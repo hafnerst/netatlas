@@ -5,7 +5,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const order = ['enterprise-wan.yaml', 'datacenter-evpn.yaml', 'minimal.yaml', 'editor-new-network.yaml', 'minimal-edited.yaml', 'metro-ring.yaml', 'metro-ring-arranged.yaml'];
+const order = ['enterprise-wan.yaml', 'datacenter-evpn.yaml', 'minimal.yaml', 'editor-new-network.yaml', 'minimal-edited.yaml', 'metro-ring.yaml', 'metro-ring-arranged.yaml', 'device-types.yaml'];
 const files = readdirSync(join(root, 'examples'))
   .filter((f) => /\.ya?ml$/.test(f))
   .sort((a, b) => ((order.indexOf(a) + 1 || 99) - (order.indexOf(b) + 1 || 99)) || a.localeCompare(b));

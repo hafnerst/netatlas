@@ -1,0 +1,214 @@
+# netatlas example: every device type
+#
+# A small campus that uses each of the 15 device types once or more:
+# cloud, router, gateway, firewall, ids_ips, load_balancer, proxy, switch,
+# ap, endpoint, server, vm, container, storage and system.
+netatlas: 1
+title: Campus — all device types
+description: |
+  Internet edge with a VPN gateway, firewall and inline IPS; a DMZ with a
+  load balancer and a proxy; core and access switching with Wi-Fi; a server
+  room with a virtualisation host, NAS and a monitoring appliance.
+
+groups:
+  - id: providers
+    label: Internet
+    kind: provider
+  - id: campus
+    label: Campus
+    kind: campus
+  - id: dmz
+    label: DMZ
+    kind: zone
+    parent: campus
+  - id: office
+    label: Office floor 1
+    kind: room
+    parent: campus
+  - id: server-room
+    label: Server room
+    kind: room
+    parent: campus
+
+devices:
+  - id: isp
+    label: ISP
+    type: cloud
+    group: providers
+    interfaces: [edge, vpn]
+  - id: edge
+    label: edge-rtr
+    type: router
+    group: campus
+    router_id: lo0
+    interfaces:
+      - {id: wan0, speed: 1G, media: fiber, ip: 198.51.100.2/30}
+      - {id: lan0, speed: 1G, ip: 10.0.0.1/30}
+      - {id: lo0, type: loopback, ip: 10.255.0.1/32}
+  - id: vpn-gw
+    label: vpn-gw
+    type: gateway
+    role: remote access
+    group: campus
+    interfaces:
+      - {id: wan0, speed: 1G, media: fiber, ip: 198.51.100.6/30}
+      - {id: lan0, speed: 1G, ip: 10.0.0.5/30}
+  - id: fw
+    label: fw1
+    type: firewall
+    group: campus
+    interfaces:
+      - {id: outside, speed: 1G, ip: 10.0.0.2/30}
+      - {id: vpn, speed: 1G, ip: 10.0.0.6/30}
+      - {id: inside, speed: 10G}
+      - {id: dmz1, speed: 1G}
+      - {id: dmz2, speed: 1G}
+  - id: ips
+    label: ips1
+    type: ids_ips
+    role: inline
+    group: campus
+    interfaces:
+      - {id: in, speed: 10G}
+      - {id: out, speed: 10G}
+  - id: lb
+    label: lb1
+    type: load_balancer
+    group: dmz
+    tier: 3
+    interfaces:
+      - {id: eth0, speed: 1G}
+  - id: proxy
+    label: proxy1
+    type: proxy
+    role: web proxy
+    group: dmz
+    tier: 3
+    interfaces:
+      - {id: eth0, speed: 1G}
+  - id: core
+    label: core-sw
+    type: switch
+    role: core
+    group: campus
+    tier: 3
+    interfaces:
+      - {id: Et1, speed: 10G}
+      - {id: Et2, speed: 10G, media: fiber}
+      - {id: Et3, speed: 10G, media: dac}
+      - {id: Et4, speed: 10G, media: dac}
+      - {id: Et5, speed: 1G}
+  - id: access
+    label: acc-sw1
+    type: switch
+    role: access
+    group: office
+    interfaces:
+      - {id: Et49, speed: 10G, media: fiber}
+      - {id: Et1, speed: 1G}
+      - {id: Et2, speed: 1G}
+  - id: ap
+    label: ap-1-01
+    type: ap
+    group: office
+    interfaces:
+      - {id: eth0, speed: 1G}
+      - {id: wlan0, media: wireless}
+  - id: laptop
+    label: laptop-042
+    type: endpoint
+    group: office
+    interfaces:
+      - {id: wlan0, media: wireless}
+  - id: desktop
+    label: pc-017
+    type: endpoint
+    group: office
+    interfaces:
+      - {id: eth0, speed: 1G}
+  - id: host
+    label: esx-01
+    type: server
+    role: hypervisor
+    group: server-room
+    interfaces:
+      - {id: vmnic0, speed: 10G, media: dac}
+      - {id: vswitch0}
+  - id: app-vm
+    label: app-vm
+    type: vm
+    group: server-room
+    tier: 7
+    interfaces: [eth0, docker0]
+  - id: api
+    label: api
+    type: container
+    group: server-room
+    tier: 8
+    interfaces: [eth0]
+  - id: nas
+    label: nas-01
+    type: storage
+    group: server-room
+    interfaces:
+      - {id: eth0, speed: 10G, media: dac}
+  - id: nms
+    label: nms
+    type: system
+    role: monitoring appliance
+    group: server-room
+    interfaces:
+      - {id: eth0, speed: 1G}
+
+links:
+  - {id: l-isp-edge, a: "isp:edge", b: "edge:wan0"}
+  - {id: l-isp-vpn, a: "isp:vpn", b: "vpn-gw:wan0"}
+  - {id: l-edge-fw, a: "edge:lan0", b: "fw:outside"}
+  - {id: l-vpn-fw, a: "vpn-gw:lan0", b: "fw:vpn"}
+  - {id: l-fw-ips, a: "fw:inside", b: "ips:in"}
+  - {id: l-ips-core, a: "ips:out", b: "core:Et1"}
+  - {id: l-fw-lb, a: "fw:dmz1", b: "lb:eth0"}
+  - {id: l-fw-proxy, a: "fw:dmz2", b: "proxy:eth0"}
+  - {id: l-core-access, a: "core:Et2", b: "access:Et49"}
+  - {id: l-access-ap, a: "access:Et1", b: "ap:eth0"}
+  - {id: l-access-pc, a: "access:Et2", b: "desktop:eth0"}
+  - {id: l-wifi, a: "ap:wlan0", b: "laptop:wlan0", medium: wireless}
+  - {id: l-core-host, a: "core:Et3", b: "host:vmnic0"}
+  - {id: l-core-nas, a: "core:Et4", b: "nas:eth0"}
+  - {id: l-core-nms, a: "core:Et5", b: "nms:eth0"}
+  - {id: l-host-vm, a: "host:vswitch0", b: "app-vm:eth0", medium: virtual}
+  - {id: l-vm-api, a: "app-vm:docker0", b: "api:eth0", medium: virtual}
+
+relations:
+  - id: ebgp-isp
+    protocol: ebgp
+    endpoints: [edge, isp]
+    over: l-isp-edge
+  - id: ipsec-remote
+    protocol: ipsec
+    label: remote-access VPN
+    endpoints: [vpn-gw, isp]
+    over: l-isp-vpn
+  - id: https-lb-api
+    protocol: https
+    label: published API
+    endpoints: [lb, api]
+    directed: true
+  - id: proxy-out
+    protocol: https
+    label: outbound web
+    endpoints: [proxy, isp]
+    directed: true
+  - id: snmp-core
+    protocol: snmp
+    endpoints: [nms, core]
+    directed: true
+  - id: syslog-fw
+    protocol: syslog
+    endpoints: [fw, nms]
+    directed: true
+  - id: nfs
+    protocol: nfs
+    category: other
+    label: NFS datastore
+    endpoints: [host, nas]
