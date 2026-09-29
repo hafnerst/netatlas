@@ -250,9 +250,15 @@ layout:
     pe1: [0, 0]
     vrf-cust-a: [240, 90]
     ospf-core: [120, 60]
+  manual:              # optional: nodes placed by hand (written by the editor)
+    physical: [pe3]
 ```
 
 * Values are `[x, y]` numbers; netatlas writes integers, sorted by id.
+* `manual` lists, per view, the nodes the user dragged. It is used only for
+  the layout status (see below): it tells *Manually adjusted* apart from
+  *Edited since arranged*. Auto-arrange clears it for the arranged view. A
+  node dropped exactly on its auto-arranged position is removed from it.
 * Group boxes, ports, cables, relation lines and labels are never stored.
   They're derived from the node positions.
 * **Layout data never changes what the network is.** A malformed entry, an
@@ -277,6 +283,20 @@ layout:
 So **load → arrange → export → reload** shows exactly the same picture. A
 file that has never been edited in netatlas keeps showing the auto-arranged
 layout, which is itself deterministic.
+
+### Layout status
+
+For each view the editor shows whether the diagram matches Auto-arrange. The
+status is derived from the document, never from the last action:
+
+| Status | Rule |
+|---|---|
+| **Auto-arranged** | No positions are stored for the view, or every displayed position equals the Auto-arrange result for the current model. |
+| **Manually adjusted** | Some positions differ, and at least one differing node is listed in `layout.manual`. |
+| **Edited since arranged** | Some positions differ, but none of the differing nodes was placed by hand. The model changed after arranging, and positions were kept stable rather than re-arranged. |
+
+Because it's derived, undo/redo, export → reload and moving a node back to
+its calculated position always give the right status.
 
 ### Auto-arrange
 

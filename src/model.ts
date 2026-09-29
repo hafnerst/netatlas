@@ -127,6 +127,8 @@ export interface ProtocolDef {
 export interface ModelLayout {
   physical: Map<string, { x: number; y: number }>;
   logical: Map<string, { x: number; y: number }>;
+  /** ids of nodes the user positioned by hand, per view (for the layout status only) */
+  manual: { physical: Set<string>; logical: Set<string> };
 }
 
 export interface Model {

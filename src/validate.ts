@@ -925,15 +925,34 @@ function build(root: YNode | null, c: Ctx): Model | null {
   // ------------------------------------------------------------- layout
   // Presentation only: problems here are warnings and the entry is ignored,
   // so stored positions can never change what the model means.
-  const layout: ModelLayout = { physical: new Map(), logical: new Map() };
+  const layout: ModelLayout = { physical: new Map(), logical: new Map(), manual: { physical: new Set(), logical: new Set() } };
   const layoutNode = get(top, 'layout');
   if (!isNull(layoutNode)) {
     const ln = layoutNode as YNode;
     if (ln.kind !== 'map') c.warn(ln, 'layout', 'layout must be a mapping with "physical:" and/or "logical:"; it is ignored');
     else {
       ln.entries.forEach((e, view) => {
+        if (view === 'manual') {
+          // which nodes were placed by hand, per view (only used for the layout status)
+          if (isNull(e.value)) return;
+          if (e.value.kind !== 'map') {
+            c.warn(e.value, 'layout.manual', 'expected "physical: [ids]" and/or "logical: [ids]"; ignored');
+            return;
+          }
+          e.value.entries.forEach((me, mview) => {
+            if ((mview !== 'physical' && mview !== 'logical') || me.value.kind !== 'seq') {
+              c.warn(e.value, 'layout.manual.' + mview, 'expected "physical: [ids]" or "logical: [ids]"; ignored', { key: mview, line: me.keyLine });
+              return;
+            }
+            for (const it of me.value.items) {
+              const id = scalarText(it);
+              if (id !== undefined) layout.manual[mview].add(id);
+            }
+          });
+          return;
+        }
         if (view !== 'physical' && view !== 'logical') {
-          c.warn(ln, 'layout.' + view, `unknown layout view "${view}" (use physical or logical); it is ignored`, { key: view, line: e.keyLine });
+          c.warn(ln, 'layout.' + view, `unknown layout view "${view}" (use physical, logical or manual); it is ignored`, { key: view, line: e.keyLine });
           return;
         }
         if (isNull(e.value)) return;

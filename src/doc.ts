@@ -69,6 +69,15 @@ function keepTrivia(from: YNode | undefined, to: YNode): YNode {
   return to;
 }
 
+function sameSet(a: Set<string>, b: Set<string>): boolean {
+  if (a.size !== b.size) return false;
+  let same = true;
+  a.forEach((x) => {
+    if (!b.has(x)) same = false;
+  });
+  return same;
+}
+
 /** Insert or replace `key` in `m`, placing new keys according to `order`. */
 export function setKey(m: YMap, key: string, value: YNode, order?: string[]): void {
   const existing = m.entries.get(key);
@@ -292,8 +301,103 @@ export class ModelDoc {
         this.writeLayout(view, next);
         changed = true;
       }
+      // the record of hand-placed nodes follows renames and forgets removed nodes
+      const manual = new Set<string>();
+      pre.layout.manual[view].forEach((id) => {
+        const nid = this.renames.get(id) || id;
+        if (next.has(nid)) manual.add(nid);
+      });
+      post.layout.manual[view].forEach((id) => {
+        if (next.has(id)) manual.add(id);
+      });
+      if (!sameSet(manual, post.layout.manual[view]) || this.rawManualIds(view).some((id) => !next.has(id))) {
+        this.writeManual(view, manual);
+        changed = true;
+      }
     }
     if (changed) this.revalidate();
+  }
+
+  // ------------------------------------------------------------ layout status
+
+  private autoMemo = new Map<string, Map<string, Pt>>();
+
+  /** Auto-arrange result for the current model (cached per layout signature). */
+  autoLayout(view: LayoutView): Map<string, Pt> {
+    const m = this.result.model;
+    if (!m) return new Map();
+    const input = layoutInput(m);
+    const key = view + '\n' + layoutSignature(input);
+    let r = this.autoMemo.get(key);
+    if (!r) {
+      r = autoPositions(view, input);
+      // keep only the latest result per view
+      Array.from(this.autoMemo.keys()).forEach((k) => {
+        if (k.indexOf(view + '\n') === 0) this.autoMemo.delete(k);
+      });
+      this.autoMemo.set(key, r);
+    }
+    return r;
+  }
+
+  /**
+   * Does the diagram of a view match Auto-arrange for the current model?
+   *   'auto'    every node is exactly where Auto-arrange puts it;
+   *   'manual'  at least one node that was placed by hand differs from it;
+   *   'edited'  it differs only because the model changed after arranging
+   *             (edits keep existing positions stable instead of re-arranging).
+   * Derived from the document every time: it is correct after undo, reload,
+   * or when nodes are back at their calculated positions.
+   */
+  layoutStatus(view: LayoutView): 'auto' | 'manual' | 'edited' {
+    const m = this.result.model;
+    if (!m || m.layout[view].size === 0) return 'auto';
+    const auto = this.autoLayout(view);
+    const shown = this.displayedPositions(view);
+    const differing: string[] = [];
+    shown.forEach((p, id) => {
+      const q = auto.get(id);
+      if (!q || q.x !== p.x || q.y !== p.y) differing.push(id);
+    });
+    if (!differing.length) return 'auto';
+    return differing.some((id) => m.layout.manual[view].has(id)) ? 'manual' : 'edited';
+  }
+
+  /** Ids recorded as hand-placed in the document (valid or not). */
+  private rawManualIds(view: LayoutView): string[] {
+    const lay = this.root.entries.get('layout');
+    if (!lay || lay.value.kind !== 'map') return [];
+    const man = lay.value.entries.get('manual');
+    if (!man || man.value.kind !== 'map') return [];
+    const l = man.value.entries.get(view);
+    return l && l.value.kind === 'seq' ? l.value.items.map((i) => scalarText(i) || '') : [];
+  }
+
+  /** Store the set of hand-placed nodes of a view (sorted; removed when empty). */
+  private writeManual(view: LayoutView, ids: Set<string>): void {
+    let lay = this.root.entries.get('layout');
+    if (!lay || lay.value.kind !== 'map') {
+      if (!ids.size) return;
+      const fresh = mapNode();
+      fresh.blank = true;
+      setKey(this.root, 'layout', fresh, KEY_ORDER.top);
+      lay = this.root.entries.get('layout') as { key: string; keyLine: number; value: YNode };
+    }
+    const layMap = lay.value as YMap;
+    const cur = layMap.entries.get('manual');
+    let man = cur && cur.value.kind === 'map' ? cur.value : null;
+    if (!ids.size) {
+      if (man) {
+        man.entries.delete(view);
+        if (!man.entries.size) layMap.entries.delete('manual');
+      }
+      return;
+    }
+    if (!man) {
+      man = mapNode();
+      setKey(layMap, 'manual', man, ['physical', 'logical', 'manual']);
+    }
+    setKey(man, view, seqNode(Array.from(ids).sort(cmp).map(strNode), true), ['physical', 'logical']);
   }
 
   /** Keys present in the document's layout section for a view (valid or not). */
@@ -340,7 +444,7 @@ export class ModelDoc {
     const targets = new Map<LayoutView, Map<string, Pt>>();
     let moved = 0;
     for (const v of views) {
-      const auto = autoPositions(v, input);
+      const auto = this.autoLayout(v);
       const shown = resolvePositions(v, input, m.layout[v]);
       auto.forEach((p, id) => {
         const q = shown.get(id);
@@ -350,7 +454,15 @@ export class ModelDoc {
     }
     if (!targets.size) return { changed: false, moved: 0 };
     const label = views.length > 1 ? 'Auto-arrange (both views)' : `Auto-arrange (${views[0]} view)`;
-    this.change(label, () => targets.forEach((pos, v) => this.writeLayout(v, pos)), { layout: false });
+    this.change(
+      label,
+      () =>
+        targets.forEach((pos, v) => {
+          this.writeLayout(v, pos);
+          this.writeManual(v, new Set());
+        }),
+      { layout: false },
+    );
     return { changed: true, moved };
   }
 
@@ -363,7 +475,25 @@ export class ModelDoc {
       if (next.has(id)) next.set(id, { x: Math.round(p.x), y: Math.round(p.y) });
     });
     if (samePositions(next, m.layout[view])) return false;
-    this.change(label, () => this.writeLayout(view, next), { layout: false });
+    const manual = new Set(m.layout.manual[view]);
+    updates.forEach((_, id) => {
+      if (next.has(id)) manual.add(id);
+    });
+    // a node put back exactly where Auto-arrange places it is no longer "placed by hand"
+    const auto = this.autoLayout(view);
+    Array.from(manual).forEach((id) => {
+      const p = next.get(id);
+      const q = auto.get(id);
+      if (!p || (q && q.x === p.x && q.y === p.y)) manual.delete(id);
+    });
+    this.change(
+      label,
+      () => {
+        this.writeLayout(view, next);
+        this.writeManual(view, manual);
+      },
+      { layout: false },
+    );
     return true;
   }
 

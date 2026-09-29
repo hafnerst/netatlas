@@ -1,10 +1,12 @@
-# netatlas
+# NetAtlas
 
-**Offline network architecture diagrams and editor. YAML in, YAML out.**
+**NetAtlas — an explorable map of a network architecture.**
 
-netatlas is a single, self-contained HTML file: `dist/netatlas.html`. Open it
-in any modern browser, including on an air-gapped machine. Start a new
-network model or open a YAML file, then view it and edit it:
+NetAtlas lets you create, edit and explore physical and logical network
+diagrams from a single YAML file, entirely offline. The whole tool is one
+self-contained HTML file, `dist/netatlas.html`, that runs in any modern
+browser, including on an air-gapped machine. Start a new model or open a YAML
+file, then:
 
 * **Physical view:** devices, their ports (with interface names), cabling
   (medium and speed), and locations such as sites, rooms and racks, drawn as
@@ -120,18 +122,35 @@ written back byte-for-byte. The details are in
 | Highlight | selecting something dims everything unrelated. For a tunnel this includes its carriers, what it carries, its endpoints and, in the physical view, **the cables it rides on**. The selection is kept across views. |
 | Hover | tooltip with a short summary |
 | Rearrange | drag devices or networks. The position is stored in the model (one undo step each) and exported with it. |
-| Auto-arrange | **Auto-arrange…** (or `A`): recomputes the positions of the **whole model** for this view or both views. See below. |
+| Auto-arrange | **Auto-arrange…** in the top toolbar (or `A`): recomputes the positions of the **whole model** for this view or both views. The badges next to it show whether each view is auto-arranged. See below. |
 | Find | `/` or the search box: ids, labels, IP addresses, CIDRs, protocols, cable ids |
 | Filter | **Legend** tab (logical view): turn protocols on and off; top-bar toggles for labels, networks and a faint physical underlay |
 | Export picture | **Save SVG** saves the current view as a standalone SVG file |
 
 ## Auto-arrange and positions
 
-**Auto-arrange…** (next to *Fit*, or press `A`) lays out the entire model,
-not just what is visible or selected. It includes objects hidden by filters.
-A dialog shows its scope (how many objects in each view) and lets you arrange
-**this view** or **both views**. The result is one undo step (Ctrl+Z). It
-never runs by itself.
+The **Auto-arrange…** button in the top toolbar, next to *Physical* /
+*Logical* (or press `A`), lays out the entire model, not just what is
+visible or selected. It includes objects hidden by filters. A dialog shows
+the scope and the current status of each view, and lets you choose
+**Arrange <current> view only** or **Arrange both views**. The result is one
+undo step (Ctrl+Z). It never runs by itself.
+
+Next to the button, one badge per view tells you whether that view matches
+the Auto-arrange result (the badge of the shown view is highlighted):
+
+| Status | Meaning |
+|---|---|
+| ✓ **Auto-arranged** | Every object is exactly where Auto-arrange puts it for the current model. |
+| ✎ **Manually adjusted** | Some objects were dragged away from their auto-arranged positions. |
+| ● **Edited since arranged** | The model changed after arranging (e.g. a device was added). Existing objects kept their positions and new ones were placed next to their neighbors, so the diagram no longer matches a fresh Auto-arrange. Nothing was moved by hand. |
+
+The status is **derived from the document every time**: it compares the
+current positions with the deterministic Auto-arrange result for the current
+model. So it's correct after undo/redo, after export and reload, and when
+objects are back at their calculated positions. Physical and logical views
+are tracked separately. Ordinary model edits never count as manual
+adjustments.
 
 * **Physical view:** sites, racks and other groups become nested boxes;
   devices sit in rows by role (WAN/cloud on top, then routers, firewalls,
@@ -153,15 +172,19 @@ never runs by itself.
 (`id: [x, y]` per view). It's presentation only: it never changes the
 network, and a broken entry is only a warning.
 
-* Opening a file never writes positions. Without a `layout` section the
-  diagram shows the auto-arranged layout, and the status next to the button
-  says *positions: automatic*.
+* **Exported YAML stores the coordinates** once there are any to store.
+  Opening a file never writes positions: without a `layout` section the
+  diagram shows the auto-arranged layout (*Auto-arranged*).
 * When you drag a node, or make the first edit that changes the geometry
   (adding, removing or renaming objects, changing labels, groups, cables or
-  relations), the positions currently shown are stored (*positions: saved*).
-  From then on nothing moves by itself; new objects are placed next to their
-  neighbors.
-* Load → Auto-arrange → export → reload shows exactly the same diagram.
+  relations), the positions currently shown are stored. From then on nothing
+  moves by itself; new objects are placed next to their neighbors.
+* Dragged nodes are also listed in `layout.manual`, which is how
+  *Manually adjusted* is told apart from *Edited since arranged* after a
+  reload. Auto-arrange clears that list for the arranged view, and a node
+  dropped exactly on its calculated position leaves it.
+* Load → Auto-arrange → export → reload shows exactly the same diagram with
+  the same status.
 
 The complete rules are in [docs/FORMAT.md](docs/FORMAT.md#layout-diagram-positions).
 
@@ -274,11 +297,11 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/scr
 | Parsing | `test/yaml.test.mjs` (19 tests) | Every supported construct; rejection (with line numbers) of anchors, aliases, tags, merge keys, directives, multiple documents, multi-line scalars and flow, tabs, duplicate keys and bad escapes; all resource limits; `__proto__` safety; all examples conform to the subset |
 | Validation | `test/validate.test.mjs` (17 tests) | Examples valid; unknown keys, ids and references reported with suggestions; one cable per port; logical interfaces can't be cabled; `over` cycles; protocols; groups; limits; the broken demo file's exact errors |
 | **Editor core and round trips** | `test/editor.test.mjs` (22 tests) | **Example files written back byte-for-byte.** A torture document and 400 random trees round-trip. **Create → export → reload.** **Import → edit → export → reload** (untouched text identical). **Attributes no diagram shows, and unknown keys, survive.** Renames update every kind of reference. Deletes report broken references; undo/redo; shorthand expansion; canonical key order. **Multiple IPv4/IPv6 loopbacks.** Every class of invalid loopback address, with the error located at the exact address. `router_id` rules; duplicate-address and CIDR-membership warnings; compatibility with existing loopbacks; loopback display in both views and details; drafts with errors still draw; the editor examples are reproducible. |
-| **Auto-arrange** | `test/layout.test.mjs` (18 tests) | **Repeatability** (fresh documents give identical integer positions). **Order independence:** every example with shuffled keys, sections and lists and swapped cable ends, 3 seeds each, gives the same canonical input and identical positions in both views; fields that don't affect geometry don't matter. **Idempotence:** a second arrange changes nothing and adds no undo step. **Load → arrange → export → reload:** same positions and same rendered scene, and re-arranging after reload is a no-op; the arranged example is reproducible. **Manual moves:** only the moved node changes; the other view is untouched; arrange ignores manual positions; undo restores them. **Edits never re-arrange:** the first geometric edit freezes the shown positions; new nodes go next to their neighbors without overlap; renames carry positions; deletes drop them. The YAML tab is taken literally. **Semantics:** the model is identical with and without `layout`, and bad entries are warnings only. **Disconnected components** of different sizes: no overlaps in either view, and component bounding boxes are disjoint. **Dense relationships:** a 12-router full mesh with tunnels has no overlaps and gets a lane per relation. No overlaps for any example. **Static determinism guard:** no `Math.random`, time, `localeCompare`, `hypot`/`sin`/`cos`/`pow` or DOM measurement in layout code. Large-model runtime |
+| **Auto-arrange** | `test/layout.test.mjs` (20 tests) | **Repeatability** (fresh documents give identical integer positions). **Order independence:** every example with shuffled keys, sections and lists and swapped cable ends, 3 seeds each, gives the same canonical input and identical positions in both views; fields that don't affect geometry don't matter. **Idempotence:** a second arrange changes nothing and adds no undo step. **Load → arrange → export → reload:** same positions and same rendered scene, and re-arranging after reload is a no-op; the arranged example is reproducible. **Manual moves:** only the moved node changes; the other view is untouched; arrange ignores manual positions; undo restores them. **Edits never re-arrange:** the first geometric edit freezes the shown positions; new nodes go next to their neighbors without overlap; renames carry positions; deletes drop them. The YAML tab is taken literally. **Semantics:** the model is identical with and without `layout`, and bad entries are warnings only. **Disconnected components** of different sizes: no overlaps in either view, and component bounding boxes are disjoint. **Dense relationships:** a 12-router full mesh with tunnels has no overlaps and gets a lane per relation. No overlaps for any example. **Static determinism guard:** no `Math.random`, time, `localeCompare`, `hypot`/`sin`/`cos`/`pow` or DOM measurement in layout code. Large-model runtime. **Layout status:** *auto / manual / edited* for each view after load, non-geometric edits, drags, undo/redo, a node moved back to its calculated position, export → reload, Auto-arrange and its repetition, model edits (never "manual"), renames and deletes; bad `layout.manual` entries are warnings only. |
 | Rendering | `test/render.test.mjs` (12 tests) | Physical view: devices, cables and ports, no relations. Logical view: relations, no cables; tunnels as tubes; GRE inside IPsec; parallel lanes; protocol matrix; hostile labels stay text; deterministic layout |
 | View switching | `test/state.test.mjs` (8 tests) | Physical ↔ logical switching keeps the selection and positions; highlight sets; search, details and legend |
 | Offline / artifact | `test/build.test.mjs` (7 tests) | One inline script; no external references or remote URLs; no `fetch`, XHR, WebSocket, `eval`, `innerHTML` …; strict CSP before the script; compiled JavaScript only; every module comes from `src/` |
-| **End-to-end in a real browser** | `test/browser.test.mjs` → `dist/netatlas.html#selftest` (128 in-page checks) | Headless Chrome, Edge or Chromium opens the file from `file://` **with DNS resolution disabled** and drives the real UI. **Viewer:** every example loads through the File API path, both views are drawn, loopback chips appear only in the logical view, interaction works. **New model:** add a device, **add two loopbacks, type IPv4/IPv6 addresses, see the error for an address without a prefix and fix it**, set `router_id`, add interfaces, a cable, a GRE tunnel between loopbacks with nested attrs, then **download and reload** the file. **Imported model:** rename a device (every reference follows), edit, add an IPv6 loopback, download as `…-edited.yaml`, **reload, and check that edits, hidden attributes and comments survived**. **Guards:** unsaved-changes dialog on replace; `beforeunload`; Ctrl+Z/Y; deleting a referenced device reports broken references; **exporting an invalid model requires "Download anyway"**; YAML-tab apply/reject; unknown keys kept and movable into attrs; typed text is committed before a button acts. **Auto-arrange:** loading stores nothing; the dialog shows the scope; arranging an automatic layout stores it without moving anything; repeating it is a no-op; a manual move changes only that node and is undone by arrange (and restored by undo); **arrange → export → reload is pixel-identical in both views**; a file with every list and key reversed arranges identically; **the browser reproduces the build-time positions of `metro-ring-arranged.yaml`** (a cross-engine determinism check when run in Firefox or Safari). **Safety:** hostile labels create no elements; YAML syntax errors are refused with the current model kept; **no network requests, no CSP violations**. The test is skipped if no Chromium-based browser is installed; set `NETATLAS_BROWSER` to choose one. |
+| **End-to-end in a real browser** | `test/browser.test.mjs` → `dist/netatlas.html#selftest` (142 in-page checks) | Headless Chrome, Edge or Chromium opens the file from `file://` **with DNS resolution disabled** and drives the real UI. **Viewer:** every example loads through the File API path, both views are drawn, loopback chips appear only in the logical view, interaction works. **New model:** add a device, **add two loopbacks, type IPv4/IPv6 addresses, see the error for an address without a prefix and fix it**, set `router_id`, add interfaces, a cable, a GRE tunnel between loopbacks with nested attrs, then **download and reload** the file. **Imported model:** rename a device (every reference follows), edit, add an IPv6 loopback, download as `…-edited.yaml`, **reload, and check that edits, hidden attributes and comments survived**. **Guards:** unsaved-changes dialog on replace; `beforeunload`; Ctrl+Z/Y; deleting a referenced device reports broken references; **exporting an invalid model requires "Download anyway"**; YAML-tab apply/reject; unknown keys kept and movable into attrs; typed text is committed before a button acts. **Auto-arrange:** the button is in the top toolbar, visible and labelled (disabled until a model is open); the status badges read *Auto-arranged* / *Manually adjusted* / *Edited since arranged* after loading, dragging, undo, switching views (the shown view is highlighted), Auto-arrange, moving a node back to its calculated position, export → reload of arranged and of manually adjusted layouts, a model edit, and New; loading stores nothing; the dialog shows the scope; arranging an automatic layout stores it without moving anything; repeating it is a no-op; a manual move changes only that node and is undone by arrange (and restored by undo); **arrange → export → reload is pixel-identical in both views**; a file with every list and key reversed arranges identically; **the browser reproduces the build-time positions of `metro-ring-arranged.yaml`** (a cross-engine determinism check when run in Firefox or Safari). **Safety:** hostile labels create no elements; YAML syntax errors are refused with the current model kept; **no network requests, no CSP violations**. The test is skipped if no Chromium-based browser is installed; set `NETATLAS_BROWSER` to choose one. |
 
 ### Manual check (any browser, e.g. Firefox or Safari)
 
@@ -297,14 +320,20 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/scr
    file: the rename, all comments and all other content are there.
 5. Open `examples/broken/errors-demo.yaml`. It opens as a draft with five
    errors, each shown next to its field and listed in **Problems**.
-6. **Auto-arrange:** open `examples/metro-ring.yaml`; the zoom bar says
-   *positions: automatic*.
-   * Drag `pe3` somewhere else, then choose **Auto-arrange… → Both views**:
-     `pe3` returns and the toast reports what moved.
+6. **Auto-arrange:** open `examples/metro-ring.yaml`. The **Auto-arrange…**
+   button is in the top toolbar, and the badges next to it read
+   *Physical: Auto-arranged* and *Logical: Auto-arranged*.
+   * Drag `pe3` somewhere else: the Physical badge changes to *Manually
+     adjusted*, and switching to Logical shows that view is still
+     *Auto-arranged*.
+   * Choose **Auto-arrange… → Arrange both views**:
+     `pe3` returns, the toast reports what moved, and both badges read
+     *Auto-arranged*.
    * Choose **Auto-arrange…** again: "Already arranged — nothing moved".
-   * Press Ctrl+Z: `pe3` is back where you dragged it.
+   * Press Ctrl+Z: `pe3` is back where you dragged it, and the badge says
+     *Manually adjusted* again.
    * Download, then open the downloaded file: both views look exactly the
-     same. Its `layout:` section matches the one in
+     same and show the same badges. Its `layout:` section matches the one in
      `examples/metro-ring-arranged.yaml` after the same arrange.
 
 ## Security model

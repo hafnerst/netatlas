@@ -606,14 +606,41 @@ export class App {
         ]
       : [];
     for (const [id, v] of opts) (this.$(id) as HTMLInputElement).checked = v;
-    const ls = this.$('layout-state');
-    if (d && s) {
-      const stored = d.hasStoredLayout(s.state.view);
-      ls.textContent = stored ? 'positions: saved' : 'positions: automatic';
-      ls.title = stored
-        ? 'Positions of this view are stored in the model (layout section) and exported with it. Drag nodes to move them; Auto-arrange recomputes them.'
-        : 'This view shows the Auto-arrange result; nothing is stored in the file yet. Moving a node or editing the model saves the current positions.';
-    } else ls.textContent = '';
+    (this.$('btn-arrange') as HTMLButtonElement).disabled = !d || !s;
+    this.updateLayoutStatus();
+  }
+
+  /**
+   * Per-view layout status next to the Auto-arrange button. Always derived
+   * from the document (current positions vs. the deterministic Auto-arrange
+   * result), never from the last action, so it is right after undo/reload.
+   */
+  private updateLayoutStatus(): void {
+    const d = this.mdoc;
+    const s = this.session;
+    const texts = { auto: 'Auto-arranged', manual: 'Manually adjusted', edited: 'Edited since arranged' };
+    const tips = {
+      auto: 'Every object is exactly where Auto-arrange puts it for the current model.',
+      manual: 'Some objects were dragged away from their auto-arranged positions. Auto-arrange restores them (undoable).',
+      edited:
+        'The model changed after the layout was arranged. Existing objects kept their positions and new ones were placed next to their neighbors, so the diagram no longer matches a fresh Auto-arrange. No object was moved by hand.',
+    };
+    const views: View[] = ['physical', 'logical'];
+    for (const v of views) {
+      const badge = this.doc.querySelector(`[data-view-status="${v}"]`) as HTMLElement | null;
+      if (!badge) continue;
+      if (!d || !s) {
+        badge.textContent = '';
+        badge.className = 'lstat';
+        continue;
+      }
+      const st = d.layoutStatus(v);
+      const name = v === 'physical' ? 'Physical' : 'Logical';
+      badge.textContent = `${name}: ${texts[st]}`;
+      badge.className = `lstat st-${st}${s.state.view === v ? ' current' : ''}`;
+      badge.setAttribute('data-status', st);
+      badge.title = `${name} view${s.state.view === v ? ' (shown)' : ''}: ${tips[st]}` + (d.hasStoredLayout(v) ? ' Positions are stored in the model and exported with it.' : ' Positions are not stored yet; the file shows the auto-arranged layout.');
+    }
   }
 
   private fillExamples(): void {
@@ -957,8 +984,8 @@ export class App {
           'The layout is deterministic: the same model always gives the same positions, whatever you moved before.',
       ]),
       el(this.doc, 'ul', { class: 'arrange-scope' }, [
-        el(this.doc, 'li', {}, [`Physical view: ${counts.physical} devices (group boxes follow their devices)` + (d.hasStoredLayout('physical') ? ' — manual positions will be replaced' : '')]),
-        el(this.doc, 'li', {}, [`Logical view: ${counts.logical} devices, networks and hubs` + (d.hasStoredLayout('logical') ? ' — manual positions will be replaced' : '')]),
+        el(this.doc, 'li', {}, [`Physical view: ${counts.physical} devices (group boxes follow their devices) — currently ${statusText(d.layoutStatus('physical'))}`]),
+        el(this.doc, 'li', {}, [`Logical view: ${counts.logical} devices, networks and hubs — currently ${statusText(d.layoutStatus('logical'))}`]),
       ]),
       el(this.doc, 'p', { class: 'muted' }, ['The positions are stored in the model’s layout section and exported with the YAML. Undo with Ctrl+Z.']),
     ];
@@ -967,8 +994,8 @@ export class App {
       body,
       buttons: [
         { label: 'Cancel', value: 'cancel' },
-        { label: 'Both views', value: 'both' },
-        { label: `${view === 'physical' ? 'Physical' : 'Logical'} view`, value: view, kind: 'primary' },
+        { label: 'Arrange both views', value: 'both' },
+        { label: `Arrange ${view} view only`, value: view, kind: 'primary' },
       ],
     });
     if (a === 'cancel') return;
@@ -1148,6 +1175,10 @@ export class App {
     const base = this.mdoc.fileName.replace(/\.[^.]*$/, '') || 'netatlas';
     this.downloadText(this.exportSvg(), base + '-' + this.session.state.view + '.svg', 'image/svg+xml');
   }
+}
+
+function statusText(st: 'auto' | 'manual' | 'edited'): string {
+  return st === 'auto' ? '“Auto-arranged”' : st === 'manual' ? '“Manually adjusted”' : '“Edited since arranged”';
 }
 
 function round(v: number): number {
