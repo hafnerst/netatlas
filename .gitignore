@@ -1,0 +1,4 @@
+node_modules/
+build/
+dist/screenshots/
+dist/selftest-downloads/

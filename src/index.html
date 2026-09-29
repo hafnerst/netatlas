@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- Offline by construction: no network access of any kind is permitted. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; connect-src 'none'; font-src 'none'; object-src 'none'; media-src 'none'; frame-src 'none'; worker-src 'none'; form-action 'none'; base-uri 'none'">
+<meta name="referrer" content="no-referrer">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="generator" content="netatlas __VERSION__">
+<title>netatlas</title>
+<style id="app-style">
+/*__CSS__*/
+</style>
+</head>
+<body data-state="empty" data-view="none" data-dirty="false">
+<header class="topbar">
+  <div class="brand" title="netatlas __VERSION__ — offline network architecture diagrams and editor">
+    <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="6" r="2.6"/><circle cx="19" cy="6" r="2.6"/><circle cx="12" cy="18" r="2.6"/><path d="M7.4 6.8h9.2M6.3 8.3l4.4 7.4M17.7 8.3l-4.4 7.4"/></svg>
+    <span>netatlas</span>
+  </div>
+  <div class="btn-group">
+    <button id="btn-new" type="button" title="Start a new model">New</button>
+    <button id="open" type="button" class="primary" title="Open a local YAML file (nothing is uploaded)">Open YAML…</button>
+    <button id="btn-download" type="button" title="Download the current model as YAML (Ctrl+S)" disabled>Download YAML</button>
+  </div>
+  <input id="file" type="file" accept=".yaml,.yml,application/yaml,application/x-yaml,text/yaml,text/plain" hidden>
+  <select id="examples" aria-label="Load a built-in example"><option value="">Examples…</option></select>
+  <div class="btn-group">
+    <button id="btn-undo" type="button" title="Undo (Ctrl+Z)" disabled aria-label="Undo">↶</button>
+    <button id="btn-redo" type="button" title="Redo (Ctrl+Y)" disabled aria-label="Redo">↷</button>
+  </div>
+  <div class="seg" role="group" aria-label="View">
+    <button type="button" data-view-btn="physical" title="Physical view (P)">Physical</button>
+    <button type="button" data-view-btn="logical" title="Logical view (L)">Logical</button>
+  </div>
+  <div class="search-wrap">
+    <input id="search" type="search" placeholder="Find… ( / )" aria-label="Find device, network, relation" autocomplete="off" spellcheck="false">
+    <div id="search-results" class="dropdown" hidden></div>
+  </div>
+  <span class="spacer"></span>
+  <label class="opt"><input id="opt-labels" type="checkbox" checked> Labels</label>
+  <label class="opt logical-only"><input id="opt-networks" type="checkbox" checked> Networks</label>
+  <label class="opt logical-only"><input id="opt-underlay" type="checkbox"> Underlay</label>
+  <button id="btn-outline" type="button" title="Show / hide the model outline" class="ghost">☰ Model</button>
+</header>
+<main>
+  <aside id="outline" aria-label="Model outline">
+    <div id="outline-body"></div>
+  </aside>
+  <section id="canvas-wrap">
+    <svg id="canvas" role="img" aria-label="Network diagram"><g id="viewport"></g></svg>
+    <div class="zoombar" role="toolbar" aria-label="Navigation">
+      <button id="zoom-in" type="button" title="Zoom in (+)">+</button>
+      <span id="zoom-level">100%</span>
+      <button id="zoom-out" type="button" title="Zoom out (−)">−</button>
+      <button id="zoom-fit" type="button" title="Fit to screen (0)">Fit</button>
+      <button id="btn-arrange" type="button" title="Recompute the positions of the whole model (A)">Auto-arrange…</button>
+      <span id="layout-state" class="muted small"></span>
+      <button id="save-svg" type="button" title="Save the current view as an SVG file">Save SVG</button>
+    </div>
+    <div id="empty" class="overlay">
+      <div class="card-intro">
+        <h1>Network architecture diagrams — view and edit, fully offline</h1>
+        <p>Start a <strong>new model</strong> or open a <strong>netatlas YAML</strong> file. You get a <em>physical</em> view (devices, ports, cabling, sites, racks) and a <em>logical</em> view (networks, loopbacks, routing adjacencies, overlays, GRE / IPsec and other tunnels), and you can edit every part of the model in the page.</p>
+        <p><button id="new-empty" type="button">New model</button> <button id="open-empty" type="button" class="primary">Open YAML file…</button> or drop a file anywhere on this page.</p>
+        <p class="muted">Or try an example: <span id="example-buttons"></span></p>
+        <p class="muted small">Files are read, edited and saved only inside this page; saving downloads a new YAML file. This page has no network access (enforced by its Content-Security-Policy) and never sends your data anywhere.</p>
+      </div>
+    </div>
+    <div id="errors" class="overlay error-overlay"></div>
+    <div id="tooltip" role="tooltip" hidden></div>
+    <div id="drop-hint">Drop the YAML file to open it</div>
+    <div id="toast" role="status" aria-live="polite" hidden></div>
+  </section>
+  <aside id="side">
+    <nav class="tabs" role="tablist">
+      <button type="button" data-tab="edit" title="Edit the selected object (E)">Edit</button>
+      <button type="button" data-tab="details">Details</button>
+      <button type="button" data-tab="legend">Legend</button>
+      <button type="button" data-tab="relations">Relations</button>
+      <button type="button" data-tab="problems">Problems</button>
+      <button type="button" data-tab="yaml">YAML</button>
+    </nav>
+    <div id="side-body"></div>
+    <div class="keys muted small">Drag background: pan · wheel: zoom · drag node: move · click: select · Esc: clear · P / L: view · Ctrl+Z / Y: undo / redo · Ctrl+S: download</div>
+  </aside>
+</main>
+<footer id="status" aria-live="polite"></footer>
+<dialog id="modal"></dialog>
+<pre id="selftest" hidden></pre>
+<script>
+/*__JS__*/
+</script>
+</body>
+</html>

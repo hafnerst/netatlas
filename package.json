@@ -1,0 +1,16 @@
+{
+  "name": "netatlas",
+  "version": "1.0.0",
+  "description": "Offline, single-file network architecture diagram tool (YAML in, interactive SVG out)",
+  "private": true,
+  "license": "Apache-2.0",
+  "scripts": {
+    "build": "node scripts/gen-examples.mjs && tsc -p tsconfig.json && node scripts/build.mjs",
+    "test": "npm run build && node --test test/",
+    "selftest:browser": "node scripts/browser-selftest.mjs",
+    "typecheck": "node scripts/gen-examples.mjs && tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "~5.9.2"
+  }
+}

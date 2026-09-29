@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "target": "ES2019",
+    "module": "commonjs",
+    "lib": ["ES2019", "DOM"],
+    "strict": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": true,
+    "rootDir": "src",
+    "outDir": "build/js",
+    "removeComments": false,
+    "sourceMap": false,
+    "declaration": false,
+    "types": []
+  },
+  "include": ["src/**/*.ts"]
+}

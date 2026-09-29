@@ -1,0 +1,221 @@
+# netatlas example: data-center fabric
+#
+# A two-spine / four-leaf fabric. The physical view shows racks and cabling;
+# the logical view shows the eBGP underlay, the EVPN control plane, VXLAN
+# data-plane tunnels (one multipoint VNI), MLAG, and a user-defined protocol
+# ("srv6") that is not built in.
+#
+# Note: YAML anchors/aliases are NOT supported by netatlas, so repeated
+# interface lists are written out in full.
+netatlas: 1
+title: FRA1 data-center fabric
+description: Spine/leaf fabric with BGP underlay and EVPN/VXLAN overlay.
+
+protocols:
+  - id: srv6
+    label: SRv6 policy
+    category: tunnel
+    color: "#e03131"
+    description: Segment routing over IPv6 (user-defined protocol)
+
+groups:
+  - id: fra1
+    label: FRA1 data hall 2
+    kind: site
+  - id: rack-a01
+    label: Rack A01 (spines)
+    kind: rack
+    parent: fra1
+  - id: rack-a02
+    label: Rack A02 (compute)
+    kind: rack
+    parent: fra1
+  - id: rack-a03
+    label: Rack A03 (border + compute)
+    kind: rack
+    parent: fra1
+  - id: wan
+    label: WAN
+    kind: provider
+
+devices:
+  - id: spine1
+    type: switch
+    role: spine
+    tier: 1
+    model: 7280R3
+    group: rack-a01
+    interfaces:
+      - {id: Et1, speed: 100G, media: fiber, ip: 10.1.0.0/31}
+      - {id: Et2, speed: 100G, media: fiber, ip: 10.1.0.2/31}
+      - {id: Et3, speed: 100G, media: fiber, ip: 10.1.0.4/31}
+      - {id: Et4, speed: 100G, media: fiber, ip: 10.1.0.6/31}
+      - {id: Lo0, type: loopback, ip: 10.0.250.1/32}
+  - id: spine2
+    type: switch
+    role: spine
+    tier: 1
+    model: 7280R3
+    group: rack-a01
+    interfaces:
+      - {id: Et1, speed: 100G, media: fiber, ip: 10.1.1.0/31}
+      - {id: Et2, speed: 100G, media: fiber, ip: 10.1.1.2/31}
+      - {id: Et3, speed: 100G, media: fiber, ip: 10.1.1.4/31}
+      - {id: Et4, speed: 100G, media: fiber, ip: 10.1.1.6/31}
+      - {id: Lo0, type: loopback, ip: 10.0.250.2/32}
+
+  - id: leaf1
+    type: switch
+    role: leaf
+    tier: 2
+    group: rack-a02
+    interfaces:
+      - {id: Et49, speed: 100G, media: fiber, ip: 10.1.0.1/31}
+      - {id: Et50, speed: 100G, media: fiber, ip: 10.1.1.1/31}
+      - {id: Et51, speed: 100G, media: dac}
+      - {id: Et1, speed: 25G, media: dac}
+      - {id: Lo0, type: loopback, ip: 10.0.250.11/32}
+      - {id: Vxlan1, type: virtual, description: VTEP 10.0.251.12}
+  - id: leaf2
+    type: switch
+    role: leaf
+    tier: 2
+    group: rack-a02
+    interfaces:
+      - {id: Et49, speed: 100G, media: fiber, ip: 10.1.0.3/31}
+      - {id: Et50, speed: 100G, media: fiber, ip: 10.1.1.3/31}
+      - {id: Et51, speed: 100G, media: dac}
+      - {id: Et1, speed: 25G, media: dac}
+      - {id: Lo0, type: loopback, ip: 10.0.250.12/32}
+      - {id: Vxlan1, type: virtual, description: VTEP 10.0.251.12}
+  - id: leaf3
+    type: switch
+    role: border-leaf
+    tier: 2
+    group: rack-a03
+    interfaces:
+      - {id: Et49, speed: 100G, media: fiber, ip: 10.1.0.5/31}
+      - {id: Et50, speed: 100G, media: fiber, ip: 10.1.1.5/31}
+      - {id: Et1, speed: 25G, media: dac}
+      - {id: Et48, speed: 10G, media: fiber, ip: 100.64.0.2/30}
+      - {id: Lo0, type: loopback, ip: 10.0.250.13/32}
+      - {id: Vxlan1, type: virtual, description: VTEP 10.0.251.13}
+  - id: leaf4
+    type: switch
+    role: leaf
+    tier: 2
+    group: rack-a03
+    interfaces:
+      - {id: Et49, speed: 100G, media: fiber, ip: 10.1.0.7/31}
+      - {id: Et50, speed: 100G, media: fiber, ip: 10.1.1.7/31}
+      - {id: Et1, speed: 25G, media: dac}
+      - {id: Lo0, type: loopback, ip: 10.0.250.14/32}
+      - {id: Vxlan1, type: virtual, description: VTEP 10.0.251.14}
+
+  - id: esx01
+    label: esx01
+    type: hypervisor
+    group: rack-a02
+    interfaces:
+      - {id: vmnic0, speed: 25G, media: dac}
+      - {id: vmnic1, speed: 25G, media: dac}
+  - id: esx02
+    label: esx02
+    type: hypervisor
+    group: rack-a03
+    interfaces:
+      - {id: vmnic0, speed: 25G, media: dac}
+  - id: k8s01
+    label: k8s01
+    type: server
+    group: rack-a03
+    interfaces:
+      - {id: ens1f0, speed: 25G, media: dac}
+
+  - id: wan-pe
+    label: Carrier PE
+    type: router
+    group: wan
+    interfaces:
+      - {id: xe-0/1/0, speed: 10G, media: fiber, ip: 100.64.0.1/30}
+
+links:
+  - {id: s1-l1, a: "spine1:Et1", b: "leaf1:Et49"}
+  - {id: s1-l2, a: "spine1:Et2", b: "leaf2:Et49"}
+  - {id: s1-l3, a: "spine1:Et3", b: "leaf3:Et49"}
+  - {id: s1-l4, a: "spine1:Et4", b: "leaf4:Et49"}
+  - {id: s2-l1, a: "spine2:Et1", b: "leaf1:Et50"}
+  - {id: s2-l2, a: "spine2:Et2", b: "leaf2:Et50"}
+  - {id: s2-l3, a: "spine2:Et3", b: "leaf3:Et50"}
+  - {id: s2-l4, a: "spine2:Et4", b: "leaf4:Et50"}
+  - {id: mlag-peer, a: "leaf1:Et51", b: "leaf2:Et51", cable: DAC 0.5m}
+  - {id: esx01-a, a: "esx01:vmnic0", b: "leaf1:Et1"}
+  - {id: esx01-b, a: "esx01:vmnic1", b: "leaf2:Et1"}
+  - {id: esx02-a, a: "esx02:vmnic0", b: "leaf3:Et1"}
+  - {id: k8s01-a, a: "k8s01:ens1f0", b: "leaf4:Et1"}
+  - {id: wan-uplink, a: "leaf3:Et48", b: "wan-pe:xe-0/1/0", cable: "Cross-connect MMR-2 #118"}
+
+networks:
+  - id: vni-10100
+    label: VNI 10100 (web)
+    kind: vni
+    vlan: 100
+    vrf: tenant-a
+    cidr: 192.168.100.0/24
+    members: [leaf1, leaf2, leaf3, leaf4]
+  - id: vrf-tenant-a
+    label: VRF tenant-a
+    kind: vrf
+    attrs: {l3vni: 50001, route-target: "65000:50001"}
+    members: [leaf1, leaf2, leaf3, leaf4]
+
+relations:
+  # eBGP underlay: one session per fabric link
+  - {id: bgp-s1-l1, protocol: ebgp, endpoints: ["spine1:Et1", "leaf1:Et49"], over: s1-l1}
+  - {id: bgp-s1-l2, protocol: ebgp, endpoints: ["spine1:Et2", "leaf2:Et49"], over: s1-l2}
+  - {id: bgp-s1-l3, protocol: ebgp, endpoints: ["spine1:Et3", "leaf3:Et49"], over: s1-l3}
+  - {id: bgp-s1-l4, protocol: ebgp, endpoints: ["spine1:Et4", "leaf4:Et49"], over: s1-l4}
+  - {id: bgp-s2-l1, protocol: ebgp, endpoints: ["spine2:Et1", "leaf1:Et50"], over: s2-l1}
+  - {id: bgp-s2-l2, protocol: ebgp, endpoints: ["spine2:Et2", "leaf2:Et50"], over: s2-l2}
+  - {id: bgp-s2-l3, protocol: ebgp, endpoints: ["spine2:Et3", "leaf3:Et50"], over: s2-l3}
+  - {id: bgp-s2-l4, protocol: ebgp, endpoints: ["spine2:Et4", "leaf4:Et50"], over: s2-l4}
+
+  # EVPN control plane: loopback-to-loopback multihop sessions to the spines
+  - {id: evpn-s1-l1, protocol: evpn, endpoints: ["spine1:Lo0", "leaf1:Lo0"], over: bgp-s1-l1}
+  - {id: evpn-s1-l3, protocol: evpn, endpoints: ["spine1:Lo0", "leaf3:Lo0"], over: bgp-s1-l3}
+  - {id: evpn-s2-l2, protocol: evpn, endpoints: ["spine2:Lo0", "leaf2:Lo0"], over: bgp-s2-l2}
+  - {id: evpn-s2-l4, protocol: evpn, endpoints: ["spine2:Lo0", "leaf4:Lo0"], over: bgp-s2-l4}
+
+  # VXLAN data plane: one multipoint relation for the VNI (drawn with a hub)
+  - id: vxlan-10100
+    protocol: vxlan
+    label: VNI 10100
+    endpoints: ["leaf1:Vxlan1", "leaf2:Vxlan1", "leaf3:Vxlan1", "leaf4:Vxlan1"]
+    network: vni-10100
+    attrs: {vni: 10100, replication: ingress, udp-port: 4789}
+
+  - id: mlag-12
+    protocol: mlag
+    label: MLAG domain 1
+    endpoints:
+      - {device: leaf1, role: primary}
+      - {device: leaf2, role: secondary}
+    over: mlag-peer
+    attrs: {domain-id: 1, peer-address: 10.255.255.2}
+  - id: lacp-esx01
+    protocol: lacp
+    endpoints: [esx01, leaf1, leaf2]
+    over: [esx01-a, esx01-b]
+    attrs: {mode: active}
+
+  - id: srv6-dci
+    protocol: srv6
+    label: DCI policy blue
+    endpoints: ["leaf3:Lo0", "wan-pe"]
+    over: wan-uplink
+    attrs: {color: 100, endpoint: "2001:db8:f::1", segment-list: "fc00:0:1::, fc00:0:5::"}
+  - id: ebgp-wan
+    protocol: ebgp
+    endpoints: ["leaf3:Et48", "wan-pe:xe-0/1/0"]
+    over: wan-uplink
+    attrs: {local-as: 65100, peer-as: 64512}

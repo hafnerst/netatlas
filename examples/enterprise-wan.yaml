@@ -1,0 +1,351 @@
+# netatlas example: enterprise WAN
+#
+# Headquarters with redundant edge routers and two branches. The same physical
+# internet uplinks carry several logical layers:
+#   IPsec (encryption)  ->  GRE (tunnel)  ->  OSPF (routing adjacency)
+# plus eBGP to two ISPs, a WireGuard backup tunnel over LTE, VRRP, LACP,
+# syslog, and a custom protocol (MACsec) defined in the "protocols" section.
+netatlas: 1
+title: ACME Corp — enterprise WAN
+description: |
+  HQ Berlin with dual ISPs; branches Munich and Hamburg reach HQ over
+  GRE-over-IPsec tunnels across the public internet.
+
+protocols:
+  - id: macsec
+    label: MACsec
+    category: other
+    color: "#2b8a3e"
+    style: solid
+    description: IEEE 802.1AE hop-by-hop link encryption
+
+groups:
+  - id: providers
+    label: Service providers
+    kind: provider
+  - id: hq
+    label: HQ Berlin
+    kind: site
+    attrs:
+      address: Alexanderplatz 1, Berlin
+  - id: hq-edge
+    label: Edge rack E1
+    kind: rack
+    parent: hq
+  - id: hq-core
+    label: Core rack C1
+    kind: rack
+    parent: hq
+  - id: branch-muc
+    label: Branch Munich
+    kind: site
+  - id: branch-ham
+    label: Branch Hamburg
+    kind: site
+
+devices:
+  - id: inet
+    label: Internet
+    type: cloud
+
+  - id: isp1-pe
+    label: ISP-1 PE
+    type: router
+    group: providers
+    attrs: {asn: 3320}
+    interfaces:
+      - {id: xe-1/0/0, speed: 10G, media: fiber}
+      - {id: xe-1/0/1, speed: 1G, media: fiber}
+  - id: isp2-pe
+    label: ISP-2 PE
+    type: router
+    group: providers
+    attrs: {asn: 1299}
+    interfaces:
+      - {id: xe-2/0/0, speed: 10G, media: fiber}
+      - {id: xe-2/0/7, speed: 1G, media: fiber}
+
+  - id: hq-rtr1
+    label: hq-rtr1
+    type: router
+    vendor: Juniper
+    model: MX204
+    group: hq-edge
+    mgmt: 10.99.0.11
+    interfaces:
+      - {id: ge-0/0/0, speed: 1G, media: fiber, ip: 198.51.100.2/30, description: ISP-1 uplink}
+      - {id: ge-0/0/1, speed: 1G, media: copper, ip: 10.0.0.2/28}
+      - {id: st0.10, type: tunnel, ip: 172.16.10.1/30, description: GRE to Munich}
+      - {id: lo0, type: loopback, ip: 10.255.0.1/32}
+  - id: hq-rtr2
+    label: hq-rtr2
+    type: router
+    vendor: Juniper
+    model: MX204
+    group: hq-edge
+    mgmt: 10.99.0.12
+    interfaces:
+      - {id: ge-0/0/0, speed: 1G, media: fiber, ip: 203.0.113.2/30, description: ISP-2 uplink}
+      - {id: ge-0/0/1, speed: 1G, media: copper, ip: 10.0.0.3/28}
+      - {id: st0.11, type: tunnel, ip: 172.16.11.1/30, description: GRE to Hamburg}
+      - {id: wg0, type: tunnel, ip: 172.16.99.1/30}
+      - {id: lo0, type: loopback, ip: 10.255.0.2/32}
+  - id: hq-fw
+    label: hq-fw
+    type: firewall
+    vendor: Palo Alto
+    model: PA-3410
+    group: hq-edge
+    interfaces:
+      - {id: eth1, speed: 1G, ip: 10.0.0.1/28}
+      - {id: eth2, speed: 1G}
+      - {id: eth3, speed: 10G, media: fiber}
+      - {id: eth4, speed: 10G, media: fiber}
+  - id: hq-core1
+    label: hq-core1
+    type: l3switch
+    vendor: Arista
+    model: 7050X3
+    group: hq-core
+    interfaces:
+      - {id: Ethernet49, speed: 10G, media: fiber}
+      - {id: Ethernet51, speed: 100G, media: dac}
+      - {id: Ethernet52, speed: 100G, media: dac}
+      - {id: Ethernet1, speed: 10G, media: fiber}
+      - {id: Port-Channel1, type: lag}
+      - {id: Vlan10, type: svi, ip: 10.10.10.2/24}
+      - {id: Vlan20, type: svi, ip: 10.10.20.2/24}
+  - id: hq-core2
+    label: hq-core2
+    type: l3switch
+    vendor: Arista
+    model: 7050X3
+    group: hq-core
+    interfaces:
+      - {id: Ethernet49, speed: 10G, media: fiber}
+      - {id: Ethernet51, speed: 100G, media: dac}
+      - {id: Ethernet52, speed: 100G, media: dac}
+      - {id: Ethernet1, speed: 10G, media: fiber}
+      - {id: Port-Channel1, type: lag}
+      - {id: Vlan10, type: svi, ip: 10.10.10.3/24}
+      - {id: Vlan20, type: svi, ip: 10.10.20.3/24}
+  - id: hq-acc1
+    label: hq-acc1
+    type: switch
+    model: Catalyst 9300
+    group: hq-core
+    interfaces:
+      - {id: Gi1/0/49, speed: 10G, media: fiber}
+      - {id: Gi1/0/50, speed: 10G, media: fiber}
+      - {id: Gi1/0/1, speed: 1G, media: copper}
+  - id: hq-log
+    label: hq-log (syslog)
+    type: server
+    group: hq-core
+    interfaces:
+      - {id: eno1, speed: 1G, media: copper, ip: 10.10.20.50/24}
+
+  - id: muc-rtr
+    label: muc-rtr
+    type: router
+    model: ISR 1100
+    group: branch-muc
+    interfaces:
+      - {id: wan0, speed: 250M, media: copper, ip: 192.0.2.10/29, description: VDSL}
+      - {id: lan0, speed: 1G, media: copper, ip: 10.20.0.1/24}
+      - {id: Tunnel10, type: tunnel, ip: 172.16.10.2/30}
+  - id: muc-sw
+    label: muc-sw
+    type: switch
+    group: branch-muc
+    interfaces: [gi1, gi8]
+  - id: muc-ap
+    label: muc-ap
+    type: ap
+    group: branch-muc
+    interfaces:
+      - {id: eth0, speed: 1G, media: copper}
+
+  - id: ham-rtr
+    label: ham-rtr
+    type: router
+    model: ISR 1100
+    group: branch-ham
+    interfaces:
+      - {id: wan0, speed: 1G, media: fiber, ip: 192.0.2.34/29}
+      - {id: wan1, speed: 150M, media: lte, description: LTE backup modem}
+      - {id: lan0, speed: 1G, media: copper, ip: 10.30.0.1/24}
+      - {id: Tunnel11, type: tunnel, ip: 172.16.11.2/30}
+      - {id: wg0, type: tunnel, ip: 172.16.99.2/30}
+  - id: ham-sw
+    label: ham-sw
+    type: switch
+    group: branch-ham
+    interfaces: [gi1, gi2]
+
+links:
+  # provider side
+  - {id: l-isp1-inet, a: "isp1-pe:xe-1/0/0", b: inet, label: AS3320 transit}
+  - {id: l-isp2-inet, a: "isp2-pe:xe-2/0/0", b: inet, label: AS1299 transit}
+  - {id: l-hq-isp1, a: "hq-rtr1:ge-0/0/0", b: "isp1-pe:xe-1/0/1", cable: CID-4711}
+  - {id: l-hq-isp2, a: "hq-rtr2:ge-0/0/0", b: "isp2-pe:xe-2/0/7", cable: CID-0815}
+  - {id: l-muc-inet, a: "muc-rtr:wan0", b: inet, label: VDSL 250M}
+  - {id: l-ham-inet, a: "ham-rtr:wan0", b: inet, label: FTTH}
+  - {id: l-ham-lte, a: "ham-rtr:wan1", b: inet, medium: lte, label: LTE backup}
+  # HQ
+  - {id: l-rtr1-fw, a: "hq-rtr1:ge-0/0/1", b: "hq-fw:eth1"}
+  - {id: l-rtr2-fw, a: "hq-rtr2:ge-0/0/1", b: "hq-fw:eth2"}
+  - {id: l-fw-core1, a: "hq-fw:eth3", b: "hq-core1:Ethernet49"}
+  - {id: l-fw-core2, a: "hq-fw:eth4", b: "hq-core2:Ethernet49"}
+  - {id: l-peer1, a: "hq-core1:Ethernet51", b: "hq-core2:Ethernet51", cable: DAC 1m}
+  - {id: l-peer2, a: "hq-core1:Ethernet52", b: "hq-core2:Ethernet52", cable: DAC 1m}
+  - {id: l-core1-acc, a: "hq-core1:Ethernet1", b: "hq-acc1:Gi1/0/49"}
+  - {id: l-core2-acc, a: "hq-core2:Ethernet1", b: "hq-acc1:Gi1/0/50"}
+  - {id: l-acc-log, a: "hq-acc1:Gi1/0/1", b: "hq-log:eno1"}
+  # branches
+  - {id: l-muc-sw, a: "muc-rtr:lan0", b: "muc-sw:gi1"}
+  - {id: l-muc-ap, a: "muc-sw:gi8", b: "muc-ap:eth0", medium: copper, speed: 1G, label: PoE+}
+  - {id: l-ham-sw, a: "ham-rtr:lan0", b: "ham-sw:gi1", medium: copper}
+
+networks:
+  - id: net-transit
+    label: HQ transit
+    kind: subnet
+    cidr: 10.0.0.0/28
+    members: ["hq-rtr1:ge-0/0/1", "hq-rtr2:ge-0/0/1", "hq-fw:eth1"]
+  - id: net-users
+    label: Users
+    kind: vlan
+    vlan: 10
+    cidr: 10.10.10.0/24
+    members:
+      - {device: hq-core1, interface: Vlan10}
+      - {device: hq-core2, interface: Vlan10}
+      - hq-acc1
+  - id: net-servers
+    label: Servers
+    kind: vlan
+    vlan: 20
+    cidr: 10.10.20.0/24
+    members: ["hq-core1:Vlan20", "hq-core2:Vlan20", "hq-log:eno1"]
+  - id: net-muc-lan
+    label: Munich LAN
+    cidr: 10.20.0.0/24
+    members: ["muc-rtr:lan0", muc-ap]
+  - id: net-ham-lan
+    label: Hamburg LAN
+    cidr: 10.30.0.0/24
+    members: ["ham-rtr:lan0"]
+
+relations:
+  # --- Munich: IPsec carries GRE carries OSPF -----------------------------
+  - id: ipsec-muc
+    protocol: ipsec
+    label: IKEv2 site-to-site
+    endpoints: ["hq-rtr1:ge-0/0/0", "muc-rtr:wan0"]
+    over: [l-hq-isp1, l-isp1-inet, l-muc-inet]
+    attrs:
+      ike: v2
+      encryption: aes-256-gcm
+      dh-group: 20
+      lifetime: 8h
+  - id: gre-muc
+    protocol: gre
+    endpoints: ["hq-rtr1:st0.10", "muc-rtr:Tunnel10"]
+    over: ipsec-muc
+    attrs: {key: 10, mtu: 1400, keepalive: "10 3"}
+  - id: ospf-muc
+    protocol: ospf
+    endpoints: ["hq-rtr1:st0.10", "muc-rtr:Tunnel10"]
+    over: gre-muc
+    attrs: {area: 0.0.0.1, cost: 100, network-type: point-to-point}
+
+  # --- Hamburg: same stack via ISP-2, plus a WireGuard backup over LTE ------
+  - id: ipsec-ham
+    protocol: ipsec
+    endpoints: ["hq-rtr2:ge-0/0/0", "ham-rtr:wan0"]
+    over: [l-hq-isp2, l-isp2-inet, l-ham-inet]
+    attrs: {ike: v2, encryption: aes-256-gcm}
+  - id: gre-ham
+    protocol: gre
+    endpoints: ["hq-rtr2:st0.11", "ham-rtr:Tunnel11"]
+    over: ipsec-ham
+    attrs: {key: 11, mtu: 1400}
+  - id: ospf-ham
+    protocol: ospf
+    endpoints: ["hq-rtr2:st0.11", "ham-rtr:Tunnel11"]
+    over: gre-ham
+    attrs: {area: 0.0.0.2, cost: 100}
+  - id: wg-ham-backup
+    protocol: wireguard
+    label: LTE backup
+    endpoints: ["hq-rtr2:wg0", "ham-rtr:wg0"]
+    over: [l-ham-lte, l-isp2-inet, l-hq-isp2]
+    attrs: {listen-port: 51820, persistent-keepalive: 25}
+  - id: ospf-ham-backup
+    protocol: ospf
+    endpoints: ["hq-rtr2:wg0", "ham-rtr:wg0"]
+    over: wg-ham-backup
+    attrs: {area: 0.0.0.2, cost: 1000}
+
+  # --- Internet edge ---------------------------------------------------------
+  - id: bgp-isp1
+    protocol: ebgp
+    endpoints:
+      - {device: hq-rtr1, interface: ge-0/0/0, attrs: {asn: 65010}}
+      - {device: isp1-pe, interface: xe-1/0/1, attrs: {asn: 3320}}
+    over: l-hq-isp1
+    attrs: {prefixes-out: 1, max-prefix: 1000000}
+  - id: bgp-isp2
+    protocol: ebgp
+    endpoints:
+      - {device: hq-rtr2, interface: ge-0/0/0, attrs: {asn: 65010}}
+      - {device: isp2-pe, interface: xe-2/0/7, attrs: {asn: 1299}}
+    over: l-hq-isp2
+  - id: ibgp-hq
+    protocol: ibgp
+    endpoints: ["hq-rtr1:lo0", "hq-rtr2:lo0"]
+    over: net-transit
+  - id: bfd-isp1
+    protocol: bfd
+    endpoints: ["hq-rtr1:ge-0/0/0", "isp1-pe:xe-1/0/1"]
+    over: l-hq-isp1
+    attrs: {interval: 300ms, multiplier: 3}
+
+  # --- HQ campus ------------------------------------------------------------
+  - id: ospf-hq-area0
+    protocol: ospf
+    label: area 0
+    endpoints: [hq-rtr1, hq-rtr2, hq-fw, hq-core1, hq-core2]
+    network: net-transit
+    attrs: {area: 0.0.0.0}
+  - id: lag-peer
+    protocol: lacp
+    label: Po1 peer-link
+    endpoints: ["hq-core1:Port-Channel1", "hq-core2:Port-Channel1"]
+    over: [l-peer1, l-peer2]
+    attrs: {mode: active, members: 2}
+  - id: macsec-peer
+    protocol: macsec
+    endpoints: ["hq-core1:Ethernet51", "hq-core2:Ethernet51"]
+    over: l-peer1
+    attrs: {cipher: GCM-AES-XPN-256}
+  - id: vrrp-users
+    protocol: vrrp
+    label: VIP 10.10.10.1
+    endpoints:
+      - {device: hq-core1, interface: Vlan10, role: master, attrs: {priority: 200}}
+      - {device: hq-core2, interface: Vlan10, role: backup, attrs: {priority: 100}}
+    network: net-users
+    attrs: {vrid: 10, virtual-ip: 10.10.10.1}
+  - id: syslog-fw
+    protocol: syslog
+    directed: true
+    endpoints: [hq-fw, "hq-log:eno1"]
+    attrs: {transport: tcp/6514, format: RFC5424}
+  - id: twamp-muc
+    protocol: twamp
+    category: service
+    label: SLA probe
+    directed: true
+    endpoints: [muc-rtr, hq-rtr1]

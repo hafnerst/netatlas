@@ -1,0 +1,25 @@
+# netatlas example: a file with mistakes, to show how errors are reported.
+# Open it in netatlas: every problem is listed with its line number, the
+# path of the offending value, the source line, and a suggestion.
+netatlas: 1
+title: Error reporting demo
+
+devices:
+  - id: r1
+    typ: router                 # typo: "type"
+    interfaces:
+      - {id: eth0}
+      - {id: tun0, type: tunnel}
+  - id: r2
+    interfaces: [eth0, eth1]
+
+links:
+  - {id: l1, a: "r1:eth1", b: "r2:eth0"}   # r1 has no eth1
+  - {id: l2, a: "r1:tun0", b: "r2:eth1"}   # a tunnel interface is not a physical port
+
+relations:
+  - id: gre1
+    protocol: gre
+    category: tunel                        # typo: "tunnel"
+    endpoints: [r1, r2]
+    over: l3                               # no such link
