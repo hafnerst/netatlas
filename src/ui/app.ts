@@ -121,7 +121,7 @@ export class App {
 
   newModel(): void {
     this.openDoc(ModelDoc.create());
-    this.editor.sel = { kind: 'device', index: 0 };
+    this.editor.sel = { kind: 'document', index: 0 };
     this.editorSelected(this.editor.sel);
     this.tab = 'edit';
     this.renderSide();

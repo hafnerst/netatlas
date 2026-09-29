@@ -295,6 +295,11 @@ body[data-dirty="true"] #btn-download { border-color: var(--warn); box-shadow: i
 .field > label { font-size: 11.5px; color: var(--muted); font-weight: 500; }
 .field input[type="text"], .field textarea, .field select, .g-row input[type="text"], .list-ed input, .ep-row select { width: 100%; padding: 4px 7px; border: 1px solid var(--border); border-radius: 5px; background: var(--canvas); min-width: 0; }
 .field textarea { resize: vertical; font: inherit; }
+/* nothing chosen yet: the prompt must not look like a saved value */
+.field select.unset { color: var(--muted); font-style: italic; }
+.field select.unset option { color: var(--text); font-style: normal; }
+.field input::placeholder { color: var(--muted); font-style: italic; opacity: 1; }
+.hint-empty { margin: 4px 0; padding: 6px 9px; border: 1px dashed var(--border); border-radius: 6px; color: var(--muted); }
 .field.invalid > input, .field.invalid > .ctl input, .field.invalid > select, .list-row.invalid input, .ep-row.invalid select { border-color: var(--error); }
 .field-err { color: var(--error); font-size: 11.5px; overflow-wrap: anywhere; }
 .field-warn { color: var(--warn); font-size: 11.5px; overflow-wrap: anywhere; }
@@ -622,7 +627,7 @@ class App {
     }
     newModel() {
         this.openDoc(document_1.ModelDoc.create());
-        this.editor.sel = { kind: 'device', index: 0 };
+        this.editor.sel = { kind: 'document', index: 0 };
         this.editorSelected(this.editor.sel);
         this.tab = 'edit';
         this.renderSide();
@@ -1723,14 +1728,9 @@ function kindOfSection(section) {
 }
 /** Canonical key order used when the editor adds keys (existing order is never changed). */
 exports.KEY_ORDER = schema_1.SCHEMA;
+/** "New" starts from an empty model: nothing is created that the user did not choose. */
 exports.NEW_MODEL_YAML = `netatlas: 1
 title: New network
-devices:
-  - id: router1
-    type: router
-    router_id: lo0
-    interfaces:
-      - {id: lo0, type: loopback, label: Router ID, ip: [10.255.0.1/32]}
 `;
 const MAX_UNDO = 100;
 class ModelDoc {
@@ -2387,7 +2387,11 @@ class ModelDoc {
             n++;
         return stem + n;
     }
-    /** Add a new entity with a unique id; returns its index. */
+    /**
+     * Add a new entity with a unique id; returns its index. Only the given
+     * fields are set: no type, kind, protocol or category is chosen for the
+     * user. A relation gets an empty endpoint list to fill in.
+     */
     addEntity(kind, fields = []) {
         return this.change(`Add ${kind}`, () => {
             const base = {
@@ -2401,12 +2405,12 @@ class ModelDoc {
             const idNode = fields.find(([k]) => k === 'id');
             const id = idNode ? (0, validate_1.scalarText)(idNode[1]) || base[kind] : this.uniqueId(base[kind]);
             const defaults = {
-                device: [['type', (0, parse_1.strNode)('router')]],
+                device: [],
                 link: [],
-                network: [['kind', (0, parse_1.strNode)('subnet')]],
-                relation: [['protocol', (0, parse_1.strNode)('bgp')], ['endpoints', (0, parse_1.seqNode)([], true)]],
-                group: [['kind', (0, parse_1.strNode)('site')]],
-                protocol: [['category', (0, parse_1.strNode)('other')]],
+                network: [],
+                relation: [['endpoints', (0, parse_1.seqNode)([], true)]],
+                group: [],
+                protocol: [],
             };
             const entries = [['id', (0, parse_1.strNode)(id)]];
             for (const [k, v] of defaults[kind])
@@ -4301,7 +4305,7 @@ function build(root, c) {
         groups.push({
             id,
             label: r.field(m, 'label', gpath, L.maxLabel) || id,
-            kind: (r.field(m, 'kind', gpath, 40) || 'site').toLowerCase(),
+            kind: (r.field(m, 'kind', gpath, 40) || '').toLowerCase(),
             parent: r.field(m, 'parent', gpath, 200),
             description: r.field(m, 'description', gpath, L.maxDescription),
             attrs: r.attrs((0, reader_1.get)(m, 'attrs'), gpath + '.attrs'),
@@ -4654,7 +4658,7 @@ function build(root, c) {
         networks.push({
             id,
             label: r.field(m, 'label', npath, L.maxLabel) || id,
-            kind: (r.field(m, 'kind', npath, 40) || 'subnet').toLowerCase(),
+            kind: (r.field(m, 'kind', npath, 40) || '').toLowerCase(),
             cidr,
             vlan: r.field(m, 'vlan', npath, 100),
             vrf: r.field(m, 'vrf', npath, 100),
@@ -4682,8 +4686,14 @@ function build(root, c) {
         if (!claim(id, 'relation', m, path))
             return;
         const protoRaw = r.reqStr(m, 'protocol', rpath, 40);
-        if (protoRaw === undefined)
+        if (protoRaw === undefined) {
+            // report missing endpoints as well, so a new relation shows everything still to fill in
+            const eps = (0, reader_1.get)(m, 'endpoints');
+            if ((0, reader_1.isNull)(eps) || (eps.kind === 'seq' && eps.items.length < 2)) {
+                c.error(eps && !(0, reader_1.isNull)(eps) ? eps : m, rpath + '.endpoints', 'a relation needs at least 2 endpoints', eps && !(0, reader_1.isNull)(eps) ? {} : { key: 'endpoints' });
+            }
             return;
+        }
         const proto = (0, protocols_1.normalizeProtocol)(protoRaw);
         if (!exports.PROTO_RE.test(proto)) {
             c.error((0, reader_1.get)(m, 'protocol'), rpath + '.protocol', `invalid protocol name "${protoRaw}": use letters, digits and _ . + -`);
@@ -7282,6 +7292,9 @@ class Editor {
         w.appendChild(this.header('document', 'Document', null));
         w.appendChild(this.issueBox([]));
         w.appendChild(this.field('Format version', this.e('span', { class: 'ro' }, [this.doc.text(['netatlas']) || '(missing)']), ['netatlas'], 'Always 1 for this version of netatlas.'));
+        if (document_1.ENTITY_KINDS.every((k) => this.doc.entities(k).length === 0)) {
+            w.appendChild(this.e('p', { class: 'hint-empty' }, ['This model is empty. Add a device, link, network, relation, group or protocol with “+ Add” in the Model outline; nothing is filled in for you.']));
+        }
         w.appendChild(this.textField(['title'], 'Title', 'top'));
         w.appendChild(this.textField(['description'], 'Description', 'top', 'textarea'));
         w.appendChild(this.otherProps([], 'document'));
@@ -7354,7 +7367,7 @@ class Editor {
         }
         else if (kind === 'network') {
             add(this.textField(base.concat('label'), 'Label', o));
-            add(this.textField(base.concat('kind'), 'Kind', o, 'text', NET_KINDS));
+            add(this.textField(base.concat('kind'), 'Kind', o, 'text', NET_KINDS, undefined, 'Select or type a network kind'));
             add(this.listField(base.concat('cidr'), 'Prefixes (CIDR)', o, '192.0.2.0/24 or 2001:db8::/64'));
             add(this.textField(base.concat('vlan'), 'VLAN', o));
             add(this.textField(base.concat('vrf'), 'VRF', o));
@@ -7363,7 +7376,7 @@ class Editor {
         }
         else if (kind === 'relation') {
             const protos = Array.from((0, protocols_1.builtinProtocols)().keys()).concat(this.ids('protocol'));
-            add(this.textField(base.concat('protocol'), 'Protocol', o, 'text', protos, 'Any name. Built-in protocols get a default category and colour; define new ones under Protocols.'));
+            add(this.textField(base.concat('protocol'), 'Protocol', o, 'text', protos, 'Required. Any name. Built-in protocols get a default category and colour; define new ones under Protocols.', 'Select or type a protocol'));
             add(this.enumField(base.concat('category'), 'Category', o, types_1.CATEGORIES, '(from protocol)'));
             add(this.textField(base.concat('label'), 'Label', o));
             add(this.endpointList(base.concat('endpoints'), 'Endpoints', o));
@@ -7374,14 +7387,14 @@ class Editor {
         }
         else if (kind === 'group') {
             add(this.textField(base.concat('label'), 'Label', o));
-            add(this.textField(base.concat('kind'), 'Kind', o, 'text', GROUP_KINDS));
+            add(this.textField(base.concat('kind'), 'Kind', o, 'text', GROUP_KINDS, undefined, 'Select or type a group kind'));
             const self = doc.text(base.concat('id'));
             add(this.refField(base.concat('parent'), 'Parent group', o, this.ids('group').filter((g) => g !== self)));
             add(this.textField(base.concat('description'), 'Description', o, 'textarea'));
         }
         else if (kind === 'protocol') {
             add(this.textField(base.concat('label'), 'Label', o));
-            add(this.enumField(base.concat('category'), 'Category', o, types_1.CATEGORIES, '(other)'));
+            add(this.enumField(base.concat('category'), 'Category', o, types_1.CATEGORIES, 'Select category'));
             add(this.colorField(base.concat('color'), 'Colour', o));
             add(this.enumField(base.concat('style'), 'Line style', o, types_1.LINE_STYLES, '(from category)'));
             add(this.textField(base.concat('description'), 'Description', o, 'textarea'));
@@ -7464,7 +7477,7 @@ class Editor {
         card.appendChild(this.ifIdField(p, devIndex, k));
         card.appendChild(this.textField(p.concat('label'), loop ? 'Name' : 'Label', o, 'text', undefined, loop ? 'Descriptive name, e.g. “Router ID” or “BGP source”.' : undefined));
         card.appendChild(this.listField(p.concat('ip'), loop ? 'Addresses (IPv4 / IPv6 with prefix)' : 'Addresses', o, loop ? '10.255.0.1/32 or 2001:db8::1/128' : '192.0.2.1/24'));
-        card.appendChild(this.textField(p.concat('type'), 'Type', o, 'text', IFACE_TYPES, loop ? undefined : 'Logical types (loopback, tunnel, svi, lag …) cannot be cabled.'));
+        card.appendChild(this.textField(p.concat('type'), 'Type', o, 'text', IFACE_TYPES, loop ? undefined : 'Without a type the interface is a physical port (format rule). Logical types (loopback, tunnel, svi, lag …) cannot be cabled.', 'Not set: physical port'));
         if (!loop || doc.get(p.concat('speed')) || doc.get(p.concat('media'))) {
             card.appendChild(this.textField(p.concat('speed'), 'Speed', o, 'text', ['1G', '10G', '25G', '100G']));
             card.appendChild(this.textField(p.concat('media'), 'Media', o, 'text', MEDIA));
@@ -7533,7 +7546,7 @@ class Editor {
             dl.appendChild(this.e('option', { value: v }));
         return { id, node: dl };
     }
-    textField(p, label, order, kind = 'text', suggestions, help) {
+    textField(p, label, order, kind = 'text', suggestions, help, placeholder) {
         const n = this.doc.get(p);
         const val = n ? (n.kind === 'scalar' ? (0, validate_1.scalarText)(n) || '' : '') : '';
         if (n && n.kind !== 'scalar')
@@ -7547,6 +7560,8 @@ class Editor {
         }
         else {
             const extra = { 'data-o': order };
+            if (placeholder)
+                extra.placeholder = placeholder;
             let dl = null;
             if (suggestions) {
                 dl = this.datalist(suggestions);
@@ -7586,6 +7601,8 @@ class Editor {
         for (const o of opts)
             s.appendChild(this.e('option', { value: o }, [o]));
         s.value = current;
+        if (!current)
+            s.classList.add('unset');
         return s;
     }
     /** Device type: the format's types by display name; a disallowed current value stays visible. */
@@ -7595,7 +7612,9 @@ class Editor {
             return this.field('Type', this.generic(p, n, 0), p, 'Not a single value — shown as a structure.');
         const current = this.doc.text(p) || '';
         const s = this.e('select', { 'data-p': J(p), 'data-t': 'text', 'data-o': order });
-        s.appendChild(this.e('option', { value: '' }, ['(none)']));
+        s.appendChild(this.e('option', { value: '' }, ['Select device type']));
+        if (!current)
+            s.classList.add('unset');
         if (current && !(0, device_types_1.isDeviceType)(current))
             s.appendChild(this.e('option', { value: current }, [current + ' (not a valid type)']));
         for (const t of device_types_1.DEVICE_TYPES)
@@ -8328,7 +8347,7 @@ function search(model, query, limit = 12) {
     for (const l of model.links)
         consider('link:' + l.id, 'link', l.label || l.id, [l.id, l.label || '', l.cable || '']);
     for (const g of model.groups)
-        consider('group:' + g.id, g.kind, g.label, [g.id, g.label]);
+        consider('group:' + g.id, g.kind || 'group', g.label, [g.id, g.label]);
     hits.sort((a, b) => b.score - a.score || a.label.localeCompare(b.label));
     return hits.slice(0, limit).map(({ ref, label, kind }) => ({ ref, label, kind }));
 }
@@ -8474,7 +8493,7 @@ exports.EXAMPLES = [
     },
     {
         "name": "editor-new-network.yaml",
-        "text": "# netatlas example: a model created with \"New\" in the editor and built up\n# with the editor operations (generated by scripts/make-editor-examples.mjs).\nnetatlas: 1\ntitle: \"Lab: two edge routers\"\ndescription: \"Created in the netatlas editor: loopbacks, one cable, iBGP and a GRE tunnel between loopbacks.\"\ndevices:\n  - id: edge-a\n    type: router\n    router_id: lo0\n    interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.255.0.1/32]}\n      - {id: lo1, type: loopback, label: BGP source (IPv6), ip: [2001:db8:ffff::a/128]}\n      - {id: ge-0/0/0, speed: 10G, media: fiber, ip: [192.0.2.1/31]}\n  - id: edge-b\n    label: Edge B\n    type: router\n    router_id: lo0\n    interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.255.0.2/32, 2001:db8:ffff::2/128]}\n      - {id: lo1, type: loopback, label: BGP source (IPv6), ip: [2001:db8:ffff::b/128]}\n      - {id: ge-0/0/0, speed: 10G, media: fiber, ip: [192.0.2.0/31]}\nlinks:\n  - {id: cable-1, a: edge-a:ge-0/0/0, b: edge-b:ge-0/0/0, cable: LC-LC OM4 3m}\nrelations:\n  - id: ibgp-v6\n    protocol: ibgp\n    endpoints: [edge-a:lo1, edge-b:lo1]\n    over: cable-1\n    attrs:\n      asn: 65000\n      address-family: [ipv6-unicast, evpn]\n  - id: gre-lab\n    protocol: gre\n    endpoints: [edge-a:lo0, edge-b:lo0]\n    over: cable-1\n    attrs:\n      key: 100\n      keepalive:\n        interval: 10s\n        retries: 3\n\nlayout:\n  physical:\n    edge-a: [75, 27]\n    edge-b: [75, 161]\n  logical:\n    edge-a: [70, 36]\n    edge-b: [70, 196]\n"
+        "text": "# netatlas example: a model created with \"New\" in the editor and built up\n# with the editor operations (generated by scripts/make-editor-examples.mjs).\nnetatlas: 1\ntitle: \"Lab: two edge routers\"\ndescription: \"Created in the netatlas editor: loopbacks, one cable, iBGP and a GRE tunnel between loopbacks.\"\ndevices:\n  - id: edge-a\n    type: router\n    router_id: lo0\n    interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.255.0.1/32]}\n      - {id: lo1, type: loopback, label: BGP source (IPv6), ip: [2001:db8:ffff::a/128]}\n      - {id: ge-0/0/0, speed: 10G, media: fiber, ip: [192.0.2.1/31]}\n  - id: edge-b\n    label: Edge B\n    type: router\n    router_id: lo0\n    interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.255.0.2/32, 2001:db8:ffff::2/128]}\n      - {id: lo1, type: loopback, label: BGP source (IPv6), ip: [2001:db8:ffff::b/128]}\n      - {id: ge-0/0/0, speed: 10G, media: fiber, ip: [192.0.2.0/31]}\nlinks:\n  - {id: cable-1, a: edge-a:ge-0/0/0, b: edge-b:ge-0/0/0, cable: LC-LC OM4 3m}\nrelations:\n  - id: ibgp-v6\n    protocol: ibgp\n    endpoints: [edge-a:lo1, edge-b:lo1]\n    over: cable-1\n    attrs:\n      asn: 65000\n      address-family: [ipv6-unicast, evpn]\n  - id: gre-lab\n    protocol: gre\n    endpoints: [edge-a:lo0, edge-b:lo0]\n    over: cable-1\n    attrs:\n      key: 100\n      keepalive:\n        interval: 10s\n        retries: 3\n\nlayout:\n  physical:\n    edge-a: [75, 27]\n    edge-b: [75, 161]\n  logical:\n    edge-a: [70, 25]\n    edge-b: [70, 185]\n"
     },
     {
         "name": "minimal-edited.yaml",
@@ -8706,7 +8725,7 @@ function detailsFor(model, ref) {
         const n = ix.networks.get(id);
         if (!n)
             return (0, scene_1.h)('div', {}, 'Not found');
-        kids.push(header(n.kind, n.label));
+        kids.push(header(n.kind || 'network', n.label));
         kids.push(kv([['id', n.id], ['kind', n.kind], ['cidr', n.cidr.join(', ')], ['vlan', n.vlan], ['vrf', n.vrf], ['description', n.description]]));
         kids.push(list('Members', n.members.map((m) => epNode(model, m))));
         kids.push(list('Relations', model.relations
@@ -8718,7 +8737,7 @@ function detailsFor(model, ref) {
         const g = ix.groups.get(id);
         if (!g)
             return (0, scene_1.h)('div', {}, 'Not found');
-        kids.push(header(g.kind, g.label));
+        kids.push(header(g.kind || 'group', g.label));
         kids.push(kv([['id', g.id], ['kind', g.kind], ['parent', g.parent ? refLink('group:' + g.parent, ((_e = ix.groups.get(g.parent)) === null || _e === void 0 ? void 0 : _e.label) || g.parent) : undefined], ['description', g.description]]));
         kids.push(list('Sub-groups', model.groups.filter((c) => c.parent === g.id).map((c) => (0, scene_1.h)('li', {}, [refLink('group:' + c.id, c.label)]))));
         kids.push(list('Devices', model.devices.filter((d) => d.group === g.id).map((d) => (0, scene_1.h)('li', {}, [refLink('device:' + d.id, d.label)]))));
@@ -8849,7 +8868,7 @@ function legendFor(model, view, hidden) {
                 (0, scene_1.h)('h4', {}, 'Locations / groups'),
                 (0, scene_1.h)('ul', {}, kinds.map((k) => row(swatchSvg([
                     (0, scene_1.h)('rect', { class: 'group-box ' + ((0, style_1.groupKindStyle)(k).strong ? 'group-strong' : ''), x: 3, y: 2, width: 38, height: 14, rx: 4, 'stroke-dasharray': (0, style_1.groupKindStyle)(k).dash }),
-                ]), k))),
+                ]), k || '(no kind)'))),
             ]));
         }
         sections.push((0, scene_1.h)('p', { class: 'muted' }, 'Tunnels and protocol sessions are logical and are shown in the Logical view, not as cables. Select a tunnel in the Relations list to highlight the cables it rides on.'));
@@ -9111,6 +9130,8 @@ function networkColor(kind) {
         segment: '#1098ad',
         'l2-domain': '#2b8a3e',
     };
+    if (!k)
+        return '#868e96'; // no kind chosen: neutral grey
     return table[k] || (0, protocols_1.hashColor)('net:' + k);
 }
 function groupKindStyle(kind) {
@@ -9942,7 +9963,7 @@ async function runSelfTest(app, doc) {
             return p.length === 3 && p[0] === 'devices' && p[2] === 'type';
         });
         const typeOpts = typeSel ? Array.from(typeSel.options).map((o) => o.textContent).join('|') : '';
-        check('device type is chosen from the 15 types by display name', !!typeSel && typeSel.value === 'firewall' && typeOpts === '(none)|' + device_types_1.DEVICE_TYPES.map((t) => t.label).join('|') && typeSel.options.length === 16, typeOpts);
+        check('device type is chosen from the 15 types by display name', !!typeSel && typeSel.value === 'firewall' && typeOpts === 'Select device type|' + device_types_1.DEVICE_TYPES.map((t) => t.label).join('|') && typeSel.options.length === 16, typeOpts);
         devEl.dispatchEvent(pe('pointerdown', cx, cy));
         svg.dispatchEvent(pe('pointermove', cx + 60, cy + 30));
         svg.dispatchEvent(pe('pointermove', cx + 120, cy + 60));
@@ -10195,10 +10216,31 @@ async function runSelfTest(app, doc) {
         click('#btn-new');
         await tick();
         const d0 = app.mdoc;
-        check('New creates a valid minimal model (one router with a loopback)', !!d0 && d0.origin === 'new' && d0.valid && d0.entities('device').length === 1 && !d0.dirty);
+        check('New creates an empty, valid model: nothing is chosen for the user', !!d0 && d0.origin === 'new' && d0.valid && !d0.dirty && d0.exportText() === 'netatlas: 1\ntitle: New network\n' && !!q('#side-body .hint-empty'), d0 ? d0.exportText() : '');
         check('status of a new model: both views "Auto-arranged"', status('physical') === 'auto' && status('logical') === 'auto');
+        // the first device: no type preselected, and nothing saved for it
+        click('#outline [data-act="add-entity"][data-kind="device"]');
+        await tick();
+        const devType = '#side-body select[data-p=\'["devices",0,"type"]\']';
+        {
+            const sel = q(devType);
+            const dn = app.mdoc;
+            check('a new device has no type: the field reads "Select device type" and no type is saved or drawn', !!sel && sel.value === '' && sel.options[sel.selectedIndex].textContent === 'Select device type' && sel.classList.contains('unset') &&
+                !/type:/.test(dn.exportText()) && dn.valid && !!dn.result.model && dn.result.model.devices[0].type === 'generic' && count('g.device .icon-generic') === 1, dn.exportText());
+        }
+        await setField('#side-body [data-t="id"]', 'router1');
+        await setField(devType, 'router');
+        {
+            const dn = app.mdoc;
+            const sel = q(devType);
+            check('choosing a device type saves exactly that value', /- id: router1\n {4}type: router\n/.test(dn.exportText()) && dn.result.model.devices[0].type === 'router' && !!sel && sel.value === 'router' && !sel.classList.contains('unset') && count('g.device .icon-router') === 1, dn.exportText());
+        }
+        click('#side-body [data-act="add-loop"]');
+        await tick();
+        await setField('#side-body [data-t="list-append"][data-p=\'["devices",0,"interfaces",0,"ip"]\']', '10.255.0.1/32');
+        await setField('#side-body [data-p=\'["devices",0,"router_id"]\']', 'lo0');
         click('[data-view-btn="logical"]');
-        check('new model: loopback chip with router-ID marker in the logical view', count('.loop-chip.rid') === 1);
+        check('new model: loopback chip with router-ID marker in the logical view', count('.loop-chip.rid') === 1 && app.mdoc.valid);
         click('#outline [data-act="add-entity"][data-kind="device"]');
         await tick();
         check('Add device selects it in the inspector', ((_a = q('#side-body [data-t="id"]')) === null || _a === void 0 ? void 0 : _a.value) === 'device1');
@@ -10245,7 +10287,20 @@ async function runSelfTest(app, doc) {
         check('link created in the editor is drawn as a cable', count('.cable') === 1 && app.mdoc.valid, JSON.stringify(app.mdoc.errors.map((e) => e.message)));
         click('#outline [data-act="add-entity"][data-kind="relation"]');
         await tick();
+        {
+            const dr = app.mdoc;
+            const inp = q('#side-body [data-p=\'["relations",0,"protocol"]\']');
+            const errs = dr.errors.map((e) => e.message).join(' | ');
+            const fieldErr = Array.prototype.map.call(doc.querySelectorAll('#side-body .field-err'), (e) => e.textContent).join(' | ');
+            check('a new relation has no protocol: empty field with a prompt; missing protocol and endpoints are reported', !!inp && inp.value === '' && inp.placeholder === 'Select or type a protocol' && !/protocol:/.test(dr.exportText()) &&
+                /missing required key "protocol"/.test(errs) && /at least 2 endpoints/.test(errs) && /protocol/.test(fieldErr) && count('g.rel') === 0, errs + ' // ' + fieldErr);
+            click('#btn-download');
+            await tick(10);
+            check('the incomplete relation makes export warn explicitly ("Download anyway")', /has errors/.test(q('#modal h2').textContent || '') && !!q('#modal [data-value="download"].danger'));
+            await answerDialog('cancel');
+        }
         await setField('#side-body [data-p=\'["relations",0,"protocol"]\']', 'gre');
+        check('choosing a protocol saves exactly that value', /protocol: gre\n/.test(app.mdoc.exportText()));
         await setField('#side-body select[data-t="ep-append"]', 'router1');
         await setField('#side-body select[data-t="ep-append"]', 'edge2');
         await setField('#side-body select[data-t="ep-if"][data-p=\'["relations",0,"endpoints",0]\']', 'lo0');
@@ -10263,6 +10318,16 @@ async function runSelfTest(app, doc) {
         const dB = app.mdoc;
         check('GRE tunnel between loopbacks drawn as a tube', count('g.rel.cat-tunnel .tube-outer') === 1 && dB.valid, JSON.stringify(dB.errors.map((e) => e.message)));
         check('edits mark the document dirty', dB.dirty && doc.body.getAttribute('data-dirty') === 'true' && /unsaved/.test(q('#status').textContent || ''));
+        // a new network: no kind preselected
+        click('#outline [data-act="add-entity"][data-kind="network"]');
+        await tick();
+        {
+            const dn = app.mdoc;
+            const inp = q('#side-body [data-p=\'["networks",0,"kind"]\']');
+            check('a new network has no kind: empty field with a prompt; nothing saved, drawn without a kind (neutral)', !!inp && inp.value === '' && inp.placeholder === 'Select or type a network kind' && !/kind:/.test(dn.exportText()) && dn.valid && dn.result.model.networks[0].kind === '' && count('g.network.kind-subnet') === 0, dn.exportText());
+            await setField('#side-body [data-p=\'["networks",0,"kind"]\']', 'vlan');
+            check('choosing a network kind saves exactly that value', /- id: net1\n {4}kind: vlan\n/.test(app.mdoc.exportText()) && app.mdoc.result.model.networks[0].kind === 'vlan', app.mdoc.exportText());
+        }
         // export the new model
         click('#btn-download');
         await tick(10);

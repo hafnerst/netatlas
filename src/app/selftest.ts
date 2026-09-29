@@ -146,7 +146,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     const typeOpts = typeSel ? Array.from(typeSel.options).map((o) => o.textContent).join('|') : '';
     check(
       'device type is chosen from the 15 types by display name',
-      !!typeSel && typeSel.value === 'firewall' && typeOpts === '(none)|' + DEVICE_TYPES.map((t) => t.label).join('|') && typeSel.options.length === 16,
+      !!typeSel && typeSel.value === 'firewall' && typeOpts === 'Select device type|' + DEVICE_TYPES.map((t) => t.label).join('|') && typeSel.options.length === 16,
       typeOpts,
     );
     devEl.dispatchEvent(pe('pointerdown', cx, cy));
@@ -410,10 +410,43 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     click('#btn-new');
     await tick();
     const d0 = app.mdoc as ModelDoc;
-    check('New creates a valid minimal model (one router with a loopback)', !!d0 && d0.origin === 'new' && d0.valid && d0.entities('device').length === 1 && !d0.dirty);
+    check(
+      'New creates an empty, valid model: nothing is chosen for the user',
+      !!d0 && d0.origin === 'new' && d0.valid && !d0.dirty && d0.exportText() === 'netatlas: 1\ntitle: New network\n' && !!q('#side-body .hint-empty'),
+      d0 ? d0.exportText() : '',
+    );
     check('status of a new model: both views "Auto-arranged"', status('physical') === 'auto' && status('logical') === 'auto');
+    // the first device: no type preselected, and nothing saved for it
+    click('#outline [data-act="add-entity"][data-kind="device"]');
+    await tick();
+    const devType = '#side-body select[data-p=\'["devices",0,"type"]\']';
+    {
+      const sel = q(devType) as HTMLSelectElement | null;
+      const dn = app.mdoc as ModelDoc;
+      check(
+        'a new device has no type: the field reads "Select device type" and no type is saved or drawn',
+        !!sel && sel.value === '' && sel.options[sel.selectedIndex].textContent === 'Select device type' && sel.classList.contains('unset') &&
+          !/type:/.test(dn.exportText()) && dn.valid && !!dn.result.model && dn.result.model.devices[0].type === 'generic' && count('g.device .icon-generic') === 1,
+        dn.exportText(),
+      );
+    }
+    await setField('#side-body [data-t="id"]', 'router1');
+    await setField(devType, 'router');
+    {
+      const dn = app.mdoc as ModelDoc;
+      const sel = q(devType) as HTMLSelectElement | null;
+      check(
+        'choosing a device type saves exactly that value',
+        /- id: router1\n {4}type: router\n/.test(dn.exportText()) && dn.result.model!.devices[0].type === 'router' && !!sel && sel.value === 'router' && !sel.classList.contains('unset') && count('g.device .icon-router') === 1,
+        dn.exportText(),
+      );
+    }
+    click('#side-body [data-act="add-loop"]');
+    await tick();
+    await setField('#side-body [data-t="list-append"][data-p=\'["devices",0,"interfaces",0,"ip"]\']', '10.255.0.1/32');
+    await setField('#side-body [data-p=\'["devices",0,"router_id"]\']', 'lo0');
     click('[data-view-btn="logical"]');
-    check('new model: loopback chip with router-ID marker in the logical view', count('.loop-chip.rid') === 1);
+    check('new model: loopback chip with router-ID marker in the logical view', count('.loop-chip.rid') === 1 && (app.mdoc as ModelDoc).valid);
 
     click('#outline [data-act="add-entity"][data-kind="device"]');
     await tick();
@@ -466,7 +499,24 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     check('link created in the editor is drawn as a cable', count('.cable') === 1 && (app.mdoc as ModelDoc).valid, JSON.stringify((app.mdoc as ModelDoc).errors.map((e) => e.message)));
     click('#outline [data-act="add-entity"][data-kind="relation"]');
     await tick();
+    {
+      const dr = app.mdoc as ModelDoc;
+      const inp = q('#side-body [data-p=\'["relations",0,"protocol"]\']') as HTMLInputElement | null;
+      const errs = dr.errors.map((e) => e.message).join(' | ');
+      const fieldErr = Array.prototype.map.call(doc.querySelectorAll('#side-body .field-err'), (e: Element) => e.textContent).join(' | ');
+      check(
+        'a new relation has no protocol: empty field with a prompt; missing protocol and endpoints are reported',
+        !!inp && inp.value === '' && inp.placeholder === 'Select or type a protocol' && !/protocol:/.test(dr.exportText()) &&
+          /missing required key "protocol"/.test(errs) && /at least 2 endpoints/.test(errs) && /protocol/.test(fieldErr) && count('g.rel') === 0,
+        errs + ' // ' + fieldErr,
+      );
+      click('#btn-download');
+      await tick(10);
+      check('the incomplete relation makes export warn explicitly ("Download anyway")', /has errors/.test(q('#modal h2')!.textContent || '') && !!q('#modal [data-value="download"].danger'));
+      await answerDialog('cancel');
+    }
     await setField('#side-body [data-p=\'["relations",0,"protocol"]\']', 'gre');
+    check('choosing a protocol saves exactly that value', /protocol: gre\n/.test((app.mdoc as ModelDoc).exportText()));
     await setField('#side-body select[data-t="ep-append"]', 'router1');
     await setField('#side-body select[data-t="ep-append"]', 'edge2');
     await setField('#side-body select[data-t="ep-if"][data-p=\'["relations",0,"endpoints",0]\']', 'lo0');
@@ -484,6 +534,21 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     const dB = app.mdoc as ModelDoc;
     check('GRE tunnel between loopbacks drawn as a tube', count('g.rel.cat-tunnel .tube-outer') === 1 && dB.valid, JSON.stringify(dB.errors.map((e) => e.message)));
     check('edits mark the document dirty', dB.dirty && doc.body.getAttribute('data-dirty') === 'true' && /unsaved/.test(q('#status')!.textContent || ''));
+
+    // a new network: no kind preselected
+    click('#outline [data-act="add-entity"][data-kind="network"]');
+    await tick();
+    {
+      const dn = app.mdoc as ModelDoc;
+      const inp = q('#side-body [data-p=\'["networks",0,"kind"]\']') as HTMLInputElement | null;
+      check(
+        'a new network has no kind: empty field with a prompt; nothing saved, drawn without a kind (neutral)',
+        !!inp && inp.value === '' && inp.placeholder === 'Select or type a network kind' && !/kind:/.test(dn.exportText()) && dn.valid && dn.result.model!.networks[0].kind === '' && count('g.network.kind-subnet') === 0,
+        dn.exportText(),
+      );
+      await setField('#side-body [data-p=\'["networks",0,"kind"]\']', 'vlan');
+      check('choosing a network kind saves exactly that value', /- id: net1\n {4}kind: vlan\n/.test((app.mdoc as ModelDoc).exportText()) && (app.mdoc as ModelDoc).result.model!.networks[0].kind === 'vlan', (app.mdoc as ModelDoc).exportText());
+    }
 
     // export the new model
     click('#btn-download');

@@ -206,7 +206,7 @@ export function search(model: Model, query: string, limit = 12): SearchHit[] {
   for (const n of model.networks) consider('network:' + n.id, 'network', n.label, [n.id, n.label, n.kind, n.vlan || '', ...n.cidr]);
   for (const r of model.relations) consider('relation:' + r.id, r.protocol, r.label || r.id, [r.id, r.protocol, r.label || '']);
   for (const l of model.links) consider('link:' + l.id, 'link', l.label || l.id, [l.id, l.label || '', l.cable || '']);
-  for (const g of model.groups) consider('group:' + g.id, g.kind, g.label, [g.id, g.label]);
+  for (const g of model.groups) consider('group:' + g.id, g.kind || 'group', g.label, [g.id, g.label]);
   hits.sort((a, b) => b.score - a.score || a.label.localeCompare(b.label));
   return hits.slice(0, limit).map(({ ref, label, kind }) => ({ ref, label, kind }));
 }
