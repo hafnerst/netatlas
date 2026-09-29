@@ -8,6 +8,7 @@
  * safety, error reporting and that the page made no network requests.
  */
 import { ModelDoc } from '../editor/document';
+import { DEVICE_TYPES } from '../model/device-types';
 import { strNode } from '../yaml/parse';
 import { EXAMPLES } from '../generated/examples';
 import { App } from '../ui/app';
@@ -137,6 +138,16 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     devEl.dispatchEvent(pe('pointerdown', cx, cy));
     svg.dispatchEvent(pe('pointerup', cx, cy));
     check('click selects a device (and opens it in the editor)', !!app.session && app.session.state.selected === 'device:hq-fw' && (q('#side-body .inspector [data-t="id"]') as HTMLInputElement).value === 'hq-fw');
+    const typeSel = (Array.from(doc.querySelectorAll('#side-body .inspector select[data-p]')) as HTMLSelectElement[]).find((x) => {
+      const p = JSON.parse(x.getAttribute('data-p') || '[]');
+      return p.length === 3 && p[0] === 'devices' && p[2] === 'type';
+    });
+    const typeOpts = typeSel ? Array.from(typeSel.options).map((o) => o.textContent).join('|') : '';
+    check(
+      'device type is chosen from the 15 types by display name',
+      !!typeSel && typeSel.value === 'firewall' && typeOpts === '(none)|' + DEVICE_TYPES.map((t) => t.label).join('|') && typeSel.options.length === 16,
+      typeOpts,
+    );
     devEl.dispatchEvent(pe('pointerdown', cx, cy));
     svg.dispatchEvent(pe('pointermove', cx + 60, cy + 30));
     svg.dispatchEvent(pe('pointermove', cx + 120, cy + 60));

@@ -1,5 +1,6 @@
 /** Side-panel content (details, legend, relation list) as HTML VNodes. */
 import { deviceIcon, iconName } from '../diagram/icons';
+import { DEVICE_TYPE_IDS, deviceTypeLabel } from '../model/device-types';
 import { Attrs, CATEGORIES, Category, Model, ProtocolDef, RelEndpoint, endpointText, ifaceKey, isLoopback, loopbacks, relationDevices } from '../model/types';
 import { VNode, h } from '../diagram/scene';
 import { View } from '../diagram/session';
@@ -70,7 +71,7 @@ export function detailsFor(model: Model, ref: string): VNode {
     kids.push(
       kv([
         ['id', d.id],
-        ['type', d.type],
+        ['type', deviceTypeLabel(d.type) || undefined],
         ['role', d.role],
         ['vendor', d.vendor],
         ['model', d.model],
@@ -274,7 +275,7 @@ export function tooltipFor(model: Model, ref: string): string[] {
     const d = ix.devices.get(id);
     if (!d) return [];
     const cabled = d.interfaces.filter((i) => ix.ifaceLink.has(ifaceKey(d.id, i.id))).length;
-    return [d.label, [d.type, d.vendor, d.model].filter((s) => s).join(' · '), `${d.interfaces.length} interfaces, ${cabled} cabled`, d.mgmt ? 'mgmt ' + d.mgmt : ''].filter((s) => s);
+    return [d.label, [deviceTypeLabel(d.type), d.vendor, d.model].filter((s) => s).join(' · '), `${d.interfaces.length} interfaces, ${cabled} cabled`, d.mgmt ? 'mgmt ' + d.mgmt : ''].filter((s) => s);
   }
   if (kind === 'iface') {
     const i = ix.interfaces.get(id);
@@ -338,11 +339,13 @@ function row(sw: VNode, label: string, extra?: VNode | null): VNode {
 export function legendFor(model: Model, view: View, hidden: Set<string>): VNode {
   const sections: VNode[] = [];
   if (view === 'physical') {
-    const types = Array.from(new Set(model.devices.map((d) => iconName(d.type)))).sort();
+    // in the format's order; devices without a type last
+    const rank = (t: string): number => (DEVICE_TYPE_IDS.indexOf(t) + DEVICE_TYPE_IDS.length + 1) % (DEVICE_TYPE_IDS.length + 1);
+    const types = Array.from(new Set(model.devices.map((d) => iconName(d.type)))).sort((p, q) => rank(p) - rank(q));
     sections.push(
       h('section', {}, [
         h('h4', {}, 'Devices'),
-        h('ul', {}, types.map((t) => row(h('svg', { class: 'swatch', width: 44, height: 22, viewBox: '0 0 44 22' }, [deviceIcon(t, 11, 0, 22)]), t))),
+        h('ul', {}, types.map((t) => row(h('svg', { class: 'swatch', width: 44, height: 22, viewBox: '0 0 44 22' }, [deviceIcon(t, 11, 0, 22)]), deviceTypeLabel(t) || 'No type'))),
       ]),
     );
     const media = new Map<string, { label: string; color: string; dash?: string }>();

@@ -11,6 +11,7 @@ import { DialogOpts } from './dialogs';
 import { el } from './dom';
 import { CATEGORIES, LINE_STYLES, LOGICAL_IFACE_TYPES } from '../model/types';
 import { builtinProtocols } from '../model/protocols';
+import { DEVICE_TYPES, isDeviceType } from '../model/device-types';
 import { Issue, scalarText } from '../validation/validate';
 
 export type EditorSel = { kind: EntityKind | 'document'; index: number; iface?: number } | null;
@@ -27,7 +28,6 @@ export interface EditorHost {
 const J = (p: Path): string => JSON.stringify(p);
 const P = (s: string | null): Path => (s ? (JSON.parse(s) as Path) : []);
 
-const DEVICE_TYPES = ['router', 'switch', 'l3switch', 'firewall', 'server', 'hypervisor', 'cloud', 'ap', 'storage', 'loadbalancer', 'host', 'leaf', 'spine', 'vm', 'internet'];
 const IFACE_TYPES = ['physical'].concat(LOGICAL_IFACE_TYPES);
 const MEDIA = ['fiber', 'copper', 'dac', 'aoc', 'wireless', 'lte', '5g', 'microwave', 'serial', 'virtual'];
 const NET_KINDS = ['subnet', 'vlan', 'vni', 'vrf', 'zone', 'segment'];
@@ -283,7 +283,7 @@ export class Editor {
     add(this.idField(base, kind));
     if (kind === 'device') {
       add(this.textField(base.concat('label'), 'Label', o));
-      add(this.textField(base.concat('type'), 'Type', o, 'text', DEVICE_TYPES, 'Chooses the icon and the default row in the physical view.'));
+      add(this.typeField(base.concat('type'), o));
       add(this.refField(base.concat('group'), 'Group / location', o, this.ids('group')));
       add(this.textField(base.concat('vendor'), 'Vendor', o));
       add(this.textField(base.concat('model'), 'Model', o));
@@ -541,6 +541,19 @@ export class Editor {
     for (const o of opts) s.appendChild(this.e('option', { value: o }, [o]));
     s.value = current;
     return s;
+  }
+
+  /** Device type: the format's types by display name; a disallowed current value stays visible. */
+  private typeField(p: Path, order: string): HTMLElement {
+    const n = this.doc.get(p);
+    if (n && n.kind !== 'scalar') return this.field('Type', this.generic(p, n, 0), p, 'Not a single value — shown as a structure.');
+    const current = this.doc.text(p) || '';
+    const s = this.e('select', { 'data-p': J(p), 'data-t': 'text', 'data-o': order }) as HTMLSelectElement;
+    s.appendChild(this.e('option', { value: '' }, ['(none)']));
+    if (current && !isDeviceType(current)) s.appendChild(this.e('option', { value: current }, [current + ' (not a valid type)']));
+    for (const t of DEVICE_TYPES) s.appendChild(this.e('option', { value: t.id }, [t.label]));
+    s.value = current;
+    return this.field('Type', s, p, 'Chooses the icon and the default row in the physical view.');
   }
 
   private enumField(p: Path, label: string, order: string, options: string[], emptyLabel: string): HTMLElement {

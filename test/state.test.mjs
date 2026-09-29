@@ -86,7 +86,7 @@ test('details, tooltips and legend describe the selection', () => {
   assert.match(panels.tooltipFor(m, 'link:l-hq-isp1').join('\n'), /carries 3 logical relations/);
   const legendP = scene.textOf(panels.legendFor(m, 'physical', new Set()));
   assert.match(legendP, /Fiber/);
-  assert.match(legendP, /firewall/);
+  assert.match(legendP, /Firewall/);
   const legendL = panels.legendFor(m, 'logical', new Set(['ospf']));
   assert.match(scene.textOf(legendL), /IPsec[\s\S]*GRE[\s\S]*MACsec \*/);
   const ospfToggle = scene.findAll(legendL, (n) => n.attrs['data-proto'] === 'ospf')[0];

@@ -103,10 +103,11 @@ devices:
       - {id: eth4, speed: 10G, media: fiber}
   - id: hq-core1
     label: hq-core1
-    type: l3switch
+    type: switch
     vendor: Arista
     model: 7050X3
     group: hq-core
+    tier: 3
     interfaces:
       - {id: Ethernet49, speed: 10G, media: fiber}
       - {id: Ethernet51, speed: 100G, media: dac}
@@ -117,10 +118,11 @@ devices:
       - {id: Vlan20, type: svi, ip: 10.10.20.2/24}
   - id: hq-core2
     label: hq-core2
-    type: l3switch
+    type: switch
     vendor: Arista
     model: 7050X3
     group: hq-core
+    tier: 3
     interfaces:
       - {id: Ethernet49, speed: 10G, media: fiber}
       - {id: Ethernet51, speed: 100G, media: dac}

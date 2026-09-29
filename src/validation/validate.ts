@@ -20,6 +20,7 @@ import {
   ifaceKey,
   relationDevices,
 } from '../model/types';
+import { DEVICE_TYPE_IDS, NO_DEVICE_TYPE, isDeviceType } from '../model/device-types';
 import { COLOR_RE, DEFAULT_STYLE, builtinProtocols, lookupProtocol, normalizeProtocol } from '../model/protocols';
 import { YMap, YNode, YamlError, YamlLimits, parseYaml } from '../yaml/parse';
 import { FORMAT_VERSION, SCHEMA } from '../yaml/schema';
@@ -273,7 +274,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
     const dev: Device = {
       id,
       label: r.field(m, 'label', dpath, L.maxLabel) || id,
-      type: (r.field(m, 'type', dpath, 40) || 'generic').toLowerCase(),
+      type: deviceType(r, m, dpath, c),
       group: group !== undefined && groupMap.has(group) ? group : undefined,
       vendor: r.field(m, 'vendor', dpath, L.maxLabel),
       model: r.field(m, 'model', dpath, L.maxLabel),
@@ -766,4 +767,13 @@ function build(root: YNode | null, c: Ctx): Model | null {
     layout,
     index,
   };
+}
+
+/** A device's type: one of the format's device types, or none. Anything else is an error. */
+function deviceType(r: Reader, m: YMap, dpath: string, c: Ctx): string {
+  const t = r.field(m, 'type', dpath, 40);
+  if (t === undefined) return NO_DEVICE_TYPE;
+  if (isDeviceType(t)) return t;
+  c.error(get(m, 'type') as YNode, dpath + '.type', `unknown device type "${t}"${suggest(t, DEVICE_TYPE_IDS, 20)}`);
+  return NO_DEVICE_TYPE;
 }

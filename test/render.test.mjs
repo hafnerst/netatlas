@@ -169,7 +169,7 @@ relations:
 test('untrusted text only ever becomes text nodes; class names are sanitized', () => {
   const s = sessionFor(`netatlas: 1
 devices:
-  - {id: a, label: "<img src=x onerror=alert(1)>", type: "x\\" onload=\\"y"}
+  - {id: a, label: "<img src=x onerror=alert(1)>", type: server}
   - {id: b, label: "</text><script>alert(2)</script>"}
 links:
   - {id: l1, a: a, b: b, medium: "fiber\\" style=\\"x", label: "<b>bold</b>"}
