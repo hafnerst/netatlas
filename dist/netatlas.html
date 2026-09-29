@@ -511,12 +511,14 @@ exports.App = void 0;
  * letting the browser download a new copy. Nothing is transmitted.
  */
 const document_1 = __req("editor/document");
+const files_1 = __req("ui/files");
 const dom_1 = __req("ui/dom");
+const dialogs_1 = __req("ui/dialogs");
 const inspector_1 = __req("ui/inspector");
 const examples_1 = __req("generated/examples");
 const panels_1 = __req("ui/panels");
 const session_1 = __req("diagram/session");
-const parse_1 = __req("yaml/parse");
+const queries_1 = __req("model/queries");
 class App {
     constructor(doc) {
         this.session = null;
@@ -530,7 +532,6 @@ class App {
         this.loadErrorName = '';
         this.rafPending = false;
         this.errorRefs = new Set();
-        this.toastTimer = 0;
         /** set when a pointerdown already performed an editor action; the following mouse click is ignored */
         this.clickHandled = false;
         this.doc = doc;
@@ -555,18 +556,10 @@ class App {
     // ------------------------------------------------------------- loading
     /** Read a user-chosen local file (size-checked, strict UTF-8). Does not ask about unsaved changes. */
     async loadFile(file) {
-        if (file.size > parse_1.DEFAULT_YAML_LIMITS.maxBytes) {
-            return this.fail(file.name, [{ severity: 'error', line: 0, path: '', message: `The file is ${(file.size / 1048576).toFixed(1)} MiB; the limit is ${parse_1.DEFAULT_YAML_LIMITS.maxBytes / 1048576} MiB.` }], []);
-        }
-        let text;
-        try {
-            const buf = await file.arrayBuffer();
-            text = new TextDecoder('utf-8', { fatal: true }).decode(buf);
-        }
-        catch (e) {
-            return this.fail(file.name, [{ severity: 'error', line: 0, path: '', message: 'The file is not valid UTF-8 text. Save it as UTF-8 and try again.' }], []);
-        }
-        return this.loadText(text, file.name, 'file');
+        const r = await (0, files_1.readTextFile)(file);
+        if ('error' in r)
+            return this.fail(file.name, [{ severity: 'error', line: 0, path: '', message: r.error }], []);
+        return this.loadText(r.text, file.name, 'file');
     }
     /** Open YAML text as the current document (replaces it without asking). */
     loadText(text, name, origin = 'file') {
@@ -706,13 +699,7 @@ class App {
         return this.mdoc ? this.mdoc.exportText() : '';
     }
     suggestedFileName() {
-        const d = this.mdoc;
-        if (!d)
-            return 'network.yaml';
-        const base = d.fileName.replace(/\.(ya?ml)$/i, '');
-        if (d.origin === 'file')
-            return /-edited$/.test(base) ? base + '.yaml' : base + '-edited.yaml';
-        return base + '.yaml';
+        return this.mdoc ? (0, files_1.exportFileName)(this.mdoc.fileName, this.mdoc.origin) : 'network.yaml';
     }
     /**
      * Explain what will happen (a new copy is downloaded; the original file is
@@ -750,27 +737,12 @@ class App {
         });
         if (a !== 'download')
             return false;
-        let name = nameInput.value.trim() || this.suggestedFileName();
-        if (!/\.ya?ml$/i.test(name))
-            name += '.yaml';
-        name = name.replace(/[\\/:*?"<>|]+/g, '_');
-        this.downloadText(this.exportText(), name, 'application/yaml');
+        const name = (0, files_1.safeYamlFileName)(nameInput.value, this.suggestedFileName());
+        (0, files_1.downloadText)(this.doc, this.exportText(), name, 'application/yaml');
         d.markSaved();
         this.updateChrome();
         this.toast(`Downloaded “${name}”.`);
         return true;
-    }
-    /** Offer text as a local download (Blob URL; nothing leaves the machine). */
-    downloadText(text, name, type) {
-        const blob = new Blob([text], { type });
-        const url = URL.createObjectURL(blob);
-        const a = this.doc.createElement('a');
-        a.href = url;
-        a.download = name;
-        this.doc.body.appendChild(a);
-        a.click();
-        a.remove();
-        setTimeout(() => URL.revokeObjectURL(url), 2000);
     }
     // ------------------------------------------------------------ rendering
     setView(v) {
@@ -845,7 +817,7 @@ class App {
             this.reveal(ref);
     }
     reveal(ref) {
-        const [kind, id] = (0, session_1.splitRef)(ref);
+        const [kind, id] = (0, queries_1.splitRef)(ref);
         const candidates = [ref, kind === 'relation' ? 'hub:' + id : ''];
         const els = this.viewport.querySelectorAll('[data-ref]');
         for (let i = 0; i < els.length; i++) {
@@ -1150,64 +1122,12 @@ class App {
         examples_1.EXAMPLES.forEach((ex, i) => list.appendChild((0, dom_1.el)(this.doc, 'button', { type: 'button', class: 'linkish', 'data-example': String(i) }, [ex.name])));
     }
     // ------------------------------------------------------ dialogs / toasts
-    /** Modal dialog built from text nodes; resolves with the clicked button's value ("cancel" on Esc). */
+    /** Modal dialog (see dialogs.ts); resolves with the clicked button's value. */
     dialog(opts) {
-        const dlg = this.$('modal');
-        while (dlg.firstChild)
-            dlg.removeChild(dlg.firstChild);
-        const form = (0, dom_1.el)(this.doc, 'div', { class: 'modal-inner' });
-        form.appendChild((0, dom_1.el)(this.doc, 'h2', {}, [opts.title]));
-        const bodyEl = (0, dom_1.el)(this.doc, 'div', { class: 'modal-body' });
-        for (const b of opts.body)
-            bodyEl.appendChild(typeof b === 'string' ? this.doc.createTextNode(b) : b);
-        form.appendChild(bodyEl);
-        const btns = (0, dom_1.el)(this.doc, 'div', { class: 'modal-btns' });
-        form.appendChild(btns);
-        dlg.appendChild(form);
-        return new Promise((resolve) => {
-            const done = (v) => {
-                dlg.removeEventListener('cancel', onCancel);
-                if (dlg.open)
-                    dlg.close();
-                resolve(v);
-            };
-            const onCancel = (e) => {
-                e.preventDefault();
-                done('cancel');
-            };
-            dlg.addEventListener('cancel', onCancel);
-            for (const b of opts.buttons) {
-                const btn = (0, dom_1.el)(this.doc, 'button', { type: 'button', class: b.kind || '', 'data-value': b.value }, [b.label]);
-                btn.addEventListener('click', () => done(b.value));
-                btns.appendChild(btn);
-            }
-            if (typeof dlg.showModal === 'function')
-                dlg.showModal();
-            else
-                dlg.setAttribute('open', '');
-            const primary = btns.querySelector('.primary, .danger');
-            if (primary && !bodyEl.querySelector('input'))
-                primary.focus();
-            else {
-                const inp = bodyEl.querySelector('input');
-                if (inp) {
-                    inp.focus();
-                    inp.select();
-                }
-            }
-        });
+        return (0, dialogs_1.showDialog)(this.doc, opts);
     }
     toast(msg) {
-        const t = this.$('toast');
-        t.textContent = msg;
-        t.hidden = false;
-        const win = this.doc.defaultView;
-        if (win) {
-            win.clearTimeout(this.toastTimer);
-            this.toastTimer = win.setTimeout(() => {
-                t.hidden = true;
-            }, 3500);
-        }
+        (0, dialogs_1.showToast)(this.doc, msg);
     }
     // ---------------------------------------------------------------- events
     wire() {
@@ -1391,7 +1311,7 @@ class App {
             closeResults();
             if (!this.session || !q.value.trim())
                 return;
-            const hits = (0, session_1.search)(this.session.model, q.value);
+            const hits = (0, queries_1.search)(this.session.model, q.value);
             if (!hits.length)
                 results.appendChild((0, dom_1.el)(doc, 'div', { class: 'muted' }, ['No matches']));
             for (const hit of hits) {
@@ -1640,7 +1560,7 @@ class App {
     }
     nodeCenter(ref) {
         const s = this.session;
-        const [kind, id] = (0, session_1.splitRef)(ref);
+        const [kind, id] = (0, queries_1.splitRef)(ref);
         if (s.state.view === 'physical') {
             const o = s.state.positions.physical.get(ref);
             if (o)
@@ -1705,7 +1625,7 @@ class App {
         if (!this.session || !this.mdoc)
             return;
         const base = this.mdoc.fileName.replace(/\.[^.]*$/, '') || 'netatlas';
-        this.downloadText(this.exportSvg(), base + '-' + this.session.state.view + '.svg', 'image/svg+xml');
+        (0, files_1.downloadText)(this.doc, this.exportSvg(), base + '-' + this.session.state.view + '.svg', 'image/svg+xml');
     }
 }
 exports.App = App;
@@ -1755,14 +1675,17 @@ function restoreFocus(doc, f) {
 __defs["editor/document"] = function (module, exports) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.ModelDoc = exports.NEW_MODEL_YAML = exports.KEY_ORDER = exports.SECTION = exports.ENTITY_KINDS = void 0;
+exports.ModelDoc = exports.NEW_MODEL_YAML = exports.KEY_ORDER = exports.SECTION = exports.ENTITY_KINDS = exports.MAX_INPUT_BYTES = void 0;
 exports.kindOfSection = kindOfSection;
 exports.setKey = setKey;
 const positions_1 = __req("layout/positions");
 const input_1 = __req("layout/input");
 const validate_1 = __req("validation/validate");
+const schema_1 = __req("yaml/schema");
 const parse_1 = __req("yaml/parse");
 const write_1 = __req("yaml/write");
+/** Largest file the editor opens (checked before reading it). */
+exports.MAX_INPUT_BYTES = parse_1.DEFAULT_YAML_LIMITS.maxBytes;
 exports.ENTITY_KINDS = ['device', 'link', 'network', 'relation', 'group', 'protocol'];
 exports.SECTION = {
     protocol: 'protocols',
@@ -1779,17 +1702,7 @@ function kindOfSection(section) {
     return null;
 }
 /** Canonical key order used when the editor adds keys (existing order is never changed). */
-exports.KEY_ORDER = {
-    top: validate_1.TOP_KEYS,
-    protocol: ['id', 'label', 'category', 'color', 'style', 'description'],
-    group: ['id', 'label', 'kind', 'parent', 'description', 'attrs'],
-    device: ['id', 'label', 'type', 'group', 'vendor', 'model', 'role', 'mgmt', 'router_id', 'tier', 'description', 'attrs', 'interfaces'],
-    interface: ['id', 'label', 'type', 'speed', 'media', 'ip', 'vlan', 'mac', 'description', 'attrs'],
-    link: ['id', 'a', 'b', 'medium', 'speed', 'label', 'cable', 'description', 'attrs'],
-    network: ['id', 'label', 'kind', 'cidr', 'vlan', 'vrf', 'members', 'description', 'attrs'],
-    relation: ['id', 'protocol', 'category', 'label', 'endpoints', 'over', 'network', 'directed', 'description', 'attrs'],
-    endpoint: ['device', 'interface', 'role', 'address', 'attrs'],
-};
+exports.KEY_ORDER = schema_1.SCHEMA;
 exports.NEW_MODEL_YAML = `netatlas: 1
 title: New network
 devices:
@@ -2378,6 +2291,169 @@ class ModelDoc {
         const [it] = s.items.splice(from, 1);
         s.items.splice(to, 0, it);
     }
+    // ------------------------------------------------- editing operations (UI)
+    // Named, undoable operations used by the editor UI. They take plain values
+    // (text, flags, kinds) and decide how they are represented in YAML, so the
+    // UI never builds YAML nodes. New keys go into the canonical schema order,
+    // which is derived from the path.
+    /** Schema kind of the mapping at `path` (for key order), if the format defines one. */
+    schemaKindOf(path) {
+        if (path.length === 0)
+            return 'top';
+        if (path.length === 2 && typeof path[1] === 'number')
+            return kindOfSection(String(path[0])) || undefined;
+        if (path.length === 4 && path[0] === 'devices' && path[2] === 'interfaces')
+            return 'interface';
+        if (path.length === 4 && typeof path[3] === 'number' && (path[2] === 'members' || path[2] === 'endpoints'))
+            return 'endpoint';
+        if (path.length === 1 && path[0] === 'layout')
+            return 'layout';
+        return undefined;
+    }
+    orderFor(parentPath) {
+        const k = this.schemaKindOf(parentPath);
+        return k ? exports.KEY_ORDER[k] : undefined;
+    }
+    label(path) {
+        const last = path[path.length - 1];
+        return typeof last === 'number' ? String(path[path.length - 2]) : String(last);
+    }
+    /** Set a text field; empty text removes the key (or list item). */
+    setText(path, text) {
+        this.change('Edit ' + this.label(path), () => {
+            if (text === '')
+                this.removeAt(path);
+            else
+                this.setAt(path, (0, parse_1.strNode)(text), this.orderFor(path.slice(0, -1)));
+        });
+    }
+    /** Set an integer field (text that isn't an integer is kept as text and reported by validation). */
+    setInteger(path, text) {
+        this.change('Edit ' + this.label(path), () => {
+            if (text === '')
+                this.removeAt(path);
+            else
+                this.setAt(path, /^-?[0-9]+$/.test(text) ? (0, parse_1.numNode)(Number(text)) : (0, parse_1.strNode)(text), this.orderFor(path.slice(0, -1)));
+        });
+    }
+    /** Set a boolean flag; false removes it (the format's default). */
+    setFlag(path, on) {
+        this.change('Edit ' + this.label(path), () => {
+            if (on)
+                this.setAt(path, (0, parse_1.boolNode)(true), this.orderFor(path.slice(0, -1)));
+            else
+                this.removeAt(path);
+        });
+    }
+    /** Set a free-form value typed like YAML would type it ("42" number, "true" boolean …); empty = null. */
+    setValue(path, text) {
+        this.change('Edit value', () => this.setAt(path, text === '' ? (0, parse_1.nullNode)() : (0, parse_1.autoNode)(text)));
+    }
+    /** Append text to a list (created as [a, b] if missing; a single value becomes a list). */
+    appendText(listPath, text, label = 'Add ' + this.label(listPath)) {
+        this.change(label, () => {
+            this.ensureSeq(listPath, true, this.orderFor(listPath.slice(0, -1))).items.push((0, parse_1.strNode)(text));
+        });
+    }
+    /**
+     * Point an endpoint (link end, relation endpoint or network member) at a
+     * device and optional interface. Short forms ("dev", "dev:if") stay short;
+     * an endpoint written as a mapping keeps its other keys. An empty device
+     * removes the endpoint.
+     */
+    setEndpoint(path, device, iface) {
+        const node = this.get(path);
+        this.change('Edit endpoint', () => {
+            if (!device) {
+                this.removeAt(path);
+                return;
+            }
+            if (node && node.kind === 'map') {
+                const m = this.ensureMap(path);
+                this.setAt(path.concat('device'), (0, parse_1.strNode)(device), exports.KEY_ORDER.endpoint);
+                if (iface)
+                    this.setAt(path.concat('interface'), (0, parse_1.strNode)(iface), exports.KEY_ORDER.endpoint);
+                else
+                    m.entries.delete('interface');
+            }
+            else {
+                this.setAt(path, (0, parse_1.strNode)(iface ? device + ':' + iface : device), this.orderFor(path.slice(0, -1)));
+            }
+        });
+    }
+    /** Set role / address of an endpoint (expands a short endpoint to a mapping); empty removes it. */
+    setEndpointField(path, text) {
+        const ep = path.slice(0, -1);
+        this.change('Edit endpoint', () => {
+            if (text === '') {
+                const m = this.get(ep);
+                if (m && m.kind === 'map')
+                    m.entries.delete(String(path[path.length - 1]));
+            }
+            else {
+                this.ensureMap(ep);
+                this.setAt(path, (0, parse_1.strNode)(text), exports.KEY_ORDER.endpoint);
+            }
+        });
+    }
+    /** Add a key to a mapping (created if missing): an empty value, a group or a list. */
+    addField(mapPath, key, kind) {
+        if (!key)
+            return 'empty';
+        const cur = this.get(mapPath);
+        if (cur && cur.kind === 'map' && cur.entries.has(key))
+            return 'exists';
+        this.change('Add attribute', () => {
+            const m = this.get(mapPath);
+            if (!m || m.kind !== 'map')
+                this.setAt(mapPath, (0, parse_1.mapNode)(), this.orderFor(mapPath.slice(0, -1)));
+            this.setAt(mapPath.concat(key), kind === 'group' ? (0, parse_1.mapNode)() : kind === 'list' ? (0, parse_1.seqNode)() : (0, parse_1.nullNode)());
+        });
+        return 'ok';
+    }
+    /** Rename a key of a mapping (keeps its position). */
+    renameField(mapPath, oldKey, newKey) {
+        if (!newKey)
+            return 'empty';
+        const m = this.get(mapPath);
+        if (m && m.kind === 'map' && m.entries.has(newKey) && newKey !== oldKey)
+            return 'exists';
+        this.change('Rename key', () => this.renameKey(mapPath, oldKey, newKey));
+        return 'ok';
+    }
+    /** Append an empty value, group or list to a list. */
+    pushItem(listPath, kind) {
+        this.change('Add item', () => {
+            this.ensureSeq(listPath).items.push(kind === 'group' ? (0, parse_1.mapNode)() : kind === 'list' ? (0, parse_1.seqNode)() : (0, parse_1.nullNode)());
+        });
+    }
+    /** Remove a key or list item (one undo step). */
+    remove(path, label = 'Remove') {
+        this.change(label, () => this.removeAt(path));
+    }
+    /** Move a list item one position up. */
+    moveUp(path) {
+        const k = path[path.length - 1];
+        if (typeof k !== 'number' || k <= 0)
+            return;
+        this.change('Reorder', () => this.moveItem(path.slice(0, -1), k, k - 1));
+    }
+    /** Move a key the format doesn't define into the object's `attrs` (kept as it is). */
+    moveIntoAttrs(objPath, key) {
+        const m = this.get(objPath);
+        if (!m || m.kind !== 'map' || !m.entries.has(key))
+            return 'missing';
+        const attrs = m.entries.get('attrs');
+        if (attrs && attrs.value.kind === 'map' && attrs.value.entries.has(key))
+            return 'exists';
+        this.change('Move into attrs', () => {
+            const v = m.entries.get(key).value;
+            m.entries.delete(key);
+            const target = this.ensureMap(objPath.concat('attrs'), this.orderFor(objPath));
+            target.entries.set(key, { key, keyLine: 0, value: v });
+        });
+        return 'ok';
+    }
     // ---------------------------------------------------------------- entities
     section(kind) {
         const s = this.root.entries.get(exports.SECTION[kind]);
@@ -2869,6 +2945,7 @@ function samePositions(a, b) {
 __defs["layout/input"] = function (module, exports) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.defaultTier = defaultTier;
 exports.cmp = cmp;
 exports.layoutInput = layoutInput;
 exports.layoutSignature = layoutSignature;
@@ -2886,7 +2963,25 @@ exports.layoutSignature = layoutSignature;
  */
 const types_1 = __req("model/types");
 const sizes_1 = __req("layout/sizes");
-const style_1 = __req("diagram/style");
+/** Vertical tier of a device type in the physical view (0 = top). */
+function defaultTier(type) {
+    const t = type.toLowerCase();
+    if (/^(cloud|internet|wan|isp|provider)$/.test(t))
+        return 0;
+    if (/^(firewall|fw|ngfw|utm|ids|ips|waf)$/.test(t))
+        return 2;
+    if (/^(router|gateway|vpn|pe|ce|bng|sdwan|sd-wan|loadbalancer|lb|adc)$/.test(t))
+        return 1;
+    if (/^(l3switch|core|multilayer|spine)$/.test(t))
+        return 3;
+    if (/^(switch|l2switch|leaf|access|tor)$/.test(t))
+        return 4;
+    if (/^(ap|wlc|wireless|accesspoint)$/.test(t))
+        return 5;
+    if (/^(server|host|hypervisor|vm|container|storage|nas|san|pc|workstation|laptop|phone|printer|camera|iot|client)$/.test(t))
+        return 6;
+    return 4;
+}
 /** Code-unit string order: the same in every browser and locale. */
 function cmp(a, b) {
     return a < b ? -1 : a > b ? 1 : 0;
@@ -2903,7 +2998,7 @@ function layoutInput(m) {
         devices: byId(m.devices.map((d) => ({
             id: d.id,
             label: d.label,
-            tier: d.tier !== undefined ? d.tier : (0, style_1.defaultTier)(d.type),
+            tier: d.tier !== undefined ? d.tier : defaultTier(d.type),
             group: d.group || null,
             loopbacks: (0, types_1.loopbacks)(d).length,
         }))),
@@ -3117,223 +3212,6 @@ function ellipsize(s, size, maxW) {
     }
     return s.slice(0, Math.max(1, lo)) + '…';
 }
-
-};
-__defs["diagram/style"] = function (module, exports) {
-"use strict";
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.mediumStyle = mediumStyle;
-exports.parseSpeed = parseSpeed;
-exports.speedWidth = speedWidth;
-exports.defaultTier = defaultTier;
-exports.networkColor = networkColor;
-exports.groupKindStyle = groupKindStyle;
-/** Visual vocabulary shared by renderers and the legend. */
-const protocols_1 = __req("model/protocols");
-const MEDIA = [
-    [['fiber', 'fibre', 'smf', 'mmf', 'optical', 'sfp', 'qsfp'], { key: 'fiber', label: 'Fiber', color: '#e67700' }],
-    [['copper', 'utp', 'stp', 'cat5', 'cat5e', 'cat6', 'cat6a', 'rj45', 'ethernet'], { key: 'copper', label: 'Copper', color: '#1c7ed6' }],
-    [['dac', 'twinax'], { key: 'dac', label: 'DAC / twinax', color: '#0b7285' }],
-    [['aoc'], { key: 'aoc', label: 'AOC', color: '#d9480f' }],
-    [['wireless', 'wifi', 'radio', 'microwave', 'lte', '4g', '5g', 'satellite'], { key: 'wireless', label: 'Wireless / radio', color: '#862e9c', dash: '7 4' }],
-    [['serial', 't1', 'e1'], { key: 'serial', label: 'Serial', color: '#5c940d', dash: '2 3' }],
-    [['virtual', 'vswitch', 'internal'], { key: 'virtual', label: 'Virtual', color: '#868e96', dash: '4 4' }],
-    [['unspecified'], { key: 'unspecified', label: 'Unspecified', color: '#495057' }],
-];
-function mediumStyle(medium) {
-    const m = medium.toLowerCase();
-    for (const [names, st] of MEDIA)
-        if (names.indexOf(m) >= 0)
-            return st;
-    return { key: m, label: medium, color: (0, protocols_1.hashColor)('medium:' + m) };
-}
-/** Parse "10G", "100M", "1 Gbps", "400GbE" into bits per second. */
-function parseSpeed(s) {
-    if (!s)
-        return null;
-    const m = /^\s*([0-9]+(?:\.[0-9]+)?)\s*([kKmMgGtT]?)(?:b(?:ps|it\/s|e)?|bps)?\s*$/i.exec(s.replace(/gbe$/i, 'G'));
-    if (!m)
-        return null;
-    const mult = { '': 1, k: 1e3, m: 1e6, g: 1e9, t: 1e12 };
-    return parseFloat(m[1]) * mult[m[2].toLowerCase()];
-}
-function speedWidth(speed) {
-    const bps = parseSpeed(speed);
-    if (!bps)
-        return 2;
-    return 1.4 + Math.max(0, Math.min(3.8, Math.log10(bps / 1e8))) * 0.95;
-}
-/** Vertical tier of a device type in the physical view (0 = top). */
-function defaultTier(type) {
-    const t = type.toLowerCase();
-    if (/^(cloud|internet|wan|isp|provider)$/.test(t))
-        return 0;
-    if (/^(firewall|fw|ngfw|utm|ids|ips|waf)$/.test(t))
-        return 2;
-    if (/^(router|gateway|vpn|pe|ce|bng|sdwan|sd-wan|loadbalancer|lb|adc)$/.test(t))
-        return 1;
-    if (/^(l3switch|core|multilayer|spine)$/.test(t))
-        return 3;
-    if (/^(switch|l2switch|leaf|access|tor)$/.test(t))
-        return 4;
-    if (/^(ap|wlc|wireless|accesspoint)$/.test(t))
-        return 5;
-    if (/^(server|host|hypervisor|vm|container|storage|nas|san|pc|workstation|laptop|phone|printer|camera|iot|client)$/.test(t))
-        return 6;
-    return 4;
-}
-/** Fill colors for network kinds in the logical view. */
-function networkColor(kind) {
-    const k = kind.toLowerCase();
-    const table = {
-        subnet: '#1c7ed6',
-        vlan: '#2f9e44',
-        vni: '#0c8599',
-        vrf: '#7048e8',
-        zone: '#e8590c',
-        segment: '#1098ad',
-        'l2-domain': '#2b8a3e',
-    };
-    return table[k] || (0, protocols_1.hashColor)('net:' + k);
-}
-function groupKindStyle(kind) {
-    const k = kind.toLowerCase();
-    if (k === 'site' || k === 'region' || k === 'campus' || k === 'datacenter' || k === 'building')
-        return { strong: true };
-    if (k === 'provider' || k === 'cloud' || k === 'external')
-        return { dash: '6 4', strong: false };
-    return { strong: false };
-}
-
-};
-__defs["model/protocols"] = function (module, exports) {
-"use strict";
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.COLOR_RE = exports.DEFAULT_STYLE = void 0;
-exports.builtinProtocols = builtinProtocols;
-exports.normalizeProtocol = normalizeProtocol;
-exports.lookupProtocol = lookupProtocol;
-exports.hashColor = hashColor;
-const BUILTINS = [
-    // tunnels / encapsulations
-    ['gre', 'GRE', 'tunnel', '#e8590c', ['mgre', 'gretap']],
-    ['ipsec', 'IPsec', 'tunnel', '#7048e8', ['ikev2', 'ike']],
-    ['ipip', 'IP-in-IP', 'tunnel', '#c2255c', ['ip-in-ip']],
-    ['wireguard', 'WireGuard', 'tunnel', '#88171a', ['wg']],
-    ['openvpn', 'OpenVPN', 'tunnel', '#e67700'],
-    ['l2tp', 'L2TP', 'tunnel', '#5f3dc4', ['l2tpv3']],
-    ['dmvpn', 'DMVPN', 'tunnel', '#9c36b5'],
-    ['gtp', 'GTP', 'tunnel', '#a61e4d', ['gtp-u']],
-    ['rsvp-te', 'RSVP-TE LSP', 'tunnel', '#364fc7', ['mpls-te', 'te-tunnel']],
-    ['sr-te', 'SR-TE policy', 'tunnel', '#1864ab', ['sr-policy']],
-    ['pseudowire', 'Pseudowire', 'tunnel', '#0b7285', ['pw', 'vpws']],
-    ['ssl-vpn', 'SSL VPN', 'tunnel', '#d6336c'],
-    // overlays
-    ['vxlan', 'VXLAN', 'overlay', '#0c8599'],
-    ['geneve', 'Geneve', 'overlay', '#099268'],
-    ['evpn', 'EVPN', 'overlay', '#1098ad', ['bgp-evpn']],
-    ['l3vpn', 'MPLS L3VPN', 'overlay', '#3b5bdb', ['mpls-l3vpn', 'vrf-lite']],
-    ['vpls', 'VPLS', 'overlay', '#4263eb'],
-    ['sd-wan', 'SD-WAN', 'overlay', '#ae3ec9', ['sdwan']],
-    ['otv', 'OTV', 'overlay', '#15aabf'],
-    // routing / control-plane adjacencies
-    ['bgp', 'BGP', 'adjacency', '#1971c2', ['ebgp', 'ibgp', 'mp-bgp']],
-    ['ospf', 'OSPF', 'adjacency', '#2f9e44', ['ospfv2', 'ospfv3']],
-    ['isis', 'IS-IS', 'adjacency', '#5c940d', ['is-is']],
-    ['eigrp', 'EIGRP', 'adjacency', '#087f5b'],
-    ['rip', 'RIP', 'adjacency', '#74b816', ['ripng']],
-    ['ldp', 'LDP', 'adjacency', '#495057'],
-    ['pim', 'PIM', 'adjacency', '#d9480f'],
-    ['bfd', 'BFD', 'adjacency', '#868e96'],
-    ['static', 'Static route', 'adjacency', '#343a40'],
-    // redundancy / bundling
-    ['lacp', 'LACP / LAG', 'redundancy', '#f08c00', ['lag', 'port-channel', 'etherchannel']],
-    ['mlag', 'MLAG / vPC', 'redundancy', '#f59f00', ['vpc', 'mc-lag']],
-    ['vrrp', 'VRRP', 'redundancy', '#e64980'],
-    ['hsrp', 'HSRP', 'redundancy', '#d6336c'],
-    ['glbp', 'GLBP', 'redundancy', '#c2255c'],
-    ['carp', 'CARP', 'redundancy', '#a61e4d'],
-    ['ha-sync', 'HA sync', 'redundancy', '#fd7e14', ['ha', 'cluster']],
-    // services
-    ['dns', 'DNS', 'service', '#6741d9'],
-    ['ntp', 'NTP', 'service', '#5f3dc4'],
-    ['syslog', 'Syslog', 'service', '#7950f2'],
-    ['snmp', 'SNMP', 'service', '#845ef7'],
-    ['radius', 'RADIUS', 'service', '#9775fa', ['tacacs', 'tacacs+']],
-    ['dhcp', 'DHCP relay', 'service', '#6c5ce7', ['dhcp-relay']],
-    ['https', 'HTTPS', 'service', '#1c7ed6', ['http']],
-    ['netflow', 'NetFlow / IPFIX', 'service', '#4c6ef5', ['ipfix', 'sflow']],
-];
-exports.DEFAULT_STYLE = {
-    tunnel: 'tube',
-    adjacency: 'solid',
-    overlay: 'dashed',
-    redundancy: 'dotted',
-    service: 'dashdot',
-    other: 'dashdot',
-};
-function builtinProtocols() {
-    const m = new Map();
-    for (const [id, label, category, color] of BUILTINS) {
-        m.set(id, { id, label, category, color, style: exports.DEFAULT_STYLE[category], custom: false });
-    }
-    return m;
-}
-const ALIASES = new Map();
-for (const b of BUILTINS)
-    for (const a of b[4] || [])
-        ALIASES.set(a, b[0]);
-/** Canonical registry key for a protocol name ("eBGP" -> "bgp" only via aliases, never silently otherwise). */
-function normalizeProtocol(name) {
-    return name.trim().toLowerCase();
-}
-/**
- * Look up the definition for a protocol name. Exact match wins (so a user
- * definition of "ebgp" overrides the alias to "bgp"); then aliases; then a
- * generated definition for unknown protocols.
- */
-function lookupProtocol(registry, name, fallbackCategory) {
-    const key = normalizeProtocol(name);
-    const exact = registry.get(key);
-    if (exact)
-        return exact;
-    const alias = ALIASES.get(key);
-    if (alias && registry.has(alias)) {
-        const base = registry.get(alias);
-        return { ...base, id: key, label: aliasLabel(key, base.label) };
-    }
-    const category = fallbackCategory || 'other';
-    return {
-        id: key,
-        label: name.trim().toUpperCase().length <= 5 ? name.trim().toUpperCase() : name.trim(),
-        category,
-        color: hashColor(key),
-        style: exports.DEFAULT_STYLE[category],
-        custom: false,
-    };
-}
-function aliasLabel(alias, baseLabel) {
-    const special = { ebgp: 'eBGP', ibgp: 'iBGP', 'mp-bgp': 'MP-BGP', ospfv3: 'OSPFv3', ospfv2: 'OSPFv2' };
-    return special[alias] || (alias.length <= 6 ? alias.toUpperCase() : baseLabel);
-}
-/** Deterministic, readable color for an unknown protocol name. */
-function hashColor(s) {
-    let h = 2166136261;
-    for (let i = 0; i < s.length; i++) {
-        h ^= s.charCodeAt(i);
-        h = Math.imul(h, 16777619);
-    }
-    const hue = (h >>> 0) % 360;
-    return hslToHex(hue, 0.62, 0.42);
-}
-function hslToHex(h, s, l) {
-    const k = (n) => (n + h / 30) % 12;
-    const a = s * Math.min(l, 1 - l);
-    const f = (n) => l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)));
-    const hex = (x) => Math.round(x * 255).toString(16).padStart(2, '0');
-    return '#' + hex(f(0)) + hex(f(8)) + hex(f(4));
-}
-exports.COLOR_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
 
 };
 __defs["layout/logical"] = function (module, exports) {
@@ -4349,16 +4227,17 @@ function assignPorts(links, boxes) {
 __defs["validation/validate"] = function (module, exports) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.PROTO_KEYS = exports.EP_KEYS = exports.REL_KEYS = exports.NET_KEYS = exports.LINK_KEYS = exports.IFACE_KEYS = exports.DEVICE_KEYS = exports.GROUP_KEYS = exports.MAX_COORD = exports.TOP_KEYS = exports.PROTO_RE = exports.IFACE_RE = exports.ID_RE = exports.FORMAT_VERSION = exports.DEFAULT_MODEL_LIMITS = void 0;
+exports.MAX_COORD = exports.PROTO_RE = exports.IFACE_RE = exports.ID_RE = exports.FORMAT_VERSION = exports.DEFAULT_MODEL_LIMITS = void 0;
 exports.suggest = suggest;
 exports.scalarText = scalarText;
 exports.loadModel = loadModel;
 exports.validate = validate;
-exports.relationStyle = relationStyle;
 const ip_1 = __req("model/ip");
 const types_1 = __req("model/types");
 const protocols_1 = __req("model/protocols");
 const parse_1 = __req("yaml/parse");
+const schema_1 = __req("yaml/schema");
+Object.defineProperty(exports, "FORMAT_VERSION", { enumerable: true, get: function () { return schema_1.FORMAT_VERSION; } });
 exports.DEFAULT_MODEL_LIMITS = {
     maxGroups: 500,
     maxDevices: 1000,
@@ -4376,23 +4255,23 @@ exports.DEFAULT_MODEL_LIMITS = {
     maxDescription: 4000,
     maxErrors: 200,
 };
-exports.FORMAT_VERSION = 1;
 /** Entity ids: letters, digits, "_", ".", "-" (no ":" — it separates device and interface). */
 exports.ID_RE = /^[A-Za-z0-9_][A-Za-z0-9_.\-]{0,63}$/;
 /** Interface ids additionally allow "/" (e.g. "ge-0/0/1", "Ethernet1/1"). */
 exports.IFACE_RE = /^[A-Za-z0-9_][A-Za-z0-9_.\-\/]{0,63}$/;
 exports.PROTO_RE = /^[a-z0-9][a-z0-9_.+\-]{0,39}$/;
-exports.TOP_KEYS = ['netatlas', 'title', 'description', 'protocols', 'groups', 'devices', 'links', 'networks', 'relations', 'layout'];
 /** largest accepted coordinate in the layout section */
 exports.MAX_COORD = 1000000;
-exports.GROUP_KEYS = ['id', 'label', 'kind', 'parent', 'description', 'attrs'];
-exports.DEVICE_KEYS = ['id', 'label', 'type', 'group', 'vendor', 'model', 'role', 'mgmt', 'router_id', 'tier', 'description', 'attrs', 'interfaces'];
-exports.IFACE_KEYS = ['id', 'label', 'type', 'speed', 'media', 'ip', 'vlan', 'mac', 'description', 'attrs'];
-exports.LINK_KEYS = ['id', 'a', 'b', 'medium', 'speed', 'label', 'cable', 'description', 'attrs'];
-exports.NET_KEYS = ['id', 'label', 'kind', 'cidr', 'vlan', 'vrf', 'members', 'description', 'attrs'];
-exports.REL_KEYS = ['id', 'protocol', 'category', 'label', 'endpoints', 'over', 'network', 'directed', 'description', 'attrs'];
-exports.EP_KEYS = ['device', 'interface', 'role', 'address', 'attrs'];
-exports.PROTO_KEYS = ['id', 'label', 'category', 'color', 'style', 'description'];
+// keys per mapping kind: the single definition is yaml/schema.ts
+const TOP_KEYS = schema_1.SCHEMA.top;
+const GROUP_KEYS = schema_1.SCHEMA.group;
+const DEVICE_KEYS = schema_1.SCHEMA.device;
+const IFACE_KEYS = schema_1.SCHEMA.interface;
+const LINK_KEYS = schema_1.SCHEMA.link;
+const NET_KEYS = schema_1.SCHEMA.network;
+const REL_KEYS = schema_1.SCHEMA.relation;
+const EP_KEYS = schema_1.SCHEMA.endpoint;
+const PROTO_KEYS = schema_1.SCHEMA.protocol;
 const ATTRS_HINT = ' (custom data belongs under "attrs:")';
 class TooManyErrors extends Error {
 }
@@ -4624,13 +4503,13 @@ function build(root, c) {
     const top = r.map(root, '(document)');
     if (!top)
         return null;
-    r.keys(top, exports.TOP_KEYS, '', '');
+    r.keys(top, TOP_KEYS, '', '');
     const verNode = get(top, 'netatlas');
     if (isNull(verNode)) {
-        c.error(top, 'netatlas', `missing format version — add "netatlas: ${exports.FORMAT_VERSION}" as the first line`, { key: 'netatlas', line: 1 });
+        c.error(top, 'netatlas', `missing format version — add "netatlas: ${schema_1.FORMAT_VERSION}" as the first line`, { key: 'netatlas', line: 1 });
     }
-    else if (!(verNode.kind === 'scalar' && verNode.value === exports.FORMAT_VERSION)) {
-        c.error(verNode, 'netatlas', `unsupported format version; this build understands "netatlas: ${exports.FORMAT_VERSION}"`);
+    else if (!(verNode.kind === 'scalar' && verNode.value === schema_1.FORMAT_VERSION)) {
+        c.error(verNode, 'netatlas', `unsupported format version; this build understands "netatlas: ${schema_1.FORMAT_VERSION}"`);
     }
     const title = r.field(top, 'title', '', L.maxLabel) || 'Untitled network';
     const description = r.field(top, 'description', '', L.maxDescription);
@@ -4661,7 +4540,7 @@ function build(root, c) {
         const m = r.map(n, path);
         if (!m)
             return;
-        r.keys(m, exports.PROTO_KEYS, path);
+        r.keys(m, PROTO_KEYS, path);
         const rawId = r.reqStr(m, 'id', path, 40);
         if (rawId === undefined)
             return;
@@ -4720,7 +4599,7 @@ function build(root, c) {
         const m = r.map(n, path);
         if (!m)
             return;
-        r.keys(m, exports.GROUP_KEYS, path, ATTRS_HINT);
+        r.keys(m, GROUP_KEYS, path, ATTRS_HINT);
         const id = r.id(m, path);
         if (!id || !claim(id, 'group', m, path))
             return;
@@ -4777,7 +4656,7 @@ function build(root, c) {
         const m = r.map(n, path);
         if (!m)
             return;
-        r.keys(m, exports.DEVICE_KEYS, path, ATTRS_HINT);
+        r.keys(m, DEVICE_KEYS, path, ATTRS_HINT);
         const id = r.id(m, path);
         if (!id)
             return;
@@ -4825,7 +4704,7 @@ function build(root, c) {
                 im = r.map(inode, ipath);
             if (!im)
                 return;
-            r.keys(im, exports.IFACE_KEYS, ipath, ATTRS_HINT);
+            r.keys(im, IFACE_KEYS, ipath, ATTRS_HINT);
             const iid = r.id(im, ipath, exports.IFACE_RE, 'interface id');
             if (!iid)
                 return;
@@ -4935,7 +4814,7 @@ function build(root, c) {
             iface = colon < 0 ? undefined : s.slice(colon + 1);
         }
         else if (n.kind === 'map') {
-            r.keys(n, extended ? exports.EP_KEYS : ['device', 'interface'], path);
+            r.keys(n, extended ? EP_KEYS : ['device', 'interface'], path);
             device = r.reqStr(n, 'device', path, 200);
             iface = r.field(n, 'interface', path, 200);
             if (extended) {
@@ -4971,7 +4850,7 @@ function build(root, c) {
         const m = r.map(n, path);
         if (!m)
             return;
-        r.keys(m, exports.LINK_KEYS, path, ATTRS_HINT);
+        r.keys(m, LINK_KEYS, path, ATTRS_HINT);
         const id = r.id(m, path);
         if (!id)
             return;
@@ -5036,7 +4915,7 @@ function build(root, c) {
         const m = r.map(n, path);
         if (!m)
             return;
-        r.keys(m, exports.NET_KEYS, path, ATTRS_HINT);
+        r.keys(m, NET_KEYS, path, ATTRS_HINT);
         const id = r.id(m, path);
         if (!id)
             return;
@@ -5102,7 +4981,7 @@ function build(root, c) {
         const m = r.map(n, path);
         if (!m)
             return;
-        r.keys(m, exports.REL_KEYS, path, ATTRS_HINT);
+        r.keys(m, REL_KEYS, path, ATTRS_HINT);
         const id = r.id(m, path);
         if (!id)
             return;
@@ -5304,7 +5183,7 @@ function build(root, c) {
         ifaceLink,
     };
     return {
-        version: exports.FORMAT_VERSION,
+        version: schema_1.FORMAT_VERSION,
         title,
         description,
         groups,
@@ -5316,13 +5195,6 @@ function build(root, c) {
         layout,
         index,
     };
-}
-/** Definition used to draw a relation: its protocol def, with category/style following the relation's category. */
-function relationStyle(model, rel) {
-    const def = (0, protocols_1.lookupProtocol)(model.protocols, rel.protocol, rel.category);
-    if (def.category !== rel.category)
-        return { ...def, category: rel.category, style: protocols_1.DEFAULT_STYLE[rel.category] };
-    return def;
 }
 
 };
@@ -5453,6 +5325,147 @@ function prefixContains(net, a) {
 /** Canonical text of an address (for duplicate detection). */
 function addrKey(a) {
     return a.version + ':' + a.bytes.join('.');
+}
+
+};
+__defs["model/protocols"] = function (module, exports) {
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.COLOR_RE = exports.DEFAULT_STYLE = void 0;
+exports.builtinProtocols = builtinProtocols;
+exports.normalizeProtocol = normalizeProtocol;
+exports.lookupProtocol = lookupProtocol;
+exports.hashColor = hashColor;
+exports.relationStyle = relationStyle;
+const BUILTINS = [
+    // tunnels / encapsulations
+    ['gre', 'GRE', 'tunnel', '#e8590c', ['mgre', 'gretap']],
+    ['ipsec', 'IPsec', 'tunnel', '#7048e8', ['ikev2', 'ike']],
+    ['ipip', 'IP-in-IP', 'tunnel', '#c2255c', ['ip-in-ip']],
+    ['wireguard', 'WireGuard', 'tunnel', '#88171a', ['wg']],
+    ['openvpn', 'OpenVPN', 'tunnel', '#e67700'],
+    ['l2tp', 'L2TP', 'tunnel', '#5f3dc4', ['l2tpv3']],
+    ['dmvpn', 'DMVPN', 'tunnel', '#9c36b5'],
+    ['gtp', 'GTP', 'tunnel', '#a61e4d', ['gtp-u']],
+    ['rsvp-te', 'RSVP-TE LSP', 'tunnel', '#364fc7', ['mpls-te', 'te-tunnel']],
+    ['sr-te', 'SR-TE policy', 'tunnel', '#1864ab', ['sr-policy']],
+    ['pseudowire', 'Pseudowire', 'tunnel', '#0b7285', ['pw', 'vpws']],
+    ['ssl-vpn', 'SSL VPN', 'tunnel', '#d6336c'],
+    // overlays
+    ['vxlan', 'VXLAN', 'overlay', '#0c8599'],
+    ['geneve', 'Geneve', 'overlay', '#099268'],
+    ['evpn', 'EVPN', 'overlay', '#1098ad', ['bgp-evpn']],
+    ['l3vpn', 'MPLS L3VPN', 'overlay', '#3b5bdb', ['mpls-l3vpn', 'vrf-lite']],
+    ['vpls', 'VPLS', 'overlay', '#4263eb'],
+    ['sd-wan', 'SD-WAN', 'overlay', '#ae3ec9', ['sdwan']],
+    ['otv', 'OTV', 'overlay', '#15aabf'],
+    // routing / control-plane adjacencies
+    ['bgp', 'BGP', 'adjacency', '#1971c2', ['ebgp', 'ibgp', 'mp-bgp']],
+    ['ospf', 'OSPF', 'adjacency', '#2f9e44', ['ospfv2', 'ospfv3']],
+    ['isis', 'IS-IS', 'adjacency', '#5c940d', ['is-is']],
+    ['eigrp', 'EIGRP', 'adjacency', '#087f5b'],
+    ['rip', 'RIP', 'adjacency', '#74b816', ['ripng']],
+    ['ldp', 'LDP', 'adjacency', '#495057'],
+    ['pim', 'PIM', 'adjacency', '#d9480f'],
+    ['bfd', 'BFD', 'adjacency', '#868e96'],
+    ['static', 'Static route', 'adjacency', '#343a40'],
+    // redundancy / bundling
+    ['lacp', 'LACP / LAG', 'redundancy', '#f08c00', ['lag', 'port-channel', 'etherchannel']],
+    ['mlag', 'MLAG / vPC', 'redundancy', '#f59f00', ['vpc', 'mc-lag']],
+    ['vrrp', 'VRRP', 'redundancy', '#e64980'],
+    ['hsrp', 'HSRP', 'redundancy', '#d6336c'],
+    ['glbp', 'GLBP', 'redundancy', '#c2255c'],
+    ['carp', 'CARP', 'redundancy', '#a61e4d'],
+    ['ha-sync', 'HA sync', 'redundancy', '#fd7e14', ['ha', 'cluster']],
+    // services
+    ['dns', 'DNS', 'service', '#6741d9'],
+    ['ntp', 'NTP', 'service', '#5f3dc4'],
+    ['syslog', 'Syslog', 'service', '#7950f2'],
+    ['snmp', 'SNMP', 'service', '#845ef7'],
+    ['radius', 'RADIUS', 'service', '#9775fa', ['tacacs', 'tacacs+']],
+    ['dhcp', 'DHCP relay', 'service', '#6c5ce7', ['dhcp-relay']],
+    ['https', 'HTTPS', 'service', '#1c7ed6', ['http']],
+    ['netflow', 'NetFlow / IPFIX', 'service', '#4c6ef5', ['ipfix', 'sflow']],
+];
+exports.DEFAULT_STYLE = {
+    tunnel: 'tube',
+    adjacency: 'solid',
+    overlay: 'dashed',
+    redundancy: 'dotted',
+    service: 'dashdot',
+    other: 'dashdot',
+};
+function builtinProtocols() {
+    const m = new Map();
+    for (const [id, label, category, color] of BUILTINS) {
+        m.set(id, { id, label, category, color, style: exports.DEFAULT_STYLE[category], custom: false });
+    }
+    return m;
+}
+const ALIASES = new Map();
+for (const b of BUILTINS)
+    for (const a of b[4] || [])
+        ALIASES.set(a, b[0]);
+/** Canonical registry key for a protocol name ("eBGP" -> "bgp" only via aliases, never silently otherwise). */
+function normalizeProtocol(name) {
+    return name.trim().toLowerCase();
+}
+/**
+ * Look up the definition for a protocol name. Exact match wins (so a user
+ * definition of "ebgp" overrides the alias to "bgp"); then aliases; then a
+ * generated definition for unknown protocols.
+ */
+function lookupProtocol(registry, name, fallbackCategory) {
+    const key = normalizeProtocol(name);
+    const exact = registry.get(key);
+    if (exact)
+        return exact;
+    const alias = ALIASES.get(key);
+    if (alias && registry.has(alias)) {
+        const base = registry.get(alias);
+        return { ...base, id: key, label: aliasLabel(key, base.label) };
+    }
+    const category = fallbackCategory || 'other';
+    return {
+        id: key,
+        label: name.trim().toUpperCase().length <= 5 ? name.trim().toUpperCase() : name.trim(),
+        category,
+        color: hashColor(key),
+        style: exports.DEFAULT_STYLE[category],
+        custom: false,
+    };
+}
+function aliasLabel(alias, baseLabel) {
+    const special = { ebgp: 'eBGP', ibgp: 'iBGP', 'mp-bgp': 'MP-BGP', ospfv3: 'OSPFv3', ospfv2: 'OSPFv2' };
+    return special[alias] || (alias.length <= 6 ? alias.toUpperCase() : baseLabel);
+}
+/** Deterministic, readable color for an unknown protocol name. */
+function hashColor(s) {
+    let h = 2166136261;
+    for (let i = 0; i < s.length; i++) {
+        h ^= s.charCodeAt(i);
+        h = Math.imul(h, 16777619);
+    }
+    const hue = (h >>> 0) % 360;
+    return hslToHex(hue, 0.62, 0.42);
+}
+function hslToHex(h, s, l) {
+    const k = (n) => (n + h / 30) % 12;
+    const a = s * Math.min(l, 1 - l);
+    const f = (n) => l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)));
+    const hex = (x) => Math.round(x * 255).toString(16).padStart(2, '0');
+    return '#' + hex(f(0)) + hex(f(8)) + hex(f(4));
+}
+exports.COLOR_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
+/**
+ * Definition used to draw a relation: its protocol definition, with category
+ * and line style following the relation's own category when it overrides it.
+ */
+function relationStyle(model, rel) {
+    const def = lookupProtocol(model.protocols, rel.protocol, rel.category);
+    if (def.category !== rel.category)
+        return { ...def, category: rel.category, style: exports.DEFAULT_STYLE[rel.category] };
+    return def;
 }
 
 };
@@ -6409,6 +6422,35 @@ function isPlainSafe(s, inFlow) {
 const UNSAFE_CHARS = /[\u0000-\u001F\u007F-\u009F\u2028\u2029\uFEFF]/;
 
 };
+__defs["yaml/schema"] = function (module, exports) {
+"use strict";
+/**
+ * The netatlas YAML format: which keys each kind of mapping may contain, in
+ * canonical order. This is the single definition used by
+ *   - validation (unknown keys are errors),
+ *   - the editing core (new keys are inserted in this order),
+ *   - the inspector (keys outside the schema are shown as "other properties").
+ * The prose reference is docs/FORMAT.md.
+ */
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.SCHEMA = exports.FORMAT_VERSION = void 0;
+exports.FORMAT_VERSION = 1;
+exports.SCHEMA = {
+    top: ['netatlas', 'title', 'description', 'protocols', 'groups', 'devices', 'links', 'networks', 'relations', 'layout'],
+    protocol: ['id', 'label', 'category', 'color', 'style', 'description'],
+    group: ['id', 'label', 'kind', 'parent', 'description', 'attrs'],
+    device: ['id', 'label', 'type', 'group', 'vendor', 'model', 'role', 'mgmt', 'router_id', 'tier', 'description', 'attrs', 'interfaces'],
+    interface: ['id', 'label', 'type', 'speed', 'media', 'ip', 'vlan', 'mac', 'description', 'attrs'],
+    link: ['id', 'a', 'b', 'medium', 'speed', 'label', 'cable', 'description', 'attrs'],
+    network: ['id', 'label', 'kind', 'cidr', 'vlan', 'vrf', 'members', 'description', 'attrs'],
+    relation: ['id', 'protocol', 'category', 'label', 'endpoints', 'over', 'network', 'directed', 'description', 'attrs'],
+    /** an endpoint written as a mapping (links accept only device/interface) */
+    endpoint: ['device', 'interface', 'role', 'address', 'attrs'],
+    /** the presentation-only layout section */
+    layout: ['physical', 'logical', 'manual'],
+};
+
+};
 __defs["yaml/write"] = function (module, exports) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
@@ -6696,6 +6738,65 @@ function emitSeqBody(s, ind, out) {
 }
 
 };
+__defs["ui/files"] = function (module, exports) {
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.readTextFile = readTextFile;
+exports.exportFileName = exportFileName;
+exports.safeYamlFileName = safeYamlFileName;
+exports.downloadText = downloadText;
+/**
+ * Local files: reading a file the user picked or dropped, and saving text by
+ * letting the browser download it. Nothing is ever uploaded: reading uses the
+ * File API, saving uses a Blob URL.
+ */
+const document_1 = __req("editor/document");
+/** Read a user-chosen file as strict UTF-8 text, refusing oversized files before reading them. */
+async function readTextFile(file) {
+    if (file.size > document_1.MAX_INPUT_BYTES) {
+        return { error: `The file is ${(file.size / 1048576).toFixed(1)} MiB; the limit is ${document_1.MAX_INPUT_BYTES / 1048576} MiB.` };
+    }
+    try {
+        const buf = await file.arrayBuffer();
+        return { text: new TextDecoder('utf-8', { fatal: true }).decode(buf) };
+    }
+    catch (e) {
+        return { error: 'The file is not valid UTF-8 text. Save it as UTF-8 and try again.' };
+    }
+}
+/**
+ * Suggested name for downloading a model. An imported file is saved as a new
+ * copy ("<name>-edited.yaml") so the original is obviously left alone.
+ */
+function exportFileName(fileName, origin) {
+    if (!fileName)
+        return 'network.yaml';
+    const base = fileName.replace(/\.(ya?ml)$/i, '');
+    if (origin === 'file')
+        return /-edited$/.test(base) ? base + '.yaml' : base + '-edited.yaml';
+    return base + '.yaml';
+}
+/** Normalize a user-typed download name: non-empty, .yaml/.yml extension, no path characters. */
+function safeYamlFileName(typed, fallback) {
+    let name = typed.trim() || fallback;
+    if (!/\.ya?ml$/i.test(name))
+        name += '.yaml';
+    return name.replace(/[\\/:*?"<>|]+/g, '_');
+}
+/** Offer text as a local download (Blob URL; nothing leaves the machine). */
+function downloadText(doc, text, name, type) {
+    const blob = new Blob([text], { type });
+    const url = URL.createObjectURL(blob);
+    const a = doc.createElement('a');
+    a.href = url;
+    a.download = name;
+    doc.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+};
 __defs["ui/dom"] = function (module, exports) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
@@ -6741,6 +6842,80 @@ function el(doc, tag, attrs = {}, children = []) {
 }
 
 };
+__defs["ui/dialogs"] = function (module, exports) {
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.showDialog = showDialog;
+exports.showToast = showToast;
+/** Modal dialog and toast. Content is built from text nodes and elements only. */
+const dom_1 = __req("ui/dom");
+/**
+ * Show the page's <dialog id="modal"> and resolve with the value of the
+ * clicked button ("cancel" on Esc). The primary button, or the first input,
+ * gets the focus.
+ */
+function showDialog(doc, opts) {
+    const dlg = doc.getElementById('modal');
+    while (dlg.firstChild)
+        dlg.removeChild(dlg.firstChild);
+    const form = (0, dom_1.el)(doc, 'div', { class: 'modal-inner' });
+    form.appendChild((0, dom_1.el)(doc, 'h2', {}, [opts.title]));
+    const bodyEl = (0, dom_1.el)(doc, 'div', { class: 'modal-body' });
+    for (const b of opts.body)
+        bodyEl.appendChild(typeof b === 'string' ? doc.createTextNode(b) : b);
+    form.appendChild(bodyEl);
+    const btns = (0, dom_1.el)(doc, 'div', { class: 'modal-btns' });
+    form.appendChild(btns);
+    dlg.appendChild(form);
+    return new Promise((resolve) => {
+        const done = (v) => {
+            dlg.removeEventListener('cancel', onCancel);
+            if (dlg.open)
+                dlg.close();
+            resolve(v);
+        };
+        const onCancel = (e) => {
+            e.preventDefault();
+            done('cancel');
+        };
+        dlg.addEventListener('cancel', onCancel);
+        for (const b of opts.buttons) {
+            const btn = (0, dom_1.el)(doc, 'button', { type: 'button', class: b.kind || '', 'data-value': b.value }, [b.label]);
+            btn.addEventListener('click', () => done(b.value));
+            btns.appendChild(btn);
+        }
+        if (typeof dlg.showModal === 'function')
+            dlg.showModal();
+        else
+            dlg.setAttribute('open', '');
+        const primary = btns.querySelector('.primary, .danger');
+        if (primary && !bodyEl.querySelector('input'))
+            primary.focus();
+        else {
+            const inp = bodyEl.querySelector('input');
+            if (inp) {
+                inp.focus();
+                inp.select();
+            }
+        }
+    });
+}
+let toastTimer = 0;
+/** Show a short message in the page's #toast element for 3.5 s. */
+function showToast(doc, msg) {
+    const t = doc.getElementById('toast');
+    t.textContent = msg;
+    t.hidden = false;
+    const win = doc.defaultView;
+    if (win) {
+        win.clearTimeout(toastTimer);
+        toastTimer = win.setTimeout(() => {
+            t.hidden = true;
+        }, 3500);
+    }
+}
+
+};
 __defs["ui/inspector"] = function (module, exports) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
@@ -6758,7 +6933,6 @@ const dom_1 = __req("ui/dom");
 const types_1 = __req("model/types");
 const protocols_1 = __req("model/protocols");
 const validate_1 = __req("validation/validate");
-const parse_1 = __req("yaml/parse");
 const J = (p) => JSON.stringify(p);
 const P = (s) => (s ? JSON.parse(s) : []);
 const DEVICE_TYPES = ['router', 'switch', 'l3switch', 'firewall', 'server', 'hypervisor', 'cloud', 'ap', 'storage', 'loadbalancer', 'host', 'leaf', 'spine', 'vm', 'internet'];
@@ -6766,16 +6940,8 @@ const IFACE_TYPES = ['physical'].concat(types_1.LOGICAL_IFACE_TYPES);
 const MEDIA = ['fiber', 'copper', 'dac', 'aoc', 'wireless', 'lte', '5g', 'microwave', 'serial', 'virtual'];
 const NET_KINDS = ['subnet', 'vlan', 'vni', 'vrf', 'zone', 'segment'];
 const GROUP_KINDS = ['site', 'building', 'room', 'row', 'rack', 'provider', 'cloud', 'zone', 'region'];
-const KNOWN = {
-    document: validate_1.TOP_KEYS,
-    device: validate_1.DEVICE_KEYS,
-    interface: validate_1.IFACE_KEYS,
-    link: validate_1.LINK_KEYS,
-    network: validate_1.NET_KEYS,
-    relation: validate_1.REL_KEYS,
-    group: validate_1.GROUP_KEYS,
-    protocol: validate_1.PROTO_KEYS,
-};
+/** keys the format defines for a kind of mapping (single source: the format schema) */
+const KNOWN = { ...document_1.KEY_ORDER, document: document_1.KEY_ORDER.top };
 const KIND_TITLE = {
     device: 'Devices',
     link: 'Links (cables)',
@@ -7007,7 +7173,8 @@ class Editor {
         w.appendChild(this.issueBox(doc.issuesAt(base)));
         if (!node || node.kind !== 'map') {
             w.appendChild(this.e('p', { class: 'muted' }, ['This entry is not a mapping; edit it in the YAML tab or delete it.']));
-            w.appendChild(this.generic(base, node || (0, parse_1.nullNode)(), 0));
+            if (node)
+                w.appendChild(this.generic(base, node, 0));
             return;
         }
         const o = kind;
@@ -7517,37 +7684,21 @@ class Editor {
         if (!doc)
             return true;
         const p = P(target.getAttribute('data-p'));
-        const order = document_1.KEY_ORDER[target.getAttribute('data-o') || ''] || undefined;
         const val = target.value;
         const trimmed = typeof val === 'string' ? val.trim() : '';
         let note;
         switch (t) {
             case 'text':
-                doc.change('Edit ' + p[p.length - 1], () => {
-                    if (trimmed === '')
-                        doc.removeAt(p);
-                    else
-                        doc.setAt(p, (0, parse_1.strNode)(target.tagName === 'TEXTAREA' ? val.replace(/\s+$/, '') : trimmed), order);
-                });
+                doc.setText(p, target.tagName === 'TEXTAREA' ? val.replace(/\s+$/, '') : trimmed);
                 break;
             case 'int':
-                doc.change('Edit ' + p[p.length - 1], () => {
-                    if (trimmed === '')
-                        doc.removeAt(p);
-                    else
-                        doc.setAt(p, /^-?[0-9]+$/.test(trimmed) ? (0, parse_1.numNode)(Number(trimmed)) : (0, parse_1.strNode)(trimmed), order);
-                });
+                doc.setInteger(p, trimmed);
                 break;
             case 'bool':
-                doc.change('Edit ' + p[p.length - 1], () => {
-                    if (target.checked)
-                        doc.setAt(p, (0, parse_1.boolNode)(true), order);
-                    else
-                        doc.removeAt(p);
-                });
+                doc.setFlag(p, target.checked);
                 break;
             case 'auto':
-                doc.change('Edit value', () => doc.setAt(p, trimmed === '' ? (0, parse_1.nullNode)() : (0, parse_1.autoNode)(trimmed)));
+                doc.setValue(p, trimmed);
                 break;
             case 'id': {
                 const kind = target.getAttribute('data-kind');
@@ -7570,107 +7721,55 @@ class Editor {
             }
             case 'list-item':
             case 'list-scalar':
-                doc.change('Edit ' + (t === 'list-scalar' ? p[p.length - 1] : p[p.length - 2]), () => {
-                    if (trimmed === '')
-                        doc.removeAt(p);
-                    else
-                        doc.setAt(p, (0, parse_1.strNode)(trimmed));
-                });
+                doc.setText(p, trimmed);
                 break;
             case 'list-append':
                 if (trimmed === '')
                     return true;
-                doc.change('Add ' + p[p.length - 1], () => {
-                    const seq = doc.ensureSeq(p, true, order);
-                    seq.items.push((0, parse_1.strNode)(trimmed));
-                });
+                doc.appendText(p, trimmed);
                 break;
             case 'over-append':
                 if (!val)
                     return true;
-                doc.change('Add underlay', () => {
-                    const seq = doc.ensureSeq(p, true, order);
-                    seq.items.push((0, parse_1.strNode)(val));
-                });
+                doc.appendText(p, val, 'Add underlay');
                 break;
             case 'ep-append':
                 if (!val)
                     return true;
-                doc.change('Add endpoint', () => {
-                    const seq = doc.ensureSeq(p, true, order);
-                    seq.items.push((0, parse_1.strNode)(val));
-                });
+                doc.appendText(p, val, 'Add endpoint');
                 break;
             case 'ep-dev':
             case 'ep-if': {
                 const cur = this.epParts(p);
-                const dev = t === 'ep-dev' ? val : cur.device;
-                const inf = t === 'ep-dev' ? '' : val;
-                const node = doc.get(p);
-                doc.change('Edit endpoint', () => {
-                    if (!dev) {
-                        doc.removeAt(p);
-                        return;
-                    }
-                    if (node && node.kind === 'map') {
-                        const m = doc.ensureMap(p);
-                        doc.setAt(p.concat('device'), (0, parse_1.strNode)(dev), document_1.KEY_ORDER.endpoint);
-                        if (inf)
-                            doc.setAt(p.concat('interface'), (0, parse_1.strNode)(inf), document_1.KEY_ORDER.endpoint);
-                        else
-                            m.entries.delete('interface');
-                    }
-                    else {
-                        doc.setAt(p, (0, parse_1.strNode)(inf ? dev + ':' + inf : dev), order);
-                    }
-                });
+                doc.setEndpoint(p, t === 'ep-dev' ? val : cur.device, t === 'ep-dev' ? '' : val);
                 break;
             }
             case 'ep-attr':
-                doc.change('Edit endpoint', () => {
-                    const ep = p.slice(0, -1);
-                    if (trimmed === '') {
-                        const m = doc.get(ep);
-                        if (m && m.kind === 'map')
-                            m.entries.delete(String(p[p.length - 1]));
-                    }
-                    else {
-                        doc.ensureMap(ep);
-                        doc.setAt(p, (0, parse_1.strNode)(trimmed), document_1.KEY_ORDER.endpoint);
-                    }
-                });
+                doc.setEndpointField(p, trimmed);
                 break;
             case 'g-key': {
                 const oldKey = target.getAttribute('data-k');
                 if (trimmed === oldKey)
                     return true;
-                const m = doc.get(p);
-                if (!trimmed || (m && m.kind === 'map' && m.entries.has(trimmed))) {
-                    this.host.toast(trimmed ? `Key "${trimmed}" already exists here.` : 'A key cannot be empty.');
+                const r = doc.renameField(p, oldKey, trimmed);
+                if (r !== 'ok') {
+                    this.host.toast(r === 'exists' ? `Key "${trimmed}" already exists here.` : 'A key cannot be empty.');
                     this.host.changed();
                     return true;
                 }
-                doc.change('Rename key', () => doc.renameKey(p, oldKey, trimmed));
                 break;
             }
             case 'g-newkey': {
                 if (!trimmed)
                     return true;
-                const m = doc.get(p);
-                if (m && m.kind === 'map' && m.entries.has(trimmed)) {
+                const typeSel = target.parentElement ? target.parentElement.querySelector('.g-newtype') : null;
+                const ty = typeSel ? typeSel.value : 'scalar';
+                const r = doc.addField(p, trimmed, ty === 'map' ? 'group' : ty === 'seq' ? 'list' : 'value');
+                if (r === 'exists') {
                     this.host.toast(`Key "${trimmed}" already exists here.`);
                     return true;
                 }
-                const typeSel = target.parentElement ? target.parentElement.querySelector('.g-newtype') : null;
-                const ty = typeSel ? typeSel.value : 'scalar';
                 this.open.add(J(p));
-                doc.change('Add attribute', () => {
-                    const parentOrder = p[p.length - 1] === 'attrs' ? document_1.KEY_ORDER[target.getAttribute('data-o') || ''] : undefined;
-                    const map = doc.get(p) && doc.get(p).kind === 'map' ? doc.get(p) : null;
-                    if (!map)
-                        doc.setAt(p, (0, parse_1.mapNode)(), parentOrder);
-                    doc.setAt(p.concat(trimmed), ty === 'map' ? (0, parse_1.mapNode)() : ty === 'seq' ? (0, parse_1.seqNode)() : (0, parse_1.nullNode)());
-                });
                 break;
             }
             default:
@@ -7761,48 +7860,35 @@ class Editor {
                     if (a !== 'delete')
                         return true;
                 }
-                doc.change('Delete interface', () => doc.removeAt(p));
+                doc.remove(p, 'Delete interface');
                 this.host.changed('Interface deleted.');
                 return true;
             }
             case 'del-item':
-                doc.change('Remove', () => doc.removeAt(p));
+                doc.remove(p);
                 this.host.changed();
                 return true;
             case 'move-up': {
-                const k = p[p.length - 1];
-                if (k > 0)
-                    doc.change('Reorder', () => doc.moveItem(p.slice(0, -1), k, k - 1));
+                doc.moveUp(p);
                 this.host.changed();
                 return true;
             }
             case 'to-attrs': {
                 const k = btn.getAttribute('data-k');
-                const m = doc.get(p);
-                if (!m || m.kind !== 'map')
-                    return true;
-                const attrs = m.entries.get('attrs');
-                if (attrs && attrs.value.kind === 'map' && attrs.value.entries.has(k)) {
+                const r = doc.moveIntoAttrs(p, k);
+                if (r === 'exists') {
                     this.host.toast(`attrs already has a key "${k}".`);
                     return true;
                 }
-                doc.change('Move into attrs', () => {
-                    const v = m.entries.get(k).value;
-                    m.entries.delete(k);
-                    const kindName = (0, document_1.kindOfSection)(String(p[0]));
-                    const target = doc.ensureMap(p.concat('attrs'), document_1.KEY_ORDER[p.length > 2 ? 'interface' : kindName || ''] || undefined);
-                    target.entries.set(k, { key: k, keyLine: 0, value: v });
-                });
+                if (r === 'missing')
+                    return true;
                 this.open.add(J(p.concat('attrs')));
                 this.host.changed(`Moved “${k}” into attrs.`);
                 return true;
             }
             case 'g-push': {
                 const what = btn.getAttribute('data-kind');
-                doc.change('Add item', () => {
-                    const s = doc.ensureSeq(p);
-                    s.items.push(what === 'map' ? (0, parse_1.mapNode)() : what === 'seq' ? (0, parse_1.seqNode)() : (0, parse_1.nullNode)());
-                });
+                doc.pushItem(p, what === 'map' ? 'group' : what === 'seq' ? 'list' : 'value');
                 this.host.changed();
                 return true;
             }
@@ -7871,9 +7957,9 @@ exports.relationList = relationList;
 const icons_1 = __req("diagram/icons");
 const types_1 = __req("model/types");
 const scene_1 = __req("diagram/scene");
-const session_1 = __req("diagram/session");
+const queries_1 = __req("model/queries");
 const style_1 = __req("diagram/style");
-const validate_1 = __req("validation/validate");
+const protocols_1 = __req("model/protocols");
 const CATEGORY_TEXT = {
     tunnel: 'Tunnel (encapsulation) — hollow tube',
     adjacency: 'Protocol adjacency / session',
@@ -7925,7 +8011,7 @@ function header(kind, title) {
 /** Details for the selected entity. */
 function detailsFor(model, ref) {
     var _a, _b, _c, _d, _e;
-    const [kind, id] = (0, session_1.splitRef)(ref);
+    const [kind, id] = (0, queries_1.splitRef)(ref);
     const ix = model.index;
     const kids = [];
     if (kind === 'device') {
@@ -8035,7 +8121,7 @@ function detailsFor(model, ref) {
         const r = ix.relations.get(id);
         if (!r)
             return (0, scene_1.h)('div', {}, 'Not found');
-        const def = (0, validate_1.relationStyle)(model, r);
+        const def = (0, protocols_1.relationStyle)(model, r);
         kids.push(header(r.category, relationTitle(model, r.id)));
         kids.push(kv([
             ['id', r.id],
@@ -8088,14 +8174,14 @@ function relationTitle(model, id) {
     const r = model.index.relations.get(id);
     if (!r)
         return id;
-    const def = (0, validate_1.relationStyle)(model, r);
+    const def = (0, protocols_1.relationStyle)(model, r);
     const devs = (0, types_1.relationDevices)(r).map((d) => { var _a; return ((_a = model.index.devices.get(d)) === null || _a === void 0 ? void 0 : _a.label) || d; });
     const pair = devs.length <= 3 ? devs.join(r.directed ? ' → ' : ' ↔ ') : `${devs.length} devices`;
     return `${def.label}${r.label ? ' “' + r.label + '”' : ''}: ${pair}`;
 }
 /** Short hover text. */
 function tooltipFor(model, ref) {
-    const [kind, id] = (0, session_1.splitRef)(ref);
+    const [kind, id] = (0, queries_1.splitRef)(ref);
     const ix = model.index;
     if (kind === 'device') {
         const d = ix.devices.get(id);
@@ -8202,7 +8288,7 @@ function legendFor(model, view, hidden) {
     else {
         const used = new Map();
         for (const r of model.relations) {
-            const def = (0, validate_1.relationStyle)(model, r);
+            const def = (0, protocols_1.relationStyle)(model, r);
             const u = used.get(r.protocol);
             if (u)
                 u.count++;
@@ -8255,7 +8341,7 @@ function relationList(model) {
         (0, scene_1.h)('h4', {}, c),
         (0, scene_1.h)('ul', { class: 'reflist' }, model.relations
             .filter((r) => r.category === c)
-            .map((r) => (0, scene_1.h)('li', {}, [relationSwatch((0, validate_1.relationStyle)(model, r)), refLink('relation:' + r.id, relationTitle(model, r.id))]))),
+            .map((r) => (0, scene_1.h)('li', {}, [relationSwatch((0, protocols_1.relationStyle)(model, r)), refLink('relation:' + r.id, relationTitle(model, r.id))]))),
     ])));
 }
 
@@ -8428,122 +8514,19 @@ function textOf(v) {
 }
 
 };
-__defs["diagram/session"] = function (module, exports) {
+__defs["model/queries"] = function (module, exports) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.Session = void 0;
-exports.createViewState = createViewState;
 exports.splitRef = splitRef;
 exports.refExists = refExists;
 exports.relatedRefs = relatedRefs;
 exports.search = search;
-const positions_1 = __req("layout/positions");
-const input_1 = __req("layout/input");
-const logical_1 = __req("layout/logical");
-const physical_1 = __req("layout/physical");
+/**
+ * Pure queries over the network model: reference parsing, existence checks,
+ * "what belongs to this object" (used for highlighting) and text search.
+ * No layout, rendering or YAML knowledge.
+ */
 const types_1 = __req("model/types");
-const logical_2 = __req("diagram/logical");
-const physical_2 = __req("diagram/physical");
-const validate_1 = __req("validation/validate");
-function createViewState() {
-    return {
-        view: 'physical',
-        selected: null,
-        showLabels: true,
-        showUnderlay: false,
-        showNetworks: true,
-        hiddenProtocols: new Set(),
-        positions: { physical: new Map(), logical: new Map() },
-    };
-}
-class Session {
-    constructor(model) {
-        this.model = model;
-        this.state = createViewState();
-        /** displayed positions per view (stored layout, else auto-arrange; new nodes placed incrementally) */
-        this.resolved = { physical: null, logical: null };
-        this.input = (0, input_1.layoutInput)(model);
-    }
-    /**
-     * Swap in an updated model (after an edit) while keeping the view state:
-     * view, options, filters and the selection (if it still exists). Positions
-     * come from the model's layout, so temporary drag positions are dropped.
-     */
-    setModel(model) {
-        this.model = model;
-        this.input = (0, input_1.layoutInput)(model);
-        this.resolved = { physical: null, logical: null };
-        if (this.state.selected && !refExists(model, this.state.selected))
-            this.state.selected = null;
-        this.state.positions.physical.clear();
-        this.state.positions.logical.clear();
-    }
-    /** Displayed node centers of a view, keyed by entity id (without temporary drags). */
-    positionsFor(view) {
-        let p = this.resolved[view];
-        if (!p)
-            p = this.resolved[view] = (0, positions_1.resolvePositions)(view, this.input, this.model.layout[view]);
-        return p;
-    }
-    static fromYaml(text) {
-        const result = (0, validate_1.loadModel)(text);
-        return { session: result.model && !result.errors.length ? new Session(result.model) : null, result };
-    }
-    setView(v) {
-        this.state.view = v;
-    }
-    select(ref) {
-        this.state.selected = ref && refExists(this.model, ref) ? ref : null;
-    }
-    toggleProtocol(proto, visible) {
-        if (visible)
-            this.state.hiddenProtocols.delete(proto);
-        else
-            this.state.hiddenProtocols.add(proto);
-    }
-    moveNode(ref, p) {
-        this.state.positions[this.state.view].set(ref, p);
-    }
-    resetPositions() {
-        this.state.positions[this.state.view].clear();
-    }
-    logicalLayout() {
-        const pos = this.positionsFor('logical');
-        const byRef = new Map();
-        for (const sp of (0, logical_1.logicalSpecs)(this.input)) {
-            const p = pos.get(sp.id);
-            if (p)
-                byRef.set(sp.ref, p);
-        }
-        return (0, logical_1.logicalLayoutFrom)(this.input, byRef);
-    }
-    physicalLayout() {
-        const pos = new Map(this.positionsFor('physical'));
-        this.state.positions.physical.forEach((p, ref) => {
-            if (ref.indexOf('device:') === 0)
-                pos.set(ref.slice(7), p);
-        });
-        return { boxes: (0, physical_1.physicalBoxes)(this.input, pos) };
-    }
-    render() {
-        const s = this.state;
-        if (s.view === 'physical') {
-            return (0, physical_2.renderPhysical)(this.model, this.physicalLayout(), { showLabels: s.showLabels, positions: new Map() });
-        }
-        return (0, logical_2.renderLogical)(this.model, this.logicalLayout(), {
-            showLabels: s.showLabels,
-            showUnderlay: s.showUnderlay,
-            showNetworks: s.showNetworks,
-            hiddenProtocols: s.hiddenProtocols,
-            positions: s.positions.logical,
-        });
-    }
-    /** Refs to keep highlighted for the current selection (null = nothing selected). */
-    highlight() {
-        return this.state.selected ? relatedRefs(this.model, this.state.selected) : null;
-    }
-}
-exports.Session = Session;
 function splitRef(ref) {
     const i = ref.indexOf(':');
     return i < 0 ? [ref, ''] : [ref.slice(0, i), ref.slice(i + 1)];
@@ -8776,6 +8759,182 @@ function search(model, query, limit = 12) {
 }
 
 };
+__defs["diagram/style"] = function (module, exports) {
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.mediumStyle = mediumStyle;
+exports.parseSpeed = parseSpeed;
+exports.speedWidth = speedWidth;
+exports.networkColor = networkColor;
+exports.groupKindStyle = groupKindStyle;
+/** Visual vocabulary shared by renderers and the legend. */
+const protocols_1 = __req("model/protocols");
+const MEDIA = [
+    [['fiber', 'fibre', 'smf', 'mmf', 'optical', 'sfp', 'qsfp'], { key: 'fiber', label: 'Fiber', color: '#e67700' }],
+    [['copper', 'utp', 'stp', 'cat5', 'cat5e', 'cat6', 'cat6a', 'rj45', 'ethernet'], { key: 'copper', label: 'Copper', color: '#1c7ed6' }],
+    [['dac', 'twinax'], { key: 'dac', label: 'DAC / twinax', color: '#0b7285' }],
+    [['aoc'], { key: 'aoc', label: 'AOC', color: '#d9480f' }],
+    [['wireless', 'wifi', 'radio', 'microwave', 'lte', '4g', '5g', 'satellite'], { key: 'wireless', label: 'Wireless / radio', color: '#862e9c', dash: '7 4' }],
+    [['serial', 't1', 'e1'], { key: 'serial', label: 'Serial', color: '#5c940d', dash: '2 3' }],
+    [['virtual', 'vswitch', 'internal'], { key: 'virtual', label: 'Virtual', color: '#868e96', dash: '4 4' }],
+    [['unspecified'], { key: 'unspecified', label: 'Unspecified', color: '#495057' }],
+];
+function mediumStyle(medium) {
+    const m = medium.toLowerCase();
+    for (const [names, st] of MEDIA)
+        if (names.indexOf(m) >= 0)
+            return st;
+    return { key: m, label: medium, color: (0, protocols_1.hashColor)('medium:' + m) };
+}
+/** Parse "10G", "100M", "1 Gbps", "400GbE" into bits per second. */
+function parseSpeed(s) {
+    if (!s)
+        return null;
+    const m = /^\s*([0-9]+(?:\.[0-9]+)?)\s*([kKmMgGtT]?)(?:b(?:ps|it\/s|e)?|bps)?\s*$/i.exec(s.replace(/gbe$/i, 'G'));
+    if (!m)
+        return null;
+    const mult = { '': 1, k: 1e3, m: 1e6, g: 1e9, t: 1e12 };
+    return parseFloat(m[1]) * mult[m[2].toLowerCase()];
+}
+function speedWidth(speed) {
+    const bps = parseSpeed(speed);
+    if (!bps)
+        return 2;
+    return 1.4 + Math.max(0, Math.min(3.8, Math.log10(bps / 1e8))) * 0.95;
+}
+/** Fill colors for network kinds in the logical view. */
+function networkColor(kind) {
+    const k = kind.toLowerCase();
+    const table = {
+        subnet: '#1c7ed6',
+        vlan: '#2f9e44',
+        vni: '#0c8599',
+        vrf: '#7048e8',
+        zone: '#e8590c',
+        segment: '#1098ad',
+        'l2-domain': '#2b8a3e',
+    };
+    return table[k] || (0, protocols_1.hashColor)('net:' + k);
+}
+function groupKindStyle(kind) {
+    const k = kind.toLowerCase();
+    if (k === 'site' || k === 'region' || k === 'campus' || k === 'datacenter' || k === 'building')
+        return { strong: true };
+    if (k === 'provider' || k === 'cloud' || k === 'external')
+        return { dash: '6 4', strong: false };
+    return { strong: false };
+}
+
+};
+__defs["diagram/session"] = function (module, exports) {
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.Session = void 0;
+exports.createViewState = createViewState;
+const positions_1 = __req("layout/positions");
+const input_1 = __req("layout/input");
+const logical_1 = __req("layout/logical");
+const physical_1 = __req("layout/physical");
+const queries_1 = __req("model/queries");
+const logical_2 = __req("diagram/logical");
+const physical_2 = __req("diagram/physical");
+function createViewState() {
+    return {
+        view: 'physical',
+        selected: null,
+        showLabels: true,
+        showUnderlay: false,
+        showNetworks: true,
+        hiddenProtocols: new Set(),
+        positions: { physical: new Map(), logical: new Map() },
+    };
+}
+class Session {
+    constructor(model) {
+        this.model = model;
+        this.state = createViewState();
+        /** displayed positions per view (stored layout, else auto-arrange; new nodes placed incrementally) */
+        this.resolved = { physical: null, logical: null };
+        this.input = (0, input_1.layoutInput)(model);
+    }
+    /**
+     * Swap in an updated model (after an edit) while keeping the view state:
+     * view, options, filters and the selection (if it still exists). Positions
+     * come from the model's layout, so temporary drag positions are dropped.
+     */
+    setModel(model) {
+        this.model = model;
+        this.input = (0, input_1.layoutInput)(model);
+        this.resolved = { physical: null, logical: null };
+        if (this.state.selected && !(0, queries_1.refExists)(model, this.state.selected))
+            this.state.selected = null;
+        this.state.positions.physical.clear();
+        this.state.positions.logical.clear();
+    }
+    /** Displayed node centers of a view, keyed by entity id (without temporary drags). */
+    positionsFor(view) {
+        let p = this.resolved[view];
+        if (!p)
+            p = this.resolved[view] = (0, positions_1.resolvePositions)(view, this.input, this.model.layout[view]);
+        return p;
+    }
+    setView(v) {
+        this.state.view = v;
+    }
+    select(ref) {
+        this.state.selected = ref && (0, queries_1.refExists)(this.model, ref) ? ref : null;
+    }
+    toggleProtocol(proto, visible) {
+        if (visible)
+            this.state.hiddenProtocols.delete(proto);
+        else
+            this.state.hiddenProtocols.add(proto);
+    }
+    moveNode(ref, p) {
+        this.state.positions[this.state.view].set(ref, p);
+    }
+    resetPositions() {
+        this.state.positions[this.state.view].clear();
+    }
+    logicalLayout() {
+        const pos = this.positionsFor('logical');
+        const byRef = new Map();
+        for (const sp of (0, logical_1.logicalSpecs)(this.input)) {
+            const p = pos.get(sp.id);
+            if (p)
+                byRef.set(sp.ref, p);
+        }
+        return (0, logical_1.logicalLayoutFrom)(this.input, byRef);
+    }
+    physicalLayout() {
+        const pos = new Map(this.positionsFor('physical'));
+        this.state.positions.physical.forEach((p, ref) => {
+            if (ref.indexOf('device:') === 0)
+                pos.set(ref.slice(7), p);
+        });
+        return { boxes: (0, physical_1.physicalBoxes)(this.input, pos) };
+    }
+    render() {
+        const s = this.state;
+        if (s.view === 'physical') {
+            return (0, physical_2.renderPhysical)(this.model, this.physicalLayout(), { showLabels: s.showLabels, positions: new Map() });
+        }
+        return (0, logical_2.renderLogical)(this.model, this.logicalLayout(), {
+            showLabels: s.showLabels,
+            showUnderlay: s.showUnderlay,
+            showNetworks: s.showNetworks,
+            hiddenProtocols: s.hiddenProtocols,
+            positions: s.positions.logical,
+        });
+    }
+    /** Refs to keep highlighted for the current selection (null = nothing selected). */
+    highlight() {
+        return this.state.selected ? (0, queries_1.relatedRefs)(this.model, this.state.selected) : null;
+    }
+}
+exports.Session = Session;
+
+};
 __defs["diagram/logical"] = function (module, exports) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
@@ -8799,7 +8958,7 @@ const types_1 = __req("model/types");
 const physical_1 = __req("diagram/physical");
 const scene_1 = __req("diagram/scene");
 const style_1 = __req("diagram/style");
-const validate_1 = __req("validation/validate");
+const protocols_1 = __req("model/protocols");
 const LANE_GAP = 7;
 const TUBE_WALL = 3;
 const TUBE_MIN = 12;
@@ -8958,7 +9117,7 @@ function renderLogical(model, layout, opts) {
         const inPair = new Set(rels.map((r) => r.id));
         const lanes = new Map();
         for (const r of rels) {
-            lanes.set(r.id, { rel: r, def: (0, validate_1.relationStyle)(model, r), width: 0, children: [] });
+            lanes.set(r.id, { rel: r, def: (0, protocols_1.relationStyle)(model, r), width: 0, children: [] });
         }
         const roots = [];
         for (const r of rels) {
@@ -9062,7 +9221,7 @@ function renderLogical(model, layout, opts) {
         const hub = nodes.get('hub:' + r.id);
         if (!hub)
             continue;
-        const def = (0, validate_1.relationStyle)(model, r);
+        const def = (0, protocols_1.relationStyle)(model, r);
         const kids = [];
         for (const d of (0, types_1.relationDevices)(r)) {
             const dn = dev(d);

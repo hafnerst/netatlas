@@ -6,14 +6,16 @@
  * letting the browser download a new copy. Nothing is transmitted.
  */
 import { ModelDoc, Origin } from '../editor/document';
+import { downloadText, exportFileName, readTextFile, safeYamlFileName } from './files';
 import { el, mount } from './dom';
-import { DialogOpts, Editor, EditorSel } from './inspector';
+import { DialogOpts, showDialog, showToast } from './dialogs';
+import { Editor, EditorSel } from './inspector';
 import { EXAMPLES } from '../generated/examples';
 import { Rect } from '../layout/geometry';
 import { detailsFor, legendFor, relationList, tooltipFor } from './panels';
-import { Session, View, search, splitRef } from '../diagram/session';
+import { Session, View } from '../diagram/session';
+import { search, splitRef } from '../model/queries';
 import { Issue } from '../validation/validate';
-import { DEFAULT_YAML_LIMITS } from '../yaml/parse';
 
 type Tab = 'edit' | 'details' | 'legend' | 'relations' | 'problems' | 'yaml';
 
@@ -41,7 +43,6 @@ export class App {
   private loadErrorName = '';
   private rafPending = false;
   private errorRefs = new Set<string>();
-  private toastTimer = 0;
 
   constructor(doc: Document) {
     this.doc = doc;
@@ -67,17 +68,9 @@ export class App {
 
   /** Read a user-chosen local file (size-checked, strict UTF-8). Does not ask about unsaved changes. */
   async loadFile(file: File): Promise<LoadOutcome> {
-    if (file.size > DEFAULT_YAML_LIMITS.maxBytes) {
-      return this.fail(file.name, [{ severity: 'error', line: 0, path: '', message: `The file is ${(file.size / 1048576).toFixed(1)} MiB; the limit is ${DEFAULT_YAML_LIMITS.maxBytes / 1048576} MiB.` }], []);
-    }
-    let text: string;
-    try {
-      const buf = await file.arrayBuffer();
-      text = new TextDecoder('utf-8', { fatal: true }).decode(buf);
-    } catch (e) {
-      return this.fail(file.name, [{ severity: 'error', line: 0, path: '', message: 'The file is not valid UTF-8 text. Save it as UTF-8 and try again.' }], []);
-    }
-    return this.loadText(text, file.name, 'file');
+    const r = await readTextFile(file);
+    if ('error' in r) return this.fail(file.name, [{ severity: 'error', line: 0, path: '', message: r.error }], []);
+    return this.loadText(r.text, file.name, 'file');
   }
 
   /** Open YAML text as the current document (replaces it without asking). */
@@ -214,12 +207,9 @@ export class App {
   }
 
   suggestedFileName(): string {
-    const d = this.mdoc;
-    if (!d) return 'network.yaml';
-    const base = d.fileName.replace(/\.(ya?ml)$/i, '');
-    if (d.origin === 'file') return /-edited$/.test(base) ? base + '.yaml' : base + '-edited.yaml';
-    return base + '.yaml';
+    return this.mdoc ? exportFileName(this.mdoc.fileName, this.mdoc.origin) : 'network.yaml';
   }
+
 
   /**
    * Explain what will happen (a new copy is downloaded; the original file is
@@ -257,28 +247,15 @@ export class App {
       ],
     });
     if (a !== 'download') return false;
-    let name = nameInput.value.trim() || this.suggestedFileName();
-    if (!/\.ya?ml$/i.test(name)) name += '.yaml';
-    name = name.replace(/[\\/:*?"<>|]+/g, '_');
-    this.downloadText(this.exportText(), name, 'application/yaml');
+    const name = safeYamlFileName(nameInput.value, this.suggestedFileName());
+    downloadText(this.doc, this.exportText(), name, 'application/yaml');
     d.markSaved();
     this.updateChrome();
     this.toast(`Downloaded “${name}”.`);
     return true;
   }
 
-  /** Offer text as a local download (Blob URL; nothing leaves the machine). */
-  downloadText(text: string, name: string, type: string): void {
-    const blob = new Blob([text], { type });
-    const url = URL.createObjectURL(blob);
-    const a = this.doc.createElement('a');
-    a.href = url;
-    a.download = name;
-    this.doc.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 2000);
-  }
+
 
   // ------------------------------------------------------------ rendering
 
@@ -652,59 +629,13 @@ export class App {
 
   // ------------------------------------------------------ dialogs / toasts
 
-  /** Modal dialog built from text nodes; resolves with the clicked button's value ("cancel" on Esc). */
+  /** Modal dialog (see dialogs.ts); resolves with the clicked button's value. */
   dialog(opts: DialogOpts): Promise<string> {
-    const dlg = this.$('modal') as HTMLDialogElement;
-    while (dlg.firstChild) dlg.removeChild(dlg.firstChild);
-    const form = el(this.doc, 'div', { class: 'modal-inner' });
-    form.appendChild(el(this.doc, 'h2', {}, [opts.title]));
-    const bodyEl = el(this.doc, 'div', { class: 'modal-body' });
-    for (const b of opts.body) bodyEl.appendChild(typeof b === 'string' ? this.doc.createTextNode(b) : b);
-    form.appendChild(bodyEl);
-    const btns = el(this.doc, 'div', { class: 'modal-btns' });
-    form.appendChild(btns);
-    dlg.appendChild(form);
-    return new Promise((resolve) => {
-      const done = (v: string): void => {
-        dlg.removeEventListener('cancel', onCancel);
-        if (dlg.open) dlg.close();
-        resolve(v);
-      };
-      const onCancel = (e: Event): void => {
-        e.preventDefault();
-        done('cancel');
-      };
-      dlg.addEventListener('cancel', onCancel);
-      for (const b of opts.buttons) {
-        const btn = el(this.doc, 'button', { type: 'button', class: b.kind || '', 'data-value': b.value }, [b.label]);
-        btn.addEventListener('click', () => done(b.value));
-        btns.appendChild(btn);
-      }
-      if (typeof dlg.showModal === 'function') dlg.showModal();
-      else dlg.setAttribute('open', '');
-      const primary = btns.querySelector('.primary, .danger') as HTMLElement | null;
-      if (primary && !bodyEl.querySelector('input')) primary.focus();
-      else {
-        const inp = bodyEl.querySelector('input') as HTMLInputElement | null;
-        if (inp) {
-          inp.focus();
-          inp.select();
-        }
-      }
-    });
+    return showDialog(this.doc, opts);
   }
 
   toast(msg: string): void {
-    const t = this.$('toast');
-    t.textContent = msg;
-    t.hidden = false;
-    const win = this.doc.defaultView;
-    if (win) {
-      win.clearTimeout(this.toastTimer);
-      this.toastTimer = win.setTimeout(() => {
-        t.hidden = true;
-      }, 3500);
-    }
+    showToast(this.doc, msg);
   }
 
   // ---------------------------------------------------------------- events
@@ -1173,7 +1104,7 @@ export class App {
   downloadSvg(): void {
     if (!this.session || !this.mdoc) return;
     const base = this.mdoc.fileName.replace(/\.[^.]*$/, '') || 'netatlas';
-    this.downloadText(this.exportSvg(), base + '-' + this.session.state.view + '.svg', 'image/svg+xml');
+    downloadText(this.doc, this.exportSvg(), base + '-' + this.session.state.view + '.svg', 'image/svg+xml');
   }
 }
 

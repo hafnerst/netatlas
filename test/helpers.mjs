@@ -13,6 +13,13 @@ export const validate = load('validation/validate.js');
 export const state = load('diagram/session.js');
 export const scene = load('diagram/scene.js');
 export const panels = load('ui/panels.js');
+export const queries = load('model/queries.js');
+
+/** Validate YAML and build a diagram session (null when there are errors), as the UI does. */
+export function sessionFromYaml(text) {
+  const result = validate.loadModel(text);
+  return { session: result.model && !result.errors.length ? new state.Session(result.model) : null, result };
+}
 
 export function example(name) {
   return readFileSync(join(root, 'examples', name), 'utf8');

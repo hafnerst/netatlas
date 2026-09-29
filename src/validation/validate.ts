@@ -15,7 +15,6 @@ import {
   ModelIndex,
   ModelLayout,
   Network,
-  ProtocolDef,
   RelEndpoint,
   Relation,
   ifaceKey,
@@ -23,6 +22,7 @@ import {
 } from '../model/types';
 import { COLOR_RE, DEFAULT_STYLE, builtinProtocols, lookupProtocol, normalizeProtocol } from '../model/protocols';
 import { YMap, YNode, YamlError, YamlLimits, parseYaml } from '../yaml/parse';
+import { FORMAT_VERSION, SCHEMA } from '../yaml/schema';
 
 export interface Issue {
   severity: 'error' | 'warning';
@@ -86,7 +86,7 @@ export const DEFAULT_MODEL_LIMITS: ModelLimits = {
   maxErrors: 200,
 };
 
-export const FORMAT_VERSION = 1;
+export { FORMAT_VERSION };
 
 /** Entity ids: letters, digits, "_", ".", "-" (no ":" — it separates device and interface). */
 export const ID_RE = /^[A-Za-z0-9_][A-Za-z0-9_.\-]{0,63}$/;
@@ -94,17 +94,19 @@ export const ID_RE = /^[A-Za-z0-9_][A-Za-z0-9_.\-]{0,63}$/;
 export const IFACE_RE = /^[A-Za-z0-9_][A-Za-z0-9_.\-\/]{0,63}$/;
 export const PROTO_RE = /^[a-z0-9][a-z0-9_.+\-]{0,39}$/;
 
-export const TOP_KEYS = ['netatlas', 'title', 'description', 'protocols', 'groups', 'devices', 'links', 'networks', 'relations', 'layout'];
 /** largest accepted coordinate in the layout section */
 export const MAX_COORD = 1000000;
-export const GROUP_KEYS = ['id', 'label', 'kind', 'parent', 'description', 'attrs'];
-export const DEVICE_KEYS = ['id', 'label', 'type', 'group', 'vendor', 'model', 'role', 'mgmt', 'router_id', 'tier', 'description', 'attrs', 'interfaces'];
-export const IFACE_KEYS = ['id', 'label', 'type', 'speed', 'media', 'ip', 'vlan', 'mac', 'description', 'attrs'];
-export const LINK_KEYS = ['id', 'a', 'b', 'medium', 'speed', 'label', 'cable', 'description', 'attrs'];
-export const NET_KEYS = ['id', 'label', 'kind', 'cidr', 'vlan', 'vrf', 'members', 'description', 'attrs'];
-export const REL_KEYS = ['id', 'protocol', 'category', 'label', 'endpoints', 'over', 'network', 'directed', 'description', 'attrs'];
-export const EP_KEYS = ['device', 'interface', 'role', 'address', 'attrs'];
-export const PROTO_KEYS = ['id', 'label', 'category', 'color', 'style', 'description'];
+
+// keys per mapping kind: the single definition is yaml/schema.ts
+const TOP_KEYS = SCHEMA.top;
+const GROUP_KEYS = SCHEMA.group;
+const DEVICE_KEYS = SCHEMA.device;
+const IFACE_KEYS = SCHEMA.interface;
+const LINK_KEYS = SCHEMA.link;
+const NET_KEYS = SCHEMA.network;
+const REL_KEYS = SCHEMA.relation;
+const EP_KEYS = SCHEMA.endpoint;
+const PROTO_KEYS = SCHEMA.protocol;
 const ATTRS_HINT = ' (custom data belongs under "attrs:")';
 
 class TooManyErrors extends Error {}
@@ -1005,11 +1007,4 @@ function build(root: YNode | null, c: Ctx): Model | null {
     layout,
     index,
   };
-}
-
-/** Definition used to draw a relation: its protocol def, with category/style following the relation's category. */
-export function relationStyle(model: Model, rel: Relation): ProtocolDef {
-  const def = lookupProtocol(model.protocols, rel.protocol, rel.category);
-  if (def.category !== rel.category) return { ...def, category: rel.category, style: DEFAULT_STYLE[rel.category] };
-  return def;
 }

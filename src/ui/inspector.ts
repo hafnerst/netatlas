@@ -6,12 +6,12 @@
  * user clicks the diagram or another object: the browser fires "change"
  * before focus moves. Everything user-provided is rendered as text.
  */
-import { EntityKind, KEY_ORDER, ModelDoc, Path, SECTION, kindOfSection } from '../editor/document';
+import { DocMap, DocNode, EntityKind, KEY_ORDER, ModelDoc, Path, SECTION, kindOfSection } from '../editor/document';
+import { DialogOpts } from './dialogs';
 import { el } from './dom';
 import { CATEGORIES, LINE_STYLES, LOGICAL_IFACE_TYPES } from '../model/types';
 import { builtinProtocols } from '../model/protocols';
-import { DEVICE_KEYS, GROUP_KEYS, IFACE_KEYS, Issue, LINK_KEYS, NET_KEYS, PROTO_KEYS, REL_KEYS, TOP_KEYS, scalarText } from '../validation/validate';
-import { YMap, YNode, autoNode, boolNode, mapNode, nullNode, numNode, seqNode, strNode } from '../yaml/parse';
+import { Issue, scalarText } from '../validation/validate';
 
 export type EditorSel = { kind: EntityKind | 'document'; index: number; iface?: number } | null;
 
@@ -24,12 +24,6 @@ export interface EditorHost {
   toast(msg: string): void;
 }
 
-export interface DialogOpts {
-  title: string;
-  body: Array<Node | string>;
-  buttons: Array<{ label: string; value: string; kind?: 'primary' | 'danger' }>;
-}
-
 const J = (p: Path): string => JSON.stringify(p);
 const P = (s: string | null): Path => (s ? (JSON.parse(s) as Path) : []);
 
@@ -39,16 +33,8 @@ const MEDIA = ['fiber', 'copper', 'dac', 'aoc', 'wireless', 'lte', '5g', 'microw
 const NET_KINDS = ['subnet', 'vlan', 'vni', 'vrf', 'zone', 'segment'];
 const GROUP_KINDS = ['site', 'building', 'room', 'row', 'rack', 'provider', 'cloud', 'zone', 'region'];
 
-const KNOWN: { [k: string]: string[] } = {
-  document: TOP_KEYS,
-  device: DEVICE_KEYS,
-  interface: IFACE_KEYS,
-  link: LINK_KEYS,
-  network: NET_KEYS,
-  relation: REL_KEYS,
-  group: GROUP_KEYS,
-  protocol: PROTO_KEYS,
-};
+/** keys the format defines for a kind of mapping (single source: the format schema) */
+const KNOWN: { [k: string]: string[] } = { ...KEY_ORDER, document: KEY_ORDER.top };
 
 const KIND_TITLE: { [k in EntityKind]: string } = {
   device: 'Devices',
@@ -287,7 +273,7 @@ export class Editor {
     w.appendChild(this.issueBox(doc.issuesAt(base)));
     if (!node || node.kind !== 'map') {
       w.appendChild(this.e('p', { class: 'muted' }, ['This entry is not a mapping; edit it in the YAML tab or delete it.']));
-      w.appendChild(this.generic(base, node || nullNode(), 0));
+      if (node) w.appendChild(this.generic(base, node, 0));
       return;
     }
     const o = kind;
@@ -406,7 +392,7 @@ export class Editor {
   private ifaceCard(devIndex: number, k: number, loop: boolean): HTMLElement {
     const doc = this.doc;
     const p: Path = ['devices', devIndex, 'interfaces', k];
-    const n = doc.get(p) as YNode;
+    const n = doc.get(p) as DocNode;
     const id = n.kind === 'map' ? doc.text(p.concat('id')) : scalarText(n);
     const iss = doc.issuesAt(p);
     const errs = iss.filter((i) => i.severity === 'error').length;
@@ -529,7 +515,7 @@ export class Editor {
   }
 
   private ifIdField(p: Path, devIndex: number, k: number): HTMLElement {
-    const n = this.doc.get(p) as YNode;
+    const n = this.doc.get(p) as DocNode;
     const val = n.kind === 'map' ? this.doc.text(p.concat('id')) || '' : scalarText(n) || '';
     return this.field('ID', this.input(p.concat('id'), 'ifid', val, { 'data-dev': String(devIndex), 'data-if': String(k) }), p.concat('id'), 'Unique on this device (e.g. lo0, ge-0/0/1). Renaming updates references.');
   }
@@ -721,7 +707,7 @@ export class Editor {
       box.appendChild(
         this.e('div', { class: 'g-row' }, [
           this.input(base, 'g-key', k, { 'data-k': k, class: 'g-key' }),
-          this.generic(vp, (n.entries.get(k) as { value: YNode }).value, 1),
+          this.generic(vp, (n.entries.get(k) as { value: DocNode }).value, 1),
           kind !== 'document' ? this.e('button', { type: 'button', class: 'mini', 'data-act': 'to-attrs', 'data-p': J(base), 'data-k': k, title: 'Move into attrs' }, ['→ attrs']) : null,
           this.e('button', { type: 'button', class: 'mini danger', 'data-act': 'del-item', 'data-p': J(vp), title: 'Delete property' }, ['×']),
         ]),
@@ -732,7 +718,7 @@ export class Editor {
   }
 
   /** Recursive editor for any value. */
-  generic(p: Path, n: YNode, depth: number): HTMLElement {
+  generic(p: Path, n: DocNode, depth: number): HTMLElement {
     if (n.kind === 'map') return this.genericMap(p, n, depth, undefined);
     if (n.kind === 'seq') {
       const box = this.e('div', { class: 'g-seq' });
@@ -766,7 +752,7 @@ export class Editor {
     ]);
   }
 
-  private genericMap(p: Path, n: YMap | null, depth: number, order: string | undefined): HTMLElement {
+  private genericMap(p: Path, n: DocMap | null, depth: number, order: string | undefined): HTMLElement {
     const box = this.e('div', { class: 'g-map' });
     if (n && depth > 8) {
       box.appendChild(this.e('span', { class: 'muted small' }, ['(deeply nested — edit in the YAML tab)']));
@@ -808,31 +794,21 @@ export class Editor {
     const doc = this.getDoc();
     if (!doc) return true;
     const p = P(target.getAttribute('data-p'));
-    const order = KEY_ORDER[target.getAttribute('data-o') || ''] || undefined;
     const val = (target as HTMLInputElement).value;
     const trimmed = typeof val === 'string' ? val.trim() : '';
     let note: string | undefined;
     switch (t) {
       case 'text':
-        doc.change('Edit ' + p[p.length - 1], () => {
-          if (trimmed === '') doc.removeAt(p);
-          else doc.setAt(p, strNode(target.tagName === 'TEXTAREA' ? val.replace(/\s+$/, '') : trimmed), order);
-        });
+        doc.setText(p, target.tagName === 'TEXTAREA' ? val.replace(/\s+$/, '') : trimmed);
         break;
       case 'int':
-        doc.change('Edit ' + p[p.length - 1], () => {
-          if (trimmed === '') doc.removeAt(p);
-          else doc.setAt(p, /^-?[0-9]+$/.test(trimmed) ? numNode(Number(trimmed)) : strNode(trimmed), order);
-        });
+        doc.setInteger(p, trimmed);
         break;
       case 'bool':
-        doc.change('Edit ' + p[p.length - 1], () => {
-          if ((target as HTMLInputElement).checked) doc.setAt(p, boolNode(true), order);
-          else doc.removeAt(p);
-        });
+        doc.setFlag(p, (target as HTMLInputElement).checked);
         break;
       case 'auto':
-        doc.change('Edit value', () => doc.setAt(p, trimmed === '' ? nullNode() : autoNode(trimmed)));
+        doc.setValue(p, trimmed);
         break;
       case 'id': {
         const kind = target.getAttribute('data-kind') as EntityKind;
@@ -855,94 +831,50 @@ export class Editor {
       }
       case 'list-item':
       case 'list-scalar':
-        doc.change('Edit ' + (t === 'list-scalar' ? p[p.length - 1] : p[p.length - 2]), () => {
-          if (trimmed === '') doc.removeAt(p);
-          else doc.setAt(p, strNode(trimmed));
-        });
+        doc.setText(p, trimmed);
         break;
       case 'list-append':
         if (trimmed === '') return true;
-        doc.change('Add ' + p[p.length - 1], () => {
-          const seq = doc.ensureSeq(p, true, order);
-          seq.items.push(strNode(trimmed));
-        });
+        doc.appendText(p, trimmed);
         break;
       case 'over-append':
         if (!val) return true;
-        doc.change('Add underlay', () => {
-          const seq = doc.ensureSeq(p, true, order);
-          seq.items.push(strNode(val));
-        });
+        doc.appendText(p, val, 'Add underlay');
         break;
       case 'ep-append':
         if (!val) return true;
-        doc.change('Add endpoint', () => {
-          const seq = doc.ensureSeq(p, true, order);
-          seq.items.push(strNode(val));
-        });
+        doc.appendText(p, val, 'Add endpoint');
         break;
       case 'ep-dev':
       case 'ep-if': {
         const cur = this.epParts(p);
-        const dev = t === 'ep-dev' ? val : cur.device;
-        const inf = t === 'ep-dev' ? '' : val;
-        const node = doc.get(p);
-        doc.change('Edit endpoint', () => {
-          if (!dev) {
-            doc.removeAt(p);
-            return;
-          }
-          if (node && node.kind === 'map') {
-            const m = doc.ensureMap(p);
-            doc.setAt(p.concat('device'), strNode(dev), KEY_ORDER.endpoint);
-            if (inf) doc.setAt(p.concat('interface'), strNode(inf), KEY_ORDER.endpoint);
-            else m.entries.delete('interface');
-          } else {
-            doc.setAt(p, strNode(inf ? dev + ':' + inf : dev), order);
-          }
-        });
+        doc.setEndpoint(p, t === 'ep-dev' ? val : cur.device, t === 'ep-dev' ? '' : val);
         break;
       }
       case 'ep-attr':
-        doc.change('Edit endpoint', () => {
-          const ep = p.slice(0, -1);
-          if (trimmed === '') {
-            const m = doc.get(ep);
-            if (m && m.kind === 'map') m.entries.delete(String(p[p.length - 1]));
-          } else {
-            doc.ensureMap(ep);
-            doc.setAt(p, strNode(trimmed), KEY_ORDER.endpoint);
-          }
-        });
+        doc.setEndpointField(p, trimmed);
         break;
       case 'g-key': {
         const oldKey = target.getAttribute('data-k') as string;
         if (trimmed === oldKey) return true;
-        const m = doc.get(p);
-        if (!trimmed || (m && m.kind === 'map' && m.entries.has(trimmed))) {
-          this.host.toast(trimmed ? `Key "${trimmed}" already exists here.` : 'A key cannot be empty.');
+        const r = doc.renameField(p, oldKey, trimmed);
+        if (r !== 'ok') {
+          this.host.toast(r === 'exists' ? `Key "${trimmed}" already exists here.` : 'A key cannot be empty.');
           this.host.changed();
           return true;
         }
-        doc.change('Rename key', () => doc.renameKey(p, oldKey, trimmed));
         break;
       }
       case 'g-newkey': {
         if (!trimmed) return true;
-        const m = doc.get(p);
-        if (m && m.kind === 'map' && m.entries.has(trimmed)) {
+        const typeSel = target.parentElement ? (target.parentElement.querySelector('.g-newtype') as HTMLSelectElement | null) : null;
+        const ty = typeSel ? typeSel.value : 'scalar';
+        const r = doc.addField(p, trimmed, ty === 'map' ? 'group' : ty === 'seq' ? 'list' : 'value');
+        if (r === 'exists') {
           this.host.toast(`Key "${trimmed}" already exists here.`);
           return true;
         }
-        const typeSel = target.parentElement ? (target.parentElement.querySelector('.g-newtype') as HTMLSelectElement | null) : null;
-        const ty = typeSel ? typeSel.value : 'scalar';
         this.open.add(J(p));
-        doc.change('Add attribute', () => {
-          const parentOrder = p[p.length - 1] === 'attrs' ? KEY_ORDER[target.getAttribute('data-o') || ''] : undefined;
-          const map = doc.get(p) && (doc.get(p) as YNode).kind === 'map' ? (doc.get(p) as YMap) : null;
-          if (!map) doc.setAt(p, mapNode(), parentOrder);
-          doc.setAt(p.concat(trimmed), ty === 'map' ? mapNode() : ty === 'seq' ? seqNode() : nullNode());
-        });
         break;
       }
       default:
@@ -1016,7 +948,7 @@ export class Editor {
       }
       case 'del-iface': {
         const dev = doc.text(['devices', p[1], 'id']);
-        const ifid = doc.text(p.concat('id')) || scalarText(doc.get(p) as YNode);
+        const ifid = doc.text(p.concat('id')) || scalarText(doc.get(p) as DocNode);
         const refs = dev && ifid ? doc.references('device', dev, ifid) : [];
         if (refs.length) {
           const a = await this.host.dialog({
@@ -1029,46 +961,34 @@ export class Editor {
           });
           if (a !== 'delete') return true;
         }
-        doc.change('Delete interface', () => doc.removeAt(p));
+        doc.remove(p, 'Delete interface');
         this.host.changed('Interface deleted.');
         return true;
       }
       case 'del-item':
-        doc.change('Remove', () => doc.removeAt(p));
+        doc.remove(p);
         this.host.changed();
         return true;
       case 'move-up': {
-        const k = p[p.length - 1] as number;
-        if (k > 0) doc.change('Reorder', () => doc.moveItem(p.slice(0, -1), k, k - 1));
+        doc.moveUp(p);
         this.host.changed();
         return true;
       }
       case 'to-attrs': {
         const k = btn.getAttribute('data-k') as string;
-        const m = doc.get(p);
-        if (!m || m.kind !== 'map') return true;
-        const attrs = m.entries.get('attrs');
-        if (attrs && attrs.value.kind === 'map' && attrs.value.entries.has(k)) {
+        const r = doc.moveIntoAttrs(p, k);
+        if (r === 'exists') {
           this.host.toast(`attrs already has a key "${k}".`);
           return true;
         }
-        doc.change('Move into attrs', () => {
-          const v = (m.entries.get(k) as { value: YNode }).value;
-          m.entries.delete(k);
-          const kindName = kindOfSection(String(p[0]));
-          const target = doc.ensureMap(p.concat('attrs'), KEY_ORDER[p.length > 2 ? 'interface' : kindName || ''] || undefined);
-          target.entries.set(k, { key: k, keyLine: 0, value: v });
-        });
+        if (r === 'missing') return true;
         this.open.add(J(p.concat('attrs')));
         this.host.changed(`Moved “${k}” into attrs.`);
         return true;
       }
       case 'g-push': {
         const what = btn.getAttribute('data-kind');
-        doc.change('Add item', () => {
-          const s = doc.ensureSeq(p);
-          s.items.push(what === 'map' ? mapNode() : what === 'seq' ? seqNode() : nullNode());
-        });
+        doc.pushItem(p, what === 'map' ? 'group' : what === 'seq' ? 'list' : 'value');
         this.host.changed();
         return true;
       }

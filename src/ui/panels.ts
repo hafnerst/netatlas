@@ -2,9 +2,10 @@
 import { deviceIcon, iconName } from '../diagram/icons';
 import { Attrs, CATEGORIES, Category, Model, ProtocolDef, RelEndpoint, endpointText, ifaceKey, isLoopback, loopbacks, relationDevices } from '../model/types';
 import { VNode, h } from '../diagram/scene';
-import { View, splitRef } from '../diagram/session';
+import { View } from '../diagram/session';
+import { splitRef } from '../model/queries';
 import { groupKindStyle, mediumStyle, networkColor, speedWidth } from '../diagram/style';
-import { relationStyle } from '../validation/validate';
+import { relationStyle } from '../model/protocols';
 
 const CATEGORY_TEXT: { [c in Category]: string } = {
   tunnel: 'Tunnel (encapsulation) — hollow tube',

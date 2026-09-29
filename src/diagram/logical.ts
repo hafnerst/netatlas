@@ -16,7 +16,7 @@ import { Device, LineStyle, Model, ProtocolDef, Relation, ifaceKey, loopbacks, r
 import { cssToken, deviceNode, deviceSubtitle, SceneResult } from './physical';
 import { VNode, h } from './scene';
 import { networkColor } from './style';
-import { relationStyle } from '../validation/validate';
+import { relationStyle } from '../model/protocols';
 
 export interface LogicalOptions {
   showLabels: boolean;

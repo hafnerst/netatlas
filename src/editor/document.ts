@@ -10,9 +10,22 @@ import { Pt } from '../layout/geometry';
 import { LAYOUT_VIEWS, LayoutView, autoPositions, resolvePositions, samePositions } from '../layout/positions';
 import { cmp, layoutInput, layoutSignature } from '../layout/input';
 import { Model } from '../model/types';
-import { Issue, LoadResult, TOP_KEYS, loadModel, scalarText, validate } from '../validation/validate';
-import { YMap, YNode, YSeq, cloneNode, mapNode, numNode, seqNode, strNode } from '../yaml/parse';
+import { Issue, LoadResult, loadModel, scalarText, validate } from '../validation/validate';
+import { SCHEMA } from '../yaml/schema';
+import { DEFAULT_YAML_LIMITS, YMap, YNode, YSeq, autoNode, boolNode, cloneNode, mapNode, nullNode, numNode, seqNode, strNode } from '../yaml/parse';
 import { stringifyYaml } from '../yaml/write';
+
+/**
+ * Read-only view of the document tree for the UI. The document IS the YAML
+ * tree (that is what keeps comments, order and unknown keys intact), but the
+ * UI only reads it through these aliases and changes it through ModelDoc's
+ * editing operations; it never imports the YAML layer.
+ */
+export type DocNode = YNode;
+export type DocMap = YMap;
+
+/** Largest file the editor opens (checked before reading it). */
+export const MAX_INPUT_BYTES = DEFAULT_YAML_LIMITS.maxBytes;
 
 export type PathSeg = string | number;
 export type Path = PathSeg[];
@@ -33,17 +46,7 @@ export function kindOfSection(section: string): EntityKind | null {
 }
 
 /** Canonical key order used when the editor adds keys (existing order is never changed). */
-export const KEY_ORDER: { [k: string]: string[] } = {
-  top: TOP_KEYS,
-  protocol: ['id', 'label', 'category', 'color', 'style', 'description'],
-  group: ['id', 'label', 'kind', 'parent', 'description', 'attrs'],
-  device: ['id', 'label', 'type', 'group', 'vendor', 'model', 'role', 'mgmt', 'router_id', 'tier', 'description', 'attrs', 'interfaces'],
-  interface: ['id', 'label', 'type', 'speed', 'media', 'ip', 'vlan', 'mac', 'description', 'attrs'],
-  link: ['id', 'a', 'b', 'medium', 'speed', 'label', 'cable', 'description', 'attrs'],
-  network: ['id', 'label', 'kind', 'cidr', 'vlan', 'vrf', 'members', 'description', 'attrs'],
-  relation: ['id', 'protocol', 'category', 'label', 'endpoints', 'over', 'network', 'directed', 'description', 'attrs'],
-  endpoint: ['device', 'interface', 'role', 'address', 'attrs'],
-};
+export const KEY_ORDER: { [k: string]: string[] } = SCHEMA;
 
 export type Origin = 'new' | 'file' | 'example';
 
@@ -642,6 +645,162 @@ export class ModelDoc {
     if (!s || s.kind !== 'seq' || to < 0 || to >= s.items.length) return;
     const [it] = s.items.splice(from, 1);
     s.items.splice(to, 0, it);
+  }
+
+  // ------------------------------------------------- editing operations (UI)
+  // Named, undoable operations used by the editor UI. They take plain values
+  // (text, flags, kinds) and decide how they are represented in YAML, so the
+  // UI never builds YAML nodes. New keys go into the canonical schema order,
+  // which is derived from the path.
+
+  /** Schema kind of the mapping at `path` (for key order), if the format defines one. */
+  schemaKindOf(path: Path): string | undefined {
+    if (path.length === 0) return 'top';
+    if (path.length === 2 && typeof path[1] === 'number') return kindOfSection(String(path[0])) || undefined;
+    if (path.length === 4 && path[0] === 'devices' && path[2] === 'interfaces') return 'interface';
+    if (path.length === 4 && typeof path[3] === 'number' && (path[2] === 'members' || path[2] === 'endpoints')) return 'endpoint';
+    if (path.length === 1 && path[0] === 'layout') return 'layout';
+    return undefined;
+  }
+
+  private orderFor(parentPath: Path): string[] | undefined {
+    const k = this.schemaKindOf(parentPath);
+    return k ? KEY_ORDER[k] : undefined;
+  }
+
+  private label(path: Path): string {
+    const last = path[path.length - 1];
+    return typeof last === 'number' ? String(path[path.length - 2]) : String(last);
+  }
+
+  /** Set a text field; empty text removes the key (or list item). */
+  setText(path: Path, text: string): void {
+    this.change('Edit ' + this.label(path), () => {
+      if (text === '') this.removeAt(path);
+      else this.setAt(path, strNode(text), this.orderFor(path.slice(0, -1)));
+    });
+  }
+
+  /** Set an integer field (text that isn't an integer is kept as text and reported by validation). */
+  setInteger(path: Path, text: string): void {
+    this.change('Edit ' + this.label(path), () => {
+      if (text === '') this.removeAt(path);
+      else this.setAt(path, /^-?[0-9]+$/.test(text) ? numNode(Number(text)) : strNode(text), this.orderFor(path.slice(0, -1)));
+    });
+  }
+
+  /** Set a boolean flag; false removes it (the format's default). */
+  setFlag(path: Path, on: boolean): void {
+    this.change('Edit ' + this.label(path), () => {
+      if (on) this.setAt(path, boolNode(true), this.orderFor(path.slice(0, -1)));
+      else this.removeAt(path);
+    });
+  }
+
+  /** Set a free-form value typed like YAML would type it ("42" number, "true" boolean …); empty = null. */
+  setValue(path: Path, text: string): void {
+    this.change('Edit value', () => this.setAt(path, text === '' ? nullNode() : autoNode(text)));
+  }
+
+  /** Append text to a list (created as [a, b] if missing; a single value becomes a list). */
+  appendText(listPath: Path, text: string, label = 'Add ' + this.label(listPath)): void {
+    this.change(label, () => {
+      this.ensureSeq(listPath, true, this.orderFor(listPath.slice(0, -1))).items.push(strNode(text));
+    });
+  }
+
+  /**
+   * Point an endpoint (link end, relation endpoint or network member) at a
+   * device and optional interface. Short forms ("dev", "dev:if") stay short;
+   * an endpoint written as a mapping keeps its other keys. An empty device
+   * removes the endpoint.
+   */
+  setEndpoint(path: Path, device: string, iface: string): void {
+    const node = this.get(path);
+    this.change('Edit endpoint', () => {
+      if (!device) {
+        this.removeAt(path);
+        return;
+      }
+      if (node && node.kind === 'map') {
+        const m = this.ensureMap(path);
+        this.setAt(path.concat('device'), strNode(device), KEY_ORDER.endpoint);
+        if (iface) this.setAt(path.concat('interface'), strNode(iface), KEY_ORDER.endpoint);
+        else m.entries.delete('interface');
+      } else {
+        this.setAt(path, strNode(iface ? device + ':' + iface : device), this.orderFor(path.slice(0, -1)));
+      }
+    });
+  }
+
+  /** Set role / address of an endpoint (expands a short endpoint to a mapping); empty removes it. */
+  setEndpointField(path: Path, text: string): void {
+    const ep = path.slice(0, -1);
+    this.change('Edit endpoint', () => {
+      if (text === '') {
+        const m = this.get(ep);
+        if (m && m.kind === 'map') m.entries.delete(String(path[path.length - 1]));
+      } else {
+        this.ensureMap(ep);
+        this.setAt(path, strNode(text), KEY_ORDER.endpoint);
+      }
+    });
+  }
+
+  /** Add a key to a mapping (created if missing): an empty value, a group or a list. */
+  addField(mapPath: Path, key: string, kind: 'value' | 'group' | 'list'): 'ok' | 'exists' | 'empty' {
+    if (!key) return 'empty';
+    const cur = this.get(mapPath);
+    if (cur && cur.kind === 'map' && cur.entries.has(key)) return 'exists';
+    this.change('Add attribute', () => {
+      const m = this.get(mapPath);
+      if (!m || m.kind !== 'map') this.setAt(mapPath, mapNode(), this.orderFor(mapPath.slice(0, -1)));
+      this.setAt(mapPath.concat(key), kind === 'group' ? mapNode() : kind === 'list' ? seqNode() : nullNode());
+    });
+    return 'ok';
+  }
+
+  /** Rename a key of a mapping (keeps its position). */
+  renameField(mapPath: Path, oldKey: string, newKey: string): 'ok' | 'exists' | 'empty' {
+    if (!newKey) return 'empty';
+    const m = this.get(mapPath);
+    if (m && m.kind === 'map' && m.entries.has(newKey) && newKey !== oldKey) return 'exists';
+    this.change('Rename key', () => this.renameKey(mapPath, oldKey, newKey));
+    return 'ok';
+  }
+
+  /** Append an empty value, group or list to a list. */
+  pushItem(listPath: Path, kind: 'value' | 'group' | 'list'): void {
+    this.change('Add item', () => {
+      this.ensureSeq(listPath).items.push(kind === 'group' ? mapNode() : kind === 'list' ? seqNode() : nullNode());
+    });
+  }
+
+  /** Remove a key or list item (one undo step). */
+  remove(path: Path, label = 'Remove'): void {
+    this.change(label, () => this.removeAt(path));
+  }
+
+  /** Move a list item one position up. */
+  moveUp(path: Path): void {
+    const k = path[path.length - 1];
+    if (typeof k !== 'number' || k <= 0) return;
+    this.change('Reorder', () => this.moveItem(path.slice(0, -1), k, k - 1));
+  }
+
+  /** Move a key the format doesn't define into the object's `attrs` (kept as it is). */
+  moveIntoAttrs(objPath: Path, key: string): 'ok' | 'exists' | 'missing' {
+    const m = this.get(objPath);
+    if (!m || m.kind !== 'map' || !m.entries.has(key)) return 'missing';
+    const attrs = m.entries.get('attrs');
+    if (attrs && attrs.value.kind === 'map' && attrs.value.entries.has(key)) return 'exists';
+    this.change('Move into attrs', () => {
+      const v = (m.entries.get(key) as { value: YNode }).value;
+      m.entries.delete(key);
+      const target = this.ensureMap(objPath.concat('attrs'), this.orderFor(objPath));
+      target.entries.set(key, { key, keyLine: 0, value: v });
+    });
+    return 'ok';
   }
 
   // ---------------------------------------------------------------- entities
