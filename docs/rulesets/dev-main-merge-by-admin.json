@@ -1,0 +1,17 @@
+{
+  "name": "dev and main: merges by repository admin only",
+  "target": "branch",
+  "enforcement": "active",
+  "conditions": {
+    "ref_name": {
+      "include": ["refs/heads/dev", "refs/heads/main"],
+      "exclude": []
+    }
+  },
+  "bypass_actors": [
+    { "actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "pull_request" }
+  ],
+  "rules": [
+    { "type": "update", "parameters": { "update_allows_fetch_and_merge": false } }
+  ]
+}

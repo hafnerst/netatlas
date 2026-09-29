@@ -367,6 +367,10 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/scr
 * The automated browser test needs a Chromium-based browser. Firefox and
   Safari are covered by the manual `#selftest` procedure.
 
+## Contributing
+
+Work happens on short-lived branches with pull requests into `dev`; releases are pull requests from `dev` into `main`. See [CONTRIBUTING.md](CONTRIBUTING.md) and, for the GitHub rules that enforce it, [docs/REPOSITORY-SETTINGS.md](docs/REPOSITORY-SETTINGS.md).
+
 ## Project layout
 
 ```

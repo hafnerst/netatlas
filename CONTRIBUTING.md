@@ -1,0 +1,60 @@
+# Contributing: branch workflow
+
+NetAtlas uses three kinds of branches. Every change reaches `dev` and `main`
+through a reviewed pull request; nobody pushes to them directly.
+
+| Branch | Purpose | How changes arrive | Who merges |
+|---|---|---|---|
+| `main` | Release branch (the default branch) | A deliberate **release pull request from `dev`** | The maintainer, **@hafnerst**, only |
+| `dev` | Integration branch | Pull requests from working branches | The maintainer, **@hafnerst**, only |
+| `feature/…`, `fix/…`, `docs/…`, `chore/…` | One short-lived branch per task | Commits by the author | (not merged directly; deleted after the PR is merged) |
+
+```
+feature/x ──PR──┐
+fix/y ─────PR───┼──► dev ──release PR──► main
+docs/z ────PR───┘
+```
+
+## Working on a task
+
+These rules apply to every contributor, including the automation account
+**@hafnerst-agent**.
+
+1. **Start from the latest `dev`.** Fetch it first. Never assume an earlier PR
+   was merged: check that it actually is on `dev`.
+   ```sh
+   git fetch origin
+   git switch -c feature/<topic> origin/dev
+   ```
+2. **One branch per task.** Name it `feature/<topic>`, `fix/<topic>`,
+   `docs/<topic>` or `chore/<topic>`, with a short, descriptive, lower-case
+   topic (e.g. `feature/auto-arrange`, `fix/yaml-tab-crlf`). Never reuse a
+   branch for an unrelated task.
+3. **Implement and test on that branch.** Run `npm test`: it builds
+   `dist/netatlas.html` and runs the Node tests and the headless-browser
+   self-test. Commit the regenerated `dist/netatlas.html` together with the
+   source changes.
+4. **Push the branch and open a pull request into `dev`.** Fill in the
+   template: what changed, how it was verified (commands and results), and
+   known limitations.
+5. **Request review from @hafnerst.** Then stop. The author never approves,
+   merges or bypasses protections for their own pull request.
+6. **Wait for the merge.** An opened or approved PR is not a merged one. The
+   next task starts from the updated `dev` (step 1).
+
+## Releasing
+
+A release is a pull request **from `dev` into `main`**, opened only when the
+maintainer asks for a release. @hafnerst reviews and merges it. Nothing else
+targets `main`.
+
+(GitHub can't require that the source branch of a PR into `main` is `dev`.
+This is a policy until a CI check enforces it; see
+[docs/REPOSITORY-SETTINGS.md](docs/REPOSITORY-SETTINGS.md).)
+
+## Repository settings
+
+The branch rules (pull requests required, approval by the code owner, no
+force pushes or deletion, merges only by the maintainer) are configured as
+GitHub **rulesets**. The exact settings, and what they can and cannot
+enforce, are in [docs/REPOSITORY-SETTINGS.md](docs/REPOSITORY-SETTINGS.md).
