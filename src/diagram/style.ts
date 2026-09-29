@@ -52,6 +52,7 @@ export function networkColor(kind: string): string {
     segment: '#1098ad',
     'l2-domain': '#2b8a3e',
   };
+  if (!k) return '#868e96'; // no kind chosen: neutral grey
   return table[k] || hashColor('net:' + k);
 }
 

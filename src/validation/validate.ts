@@ -207,7 +207,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
     groups.push({
       id,
       label: r.field(m, 'label', gpath, L.maxLabel) || id,
-      kind: (r.field(m, 'kind', gpath, 40) || 'site').toLowerCase(),
+      kind: (r.field(m, 'kind', gpath, 40) || '').toLowerCase(),
       parent: r.field(m, 'parent', gpath, 200),
       description: r.field(m, 'description', gpath, L.maxDescription),
       attrs: r.attrs(get(m, 'attrs'), gpath + '.attrs'),
@@ -539,7 +539,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
     networks.push({
       id,
       label: r.field(m, 'label', npath, L.maxLabel) || id,
-      kind: (r.field(m, 'kind', npath, 40) || 'subnet').toLowerCase(),
+      kind: (r.field(m, 'kind', npath, 40) || '').toLowerCase(),
       cidr,
       vlan: r.field(m, 'vlan', npath, 100),
       vrf: r.field(m, 'vrf', npath, 100),
@@ -565,7 +565,14 @@ function build(root: YNode | null, c: Ctx): Model | null {
     const rpath = `relations.${id}`;
     if (!claim(id, 'relation', m, path)) return;
     const protoRaw = r.reqStr(m, 'protocol', rpath, 40);
-    if (protoRaw === undefined) return;
+    if (protoRaw === undefined) {
+      // report missing endpoints as well, so a new relation shows everything still to fill in
+      const eps = get(m, 'endpoints');
+      if (isNull(eps) || (eps!.kind === 'seq' && eps!.items.length < 2)) {
+        c.error(eps && !isNull(eps) ? eps : m, rpath + '.endpoints', 'a relation needs at least 2 endpoints', eps && !isNull(eps) ? {} : { key: 'endpoints' });
+      }
+      return;
+    }
     const proto = normalizeProtocol(protoRaw);
     if (!PROTO_RE.test(proto)) {
       c.error(get(m, 'protocol') as YNode, rpath + '.protocol', `invalid protocol name "${protoRaw}": use letters, digits and _ . + -`);

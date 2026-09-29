@@ -6,7 +6,7 @@
  * user clicks the diagram or another object: the browser fires "change"
  * before focus moves. Everything user-provided is rendered as text.
  */
-import { DocMap, DocNode, EntityKind, KEY_ORDER, ModelDoc, Path, SECTION, kindOfSection } from '../editor/document';
+import { DocMap, DocNode, ENTITY_KINDS, EntityKind, KEY_ORDER, ModelDoc, Path, SECTION, kindOfSection } from '../editor/document';
 import { DialogOpts } from './dialogs';
 import { el } from './dom';
 import { CATEGORIES, LINE_STYLES, LOGICAL_IFACE_TYPES } from '../model/types';
@@ -264,6 +264,9 @@ export class Editor {
     w.appendChild(this.header('document', 'Document', null));
     w.appendChild(this.issueBox([]));
     w.appendChild(this.field('Format version', this.e('span', { class: 'ro' }, [this.doc.text(['netatlas']) || '(missing)']), ['netatlas'], 'Always 1 for this version of netatlas.'));
+    if (ENTITY_KINDS.every((k) => this.doc.entities(k).length === 0)) {
+      w.appendChild(this.e('p', { class: 'hint-empty' }, ['This model is empty. Add a device, link, network, relation, group or protocol with “+ Add” in the Model outline; nothing is filled in for you.']));
+    }
     w.appendChild(this.textField(['title'], 'Title', 'top'));
     w.appendChild(this.textField(['description'], 'Description', 'top', 'textarea'));
     w.appendChild(this.otherProps([], 'document'));
@@ -335,7 +338,7 @@ export class Editor {
       add(this.textField(base.concat('description'), 'Description', o, 'textarea'));
     } else if (kind === 'network') {
       add(this.textField(base.concat('label'), 'Label', o));
-      add(this.textField(base.concat('kind'), 'Kind', o, 'text', NET_KINDS));
+      add(this.textField(base.concat('kind'), 'Kind', o, 'text', NET_KINDS, undefined, 'Select or type a network kind'));
       add(this.listField(base.concat('cidr'), 'Prefixes (CIDR)', o, '192.0.2.0/24 or 2001:db8::/64'));
       add(this.textField(base.concat('vlan'), 'VLAN', o));
       add(this.textField(base.concat('vrf'), 'VRF', o));
@@ -343,7 +346,7 @@ export class Editor {
       add(this.textField(base.concat('description'), 'Description', o, 'textarea'));
     } else if (kind === 'relation') {
       const protos = Array.from(builtinProtocols().keys()).concat(this.ids('protocol'));
-      add(this.textField(base.concat('protocol'), 'Protocol', o, 'text', protos, 'Any name. Built-in protocols get a default category and colour; define new ones under Protocols.'));
+      add(this.textField(base.concat('protocol'), 'Protocol', o, 'text', protos, 'Required. Any name. Built-in protocols get a default category and colour; define new ones under Protocols.', 'Select or type a protocol'));
       add(this.enumField(base.concat('category'), 'Category', o, CATEGORIES as unknown as string[], '(from protocol)'));
       add(this.textField(base.concat('label'), 'Label', o));
       add(this.endpointList(base.concat('endpoints'), 'Endpoints', o));
@@ -353,13 +356,13 @@ export class Editor {
       add(this.textField(base.concat('description'), 'Description', o, 'textarea'));
     } else if (kind === 'group') {
       add(this.textField(base.concat('label'), 'Label', o));
-      add(this.textField(base.concat('kind'), 'Kind', o, 'text', GROUP_KINDS));
+      add(this.textField(base.concat('kind'), 'Kind', o, 'text', GROUP_KINDS, undefined, 'Select or type a group kind'));
       const self = doc.text(base.concat('id'));
       add(this.refField(base.concat('parent'), 'Parent group', o, this.ids('group').filter((g) => g !== self)));
       add(this.textField(base.concat('description'), 'Description', o, 'textarea'));
     } else if (kind === 'protocol') {
       add(this.textField(base.concat('label'), 'Label', o));
-      add(this.enumField(base.concat('category'), 'Category', o, CATEGORIES as unknown as string[], '(other)'));
+      add(this.enumField(base.concat('category'), 'Category', o, CATEGORIES as unknown as string[], 'Select category'));
       add(this.colorField(base.concat('color'), 'Colour', o));
       add(this.enumField(base.concat('style'), 'Line style', o, LINE_STYLES as unknown as string[], '(from category)'));
       add(this.textField(base.concat('description'), 'Description', o, 'textarea'));
@@ -444,7 +447,7 @@ export class Editor {
     card.appendChild(this.ifIdField(p, devIndex, k));
     card.appendChild(this.textField(p.concat('label'), loop ? 'Name' : 'Label', o, 'text', undefined, loop ? 'Descriptive name, e.g. “Router ID” or “BGP source”.' : undefined));
     card.appendChild(this.listField(p.concat('ip'), loop ? 'Addresses (IPv4 / IPv6 with prefix)' : 'Addresses', o, loop ? '10.255.0.1/32 or 2001:db8::1/128' : '192.0.2.1/24'));
-    card.appendChild(this.textField(p.concat('type'), 'Type', o, 'text', IFACE_TYPES, loop ? undefined : 'Logical types (loopback, tunnel, svi, lag …) cannot be cabled.'));
+    card.appendChild(this.textField(p.concat('type'), 'Type', o, 'text', IFACE_TYPES, loop ? undefined : 'Without a type the interface is a physical port (format rule). Logical types (loopback, tunnel, svi, lag …) cannot be cabled.', 'Not set: physical port'));
     if (!loop || doc.get(p.concat('speed')) || doc.get(p.concat('media'))) {
       card.appendChild(this.textField(p.concat('speed'), 'Speed', o, 'text', ['1G', '10G', '25G', '100G']));
       card.appendChild(this.textField(p.concat('media'), 'Media', o, 'text', MEDIA));
@@ -517,7 +520,7 @@ export class Editor {
     return { id, node: dl };
   }
 
-  private textField(p: Path, label: string, order: string, kind: 'text' | 'textarea' = 'text', suggestions?: string[], help?: string): HTMLElement {
+  private textField(p: Path, label: string, order: string, kind: 'text' | 'textarea' = 'text', suggestions?: string[], help?: string, placeholder?: string): HTMLElement {
     const n = this.doc.get(p);
     const val = n ? (n.kind === 'scalar' ? scalarText(n) || '' : '') : '';
     if (n && n.kind !== 'scalar') return this.field(label, this.generic(p, n, 0), p, 'Not a single value — shown as a structure.');
@@ -529,6 +532,7 @@ export class Editor {
       ctl = ta;
     } else {
       const extra: { [k: string]: string } = { 'data-o': order };
+      if (placeholder) extra.placeholder = placeholder;
       let dl: { id: string; node: HTMLElement } | null = null;
       if (suggestions) {
         dl = this.datalist(suggestions);
@@ -571,6 +575,7 @@ export class Editor {
     if (current && opts.indexOf(current) < 0) s.appendChild(this.e('option', { value: current }, [current + ' (missing!)']));
     for (const o of opts) s.appendChild(this.e('option', { value: o }, [o]));
     s.value = current;
+    if (!current) s.classList.add('unset');
     return s;
   }
 
@@ -580,7 +585,8 @@ export class Editor {
     if (n && n.kind !== 'scalar') return this.field('Type', this.generic(p, n, 0), p, 'Not a single value — shown as a structure.');
     const current = this.doc.text(p) || '';
     const s = this.e('select', { 'data-p': J(p), 'data-t': 'text', 'data-o': order }) as HTMLSelectElement;
-    s.appendChild(this.e('option', { value: '' }, ['(none)']));
+    s.appendChild(this.e('option', { value: '' }, ['Select device type']));
+    if (!current) s.classList.add('unset');
     if (current && !isDeviceType(current)) s.appendChild(this.e('option', { value: current }, [current + ' (not a valid type)']));
     for (const t of DEVICE_TYPES) s.appendChild(this.e('option', { value: t.id }, [t.label]));
     s.value = current;

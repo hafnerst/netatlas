@@ -63,7 +63,7 @@ and relation endpoints. Physical links accept only `device` / `interface`.
 |---|---|---|
 | `id` | yes | |
 | `label` | | Display name (defaults to the id) |
-| `kind` | | Free text, e.g. `site`, `building`, `room`, `row`, `rack`, `provider`, `cloud`, `zone` (default `site`). `site`/`campus`/`building`/`datacenter`/`region` are emphasised; `provider`/`cloud`/`external` are drawn dashed. |
+| `kind` | | Free text, e.g. `site`, `building`, `room`, `row`, `rack`, `provider`, `cloud`, `zone`. There is no default: a group without a kind is drawn as a plain box. `site`/`campus`/`building`/`datacenter`/`region` are emphasised; `provider`/`cloud`/`external` are drawn dashed. |
 | `parent` | | Id of the enclosing group (at most 8 levels) |
 | `description`, `attrs` | | |
 
@@ -183,7 +183,7 @@ be cabled. A link can't connect a port to itself.
 |---|---|
 | `id` | required |
 | `label` | |
-| `kind` | free text; common: `subnet` (default), `vlan`, `vni`, `vrf`, `zone`, `segment` |
+| `kind` | free text; common: `subnet`, `vlan`, `vni`, `vrf`, `zone`, `segment`. There is no default: a network without a kind is drawn in neutral grey. |
 | `cidr` | one prefix or a list |
 | `vlan`, `vrf` | |
 | `members` | endpoint references (devices or interfaces); the interface's first address (or `address:`) is shown on the membership line |

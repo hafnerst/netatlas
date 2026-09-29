@@ -238,7 +238,7 @@ export function detailsFor(model: Model, ref: string): VNode {
   } else if (kind === 'network') {
     const n = ix.networks.get(id);
     if (!n) return h('div', {}, 'Not found');
-    kids.push(header(n.kind, n.label));
+    kids.push(header(n.kind || 'network', n.label));
     kids.push(kv([['id', n.id], ['kind', n.kind], ['cidr', n.cidr.join(', ')], ['vlan', n.vlan], ['vrf', n.vrf], ['description', n.description]]));
     kids.push(list('Members', n.members.map((m) => epNode(model, m))));
     kids.push(
@@ -253,7 +253,7 @@ export function detailsFor(model: Model, ref: string): VNode {
   } else if (kind === 'group') {
     const g = ix.groups.get(id);
     if (!g) return h('div', {}, 'Not found');
-    kids.push(header(g.kind, g.label));
+    kids.push(header(g.kind || 'group', g.label));
     kids.push(kv([['id', g.id], ['kind', g.kind], ['parent', g.parent ? refLink('group:' + g.parent, ix.groups.get(g.parent)?.label || g.parent) : undefined], ['description', g.description]]));
     kids.push(list('Sub-groups', model.groups.filter((c) => c.parent === g.id).map((c) => h('li', {}, [refLink('group:' + c.id, c.label)]))));
     kids.push(list('Devices', model.devices.filter((d) => d.group === g.id).map((d) => h('li', {}, [refLink('device:' + d.id, d.label)]))));
@@ -397,7 +397,7 @@ export function legendFor(model: Model, view: View, hidden: Set<string>): VNode 
                 swatchSvg([
                   h('rect', { class: 'group-box ' + (groupKindStyle(k).strong ? 'group-strong' : ''), x: 3, y: 2, width: 38, height: 14, rx: 4, 'stroke-dasharray': groupKindStyle(k).dash }),
                 ]),
-                k,
+                k || '(no kind)',
               ),
             ),
           ),

@@ -162,14 +162,13 @@ test('serializer fuzz: random trees survive stringify -> parse unchanged', () =>
 
 // ------------------------------------------------------------ ModelDoc
 
-test('a new model is valid and minimal', () => {
+test('a new model is valid and empty: nothing is created for the user', () => {
   const d = ModelDoc.create();
   assert.ok(d.valid, JSON.stringify(d.errors));
   assert.equal(d.origin, 'new');
   assert.equal(d.dirty, false);
-  assert.equal(d.entities('device').length, 1);
-  const m = d.result.model;
-  assert.equal(m.devices[0].routerId, 'lo0');
+  assert.equal(d.exportText(), 'netatlas: 1\ntitle: New network\n');
+  for (const k of ['device', 'link', 'network', 'relation', 'group', 'protocol']) assert.equal(d.entities(k).length, 0, k);
 });
 
 test('import -> edit -> export -> reload keeps every edit and every untouched attribute', () => {
@@ -252,7 +251,7 @@ test('renaming ids updates every reference (device, interface, group, link, rela
 });
 
 test('router_id follows an interface rename', () => {
-  const d = ModelDoc.create();
+  const d = ModelDoc.fromText('netatlas: 1\ndevices:\n  - id: r1\n    router_id: lo0\n    interfaces:\n      - {id: lo0, type: loopback, ip: [10.255.0.1/32]}\n', 'r.yaml', 'file').doc;
   assert.equal(d.renameInterface(0, 0, 'Loopback0'), 1);
   assert.ok(d.valid);
   assert.equal(d.result.model.devices[0].routerId, 'Loopback0');

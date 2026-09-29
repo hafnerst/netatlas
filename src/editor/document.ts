@@ -54,14 +54,9 @@ export const KEY_ORDER: { [k: string]: string[] } = SCHEMA;
 
 export type Origin = 'new' | 'file' | 'example';
 
+/** "New" starts from an empty model: nothing is created that the user did not choose. */
 export const NEW_MODEL_YAML = `netatlas: 1
 title: New network
-devices:
-  - id: router1
-    type: router
-    router_id: lo0
-    interfaces:
-      - {id: lo0, type: loopback, label: Router ID, ip: [10.255.0.1/32]}
 `;
 
 const MAX_UNDO = 100;
@@ -735,7 +730,11 @@ export class ModelDoc {
     return stem + n;
   }
 
-  /** Add a new entity with a unique id; returns its index. */
+  /**
+   * Add a new entity with a unique id; returns its index. Only the given
+   * fields are set: no type, kind, protocol or category is chosen for the
+   * user. A relation gets an empty endpoint list to fill in.
+   */
   addEntity(kind: EntityKind, fields: Array<[string, YNode]> = []): number {
     return this.change(`Add ${kind}`, () => {
       const base: { [k in EntityKind]: string } = {
@@ -749,12 +748,12 @@ export class ModelDoc {
       const idNode = fields.find(([k]) => k === 'id');
       const id = idNode ? scalarText(idNode[1]) || base[kind] : this.uniqueId(base[kind]);
       const defaults: { [k in EntityKind]: Array<[string, YNode]> } = {
-        device: [['type', strNode('router')]],
+        device: [],
         link: [],
-        network: [['kind', strNode('subnet')]],
-        relation: [['protocol', strNode('bgp')], ['endpoints', seqNode([], true)]],
-        group: [['kind', strNode('site')]],
-        protocol: [['category', strNode('other')]],
+        network: [],
+        relation: [['endpoints', seqNode([], true)]],
+        group: [],
+        protocol: [],
       };
       const entries: Array<[string, YNode]> = [['id', strNode(id)]];
       for (const [k, v] of defaults[kind]) if (!fields.some(([f]) => f === k)) entries.push([k, v]);
