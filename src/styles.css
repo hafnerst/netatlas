@@ -80,6 +80,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 }
 .brand { display: flex; align-items: center; gap: 6px; font-weight: 700; font-size: 15px; margin-right: 6px; }
 .brand svg { fill: var(--accent); stroke: var(--accent); stroke-width: 1.6; }
+.brand .version { font-weight: 400; font-size: 11px; color: var(--muted); align-self: flex-end; margin-bottom: 2px; }
 .seg { display: inline-flex; }
 .seg button { border-radius: 0; margin-left: -1px; }
 .seg button:first-child { border-radius: 6px 0 0 6px; }

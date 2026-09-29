@@ -60,6 +60,30 @@ A release is a pull request **from `dev` into `main`**, opened only when the
 maintainer asks for a release. @hafnerst reviews and merges it. Nothing else
 targets `main`.
 
+Versions follow [semantic versioning](https://semver.org/); the version lives
+in `package.json` (and `package-lock.json`), and the build writes it into the
+HTML. The YAML format has its own version (`netatlas: 1`), independent of the
+application version. Steps for a release `X.Y.Z`:
+
+1. **Release preparation** on a working branch from `dev` (e.g.
+   `chore/release-vX.Y.Z`): set the version, add the `CHANGELOG.md` section,
+   update the documentation, rebuild `dist/netatlas.html`, run `npm test`,
+   `npm run check:dist` and the manual checks in the README. PR into `dev`,
+   reviewed and merged by @hafnerst.
+2. **Release PR** from `dev` into `main`, reviewed and merged by @hafnerst.
+3. **Tag and GitHub release** by @hafnerst (or on explicit request), on the
+   merge commit in `main`:
+   ```sh
+   git fetch origin && git switch main && git pull --ff-only
+   npm ci && npm test && npm run check:dist   # the released HTML matches the source
+   git tag -a vX.Y.Z -m "NetAtlas vX.Y.Z" && git push origin vX.Y.Z
+   ```
+   Create the GitHub release from tag `vX.Y.Z` with the `CHANGELOG.md`
+   section as notes, and attach `dist/netatlas.html`.
+4. **After the release**, check that `dev` still exists (see
+   [docs/REPOSITORY-SETTINGS.md](docs/REPOSITORY-SETTINGS.md), "Branch
+   cleanup").
+
 (GitHub can't require that the source branch of a PR into `main` is `dev`.
 This is a policy until a CI check enforces it; see
 [docs/REPOSITORY-SETTINGS.md](docs/REPOSITORY-SETTINGS.md).)
@@ -67,6 +91,6 @@ This is a policy until a CI check enforces it; see
 ## Repository settings
 
 The branch rules (pull requests required, approval by the code owner, no
-force pushes or deletion, merges only by the maintainer) are configured as
-GitHub **rulesets**. The exact settings, and what they can and cannot
+force pushes or deletion) are configured as a GitHub **ruleset**; that only
+the maintainer merges is policy. The exact settings, and what they can and cannot
 enforce, are in [docs/REPOSITORY-SETTINGS.md](docs/REPOSITORY-SETTINGS.md).

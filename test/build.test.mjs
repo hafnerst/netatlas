@@ -76,3 +76,16 @@ test('reasonable size, and the examples are embedded', () => {
   assert.match(js, /enterprise-wan\.yaml/);
   assert.match(js, /datacenter-evpn\.yaml/);
 });
+
+test('one version everywhere: package.json, package-lock.json, the HTML and the changelog', () => {
+  const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
+  const lock = JSON.parse(readFileSync(join(root, 'package-lock.json'), 'utf8'));
+  assert.match(pkg.version, /^\d+\.\d+\.\d+$/);
+  assert.equal(lock.version, pkg.version);
+  assert.equal(lock.packages[''].version, pkg.version);
+  assert.ok(markup.includes(`<meta name="generator" content="netatlas ${pkg.version}">`), 'generator meta');
+  assert.ok(markup.includes(`<span class="version" title="netatlas version">v${pkg.version}</span>`), 'version shown in the UI');
+  assert.ok(!markup.includes('__VERSION__'));
+  const changelog = readFileSync(join(root, 'CHANGELOG.md'), 'utf8');
+  assert.ok(changelog.split('\n').some((l) => l.startsWith(`## [${pkg.version}]`)), 'CHANGELOG has a section for this version');
+});

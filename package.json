@@ -1,6 +1,6 @@
 {
   "name": "netatlas",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "description": "Offline, single-file network architecture diagram tool (YAML in, interactive SVG out)",
   "private": true,
   "license": "Apache-2.0",
