@@ -10,7 +10,8 @@ import { DocMap, DocNode, EntityKind, KEY_ORDER, ModelDoc, Path, SECTION, kindOf
 import { DialogOpts } from './dialogs';
 import { el } from './dom';
 import { CATEGORIES, LINE_STYLES, LOGICAL_IFACE_TYPES } from '../model/types';
-import { builtinProtocols } from '../model/protocols';
+import { builtinProtocols, normalizeProtocol } from '../model/protocols';
+import { SelectionContext, contextState } from '../model/queries';
 import { DEVICE_TYPES, isDeviceType } from '../model/device-types';
 import { Issue, scalarText } from '../validation/validate';
 
@@ -26,6 +27,8 @@ export interface EditorHost {
 }
 
 const J = (p: Path): string => JSON.stringify(p);
+/** Model ref of an outline entity (protocol ids are normalized in the model). */
+const entityRef = (kind: EntityKind, id: string): string => kind + ':' + (kind === 'protocol' ? normalizeProtocol(id) : id);
 const P = (s: string | null): Path => (s ? (JSON.parse(s) as Path) : []);
 
 const IFACE_TYPES = ['physical'].concat(LOGICAL_IFACE_TYPES);
@@ -86,6 +89,12 @@ export class Editor {
     }
     const k = (kind === 'hub' ? 'relation' : kind) as EntityKind;
     if (!SECTION[k]) return;
+    if (k === 'protocol') {
+      // the model uses normalized protocol ids
+      const i = this.doc.entities('protocol').findIndex((e) => !!e.id && normalizeProtocol(e.id) === id);
+      if (i >= 0) this.sel = { kind: k, index: i };
+      return;
+    }
     const ent = this.doc.findEntity(k, id);
     if (ent) this.sel = { kind: k, index: ent.index };
   }
@@ -100,7 +109,7 @@ export class Editor {
       const ifs = this.doc.interfaceIds(s.index);
       if (ifs[s.iface]) return `iface:${ent.id}:${ifs[s.iface]}`;
     }
-    return s.kind === 'protocol' ? null : s.kind + ':' + ent.id;
+    return entityRef(s.kind, ent.id);
   }
 
   private selectEntity(kind: EntityKind | 'document', index: number): void {
@@ -110,7 +119,12 @@ export class Editor {
 
   // -------------------------------------------------------------- outline
 
-  renderOutline(box: HTMLElement): void {
+  /**
+   * The model outline. With a selection context (from the diagram session),
+   * entries are marked selected / directly related / not related; unrelated
+   * entries stay visible and selectable.
+   */
+  renderOutline(box: HTMLElement, ctx: SelectionContext | null = null): void {
     while (box.firstChild) box.removeChild(box.firstChild);
     const doc = this.getDoc();
     if (!doc) {
@@ -128,6 +142,16 @@ export class Editor {
         this.badge(docIss.e, docIss.w),
       ]),
     );
+    if (ctx) {
+      box.appendChild(
+        this.e('p', { class: 'ol-ctx-hint small', 'data-related': String(ctx.related.size) }, [
+          this.e('span', { class: 'ctx-mark sel', 'aria-hidden': 'true' }, ['▸']),
+          ' selected · ',
+          this.e('span', { class: 'ctx-mark rel', 'aria-hidden': 'true' }, ['•']),
+          ` related (${ctx.related.size}) · others dimmed`,
+        ]),
+      );
+    }
     const q = this.filter.toLowerCase();
     for (const kind of ['device', 'link', 'network', 'relation', 'group', 'protocol'] as EntityKind[]) {
       const ents = doc.entities(kind);
@@ -143,9 +167,16 @@ export class Editor {
         if (q && (label + ' ' + (ent.id || '')).toLowerCase().indexOf(q) < 0) continue;
         const c = counts.get(kind + '#' + ent.index) || { e: 0, w: 0 };
         const active = this.sel && this.sel.kind === kind && this.sel.index === ent.index;
+        const st = ent.id ? contextState(ctx, entityRef(kind, ent.id)) : ctx ? 'unrelated' : null;
+        const attrs: { [k: string]: string } = { type: 'button', class: 'ol-item' + (active ? ' active' : '') + (st ? ' ctx-' + st : ''), 'data-act': 'select', 'data-kind': kind, 'data-index': String(ent.index), title: ent.id || '(no id)' };
+        if (ent.id) attrs['data-ref'] = entityRef(kind, ent.id);
+        if (st) attrs['data-ctx'] = st;
+        if (st === 'selected' || (!st && active)) attrs['aria-current'] = 'true';
         sec.appendChild(
-          this.e('button', { type: 'button', class: 'ol-item' + (active ? ' active' : ''), 'data-act': 'select', 'data-kind': kind, 'data-index': String(ent.index), title: ent.id || '(no id)' }, [
+          this.e('button', attrs, [
+            st === 'selected' || st === 'related' ? this.e('span', { class: 'ctx-mark ' + (st === 'selected' ? 'sel' : 'rel'), 'aria-hidden': 'true' }, [st === 'selected' ? '▸' : '•']) : null,
             this.e('span', { class: 'ol-label' }, [label]),
+            st ? this.e('span', { class: 'sr-only' }, [st === 'selected' ? ' (selected)' : st === 'related' ? ' (directly related)' : ' (not related)']) : null,
             this.badge(c.e, c.w),
           ]),
         );

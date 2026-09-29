@@ -81,7 +81,8 @@ export function runSelfTest() {
   const browser = findBrowser();
   if (!browser) return { skipped: true };
   if (!existsSync(html)) throw new Error('dist/netatlas.html not found — run "npm run build" first');
-  const dom = run(browser, pathToFileURL(html).href + '#selftest', ['--dump-dom']);
+  // desktop size, so the element lists (hidden below 1100 px) are on screen
+  const dom = run(browser, pathToFileURL(html).href + '#selftest', ['--window-size=1600,1000', '--dump-dom']);
   const m = /<pre id="selftest"[^>]*>([\s\S]*?)<\/pre>/.exec(dom);
   if (!m || !m[1].trim()) return { browser, pass: false, error: 'self-test produced no output', raw: dom.slice(0, 2000) };
   return { browser, ...JSON.parse(decode(m[1])) };

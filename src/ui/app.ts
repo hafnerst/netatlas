@@ -14,7 +14,7 @@ import { EXAMPLES } from '../generated/examples';
 import { Rect } from '../layout/geometry';
 import { detailsFor, legendFor, relationList, tooltipFor } from './panels';
 import { Session, View } from '../diagram/session';
-import { search, splitRef } from '../model/queries';
+import { SelectionContext, search, selectionContext, splitRef } from '../model/queries';
 import { Issue } from '../validation/validate';
 
 type Tab = 'edit' | 'details' | 'legend' | 'relations' | 'problems' | 'yaml';
@@ -389,8 +389,14 @@ export class App {
     this.renderSide();
   }
 
+  /** Selection context for the element lists, derived from the diagram selection (the single source). */
+  selectionContext(): SelectionContext | null {
+    const s = this.session;
+    return s && s.state.selected ? selectionContext(s.model, s.state.selected) : null;
+  }
+
   private renderOutline(): void {
-    this.editor.renderOutline(this.$('outline-body'));
+    this.editor.renderOutline(this.$('outline-body'), this.selectionContext());
   }
 
   private renderSide(): void {
@@ -419,7 +425,7 @@ export class App {
         ]);
       }
     } else if (this.tab === 'legend') mount(body, legendFor(s.model, s.state.view, s.state.hiddenProtocols));
-    else mount(body, relationList(s.model));
+    else mount(body, relationList(s.model, this.selectionContext()));
     restoreFocus(this.doc, focus);
   }
 
