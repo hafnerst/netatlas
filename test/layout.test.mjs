@@ -398,3 +398,70 @@ test('resolvePositions: stored positions win, missing nodes are placed without m
   assert.notDeepEqual(res.get('r2'), auto.get('r2'));
   assert.deepEqual(resolvePositions('physical', input, new Map()), auto);
 });
+
+// --------------------------------------------------------------- layout status
+
+test('layout status is derived per view: auto-arranged, manually adjusted, edited since arranged', () => {
+  const src = read('metro-ring.yaml');
+  const d = docOf(src);
+  const st = () => d.layoutStatus('physical') + '/' + d.layoutStatus('logical');
+  assert.equal(st(), 'auto/auto', 'a file without stored positions shows the auto-arranged layout');
+  // a non-geometric edit never changes the status
+  const i = d.findEntity('device', 'pe1').index;
+  d.change('vendor', () => d.setAt(['devices', i, 'vendor'], yaml.strNode('Acme')));
+  assert.equal(st(), 'auto/auto');
+  // dragging marks only that view as manually adjusted
+  d.movePositions('physical', new Map([['pe3', { x: 9000, y: 9000 }]]), 'Move pe3');
+  assert.equal(st(), 'manual/auto');
+  assert.match(d.exportText(), /\n  manual:\n    physical: \[pe3\]\n/);
+  // undo -> derived again from the document, no stale flag
+  d.undo();
+  assert.equal(st(), 'auto/auto');
+  d.redo();
+  assert.equal(st(), 'manual/auto');
+  // moving it back to its calculated position is "auto-arranged" again
+  d.movePositions('physical', new Map([['pe3', d.autoLayout('physical').get('pe3')]]), 'Move pe3 back');
+  assert.equal(st(), 'auto/auto');
+  // export -> reload keeps a manual adjustment (positions and the record are in the YAML)
+  d.movePositions('logical', new Map([['pe4', { x: -500, y: -500 }]]), 'Move pe4');
+  const reloaded = docOf(d.exportText());
+  assert.equal(reloaded.layoutStatus('physical') + '/' + reloaded.layoutStatus('logical'), 'auto/manual');
+  // Auto-arrange restores the view and clears its record; repeating it changes nothing
+  d.arrange(['logical']);
+  assert.equal(st(), 'auto/auto');
+  assert.ok(!/\n  manual:/.test(d.exportText()) || !/logical: \[pe4\]/.test(d.exportText()));
+  assert.deepEqual(d.arrange(['physical', 'logical']), { changed: false, moved: 0 });
+  // a geometric model edit is not a manual adjustment
+  d.addEntity('device', [['id', yaml.strNode('pe7')], ['type', yaml.strNode('router')], ['group', yaml.strNode('pop-east')]]);
+  assert.equal(st(), 'edited/edited');
+  const edited = docOf(d.exportText());
+  assert.equal(edited.layoutStatus('physical') + '/' + edited.layoutStatus('logical'), 'edited/edited', 'survives export -> reload');
+  // ... but dragging after an edit is
+  d.movePositions('physical', new Map([['pe7', { x: 0, y: -2000 }]]));
+  assert.equal(st(), 'manual/edited');
+  // renaming keeps the record; deleting the node removes it
+  d.renameEntity('device', d.findEntity('device', 'pe7').index, 'pe8');
+  assert.match(d.exportText(), /physical: \[pe8\]/);
+  d.deleteEntity('device', d.findEntity('device', 'pe8').index);
+  assert.ok(!/pe8/.test(d.exportText()));
+  assert.equal(st(), 'auto/auto', 'without pe8 the stored layout equals Auto-arrange again');
+  // an arranged example is auto-arranged when loaded
+  const arranged = docOf(read('metro-ring-arranged.yaml'));
+  assert.equal(arranged.layoutStatus('physical') + '/' + arranged.layoutStatus('logical'), 'auto/auto');
+});
+
+test('the manual record is presentation only: bad entries warn and never affect the model', () => {
+  const r = validate.loadModel(`netatlas: 1
+devices:
+  - {id: a}
+layout:
+  physical:
+    a: [0, 0]
+  manual:
+    physical: [a, ghost]
+    sideways: [a]
+`);
+  assert.deepEqual(r.errors, []);
+  assert.equal(r.warnings.length, 1);
+  assert.deepEqual(Array.from(r.model.layout.manual.physical), ['a', 'ghost']);
+});

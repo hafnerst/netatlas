@@ -8,6 +8,7 @@
  * safety, error reporting and that the page made no network requests.
  */
 import { ModelDoc } from './doc';
+import { strNode } from './yaml';
 import { EXAMPLES } from './generated/examples';
 import { App } from './ui';
 
@@ -47,6 +48,9 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     await tick(10);
     return !!b;
   };
+  /** status shown next to the Auto-arrange button: "auto" | "manual" | "edited" */
+  const status = (v: 'physical' | 'logical'): string => (q(`[data-view-status="${v}"]`) || { getAttribute: () => '' }).getAttribute('data-status') || '';
+  const statusText = (v: 'physical' | 'logical'): string => (q(`[data-view-status="${v}"]`) || { textContent: '' }).textContent || '';
   let violations = 0;
   doc.addEventListener('securitypolicyviolation', () => violations++);
   // capture downloads instead of saving them
@@ -71,6 +75,15 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     const csp = doc.querySelector('meta[http-equiv="Content-Security-Policy"]');
     const policy = csp ? csp.getAttribute('content') || '' : '';
     check('CSP meta present and blocks network', /default-src 'none'/.test(policy) && /connect-src 'none'/.test(policy), policy);
+    {
+      const btn = q('#btn-arrange') as HTMLButtonElement | null;
+      const r = btn ? btn.getBoundingClientRect() : null;
+      check(
+        'Auto-arrange button is in the top toolbar, visible and labelled (disabled until a model is open)',
+        !!btn && !!btn.closest('header.topbar') && !!r && r.width > 40 && r.height > 10 && r.top < 60 && /^Auto-arrange/.test((btn.textContent || '').trim()) && btn.disabled,
+        btn ? (btn.textContent || '') + (btn.disabled ? ' (disabled)' : '') : 'missing',
+      );
+    }
 
     // ------------------------------------------------ viewer: every example
     for (let i = 0; i < EXAMPLES.length; i++) {
@@ -136,6 +149,8 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         !!fw && dm.dirty && dm.canUndo() === 'Move hq-fw' && dm.hasStoredLayout('physical') && !dm.hasStoredLayout('logical'),
         JSON.stringify(fw),
       );
+      check('status after dragging: Physical "Manually adjusted", Logical still "Auto-arranged"', status('physical') === 'manual' && status('logical') === 'auto' && /Physical: Manually adjusted/.test(statusText('physical')), statusText('physical') + ' / ' + statusText('logical'));
+      check('Auto-arrange button is enabled once a model is open', !(q('#btn-arrange') as HTMLButtonElement).disabled);
     }
     const t0 = vp.getAttribute('transform');
     const sr = svg.getBoundingClientRect();
@@ -148,8 +163,10 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     check('mouse wheel zooms', vp.getAttribute('transform') !== t1);
     doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }));
     check('undo reverts the drag (and the stored positions)', !(app.mdoc as ModelDoc).hasStoredLayout('physical'));
+    check('status after undo: back to "Auto-arranged"', status('physical') === 'auto' && status('logical') === 'auto');
     doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'l', bubbles: true }));
     check('keyboard shortcut L switches to the logical view', doc.body.getAttribute('data-view') === 'logical');
+    check('switching views highlights the status of the shown view', !!q('[data-view-status="logical"].current') && !q('[data-view-status="physical"].current'));
     doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     check('Escape clears the selection', !!app.session && app.session.state.selected === null);
 
@@ -182,7 +199,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const physBefore = rects();
       click('[data-view-btn="logical"]');
       const logBefore = rects();
-      check('loading a file does not store positions or mark it changed', !(app.mdoc as ModelDoc).hasStoredLayout('physical') && !(app.mdoc as ModelDoc).dirty && /automatic/.test(q('#layout-state')!.textContent || ''));
+      check('loading a file does not store positions or mark it changed; status "Auto-arranged"', !(app.mdoc as ModelDoc).hasStoredLayout('physical') && !(app.mdoc as ModelDoc).dirty && status('physical') === 'auto' && status('logical') === 'auto');
       click('#btn-arrange');
       await tick(10);
       check('Auto-arrange explains its scope (whole model, both views, undo)', /whole model/.test(q('#modal')!.textContent || '') && /Physical view: 15 devices/.test(q('#modal')!.textContent || '') && !!q('#modal [data-value="both"]'));
@@ -192,6 +209,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       check('arranging an automatic layout stores it without moving anything', ad.hasStoredLayout('physical') && ad.hasStoredLayout('logical') && rects() === physBefore && /nothing moved/.test(q('#toast')!.textContent || ''));
       click('[data-view-btn="logical"]');
       check('… in the logical view as well', rects() === logBefore);
+      check('status after Auto-arrange: both views "Auto-arranged"', status('physical') === 'auto' && status('logical') === 'auto');
       const undoLabel = ad.canUndo();
       doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true }));
       await tick(10);
@@ -203,12 +221,20 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       (app as unknown as { afterEdit(n?: string): void }).afterEdit();
       const moved = rects();
       check('a manual move changes only that node', moved !== logBefore && moved.split(' ').filter((x, i) => x !== logBefore.split(' ')[i]).every((x) => /device:hq-fw|iface:hq-fw/.test(x)));
+      check('status after a logical move: Logical "Manually adjusted", Physical unchanged', status('logical') === 'manual' && status('physical') === 'auto');
+      // returning the node to its calculated position counts as auto-arranged again (derived, not a flag)
+      ad.movePositions('logical', new Map([['hq-fw', ad.autoLayout('logical').get('hq-fw')!]]), 'Move hq-fw back');
+      (app as unknown as { afterEdit(n?: string): void }).afterEdit();
+      check('moving the node back to its calculated position shows "Auto-arranged"', status('logical') === 'auto' && rects() === logBefore);
+      doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }));
+      check('undo of that shows "Manually adjusted" again', status('logical') === 'manual' && rects() === moved);
       click('#btn-arrange');
       await answerDialog('logical');
       check('Auto-arrange ignores manual positions (same result as before the move)', rects() === logBefore);
       doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }));
-      check('undo restores the manual position', rects() === moved);
+      check('undo restores the manual position', rects() === moved && status('logical') === 'manual');
       doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'y', ctrlKey: true, bubbles: true }));
+      check('redo: "Auto-arranged" again', status('logical') === 'auto');
       // export -> reload: identical positions in both views
       const exported = app.exportText();
       app.loadText(exported, 'arranged.yaml', 'file');
@@ -216,6 +242,20 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const logReload = rects();
       click('[data-view-btn="physical"]');
       check('arrange -> export -> reload keeps every position (both views)', logReload === logBefore && rects() === physBefore && !(app.mdoc as ModelDoc).dirty);
+      check('status after export -> reload: both "Auto-arranged"', status('physical') === 'auto' && status('logical') === 'auto');
+      {
+        // a manual adjustment survives export -> reload, and a model edit is not a manual adjustment
+        const md = app.mdoc as ModelDoc;
+        md.movePositions('physical', new Map([['hq-log', { x: -700, y: 40 }]]), 'Move hq-log');
+        app.loadText(md.exportText(), 'manual.yaml', 'file');
+        check('status after exporting and reloading a manually adjusted layout: Physical "Manually adjusted"', status('physical') === 'manual' && status('logical') === 'auto');
+        const re = app.mdoc as ModelDoc;
+        re.arrange(['physical', 'logical']);
+        re.addEntity('device', [['id', strNode('hq-spare')], ['type', strNode('switch')], ['group', strNode('hq-core')]]);
+        (app as unknown as { afterEdit(n?: string): void }).afterEdit();
+        check('a model edit is not reported as a manual adjustment ("Edited since arranged")', status('physical') === 'edited' && status('logical') === 'edited', statusText('physical'));
+        re.markSaved();
+      }
       // an equivalent file with every list reversed arranges identically
       const shuffled = ModelDoc.fromText(EXAMPLES[wanIdx].text, 'shuffled.yaml', 'file').doc as ModelDoc;
       const rev = (n: import('./yaml').YNode): void => {
@@ -253,6 +293,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     await tick();
     const d0 = app.mdoc as ModelDoc;
     check('New creates a valid minimal model (one router with a loopback)', !!d0 && d0.origin === 'new' && d0.valid && d0.entities('device').length === 1 && !d0.dirty);
+    check('status of a new model: both views "Auto-arranged"', status('physical') === 'auto' && status('logical') === 'auto');
     click('[data-view-btn="logical"]');
     check('new model: loopback chip with router-ID marker in the logical view', count('.loop-chip.rid') === 1);
 

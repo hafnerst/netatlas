@@ -342,5 +342,19 @@ dialog#modal::backdrop { background: rgba(0,0,0,.35); }
 .loop-chip text { font-size: 9.5px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .loop-chip.rid rect { stroke-width: 1.8; }
 
-#layout-state { padding: 0 6px; white-space: nowrap; cursor: help; }
 .arrange-scope { margin: 6px 0 10px; padding-left: 20px; }
+/* auto-arrange button and per-view layout status */
+.arrange-group { display: inline-flex; align-items: center; gap: 6px; }
+.arrange-btn { font-weight: 600; border-color: var(--accent); color: var(--accent); }
+.arrange-btn:disabled { color: inherit; border-color: var(--border); }
+.layout-status { display: inline-flex; gap: 4px; }
+body:not([data-state="loaded"]) .layout-status { display: none; }
+.lstat { font-size: 11.5px; padding: 1px 7px; border-radius: 99px; border: 1px solid var(--border); color: var(--muted); white-space: nowrap; cursor: help; }
+.lstat.current { color: var(--text); font-weight: 600; }
+.lstat.st-auto.current { border-color: #2f9e44; }
+.lstat.st-manual.current { border-color: var(--warn); }
+.lstat.st-edited.current { border-color: var(--accent); }
+.lstat::before { margin-right: 4px; }
+.lstat.st-auto::before { content: "\2713"; color: #2f9e44; }
+.lstat.st-manual::before { content: "\270E"; color: var(--warn); }
+.lstat.st-edited::before { content: "\25CF"; color: var(--accent); }

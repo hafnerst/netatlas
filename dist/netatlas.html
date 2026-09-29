@@ -353,8 +353,22 @@ dialog#modal::backdrop { background: rgba(0,0,0,.35); }
 .loop-chip text { font-size: 9.5px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .loop-chip.rid rect { stroke-width: 1.8; }
 
-#layout-state { padding: 0 6px; white-space: nowrap; cursor: help; }
 .arrange-scope { margin: 6px 0 10px; padding-left: 20px; }
+/* auto-arrange button and per-view layout status */
+.arrange-group { display: inline-flex; align-items: center; gap: 6px; }
+.arrange-btn { font-weight: 600; border-color: var(--accent); color: var(--accent); }
+.arrange-btn:disabled { color: inherit; border-color: var(--border); }
+.layout-status { display: inline-flex; gap: 4px; }
+body:not([data-state="loaded"]) .layout-status { display: none; }
+.lstat { font-size: 11.5px; padding: 1px 7px; border-radius: 99px; border: 1px solid var(--border); color: var(--muted); white-space: nowrap; cursor: help; }
+.lstat.current { color: var(--text); font-weight: 600; }
+.lstat.st-auto.current { border-color: #2f9e44; }
+.lstat.st-manual.current { border-color: var(--warn); }
+.lstat.st-edited.current { border-color: var(--accent); }
+.lstat::before { margin-right: 4px; }
+.lstat.st-auto::before { content: "\2713"; color: #2f9e44; }
+.lstat.st-manual::before { content: "\270E"; color: var(--warn); }
+.lstat.st-edited::before { content: "\25CF"; color: var(--accent); }
 
 </style>
 </head>
@@ -379,6 +393,13 @@ dialog#modal::backdrop { background: rgba(0,0,0,.35); }
     <button type="button" data-view-btn="physical" title="Physical view (P)">Physical</button>
     <button type="button" data-view-btn="logical" title="Logical view (L)">Logical</button>
   </div>
+  <div class="arrange-group" role="group" aria-label="Layout">
+    <button id="btn-arrange" type="button" class="arrange-btn" disabled title="Recompute the positions of every object in the whole model, for the current view or both views (A)">Auto-arrange…</button>
+    <span id="layout-status" class="layout-status" aria-live="polite">
+      <span class="lstat" data-view-status="physical"></span>
+      <span class="lstat" data-view-status="logical"></span>
+    </span>
+  </div>
   <div class="search-wrap">
     <input id="search" type="search" placeholder="Find… ( / )" aria-label="Find device, network, relation" autocomplete="off" spellcheck="false">
     <div id="search-results" class="dropdown" hidden></div>
@@ -400,8 +421,6 @@ dialog#modal::backdrop { background: rgba(0,0,0,.35); }
       <span id="zoom-level">100%</span>
       <button id="zoom-out" type="button" title="Zoom out (−)">−</button>
       <button id="zoom-fit" type="button" title="Fit to screen (0)">Fit</button>
-      <button id="btn-arrange" type="button" title="Recompute the positions of the whole model (A)">Auto-arrange…</button>
-      <span id="layout-state" class="muted small"></span>
       <button id="save-svg" type="button" title="Save the current view as an SVG file">Save SVG</button>
     </div>
     <div id="empty" class="overlay">
@@ -1089,16 +1108,40 @@ class App {
             : [];
         for (const [id, v] of opts)
             this.$(id).checked = v;
-        const ls = this.$('layout-state');
-        if (d && s) {
-            const stored = d.hasStoredLayout(s.state.view);
-            ls.textContent = stored ? 'positions: saved' : 'positions: automatic';
-            ls.title = stored
-                ? 'Positions of this view are stored in the model (layout section) and exported with it. Drag nodes to move them; Auto-arrange recomputes them.'
-                : 'This view shows the Auto-arrange result; nothing is stored in the file yet. Moving a node or editing the model saves the current positions.';
+        this.$('btn-arrange').disabled = !d || !s;
+        this.updateLayoutStatus();
+    }
+    /**
+     * Per-view layout status next to the Auto-arrange button. Always derived
+     * from the document (current positions vs. the deterministic Auto-arrange
+     * result), never from the last action, so it is right after undo/reload.
+     */
+    updateLayoutStatus() {
+        const d = this.mdoc;
+        const s = this.session;
+        const texts = { auto: 'Auto-arranged', manual: 'Manually adjusted', edited: 'Edited since arranged' };
+        const tips = {
+            auto: 'Every object is exactly where Auto-arrange puts it for the current model.',
+            manual: 'Some objects were dragged away from their auto-arranged positions. Auto-arrange restores them (undoable).',
+            edited: 'The model changed after the layout was arranged. Existing objects kept their positions and new ones were placed next to their neighbors, so the diagram no longer matches a fresh Auto-arrange. No object was moved by hand.',
+        };
+        const views = ['physical', 'logical'];
+        for (const v of views) {
+            const badge = this.doc.querySelector(`[data-view-status="${v}"]`);
+            if (!badge)
+                continue;
+            if (!d || !s) {
+                badge.textContent = '';
+                badge.className = 'lstat';
+                continue;
+            }
+            const st = d.layoutStatus(v);
+            const name = v === 'physical' ? 'Physical' : 'Logical';
+            badge.textContent = `${name}: ${texts[st]}`;
+            badge.className = `lstat st-${st}${s.state.view === v ? ' current' : ''}`;
+            badge.setAttribute('data-status', st);
+            badge.title = `${name} view${s.state.view === v ? ' (shown)' : ''}: ${tips[st]}` + (d.hasStoredLayout(v) ? ' Positions are stored in the model and exported with it.' : ' Positions are not stored yet; the file shows the auto-arranged layout.');
         }
-        else
-            ls.textContent = '';
     }
     fillExamples() {
         const sel = this.$('examples');
@@ -1469,8 +1512,8 @@ class App {
                     'The layout is deterministic: the same model always gives the same positions, whatever you moved before.',
             ]),
             (0, dom_1.el)(this.doc, 'ul', { class: 'arrange-scope' }, [
-                (0, dom_1.el)(this.doc, 'li', {}, [`Physical view: ${counts.physical} devices (group boxes follow their devices)` + (d.hasStoredLayout('physical') ? ' — manual positions will be replaced' : '')]),
-                (0, dom_1.el)(this.doc, 'li', {}, [`Logical view: ${counts.logical} devices, networks and hubs` + (d.hasStoredLayout('logical') ? ' — manual positions will be replaced' : '')]),
+                (0, dom_1.el)(this.doc, 'li', {}, [`Physical view: ${counts.physical} devices (group boxes follow their devices) — currently ${statusText(d.layoutStatus('physical'))}`]),
+                (0, dom_1.el)(this.doc, 'li', {}, [`Logical view: ${counts.logical} devices, networks and hubs — currently ${statusText(d.layoutStatus('logical'))}`]),
             ]),
             (0, dom_1.el)(this.doc, 'p', { class: 'muted' }, ['The positions are stored in the model’s layout section and exported with the YAML. Undo with Ctrl+Z.']),
         ];
@@ -1479,8 +1522,8 @@ class App {
             body,
             buttons: [
                 { label: 'Cancel', value: 'cancel' },
-                { label: 'Both views', value: 'both' },
-                { label: `${view === 'physical' ? 'Physical' : 'Logical'} view`, value: view, kind: 'primary' },
+                { label: 'Arrange both views', value: 'both' },
+                { label: `Arrange ${view} view only`, value: view, kind: 'primary' },
             ],
         });
         if (a === 'cancel')
@@ -1666,6 +1709,9 @@ class App {
     }
 }
 exports.App = App;
+function statusText(st) {
+    return st === 'auto' ? '“Auto-arranged”' : st === 'manual' ? '“Manually adjusted”' : '“Edited since arranged”';
+}
 function round(v) {
     return Math.round(v * 100) / 100;
 }
@@ -1768,6 +1814,16 @@ function keepTrivia(from, to) {
         to.comment = from.comment;
     return to;
 }
+function sameSet(a, b) {
+    if (a.size !== b.size)
+        return false;
+    let same = true;
+    a.forEach((x) => {
+        if (!b.has(x))
+            same = false;
+    });
+    return same;
+}
 /** Insert or replace `key` in `m`, placing new keys according to `order`. */
 function setKey(m, key, value, order) {
     const existing = m.entries.get(key);
@@ -1810,6 +1866,8 @@ class ModelDoc {
         this.edited = false;
         /** id renames performed during the current change (old -> new), for layout maintenance */
         this.renames = new Map();
+        // ------------------------------------------------------------ layout status
+        this.autoMemo = new Map();
         this.root = root;
         this.fileName = fileName;
         this.origin = origin;
@@ -1976,9 +2034,107 @@ class ModelDoc {
                 this.writeLayout(view, next);
                 changed = true;
             }
+            // the record of hand-placed nodes follows renames and forgets removed nodes
+            const manual = new Set();
+            pre.layout.manual[view].forEach((id) => {
+                const nid = this.renames.get(id) || id;
+                if (next.has(nid))
+                    manual.add(nid);
+            });
+            post.layout.manual[view].forEach((id) => {
+                if (next.has(id))
+                    manual.add(id);
+            });
+            if (!sameSet(manual, post.layout.manual[view]) || this.rawManualIds(view).some((id) => !next.has(id))) {
+                this.writeManual(view, manual);
+                changed = true;
+            }
         }
         if (changed)
             this.revalidate();
+    }
+    /** Auto-arrange result for the current model (cached per layout signature). */
+    autoLayout(view) {
+        const m = this.result.model;
+        if (!m)
+            return new Map();
+        const input = (0, layout_input_1.layoutInput)(m);
+        const key = view + '\n' + (0, layout_input_1.layoutSignature)(input);
+        let r = this.autoMemo.get(key);
+        if (!r) {
+            r = (0, layout_auto_1.autoPositions)(view, input);
+            // keep only the latest result per view
+            Array.from(this.autoMemo.keys()).forEach((k) => {
+                if (k.indexOf(view + '\n') === 0)
+                    this.autoMemo.delete(k);
+            });
+            this.autoMemo.set(key, r);
+        }
+        return r;
+    }
+    /**
+     * Does the diagram of a view match Auto-arrange for the current model?
+     *   'auto'    every node is exactly where Auto-arrange puts it;
+     *   'manual'  at least one node that was placed by hand differs from it;
+     *   'edited'  it differs only because the model changed after arranging
+     *             (edits keep existing positions stable instead of re-arranging).
+     * Derived from the document every time: it is correct after undo, reload,
+     * or when nodes are back at their calculated positions.
+     */
+    layoutStatus(view) {
+        const m = this.result.model;
+        if (!m || m.layout[view].size === 0)
+            return 'auto';
+        const auto = this.autoLayout(view);
+        const shown = this.displayedPositions(view);
+        const differing = [];
+        shown.forEach((p, id) => {
+            const q = auto.get(id);
+            if (!q || q.x !== p.x || q.y !== p.y)
+                differing.push(id);
+        });
+        if (!differing.length)
+            return 'auto';
+        return differing.some((id) => m.layout.manual[view].has(id)) ? 'manual' : 'edited';
+    }
+    /** Ids recorded as hand-placed in the document (valid or not). */
+    rawManualIds(view) {
+        const lay = this.root.entries.get('layout');
+        if (!lay || lay.value.kind !== 'map')
+            return [];
+        const man = lay.value.entries.get('manual');
+        if (!man || man.value.kind !== 'map')
+            return [];
+        const l = man.value.entries.get(view);
+        return l && l.value.kind === 'seq' ? l.value.items.map((i) => (0, validate_1.scalarText)(i) || '') : [];
+    }
+    /** Store the set of hand-placed nodes of a view (sorted; removed when empty). */
+    writeManual(view, ids) {
+        let lay = this.root.entries.get('layout');
+        if (!lay || lay.value.kind !== 'map') {
+            if (!ids.size)
+                return;
+            const fresh = (0, yaml_1.mapNode)();
+            fresh.blank = true;
+            setKey(this.root, 'layout', fresh, exports.KEY_ORDER.top);
+            lay = this.root.entries.get('layout');
+        }
+        const layMap = lay.value;
+        const cur = layMap.entries.get('manual');
+        let man = cur && cur.value.kind === 'map' ? cur.value : null;
+        if (!ids.size) {
+            if (man) {
+                man.entries.delete(view);
+                if (!man.entries.size)
+                    layMap.entries.delete('manual');
+            }
+            return;
+        }
+        if (!man) {
+            man = (0, yaml_1.mapNode)();
+            setKey(layMap, 'manual', man, ['physical', 'logical', 'manual']);
+        }
+        setKey(man, view, (0, yaml_1.seqNode)(Array.from(ids).sort(layout_input_1.cmp).map(yaml_1.strNode), true), ['physical', 'logical']);
     }
     /** Keys present in the document's layout section for a view (valid or not). */
     rawLayoutKeys(view) {
@@ -2025,7 +2181,7 @@ class ModelDoc {
         const targets = new Map();
         let moved = 0;
         for (const v of views) {
-            const auto = (0, layout_auto_1.autoPositions)(v, input);
+            const auto = this.autoLayout(v);
             const shown = (0, layout_auto_1.resolvePositions)(v, input, m.layout[v]);
             auto.forEach((p, id) => {
                 const q = shown.get(id);
@@ -2038,7 +2194,10 @@ class ModelDoc {
         if (!targets.size)
             return { changed: false, moved: 0 };
         const label = views.length > 1 ? 'Auto-arrange (both views)' : `Auto-arrange (${views[0]} view)`;
-        this.change(label, () => targets.forEach((pos, v) => this.writeLayout(v, pos)), { layout: false });
+        this.change(label, () => targets.forEach((pos, v) => {
+            this.writeLayout(v, pos);
+            this.writeManual(v, new Set());
+        }), { layout: false });
         return { changed: true, moved };
     }
     /** Store manual positions (a drag). The rest of the view keeps its displayed positions. */
@@ -2053,7 +2212,23 @@ class ModelDoc {
         });
         if ((0, layout_auto_1.samePositions)(next, m.layout[view]))
             return false;
-        this.change(label, () => this.writeLayout(view, next), { layout: false });
+        const manual = new Set(m.layout.manual[view]);
+        updates.forEach((_, id) => {
+            if (next.has(id))
+                manual.add(id);
+        });
+        // a node put back exactly where Auto-arrange places it is no longer "placed by hand"
+        const auto = this.autoLayout(view);
+        Array.from(manual).forEach((id) => {
+            const p = next.get(id);
+            const q = auto.get(id);
+            if (!p || (q && q.x === p.x && q.y === p.y))
+                manual.delete(id);
+        });
+        this.change(label, () => {
+            this.writeLayout(view, next);
+            this.writeManual(view, manual);
+        }, { layout: false });
         return true;
     }
     /** Remove all stored positions (the diagram then shows the auto-arrange result). */
@@ -5059,7 +5234,7 @@ function build(root, c) {
     // ------------------------------------------------------------- layout
     // Presentation only: problems here are warnings and the entry is ignored,
     // so stored positions can never change what the model means.
-    const layout = { physical: new Map(), logical: new Map() };
+    const layout = { physical: new Map(), logical: new Map(), manual: { physical: new Set(), logical: new Set() } };
     const layoutNode = get(top, 'layout');
     if (!isNull(layoutNode)) {
         const ln = layoutNode;
@@ -5067,8 +5242,29 @@ function build(root, c) {
             c.warn(ln, 'layout', 'layout must be a mapping with "physical:" and/or "logical:"; it is ignored');
         else {
             ln.entries.forEach((e, view) => {
+                if (view === 'manual') {
+                    // which nodes were placed by hand, per view (only used for the layout status)
+                    if (isNull(e.value))
+                        return;
+                    if (e.value.kind !== 'map') {
+                        c.warn(e.value, 'layout.manual', 'expected "physical: [ids]" and/or "logical: [ids]"; ignored');
+                        return;
+                    }
+                    e.value.entries.forEach((me, mview) => {
+                        if ((mview !== 'physical' && mview !== 'logical') || me.value.kind !== 'seq') {
+                            c.warn(e.value, 'layout.manual.' + mview, 'expected "physical: [ids]" or "logical: [ids]"; ignored', { key: mview, line: me.keyLine });
+                            return;
+                        }
+                        for (const it of me.value.items) {
+                            const id = scalarText(it);
+                            if (id !== undefined)
+                                layout.manual[mview].add(id);
+                        }
+                    });
+                    return;
+                }
                 if (view !== 'physical' && view !== 'logical') {
-                    c.warn(ln, 'layout.' + view, `unknown layout view "${view}" (use physical or logical); it is ignored`, { key: view, line: e.keyLine });
+                    c.warn(ln, 'layout.' + view, `unknown layout view "${view}" (use physical, logical or manual); it is ignored`, { key: view, line: e.keyLine });
                     return;
                 }
                 if (isNull(e.value))
@@ -9170,6 +9366,7 @@ exports.runSelfTest = runSelfTest;
  * safety, error reporting and that the page made no network requests.
  */
 const doc_1 = __req("doc");
+const yaml_1 = __req("yaml");
 const examples_1 = __req("generated/examples");
 const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms));
 async function runSelfTest(app, doc) {
@@ -9204,6 +9401,9 @@ async function runSelfTest(app, doc) {
         await tick(10);
         return !!b;
     };
+    /** status shown next to the Auto-arrange button: "auto" | "manual" | "edited" */
+    const status = (v) => (q(`[data-view-status="${v}"]`) || { getAttribute: () => '' }).getAttribute('data-status') || '';
+    const statusText = (v) => (q(`[data-view-status="${v}"]`) || { textContent: '' }).textContent || '';
     let violations = 0;
     doc.addEventListener('securitypolicyviolation', () => violations++);
     // capture downloads instead of saving them
@@ -9228,6 +9428,11 @@ async function runSelfTest(app, doc) {
         const csp = doc.querySelector('meta[http-equiv="Content-Security-Policy"]');
         const policy = csp ? csp.getAttribute('content') || '' : '';
         check('CSP meta present and blocks network', /default-src 'none'/.test(policy) && /connect-src 'none'/.test(policy), policy);
+        {
+            const btn = q('#btn-arrange');
+            const r = btn ? btn.getBoundingClientRect() : null;
+            check('Auto-arrange button is in the top toolbar, visible and labelled (disabled until a model is open)', !!btn && !!btn.closest('header.topbar') && !!r && r.width > 40 && r.height > 10 && r.top < 60 && /^Auto-arrange/.test((btn.textContent || '').trim()) && btn.disabled, btn ? (btn.textContent || '') + (btn.disabled ? ' (disabled)' : '') : 'missing');
+        }
         // ------------------------------------------------ viewer: every example
         for (let i = 0; i < examples_1.EXAMPLES.length; i++) {
             const ex = examples_1.EXAMPLES[i];
@@ -9281,6 +9486,8 @@ async function runSelfTest(app, doc) {
             const dm = app.mdoc;
             const fw = dm.result.model.layout.physical.get('hq-fw');
             check('dragging a device stores its position in the model (physical view only, one undo step)', !!fw && dm.dirty && dm.canUndo() === 'Move hq-fw' && dm.hasStoredLayout('physical') && !dm.hasStoredLayout('logical'), JSON.stringify(fw));
+            check('status after dragging: Physical "Manually adjusted", Logical still "Auto-arranged"', status('physical') === 'manual' && status('logical') === 'auto' && /Physical: Manually adjusted/.test(statusText('physical')), statusText('physical') + ' / ' + statusText('logical'));
+            check('Auto-arrange button is enabled once a model is open', !q('#btn-arrange').disabled);
         }
         const t0 = vp.getAttribute('transform');
         const sr = svg.getBoundingClientRect();
@@ -9293,8 +9500,10 @@ async function runSelfTest(app, doc) {
         check('mouse wheel zooms', vp.getAttribute('transform') !== t1);
         doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }));
         check('undo reverts the drag (and the stored positions)', !app.mdoc.hasStoredLayout('physical'));
+        check('status after undo: back to "Auto-arranged"', status('physical') === 'auto' && status('logical') === 'auto');
         doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'l', bubbles: true }));
         check('keyboard shortcut L switches to the logical view', doc.body.getAttribute('data-view') === 'logical');
+        check('switching views highlights the status of the shown view', !!q('[data-view-status="logical"].current') && !q('[data-view-status="physical"].current'));
         doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
         check('Escape clears the selection', !!app.session && app.session.state.selected === null);
         click('[data-view-btn="logical"]');
@@ -9326,7 +9535,7 @@ async function runSelfTest(app, doc) {
             const physBefore = rects();
             click('[data-view-btn="logical"]');
             const logBefore = rects();
-            check('loading a file does not store positions or mark it changed', !app.mdoc.hasStoredLayout('physical') && !app.mdoc.dirty && /automatic/.test(q('#layout-state').textContent || ''));
+            check('loading a file does not store positions or mark it changed; status "Auto-arranged"', !app.mdoc.hasStoredLayout('physical') && !app.mdoc.dirty && status('physical') === 'auto' && status('logical') === 'auto');
             click('#btn-arrange');
             await tick(10);
             check('Auto-arrange explains its scope (whole model, both views, undo)', /whole model/.test(q('#modal').textContent || '') && /Physical view: 15 devices/.test(q('#modal').textContent || '') && !!q('#modal [data-value="both"]'));
@@ -9336,6 +9545,7 @@ async function runSelfTest(app, doc) {
             check('arranging an automatic layout stores it without moving anything', ad.hasStoredLayout('physical') && ad.hasStoredLayout('logical') && rects() === physBefore && /nothing moved/.test(q('#toast').textContent || ''));
             click('[data-view-btn="logical"]');
             check('… in the logical view as well', rects() === logBefore);
+            check('status after Auto-arrange: both views "Auto-arranged"', status('physical') === 'auto' && status('logical') === 'auto');
             const undoLabel = ad.canUndo();
             doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true }));
             await tick(10);
@@ -9347,12 +9557,20 @@ async function runSelfTest(app, doc) {
             app.afterEdit();
             const moved = rects();
             check('a manual move changes only that node', moved !== logBefore && moved.split(' ').filter((x, i) => x !== logBefore.split(' ')[i]).every((x) => /device:hq-fw|iface:hq-fw/.test(x)));
+            check('status after a logical move: Logical "Manually adjusted", Physical unchanged', status('logical') === 'manual' && status('physical') === 'auto');
+            // returning the node to its calculated position counts as auto-arranged again (derived, not a flag)
+            ad.movePositions('logical', new Map([['hq-fw', ad.autoLayout('logical').get('hq-fw')]]), 'Move hq-fw back');
+            app.afterEdit();
+            check('moving the node back to its calculated position shows "Auto-arranged"', status('logical') === 'auto' && rects() === logBefore);
+            doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }));
+            check('undo of that shows "Manually adjusted" again', status('logical') === 'manual' && rects() === moved);
             click('#btn-arrange');
             await answerDialog('logical');
             check('Auto-arrange ignores manual positions (same result as before the move)', rects() === logBefore);
             doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }));
-            check('undo restores the manual position', rects() === moved);
+            check('undo restores the manual position', rects() === moved && status('logical') === 'manual');
             doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'y', ctrlKey: true, bubbles: true }));
+            check('redo: "Auto-arranged" again', status('logical') === 'auto');
             // export -> reload: identical positions in both views
             const exported = app.exportText();
             app.loadText(exported, 'arranged.yaml', 'file');
@@ -9360,6 +9578,20 @@ async function runSelfTest(app, doc) {
             const logReload = rects();
             click('[data-view-btn="physical"]');
             check('arrange -> export -> reload keeps every position (both views)', logReload === logBefore && rects() === physBefore && !app.mdoc.dirty);
+            check('status after export -> reload: both "Auto-arranged"', status('physical') === 'auto' && status('logical') === 'auto');
+            {
+                // a manual adjustment survives export -> reload, and a model edit is not a manual adjustment
+                const md = app.mdoc;
+                md.movePositions('physical', new Map([['hq-log', { x: -700, y: 40 }]]), 'Move hq-log');
+                app.loadText(md.exportText(), 'manual.yaml', 'file');
+                check('status after exporting and reloading a manually adjusted layout: Physical "Manually adjusted"', status('physical') === 'manual' && status('logical') === 'auto');
+                const re = app.mdoc;
+                re.arrange(['physical', 'logical']);
+                re.addEntity('device', [['id', (0, yaml_1.strNode)('hq-spare')], ['type', (0, yaml_1.strNode)('switch')], ['group', (0, yaml_1.strNode)('hq-core')]]);
+                app.afterEdit();
+                check('a model edit is not reported as a manual adjustment ("Edited since arranged")', status('physical') === 'edited' && status('logical') === 'edited', statusText('physical'));
+                re.markSaved();
+            }
             // an equivalent file with every list reversed arranges identically
             const shuffled = doc_1.ModelDoc.fromText(examples_1.EXAMPLES[wanIdx].text, 'shuffled.yaml', 'file').doc;
             const rev = (n) => {
@@ -9397,6 +9629,7 @@ async function runSelfTest(app, doc) {
         await tick();
         const d0 = app.mdoc;
         check('New creates a valid minimal model (one router with a loopback)', !!d0 && d0.origin === 'new' && d0.valid && d0.entities('device').length === 1 && !d0.dirty);
+        check('status of a new model: both views "Auto-arranged"', status('physical') === 'auto' && status('logical') === 'auto');
         click('[data-view-btn="logical"]');
         check('new model: loopback chip with router-ID marker in the logical view', count('.loop-chip.rid') === 1);
         click('#outline [data-act="add-entity"][data-kind="device"]');
