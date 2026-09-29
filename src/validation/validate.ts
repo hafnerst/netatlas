@@ -1,4 +1,4 @@
-import { addrKey, parseAddress, parsePrefix, prefixContains, prefixProblem } from './ip';
+import { addrKey, parseAddress, parsePrefix, prefixContains, prefixProblem } from '../model/ip';
 import {
   Attrs,
   CATEGORIES,
@@ -15,27 +15,22 @@ import {
   ModelIndex,
   ModelLayout,
   Network,
-  ProtocolDef,
   RelEndpoint,
   Relation,
   ifaceKey,
   relationDevices,
-} from './model';
-import { COLOR_RE, DEFAULT_STYLE, builtinProtocols, lookupProtocol, normalizeProtocol } from './protocols';
-import { YMap, YNode, YamlError, YamlLimits, parseYaml } from './yaml';
+} from '../model/types';
+import { COLOR_RE, DEFAULT_STYLE, builtinProtocols, lookupProtocol, normalizeProtocol } from '../model/protocols';
+import { YMap, YNode, YamlError, YamlLimits, parseYaml } from '../yaml/parse';
+import { FORMAT_VERSION, SCHEMA } from '../yaml/schema';
+import { Ctx, DEFAULT_MODEL_LIMITS, ID_RE, IFACE_RE, Issue, ModelLimits, Reader, TooManyErrors, get, isNull, kindOf, scalarText, suggest } from './reader';
 
-export interface Issue {
-  severity: 'error' | 'warning';
-  /** 1-based line in the loaded file; 0 for content created in the editor */
-  line: number;
-  /** human-readable location, e.g. "devices.r1.interfaces[0].ip[1]" */
-  path: string;
-  message: string;
-  /** the YAML node the issue is about (the containing mapping for a missing key) */
-  node?: YNode;
-  /** the key concerned, when the issue is about a key of `node` (missing / unknown key) */
-  key?: string;
-}
+export { DEFAULT_MODEL_LIMITS, ID_RE, IFACE_RE, scalarText, suggest };
+export type { Issue, ModelLimits };
+export { FORMAT_VERSION };
+
+/** protocol ids: lower-case letters, digits and _ . + - */
+export const PROTO_RE = /^[a-z0-9][a-z0-9_.+-]{0,39}$/;
 
 export interface LoadResult {
   /**
@@ -50,254 +45,20 @@ export interface LoadResult {
   warnings: Issue[];
 }
 
-export interface ModelLimits {
-  maxGroups: number;
-  maxDevices: number;
-  maxInterfacesPerDevice: number;
-  maxInterfaces: number;
-  maxLinks: number;
-  maxNetworks: number;
-  maxRelations: number;
-  maxEndpoints: number;
-  maxMembers: number;
-  maxProtocols: number;
-  maxGroupDepth: number;
-  maxAttrs: number;
-  maxLabel: number;
-  maxDescription: number;
-  maxErrors: number;
-}
-
-export const DEFAULT_MODEL_LIMITS: ModelLimits = {
-  maxGroups: 500,
-  maxDevices: 1000,
-  maxInterfacesPerDevice: 512,
-  maxInterfaces: 20000,
-  maxLinks: 5000,
-  maxNetworks: 2000,
-  maxRelations: 5000,
-  maxEndpoints: 64,
-  maxMembers: 1000,
-  maxProtocols: 200,
-  maxGroupDepth: 8,
-  maxAttrs: 100,
-  maxLabel: 200,
-  maxDescription: 4000,
-  maxErrors: 200,
-};
-
-export const FORMAT_VERSION = 1;
-
-/** Entity ids: letters, digits, "_", ".", "-" (no ":" — it separates device and interface). */
-export const ID_RE = /^[A-Za-z0-9_][A-Za-z0-9_.\-]{0,63}$/;
-/** Interface ids additionally allow "/" (e.g. "ge-0/0/1", "Ethernet1/1"). */
-export const IFACE_RE = /^[A-Za-z0-9_][A-Za-z0-9_.\-\/]{0,63}$/;
-export const PROTO_RE = /^[a-z0-9][a-z0-9_.+\-]{0,39}$/;
-
-export const TOP_KEYS = ['netatlas', 'title', 'description', 'protocols', 'groups', 'devices', 'links', 'networks', 'relations', 'layout'];
 /** largest accepted coordinate in the layout section */
 export const MAX_COORD = 1000000;
-export const GROUP_KEYS = ['id', 'label', 'kind', 'parent', 'description', 'attrs'];
-export const DEVICE_KEYS = ['id', 'label', 'type', 'group', 'vendor', 'model', 'role', 'mgmt', 'router_id', 'tier', 'description', 'attrs', 'interfaces'];
-export const IFACE_KEYS = ['id', 'label', 'type', 'speed', 'media', 'ip', 'vlan', 'mac', 'description', 'attrs'];
-export const LINK_KEYS = ['id', 'a', 'b', 'medium', 'speed', 'label', 'cable', 'description', 'attrs'];
-export const NET_KEYS = ['id', 'label', 'kind', 'cidr', 'vlan', 'vrf', 'members', 'description', 'attrs'];
-export const REL_KEYS = ['id', 'protocol', 'category', 'label', 'endpoints', 'over', 'network', 'directed', 'description', 'attrs'];
-export const EP_KEYS = ['device', 'interface', 'role', 'address', 'attrs'];
-export const PROTO_KEYS = ['id', 'label', 'category', 'color', 'style', 'description'];
+
+// keys per mapping kind: the single definition is yaml/schema.ts
+const TOP_KEYS = SCHEMA.top;
+const GROUP_KEYS = SCHEMA.group;
+const DEVICE_KEYS = SCHEMA.device;
+const IFACE_KEYS = SCHEMA.interface;
+const LINK_KEYS = SCHEMA.link;
+const NET_KEYS = SCHEMA.network;
+const REL_KEYS = SCHEMA.relation;
+const EP_KEYS = SCHEMA.endpoint;
+const PROTO_KEYS = SCHEMA.protocol;
 const ATTRS_HINT = ' (custom data belongs under "attrs:")';
-
-class TooManyErrors extends Error {}
-
-interface At {
-  key?: string;
-  line?: number;
-}
-
-class Ctx {
-  errors: Issue[] = [];
-  warnings: Issue[] = [];
-  constructor(readonly limits: ModelLimits) {}
-  private mk(severity: 'error' | 'warning', node: YNode, path: string, message: string, at: At): Issue {
-    const is: Issue = { severity, line: at.line !== undefined ? at.line : node.line, path, message, node };
-    if (at.key !== undefined) is.key = at.key;
-    return is;
-  }
-  error(node: YNode, path: string, message: string, at: At = {}): void {
-    this.errors.push(this.mk('error', node, path, message, at));
-    if (this.errors.length >= this.limits.maxErrors) throw new TooManyErrors();
-  }
-  warn(node: YNode, path: string, message: string, at: At = {}): void {
-    if (this.warnings.length < this.limits.maxErrors) this.warnings.push(this.mk('warning', node, path, message, at));
-  }
-}
-
-// --------------------------------------------------------------- utilities
-
-function levenshtein(a: string, b: string): number {
-  if (Math.abs(a.length - b.length) > 3) return 99;
-  const dp: number[] = [];
-  for (let j = 0; j <= b.length; j++) dp[j] = j;
-  for (let i = 1; i <= a.length; i++) {
-    let prev = dp[0];
-    dp[0] = i;
-    for (let j = 1; j <= b.length; j++) {
-      const tmp = dp[j];
-      dp[j] = Math.min(dp[j] + 1, dp[j - 1] + 1, prev + (a.charAt(i - 1) === b.charAt(j - 1) ? 0 : 1));
-      prev = tmp;
-    }
-  }
-  return dp[b.length];
-}
-
-/** " — did you mean "x"?" or a short list of valid options. */
-export function suggest(name: string, candidates: Iterable<string>, listIfFew = 8): string {
-  const all = Array.from(candidates);
-  let best = '';
-  let bestD = 99;
-  const lname = name.toLowerCase();
-  for (const c of all) {
-    const d = levenshtein(lname, c.toLowerCase());
-    if (d < bestD) {
-      bestD = d;
-      best = c;
-    }
-  }
-  if (best && bestD <= Math.max(1, Math.min(3, Math.floor(name.length / 3)))) return ` — did you mean "${best}"?`;
-  if (all.length && all.length <= listIfFew) return ` (known: ${all.join(', ')})`;
-  return '';
-}
-
-function kindOf(n: YNode): string {
-  return n.kind === 'map' ? 'a mapping' : n.kind === 'seq' ? 'a list' : n.value === null ? 'empty (null)' : 'a scalar';
-}
-
-function get(m: YMap, key: string): YNode | undefined {
-  const e = m.entries.get(key);
-  return e ? e.value : undefined;
-}
-
-function isNull(n: YNode | undefined): boolean {
-  return !n || (n.kind === 'scalar' && n.value === null && !n.quoted);
-}
-
-/** Text of a scalar as written (numbers keep their spelling, e.g. "010"). */
-export function scalarText(n: YNode): string | undefined {
-  if (n.kind !== 'scalar' || (n.value === null && !n.quoted)) return undefined;
-  return n.quoted ? String(n.value) : n.raw;
-}
-
-class Reader {
-  constructor(private readonly c: Ctx) {}
-
-  map(n: YNode | undefined, path: string): YMap | null {
-    if (!n) return null;
-    if (n.kind !== 'map') {
-      this.c.error(n, path, `expected a mapping ("key: value" lines) but found ${kindOf(n)}`);
-      return null;
-    }
-    return n;
-  }
-
-  /** A list; a single scalar is accepted as a one-element list when `allowScalar`. */
-  list(n: YNode | undefined, path: string, allowScalar = false): YNode[] {
-    if (isNull(n)) return [];
-    const node = n as YNode;
-    if (node.kind === 'seq') return node.items;
-    if (allowScalar && node.kind === 'scalar') return [node];
-    this.c.error(node, path, `expected a list ("- item" lines or [a, b]) but found ${kindOf(node)}`);
-    return [];
-  }
-
-  keys(m: YMap, allowed: string[], path: string, hint = ''): void {
-    m.entries.forEach((e, k) => {
-      if (allowed.indexOf(k) < 0) {
-        this.c.error(m, path ? path + '.' + k : k, `unknown key "${k}"${suggest(k, allowed, 20)}${hint}`, { key: k, line: e.keyLine });
-      }
-    });
-  }
-
-  str(n: YNode | undefined, path: string, max: number): string | undefined {
-    if (isNull(n)) return undefined;
-    const node = n as YNode;
-    if (node.kind !== 'scalar') {
-      this.c.error(node, path, `expected a single value but found ${kindOf(node)}`);
-      return undefined;
-    }
-    const s = scalarText(node) as string;
-    if (s.length > max) {
-      this.c.error(node, path, `value is ${s.length} characters long; the limit is ${max}`);
-      return s.slice(0, max);
-    }
-    return s;
-  }
-
-  field(m: YMap, key: string, path: string, max: number): string | undefined {
-    return this.str(get(m, key), path + '.' + key, max);
-  }
-
-  reqStr(m: YMap, key: string, path: string, max: number): string | undefined {
-    const n = get(m, key);
-    if (isNull(n)) {
-      this.c.error(m, path, `missing required key "${key}"`, { key });
-      return undefined;
-    }
-    return this.str(n, path + '.' + key, max);
-  }
-
-  id(m: YMap, path: string, re = ID_RE, what = 'id'): string | undefined {
-    const v = this.reqStr(m, 'id', path, 200);
-    if (v === undefined) return undefined;
-    if (!re.test(v)) {
-      this.c.error(
-        get(m, 'id') as YNode,
-        path + '.id',
-        `invalid ${what} "${v}": use 1–64 characters from A–Z a–z 0–9 _ . -${re === IFACE_RE ? ' /' : ''}, starting with a letter or digit` +
-          (v.indexOf(':') >= 0 ? ' (":" is reserved to separate device and interface)' : ''),
-      );
-      return undefined;
-    }
-    return v;
-  }
-
-  bool(n: YNode | undefined, path: string): boolean | undefined {
-    if (isNull(n)) return undefined;
-    const node = n as YNode;
-    if (node.kind !== 'scalar' || typeof node.value !== 'boolean') {
-      this.c.error(node, path, 'expected true or false');
-      return undefined;
-    }
-    return node.value;
-  }
-
-  /** Display-only flattening of attrs; the document keeps the full structure. */
-  attrs(n: YNode | undefined, path: string): Attrs {
-    const out: Attrs = [];
-    if (isNull(n)) return out;
-    const m = this.map(n, path);
-    if (!m) return out;
-    const walk = (node: YNode, prefix: string, depth: number): void => {
-      if (out.length >= this.c.limits.maxAttrs) {
-        this.c.error(node, path, `more than ${this.c.limits.maxAttrs} attributes`);
-        return;
-      }
-      if (node.kind === 'scalar') {
-        const s = node.quoted ? String(node.value) : node.raw;
-        out.push([prefix, s.length > 500 ? s.slice(0, 500) + '…' : s]);
-      } else if (node.kind === 'seq') {
-        if (node.items.every((i) => i.kind === 'scalar')) {
-          out.push([prefix, node.items.map((i) => (i.kind === 'scalar' ? (i.quoted ? String(i.value) : i.raw) : '')).join(', ')]);
-        } else node.items.forEach((i, k) => walk(i, prefix + '[' + k + ']', depth + 1));
-      } else if (depth > 4) {
-        out.push([prefix, '{…}']);
-      } else {
-        node.entries.forEach((e, k) => walk(e.value, prefix ? prefix + '.' + k : k, depth + 1));
-      }
-    };
-    walk(m, '', 0);
-    return out;
-  }
-}
 
 // ------------------------------------------------------------ main entry
 
@@ -1005,11 +766,4 @@ function build(root: YNode | null, c: Ctx): Model | null {
     layout,
     index,
   };
-}
-
-/** Definition used to draw a relation: its protocol def, with category/style following the relation's category. */
-export function relationStyle(model: Model, rel: Relation): ProtocolDef {
-  const def = lookupProtocol(model.protocols, rel.protocol, rel.category);
-  if (def.category !== rel.category) return { ...def, category: rel.category, style: DEFAULT_STYLE[rel.category] };
-  return def;
 }

@@ -1,4 +1,4 @@
-import { Category, LineStyle, ProtocolDef } from './model';
+import { Category, LineStyle, Model, ProtocolDef, Relation } from './types';
 
 /**
  * Built-in protocol registry. This is a convenience, not a whitelist: any
@@ -138,3 +138,13 @@ function hslToHex(h: number, s: number, l: number): string {
 }
 
 export const COLOR_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
+
+/**
+ * Definition used to draw a relation: its protocol definition, with category
+ * and line style following the relation's own category when it overrides it.
+ */
+export function relationStyle(model: Model, rel: Relation): ProtocolDef {
+  const def = lookupProtocol(model.protocols, rel.protocol, rel.category);
+  if (def.category !== rel.category) return { ...def, category: rel.category, style: DEFAULT_STYLE[rel.category] };
+  return def;
+}

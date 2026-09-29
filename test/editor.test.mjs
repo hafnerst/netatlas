@@ -6,9 +6,9 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { root, load, yaml, validate, state, scene, byClass } from './helpers.mjs';
 
-const W = load('yaml-write.js');
-const D = load('doc.js');
-const IP = load('ip.js');
+const W = load('yaml/write.js');
+const D = load('editor/document.js');
+const IP = load('model/ip.js');
 const { ModelDoc, KEY_ORDER } = D;
 
 /** Data-only view of a tree (values, raw text of plain scalars, order). */
@@ -397,7 +397,7 @@ test('loopbacks: shown as chips in the logical view and in device details, never
   assert.equal(chips.length, 4);
   assert.equal(byClass(log, 'rid').length, 2);
   assert.match(scene.textOf(log), /lo0  10\.255\.0\.2\/32 \+1/);
-  const det = scene.textOf(load('panels.js').detailsFor(d.result.model, 'device:edge-b'));
+  const det = scene.textOf(load('ui/panels.js').detailsFor(d.result.model, 'device:edge-b'));
   assert.match(det, /Loopbacks \(2\)/);
   assert.match(det, /10\.255\.0\.2\/32\n2001:db8:ffff::2\/128/);
   assert.match(det, /Interfaces \(1, 1 cabled\)/);

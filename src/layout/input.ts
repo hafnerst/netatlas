@@ -10,9 +10,8 @@
  * Everything is sorted by id with plain code-unit string comparison (never
  * localeCompare, which depends on the browser locale).
  */
-import { Model, loopbacks, relationDevices } from './model';
-import { networkSubtitle } from './layout-logical-size';
-import { defaultTier } from './style';
+import { Model, loopbacks, relationDevices } from '../model/types';
+import { networkSubtitle } from './sizes';
 
 export interface LEnd {
   device: string;
@@ -50,6 +49,19 @@ export interface LayoutInput {
   links: LLink[];
   networks: LNet[];
   relations: LRel[];
+}
+
+/** Vertical tier of a device type in the physical view (0 = top). */
+export function defaultTier(type: string): number {
+  const t = type.toLowerCase();
+  if (/^(cloud|internet|wan|isp|provider)$/.test(t)) return 0;
+  if (/^(firewall|fw|ngfw|utm|ids|ips|waf)$/.test(t)) return 2;
+  if (/^(router|gateway|vpn|pe|ce|bng|sdwan|sd-wan|loadbalancer|lb|adc)$/.test(t)) return 1;
+  if (/^(l3switch|core|multilayer|spine)$/.test(t)) return 3;
+  if (/^(switch|l2switch|leaf|access|tor)$/.test(t)) return 4;
+  if (/^(ap|wlc|wireless|accesspoint)$/.test(t)) return 5;
+  if (/^(server|host|hypervisor|vm|container|storage|nas|san|pc|workstation|laptop|phone|printer|camera|iot|client)$/.test(t)) return 6;
+  return 4;
 }
 
 /** Code-unit string order: the same in every browser and locale. */

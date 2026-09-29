@@ -8,11 +8,18 @@ export const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const require = createRequire(import.meta.url);
 export const load = (m) => require(join(root, 'build', 'js', m));
 
-export const yaml = load('yaml.js');
-export const validate = load('validate.js');
-export const state = load('state.js');
-export const scene = load('scene.js');
-export const panels = load('panels.js');
+export const yaml = load('yaml/parse.js');
+export const validate = load('validation/validate.js');
+export const state = load('diagram/session.js');
+export const scene = load('diagram/scene.js');
+export const panels = load('ui/panels.js');
+export const queries = load('model/queries.js');
+
+/** Validate YAML and build a diagram session (null when there are errors), as the UI does. */
+export function sessionFromYaml(text) {
+  const result = validate.loadModel(text);
+  return { session: result.model && !result.errors.length ? new state.Session(result.model) : null, result };
+}
 
 export function example(name) {
   return readFileSync(join(root, 'examples', name), 'utf8');

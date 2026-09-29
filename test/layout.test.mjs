@@ -7,12 +7,12 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { root, load, yaml, validate, state, byClass } from './helpers.mjs';
 
-const { ModelDoc } = load('doc.js');
-const { layoutInput, layoutSignature } = load('layout-input.js');
-const { autoPositions, resolvePositions } = load('layout-auto.js');
-const { autoPhysical, physicalBoxes } = load('layout-physical.js');
-const { logicalSpecs } = load('layout-logical.js');
-const W = load('yaml-write.js');
+const { ModelDoc } = load('editor/document.js');
+const { layoutInput, layoutSignature } = load('layout/input.js');
+const { autoPositions, resolvePositions } = load('layout/positions.js');
+const { autoPhysical, physicalBoxes } = load('layout/physical.js');
+const { logicalSpecs } = load('layout/logical.js');
+const W = load('yaml/write.js');
 
 const exampleNames = readdirSync(join(root, 'examples')).filter((f) => /\.ya?ml$/.test(f));
 const read = (f) => readFileSync(join(root, 'examples', f), 'utf8');
@@ -355,9 +355,12 @@ test('the two views use different strategies (not identical positions)', () => {
 });
 
 test('determinism guard: layout code uses no randomness, time, locale or browser-approximated math', () => {
-  for (const f of ['layout-input.ts', 'layout-auto.ts', 'layout-physical.ts', 'layout-logical.ts', 'layout-logical-size.ts', 'geometry.ts']) {
+  // every module of the layout layer
+  const files = readdirSync(join(root, 'src', 'layout')).filter((x) => x.endsWith('.ts'));
+  assert.ok(files.length >= 6, files.join(', '));
+  for (const f of files) {
     // code only: comments may mention what is avoided
-    const src = readFileSync(join(root, 'src', f), 'utf8')
+    const src = readFileSync(join(root, 'src', 'layout', f), 'utf8')
       .replace(/\/\*[\s\S]*?\*\//g, '')
       .replace(/\/\/.*$/gm, '');
     for (const banned of ['Math.random', 'Date.now', 'new Date', 'performance.', 'localeCompare', 'Math.hypot', 'Math.sin', 'Math.cos', 'Math.atan', 'Math.exp', 'Math.pow', '**', 'getBBox', 'getComputedStyle', 'measureText']) {
@@ -366,7 +369,7 @@ test('determinism guard: layout code uses no randomness, time, locale or browser
     }
   }
   // the geometry helpers used by the layout (textWidth) are pure arithmetic
-  const geo = readFileSync(join(root, 'src', 'geometry.ts'), 'utf8');
+  const geo = readFileSync(join(root, 'src', 'layout', 'geometry.ts'), 'utf8');
   const tw = geo.slice(geo.indexOf('export function textWidth'), geo.indexOf('export function ellipsize'));
   assert.ok(!/Math\.(hypot|sin|cos|random)/.test(tw));
 });

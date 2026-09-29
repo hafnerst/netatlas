@@ -1,5 +1,5 @@
 /** Visual vocabulary shared by renderers and the legend. */
-import { hashColor } from './protocols';
+import { hashColor } from '../model/protocols';
 
 export interface MediumStyle {
   key: string;
@@ -38,19 +38,6 @@ export function speedWidth(speed: string | undefined): number {
   const bps = parseSpeed(speed);
   if (!bps) return 2;
   return 1.4 + Math.max(0, Math.min(3.8, Math.log10(bps / 1e8))) * 0.95;
-}
-
-/** Vertical tier of a device type in the physical view (0 = top). */
-export function defaultTier(type: string): number {
-  const t = type.toLowerCase();
-  if (/^(cloud|internet|wan|isp|provider)$/.test(t)) return 0;
-  if (/^(firewall|fw|ngfw|utm|ids|ips|waf)$/.test(t)) return 2;
-  if (/^(router|gateway|vpn|pe|ce|bng|sdwan|sd-wan|loadbalancer|lb|adc)$/.test(t)) return 1;
-  if (/^(l3switch|core|multilayer|spine)$/.test(t)) return 3;
-  if (/^(switch|l2switch|leaf|access|tor)$/.test(t)) return 4;
-  if (/^(ap|wlc|wireless|accesspoint)$/.test(t)) return 5;
-  if (/^(server|host|hypervisor|vm|container|storage|nas|san|pc|workstation|laptop|phone|printer|camera|iot|client)$/.test(t)) return 6;
-  return 4;
 }
 
 /** Fill colors for network kinds in the logical view. */

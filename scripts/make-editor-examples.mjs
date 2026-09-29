@@ -1,5 +1,5 @@
 // Produces the two "editor" examples by driving the same editing core the
-// web page uses (build/js/doc.js — ModelDoc), so they are reproducible:
+// web page uses (build/js/editor/document.js — ModelDoc), so they are reproducible:
 //
 //   examples/editor-new-network.yaml   a model created from "New" and built up
 //   examples/minimal-edited.yaml       examples/minimal.yaml imported and edited
@@ -15,8 +15,8 @@ import { fileURLToPath } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const require = createRequire(import.meta.url);
-const { ModelDoc, KEY_ORDER } = require(join(root, 'build/js/doc.js'));
-const Y = require(join(root, 'build/js/yaml.js'));
+const { ModelDoc, KEY_ORDER } = require(join(root, 'build/js/editor/document.js'));
+const Y = require(join(root, 'build/js/yaml/parse.js'));
 
 const s = Y.strNode;
 const flowList = (...xs) => Y.seqNode(xs.map(s), true);

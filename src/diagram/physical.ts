@@ -1,7 +1,7 @@
-import { CBox, Pt, Rect, ellipsize, textWidth, unionRect } from './geometry';
+import { CBox, Pt, Rect, ellipsize, textWidth, unionRect } from '../layout/geometry';
 import { deviceIcon } from './icons';
-import { GROUP_PAD, GROUP_TITLE, PORT_FONT, PhysicalLayout, PortPos, assignPorts } from './layout-physical';
-import { Model } from './model';
+import { GROUP_PAD, GROUP_TITLE, PORT_FONT, PhysicalLayout, PortPos, assignPorts } from '../layout/physical';
+import { Model } from '../model/types';
 import { VNode, h } from './scene';
 import { groupKindStyle, mediumStyle, speedWidth } from './style';
 

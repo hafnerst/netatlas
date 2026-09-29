@@ -6,13 +6,30 @@
  * dirty and re-validates. Export serializes the tree with yaml-write.ts.
  * This module has no DOM dependency and is fully testable in Node.
  */
-import { Pt } from './geometry';
-import { LAYOUT_VIEWS, LayoutView, autoPositions, resolvePositions, samePositions } from './layout-auto';
-import { cmp, layoutInput, layoutSignature } from './layout-input';
-import { Model } from './model';
-import { Issue, LoadResult, TOP_KEYS, loadModel, scalarText, validate } from './validate';
-import { YMap, YNode, YSeq, cloneNode, mapNode, numNode, seqNode, strNode } from './yaml';
-import { stringifyYaml } from './yaml-write';
+import { Pt } from '../layout/geometry';
+import { LAYOUT_VIEWS, LayoutView, autoPositions, resolvePositions, samePositions } from '../layout/positions';
+import { layoutInput, layoutSignature } from '../layout/input';
+import { Model } from '../model/types';
+import { Issue, LoadResult, loadModel, scalarText, validate } from '../validation/validate';
+import { SCHEMA } from '../yaml/schema';
+import { DEFAULT_YAML_LIMITS, YMap, YNode, YSeq, autoNode, boolNode, cloneNode, mapNode, nullNode, numNode, seqNode, strNode } from '../yaml/parse';
+import { stringifyYaml } from '../yaml/write';
+import { rawLayoutKeys, rawManualIds, writeLayout, writeManual } from './layout-section';
+import { keepTrivia, sameSet, setKey } from './tree';
+
+export { setKey };
+
+/**
+ * Read-only view of the document tree for the UI. The document IS the YAML
+ * tree (that is what keeps comments, order and unknown keys intact), but the
+ * UI only reads it through these aliases and changes it through ModelDoc's
+ * editing operations; it never imports the YAML layer.
+ */
+export type DocNode = YNode;
+export type DocMap = YMap;
+
+/** Largest file the editor opens (checked before reading it). */
+export const MAX_INPUT_BYTES = DEFAULT_YAML_LIMITS.maxBytes;
 
 export type PathSeg = string | number;
 export type Path = PathSeg[];
@@ -33,17 +50,7 @@ export function kindOfSection(section: string): EntityKind | null {
 }
 
 /** Canonical key order used when the editor adds keys (existing order is never changed). */
-export const KEY_ORDER: { [k: string]: string[] } = {
-  top: TOP_KEYS,
-  protocol: ['id', 'label', 'category', 'color', 'style', 'description'],
-  group: ['id', 'label', 'kind', 'parent', 'description', 'attrs'],
-  device: ['id', 'label', 'type', 'group', 'vendor', 'model', 'role', 'mgmt', 'router_id', 'tier', 'description', 'attrs', 'interfaces'],
-  interface: ['id', 'label', 'type', 'speed', 'media', 'ip', 'vlan', 'mac', 'description', 'attrs'],
-  link: ['id', 'a', 'b', 'medium', 'speed', 'label', 'cable', 'description', 'attrs'],
-  network: ['id', 'label', 'kind', 'cidr', 'vlan', 'vrf', 'members', 'description', 'attrs'],
-  relation: ['id', 'protocol', 'category', 'label', 'endpoints', 'over', 'network', 'directed', 'description', 'attrs'],
-  endpoint: ['device', 'interface', 'role', 'address', 'attrs'],
-};
+export const KEY_ORDER: { [k: string]: string[] } = SCHEMA;
 
 export type Origin = 'new' | 'file' | 'example';
 
@@ -59,54 +66,8 @@ devices:
 
 const MAX_UNDO = 100;
 
-/** Copy comments / blank-line markers from an old node onto its replacement. */
-function keepTrivia(from: YNode | undefined, to: YNode): YNode {
-  if (!from) return to;
-  if (from.before && !to.before) to.before = from.before;
-  if (from.blank && !to.blank) to.blank = true;
-  if (from.comment !== undefined && to.comment === undefined && to.kind === 'scalar' && from.kind === 'scalar') to.comment = from.comment;
-  if (from.comment !== undefined && to.comment === undefined && to.kind !== 'scalar' && from.kind !== 'scalar') to.comment = from.comment;
-  return to;
-}
 
-function sameSet(a: Set<string>, b: Set<string>): boolean {
-  if (a.size !== b.size) return false;
-  let same = true;
-  a.forEach((x) => {
-    if (!b.has(x)) same = false;
-  });
-  return same;
-}
 
-/** Insert or replace `key` in `m`, placing new keys according to `order`. */
-export function setKey(m: YMap, key: string, value: YNode, order?: string[]): void {
-  const existing = m.entries.get(key);
-  if (existing) {
-    existing.value = keepTrivia(existing.value, value);
-    return;
-  }
-  const entry = { key, keyLine: 0, value };
-  const pos = order ? order.indexOf(key) : -1;
-  if (pos < 0) {
-    m.entries.set(key, entry);
-    return;
-  }
-  // insert before the first existing key that comes later in the canonical order
-  const next = Array.from(m.entries.keys()).find((k) => {
-    const p = (order as string[]).indexOf(k);
-    return p > pos;
-  });
-  if (next === undefined) {
-    m.entries.set(key, entry);
-    return;
-  }
-  const rebuilt = new Map<string, typeof entry>();
-  m.entries.forEach((e, k) => {
-    if (k === next) rebuilt.set(key, entry);
-    rebuilt.set(k, e);
-  });
-  m.entries = rebuilt;
-}
 
 export interface EntityRef {
   kind: EntityKind;
@@ -295,10 +256,10 @@ export class ModelDoc {
       shown.forEach((p, id) => base.set(this.renames.get(id) || id, p));
       const next = resolvePositions(view, postIn, base);
       // also rewrite when the file still holds entries for nodes that no longer exist
-      const raw = this.rawLayoutKeys(view);
+      const raw = rawLayoutKeys(this.root, view);
       const stale = raw.some((id) => !next.has(id));
       if (stale || !samePositions(next, post.layout[view])) {
-        this.writeLayout(view, next);
+        writeLayout(this.root, view, next);
         changed = true;
       }
       // the record of hand-placed nodes follows renames and forgets removed nodes
@@ -310,8 +271,8 @@ export class ModelDoc {
       post.layout.manual[view].forEach((id) => {
         if (next.has(id)) manual.add(id);
       });
-      if (!sameSet(manual, post.layout.manual[view]) || this.rawManualIds(view).some((id) => !next.has(id))) {
-        this.writeManual(view, manual);
+      if (!sameSet(manual, post.layout.manual[view]) || rawManualIds(this.root, view).some((id) => !next.has(id))) {
+        writeManual(this.root, view, manual);
         changed = true;
       }
     }
@@ -363,73 +324,9 @@ export class ModelDoc {
     return differing.some((id) => m.layout.manual[view].has(id)) ? 'manual' : 'edited';
   }
 
-  /** Ids recorded as hand-placed in the document (valid or not). */
-  private rawManualIds(view: LayoutView): string[] {
-    const lay = this.root.entries.get('layout');
-    if (!lay || lay.value.kind !== 'map') return [];
-    const man = lay.value.entries.get('manual');
-    if (!man || man.value.kind !== 'map') return [];
-    const l = man.value.entries.get(view);
-    return l && l.value.kind === 'seq' ? l.value.items.map((i) => scalarText(i) || '') : [];
-  }
 
-  /** Store the set of hand-placed nodes of a view (sorted; removed when empty). */
-  private writeManual(view: LayoutView, ids: Set<string>): void {
-    let lay = this.root.entries.get('layout');
-    if (!lay || lay.value.kind !== 'map') {
-      if (!ids.size) return;
-      const fresh = mapNode();
-      fresh.blank = true;
-      setKey(this.root, 'layout', fresh, KEY_ORDER.top);
-      lay = this.root.entries.get('layout') as { key: string; keyLine: number; value: YNode };
-    }
-    const layMap = lay.value as YMap;
-    const cur = layMap.entries.get('manual');
-    let man = cur && cur.value.kind === 'map' ? cur.value : null;
-    if (!ids.size) {
-      if (man) {
-        man.entries.delete(view);
-        if (!man.entries.size) layMap.entries.delete('manual');
-      }
-      return;
-    }
-    if (!man) {
-      man = mapNode();
-      setKey(layMap, 'manual', man, ['physical', 'logical', 'manual']);
-    }
-    setKey(man, view, seqNode(Array.from(ids).sort(cmp).map(strNode), true), ['physical', 'logical']);
-  }
 
-  /** Keys present in the document's layout section for a view (valid or not). */
-  private rawLayoutKeys(view: LayoutView): string[] {
-    const lay = this.root.entries.get('layout');
-    if (!lay || lay.value.kind !== 'map') return [];
-    const vm = lay.value.entries.get(view);
-    return vm && vm.value.kind === 'map' ? Array.from(vm.value.entries.keys()) : [];
-  }
 
-  /** Replace the stored positions of one view (entries sorted by id; comments kept). */
-  private writeLayout(view: LayoutView, positions: Map<string, Pt>): void {
-    let lay = this.root.entries.get('layout');
-    if (!lay || lay.value.kind !== 'map') {
-      const fresh = mapNode();
-      fresh.blank = true;
-      setKey(this.root, 'layout', fresh, KEY_ORDER.top);
-      lay = this.root.entries.get('layout') as { key: string; keyLine: number; value: YNode };
-    }
-    const layMap = lay.value as YMap;
-    const oldEntry = layMap.entries.get(view);
-    const old = oldEntry && oldEntry.value.kind === 'map' ? oldEntry.value : null;
-    const m = mapNode();
-    for (const id of Array.from(positions.keys()).sort(cmp)) {
-      const p = positions.get(id) as Pt;
-      const v = seqNode([numNode(p.x), numNode(p.y)], true);
-      const prev = old ? old.entries.get(id) : undefined;
-      if (prev) keepTrivia(prev.value, v);
-      m.entries.set(id, { key: id, keyLine: 0, value: v });
-    }
-    setKey(layMap, view, m, ['physical', 'logical']);
-  }
 
   /**
    * Auto-arrange: compute the deterministic layout of the whole model for the
@@ -458,8 +355,8 @@ export class ModelDoc {
       label,
       () =>
         targets.forEach((pos, v) => {
-          this.writeLayout(v, pos);
-          this.writeManual(v, new Set());
+          writeLayout(this.root, v, pos);
+          writeManual(this.root, v, new Set());
         }),
       { layout: false },
     );
@@ -489,8 +386,8 @@ export class ModelDoc {
     this.change(
       label,
       () => {
-        this.writeLayout(view, next);
-        this.writeManual(view, manual);
+        writeLayout(this.root, view, next);
+        writeManual(this.root, view, manual);
       },
       { layout: false },
     );
@@ -642,6 +539,162 @@ export class ModelDoc {
     if (!s || s.kind !== 'seq' || to < 0 || to >= s.items.length) return;
     const [it] = s.items.splice(from, 1);
     s.items.splice(to, 0, it);
+  }
+
+  // ------------------------------------------------- editing operations (UI)
+  // Named, undoable operations used by the editor UI. They take plain values
+  // (text, flags, kinds) and decide how they are represented in YAML, so the
+  // UI never builds YAML nodes. New keys go into the canonical schema order,
+  // which is derived from the path.
+
+  /** Schema kind of the mapping at `path` (for key order), if the format defines one. */
+  schemaKindOf(path: Path): string | undefined {
+    if (path.length === 0) return 'top';
+    if (path.length === 2 && typeof path[1] === 'number') return kindOfSection(String(path[0])) || undefined;
+    if (path.length === 4 && path[0] === 'devices' && path[2] === 'interfaces') return 'interface';
+    if (path.length === 4 && typeof path[3] === 'number' && (path[2] === 'members' || path[2] === 'endpoints')) return 'endpoint';
+    if (path.length === 1 && path[0] === 'layout') return 'layout';
+    return undefined;
+  }
+
+  private orderFor(parentPath: Path): string[] | undefined {
+    const k = this.schemaKindOf(parentPath);
+    return k ? KEY_ORDER[k] : undefined;
+  }
+
+  private label(path: Path): string {
+    const last = path[path.length - 1];
+    return typeof last === 'number' ? String(path[path.length - 2]) : String(last);
+  }
+
+  /** Set a text field; empty text removes the key (or list item). */
+  setText(path: Path, text: string): void {
+    this.change('Edit ' + this.label(path), () => {
+      if (text === '') this.removeAt(path);
+      else this.setAt(path, strNode(text), this.orderFor(path.slice(0, -1)));
+    });
+  }
+
+  /** Set an integer field (text that isn't an integer is kept as text and reported by validation). */
+  setInteger(path: Path, text: string): void {
+    this.change('Edit ' + this.label(path), () => {
+      if (text === '') this.removeAt(path);
+      else this.setAt(path, /^-?[0-9]+$/.test(text) ? numNode(Number(text)) : strNode(text), this.orderFor(path.slice(0, -1)));
+    });
+  }
+
+  /** Set a boolean flag; false removes it (the format's default). */
+  setFlag(path: Path, on: boolean): void {
+    this.change('Edit ' + this.label(path), () => {
+      if (on) this.setAt(path, boolNode(true), this.orderFor(path.slice(0, -1)));
+      else this.removeAt(path);
+    });
+  }
+
+  /** Set a free-form value typed like YAML would type it ("42" number, "true" boolean …); empty = null. */
+  setValue(path: Path, text: string): void {
+    this.change('Edit value', () => this.setAt(path, text === '' ? nullNode() : autoNode(text), this.orderFor(path.slice(0, -1))));
+  }
+
+  /** Append text to a list (created as [a, b] if missing; a single value becomes a list). */
+  appendText(listPath: Path, text: string, label = 'Add ' + this.label(listPath)): void {
+    this.change(label, () => {
+      this.ensureSeq(listPath, true, this.orderFor(listPath.slice(0, -1))).items.push(strNode(text));
+    });
+  }
+
+  /**
+   * Point an endpoint (link end, relation endpoint or network member) at a
+   * device and optional interface. Short forms ("dev", "dev:if") stay short;
+   * an endpoint written as a mapping keeps its other keys. An empty device
+   * removes the endpoint.
+   */
+  setEndpoint(path: Path, device: string, iface: string): void {
+    const node = this.get(path);
+    this.change('Edit endpoint', () => {
+      if (!device) {
+        this.removeAt(path);
+        return;
+      }
+      if (node && node.kind === 'map') {
+        const m = this.ensureMap(path);
+        this.setAt(path.concat('device'), strNode(device), KEY_ORDER.endpoint);
+        if (iface) this.setAt(path.concat('interface'), strNode(iface), KEY_ORDER.endpoint);
+        else m.entries.delete('interface');
+      } else {
+        this.setAt(path, strNode(iface ? device + ':' + iface : device), this.orderFor(path.slice(0, -1)));
+      }
+    });
+  }
+
+  /** Set role / address of an endpoint (expands a short endpoint to a mapping); empty removes it. */
+  setEndpointField(path: Path, text: string): void {
+    const ep = path.slice(0, -1);
+    this.change('Edit endpoint', () => {
+      if (text === '') {
+        const m = this.get(ep);
+        if (m && m.kind === 'map') m.entries.delete(String(path[path.length - 1]));
+      } else {
+        this.ensureMap(ep);
+        this.setAt(path, strNode(text), KEY_ORDER.endpoint);
+      }
+    });
+  }
+
+  /** Add a key to a mapping (created if missing): an empty value, a group or a list. */
+  addField(mapPath: Path, key: string, kind: 'value' | 'group' | 'list'): 'ok' | 'exists' | 'empty' {
+    if (!key) return 'empty';
+    const cur = this.get(mapPath);
+    if (cur && cur.kind === 'map' && cur.entries.has(key)) return 'exists';
+    this.change('Add attribute', () => {
+      const m = this.get(mapPath);
+      if (!m || m.kind !== 'map') this.setAt(mapPath, mapNode(), this.orderFor(mapPath.slice(0, -1)));
+      this.setAt(mapPath.concat(key), kind === 'group' ? mapNode() : kind === 'list' ? seqNode() : nullNode());
+    });
+    return 'ok';
+  }
+
+  /** Rename a key of a mapping (keeps its position). */
+  renameField(mapPath: Path, oldKey: string, newKey: string): 'ok' | 'exists' | 'empty' {
+    if (!newKey) return 'empty';
+    const m = this.get(mapPath);
+    if (m && m.kind === 'map' && m.entries.has(newKey) && newKey !== oldKey) return 'exists';
+    this.change('Rename key', () => this.renameKey(mapPath, oldKey, newKey));
+    return 'ok';
+  }
+
+  /** Append an empty value, group or list to a list. */
+  pushItem(listPath: Path, kind: 'value' | 'group' | 'list'): void {
+    this.change('Add item', () => {
+      this.ensureSeq(listPath).items.push(kind === 'group' ? mapNode() : kind === 'list' ? seqNode() : nullNode());
+    });
+  }
+
+  /** Remove a key or list item (one undo step). */
+  remove(path: Path, label = 'Remove'): void {
+    this.change(label, () => this.removeAt(path));
+  }
+
+  /** Move a list item one position up. */
+  moveUp(path: Path): void {
+    const k = path[path.length - 1];
+    if (typeof k !== 'number' || k <= 0) return;
+    this.change('Reorder', () => this.moveItem(path.slice(0, -1), k, k - 1));
+  }
+
+  /** Move a key the format doesn't define into the object's `attrs` (kept as it is). */
+  moveIntoAttrs(objPath: Path, key: string): 'ok' | 'exists' | 'missing' {
+    const m = this.get(objPath);
+    if (!m || m.kind !== 'map' || !m.entries.has(key)) return 'missing';
+    const attrs = m.entries.get('attrs');
+    if (attrs && attrs.value.kind === 'map' && attrs.value.entries.has(key)) return 'exists';
+    this.change('Move into attrs', () => {
+      const v = (m.entries.get(key) as { value: YNode }).value;
+      m.entries.delete(key);
+      const target = this.ensureMap(objPath.concat('attrs'), this.orderFor(objPath));
+      target.entries.set(key, { key, keyLine: 0, value: v });
+    });
+    return 'ok';
   }
 
   // ---------------------------------------------------------------- entities

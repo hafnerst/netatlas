@@ -284,10 +284,27 @@ npm run build      # -> dist/netatlas.html
 To regenerate the editor examples after changing the editing core, run
 `node scripts/make-editor-examples.mjs`. Use `--check` to only verify them.
 
+### Is the checked-in HTML current?
+
+`dist/netatlas.html` is committed so that it can be used without building.
+To confirm that it was generated from the current source:
+
+```sh
+git status --short        # 1. clean working tree (no local edits)
+npm ci                    # 2. the pinned TypeScript version
+npm run check:dist        # 3. rebuild in memory and compare byte-for-byte
+```
+
+`check:dist` regenerates `src/generated/examples.ts` and the bundle in memory
+and writes neither file. It prints the sha256 of the result, and exits with
+status 1 if either committed file differs. The build is deterministic, so the
+same source always gives the same file. `npm test` checks this too.
+
 ## Verification
 
 ```sh
 npm test                    # build + all automated tests (Node + headless browser)
+npm run check:dist          # is dist/netatlas.html generated from the current source?
 npm run selftest:browser    # only the in-browser end-to-end test (verbose)
 node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/screenshots/
 ```
@@ -301,6 +318,8 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/scr
 | Rendering | `test/render.test.mjs` (12 tests) | Physical view: devices, cables and ports, no relations. Logical view: relations, no cables; tunnels as tubes; GRE inside IPsec; parallel lanes; protocol matrix; hostile labels stay text; deterministic layout |
 | View switching | `test/state.test.mjs` (8 tests) | Physical ↔ logical switching keeps the selection and positions; highlight sets; search, details and legend |
 | Offline / artifact | `test/build.test.mjs` (7 tests) | One inline script; no external references or remote URLs; no `fetch`, XHR, WebSocket, `eval`, `innerHTML` …; strict CSP before the script; compiled JavaScript only; every module comes from `src/` |
+| Architecture | `test/architecture.test.mjs` (3 tests) | Every module lives in a layer folder; imports follow the allowed dependency direction (docs/ARCHITECTURE.md); the diagram, layout and UI layers never import the YAML layer |
+| Module APIs | `test/modules.test.mjs` (9 tests) | Document editing operations (typed values, lists, endpoints, attrs, key order, one undo step each); the format schema is the single source of allowed keys; model queries; export file names; `check:dist` accepts the current build and rejects a stale HTML file |
 | **End-to-end in a real browser** | `test/browser.test.mjs` → `dist/netatlas.html#selftest` (142 in-page checks) | Headless Chrome, Edge or Chromium opens the file from `file://` **with DNS resolution disabled** and drives the real UI. **Viewer:** every example loads through the File API path, both views are drawn, loopback chips appear only in the logical view, interaction works. **New model:** add a device, **add two loopbacks, type IPv4/IPv6 addresses, see the error for an address without a prefix and fix it**, set `router_id`, add interfaces, a cable, a GRE tunnel between loopbacks with nested attrs, then **download and reload** the file. **Imported model:** rename a device (every reference follows), edit, add an IPv6 loopback, download as `…-edited.yaml`, **reload, and check that edits, hidden attributes and comments survived**. **Guards:** unsaved-changes dialog on replace; `beforeunload`; Ctrl+Z/Y; deleting a referenced device reports broken references; **exporting an invalid model requires "Download anyway"**; YAML-tab apply/reject; unknown keys kept and movable into attrs; typed text is committed before a button acts. **Auto-arrange:** the button is in the top toolbar, visible and labelled (disabled until a model is open); the status badges read *Auto-arranged* / *Manually adjusted* / *Edited since arranged* after loading, dragging, undo, switching views (the shown view is highlighted), Auto-arrange, moving a node back to its calculated position, export → reload of arranged and of manually adjusted layouts, a model edit, and New; loading stores nothing; the dialog shows the scope; arranging an automatic layout stores it without moving anything; repeating it is a no-op; a manual move changes only that node and is undone by arrange (and restored by undo); **arrange → export → reload is pixel-identical in both views**; a file with every list and key reversed arranges identically; **the browser reproduces the build-time positions of `metro-ring-arranged.yaml`** (a cross-engine determinism check when run in Firefox or Safari). **Safety:** hostile labels create no elements; YAML syntax errors are refused with the current model kept; **no network requests, no CSP violations**. The test is skipped if no Chromium-based browser is installed; set `NETATLAS_BROWSER` to choose one. |
 
 ### Manual check (any browser, e.g. Firefox or Safari)
@@ -402,31 +421,26 @@ Work happens on short-lived branches with pull requests into `dev`; releases are
 
 ## Project layout
 
+The source is split into layers. Each layer imports only the layers below
+it, and `test/architecture.test.mjs` enforces this. See
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the responsibilities, the
+allowed dependencies and the trade-offs.
+
 ```
-src/                  TypeScript application source
-  yaml.ts             YAML-subset parser (positions, comments, styles, limits)
-  yaml-write.ts       YAML-subset serializer (inverse of yaml.ts)
-  doc.ts              Editable document: tree edits, undo/redo, renames with references, export
-  ip.ts               IPv4/IPv6 address and prefix handling
-  model.ts            Typed model (derived from the document for drawing)
-  protocols.ts        Built-in protocol registry (extensible from YAML)
-  validate.ts         Document -> model + errors/warnings located at YAML nodes
-  editor.ts           Model outline + property inspector (forms, cards, generic tree editor)
-  layout-physical.ts  Physical auto-arrange (tiered nested groups, components); port placement
-  layout-input.ts     Canonical, order-independent layout input
-  layout-auto.ts      Stored vs automatic positions, placement of new nodes
-  layout-logical.ts   Logical auto-arrange (stress / force layout, crossing reduction)
-  render-physical.ts  Physical view -> virtual SVG tree
-  render-logical.ts   Logical view: lanes, nested tubes, hubs, networks, loopback chips
-  state.ts            DOM-free session: view switching, selection, search
-  panels.ts           Details, tooltip, legend, relation list
-  scene.ts, dom.ts    Virtual nodes and the only VNode -> DOM code
-  ui.ts, main.ts      Browser shell (file I/O, dialogs, pan/zoom, editor wiring)
-  selftest.ts         In-browser end-to-end checks (#selftest)
+src/
+  model/        Network model: types, protocol registry, IP handling, queries (refs, search)
+  yaml/         YAML boundary: subset parser, serializer, format schema (keys + order)
+  validation/   Parsed tree -> model + errors/warnings located at YAML nodes
+  layout/       Deterministic auto-arrange for both views, stored vs automatic positions
+  diagram/      Model + positions -> virtual SVG tree; DOM-free view session
+  editor/       Editable document: editing operations, undo/redo, renames, layout section
+  ui/           Browser: app shell, inspector, panels, dialogs, file I/O, VNode -> DOM
+  app/          Entry point (main.ts) and in-browser self-test (selftest.ts)
+  generated/    Examples embedded at build time (do not edit)
   index.html, styles.css
-scripts/              build.mjs, gen-examples.mjs, make-editor-examples.mjs, browser-selftest.mjs
-test/                 node:test suites
-examples/             Example inputs (all conform to the subset)
-docs/                 FORMAT.md, YAML-SUBSET.md, screenshots
-dist/netatlas.html    The deliverable
+scripts/        build.mjs, gen-examples.mjs, make-editor-examples.mjs, browser-selftest.mjs
+test/           node:test suites
+examples/       Example inputs (all conform to the subset)
+docs/           ARCHITECTURE.md, FORMAT.md, YAML-SUBSET.md, repository settings, screenshots
+dist/netatlas.html   The deliverable (checked in; see "Is the checked-in HTML current?")
 ```

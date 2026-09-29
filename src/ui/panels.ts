@@ -1,10 +1,11 @@
 /** Side-panel content (details, legend, relation list) as HTML VNodes. */
-import { deviceIcon, iconName } from './icons';
-import { Attrs, CATEGORIES, Category, Model, ProtocolDef, RelEndpoint, endpointText, ifaceKey, isLoopback, loopbacks, relationDevices } from './model';
-import { VNode, h } from './scene';
-import { View, splitRef } from './state';
-import { groupKindStyle, mediumStyle, networkColor, speedWidth } from './style';
-import { relationStyle } from './validate';
+import { deviceIcon, iconName } from '../diagram/icons';
+import { Attrs, CATEGORIES, Category, Model, ProtocolDef, RelEndpoint, endpointText, ifaceKey, isLoopback, loopbacks, relationDevices } from '../model/types';
+import { VNode, h } from '../diagram/scene';
+import { View } from '../diagram/session';
+import { splitRef } from '../model/queries';
+import { groupKindStyle, mediumStyle, networkColor, speedWidth } from '../diagram/style';
+import { relationStyle } from '../model/protocols';
 
 const CATEGORY_TEXT: { [c in Category]: string } = {
   tunnel: 'Tunnel (encapsulation) — hollow tube',
