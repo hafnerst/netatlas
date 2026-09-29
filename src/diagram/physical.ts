@@ -2,6 +2,7 @@ import { CBox, Pt, Rect, ellipsize, textWidth, unionRect } from '../layout/geome
 import { deviceIcon } from './icons';
 import { GROUP_PAD, GROUP_TITLE, PORT_FONT, PhysicalLayout, PortPos, assignPorts } from '../layout/physical';
 import { Model } from '../model/types';
+import { deviceTypeLabel } from '../model/device-types';
 import { VNode, h } from './scene';
 import { groupKindStyle, mediumStyle, speedWidth } from './style';
 
@@ -79,7 +80,7 @@ export function deviceNode(
 }
 
 export function deviceSubtitle(type: string, model?: string, role?: string): string {
-  return [type, role, model].filter((s) => !!s).join(' · ');
+  return [deviceTypeLabel(type), role, model].filter((s) => !!s).join(' · ');
 }
 
 export function renderPhysical(model: Model, layout: PhysicalLayout, opts: ViewOptions): SceneResult {

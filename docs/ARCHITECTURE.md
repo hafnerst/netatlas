@@ -9,7 +9,7 @@ Each layer has one responsibility and may only import the layers below it.
 
 | Layer | Responsibility | Main modules |
 |---|---|---|
-| `model/` | The network model: types for devices, interfaces (incl. loopbacks), links, networks, relations, protocols and groups; the protocol registry; IP addresses; pure queries (references, related objects, search). No I/O, no YAML, no layout. | `types.ts`, `protocols.ts`, `ip.ts`, `queries.ts` |
+| `model/` | The network model: types for devices, interfaces (incl. loopbacks), links, networks, relations, protocols and groups; the protocol registry; IP addresses; pure queries (references, related objects, search). No I/O, no YAML, no layout. | `types.ts`, `device-types.ts`, `protocols.ts`, `ip.ts`, `queries.ts` |
 | `yaml/` | The YAML boundary: the supported YAML subset (parser with line/column positions, comments and styles), the serializer (the inverse), and the format **schema** (which keys exist, in canonical order). Knows nothing about networks beyond key names. | `parse.ts`, `write.ts`, `schema.ts` |
 | `validation/` | Turns a parsed YAML tree into a `Model` plus errors and warnings. Every issue is attached to the YAML node it concerns. Structural and cross-reference checks, loopback/IP rules, the presentation-only `layout` section. Callable without any UI. | `validate.ts` (the format's rules), `reader.ts` (issue collector, typed reader, suggestions) |
 | `layout/` | Deterministic positions for both views: a canonical, order-independent input built from the model; auto-arrange for the physical and the logical view; placement of new nodes; the rule "stored positions else auto-arrange". Separates calculated positions from network semantics. | `input.ts`, `physical.ts`, `logical.ts`, `positions.ts`, `sizes.ts`, `geometry.ts` |
@@ -89,6 +89,9 @@ anything else.
 * **New protocol:** nothing to change in the code. Add it under
   `protocols:` in a YAML file, or extend the built-in table in
   `model/protocols.ts`.
+* **New device type:** add it to `model/device-types.ts` (identifier and
+  display name), give it a glyph in `diagram/icons.ts` and a default row in
+  `layout/input.ts`, and list it in `docs/FORMAT.md`.
 * **New field on an entity:** add the key to `yaml/schema.ts`, read and
   check it in `validation/validate.ts` (and the model type), then show and
   edit it in `ui/inspector.ts` using an existing `ModelDoc` operation.

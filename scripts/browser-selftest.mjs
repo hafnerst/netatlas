@@ -41,7 +41,7 @@ export function findBrowser() {
   return candidates.find((c) => c && existsSync(c)) || null;
 }
 
-function run(browser, url, extra) {
+export function run(browser, url, extra) {
   const profile = mkdtempSync(join(tmpdir(), 'netatlas-'));
   try {
     return execFileSync(

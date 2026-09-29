@@ -281,7 +281,7 @@ function islands() {
   add('big', 20, 'g-big');
   add('mid', 8, null);
   add('sm', 3, null);
-  t += '  - {id: lone1, type: server}\n  - {id: lone2, type: host}\n';
+  t += '  - {id: lone1, type: server}\n  - {id: lone2, type: endpoint}\n';
   return t + 'links:\n' + links.join('\n') + '\nrelations:\n' + rels.join('\n') + '\n';
 }
 

@@ -73,13 +73,40 @@ and relation endpoints. Physical links accept only `device` / `interface`.
 |---|---|---|
 | `id` | yes | |
 | `label` | | Display name |
-| `type` | | Free text. Recognised icons: `router`, `switch`, `l3switch`, `firewall`, `server`, `hypervisor`, `cloud`, `ap`, `storage`, `loadbalancer`, `host`, plus aliases such as `leaf`, `spine`, `fw`, `vm`, `internet`, `pc`. Other values get a generic icon. |
+| `type` | | One of the [device types](#device-types) below, written exactly as listed (lower case). Any other value is an error. Without a type the device gets a generic icon. |
 | `group` | | Id of the group the device is located in |
-| `tier` | | 0–9: vertical row in the physical view (0 = top). By default this comes from the type: cloud/WAN → routers → firewalls → core → access → APs → servers/hosts. |
+| `tier` | | 0–9: vertical row in the physical view (0 = top). By default this comes from the type (see the table below). Set it to place a device elsewhere, e.g. `tier: 3` for core or spine switches above the access switches. |
 | `vendor`, `model`, `role`, `mgmt` | | Shown in the subtitle, tooltip and details |
 | `router_id` | | Id of one of **this device's loopbacks**. Its IPv4 address is the router ID. Must name an interface of `type: loopback`; a warning is given if that loopback has no IPv4 address. |
 | `description`, `attrs` | | |
 | `interfaces` | | List of interfaces (below), **including loopbacks**. The shorthand `interfaces: [eth0, eth1]` is allowed. |
+
+### Device types
+
+| Display name | `type` | Default `tier` |
+|---|---|---|
+| Router | `router` | 1 |
+| Switch | `switch` | 4 |
+| Firewall | `firewall` | 2 |
+| Access point | `ap` | 5 |
+| Server | `server` | 6 |
+| Virtual machine | `vm` | 6 |
+| Container | `container` | 6 |
+| Storage | `storage` | 6 |
+| Load balancer | `load_balancer` | 1 |
+| Proxy | `proxy` | 1 |
+| IDS/IPS | `ids_ips` | 2 |
+| Gateway | `gateway` | 1 |
+| Endpoint | `endpoint` | 6 |
+| Cloud | `cloud` | 0 |
+| System | `system` | 6 |
+| *(no type)* | | 4 |
+
+Each type has its own icon, and the display name appears in the diagram
+subtitle, the details, tooltips, the legend and the editor. The error for
+any other value suggests the closest type (`Router` → `router`,
+`load-balancer` → `load_balancer`) or lists all of them. Roles such as
+spine, leaf, core or border belong in `role`, which is free text.
 
 ### Interfaces
 
