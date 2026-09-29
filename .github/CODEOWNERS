@@ -1,0 +1,4 @@
+# Every change needs approval from the maintainer.
+# (Takes effect together with "Require review from Code Owners" in the
+# pull-request rules; see docs/REPOSITORY-SETTINGS.md.)
+* @hafnerst
