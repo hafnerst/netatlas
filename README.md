@@ -25,6 +25,10 @@ file, then:
 There's nothing to install, no server, and no network access. YAML remains
 the model: the page reads it, edits it and writes it back.
 
+**Version 0.1.0**, the first release. It's a usable initial version; see
+the [changelog](CHANGELOG.md) for what it covers, and
+[Limitations](#limitations-honest-list) for what it doesn't.
+
 | Editor: outline, inspector with the device type, loopbacks; logical view | Physical view of the same network |
 |---|---|
 | ![Editor with the inspector open for router hq-rtr1 in the logical view](docs/img/editor.png) | ![Enterprise WAN, physical view](docs/img/wan-physical.png) |
@@ -46,7 +50,10 @@ The **Auto-arrange…** button and the per-view status (*Auto-arranged* /
 
 ## Open it, create or load a model
 
-1. Open `dist/netatlas.html` in Chrome, Edge, Firefox or Safari. Double-click
+1. Get `netatlas.html`: attach it from the
+   [GitHub release](https://github.com/hafnerst/netatlas/releases), or take
+   `dist/netatlas.html` from this repository (or build it, see *Build*).
+   It's the only file you need. Open it in Chrome, Edge, Firefox or Safari. Double-click
    it, drag it into a browser window, or enter its `file:///…/netatlas.html`
    path in the address bar. (Don't open `src/index.html`: that's only the
    build template.)
@@ -359,7 +366,7 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/scr
 | **Auto-arrange** | `test/layout.test.mjs` (20 tests) | **Repeatability** (fresh documents give identical integer positions). **Order independence:** every example with shuffled keys, sections and lists and swapped cable ends, 3 seeds each, gives the same canonical input and identical positions in both views; fields that don't affect geometry don't matter. **Idempotence:** a second arrange changes nothing and adds no undo step. **Load → arrange → export → reload:** same positions and same rendered scene, and re-arranging after reload is a no-op; the arranged example is reproducible. **Manual moves:** only the moved node changes; the other view is untouched; arrange ignores manual positions; undo restores them. **Edits never re-arrange:** the first geometric edit freezes the shown positions; new nodes go next to their neighbors without overlap; renames carry positions; deletes drop them. The YAML tab is taken literally. **Semantics:** the model is identical with and without `layout`, and bad entries are warnings only. **Disconnected components** of different sizes: no overlaps in either view, and component bounding boxes are disjoint. **Dense relationships:** a 12-router full mesh with tunnels has no overlaps and gets a lane per relation. No overlaps for any example. **Static determinism guard:** no `Math.random`, time, `localeCompare`, `hypot`/`sin`/`cos`/`pow` or DOM measurement in layout code. Large-model runtime. **Layout status:** *auto / manual / edited* for each view after load, non-geometric edits, drags, undo/redo, a node moved back to its calculated position, export → reload, Auto-arrange and its repetition, model edits (never "manual"), renames and deletes; bad `layout.manual` entries are warnings only. |
 | Rendering | `test/render.test.mjs` (12 tests) | Physical view: devices, cables and ports, no relations. Logical view: relations, no cables; tunnels as tubes; GRE inside IPsec; parallel lanes; protocol matrix; hostile labels stay text; deterministic layout |
 | View switching | `test/state.test.mjs` (8 tests) | Physical ↔ logical switching keeps the selection and positions; highlight sets; search, details and legend |
-| Offline / artifact | `test/build.test.mjs` (7 tests) | One inline script; no external references or remote URLs; no `fetch`, XHR, WebSocket, `eval`, `innerHTML` …; strict CSP before the script; compiled JavaScript only; every module comes from `src/` |
+| Offline / artifact | `test/build.test.mjs` (8 tests) | One inline script; no external references or remote URLs; no `fetch`, XHR, WebSocket, `eval`, `innerHTML` …; strict CSP before the script; compiled JavaScript only; every module comes from `src/`; one version in `package.json`, `package-lock.json`, the HTML (meta and UI) and `CHANGELOG.md` |
 | Device types | `test/device-types.test.mjs` (6 tests) | Exactly the 15 specified types with their display names; each is accepted, has its own icon and a default tier; no type is allowed (generic icon); any other value (old names such as `l3switch`, `hypervisor`, `host`, `leaf`, `spine`, wrong case, hostile text) is an error at the type line with a suggestion or the list of types; display names in subtitles, details and the legend; the examples use only these types |
 | New elements | `test/creation-defaults.test.mjs` (7 tests) | **New** is empty and valid; each new object gets only an ID (no type, kind, protocol or category); missing required values are errors located at the object, optional ones stay unset; choosing a value saves exactly it and clearing removes the key; an empty kind is not drawn as subnet or site; **Duplicate** keeps all values; every example imports and exports byte-for-byte, with model values taken only from the file |
 | Selection context | `test/selection-context.test.mjs` (6 tests) | Each element type (device, port, link, network, relation, group, protocol) gives the documented direct relationships; indirect ones (a cable's far end, a sub-group's devices, the cables under a tunnel's carrier, built-in protocols) are excluded; symmetric and a subset of the diagram highlight in every example; view-independent; protocols can be selected; the Relations list shows the same states with screen-reader text |
@@ -473,6 +480,14 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/scr
   shortened with "…". The full text is in the inspector and tooltips.
 * **Keyboard access:** forms and panels are keyboard-operable, but diagram
   elements aren't individually focusable.
+* **Narrow windows:** below 1100 px the element lists (Model outline) are
+  hidden; the diagram, inspector and Relations tab still work.
+* **Device types are a fixed list** of 15 (see [docs/FORMAT.md](docs/FORMAT.md));
+  roles such as spine or leaf go in `role`.
+* **An interface without `type` is a physical port** (a format rule that the
+  shorthand `interfaces: [eth0]` relies on).
+* **No other import or export formats** (only YAML in, YAML and SVG out), no
+  printing layout, and no multi-user editing.
 * The automated browser test needs a Chromium-based browser. Firefox and
   Safari are covered by the manual `#selftest` procedure.
 
@@ -505,4 +520,6 @@ test/           node:test suites
 examples/       Example inputs (all conform to the subset)
 docs/           ARCHITECTURE.md, FORMAT.md, YAML-SUBSET.md, repository settings, screenshots
 dist/netatlas.html   The deliverable (checked in; see "Is the checked-in HTML current?")
+CHANGELOG.md    Release notes per version
+CONTRIBUTING.md Branch workflow and release procedure
 ```

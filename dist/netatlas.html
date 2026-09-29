@@ -6,7 +6,7 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; connect-src 'none'; font-src 'none'; object-src 'none'; media-src 'none'; frame-src 'none'; worker-src 'none'; form-action 'none'; base-uri 'none'">
 <meta name="referrer" content="no-referrer">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="generator" content="netatlas 1.0.0">
+<meta name="generator" content="netatlas 0.1.0">
 <title>netatlas</title>
 <style id="app-style">
 :root {
@@ -91,6 +91,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 }
 .brand { display: flex; align-items: center; gap: 6px; font-weight: 700; font-size: 15px; margin-right: 6px; }
 .brand svg { fill: var(--accent); stroke: var(--accent); stroke-width: 1.6; }
+.brand .version { font-weight: 400; font-size: 11px; color: var(--muted); align-self: flex-end; margin-bottom: 2px; }
 .seg { display: inline-flex; }
 .seg button { border-radius: 0; margin-left: -1px; }
 .seg button:first-child { border-radius: 6px 0 0 6px; }
@@ -392,9 +393,9 @@ body:not([data-state="loaded"]) .layout-status { display: none; }
 </head>
 <body data-state="empty" data-view="none" data-dirty="false">
 <header class="topbar">
-  <div class="brand" title="netatlas 1.0.0 — offline network architecture diagrams and editor">
+  <div class="brand" title="netatlas 0.1.0 — offline network architecture diagrams and editor">
     <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="6" r="2.6"/><circle cx="19" cy="6" r="2.6"/><circle cx="12" cy="18" r="2.6"/><path d="M7.4 6.8h9.2M6.3 8.3l4.4 7.4M17.7 8.3l-4.4 7.4"/></svg>
-    <span>netatlas</span>
+    <span>netatlas</span><span class="version" title="netatlas version">v0.1.0</span>
   </div>
   <div class="btn-group">
     <button id="btn-new" type="button" title="Start a new model">New</button>
