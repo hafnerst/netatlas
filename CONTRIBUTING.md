@@ -33,7 +33,9 @@ These rules apply to every contributor, including the automation account
 3. **Implement and test on that branch.** Run `npm test`: it builds
    `dist/netatlas.html` and runs the Node tests and the headless-browser
    self-test. Commit the regenerated `dist/netatlas.html` together with the
-   source changes.
+   source changes. `npm run check:dist` confirms that the committed HTML
+   matches the source. Keep imports within the layer rules in
+   [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 4. **Push the branch and open a pull request into `dev`.** Fill in the
    template: what changed, how it was verified (commands and results), and
    known limitations.
