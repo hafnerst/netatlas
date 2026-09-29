@@ -593,7 +593,7 @@ export class ModelDoc {
 
   /** Set a free-form value typed like YAML would type it ("42" number, "true" boolean …); empty = null. */
   setValue(path: Path, text: string): void {
-    this.change('Edit value', () => this.setAt(path, text === '' ? nullNode() : autoNode(text)));
+    this.change('Edit value', () => this.setAt(path, text === '' ? nullNode() : autoNode(text), this.orderFor(path.slice(0, -1))));
   }
 
   /** Append text to a list (created as [a, b] if missing; a single value becomes a list). */
