@@ -16,7 +16,7 @@
 <header class="topbar">
   <div class="brand" title="netatlas __VERSION__ — offline network architecture diagrams and editor">
     <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="6" r="2.6"/><circle cx="19" cy="6" r="2.6"/><circle cx="12" cy="18" r="2.6"/><path d="M7.4 6.8h9.2M6.3 8.3l4.4 7.4M17.7 8.3l-4.4 7.4"/></svg>
-    <span>netatlas</span>
+    <span>netatlas</span><span class="version" title="netatlas version">v__VERSION__</span>
   </div>
   <div class="btn-group">
     <button id="btn-new" type="button" title="Start a new model">New</button>
@@ -32,6 +32,13 @@
   <div class="seg" role="group" aria-label="View">
     <button type="button" data-view-btn="physical" title="Physical view (P)">Physical</button>
     <button type="button" data-view-btn="logical" title="Logical view (L)">Logical</button>
+  </div>
+  <div class="arrange-group" role="group" aria-label="Layout">
+    <button id="btn-arrange" type="button" class="arrange-btn" disabled title="Recompute the positions of every object in the whole model, for the current view or both views (A)">Auto-arrange…</button>
+    <span id="layout-status" class="layout-status" aria-live="polite">
+      <span class="lstat" data-view-status="physical"></span>
+      <span class="lstat" data-view-status="logical"></span>
+    </span>
   </div>
   <div class="search-wrap">
     <input id="search" type="search" placeholder="Find… ( / )" aria-label="Find device, network, relation" autocomplete="off" spellcheck="false">
@@ -54,8 +61,6 @@
       <span id="zoom-level">100%</span>
       <button id="zoom-out" type="button" title="Zoom out (−)">−</button>
       <button id="zoom-fit" type="button" title="Fit to screen (0)">Fit</button>
-      <button id="btn-arrange" type="button" title="Recompute the positions of the whole model (A)">Auto-arrange…</button>
-      <span id="layout-state" class="muted small"></span>
       <button id="save-svg" type="button" title="Save the current view as an SVG file">Save SVG</button>
     </div>
     <div id="empty" class="overlay">

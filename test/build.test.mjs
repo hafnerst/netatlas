@@ -57,12 +57,14 @@ test('the artifact contains compiled JavaScript, not TypeScript', () => {
 
 test('no third-party runtime code: every bundled module comes from src/', () => {
   const ids = [...js.matchAll(/__defs\["([^"]+)"\]/g)].map((m) => m[1]).sort();
-  const srcModules = new Set(
-    readdirSync(join(root, 'src'), { recursive: false })
-      .filter((f) => f.endsWith('.ts'))
-      .map((f) => f.replace(/\.ts$/, '')),
-  );
-  srcModules.add('generated/examples');
+  const srcModules = new Set();
+  const walk = (dir, prefix) => {
+    for (const e of readdirSync(join(root, 'src', dir), { withFileTypes: true })) {
+      if (e.isDirectory()) walk(join(dir, e.name), prefix + e.name + '/');
+      else if (e.name.endsWith('.ts')) srcModules.add(prefix + e.name.replace(/\.ts$/, ''));
+    }
+  };
+  walk('', '');
   for (const id of ids) assert.ok(srcModules.has(id), `unexpected module ${id}`);
   const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
   assert.equal(pkg.dependencies, undefined, 'no runtime dependencies');
@@ -73,4 +75,17 @@ test('reasonable size, and the examples are embedded', () => {
   assert.ok(html.length < 1024 * 1024, `${html.length} bytes`);
   assert.match(js, /enterprise-wan\.yaml/);
   assert.match(js, /datacenter-evpn\.yaml/);
+});
+
+test('one version everywhere: package.json, package-lock.json, the HTML and the changelog', () => {
+  const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
+  const lock = JSON.parse(readFileSync(join(root, 'package-lock.json'), 'utf8'));
+  assert.match(pkg.version, /^\d+\.\d+\.\d+$/);
+  assert.equal(lock.version, pkg.version);
+  assert.equal(lock.packages[''].version, pkg.version);
+  assert.ok(markup.includes(`<meta name="generator" content="netatlas ${pkg.version}">`), 'generator meta');
+  assert.ok(markup.includes(`<span class="version" title="netatlas version">v${pkg.version}</span>`), 'version shown in the UI');
+  assert.ok(!markup.includes('__VERSION__'));
+  const changelog = readFileSync(join(root, 'CHANGELOG.md'), 'utf8');
+  assert.ok(changelog.split('\n').some((l) => l.startsWith(`## [${pkg.version}]`)), 'CHANGELOG has a section for this version');
 });

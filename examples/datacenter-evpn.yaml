@@ -114,14 +114,14 @@ devices:
 
   - id: esx01
     label: esx01
-    type: hypervisor
+    type: server
     group: rack-a02
     interfaces:
       - {id: vmnic0, speed: 25G, media: dac}
       - {id: vmnic1, speed: 25G, media: dac}
   - id: esx02
     label: esx02
-    type: hypervisor
+    type: server
     group: rack-a03
     interfaces:
       - {id: vmnic0, speed: 25G, media: dac}

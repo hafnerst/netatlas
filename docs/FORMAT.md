@@ -63,7 +63,7 @@ and relation endpoints. Physical links accept only `device` / `interface`.
 |---|---|---|
 | `id` | yes | |
 | `label` | | Display name (defaults to the id) |
-| `kind` | | Free text, e.g. `site`, `building`, `room`, `row`, `rack`, `provider`, `cloud`, `zone` (default `site`). `site`/`campus`/`building`/`datacenter`/`region` are emphasised; `provider`/`cloud`/`external` are drawn dashed. |
+| `kind` | | Free text, e.g. `site`, `building`, `room`, `row`, `rack`, `provider`, `cloud`, `zone`. There is no default: a group without a kind is drawn as a plain box. `site`/`campus`/`building`/`datacenter`/`region` are emphasised; `provider`/`cloud`/`external` are drawn dashed. |
 | `parent` | | Id of the enclosing group (at most 8 levels) |
 | `description`, `attrs` | | |
 
@@ -73,13 +73,40 @@ and relation endpoints. Physical links accept only `device` / `interface`.
 |---|---|---|
 | `id` | yes | |
 | `label` | | Display name |
-| `type` | | Free text. Recognised icons: `router`, `switch`, `l3switch`, `firewall`, `server`, `hypervisor`, `cloud`, `ap`, `storage`, `loadbalancer`, `host`, plus aliases such as `leaf`, `spine`, `fw`, `vm`, `internet`, `pc`. Other values get a generic icon. |
+| `type` | | One of the [device types](#device-types) below, written exactly as listed (lower case). Any other value is an error. Without a type the device gets a generic icon. |
 | `group` | | Id of the group the device is located in |
-| `tier` | | 0–9: vertical row in the physical view (0 = top). By default this comes from the type: cloud/WAN → routers → firewalls → core → access → APs → servers/hosts. |
+| `tier` | | 0–9: vertical row in the physical view (0 = top). By default this comes from the type (see the table below). Set it to place a device elsewhere, e.g. `tier: 3` for core or spine switches above the access switches. |
 | `vendor`, `model`, `role`, `mgmt` | | Shown in the subtitle, tooltip and details |
 | `router_id` | | Id of one of **this device's loopbacks**. Its IPv4 address is the router ID. Must name an interface of `type: loopback`; a warning is given if that loopback has no IPv4 address. |
 | `description`, `attrs` | | |
 | `interfaces` | | List of interfaces (below), **including loopbacks**. The shorthand `interfaces: [eth0, eth1]` is allowed. |
+
+### Device types
+
+| Display name | `type` | Default `tier` |
+|---|---|---|
+| Router | `router` | 1 |
+| Switch | `switch` | 4 |
+| Firewall | `firewall` | 2 |
+| Access point | `ap` | 5 |
+| Server | `server` | 6 |
+| Virtual machine | `vm` | 6 |
+| Container | `container` | 6 |
+| Storage | `storage` | 6 |
+| Load balancer | `load_balancer` | 1 |
+| Proxy | `proxy` | 1 |
+| IDS/IPS | `ids_ips` | 2 |
+| Gateway | `gateway` | 1 |
+| Endpoint | `endpoint` | 6 |
+| Cloud | `cloud` | 0 |
+| System | `system` | 6 |
+| *(no type)* | | 4 |
+
+Each type has its own icon, and the display name appears in the diagram
+subtitle, the details, tooltips, the legend and the editor. The error for
+any other value suggests the closest type (`Router` → `router`,
+`load-balancer` → `load_balancer`) or lists all of them. Roles such as
+spine, leaf, core or border belong in `role`, which is free text.
 
 ### Interfaces
 
@@ -156,7 +183,7 @@ be cabled. A link can't connect a port to itself.
 |---|---|
 | `id` | required |
 | `label` | |
-| `kind` | free text; common: `subnet` (default), `vlan`, `vni`, `vrf`, `zone`, `segment` |
+| `kind` | free text; common: `subnet`, `vlan`, `vni`, `vrf`, `zone`, `segment`. There is no default: a network without a kind is drawn in neutral grey. |
 | `cidr` | one prefix or a list |
 | `vlan`, `vrf` | |
 | `members` | endpoint references (devices or interfaces); the interface's first address (or `address:`) is shown on the membership line |
@@ -250,9 +277,15 @@ layout:
     pe1: [0, 0]
     vrf-cust-a: [240, 90]
     ospf-core: [120, 60]
+  manual:              # optional: nodes placed by hand (written by the editor)
+    physical: [pe3]
 ```
 
 * Values are `[x, y]` numbers; netatlas writes integers, sorted by id.
+* `manual` lists, per view, the nodes the user dragged. It is used only for
+  the layout status (see below): it tells *Manually adjusted* apart from
+  *Edited since arranged*. Auto-arrange clears it for the arranged view. A
+  node dropped exactly on its auto-arranged position is removed from it.
 * Group boxes, ports, cables, relation lines and labels are never stored.
   They're derived from the node positions.
 * **Layout data never changes what the network is.** A malformed entry, an
@@ -277,6 +310,20 @@ layout:
 So **load → arrange → export → reload** shows exactly the same picture. A
 file that has never been edited in netatlas keeps showing the auto-arranged
 layout, which is itself deterministic.
+
+### Layout status
+
+For each view the editor shows whether the diagram matches Auto-arrange. The
+status is derived from the document, never from the last action:
+
+| Status | Rule |
+|---|---|
+| **Auto-arranged** | No positions are stored for the view, or every displayed position equals the Auto-arrange result for the current model. |
+| **Manually adjusted** | Some positions differ, and at least one differing node is listed in `layout.manual`. |
+| **Edited since arranged** | Some positions differ, but none of the differing nodes was placed by hand. The model changed after arranging, and positions were kept stable rather than re-arranged. |
+
+Because it's derived, undo/redo, export → reload and moving a node back to
+its calculated position always give the right status.
 
 ### Auto-arrange
 

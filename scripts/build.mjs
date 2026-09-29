@@ -30,7 +30,7 @@ function load(id) {
   deps.forEach(load);
 }
 
-load('main');
+load('app/main');
 
 let bundle = '(function () {\n"use strict";\nvar __defs = {};\nvar __cache = {};\n' +
   'function __req(id) {\n  var c = __cache[id];\n  if (c) return c.exports;\n  var m = (__cache[id] = { exports: {} });\n' +
@@ -38,7 +38,7 @@ let bundle = '(function () {\n"use strict";\nvar __defs = {};\nvar __cache = {};
 for (const [id, src] of modules) {
   bundle += `__defs[${JSON.stringify(id)}] = function (module, exports) {\n${src.replace(/^\/\/# sourceMappingURL=.*$/m, '')}\n};\n`;
 }
-bundle += '__req("main");\n})();\n';
+bundle += '__req("app/main");\n})();\n';
 
 // Make the script safe to inline in HTML.
 // "</script" would end the inline script and "<!--" can switch the HTML parser
@@ -56,8 +56,25 @@ html = html
   .replace('/*__JS__*/', () => bundle)
   .replace(/__VERSION__/g, pkg.version);
 
-mkdirSync(join(root, 'dist'), { recursive: true });
-const out = join(root, 'dist', 'netatlas.html');
-writeFileSync(out, html);
-const sha = createHash('sha256').update(html).digest('hex');
-console.log(`wrote dist/netatlas.html  ${(html.length / 1024).toFixed(1)} KiB  ${modules.size} modules  sha256 ${sha.slice(0, 16)}…`);
+const sha = (t) => createHash('sha256').update(t).digest('hex');
+const ti = process.argv.indexOf('--target');
+const out = ti > 0 ? process.argv[ti + 1] : join(root, 'dist', 'netatlas.html');
+if (process.argv.includes('--check')) {
+  // verify only: the checked-in HTML must be byte-identical to a fresh build of the current source
+  let cur = '';
+  try {
+    cur = readFileSync(out, 'utf8');
+  } catch {
+    /* missing */
+  }
+  if (cur !== html) {
+    console.error(`${out} does NOT match the current source (checked-in sha256 ${sha(cur).slice(0, 16)}…, fresh build ${sha(html).slice(0, 16)}…).`);
+    console.error('Run "npm run build" and commit dist/netatlas.html.');
+    process.exit(1);
+  }
+  console.log(`${out} matches a fresh build of the current source (sha256 ${sha(html).slice(0, 16)}…, ${modules.size} modules)`);
+} else {
+  mkdirSync(dirname(out), { recursive: true });
+  writeFileSync(out, html);
+  console.log(`wrote dist/netatlas.html  ${(html.length / 1024).toFixed(1)} KiB  ${modules.size} modules  sha256 ${sha(html).slice(0, 16)}…`);
+}

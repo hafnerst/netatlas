@@ -95,13 +95,13 @@ devices:
     interfaces: [p1, p2, p3]
   - id: oob-con1
     label: Console server 1
-    type: host
+    type: system
     group: oob
     interfaces:
       - {id: eth0, ip: 172.31.0.11/24}
   - id: oob-con2
     label: Console server 2
-    type: host
+    type: system
     group: oob
     interfaces:
       - {id: eth0, ip: 172.31.0.12/24}

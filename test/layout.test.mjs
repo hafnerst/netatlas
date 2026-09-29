@@ -7,12 +7,12 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { root, load, yaml, validate, state, byClass } from './helpers.mjs';
 
-const { ModelDoc } = load('doc.js');
-const { layoutInput, layoutSignature } = load('layout-input.js');
-const { autoPositions, resolvePositions } = load('layout-auto.js');
-const { autoPhysical, physicalBoxes } = load('layout-physical.js');
-const { logicalSpecs } = load('layout-logical.js');
-const W = load('yaml-write.js');
+const { ModelDoc } = load('editor/document.js');
+const { layoutInput, layoutSignature } = load('layout/input.js');
+const { autoPositions, resolvePositions } = load('layout/positions.js');
+const { autoPhysical, physicalBoxes } = load('layout/physical.js');
+const { logicalSpecs } = load('layout/logical.js');
+const W = load('yaml/write.js');
 
 const exampleNames = readdirSync(join(root, 'examples')).filter((f) => /\.ya?ml$/.test(f));
 const read = (f) => readFileSync(join(root, 'examples', f), 'utf8');
@@ -281,7 +281,7 @@ function islands() {
   add('big', 20, 'g-big');
   add('mid', 8, null);
   add('sm', 3, null);
-  t += '  - {id: lone1, type: server}\n  - {id: lone2, type: host}\n';
+  t += '  - {id: lone1, type: server}\n  - {id: lone2, type: endpoint}\n';
   return t + 'links:\n' + links.join('\n') + '\nrelations:\n' + rels.join('\n') + '\n';
 }
 
@@ -355,9 +355,12 @@ test('the two views use different strategies (not identical positions)', () => {
 });
 
 test('determinism guard: layout code uses no randomness, time, locale or browser-approximated math', () => {
-  for (const f of ['layout-input.ts', 'layout-auto.ts', 'layout-physical.ts', 'layout-logical.ts', 'layout-logical-size.ts', 'geometry.ts']) {
+  // every module of the layout layer
+  const files = readdirSync(join(root, 'src', 'layout')).filter((x) => x.endsWith('.ts'));
+  assert.ok(files.length >= 6, files.join(', '));
+  for (const f of files) {
     // code only: comments may mention what is avoided
-    const src = readFileSync(join(root, 'src', f), 'utf8')
+    const src = readFileSync(join(root, 'src', 'layout', f), 'utf8')
       .replace(/\/\*[\s\S]*?\*\//g, '')
       .replace(/\/\/.*$/gm, '');
     for (const banned of ['Math.random', 'Date.now', 'new Date', 'performance.', 'localeCompare', 'Math.hypot', 'Math.sin', 'Math.cos', 'Math.atan', 'Math.exp', 'Math.pow', '**', 'getBBox', 'getComputedStyle', 'measureText']) {
@@ -366,7 +369,7 @@ test('determinism guard: layout code uses no randomness, time, locale or browser
     }
   }
   // the geometry helpers used by the layout (textWidth) are pure arithmetic
-  const geo = readFileSync(join(root, 'src', 'geometry.ts'), 'utf8');
+  const geo = readFileSync(join(root, 'src', 'layout', 'geometry.ts'), 'utf8');
   const tw = geo.slice(geo.indexOf('export function textWidth'), geo.indexOf('export function ellipsize'));
   assert.ok(!/Math\.(hypot|sin|cos|random)/.test(tw));
 });
@@ -397,4 +400,71 @@ test('resolvePositions: stored positions win, missing nodes are placed without m
   assert.ok(res.has('r2'));
   assert.notDeepEqual(res.get('r2'), auto.get('r2'));
   assert.deepEqual(resolvePositions('physical', input, new Map()), auto);
+});
+
+// --------------------------------------------------------------- layout status
+
+test('layout status is derived per view: auto-arranged, manually adjusted, edited since arranged', () => {
+  const src = read('metro-ring.yaml');
+  const d = docOf(src);
+  const st = () => d.layoutStatus('physical') + '/' + d.layoutStatus('logical');
+  assert.equal(st(), 'auto/auto', 'a file without stored positions shows the auto-arranged layout');
+  // a non-geometric edit never changes the status
+  const i = d.findEntity('device', 'pe1').index;
+  d.change('vendor', () => d.setAt(['devices', i, 'vendor'], yaml.strNode('Acme')));
+  assert.equal(st(), 'auto/auto');
+  // dragging marks only that view as manually adjusted
+  d.movePositions('physical', new Map([['pe3', { x: 9000, y: 9000 }]]), 'Move pe3');
+  assert.equal(st(), 'manual/auto');
+  assert.match(d.exportText(), /\n  manual:\n    physical: \[pe3\]\n/);
+  // undo -> derived again from the document, no stale flag
+  d.undo();
+  assert.equal(st(), 'auto/auto');
+  d.redo();
+  assert.equal(st(), 'manual/auto');
+  // moving it back to its calculated position is "auto-arranged" again
+  d.movePositions('physical', new Map([['pe3', d.autoLayout('physical').get('pe3')]]), 'Move pe3 back');
+  assert.equal(st(), 'auto/auto');
+  // export -> reload keeps a manual adjustment (positions and the record are in the YAML)
+  d.movePositions('logical', new Map([['pe4', { x: -500, y: -500 }]]), 'Move pe4');
+  const reloaded = docOf(d.exportText());
+  assert.equal(reloaded.layoutStatus('physical') + '/' + reloaded.layoutStatus('logical'), 'auto/manual');
+  // Auto-arrange restores the view and clears its record; repeating it changes nothing
+  d.arrange(['logical']);
+  assert.equal(st(), 'auto/auto');
+  assert.ok(!/\n  manual:/.test(d.exportText()) || !/logical: \[pe4\]/.test(d.exportText()));
+  assert.deepEqual(d.arrange(['physical', 'logical']), { changed: false, moved: 0 });
+  // a geometric model edit is not a manual adjustment
+  d.addEntity('device', [['id', yaml.strNode('pe7')], ['type', yaml.strNode('router')], ['group', yaml.strNode('pop-east')]]);
+  assert.equal(st(), 'edited/edited');
+  const edited = docOf(d.exportText());
+  assert.equal(edited.layoutStatus('physical') + '/' + edited.layoutStatus('logical'), 'edited/edited', 'survives export -> reload');
+  // ... but dragging after an edit is
+  d.movePositions('physical', new Map([['pe7', { x: 0, y: -2000 }]]));
+  assert.equal(st(), 'manual/edited');
+  // renaming keeps the record; deleting the node removes it
+  d.renameEntity('device', d.findEntity('device', 'pe7').index, 'pe8');
+  assert.match(d.exportText(), /physical: \[pe8\]/);
+  d.deleteEntity('device', d.findEntity('device', 'pe8').index);
+  assert.ok(!/pe8/.test(d.exportText()));
+  assert.equal(st(), 'auto/auto', 'without pe8 the stored layout equals Auto-arrange again');
+  // an arranged example is auto-arranged when loaded
+  const arranged = docOf(read('metro-ring-arranged.yaml'));
+  assert.equal(arranged.layoutStatus('physical') + '/' + arranged.layoutStatus('logical'), 'auto/auto');
+});
+
+test('the manual record is presentation only: bad entries warn and never affect the model', () => {
+  const r = validate.loadModel(`netatlas: 1
+devices:
+  - {id: a}
+layout:
+  physical:
+    a: [0, 0]
+  manual:
+    physical: [a, ghost]
+    sideways: [a]
+`);
+  assert.deepEqual(r.errors, []);
+  assert.equal(r.warnings.length, 1);
+  assert.deepEqual(Array.from(r.model.layout.manual.physical), ['a', 'ghost']);
 });

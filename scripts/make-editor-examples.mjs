@@ -1,5 +1,5 @@
 // Produces the two "editor" examples by driving the same editing core the
-// web page uses (build/js/doc.js — ModelDoc), so they are reproducible:
+// web page uses (build/js/editor/document.js — ModelDoc), so they are reproducible:
 //
 //   examples/editor-new-network.yaml   a model created from "New" and built up
 //   examples/minimal-edited.yaml       examples/minimal.yaml imported and edited
@@ -15,8 +15,8 @@ import { fileURLToPath } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const require = createRequire(import.meta.url);
-const { ModelDoc, KEY_ORDER } = require(join(root, 'build/js/doc.js'));
-const Y = require(join(root, 'build/js/yaml.js'));
+const { ModelDoc, KEY_ORDER } = require(join(root, 'build/js/editor/document.js'));
+const Y = require(join(root, 'build/js/yaml/parse.js'));
 
 const s = Y.strNode;
 const flowList = (...xs) => Y.seqNode(xs.map(s), true);
@@ -26,9 +26,10 @@ export function buildNewNetwork() {
   const d = ModelDoc.create();
   d.change('Edit title', () => d.setAt(['title'], s('Lab: two edge routers'), KEY_ORDER.top));
   d.change('Edit description', () => d.setAt(['description'], s('Created in the netatlas editor: loopbacks, one cable, iBGP and a GRE tunnel between loopbacks.'), KEY_ORDER.top));
-  // rename the template router and add a second one
-  d.renameEntity('device', 0, 'edge-a');
-  const b = d.addEntity('device', [['id', s('edge-b')]]);
+  // New starts empty: add both routers, choosing their type explicitly
+  const a = d.addEntity('device', [['id', s('edge-a')], ['type', s('router')], ['router_id', s('lo0')]]);
+  d.addLoopback(a, ['10.255.0.1/32'], 'Router ID', 'lo0');
+  const b = d.addEntity('device', [['id', s('edge-b')], ['type', s('router')]]);
   d.change('Edit label', () => d.setAt(['devices', b, 'label'], s('Edge B'), KEY_ORDER.device));
   // loopbacks: edge-a gets a second (IPv6) loopback, edge-b gets two with v4+v6
   d.addLoopback(0, ['2001:db8:ffff::a/128'], 'BGP source (IPv6)', 'lo1');

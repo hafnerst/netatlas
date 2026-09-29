@@ -80,6 +80,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 }
 .brand { display: flex; align-items: center; gap: 6px; font-weight: 700; font-size: 15px; margin-right: 6px; }
 .brand svg { fill: var(--accent); stroke: var(--accent); stroke-width: 1.6; }
+.brand .version { font-weight: 400; font-size: 11px; color: var(--muted); align-self: flex-end; margin-bottom: 2px; }
 .seg { display: inline-flex; }
 .seg button { border-radius: 0; margin-left: -1px; }
 .seg button:first-child { border-radius: 6px 0 0 6px; }
@@ -254,6 +255,19 @@ body[data-dirty="true"] #btn-download { border-color: var(--warn); box-shadow: i
 .ol-item:hover { background: var(--accent-soft); }
 .ol-item.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
 .ol-doc { font-weight: 600; }
+/* selection context in the element lists: shape and weight as well as colour */
+.ctx-mark { width: 10px; flex: none; text-align: center; color: var(--accent); font-weight: 700; }
+.ol-item.ctx-selected { background: var(--accent-soft); color: var(--accent); font-weight: 600; box-shadow: inset 3px 0 0 var(--accent); }
+.ol-item.ctx-unrelated { color: var(--muted); padding-left: 22px; }
+.ol-item.ctx-unrelated:hover, .ol-item.ctx-unrelated:focus-visible { color: var(--text); }
+.ol-ctx-hint { margin: 6px 2px 0; color: var(--muted); font-size: 11px; }
+.ol-ctx-hint .ctx-mark { display: inline-block; }
+.reflist li.ctx-selected { box-shadow: inset 3px 0 0 var(--accent); padding-left: 6px; }
+.reflist li.ctx-selected button.ref { font-weight: 700; }
+.reflist li.ctx-related::before { content: '•'; color: var(--accent); font-weight: 700; width: 8px; }
+.reflist li.ctx-unrelated button.ref { color: var(--muted); }
+.reflist li.ctx-unrelated button.ref:hover, .reflist li.ctx-unrelated button.ref:focus-visible { color: var(--text); }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 .ol-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ol-badge { font-size: 10.5px; font-weight: 700; border-radius: 99px; padding: 0 6px; color: #fff; }
 .ol-badge.err { background: var(--error); }
@@ -271,6 +285,11 @@ body[data-dirty="true"] #btn-download { border-color: var(--warn); box-shadow: i
 .field > label { font-size: 11.5px; color: var(--muted); font-weight: 500; }
 .field input[type="text"], .field textarea, .field select, .g-row input[type="text"], .list-ed input, .ep-row select { width: 100%; padding: 4px 7px; border: 1px solid var(--border); border-radius: 5px; background: var(--canvas); min-width: 0; }
 .field textarea { resize: vertical; font: inherit; }
+/* nothing chosen yet: the prompt must not look like a saved value */
+.field select.unset { color: var(--muted); font-style: italic; }
+.field select.unset option { color: var(--text); font-style: normal; }
+.field input::placeholder { color: var(--muted); font-style: italic; opacity: 1; }
+.hint-empty { margin: 4px 0; padding: 6px 9px; border: 1px dashed var(--border); border-radius: 6px; color: var(--muted); }
 .field.invalid > input, .field.invalid > .ctl input, .field.invalid > select, .list-row.invalid input, .ep-row.invalid select { border-color: var(--error); }
 .field-err { color: var(--error); font-size: 11.5px; overflow-wrap: anywhere; }
 .field-warn { color: var(--warn); font-size: 11.5px; overflow-wrap: anywhere; }
@@ -342,5 +361,19 @@ dialog#modal::backdrop { background: rgba(0,0,0,.35); }
 .loop-chip text { font-size: 9.5px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .loop-chip.rid rect { stroke-width: 1.8; }
 
-#layout-state { padding: 0 6px; white-space: nowrap; cursor: help; }
 .arrange-scope { margin: 6px 0 10px; padding-left: 20px; }
+/* auto-arrange button and per-view layout status */
+.arrange-group { display: inline-flex; align-items: center; gap: 6px; }
+.arrange-btn { font-weight: 600; border-color: var(--accent); color: var(--accent); }
+.arrange-btn:disabled { color: inherit; border-color: var(--border); }
+.layout-status { display: inline-flex; gap: 4px; }
+body:not([data-state="loaded"]) .layout-status { display: none; }
+.lstat { font-size: 11.5px; padding: 1px 7px; border-radius: 99px; border: 1px solid var(--border); color: var(--muted); white-space: nowrap; cursor: help; }
+.lstat.current { color: var(--text); font-weight: 600; }
+.lstat.st-auto.current { border-color: #2f9e44; }
+.lstat.st-manual.current { border-color: var(--warn); }
+.lstat.st-edited.current { border-color: var(--accent); }
+.lstat::before { margin-right: 4px; }
+.lstat.st-auto::before { content: "\2713"; color: #2f9e44; }
+.lstat.st-manual::before { content: "\270E"; color: var(--warn); }
+.lstat.st-edited::before { content: "\25CF"; color: var(--accent); }
