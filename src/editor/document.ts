@@ -8,12 +8,16 @@
  */
 import { Pt } from '../layout/geometry';
 import { LAYOUT_VIEWS, LayoutView, autoPositions, resolvePositions, samePositions } from '../layout/positions';
-import { cmp, layoutInput, layoutSignature } from '../layout/input';
+import { layoutInput, layoutSignature } from '../layout/input';
 import { Model } from '../model/types';
 import { Issue, LoadResult, loadModel, scalarText, validate } from '../validation/validate';
 import { SCHEMA } from '../yaml/schema';
 import { DEFAULT_YAML_LIMITS, YMap, YNode, YSeq, autoNode, boolNode, cloneNode, mapNode, nullNode, numNode, seqNode, strNode } from '../yaml/parse';
 import { stringifyYaml } from '../yaml/write';
+import { rawLayoutKeys, rawManualIds, writeLayout, writeManual } from './layout-section';
+import { keepTrivia, sameSet, setKey } from './tree';
+
+export { setKey };
 
 /**
  * Read-only view of the document tree for the UI. The document IS the YAML
@@ -62,54 +66,8 @@ devices:
 
 const MAX_UNDO = 100;
 
-/** Copy comments / blank-line markers from an old node onto its replacement. */
-function keepTrivia(from: YNode | undefined, to: YNode): YNode {
-  if (!from) return to;
-  if (from.before && !to.before) to.before = from.before;
-  if (from.blank && !to.blank) to.blank = true;
-  if (from.comment !== undefined && to.comment === undefined && to.kind === 'scalar' && from.kind === 'scalar') to.comment = from.comment;
-  if (from.comment !== undefined && to.comment === undefined && to.kind !== 'scalar' && from.kind !== 'scalar') to.comment = from.comment;
-  return to;
-}
 
-function sameSet(a: Set<string>, b: Set<string>): boolean {
-  if (a.size !== b.size) return false;
-  let same = true;
-  a.forEach((x) => {
-    if (!b.has(x)) same = false;
-  });
-  return same;
-}
 
-/** Insert or replace `key` in `m`, placing new keys according to `order`. */
-export function setKey(m: YMap, key: string, value: YNode, order?: string[]): void {
-  const existing = m.entries.get(key);
-  if (existing) {
-    existing.value = keepTrivia(existing.value, value);
-    return;
-  }
-  const entry = { key, keyLine: 0, value };
-  const pos = order ? order.indexOf(key) : -1;
-  if (pos < 0) {
-    m.entries.set(key, entry);
-    return;
-  }
-  // insert before the first existing key that comes later in the canonical order
-  const next = Array.from(m.entries.keys()).find((k) => {
-    const p = (order as string[]).indexOf(k);
-    return p > pos;
-  });
-  if (next === undefined) {
-    m.entries.set(key, entry);
-    return;
-  }
-  const rebuilt = new Map<string, typeof entry>();
-  m.entries.forEach((e, k) => {
-    if (k === next) rebuilt.set(key, entry);
-    rebuilt.set(k, e);
-  });
-  m.entries = rebuilt;
-}
 
 export interface EntityRef {
   kind: EntityKind;
@@ -298,10 +256,10 @@ export class ModelDoc {
       shown.forEach((p, id) => base.set(this.renames.get(id) || id, p));
       const next = resolvePositions(view, postIn, base);
       // also rewrite when the file still holds entries for nodes that no longer exist
-      const raw = this.rawLayoutKeys(view);
+      const raw = rawLayoutKeys(this.root, view);
       const stale = raw.some((id) => !next.has(id));
       if (stale || !samePositions(next, post.layout[view])) {
-        this.writeLayout(view, next);
+        writeLayout(this.root, view, next);
         changed = true;
       }
       // the record of hand-placed nodes follows renames and forgets removed nodes
@@ -313,8 +271,8 @@ export class ModelDoc {
       post.layout.manual[view].forEach((id) => {
         if (next.has(id)) manual.add(id);
       });
-      if (!sameSet(manual, post.layout.manual[view]) || this.rawManualIds(view).some((id) => !next.has(id))) {
-        this.writeManual(view, manual);
+      if (!sameSet(manual, post.layout.manual[view]) || rawManualIds(this.root, view).some((id) => !next.has(id))) {
+        writeManual(this.root, view, manual);
         changed = true;
       }
     }
@@ -366,73 +324,9 @@ export class ModelDoc {
     return differing.some((id) => m.layout.manual[view].has(id)) ? 'manual' : 'edited';
   }
 
-  /** Ids recorded as hand-placed in the document (valid or not). */
-  private rawManualIds(view: LayoutView): string[] {
-    const lay = this.root.entries.get('layout');
-    if (!lay || lay.value.kind !== 'map') return [];
-    const man = lay.value.entries.get('manual');
-    if (!man || man.value.kind !== 'map') return [];
-    const l = man.value.entries.get(view);
-    return l && l.value.kind === 'seq' ? l.value.items.map((i) => scalarText(i) || '') : [];
-  }
 
-  /** Store the set of hand-placed nodes of a view (sorted; removed when empty). */
-  private writeManual(view: LayoutView, ids: Set<string>): void {
-    let lay = this.root.entries.get('layout');
-    if (!lay || lay.value.kind !== 'map') {
-      if (!ids.size) return;
-      const fresh = mapNode();
-      fresh.blank = true;
-      setKey(this.root, 'layout', fresh, KEY_ORDER.top);
-      lay = this.root.entries.get('layout') as { key: string; keyLine: number; value: YNode };
-    }
-    const layMap = lay.value as YMap;
-    const cur = layMap.entries.get('manual');
-    let man = cur && cur.value.kind === 'map' ? cur.value : null;
-    if (!ids.size) {
-      if (man) {
-        man.entries.delete(view);
-        if (!man.entries.size) layMap.entries.delete('manual');
-      }
-      return;
-    }
-    if (!man) {
-      man = mapNode();
-      setKey(layMap, 'manual', man, ['physical', 'logical', 'manual']);
-    }
-    setKey(man, view, seqNode(Array.from(ids).sort(cmp).map(strNode), true), ['physical', 'logical']);
-  }
 
-  /** Keys present in the document's layout section for a view (valid or not). */
-  private rawLayoutKeys(view: LayoutView): string[] {
-    const lay = this.root.entries.get('layout');
-    if (!lay || lay.value.kind !== 'map') return [];
-    const vm = lay.value.entries.get(view);
-    return vm && vm.value.kind === 'map' ? Array.from(vm.value.entries.keys()) : [];
-  }
 
-  /** Replace the stored positions of one view (entries sorted by id; comments kept). */
-  private writeLayout(view: LayoutView, positions: Map<string, Pt>): void {
-    let lay = this.root.entries.get('layout');
-    if (!lay || lay.value.kind !== 'map') {
-      const fresh = mapNode();
-      fresh.blank = true;
-      setKey(this.root, 'layout', fresh, KEY_ORDER.top);
-      lay = this.root.entries.get('layout') as { key: string; keyLine: number; value: YNode };
-    }
-    const layMap = lay.value as YMap;
-    const oldEntry = layMap.entries.get(view);
-    const old = oldEntry && oldEntry.value.kind === 'map' ? oldEntry.value : null;
-    const m = mapNode();
-    for (const id of Array.from(positions.keys()).sort(cmp)) {
-      const p = positions.get(id) as Pt;
-      const v = seqNode([numNode(p.x), numNode(p.y)], true);
-      const prev = old ? old.entries.get(id) : undefined;
-      if (prev) keepTrivia(prev.value, v);
-      m.entries.set(id, { key: id, keyLine: 0, value: v });
-    }
-    setKey(layMap, view, m, ['physical', 'logical']);
-  }
 
   /**
    * Auto-arrange: compute the deterministic layout of the whole model for the
@@ -461,8 +355,8 @@ export class ModelDoc {
       label,
       () =>
         targets.forEach((pos, v) => {
-          this.writeLayout(v, pos);
-          this.writeManual(v, new Set());
+          writeLayout(this.root, v, pos);
+          writeManual(this.root, v, new Set());
         }),
       { layout: false },
     );
@@ -492,8 +386,8 @@ export class ModelDoc {
     this.change(
       label,
       () => {
-        this.writeLayout(view, next);
-        this.writeManual(view, manual);
+        writeLayout(this.root, view, next);
+        writeManual(this.root, view, manual);
       },
       { layout: false },
     );

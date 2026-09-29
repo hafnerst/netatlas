@@ -1675,15 +1675,17 @@ function restoreFocus(doc, f) {
 __defs["editor/document"] = function (module, exports) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.ModelDoc = exports.NEW_MODEL_YAML = exports.KEY_ORDER = exports.SECTION = exports.ENTITY_KINDS = exports.MAX_INPUT_BYTES = void 0;
+exports.ModelDoc = exports.NEW_MODEL_YAML = exports.KEY_ORDER = exports.SECTION = exports.ENTITY_KINDS = exports.MAX_INPUT_BYTES = exports.setKey = void 0;
 exports.kindOfSection = kindOfSection;
-exports.setKey = setKey;
 const positions_1 = __req("layout/positions");
 const input_1 = __req("layout/input");
 const validate_1 = __req("validation/validate");
 const schema_1 = __req("yaml/schema");
 const parse_1 = __req("yaml/parse");
 const write_1 = __req("yaml/write");
+const layout_section_1 = __req("editor/layout-section");
+const tree_1 = __req("editor/tree");
+Object.defineProperty(exports, "setKey", { enumerable: true, get: function () { return tree_1.setKey; } });
 /** Largest file the editor opens (checked before reading it). */
 exports.MAX_INPUT_BYTES = parse_1.DEFAULT_YAML_LIMITS.maxBytes;
 exports.ENTITY_KINDS = ['device', 'link', 'network', 'relation', 'group', 'protocol'];
@@ -1713,60 +1715,6 @@ devices:
       - {id: lo0, type: loopback, label: Router ID, ip: [10.255.0.1/32]}
 `;
 const MAX_UNDO = 100;
-/** Copy comments / blank-line markers from an old node onto its replacement. */
-function keepTrivia(from, to) {
-    if (!from)
-        return to;
-    if (from.before && !to.before)
-        to.before = from.before;
-    if (from.blank && !to.blank)
-        to.blank = true;
-    if (from.comment !== undefined && to.comment === undefined && to.kind === 'scalar' && from.kind === 'scalar')
-        to.comment = from.comment;
-    if (from.comment !== undefined && to.comment === undefined && to.kind !== 'scalar' && from.kind !== 'scalar')
-        to.comment = from.comment;
-    return to;
-}
-function sameSet(a, b) {
-    if (a.size !== b.size)
-        return false;
-    let same = true;
-    a.forEach((x) => {
-        if (!b.has(x))
-            same = false;
-    });
-    return same;
-}
-/** Insert or replace `key` in `m`, placing new keys according to `order`. */
-function setKey(m, key, value, order) {
-    const existing = m.entries.get(key);
-    if (existing) {
-        existing.value = keepTrivia(existing.value, value);
-        return;
-    }
-    const entry = { key, keyLine: 0, value };
-    const pos = order ? order.indexOf(key) : -1;
-    if (pos < 0) {
-        m.entries.set(key, entry);
-        return;
-    }
-    // insert before the first existing key that comes later in the canonical order
-    const next = Array.from(m.entries.keys()).find((k) => {
-        const p = order.indexOf(k);
-        return p > pos;
-    });
-    if (next === undefined) {
-        m.entries.set(key, entry);
-        return;
-    }
-    const rebuilt = new Map();
-    m.entries.forEach((e, k) => {
-        if (k === next)
-            rebuilt.set(key, entry);
-        rebuilt.set(k, e);
-    });
-    m.entries = rebuilt;
-}
 class ModelDoc {
     constructor(root, fileName, origin) {
         this.dirty = false;
@@ -1941,10 +1889,10 @@ class ModelDoc {
             shown.forEach((p, id) => base.set(this.renames.get(id) || id, p));
             const next = (0, positions_1.resolvePositions)(view, postIn, base);
             // also rewrite when the file still holds entries for nodes that no longer exist
-            const raw = this.rawLayoutKeys(view);
+            const raw = (0, layout_section_1.rawLayoutKeys)(this.root, view);
             const stale = raw.some((id) => !next.has(id));
             if (stale || !(0, positions_1.samePositions)(next, post.layout[view])) {
-                this.writeLayout(view, next);
+                (0, layout_section_1.writeLayout)(this.root, view, next);
                 changed = true;
             }
             // the record of hand-placed nodes follows renames and forgets removed nodes
@@ -1958,8 +1906,8 @@ class ModelDoc {
                 if (next.has(id))
                     manual.add(id);
             });
-            if (!sameSet(manual, post.layout.manual[view]) || this.rawManualIds(view).some((id) => !next.has(id))) {
-                this.writeManual(view, manual);
+            if (!(0, tree_1.sameSet)(manual, post.layout.manual[view]) || (0, layout_section_1.rawManualIds)(this.root, view).some((id) => !next.has(id))) {
+                (0, layout_section_1.writeManual)(this.root, view, manual);
                 changed = true;
             }
         }
@@ -2010,76 +1958,6 @@ class ModelDoc {
             return 'auto';
         return differing.some((id) => m.layout.manual[view].has(id)) ? 'manual' : 'edited';
     }
-    /** Ids recorded as hand-placed in the document (valid or not). */
-    rawManualIds(view) {
-        const lay = this.root.entries.get('layout');
-        if (!lay || lay.value.kind !== 'map')
-            return [];
-        const man = lay.value.entries.get('manual');
-        if (!man || man.value.kind !== 'map')
-            return [];
-        const l = man.value.entries.get(view);
-        return l && l.value.kind === 'seq' ? l.value.items.map((i) => (0, validate_1.scalarText)(i) || '') : [];
-    }
-    /** Store the set of hand-placed nodes of a view (sorted; removed when empty). */
-    writeManual(view, ids) {
-        let lay = this.root.entries.get('layout');
-        if (!lay || lay.value.kind !== 'map') {
-            if (!ids.size)
-                return;
-            const fresh = (0, parse_1.mapNode)();
-            fresh.blank = true;
-            setKey(this.root, 'layout', fresh, exports.KEY_ORDER.top);
-            lay = this.root.entries.get('layout');
-        }
-        const layMap = lay.value;
-        const cur = layMap.entries.get('manual');
-        let man = cur && cur.value.kind === 'map' ? cur.value : null;
-        if (!ids.size) {
-            if (man) {
-                man.entries.delete(view);
-                if (!man.entries.size)
-                    layMap.entries.delete('manual');
-            }
-            return;
-        }
-        if (!man) {
-            man = (0, parse_1.mapNode)();
-            setKey(layMap, 'manual', man, ['physical', 'logical', 'manual']);
-        }
-        setKey(man, view, (0, parse_1.seqNode)(Array.from(ids).sort(input_1.cmp).map(parse_1.strNode), true), ['physical', 'logical']);
-    }
-    /** Keys present in the document's layout section for a view (valid or not). */
-    rawLayoutKeys(view) {
-        const lay = this.root.entries.get('layout');
-        if (!lay || lay.value.kind !== 'map')
-            return [];
-        const vm = lay.value.entries.get(view);
-        return vm && vm.value.kind === 'map' ? Array.from(vm.value.entries.keys()) : [];
-    }
-    /** Replace the stored positions of one view (entries sorted by id; comments kept). */
-    writeLayout(view, positions) {
-        let lay = this.root.entries.get('layout');
-        if (!lay || lay.value.kind !== 'map') {
-            const fresh = (0, parse_1.mapNode)();
-            fresh.blank = true;
-            setKey(this.root, 'layout', fresh, exports.KEY_ORDER.top);
-            lay = this.root.entries.get('layout');
-        }
-        const layMap = lay.value;
-        const oldEntry = layMap.entries.get(view);
-        const old = oldEntry && oldEntry.value.kind === 'map' ? oldEntry.value : null;
-        const m = (0, parse_1.mapNode)();
-        for (const id of Array.from(positions.keys()).sort(input_1.cmp)) {
-            const p = positions.get(id);
-            const v = (0, parse_1.seqNode)([(0, parse_1.numNode)(p.x), (0, parse_1.numNode)(p.y)], true);
-            const prev = old ? old.entries.get(id) : undefined;
-            if (prev)
-                keepTrivia(prev.value, v);
-            m.entries.set(id, { key: id, keyLine: 0, value: v });
-        }
-        setKey(layMap, view, m, ['physical', 'logical']);
-    }
     /**
      * Auto-arrange: compute the deterministic layout of the whole model for the
      * given views and store it (one undo step). Returns how many nodes moved on
@@ -2108,8 +1986,8 @@ class ModelDoc {
             return { changed: false, moved: 0 };
         const label = views.length > 1 ? 'Auto-arrange (both views)' : `Auto-arrange (${views[0]} view)`;
         this.change(label, () => targets.forEach((pos, v) => {
-            this.writeLayout(v, pos);
-            this.writeManual(v, new Set());
+            (0, layout_section_1.writeLayout)(this.root, v, pos);
+            (0, layout_section_1.writeManual)(this.root, v, new Set());
         }), { layout: false });
         return { changed: true, moved };
     }
@@ -2139,8 +2017,8 @@ class ModelDoc {
                 manual.delete(id);
         });
         this.change(label, () => {
-            this.writeLayout(view, next);
-            this.writeManual(view, manual);
+            (0, layout_section_1.writeLayout)(this.root, view, next);
+            (0, layout_section_1.writeManual)(this.root, view, manual);
         }, { layout: false });
         return true;
     }
@@ -2214,7 +2092,7 @@ class ModelDoc {
         else {
             replacement = (0, parse_1.mapNode)();
         }
-        keepTrivia(cur, replacement);
+        (0, tree_1.keepTrivia)(cur, replacement);
         this.put(parentPath, seg, replacement, order);
         return replacement;
     }
@@ -2232,7 +2110,7 @@ class ModelDoc {
             s.items.push(item);
             s.flow = true;
         }
-        keepTrivia(cur, s);
+        (0, tree_1.keepTrivia)(cur, s);
         this.put(path.slice(0, -1), path[path.length - 1], s, order);
         return s;
     }
@@ -2242,12 +2120,12 @@ class ModelDoc {
             const parent = this.get(parentPath);
             if (!parent || parent.kind !== 'seq')
                 throw new Error('not a list: ' + parentPath.join('.'));
-            value = keepTrivia(parent.items[seg], value);
+            value = (0, tree_1.keepTrivia)(parent.items[seg], value);
             parent.items[seg] = value;
             return;
         }
         const parent = parentPath.length ? this.ensureMap(parentPath) : this.root;
-        setKey(parent, seg, value, order || (parentPath.length === 0 ? exports.KEY_ORDER.top : undefined));
+        (0, tree_1.setKey)(parent, seg, value, order || (parentPath.length === 0 ? exports.KEY_ORDER.top : undefined));
     }
     /** Set the value at `path` (not undoable by itself: call inside change()). */
     setAt(path, value, order) {
@@ -2536,7 +2414,7 @@ class ModelDoc {
             delete copy.blank;
             if (copy.kind === 'map' && copy.entries.has('id')) {
                 const old = (0, validate_1.scalarText)(copy.entries.get('id').value) || kind;
-                setKey(copy, 'id', (0, parse_1.strNode)(this.uniqueId(old)));
+                (0, tree_1.setKey)(copy, 'id', (0, parse_1.strNode)(this.uniqueId(old)));
             }
             const seq = this.section(kind);
             seq.items.splice(index + 1, 0, copy);
@@ -2683,9 +2561,9 @@ class ModelDoc {
         }
         else if (n.kind === 'map') {
             if (oldIf !== undefined && newIf !== undefined)
-                setKey(n, 'interface', (0, parse_1.strNode)(newIf));
+                (0, tree_1.setKey)(n, 'interface', (0, parse_1.strNode)(newIf));
             else
-                setKey(n, 'device', (0, parse_1.strNode)(newId));
+                (0, tree_1.setKey)(n, 'device', (0, parse_1.strNode)(newId));
         }
     }
     /**
@@ -2699,7 +2577,7 @@ class ModelDoc {
         const oldId = ent.id;
         return this.change(`Rename ${kind}`, () => {
             const refs = oldId ? this.references(kind, oldId, undefined, true) : [];
-            setKey(ent.node, 'id', (0, parse_1.strNode)(newId), exports.KEY_ORDER[kind]);
+            (0, tree_1.setKey)(ent.node, 'id', (0, parse_1.strNode)(newId), exports.KEY_ORDER[kind]);
             for (const p of refs)
                 this.rewriteRef(p, oldId, newId);
             if (oldId)
@@ -2718,7 +2596,7 @@ class ModelDoc {
         return this.change('Rename interface', () => {
             const refs = oldIf ? this.references('device', dev.id, oldIf) : [];
             const m = this.ensureMap(ipath, exports.KEY_ORDER.interface);
-            setKey(m, 'id', (0, parse_1.strNode)(newIf), exports.KEY_ORDER.interface);
+            (0, tree_1.setKey)(m, 'id', (0, parse_1.strNode)(newIf), exports.KEY_ORDER.interface);
             for (const p of refs)
                 this.rewriteRef(p, dev.id, dev.id, oldIf, newIf);
             return refs.length;
@@ -4227,9 +4105,7 @@ function assignPorts(links, boxes) {
 __defs["validation/validate"] = function (module, exports) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.MAX_COORD = exports.PROTO_RE = exports.IFACE_RE = exports.ID_RE = exports.FORMAT_VERSION = exports.DEFAULT_MODEL_LIMITS = void 0;
-exports.suggest = suggest;
-exports.scalarText = scalarText;
+exports.MAX_COORD = exports.PROTO_RE = exports.FORMAT_VERSION = exports.suggest = exports.scalarText = exports.IFACE_RE = exports.ID_RE = exports.DEFAULT_MODEL_LIMITS = void 0;
 exports.loadModel = loadModel;
 exports.validate = validate;
 const ip_1 = __req("model/ip");
@@ -4238,28 +4114,14 @@ const protocols_1 = __req("model/protocols");
 const parse_1 = __req("yaml/parse");
 const schema_1 = __req("yaml/schema");
 Object.defineProperty(exports, "FORMAT_VERSION", { enumerable: true, get: function () { return schema_1.FORMAT_VERSION; } });
-exports.DEFAULT_MODEL_LIMITS = {
-    maxGroups: 500,
-    maxDevices: 1000,
-    maxInterfacesPerDevice: 512,
-    maxInterfaces: 20000,
-    maxLinks: 5000,
-    maxNetworks: 2000,
-    maxRelations: 5000,
-    maxEndpoints: 64,
-    maxMembers: 1000,
-    maxProtocols: 200,
-    maxGroupDepth: 8,
-    maxAttrs: 100,
-    maxLabel: 200,
-    maxDescription: 4000,
-    maxErrors: 200,
-};
-/** Entity ids: letters, digits, "_", ".", "-" (no ":" — it separates device and interface). */
-exports.ID_RE = /^[A-Za-z0-9_][A-Za-z0-9_.\-]{0,63}$/;
-/** Interface ids additionally allow "/" (e.g. "ge-0/0/1", "Ethernet1/1"). */
-exports.IFACE_RE = /^[A-Za-z0-9_][A-Za-z0-9_.\-\/]{0,63}$/;
-exports.PROTO_RE = /^[a-z0-9][a-z0-9_.+\-]{0,39}$/;
+const reader_1 = __req("validation/reader");
+Object.defineProperty(exports, "DEFAULT_MODEL_LIMITS", { enumerable: true, get: function () { return reader_1.DEFAULT_MODEL_LIMITS; } });
+Object.defineProperty(exports, "ID_RE", { enumerable: true, get: function () { return reader_1.ID_RE; } });
+Object.defineProperty(exports, "IFACE_RE", { enumerable: true, get: function () { return reader_1.IFACE_RE; } });
+Object.defineProperty(exports, "scalarText", { enumerable: true, get: function () { return reader_1.scalarText; } });
+Object.defineProperty(exports, "suggest", { enumerable: true, get: function () { return reader_1.suggest; } });
+/** protocol ids: lower-case letters, digits and _ . + - */
+exports.PROTO_RE = /^[a-z0-9][a-z0-9_.+-]{0,39}$/;
 /** largest accepted coordinate in the layout section */
 exports.MAX_COORD = 1000000;
 // keys per mapping kind: the single definition is yaml/schema.ts
@@ -4273,197 +4135,6 @@ const REL_KEYS = schema_1.SCHEMA.relation;
 const EP_KEYS = schema_1.SCHEMA.endpoint;
 const PROTO_KEYS = schema_1.SCHEMA.protocol;
 const ATTRS_HINT = ' (custom data belongs under "attrs:")';
-class TooManyErrors extends Error {
-}
-class Ctx {
-    constructor(limits) {
-        this.limits = limits;
-        this.errors = [];
-        this.warnings = [];
-    }
-    mk(severity, node, path, message, at) {
-        const is = { severity, line: at.line !== undefined ? at.line : node.line, path, message, node };
-        if (at.key !== undefined)
-            is.key = at.key;
-        return is;
-    }
-    error(node, path, message, at = {}) {
-        this.errors.push(this.mk('error', node, path, message, at));
-        if (this.errors.length >= this.limits.maxErrors)
-            throw new TooManyErrors();
-    }
-    warn(node, path, message, at = {}) {
-        if (this.warnings.length < this.limits.maxErrors)
-            this.warnings.push(this.mk('warning', node, path, message, at));
-    }
-}
-// --------------------------------------------------------------- utilities
-function levenshtein(a, b) {
-    if (Math.abs(a.length - b.length) > 3)
-        return 99;
-    const dp = [];
-    for (let j = 0; j <= b.length; j++)
-        dp[j] = j;
-    for (let i = 1; i <= a.length; i++) {
-        let prev = dp[0];
-        dp[0] = i;
-        for (let j = 1; j <= b.length; j++) {
-            const tmp = dp[j];
-            dp[j] = Math.min(dp[j] + 1, dp[j - 1] + 1, prev + (a.charAt(i - 1) === b.charAt(j - 1) ? 0 : 1));
-            prev = tmp;
-        }
-    }
-    return dp[b.length];
-}
-/** " — did you mean "x"?" or a short list of valid options. */
-function suggest(name, candidates, listIfFew = 8) {
-    const all = Array.from(candidates);
-    let best = '';
-    let bestD = 99;
-    const lname = name.toLowerCase();
-    for (const c of all) {
-        const d = levenshtein(lname, c.toLowerCase());
-        if (d < bestD) {
-            bestD = d;
-            best = c;
-        }
-    }
-    if (best && bestD <= Math.max(1, Math.min(3, Math.floor(name.length / 3))))
-        return ` — did you mean "${best}"?`;
-    if (all.length && all.length <= listIfFew)
-        return ` (known: ${all.join(', ')})`;
-    return '';
-}
-function kindOf(n) {
-    return n.kind === 'map' ? 'a mapping' : n.kind === 'seq' ? 'a list' : n.value === null ? 'empty (null)' : 'a scalar';
-}
-function get(m, key) {
-    const e = m.entries.get(key);
-    return e ? e.value : undefined;
-}
-function isNull(n) {
-    return !n || (n.kind === 'scalar' && n.value === null && !n.quoted);
-}
-/** Text of a scalar as written (numbers keep their spelling, e.g. "010"). */
-function scalarText(n) {
-    if (n.kind !== 'scalar' || (n.value === null && !n.quoted))
-        return undefined;
-    return n.quoted ? String(n.value) : n.raw;
-}
-class Reader {
-    constructor(c) {
-        this.c = c;
-    }
-    map(n, path) {
-        if (!n)
-            return null;
-        if (n.kind !== 'map') {
-            this.c.error(n, path, `expected a mapping ("key: value" lines) but found ${kindOf(n)}`);
-            return null;
-        }
-        return n;
-    }
-    /** A list; a single scalar is accepted as a one-element list when `allowScalar`. */
-    list(n, path, allowScalar = false) {
-        if (isNull(n))
-            return [];
-        const node = n;
-        if (node.kind === 'seq')
-            return node.items;
-        if (allowScalar && node.kind === 'scalar')
-            return [node];
-        this.c.error(node, path, `expected a list ("- item" lines or [a, b]) but found ${kindOf(node)}`);
-        return [];
-    }
-    keys(m, allowed, path, hint = '') {
-        m.entries.forEach((e, k) => {
-            if (allowed.indexOf(k) < 0) {
-                this.c.error(m, path ? path + '.' + k : k, `unknown key "${k}"${suggest(k, allowed, 20)}${hint}`, { key: k, line: e.keyLine });
-            }
-        });
-    }
-    str(n, path, max) {
-        if (isNull(n))
-            return undefined;
-        const node = n;
-        if (node.kind !== 'scalar') {
-            this.c.error(node, path, `expected a single value but found ${kindOf(node)}`);
-            return undefined;
-        }
-        const s = scalarText(node);
-        if (s.length > max) {
-            this.c.error(node, path, `value is ${s.length} characters long; the limit is ${max}`);
-            return s.slice(0, max);
-        }
-        return s;
-    }
-    field(m, key, path, max) {
-        return this.str(get(m, key), path + '.' + key, max);
-    }
-    reqStr(m, key, path, max) {
-        const n = get(m, key);
-        if (isNull(n)) {
-            this.c.error(m, path, `missing required key "${key}"`, { key });
-            return undefined;
-        }
-        return this.str(n, path + '.' + key, max);
-    }
-    id(m, path, re = exports.ID_RE, what = 'id') {
-        const v = this.reqStr(m, 'id', path, 200);
-        if (v === undefined)
-            return undefined;
-        if (!re.test(v)) {
-            this.c.error(get(m, 'id'), path + '.id', `invalid ${what} "${v}": use 1–64 characters from A–Z a–z 0–9 _ . -${re === exports.IFACE_RE ? ' /' : ''}, starting with a letter or digit` +
-                (v.indexOf(':') >= 0 ? ' (":" is reserved to separate device and interface)' : ''));
-            return undefined;
-        }
-        return v;
-    }
-    bool(n, path) {
-        if (isNull(n))
-            return undefined;
-        const node = n;
-        if (node.kind !== 'scalar' || typeof node.value !== 'boolean') {
-            this.c.error(node, path, 'expected true or false');
-            return undefined;
-        }
-        return node.value;
-    }
-    /** Display-only flattening of attrs; the document keeps the full structure. */
-    attrs(n, path) {
-        const out = [];
-        if (isNull(n))
-            return out;
-        const m = this.map(n, path);
-        if (!m)
-            return out;
-        const walk = (node, prefix, depth) => {
-            if (out.length >= this.c.limits.maxAttrs) {
-                this.c.error(node, path, `more than ${this.c.limits.maxAttrs} attributes`);
-                return;
-            }
-            if (node.kind === 'scalar') {
-                const s = node.quoted ? String(node.value) : node.raw;
-                out.push([prefix, s.length > 500 ? s.slice(0, 500) + '…' : s]);
-            }
-            else if (node.kind === 'seq') {
-                if (node.items.every((i) => i.kind === 'scalar')) {
-                    out.push([prefix, node.items.map((i) => (i.kind === 'scalar' ? (i.quoted ? String(i.value) : i.raw) : '')).join(', ')]);
-                }
-                else
-                    node.items.forEach((i, k) => walk(i, prefix + '[' + k + ']', depth + 1));
-            }
-            else if (depth > 4) {
-                out.push([prefix, '{…}']);
-            }
-            else {
-                node.entries.forEach((e, k) => walk(e.value, prefix ? prefix + '.' + k : k, depth + 1));
-            }
-        };
-        walk(m, '', 0);
-        return out;
-    }
-}
 // ------------------------------------------------------------ main entry
 function loadModel(text, yamlLimits = {}, modelLimits = {}) {
     let root;
@@ -4479,13 +4150,13 @@ function loadModel(text, yamlLimits = {}, modelLimits = {}) {
     return validate(root, modelLimits);
 }
 function validate(root, modelLimits = {}) {
-    const c = new Ctx({ ...exports.DEFAULT_MODEL_LIMITS, ...modelLimits });
+    const c = new reader_1.Ctx({ ...reader_1.DEFAULT_MODEL_LIMITS, ...modelLimits });
     let model = null;
     try {
         model = build(root, c);
     }
     catch (e) {
-        if (!(e instanceof TooManyErrors))
+        if (!(e instanceof reader_1.TooManyErrors))
             throw e;
         c.errors.push({ severity: 'error', line: 0, path: '', message: `stopped after ${c.errors.length} errors` });
         model = null;
@@ -4493,7 +4164,7 @@ function validate(root, modelLimits = {}) {
     return { model, root, errors: c.errors, warnings: c.warnings };
 }
 function build(root, c) {
-    const r = new Reader(c);
+    const r = new reader_1.Reader(c);
     const L = c.limits;
     if (!root) {
         const dummy = { kind: 'scalar', value: null, raw: '', quoted: false, line: 1, col: 1 };
@@ -4504,8 +4175,8 @@ function build(root, c) {
     if (!top)
         return null;
     r.keys(top, TOP_KEYS, '', '');
-    const verNode = get(top, 'netatlas');
-    if (isNull(verNode)) {
+    const verNode = (0, reader_1.get)(top, 'netatlas');
+    if ((0, reader_1.isNull)(verNode)) {
         c.error(top, 'netatlas', `missing format version — add "netatlas: ${schema_1.FORMAT_VERSION}" as the first line`, { key: 'netatlas', line: 1 });
     }
     else if (!(verNode.kind === 'scalar' && verNode.value === schema_1.FORMAT_VERSION)) {
@@ -4518,7 +4189,7 @@ function build(root, c) {
     const claim = (id, kind, m, path) => {
         const prev = ids.get(id);
         if (prev) {
-            c.error(get(m, 'id'), path + '.id', `duplicate id "${id}" (already used by a ${prev.kind}${prev.line ? ' on line ' + prev.line : ''}; ids must be unique across all sections)`);
+            c.error((0, reader_1.get)(m, 'id'), path + '.id', `duplicate id "${id}" (already used by a ${prev.kind}${prev.line ? ' on line ' + prev.line : ''}; ids must be unique across all sections)`);
             return false;
         }
         ids.set(id, { kind, line: m.line });
@@ -4533,7 +4204,7 @@ function build(root, c) {
     };
     // ---------------------------------------------------------- protocols
     const protocols = (0, protocols_1.builtinProtocols)();
-    const protoItems = capped(r.list(get(top, 'protocols'), 'protocols'), L.maxProtocols, 'protocols', 'protocol definitions');
+    const protoItems = capped(r.list((0, reader_1.get)(top, 'protocols'), 'protocols'), L.maxProtocols, 'protocols', 'protocol definitions');
     const seenProto = new Set();
     protoItems.forEach((n, i) => {
         const path = `protocols[${i}]`;
@@ -4545,7 +4216,7 @@ function build(root, c) {
         if (rawId === undefined)
             return;
         const id = (0, protocols_1.normalizeProtocol)(rawId);
-        const idNode = get(m, 'id');
+        const idNode = (0, reader_1.get)(m, 'id');
         if (!exports.PROTO_RE.test(id)) {
             c.error(idNode, path + '.id', `invalid protocol id "${rawId}": use lowercase letters, digits and _ . + -`);
             return;
@@ -4560,7 +4231,7 @@ function build(root, c) {
         let category = base ? base.category : 'other';
         if (catS !== undefined) {
             if (types_1.CATEGORIES.indexOf(catS) < 0) {
-                c.error(get(m, 'category'), path + '.category', `unknown category "${catS}"${suggest(catS, types_1.CATEGORIES)}`);
+                c.error((0, reader_1.get)(m, 'category'), path + '.category', `unknown category "${catS}"${(0, reader_1.suggest)(catS, types_1.CATEGORIES)}`);
             }
             else
                 category = catS;
@@ -4570,13 +4241,13 @@ function build(root, c) {
         }
         const color = r.field(m, 'color', path, 20);
         if (color !== undefined && !protocols_1.COLOR_RE.test(color)) {
-            c.error(get(m, 'color'), path + '.color', `invalid color "${color}": use #rgb or #rrggbb`);
+            c.error((0, reader_1.get)(m, 'color'), path + '.color', `invalid color "${color}": use #rgb or #rrggbb`);
         }
         const styleS = r.field(m, 'style', path, 20);
         let style = catS !== undefined || !base ? protocols_1.DEFAULT_STYLE[category] : base.style;
         if (styleS !== undefined) {
             if (types_1.LINE_STYLES.indexOf(styleS) < 0) {
-                c.error(get(m, 'style'), path + '.style', `unknown style "${styleS}"${suggest(styleS, types_1.LINE_STYLES)}`);
+                c.error((0, reader_1.get)(m, 'style'), path + '.style', `unknown style "${styleS}"${(0, reader_1.suggest)(styleS, types_1.LINE_STYLES)}`);
             }
             else
                 style = styleS;
@@ -4594,7 +4265,7 @@ function build(root, c) {
     // ------------------------------------------------------------- groups
     const groups = [];
     const groupNodes = new Map();
-    capped(r.list(get(top, 'groups'), 'groups'), L.maxGroups, 'groups', 'groups').forEach((n, i) => {
+    capped(r.list((0, reader_1.get)(top, 'groups'), 'groups'), L.maxGroups, 'groups', 'groups').forEach((n, i) => {
         const path = `groups[${i}]`;
         const m = r.map(n, path);
         if (!m)
@@ -4611,7 +4282,7 @@ function build(root, c) {
             kind: (r.field(m, 'kind', gpath, 40) || 'site').toLowerCase(),
             parent: r.field(m, 'parent', gpath, 200),
             description: r.field(m, 'description', gpath, L.maxDescription),
-            attrs: r.attrs(get(m, 'attrs'), gpath + '.attrs'),
+            attrs: r.attrs((0, reader_1.get)(m, 'attrs'), gpath + '.attrs'),
             line: m.line,
         });
     });
@@ -4620,8 +4291,8 @@ function build(root, c) {
         if (g.parent === undefined)
             continue;
         if (!groupMap.has(g.parent)) {
-            const pn = get(groupNodes.get(g.id), 'parent');
-            c.error(pn, `groups.${g.id}.parent`, `unknown parent group "${g.parent}"${suggest(g.parent, groupMap.keys())}`);
+            const pn = (0, reader_1.get)(groupNodes.get(g.id), 'parent');
+            c.error(pn, `groups.${g.id}.parent`, `unknown parent group "${g.parent}"${(0, reader_1.suggest)(g.parent, groupMap.keys())}`);
             g.parent = undefined;
         }
     }
@@ -4630,7 +4301,7 @@ function build(root, c) {
         let p = g.parent;
         let depth = 1;
         while (p !== undefined) {
-            const pn = get(groupNodes.get(g.id), 'parent') || groupNodes.get(g.id);
+            const pn = (0, reader_1.get)(groupNodes.get(g.id), 'parent') || groupNodes.get(g.id);
             if (seen.has(p)) {
                 c.error(pn, `groups.${g.id}.parent`, `group parent chain forms a cycle (${Array.from(seen).join(' → ')} → ${p})`);
                 g.parent = undefined;
@@ -4651,7 +4322,7 @@ function build(root, c) {
     const ifaceNodes = new Map();
     /** canonical address -> first "device:iface" using it */
     const addrOwner = new Map();
-    capped(r.list(get(top, 'devices'), 'devices'), L.maxDevices, 'devices', 'devices').forEach((n, i) => {
+    capped(r.list((0, reader_1.get)(top, 'devices'), 'devices'), L.maxDevices, 'devices', 'devices').forEach((n, i) => {
         const path = `devices[${i}]`;
         const m = r.map(n, path);
         if (!m)
@@ -4665,11 +4336,11 @@ function build(root, c) {
             return;
         const group = r.field(m, 'group', dpath, 200);
         if (group !== undefined && !groupMap.has(group)) {
-            c.error(get(m, 'group'), dpath + '.group', `unknown group "${group}"${suggest(group, groupMap.keys())}`);
+            c.error((0, reader_1.get)(m, 'group'), dpath + '.group', `unknown group "${group}"${(0, reader_1.suggest)(group, groupMap.keys())}`);
         }
         let tier;
-        const tierN = get(m, 'tier');
-        if (!isNull(tierN)) {
+        const tierN = (0, reader_1.get)(m, 'tier');
+        if (!(0, reader_1.isNull)(tierN)) {
             const t = tierN;
             if (t.kind !== 'scalar' || typeof t.value !== 'number' || !Number.isInteger(t.value) || t.value < 0 || t.value > 9) {
                 c.error(t, dpath + '.tier', 'tier must be an integer from 0 (top) to 9 (bottom)');
@@ -4688,11 +4359,11 @@ function build(root, c) {
             mgmt: r.field(m, 'mgmt', dpath, L.maxLabel),
             tier,
             description: r.field(m, 'description', dpath, L.maxDescription),
-            attrs: r.attrs(get(m, 'attrs'), dpath + '.attrs'),
+            attrs: r.attrs((0, reader_1.get)(m, 'attrs'), dpath + '.attrs'),
             interfaces: [],
             line: m.line,
         };
-        const ifItems = capped(r.list(get(m, 'interfaces'), dpath + '.interfaces'), L.maxInterfacesPerDevice, dpath + '.interfaces', 'interfaces on one device');
+        const ifItems = capped(r.list((0, reader_1.get)(m, 'interfaces'), dpath + '.interfaces'), L.maxInterfacesPerDevice, dpath + '.interfaces', 'interfaces on one device');
         ifItems.forEach((inode, k) => {
             const ipath = `${dpath}.interfaces[${k}]`;
             let im;
@@ -4705,19 +4376,19 @@ function build(root, c) {
             if (!im)
                 return;
             r.keys(im, IFACE_KEYS, ipath, ATTRS_HINT);
-            const iid = r.id(im, ipath, exports.IFACE_RE, 'interface id');
+            const iid = r.id(im, ipath, reader_1.IFACE_RE, 'interface id');
             if (!iid)
                 return;
             const key = (0, types_1.ifaceKey)(id, iid);
             if (interfaces.has(key)) {
-                c.error(get(im, 'id'), ipath + '.id', `duplicate interface "${iid}" on device "${id}"`);
+                c.error((0, reader_1.get)(im, 'id'), ipath + '.id', `duplicate interface "${iid}" on device "${id}"`);
                 return;
             }
             if (interfaces.size >= L.maxInterfaces) {
                 c.error(im, ipath, `too many interfaces in total (limit ${L.maxInterfaces})`);
                 return;
             }
-            const ipNode = get(im, 'ip');
+            const ipNode = (0, reader_1.get)(im, 'ip');
             const addrNodes = r.list(ipNode, ipath + '.ip', true);
             const addrs = [];
             const type = (r.field(im, 'type', ipath, 40) || 'physical').toLowerCase();
@@ -4754,7 +4425,7 @@ function build(root, c) {
                     addrOwner.set(k2, { where: key, node: an });
             });
             if (isLoop && !addrs.length) {
-                c.error(ipNode && !isNull(ipNode) ? ipNode : im, ipath + '.ip', `loopback "${iid}" needs at least one IPv4 or IPv6 address with prefix length (e.g. 10.255.0.1/32 or 2001:db8::1/128)`, ipNode && !isNull(ipNode) ? {} : { key: 'ip' });
+                c.error(ipNode && !(0, reader_1.isNull)(ipNode) ? ipNode : im, ipath + '.ip', `loopback "${iid}" needs at least one IPv4 or IPv6 address with prefix length (e.g. 10.255.0.1/32 or 2001:db8::1/128)`, ipNode && !(0, reader_1.isNull)(ipNode) ? {} : { key: 'ip' });
             }
             const iface = {
                 id: iid,
@@ -4767,7 +4438,7 @@ function build(root, c) {
                 vlan: r.field(im, 'vlan', ipath, 100),
                 mac: r.field(im, 'mac', ipath, 40),
                 description: r.field(im, 'description', ipath, L.maxDescription),
-                attrs: r.attrs(get(im, 'attrs'), ipath + '.attrs'),
+                attrs: r.attrs((0, reader_1.get)(im, 'attrs'), ipath + '.attrs'),
                 line: im.line,
             };
             interfaces.set(key, iface);
@@ -4775,13 +4446,13 @@ function build(root, c) {
             dev.interfaces.push(iface);
         });
         // router_id: a loopback of this device
-        const ridNode = get(m, 'router_id');
+        const ridNode = (0, reader_1.get)(m, 'router_id');
         const rid = r.str(ridNode, dpath + '.router_id', 100);
         if (rid !== undefined) {
             const inf = interfaces.get((0, types_1.ifaceKey)(id, rid));
             const loops = dev.interfaces.filter((x) => x.type === 'loopback').map((x) => x.id);
             if (!inf) {
-                c.error(ridNode, dpath + '.router_id', `device "${id}" has no loopback "${rid}"` + (loops.length ? suggest(rid, loops) : ' (add a loopback interface first)'));
+                c.error(ridNode, dpath + '.router_id', `device "${id}" has no loopback "${rid}"` + (loops.length ? (0, reader_1.suggest)(rid, loops) : ' (add a loopback interface first)'));
             }
             else if (inf.type !== 'loopback') {
                 c.error(ridNode, dpath + '.router_id', `router_id must name a loopback interface; "${rid}" has type "${inf.type}"`);
@@ -4820,24 +4491,24 @@ function build(root, c) {
             if (extended) {
                 role = r.field(n, 'role', path, 60);
                 address = r.field(n, 'address', path, 100);
-                attrs = r.attrs(get(n, 'attrs'), path + '.attrs');
+                attrs = r.attrs((0, reader_1.get)(n, 'attrs'), path + '.attrs');
             }
             if (device === undefined)
                 return null;
         }
         else {
-            c.error(n, path, `expected "device", "device:interface" or a mapping with "device:" but found ${kindOf(n)}`);
+            c.error(n, path, `expected "device", "device:interface" or a mapping with "device:" but found ${(0, reader_1.kindOf)(n)}`);
             return null;
         }
         const dev = deviceMap.get(device);
-        const devNode = n.kind === 'map' ? get(n, 'device') : n;
+        const devNode = n.kind === 'map' ? (0, reader_1.get)(n, 'device') : n;
         if (!dev) {
-            c.error(devNode, path, `unknown device "${device}"${suggest(device, deviceMap.keys())}`);
+            c.error(devNode, path, `unknown device "${device}"${(0, reader_1.suggest)(device, deviceMap.keys())}`);
             return null;
         }
         if (iface !== undefined && !interfaces.has((0, types_1.ifaceKey)(device, iface))) {
             const names = dev.interfaces.map((x) => x.id);
-            c.error(n.kind === 'map' ? get(n, 'interface') : n, path, `device "${device}" has no interface "${iface}"` + (names.length ? suggest(iface, names) : ' (the device declares no interfaces)'));
+            c.error(n.kind === 'map' ? (0, reader_1.get)(n, 'interface') : n, path, `device "${device}" has no interface "${iface}"` + (names.length ? (0, reader_1.suggest)(iface, names) : ' (the device declares no interfaces)'));
             return null;
         }
         return { device, iface, role, address, attrs };
@@ -4845,7 +4516,7 @@ function build(root, c) {
     // -------------------------------------------------------------- links
     const links = [];
     const ifaceLink = new Map();
-    capped(r.list(get(top, 'links'), 'links'), L.maxLinks, 'links', 'links').forEach((n, i) => {
+    capped(r.list((0, reader_1.get)(top, 'links'), 'links'), L.maxLinks, 'links', 'links').forEach((n, i) => {
         const path = `links[${i}]`;
         const m = r.map(n, path);
         if (!m)
@@ -4858,8 +4529,8 @@ function build(root, c) {
         if (!claim(id, 'link', m, path))
             return;
         const ends = ['a', 'b'].map((side) => {
-            const en = get(m, side);
-            if (isNull(en)) {
+            const en = (0, reader_1.get)(m, side);
+            if ((0, reader_1.isNull)(en)) {
                 c.error(m, lpath, `missing required key "${side}" (a physical link joins two endpoints "a" and "b")`, { key: side });
                 return null;
             }
@@ -4904,13 +4575,13 @@ function build(root, c) {
             label: r.field(m, 'label', lpath, L.maxLabel),
             cable: r.field(m, 'cable', lpath, L.maxLabel),
             description: r.field(m, 'description', lpath, L.maxDescription),
-            attrs: r.attrs(get(m, 'attrs'), lpath + '.attrs'),
+            attrs: r.attrs((0, reader_1.get)(m, 'attrs'), lpath + '.attrs'),
             line: m.line,
         });
     });
     // ----------------------------------------------------------- networks
     const networks = [];
-    capped(r.list(get(top, 'networks'), 'networks'), L.maxNetworks, 'networks', 'networks').forEach((n, i) => {
+    capped(r.list((0, reader_1.get)(top, 'networks'), 'networks'), L.maxNetworks, 'networks', 'networks').forEach((n, i) => {
         const path = `networks[${i}]`;
         const m = r.map(n, path);
         if (!m)
@@ -4922,10 +4593,10 @@ function build(root, c) {
         const npath = `networks.${id}`;
         if (!claim(id, 'network', m, path))
             return;
-        const memberNodes = r.list(get(m, 'members'), npath + '.members');
+        const memberNodes = r.list((0, reader_1.get)(m, 'members'), npath + '.members');
         if (memberNodes.length > L.maxMembers)
             c.error(m, npath + '.members', `too many members (limit ${L.maxMembers})`, { key: 'members' });
-        const cidrNodes = r.list(get(m, 'cidr'), npath + '.cidr', true);
+        const cidrNodes = r.list((0, reader_1.get)(m, 'cidr'), npath + '.cidr', true);
         const cidr = [];
         const prefixes = cidrNodes
             .map((x, k) => {
@@ -4967,7 +4638,7 @@ function build(root, c) {
             vrf: r.field(m, 'vrf', npath, 100),
             members,
             description: r.field(m, 'description', npath, L.maxDescription),
-            attrs: r.attrs(get(m, 'attrs'), npath + '.attrs'),
+            attrs: r.attrs((0, reader_1.get)(m, 'attrs'), npath + '.attrs'),
             line: m.line,
         });
     });
@@ -4976,7 +4647,7 @@ function build(root, c) {
     const relations = [];
     const overNodes = new Map();
     const relNodes = new Map();
-    capped(r.list(get(top, 'relations'), 'relations'), L.maxRelations, 'relations', 'relations').forEach((n, i) => {
+    capped(r.list((0, reader_1.get)(top, 'relations'), 'relations'), L.maxRelations, 'relations', 'relations').forEach((n, i) => {
         const path = `relations[${i}]`;
         const m = r.map(n, path);
         if (!m)
@@ -4993,23 +4664,23 @@ function build(root, c) {
             return;
         const proto = (0, protocols_1.normalizeProtocol)(protoRaw);
         if (!exports.PROTO_RE.test(proto)) {
-            c.error(get(m, 'protocol'), rpath + '.protocol', `invalid protocol name "${protoRaw}": use letters, digits and _ . + -`);
+            c.error((0, reader_1.get)(m, 'protocol'), rpath + '.protocol', `invalid protocol name "${protoRaw}": use letters, digits and _ . + -`);
             return;
         }
         const catS = r.field(m, 'category', rpath, 40);
         let category;
         if (catS !== undefined) {
             if (types_1.CATEGORIES.indexOf(catS) < 0) {
-                c.error(get(m, 'category'), rpath + '.category', `unknown category "${catS}"${suggest(catS, types_1.CATEGORIES)}`);
+                c.error((0, reader_1.get)(m, 'category'), rpath + '.category', `unknown category "${catS}"${(0, reader_1.suggest)(catS, types_1.CATEGORIES)}`);
             }
             else
                 category = catS;
         }
         const def = (0, protocols_1.lookupProtocol)(protocols, proto, category);
         if (!protocols.has(proto) && catS === undefined && def.category === 'other') {
-            c.warn(get(m, 'protocol'), rpath + '.protocol', `protocol "${proto}" is not built in; it is drawn as category "other". Add "category:" here or define it under "protocols:"`);
+            c.warn((0, reader_1.get)(m, 'protocol'), rpath + '.protocol', `protocol "${proto}" is not built in; it is drawn as category "other". Add "category:" here or define it under "protocols:"`);
         }
-        const epNode = get(m, 'endpoints');
+        const epNode = (0, reader_1.get)(m, 'endpoints');
         const epNodes = r.list(epNode, rpath + '.endpoints');
         if (epNodes.length > L.maxEndpoints)
             c.error(epNode, rpath + '.endpoints', `too many endpoints (limit ${L.maxEndpoints})`);
@@ -5018,10 +4689,10 @@ function build(root, c) {
             .map((x, k) => endpoint(x, `${rpath}.endpoints[${k}]`, true))
             .filter((x) => x !== null);
         if (epNodes.length < 2) {
-            c.error(epNode && !isNull(epNode) ? epNode : m, rpath + '.endpoints', 'a relation needs at least 2 endpoints', epNode && !isNull(epNode) ? {} : { key: 'endpoints' });
+            c.error(epNode && !(0, reader_1.isNull)(epNode) ? epNode : m, rpath + '.endpoints', 'a relation needs at least 2 endpoints', epNode && !(0, reader_1.isNull)(epNode) ? {} : { key: 'endpoints' });
             return;
         }
-        const overNode = get(m, 'over');
+        const overNode = (0, reader_1.get)(m, 'over');
         const over = r.list(overNode, rpath + '.over', true)
             .map((x, k) => r.str(x, `${rpath}.over[${k}]`, 200))
             .filter((x) => x !== undefined);
@@ -5030,7 +4701,7 @@ function build(root, c) {
         relNodes.set(id, m);
         const network = r.field(m, 'network', rpath, 200);
         if (network !== undefined && !networkMap.has(network)) {
-            c.error(get(m, 'network'), rpath + '.network', `unknown network "${network}"${suggest(network, networkMap.keys())}`);
+            c.error((0, reader_1.get)(m, 'network'), rpath + '.network', `unknown network "${network}"${(0, reader_1.suggest)(network, networkMap.keys())}`);
         }
         const rel = {
             id,
@@ -5040,9 +4711,9 @@ function build(root, c) {
             endpoints,
             over,
             network: network !== undefined && networkMap.has(network) ? network : undefined,
-            directed: r.bool(get(m, 'directed'), rpath + '.directed') || false,
+            directed: r.bool((0, reader_1.get)(m, 'directed'), rpath + '.directed') || false,
             description: r.field(m, 'description', rpath, L.maxDescription),
-            attrs: r.attrs(get(m, 'attrs'), rpath + '.attrs'),
+            attrs: r.attrs((0, reader_1.get)(m, 'attrs'), rpath + '.attrs'),
             line: m.line,
         };
         if (endpoints.length === epNodes.length && (0, types_1.relationDevices)(rel).length < 2) {
@@ -5085,7 +4756,7 @@ function build(root, c) {
                     ? `"${o}" is a ${kind.kind}; "over" may only reference links, relations or networks`
                     : kind
                         ? `"${o}" has errors of its own, see there`
-                        : `unknown link, relation or network "${o}"${suggest(o, known)}`);
+                        : `unknown link, relation or network "${o}"${(0, reader_1.suggest)(o, known)}`);
             }
         });
         rel.over = ok;
@@ -5114,8 +4785,8 @@ function build(root, c) {
     // Presentation only: problems here are warnings and the entry is ignored,
     // so stored positions can never change what the model means.
     const layout = { physical: new Map(), logical: new Map(), manual: { physical: new Set(), logical: new Set() } };
-    const layoutNode = get(top, 'layout');
-    if (!isNull(layoutNode)) {
+    const layoutNode = (0, reader_1.get)(top, 'layout');
+    if (!(0, reader_1.isNull)(layoutNode)) {
         const ln = layoutNode;
         if (ln.kind !== 'map')
             c.warn(ln, 'layout', 'layout must be a mapping with "physical:" and/or "logical:"; it is ignored');
@@ -5123,7 +4794,7 @@ function build(root, c) {
             ln.entries.forEach((e, view) => {
                 if (view === 'manual') {
                     // which nodes were placed by hand, per view (only used for the layout status)
-                    if (isNull(e.value))
+                    if ((0, reader_1.isNull)(e.value))
                         return;
                     if (e.value.kind !== 'map') {
                         c.warn(e.value, 'layout.manual', 'expected "physical: [ids]" and/or "logical: [ids]"; ignored');
@@ -5135,7 +4806,7 @@ function build(root, c) {
                             return;
                         }
                         for (const it of me.value.items) {
-                            const id = scalarText(it);
+                            const id = (0, reader_1.scalarText)(it);
                             if (id !== undefined)
                                 layout.manual[mview].add(id);
                         }
@@ -5146,7 +4817,7 @@ function build(root, c) {
                     c.warn(ln, 'layout.' + view, `unknown layout view "${view}" (use physical, logical or manual); it is ignored`, { key: view, line: e.keyLine });
                     return;
                 }
-                if (isNull(e.value))
+                if ((0, reader_1.isNull)(e.value))
                     return;
                 if (e.value.kind !== 'map') {
                     c.warn(e.value, 'layout.' + view, 'expected a mapping of "id: [x, y]" entries; ignored');
@@ -6451,6 +6122,232 @@ exports.SCHEMA = {
 };
 
 };
+__defs["validation/reader"] = function (module, exports) {
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.Reader = exports.Ctx = exports.TooManyErrors = exports.IFACE_RE = exports.ID_RE = exports.DEFAULT_MODEL_LIMITS = void 0;
+exports.suggest = suggest;
+exports.kindOf = kindOf;
+exports.get = get;
+exports.isNull = isNull;
+exports.scalarText = scalarText;
+exports.DEFAULT_MODEL_LIMITS = {
+    maxGroups: 500,
+    maxDevices: 1000,
+    maxInterfacesPerDevice: 512,
+    maxInterfaces: 20000,
+    maxLinks: 5000,
+    maxNetworks: 2000,
+    maxRelations: 5000,
+    maxEndpoints: 64,
+    maxMembers: 1000,
+    maxProtocols: 200,
+    maxGroupDepth: 8,
+    maxAttrs: 100,
+    maxLabel: 200,
+    maxDescription: 4000,
+    maxErrors: 200,
+};
+/** Entity ids: letters, digits, "_", ".", "-" (no ":" — it separates device and interface). */
+exports.ID_RE = /^[A-Za-z0-9_][A-Za-z0-9_.\-]{0,63}$/;
+/** Interface ids additionally allow "/" (e.g. "ge-0/0/1", "Ethernet1/1"). */
+exports.IFACE_RE = /^[A-Za-z0-9_][A-Za-z0-9_.\-\/]{0,63}$/;
+class TooManyErrors extends Error {
+}
+exports.TooManyErrors = TooManyErrors;
+class Ctx {
+    constructor(limits) {
+        this.limits = limits;
+        this.errors = [];
+        this.warnings = [];
+    }
+    mk(severity, node, path, message, at) {
+        const is = { severity, line: at.line !== undefined ? at.line : node.line, path, message, node };
+        if (at.key !== undefined)
+            is.key = at.key;
+        return is;
+    }
+    error(node, path, message, at = {}) {
+        this.errors.push(this.mk('error', node, path, message, at));
+        if (this.errors.length >= this.limits.maxErrors)
+            throw new TooManyErrors();
+    }
+    warn(node, path, message, at = {}) {
+        if (this.warnings.length < this.limits.maxErrors)
+            this.warnings.push(this.mk('warning', node, path, message, at));
+    }
+}
+exports.Ctx = Ctx;
+// --------------------------------------------------------------- utilities
+function levenshtein(a, b) {
+    if (Math.abs(a.length - b.length) > 3)
+        return 99;
+    const dp = [];
+    for (let j = 0; j <= b.length; j++)
+        dp[j] = j;
+    for (let i = 1; i <= a.length; i++) {
+        let prev = dp[0];
+        dp[0] = i;
+        for (let j = 1; j <= b.length; j++) {
+            const tmp = dp[j];
+            dp[j] = Math.min(dp[j] + 1, dp[j - 1] + 1, prev + (a.charAt(i - 1) === b.charAt(j - 1) ? 0 : 1));
+            prev = tmp;
+        }
+    }
+    return dp[b.length];
+}
+/** " — did you mean "x"?" or a short list of valid options. */
+function suggest(name, candidates, listIfFew = 8) {
+    const all = Array.from(candidates);
+    let best = '';
+    let bestD = 99;
+    const lname = name.toLowerCase();
+    for (const c of all) {
+        const d = levenshtein(lname, c.toLowerCase());
+        if (d < bestD) {
+            bestD = d;
+            best = c;
+        }
+    }
+    if (best && bestD <= Math.max(1, Math.min(3, Math.floor(name.length / 3))))
+        return ` — did you mean "${best}"?`;
+    if (all.length && all.length <= listIfFew)
+        return ` (known: ${all.join(', ')})`;
+    return '';
+}
+function kindOf(n) {
+    return n.kind === 'map' ? 'a mapping' : n.kind === 'seq' ? 'a list' : n.value === null ? 'empty (null)' : 'a scalar';
+}
+function get(m, key) {
+    const e = m.entries.get(key);
+    return e ? e.value : undefined;
+}
+function isNull(n) {
+    return !n || (n.kind === 'scalar' && n.value === null && !n.quoted);
+}
+/** Text of a scalar as written (numbers keep their spelling, e.g. "010"). */
+function scalarText(n) {
+    if (n.kind !== 'scalar' || (n.value === null && !n.quoted))
+        return undefined;
+    return n.quoted ? String(n.value) : n.raw;
+}
+class Reader {
+    constructor(c) {
+        this.c = c;
+    }
+    map(n, path) {
+        if (!n)
+            return null;
+        if (n.kind !== 'map') {
+            this.c.error(n, path, `expected a mapping ("key: value" lines) but found ${kindOf(n)}`);
+            return null;
+        }
+        return n;
+    }
+    /** A list; a single scalar is accepted as a one-element list when `allowScalar`. */
+    list(n, path, allowScalar = false) {
+        if (isNull(n))
+            return [];
+        const node = n;
+        if (node.kind === 'seq')
+            return node.items;
+        if (allowScalar && node.kind === 'scalar')
+            return [node];
+        this.c.error(node, path, `expected a list ("- item" lines or [a, b]) but found ${kindOf(node)}`);
+        return [];
+    }
+    keys(m, allowed, path, hint = '') {
+        m.entries.forEach((e, k) => {
+            if (allowed.indexOf(k) < 0) {
+                this.c.error(m, path ? path + '.' + k : k, `unknown key "${k}"${suggest(k, allowed, 20)}${hint}`, { key: k, line: e.keyLine });
+            }
+        });
+    }
+    str(n, path, max) {
+        if (isNull(n))
+            return undefined;
+        const node = n;
+        if (node.kind !== 'scalar') {
+            this.c.error(node, path, `expected a single value but found ${kindOf(node)}`);
+            return undefined;
+        }
+        const s = scalarText(node);
+        if (s.length > max) {
+            this.c.error(node, path, `value is ${s.length} characters long; the limit is ${max}`);
+            return s.slice(0, max);
+        }
+        return s;
+    }
+    field(m, key, path, max) {
+        return this.str(get(m, key), path + '.' + key, max);
+    }
+    reqStr(m, key, path, max) {
+        const n = get(m, key);
+        if (isNull(n)) {
+            this.c.error(m, path, `missing required key "${key}"`, { key });
+            return undefined;
+        }
+        return this.str(n, path + '.' + key, max);
+    }
+    id(m, path, re = exports.ID_RE, what = 'id') {
+        const v = this.reqStr(m, 'id', path, 200);
+        if (v === undefined)
+            return undefined;
+        if (!re.test(v)) {
+            this.c.error(get(m, 'id'), path + '.id', `invalid ${what} "${v}": use 1–64 characters from A–Z a–z 0–9 _ . -${re === exports.IFACE_RE ? ' /' : ''}, starting with a letter or digit` +
+                (v.indexOf(':') >= 0 ? ' (":" is reserved to separate device and interface)' : ''));
+            return undefined;
+        }
+        return v;
+    }
+    bool(n, path) {
+        if (isNull(n))
+            return undefined;
+        const node = n;
+        if (node.kind !== 'scalar' || typeof node.value !== 'boolean') {
+            this.c.error(node, path, 'expected true or false');
+            return undefined;
+        }
+        return node.value;
+    }
+    /** Display-only flattening of attrs; the document keeps the full structure. */
+    attrs(n, path) {
+        const out = [];
+        if (isNull(n))
+            return out;
+        const m = this.map(n, path);
+        if (!m)
+            return out;
+        const walk = (node, prefix, depth) => {
+            if (out.length >= this.c.limits.maxAttrs) {
+                this.c.error(node, path, `more than ${this.c.limits.maxAttrs} attributes`);
+                return;
+            }
+            if (node.kind === 'scalar') {
+                const s = node.quoted ? String(node.value) : node.raw;
+                out.push([prefix, s.length > 500 ? s.slice(0, 500) + '…' : s]);
+            }
+            else if (node.kind === 'seq') {
+                if (node.items.every((i) => i.kind === 'scalar')) {
+                    out.push([prefix, node.items.map((i) => (i.kind === 'scalar' ? (i.quoted ? String(i.value) : i.raw) : '')).join(', ')]);
+                }
+                else
+                    node.items.forEach((i, k) => walk(i, prefix + '[' + k + ']', depth + 1));
+            }
+            else if (depth > 4) {
+                out.push([prefix, '{…}']);
+            }
+            else {
+                node.entries.forEach((e, k) => walk(e.value, prefix ? prefix + '.' + k : k, depth + 1));
+            }
+        };
+        walk(m, '', 0);
+        return out;
+    }
+}
+exports.Reader = Reader;
+
+};
 __defs["yaml/write"] = function (module, exports) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
@@ -6735,6 +6632,153 @@ function emitSeqBody(s, ind, out) {
         }
         emitAfter(ind + '-', item, ind + IND, out);
     }
+}
+
+};
+__defs["editor/layout-section"] = function (module, exports) {
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.rawLayoutKeys = rawLayoutKeys;
+exports.writeLayout = writeLayout;
+exports.rawManualIds = rawManualIds;
+exports.writeManual = writeManual;
+const input_1 = __req("layout/input");
+const validate_1 = __req("validation/validate");
+const parse_1 = __req("yaml/parse");
+const schema_1 = __req("yaml/schema");
+const tree_1 = __req("editor/tree");
+/** Keys present in the document's layout section for a view (valid or not). */
+function rawLayoutKeys(root, view) {
+    const lay = root.entries.get('layout');
+    if (!lay || lay.value.kind !== 'map')
+        return [];
+    const vm = lay.value.entries.get(view);
+    return vm && vm.value.kind === 'map' ? Array.from(vm.value.entries.keys()) : [];
+}
+/** Replace the stored positions of one view (entries sorted by id; comments kept). */
+function writeLayout(root, view, positions) {
+    let lay = root.entries.get('layout');
+    if (!lay || lay.value.kind !== 'map') {
+        const fresh = (0, parse_1.mapNode)();
+        fresh.blank = true;
+        (0, tree_1.setKey)(root, 'layout', fresh, schema_1.SCHEMA.top);
+        lay = root.entries.get('layout');
+    }
+    const layMap = lay.value;
+    const oldEntry = layMap.entries.get(view);
+    const old = oldEntry && oldEntry.value.kind === 'map' ? oldEntry.value : null;
+    const m = (0, parse_1.mapNode)();
+    for (const id of Array.from(positions.keys()).sort(input_1.cmp)) {
+        const p = positions.get(id);
+        const v = (0, parse_1.seqNode)([(0, parse_1.numNode)(p.x), (0, parse_1.numNode)(p.y)], true);
+        const prev = old ? old.entries.get(id) : undefined;
+        if (prev)
+            (0, tree_1.keepTrivia)(prev.value, v);
+        m.entries.set(id, { key: id, keyLine: 0, value: v });
+    }
+    (0, tree_1.setKey)(layMap, view, m, ['physical', 'logical']);
+}
+/** Ids recorded as hand-placed in the document (valid or not). */
+function rawManualIds(root, view) {
+    const lay = root.entries.get('layout');
+    if (!lay || lay.value.kind !== 'map')
+        return [];
+    const man = lay.value.entries.get('manual');
+    if (!man || man.value.kind !== 'map')
+        return [];
+    const l = man.value.entries.get(view);
+    return l && l.value.kind === 'seq' ? l.value.items.map((i) => (0, validate_1.scalarText)(i) || '') : [];
+}
+/** Store the set of hand-placed nodes of a view (sorted; removed when empty). */
+function writeManual(root, view, ids) {
+    let lay = root.entries.get('layout');
+    if (!lay || lay.value.kind !== 'map') {
+        if (!ids.size)
+            return;
+        const fresh = (0, parse_1.mapNode)();
+        fresh.blank = true;
+        (0, tree_1.setKey)(root, 'layout', fresh, schema_1.SCHEMA.top);
+        lay = root.entries.get('layout');
+    }
+    const layMap = lay.value;
+    const cur = layMap.entries.get('manual');
+    let man = cur && cur.value.kind === 'map' ? cur.value : null;
+    if (!ids.size) {
+        if (man) {
+            man.entries.delete(view);
+            if (!man.entries.size)
+                layMap.entries.delete('manual');
+        }
+        return;
+    }
+    if (!man) {
+        man = (0, parse_1.mapNode)();
+        (0, tree_1.setKey)(layMap, 'manual', man, ['physical', 'logical', 'manual']);
+    }
+    (0, tree_1.setKey)(man, view, (0, parse_1.seqNode)(Array.from(ids).sort(input_1.cmp).map(parse_1.strNode), true), ['physical', 'logical']);
+}
+
+};
+__defs["editor/tree"] = function (module, exports) {
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.keepTrivia = keepTrivia;
+exports.setKey = setKey;
+exports.sameSet = sameSet;
+/** Copy comments / blank-line markers from an old node onto its replacement. */
+function keepTrivia(from, to) {
+    if (!from)
+        return to;
+    if (from.before && !to.before)
+        to.before = from.before;
+    if (from.blank && !to.blank)
+        to.blank = true;
+    if (from.comment !== undefined && to.comment === undefined && to.kind === 'scalar' && from.kind === 'scalar')
+        to.comment = from.comment;
+    if (from.comment !== undefined && to.comment === undefined && to.kind !== 'scalar' && from.kind !== 'scalar')
+        to.comment = from.comment;
+    return to;
+}
+/** Insert or replace `key` in `m`, placing new keys according to `order`. */
+function setKey(m, key, value, order) {
+    const existing = m.entries.get(key);
+    if (existing) {
+        existing.value = keepTrivia(existing.value, value);
+        return;
+    }
+    const entry = { key, keyLine: 0, value };
+    const pos = order ? order.indexOf(key) : -1;
+    if (pos < 0) {
+        m.entries.set(key, entry);
+        return;
+    }
+    // insert before the first existing key that comes later in the canonical order
+    const next = Array.from(m.entries.keys()).find((k) => {
+        const p = order.indexOf(k);
+        return p > pos;
+    });
+    if (next === undefined) {
+        m.entries.set(key, entry);
+        return;
+    }
+    const rebuilt = new Map();
+    m.entries.forEach((e, k) => {
+        if (k === next)
+            rebuilt.set(key, entry);
+        rebuilt.set(k, e);
+    });
+    m.entries = rebuilt;
+}
+/** Same members? */
+function sameSet(a, b) {
+    if (a.size !== b.size)
+        return false;
+    let same = true;
+    a.forEach((x) => {
+        if (!b.has(x))
+            same = false;
+    });
+    return same;
 }
 
 };
