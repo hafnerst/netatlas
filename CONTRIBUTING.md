@@ -41,6 +41,16 @@ These rules apply to every contributor, including the automation account
    merges or bypasses protections for their own pull request.
 6. **Wait for the merge.** An opened or approved PR is not a merged one. The
    next task starts from the updated `dev` (step 1).
+7. **The working branch is deleted after the merge.** Only `main` and `dev`
+   are long-lived. GitHub deletes the merged branch automatically
+   ("Automatically delete head branches"). Clean up your local copy too:
+   ```sh
+   git fetch --prune origin      # forget remote branches deleted on GitHub
+   git switch dev && git pull --ff-only
+   git branch -d <topic-branch>  # -d refuses to delete unmerged work
+   ```
+   A branch whose PR was closed without merging is deleted only after
+   confirming that nothing on it is still needed.
 
 ## Releasing
 

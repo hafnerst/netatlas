@@ -66,16 +66,38 @@ Ruleset B is active would itself be blocked.
    **Active**. After import, check that the bypass list of Ruleset B shows
    **Repository admin** with **For pull requests only**. If it shows a
    different role, select *Repository admin* in the UI.
-3. **Recommended general settings** (*Settings → General → Pull Requests*):
-   * enable **Automatically delete head branches**, so working branches
-     disappear after merge;
+3. **General settings** (*Settings → General → Pull Requests*):
+   * **required:** enable **Automatically delete head branches**. Only `main`
+     and `dev` are long-lived; every working branch is deleted as soon as its
+     PR is merged (see "Branch cleanup" below);
    * keep merge commits, squash and rebase as you prefer (the workflow works
      with any);
    * keep `main` as the default branch. PRs from @hafnerst-agent always set
      base `dev` explicitly. Optionally make `dev` the default branch, so
      new PRs target it automatically.
-4. The pending documentation PR (`docs/branch-workflow` → `dev`) can then be
+4. Pull requests into `dev` can then be
    opened and reviewed under the new rules.
+
+## Branch cleanup
+
+The repository keeps only two long-lived branches, `main` and `dev`.
+
+* **Merged working branches:** GitHub deletes them when the PR is merged,
+  through *Automatically delete head branches*. Only an admin can change that
+  setting; @hafnerst-agent can't.
+* **`dev` itself is never deleted.** When a release PR from `dev` into `main`
+  is merged, `dev` is the head branch. Ruleset A's *Restrict deletions*
+  protects it, so the automatic cleanup can't remove it. After the first
+  release, check that `dev` still exists. If it doesn't, recreate it from
+  `main` and report it, because that would mean the protection didn't apply.
+* **Branches left over** (e.g. from before the setting was enabled, or a PR
+  closed without merging): they are deleted only after checking that the
+  branch's last commit is contained in `dev`
+  (`git merge-base --is-ancestor origin/<branch> origin/dev`), or, for an
+  unmerged branch, that it is no longer needed.
+* **Local clones:** `git fetch --prune origin` removes the deleted remote
+  branches; `git branch -d <branch>` removes the local copy and refuses if it
+  isn't merged.
 
 ## Ruleset A: pull requests, approval, history protection
 
