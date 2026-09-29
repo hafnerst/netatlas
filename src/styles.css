@@ -254,6 +254,19 @@ body[data-dirty="true"] #btn-download { border-color: var(--warn); box-shadow: i
 .ol-item:hover { background: var(--accent-soft); }
 .ol-item.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
 .ol-doc { font-weight: 600; }
+/* selection context in the element lists: shape and weight as well as colour */
+.ctx-mark { width: 10px; flex: none; text-align: center; color: var(--accent); font-weight: 700; }
+.ol-item.ctx-selected { background: var(--accent-soft); color: var(--accent); font-weight: 600; box-shadow: inset 3px 0 0 var(--accent); }
+.ol-item.ctx-unrelated { color: var(--muted); padding-left: 22px; }
+.ol-item.ctx-unrelated:hover, .ol-item.ctx-unrelated:focus-visible { color: var(--text); }
+.ol-ctx-hint { margin: 6px 2px 0; color: var(--muted); font-size: 11px; }
+.ol-ctx-hint .ctx-mark { display: inline-block; }
+.reflist li.ctx-selected { box-shadow: inset 3px 0 0 var(--accent); padding-left: 6px; }
+.reflist li.ctx-selected button.ref { font-weight: 700; }
+.reflist li.ctx-related::before { content: '•'; color: var(--accent); font-weight: 700; width: 8px; }
+.reflist li.ctx-unrelated button.ref { color: var(--muted); }
+.reflist li.ctx-unrelated button.ref:hover, .reflist li.ctx-unrelated button.ref:focus-visible { color: var(--text); }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 .ol-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ol-badge { font-size: 10.5px; font-weight: 700; border-radius: 99px; padding: 0 6px; color: #fff; }
 .ol-badge.err { background: var(--error); }

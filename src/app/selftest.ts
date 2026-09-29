@@ -9,6 +9,7 @@
  */
 import { ModelDoc } from '../editor/document';
 import { DEVICE_TYPES } from '../model/device-types';
+import { contextState, relatedRefs, selectionContext } from '../model/queries';
 import { strNode } from '../yaml/parse';
 import { EXAMPLES } from '../generated/examples';
 import { App } from '../ui/app';
@@ -193,6 +194,112 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     app.select('relation:gre-muc');
     check('selecting GRE tunnel highlights its physical path (3 cables)', count('.cable.hl') === 3, String(count('.cable.hl')));
     app.select(null);
+
+    // ------------------------------------ selection context in the element lists
+    {
+      const olItems = (): HTMLButtonElement[] => Array.from(doc.querySelectorAll('#outline-body .ol-item[data-ref]')) as HTMLButtonElement[];
+      const total = olItems().length;
+      const olBtn = (ref: string): HTMLButtonElement | null => doc.querySelector(`#outline-body .ol-item[data-ref="${ref}"]`) as HTMLButtonElement | null;
+      // outline and diagram agree with the model-derived context; nothing hidden, reordered or disabled
+      const ctxOk = (ref: string): [boolean, string] => {
+        const s = app.session!;
+        const ctx = selectionContext(s.model, ref);
+        const keep = relatedRefs(s.model, ref);
+        const bad: string[] = [];
+        if (!ctx || s.state.selected !== (ref.indexOf('hub:') === 0 ? 'relation:' + ref.slice(4) : ref)) bad.push('session selection ' + s.state.selected);
+        const items = olItems();
+        if (items.length !== total) bad.push(`entries ${items.length}/${total}`);
+        for (const b of items) {
+          const r = b.getAttribute('data-ref') as string;
+          const want = contextState(ctx, r);
+          if (b.getAttribute('data-ctx') !== want) bad.push(`${r}: ${b.getAttribute('data-ctx')} ≠ ${want}`);
+          if (b.disabled || b.tabIndex < 0 || b.hidden || doc.defaultView!.getComputedStyle(b).display === 'none' || doc.defaultView!.getComputedStyle(b).visibility !== 'visible') bad.push(r + ' not usable');
+        }
+        if (doc.querySelectorAll('#outline-body .ctx-selected').length !== 1) bad.push('not exactly one selected entry');
+        const hint = q('#outline-body .ol-ctx-hint');
+        if (!hint || hint.getAttribute('data-related') !== String(ctx ? ctx.related.size : -1)) bad.push('hint');
+        // the diagram highlights (at least) the list context, and nothing outside relatedRefs
+        const drawn = Array.from(doc.querySelectorAll('#viewport [data-ref]'));
+        for (const e of drawn) {
+          const r = e.getAttribute('data-ref') as string;
+          if (e.classList.contains('hl') !== keep.has(r)) bad.push('diagram ' + r);
+          if (ctx && (r === ctx.selected || ctx.related.has(r)) && !e.classList.contains('hl')) bad.push('diagram misses ' + r);
+        }
+        return [!bad.length, bad.slice(0, 6).join('; ')];
+      };
+      const stateOf = (ref: string): string | null => (olBtn(ref) ? olBtn(ref)!.getAttribute('data-ctx') : 'missing');
+      const clickDevice = (ref: string): void => {
+        const box = q(`#viewport g.device[data-ref="${ref}"] .dev-box`) as unknown as SVGGraphicsElement;
+        const b = box.getBoundingClientRect();
+        box.dispatchEvent(pe('pointerdown', b.left + b.width / 2, b.top + b.height / 2));
+        svg.dispatchEvent(pe('pointerup', b.left + b.width / 2, b.top + b.height / 2));
+      };
+
+      check('no selection: list entries at normal prominence', olItems().every((b) => !b.hasAttribute('data-ctx')) && !q('#outline-body .ol-ctx-hint'));
+      clickDevice('device:muc-sw');
+      let [ok, why] = ctxOk('device:muc-sw');
+      check('diagram click on muc-sw: lists and diagram show the same selection context', ok, why);
+      check(
+        '… muc-sw selected; its cables and group directly related; the neighbour router (only via a cable) and others dimmed',
+        stateOf('device:muc-sw') === 'selected' && stateOf('link:l-muc-sw') === 'related' && stateOf('link:l-muc-ap') === 'related' && stateOf('group:branch-muc') === 'related' &&
+          stateOf('device:muc-rtr') === 'unrelated' && stateOf('device:hq-fw') === 'unrelated' && stateOf('relation:ospf-muc') === 'unrelated',
+      );
+      const selEl = olBtn('device:muc-sw')!;
+      const relEl = olBtn('link:l-muc-sw')!;
+      const unEl = olBtn('device:hq-fw')!;
+      const view = doc.defaultView!;
+      check(
+        'states differ without colour: marker / bar / weight, and text for screen readers',
+        selEl.getAttribute('aria-current') === 'true' && !!selEl.querySelector('.ctx-mark.sel') && view.getComputedStyle(selEl).fontWeight === '600' && view.getComputedStyle(selEl).boxShadow !== 'none' &&
+          !!relEl.querySelector('.ctx-mark.rel') && !unEl.querySelector('.ctx-mark') &&
+          /\(selected\)/.test(selEl.textContent || '') && /\(directly related\)/.test(relEl.textContent || '') && /\(not related\)/.test(unEl.textContent || ''),
+      );
+      check('dimmed entries stay readable (not transparent, not hidden)', view.getComputedStyle(unEl).opacity === '1' && view.getComputedStyle(unEl).visibility === 'visible');
+      unEl.focus();
+      const focused = doc.activeElement === unEl;
+      unEl.click();
+      [ok, why] = ctxOk('device:hq-fw');
+      check('an unrelated entry is focusable and selectable; the context moves to it', focused && ok && stateOf('device:hq-fw') === 'selected' && stateOf('device:muc-sw') === 'unrelated', why);
+
+      const fromOutline: Array<[string, () => boolean]> = [
+        ['link:l-muc-sw', () => stateOf('device:muc-sw') === 'related' && stateOf('device:muc-rtr') === 'related' && stateOf('link:l-muc-ap') === 'unrelated'],
+        ['network:net-transit', () => stateOf('device:hq-rtr1') === 'related' && stateOf('relation:ospf-hq-area0') === 'related' && stateOf('device:muc-rtr') === 'unrelated'],
+        // carried over IPsec directly; the cables IPsec rides on are only indirect (the diagram still shows that path)
+        ['relation:gre-muc', () => stateOf('relation:ipsec-muc') === 'related' && stateOf('relation:ospf-muc') === 'related' && stateOf('link:l-muc-inet') === 'unrelated' && count('.cable.hl') === 3],
+        ['group:hq-core', () => stateOf('device:hq-core1') === 'related' && stateOf('group:hq') === 'related' && stateOf('group:hq-edge') === 'unrelated' && stateOf('device:hq-rtr1') === 'unrelated'],
+        ['protocol:macsec', () => stateOf('relation:macsec-peer') === 'related' && stateOf('device:hq-core1') === 'unrelated' && count('g.rel.proto-macsec.hl') + count('.hl') > 0],
+        ['device:muc-sw', () => stateOf('link:l-muc-sw') === 'related'],
+      ];
+      for (const [ref, extra] of fromOutline) {
+        olBtn(ref)!.click();
+        [ok, why] = ctxOk(ref);
+        check(`selecting ${ref.split(':')[0]} ${ref.split(':')[1]} from the list: direct relations related, indirect ones dimmed`, ok && extra(), why);
+      }
+      app.select('relation:gre-muc');
+      click('[data-view-btn="logical"]');
+      [ok, why] = ctxOk('relation:gre-muc');
+      check('switching to the logical view keeps lists and diagram consistent (no stale highlighting)', ok, why);
+      app.showTab('relations');
+      const li = (r: string): string => {
+        const b = q(`#side-body .rel-list button.ref[data-goto="${r}"]`);
+        return b && b.parentElement ? b.parentElement.className : 'missing';
+      };
+      check('right-hand Relations list shows the same context', li('relation:gre-muc') === 'ctx-selected' && li('relation:ipsec-muc') === 'ctx-related' && li('relation:syslog-fw') === 'ctx-unrelated', [li('relation:gre-muc'), li('relation:ipsec-muc'), li('relation:syslog-fw')].join(' '));
+      (q('#side-body .rel-list button.ref[data-goto="relation:ospf-muc"]') as HTMLButtonElement).click();
+      [ok, why] = ctxOk('relation:ospf-muc');
+      check('selecting in the right-hand list updates the left list and the diagram', ok && stateOf('relation:ospf-muc') === 'selected' && stateOf('relation:gre-muc') === 'related', why);
+      click('[data-view-btn="physical"]');
+      [ok, why] = ctxOk('relation:ospf-muc');
+      check('… and switching back to the physical view as well', ok, why);
+      app.select('iface:muc-rtr:wan0');
+      [ok, why] = ctxOk('iface:muc-rtr:wan0');
+      check('selecting a port marks its device; its cable and relations are related', ok && stateOf('device:muc-rtr') === 'selected' && stateOf('link:l-muc-inet') === 'related' && stateOf('relation:ipsec-muc') === 'related' && stateOf('link:l-muc-sw') === 'unrelated', why);
+      doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      check(
+        'clearing the selection returns every entry to normal prominence',
+        app.session!.state.selected === null && olItems().every((b) => !b.hasAttribute('data-ctx')) && !q('#outline-body .ol-ctx-hint') && count('.dim') === 0 && count('.hl') === 0,
+      );
+    }
 
     // ---------------------------------------------------- auto-arrange
     {

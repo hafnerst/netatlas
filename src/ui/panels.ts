@@ -4,7 +4,7 @@ import { DEVICE_TYPE_IDS, deviceTypeLabel } from '../model/device-types';
 import { Attrs, CATEGORIES, Category, Model, ProtocolDef, RelEndpoint, endpointText, ifaceKey, isLoopback, loopbacks, relationDevices } from '../model/types';
 import { VNode, h } from '../diagram/scene';
 import { View } from '../diagram/session';
-import { splitRef } from '../model/queries';
+import { ContextState, SelectionContext, contextState, splitRef } from '../model/queries';
 import { groupKindStyle, mediumStyle, networkColor, speedWidth } from '../diagram/style';
 import { relationStyle } from '../model/protocols';
 
@@ -45,6 +45,12 @@ function epNode(model: Model, e: RelEndpoint): VNode {
   for (const [k, v] of e.attrs) extra.push(`${k}=${v}`);
   if (extra.length) parts.push(h('span', { class: 'muted' }, '  ' + extra.join(', ')));
   return h('li', {}, parts);
+}
+
+/** Text for assistive technology: the state is also shown by markers and weight, not colour alone. */
+export function contextNote(st: ContextState | null): VNode | null {
+  if (!st) return null;
+  return h('span', { class: 'sr-only' }, st === 'selected' ? ' (selected)' : st === 'related' ? ' (directly related)' : ' (not related)');
 }
 
 function list(title: string, items: VNode[]): VNode | null {
@@ -252,6 +258,12 @@ export function detailsFor(model: Model, ref: string): VNode {
     kids.push(list('Sub-groups', model.groups.filter((c) => c.parent === g.id).map((c) => h('li', {}, [refLink('group:' + c.id, c.label)]))));
     kids.push(list('Devices', model.devices.filter((d) => d.group === g.id).map((d) => h('li', {}, [refLink('device:' + d.id, d.label)]))));
     kids.push(attrsTable('Attributes', g.attrs));
+  } else if (kind === 'protocol') {
+    const p = model.protocols.get(id);
+    if (!p) return h('div', {}, 'Not found');
+    kids.push(header('protocol', p.label));
+    kids.push(kv([['id', p.id], ['category', p.category], ['description', p.description]]));
+    kids.push(list('Relations', model.relations.filter((r) => r.protocol === id).map((r) => h('li', {}, [refLink('relation:' + r.id, relationTitle(model, r.id))]))));
   } else {
     return h('div', {}, 'Nothing selected');
   }
@@ -452,7 +464,8 @@ export function legendFor(model: Model, view: View, hidden: Set<string>): VNode 
 }
 
 /** Relations list (usable from both views; selecting highlights the underlay path). */
-export function relationList(model: Model): VNode {
+/** Relations by category; with a selection, entries show its context like the outline. */
+export function relationList(model: Model, ctx: SelectionContext | null = null): VNode {
   if (!model.relations.length) return h('p', { class: 'muted' }, 'This file defines no logical relations.');
   const cats = CATEGORIES.filter((c) => model.relations.some((r) => r.category === c));
   return h(
@@ -466,7 +479,10 @@ export function relationList(model: Model): VNode {
           { class: 'reflist' },
           model.relations
             .filter((r) => r.category === c)
-            .map((r) => h('li', {}, [relationSwatch(relationStyle(model, r)), refLink('relation:' + r.id, relationTitle(model, r.id))])),
+            .map((r) => {
+              const st = contextState(ctx, 'relation:' + r.id);
+              return h('li', st ? { class: 'ctx-' + st } : {}, [relationSwatch(relationStyle(model, r)), refLink('relation:' + r.id, relationTitle(model, r.id)), contextNote(st)]);
+            }),
         ),
       ]),
     ),
