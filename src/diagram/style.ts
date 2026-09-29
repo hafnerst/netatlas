@@ -1,5 +1,5 @@
 /** Visual vocabulary shared by renderers and the legend. */
-import { hashColor } from './protocols';
+import { hashColor } from '../model/protocols';
 
 export interface MediumStyle {
   key: string;

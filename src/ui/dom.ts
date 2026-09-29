@@ -3,7 +3,7 @@
  * Text is always assigned via text nodes; attribute names are restricted so
  * that no event handler or script URL can ever be produced from input data.
  */
-import { VNode } from './scene';
+import { VNode } from '../diagram/scene';
 
 export const SVG_NS = 'http://www.w3.org/2000/svg';
 

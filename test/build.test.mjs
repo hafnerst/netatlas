@@ -57,12 +57,14 @@ test('the artifact contains compiled JavaScript, not TypeScript', () => {
 
 test('no third-party runtime code: every bundled module comes from src/', () => {
   const ids = [...js.matchAll(/__defs\["([^"]+)"\]/g)].map((m) => m[1]).sort();
-  const srcModules = new Set(
-    readdirSync(join(root, 'src'), { recursive: false })
-      .filter((f) => f.endsWith('.ts'))
-      .map((f) => f.replace(/\.ts$/, '')),
-  );
-  srcModules.add('generated/examples');
+  const srcModules = new Set();
+  const walk = (dir, prefix) => {
+    for (const e of readdirSync(join(root, 'src', dir), { withFileTypes: true })) {
+      if (e.isDirectory()) walk(join(dir, e.name), prefix + e.name + '/');
+      else if (e.name.endsWith('.ts')) srcModules.add(prefix + e.name.replace(/\.ts$/, ''));
+    }
+  };
+  walk('', '');
   for (const id of ids) assert.ok(srcModules.has(id), `unexpected module ${id}`);
   const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
   assert.equal(pkg.dependencies, undefined, 'no runtime dependencies');

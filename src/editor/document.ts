@@ -6,13 +6,13 @@
  * dirty and re-validates. Export serializes the tree with yaml-write.ts.
  * This module has no DOM dependency and is fully testable in Node.
  */
-import { Pt } from './geometry';
-import { LAYOUT_VIEWS, LayoutView, autoPositions, resolvePositions, samePositions } from './layout-auto';
-import { cmp, layoutInput, layoutSignature } from './layout-input';
-import { Model } from './model';
-import { Issue, LoadResult, TOP_KEYS, loadModel, scalarText, validate } from './validate';
-import { YMap, YNode, YSeq, cloneNode, mapNode, numNode, seqNode, strNode } from './yaml';
-import { stringifyYaml } from './yaml-write';
+import { Pt } from '../layout/geometry';
+import { LAYOUT_VIEWS, LayoutView, autoPositions, resolvePositions, samePositions } from '../layout/positions';
+import { cmp, layoutInput, layoutSignature } from '../layout/input';
+import { Model } from '../model/types';
+import { Issue, LoadResult, TOP_KEYS, loadModel, scalarText, validate } from '../validation/validate';
+import { YMap, YNode, YSeq, cloneNode, mapNode, numNode, seqNode, strNode } from '../yaml/parse';
+import { stringifyYaml } from '../yaml/write';
 
 export type PathSeg = string | number;
 export type Path = PathSeg[];

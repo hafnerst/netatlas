@@ -17,7 +17,7 @@
  * Group boxes are never stored: they are derived from their devices.
  */
 import { CBox, Pt, textWidth } from './geometry';
-import { LEnd, LayoutInput, cmp } from './layout-input';
+import { LEnd, LayoutInput, cmp } from './input';
 
 export type Side = 'top' | 'bottom' | 'left' | 'right';
 

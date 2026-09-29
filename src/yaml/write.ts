@@ -12,7 +12,7 @@
  * folded (>) block scalars, which are written as literal (|) blocks with the
  * same value. The "---" / "..." document markers are not written.
  */
-import { YMap, YNode, YScalar, YSeq, isPlainSafe, resolvePlain } from './yaml';
+import { YMap, YNode, YScalar, YSeq, isPlainSafe, resolvePlain } from './parse';
 
 const IND = '  ';
 const MAX_FLOW_LINE = 140;

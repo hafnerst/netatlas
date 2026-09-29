@@ -1,4 +1,4 @@
-import { addrKey, parseAddress, parsePrefix, prefixContains, prefixProblem } from './ip';
+import { addrKey, parseAddress, parsePrefix, prefixContains, prefixProblem } from '../model/ip';
 import {
   Attrs,
   CATEGORIES,
@@ -20,9 +20,9 @@ import {
   Relation,
   ifaceKey,
   relationDevices,
-} from './model';
-import { COLOR_RE, DEFAULT_STYLE, builtinProtocols, lookupProtocol, normalizeProtocol } from './protocols';
-import { YMap, YNode, YamlError, YamlLimits, parseYaml } from './yaml';
+} from '../model/types';
+import { COLOR_RE, DEFAULT_STYLE, builtinProtocols, lookupProtocol, normalizeProtocol } from '../model/protocols';
+import { YMap, YNode, YamlError, YamlLimits, parseYaml } from '../yaml/parse';
 
 export interface Issue {
   severity: 'error' | 'warning';

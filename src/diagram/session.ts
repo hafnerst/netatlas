@@ -3,15 +3,15 @@
  * state, and produces render scenes. The browser UI is a thin shell around
  * this, which is what makes view switching testable in Node.
  */
-import { Pt } from './geometry';
-import { LayoutView, resolvePositions } from './layout-auto';
-import { LayoutInput, layoutInput } from './layout-input';
-import { LogicalLayout, logicalLayoutFrom, logicalSpecs } from './layout-logical';
-import { PhysicalLayout, physicalBoxes } from './layout-physical';
-import { Model, relationDevices } from './model';
-import { renderLogical } from './render-logical';
-import { SceneResult, renderPhysical } from './render-physical';
-import { LoadResult, loadModel } from './validate';
+import { Pt } from '../layout/geometry';
+import { LayoutView, resolvePositions } from '../layout/positions';
+import { LayoutInput, layoutInput } from '../layout/input';
+import { LogicalLayout, logicalLayoutFrom, logicalSpecs } from '../layout/logical';
+import { PhysicalLayout, physicalBoxes } from '../layout/physical';
+import { Model, relationDevices } from '../model/types';
+import { renderLogical } from './logical';
+import { SceneResult, renderPhysical } from './physical';
+import { LoadResult, loadModel } from '../validation/validate';
 
 export type View = 'physical' | 'logical';
 

@@ -10,9 +10,9 @@
  * Everything is sorted by id with plain code-unit string comparison (never
  * localeCompare, which depends on the browser locale).
  */
-import { Model, loopbacks, relationDevices } from './model';
-import { networkSubtitle } from './layout-logical-size';
-import { defaultTier } from './style';
+import { Model, loopbacks, relationDevices } from '../model/types';
+import { networkSubtitle } from './sizes';
+import { defaultTier } from '../diagram/style';
 
 export interface LEnd {
   device: string;

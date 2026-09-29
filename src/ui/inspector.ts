@@ -6,12 +6,12 @@
  * user clicks the diagram or another object: the browser fires "change"
  * before focus moves. Everything user-provided is rendered as text.
  */
-import { EntityKind, KEY_ORDER, ModelDoc, Path, SECTION, kindOfSection } from './doc';
+import { EntityKind, KEY_ORDER, ModelDoc, Path, SECTION, kindOfSection } from '../editor/document';
 import { el } from './dom';
-import { CATEGORIES, LINE_STYLES, LOGICAL_IFACE_TYPES } from './model';
-import { builtinProtocols } from './protocols';
-import { DEVICE_KEYS, GROUP_KEYS, IFACE_KEYS, Issue, LINK_KEYS, NET_KEYS, PROTO_KEYS, REL_KEYS, TOP_KEYS, scalarText } from './validate';
-import { YMap, YNode, autoNode, boolNode, mapNode, nullNode, numNode, seqNode, strNode } from './yaml';
+import { CATEGORIES, LINE_STYLES, LOGICAL_IFACE_TYPES } from '../model/types';
+import { builtinProtocols } from '../model/protocols';
+import { DEVICE_KEYS, GROUP_KEYS, IFACE_KEYS, Issue, LINK_KEYS, NET_KEYS, PROTO_KEYS, REL_KEYS, TOP_KEYS, scalarText } from '../validation/validate';
+import { YMap, YNode, autoNode, boolNode, mapNode, nullNode, numNode, seqNode, strNode } from '../yaml/parse';
 
 export type EditorSel = { kind: EntityKind | 'document'; index: number; iface?: number } | null;
 

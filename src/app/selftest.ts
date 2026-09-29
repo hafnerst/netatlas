@@ -7,10 +7,10 @@
  * checks what was drawn and what gets exported. It also verifies label
  * safety, error reporting and that the page made no network requests.
  */
-import { ModelDoc } from './doc';
-import { strNode } from './yaml';
-import { EXAMPLES } from './generated/examples';
-import { App } from './ui';
+import { ModelDoc } from '../editor/document';
+import { strNode } from '../yaml/parse';
+import { EXAMPLES } from '../generated/examples';
+import { App } from '../ui/app';
 
 interface Check {
   name: string;
@@ -258,7 +258,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       }
       // an equivalent file with every list reversed arranges identically
       const shuffled = ModelDoc.fromText(EXAMPLES[wanIdx].text, 'shuffled.yaml', 'file').doc as ModelDoc;
-      const rev = (n: import('./yaml').YNode): void => {
+      const rev = (n: import('../yaml/parse').YNode): void => {
         if (n.kind === 'seq') {
           n.items.reverse();
           n.items.forEach(rev);

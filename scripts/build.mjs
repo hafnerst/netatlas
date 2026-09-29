@@ -30,7 +30,7 @@ function load(id) {
   deps.forEach(load);
 }
 
-load('main');
+load('app/main');
 
 let bundle = '(function () {\n"use strict";\nvar __defs = {};\nvar __cache = {};\n' +
   'function __req(id) {\n  var c = __cache[id];\n  if (c) return c.exports;\n  var m = (__cache[id] = { exports: {} });\n' +
@@ -38,7 +38,7 @@ let bundle = '(function () {\n"use strict";\nvar __defs = {};\nvar __cache = {};
 for (const [id, src] of modules) {
   bundle += `__defs[${JSON.stringify(id)}] = function (module, exports) {\n${src.replace(/^\/\/# sourceMappingURL=.*$/m, '')}\n};\n`;
 }
-bundle += '__req("main");\n})();\n';
+bundle += '__req("app/main");\n})();\n';
 
 // Make the script safe to inline in HTML.
 // "</script" would end the inline script and "<!--" can switch the HTML parser

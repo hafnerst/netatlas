@@ -465,13 +465,13 @@ function __req(id) {
   __defs[id].call(m.exports, m, m.exports);
   return m.exports;
 }
-__defs["main"] = function (module, exports) {
+__defs["app/main"] = function (module, exports) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-const ui_1 = __req("ui");
-const selftest_1 = __req("selftest");
+const app_1 = __req("ui/app");
+const selftest_1 = __req("app/selftest");
 function start() {
-    const app = new ui_1.App(document);
+    const app = new app_1.App(document);
     window.netatlas = app;
     const hash = location.hash.replace(/^#/, '');
     if (hash === 'selftest') {
@@ -499,7 +499,7 @@ else
     start();
 
 };
-__defs["ui"] = function (module, exports) {
+__defs["ui/app"] = function (module, exports) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.App = void 0;
@@ -510,13 +510,13 @@ exports.App = void 0;
  * user action (file picker or drag-and-drop), edited in memory, and saved by
  * letting the browser download a new copy. Nothing is transmitted.
  */
-const doc_1 = __req("doc");
-const dom_1 = __req("dom");
-const editor_1 = __req("editor");
+const document_1 = __req("editor/document");
+const dom_1 = __req("ui/dom");
+const inspector_1 = __req("ui/inspector");
 const examples_1 = __req("generated/examples");
-const panels_1 = __req("panels");
-const state_1 = __req("state");
-const yaml_1 = __req("yaml");
+const panels_1 = __req("ui/panels");
+const session_1 = __req("diagram/session");
+const parse_1 = __req("yaml/parse");
 class App {
     constructor(doc) {
         this.session = null;
@@ -542,7 +542,7 @@ class App {
         };
         this.svg = this.$('canvas');
         this.viewport = this.$('viewport');
-        this.editor = new editor_1.Editor(doc, {
+        this.editor = new inspector_1.Editor(doc, {
             changed: (note) => this.afterEdit(note),
             selected: (sel) => this.editorSelected(sel),
             dialog: (o) => this.dialog(o),
@@ -555,8 +555,8 @@ class App {
     // ------------------------------------------------------------- loading
     /** Read a user-chosen local file (size-checked, strict UTF-8). Does not ask about unsaved changes. */
     async loadFile(file) {
-        if (file.size > yaml_1.DEFAULT_YAML_LIMITS.maxBytes) {
-            return this.fail(file.name, [{ severity: 'error', line: 0, path: '', message: `The file is ${(file.size / 1048576).toFixed(1)} MiB; the limit is ${yaml_1.DEFAULT_YAML_LIMITS.maxBytes / 1048576} MiB.` }], []);
+        if (file.size > parse_1.DEFAULT_YAML_LIMITS.maxBytes) {
+            return this.fail(file.name, [{ severity: 'error', line: 0, path: '', message: `The file is ${(file.size / 1048576).toFixed(1)} MiB; the limit is ${parse_1.DEFAULT_YAML_LIMITS.maxBytes / 1048576} MiB.` }], []);
         }
         let text;
         try {
@@ -571,7 +571,7 @@ class App {
     /** Open YAML text as the current document (replaces it without asking). */
     loadText(text, name, origin = 'file') {
         const lines = text.split(/\r\n|\r|\n/);
-        const { doc, errors } = doc_1.ModelDoc.fromText(text, name, origin);
+        const { doc, errors } = document_1.ModelDoc.fromText(text, name, origin);
         if (!doc)
             return this.fail(name, errors, lines);
         this.sourceLines = lines;
@@ -604,7 +604,7 @@ class App {
         this.editor.sourceDraft = null;
         this.editor.sourceError = null;
         const model = doc.result.model;
-        this.session = model ? new state_1.Session(model) : null;
+        this.session = model ? new session_1.Session(model) : null;
         if (this.session)
             this.session.setView(prevView);
         this.tab = doc.errors.length || doc.warnings.length ? 'problems' : this.tab === 'yaml' ? 'yaml' : 'legend';
@@ -615,7 +615,7 @@ class App {
         this.updateChrome();
     }
     newModel() {
-        this.openDoc(doc_1.ModelDoc.create());
+        this.openDoc(document_1.ModelDoc.create());
         this.editor.sel = { kind: 'device', index: 0 };
         this.editorSelected(this.editor.sel);
         this.tab = 'edit';
@@ -654,7 +654,7 @@ class App {
                 if (this.session)
                     this.session.setModel(model);
                 else
-                    this.session = new state_1.Session(model);
+                    this.session = new session_1.Session(model);
             }
             else
                 this.session = null;
@@ -845,7 +845,7 @@ class App {
             this.reveal(ref);
     }
     reveal(ref) {
-        const [kind, id] = (0, state_1.splitRef)(ref);
+        const [kind, id] = (0, session_1.splitRef)(ref);
         const candidates = [ref, kind === 'relation' ? 'hub:' + id : ''];
         const els = this.viewport.querySelectorAll('[data-ref]');
         for (let i = 0; i < els.length; i++) {
@@ -968,7 +968,7 @@ class App {
         const ta = this.doc.getElementById('yaml-src');
         if (!d || !ta)
             return;
-        const parsed = doc_1.ModelDoc.fromText(ta.value, d.fileName, d.origin);
+        const parsed = document_1.ModelDoc.fromText(ta.value, d.fileName, d.origin);
         if (!parsed.doc) {
             const e = parsed.errors[0];
             this.editor.sourceDraft = ta.value;
@@ -1391,7 +1391,7 @@ class App {
             closeResults();
             if (!this.session || !q.value.trim())
                 return;
-            const hits = (0, state_1.search)(this.session.model, q.value);
+            const hits = (0, session_1.search)(this.session.model, q.value);
             if (!hits.length)
                 results.appendChild((0, dom_1.el)(doc, 'div', { class: 'muted' }, ['No matches']));
             for (const hit of hits) {
@@ -1640,7 +1640,7 @@ class App {
     }
     nodeCenter(ref) {
         const s = this.session;
-        const [kind, id] = (0, state_1.splitRef)(ref);
+        const [kind, id] = (0, session_1.splitRef)(ref);
         if (s.state.view === 'physical') {
             const o = s.state.positions.physical.get(ref);
             if (o)
@@ -1752,17 +1752,17 @@ function restoreFocus(doc, f) {
 }
 
 };
-__defs["doc"] = function (module, exports) {
+__defs["editor/document"] = function (module, exports) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ModelDoc = exports.NEW_MODEL_YAML = exports.KEY_ORDER = exports.SECTION = exports.ENTITY_KINDS = void 0;
 exports.kindOfSection = kindOfSection;
 exports.setKey = setKey;
-const layout_auto_1 = __req("layout-auto");
-const layout_input_1 = __req("layout-input");
-const validate_1 = __req("validate");
-const yaml_1 = __req("yaml");
-const yaml_write_1 = __req("yaml-write");
+const positions_1 = __req("layout/positions");
+const input_1 = __req("layout/input");
+const validate_1 = __req("validation/validate");
+const parse_1 = __req("yaml/parse");
+const write_1 = __req("yaml/write");
 exports.ENTITY_KINDS = ['device', 'link', 'network', 'relation', 'group', 'protocol'];
 exports.SECTION = {
     protocol: 'protocols',
@@ -1979,7 +1979,7 @@ class ModelDoc {
      * positions of removed nodes are dropped. Nothing ever re-arranges itself.
      */
     change(label, fn, opts = {}) {
-        const snapshot = (0, yaml_1.cloneNode)(this.root);
+        const snapshot = (0, parse_1.cloneNode)(this.root);
         const pre = this.result.model;
         this.renames = new Map();
         const out = fn();
@@ -2006,7 +2006,7 @@ class ModelDoc {
     /** Positions that are displayed for a view (stored, else auto-arranged). */
     displayedPositions(view) {
         const m = this.result.model;
-        return m ? (0, layout_auto_1.resolvePositions)(view, (0, layout_input_1.layoutInput)(m), m.layout[view]) : new Map();
+        return m ? (0, positions_1.resolvePositions)(view, (0, input_1.layoutInput)(m), m.layout[view]) : new Map();
     }
     /** Does the document store positions for this view? */
     hasStoredLayout(view) {
@@ -2017,20 +2017,20 @@ class ModelDoc {
         const post = this.result.model;
         if (!post)
             return;
-        const preIn = (0, layout_input_1.layoutInput)(pre);
-        const postIn = (0, layout_input_1.layoutInput)(post);
-        if ((0, layout_input_1.layoutSignature)(preIn) === (0, layout_input_1.layoutSignature)(postIn))
+        const preIn = (0, input_1.layoutInput)(pre);
+        const postIn = (0, input_1.layoutInput)(post);
+        if ((0, input_1.layoutSignature)(preIn) === (0, input_1.layoutSignature)(postIn))
             return;
         let changed = false;
-        for (const view of layout_auto_1.LAYOUT_VIEWS) {
-            const shown = (0, layout_auto_1.resolvePositions)(view, preIn, pre.layout[view]);
+        for (const view of positions_1.LAYOUT_VIEWS) {
+            const shown = (0, positions_1.resolvePositions)(view, preIn, pre.layout[view]);
             const base = new Map();
             shown.forEach((p, id) => base.set(this.renames.get(id) || id, p));
-            const next = (0, layout_auto_1.resolvePositions)(view, postIn, base);
+            const next = (0, positions_1.resolvePositions)(view, postIn, base);
             // also rewrite when the file still holds entries for nodes that no longer exist
             const raw = this.rawLayoutKeys(view);
             const stale = raw.some((id) => !next.has(id));
-            if (stale || !(0, layout_auto_1.samePositions)(next, post.layout[view])) {
+            if (stale || !(0, positions_1.samePositions)(next, post.layout[view])) {
                 this.writeLayout(view, next);
                 changed = true;
             }
@@ -2058,11 +2058,11 @@ class ModelDoc {
         const m = this.result.model;
         if (!m)
             return new Map();
-        const input = (0, layout_input_1.layoutInput)(m);
-        const key = view + '\n' + (0, layout_input_1.layoutSignature)(input);
+        const input = (0, input_1.layoutInput)(m);
+        const key = view + '\n' + (0, input_1.layoutSignature)(input);
         let r = this.autoMemo.get(key);
         if (!r) {
-            r = (0, layout_auto_1.autoPositions)(view, input);
+            r = (0, positions_1.autoPositions)(view, input);
             // keep only the latest result per view
             Array.from(this.autoMemo.keys()).forEach((k) => {
                 if (k.indexOf(view + '\n') === 0)
@@ -2114,7 +2114,7 @@ class ModelDoc {
         if (!lay || lay.value.kind !== 'map') {
             if (!ids.size)
                 return;
-            const fresh = (0, yaml_1.mapNode)();
+            const fresh = (0, parse_1.mapNode)();
             fresh.blank = true;
             setKey(this.root, 'layout', fresh, exports.KEY_ORDER.top);
             lay = this.root.entries.get('layout');
@@ -2131,10 +2131,10 @@ class ModelDoc {
             return;
         }
         if (!man) {
-            man = (0, yaml_1.mapNode)();
+            man = (0, parse_1.mapNode)();
             setKey(layMap, 'manual', man, ['physical', 'logical', 'manual']);
         }
-        setKey(man, view, (0, yaml_1.seqNode)(Array.from(ids).sort(layout_input_1.cmp).map(yaml_1.strNode), true), ['physical', 'logical']);
+        setKey(man, view, (0, parse_1.seqNode)(Array.from(ids).sort(input_1.cmp).map(parse_1.strNode), true), ['physical', 'logical']);
     }
     /** Keys present in the document's layout section for a view (valid or not). */
     rawLayoutKeys(view) {
@@ -2148,7 +2148,7 @@ class ModelDoc {
     writeLayout(view, positions) {
         let lay = this.root.entries.get('layout');
         if (!lay || lay.value.kind !== 'map') {
-            const fresh = (0, yaml_1.mapNode)();
+            const fresh = (0, parse_1.mapNode)();
             fresh.blank = true;
             setKey(this.root, 'layout', fresh, exports.KEY_ORDER.top);
             lay = this.root.entries.get('layout');
@@ -2156,10 +2156,10 @@ class ModelDoc {
         const layMap = lay.value;
         const oldEntry = layMap.entries.get(view);
         const old = oldEntry && oldEntry.value.kind === 'map' ? oldEntry.value : null;
-        const m = (0, yaml_1.mapNode)();
-        for (const id of Array.from(positions.keys()).sort(layout_input_1.cmp)) {
+        const m = (0, parse_1.mapNode)();
+        for (const id of Array.from(positions.keys()).sort(input_1.cmp)) {
             const p = positions.get(id);
-            const v = (0, yaml_1.seqNode)([(0, yaml_1.numNode)(p.x), (0, yaml_1.numNode)(p.y)], true);
+            const v = (0, parse_1.seqNode)([(0, parse_1.numNode)(p.x), (0, parse_1.numNode)(p.y)], true);
             const prev = old ? old.entries.get(id) : undefined;
             if (prev)
                 keepTrivia(prev.value, v);
@@ -2177,18 +2177,18 @@ class ModelDoc {
         const m = this.result.model;
         if (!m)
             return { changed: false, moved: 0 };
-        const input = (0, layout_input_1.layoutInput)(m);
+        const input = (0, input_1.layoutInput)(m);
         const targets = new Map();
         let moved = 0;
         for (const v of views) {
             const auto = this.autoLayout(v);
-            const shown = (0, layout_auto_1.resolvePositions)(v, input, m.layout[v]);
+            const shown = (0, positions_1.resolvePositions)(v, input, m.layout[v]);
             auto.forEach((p, id) => {
                 const q = shown.get(id);
                 if (!q || q.x !== p.x || q.y !== p.y)
                     moved++;
             });
-            if (!(0, layout_auto_1.samePositions)(auto, m.layout[v]))
+            if (!(0, positions_1.samePositions)(auto, m.layout[v]))
                 targets.set(v, auto);
         }
         if (!targets.size)
@@ -2205,12 +2205,12 @@ class ModelDoc {
         const m = this.result.model;
         if (!m)
             return false;
-        const next = new Map((0, layout_auto_1.resolvePositions)(view, (0, layout_input_1.layoutInput)(m), m.layout[view]));
+        const next = new Map((0, positions_1.resolvePositions)(view, (0, input_1.layoutInput)(m), m.layout[view]));
         updates.forEach((p, id) => {
             if (next.has(id))
                 next.set(id, { x: Math.round(p.x), y: Math.round(p.y) });
         });
-        if ((0, layout_auto_1.samePositions)(next, m.layout[view]))
+        if ((0, positions_1.samePositions)(next, m.layout[view]))
             return false;
         const manual = new Set(m.layout.manual[view]);
         updates.forEach((_, id) => {
@@ -2266,7 +2266,7 @@ class ModelDoc {
         this.dirty = false;
     }
     exportText() {
-        return (0, yaml_write_1.stringifyYaml)(this.root);
+        return (0, write_1.stringifyYaml)(this.root);
     }
     /** Replace the whole document (used by the YAML source editor). */
     replaceRoot(root, label = 'Edit YAML source') {
@@ -2287,19 +2287,19 @@ class ModelDoc {
             return cur;
         let replacement;
         if (cur && cur.kind === 'scalar' && typeof seg === 'number' && String(parentPath[parentPath.length - 1]) === 'interfaces') {
-            replacement = (0, yaml_1.mapNode)([['id', (0, yaml_1.strNode)((0, validate_1.scalarText)(cur) || '')]], true);
+            replacement = (0, parse_1.mapNode)([['id', (0, parse_1.strNode)((0, validate_1.scalarText)(cur) || '')]], true);
         }
         else if (cur && cur.kind === 'scalar' && typeof seg === 'number' && (0, validate_1.scalarText)(cur) !== undefined && /^(members|endpoints)$/.test(String(parentPath[parentPath.length - 1]))) {
             // "dev:if" endpoint shorthand -> {device, interface}
             const t = (0, validate_1.scalarText)(cur);
             const i = t.indexOf(':');
-            const e = [['device', (0, yaml_1.strNode)(i < 0 ? t : t.slice(0, i))]];
+            const e = [['device', (0, parse_1.strNode)(i < 0 ? t : t.slice(0, i))]];
             if (i >= 0)
-                e.push(['interface', (0, yaml_1.strNode)(t.slice(i + 1))]);
-            replacement = (0, yaml_1.mapNode)(e, true);
+                e.push(['interface', (0, parse_1.strNode)(t.slice(i + 1))]);
+            replacement = (0, parse_1.mapNode)(e, true);
         }
         else {
-            replacement = (0, yaml_1.mapNode)();
+            replacement = (0, parse_1.mapNode)();
         }
         keepTrivia(cur, replacement);
         this.put(parentPath, seg, replacement, order);
@@ -2310,9 +2310,9 @@ class ModelDoc {
         const cur = this.get(path);
         if (cur && cur.kind === 'seq')
             return cur;
-        const s = (0, yaml_1.seqNode)([], flow);
+        const s = (0, parse_1.seqNode)([], flow);
         if (cur && cur.kind === 'scalar' && (0, validate_1.scalarText)(cur) !== undefined) {
-            const item = (0, yaml_1.cloneNode)(cur);
+            const item = (0, parse_1.cloneNode)(cur);
             delete item.comment;
             delete item.before;
             delete item.blank;
@@ -2429,21 +2429,21 @@ class ModelDoc {
             const idNode = fields.find(([k]) => k === 'id');
             const id = idNode ? (0, validate_1.scalarText)(idNode[1]) || base[kind] : this.uniqueId(base[kind]);
             const defaults = {
-                device: [['type', (0, yaml_1.strNode)('router')]],
+                device: [['type', (0, parse_1.strNode)('router')]],
                 link: [],
-                network: [['kind', (0, yaml_1.strNode)('subnet')]],
-                relation: [['protocol', (0, yaml_1.strNode)('bgp')], ['endpoints', (0, yaml_1.seqNode)([], true)]],
-                group: [['kind', (0, yaml_1.strNode)('site')]],
-                protocol: [['category', (0, yaml_1.strNode)('other')]],
+                network: [['kind', (0, parse_1.strNode)('subnet')]],
+                relation: [['protocol', (0, parse_1.strNode)('bgp')], ['endpoints', (0, parse_1.seqNode)([], true)]],
+                group: [['kind', (0, parse_1.strNode)('site')]],
+                protocol: [['category', (0, parse_1.strNode)('other')]],
             };
-            const entries = [['id', (0, yaml_1.strNode)(id)]];
+            const entries = [['id', (0, parse_1.strNode)(id)]];
             for (const [k, v] of defaults[kind])
                 if (!fields.some(([f]) => f === k))
                     entries.push([k, v]);
             for (const [k, v] of fields)
                 if (k !== 'id')
                     entries.push([k, v]);
-            const node = (0, yaml_1.mapNode)(entries, kind === 'link' || kind === 'protocol');
+            const node = (0, parse_1.mapNode)(entries, kind === 'link' || kind === 'protocol');
             const seq = this.ensureSeq([exports.SECTION[kind]]);
             seq.items.push(node);
             return seq.items.length - 1;
@@ -2455,12 +2455,12 @@ class ModelDoc {
         if (!src)
             return -1;
         return this.change(`Duplicate ${kind}`, () => {
-            const copy = (0, yaml_1.cloneNode)(src);
+            const copy = (0, parse_1.cloneNode)(src);
             delete copy.before;
             delete copy.blank;
             if (copy.kind === 'map' && copy.entries.has('id')) {
                 const old = (0, validate_1.scalarText)(copy.entries.get('id').value) || kind;
-                setKey(copy, 'id', (0, yaml_1.strNode)(this.uniqueId(old)));
+                setKey(copy, 'id', (0, parse_1.strNode)(this.uniqueId(old)));
             }
             const seq = this.section(kind);
             seq.items.splice(index + 1, 0, copy);
@@ -2481,7 +2481,7 @@ class ModelDoc {
         if (includeLayout && iface === undefined && (kind === 'device' || kind === 'network' || kind === 'relation')) {
             const lay = this.root.entries.get('layout');
             if (lay && lay.value.kind === 'map') {
-                for (const view of layout_auto_1.LAYOUT_VIEWS) {
+                for (const view of positions_1.LAYOUT_VIEWS) {
                     const vm = lay.value.entries.get(view);
                     if (vm && vm.value.kind === 'map' && vm.value.entries.has(id))
                         out.push(['layout', view, id]);
@@ -2598,7 +2598,7 @@ class ModelDoc {
             }
             else
                 nt = newId;
-            const repl = (0, yaml_1.strNode)(nt);
+            const repl = (0, parse_1.strNode)(nt);
             if (n.style === 'double' || n.style === 'single') {
                 repl.quoted = true;
                 repl.style = n.style;
@@ -2607,9 +2607,9 @@ class ModelDoc {
         }
         else if (n.kind === 'map') {
             if (oldIf !== undefined && newIf !== undefined)
-                setKey(n, 'interface', (0, yaml_1.strNode)(newIf));
+                setKey(n, 'interface', (0, parse_1.strNode)(newIf));
             else
-                setKey(n, 'device', (0, yaml_1.strNode)(newId));
+                setKey(n, 'device', (0, parse_1.strNode)(newId));
         }
     }
     /**
@@ -2623,7 +2623,7 @@ class ModelDoc {
         const oldId = ent.id;
         return this.change(`Rename ${kind}`, () => {
             const refs = oldId ? this.references(kind, oldId, undefined, true) : [];
-            setKey(ent.node, 'id', (0, yaml_1.strNode)(newId), exports.KEY_ORDER[kind]);
+            setKey(ent.node, 'id', (0, parse_1.strNode)(newId), exports.KEY_ORDER[kind]);
             for (const p of refs)
                 this.rewriteRef(p, oldId, newId);
             if (oldId)
@@ -2642,7 +2642,7 @@ class ModelDoc {
         return this.change('Rename interface', () => {
             const refs = oldIf ? this.references('device', dev.id, oldIf) : [];
             const m = this.ensureMap(ipath, exports.KEY_ORDER.interface);
-            setKey(m, 'id', (0, yaml_1.strNode)(newIf), exports.KEY_ORDER.interface);
+            setKey(m, 'id', (0, parse_1.strNode)(newIf), exports.KEY_ORDER.interface);
             for (const p of refs)
                 this.rewriteRef(p, dev.id, dev.id, oldIf, newIf);
             return refs.length;
@@ -2663,12 +2663,12 @@ class ModelDoc {
             const taken = new Set(this.interfaceIds(devIndex));
             const idGiven = fields.find(([k]) => k === 'id');
             const id = idGiven ? (0, validate_1.scalarText)(idGiven[1]) || base : this.uniqueId(base, taken);
-            const entries = [['id', (0, yaml_1.strNode)(id)]];
+            const entries = [['id', (0, parse_1.strNode)(id)]];
             for (const [k, v] of fields)
                 if (k !== 'id')
                     entries.push([k, v]);
             const list = this.ensureSeq(['devices', devIndex, 'interfaces'], false, exports.KEY_ORDER.device);
-            list.items.push((0, yaml_1.mapNode)(entries, true));
+            list.items.push((0, parse_1.mapNode)(entries, true));
             return list.items.length - 1;
         });
     }
@@ -2676,18 +2676,18 @@ class ModelDoc {
     addLoopback(devIndex, addresses = [], name, id) {
         const f = [];
         if (id)
-            f.push(['id', (0, yaml_1.strNode)(id)]);
-        f.push(['type', (0, yaml_1.strNode)('loopback')]);
+            f.push(['id', (0, parse_1.strNode)(id)]);
+        f.push(['type', (0, parse_1.strNode)('loopback')]);
         if (name)
-            f.push(['label', (0, yaml_1.strNode)(name)]);
-        f.push(['ip', (0, yaml_1.seqNode)(addresses.map(yaml_1.strNode), true)]);
+            f.push(['label', (0, parse_1.strNode)(name)]);
+        f.push(['ip', (0, parse_1.seqNode)(addresses.map(parse_1.strNode), true)]);
         return this.addInterface(devIndex, f, 'lo0');
     }
 }
 exports.ModelDoc = ModelDoc;
 
 };
-__defs["layout-auto"] = function (module, exports) {
+__defs["layout/positions"] = function (module, exports) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.LAYOUT_VIEWS = void 0;
@@ -2697,9 +2697,9 @@ exports.autoPositions = autoPositions;
 exports.placeIncremental = placeIncremental;
 exports.resolvePositions = resolvePositions;
 exports.samePositions = samePositions;
-const layout_input_1 = __req("layout-input");
-const layout_logical_1 = __req("layout-logical");
-const layout_physical_1 = __req("layout-physical");
+const input_1 = __req("layout/input");
+const logical_1 = __req("layout/logical");
+const physical_1 = __req("layout/physical");
 exports.LAYOUT_VIEWS = ['physical', 'logical'];
 /** refs ("device:x", "network:y", "hub:r") <-> plain ids */
 function refToId(ref) {
@@ -2733,27 +2733,27 @@ function viewNodes(view, input) {
                 for (const b of ids)
                     add(a, b);
         });
-        return input.devices.map((d) => ({ id: d.id, ...(0, layout_physical_1.physicalBaseSize)(d.label), nbrs: Array.from(nbrs.get(d.id)).sort(layout_input_1.cmp) }));
+        return input.devices.map((d) => ({ id: d.id, ...(0, physical_1.physicalBaseSize)(d.label), nbrs: Array.from(nbrs.get(d.id)).sort(input_1.cmp) }));
     }
-    const specs = (0, layout_logical_1.logicalSpecs)(input);
+    const specs = (0, logical_1.logicalSpecs)(input);
     const nbrs = new Map();
     for (const s of specs)
         nbrs.set(s.id, new Set());
-    for (const [a, b] of (0, layout_logical_1.logicalEdges)(input, specs)) {
+    for (const [a, b] of (0, logical_1.logicalEdges)(input, specs)) {
         nbrs.get(refToId(a)).add(refToId(b));
         nbrs.get(refToId(b)).add(refToId(a));
     }
     return specs
-        .map((s) => ({ id: s.id, w: s.w, h: s.h, nbrs: Array.from(nbrs.get(s.id)).sort(layout_input_1.cmp) }))
-        .sort((a, b) => (0, layout_input_1.cmp)(a.id, b.id));
+        .map((s) => ({ id: s.id, w: s.w, h: s.h, nbrs: Array.from(nbrs.get(s.id)).sort(input_1.cmp) }))
+        .sort((a, b) => (0, input_1.cmp)(a.id, b.id));
 }
 /** Auto-arrange result for one view, keyed by plain id. */
 function autoPositions(view, input) {
-    const phys = (0, layout_physical_1.autoPhysical)(input);
+    const phys = (0, physical_1.autoPhysical)(input);
     if (view === 'physical')
         return phys;
     const out = new Map();
-    (0, layout_logical_1.autoLogical)(input, phys).forEach((p, ref) => out.set(refToId(ref), p));
+    (0, logical_1.autoLogical)(input, phys).forEach((p, ref) => out.set(refToId(ref), p));
     return out;
 }
 const GAP = 40;
@@ -2866,7 +2866,7 @@ function samePositions(a, b) {
 }
 
 };
-__defs["layout-input"] = function (module, exports) {
+__defs["layout/input"] = function (module, exports) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.cmp = cmp;
@@ -2884,9 +2884,9 @@ exports.layoutSignature = layoutSignature;
  * Everything is sorted by id with plain code-unit string comparison (never
  * localeCompare, which depends on the browser locale).
  */
-const model_1 = __req("model");
-const layout_logical_size_1 = __req("layout-logical-size");
-const style_1 = __req("style");
+const types_1 = __req("model/types");
+const sizes_1 = __req("layout/sizes");
+const style_1 = __req("diagram/style");
 /** Code-unit string order: the same in every browser and locale. */
 function cmp(a, b) {
     return a < b ? -1 : a > b ? 1 : 0;
@@ -2905,7 +2905,7 @@ function layoutInput(m) {
             label: d.label,
             tier: d.tier !== undefined ? d.tier : (0, style_1.defaultTier)(d.type),
             group: d.group || null,
-            loopbacks: (0, model_1.loopbacks)(d).length,
+            loopbacks: (0, types_1.loopbacks)(d).length,
         }))),
         groups: byId(m.groups.map((g) => ({ id: g.id, parent: g.parent || null }))),
         links: byId(m.links.map((l) => {
@@ -2919,10 +2919,10 @@ function layoutInput(m) {
         networks: byId(m.networks.map((n) => ({
             id: n.id,
             label: n.label,
-            sub: (0, layout_logical_size_1.networkSubtitle)(n.kind, n.cidr, n.vlan),
+            sub: (0, sizes_1.networkSubtitle)(n.kind, n.cidr, n.vlan),
             members: uniqSorted(n.members.map((x) => x.device).filter((d) => devIds.has(d))),
         }))),
-        relations: byId(m.relations.map((r) => ({ id: r.id, devices: uniqSorted((0, model_1.relationDevices)(r)) }))),
+        relations: byId(m.relations.map((r) => ({ id: r.id, devices: uniqSorted((0, types_1.relationDevices)(r)) }))),
     };
 }
 /** Stable text form of the input: equal signatures always give equal auto-arrange results. */
@@ -2931,7 +2931,7 @@ function layoutSignature(i) {
 }
 
 };
-__defs["model"] = function (module, exports) {
+__defs["model/types"] = function (module, exports) {
 "use strict";
 /** Validated, typed network model produced from the YAML input. */
 Object.defineProperty(exports, "__esModule", { value: true });
@@ -2968,7 +2968,7 @@ function loopbacks(d) {
 }
 
 };
-__defs["layout-logical-size"] = function (module, exports) {
+__defs["layout/sizes"] = function (module, exports) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.MAX_CHIPS = exports.CHIP_H = exports.DEVICE_H = exports.HUB_R = void 0;
@@ -2977,7 +2977,7 @@ exports.logicalDeviceSize = logicalDeviceSize;
 exports.networkSize = networkSize;
 exports.networkSubtitle = networkSubtitle;
 /** Node sizes for the logical view (shared by layout and rendering). */
-const geometry_1 = __req("geometry");
+const geometry_1 = __req("layout/geometry");
 exports.HUB_R = 12;
 exports.DEVICE_H = 50;
 exports.CHIP_H = 16;
@@ -3006,7 +3006,7 @@ function networkSubtitle(kind, cidr, vlan) {
 }
 
 };
-__defs["geometry"] = function (module, exports) {
+__defs["layout/geometry"] = function (module, exports) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.clipToBox = clipToBox;
@@ -3119,7 +3119,7 @@ function ellipsize(s, size, maxW) {
 }
 
 };
-__defs["style"] = function (module, exports) {
+__defs["diagram/style"] = function (module, exports) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.mediumStyle = mediumStyle;
@@ -3129,7 +3129,7 @@ exports.defaultTier = defaultTier;
 exports.networkColor = networkColor;
 exports.groupKindStyle = groupKindStyle;
 /** Visual vocabulary shared by renderers and the legend. */
-const protocols_1 = __req("protocols");
+const protocols_1 = __req("model/protocols");
 const MEDIA = [
     [['fiber', 'fibre', 'smf', 'mmf', 'optical', 'sfp', 'qsfp'], { key: 'fiber', label: 'Fiber', color: '#e67700' }],
     [['copper', 'utp', 'stp', 'cat5', 'cat5e', 'cat6', 'cat6a', 'rj45', 'ethernet'], { key: 'copper', label: 'Copper', color: '#1c7ed6' }],
@@ -3206,7 +3206,7 @@ function groupKindStyle(kind) {
 }
 
 };
-__defs["protocols"] = function (module, exports) {
+__defs["model/protocols"] = function (module, exports) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.COLOR_RE = exports.DEFAULT_STYLE = void 0;
@@ -3336,7 +3336,7 @@ function hslToHex(h, s, l) {
 exports.COLOR_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
 
 };
-__defs["layout-logical"] = function (module, exports) {
+__defs["layout/logical"] = function (module, exports) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.networkSubtitle = exports.networkSize = exports.chipRows = exports.MAX_CHIPS = exports.HUB_R = exports.DEVICE_H = exports.CHIP_H = void 0;
@@ -3346,25 +3346,25 @@ exports.logicalSpecs = logicalSpecs;
 exports.logicalEdges = logicalEdges;
 exports.autoLogical = autoLogical;
 exports.logicalLayoutFrom = logicalLayoutFrom;
-const layout_input_1 = __req("layout-input");
-const layout_logical_size_1 = __req("layout-logical-size");
-var layout_logical_size_2 = __req("layout-logical-size");
-Object.defineProperty(exports, "CHIP_H", { enumerable: true, get: function () { return layout_logical_size_2.CHIP_H; } });
-Object.defineProperty(exports, "DEVICE_H", { enumerable: true, get: function () { return layout_logical_size_2.DEVICE_H; } });
-Object.defineProperty(exports, "HUB_R", { enumerable: true, get: function () { return layout_logical_size_2.HUB_R; } });
-Object.defineProperty(exports, "MAX_CHIPS", { enumerable: true, get: function () { return layout_logical_size_2.MAX_CHIPS; } });
-Object.defineProperty(exports, "chipRows", { enumerable: true, get: function () { return layout_logical_size_2.chipRows; } });
-Object.defineProperty(exports, "networkSize", { enumerable: true, get: function () { return layout_logical_size_2.networkSize; } });
-Object.defineProperty(exports, "networkSubtitle", { enumerable: true, get: function () { return layout_logical_size_2.networkSubtitle; } });
+const input_1 = __req("layout/input");
+const sizes_1 = __req("layout/sizes");
+var sizes_2 = __req("layout/sizes");
+Object.defineProperty(exports, "CHIP_H", { enumerable: true, get: function () { return sizes_2.CHIP_H; } });
+Object.defineProperty(exports, "DEVICE_H", { enumerable: true, get: function () { return sizes_2.DEVICE_H; } });
+Object.defineProperty(exports, "HUB_R", { enumerable: true, get: function () { return sizes_2.HUB_R; } });
+Object.defineProperty(exports, "MAX_CHIPS", { enumerable: true, get: function () { return sizes_2.MAX_CHIPS; } });
+Object.defineProperty(exports, "chipRows", { enumerable: true, get: function () { return sizes_2.chipRows; } });
+Object.defineProperty(exports, "networkSize", { enumerable: true, get: function () { return sizes_2.networkSize; } });
+Object.defineProperty(exports, "networkSubtitle", { enumerable: true, get: function () { return sizes_2.networkSubtitle; } });
 /** Relations with 3+ distinct devices are drawn as a hub with spokes. */
 function isMultipoint(devs) {
     return devs.length >= 3;
 }
 /** The drawn device rectangle inside a (possibly taller) logical node. */
 function deviceRect(n) {
-    if (n.kind !== 'device' || n.h <= layout_logical_size_1.DEVICE_H)
+    if (n.kind !== 'device' || n.h <= sizes_1.DEVICE_H)
         return n;
-    return { ...n, cy: n.cy - n.h / 2 + layout_logical_size_1.DEVICE_H / 2, h: layout_logical_size_1.DEVICE_H };
+    return { ...n, cy: n.cy - n.h / 2 + sizes_1.DEVICE_H / 2, h: sizes_1.DEVICE_H };
 }
 /** Nodes of the logical view with their sizes, sorted by ref. */
 function logicalSpecs(input) {
@@ -3382,16 +3382,16 @@ function logicalSpecs(input) {
     const devs = involved.size ? input.devices.filter((d) => involved.has(d.id)) : input.devices;
     const out = [];
     for (const d of devs)
-        out.push({ ref: 'device:' + d.id, kind: 'device', id: d.id, ...(0, layout_logical_size_1.logicalDeviceSize)(d.label, d.loopbacks) });
+        out.push({ ref: 'device:' + d.id, kind: 'device', id: d.id, ...(0, sizes_1.logicalDeviceSize)(d.label, d.loopbacks) });
     for (const n of input.networks)
-        out.push({ ref: 'network:' + n.id, kind: 'network', id: n.id, ...(0, layout_logical_size_1.networkSize)(n.label, n.sub) });
+        out.push({ ref: 'network:' + n.id, kind: 'network', id: n.id, ...(0, sizes_1.networkSize)(n.label, n.sub) });
     const devSet = new Set(devs.map((d) => d.id));
     for (const r of input.relations) {
         const ds = r.devices.filter((d) => devSet.has(d));
         if (isMultipoint(ds))
-            out.push({ ref: 'hub:' + r.id, kind: 'hub', id: r.id, w: layout_logical_size_1.HUB_R * 2, h: layout_logical_size_1.HUB_R * 2 });
+            out.push({ ref: 'hub:' + r.id, kind: 'hub', id: r.id, w: sizes_1.HUB_R * 2, h: sizes_1.HUB_R * 2 });
     }
-    return out.sort((a, b) => (0, layout_input_1.cmp)(a.ref, b.ref));
+    return out.sort((a, b) => (0, input_1.cmp)(a.ref, b.ref));
 }
 /** Weighted edges between node refs (canonical order). */
 function logicalEdges(input, specs) {
@@ -3413,12 +3413,12 @@ function logicalEdges(input, specs) {
         }
     }
     Array.from(pairW.keys())
-        .sort(layout_input_1.cmp)
+        .sort(input_1.cmp)
         .forEach((key) => {
         const [a, b] = key.split('\u0000');
         edges.push(['device:' + a, 'device:' + b, Math.min(2, 0.7 + pairW.get(key) * 0.15)]);
     });
-    return edges.sort((p, q) => (0, layout_input_1.cmp)(p[0], q[0]) || (0, layout_input_1.cmp)(p[1], q[1]));
+    return edges.sort((p, q) => (0, input_1.cmp)(p[0], q[0]) || (0, input_1.cmp)(p[1], q[1]));
 }
 /** 16 unit directions (k · 22.5°) as constants: no trigonometry at run time. */
 const DIRS = [
@@ -3470,7 +3470,7 @@ function autoLogical(input, physical) {
             groups.set(r, []);
         groups.get(r).push(i);
     });
-    const comps = Array.from(groups.values()).sort((a, b) => b.length - a.length || (0, layout_input_1.cmp)(specs[a[0]].ref, specs[b[0]].ref));
+    const comps = Array.from(groups.values()).sort((a, b) => b.length - a.length || (0, input_1.cmp)(specs[a[0]].ref, specs[b[0]].ref));
     // --- seed positions: physical auto positions; networks / hubs near their devices
     const seed = new Map();
     for (const s of specs)
@@ -3487,7 +3487,7 @@ function autoLogical(input, physical) {
     for (const s of specs) {
         if (s.kind === 'device')
             continue;
-        const ms = (members.get(s.ref) || []).slice().sort(layout_input_1.cmp);
+        const ms = (members.get(s.ref) || []).slice().sort(input_1.cmp);
         let cx = 0;
         let cy = 0;
         for (const m of ms) {
@@ -3913,7 +3913,7 @@ function logicalLayoutFrom(input, positions) {
 }
 
 };
-__defs["layout-physical"] = function (module, exports) {
+__defs["layout/physical"] = function (module, exports) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.PORT_FONT = exports.GROUP_TITLE = exports.GROUP_PAD = void 0;
@@ -3940,8 +3940,8 @@ exports.assignPorts = assignPorts;
  *
  * Group boxes are never stored: they are derived from their devices.
  */
-const geometry_1 = __req("geometry");
-const layout_input_1 = __req("layout-input");
+const geometry_1 = __req("layout/geometry");
+const input_1 = __req("layout/input");
 exports.GROUP_PAD = 26;
 exports.GROUP_TITLE = 30;
 const HGAP = 76;
@@ -3972,7 +3972,7 @@ function tiersOf(ids, tier) {
     }
     return Array.from(tm.keys())
         .sort((a, b) => a - b)
-        .map((t) => tm.get(t).slice().sort(layout_input_1.cmp));
+        .map((t) => tm.get(t).slice().sort(input_1.cmp));
 }
 /** Auto-arranged device centers for the physical view. */
 function autoPhysical(input) {
@@ -3993,7 +3993,7 @@ function autoPhysical(input) {
         nbrs.get(l.a.device).push(l.b.device);
         nbrs.get(l.b.device).push(l.a.device);
     }
-    nbrs.forEach((v) => v.sort(layout_input_1.cmp));
+    nbrs.forEach((v) => v.sort(input_1.cmp));
     // --- group tree
     const nodes = new Map();
     const root = { id: null, tiers: [], children: [], comps: [] };
@@ -4015,7 +4015,7 @@ function autoPhysical(input) {
             n.tiers = tiersOf(ids, tier);
     });
     // ungrouped devices: connected components over links between ungrouped devices
-    const ungrouped = (byGroup.get(root) || []).slice().sort(layout_input_1.cmp);
+    const ungrouped = (byGroup.get(root) || []).slice().sort(input_1.cmp);
     const ug = new Set(ungrouped);
     const seen = new Set();
     const comps = [];
@@ -4035,10 +4035,10 @@ function autoPhysical(input) {
                 }
             }
         }
-        comps.push(comp.sort(layout_input_1.cmp));
+        comps.push(comp.sort(input_1.cmp));
     }
     const minTier = (ids) => ids.reduce((m, id) => Math.min(m, tier.get(id)), 99);
-    comps.sort((a, b) => minTier(a) - minTier(b) || b.length - a.length || (0, layout_input_1.cmp)(a[0], b[0]));
+    comps.sort((a, b) => minTier(a) - minTier(b) || b.length - a.length || (0, input_1.cmp)(a[0], b[0]));
     root.comps = comps.map((c) => tiersOf(c, tier));
     const subtreeDevices = new Map();
     const collect = (n) => {
@@ -4047,7 +4047,7 @@ function autoPhysical(input) {
             own.push(...t);
         for (const c of n.children)
             own.push(...collect(c));
-        own.sort(layout_input_1.cmp);
+        own.sort(input_1.cmp);
         subtreeDevices.set(n, own);
         return own;
     };
@@ -4058,7 +4058,7 @@ function autoPhysical(input) {
     for (const n of allNodes) {
         n.children.sort((a, b) => minTier(subtreeDevices.get(a)) - minTier(subtreeDevices.get(b)) ||
             subtreeDevices.get(b).length - subtreeDevices.get(a).length ||
-            (0, layout_input_1.cmp)(a.id, b.id));
+            (0, input_1.cmp)(a.id, b.id));
     }
     const pos = new Map();
     const rowsBlock = (tiers) => {
@@ -4166,13 +4166,13 @@ function autoPhysical(input) {
     const externalNbrs = (inside) => {
         const ext = [];
         Array.from(inside)
-            .sort(layout_input_1.cmp)
+            .sort(input_1.cmp)
             .forEach((id) => {
             for (const o of nbrs.get(id))
                 if (!inside.has(o))
                     ext.push(o);
         });
-        return ext.sort(layout_input_1.cmp);
+        return ext.sort(input_1.cmp);
     };
     const sweep = () => {
         // device rows: order by mean x of neighbors outside the row
@@ -4284,7 +4284,7 @@ function portSpaceNeeds(ports) {
 function assignPorts(links, boxes) {
     const bySide = new Map();
     const out = [];
-    const sorted = links.slice().sort((a, b) => (0, layout_input_1.cmp)(a.id, b.id));
+    const sorted = links.slice().sort((a, b) => (0, input_1.cmp)(a.id, b.id));
     for (const l of sorted) {
         for (const end of ['a', 'b']) {
             const me = end === 'a' ? l.a : l.b;
@@ -4323,7 +4323,7 @@ function assignPorts(links, boxes) {
         const p0 = list[0].p;
         const b = boxes.get(p0.device);
         const horiz = p0.side === 'top' || p0.side === 'bottom';
-        list.sort((u, v) => (horiz ? u.peer.x - v.peer.x : u.peer.y - v.peer.y) || (0, layout_input_1.cmp)(u.p.key, v.p.key));
+        list.sort((u, v) => (horiz ? u.peer.x - v.peer.x : u.peer.y - v.peer.y) || (0, input_1.cmp)(u.p.key, v.p.key));
         const len = (horiz ? b.w : b.h) - 16;
         const slots = list.map((e) => (horiz ? portLabelWidth(e.p.iface) : 22));
         const total = slots.reduce((s, x) => s + x, 0);
@@ -4346,7 +4346,7 @@ function assignPorts(links, boxes) {
 }
 
 };
-__defs["validate"] = function (module, exports) {
+__defs["validation/validate"] = function (module, exports) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.PROTO_KEYS = exports.EP_KEYS = exports.REL_KEYS = exports.NET_KEYS = exports.LINK_KEYS = exports.IFACE_KEYS = exports.DEVICE_KEYS = exports.GROUP_KEYS = exports.MAX_COORD = exports.TOP_KEYS = exports.PROTO_RE = exports.IFACE_RE = exports.ID_RE = exports.FORMAT_VERSION = exports.DEFAULT_MODEL_LIMITS = void 0;
@@ -4355,10 +4355,10 @@ exports.scalarText = scalarText;
 exports.loadModel = loadModel;
 exports.validate = validate;
 exports.relationStyle = relationStyle;
-const ip_1 = __req("ip");
-const model_1 = __req("model");
-const protocols_1 = __req("protocols");
-const yaml_1 = __req("yaml");
+const ip_1 = __req("model/ip");
+const types_1 = __req("model/types");
+const protocols_1 = __req("model/protocols");
+const parse_1 = __req("yaml/parse");
 exports.DEFAULT_MODEL_LIMITS = {
     maxGroups: 500,
     maxDevices: 1000,
@@ -4589,10 +4589,10 @@ class Reader {
 function loadModel(text, yamlLimits = {}, modelLimits = {}) {
     let root;
     try {
-        root = (0, yaml_1.parseYaml)(text, yamlLimits);
+        root = (0, parse_1.parseYaml)(text, yamlLimits);
     }
     catch (e) {
-        if (e instanceof yaml_1.YamlError) {
+        if (e instanceof parse_1.YamlError) {
             return { model: null, root: null, errors: [{ severity: 'error', line: e.line, path: '', message: 'YAML: ' + e.message }], warnings: [] };
         }
         throw e;
@@ -4680,14 +4680,14 @@ function build(root, c) {
         const catS = r.field(m, 'category', path, 40);
         let category = base ? base.category : 'other';
         if (catS !== undefined) {
-            if (model_1.CATEGORIES.indexOf(catS) < 0) {
-                c.error(get(m, 'category'), path + '.category', `unknown category "${catS}"${suggest(catS, model_1.CATEGORIES)}`);
+            if (types_1.CATEGORIES.indexOf(catS) < 0) {
+                c.error(get(m, 'category'), path + '.category', `unknown category "${catS}"${suggest(catS, types_1.CATEGORIES)}`);
             }
             else
                 category = catS;
         }
         else if (!base) {
-            c.warn(m, path, `protocol "${id}" has no category; using "other" (choose one of ${model_1.CATEGORIES.join(', ')})`, { key: 'category' });
+            c.warn(m, path, `protocol "${id}" has no category; using "other" (choose one of ${types_1.CATEGORIES.join(', ')})`, { key: 'category' });
         }
         const color = r.field(m, 'color', path, 20);
         if (color !== undefined && !protocols_1.COLOR_RE.test(color)) {
@@ -4696,8 +4696,8 @@ function build(root, c) {
         const styleS = r.field(m, 'style', path, 20);
         let style = catS !== undefined || !base ? protocols_1.DEFAULT_STYLE[category] : base.style;
         if (styleS !== undefined) {
-            if (model_1.LINE_STYLES.indexOf(styleS) < 0) {
-                c.error(get(m, 'style'), path + '.style', `unknown style "${styleS}"${suggest(styleS, model_1.LINE_STYLES)}`);
+            if (types_1.LINE_STYLES.indexOf(styleS) < 0) {
+                c.error(get(m, 'style'), path + '.style', `unknown style "${styleS}"${suggest(styleS, types_1.LINE_STYLES)}`);
             }
             else
                 style = styleS;
@@ -4829,7 +4829,7 @@ function build(root, c) {
             const iid = r.id(im, ipath, exports.IFACE_RE, 'interface id');
             if (!iid)
                 return;
-            const key = (0, model_1.ifaceKey)(id, iid);
+            const key = (0, types_1.ifaceKey)(id, iid);
             if (interfaces.has(key)) {
                 c.error(get(im, 'id'), ipath + '.id', `duplicate interface "${iid}" on device "${id}"`);
                 return;
@@ -4899,7 +4899,7 @@ function build(root, c) {
         const ridNode = get(m, 'router_id');
         const rid = r.str(ridNode, dpath + '.router_id', 100);
         if (rid !== undefined) {
-            const inf = interfaces.get((0, model_1.ifaceKey)(id, rid));
+            const inf = interfaces.get((0, types_1.ifaceKey)(id, rid));
             const loops = dev.interfaces.filter((x) => x.type === 'loopback').map((x) => x.id);
             if (!inf) {
                 c.error(ridNode, dpath + '.router_id', `device "${id}" has no loopback "${rid}"` + (loops.length ? suggest(rid, loops) : ' (add a loopback interface first)'));
@@ -4956,7 +4956,7 @@ function build(root, c) {
             c.error(devNode, path, `unknown device "${device}"${suggest(device, deviceMap.keys())}`);
             return null;
         }
-        if (iface !== undefined && !interfaces.has((0, model_1.ifaceKey)(device, iface))) {
+        if (iface !== undefined && !interfaces.has((0, types_1.ifaceKey)(device, iface))) {
             const names = dev.interfaces.map((x) => x.id);
             c.error(n.kind === 'map' ? get(n, 'interface') : n, path, `device "${device}" has no interface "${iface}"` + (names.length ? suggest(iface, names) : ' (the device declares no interfaces)'));
             return null;
@@ -4988,9 +4988,9 @@ function build(root, c) {
             if (!ep)
                 return null;
             if (ep.iface !== undefined) {
-                const key = (0, model_1.ifaceKey)(ep.device, ep.iface);
+                const key = (0, types_1.ifaceKey)(ep.device, ep.iface);
                 const inf = interfaces.get(key);
-                if (model_1.LOGICAL_IFACE_TYPES.indexOf(inf.type) >= 0) {
+                if (types_1.LOGICAL_IFACE_TYPES.indexOf(inf.type) >= 0) {
                     c.error(en, `${lpath}.${side}`, `interface "${key}" has type "${inf.type}", which is logical — a physical link must end on a physical port. ` +
                         'Model tunnels, loopbacks, SVIs and bundles as relations instead.');
                     return null;
@@ -5011,8 +5011,8 @@ function build(root, c) {
             c.error(m, lpath, 'a link cannot connect an endpoint to itself');
             return;
         }
-        const ia = a.iface ? interfaces.get((0, model_1.ifaceKey)(a.device, a.iface)) : undefined;
-        const ib = b.iface ? interfaces.get((0, model_1.ifaceKey)(b.device, b.iface)) : undefined;
+        const ia = a.iface ? interfaces.get((0, types_1.ifaceKey)(a.device, a.iface)) : undefined;
+        const ib = b.iface ? interfaces.get((0, types_1.ifaceKey)(b.device, b.iface)) : undefined;
         if (ia && ib && ia.speed && ib.speed && ia.speed.toLowerCase() !== ib.speed.toLowerCase()) {
             c.warn(m, lpath, `speed mismatch: ${a.device}:${a.iface} is ${ia.speed}, ${b.device}:${b.iface} is ${ib.speed}`);
         }
@@ -5067,7 +5067,7 @@ function build(root, c) {
                 return;
             members.push(ep);
             // relevant relationship check: member addresses inside the network's prefixes
-            const inf = ep.iface ? interfaces.get((0, model_1.ifaceKey)(ep.device, ep.iface)) : undefined;
+            const inf = ep.iface ? interfaces.get((0, types_1.ifaceKey)(ep.device, ep.iface)) : undefined;
             const addrs = ep.address ? [ep.address] : inf ? inf.addresses : [];
             for (const a of addrs) {
                 const pa = (0, ip_1.parsePrefix)(a, false);
@@ -5120,8 +5120,8 @@ function build(root, c) {
         const catS = r.field(m, 'category', rpath, 40);
         let category;
         if (catS !== undefined) {
-            if (model_1.CATEGORIES.indexOf(catS) < 0) {
-                c.error(get(m, 'category'), rpath + '.category', `unknown category "${catS}"${suggest(catS, model_1.CATEGORIES)}`);
+            if (types_1.CATEGORIES.indexOf(catS) < 0) {
+                c.error(get(m, 'category'), rpath + '.category', `unknown category "${catS}"${suggest(catS, types_1.CATEGORIES)}`);
             }
             else
                 category = catS;
@@ -5166,7 +5166,7 @@ function build(root, c) {
             attrs: r.attrs(get(m, 'attrs'), rpath + '.attrs'),
             line: m.line,
         };
-        if (endpoints.length === epNodes.length && (0, model_1.relationDevices)(rel).length < 2) {
+        if (endpoints.length === epNodes.length && (0, types_1.relationDevices)(rel).length < 2) {
             c.warn(epNode, rpath + '.endpoints', 'all endpoints are on the same device');
         }
         relations.push(rel);
@@ -5188,8 +5188,8 @@ function build(root, c) {
                     ok.push(o);
                 const carrier = relationMap.get(o);
                 if (carrier) {
-                    const cd = (0, model_1.relationDevices)(carrier);
-                    const missing = (0, model_1.relationDevices)(rel).filter((d) => cd.indexOf(d) < 0);
+                    const cd = (0, types_1.relationDevices)(carrier);
+                    const missing = (0, types_1.relationDevices)(rel).filter((d) => cd.indexOf(d) < 0);
                     if (missing.length) {
                         c.warn(at, `relations.${rel.id}.over`, `carried over "${o}", but ${missing.join(', ')} ${missing.length > 1 ? 'are' : 'is'} not an endpoint of "${o}"`);
                     }
@@ -5277,7 +5277,7 @@ function build(root, c) {
                     const p = `layout.${view}.${id}`;
                     const known = view === 'physical'
                         ? deviceMap.has(id)
-                        : deviceMap.has(id) || networkMap.has(id) || (relationMap.has(id) && (0, model_1.relationDevices)(relationMap.get(id)).length >= 3);
+                        : deviceMap.has(id) || networkMap.has(id) || (relationMap.has(id) && (0, types_1.relationDevices)(relationMap.get(id)).length >= 3);
                     if (!known) {
                         const what = view === 'physical' ? 'device' : 'device, network or multipoint relation';
                         c.warn(e.value, p, `position for "${id}", which is not a ${what} in this model; it is ignored`, { key: id, line: pe.keyLine });
@@ -5326,7 +5326,7 @@ function relationStyle(model, rel) {
 }
 
 };
-__defs["ip"] = function (module, exports) {
+__defs["model/ip"] = function (module, exports) {
 "use strict";
 /** Minimal IPv4 / IPv6 address and prefix handling (no dependencies). */
 Object.defineProperty(exports, "__esModule", { value: true });
@@ -5456,7 +5456,7 @@ function addrKey(a) {
 }
 
 };
-__defs["yaml"] = function (module, exports) {
+__defs["yaml/parse"] = function (module, exports) {
 "use strict";
 /**
  * netatlas YAML subset parser.
@@ -6409,7 +6409,7 @@ function isPlainSafe(s, inFlow) {
 const UNSAFE_CHARS = /[\u0000-\u001F\u007F-\u009F\u2028\u2029\uFEFF]/;
 
 };
-__defs["yaml-write"] = function (module, exports) {
+__defs["yaml/write"] = function (module, exports) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.stringifyYaml = stringifyYaml;
@@ -6431,7 +6431,7 @@ exports.flowText = flowText;
  * folded (>) block scalars, which are written as literal (|) blocks with the
  * same value. The "---" / "..." document markers are not written.
  */
-const yaml_1 = __req("yaml");
+const parse_1 = __req("yaml/parse");
 const IND = '  ';
 const MAX_FLOW_LINE = 140;
 function stringifyYaml(root) {
@@ -6512,12 +6512,12 @@ function numberText(v) {
 function scalarInline(n, inFlow) {
     const v = n.value;
     if (v === null) {
-        if (!n.quoted && n.raw !== '' && (0, yaml_1.isPlainSafe)(n.raw, inFlow) && (0, yaml_1.resolvePlain)(n.raw) === null)
+        if (!n.quoted && n.raw !== '' && (0, parse_1.isPlainSafe)(n.raw, inFlow) && (0, parse_1.resolvePlain)(n.raw) === null)
             return n.raw;
         return inFlow ? 'null' : '';
     }
     if (typeof v === 'string') {
-        if (!n.quoted && (0, yaml_1.isPlainSafe)(n.raw, inFlow) && n.raw === v && (0, yaml_1.resolvePlain)(v) === v)
+        if (!n.quoted && (0, parse_1.isPlainSafe)(n.raw, inFlow) && n.raw === v && (0, parse_1.resolvePlain)(v) === v)
             return v;
         if (v.indexOf('\n') >= 0) {
             if (!inFlow && blockRepresentable(v))
@@ -6529,7 +6529,7 @@ function scalarInline(n, inFlow) {
         return doubleQuote(v);
     }
     // number / boolean: keep the original spelling (0x1F, 1e3, True …) when possible
-    if (!n.quoted && n.raw !== '' && (0, yaml_1.isPlainSafe)(n.raw, inFlow) && sameValue((0, yaml_1.resolvePlain)(n.raw), v))
+    if (!n.quoted && n.raw !== '' && (0, parse_1.isPlainSafe)(n.raw, inFlow) && sameValue((0, parse_1.resolvePlain)(n.raw), v))
         return n.raw;
     return typeof v === 'number' ? numberText(v) : v ? 'true' : 'false';
 }
@@ -6583,7 +6583,7 @@ function lead(n, ind, out) {
             out.push(c === '' ? '' : ind + c);
 }
 function keyText(k, inFlow) {
-    return (0, yaml_1.isPlainSafe)(k, inFlow) ? k : doubleQuote(k);
+    return (0, parse_1.isPlainSafe)(k, inFlow) ? k : doubleQuote(k);
 }
 function hasComments(n) {
     if (n.before || n.comment || n.blank)
@@ -6696,7 +6696,7 @@ function emitSeqBody(s, ind, out) {
 }
 
 };
-__defs["dom"] = function (module, exports) {
+__defs["ui/dom"] = function (module, exports) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.SVG_NS = void 0;
@@ -6741,7 +6741,7 @@ function el(doc, tag, attrs = {}, children = []) {
 }
 
 };
-__defs["editor"] = function (module, exports) {
+__defs["ui/inspector"] = function (module, exports) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.Editor = void 0;
@@ -6753,16 +6753,16 @@ exports.Editor = void 0;
  * user clicks the diagram or another object: the browser fires "change"
  * before focus moves. Everything user-provided is rendered as text.
  */
-const doc_1 = __req("doc");
-const dom_1 = __req("dom");
-const model_1 = __req("model");
-const protocols_1 = __req("protocols");
-const validate_1 = __req("validate");
-const yaml_1 = __req("yaml");
+const document_1 = __req("editor/document");
+const dom_1 = __req("ui/dom");
+const types_1 = __req("model/types");
+const protocols_1 = __req("model/protocols");
+const validate_1 = __req("validation/validate");
+const parse_1 = __req("yaml/parse");
 const J = (p) => JSON.stringify(p);
 const P = (s) => (s ? JSON.parse(s) : []);
 const DEVICE_TYPES = ['router', 'switch', 'l3switch', 'firewall', 'server', 'hypervisor', 'cloud', 'ap', 'storage', 'loadbalancer', 'host', 'leaf', 'spine', 'vm', 'internet'];
-const IFACE_TYPES = ['physical'].concat(model_1.LOGICAL_IFACE_TYPES);
+const IFACE_TYPES = ['physical'].concat(types_1.LOGICAL_IFACE_TYPES);
 const MEDIA = ['fiber', 'copper', 'dac', 'aoc', 'wireless', 'lte', '5g', 'microwave', 'serial', 'virtual'];
 const NET_KINDS = ['subnet', 'vlan', 'vni', 'vrf', 'zone', 'segment'];
 const GROUP_KINDS = ['site', 'building', 'room', 'row', 'rack', 'provider', 'cloud', 'zone', 'region'];
@@ -6825,7 +6825,7 @@ class Editor {
             return;
         }
         const k = (kind === 'hub' ? 'relation' : kind);
-        if (!doc_1.SECTION[k])
+        if (!document_1.SECTION[k])
             return;
         const ent = this.doc.findEntity(k, id);
         if (ent)
@@ -6912,7 +6912,7 @@ class Editor {
     }
     entityLabel(kind, index) {
         const doc = this.doc;
-        const base = [doc_1.SECTION[kind], index];
+        const base = [document_1.SECTION[kind], index];
         const id = doc.text(base.concat('id'));
         const label = doc.text(base.concat('label'));
         if (kind === 'relation') {
@@ -7001,13 +7001,13 @@ class Editor {
     }
     renderEntity(w, kind, index) {
         const doc = this.doc;
-        const base = [doc_1.SECTION[kind], index];
+        const base = [document_1.SECTION[kind], index];
         const node = doc.get(base);
         w.appendChild(this.header(kind, this.entityLabel(kind, index), this.entityActions(kind, index)));
         w.appendChild(this.issueBox(doc.issuesAt(base)));
         if (!node || node.kind !== 'map') {
             w.appendChild(this.e('p', { class: 'muted' }, ['This entry is not a mapping; edit it in the YAML tab or delete it.']));
-            w.appendChild(this.generic(base, node || (0, yaml_1.nullNode)(), 0));
+            w.appendChild(this.generic(base, node || (0, parse_1.nullNode)(), 0));
             return;
         }
         const o = kind;
@@ -7050,7 +7050,7 @@ class Editor {
         else if (kind === 'relation') {
             const protos = Array.from((0, protocols_1.builtinProtocols)().keys()).concat(this.ids('protocol'));
             add(this.textField(base.concat('protocol'), 'Protocol', o, 'text', protos, 'Any name. Built-in protocols get a default category and colour; define new ones under Protocols.'));
-            add(this.enumField(base.concat('category'), 'Category', o, model_1.CATEGORIES, '(from protocol)'));
+            add(this.enumField(base.concat('category'), 'Category', o, types_1.CATEGORIES, '(from protocol)'));
             add(this.textField(base.concat('label'), 'Label', o));
             add(this.endpointList(base.concat('endpoints'), 'Endpoints', o));
             add(this.overField(base.concat('over'), 'Carried over (underlay)', o, index));
@@ -7067,9 +7067,9 @@ class Editor {
         }
         else if (kind === 'protocol') {
             add(this.textField(base.concat('label'), 'Label', o));
-            add(this.enumField(base.concat('category'), 'Category', o, model_1.CATEGORIES, '(other)'));
+            add(this.enumField(base.concat('category'), 'Category', o, types_1.CATEGORIES, '(other)'));
             add(this.colorField(base.concat('color'), 'Colour', o));
-            add(this.enumField(base.concat('style'), 'Line style', o, model_1.LINE_STYLES, '(from category)'));
+            add(this.enumField(base.concat('style'), 'Line style', o, types_1.LINE_STYLES, '(from category)'));
             add(this.textField(base.concat('description'), 'Description', o, 'textarea'));
         }
         if (kind !== 'protocol')
@@ -7167,7 +7167,7 @@ class Editor {
                     'Used by: ' +
                         refs
                             .map((r) => {
-                            const kind = (0, doc_1.kindOfSection)(String(r[0]));
+                            const kind = (0, document_1.kindOfSection)(String(r[0]));
                             return kind ? doc.text([r[0], r[1], 'id']) || kind : '?';
                         })
                             .join(', '),
@@ -7517,7 +7517,7 @@ class Editor {
         if (!doc)
             return true;
         const p = P(target.getAttribute('data-p'));
-        const order = doc_1.KEY_ORDER[target.getAttribute('data-o') || ''] || undefined;
+        const order = document_1.KEY_ORDER[target.getAttribute('data-o') || ''] || undefined;
         const val = target.value;
         const trimmed = typeof val === 'string' ? val.trim() : '';
         let note;
@@ -7527,7 +7527,7 @@ class Editor {
                     if (trimmed === '')
                         doc.removeAt(p);
                     else
-                        doc.setAt(p, (0, yaml_1.strNode)(target.tagName === 'TEXTAREA' ? val.replace(/\s+$/, '') : trimmed), order);
+                        doc.setAt(p, (0, parse_1.strNode)(target.tagName === 'TEXTAREA' ? val.replace(/\s+$/, '') : trimmed), order);
                 });
                 break;
             case 'int':
@@ -7535,19 +7535,19 @@ class Editor {
                     if (trimmed === '')
                         doc.removeAt(p);
                     else
-                        doc.setAt(p, /^-?[0-9]+$/.test(trimmed) ? (0, yaml_1.numNode)(Number(trimmed)) : (0, yaml_1.strNode)(trimmed), order);
+                        doc.setAt(p, /^-?[0-9]+$/.test(trimmed) ? (0, parse_1.numNode)(Number(trimmed)) : (0, parse_1.strNode)(trimmed), order);
                 });
                 break;
             case 'bool':
                 doc.change('Edit ' + p[p.length - 1], () => {
                     if (target.checked)
-                        doc.setAt(p, (0, yaml_1.boolNode)(true), order);
+                        doc.setAt(p, (0, parse_1.boolNode)(true), order);
                     else
                         doc.removeAt(p);
                 });
                 break;
             case 'auto':
-                doc.change('Edit value', () => doc.setAt(p, trimmed === '' ? (0, yaml_1.nullNode)() : (0, yaml_1.autoNode)(trimmed)));
+                doc.change('Edit value', () => doc.setAt(p, trimmed === '' ? (0, parse_1.nullNode)() : (0, parse_1.autoNode)(trimmed)));
                 break;
             case 'id': {
                 const kind = target.getAttribute('data-kind');
@@ -7574,7 +7574,7 @@ class Editor {
                     if (trimmed === '')
                         doc.removeAt(p);
                     else
-                        doc.setAt(p, (0, yaml_1.strNode)(trimmed));
+                        doc.setAt(p, (0, parse_1.strNode)(trimmed));
                 });
                 break;
             case 'list-append':
@@ -7582,7 +7582,7 @@ class Editor {
                     return true;
                 doc.change('Add ' + p[p.length - 1], () => {
                     const seq = doc.ensureSeq(p, true, order);
-                    seq.items.push((0, yaml_1.strNode)(trimmed));
+                    seq.items.push((0, parse_1.strNode)(trimmed));
                 });
                 break;
             case 'over-append':
@@ -7590,7 +7590,7 @@ class Editor {
                     return true;
                 doc.change('Add underlay', () => {
                     const seq = doc.ensureSeq(p, true, order);
-                    seq.items.push((0, yaml_1.strNode)(val));
+                    seq.items.push((0, parse_1.strNode)(val));
                 });
                 break;
             case 'ep-append':
@@ -7598,7 +7598,7 @@ class Editor {
                     return true;
                 doc.change('Add endpoint', () => {
                     const seq = doc.ensureSeq(p, true, order);
-                    seq.items.push((0, yaml_1.strNode)(val));
+                    seq.items.push((0, parse_1.strNode)(val));
                 });
                 break;
             case 'ep-dev':
@@ -7614,14 +7614,14 @@ class Editor {
                     }
                     if (node && node.kind === 'map') {
                         const m = doc.ensureMap(p);
-                        doc.setAt(p.concat('device'), (0, yaml_1.strNode)(dev), doc_1.KEY_ORDER.endpoint);
+                        doc.setAt(p.concat('device'), (0, parse_1.strNode)(dev), document_1.KEY_ORDER.endpoint);
                         if (inf)
-                            doc.setAt(p.concat('interface'), (0, yaml_1.strNode)(inf), doc_1.KEY_ORDER.endpoint);
+                            doc.setAt(p.concat('interface'), (0, parse_1.strNode)(inf), document_1.KEY_ORDER.endpoint);
                         else
                             m.entries.delete('interface');
                     }
                     else {
-                        doc.setAt(p, (0, yaml_1.strNode)(inf ? dev + ':' + inf : dev), order);
+                        doc.setAt(p, (0, parse_1.strNode)(inf ? dev + ':' + inf : dev), order);
                     }
                 });
                 break;
@@ -7636,7 +7636,7 @@ class Editor {
                     }
                     else {
                         doc.ensureMap(ep);
-                        doc.setAt(p, (0, yaml_1.strNode)(trimmed), doc_1.KEY_ORDER.endpoint);
+                        doc.setAt(p, (0, parse_1.strNode)(trimmed), document_1.KEY_ORDER.endpoint);
                     }
                 });
                 break;
@@ -7665,11 +7665,11 @@ class Editor {
                 const ty = typeSel ? typeSel.value : 'scalar';
                 this.open.add(J(p));
                 doc.change('Add attribute', () => {
-                    const parentOrder = p[p.length - 1] === 'attrs' ? doc_1.KEY_ORDER[target.getAttribute('data-o') || ''] : undefined;
+                    const parentOrder = p[p.length - 1] === 'attrs' ? document_1.KEY_ORDER[target.getAttribute('data-o') || ''] : undefined;
                     const map = doc.get(p) && doc.get(p).kind === 'map' ? doc.get(p) : null;
                     if (!map)
-                        doc.setAt(p, (0, yaml_1.mapNode)(), parentOrder);
-                    doc.setAt(p.concat(trimmed), ty === 'map' ? (0, yaml_1.mapNode)() : ty === 'seq' ? (0, yaml_1.seqNode)() : (0, yaml_1.nullNode)());
+                        doc.setAt(p, (0, parse_1.mapNode)(), parentOrder);
+                    doc.setAt(p.concat(trimmed), ty === 'map' ? (0, parse_1.mapNode)() : ty === 'seq' ? (0, parse_1.seqNode)() : (0, parse_1.nullNode)());
                 });
                 break;
             }
@@ -7789,8 +7789,8 @@ class Editor {
                 doc.change('Move into attrs', () => {
                     const v = m.entries.get(k).value;
                     m.entries.delete(k);
-                    const kindName = (0, doc_1.kindOfSection)(String(p[0]));
-                    const target = doc.ensureMap(p.concat('attrs'), doc_1.KEY_ORDER[p.length > 2 ? 'interface' : kindName || ''] || undefined);
+                    const kindName = (0, document_1.kindOfSection)(String(p[0]));
+                    const target = doc.ensureMap(p.concat('attrs'), document_1.KEY_ORDER[p.length > 2 ? 'interface' : kindName || ''] || undefined);
                     target.entries.set(k, { key: k, keyLine: 0, value: v });
                 });
                 this.open.add(J(p.concat('attrs')));
@@ -7801,7 +7801,7 @@ class Editor {
                 const what = btn.getAttribute('data-kind');
                 doc.change('Add item', () => {
                     const s = doc.ensureSeq(p);
-                    s.items.push(what === 'map' ? (0, yaml_1.mapNode)() : what === 'seq' ? (0, yaml_1.seqNode)() : (0, yaml_1.nullNode)());
+                    s.items.push(what === 'map' ? (0, parse_1.mapNode)() : what === 'seq' ? (0, parse_1.seqNode)() : (0, parse_1.nullNode)());
                 });
                 this.host.changed();
                 return true;
@@ -7858,7 +7858,7 @@ exports.EXAMPLES = [
 ];
 
 };
-__defs["panels"] = function (module, exports) {
+__defs["ui/panels"] = function (module, exports) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.detailsFor = detailsFor;
@@ -7868,12 +7868,12 @@ exports.relationSwatch = relationSwatch;
 exports.legendFor = legendFor;
 exports.relationList = relationList;
 /** Side-panel content (details, legend, relation list) as HTML VNodes. */
-const icons_1 = __req("icons");
-const model_1 = __req("model");
-const scene_1 = __req("scene");
-const state_1 = __req("state");
-const style_1 = __req("style");
-const validate_1 = __req("validate");
+const icons_1 = __req("diagram/icons");
+const types_1 = __req("model/types");
+const scene_1 = __req("diagram/scene");
+const session_1 = __req("diagram/session");
+const style_1 = __req("diagram/style");
+const validate_1 = __req("validation/validate");
 const CATEGORY_TEXT = {
     tunnel: 'Tunnel (encapsulation) — hollow tube',
     adjacency: 'Protocol adjacency / session',
@@ -7925,7 +7925,7 @@ function header(kind, title) {
 /** Details for the selected entity. */
 function detailsFor(model, ref) {
     var _a, _b, _c, _d, _e;
-    const [kind, id] = (0, state_1.splitRef)(ref);
+    const [kind, id] = (0, session_1.splitRef)(ref);
     const ix = model.index;
     const kids = [];
     if (kind === 'device') {
@@ -7944,7 +7944,7 @@ function detailsFor(model, ref) {
             ['group', d.group ? refLink('group:' + d.group, ((_b = ix.groups.get(d.group)) === null || _b === void 0 ? void 0 : _b.label) || d.group) : undefined],
             ['description', d.description],
         ]));
-        const loops = (0, model_1.loopbacks)(d);
+        const loops = (0, types_1.loopbacks)(d);
         if (loops.length) {
             kids.push((0, scene_1.h)('section', {}, [
                 (0, scene_1.h)('h4', {}, `Loopbacks (${loops.length})`),
@@ -7960,20 +7960,20 @@ function detailsFor(model, ref) {
                 d.routerId ? (0, scene_1.h)('p', { class: 'muted small' }, '★ = router ID source') : null,
             ]));
         }
-        const rows = d.interfaces.filter((i) => !(0, model_1.isLoopback)(i)).map((i) => {
-            const lid = ix.ifaceLink.get((0, model_1.ifaceKey)(d.id, i.id));
+        const rows = d.interfaces.filter((i) => !(0, types_1.isLoopback)(i)).map((i) => {
+            const lid = ix.ifaceLink.get((0, types_1.ifaceKey)(d.id, i.id));
             const l = lid ? ix.links.get(lid) : undefined;
             const peer = l ? (l.a.device === d.id && l.a.iface === i.id ? l.b : l.a) : undefined;
             return (0, scene_1.h)('tr', { class: l ? '' : 'unused' }, [
                 (0, scene_1.h)('td', {}, [refLink(`iface:${d.id}:${i.id}`, i.id)]),
                 (0, scene_1.h)('td', {}, [i.type === 'physical' ? '' : i.type, i.speed || '', i.media || ''].filter((s) => s).join(' ')),
                 (0, scene_1.h)('td', {}, i.addresses.join(', ')),
-                (0, scene_1.h)('td', {}, peer ? [refLink('link:' + lid, '→ ' + (0, model_1.endpointText)(peer))] : []),
+                (0, scene_1.h)('td', {}, peer ? [refLink('link:' + lid, '→ ' + (0, types_1.endpointText)(peer))] : []),
             ]);
         });
         if (rows.length) {
             kids.push((0, scene_1.h)('section', {}, [
-                (0, scene_1.h)('h4', {}, `Interfaces (${rows.length}, ${d.interfaces.filter((i) => ix.ifaceLink.has((0, model_1.ifaceKey)(d.id, i.id))).length} cabled)`),
+                (0, scene_1.h)('h4', {}, `Interfaces (${rows.length}, ${d.interfaces.filter((i) => ix.ifaceLink.has((0, types_1.ifaceKey)(d.id, i.id))).length} cabled)`),
                 (0, scene_1.h)('table', { class: 'ports' }, [(0, scene_1.h)('tr', {}, [(0, scene_1.h)('th', {}, 'port'), (0, scene_1.h)('th', {}, 'type'), (0, scene_1.h)('th', {}, 'address'), (0, scene_1.h)('th', {}, 'cable')]), ...rows]),
             ]));
         }
@@ -8089,19 +8089,19 @@ function relationTitle(model, id) {
     if (!r)
         return id;
     const def = (0, validate_1.relationStyle)(model, r);
-    const devs = (0, model_1.relationDevices)(r).map((d) => { var _a; return ((_a = model.index.devices.get(d)) === null || _a === void 0 ? void 0 : _a.label) || d; });
+    const devs = (0, types_1.relationDevices)(r).map((d) => { var _a; return ((_a = model.index.devices.get(d)) === null || _a === void 0 ? void 0 : _a.label) || d; });
     const pair = devs.length <= 3 ? devs.join(r.directed ? ' → ' : ' ↔ ') : `${devs.length} devices`;
     return `${def.label}${r.label ? ' “' + r.label + '”' : ''}: ${pair}`;
 }
 /** Short hover text. */
 function tooltipFor(model, ref) {
-    const [kind, id] = (0, state_1.splitRef)(ref);
+    const [kind, id] = (0, session_1.splitRef)(ref);
     const ix = model.index;
     if (kind === 'device') {
         const d = ix.devices.get(id);
         if (!d)
             return [];
-        const cabled = d.interfaces.filter((i) => ix.ifaceLink.has((0, model_1.ifaceKey)(d.id, i.id))).length;
+        const cabled = d.interfaces.filter((i) => ix.ifaceLink.has((0, types_1.ifaceKey)(d.id, i.id))).length;
         return [d.label, [d.type, d.vendor, d.model].filter((s) => s).join(' · '), `${d.interfaces.length} interfaces, ${cabled} cabled`, d.mgmt ? 'mgmt ' + d.mgmt : ''].filter((s) => s);
     }
     if (kind === 'iface') {
@@ -8116,7 +8116,7 @@ function tooltipFor(model, ref) {
             return [];
         const carried = model.relations.filter((r) => r.over.indexOf(l.id) >= 0).length;
         return [
-            `${(0, model_1.endpointText)(l.a)}  ⟷  ${(0, model_1.endpointText)(l.b)}`,
+            `${(0, types_1.endpointText)(l.a)}  ⟷  ${(0, types_1.endpointText)(l.b)}`,
             [(0, style_1.mediumStyle)(l.medium).label, l.speed, l.label, l.cable].filter((s) => s).join(' · '),
             carried ? `carries ${carried} logical relation${carried > 1 ? 's' : ''}` : '',
         ].filter((s) => s);
@@ -8209,7 +8209,7 @@ function legendFor(model, view, hidden) {
             else
                 used.set(r.protocol, { def, count: 1 });
         }
-        for (const cat of model_1.CATEGORIES) {
+        for (const cat of types_1.CATEGORIES) {
             const protos = Array.from(used.entries()).filter(([, u]) => u.def.category === cat);
             if (!protos.length)
                 continue;
@@ -8250,7 +8250,7 @@ function legendFor(model, view, hidden) {
 function relationList(model) {
     if (!model.relations.length)
         return (0, scene_1.h)('p', { class: 'muted' }, 'This file defines no logical relations.');
-    const cats = model_1.CATEGORIES.filter((c) => model.relations.some((r) => r.category === c));
+    const cats = types_1.CATEGORIES.filter((c) => model.relations.some((r) => r.category === c));
     return (0, scene_1.h)('div', { class: 'rel-list' }, cats.map((c) => (0, scene_1.h)('section', {}, [
         (0, scene_1.h)('h4', {}, c),
         (0, scene_1.h)('ul', { class: 'reflist' }, model.relations
@@ -8260,13 +8260,13 @@ function relationList(model) {
 }
 
 };
-__defs["icons"] = function (module, exports) {
+__defs["diagram/icons"] = function (module, exports) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ICON_NAMES = void 0;
 exports.iconName = iconName;
 exports.deviceIcon = deviceIcon;
-const scene_1 = __req("scene");
+const scene_1 = __req("diagram/scene");
 /** Simple built-in line-art glyphs (24×24 design grid); no external icon library. */
 const GLYPHS = {
     router: [
@@ -8373,7 +8373,7 @@ function deviceIcon(type, x, y, size) {
 }
 
 };
-__defs["scene"] = function (module, exports) {
+__defs["diagram/scene"] = function (module, exports) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.h = h;
@@ -8428,7 +8428,7 @@ function textOf(v) {
 }
 
 };
-__defs["state"] = function (module, exports) {
+__defs["diagram/session"] = function (module, exports) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.Session = void 0;
@@ -8437,14 +8437,14 @@ exports.splitRef = splitRef;
 exports.refExists = refExists;
 exports.relatedRefs = relatedRefs;
 exports.search = search;
-const layout_auto_1 = __req("layout-auto");
-const layout_input_1 = __req("layout-input");
-const layout_logical_1 = __req("layout-logical");
-const layout_physical_1 = __req("layout-physical");
-const model_1 = __req("model");
-const render_logical_1 = __req("render-logical");
-const render_physical_1 = __req("render-physical");
-const validate_1 = __req("validate");
+const positions_1 = __req("layout/positions");
+const input_1 = __req("layout/input");
+const logical_1 = __req("layout/logical");
+const physical_1 = __req("layout/physical");
+const types_1 = __req("model/types");
+const logical_2 = __req("diagram/logical");
+const physical_2 = __req("diagram/physical");
+const validate_1 = __req("validation/validate");
 function createViewState() {
     return {
         view: 'physical',
@@ -8462,7 +8462,7 @@ class Session {
         this.state = createViewState();
         /** displayed positions per view (stored layout, else auto-arrange; new nodes placed incrementally) */
         this.resolved = { physical: null, logical: null };
-        this.input = (0, layout_input_1.layoutInput)(model);
+        this.input = (0, input_1.layoutInput)(model);
     }
     /**
      * Swap in an updated model (after an edit) while keeping the view state:
@@ -8471,7 +8471,7 @@ class Session {
      */
     setModel(model) {
         this.model = model;
-        this.input = (0, layout_input_1.layoutInput)(model);
+        this.input = (0, input_1.layoutInput)(model);
         this.resolved = { physical: null, logical: null };
         if (this.state.selected && !refExists(model, this.state.selected))
             this.state.selected = null;
@@ -8482,7 +8482,7 @@ class Session {
     positionsFor(view) {
         let p = this.resolved[view];
         if (!p)
-            p = this.resolved[view] = (0, layout_auto_1.resolvePositions)(view, this.input, this.model.layout[view]);
+            p = this.resolved[view] = (0, positions_1.resolvePositions)(view, this.input, this.model.layout[view]);
         return p;
     }
     static fromYaml(text) {
@@ -8510,12 +8510,12 @@ class Session {
     logicalLayout() {
         const pos = this.positionsFor('logical');
         const byRef = new Map();
-        for (const sp of (0, layout_logical_1.logicalSpecs)(this.input)) {
+        for (const sp of (0, logical_1.logicalSpecs)(this.input)) {
             const p = pos.get(sp.id);
             if (p)
                 byRef.set(sp.ref, p);
         }
-        return (0, layout_logical_1.logicalLayoutFrom)(this.input, byRef);
+        return (0, logical_1.logicalLayoutFrom)(this.input, byRef);
     }
     physicalLayout() {
         const pos = new Map(this.positionsFor('physical'));
@@ -8523,14 +8523,14 @@ class Session {
             if (ref.indexOf('device:') === 0)
                 pos.set(ref.slice(7), p);
         });
-        return { boxes: (0, layout_physical_1.physicalBoxes)(this.input, pos) };
+        return { boxes: (0, physical_1.physicalBoxes)(this.input, pos) };
     }
     render() {
         const s = this.state;
         if (s.view === 'physical') {
-            return (0, render_physical_1.renderPhysical)(this.model, this.physicalLayout(), { showLabels: s.showLabels, positions: new Map() });
+            return (0, physical_2.renderPhysical)(this.model, this.physicalLayout(), { showLabels: s.showLabels, positions: new Map() });
         }
-        return (0, render_logical_1.renderLogical)(this.model, this.logicalLayout(), {
+        return (0, logical_2.renderLogical)(this.model, this.logicalLayout(), {
             showLabels: s.showLabels,
             showUnderlay: s.showUnderlay,
             showNetworks: s.showNetworks,
@@ -8612,7 +8612,7 @@ function relatedRefs(model, ref) {
             return;
         out.add('relation:' + rid);
         out.add('hub:' + rid);
-        for (const d of (0, model_1.relationDevices)(r))
+        for (const d of (0, types_1.relationDevices)(r))
             addDevice(d);
         for (const e of r.endpoints)
             if (e.iface)
@@ -8776,7 +8776,7 @@ function search(model, query, limit = 12) {
 }
 
 };
-__defs["render-logical"] = function (module, exports) {
+__defs["diagram/logical"] = function (module, exports) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.logicalNodes = logicalNodes;
@@ -8793,13 +8793,13 @@ exports.renderLogical = renderLogical;
  * - Relations with 3+ devices get a hub node with spokes.
  * - Networks are pill nodes connected to member devices by thin lines.
  */
-const geometry_1 = __req("geometry");
-const layout_logical_1 = __req("layout-logical");
-const model_1 = __req("model");
-const render_physical_1 = __req("render-physical");
-const scene_1 = __req("scene");
-const style_1 = __req("style");
-const validate_1 = __req("validate");
+const geometry_1 = __req("layout/geometry");
+const logical_1 = __req("layout/logical");
+const types_1 = __req("model/types");
+const physical_1 = __req("diagram/physical");
+const scene_1 = __req("diagram/scene");
+const style_1 = __req("diagram/style");
+const validate_1 = __req("validation/validate");
 const LANE_GAP = 7;
 const TUBE_WALL = 3;
 const TUBE_MIN = 12;
@@ -8880,16 +8880,16 @@ function laneSegment(A, B, offset) {
     return [s, e];
 }
 function nodeBorder(n, toward) {
-    return n.kind === 'hub' ? (0, geometry_1.clipToCircle)({ x: n.cx, y: n.cy }, layout_logical_1.HUB_R, toward) : (0, geometry_1.clipToBox)(n, toward, 2);
+    return n.kind === 'hub' ? (0, geometry_1.clipToCircle)({ x: n.cx, y: n.cy }, logical_1.HUB_R, toward) : (0, geometry_1.clipToBox)(n, toward, 2);
 }
 function renderLogical(model, layout, opts) {
     const nodes = logicalNodes(layout, opts.positions);
     // lines attach to the device rectangle, not to the loopback chips below it
     const dev = (id) => {
         const n = nodes.get('device:' + id);
-        return n ? (0, layout_logical_1.deviceRect)(n) : undefined;
+        return n ? (0, logical_1.deviceRect)(n) : undefined;
     };
-    const visible = model.relations.filter((r) => !opts.hiddenProtocols.has(r.protocol) && (0, model_1.relationDevices)(r).every((d) => !!dev(d)));
+    const visible = model.relations.filter((r) => !opts.hiddenProtocols.has(r.protocol) && (0, types_1.relationDevices)(r).every((d) => !!dev(d)));
     const visibleIds = new Set(visible.map((r) => r.id));
     const underlay = [];
     const members = [];
@@ -8927,7 +8927,7 @@ function renderLogical(model, layout, opts) {
                 const e = (0, geometry_1.clipToBox)(nn, { x: dn.cx, y: dn.cy }, 1);
                 members.push((0, scene_1.h)('path', { class: 'member', 'data-ref': 'network:' + nw.id, d: lineD(s, e) }));
                 if (opts.showLabels) {
-                    const iface = m.iface ? model.index.interfaces.get((0, model_1.ifaceKey)(m.device, m.iface)) : undefined;
+                    const iface = m.iface ? model.index.interfaces.get((0, types_1.ifaceKey)(m.device, m.iface)) : undefined;
                     const addr = m.address || (iface && iface.addresses[0]) || m.iface;
                     if (addr) {
                         const t = { x: s.x + (e.x - s.x) * 0.22, y: s.y + (e.y - s.y) * 0.22 };
@@ -8941,8 +8941,8 @@ function renderLogical(model, layout, opts) {
     const byPair = new Map();
     const multi = [];
     for (const r of visible) {
-        const ds = (0, model_1.relationDevices)(r);
-        if ((0, layout_logical_1.isMultipoint)(ds))
+        const ds = (0, types_1.relationDevices)(r);
+        if ((0, logical_1.isMultipoint)(ds))
             multi.push(r);
         else if (ds.length === 2) {
             const key = ds.slice().sort().join('\u0000');
@@ -9018,7 +9018,7 @@ function renderLogical(model, layout, opts) {
             if (p.rel.directed)
                 children.push(arrowHead(endTip(p.rel, s, e, da), endFrom(p.rel, s, e, da), p.def.color));
             relNodes.push((0, scene_1.h)('g', {
-                class: `rel cat-${p.def.category} style-${p.def.style} proto-${(0, render_physical_1.cssToken)(p.rel.protocol)} depth-${p.depth}`,
+                class: `rel cat-${p.def.category} style-${p.def.style} proto-${(0, physical_1.cssToken)(p.rel.protocol)} depth-${p.depth}`,
                 'data-ref': 'relation:' + p.rel.id,
             }, children));
         }
@@ -9064,19 +9064,19 @@ function renderLogical(model, layout, opts) {
             continue;
         const def = (0, validate_1.relationStyle)(model, r);
         const kids = [];
-        for (const d of (0, model_1.relationDevices)(r)) {
+        for (const d of (0, types_1.relationDevices)(r)) {
             const dn = dev(d);
             const s = (0, geometry_1.clipToBox)(dn, { x: hub.cx, y: hub.cy }, 2);
             const e = nodeBorder(hub, { x: dn.cx, y: dn.cy });
             const dd = lineD(s, e);
             kids.push((0, scene_1.h)('path', { class: 'hit', d: dd }), ...relationStroke(def, dd, TUBE_MIN));
         }
-        kids.push((0, scene_1.h)('circle', { class: 'hub', cx: hub.cx, cy: hub.cy, r: layout_logical_1.HUB_R, stroke: def.color }));
-        kids.push((0, scene_1.h)('text', { class: 'hub-glyph', x: hub.cx, y: hub.cy + 4, 'text-anchor': 'middle', fill: def.color }, String((0, model_1.relationDevices)(r).length)));
-        relNodes.push((0, scene_1.h)('g', { class: `rel hub-rel cat-${def.category} style-${def.style} proto-${(0, render_physical_1.cssToken)(r.protocol)}`, 'data-ref': 'relation:' + r.id }, kids));
+        kids.push((0, scene_1.h)('circle', { class: 'hub', cx: hub.cx, cy: hub.cy, r: logical_1.HUB_R, stroke: def.color }));
+        kids.push((0, scene_1.h)('text', { class: 'hub-glyph', x: hub.cx, y: hub.cy + 4, 'text-anchor': 'middle', fill: def.color }, String((0, types_1.relationDevices)(r).length)));
+        relNodes.push((0, scene_1.h)('g', { class: `rel hub-rel cat-${def.category} style-${def.style} proto-${(0, physical_1.cssToken)(r.protocol)}`, 'data-ref': 'relation:' + r.id }, kids));
         if (opts.showLabels) {
             const text = def.label + (r.label ? ' · ' + r.label : '');
-            labels.push(pill('relation:' + r.id, { x: hub.cx, y: hub.cy + layout_logical_1.HUB_R + 13 }, (0, geometry_1.ellipsize)(text, 10, 200), def.color));
+            labels.push(pill('relation:' + r.id, { x: hub.cx, y: hub.cy + logical_1.HUB_R + 13 }, (0, geometry_1.ellipsize)(text, 10, 200), def.color));
         }
     }
     // ---- nodes
@@ -9085,7 +9085,7 @@ function renderLogical(model, layout, opts) {
             const d = model.index.devices.get(n.id);
             if (!d)
                 return;
-            nodeLayer.push((0, render_physical_1.deviceNode)(n.ref, d.label, (0, render_physical_1.deviceSubtitle)(d.type, d.model, d.role), d.type, (0, layout_logical_1.deviceRect)(n), 'type-' + (0, render_physical_1.cssToken)(d.type)));
+            nodeLayer.push((0, physical_1.deviceNode)(n.ref, d.label, (0, physical_1.deviceSubtitle)(d.type, d.model, d.role), d.type, (0, logical_1.deviceRect)(n), 'type-' + (0, physical_1.cssToken)(d.type)));
             nodeLayer.push(...loopbackChips(d, n));
         }
         else if (n.kind === 'network' && opts.showNetworks) {
@@ -9095,8 +9095,8 @@ function renderLogical(model, layout, opts) {
             const color = (0, style_1.networkColor)(nw.kind);
             const x = n.cx - n.w / 2;
             const y = n.cy - n.h / 2;
-            const sub = (0, layout_logical_1.networkSubtitle)(nw.kind, nw.cidr, nw.vlan);
-            nodeLayer.push((0, scene_1.h)('g', { class: `node network kind-${(0, render_physical_1.cssToken)(nw.kind)}`, 'data-ref': n.ref }, [
+            const sub = (0, logical_1.networkSubtitle)(nw.kind, nw.cidr, nw.vlan);
+            nodeLayer.push((0, scene_1.h)('g', { class: `node network kind-${(0, physical_1.cssToken)(nw.kind)}`, 'data-ref': n.ref }, [
                 (0, scene_1.h)('rect', { class: 'net-box', x, y, width: n.w, height: n.h, rx: n.h / 2, stroke: color }),
                 (0, scene_1.h)('rect', { class: 'net-tint', x, y, width: n.w, height: n.h, rx: n.h / 2, fill: color }),
                 (0, scene_1.h)('text', { class: 'net-label', x: n.cx, y: n.cy + (sub ? -2 : 4), 'text-anchor': 'middle' }, (0, geometry_1.ellipsize)(nw.label, 12, n.w - 20)),
@@ -9139,30 +9139,30 @@ function pill(ref, p, text, color) {
 }
 /** Loopbacks as small chips hanging under the device (logical view only; they are never cabled). */
 function loopbackChips(d, n) {
-    const loops = (0, model_1.loopbacks)(d);
+    const loops = (0, types_1.loopbacks)(d);
     if (!loops.length)
         return [];
     const out = [];
-    const top = n.cy - n.h / 2 + layout_logical_1.DEVICE_H + 4;
+    const top = n.cy - n.h / 2 + logical_1.DEVICE_H + 4;
     const w = n.w - 16;
-    loops.slice(0, layout_logical_1.MAX_CHIPS).forEach((l, i) => {
+    loops.slice(0, logical_1.MAX_CHIPS).forEach((l, i) => {
         const rid = d.routerId === l.id;
         const extra = l.addresses.length > 1 ? ' +' + (l.addresses.length - 1) : '';
         const text = (rid ? '\u2605 ' : '') + l.id + '  ' + (l.addresses[0] || '(no address)') + extra;
-        const y = top + i * layout_logical_1.CHIP_H;
+        const y = top + i * logical_1.CHIP_H;
         out.push((0, scene_1.h)('g', { class: 'loop-chip' + (rid ? ' rid' : ''), 'data-ref': `iface:${d.id}:${l.id}` }, [
-            (0, scene_1.h)('rect', { x: n.cx - w / 2, y, width: w, height: layout_logical_1.CHIP_H - 3, rx: 6.5 }),
+            (0, scene_1.h)('rect', { x: n.cx - w / 2, y, width: w, height: logical_1.CHIP_H - 3, rx: 6.5 }),
             (0, scene_1.h)('text', { x: n.cx, y: y + 9.5, 'text-anchor': 'middle' }, (0, geometry_1.ellipsize)(text, 9.5, w - 8)),
         ]));
     });
-    if (loops.length > layout_logical_1.MAX_CHIPS) {
-        out.push((0, scene_1.h)('text', { class: 'loop-more', x: n.cx, y: top + layout_logical_1.MAX_CHIPS * layout_logical_1.CHIP_H + 9, 'text-anchor': 'middle', 'data-ref': 'device:' + d.id }, `+${loops.length - layout_logical_1.MAX_CHIPS} more loopbacks`));
+    if (loops.length > logical_1.MAX_CHIPS) {
+        out.push((0, scene_1.h)('text', { class: 'loop-more', x: n.cx, y: top + logical_1.MAX_CHIPS * logical_1.CHIP_H + 9, 'text-anchor': 'middle', 'data-ref': 'device:' + d.id }, `+${loops.length - logical_1.MAX_CHIPS} more loopbacks`));
     }
     return out;
 }
 
 };
-__defs["render-physical"] = function (module, exports) {
+__defs["diagram/physical"] = function (module, exports) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.physicalBoxes = physicalBoxes;
@@ -9171,11 +9171,11 @@ exports.deviceNode = deviceNode;
 exports.deviceSubtitle = deviceSubtitle;
 exports.renderPhysical = renderPhysical;
 exports.cssToken = cssToken;
-const geometry_1 = __req("geometry");
-const icons_1 = __req("icons");
-const layout_physical_1 = __req("layout-physical");
-const scene_1 = __req("scene");
-const style_1 = __req("style");
+const geometry_1 = __req("layout/geometry");
+const icons_1 = __req("diagram/icons");
+const physical_1 = __req("layout/physical");
+const scene_1 = __req("diagram/scene");
+const style_1 = __req("diagram/style");
 const STUB = 20;
 /** Device boxes after applying user drags. */
 function physicalBoxes(layout, positions) {
@@ -9215,7 +9215,7 @@ function groupRects(model, boxes) {
         if (!parts.length)
             continue;
         const u = (0, geometry_1.unionRect)(parts);
-        rects.set(g.id, { x: u.x - layout_physical_1.GROUP_PAD, y: u.y - layout_physical_1.GROUP_PAD - layout_physical_1.GROUP_TITLE, w: u.w + 2 * layout_physical_1.GROUP_PAD, h: u.h + 2 * layout_physical_1.GROUP_PAD + layout_physical_1.GROUP_TITLE });
+        rects.set(g.id, { x: u.x - physical_1.GROUP_PAD, y: u.y - physical_1.GROUP_PAD - physical_1.GROUP_TITLE, w: u.w + 2 * physical_1.GROUP_PAD, h: u.h + 2 * physical_1.GROUP_PAD + physical_1.GROUP_TITLE });
     }
     return rects;
 }
@@ -9238,7 +9238,7 @@ function deviceSubtitle(type, model, role) {
 function renderPhysical(model, layout, opts) {
     const boxes = physicalBoxes(layout, opts.positions);
     const grects = groupRects(model, boxes);
-    const ports = (0, layout_physical_1.assignPorts)(model.links, boxes);
+    const ports = (0, physical_1.assignPorts)(model.links, boxes);
     const portByKey = new Map(ports.map((p) => [p.key, p]));
     // ---- groups (outermost first so children draw on top)
     const groupNodes = [];
@@ -9340,7 +9340,7 @@ function portLabel(p) {
         x: p.x + p.nx * 7,
         y: p.y - 5,
         'text-anchor': p.side === 'left' ? 'end' : 'start',
-        'font-size': layout_physical_1.PORT_FONT,
+        'font-size': physical_1.PORT_FONT,
     }, text);
 }
 function n(v) {
@@ -9352,7 +9352,7 @@ function cssToken(s) {
 }
 
 };
-__defs["selftest"] = function (module, exports) {
+__defs["app/selftest"] = function (module, exports) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.runSelfTest = runSelfTest;
@@ -9365,8 +9365,8 @@ exports.runSelfTest = runSelfTest;
  * checks what was drawn and what gets exported. It also verifies label
  * safety, error reporting and that the page made no network requests.
  */
-const doc_1 = __req("doc");
-const yaml_1 = __req("yaml");
+const document_1 = __req("editor/document");
+const parse_1 = __req("yaml/parse");
 const examples_1 = __req("generated/examples");
 const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms));
 async function runSelfTest(app, doc) {
@@ -9587,13 +9587,13 @@ async function runSelfTest(app, doc) {
                 check('status after exporting and reloading a manually adjusted layout: Physical "Manually adjusted"', status('physical') === 'manual' && status('logical') === 'auto');
                 const re = app.mdoc;
                 re.arrange(['physical', 'logical']);
-                re.addEntity('device', [['id', (0, yaml_1.strNode)('hq-spare')], ['type', (0, yaml_1.strNode)('switch')], ['group', (0, yaml_1.strNode)('hq-core')]]);
+                re.addEntity('device', [['id', (0, parse_1.strNode)('hq-spare')], ['type', (0, parse_1.strNode)('switch')], ['group', (0, parse_1.strNode)('hq-core')]]);
                 app.afterEdit();
                 check('a model edit is not reported as a manual adjustment ("Edited since arranged")', status('physical') === 'edited' && status('logical') === 'edited', statusText('physical'));
                 re.markSaved();
             }
             // an equivalent file with every list reversed arranges identically
-            const shuffled = doc_1.ModelDoc.fromText(examples_1.EXAMPLES[wanIdx].text, 'shuffled.yaml', 'file').doc;
+            const shuffled = document_1.ModelDoc.fromText(examples_1.EXAMPLES[wanIdx].text, 'shuffled.yaml', 'file').doc;
             const rev = (n) => {
                 if (n.kind === 'seq') {
                     n.items.reverse();
@@ -9619,7 +9619,7 @@ async function runSelfTest(app, doc) {
             const src = examples_1.EXAMPLES.find((e) => e.name === 'metro-ring.yaml');
             const ref = examples_1.EXAMPLES.find((e) => e.name === 'metro-ring-arranged.yaml');
             if (src && ref) {
-                const md = doc_1.ModelDoc.fromText(src.text, 'metro-ring.yaml', 'file').doc;
+                const md = document_1.ModelDoc.fromText(src.text, 'metro-ring.yaml', 'file').doc;
                 md.arrange(['physical', 'logical']);
                 check('this browser computes exactly the positions that were computed at build time (metro-ring-arranged.yaml)', layoutText(md.exportText()) === layoutText(ref.text));
             }
@@ -9705,7 +9705,7 @@ async function runSelfTest(app, doc) {
         const created = await lastDownload();
         check('new model downloaded as YAML', !!created && created.name === 'new-network.yaml' && !app.mdoc.dirty);
         if (created) {
-            const re = doc_1.ModelDoc.fromText(created.text, 'new-network.yaml', 'file');
+            const re = document_1.ModelDoc.fromText(created.text, 'new-network.yaml', 'file');
             const rd = re.doc;
             const rm = rd && rd.result.model;
             check('exported new model reloads identically (valid, same YAML, loopbacks + attrs intact)', !!rd && rd.valid && rd.exportText() === created.text && !!rm && rm.index.devices.get('edge2').routerId === 'lo0' &&
@@ -9731,7 +9731,7 @@ async function runSelfTest(app, doc) {
         await answerDialog('download');
         const edited = await lastDownload();
         if (edited) {
-            const back = doc_1.ModelDoc.fromText(edited.text, edited.name, 'file').doc;
+            const back = document_1.ModelDoc.fromText(edited.text, edited.name, 'file').doc;
             const bm = back.result.model;
             check('import → edit → export → reload keeps the edits', back.valid && bm.index.devices.get('hq-edge-a').vendor === 'Juniper Networks' && bm.index.interfaces.get('hq-edge-a:' + back.interfaceIds(3)[lastLoop]).addresses[0] === '2001:db8:0:ff::1/128');
             check('attributes not shown in diagrams survive the round trip', /serial: JN11AB22CD/.test(edited.text) && /contract: \{id: C-77, expires: 2027-01-31\}/.test(edited.text) && /cipher: GCM-AES-XPN-256/.test(edited.text));
@@ -9832,7 +9832,7 @@ async function runSelfTest(app, doc) {
 }
 
 };
-__req("main");
+__req("app/main");
 })();
 
 </script>

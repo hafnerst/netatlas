@@ -15,10 +15,10 @@
  *     result is rounded to integers.
  */
 import { CBox, Pt } from './geometry';
-import { LayoutInput, cmp } from './layout-input';
-import { DEVICE_H, HUB_R, logicalDeviceSize, networkSize } from './layout-logical-size';
+import { LayoutInput, cmp } from './input';
+import { DEVICE_H, HUB_R, logicalDeviceSize, networkSize } from './sizes';
 
-export { CHIP_H, DEVICE_H, HUB_R, MAX_CHIPS, chipRows, networkSize, networkSubtitle } from './layout-logical-size';
+export { CHIP_H, DEVICE_H, HUB_R, MAX_CHIPS, chipRows, networkSize, networkSubtitle } from './sizes';
 
 export interface LNode extends CBox {
   /** "device:<id>" | "network:<id>" | "hub:<relationId>" */

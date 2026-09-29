@@ -1,4 +1,4 @@
-import { Category, LineStyle, ProtocolDef } from './model';
+import { Category, LineStyle, ProtocolDef } from './types';
 
 /**
  * Built-in protocol registry. This is a convenience, not a whitelist: any

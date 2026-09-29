@@ -1,4 +1,4 @@
-import { App } from './ui';
+import { App } from '../ui/app';
 import { runSelfTest } from './selftest';
 
 function start(): void {

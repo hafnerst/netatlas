@@ -10,13 +10,13 @@
  * - Relations with 3+ devices get a hub node with spokes.
  * - Networks are pill nodes connected to member devices by thin lines.
  */
-import { CBox, Pt, Rect, clipToBox, clipToCircle, ellipsize, lineBoxExit, normal, textWidth, unionRect } from './geometry';
-import { CHIP_H, DEVICE_H, HUB_R, LNode, LogicalLayout, MAX_CHIPS, deviceRect, isMultipoint, networkSubtitle } from './layout-logical';
-import { Device, LineStyle, Model, ProtocolDef, Relation, ifaceKey, loopbacks, relationDevices } from './model';
-import { cssToken, deviceNode, deviceSubtitle, SceneResult } from './render-physical';
+import { CBox, Pt, Rect, clipToBox, clipToCircle, ellipsize, lineBoxExit, normal, textWidth, unionRect } from '../layout/geometry';
+import { CHIP_H, DEVICE_H, HUB_R, LNode, LogicalLayout, MAX_CHIPS, deviceRect, isMultipoint, networkSubtitle } from '../layout/logical';
+import { Device, LineStyle, Model, ProtocolDef, Relation, ifaceKey, loopbacks, relationDevices } from '../model/types';
+import { cssToken, deviceNode, deviceSubtitle, SceneResult } from './physical';
 import { VNode, h } from './scene';
 import { networkColor } from './style';
-import { relationStyle } from './validate';
+import { relationStyle } from '../validation/validate';
 
 export interface LogicalOptions {
   showLabels: boolean;

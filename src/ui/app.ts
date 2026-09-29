@@ -5,15 +5,15 @@
  * user action (file picker or drag-and-drop), edited in memory, and saved by
  * letting the browser download a new copy. Nothing is transmitted.
  */
-import { ModelDoc, Origin } from './doc';
+import { ModelDoc, Origin } from '../editor/document';
 import { el, mount } from './dom';
-import { DialogOpts, Editor, EditorSel } from './editor';
-import { EXAMPLES } from './generated/examples';
-import { Rect } from './geometry';
+import { DialogOpts, Editor, EditorSel } from './inspector';
+import { EXAMPLES } from '../generated/examples';
+import { Rect } from '../layout/geometry';
 import { detailsFor, legendFor, relationList, tooltipFor } from './panels';
-import { Session, View, search, splitRef } from './state';
-import { Issue } from './validate';
-import { DEFAULT_YAML_LIMITS } from './yaml';
+import { Session, View, search, splitRef } from '../diagram/session';
+import { Issue } from '../validation/validate';
+import { DEFAULT_YAML_LIMITS } from '../yaml/parse';
 
 type Tab = 'edit' | 'details' | 'legend' | 'relations' | 'problems' | 'yaml';
 

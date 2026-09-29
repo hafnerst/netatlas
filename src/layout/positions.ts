@@ -15,9 +15,9 @@
  *     (in id order) without moving anything else.
  */
 import { Pt } from './geometry';
-import { LayoutInput, cmp } from './layout-input';
-import { autoLogical, logicalEdges, logicalSpecs } from './layout-logical';
-import { autoPhysical, physicalBaseSize } from './layout-physical';
+import { LayoutInput, cmp } from './input';
+import { autoLogical, logicalEdges, logicalSpecs } from './logical';
+import { autoPhysical, physicalBaseSize } from './physical';
 
 export type LayoutView = 'physical' | 'logical';
 export const LAYOUT_VIEWS: LayoutView[] = ['physical', 'logical'];
