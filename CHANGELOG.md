@@ -3,20 +3,19 @@
 All notable changes to NetAtlas are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [semantic versioning](https://semver.org/). While the version is 0.x, minor
-releases may still change behaviour. The YAML format has its own version
-(the `netatlas:` line of a file). A build reads exactly one format version
-and rejects the others with an explanation; a change of the format version
-is a breaking change and is called out below.
+releases may still change behaviour; the YAML format has its own version
+(`netatlas: 1`) and stays readable across application versions.
 
 ## [Unreleased]
 
-### Breaking: YAML format version 2
+### Breaking: restructured YAML format
 
-**Files written for `netatlas: 1` are no longer read, and they are not
-converted.** They open as a draft with an error for the version line and one
-for every key that has to change; each error says what to do. Update the
-file by hand and set `netatlas: 2`. The full table is in
-[docs/FORMAT.md](docs/FORMAT.md#changes-from-version-1).
+**Files written for release 0.1.x that use the removed keys are not
+converted.** They open as a draft with one error for every key that has to
+change; each error says what to do. Update the file by hand. The format
+version stays `netatlas: 1`: the tool isn't used in production yet, so this
+one incompatible change is made without a new format version. The full table
+is in [docs/FORMAT.md](docs/FORMAT.md#changes-from-the-earlier-format).
 
 The model now follows one rule: **each fact is configured in one place and
 derived everywhere else.**

@@ -282,7 +282,7 @@ export class Editor {
   private renderDocument(w: HTMLElement): void {
     w.appendChild(this.header('document', 'Document', null));
     w.appendChild(this.issueBox([]));
-    w.appendChild(this.field('Format version', this.e('span', { class: 'ro' }, [this.doc.text(['netatlas']) || '(missing)']), ['netatlas'], 'Always 2 for this version of netatlas.'));
+    w.appendChild(this.field('Format version', this.e('span', { class: 'ro' }, [this.doc.text(['netatlas']) || '(missing)']), ['netatlas'], 'Always 1 for this version of netatlas.'));
     if (ENTITY_KINDS.every((k) => this.doc.entities(k).length === 0)) {
       w.appendChild(this.e('p', { class: 'hint-empty' }, ['This model is empty. Add a device, link, network, relation, group or protocol with “+ Add” in the Model outline; nothing is filled in for you.']));
     }

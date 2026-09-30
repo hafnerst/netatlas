@@ -413,7 +413,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     const d0 = app.mdoc as ModelDoc;
     check(
       'New creates an empty, valid model: nothing is chosen for the user',
-      !!d0 && d0.origin === 'new' && d0.valid && !d0.dirty && d0.exportText() === 'netatlas: 2\ntitle: New network\n' && !!q('#side-body .hint-empty'),
+      !!d0 && d0.origin === 'new' && d0.valid && !d0.dirty && d0.exportText() === 'netatlas: 1\ntitle: New network\n' && !!q('#side-body .hint-empty'),
       d0 ? d0.exportText() : '',
     );
     check('status of a new model: both views "Auto-arranged"', status('physical') === 'auto' && status('logical') === 'auto');
@@ -762,13 +762,13 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     check('unapplied YAML text survives switching tabs', /edited as text/.test((q('#yaml-src') as HTMLTextAreaElement).value));
     click('[data-yaml="apply"]');
     check('YAML tab edits are applied', app.mdoc!.result.model!.title === 'ACME WAN (edited as text)');
-    (q('#yaml-src') as HTMLTextAreaElement).value = 'netatlas: 2\ndevices:\n  - &x {id: a}\n';
+    (q('#yaml-src') as HTMLTextAreaElement).value = 'netatlas: 1\ndevices:\n  - &x {id: a}\n';
     click('[data-yaml="apply"]');
     check('invalid YAML in the text tab is rejected with a line number', /line 3/.test(q('#side-body .field-err')!.textContent || '') && app.mdoc!.result.model!.devices.length > 3);
     click('[data-yaml="revert"]');
 
     // unknown keys are kept and shown
-    const unk = app.loadText('netatlas: 2\ndevices:\n  - id: r1\n    colour: blue\n    interfaces: [{id: lo0, type: loopback, ip: [10.0.0.1/32], weird: {x: 1}}]\n', 'unknown.yaml', 'file');
+    const unk = app.loadText('netatlas: 1\ndevices:\n  - id: r1\n    colour: blue\n    interfaces: [{id: lo0, type: loopback, ip: [10.0.0.1/32], weird: {x: 1}}]\n', 'unknown.yaml', 'file');
     app.select('device:r1');
     check('unknown properties are shown in the inspector, not dropped', unk.errors.length > 0 && !!q('#side-body .other') && /colour/.test(app.exportText()) && /weird: \{x: 1\}/.test(app.exportText()));
     click('#side-body [data-act="to-attrs"][data-k="colour"]');
@@ -784,8 +784,8 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       );
       const msgs = oldFile.errors.map((e) => e.message).join(' | ');
       check(
-        'a version 1 file opens as a draft: an error for the version and one actionable error per retired key',
-        oldFile.ok && oldFile.errors.length === 8 && /format version 1 is no longer read/.test(msgs) && /"speed" is no longer part of the format/.test(msgs) && /"members" is no longer part of the format/.test(msgs) && /renamed to "floor"/.test(msgs) &&
+        'a file in the earlier format opens as a draft with one actionable error per retired key',
+        oldFile.ok && oldFile.errors.length === 7 && /"speed" is no longer part of the format/.test(msgs) && /"members" is no longer part of the format/.test(msgs) && /renamed to "floor"/.test(msgs) &&
           (app.mdoc as ModelDoc).result.model!.networks[0].vlan === undefined && networkMembers((app.mdoc as ModelDoc).result.model!, 'n1').length === 1,
         msgs,
       );
@@ -793,7 +793,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
 
     // ------------------------------------------ safety / errors / offline
     const evil =
-      'netatlas: 2\ntitle: "<img src=x onerror=alert(1)>"\ndevices:\n' +
+      'netatlas: 1\ntitle: "<img src=x onerror=alert(1)>"\ndevices:\n' +
       '  - id: a\n    label: "<script>alert(1)</script>"\n    interfaces: [e0]\n' +
       '  - id: b\n    label: "<svg onload=alert(1)>"\n    interfaces: [e0]\n' +
       'links:\n  - {id: l1, a: "a:e0", b: "b:e0"}\n';
@@ -804,11 +804,11 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     check('hostile labels load and are shown literally', res.ok && texts.indexOf('<script>alert(1)</script>') >= 0, texts);
     check('no injected elements (diagram, outline, inspector)', !doc.querySelector('#viewport img, #viewport script, #viewport foreignObject, #side-body img, #side-body script, #outline img, body > img'));
 
-    const bad = app.loadText('netatlas: 2\ndevices:\n  - &a {id: r1}\n', 'bad.yaml');
+    const bad = app.loadText('netatlas: 1\ndevices:\n  - &a {id: r1}\n', 'bad.yaml');
     check('YAML syntax errors are rejected before editing, with line number', !bad.ok && bad.errors[0].line === 3 && /anchor/.test(bad.errors[0].message) && (app.mdoc as ModelDoc).fileName === 'evil.yaml');
     check('the rejection is explained in a dialog and the current model is kept', /anchor/.test(q('#modal')!.textContent || ''));
     await answerDialog('ok');
-    const bad2 = app.loadText('netatlas: 2\ndevices:\n  - id: r1\nlinks:\n  - {id: l1, a: "r1:eth0", b: r2}\n', 'bad2.yaml');
+    const bad2 = app.loadText('netatlas: 1\ndevices:\n  - id: r1\nlinks:\n  - {id: l1, a: "r1:eth0", b: r2}\n', 'bad2.yaml');
     check('a file with broken references opens as a draft listing its errors', bad2.ok && bad2.errors.length === 2 && /Problems \(2\)/.test(q('[data-tab="problems"]')!.textContent || ''));
 
     const perf = (doc.defaultView as Window).performance;

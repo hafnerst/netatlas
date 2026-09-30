@@ -7,11 +7,7 @@
  * The prose reference is docs/FORMAT.md.
  */
 
-/**
- * Version 2 replaced version 1 (one authoritative place per fact; see "Changes
- * from version 1" in docs/FORMAT.md). Version 1 files are not read.
- */
-export const FORMAT_VERSION = 2;
+export const FORMAT_VERSION = 1;
 
 export const SCHEMA = {
   top: ['netatlas', 'title', 'description', 'protocols', 'groups', 'devices', 'links', 'networks', 'relations', 'layout'],

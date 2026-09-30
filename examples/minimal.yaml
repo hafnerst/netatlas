@@ -1,6 +1,6 @@
 # netatlas example: the smallest useful file.
 # Two routers, one cable, one GRE tunnel with an OSPF adjacency inside it.
-netatlas: 2
+netatlas: 1
 title: Minimal example
 
 devices:

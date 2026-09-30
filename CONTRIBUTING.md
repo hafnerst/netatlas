@@ -62,7 +62,7 @@ targets `main`.
 
 Versions follow [semantic versioning](https://semver.org/); the version lives
 in `package.json` (and `package-lock.json`), and the build writes it into the
-HTML. The YAML format has its own version (`netatlas: 2`), independent of the
+HTML. The YAML format has its own version (`netatlas: 1`), independent of the
 application version. Steps for a release `X.Y.Z`:
 
 1. **Release preparation** on a working branch from `dev` (e.g.

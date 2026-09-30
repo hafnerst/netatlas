@@ -244,7 +244,7 @@ test('layout data never changes the network semantics', () => {
 });
 
 test('bad layout entries are warnings and are ignored (never errors)', () => {
-  const r = validate.loadModel(`netatlas: 2
+  const r = validate.loadModel(`netatlas: 1
 devices:
   - {id: a}
   - {id: b}
@@ -270,7 +270,7 @@ layout:
 
 function islands() {
   // components of different sizes, one grouped, plus isolated devices
-  let t = 'netatlas: 2\ngroups:\n  - {id: g-big, kind: site}\ndevices:\n';
+  let t = 'netatlas: 1\ngroups:\n  - {id: g-big, kind: site}\ndevices:\n';
   const links = [];
   const rels = [];
   const add = (prefix, n, group) => {
@@ -313,7 +313,7 @@ test('disconnected components of different sizes: no overlaps in either view, co
 
 test('dense relationships: a 12-router full mesh with tunnels stays readable', () => {
   const n = 12;
-  let t = 'netatlas: 2\ndevices:\n';
+  let t = 'netatlas: 1\ndevices:\n';
   for (let i = 0; i < n; i++) t += `  - {id: r${String(i).padStart(2, '0')}, type: router, interfaces: [{id: lo0, type: loopback, ip: [10.0.0.${i}/32, "2001:db8::${i}/128"]}]}\n`;
   t += 'relations:\n  - {id: ospf, protocol: ospf, endpoints: [' + Array.from({ length: n }, (_, i) => 'r' + String(i).padStart(2, '0')).join(', ') + ']}\n';
   for (let i = 0; i < n; i++) {
@@ -375,7 +375,7 @@ test('determinism guard: layout code uses no randomness, time, locale or browser
 });
 
 test('auto-arrange stays fast for a large model', () => {
-  let t = 'netatlas: 2\ngroups:\n';
+  let t = 'netatlas: 1\ngroups:\n';
   for (let g = 0; g < 10; g++) t += `  - {id: s${g}, kind: site}\n`;
   t += 'devices:\n';
   for (let i = 0; i < 400; i++) t += `  - {id: d${String(i).padStart(3, '0')}, type: ${i % 10 ? 'switch' : 'router'}, group: s${i % 10}, interfaces: [a, b, c, {id: lo0, type: loopback, ip: [10.1.${i >> 8}.${i & 255}/32]}]}\n`;
@@ -454,7 +454,7 @@ test('layout status is derived per view: auto-arranged, manually adjusted, edite
 });
 
 test('the manual record is presentation only: bad entries warn and never affect the model', () => {
-  const r = validate.loadModel(`netatlas: 2
+  const r = validate.loadModel(`netatlas: 1
 devices:
   - {id: a}
 layout:

@@ -3,7 +3,7 @@
 # A small campus that uses each of the 15 device types once or more:
 # cloud, router, gateway, firewall, ids_ips, load_balancer, proxy, switch,
 # ap, endpoint, server, vm, container, storage and system.
-netatlas: 2
+netatlas: 1
 title: Campus — all device types
 description: |
   Internet edge with a VPN gateway, firewall and inline IPS; a DMZ with a

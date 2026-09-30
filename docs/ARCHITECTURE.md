@@ -65,7 +65,7 @@ anything else.
 * **One format schema.** `yaml/schema.ts` lists the keys of every mapping
   kind in canonical order. Validation (unknown keys), the editor (where new
   keys go) and the inspector ("other properties") all use it. It also lists
-  the keys of format version 1 that were retired, with the instruction shown
+  the keys of the earlier format that were retired, with the instruction shown
   when one is found; they are rejected, never read or converted.
 * **Configured versus derived.** A fact is stored in one place in the YAML
   tree. Whatever follows from it is computed by `model/derive.ts` from the

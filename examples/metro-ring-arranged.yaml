@@ -10,7 +10,7 @@
 # overlay and customer eBGP. An out-of-band management network forms a
 # separate, disconnected component, and a spare router is not connected at
 # all. There is no "layout" section: open it and use Auto-arrange.
-netatlas: 2
+netatlas: 1
 title: Metro ring MR-1
 
 groups:

@@ -110,13 +110,6 @@ function build(root: YNode | null, c: Ctx): Model | null {
   const verNode = get(top, 'netatlas');
   if (isNull(verNode)) {
     c.error(top, 'netatlas', `missing format version — add "netatlas: ${FORMAT_VERSION}" as the first line`, { key: 'netatlas', line: 1 });
-  } else if (verNode!.kind === 'scalar' && verNode!.value === 1) {
-    c.error(
-      verNode!,
-      'netatlas',
-      `format version 1 is no longer read: this build reads "netatlas: ${FORMAT_VERSION}". Update the file by hand (the errors below name each key to change; ` +
-        `see "Changes from version 1" in docs/FORMAT.md), then set "netatlas: ${FORMAT_VERSION}"`,
-    );
   } else if (!(verNode!.kind === 'scalar' && verNode!.value === FORMAT_VERSION)) {
     c.error(verNode!, 'netatlas', `unsupported format version; this build understands "netatlas: ${FORMAT_VERSION}"`);
   }

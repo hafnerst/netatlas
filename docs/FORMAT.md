@@ -1,10 +1,12 @@
-# netatlas YAML format (version 2)
+# netatlas YAML format (version 1)
 
-> **Breaking change: version 2 replaces version 1.** Files written for
-> `netatlas: 1` are not read and are not converted. They open as a draft
-> with one error per key that has to change; update them by hand as described
-> in [Changes from version 1](#changes-from-version-1), then set
-> `netatlas: 2`.
+> **Breaking change (after release 0.1.x).** The format was restructured so
+> that each fact is configured in one place. The version line stays
+> `netatlas: 1`, because the tool isn't used in production yet, but files
+> written for release 0.1.x that use the removed keys are **not converted**.
+> They open as a draft with one error per key that has to change; update
+> them by hand as described in
+> [Changes from the earlier format](#changes-from-the-earlier-format).
 
 A netatlas file describes **one** network architecture. It separates two
 things that are often mixed up in diagrams:
@@ -23,7 +25,7 @@ over two internet uplinks.
 The file must use the [supported YAML subset](YAML-SUBSET.md).
 
 ```yaml
-netatlas: 2            # required format version
+netatlas: 1            # required format version
 title: My network      # optional
 description: |         # optional
   Free text.
@@ -533,8 +535,8 @@ next to the object and field they concern.
 * `over` cycles;
 * invalid loopback addresses, invalid network prefixes, invalid or repeated
   VLAN IDs, and bad colours, categories or styles;
-* keys and values of format version 1 (see
-  [Changes from version 1](#changes-from-version-1)).
+* keys and values of the earlier format (see
+  [Changes from the earlier format](#changes-from-the-earlier-format)).
 
 **Warnings** don't block rendering:
 * an unknown protocol without a category;
@@ -565,18 +567,18 @@ before editing.
 | Group nesting | 8 levels |
 | Attributes per entity | 100 |
 
-## Changes from version 1
+## Changes from the earlier format
 
-Version 2 applies one rule throughout: each fact is configured in one place
-and derived everywhere else. Version 1 files have to be updated by hand;
+The format now applies one rule throughout: each fact is configured in one
+place and derived everywhere else. The format version is unchanged
+(`netatlas: 1`). Files written for release 0.1.x have to be updated by hand;
 netatlas doesn't convert them, and it doesn't keep the old keys as aliases.
-Opening a version 1 file shows an error for the version line and one for
-every key below, each saying what to do. Nothing of the old keys is read into
+Opening such a file shows an error for every key below, each saying what to
+do. Nothing of the old keys is read into
 the model, and the file is kept as it is until you change it.
 
-| Version 1 | Version 2 | What to do |
+| Before (0.1.x) | Now | What to do |
 |---|---|---|
-| `netatlas: 1` | `netatlas: 2` | Change it once the rest is updated. |
 | `kind` on a network | removed | Delete it. A network is always an IP network. |
 | `vrf` on a network | removed | Delete it, and set `vrf:` on the interfaces (or loopbacks) that are in the VRF. |
 | `members` on a network | removed; derived | Delete it. Make sure each former member has an interface or loopback address inside the network's `cidr`, and that the network has a `cidr`. A "network" that was only a list of devices (a VRF, a zone) isn't an IP network: remove it, or model it as a relation or group. |

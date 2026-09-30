@@ -5,7 +5,7 @@
 #   IPsec (encryption)  ->  GRE (tunnel)  ->  OSPF (routing adjacency)
 # plus eBGP to two ISPs, a WireGuard backup tunnel over LTE, VRRP, LACP,
 # syslog, and a custom protocol (MACsec) defined in the "protocols" section.
-netatlas: 2
+netatlas: 1
 title: ACME Corp — enterprise WAN
 description: |
   HQ Berlin with dual ISPs; branches Munich and Hamburg reach HQ over

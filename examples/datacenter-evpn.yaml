@@ -7,7 +7,7 @@
 #
 # Note: YAML anchors/aliases are NOT supported by netatlas, so repeated
 # interface lists are written out in full.
-netatlas: 2
+netatlas: 1
 title: FRA1 data-center fabric
 description: Spine/leaf fabric with BGP underlay and EVPN/VXLAN overlay.
 

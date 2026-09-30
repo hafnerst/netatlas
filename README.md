@@ -25,13 +25,14 @@ file, then:
 There's nothing to install, no server, and no network access. YAML remains
 the model: the page reads it, edits it and writes it back.
 
-> **Breaking change on `dev` (unreleased): YAML format version 2.** Each fact
+> **Breaking change on `dev` (unreleased): the YAML format was restructured.** Each fact
 > is now configured in one place and derived everywhere else: network
 > members and interface VLANs are computed from addresses, speed and medium
-> live only on the link, and each link end lists its own VLANs. Files written
-> for `netatlas: 1` (release 0.1.x) are **not read or converted**; they open
-> as a draft with one error per key to change. See
-> [Changes from version 1](docs/FORMAT.md#changes-from-version-1).
+> live only on the link, and each link end lists its own VLANs. The version
+> line stays `netatlas: 1`, but files written for release 0.1.x that use the
+> removed keys are **not converted**; they open as a draft with one error
+> per key to change. See
+> [Changes from the earlier format](docs/FORMAT.md#changes-from-the-earlier-format).
 
 **Version 0.1.0**, the first release. It's a usable initial version; see
 the [changelog](CHANGELOG.md) for what it covers, and
@@ -244,7 +245,7 @@ The complete rules are in [docs/FORMAT.md](docs/FORMAT.md#layout-diagram-positio
 ## The YAML model in brief
 
 ```yaml
-netatlas: 2
+netatlas: 1
 title: Minimal example
 devices:
   - id: r1
@@ -389,7 +390,7 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/scr
 | Offline / artifact | `test/build.test.mjs` (8 tests) | One inline script; no external references or remote URLs; no `fetch`, XHR, WebSocket, `eval`, `innerHTML` …; strict CSP before the script; compiled JavaScript only; every module comes from `src/`; one version in `package.json`, `package-lock.json`, the HTML (meta and UI) and `CHANGELOG.md` |
 | Device types | `test/device-types.test.mjs` (6 tests) | Exactly the 15 specified types with their display names; each is accepted, has its own icon and a default tier; no type is allowed (generic icon); any other value (old names such as `l3switch`, `hypervisor`, `host`, `leaf`, `spine`, wrong case, hostile text) is an error at the type line with a suggestion or the list of types; display names in subtitles, details and the legend; the examples use only these types |
 | New elements | `test/creation-defaults.test.mjs` (7 tests) | **New** is empty and valid; each new object gets only an ID (no type, kind, prefix, VLAN, protocol or category); missing required values are errors located at the object, optional ones stay unset; choosing a value saves exactly it and clearing removes the key; an empty group kind is not drawn as a site; **Duplicate** keeps all values; every example imports and exports byte-for-byte, with model values taken only from the file |
-| **Derived values and the version 2 rules** | `test/derive.test.mjs` (25 tests) | **Membership** from addresses: one entry per device with every match; the network prefix is the authority (the interface's own prefix length is ignored); IPv4 and IPv6 boundaries and prefix lengths (`/0`, `/30`, `/31`, `/32`, `/52`, `/128`); no matching across families; overlapping networks; invalid and incomplete addresses match nothing; invalid network prefixes are errors. **Interface VLAN:** derived per address; none when no network matches or no VLAN is defined; several addresses give several VLANs; conflicting networks give an explicit ambiguity and a warning. Derived values follow every edit and undo, and are **never written to YAML**. Membership drives highlighting, selection context, search and the layout input. **Link ends:** VLANs stored per end; Trunk / single / none; a mismatch is a warning and changes neither end; ID validation; editing one end never writes the other; short form restored when the last VLAN is removed; network VLANs and link VLANs are independent. **Version 1 input:** every retired key and the renamed group kind is an error with instructions, located at the key; nothing is converted; the file is written back unchanged. The schema holds no retired key; `vrf` on interfaces; loopbacks have no physical-link properties. |
+| **Derived values and retired keys** | `test/derive.test.mjs` (25 tests) | **Membership** from addresses: one entry per device with every match; the network prefix is the authority (the interface's own prefix length is ignored); IPv4 and IPv6 boundaries and prefix lengths (`/0`, `/30`, `/31`, `/32`, `/52`, `/128`); no matching across families; overlapping networks; invalid and incomplete addresses match nothing; invalid network prefixes are errors. **Interface VLAN:** derived per address; none when no network matches or no VLAN is defined; several addresses give several VLANs; conflicting networks give an explicit ambiguity and a warning. Derived values follow every edit and undo, and are **never written to YAML**. Membership drives highlighting, selection context, search and the layout input. **Link ends:** VLANs stored per end; Trunk / single / none; a mismatch is a warning and changes neither end; ID validation; editing one end never writes the other; short form restored when the last VLAN is removed; network VLANs and link VLANs are independent. **Earlier-format input:** every retired key and the renamed group kind is an error with instructions, located at the key; nothing is converted; the file is written back unchanged. The schema holds no retired key; `vrf` on interfaces; loopbacks have no physical-link properties. |
 | Selection context | `test/selection-context.test.mjs` (6 tests) | Each element type (device, port, link, network, relation, group, protocol) gives the documented direct relationships; indirect ones (a cable's far end, a sub-group's devices, the cables under a tunnel's carrier, built-in protocols) are excluded; symmetric and a subset of the diagram highlight in every example; view-independent; protocols can be selected; the Relations list shows the same states with screen-reader text |
 | Architecture | `test/architecture.test.mjs` (3 tests) | Every module lives in a layer folder; imports follow the allowed dependency direction (docs/ARCHITECTURE.md); the diagram, layout and UI layers never import the YAML layer |
 | Module APIs | `test/modules.test.mjs` (9 tests) | Document editing operations (typed values, lists, endpoints, attrs, key order, one undo step each); the format schema is the single source of allowed keys; model queries; export file names; `check:dist` accepts the current build and rejects a stale HTML file |
@@ -444,7 +445,7 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/scr
    * Switch views: the markings stay the same.
    * Press `Esc`: all entries return to normal.
 
-8. **Derived values and trunk VLANs** (format version 2). Keep the **YAML**
+8. **Derived values and trunk VLANs.** Keep the **YAML**
    tab in mind: at every step it must show only what you typed.
    * Click **New**. Add two devices; on each, press **+ Interface** (`eth0`).
      Add a link and choose `device1`/`eth0` for End A and `device2`/`eth0`
@@ -482,10 +483,10 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/scr
      the downloaded file: the members, the interface VLANs, the trunk
      labels and both views are the same as before, and the status reads no
      unsaved changes.
-   * **Version 1 input.** In the YAML tab, change the first line to
-     `netatlas: 1`, add `speed: 1G` to an interface and `members: [device1]`
-     to a network, and **Apply**. Problems lists an error for the version and
-     one for each of the two keys, each saying what to do; the keys are shown
+   * **Earlier-format input.** In the YAML tab, add `speed: 1G` to an
+     interface and `members: [device1]` to a network, and **Apply**.
+     Problems lists one error for each of the two keys, each saying what to
+     do; the keys are shown
      under **Other properties** on the interface and the network, and the
      YAML tab still contains them unchanged.
 

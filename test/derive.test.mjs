@@ -24,7 +24,7 @@ const errorsOf = (text) => load2(text).errors.map((e) => e.message);
 
 // ------------------------------------------------------------------ membership
 
-const net = `netatlas: 2
+const net = `netatlas: 1
 devices:
   - id: r1
     interfaces:
@@ -207,7 +207,7 @@ test('membership drives highlighting, the selection context, search and the layo
 
 // ---------------------------------------------------------- link-end VLANs
 
-const lk = `netatlas: 2
+const lk = `netatlas: 1
 devices:
   - id: a
     interfaces: [e0, e1, e2]
@@ -296,11 +296,11 @@ test('editing link-end VLANs: only the edited end is written; short form in, sho
   assert.match(d.exportText(), /\{id: plain, a: a:e2, b: "b:e2"\}/, 'no VLAN left: back to the short form, no empty list');
   assert.ok(d.valid && !d.warnings.length);
   // an end without a device cannot get VLANs
-  const e = doc('netatlas: 2\ndevices:\n  - id: a\nlinks:\n  - {id: l}\n');
+  const e = doc('netatlas: 1\ndevices:\n  - id: a\nlinks:\n  - {id: l}\n');
   assert.equal(e.addEndVlans(['links', 0, 'a'], [10]), false);
-  assert.equal(e.exportText(), 'netatlas: 2\ndevices:\n  - id: a\nlinks:\n  - {id: l}\n');
+  assert.equal(e.exportText(), 'netatlas: 1\ndevices:\n  - id: a\nlinks:\n  - {id: l}\n');
   // a device-only end works too, and an invalid entry in the file is kept, not dropped
-  const f = doc('netatlas: 2\ndevices:\n  - id: a\n  - id: b\nlinks:\n  - {id: l, a: a, b: {device: b, vlans: [x, 5]}}\n');
+  const f = doc('netatlas: 1\ndevices:\n  - id: a\n  - id: b\nlinks:\n  - {id: l, a: a, b: {device: b, vlans: [x, 5]}}\n');
   f.addEndVlans(['links', 0, 'a'], [5]);
   f.addEndVlans(['links', 0, 'b'], [7]);
   assert.match(f.exportText(), /a: \{device: a, vlans: \[5\]\}, b: \{device: b, vlans: \[x, 5, 7\]\}/);
@@ -369,8 +369,7 @@ networks:
 `;
   const r = load2(old);
   const by = (re) => r.errors.filter((e) => re.test(e.message));
-  assert.equal(r.errors.length, 9, r.errors.map((e) => e.message).join('\n'));
-  assert.match(r.errors[0].message, /^format version 1 is no longer read/);
+  assert.equal(r.errors.length, 8, r.errors.map((e) => e.message).join('\n'));
   assert.match(by(/"speed"/)[0].message, /^"speed" is no longer part of the format — speed is configured once, on the physical link: set "speed:" on the link/);
   assert.match(by(/"media"/)[0].message, /set "medium:" on the link cabled to this port/);
   assert.equal(by(/"vlan" is no longer part of the format — the VLAN of an interface is derived from the network/).length, 2, 'interfaces and loopbacks');
@@ -387,8 +386,8 @@ networks:
   // … and the file is written back unchanged, so the user can fix it
   assert.equal(doc(old).exportText(), old);
   // the same keys are rejected when written in block style, and link "speed"/"medium" stay valid
-  assert.match(errorsOf('netatlas: 2\ndevices:\n  - id: a\n    interfaces:\n      - id: e0\n        speed: 1G\n')[0], /"speed" is no longer part of the format/);
-  assert.deepEqual(errorsOf('netatlas: 2\ndevices:\n  - id: a\n  - id: b\nlinks:\n  - {id: l, a: a, b: b, medium: fiber, speed: 1G}\n'), []);
+  assert.match(errorsOf('netatlas: 1\ndevices:\n  - id: a\n    interfaces:\n      - id: e0\n        speed: 1G\n')[0], /"speed" is no longer part of the format/);
+  assert.deepEqual(errorsOf('netatlas: 1\ndevices:\n  - id: a\n  - id: b\nlinks:\n  - {id: l, a: a, b: b, medium: fiber, speed: 1G}\n'), []);
 });
 
 test('the schema no longer contains retired keys, and the editor never writes them', () => {
@@ -405,7 +404,7 @@ test('the schema no longer contains retired keys, and the editor never writes th
 });
 
 test('VRF is assigned on interfaces (loopbacks included), not on networks', () => {
-  const r = ok('netatlas: 2\ndevices:\n  - id: pe\n    interfaces:\n      - {id: lo1, type: loopback, ip: 10.9.9.1/32, vrf: red}\n      - {id: e0, ip: 10.1.0.1/24, vrf: red}\n      - {id: e1, ip: 10.1.0.2/24}\nnetworks:\n  - {id: n, cidr: 10.1.0.0/24}\n');
+  const r = ok('netatlas: 1\ndevices:\n  - id: pe\n    interfaces:\n      - {id: lo1, type: loopback, ip: 10.9.9.1/32, vrf: red}\n      - {id: e0, ip: 10.1.0.1/24, vrf: red}\n      - {id: e1, ip: 10.1.0.2/24}\nnetworks:\n  - {id: n, cidr: 10.1.0.0/24}\n');
   assert.deepEqual(r.model.devices[0].interfaces.map((i) => i.vrf), ['red', 'red', undefined]);
   assert.match(JSON.stringify(panels.detailsFor(r.model, 'iface:pe:e0')), /"vrf"[^\]]*\]?[^\]]*red/);
   // membership is by prefix only; the VRF does not take part
@@ -413,13 +412,13 @@ test('VRF is assigned on interfaces (loopbacks included), not on networks', () =
 });
 
 test('group kind "floor" replaces "row"', () => {
-  const r = ok('netatlas: 2\ngroups:\n  - {id: b, kind: building}\n  - {id: f2, kind: Floor, parent: b}\n');
+  const r = ok('netatlas: 1\ngroups:\n  - {id: b, kind: building}\n  - {id: f2, kind: Floor, parent: b}\n');
   assert.equal(r.model.groups[1].kind, 'floor');
-  assert.match(errorsOf('netatlas: 2\ngroups:\n  - {id: f2, kind: ROW}\n')[0], /group kind "row" was renamed to "floor"/);
+  assert.match(errorsOf('netatlas: 1\ngroups:\n  - {id: f2, kind: ROW}\n')[0], /group kind "row" was renamed to "floor"/);
 });
 
 test('loopbacks stay logical: no physical-link properties, no cable', () => {
-  const base = 'netatlas: 2\ndevices:\n  - id: a\n    interfaces: [{id: lo0, type: loopback, ip: 10.0.0.1/32SPEED}, e0]\n  - id: b\n    interfaces: [e0]\n';
+  const base = 'netatlas: 1\ndevices:\n  - id: a\n    interfaces: [{id: lo0, type: loopback, ip: 10.0.0.1/32SPEED}, e0]\n  - id: b\n    interfaces: [e0]\n';
   assert.match(errorsOf(base.replace('SPEED', ', speed: 1G'))[0], /"speed" is no longer part of the format/);
   assert.match(errorsOf(base.replace('SPEED', '') + 'links:\n  - {id: l, a: "a:lo0", b: "b:e0"}\n')[0], /which is logical/);
   assert.doesNotMatch(JSON.stringify(panels.detailsFor(ok(base.replace('SPEED', '')).model, 'iface:a:lo0')), /cable|speed|media/);

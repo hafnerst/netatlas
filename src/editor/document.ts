@@ -55,7 +55,7 @@ export const KEY_ORDER: { [k: string]: string[] } = SCHEMA;
 export type Origin = 'new' | 'file' | 'example';
 
 /** "New" starts from an empty model: nothing is created that the user did not choose. */
-export const NEW_MODEL_YAML = `netatlas: 2
+export const NEW_MODEL_YAML = `netatlas: 1
 title: New network
 `;
 
@@ -109,7 +109,7 @@ export class ModelDoc {
     const res = loadModel(text);
     if (!res.root) return { errors: res.errors };
     if (res.root.kind !== 'map') {
-      return { errors: [{ severity: 'error', line: res.root.line || 1, path: '', message: 'the document must be a mapping starting with "netatlas: 2"' }] };
+      return { errors: [{ severity: 'error', line: res.root.line || 1, path: '', message: 'the document must be a mapping starting with "netatlas: 1"' }] };
     }
     return { doc: new ModelDoc(res.root, fileName, origin), errors: [] };
   }
