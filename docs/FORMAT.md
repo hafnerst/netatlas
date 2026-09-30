@@ -457,8 +457,10 @@ layout, which is itself deterministic.
 
 ### Layout status
 
-For each view the editor shows whether the diagram matches Auto-arrange. The
-status is derived from the document, never from the last action:
+For each view the editor knows whether the diagram matches Auto-arrange, and
+shows the status of the view on screen on the **Auto-arrange** button (icon,
+colour, hover text and accessible description). The status is derived from
+the document, never from the last action:
 
 | Status | Rule |
 |---|---|

@@ -594,36 +594,39 @@ export class App {
   }
 
   /**
-   * Per-view layout status next to the Auto-arrange button. Always derived
-   * from the document (current positions vs. the deterministic Auto-arrange
-   * result), never from the last action, so it is right after undo/reload.
+   * Layout status of the shown view, on the Auto-arrange button itself: an
+   * icon, a colour and a message (hover text and accessible description).
+   * Always derived from the document (current positions vs. the
+   * deterministic Auto-arrange result), never from the last action, so it is
+   * right after undo/reload. Both views are tracked independently; the
+   * button shows the one on screen.
    */
   private updateLayoutStatus(): void {
     const d = this.mdoc;
     const s = this.session;
-    const texts = { auto: 'Auto-arranged', manual: 'Manually adjusted', edited: 'Edited since arranged' };
-    const tips = {
-      auto: 'Every object is exactly where Auto-arrange puts it for the current model.',
-      manual: 'Some objects were dragged away from their auto-arranged positions. Auto-arrange restores them (undoable).',
-      edited:
-        'The model changed after the layout was arranged. Existing objects kept their positions and new ones were placed next to their neighbors, so the diagram no longer matches a fresh Auto-arrange. No object was moved by hand.',
-    };
-    const views: View[] = ['physical', 'logical'];
-    for (const v of views) {
-      const badge = this.doc.querySelector(`[data-view-status="${v}"]`) as HTMLElement | null;
-      if (!badge) continue;
-      if (!d || !s) {
-        badge.textContent = '';
-        badge.className = 'lstat';
-        continue;
-      }
-      const st = d.layoutStatus(v);
-      const name = v === 'physical' ? 'Physical' : 'Logical';
-      badge.textContent = `${name}: ${texts[st]}`;
-      badge.className = `lstat st-${st}${s.state.view === v ? ' current' : ''}`;
-      badge.setAttribute('data-status', st);
-      badge.title = `${name} view${s.state.view === v ? ' (shown)' : ''}: ${tips[st]}` + (d.hasStoredLayout(v) ? ' Positions are stored in the model and exported with it.' : ' Positions are not stored yet; the file shows the auto-arranged layout.');
+    const btn = this.$('btn-arrange') as HTMLButtonElement;
+    const icon = btn.querySelector('.arrange-icon') as HTMLElement;
+    const desc = this.$('arrange-status');
+    const action = 'Auto-arrange recomputes the positions of every object, for this view or both (A).';
+    for (const v of ['physical', 'logical'] as View[]) {
+      if (d && s) btn.setAttribute('data-status-' + v, d.layoutStatus(v));
+      else btn.removeAttribute('data-status-' + v);
     }
+    if (!d || !s) {
+      btn.removeAttribute('data-status');
+      btn.removeAttribute('data-view');
+      icon.textContent = '';
+      desc.textContent = '';
+      btn.title = action;
+      return;
+    }
+    const st = d.layoutStatus(s.state.view);
+    btn.setAttribute('data-status', st);
+    btn.setAttribute('data-view', s.state.view);
+    icon.textContent = LAYOUT_STATUS_ICON[st];
+    // the same message for hover and for assistive technology (aria-describedby)
+    if (desc.textContent !== LAYOUT_STATUS_MESSAGE[st]) desc.textContent = LAYOUT_STATUS_MESSAGE[st];
+    btn.title = LAYOUT_STATUS_MESSAGE[st] + ' ' + action;
   }
 
   private fillExamples(): void {
@@ -1113,6 +1116,14 @@ export class App {
     downloadText(this.doc, this.exportSvg(), base + '-' + this.session.state.view + '.svg', 'image/svg+xml');
   }
 }
+
+/** What the Auto-arrange button says about the shown view (icon + message, never colour alone). */
+const LAYOUT_STATUS_ICON = { auto: '\u2713', manual: '\u270E', edited: '\u25CF' };
+const LAYOUT_STATUS_MESSAGE = {
+  auto: 'This view matches the auto-arranged layout.',
+  manual: 'This view has manually adjusted positions. Auto-arrange will replace them.',
+  edited: 'This view no longer matches the auto-arranged layout: the model was edited after it was arranged. Auto-arrange will rearrange it.',
+};
 
 function statusText(st: 'auto' | 'manual' | 'edited'): string {
   return st === 'auto' ? '“Auto-arranged”' : st === 'manual' ? '“Manually adjusted”' : '“Edited since arranged”';

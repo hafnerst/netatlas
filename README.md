@@ -54,8 +54,9 @@ the [changelog](CHANGELOG.md) for what it covers, and
 |---|---|
 | ![Metro ring after Auto-arrange, physical view](docs/img/metro-physical.png) | ![Metro ring after Auto-arrange, logical view](docs/img/metro-logical.png) |
 
-The **Auto-arrange…** button and the per-view status (*Auto-arranged* /
-*Manually adjusted* / *Edited since arranged*) sit in the top toolbar.
+The **Auto-arrange…** button sits in the top toolbar. Its icon shows the
+layout status of the view on screen (✓ matches the auto-arranged layout,
+✎ manually adjusted).
 
 ## Open it, create or load a model
 
@@ -149,7 +150,7 @@ written back byte-for-byte. The details are in
 | Selection context in the lists | the element lists on the left and the **Relations** tab show the same selection: the selected entry is marked **▸** (bold, with a bar), entries **directly** related to it are marked **•**, and all others are greyed out but stay readable, clickable and keyboard-focusable. Select from either list or the diagram; `Esc` clears it. See *Which entries count as related* below. |
 | Hover | tooltip with a short summary |
 | Rearrange | drag devices or networks. The position is stored in the model (one undo step each) and exported with it. |
-| Auto-arrange | **Auto-arrange…** in the top toolbar (or `A`): recomputes the positions of the **whole model** for this view or both views. The badges next to it show whether each view is auto-arranged. See below. |
+| Auto-arrange | **Auto-arrange…** in the top toolbar (or `A`): recomputes the positions of the **whole model** for this view or both views. The button itself shows whether the view on screen matches the auto-arranged layout (icon, colour and hover text). |
 | Find | `/` or the search box: ids, labels, IP addresses, CIDRs, protocols, cable ids |
 | Filter | **Legend** tab (logical view): turn protocols on and off; top-bar toggles for labels, networks and a faint physical underlay |
 | Export picture | **Save SVG** saves the current view as a standalone SVG file |
@@ -190,14 +191,18 @@ the scope and the current status of each view, and lets you choose
 **Arrange <current> view only** or **Arrange both views**. The result is one
 undo step (Ctrl+Z). It never runs by itself.
 
-Next to the button, one badge per view tells you whether that view matches
-the Auto-arrange result (the badge of the shown view is highlighted):
+The button itself tells you whether the **view on screen** matches the
+Auto-arrange result. There is no separate status element. The status is shown
+three ways, so it doesn't depend on colour or on hovering: an icon in front
+of the label, the button's colour and border, and a message that is both the
+hover text and the button's accessible description. The button stays a
+normal, clickable button in every state.
 
-| Status | Meaning |
-|---|---|
-| ✓ **Auto-arranged** | Every object is exactly where Auto-arrange puts it for the current model. |
-| ✎ **Manually adjusted** | Some objects were dragged away from their auto-arranged positions. |
-| ● **Edited since arranged** | The model changed after arranging (e.g. a device was added). Existing objects kept their positions and new ones were placed next to their neighbors, so the diagram no longer matches a fresh Auto-arrange. Nothing was moved by hand. |
+| Button | Message | Meaning |
+|---|---|---|
+| ✓ green icon, solid border | *This view matches the auto-arranged layout.* | **Auto-arranged.** Every object is exactly where Auto-arrange puts it for the current model. |
+| ✎ orange icon, dashed orange border | *This view has manually adjusted positions. Auto-arrange will replace them.* | **Manually adjusted.** Some objects were dragged away from their auto-arranged positions. |
+| ● dashed border | *This view no longer matches the auto-arranged layout: the model was edited after it was arranged. Auto-arrange will rearrange it.* | **Edited since arranged.** The model changed after arranging (e.g. a device was added). Existing objects kept their positions and new ones were placed next to their neighbors, so the diagram no longer matches a fresh Auto-arrange. Nothing was moved by hand. |
 
 The status is **derived from the document every time**: it compares the
 current positions with the deterministic Auto-arrange result for the current
@@ -394,7 +399,7 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/scr
 | Selection context | `test/selection-context.test.mjs` (6 tests) | Each element type (device, port, link, network, relation, group, protocol) gives the documented direct relationships; indirect ones (a cable's far end, a sub-group's devices, the cables under a tunnel's carrier, built-in protocols) are excluded; symmetric and a subset of the diagram highlight in every example; view-independent; protocols can be selected; the Relations list shows the same states with screen-reader text |
 | Architecture | `test/architecture.test.mjs` (3 tests) | Every module lives in a layer folder; imports follow the allowed dependency direction (docs/ARCHITECTURE.md); the diagram, layout and UI layers never import the YAML layer |
 | Module APIs | `test/modules.test.mjs` (9 tests) | Document editing operations (typed values, lists, endpoints, attrs, key order, one undo step each); the format schema is the single source of allowed keys; model queries; export file names; `check:dist` accepts the current build and rejects a stale HTML file |
-| **End-to-end in a real browser** | `test/browser.test.mjs` → `dist/netatlas.html#selftest` (199 in-page checks) | Headless Chrome, Edge or Chromium opens the file from `file://` **with DNS resolution disabled** and drives the real UI. **Viewer:** every example loads through the File API path, both views are drawn, loopback chips appear only in the logical view, interaction works. **New model:** New is empty; a new device shows *Select device type* and saves no type until one is chosen; a new relation has no protocol and reports its missing protocol and endpoints (export then needs "Download anyway"); a new network is only an ID; add a device, **add two loopbacks, type IPv4/IPv6 addresses, see the error for an address without a prefix and fix it**, set `router_id`, add interfaces, a cable, a GRE tunnel between loopbacks with nested attrs, then **download and reload** the file. **Imported model:** rename a device (every reference follows), edit, add an IPv6 loopback, download as `…-edited.yaml`, **reload, and check that edits, hidden attributes and comments survived**. **Guards:** unsaved-changes dialog on replace; `beforeunload`; Ctrl+Z/Y; deleting a referenced device reports broken references; **exporting an invalid model requires "Download anyway"**; YAML-tab apply/reject; unknown keys kept and movable into attrs; typed text is committed before a button acts; **selection context in the lists:** selecting from the diagram, the left list and the right-hand Relations list keeps lists and diagram consistent for every element type (direct entries related, indirect ones dimmed), unrelated entries stay focusable and selectable, view switches leave no stale highlighting, and `Esc` clears everything; the device type is chosen from the 15 types by display name. **Auto-arrange:** the button is in the top toolbar, visible and labelled (disabled until a model is open); the status badges read *Auto-arranged* / *Manually adjusted* / *Edited since arranged* after loading, dragging, undo, switching views (the shown view is highlighted), Auto-arrange, moving a node back to its calculated position, export → reload of arranged and of manually adjusted layouts, a model edit, and New; loading stores nothing; the dialog shows the scope; arranging an automatic layout stores it without moving anything; repeating it is a no-op; a manual move changes only that node and is undone by arrange (and restored by undo); **arrange → export → reload is pixel-identical in both views**; a file with every list and key reversed arranges identically; **the browser reproduces the build-time positions of `metro-ring-arranged.yaml`** (a cross-engine determinism check when run in Firefox or Safari). **Safety:** hostile labels create no elements; YAML syntax errors are refused with the current model kept; **no network requests, no CSP violations**. The test is skipped if no Chromium-based browser is installed; set `NETATLAS_BROWSER` to choose one. |
+| **End-to-end in a real browser** | `test/browser.test.mjs` → `dist/netatlas.html#selftest` (202 in-page checks) | Headless Chrome, Edge or Chromium opens the file from `file://` **with DNS resolution disabled** and drives the real UI. **Viewer:** every example loads through the File API path, both views are drawn, loopback chips appear only in the logical view, interaction works. **New model:** New is empty; a new device shows *Select device type* and saves no type until one is chosen; a new relation has no protocol and reports its missing protocol and endpoints (export then needs "Download anyway"); a new network is only an ID; add a device, **add two loopbacks, type IPv4/IPv6 addresses, see the error for an address without a prefix and fix it**, set `router_id`, add interfaces, a cable, a GRE tunnel between loopbacks with nested attrs, then **download and reload** the file. **Imported model:** rename a device (every reference follows), edit, add an IPv6 loopback, download as `…-edited.yaml`, **reload, and check that edits, hidden attributes and comments survived**. **Guards:** unsaved-changes dialog on replace; `beforeunload`; Ctrl+Z/Y; deleting a referenced device reports broken references; **exporting an invalid model requires "Download anyway"**; YAML-tab apply/reject; unknown keys kept and movable into attrs; typed text is committed before a button acts; **selection context in the lists:** selecting from the diagram, the left list and the right-hand Relations list keeps lists and diagram consistent for every element type (direct entries related, indirect ones dimmed), unrelated entries stay focusable and selectable, view switches leave no stale highlighting, and `Esc` clears everything; the device type is chosen from the 15 types by display name. **Auto-arrange:** the button is in the top toolbar, visible and labelled (disabled until a model is open); the status badges read *Auto-arranged* / *Manually adjusted* / *Edited since arranged* after loading, dragging, undo, switching views (the shown view is highlighted), Auto-arrange, moving a node back to its calculated position, export → reload of arranged and of manually adjusted layouts, a model edit, and New; loading stores nothing; the dialog shows the scope; arranging an automatic layout stores it without moving anything; repeating it is a no-op; a manual move changes only that node and is undone by arrange (and restored by undo); **arrange → export → reload is pixel-identical in both views**; a file with every list and key reversed arranges identically; **the browser reproduces the build-time positions of `metro-ring-arranged.yaml`** (a cross-engine determinism check when run in Firefox or Safari). **Safety:** hostile labels create no elements; YAML syntax errors are refused with the current model kept; **no network requests, no CSP violations**. The test is skipped if no Chromium-based browser is installed; set `NETATLAS_BROWSER` to choose one. |
 
 ### Manual check (any browser, e.g. Firefox or Safari)
 
@@ -418,19 +423,27 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/scr
 5. Open `examples/broken/errors-demo.yaml`. It opens as a draft with five
    errors, each shown next to its field and listed in **Problems**.
 6. **Auto-arrange:** open `examples/metro-ring.yaml`. The **Auto-arrange…**
-   button is in the top toolbar, and the badges next to it read
-   *Physical: Auto-arranged* and *Logical: Auto-arranged*.
-   * Drag `pe3` somewhere else: the Physical badge changes to *Manually
-     adjusted*, and switching to Logical shows that view is still
-     *Auto-arranged*.
+   button is in the top toolbar, next to **Physical** / **Logical**, with a
+   green ✓ in front of its label; there is no other status element. Hover
+   over it: *This view matches the auto-arranged layout.* A screen reader
+   reads the same sentence as the button's description.
+   * Drag `pe3` somewhere else: the icon changes to an orange ✎, the border
+     becomes dashed orange, and the hover text reads *This view has manually
+     adjusted positions. Auto-arrange will replace them.* The button is
+     still clickable.
+   * Switch to **Logical**: the button shows ✓ again (that view wasn't
+     touched) and nothing moves. Switch back to **Physical**: ✎, and `pe3`
+     is still where you dropped it.
    * Choose **Auto-arrange… → Arrange both views**:
-     `pe3` returns, the toast reports what moved, and both badges read
-     *Auto-arranged*.
+     `pe3` returns, the toast reports what moved, and the button shows ✓ in
+     both views.
    * Choose **Auto-arrange…** again: "Already arranged — nothing moved".
-   * Press Ctrl+Z: `pe3` is back where you dragged it, and the badge says
-     *Manually adjusted* again.
-   * Download, then open the downloaded file: both views look exactly the
-     same and show the same badges. Its `layout:` section matches the one in
+   * Press Ctrl+Z: `pe3` is back where you dragged it, and the button shows
+     ✎ again.
+   * Click **New**: ✓. Open the file again: ✓.
+   * Drag `pe3`, download, then open the downloaded file: both views look
+     exactly the same and the button shows the same status in each view
+     (Physical ✎, Logical ✓). After Auto-arrange and another download, its `layout:` section matches the one in
      `examples/metro-ring-arranged.yaml` after the same arrange.
 7. **Selection context:** open `examples/enterprise-wan.yaml` in a window
    wider than 1100 px, so the element lists are shown.
