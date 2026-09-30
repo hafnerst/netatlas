@@ -21,7 +21,7 @@ import { CHIP_FONT, MEMBER_LABEL_SIZE, NET_LABEL_SIZE, loopbackChipText, network
 import { TextBlock } from '../layout/text';
 import { networkMembers } from '../model/derive';
 import { sortedByName } from '../model/order';
-import { Device, LineStyle, Model, ProtocolDef, Relation, relationDevices } from '../model/types';
+import { Device, LineStyle, Model, ProtocolDef, Relation, loopbacks, relationDevices } from '../model/types';
 import { LabelPlacer, alongSegment, centerRect, textLines } from './labels';
 import { cssToken, deviceNode, deviceSubtitle, SceneResult } from './physical';
 import { VNode, h } from './scene';
@@ -367,7 +367,7 @@ function pill(ref: string, p: Pt, box: { block: TextBlock; w: number; h: number 
 
 /** Loopbacks as small chips hanging under the device, in alphabetical order (logical view only; they are never cabled). */
 function loopbackChips(d: Device, n: LNode): VNode[] {
-  const loops = sortedByName(d.loopbacks, (l) => l.id);
+  const loops = sortedByName(loopbacks(d), (l) => l.id);
   if (!loops.length) return [];
   const out: VNode[] = [];
   const top = n.cy - n.h / 2 + (n.bodyH || 0) + 4;

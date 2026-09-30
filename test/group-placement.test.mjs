@@ -262,10 +262,10 @@ test('the logical view is arranged by logical relationships, not by cables', () 
   // a-b-c-d are cabled in a chain; logically a talks to d and b to c's network only
   const text = `netatlas: 1
 devices:
-  - {id: a, type: router, loopbacks: [{id: lo0, ip: 10.0.0.1/32}], interfaces: [e0]}
-  - {id: b, type: router, loopbacks: [{id: lo0, ip: 10.0.0.2/32}], interfaces: [e0, e1]}
-  - {id: c, type: router, interfaces: [e0, {id: e1, children: [{id: v1, ip: 10.9.0.3/24}]}]}
-  - {id: d, type: router, loopbacks: [{id: lo0, ip: 10.0.0.4/32}], interfaces: [{id: e0, children: [{id: v1, ip: 10.9.0.4/24}]}]}
+  - {id: a, type: router, interfaces: [e0], logical_interfaces: [{id: lo0, type: loopback, ip: 10.0.0.1/32}]}
+  - {id: b, type: router, interfaces: [e0, e1], logical_interfaces: [{id: lo0, type: loopback, ip: 10.0.0.2/32}]}
+  - {id: c, type: router, interfaces: [e0, e1], logical_interfaces: [{id: v1, type: virtual, ip: 10.9.0.3/24}]}
+  - {id: d, type: router, interfaces: [e0], logical_interfaces: [{id: lo0, type: loopback, ip: 10.0.0.4/32}, {id: v1, type: virtual, ip: 10.9.0.4/24}]}
 links:
   - {id: ab, a: "a:e0", b: "b:e0"}
   - {id: bc, a: "b:e1", b: "c:e0"}

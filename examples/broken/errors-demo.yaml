@@ -8,14 +8,17 @@ devices:
   - id: r1
     typ: router                 # typo: "type"
     vendor: Acme                # no longer part of the format
+    loopbacks:                  # outdated: a loopback is a logical interface now
+      - {id: lo9, ip: 10.0.0.9/32}
     interfaces:
       - id: eth0
-        type: physical          # an interface is always physical: it has no type
-        children:
-          - {id: tun0, type: tunnel}
-          - {id: eth0.10, type: subinterface}   # a child is "logical" or "tunnel"
-    loopbacks:
-      - {id: lo0}               # a loopback needs an address
+        children:               # outdated: interfaces are no longer nested
+          - {id: tun9, type: tunnel}
+    logical_interfaces:
+      - {id: tun0, type: tunnel, source: eth7}              # r1 has no eth7
+      - {id: bond0, type: virtual, members: [eth0, tun0]}   # a member is a physical interface
+      - {id: lo0, type: loopback}                           # a loopback needs an address
+      - {id: x0, type: subinterface}                        # loopback, virtual or tunnel
   - id: r2
     interfaces: [eth0, eth1]
 

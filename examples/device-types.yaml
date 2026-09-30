@@ -40,11 +40,11 @@ devices:
     label: edge-rtr
     type: router
     group: campus
-    loopbacks:
-      - {id: lo0, ip: 10.255.0.1/32}
     interfaces:
       - {id: wan0, ip: 198.51.100.2/30}
       - {id: lan0, ip: 10.0.0.1/30}
+    logical_interfaces:
+      - {id: lo0, type: loopback, ip: 10.255.0.1/32}
   - id: vpn-gw
     label: vpn-gw
     type: gateway

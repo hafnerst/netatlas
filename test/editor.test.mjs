@@ -213,8 +213,8 @@ devices:
       empty-map: {}
       when: 2027-01-31
       yes-string: yes
-    loopbacks:
-      - {id: lo0, ip: [10.0.0.1/32], attrs: {ospf-passive: true}}
+    logical_interfaces:
+      - {id: lo0, type: loopback, ip: [10.0.0.1/32], attrs: {ospf-passive: true}}
     interfaces:
       - id: eth0
         extra: {x: [1, {y: z}]}
@@ -252,11 +252,11 @@ test('renaming ids updates every reference (device, interface, group, link, rela
 });
 
 test('renaming a loopback updates the relations that use it', () => {
-  const d = ModelDoc.fromText('netatlas: 1\ndevices:\n  - id: r1\n    loopbacks:\n      - {id: lo0, ip: [10.255.0.1/32]}\n  - id: r2\n    loopbacks:\n      - {id: lo0, ip: [10.255.0.2/32]}\nrelations:\n  - {id: s, protocol: ibgp, endpoints: ["r1:lo0", "r2:lo0"]}\n', 'r.yaml', 'file').doc;
-  assert.equal(d.renameInterface(['devices', 0, 'loopbacks', 0], 'Loopback0'), 1);
+  const d = ModelDoc.fromText('netatlas: 1\ndevices:\n  - id: r1\n    logical_interfaces:\n      - {id: lo0, type: loopback, ip: [10.255.0.1/32]}\n  - id: r2\n    logical_interfaces:\n      - {id: lo0, type: loopback, ip: [10.255.0.2/32]}\nrelations:\n  - {id: s, protocol: ibgp, endpoints: ["r1:lo0", "r2:lo0"]}\n', 'r.yaml', 'file').doc;
+  assert.equal(d.renameInterface(['devices', 0, 'logical_interfaces', 0], 'Loopback0'), 1);
   assert.ok(d.valid);
   assert.deepEqual(d.result.model.relations[0].endpoints.map((e) => e.device + ':' + e.iface), ['r1:Loopback0', 'r2:lo0']);
-  assert.equal(d.canUndo(), 'Rename loopback');
+  assert.equal(d.canUndo(), 'Rename interface');
 });
 
 test('deleting an entity reports (never silently removes) broken references; undo restores', () => {
@@ -325,25 +325,25 @@ test('undo history is bounded and dirty tracking follows save', () => {
 const loopDoc = (ip, extra = '') => `netatlas: 1
 devices:
   - id: r1
-${extra}    loopbacks:
-      - {id: lo0, label: Router ID, ip: ${ip}}
+${extra}    logical_interfaces:
+      - {id: lo0, type: loopback, label: Router ID, ip: ${ip}}
     interfaces:
       - {id: eth0}
 `;
 
-test('loopbacks: valid IPv4/IPv6 lists, single value and multiple loopbacks', () => {
+test('logical_interfaces: valid IPv4/IPv6 lists, single value and multiple loopbacks', () => {
   for (const ip of ['[10.0.0.1/32]', '[2001:db8::1/128]', '[10.0.0.1/32, 2001:db8::1/128, 192.0.2.7/24]', '10.0.0.1/32', '[::1/128]', '["2001:db8:0:0:0:0:0:2/128"]', '[::ffff:10.1.2.3/128]']) {
     const r = validate.loadModel(loopDoc(ip));
     assert.deepEqual(r.errors, [], ip);
   }
-  const r = validate.loadModel(loopDoc('[10.0.0.1/32]').replace('    interfaces:', '      - {id: lo1, ip: [fd00::1/128]}\n      - {id: lo2, ip: [10.9.9.9/32]}\n    interfaces:'));
+  const r = validate.loadModel(loopDoc('[10.0.0.1/32]').replace('    interfaces:', '      - {id: lo1, type: loopback, ip: [fd00::1/128]}\n      - {id: lo2, type: loopback, ip: [10.9.9.9/32]}\n    interfaces:'));
   assert.deepEqual(r.errors, []);
   const d = r.model.devices[0];
-  assert.deepEqual(d.loopbacks.map((i) => i.id + ':' + i.type), ['lo0:loopback', 'lo1:loopback', 'lo2:loopback']);
+  assert.deepEqual(d.logical.map((i) => i.id + ':' + i.type), ['lo0:loopback', 'lo1:loopback', 'lo2:loopback']);
   assert.deepEqual(d.interfaces.map((i) => i.id + ':' + i.type), ['eth0:physical'], 'loopbacks are not part of the physical interfaces');
 });
 
-test('loopbacks: invalid addresses are errors with an explanation at the address', () => {
+test('logical_interfaces: invalid addresses are errors with an explanation at the address', () => {
   const cases = [
     ['[10.0.0.1]', /needs a prefix length, e\.g\. 10\.0\.0\.1\/32/],
     ['[10.0.0.256/32]', /not a valid IPv4 or IPv6 address/],
@@ -362,28 +362,28 @@ test('loopbacks: invalid addresses are errors with an explanation at the address
     assert.ok(r.errors.some((e) => re.test(e.message)), `${ip}: ${r.errors.map((e) => e.message).join('; ')}`);
   }
   const d = ModelDoc.fromText(loopDoc('[10.0.0.1/32, bad]'), 'x', 'file').doc;
-  assert.deepEqual(d.issuePath(d.errors[0]), ['devices', 0, 'loopbacks', 0, 'ip', 1]);
+  assert.deepEqual(d.issuePath(d.errors[0]), ['devices', 0, 'logical_interfaces', 0, 'ip', 1]);
 });
 
-test('loopbacks: the router-ID field is gone, loopbacks and their addresses are not', () => {
+test('logical_interfaces: the router-ID field is gone, loopbacks and their addresses are not', () => {
   const r = validate.loadModel(loopDoc('[10.0.0.1/32, 2001:db8::1/128]', '    router_id: lo0\n'));
   assert.equal(r.errors.length, 1);
   assert.match(r.errors[0].message, /^"router_id" is no longer part of the format — a device has no router-ID field: delete this key/);
-  assert.deepEqual(r.model.devices[0].loopbacks.map((l) => [l.id, l.label, l.addresses]), [['lo0', 'Router ID', ['10.0.0.1/32', '2001:db8::1/128']]]);
+  assert.deepEqual(r.model.devices[0].logical.map((l) => [l.id, l.label, l.addresses]), [['lo0', 'Router ID', ['10.0.0.1/32', '2001:db8::1/128']]]);
   assert.ok(!('routerId' in r.model.devices[0]));
   // a loopback without IPv4 is fine: nothing depends on it being a router ID
   const v6 = validate.loadModel(loopDoc('[2001:db8::1/128]'));
   assert.deepEqual(v6.errors.concat(v6.warnings), []);
 });
 
-test('loopbacks: never cabled, usable as relation endpoints; duplicates across devices warn', () => {
+test('logical_interfaces: never cabled, usable as relation endpoints; duplicates across devices warn', () => {
   const base = `netatlas: 1
 devices:
   - id: a
-    loopbacks: [{id: lo0, ip: [10.0.0.1/32]}]
+    logical_interfaces: [{id: lo0, type: loopback, ip: [10.0.0.1/32]}]
     interfaces: [{id: e0}]
   - id: b
-    loopbacks: [{id: lo0, ip: [10.0.0.1/32]}]
+    logical_interfaces: [{id: lo0, type: loopback, ip: [10.0.0.1/32]}]
     interfaces: [{id: e0}]
 `;
   const cabled = validate.loadModel(base + 'links:\n  - {id: l1, a: "a:lo0", b: "b:e0"}\n');
@@ -393,13 +393,13 @@ devices:
   assert.ok(rel.warnings.some((w) => /also assigned to a:lo0/.test(w.message)));
 });
 
-test('loopbacks: a single address may be written as a scalar', () => {
+test('logical_interfaces: a single address may be written as a scalar', () => {
   const m = validate.loadModel(readFileSync(join(root, 'examples', 'enterprise-wan.yaml'), 'utf8'));
   assert.deepEqual(m.errors, []);
   assert.equal(m.model.index.interfaces.get('hq-rtr1:lo0').type, 'loopback');
 });
 
-test('loopbacks: shown as chips in the logical view and in device details, never as ports', () => {
+test('logical_interfaces: shown as chips in the logical view and in device details, never as ports', () => {
   const d = ModelDoc.fromText(readFileSync(join(root, 'examples', 'editor-new-network.yaml'), 'utf8'), 'n', 'file').doc;
   const s = new state.Session(d.result.model);
   const phys = s.render().root;
@@ -413,9 +413,9 @@ test('loopbacks: shown as chips in the logical view and in device details, never
   assert.ok(!/★/.test(scene.textOf(log)));
   assert.match(scene.textOf(log), /lo0  10\.255\.0\.2\/32 \+1/);
   const det = scene.textOf(load('ui/panels.js').detailsFor(d.result.model, 'device:edge-b'));
-  assert.match(det, /Loopbacks \(2\)/);
+  assert.match(det, /Logical interfaces \(4\)/);
   assert.match(det, /10\.255\.0\.2\/32\n2001:db8:ffff::2\/128/);
-  assert.match(det, /Interfaces \(1 physical, 1 cabled, 2 children\)/);
+  assert.match(det, /Physical interfaces \(1, 1 cabled\)/);
 });
 
 // ------------------------------------------------------------ IP helpers

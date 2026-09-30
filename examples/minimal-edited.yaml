@@ -10,24 +10,18 @@ title: Minimal example (edited in netatlas)
 devices:
   - id: edge-1
     type: router
-    loopbacks:
-      - {id: lo0, label: Router ID, ip: [10.255.0.1/32, 2001:db8:ffff::1/128]}
     interfaces:
-      - id: eth0
-        ip: 192.0.2.1/30
-        children:
-          - id: tun0
-            type: tunnel
+      - {id: eth0, ip: 192.0.2.1/30}
+    logical_interfaces:
+      - {id: tun0, type: tunnel, source: eth0, destination: r2:eth0}
+      - {id: lo0, type: loopback, label: Router ID, ip: [10.255.0.1/32, 2001:db8:ffff::1/128]}
   - id: r2
     type: router
-    loopbacks:
-      - {id: lo0, label: Router ID, ip: [10.255.0.2/32, 2001:db8:ffff::2/128]}
     interfaces:
-      - id: eth0
-        ip: 192.0.2.2/30
-        children:
-          - id: tun0
-            type: tunnel
+      - {id: eth0, ip: 192.0.2.2/30}
+    logical_interfaces:
+      - {id: tun0, type: tunnel, source: eth0, destination: edge-1:eth0}
+      - {id: lo0, type: loopback, label: Router ID, ip: [10.255.0.2/32, 2001:db8:ffff::2/128]}
 
 links:
   - id: cable-1

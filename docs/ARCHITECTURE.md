@@ -9,12 +9,12 @@ Each layer has one responsibility and may only import the layers below it.
 
 | Layer | Responsibility | Main modules |
 |---|---|---|
-| `model/` | The network model: types for devices, their interface hierarchy (physical interfaces with logical and tunnel children, and loopbacks), links, networks, relations, protocols and groups; the display order of names (`order.ts`); the protocol registry; IP addresses; **derived facts** (network members and interface VLANs from addresses, link-end VLAN state); pure queries (references, related objects, search). No I/O, no YAML, no layout. | `types.ts`, `device-types.ts`, `protocols.ts`, `ip.ts`, `derive.ts`, `queries.ts`, `order.ts` |
+| `model/` | The network model: types for devices, their physical and logical interfaces (loopback, virtual, tunnel) with the associations of each kind, links, networks, relations, protocols and groups; the display order of names (`order.ts`); the protocol registry; IP addresses; **derived facts** (network members and interface VLANs from addresses, link-end VLAN state); pure queries (references, related objects, search). No I/O, no YAML, no layout. | `types.ts`, `device-types.ts`, `protocols.ts`, `ip.ts`, `derive.ts`, `queries.ts`, `order.ts` |
 | `yaml/` | The YAML boundary: the supported YAML subset (parser with line/column positions, comments and styles), the serializer (the inverse), and the format **schema** (which keys exist, in canonical order). Knows nothing about networks beyond key names. | `parse.ts`, `write.ts`, `schema.ts` |
 | `validation/` | Turns a parsed YAML tree into a `Model` plus errors and warnings. Every issue is attached to the YAML node it concerns. Structural and cross-reference checks, loopback/IP rules, the presentation-only `layout` section. Callable without any UI. | `validate.ts` (the format's rules), `reader.ts` (issue collector, typed reader, suggestions) |
 | `layout/` | Deterministic positions for both views: a canonical, order-independent input built from the model; auto-arrange for the physical and the logical view; placement of new nodes; the rule "stored positions else auto-arrange". Separates calculated positions from network semantics. | `input.ts`, `physical.ts`, `logical.ts`, `positions.ts`, `text.ts` (width estimate, wrapping), `sizes.ts` (element sizes from their text), `bundles.ts` (lanes and labels of a device pair), `geometry.ts`, `order.ts` |
 | `diagram/` | Presentation: turns model + positions into a virtual SVG tree (`VNode`) for each view, and holds the DOM-free view state (current view, selection, filters, temporary drag positions). No parsing, no editing rules, no DOM. | `session.ts`, `physical.ts`, `logical.ts`, `legend.ts` (the legend as data, and its SVG form for exports), `networks-box.ts` (the networks relevant to a rendered view, and their overview box for exports), `labels.ts` (multi-line text, collision-free label placement), `scene.ts`, `style.ts`, `icons.ts` |
-| `editor/` | The editable document (`ModelDoc`): the YAML tree plus undo/redo, dirty state, validation after every change, and **explicit editing operations** (set a field, append to a list, point an endpoint at an interface, rename an id with all references, add a loopback or a child interface, arrange one view, move a node, …). Also the layout section and the layout status. | `document.ts`, `tree.ts`, `layout-section.ts` |
+| `editor/` | The editable document (`ModelDoc`): the YAML tree plus undo/redo, dirty state, validation after every change, and **explicit editing operations** (set a field, append to a list, point an endpoint at an interface, rename an id with all references, add a physical or logical interface, arrange one view, move a node, …). Also the layout section and the layout status. | `document.ts`, `tree.ts`, `layout-section.ts` |
 | `ui/` | The browser: application shell, canvas interaction, inspector forms and outline, side panels, dialogs, local file reading and download, and the only code that creates DOM elements (`dom.ts`). Uses the editor's operations and never builds YAML itself. | `app.ts`, `inspector.ts`, `panels.ts`, `dialogs.ts`, `files.ts`, `dom.ts` |
 | `app/` | Entry point and the in-browser self-test (`#selftest`). | `main.ts`, `selftest.ts` |
 | `generated/` | Built from `examples/*.yaml` by `scripts/gen-examples.mjs`; do not edit. | `examples.ts` |
@@ -78,14 +78,16 @@ anything else.
   *Trade-off:* membership is recomputed for the whole model after each edit
   (addresses × networks); that is well inside the time validation already
   takes.
-* **An interface's kind is its place in the file.** `Device.interfaces`
-  holds physical interfaces only, each with its `children` (logical or
-  tunnel); `Device.loopbacks` is a separate list. No free-text type decides
-  what can be cabled. All three share the per-device id namespace, so
-  `index.interfaces` and `device:interface` references stay flat;
-  `deviceInterfaces()` gives "every interface of a device" in file order.
-  The editor addresses an interface by its document path
-  (`interfaceEntries()`), never by a position in a merged list.
+* **Interfaces are flat, in two lists.** `Device.interfaces` holds the
+  physical interfaces and `Device.logical` the loopback, virtual and tunnel
+  interfaces; nothing is nested and there is no generic parent. Both lists
+  share the per-device id namespace, so `index.interfaces` and
+  `device:interface` references are flat too. An association is a field of
+  the kind of interface it belongs to (`members`, `vlan`, `source`,
+  `destination`) or is derived in `model/derive.ts` (`interfaceVlans`,
+  `interfaceVlanPorts`, `associatedInterfaces`): the ports of a VLAN
+  interface come from the link ends and are never stored. The editor
+  addresses an interface by its document path (`interfaceEntries()`).
 * **Display order is not file order.** `model/order.ts` sorts names for
   display (editor cards, details, loopback chips, the networks box). The
   lists in the model and in the YAML tree keep the file's order, so viewing

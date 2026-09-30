@@ -39,33 +39,31 @@ const nets = `netatlas: 1
 devices:
   - id: r1
     type: router
-    loopbacks:
-      - {id: lo0, ip: 10.255.0.1/32}
     interfaces:
-      - id: eth0
-        ip: 10.1.0.1/24
-        children:
-          - {id: eth0.20, type: logical, ip: 10.20.0.1/24}
-          - {id: tun0, type: tunnel, ip: 172.16.0.1/30}
+      - {id: eth0, ip: 10.1.0.1/24}
       - {id: eth9, ip: 10.9.0.1/24}
+    logical_interfaces:
+      - {id: lo0, type: loopback, ip: 10.255.0.1/32}
+      - {id: Vlan20, type: virtual, ip: 10.20.0.1/24}
+      - {id: bond0, type: virtual, members: [eth0], ip: 10.50.0.1/24}
+      - {id: tun0, type: tunnel, source: eth0, ip: 172.16.0.1/30}
   - id: r2
     type: router
-    loopbacks:
-      - {id: lo0, ip: 10.255.0.2/32}
     interfaces:
-      - id: eth0
-        ip: 10.1.0.2/24
-        children:
-          - {id: tun0, type: tunnel, ip: 172.16.0.2/30}
+      - {id: eth0, ip: 10.1.0.2/24}
+    logical_interfaces:
+      - {id: lo0, type: loopback, ip: 10.255.0.2/32}
+      - {id: tun0, type: tunnel, source: eth0, ip: 172.16.0.2/30}
   - id: sw
     type: switch
     interfaces: [p1, p2]
 links:
-  - {id: c1, a: "r1:eth0", b: "r2:eth0"}
+  - {id: c1, a: {device: r1, interface: eth0, vlans: [20]}, b: {device: r2, interface: eth0, vlans: [20]}}
   - {id: c2, a: {device: sw, interface: p1, vlans: [30, 31]}, b: {device: r2, vlans: [30, 31]}}
 networks:
   - {id: port-net, label: Core link, cidr: 10.1.0.0/24}
-  - {id: sub-net, label: Subinterface VLAN, cidr: 10.20.0.0/24, vlan: 20}
+  - {id: sub-net, label: VLAN interface, cidr: 10.20.0.0/24, vlan: 20}
+  - {id: agg-net, label: Bond segment, cidr: 10.50.0.0/24}
   - {id: tun-net, label: Tunnel transit, cidr: 172.16.0.0/30}
   - {id: lo-net, label: Loopbacks, cidr: 10.255.0.0/24}
   - {id: vlan-net, label: Trunked VLAN, cidr: 10.30.0.0/24, vlan: 30}
@@ -80,19 +78,19 @@ relations:
 
 test('relevance: the physical picture lists the networks of its ports and cables, not every network in the file', () => {
   const m = model(nets);
-  // ports (and the logical children that run on them) and the VLANs permitted on the cables
-  assert.deepEqual(ids(m, 'physical').sort(), ['port-net', 'sub-net', 'vlan-net']);
+  // ports, the virtual interfaces that use them (an aggregate's members, a VLAN carried on the port) and the VLANs permitted on the cables
+  assert.deepEqual(ids(m, 'physical').sort(), ['agg-net', 'port-net', 'sub-net', 'vlan-net']);
   // not: networks reached only through a loopback, a tunnel interface, a relation or an uncabled interface
   for (const out of ['lo-net', 'tun-net', 'rel-net', 'uncabled-net', 'orphan']) assert.ok(!ids(m, 'physical').includes(out), out);
   // cabling the spare port brings its network in; removing the VLAN from the cable takes that one out
   const recabled = model(nets.replace('b: {device: r2, vlans: [30, 31]}', 'b: {device: r1, interface: eth9, vlans: [31]}').replace('vlans: [30, 31]}', 'vlans: [31]}'));
-  assert.deepEqual(ids(recabled, 'physical').sort(), ['port-net', 'sub-net', 'uncabled-net']);
+  assert.deepEqual(ids(recabled, 'physical').sort(), ['agg-net', 'port-net', 'sub-net', 'uncabled-net']);
 });
 
 test('relevance: the logical picture lists the networks it draws; without network nodes, only what its relations and loopbacks use', () => {
   const m = model(nets);
   // network nodes are part of the logical picture, so each drawn network is listed
-  assert.deepEqual(ids(m, 'logical').sort(), ['lo-net', 'orphan', 'port-net', 'rel-net', 'sub-net', 'tun-net', 'uncabled-net', 'vlan-net']);
+  assert.deepEqual(ids(m, 'logical').sort(), ['agg-net', 'lo-net', 'orphan', 'port-net', 'rel-net', 'sub-net', 'tun-net', 'uncabled-net', 'vlan-net']);
   const noNodes = { ...ALL, showNetworks: false };
   // gre: its tunnel interfaces' network; vrrp: its "network"; ospf: "over" a network; devices: their loopbacks
   assert.deepEqual(ids(m, 'logical', noNodes).sort(), ['lo-net', 'port-net', 'rel-net', 'tun-net']);
@@ -109,7 +107,8 @@ test('relevance is decided from the drawn elements (the scene), not from the mod
   const pick = (view, refs) => nb.viewNetworks(m, view, new Set(refs)).map((n) => n.id);
   assert.deepEqual(pick('physical', []), []);
   assert.deepEqual(pick('physical', ['device:r1', 'device:r2', 'device:sw', 'group:x']), [], 'a device box alone brings no network');
-  assert.deepEqual(pick('physical', ['iface:r1:eth0']), ['port-net', 'sub-net']);
+  assert.deepEqual(pick('physical', ['iface:r1:eth0']), ['agg-net', 'port-net', 'sub-net'], 'the port, the aggregate it is a member of, the VLAN interface it carries; not the tunnel sourced from it');
+  assert.deepEqual(pick('physical', ['iface:r2:eth0']), ['port-net'], 'r2 has no interface of VLAN 20');
   assert.deepEqual(pick('physical', ['iface:r1:eth9']), ['uncabled-net']);
   assert.deepEqual(pick('physical', ['link:c2']), ['vlan-net']);
   assert.deepEqual(pick('logical', ['device:r1']), ['lo-net']);
@@ -124,10 +123,10 @@ test('content: a titled box per view with name, prefix and VLAN of each network,
   const m = model(nets);
   const p = exported(m, 'physical');
   const t = lines(p.networks.root).map((l) => l[1]);
-  assert.deepEqual(t, ['Networks — physical view', '3 of 8 in the model: those used by what is shown', 'Core link', '10.1.0.0/24', 'Subinterface VLAN', '10.20.0.0/24 · VLAN 20', 'Trunked VLAN', '10.30.0.0/24 · VLAN 30']);
+  assert.deepEqual(t, ['Networks — physical view', '4 of 9 in the model: those used by what is shown', 'Bond segment', '10.50.0.0/24', 'Core link', '10.1.0.0/24', 'Trunked VLAN', '10.30.0.0/24 · VLAN 30', 'VLAN interface', '10.20.0.0/24 · VLAN 20']);
   assert.equal(lines(exported(m, 'logical').networks.root)[0][1], 'Networks — logical view');
   assert.equal(p.networks.root.attrs.class, 'svg-networks');
-  assert.equal(p.networks.root.attrs['data-count'], '3');
+  assert.equal(p.networks.root.attrs['data-count'], '4');
   // it is a box of its own, separate from the legend, drawn in the same style (same frame class, heading and label classes)
   assert.equal(p.legend.root.attrs.class, 'svg-legend');
   assert.equal(scene.findAll(p.legend.root, (n) => scene.hasClass(n, 'nw-entry')).length, 0);
@@ -146,7 +145,7 @@ test('empty state: a view without relevant networks says so', () => {
     assert.equal(x.networks.root.attrs['data-count'], '0');
   }
   // networks exist, but nothing drawn in the physical view uses one
-  const m = model('netatlas: 1\ndevices:\n  - {id: a, loopbacks: [{id: lo0, ip: 10.0.0.1/32}], interfaces: [e0]}\n  - {id: b, interfaces: [e0]}\nlinks:\n  - {id: l, a: "a:e0", b: "b:e0"}\nnetworks:\n  - {id: loops, cidr: 10.0.0.0/24}\n');
+  const m = model('netatlas: 1\ndevices:\n  - {id: a, interfaces: [e0], logical_interfaces: [{id: lo0, type: loopback, ip: 10.0.0.1/32}]}\n  - {id: b, interfaces: [e0]}\nlinks:\n  - {id: l, a: "a:e0", b: "b:e0"}\nnetworks:\n  - {id: loops, cidr: 10.0.0.0/24}\n');
   assert.deepEqual(lines(exported(m, 'physical').networks.root).map((l) => l[1]), ['Networks — physical view', 'No network is used by the elements', 'shown in this view.']);
   assert.deepEqual(ids(m, 'logical'), ['loops']);
 });
@@ -207,9 +206,10 @@ test('long names wrap inside the box instead of widening it without bound', () =
 });
 
 test('a large list continues in further columns; every network is listed once, readable and unclipped', () => {
-  let t = 'netatlas: 1\ndevices:\n  - id: a\n    interfaces:\n      - id: e0\n        children:\n';
-  for (let i = 0; i < 150; i++) t += `          - {id: e0.${i}, ip: 10.${i}.0.1/24}\n`;
-  t += '  - {id: b, interfaces: [e0]}\nlinks:\n  - {id: l, a: "a:e0", b: "b:e0"}\nnetworks:\n';
+  // 150 VLAN interfaces on one switch, all carried on its uplink
+  let t = 'netatlas: 1\ndevices:\n  - id: a\n    interfaces: [e0]\n    logical_interfaces:\n';
+  for (let i = 0; i < 150; i++) t += `      - {id: Vlan${100 + i}, type: virtual, ip: 10.${i}.0.1/24}\n`;
+  t += `  - {id: b, interfaces: [e0]}\nlinks:\n  - {id: l, a: {device: a, interface: e0, vlans: [${Array.from({ length: 150 }, (_, i) => 100 + i).join(', ')}]}, b: "b:e0"}\nnetworks:\n`;
   for (let i = 0; i < 150; i++) t += `  - {id: n${i}, label: "Segment ${i} of the campus", cidr: 10.${i}.0.0/24, vlan: ${100 + i}}\n`;
   const m = model(t);
   const x = exported(m, 'physical');

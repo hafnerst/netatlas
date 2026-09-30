@@ -8,8 +8,8 @@ devices:
     type: router
     interfaces:
       - {id: eth0}
-      - id: eth1
-        children: [{id: tun0, type: tunnel}]
+      - {id: eth1}
+    logical_interfaces: [{id: tun0, type: tunnel, source: eth1}]
   - id: r2
     interfaces: [eth0, eth1]
 `;
@@ -72,7 +72,7 @@ test('unknown device / interface references are reported with suggestions', () =
 
 test('physical rules: one cable per port, logical interfaces cannot be cabled', () => {
   expectError(base + 'links:\n  - {id: l1, a: "r1:eth0", b: "r2:eth0"}\n  - {id: l2, a: "r1:eth0", b: "r2:eth1"}\n', /already cabled by link "l1"/, 13);
-  expectError(base + 'links:\n  - {id: l1, a: "r1:tun0", b: "r2:eth0"}\n', /"r1:tun0" is a tunnel interface of "eth1", not a physical interface .* Cable its physical interface "r1:eth1" instead/);
+  expectError(base + 'links:\n  - {id: l1, a: "r1:tun0", b: "r2:eth0"}\n', /"r1:tun0" is a tunnel interface, not a physical interface — a physical link must end on a physical interface\. Its source is "eth1"/);
   expectError(base + 'links:\n  - {id: l1, a: "r1:eth0", b: "r1:eth0"}\n', /already cabled|to itself/);
 });
 
@@ -163,13 +163,16 @@ test('the broken demo file reports every problem with line numbers', async () =>
   const expected = [
     [9, /unknown key "typ" — did you mean "type"/],
     [10, /"vendor" is no longer part of the format/],
-    [13, /"type" is no longer part of the format — an entry of "interfaces:" is always a physical interface/],
-    [16, /"subinterface" is not a child interface type: use "logical" or "tunnel"/],
-    [18, /loopback "lo0" needs at least one IPv4 or IPv6 address/],
-    [23, /device "r1" has no interface "eth1" — did you mean "eth0"/],
-    [24, /"r1:tun0" is a tunnel interface of "eth0", not a physical interface/],
-    [29, /unknown category "tunel" — did you mean "tunnel"/],
-    [31, /unknown link, relation or network "l3" — did you mean "l1"/],
+    [11, /"loopbacks" is no longer part of the format — loopbacks are logical interfaces/],
+    [15, /"children" is no longer part of the format — interfaces are no longer nested/],
+    [18, /tunnel source "eth7" is neither an IP address nor an interface of "r1" — did you mean "eth0"/],
+    [19, /"tun0" is a tunnel interface: the members of an aggregate are physical interfaces of the same device/],
+    [20, /loopback "lo0" needs at least one IPv4 or IPv6 address/],
+    [21, /"subinterface" is not a logical interface type: use "loopback", "virtual" or "tunnel"/],
+    [26, /device "r1" has no interface "eth1" — did you mean "eth0"/],
+    [27, /"r1:tun0" is a tunnel interface, not a physical interface/],
+    [32, /unknown category "tunel" — did you mean "tunnel"/],
+    [34, /unknown link, relation or network "l3" — did you mean "l1"/],
   ];
   for (const [line, re] of expected) assert.ok(errs.some((e) => e.line === line && re.test(e.message)), `${line} ${re}\n${summary.join('\n')}`);
   assert.equal(errs.length, expected.length, summary.join('\n'));

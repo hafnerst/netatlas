@@ -21,11 +21,11 @@ const Y = require(join(root, 'build/js/yaml/parse.js'));
 const s = Y.strNode;
 const flowList = (...xs) => Y.seqNode(xs.map(s), true);
 
-/** "New" → two routers, loopbacks, ports with logical and tunnel children, a cable, iBGP between loopbacks and a GRE tunnel. */
+/** "New" → two routers, loopbacks, ports, a VLAN interface and a tunnel interface, a cable, iBGP between loopbacks and a GRE tunnel. */
 export function buildNewNetwork() {
   const d = ModelDoc.create();
   d.change('Edit title', () => d.setAt(['title'], s('Lab: two edge routers'), KEY_ORDER.top));
-  d.change('Edit description', () => d.setAt(['description'], s('Created in the netatlas editor: loopbacks, ports with logical and tunnel children, one cable, IP networks, iBGP and a GRE tunnel between loopbacks.'), KEY_ORDER.top));
+  d.change('Edit description', () => d.setAt(['description'], s('Created in the netatlas editor: loopbacks, ports, a VLAN interface and a tunnel interface per router, one cable, IP networks, iBGP and a GRE tunnel between loopbacks.'), KEY_ORDER.top));
   // New starts empty: add both routers, choosing their type explicitly
   const a = d.addEntity('device', [['id', s('edge-a')], ['type', s('router')]]);
   d.addLoopback(a, ['10.255.0.1/32'], 'Router ID', 'lo0');
@@ -37,14 +37,18 @@ export function buildNewNetwork() {
   d.addLoopback(b, ['2001:db8:ffff::b/128'], 'BGP source (IPv6)', 'lo1');
   // physical ports and a cable
   // (speed and medium belong to the cable, not to the ports)
-  const pa = d.addInterface(0, [['id', s('ge-0/0/0')], ['ip', flowList('192.0.2.1/31')]]);
-  const pb = d.addInterface(b, [['id', s('ge-0/0/0')], ['ip', flowList('192.0.2.0/31')]]);
-  // children of the physical ports: a logical subinterface and a tunnel interface on each
-  for (const [dev, port, n] of [[0, pa, 1], [b, pb, 2]]) {
-    d.addChild(['devices', dev, 'interfaces', port], 'logical', [['id', s('ge-0/0/0.100')], ['label', s('Management')], ['ip', flowList(`10.100.0.${n}/24`)]]);
-    d.addChild(['devices', dev, 'interfaces', port], 'tunnel', [['id', s('gr-0/0/0.1')], ['ip', flowList(`172.16.0.${n}/30`)]]);
+  d.addInterface(0, [['id', s('ge-0/0/0')], ['ip', flowList('192.0.2.1/31')]]);
+  d.addInterface(b, [['id', s('ge-0/0/0')], ['ip', flowList('192.0.2.0/31')]]);
+  // logical interfaces: a VLAN interface (its VLAN comes from the network of its address; the port carrying it is
+  // derived from the cable) and a tunnel interface sourced from the loopback, towards the other router's loopback
+  for (const [dev, n, peer] of [[0, 1, 2], [b, 2, 1]]) {
+    d.addLogical(dev, 'virtual', [['id', s('irb.100')], ['label', s('Management')], ['ip', flowList(`10.100.0.${n}/24`)]]);
+    d.addLogical(dev, 'tunnel', [['id', s('gr-0/0/0.1')], ['ip', flowList(`172.16.0.${n}/30`)], ['source', s('lo0')], ['destination', s(`10.255.0.${peer}`)]]);
   }
   d.addEntity('link', [['id', s('cable-1')], ['a', s('edge-a:ge-0/0/0')], ['b', s('edge-b:ge-0/0/0')], ['medium', s('fiber')], ['speed', s('10G')], ['cable', s('LC-LC OM4 3m')]]);
+  // the cable carries VLAN 100 at both ends
+  d.addEndVlans(['links', 0, 'a'], [100]);
+  d.addEndVlans(['links', 0, 'b'], [100]);
   // an IP network: both routers become members through their port addresses
   d.addEntity('network', [['id', s('net-core')], ['label', s('Core link')], ['cidr', s('192.0.2.0/31')]]);
   d.addEntity('network', [['id', s('net-mgmt')], ['label', s('Management')], ['cidr', s('10.100.0.0/24')], ['vlan', Y.numNode(100)]]);

@@ -9,6 +9,7 @@
 import { Pt } from '../layout/geometry';
 import { LAYOUT_VIEWS, LayoutView, autoPositions, resolvePositions, samePositions } from '../layout/positions';
 import { layoutInput, layoutSignature } from '../layout/input';
+import { parseAddress } from '../model/ip';
 import { Model } from '../model/types';
 import { Issue, LoadResult, loadModel, scalarText, validate } from '../validation/validate';
 import { SCHEMA } from '../yaml/schema';
@@ -464,7 +465,7 @@ export class ModelDoc {
     const cur = this.get(path);
     if (cur && cur.kind === 'map') return cur;
     let replacement: YMap;
-    if (cur && cur.kind === 'scalar' && typeof seg === 'number' && /^(interfaces|children)$/.test(String(parentPath[parentPath.length - 1]))) {
+    if (cur && cur.kind === 'scalar' && typeof seg === 'number' && String(parentPath[parentPath.length - 1]) === 'interfaces') {
       replacement = mapNode([['id', strNode(scalarText(cur) || '')]], true);
     } else if (cur && cur.kind === 'scalar' && scalarText(cur) !== undefined && (this.isLinkEnd(path) || (typeof seg === 'number' && parentPath[parentPath.length - 1] === 'endpoints'))) {
       // "dev:if" endpoint shorthand -> {device, interface}
@@ -932,6 +933,29 @@ export class ModelDoc {
     if (kind === 'device') {
       epRefs('links', 'a/b');
       epRefs('relations', 'endpoints');
+      // associations of logical interfaces: member ports and tunnel sources (same device), tunnel destinations (any device)
+      this.entities('device').forEach((dev) => {
+        const lp: Path = ['devices', dev.index, 'logical_interfaces'];
+        const list = this.get(lp);
+        if (!list || list.kind !== 'seq') return;
+        list.items.forEach((it, k) => {
+          if (it.kind !== 'map') return;
+          if (iface !== undefined && dev.id === id) {
+            const mem = it.entries.get('members');
+            if (mem && mem.value.kind === 'seq') mem.value.items.forEach((mn, j) => scalarText(mn) === iface && out.push(lp.concat(k, 'members', j)));
+            else if (mem && scalarText(mem.value) === iface) out.push(lp.concat(k, 'members'));
+            const src = it.entries.get('source');
+            if (src && scalarText(src.value) === iface) out.push(lp.concat(k, 'source'));
+          }
+          const dst = it.entries.get('destination');
+          const t = dst ? scalarText(dst.value) : undefined;
+          if (t === undefined || parseAddress(t)) return;
+          const c = t.indexOf(':');
+          const d = c < 0 ? t : t.slice(0, c);
+          const inf = c < 0 ? undefined : t.slice(c + 1);
+          if (d === id && (iface === undefined || inf === iface)) out.push(lp.concat(k, 'destination'));
+        });
+      });
     } else if (kind === 'group') {
       scalarRefs('groups', 'parent', (t) => t === id);
       scalarRefs('devices', 'group', (t) => t === id);
@@ -955,7 +979,11 @@ export class ModelDoc {
     if (n.kind === 'scalar') {
       const t = scalarText(n) as string;
       let nt = t;
-      if (/^(a|b)$/.test(String(p[p.length - 1])) || p[p.length - 2] === 'endpoints') {
+      const last = p[p.length - 1];
+      if (last === 'source' || last === 'members' || p[p.length - 2] === 'members') {
+        // an interface of the same device, written as its bare id
+        nt = newIf !== undefined ? newIf : t;
+      } else if (/^(a|b|destination)$/.test(String(last)) || p[p.length - 2] === 'endpoints') {
         const c = t.indexOf(':');
         const dev = c < 0 ? t : t.slice(0, c);
         const inf = c < 0 ? undefined : t.slice(c + 1);
@@ -990,14 +1018,17 @@ export class ModelDoc {
     });
   }
 
-  /** Rename an interface, child interface or loopback (by its path) and update references ("dev:if", {interface}). */
+  /**
+   * Rename a physical or logical interface (by its path) and update every reference to it: link ends and relation
+   * endpoints ("dev:if", {interface}), member lists and tunnel sources on its device, tunnel destinations anywhere.
+   */
   renameInterface(ipath: Path, newIf: string): number {
     const kind = ifaceSchemaKind(ipath);
     const dev = this.entities('device')[ipath[1] as number];
     if (!kind || !dev || !dev.id) return 0;
     const cur = this.get(ipath);
     const oldIf = cur ? (cur.kind === 'map' ? this.text(ipath.concat('id')) : scalarText(cur)) : undefined;
-    return this.change('Rename ' + (kind === 'loopback' ? 'loopback' : 'interface'), () => {
+    return this.change('Rename interface', () => {
       const refs = oldIf ? this.references('device', dev.id as string, oldIf) : [];
       const m = this.ensureMap(ipath, KEY_ORDER[kind]);
       setKey(m, 'id', strNode(newIf), KEY_ORDER[kind]);
@@ -1009,80 +1040,62 @@ export class ModelDoc {
   // --------------------------------------------------------------- interfaces
 
   /**
-   * Every interface entry of a device, in file order: each physical
-   * interface followed by its children, then the loopbacks. The order of
-   * the lists in the file is never changed by reading them.
+   * Every interface entry of a device, in file order: the physical
+   * interfaces, then the logical ones. The order of the lists in the file
+   * is never changed by reading them.
    */
   interfaceEntries(devIndex: number): IfaceEntry[] {
     const out: IfaceEntry[] = [];
-    const idOf = (n: YNode): string | undefined => (n.kind === 'map' ? (n.entries.get('id') ? scalarText((n.entries.get('id') as { value: YNode }).value) : undefined) : scalarText(n));
+    const text = (n: YNode, key: string): string | undefined => (n.kind === 'map' && n.entries.get(key) ? scalarText((n.entries.get(key) as { value: YNode }).value) : undefined);
     const base: Path = ['devices', devIndex];
     const ifs = this.get(base.concat('interfaces'));
-    if (ifs && ifs.kind === 'seq') {
-      ifs.items.forEach((it, k) => {
-        const path = base.concat('interfaces', k);
-        out.push({ path, id: idOf(it), kind: 'interface' });
-        const ch = it.kind === 'map' ? it.entries.get('children') : undefined;
-        if (ch && ch.value.kind === 'seq') {
-          ch.value.items.forEach((c, j) => {
-            const type = c.kind === 'map' && c.entries.get('type') ? scalarText((c.entries.get('type') as { value: YNode }).value) : undefined;
-            out.push({ path: path.concat('children', j), id: idOf(c), kind: 'child', type, parent: path });
-          });
-        }
-      });
-    }
-    const loops = this.get(base.concat('loopbacks'));
-    if (loops && loops.kind === 'seq') loops.items.forEach((it, k) => out.push({ path: base.concat('loopbacks', k), id: idOf(it), kind: 'loopback' }));
+    if (ifs && ifs.kind === 'seq') ifs.items.forEach((it, k) => out.push({ path: base.concat('interfaces', k), id: it.kind === 'map' ? text(it, 'id') : scalarText(it), kind: 'interface' }));
+    const logical = this.get(base.concat('logical_interfaces'));
+    if (logical && logical.kind === 'seq') logical.items.forEach((it, k) => out.push({ path: base.concat('logical_interfaces', k), id: text(it, 'id'), kind: 'logical', type: text(it, 'type') }));
     return out;
   }
 
-  /** Ids of all interfaces, children and loopbacks of a device (one namespace per device). */
+  /** Ids of all physical and logical interfaces of a device (one namespace per device). */
   interfaceIds(devIndex: number): string[] {
     return this.interfaceEntries(devIndex)
       .map((e) => e.id)
       .filter((x): x is string => !!x);
   }
 
-  private newIface(devIndex: number, listPath: Path, order: string[], fields: Array<[string, YNode]>, base: string): number {
+  private newIface(devIndex: number, listKey: 'interfaces' | 'logical_interfaces', fields: Array<[string, YNode]>, base: string): number {
     const taken = new Set(this.interfaceIds(devIndex));
     const idGiven = fields.find(([k]) => k === 'id');
     const id = idGiven ? scalarText(idGiven[1]) || base : this.uniqueId(base, taken);
     const entries: Array<[string, YNode]> = [['id', strNode(id)]];
     for (const [k, v] of fields) if (k !== 'id') entries.push([k, v]);
-    const list = this.ensureSeq(listPath, false, order);
+    const list = this.ensureSeq(['devices', devIndex, listKey], false, KEY_ORDER.device);
     list.items.push(mapNode(entries, true));
     return list.items.length - 1;
   }
 
   /** Add a physical interface to a device; returns its index in the `interfaces` list. */
   addInterface(devIndex: number, fields: Array<[string, YNode]> = [], base = 'eth0'): number {
-    return this.change('Add interface', () => this.newIface(devIndex, ['devices', devIndex, 'interfaces'], KEY_ORDER.device, fields, base));
+    return this.change('Add interface', () => this.newIface(devIndex, 'interfaces', fields, base));
   }
 
   /**
-   * Add a logical or tunnel child to a physical interface (`ifPath`);
-   * returns its index in that interface's `children` list.
+   * Add a logical interface of the given type (loopback, virtual or tunnel);
+   * returns its index in the device's `logical_interfaces` list. Only the id
+   * and the type are set unless fields are given.
    */
-  addChild(ifPath: Path, type: 'logical' | 'tunnel', fields: Array<[string, YNode]> = []): number {
-    const devIndex = ifPath[1] as number;
-    return this.change(`Add ${type} interface`, () => {
-      const parent = this.ensureMap(ifPath, KEY_ORDER.interface);
-      // an interface with children is written as a block, its children one per line
-      delete parent.flow;
-      const pid = parent.entries.get('id') ? scalarText((parent.entries.get('id') as { value: YNode }).value) : undefined;
-      const f = fields.filter(([k]) => k !== 'type');
-      f.splice(f.length && f[0][0] === 'id' ? 1 : 0, 0, ['type', strNode(type)]);
-      return this.newIface(devIndex, ifPath.concat('children'), KEY_ORDER.interface, f, type === 'tunnel' ? 'tun0' : (pid || 'if') + '.1');
-    });
+  addLogical(devIndex: number, type: 'loopback' | 'virtual' | 'tunnel', fields: Array<[string, YNode]> = []): number {
+    const f = fields.filter(([k]) => k !== 'type');
+    f.splice(f.length && f[0][0] === 'id' ? 1 : 0, 0, ['type', strNode(type)]);
+    return this.change(`Add ${type} interface`, () => this.newIface(devIndex, 'logical_interfaces', f, type === 'loopback' ? 'lo0' : type === 'tunnel' ? 'tun0' : 'virtual0'));
   }
 
-  /** Add a loopback with a name and addresses; returns its index in the `loopbacks` list. */
+  /** Add a loopback with a name and addresses; returns its index in the `logical_interfaces` list. */
   addLoopback(devIndex: number, addresses: string[] = [], name?: string, id?: string): number {
     const f: Array<[string, YNode]> = [];
     if (id) f.push(['id', strNode(id)]);
     if (name) f.push(['label', strNode(name)]);
     f.push(['ip', seqNode(addresses.map(strNode), true)]);
-    return this.change('Add loopback', () => this.newIface(devIndex, ['devices', devIndex, 'loopbacks'], KEY_ORDER.device, f, 'lo0'));
+    return this.addLogical(devIndex, 'loopback', f);
   }
 }
 
@@ -1090,19 +1103,14 @@ export class ModelDoc {
 export interface IfaceEntry {
   path: Path;
   id: string | undefined;
-  /** which list it is in: `interfaces` (physical), `children` of one, or `loopbacks` */
-  kind: 'interface' | 'child' | 'loopback';
-  /** child only: its `type` as written */
+  /** which list it is in: `interfaces` (physical) or `logical_interfaces` */
+  kind: 'interface' | 'logical';
+  /** logical only: its `type` as written */
   type?: string;
-  /** child only: the path of its physical interface */
-  parent?: Path;
 }
 
-/** Schema kind of an interface path: devices[i].interfaces[k], …interfaces[k].children[j] or devices[i].loopbacks[k]. */
-export function ifaceSchemaKind(path: Path): 'interface' | 'child' | 'loopback' | undefined {
-  if (path[0] !== 'devices' || typeof path[1] !== 'number' || typeof path[path.length - 1] !== 'number') return undefined;
-  if (path.length === 4 && path[2] === 'interfaces') return 'interface';
-  if (path.length === 4 && path[2] === 'loopbacks') return 'loopback';
-  if (path.length === 6 && path[2] === 'interfaces' && typeof path[3] === 'number' && path[4] === 'children') return 'child';
-  return undefined;
+/** Schema kind of an interface path: devices[i].interfaces[k] or devices[i].logical_interfaces[k]. */
+export function ifaceSchemaKind(path: Path): 'interface' | 'logical' | undefined {
+  if (path.length !== 4 || path[0] !== 'devices' || typeof path[1] !== 'number' || typeof path[3] !== 'number') return undefined;
+  return path[2] === 'interfaces' ? 'interface' : path[2] === 'logical_interfaces' ? 'logical' : undefined;
 }
