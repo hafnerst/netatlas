@@ -49,7 +49,10 @@ export async function runViewportCheck(app: App, doc: Document): Promise<Check[]
     root.scrollTop = 0;
     doc.body.scrollTop = 0;
     // every part of the shell lies inside the window
-    for (const sel of ['header.topbar', 'main', '#outline', '#canvas-wrap', '#side', '#side .tabs', '#side-body', '#status']) {
+    // (the start screen has no panels: they appear with the first model)
+    const started = doc.body.getAttribute('data-state') !== 'empty';
+    const panels = started ? ['#outline', '#side', '#side .tabs', '#side-body'] : [];
+    for (const sel of ['header.topbar', 'main', '#canvas-wrap', '#status'].concat(panels)) {
       const e = q(sel);
       if (!e) {
         why.push('missing ' + sel);
@@ -61,7 +64,7 @@ export async function runViewportCheck(app: App, doc: Document): Promise<Check[]
     }
     // the panels end where the status bar begins: nothing extends below the application's bottom edge
     const status = (q('#status') as HTMLElement).getBoundingClientRect();
-    for (const sel of ['#side', '#outline', '#canvas-wrap']) {
+    for (const sel of started ? ['#side', '#outline', '#canvas-wrap'] : ['#canvas-wrap']) {
       const r = (q(sel) as HTMLElement).getBoundingClientRect();
       if (r.bottom > status.top + 0.5) why.push(`${sel} extends below the status bar (${Math.round(r.bottom)} > ${Math.round(status.top)})`);
     }
@@ -107,6 +110,28 @@ export async function runViewportCheck(app: App, doc: Document): Promise<Check[]
 
   try {
     state('empty start page');
+    {
+      // every way to begin can be brought into view inside the start screen (it scrolls by itself in a small window), never the page
+      const why: string[] = [];
+      const area = (q('#canvas-wrap') as HTMLElement).getBoundingClientRect();
+      for (const sel of ['#empty h1', '#new-empty', '#open-empty', '#start-example', '#start-load', '#empty .start-note']) {
+        const e = q(sel);
+        if (!e) {
+          why.push('missing ' + sel);
+          continue;
+        }
+        e.scrollIntoView({ block: 'nearest' });
+        const r = e.getBoundingClientRect();
+        if (r.width < 1 || r.height < 1) why.push(`${sel} is not shown`);
+        else if (r.top < area.top - 0.5 || r.bottom > area.bottom + 0.5 || r.left < area.left - 0.5 || r.right > area.right + 0.5 || r.bottom > vh() + 0.5) why.push(`${sel} cannot be brought into view (${Math.round(r.top)}–${Math.round(r.bottom)} of ${Math.round(area.top)}–${Math.round(area.bottom)})`);
+        else {
+          const hit = doc.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+          if (!hit || !(e.contains(hit) || hit.contains(e))) why.push(`${sel} is covered`);
+        }
+      }
+      state('start screen: name, the three ways to begin and the note are reachable', why);
+      (q('#empty') as HTMLElement).scrollTop = 0;
+    }
 
     // a long device form: every interface card open
     app.loadExample(EXAMPLES.findIndex((e) => /enterprise-wan/.test(e.name)));
@@ -162,6 +187,11 @@ export async function runViewportCheck(app: App, doc: Document): Promise<Check[]
     click('#menu-btn');
     await tick();
     state('File menu closed again', q('#main-menu') && !(q('#main-menu') as HTMLElement).hidden ? ['the menu did not close'] : []);
+    click('#export-btn');
+    await tick();
+    state('Export menu open', popup('#export-menu'));
+    click('#export-btn');
+    await tick();
 
     // switching views and tabs
     for (const view of ['logical', 'physical']) {

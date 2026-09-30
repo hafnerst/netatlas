@@ -153,64 +153,96 @@ export class App {
     if (over > 0) popup.style.left = -Math.min(over, Math.max(0, r.left - 8)) + 'px';
   }
 
-  /** Open or close the File menu; opening moves the focus to its first entry (keyboard use). */
-  setMenu(open: boolean, focus = false): void {
-    const menu = this.$('main-menu');
-    const btn = this.$('menu-btn');
-    menu.hidden = !open;
-    btn.setAttribute('aria-expanded', open ? 'true' : 'false');
-    btn.classList.toggle('active', open);
-    if (open) this.keepInWindow(menu);
-    if (open && focus) {
-      const first = menu.querySelector('button:not(:disabled)') as HTMLElement | null;
-      if (first) first.focus();
+  /** The menus of the toolbar, in their order: [button id, menu id]. */
+  private static readonly MENUS: Array<[string, string]> = [
+    ['menu-btn', 'main-menu'],
+    ['export-btn', 'export-menu'],
+  ];
+
+  /**
+   * Open one toolbar menu (by the id of its list) or, with null, close them
+   * all; at most one is open. Opening with `focus` moves the focus to its
+   * first available entry (keyboard use).
+   */
+  openMenu(menuId: string | null, focus = false): void {
+    for (const [btnId, id] of App.MENUS) {
+      const menu = this.$(id);
+      const btn = this.$(btnId);
+      const open = id === menuId;
+      menu.hidden = !open;
+      btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+      btn.classList.toggle('active', open);
+      if (!open) continue;
+      this.keepInWindow(menu);
+      if (focus) {
+        const first = menu.querySelector('button:not(:disabled)') as HTMLElement | null;
+        (first || btn).focus();
+      }
     }
   }
 
+  /** Open or close the File menu. */
+  setMenu(open: boolean, focus = false): void {
+    this.openMenu(open ? 'main-menu' : null, focus);
+  }
+
   /**
-   * The File menu: a button that opens a list of entries. It closes after an
-   * entry is chosen, on Escape, and when anything outside it is pressed.
-   * Arrow keys move between the entries.
+   * The toolbar menus (File, Export): a button that opens a list of entries.
+   * A menu closes after an entry is chosen, on Escape, and when anything
+   * outside it is pressed. Arrow up/down move between the entries, arrow
+   * left/right to the neighbouring menu.
    */
-  private wireMenu(): void {
-    const btn = this.$('menu-btn');
-    const menu = this.$('main-menu');
-    const items = (): HTMLElement[] => Array.prototype.slice.call(menu.querySelectorAll('button:not(:disabled)')) as HTMLElement[];
-    btn.addEventListener('click', () => this.setMenu(!this.menuOpen));
-    btn.addEventListener('keydown', (e) => {
-      if (e.key === 'ArrowDown' || e.key === 'Enter' || e.key === ' ') {
-        e.preventDefault();
-        this.setMenu(true, true);
-      } else if (e.key === 'Escape' && this.menuOpen) {
-        e.stopPropagation();
-        this.setMenu(false);
-      }
-    });
-    // an entry acts through its own handler; the menu then gets out of the way
-    menu.addEventListener('click', (e) => {
-      if ((e.target as Element).closest('button')) this.setMenu(false);
-    });
-    menu.addEventListener('keydown', (e) => {
-      const list = items();
-      const at = list.indexOf(this.doc.activeElement as HTMLElement);
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        e.stopPropagation();
-        this.setMenu(false);
-        btn.focus();
-      } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-        e.preventDefault();
-        e.stopPropagation();
-        const next = list[(at + (e.key === 'ArrowDown' ? 1 : list.length - 1)) % list.length];
-        if (next) next.focus();
-      } else if (e.key === 'Home' || e.key === 'End') {
-        e.preventDefault();
-        const to = list[e.key === 'Home' ? 0 : list.length - 1];
-        if (to) to.focus();
-      } else if (e.key === 'Tab') this.setMenu(false);
+  private wireMenus(): void {
+    App.MENUS.forEach(([btnId, menuId], at) => {
+      const btn = this.$(btnId);
+      const menu = this.$(menuId);
+      const isOpen = (): boolean => !menu.hidden;
+      const items = (): HTMLElement[] => Array.prototype.slice.call(menu.querySelectorAll('button:not(:disabled)')) as HTMLElement[];
+      const neighbour = (step: number): void => this.openMenu(App.MENUS[(at + step + App.MENUS.length) % App.MENUS.length][1], true);
+      btn.addEventListener('click', () => this.openMenu(isOpen() ? null : menuId));
+      btn.addEventListener('keydown', (e) => {
+        if (e.key === 'ArrowDown' || e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          this.openMenu(menuId, true);
+        } else if (e.key === 'Escape' && isOpen()) {
+          e.stopPropagation();
+          this.openMenu(null);
+        } else if (isOpen() && (e.key === 'ArrowRight' || e.key === 'ArrowLeft')) {
+          e.preventDefault();
+          e.stopPropagation();
+          neighbour(e.key === 'ArrowRight' ? 1 : -1);
+        }
+      });
+      // an entry acts through its own handler; the menu then gets out of the way
+      menu.addEventListener('click', (e) => {
+        if ((e.target as Element).closest('button')) this.openMenu(null);
+      });
+      menu.addEventListener('keydown', (e) => {
+        const list = items();
+        const pos = list.indexOf(this.doc.activeElement as HTMLElement);
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          e.stopPropagation();
+          this.openMenu(null);
+          btn.focus();
+        } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+          e.preventDefault();
+          e.stopPropagation();
+          const next = list[(pos + (e.key === 'ArrowDown' ? 1 : list.length - 1)) % list.length];
+          if (next) next.focus();
+        } else if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+          e.preventDefault();
+          e.stopPropagation();
+          neighbour(e.key === 'ArrowRight' ? 1 : -1);
+        } else if (e.key === 'Home' || e.key === 'End') {
+          e.preventDefault();
+          const to = list[e.key === 'Home' ? 0 : list.length - 1];
+          if (to) to.focus();
+        } else if (e.key === 'Tab') this.openMenu(null);
+      });
     });
     this.doc.addEventListener('pointerdown', (e) => {
-      if (this.menuOpen && !(e.target as Element).closest('.menu-wrap')) this.setMenu(false);
+      if (!(e.target as Element).closest('.menu-wrap')) this.openMenu(null);
     });
   }
 
@@ -624,7 +656,21 @@ export class App {
       ]),
     );
     box.appendChild(this.issueList(this.loadErrors, this.sourceLines));
-    box.appendChild(el(this.doc, 'p', {}, [el(this.doc, 'button', { type: 'button', 'data-act-top': 'new' }, ['Start a new model instead'])]));
+    box.appendChild(
+      el(this.doc, 'p', { class: 'error-actions' }, [
+        el(this.doc, 'button', { type: 'button', class: 'primary', 'data-act-top': 'open' }, ['Open another YAML file…']),
+        el(this.doc, 'button', { type: 'button', 'data-act-top': 'new' }, ['New model']),
+        el(this.doc, 'button', { type: 'button', 'data-act-top': 'start' }, ['Back to the start screen']),
+      ]),
+    );
+  }
+
+  /** Leave the "could not open" page and show the start screen again (only while no model is open). */
+  showStart(): void {
+    if (this.mdoc) return;
+    this.loadErrors = [];
+    this.loadErrorName = '';
+    this.updateChrome();
   }
 
   private updateChrome(): void {
@@ -652,6 +698,10 @@ export class App {
     (this.$('btn-undo') as HTMLButtonElement).disabled = !d || !d.canUndo();
     (this.$('btn-redo') as HTMLButtonElement).disabled = !d || !d.canRedo();
     (this.$('btn-download') as HTMLButtonElement).disabled = !d;
+    // exporting needs a diagram: a model that could be drawn
+    const ex = this.$('btn-export-svg') as HTMLButtonElement;
+    ex.disabled = !s;
+    ex.title = s ? `Save the ${s.state.view} view on screen as an SVG file, with its legend and networks overview` : 'Open or create a model first';
     // "Current model": the whole model's settings, with the problems that belong to no single object
     const mb = this.$('btn-model') as HTMLButtonElement;
     mb.disabled = !d;
@@ -738,8 +788,13 @@ export class App {
   private fillExamples(): void {
     const menu = this.$('menu-examples');
     EXAMPLES.forEach((ex, i) => menu.appendChild(el(this.doc, 'button', { type: 'button', role: 'menuitem', 'data-example': String(i), title: `Open the example ${ex.name}` }, [el(this.doc, 'span', { class: 'mi-label' }, [ex.name])])));
-    const list = this.$('example-buttons');
-    EXAMPLES.forEach((ex, i) => list.appendChild(el(this.doc, 'button', { type: 'button', class: 'linkish', 'data-example': String(i) }, [ex.name])));
+    // the start screen's picker names each example by its title
+    const pick = this.$('start-example');
+    EXAMPLES.forEach((ex, i) => {
+      const m = /^title:[ \t]*(.*)$/m.exec(ex.text);
+      const title = m ? m[1].replace(/^["']|["']$/g, '').trim() : '';
+      pick.appendChild(el(this.doc, 'option', { value: String(i) }, [title || ex.name]));
+    });
   }
 
   // ------------------------------------------------------ dialogs / toasts
@@ -772,7 +827,11 @@ export class App {
     this.$('btn-undo').addEventListener('click', () => this.undo());
     this.$('btn-redo').addEventListener('click', () => this.redo());
     this.$('errors').addEventListener('click', (e) => {
-      if ((e.target as Element).closest('[data-act-top="new"]')) this.newModel();
+      const act = (e.target as Element).closest('[data-act-top]');
+      const what = act ? act.getAttribute('data-act-top') : '';
+      if (what === 'new') this.newModel();
+      else if (what === 'open') void open();
+      else if (what === 'start') this.showStart();
     });
     fileInput.addEventListener('change', () => {
       const f = fileInput.files && fileInput.files[0];
@@ -784,15 +843,34 @@ export class App {
       if (t && (await this.confirmDiscard('Loading an example'))) this.loadExample(Number(t.getAttribute('data-example')));
     });
     this.$('btn-model').addEventListener('click', () => this.editModel());
-    this.wireMenu();
-    this.$('example-buttons').addEventListener('click', (e) => {
-      const t = (e.target as Element).closest('[data-example]');
-      if (t) this.loadExample(Number(t.getAttribute('data-example')));
+    this.wireMenus();
+    // start screen: choose an example, then load it (choosing alone loads nothing, so arrow keys can browse the list)
+    const pick = this.$<HTMLSelectElement>('start-example');
+    const loadBtn = this.$<HTMLButtonElement>('start-load');
+    pick.addEventListener('change', () => {
+      loadBtn.disabled = pick.value === '';
+    });
+    const loadPicked = async (): Promise<void> => {
+      if (pick.value === '' || !(await this.confirmDiscard('Loading an example'))) return;
+      const i = Number(pick.value);
+      pick.value = '';
+      loadBtn.disabled = true;
+      this.loadExample(i);
+    };
+    loadBtn.addEventListener('click', () => void loadPicked());
+    pick.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        void loadPicked();
+      }
     });
 
     // drag & drop a file anywhere
+    // Every drag over and drop on the page is taken over, whatever is dragged and wherever it lands:
+    // the browser's own reaction to a dropped file is to navigate to it, away from the app.
     doc.addEventListener('dragover', (e) => {
       e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
       doc.body.classList.add('dropping');
     });
     doc.addEventListener('dragleave', (e) => {
@@ -802,7 +880,8 @@ export class App {
       e.preventDefault();
       doc.body.classList.remove('dropping');
       const f = e.dataTransfer && e.dataTransfer.files[0];
-      if (f && (await this.confirmDiscard('Opening the dropped file'))) void this.loadFile(f);
+      if (!f) this.toast('Nothing was opened: drop a YAML file from this computer.');
+      else if (await this.confirmDiscard('Opening the dropped file')) void this.loadFile(f);
     });
 
     // closing / reloading the tab with unsaved edits
@@ -823,7 +902,7 @@ export class App {
     this.$('zoom-in').addEventListener('click', () => this.zoomBy(1.25));
     this.$('zoom-out').addEventListener('click', () => this.zoomBy(0.8));
     this.$('zoom-fit').addEventListener('click', () => this.fit());
-    this.$('save-svg').addEventListener('click', () => this.downloadSvg());
+    this.$('btn-export-svg').addEventListener('click', () => this.downloadSvg());
     this.$('btn-arrange').addEventListener('click', () => void this.arrangeCurrentView());
 
     const opt = (id: string, fn: (v: boolean) => void): void => {
@@ -1206,7 +1285,7 @@ export class App {
   }
 
   /**
-   * Serialize the current diagram as a standalone SVG string (for "Save SVG").
+   * Serialize the current diagram as a standalone SVG string (Export → "Export current view as SVG").
    * The legend of the shown view and the overview of the networks relevant
    * to it are drawn into the file, beside the diagram, and the picture is
    * enlarged to contain all of it.

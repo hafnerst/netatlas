@@ -118,6 +118,7 @@ body:not([data-view="logical"]) .logical-only { display: none; }
 .menu-btn { font-weight: 600; }
 .menu-btn.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
 .menu-btn .caret { font-size: 10px; margin-left: 2px; }
+.dropdown.menu button:disabled { opacity: .5; }
 .dropdown.menu { min-width: min(270px, calc(100vw - 16px)); max-width: min(360px, calc(100vw - 16px)); max-height: calc(100vh - 70px); max-height: calc(100dvh - 70px); }
 .dropdown.menu button { align-items: baseline; justify-content: space-between; border-radius: 5px; background: none; }
 .dropdown.menu button:hover:not(:disabled), .dropdown.menu button:focus-visible { background: var(--accent-soft); }
@@ -150,13 +151,45 @@ body:not([data-state="loaded"]) .zoombar { display: none; }
 .overlay { position: absolute; inset: 0; display: none; overflow: auto; padding: 40px 24px; }
 body[data-state="empty"] #empty { display: flex; align-items: flex-start; justify-content: center; }
 body[data-state="error"] #errors { display: block; }
-.card-intro { max-width: 660px; margin-top: 6vh; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 24px 28px; box-shadow: 0 6px 24px rgba(0,0,0,.06); }
-.card-intro h1 { font-size: 20px; margin: 0 0 10px; }
-.linkish { border: 0; background: none; color: var(--accent); padding: 0 4px; text-decoration: underline; }
-.error-overlay { background: var(--canvas); max-width: 900px; }
-.error-overlay h2 { margin: 0 0 4px; color: var(--error); font-size: 18px; }
+/* start screen: name, one sentence, three ways to begin. Until a model is open
+   the two panels have nothing to show, so the start screen gets the whole area. */
+body[data-state="empty"] main { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
+body[data-state="empty"] #outline, body[data-state="empty"] #side { display: none; }
+.start { width: min(720px, 100%); margin: 5vh auto 0; text-align: center; }
+.start-brand { display: flex; align-items: center; justify-content: center; gap: 12px; }
+.start-brand svg { fill: var(--accent); stroke: var(--accent); stroke-width: 1.6; flex: none; }
+.start-brand h1 { margin: 0; font-size: 34px; letter-spacing: -.01em; }
+.start-tagline { margin: 10px 0 26px; font-size: 15px; color: var(--muted); }
+.start-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; text-align: left; }
+.start-card {
+  display: flex; flex-direction: column; gap: 6px; align-items: flex-start; justify-content: flex-start; min-width: 0;
+  padding: 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel); font: inherit; color: inherit; text-align: left;
+}
+button.start-card { cursor: pointer; }
+button.start-card:hover, button.start-card:focus-visible { border-color: var(--accent); background: var(--accent-soft); }
+.start-title { font-size: 15px; font-weight: 700; }
+.start-sub { color: var(--muted); font-size: 12px; }
+/* the drop target: dashed while idle, filled while a file is dragged over the page */
+.start-drop { border-style: dashed; border-width: 2px; padding: 15px; }
+body.dropping .start-drop { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+.start-row { display: flex; flex-direction: column; gap: 6px; width: 100%; }
+.start-row select { width: 100%; min-width: 0; }
+.start-note { margin: 18px 0 0; }
+@media (max-height: 560px) {
+  .start { margin-top: 0; }
+  .start-brand svg { width: 34px; height: 34px; }
+  .start-brand h1 { font-size: 24px; }
+  .start-tagline { margin: 4px 0 12px; font-size: 13px; }
+  .start-card { padding: 10px 12px; }
+  .start-drop { padding: 9px 11px; }
+  .start-note { margin-top: 8px; }
+  .overlay { padding: 14px 16px; }
+}
+.error-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 #drop-hint { display: none; position: absolute; inset: 12px; border: 3px dashed var(--accent); border-radius: 16px; background: var(--accent-soft); color: var(--accent); font-size: 20px; font-weight: 600; align-items: center; justify-content: center; pointer-events: none; opacity: .92; }
 body.dropping #drop-hint { display: flex; }
+/* on the start screen the drop target is the "Open YAML file" card itself */
+body[data-state="empty"].dropping #drop-hint { display: none; }
 
 #tooltip {
   position: absolute; z-index: 30; pointer-events: none; max-width: 340px;

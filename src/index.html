@@ -29,6 +29,12 @@
       <div id="menu-examples" role="group" aria-labelledby="menu-examples-title"></div>
     </div>
   </div>
+  <div class="menu-wrap">
+    <button id="export-btn" type="button" class="menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="export-menu" title="Export: save the current view as a picture">Export <span class="caret" aria-hidden="true">▾</span></button>
+    <div id="export-menu" class="dropdown menu" role="menu" aria-label="Export" hidden>
+      <button id="btn-export-svg" type="button" role="menuitem" title="Open or create a model first" disabled><span class="mi-label">Export current view as SVG</span></button>
+    </div>
+  </div>
   <input id="file" type="file" accept=".yaml,.yml,application/yaml,application/x-yaml,text/yaml,text/plain" hidden>
   <button id="btn-model" type="button" class="model-btn" title="Edit the settings of the whole model (title, description)" disabled><span class="model-btn-label">Current model</span><span id="model-badge" class="ol-badge" hidden></span></button>
   <div class="btn-group">
@@ -58,25 +64,42 @@
   </aside>
   <section id="canvas-wrap">
     <svg id="canvas" role="img" aria-label="Network diagram"><g id="viewport"></g></svg>
-    <div class="zoombar" role="toolbar" aria-label="Navigation">
+    <div class="zoombar" role="toolbar" aria-label="Zoom">
       <button id="zoom-in" type="button" title="Zoom in (+)">+</button>
       <span id="zoom-level">100%</span>
       <button id="zoom-out" type="button" title="Zoom out (−)">−</button>
       <button id="zoom-fit" type="button" title="Fit to screen (0)">Fit</button>
-      <button id="save-svg" type="button" title="Save the current view as an SVG file">Save SVG</button>
     </div>
     <div id="empty" class="overlay">
-      <div class="card-intro">
-        <h1>Network architecture diagrams — view and edit, fully offline</h1>
-        <p>Start a <strong>new model</strong> or open a <strong>netatlas YAML</strong> file. You get a <em>physical</em> view (devices, ports, cabling, sites, racks) and a <em>logical</em> view (networks, loopbacks, routing adjacencies, overlays, GRE / IPsec and other tunnels), and you can edit every part of the model in the page.</p>
-        <p><button id="new-empty" type="button" title="Start a new, empty model">New model</button> <button id="open-empty" type="button" class="primary" title="Open a model from a YAML file on this computer (nothing is uploaded)">Open model…</button> or drop a file anywhere on this page.</p>
-        <p class="muted">Or try an example: <span id="example-buttons"></span></p>
-        <p class="muted small">Files are read, edited and saved only inside this page; saving downloads a new YAML file. This page has no network access (enforced by its Content-Security-Policy) and never sends your data anywhere.</p>
+      <div class="start">
+        <div class="start-brand">
+          <svg width="52" height="52" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="6" r="2.6"/><circle cx="19" cy="6" r="2.6"/><circle cx="12" cy="18" r="2.6"/><path d="M7.4 6.8h9.2M6.3 8.3l4.4 7.4M17.7 8.3l-4.4 7.4"/></svg>
+          <h1>NetAtlas</h1>
+        </div>
+        <p class="start-tagline">Create and explore network architecture diagrams, fully offline.</p>
+        <div class="start-actions" role="group" aria-label="Ways to begin">
+          <button id="new-empty" type="button" class="start-card">
+            <span class="start-title">New model</span>
+            <span class="start-sub">Start with an empty model</span>
+          </button>
+          <button id="open-empty" type="button" class="start-card start-drop">
+            <span class="start-title">Open YAML file…</span>
+            <span class="start-sub">Choose a file, or drop one here</span>
+          </button>
+          <div class="start-card start-example">
+            <label class="start-title" for="start-example">Load example</label>
+            <span class="start-row">
+              <select id="start-example" aria-label="Example to load"><option value="">Choose an example…</option></select>
+              <button id="start-load" type="button" disabled>Load</button>
+            </span>
+          </div>
+        </div>
+        <p class="start-note muted small">Your files stay on this computer.</p>
       </div>
     </div>
     <div id="errors" class="overlay error-overlay"></div>
     <div id="tooltip" role="tooltip" hidden></div>
-    <div id="drop-hint">Drop the YAML file to open it</div>
+    <div id="drop-hint" aria-hidden="true">Drop the YAML file to open it</div>
     <div id="toast" role="status" aria-live="polite" hidden></div>
   </section>
   <aside id="side">
