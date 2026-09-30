@@ -38,8 +38,8 @@ test('File menu: New, Open, Download and the examples in one menu with plain nam
   assert.match(menu, /id="open"[^>]*title="Open a model from a YAML file on this computer \(nothing is uploaded\)"/);
   assert.match(menu, /id="btn-download"[^>]*title="Download the current model as a YAML file \(Ctrl\+S\)"/);
   assert.deepEqual([...menu.matchAll(/class="mi-hint">([^<]*)</g)].map((m) => m[1]), ['Ctrl+S']);
-  // the start page uses the same two labels
-  assert.match(html, /<button id="new-empty"[^>]*>New model<\/button> <button id="open-empty"[^>]*>Open model…<\/button>/);
+  // the ellipsis rule holds on the start screen too: opening a file asks for one
+  assert.match(html, /<button id="open-empty"[^>]*>\s*<span class="start-title">Open YAML file…<\/span>/);
   assert.match(menu, /<div class="menu-title" id="menu-examples-title">Examples<\/div>\s*<div id="menu-examples" role="group" aria-labelledby="menu-examples-title"><\/div>/);
   // and nowhere else in the toolbar
   const outside = header.replace(menu, '');
@@ -101,4 +101,52 @@ test('selection hint of the outline: "selected" and "related (n)", without a not
   assert.match(hint, /' selected · ',/);
   // the text ends after the count: no trailing separator, no empty element after it
   assert.match(hint, /` related \(\$\{ctx\.related\.size\}\)`,\s*\]\),\s*$/);
+});
+
+test('Export menu: next to File, one entry, built like the File menu; the zoom bar has no Save SVG', () => {
+  // order in the toolbar: File, Export, then the rest
+  const at = ['id="menu-btn"', 'id="export-btn"', 'id="btn-model"'].map((x) => header.indexOf(x));
+  assert.ok(at[0] >= 0 && at[0] < at[1] && at[1] < at[2], JSON.stringify(at));
+  assert.match(header, /<button id="export-btn" type="button" class="menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="export-menu"[^>]*>Export <span class="caret"/);
+  const exp = /<div id="export-menu" class="dropdown menu" role="menu" aria-label="Export" hidden>([\s\S]*?)\n    <\/div>/.exec(header)[1];
+  assert.deepEqual([...exp.matchAll(/<button id="([^"]+)"[^>]*role="menuitem"[^>]*disabled[^>]*><span class="mi-label">([^<]+)</g)].map((m) => [m[1], m[2]]), [['btn-export-svg', 'Export current view as SVG']]);
+  // the same markup pattern as the File menu, and the same code drives both
+  const fileBtn = /<button id="menu-btn"[^>]*>/.exec(header)[0];
+  for (const attr of ['class="menu-btn"', 'aria-haspopup="menu"', 'aria-expanded="false"']) assert.ok(fileBtn.includes(attr), attr);
+  const app = readFileSync(join(root, 'src', 'ui', 'app.ts'), 'utf8');
+  assert.match(app, /\['menu-btn', 'main-menu'\],\s*\['export-btn', 'export-menu'\],/);
+  assert.match(app, /this\.\$\('btn-export-svg'\)\.addEventListener\('click', \(\) => this\.downloadSvg\(\)\);/);
+  // available only with a diagram
+  assert.match(app, /const ex = this\.\$\('btn-export-svg'\) as HTMLButtonElement;\s*ex\.disabled = !s;/);
+  // the old button is gone everywhere
+  assert.doesNotMatch(html + app, /save-svg|Save SVG/);
+  const zoom = /<div class="zoombar"[^>]*>([\s\S]*?)<\/div>/.exec(html)[1];
+  assert.deepEqual([...zoom.matchAll(/<button id="([^"]+)"/g)].map((m) => m[1]), ['zoom-in', 'zoom-out', 'zoom-fit']);
+});
+
+test('start screen: name, one sentence, three ways to begin; no link row, no long text', () => {
+  const start = /<div id="empty" class="overlay">([\s\S]*?)\n    <\/div>\n    <div id="errors"/.exec(html)[1];
+  assert.match(start, /<h1>NetAtlas<\/h1>/);
+  assert.match(start, /<div class="start-brand">\s*<svg /, 'a logo next to the name');
+  assert.match(start, /<p class="start-tagline">Create and explore network architecture diagrams, fully offline\.<\/p>/);
+  const titles = [...start.matchAll(/class="start-title"[^>]*>([^<]+)</g)].map((m) => m[1]);
+  assert.deepEqual(titles, ['New model', 'Open YAML file…', 'Load example']);
+  assert.match(start, /<button id="open-empty" type="button" class="start-card start-drop">[\s\S]*?drop one here/);
+  assert.match(start, /<label class="start-title" for="start-example">Load example<\/label>[\s\S]*?<select id="start-example"[^>]*><option value="">Choose an example…<\/option><\/select>\s*<button id="start-load" type="button" disabled>Load<\/button>/);
+  // every action is a native, focusable control
+  assert.equal((start.match(/<button /g) || []).length, 3);
+  assert.doesNotMatch(start, /tabindex|<a |linkish|example-buttons|onclick/);
+  // short: the visible text besides the example names
+  const text = start.replace(/<svg[\s\S]*?<\/svg>/g, '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  assert.ok(text.length < 260, `${text.length}: ${text}`);
+  assert.doesNotMatch(text, /Content-Security-Policy|IPsec|physical|logical|\.yaml/i);
+  assert.match(start, /<p class="start-note muted small">Your files stay on this computer\.<\/p>/);
+  // the picker is filled from the user-facing examples only, by title
+  const app = readFileSync(join(root, 'src', 'ui', 'app.ts'), 'utf8');
+  assert.match(app, /const pick = this\.\$\('start-example'\);\s*EXAMPLES\.forEach/);
+  assert.doesNotMatch(app, /FIXTURES/);
+  // drops are always taken over by the page, and replacing unsaved work is confirmed
+  assert.match(app, /doc\.addEventListener\('dragover', \(e\) => \{\s*e\.preventDefault\(\);/);
+  assert.match(app, /doc\.addEventListener\('drop', async \(e\) => \{\s*e\.preventDefault\(\);/);
+  assert.match(app, /else if \(await this\.confirmDiscard\('Opening the dropped file'\)\) void this\.loadFile\(f\);/);
 });

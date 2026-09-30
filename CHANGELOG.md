@@ -8,6 +8,22 @@ releases may still change behaviour; the YAML format has its own version
 
 ## [Unreleased]
 
+### Changed: start screen and Export menu
+
+* **New start screen.** Before a model is open the page shows the NetAtlas
+  name and logo, one sentence, and three ways to begin: **New model**,
+  **Open YAML file…** (also the drop target) and **Load example** (a picker
+  with the six examples, then *Load*). The long description and the row of
+  example links are gone, and the two side panels appear with the first
+  model. Dropping a file anywhere still opens it; every drag and drop on the
+  page is taken over, so the browser can't navigate away. The "could not
+  open" page offers to open another file, start a new model or go back.
+* **Export menu.** *Save SVG* moved from the zoom bar into an **Export** menu
+  next to **File**: **Export current view as SVG** exports the selected view
+  (Physical or Logical) exactly as before, with its legend and Networks
+  overview. It is disabled until there is a diagram. The two menus share
+  their behaviour; the left and right arrow keys move between them.
+
 ### Changed: toolbar and model outline
 
 * **Six examples.** `editor-new-network.yaml`, `minimal-edited.yaml` and

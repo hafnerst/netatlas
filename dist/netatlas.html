@@ -129,6 +129,7 @@ body:not([data-view="logical"]) .logical-only { display: none; }
 .menu-btn { font-weight: 600; }
 .menu-btn.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
 .menu-btn .caret { font-size: 10px; margin-left: 2px; }
+.dropdown.menu button:disabled { opacity: .5; }
 .dropdown.menu { min-width: min(270px, calc(100vw - 16px)); max-width: min(360px, calc(100vw - 16px)); max-height: calc(100vh - 70px); max-height: calc(100dvh - 70px); }
 .dropdown.menu button { align-items: baseline; justify-content: space-between; border-radius: 5px; background: none; }
 .dropdown.menu button:hover:not(:disabled), .dropdown.menu button:focus-visible { background: var(--accent-soft); }
@@ -161,13 +162,45 @@ body:not([data-state="loaded"]) .zoombar { display: none; }
 .overlay { position: absolute; inset: 0; display: none; overflow: auto; padding: 40px 24px; }
 body[data-state="empty"] #empty { display: flex; align-items: flex-start; justify-content: center; }
 body[data-state="error"] #errors { display: block; }
-.card-intro { max-width: 660px; margin-top: 6vh; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 24px 28px; box-shadow: 0 6px 24px rgba(0,0,0,.06); }
-.card-intro h1 { font-size: 20px; margin: 0 0 10px; }
-.linkish { border: 0; background: none; color: var(--accent); padding: 0 4px; text-decoration: underline; }
-.error-overlay { background: var(--canvas); max-width: 900px; }
-.error-overlay h2 { margin: 0 0 4px; color: var(--error); font-size: 18px; }
+/* start screen: name, one sentence, three ways to begin. Until a model is open
+   the two panels have nothing to show, so the start screen gets the whole area. */
+body[data-state="empty"] main { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
+body[data-state="empty"] #outline, body[data-state="empty"] #side { display: none; }
+.start { width: min(720px, 100%); margin: 5vh auto 0; text-align: center; }
+.start-brand { display: flex; align-items: center; justify-content: center; gap: 12px; }
+.start-brand svg { fill: var(--accent); stroke: var(--accent); stroke-width: 1.6; flex: none; }
+.start-brand h1 { margin: 0; font-size: 34px; letter-spacing: -.01em; }
+.start-tagline { margin: 10px 0 26px; font-size: 15px; color: var(--muted); }
+.start-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; text-align: left; }
+.start-card {
+  display: flex; flex-direction: column; gap: 6px; align-items: flex-start; justify-content: flex-start; min-width: 0;
+  padding: 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel); font: inherit; color: inherit; text-align: left;
+}
+button.start-card { cursor: pointer; }
+button.start-card:hover, button.start-card:focus-visible { border-color: var(--accent); background: var(--accent-soft); }
+.start-title { font-size: 15px; font-weight: 700; }
+.start-sub { color: var(--muted); font-size: 12px; }
+/* the drop target: dashed while idle, filled while a file is dragged over the page */
+.start-drop { border-style: dashed; border-width: 2px; padding: 15px; }
+body.dropping .start-drop { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+.start-row { display: flex; flex-direction: column; gap: 6px; width: 100%; }
+.start-row select { width: 100%; min-width: 0; }
+.start-note { margin: 18px 0 0; }
+@media (max-height: 560px) {
+  .start { margin-top: 0; }
+  .start-brand svg { width: 34px; height: 34px; }
+  .start-brand h1 { font-size: 24px; }
+  .start-tagline { margin: 4px 0 12px; font-size: 13px; }
+  .start-card { padding: 10px 12px; }
+  .start-drop { padding: 9px 11px; }
+  .start-note { margin-top: 8px; }
+  .overlay { padding: 14px 16px; }
+}
+.error-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 #drop-hint { display: none; position: absolute; inset: 12px; border: 3px dashed var(--accent); border-radius: 16px; background: var(--accent-soft); color: var(--accent); font-size: 20px; font-weight: 600; align-items: center; justify-content: center; pointer-events: none; opacity: .92; }
 body.dropping #drop-hint { display: flex; }
+/* on the start screen the drop target is the "Open YAML file" card itself */
+body[data-state="empty"].dropping #drop-hint { display: none; }
 
 #tooltip {
   position: absolute; z-index: 30; pointer-events: none; max-width: 340px;
@@ -489,6 +522,12 @@ dialog#modal::backdrop { background: rgba(0,0,0,.35); }
       <div id="menu-examples" role="group" aria-labelledby="menu-examples-title"></div>
     </div>
   </div>
+  <div class="menu-wrap">
+    <button id="export-btn" type="button" class="menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="export-menu" title="Export: save the current view as a picture">Export <span class="caret" aria-hidden="true">▾</span></button>
+    <div id="export-menu" class="dropdown menu" role="menu" aria-label="Export" hidden>
+      <button id="btn-export-svg" type="button" role="menuitem" title="Open or create a model first" disabled><span class="mi-label">Export current view as SVG</span></button>
+    </div>
+  </div>
   <input id="file" type="file" accept=".yaml,.yml,application/yaml,application/x-yaml,text/yaml,text/plain" hidden>
   <button id="btn-model" type="button" class="model-btn" title="Edit the settings of the whole model (title, description)" disabled><span class="model-btn-label">Current model</span><span id="model-badge" class="ol-badge" hidden></span></button>
   <div class="btn-group">
@@ -518,25 +557,42 @@ dialog#modal::backdrop { background: rgba(0,0,0,.35); }
   </aside>
   <section id="canvas-wrap">
     <svg id="canvas" role="img" aria-label="Network diagram"><g id="viewport"></g></svg>
-    <div class="zoombar" role="toolbar" aria-label="Navigation">
+    <div class="zoombar" role="toolbar" aria-label="Zoom">
       <button id="zoom-in" type="button" title="Zoom in (+)">+</button>
       <span id="zoom-level">100%</span>
       <button id="zoom-out" type="button" title="Zoom out (−)">−</button>
       <button id="zoom-fit" type="button" title="Fit to screen (0)">Fit</button>
-      <button id="save-svg" type="button" title="Save the current view as an SVG file">Save SVG</button>
     </div>
     <div id="empty" class="overlay">
-      <div class="card-intro">
-        <h1>Network architecture diagrams — view and edit, fully offline</h1>
-        <p>Start a <strong>new model</strong> or open a <strong>netatlas YAML</strong> file. You get a <em>physical</em> view (devices, ports, cabling, sites, racks) and a <em>logical</em> view (networks, loopbacks, routing adjacencies, overlays, GRE / IPsec and other tunnels), and you can edit every part of the model in the page.</p>
-        <p><button id="new-empty" type="button" title="Start a new, empty model">New model</button> <button id="open-empty" type="button" class="primary" title="Open a model from a YAML file on this computer (nothing is uploaded)">Open model…</button> or drop a file anywhere on this page.</p>
-        <p class="muted">Or try an example: <span id="example-buttons"></span></p>
-        <p class="muted small">Files are read, edited and saved only inside this page; saving downloads a new YAML file. This page has no network access (enforced by its Content-Security-Policy) and never sends your data anywhere.</p>
+      <div class="start">
+        <div class="start-brand">
+          <svg width="52" height="52" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="6" r="2.6"/><circle cx="19" cy="6" r="2.6"/><circle cx="12" cy="18" r="2.6"/><path d="M7.4 6.8h9.2M6.3 8.3l4.4 7.4M17.7 8.3l-4.4 7.4"/></svg>
+          <h1>NetAtlas</h1>
+        </div>
+        <p class="start-tagline">Create and explore network architecture diagrams, fully offline.</p>
+        <div class="start-actions" role="group" aria-label="Ways to begin">
+          <button id="new-empty" type="button" class="start-card">
+            <span class="start-title">New model</span>
+            <span class="start-sub">Start with an empty model</span>
+          </button>
+          <button id="open-empty" type="button" class="start-card start-drop">
+            <span class="start-title">Open YAML file…</span>
+            <span class="start-sub">Choose a file, or drop one here</span>
+          </button>
+          <div class="start-card start-example">
+            <label class="start-title" for="start-example">Load example</label>
+            <span class="start-row">
+              <select id="start-example" aria-label="Example to load"><option value="">Choose an example…</option></select>
+              <button id="start-load" type="button" disabled>Load</button>
+            </span>
+          </div>
+        </div>
+        <p class="start-note muted small">Your files stay on this computer.</p>
       </div>
     </div>
     <div id="errors" class="overlay error-overlay"></div>
     <div id="tooltip" role="tooltip" hidden></div>
-    <div id="drop-hint">Drop the YAML file to open it</div>
+    <div id="drop-hint" aria-hidden="true">Drop the YAML file to open it</div>
     <div id="toast" role="status" aria-live="polite" hidden></div>
   </section>
   <aside id="side">
@@ -746,74 +802,100 @@ class App {
         if (over > 0)
             popup.style.left = -Math.min(over, Math.max(0, r.left - 8)) + 'px';
     }
-    /** Open or close the File menu; opening moves the focus to its first entry (keyboard use). */
-    setMenu(open, focus = false) {
-        const menu = this.$('main-menu');
-        const btn = this.$('menu-btn');
-        menu.hidden = !open;
-        btn.setAttribute('aria-expanded', open ? 'true' : 'false');
-        btn.classList.toggle('active', open);
-        if (open)
+    /**
+     * Open one toolbar menu (by the id of its list) or, with null, close them
+     * all; at most one is open. Opening with `focus` moves the focus to its
+     * first available entry (keyboard use).
+     */
+    openMenu(menuId, focus = false) {
+        for (const [btnId, id] of App.MENUS) {
+            const menu = this.$(id);
+            const btn = this.$(btnId);
+            const open = id === menuId;
+            menu.hidden = !open;
+            btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+            btn.classList.toggle('active', open);
+            if (!open)
+                continue;
             this.keepInWindow(menu);
-        if (open && focus) {
-            const first = menu.querySelector('button:not(:disabled)');
-            if (first)
-                first.focus();
+            if (focus) {
+                const first = menu.querySelector('button:not(:disabled)');
+                (first || btn).focus();
+            }
         }
     }
+    /** Open or close the File menu. */
+    setMenu(open, focus = false) {
+        this.openMenu(open ? 'main-menu' : null, focus);
+    }
     /**
-     * The File menu: a button that opens a list of entries. It closes after an
-     * entry is chosen, on Escape, and when anything outside it is pressed.
-     * Arrow keys move between the entries.
+     * The toolbar menus (File, Export): a button that opens a list of entries.
+     * A menu closes after an entry is chosen, on Escape, and when anything
+     * outside it is pressed. Arrow up/down move between the entries, arrow
+     * left/right to the neighbouring menu.
      */
-    wireMenu() {
-        const btn = this.$('menu-btn');
-        const menu = this.$('main-menu');
-        const items = () => Array.prototype.slice.call(menu.querySelectorAll('button:not(:disabled)'));
-        btn.addEventListener('click', () => this.setMenu(!this.menuOpen));
-        btn.addEventListener('keydown', (e) => {
-            if (e.key === 'ArrowDown' || e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault();
-                this.setMenu(true, true);
-            }
-            else if (e.key === 'Escape' && this.menuOpen) {
-                e.stopPropagation();
-                this.setMenu(false);
-            }
-        });
-        // an entry acts through its own handler; the menu then gets out of the way
-        menu.addEventListener('click', (e) => {
-            if (e.target.closest('button'))
-                this.setMenu(false);
-        });
-        menu.addEventListener('keydown', (e) => {
-            const list = items();
-            const at = list.indexOf(this.doc.activeElement);
-            if (e.key === 'Escape') {
-                e.preventDefault();
-                e.stopPropagation();
-                this.setMenu(false);
-                btn.focus();
-            }
-            else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-                e.preventDefault();
-                e.stopPropagation();
-                const next = list[(at + (e.key === 'ArrowDown' ? 1 : list.length - 1)) % list.length];
-                if (next)
-                    next.focus();
-            }
-            else if (e.key === 'Home' || e.key === 'End') {
-                e.preventDefault();
-                const to = list[e.key === 'Home' ? 0 : list.length - 1];
-                if (to)
-                    to.focus();
-            }
-            else if (e.key === 'Tab')
-                this.setMenu(false);
+    wireMenus() {
+        App.MENUS.forEach(([btnId, menuId], at) => {
+            const btn = this.$(btnId);
+            const menu = this.$(menuId);
+            const isOpen = () => !menu.hidden;
+            const items = () => Array.prototype.slice.call(menu.querySelectorAll('button:not(:disabled)'));
+            const neighbour = (step) => this.openMenu(App.MENUS[(at + step + App.MENUS.length) % App.MENUS.length][1], true);
+            btn.addEventListener('click', () => this.openMenu(isOpen() ? null : menuId));
+            btn.addEventListener('keydown', (e) => {
+                if (e.key === 'ArrowDown' || e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    this.openMenu(menuId, true);
+                }
+                else if (e.key === 'Escape' && isOpen()) {
+                    e.stopPropagation();
+                    this.openMenu(null);
+                }
+                else if (isOpen() && (e.key === 'ArrowRight' || e.key === 'ArrowLeft')) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    neighbour(e.key === 'ArrowRight' ? 1 : -1);
+                }
+            });
+            // an entry acts through its own handler; the menu then gets out of the way
+            menu.addEventListener('click', (e) => {
+                if (e.target.closest('button'))
+                    this.openMenu(null);
+            });
+            menu.addEventListener('keydown', (e) => {
+                const list = items();
+                const pos = list.indexOf(this.doc.activeElement);
+                if (e.key === 'Escape') {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    this.openMenu(null);
+                    btn.focus();
+                }
+                else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const next = list[(pos + (e.key === 'ArrowDown' ? 1 : list.length - 1)) % list.length];
+                    if (next)
+                        next.focus();
+                }
+                else if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    neighbour(e.key === 'ArrowRight' ? 1 : -1);
+                }
+                else if (e.key === 'Home' || e.key === 'End') {
+                    e.preventDefault();
+                    const to = list[e.key === 'Home' ? 0 : list.length - 1];
+                    if (to)
+                        to.focus();
+                }
+                else if (e.key === 'Tab')
+                    this.openMenu(null);
+            });
         });
         this.doc.addEventListener('pointerdown', (e) => {
-            if (this.menuOpen && !e.target.closest('.menu-wrap'))
-                this.setMenu(false);
+            if (!e.target.closest('.menu-wrap'))
+                this.openMenu(null);
         });
     }
     loadExample(i) {
@@ -1231,7 +1313,19 @@ class App {
             `${n} error${n === 1 ? '' : 's'} found. This file cannot be edited until it is valid YAML in the supported subset. Nothing was sent anywhere — the file was only read locally.`,
         ]));
         box.appendChild(this.issueList(this.loadErrors, this.sourceLines));
-        box.appendChild((0, dom_1.el)(this.doc, 'p', {}, [(0, dom_1.el)(this.doc, 'button', { type: 'button', 'data-act-top': 'new' }, ['Start a new model instead'])]));
+        box.appendChild((0, dom_1.el)(this.doc, 'p', { class: 'error-actions' }, [
+            (0, dom_1.el)(this.doc, 'button', { type: 'button', class: 'primary', 'data-act-top': 'open' }, ['Open another YAML file…']),
+            (0, dom_1.el)(this.doc, 'button', { type: 'button', 'data-act-top': 'new' }, ['New model']),
+            (0, dom_1.el)(this.doc, 'button', { type: 'button', 'data-act-top': 'start' }, ['Back to the start screen']),
+        ]));
+    }
+    /** Leave the "could not open" page and show the start screen again (only while no model is open). */
+    showStart() {
+        if (this.mdoc)
+            return;
+        this.loadErrors = [];
+        this.loadErrorName = '';
+        this.updateChrome();
     }
     updateChrome() {
         const s = this.session;
@@ -1258,6 +1352,10 @@ class App {
         this.$('btn-undo').disabled = !d || !d.canUndo();
         this.$('btn-redo').disabled = !d || !d.canRedo();
         this.$('btn-download').disabled = !d;
+        // exporting needs a diagram: a model that could be drawn
+        const ex = this.$('btn-export-svg');
+        ex.disabled = !s;
+        ex.title = s ? `Save the ${s.state.view} view on screen as an SVG file, with its legend and networks overview` : 'Open or create a model first';
         // "Current model": the whole model's settings, with the problems that belong to no single object
         const mb = this.$('btn-model');
         mb.disabled = !d;
@@ -1349,8 +1447,13 @@ class App {
     fillExamples() {
         const menu = this.$('menu-examples');
         examples_1.EXAMPLES.forEach((ex, i) => menu.appendChild((0, dom_1.el)(this.doc, 'button', { type: 'button', role: 'menuitem', 'data-example': String(i), title: `Open the example ${ex.name}` }, [(0, dom_1.el)(this.doc, 'span', { class: 'mi-label' }, [ex.name])])));
-        const list = this.$('example-buttons');
-        examples_1.EXAMPLES.forEach((ex, i) => list.appendChild((0, dom_1.el)(this.doc, 'button', { type: 'button', class: 'linkish', 'data-example': String(i) }, [ex.name])));
+        // the start screen's picker names each example by its title
+        const pick = this.$('start-example');
+        examples_1.EXAMPLES.forEach((ex, i) => {
+            const m = /^title:[ \t]*(.*)$/m.exec(ex.text);
+            const title = m ? m[1].replace(/^["']|["']$/g, '').trim() : '';
+            pick.appendChild((0, dom_1.el)(this.doc, 'option', { value: String(i) }, [title || ex.name]));
+        });
     }
     // ------------------------------------------------------ dialogs / toasts
     /** Modal dialog (see dialogs.ts); resolves with the clicked button's value. */
@@ -1380,8 +1483,14 @@ class App {
         this.$('btn-undo').addEventListener('click', () => this.undo());
         this.$('btn-redo').addEventListener('click', () => this.redo());
         this.$('errors').addEventListener('click', (e) => {
-            if (e.target.closest('[data-act-top="new"]'))
+            const act = e.target.closest('[data-act-top]');
+            const what = act ? act.getAttribute('data-act-top') : '';
+            if (what === 'new')
                 this.newModel();
+            else if (what === 'open')
+                void open();
+            else if (what === 'start')
+                this.showStart();
         });
         fileInput.addEventListener('change', () => {
             const f = fileInput.files && fileInput.files[0];
@@ -1395,15 +1504,35 @@ class App {
                 this.loadExample(Number(t.getAttribute('data-example')));
         });
         this.$('btn-model').addEventListener('click', () => this.editModel());
-        this.wireMenu();
-        this.$('example-buttons').addEventListener('click', (e) => {
-            const t = e.target.closest('[data-example]');
-            if (t)
-                this.loadExample(Number(t.getAttribute('data-example')));
+        this.wireMenus();
+        // start screen: choose an example, then load it (choosing alone loads nothing, so arrow keys can browse the list)
+        const pick = this.$('start-example');
+        const loadBtn = this.$('start-load');
+        pick.addEventListener('change', () => {
+            loadBtn.disabled = pick.value === '';
+        });
+        const loadPicked = async () => {
+            if (pick.value === '' || !(await this.confirmDiscard('Loading an example')))
+                return;
+            const i = Number(pick.value);
+            pick.value = '';
+            loadBtn.disabled = true;
+            this.loadExample(i);
+        };
+        loadBtn.addEventListener('click', () => void loadPicked());
+        pick.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                void loadPicked();
+            }
         });
         // drag & drop a file anywhere
+        // Every drag over and drop on the page is taken over, whatever is dragged and wherever it lands:
+        // the browser's own reaction to a dropped file is to navigate to it, away from the app.
         doc.addEventListener('dragover', (e) => {
             e.preventDefault();
+            if (e.dataTransfer)
+                e.dataTransfer.dropEffect = 'copy';
             doc.body.classList.add('dropping');
         });
         doc.addEventListener('dragleave', (e) => {
@@ -1414,7 +1543,9 @@ class App {
             e.preventDefault();
             doc.body.classList.remove('dropping');
             const f = e.dataTransfer && e.dataTransfer.files[0];
-            if (f && (await this.confirmDiscard('Opening the dropped file')))
+            if (!f)
+                this.toast('Nothing was opened: drop a YAML file from this computer.');
+            else if (await this.confirmDiscard('Opening the dropped file'))
                 void this.loadFile(f);
         });
         // closing / reloading the tab with unsaved edits
@@ -1434,7 +1565,7 @@ class App {
         this.$('zoom-in').addEventListener('click', () => this.zoomBy(1.25));
         this.$('zoom-out').addEventListener('click', () => this.zoomBy(0.8));
         this.$('zoom-fit').addEventListener('click', () => this.fit());
-        this.$('save-svg').addEventListener('click', () => this.downloadSvg());
+        this.$('btn-export-svg').addEventListener('click', () => this.downloadSvg());
         this.$('btn-arrange').addEventListener('click', () => void this.arrangeCurrentView());
         const opt = (id, fn) => {
             this.$(id).addEventListener('change', (e) => {
@@ -1843,7 +1974,7 @@ class App {
         tip.style.top = Math.min(y, wrap.height - tip.offsetHeight - 8) + 'px';
     }
     /**
-     * Serialize the current diagram as a standalone SVG string (for "Save SVG").
+     * Serialize the current diagram as a standalone SVG string (Export → "Export current view as SVG").
      * The legend of the shown view and the overview of the networks relevant
      * to it are drawn into the file, beside the diagram, and the picture is
      * enlarged to contain all of it.
@@ -1883,6 +2014,11 @@ class App {
     }
 }
 exports.App = App;
+/** The menus of the toolbar, in their order: [button id, menu id]. */
+App.MENUS = [
+    ['menu-btn', 'main-menu'],
+    ['export-btn', 'export-menu'],
+];
 /** What the Auto-arrange button says about the shown view (icon + message, never colour alone). */
 const LAYOUT_STATUS_ICON = { auto: '\u2713', manual: '\u270E', edited: '\u25CF' };
 const LAYOUT_STATUS_MESSAGE = {
@@ -12768,6 +12904,169 @@ async function runSelfTest(app, doc) {
             const moved = doc.activeElement === q('#open');
             q('#open').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
             check('the File menu closes with Escape and when something else is pressed; arrow keys open it and move between entries', byEsc && byOutside && focused && moved && menu.hidden && doc.activeElement === menuBtn, `${byEsc} ${byOutside} ${focused} ${moved}`);
+            // ------------------------------------------------ Export menu (nothing to export yet)
+            {
+                const exBtn = q('#export-btn');
+                const exMenu = q('#export-menu');
+                const item = q('#btn-export-svg');
+                click('#export-btn');
+                const open = !exMenu.hidden && exBtn.getAttribute('aria-expanded') === 'true';
+                check('an Export menu sits next to File, built like it, with one entry "Export current view as SVG" that is disabled while there is no diagram', !!exBtn && q('#menu-btn').parentElement.nextElementSibling === exBtn.parentElement && /^Export/.test((exBtn.textContent || '').trim()) && exBtn.className === q('#menu-btn').className.replace(' active', '') + ' active' &&
+                    exMenu.className === menu.className && exMenu.getAttribute('role') === 'menu' && open && textsOf('#export-menu button').join('|') === 'Export current view as SVG' && item.disabled && /Open or create a model first/.test(item.title) &&
+                    !q('#save-svg') && !/Save SVG/.test(q('main').textContent || '') && !/Save SVG/.test(q('header.topbar').textContent || ''), `${open} ${textsOf('#export-menu button').join('|')} disabled=${item.disabled}`);
+                const before = downloads.length;
+                item.click();
+                exBtn.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+                const closed = exMenu.hidden && exBtn.getAttribute('aria-expanded') === 'false';
+                // one menu at a time, and the arrow keys move between the two menus
+                click('#menu-btn');
+                click('#export-btn');
+                const oneOpen = menu.hidden && !exMenu.hidden;
+                exBtn.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }));
+                const toFile = !menu.hidden && exMenu.hidden && doc.activeElement === q('#btn-new');
+                q('#btn-new').dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+                const toExport = menu.hidden && !exMenu.hidden;
+                doc.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+                await tick(30);
+                check('the disabled export does nothing; the Export menu closes with Escape; only one menu is open at a time and the left/right arrow keys switch between File and Export', downloads.length === before && closed && oneOpen && toFile && toExport && exMenu.hidden && menu.hidden, `${downloads.length - before} ${closed} ${oneOpen} ${toFile} ${toExport}`);
+            }
+            // ------------------------------------------------ start screen
+            {
+                /** back to the state before any model was opened (the application has no "close model") */
+                const toStart = () => {
+                    const a = app;
+                    a.mdoc = null;
+                    a.session = null;
+                    a.render();
+                    a.renderOutline();
+                    a.updateChrome();
+                };
+                const start = q('#empty');
+                const shownNow = (e) => !!e && e.getBoundingClientRect().width > 0 && e.getBoundingClientRect().height > 0;
+                const newBtn = q('#new-empty');
+                const openBtn = q('#open-empty');
+                const pick = q('#start-example');
+                const loadBtn = q('#start-load');
+                const startText = (start.textContent || '').replace(/\s+/g, ' ').trim();
+                check('start screen: the NetAtlas name with its logo and one sentence about the tool', doc.body.getAttribute('data-state') === 'empty' && shownNow(start) && q('#empty h1').textContent === 'NetAtlas' && parseFloat(doc.defaultView.getComputedStyle(q('#empty h1')).fontSize) >= 24 &&
+                    shownNow(q('#empty .start-brand svg')) && q('#empty .start-tagline').textContent === 'Create and explore network architecture diagrams, fully offline.' && doc.querySelectorAll('#empty p').length === 2, startText);
+                const options = Array.prototype.map.call(pick.options, (o) => o.textContent);
+                check('start screen: three ways to begin — New model, Open YAML file (also the drop target), Load example from a picker', /^New model/.test((newBtn.textContent || '').trim()) && /^Open YAML file…/.test((openBtn.textContent || '').trim()) && /drop one here/.test(openBtn.textContent || '') && openBtn.classList.contains('start-drop') &&
+                    doc.defaultView.getComputedStyle(openBtn).borderTopStyle === 'dashed' && q('#empty label[for="start-example"]').textContent === 'Load example' && options[0] === 'Choose an example…' && options.length === 1 + examples_1.EXAMPLES.length &&
+                    options.indexOf('Minimal example') === 3 && loadBtn.disabled && doc.querySelectorAll('#empty .start-card').length === 3 && [newBtn, openBtn, pick].every(shownNow), options.join(' | '));
+                check('start screen: no row of example links, no file names, no fixtures, no long description; the privacy note is one short line', !q('#empty .linkish') && !q('#empty [data-example]') && !q('#empty a') && !/\.ya?ml/.test(startText.replace('YAML', '')) && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(startText) &&
+                    !/Content-Security-Policy|physical|logical|GRE|IPsec/i.test(startText) && startText.length - options.join('').length < 260 && (q('#empty .start-note').textContent || '').length < 50, `${startText.length - options.join('').length} characters besides the example names: ${startText}`);
+                // keyboard: every action is a native control, reachable with Tab in reading order
+                const order = Array.prototype.filter.call(doc.querySelectorAll('#empty button, #empty select, #empty a, #empty input'), (e) => e.tabIndex >= 0);
+                newBtn.focus();
+                const focusable = doc.activeElement === newBtn;
+                pick.focus();
+                check('start screen: all actions are keyboard-accessible (buttons and a select, in reading order, with visible names)', order.map((e) => e.id).join() === 'new-empty,open-empty,start-example,start-load' && focusable && doc.activeElement === pick && newBtn.tagName === 'BUTTON' && openBtn.tagName === 'BUTTON' && pick.tagName === 'SELECT' &&
+                    !!pick.labels && pick.labels.length === 1 && loadBtn.textContent === 'Load', order.map((e) => e.id).join());
+                // New model: an empty model, and straight into the editor
+                newBtn.click();
+                await tick(10);
+                check('start screen → New model creates an empty model and opens it in the editor', doc.body.getAttribute('data-state') === 'loaded' && !shownNow(start) && !!app.mdoc && app.mdoc.origin === 'new' && app.mdoc.exportText() === 'netatlas: 1\ntitle: New network\n' && !!q('[data-tab="edit"].active') &&
+                    !!q('#side-body [data-p=\'["title"]\']') && !app.mdoc.dirty);
+                toStart();
+                // Open YAML file: the file picker of the existing loader
+                const inputClick = HTMLInputElement.prototype.click;
+                let pickerOpened = 0;
+                HTMLInputElement.prototype.click = function () {
+                    if (this.id === 'file')
+                        pickerOpened++;
+                };
+                openBtn.click();
+                await tick(10);
+                HTMLInputElement.prototype.click = inputClick;
+                check('start screen → Open YAML file opens the file picker (for .yaml / .yml files)', pickerOpened === 1 && /\.yaml/.test(q('#file').accept) && doc.body.getAttribute('data-state') === 'empty');
+                // drag and drop: the page takes over every drag, so the browser never navigates to a dropped file
+                const dragEvent = (type, files, text) => {
+                    const dt = new DataTransfer();
+                    for (const f of files)
+                        dt.items.add(f);
+                    if (text !== undefined)
+                        dt.setData('text/plain', text);
+                    return new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: dt });
+                };
+                /** wait until a dropped file has been read and handled (reading a file is asynchronous) */
+                const until = async (done) => {
+                    for (let n = 0; n < 100 && !done(); n++)
+                        await tick(10);
+                };
+                const idleBg = doc.defaultView.getComputedStyle(openBtn).backgroundColor;
+                const over = dragEvent('dragover', [new File(['x'], 'x.yaml')]);
+                q('#side').dispatchEvent(over);
+                const marked = doc.body.classList.contains('dropping') && doc.defaultView.getComputedStyle(openBtn).backgroundColor !== idleBg && doc.defaultView.getComputedStyle(q('#drop-hint')).display === 'none';
+                doc.dispatchEvent(new DragEvent('dragleave', { bubbles: true }));
+                check('dragging a file over the page marks the "Open YAML file" card as the drop target; the drag is taken over by the page', over.defaultPrevented && marked && !doc.body.classList.contains('dropping'), `${over.defaultPrevented} ${marked}`);
+                const good = dragEvent('drop', [new File([examples_1.EXAMPLES[2].text], 'dropped.yaml', { type: 'application/yaml' })]);
+                q('header.topbar').dispatchEvent(good);
+                await until(() => !!app.mdoc);
+                check('dropping a YAML file anywhere on the page opens it (the same loader as the file picker); the browser does not navigate', good.defaultPrevented && !!app.mdoc && app.mdoc.fileName === 'dropped.yaml' && app.mdoc.origin === 'file' && app.mdoc.valid && doc.body.getAttribute('data-state') === 'loaded', `${good.defaultPrevented} ${app.mdoc ? app.mdoc.fileName + ' ' + app.mdoc.origin : 'no model'} ${doc.body.getAttribute('data-state')} files=${good.dataTransfer ? good.dataTransfer.files.length : -1}`);
+                toStart();
+                const bad = dragEvent('drop', [new File(['netatlas: 1\ndevices:\n  - &x {id: a}\n'], 'broken.yaml')]);
+                openBtn.dispatchEvent(bad);
+                await until(() => doc.body.getAttribute('data-state') === 'error');
+                const errText = q('#errors').textContent || '';
+                check('an invalid file gives clear feedback: what could not be opened, where and why, and how to go on', bad.defaultPrevented && doc.body.getAttribute('data-state') === 'error' && !app.mdoc && shownNow(q('#errors')) && /Could not open broken\.yaml/.test(errText) && /line 3/i.test(errText) && /anchor/.test(errText) &&
+                    textsOf('#errors .error-actions button').join('|') === 'Open another YAML file…|New model|Back to the start screen', errText.slice(0, 300));
+                const notYaml = dragEvent('drop', [new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0xff, 0xfe, 0x00, 0x01])], 'picture.png', { type: 'image/png' })]);
+                doc.body.dispatchEvent(notYaml);
+                await until(() => /picture\.png/.test(q('#errors').textContent || ''));
+                const pngText = q('#errors').textContent || '';
+                click('#errors [data-act-top="start"]');
+                check('a file that is not YAML at all is refused the same way, and "Back to the start screen" returns', notYaml.defaultPrevented && /Could not open picture\.png/.test(pngText) && doc.body.getAttribute('data-state') === 'empty' && shownNow(start) && !app.mdoc, pngText.slice(0, 200));
+                const textDrop = dragEvent('drop', [], 'some text dragged from another window');
+                q('#canvas-wrap').dispatchEvent(textDrop);
+                await tick(10);
+                check('dropping something that is not a file (a link, text) changes nothing and says so', textDrop.defaultPrevented && doc.body.getAttribute('data-state') === 'empty' && /drop a YAML file/.test(q('#toast').textContent || '') && !q('#toast').hidden);
+                // Load example: choose, then load
+                pick.value = '0';
+                pick.dispatchEvent(new Event('change', { bubbles: true }));
+                const browsing = doc.body.getAttribute('data-state') === 'empty' && !loadBtn.disabled;
+                loadBtn.click();
+                await tick(10);
+                check('start screen → Load example: choosing enables "Load", and only "Load" (or Enter) opens the example', browsing && !!app.mdoc && app.mdoc.fileName === examples_1.EXAMPLES[0].name && app.mdoc.origin === 'example' && pick.value === '' && loadBtn.disabled && !shownNow(start));
+                toStart();
+                pick.value = '2';
+                pick.dispatchEvent(new Event('change', { bubbles: true }));
+                pick.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+                await tick(10);
+                check('… with the keyboard: Enter on the chosen example loads it', !!app.mdoc && app.mdoc.fileName === examples_1.EXAMPLES[2].name);
+                // replacing a model with unsaved changes is confirmed first, also for a dropped file
+                app.mdoc.setText(['title'], 'Unsaved work');
+                const replacing = dragEvent('drop', [new File([examples_1.EXAMPLES[0].text], 'other.yaml')]);
+                doc.body.dispatchEvent(replacing);
+                await tick(20);
+                const asked = !!q('#modal[open]') && /Unsaved changes/.test(q('#modal').textContent || '') && /Opening the dropped file/.test(q('#modal').textContent || '');
+                await answerDialog('cancel');
+                await tick(30);
+                check('a drop onto a model with unsaved changes asks first; Cancel keeps the model', replacing.defaultPrevented && asked && app.mdoc.fileName === examples_1.EXAMPLES[2].name && app.mdoc.text(['title']) === 'Unsaved work' && app.mdoc.dirty);
+                app.mdoc.undo();
+                app.mdoc.markSaved();
+                // Export: enabled with a diagram, and it exports the view that is selected
+                const item = q('#btn-export-svg');
+                app.updateChrome();
+                const names = [];
+                const same = [];
+                for (const view of ['logical', 'physical']) {
+                    click(`[data-view-btn="${view}"]`);
+                    click('#export-btn');
+                    const enabled = !item.disabled && new RegExp(view).test(item.title);
+                    const expected = app.exportSvg();
+                    const had = downloads.length;
+                    item.click();
+                    for (let n = 0; n < 40 && downloads.length === had; n++)
+                        await tick(10);
+                    const got = downloads.length > had ? downloads[downloads.length - 1] : undefined;
+                    names.push(got ? got.name : '?');
+                    same.push(enabled && !!got && got.text === expected && new RegExp(`Legend — ${view} view`).test(got.text) && new RegExp(`Networks — ${view} view`).test(got.text) && /class="svg-legend"/.test(got.text) && /class="svg-networks"/.test(got.text));
+                }
+                check('"Export current view as SVG" exports whichever view is selected, with the same content as before (legend and Networks box), and closes the menu', names.join() === 'minimal-logical.svg,minimal-physical.svg' && same.every((x) => x) && q('#export-menu').hidden, names.join() + ' ' + same.join());
+                check('the zoom bar has only zoom controls left', textsOf('.zoombar button').join('|') === '+|−|Fit' && !q('.zoombar #save-svg'));
+                toStart();
+            }
             click('#menu-btn');
             click('#menu-examples [data-example="2"]');
             await tick(10);
@@ -13885,7 +14184,10 @@ async function runViewportCheck(app, doc) {
         root.scrollTop = 0;
         doc.body.scrollTop = 0;
         // every part of the shell lies inside the window
-        for (const sel of ['header.topbar', 'main', '#outline', '#canvas-wrap', '#side', '#side .tabs', '#side-body', '#status']) {
+        // (the start screen has no panels: they appear with the first model)
+        const started = doc.body.getAttribute('data-state') !== 'empty';
+        const panels = started ? ['#outline', '#side', '#side .tabs', '#side-body'] : [];
+        for (const sel of ['header.topbar', 'main', '#canvas-wrap', '#status'].concat(panels)) {
             const e = q(sel);
             if (!e) {
                 why.push('missing ' + sel);
@@ -13899,7 +14201,7 @@ async function runViewportCheck(app, doc) {
         }
         // the panels end where the status bar begins: nothing extends below the application's bottom edge
         const status = q('#status').getBoundingClientRect();
-        for (const sel of ['#side', '#outline', '#canvas-wrap']) {
+        for (const sel of started ? ['#side', '#outline', '#canvas-wrap'] : ['#canvas-wrap']) {
             const r = q(sel).getBoundingClientRect();
             if (r.bottom > status.top + 0.5)
                 why.push(`${sel} extends below the status bar (${Math.round(r.bottom)} > ${Math.round(status.top)})`);
@@ -13955,6 +14257,31 @@ async function runViewportCheck(app, doc) {
     };
     try {
         state('empty start page');
+        {
+            // every way to begin can be brought into view inside the start screen (it scrolls by itself in a small window), never the page
+            const why = [];
+            const area = q('#canvas-wrap').getBoundingClientRect();
+            for (const sel of ['#empty h1', '#new-empty', '#open-empty', '#start-example', '#start-load', '#empty .start-note']) {
+                const e = q(sel);
+                if (!e) {
+                    why.push('missing ' + sel);
+                    continue;
+                }
+                e.scrollIntoView({ block: 'nearest' });
+                const r = e.getBoundingClientRect();
+                if (r.width < 1 || r.height < 1)
+                    why.push(`${sel} is not shown`);
+                else if (r.top < area.top - 0.5 || r.bottom > area.bottom + 0.5 || r.left < area.left - 0.5 || r.right > area.right + 0.5 || r.bottom > vh() + 0.5)
+                    why.push(`${sel} cannot be brought into view (${Math.round(r.top)}–${Math.round(r.bottom)} of ${Math.round(area.top)}–${Math.round(area.bottom)})`);
+                else {
+                    const hit = doc.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+                    if (!hit || !(e.contains(hit) || hit.contains(e)))
+                        why.push(`${sel} is covered`);
+                }
+            }
+            state('start screen: name, the three ways to begin and the note are reachable', why);
+            q('#empty').scrollTop = 0;
+        }
         // a long device form: every interface card open
         app.loadExample(examples_1.EXAMPLES.findIndex((e) => /enterprise-wan/.test(e.name)));
         app.select('device:hq-core1');
@@ -14013,6 +14340,11 @@ async function runViewportCheck(app, doc) {
         click('#menu-btn');
         await tick();
         state('File menu closed again', q('#main-menu') && !q('#main-menu').hidden ? ['the menu did not close'] : []);
+        click('#export-btn');
+        await tick();
+        state('Export menu open', popup('#export-menu'));
+        click('#export-btn');
+        await tick();
         // switching views and tabs
         for (const view of ['logical', 'physical']) {
             click(`[data-view-btn="${view}"]`);
