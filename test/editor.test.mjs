@@ -274,16 +274,23 @@ test('deleting an entity reports (never silently removes) broken references; und
 });
 
 test('shorthand forms are expanded only when edited, keeping their data', () => {
-  const d = ModelDoc.fromText('netatlas: 1\ndevices:\n  - id: r1\n    interfaces: [eth0, eth1]\n  - id: r2\n    interfaces: [eth0]\nnetworks:\n  - {id: n1, members: ["r1:eth0", r2]}\n', 's.yaml', 'file').doc;
+  const d = ModelDoc.fromText(
+    'netatlas: 1\ndevices:\n  - id: r1\n    interfaces: [eth0, eth1]\n  - id: r2\n    interfaces: [eth0]\nlinks:\n  - {id: l1, a: "r1:eth1", b: r2:eth0}\nrelations:\n  - {id: x, protocol: ospf, endpoints: ["r1:eth0", r2]}\n',
+    's.yaml',
+    'file',
+  ).doc;
   d.change('edit', () => {
     d.ensureMap(['devices', 0, 'interfaces', 1]);
-    d.setAt(['devices', 0, 'interfaces', 1, 'speed'], yaml.strNode('10G'), KEY_ORDER.interface);
-    d.ensureMap(['networks', 0, 'members', 0]);
-    d.setAt(['networks', 0, 'members', 0, 'role'], yaml.strNode('gateway'), KEY_ORDER.endpoint);
+    d.setAt(['devices', 0, 'interfaces', 1, 'vrf'], yaml.strNode('blue'), KEY_ORDER.interface);
+    d.ensureMap(['relations', 0, 'endpoints', 0]);
+    d.setAt(['relations', 0, 'endpoints', 0, 'role'], yaml.strNode('gateway'), KEY_ORDER.endpoint);
   });
+  // a link end becomes a mapping only when it gets VLANs; the other end is left as written
+  assert.ok(d.addEndVlans(['links', 0, 'a'], [20, 10]));
   const out = d.exportText();
-  assert.match(out, /interfaces: \[eth0, \{id: eth1, speed: 10G\}\]/);
-  assert.match(out, /members: \[\{device: r1, interface: eth0, role: gateway\}, r2\]/);
+  assert.match(out, /interfaces: \[eth0, \{id: eth1, vrf: blue\}\]/);
+  assert.match(out, /endpoints: \[\{device: r1, interface: eth0, role: gateway\}, r2\]/);
+  assert.match(out, /a: \{device: r1, interface: eth1, vlans: \[10, 20\]\}, b: r2:eth0\}/);
   assert.ok(d.valid);
 });
 
@@ -418,16 +425,16 @@ test('ip helpers: parsing and containment', () => {
   assert.ok(IP.prefixContains(IP.parsePrefix('0.0.0.0/0'), IP.parseAddress('8.8.8.8')));
 });
 
-test('network relationship check: member address outside the network prefix warns', () => {
+test('an address outside a network is simply not a member (nothing to configure, nothing to warn about)', () => {
   const r = validate.loadModel(`netatlas: 1
 devices:
   - id: a
     interfaces: [{id: e0, ip: 10.9.0.1/24}]
 networks:
-  - {id: n, cidr: [10.1.0.0/24, 2001:db8::/64], members: ["a:e0"]}
+  - {id: n, cidr: [10.1.0.0/24, 2001:db8::/64]}
 `);
-  assert.equal(r.errors.length, 0);
-  assert.match(r.warnings[0].message, /10\.9\.0\.1\/24 of a:e0 is outside 10\.1\.0\.0\/24, 2001:db8::\/64/);
+  assert.deepEqual(r.errors.concat(r.warnings), []);
+  assert.deepEqual(load('model/derive.js').networkMembers(r.model, 'n'), []);
 });
 
 test('drafts with errors still produce a drawable partial model', () => {

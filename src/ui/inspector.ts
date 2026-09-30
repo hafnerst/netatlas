@@ -5,11 +5,17 @@
  * "change" (Enter / leaving the field), so nothing typed is lost when the
  * user clicks the diagram or another object: the browser fires "change"
  * before focus moves. Everything user-provided is rendered as text.
+ *
+ * Fields come in two kinds. Configured fields edit the one place in the YAML
+ * file where a fact is stored. Derived fields (network members, the VLAN of
+ * an interface, the trunk state of a link end) are computed from the current
+ * model on every render, are read-only, and are never written to the file.
  */
 import { DocMap, DocNode, ENTITY_KINDS, EntityKind, KEY_ORDER, ModelDoc, Path, SECTION, kindOfSection } from '../editor/document';
 import { DialogOpts } from './dialogs';
 import { el } from './dom';
-import { CATEGORIES, LINE_STYLES, LOGICAL_IFACE_TYPES } from '../model/types';
+import { CATEGORIES, LINE_STYLES, LOGICAL_IFACE_TYPES, VLAN_MAX, VLAN_MIN, ifaceKey } from '../model/types';
+import { derivedVlanText, interfaceAddresses, linkEndVlanText, networkMembers, vlanMismatch, vlanMismatchText } from '../model/derive';
 import { builtinProtocols, normalizeProtocol } from '../model/protocols';
 import { SelectionContext, contextState } from '../model/queries';
 import { DEVICE_TYPES, isDeviceType } from '../model/device-types';
@@ -33,8 +39,7 @@ const P = (s: string | null): Path => (s ? (JSON.parse(s) as Path) : []);
 
 const IFACE_TYPES = ['physical'].concat(LOGICAL_IFACE_TYPES);
 const MEDIA = ['fiber', 'copper', 'dac', 'aoc', 'wireless', 'lte', '5g', 'microwave', 'serial', 'virtual'];
-const NET_KINDS = ['subnet', 'vlan', 'vni', 'vrf', 'zone', 'segment'];
-const GROUP_KINDS = ['site', 'building', 'room', 'row', 'rack', 'provider', 'cloud', 'zone', 'region'];
+const GROUP_KINDS = ['site', 'building', 'floor', 'room', 'rack', 'provider', 'cloud', 'zone', 'region'];
 
 /** keys the format defines for a kind of mapping (single source: the format schema) */
 const KNOWN: { [k: string]: string[] } = { ...KEY_ORDER, document: KEY_ORDER.top };
@@ -47,6 +52,20 @@ const KIND_TITLE: { [k in EntityKind]: string } = {
   group: 'Groups / locations',
   protocol: 'Protocols',
 };
+
+/** "10, 20 30-32" -> [10, 20, 30, 31, 32]; null if anything is not a VLAN ID or range. */
+export function parseVlanList(text: string): number[] | null {
+  const out: number[] = [];
+  for (const part of text.split(/[\s,;]+/).filter((x) => x)) {
+    const m = /^([0-9]{1,4})(?:-([0-9]{1,4}))?$/.exec(part);
+    if (!m) return null;
+    const from = Number(m[1]);
+    const to = m[2] === undefined ? from : Number(m[2]);
+    if (from < VLAN_MIN || to > VLAN_MAX || to < from) return null;
+    for (let v = from; v <= to; v++) if (out.indexOf(v) < 0) out.push(v);
+  }
+  return out.length ? out : null;
+}
 
 export class Editor {
   sel: EditorSel = null;
@@ -330,19 +349,20 @@ export class Editor {
       this.renderInterfaces(w, index);
     } else if (kind === 'link') {
       add(this.endpointField(base.concat('a'), 'End A', o, false));
+      add(this.endVlansField(base.concat('a'), 'A'));
       add(this.endpointField(base.concat('b'), 'End B', o, false));
-      add(this.textField(base.concat('medium'), 'Medium', o, 'text', MEDIA));
-      add(this.textField(base.concat('speed'), 'Speed', o, 'text', ['100M', '1G', '10G', '25G', '40G', '100G', '400G']));
+      add(this.endVlansField(base.concat('b'), 'B'));
+      add(this.vlanMismatchNote(index));
+      add(this.textField(base.concat('medium'), 'Medium', o, 'text', MEDIA, 'The medium of the physical connection. It is configured here only; ports have no medium of their own.'));
+      add(this.textField(base.concat('speed'), 'Speed', o, 'text', ['100M', '1G', '10G', '25G', '40G', '100G', '400G'], 'The speed of the physical connection. It is configured here only; ports have no speed of their own.'));
       add(this.textField(base.concat('label'), 'Label', o));
       add(this.textField(base.concat('cable'), 'Cable / circuit id', o));
       add(this.textField(base.concat('description'), 'Description', o, 'textarea'));
     } else if (kind === 'network') {
       add(this.textField(base.concat('label'), 'Label', o));
-      add(this.textField(base.concat('kind'), 'Kind', o, 'text', NET_KINDS, undefined, 'Select or type a network kind'));
-      add(this.listField(base.concat('cidr'), 'Prefixes (CIDR)', o, '192.0.2.0/24 or 2001:db8::/64'));
-      add(this.textField(base.concat('vlan'), 'VLAN', o));
-      add(this.textField(base.concat('vrf'), 'VRF', o));
-      add(this.endpointList(base.concat('members'), 'Members', o));
+      add(this.listField(base.concat('cidr'), 'Prefixes (CIDR)', o, '192.0.2.0/24 or 2001:db8::/64', 'An IP network is defined by its prefixes. Every device with an address inside one of them is a member.'));
+      add(this.intField(base.concat('vlan'), `VLAN ID (${VLAN_MIN}–${VLAN_MAX})`, o, 'The VLAN this IP network lives in. Interfaces with an address in the network show it as their VLAN. (VLANs permitted on a cable are set on the link’s ends.)'));
+      add(this.membersField(index));
       add(this.textField(base.concat('description'), 'Description', o, 'textarea'));
     } else if (kind === 'relation') {
       const protos = Array.from(builtinProtocols().keys()).concat(this.ids('protocol'));
@@ -448,11 +468,8 @@ export class Editor {
     card.appendChild(this.textField(p.concat('label'), loop ? 'Name' : 'Label', o, 'text', undefined, loop ? 'Descriptive name, e.g. “Router ID” or “BGP source”.' : undefined));
     card.appendChild(this.listField(p.concat('ip'), loop ? 'Addresses (IPv4 / IPv6 with prefix)' : 'Addresses', o, loop ? '10.255.0.1/32 or 2001:db8::1/128' : '192.0.2.1/24'));
     card.appendChild(this.textField(p.concat('type'), 'Type', o, 'text', IFACE_TYPES, loop ? undefined : 'Without a type the interface is a physical port (format rule). Logical types (loopback, tunnel, svi, lag …) cannot be cabled.', 'Not set: physical port'));
-    if (!loop || doc.get(p.concat('speed')) || doc.get(p.concat('media'))) {
-      card.appendChild(this.textField(p.concat('speed'), 'Speed', o, 'text', ['1G', '10G', '25G', '100G']));
-      card.appendChild(this.textField(p.concat('media'), 'Media', o, 'text', MEDIA));
-    }
-    card.appendChild(this.textField(p.concat('vlan'), 'VLAN', o));
+    card.appendChild(this.ifaceDerivedField(devIndex, k));
+    card.appendChild(this.textField(p.concat('vrf'), 'VRF', o, 'text', undefined, 'The VRF this interface is assigned to, if any.'));
     if (!loop || doc.get(p.concat('mac'))) card.appendChild(this.textField(p.concat('mac'), 'MAC', o));
     card.appendChild(this.textField(p.concat('description'), 'Description', o, 'textarea'));
     if (id) {
@@ -609,7 +626,7 @@ export class Editor {
   }
 
   /** Editable list of scalars (addresses, prefixes). Also handles a single scalar value. */
-  private listField(p: Path, label: string, order: string, placeholder: string): HTMLElement {
+  private listField(p: Path, label: string, order: string, placeholder: string, help?: string): HTMLElement {
     const n = this.doc.get(p);
     const box = this.e('div', { class: 'list-ed' });
     const row = (ip: Path, val: string, t: string): HTMLElement =>
@@ -620,7 +637,145 @@ export class Editor {
     if (n && n.kind === 'scalar' && scalarText(n) !== undefined) box.appendChild(row(p, scalarText(n) as string, 'list-scalar'));
     else if (n && n.kind === 'seq') n.items.forEach((it, k) => box.appendChild(row(p.concat(k), scalarText(it) || '', 'list-item')));
     box.appendChild(this.input(p, 'list-append', '', { placeholder: '+ add: ' + placeholder, 'data-o': order, class: 'append' }));
-    return this.field(label, box, p);
+    return this.field(label, box, p, help);
+  }
+
+  // ------------------------------------------------- derived (read-only) fields
+
+  /** A computed value: shown, never edited, never written to the file. */
+  private derivedField(label: string, name: string, body: Array<Node | string | null>, help: string): HTMLElement {
+    return this.e('div', { class: 'field derived', 'data-derived': name }, [
+      this.e('label', {}, [label, ' ', this.e('span', { class: 'derived-tag', title: 'Computed from the model; not stored in the YAML file' }, ['derived'])]),
+      this.e('div', { class: 'derived-body' }, body),
+      this.e('div', { class: 'help' }, [help]),
+    ]);
+  }
+
+  /** Members of a network: the devices with an address inside its prefixes. */
+  private membersField(netIndex: number): HTMLElement {
+    const model = this.doc.result.model;
+    const id = this.doc.text(['networks', netIndex, 'id']);
+    const net = model && id ? model.index.networks.get(id) : undefined;
+    const help = 'Devices with an interface or loopback address inside the prefixes above. To add a member, give one of its interfaces an address in the network.';
+    if (!model || !net) return this.derivedField('Members', 'members', [this.e('span', { class: 'muted' }, ['Not available while this network has errors.'])], help);
+    const members = networkMembers(model, net.id);
+    const rows = members.map((m) => {
+      const dev = model.index.devices.get(m.device);
+      return this.e('li', { 'data-member': m.device }, [
+        this.e('button', { type: 'button', class: 'ref', 'data-goto': 'device:' + m.device }, [dev ? dev.label : m.device]),
+        this.e('span', { class: 'ro small' }, [' ' + m.matches.map((x) => `${x.iface}${x.loopback ? ' (loopback)' : ''} ${x.address}`).join(', ')]),
+      ]);
+    });
+    const body = rows.length
+      ? [this.e('ul', { class: 'derived-list' }, rows)]
+      : [this.e('span', { class: 'muted' }, [net.cidr.length ? 'No device has an address in this network.' : 'No prefix yet, so there are no members.'])];
+    return this.derivedField(`Members (${members.length})`, 'members', body, help);
+  }
+
+  /** Network and VLAN of each address of an interface, from the networks containing it. */
+  private ifaceDerivedField(devIndex: number, k: number): HTMLElement {
+    const doc = this.doc;
+    const model = doc.result.model;
+    const dev = doc.text(['devices', devIndex, 'id']);
+    const p: Path = ['devices', devIndex, 'interfaces', k];
+    const n = doc.get(p) as DocNode;
+    const id = n.kind === 'map' ? doc.text(p.concat('id')) : scalarText(n);
+    const help = 'From the network whose prefix contains the address and that network’s VLAN. Change the address or the network to change it.';
+    const label = 'Network / VLAN';
+    const inf = model && dev && id ? model.index.interfaces.get(ifaceKey(dev, id)) : undefined;
+    if (!model || !inf) return this.derivedField(label, 'iface-vlan', [this.e('span', { class: 'muted' }, ['Not available while this interface has errors.'])], help);
+    const assocs = interfaceAddresses(model, inf.device, inf.id);
+    if (!assocs.length) return this.derivedField(label, 'iface-vlan', [this.e('span', { class: 'muted' }, ['No address, so no network and no VLAN.'])], help);
+    const rows = assocs.map((a) => {
+      let text: string;
+      let cls = '';
+      if (!a.valid) text = 'not an IP address — no network';
+      else if (!a.networks.length) text = 'no network contains it — no VLAN';
+      else {
+        const nets = a.networks.map((nid) => model.index.networks.get(nid)).filter((x): x is NonNullable<typeof x> => !!x);
+        if (a.vlan.state === 'ambiguous') {
+          cls = 'field-warn';
+          text = 'VLAN ambiguous: ' + nets.filter((x) => x.vlan !== undefined).map((x) => `VLAN ${x.vlan} (${x.label})`).join(' or ') + ' — none is chosen';
+        } else {
+          text = nets.map((x) => x.label).join(', ') + ' · ' + (a.vlan.state === 'vlan' ? derivedVlanText(a.vlan) : 'no VLAN defined');
+        }
+      }
+      return this.e('li', { class: cls, 'data-vlan': a.vlan.state === 'vlan' ? String(a.vlan.vlan) : a.vlan.state }, [this.e('span', { class: 'ro' }, [a.address]), ' → ' + text]);
+    });
+    return this.derivedField(label, 'iface-vlan', [this.e('ul', { class: 'derived-list' }, rows)], help);
+  }
+
+  // --------------------------------------------------------- link-end VLANs
+
+  /** VLAN IDs that networks define, with the network labels (for the picker and the chips). */
+  private knownVlans(): Map<number, string[]> {
+    const out = new Map<number, string[]>();
+    const model = this.doc.result.model;
+    if (model) {
+      for (const n of model.networks) {
+        if (n.vlan === undefined) continue;
+        out.set(n.vlan, (out.get(n.vlan) || []).concat(n.label));
+      }
+    }
+    return out;
+  }
+
+  /**
+   * VLANs permitted at one end of a link: any number, chosen per end and
+   * stored on that end. The other end is never changed to match.
+   */
+  private endVlansField(endPath: Path, side: string): HTMLElement {
+    const doc = this.doc;
+    const cur = doc.endVlans(endPath);
+    const known = this.knownVlans();
+    const hasEnd = !!this.epParts(endPath).device;
+    const valid = cur.map(Number).filter((v) => Number.isInteger(v) && v >= VLAN_MIN && v <= VLAN_MAX);
+    const state = cur.length === 0 ? 'none' : cur.length === 1 ? 'single' : 'trunk';
+    const box = this.e('div', { class: 'vlan-ed', 'data-vlan-end': side, 'data-vlan-state': state });
+    box.appendChild(this.e('div', { class: 'vlan-state' + (state === 'trunk' ? ' trunk' : state === 'none' ? ' muted' : '') }, [cur.length === valid.length ? linkEndVlanText(valid) : `${cur.length} entries`]));
+    if (cur.length) {
+      const chips = this.e('div', { class: 'vlan-chips' });
+      for (const id of cur) {
+        const names = known.get(Number(id));
+        chips.appendChild(
+          this.e('span', { class: 'ref-chip vlan-chip', title: names ? 'VLAN of ' + names.join(', ') : '' }, [
+            id,
+            this.e('button', { type: 'button', class: 'mini', 'data-act': 'del-vlan', 'data-p': J(endPath), 'data-k': id, title: `Remove VLAN ${id} from end ${side}` }, ['×']),
+          ]),
+        );
+      }
+      box.appendChild(chips);
+    }
+    if (hasEnd) {
+      const pick = this.e('select', { 'data-p': J(endPath), 'data-t': 'vlan-pick', 'aria-label': `Add a VLAN to end ${side}` }) as HTMLSelectElement;
+      pick.appendChild(this.e('option', { value: '' }, ['+ network VLAN…']));
+      Array.from(known.keys())
+        .sort((p, q) => p - q)
+        .filter((v) => cur.indexOf(String(v)) < 0)
+        .forEach((v) => pick.appendChild(this.e('option', { value: String(v) }, [`${v} · ${(known.get(v) as string[]).join(', ')}`])));
+      box.appendChild(this.e('div', { class: 'list-row' }, [pick, this.input(endPath, 'vlan-add', '', { placeholder: '+ add IDs: 10, 20, 30-32', class: 'append', inputmode: 'numeric' })]));
+    } else {
+      box.appendChild(this.e('span', { class: 'muted small' }, ['Choose the device of this end first.']));
+    }
+    const help =
+      state === 'none'
+        ? 'No VLAN is configured for this end, and none is assumed.'
+        : state === 'single'
+          ? 'One VLAN is permitted at this end.'
+          : 'Several VLANs are permitted at this end: a trunk.';
+    return this.field(`End ${side} VLANs`, box, endPath.concat('vlans'), help + ' Stored on this end only.');
+  }
+
+  /** The difference between the two ends' VLANs, shown but never repaired. */
+  private vlanMismatchNote(linkIndex: number): HTMLElement {
+    const num = (side: string): number[] =>
+      this.doc
+        .endVlans(['links', linkIndex, side])
+        .map(Number)
+        .filter((v) => Number.isInteger(v));
+    const mm = vlanMismatch(num('a'), num('b'));
+    if (!mm) return this.e('div', { class: 'vlan-match', 'data-vlan-mismatch': 'no' });
+    return this.e('div', { class: 'vlan-mismatch-note field-warn', 'data-vlan-mismatch': 'yes', role: 'status' }, ['⚠ The two ends permit different VLANs (' + vlanMismatchText(mm) + '). Nothing is changed automatically.']);
   }
 
   // -------------------------------------------------------------- endpoints
@@ -887,6 +1042,21 @@ export class Editor {
         if (trimmed === '') return true;
         doc.appendText(p, trimmed);
         break;
+      case 'vlan-pick':
+        if (!val) return true;
+        doc.addEndVlans(p, [Number(val)]);
+        break;
+      case 'vlan-add': {
+        if (trimmed === '') return true;
+        const ids = parseVlanList(trimmed);
+        if (!ids) {
+          this.host.toast(`VLAN IDs are whole numbers from ${VLAN_MIN} to ${VLAN_MAX}, e.g. “10, 20, 30-32”.`);
+          this.host.changed();
+          return true;
+        }
+        doc.addEndVlans(p, ids);
+        break;
+      }
       case 'over-append':
         if (!val) return true;
         doc.appendText(p, val, 'Add underlay');
@@ -1017,6 +1187,10 @@ export class Editor {
       }
       case 'del-item':
         doc.remove(p);
+        this.host.changed();
+        return true;
+      case 'del-vlan':
+        doc.removeEndVlan(p, btn.getAttribute('data-k') as string);
         this.host.changed();
         return true;
       case 'move-up': {

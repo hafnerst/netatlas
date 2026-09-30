@@ -1,7 +1,8 @@
 import { CBox, Pt, Rect, ellipsize, textWidth, unionRect } from '../layout/geometry';
 import { deviceIcon } from './icons';
 import { GROUP_PAD, GROUP_TITLE, PORT_FONT, PhysicalLayout, PortPos, assignPorts } from '../layout/physical';
-import { Model } from '../model/types';
+import { vlanMismatch } from '../model/derive';
+import { Link, Model } from '../model/types';
 import { deviceTypeLabel } from '../model/device-types';
 import { VNode, h } from './scene';
 import { groupKindStyle, mediumStyle, speedWidth } from './style';
@@ -127,8 +128,9 @@ export function renderPhysical(model: Model, layout: PhysicalLayout, opts: ViewO
     const sb = { x: pb.x + pb.nx * STUB, y: pb.y + pb.ny * STUB };
     const d = `M${n(pa.x)} ${n(pa.y)}L${n(sa.x)} ${n(sa.y)}L${n(sb.x)} ${n(sb.y)}L${n(pb.x)} ${n(pb.y)}`;
     const width = speedWidth(l.speed);
+    const mismatch = !!vlanMismatch(l.a.vlans, l.b.vlans);
     linkNodes.push(
-      h('g', { class: `link cable medium-${cssToken(ms.key)}`, 'data-ref': 'link:' + l.id }, [
+      h('g', { class: `link cable medium-${cssToken(ms.key)}${mismatch ? ' vlan-mismatch' : ''}`, 'data-ref': 'link:' + l.id }, [
         h('path', { class: 'hit', d }),
         h('path', { class: 'cable-line', d, stroke: ms.color, 'stroke-width': width, 'stroke-dasharray': ms.dash }),
       ]),
@@ -148,13 +150,16 @@ export function renderPhysical(model: Model, layout: PhysicalLayout, opts: ViewO
       );
       if (opts.showLabels && p.iface) labelNodes.push(portLabel(p));
     }
+    const mid = { x: (sa.x + sb.x) / 2, y: (sa.y + sb.y) / 2 };
+    // a VLAN mismatch is marked on the cable itself, with or without labels
+    if (mismatch) labelNodes.push(h('text', { class: 'halo vlan-warn', 'data-ref': 'link:' + l.id, x: mid.x, y: mid.y - 8, 'text-anchor': 'middle' }, '⚠'));
     if (opts.showLabels) {
-      const text = [l.speed, l.label].filter((s) => !!s).join(' · ');
+      const text = [l.speed, linkVlanLabel(l), l.label].filter((s) => !!s).join(' · ');
       // only label cables whose middle segment has room for the text (hover shows it otherwise)
       if (text && Math.hypot(sb.x - sa.x, sb.y - sa.y) > Math.min(textWidth(text, 10.5), 160) + 24) {
-        const m = { x: (sa.x + sb.x) / 2, y: (sa.y + sb.y) / 2 };
+        const m = mid;
         labelNodes.push(
-          h('text', { class: 'halo link-label', 'data-ref': 'link:' + l.id, x: m.x, y: m.y + 4, 'text-anchor': 'middle' }, ellipsize(text, 10.5, 160)),
+          h('text', { class: 'halo link-label' + (mismatch ? ' vlan-mismatch' : ''), 'data-ref': 'link:' + l.id, x: m.x, y: m.y + 4, 'text-anchor': 'middle' }, ellipsize(text, 10.5, 160)),
         );
       }
     }
@@ -181,6 +186,19 @@ export function renderPhysical(model: Model, layout: PhysicalLayout, opts: ViewO
     ]),
     bounds,
   };
+}
+
+/**
+ * VLANs of a cable for its label: what both ends permit, "Trunk" for several,
+ * nothing when no VLAN is configured, and a warning when the ends differ
+ * (the per-end lists are in the tooltip and the details).
+ */
+export function linkVlanLabel(l: Link): string {
+  if (vlanMismatch(l.a.vlans, l.b.vlans)) return 'VLAN mismatch';
+  const v = l.a.vlans;
+  if (!v.length) return '';
+  if (v.length === 1) return 'VLAN ' + v[0];
+  return 'Trunk ' + (v.length > 4 ? v.slice(0, 4).join(',') + ',…' : v.join(','));
 }
 
 function portLabel(p: PortPos): VNode {

@@ -14,6 +14,7 @@ export const state = load('diagram/session.js');
 export const scene = load('diagram/scene.js');
 export const panels = load('ui/panels.js');
 export const queries = load('model/queries.js');
+export const derive = load('model/derive.js');
 
 /** Validate YAML and build a diagram session (null when there are errors), as the UI does. */
 export function sessionFromYaml(text) {

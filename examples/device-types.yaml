@@ -42,8 +42,8 @@ devices:
     group: campus
     router_id: lo0
     interfaces:
-      - {id: wan0, speed: 1G, media: fiber, ip: 198.51.100.2/30}
-      - {id: lan0, speed: 1G, ip: 10.0.0.1/30}
+      - {id: wan0, ip: 198.51.100.2/30}
+      - {id: lan0, ip: 10.0.0.1/30}
       - {id: lo0, type: loopback, ip: 10.255.0.1/32}
   - id: vpn-gw
     label: vpn-gw
@@ -51,33 +51,33 @@ devices:
     role: remote access
     group: campus
     interfaces:
-      - {id: wan0, speed: 1G, media: fiber, ip: 198.51.100.6/30}
-      - {id: lan0, speed: 1G, ip: 10.0.0.5/30}
+      - {id: wan0, ip: 198.51.100.6/30}
+      - {id: lan0, ip: 10.0.0.5/30}
   - id: fw
     label: fw1
     type: firewall
     group: campus
     interfaces:
-      - {id: outside, speed: 1G, ip: 10.0.0.2/30}
-      - {id: vpn, speed: 1G, ip: 10.0.0.6/30}
-      - {id: inside, speed: 10G}
-      - {id: dmz1, speed: 1G}
-      - {id: dmz2, speed: 1G}
+      - {id: outside, ip: 10.0.0.2/30}
+      - {id: vpn, ip: 10.0.0.6/30}
+      - {id: inside}
+      - {id: dmz1}
+      - {id: dmz2}
   - id: ips
     label: ips1
     type: ids_ips
     role: inline
     group: campus
     interfaces:
-      - {id: in, speed: 10G}
-      - {id: out, speed: 10G}
+      - {id: in}
+      - {id: out}
   - id: lb
     label: lb1
     type: load_balancer
     group: dmz
     tier: 3
     interfaces:
-      - {id: eth0, speed: 1G}
+      - {id: eth0}
   - id: proxy
     label: proxy1
     type: proxy
@@ -85,7 +85,7 @@ devices:
     group: dmz
     tier: 3
     interfaces:
-      - {id: eth0, speed: 1G}
+      - {id: eth0}
   - id: core
     label: core-sw
     type: switch
@@ -93,46 +93,46 @@ devices:
     group: campus
     tier: 3
     interfaces:
-      - {id: Et1, speed: 10G}
-      - {id: Et2, speed: 10G, media: fiber}
-      - {id: Et3, speed: 10G, media: dac}
-      - {id: Et4, speed: 10G, media: dac}
-      - {id: Et5, speed: 1G}
+      - {id: Et1}
+      - {id: Et2}
+      - {id: Et3}
+      - {id: Et4}
+      - {id: Et5}
   - id: access
     label: acc-sw1
     type: switch
     role: access
     group: office
     interfaces:
-      - {id: Et49, speed: 10G, media: fiber}
-      - {id: Et1, speed: 1G}
-      - {id: Et2, speed: 1G}
+      - {id: Et49}
+      - {id: Et1}
+      - {id: Et2}
   - id: ap
     label: ap-1-01
     type: ap
     group: office
     interfaces:
-      - {id: eth0, speed: 1G}
-      - {id: wlan0, media: wireless}
+      - {id: eth0}
+      - {id: wlan0}
   - id: laptop
     label: laptop-042
     type: endpoint
     group: office
     interfaces:
-      - {id: wlan0, media: wireless}
+      - {id: wlan0}
   - id: desktop
     label: pc-017
     type: endpoint
     group: office
     interfaces:
-      - {id: eth0, speed: 1G}
+      - {id: eth0}
   - id: host
     label: esx-01
     type: server
     role: hypervisor
     group: server-room
     interfaces:
-      - {id: vmnic0, speed: 10G, media: dac}
+      - {id: vmnic0}
       - {id: vswitch0}
   - id: app-vm
     label: app-vm
@@ -151,31 +151,31 @@ devices:
     type: storage
     group: server-room
     interfaces:
-      - {id: eth0, speed: 10G, media: dac}
+      - {id: eth0}
   - id: nms
     label: nms
     type: system
     role: monitoring appliance
     group: server-room
     interfaces:
-      - {id: eth0, speed: 1G}
+      - {id: eth0}
 
 links:
-  - {id: l-isp-edge, a: "isp:edge", b: "edge:wan0"}
-  - {id: l-isp-vpn, a: "isp:vpn", b: "vpn-gw:wan0"}
-  - {id: l-edge-fw, a: "edge:lan0", b: "fw:outside"}
-  - {id: l-vpn-fw, a: "vpn-gw:lan0", b: "fw:vpn"}
-  - {id: l-fw-ips, a: "fw:inside", b: "ips:in"}
-  - {id: l-ips-core, a: "ips:out", b: "core:Et1"}
-  - {id: l-fw-lb, a: "fw:dmz1", b: "lb:eth0"}
-  - {id: l-fw-proxy, a: "fw:dmz2", b: "proxy:eth0"}
-  - {id: l-core-access, a: "core:Et2", b: "access:Et49"}
-  - {id: l-access-ap, a: "access:Et1", b: "ap:eth0"}
-  - {id: l-access-pc, a: "access:Et2", b: "desktop:eth0"}
+  - {id: l-isp-edge, a: "isp:edge", b: "edge:wan0", medium: fiber, speed: 1G}
+  - {id: l-isp-vpn, a: "isp:vpn", b: "vpn-gw:wan0", medium: fiber, speed: 1G}
+  - {id: l-edge-fw, a: "edge:lan0", b: "fw:outside", speed: 1G}
+  - {id: l-vpn-fw, a: "vpn-gw:lan0", b: "fw:vpn", speed: 1G}
+  - {id: l-fw-ips, a: "fw:inside", b: "ips:in", speed: 10G}
+  - {id: l-ips-core, a: "ips:out", b: "core:Et1", speed: 10G}
+  - {id: l-fw-lb, a: "fw:dmz1", b: "lb:eth0", speed: 1G}
+  - {id: l-fw-proxy, a: "fw:dmz2", b: "proxy:eth0", speed: 1G}
+  - {id: l-core-access, a: "core:Et2", b: "access:Et49", medium: fiber, speed: 10G}
+  - {id: l-access-ap, a: "access:Et1", b: "ap:eth0", speed: 1G}
+  - {id: l-access-pc, a: "access:Et2", b: "desktop:eth0", speed: 1G}
   - {id: l-wifi, a: "ap:wlan0", b: "laptop:wlan0", medium: wireless}
-  - {id: l-core-host, a: "core:Et3", b: "host:vmnic0"}
-  - {id: l-core-nas, a: "core:Et4", b: "nas:eth0"}
-  - {id: l-core-nms, a: "core:Et5", b: "nms:eth0"}
+  - {id: l-core-host, a: "core:Et3", b: "host:vmnic0", medium: dac, speed: 10G}
+  - {id: l-core-nas, a: "core:Et4", b: "nas:eth0", medium: dac, speed: 10G}
+  - {id: l-core-nms, a: "core:Et5", b: "nms:eth0", speed: 1G}
   - {id: l-host-vm, a: "host:vswitch0", b: "app-vm:eth0", medium: virtual}
   - {id: l-vm-api, a: "app-vm:docker0", b: "api:eth0", medium: virtual}
 

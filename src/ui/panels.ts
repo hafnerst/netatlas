@@ -5,7 +5,8 @@ import { Attrs, CATEGORIES, Category, Model, ProtocolDef, RelEndpoint, endpointT
 import { VNode, h } from '../diagram/scene';
 import { View } from '../diagram/session';
 import { ContextState, SelectionContext, contextState, splitRef } from '../model/queries';
-import { groupKindStyle, mediumStyle, networkColor, speedWidth } from '../diagram/style';
+import { NETWORK_COLOR, groupKindStyle, mediumStyle, speedWidth } from '../diagram/style';
+import { AddressAssoc, deviceNetworks, derivedVlanText, interfaceAddresses, interfaceVlanText, linkEndVlanText, networkMembers, vlanMismatch, vlanMismatchText } from '../model/derive';
 import { relationStyle } from '../model/protocols';
 
 const CATEGORY_TEXT: { [c in Category]: string } = {
@@ -45,6 +46,27 @@ function epNode(model: Model, e: RelEndpoint): VNode {
   for (const [k, v] of e.attrs) extra.push(`${k}=${v}`);
   if (extra.length) parts.push(h('span', { class: 'muted' }, '  ' + extra.join(', ')));
   return h('li', {}, parts);
+}
+
+/** Read-only "address → network · VLAN" lines of an interface (all derived). */
+function derivedAddressList(model: Model, assocs: AddressAssoc[]): VNode {
+  return h(
+    'ul',
+    { class: 'reflist', 'data-derived': 'iface-vlan' },
+    assocs.map((a) => {
+      const kids: Array<VNode | null> = [h('span', { class: 'ro' }, a.address), h('span', { class: 'muted' }, ' → ')];
+      if (!a.valid) kids.push(h('span', { class: 'muted' }, 'not an IP address'));
+      else if (!a.networks.length) kids.push(h('span', { class: 'muted' }, 'no network'));
+      else {
+        a.networks.forEach((n, k) => {
+          if (k) kids.push(h('span', {}, ', '));
+          kids.push(refLink('network:' + n, model.index.networks.get(n)?.label || n));
+        });
+        kids.push(h('span', { class: a.vlan.state === 'ambiguous' ? 'warn-text' : 'muted' }, ' · ' + (derivedVlanText(a.vlan) || 'no VLAN defined')));
+      }
+      return h('li', {}, kids);
+    }),
+  );
 }
 
 /** Text for assistive technology: the state is also shown by markers and weight, not colour alone. */
@@ -117,8 +139,9 @@ export function detailsFor(model: Model, ref: string): VNode {
       const peer = l ? (l.a.device === d.id && l.a.iface === i.id ? l.b : l.a) : undefined;
       return h('tr', { class: l ? '' : 'unused' }, [
         h('td', {}, [refLink(`iface:${d.id}:${i.id}`, i.id)]),
-        h('td', {}, [i.type === 'physical' ? '' : i.type, i.speed || '', i.media || ''].filter((s) => s).join(' ')),
+        h('td', {}, i.type === 'physical' ? '' : i.type),
         h('td', {}, i.addresses.join(', ')),
+        h('td', {}, interfaceVlanText(interfaceAddresses(model, d.id, i.id)).replace(/VLAN /g, '')),
         h('td', {}, peer ? [refLink('link:' + (lid as string), '→ ' + endpointText(peer))] : []),
       ]);
     });
@@ -126,7 +149,7 @@ export function detailsFor(model: Model, ref: string): VNode {
       kids.push(
         h('section', {}, [
           h('h4', {}, `Interfaces (${rows.length}, ${d.interfaces.filter((i) => ix.ifaceLink.has(ifaceKey(d.id, i.id))).length} cabled)`),
-          h('table', { class: 'ports' }, [h('tr', {}, [h('th', {}, 'port'), h('th', {}, 'type'), h('th', {}, 'address'), h('th', {}, 'cable')]), ...rows]),
+          h('table', { class: 'ports' }, [h('tr', {}, [h('th', {}, 'port'), h('th', {}, 'type'), h('th', {}, 'address'), h('th', { title: 'Derived from the network containing the address' }, 'vlan'), h('th', {}, 'cable')]), ...rows]),
         ]),
       );
     }
@@ -141,7 +164,7 @@ export function detailsFor(model: Model, ref: string): VNode {
     kids.push(
       list(
         'Networks',
-        model.networks.filter((n) => n.members.some((m) => m.device === d.id)).map((n) => h('li', {}, [refLink('network:' + n.id, n.label)])),
+        deviceNetworks(model, d.id).map((n) => h('li', {}, [refLink('network:' + n, ix.networks.get(n)?.label || n)])),
       ),
     );
     kids.push(attrsTable('Attributes', d.attrs));
@@ -155,15 +178,15 @@ export function detailsFor(model: Model, ref: string): VNode {
         ['device', refLink('device:' + i.device, ix.devices.get(i.device)?.label || i.device)],
         ['label', i.label],
         ['type', i.type],
-        ['speed', i.speed],
-        ['media', i.media],
         ['addresses', i.addresses.join(', ')],
-        ['vlan', i.vlan],
+        ['vrf', i.vrf],
         ['mac', i.mac],
-        ['cable', lid ? refLink('link:' + lid, lid) : 'not cabled'],
+        ['cable', isLoopback(i) ? undefined : lid ? refLink('link:' + lid, lid) : 'not cabled'],
         ['description', i.description],
       ]),
     );
+    const assocs = interfaceAddresses(model, i.device, i.id);
+    if (assocs.length) kids.push(h('section', {}, [h('h4', {}, 'Network / VLAN (derived from the addresses)'), derivedAddressList(model, assocs)]));
     kids.push(
       list(
         'Relations on this interface',
@@ -177,17 +200,20 @@ export function detailsFor(model: Model, ref: string): VNode {
     const l = ix.links.get(id);
     if (!l) return h('div', {}, 'Not found');
     kids.push(header('physical link', l.label || l.id));
-    const ep = (e: { device: string; iface?: string }): VNode =>
+    const ep = (e: { device: string; iface?: string; vlans: number[] }): VNode =>
       h('span', {}, [
         refLink('device:' + e.device, ix.devices.get(e.device)?.label || e.device),
         e.iface ? h('span', {}, ' ') : null,
         e.iface ? refLink(`iface:${e.device}:${e.iface}`, e.iface) : null,
+        h('span', { class: e.vlans.length ? 'vlan-end' : 'vlan-end muted' }, ' — ' + linkEndVlanText(e.vlans)),
       ]);
+    const mm = vlanMismatch(l.a.vlans, l.b.vlans);
     kids.push(
       kv([
         ['id', l.id],
         ['A', ep(l.a)],
         ['B', ep(l.b)],
+        ['VLANs', mm ? h('span', { class: 'warn-text', 'data-vlan-mismatch': 'yes' }, '⚠ mismatch — ' + vlanMismatchText(mm)) : undefined],
         ['medium', mediumStyle(l.medium).label],
         ['speed', l.speed],
         ['cable', l.cable],
@@ -238,9 +264,22 @@ export function detailsFor(model: Model, ref: string): VNode {
   } else if (kind === 'network') {
     const n = ix.networks.get(id);
     if (!n) return h('div', {}, 'Not found');
-    kids.push(header(n.kind || 'network', n.label));
-    kids.push(kv([['id', n.id], ['kind', n.kind], ['cidr', n.cidr.join(', ')], ['vlan', n.vlan], ['vrf', n.vrf], ['description', n.description]]));
-    kids.push(list('Members', n.members.map((m) => epNode(model, m))));
+    kids.push(header('IP network', n.label));
+    kids.push(kv([['id', n.id], ['cidr', n.cidr.join(', ')], ['vlan', n.vlan !== undefined ? String(n.vlan) : undefined], ['description', n.description]]));
+    // derived: every device with an address inside the network's prefixes, once
+    kids.push(
+      list(
+        'Members',
+        networkMembers(model, n.id).map((m) =>
+          h('li', { 'data-member': m.device }, [
+            refLink('device:' + m.device, ix.devices.get(m.device)?.label || m.device),
+            ...m.matches.map((x, k) =>
+              h('span', {}, [h('span', { class: 'muted' }, k ? ', ' : ' '), refLink(`iface:${x.device}:${x.iface}`, x.iface), h('span', { class: 'muted' }, ' ' + x.address)]),
+            ),
+          ]),
+        ),
+      ),
+    );
     kids.push(
       list(
         'Relations',
@@ -292,7 +331,7 @@ export function tooltipFor(model: Model, ref: string): string[] {
   if (kind === 'iface') {
     const i = ix.interfaces.get(id);
     if (!i) return [];
-    return [`${i.device} ${i.id}`, [i.type !== 'physical' ? i.type : '', i.speed, i.media].filter((s) => s).join(' · '), i.addresses.join(', '), i.description || ''].filter((s) => s);
+    return [`${i.device} ${i.id}`, i.type !== 'physical' ? i.type : '', i.addresses.join(', '), interfaceVlanText(interfaceAddresses(model, i.device, i.id)), i.description || ''].filter((s) => s);
   }
   if (kind === 'link') {
     const l = ix.links.get(id);
@@ -301,6 +340,8 @@ export function tooltipFor(model: Model, ref: string): string[] {
     return [
       `${endpointText(l.a)}  ⟷  ${endpointText(l.b)}`,
       [mediumStyle(l.medium).label, l.speed, l.label, l.cable].filter((s) => s).join(' · '),
+      l.a.vlans.length || l.b.vlans.length ? `A: ${linkEndVlanText(l.a.vlans)}  |  B: ${linkEndVlanText(l.b.vlans)}` : '',
+      vlanMismatch(l.a.vlans, l.b.vlans) ? '⚠ VLAN mismatch between the ends' : '',
       carried ? `carries ${carried} logical relation${carried > 1 ? 's' : ''}` : '',
     ].filter((s) => s);
   }
@@ -314,7 +355,8 @@ export function tooltipFor(model: Model, ref: string): string[] {
   if (kind === 'network') {
     const n = ix.networks.get(id);
     if (!n) return [];
-    return [n.label, [n.kind, n.vlan ? 'VLAN ' + n.vlan : '', n.cidr.join(', ')].filter((s) => s).join(' · '), `${n.members.length} members`];
+    const count = networkMembers(model, n.id).length;
+    return [n.label, [n.vlan !== undefined ? 'VLAN ' + n.vlan : '', n.cidr.join(', ')].filter((s) => s).join(' · '), `${count} member${count === 1 ? '' : 's'}`].filter((s) => s);
   }
   if (kind === 'group') {
     const g = ix.groups.get(id);
@@ -376,7 +418,7 @@ export function legendFor(model: Model, view: View, hidden: Set<string>): VNode 
               row(swatchSvg([h('path', { d: 'M3 9H41', stroke: m.color, 'stroke-width': 2.6, 'stroke-dasharray': m.dash, fill: 'none' })]), m.label),
             ),
           ),
-          h('p', { class: 'muted' }, 'Line width grows with link speed (100M → 400G). Small squares are ports; labels show the interface name.'),
+          h('p', { class: 'muted' }, 'Line width grows with link speed (100M → 400G). Small squares are ports; labels show the interface name. “Trunk” on a cable means several VLANs are permitted; ⚠ marks a cable whose two ends permit different VLANs.'),
           h('ul', {}, [
             row(swatchSvg([h('path', { d: 'M3 9H41', stroke: '#868e96', 'stroke-width': speedWidth('1G'), fill: 'none' })]), '1G'),
             row(swatchSvg([h('path', { d: 'M3 9H41', stroke: '#868e96', 'stroke-width': speedWidth('100G'), fill: 'none' })]), '100G'),
@@ -450,8 +492,8 @@ export function legendFor(model: Model, view: View, hidden: Set<string>): VNode 
             'Carried inside (e.g. GRE over IPsec)',
           ),
           row(swatchSvg([h('circle', { class: 'hub', cx: 22, cy: 9, r: 7, stroke: '#0c8599' })]), 'Multipoint hub (3+ devices)'),
-          row(swatchSvg([h('rect', { class: 'net-box', x: 3, y: 2, width: 38, height: 14, rx: 7, stroke: networkColor('subnet') })]), 'Network (subnet / VLAN / VRF …)'),
-          row(swatchSvg([h('path', { class: 'member', d: 'M3 9H41' })]), 'Network membership'),
+          row(swatchSvg([h('rect', { class: 'net-box', x: 3, y: 2, width: 38, height: 14, rx: 7, stroke: NETWORK_COLOR })]), 'IP network'),
+          row(swatchSvg([h('path', { class: 'member', d: 'M3 9H41' })]), 'Network membership (from addresses)'),
           row(swatchSvg([h('path', { class: 'underlay', d: 'M3 9H41' })]), 'Physical adjacency (optional underlay)'),
         ]),
         used.size && Array.from(used.values()).some((u) => u.def.custom)

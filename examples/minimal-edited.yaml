@@ -13,7 +13,6 @@ devices:
     router_id: lo0
     interfaces:
       - id: eth0
-        speed: 1G
         ip: 192.0.2.1/30
       - id: tun0
         type: tunnel
@@ -23,7 +22,6 @@ devices:
     router_id: lo0
     interfaces:
       - id: eth0
-        speed: 1G
         ip: 192.0.2.2/30
       - id: tun0
         type: tunnel
@@ -34,6 +32,7 @@ links:
     a: edge-1:eth0
     b: r2:eth0
     medium: copper
+    speed: 1G
     attrs:
       patch-panel: PP-3 port 14
       length: 2m

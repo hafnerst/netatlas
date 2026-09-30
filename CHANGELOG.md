@@ -6,6 +6,54 @@ All notable changes to NetAtlas are listed here. The format follows
 releases may still change behaviour; the YAML format has its own version
 (`netatlas: 1`) and stays readable across application versions.
 
+## [Unreleased]
+
+### Breaking: restructured YAML format
+
+**Files written for release 0.1.x that use the removed keys are not
+converted.** They open as a draft with one error for every key that has to
+change; each error says what to do. Update the file by hand. The format
+version stays `netatlas: 1`: the tool isn't used in production yet, so this
+one incompatible change is made without a new format version. The full table
+is in [docs/FORMAT.md](docs/FORMAT.md#changes-from-the-earlier-format).
+
+The model now follows one rule: **each fact is configured in one place and
+derived everywhere else.**
+
+* **Networks are IP networks.** Removed from networks: `kind`, `vrf` and
+  `members`. A network is its `cidr` prefixes and, optionally, the `vlan` it
+  lives in (a VLAN ID, 1–4094). A `cidr` entry that isn't a valid prefix is
+  now an error.
+* **Network members are derived.** A device is a member when one of its
+  interface or loopback addresses lies inside one of the network's prefixes.
+  The network's prefix decides; the interface's own prefix length isn't
+  used. The read-only list shows each device once, with the matching
+  interfaces and addresses, and updates with every edit.
+* **Interfaces:** removed `vlan`, `speed` and `media`. The VLAN shown for an
+  interface is derived from the network containing each address; conflicting
+  networks give an explicit "ambiguous" and a warning instead of a choice.
+  New: `vrf` on an interface (also on loopbacks).
+* **Links:** `speed` and `medium` are configured on the link only; there is
+  no fallback to the interfaces, and the "speed mismatch" warning is gone.
+  New: each end (`a`, `b`) can list the VLANs it permits
+  (`a: {device: sw1, interface: Et1, vlans: [10, 20]}`). Several VLANs are
+  labelled *Trunk*, one *VLAN n*, none *No VLAN*. Different lists at the two
+  ends give a warning, in the editor and as ⚠ on the cable; neither end is
+  changed.
+* **Groups:** the kind `row` was renamed to `floor`; `kind: row` is an
+  error.
+* **Editor:** derived values are marked *derived* and can't be edited. New
+  VLAN pickers per link end. Networks have no kind, VRF or member fields;
+  interfaces no VLAN, speed or media fields.
+* **Diagrams:** the logical view draws membership lines from the derived
+  members and all networks in one colour; the physical view labels trunks
+  and marks VLAN mismatches.
+* All examples are in the new format. Two devices in
+  `enterprise-wan.yaml`, the leaves in `datacenter-evpn.yaml` and three
+  devices in `metro-ring.yaml` got an address so that they remain members;
+  the networks that were only a VRF's device list are gone (the VRF is on
+  the interfaces).
+
 ## [0.1.0] - 2026-09-29
 
 First release: a usable initial version, not a complete one.

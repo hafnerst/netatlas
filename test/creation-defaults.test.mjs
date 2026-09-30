@@ -60,11 +60,12 @@ test('incomplete new elements: required values are reported, optional ones are s
   assert.ok(errs.some((e) => /^links\.link1: missing required key "a"/.test(e)));
   assert.ok(errs.some((e) => /^links\.link1: missing required key "b"/.test(e)));
   assert.ok(d.warnings.some((w) => /protocol "custom1" has no category/.test(w.message)));
-  // device type, network kind and group kind are optional: no error, and no value invented
+  // device type, group kind and a network's prefix/VLAN are optional: no error, and no value invented
   assert.ok(!errs.some((e) => /device1|net1|site1/.test(e)), errs.join('\n'));
   const m = d.result.model;
   assert.equal(m.devices[0].type, 'generic', 'no device type (drawn with the generic icon)');
-  assert.equal(m.networks[0].kind, '', 'no network kind (not "subnet")');
+  assert.deepEqual([m.networks[0].cidr, m.networks[0].vlan], [[], undefined], 'no prefix and no VLAN invented');
+  assert.ok(d.warnings.some((w) => /network "net1" has no prefix/.test(w.message)));
   assert.equal(m.groups[0].kind, '', 'no group kind (not "site")');
   // the issue is located at the relation, for the inline field feedback
   const e = d.errors.find((x) => /missing required key "protocol"/.test(x.message));
@@ -80,29 +81,27 @@ test('choosing a value saves exactly that value; clearing it removes the key aga
   d.addEntity('group');
   d.addEntity('protocol');
   d.setText(['devices', 0, 'type'], 'firewall');
-  d.setText(['networks', 0, 'kind'], 'vlan');
+  d.setInteger(['networks', 0, 'vlan'], '30');
   d.setText(['relations', 0, 'protocol'], 'ospf');
   d.setText(['groups', 0, 'kind'], 'rack');
   d.setText(['protocols', 0, 'category'], 'service');
   const out = d.exportText();
   assert.match(out, /- id: device1\n {4}type: firewall\n/);
-  assert.match(out, /- id: net1\n {4}kind: vlan\n/);
+  assert.match(out, /- id: net1\n {4}vlan: 30\n/);
   assert.match(out, /- id: rel1\n {4}protocol: ospf\n {4}endpoints: \[\]\n/);
   assert.match(out, /- id: site1\n {4}kind: rack\n/);
   assert.match(out, /- \{id: custom1, category: service\}/);
   const m = d.result.model;
   assert.equal(m.devices[0].type, 'firewall');
-  assert.equal(m.networks[0].kind, 'vlan');
+  assert.equal(m.networks[0].vlan, 30);
   assert.equal(m.groups[0].kind, 'rack');
   assert.equal(m.protocols.get('custom1').category, 'service');
   d.setText(['devices', 0, 'type'], '');
-  d.setText(['networks', 0, 'kind'], '');
-  assert.ok(!/type:/.test(d.exportText()) && !/kind: vlan/.test(d.exportText()));
+  d.setInteger(['networks', 0, 'vlan'], '');
+  assert.ok(!/type:/.test(d.exportText()) && !/vlan:/.test(d.exportText()));
 });
 
-test('an empty kind is not drawn as a subnet or a site', () => {
-  assert.equal(style.networkColor(''), '#868e96');
-  assert.notEqual(style.networkColor(''), style.networkColor('subnet'));
+test('an empty group kind is not drawn as a site', () => {
   assert.deepEqual(style.groupKindStyle(''), { strong: false });
   assert.deepEqual(style.groupKindStyle('site'), { strong: true });
 });
@@ -131,7 +130,6 @@ test('importing existing models leaves their values unchanged', () => {
     const m = d.result.model;
     // model values come from the file only: present keys keep their value, absent ones stay empty
     for (const [i, g] of m.groups.entries()) assert.equal(g.kind, (d.text(['groups', i, 'kind']) || '').toLowerCase(), `${f} group ${g.id}`);
-    for (const [i, n] of m.networks.entries()) assert.equal(n.kind, (d.text(['networks', i, 'kind']) || '').toLowerCase(), `${f} network ${n.id}`);
     for (const [i, dv] of m.devices.entries()) assert.equal(dv.type, d.text(['devices', i, 'type']) || 'generic', `${f} device ${dv.id}`);
     for (const [i, r] of m.relations.entries()) assert.equal(r.protocol, (d.text(['relations', i, 'protocol']) || '').toLowerCase(), `${f} relation ${r.id}`);
   }

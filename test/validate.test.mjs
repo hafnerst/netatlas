@@ -7,7 +7,7 @@ devices:
   - id: r1
     type: router
     interfaces:
-      - {id: eth0, speed: 1G}
+      - {id: eth0}
       - {id: eth1}
       - {id: tun0, type: tunnel}
   - id: r2
@@ -76,11 +76,13 @@ test('physical rules: one cable per port, logical interfaces cannot be cabled', 
   expectError(base + 'links:\n  - {id: l1, a: "r1:eth0", b: "r1:eth0"}\n', /already cabled|to itself/);
 });
 
-test('speed mismatch is a warning, not an error', () => {
-  const r = validate.loadModel(base.replace('interfaces: [eth0, eth1]', 'interfaces: [{id: eth0, speed: 10G}]') + 'links:\n  - {id: l1, a: "r1:eth0", b: "r2:eth0"}\n');
-  assert.equal(r.errors.length, 0);
-  assert.match(r.warnings[0].message, /speed mismatch/);
-  assert.equal(r.model.links[0].speed, '1G');
+test('speed and medium are configured on the link and nowhere else', () => {
+  const r = validate.loadModel(base + 'links:\n  - {id: l1, a: "r1:eth0", b: "r2:eth0", medium: Fiber, speed: 10G}\n  - {id: l2, a: "r1:eth1", b: "r2:eth1"}\n');
+  assert.deepEqual(r.errors, []);
+  assert.deepEqual(r.warnings, []);
+  assert.deepEqual(r.model.links.map((l) => [l.medium, l.speed]), [['fiber', '10G'], ['unspecified', undefined]]);
+  // nothing on an interface can supply them
+  for (const i of r.model.index.interfaces.values()) assert.ok(!('speed' in i) && !('media' in i) && !('vlan' in i));
 });
 
 test('relations: endpoints, over references and cycles', () => {
