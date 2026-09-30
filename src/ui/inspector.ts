@@ -335,7 +335,7 @@ export class Editor {
     };
     add(this.idField(base, kind));
     if (kind === 'device') {
-      add(this.textField(base.concat('label'), 'Label', o));
+      add(this.textField(base.concat('label'), 'Label', o, 'textarea', undefined, 'Shown in full in the diagram; long labels wrap. Line breaks typed here are kept.'));
       add(this.typeField(base.concat('type'), o));
       add(this.refField(base.concat('group'), 'Group / location', o, this.ids('group')));
       add(this.textField(base.concat('vendor'), 'Vendor', o));

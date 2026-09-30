@@ -7,8 +7,9 @@
  *   - the graph is split into connected components; each is laid out on its
  *     own, seeded from the auto-arranged *physical* positions (never from
  *     manual positions), so both views keep a similar mental map;
- *   - overlapping boxes are pushed apart with generous margins for relation
- *     bundles and labels;
+ *   - every node is as large as its full text needs; the distance between two
+ *     connected nodes is chosen from their sizes and from the labels that
+ *     have to fit between them, and boxes are pushed apart to keep that room;
  *   - components are packed in rows, largest first (ties: smallest id);
  *   - nodes and edges are processed in id order; only + - * / and Math.sqrt
  *     are used (Math.hypot / sin / cos may differ between browsers), and the
@@ -16,15 +17,17 @@
  */
 import { CBox, Pt } from './geometry';
 import { LayoutInput, cmp } from './input';
-import { DEVICE_H, HUB_R, logicalDeviceSize, networkSize } from './sizes';
+import { HUB_R, logicalDeviceSize, networkBody, pillBox } from './sizes';
 
-export { CHIP_H, DEVICE_H, HUB_R, MAX_CHIPS, chipRows, networkSize, networkSubtitle } from './sizes';
+export { CHIP_H, HUB_R, MAX_CHIPS, chipRows, networkSubtitle } from './sizes';
 
 export interface LNode extends CBox {
   /** "device:<id>" | "network:<id>" | "hub:<relationId>" */
   ref: string;
   kind: 'device' | 'network' | 'hub';
   id: string;
+  /** devices: height of the device box itself (the node also holds the loopback chips) */
+  bodyH?: number;
 }
 
 export interface LogicalLayout {
@@ -37,7 +40,15 @@ export interface LSpec {
   id: string;
   w: number;
   h: number;
+  bodyH?: number;
 }
+
+/**
+ * A layout edge: [node ref, node ref, weight, rx, ry]. The labels between the
+ * two nodes need a horizontal gap of rx OR a vertical gap of ry between the
+ * boxes (label text is horizontal, so a vertical line needs much less).
+ */
+export type LEdge = [string, string, number, number, number];
 
 /** Relations with 3+ distinct devices are drawn as a hub with spokes. */
 export function isMultipoint(devs: string[]): boolean {
@@ -46,8 +57,8 @@ export function isMultipoint(devs: string[]): boolean {
 
 /** The drawn device rectangle inside a (possibly taller) logical node. */
 export function deviceRect(n: LNode): LNode {
-  if (n.kind !== 'device' || n.h <= DEVICE_H) return n;
-  return { ...n, cy: n.cy - n.h / 2 + DEVICE_H / 2, h: DEVICE_H };
+  if (n.kind !== 'device' || n.bodyH === undefined || n.h <= n.bodyH) return n;
+  return { ...n, cy: n.cy - n.h / 2 + n.bodyH / 2, h: n.bodyH };
 }
 
 /** Nodes of the logical view with their sizes, sorted by ref. */
@@ -59,8 +70,11 @@ export function logicalSpecs(input: LayoutInput): LSpec[] {
   for (const d of input.devices) if (d.loopbacks) involved.add(d.id);
   const devs = involved.size ? input.devices.filter((d) => involved.has(d.id)) : input.devices;
   const out: LSpec[] = [];
-  for (const d of devs) out.push({ ref: 'device:' + d.id, kind: 'device', id: d.id, ...logicalDeviceSize(d.label, d.loopbacks) });
-  for (const n of input.networks) out.push({ ref: 'network:' + n.id, kind: 'network', id: n.id, ...networkSize(n.label, n.sub) });
+  for (const d of devs) out.push({ ref: 'device:' + d.id, kind: 'device', id: d.id, ...logicalDeviceSize(d.label, d.sub, d.chipW, d.loopbacks) });
+  for (const n of input.networks) {
+    const b = networkBody(n.label, n.sub);
+    out.push({ ref: 'network:' + n.id, kind: 'network', id: n.id, w: b.w, h: b.h });
+  }
   const devSet = new Set(devs.map((d) => d.id));
   for (const r of input.relations) {
     const ds = r.devices.filter((d) => devSet.has(d));
@@ -69,26 +83,33 @@ export function logicalSpecs(input: LayoutInput): LSpec[] {
   return out.sort((a, b) => cmp(a.ref, b.ref));
 }
 
-/** Weighted edges between node refs (canonical order). */
-export function logicalEdges(input: LayoutInput, specs: LSpec[]): Array<[string, string, number]> {
+/** room for the address written on a membership line, and for a hub's spokes */
+const MEMBER_ROOM: [number, number] = [120, 56];
+const SPOKE_ROOM: [number, number] = [80, 50];
+
+/**
+ * Room the labels of a device pair need between the two boxes: as wide as
+ * the widest label, or as high as all of them stacked.
+ */
+export function pairLabelRoom(labels: string[]): [number, number] {
+  const boxes = labels.map(pillBox);
+  return [boxes.reduce((m, b) => Math.max(m, b.w), 0) + 40, boxes.reduce((s, b) => s + b.h + 4, 0) + 44];
+}
+
+/** Weighted edges between node refs (canonical order), each with the room its labels need. */
+export function logicalEdges(input: LayoutInput, specs: LSpec[]): LEdge[] {
   const has = new Set(specs.map((s) => s.ref));
-  const edges: Array<[string, string, number]> = [];
-  for (const n of input.networks) for (const d of n.members) if (has.has('device:' + d)) edges.push(['network:' + n.id, 'device:' + d, 1]);
-  const pairW = new Map<string, number>();
+  const edges: LEdge[] = [];
+  for (const n of input.networks) for (const d of n.members) if (has.has('device:' + d)) edges.push(['network:' + n.id, 'device:' + d, 1, MEMBER_ROOM[0], MEMBER_ROOM[1]]);
   for (const r of input.relations) {
     const ds = r.devices.filter((d) => has.has('device:' + d));
-    if (isMultipoint(ds)) for (const d of ds) edges.push(['hub:' + r.id, 'device:' + d, 0.8]);
-    else if (ds.length === 2) {
-      const key = ds[0] + '\u0000' + ds[1];
-      pairW.set(key, (pairW.get(key) || 0) + 1);
-    }
+    if (isMultipoint(ds)) for (const d of ds) edges.push(['hub:' + r.id, 'device:' + d, 0.8, SPOKE_ROOM[0], SPOKE_ROOM[1]]);
   }
-  Array.from(pairW.keys())
-    .sort(cmp)
-    .forEach((key) => {
-      const [a, b] = key.split('\u0000');
-      edges.push(['device:' + a, 'device:' + b, Math.min(2, 0.7 + (pairW.get(key) as number) * 0.15)]);
-    });
+  for (const p of input.pairs) {
+    if (!has.has('device:' + p.a) || !has.has('device:' + p.b)) continue;
+    const [rx, ry] = pairLabelRoom(p.labels);
+    edges.push(['device:' + p.a, 'device:' + p.b, Math.min(2, 0.7 + p.labels.length * 0.15), rx, ry]);
+  }
   return edges.sort((p, q) => cmp(p[0], q[0]) || cmp(p[1], q[1]));
 }
 
@@ -220,7 +241,7 @@ export function autoLogical(input: LayoutInput, physical: Map<string, Pt>): Map<
 }
 
 /** Force-directed layout of one connected component (nodes sorted by ref). */
-function layoutComponent(list: LSpec[], edgesIn: Array<[string, string, number]>, seed: Map<string, Pt>): Map<string, Pt> {
+function layoutComponent(list: LSpec[], edgesIn: LEdge[], seed: Map<string, Pt>): Map<string, Pt> {
   const N = list.length;
   const X = new Float64Array(N);
   const Y = new Float64Array(N);
@@ -238,6 +259,17 @@ function layoutComponent(list: LSpec[], edgesIn: Array<[string, string, number]>
   }
   const idx = new Map(list.map((n, i) => [n.ref, i] as [string, number]));
   const E = edgesIn.filter(([a, b]) => idx.has(a) && idx.has(b)).map(([a, b, w]) => [idx.get(a) as number, idx.get(b) as number, w] as [number, number, number]);
+  // room needed between two connected nodes (index pair -> px), and the edge length that gives it
+  const room = new Map<number, [number, number]>();
+  const lengths: number[] = [];
+  edgesIn
+    .filter(([a, b]) => idx.has(a) && idx.has(b))
+    .forEach(([a, b, , rx, ry]) => {
+      const i = idx.get(a) as number;
+      const j = idx.get(b) as number;
+      room.set(Math.min(i, j) * N + Math.max(i, j), [rx, ry]);
+      lengths.push(Math.max(MIN_EDGE, Math.min(rx, 190) + (list[i].w + list[j].w) / 4 + (list[i].h + list[j].h) / 4 + 30));
+    });
 
   // normalize the seed to a size suited to the node count (keeps its shape)
   {
@@ -265,21 +297,21 @@ function layoutComponent(list: LSpec[], edgesIn: Array<[string, string, number]>
     }
   }
   if (N <= STRESS_MAX) {
-    stressLayout(N, E, X, Y);
+    stressLayout(N, E, lengths, X, Y);
   } else {
     forceLayout(N, E, X, Y, R);
   }
-  removeOverlaps(list, X, Y);
+  removeOverlaps(list, X, Y, room);
   // crossing reduction: swap node positions when that strictly reduces edge crossings
   if (N <= 60 && E.length >= 3) {
     reduceCrossings(list, E, X, Y);
-    removeOverlaps(list, X, Y);
+    removeOverlaps(list, X, Y, room);
   }
   if (N <= 150) {
     // alternate: clearing an edge can create an overlap and vice versa
     for (let k = 0; k < 4; k++) {
       clearEdgesFromNodes(list, E, X, Y);
-      removeOverlaps(list, X, Y);
+      removeOverlaps(list, X, Y, room);
     }
   }
   list.forEach((n, i) => out.set(n.ref, { x: X[i], y: Y[i] }));
@@ -321,40 +353,43 @@ function clearEdgesFromNodes(list: LSpec[], E: Array<[number, number, number]>, 
 }
 
 const STRESS_MAX = 300;
-const L = 300;
+/** shortest edge: two small boxes with a short label between them */
+const MIN_EDGE = 300;
 
 /**
  * Stress majorization (SMACOF, Gauss-Seidel updates): places nodes so that
  * their distances match graph distances (hops x L). Gives even, readable
  * layouts for dense cores (full meshes, rings) where force layouts fold.
  */
-function stressLayout(N: number, E: Array<[number, number, number]>, X: Float64Array, Y: Float64Array): void {
-  const adj: number[][] = [];
-  for (let i = 0; i < N; i++) adj.push([]);
-  for (const [a, b] of E) {
-    if (a === b) continue;
-    adj[a].push(b);
-    adj[b].push(a);
-  }
-  for (const l of adj) l.sort((p, q) => p - q);
-  // all-pairs hop distances (BFS; the component is connected)
+function stressLayout(N: number, E: Array<[number, number, number]>, lengths: number[], X: Float64Array, Y: Float64Array): void {
+  // all-pairs shortest paths over the edge lengths (Floyd-Warshall; the component is connected)
+  const FAR = 1e12;
   const D: Float64Array[] = [];
-  for (let s = 0; s < N; s++) {
-    const d = new Float64Array(N).fill(-1);
-    d[s] = 0;
-    const queue = [s];
-    for (let h = 0; h < queue.length; h++) {
-      const u = queue[h];
-      for (const v of adj[u]) {
-        if (d[v] < 0) {
-          d[v] = d[u] + 1;
-          queue.push(v);
-        }
-      }
-    }
-    for (let v = 0; v < N; v++) d[v] = (d[v] < 0 ? N : d[v]) * L;
+  for (let i = 0; i < N; i++) {
+    const d = new Float64Array(N).fill(FAR);
+    d[i] = 0;
     D.push(d);
   }
+  E.forEach(([a, b], k) => {
+    if (a === b) return;
+    if (lengths[k] < D[a][b]) {
+      D[a][b] = lengths[k];
+      D[b][a] = lengths[k];
+    }
+  });
+  for (let k = 0; k < N; k++) {
+    const dk = D[k];
+    for (let i = 0; i < N; i++) {
+      const dik = D[i][k];
+      if (dik >= FAR) continue;
+      const di = D[i];
+      for (let j = 0; j < N; j++) {
+        const v = dik + dk[j];
+        if (v < di[j]) di[j] = v;
+      }
+    }
+  }
+  for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) if (D[i][j] >= FAR) D[i][j] = N * MIN_EDGE;
   for (let it = 0; it < 250; it++) {
     let change = 0;
     for (let i = 0; i < N; i++) {
@@ -447,18 +482,26 @@ function forceLayout(N: number, E: Array<[number, number, number]>, X: Float64Ar
   }
 }
 
-/** Push overlapping boxes apart; devices keep room for relation bundles and their labels. */
-function removeOverlaps(list: LSpec[], X: Float64Array, Y: Float64Array): void {
+/**
+ * Push boxes apart until each pair is separated by its margin: connected
+ * nodes by the room their labels need, other devices by room for relation
+ * bundles passing between them.
+ */
+function removeOverlaps(list: LSpec[], X: Float64Array, Y: Float64Array, room: Map<number, [number, number]>): void {
   const N = list.length;
-  const margin = (a: LSpec, b: LSpec): number => (a.kind === 'device' && b.kind === 'device' ? 150 : 40);
+  const margin = (i: number, j: number): [number, number] => {
+    const base = list[i].kind === 'device' && list[j].kind === 'device' ? 150 : 40;
+    const r = room.get(i * N + j);
+    return r === undefined ? [base, base * 0.8] : [Math.max(base, r[0]), Math.max(base * 0.8, r[1])];
+  };
   const passes = Math.max(4, Math.min(120, Math.floor(6e7 / (N * N))));
   for (let pass = 0; pass < passes; pass++) {
     let moved = false;
     for (let i = 0; i < N; i++) {
       for (let j = i + 1; j < N; j++) {
-        const M = margin(list[i], list[j]);
-        const ox = (list[i].w + list[j].w) / 2 + M - Math.abs(X[i] - X[j]);
-        const oy = (list[i].h + list[j].h) / 2 + M * 0.8 - Math.abs(Y[i] - Y[j]);
+        const [mx, my] = margin(i, j);
+        const ox = (list[i].w + list[j].w) / 2 + mx - Math.abs(X[i] - X[j]);
+        const oy = (list[i].h + list[j].h) / 2 + my - Math.abs(Y[i] - Y[j]);
         if (ox > 0 && oy > 0) {
           moved = true;
           if (ox / (list[i].w + list[j].w) < oy / (list[i].h + list[j].h)) {
@@ -569,7 +612,7 @@ export function logicalLayoutFrom(input: LayoutInput, positions: Map<string, Pt>
   const nodes = new Map<string, LNode>();
   for (const s of logicalSpecs(input)) {
     const p = positions.get(s.ref) || { x: 0, y: 0 };
-    nodes.set(s.ref, { ref: s.ref, kind: s.kind, id: s.id, cx: p.x, cy: p.y, w: s.w, h: s.h });
+    nodes.set(s.ref, { ref: s.ref, kind: s.kind, id: s.id, cx: p.x, cy: p.y, w: s.w, h: s.h, bodyH: s.bodyH });
   }
   return { nodes };
 }

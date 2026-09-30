@@ -2821,7 +2821,7 @@ function viewNodes(view, input) {
                 for (const b of ids)
                     add(a, b);
         });
-        return input.devices.map((d) => ({ id: d.id, ...(0, physical_1.physicalBaseSize)(d.label), nbrs: Array.from(nbrs.get(d.id)).sort(input_1.cmp) }));
+        return input.devices.map((d) => ({ id: d.id, ...(0, physical_1.physicalBaseSize)(d), nbrs: Array.from(nbrs.get(d.id)).sort(input_1.cmp) }));
     }
     const specs = (0, logical_1.logicalSpecs)(input);
     const nbrs = new Map();
@@ -2957,9 +2957,11 @@ function samePositions(a, b) {
 __defs["layout/input"] = function (module, exports) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.cmp = void 0;
 exports.defaultTier = defaultTier;
-exports.cmp = cmp;
 exports.layoutInput = layoutInput;
+exports.linkVlanLabel = linkVlanLabel;
+exports.linkLabelText = linkLabelText;
 exports.layoutSignature = layoutSignature;
 /**
  * Canonical layout input.
@@ -2975,7 +2977,13 @@ exports.layoutSignature = layoutSignature;
  * localeCompare, which depends on the browser locale).
  */
 const derive_1 = __req("model/derive");
+const device_types_1 = __req("model/device-types");
+const protocols_1 = __req("model/protocols");
+const derive_2 = __req("model/derive");
 const types_1 = __req("model/types");
+const bundles_1 = __req("layout/bundles");
+const order_1 = __req("layout/order");
+Object.defineProperty(exports, "cmp", { enumerable: true, get: function () { return order_1.cmp; } });
 const sizes_1 = __req("layout/sizes");
 /** Vertical tier of a device type in the physical view (0 = top). */
 const TIERS = {
@@ -2999,33 +3007,32 @@ const TIERS = {
 function defaultTier(type) {
     return Object.prototype.hasOwnProperty.call(TIERS, type) ? TIERS[type] : 4;
 }
-/** Code-unit string order: the same in every browser and locale. */
-function cmp(a, b) {
-    return a < b ? -1 : a > b ? 1 : 0;
-}
 function byId(xs) {
-    return xs.slice().sort((p, q) => cmp(p.id, q.id));
+    return xs.slice().sort((p, q) => (0, order_1.cmp)(p.id, q.id));
 }
 function uniqSorted(xs) {
-    return Array.from(new Set(xs)).sort(cmp);
+    return Array.from(new Set(xs)).sort(order_1.cmp);
 }
 function layoutInput(m) {
     return {
         devices: byId(m.devices.map((d) => ({
             id: d.id,
             label: d.label,
+            sub: (0, device_types_1.deviceSubtitle)(d.type, d.model, d.role),
             tier: d.tier !== undefined ? d.tier : defaultTier(d.type),
             group: d.group || null,
             loopbacks: (0, types_1.loopbacks)(d).length,
+            // over all loopbacks, not only the ones shown, so the order in the file doesn't matter
+            chipW: (0, types_1.loopbacks)(d).reduce((m, l) => Math.max(m, chipNeed(l.id, l.addresses, d.routerId === l.id)), 0),
         }))),
-        groups: byId(m.groups.map((g) => ({ id: g.id, parent: g.parent || null }))),
+        groups: byId(m.groups.map((g) => ({ id: g.id, parent: g.parent || null, label: g.label, kind: g.kind }))),
         links: byId(m.links.map((l) => {
             // endpoints in canonical order so "a/b" swapped is the same cable
             const ea = l.a.iface ? { device: l.a.device, iface: l.a.iface } : { device: l.a.device };
             const eb = l.b.iface ? { device: l.b.device, iface: l.b.iface } : { device: l.b.device };
             const ka = ea.device + ':' + (ea.iface || '');
             const kb = eb.device + ':' + (eb.iface || '');
-            return cmp(ka, kb) <= 0 ? { id: l.id, a: ea, b: eb } : { id: l.id, a: eb, b: ea };
+            return (0, order_1.cmp)(ka, kb) <= 0 ? { id: l.id, a: ea, b: eb } : { id: l.id, a: eb, b: ea };
         })),
         networks: byId(m.networks.map((n) => ({
             id: n.id,
@@ -3034,8 +3041,36 @@ function layoutInput(m) {
             // derived from the addresses inside the network's prefixes
             members: uniqSorted((0, derive_1.networkMembers)(m, n.id).map((x) => x.device)),
         }))),
-        relations: byId(m.relations.map((r) => ({ id: r.id, devices: uniqSorted((0, types_1.relationDevices)(r)) }))),
+        relations: byId(m.relations.map((r) => {
+            const devices = uniqSorted((0, types_1.relationDevices)(r));
+            return { id: r.id, devices, hubLabel: devices.length >= 3 ? (0, protocols_1.relationStyle)(m, r).label + (r.label ? ' · ' + r.label : '') : '' };
+        })),
+        pairs: Array.from((0, bundles_1.relationPairs)(m.relations).entries()).map(([key, rels]) => {
+            const bundle = (0, bundles_1.buildBundle)(m, key, rels);
+            return { a: bundle.a, b: bundle.b, labels: bundle.lanes.filter((p) => p.root).map(bundles_1.laneLabel), width: bundle.width };
+        }),
+        linkLabels: byId(m.links.map((l) => ({ id: l.id, text: linkLabelText(l) })).filter((x) => x.text !== '')),
     };
+}
+/** Width a loopback's chip needs whichever of its addresses is written first (the chip shows the first one). */
+function chipNeed(id, addresses, routerId) {
+    const firsts = addresses.length ? addresses : [''];
+    return firsts.reduce((m, a) => Math.max(m, Math.ceil((0, sizes_1.chipTextWidth)((0, sizes_1.loopbackChipText)(id, a ? [a].concat(addresses.slice(1)) : [], routerId)))), 0);
+}
+/** VLANs of a cable for its label: what both ends permit, "Trunk" for several, a note when the ends differ. */
+function linkVlanLabel(l) {
+    if ((0, derive_2.vlanMismatch)(l.a.vlans, l.b.vlans))
+        return 'VLAN mismatch';
+    const v = l.a.vlans;
+    if (!v.length)
+        return '';
+    if (v.length === 1)
+        return 'VLAN ' + v[0];
+    return 'Trunk ' + v.join(',');
+}
+/** The text drawn on a cable: speed, VLANs, label. */
+function linkLabelText(l) {
+    return [l.speed, linkVlanLabel(l), l.label].filter((s) => !!s).join(' · ');
 }
 /** Stable text form of the input: equal signatures always give equal auto-arrange results. */
 function layoutSignature(i) {
@@ -3373,164 +3408,563 @@ function loopbacks(d) {
 }
 
 };
+__defs["model/device-types"] = function (module, exports) {
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.NO_DEVICE_TYPE = exports.DEVICE_TYPE_IDS = exports.DEVICE_TYPES = void 0;
+exports.isDeviceType = isDeviceType;
+exports.deviceTypeLabel = deviceTypeLabel;
+exports.deviceSubtitle = deviceSubtitle;
+exports.DEVICE_TYPES = [
+    { id: 'router', label: 'Router' },
+    { id: 'switch', label: 'Switch' },
+    { id: 'firewall', label: 'Firewall' },
+    { id: 'ap', label: 'Access point' },
+    { id: 'server', label: 'Server' },
+    { id: 'vm', label: 'Virtual machine' },
+    { id: 'container', label: 'Container' },
+    { id: 'storage', label: 'Storage' },
+    { id: 'load_balancer', label: 'Load balancer' },
+    { id: 'proxy', label: 'Proxy' },
+    { id: 'ids_ips', label: 'IDS/IPS' },
+    { id: 'gateway', label: 'Gateway' },
+    { id: 'endpoint', label: 'Endpoint' },
+    { id: 'cloud', label: 'Cloud' },
+    { id: 'system', label: 'System' },
+];
+exports.DEVICE_TYPE_IDS = exports.DEVICE_TYPES.map((t) => t.id);
+/** Model value of a device without a (valid) type. */
+exports.NO_DEVICE_TYPE = 'generic';
+function isDeviceType(id) {
+    return exports.DEVICE_TYPE_IDS.indexOf(id) >= 0;
+}
+/** Display name of a device type; '' for a device without a valid type. */
+function deviceTypeLabel(id) {
+    for (const t of exports.DEVICE_TYPES)
+        if (t.id === id)
+            return t.label;
+    return '';
+}
+/** Second line of a device box: type, role and model. */
+function deviceSubtitle(type, model, role) {
+    return [deviceTypeLabel(type), role, model].filter((x) => !!x).join(' · ');
+}
+
+};
+__defs["model/protocols"] = function (module, exports) {
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.COLOR_RE = exports.DEFAULT_STYLE = void 0;
+exports.builtinProtocols = builtinProtocols;
+exports.normalizeProtocol = normalizeProtocol;
+exports.lookupProtocol = lookupProtocol;
+exports.hashColor = hashColor;
+exports.relationStyle = relationStyle;
+const BUILTINS = [
+    // tunnels / encapsulations
+    ['gre', 'GRE', 'tunnel', '#e8590c', ['mgre', 'gretap']],
+    ['ipsec', 'IPsec', 'tunnel', '#7048e8', ['ikev2', 'ike']],
+    ['ipip', 'IP-in-IP', 'tunnel', '#c2255c', ['ip-in-ip']],
+    ['wireguard', 'WireGuard', 'tunnel', '#88171a', ['wg']],
+    ['openvpn', 'OpenVPN', 'tunnel', '#e67700'],
+    ['l2tp', 'L2TP', 'tunnel', '#5f3dc4', ['l2tpv3']],
+    ['dmvpn', 'DMVPN', 'tunnel', '#9c36b5'],
+    ['gtp', 'GTP', 'tunnel', '#a61e4d', ['gtp-u']],
+    ['rsvp-te', 'RSVP-TE LSP', 'tunnel', '#364fc7', ['mpls-te', 'te-tunnel']],
+    ['sr-te', 'SR-TE policy', 'tunnel', '#1864ab', ['sr-policy']],
+    ['pseudowire', 'Pseudowire', 'tunnel', '#0b7285', ['pw', 'vpws']],
+    ['ssl-vpn', 'SSL VPN', 'tunnel', '#d6336c'],
+    // overlays
+    ['vxlan', 'VXLAN', 'overlay', '#0c8599'],
+    ['geneve', 'Geneve', 'overlay', '#099268'],
+    ['evpn', 'EVPN', 'overlay', '#1098ad', ['bgp-evpn']],
+    ['l3vpn', 'MPLS L3VPN', 'overlay', '#3b5bdb', ['mpls-l3vpn', 'vrf-lite']],
+    ['vpls', 'VPLS', 'overlay', '#4263eb'],
+    ['sd-wan', 'SD-WAN', 'overlay', '#ae3ec9', ['sdwan']],
+    ['otv', 'OTV', 'overlay', '#15aabf'],
+    // routing / control-plane adjacencies
+    ['bgp', 'BGP', 'adjacency', '#1971c2', ['ebgp', 'ibgp', 'mp-bgp']],
+    ['ospf', 'OSPF', 'adjacency', '#2f9e44', ['ospfv2', 'ospfv3']],
+    ['isis', 'IS-IS', 'adjacency', '#5c940d', ['is-is']],
+    ['eigrp', 'EIGRP', 'adjacency', '#087f5b'],
+    ['rip', 'RIP', 'adjacency', '#74b816', ['ripng']],
+    ['ldp', 'LDP', 'adjacency', '#495057'],
+    ['pim', 'PIM', 'adjacency', '#d9480f'],
+    ['bfd', 'BFD', 'adjacency', '#868e96'],
+    ['static', 'Static route', 'adjacency', '#343a40'],
+    // redundancy / bundling
+    ['lacp', 'LACP / LAG', 'redundancy', '#f08c00', ['lag', 'port-channel', 'etherchannel']],
+    ['mlag', 'MLAG / vPC', 'redundancy', '#f59f00', ['vpc', 'mc-lag']],
+    ['vrrp', 'VRRP', 'redundancy', '#e64980'],
+    ['hsrp', 'HSRP', 'redundancy', '#d6336c'],
+    ['glbp', 'GLBP', 'redundancy', '#c2255c'],
+    ['carp', 'CARP', 'redundancy', '#a61e4d'],
+    ['ha-sync', 'HA sync', 'redundancy', '#fd7e14', ['ha', 'cluster']],
+    // services
+    ['dns', 'DNS', 'service', '#6741d9'],
+    ['ntp', 'NTP', 'service', '#5f3dc4'],
+    ['syslog', 'Syslog', 'service', '#7950f2'],
+    ['snmp', 'SNMP', 'service', '#845ef7'],
+    ['radius', 'RADIUS', 'service', '#9775fa', ['tacacs', 'tacacs+']],
+    ['dhcp', 'DHCP relay', 'service', '#6c5ce7', ['dhcp-relay']],
+    ['https', 'HTTPS', 'service', '#1c7ed6', ['http']],
+    ['netflow', 'NetFlow / IPFIX', 'service', '#4c6ef5', ['ipfix', 'sflow']],
+];
+exports.DEFAULT_STYLE = {
+    tunnel: 'tube',
+    adjacency: 'solid',
+    overlay: 'dashed',
+    redundancy: 'dotted',
+    service: 'dashdot',
+    other: 'dashdot',
+};
+function builtinProtocols() {
+    const m = new Map();
+    for (const [id, label, category, color] of BUILTINS) {
+        m.set(id, { id, label, category, color, style: exports.DEFAULT_STYLE[category], custom: false });
+    }
+    return m;
+}
+const ALIASES = new Map();
+for (const b of BUILTINS)
+    for (const a of b[4] || [])
+        ALIASES.set(a, b[0]);
+/** Canonical registry key for a protocol name ("eBGP" -> "bgp" only via aliases, never silently otherwise). */
+function normalizeProtocol(name) {
+    return name.trim().toLowerCase();
+}
+/**
+ * Look up the definition for a protocol name. Exact match wins (so a user
+ * definition of "ebgp" overrides the alias to "bgp"); then aliases; then a
+ * generated definition for unknown protocols.
+ */
+function lookupProtocol(registry, name, fallbackCategory) {
+    const key = normalizeProtocol(name);
+    const exact = registry.get(key);
+    if (exact)
+        return exact;
+    const alias = ALIASES.get(key);
+    if (alias && registry.has(alias)) {
+        const base = registry.get(alias);
+        return { ...base, id: key, label: aliasLabel(key, base.label) };
+    }
+    const category = fallbackCategory || 'other';
+    return {
+        id: key,
+        label: name.trim().toUpperCase().length <= 5 ? name.trim().toUpperCase() : name.trim(),
+        category,
+        color: hashColor(key),
+        style: exports.DEFAULT_STYLE[category],
+        custom: false,
+    };
+}
+function aliasLabel(alias, baseLabel) {
+    const special = { ebgp: 'eBGP', ibgp: 'iBGP', 'mp-bgp': 'MP-BGP', ospfv3: 'OSPFv3', ospfv2: 'OSPFv2' };
+    return special[alias] || (alias.length <= 6 ? alias.toUpperCase() : baseLabel);
+}
+/** Deterministic, readable color for an unknown protocol name. */
+function hashColor(s) {
+    let h = 2166136261;
+    for (let i = 0; i < s.length; i++) {
+        h ^= s.charCodeAt(i);
+        h = Math.imul(h, 16777619);
+    }
+    const hue = (h >>> 0) % 360;
+    return hslToHex(hue, 0.62, 0.42);
+}
+function hslToHex(h, s, l) {
+    const k = (n) => (n + h / 30) % 12;
+    const a = s * Math.min(l, 1 - l);
+    const f = (n) => l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)));
+    const hex = (x) => Math.round(x * 255).toString(16).padStart(2, '0');
+    return '#' + hex(f(0)) + hex(f(8)) + hex(f(4));
+}
+exports.COLOR_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
+/**
+ * Definition used to draw a relation: its protocol definition, with category
+ * and line style following the relation's own category when it overrides it.
+ */
+function relationStyle(model, rel) {
+    const def = lookupProtocol(model.protocols, rel.protocol, rel.category);
+    if (def.category !== rel.category)
+        return { ...def, category: rel.category, style: exports.DEFAULT_STYLE[rel.category] };
+    return def;
+}
+
+};
+__defs["layout/bundles"] = function (module, exports) {
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.LINE_W = exports.TUBE_MIN = exports.TUBE_WALL = exports.LANE_GAP = void 0;
+exports.laneLabel = laneLabel;
+exports.pairKey = pairKey;
+exports.relationPairs = relationPairs;
+exports.buildBundle = buildBundle;
+/**
+ * Relations between the same two devices form a bundle of parallel lanes; a
+ * relation carried over a tunnel of the same pair is nested inside that
+ * tunnel's tube. Both the layout (to reserve room for the lanes and their
+ * labels) and the logical renderer (to draw them) use this one definition.
+ */
+const protocols_1 = __req("model/protocols");
+const types_1 = __req("model/types");
+const order_1 = __req("layout/order");
+exports.LANE_GAP = 7;
+exports.TUBE_WALL = 3;
+exports.TUBE_MIN = 12;
+exports.LINE_W = 2.4;
+/** Text of the label of a root lane: the relation and everything nested in it, each with its own label. */
+function laneLabel(p) {
+    return p.stack;
+}
+/** Key of a device pair, independent of endpoint order. */
+function pairKey(a, b) {
+    return (0, order_1.cmp)(a, b) <= 0 ? a + '\u0000' + b : b + '\u0000' + a;
+}
+/** Two-device relations grouped by device pair (pairs and relations in id order). */
+function relationPairs(relations) {
+    const byPair = new Map();
+    for (const r of relations.slice().sort((p, q) => (0, order_1.cmp)(p.id, q.id))) {
+        const ds = (0, types_1.relationDevices)(r);
+        if (ds.length !== 2)
+            continue;
+        const key = pairKey(ds[0], ds[1]);
+        if (!byPair.has(key))
+            byPair.set(key, []);
+        byPair.get(key).push(r);
+    }
+    return new Map(Array.from(byPair.entries()).sort((p, q) => (0, order_1.cmp)(p[0], q[0])));
+}
+/** Lanes of one device pair, with nesting, widths and offsets. */
+function buildBundle(model, key, rels) {
+    const [a, b] = key.split('\u0000');
+    const inPair = new Set(rels.map((r) => r.id));
+    const lanes = new Map();
+    for (const r of rels)
+        lanes.set(r.id, { rel: r, def: (0, protocols_1.relationStyle)(model, r), width: 0, children: [] });
+    const roots = [];
+    for (const r of rels) {
+        // (the smallest id if it names several, so the order of the list doesn't matter)
+        const carrier = r.over
+            .filter((o) => inPair.has(o) && lanes.get(o).def.style === 'tube')
+            .sort(order_1.cmp)[0];
+        if (carrier && carrier !== r.id)
+            lanes.get(carrier).children.push(lanes.get(r.id));
+        else
+            roots.push(lanes.get(r.id));
+    }
+    // guard against cycles (validated already, but never loop forever)
+    const measure = (ln, depth) => {
+        if (depth > 12)
+            ln.children = [];
+        const kids = ln.children.map((c) => measure(c, depth + 1));
+        if (ln.def.style === 'tube') {
+            const inner = kids.length ? kids.reduce((s, w) => s + w, 0) + 3 * (kids.length - 1) : 0;
+            ln.width = Math.max(exports.TUBE_MIN, inner + 2 * exports.TUBE_WALL + 4);
+        }
+        else
+            ln.width = exports.LINE_W + 3;
+        return ln.width;
+    };
+    roots.forEach((r) => measure(r, 0));
+    // sort lanes: tunnels (widest) in the middle keeps the bundle symmetric
+    roots.sort((u, v) => u.width - v.width || (0, order_1.cmp)(u.rel.id, v.rel.id));
+    const ordered = [];
+    roots.forEach((ln, i) => (i % 2 ? ordered.unshift(ln) : ordered.push(ln)));
+    const total = ordered.reduce((s, l) => s + l.width, 0) + exports.LANE_GAP * Math.max(0, ordered.length - 1);
+    const placed = [];
+    // every relation of the stack is named with its own label, so none is lost by nesting
+    const stackLabel = (ln) => ln.def.label +
+        (ln.rel.label ? ' · ' + ln.rel.label : '') +
+        (ln.children.length === 1 ? ' › ' + stackLabel(ln.children[0]) : ln.children.length > 1 ? ' › (' + ln.children.map(stackLabel).join(', ') + ')' : '');
+    const place = (ln, offset, depth, root) => {
+        placed.push({ rel: ln.rel, def: ln.def, offset, width: ln.width, depth, stack: stackLabel(ln), root });
+        if (!ln.children.length)
+            return;
+        const inner = ln.children.reduce((s, c) => s + c.width, 0) + 3 * (ln.children.length - 1);
+        let cur = offset - inner / 2;
+        for (const c of ln.children) {
+            place(c, cur + c.width / 2, depth + 1, false);
+            cur += c.width + 3;
+        }
+    };
+    let cur = -total / 2;
+    for (const ln of ordered) {
+        place(ln, cur + ln.width / 2, 0, true);
+        cur += ln.width + exports.LANE_GAP;
+    }
+    return { a, b, lanes: placed, width: total };
+}
+
+};
+__defs["layout/order"] = function (module, exports) {
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.cmp = cmp;
+/** Code-unit string order: the same in every browser and locale. */
+function cmp(a, b) {
+    return a < b ? -1 : a > b ? 1 : 0;
+}
+
+};
 __defs["layout/sizes"] = function (module, exports) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.MAX_CHIPS = exports.CHIP_H = exports.DEVICE_H = exports.HUB_R = void 0;
+exports.lineHeight = exports.MEMBER_LABEL_SIZE = exports.LINK_LABEL_MAX_W = exports.LINK_LABEL_SIZE = exports.PILL_MAX_W = exports.PILL_SIZE = exports.GROUP_KIND_SIZE = exports.GROUP_TITLE_SIZE = exports.GROUP_PAD = exports.NET_TEXT_MAX_W = exports.NET_SUB_SIZE = exports.NET_LABEL_SIZE = exports.CHIP_FONT = exports.LOGICAL_DEVICE_MIN_H = exports.LOGICAL_DEVICE_MIN_W = exports.DEVICE_TEXT_X = exports.DEVICE_ICON = exports.DEVICE_TEXT_MAX_W = exports.DEVICE_SUB_SIZE = exports.DEVICE_LABEL_SIZE = exports.MAX_CHIPS = exports.CHIP_H = exports.HUB_R = void 0;
+exports.deviceBody = deviceBody;
+exports.chipTextWidth = chipTextWidth;
+exports.loopbackChipText = loopbackChipText;
 exports.chipRows = chipRows;
 exports.logicalDeviceSize = logicalDeviceSize;
-exports.networkSize = networkSize;
+exports.networkBody = networkBody;
 exports.networkSubtitle = networkSubtitle;
-/** Node sizes for the logical view (shared by layout and rendering). */
-const geometry_1 = __req("layout/geometry");
+exports.groupHeader = groupHeader;
+exports.pillBox = pillBox;
+exports.linkLabelBox = linkLabelBox;
+/**
+ * Sizes of diagram elements, derived from their text. Shared by the layout
+ * (which needs the sizes to space things) and the renderers (which draw the
+ * same lines at the same sizes), so what Auto-arrange reserves is what gets
+ * drawn. Every element grows to fit its full text; nothing is shortened.
+ */
+const text_1 = __req("layout/text");
+Object.defineProperty(exports, "lineHeight", { enumerable: true, get: function () { return text_1.lineHeight; } });
 exports.HUB_R = 12;
-exports.DEVICE_H = 50;
 exports.CHIP_H = 16;
 /** loopback chips shown under a device in the logical view */
 exports.MAX_CHIPS = 3;
+// ------------------------------------------------------------------ devices
+exports.DEVICE_LABEL_SIZE = 13;
+exports.DEVICE_SUB_SIZE = 10.5;
+/** widest line of a device label or subtitle; longer text wraps */
+exports.DEVICE_TEXT_MAX_W = 220;
+exports.DEVICE_ICON = 26;
+/** left padding + icon + gap: where the text starts */
+exports.DEVICE_TEXT_X = 12 + exports.DEVICE_ICON + 10;
+const DEVICE_PAD_R = 14;
+const DEVICE_PAD_Y = 10;
+/** gap between label and subtitle */
+const DEVICE_SUB_GAP = 2;
+/** The device box for its text: label and subtitle wrapped, the box grown around them. */
+function deviceBody(label, sub, minW, minH) {
+    const l = (0, text_1.textBlock)(label, exports.DEVICE_LABEL_SIZE, exports.DEVICE_TEXT_MAX_W);
+    const s = (0, text_1.textBlock)(sub, exports.DEVICE_SUB_SIZE, exports.DEVICE_TEXT_MAX_W);
+    const textH = l.h + (s.lines.length ? s.h + DEVICE_SUB_GAP : 0);
+    return {
+        label: l,
+        sub: s,
+        textH,
+        w: Math.max(minW, Math.ceil(exports.DEVICE_TEXT_X + Math.max(l.w, s.w) + DEVICE_PAD_R)),
+        h: Math.max(minH, textH + 2 * DEVICE_PAD_Y),
+    };
+}
+exports.LOGICAL_DEVICE_MIN_W = 140;
+exports.LOGICAL_DEVICE_MIN_H = 50;
+exports.CHIP_FONT = 9.5;
+/** Chips use a monospace font. */
+function chipTextWidth(s) {
+    return s.length * exports.CHIP_FONT * 0.62;
+}
+/** Text of a loopback chip: marker for the router ID, id, first address, number of further addresses. */
+function loopbackChipText(id, addresses, routerId) {
+    return (routerId ? '★ ' : '') + id + '  ' + (addresses[0] || '(no address)') + (addresses.length > 1 ? ' +' + (addresses.length - 1) : '');
+}
 /** Number of chip rows below the device box (loopbacks, plus a "+N more" row). */
 function chipRows(loopbackCount) {
     return loopbackCount === 0 ? 0 : Math.min(loopbackCount, exports.MAX_CHIPS) + (loopbackCount > exports.MAX_CHIPS ? 1 : 0);
 }
-function logicalDeviceSize(label, loopbackCount) {
+/**
+ * A device in the logical view: its body, plus the loopback chips hanging
+ * under it. The node is as wide as its widest chip needs.
+ */
+function logicalDeviceSize(label, sub, chipW, loopbackCount) {
+    const body = deviceBody(label, sub, exports.LOGICAL_DEVICE_MIN_W, exports.LOGICAL_DEVICE_MIN_H);
     const rows = chipRows(loopbackCount);
-    return { w: Math.max(140, Math.min(250, (0, geometry_1.textWidth)(label, 13) + 64)), h: exports.DEVICE_H + (rows ? rows * exports.CHIP_H + 6 : 0) };
+    return { w: Math.max(body.w, chipW ? chipW + 16 + 12 : 0), h: body.h + (rows ? rows * exports.CHIP_H + 6 : 0), bodyH: body.h };
 }
-function networkSize(label, sub) {
-    return { w: Math.max(120, (0, geometry_1.textWidth)(label, 12) + 34, (0, geometry_1.textWidth)(sub, 10) + 34), h: sub ? 42 : 32 };
+// ----------------------------------------------------------------- networks
+exports.NET_LABEL_SIZE = 12;
+exports.NET_SUB_SIZE = 10;
+exports.NET_TEXT_MAX_W = 210;
+function networkBody(label, sub) {
+    const l = (0, text_1.textBlock)(label, exports.NET_LABEL_SIZE, exports.NET_TEXT_MAX_W);
+    const s = (0, text_1.textBlock)(sub, exports.NET_SUB_SIZE, exports.NET_TEXT_MAX_W);
+    return { label: l, sub: s, w: Math.max(120, Math.ceil(Math.max(l.w, s.w) + 36)), h: Math.max(32, l.h + s.h + 14) };
 }
+/** Second line of a network: its VLAN and all of its prefixes (in a fixed order). */
 function networkSubtitle(cidr, vlan) {
     const parts = [];
     if (vlan !== undefined)
         parts.push('VLAN ' + vlan);
-    // in a fixed order, so the order of the list in the file affects neither text nor size
+    // sorted, so the order of the list in the file affects neither text nor size
     const sorted = cidr.slice().sort();
     if (sorted.length)
-        parts.push(sorted.slice(0, 2).join(', ') + (sorted.length > 2 ? ' …' : ''));
+        parts.push(sorted.join(', '));
     return parts.join(' · ');
 }
+// ------------------------------------------------------------------- groups
+exports.GROUP_PAD = 26;
+exports.GROUP_TITLE_SIZE = 13;
+exports.GROUP_KIND_SIZE = 9.5;
+/**
+ * Title area of a group box whose content is `innerW` wide. The title wraps
+ * at the width the content gives it (at least 260), and the kind keeps its
+ * place at the right of the first line.
+ */
+function groupHeader(label, kind, innerW) {
+    const kindText = kind.toUpperCase();
+    const kindW = kindText ? (0, text_1.textWidth)(kindText, exports.GROUP_KIND_SIZE) * 1.1 + 18 : 0;
+    const boxW = innerW + 2 * exports.GROUP_PAD;
+    const avail = Math.max(260, boxW - 28 - kindW);
+    const title = (0, text_1.textBlock)(label, exports.GROUP_TITLE_SIZE, avail);
+    return { title, kind: kindText, h: Math.max(30, title.h + 14), minW: Math.ceil(title.w + 28 + kindW) };
+}
+// ------------------------------------------------------------------- labels
+exports.PILL_SIZE = 10;
+exports.PILL_MAX_W = 240;
+/** A relation label ("pill"): its wrapped text and outer size. */
+function pillBox(text) {
+    const block = (0, text_1.textBlock)(text, exports.PILL_SIZE, exports.PILL_MAX_W);
+    return { block, w: Math.ceil(block.w + 16), h: Math.max(18, block.h + 6) };
+}
+exports.LINK_LABEL_SIZE = 10.5;
+exports.LINK_LABEL_MAX_W = 190;
+function linkLabelBox(text) {
+    const block = (0, text_1.textBlock)(text, exports.LINK_LABEL_SIZE, exports.LINK_LABEL_MAX_W);
+    return { block, w: Math.ceil(block.w + 8), h: block.h + 2 };
+}
+exports.MEMBER_LABEL_SIZE = 10;
 
 };
-__defs["layout/geometry"] = function (module, exports) {
+__defs["layout/text"] = function (module, exports) {
 "use strict";
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.clipToBox = clipToBox;
-exports.clipToCircle = clipToCircle;
-exports.lineBoxExit = lineBoxExit;
-exports.mid = mid;
-exports.lerp = lerp;
-exports.normal = normal;
-exports.unionRect = unionRect;
-exports.textWidth = textWidth;
-exports.ellipsize = ellipsize;
-/** Point where the ray from the box center toward `t` leaves the box. */
-function clipToBox(b, t, pad = 0) {
-    const dx = t.x - b.cx;
-    const dy = t.y - b.cy;
-    if (dx === 0 && dy === 0)
-        return { x: b.cx, y: b.cy };
-    const hw = b.w / 2 + pad;
-    const hh = b.h / 2 + pad;
-    const s = Math.min(dx !== 0 ? hw / Math.abs(dx) : Infinity, dy !== 0 ? hh / Math.abs(dy) : Infinity);
-    return { x: b.cx + dx * s, y: b.cy + dy * s };
-}
-function clipToCircle(c, r, t) {
-    const dx = t.x - c.x;
-    const dy = t.y - c.y;
-    const d = Math.hypot(dx, dy) || 1;
-    return { x: c.x + (dx / d) * r, y: c.y + (dy / d) * r };
-}
 /**
- * Clip the infinite line through p->q against box b; returns the parameter t
- * (along p->q) where the segment leaves (fromStart=true) or enters the box.
+ * Text measuring and wrapping for diagram labels.
+ *
+ * Labels are never shortened: a label that is too long for one line is
+ * wrapped, and the element it belongs to grows. Widths are estimated from
+ * character classes (no font metrics, no DOM), so the same text gives the
+ * same lines and sizes in every browser and in Node; this is what keeps
+ * Auto-arrange deterministic. The estimate is deliberately a little wide.
  */
-function lineBoxExit(b, p, q, pad = 0) {
-    const x0 = b.cx - b.w / 2 - pad;
-    const x1 = b.cx + b.w / 2 + pad;
-    const y0 = b.cy - b.h / 2 - pad;
-    const y1 = b.cy + b.h / 2 + pad;
-    const dx = q.x - p.x;
-    const dy = q.y - p.y;
-    let tmin = -Infinity;
-    let tmax = Infinity;
-    const clip = (d, a, lo, hi) => {
-        if (Math.abs(d) < 1e-9)
-            return a >= lo && a <= hi;
-        let t0 = (lo - a) / d;
-        let t1 = (hi - a) / d;
-        if (t0 > t1) {
-            const tmp = t0;
-            t0 = t1;
-            t1 = tmp;
-        }
-        tmin = Math.max(tmin, t0);
-        tmax = Math.min(tmax, t1);
-        return tmin <= tmax;
-    };
-    if (!clip(dx, p.x, x0, x1) || !clip(dy, p.y, y0, y1))
-        return null;
-    return tmax;
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.textWidth = textWidth;
+exports.lineHeight = lineHeight;
+exports.explicitLines = explicitLines;
+exports.wrapText = wrapText;
+exports.textBlock = textBlock;
+/** Estimated advance of one character, in em, for the UI font at label weight. */
+function charEm(c) {
+    const code = c.charCodeAt(0);
+    if (code >= 0x2e80)
+        return 1.05; // CJK, full-width forms, most symbols and emoji halves
+    if (code > 0x7e)
+        return 0.72; // accented Latin, Greek, Cyrillic, arrows, dashes …
+    if (c === ' ')
+        return 0.3;
+    if (/[ilj.,:;|!']/.test(c))
+        return 0.33;
+    if (/[ftrI1()\[\]\/\\\-"`]/.test(c))
+        return 0.43;
+    if (/[mw]/.test(c))
+        return 0.9;
+    if (/[MW@%]/.test(c))
+        return 1.0;
+    if (/[A-Z]/.test(c))
+        return 0.72;
+    if (/[0-9]/.test(c))
+        return 0.61;
+    return 0.59;
 }
-function mid(a, b) {
-    return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
-}
-function lerp(a, b, t) {
-    return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
-}
-/** Unit normal (rotated +90°) of the direction a->b. */
-function normal(a, b) {
-    const dx = b.x - a.x;
-    const dy = b.y - a.y;
-    const d = Math.hypot(dx, dy) || 1;
-    return { x: -dy / d, y: dx / d };
-}
-function unionRect(rs) {
-    if (!rs.length)
-        return { x: 0, y: 0, w: 0, h: 0 };
-    let x0 = Infinity;
-    let y0 = Infinity;
-    let x1 = -Infinity;
-    let y1 = -Infinity;
-    for (const r of rs) {
-        x0 = Math.min(x0, r.x);
-        y0 = Math.min(y0, r.y);
-        x1 = Math.max(x1, r.x + r.w);
-        y1 = Math.max(y1, r.y + r.h);
-    }
-    return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
-}
-/** Rough text width for the UI font at a given size (no DOM measuring needed). */
+/** Estimated width of one line of text at a font size. */
 function textWidth(s, size) {
     let w = 0;
-    for (let i = 0; i < s.length; i++) {
-        const c = s.charAt(i);
-        w += /[ilj.,:;|!'\/1]/.test(c) ? 0.32 : /[mwMW@]/.test(c) ? 0.86 : /[A-Z0-9]/.test(c) ? 0.64 : 0.55;
-    }
+    for (let i = 0; i < s.length; i++)
+        w += charEm(s.charAt(i));
     return w * size;
 }
-function ellipsize(s, size, maxW) {
-    if (textWidth(s, size) <= maxW)
-        return s;
-    let lo = 0;
-    let hi = s.length;
-    while (lo < hi) {
-        const m = (lo + hi + 1) >> 1;
-        if (textWidth(s.slice(0, m) + '…', size) <= maxW)
-            lo = m;
-        else
-            hi = m - 1;
+/** Height of one line of text at a font size (whole pixels). */
+function lineHeight(size) {
+    return Math.round(size * 1.25);
+}
+/**
+ * The lines a label is written in: explicit line breaks are kept, other
+ * white space is collapsed, and empty lines are dropped.
+ */
+function explicitLines(s) {
+    return s
+        .split(/\r\n|\r|\n/)
+        .map((l) => l.replace(/\s+/g, ' ').trim())
+        .filter((l) => l !== '');
+}
+/** Characters after which a long word may be broken without a hyphen. */
+const BREAK_AFTER = /[-_\/\\.:,;|@=+]/;
+/** Split a word that is wider than `maxW` on its own; prefers breaking after punctuation. */
+function breakWord(word, size, maxW) {
+    const out = [];
+    let start = 0;
+    while (start < word.length) {
+        let w = 0;
+        let end = start;
+        let soft = -1;
+        while (end < word.length) {
+            const cw = charEm(word.charAt(end)) * size;
+            if (end > start && w + cw > maxW)
+                break;
+            w += cw;
+            end++;
+            if (end < word.length && BREAK_AFTER.test(word.charAt(end - 1)))
+                soft = end;
+        }
+        // use the last punctuation break if it keeps at least 40 % of the line
+        if (end < word.length && soft > start && soft - start >= (end - start) * 0.4)
+            end = soft;
+        out.push(word.slice(start, end));
+        start = end;
     }
-    return s.slice(0, Math.max(1, lo)) + '…';
+    return out;
+}
+/**
+ * Wrap a label to lines no wider than `maxW`: at explicit line breaks, then
+ * at spaces, and inside a word only when the word alone is too wide. No text
+ * is dropped and nothing is replaced by "…".
+ */
+function wrapText(s, size, maxW) {
+    const out = [];
+    for (const para of explicitLines(s)) {
+        let line = '';
+        for (const word of para.split(' ')) {
+            const pieces = textWidth(word, size) > maxW ? breakWord(word, size, maxW) : [word];
+            pieces.forEach((piece, k) => {
+                // pieces of a broken word never share a line with each other
+                const joined = line === '' ? piece : line + (k === 0 ? ' ' : '') + piece;
+                if (line !== '' && (k > 0 || textWidth(joined, size) > maxW)) {
+                    out.push(line);
+                    line = piece;
+                }
+                else
+                    line = joined;
+            });
+        }
+        if (line !== '')
+            out.push(line);
+    }
+    return out;
+}
+function textBlock(s, size, maxW) {
+    const lines = wrapText(s, size, maxW);
+    return { lines, size, w: lines.reduce((m, l) => Math.max(m, textWidth(l, size)), 0), h: lines.length * lineHeight(size) };
 }
 
 };
 __defs["layout/logical"] = function (module, exports) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.networkSubtitle = exports.networkSize = exports.chipRows = exports.MAX_CHIPS = exports.HUB_R = exports.DEVICE_H = exports.CHIP_H = void 0;
+exports.networkSubtitle = exports.chipRows = exports.MAX_CHIPS = exports.HUB_R = exports.CHIP_H = void 0;
 exports.isMultipoint = isMultipoint;
 exports.deviceRect = deviceRect;
 exports.logicalSpecs = logicalSpecs;
+exports.pairLabelRoom = pairLabelRoom;
 exports.logicalEdges = logicalEdges;
 exports.autoLogical = autoLogical;
 exports.logicalLayoutFrom = logicalLayoutFrom;
@@ -3538,11 +3972,9 @@ const input_1 = __req("layout/input");
 const sizes_1 = __req("layout/sizes");
 var sizes_2 = __req("layout/sizes");
 Object.defineProperty(exports, "CHIP_H", { enumerable: true, get: function () { return sizes_2.CHIP_H; } });
-Object.defineProperty(exports, "DEVICE_H", { enumerable: true, get: function () { return sizes_2.DEVICE_H; } });
 Object.defineProperty(exports, "HUB_R", { enumerable: true, get: function () { return sizes_2.HUB_R; } });
 Object.defineProperty(exports, "MAX_CHIPS", { enumerable: true, get: function () { return sizes_2.MAX_CHIPS; } });
 Object.defineProperty(exports, "chipRows", { enumerable: true, get: function () { return sizes_2.chipRows; } });
-Object.defineProperty(exports, "networkSize", { enumerable: true, get: function () { return sizes_2.networkSize; } });
 Object.defineProperty(exports, "networkSubtitle", { enumerable: true, get: function () { return sizes_2.networkSubtitle; } });
 /** Relations with 3+ distinct devices are drawn as a hub with spokes. */
 function isMultipoint(devs) {
@@ -3550,9 +3982,9 @@ function isMultipoint(devs) {
 }
 /** The drawn device rectangle inside a (possibly taller) logical node. */
 function deviceRect(n) {
-    if (n.kind !== 'device' || n.h <= sizes_1.DEVICE_H)
+    if (n.kind !== 'device' || n.bodyH === undefined || n.h <= n.bodyH)
         return n;
-    return { ...n, cy: n.cy - n.h / 2 + sizes_1.DEVICE_H / 2, h: sizes_1.DEVICE_H };
+    return { ...n, cy: n.cy - n.h / 2 + n.bodyH / 2, h: n.bodyH };
 }
 /** Nodes of the logical view with their sizes, sorted by ref. */
 function logicalSpecs(input) {
@@ -3570,9 +4002,11 @@ function logicalSpecs(input) {
     const devs = involved.size ? input.devices.filter((d) => involved.has(d.id)) : input.devices;
     const out = [];
     for (const d of devs)
-        out.push({ ref: 'device:' + d.id, kind: 'device', id: d.id, ...(0, sizes_1.logicalDeviceSize)(d.label, d.loopbacks) });
-    for (const n of input.networks)
-        out.push({ ref: 'network:' + n.id, kind: 'network', id: n.id, ...(0, sizes_1.networkSize)(n.label, n.sub) });
+        out.push({ ref: 'device:' + d.id, kind: 'device', id: d.id, ...(0, sizes_1.logicalDeviceSize)(d.label, d.sub, d.chipW, d.loopbacks) });
+    for (const n of input.networks) {
+        const b = (0, sizes_1.networkBody)(n.label, n.sub);
+        out.push({ ref: 'network:' + n.id, kind: 'network', id: n.id, w: b.w, h: b.h });
+    }
     const devSet = new Set(devs.map((d) => d.id));
     for (const r of input.relations) {
         const ds = r.devices.filter((d) => devSet.has(d));
@@ -3581,31 +4015,37 @@ function logicalSpecs(input) {
     }
     return out.sort((a, b) => (0, input_1.cmp)(a.ref, b.ref));
 }
-/** Weighted edges between node refs (canonical order). */
+/** room for the address written on a membership line, and for a hub's spokes */
+const MEMBER_ROOM = [120, 56];
+const SPOKE_ROOM = [80, 50];
+/**
+ * Room the labels of a device pair need between the two boxes: as wide as
+ * the widest label, or as high as all of them stacked.
+ */
+function pairLabelRoom(labels) {
+    const boxes = labels.map(sizes_1.pillBox);
+    return [boxes.reduce((m, b) => Math.max(m, b.w), 0) + 40, boxes.reduce((s, b) => s + b.h + 4, 0) + 44];
+}
+/** Weighted edges between node refs (canonical order), each with the room its labels need. */
 function logicalEdges(input, specs) {
     const has = new Set(specs.map((s) => s.ref));
     const edges = [];
     for (const n of input.networks)
         for (const d of n.members)
             if (has.has('device:' + d))
-                edges.push(['network:' + n.id, 'device:' + d, 1]);
-    const pairW = new Map();
+                edges.push(['network:' + n.id, 'device:' + d, 1, MEMBER_ROOM[0], MEMBER_ROOM[1]]);
     for (const r of input.relations) {
         const ds = r.devices.filter((d) => has.has('device:' + d));
         if (isMultipoint(ds))
             for (const d of ds)
-                edges.push(['hub:' + r.id, 'device:' + d, 0.8]);
-        else if (ds.length === 2) {
-            const key = ds[0] + '\u0000' + ds[1];
-            pairW.set(key, (pairW.get(key) || 0) + 1);
-        }
+                edges.push(['hub:' + r.id, 'device:' + d, 0.8, SPOKE_ROOM[0], SPOKE_ROOM[1]]);
     }
-    Array.from(pairW.keys())
-        .sort(input_1.cmp)
-        .forEach((key) => {
-        const [a, b] = key.split('\u0000');
-        edges.push(['device:' + a, 'device:' + b, Math.min(2, 0.7 + pairW.get(key) * 0.15)]);
-    });
+    for (const p of input.pairs) {
+        if (!has.has('device:' + p.a) || !has.has('device:' + p.b))
+            continue;
+        const [rx, ry] = pairLabelRoom(p.labels);
+        edges.push(['device:' + p.a, 'device:' + p.b, Math.min(2, 0.7 + p.labels.length * 0.15), rx, ry]);
+    }
     return edges.sort((p, q) => (0, input_1.cmp)(p[0], q[0]) || (0, input_1.cmp)(p[1], q[1]));
 }
 /** 16 unit directions (k · 22.5°) as constants: no trigonometry at run time. */
@@ -3749,6 +4189,17 @@ function layoutComponent(list, edgesIn, seed) {
     }
     const idx = new Map(list.map((n, i) => [n.ref, i]));
     const E = edgesIn.filter(([a, b]) => idx.has(a) && idx.has(b)).map(([a, b, w]) => [idx.get(a), idx.get(b), w]);
+    // room needed between two connected nodes (index pair -> px), and the edge length that gives it
+    const room = new Map();
+    const lengths = [];
+    edgesIn
+        .filter(([a, b]) => idx.has(a) && idx.has(b))
+        .forEach(([a, b, , rx, ry]) => {
+        const i = idx.get(a);
+        const j = idx.get(b);
+        room.set(Math.min(i, j) * N + Math.max(i, j), [rx, ry]);
+        lengths.push(Math.max(MIN_EDGE, Math.min(rx, 190) + (list[i].w + list[j].w) / 4 + (list[i].h + list[j].h) / 4 + 30));
+    });
     // normalize the seed to a size suited to the node count (keeps its shape)
     {
         let x0 = Infinity;
@@ -3775,22 +4226,22 @@ function layoutComponent(list, edgesIn, seed) {
         }
     }
     if (N <= STRESS_MAX) {
-        stressLayout(N, E, X, Y);
+        stressLayout(N, E, lengths, X, Y);
     }
     else {
         forceLayout(N, E, X, Y, R);
     }
-    removeOverlaps(list, X, Y);
+    removeOverlaps(list, X, Y, room);
     // crossing reduction: swap node positions when that strictly reduces edge crossings
     if (N <= 60 && E.length >= 3) {
         reduceCrossings(list, E, X, Y);
-        removeOverlaps(list, X, Y);
+        removeOverlaps(list, X, Y, room);
     }
     if (N <= 150) {
         // alternate: clearing an edge can create an overlap and vice versa
         for (let k = 0; k < 4; k++) {
             clearEdgesFromNodes(list, E, X, Y);
-            removeOverlaps(list, X, Y);
+            removeOverlaps(list, X, Y, room);
         }
     }
     list.forEach((n, i) => out.set(n.ref, { x: X[i], y: Y[i] }));
@@ -3834,43 +4285,48 @@ function clearEdgesFromNodes(list, E, X, Y) {
     }
 }
 const STRESS_MAX = 300;
-const L = 300;
+/** shortest edge: two small boxes with a short label between them */
+const MIN_EDGE = 300;
 /**
  * Stress majorization (SMACOF, Gauss-Seidel updates): places nodes so that
  * their distances match graph distances (hops x L). Gives even, readable
  * layouts for dense cores (full meshes, rings) where force layouts fold.
  */
-function stressLayout(N, E, X, Y) {
-    const adj = [];
-    for (let i = 0; i < N; i++)
-        adj.push([]);
-    for (const [a, b] of E) {
-        if (a === b)
-            continue;
-        adj[a].push(b);
-        adj[b].push(a);
-    }
-    for (const l of adj)
-        l.sort((p, q) => p - q);
-    // all-pairs hop distances (BFS; the component is connected)
+function stressLayout(N, E, lengths, X, Y) {
+    // all-pairs shortest paths over the edge lengths (Floyd-Warshall; the component is connected)
+    const FAR = 1e12;
     const D = [];
-    for (let s = 0; s < N; s++) {
-        const d = new Float64Array(N).fill(-1);
-        d[s] = 0;
-        const queue = [s];
-        for (let h = 0; h < queue.length; h++) {
-            const u = queue[h];
-            for (const v of adj[u]) {
-                if (d[v] < 0) {
-                    d[v] = d[u] + 1;
-                    queue.push(v);
-                }
-            }
-        }
-        for (let v = 0; v < N; v++)
-            d[v] = (d[v] < 0 ? N : d[v]) * L;
+    for (let i = 0; i < N; i++) {
+        const d = new Float64Array(N).fill(FAR);
+        d[i] = 0;
         D.push(d);
     }
+    E.forEach(([a, b], k) => {
+        if (a === b)
+            return;
+        if (lengths[k] < D[a][b]) {
+            D[a][b] = lengths[k];
+            D[b][a] = lengths[k];
+        }
+    });
+    for (let k = 0; k < N; k++) {
+        const dk = D[k];
+        for (let i = 0; i < N; i++) {
+            const dik = D[i][k];
+            if (dik >= FAR)
+                continue;
+            const di = D[i];
+            for (let j = 0; j < N; j++) {
+                const v = dik + dk[j];
+                if (v < di[j])
+                    di[j] = v;
+            }
+        }
+    }
+    for (let i = 0; i < N; i++)
+        for (let j = 0; j < N; j++)
+            if (D[i][j] >= FAR)
+                D[i][j] = N * MIN_EDGE;
     for (let it = 0; it < 250; it++) {
         let change = 0;
         for (let i = 0; i < N; i++) {
@@ -3963,18 +4419,26 @@ function forceLayout(N, E, X, Y, R) {
         temp = Math.max(2, temp - cool);
     }
 }
-/** Push overlapping boxes apart; devices keep room for relation bundles and their labels. */
-function removeOverlaps(list, X, Y) {
+/**
+ * Push boxes apart until each pair is separated by its margin: connected
+ * nodes by the room their labels need, other devices by room for relation
+ * bundles passing between them.
+ */
+function removeOverlaps(list, X, Y, room) {
     const N = list.length;
-    const margin = (a, b) => (a.kind === 'device' && b.kind === 'device' ? 150 : 40);
+    const margin = (i, j) => {
+        const base = list[i].kind === 'device' && list[j].kind === 'device' ? 150 : 40;
+        const r = room.get(i * N + j);
+        return r === undefined ? [base, base * 0.8] : [Math.max(base, r[0]), Math.max(base * 0.8, r[1])];
+    };
     const passes = Math.max(4, Math.min(120, Math.floor(6e7 / (N * N))));
     for (let pass = 0; pass < passes; pass++) {
         let moved = false;
         for (let i = 0; i < N; i++) {
             for (let j = i + 1; j < N; j++) {
-                const M = margin(list[i], list[j]);
-                const ox = (list[i].w + list[j].w) / 2 + M - Math.abs(X[i] - X[j]);
-                const oy = (list[i].h + list[j].h) / 2 + M * 0.8 - Math.abs(Y[i] - Y[j]);
+                const [mx, my] = margin(i, j);
+                const ox = (list[i].w + list[j].w) / 2 + mx - Math.abs(X[i] - X[j]);
+                const oy = (list[i].h + list[j].h) / 2 + my - Math.abs(Y[i] - Y[j]);
                 if (ox > 0 && oy > 0) {
                     moved = true;
                     if (ox / (list[i].w + list[j].w) < oy / (list[i].h + list[j].h)) {
@@ -4095,7 +4559,7 @@ function logicalLayoutFrom(input, positions) {
     const nodes = new Map();
     for (const s of logicalSpecs(input)) {
         const p = positions.get(s.ref) || { x: 0, y: 0 };
-        nodes.set(s.ref, { ref: s.ref, kind: s.kind, id: s.id, cx: p.x, cy: p.y, w: s.w, h: s.h });
+        nodes.set(s.ref, { ref: s.ref, kind: s.kind, id: s.id, cx: p.x, cy: p.y, w: s.w, h: s.h, bodyH: s.bodyH });
     }
     return { nodes };
 }
@@ -4104,11 +4568,10 @@ function logicalLayoutFrom(input, positions) {
 __defs["layout/physical"] = function (module, exports) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.PORT_FONT = exports.GROUP_TITLE = exports.GROUP_PAD = void 0;
-exports.deviceBaseWidth = deviceBaseWidth;
+exports.PORT_LABEL_GAP = exports.PORT_FONT = exports.GROUP_PAD = void 0;
+exports.physicalBaseSize = physicalBaseSize;
 exports.autoPhysical = autoPhysical;
 exports.physicalBoxes = physicalBoxes;
-exports.physicalBaseSize = physicalBaseSize;
 exports.assignPorts = assignPorts;
 /**
  * Physical view layout.
@@ -4122,7 +4585,13 @@ exports.assignPorts = assignPorts;
  *     its own block (higher-tier and larger components first);
  *   - rows and sibling groups are reordered with barycenter sweeps to reduce
  *     crossings; every tie is broken by id;
- *   - device boxes grow to fit their ports, leaving room for port labels.
+ *   - device boxes are as large as their full (wrapped) label needs and grow
+ *     further to fit their ports and port labels;
+ *   - the gap between two devices of a row is widened for the port labels on
+ *     the facing sides and for the label of a cable between them; group boxes
+ *     are at least as wide as their title;
+ *   - ports of the two ends of a cable are lined up where the boxes face each
+ *     other, so such cables are straight.
  * Only + - * / and Math.sqrt are used, and results are rounded to integers,
  * so every browser computes the same positions.
  *
@@ -4130,16 +4599,24 @@ exports.assignPorts = assignPorts;
  */
 const geometry_1 = __req("layout/geometry");
 const input_1 = __req("layout/input");
-exports.GROUP_PAD = 26;
-exports.GROUP_TITLE = 30;
+const sizes_1 = __req("layout/sizes");
+Object.defineProperty(exports, "GROUP_PAD", { enumerable: true, get: function () { return sizes_1.GROUP_PAD; } });
 const HGAP = 76;
-const VGAP = 96;
+const VGAP = 110;
 const BLOCK_GAP = 48;
 const MAX_PER_ROW = 6;
+const BASE_W = 150;
 const BASE_H = 54;
 exports.PORT_FONT = 10;
-function deviceBaseWidth(label) {
-    return Math.max(150, Math.min(260, (0, geometry_1.textWidth)(label, 13) + 64));
+/** a box grows for its ports up to this size; beyond it the ports share the side */
+const MAX_PORT_W = 1200;
+const MAX_PORT_H = 800;
+/** distance from a side port to the start of its label */
+exports.PORT_LABEL_GAP = 7;
+/** Size of a device box for its label and subtitle alone (ports may enlarge it). */
+function physicalBaseSize(d) {
+    const b = (0, sizes_1.deviceBody)(d.label, d.sub, BASE_W, BASE_H);
+    return { w: b.w, h: b.h };
 }
 /** Stable sort by numeric key; equal keys keep their current order. */
 function stableSortBy(xs, key) {
@@ -4167,7 +4644,7 @@ function autoPhysical(input) {
     const size = new Map();
     const tier = new Map();
     for (const d of input.devices) {
-        size.set(d.id, { w: deviceBaseWidth(d.label), h: BASE_H });
+        size.set(d.id, physicalBaseSize(d));
         tier.set(d.id, d.tier);
     }
     const groupIds = new Set(input.groups.map((g) => g.id));
@@ -4184,9 +4661,9 @@ function autoPhysical(input) {
     nbrs.forEach((v) => v.sort(input_1.cmp));
     // --- group tree
     const nodes = new Map();
-    const root = { id: null, tiers: [], children: [], comps: [] };
+    const root = { id: null, label: '', kind: '', tiers: [], children: [], comps: [] };
     for (const g of input.groups)
-        nodes.set(g.id, { id: g.id, tiers: [], children: [], comps: [] });
+        nodes.set(g.id, { id: g.id, label: g.label, kind: g.kind, tiers: [], children: [], comps: [] });
     for (const g of input.groups) {
         const parent = g.parent && nodes.has(g.parent) ? nodes.get(g.parent) : root;
         parent.children.push(nodes.get(g.id));
@@ -4249,12 +4726,32 @@ function autoPhysical(input) {
             (0, input_1.cmp)(a.id, b.id));
     }
     const pos = new Map();
+    // room the labels need between two neighbors of a row: port labels on the
+    // facing sides (known once ports are assigned) and the label of a cable
+    // that joins the two directly
+    const sidePad = new Map();
+    const labelW = new Map(input.linkLabels.map((l) => [l.id, (0, sizes_1.linkLabelBox)(l.text).w]));
+    const between = new Map();
+    for (const l of input.links) {
+        const w = labelW.get(l.id);
+        if (w === undefined || l.a.device === l.b.device)
+            continue;
+        const k = (0, input_1.cmp)(l.a.device, l.b.device) <= 0 ? l.a.device + '\u0000' + l.b.device : l.b.device + '\u0000' + l.a.device;
+        between.set(k, Math.max(between.get(k) || 0, w));
+    }
+    const gap = (a, b) => {
+        const pa = sidePad.get(a);
+        const pb = sidePad.get(b);
+        const lw = between.get((0, input_1.cmp)(a, b) <= 0 ? a + '\u0000' + b : b + '\u0000' + a) || 0;
+        return Math.max(HGAP, (pa ? pa.right : 0) + (pb ? pb.left : 0) + (lw ? lw + 24 : 16));
+    };
+    const rowWidth = (r) => r.reduce((s, id, i) => s + size.get(id).w + (i ? gap(r[i - 1], id) : 0), 0);
     const rowsBlock = (tiers) => {
         const rows = [];
         for (const t of tiers)
             for (let i = 0; i < t.length; i += MAX_PER_ROW)
                 rows.push(t.slice(i, i + MAX_PER_ROW));
-        const rw = rows.map((r) => r.reduce((s, id) => s + size.get(id).w, 0) + HGAP * Math.max(0, r.length - 1));
+        const rw = rows.map(rowWidth);
         const rh = rows.map((r) => r.reduce((m, id) => Math.max(m, size.get(id).h), 0));
         const w = rows.length ? rw.reduce((m, x) => Math.max(m, x), 0) : 0;
         const h = rh.reduce((s, x) => s + x, 0) + VGAP * Math.max(0, rows.length - 1);
@@ -4265,11 +4762,13 @@ function autoPhysical(input) {
                 let cy = y;
                 rows.forEach((r, i) => {
                     let cx = x + (w - rw[i]) / 2;
-                    for (const id of r) {
+                    r.forEach((id, k) => {
                         const s = size.get(id);
+                        if (k)
+                            cx += gap(r[k - 1], id);
                         pos.set(id, { x: cx + s.w / 2, y: cy + rh[i] / 2 });
-                        cx += s.w + HGAP;
-                    }
+                        cx += s.w;
+                    });
                     cy += rh[i] + VGAP;
                 });
             },
@@ -4316,14 +4815,17 @@ function autoPhysical(input) {
     const groupBlock = (n) => {
         const rows = rowsBlock(n.tiers);
         const kids = packBlocks(n.children.map(groupBlock), rows.w);
-        const innerW = Math.max(rows.w, kids.w, 140);
+        // at least as wide as the group's title needs; the title area grows with its lines
+        const contentW = Math.max(rows.w, kids.w, 140);
+        const head = (0, sizes_1.groupHeader)(n.label, n.kind, contentW);
+        const innerW = Math.max(contentW, head.minW - 2 * sizes_1.GROUP_PAD);
         const innerH = rows.h + kids.h + (rows.h && kids.h ? BLOCK_GAP : 0);
         return {
-            w: innerW + 2 * exports.GROUP_PAD,
-            h: innerH + 2 * exports.GROUP_PAD + exports.GROUP_TITLE,
+            w: innerW + 2 * sizes_1.GROUP_PAD,
+            h: innerH + 2 * sizes_1.GROUP_PAD + head.h,
             place(x, y) {
-                const ix = x + exports.GROUP_PAD;
-                const iy = y + exports.GROUP_PAD + exports.GROUP_TITLE;
+                const ix = x + sizes_1.GROUP_PAD;
+                const iy = y + sizes_1.GROUP_PAD + head.h;
                 rows.place(ix + (innerW - rows.w) / 2, iy);
                 kids.place(ix + (innerW - kids.w) / 2, iy + rows.h + (rows.h && kids.h ? BLOCK_GAP : 0));
             },
@@ -4412,14 +4914,22 @@ function autoPhysical(input) {
         }
         return m;
     };
-    const need = portSpaceNeeds(assignPorts(input.links, boxesNow()));
+    const { ports, need } = layoutPorts(input.links, boxesNow());
     for (const d of input.devices) {
         const s = size.get(d.id);
         const n = need.get(d.id);
         if (n) {
-            s.w = Math.max(s.w, Math.min(1200, n.horizontal + 24));
-            s.h = Math.max(s.h, Math.min(800, n.vertical + 16));
+            s.w = Math.max(s.w, Math.min(MAX_PORT_W, n.w));
+            s.h = Math.max(s.h, Math.min(MAX_PORT_H, n.h));
         }
+    }
+    for (const p of ports) {
+        if (p.side !== 'left' && p.side !== 'right')
+            continue;
+        let pad = sidePad.get(p.device);
+        if (!pad)
+            sidePad.set(p.device, (pad = { left: 0, right: 0 }));
+        pad[p.side] = Math.max(pad[p.side], sideLabelWidth(p.iface));
     }
     rootBlock().place(0, 0);
     const out = new Map();
@@ -4434,43 +4944,53 @@ function physicalBoxes(input, positions) {
     const boxes = new Map();
     for (const d of input.devices) {
         const p = positions.get(d.id) || { x: 0, y: 0 };
-        boxes.set(d.id, { cx: p.x, cy: p.y, w: deviceBaseWidth(d.label), h: BASE_H });
+        boxes.set(d.id, { cx: p.x, cy: p.y, ...physicalBaseSize(d) });
     }
-    const need = portSpaceNeeds(assignPorts(input.links, boxes));
-    need.forEach((n, id) => {
+    layoutPorts(input.links, boxes).need.forEach((n, id) => {
         const b = boxes.get(id);
         if (!b)
             return;
-        b.w = Math.max(b.w, Math.min(1200, n.horizontal + 24));
-        b.h = Math.max(b.h, Math.min(800, n.vertical + 16));
+        b.w = Math.max(b.w, Math.min(MAX_PORT_W, n.w));
+        b.h = Math.max(b.h, Math.min(MAX_PORT_H, n.h));
     });
     return boxes;
 }
-/** Base (un-grown) device size, used when placing new devices. */
-function physicalBaseSize(label) {
-    return { w: deviceBaseWidth(label), h: BASE_H };
+/** Room a label of a left/right port takes beside its device. */
+function sideLabelWidth(iface) {
+    return iface ? exports.PORT_LABEL_GAP + (0, geometry_1.textWidth)(iface, exports.PORT_FONT) + 4 : 0;
 }
 function portLabelWidth(iface) {
     return iface ? (0, geometry_1.textWidth)(iface, exports.PORT_FONT) + 12 : 14;
 }
-function portSpaceNeeds(ports) {
-    const acc = new Map();
-    for (const p of ports) {
-        let a = acc.get(p.device);
-        if (!a)
-            acc.set(p.device, (a = { top: 0, bottom: 0, left: 0, right: 0 }));
-        a[p.side] += p.side === 'top' || p.side === 'bottom' ? portLabelWidth(p.iface) : 22;
-    }
-    const out = new Map();
-    acc.forEach((a, id) => out.set(id, { horizontal: Math.max(a.top, a.bottom), vertical: Math.max(a.left, a.right) }));
-    return out;
-}
 /**
- * Place a port for every link end on the side of its device facing the peer,
- * spread along that side in the order of the peers (ties: link id).
+ * Place a port for every link end on the side of its device facing the peer.
+ *
+ * Along a side, each port is put as close as possible to the point opposite
+ * its peer's center, in the order of the peers (ties: link id), keeping a
+ * slot per port wide enough for its label. Then the two ports of a cable
+ * that sit on sides facing each other are moved onto one line where both
+ * sides have room, which makes that cable a single straight segment.
+ *
+ * `need` is the size each device must have for its ports to sit where they
+ * want to be (opposite their peers) with their labels; the layout grows the
+ * boxes to it.
  */
 function assignPorts(links, boxes) {
+    return layoutPorts(links, boxes).ports;
+}
+function layoutPorts(links, boxes) {
+    const need = new Map();
+    const needs = (device, horiz, size) => {
+        let n = need.get(device);
+        if (!n)
+            need.set(device, (n = { w: 0, h: 0 }));
+        if (horiz)
+            n.w = Math.max(n.w, size);
+        else
+            n.h = Math.max(n.h, size);
+    };
     const bySide = new Map();
+    const byKey = new Map();
     const out = [];
     const sorted = links.slice().sort((a, b) => (0, input_1.cmp)(a.id, b.id));
     for (const l of sorted) {
@@ -4503,34 +5023,237 @@ function assignPorts(links, boxes) {
             const k = me.device + '|' + side;
             if (!bySide.has(k))
                 bySide.set(k, []);
-            bySide.get(k).push({ p, peer: { x: ob.cx, y: ob.cy } });
+            const list = bySide.get(k);
+            const e = { p, peer: { x: ob.cx, y: ob.cy }, slot: vertical ? portLabelWidth(me.iface) : 22, at: 0, list };
+            list.push(e);
+            byKey.set(p.key, e);
             out.push(p);
         }
     }
+    const isHoriz = (e) => e.p.side === 'top' || e.p.side === 'bottom';
+    /** how close a port may come to the end of its side (a label under a top/bottom port needs half its slot) */
+    const endGap = (e) => (isHoriz(e) ? e.slot / 2 : 6);
+    /** usable range along the side of a port's device */
+    const range = (e) => {
+        const b = boxes.get(e.p.device);
+        return isHoriz(e) ? [b.cx - b.w / 2 + 8, b.cx + b.w / 2 - 8] : [b.cy - b.h / 2 + 8, b.cy + b.h / 2 - 8];
+    };
     bySide.forEach((list) => {
-        const p0 = list[0].p;
-        const b = boxes.get(p0.device);
-        const horiz = p0.side === 'top' || p0.side === 'bottom';
+        const horiz = isHoriz(list[0]);
+        const [lo, hi] = range(list[0]);
         list.sort((u, v) => (horiz ? u.peer.x - v.peer.x : u.peer.y - v.peer.y) || (0, input_1.cmp)(u.p.key, v.p.key));
-        const len = (horiz ? b.w : b.h) - 16;
-        const slots = list.map((e) => (horiz ? portLabelWidth(e.p.iface) : 22));
-        const total = slots.reduce((s, x) => s + x, 0);
-        const scale = total > len ? len / total : 1;
-        let cur = (len - total * scale) / 2 + 8 - (horiz ? b.w : b.h) / 2;
-        list.forEach((e, i) => {
-            const off = cur + (slots[i] * scale) / 2;
-            cur += slots[i] * scale;
-            if (horiz) {
-                e.p.x = b.cx + off;
-                e.p.y = b.cy + (p0.side === 'top' ? -b.h / 2 : b.h / 2);
+        const total = list.reduce((s, e) => s + e.slot, 0);
+        const n = list.length;
+        const sep = (i) => (list[i].slot + list[i + 1].slot) / 2;
+        /** nearest positions to `want` that keep the slots apart: the mean of pushing right and pushing left */
+        const spread = (want) => {
+            const f = want.slice();
+            for (let i = 1; i < n; i++)
+                f[i] = Math.max(f[i], f[i - 1] + sep(i - 1));
+            const g = want.slice();
+            for (let i = n - 2; i >= 0; i--)
+                g[i] = Math.min(g[i], g[i + 1] - sep(i));
+            return f.map((v, i) => (v + g[i]) / 2);
+        };
+        const peerAt = (e) => (horiz ? e.peer.x : e.peer.y);
+        // The size the side should have: enough for every port to sit opposite
+        // its peer (peers far to one side count as "at that end"). Measured on a
+        // side just long enough for all slots, so it doesn't depend on the box's
+        // current size.
+        const center = (lo + hi) / 2;
+        const ideal = spread(list.map((e) => Math.max(center - total / 2 + e.slot / 2, Math.min(center + total / 2 - e.slot / 2, peerAt(e)))));
+        const reach = ideal.reduce((m, v, i) => Math.max(m, Math.abs(v - center) + list[i].slot / 2), 0);
+        needs(list[0].p.device, horiz, 2 * reach + (horiz ? 24 : 16));
+        if (total > hi - lo) {
+            // more ports than the side has room for: share the side in proportion
+            const scale = (hi - lo) / total;
+            let cur = lo;
+            for (const e of list) {
+                e.at = cur + (e.slot * scale) / 2;
+                cur += e.slot * scale;
+            }
+            return;
+        }
+        const at = spread(list.map((e) => Math.max(lo + endGap(e), Math.min(hi - endGap(e), peerAt(e)))));
+        // back inside the side
+        at[0] = Math.max(at[0], lo + endGap(list[0]));
+        for (let i = 1; i < n; i++)
+            at[i] = Math.max(at[i], at[i - 1] + sep(i - 1));
+        at[n - 1] = Math.min(at[n - 1], hi - endGap(list[n - 1]));
+        for (let i = n - 2; i >= 0; i--)
+            at[i] = Math.min(at[i], at[i + 1] - sep(i));
+        list.forEach((e, i) => (e.at = at[i]));
+    });
+    // line up the two ports of a cable whose sides face each other
+    const opposite = { top: 'bottom', bottom: 'top', left: 'right', right: 'left' };
+    const canMove = (e, to) => {
+        const [lo, hi] = range(e);
+        if (to < lo + endGap(e) - 0.01 || to > hi - endGap(e) + 0.01)
+            return false;
+        const i = e.list.indexOf(e);
+        if (i > 0 && to < e.list[i - 1].at + (e.list[i - 1].slot + e.slot) / 2 - 0.01)
+            return false;
+        if (i < e.list.length - 1 && to > e.list[i + 1].at - (e.list[i + 1].slot + e.slot) / 2 + 0.01)
+            return false;
+        return true;
+    };
+    for (let round = 0; round < 2; round++) {
+        for (const l of sorted) {
+            const a = byKey.get(l.id + ':a');
+            const b = byKey.get(l.id + ':b');
+            if (!a || !b || a.p.device === b.p.device || opposite[a.p.side] !== b.p.side || a.at === b.at)
+                continue;
+            const mid = Math.round((a.at + b.at) / 2);
+            for (const to of [mid, a.at, b.at]) {
+                if ((to === a.at || canMove(a, to)) && (to === b.at || canMove(b, to))) {
+                    a.at = to;
+                    b.at = to;
+                    break;
+                }
+            }
+        }
+    }
+    bySide.forEach((list) => {
+        for (const e of list) {
+            const b = boxes.get(e.p.device);
+            if (isHoriz(e)) {
+                e.p.x = e.at;
+                e.p.y = b.cy + (e.p.side === 'top' ? -b.h / 2 : b.h / 2);
             }
             else {
-                e.p.x = b.cx + (p0.side === 'left' ? -b.w / 2 : b.w / 2);
-                e.p.y = b.cy + off;
+                e.p.x = b.cx + (e.p.side === 'left' ? -b.w / 2 : b.w / 2);
+                e.p.y = e.at;
             }
-        });
+        }
     });
-    return out;
+    return { ports: out, need };
+}
+
+};
+__defs["layout/geometry"] = function (module, exports) {
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.textWidth = void 0;
+exports.clipToBox = clipToBox;
+exports.clipToCircle = clipToCircle;
+exports.lineBoxExit = lineBoxExit;
+exports.mid = mid;
+exports.lerp = lerp;
+exports.normal = normal;
+exports.unionRect = unionRect;
+exports.rectsOverlap = rectsOverlap;
+exports.boxRect = boxRect;
+exports.segmentHitsRect = segmentHitsRect;
+/** Point where the ray from the box center toward `t` leaves the box. */
+function clipToBox(b, t, pad = 0) {
+    const dx = t.x - b.cx;
+    const dy = t.y - b.cy;
+    if (dx === 0 && dy === 0)
+        return { x: b.cx, y: b.cy };
+    const hw = b.w / 2 + pad;
+    const hh = b.h / 2 + pad;
+    const s = Math.min(dx !== 0 ? hw / Math.abs(dx) : Infinity, dy !== 0 ? hh / Math.abs(dy) : Infinity);
+    return { x: b.cx + dx * s, y: b.cy + dy * s };
+}
+function clipToCircle(c, r, t) {
+    const dx = t.x - c.x;
+    const dy = t.y - c.y;
+    const d = Math.hypot(dx, dy) || 1;
+    return { x: c.x + (dx / d) * r, y: c.y + (dy / d) * r };
+}
+/**
+ * Clip the infinite line through p->q against box b; returns the parameter t
+ * (along p->q) where the segment leaves (fromStart=true) or enters the box.
+ */
+function lineBoxExit(b, p, q, pad = 0) {
+    const x0 = b.cx - b.w / 2 - pad;
+    const x1 = b.cx + b.w / 2 + pad;
+    const y0 = b.cy - b.h / 2 - pad;
+    const y1 = b.cy + b.h / 2 + pad;
+    const dx = q.x - p.x;
+    const dy = q.y - p.y;
+    let tmin = -Infinity;
+    let tmax = Infinity;
+    const clip = (d, a, lo, hi) => {
+        if (Math.abs(d) < 1e-9)
+            return a >= lo && a <= hi;
+        let t0 = (lo - a) / d;
+        let t1 = (hi - a) / d;
+        if (t0 > t1) {
+            const tmp = t0;
+            t0 = t1;
+            t1 = tmp;
+        }
+        tmin = Math.max(tmin, t0);
+        tmax = Math.min(tmax, t1);
+        return tmin <= tmax;
+    };
+    if (!clip(dx, p.x, x0, x1) || !clip(dy, p.y, y0, y1))
+        return null;
+    return tmax;
+}
+function mid(a, b) {
+    return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+}
+function lerp(a, b, t) {
+    return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
+}
+/** Unit normal (rotated +90°) of the direction a->b. */
+function normal(a, b) {
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const d = Math.hypot(dx, dy) || 1;
+    return { x: -dy / d, y: dx / d };
+}
+function unionRect(rs) {
+    if (!rs.length)
+        return { x: 0, y: 0, w: 0, h: 0 };
+    let x0 = Infinity;
+    let y0 = Infinity;
+    let x1 = -Infinity;
+    let y1 = -Infinity;
+    for (const r of rs) {
+        x0 = Math.min(x0, r.x);
+        y0 = Math.min(y0, r.y);
+        x1 = Math.max(x1, r.x + r.w);
+        y1 = Math.max(y1, r.y + r.h);
+    }
+    return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+}
+var text_1 = __req("layout/text");
+Object.defineProperty(exports, "textWidth", { enumerable: true, get: function () { return text_1.textWidth; } });
+/** Do two rectangles overlap (touching edges don't count)? */
+function rectsOverlap(a, b) {
+    return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+}
+function boxRect(b, pad = 0) {
+    return { x: b.cx - b.w / 2 - pad, y: b.cy - b.h / 2 - pad, w: b.w + 2 * pad, h: b.h + 2 * pad };
+}
+/** Does the segment a->b pass through the rectangle? (Liang-Barsky clipping) */
+function segmentHitsRect(a, b, r) {
+    let t0 = 0;
+    let t1 = 1;
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const clip = (p, q) => {
+        if (p === 0)
+            return q >= 0;
+        const t = q / p;
+        if (p < 0) {
+            if (t > t1)
+                return false;
+            if (t > t0)
+                t0 = t;
+        }
+        else {
+            if (t < t0)
+                return false;
+            if (t < t1)
+                t1 = t;
+        }
+        return true;
+    };
+    return clip(-dx, a.x - r.x) && clip(dx, r.x + r.w - a.x) && clip(-dy, a.y - r.y) && clip(dy, r.y + r.h - a.y) && t0 <= t1;
 }
 
 };
@@ -5332,185 +6055,6 @@ function deviceType(r, m, dpath, c) {
         return t;
     c.error((0, reader_1.get)(m, 'type'), dpath + '.type', `unknown device type "${t}"${(0, reader_1.suggest)(t, device_types_1.DEVICE_TYPE_IDS, 20)}`);
     return device_types_1.NO_DEVICE_TYPE;
-}
-
-};
-__defs["model/device-types"] = function (module, exports) {
-"use strict";
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.NO_DEVICE_TYPE = exports.DEVICE_TYPE_IDS = exports.DEVICE_TYPES = void 0;
-exports.isDeviceType = isDeviceType;
-exports.deviceTypeLabel = deviceTypeLabel;
-exports.DEVICE_TYPES = [
-    { id: 'router', label: 'Router' },
-    { id: 'switch', label: 'Switch' },
-    { id: 'firewall', label: 'Firewall' },
-    { id: 'ap', label: 'Access point' },
-    { id: 'server', label: 'Server' },
-    { id: 'vm', label: 'Virtual machine' },
-    { id: 'container', label: 'Container' },
-    { id: 'storage', label: 'Storage' },
-    { id: 'load_balancer', label: 'Load balancer' },
-    { id: 'proxy', label: 'Proxy' },
-    { id: 'ids_ips', label: 'IDS/IPS' },
-    { id: 'gateway', label: 'Gateway' },
-    { id: 'endpoint', label: 'Endpoint' },
-    { id: 'cloud', label: 'Cloud' },
-    { id: 'system', label: 'System' },
-];
-exports.DEVICE_TYPE_IDS = exports.DEVICE_TYPES.map((t) => t.id);
-/** Model value of a device without a (valid) type. */
-exports.NO_DEVICE_TYPE = 'generic';
-function isDeviceType(id) {
-    return exports.DEVICE_TYPE_IDS.indexOf(id) >= 0;
-}
-/** Display name of a device type; '' for a device without a valid type. */
-function deviceTypeLabel(id) {
-    for (const t of exports.DEVICE_TYPES)
-        if (t.id === id)
-            return t.label;
-    return '';
-}
-
-};
-__defs["model/protocols"] = function (module, exports) {
-"use strict";
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.COLOR_RE = exports.DEFAULT_STYLE = void 0;
-exports.builtinProtocols = builtinProtocols;
-exports.normalizeProtocol = normalizeProtocol;
-exports.lookupProtocol = lookupProtocol;
-exports.hashColor = hashColor;
-exports.relationStyle = relationStyle;
-const BUILTINS = [
-    // tunnels / encapsulations
-    ['gre', 'GRE', 'tunnel', '#e8590c', ['mgre', 'gretap']],
-    ['ipsec', 'IPsec', 'tunnel', '#7048e8', ['ikev2', 'ike']],
-    ['ipip', 'IP-in-IP', 'tunnel', '#c2255c', ['ip-in-ip']],
-    ['wireguard', 'WireGuard', 'tunnel', '#88171a', ['wg']],
-    ['openvpn', 'OpenVPN', 'tunnel', '#e67700'],
-    ['l2tp', 'L2TP', 'tunnel', '#5f3dc4', ['l2tpv3']],
-    ['dmvpn', 'DMVPN', 'tunnel', '#9c36b5'],
-    ['gtp', 'GTP', 'tunnel', '#a61e4d', ['gtp-u']],
-    ['rsvp-te', 'RSVP-TE LSP', 'tunnel', '#364fc7', ['mpls-te', 'te-tunnel']],
-    ['sr-te', 'SR-TE policy', 'tunnel', '#1864ab', ['sr-policy']],
-    ['pseudowire', 'Pseudowire', 'tunnel', '#0b7285', ['pw', 'vpws']],
-    ['ssl-vpn', 'SSL VPN', 'tunnel', '#d6336c'],
-    // overlays
-    ['vxlan', 'VXLAN', 'overlay', '#0c8599'],
-    ['geneve', 'Geneve', 'overlay', '#099268'],
-    ['evpn', 'EVPN', 'overlay', '#1098ad', ['bgp-evpn']],
-    ['l3vpn', 'MPLS L3VPN', 'overlay', '#3b5bdb', ['mpls-l3vpn', 'vrf-lite']],
-    ['vpls', 'VPLS', 'overlay', '#4263eb'],
-    ['sd-wan', 'SD-WAN', 'overlay', '#ae3ec9', ['sdwan']],
-    ['otv', 'OTV', 'overlay', '#15aabf'],
-    // routing / control-plane adjacencies
-    ['bgp', 'BGP', 'adjacency', '#1971c2', ['ebgp', 'ibgp', 'mp-bgp']],
-    ['ospf', 'OSPF', 'adjacency', '#2f9e44', ['ospfv2', 'ospfv3']],
-    ['isis', 'IS-IS', 'adjacency', '#5c940d', ['is-is']],
-    ['eigrp', 'EIGRP', 'adjacency', '#087f5b'],
-    ['rip', 'RIP', 'adjacency', '#74b816', ['ripng']],
-    ['ldp', 'LDP', 'adjacency', '#495057'],
-    ['pim', 'PIM', 'adjacency', '#d9480f'],
-    ['bfd', 'BFD', 'adjacency', '#868e96'],
-    ['static', 'Static route', 'adjacency', '#343a40'],
-    // redundancy / bundling
-    ['lacp', 'LACP / LAG', 'redundancy', '#f08c00', ['lag', 'port-channel', 'etherchannel']],
-    ['mlag', 'MLAG / vPC', 'redundancy', '#f59f00', ['vpc', 'mc-lag']],
-    ['vrrp', 'VRRP', 'redundancy', '#e64980'],
-    ['hsrp', 'HSRP', 'redundancy', '#d6336c'],
-    ['glbp', 'GLBP', 'redundancy', '#c2255c'],
-    ['carp', 'CARP', 'redundancy', '#a61e4d'],
-    ['ha-sync', 'HA sync', 'redundancy', '#fd7e14', ['ha', 'cluster']],
-    // services
-    ['dns', 'DNS', 'service', '#6741d9'],
-    ['ntp', 'NTP', 'service', '#5f3dc4'],
-    ['syslog', 'Syslog', 'service', '#7950f2'],
-    ['snmp', 'SNMP', 'service', '#845ef7'],
-    ['radius', 'RADIUS', 'service', '#9775fa', ['tacacs', 'tacacs+']],
-    ['dhcp', 'DHCP relay', 'service', '#6c5ce7', ['dhcp-relay']],
-    ['https', 'HTTPS', 'service', '#1c7ed6', ['http']],
-    ['netflow', 'NetFlow / IPFIX', 'service', '#4c6ef5', ['ipfix', 'sflow']],
-];
-exports.DEFAULT_STYLE = {
-    tunnel: 'tube',
-    adjacency: 'solid',
-    overlay: 'dashed',
-    redundancy: 'dotted',
-    service: 'dashdot',
-    other: 'dashdot',
-};
-function builtinProtocols() {
-    const m = new Map();
-    for (const [id, label, category, color] of BUILTINS) {
-        m.set(id, { id, label, category, color, style: exports.DEFAULT_STYLE[category], custom: false });
-    }
-    return m;
-}
-const ALIASES = new Map();
-for (const b of BUILTINS)
-    for (const a of b[4] || [])
-        ALIASES.set(a, b[0]);
-/** Canonical registry key for a protocol name ("eBGP" -> "bgp" only via aliases, never silently otherwise). */
-function normalizeProtocol(name) {
-    return name.trim().toLowerCase();
-}
-/**
- * Look up the definition for a protocol name. Exact match wins (so a user
- * definition of "ebgp" overrides the alias to "bgp"); then aliases; then a
- * generated definition for unknown protocols.
- */
-function lookupProtocol(registry, name, fallbackCategory) {
-    const key = normalizeProtocol(name);
-    const exact = registry.get(key);
-    if (exact)
-        return exact;
-    const alias = ALIASES.get(key);
-    if (alias && registry.has(alias)) {
-        const base = registry.get(alias);
-        return { ...base, id: key, label: aliasLabel(key, base.label) };
-    }
-    const category = fallbackCategory || 'other';
-    return {
-        id: key,
-        label: name.trim().toUpperCase().length <= 5 ? name.trim().toUpperCase() : name.trim(),
-        category,
-        color: hashColor(key),
-        style: exports.DEFAULT_STYLE[category],
-        custom: false,
-    };
-}
-function aliasLabel(alias, baseLabel) {
-    const special = { ebgp: 'eBGP', ibgp: 'iBGP', 'mp-bgp': 'MP-BGP', ospfv3: 'OSPFv3', ospfv2: 'OSPFv2' };
-    return special[alias] || (alias.length <= 6 ? alias.toUpperCase() : baseLabel);
-}
-/** Deterministic, readable color for an unknown protocol name. */
-function hashColor(s) {
-    let h = 2166136261;
-    for (let i = 0; i < s.length; i++) {
-        h ^= s.charCodeAt(i);
-        h = Math.imul(h, 16777619);
-    }
-    const hue = (h >>> 0) % 360;
-    return hslToHex(hue, 0.62, 0.42);
-}
-function hslToHex(h, s, l) {
-    const k = (n) => (n + h / 30) % 12;
-    const a = s * Math.min(l, 1 - l);
-    const f = (n) => l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)));
-    const hex = (x) => Math.round(x * 255).toString(16).padStart(2, '0');
-    return '#' + hex(f(0)) + hex(f(8)) + hex(f(4));
-}
-exports.COLOR_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
-/**
- * Definition used to draw a relation: its protocol definition, with category
- * and line style following the relation's own category when it overrides it.
- */
-function relationStyle(model, rel) {
-    const def = lookupProtocol(model.protocols, rel.protocol, rel.category);
-    if (def.category !== rel.category)
-        return { ...def, category: rel.category, style: exports.DEFAULT_STYLE[rel.category] };
-    return def;
 }
 
 };
@@ -7707,7 +8251,7 @@ class Editor {
         };
         add(this.idField(base, kind));
         if (kind === 'device') {
-            add(this.textField(base.concat('label'), 'Label', o));
+            add(this.textField(base.concat('label'), 'Label', o, 'textarea', undefined, 'Shown in full in the diagram; long labels wrap. Line breaks typed here are kept.'));
             add(this.typeField(base.concat('type'), o));
             add(this.refField(base.concat('group'), 'Group / location', o, this.ids('group')));
             add(this.textField(base.concat('vendor'), 'Vendor', o));
@@ -9008,11 +9552,11 @@ exports.EXAMPLES = [
     },
     {
         "name": "editor-new-network.yaml",
-        "text": "# netatlas example: a model created with \"New\" in the editor and built up\n# with the editor operations (generated by scripts/make-editor-examples.mjs).\nnetatlas: 1\ntitle: \"Lab: two edge routers\"\ndescription: \"Created in the netatlas editor: loopbacks, one cable, an IP network, iBGP and a GRE tunnel between loopbacks.\"\ndevices:\n  - id: edge-a\n    type: router\n    router_id: lo0\n    interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.255.0.1/32]}\n      - {id: lo1, type: loopback, label: BGP source (IPv6), ip: [2001:db8:ffff::a/128]}\n      - {id: ge-0/0/0, ip: [192.0.2.1/31]}\n  - id: edge-b\n    label: Edge B\n    type: router\n    router_id: lo0\n    interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.255.0.2/32, 2001:db8:ffff::2/128]}\n      - {id: lo1, type: loopback, label: BGP source (IPv6), ip: [2001:db8:ffff::b/128]}\n      - {id: ge-0/0/0, ip: [192.0.2.0/31]}\nlinks:\n  - {id: cable-1, a: edge-a:ge-0/0/0, b: edge-b:ge-0/0/0, medium: fiber, speed: 10G, cable: LC-LC OM4 3m}\nnetworks:\n  - id: net-core\n    label: Core link\n    cidr: 192.0.2.0/31\nrelations:\n  - id: ibgp-v6\n    protocol: ibgp\n    endpoints: [edge-a:lo1, edge-b:lo1]\n    over: cable-1\n    attrs:\n      asn: 65000\n      address-family: [ipv6-unicast, evpn]\n  - id: gre-lab\n    protocol: gre\n    endpoints: [edge-a:lo0, edge-b:lo0]\n    over: cable-1\n    attrs:\n      key: 100\n      keepalive:\n        interval: 10s\n        retries: 3\n\nlayout:\n  physical:\n    edge-a: [75, 27]\n    edge-b: [75, 161]\n  logical:\n    edge-a: [70, 25]\n    edge-b: [70, 185]\n    net-core: [-110, 105]\n"
+        "text": "# netatlas example: a model created with \"New\" in the editor and built up\n# with the editor operations (generated by scripts/make-editor-examples.mjs).\nnetatlas: 1\ntitle: \"Lab: two edge routers\"\ndescription: \"Created in the netatlas editor: loopbacks, one cable, an IP network, iBGP and a GRE tunnel between loopbacks.\"\ndevices:\n  - id: edge-a\n    type: router\n    router_id: lo0\n    interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.255.0.1/32]}\n      - {id: lo1, type: loopback, label: BGP source (IPv6), ip: [2001:db8:ffff::a/128]}\n      - {id: ge-0/0/0, ip: [192.0.2.1/31]}\n  - id: edge-b\n    label: Edge B\n    type: router\n    router_id: lo0\n    interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.255.0.2/32, 2001:db8:ffff::2/128]}\n      - {id: lo1, type: loopback, label: BGP source (IPv6), ip: [2001:db8:ffff::b/128]}\n      - {id: ge-0/0/0, ip: [192.0.2.0/31]}\nlinks:\n  - {id: cable-1, a: edge-a:ge-0/0/0, b: edge-b:ge-0/0/0, medium: fiber, speed: 10G, cable: LC-LC OM4 3m}\nnetworks:\n  - id: net-core\n    label: Core link\n    cidr: 192.0.2.0/31\nrelations:\n  - id: ibgp-v6\n    protocol: ibgp\n    endpoints: [edge-a:lo1, edge-b:lo1]\n    over: cable-1\n    attrs:\n      asn: 65000\n      address-family: [ipv6-unicast, evpn]\n  - id: gre-lab\n    protocol: gre\n    endpoints: [edge-a:lo0, edge-b:lo0]\n    over: cable-1\n    attrs:\n      key: 100\n      keepalive:\n        interval: 10s\n        retries: 3\n\nlayout:\n  physical:\n    edge-a: [75, 27]\n    edge-b: [384, 27]\n  logical:\n    edge-a: [88, 45]\n    edge-b: [430, 52]\n    net-core: [252, 308]\n"
     },
     {
         "name": "minimal-edited.yaml",
-        "text": "# netatlas example: examples/minimal.yaml after being imported and edited\n# (generated by scripts/make-editor-examples.mjs): loopbacks with IPv4 + IPv6,\n# router IDs, r1 renamed to edge-1 (references updated), cable attributes and\n# an iBGP session between the loopbacks. Original comments are preserved.\n# netatlas example: the smallest useful file.\n# Two routers, one cable, one GRE tunnel with an OSPF adjacency inside it.\nnetatlas: 1\ntitle: Minimal example (edited in netatlas)\n\ndevices:\n  - id: edge-1\n    type: router\n    router_id: lo0\n    interfaces:\n      - id: eth0\n        ip: 192.0.2.1/30\n      - id: tun0\n        type: tunnel\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.255.0.1/32, 2001:db8:ffff::1/128]}\n  - id: r2\n    type: router\n    router_id: lo0\n    interfaces:\n      - id: eth0\n        ip: 192.0.2.2/30\n      - id: tun0\n        type: tunnel\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.255.0.2/32, 2001:db8:ffff::2/128]}\n\nlinks:\n  - id: cable-1\n    a: edge-1:eth0\n    b: r2:eth0\n    medium: copper\n    speed: 1G\n    attrs:\n      patch-panel: PP-3 port 14\n      length: 2m\n\nrelations:\n  - id: gre-1\n    protocol: gre\n    endpoints: [edge-1:tun0, r2:tun0]\n    over: cable-1\n  - id: ospf-1\n    protocol: ospf\n    endpoints: [edge-1:tun0, r2:tun0]\n    over: gre-1\n  - id: bgp-1\n    protocol: ibgp\n    endpoints: [edge-1:lo0, r2:lo0]\n    over: ospf-1\n    attrs:\n      asn: 65001\n      update-source: lo0\n\nlayout:\n  physical:\n    edge-1: [75, 27]\n    r2: [301, 27]\n  logical:\n    edge-1: [70, 25]\n    r2: [370, 25]\n"
+        "text": "# netatlas example: examples/minimal.yaml after being imported and edited\n# (generated by scripts/make-editor-examples.mjs): loopbacks with IPv4 + IPv6,\n# router IDs, r1 renamed to edge-1 (references updated), cable attributes and\n# an iBGP session between the loopbacks. Original comments are preserved.\n# netatlas example: the smallest useful file.\n# Two routers, one cable, one GRE tunnel with an OSPF adjacency inside it.\nnetatlas: 1\ntitle: Minimal example (edited in netatlas)\n\ndevices:\n  - id: edge-1\n    type: router\n    router_id: lo0\n    interfaces:\n      - id: eth0\n        ip: 192.0.2.1/30\n      - id: tun0\n        type: tunnel\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.255.0.1/32, 2001:db8:ffff::1/128]}\n  - id: r2\n    type: router\n    router_id: lo0\n    interfaces:\n      - id: eth0\n        ip: 192.0.2.2/30\n      - id: tun0\n        type: tunnel\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.255.0.2/32, 2001:db8:ffff::2/128]}\n\nlinks:\n  - id: cable-1\n    a: edge-1:eth0\n    b: r2:eth0\n    medium: copper\n    speed: 1G\n    attrs:\n      patch-panel: PP-3 port 14\n      length: 2m\n\nrelations:\n  - id: gre-1\n    protocol: gre\n    endpoints: [edge-1:tun0, r2:tun0]\n    over: cable-1\n  - id: ospf-1\n    protocol: ospf\n    endpoints: [edge-1:tun0, r2:tun0]\n    over: gre-1\n  - id: bgp-1\n    protocol: ibgp\n    endpoints: [edge-1:lo0, r2:lo0]\n    over: ospf-1\n    attrs:\n      asn: 65001\n      update-source: lo0\n\nlayout:\n  physical:\n    edge-1: [75, 27]\n    r2: [336, 27]\n  logical:\n    edge-1: [103, 37]\n    r2: [459, 37]\n"
     },
     {
         "name": "metro-ring.yaml",
@@ -9020,11 +9564,15 @@ exports.EXAMPLES = [
     },
     {
         "name": "metro-ring-arranged.yaml",
-        "text": "# netatlas example: examples/metro-ring.yaml after Auto-arrange (both views) and export\n# (generated by scripts/make-editor-examples.mjs). The positions are in the\n# \"layout\" section at the end; the network itself is unchanged.\n# netatlas example: metro ring (for Auto-arrange)\n#\n# Six PE routers in three POPs on a fibre ring, each with IPv4/IPv6\n# loopbacks used as router IDs and as iBGP / RSVP-TE endpoints. The logical\n# layer is dense on purpose: an OSPF area, LDP on every ring link, a full\n# iBGP mesh between loopbacks (15 sessions), two RSVP-TE tunnels, an L3VPN\n# overlay and customer eBGP. An out-of-band management network forms a\n# separate, disconnected component, and a spare router is not connected at\n# all. There is no \"layout\" section: open it and use Auto-arrange.\nnetatlas: 1\ntitle: Metro ring MR-1\n\ngroups:\n  - {id: pop-north, label: POP North, kind: site}\n  - {id: pop-east, label: POP East, kind: site}\n  - {id: pop-south, label: POP South, kind: site}\n  - {id: oob, label: Out-of-band management, kind: zone}\n  - {id: cust-a, label: Customer A, kind: external}\n\ndevices:\n  - id: pe1\n    type: router\n    group: pop-north\n    router_id: lo0\n    interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.1/32, 2001:db8:0:ffff::1/128]}\n      - {id: et1, ip: 10.1.12.1/31}\n      - {id: et2, ip: 10.1.16.1/31}\n      - {id: et3, ip: 192.0.2.1/30, vrf: CUST-A}\n      - {id: et4}\n  - id: pe2\n    type: router\n    group: pop-north\n    router_id: lo0\n    interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.2/32, 2001:db8:0:ffff::2/128]}\n      - {id: et1, ip: 10.1.12.0/31}\n      - {id: et2, ip: 10.1.23.0/31}\n      - {id: et4}\n  - id: pe3\n    type: router\n    group: pop-east\n    router_id: lo0\n    interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.3/32, 2001:db8:0:ffff::3/128]}\n      - {id: lo1, type: loopback, label: VPN next-hop, ip: [10.0.1.3/32]}\n      - {id: et1, ip: 10.1.23.1/31}\n      - {id: et2, ip: 10.1.34.0/31}\n      - {id: et4}\n  - id: pe4\n    type: router\n    group: pop-east\n    router_id: lo0\n    interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.4/32, 2001:db8:0:ffff::4/128]}\n      - {id: et1, ip: 10.1.34.1/31}\n      - {id: et2, ip: 10.1.45.0/31}\n      - {id: et4}\n  - id: pe5\n    type: router\n    group: pop-south\n    router_id: lo0\n    interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.5/32, 2001:db8:0:ffff::5/128]}\n      - {id: lo1, type: loopback, label: VPN next-hop, ip: [10.0.1.5/32]}\n      - {id: et1, ip: 10.1.45.1/31}\n      - {id: et2, ip: 10.1.56.0/31}\n      - {id: et3, ip: 192.0.2.5/30, vrf: CUST-A}\n      - {id: et4}\n  - id: pe6\n    type: router\n    group: pop-south\n    router_id: lo0\n    interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.6/32, 2001:db8:0:ffff::6/128]}\n      - {id: et1, ip: 10.1.56.1/31}\n      - {id: et2, ip: 10.1.16.0/31}\n      - {id: et4}\n  - id: ce-a1\n    label: Customer A — HQ\n    type: router\n    group: cust-a\n    interfaces:\n      - {id: ge0, ip: 192.0.2.2/30}\n  - id: ce-a2\n    label: Customer A — Plant\n    type: router\n    group: cust-a\n    interfaces:\n      - {id: ge0, ip: 192.0.2.6/30}\n  - id: oob-sw\n    label: OOB switch\n    type: switch\n    group: oob\n    interfaces: [p1, p2, p3, {id: vlan1, type: svi, ip: 172.31.0.2/24}]\n  - id: oob-con1\n    label: Console server 1\n    type: system\n    group: oob\n    interfaces:\n      - {id: eth0, ip: 172.31.0.11/24}\n  - id: oob-con2\n    label: Console server 2\n    type: system\n    group: oob\n    interfaces:\n      - {id: eth0, ip: 172.31.0.12/24}\n  - id: oob-nms\n    label: NMS collector\n    type: server\n    group: oob\n    interfaces:\n      - {id: eth0, ip: 172.31.0.20/24}\n  - id: spare-pe\n    label: Spare PE (not in service)\n    type: router\n    interfaces:\n      - {id: lo0, type: loopback, ip: [10.0.0.99/32]}\n\nlinks:\n  # the ring\n  - {id: r12, a: \"pe1:et1\", b: \"pe2:et1\", medium: fiber, speed: 100G}\n  - {id: r23, a: \"pe2:et2\", b: \"pe3:et1\", medium: fiber, speed: 100G}\n  - {id: r34, a: \"pe3:et2\", b: \"pe4:et1\", medium: fiber, speed: 100G}\n  - {id: r45, a: \"pe4:et2\", b: \"pe5:et1\", medium: fiber, speed: 100G}\n  - {id: r56, a: \"pe5:et2\", b: \"pe6:et1\", medium: fiber, speed: 100G}\n  - {id: r61, a: \"pe6:et2\", b: \"pe1:et2\", medium: fiber, speed: 100G}\n  # intra-POP cross-connects\n  - {id: x-north, a: \"pe1:et4\", b: \"pe2:et4\", medium: dac, speed: 100G, cable: DAC 1m}\n  - {id: x-east, a: \"pe3:et4\", b: \"pe4:et4\", medium: dac, speed: 100G, cable: DAC 1m}\n  - {id: x-south, a: \"pe5:et4\", b: \"pe6:et4\", medium: dac, speed: 100G, cable: DAC 1m}\n  # customer access\n  - {id: acc-a1, a: \"pe1:et3\", b: \"ce-a1:ge0\", medium: fiber, speed: 10G}\n  - {id: acc-a2, a: \"pe5:et3\", b: \"ce-a2:ge0\", medium: fiber, speed: 10G}\n  # out-of-band island (not connected to the ring)\n  - {id: oob-1, a: \"oob-sw:p1\", b: \"oob-con1:eth0\", medium: copper}\n  - {id: oob-2, a: \"oob-sw:p2\", b: \"oob-con2:eth0\", medium: copper}\n  - {id: oob-3, a: \"oob-sw:p3\", b: \"oob-nms:eth0\", medium: copper}\n\nnetworks:\n  # members are derived from the addresses inside each prefix\n  - id: cust-a-access\n    label: Customer A access\n    cidr: [192.0.2.0/30, 192.0.2.4/30]\n    attrs: {vrf: CUST-A, rd: \"65000:100\", rt: \"65000:100\"}\n  - id: oob-mgmt\n    label: OOB management\n    cidr: 172.31.0.0/24\n\nrelations:\n  - id: ospf-core\n    protocol: ospf\n    label: area 0\n    endpoints: [pe1, pe2, pe3, pe4, pe5, pe6]\n  # LDP on every ring link\n  - {id: ldp-12, protocol: ldp, endpoints: [\"pe1:et1\", \"pe2:et1\"], over: r12}\n  - {id: ldp-23, protocol: ldp, endpoints: [\"pe2:et2\", \"pe3:et1\"], over: r23}\n  - {id: ldp-34, protocol: ldp, endpoints: [\"pe3:et2\", \"pe4:et1\"], over: r34}\n  - {id: ldp-45, protocol: ldp, endpoints: [\"pe4:et2\", \"pe5:et1\"], over: r45}\n  - {id: ldp-56, protocol: ldp, endpoints: [\"pe5:et2\", \"pe6:et1\"], over: r56}\n  - {id: ldp-61, protocol: ldp, endpoints: [\"pe6:et2\", \"pe1:et2\"], over: r61}\n  # full iBGP mesh between loopbacks (15 sessions)\n  - {id: ibgp-1-2, protocol: ibgp, endpoints: [\"pe1:lo0\", \"pe2:lo0\"]}\n  - {id: ibgp-1-3, protocol: ibgp, endpoints: [\"pe1:lo0\", \"pe3:lo0\"]}\n  - {id: ibgp-1-4, protocol: ibgp, endpoints: [\"pe1:lo0\", \"pe4:lo0\"]}\n  - {id: ibgp-1-5, protocol: ibgp, endpoints: [\"pe1:lo0\", \"pe5:lo0\"]}\n  - {id: ibgp-1-6, protocol: ibgp, endpoints: [\"pe1:lo0\", \"pe6:lo0\"]}\n  - {id: ibgp-2-3, protocol: ibgp, endpoints: [\"pe2:lo0\", \"pe3:lo0\"]}\n  - {id: ibgp-2-4, protocol: ibgp, endpoints: [\"pe2:lo0\", \"pe4:lo0\"]}\n  - {id: ibgp-2-5, protocol: ibgp, endpoints: [\"pe2:lo0\", \"pe5:lo0\"]}\n  - {id: ibgp-2-6, protocol: ibgp, endpoints: [\"pe2:lo0\", \"pe6:lo0\"]}\n  - {id: ibgp-3-4, protocol: ibgp, endpoints: [\"pe3:lo0\", \"pe4:lo0\"]}\n  - {id: ibgp-3-5, protocol: ibgp, endpoints: [\"pe3:lo0\", \"pe5:lo0\"]}\n  - {id: ibgp-3-6, protocol: ibgp, endpoints: [\"pe3:lo0\", \"pe6:lo0\"]}\n  - {id: ibgp-4-5, protocol: ibgp, endpoints: [\"pe4:lo0\", \"pe5:lo0\"]}\n  - {id: ibgp-4-6, protocol: ibgp, endpoints: [\"pe4:lo0\", \"pe6:lo0\"]}\n  - {id: ibgp-5-6, protocol: ibgp, endpoints: [\"pe5:lo0\", \"pe6:lo0\"]}\n  # traffic-engineered tunnels between loopbacks, riding the ring\n  - id: te-1-4\n    protocol: rsvp-te\n    label: primary north→east\n    directed: true\n    endpoints: [\"pe1:lo0\", \"pe4:lo0\"]\n    over: [r12, r23, r34]\n    attrs: {bandwidth: 40G, setup-priority: 3}\n  - id: te-2-5\n    protocol: rsvp-te\n    label: primary north→south\n    directed: true\n    endpoints: [\"pe2:lo0\", \"pe5:lo0\"]\n    over: [r61, r56, x-north]\n    attrs: {bandwidth: 20G}\n  # customer service\n  - id: l3vpn-a\n    protocol: l3vpn\n    label: CUST-A\n    endpoints: [\"pe1:lo0\", \"pe3:lo1\", \"pe5:lo1\"]\n    network: cust-a-access\n  - {id: ebgp-a1, protocol: ebgp, endpoints: [\"pe1:et3\", \"ce-a1:ge0\"], over: acc-a1, attrs: {peer-as: 64601}}\n  - {id: ebgp-a2, protocol: ebgp, endpoints: [\"pe5:et3\", \"ce-a2:ge0\"], over: acc-a2, attrs: {peer-as: 64601}}\n  # inside the OOB island\n  - {id: syslog-oob, protocol: syslog, directed: true, endpoints: [oob-con1, \"oob-nms:eth0\"]}\n  - {id: snmp-oob, protocol: snmp, directed: true, endpoints: [oob-nms, oob-sw]}\n\nlayout:\n  physical:\n    ce-a1: [116, 423]\n    ce-a2: [381, 423]\n    oob-con1: [247, 763]\n    oob-con2: [499, 763]\n    oob-nms: [742, 763]\n    oob-sw: [491, 613]\n    pe1: [366, 236]\n    pe2: [140, 236]\n    pe3: [654, 426]\n    pe4: [880, 426]\n    pe5: [842, 236]\n    pe6: [616, 236]\n    spare-pe: [491, 27]\n  logical:\n    ce-a1: [90, 386]\n    ce-a2: [416, 817]\n    cust-a-access: [234, 619]\n    l3vpn-a: [738, 681]\n    oob-con1: [1328, 712]\n    oob-con2: [1086, 232]\n    oob-mgmt: [1297, 398]\n    oob-nms: [1467, 235]\n    oob-sw: [1387, 25]\n    ospf-core: [771, 268]\n    pe1: [425, 299]\n    pe2: [252, 106]\n    pe3: [785, 468]\n    pe4: [542, 36]\n    pe5: [490, 565]\n    pe6: [838, 75]\n    spare-pe: [120, 968]\n"
+        "text": "# netatlas example: examples/metro-ring.yaml after Auto-arrange (both views) and export\n# (generated by scripts/make-editor-examples.mjs). The positions are in the\n# \"layout\" section at the end; the network itself is unchanged.\n# netatlas example: metro ring (for Auto-arrange)\n#\n# Six PE routers in three POPs on a fibre ring, each with IPv4/IPv6\n# loopbacks used as router IDs and as iBGP / RSVP-TE endpoints. The logical\n# layer is dense on purpose: an OSPF area, LDP on every ring link, a full\n# iBGP mesh between loopbacks (15 sessions), two RSVP-TE tunnels, an L3VPN\n# overlay and customer eBGP. An out-of-band management network forms a\n# separate, disconnected component, and a spare router is not connected at\n# all. There is no \"layout\" section: open it and use Auto-arrange.\nnetatlas: 1\ntitle: Metro ring MR-1\n\ngroups:\n  - {id: pop-north, label: POP North, kind: site}\n  - {id: pop-east, label: POP East, kind: site}\n  - {id: pop-south, label: POP South, kind: site}\n  - {id: oob, label: Out-of-band management, kind: zone}\n  - {id: cust-a, label: Customer A, kind: external}\n\ndevices:\n  - id: pe1\n    type: router\n    group: pop-north\n    router_id: lo0\n    interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.1/32, 2001:db8:0:ffff::1/128]}\n      - {id: et1, ip: 10.1.12.1/31}\n      - {id: et2, ip: 10.1.16.1/31}\n      - {id: et3, ip: 192.0.2.1/30, vrf: CUST-A}\n      - {id: et4}\n  - id: pe2\n    type: router\n    group: pop-north\n    router_id: lo0\n    interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.2/32, 2001:db8:0:ffff::2/128]}\n      - {id: et1, ip: 10.1.12.0/31}\n      - {id: et2, ip: 10.1.23.0/31}\n      - {id: et4}\n  - id: pe3\n    type: router\n    group: pop-east\n    router_id: lo0\n    interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.3/32, 2001:db8:0:ffff::3/128]}\n      - {id: lo1, type: loopback, label: VPN next-hop, ip: [10.0.1.3/32]}\n      - {id: et1, ip: 10.1.23.1/31}\n      - {id: et2, ip: 10.1.34.0/31}\n      - {id: et4}\n  - id: pe4\n    type: router\n    group: pop-east\n    router_id: lo0\n    interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.4/32, 2001:db8:0:ffff::4/128]}\n      - {id: et1, ip: 10.1.34.1/31}\n      - {id: et2, ip: 10.1.45.0/31}\n      - {id: et4}\n  - id: pe5\n    type: router\n    group: pop-south\n    router_id: lo0\n    interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.5/32, 2001:db8:0:ffff::5/128]}\n      - {id: lo1, type: loopback, label: VPN next-hop, ip: [10.0.1.5/32]}\n      - {id: et1, ip: 10.1.45.1/31}\n      - {id: et2, ip: 10.1.56.0/31}\n      - {id: et3, ip: 192.0.2.5/30, vrf: CUST-A}\n      - {id: et4}\n  - id: pe6\n    type: router\n    group: pop-south\n    router_id: lo0\n    interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.6/32, 2001:db8:0:ffff::6/128]}\n      - {id: et1, ip: 10.1.56.1/31}\n      - {id: et2, ip: 10.1.16.0/31}\n      - {id: et4}\n  - id: ce-a1\n    label: Customer A — HQ\n    type: router\n    group: cust-a\n    interfaces:\n      - {id: ge0, ip: 192.0.2.2/30}\n  - id: ce-a2\n    label: Customer A — Plant\n    type: router\n    group: cust-a\n    interfaces:\n      - {id: ge0, ip: 192.0.2.6/30}\n  - id: oob-sw\n    label: OOB switch\n    type: switch\n    group: oob\n    interfaces: [p1, p2, p3, {id: vlan1, type: svi, ip: 172.31.0.2/24}]\n  - id: oob-con1\n    label: Console server 1\n    type: system\n    group: oob\n    interfaces:\n      - {id: eth0, ip: 172.31.0.11/24}\n  - id: oob-con2\n    label: Console server 2\n    type: system\n    group: oob\n    interfaces:\n      - {id: eth0, ip: 172.31.0.12/24}\n  - id: oob-nms\n    label: NMS collector\n    type: server\n    group: oob\n    interfaces:\n      - {id: eth0, ip: 172.31.0.20/24}\n  - id: spare-pe\n    label: Spare PE (not in service)\n    type: router\n    interfaces:\n      - {id: lo0, type: loopback, ip: [10.0.0.99/32]}\n\nlinks:\n  # the ring\n  - {id: r12, a: \"pe1:et1\", b: \"pe2:et1\", medium: fiber, speed: 100G}\n  - {id: r23, a: \"pe2:et2\", b: \"pe3:et1\", medium: fiber, speed: 100G}\n  - {id: r34, a: \"pe3:et2\", b: \"pe4:et1\", medium: fiber, speed: 100G}\n  - {id: r45, a: \"pe4:et2\", b: \"pe5:et1\", medium: fiber, speed: 100G}\n  - {id: r56, a: \"pe5:et2\", b: \"pe6:et1\", medium: fiber, speed: 100G}\n  - {id: r61, a: \"pe6:et2\", b: \"pe1:et2\", medium: fiber, speed: 100G}\n  # intra-POP cross-connects\n  - {id: x-north, a: \"pe1:et4\", b: \"pe2:et4\", medium: dac, speed: 100G, cable: DAC 1m}\n  - {id: x-east, a: \"pe3:et4\", b: \"pe4:et4\", medium: dac, speed: 100G, cable: DAC 1m}\n  - {id: x-south, a: \"pe5:et4\", b: \"pe6:et4\", medium: dac, speed: 100G, cable: DAC 1m}\n  # customer access\n  - {id: acc-a1, a: \"pe1:et3\", b: \"ce-a1:ge0\", medium: fiber, speed: 10G}\n  - {id: acc-a2, a: \"pe5:et3\", b: \"ce-a2:ge0\", medium: fiber, speed: 10G}\n  # out-of-band island (not connected to the ring)\n  - {id: oob-1, a: \"oob-sw:p1\", b: \"oob-con1:eth0\", medium: copper}\n  - {id: oob-2, a: \"oob-sw:p2\", b: \"oob-con2:eth0\", medium: copper}\n  - {id: oob-3, a: \"oob-sw:p3\", b: \"oob-nms:eth0\", medium: copper}\n\nnetworks:\n  # members are derived from the addresses inside each prefix\n  - id: cust-a-access\n    label: Customer A access\n    cidr: [192.0.2.0/30, 192.0.2.4/30]\n    attrs: {vrf: CUST-A, rd: \"65000:100\", rt: \"65000:100\"}\n  - id: oob-mgmt\n    label: OOB management\n    cidr: 172.31.0.0/24\n\nrelations:\n  - id: ospf-core\n    protocol: ospf\n    label: area 0\n    endpoints: [pe1, pe2, pe3, pe4, pe5, pe6]\n  # LDP on every ring link\n  - {id: ldp-12, protocol: ldp, endpoints: [\"pe1:et1\", \"pe2:et1\"], over: r12}\n  - {id: ldp-23, protocol: ldp, endpoints: [\"pe2:et2\", \"pe3:et1\"], over: r23}\n  - {id: ldp-34, protocol: ldp, endpoints: [\"pe3:et2\", \"pe4:et1\"], over: r34}\n  - {id: ldp-45, protocol: ldp, endpoints: [\"pe4:et2\", \"pe5:et1\"], over: r45}\n  - {id: ldp-56, protocol: ldp, endpoints: [\"pe5:et2\", \"pe6:et1\"], over: r56}\n  - {id: ldp-61, protocol: ldp, endpoints: [\"pe6:et2\", \"pe1:et2\"], over: r61}\n  # full iBGP mesh between loopbacks (15 sessions)\n  - {id: ibgp-1-2, protocol: ibgp, endpoints: [\"pe1:lo0\", \"pe2:lo0\"]}\n  - {id: ibgp-1-3, protocol: ibgp, endpoints: [\"pe1:lo0\", \"pe3:lo0\"]}\n  - {id: ibgp-1-4, protocol: ibgp, endpoints: [\"pe1:lo0\", \"pe4:lo0\"]}\n  - {id: ibgp-1-5, protocol: ibgp, endpoints: [\"pe1:lo0\", \"pe5:lo0\"]}\n  - {id: ibgp-1-6, protocol: ibgp, endpoints: [\"pe1:lo0\", \"pe6:lo0\"]}\n  - {id: ibgp-2-3, protocol: ibgp, endpoints: [\"pe2:lo0\", \"pe3:lo0\"]}\n  - {id: ibgp-2-4, protocol: ibgp, endpoints: [\"pe2:lo0\", \"pe4:lo0\"]}\n  - {id: ibgp-2-5, protocol: ibgp, endpoints: [\"pe2:lo0\", \"pe5:lo0\"]}\n  - {id: ibgp-2-6, protocol: ibgp, endpoints: [\"pe2:lo0\", \"pe6:lo0\"]}\n  - {id: ibgp-3-4, protocol: ibgp, endpoints: [\"pe3:lo0\", \"pe4:lo0\"]}\n  - {id: ibgp-3-5, protocol: ibgp, endpoints: [\"pe3:lo0\", \"pe5:lo0\"]}\n  - {id: ibgp-3-6, protocol: ibgp, endpoints: [\"pe3:lo0\", \"pe6:lo0\"]}\n  - {id: ibgp-4-5, protocol: ibgp, endpoints: [\"pe4:lo0\", \"pe5:lo0\"]}\n  - {id: ibgp-4-6, protocol: ibgp, endpoints: [\"pe4:lo0\", \"pe6:lo0\"]}\n  - {id: ibgp-5-6, protocol: ibgp, endpoints: [\"pe5:lo0\", \"pe6:lo0\"]}\n  # traffic-engineered tunnels between loopbacks, riding the ring\n  - id: te-1-4\n    protocol: rsvp-te\n    label: primary north→east\n    directed: true\n    endpoints: [\"pe1:lo0\", \"pe4:lo0\"]\n    over: [r12, r23, r34]\n    attrs: {bandwidth: 40G, setup-priority: 3}\n  - id: te-2-5\n    protocol: rsvp-te\n    label: primary north→south\n    directed: true\n    endpoints: [\"pe2:lo0\", \"pe5:lo0\"]\n    over: [r61, r56, x-north]\n    attrs: {bandwidth: 20G}\n  # customer service\n  - id: l3vpn-a\n    protocol: l3vpn\n    label: CUST-A\n    endpoints: [\"pe1:lo0\", \"pe3:lo1\", \"pe5:lo1\"]\n    network: cust-a-access\n  - {id: ebgp-a1, protocol: ebgp, endpoints: [\"pe1:et3\", \"ce-a1:ge0\"], over: acc-a1, attrs: {peer-as: 64601}}\n  - {id: ebgp-a2, protocol: ebgp, endpoints: [\"pe5:et3\", \"ce-a2:ge0\"], over: acc-a2, attrs: {peer-as: 64601}}\n  # inside the OOB island\n  - {id: syslog-oob, protocol: syslog, directed: true, endpoints: [oob-con1, \"oob-nms:eth0\"]}\n  - {id: snmp-oob, protocol: snmp, directed: true, endpoints: [oob-nms, oob-sw]}\n\nlayout:\n  physical:\n    ce-a1: [114, 437]\n    ce-a2: [372, 437]\n    oob-con1: [262, 791]\n    oob-con2: [509, 791]\n    oob-nms: [749, 791]\n    oob-sw: [502, 627]\n    pe1: [377, 250]\n    pe2: [116, 250]\n    pe3: [642, 440]\n    pe4: [904, 440]\n    pe5: [889, 250]\n    pe6: [627, 250]\n    spare-pe: [502, 27]\n  logical:\n    ce-a1: [91, 671]\n    ce-a2: [585, 843]\n    cust-a-access: [915, 711]\n    l3vpn-a: [406, 444]\n    oob-con1: [1611, 713]\n    oob-con2: [1369, 233]\n    oob-mgmt: [1580, 398]\n    oob-nms: [1750, 236]\n    oob-sw: [1670, 26]\n    ospf-core: [519, 146]\n    pe1: [108, 435]\n    pe2: [594, 37]\n    pe3: [438, 637]\n    pe4: [970, 136]\n    pe5: [942, 580]\n    pe6: [1085, 355]\n    spare-pe: [114, 995]\n"
     },
     {
         "name": "device-types.yaml",
         "text": "# netatlas example: every device type\n#\n# A small campus that uses each of the 15 device types once or more:\n# cloud, router, gateway, firewall, ids_ips, load_balancer, proxy, switch,\n# ap, endpoint, server, vm, container, storage and system.\nnetatlas: 1\ntitle: Campus — all device types\ndescription: |\n  Internet edge with a VPN gateway, firewall and inline IPS; a DMZ with a\n  load balancer and a proxy; core and access switching with Wi-Fi; a server\n  room with a virtualisation host, NAS and a monitoring appliance.\n\ngroups:\n  - id: providers\n    label: Internet\n    kind: provider\n  - id: campus\n    label: Campus\n    kind: campus\n  - id: dmz\n    label: DMZ\n    kind: zone\n    parent: campus\n  - id: office\n    label: Office floor 1\n    kind: room\n    parent: campus\n  - id: server-room\n    label: Server room\n    kind: room\n    parent: campus\n\ndevices:\n  - id: isp\n    label: ISP\n    type: cloud\n    group: providers\n    interfaces: [edge, vpn]\n  - id: edge\n    label: edge-rtr\n    type: router\n    group: campus\n    router_id: lo0\n    interfaces:\n      - {id: wan0, ip: 198.51.100.2/30}\n      - {id: lan0, ip: 10.0.0.1/30}\n      - {id: lo0, type: loopback, ip: 10.255.0.1/32}\n  - id: vpn-gw\n    label: vpn-gw\n    type: gateway\n    role: remote access\n    group: campus\n    interfaces:\n      - {id: wan0, ip: 198.51.100.6/30}\n      - {id: lan0, ip: 10.0.0.5/30}\n  - id: fw\n    label: fw1\n    type: firewall\n    group: campus\n    interfaces:\n      - {id: outside, ip: 10.0.0.2/30}\n      - {id: vpn, ip: 10.0.0.6/30}\n      - {id: inside}\n      - {id: dmz1}\n      - {id: dmz2}\n  - id: ips\n    label: ips1\n    type: ids_ips\n    role: inline\n    group: campus\n    interfaces:\n      - {id: in}\n      - {id: out}\n  - id: lb\n    label: lb1\n    type: load_balancer\n    group: dmz\n    tier: 3\n    interfaces:\n      - {id: eth0}\n  - id: proxy\n    label: proxy1\n    type: proxy\n    role: web proxy\n    group: dmz\n    tier: 3\n    interfaces:\n      - {id: eth0}\n  - id: core\n    label: core-sw\n    type: switch\n    role: core\n    group: campus\n    tier: 3\n    interfaces:\n      - {id: Et1}\n      - {id: Et2}\n      - {id: Et3}\n      - {id: Et4}\n      - {id: Et5}\n  - id: access\n    label: acc-sw1\n    type: switch\n    role: access\n    group: office\n    interfaces:\n      - {id: Et49}\n      - {id: Et1}\n      - {id: Et2}\n  - id: ap\n    label: ap-1-01\n    type: ap\n    group: office\n    interfaces:\n      - {id: eth0}\n      - {id: wlan0}\n  - id: laptop\n    label: laptop-042\n    type: endpoint\n    group: office\n    interfaces:\n      - {id: wlan0}\n  - id: desktop\n    label: pc-017\n    type: endpoint\n    group: office\n    interfaces:\n      - {id: eth0}\n  - id: host\n    label: esx-01\n    type: server\n    role: hypervisor\n    group: server-room\n    interfaces:\n      - {id: vmnic0}\n      - {id: vswitch0}\n  - id: app-vm\n    label: app-vm\n    type: vm\n    group: server-room\n    tier: 7\n    interfaces: [eth0, docker0]\n  - id: api\n    label: api\n    type: container\n    group: server-room\n    tier: 8\n    interfaces: [eth0]\n  - id: nas\n    label: nas-01\n    type: storage\n    group: server-room\n    interfaces:\n      - {id: eth0}\n  - id: nms\n    label: nms\n    type: system\n    role: monitoring appliance\n    group: server-room\n    interfaces:\n      - {id: eth0}\n\nlinks:\n  - {id: l-isp-edge, a: \"isp:edge\", b: \"edge:wan0\", medium: fiber, speed: 1G}\n  - {id: l-isp-vpn, a: \"isp:vpn\", b: \"vpn-gw:wan0\", medium: fiber, speed: 1G}\n  - {id: l-edge-fw, a: \"edge:lan0\", b: \"fw:outside\", speed: 1G}\n  - {id: l-vpn-fw, a: \"vpn-gw:lan0\", b: \"fw:vpn\", speed: 1G}\n  - {id: l-fw-ips, a: \"fw:inside\", b: \"ips:in\", speed: 10G}\n  - {id: l-ips-core, a: \"ips:out\", b: \"core:Et1\", speed: 10G}\n  - {id: l-fw-lb, a: \"fw:dmz1\", b: \"lb:eth0\", speed: 1G}\n  - {id: l-fw-proxy, a: \"fw:dmz2\", b: \"proxy:eth0\", speed: 1G}\n  - {id: l-core-access, a: \"core:Et2\", b: \"access:Et49\", medium: fiber, speed: 10G}\n  - {id: l-access-ap, a: \"access:Et1\", b: \"ap:eth0\", speed: 1G}\n  - {id: l-access-pc, a: \"access:Et2\", b: \"desktop:eth0\", speed: 1G}\n  - {id: l-wifi, a: \"ap:wlan0\", b: \"laptop:wlan0\", medium: wireless}\n  - {id: l-core-host, a: \"core:Et3\", b: \"host:vmnic0\", medium: dac, speed: 10G}\n  - {id: l-core-nas, a: \"core:Et4\", b: \"nas:eth0\", medium: dac, speed: 10G}\n  - {id: l-core-nms, a: \"core:Et5\", b: \"nms:eth0\", speed: 1G}\n  - {id: l-host-vm, a: \"host:vswitch0\", b: \"app-vm:eth0\", medium: virtual}\n  - {id: l-vm-api, a: \"app-vm:docker0\", b: \"api:eth0\", medium: virtual}\n\nrelations:\n  - id: ebgp-isp\n    protocol: ebgp\n    endpoints: [edge, isp]\n    over: l-isp-edge\n  - id: ipsec-remote\n    protocol: ipsec\n    label: remote-access VPN\n    endpoints: [vpn-gw, isp]\n    over: l-isp-vpn\n  - id: https-lb-api\n    protocol: https\n    label: published API\n    endpoints: [lb, api]\n    directed: true\n  - id: proxy-out\n    protocol: https\n    label: outbound web\n    endpoints: [proxy, isp]\n    directed: true\n  - id: snmp-core\n    protocol: snmp\n    endpoints: [nms, core]\n    directed: true\n  - id: syslog-fw\n    protocol: syslog\n    endpoints: [fw, nms]\n    directed: true\n  - id: nfs\n    protocol: nfs\n    category: other\n    label: NFS datastore\n    endpoints: [host, nas]\n"
+    },
+    {
+        "name": "long-labels.yaml",
+        "text": "# netatlas example: long and multi-line labels, nodes of different sizes\n#\n# A test case for diagram sizing and Auto-arrange: device labels with explicit\n# line breaks, a very long label, a long word without spaces, several cables\n# between the same two devices, long cable labels, and several labelled\n# relations between the same pair of devices. Nothing is shortened: every\n# element grows to fit its text, and Auto-arrange leaves room for the labels.\nnetatlas: 1\ntitle: Long labels and mixed node sizes\n\ngroups:\n  - id: dc\n    label: Primary data centre Frankfurt am Main, building B, second floor, cage 14 (shared with the storage team)\n    kind: site\n  - id: branch\n    label: Branch\n    kind: site\n\ndevices:\n  - id: core-a\n    label: |\n      core-a\n      Core switch A\n      (rack 12, U30-U34)\n    type: switch\n    role: core\n    model: Catalyst 9500-48Y4C\n    group: dc\n    tier: 3\n    interfaces:\n      - {id: Hu1/0/49}\n      - {id: Hu1/0/50}\n      - {id: Hu1/0/51}\n      - {id: TwentyFiveGigE1/0/1}\n      - {id: TwentyFiveGigE1/0/2}\n      - {id: lo0, type: loopback, ip: [10.255.0.1/32, 2001:db8:ffff::1/128]}\n  - id: core-b\n    label: |-\n      core-b\n      Core switch B\n    type: switch\n    role: core\n    group: dc\n    tier: 3\n    interfaces:\n      - {id: Hu1/0/49}\n      - {id: Hu1/0/50}\n      - {id: Hu1/0/51}\n      - {id: TwentyFiveGigE1/0/1}\n      - {id: lo0, type: loopback, ip: 10.255.0.2/32}\n  - id: fw\n    label: Perimeter firewall cluster for the production and the pre-production environment (active/passive)\n    type: firewall\n    model: PA-5450\n    group: dc\n    interfaces:\n      - {id: ethernet1/1, ip: 10.10.0.1/24}\n      - {id: ethernet1/2}\n      - {id: tunnel.10, type: tunnel}\n      - {id: tunnel.20, type: tunnel}\n  - id: srv\n    label: s\n    type: server\n    group: dc\n    interfaces:\n      - {id: eno1, ip: 10.10.0.20/24}\n  - id: storage\n    label: netapp-aff-a400-cluster01-node01.storage.infrastructure.example.internal\n    type: storage\n    group: dc\n    interfaces:\n      - {id: e0a, ip: 10.10.0.30/24}\n  - id: br-rtr\n    label: Branch router\n    type: router\n    group: branch\n    interfaces:\n      - {id: GigabitEthernet0/0/0}\n      - {id: Tunnel10, type: tunnel}\n      - {id: Tunnel20, type: tunnel}\n\nlinks:\n  # three parallel cables between the two core switches\n  - {id: peer-1, a: \"core-a:Hu1/0/49\", b: \"core-b:Hu1/0/49\", medium: dac, speed: 100G, label: peer link 1}\n  - {id: peer-2, a: \"core-a:Hu1/0/50\", b: \"core-b:Hu1/0/50\", medium: dac, speed: 100G, label: peer link 2}\n  - {id: peer-3, a: \"core-a:Hu1/0/51\", b: \"core-b:Hu1/0/51\", medium: fiber, speed: 100G, label: keepalive}\n  - {id: fw-a, a: \"fw:ethernet1/1\", b: \"core-a:TwentyFiveGigE1/0/1\", medium: fiber, speed: 25G}\n  - {id: fw-b, a: \"fw:ethernet1/2\", b: \"core-b:TwentyFiveGigE1/0/1\", medium: fiber, speed: 25G}\n  - id: srv-a\n    a: {device: core-a, interface: TwentyFiveGigE1/0/2, vlans: [10, 20, 30, 40, 50, 60, 70, 80]}\n    b: {device: srv, interface: eno1, vlans: [10, 20, 30, 40, 50, 60, 70, 80]}\n    medium: dac\n    speed: 25G\n    label: hypervisor uplink, all tenant VLANs\n  - {id: sto-b, a: core-b, b: \"storage:e0a\", medium: fiber, speed: 25G, label: iSCSI}\n  - id: wan\n    a: fw\n    b: br-rtr:GigabitEthernet0/0/0\n    medium: fiber\n    speed: 1G\n    label: \"carrier ethernet, circuit CID-2024-000173\"\n    cable: CID-2024-000173\n\nnetworks:\n  - id: servers\n    label: Server network (production)\n    cidr: [10.10.0.0/24, \"2001:db8:10::/64\", \"2001:db8:11::/64\"]\n    vlan: 10\n\nrelations:\n  # four labelled relations between the same two devices, two of them nested\n  - {id: ipsec-br, protocol: ipsec, label: IKEv2 site-to-site with certificate authentication, endpoints: [fw, br-rtr], over: wan}\n  - {id: gre-br, protocol: gre, label: primary, endpoints: [\"fw:tunnel.10\", \"br-rtr:Tunnel10\"], over: ipsec-br}\n  - {id: ospf-br, protocol: ospf, label: area 0.0.0.10, endpoints: [\"fw:tunnel.10\", \"br-rtr:Tunnel10\"], over: gre-br}\n  - {id: bgp-br, protocol: ebgp, label: AS 65010 ↔ AS 65020, endpoints: [fw, br-rtr]}\n  - {id: bfd-br, protocol: bfd, label: 300 ms × 3, endpoints: [fw, br-rtr]}\n  - {id: syslog-br, protocol: syslog, directed: true, label: audit log, endpoints: [br-rtr, fw]}\n  # relations between the core switches\n  - {id: mlag-core, protocol: mlag, label: domain 1, endpoints: [core-a, core-b], over: [peer-1, peer-2]}\n  - {id: ibgp-core, protocol: ibgp, endpoints: [\"core-a:lo0\", \"core-b:lo0\"]}\n  - {id: ospf-core, protocol: ospf, label: backbone, endpoints: [core-a, core-b, fw]}\n"
     }
 ];
 
@@ -9939,19 +10487,21 @@ exports.renderLogical = renderLogical;
  * - Relations with 3+ devices get a hub node with spokes.
  * - Networks are pill nodes connected to member devices by thin lines. Members
  *   are derived from the addresses inside the network's prefixes.
+ * - All text is drawn in full. Every relation label gets its own place along
+ *   (or, on a short line, beside) its bundle, clear of nodes and of the labels
+ *   placed before it; see diagram/labels.ts.
  */
 const geometry_1 = __req("layout/geometry");
+const bundles_1 = __req("layout/bundles");
 const logical_1 = __req("layout/logical");
+const sizes_1 = __req("layout/sizes");
 const derive_1 = __req("model/derive");
 const types_1 = __req("model/types");
+const labels_1 = __req("diagram/labels");
 const physical_1 = __req("diagram/physical");
 const scene_1 = __req("diagram/scene");
 const style_1 = __req("diagram/style");
 const protocols_1 = __req("model/protocols");
-const LANE_GAP = 7;
-const TUBE_WALL = 3;
-const TUBE_MIN = 12;
-const LINE_W = 2.4;
 function logicalNodes(layout, positions) {
     const out = new Map();
     layout.nodes.forEach((n, ref) => {
@@ -9977,7 +10527,7 @@ function relationStroke(def, d, width) {
     if (def.style === 'tube') {
         return [
             (0, scene_1.h)('path', { class: 'tube-outer', d, stroke: def.color, 'stroke-width': width }),
-            (0, scene_1.h)('path', { class: 'tube-inner', d, 'stroke-width': Math.max(1, width - 2 * TUBE_WALL) }),
+            (0, scene_1.h)('path', { class: 'tube-inner', d, 'stroke-width': Math.max(1, width - 2 * bundles_1.TUBE_WALL) }),
         ];
     }
     return [
@@ -9985,7 +10535,7 @@ function relationStroke(def, d, width) {
             class: 'rel-line',
             d,
             stroke: def.color,
-            'stroke-width': def.style === 'dotted' ? LINE_W + 0.8 : LINE_W,
+            'stroke-width': def.style === 'dotted' ? bundles_1.LINE_W + 0.8 : bundles_1.LINE_W,
             'stroke-dasharray': dashFor(def.style),
             'stroke-linecap': def.style === 'dotted' ? 'round' : undefined,
         }),
@@ -10038,12 +10588,20 @@ function renderLogical(model, layout, opts) {
         return n ? (0, logical_1.deviceRect)(n) : undefined;
     };
     const visible = model.relations.filter((r) => !opts.hiddenProtocols.has(r.protocol) && (0, types_1.relationDevices)(r).every((d) => !!dev(d)));
-    const visibleIds = new Set(visible.map((r) => r.id));
+    // labels keep clear of every node, and of each other
+    const placer = new labels_1.LabelPlacer();
+    const labelRects = [];
+    nodes.forEach((n) => {
+        if (n.kind === 'network' && !opts.showNetworks)
+            return;
+        placer.block((0, geometry_1.boxRect)(n, 3));
+    });
     const underlay = [];
     const members = [];
     const relNodes = [];
     const labels = [];
     const nodeLayer = [];
+    const memberLabels = [];
     // ---- faint physical underlay (optional)
     if (opts.showUnderlay) {
         const seen = new Set();
@@ -10077,87 +10635,19 @@ function renderLogical(model, layout, opts) {
                 if (opts.showLabels) {
                     // the address that makes the device a member (the first one, if several match)
                     const addr = m.matches[0].address + (m.matches.length > 1 ? ` +${m.matches.length - 1}` : '');
-                    {
-                        const t = { x: s.x + (e.x - s.x) * 0.22, y: s.y + (e.y - s.y) * 0.22 };
-                        labels.push((0, scene_1.h)('text', { class: 'halo member-label', 'data-ref': 'network:' + nw.id, x: t.x, y: t.y + 3, 'text-anchor': 'middle' }, (0, geometry_1.ellipsize)(addr, 10, 150)));
-                    }
+                    memberLabels.push({ ref: 'network:' + nw.id, s, e, text: addr });
                 }
             }
         }
     }
     // ---- two-device relations: group by device pair, nest carried relations
-    const byPair = new Map();
-    const multi = [];
-    for (const r of visible) {
-        const ds = (0, types_1.relationDevices)(r);
-        if ((0, logical_1.isMultipoint)(ds))
-            multi.push(r);
-        else if (ds.length === 2) {
-            const key = ds.slice().sort().join('\u0000');
-            if (!byPair.has(key))
-                byPair.set(key, []);
-            byPair.get(key).push(r);
-        }
-    }
+    const multi = visible.filter((r) => (0, logical_1.isMultipoint)((0, types_1.relationDevices)(r)));
+    const byPair = (0, bundles_1.relationPairs)(visible);
     byPair.forEach((rels, key) => {
         const [da, db] = key.split('\u0000');
         const A = dev(da);
         const B = dev(db);
-        const inPair = new Set(rels.map((r) => r.id));
-        const lanes = new Map();
-        for (const r of rels) {
-            lanes.set(r.id, { rel: r, def: (0, protocols_1.relationStyle)(model, r), width: 0, children: [] });
-        }
-        const roots = [];
-        for (const r of rels) {
-            const carrier = r.over.find((o) => inPair.has(o) && visibleIds.has(o) && lanes.get(o).def.style === 'tube');
-            if (carrier && carrier !== r.id)
-                lanes.get(carrier).children.push(lanes.get(r.id));
-            else
-                roots.push(lanes.get(r.id));
-        }
-        // guard against cycles (validated already, but never loop forever)
-        const measure = (ln, depth) => {
-            if (depth > 12)
-                ln.children = [];
-            const kids = ln.children.map((c) => measure(c, depth + 1));
-            if (ln.def.style === 'tube') {
-                const inner = kids.length ? kids.reduce((s, w) => s + w, 0) + 3 * (kids.length - 1) : 0;
-                ln.width = Math.max(TUBE_MIN, inner + 2 * TUBE_WALL + 4);
-            }
-            else
-                ln.width = LINE_W + 3;
-            return ln.width;
-        };
-        roots.forEach((r) => measure(r, 0));
-        // sort lanes: tunnels (widest) in the middle keeps the bundle symmetric
-        roots.sort((u, v) => u.width - v.width || (u.rel.id < v.rel.id ? -1 : 1));
-        const ordered = [];
-        roots.forEach((ln, i) => (i % 2 ? ordered.unshift(ln) : ordered.push(ln)));
-        const total = ordered.reduce((s, l) => s + l.width, 0) + LANE_GAP * (ordered.length - 1);
-        const placed = [];
-        const stackLabel = (ln) => ln.def.label +
-            (ln.children.length === 1
-                ? ' › ' + stackLabel(ln.children[0])
-                : ln.children.length > 1
-                    ? ' › (' + ln.children.map(stackLabel).join(', ') + ')'
-                    : '');
-        const place = (ln, offset, depth, root) => {
-            placed.push({ rel: ln.rel, def: ln.def, offset, width: ln.width, depth, stack: stackLabel(ln), root });
-            if (!ln.children.length)
-                return;
-            const inner = ln.children.reduce((s, c) => s + c.width, 0) + 3 * (ln.children.length - 1);
-            let cur = offset - inner / 2;
-            for (const c of ln.children) {
-                place(c, cur + c.width / 2, depth + 1, false);
-                cur += c.width + 3;
-            }
-        };
-        let cur = -total / 2;
-        for (const ln of ordered) {
-            place(ln, cur + ln.width / 2, 0, true);
-            cur += ln.width + LANE_GAP;
-        }
+        const placed = (0, bundles_1.buildBundle)(model, key, rels).lanes;
         const rootsPlaced = placed.filter((p) => p.root);
         for (const p of placed) {
             const [s, e] = laneSegment(A, B, p.offset);
@@ -10171,37 +10661,44 @@ function renderLogical(model, layout, opts) {
             }, children));
         }
         if (opts.showLabels) {
-            // spread the pills along the bundle by their projected size so they never overlap
+            // One label per lane that is not nested. They are written one after the
+            // other along the bundle, each next to its own lane; on a line too short
+            // for that they are stacked across it. Each then takes the nearest free
+            // place, so no two labels (and no label and node) share a spot.
             const dx = B.cx - A.cx;
             const dy = B.cy - A.cy;
             const dl = Math.hypot(dx, dy) || 1;
             const ux = dx / dl;
             const uy = dy / dl;
             const items = rootsPlaced.map((p) => {
-                const text = (0, geometry_1.ellipsize)(p.stack + (p.rel.label ? ' · ' + p.rel.label : ''), 10, 260);
-                const w = (0, geometry_1.textWidth)(text, 10) + 14;
-                return { p, text, ext: Math.abs(ux) * w + Math.abs(uy) * 18 + 5 };
+                const box = (0, sizes_1.pillBox)((0, bundles_1.laneLabel)(p));
+                return { p, box, ext: Math.abs(ux) * box.w + Math.abs(uy) * box.h + 6 };
             });
             const total = items.reduce((s, it) => s + it.ext, 0);
             const [cs, ce] = laneSegment(A, B, 0);
             const room = Math.hypot(ce.x - cs.x, ce.y - cs.y) - 16;
-            if (total <= room || items.length === 1) {
-                let along = -total / 2;
-                for (const it of items) {
-                    const [s, e] = laneSegment(A, B, it.p.offset);
-                    const c = along + it.ext / 2;
+            const alongOk = items.length === 1 || total <= room;
+            let along = -total / 2;
+            let across = -items.reduce((s, it) => s + it.box.h + 3, 0) / 2;
+            for (const it of items) {
+                const [s, e] = laneSegment(A, B, it.p.offset);
+                const len = Math.hypot(e.x - s.x, e.y - s.y) || 1;
+                let shift;
+                let side;
+                if (alongOk) {
+                    shift = along + it.ext / 2;
+                    side = 0;
                     along += it.ext;
-                    labels.push(pill('relation:' + it.p.rel.id, { x: (s.x + e.x) / 2 + ux * c, y: (s.y + e.y) / 2 + uy * c }, it.text, it.p.def.color));
                 }
-            }
-            else {
-                // not enough room along a short edge: stack the pills across it instead
-                const mx = (cs.x + ce.x) / 2;
-                const my = (cs.y + ce.y) / 2;
-                items.forEach((it, i) => {
-                    const k = (i - (items.length - 1) / 2) * 21;
-                    labels.push(pill('relation:' + it.p.rel.id, { x: mx - uy * k, y: my + ux * k }, it.text, it.p.def.color));
-                });
+                else {
+                    shift = 0;
+                    side = across + (it.box.h + 3) / 2 - it.p.offset;
+                    across += it.box.h + 3;
+                }
+                const step = it.box.h + 4;
+                const c = placer.place((0, labels_1.alongSegment)(s, e, 0.5, [shift, shift - 24, shift + 24, shift - 48, shift + 48, shift - 80, shift + 80, shift - 120, shift + 120].map((v) => Math.max(-len / 2 + 8, Math.min(len / 2 - 8, v))), [side, side - step, side + step, side - 2 * step, side + 2 * step]), it.box.w, it.box.h);
+                labelRects.push((0, labels_1.centerRect)(c, it.box.w, it.box.h));
+                labels.push(pill('relation:' + it.p.rel.id, c, it.box, it.p.def.color));
             }
         }
     });
@@ -10217,15 +10714,35 @@ function renderLogical(model, layout, opts) {
             const s = (0, geometry_1.clipToBox)(dn, { x: hub.cx, y: hub.cy }, 2);
             const e = nodeBorder(hub, { x: dn.cx, y: dn.cy });
             const dd = lineD(s, e);
-            kids.push((0, scene_1.h)('path', { class: 'hit', d: dd }), ...relationStroke(def, dd, TUBE_MIN));
+            kids.push((0, scene_1.h)('path', { class: 'hit', d: dd }), ...relationStroke(def, dd, bundles_1.TUBE_MIN));
         }
         kids.push((0, scene_1.h)('circle', { class: 'hub', cx: hub.cx, cy: hub.cy, r: logical_1.HUB_R, stroke: def.color }));
         kids.push((0, scene_1.h)('text', { class: 'hub-glyph', x: hub.cx, y: hub.cy + 4, 'text-anchor': 'middle', fill: def.color }, String((0, types_1.relationDevices)(r).length)));
         relNodes.push((0, scene_1.h)('g', { class: `rel hub-rel cat-${def.category} style-${def.style} proto-${(0, physical_1.cssToken)(r.protocol)}`, 'data-ref': 'relation:' + r.id }, kids));
         if (opts.showLabels) {
-            const text = def.label + (r.label ? ' · ' + r.label : '');
-            labels.push(pill('relation:' + r.id, { x: hub.cx, y: hub.cy + logical_1.HUB_R + 13 }, (0, geometry_1.ellipsize)(text, 10, 200), def.color));
+            const box = (0, sizes_1.pillBox)(def.label + (r.label ? ' · ' + r.label : ''));
+            const dyy = logical_1.HUB_R + 5 + box.h / 2;
+            const dxx = logical_1.HUB_R + 6 + box.w / 2;
+            const c = placer.place([
+                { x: hub.cx, y: hub.cy + dyy },
+                { x: hub.cx, y: hub.cy - dyy },
+                { x: hub.cx + dxx, y: hub.cy },
+                { x: hub.cx - dxx, y: hub.cy },
+                { x: hub.cx + dxx, y: hub.cy + dyy },
+                { x: hub.cx - dxx, y: hub.cy + dyy },
+                { x: hub.cx + dxx, y: hub.cy - dyy },
+                { x: hub.cx - dxx, y: hub.cy - dyy },
+            ], box.w, box.h);
+            labelRects.push((0, labels_1.centerRect)(c, box.w, box.h));
+            labels.push(pill('relation:' + r.id, c, box, def.color));
         }
+    }
+    // ---- addresses on membership lines: near the device, moved along the line where that spot is taken
+    for (const ml of memberLabels) {
+        const w = (0, geometry_1.textWidth)(ml.text, sizes_1.MEMBER_LABEL_SIZE) + 4;
+        const c = placer.place((0, labels_1.alongSegment)(ml.s, ml.e, 0.22, [0, 22, 44, 70, 100, -14], [0, -12, 12]), w, 12);
+        labelRects.push((0, labels_1.centerRect)(c, w, 12));
+        labels.push((0, scene_1.h)('text', { class: 'halo member-label', 'data-ref': ml.ref, x: c.x, y: c.y + 3.5, 'text-anchor': 'middle' }, ml.text));
     }
     // ---- nodes
     nodes.forEach((n) => {
@@ -10243,12 +10760,14 @@ function renderLogical(model, layout, opts) {
             const color = style_1.NETWORK_COLOR;
             const x = n.cx - n.w / 2;
             const y = n.cy - n.h / 2;
-            const sub = (0, logical_1.networkSubtitle)(nw.cidr, nw.vlan);
+            const body = (0, sizes_1.networkBody)(nw.label, (0, logical_1.networkSubtitle)(nw.cidr, nw.vlan));
+            const top = n.cy - (body.label.h + body.sub.h) / 2;
+            const rx = Math.min(n.h / 2, 21);
             nodeLayer.push((0, scene_1.h)('g', { class: 'node network', 'data-ref': n.ref }, [
-                (0, scene_1.h)('rect', { class: 'net-box', x, y, width: n.w, height: n.h, rx: n.h / 2, stroke: color }),
-                (0, scene_1.h)('rect', { class: 'net-tint', x, y, width: n.w, height: n.h, rx: n.h / 2, fill: color }),
-                (0, scene_1.h)('text', { class: 'net-label', x: n.cx, y: n.cy + (sub ? -2 : 4), 'text-anchor': 'middle' }, (0, geometry_1.ellipsize)(nw.label, 12, n.w - 20)),
-                sub ? (0, scene_1.h)('text', { class: 'net-sub', x: n.cx, y: n.cy + 12, 'text-anchor': 'middle' }, (0, geometry_1.ellipsize)(sub, 10, n.w - 20)) : null,
+                (0, scene_1.h)('rect', { class: 'net-box', x, y, width: n.w, height: n.h, rx, stroke: color }),
+                (0, scene_1.h)('rect', { class: 'net-tint', x, y, width: n.w, height: n.h, rx, fill: color }),
+                (0, labels_1.textLines)({ class: 'net-label', 'text-anchor': 'middle', 'font-size': sizes_1.NET_LABEL_SIZE }, body.label, n.cx, top),
+                body.sub.lines.length ? (0, labels_1.textLines)({ class: 'net-sub', 'text-anchor': 'middle' }, body.sub, n.cx, top + body.label.h) : null,
             ]));
         }
     });
@@ -10258,6 +10777,9 @@ function renderLogical(model, layout, opts) {
             return;
         rects.push({ x: n.cx - n.w / 2 - 60, y: n.cy - n.h / 2 - 50, w: n.w + 120, h: n.h + 100 });
     });
+    // labels can lie outside the nodes' surroundings; they belong to the picture too
+    for (const r of labelRects)
+        rects.push({ x: r.x - 14, y: r.y - 14, w: r.w + 28, h: r.h + 28 });
     return {
         root: (0, scene_1.h)('g', { class: 'scene scene-logical' }, [
             (0, scene_1.h)('g', { class: 'layer-underlay' }, underlay),
@@ -10278,11 +10800,11 @@ function endFrom(r, s, e, firstSorted) {
     const target = r.endpoints[r.endpoints.length - 1].device;
     return target === firstSorted ? e : s;
 }
-function pill(ref, p, text, color) {
-    const w = (0, geometry_1.textWidth)(text, 10) + 14;
+/** A relation label: its full text (wrapped if long) in a rounded box, centered at `p`. */
+function pill(ref, p, box, color) {
     return (0, scene_1.h)('g', { class: 'pill', 'data-ref': ref }, [
-        (0, scene_1.h)('rect', { class: 'pill-box', x: p.x - w / 2, y: p.y - 9, width: w, height: 18, rx: 9, stroke: color }),
-        (0, scene_1.h)('text', { class: 'pill-text', x: p.x, y: p.y + 3.5, 'text-anchor': 'middle' }, text),
+        (0, scene_1.h)('rect', { class: 'pill-box', x: p.x - box.w / 2, y: p.y - box.h / 2, width: box.w, height: box.h, rx: 9, stroke: color }),
+        (0, labels_1.textLines)({ class: 'pill-text', 'text-anchor': 'middle' }, box.block, p.x, p.y - box.block.h / 2),
     ]);
 }
 /** Loopbacks as small chips hanging under the device (logical view only; they are never cabled). */
@@ -10291,16 +10813,15 @@ function loopbackChips(d, n) {
     if (!loops.length)
         return [];
     const out = [];
-    const top = n.cy - n.h / 2 + logical_1.DEVICE_H + 4;
+    const top = n.cy - n.h / 2 + (n.bodyH || 0) + 4;
     const w = n.w - 16;
     loops.slice(0, logical_1.MAX_CHIPS).forEach((l, i) => {
         const rid = d.routerId === l.id;
-        const extra = l.addresses.length > 1 ? ' +' + (l.addresses.length - 1) : '';
-        const text = (rid ? '\u2605 ' : '') + l.id + '  ' + (l.addresses[0] || '(no address)') + extra;
+        const text = (0, sizes_1.loopbackChipText)(l.id, l.addresses, rid);
         const y = top + i * logical_1.CHIP_H;
         out.push((0, scene_1.h)('g', { class: 'loop-chip' + (rid ? ' rid' : ''), 'data-ref': `iface:${d.id}:${l.id}` }, [
             (0, scene_1.h)('rect', { x: n.cx - w / 2, y, width: w, height: logical_1.CHIP_H - 3, rx: 6.5 }),
-            (0, scene_1.h)('text', { x: n.cx, y: y + 9.5, 'text-anchor': 'middle' }, (0, geometry_1.ellipsize)(text, 9.5, w - 8)),
+            (0, scene_1.h)('text', { x: n.cx, y: y + 9.5, 'text-anchor': 'middle', 'font-size': sizes_1.CHIP_FONT }, text),
         ]));
     });
     if (loops.length > logical_1.MAX_CHIPS) {
@@ -10310,21 +10831,143 @@ function loopbackChips(d, n) {
 }
 
 };
+__defs["diagram/labels"] = function (module, exports) {
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.LabelPlacer = void 0;
+exports.textLines = textLines;
+exports.centerRect = centerRect;
+exports.alongSegment = alongSegment;
+/**
+ * Drawing text and placing labels.
+ *
+ * Text is drawn in full, as one <text> with a <tspan> per line when it
+ * wraps. Labels that float over the diagram (cable labels, relation labels,
+ * addresses on membership lines) are placed by a LabelPlacer: each label has
+ * a list of candidate positions in order of preference and takes the first
+ * one that is free of nodes and of labels placed before it. Labels are
+ * processed in a fixed order, so the result depends only on the model and
+ * the node positions.
+ */
+const geometry_1 = __req("layout/geometry");
+const text_1 = __req("layout/text");
+const scene_1 = __req("diagram/scene");
+/**
+ * A block of text lines starting at `top`. One line is a plain <text>;
+ * several lines are <tspan>s with absolute positions, so the file renders
+ * the same in every SVG viewer.
+ */
+function textLines(attrs, block, x, top) {
+    const lh = (0, text_1.lineHeight)(block.size);
+    // baseline of a line inside its line box
+    const base = lh / 2 + block.size * 0.35;
+    if (block.lines.length === 1)
+        return (0, scene_1.h)('text', { ...attrs, x, y: top + base }, block.lines[0]);
+    return (0, scene_1.h)('text', { ...attrs, x, y: top + base }, block.lines.map((l, i) => (0, scene_1.h)('tspan', { x, y: top + i * lh + base }, l)));
+}
+function centerRect(c, w, hgt) {
+    return { x: c.x - w / 2, y: c.y - hgt / 2, w, h: hgt };
+}
+function overlapArea(a, b) {
+    const w = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
+    const hgt = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
+    return w > 0 && hgt > 0 ? w * hgt : 0;
+}
+class LabelPlacer {
+    constructor() {
+        /** rectangles labels must keep clear of: nodes, and labels placed so far */
+        this.taken = [];
+        /** rectangles of the labels placed so far */
+        this.labels = [];
+    }
+    /** Reserve a rectangle (a node, fixed text). */
+    block(r) {
+        this.taken.push(r);
+    }
+    /**
+     * Place a label of size w × h at the first candidate center that overlaps
+     * nothing. If none is free, the candidate with the smallest overlap is
+     * used: a label is never dropped.
+     */
+    place(candidates, w, hgt) {
+        let best = candidates[0];
+        let bestArea = Infinity;
+        for (const c of candidates) {
+            const r = centerRect(c, w + 4, hgt + 4);
+            let area = 0;
+            for (const t of this.taken) {
+                if ((0, geometry_1.rectsOverlap)(r, t))
+                    area += overlapArea(r, t);
+            }
+            if (area === 0) {
+                best = c;
+                break;
+            }
+            if (area < bestArea) {
+                bestArea = area;
+                best = c;
+            }
+        }
+        const r = centerRect(best, w, hgt);
+        this.taken.push(r);
+        this.labels.push(r);
+        return best;
+    }
+}
+exports.LabelPlacer = LabelPlacer;
+/**
+ * Candidate label centers on the segment a->b: around the preferred point
+ * first, then further along the segment in both directions, then beside it.
+ */
+function alongSegment(a, b, at, along, across) {
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const ux = dx / len;
+    const uy = dy / len;
+    const out = [];
+    for (const k of across) {
+        for (const t of along) {
+            const d = Math.max(0, Math.min(len, at * len + t));
+            out.push({ x: a.x + ux * d - uy * k, y: a.y + uy * d + ux * k });
+        }
+    }
+    return out;
+}
+
+};
 __defs["diagram/physical"] = function (module, exports) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.linkVlanLabel = exports.deviceSubtitle = void 0;
 exports.physicalBoxes = physicalBoxes;
 exports.groupRects = groupRects;
 exports.deviceNode = deviceNode;
-exports.deviceSubtitle = deviceSubtitle;
+exports.cableRoute = cableRoute;
 exports.renderPhysical = renderPhysical;
-exports.linkVlanLabel = linkVlanLabel;
 exports.cssToken = cssToken;
+/**
+ * Physical view renderer: groups, devices, ports and cables.
+ *
+ * - Every label is drawn in full; boxes are sized for their text by the
+ *   layout (layout/sizes.ts) and the text wraps inside them.
+ * - A cable whose two ports face each other on one line is a single straight
+ *   segment. Otherwise it leaves each port at a right angle and runs straight
+ *   between the two stubs; if that would pass through a device, it bends
+ *   around the device.
+ * - Cable labels are placed on the cable's longest segment, away from
+ *   devices, port labels and other cable labels.
+ */
 const geometry_1 = __req("layout/geometry");
-const icons_1 = __req("diagram/icons");
+const input_1 = __req("layout/input");
+Object.defineProperty(exports, "linkVlanLabel", { enumerable: true, get: function () { return input_1.linkVlanLabel; } });
 const physical_1 = __req("layout/physical");
+const sizes_1 = __req("layout/sizes");
 const derive_1 = __req("model/derive");
 const device_types_1 = __req("model/device-types");
+Object.defineProperty(exports, "deviceSubtitle", { enumerable: true, get: function () { return device_types_1.deviceSubtitle; } });
+const icons_1 = __req("diagram/icons");
+const labels_1 = __req("diagram/labels");
 const scene_1 = __req("diagram/scene");
 const style_1 = __req("diagram/style");
 const STUB = 20;
@@ -10337,7 +10980,7 @@ function physicalBoxes(layout, positions) {
     });
     return boxes;
 }
-/** Group rectangles derived bottom-up from their contents. */
+/** Group rectangles derived bottom-up from their contents; wide enough for their title. */
 function groupRects(model, boxes) {
     const depth = new Map();
     const depthOf = (id) => {
@@ -10357,8 +11000,7 @@ function groupRects(model, boxes) {
         for (const d of model.devices) {
             if (d.group !== g.id)
                 continue;
-            const b = boxes.get(d.id);
-            parts.push({ x: b.cx - b.w / 2, y: b.cy - b.h / 2, w: b.w, h: b.h });
+            parts.push((0, geometry_1.boxRect)(boxes.get(d.id)));
         }
         for (const c of model.groups)
             if (c.parent === g.id && rects.has(c.id))
@@ -10366,31 +11008,112 @@ function groupRects(model, boxes) {
         if (!parts.length)
             continue;
         const u = (0, geometry_1.unionRect)(parts);
-        rects.set(g.id, { x: u.x - physical_1.GROUP_PAD, y: u.y - physical_1.GROUP_PAD - physical_1.GROUP_TITLE, w: u.w + 2 * physical_1.GROUP_PAD, h: u.h + 2 * physical_1.GROUP_PAD + physical_1.GROUP_TITLE });
+        const head = (0, sizes_1.groupHeader)(g.label, g.kind, u.w);
+        const w = Math.max(u.w + 2 * physical_1.GROUP_PAD, head.minW);
+        rects.set(g.id, { x: u.x + u.w / 2 - w / 2, y: u.y - physical_1.GROUP_PAD - head.h, w, h: u.h + 2 * physical_1.GROUP_PAD + head.h });
     }
     return rects;
 }
+/** A device box with its icon and its full, wrapped label and subtitle. */
 function deviceNode(ref, label, sub, type, b, extraClass = '') {
     const x = b.cx - b.w / 2;
     const y = b.cy - b.h / 2;
-    const icon = 26;
-    const textX = x + 12 + icon + 10;
-    const maxText = b.w - (textX - x) - 10;
+    const body = (0, sizes_1.deviceBody)(label, sub, 0, 0);
+    const textX = x + sizes_1.DEVICE_TEXT_X;
+    const top = b.cy - body.textH / 2;
     return (0, scene_1.h)('g', { class: 'node device ' + extraClass, 'data-ref': ref }, [
         (0, scene_1.h)('rect', { class: 'dev-box', x, y, width: b.w, height: b.h, rx: 8 }),
-        (0, icons_1.deviceIcon)(type, x + 12, b.cy - icon / 2, icon),
-        (0, scene_1.h)('text', { class: 'dev-label', x: textX, y: b.cy - (sub ? 3 : -4) }, (0, geometry_1.ellipsize)(label, 13, maxText)),
-        sub ? (0, scene_1.h)('text', { class: 'dev-sub', x: textX, y: b.cy + 12 }, (0, geometry_1.ellipsize)(sub, 10.5, maxText)) : null,
+        (0, icons_1.deviceIcon)(type, x + 12, b.cy - sizes_1.DEVICE_ICON / 2, sizes_1.DEVICE_ICON),
+        (0, labels_1.textLines)({ class: 'dev-label' }, body.label, textX, top),
+        body.sub.lines.length ? (0, labels_1.textLines)({ class: 'dev-sub' }, body.sub, textX, top + body.textH - body.sub.h) : null,
     ]);
 }
-function deviceSubtitle(type, model, role) {
-    return [(0, device_types_1.deviceTypeLabel)(type), role, model].filter((s) => !!s).join(' · ');
+/** Where the label of a port is drawn, and the rectangle it covers. */
+function portLabelBox(p) {
+    const w = (0, geometry_1.textWidth)(p.iface, physical_1.PORT_FONT);
+    if (p.side === 'top' || p.side === 'bottom') {
+        const y = p.y + p.ny * 12 + (p.side === 'top' ? -1 : 8);
+        return { x: p.x, y, anchor: 'middle', rect: { x: p.x - w / 2, y: y - 9, w, h: 12 } };
+    }
+    const x = p.x + p.nx * physical_1.PORT_LABEL_GAP;
+    const y = p.y - 5;
+    return { x, y, anchor: p.side === 'left' ? 'end' : 'start', rect: { x: p.side === 'left' ? x - w : x, y: y - 9, w, h: 12 } };
+}
+/**
+ * Way points between `s` and `e` that lead around the device boxes the
+ * straight line would pass through (at most a few bends).
+ */
+function detour(s, e, obstacles, depth) {
+    if (depth >= 4)
+        return [];
+    let hit = null;
+    let hitD = Infinity;
+    for (const o of obstacles) {
+        if (!(0, geometry_1.segmentHitsRect)(s, e, o))
+            continue;
+        const d = Math.hypot(o.x + o.w / 2 - s.x, o.y + o.h / 2 - s.y);
+        if (d < hitD) {
+            hitD = d;
+            hit = o;
+        }
+    }
+    if (!hit)
+        return [];
+    const m = 12;
+    const corners = [
+        { x: hit.x - m, y: hit.y - m },
+        { x: hit.x + hit.w + m, y: hit.y - m },
+        { x: hit.x - m, y: hit.y + hit.h + m },
+        { x: hit.x + hit.w + m, y: hit.y + hit.h + m },
+    ];
+    const len = (p, q) => Math.hypot(q.x - p.x, q.y - p.y);
+    const clear = (p, q) => !(0, geometry_1.segmentHitsRect)(p, q, hit);
+    // around one corner, or, when the box lies squarely in the way, along one of its sides (two corners)
+    const ways = corners.map((c) => [c]);
+    for (const [i, j] of [[0, 2], [1, 3], [0, 1], [2, 3]]) {
+        ways.push([corners[i], corners[j]], [corners[j], corners[i]]);
+    }
+    const usable = ways
+        .map((w, i) => ({ w, i, cost: len(s, w[0]) + (w.length > 1 ? len(w[0], w[1]) : 0) + len(w[w.length - 1], e) }))
+        .filter((x) => clear(s, x.w[0]) && clear(x.w[x.w.length - 1], e))
+        .sort((p, q) => p.cost - q.cost || p.i - q.i);
+    if (!usable.length)
+        return [];
+    const w = usable[0].w;
+    return [...detour(s, w[0], obstacles, depth + 1), ...w, ...detour(w[w.length - 1], e, obstacles, depth + 1)];
+}
+/** The points of a cable from port to port. */
+function cableRoute(pa, pb, boxes) {
+    const obstacles = Array.from(boxes.values());
+    const facing = pa.nx === -pb.nx && pa.ny === -pb.ny;
+    const a = { x: pa.x, y: pa.y };
+    const b = { x: pb.x, y: pb.y };
+    // two ports looking at each other on one line: one straight segment
+    if (facing && (pa.nx !== 0 ? Math.abs(pa.y - pb.y) < 0.5 && (pb.x - pa.x) * pa.nx > 0 : Math.abs(pa.x - pb.x) < 0.5 && (pb.y - pa.y) * pa.ny > 0)) {
+        let blocked = false;
+        boxes.forEach((o, id) => {
+            if (id !== pa.device && id !== pb.device && (0, geometry_1.segmentHitsRect)(a, b, o))
+                blocked = true;
+        });
+        if (!blocked)
+            return [a, b];
+    }
+    const sa = { x: pa.x + pa.nx * STUB, y: pa.y + pa.ny * STUB };
+    const sb = { x: pb.x + pb.nx * STUB, y: pb.y + pb.ny * STUB };
+    return [a, sa, ...detour(sa, sb, obstacles, 0), sb, b];
 }
 function renderPhysical(model, layout, opts) {
     const boxes = physicalBoxes(layout, opts.positions);
     const grects = groupRects(model, boxes);
     const ports = (0, physical_1.assignPorts)(model.links, boxes);
     const portByKey = new Map(ports.map((p) => [p.key, p]));
+    const placer = new labels_1.LabelPlacer();
+    const obstacles = new Map();
+    model.devices.forEach((d) => {
+        const b = boxes.get(d.id);
+        placer.block((0, geometry_1.boxRect)(b, 2));
+        obstacles.set(d.id, (0, geometry_1.boxRect)(b, 5));
+    });
     // ---- groups (outermost first so children draw on top)
     const groupNodes = [];
     const depthSorted = model.groups.filter((g) => grects.has(g.id));
@@ -10407,31 +11130,84 @@ function renderPhysical(model, layout, opts) {
     for (const g of depthSorted) {
         const r = grects.get(g.id);
         const ks = (0, style_1.groupKindStyle)(g.kind);
+        const head = (0, sizes_1.groupHeader)(g.label, g.kind, r.w - 2 * physical_1.GROUP_PAD);
         groupNodes.push((0, scene_1.h)('g', { class: `group kind-${cssToken(g.kind)} ${ks.strong ? 'group-strong' : ''}`, 'data-ref': 'group:' + g.id }, [
             (0, scene_1.h)('rect', { class: 'group-box', x: r.x, y: r.y, width: r.w, height: r.h, rx: 12, 'stroke-dasharray': ks.dash }),
-            (0, scene_1.h)('text', { class: 'group-title', x: r.x + 14, y: r.y + 21 }, (0, geometry_1.ellipsize)(g.label, 13, r.w - 90)),
-            (0, scene_1.h)('text', { class: 'group-kind', x: r.x + r.w - 12, y: r.y + 20, 'text-anchor': 'end' }, g.kind.toUpperCase()),
+            (0, labels_1.textLines)({ class: 'group-title' }, head.title, r.x + 14, r.y + 7),
+            head.kind ? (0, scene_1.h)('text', { class: 'group-kind', x: r.x + r.w - 12, y: r.y + 20, 'text-anchor': 'end' }, head.kind) : null,
         ]));
+        placer.block({ x: r.x + 10, y: r.y + 5, w: head.title.w + 8, h: head.title.h + 4 });
     }
-    // ---- links (cables)
+    // ---- ports and cables: port labels first, they have fixed places
     const linkNodes = [];
     const labelNodes = [];
     const portNodes = [];
-    for (const l of model.links) {
-        const pa = portByKey.get(l.id + ':a');
-        const pb = portByKey.get(l.id + ':b');
-        if (!pa || !pb)
-            continue;
-        const ms = (0, style_1.mediumStyle)(l.medium);
-        const sa = { x: pa.x + pa.nx * STUB, y: pa.y + pa.ny * STUB };
-        const sb = { x: pb.x + pb.nx * STUB, y: pb.y + pb.ny * STUB };
-        const d = `M${n(pa.x)} ${n(pa.y)}L${n(sa.x)} ${n(sa.y)}L${n(sb.x)} ${n(sb.y)}L${n(pb.x)} ${n(pb.y)}`;
-        const width = (0, style_1.speedWidth)(l.speed);
+    const drawn = model.links
+        .map((l) => ({ l, pa: portByKey.get(l.id + ':a'), pb: portByKey.get(l.id + ':b') }))
+        .filter((x) => !!x.pa && !!x.pb);
+    const extra = [];
+    if (opts.showLabels) {
+        for (const { pa, pb } of drawn) {
+            for (const p of [pa, pb]) {
+                if (!p.iface)
+                    continue;
+                const pl = portLabelBox(p);
+                labelNodes.push((0, scene_1.h)('text', { class: 'halo port-label', 'data-ref': `iface:${p.device}:${p.iface}`, x: pl.x, y: pl.y, 'text-anchor': pl.anchor, 'font-size': physical_1.PORT_FONT }, p.iface));
+                placer.block(pl.rect);
+                extra.push(pl.rect);
+            }
+        }
+    }
+    // cables in id order, so label placement never depends on the order in the file
+    const byId = drawn.slice().sort((p, q) => (p.l.id < q.l.id ? -1 : p.l.id > q.l.id ? 1 : 0));
+    const labelAt = new Map();
+    for (const { l, pa, pb } of byId) {
+        const pts = cableRoute(pa, pb, obstacles);
+        // the longest segment carries the label
+        let seg = 0;
+        let segLen = -1;
+        for (let i = 0; i + 1 < pts.length; i++) {
+            const d = Math.hypot(pts[i + 1].x - pts[i].x, pts[i + 1].y - pts[i].y);
+            if (d > segLen + 0.01) {
+                segLen = d;
+                seg = i;
+            }
+        }
+        const out = [];
         const mismatch = !!(0, derive_1.vlanMismatch)(l.a.vlans, l.b.vlans);
-        linkNodes.push((0, scene_1.h)('g', { class: `link cable medium-${cssToken(ms.key)}${mismatch ? ' vlan-mismatch' : ''}`, 'data-ref': 'link:' + l.id }, [
-            (0, scene_1.h)('path', { class: 'hit', d }),
-            (0, scene_1.h)('path', { class: 'cable-line', d, stroke: ms.color, 'stroke-width': width, 'stroke-dasharray': ms.dash }),
-        ]));
+        const text = opts.showLabels ? (0, input_1.linkLabelText)(l) : '';
+        let center = { x: (pts[seg].x + pts[seg + 1].x) / 2, y: (pts[seg].y + pts[seg + 1].y) / 2 };
+        if (text) {
+            const box = (0, sizes_1.linkLabelBox)(text);
+            const step = Math.max(14, box.h + 2);
+            center = placer.place((0, labels_1.alongSegment)(pts[seg], pts[seg + 1], 0.5, [0, -26, 26, -52, 52, -80, 80, -110, 110], [0, -step, step, -2 * step, 2 * step]), box.w, box.h);
+            const r = (0, labels_1.centerRect)(center, box.w, box.h);
+            extra.push(r);
+            out.push((0, labels_1.textLines)({ class: 'halo link-label' + (mismatch ? ' vlan-mismatch' : ''), 'data-ref': 'link:' + l.id, 'text-anchor': 'middle' }, box.block, center.x, r.y + 1));
+            // a VLAN mismatch is marked next to the label
+            if (mismatch)
+                out.push((0, scene_1.h)('text', { class: 'halo vlan-warn', 'data-ref': 'link:' + l.id, x: center.x, y: r.y - 3, 'text-anchor': 'middle' }, '⚠'));
+        }
+        else if (mismatch) {
+            // … and on the cable itself when labels are off
+            out.push((0, scene_1.h)('text', { class: 'halo vlan-warn', 'data-ref': 'link:' + l.id, x: center.x, y: center.y - 8, 'text-anchor': 'middle' }, '⚠'));
+        }
+        labelAt.set(l.id, out);
+        for (const p of pts)
+            extra.push({ x: p.x - 8, y: p.y - 8, w: 16, h: 16 });
+        const ms = (0, style_1.mediumStyle)(l.medium);
+        const d = pts.map((p, i) => (i ? 'L' : 'M') + n(p.x) + ' ' + n(p.y)).join('');
+        labelAt.set(l.id + '\u0000path', [
+            (0, scene_1.h)('g', { class: `link cable medium-${cssToken(ms.key)}${mismatch ? ' vlan-mismatch' : ''}${pts.length === 2 ? ' straight' : ''}`, 'data-ref': 'link:' + l.id }, [
+                (0, scene_1.h)('path', { class: 'hit', d }),
+                (0, scene_1.h)('path', { class: 'cable-line', d, stroke: ms.color, 'stroke-width': (0, style_1.speedWidth)(l.speed), 'stroke-dasharray': ms.dash }),
+            ]),
+        ]);
+    }
+    // emit in model order (as before), whatever order the labels were placed in
+    for (const { l, pa, pb } of drawn) {
+        const ms = (0, style_1.mediumStyle)(l.medium);
+        linkNodes.push(...labelAt.get(l.id + '\u0000path'));
         for (const p of [pa, pb]) {
             portNodes.push((0, scene_1.h)('rect', {
                 class: 'port',
@@ -10443,30 +11219,20 @@ function renderPhysical(model, layout, opts) {
                 rx: 1.5,
                 fill: ms.color,
             }));
-            if (opts.showLabels && p.iface)
-                labelNodes.push(portLabel(p));
         }
-        const mid = { x: (sa.x + sb.x) / 2, y: (sa.y + sb.y) / 2 };
-        // a VLAN mismatch is marked on the cable itself, with or without labels
-        if (mismatch)
-            labelNodes.push((0, scene_1.h)('text', { class: 'halo vlan-warn', 'data-ref': 'link:' + l.id, x: mid.x, y: mid.y - 8, 'text-anchor': 'middle' }, '⚠'));
-        if (opts.showLabels) {
-            const text = [l.speed, linkVlanLabel(l), l.label].filter((s) => !!s).join(' · ');
-            // only label cables whose middle segment has room for the text (hover shows it otherwise)
-            if (text && Math.hypot(sb.x - sa.x, sb.y - sa.y) > Math.min((0, geometry_1.textWidth)(text, 10.5), 160) + 24) {
-                const m = mid;
-                labelNodes.push((0, scene_1.h)('text', { class: 'halo link-label' + (mismatch ? ' vlan-mismatch' : ''), 'data-ref': 'link:' + l.id, x: m.x, y: m.y + 4, 'text-anchor': 'middle' }, (0, geometry_1.ellipsize)(text, 10.5, 160)));
-            }
-        }
+        labelNodes.push(...labelAt.get(l.id));
     }
     // ---- devices
     const deviceNodes = model.devices.map((d) => {
         const b = boxes.get(d.id);
-        return deviceNode('device:' + d.id, d.label, deviceSubtitle(d.type, d.model, d.role), d.type, b, 'type-' + cssToken(d.type));
+        return deviceNode('device:' + d.id, d.label, (0, device_types_1.deviceSubtitle)(d.type, d.model, d.role), d.type, b, 'type-' + cssToken(d.type));
     });
+    // everything drawn is inside the bounds: boxes, groups, labels and cable bends
     const rects = [];
-    grects.forEach((r) => rects.push(r));
+    grects.forEach((r) => rects.push({ x: r.x - 20, y: r.y - 20, w: r.w + 40, h: r.h + 40 }));
     boxes.forEach((b) => rects.push({ x: b.cx - b.w / 2 - 50, y: b.cy - b.h / 2 - 40, w: b.w + 100, h: b.h + 80 }));
+    for (const r of extra)
+        rects.push({ x: r.x - 12, y: r.y - 12, w: r.w + 24, h: r.h + 24 });
     const bounds = (0, geometry_1.unionRect)(rects);
     return {
         root: (0, scene_1.h)('g', { class: 'scene scene-physical' }, [
@@ -10478,41 +11244,6 @@ function renderPhysical(model, layout, opts) {
         ]),
         bounds,
     };
-}
-/**
- * VLANs of a cable for its label: what both ends permit, "Trunk" for several,
- * nothing when no VLAN is configured, and a warning when the ends differ
- * (the per-end lists are in the tooltip and the details).
- */
-function linkVlanLabel(l) {
-    if ((0, derive_1.vlanMismatch)(l.a.vlans, l.b.vlans))
-        return 'VLAN mismatch';
-    const v = l.a.vlans;
-    if (!v.length)
-        return '';
-    if (v.length === 1)
-        return 'VLAN ' + v[0];
-    return 'Trunk ' + (v.length > 4 ? v.slice(0, 4).join(',') + ',…' : v.join(','));
-}
-function portLabel(p) {
-    const text = p.iface;
-    if (p.side === 'top' || p.side === 'bottom') {
-        return (0, scene_1.h)('text', {
-            class: 'halo port-label',
-            'data-ref': `iface:${p.device}:${p.iface}`,
-            x: p.x,
-            y: p.y + p.ny * 12 + (p.side === 'top' ? -1 : 8),
-            'text-anchor': 'middle',
-        }, text);
-    }
-    return (0, scene_1.h)('text', {
-        class: 'halo port-label',
-        'data-ref': `iface:${p.device}:${p.iface}`,
-        x: p.x + p.nx * 7,
-        y: p.y - 5,
-        'text-anchor': p.side === 'left' ? 'end' : 'start',
-        'font-size': physical_1.PORT_FONT,
-    }, text);
 }
 function n(v) {
     return String(Math.round(v * 10) / 10);
@@ -10591,6 +11322,57 @@ async function runSelfTest(app, doc) {
         const msg = st === 'auto' ? AUTO_MSG : MANUAL_MSG;
         return x.view === view && x.st === st && x.icon === (st === 'auto' ? '\u2713' : '\u270E') && x.title.indexOf(msg) === 0 && x.desc === msg && x.st === status(view);
     };
+    /**
+     * What a reader would see as wrong in the drawn diagram, measured with the
+     * browser's real font metrics (getBBox): text outside its box, overlapping
+     * boxes, labels on top of each other or of a node, a shortened label.
+     */
+    const drawnProblems = (rootSel = '#viewport') => {
+        const root = q(rootSel);
+        const out = [];
+        const bb = (e) => {
+            const b = e.getBBox();
+            return { x: b.x, y: b.y, w: b.width, h: b.height };
+        };
+        const inside = (a, b) => a.x >= b.x - 1 && a.y >= b.y - 1 && a.x + a.w <= b.x + b.w + 1 && a.y + a.h <= b.y + b.h + 1;
+        const hit = (a, b) => a.x + 1 < b.x + b.w && b.x + 1 < a.x + a.w && a.y + 1 < b.y + b.h && b.y + 1 < a.y + a.h;
+        const each = (sel, fn) => Array.prototype.forEach.call(root.querySelectorAll(sel), fn);
+        const boxed = (group, box, text) => each(group, (g) => {
+            const frame = g.querySelector(box);
+            if (!frame)
+                return;
+            Array.prototype.forEach.call(g.querySelectorAll(text), (t) => {
+                if (!inside(bb(t), bb(frame)))
+                    out.push(`"${t.textContent}" leaves its box (${Math.round(bb(t).w)} > ${Math.round(bb(frame).w)})`);
+            });
+        });
+        boxed('g.device', '.dev-box', 'text');
+        boxed('g.network', '.net-box', 'text');
+        boxed('g.group', '.group-box', '.group-title');
+        boxed('g.pill', '.pill-box', 'text');
+        boxed('g.loop-chip', 'rect', 'text');
+        each('text', (t) => {
+            if (/…$|\.\.\.$/.test(t.textContent || ''))
+                out.push(`shortened text "${t.textContent}"`);
+        });
+        const nodes = [];
+        each('g.device .dev-box, g.network .net-box', (e) => nodes.push([e.parentElement.getAttribute('data-ref') || '', bb(e)]));
+        for (let i = 0; i < nodes.length; i++)
+            for (let j = i + 1; j < nodes.length; j++)
+                if (hit(nodes[i][1], nodes[j][1]))
+                    out.push(`${nodes[i][0]} overlaps ${nodes[j][0]}`);
+        const labels = [];
+        each('g.pill .pill-box, text.link-label, text.member-label', (e) => labels.push([(e.textContent || e.parentElement.textContent || '').slice(0, 40), bb(e)]));
+        for (let i = 0; i < labels.length; i++) {
+            for (let j = i + 1; j < labels.length; j++)
+                if (hit(labels[i][1], labels[j][1]))
+                    out.push(`labels overlap: "${labels[i][0]}" / "${labels[j][0]}"`);
+            for (const n of nodes)
+                if (hit(labels[i][1], n[1]))
+                    out.push(`label "${labels[i][0]}" covers ${n[0]}`);
+        }
+        return out;
+    };
     let violations = 0;
     doc.addEventListener('securitypolicyviolation', () => violations++);
     // capture downloads instead of saving them
@@ -10634,6 +11416,9 @@ async function runSelfTest(app, doc) {
             click('[data-view-btn="physical"]');
             check(`${ex.name}: physical view draws every device and cable, no relations`, doc.body.getAttribute('data-view') === 'physical' && count('.device') === m.devices.length && count('.cable') === m.links.length && count('.rel') === 0 && count('.port') === m.links.length * 2, `${count('.device')}/${m.devices.length} devices, ${count('.cable')}/${m.links.length} cables`);
             check(`${ex.name}: loopbacks are not drawn as ports in the physical view`, count('.loop-chip') === 0);
+            // stored layouts (the "…-arranged"/edited examples are arranged too) and auto layouts alike
+            const physProblems = drawnProblems();
+            check(`${ex.name}: physical view, measured in the browser: full text inside its boxes, no overlapping boxes or labels`, !physProblems.length, physProblems.slice(0, 5).join('; '));
             click('[data-view-btn="logical"]');
             const drawable = m.relations.filter((r) => new Set(r.endpoints.map((e) => e.device)).size >= 2).length;
             check(`${ex.name}: logical view draws relations, no cables`, doc.body.getAttribute('data-view') === 'logical' && count('g.rel') === drawable && count('.cable') === 0, `${count('g.rel')} / ${drawable}`);
@@ -10641,6 +11426,8 @@ async function runSelfTest(app, doc) {
             check(`${ex.name}: tunnels drawn as tubes`, count('g.rel.cat-tunnel .tube-outer') >= tunnels && count('g.rel.cat-tunnel .cable-line') === 0);
             const loops = m.devices.reduce((s, d) => s + Math.min(3, d.interfaces.filter((x) => x.type === 'loopback').length), 0);
             check(`${ex.name}: loopbacks shown as chips in the logical view`, count('.loop-chip') === loops, `${count('.loop-chip')} / ${loops}`);
+            const logProblems = drawnProblems();
+            check(`${ex.name}: logical view, measured in the browser: full text inside its boxes, no overlapping boxes or labels`, !logProblems.length, logProblems.slice(0, 5).join('; '));
             const firstRel = m.relations[0];
             if (firstRel) {
                 app.select('relation:' + firstRel.id);
@@ -10904,6 +11691,88 @@ async function runSelfTest(app, doc) {
             check('selecting a port marks its device; its cable and relations are related', ok && stateOf('device:muc-rtr') === 'selected' && stateOf('link:l-muc-inet') === 'related' && stateOf('relation:ipsec-muc') === 'related' && stateOf('link:l-muc-sw') === 'unrelated', why);
             doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
             check('clearing the selection returns every entry to normal prominence', app.session.state.selected === null && olItems().every((b) => !b.hasAttribute('data-ctx')) && !q('#outline-body .ol-ctx-hint') && count('.dim') === 0 && count('.hl') === 0);
+        }
+        // ------------------------ sizing and readability: long and multi-line labels
+        {
+            const idx = examples_1.EXAMPLES.findIndex((e) => e.name === 'long-labels.yaml');
+            app.loadExample(idx);
+            const m = app.session.model;
+            click('[data-view-btn="physical"]');
+            const lines = (ref, cls) => {
+                const t = q(`#viewport g[data-ref="${ref}"] text.${cls}`);
+                if (!t)
+                    return [];
+                const spans = t.querySelectorAll('tspan');
+                return spans.length ? Array.prototype.map.call(spans, (x) => x.textContent) : [t.textContent || ''];
+            };
+            const boxH = (ref) => q(`#viewport g[data-ref="${ref}"] .dev-box`).getBBox().height;
+            check('a device label with line breaks is drawn as those lines; a long label wraps; a long word is broken; nothing is cut', lines('device:core-a', 'dev-label').join('|') === 'core-a|Core switch A|(rack 12, U30-U34)' &&
+                lines('device:fw', 'dev-label').length >= 3 && lines('device:fw', 'dev-label').join(' ') === m.index.devices.get('fw').label &&
+                lines('device:storage', 'dev-label').length >= 2 && lines('device:storage', 'dev-label').join('') === m.index.devices.get('storage').label &&
+                lines('group:dc', 'group-title').join(' ') === m.index.groups.get('dc').label, JSON.stringify([lines('device:core-a', 'dev-label'), lines('device:fw', 'dev-label'), lines('device:storage', 'dev-label'), lines('group:dc', 'group-title')]));
+            check('boxes differ in size with their text (one-letter label < three lines < long wrapped label)', boxH('device:srv') < boxH('device:core-a') && boxH('device:core-a') < boxH('device:fw'), [boxH('device:srv'), boxH('device:core-a'), boxH('device:fw')].join(' '));
+            const straight = count('.cable.straight');
+            const peerD = ['peer-1', 'peer-2', 'peer-3'].map((id) => q(`#viewport g.cable[data-ref="link:${id}"] .cable-line`).getAttribute('d') || '');
+            check('three cables between the same two devices are parallel straight lines, each with its own label on it', peerD.every((d) => /^M[-0-9.]+ ([-0-9.]+)L[-0-9.]+ \1$/.test(d)) && new Set(peerD).size === 3 && straight >= 5 &&
+                ['100G · peer link 1', '100G · peer link 2', '100G · keepalive'].every((t) => Array.prototype.some.call(doc.querySelectorAll('#viewport text.link-label'), (e) => e.textContent === t)), peerD.join(' | ') + ' straight: ' + straight);
+            const physSvg = app.exportSvg();
+            click('[data-view-btn="logical"]');
+            const pillText = (id) => {
+                const t = q(`#viewport g.pill[data-ref="relation:${id}"] text`);
+                if (!t)
+                    return '';
+                const spans = t.querySelectorAll('tspan');
+                return spans.length ? Array.prototype.map.call(spans, (x) => x.textContent).join(' ') : t.textContent || '';
+            };
+            const pillRect = (id) => q(`#viewport g.pill[data-ref="relation:${id}"] .pill-box`).getBoundingClientRect();
+            const four = ['ipsec-br', 'bgp-br', 'bfd-br', 'syslog-br'];
+            const apart = four.every((a, i) => four.slice(i + 1).every((b) => {
+                const ra = pillRect(a);
+                const rb = pillRect(b);
+                return ra.right <= rb.left || rb.right <= ra.left || ra.bottom <= rb.top || rb.bottom <= ra.top;
+            }));
+            check('four labelled relations between the same two devices: four labels, each complete, at its own place; nested relations are named in their carrier\'s label', apart && pillText('ipsec-br') === 'IPsec · IKEv2 site-to-site with certificate authentication › GRE · primary › OSPF · area 0.0.0.10' &&
+                pillText('bgp-br') === 'eBGP · AS 65010 ↔ AS 65020' && pillText('bfd-br') === 'BFD · 300 ms × 3' && pillText('syslog-br') === 'Syslog · audit log' && !q('#viewport g.pill[data-ref="relation:gre-br"]'), four.map(pillText).join(' | '));
+            const netLines = lines('network:servers', 'net-sub').join(' ');
+            check('a network shows all of its prefixes', ['10.10.0.0/24', '2001:db8:10::/64', '2001:db8:11::/64'].every((c) => netLines.indexOf(c) >= 0), netLines);
+            // the standalone SVG files: same full text, measured on their own
+            const logSvg = app.exportSvg();
+            const exported = (text) => {
+                const parsed = new DOMParser().parseFromString(text, 'image/svg+xml').documentElement;
+                const holder = doc.createElement('div');
+                holder.setAttribute('class', 'sr-only');
+                holder.id = 'export-probe';
+                holder.appendChild(doc.importNode(parsed, true));
+                doc.body.appendChild(holder);
+                const all = (holder.textContent || '').replace(/\s+/g, '');
+                const full = m.devices.every((d) => all.indexOf(d.label.replace(/\s+/g, '')) >= 0);
+                const problems = drawnProblems('#export-probe #viewport');
+                doc.body.removeChild(holder);
+                return { full, problems };
+            };
+            const ep = exported(physSvg);
+            const el2 = exported(logSvg);
+            check('SVG exports of both views contain every label in full, inside its box, without overlapping labels', ep.full && el2.full && !ep.problems.length && !el2.problems.length && /peer link 2/.test(physSvg) && /certificate/.test(logSvg) && !/…</.test(physSvg + logSvg), ep.problems.concat(el2.problems).slice(0, 5).join('; '));
+            // Auto-arrange is a function of the model: drag, select, arrange -> the picture before the drag
+            const snapshot = () => new XMLSerializer().serializeToString(q('#viewport'));
+            const before = snapshot();
+            const d = app.mdoc;
+            d.movePositions('logical', new Map([['fw', { x: 2222, y: -1111 }]]), 'Move fw');
+            app.afterEdit();
+            app.select('device:br-rtr');
+            const dragged = snapshot() !== before && status('logical') === 'manual';
+            app.select(null);
+            click('#btn-arrange');
+            await answerDialog('logical');
+            const again = snapshot() === before && status('logical') === 'auto';
+            click('#btn-arrange');
+            await answerDialog('logical');
+            check('after dragging and selecting, Auto-arrange gives exactly the same picture (positions, routes, label places); repeating it moves nothing', dragged && again && snapshot() === before && /Already arranged/.test(q('#toast').textContent || ''), `${dragged} ${again}`);
+            // a label typed with a line break in the editor
+            app.select('device:srv');
+            await setField('#side-body textarea[data-p=\'["devices",3,"label"]\']', 'srv-01\nhypervisor');
+            check('typing a line break into a device label gives two lines in the diagram and a block scalar in the YAML', lines('device:srv', 'dev-label').join('|') === 'srv-01|hypervisor' && /label: \|-\n {6}srv-01\n {6}hypervisor\n/.test(app.exportText()) && !drawnProblems().length, lines('device:srv', 'dev-label').join('|'));
+            app.mdoc.markSaved();
         }
         // ---------------------------------------------------- auto-arrange
         {

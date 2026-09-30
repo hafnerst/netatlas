@@ -46,8 +46,8 @@ relations:
 layout:
   physical:
     edge-a: [75, 27]
-    edge-b: [75, 161]
+    edge-b: [384, 27]
   logical:
-    edge-a: [70, 25]
-    edge-b: [70, 185]
-    net-core: [-110, 105]
+    edge-a: [88, 45]
+    edge-b: [430, 52]
+    net-core: [252, 308]

@@ -41,3 +41,8 @@ export function deviceTypeLabel(id: string): string {
   for (const t of DEVICE_TYPES) if (t.id === id) return t.label;
   return '';
 }
+
+/** Second line of a device box: type, role and model. */
+export function deviceSubtitle(type: string, model?: string, role?: string): string {
+  return [deviceTypeLabel(type), role, model].filter((x) => !!x).join(' · ');
+}

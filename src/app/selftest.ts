@@ -67,6 +67,50 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     const msg = st === 'auto' ? AUTO_MSG : MANUAL_MSG;
     return x.view === view && x.st === st && x.icon === (st === 'auto' ? '\u2713' : '\u270E') && x.title.indexOf(msg) === 0 && x.desc === msg && x.st === status(view as 'physical' | 'logical');
   };
+  /**
+   * What a reader would see as wrong in the drawn diagram, measured with the
+   * browser's real font metrics (getBBox): text outside its box, overlapping
+   * boxes, labels on top of each other or of a node, a shortened label.
+   */
+  const drawnProblems = (rootSel = '#viewport'): string[] => {
+    const root = q(rootSel) as unknown as SVGGElement;
+    const out: string[] = [];
+    type R = { x: number; y: number; w: number; h: number };
+    const bb = (e: Element): R => {
+      const b = (e as SVGGraphicsElement).getBBox();
+      return { x: b.x, y: b.y, w: b.width, h: b.height };
+    };
+    const inside = (a: R, b: R): boolean => a.x >= b.x - 1 && a.y >= b.y - 1 && a.x + a.w <= b.x + b.w + 1 && a.y + a.h <= b.y + b.h + 1;
+    const hit = (a: R, b: R): boolean => a.x + 1 < b.x + b.w && b.x + 1 < a.x + a.w && a.y + 1 < b.y + b.h && b.y + 1 < a.y + a.h;
+    const each = (sel: string, fn: (e: Element) => void): void => Array.prototype.forEach.call(root.querySelectorAll(sel), fn);
+    const boxed = (group: string, box: string, text: string): void =>
+      each(group, (g) => {
+        const frame = g.querySelector(box);
+        if (!frame) return;
+        Array.prototype.forEach.call(g.querySelectorAll(text), (t: Element) => {
+          if (!inside(bb(t), bb(frame))) out.push(`"${t.textContent}" leaves its box (${Math.round(bb(t).w)} > ${Math.round(bb(frame).w)})`);
+        });
+      });
+    boxed('g.device', '.dev-box', 'text');
+    boxed('g.network', '.net-box', 'text');
+    boxed('g.group', '.group-box', '.group-title');
+    boxed('g.pill', '.pill-box', 'text');
+    boxed('g.loop-chip', 'rect', 'text');
+    each('text', (t) => {
+      if (/…$|\.\.\.$/.test(t.textContent || '')) out.push(`shortened text "${t.textContent}"`);
+    });
+    const nodes: Array<[string, R]> = [];
+    each('g.device .dev-box, g.network .net-box', (e) => nodes.push([(e.parentElement as Element).getAttribute('data-ref') || '', bb(e)]));
+    for (let i = 0; i < nodes.length; i++) for (let j = i + 1; j < nodes.length; j++) if (hit(nodes[i][1], nodes[j][1])) out.push(`${nodes[i][0]} overlaps ${nodes[j][0]}`);
+    const labels: Array<[string, R]> = [];
+    each('g.pill .pill-box, text.link-label, text.member-label', (e) => labels.push([(e.textContent || (e.parentElement as Element).textContent || '').slice(0, 40), bb(e)]));
+    for (let i = 0; i < labels.length; i++) {
+      for (let j = i + 1; j < labels.length; j++) if (hit(labels[i][1], labels[j][1])) out.push(`labels overlap: "${labels[i][0]}" / "${labels[j][0]}"`);
+      for (const n of nodes) if (hit(labels[i][1], n[1])) out.push(`label "${labels[i][0]}" covers ${n[0]}`);
+    }
+    return out;
+  };
+
   let violations = 0;
   doc.addEventListener('securitypolicyviolation', () => violations++);
   // capture downloads instead of saving them
@@ -117,6 +161,9 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         doc.body.getAttribute('data-view') === 'physical' && count('.device') === m.devices.length && count('.cable') === m.links.length && count('.rel') === 0 && count('.port') === m.links.length * 2,
         `${count('.device')}/${m.devices.length} devices, ${count('.cable')}/${m.links.length} cables`);
       check(`${ex.name}: loopbacks are not drawn as ports in the physical view`, count('.loop-chip') === 0);
+      // stored layouts (the "…-arranged"/edited examples are arranged too) and auto layouts alike
+      const physProblems = drawnProblems();
+      check(`${ex.name}: physical view, measured in the browser: full text inside its boxes, no overlapping boxes or labels`, !physProblems.length, physProblems.slice(0, 5).join('; '));
 
       click('[data-view-btn="logical"]');
       const drawable = m.relations.filter((r) => new Set(r.endpoints.map((e) => e.device)).size >= 2).length;
@@ -125,6 +172,8 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       check(`${ex.name}: tunnels drawn as tubes`, count('g.rel.cat-tunnel .tube-outer') >= tunnels && count('g.rel.cat-tunnel .cable-line') === 0);
       const loops = m.devices.reduce((s, d) => s + Math.min(3, d.interfaces.filter((x) => x.type === 'loopback').length), 0);
       check(`${ex.name}: loopbacks shown as chips in the logical view`, count('.loop-chip') === loops, `${count('.loop-chip')} / ${loops}`);
+      const logProblems = drawnProblems();
+      check(`${ex.name}: logical view, measured in the browser: full text inside its boxes, no overlapping boxes or labels`, !logProblems.length, logProblems.slice(0, 5).join('; '));
 
       const firstRel = m.relations[0];
       if (firstRel) {
@@ -409,6 +458,99 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         'clearing the selection returns every entry to normal prominence',
         app.session!.state.selected === null && olItems().every((b) => !b.hasAttribute('data-ctx')) && !q('#outline-body .ol-ctx-hint') && count('.dim') === 0 && count('.hl') === 0,
       );
+    }
+
+    // ------------------------ sizing and readability: long and multi-line labels
+    {
+      const idx = EXAMPLES.findIndex((e) => e.name === 'long-labels.yaml');
+      app.loadExample(idx);
+      const m = app.session!.model;
+      click('[data-view-btn="physical"]');
+      const lines = (ref: string, cls: string): string[] => {
+        const t = q(`#viewport g[data-ref="${ref}"] text.${cls}`);
+        if (!t) return [];
+        const spans = t.querySelectorAll('tspan');
+        return spans.length ? (Array.prototype.map.call(spans, (x: Element) => x.textContent) as string[]) : [t.textContent || ''];
+      };
+      const boxH = (ref: string): number => (q(`#viewport g[data-ref="${ref}"] .dev-box`) as unknown as SVGGraphicsElement).getBBox().height;
+      check(
+        'a device label with line breaks is drawn as those lines; a long label wraps; a long word is broken; nothing is cut',
+        lines('device:core-a', 'dev-label').join('|') === 'core-a|Core switch A|(rack 12, U30-U34)' &&
+          lines('device:fw', 'dev-label').length >= 3 && lines('device:fw', 'dev-label').join(' ') === m.index.devices.get('fw')!.label &&
+          lines('device:storage', 'dev-label').length >= 2 && lines('device:storage', 'dev-label').join('') === m.index.devices.get('storage')!.label &&
+          lines('group:dc', 'group-title').join(' ') === m.index.groups.get('dc')!.label,
+        JSON.stringify([lines('device:core-a', 'dev-label'), lines('device:fw', 'dev-label'), lines('device:storage', 'dev-label'), lines('group:dc', 'group-title')]),
+      );
+      check('boxes differ in size with their text (one-letter label < three lines < long wrapped label)', boxH('device:srv') < boxH('device:core-a') && boxH('device:core-a') < boxH('device:fw'), [boxH('device:srv'), boxH('device:core-a'), boxH('device:fw')].join(' '));
+      const straight = count('.cable.straight');
+      const peerD = ['peer-1', 'peer-2', 'peer-3'].map((id) => (q(`#viewport g.cable[data-ref="link:${id}"] .cable-line`) as Element).getAttribute('d') || '');
+      check(
+        'three cables between the same two devices are parallel straight lines, each with its own label on it',
+        peerD.every((d) => /^M[-0-9.]+ ([-0-9.]+)L[-0-9.]+ \1$/.test(d)) && new Set(peerD).size === 3 && straight >= 5 &&
+          ['100G · peer link 1', '100G · peer link 2', '100G · keepalive'].every((t) => Array.prototype.some.call(doc.querySelectorAll('#viewport text.link-label'), (e: Element) => e.textContent === t)),
+        peerD.join(' | ') + ' straight: ' + straight,
+      );
+      const physSvg = app.exportSvg();
+      click('[data-view-btn="logical"]');
+      const pillText = (id: string): string => {
+        const t = q(`#viewport g.pill[data-ref="relation:${id}"] text`);
+        if (!t) return '';
+        const spans = t.querySelectorAll('tspan');
+        return spans.length ? (Array.prototype.map.call(spans, (x: Element) => x.textContent) as string[]).join(' ') : t.textContent || '';
+      };
+      const pillRect = (id: string): DOMRect => (q(`#viewport g.pill[data-ref="relation:${id}"] .pill-box`) as Element).getBoundingClientRect();
+      const four = ['ipsec-br', 'bgp-br', 'bfd-br', 'syslog-br'];
+      const apart = four.every((a, i) => four.slice(i + 1).every((b) => {
+        const ra = pillRect(a);
+        const rb = pillRect(b);
+        return ra.right <= rb.left || rb.right <= ra.left || ra.bottom <= rb.top || rb.bottom <= ra.top;
+      }));
+      check(
+        'four labelled relations between the same two devices: four labels, each complete, at its own place; nested relations are named in their carrier\'s label',
+        apart && pillText('ipsec-br') === 'IPsec · IKEv2 site-to-site with certificate authentication › GRE · primary › OSPF · area 0.0.0.10' &&
+          pillText('bgp-br') === 'eBGP · AS 65010 ↔ AS 65020' && pillText('bfd-br') === 'BFD · 300 ms × 3' && pillText('syslog-br') === 'Syslog · audit log' && !q('#viewport g.pill[data-ref="relation:gre-br"]'),
+        four.map(pillText).join(' | '),
+      );
+      const netLines = lines('network:servers', 'net-sub').join(' ');
+      check('a network shows all of its prefixes', ['10.10.0.0/24', '2001:db8:10::/64', '2001:db8:11::/64'].every((c) => netLines.indexOf(c) >= 0), netLines);
+      // the standalone SVG files: same full text, measured on their own
+      const logSvg = app.exportSvg();
+      const exported = (text: string): { full: boolean; problems: string[] } => {
+        const parsed = new DOMParser().parseFromString(text, 'image/svg+xml').documentElement;
+        const holder = doc.createElement('div');
+        holder.setAttribute('class', 'sr-only');
+        holder.id = 'export-probe';
+        holder.appendChild(doc.importNode(parsed, true));
+        doc.body.appendChild(holder);
+        const all = (holder.textContent || '').replace(/\s+/g, '');
+        const full = m.devices.every((d) => all.indexOf(d.label.replace(/\s+/g, '')) >= 0);
+        const problems = drawnProblems('#export-probe #viewport');
+        doc.body.removeChild(holder);
+        return { full, problems };
+      };
+      const ep = exported(physSvg);
+      const el2 = exported(logSvg);
+      check('SVG exports of both views contain every label in full, inside its box, without overlapping labels', ep.full && el2.full && !ep.problems.length && !el2.problems.length && /peer link 2/.test(physSvg) && /certificate/.test(logSvg) && !/…</.test(physSvg + logSvg), ep.problems.concat(el2.problems).slice(0, 5).join('; '));
+      // Auto-arrange is a function of the model: drag, select, arrange -> the picture before the drag
+      const snapshot = (): string => new XMLSerializer().serializeToString(q('#viewport') as Element);
+      const before = snapshot();
+      const d = app.mdoc as ModelDoc;
+      d.movePositions('logical', new Map([['fw', { x: 2222, y: -1111 }]]), 'Move fw');
+      (app as unknown as { afterEdit(n?: string): void }).afterEdit();
+      app.select('device:br-rtr');
+      const dragged = snapshot() !== before && status('logical') === 'manual';
+      app.select(null);
+      click('#btn-arrange');
+      await answerDialog('logical');
+      const again = snapshot() === before && status('logical') === 'auto';
+      click('#btn-arrange');
+      await answerDialog('logical');
+      check('after dragging and selecting, Auto-arrange gives exactly the same picture (positions, routes, label places); repeating it moves nothing', dragged && again && snapshot() === before && /Already arranged/.test(q('#toast')!.textContent || ''), `${dragged} ${again}`);
+      // a label typed with a line break in the editor
+      app.select('device:srv');
+      await setField('#side-body textarea[data-p=\'["devices",3,"label"]\']', 'srv-01\nhypervisor');
+      check('typing a line break into a device label gives two lines in the diagram and a block scalar in the YAML', lines('device:srv', 'dev-label').join('|') === 'srv-01|hypervisor' && /label: \|-\n {6}srv-01\n {6}hypervisor\n/.test(app.exportText()) && !drawnProblems().length, lines('device:srv', 'dev-label').join('|'));
+      (app.mdoc as ModelDoc).markSaved();
     }
 
     // ---------------------------------------------------- auto-arrange
