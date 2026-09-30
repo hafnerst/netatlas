@@ -14,6 +14,7 @@ import { interfaceAddresses, interfaceVlanText, networkMembers } from '../model/
 import { contextState, relatedRefs, selectionContext } from '../model/queries';
 import { strNode } from '../yaml/parse';
 import { EXAMPLES, FIXTURES } from '../generated/examples';
+import { PNG_MAX_PIXELS, PNG_MAX_SIDE, pngScale, svgToPng } from '../ui/files';
 import { App } from '../ui/app';
 
 interface Check {
@@ -28,6 +29,8 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
   const checks: Check[] = [];
   const check = (name: string, ok: boolean, detail?: string): void => {
     checks.push({ name, ok, detail });
+    // if the run never finishes, the page still says how far it got
+    doc.body.setAttribute('data-selftest-last', `${checks.length}: ${name}`);
   };
   const count = (sel: string): number => doc.querySelectorAll('#viewport ' + sel).length;
   const q = (sel: string): HTMLElement | null => doc.querySelector(sel) as HTMLElement | null;
@@ -116,6 +119,8 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
   doc.addEventListener('securitypolicyviolation', () => violations++);
   // capture downloads instead of saving them
   const downloads: Array<{ name: string; text: string }> = [];
+  /** downloaded pictures that are not text (PNG), by file name */
+  const pictures = new Map<string, Blob>();
   const origCreate = URL.createObjectURL;
   const pendingBlobs: Blob[] = [];
   URL.createObjectURL = (b: Blob | MediaSource): string => {
@@ -125,7 +130,11 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
   const origClick = HTMLAnchorElement.prototype.click;
   HTMLAnchorElement.prototype.click = function (this: HTMLAnchorElement): void {
     const blob = pendingBlobs.shift();
-    if (blob) void blob.text().then((text) => downloads.push({ name: this.download, text }));
+    if (!blob) return;
+    if (blob.type === 'image/png') {
+      pictures.set(this.download, blob);
+      downloads.push({ name: this.download, text: '' });
+    } else void blob.text().then((text) => downloads.push({ name: this.download, text }));
   };
   const lastDownload = async (): Promise<{ name: string; text: string } | undefined> => {
     await tick(30);
@@ -158,17 +167,17 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const bar = 'header.topbar';
       const menuBtn = q('#menu-btn') as HTMLButtonElement | null;
       const menu = q('#main-menu') as HTMLElement | null;
-      const direct = ['#btn-undo', '#btn-redo', '[data-view-btn="physical"]', '[data-view-btn="logical"]', '#btn-arrange', '#search', '#btn-model', '#menu-btn'];
+      const direct = ['#btn-undo', '#btn-redo', '[data-view-btn="physical"]', '[data-view-btn="logical"]', '#btn-arrange', '#search', '#menu-btn', '#export-btn'];
       check(
-        'toolbar: logo and version, a File menu, "Current model", and undo/redo, Physical/Logical, Auto-arrange and Find as direct controls',
+        'toolbar: logo and version, the File and Export menus, and undo/redo, Physical/Logical, Auto-arrange and Find as direct controls; no "Current model" button',
         !!q(bar + ' .brand svg') && /^v\d+\.\d+\.\d+/.test((q(bar + ' .brand .version') || { textContent: '' }).textContent || '') && !!menuBtn && /^File/.test((menuBtn.textContent || '').trim()) &&
           direct.every((d) => !!q(bar + ' ' + d) && !(q(bar + ' ' + d) as HTMLElement).closest('.dropdown') && (q(bar + ' ' + d) as HTMLElement).getBoundingClientRect().width > 10) &&
-          /^Current model/.test((q('#btn-model') as HTMLElement).textContent || '') && (q('#btn-model') as HTMLButtonElement).disabled,
+          !q('#btn-model') && !q('#model-badge') && !/Current model/.test((q(bar) as HTMLElement).textContent || ''),
       );
       check(
         'New, Open, Download and the examples are grouped in the File menu and nowhere else in the toolbar',
         !!menu && menu.hidden && menuBtn!.getAttribute('aria-expanded') === 'false' && ['#btn-new', '#open', '#btn-download', '#menu-examples'].every((x) => !!q('#main-menu ' + x)) && !q('#examples') && !q(bar + ' select') &&
-          doc.querySelectorAll(bar + ' > button, ' + bar + ' > .btn-group > button').length === 3,
+          doc.querySelectorAll(bar + ' > button, ' + bar + ' > .btn-group > button').length === 2,
         String(doc.querySelectorAll(bar + ' > button, ' + bar + ' > .btn-group > button').length),
       );
       click('#menu-btn');
@@ -195,16 +204,32 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       {
         const exBtn = q('#export-btn') as HTMLButtonElement;
         const exMenu = q('#export-menu') as HTMLElement;
-        const item = q('#btn-export-svg') as HTMLButtonElement;
+        const item = q('#btn-export-as') as HTMLButtonElement;
+        const sub = q('#export-formats') as HTMLElement;
         click('#export-btn');
         const open = !exMenu.hidden && exBtn.getAttribute('aria-expanded') === 'true';
+        const direct = (Array.prototype.filter.call(exMenu.children, (c: Element) => c.tagName === 'BUTTON') as HTMLElement[]).map((c) => (c.querySelector('.mi-label') as HTMLElement).textContent);
         check(
-          'an Export menu sits next to File, built like it, with one entry "Export current view as SVG" that is disabled while there is no diagram',
+          'an Export menu sits next to File, built like it, with one entry "Export view as…" that is disabled while there is no diagram',
           !!exBtn && (q('#menu-btn') as HTMLElement).parentElement!.nextElementSibling === exBtn.parentElement && /^Export/.test((exBtn.textContent || '').trim()) && exBtn.className === (q('#menu-btn') as HTMLElement).className.replace(' active', '') + ' active' &&
-            exMenu.className === menu!.className && exMenu.getAttribute('role') === 'menu' && open && textsOf('#export-menu button').join('|') === 'Export current view as SVG' && item.disabled && /Open or create a model first/.test(item.title) &&
+            exMenu.className === menu!.className && exMenu.getAttribute('role') === 'menu' && open && direct.join('|') === 'Export view as…' && item.disabled && /Open or create a model first/.test(item.title) &&
+            item.getAttribute('aria-haspopup') === 'menu' && item.getAttribute('aria-expanded') === 'false' && item.getAttribute('aria-controls') === sub.id && sub.hidden && sub.getAttribute('role') === 'menu' &&
             !q('#save-svg') && !/Save SVG/.test((q('main') as HTMLElement).textContent || '') && !/Save SVG/.test((q('header.topbar') as HTMLElement).textContent || ''),
-          `${open} ${textsOf('#export-menu button').join('|')} disabled=${item.disabled}`,
+          `${open} ${direct.join('|')} disabled=${item.disabled}`,
         );
+        {
+          // no model: the submenu cannot be opened, by pointer or by keyboard, and its formats are disabled too
+          item.click();
+          exBtn.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+          const nowhere = doc.activeElement === exBtn;
+          const formats = ['#btn-export-png', '#btn-export-svg'].map((x) => q(x) as HTMLButtonElement);
+          check(
+            'without a model the submenu stays closed and PNG and SVG are disabled',
+            sub.hidden && item.getAttribute('aria-expanded') === 'false' && nowhere && !exMenu.hidden && formats.every((b) => !!b && b.disabled && /Open or create a model first/.test(b.title)) && formats.map((b) => (b.querySelector('.mi-label') as HTMLElement).textContent).join('|') === 'PNG|SVG' && !/PDF/i.test(exMenu.textContent || ''),
+            `${sub.hidden} ${nowhere} ${!exMenu.hidden} ${formats.map((b) => b.disabled + ' ' + b.title).join(' / ')}`,
+          );
+          for (const b of formats) b.click();
+        }
         const before = downloads.length;
         item.click();
         exBtn.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
@@ -362,25 +387,85 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         app.mdoc!.markSaved();
 
         // Export: enabled with a diagram, and it exports the view that is selected
-        const item = q('#btn-export-svg') as HTMLButtonElement;
+        const item = q('#btn-export-as') as HTMLButtonElement;
+        const sub = q('#export-formats') as HTMLElement;
+        const exBtn = q('#export-btn') as HTMLButtonElement;
+        const exMenu = q('#export-menu') as HTMLElement;
+        const key = (target: HTMLElement, k: string): void => void target.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true }));
         (app as unknown as { updateChrome(): void }).updateChrome();
+        {
+          // pointer and touch: a press on the entry opens the submenu in place and keeps the menu; nothing depends on hovering
+          click('#export-btn');
+          for (const type of ['pointerenter', 'mouseenter', 'mouseover', 'pointermove']) item.dispatchEvent(new MouseEvent(type, { bubbles: true }));
+          const notOnHover = sub.hidden;
+          item.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 }));
+          const byPress = !sub.hidden && !exMenu.hidden && item.getAttribute('aria-expanded') === 'true';
+          const sr = sub.getBoundingClientRect();
+          const mr2 = exMenu.getBoundingClientRect();
+          const inside = sr.height > 40 && sr.top >= item.getBoundingClientRect().bottom - 1 && sr.bottom <= mr2.bottom + 0.5 && sr.left >= mr2.left && sr.right <= mr2.right + 0.5 && mr2.right <= doc.documentElement.clientWidth;
+          const sizes = ['#btn-export-png', '#btn-export-svg'].map((x) => (q(x) as HTMLElement).getBoundingClientRect().height);
+          item.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 }));
+          const toggled = sub.hidden && !exMenu.hidden && item.getAttribute('aria-expanded') === 'false';
+          item.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 }));
+          click('#export-btn');
+          const collapsed = exMenu.hidden && sub.hidden && item.getAttribute('aria-expanded') === 'false';
+          check(
+            '"Export view as…" opens its submenu (PNG, SVG) when pressed, not on hover; the submenu opens inside the menu, within the window, with entries as tall as the other menu entries; pressing again closes it, and it is closed when the menu closes',
+            notOnHover && byPress && inside && sizes.every((h) => Math.abs(h - item.getBoundingClientRect().height) < 0.5 || h >= 24) && sizes[0] === sizes[1] && toggled && collapsed,
+            `${notOnHover} ${byPress} ${inside} ${sizes.join('/')} ${toggled} ${collapsed}`,
+          );
+          // keyboard: arrow down onto the entry, arrow right (or Enter/Space, a click without a pointer) opens and enters the submenu
+          exBtn.focus();
+          key(exBtn, 'ArrowDown');
+          const onEntry = doc.activeElement === item && sub.hidden;
+          key(item, 'ArrowDown');
+          const staysOnEntry = doc.activeElement === item;
+          key(item, 'ArrowRight');
+          const entered = !sub.hidden && doc.activeElement === q('#btn-export-png');
+          key(doc.activeElement as HTMLElement, 'ArrowDown');
+          const toSvg = doc.activeElement === q('#btn-export-svg');
+          key(doc.activeElement as HTMLElement, 'ArrowDown');
+          const wraps = doc.activeElement === item;
+          key(doc.activeElement as HTMLElement, 'ArrowUp');
+          const back = doc.activeElement === q('#btn-export-svg');
+          key(doc.activeElement as HTMLElement, 'ArrowLeft');
+          const left = sub.hidden && doc.activeElement === item && !exMenu.hidden;
+          item.click(); // Enter or Space on a button is a click without a pointer position
+          const byEnter = !sub.hidden && doc.activeElement === q('#btn-export-png');
+          key(doc.activeElement as HTMLElement, 'Escape');
+          const escSub = sub.hidden && doc.activeElement === item && !exMenu.hidden;
+          key(item, 'Escape');
+          const escMenu = exMenu.hidden && doc.activeElement === exBtn;
+          check(
+            'keyboard: arrow keys reach "Export view as…"; arrow right, Enter or Space open the submenu and move into it; up/down move through PNG and SVG; arrow left or Escape return to the entry, Escape again closes the menu',
+            onEntry && staysOnEntry && entered && toSvg && wraps && back && left && byEnter && escSub && escMenu,
+            [onEntry, staysOnEntry, entered, toSvg, wraps, back, left, byEnter, escSub, escMenu].join(' '),
+          );
+        }
         const names: string[] = [];
         const same: boolean[] = [];
         for (const view of ['logical', 'physical']) {
           click(`[data-view-btn="${view}"]`);
-          click('#export-btn');
-          const enabled = !item.disabled && new RegExp(view).test(item.title);
-          const expected = app.exportSvg();
-          const had = downloads.length;
-          item.click();
-          for (let n = 0; n < 40 && downloads.length === had; n++) await tick(10);
-          const got = downloads.length > had ? downloads[downloads.length - 1] : undefined;
-          names.push(got ? got.name : '?');
-          same.push(enabled && !!got && got.text === expected && new RegExp(`Legend — ${view} view`).test(got.text) && new RegExp(`Networks — ${view} view`).test(got.text) && /class="svg-legend"/.test(got.text) && /class="svg-networks"/.test(got.text));
+          for (const fmt of ['svg', 'png']) {
+            const b = q('#btn-export-' + fmt) as HTMLButtonElement;
+            click('#export-btn');
+            item.click();
+            const enabled = !item.disabled && !b.disabled && !sub.hidden && new RegExp(view).test(item.title) && new RegExp(view).test(b.title);
+            const expected = app.exportSvg();
+            const had = downloads.length;
+            b.click();
+            const closedAtOnce = exMenu.hidden && sub.hidden;
+            for (let n = 0; n < 300 && downloads.length === had; n++) await tick(10);
+            const got = downloads.length > had ? downloads[downloads.length - 1] : undefined;
+            names.push(got ? got.name : '?');
+            const said = new RegExp(`Exported “minimal-${view}\\.${fmt}”`).test(q('#toast')!.textContent || '');
+            if (fmt === 'svg') same.push(enabled && closedAtOnce && said && !!got && got.text === expected && new RegExp(`Legend — ${view} view`).test(got.text) && new RegExp(`Networks — ${view} view`).test(got.text) && /class="svg-legend"/.test(got.text) && /class="svg-networks"/.test(got.text));
+            else same.push(enabled && closedAtOnce && said && !!got && pictures.has(got.name) && pictures.get(got.name)!.size > 1000);
+          }
         }
         check(
-          '"Export current view as SVG" exports whichever view is selected, with the same content as before (legend and Networks box), and closes the menu',
-          names.join() === 'minimal-logical.svg,minimal-physical.svg' && same.every((x) => x) && (q('#export-menu') as HTMLElement).hidden,
+          'Export view as… → SVG / PNG exports whichever view is selected, named after the model and the view; the SVG has the same content as before (legend and Networks box); the menu closes and a message names the file',
+          names.join() === 'minimal-logical.svg,minimal-logical.png,minimal-physical.svg,minimal-physical.png' && same.every((x) => x) && exMenu.hidden && downloads.length === downloads.filter((d) => d.name).length,
           names.join() + ' ' + same.join(),
         );
         check('the zoom bar has only zoom controls left', textsOf('.zoombar button').join('|') === '+|−|Fit' && !q('.zoombar #save-svg'));
@@ -599,21 +684,27 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       await tick(10);
       check('choosing an example from the menu loads it and closes the menu', menu!.hidden && !!app.mdoc && app.mdoc.fileName === EXAMPLES[2].name && !(q('#btn-download') as HTMLButtonElement).disabled, app.mdoc ? app.mdoc.fileName : 'nothing loaded');
 
-      // "Current model": the edit view of the whole model
-      const mb = q('#btn-model') as HTMLButtonElement;
+      // the model and its settings without a "Current model" button: the model panel stays, the settings open from the Edit tab
       app.select('device:r1');
-      const before = mb.getAttribute('aria-pressed');
-      click('#btn-model');
+      await tick();
+      const panel = (q('#outline') as HTMLElement).getBoundingClientRect();
+      const listed = doc.querySelectorAll('#outline [data-ref]').length;
+      app.select(null);
+      await tick();
+      click('[data-tab="edit"]');
+      await tick();
+      const settingsBtn = Array.prototype.find.call(doc.querySelectorAll('#side-body button'), (x: Element) => /Edit model settings/.test(x.textContent || '')) as HTMLElement | undefined;
+      if (settingsBtn) settingsBtn.click();
       await tick();
       const head = (q('#side-body .insp-head') || { textContent: '' }).textContent || '';
       check(
-        '"Current model" opens the edit view of the entire model (title, description), whatever was selected before',
-        !mb.disabled && before === 'false' && mb.getAttribute('aria-pressed') === 'true' && doc.body.getAttribute('data-state') === 'loaded' && !!q('[data-tab="edit"].active') && /^model/.test(head) && /Minimal example/.test(head) &&
+        'without the "Current model" button the model stays open and visible (model panel with its entries, diagram), and its settings (title, description) open from the Edit tab',
+        !q('#btn-model') && doc.body.getAttribute('data-state') === 'loaded' && panel.width > 100 && panel.height > 100 && listed >= 2 && count('g.device') === 2 && !!settingsBtn && !!q('[data-tab="edit"].active') && /^model/.test(head) && /Minimal example/.test(head) &&
           !!q('#side-body [data-p=\'["title"]\']') && !!q('#side-body [data-p=\'["description"]\']') && app.session!.state.selected === null,
-        head,
+        `${panel.width}x${panel.height} ${listed} ${head}`,
       );
       await setField('#side-body [data-p=\'["title"]\']', 'Renamed model');
-      check('the title is edited there and the button names the model', /Renamed model/.test(mb.title) && (app.mdoc as ModelDoc).text(['title']) === 'Renamed model' && mb.getAttribute('aria-pressed') === 'true');
+      check('the title is edited there, and undo takes it back', (app.mdoc as ModelDoc).text(['title']) === 'Renamed model' && !!(app.mdoc as ModelDoc).canUndo() && !(q('#btn-undo') as HTMLButtonElement).disabled);
       check(
         'the model outline has no "Document" entry, and the interface says "model", not "document"',
         !q('#outline .ol-doc') && !q('#outline [data-kind="document"]') && !/Document/.test(q('#outline')!.textContent || '') && !/[Dd]ocument/.test(q('#side-body')!.textContent || '') && !/[Dd]ocument/.test(q('header.topbar')!.textContent || ''),
@@ -1832,6 +1923,232 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         `document ${root.scrollWidth}x${root.scrollHeight} in ${root.clientWidth}x${root.clientHeight}, scrolled ${scrolled}, side ends at ${side.bottom}, status ${st.top}–${st.bottom}`,
       );
     }
+    // ------------------------------------------------ Export view as… PNG / SVG: what the pictures contain
+    {
+      interface Px { w: number; h: number; data: Uint8ClampedArray }
+      /** wait for work the browser does outside the page's timers (decoding, encoding), keeping the run's clock going */
+      const alive = async <T>(p: Promise<T>): Promise<T> => {
+        let settled = false;
+        const done = (): void => void (settled = true);
+        p.then(done, done);
+        for (let n = 0; n < 3000 && !settled; n++) await tick(10);
+        return p;
+      };
+      const be = (b: Uint8Array, at: number): number => ((b[at] << 24) | (b[at + 1] << 16) | (b[at + 2] << 8) | b[at + 3]) >>> 0;
+      /** read a PNG: its signature and header, and its pixels as the browser decodes them */
+      const readPng = async (blob: Blob): Promise<{ valid: boolean; w: number; h: number; px: Px }> => {
+        const bytes = new Uint8Array(await alive(blob.arrayBuffer()));
+        const sig = [137, 80, 78, 71, 13, 10, 26, 10].every((v, i) => bytes[i] === v) && String.fromCharCode(bytes[12], bytes[13], bytes[14], bytes[15]) === 'IHDR';
+        // decoded as an image from a data: URL, like any picture in a page
+        let bin = '';
+        for (let i = 0; i < bytes.length; i += 8192) bin += String.fromCharCode.apply(null, Array.prototype.slice.call(bytes.subarray(i, i + 8192)) as number[]);
+        const bmp = new Image();
+        await alive(
+          new Promise<void>((done, fail) => {
+            bmp.onload = () => done();
+            bmp.onerror = () => fail(new Error('the PNG cannot be decoded'));
+            bmp.src = 'data:image/png;base64,' + btoa(bin);
+          }),
+        );
+        const c = doc.createElement('canvas');
+        c.width = bmp.naturalWidth;
+        c.height = bmp.naturalHeight;
+        const ctx = c.getContext('2d', { willReadFrequently: true }) as CanvasRenderingContext2D;
+        ctx.drawImage(bmp, 0, 0);
+        return { valid: sig, w: be(bytes, 16), h: be(bytes, 20), px: { w: c.width, h: c.height, data: ctx.getImageData(0, 0, c.width, c.height).data } };
+      };
+      /** share of the pixels of a rectangle (in pixels) that differ from the colour of the picture's first pixel */
+      const ink = (p: Px, x0: number, y0: number, x1: number, y1: number): number => {
+        const d = p.data;
+        let n = 0;
+        let all = 0;
+        for (let y = Math.max(0, Math.floor(y0)); y < Math.min(p.h, Math.ceil(y1)); y++)
+          for (let x = Math.max(0, Math.floor(x0)); x < Math.min(p.w, Math.ceil(x1)); x++) {
+            const i = (y * p.w + x) * 4;
+            all++;
+            if (Math.abs(d[i] - d[0]) + Math.abs(d[i + 1] - d[1]) + Math.abs(d[i + 2] - d[2]) > 24 || d[i + 3] !== 255) n++;
+          }
+        return all ? n / all : 0;
+      };
+      interface Box { x: number; y: number; w: number; h: number }
+      /** what an exported SVG contains: size, the legend and Networks boxes (in picture units), its texts */
+      const readSvg = (text: string): { w: number; h: number; vb: number[]; legend: Box | null; networks: Box | null; netCount: number; texts: string[]; heading: string; devices: number; content: Box | null } => {
+        const root = new DOMParser().parseFromString(text, 'image/svg+xml').documentElement;
+        const vb = (root.getAttribute('viewBox') || '').split(' ').map(Number);
+        const box = (sel: string): Box | null => {
+          const g = root.querySelector(sel);
+          const m = g ? /translate\(([-0-9.]+) ([-0-9.]+)\)/.exec(g.getAttribute('transform') || '') : null;
+          const r = g ? g.querySelector('rect') : null;
+          return m && r ? { x: +m[1] - vb[0], y: +m[2] - vb[1], w: +(r.getAttribute('width') || 0), h: +(r.getAttribute('height') || 0) } : null;
+        };
+        const nw = root.querySelector('g.svg-networks');
+        const texts = (Array.prototype.map.call(root.querySelectorAll('text'), (t: Element) => t.textContent || '') as string[]);
+        return { w: +(root.getAttribute('width') || 0), h: +(root.getAttribute('height') || 0), vb, legend: box('g.svg-legend'), networks: box('g.svg-networks'), netCount: nw ? +(nw.getAttribute('data-count') || 0) : -1, texts, heading: nw ? (nw.querySelector('text') as Element).textContent || '' : '', devices: root.querySelectorAll('g.device').length, content: null };
+      };
+      const within = (b: Box | null, w: number, h: number): boolean => !!b && b.x >= 0 && b.y >= 0 && b.x + b.w <= w + 0.5 && b.y + b.h <= h + 0.5;
+      /** export the view on screen in both formats through the menu and compare the two pictures */
+      const both = async (base: string, view: string): Promise<{ ok: boolean; why: string; svg: ReturnType<typeof readSvg>; scale: number; png: { w: number; h: number } }> => {
+        const why: string[] = [];
+        const got: { [fmt: string]: string } = {};
+        for (const fmt of ['svg', 'png']) {
+          click('#export-btn');
+          click('#btn-export-as');
+          const had = downloads.length;
+          click('#btn-export-' + fmt);
+          for (let n = 0; n < 1500 && downloads.length === had; n++) await tick(10);
+          const d = downloads.length > had ? downloads[downloads.length - 1] : undefined;
+          if (!d || d.name !== `${base}-${view}.${fmt}`) why.push(`${fmt}: downloaded ${d ? d.name : 'nothing'}`);
+          got[fmt] = d ? d.name : '';
+          if (q('#modal[open]')) {
+            why.push(`${fmt}: ${q('#modal')!.textContent}`);
+            await answerDialog('ok');
+          }
+        }
+        const svgText = (downloads.filter((d) => d.name === got.svg).pop() || { text: '' }).text;
+        const svg = readSvg(svgText);
+        const blob = pictures.get(got.png);
+        if (!svgText || !blob) return { ok: false, why: why.join('; ') || 'a picture is missing', svg, scale: 0, png: { w: 0, h: 0 } };
+        const png = await readPng(blob);
+        const scale = pngScale(svg.w, svg.h);
+        if (!png.valid) why.push('not a PNG file');
+        if (png.w !== Math.round(svg.w * scale) || png.h !== Math.round(svg.h * scale) || png.px.w !== png.w || png.px.h !== png.h) why.push(`PNG is ${png.w}x${png.h}, expected ${svg.w}x${svg.h} at ${scale}`);
+        // the whole diagram: the bounds come from what is drawn, not from the part on screen
+        const bounds = (app as unknown as { bounds: Box }).bounds;
+        if (svg.vb[0] > bounds.x + 0.5 || svg.vb[1] > bounds.y + 0.5 || svg.vb[0] + svg.vb[2] < bounds.x + bounds.w - 0.5 || svg.vb[1] + svg.vb[3] < bounds.y + bounds.h - 0.5) why.push('the picture is smaller than the diagram');
+        if (svg.devices !== count('g.device')) why.push(`${svg.devices} of ${count('g.device')} devices`);
+        if (/transform=/.test(/<g[^>]*id="viewport"[^>]*>/.exec(svgText)![0])) why.push('the pan/zoom of the screen is in the picture');
+        if (svg.texts.some((t) => /…$|\.\.\.$/.test(t))) why.push('shortened text');
+        // legend and Networks box: inside the picture, for this view, and drawn in the PNG
+        if (!within(svg.legend, svg.w, svg.h)) why.push('legend outside the picture');
+        if (!within(svg.networks, svg.w, svg.h)) why.push('Networks box outside the picture');
+        if (svg.texts.indexOf(`Legend — ${view} view`) < 0) why.push('no legend for this view');
+        if (svg.heading !== `Networks — ${view} view`) why.push('Networks box: ' + svg.heading);
+        for (const [name, b] of [['legend', svg.legend], ['Networks box', svg.networks]] as Array<[string, Box | null]>) {
+          if (!b) continue;
+          const share = ink(png.px, b.x * scale, b.y * scale, (b.x + b.w) * scale, (b.y + b.h) * scale);
+          if (share < 0.01) why.push(`${name} is blank in the PNG (${share})`);
+        }
+        const all = ink(png.px, 0, 0, png.w, png.h);
+        if (all < 0.005) why.push(`the PNG is blank (${all})`);
+        // margin: the boxes beside the diagram keep a distance to the edge of the picture, so nothing is cut off
+        for (const b of [svg.legend, svg.networks]) if (b && (b.x < 8 || b.y < 8 || svg.w - b.x - b.w < 8 || svg.h - b.y - b.h < 8)) why.push('a box touches the edge of the picture');
+        // same composition: the downloaded SVG, drawn at the PNG's size, gives the PNG's pixels
+        const again = await readPng((await alive(svgToPng(doc, svgText, svg.w, svg.h, getComputedStyle(q('#canvas-wrap') as HTMLElement).backgroundColor))).blob);
+        let differ = 0;
+        if (again.px.data.length !== png.px.data.length) differ = -1;
+        else for (let i = 0; i < png.px.data.length; i += 4) if (Math.abs(png.px.data[i] - again.px.data[i]) + Math.abs(png.px.data[i + 1] - again.px.data[i + 1]) + Math.abs(png.px.data[i + 2] - again.px.data[i + 2]) > 24) differ++;
+        if (differ < 0 || differ > (png.w * png.h) / 1000) why.push(`the PNG differs from the SVG in ${differ} pixels`);
+        return { ok: !why.length, why: why.join('; '), svg, scale, png: { w: png.w, h: png.h } };
+      };
+
+      // enterprise WAN, zoomed in and panned away: the picture is still the whole diagram
+      app.mdoc!.markSaved();
+      app.loadExample(EXAMPLES.findIndex((e) => e.name === 'enterprise-wan.yaml'));
+      const res: { [view: string]: Awaited<ReturnType<typeof both>> } = {};
+      for (const view of ['physical', 'logical']) {
+        click(`[data-view-btn="${view}"]`);
+        await tick();
+        for (let n = 0; n < 4; n++) click('#zoom-in');
+        (q('#canvas') as unknown as Element).dispatchEvent(new WheelEvent('wheel', { deltaX: 400, deltaY: 300, bubbles: true, cancelable: true }));
+        res[view] = await both('enterprise-wan', view);
+        click('#zoom-fit');
+        check(`PNG and SVG of the ${view} view (enterprise WAN, zoomed in): the whole diagram with a margin, full labels, the legend and the Networks box of that view; the PNG is the SVG at ${res[view].scale}× and shows the same picture`, res[view].ok, `${res[view].why} svg ${res[view].svg.w}x${res[view].svg.h} png ${res[view].png.w}x${res[view].png.h}`);
+      }
+      check(
+        'each view exports its own picture: different legends and sizes, the Networks box headed by the view, and interface names only in the physical one',
+        res.physical.svg.heading !== res.logical.svg.heading && res.physical.svg.texts.join('|') !== res.logical.svg.texts.join('|') && res.physical.svg.netCount > 0 && res.logical.svg.netCount > 0,
+        `${res.physical.svg.heading} (${res.physical.svg.netCount}) / ${res.logical.svg.heading} (${res.logical.svg.netCount})`,
+      );
+      {
+        // view-specific network information: a network that only loopbacks are in belongs to the logical picture alone
+        app.loadText(FIXTURES.find((e) => e.name === 'editor-new-network.yaml')!.text, 'editor-new-network.yaml', 'example');
+        click('[data-view-btn="physical"]');
+        const p = await both('editor-new-network', 'physical');
+        click('[data-view-btn="logical"]');
+        const l = await both('editor-new-network', 'logical');
+        check('the Networks box of each exported picture lists the networks of that view (a loopback-only network only in the logical PNG and SVG)', p.ok && l.ok && l.svg.netCount > p.svg.netCount && l.svg.networks!.h > p.svg.networks!.h, `${p.why} / ${l.why} / ${p.svg.netCount} < ${l.svg.netCount}`);
+      }
+      {
+        // long labels: nothing shortened, nothing cut off
+        app.loadExample(EXAMPLES.findIndex((e) => e.name === 'long-labels.yaml'));
+        for (const view of ['physical', 'logical']) {
+          click(`[data-view-btn="${view}"]`);
+          const r = await both('long-labels', view);
+          const longest = r.svg.texts.reduce((a, t) => Math.max(a, t.length), 0);
+          check(`long labels, ${view} view: PNG and SVG carry every label in full, inside the picture`, r.ok && longest > 30, `${r.why} longest text ${longest}`);
+        }
+      }
+      {
+        // a large diagram: 96 devices in 8 groups
+        const lines = ['netatlas: 1', 'title: Large network with many devices', 'groups:'];
+        for (let g = 0; g < 8; g++) lines.push(`  - {id: site-${g}, label: Site number ${g} with a long descriptive name, kind: site}`);
+        lines.push('devices:');
+        for (let g = 0; g < 8; g++)
+          for (let n = 0; n < 12; n++) {
+            lines.push(`  - id: d${g}-${n}`, `    label: Device ${n} of site ${g}`, `    type: ${n === 0 ? 'router' : 'switch'}`, `    group: site-${g}`, '    interfaces:', `      - {id: up, ip: 10.${g}.0.${n + 1}/24}`, '      - {id: down}', '      - {id: wan}');
+            lines.push('    logical_interfaces:', `      - {id: lo0, type: loopback, ip: 10.255.${g}.${n + 1}/32}`);
+          }
+        lines.push('links:');
+        for (let g = 0; g < 8; g++) {
+          for (let n = 1; n < 12; n++) lines.push(`  - {id: l${g}-${n}, a: "d${g}-${n}:up", b: "d${g}-${n - 1}:${n === 1 ? 'down' : 'down'}", speed: 10G}`.replace(`d${g}-${n - 1}:down`, n % 3 === 1 ? `d${g}-0:down` : `d${g}-${n - 1}:down`));
+          lines.push(`  - {id: wan-${g}, a: "d${g}-0:wan", b: "d${(g + 1) % 8}-0:up", speed: 100G, label: backbone ${g}}`);
+        }
+        lines.push('networks:');
+        for (let g = 0; g < 8; g++) lines.push(`  - {id: net-${g}, label: Site ${g} access, cidr: 10.${g}.0.0/24, vlan: ${100 + g}}`);
+        lines.push('  - {id: net-lo, label: Loopbacks, cidr: 10.255.0.0/16}');
+        const big = app.loadText(lines.join('\n') + '\n', 'large-network.yaml', 'file');
+        const drawn = count('g.device');
+        const sizes: string[] = [];
+        let okBig = !!big && drawn === 96;
+        for (const view of ['physical', 'logical']) {
+          click(`[data-view-btn="${view}"]`);
+          await tick();
+          const r = await both('large-network', view);
+          okBig = okBig && r.ok && r.svg.devices === 96 && r.svg.netCount >= 8 && r.png.w <= PNG_MAX_SIDE && r.png.h <= PNG_MAX_SIDE && r.png.w * r.png.h <= PNG_MAX_PIXELS * 1.001 && r.svg.w > 1500;
+          sizes.push(`${view}: ${r.why} svg ${r.svg.w}x${r.svg.h} png ${r.png.w}x${r.png.h} at ${r.scale} networks ${r.svg.netCount}`);
+        }
+        check('a large diagram (96 devices, 8 groups, 9 networks) exports completely as PNG and SVG in both views, within the size a browser can draw', okBig, `${drawn} devices; ${sizes.join(' | ')}`);
+      }
+      {
+        // a picture too large for one image is drawn smaller, not cut off (checked with the limits lowered for the run)
+        const small = pngScale(40000, 10000);
+        const huge = pngScale(100000, 100000);
+        check('PNG size limits: twice the diagram size normally, reduced for very large diagrams so that the whole picture still fits', pngScale(1200, 800) === 2 && Math.abs(small - PNG_MAX_SIDE / 40000) < 1e-9 && Math.abs(huge - Math.sqrt(PNG_MAX_PIXELS) / 100000) < 1e-9 && huge < small);
+      }
+      {
+        // failures are reported, and nothing is downloaded
+        const had = downloads.length;
+        const proto = HTMLCanvasElement.prototype as unknown as { toBlob: (cb: (b: Blob | null) => void) => void };
+        const origToBlob = proto.toBlob;
+        proto.toBlob = (cb): void => cb(null);
+        click('#export-btn');
+        click('#btn-export-as');
+        click('#btn-export-png');
+        for (let n = 0; n < 300 && !q('#modal[open]'); n++) await tick(10);
+        proto.toBlob = origToBlob;
+        const said = q('#modal[open]') ? q('#modal')!.textContent || '' : '';
+        await answerDialog('ok');
+        check(
+          'a PNG export that fails is reported in a dialog (what, why, and that nothing was downloaded); nothing is downloaded and the model stays as it was',
+          /Could not export the view as PNG/.test(said) && /“large-network-logical\.png” was not created: the browser could not encode a \d+ × \d+ pixel picture\./.test(said) && /Nothing was downloaded/.test(said) && /SVG export has no such limit/.test(said) && downloads.length === had && !q('#modal[open]') && count('g.device') === 96,
+          said,
+        );
+        const xs = XMLSerializer.prototype as unknown as { serializeToString: (n: Node) => string };
+        const origSer = xs.serializeToString;
+        xs.serializeToString = (): string => {
+          throw new Error('out of memory');
+        };
+        click('#export-btn');
+        click('#btn-export-as');
+        click('#btn-export-svg');
+        for (let n = 0; n < 300 && !q('#modal[open]'); n++) await tick(10);
+        xs.serializeToString = origSer;
+        const saidSvg = q('#modal[open]') ? q('#modal')!.textContent || '' : '';
+        await answerDialog('ok');
+        check('a failing SVG export is reported the same way', /Could not export the view as SVG/.test(saidSvg) && /“large-network-logical\.svg” was not created: out of memory\./.test(saidSvg) && downloads.length === had, saidSvg);
+      }
+    }
+
     const perf = (doc.defaultView as Window).performance;
     const resources = perf && perf.getEntriesByType ? perf.getEntriesByType('resource').length : 0;
     check('no network resources requested', resources === 0, String(resources));

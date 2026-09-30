@@ -59,7 +59,7 @@ export function run(browser, url, extra) {
         // any DNS lookup fails: proves nothing on the page needs the network
         '--host-resolver-rules=MAP * ~NOTFOUND',
         `--user-data-dir=${profile}`,
-        '--virtual-time-budget=20000',
+        '--virtual-time-budget=120000',
         ...extra,
         url,
       ],
@@ -84,7 +84,10 @@ function runPage(hash, extra) {
   if (!existsSync(html)) throw new Error('dist/netatlas.html not found — run "npm run build" first');
   const dom = run(browser, pathToFileURL(html).href + '#' + hash, [...extra, '--dump-dom']);
   const m = /<pre id="selftest"[^>]*>([\s\S]*?)<\/pre>/.exec(dom);
-  if (!m || !m[1].trim()) return { browser, pass: false, error: 'the page produced no result', raw: dom.slice(0, 2000) };
+  if (!m || !m[1].trim()) {
+    const last = /data-selftest-last="([^"]*)"/.exec(dom);
+    return { browser, pass: false, error: 'the page produced no result' + (last ? `; the last finished check was ${last[1]}` : ''), raw: dom.slice(0, 2000) };
+  }
   return { browser, ...JSON.parse(decode(m[1])) };
 }
 
@@ -150,7 +153,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   if (res.downloads && res.downloads.length) {
     const dir = join(root, 'dist', 'selftest-downloads');
     mkdirSync(dir, { recursive: true });
-    for (const d of res.downloads) writeFileSync(join(dir, d.name.replace(/[^A-Za-z0-9._-]/g, '_')), d.text);
+    for (const d of res.downloads.filter((x) => !/\.png$/.test(x.name))) writeFileSync(join(dir, d.name.replace(/[^A-Za-z0-9._-]/g, '_')), d.text);
     console.log(`\nsaved ${res.downloads.length} downloaded file(s) to dist/selftest-downloads/`);
   }
   console.log(`\n${res.pass ? 'PASS' : 'FAIL'}: ${res.checks.filter((c) => c.ok).length}/${res.total} checks`);

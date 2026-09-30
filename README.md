@@ -82,9 +82,9 @@ auto-arranged layout, ✎ manually adjusted).
    model has unsaved changes, you are asked before it is replaced.
 3. Switch between **Physical** and **Logical** (or press `P` / `L`).
 4. Click anything in the diagram or in the model outline on the left. The
-   **Edit** tab on the right opens it in the inspector. **Current model** in
-   the toolbar opens the settings of the model as a whole (title,
-   description).
+   **Edit** tab on the right opens it in the inspector. With nothing
+   selected, the Edit tab offers **Edit model settings** for the model as a
+   whole (title, description).
 5. Choose **File → Download model…** (or press Ctrl+S) to save the model as
    a YAML file.
 
@@ -94,8 +94,7 @@ auto-arranged layout, ✎ manually adjusted).
 |---|---|
 | **netatlas** logo and version | which build this is |
 | **File ▾** | one menu for everything about files: **New model**, **Open model…**, **Download model…** (Ctrl+S), **Close model** and, under **Examples**, the built-in files. *Close model* leaves the current model and returns to the start screen; it is greyed out while no model is open. An entry ends in “…” when it asks for something before it acts (a file to pick, a file name to confirm). It closes after a choice, with Esc, or when you click elsewhere; the arrow keys move through it. |
-| **Export ▾** | **Export current view as SVG**: saves the view on screen (Physical or Logical) as a picture. Greyed out until a model is open. The menu works like **File**; the left and right arrow keys move between the two. |
-| **Current model** | opens the edit view of the entire model: its title, description and format version, and any problem that doesn't belong to a single object (shown as a badge on the button). |
+| **Export ▾** | One entry, **Export view as…**, which opens a submenu with **PNG** and **SVG**. Either saves the selected view (Physical or Logical) as a picture; see [Exporting pictures](#exporting-pictures). Greyed out until a model is open. The submenu opens when the entry is clicked or tapped, or with Enter, Space or the right arrow key; the left arrow key or Esc closes it. The menu works like **File**; the left and right arrow keys move between the two. |
 | ↶ ↷ | undo and redo |
 | **Physical** / **Logical** | the two views |
 | **Auto-arrange** | arranges the view on screen; its icon shows the layout status |
@@ -155,6 +154,37 @@ exporting, **Cancel** keeps the model and the editor exactly as they are. A
 download is always a new file in the browser's downloads location; the file
 you opened is never overwritten. Closing also clears the selection, the
 view, filters and zoom, so the next model starts clean.
+
+### Exporting pictures
+
+**Export → Export view as…** opens a submenu with two formats:
+
+| Format | What you get |
+|---|---|
+| **PNG** | A bitmap image, drawn at twice the diagram's size so text stays sharp, on the diagram's background colour. For documents, chats and slides. |
+| **SVG** | A vector drawing that stays sharp at any size and can be opened in a browser or a drawing program. |
+
+Both are made from the same picture, so they show the same thing:
+
+* **the view that is selected**, Physical or Logical; the other view is
+  exported by switching to it first;
+* **the whole diagram**, whatever part of it is on screen: zooming and
+  panning don't change the export, and a margin around the content keeps
+  anything from being cut off;
+* **every label in full**, as on screen;
+* the **legend** and the **Networks** overview of that view, beside the
+  diagram ([Networks in exported pictures](#networks-in-exported-pictures)).
+
+The file is named after the model and the view, for example
+`enterprise-wan-logical.png`, and lands in the browser's downloads location.
+A short message confirms the export. The picture is produced inside the page;
+nothing is sent anywhere.
+
+A browser can only draw images up to a certain size. A very large diagram is
+therefore drawn at less than twice its size (the message says at what scale)
+so that the whole picture still fits; the SVG has no such limit. If an export
+fails, a dialog says which file could not be created and why, and nothing is
+downloaded.
 
 ### Port ranges
 
@@ -232,7 +262,7 @@ written back byte-for-byte. The details are in
 | Auto-arrange | **Auto-arrange** in the top toolbar (or `A`): recomputes the positions of the **whole model** in the view on screen. The other view is not changed. If the view has positions you set by hand, it asks before replacing them. The button itself shows whether the view on screen matches the auto-arranged layout (icon, colour and hover text). |
 | Find | `/` or the search box: ids, labels, IP addresses, CIDRs, protocols, cable ids |
 | Filter | **Legend** tab (logical view): turn protocols on and off; top-bar toggles for labels, networks and a faint physical underlay |
-| Export picture | **Export → Export current view as SVG** in the toolbar saves the view on screen (Physical or Logical) as a standalone SVG file. The file always contains the **legend** of that view (device types, cable media and speed, locations; or protocols and line styles) and, in a second box beside it, a **Networks** overview. Both are drawn to the right of the diagram so they cover nothing, and the picture is enlarged to include them. They list what is drawn: protocols you have hidden are left out. See [Networks in exported pictures](#networks-in-exported-pictures). |
+| Export picture | **Export → Export view as… → PNG** or **SVG** in the toolbar saves the selected view (Physical or Logical) as a picture; see [Exporting pictures](#exporting-pictures). The picture always contains the **legend** of that view (device types, cable media and speed, locations; or protocols and line styles) and, in a second box beside it, a **Networks** overview. Both are drawn to the right of the diagram so they cover nothing, and the picture is enlarged to include them. They list what is drawn: protocols you have hidden are left out. See [Networks in exported pictures](#networks-in-exported-pictures). |
 
 ### Which entries count as related
 
@@ -537,8 +567,9 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/scr
 | Rendering | `test/render.test.mjs` (12 tests) | Physical view: devices, cables and ports, no relations. Logical view: relations, no cables; tunnels as tubes; GRE inside IPsec; parallel lanes; protocol matrix; hostile labels stay text; deterministic layout |
 | **Legend in exported SVG** | `test/legend.test.mjs` (5 tests) | For every example and both views: the legend lies to the right of everything drawn, inside the enlarged viewBox, with margins; every label fits its frame; a short diagram grows to the legend's height and a large one with many disconnected components keeps its size. Content: device types, media, speed, ports, locations, the VLAN-mismatch symbol only when used; protocols with their line styles, without the ones that are hidden; no references outside the file. The Legend tab and the SVG legend come from the same entries. |
 | View switching | `test/state.test.mjs` (8 tests) | Physical ↔ logical switching keeps the selection and positions; highlight sets; search, details and legend |
-| **Toolbar and outline** | `test/menu.test.mjs` (8 tests), and 49 checks of the browser self-test | The toolbar markup: logo and version, one **File** menu holding New, Open, Download and the examples, **Current model**, and undo/redo, views, Auto-arrange and Find as direct controls; no "document" wording in the interface. In the browser: the menu opens, names its entries, closes with Esc and on an outside click, works with arrow keys, and loads an example; **Current model** opens the whole model's edit view; outline sections fold and unfold, Links and Protocols start folded, a folded section keeps its count, its problems, the selected entry and the number of related entries, the filter looks inside, **+ Add** opens it, and folding never changes the model. **Start screen:** name, logo and one sentence; New model, Open YAML file (file picker and drop target) and Load example (picker filled with the six examples by title, then *Load* or Enter); no link row, file names or long text; keyboard order; drops anywhere are taken over by the page, valid files open, invalid and non-YAML files give a "Could not open" page with a way back, non-file drops change nothing, and a drop onto unsaved work asks first. **Export menu:** next to File, same behaviour, arrow keys between the menus, disabled without a diagram, exports the selected view with its legend and Networks box; no Save SVG button. **Close model:** after *Download model…*, disabled without a model; a clean new model, opened file and example close at once; with unsaved changes the prompt offers Cancel (model, view, selection, tab and form untouched; Esc too), Discard changes (nothing exported) and Download and close (the YAML is exported under the new-copy name, then the start screen); the wording never claims to overwrite the original; closing clears selection, view, filters, folding and search. **+ Port Range** through the dialog: live preview, disabled Create and errors for invalid ranges, Cancel, creation of 24 ports, duplicate rejection, undo, export → reload. |
-| **Viewport** | `test/viewport.test.mjs` (12 tests) → `dist/netatlas.html#viewportcheck` (23 states per window size, including the start screen's actions, the open File and Export menus and the search results) | Stylesheet: the shell is sized by the viewport (`100dvh`, shrinkable middle row), the document is clipped, no fixed pixel heights, the panels are the scrolling regions and positioned. **In a real browser at ten window sizes** (maximized, not maximized, short and wide, both narrow layouts, and the viewports of pages zoomed to 150 %, 200 % and 300 %): with a long device form, its last field focused, both views, every tab, long lists and a dialog, the document has nothing to scroll and cannot be scrolled; toolbar controls, diagram controls, tabs and status bar are inside the window; the side panel ends at the status bar; long panels scroll to their end inside themselves. |
+| **Toolbar and outline** | `test/menu.test.mjs` (9 tests), and the browser self-test | The toolbar markup: logo and version, one **File** menu holding New, Open, Download and the examples, the **Export** menu with *Export view as…* and its PNG / SVG submenu, and undo/redo, views, Auto-arrange and Find as direct controls; no "document" wording in the interface. In the browser: the menu opens, names its entries, closes with Esc and on an outside click, works with arrow keys, and loads an example; there is no **Current model** button, the model panel stays visible and **Edit model settings** in the Edit tab opens the whole model's edit view, where the title is edited and undone; outline sections fold and unfold, Links and Protocols start folded, a folded section keeps its count, its problems, the selected entry and the number of related entries, the filter looks inside, **+ Add** opens it, and folding never changes the model. **Start screen:** name, logo and one sentence; New model, Open YAML file (file picker and drop target) and Load example (picker filled with the six examples by title, then *Load* or Enter); no link row, file names or long text; keyboard order; drops anywhere are taken over by the page, valid files open, invalid and non-YAML files give a "Could not open" page with a way back, non-file drops change nothing, and a drop onto unsaved work asks first. **Export menu:** next to File, same behaviour, arrow keys between the menus, disabled without a diagram, exports the selected view with its legend and Networks box; no Save SVG button. **Close model:** after *Download model…*, disabled without a model; a clean new model, opened file and example close at once; with unsaved changes the prompt offers Cancel (model, view, selection, tab and form untouched; Esc too), Discard changes (nothing exported) and Download and close (the YAML is exported under the new-copy name, then the start screen); the wording never claims to overwrite the original; closing clears selection, view, filters, folding and search. **+ Port Range** through the dialog: live preview, disabled Create and errors for invalid ranges, Cancel, creation of 24 ports, duplicate rejection, undo, export → reload. |
+| **Picture export** | `test/menu.test.mjs` (scale and file names), and the browser self-test | **Both formats, both views**, through the menu, for enterprise-wan (zoomed in and panned first), long-labels, a fixture with a loopback-only network and a generated **large model** (96 devices, 8 groups, 9 networks): the file is named `<model>-<view>.png` / `.svg`; the picture covers the diagram's bounds, not the part on screen, and carries no pan or zoom; every device is in it and no text is shortened; the **legend** and the **Networks** box of that view lie inside the picture with a margin. The PNG has a valid signature and header, the size of the SVG times the scale, is not blank in the legend and Networks areas, and matches the downloaded SVG drawn at the same size pixel for pixel (one picture, two formats). The Networks box differs by view (the loopback-only network only in the logical pictures). PNG scale: 2×, reduced for very large diagrams (the large logical view is drawn below 2×). **Menu:** disabled without a model; the submenu opens on a press, not on hover, with arrow right / Enter / Space, closes with arrow left / Esc. **Failures:** a PNG that can't be encoded and an SVG that can't be serialised open a dialog naming the file and the reason; nothing is downloaded. |
+| **Viewport** | `test/viewport.test.mjs` (12 tests) → `dist/netatlas.html#viewportcheck` (24 states per window size, including the start screen's actions, the open File and Export menus, the open PNG / SVG submenu and the search results) | Stylesheet: the shell is sized by the viewport (`100dvh`, shrinkable middle row), the document is clipped, no fixed pixel heights, the panels are the scrolling regions and positioned. **In a real browser at ten window sizes** (maximized, not maximized, short and wide, both narrow layouts, and the viewports of pages zoomed to 150 %, 200 % and 300 %): with a long device form, its last field focused, both views, every tab, long lists and a dialog, the document has nothing to scroll and cannot be scrolled; toolbar controls, diagram controls, tabs and status bar are inside the window; the side panel ends at the status bar; long panels scroll to their end inside themselves. |
 | Offline / artifact | `test/build.test.mjs` (8 tests) | One inline script; no external references or remote URLs; no `fetch`, XHR, WebSocket, `eval`, `innerHTML` …; strict CSP before the script; compiled JavaScript only; every module comes from `src/`; one version in `package.json`, `package-lock.json`, the HTML (meta and UI) and `CHANGELOG.md` |
 | Device types | `test/device-types.test.mjs` (6 tests) | Exactly the 15 specified types with their display names; each is accepted, has its own icon and a default tier; no type is allowed (generic icon); any other value (old names such as `l3switch`, `hypervisor`, `host`, `leaf`, `spine`, wrong case, hostile text) is an error at the type line with a suggestion or the list of types; display names in subtitles, details and the legend; the examples use only these types |
 | New elements | `test/creation-defaults.test.mjs` (7 tests) | **New** is empty and valid; each new object gets only an ID (no type, kind, prefix, VLAN, protocol or category); missing required values are errors located at the object, optional ones stay unset; choosing a value saves exactly it and clearing removes the key; an empty group kind is not drawn as a site; **Duplicate** keeps all values; every example imports and exports byte-for-byte, with model values taken only from the file |
@@ -547,7 +578,7 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/scr
 | Architecture | `test/architecture.test.mjs` (3 tests) | Every module lives in a layer folder; imports follow the allowed dependency direction (docs/ARCHITECTURE.md); the diagram, layout and UI layers never import the YAML layer |
 | **Port ranges** | `test/port-range.test.mjs` (7 tests) | The final number is the port number (also with leading zeros and multi-part names); ids follow the model's convention, with the typed name as label when it isn't a valid id. Rejected with a clear reason: missing number, different prefixes, first not lower than last, more than 256 ports, names that can't become ids. Duplicate names or ids on the device (ids and labels, physical and logical) reject the whole range; other devices don't count. Creation is all or nothing, one undo step, physical interfaces only (no addresses, VLANs, links); alphabetical display; **export → reload** of generated ports. |
 | Module APIs | `test/modules.test.mjs` (9 tests) | Document editing operations (typed values, lists, endpoints, attrs, key order, one undo step each); the format schema is the single source of allowed keys; model queries; export file names; `check:dist` accepts the current build and rejects a stale HTML file |
-| **End-to-end in a real browser** | `test/browser.test.mjs` → `dist/netatlas.html#selftest` (281 in-page checks) | Headless Chrome, Edge or Chromium opens the file from `file://` **with DNS resolution disabled** and drives the real UI. **Viewer:** every example loads through the File API path, both views are drawn, loopback chips appear only in the logical view, interaction works. **New model:** New is empty; a new device shows *Select device type* and saves no type until one is chosen; a new relation has no protocol and reports its missing protocol and endpoints (export then needs "Download anyway"); a new network is only an ID; add a device, **add two loopbacks, type IPv4/IPv6 addresses, see the error for an address without a prefix and fix it**, add physical interfaces (type shown as read-only *Physical*), **a bond with two member ports, a VLAN interface whose *Ports carrying VLAN* follow the cable's VLANs, and a tunnel sourced from a loopback, an address and a port (an unknown source is an error)**, all listed alphabetically while the file keeps its order, a cable (link ends offer physical interfaces only), a GRE tunnel between loopbacks with nested attrs, then **download and reload** the file. **Imported model:** rename a device (every reference follows), edit, add an IPv6 loopback, download as `…-edited.yaml`, **reload, and check that edits, hidden attributes and comments survived**. **Guards:** unsaved-changes dialog on replace; `beforeunload`; Ctrl+Z/Y; deleting a referenced device reports broken references; **exporting an invalid model requires "Download anyway"**; YAML-tab apply/reject; unknown keys kept and movable into attrs; typed text is committed before a button acts; **selection context in the lists:** selecting from the diagram, the left list and the right-hand Relations list keeps lists and diagram consistent for every element type (direct entries related, indirect ones dimmed), unrelated entries stay focusable and selectable, view switches leave no stale highlighting, and `Esc` clears everything; the device type is chosen from the 15 types by display name. **Auto-arrange:** the button is in the top toolbar, visible and labelled (disabled until a model is open); the status badges read *Auto-arranged* / *Manually adjusted* / *Edited since arranged* after loading, dragging, undo, switching views (the shown view is highlighted), Auto-arrange, moving a node back to its calculated position, export → reload of arranged and of manually adjusted layouts, a model edit, and New; loading stores nothing; the dialog shows the scope; arranging an automatic layout stores it without moving anything; repeating it is a no-op; a manual move changes only that node and is undone by arrange (and restored by undo); **arrange → export → reload is pixel-identical in both views**; a file with every list and key reversed arranges identically; **the browser reproduces the build-time positions of `metro-ring-arranged.yaml`** (a cross-engine determinism check when run in Firefox or Safari). **Safety:** hostile labels create no elements; YAML syntax errors are refused with the current model kept; **no network requests, no CSP violations**. The test is skipped if no Chromium-based browser is installed; set `NETATLAS_BROWSER` to choose one. |
+| **End-to-end in a real browser** | `test/browser.test.mjs` → `dist/netatlas.html#selftest` (294 in-page checks) | Headless Chrome, Edge or Chromium opens the file from `file://` **with DNS resolution disabled** and drives the real UI. **Viewer:** every example loads through the File API path, both views are drawn, loopback chips appear only in the logical view, interaction works. **New model:** New is empty; a new device shows *Select device type* and saves no type until one is chosen; a new relation has no protocol and reports its missing protocol and endpoints (export then needs "Download anyway"); a new network is only an ID; add a device, **add two loopbacks, type IPv4/IPv6 addresses, see the error for an address without a prefix and fix it**, add physical interfaces (type shown as read-only *Physical*), **a bond with two member ports, a VLAN interface whose *Ports carrying VLAN* follow the cable's VLANs, and a tunnel sourced from a loopback, an address and a port (an unknown source is an error)**, all listed alphabetically while the file keeps its order, a cable (link ends offer physical interfaces only), a GRE tunnel between loopbacks with nested attrs, then **download and reload** the file. **Imported model:** rename a device (every reference follows), edit, add an IPv6 loopback, download as `…-edited.yaml`, **reload, and check that edits, hidden attributes and comments survived**. **Guards:** unsaved-changes dialog on replace; `beforeunload`; Ctrl+Z/Y; deleting a referenced device reports broken references; **exporting an invalid model requires "Download anyway"**; YAML-tab apply/reject; unknown keys kept and movable into attrs; typed text is committed before a button acts; **selection context in the lists:** selecting from the diagram, the left list and the right-hand Relations list keeps lists and diagram consistent for every element type (direct entries related, indirect ones dimmed), unrelated entries stay focusable and selectable, view switches leave no stale highlighting, and `Esc` clears everything; the device type is chosen from the 15 types by display name. **Auto-arrange:** the button is in the top toolbar, visible and labelled (disabled until a model is open); the status badges read *Auto-arranged* / *Manually adjusted* / *Edited since arranged* after loading, dragging, undo, switching views (the shown view is highlighted), Auto-arrange, moving a node back to its calculated position, export → reload of arranged and of manually adjusted layouts, a model edit, and New; loading stores nothing; the dialog shows the scope; arranging an automatic layout stores it without moving anything; repeating it is a no-op; a manual move changes only that node and is undone by arrange (and restored by undo); **arrange → export → reload is pixel-identical in both views**; a file with every list and key reversed arranges identically; **the browser reproduces the build-time positions of `metro-ring-arranged.yaml`** (a cross-engine determinism check when run in Firefox or Safari). **Safety:** hostile labels create no elements; YAML syntax errors are refused with the current model kept; **no network requests, no CSP violations**. The test is skipped if no Chromium-based browser is installed; set `NETATLAS_BROWSER` to choose one. |
 
 ### Manual check (any browser, e.g. Firefox or Safari)
 
@@ -673,7 +704,7 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/scr
      panel) and never lies on top of the diagram, the zoom bar or the
      toolbar.
    * Open `examples/enterprise-wan.yaml`, choose **Physical**, press
-     **Export → Export current view as SVG**. Open the saved file by itself in a browser (offline is
+     **Export → Export view as… → SVG**. Open the saved file by itself in a browser (offline is
      fine): right of the diagram is a box *Legend — physical view* with
      device icons, cable colours, the two line widths and the location
      boxes. It doesn't overlap anything and nothing is cut off.
@@ -710,7 +741,7 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/scr
       The button shows ✓.
     * Select the device `s`, type a second line into **Label** (Enter makes a
       new line; click elsewhere to apply): the box grows and shows two lines.
-    * Export both views (**Export → Export current view as SVG**) and open the files on their own: the same
+    * Export both views (**Export → Export view as… → SVG**) and open the files on their own: the same
       full text, the same label places, and the legend beside the diagram.
     * Open `enterprise-wan.yaml`: in the physical view the two peer links
       between `hq-core1` and `hq-core2` are straight, every cable has its
@@ -727,11 +758,17 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/scr
       `netatlas.html`. Reload, then drop a picture or a broken YAML file:
       the page says *Could not open …* with the reason and offers to open
       another file, start a new model or go back.
-    * **Export** next to **File** lists *Export current view as SVG*, greyed
-      out on the start screen. With a model open, choose it in the Physical
-      and in the Logical view: the two files are named `…-physical.svg` and
-      `…-logical.svg` and each contains its legend and Networks box. The zoom
-      bar at the bottom of the diagram has only **+**, **−** and **Fit**.
+    * **Export** next to **File** lists *Export view as…*, greyed out on
+      the start screen. With a model open, click it: **PNG** and **SVG**
+      appear under it (nothing opens by hovering). Try it with the keyboard
+      too: arrow-down to the entry, arrow-right into the submenu, arrow-left
+      or Esc back.
+    * Zoom far into the diagram, then export **PNG** and **SVG** in the
+      Physical and in the Logical view: four files named `…-physical.png`,
+      `…-physical.svg`, `…-logical.png`, `…-logical.svg`. Each shows the
+      whole diagram (not the zoomed part) with its legend and Networks box,
+      and the PNG looks like the SVG. The zoom bar at the bottom of the
+      diagram has only **+**, **−** and **Fit**.
     * Change something in the model, then drop another file: you are asked
       before the unsaved model is replaced.
 
@@ -755,14 +792,16 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/scr
 
 13. **Toolbar and outline.** Open `enterprise-wan.yaml`.
     * The toolbar reads, from the left: logo and version, **File**,
-      **Current model**, undo and redo, **Physical** / **Logical**,
+      **Export**, undo and redo, **Physical** / **Logical**,
       **Auto-arrange**, **Find…**.
     * **File** opens a menu with *New model*, *Open model…*, *Download
       YAML* and the examples. Esc or a click elsewhere closes it; with the
       keyboard, arrow-down opens it and moves through the entries.
-    * Select a device, then press **Current model**: the Edit tab shows the
-      model's title and description, and the button is highlighted. There is
-      no "Document" entry in the panel on the left.
+    * There is no **Current model** button. The model panel on the left and
+      the diagram are there as before. Click an empty spot of the diagram,
+      open the **Edit** tab and press **Edit model settings**: the model's
+      title and description can be edited. There is no "Document" entry in
+      the panel on the left.
     * In the left panel **Links** and **Protocols** are folded. Click a
       heading to fold or unfold it; **Collapse all** leaves six headings.
       Select a device in the diagram: its entry appears under the folded

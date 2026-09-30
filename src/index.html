@@ -33,11 +33,14 @@
   <div class="menu-wrap">
     <button id="export-btn" type="button" class="menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="export-menu" title="Export: save the current view as a picture">Export <span class="caret" aria-hidden="true">▾</span></button>
     <div id="export-menu" class="dropdown menu" role="menu" aria-label="Export" hidden>
-      <button id="btn-export-svg" type="button" role="menuitem" title="Open or create a model first" disabled><span class="mi-label">Export current view as SVG</span></button>
+      <button id="btn-export-as" type="button" role="menuitem" aria-haspopup="menu" aria-expanded="false" aria-controls="export-formats" title="Open or create a model first" disabled><span class="mi-label">Export view as…</span><span class="mi-hint sub-caret" aria-hidden="true">▸</span></button>
+      <div id="export-formats" class="submenu" role="menu" aria-label="Export view as" hidden>
+        <button id="btn-export-png" type="button" role="menuitem" data-format="png" title="Open or create a model first" disabled><span class="mi-label">PNG</span><span class="mi-hint">image</span></button>
+        <button id="btn-export-svg" type="button" role="menuitem" data-format="svg" title="Open or create a model first" disabled><span class="mi-label">SVG</span><span class="mi-hint">vector drawing</span></button>
+      </div>
     </div>
   </div>
   <input id="file" type="file" accept=".yaml,.yml,application/yaml,application/x-yaml,text/yaml,text/plain" hidden>
-  <button id="btn-model" type="button" class="model-btn" title="Edit the settings of the whole model (title, description)" disabled><span class="model-btn-label">Current model</span><span id="model-badge" class="ol-badge" hidden></span></button>
   <div class="btn-group">
     <button id="btn-undo" type="button" title="Undo (Ctrl+Z)" disabled aria-label="Undo">↶</button>
     <button id="btn-redo" type="button" title="Redo (Ctrl+Y)" disabled aria-label="Redo">↷</button>

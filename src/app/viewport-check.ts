@@ -190,6 +190,9 @@ export async function runViewportCheck(app: App, doc: Document): Promise<Check[]
     click('#export-btn');
     await tick();
     state('Export menu open', popup('#export-menu'));
+    click('#btn-export-as');
+    await tick();
+    state('Export submenu open (PNG, SVG)', (q('#export-formats') as HTMLElement).hidden ? ['the submenu did not open'] : popup('#export-menu'));
     click('#export-btn');
     await tick();
 

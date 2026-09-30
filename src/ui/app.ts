@@ -6,7 +6,7 @@
  * letting the browser download a new copy. Nothing is transmitted.
  */
 import { ModelDoc, Origin, ifaceSchemaKind } from '../editor/document';
-import { downloadText, exportFileName, readTextFile, safeYamlFileName } from './files';
+import { PngPicture, downloadBlob, downloadText, exportFileName, pictureBaseName, readTextFile, safeYamlFileName, svgToPng } from './files';
 import { el, materialize, mount } from './dom';
 import { DialogOpts, showDialog, showToast } from './dialogs';
 import { Editor, EditorSel } from './inspector';
@@ -126,7 +126,7 @@ export class App {
   }
 
   /** Open the edit view of the whole model (title, description, format version). */
-  editModel(): void {
+  private editModel(): void {
     if (!this.mdoc) return;
     this.editor.sel = { kind: 'document', index: 0 };
     this.editorSelected(this.editor.sel);
@@ -172,11 +172,35 @@ export class App {
       menu.hidden = !open;
       btn.setAttribute('aria-expanded', open ? 'true' : 'false');
       btn.classList.toggle('active', open);
+      // a menu always opens with its submenus closed
+      const subs = menu.querySelectorAll('[aria-haspopup="menu"]');
+      for (let i = 0; i < subs.length; i++) this.setSubmenu(subs[i] as HTMLElement, false);
       if (!open) continue;
       this.keepInWindow(menu);
       if (focus) {
         const first = menu.querySelector('button:not(:disabled)') as HTMLElement | null;
         (first || btn).focus();
+      }
+    }
+  }
+
+  /**
+   * Open or close the submenu of a menu entry (the entry names it with
+   * aria-controls). It opens in place, under its entry. `focus` moves the
+   * focus to its first entry when it opens (keyboard use).
+   */
+  setSubmenu(entry: HTMLElement, open: boolean, focus = false): void {
+    const sub = this.doc.getElementById(entry.getAttribute('aria-controls') || '');
+    if (!sub) return;
+    const show = open && !(entry as HTMLButtonElement).disabled;
+    sub.hidden = !show;
+    entry.setAttribute('aria-expanded', show ? 'true' : 'false');
+    if (show) {
+      const menu = entry.closest('.dropdown') as HTMLElement | null;
+      if (menu) this.keepInWindow(menu);
+      if (focus) {
+        const first = sub.querySelector('button:not(:disabled)') as HTMLElement | null;
+        if (first) first.focus();
       }
     }
   }
@@ -190,14 +214,21 @@ export class App {
    * The toolbar menus (File, Export): a button that opens a list of entries.
    * A menu closes after an entry is chosen, on Escape, and when anything
    * outside it is pressed. Arrow up/down move between the entries, arrow
-   * left/right to the neighbouring menu.
+   * left/right to the neighbouring menu. An entry with a submenu opens it
+   * when it is pressed (mouse, touch, Enter or Space) or with arrow right;
+   * arrow left or Escape closes the submenu again. Nothing opens on hover.
    */
   private wireMenus(): void {
     App.MENUS.forEach(([btnId, menuId], at) => {
       const btn = this.$(btnId);
       const menu = this.$(menuId);
       const isOpen = (): boolean => !menu.hidden;
-      const items = (): HTMLElement[] => Array.prototype.slice.call(menu.querySelectorAll('button:not(:disabled)')) as HTMLElement[];
+      // the entries that can be reached now: enabled, and not inside a closed submenu
+      const items = (): HTMLElement[] => (Array.prototype.slice.call(menu.querySelectorAll('button:not(:disabled)')) as HTMLElement[]).filter((b) => !b.closest('[hidden]'));
+      const parentEntry = (el: Element | null): HTMLElement | null => {
+        const sub = el ? el.closest('.submenu') : null;
+        return sub ? (menu.querySelector(`[aria-controls="${sub.id}"]`) as HTMLElement | null) : null;
+      };
       const neighbour = (step: number): void => this.openMenu(App.MENUS[(at + step + App.MENUS.length) % App.MENUS.length][1], true);
       btn.addEventListener('click', () => this.openMenu(isOpen() ? null : menuId));
       btn.addEventListener('keydown', (e) => {
@@ -215,12 +246,32 @@ export class App {
       });
       // an entry acts through its own handler; the menu then gets out of the way
       menu.addEventListener('click', (e) => {
-        if ((e.target as Element).closest('button')) this.openMenu(null);
+        const b = (e.target as Element).closest('button') as HTMLElement | null;
+        if (!b) return;
+        if (b.getAttribute('aria-haspopup') === 'menu') {
+          // an entry with a submenu: pressing it opens or closes the submenu, the menu stays
+          // (a click made with the keyboard has no pointer position: the focus then follows into the submenu)
+          const opening = b.getAttribute('aria-expanded') !== 'true';
+          this.setSubmenu(b, opening, opening && (e as MouseEvent).detail === 0);
+        } else this.openMenu(null);
       });
       menu.addEventListener('keydown', (e) => {
         const list = items();
         const pos = list.indexOf(this.doc.activeElement as HTMLElement);
-        if (e.key === 'Escape') {
+        const active = this.doc.activeElement as HTMLElement | null;
+        const owner = parentEntry(active);
+        const opensSub = !!active && active.getAttribute('aria-haspopup') === 'menu' && menu.contains(active);
+        if (owner && (e.key === 'Escape' || e.key === 'ArrowLeft')) {
+          // inside a submenu: back to its entry
+          e.preventDefault();
+          e.stopPropagation();
+          this.setSubmenu(owner, false);
+          owner.focus();
+        } else if (opensSub && e.key === 'ArrowRight') {
+          e.preventDefault();
+          e.stopPropagation();
+          this.setSubmenu(active as HTMLElement, true, true);
+        } else if (e.key === 'Escape') {
           e.preventDefault();
           e.stopPropagation();
           this.openMenu(null);
@@ -775,23 +826,15 @@ export class App {
     (this.$('btn-download') as HTMLButtonElement).disabled = !d;
     (this.$('btn-close') as HTMLButtonElement).disabled = !d;
     // exporting needs a diagram: a model that could be drawn
-    const ex = this.$('btn-export-svg') as HTMLButtonElement;
+    const ex = this.$('btn-export-as') as HTMLButtonElement;
     ex.disabled = !s;
-    ex.title = s ? `Save the ${s.state.view} view on screen as an SVG file, with its legend and networks overview` : 'Open or create a model first';
-    // "Current model": the whole model's settings, with the problems that belong to no single object
-    const mb = this.$('btn-model') as HTMLButtonElement;
-    mb.disabled = !d;
-    const editing = !!d && !!this.editor.sel && this.editor.sel.kind === 'document';
-    mb.classList.toggle('active', editing);
-    mb.setAttribute('aria-pressed', editing ? 'true' : 'false');
-    mb.title = d ? `Edit the settings of the whole model: “${d.text(['title']) || 'Untitled'}”` : 'Edit the settings of the whole model (title, description)';
-    const general = d ? d.errors.concat(d.warnings).filter((i) => !d.issueEntity(i)) : [];
-    const generalErrors = general.filter((i) => i.severity === 'error').length;
-    const badge = this.$('model-badge');
-    badge.hidden = !general.length;
-    badge.textContent = String(generalErrors || general.length);
-    badge.className = 'ol-badge ' + (generalErrors ? 'err' : 'warn');
-    badge.title = `${generalErrors} error(s), ${general.length - generalErrors} warning(s) in the model settings`;
+    ex.title = s ? `Save the ${s.state.view} view as a picture: the whole diagram with its legend and networks overview` : 'Open or create a model first';
+    if (!s) this.setSubmenu(ex, false);
+    for (const fmt of ['png', 'svg']) {
+      const b = this.$('btn-export-' + fmt) as HTMLButtonElement;
+      b.disabled = !s;
+      b.title = s ? `Save the ${s.state.view} view as ${fmt === 'png' ? 'a PNG image' : 'an SVG file'}` : 'Open or create a model first';
+    }
     this.$('btn-undo').title = d && d.canUndo() ? `Undo: ${d.canUndo()} (Ctrl+Z)` : 'Undo (Ctrl+Z)';
     this.$('btn-redo').title = d && d.canRedo() ? `Redo: ${d.canRedo()} (Ctrl+Y)` : 'Redo (Ctrl+Y)';
     const st = this.$('status');
@@ -919,7 +962,6 @@ export class App {
       const t = (e.target as Element).closest('[data-example]');
       if (t && (await this.confirmDiscard('Loading an example'))) this.loadExample(Number(t.getAttribute('data-example')));
     });
-    this.$('btn-model').addEventListener('click', () => this.editModel());
     this.wireMenus();
     // start screen: choose an example, then load it (choosing alone loads nothing, so arrow keys can browse the list)
     const pick = this.$<HTMLSelectElement>('start-example');
@@ -979,7 +1021,8 @@ export class App {
     this.$('zoom-in').addEventListener('click', () => this.zoomBy(1.25));
     this.$('zoom-out').addEventListener('click', () => this.zoomBy(0.8));
     this.$('zoom-fit').addEventListener('click', () => this.fit());
-    this.$('btn-export-svg').addEventListener('click', () => this.downloadSvg());
+    this.$('btn-export-svg').addEventListener('click', () => void this.exportView('svg'));
+    this.$('btn-export-png').addEventListener('click', () => void this.exportView('png'));
     this.$('btn-arrange').addEventListener('click', () => void this.arrangeCurrentView());
 
     const opt = (id: string, fn: (v: boolean) => void): void => {
@@ -1368,6 +1411,18 @@ export class App {
    * enlarged to contain all of it.
    */
   exportSvg(): string {
+    return this.buildExport().text;
+  }
+
+  /**
+   * The picture of the view on screen as a standalone SVG document, with
+   * its size in diagram units. Its bounds are those of everything drawn
+   * (they include a margin), not of the part that is scrolled or zoomed into
+   * view; the legend and the networks overview are added beside the diagram
+   * and the picture is enlarged to contain them. Both export formats are
+   * made from this one document, so they show the same thing.
+   */
+  private buildExport(): { text: string; width: number; height: number } {
     const clone = this.svg.cloneNode(true) as SVGSVGElement;
     let b = this.bounds;
     const vp = clone.querySelector('#viewport');
@@ -1391,13 +1446,58 @@ export class App {
     clone.insertBefore(st, clone.firstChild);
     clone.removeAttribute('class');
     clone.setAttribute('class', 'export ' + (this.svg.getAttribute('class') || ''));
-    return new XMLSerializer().serializeToString(clone);
+    return { text: new XMLSerializer().serializeToString(clone), width: Math.round(b.w), height: Math.round(b.h) };
+  }
+
+  /** The view on screen as a PNG: the SVG export, drawn onto the diagram's background colour. */
+  exportPng(): Promise<PngPicture> {
+    const pic = this.buildExport();
+    const win = this.doc.defaultView;
+    const bg = win ? win.getComputedStyle(this.$('canvas-wrap')).backgroundColor : '';
+    return svgToPng(this.doc, pic.text, pic.width, pic.height, bg && bg !== 'rgba(0, 0, 0, 0)' ? bg : '#ffffff');
+  }
+
+  /** Name of an exported picture: the model's file name and the view, e.g. "enterprise-wan-logical.png". */
+  exportName(format: 'png' | 'svg'): string {
+    const view = this.session ? this.session.state.view : 'view';
+    return `${pictureBaseName(this.mdoc ? this.mdoc.fileName : '')}-${view}.${format}`;
+  }
+
+  /**
+   * Export → Export view as… → PNG / SVG: save the view that is selected
+   * (Physical or Logical) as a picture. A failure is reported in a dialog,
+   * with what went wrong and what can be done instead.
+   */
+  async exportView(format: 'png' | 'svg'): Promise<boolean> {
+    if (!this.session || !this.mdoc) return false;
+    const name = this.exportName(format);
+    try {
+      if (format === 'svg') {
+        downloadText(this.doc, this.exportSvg(), name, 'image/svg+xml');
+        this.toast(`Exported “${name}”.`);
+      } else {
+        const png = await this.exportPng();
+        downloadBlob(this.doc, png.blob, name);
+        const reduced = png.scale < 1.999 ? `, drawn at ${Math.round(png.scale * 100)} % because of its size` : '';
+        this.toast(`Exported “${name}” (${png.width} × ${png.height} pixels${reduced}).`);
+      }
+      return true;
+    } catch (e) {
+      const why = e instanceof Error ? e.message : String(e);
+      void this.dialog({
+        title: `Could not export the view as ${format.toUpperCase()}`,
+        body: [
+          el(this.doc, 'p', {}, [`“${name}” was not created: ${why}.`]),
+          el(this.doc, 'p', { class: 'muted' }, [format === 'png' ? 'Nothing was downloaded. Very large diagrams can exceed what a browser can draw as one image; the SVG export has no such limit.' : 'Nothing was downloaded.']),
+        ],
+        buttons: [{ label: 'OK', value: 'ok', kind: 'primary' }],
+      });
+      return false;
+    }
   }
 
   downloadSvg(): void {
-    if (!this.session || !this.mdoc) return;
-    const base = this.mdoc.fileName.replace(/\.[^.]*$/, '') || 'netatlas';
-    downloadText(this.doc, this.exportSvg(), base + '-' + this.session.state.view + '.svg', 'image/svg+xml');
+    void this.exportView('svg');
   }
 }
 
