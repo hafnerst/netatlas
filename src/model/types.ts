@@ -39,14 +39,27 @@ export interface Group {
 export const VLAN_MIN = 1;
 export const VLAN_MAX = 4094;
 
-/** Interface types that are not physical ports and therefore cannot terminate a cable. */
-export const LOGICAL_IFACE_TYPES = ['loopback', 'tunnel', 'vlan', 'svi', 'subinterface', 'virtual', 'lag', 'bundle', 'irb', 'bvi', 'vti'];
+/**
+ * What an interface is. The kind follows from where it is declared:
+ *   physical  an entry of the device's `interfaces` list: a port, the only kind that can be cabled;
+ *   logical   a child of a physical interface (`children`), e.g. a subinterface or an SVI;
+ *   tunnel    a child of a physical interface that is a tunnel endpoint;
+ *   loopback  an entry of the device's `loopbacks` list: a device-level logical endpoint.
+ */
+export type InterfaceKind = 'physical' | 'logical' | 'tunnel' | 'loopback';
+
+/** The types a child interface can have (the only interface type written in a file). */
+export const CHILD_IFACE_TYPES: readonly InterfaceKind[] = ['logical', 'tunnel'];
 
 export interface Interface {
   id: string;
   device: string;
   label?: string;
-  type: string;
+  type: InterfaceKind;
+  /** id of the physical interface a logical or tunnel interface belongs to */
+  parent?: string;
+  /** logical and tunnel interfaces of a physical interface, in file order (empty for every other kind) */
+  children: Interface[];
   addresses: string[];
   /** name of the VRF this interface is assigned to (display only) */
   vrf?: string;
@@ -61,16 +74,13 @@ export interface Device {
   label: string;
   type: string;
   group?: string;
-  vendor?: string;
-  model?: string;
-  role?: string;
-  mgmt?: string;
-  /** id of the loopback interface whose (IPv4) address is the router ID */
-  routerId?: string;
   tier?: number;
   description?: string;
   attrs: Attrs;
+  /** physical interfaces only, in file order; each holds its children */
   interfaces: Interface[];
+  /** device-level logical endpoints, in file order */
+  loopbacks: Interface[];
   line: number;
 }
 
@@ -193,7 +203,17 @@ export function isLoopback(i: Interface): boolean {
   return i.type === 'loopback';
 }
 
-/** Loopback interfaces of a device, in declaration order. */
-export function loopbacks(d: Device): Interface[] {
-  return d.interfaces.filter(isLoopback);
+/** Every interface of a device in file order: each physical interface followed by its children, then the loopbacks. */
+export function deviceInterfaces(d: Device): Interface[] {
+  const out: Interface[] = [];
+  for (const i of d.interfaces) {
+    out.push(i);
+    for (const c of i.children) out.push(c);
+  }
+  return out.concat(d.loopbacks);
+}
+
+/** Display name of an interface kind. */
+export function interfaceKindLabel(k: InterfaceKind): string {
+  return k === 'physical' ? 'Physical' : k === 'logical' ? 'Logical' : k === 'tunnel' ? 'Tunnel' : 'Loopback';
 }

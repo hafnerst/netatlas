@@ -1,14 +1,15 @@
-import { addrKey, hasHostBits, parseAddress, parsePrefix, prefixProblem } from '../model/ip';
+import { addrKey, hasHostBits, parsePrefix, prefixProblem } from '../model/ip';
 import { derive, vlanMismatch, vlanMismatchText } from '../model/derive';
 import {
   Attrs,
   CATEGORIES,
+  CHILD_IFACE_TYPES,
   Category,
   Device,
   Group,
   Interface,
+  InterfaceKind,
   LINE_STYLES,
-  LOGICAL_IFACE_TYPES,
   LineStyle,
   Link,
   LinkEnd,
@@ -18,6 +19,7 @@ import {
   Network,
   RelEndpoint,
   Relation,
+  deviceInterfaces,
   ifaceKey,
   relationDevices,
 } from '../model/types';
@@ -54,7 +56,6 @@ export const MAX_COORD = 1000000;
 const TOP_KEYS = SCHEMA.top;
 const GROUP_KEYS = SCHEMA.group;
 const DEVICE_KEYS = SCHEMA.device;
-const IFACE_KEYS = SCHEMA.interface;
 const LINK_KEYS = SCHEMA.link;
 const LINK_END_KEYS = SCHEMA.linkEnd;
 const NET_KEYS = SCHEMA.network;
@@ -255,13 +256,15 @@ function build(root: YNode | null, c: Ctx): Model | null {
   const interfaces = new Map<string, Interface>();
   /** "device:iface" -> the YAML node of each address in Interface.addresses (same order) */
   const ifaceAddrNodes = new Map<string, YNode[]>();
+  /** "device:iface" -> where the interface is declared, e.g. "devices.r1.interfaces[0].children[1]" */
+  const ifacePaths = new Map<string, string>();
   /** canonical address -> first "device:iface" using it */
   const addrOwner = new Map<string, { where: string; node: YNode }>();
   capped(r.list(get(top, 'devices'), 'devices'), L.maxDevices, 'devices', 'devices').forEach((n, i) => {
     const path = `devices[${i}]`;
     const m = r.map(n, path);
     if (!m) return;
-    r.keys(m, DEVICE_KEYS, path, ATTRS_HINT);
+    r.keys(m, DEVICE_KEYS, path, ATTRS_HINT, RETIRED.device);
     const id = r.id(m, path);
     if (!id) return;
     const dpath = `devices.${id}`;
@@ -283,44 +286,69 @@ function build(root: YNode | null, c: Ctx): Model | null {
       label: r.field(m, 'label', dpath, L.maxLabel) || id,
       type: deviceType(r, m, dpath, c),
       group: group !== undefined && groupMap.has(group) ? group : undefined,
-      vendor: r.field(m, 'vendor', dpath, L.maxLabel),
-      model: r.field(m, 'model', dpath, L.maxLabel),
-      role: r.field(m, 'role', dpath, L.maxLabel),
-      mgmt: r.field(m, 'mgmt', dpath, L.maxLabel),
       tier,
       description: r.field(m, 'description', dpath, L.maxDescription),
       attrs: r.attrs(get(m, 'attrs'), dpath + '.attrs'),
       interfaces: [],
+      loopbacks: [],
       line: m.line,
     };
-    const ifItems = capped(r.list(get(m, 'interfaces'), dpath + '.interfaces'), L.maxInterfacesPerDevice, dpath + '.interfaces', 'interfaces on one device');
-    ifItems.forEach((inode, k) => {
-      const ipath = `${dpath}.interfaces[${k}]`;
+    let count = 0;
+    /**
+     * One interface of this device. Its kind follows from the list it is in:
+     * `interfaces` (physical), `children` of a physical interface (logical or
+     * tunnel) or `loopbacks`. All of them share the device's id namespace, so
+     * "device:interface" names exactly one of them.
+     */
+    const readIface = (inode: YNode, ipath: string, where: 'interface' | 'child' | 'loopback', parent?: Interface): Interface | null => {
       let im: YMap | null;
-      if (inode.kind === 'scalar') {
+      if (inode.kind === 'scalar' && where !== 'loopback') {
         // shorthand: "- eth0"
         im = { kind: 'map', entries: new Map([['id', { key: 'id', keyLine: inode.line, value: inode }]]), line: inode.line, col: inode.col };
       } else im = r.map(inode, ipath);
-      if (!im) return;
-      r.keys(im, IFACE_KEYS, ipath, ATTRS_HINT, RETIRED.interface);
-      const iid = r.id(im, ipath, IFACE_RE, 'interface id');
-      if (!iid) return;
+      if (!im) return null;
+      r.keys(im, SCHEMA[where], ipath, ATTRS_HINT, RETIRED[where]);
+      const isLoop = where === 'loopback';
+      const kind = isLoop ? 'loopback' : 'interface';
+      const iid = r.id(im, ipath, IFACE_RE, kind + ' id');
+      if (!iid) return null;
       const key = ifaceKey(id, iid);
-      if (interfaces.has(key)) {
-        c.error(get(im, 'id') as YNode, ipath + '.id', `duplicate interface "${iid}" on device "${id}"`);
-        return;
+      const prev = interfaces.get(key);
+      if (prev) {
+        c.error(
+          get(im, 'id') as YNode,
+          ipath + '.id',
+          `duplicate interface "${iid}" on device "${id}" (already used by ${describeIface(prev)}; interfaces, their children and loopbacks share one set of ids per device)`,
+        );
+        return null;
       }
       if (interfaces.size >= L.maxInterfaces) {
         c.error(im, ipath, `too many interfaces in total (limit ${L.maxInterfaces})`);
-        return;
+        return null;
+      }
+      if (++count > L.maxInterfacesPerDevice) {
+        c.error(im, ipath, `too many interfaces on one device (limit ${L.maxInterfacesPerDevice}, counting children and loopbacks)`);
+        return null;
+      }
+      let type: InterfaceKind = isLoop ? 'loopback' : 'physical';
+      if (where === 'child') {
+        type = 'logical';
+        const t = r.field(im, 'type', ipath, 40);
+        if (t !== undefined) {
+          if (CHILD_IFACE_TYPES.indexOf(t as InterfaceKind) >= 0) type = t as InterfaceKind;
+          else {
+            c.error(
+              get(im, 'type') as YNode,
+              ipath + '.type',
+              `"${t}" is not a child interface type: use "logical" or "tunnel" (describe a more specific function, such as an SVI or a subinterface, with "label", "description" or "attrs")`,
+            );
+          }
+        }
       }
       const ipNode = get(im, 'ip');
       const addrNodes = r.list(ipNode, ipath + '.ip', true);
       const addrs: string[] = [];
       const addrsAt: YNode[] = [];
-      const type = (r.field(im, 'type', ipath, 40) || 'physical').toLowerCase();
-      const isLoop = type === 'loopback';
-      const kind = isLoop ? 'loopback' : 'interface';
       const seenHere = new Set<string>();
       addrNodes.forEach((an, j) => {
         const a = r.str(an, `${ipath}.ip[${j}]`, 64);
@@ -355,34 +383,34 @@ function build(root: YNode | null, c: Ctx): Model | null {
         device: id,
         label: r.field(im, 'label', ipath, L.maxLabel),
         type,
+        parent: parent ? parent.id : undefined,
+        children: [],
         addresses: addrs,
         vrf: r.field(im, 'vrf', ipath, 100),
-        mac: r.field(im, 'mac', ipath, 40),
+        mac: isLoop ? undefined : r.field(im, 'mac', ipath, 40),
         description: r.field(im, 'description', ipath, L.maxDescription),
         attrs: r.attrs(get(im, 'attrs'), ipath + '.attrs'),
         line: im.line,
       };
       interfaces.set(key, iface);
       ifaceAddrNodes.set(key, addrsAt);
-      dev.interfaces.push(iface);
-    });
-    // router_id: a loopback of this device
-    const ridNode = get(m, 'router_id');
-    const rid = r.str(ridNode, dpath + '.router_id', 100);
-    if (rid !== undefined) {
-      const inf = interfaces.get(ifaceKey(id, rid));
-      const loops = dev.interfaces.filter((x) => x.type === 'loopback').map((x) => x.id);
-      if (!inf) {
-        c.error(ridNode as YNode, dpath + '.router_id', `device "${id}" has no loopback "${rid}"` + (loops.length ? suggest(rid, loops) : ' (add a loopback interface first)'));
-      } else if (inf.type !== 'loopback') {
-        c.error(ridNode as YNode, dpath + '.router_id', `router_id must name a loopback interface; "${rid}" has type "${inf.type}"`);
-      } else {
-        dev.routerId = rid;
-        if (!inf.addresses.some((a) => a.indexOf(':') < 0 && !!parseAddress(a.split('/')[0]))) {
-          c.warn(ridNode as YNode, dpath + '.router_id', `loopback "${rid}" has no IPv4 address; router IDs are 32-bit (dotted-quad) values`);
-        }
+      ifacePaths.set(key, ipath);
+      if (where === 'interface') {
+        r.list(get(im, 'children'), ipath + '.children').forEach((cn, j) => {
+          const child = readIface(cn, `${ipath}.children[${j}]`, 'child', iface);
+          if (child) iface.children.push(child);
+        });
       }
-    }
+      return iface;
+    };
+    r.list(get(m, 'interfaces'), dpath + '.interfaces').forEach((inode, k) => {
+      const i = readIface(inode, `${dpath}.interfaces[${k}]`, 'interface');
+      if (i) dev.interfaces.push(i);
+    });
+    r.list(get(m, 'loopbacks'), dpath + '.loopbacks').forEach((inode, k) => {
+      const i = readIface(inode, `${dpath}.loopbacks[${k}]`, 'loopback');
+      if (i) dev.loopbacks.push(i);
+    });
     devices.push(dev);
   });
   const deviceMap = new Map(devices.map((d) => [d.id, d] as [string, Device]));
@@ -437,7 +465,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
       return null;
     }
     if (iface !== undefined && !interfaces.has(ifaceKey(device, iface))) {
-      const names = dev.interfaces.map((x) => x.id);
+      const names = deviceInterfaces(dev).map((x) => x.id);
       c.error(
         n.kind === 'map' ? (get(n, 'interface') as YNode) : n,
         path,
@@ -471,12 +499,13 @@ function build(root: YNode | null, c: Ctx): Model | null {
       if (ep.iface !== undefined) {
         const key = ifaceKey(ep.device, ep.iface);
         const inf = interfaces.get(key) as Interface;
-        if (LOGICAL_IFACE_TYPES.indexOf(inf.type) >= 0) {
+        if (inf.type !== 'physical') {
           c.error(
             en as YNode,
             `${lpath}.${side}`,
-            `interface "${key}" has type "${inf.type}", which is logical — a physical link must end on a physical port. ` +
-              'Model tunnels, loopbacks, SVIs and bundles as relations instead.',
+            `"${key}" is ${describeIface(inf)}, not a physical interface — a physical link must end on a physical interface. ` +
+              (inf.parent ? `Cable its physical interface "${ifaceKey(ep.device, inf.parent)}" instead; ` : '') +
+              'tunnels and sessions between logical interfaces or loopbacks are relations.',
           );
           return null;
         }
@@ -780,13 +809,18 @@ function build(root: YNode | null, c: Ctx): Model | null {
     assocs.forEach((a, j) => {
       if (a.vlan.state !== 'ambiguous') return;
       const at = (ifaceAddrNodes.get(key) as YNode[])[j];
-      const inf = interfaces.get(key) as Interface;
-      const k = (deviceMap.get(inf.device) as Device).interfaces.indexOf(inf);
       const nets = a.networks.filter((n) => (networkMap.get(n) as Network).vlan !== undefined).map((n) => `"${n}" (VLAN ${(networkMap.get(n) as Network).vlan})`);
-      c.warn(at, `devices.${inf.device}.interfaces[${k}].ip`, `the VLAN of ${a.address} on ${key} is ambiguous: it lies in ${nets.join(' and ')}; no VLAN is derived for it`);
+      c.warn(at, `${ifacePaths.get(key)}.ip`, `the VLAN of ${a.address} on ${key} is ambiguous: it lies in ${nets.join(' and ')}; no VLAN is derived for it`);
     });
   });
   return model;
+}
+
+/** "a loopback", "a tunnel interface of eth0" … for messages. */
+function describeIface(i: Interface): string {
+  if (i.type === 'loopback') return 'a loopback';
+  if (i.type === 'physical') return 'a physical interface';
+  return `a ${i.type} interface${i.parent ? ` of "${i.parent}"` : ''}`;
 }
 
 /** A device's type: one of the format's device types, or none. Anything else is an error. */

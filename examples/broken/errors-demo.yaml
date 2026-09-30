@@ -7,9 +7,15 @@ title: Error reporting demo
 devices:
   - id: r1
     typ: router                 # typo: "type"
+    vendor: Acme                # no longer part of the format
     interfaces:
-      - {id: eth0}
-      - {id: tun0, type: tunnel}
+      - id: eth0
+        type: physical          # an interface is always physical: it has no type
+        children:
+          - {id: tun0, type: tunnel}
+          - {id: eth0.10, type: subinterface}   # a child is "logical" or "tunnel"
+    loopbacks:
+      - {id: lo0}               # a loopback needs an address
   - id: r2
     interfaces: [eth0, eth1]
 

@@ -1,6 +1,7 @@
 /** Side-panel content (details, legend, relation list) as HTML VNodes. */
 import { deviceTypeLabel } from '../model/device-types';
-import { Attrs, CATEGORIES, Model, ProtocolDef, RelEndpoint, endpointText, ifaceKey, isLoopback, loopbacks, relationDevices } from '../model/types';
+import { sortedByName } from '../model/order';
+import { Attrs, CATEGORIES, Interface, Model, ProtocolDef, RelEndpoint, deviceInterfaces, endpointText, ifaceKey, interfaceKindLabel, relationDevices } from '../model/types';
 import { LegendItem, SWATCH_H, SWATCH_W, legendOf, relationSwatchParts } from '../diagram/legend';
 import { VNode, h } from '../diagram/scene';
 import { View } from '../diagram/session';
@@ -92,19 +93,15 @@ export function detailsFor(model: Model, ref: string): VNode {
       kv([
         ['id', d.id],
         ['type', deviceTypeLabel(d.type) || undefined],
-        ['role', d.role],
-        ['vendor', d.vendor],
-        ['model', d.model],
-        ['mgmt', d.mgmt],
-        ['router ID', d.routerId ? refLink(`iface:${d.id}:${d.routerId}`, `${d.routerId} (${(d.interfaces.find((i) => i.id === d.routerId)?.addresses || []).filter((a) => a.indexOf(':') < 0)[0] || 'no IPv4'})`) : undefined],
         ['group', d.group ? refLink('group:' + d.group, ix.groups.get(d.group)?.label || d.group) : undefined],
         ['description', d.description],
       ]),
     );
-    const loops = loopbacks(d);
+    // display order is alphabetical; the file order is not changed by viewing
+    const loops = sortedByName(d.loopbacks, (l) => l.id);
     if (loops.length) {
       kids.push(
-        h('section', {}, [
+        h('section', { 'data-list': 'loopbacks' }, [
           h('h4', {}, `Loopbacks (${loops.length})`),
           h(
             'table',
@@ -112,8 +109,8 @@ export function detailsFor(model: Model, ref: string): VNode {
             [h('tr', {}, [h('th', {}, 'id'), h('th', {}, 'name'), h('th', {}, 'addresses'), h('th', {}, 'used by')])].concat(
               loops.map((l) => {
                 const users = model.relations.filter((r) => r.endpoints.some((e) => e.device === d.id && e.iface === l.id));
-                return h('tr', {}, [
-                  h('td', {}, [refLink(`iface:${d.id}:${l.id}`, l.id + (d.routerId === l.id ? ' ★' : ''))]),
+                return h('tr', { 'data-iface': l.id }, [
+                  h('td', {}, [refLink(`iface:${d.id}:${l.id}`, l.id)]),
                   h('td', {}, l.label || ''),
                   h('td', {}, l.addresses.join('\n')),
                   h('td', {}, users.map((r) => refLink('relation:' + r.id, r.protocol.toUpperCase()))),
@@ -121,27 +118,33 @@ export function detailsFor(model: Model, ref: string): VNode {
               }),
             ),
           ),
-          d.routerId ? h('p', { class: 'muted small' }, '★ = router ID source') : null,
         ]),
       );
     }
-    const rows = d.interfaces.filter((i) => !isLoopback(i)).map((i) => {
+    const row = (i: Interface): VNode => {
       const lid = ix.ifaceLink.get(ifaceKey(d.id, i.id));
       const l = lid ? ix.links.get(lid) : undefined;
       const peer = l ? (l.a.device === d.id && l.a.iface === i.id ? l.b : l.a) : undefined;
-      return h('tr', { class: l ? '' : 'unused' }, [
-        h('td', {}, [refLink(`iface:${d.id}:${i.id}`, i.id)]),
-        h('td', {}, i.type === 'physical' ? '' : i.type),
+      return h('tr', { class: (i.parent ? 'child' : l ? '' : 'unused'), 'data-iface': i.id, 'data-kind': i.type }, [
+        h('td', {}, [i.parent ? h('span', { class: 'child-mark', 'aria-hidden': 'true' }, '↳ ') : null, refLink(`iface:${d.id}:${i.id}`, i.id)]),
+        h('td', {}, interfaceKindLabel(i.type)),
         h('td', {}, i.addresses.join(', ')),
         h('td', {}, interfaceVlanText(interfaceAddresses(model, d.id, i.id)).replace(/VLAN /g, '')),
         h('td', {}, peer ? [refLink('link:' + (lid as string), '→ ' + endpointText(peer))] : []),
       ]);
-    });
+    };
+    // each physical interface, followed by its logical and tunnel children
+    const rows: VNode[] = [];
+    for (const i of sortedByName(d.interfaces, (x) => x.id)) {
+      rows.push(row(i));
+      for (const c of sortedByName(i.children, (x) => x.id)) rows.push(row(c));
+    }
     if (rows.length) {
+      const kidsN = rows.length - d.interfaces.length;
       kids.push(
-        h('section', {}, [
-          h('h4', {}, `Interfaces (${rows.length}, ${d.interfaces.filter((i) => ix.ifaceLink.has(ifaceKey(d.id, i.id))).length} cabled)`),
-          h('table', { class: 'ports' }, [h('tr', {}, [h('th', {}, 'port'), h('th', {}, 'type'), h('th', {}, 'address'), h('th', { title: 'Derived from the network containing the address' }, 'vlan'), h('th', {}, 'cable')]), ...rows]),
+        h('section', { 'data-list': 'interfaces' }, [
+          h('h4', {}, `Interfaces (${d.interfaces.length} physical, ${d.interfaces.filter((i) => ix.ifaceLink.has(ifaceKey(d.id, i.id))).length} cabled${kidsN ? `, ${kidsN} child${kidsN > 1 ? 'ren' : ''}` : ''})`),
+          h('table', { class: 'ports' }, [h('tr', {}, [h('th', {}, 'interface'), h('th', {}, 'type'), h('th', {}, 'address'), h('th', { title: 'Derived from the network containing the address' }, 'vlan'), h('th', {}, 'cable')]), ...rows]),
         ]),
       );
     }
@@ -169,16 +172,25 @@ export function detailsFor(model: Model, ref: string): VNode {
       kv([
         ['device', refLink('device:' + i.device, ix.devices.get(i.device)?.label || i.device)],
         ['label', i.label],
-        ['type', i.type],
+        ['type', interfaceKindLabel(i.type)],
+        ['physical interface', i.parent ? refLink(`iface:${i.device}:${i.parent}`, i.parent) : undefined],
         ['addresses', i.addresses.join(', ')],
         ['vrf', i.vrf],
         ['mac', i.mac],
-        ['cable', isLoopback(i) ? undefined : lid ? refLink('link:' + lid, lid) : 'not cabled'],
+        ['cable', i.type !== 'physical' ? undefined : lid ? refLink('link:' + lid, lid) : 'not cabled'],
         ['description', i.description],
       ]),
     );
     const assocs = interfaceAddresses(model, i.device, i.id);
     if (assocs.length) kids.push(h('section', {}, [h('h4', {}, 'Network / VLAN (derived from the addresses)'), derivedAddressList(model, assocs)]));
+    kids.push(
+      list(
+        'Child interfaces',
+        sortedByName(i.children, (c) => c.id).map((c) =>
+          h('li', { 'data-iface': c.id }, [refLink(`iface:${i.device}:${c.id}`, c.id), h('span', { class: 'muted' }, ' ' + [interfaceKindLabel(c.type), c.addresses.join(', ')].filter((x) => x).join(' · '))]),
+        ),
+      ),
+    );
     kids.push(
       list(
         'Relations on this interface',
@@ -318,12 +330,19 @@ export function tooltipFor(model: Model, ref: string): string[] {
     const d = ix.devices.get(id);
     if (!d) return [];
     const cabled = d.interfaces.filter((i) => ix.ifaceLink.has(ifaceKey(d.id, i.id))).length;
-    return [d.label, [deviceTypeLabel(d.type), d.vendor, d.model].filter((s) => s).join(' · '), `${d.interfaces.length} interfaces, ${cabled} cabled`, d.mgmt ? 'mgmt ' + d.mgmt : ''].filter((s) => s);
+    const others = deviceInterfaces(d).length - d.interfaces.length - d.loopbacks.length;
+    return [
+      d.label,
+      deviceTypeLabel(d.type),
+      `${d.interfaces.length} physical interface${d.interfaces.length === 1 ? '' : 's'}, ${cabled} cabled`,
+      others ? `${others} child interface${others === 1 ? '' : 's'}` : '',
+      d.loopbacks.length ? `${d.loopbacks.length} loopback${d.loopbacks.length === 1 ? '' : 's'}` : '',
+    ].filter((s) => s);
   }
   if (kind === 'iface') {
     const i = ix.interfaces.get(id);
     if (!i) return [];
-    return [`${i.device} ${i.id}`, i.type !== 'physical' ? i.type : '', i.addresses.join(', '), interfaceVlanText(interfaceAddresses(model, i.device, i.id)), i.description || ''].filter((s) => s);
+    return [`${i.device} ${i.id}`, interfaceKindLabel(i.type) + (i.parent ? ' on ' + i.parent : '') + (i.children.length ? ' · children: ' + sortedByName(i.children, (c) => c.id).map((c) => c.id).join(', ') : ''), i.addresses.join(', '), interfaceVlanText(interfaceAddresses(model, i.device, i.id)), i.description || ''].filter((s) => s);
   }
   if (kind === 'link') {
     const l = ix.links.get(id);

@@ -34,19 +34,19 @@ networks:
 
 test('text, integer, flag and value edits: canonical key order, empty removes, one undo step each', () => {
   const d = doc(base);
-  d.setText(['devices', 0, 'vendor'], 'Acme');
+  d.setText(['devices', 0, 'description'], 'Acme');
   d.setText(['devices', 0, 'label'], 'Router 1');
   d.setInteger(['devices', 0, 'tier'], '2');
   d.setFlag(['relations', 0, 'directed'], true);
   d.setValue(['devices', 0, 'attrs'], ''); // null value, key kept
   let out = d.exportText();
-  assert.match(out, /- id: r1 {3}# the router\n {4}label: Router 1\n {4}vendor: Acme\n {4}tier: 2\n {4}attrs:\n {4}interfaces: \[eth0\]/);
+  assert.match(out, /- id: r1 {3}# the router\n {4}label: Router 1\n {4}tier: 2\n {4}description: Acme\n {4}attrs:\n {4}interfaces: \[eth0\]/);
   assert.match(out, /directed: true/);
-  d.setText(['devices', 0, 'vendor'], '');
+  d.setText(['devices', 0, 'description'], '');
   d.setFlag(['relations', 0, 'directed'], false);
   d.setInteger(['devices', 0, 'tier'], 'high'); // kept as text, reported by validation
   out = d.exportText();
-  assert.ok(!/vendor:/.test(out) && !/directed:/.test(out));
+  assert.ok(!/description:/.test(out) && !/directed:/.test(out));
   assert.ok(d.errors.some((e) => /tier must be an integer/.test(e.message)));
   // every operation was one undo step
   let n = 0;

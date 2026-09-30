@@ -42,7 +42,7 @@ export function deviceTypeLabel(id: string): string {
   return '';
 }
 
-/** Second line of a device box: type, role and model. */
-export function deviceSubtitle(type: string, model?: string, role?: string): string {
-  return [deviceTypeLabel(type), role, model].filter((x) => !!x).join(' · ');
+/** Second line of a device box: the display name of its type. */
+export function deviceSubtitle(type: string): string {
+  return deviceTypeLabel(type);
 }

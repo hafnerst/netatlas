@@ -20,7 +20,8 @@ import { CHIP_H, HUB_R, LNode, LogicalLayout, MAX_CHIPS, deviceRect, isMultipoin
 import { CHIP_FONT, MEMBER_LABEL_SIZE, NET_LABEL_SIZE, loopbackChipText, networkBody, pillBox } from '../layout/sizes';
 import { TextBlock } from '../layout/text';
 import { networkMembers } from '../model/derive';
-import { Device, LineStyle, Model, ProtocolDef, Relation, loopbacks, relationDevices } from '../model/types';
+import { sortedByName } from '../model/order';
+import { Device, LineStyle, Model, ProtocolDef, Relation, relationDevices } from '../model/types';
 import { LabelPlacer, alongSegment, centerRect, textLines } from './labels';
 import { cssToken, deviceNode, deviceSubtitle, SceneResult } from './physical';
 import { VNode, h } from './scene';
@@ -305,7 +306,7 @@ export function renderLogical(model: Model, layout: LogicalLayout, opts: Logical
     if (n.kind === 'device') {
       const d = model.index.devices.get(n.id);
       if (!d) return;
-      nodeLayer.push(deviceNode(n.ref, d.label, deviceSubtitle(d.type, d.model, d.role), d.type, deviceRect(n), 'type-' + cssToken(d.type)));
+      nodeLayer.push(deviceNode(n.ref, d.label, deviceSubtitle(d.type), d.type, deviceRect(n), 'type-' + cssToken(d.type)));
       nodeLayer.push(...loopbackChips(d, n));
     } else if (n.kind === 'network' && opts.showNetworks) {
       const nw = model.index.networks.get(n.id);
@@ -364,19 +365,18 @@ function pill(ref: string, p: Pt, box: { block: TextBlock; w: number; h: number 
   ]);
 }
 
-/** Loopbacks as small chips hanging under the device (logical view only; they are never cabled). */
+/** Loopbacks as small chips hanging under the device, in alphabetical order (logical view only; they are never cabled). */
 function loopbackChips(d: Device, n: LNode): VNode[] {
-  const loops = loopbacks(d);
+  const loops = sortedByName(d.loopbacks, (l) => l.id);
   if (!loops.length) return [];
   const out: VNode[] = [];
   const top = n.cy - n.h / 2 + (n.bodyH || 0) + 4;
   const w = n.w - 16;
   loops.slice(0, MAX_CHIPS).forEach((l, i) => {
-    const rid = d.routerId === l.id;
-    const text = loopbackChipText(l.id, l.addresses, rid);
+    const text = loopbackChipText(l.id, l.addresses);
     const y = top + i * CHIP_H;
     out.push(
-      h('g', { class: 'loop-chip' + (rid ? ' rid' : ''), 'data-ref': `iface:${d.id}:${l.id}` }, [
+      h('g', { class: 'loop-chip', 'data-ref': `iface:${d.id}:${l.id}` }, [
         h('rect', { x: n.cx - w / 2, y, width: w, height: CHIP_H - 3, rx: 6.5 }),
         h('text', { x: n.cx, y: y + 9.5, 'text-anchor': 'middle', 'font-size': CHIP_FONT }, text),
       ]),

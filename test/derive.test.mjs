@@ -27,8 +27,9 @@ const errorsOf = (text) => load2(text).errors.map((e) => e.message);
 const net = `netatlas: 1
 devices:
   - id: r1
+    loopbacks:
+      - {id: lo0, ip: [10.255.0.1/32, 2001:db8:ffff::1/128]}
     interfaces:
-      - {id: lo0, type: loopback, ip: [10.255.0.1/32, 2001:db8:ffff::1/128]}
       - {id: eth0, ip: [10.1.0.1/24, 2001:db8:1::1/64]}
       - {id: eth1, ip: 10.1.0.9/24}
       - {id: eth2}
@@ -133,7 +134,7 @@ test('membership: an invalid network prefix is an error and defines nothing', ()
 test('membership: overlapping networks each list the device', () => {
   const { model: m } = ok(net.replace('{id: empty}', '{id: super, cidr: 10.0.0.0/8}'));
   assert.deepEqual(members(m, 'super'), ['r1', 'r2']);
-  assert.deepEqual(matches(m, 'super'), ['r1:lo0 10.255.0.1/32', 'r1:eth0 10.1.0.1/24', 'r1:eth1 10.1.0.9/24', 'r2:eth0 10.1.0.2', 'r2:eth1 10.1.1.2/16']);
+  assert.deepEqual(matches(m, 'super'), ['r1:eth0 10.1.0.1/24', 'r1:eth1 10.1.0.9/24', 'r1:lo0 10.255.0.1/32', 'r2:eth0 10.1.0.2', 'r2:eth1 10.1.1.2/16']);
   assert.deepEqual(derive.interfaceAddresses(m, 'r1', 'eth1')[0].networks, ['lan', 'super']);
 });
 
@@ -164,7 +165,7 @@ test('interface VLAN: overlapping networks with conflicting VLANs are an explici
   const w = r.warnings.filter((x) => /ambiguous/.test(x.message));
   assert.equal(w.length, 3);
   assert.match(w[0].message, /the VLAN of 10\.1\.0\.1\/24 on r1:eth0 is ambiguous: it lies in "lan" \(VLAN 10\) and "part" \(VLAN 99\); no VLAN is derived for it/);
-  assert.equal(w[0].path, 'devices.r1.interfaces[1].ip');
+  assert.equal(w[0].path, 'devices.r1.interfaces[0].ip');
   // overlapping networks that agree, or where only one defines a VLAN, are not ambiguous
   assert.deepEqual(vlanOf(ok(net.replace('{id: empty}', '{id: part, cidr: 10.1.0.0/28, vlan: 10}')).model, 'r1', 'eth0'), [10, 'none']);
   assert.deepEqual(vlanOf(ok(net.replace('{id: empty}', '{id: super, cidr: 10.0.0.0/8}')).model, 'r1', 'eth0'), [10, 'none']);
@@ -363,7 +364,8 @@ devices:
   - id: r1
     interfaces:
       - {id: e0, speed: 1G, media: fiber, vlan: 10, ip: 10.1.0.1/24}
-      - {id: lo0, type: loopback, ip: 10.255.0.1/32, vlan: 5}
+    loopbacks:
+      - {id: lo0, ip: 10.255.0.1/32, vlan: 5}
 networks:
   - {id: n1, kind: vlan, vrf: red, vlan: 10, cidr: 10.1.0.0/24, members: [r1, "r1:e0"]}
 `;
@@ -378,7 +380,7 @@ networks:
   assert.match(by(/"members"/)[0].message, /members are derived from the interface and loopback addresses/);
   assert.match(by(/renamed/)[0].message, /group kind "row" was renamed to "floor" — write "kind: floor"/);
   // located at the key, with its line, for the editor and the problem list
-  assert.deepEqual([by(/"members"/)[0].path, by(/"members"/)[0].key, by(/"members"/)[0].line], ['networks[0].members', 'members', 10]);
+  assert.deepEqual([by(/"members"/)[0].path, by(/"members"/)[0].key, by(/"members"/)[0].line], ['networks[0].members', 'members', 11]);
   // nothing is converted: the old values are not read into the model …
   const e0 = r.model.index.interfaces.get('r1:e0');
   assert.ok(!('speed' in e0) && !('vlan' in e0));
@@ -393,7 +395,9 @@ networks:
 test('the schema no longer contains retired keys, and the editor never writes them', () => {
   for (const kind of Object.keys(RETIRED)) for (const k of Object.keys(RETIRED[kind])) assert.ok(!SCHEMA[kind].includes(k), `${kind}.${k}`);
   assert.deepEqual(SCHEMA.network, ['id', 'label', 'cidr', 'vlan', 'description', 'attrs']);
-  assert.deepEqual(SCHEMA.interface, ['id', 'label', 'type', 'ip', 'vrf', 'mac', 'description', 'attrs']);
+  assert.deepEqual(SCHEMA.interface, ['id', 'label', 'ip', 'vrf', 'mac', 'description', 'attrs', 'children']);
+  assert.deepEqual(SCHEMA.child, ['id', 'label', 'type', 'ip', 'vrf', 'mac', 'description', 'attrs']);
+  assert.deepEqual(SCHEMA.loopback, ['id', 'label', 'ip', 'vrf', 'description', 'attrs']);
   assert.deepEqual(SCHEMA.linkEnd, ['device', 'interface', 'vlans']);
   assert.ok(SCHEMA.link.includes('medium') && SCHEMA.link.includes('speed'));
   for (const f of exampleNames) {
@@ -404,8 +408,8 @@ test('the schema no longer contains retired keys, and the editor never writes th
 });
 
 test('VRF is assigned on interfaces (loopbacks included), not on networks', () => {
-  const r = ok('netatlas: 1\ndevices:\n  - id: pe\n    interfaces:\n      - {id: lo1, type: loopback, ip: 10.9.9.1/32, vrf: red}\n      - {id: e0, ip: 10.1.0.1/24, vrf: red}\n      - {id: e1, ip: 10.1.0.2/24}\nnetworks:\n  - {id: n, cidr: 10.1.0.0/24}\n');
-  assert.deepEqual(r.model.devices[0].interfaces.map((i) => i.vrf), ['red', 'red', undefined]);
+  const r = ok('netatlas: 1\ndevices:\n  - id: pe\n    loopbacks:\n      - {id: lo1, ip: 10.9.9.1/32, vrf: red}\n    interfaces:\n      - {id: e0, ip: 10.1.0.1/24, vrf: red}\n      - {id: e1, ip: 10.1.0.2/24}\nnetworks:\n  - {id: n, cidr: 10.1.0.0/24}\n');
+  assert.deepEqual(r.model.devices[0].loopbacks.concat(r.model.devices[0].interfaces).map((i) => i.vrf), ['red', 'red', undefined]);
   assert.match(JSON.stringify(panels.detailsFor(r.model, 'iface:pe:e0')), /"vrf"[^\]]*\]?[^\]]*red/);
   // membership is by prefix only; the VRF does not take part
   assert.deepEqual(matches(r.model, 'n'), ['pe:e0 10.1.0.1/24', 'pe:e1 10.1.0.2/24']);
@@ -418,8 +422,8 @@ test('group kind "floor" replaces "row"', () => {
 });
 
 test('loopbacks stay logical: no physical-link properties, no cable', () => {
-  const base = 'netatlas: 1\ndevices:\n  - id: a\n    interfaces: [{id: lo0, type: loopback, ip: 10.0.0.1/32SPEED}, e0]\n  - id: b\n    interfaces: [e0]\n';
+  const base = 'netatlas: 1\ndevices:\n  - id: a\n    loopbacks: [{id: lo0, ip: 10.0.0.1/32SPEED}]\n    interfaces: [e0]\n  - id: b\n    interfaces: [e0]\n';
   assert.match(errorsOf(base.replace('SPEED', ', speed: 1G'))[0], /"speed" is no longer part of the format/);
-  assert.match(errorsOf(base.replace('SPEED', '') + 'links:\n  - {id: l, a: "a:lo0", b: "b:e0"}\n')[0], /which is logical/);
+  assert.match(errorsOf(base.replace('SPEED', '') + 'links:\n  - {id: l, a: "a:lo0", b: "b:e0"}\n')[0], /"a:lo0" is a loopback, not a physical interface/);
   assert.doesNotMatch(JSON.stringify(panels.detailsFor(ok(base.replace('SPEED', '')).model, 'iface:a:lo0')), /cable|speed|media/);
 });

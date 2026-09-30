@@ -15,7 +15,7 @@
  * valid prefix length) belongs to no network.
  */
 import { IpPrefix, parsePrefix, prefixContains } from './ip';
-import { Model, Network, ifaceKey, isLoopback } from './types';
+import { Model, Network, deviceInterfaces, ifaceKey, isLoopback } from './types';
 
 /** One assigned address that lies inside a network. */
 export interface AddressMatch {
@@ -89,7 +89,7 @@ export function derive(model: Model): Derived {
   for (const { n } of nets) members.set(n.id, []);
   const addresses = new Map<string, AddressAssoc[]>();
   for (const d of model.devices) {
-    for (const i of d.interfaces) {
+    for (const i of deviceInterfaces(d)) {
       const assocs: AddressAssoc[] = [];
       for (const address of i.addresses) {
         const a = parsePrefix(address, false);

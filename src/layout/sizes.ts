@@ -57,9 +57,9 @@ export function chipTextWidth(s: string): number {
   return s.length * CHIP_FONT * 0.62;
 }
 
-/** Text of a loopback chip: marker for the router ID, id, first address, number of further addresses. */
-export function loopbackChipText(id: string, addresses: string[], routerId: boolean): string {
-  return (routerId ? '★ ' : '') + id + '  ' + (addresses[0] || '(no address)') + (addresses.length > 1 ? ' +' + (addresses.length - 1) : '');
+/** Text of a loopback chip: id, first address, number of further addresses. */
+export function loopbackChipText(id: string, addresses: string[]): string {
+  return id + '  ' + (addresses[0] || '(no address)') + (addresses.length > 1 ? ' +' + (addresses.length - 1) : '');
 }
 
 /** Number of chip rows below the device box (loopbacks, plus a "+N more" row). */

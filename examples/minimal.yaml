@@ -9,15 +9,17 @@ devices:
     interfaces:
       - id: eth0
         ip: 192.0.2.1/30
-      - id: tun0
-        type: tunnel
+        children:
+          - id: tun0
+            type: tunnel
   - id: r2
     type: router
     interfaces:
       - id: eth0
         ip: 192.0.2.2/30
-      - id: tun0
-        type: tunnel
+        children:
+          - id: tun0
+            type: tunnel
 
 links:
   - id: cable-1

@@ -8,7 +8,57 @@ releases may still change behaviour; the YAML format has its own version
 
 ## [Unreleased]
 
+### Breaking: interface hierarchy, loopback list, fewer device fields
+
+The YAML format changes incompatibly (the version line stays `netatlas: 1`;
+the tool isn't used in production). Nothing is converted and no old key is
+kept as an alias: a file in the old form opens as a draft with one error per
+key to change. See "Changes from the earlier format" in `docs/FORMAT.md`.
+
+* **`interfaces` holds physical interfaces only.** They have no `type` key;
+  writing one (any value) is an error. In the editor their type is the
+  read-only text *Physical*.
+* **Logical and tunnel interfaces are children** of a physical interface
+  (`children:`), none, one or several per port. A child's `type` is
+  `logical` (the default) or `tunnel`; `vlan`, `svi`, `subinterface`,
+  `virtual`, `lag`, `bundle`, `irb`, `bvi`, `vti` and every other value are
+  errors. Describe the specific function with the label, the description or
+  `attrs`.
+* **Loopbacks have their own list** on the device (`loopbacks:`), without a
+  `type`. They are still addressed as `device:lo0`, still need an address,
+  still can't be cabled, and are still drawn as chips in the logical view.
+* Interfaces, children and loopbacks share one id namespace per device.
+  Only a physical interface can be the end of a link; relations can use any.
+* **Removed from devices:** `vendor`, `model`, `role`, `mgmt` and
+  `router_id`. They are errors in a file and gone from the editor, the
+  subtitle of a device (now just its type), tooltips, details and search.
+  The ★ router-ID marker is gone; loopbacks and their addresses are
+  unaffected.
+* Examples, documentation and tests use the new format.
+
 ### Changed
+
+* **Auto-arrange arranges the view on screen only.** The dialog that offered
+  "this view" or "both views" is gone, and the other view is never touched.
+  If the view has positions that were set by hand, a confirmation says which
+  objects move and that the other view stays as it is; Cancel changes
+  nothing. A view that already matches the auto-arranged layout, or differs
+  only because the model was edited, is not asked about. Determinism,
+  idempotence and the status on the button are unchanged.
+* **Exported SVG files contain a Networks overview** in a second box beside
+  the legend, in both views. It lists the networks relevant to the exported
+  view (name, prefixes, VLAN), decided from what the picture shows: ports,
+  their logical children and cable VLANs in the physical view; network
+  nodes, relations and loopbacks in the logical view. Long names wrap, long
+  lists continue in columns, and an empty list says so.
+* **Interfaces and loopbacks are shown alphabetically** (digits by value) in
+  the editor, the details, interface pickers and the loopback chips. The
+  order in the YAML file is not changed by this.
+* Selecting a child interface highlights its physical port and that port's
+  cable; selecting a port highlights its children.
+* Device boxes are narrower where a role or model used to be in the
+  subtitle, so auto-arranged positions change again. Stored layouts are kept
+  and show *edited since arranged* until Auto-arrange is used.
 
 * **Auto-arrange places groups by their cabling** (physical view). Blocks
   that are cabled to each other form layers: a group lies one layer below the

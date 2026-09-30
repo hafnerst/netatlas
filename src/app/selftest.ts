@@ -60,7 +60,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     return { view: b.getAttribute('data-view') || '', st: b.getAttribute('data-status') || '', icon: (b.querySelector('.arrange-icon') as HTMLElement).textContent || '', title: b.title, desc: d ? d.textContent || '' : '' };
   };
   const AUTO_MSG = 'This view matches the auto-arranged layout.';
-  const MANUAL_MSG = 'This view has manually adjusted positions. Auto-arrange will replace them.';
+  const MANUAL_MSG = 'This view has manually adjusted positions. Auto-arrange replaces them after a confirmation.';
   /** the button shows `st` for `view`: icon, hover text and description agree */
   const shows = (view: string, st: 'auto' | 'manual'): boolean => {
     const x = shown();
@@ -170,7 +170,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       check(`${ex.name}: logical view draws relations, no cables`, doc.body.getAttribute('data-view') === 'logical' && count('g.rel') === drawable && count('.cable') === 0, `${count('g.rel')} / ${drawable}`);
       const tunnels = m.relations.filter((r) => r.category === 'tunnel').length;
       check(`${ex.name}: tunnels drawn as tubes`, count('g.rel.cat-tunnel .tube-outer') >= tunnels && count('g.rel.cat-tunnel .cable-line') === 0);
-      const loops = m.devices.reduce((s, d) => s + Math.min(3, d.interfaces.filter((x) => x.type === 'loopback').length), 0);
+      const loops = m.devices.reduce((s, d) => s + Math.min(3, d.loopbacks.length), 0);
       check(`${ex.name}: loopbacks shown as chips in the logical view`, count('.loop-chip') === loops, `${count('.loop-chip')} / ${loops}`);
       const logProblems = drawnProblems();
       check(`${ex.name}: logical view, measured in the browser: full text inside its boxes, no overlapping boxes or labels`, !logProblems.length, logProblems.slice(0, 5).join('; '));
@@ -289,7 +289,8 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     check('SVG export is standalone (inline style, no script, no external refs)', /^<svg[\s\S]*<style[\s\S]*relation:gre-muc[\s\S]*<\/svg>$/.test(svgText) && !/<script|https?:\/\/(?!www\.w3\.org)/.test(svgText));
     {
       // the exported file is parsed and laid out on its own, as a viewer would, and measured with real font metrics
-      const measure = (text: string): { ok: boolean; labels: string[]; why: string } => {
+      type Box = { x: number; y: number; w: number; h: number };
+      const measure = (text: string, sel = 'g.svg-legend'): { ok: boolean; labels: string[]; why: string; box: Box } => {
         const parsed = new DOMParser().parseFromString(text, 'image/svg+xml').documentElement as unknown as SVGSVGElement;
         const holder = doc.createElement('div');
         // off screen at its natural size (scaled down to nothing, text metrics become meaningless)
@@ -299,7 +300,8 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         doc.body.appendChild(holder);
         const root = holder.firstChild as SVGSVGElement;
         const why: string[] = [];
-        const lg = root.querySelector('g.svg-legend') as SVGGElement | null;
+        const lg = root.querySelector(sel) as SVGGElement | null;
+        let at: Box = { x: 0, y: 0, w: 0, h: 0 };
         const vpEl = root.querySelector('#viewport') as SVGGElement;
         let labels: string[] = [];
         if (!lg) why.push('no legend in the file');
@@ -309,6 +311,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
           const tr = /translate\(([-0-9.]+) ([-0-9.]+)\)/.exec(lg.getAttribute('transform') || '') || ['', '0', '0'];
           const lb = lg.getBBox();
           const box = { x: Number(tr[1]) + lb.x, y: Number(tr[2]) + lb.y, w: lb.width, h: lb.height };
+          at = box;
           const db = vpEl.getBBox();
           const frame = lg.querySelector('.lg-box') as SVGRectElement;
           if (!(box.x >= db.x + db.width)) why.push(`legend (x ${box.x}) is not right of the diagram (ends at ${db.x + db.width})`);
@@ -322,7 +325,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
           if (Number(root.getAttribute('width')) !== Math.round(vb[2]) || Number(root.getAttribute('height')) !== Math.round(vb[3])) why.push('width/height do not match the viewBox');
         }
         doc.body.removeChild(holder);
-        return { ok: !why.length, labels, why: why.join('; ') };
+        return { ok: !why.length, labels, why: why.join('; '), box: at };
       };
       const lgL = measure(svgText);
       check(
@@ -339,6 +342,23 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
           !/<script|https?:\/\/(?!www\.w3\.org)/.test(physText),
         lgP.why + ' // ' + lgP.labels.join(' | '),
       );
+      {
+        // the networks overview: its own titled box in the legend's style, beside the legend, per view
+        const apart = (a: Box, b: Box): boolean => a.x + a.w <= b.x || b.x + b.w <= a.x || a.y + a.h <= b.y || b.y + b.h <= a.y;
+        const nwL = measure(svgText, 'g.svg-networks');
+        const nwP = measure(physText, 'g.svg-networks');
+        check(
+          'SVG exports of both views contain a separate, titled "Networks" box: beside the diagram and the legend, not clipped, text inside its frame',
+          nwL.ok && nwP.ok && nwL.labels[0] === 'Networks — logical view' && nwP.labels[0] === 'Networks — physical view' && apart(nwL.box, lgL.box) && apart(nwP.box, lgP.box) && nwL.box.x >= lgL.box.x + lgL.box.w && nwP.box.x >= lgP.box.x + lgP.box.w,
+          nwL.why + ' // ' + nwP.why,
+        );
+        check(
+          'the Networks box names each network with its prefix and VLAN (enterprise WAN: “Users” 10.10.10.0/24 · VLAN 10)',
+          nwP.labels.some((x) => /10\.10\.10\.0\/24 · VLAN 10/.test(x)) && nwL.labels.some((x) => /10\.10\.10\.0\/24 · VLAN 10/.test(x)) && /<g class="svg-networks"/.test(physText),
+          nwP.labels.join(' | '),
+        );
+        check('the diagram on screen has no Networks box drawn into it (export only)', !q('#canvas .svg-networks'));
+      }
       // a model with several disconnected components and an unconnected device
       const cur = (q('#examples') as HTMLSelectElement).value;
       app.loadExample(EXAMPLES.findIndex((e) => e.name === 'metro-ring.yaml'));
@@ -346,6 +366,33 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       click('[data-view-btn="logical"]');
       const mL = measure(app.exportSvg());
       check('disconnected components (metro ring): the legend is beside all of them in both views', mP.ok && mL.ok, mP.why + ' // ' + mL.why);
+      {
+        // view-specific lists: a network that only loopbacks are in belongs to the logical picture alone
+        app.loadExample(EXAMPLES.findIndex((e) => e.name === 'editor-new-network.yaml'));
+        click('[data-view-btn="physical"]');
+        const p = measure(app.exportSvg(), 'g.svg-networks');
+        click('[data-view-btn="logical"]');
+        const l = measure(app.exportSvg(), 'g.svg-networks');
+        (q('#opt-networks') as HTMLInputElement).click();
+        const hidden = measure(app.exportSvg(), 'g.svg-networks');
+        (q('#opt-networks') as HTMLInputElement).click();
+        const has = (m: { labels: string[] }, name: string): boolean => m.labels.indexOf(name) >= 0;
+        check(
+          'the Networks box lists only the networks of the exported view (loopback network: logical only; port networks: physical)',
+          p.ok && l.ok && has(p, 'Core link') && has(p, 'Management') && !has(p, 'Router loopbacks') && has(l, 'Router loopbacks') && has(l, 'Core link') && p.labels.some((x) => /^2 of 3 in the model/.test(x)),
+          p.labels.join(' | ') + ' // ' + l.labels.join(' | '),
+        );
+        check(
+          'with network nodes switched off, the logical list holds only what the drawn relations and loopbacks use',
+          hidden.ok && has(hidden, 'Router loopbacks') && !has(hidden, 'Core link') && !has(hidden, 'Management'),
+          hidden.labels.join(' | '),
+        );
+        app.loadExample(EXAMPLES.findIndex((e) => e.name === 'minimal.yaml'));
+        const none = measure(app.exportSvg(), 'g.svg-networks');
+        check('a view without relevant networks says so in the box (clear empty state)', none.ok && none.labels[0] === 'Networks — logical view' && none.labels.some((x) => /The model defines no networks\./.test(x)), none.labels.join(' | '));
+        app.loadExample(EXAMPLES.findIndex((e) => e.name === 'metro-ring.yaml'));
+        click('[data-view-btn="logical"]');
+      }
       check('the diagram on screen has no legend drawn into it (export only)', !q('#canvas .svg-legend'));
       app.loadExample(EXAMPLES.findIndex((e) => /enterprise-wan/.test(e.name)));
       void cur;
@@ -545,11 +592,11 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const dragged = snapshot() !== before && status('logical') === 'manual';
       app.select(null);
       click('#btn-arrange');
-      await answerDialog('logical');
+      await answerDialog('arrange');
       const again = snapshot() === before && status('logical') === 'auto';
       click('#btn-arrange');
-      await answerDialog('logical');
-      check('after dragging and selecting, Auto-arrange gives exactly the same picture (positions, routes, label places); repeating it moves nothing', dragged && again && snapshot() === before && /Already arranged/.test(q('#toast')!.textContent || ''), `${dragged} ${again}`);
+      await tick(10);
+      check('after dragging and selecting, Auto-arrange gives exactly the same picture (positions, routes, label places); repeating it moves nothing and asks nothing', dragged && again && !q('#modal[open]') && snapshot() === before && /Already arranged/.test(q('#toast')!.textContent || ''), `${dragged} ${again}`);
       // a label typed with a line break in the editor
       app.select('device:srv');
       await setField('#side-body textarea[data-p=\'["devices",3,"label"]\']', 'srv-01\nhypervisor');
@@ -588,21 +635,27 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       click('[data-view-btn="logical"]');
       const logBefore = rects();
       check('loading a file does not store positions or mark it changed; status "Auto-arranged"', !(app.mdoc as ModelDoc).hasStoredLayout('physical') && !(app.mdoc as ModelDoc).dirty && status('physical') === 'auto' && status('logical') === 'auto');
+      const ad = app.mdoc as ModelDoc;
+      /** the positions shown in a view, and the view's part of the layout section */
+      const viewState = (v: 'physical' | 'logical'): string => JSON.stringify([Array.from(ad.displayedPositions(v).entries()), Array.from(ad.result.model!.layout[v].entries()), Array.from(ad.result.model!.layout.manual[v])]);
       click('#btn-arrange');
       await tick(10);
-      check('Auto-arrange explains its scope (whole model, both views, undo)', /whole model/.test(q('#modal')!.textContent || '') && /Physical view: 15 devices/.test(q('#modal')!.textContent || '') && !!q('#modal [data-value="both"]'));
-      await answerDialog('both');
-      const ad = app.mdoc as ModelDoc;
+      check(
+        'Auto-arrange has no view chooser: it arranges the view on screen at once and leaves the other view alone',
+        !q('#modal[open]') && ad.hasStoredLayout('logical') && !ad.hasStoredLayout('physical') && rects() === logBefore && ad.canUndo() === 'Auto-arrange (logical view)' && /nothing moved/.test(q('#toast')!.textContent || ''),
+        `${ad.canUndo()} / ${q('#toast')!.textContent}`,
+      );
       click('[data-view-btn="physical"]');
-      check('arranging an automatic layout stores it without moving anything', ad.hasStoredLayout('physical') && ad.hasStoredLayout('logical') && rects() === physBefore && /nothing moved/.test(q('#toast')!.textContent || ''));
+      click('#btn-arrange');
+      await tick(10);
+      check('arranging an automatic layout stores it without moving anything', !q('#modal[open]') && ad.hasStoredLayout('physical') && ad.hasStoredLayout('logical') && rects() === physBefore && /nothing moved/.test(q('#toast')!.textContent || ''));
       click('[data-view-btn="logical"]');
       check('… in the logical view as well', rects() === logBefore);
       check('status after Auto-arrange: both views "Auto-arranged"', status('physical') === 'auto' && status('logical') === 'auto');
       const undoLabel = ad.canUndo();
       doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true }));
       await tick(10);
-      await answerDialog('logical');
-      check('auto-arranging again changes nothing (no move, no undo step)', ad.canUndo() === undoLabel && rects() === logBefore && /Already arranged/.test(q('#toast')!.textContent || ''));
+      check('auto-arranging again changes nothing (no question, no move, no undo step)', !q('#modal[open]') && ad.canUndo() === undoLabel && rects() === logBefore && /Already arranged/.test(q('#toast')!.textContent || ''));
       // manual move, then arrange restores the deterministic positions; undo brings the manual one back
       ad.movePositions('logical', new Map([['hq-fw', { x: 4321, y: 1234 }]]), 'Move hq-fw');
       app.mdoc && app.select(null);
@@ -624,9 +677,31 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       check('moving the node back to its calculated position shows "Auto-arranged"', status('logical') === 'auto' && rects() === logBefore);
       doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }));
       check('undo of that shows "Manually adjusted" again', status('logical') === 'manual' && rects() === moved);
-      click('#btn-arrange');
-      await answerDialog('logical');
-      check('Auto-arrange ignores manual positions (same result as before the move)', rects() === logBefore);
+      {
+        // positions set by hand are only replaced after a confirmation that says what changes
+        const physState = viewState('physical');
+        const logState = viewState('logical');
+        const textBefore = app.exportText();
+        const undoBefore = ad.canUndo();
+        click('#btn-arrange');
+        await tick(10);
+        const asked = q('#modal[open]') ? q('#modal')!.textContent || '' : '';
+        check(
+          'Auto-arrange asks before replacing manual positions and explains what changes (which objects, this view only, undo)',
+          /Replace manual positions in the logical view\?/.test(asked) && /1 object was positioned by hand in the logical view: hq-fw/.test(asked) && /physical view is not changed/.test(asked) && /Ctrl\+Z/.test(asked) &&
+            !q('#modal [data-value="both"]') && !!q('#modal [data-value="cancel"]') && !!q('#modal [data-value="arrange"]'),
+          asked,
+        );
+        await answerDialog('cancel');
+        check(
+          'Cancel leaves both views untouched (positions, stored layout, YAML, undo history, status)',
+          rects() === moved && viewState('logical') === logState && viewState('physical') === physState && app.exportText() === textBefore && ad.canUndo() === undoBefore && status('logical') === 'manual' && status('physical') === 'auto',
+        );
+        click('#btn-arrange');
+        await answerDialog('arrange');
+        check('after confirming, Auto-arrange ignores manual positions (same result as before the move)', rects() === logBefore && status('logical') === 'auto');
+        check('… and the other view is exactly as it was', viewState('physical') === physState);
+      }
       doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }));
       check('undo restores the manual position', rects() === moved && status('logical') === 'manual');
       doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'y', ctrlKey: true, bubbles: true }));
@@ -721,10 +796,17 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     }
     click('#side-body [data-act="add-loop"]');
     await tick();
-    await setField('#side-body [data-t="list-append"][data-p=\'["devices",0,"interfaces",0,"ip"]\']', '10.255.0.1/32');
-    await setField('#side-body [data-p=\'["devices",0,"router_id"]\']', 'lo0');
+    await setField('#side-body [data-t="list-append"][data-p=\'["devices",0,"loopbacks",0,"ip"]\']', '10.255.0.1/32');
     click('[data-view-btn="logical"]');
-    check('new model: loopback chip with router-ID marker in the logical view', count('.loop-chip.rid') === 1 && (app.mdoc as ModelDoc).valid);
+    check(
+      'new model: the loopback is stored in the device\'s "loopbacks" list and drawn as a chip in the logical view',
+      count('.loop-chip') === 1 && (app.mdoc as ModelDoc).valid && /loopbacks:\n {6}- \{id: lo0, ip: \[10\.255\.0\.1\/32\]\}/.test(app.exportText()) && !/type: loopback|interfaces:/.test(app.exportText()),
+      app.exportText(),
+    );
+    check(
+      'devices have no vendor, model, role, management-address or router-ID field',
+      ['vendor', 'model', 'role', 'mgmt', 'router_id'].every((k) => !q(`#side-body [data-p='["devices",0,"${k}"]']`)) && !/Router ID \(loopback\)|Vendor|Management address/.test(q('#side-body')!.textContent || ''),
+    );
 
     click('#outline [data-act="add-entity"][data-kind="device"]');
     await tick();
@@ -743,20 +825,19 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       (app.mdoc as ModelDoc).text(['devices', 1, 'label']) === 'Edge router 2' && (app.mdoc as ModelDoc).interfaceIds(1).length === 1,
       JSON.stringify([(app.mdoc as ModelDoc).text(['devices', 1, 'label']), (app.mdoc as ModelDoc).interfaceIds(1)]),
     );
-    const appendSel = '#side-body [data-t="list-append"][data-p=\'["devices",1,"interfaces",0,"ip"]\']';
+    const appendSel = '#side-body [data-t="list-append"][data-p=\'["devices",1,"loopbacks",0,"ip"]\']';
     await setField(appendSel, '10.255.0.2/32');
     await setField(appendSel, '2001:db8:ffff::2/128');
     await setField(appendSel, '10.255.0.3');
     const errText = Array.prototype.map.call(doc.querySelectorAll('#side-body details.card .field-err'), (e: Element) => e.textContent).join(' | ');
     check('invalid loopback address is reported next to the field', /needs a prefix length/.test(errText) && !(app.mdoc as ModelDoc).valid, errText);
-    await setField('#side-body [data-t="list-item"][data-p=\'["devices",1,"interfaces",0,"ip",2]\']', '10.255.0.3/32');
-    await setField('#side-body [data-p=\'["devices",1,"interfaces",0,"label"]\']', 'Router ID');
+    await setField('#side-body [data-t="list-item"][data-p=\'["devices",1,"loopbacks",0,"ip",2]\']', '10.255.0.3/32');
+    await setField('#side-body [data-p=\'["devices",1,"loopbacks",0,"label"]\']', 'Router ID');
     click('#side-body [data-act="add-loop"]');
     await tick();
-    await setField('#side-body [data-t="list-append"][data-p=\'["devices",1,"interfaces",1,"ip"]\']', 'fd00::77/128');
-    await setField('#side-body [data-p=\'["devices",1,"router_id"]\']', 'lo0');
+    await setField('#side-body [data-t="list-append"][data-p=\'["devices",1,"loopbacks",1,"ip"]\']', 'fd00::77/128');
     const dA = app.mdoc as ModelDoc;
-    const loops = dA.result.model ? dA.result.model.index.devices.get('edge2')!.interfaces.filter((x) => x.type === 'loopback') : [];
+    const loops = dA.result.model ? dA.result.model.index.devices.get('edge2')!.loopbacks : [];
     check('two loopbacks with IPv4 + IPv6 addresses added and valid', dA.valid && loops.length === 2 && loops[0].addresses.length === 3 && loops[1].addresses[0] === 'fd00::77/128', JSON.stringify(dA.errors.map((e) => e.message)));
     check('loopbacks appear in the diagram right away', count('[data-ref="iface:edge2:lo0"]') === 1 && count('[data-ref="iface:edge2:lo1"]') === 1);
 
@@ -775,6 +856,69 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     await setField('#side-body select[data-t="ep-if"][data-p=\'["links",0,"b"]\']', 'eth0');
     click('[data-view-btn="physical"]');
     check('link created in the editor is drawn as a cable', count('.cable') === 1 && (app.mdoc as ModelDoc).valid, JSON.stringify((app.mdoc as ModelDoc).errors.map((e) => e.message)));
+
+    // ----------------- interface hierarchy: physical interfaces, their children, loopbacks
+    {
+      click('#outline [data-act="select"][data-kind="device"][data-index="0"]');
+      await tick();
+      const dh = (): ModelDoc => app.mdoc as ModelDoc;
+      const eth = '["devices",0,"interfaces",0]';
+      const card = (p: string): string => `#side-body details[data-card='${p}']`;
+      const typeText = q(card(eth) + ' > [data-iface-type="physical"]');
+      check(
+        'a physical interface has no type field: its type is read-only text "Physical"',
+        !!typeText && /Physical/.test(typeText.textContent || '') && !typeText.querySelector('input, select, textarea') && !q(`#side-body [data-p='["devices",0,"interfaces",0,"type"]']`) && !/type: physical/.test(app.exportText()),
+        typeText ? typeText.textContent || '' : 'no type text',
+      );
+      const loopType = q(card('["devices",0,"loopbacks",0]') + ' > [data-iface-type="loopback"]');
+      check('a loopback is listed on its own, outside the physical interfaces, with read-only type "Loopback"', !!loopType && !loopType.querySelector('input, select') && !!q(`#side-body [data-list="loopbacks"] details[data-card='["devices",0,"loopbacks",0]']`) && !q(`#side-body [data-list="interfaces"] details[data-card='["devices",0,"loopbacks",0]']`));
+      // children: a tunnel first, then a logical interface
+      click(card(eth) + ' [data-act="add-child"][data-kind="tunnel"]');
+      await tick();
+      click(card(eth) + ' [data-act="add-child"][data-kind="logical"]');
+      await tick();
+      const typeSel = q(`#side-body select[data-t="child-type"][data-p='["devices",0,"interfaces",0,"children",0,"type"]']`) as HTMLSelectElement | null;
+      const options = typeSel ? (Array.prototype.map.call(typeSel.options, (o: HTMLOptionElement) => o.value + '=' + o.textContent) as string[]).join() : '';
+      const kinds = (): string => dh().result.model!.index.devices.get('router1')!.interfaces[0].children.map((c) => c.id + ':' + c.type).join();
+      check(
+        'a physical interface can carry several children; a child is Logical or Tunnel and nothing else can be chosen',
+        options === 'logical=Logical,tunnel=Tunnel' && !!typeSel && typeSel.value === 'tunnel' && kinds() === 'tun0:tunnel,eth0.1:logical' && dh().valid &&
+          /- id: eth0\n {8}children:\n {10}- \{id: tun0, type: tunnel\}\n {10}- \{id: eth0\.1, type: logical\}/.test(app.exportText()),
+        options + ' // ' + kinds() + ' // ' + app.exportText(),
+      );
+      const shownKids = (): string => (Array.prototype.map.call(doc.querySelectorAll(card(eth) + ' details.child-card'), (e: Element) => e.getAttribute('data-iface')) as string[]).join();
+      const yamlBefore = app.exportText();
+      click('#outline [data-act="select"][data-kind="device"][data-index="1"]');
+      await tick();
+      click('#outline [data-act="select"][data-kind="device"][data-index="0"]');
+      await tick();
+      check(
+        'children are shown in alphabetical order (eth0.1 before tun0) while the file keeps its own order; viewing changes nothing',
+        shownKids() === 'eth0.1,tun0' && app.exportText() === yamlBefore && kinds() === 'tun0:tunnel,eth0.1:logical',
+        shownKids(),
+      );
+      await setField(`#side-body select[data-t="child-type"][data-p='["devices",0,"interfaces",0,"children",1,"type"]']`, 'tunnel');
+      check('changing a child\'s type writes exactly that value', kinds() === 'tun0:tunnel,eth0.1:tunnel' && dh().valid);
+      await setField(`#side-body select[data-t="child-type"][data-p='["devices",0,"interfaces",0,"children",1,"type"]']`, 'logical');
+      // a cable can only end on a physical interface; a relation can use any interface or loopback
+      click('#outline [data-act="select"][data-kind="link"][data-index="0"]');
+      await tick();
+      const endIfs = (Array.prototype.map.call((q('#side-body select[data-t="ep-if"][data-p=\'["links",0,"a"]\']') as HTMLSelectElement).options, (o: HTMLOptionElement) => o.value) as string[]).join();
+      check('a link end offers physical interfaces only', endIfs === ',eth0', endIfs);
+      // renaming a child updates references; deleting the physical interface would take its children along
+      click('#outline [data-act="select"][data-kind="device"][data-index="0"]');
+      await tick();
+      await setField(`#side-body [data-t="ifid"][data-p='["devices",0,"interfaces",0,"children",1,"id"]']`, 'eth0.100');
+      check('a child can be renamed like any interface', kinds() === 'tun0:tunnel,eth0.100:logical' && dh().valid && shownKids() === 'eth0.100,tun0');
+      click('[data-view-btn="logical"]');
+      click('[data-view-btn="physical"]');
+      app.select('iface:router1:tun0');
+      check(
+        'selecting a child in the diagram context opens it inside its physical interface and highlights that port and its cable',
+        !!q(card('["devices",0,"interfaces",0,"children",0]') + '[open]') && !!q(card(eth) + '[open]') && !!q('#viewport [data-ref="iface:router1:eth0"].hl, #viewport [data-ref="iface:router1:eth0"].selected') && !!q('#viewport [data-ref="link:link1"].hl'),
+      );
+      app.select(null);
+    }
     click('#outline [data-act="add-entity"][data-kind="relation"]');
     await tick();
     {
@@ -820,7 +964,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     const text = (sel: string): string => (q(sel) || { textContent: '' }).textContent || '';
     const readOnly = (sel: string): boolean => !!q(sel) && !q(sel)!.querySelector('input, select, textarea, [data-act]');
     const members = '#side-body [data-derived="members"]';
-    const ifVlan = (dev: number, k: number): string => `#side-body [data-card='["devices",${dev},"interfaces",${k}]'] [data-derived="iface-vlan"]`;
+    const ifVlan = (dev: number, k: number, list = 'interfaces'): string => `#side-body [data-card='["devices",${dev},"${list}",${k}]'] > [data-derived="iface-vlan"]`;
     const selectDevice = async (i: number): Promise<void> => {
       click(`#outline [data-act="select"][data-kind="device"][data-index="${i}"]`);
       await tick();
@@ -842,24 +986,24 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       check('a prefix alone adds no member', /Members \(0\)/.test(text(members)) && count('.member') === 0 && /cidr: \[10\.77\.0\.0\/24\]\n {4}vlan: 77\n/.test((app.mdoc as ModelDoc).exportText()), (app.mdoc as ModelDoc).exportText());
       // an address on router1:eth0 makes router1 a member and gives the port the network's VLAN, at once
       await selectDevice(0);
-      check('an interface without an address shows no derived network or VLAN (read-only)', readOnly(ifVlan(0, 1)) && /No address/.test(text(ifVlan(0, 1))), text(ifVlan(0, 1)));
+      check('an interface without an address shows no derived network or VLAN (read-only)', readOnly(ifVlan(0, 0)) && /No address/.test(text(ifVlan(0, 0))), text(ifVlan(0, 0)));
       check(
         'interfaces have no editable VLAN, speed or media field',
-        !q('#side-body [data-p=\'["devices",0,"interfaces",1,"vlan"]\']') && !q('#side-body [data-p=\'["devices",0,"interfaces",1,"speed"]\']') && !q('#side-body [data-p=\'["devices",0,"interfaces",1,"media"]\']') &&
-          !q('#side-body [data-p=\'["devices",0,"interfaces",0,"speed"]\']'),
+        !q('#side-body [data-p=\'["devices",0,"interfaces",0,"vlan"]\']') && !q('#side-body [data-p=\'["devices",0,"interfaces",0,"speed"]\']') && !q('#side-body [data-p=\'["devices",0,"interfaces",0,"media"]\']') &&
+          !q('#side-body [data-p=\'["devices",0,"loopbacks",0,"speed"]\']') && !q('#side-body [data-p=\'["devices",0,"interfaces",0,"children",0,"speed"]\']'),
       );
-      await setField('#side-body [data-t="list-append"][data-p=\'["devices",0,"interfaces",1,"ip"]\']', '10.77.0.1/24');
+      await setField('#side-body [data-t="list-append"][data-p=\'["devices",0,"interfaces",0,"ip"]\']', '10.77.0.1/24');
       check(
         'typing an address updates the interface\'s derived VLAN immediately (VLAN 77 from net1)',
-        !!q(ifVlan(0, 1) + ' li[data-vlan="77"]') && /net1 · VLAN 77/.test(text(ifVlan(0, 1))) && readOnly(ifVlan(0, 1)),
-        text(ifVlan(0, 1)),
+        !!q(ifVlan(0, 0) + ' li[data-vlan="77"]') && /net1 · VLAN 77/.test(text(ifVlan(0, 0))) && readOnly(ifVlan(0, 0)),
+        text(ifVlan(0, 0)),
       );
-      check('a loopback outside every network derives nothing, and no VLAN is invented', !!q(ifVlan(0, 0) + ' li[data-vlan="none"]') && /no network contains it/.test(text(ifVlan(0, 0))), text(ifVlan(0, 0)));
+      check('a loopback outside every network derives nothing, and no VLAN is invented', !!q(ifVlan(0, 0, 'loopbacks') + ' li[data-vlan="none"]') && /no network contains it/.test(text(ifVlan(0, 0, 'loopbacks'))), text(ifVlan(0, 0, 'loopbacks')));
       click('[data-view-btn="logical"]');
       check('… and the logical view draws the membership line at once', count('.member') === 1 && count('g.network') === 1, String(count('.member')));
       // the network's prefix decides: a different prefix length on the interface still matches
       await selectDevice(1);
-      await setField('#side-body [data-t="list-append"][data-p=\'["devices",1,"interfaces",2,"ip"]\']', '10.77.0.2/16');
+      await setField('#side-body [data-t="list-append"][data-p=\'["devices",1,"interfaces",0,"ip"]\']', '10.77.0.2/16');
       await selectNetwork(0);
       check(
         'the network lists both devices once, with interface and address (own prefix length /16 does not matter)',
@@ -869,7 +1013,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       // changing the network changes every derived value
       await setField('#side-body [data-t="int"][data-p=\'["networks",0,"vlan"]\']', '78');
       await selectDevice(0);
-      check('changing the network\'s VLAN updates the interface immediately (78)', !!q(ifVlan(0, 1) + ' li[data-vlan="78"]'), text(ifVlan(0, 1)));
+      check('changing the network\'s VLAN updates the interface immediately (78)', !!q(ifVlan(0, 0) + ' li[data-vlan="78"]'), text(ifVlan(0, 0)));
       // an overlapping network with another VLAN: an explicit ambiguity, nothing chosen
       click('#outline [data-act="add-entity"][data-kind="network"]');
       await tick();
@@ -880,14 +1024,14 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         const da = app.mdoc as ModelDoc;
         check(
           'overlapping networks with different VLANs: the interface shows an explicit ambiguity and a warning, no VLAN is picked',
-          !!q(ifVlan(0, 1) + ' li[data-vlan="ambiguous"]') && /VLAN 78 \(net1\) or VLAN 99 \(net2\)/.test(text(ifVlan(0, 1))) && da.valid && da.warnings.some((w) => /ambiguous/.test(w.message)),
-          text(ifVlan(0, 1)),
+          !!q(ifVlan(0, 0) + ' li[data-vlan="ambiguous"]') && /VLAN 78 \(net1\) or VLAN 99 \(net2\)/.test(text(ifVlan(0, 0))) && da.valid && da.warnings.some((w) => /ambiguous/.test(w.message)),
+          text(ifVlan(0, 0)),
         );
       }
       await selectNetwork(1);
       await setField('#side-body [data-t="list-item"][data-p=\'["networks",1,"cidr",0]\']', '10.99.0.0/24');
       await selectDevice(0);
-      check('moving the second network away resolves it again (VLAN 78), and membership follows', !!q(ifVlan(0, 1) + ' li[data-vlan="78"]') && count('.member') === 2, text(ifVlan(0, 1)));
+      check('moving the second network away resolves it again (VLAN 78), and membership follows', !!q(ifVlan(0, 0) + ' li[data-vlan="78"]') && count('.member') === 2, text(ifVlan(0, 0)));
       const ex = (app.mdoc as ModelDoc).exportText();
       check('derived members and interface VLANs are never written to the YAML', !/members:|kind:/.test(ex) && (ex.match(/vlan: /g) || []).length === 2 && !/eth0[^\n]*vlan/.test(ex), ex);
     }
@@ -948,9 +1092,10 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const re = ModelDoc.fromText(created.text, 'new-network.yaml', 'file');
       const rd = re.doc;
       const rm = rd && rd.result.model;
-      check('exported new model reloads identically (valid, same YAML, loopbacks + attrs intact)',
-        !!rd && rd.valid && rd.exportText() === created.text && !!rm && rm.index.devices.get('edge2')!.routerId === 'lo0' &&
-          rm.index.interfaces.get('edge2:lo0')!.addresses.join(',') === '10.255.0.2/32,2001:db8:ffff::2/128,10.255.0.3/32' &&
+      check('exported new model reloads identically (valid, same YAML, loopbacks, interface hierarchy + attrs intact)',
+        !!rd && rd.valid && rd.exportText() === created.text && !!rm && rm.index.devices.get('edge2')!.loopbacks.map((l) => l.id).join() === 'lo0,lo1' &&
+          rm.index.interfaces.get('edge2:lo0')!.addresses.join(',') === '10.255.0.2/32,2001:db8:ffff::2/128,10.255.0.3/32' && rm.index.interfaces.get('edge2:lo0')!.type === 'loopback' &&
+          rm.index.devices.get('router1')!.interfaces.map((i) => `${i.id}:${i.type}>` + i.children.map((c) => `${c.id}:${c.type}:${c.parent}`).join('+')).join() === 'eth0:physical>tun0:tunnel:eth0+eth0.100:logical:eth0' &&
           rm.relations[0].attrs.some(([k, v]) => k === 'keepalive.interval' && v === '10s') && /key: 42/.test(created.text),
         created.text);
       check(
@@ -968,7 +1113,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     }
 
     // ------------------------ editor: import → edit → export → reload
-    const wanText = EXAMPLES.find((e) => /enterprise-wan/.test(e.name))!.text.replace('    vendor: Juniper\n    model: MX204\n    group: hq-edge\n    mgmt: 10.99.0.11', '    vendor: Juniper\n    model: MX204\n    group: hq-edge\n    mgmt: 10.99.0.11\n    attrs:\n      serial: JN11AB22CD\n      contract: {id: C-77, expires: 2027-01-31}');
+    const wanText = EXAMPLES.find((e) => /enterprise-wan/.test(e.name))!.text.replace('    label: hq-rtr1\n    type: router\n    group: hq-edge\n', '    label: hq-rtr1\n    type: router\n    group: hq-edge\n    attrs:\n      serial: JN11AB22CD\n      contract: {id: C-77, expires: 2027-01-31}\n');
     const imp = await app.loadFile(new File([wanText], 'acme-wan.yaml'));
     check('imported file opens in the editor', imp.ok && (app.mdoc as ModelDoc).origin === 'file' && (app.mdoc as ModelDoc).valid);
     app.select('device:hq-rtr1');
@@ -976,11 +1121,10 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     const renamed = (app.mdoc as ModelDoc).exportText();
     check('renaming a device updates every reference', (app.mdoc as ModelDoc).valid && !/hq-rtr1:|device: hq-rtr1|id: hq-rtr1/.test(renamed) && /label: hq-rtr1/.test(renamed) && (renamed.match(/hq-edge-a/g) || []).length >= 12,
       String((renamed.match(/hq-edge-a/g) || []).length));
-    await setField('#side-body [data-p=\'["devices",3,"vendor"]\']', 'Juniper Networks');
+    await setField('#side-body [data-p=\'["devices",3,"description"]\']', 'Primary edge router');
     click('#side-body [data-act="add-loop"]');
     await tick();
-    const lastLoop = (app.mdoc as ModelDoc).interfaceIds(3).length - 1;
-    await setField(`#side-body [data-t="list-append"][data-p='["devices",3,"interfaces",${lastLoop},"ip"]']`, '2001:db8:0:ff::1/128');
+    await setField(`#side-body [data-t="list-append"][data-p='["devices",3,"loopbacks",1,"ip"]']`, '2001:db8:0:ff::1/128');
     click('#btn-download');
     await tick(10);
     check('export of an imported file is offered as a new copy', /original file on your disk is not modified/.test(q('#modal')!.textContent || '') && (q('#dl-name') as HTMLInputElement).value === 'acme-wan-edited.yaml');
@@ -989,13 +1133,14 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     if (edited) {
       const back = ModelDoc.fromText(edited.text, edited.name, 'file').doc as ModelDoc;
       const bm = back.result.model!;
-      check('import → edit → export → reload keeps the edits', back.valid && bm.index.devices.get('hq-edge-a')!.vendor === 'Juniper Networks' && bm.index.interfaces.get('hq-edge-a:' + back.interfaceIds(3)[lastLoop])!.addresses[0] === '2001:db8:0:ff::1/128');
+      check('import → edit → export → reload keeps the edits', back.valid && bm.index.devices.get('hq-edge-a')!.description === 'Primary edge router' && bm.index.devices.get('hq-edge-a')!.loopbacks.map((l) => l.id).join() === 'lo0,lo1' && bm.index.interfaces.get('hq-edge-a:lo1')!.addresses[0] === '2001:db8:0:ff::1/128' &&
+        bm.index.interfaces.get('hq-edge-a:st0.10')!.parent === 'ge-0/0/0');
       check('attributes not shown in diagrams survive the round trip', /serial: JN11AB22CD/.test(edited.text) && /contract: \{id: C-77, expires: 2027-01-31\}/.test(edited.text) && /cipher: GCM-AES-XPN-256/.test(edited.text));
       check('comments of the imported file are kept', /# --- Munich: IPsec carries GRE carries OSPF/.test(edited.text) && /^# netatlas example: enterprise WAN/.test(edited.text));
     } else check('import → edit → export → reload keeps the edits', false, 'no download captured');
 
     // unsaved-change guards
-    await setField('#side-body [data-p=\'["devices",3,"model"]\']', 'MX304');
+    await setField('#side-body [data-p=\'["devices",3,"description"]\']', 'Primary edge router (MX304)');
     const sel = q('#examples') as HTMLSelectElement;
     sel.value = '0';
     sel.dispatchEvent(new Event('change', { bubbles: true }));
@@ -1009,9 +1154,9 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
 
     // undo / redo
     doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }));
-    check('Ctrl+Z undoes the last edit', app.mdoc!.result.model!.index.devices.get('hq-edge-a')!.model === 'MX204');
+    check('Ctrl+Z undoes the last edit', app.mdoc!.result.model!.index.devices.get('hq-edge-a')!.description === 'Primary edge router');
     doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'y', ctrlKey: true, bubbles: true }));
-    check('Ctrl+Y redoes it', app.mdoc!.result.model!.index.devices.get('hq-edge-a')!.model === 'MX304');
+    check('Ctrl+Y redoes it', app.mdoc!.result.model!.index.devices.get('hq-edge-a')!.description === 'Primary edge router (MX304)');
 
     // broken references: deleting a device others refer to
     app.select('device:muc-rtr');
@@ -1045,7 +1190,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     click('[data-yaml="revert"]');
 
     // unknown keys are kept and shown
-    const unk = app.loadText('netatlas: 1\ndevices:\n  - id: r1\n    colour: blue\n    interfaces: [{id: lo0, type: loopback, ip: [10.0.0.1/32], weird: {x: 1}}]\n', 'unknown.yaml', 'file');
+    const unk = app.loadText('netatlas: 1\ndevices:\n  - id: r1\n    colour: blue\n    loopbacks: [{id: lo0, ip: [10.0.0.1/32], weird: {x: 1}}]\n', 'unknown.yaml', 'file');
     app.select('device:r1');
     check('unknown properties are shown in the inspector, not dropped', unk.errors.length > 0 && !!q('#side-body .other') && /colour/.test(app.exportText()) && /weird: \{x: 1\}/.test(app.exportText()));
     click('#side-body [data-act="to-attrs"][data-k="colour"]');
@@ -1055,14 +1200,15 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     // keys of the earlier format are rejected with what to do instead (never read or converted)
     {
       const oldFile = app.loadText(
-        'netatlas: 1\ngroups:\n  - {id: g1, kind: row}\ndevices:\n  - id: r1\n    interfaces: [{id: e0, speed: 1G, media: fiber, vlan: 5, ip: 10.0.0.1/24}]\nnetworks:\n  - {id: n1, kind: vlan, vrf: red, cidr: 10.0.0.0/24, members: [r1]}\n',
+        'netatlas: 1\ngroups:\n  - {id: g1, kind: row}\ndevices:\n  - id: r1\n    vendor: Acme\n    router_id: lo0\n    interfaces: [{id: e0, type: physical, speed: 1G, media: fiber, vlan: 5, ip: 10.0.0.1/24}, {id: lo0, type: loopback, ip: 10.9.9.9/32}]\nnetworks:\n  - {id: n1, kind: vlan, vrf: red, cidr: 10.0.0.0/24, members: [r1]}\n',
         'old-format.yaml',
         'file',
       );
       const msgs = oldFile.errors.map((e) => e.message).join(' | ');
       check(
         'a file in the earlier format opens as a draft with one actionable error per retired key',
-        oldFile.ok && oldFile.errors.length === 7 && /"speed" is no longer part of the format/.test(msgs) && /"members" is no longer part of the format/.test(msgs) && /renamed to "floor"/.test(msgs) &&
+        oldFile.ok && oldFile.errors.length === 11 && /"speed" is no longer part of the format/.test(msgs) && /"vendor" is no longer part of the format/.test(msgs) && /"router_id" is no longer part of the format/.test(msgs) && /"type" is no longer part of the format/.test(msgs) &&
+          (app.mdoc as ModelDoc).result.model!.devices[0].loopbacks.length === 0 && (app.mdoc as ModelDoc).result.model!.devices[0].interfaces.every((i) => i.type === 'physical') && /"members" is no longer part of the format/.test(msgs) && /renamed to "floor"/.test(msgs) &&
           (app.mdoc as ModelDoc).result.model!.networks[0].vlan === undefined && networkMembers((app.mdoc as ModelDoc).result.model!, 'n1').length === 1,
         msgs,
       );

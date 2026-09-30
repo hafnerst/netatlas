@@ -177,7 +177,7 @@ test('import -> edit -> export -> reload keeps every edit and every untouched at
   assert.ok(d.valid);
   const i = d.findEntity('device', 'hq-fw').index;
   d.change('edit', () => {
-    d.setAt(['devices', i, 'vendor'], yaml.strNode('Palo Alto Networks'), KEY_ORDER.device);
+    d.setAt(['devices', i, 'description'], yaml.strNode('Perimeter firewall'), KEY_ORDER.device);
     d.setAt(['devices', i, 'attrs'], yaml.mapNode([['ha', yaml.mapNode([['mode', yaml.strNode('active/passive')], ['peers', yaml.seqNode([yaml.strNode('fw-b')], true)]])]]), KEY_ORDER.device);
   });
   assert.ok(d.dirty);
@@ -186,11 +186,11 @@ test('import -> edit -> export -> reload keeps every edit and every untouched at
   assert.ok(back.valid);
   assert.equal(back.exportText(), out);
   const fw = back.result.model.index.devices.get('hq-fw');
-  assert.equal(fw.vendor, 'Palo Alto Networks');
+  assert.equal(fw.description, 'Perimeter firewall');
   assert.deepEqual(fw.attrs, [['ha.mode', 'active/passive'], ['ha.peers', 'fw-b']]);
   // untouched content is identical: reverting the two edits gives back the original text
   const reverted = out
-    .replace('vendor: Palo Alto Networks', 'vendor: Palo Alto')
+    .replace('    description: Perimeter firewall\n', '')
     .replace('    attrs:\n      ha:\n        mode: active/passive\n        peers: [fw-b]\n', '');
   assert.equal(reverted, src);
   assert.match(out, /cipher: GCM-AES-XPN-256/);
@@ -213,8 +213,9 @@ devices:
       empty-map: {}
       when: 2027-01-31
       yes-string: yes
+    loopbacks:
+      - {id: lo0, ip: [10.0.0.1/32], attrs: {ospf-passive: true}}
     interfaces:
-      - {id: lo0, type: loopback, ip: [10.0.0.1/32], attrs: {ospf-passive: true}}
       - id: eth0
         extra: {x: [1, {y: z}]}
 `;
@@ -237,7 +238,7 @@ test('renaming ids updates every reference (device, interface, group, link, rela
   const before = d.references('device', 'hq-rtr2').length;
   assert.equal(d.renameEntity('device', d.findEntity('device', 'hq-rtr2').index, 'edge-b'), before);
   const dev = d.findEntity('device', 'edge-b').index;
-  assert.equal(d.renameInterface(dev, d.interfaceIds(dev).indexOf('lo0'), 'loopback0'), 1);
+  assert.equal(d.renameInterface(d.interfaceEntries(dev).find((e) => e.id === 'lo0').path, 'loopback0'), 1);
   assert.equal(d.renameEntity('group', d.findEntity('group', 'hq').index, 'berlin'), 2);
   assert.equal(d.renameEntity('link', d.findEntity('link', 'l-hq-isp1').index, 'uplink-1'), 3);
   assert.equal(d.renameEntity('relation', d.findEntity('relation', 'ipsec-muc').index, 'ipsec-munich'), 1);
@@ -250,11 +251,12 @@ test('renaming ids updates every reference (device, interface, group, link, rela
   assert.deepEqual(m.index.relations.get('gre-muc').over, ['ipsec-munich']);
 });
 
-test('router_id follows an interface rename', () => {
-  const d = ModelDoc.fromText('netatlas: 1\ndevices:\n  - id: r1\n    router_id: lo0\n    interfaces:\n      - {id: lo0, type: loopback, ip: [10.255.0.1/32]}\n', 'r.yaml', 'file').doc;
-  assert.equal(d.renameInterface(0, 0, 'Loopback0'), 1);
+test('renaming a loopback updates the relations that use it', () => {
+  const d = ModelDoc.fromText('netatlas: 1\ndevices:\n  - id: r1\n    loopbacks:\n      - {id: lo0, ip: [10.255.0.1/32]}\n  - id: r2\n    loopbacks:\n      - {id: lo0, ip: [10.255.0.2/32]}\nrelations:\n  - {id: s, protocol: ibgp, endpoints: ["r1:lo0", "r2:lo0"]}\n', 'r.yaml', 'file').doc;
+  assert.equal(d.renameInterface(['devices', 0, 'loopbacks', 0], 'Loopback0'), 1);
   assert.ok(d.valid);
-  assert.equal(d.result.model.devices[0].routerId, 'Loopback0');
+  assert.deepEqual(d.result.model.relations[0].endpoints.map((e) => e.device + ':' + e.iface), ['r1:Loopback0', 'r2:lo0']);
+  assert.equal(d.canUndo(), 'Rename loopback');
 });
 
 test('deleting an entity reports (never silently removes) broken references; undo restores', () => {
@@ -323,8 +325,9 @@ test('undo history is bounded and dirty tracking follows save', () => {
 const loopDoc = (ip, extra = '') => `netatlas: 1
 devices:
   - id: r1
-${extra}    interfaces:
-      - {id: lo0, type: loopback, label: Router ID, ip: ${ip}}
+${extra}    loopbacks:
+      - {id: lo0, label: Router ID, ip: ${ip}}
+    interfaces:
       - {id: eth0}
 `;
 
@@ -333,10 +336,11 @@ test('loopbacks: valid IPv4/IPv6 lists, single value and multiple loopbacks', ()
     const r = validate.loadModel(loopDoc(ip));
     assert.deepEqual(r.errors, [], ip);
   }
-  const r = validate.loadModel(loopDoc('[10.0.0.1/32]').replace('      - {id: eth0}', '      - {id: lo1, type: loopback, ip: [fd00::1/128]}\n      - {id: lo2, type: loopback, ip: [10.9.9.9/32]}'));
+  const r = validate.loadModel(loopDoc('[10.0.0.1/32]').replace('    interfaces:', '      - {id: lo1, ip: [fd00::1/128]}\n      - {id: lo2, ip: [10.9.9.9/32]}\n    interfaces:'));
   assert.deepEqual(r.errors, []);
   const d = r.model.devices[0];
-  assert.equal(d.interfaces.filter((i) => i.type === 'loopback').length, 3);
+  assert.deepEqual(d.loopbacks.map((i) => i.id + ':' + i.type), ['lo0:loopback', 'lo1:loopback', 'lo2:loopback']);
+  assert.deepEqual(d.interfaces.map((i) => i.id + ':' + i.type), ['eth0:physical'], 'loopbacks are not part of the physical interfaces');
 });
 
 test('loopbacks: invalid addresses are errors with an explanation at the address', () => {
@@ -358,34 +362,38 @@ test('loopbacks: invalid addresses are errors with an explanation at the address
     assert.ok(r.errors.some((e) => re.test(e.message)), `${ip}: ${r.errors.map((e) => e.message).join('; ')}`);
   }
   const d = ModelDoc.fromText(loopDoc('[10.0.0.1/32, bad]'), 'x', 'file').doc;
-  assert.deepEqual(d.issuePath(d.errors[0]), ['devices', 0, 'interfaces', 0, 'ip', 1]);
+  assert.deepEqual(d.issuePath(d.errors[0]), ['devices', 0, 'loopbacks', 0, 'ip', 1]);
 });
 
-test('loopbacks: router_id must reference a loopback of the same device', () => {
-  assert.deepEqual(validate.loadModel(loopDoc('[10.0.0.1/32]', '    router_id: lo0\n')).errors, []);
-  assert.match(validate.loadModel(loopDoc('[10.0.0.1/32]', '    router_id: lo9\n')).errors[0].message, /no loopback "lo9" — did you mean "lo0"/);
-  assert.match(validate.loadModel(loopDoc('[10.0.0.1/32]', '    router_id: eth0\n')).errors[0].message, /must name a loopback interface/);
-  const v6 = validate.loadModel(loopDoc('[2001:db8::1/128]', '    router_id: lo0\n'));
-  assert.equal(v6.errors.length, 0);
-  assert.match(v6.warnings[0].message, /no IPv4 address; router IDs are 32-bit/);
+test('loopbacks: the router-ID field is gone, loopbacks and their addresses are not', () => {
+  const r = validate.loadModel(loopDoc('[10.0.0.1/32, 2001:db8::1/128]', '    router_id: lo0\n'));
+  assert.equal(r.errors.length, 1);
+  assert.match(r.errors[0].message, /^"router_id" is no longer part of the format — a device has no router-ID field: delete this key/);
+  assert.deepEqual(r.model.devices[0].loopbacks.map((l) => [l.id, l.label, l.addresses]), [['lo0', 'Router ID', ['10.0.0.1/32', '2001:db8::1/128']]]);
+  assert.ok(!('routerId' in r.model.devices[0]));
+  // a loopback without IPv4 is fine: nothing depends on it being a router ID
+  const v6 = validate.loadModel(loopDoc('[2001:db8::1/128]'));
+  assert.deepEqual(v6.errors.concat(v6.warnings), []);
 });
 
 test('loopbacks: never cabled, usable as relation endpoints; duplicates across devices warn', () => {
   const base = `netatlas: 1
 devices:
   - id: a
-    interfaces: [{id: lo0, type: loopback, ip: [10.0.0.1/32]}, {id: e0}]
+    loopbacks: [{id: lo0, ip: [10.0.0.1/32]}]
+    interfaces: [{id: e0}]
   - id: b
-    interfaces: [{id: lo0, type: loopback, ip: [10.0.0.1/32]}, {id: e0}]
+    loopbacks: [{id: lo0, ip: [10.0.0.1/32]}]
+    interfaces: [{id: e0}]
 `;
   const cabled = validate.loadModel(base + 'links:\n  - {id: l1, a: "a:lo0", b: "b:e0"}\n');
-  assert.match(cabled.errors[0].message, /type "loopback", which is logical/);
+  assert.match(cabled.errors[0].message, /"a:lo0" is a loopback, not a physical interface — a physical link must end on a physical interface/);
   const rel = validate.loadModel(base + 'relations:\n  - {id: r, protocol: ibgp, endpoints: ["a:lo0", "b:lo0"]}\n');
   assert.equal(rel.errors.length, 0);
   assert.ok(rel.warnings.some((w) => /also assigned to a:lo0/.test(w.message)));
 });
 
-test('loopbacks: backward compatible with existing files (type: loopback, scalar ip)', () => {
+test('loopbacks: a single address may be written as a scalar', () => {
   const m = validate.loadModel(readFileSync(join(root, 'examples', 'enterprise-wan.yaml'), 'utf8'));
   assert.deepEqual(m.errors, []);
   assert.equal(m.model.index.interfaces.get('hq-rtr1:lo0').type, 'loopback');
@@ -401,12 +409,13 @@ test('loopbacks: shown as chips in the logical view and in device details, never
   const log = s.render().root;
   const chips = byClass(log, 'loop-chip');
   assert.equal(chips.length, 4);
-  assert.equal(byClass(log, 'rid').length, 2);
+  assert.equal(byClass(log, 'rid').length, 0, 'no router-ID marker');
+  assert.ok(!/★/.test(scene.textOf(log)));
   assert.match(scene.textOf(log), /lo0  10\.255\.0\.2\/32 \+1/);
   const det = scene.textOf(load('ui/panels.js').detailsFor(d.result.model, 'device:edge-b'));
   assert.match(det, /Loopbacks \(2\)/);
   assert.match(det, /10\.255\.0\.2\/32\n2001:db8:ffff::2\/128/);
-  assert.match(det, /Interfaces \(1, 1 cabled\)/);
+  assert.match(det, /Interfaces \(1 physical, 1 cabled, 2 children\)/);
 });
 
 // ------------------------------------------------------------ IP helpers

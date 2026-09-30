@@ -258,7 +258,7 @@ test('sizes are part of the layout input: text that changes a box changes the la
   const base = example('long-labels.yaml');
   const sig = (t) => layoutSignature(layoutInput(model(t)));
   assert.notEqual(sig(base.replace('label: Branch router', 'label: Branch router with a considerably longer name')), sig(base));
-  assert.notEqual(sig(base.replace('model: PA-5450', 'model: PA-5450 with four data-plane cards')), sig(base), 'the subtitle (type, role, model) is drawn, so it counts');
+  assert.notEqual(sig(base.replace('type: firewall', 'type: load_balancer')), sig(base), 'the subtitle (the type) is drawn, so it counts');
   assert.notEqual(sig(base.replace('label: peer link 1', 'label: a much longer label for this cable')), sig(base), 'cable labels need room');
   assert.notEqual(sig(base.replace('label: area 0.0.0.10', 'label: area 0.0.0.10 (totally stubby)')), sig(base), 'relation labels need room');
   assert.equal(sig(base.replace('cable: CID-2024-000173', 'cable: something-else')), sig(base), 'text that is not drawn does not count');

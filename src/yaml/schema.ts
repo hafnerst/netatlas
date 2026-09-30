@@ -13,8 +13,13 @@ export const SCHEMA = {
   top: ['netatlas', 'title', 'description', 'protocols', 'groups', 'devices', 'links', 'networks', 'relations', 'layout'],
   protocol: ['id', 'label', 'category', 'color', 'style', 'description'],
   group: ['id', 'label', 'kind', 'parent', 'description', 'attrs'],
-  device: ['id', 'label', 'type', 'group', 'vendor', 'model', 'role', 'mgmt', 'router_id', 'tier', 'description', 'attrs', 'interfaces'],
-  interface: ['id', 'label', 'type', 'ip', 'vrf', 'mac', 'description', 'attrs'],
+  device: ['id', 'label', 'type', 'group', 'tier', 'description', 'attrs', 'loopbacks', 'interfaces'],
+  /** a physical interface: an entry of a device's `interfaces` */
+  interface: ['id', 'label', 'ip', 'vrf', 'mac', 'description', 'attrs', 'children'],
+  /** a logical or tunnel interface: an entry of a physical interface's `children` */
+  child: ['id', 'label', 'type', 'ip', 'vrf', 'mac', 'description', 'attrs'],
+  /** a loopback: an entry of a device's `loopbacks` */
+  loopback: ['id', 'label', 'ip', 'vrf', 'description', 'attrs'],
   link: ['id', 'a', 'b', 'medium', 'speed', 'label', 'cable', 'description', 'attrs'],
   /** one end of a link written as a mapping */
   linkEnd: ['device', 'interface', 'vlans'],
@@ -33,13 +38,40 @@ export type SchemaKind = keyof typeof SCHEMA;
  * instead. They are rejected (never read, converted or written), and the
  * error says how to update the file by hand.
  */
+const IFACE_VLAN =
+  'the VLAN of an interface is derived from the network whose "cidr" contains its address: set "vlan:" on that network and delete it here ' +
+  '(VLANs permitted on a cable are "vlans:" on the end of the link)';
+const NOT_A_PORT = 'speed and medium belong to the physical link, and only a physical interface can be cabled: delete this key';
+
 export const RETIRED: { [kind: string]: { [key: string]: string } } = {
+  device: {
+    vendor: 'a device has no vendor field: delete this key (custom data can be kept under "attrs:")',
+    model: 'a device has no model field: delete this key (custom data can be kept under "attrs:")',
+    role: 'a device has no role field: delete this key (custom data can be kept under "attrs:")',
+    mgmt: 'a device has no management-address field: delete this key (custom data can be kept under "attrs:")',
+    router_id: 'a device has no router-ID field: delete this key. Loopbacks and their addresses are declared under "loopbacks:"',
+  },
   interface: {
+    type:
+      'an entry of "interfaces:" is always a physical interface and has no type: delete this key. ' +
+      'A loopback belongs in the "loopbacks:" list of the device; a logical or tunnel interface belongs in "children:" of the physical interface it runs on',
     speed: 'speed is configured once, on the physical link: set "speed:" on the link cabled to this port and delete it here',
     media: 'the medium is configured once, on the physical link: set "medium:" on the link cabled to this port and delete it here',
-    vlan:
-      'the VLAN of an interface is derived from the network whose "cidr" contains its address: set "vlan:" on that network and delete it here ' +
-      '(VLANs permitted on a cable are "vlans:" on the end of the link)',
+    vlan: IFACE_VLAN,
+  },
+  child: {
+    children: 'a child interface cannot have children of its own: list it directly under "children:" of the physical interface',
+    speed: NOT_A_PORT,
+    media: NOT_A_PORT,
+    vlan: IFACE_VLAN,
+  },
+  loopback: {
+    type: 'an entry of "loopbacks:" is a loopback by definition: delete this key',
+    mac: 'a loopback is not a port and has no MAC address: delete this key',
+    children: 'a loopback has no child interfaces: delete this key',
+    speed: NOT_A_PORT,
+    media: NOT_A_PORT,
+    vlan: IFACE_VLAN,
   },
   network: {
     kind: 'a network is always an IP network: delete this key',
