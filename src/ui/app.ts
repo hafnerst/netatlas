@@ -511,9 +511,9 @@ export class App {
     if (!ent) this.editor.sel = { kind: 'document', index: 0 };
     else {
       this.editor.sel = { kind: ent.kind, index: ent.index };
-      // open the interface, child interface or loopback the issue is in
+      // open the interface the issue is in
       const p = d.issuePath(is) || [];
-      const ip = [6, 4].map((n) => p.slice(0, n)).find((x) => !!ifaceSchemaKind(x));
+      const ip = [p.slice(0, 4)].find((x) => !!ifaceSchemaKind(x));
       if (ent.kind === 'device' && ip) {
         this.editor.sel.iface = ip;
         this.editor.openIface(ip);

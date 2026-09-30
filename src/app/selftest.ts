@@ -7,6 +7,7 @@
  * checks what was drawn and what gets exported. It also verifies label
  * safety, error reporting and that the page made no network requests.
  */
+import { Device, Interface } from '../model/types';
 import { ModelDoc } from '../editor/document';
 import { DEVICE_TYPES } from '../model/device-types';
 import { interfaceAddresses, interfaceVlanText, networkMembers } from '../model/derive';
@@ -170,7 +171,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       check(`${ex.name}: logical view draws relations, no cables`, doc.body.getAttribute('data-view') === 'logical' && count('g.rel') === drawable && count('.cable') === 0, `${count('g.rel')} / ${drawable}`);
       const tunnels = m.relations.filter((r) => r.category === 'tunnel').length;
       check(`${ex.name}: tunnels drawn as tubes`, count('g.rel.cat-tunnel .tube-outer') >= tunnels && count('g.rel.cat-tunnel .cable-line') === 0);
-      const loops = m.devices.reduce((s, d) => s + Math.min(3, d.loopbacks.length), 0);
+      const loops = m.devices.reduce((s, d) => s + Math.min(3, d.logical.filter((x) => x.type === 'loopback').length), 0);
       check(`${ex.name}: loopbacks shown as chips in the logical view`, count('.loop-chip') === loops, `${count('.loop-chip')} / ${loops}`);
       const logProblems = drawnProblems();
       check(`${ex.name}: logical view, measured in the browser: full text inside its boxes, no overlapping boxes or labels`, !logProblems.length, logProblems.slice(0, 5).join('; '));
@@ -794,13 +795,13 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         dn.exportText(),
       );
     }
-    click('#side-body [data-act="add-loop"]');
+    click('#side-body [data-act="add-logical"][data-kind="loopback"]');
     await tick();
-    await setField('#side-body [data-t="list-append"][data-p=\'["devices",0,"loopbacks",0,"ip"]\']', '10.255.0.1/32');
+    await setField('#side-body [data-t="list-append"][data-p=\'["devices",0,"logical_interfaces",0,"ip"]\']', '10.255.0.1/32');
     click('[data-view-btn="logical"]');
     check(
-      'new model: the loopback is stored in the device\'s "loopbacks" list and drawn as a chip in the logical view',
-      count('.loop-chip') === 1 && (app.mdoc as ModelDoc).valid && /loopbacks:\n {6}- \{id: lo0, ip: \[10\.255\.0\.1\/32\]\}/.test(app.exportText()) && !/type: loopback|interfaces:/.test(app.exportText()),
+      'new model: the loopback is a logical interface of type loopback and is drawn as a chip in the logical view',
+      count('.loop-chip') === 1 && (app.mdoc as ModelDoc).valid && /logical_interfaces:\n {6}- \{id: lo0, type: loopback, ip: \[10\.255\.0\.1\/32\]\}/.test(app.exportText()) && !/\n {4}interfaces:|loopbacks:/.test(app.exportText()),
       app.exportText(),
     );
     check(
@@ -816,7 +817,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     const lbl = q('#side-body [data-p=\'["devices",1,"label"]\']') as HTMLInputElement;
     lbl.focus();
     lbl.value = 'Edge router 2';
-    const addLoopBtn = q('#side-body [data-act="add-loop"]') as HTMLElement;
+    const addLoopBtn = q('#side-body [data-act="add-logical"][data-kind="loopback"]') as HTMLElement;
     addLoopBtn.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, pointerId: 3 }));
     addLoopBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 }));
     await tick(10);
@@ -825,19 +826,19 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       (app.mdoc as ModelDoc).text(['devices', 1, 'label']) === 'Edge router 2' && (app.mdoc as ModelDoc).interfaceIds(1).length === 1,
       JSON.stringify([(app.mdoc as ModelDoc).text(['devices', 1, 'label']), (app.mdoc as ModelDoc).interfaceIds(1)]),
     );
-    const appendSel = '#side-body [data-t="list-append"][data-p=\'["devices",1,"loopbacks",0,"ip"]\']';
+    const appendSel = '#side-body [data-t="list-append"][data-p=\'["devices",1,"logical_interfaces",0,"ip"]\']';
     await setField(appendSel, '10.255.0.2/32');
     await setField(appendSel, '2001:db8:ffff::2/128');
     await setField(appendSel, '10.255.0.3');
     const errText = Array.prototype.map.call(doc.querySelectorAll('#side-body details.card .field-err'), (e: Element) => e.textContent).join(' | ');
     check('invalid loopback address is reported next to the field', /needs a prefix length/.test(errText) && !(app.mdoc as ModelDoc).valid, errText);
-    await setField('#side-body [data-t="list-item"][data-p=\'["devices",1,"loopbacks",0,"ip",2]\']', '10.255.0.3/32');
-    await setField('#side-body [data-p=\'["devices",1,"loopbacks",0,"label"]\']', 'Router ID');
-    click('#side-body [data-act="add-loop"]');
+    await setField('#side-body [data-t="list-item"][data-p=\'["devices",1,"logical_interfaces",0,"ip",2]\']', '10.255.0.3/32');
+    await setField('#side-body [data-p=\'["devices",1,"logical_interfaces",0,"label"]\']', 'Router ID');
+    click('#side-body [data-act="add-logical"][data-kind="loopback"]');
     await tick();
-    await setField('#side-body [data-t="list-append"][data-p=\'["devices",1,"loopbacks",1,"ip"]\']', 'fd00::77/128');
+    await setField('#side-body [data-t="list-append"][data-p=\'["devices",1,"logical_interfaces",1,"ip"]\']', 'fd00::77/128');
     const dA = app.mdoc as ModelDoc;
-    const loops = dA.result.model ? dA.result.model.index.devices.get('edge2')!.loopbacks : [];
+    const loops = dA.result.model ? dA.result.model.index.devices.get('edge2')!.logical.filter((x) => x.type === 'loopback') : [];
     check('two loopbacks with IPv4 + IPv6 addresses added and valid', dA.valid && loops.length === 2 && loops[0].addresses.length === 3 && loops[1].addresses[0] === 'fd00::77/128', JSON.stringify(dA.errors.map((e) => e.message)));
     check('loopbacks appear in the diagram right away', count('[data-ref="iface:edge2:lo0"]') === 1 && count('[data-ref="iface:edge2:lo1"]') === 1);
 
@@ -857,66 +858,127 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     click('[data-view-btn="physical"]');
     check('link created in the editor is drawn as a cable', count('.cable') === 1 && (app.mdoc as ModelDoc).valid, JSON.stringify((app.mdoc as ModelDoc).errors.map((e) => e.message)));
 
-    // ----------------- interface hierarchy: physical interfaces, their children, loopbacks
+    // ----------------- physical and logical interfaces, and what a logical interface is associated with
     {
-      click('#outline [data-act="select"][data-kind="device"][data-index="0"]');
-      await tick();
+      const selectDev = async (i: number): Promise<void> => {
+        click(`#outline [data-act="select"][data-kind="device"][data-index="${i}"]`);
+        await tick();
+      };
+      await selectDev(0);
       const dh = (): ModelDoc => app.mdoc as ModelDoc;
-      const eth = '["devices",0,"interfaces",0]';
+      const r1 = (): Device => dh().result.model!.index.devices.get('router1')!;
+      const lg = (k: number): string => `["devices",0,"logical_interfaces",${k}]`;
       const card = (p: string): string => `#side-body details[data-card='${p}']`;
-      const typeText = q(card(eth) + ' > [data-iface-type="physical"]');
+      const field = (k: number, key: string): string => `#side-body [data-p='["devices",0,"logical_interfaces",${k},"${key}"]']`;
+      const labels = (p: string): string => (Array.prototype.map.call(doc.querySelectorAll(card(p) + ' > .field > label'), (e: Element) => (e.textContent || '').trim()) as string[]).join('|');
+      const typeText = q(card('["devices",0,"interfaces",0]') + ' > [data-iface-type="physical"]');
       check(
-        'a physical interface has no type field: its type is read-only text "Physical"',
+        'a physical interface has no type to select: its type is read-only text "Physical"',
         !!typeText && /Physical/.test(typeText.textContent || '') && !typeText.querySelector('input, select, textarea') && !q(`#side-body [data-p='["devices",0,"interfaces",0,"type"]']`) && !/type: physical/.test(app.exportText()),
         typeText ? typeText.textContent || '' : 'no type text',
       );
-      const loopType = q(card('["devices",0,"loopbacks",0]') + ' > [data-iface-type="loopback"]');
-      check('a loopback is listed on its own, outside the physical interfaces, with read-only type "Loopback"', !!loopType && !loopType.querySelector('input, select') && !!q(`#side-body [data-list="loopbacks"] details[data-card='["devices",0,"loopbacks",0]']`) && !q(`#side-body [data-list="interfaces"] details[data-card='["devices",0,"loopbacks",0]']`));
-      // children: a tunnel first, then a logical interface
-      click(card(eth) + ' [data-act="add-child"][data-kind="tunnel"]');
-      await tick();
-      click(card(eth) + ' [data-act="add-child"][data-kind="logical"]');
-      await tick();
-      const typeSel = q(`#side-body select[data-t="child-type"][data-p='["devices",0,"interfaces",0,"children",0,"type"]']`) as HTMLSelectElement | null;
-      const options = typeSel ? (Array.prototype.map.call(typeSel.options, (o: HTMLOptionElement) => o.value + '=' + o.textContent) as string[]).join() : '';
-      const kinds = (): string => dh().result.model!.index.devices.get('router1')!.interfaces[0].children.map((c) => c.id + ':' + c.type).join();
+      const loopSel = q(`#side-body select[data-t="logical-type"][data-p='["devices",0,"logical_interfaces",0,"type"]']`) as HTMLSelectElement | null;
+      const typeOptions = loopSel ? (Array.prototype.map.call(loopSel.options, (o: HTMLOptionElement) => o.value + '=' + o.textContent) as string[]).join() : '';
       check(
-        'a physical interface can carry several children; a child is Logical or Tunnel and nothing else can be chosen',
-        options === 'logical=Logical,tunnel=Tunnel' && !!typeSel && typeSel.value === 'tunnel' && kinds() === 'tun0:tunnel,eth0.1:logical' && dh().valid &&
-          /- id: eth0\n {8}children:\n {10}- \{id: tun0, type: tunnel\}\n {10}- \{id: eth0\.1, type: logical\}/.test(app.exportText()),
-        options + ' // ' + kinds() + ' // ' + app.exportText(),
+        'interfaces are listed in two categories, Physical and Logical; a logical interface\'s type is Loopback, Virtual or Tunnel',
+        !!q('#side-body [data-list="interfaces"] ' + `details[data-card='["devices",0,"interfaces",0]']`) && !!q('#side-body [data-list="logical"] ' + `details[data-card='${lg(0)}']`) && typeOptions === 'loopback=Loopback,virtual=Virtual,tunnel=Tunnel' && loopSel!.value === 'loopback' &&
+          /Physical interfaces \(1\)/.test(q('#side-body [data-list="interfaces"] h4')!.textContent || '') && /Logical interfaces \(1\)/.test(q('#side-body [data-list="logical"] h4')!.textContent || '') &&
+          !q('#side-body [data-act="add-child"]') && !/Child interfaces|Parent/.test(q('#side-body')!.textContent || ''),
+        typeOptions,
       );
-      const shownKids = (): string => (Array.prototype.map.call(doc.querySelectorAll(card(eth) + ' details.child-card'), (e: Element) => e.getAttribute('data-iface')) as string[]).join();
+      check('a loopback has no parent, member or tunnel fields', !/Member ports|Ports carrying VLAN|Tunnel source|Tunnel destination/.test(labels(lg(0))) && /Addresses/.test(labels(lg(0))), labels(lg(0)));
+
+      // an aggregate: a virtual interface that names several member ports
+      click('#side-body [data-act="add-iface"]');
+      await tick();
+      click('#side-body [data-act="add-logical"][data-kind="virtual"]');
+      await tick();
+      const memberSel = `#side-body select[data-t="member-append"][data-p='["devices",0,"logical_interfaces",1,"members"]']`;
+      const offered = (): string => (Array.prototype.map.call((q(memberSel) as HTMLSelectElement).options, (o: HTMLOptionElement) => o.value) as string[]).join();
+      const before = offered();
+      await setField(memberSel, 'eth1');
+      await setField(memberSel, 'eth0');
+      const chips = (): string => (Array.prototype.map.call(doc.querySelectorAll(card(lg(1)) + ' [data-member]'), (e: Element) => e.getAttribute('data-member')) as string[]).join();
+      check(
+        'a virtual interface can reference several member ports, picked from the device\'s physical interfaces (label "Member ports")',
+        before === ',eth0,eth1' && offered() === '' && chips() === 'eth1,eth0' && r1().logical[1].members.join() === 'eth1,eth0' && r1().logical[1].type === 'virtual' && dh().valid &&
+          /- \{id: virtual0, type: virtual, members: \[eth1, eth0\]\}/.test(app.exportText()) && /Member ports/.test(labels(lg(1))),
+        `${before} / ${offered()} / ${chips()} / ${app.exportText()}`,
+      );
+
+      // a VLAN interface: it names its VLAN; the ports carrying that VLAN come from the link ends
+      click('#side-body [data-act="add-logical"][data-kind="virtual"]');
+      await tick();
+      const vlanPorts = card(lg(2)) + ' > [data-derived="vlan-ports"]';
+      // a virtual interface is not assumed to be a bond or a VLAN interface: until it is one, both are offered and no ports are shown
+      const plain = labels(lg(2));
+      const noVlanYet = !q(vlanPorts);
+      await setField(field(2, 'vlan'), '30');
+      const noPort = (q(vlanPorts) || { textContent: '' }).textContent || '';
+      click('#outline [data-act="select"][data-kind="link"][data-index="0"]');
+      await tick();
+      await setField(`#side-body [data-t="vlan-add"][data-p='["links",0,"a"]']`, '30');
+      await selectDev(0);
+      const ports = (Array.prototype.map.call(doc.querySelectorAll(vlanPorts + ' li[data-port]'), (e: Element) => e.getAttribute('data-port')) as string[]).join();
+      check(
+        'a VLAN interface shows "Ports carrying VLAN" read-only, derived from the VLANs on the link ends; no port is entered on the interface',
+        /Member ports/.test(plain) && /VLAN ID/.test(plain) && noVlanYet && /No link end of this device permits VLAN 30/.test(noPort) && ports === 'eth0' && !/Member ports/.test(labels(lg(2))) && /Ports carrying VLAN 30/.test(labels(lg(2))) &&
+          !/VLAN ID|Ports carrying VLAN/.test(labels(lg(1))) && /VLAN 30 on/.test(q(vlanPorts)!.textContent || '') && !q(vlanPorts + ' input, ' + vlanPorts + ' select, ' + vlanPorts + ' [data-act]') &&
+          !!q(vlanPorts + ' .derived-tag') && /- \{id: virtual1, type: virtual, vlan: 30\}/.test(app.exportText()) && r1().logical[2].members.length === 0 && dh().valid,
+        `${plain} / ${noPort} / ${ports} / ${labels(lg(2))} / ${labels(lg(1))}`,
+      );
+      // taking the VLAN off the link takes the port out of the list; nothing on the interface changes
+      click('#outline [data-act="select"][data-kind="link"][data-index="0"]');
+      await tick();
+      click('#side-body [data-act="del-vlan"][data-p=\'["links",0,"a"]\'][data-k="30"]');
+      await tick();
+      await selectDev(0);
+      check('… and follows the links: without the VLAN on the cable no port is listed', doc.querySelectorAll(vlanPorts + ' li[data-port]').length === 0 && /- \{id: virtual1, type: virtual, vlan: 30\}/.test(app.exportText()) && !/vlans:/.test(app.exportText()));
+
+      // a tunnel: its source is any interface of the device (here a loopback) or an address
+      click('#side-body [data-act="add-logical"][data-kind="tunnel"]');
+      await tick();
+      await setField(field(3, 'source'), 'lo0');
+      await setField(field(3, 'destination'), 'edge2:lo0');
+      const t = (): Interface => r1().logical[3];
+      const viaLoopback = dh().valid && t().type === 'tunnel' && !!t().source && t().source!.iface === 'lo0' && !!t().destination && t().destination!.device === 'edge2' && t().destination!.iface === 'lo0';
+      await setField(field(3, 'source'), 'eth7');
+      const badSource = (Array.prototype.map.call(doc.querySelectorAll(card(lg(3)) + ' .field-err'), (e: Element) => e.textContent) as string[]).join(' | ');
+      await setField(field(3, 'source'), '10.255.0.1');
+      const viaAddress = dh().valid && t().source!.address === '10.255.0.1' && t().source!.iface === 'lo0';
+      await setField(field(3, 'source'), 'eth0');
+      check(
+        'a tunnel names its source (a loopback, an address or a port: not only a physical parent) and its destination; an unknown source is an error',
+        viaLoopback && viaAddress && /tunnel source "eth7" is neither an IP address nor an interface of "router1"/.test(badSource) && dh().valid && t().source!.iface === 'eth0' && /Tunnel source\|Tunnel destination/.test(labels(lg(3))) &&
+          !/Member ports|Ports carrying VLAN/.test(labels(lg(3))) && /- \{id: tun0, type: tunnel, source: eth0, destination: edge2:lo0\}/.test(app.exportText()),
+        `${viaLoopback} ${viaAddress} ${badSource} ${labels(lg(3))}`,
+      );
+
+      // display order is alphabetical; the file keeps the order things were added in
+      const shown = (list: string): string => (Array.prototype.map.call(doc.querySelectorAll(`#side-body [data-list="${list}"] > details.card`), (e: Element) => e.getAttribute('data-iface')) as string[]).join();
       const yamlBefore = app.exportText();
-      click('#outline [data-act="select"][data-kind="device"][data-index="1"]');
-      await tick();
-      click('#outline [data-act="select"][data-kind="device"][data-index="0"]');
-      await tick();
+      await selectDev(1);
+      await selectDev(0);
       check(
-        'children are shown in alphabetical order (eth0.1 before tun0) while the file keeps its own order; viewing changes nothing',
-        shownKids() === 'eth0.1,tun0' && app.exportText() === yamlBefore && kinds() === 'tun0:tunnel,eth0.1:logical',
-        shownKids(),
+        'interfaces are shown alphabetically in both categories while the file keeps its own order; viewing changes nothing',
+        shown('logical') === 'lo0,tun0,virtual0,virtual1' && shown('interfaces') === 'eth0,eth1' && r1().logical.map((i) => i.id).join() === 'lo0,virtual0,virtual1,tun0' && app.exportText() === yamlBefore,
+        shown('logical'),
       );
-      await setField(`#side-body select[data-t="child-type"][data-p='["devices",0,"interfaces",0,"children",1,"type"]']`, 'tunnel');
-      check('changing a child\'s type writes exactly that value', kinds() === 'tun0:tunnel,eth0.1:tunnel' && dh().valid);
-      await setField(`#side-body select[data-t="child-type"][data-p='["devices",0,"interfaces",0,"children",1,"type"]']`, 'logical');
-      // a cable can only end on a physical interface; a relation can use any interface or loopback
+      // a cable ends on a physical interface; renaming a port updates the member list that names it
       click('#outline [data-act="select"][data-kind="link"][data-index="0"]');
       await tick();
       const endIfs = (Array.prototype.map.call((q('#side-body select[data-t="ep-if"][data-p=\'["links",0,"a"]\']') as HTMLSelectElement).options, (o: HTMLOptionElement) => o.value) as string[]).join();
-      check('a link end offers physical interfaces only', endIfs === ',eth0', endIfs);
-      // renaming a child updates references; deleting the physical interface would take its children along
-      click('#outline [data-act="select"][data-kind="device"][data-index="0"]');
-      await tick();
-      await setField(`#side-body [data-t="ifid"][data-p='["devices",0,"interfaces",0,"children",1,"id"]']`, 'eth0.100');
-      check('a child can be renamed like any interface', kinds() === 'tun0:tunnel,eth0.100:logical' && dh().valid && shownKids() === 'eth0.100,tun0');
-      click('[data-view-btn="logical"]');
+      check('a link end offers physical interfaces only', endIfs === ',eth0,eth1', endIfs);
+      await selectDev(0);
+      await setField(`#side-body [data-t="ifid"][data-p='["devices",0,"interfaces",1,"id"]']`, 'eth9');
+      check('renaming a port updates the aggregate that lists it', dh().valid && r1().logical[1].members.join() === 'eth9,eth0' && /members: \[eth9, eth0\]/.test(app.exportText()));
+      // selection: a logical interface highlights the ports it uses and their cables
       click('[data-view-btn="physical"]');
+      app.select('iface:router1:virtual0');
+      const bond = !!q(card(lg(1)) + '[open]') && !!q('#viewport [data-ref="iface:router1:eth0"].hl') && !!q('#viewport [data-ref="link:link1"].hl');
       app.select('iface:router1:tun0');
-      check(
-        'selecting a child in the diagram context opens it inside its physical interface and highlights that port and its cable',
-        !!q(card('["devices",0,"interfaces",0,"children",0]') + '[open]') && !!q(card(eth) + '[open]') && !!q('#viewport [data-ref="iface:router1:eth0"].hl, #viewport [data-ref="iface:router1:eth0"].selected') && !!q('#viewport [data-ref="link:link1"].hl'),
-      );
+      const tun = !!q(card(lg(3)) + '[open]') && !!q('#viewport [data-ref="iface:router1:eth0"].hl') && !!q('#viewport [data-ref="link:link1"].hl') && !!q('#viewport [data-ref="device:edge2"].hl');
+      check('selecting an aggregate highlights its member ports and their cables; selecting a tunnel its source port, that cable and the destination device', bond && tun, `${bond} ${tun}`);
       app.select(null);
     }
     click('#outline [data-act="add-entity"][data-kind="relation"]');
@@ -978,7 +1040,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       check(
         'a new network is an id only: no kind, VRF or member fields, nothing invented; the member list is read-only',
         !q('#side-body [data-p=\'["networks",0,"kind"]\']') && !q('#side-body [data-p=\'["networks",0,"vrf"]\']') && !q('#side-body [data-p=\'["networks",0,"members"]\']') &&
-          /- id: net1\n/.test(dn.exportText()) && !/kind:|vlan:|members:|cidr:/.test(dn.exportText()) && dn.valid && readOnly(members) && /Members \(0\)/.test(text(members)),
+          /- id: net1\n/.test(dn.exportText()) && !/kind:|vlan:|members:|cidr:/.test(dn.exportText().slice(dn.exportText().indexOf('networks:'))) && dn.valid && readOnly(members) && /Members \(0\)/.test(text(members)),
         dn.exportText() + ' // ' + text(members),
       );
       await setField('#side-body [data-t="list-append"][data-p=\'["networks",0,"cidr"]\']', '10.77.0.0/24');
@@ -990,7 +1052,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       check(
         'interfaces have no editable VLAN, speed or media field',
         !q('#side-body [data-p=\'["devices",0,"interfaces",0,"vlan"]\']') && !q('#side-body [data-p=\'["devices",0,"interfaces",0,"speed"]\']') && !q('#side-body [data-p=\'["devices",0,"interfaces",0,"media"]\']') &&
-          !q('#side-body [data-p=\'["devices",0,"loopbacks",0,"speed"]\']') && !q('#side-body [data-p=\'["devices",0,"interfaces",0,"children",0,"speed"]\']'),
+          !q('#side-body [data-p=\'["devices",0,"logical_interfaces",0,"speed"]\']') && !q('#side-body [data-p=\'["devices",0,"logical_interfaces",3,"speed"]\']'),
       );
       await setField('#side-body [data-t="list-append"][data-p=\'["devices",0,"interfaces",0,"ip"]\']', '10.77.0.1/24');
       check(
@@ -998,7 +1060,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         !!q(ifVlan(0, 0) + ' li[data-vlan="77"]') && /net1 · VLAN 77/.test(text(ifVlan(0, 0))) && readOnly(ifVlan(0, 0)),
         text(ifVlan(0, 0)),
       );
-      check('a loopback outside every network derives nothing, and no VLAN is invented', !!q(ifVlan(0, 0, 'loopbacks') + ' li[data-vlan="none"]') && /no network contains it/.test(text(ifVlan(0, 0, 'loopbacks'))), text(ifVlan(0, 0, 'loopbacks')));
+      check('a loopback outside every network derives nothing, and no VLAN is invented', !!q(ifVlan(0, 0, 'logical_interfaces') + ' li[data-vlan="none"]') && /no network contains it/.test(text(ifVlan(0, 0, 'logical_interfaces'))), text(ifVlan(0, 0, 'logical_interfaces')));
       click('[data-view-btn="logical"]');
       check('… and the logical view draws the membership line at once', count('.member') === 1 && count('g.network') === 1, String(count('.member')));
       // the network's prefix decides: a different prefix length on the interface still matches
@@ -1033,7 +1095,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       await selectDevice(0);
       check('moving the second network away resolves it again (VLAN 78), and membership follows', !!q(ifVlan(0, 0) + ' li[data-vlan="78"]') && count('.member') === 2, text(ifVlan(0, 0)));
       const ex = (app.mdoc as ModelDoc).exportText();
-      check('derived members and interface VLANs are never written to the YAML', !/members:|kind:/.test(ex) && (ex.match(/vlan: /g) || []).length === 2 && !/eth0[^\n]*vlan/.test(ex), ex);
+      check('derived members and interface VLANs are never written to the YAML', !/\n {4}members:|kind:/.test(ex) && (ex.match(/vlan: /g) || []).length === 3 && !/eth0[^\n]*vlan/.test(ex), ex);
     }
 
     // ------------------------------------ per-end VLANs on a link (trunk)
@@ -1092,16 +1154,17 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const re = ModelDoc.fromText(created.text, 'new-network.yaml', 'file');
       const rd = re.doc;
       const rm = rd && rd.result.model;
-      check('exported new model reloads identically (valid, same YAML, loopbacks, interface hierarchy + attrs intact)',
-        !!rd && rd.valid && rd.exportText() === created.text && !!rm && rm.index.devices.get('edge2')!.loopbacks.map((l) => l.id).join() === 'lo0,lo1' &&
+      check('exported new model reloads identically (valid, same YAML; loopbacks, aggregate, VLAN interface, tunnel + attrs intact)',
+        !!rd && rd.valid && rd.exportText() === created.text && !!rm && rm.index.devices.get('edge2')!.logical.map((l) => l.id + ':' + l.type).join() === 'lo0:loopback,lo1:loopback' &&
           rm.index.interfaces.get('edge2:lo0')!.addresses.join(',') === '10.255.0.2/32,2001:db8:ffff::2/128,10.255.0.3/32' && rm.index.interfaces.get('edge2:lo0')!.type === 'loopback' &&
-          rm.index.devices.get('router1')!.interfaces.map((i) => `${i.id}:${i.type}>` + i.children.map((c) => `${c.id}:${c.type}:${c.parent}`).join('+')).join() === 'eth0:physical>tun0:tunnel:eth0+eth0.100:logical:eth0' &&
+          rm.index.devices.get('router1')!.interfaces.map((i) => `${i.id}:${i.type}`).join() === 'eth0:physical,eth9:physical' &&
+          rm.index.devices.get('router1')!.logical.map((i) => `${i.id}:${i.type}:${i.members.join('+')}:${i.vlan || ''}:${i.source ? i.source.iface : ''}>${i.destination ? i.destination.text : ''}`).join() === 'lo0:loopback:::>,virtual0:virtual:eth9+eth0::>,virtual1:virtual::30:>,tun0:tunnel:::eth0>edge2:lo0' &&
           rm.relations[0].attrs.some(([k, v]) => k === 'keepalive.interval' && v === '10s') && /key: 42/.test(created.text),
         created.text);
       check(
         'export → reload: per-end VLANs are in the file; members and interface VLANs are derived again, not stored',
         !!rm && JSON.stringify([rm.links[0].a.vlans, rm.links[0].b.vlans]) === '[[10,20],[10,20]]' && networkMembers(rm, 'net1').map((m) => m.device).join() === 'router1,edge2' &&
-          interfaceVlanText(interfaceAddresses(rm, 'router1', 'eth0')) === 'VLAN 78' && !/members:|kind:/.test(created.text) && /b: \{device: edge2, interface: eth0, vlans: \[10, 20\]\}/.test(created.text),
+          interfaceVlanText(interfaceAddresses(rm, 'router1', 'eth0')) === 'VLAN 78' && !/\n {4}members:|kind:/.test(created.text) && /b: \{device: edge2, interface: eth0, vlans: \[10, 20\]\}/.test(created.text),
         created.text);
       if (rd) {
         app.loadText(created.text, 'reloaded.yaml', 'file');
@@ -1122,9 +1185,9 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     check('renaming a device updates every reference', (app.mdoc as ModelDoc).valid && !/hq-rtr1:|device: hq-rtr1|id: hq-rtr1/.test(renamed) && /label: hq-rtr1/.test(renamed) && (renamed.match(/hq-edge-a/g) || []).length >= 12,
       String((renamed.match(/hq-edge-a/g) || []).length));
     await setField('#side-body [data-p=\'["devices",3,"description"]\']', 'Primary edge router');
-    click('#side-body [data-act="add-loop"]');
+    click('#side-body [data-act="add-logical"][data-kind="loopback"]');
     await tick();
-    await setField(`#side-body [data-t="list-append"][data-p='["devices",3,"loopbacks",1,"ip"]']`, '2001:db8:0:ff::1/128');
+    await setField(`#side-body [data-t="list-append"][data-p='["devices",3,"logical_interfaces",2,"ip"]']`, '2001:db8:0:ff::1/128');
     click('#btn-download');
     await tick(10);
     check('export of an imported file is offered as a new copy', /original file on your disk is not modified/.test(q('#modal')!.textContent || '') && (q('#dl-name') as HTMLInputElement).value === 'acme-wan-edited.yaml');
@@ -1133,8 +1196,8 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     if (edited) {
       const back = ModelDoc.fromText(edited.text, edited.name, 'file').doc as ModelDoc;
       const bm = back.result.model!;
-      check('import → edit → export → reload keeps the edits', back.valid && bm.index.devices.get('hq-edge-a')!.description === 'Primary edge router' && bm.index.devices.get('hq-edge-a')!.loopbacks.map((l) => l.id).join() === 'lo0,lo1' && bm.index.interfaces.get('hq-edge-a:lo1')!.addresses[0] === '2001:db8:0:ff::1/128' &&
-        bm.index.interfaces.get('hq-edge-a:st0.10')!.parent === 'ge-0/0/0');
+      check('import → edit → export → reload keeps the edits', back.valid && bm.index.devices.get('hq-edge-a')!.description === 'Primary edge router' && bm.index.devices.get('hq-edge-a')!.logical.map((l) => l.id).join() === 'lo0,st0.10,lo1' && bm.index.interfaces.get('hq-edge-a:lo1')!.addresses[0] === '2001:db8:0:ff::1/128' &&
+        bm.index.interfaces.get('hq-edge-a:st0.10')!.source!.iface === 'ge-0/0/0' && bm.index.interfaces.get('hq-edge-a:st0.10')!.destination!.device === 'muc-rtr');
       check('attributes not shown in diagrams survive the round trip', /serial: JN11AB22CD/.test(edited.text) && /contract: \{id: C-77, expires: 2027-01-31\}/.test(edited.text) && /cipher: GCM-AES-XPN-256/.test(edited.text));
       check('comments of the imported file are kept', /# --- Munich: IPsec carries GRE carries OSPF/.test(edited.text) && /^# netatlas example: enterprise WAN/.test(edited.text));
     } else check('import → edit → export → reload keeps the edits', false, 'no download captured');
@@ -1190,7 +1253,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     click('[data-yaml="revert"]');
 
     // unknown keys are kept and shown
-    const unk = app.loadText('netatlas: 1\ndevices:\n  - id: r1\n    colour: blue\n    loopbacks: [{id: lo0, ip: [10.0.0.1/32], weird: {x: 1}}]\n', 'unknown.yaml', 'file');
+    const unk = app.loadText('netatlas: 1\ndevices:\n  - id: r1\n    colour: blue\n    logical_interfaces: [{id: lo0, type: loopback, ip: [10.0.0.1/32], weird: {x: 1}}]\n', 'unknown.yaml', 'file');
     app.select('device:r1');
     check('unknown properties are shown in the inspector, not dropped', unk.errors.length > 0 && !!q('#side-body .other') && /colour/.test(app.exportText()) && /weird: \{x: 1\}/.test(app.exportText()));
     click('#side-body [data-act="to-attrs"][data-k="colour"]');
@@ -1200,15 +1263,15 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     // keys of the earlier format are rejected with what to do instead (never read or converted)
     {
       const oldFile = app.loadText(
-        'netatlas: 1\ngroups:\n  - {id: g1, kind: row}\ndevices:\n  - id: r1\n    vendor: Acme\n    router_id: lo0\n    interfaces: [{id: e0, type: physical, speed: 1G, media: fiber, vlan: 5, ip: 10.0.0.1/24}, {id: lo0, type: loopback, ip: 10.9.9.9/32}]\nnetworks:\n  - {id: n1, kind: vlan, vrf: red, cidr: 10.0.0.0/24, members: [r1]}\n',
+        'netatlas: 1\ngroups:\n  - {id: g1, kind: row}\ndevices:\n  - id: r1\n    vendor: Acme\n    router_id: lo0\n    interfaces: [{id: e0, type: physical, speed: 1G, media: fiber, vlan: 5, ip: 10.0.0.1/24, children: [{id: t0, type: tunnel}]}]\n    loopbacks: [{id: lo0, ip: 10.9.9.9/32}]\nnetworks:\n  - {id: n1, kind: vlan, vrf: red, cidr: 10.0.0.0/24, members: [r1]}\n',
         'old-format.yaml',
         'file',
       );
       const msgs = oldFile.errors.map((e) => e.message).join(' | ');
       check(
         'a file in the earlier format opens as a draft with one actionable error per retired key',
-        oldFile.ok && oldFile.errors.length === 11 && /"speed" is no longer part of the format/.test(msgs) && /"vendor" is no longer part of the format/.test(msgs) && /"router_id" is no longer part of the format/.test(msgs) && /"type" is no longer part of the format/.test(msgs) &&
-          (app.mdoc as ModelDoc).result.model!.devices[0].loopbacks.length === 0 && (app.mdoc as ModelDoc).result.model!.devices[0].interfaces.every((i) => i.type === 'physical') && /"members" is no longer part of the format/.test(msgs) && /renamed to "floor"/.test(msgs) &&
+        oldFile.ok && oldFile.errors.length === 12 && /"children" is no longer part of the format — interfaces are no longer nested/.test(msgs) && /"loopbacks" is no longer part of the format/.test(msgs) && /"speed" is no longer part of the format/.test(msgs) && /"vendor" is no longer part of the format/.test(msgs) && /"router_id" is no longer part of the format/.test(msgs) && /"type" is no longer part of the format/.test(msgs) &&
+          (app.mdoc as ModelDoc).result.model!.devices[0].logical.length === 0 && (app.mdoc as ModelDoc).result.model!.devices[0].interfaces.length === 1 && (app.mdoc as ModelDoc).result.model!.devices[0].interfaces.every((i) => i.type === 'physical') && /"members" is no longer part of the format/.test(msgs) && /renamed to "floor"/.test(msgs) &&
           (app.mdoc as ModelDoc).result.model!.networks[0].vlan === undefined && networkMembers((app.mdoc as ModelDoc).result.model!, 'n1').length === 1,
         msgs,
       );
@@ -1234,6 +1297,19 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     const bad2 = app.loadText('netatlas: 1\ndevices:\n  - id: r1\nlinks:\n  - {id: l1, a: "r1:eth0", b: r2}\n', 'bad2.yaml');
     check('a file with broken references opens as a draft listing its errors', bad2.ok && bad2.errors.length === 2 && /Problems \(2\)/.test(q('[data-tab="problems"]')!.textContent || ''));
 
+    {
+      // after everything above (long forms, every tab, both views, dialogs): the page still fits its window
+      const root = doc.documentElement;
+      (doc.defaultView as Window).scrollTo(0, 100000);
+      const scrolled = (doc.defaultView as Window).scrollY || root.scrollTop || doc.body.scrollTop;
+      const st = (q('#status') as HTMLElement).getBoundingClientRect();
+      const side = (q('#side') as HTMLElement).getBoundingClientRect();
+      check(
+        'the application fits the window: the document does not scroll, and the side panel ends at the status bar',
+        root.scrollHeight <= root.clientHeight && root.scrollWidth <= root.clientWidth && !scrolled && Math.abs(st.bottom - root.clientHeight) <= 1 && side.bottom <= st.top + 0.5,
+        `document ${root.scrollWidth}x${root.scrollHeight} in ${root.clientWidth}x${root.clientHeight}, scrolled ${scrolled}, side ends at ${side.bottom}, status ${st.top}–${st.bottom}`,
+      );
+    }
     const perf = (doc.defaultView as Window).performance;
     const resources = perf && perf.getEntriesByType ? perf.getEntriesByType('resource').length : 0;
     check('no network resources requested', resources === 0, String(resources));

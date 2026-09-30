@@ -1,15 +1,15 @@
-import { addrKey, hasHostBits, parsePrefix, prefixProblem } from '../model/ip';
-import { derive, vlanMismatch, vlanMismatchText } from '../model/derive';
+import { IpPrefix, addrKey, hasHostBits, parsePrefix, prefixProblem } from '../model/ip';
+import { derive, interfaceAddresses, vlanMismatch, vlanMismatchText } from '../model/derive';
 import {
   Attrs,
   CATEGORIES,
-  CHILD_IFACE_TYPES,
   Category,
   Device,
   Group,
   Interface,
   InterfaceKind,
   LINE_STYLES,
+  LOGICAL_IFACE_TYPES,
   LineStyle,
   Link,
   LinkEnd,
@@ -19,6 +19,7 @@ import {
   Network,
   RelEndpoint,
   Relation,
+  TunnelEnd,
   deviceInterfaces,
   ifaceKey,
   relationDevices,
@@ -256,10 +257,14 @@ function build(root: YNode | null, c: Ctx): Model | null {
   const interfaces = new Map<string, Interface>();
   /** "device:iface" -> the YAML node of each address in Interface.addresses (same order) */
   const ifaceAddrNodes = new Map<string, YNode[]>();
-  /** "device:iface" -> where the interface is declared, e.g. "devices.r1.interfaces[0].children[1]" */
+  /** "device:iface" -> where the interface is declared, e.g. "devices.r1.logical_interfaces[1]" */
   const ifacePaths = new Map<string, string>();
   /** canonical address -> first "device:iface" using it */
   const addrOwner = new Map<string, { where: string; node: YNode }>();
+  /** "device:iface" -> the node of a virtual interface's "vlan" */
+  const vlanNodes = new Map<string, YNode>();
+  /** tunnel destinations: checked once every device is read */
+  const destinations: Array<{ iface: Interface; node: YNode; path: string }> = [];
   capped(r.list(get(top, 'devices'), 'devices'), L.maxDevices, 'devices', 'devices').forEach((n, i) => {
     const path = `devices[${i}]`;
     const m = r.map(n, path);
@@ -290,27 +295,31 @@ function build(root: YNode | null, c: Ctx): Model | null {
       description: r.field(m, 'description', dpath, L.maxDescription),
       attrs: r.attrs(get(m, 'attrs'), dpath + '.attrs'),
       interfaces: [],
-      loopbacks: [],
+      logical: [],
       line: m.line,
     };
     let count = 0;
+    /** address -> id of the interface of this device that has it (first one) */
+    const ownAddrs = new Map<string, string>();
+    /** tunnel sources of this device that name an interface: checked once all its interfaces are read */
+    const sources: Array<{ iface: Interface; node: YNode; path: string }> = [];
+    /** physical interface id -> the aggregate that lists it as a member (first one) */
+    const memberOf = new Map<string, string>();
     /**
-     * One interface of this device. Its kind follows from the list it is in:
-     * `interfaces` (physical), `children` of a physical interface (logical or
-     * tunnel) or `loopbacks`. All of them share the device's id namespace, so
-     * "device:interface" names exactly one of them.
+     * One interface of this device. `interfaces` holds the physical ones,
+     * `logical_interfaces` the loopback, virtual and tunnel interfaces. Both
+     * lists share the device's id namespace, so "device:interface" names
+     * exactly one interface.
      */
-    const readIface = (inode: YNode, ipath: string, where: 'interface' | 'child' | 'loopback', parent?: Interface): Interface | null => {
+    const readIface = (inode: YNode, ipath: string, where: 'interface' | 'logical'): Interface | null => {
       let im: YMap | null;
-      if (inode.kind === 'scalar' && where !== 'loopback') {
+      if (inode.kind === 'scalar' && where === 'interface') {
         // shorthand: "- eth0"
         im = { kind: 'map', entries: new Map([['id', { key: 'id', keyLine: inode.line, value: inode }]]), line: inode.line, col: inode.col };
       } else im = r.map(inode, ipath);
       if (!im) return null;
       r.keys(im, SCHEMA[where], ipath, ATTRS_HINT, RETIRED[where]);
-      const isLoop = where === 'loopback';
-      const kind = isLoop ? 'loopback' : 'interface';
-      const iid = r.id(im, ipath, IFACE_RE, kind + ' id');
+      const iid = r.id(im, ipath, IFACE_RE, 'interface id');
       if (!iid) return null;
       const key = ifaceKey(id, iid);
       const prev = interfaces.get(key);
@@ -318,7 +327,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
         c.error(
           get(im, 'id') as YNode,
           ipath + '.id',
-          `duplicate interface "${iid}" on device "${id}" (already used by ${describeIface(prev)}; interfaces, their children and loopbacks share one set of ids per device)`,
+          `duplicate interface "${iid}" on device "${id}" (already used by ${describeIface(prev)}; physical and logical interfaces share one set of ids per device)`,
         );
         return null;
       }
@@ -327,24 +336,28 @@ function build(root: YNode | null, c: Ctx): Model | null {
         return null;
       }
       if (++count > L.maxInterfacesPerDevice) {
-        c.error(im, ipath, `too many interfaces on one device (limit ${L.maxInterfacesPerDevice}, counting children and loopbacks)`);
+        c.error(im, ipath, `too many interfaces on one device (limit ${L.maxInterfacesPerDevice}, physical and logical together)`);
         return null;
       }
-      let type: InterfaceKind = isLoop ? 'loopback' : 'physical';
-      if (where === 'child') {
-        type = 'logical';
-        const t = r.field(im, 'type', ipath, 40);
+      let type: InterfaceKind = 'physical';
+      if (where === 'logical') {
+        // a draft without a (valid) type is kept as a virtual interface, the kind with the fewest rules
+        type = 'virtual';
+        const t = r.reqStr(im, 'type', ipath, 40);
         if (t !== undefined) {
-          if (CHILD_IFACE_TYPES.indexOf(t as InterfaceKind) >= 0) type = t as InterfaceKind;
+          if (LOGICAL_IFACE_TYPES.indexOf(t as InterfaceKind) >= 0) type = t as InterfaceKind;
           else {
             c.error(
               get(im, 'type') as YNode,
               ipath + '.type',
-              `"${t}" is not a child interface type: use "logical" or "tunnel" (describe a more specific function, such as an SVI or a subinterface, with "label", "description" or "attrs")`,
+              `"${t}" is not a logical interface type: use "loopback", "virtual" or "tunnel"` +
+                (t === 'physical' ? ' (a physical interface belongs in the "interfaces:" list of the device)' : ' (an SVI, a VLAN interface, a bond or a subinterface is "virtual")'),
             );
           }
         }
       }
+      const isLoop = type === 'loopback';
+      const kind = isLoop ? 'loopback' : 'interface';
       const ipNode = get(im, 'ip');
       const addrNodes = r.list(ipNode, ipath + '.ip', true);
       const addrs: string[] = [];
@@ -371,6 +384,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
           return;
         }
         seenHere.add(k2);
+        if (!ownAddrs.has(k2)) ownAddrs.set(k2, iid);
         const owner = addrOwner.get(k2);
         if (owner) c.warn(an, `${ipath}.ip[${j}]`, `address ${a.split('/')[0]} is also assigned to ${owner.where}`);
         else addrOwner.set(k2, { where: key, node: an });
@@ -383,37 +397,130 @@ function build(root: YNode | null, c: Ctx): Model | null {
         device: id,
         label: r.field(im, 'label', ipath, L.maxLabel),
         type,
-        parent: parent ? parent.id : undefined,
-        children: [],
         addresses: addrs,
         vrf: r.field(im, 'vrf', ipath, 100),
-        mac: isLoop ? undefined : r.field(im, 'mac', ipath, 40),
+        mac: r.field(im, 'mac', ipath, 40),
+        members: [],
         description: r.field(im, 'description', ipath, L.maxDescription),
         attrs: r.attrs(get(im, 'attrs'), ipath + '.attrs'),
         line: im.line,
       };
+      if (where === 'logical') {
+        // Each association belongs to one type; on another type it is an error, not silently ignored.
+        const only = (k: string, t: InterfaceKind, what: string): boolean => {
+          const n = get(im as YMap, k);
+          if (isNull(n)) return false;
+          if (type === t) return true;
+          c.error(n as YNode, `${ipath}.${k}`, `"${k}" applies to a ${t} interface only (${what}); "${iid}" is a ${type} interface — delete this key or change the type`);
+          return false;
+        };
+        if (only('members', 'virtual', 'the member ports of a bond or aggregate')) {
+          // member ports of an aggregate: physical interfaces of this device, each once
+          r.list(get(im, 'members'), ipath + '.members', true).forEach((mn, j) => {
+            const mp = `${ipath}.members[${j}]`;
+            const mid = r.str(mn, mp, 200);
+            if (mid === undefined) return;
+            const target = interfaces.get(ifaceKey(id, mid));
+            if (!target) {
+              const ports = dev.interfaces.map((x) => x.id);
+              c.error(mn, mp, `device "${id}" has no physical interface "${mid}"` + (ports.length ? suggest(mid, ports) : ' (the device declares no physical interfaces)'));
+            } else if (target.type !== 'physical') {
+              c.error(mn, mp, `"${mid}" is ${describeIface(target)}: the members of an aggregate are physical interfaces of the same device`);
+            } else if (iface.members.indexOf(mid) >= 0) {
+              c.error(mn, mp, `member port "${mid}" is listed twice`);
+            } else {
+              iface.members.push(mid);
+              const other = memberOf.get(mid);
+              if (other !== undefined) c.warn(mn, mp, `port "${mid}" is also a member of "${other}"; a port normally belongs to one aggregate`);
+              else memberOf.set(mid, iid);
+            }
+          });
+        }
+        if (only('vlan', 'virtual', 'the VLAN a VLAN interface belongs to')) {
+          iface.vlan = r.vlanId(get(im, 'vlan'), ipath + '.vlan');
+          vlanNodes.set(key, get(im, 'vlan') as YNode);
+        }
+        for (const k of ['source', 'destination'] as Array<'source' | 'destination'>) {
+          if (!only(k, 'tunnel', k === 'source' ? 'the local interface or address a tunnel is sourced from' : 'the remote end of a tunnel')) continue;
+          const text = r.field(im, k, ipath, 200);
+          if (text === undefined) continue;
+          const end: TunnelEnd = { text };
+          const addr = parsePrefix(text, false);
+          if (addr) end.address = text;
+          iface[k] = end;
+          const node = get(im, k) as YNode;
+          if (k === 'source') sources.push({ iface, node, path: `${ipath}.source` });
+          else destinations.push({ iface, node, path: `${ipath}.destination` });
+        }
+      }
       interfaces.set(key, iface);
       ifaceAddrNodes.set(key, addrsAt);
       ifacePaths.set(key, ipath);
-      if (where === 'interface') {
-        r.list(get(im, 'children'), ipath + '.children').forEach((cn, j) => {
-          const child = readIface(cn, `${ipath}.children[${j}]`, 'child', iface);
-          if (child) iface.children.push(child);
-        });
-      }
       return iface;
     };
     r.list(get(m, 'interfaces'), dpath + '.interfaces').forEach((inode, k) => {
       const i = readIface(inode, `${dpath}.interfaces[${k}]`, 'interface');
       if (i) dev.interfaces.push(i);
     });
-    r.list(get(m, 'loopbacks'), dpath + '.loopbacks').forEach((inode, k) => {
-      const i = readIface(inode, `${dpath}.loopbacks[${k}]`, 'loopback');
-      if (i) dev.loopbacks.push(i);
+    r.list(get(m, 'logical_interfaces'), dpath + '.logical_interfaces').forEach((inode, k) => {
+      const i = readIface(inode, `${dpath}.logical_interfaces[${k}]`, 'logical');
+      if (i) dev.logical.push(i);
     });
+    // tunnel sources: an address (its interface is then derived), or any other interface of this device
+    for (const s of sources) {
+      const end = s.iface.source as TunnelEnd;
+      end.device = id;
+      if (end.address !== undefined) {
+        const own = ownAddrs.get(addrKey(parsePrefix(end.address, false) as IpPrefix));
+        if (own !== undefined && own !== s.iface.id) end.iface = own;
+        else c.warn(s.node, s.path, `source address ${end.address} is not an address of an interface of "${id}"; the tunnel's source interface can't be derived`);
+        continue;
+      }
+      const target = interfaces.get(ifaceKey(id, end.text));
+      if (!target) {
+        const names = deviceInterfaces(dev).map((x) => x.id).filter((x) => x !== s.iface.id);
+        c.error(s.node, s.path, `tunnel source "${end.text}" is neither an IP address nor an interface of "${id}"` + (names.length ? suggest(end.text, names) : ''));
+        s.iface.source = undefined;
+      } else if (target.id === s.iface.id) {
+        c.error(s.node, s.path, 'a tunnel cannot be sourced from itself');
+        s.iface.source = undefined;
+      } else end.iface = target.id;
+    }
     devices.push(dev);
   });
   const deviceMap = new Map(devices.map((d) => [d.id, d] as [string, Device]));
+
+  // tunnel destinations: an address (the device that has it is then derived), or a device / interface of the model
+  for (const t of destinations) {
+    const end = t.iface.destination as TunnelEnd;
+    if (end.address !== undefined) {
+      const owner = addrOwner.get(addrKey(parsePrefix(end.address, false) as IpPrefix));
+      if (owner) {
+        const colon = owner.where.indexOf(':');
+        end.device = owner.where.slice(0, colon);
+        end.iface = owner.where.slice(colon + 1);
+      }
+      continue;
+    }
+    const colon = end.text.indexOf(':');
+    const dname = colon < 0 ? end.text : end.text.slice(0, colon);
+    const iname = colon < 0 ? undefined : end.text.slice(colon + 1);
+    const target = deviceMap.get(dname);
+    if (!target) {
+      c.error(t.node, t.path, `tunnel destination "${end.text}" is neither an IP address nor a device or "device:interface" of this model` + suggest(dname, deviceMap.keys()));
+      t.iface.destination = undefined;
+    } else if (iname !== undefined && !interfaces.has(ifaceKey(dname, iname))) {
+      const names = deviceInterfaces(target).map((x) => x.id);
+      c.error(t.node, t.path, `device "${dname}" has no interface "${iname}"` + (names.length ? suggest(iname, names) : ' (the device declares no interfaces)'));
+      t.iface.destination = undefined;
+    } else if (dname === t.iface.device && iname === t.iface.id) {
+      c.error(t.node, t.path, 'a tunnel cannot have itself as its destination');
+      t.iface.destination = undefined;
+    } else {
+      end.device = dname;
+      end.iface = iname;
+    }
+  }
 
   /**
    * Parse "dev" / "dev:iface" / a mapping. A relation endpoint may carry
@@ -504,8 +611,8 @@ function build(root: YNode | null, c: Ctx): Model | null {
             en as YNode,
             `${lpath}.${side}`,
             `"${key}" is ${describeIface(inf)}, not a physical interface — a physical link must end on a physical interface. ` +
-              (inf.parent ? `Cable its physical interface "${ifaceKey(ep.device, inf.parent)}" instead; ` : '') +
-              'tunnels and sessions between logical interfaces or loopbacks are relations.',
+              (inf.members.length ? `Cable its member ports (${inf.members.join(', ')}) instead; ` : inf.source && inf.source.iface ? `Its source is "${inf.source.iface}"; ` : '') +
+              'Tunnels and sessions between logical interfaces are relations.',
           );
           return null;
         }
@@ -813,6 +920,17 @@ function build(root: YNode | null, c: Ctx): Model | null {
       c.warn(at, `${ifacePaths.get(key)}.ip`, `the VLAN of ${a.address} on ${key} is ambiguous: it lies in ${nets.join(' and ')}; no VLAN is derived for it`);
     });
   });
+  // A VLAN written on a virtual interface and the VLAN of the network its address lies in are two statements of one fact.
+  for (const d of devices) {
+    for (const i of d.logical) {
+      if (i.vlan === undefined) continue;
+      const other = interfaceAddresses(model, d.id, i.id).filter((a) => a.vlan.state === 'vlan' && a.vlan.vlan !== i.vlan)[0];
+      if (!other || other.vlan.state !== 'vlan') continue;
+      const key = ifaceKey(d.id, i.id);
+      const vn = vlanNodes.get(key);
+      if (vn) c.warn(vn, `${ifacePaths.get(key)}.vlan`, `"${i.id}" is the interface of VLAN ${i.vlan}, but its address ${other.address} lies in a network of VLAN ${other.vlan.vlan}`);
+    }
+  }
   return model;
 }
 
@@ -820,7 +938,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
 function describeIface(i: Interface): string {
   if (i.type === 'loopback') return 'a loopback';
   if (i.type === 'physical') return 'a physical interface';
-  return `a ${i.type} interface${i.parent ? ` of "${i.parent}"` : ''}`;
+  return `a ${i.type} interface`;
 }
 
 /** A device's type: one of the format's device types, or none. Anything else is an error. */

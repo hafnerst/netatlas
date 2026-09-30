@@ -21,61 +21,61 @@ devices:
   - id: pe1
     type: router
     group: pop-north
-    loopbacks:
-      - {id: lo0, label: Router ID, ip: [10.0.0.1/32, 2001:db8:0:ffff::1/128]}
     interfaces:
       - {id: et1, ip: 10.1.12.1/31}
       - {id: et2, ip: 10.1.16.1/31}
       - {id: et3, ip: 192.0.2.1/30, vrf: CUST-A}
       - {id: et4}
+    logical_interfaces:
+      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.1/32, 2001:db8:0:ffff::1/128]}
   - id: pe2
     type: router
     group: pop-north
-    loopbacks:
-      - {id: lo0, label: Router ID, ip: [10.0.0.2/32, 2001:db8:0:ffff::2/128]}
     interfaces:
       - {id: et1, ip: 10.1.12.0/31}
       - {id: et2, ip: 10.1.23.0/31}
       - {id: et4}
+    logical_interfaces:
+      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.2/32, 2001:db8:0:ffff::2/128]}
   - id: pe3
     type: router
     group: pop-east
-    loopbacks:
-      - {id: lo0, label: Router ID, ip: [10.0.0.3/32, 2001:db8:0:ffff::3/128]}
-      - {id: lo1, label: VPN next-hop, ip: [10.0.1.3/32]}
     interfaces:
       - {id: et1, ip: 10.1.23.1/31}
       - {id: et2, ip: 10.1.34.0/31}
       - {id: et4}
+    logical_interfaces:
+      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.3/32, 2001:db8:0:ffff::3/128]}
+      - {id: lo1, type: loopback, label: VPN next-hop, ip: [10.0.1.3/32]}
   - id: pe4
     type: router
     group: pop-east
-    loopbacks:
-      - {id: lo0, label: Router ID, ip: [10.0.0.4/32, 2001:db8:0:ffff::4/128]}
     interfaces:
       - {id: et1, ip: 10.1.34.1/31}
       - {id: et2, ip: 10.1.45.0/31}
       - {id: et4}
+    logical_interfaces:
+      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.4/32, 2001:db8:0:ffff::4/128]}
   - id: pe5
     type: router
     group: pop-south
-    loopbacks:
-      - {id: lo0, label: Router ID, ip: [10.0.0.5/32, 2001:db8:0:ffff::5/128]}
-      - {id: lo1, label: VPN next-hop, ip: [10.0.1.5/32]}
     interfaces:
       - {id: et1, ip: 10.1.45.1/31}
       - {id: et2, ip: 10.1.56.0/31}
       - {id: et3, ip: 192.0.2.5/30, vrf: CUST-A}
       - {id: et4}
+    logical_interfaces:
+      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.5/32, 2001:db8:0:ffff::5/128]}
+      - {id: lo1, type: loopback, label: VPN next-hop, ip: [10.0.1.5/32]}
   - id: pe6
     type: router
     group: pop-south
-    loopbacks:
-      - {id: lo0, label: Router ID, ip: [10.0.0.6/32, 2001:db8:0:ffff::6/128]}
     interfaces:
       - {id: et1, ip: 10.1.56.1/31}
       - {id: et2, ip: 10.1.16.0/31}
       - {id: et4}
+    logical_interfaces:
+      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.6/32, 2001:db8:0:ffff::6/128]}
   - id: ce-a1
     label: Customer A — HQ
     type: router
@@ -93,11 +93,11 @@ devices:
     type: switch
     group: oob
     interfaces:
-      - id: p1
-        children:
-          - {id: vlan1, type: logical, ip: 172.31.0.2/24, attrs: {function: svi}}
+      - {id: p1}
       - p2
       - p3
+    logical_interfaces:
+      - {id: vlan1, type: virtual, ip: 172.31.0.2/24}
   - id: oob-con1
     label: Console server 1
     type: system
@@ -119,8 +119,8 @@ devices:
   - id: spare-pe
     label: Spare PE (not in service)
     type: router
-    loopbacks:
-      - {id: lo0, ip: [10.0.0.99/32]}
+    logical_interfaces:
+      - {id: lo0, type: loopback, ip: [10.0.0.99/32]}
 
 links:
   # the ring

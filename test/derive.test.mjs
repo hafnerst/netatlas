@@ -27,8 +27,8 @@ const errorsOf = (text) => load2(text).errors.map((e) => e.message);
 const net = `netatlas: 1
 devices:
   - id: r1
-    loopbacks:
-      - {id: lo0, ip: [10.255.0.1/32, 2001:db8:ffff::1/128]}
+    logical_interfaces:
+      - {id: lo0, type: loopback, ip: [10.255.0.1/32, 2001:db8:ffff::1/128]}
     interfaces:
       - {id: eth0, ip: [10.1.0.1/24, 2001:db8:1::1/64]}
       - {id: eth1, ip: 10.1.0.9/24}
@@ -374,7 +374,9 @@ networks:
   assert.equal(r.errors.length, 8, r.errors.map((e) => e.message).join('\n'));
   assert.match(by(/"speed"/)[0].message, /^"speed" is no longer part of the format — speed is configured once, on the physical link: set "speed:" on the link/);
   assert.match(by(/"media"/)[0].message, /set "medium:" on the link cabled to this port/);
-  assert.equal(by(/"vlan" is no longer part of the format — the VLAN of an interface is derived from the network/).length, 2, 'interfaces and loopbacks');
+  assert.equal(by(/"vlan" is no longer part of the format — the VLAN of a physical interface is derived from the network/).length, 1);
+  assert.match(by(/"loopbacks"/)[0].message, /^"loopbacks" is no longer part of the format — loopbacks are logical interfaces: move each entry into "logical_interfaces:" of the device and add "type: loopback"/);
+  assert.equal(r.model.devices[0].logical.length, 0, 'the old list is not read');
   assert.match(by(/"kind"/)[0].message, /a network is always an IP network: delete this key/);
   assert.match(by(/"vrf"/)[0].message, /set "vrf:" on those interfaces/);
   assert.match(by(/"members"/)[0].message, /members are derived from the interface and loopback addresses/);
@@ -395,9 +397,9 @@ networks:
 test('the schema no longer contains retired keys, and the editor never writes them', () => {
   for (const kind of Object.keys(RETIRED)) for (const k of Object.keys(RETIRED[kind])) assert.ok(!SCHEMA[kind].includes(k), `${kind}.${k}`);
   assert.deepEqual(SCHEMA.network, ['id', 'label', 'cidr', 'vlan', 'description', 'attrs']);
-  assert.deepEqual(SCHEMA.interface, ['id', 'label', 'ip', 'vrf', 'mac', 'description', 'attrs', 'children']);
-  assert.deepEqual(SCHEMA.child, ['id', 'label', 'type', 'ip', 'vrf', 'mac', 'description', 'attrs']);
-  assert.deepEqual(SCHEMA.loopback, ['id', 'label', 'ip', 'vrf', 'description', 'attrs']);
+  assert.deepEqual(SCHEMA.interface, ['id', 'label', 'ip', 'vrf', 'mac', 'description', 'attrs']);
+  assert.deepEqual(SCHEMA.logical, ['id', 'type', 'label', 'ip', 'vrf', 'mac', 'members', 'vlan', 'source', 'destination', 'description', 'attrs']);
+  assert.ok(!('child' in SCHEMA) && !('loopback' in SCHEMA));
   assert.deepEqual(SCHEMA.linkEnd, ['device', 'interface', 'vlans']);
   assert.ok(SCHEMA.link.includes('medium') && SCHEMA.link.includes('speed'));
   for (const f of exampleNames) {
@@ -408,8 +410,8 @@ test('the schema no longer contains retired keys, and the editor never writes th
 });
 
 test('VRF is assigned on interfaces (loopbacks included), not on networks', () => {
-  const r = ok('netatlas: 1\ndevices:\n  - id: pe\n    loopbacks:\n      - {id: lo1, ip: 10.9.9.1/32, vrf: red}\n    interfaces:\n      - {id: e0, ip: 10.1.0.1/24, vrf: red}\n      - {id: e1, ip: 10.1.0.2/24}\nnetworks:\n  - {id: n, cidr: 10.1.0.0/24}\n');
-  assert.deepEqual(r.model.devices[0].loopbacks.concat(r.model.devices[0].interfaces).map((i) => i.vrf), ['red', 'red', undefined]);
+  const r = ok('netatlas: 1\ndevices:\n  - id: pe\n    logical_interfaces:\n      - {id: lo1, type: loopback, ip: 10.9.9.1/32, vrf: red}\n    interfaces:\n      - {id: e0, ip: 10.1.0.1/24, vrf: red}\n      - {id: e1, ip: 10.1.0.2/24}\nnetworks:\n  - {id: n, cidr: 10.1.0.0/24}\n');
+  assert.deepEqual(r.model.devices[0].logical.concat(r.model.devices[0].interfaces).map((i) => i.vrf), ['red', 'red', undefined]);
   assert.match(JSON.stringify(panels.detailsFor(r.model, 'iface:pe:e0')), /"vrf"[^\]]*\]?[^\]]*red/);
   // membership is by prefix only; the VRF does not take part
   assert.deepEqual(matches(r.model, 'n'), ['pe:e0 10.1.0.1/24', 'pe:e1 10.1.0.2/24']);
@@ -422,7 +424,7 @@ test('group kind "floor" replaces "row"', () => {
 });
 
 test('loopbacks stay logical: no physical-link properties, no cable', () => {
-  const base = 'netatlas: 1\ndevices:\n  - id: a\n    loopbacks: [{id: lo0, ip: 10.0.0.1/32SPEED}]\n    interfaces: [e0]\n  - id: b\n    interfaces: [e0]\n';
+  const base = 'netatlas: 1\ndevices:\n  - id: a\n    logical_interfaces: [{id: lo0, type: loopback, ip: 10.0.0.1/32SPEED}]\n    interfaces: [e0]\n  - id: b\n    interfaces: [e0]\n';
   assert.match(errorsOf(base.replace('SPEED', ', speed: 1G'))[0], /"speed" is no longer part of the format/);
   assert.match(errorsOf(base.replace('SPEED', '') + 'links:\n  - {id: l, a: "a:lo0", b: "b:e0"}\n')[0], /"a:lo0" is a loopback, not a physical interface/);
   assert.doesNotMatch(JSON.stringify(panels.detailsFor(ok(base.replace('SPEED', '')).model, 'iface:a:lo0')), /cable|speed|media/);

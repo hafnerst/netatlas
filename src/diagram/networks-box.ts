@@ -10,7 +10,8 @@
  *   -------------------------------------  ---------------------------------------------
  *   a network node (logical view)          that network
  *   a port (physical view)                 networks containing an address of that physical
- *                                          interface or of one of its logical children
+ *                                          interface, of an aggregate it is a member of, or
+ *                                          of a VLAN interface whose VLAN it carries
  *   a cable (physical view)                networks whose VLAN is permitted on one of its ends
  *   a device with loopbacks (logical view) networks containing an address of those loopbacks
  *   a relation (logical view)              its `network`, the networks in its `over`, and the
@@ -22,10 +23,10 @@
  */
 import { Rect } from '../layout/geometry';
 import { TextBlock, textBlock, textWidth } from '../layout/text';
-import { interfaceNetworks } from '../model/derive';
+import { associatedInterfaces, interfaceNetworks } from '../model/derive';
 import { compareNames } from '../model/order';
 import { splitRef } from '../model/queries';
-import { Model, Network, ifaceKey } from '../model/types';
+import { Model, Network, ifaceKey, loopbacks } from '../model/types';
 import { textLines } from './labels';
 import { ExportOptions, LEGEND_GAP, SvgLegend, svgLegend } from './legend';
 import { SceneResult } from './physical';
@@ -60,8 +61,13 @@ export function viewNetworks(model: Model, view: View, refs: Set<string>): Netwo
       const inf = ix.interfaces.get(id);
       if (!inf) return;
       addIface(inf.device, inf.id);
-      // logical children (subinterfaces, SVIs) run on the drawn port; tunnels are relations of the logical view
-      if (view === 'physical') for (const c of inf.children) if (c.type === 'logical') addIface(c.device, c.id);
+      // virtual interfaces that use the drawn port (aggregates, VLAN interfaces); tunnels are relations of the logical view
+      if (view === 'physical' && inf.type === 'physical') {
+        for (const other of associatedInterfaces(model, inf)) {
+          const o = ix.interfaces.get(ifaceKey(inf.device, other));
+          if (o && o.type === 'virtual') addIface(o.device, o.id);
+        }
+      }
     } else if (kind === 'link') {
       const l = ix.links.get(id);
       if (!l) return;
@@ -70,7 +76,7 @@ export function viewNetworks(model: Model, view: View, refs: Set<string>): Netwo
     } else if (kind === 'device') {
       // loopbacks are drawn under their device in the logical view only
       const d = view === 'logical' ? ix.devices.get(id) : undefined;
-      if (d) for (const l of d.loopbacks) addIface(d.id, l.id);
+      if (d) for (const l of loopbacks(d)) addIface(d.id, l.id);
     } else if (kind === 'relation' || kind === 'hub') {
       const r = ix.relations.get(id);
       if (!r) return;

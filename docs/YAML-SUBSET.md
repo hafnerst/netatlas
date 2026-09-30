@@ -111,11 +111,10 @@ writes the same subset back out.
 
 **Edits**
 * Values changed in the forms keep their comments. Keys the editor adds are
-  inserted in the documented order (e.g. `tier` after `group`, `loopbacks`
-  before `interfaces`).
+  inserted in the documented order (e.g. `tier` after `group`, `type` right
+  after the `id` of a logical interface).
 * A shorthand is only expanded when you edit it. `interfaces: [eth0]` becomes
-  `[{id: eth0, vrf: blue}]` once you set a VRF (and a block mapping with a
-  `children:` list once you add a child interface), an endpoint `"r1:eth0"`
+  `[{id: eth0, vrf: blue}]` once you set a VRF, an endpoint `"r1:eth0"`
   becomes `{device: r1, interface: eth0, role: …}` once you give it a role,
   and a link end `"r1:eth0"` becomes
   `{device: r1, interface: eth0, vlans: [10, 20]}` once you add VLANs (and

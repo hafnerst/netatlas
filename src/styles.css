@@ -50,10 +50,19 @@
   }
 }
 * { box-sizing: border-box; }
-html, body { height: 100%; margin: 0; }
+/* The application shell is exactly as large as the browser viewport, whatever
+   the window size or zoom: the document itself never scrolls. The toolbar and
+   the status bar take the height they need; the row between them gets the
+   rest and may shrink (minmax(0, 1fr)). Long content scrolls inside its own
+   panel. "clip" rather than "hidden": a hidden box can still be scrolled by
+   a script or by focusing something, a clipped one can't. */
+html, body { height: 100%; margin: 0; overflow: hidden; overflow: clip; }
 body {
   display: grid;
-  grid-template-rows: auto 1fr auto;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr);
+  /* the visible viewport, also where browser bars come and go (falls back to 100% above) */
+  height: 100dvh;
   background: var(--bg);
   color: var(--text);
   font: 13px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
@@ -77,6 +86,9 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .topbar {
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
   padding: 6px 12px; background: var(--panel); border-bottom: 1px solid var(--border);
+  /* a narrow window wraps the toolbar onto more rows; in a very small one it
+     scrolls by itself rather than taking the whole window */
+  max-height: 45vh; max-height: 45dvh; overflow-y: auto; min-width: 0;
 }
 .brand { display: flex; align-items: center; gap: 6px; font-weight: 700; font-size: 15px; margin-right: 6px; }
 .brand svg { fill: var(--accent); stroke: var(--accent); stroke-width: 1.6; }
@@ -101,7 +113,7 @@ body:not([data-view="logical"]) .logical-only { display: none; }
 .dropdown .kind { color: var(--muted); min-width: 64px; font-size: 11px; text-transform: uppercase; letter-spacing: .03em; padding-top: 1px; }
 .dropdown > div { padding: 6px 8px; }
 
-main { display: grid; grid-template-columns: 250px minmax(0, 1fr) 410px; min-height: 0; }
+main { display: grid; grid-template-columns: 250px minmax(0, 1fr) 410px; grid-template-rows: minmax(0, 1fr); min-height: 0; min-width: 0; overflow: hidden; }
 #canvas-wrap { position: relative; min-width: 0; min-height: 0; overflow: hidden; background: var(--canvas); }
 #canvas {
   width: 100%; height: 100%; display: block; cursor: grab; touch-action: none; user-select: none;
@@ -137,12 +149,13 @@ body.dropping #drop-hint { display: flex; }
 #tooltip .tt-title { font-weight: 600; }
 #tooltip .tt-line { color: var(--muted); overflow-wrap: anywhere; }
 
-#side { display: flex; flex-direction: column; min-height: 0; background: var(--panel); border-left: 1px solid var(--border); }
-.tabs { display: flex; border-bottom: 1px solid var(--border); }
+#side { display: flex; flex-direction: column; min-height: 0; min-width: 0; overflow: hidden; background: var(--panel); border-left: 1px solid var(--border); }
+.tabs { display: flex; flex: none; border-bottom: 1px solid var(--border); }
 .tabs button { flex: 1; border: 0; border-radius: 0; border-bottom: 2px solid transparent; padding: 8px 4px; background: none; color: var(--muted); }
 .tabs button.active { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
-#side-body { flex: 1; overflow: auto; padding: 10px 14px 16px; }
-.keys { padding: 8px 14px; border-top: 1px solid var(--border); }
+/* the one scrolling region of the side panel: tabs above and hints below stay in place */
+#side-body { flex: 1 1 0; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 10px 14px 16px; }
+.keys { flex: none; padding: 8px 14px; border-top: 1px solid var(--border); }
 #side h3 { margin: 4px 0 8px; font-size: 15px; overflow-wrap: anywhere; }
 #side h4 { margin: 14px 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
 .det-head { display: flex; flex-direction: column; gap: 2px; }
@@ -153,8 +166,6 @@ table.kv, table.ports { border-collapse: collapse; width: 100%; }
 .ports th { text-align: left; font-weight: 500; color: var(--muted); font-size: 11px; padding: 2px 4px; border-bottom: 1px solid var(--border); }
 .ports td { padding: 2px 4px; border-bottom: 1px solid var(--grid); font-size: 12px; overflow-wrap: anywhere; }
 .ports tr.unused td { color: var(--muted); }
-.ports tr.child td:first-child { padding-left: 14px; }
-.ports .child-mark { color: var(--muted); }
 .reflist { list-style: none; margin: 0; padding: 0; }
 .reflist li { padding: 2px 0; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 button.ref { border: 0; background: none; padding: 0; color: var(--accent); text-align: left; cursor: pointer; }
@@ -174,7 +185,7 @@ button.ref:hover { text-decoration: underline; }
 .issue .path { color: var(--muted); }
 .issue .msg { margin-top: 2px; overflow-wrap: anywhere; }
 .issue pre.src { margin: 6px 0 0; padding: 4px 8px; background: var(--canvas); border-radius: 4px; overflow-x: auto; font-size: 12px; }
-#status { padding: 4px 12px; border-top: 1px solid var(--border); background: var(--panel); color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#status { min-width: 0; padding: 4px 12px; border-top: 1px solid var(--border); background: var(--panel); color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #selftest { position: fixed; inset: 40px; z-index: 100; overflow: auto; background: var(--panel); border: 2px solid var(--accent); padding: 12px; font-size: 11px; }
 /* The model panel (#outline) is always shown. Narrower windows give it and the
    side panel less room; below 860px both move under the diagram, side by side,
@@ -183,11 +194,18 @@ button.ref:hover { text-decoration: underline; }
   main { grid-template-columns: 200px minmax(0, 1fr) 340px; }
 }
 @media (max-width: 860px) {
-  main { grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); grid-template-rows: minmax(0, 1fr) 45%; }
+  main { grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); grid-template-rows: minmax(0, 1fr) minmax(0, 45%); }
   #canvas-wrap { grid-column: 1 / -1; grid-row: 1; }
   #outline { grid-column: 1; grid-row: 2; border-top: 1px solid var(--border); }
   #side { grid-column: 2; grid-row: 2; border-top: 1px solid var(--border); }
   #search { width: 140px; }
+}
+/* Short windows (a small or strongly zoomed window): the shortcut hints give
+   their room to the panel's content, and the toolbar gets tighter. */
+@media (max-height: 560px) {
+  .keys { display: none; }
+  .topbar { padding-top: 3px; padding-bottom: 3px; gap: 5px; }
+  #side-body { padding-top: 6px; padding-bottom: 8px; }
 }
 
 /* ------------------------------------------------------------ diagram */
@@ -262,7 +280,12 @@ body[data-dirty="true"] #btn-download { border-color: var(--warn); box-shadow: i
 #status .errcount { color: var(--error); font-weight: 600; }
 .tabs button.has-errors { color: var(--error); }
 .tabs button { padding: 8px 2px; font-size: 12.5px; }
-#outline { background: var(--panel); border-right: 1px solid var(--border); overflow: auto; min-height: 0; }
+/* The scrolling panels are positioned, so that they are the containing block
+   of absolutely positioned content inside them (the screen-reader-only texts
+   of list entries). Without that, such an element far down a long list is
+   laid out against the page and makes the whole document scrollable. */
+#outline, #side-body { position: relative; }
+#outline { background: var(--panel); border-right: 1px solid var(--border); overflow: auto; overscroll-behavior: contain; min-height: 0; min-width: 0; }
 #outline-body { padding: 8px 8px 16px; }
 .outline-filter { width: 100%; margin-bottom: 6px; padding: 4px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--canvas); }
 .ol-section { margin-top: 10px; }
@@ -317,6 +340,10 @@ body[data-dirty="true"] #btn-download { border-color: var(--warn); box-shadow: i
 .sub { margin-top: 8px; border-top: 1px solid var(--border); padding-top: 6px; }
 .sub-head { display: flex; align-items: center; justify-content: space-between; }
 .sub-head h4 { margin: 4px 0 !important; }
+.sub-head { gap: 6px; }
+.sub-head .ctl.row { flex: none; }
+.sub-head .ctl.row > * { flex: none; }
+.sub-head button { white-space: nowrap; }
 details.card { border: 1px solid var(--border); border-radius: 7px; margin: 5px 0; background: var(--canvas); }
 details.card.has-err { border-left: 3px solid var(--error); }
 details.card > summary { display: flex; align-items: center; gap: 6px; padding: 5px 8px; cursor: pointer; list-style: none; }
@@ -325,9 +352,6 @@ details.card > summary::before { content: "\25B8"; color: var(--muted); }
 details.card[open] > summary::before { content: "\25BE"; }
 details.card > .field, details.card > details, details.card > .other, details.card > .used-by { margin: 4px 10px; }
 details.card[open] { padding-bottom: 6px; }
-/* child interfaces inside the card of their physical interface */
-details.card > .sub.children { margin: 8px 10px 4px; }
-details.card.child-card { background: var(--panel); }
 .card-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; font-size: 12.5px; }
 details.attrs { border: 1px dashed var(--border); border-radius: 6px; padding: 3px 8px; margin-top: 4px; }
 details.attrs > summary { cursor: pointer; font-size: 12px; color: var(--muted); }
@@ -335,7 +359,7 @@ details.attrs > summary { cursor: pointer; font-size: 12px; color: var(--muted);
 .list-row { display: flex; gap: 4px; align-items: center; }
 .list-ed input.append { border-style: dashed; }
 .ref-chip { flex: 1; font-size: 12px; padding: 2px 6px; border-radius: 5px; background: var(--accent-soft); overflow-wrap: anywhere; }
-.list-row.invalid .ref-chip { background: none; color: var(--error); border: 1px solid var(--error); }
+.list-row.invalid .ref-chip, .ref-chip.invalid { background: none; color: var(--error); border: 1px solid var(--error); }
 .ep-list { display: flex; flex-direction: column; gap: 4px; }
 .ep-row { border: 1px solid var(--border); border-radius: 6px; padding: 4px; background: var(--canvas); }
 .ep-row.invalid { border-color: var(--error); }
@@ -373,15 +397,16 @@ details.card > .field.derived { margin: 4px 10px; }
 .vlan-ed .list-row > * { flex: 1; min-width: 0; }
 .vlan-mismatch-note { border: 1px solid var(--warn); border-radius: 6px; padding: 4px 7px; }
 .yaml-tab { display: flex; flex-direction: column; gap: 6px; height: 100%; }
-#yaml-src { width: 100%; min-height: 55vh; flex: 1; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: var(--canvas); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 8px; tab-size: 2; white-space: pre; }
+#yaml-src { width: 100%; min-height: min(55vh, 100%); flex: 1; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: var(--canvas); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 8px; tab-size: 2; white-space: pre; }
 .row-btns { display: flex; gap: 6px; }
 .issue.clickable { cursor: pointer; }
 .issue.clickable:hover { border-color: var(--accent); }
-dialog#modal { border: 1px solid var(--border); border-radius: 12px; padding: 0; max-width: 560px; width: calc(100% - 32px); background: var(--panel); color: var(--text); box-shadow: 0 16px 48px rgba(0,0,0,.3); }
+dialog#modal { border: 1px solid var(--border); border-radius: 12px; padding: 0; max-width: 560px; width: calc(100% - 32px); max-height: calc(100vh - 24px); max-height: calc(100dvh - 24px); overflow: hidden; background: var(--panel); color: var(--text); box-shadow: 0 16px 48px rgba(0,0,0,.3); }
 dialog#modal::backdrop { background: rgba(0,0,0,.35); }
-.modal-inner { padding: 18px 20px; }
+.modal-inner { display: flex; flex-direction: column; max-height: calc(100vh - 26px); max-height: calc(100dvh - 26px); padding: 18px 20px; }
+.modal-inner h2, .modal-btns { flex: none; }
 .modal-inner h2 { margin: 0 0 10px; font-size: 17px; }
-.modal-body { max-height: 60vh; overflow: auto; }
+.modal-body { flex: 1 1 auto; min-height: 0; max-height: 60vh; overflow: auto; }
 .modal-body p { margin: 0 0 8px; }
 .modal-btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
 .dl-label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--muted); }

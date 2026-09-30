@@ -3,7 +3,7 @@
  * "what belongs to this object" (used for highlighting) and text search.
  * No layout, rendering or YAML knowledge.
  */
-import { deviceNetworks, interfaceNetworks, networkMembers } from './derive';
+import { associatedInterfaces, deviceNetworks, interfaceNetworks, networkMembers } from './derive';
 import { Model, deviceInterfaces, ifaceKey, relationDevices } from './types';
 
 export function splitRef(ref: string): [string, string] {
@@ -115,12 +115,18 @@ export function relatedRefs(model: Model, ref: string): Set<string> {
       const inf = ix.interfaces.get(id);
       if (!inf) break;
       addDevice(inf.device);
-      // the hierarchy: a child rides on its physical interface (and that port's cable); a port carries its children
-      for (const c of inf.children) out.add(`iface:${inf.device}:${c.id}`);
-      if (inf.parent) {
-        out.add(`iface:${inf.device}:${inf.parent}`);
-        const plid = ix.ifaceLink.get(ifaceKey(inf.device, inf.parent));
+      // what the interface is associated with on its device: member ports, ports carrying its VLAN, a tunnel's
+      // source (and, from the other side, the aggregates, VLAN interfaces and tunnels that use this interface)
+      for (const other of associatedInterfaces(model, inf)) {
+        out.add(`iface:${inf.device}:${other}`);
+        // a logical interface shows the cables of the ports it uses
+        const plid = inf.type === 'physical' ? undefined : ix.ifaceLink.get(ifaceKey(inf.device, other));
         if (plid) addLink(plid);
+      }
+      // a tunnel's destination, when it is part of the model
+      if (inf.destination && inf.destination.device) {
+        addDevice(inf.destination.device);
+        if (inf.destination.iface) out.add(`iface:${inf.destination.device}:${inf.destination.iface}`);
       }
       const lid = ix.ifaceLink.get(id);
       if (lid) {
@@ -240,8 +246,10 @@ export function search(model: Model, query: string, limit = 12): SearchHit[] {
  * * protocol — relations using exactly that protocol id.
  * An interface (a port selected in the diagram) selects its device, and its
  * context is that of the port: the link cabled to it, networks containing one
- * of its addresses, and relations that name exactly that interface. A child
- * interface additionally has the link cabled to its physical interface.
+ * of its addresses, and relations that name exactly that interface. A
+ * logical interface additionally has the links cabled to the ports it uses
+ * (member ports, ports carrying its VLAN, a tunnel's source) and the device
+ * a tunnel's destination names.
  * The relation is symmetric for entities, and a subset of relatedRefs(), which
  * the diagram additionally extends along underlay paths and nested groups.
  */
@@ -282,7 +290,9 @@ export function selectionContext(model: Model, ref: string): SelectionContext | 
       if (!inf) break;
       selected = 'device:' + inf.device;
       add('link', ix.ifaceLink.get(id));
-      if (inf.parent) add('link', ix.ifaceLink.get(ifaceKey(inf.device, inf.parent)));
+      // a logical interface: the cables of its member ports, of the ports carrying its VLAN, of its tunnel source
+      if (inf.type !== 'physical') for (const other of associatedInterfaces(model, inf)) add('link', ix.ifaceLink.get(ifaceKey(inf.device, other)));
+      if (inf.destination && inf.destination.device && inf.destination.device !== inf.device) add('device', inf.destination.device);
       for (const n of interfaceNetworks(model, inf.device, inf.id)) add('network', n);
       for (const r of model.relations) if (r.endpoints.some((e) => e.device === inf.device && e.iface === inf.id)) add('relation', r.id);
       break;

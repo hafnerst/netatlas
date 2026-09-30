@@ -7,6 +7,9 @@
  *   network `cidr`, interface `ip`        members of a network
  *   network `vlan` (+ the two above)      VLAN of an interface address
  *   link end `vlans`                      "Trunk" / single / no VLAN, mismatch
+ *   virtual interface `vlan` (or the      the physical ports carrying that VLAN
+ *     VLAN derived from its address)
+ *     + link end `vlans`
  *
  * Membership rule: an address belongs to a network when one of the network's
  * prefixes contains it. The network's prefix is the authority; the prefix
@@ -15,7 +18,7 @@
  * valid prefix length) belongs to no network.
  */
 import { IpPrefix, parsePrefix, prefixContains } from './ip';
-import { Model, Network, deviceInterfaces, ifaceKey, isLoopback } from './types';
+import { Interface, Model, Network, deviceInterfaces, ifaceKey, isLoopback } from './types';
 
 /** One assigned address that lies inside a network. */
 export interface AddressMatch {
@@ -175,4 +178,75 @@ export function vlanMismatch(a: number[], b: number[]): VlanMismatch | null {
 export function vlanMismatchText(m: VlanMismatch): string {
   const side = (name: string, only: number[]): string => (only.length ? `only on end ${name}: ${only.join(', ')}` : '');
   return [side('A', m.onlyA), side('B', m.onlyB)].filter((s) => s).join('; ');
+}
+
+// --------------------------------------------- associations of logical interfaces
+
+/**
+ * The VLANs a virtual interface is the interface of: the `vlan` written on
+ * it, or else the VLANs derived from its addresses (the networks containing
+ * them). Empty for every other kind of interface, and for a virtual
+ * interface that has nothing to do with a VLAN (e.g. a bond or a VTEP).
+ */
+export function interfaceVlans(model: Model, i: Interface): number[] {
+  if (i.type !== 'virtual') return [];
+  if (i.vlan !== undefined) return [i.vlan];
+  const out: number[] = [];
+  for (const a of interfaceAddresses(model, i.device, i.id)) if (a.vlan.state === 'vlan' && out.indexOf(a.vlan.vlan) < 0) out.push(a.vlan.vlan);
+  return out.sort((p, q) => p - q);
+}
+
+/** A physical port whose link permits a VLAN at the port's end. */
+export interface VlanPort {
+  iface: string;
+  link: string;
+  vlan: number;
+}
+
+/**
+ * The physical ports of a device that carry one of `vlans`: the ports whose
+ * end of a link lists the VLAN. Derived from the links; in link order.
+ */
+export function portsCarryingVlans(model: Model, device: string, vlans: number[]): VlanPort[] {
+  const out: VlanPort[] = [];
+  if (!vlans.length) return out;
+  for (const l of model.links) {
+    for (const e of [l.a, l.b]) {
+      if (e.device !== device || !e.iface) continue;
+      for (const v of vlans) if (e.vlans.indexOf(v) >= 0) out.push({ iface: e.iface, link: l.id, vlan: v });
+    }
+  }
+  return out;
+}
+
+/** The ports carrying the VLAN(s) of a virtual interface (read-only; nothing is configured for it). */
+export function interfaceVlanPorts(model: Model, i: Interface): VlanPort[] {
+  return portsCarryingVlans(model, i.device, interfaceVlans(model, i));
+}
+
+/**
+ * Interfaces of the same device that an interface is associated with, in
+ * either direction, as ids:
+ *   a virtual interface  -> its member ports and the ports carrying its VLAN;
+ *   a tunnel             -> the interface it is sourced from;
+ *   any interface        -> the aggregates it is a member of, the VLAN
+ *                           interfaces it carries, the tunnels sourced from it.
+ */
+export function associatedInterfaces(model: Model, i: Interface): string[] {
+  const d = model.index.devices.get(i.device);
+  if (!d) return [];
+  const out: string[] = [];
+  const add = (id: string | undefined): void => {
+    if (id !== undefined && id !== i.id && out.indexOf(id) < 0 && model.index.interfaces.has(ifaceKey(i.device, id))) out.push(id);
+  };
+  for (const m of i.members) add(m);
+  for (const p of interfaceVlanPorts(model, i)) add(p.iface);
+  if (i.source) add(i.source.iface);
+  for (const o of d.logical) {
+    if (o.id === i.id) continue;
+    if (o.members.indexOf(i.id) >= 0) add(o.id);
+    if (o.source && o.source.iface === i.id) add(o.id);
+    if (i.type === 'physical' && interfaceVlanPorts(model, o).some((p) => p.iface === i.id)) add(o.id);
+  }
+  return out;
 }

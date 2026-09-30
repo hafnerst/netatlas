@@ -8,7 +8,46 @@ releases may still change behaviour; the YAML format has its own version
 
 ## [Unreleased]
 
-### Breaking: interface hierarchy, loopback list, fewer device fields
+### Breaking: interfaces in two categories instead of a hierarchy
+
+The nesting of logical and tunnel interfaces under physical interfaces, and
+the separate `loopbacks` list, are replaced. Nothing is converted and no old
+key is kept: `children:` and `loopbacks:` are errors that say what to do,
+their entries are not read, and the file keeps them until you move them.
+
+* A device has `interfaces` (physical: ports, no type) and
+  `logical_interfaces` (each with `type: loopback`, `virtual` or `tunnel`).
+  Both lists share one set of ids per device; `device:interface` references
+  are unchanged.
+* No generic parent. An aggregate lists its `members` (physical interfaces
+  of the same device, validated). A VLAN interface names its `vlan`, or takes
+  it from the network of its address; the **ports carrying the VLAN** are
+  derived from the link ends and shown read-only. A tunnel names its
+  `source` (any interface of the device, or an address) and `destination`
+  (an address, a device or `device:interface`).
+* Editor: two sections, *Physical interfaces* and *Logical interfaces*, with
+  **+ Loopback**, **+ Virtual**, **+ Tunnel**; the child-interface controls
+  are gone. Cards are sorted alphabetically without touching the file.
+* Diagrams and selection: a logical interface highlights the ports it uses
+  and their cables (member ports, ports carrying its VLAN, a tunnel's
+  source) and a tunnel's destination; a port highlights the logical
+  interfaces that use it. The device details have one table per category.
+* The Networks box of a physical export counts, for a drawn port, the
+  aggregates it is a member of and the VLAN interfaces it carries.
+
+### Fixed
+
+* **The application fits the browser viewport.** In a window that wasn't
+  maximized, the page could get a scrollbar of its own and the right-hand
+  panel could extend below the status bar. The cause was the hidden
+  screen-reader texts of list entries: far down a long list they were laid
+  out against the page instead of their panel and made the document as tall
+  as the list. The panels are now the containing blocks of their content,
+  the document is clipped, the shell is sized by the viewport (`100dvh`)
+  with a middle row that may shrink, and dialogs and the toolbar are bounded
+  by the window. Long forms and lists scroll inside their panels.
+
+### Breaking: fewer device fields, no interface type on ports
 
 The YAML format changes incompatibly (the version line stays `netatlas: 1`;
 the tool isn't used in production). Nothing is converted and no old key is
@@ -17,18 +56,11 @@ key to change. See "Changes from the earlier format" in `docs/FORMAT.md`.
 
 * **`interfaces` holds physical interfaces only.** They have no `type` key;
   writing one (any value) is an error. In the editor their type is the
-  read-only text *Physical*.
-* **Logical and tunnel interfaces are children** of a physical interface
-  (`children:`), none, one or several per port. A child's `type` is
-  `logical` (the default) or `tunnel`; `vlan`, `svi`, `subinterface`,
-  `virtual`, `lag`, `bundle`, `irb`, `bvi`, `vti` and every other value are
-  errors. Describe the specific function with the label, the description or
-  `attrs`.
-* **Loopbacks have their own list** on the device (`loopbacks:`), without a
-  `type`. They are still addressed as `device:lo0`, still need an address,
-  still can't be cabled, and are still drawn as chips in the logical view.
-* Interfaces, children and loopbacks share one id namespace per device.
-  Only a physical interface can be the end of a link; relations can use any.
+  read-only text *Physical*. Interfaces of the 0.1.x types `loopback`,
+  `tunnel`, `vlan`, `svi`, `subinterface`, `lag` … are logical interfaces
+  (see above).
+* Only a physical interface can be the end of a link; relations can use any
+  interface.
 * **Removed from devices:** `vendor`, `model`, `role`, `mgmt` and
   `router_id`. They are errors in a file and gone from the editor, the
   subtitle of a device (now just its type), tooltips, details and search.
@@ -48,14 +80,12 @@ key to change. See "Changes from the earlier format" in `docs/FORMAT.md`.
 * **Exported SVG files contain a Networks overview** in a second box beside
   the legend, in both views. It lists the networks relevant to the exported
   view (name, prefixes, VLAN), decided from what the picture shows: ports,
-  their logical children and cable VLANs in the physical view; network
+  the virtual interfaces using them and cable VLANs in the physical view; network
   nodes, relations and loopbacks in the logical view. Long names wrap, long
   lists continue in columns, and an empty list says so.
 * **Interfaces and loopbacks are shown alphabetically** (digits by value) in
   the editor, the details, interface pickers and the loopback chips. The
   order in the YAML file is not changed by this.
-* Selecting a child interface highlights its physical port and that port's
-  cable; selecting a port highlights its children.
 * Device boxes are narrower where a role or model used to be in the
   subtitle, so auto-arranged positions change again. Stored layouts are kept
   and show *edited since arranged* until Auto-arrange is used.

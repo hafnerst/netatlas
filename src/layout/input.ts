@@ -15,7 +15,7 @@ import { networkMembers } from '../model/derive';
 import { deviceSubtitle } from '../model/device-types';
 import { relationStyle } from '../model/protocols';
 import { vlanMismatch } from '../model/derive';
-import { Link, Model, relationDevices } from '../model/types';
+import { Link, Model, loopbacks, relationDevices } from '../model/types';
 import { buildBundle, laneLabel, relationPairs } from './bundles';
 import { cmp } from './order';
 import { chipTextWidth, loopbackChipText, networkSubtitle } from './sizes';
@@ -125,9 +125,9 @@ export function layoutInput(m: Model): LayoutInput {
         sub: deviceSubtitle(d.type),
         tier: d.tier !== undefined ? d.tier : defaultTier(d.type),
         group: d.group || null,
-        loopbacks: d.loopbacks.length,
+        loopbacks: loopbacks(d).length,
         // over all loopbacks, not only the ones shown, so the order in the file doesn't matter
-        chipW: d.loopbacks.reduce((m, l) => Math.max(m, chipNeed(l.id, l.addresses)), 0),
+        chipW: loopbacks(d).reduce((m, l) => Math.max(m, chipNeed(l.id, l.addresses)), 0),
       })),
     ),
     groups: byId(m.groups.map((g) => ({ id: g.id, parent: g.parent || null, label: g.label, kind: g.kind }))),
