@@ -2,12 +2,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { validate, yaml, example, exampleNames, model, errorsOf } from './helpers.mjs';
 
-const base = `netatlas: 1
+const base = `netatlas: 2
 devices:
   - id: r1
     type: router
     interfaces:
-      - {id: eth0, speed: 1G}
+      - {id: eth0}
       - {id: eth1}
       - {id: tun0, type: tunnel}
   - id: r2
@@ -44,8 +44,10 @@ test('the WAN example has physical links and several logical layers over the sam
 });
 
 test('missing version and unsupported version', () => {
-  expectError('devices: []\n', /netatlas: 1/);
-  expectError('netatlas: 2\n', /unsupported format version/, 1);
+  expectError('devices: []\n', /netatlas: 2/);
+  expectError('netatlas: 3\n', /unsupported format version; this build understands "netatlas: 2"/, 1);
+  // the previous format is named, with what to do
+  expectError('netatlas: 1\n', /format version 1 is no longer read: this build reads "netatlas: 2"\. Update the file by hand .*Changes from version 1/, 1);
   expectError('', /empty/);
   expectError('- a\n- b\n', /expected a mapping/);
 });
@@ -53,12 +55,12 @@ test('missing version and unsupported version', () => {
 test('unknown keys are rejected with a suggestion', () => {
   const e = expectError(base.replace('type: router', 'typ: router'), /unknown key "typ" — did you mean "type"\?/, 4);
   assert.match(e.message, /attrs/);
-  expectError('netatlas: 1\ndevice: []\n', /did you mean "devices"/, 2);
+  expectError('netatlas: 2\ndevice: []\n', /did you mean "devices"/, 2);
 });
 
 test('invalid ids, duplicate ids across sections', () => {
-  expectError('netatlas: 1\ndevices:\n  - id: "bad id"\n', /invalid id "bad id"/);
-  expectError('netatlas: 1\ndevices:\n  - id: "r1:x"\n', /":" is reserved/);
+  expectError('netatlas: 2\ndevices:\n  - id: "bad id"\n', /invalid id "bad id"/);
+  expectError('netatlas: 2\ndevices:\n  - id: "r1:x"\n', /":" is reserved/);
   expectError(base + 'networks:\n  - {id: r1}\n', /duplicate id "r1" \(already used by a device on line 3/);
   expectError(base.replace('interfaces: [eth0, eth1]', 'interfaces: [eth0, eth0]'), /duplicate interface "eth0" on device "r2"/);
 });
@@ -76,11 +78,13 @@ test('physical rules: one cable per port, logical interfaces cannot be cabled', 
   expectError(base + 'links:\n  - {id: l1, a: "r1:eth0", b: "r1:eth0"}\n', /already cabled|to itself/);
 });
 
-test('speed mismatch is a warning, not an error', () => {
-  const r = validate.loadModel(base.replace('interfaces: [eth0, eth1]', 'interfaces: [{id: eth0, speed: 10G}]') + 'links:\n  - {id: l1, a: "r1:eth0", b: "r2:eth0"}\n');
-  assert.equal(r.errors.length, 0);
-  assert.match(r.warnings[0].message, /speed mismatch/);
-  assert.equal(r.model.links[0].speed, '1G');
+test('speed and medium are configured on the link and nowhere else', () => {
+  const r = validate.loadModel(base + 'links:\n  - {id: l1, a: "r1:eth0", b: "r2:eth0", medium: Fiber, speed: 10G}\n  - {id: l2, a: "r1:eth1", b: "r2:eth1"}\n');
+  assert.deepEqual(r.errors, []);
+  assert.deepEqual(r.warnings, []);
+  assert.deepEqual(r.model.links.map((l) => [l.medium, l.speed]), [['fiber', '10G'], ['unspecified', undefined]]);
+  // nothing on an interface can supply them
+  for (const i of r.model.index.interfaces.values()) assert.ok(!('speed' in i) && !('media' in i) && !('vlan' in i));
 });
 
 test('relations: endpoints, over references and cycles', () => {
@@ -123,16 +127,16 @@ test('aliases of built-in protocols (ebgp -> bgp family) keep the family style',
 });
 
 test('groups: unknown parent, cycles, nesting depth', () => {
-  expectError('netatlas: 1\ngroups:\n  - {id: a, parent: zz}\n', /unknown parent group "zz"/);
-  expectError('netatlas: 1\ngroups:\n  - {id: a, parent: b}\n  - {id: b, parent: a}\n', /cycle/);
-  let g = 'netatlas: 1\ngroups:\n  - {id: g0}\n';
+  expectError('netatlas: 2\ngroups:\n  - {id: a, parent: zz}\n', /unknown parent group "zz"/);
+  expectError('netatlas: 2\ngroups:\n  - {id: a, parent: b}\n  - {id: b, parent: a}\n', /cycle/);
+  let g = 'netatlas: 2\ngroups:\n  - {id: g0}\n';
   for (let i = 1; i < 12; i++) g += `  - {id: g${i}, parent: g${i - 1}}\n`;
   expectError(g, /nested deeper than 8/);
   expectError(base.replace('type: router', 'type: router\n    group: nowhere'), /unknown group "nowhere"/);
 });
 
 test('entity-count limits', () => {
-  let t = 'netatlas: 1\ndevices:\n';
+  let t = 'netatlas: 2\ndevices:\n';
   for (let i = 0; i < 12; i++) t += `  - {id: d${i}}\n`;
   const r = validate.validate(yaml.parseYaml(t), { maxDevices: 10 });
   assert.match(r.errors[0].message, /too many devices: 12 \(limit 10\)/);
@@ -144,7 +148,7 @@ test('attributes: nested maps are flattened, lists joined; free-form keys allowe
 });
 
 test('error flood is capped', () => {
-  let t = 'netatlas: 1\nlinks:\n';
+  let t = 'netatlas: 2\nlinks:\n';
   for (let i = 0; i < 500; i++) t += `  - {id: l${i}, a: x, b: y}\n`;
   const errs = errorsOf(t);
   assert.ok(errs.length <= 202, String(errs.length));

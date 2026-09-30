@@ -40,21 +40,8 @@ export function speedWidth(speed: string | undefined): number {
   return 1.4 + Math.max(0, Math.min(3.8, Math.log10(bps / 1e8))) * 0.95;
 }
 
-/** Fill colors for network kinds in the logical view. */
-export function networkColor(kind: string): string {
-  const k = kind.toLowerCase();
-  const table: { [k: string]: string } = {
-    subnet: '#1c7ed6',
-    vlan: '#2f9e44',
-    vni: '#0c8599',
-    vrf: '#7048e8',
-    zone: '#e8590c',
-    segment: '#1098ad',
-    'l2-domain': '#2b8a3e',
-  };
-  if (!k) return '#868e96'; // no kind chosen: neutral grey
-  return table[k] || hashColor('net:' + k);
-}
+/** Colour of IP networks in the logical view. */
+export const NETWORK_COLOR = '#1c7ed6';
 
 export function groupKindStyle(kind: string): { dash?: string; strong: boolean } {
   const k = kind.toLowerCase();

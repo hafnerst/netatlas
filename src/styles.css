@@ -208,6 +208,8 @@ button.ref:hover { text-decoration: underline; }
 .halo { paint-order: stroke; stroke: var(--halo); stroke-width: 3.5px; stroke-linejoin: round; }
 .port-label { font-size: 10px; fill: var(--muted) !important; }
 .link-label { font-size: 10.5px; font-weight: 600; }
+.link-label.vlan-mismatch, .vlan-warn { fill: var(--warn) !important; }
+.vlan-warn { font-size: 14px; font-weight: 700; cursor: pointer; }
 .member { fill: none; stroke: var(--member); stroke-width: 1.3; }
 .member-label { font-size: 10px; fill: var(--muted) !important; }
 .underlay { fill: none; stroke: var(--underlay); stroke-width: 5; stroke-linecap: round; opacity: .65; }
@@ -337,6 +339,22 @@ details.attrs > summary { cursor: pointer; font-size: 12px; color: var(--muted);
 .other { margin-top: 4px; }
 .other h4 { color: var(--warn) !important; }
 .used-by { font-size: 11.5px; }
+/* derived (read-only) values: visibly not an input */
+.field.derived { border-left: 2px solid var(--grid); padding-left: 7px; }
+.derived-tag { font-size: 9.5px; text-transform: uppercase; letter-spacing: .05em; border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; color: var(--muted); }
+.derived-body { font-size: 12px; overflow-wrap: anywhere; }
+.derived-list { list-style: none; margin: 0; padding: 0; }
+.derived-list li { padding: 1px 0; }
+details.card > .field.derived { margin: 4px 10px; }
+.warn-text { color: var(--warn); }
+.vlan-ed { display: flex; flex-direction: column; gap: 3px; }
+.vlan-state { font-size: 12px; font-weight: 600; }
+.vlan-state.trunk { color: var(--accent); }
+.vlan-state.muted { font-weight: 400; font-style: italic; }
+.vlan-chips { display: flex; flex-wrap: wrap; gap: 3px; }
+.vlan-chip { flex: none; display: inline-flex; align-items: center; gap: 3px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.vlan-ed .list-row > * { flex: 1; min-width: 0; }
+.vlan-mismatch-note { border: 1px solid var(--warn); border-radius: 6px; padding: 4px 7px; }
 .yaml-tab { display: flex; flex-direction: column; gap: 6px; height: 100%; }
 #yaml-src { width: 100%; min-height: 55vh; flex: 1; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: var(--canvas); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 8px; tab-size: 2; white-space: pre; }
 .row-btns { display: flex; gap: 6px; }

@@ -4,12 +4,14 @@
  * Auto-arrange is a pure function of this structure and of nothing else, so
  * two models that differ only in YAML key order, section order, the order of
  * list items (devices, interfaces, links, members, endpoints …), comments,
- * formatting, or fields that do not affect geometry (vendor, addresses,
- * attrs, protocols …) get exactly the same positions.
+ * formatting, or fields that do not affect geometry (vendor, attrs,
+ * protocols, addresses that do not change which network a device belongs
+ * to …) get exactly the same positions.
  *
  * Everything is sorted by id with plain code-unit string comparison (never
  * localeCompare, which depends on the browser locale).
  */
+import { networkMembers } from '../model/derive';
 import { Model, loopbacks, relationDevices } from '../model/types';
 import { networkSubtitle } from './sizes';
 
@@ -89,7 +91,6 @@ function uniqSorted(xs: string[]): string[] {
 }
 
 export function layoutInput(m: Model): LayoutInput {
-  const devIds = new Set(m.devices.map((d) => d.id));
   return {
     devices: byId(
       m.devices.map((d) => ({
@@ -115,8 +116,9 @@ export function layoutInput(m: Model): LayoutInput {
       m.networks.map((n) => ({
         id: n.id,
         label: n.label,
-        sub: networkSubtitle(n.kind, n.cidr, n.vlan),
-        members: uniqSorted(n.members.map((x) => x.device).filter((d) => devIds.has(d))),
+        sub: networkSubtitle(n.cidr, n.vlan),
+        // derived from the addresses inside the network's prefixes
+        members: uniqSorted(networkMembers(m, n.id).map((x) => x.device)),
       })),
     ),
     relations: byId(m.relations.map((r) => ({ id: r.id, devices: uniqSorted(relationDevices(r)) }))),

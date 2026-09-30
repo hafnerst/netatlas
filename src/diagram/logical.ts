@@ -8,14 +8,16 @@
  * - Tunnels are hollow tubes (never plain cable lines), adjacencies are thin
  *   solid lines, overlays dashed, redundancy dotted, services dash-dotted.
  * - Relations with 3+ devices get a hub node with spokes.
- * - Networks are pill nodes connected to member devices by thin lines.
+ * - Networks are pill nodes connected to member devices by thin lines. Members
+ *   are derived from the addresses inside the network's prefixes.
  */
 import { CBox, Pt, Rect, clipToBox, clipToCircle, ellipsize, lineBoxExit, normal, textWidth, unionRect } from '../layout/geometry';
 import { CHIP_H, DEVICE_H, HUB_R, LNode, LogicalLayout, MAX_CHIPS, deviceRect, isMultipoint, networkSubtitle } from '../layout/logical';
-import { Device, LineStyle, Model, ProtocolDef, Relation, ifaceKey, loopbacks, relationDevices } from '../model/types';
+import { networkMembers } from '../model/derive';
+import { Device, LineStyle, Model, ProtocolDef, Relation, loopbacks, relationDevices } from '../model/types';
 import { cssToken, deviceNode, deviceSubtitle, SceneResult } from './physical';
 import { VNode, h } from './scene';
-import { networkColor } from './style';
+import { NETWORK_COLOR } from './style';
 import { relationStyle } from '../model/protocols';
 
 export interface LogicalOptions {
@@ -172,16 +174,16 @@ export function renderLogical(model: Model, layout: LogicalLayout, opts: Logical
     for (const nw of model.networks) {
       const nn = nodes.get('network:' + nw.id);
       if (!nn) continue;
-      for (const m of nw.members) {
+      for (const m of networkMembers(model, nw.id)) {
         const dn = dev(m.device);
         if (!dn) continue;
         const s = clipToBox(dn, { x: nn.cx, y: nn.cy }, 1);
         const e = clipToBox(nn, { x: dn.cx, y: dn.cy }, 1);
         members.push(h('path', { class: 'member', 'data-ref': 'network:' + nw.id, d: lineD(s, e) }));
         if (opts.showLabels) {
-          const iface = m.iface ? model.index.interfaces.get(ifaceKey(m.device, m.iface)) : undefined;
-          const addr = m.address || (iface && iface.addresses[0]) || m.iface;
-          if (addr) {
+          // the address that makes the device a member (the first one, if several match)
+          const addr = m.matches[0].address + (m.matches.length > 1 ? ` +${m.matches.length - 1}` : '');
+          {
             const t = { x: s.x + (e.x - s.x) * 0.22, y: s.y + (e.y - s.y) * 0.22 };
             labels.push(h('text', { class: 'halo member-label', 'data-ref': 'network:' + nw.id, x: t.x, y: t.y + 3, 'text-anchor': 'middle' }, ellipsize(addr, 10, 150)));
           }
@@ -341,12 +343,12 @@ export function renderLogical(model: Model, layout: LogicalLayout, opts: Logical
     } else if (n.kind === 'network' && opts.showNetworks) {
       const nw = model.index.networks.get(n.id);
       if (!nw) return;
-      const color = networkColor(nw.kind);
+      const color = NETWORK_COLOR;
       const x = n.cx - n.w / 2;
       const y = n.cy - n.h / 2;
-      const sub = networkSubtitle(nw.kind, nw.cidr, nw.vlan);
+      const sub = networkSubtitle(nw.cidr, nw.vlan);
       nodeLayer.push(
-        h('g', { class: `node network kind-${cssToken(nw.kind)}`, 'data-ref': n.ref }, [
+        h('g', { class: 'node network', 'data-ref': n.ref }, [
           h('rect', { class: 'net-box', x, y, width: n.w, height: n.h, rx: n.h / 2, stroke: color }),
           h('rect', { class: 'net-tint', x, y, width: n.w, height: n.h, rx: n.h / 2, fill: color }),
           h('text', { class: 'net-label', x: n.cx, y: n.cy + (sub ? -2 : 4), 'text-anchor': 'middle' }, ellipsize(nw.label, 12, n.w - 20)),

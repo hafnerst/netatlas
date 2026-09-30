@@ -55,7 +55,7 @@ export const KEY_ORDER: { [k: string]: string[] } = SCHEMA;
 export type Origin = 'new' | 'file' | 'example';
 
 /** "New" starts from an empty model: nothing is created that the user did not choose. */
-export const NEW_MODEL_YAML = `netatlas: 1
+export const NEW_MODEL_YAML = `netatlas: 2
 title: New network
 `;
 
@@ -109,7 +109,7 @@ export class ModelDoc {
     const res = loadModel(text);
     if (!res.root) return { errors: res.errors };
     if (res.root.kind !== 'map') {
-      return { errors: [{ severity: 'error', line: res.root.line || 1, path: '', message: 'the document must be a mapping starting with "netatlas: 1"' }] };
+      return { errors: [{ severity: 'error', line: res.root.line || 1, path: '', message: 'the document must be a mapping starting with "netatlas: 2"' }] };
     }
     return { doc: new ModelDoc(res.root, fileName, origin), errors: [] };
   }
@@ -451,7 +451,7 @@ export class ModelDoc {
     let replacement: YMap;
     if (cur && cur.kind === 'scalar' && typeof seg === 'number' && String(parentPath[parentPath.length - 1]) === 'interfaces') {
       replacement = mapNode([['id', strNode(scalarText(cur) || '')]], true);
-    } else if (cur && cur.kind === 'scalar' && typeof seg === 'number' && scalarText(cur) !== undefined && /^(members|endpoints)$/.test(String(parentPath[parentPath.length - 1]))) {
+    } else if (cur && cur.kind === 'scalar' && scalarText(cur) !== undefined && (this.isLinkEnd(path) || (typeof seg === 'number' && parentPath[parentPath.length - 1] === 'endpoints'))) {
       // "dev:if" endpoint shorthand -> {device, interface}
       const t = scalarText(cur) as string;
       const i = t.indexOf(':');
@@ -542,12 +542,18 @@ export class ModelDoc {
   // UI never builds YAML nodes. New keys go into the canonical schema order,
   // which is derived from the path.
 
+  /** Is `path` one end of a physical link (links[i].a / links[i].b)? */
+  private isLinkEnd(path: Path): boolean {
+    return path.length === 3 && path[0] === 'links' && typeof path[1] === 'number' && (path[2] === 'a' || path[2] === 'b');
+  }
+
   /** Schema kind of the mapping at `path` (for key order), if the format defines one. */
   schemaKindOf(path: Path): string | undefined {
     if (path.length === 0) return 'top';
     if (path.length === 2 && typeof path[1] === 'number') return kindOfSection(String(path[0])) || undefined;
     if (path.length === 4 && path[0] === 'devices' && path[2] === 'interfaces') return 'interface';
-    if (path.length === 4 && typeof path[3] === 'number' && (path[2] === 'members' || path[2] === 'endpoints')) return 'endpoint';
+    if (path.length === 4 && typeof path[3] === 'number' && path[0] === 'relations' && path[2] === 'endpoints') return 'endpoint';
+    if (this.isLinkEnd(path)) return 'linkEnd';
     if (path.length === 1 && path[0] === 'layout') return 'layout';
     return undefined;
   }
@@ -599,8 +605,8 @@ export class ModelDoc {
   }
 
   /**
-   * Point an endpoint (link end, relation endpoint or network member) at a
-   * device and optional interface. Short forms ("dev", "dev:if") stay short;
+   * Point an endpoint (link end or relation endpoint) at a device and
+   * optional interface. Short forms ("dev", "dev:if") stay short;
    * an endpoint written as a mapping keeps its other keys. An empty device
    * removes the endpoint.
    */
@@ -613,8 +619,9 @@ export class ModelDoc {
       }
       if (node && node.kind === 'map') {
         const m = this.ensureMap(path);
-        this.setAt(path.concat('device'), strNode(device), KEY_ORDER.endpoint);
-        if (iface) this.setAt(path.concat('interface'), strNode(iface), KEY_ORDER.endpoint);
+        const order = KEY_ORDER[this.schemaKindOf(path) || 'endpoint'];
+        this.setAt(path.concat('device'), strNode(device), order);
+        if (iface) this.setAt(path.concat('interface'), strNode(iface), order);
         else m.entries.delete('interface');
       } else {
         this.setAt(path, strNode(iface ? device + ':' + iface : device), this.orderFor(path.slice(0, -1)));
@@ -632,6 +639,61 @@ export class ModelDoc {
       } else {
         this.ensureMap(ep);
         this.setAt(path, strNode(text), KEY_ORDER.endpoint);
+      }
+    });
+  }
+
+  /** VLAN IDs written on one end of a link, as text, in file order (invalid entries included). */
+  endVlans(endPath: Path): string[] {
+    const n = this.get(endPath.concat('vlans'));
+    if (!n) return [];
+    if (n.kind === 'seq') return n.items.map((i) => scalarText(i)).filter((x): x is string => x !== undefined);
+    const t = scalarText(n);
+    return t === undefined ? [] : [t];
+  }
+
+  /**
+   * Permit more VLANs at one end of a link (`endPath` is links[i].a or .b).
+   * Only that end is written: the other end is never adjusted to match. The
+   * short "dev:if" form becomes a mapping; ids already listed are skipped.
+   * Returns false if the end has no device yet.
+   */
+  addEndVlans(endPath: Path, ids: number[]): boolean {
+    const cur = this.get(endPath);
+    if (!cur || (cur.kind === 'scalar' && scalarText(cur) === undefined)) return false;
+    const have = this.endVlans(endPath);
+    const add = ids.filter((v, k) => have.indexOf(String(v)) < 0 && ids.indexOf(v) === k);
+    if (!add.length) return true;
+    this.change('Add VLAN', () => {
+      this.ensureMap(endPath);
+      const list = this.ensureSeq(endPath.concat('vlans'), true, KEY_ORDER.linkEnd);
+      for (const v of add) list.items.push(numNode(v));
+      // keep the list ascending when every entry is a number (nothing invalid is reordered or dropped)
+      if (list.items.every((i) => i.kind === 'scalar' && typeof i.value === 'number')) {
+        list.items.sort((p, q) => ((p as { value: number }).value) - ((q as { value: number }).value));
+      }
+    });
+    return true;
+  }
+
+  /** Remove one VLAN (by its text) from one end of a link; the last one removes the `vlans` key. */
+  removeEndVlan(endPath: Path, id: string): void {
+    const vp = endPath.concat('vlans');
+    const n = this.get(vp);
+    if (!n) return;
+    this.change('Remove VLAN', () => {
+      if (n.kind === 'seq') {
+        const k = n.items.findIndex((i) => scalarText(i) === id);
+        if (k >= 0) n.items.splice(k, 1);
+        if (n.items.length) return;
+      } else if (scalarText(n) !== id) return;
+      this.removeAt(vp);
+      // an end with nothing but device/interface goes back to the short form
+      const end = this.get(endPath);
+      if (end && end.kind === 'map' && Array.from(end.entries.keys()).every((key) => key === 'device' || key === 'interface')) {
+        const dev = this.text(endPath.concat('device'));
+        const inf = this.text(endPath.concat('interface'));
+        if (dev) this.setAt(endPath, strNode(inf ? dev + ':' + inf : dev), KEY_ORDER.link);
       }
     });
   }
@@ -853,7 +915,6 @@ export class ModelDoc {
     };
     if (kind === 'device') {
       epRefs('links', 'a/b');
-      epRefs('networks', 'members');
       epRefs('relations', 'endpoints');
       if (iface !== undefined) {
         const dev = this.findEntity('device', id);
@@ -884,7 +945,7 @@ export class ModelDoc {
       const t = scalarText(n) as string;
       let nt = t;
       if (p[p.length - 1] === 'router_id') nt = newIf as string;
-      else if (/^(a|b)$/.test(String(p[p.length - 1])) || /^(members|endpoints)$/.test(String(p[p.length - 2]))) {
+      else if (/^(a|b)$/.test(String(p[p.length - 1])) || p[p.length - 2] === 'endpoints') {
         const c = t.indexOf(':');
         const dev = c < 0 ? t : t.slice(0, c);
         const inf = c < 0 ? undefined : t.slice(c + 1);

@@ -21,10 +21,11 @@ export function networkSize(label: string, sub: string): { w: number; h: number 
   return { w: Math.max(120, textWidth(label, 12) + 34, textWidth(sub, 10) + 34), h: sub ? 42 : 32 };
 }
 
-export function networkSubtitle(kind: string, cidr: string[], vlan?: string): string {
+export function networkSubtitle(cidr: string[], vlan?: number): string {
   const parts: string[] = [];
-  if (vlan) parts.push('VLAN ' + vlan);
-  if (cidr.length) parts.push(cidr.slice(0, 2).join(', ') + (cidr.length > 2 ? ' …' : ''));
-  if (!parts.length) parts.push(kind);
+  if (vlan !== undefined) parts.push('VLAN ' + vlan);
+  // in a fixed order, so the order of the list in the file affects neither text nor size
+  const sorted = cidr.slice().sort();
+  if (sorted.length) parts.push(sorted.slice(0, 2).join(', ') + (sorted.length > 2 ? ' …' : ''));
   return parts.join(' · ');
 }

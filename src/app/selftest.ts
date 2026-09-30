@@ -9,6 +9,7 @@
  */
 import { ModelDoc } from '../editor/document';
 import { DEVICE_TYPES } from '../model/device-types';
+import { interfaceAddresses, interfaceVlanText, networkMembers } from '../model/derive';
 import { contextState, relatedRefs, selectionContext } from '../model/queries';
 import { strNode } from '../yaml/parse';
 import { EXAMPLES } from '../generated/examples';
@@ -412,7 +413,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     const d0 = app.mdoc as ModelDoc;
     check(
       'New creates an empty, valid model: nothing is chosen for the user',
-      !!d0 && d0.origin === 'new' && d0.valid && !d0.dirty && d0.exportText() === 'netatlas: 1\ntitle: New network\n' && !!q('#side-body .hint-empty'),
+      !!d0 && d0.origin === 'new' && d0.valid && !d0.dirty && d0.exportText() === 'netatlas: 2\ntitle: New network\n' && !!q('#side-body .hint-empty'),
       d0 ? d0.exportText() : '',
     );
     check('status of a new model: both views "Auto-arranged"', status('physical') === 'auto' && status('logical') === 'auto');
@@ -535,19 +536,127 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     check('GRE tunnel between loopbacks drawn as a tube', count('g.rel.cat-tunnel .tube-outer') === 1 && dB.valid, JSON.stringify(dB.errors.map((e) => e.message)));
     check('edits mark the document dirty', dB.dirty && doc.body.getAttribute('data-dirty') === 'true' && /unsaved/.test(q('#status')!.textContent || ''));
 
-    // a new network: no kind preselected
+    // ------------------- derived, read-only values: members and interface VLANs
+    // an IP network is only its prefixes (and a VLAN); who belongs to it is computed
     click('#outline [data-act="add-entity"][data-kind="network"]');
     await tick();
+    const text = (sel: string): string => (q(sel) || { textContent: '' }).textContent || '';
+    const readOnly = (sel: string): boolean => !!q(sel) && !q(sel)!.querySelector('input, select, textarea, [data-act]');
+    const members = '#side-body [data-derived="members"]';
+    const ifVlan = (dev: number, k: number): string => `#side-body [data-card='["devices",${dev},"interfaces",${k}]'] [data-derived="iface-vlan"]`;
+    const selectDevice = async (i: number): Promise<void> => {
+      click(`#outline [data-act="select"][data-kind="device"][data-index="${i}"]`);
+      await tick();
+    };
+    const selectNetwork = async (i: number): Promise<void> => {
+      click(`#outline [data-act="select"][data-kind="network"][data-index="${i}"]`);
+      await tick();
+    };
     {
       const dn = app.mdoc as ModelDoc;
-      const inp = q('#side-body [data-p=\'["networks",0,"kind"]\']') as HTMLInputElement | null;
       check(
-        'a new network has no kind: empty field with a prompt; nothing saved, drawn without a kind (neutral)',
-        !!inp && inp.value === '' && inp.placeholder === 'Select or type a network kind' && !/kind:/.test(dn.exportText()) && dn.valid && dn.result.model!.networks[0].kind === '' && count('g.network.kind-subnet') === 0,
-        dn.exportText(),
+        'a new network is an id only: no kind, VRF or member fields, nothing invented; the member list is read-only',
+        !q('#side-body [data-p=\'["networks",0,"kind"]\']') && !q('#side-body [data-p=\'["networks",0,"vrf"]\']') && !q('#side-body [data-p=\'["networks",0,"members"]\']') &&
+          /- id: net1\n/.test(dn.exportText()) && !/kind:|vlan:|members:|cidr:/.test(dn.exportText()) && dn.valid && readOnly(members) && /Members \(0\)/.test(text(members)),
+        dn.exportText() + ' // ' + text(members),
       );
-      await setField('#side-body [data-p=\'["networks",0,"kind"]\']', 'vlan');
-      check('choosing a network kind saves exactly that value', /- id: net1\n {4}kind: vlan\n/.test((app.mdoc as ModelDoc).exportText()) && (app.mdoc as ModelDoc).result.model!.networks[0].kind === 'vlan', (app.mdoc as ModelDoc).exportText());
+      await setField('#side-body [data-t="list-append"][data-p=\'["networks",0,"cidr"]\']', '10.77.0.0/24');
+      await setField('#side-body [data-t="int"][data-p=\'["networks",0,"vlan"]\']', '77');
+      check('a prefix alone adds no member', /Members \(0\)/.test(text(members)) && count('.member') === 0 && /cidr: \[10\.77\.0\.0\/24\]\n {4}vlan: 77\n/.test((app.mdoc as ModelDoc).exportText()), (app.mdoc as ModelDoc).exportText());
+      // an address on router1:eth0 makes router1 a member and gives the port the network's VLAN, at once
+      await selectDevice(0);
+      check('an interface without an address shows no derived network or VLAN (read-only)', readOnly(ifVlan(0, 1)) && /No address/.test(text(ifVlan(0, 1))), text(ifVlan(0, 1)));
+      check(
+        'interfaces have no editable VLAN, speed or media field',
+        !q('#side-body [data-p=\'["devices",0,"interfaces",1,"vlan"]\']') && !q('#side-body [data-p=\'["devices",0,"interfaces",1,"speed"]\']') && !q('#side-body [data-p=\'["devices",0,"interfaces",1,"media"]\']') &&
+          !q('#side-body [data-p=\'["devices",0,"interfaces",0,"speed"]\']'),
+      );
+      await setField('#side-body [data-t="list-append"][data-p=\'["devices",0,"interfaces",1,"ip"]\']', '10.77.0.1/24');
+      check(
+        'typing an address updates the interface\'s derived VLAN immediately (VLAN 77 from net1)',
+        !!q(ifVlan(0, 1) + ' li[data-vlan="77"]') && /net1 · VLAN 77/.test(text(ifVlan(0, 1))) && readOnly(ifVlan(0, 1)),
+        text(ifVlan(0, 1)),
+      );
+      check('a loopback outside every network derives nothing, and no VLAN is invented', !!q(ifVlan(0, 0) + ' li[data-vlan="none"]') && /no network contains it/.test(text(ifVlan(0, 0))), text(ifVlan(0, 0)));
+      click('[data-view-btn="logical"]');
+      check('… and the logical view draws the membership line at once', count('.member') === 1 && count('g.network') === 1, String(count('.member')));
+      // the network's prefix decides: a different prefix length on the interface still matches
+      await selectDevice(1);
+      await setField('#side-body [data-t="list-append"][data-p=\'["devices",1,"interfaces",2,"ip"]\']', '10.77.0.2/16');
+      await selectNetwork(0);
+      check(
+        'the network lists both devices once, with interface and address (own prefix length /16 does not matter)',
+        /Members \(2\)/.test(text(members)) && doc.querySelectorAll(members + ' li[data-member]').length === 2 && /eth0 10\.77\.0\.1\/24/.test(text(members)) && /eth0 10\.77\.0\.2\/16/.test(text(members)) && count('.member') === 2,
+        text(members),
+      );
+      // changing the network changes every derived value
+      await setField('#side-body [data-t="int"][data-p=\'["networks",0,"vlan"]\']', '78');
+      await selectDevice(0);
+      check('changing the network\'s VLAN updates the interface immediately (78)', !!q(ifVlan(0, 1) + ' li[data-vlan="78"]'), text(ifVlan(0, 1)));
+      // an overlapping network with another VLAN: an explicit ambiguity, nothing chosen
+      click('#outline [data-act="add-entity"][data-kind="network"]');
+      await tick();
+      await setField('#side-body [data-t="list-append"][data-p=\'["networks",1,"cidr"]\']', '10.77.0.0/25');
+      await setField('#side-body [data-t="int"][data-p=\'["networks",1,"vlan"]\']', '99');
+      await selectDevice(0);
+      {
+        const da = app.mdoc as ModelDoc;
+        check(
+          'overlapping networks with different VLANs: the interface shows an explicit ambiguity and a warning, no VLAN is picked',
+          !!q(ifVlan(0, 1) + ' li[data-vlan="ambiguous"]') && /VLAN 78 \(net1\) or VLAN 99 \(net2\)/.test(text(ifVlan(0, 1))) && da.valid && da.warnings.some((w) => /ambiguous/.test(w.message)),
+          text(ifVlan(0, 1)),
+        );
+      }
+      await selectNetwork(1);
+      await setField('#side-body [data-t="list-item"][data-p=\'["networks",1,"cidr",0]\']', '10.99.0.0/24');
+      await selectDevice(0);
+      check('moving the second network away resolves it again (VLAN 78), and membership follows', !!q(ifVlan(0, 1) + ' li[data-vlan="78"]') && count('.member') === 2, text(ifVlan(0, 1)));
+      const ex = (app.mdoc as ModelDoc).exportText();
+      check('derived members and interface VLANs are never written to the YAML', !/members:|kind:/.test(ex) && (ex.match(/vlan: /g) || []).length === 2 && !/eth0[^\n]*vlan/.test(ex), ex);
+    }
+
+    // ------------------------------------ per-end VLANs on a link (trunk)
+    {
+      click('#outline [data-act="select"][data-kind="link"][data-index="0"]');
+      await tick();
+      const end = (side: string): string => `#side-body [data-vlan-end="${side}"]`;
+      const st = (side: string): string => (q(end(side)) || { getAttribute: () => '' }).getAttribute('data-vlan-state') || '';
+      const mismatch = (): string => (q('#side-body [data-vlan-mismatch]') || { getAttribute: () => '' }).getAttribute('data-vlan-mismatch') || '';
+      const addTo = (side: string): string => `#side-body [data-t="vlan-add"][data-p='["links",0,"${side}"]']`;
+      const lk = (): { a: number[]; b: number[] } => {
+        const l = (app.mdoc as ModelDoc).result.model!.links[0];
+        return { a: l.a.vlans, b: l.b.vlans };
+      };
+      check('a link end without VLANs says "No VLAN"; none is assumed', st('A') === 'none' && st('B') === 'none' && /No VLAN/.test(text(end('A'))) && mismatch() === 'no' && !/vlans/.test((app.mdoc as ModelDoc).exportText()));
+      check('speed and medium are fields of the link', !!q('#side-body [data-p=\'["links",0,"speed"]\']') && !!q('#side-body [data-p=\'["links",0,"medium"]\']'));
+      await setField(addTo('a'), '10, 20');
+      check(
+        'several VLANs on end A: labelled Trunk with its IDs; end B is not touched',
+        st('A') === 'trunk' && /Trunk · VLANs 10, 20/.test(text(end('A'))) && st('B') === 'none' && JSON.stringify(lk()) === '{"a":[10,20],"b":[]}' &&
+          /a: \{device: router1, interface: eth0, vlans: \[10, 20\]\}, b: edge2:eth0/.test((app.mdoc as ModelDoc).exportText()),
+        (app.mdoc as ModelDoc).exportText(),
+      );
+      click('[data-view-btn="physical"]');
+      check(
+        'the difference between the ends is highlighted (editor, problems, physical view) and not repaired',
+        mismatch() === 'yes' && /only on end A: 10, 20/.test(text('#side-body [data-vlan-mismatch]')) && (app.mdoc as ModelDoc).warnings.some((w) => /VLAN mismatch/.test(w.message)) && count('.cable.vlan-mismatch') === 1 && count('.vlan-warn') === 1,
+        text('#side-body [data-vlan-mismatch]'),
+      );
+      // end B: pick a network's VLAN from the list -> a single VLAN
+      await setField('#side-body select[data-t="vlan-pick"][data-p=\'["links",0,"b"]\']', '78');
+      check('one VLAN on end B (picked from the networks\' VLANs): shown as a single VLAN, not a trunk', st('B') === 'single' && /VLAN 78/.test(text(end('B'))) && !/Trunk/.test(text(end('B'))) && JSON.stringify(lk()) === '{"a":[10,20],"b":[78]}' && mismatch() === 'yes');
+      await setField(addTo('b'), '10 20');
+      click('#side-body [data-act="del-vlan"][data-p=\'["links",0,"b"]\'][data-k="78"]');
+      await tick();
+      check('both ends permit the same VLANs: no mismatch, the cable is a trunk', JSON.stringify(lk()) === '{"a":[10,20],"b":[10,20]}' && mismatch() === 'no' && st('B') === 'trunk' && count('.cable.vlan-mismatch') === 0 && count('.vlan-warn') === 0 && !(app.mdoc as ModelDoc).warnings.some((w) => /VLAN mismatch/.test(w.message)));
+      click('#side-body [data-act="del-vlan"][data-p=\'["links",0,"a"]\'][data-k="20"]');
+      await tick();
+      check('removing a VLAN from one end leaves the other end as it was (mismatch shown again)', JSON.stringify(lk()) === '{"a":[10],"b":[10,20]}' && st('A') === 'single' && st('B') === 'trunk' && mismatch() === 'yes');
+      await setField(addTo('a'), '4095');
+      check('an invalid VLAN ID is refused and nothing changes', JSON.stringify(lk()) === '{"a":[10],"b":[10,20]}' && /1 to 4094/.test(q('#toast')!.textContent || ''), q('#toast')!.textContent || '');
+      await setField(addTo('a'), '20');
+      check('link-end VLANs and network VLANs stay separate facts', (app.mdoc as ModelDoc).result.model!.networks[0].vlan === 78 && JSON.stringify(lk()) === '{"a":[10,20],"b":[10,20]}');
+      click('[data-view-btn="logical"]');
     }
 
     // export the new model
@@ -567,6 +676,18 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
           rm.index.interfaces.get('edge2:lo0')!.addresses.join(',') === '10.255.0.2/32,2001:db8:ffff::2/128,10.255.0.3/32' &&
           rm.relations[0].attrs.some(([k, v]) => k === 'keepalive.interval' && v === '10s') && /key: 42/.test(created.text),
         created.text);
+      check(
+        'export → reload: per-end VLANs are in the file; members and interface VLANs are derived again, not stored',
+        !!rm && JSON.stringify([rm.links[0].a.vlans, rm.links[0].b.vlans]) === '[[10,20],[10,20]]' && networkMembers(rm, 'net1').map((m) => m.device).join() === 'router1,edge2' &&
+          interfaceVlanText(interfaceAddresses(rm, 'router1', 'eth0')) === 'VLAN 78' && !/members:|kind:/.test(created.text) && /b: \{device: edge2, interface: eth0, vlans: \[10, 20\]\}/.test(created.text),
+        created.text);
+      if (rd) {
+        app.loadText(created.text, 'reloaded.yaml', 'file');
+        click('[data-view-btn="physical"]');
+        const physOk = count('.cable') === 1 && count('.vlan-warn') === 0;
+        click('[data-view-btn="logical"]');
+        check('… and both views draw the reloaded file the same way (cable without mismatch; 2 membership lines)', physOk && count('.member') === 2 && count('g.network') === 2, `${count('.member')} member lines`);
+      }
     }
 
     // ------------------------ editor: import → edit → export → reload
@@ -641,22 +762,38 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     check('unapplied YAML text survives switching tabs', /edited as text/.test((q('#yaml-src') as HTMLTextAreaElement).value));
     click('[data-yaml="apply"]');
     check('YAML tab edits are applied', app.mdoc!.result.model!.title === 'ACME WAN (edited as text)');
-    (q('#yaml-src') as HTMLTextAreaElement).value = 'netatlas: 1\ndevices:\n  - &x {id: a}\n';
+    (q('#yaml-src') as HTMLTextAreaElement).value = 'netatlas: 2\ndevices:\n  - &x {id: a}\n';
     click('[data-yaml="apply"]');
     check('invalid YAML in the text tab is rejected with a line number', /line 3/.test(q('#side-body .field-err')!.textContent || '') && app.mdoc!.result.model!.devices.length > 3);
     click('[data-yaml="revert"]');
 
     // unknown keys are kept and shown
-    const unk = app.loadText('netatlas: 1\ndevices:\n  - id: r1\n    colour: blue\n    interfaces: [{id: lo0, type: loopback, ip: [10.0.0.1/32], weird: {x: 1}}]\n', 'unknown.yaml', 'file');
+    const unk = app.loadText('netatlas: 2\ndevices:\n  - id: r1\n    colour: blue\n    interfaces: [{id: lo0, type: loopback, ip: [10.0.0.1/32], weird: {x: 1}}]\n', 'unknown.yaml', 'file');
     app.select('device:r1');
     check('unknown properties are shown in the inspector, not dropped', unk.errors.length > 0 && !!q('#side-body .other') && /colour/.test(app.exportText()) && /weird: \{x: 1\}/.test(app.exportText()));
     click('#side-body [data-act="to-attrs"][data-k="colour"]');
     await tick();
     check('"move into attrs" fixes an unknown property', /attrs:\n\s+colour: blue/.test(app.exportText()));
 
+    // keys of the earlier format are rejected with what to do instead (never read or converted)
+    {
+      const oldFile = app.loadText(
+        'netatlas: 1\ngroups:\n  - {id: g1, kind: row}\ndevices:\n  - id: r1\n    interfaces: [{id: e0, speed: 1G, media: fiber, vlan: 5, ip: 10.0.0.1/24}]\nnetworks:\n  - {id: n1, kind: vlan, vrf: red, cidr: 10.0.0.0/24, members: [r1]}\n',
+        'old-format.yaml',
+        'file',
+      );
+      const msgs = oldFile.errors.map((e) => e.message).join(' | ');
+      check(
+        'a version 1 file opens as a draft: an error for the version and one actionable error per retired key',
+        oldFile.ok && oldFile.errors.length === 8 && /format version 1 is no longer read/.test(msgs) && /"speed" is no longer part of the format/.test(msgs) && /"members" is no longer part of the format/.test(msgs) && /renamed to "floor"/.test(msgs) &&
+          (app.mdoc as ModelDoc).result.model!.networks[0].vlan === undefined && networkMembers((app.mdoc as ModelDoc).result.model!, 'n1').length === 1,
+        msgs,
+      );
+    }
+
     // ------------------------------------------ safety / errors / offline
     const evil =
-      'netatlas: 1\ntitle: "<img src=x onerror=alert(1)>"\ndevices:\n' +
+      'netatlas: 2\ntitle: "<img src=x onerror=alert(1)>"\ndevices:\n' +
       '  - id: a\n    label: "<script>alert(1)</script>"\n    interfaces: [e0]\n' +
       '  - id: b\n    label: "<svg onload=alert(1)>"\n    interfaces: [e0]\n' +
       'links:\n  - {id: l1, a: "a:e0", b: "b:e0"}\n';
@@ -667,11 +804,11 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     check('hostile labels load and are shown literally', res.ok && texts.indexOf('<script>alert(1)</script>') >= 0, texts);
     check('no injected elements (diagram, outline, inspector)', !doc.querySelector('#viewport img, #viewport script, #viewport foreignObject, #side-body img, #side-body script, #outline img, body > img'));
 
-    const bad = app.loadText('netatlas: 1\ndevices:\n  - &a {id: r1}\n', 'bad.yaml');
+    const bad = app.loadText('netatlas: 2\ndevices:\n  - &a {id: r1}\n', 'bad.yaml');
     check('YAML syntax errors are rejected before editing, with line number', !bad.ok && bad.errors[0].line === 3 && /anchor/.test(bad.errors[0].message) && (app.mdoc as ModelDoc).fileName === 'evil.yaml');
     check('the rejection is explained in a dialog and the current model is kept', /anchor/.test(q('#modal')!.textContent || ''));
     await answerDialog('ok');
-    const bad2 = app.loadText('netatlas: 1\ndevices:\n  - id: r1\nlinks:\n  - {id: l1, a: "r1:eth0", b: r2}\n', 'bad2.yaml');
+    const bad2 = app.loadText('netatlas: 2\ndevices:\n  - id: r1\nlinks:\n  - {id: l1, a: "r1:eth0", b: r2}\n', 'bad2.yaml');
     check('a file with broken references opens as a draft listing its errors', bad2.ok && bad2.errors.length === 2 && /Problems \(2\)/.test(q('[data-tab="problems"]')!.textContent || ''));
 
     const perf = (doc.defaultView as Window).performance;

@@ -1,16 +1,17 @@
-import { addrKey, parseAddress, parsePrefix, prefixContains, prefixProblem } from '../model/ip';
+import { addrKey, hasHostBits, parseAddress, parsePrefix, prefixProblem } from '../model/ip';
+import { derive, vlanMismatch, vlanMismatchText } from '../model/derive';
 import {
   Attrs,
   CATEGORIES,
   Category,
   Device,
-  Endpoint,
   Group,
   Interface,
   LINE_STYLES,
   LOGICAL_IFACE_TYPES,
   LineStyle,
   Link,
+  LinkEnd,
   Model,
   ModelIndex,
   ModelLayout,
@@ -23,7 +24,7 @@ import {
 import { DEVICE_TYPE_IDS, NO_DEVICE_TYPE, isDeviceType } from '../model/device-types';
 import { COLOR_RE, DEFAULT_STYLE, builtinProtocols, lookupProtocol, normalizeProtocol } from '../model/protocols';
 import { YMap, YNode, YamlError, YamlLimits, parseYaml } from '../yaml/parse';
-import { FORMAT_VERSION, SCHEMA } from '../yaml/schema';
+import { FORMAT_VERSION, RENAMED_GROUP_KINDS, RETIRED, SCHEMA } from '../yaml/schema';
 import { Ctx, DEFAULT_MODEL_LIMITS, ID_RE, IFACE_RE, Issue, ModelLimits, Reader, TooManyErrors, get, isNull, kindOf, scalarText, suggest } from './reader';
 
 export { DEFAULT_MODEL_LIMITS, ID_RE, IFACE_RE, scalarText, suggest };
@@ -55,6 +56,7 @@ const GROUP_KEYS = SCHEMA.group;
 const DEVICE_KEYS = SCHEMA.device;
 const IFACE_KEYS = SCHEMA.interface;
 const LINK_KEYS = SCHEMA.link;
+const LINK_END_KEYS = SCHEMA.linkEnd;
 const NET_KEYS = SCHEMA.network;
 const REL_KEYS = SCHEMA.relation;
 const EP_KEYS = SCHEMA.endpoint;
@@ -98,7 +100,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
   const L = c.limits;
   if (!root) {
     const dummy: YNode = { kind: 'scalar', value: null, raw: '', quoted: false, line: 1, col: 1 };
-    c.error(dummy, '', 'the document is empty — expected a mapping starting with "netatlas: 1"');
+    c.error(dummy, '', `the document is empty — expected a mapping starting with "netatlas: ${FORMAT_VERSION}"`);
     return null;
   }
   const top = r.map(root, '(document)');
@@ -108,6 +110,13 @@ function build(root: YNode | null, c: Ctx): Model | null {
   const verNode = get(top, 'netatlas');
   if (isNull(verNode)) {
     c.error(top, 'netatlas', `missing format version — add "netatlas: ${FORMAT_VERSION}" as the first line`, { key: 'netatlas', line: 1 });
+  } else if (verNode!.kind === 'scalar' && verNode!.value === 1) {
+    c.error(
+      verNode!,
+      'netatlas',
+      `format version 1 is no longer read: this build reads "netatlas: ${FORMAT_VERSION}". Update the file by hand (the errors below name each key to change; ` +
+        `see "Changes from version 1" in docs/FORMAT.md), then set "netatlas: ${FORMAT_VERSION}"`,
+    );
   } else if (!(verNode!.kind === 'scalar' && verNode!.value === FORMAT_VERSION)) {
     c.error(verNode!, 'netatlas', `unsupported format version; this build understands "netatlas: ${FORMAT_VERSION}"`);
   }
@@ -204,10 +213,14 @@ function build(root: YNode | null, c: Ctx): Model | null {
     if (!id || !claim(id, 'group', m, path)) return;
     const gpath = `groups.${id}`;
     groupNodes.set(id, m);
+    const kind = (r.field(m, 'kind', gpath, 40) || '').toLowerCase();
+    if (Object.prototype.hasOwnProperty.call(RENAMED_GROUP_KINDS, kind)) {
+      c.error(get(m, 'kind') as YNode, gpath + '.kind', `group kind "${kind}" was renamed to "${RENAMED_GROUP_KINDS[kind]}" — write "kind: ${RENAMED_GROUP_KINDS[kind]}"`);
+    }
     groups.push({
       id,
       label: r.field(m, 'label', gpath, L.maxLabel) || id,
-      kind: (r.field(m, 'kind', gpath, 40) || '').toLowerCase(),
+      kind,
       parent: r.field(m, 'parent', gpath, 200),
       description: r.field(m, 'description', gpath, L.maxDescription),
       attrs: r.attrs(get(m, 'attrs'), gpath + '.attrs'),
@@ -247,7 +260,8 @@ function build(root: YNode | null, c: Ctx): Model | null {
   // ------------------------------------------------------------ devices
   const devices: Device[] = [];
   const interfaces = new Map<string, Interface>();
-  const ifaceNodes = new Map<string, YMap>();
+  /** "device:iface" -> the YAML node of each address in Interface.addresses (same order) */
+  const ifaceAddrNodes = new Map<string, YNode[]>();
   /** canonical address -> first "device:iface" using it */
   const addrOwner = new Map<string, { where: string; node: YNode }>();
   capped(r.list(get(top, 'devices'), 'devices'), L.maxDevices, 'devices', 'devices').forEach((n, i) => {
@@ -295,7 +309,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
         im = { kind: 'map', entries: new Map([['id', { key: 'id', keyLine: inode.line, value: inode }]]), line: inode.line, col: inode.col };
       } else im = r.map(inode, ipath);
       if (!im) return;
-      r.keys(im, IFACE_KEYS, ipath, ATTRS_HINT);
+      r.keys(im, IFACE_KEYS, ipath, ATTRS_HINT, RETIRED.interface);
       const iid = r.id(im, ipath, IFACE_RE, 'interface id');
       if (!iid) return;
       const key = ifaceKey(id, iid);
@@ -310,6 +324,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
       const ipNode = get(im, 'ip');
       const addrNodes = r.list(ipNode, ipath + '.ip', true);
       const addrs: string[] = [];
+      const addrsAt: YNode[] = [];
       const type = (r.field(im, 'type', ipath, 40) || 'physical').toLowerCase();
       const isLoop = type === 'loopback';
       const kind = isLoop ? 'loopback' : 'interface';
@@ -321,6 +336,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
           return;
         }
         addrs.push(a);
+        addrsAt.push(an);
         const p = parsePrefix(a, !isLoop ? false : true);
         if (!p) {
           const why = prefixProblem(a) || `"${a}" is not a valid address`;
@@ -346,17 +362,15 @@ function build(root: YNode | null, c: Ctx): Model | null {
         device: id,
         label: r.field(im, 'label', ipath, L.maxLabel),
         type,
-        speed: r.field(im, 'speed', ipath, 40),
-        media: r.field(im, 'media', ipath, 40),
         addresses: addrs,
-        vlan: r.field(im, 'vlan', ipath, 100),
+        vrf: r.field(im, 'vrf', ipath, 100),
         mac: r.field(im, 'mac', ipath, 40),
         description: r.field(im, 'description', ipath, L.maxDescription),
         attrs: r.attrs(get(im, 'attrs'), ipath + '.attrs'),
         line: im.line,
       };
       interfaces.set(key, iface);
-      ifaceNodes.set(key, im);
+      ifaceAddrNodes.set(key, addrsAt);
       dev.interfaces.push(iface);
     });
     // router_id: a loopback of this device
@@ -380,13 +394,17 @@ function build(root: YNode | null, c: Ctx): Model | null {
   });
   const deviceMap = new Map(devices.map((d) => [d.id, d] as [string, Device]));
 
-  /** Parse "dev" / "dev:iface" / {device, interface, role, address, attrs}. */
-  const endpoint = (n: YNode, path: string, extended: boolean): RelEndpoint | null => {
+  /**
+   * Parse "dev" / "dev:iface" / a mapping. A relation endpoint may carry
+   * role, address and attrs; a link end may carry the VLANs it permits.
+   */
+  const endpoint = (n: YNode, path: string, extended: boolean): (RelEndpoint & { vlans: number[] }) | null => {
     let device: string | undefined;
     let iface: string | undefined;
     let role: string | undefined;
     let address: string | undefined;
     let attrs: Attrs = [];
+    const vlans: number[] = [];
     if (n.kind === 'scalar') {
       const s = r.str(n, path, 200);
       if (s === undefined) {
@@ -397,13 +415,22 @@ function build(root: YNode | null, c: Ctx): Model | null {
       device = colon < 0 ? s : s.slice(0, colon);
       iface = colon < 0 ? undefined : s.slice(colon + 1);
     } else if (n.kind === 'map') {
-      r.keys(n, extended ? EP_KEYS : ['device', 'interface'], path);
+      r.keys(n, extended ? EP_KEYS : LINK_END_KEYS, path);
       device = r.reqStr(n, 'device', path, 200);
       iface = r.field(n, 'interface', path, 200);
       if (extended) {
         role = r.field(n, 'role', path, 60);
         address = r.field(n, 'address', path, 100);
         attrs = r.attrs(get(n, 'attrs'), path + '.attrs');
+      } else {
+        // VLANs permitted at this end of the cable: a fact of the link end, kept exactly as configured
+        r.list(get(n, 'vlans'), path + '.vlans', true).forEach((vn, k) => {
+          const v = r.vlanId(vn, `${path}.vlans[${k}]`);
+          if (v === undefined) return;
+          if (vlans.indexOf(v) >= 0) c.error(vn, `${path}.vlans[${k}]`, `VLAN ${v} is listed twice on this end`);
+          else vlans.push(v);
+        });
+        vlans.sort((p, q) => p - q);
       }
       if (device === undefined) return null;
     } else {
@@ -425,7 +452,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
       );
       return null;
     }
-    return { device, iface, role, address, attrs };
+    return { device, iface, role, address, attrs, vlans };
   };
 
   // -------------------------------------------------------------- links
@@ -440,7 +467,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
     if (!id) return;
     const lpath = `links.${id}`;
     if (!claim(id, 'link', m, path)) return;
-    const ends: Array<Endpoint | null> = ['a', 'b'].map((side) => {
+    const ends: Array<LinkEnd | null> = ['a', 'b'].map((side) => {
       const en = get(m, side);
       if (isNull(en)) {
         c.error(m, lpath, `missing required key "${side}" (a physical link joins two endpoints "a" and "b")`, { key: side });
@@ -467,7 +494,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
         }
         ifaceLink.set(key, id);
       }
-      return { device: ep.device, iface: ep.iface };
+      return { device: ep.device, iface: ep.iface, vlans: ep.vlans };
     });
     const [a, b] = ends;
     if (!a || !b) return;
@@ -475,17 +502,15 @@ function build(root: YNode | null, c: Ctx): Model | null {
       c.error(m, lpath, 'a link cannot connect an endpoint to itself');
       return;
     }
-    const ia = a.iface ? interfaces.get(ifaceKey(a.device, a.iface)) : undefined;
-    const ib = b.iface ? interfaces.get(ifaceKey(b.device, b.iface)) : undefined;
-    if (ia && ib && ia.speed && ib.speed && ia.speed.toLowerCase() !== ib.speed.toLowerCase()) {
-      c.warn(m, lpath, `speed mismatch: ${a.device}:${a.iface} is ${ia.speed}, ${b.device}:${b.iface} is ${ib.speed}`);
-    }
+    // the two ends are configured independently; a difference is reported, never repaired
+    const mismatch = vlanMismatch(a.vlans, b.vlans);
+    if (mismatch) c.warn(m, lpath, `VLAN mismatch between the ends of this link (${vlanMismatchText(mismatch)})`);
     links.push({
       id,
       a,
       b,
-      medium: (r.field(m, 'medium', lpath, 40) || (ia && ia.media) || (ib && ib.media) || 'unspecified').toLowerCase(),
-      speed: r.field(m, 'speed', lpath, 40) || (ia && ia.speed) || (ib && ib.speed),
+      medium: (r.field(m, 'medium', lpath, 40) || 'unspecified').toLowerCase(),
+      speed: r.field(m, 'speed', lpath, 40),
       label: r.field(m, 'label', lpath, L.maxLabel),
       cable: r.field(m, 'cable', lpath, L.maxLabel),
       description: r.field(m, 'description', lpath, L.maxDescription),
@@ -500,50 +525,30 @@ function build(root: YNode | null, c: Ctx): Model | null {
     const path = `networks[${i}]`;
     const m = r.map(n, path);
     if (!m) return;
-    r.keys(m, NET_KEYS, path, ATTRS_HINT);
+    r.keys(m, NET_KEYS, path, ATTRS_HINT, RETIRED.network);
     const id = r.id(m, path);
     if (!id) return;
     const npath = `networks.${id}`;
     if (!claim(id, 'network', m, path)) return;
-    const memberNodes = r.list(get(m, 'members'), npath + '.members');
-    if (memberNodes.length > L.maxMembers) c.error(m, npath + '.members', `too many members (limit ${L.maxMembers})`, { key: 'members' });
-    const cidrNodes = r.list(get(m, 'cidr'), npath + '.cidr', true);
+    // the prefixes are the authority for membership, so each must be a real prefix
+    const cidrNode = get(m, 'cidr');
     const cidr: string[] = [];
-    const prefixes = cidrNodes
-      .map((x, k) => {
-        const s = r.str(x, `${npath}.cidr[${k}]`, 64);
-        if (s === undefined) return null;
-        cidr.push(s);
-        const p = parsePrefix(s);
-        if (!p) c.warn(x, `${npath}.cidr[${k}]`, `${prefixProblem(s)}; it is shown as written`);
-        return p;
-      })
-      .filter((p): p is NonNullable<typeof p> => !!p);
-    const members: RelEndpoint[] = [];
-    memberNodes.slice(0, L.maxMembers).forEach((x, k) => {
-      const ep = endpoint(x, `${npath}.members[${k}]`, true);
-      if (!ep) return;
-      members.push(ep);
-      // relevant relationship check: member addresses inside the network's prefixes
-      const inf = ep.iface ? interfaces.get(ifaceKey(ep.device, ep.iface)) : undefined;
-      const addrs = ep.address ? [ep.address] : inf ? inf.addresses : [];
-      for (const a of addrs) {
-        const pa = parsePrefix(a, false);
-        if (!pa) continue;
-        const sameFamily = prefixes.filter((p) => p.version === pa.version);
-        if (sameFamily.length && !sameFamily.some((p) => prefixContains(p, pa))) {
-          c.warn(x, `${npath}.members[${k}]`, `address ${a} of ${ep.device}${ep.iface ? ':' + ep.iface : ''} is outside ${cidr.join(', ')}`);
-        }
-      }
+    r.list(cidrNode, npath + '.cidr', true).forEach((x, k) => {
+      const s = r.str(x, `${npath}.cidr[${k}]`, 64);
+      if (s === undefined) return;
+      cidr.push(s);
+      const p = parsePrefix(s);
+      if (!p) c.error(x, `${npath}.cidr[${k}]`, `invalid network prefix: ${prefixProblem(s)}`);
+      else if (hasHostBits(p)) c.warn(x, `${npath}.cidr[${k}]`, `${s} has bits set beyond /${p.prefix}; the network is the whole /${p.prefix} that contains it`);
     });
+    if (!cidr.length) {
+      c.warn(isNull(cidrNode) ? m : (cidrNode as YNode), npath + '.cidr', `network "${id}" has no prefix, so it has no members — add "cidr:" (e.g. 192.0.2.0/24 or 2001:db8::/64)`, isNull(cidrNode) ? { key: 'cidr' } : {});
+    }
     networks.push({
       id,
       label: r.field(m, 'label', npath, L.maxLabel) || id,
-      kind: (r.field(m, 'kind', npath, 40) || '').toLowerCase(),
       cidr,
-      vlan: r.field(m, 'vlan', npath, 100),
-      vrf: r.field(m, 'vrf', npath, 100),
-      members,
+      vlan: r.vlanId(get(m, 'vlan'), npath + '.vlan'),
       description: r.field(m, 'description', npath, L.maxDescription),
       attrs: r.attrs(get(m, 'attrs'), npath + '.attrs'),
       line: m.line,
@@ -598,7 +603,10 @@ function build(root: YNode | null, c: Ctx): Model | null {
     if (epNodes.length > L.maxEndpoints) c.error(epNode as YNode, rpath + '.endpoints', `too many endpoints (limit ${L.maxEndpoints})`);
     const endpoints = epNodes
       .slice(0, L.maxEndpoints)
-      .map((x, k) => endpoint(x, `${rpath}.endpoints[${k}]`, true))
+      .map((x, k): RelEndpoint | null => {
+        const e = endpoint(x, `${rpath}.endpoints[${k}]`, true);
+        return e && { device: e.device, iface: e.iface, role: e.role, address: e.address, attrs: e.attrs };
+      })
       .filter((x): x is RelEndpoint => x !== null);
     if (epNodes.length < 2) {
       c.error(epNode && !isNull(epNode) ? epNode : m, rpath + '.endpoints', 'a relation needs at least 2 endpoints', epNode && !isNull(epNode) ? {} : { key: 'endpoints' });
@@ -761,7 +769,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
     relations: relationMap,
     ifaceLink,
   };
-  return {
+  const model: Model = {
     version: FORMAT_VERSION,
     title,
     description,
@@ -774,6 +782,18 @@ function build(root: YNode | null, c: Ctx): Model | null {
     layout,
     index,
   };
+  // Derived VLANs are never chosen for the user: conflicting networks are reported.
+  derive(model).addresses.forEach((assocs, key) => {
+    assocs.forEach((a, j) => {
+      if (a.vlan.state !== 'ambiguous') return;
+      const at = (ifaceAddrNodes.get(key) as YNode[])[j];
+      const inf = interfaces.get(key) as Interface;
+      const k = (deviceMap.get(inf.device) as Device).interfaces.indexOf(inf);
+      const nets = a.networks.filter((n) => (networkMap.get(n) as Network).vlan !== undefined).map((n) => `"${n}" (VLAN ${(networkMap.get(n) as Network).vlan})`);
+      c.warn(at, `devices.${inf.device}.interfaces[${k}].ip`, `the VLAN of ${a.address} on ${key} is ambiguous: it lies in ${nets.join(' and ')}; no VLAN is derived for it`);
+    });
+  });
+  return model;
 }
 
 /** A device's type: one of the format's device types, or none. Anything else is an error. */

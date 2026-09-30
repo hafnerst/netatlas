@@ -1,6 +1,6 @@
 # netatlas example: the smallest useful file.
 # Two routers, one cable, one GRE tunnel with an OSPF adjacency inside it.
-netatlas: 1
+netatlas: 2
 title: Minimal example
 
 devices:
@@ -8,7 +8,6 @@ devices:
     type: router
     interfaces:
       - id: eth0
-        speed: 1G
         ip: 192.0.2.1/30
       - id: tun0
         type: tunnel
@@ -16,7 +15,6 @@ devices:
     type: router
     interfaces:
       - id: eth0
-        speed: 1G
         ip: 192.0.2.2/30
       - id: tun0
         type: tunnel
@@ -26,6 +24,7 @@ links:
     a: r1:eth0
     b: r2:eth0
     medium: copper
+    speed: 1G
 
 relations:
   - id: gre-1

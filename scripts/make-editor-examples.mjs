@@ -25,7 +25,7 @@ const flowList = (...xs) => Y.seqNode(xs.map(s), true);
 export function buildNewNetwork() {
   const d = ModelDoc.create();
   d.change('Edit title', () => d.setAt(['title'], s('Lab: two edge routers'), KEY_ORDER.top));
-  d.change('Edit description', () => d.setAt(['description'], s('Created in the netatlas editor: loopbacks, one cable, iBGP and a GRE tunnel between loopbacks.'), KEY_ORDER.top));
+  d.change('Edit description', () => d.setAt(['description'], s('Created in the netatlas editor: loopbacks, one cable, an IP network, iBGP and a GRE tunnel between loopbacks.'), KEY_ORDER.top));
   // New starts empty: add both routers, choosing their type explicitly
   const a = d.addEntity('device', [['id', s('edge-a')], ['type', s('router')], ['router_id', s('lo0')]]);
   d.addLoopback(a, ['10.255.0.1/32'], 'Router ID', 'lo0');
@@ -37,9 +37,12 @@ export function buildNewNetwork() {
   d.addLoopback(b, ['2001:db8:ffff::b/128'], 'BGP source (IPv6)', 'lo1');
   d.change('Set router_id', () => d.setAt(['devices', b, 'router_id'], s('lo0'), KEY_ORDER.device));
   // physical ports and a cable
-  d.addInterface(0, [['id', s('ge-0/0/0')], ['speed', s('10G')], ['media', s('fiber')], ['ip', flowList('192.0.2.1/31')]]);
-  d.addInterface(b, [['id', s('ge-0/0/0')], ['speed', s('10G')], ['media', s('fiber')], ['ip', flowList('192.0.2.0/31')]]);
-  d.addEntity('link', [['id', s('cable-1')], ['a', s('edge-a:ge-0/0/0')], ['b', s('edge-b:ge-0/0/0')], ['cable', s('LC-LC OM4 3m')]]);
+  // (speed and medium belong to the cable, not to the ports)
+  d.addInterface(0, [['id', s('ge-0/0/0')], ['ip', flowList('192.0.2.1/31')]]);
+  d.addInterface(b, [['id', s('ge-0/0/0')], ['ip', flowList('192.0.2.0/31')]]);
+  d.addEntity('link', [['id', s('cable-1')], ['a', s('edge-a:ge-0/0/0')], ['b', s('edge-b:ge-0/0/0')], ['medium', s('fiber')], ['speed', s('10G')], ['cable', s('LC-LC OM4 3m')]]);
+  // an IP network: both routers become members through their port addresses
+  d.addEntity('network', [['id', s('net-core')], ['label', s('Core link')], ['cidr', s('192.0.2.0/31')]]);
   // logical relations sourced from loopbacks
   d.addEntity('relation', [
     ['id', s('ibgp-v6')],

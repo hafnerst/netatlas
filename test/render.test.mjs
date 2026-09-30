@@ -109,8 +109,9 @@ test('logical view: multipoint relations use a hub; networks are nodes with memb
   const hubRel = byRef(v, 'relation:vxlan-10100').find((n) => scene.hasClass(n, 'rel'));
   assert.ok(scene.hasClass(hubRel, 'hub-rel'));
   assert.equal(byClass(hubRel, 'hub').length, 1);
-  assert.equal(byClass(v, 'network').length, 2);
-  assert.ok(byClass(v, 'member').length >= 8);
+  // one IP network; its four members (the leaves) follow from their Vlan100 addresses
+  assert.equal(byClass(v, 'network').length, 1);
+  assert.equal(byClass(v, 'member').length, 4);
   // custom protocol from the file's "protocols" section
   const srv6 = byRef(v, 'relation:srv6-dci').find((n) => scene.hasClass(n, 'rel'));
   assert.ok(scene.hasClass(srv6, 'cat-tunnel'));
@@ -132,7 +133,7 @@ test('logical view options: hide protocols, networks, show underlay', () => {
 });
 
 test('representative protocol and tunnel rendering (built-in, alias, unknown, custom)', () => {
-  const text = `netatlas: 1
+  const text = `netatlas: 2
 protocols:
   - {id: quic-tun, category: tunnel, color: "#aa00aa"}
 devices:
@@ -167,7 +168,7 @@ relations:
 });
 
 test('untrusted text only ever becomes text nodes; class names are sanitized', () => {
-  const s = sessionFor(`netatlas: 1
+  const s = sessionFor(`netatlas: 2
 devices:
   - {id: a, label: "<img src=x onerror=alert(1)>", type: server}
   - {id: b, label: "</text><script>alert(2)</script>"}
@@ -198,7 +199,7 @@ test('layouts are deterministic', () => {
 });
 
 test('larger generated input renders within a reasonable time', () => {
-  let t = 'netatlas: 1\ngroups:\n';
+  let t = 'netatlas: 2\ngroups:\n';
   for (let g = 0; g < 10; g++) t += `  - {id: site${g}, kind: site}\n`;
   t += 'devices:\n';
   for (let i = 0; i < 300; i++) t += `  - {id: d${i}, type: ${i % 10 === 0 ? 'router' : 'switch'}, group: site${i % 10}, interfaces: [p1, p2, p3]}\n`;

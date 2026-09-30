@@ -9,7 +9,7 @@ Each layer has one responsibility and may only import the layers below it.
 
 | Layer | Responsibility | Main modules |
 |---|---|---|
-| `model/` | The network model: types for devices, interfaces (incl. loopbacks), links, networks, relations, protocols and groups; the protocol registry; IP addresses; pure queries (references, related objects, search). No I/O, no YAML, no layout. | `types.ts`, `device-types.ts`, `protocols.ts`, `ip.ts`, `queries.ts` |
+| `model/` | The network model: types for devices, interfaces (incl. loopbacks), links, networks, relations, protocols and groups; the protocol registry; IP addresses; **derived facts** (network members and interface VLANs from addresses, link-end VLAN state); pure queries (references, related objects, search). No I/O, no YAML, no layout. | `types.ts`, `device-types.ts`, `protocols.ts`, `ip.ts`, `derive.ts`, `queries.ts` |
 | `yaml/` | The YAML boundary: the supported YAML subset (parser with line/column positions, comments and styles), the serializer (the inverse), and the format **schema** (which keys exist, in canonical order). Knows nothing about networks beyond key names. | `parse.ts`, `write.ts`, `schema.ts` |
 | `validation/` | Turns a parsed YAML tree into a `Model` plus errors and warnings. Every issue is attached to the YAML node it concerns. Structural and cross-reference checks, loopback/IP rules, the presentation-only `layout` section. Callable without any UI. | `validate.ts` (the format's rules), `reader.ts` (issue collector, typed reader, suggestions) |
 | `layout/` | Deterministic positions for both views: a canonical, order-independent input built from the model; auto-arrange for the physical and the logical view; placement of new nodes; the rule "stored positions else auto-arrange". Separates calculated positions from network semantics. | `input.ts`, `physical.ts`, `logical.ts`, `positions.ts`, `sizes.ts`, `geometry.ts` |
@@ -64,7 +64,20 @@ anything else.
   operations and only reads the tree through the `DocNode` alias.
 * **One format schema.** `yaml/schema.ts` lists the keys of every mapping
   kind in canonical order. Validation (unknown keys), the editor (where new
-  keys go) and the inspector ("other properties") all use it.
+  keys go) and the inspector ("other properties") all use it. It also lists
+  the keys of format version 1 that were retired, with the instruction shown
+  when one is found; they are rejected, never read or converted.
+* **Configured versus derived.** A fact is stored in one place in the YAML
+  tree. Whatever follows from it is computed by `model/derive.ts` from the
+  typed `Model` (cached per model object, and a new model is built after
+  every edit), and is only ever displayed: network members, the VLAN of an
+  interface address, the trunk state and mismatch of a link's ends. No
+  editing operation writes a derived value, so it can't go stale or
+  contradict its source. The typed `Network` has no member list and the
+  typed `Interface` no VLAN, so nothing can read a stored copy by mistake.
+  *Trade-off:* membership is recomputed for the whole model after each edit
+  (addresses × networks); that is well inside the time validation already
+  takes.
 * **Positions are separate from semantics.** Positions live in the optional
   `layout:` section, are only warnings when broken, and never change the
   model. Auto-arrange is a pure function of a canonical input
@@ -95,7 +108,9 @@ anything else.
 * **New field on an entity:** add the key to `yaml/schema.ts`, read and
   check it in `validation/validate.ts` (and the model type), then show and
   edit it in `ui/inspector.ts` using an existing `ModelDoc` operation.
-  Round-tripping works automatically.
+  Round-tripping works automatically. First check that the fact isn't
+  already configured somewhere else: if it is, add a function to
+  `model/derive.ts` and show it read-only instead.
 * **New view:** add layout functions under `layout/` (fed by
   `layout/input.ts`), a renderer under `diagram/`, and switch between them in
   `diagram/session.ts`.

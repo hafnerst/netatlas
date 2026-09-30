@@ -35,6 +35,10 @@ export interface Group {
   line: number;
 }
 
+/** Valid VLAN IDs (IEEE 802.1Q). */
+export const VLAN_MIN = 1;
+export const VLAN_MAX = 4094;
+
 /** Interface types that are not physical ports and therefore cannot terminate a cable. */
 export const LOGICAL_IFACE_TYPES = ['loopback', 'tunnel', 'vlan', 'svi', 'subinterface', 'virtual', 'lag', 'bundle', 'irb', 'bvi', 'vti'];
 
@@ -43,10 +47,9 @@ export interface Interface {
   device: string;
   label?: string;
   type: string;
-  speed?: string;
-  media?: string;
   addresses: string[];
-  vlan?: string;
+  /** name of the VRF this interface is assigned to (display only) */
+  vrf?: string;
   mac?: string;
   description?: string;
   attrs: Attrs;
@@ -71,10 +74,17 @@ export interface Device {
   line: number;
 }
 
+/** One end of a physical link, with the VLAN IDs that end permits on the cable. */
+export interface LinkEnd extends Endpoint {
+  /** as configured for this end, ascending; empty = no VLAN configured */
+  vlans: number[];
+}
+
 export interface Link {
   id: string;
-  a: Endpoint;
-  b: Endpoint;
+  a: LinkEnd;
+  b: LinkEnd;
+  /** medium and speed of the physical connection: configured here and nowhere else */
   medium: string;
   speed?: string;
   label?: string;
@@ -84,14 +94,17 @@ export interface Link {
   line: number;
 }
 
+/**
+ * An IP network. Its prefixes decide which devices are members (see
+ * model/derive.ts); there is no configured member list.
+ */
 export interface Network {
   id: string;
   label: string;
-  kind: string;
+  /** prefixes as written */
   cidr: string[];
-  vlan?: string;
-  vrf?: string;
-  members: RelEndpoint[];
+  /** the VLAN this IP network lives in, if any */
+  vlan?: number;
   description?: string;
   attrs: Attrs;
   line: number;

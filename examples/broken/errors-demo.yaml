@@ -1,7 +1,7 @@
 # netatlas example: a file with mistakes, to show how errors are reported.
 # Open it in netatlas: every problem is listed with its line number, the
 # path of the offending value, the source line, and a suggestion.
-netatlas: 1
+netatlas: 2
 title: Error reporting demo
 
 devices:

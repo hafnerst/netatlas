@@ -14,7 +14,7 @@ const { SCHEMA } = load('yaml/schema.js');
 const files = load('ui/files.js');
 
 const doc = (text) => ModelDoc.fromText(text, 't.yaml', 'file').doc;
-const base = `netatlas: 1
+const base = `netatlas: 2
 devices:
   - id: r1   # the router
     interfaces: [eth0]
@@ -27,7 +27,7 @@ relations:
     protocol: ebgp
     endpoints: [r1, r2]
 networks:
-  - {id: n1, members: [r1]}
+  - {id: n1, cidr: 10.0.0.0/24}
 `;
 
 // ------------------------------------------------------------ editing operations
@@ -76,7 +76,8 @@ test('free-form values are typed like YAML and survive export -> reload', () => 
 test('lists and endpoints: short forms stay short, mappings keep their keys', () => {
   const d = doc(base);
   d.appendText(['devices', 1, 'interfaces', 1, 'ip'], '10.0.0.2/32');
-  d.appendText(['networks', 0, 'members'], 'r2:eth0');
+  d.appendText(['networks', 0, 'cidr'], '2001:db8::/64');
+  assert.match(d.exportText(), /cidr: \[10\.0\.0\.0\/24, 2001:db8::\/64\]/);
   d.setEndpoint(['relations', 0, 'endpoints', 0], 'r1', 'eth0');
   d.setEndpoint(['links', 0, 'b'], 'r2', '');
   assert.match(d.exportText(), /endpoints: \[r1:eth0, r2\]/);
@@ -87,8 +88,8 @@ test('lists and endpoints: short forms stay short, mappings keep their keys', ()
   assert.match(d.exportText(), /\{device: r2, interface: lo0, role: rr-client\}/);
   d.moveUp(['relations', 0, 'endpoints', 1]);
   assert.match(d.exportText(), /endpoints: \[\{device: r2, interface: lo0, role: rr-client\}, r1:eth0\]/);
-  d.setEndpoint(['networks', 0, 'members', 1], '', '');
-  assert.match(d.exportText(), /members: \[r1\]/);
+  d.setEndpoint(['relations', 0, 'endpoints', 1], '', '');
+  assert.match(d.exportText(), /endpoints: \[\{device: r2, interface: lo0, role: rr-client\}\]/);
   d.remove(['links', 0]);
   assert.ok(!/l1/.test(d.exportText()));
 });
@@ -108,7 +109,9 @@ test('schemaKindOf derives the canonical key order from a path', () => {
   assert.equal(d.schemaKindOf(['devices', 0]), 'device');
   assert.equal(d.schemaKindOf(['devices', 0, 'interfaces', 1]), 'interface');
   assert.equal(d.schemaKindOf(['relations', 0, 'endpoints', 0]), 'endpoint');
-  assert.equal(d.schemaKindOf(['networks', 0, 'members', 0]), 'endpoint');
+  assert.equal(d.schemaKindOf(['links', 0, 'a']), 'linkEnd');
+  assert.equal(d.schemaKindOf(['links', 0, 'b']), 'linkEnd');
+  assert.equal(d.schemaKindOf(['networks', 0, 'members', 0]), undefined);
   assert.equal(d.schemaKindOf(['devices', 0, 'attrs']), undefined);
 });
 
@@ -120,8 +123,9 @@ test('the format schema is the single source for allowed keys and key order', ()
     ['device', 'devices', '{id: d}'],
     ['link', 'links', '{id: l, a: d, b: d}'],
     ['group', 'groups', '{id: g}'],
+    ['network', 'networks', '{id: n}'],
   ]) {
-    const text = `netatlas: 1\ndevices:\n  - {id: d}\n${section === 'devices' ? '' : section + ':\n  - ' + sample + '\n'}`;
+    const text = `netatlas: 2\ndevices:\n  - {id: d}\n${section === 'devices' ? '' : section + ':\n  - ' + sample + '\n'}`;
     const withKey = (k) => text.replace(section === 'devices' ? '{id: d}' : sample, (m) => m.replace('}', `, ${k}: x}`));
     // every key in the schema is accepted (value types aside), and nothing else
     const unknown = validate.loadModel(withKey('not_in_schema')).errors.filter((e) => /unknown key/.test(e.message));
