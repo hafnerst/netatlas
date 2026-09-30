@@ -10,6 +10,16 @@ releases may still change behaviour; the YAML format has its own version
 
 ### Changed
 
+* **Auto-arrange places groups by their cabling** (physical view). Blocks
+  that are cabled to each other form layers: a group lies one layer below the
+  block it is cabled to, as close as possible to the point under the devices
+  it connects. In `enterprise-wan.yaml` the provider group is now between the
+  Internet and the HQ routers instead of at the bottom: total cable length
+  drops by about half and no cables cross (16 crossings before). The rule
+  uses only the topology and device tiers, never a group's kind or name.
+  Disconnected groups are packed beside the connected part. Auto-arranged
+  positions change again; stored layouts are kept as they are.
+
 * **Diagram elements are sized for their text; nothing is shortened with
   "…".** Labels wrap (line breaks in a device label are kept as lines),
   long words are broken, and boxes, network pills, group titles and relation

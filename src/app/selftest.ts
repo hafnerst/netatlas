@@ -88,7 +88,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         const frame = g.querySelector(box);
         if (!frame) return;
         Array.prototype.forEach.call(g.querySelectorAll(text), (t: Element) => {
-          if (!inside(bb(t), bb(frame))) out.push(`"${t.textContent}" leaves its box (${Math.round(bb(t).w)} > ${Math.round(bb(frame).w)})`);
+          if (!inside(bb(t), bb(frame))) out.push(`"${t.textContent}" leaves its box (${Math.round(bb(t).w)} > ${Math.round(bb(frame).w)}; text x ${Math.round(bb(t).x)}, box x ${Math.round(bb(frame).x)})`);
         });
       });
     boxed('g.device', '.dev-box', 'text');
@@ -292,7 +292,9 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const measure = (text: string): { ok: boolean; labels: string[]; why: string } => {
         const parsed = new DOMParser().parseFromString(text, 'image/svg+xml').documentElement as unknown as SVGSVGElement;
         const holder = doc.createElement('div');
-        holder.setAttribute('class', 'sr-only');
+        // off screen at its natural size (scaled down to nothing, text metrics become meaningless)
+        holder.setAttribute('style', 'position:absolute;left:-30000px;top:0;width:6000px;height:6000px;visibility:hidden');
+        parsed.setAttribute('id', 'export-canvas');
         holder.appendChild(doc.importNode(parsed, true));
         doc.body.appendChild(holder);
         const root = holder.firstChild as SVGSVGElement;
@@ -518,7 +520,9 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const exported = (text: string): { full: boolean; problems: string[] } => {
         const parsed = new DOMParser().parseFromString(text, 'image/svg+xml').documentElement;
         const holder = doc.createElement('div');
-        holder.setAttribute('class', 'sr-only');
+        // off screen at its natural size (scaled down to nothing, text metrics become meaningless)
+        holder.setAttribute('style', 'position:absolute;left:-30000px;top:0;width:6000px;height:6000px;visibility:hidden');
+        parsed.setAttribute('id', 'export-canvas');
         holder.id = 'export-probe';
         holder.appendChild(doc.importNode(parsed, true));
         doc.body.appendChild(holder);
@@ -567,6 +571,20 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       app.loadExample(wanIdx);
       click('[data-view-btn="physical"]');
       const physBefore = rects();
+      {
+        // groups are placed by their cabling: the providers between the Internet above and the HQ routers below
+        const top = (sel: string): DOMRect => (q('#viewport ' + sel) as Element).getBoundingClientRect();
+        const prov = top('g.group[data-ref="group:providers"] .group-box');
+        const hq = top('g.group[data-ref="group:hq"] .group-box');
+        const inet = top('g.device[data-ref="device:inet"] .dev-box');
+        const pe1 = top('g.device[data-ref="device:isp1-pe"] .dev-box');
+        const r1 = top('g.device[data-ref="device:hq-rtr1"] .dev-box');
+        check(
+          'Auto-arrange places the provider group by its cables: under the Internet, above the HQ routers it feeds, and over them',
+          inet.bottom < prov.top && prov.bottom < hq.top && pe1.left + pe1.width / 2 > hq.left && pe1.left + pe1.width / 2 < hq.right && Math.abs(pe1.left - r1.left) < hq.width / 3 && !drawnProblems().length,
+          JSON.stringify([Math.round(inet.bottom), Math.round(prov.top), Math.round(prov.bottom), Math.round(hq.top)]),
+        );
+      }
       click('[data-view-btn="logical"]');
       const logBefore = rects();
       check('loading a file does not store positions or mark it changed; status "Auto-arranged"', !(app.mdoc as ModelDoc).hasStoredLayout('physical') && !(app.mdoc as ModelDoc).dirty && status('physical') === 'auto' && status('logical') === 'auto');
