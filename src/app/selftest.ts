@@ -13,7 +13,7 @@ import { DEVICE_TYPES } from '../model/device-types';
 import { interfaceAddresses, interfaceVlanText, networkMembers } from '../model/derive';
 import { contextState, relatedRefs, selectionContext } from '../model/queries';
 import { strNode } from '../yaml/parse';
-import { EXAMPLES } from '../generated/examples';
+import { EXAMPLES, FIXTURES } from '../generated/examples';
 import { App } from '../ui/app';
 
 interface Check {
@@ -175,9 +175,9 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const entries = textsOf('#main-menu button');
       const mr = menu!.getBoundingClientRect();
       check(
-        'the File menu opens under its button with plainly named entries: New model, Open YAML file…, Download YAML, then the examples',
-        !menu!.hidden && menuBtn!.getAttribute('aria-expanded') === 'true' && mr.height > 100 && mr.top >= menuBtn!.getBoundingClientRect().bottom - 1 && /^New model/.test(entries[0]) && /^Open YAML file…/.test(entries[1]) && /^Download YAML/.test(entries[2]) &&
-          entries.length === 3 + EXAMPLES.length && entries.slice(3).join() === EXAMPLES.map((e) => e.name).join() && /Open an example/.test(menu!.textContent || '') && (q('#btn-download') as HTMLButtonElement).disabled,
+        'the File menu opens under its button with consistently named entries: New model, Open model…, Download model…, then the examples',
+        !menu!.hidden && menuBtn!.getAttribute('aria-expanded') === 'true' && mr.height > 100 && mr.top >= menuBtn!.getBoundingClientRect().bottom - 1 && /^New model/.test(entries[0]) && /^Open model…$/.test(entries[1]) && /^Download model…/.test(entries[2]) && /Ctrl\+S$/.test(entries[2]) && entries[0] === 'New model' &&
+          entries.length === 3 + EXAMPLES.length && entries.slice(3).join() === EXAMPLES.map((e) => e.name).join() && /Examples/.test(q('#menu-examples-title')!.textContent || '') && EXAMPLES.length === 6 && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(menu!.textContent || '') && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(q('#empty')!.textContent || '') && (q('#btn-download') as HTMLButtonElement).disabled,
         entries.join(' | '),
       );
       menuBtn!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
@@ -488,7 +488,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       check('disconnected components (metro ring): the legend is beside all of them in both views', mP.ok && mL.ok, mP.why + ' // ' + mL.why);
       {
         // view-specific lists: a network that only loopbacks are in belongs to the logical picture alone
-        app.loadExample(EXAMPLES.findIndex((e) => e.name === 'editor-new-network.yaml'));
+        app.loadText(FIXTURES.find((e) => e.name === 'editor-new-network.yaml')!.text, 'editor-new-network.yaml', 'example');
         click('[data-view-btn="physical"]');
         const p = measure(app.exportSvg(), 'g.svg-networks');
         click('[data-view-btn="logical"]');
@@ -545,6 +545,9 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         if (doc.querySelectorAll('#outline-body .ctx-selected').length !== 1) bad.push('not exactly one selected entry');
         const hint = q('#outline-body .ol-ctx-hint');
         if (!hint || hint.getAttribute('data-related') !== String(ctx ? ctx.related.size : -1)) bad.push('hint');
+        // the hint names what the marks mean and nothing else (no "others dimmed"); the dimming itself is still there
+        else if ((hint.textContent || '').trim() !== `▸ selected · • related (${ctx ? ctx.related.size : 0})`) bad.push('hint text "' + hint.textContent + '"');
+        if (items.some((b) => b.getAttribute('data-ctx') === 'unrelated') && !q('#outline-body .ol-item.ctx-unrelated')) bad.push('unrelated entries are not dimmed');
         // the diagram highlights (at least) the list context, and nothing outside relatedRefs
         const drawn = Array.from(doc.querySelectorAll('#viewport [data-ref]'));
         for (const e of drawn) {
@@ -870,7 +873,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       rd.markSaved();
       // cross-engine determinism: metro-ring-arranged.yaml was computed in Node when the app was built
       const src = EXAMPLES.find((e) => e.name === 'metro-ring.yaml');
-      const ref = EXAMPLES.find((e) => e.name === 'metro-ring-arranged.yaml');
+      const ref = FIXTURES.find((e) => e.name === 'metro-ring-arranged.yaml');
       if (src && ref) {
         const md = ModelDoc.fromText(src.text, 'metro-ring.yaml', 'file').doc as ModelDoc;
         md.arrange(['physical', 'logical']);

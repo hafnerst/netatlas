@@ -10,9 +10,19 @@ releases may still change behaviour; the YAML format has its own version
 
 ### Changed: toolbar and model outline
 
+* **Six examples.** `editor-new-network.yaml`, `minimal-edited.yaml` and
+  `metro-ring-arranged.yaml` are no longer offered as examples. They are
+  generated test data and moved to `test/fixtures/`
+  (`scripts/make-fixtures.mjs`, formerly `make-editor-examples.mjs`).
+* The selection hint above the outline reads "selected · related (n)"; the
+  words "others dimmed" are gone. The dimming itself is unchanged.
+
 * **One File menu.** *New*, *Open YAML…*, *Download YAML* and the examples
-  list are grouped in a **File** menu next to the logo (New model, Open YAML
-  file…, Download YAML, Open an example). Undo/redo, Physical/Logical,
+  list are grouped in a **File** menu next to the logo: **New model**,
+  **Open model…**, **Download model…** and, under **Examples**, the built-in
+  files. The three commands follow one pattern (verb + "model"), and an entry
+  ends in "…" exactly when it asks for something first (a file to pick, a
+  file name to confirm). Tooltips say what each does. Undo/redo, Physical/Logical,
   Auto-arrange and Find stay direct controls.
 * **Current model** in the toolbar opens the edit view of the entire model
   (title, description, format version). It replaces the "Document" entry at

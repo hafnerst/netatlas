@@ -400,7 +400,7 @@ test('logical_interfaces: a single address may be written as a scalar', () => {
 });
 
 test('logical_interfaces: shown as chips in the logical view and in device details, never as ports', () => {
-  const d = ModelDoc.fromText(readFileSync(join(root, 'examples', 'editor-new-network.yaml'), 'utf8'), 'n', 'file').doc;
+  const d = ModelDoc.fromText(readFileSync(join(root, 'test', 'fixtures', 'editor-new-network.yaml'), 'utf8'), 'n', 'file').doc;
   const s = new state.Session(d.result.model);
   const phys = s.render().root;
   assert.equal(byClass(phys, 'loop-chip').length, 0);
@@ -456,15 +456,15 @@ test('drafts with errors still produce a drawable partial model', () => {
 
 // ------------------------------------------------------------ examples
 
-test('the editor examples are reproducible from the editing core', async () => {
-  const mod = await import('../scripts/make-editor-examples.mjs');
+test('the generated fixtures are reproducible from the editing core', async () => {
+  const mod = await import('../scripts/make-fixtures.mjs');
   for (const name of ['editor-new-network.yaml', 'minimal-edited.yaml']) {
-    const onDisk = readFileSync(join(root, 'examples', name), 'utf8').replace(/\r\n/g, '\n');
+    const onDisk = readFileSync(join(root, 'test', 'fixtures', name), 'utf8').replace(/\r\n/g, '\n');
     assert.equal(mod.render(name), onDisk, name);
     const r = validate.loadModel(onDisk);
     assert.deepEqual(r.errors, [], name);
   }
-  const edited = readFileSync(join(root, 'examples', 'minimal-edited.yaml'), 'utf8');
+  const edited = readFileSync(join(root, 'test', 'fixtures', 'minimal-edited.yaml'), 'utf8');
   assert.match(edited, /# Two routers, one cable, one GRE tunnel with an OSPF adjacency inside it\./);
   assert.match(edited, /a: edge-1:eth0/);
   assert.match(edited, /ip: \[10\.255\.0\.1\/32, 2001:db8:ffff::1\/128\]/);

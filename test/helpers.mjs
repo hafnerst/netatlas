@@ -27,6 +27,12 @@ export function example(name) {
 }
 export const exampleNames = readdirSync(join(root, 'examples')).filter((f) => /\.ya?ml$/.test(f));
 
+/** Generated test data (scripts/make-fixtures.mjs); not offered as examples in the application. */
+export function fixture(name) {
+  return readFileSync(join(root, 'test', 'fixtures', name), 'utf8');
+}
+export const fixtureNames = readdirSync(join(root, 'test', 'fixtures')).filter((f) => /\.ya?ml$/.test(f));
+
 /** Parse+validate, failing loudly with the error list. */
 export function model(text) {
   const r = validate.loadModel(text);

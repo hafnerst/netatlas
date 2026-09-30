@@ -19,13 +19,13 @@
     <span>netatlas</span><span class="version" title="netatlas version">v__VERSION__</span>
   </div>
   <div class="menu-wrap">
-    <button id="menu-btn" type="button" class="menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="main-menu" title="New, open, download, examples">File <span class="caret" aria-hidden="true">▾</span></button>
+    <button id="menu-btn" type="button" class="menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="main-menu" title="File: new model, open, download, examples">File <span class="caret" aria-hidden="true">▾</span></button>
     <div id="main-menu" class="dropdown menu" role="menu" aria-label="File" hidden>
-      <button id="btn-new" type="button" role="menuitem"><span class="mi-label">New model</span><span class="mi-hint">start empty</span></button>
-      <button id="open" type="button" role="menuitem"><span class="mi-label">Open YAML file…</span><span class="mi-hint">from this computer</span></button>
-      <button id="btn-download" type="button" role="menuitem" disabled><span class="mi-label">Download YAML</span><span class="mi-hint">Ctrl+S</span></button>
+      <button id="btn-new" type="button" role="menuitem" title="Start a new, empty model"><span class="mi-label">New model</span></button>
+      <button id="open" type="button" role="menuitem" title="Open a model from a YAML file on this computer (nothing is uploaded)"><span class="mi-label">Open model…</span></button>
+      <button id="btn-download" type="button" role="menuitem" title="Download the current model as a YAML file (Ctrl+S)" disabled><span class="mi-label">Download model…</span><span class="mi-hint">Ctrl+S</span></button>
       <div class="menu-sep" role="separator"></div>
-      <div class="menu-title" id="menu-examples-title">Open an example</div>
+      <div class="menu-title" id="menu-examples-title">Examples</div>
       <div id="menu-examples" role="group" aria-labelledby="menu-examples-title"></div>
     </div>
   </div>
@@ -69,7 +69,7 @@
       <div class="card-intro">
         <h1>Network architecture diagrams — view and edit, fully offline</h1>
         <p>Start a <strong>new model</strong> or open a <strong>netatlas YAML</strong> file. You get a <em>physical</em> view (devices, ports, cabling, sites, racks) and a <em>logical</em> view (networks, loopbacks, routing adjacencies, overlays, GRE / IPsec and other tunnels), and you can edit every part of the model in the page.</p>
-        <p><button id="new-empty" type="button">New model</button> <button id="open-empty" type="button" class="primary">Open YAML file…</button> or drop a file anywhere on this page.</p>
+        <p><button id="new-empty" type="button" title="Start a new, empty model">New model</button> <button id="open-empty" type="button" class="primary" title="Open a model from a YAML file on this computer (nothing is uploaded)">Open model…</button> or drop a file anywhere on this page.</p>
         <p class="muted">Or try an example: <span id="example-buttons"></span></p>
         <p class="muted small">Files are read, edited and saved only inside this page; saving downloads a new YAML file. This page has no network access (enforced by its Content-Security-Policy) and never sends your data anywhere.</p>
       </div>

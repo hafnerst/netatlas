@@ -3,7 +3,7 @@
 // legend without covering the diagram or being clipped.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { load, model, example, exampleNames, state, scene } from './helpers.mjs';
+import { load, model, example, exampleNames, fixture, state, scene } from './helpers.mjs';
 
 const nb = load('diagram/networks-box.js');
 const legend = load('diagram/legend.js');
@@ -180,7 +180,7 @@ test('every example, both views: the box is beside the legend, covers nothing, a
     }
   }
   // the examples show both situations: a view-specific list, and the same list in both views
-  const lab = model(example('editor-new-network.yaml'));
+  const lab = model(fixture('editor-new-network.yaml'));
   assert.deepEqual(ids(lab, 'physical'), ['net-core', 'net-mgmt']);
   assert.deepEqual(ids(lab, 'logical'), ['net-core', 'net-mgmt', 'net-loopbacks']);
   assert.deepEqual(ids(lab, 'logical', { ...ALL, showNetworks: false }), ['net-loopbacks']);

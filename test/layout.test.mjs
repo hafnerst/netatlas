@@ -16,6 +16,7 @@ const W = load('yaml/write.js');
 
 const exampleNames = readdirSync(join(root, 'examples')).filter((f) => /\.ya?ml$/.test(f));
 const read = (f) => readFileSync(join(root, 'examples', f), 'utf8');
+const readFixture = (f) => readFileSync(join(root, 'test', 'fixtures', f), 'utf8');
 const docOf = (text, name = 'x.yaml') => {
   const r = ModelDoc.fromText(text, name, 'file');
   assert.ok(r.doc, JSON.stringify(r.errors));
@@ -160,7 +161,7 @@ test('load -> arrange -> export -> reload keeps every position; reloading does n
 test('the arranged example file is exactly load -> arrange -> export of its source', () => {
   const d = docOf(read('metro-ring.yaml'));
   d.arrange(['physical', 'logical']);
-  const expected = read('metro-ring-arranged.yaml').replace(/\r\n/g, '\n');
+  const expected = readFixture('metro-ring-arranged.yaml').replace(/\r\n/g, '\n');
   const header = expected.slice(0, expected.indexOf('# netatlas example: metro ring'));
   assert.equal(header + d.exportText(), expected);
 });
@@ -223,7 +224,7 @@ test('edits never re-arrange: positions are frozen on the first geometric edit, 
 });
 
 test('the YAML tab is taken literally: removing the layout section returns to automatic positions', () => {
-  const d = docOf(read('minimal-edited.yaml'));
+  const d = docOf(readFixture('minimal-edited.yaml'));
   assert.ok(d.hasStoredLayout('physical'));
   const text = d.exportText().replace(/\n\nlayout:\n[\s\S]*$/, '\n');
   d.replaceRoot(yaml.parseYaml(text));
@@ -235,7 +236,7 @@ test('the YAML tab is taken literally: removing the layout section returns to au
 
 test('layout data never changes the network semantics', () => {
   const plain = validate.loadModel(read('metro-ring.yaml')).model;
-  const arranged = validate.loadModel(read('metro-ring-arranged.yaml')).model;
+  const arranged = validate.loadModel(readFixture('metro-ring-arranged.yaml')).model;
   const strip = (m) =>
     JSON.stringify({ devices: m.devices, links: m.links, networks: m.networks, relations: m.relations, groups: m.groups }, (k, v) => (k === 'line' ? undefined : v));
   assert.equal(strip(arranged), strip(plain));
@@ -447,7 +448,7 @@ test('layout status is derived per view: auto-arranged, manually adjusted, edite
   assert.ok(!/pe8/.test(d.exportText()));
   assert.equal(st(), 'auto/auto', 'without pe8 the stored layout equals Auto-arrange again');
   // an arranged example is auto-arranged when loaded
-  const arranged = docOf(read('metro-ring-arranged.yaml'));
+  const arranged = docOf(readFixture('metro-ring-arranged.yaml'));
   assert.equal(arranged.layoutStatus('physical') + '/' + arranged.layoutStatus('logical'), 'auto/auto');
 });
 
