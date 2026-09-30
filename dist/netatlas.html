@@ -113,8 +113,6 @@ body:not([data-view="logical"]) .logical-only { display: none; }
 .dropdown > div { padding: 6px 8px; }
 
 main { display: grid; grid-template-columns: 250px minmax(0, 1fr) 410px; min-height: 0; }
-body.no-outline main { grid-template-columns: 0 minmax(0, 1fr) 410px; }
-body.no-outline #outline { display: none; }
 #canvas-wrap { position: relative; min-width: 0; min-height: 0; overflow: hidden; background: var(--canvas); }
 #canvas {
   width: 100%; height: 100%; display: block; cursor: grab; touch-action: none; user-select: none;
@@ -187,13 +185,17 @@ button.ref:hover { text-decoration: underline; }
 .issue pre.src { margin: 6px 0 0; padding: 4px 8px; background: var(--canvas); border-radius: 4px; overflow-x: auto; font-size: 12px; }
 #status { padding: 4px 12px; border-top: 1px solid var(--border); background: var(--panel); color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #selftest { position: fixed; inset: 40px; z-index: 100; overflow: auto; background: var(--panel); border: 2px solid var(--accent); padding: 12px; font-size: 11px; }
+/* The model panel (#outline) is always shown. Narrower windows give it and the
+   side panel less room; below 860px both move under the diagram, side by side,
+   so neither ever lies on top of the diagram or its controls. */
 @media (max-width: 1100px) {
-  main { grid-template-columns: 0 minmax(0, 1fr) 380px; }
-  #outline { display: none; }
+  main { grid-template-columns: 200px minmax(0, 1fr) 340px; }
 }
 @media (max-width: 860px) {
-  main { grid-template-columns: 1fr; grid-template-rows: 1fr 45%; }
-  #side { border-left: 0; border-top: 1px solid var(--border); }
+  main { grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); grid-template-rows: minmax(0, 1fr) 45%; }
+  #canvas-wrap { grid-column: 1 / -1; grid-row: 1; }
+  #outline { grid-column: 1; grid-row: 2; border-top: 1px solid var(--border); }
+  #side { grid-column: 2; grid-row: 2; border-top: 1px solid var(--border); }
   #search { width: 140px; }
 }
 
@@ -247,6 +249,13 @@ button.ref:hover { text-decoration: underline; }
 .selected .tube-outer, .selected .rel-line { filter: drop-shadow(0 0 3px var(--sel)); }
 .hl .cable-line { filter: drop-shadow(0 0 2px var(--sel)); }
 svg.export { background: var(--canvas); }
+/* legend drawn into exported SVG files */
+.svg-legend .lg-box { fill: var(--panel); stroke: var(--border); stroke-width: 1; }
+.svg-legend text { font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; fill: var(--text); }
+.svg-legend .lg-heading { font-size: 13px; font-weight: 700; }
+.svg-legend .lg-title { font-size: 11px; fill: var(--muted); letter-spacing: .04em; }
+.svg-legend .lg-label { font-size: 12px; }
+.svg-legend .vlan-warn { cursor: default; }
 
 /* ------------------------------------------------------------ editor */
 .btn-group { display: inline-flex; gap: 4px; }
@@ -438,7 +447,6 @@ dialog#modal::backdrop { background: rgba(0,0,0,.35); }
   <label class="opt"><input id="opt-labels" type="checkbox" checked> Labels</label>
   <label class="opt logical-only"><input id="opt-networks" type="checkbox" checked> Networks</label>
   <label class="opt logical-only"><input id="opt-underlay" type="checkbox"> Underlay</label>
-  <button id="btn-outline" type="button" title="Show / hide the model outline" class="ghost">☰ Model</button>
 </header>
 <main>
   <aside id="outline" aria-label="Model outline">
@@ -547,6 +555,7 @@ const dialogs_1 = __req("ui/dialogs");
 const inspector_1 = __req("ui/inspector");
 const examples_1 = __req("generated/examples");
 const panels_1 = __req("ui/panels");
+const legend_1 = __req("diagram/legend");
 const session_1 = __req("diagram/session");
 const queries_1 = __req("model/queries");
 class App {
@@ -1189,7 +1198,6 @@ class App {
         this.$('btn-download').addEventListener('click', () => void this.downloadDialog());
         this.$('btn-undo').addEventListener('click', () => this.undo());
         this.$('btn-redo').addEventListener('click', () => this.redo());
-        this.$('btn-outline').addEventListener('click', () => doc.body.classList.toggle('no-outline'));
         this.$('errors').addEventListener('click', (e) => {
             if (e.target.closest('[data-act-top="new"]'))
                 this.newModel();
@@ -1643,13 +1651,23 @@ class App {
         tip.style.left = Math.min(x, wrap.width - tip.offsetWidth - 8) + 'px';
         tip.style.top = Math.min(y, wrap.height - tip.offsetHeight - 8) + 'px';
     }
-    /** Serialize the current diagram as a standalone SVG string (for "Save SVG"). */
+    /**
+     * Serialize the current diagram as a standalone SVG string (for "Save SVG").
+     * The legend of the shown view is drawn into the file, beside the diagram,
+     * and the picture is enlarged to contain both.
+     */
     exportSvg() {
         const clone = this.svg.cloneNode(true);
-        const b = this.bounds;
+        let b = this.bounds;
         const vp = clone.querySelector('#viewport');
         if (vp)
             vp.removeAttribute('transform');
+        if (this.session) {
+            const st = this.session.state;
+            const legend = (0, legend_1.svgLegend)(this.session.model, st.view, st, b);
+            clone.appendChild((0, dom_1.materialize)(legend.root, this.doc, true));
+            b = legend.viewBox;
+        }
         clone.setAttribute('viewBox', `${round(b.x)} ${round(b.y)} ${round(b.w)} ${round(b.h)}`);
         clone.setAttribute('width', String(Math.round(b.w)));
         clone.setAttribute('height', String(Math.round(b.h)));
@@ -9022,22 +9040,14 @@ exports.relationSwatch = relationSwatch;
 exports.legendFor = legendFor;
 exports.relationList = relationList;
 /** Side-panel content (details, legend, relation list) as HTML VNodes. */
-const icons_1 = __req("diagram/icons");
 const device_types_1 = __req("model/device-types");
 const types_1 = __req("model/types");
+const legend_1 = __req("diagram/legend");
 const scene_1 = __req("diagram/scene");
 const queries_1 = __req("model/queries");
 const style_1 = __req("diagram/style");
 const derive_1 = __req("model/derive");
 const protocols_1 = __req("model/protocols");
-const CATEGORY_TEXT = {
-    tunnel: 'Tunnel (encapsulation) — hollow tube',
-    adjacency: 'Protocol adjacency / session',
-    overlay: 'Overlay / virtual network',
-    redundancy: 'Redundancy / bundling',
-    service: 'Service / dependency',
-    other: 'Other logical relation',
-};
 function refLink(ref, text) {
     return (0, scene_1.h)('button', { class: 'ref', type: 'button', 'data-goto': ref, title: 'Select ' + text }, text);
 }
@@ -9350,107 +9360,36 @@ function tooltipFor(model, ref) {
     return [];
 }
 // ------------------------------------------------------------------ legend
-function swatchSvg(children) {
-    return (0, scene_1.h)('svg', { class: 'swatch', width: 44, height: 18, viewBox: '0 0 44 18', 'aria-hidden': 'true' }, children);
+// What the legend contains is defined once, in diagram/legend.ts; this is its
+// HTML form for the Legend tab. Exported SVG files draw the same entries.
+function swatchSvg(children, height = legend_1.SWATCH_H) {
+    return (0, scene_1.h)('svg', { class: 'swatch', width: legend_1.SWATCH_W, height, viewBox: `0 0 ${legend_1.SWATCH_W} ${height}`, 'aria-hidden': height === legend_1.SWATCH_H ? 'true' : undefined }, children);
 }
 function relationSwatch(def) {
-    const d = 'M3 9H41';
-    if (def.style === 'tube') {
-        return swatchSvg([
-            (0, scene_1.h)('path', { class: 'tube-outer', d, stroke: def.color, 'stroke-width': 10 }),
-            (0, scene_1.h)('path', { class: 'tube-inner', d, 'stroke-width': 4.8 }),
-        ]);
-    }
-    const dash = def.style === 'dashed' ? '9 5' : def.style === 'dotted' ? '0.5 5' : def.style === 'dashdot' ? '10 4 2 4' : undefined;
-    return swatchSvg([
-        (0, scene_1.h)('path', { class: 'rel-line', d, stroke: def.color, 'stroke-width': def.style === 'dotted' ? 3.2 : 2.4, 'stroke-dasharray': dash, 'stroke-linecap': def.style === 'dotted' ? 'round' : undefined }),
-    ]);
+    return swatchSvg((0, legend_1.relationSwatchParts)(def));
 }
-function row(sw, label, extra) {
-    return (0, scene_1.h)('li', { class: 'legend-row' }, [sw, (0, scene_1.h)('span', {}, label), extra || null]);
+function row(item) {
+    return (0, scene_1.h)('li', { class: 'legend-row' }, [swatchSvg(item.swatch, item.swatchH), (0, scene_1.h)('span', {}, item.label)]);
 }
 function legendFor(model, view, hidden) {
-    const sections = [];
-    if (view === 'physical') {
-        // in the format's order; devices without a type last
-        const rank = (t) => (device_types_1.DEVICE_TYPE_IDS.indexOf(t) + device_types_1.DEVICE_TYPE_IDS.length + 1) % (device_types_1.DEVICE_TYPE_IDS.length + 1);
-        const types = Array.from(new Set(model.devices.map((d) => (0, icons_1.iconName)(d.type)))).sort((p, q) => rank(p) - rank(q));
-        sections.push((0, scene_1.h)('section', {}, [
-            (0, scene_1.h)('h4', {}, 'Devices'),
-            (0, scene_1.h)('ul', {}, types.map((t) => row((0, scene_1.h)('svg', { class: 'swatch', width: 44, height: 22, viewBox: '0 0 44 22' }, [(0, icons_1.deviceIcon)(t, 11, 0, 22)]), (0, device_types_1.deviceTypeLabel)(t) || 'No type'))),
-        ]));
-        const media = new Map();
-        for (const l of model.links) {
-            const m = (0, style_1.mediumStyle)(l.medium);
-            media.set(m.key, m);
-        }
-        if (media.size) {
-            sections.push((0, scene_1.h)('section', {}, [
-                (0, scene_1.h)('h4', {}, 'Cables (physical links)'),
-                (0, scene_1.h)('ul', {}, Array.from(media.values()).map((m) => row(swatchSvg([(0, scene_1.h)('path', { d: 'M3 9H41', stroke: m.color, 'stroke-width': 2.6, 'stroke-dasharray': m.dash, fill: 'none' })]), m.label))),
-                (0, scene_1.h)('p', { class: 'muted' }, 'Line width grows with link speed (100M → 400G). Small squares are ports; labels show the interface name. “Trunk” on a cable means several VLANs are permitted; ⚠ marks a cable whose two ends permit different VLANs.'),
-                (0, scene_1.h)('ul', {}, [
-                    row(swatchSvg([(0, scene_1.h)('path', { d: 'M3 9H41', stroke: '#868e96', 'stroke-width': (0, style_1.speedWidth)('1G'), fill: 'none' })]), '1G'),
-                    row(swatchSvg([(0, scene_1.h)('path', { d: 'M3 9H41', stroke: '#868e96', 'stroke-width': (0, style_1.speedWidth)('100G'), fill: 'none' })]), '100G'),
+    const legend = (0, legend_1.legendOf)(model, view);
+    const sections = legend.sections.map((s) => (0, scene_1.h)('section', {}, [
+        (0, scene_1.h)('h4', {}, s.title),
+        (0, scene_1.h)('ul', {}, s.items.map((i) => i.protocol === undefined
+            ? row(i)
+            : (0, scene_1.h)('li', { class: 'legend-row' }, [
+                (0, scene_1.h)('label', { class: 'legend-toggle' }, [
+                    (0, scene_1.h)('input', { type: 'checkbox', 'data-proto': i.protocol, checked: hidden.has(i.protocol) ? undefined : 'checked', title: 'Show / hide ' + i.label }),
+                    swatchSvg(i.swatch),
+                    (0, scene_1.h)('span', {}, `${i.label}${i.custom ? ' *' : ''}`),
+                    (0, scene_1.h)('span', { class: 'count' }, String(i.count)),
                 ]),
-            ]));
-        }
-        const kinds = Array.from(new Set(model.groups.map((g) => g.kind)));
-        if (kinds.length) {
-            sections.push((0, scene_1.h)('section', {}, [
-                (0, scene_1.h)('h4', {}, 'Locations / groups'),
-                (0, scene_1.h)('ul', {}, kinds.map((k) => row(swatchSvg([
-                    (0, scene_1.h)('rect', { class: 'group-box ' + ((0, style_1.groupKindStyle)(k).strong ? 'group-strong' : ''), x: 3, y: 2, width: 38, height: 14, rx: 4, 'stroke-dasharray': (0, style_1.groupKindStyle)(k).dash }),
-                ]), k || '(no kind)'))),
-            ]));
-        }
-        sections.push((0, scene_1.h)('p', { class: 'muted' }, 'Tunnels and protocol sessions are logical and are shown in the Logical view, not as cables. Select a tunnel in the Relations list to highlight the cables it rides on.'));
-    }
-    else {
-        const used = new Map();
-        for (const r of model.relations) {
-            const def = (0, protocols_1.relationStyle)(model, r);
-            const u = used.get(r.protocol);
-            if (u)
-                u.count++;
-            else
-                used.set(r.protocol, { def, count: 1 });
-        }
-        for (const cat of types_1.CATEGORIES) {
-            const protos = Array.from(used.entries()).filter(([, u]) => u.def.category === cat);
-            if (!protos.length)
-                continue;
-            sections.push((0, scene_1.h)('section', {}, [
-                (0, scene_1.h)('h4', {}, CATEGORY_TEXT[cat]),
-                (0, scene_1.h)('ul', {}, protos.map(([p, u]) => (0, scene_1.h)('li', { class: 'legend-row' }, [
-                    (0, scene_1.h)('label', { class: 'legend-toggle' }, [
-                        (0, scene_1.h)('input', { type: 'checkbox', 'data-proto': p, checked: hidden.has(p) ? undefined : 'checked', title: 'Show / hide ' + u.def.label }),
-                        relationSwatch(u.def),
-                        (0, scene_1.h)('span', {}, `${u.def.label}${u.def.custom ? ' *' : ''}`),
-                        (0, scene_1.h)('span', { class: 'count' }, String(u.count)),
-                    ]),
-                ]))),
-            ]));
-        }
-        sections.push((0, scene_1.h)('section', {}, [
-            (0, scene_1.h)('h4', {}, 'Other symbols'),
-            (0, scene_1.h)('ul', {}, [
-                row(swatchSvg([
-                    (0, scene_1.h)('path', { class: 'tube-outer', d: 'M3 9H41', stroke: '#7048e8', 'stroke-width': 14 }),
-                    (0, scene_1.h)('path', { class: 'tube-inner', d: 'M3 9H41', 'stroke-width': 8.8 }),
-                    (0, scene_1.h)('path', { class: 'tube-outer', d: 'M3 9H41', stroke: '#e8590c', 'stroke-width': 7 }),
-                    (0, scene_1.h)('path', { class: 'tube-inner', d: 'M3 9H41', 'stroke-width': 2 }),
-                ]), 'Carried inside (e.g. GRE over IPsec)'),
-                row(swatchSvg([(0, scene_1.h)('circle', { class: 'hub', cx: 22, cy: 9, r: 7, stroke: '#0c8599' })]), 'Multipoint hub (3+ devices)'),
-                row(swatchSvg([(0, scene_1.h)('rect', { class: 'net-box', x: 3, y: 2, width: 38, height: 14, rx: 7, stroke: style_1.NETWORK_COLOR })]), 'IP network'),
-                row(swatchSvg([(0, scene_1.h)('path', { class: 'member', d: 'M3 9H41' })]), 'Network membership (from addresses)'),
-                row(swatchSvg([(0, scene_1.h)('path', { class: 'underlay', d: 'M3 9H41' })]), 'Physical adjacency (optional underlay)'),
-            ]),
-            used.size && Array.from(used.values()).some((u) => u.def.custom)
-                ? (0, scene_1.h)('p', { class: 'muted' }, '* defined in this file’s "protocols" section')
-                : null,
-        ]));
-    }
+            ]))),
+        s.note ? (0, scene_1.h)('p', { class: 'muted' }, s.note) : null,
+        s.more ? (0, scene_1.h)('ul', {}, s.more.map(row)) : null,
+    ]));
+    if (legend.footer)
+        sections.push((0, scene_1.h)('p', { class: 'muted' }, legend.footer));
     return (0, scene_1.h)('div', { class: 'legend' }, sections);
 }
 /** Relations list (usable from both views; selecting highlights the underlay path). */
@@ -9468,6 +9407,217 @@ function relationList(model, ctx = null) {
             return (0, scene_1.h)('li', st ? { class: 'ctx-' + st } : {}, [relationSwatch((0, protocols_1.relationStyle)(model, r)), refLink('relation:' + r.id, relationTitle(model, r.id)), contextNote(st)]);
         })),
     ])));
+}
+
+};
+__defs["diagram/legend"] = function (module, exports) {
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.LEGEND_GAP = exports.CATEGORY_TEXT = exports.SWATCH_H = exports.SWATCH_W = void 0;
+exports.relationSwatchParts = relationSwatchParts;
+exports.legendOf = legendOf;
+exports.exportLegendSections = exportLegendSections;
+exports.svgLegend = svgLegend;
+/**
+ * The legend of a view, as data: which symbols the current model uses and
+ * what they mean. One definition feeds both the Legend tab (HTML, in
+ * ui/panels.ts) and the legend drawn into exported SVG files (below), so the
+ * two can't disagree. DOM-free, like the renderers.
+ */
+const geometry_1 = __req("layout/geometry");
+const device_types_1 = __req("model/device-types");
+const derive_1 = __req("model/derive");
+const protocols_1 = __req("model/protocols");
+const types_1 = __req("model/types");
+const icons_1 = __req("diagram/icons");
+const scene_1 = __req("diagram/scene");
+const style_1 = __req("diagram/style");
+/** Swatches are drawn in a box of this width; `swatchH` is 18 unless an item says otherwise. */
+exports.SWATCH_W = 44;
+exports.SWATCH_H = 18;
+exports.CATEGORY_TEXT = {
+    tunnel: 'Tunnel (encapsulation) — hollow tube',
+    adjacency: 'Protocol adjacency / session',
+    overlay: 'Overlay / virtual network',
+    redundancy: 'Redundancy / bundling',
+    service: 'Service / dependency',
+    other: 'Other logical relation',
+};
+const LINE = 'M3 9H41';
+function relationSwatchParts(def) {
+    if (def.style === 'tube') {
+        return [(0, scene_1.h)('path', { class: 'tube-outer', d: LINE, stroke: def.color, 'stroke-width': 10 }), (0, scene_1.h)('path', { class: 'tube-inner', d: LINE, 'stroke-width': 4.8 })];
+    }
+    const dash = def.style === 'dashed' ? '9 5' : def.style === 'dotted' ? '0.5 5' : def.style === 'dashdot' ? '10 4 2 4' : undefined;
+    return [
+        (0, scene_1.h)('path', { class: 'rel-line', d: LINE, stroke: def.color, 'stroke-width': def.style === 'dotted' ? 3.2 : 2.4, 'stroke-dasharray': dash, 'stroke-linecap': def.style === 'dotted' ? 'round' : undefined }),
+    ];
+}
+/** Legend of a view for the current model: only symbols that the model uses, plus the fixed ones. */
+function legendOf(model, view) {
+    const sections = [];
+    if (view === 'physical') {
+        // in the format's order; devices without a type last
+        const rank = (t) => (device_types_1.DEVICE_TYPE_IDS.indexOf(t) + device_types_1.DEVICE_TYPE_IDS.length + 1) % (device_types_1.DEVICE_TYPE_IDS.length + 1);
+        const types = Array.from(new Set(model.devices.map((d) => (0, icons_1.iconName)(d.type)))).sort((p, q) => rank(p) - rank(q));
+        sections.push({ title: 'Devices', items: types.map((t) => ({ swatch: [(0, icons_1.deviceIcon)(t, 11, 0, 22)], swatchH: 22, label: (0, device_types_1.deviceTypeLabel)(t) || 'No type' })) });
+        const media = new Map();
+        for (const l of model.links) {
+            const m = (0, style_1.mediumStyle)(l.medium);
+            media.set(m.key, m);
+        }
+        if (media.size) {
+            const width = (speed) => ({ swatch: [(0, scene_1.h)('path', { d: LINE, stroke: '#868e96', 'stroke-width': (0, style_1.speedWidth)(speed), fill: 'none' })], label: speed });
+            sections.push({
+                title: 'Cables (physical links)',
+                items: Array.from(media.values()).map((m) => ({ swatch: [(0, scene_1.h)('path', { d: LINE, stroke: m.color, 'stroke-width': 2.6, 'stroke-dasharray': m.dash, fill: 'none' })], label: m.label })),
+                note: 'Line width grows with link speed (100M → 400G). Small squares are ports; labels show the interface name. “Trunk” on a cable means several VLANs are permitted; ⚠ marks a cable whose two ends permit different VLANs.',
+                more: [width('1G'), width('100G')],
+            });
+        }
+        const kinds = Array.from(new Set(model.groups.map((g) => g.kind)));
+        if (kinds.length) {
+            sections.push({
+                title: 'Locations / groups',
+                items: kinds.map((k) => ({
+                    swatch: [(0, scene_1.h)('rect', { class: 'group-box ' + ((0, style_1.groupKindStyle)(k).strong ? 'group-strong' : ''), x: 3, y: 2, width: 38, height: 14, rx: 4, 'stroke-dasharray': (0, style_1.groupKindStyle)(k).dash })],
+                    label: k || '(no kind)',
+                })),
+            });
+        }
+        return {
+            sections,
+            footer: 'Tunnels and protocol sessions are logical and are shown in the Logical view, not as cables. Select a tunnel in the Relations list to highlight the cables it rides on.',
+        };
+    }
+    const used = new Map();
+    for (const r of model.relations) {
+        const def = (0, protocols_1.relationStyle)(model, r);
+        const u = used.get(r.protocol);
+        if (u)
+            u.count++;
+        else
+            used.set(r.protocol, { def, count: 1 });
+    }
+    for (const cat of types_1.CATEGORIES) {
+        const protos = Array.from(used.entries()).filter(([, u]) => u.def.category === cat);
+        if (!protos.length)
+            continue;
+        sections.push({
+            title: exports.CATEGORY_TEXT[cat],
+            items: protos.map(([p, u]) => ({ swatch: relationSwatchParts(u.def), label: u.def.label, protocol: p, count: u.count, custom: u.def.custom })),
+        });
+    }
+    sections.push({
+        title: 'Other symbols',
+        items: [
+            {
+                swatch: [
+                    (0, scene_1.h)('path', { class: 'tube-outer', d: LINE, stroke: '#7048e8', 'stroke-width': 14 }),
+                    (0, scene_1.h)('path', { class: 'tube-inner', d: LINE, 'stroke-width': 8.8 }),
+                    (0, scene_1.h)('path', { class: 'tube-outer', d: LINE, stroke: '#e8590c', 'stroke-width': 7 }),
+                    (0, scene_1.h)('path', { class: 'tube-inner', d: LINE, 'stroke-width': 2 }),
+                ],
+                label: 'Carried inside (e.g. GRE over IPsec)',
+            },
+            { swatch: [(0, scene_1.h)('circle', { class: 'hub', cx: 22, cy: 9, r: 7, stroke: '#0c8599' })], label: 'Multipoint hub (3+ devices)' },
+            { swatch: [(0, scene_1.h)('rect', { class: 'net-box', x: 3, y: 2, width: 38, height: 14, rx: 7, stroke: style_1.NETWORK_COLOR })], label: 'IP network' },
+            { swatch: [(0, scene_1.h)('path', { class: 'member', d: LINE })], label: 'Network membership (from addresses)' },
+            { swatch: [(0, scene_1.h)('path', { class: 'underlay', d: LINE })], label: 'Physical adjacency (optional underlay)' },
+        ],
+        note: Array.from(used.values()).some((u) => u.def.custom) ? '* defined in this file’s "protocols" section' : undefined,
+    });
+    return { sections };
+}
+const PAD = 14;
+const ROW_GAP = 5;
+const TITLE_SIZE = 11;
+const LABEL_SIZE = 12;
+/** space between the diagram and the legend, and around the legend */
+exports.LEGEND_GAP = 28;
+/**
+ * The sections an exported SVG needs: the Legend tab's content reduced to
+ * what is drawn (hidden protocols, networks and underlay are left out), plus
+ * the symbols the tab explains in prose (ports, VLAN mismatch).
+ */
+function exportLegendSections(model, view, opts) {
+    const out = [];
+    for (const s of legendOf(model, view).sections) {
+        let items = s.items.concat(s.more || []);
+        if (view === 'logical') {
+            items = items.filter((i) => {
+                if (i.protocol !== undefined)
+                    return !opts.hiddenProtocols.has(i.protocol);
+                if (/^IP network|^Network membership/.test(i.label))
+                    return opts.showNetworks && model.networks.length > 0;
+                if (/^Physical adjacency/.test(i.label))
+                    return opts.showUnderlay;
+                return true;
+            });
+        }
+        if (items.length)
+            out.push({ title: s.title, items: items.map((i) => (i.custom ? { ...i, label: i.label + ' *' } : i)), note: view === 'logical' ? s.note : undefined });
+    }
+    if (view === 'physical' && model.links.length) {
+        const cables = out.find((s) => /^Cables/.test(s.title));
+        if (cables) {
+            const n = cables.items.length - 2;
+            cables.items[n] = { ...cables.items[n], label: '1G (width grows with speed)' };
+            cables.items.push({ swatch: [(0, scene_1.h)('rect', { class: 'port', x: 17.5, y: 4.5, width: 9, height: 9, rx: 1.5, fill: '#868e96' })], label: 'Port (label: interface name)' });
+            if (model.links.some((l) => !!(0, derive_1.vlanMismatch)(l.a.vlans, l.b.vlans))) {
+                cables.items.push({ swatch: [(0, scene_1.h)('text', { class: 'vlan-warn', x: 22, y: 14, 'text-anchor': 'middle' }, '⚠')], label: 'VLAN mismatch between the two ends' });
+            }
+        }
+    }
+    return out;
+}
+/**
+ * Draw the legend as SVG next to the diagram. It is placed to the right of
+ * `bounds` (the rectangle enclosing every drawn object, including
+ * disconnected components), so it can't cover anything, and the returned
+ * viewBox is grown to contain it fully. Sizes are in diagram units, the
+ * same as the diagram's own labels, so both stay equally readable at any
+ * zoom.
+ */
+function svgLegend(model, view, opts, bounds) {
+    const sections = exportLegendSections(model, view, opts);
+    const heading = view === 'physical' ? 'Legend — physical view' : 'Legend — logical view';
+    const kids = [];
+    let widest = (0, geometry_1.textWidth)(heading, 13);
+    for (const s of sections) {
+        widest = Math.max(widest, (0, geometry_1.textWidth)(s.title.toUpperCase(), TITLE_SIZE) + 8);
+        if (s.note)
+            widest = Math.max(widest, (0, geometry_1.textWidth)(s.note, TITLE_SIZE));
+        for (const i of s.items)
+            widest = Math.max(widest, exports.SWATCH_W + 10 + (0, geometry_1.textWidth)(i.label, LABEL_SIZE));
+    }
+    const w = Math.ceil(widest + 2 * PAD + 6);
+    let y = PAD;
+    kids.push((0, scene_1.h)('text', { class: 'lg-heading', x: PAD, y: y + 12 }, heading));
+    y += 22;
+    for (const s of sections) {
+        y += 8;
+        kids.push((0, scene_1.h)('text', { class: 'lg-title', x: PAD, y: y + 9 }, s.title.toUpperCase()));
+        y += 17;
+        for (const i of s.items) {
+            const sh = i.swatchH || exports.SWATCH_H;
+            kids.push((0, scene_1.h)('g', { class: 'swatch', transform: `translate(${PAD} ${y})` }, i.swatch));
+            kids.push((0, scene_1.h)('text', { class: 'lg-label', x: PAD + exports.SWATCH_W + 10, y: y + sh / 2 + 4 }, i.label));
+            y += sh + ROW_GAP;
+        }
+        if (s.note) {
+            kids.push((0, scene_1.h)('text', { class: 'lg-title', x: PAD, y: y + 9 }, s.note));
+            y += 15;
+        }
+    }
+    const hgt = y + PAD - ROW_GAP;
+    const box = { x: bounds.x + bounds.w + exports.LEGEND_GAP, y: bounds.y + exports.LEGEND_GAP, w, h: hgt };
+    const viewBox = { x: bounds.x, y: bounds.y, w: bounds.w + exports.LEGEND_GAP + w + exports.LEGEND_GAP, h: Math.max(bounds.h, hgt + 2 * exports.LEGEND_GAP) };
+    return {
+        root: (0, scene_1.h)('g', { class: 'svg-legend', transform: `translate(${box.x} ${box.y})` }, [(0, scene_1.h)('rect', { class: 'lg-box', x: 0, y: 0, width: w, height: hgt, rx: 8 })].concat(kids)),
+        box,
+        viewBox,
+    };
 }
 
 };
@@ -10553,6 +10703,27 @@ async function runSelfTest(app, doc) {
         check('undo reverts the drag (and the stored positions)', !app.mdoc.hasStoredLayout('physical'));
         check('status after undo: back to "Auto-arranged"', status('physical') === 'auto' && status('logical') === 'auto');
         check('… and the button shows the check mark and "matches the auto-arranged layout" (icon, hover text, description)', shows('physical', 'auto') && doc.defaultView.getComputedStyle(q('#btn-arrange')).borderTopStyle === 'solid', JSON.stringify(shown()));
+        {
+            const panelShown = () => {
+                const o = q('#outline');
+                const r = o.getBoundingClientRect();
+                const cs = doc.defaultView.getComputedStyle(o);
+                const c = q('#canvas-wrap').getBoundingClientRect();
+                // visible, with content, and beside the diagram (not on top of it)
+                return cs.display !== 'none' && cs.visibility === 'visible' && r.width >= 150 && r.height > 200 && o.querySelectorAll('.ol-item').length > 10 && (r.right <= c.left + 1 || r.top >= c.bottom - 1);
+            };
+            const noToggle = !q('#btn-outline') && !Array.prototype.some.call(doc.querySelectorAll('header.topbar button'), (b) => /Model/.test(b.textContent || '')) && !doc.body.classList.contains('no-outline');
+            const a = panelShown();
+            app.select('device:hq-fw');
+            const b = panelShown();
+            click('[data-view-btn="logical"]');
+            const c = panelShown();
+            app.select('relation:gre-muc');
+            const d2 = panelShown();
+            click('[data-view-btn="physical"]');
+            app.select(null);
+            check('there is no Model toggle button; the model panel is always visible (while selecting objects and switching views) and never covers the diagram', noToggle && a && b && c && d2 && panelShown(), JSON.stringify([noToggle, a, b, c, d2]));
+        }
         doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'l', bubbles: true }));
         check('keyboard shortcut L switches to the logical view', doc.body.getAttribute('data-view') === 'logical');
         check('switching views: the button shows the status of the view on screen', shows('logical', 'auto'), JSON.stringify(shown()));
@@ -10566,6 +10737,68 @@ async function runSelfTest(app, doc) {
         check('custom protocol MACsec rendered', !!q('#viewport g.rel.proto-macsec'));
         const svgText = app.exportSvg();
         check('SVG export is standalone (inline style, no script, no external refs)', /^<svg[\s\S]*<style[\s\S]*relation:gre-muc[\s\S]*<\/svg>$/.test(svgText) && !/<script|https?:\/\/(?!www\.w3\.org)/.test(svgText));
+        {
+            // the exported file is parsed and laid out on its own, as a viewer would, and measured with real font metrics
+            const measure = (text) => {
+                const parsed = new DOMParser().parseFromString(text, 'image/svg+xml').documentElement;
+                const holder = doc.createElement('div');
+                holder.setAttribute('class', 'sr-only');
+                holder.appendChild(doc.importNode(parsed, true));
+                doc.body.appendChild(holder);
+                const root = holder.firstChild;
+                const why = [];
+                const lg = root.querySelector('g.svg-legend');
+                const vpEl = root.querySelector('#viewport');
+                let labels = [];
+                if (!lg)
+                    why.push('no legend in the file');
+                else {
+                    labels = Array.prototype.map.call(lg.querySelectorAll('text'), (t) => t.textContent);
+                    const vb = (root.getAttribute('viewBox') || '').split(' ').map(Number);
+                    const tr = /translate\(([-0-9.]+) ([-0-9.]+)\)/.exec(lg.getAttribute('transform') || '') || ['', '0', '0'];
+                    const lb = lg.getBBox();
+                    const box = { x: Number(tr[1]) + lb.x, y: Number(tr[2]) + lb.y, w: lb.width, h: lb.height };
+                    const db = vpEl.getBBox();
+                    const frame = lg.querySelector('.lg-box');
+                    if (!(box.x >= db.x + db.width))
+                        why.push(`legend (x ${box.x}) is not right of the diagram (ends at ${db.x + db.width})`);
+                    if (!(box.x >= vb[0] && box.y >= vb[1] && box.x + box.w <= vb[0] + vb[2] && box.y + box.h <= vb[1] + vb[3]))
+                        why.push('legend is clipped by the viewBox ' + vb.join(' '));
+                    if (!(db.x >= vb[0] - 1 && db.y >= vb[1] - 1 && db.x + db.width <= vb[0] + vb[2] + 1 && db.y + db.height <= vb[1] + vb[3] + 1))
+                        why.push('diagram is clipped by the viewBox');
+                    // measured text stays inside the legend's frame
+                    if (lb.width > Number(frame.getAttribute('width')) + 1 || lb.height > Number(frame.getAttribute('height')) + 1)
+                        why.push(`text leaves the frame (${lb.width} > ${frame.getAttribute('width')})`);
+                    const size = parseFloat(doc.defaultView.getComputedStyle(lg.querySelector('.lg-label')).fontSize);
+                    if (!(size >= 11))
+                        why.push('label font size ' + size);
+                    if (lg.querySelector('use, image, foreignObject'))
+                        why.push('legend refers to content outside the file');
+                    if (Number(root.getAttribute('width')) !== Math.round(vb[2]) || Number(root.getAttribute('height')) !== Math.round(vb[3]))
+                        why.push('width/height do not match the viewBox');
+                }
+                doc.body.removeChild(holder);
+                return { ok: !why.length, labels, why: why.join('; ') };
+            };
+            const lgL = measure(svgText);
+            check('SVG export (logical view) contains its own legend: protocols and symbols, beside the diagram, not clipped, text inside its frame', lgL.ok && lgL.labels[0] === 'Legend — logical view' && ['IPsec', 'GRE', 'OSPF', 'MACsec *', 'IP network'].every((x) => lgL.labels.indexOf(x) >= 0), lgL.why + ' // ' + lgL.labels.join(' | '));
+            click('[data-view-btn="physical"]');
+            const physText = app.exportSvg();
+            const lgP = measure(physText);
+            check('SVG export (physical view) contains its own legend: device types, cable media, speed, locations', lgP.ok && lgP.labels[0] === 'Legend — physical view' && ['Router', 'Firewall', 'Fiber', 'Copper', '100G', 'site', 'rack'].every((x) => lgP.labels.indexOf(x) >= 0) && lgP.labels.indexOf('IPsec') < 0 &&
+                !/<script|https?:\/\/(?!www\.w3\.org)/.test(physText), lgP.why + ' // ' + lgP.labels.join(' | '));
+            // a model with several disconnected components and an unconnected device
+            const cur = q('#examples').value;
+            app.loadExample(examples_1.EXAMPLES.findIndex((e) => e.name === 'metro-ring.yaml'));
+            const mP = measure(app.exportSvg());
+            click('[data-view-btn="logical"]');
+            const mL = measure(app.exportSvg());
+            check('disconnected components (metro ring): the legend is beside all of them in both views', mP.ok && mL.ok, mP.why + ' // ' + mL.why);
+            check('the diagram on screen has no legend drawn into it (export only)', !q('#canvas .svg-legend'));
+            app.loadExample(examples_1.EXAMPLES.findIndex((e) => /enterprise-wan/.test(e.name)));
+            void cur;
+            click('[data-view-btn="logical"]');
+        }
         click('[data-view-btn="physical"]');
         app.select('relation:gre-muc');
         check('selecting GRE tunnel highlights its physical path (3 cables)', count('.cable.hl') === 3, String(count('.cable.hl')));

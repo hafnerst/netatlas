@@ -7,12 +7,13 @@
  */
 import { ModelDoc, Origin } from '../editor/document';
 import { downloadText, exportFileName, readTextFile, safeYamlFileName } from './files';
-import { el, mount } from './dom';
+import { el, materialize, mount } from './dom';
 import { DialogOpts, showDialog, showToast } from './dialogs';
 import { Editor, EditorSel } from './inspector';
 import { EXAMPLES } from '../generated/examples';
 import { Rect } from '../layout/geometry';
 import { detailsFor, legendFor, relationList, tooltipFor } from './panels';
+import { svgLegend } from '../diagram/legend';
 import { Session, View } from '../diagram/session';
 import { SelectionContext, search, selectionContext, splitRef } from '../model/queries';
 import { Issue } from '../validation/validate';
@@ -665,7 +666,6 @@ export class App {
     this.$('btn-download').addEventListener('click', () => void this.downloadDialog());
     this.$('btn-undo').addEventListener('click', () => this.undo());
     this.$('btn-redo').addEventListener('click', () => this.redo());
-    this.$('btn-outline').addEventListener('click', () => doc.body.classList.toggle('no-outline'));
     this.$('errors').addEventListener('click', (e) => {
       if ((e.target as Element).closest('[data-act-top="new"]')) this.newModel();
     });
@@ -1091,12 +1091,22 @@ export class App {
     tip.style.top = Math.min(y, wrap.height - tip.offsetHeight - 8) + 'px';
   }
 
-  /** Serialize the current diagram as a standalone SVG string (for "Save SVG"). */
+  /**
+   * Serialize the current diagram as a standalone SVG string (for "Save SVG").
+   * The legend of the shown view is drawn into the file, beside the diagram,
+   * and the picture is enlarged to contain both.
+   */
   exportSvg(): string {
     const clone = this.svg.cloneNode(true) as SVGSVGElement;
-    const b = this.bounds;
+    let b = this.bounds;
     const vp = clone.querySelector('#viewport');
     if (vp) vp.removeAttribute('transform');
+    if (this.session) {
+      const st = this.session.state;
+      const legend = svgLegend(this.session.model, st.view, st, b);
+      clone.appendChild(materialize(legend.root, this.doc, true));
+      b = legend.viewBox;
+    }
     clone.setAttribute('viewBox', `${round(b.x)} ${round(b.y)} ${round(b.w)} ${round(b.h)}`);
     clone.setAttribute('width', String(Math.round(b.w)));
     clone.setAttribute('height', String(Math.round(b.h)));

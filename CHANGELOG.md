@@ -10,6 +10,15 @@ releases may still change behaviour; the YAML format has its own version
 
 ### Changed
 
+* **The model panel is always visible.** The *Model* toggle button in the
+  toolbar is gone. In narrow windows the panel gets narrower (below 1100 px)
+  or moves under the diagram next to the side panel (below 860 px) instead
+  of being hidden.
+* **Exported SVG files contain the legend** of the exported view, for both
+  views. It is drawn to the right of the diagram, never over it, and the
+  picture is enlarged so that nothing is clipped. It lists what the picture
+  shows (hidden protocols are left out).
+
 * **Layout status moved onto the Auto-arrange button.** The separate status
   badges in the toolbar are gone. The button shows the status of the view on
   screen with an icon (✓ matches the auto-arranged layout, ✎ manually
