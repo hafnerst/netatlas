@@ -32,8 +32,9 @@ test('stylesheet: the shell is sized by the viewport and the document cannot scr
   assert.match(rule('#outline'), /overflow: auto;[^}]*min-height: 0;/);
   assert.match(rule('#outline, #side-body'), /position: relative;/);
   assert.match(rule('#side'), /display: flex; flex-direction: column; min-height: 0;[^}]*overflow: hidden;/);
-  // the toolbar wraps and never takes the whole window; dialogs stay inside it
-  assert.match(css, /\.topbar \{[^}]*flex-wrap: wrap;[^}]*max-height: 45dvh; overflow-y: auto;/);
+  // the toolbar wraps; it does not scroll or clip, because its drop-downs open below it; dialogs stay inside the window
+  assert.match(css, /\.topbar \{[^}]*flex-wrap: wrap;/);
+  assert.doesNotMatch(/\n\.topbar \{([^}]*)\}/.exec(css)[1], /overflow|max-height/);
   assert.match(rule('dialog#modal'), /max-height: calc\(100dvh - 24px\);/);
   // the narrow layout keeps both rows shrinkable
   assert.match(css, /@media \(max-width: 860px\) \{\s*main \{[^}]*grid-template-rows: minmax\(0, 1fr\) minmax\(0, 45%\);/);

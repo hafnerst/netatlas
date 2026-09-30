@@ -71,6 +71,7 @@ export async function runViewportCheck(app: App, doc: Document): Promise<Check[]
     const controls = doc.querySelectorAll('header.topbar button, header.topbar select, header.topbar input#search, header.topbar label.opt');
     for (let i = 0; i < controls.length; i++) {
       const c = controls[i] as HTMLElement;
+      if (c.closest('.dropdown')) continue; // entries of an open drop-down lie below the toolbar by design (checked separately)
       const r = c.getBoundingClientRect();
       if (!r.width && !r.height) continue; // not shown in this view (e.g. logical-only options)
       if (r.left < -0.5 || r.right > vw() + 0.5 || r.top < bar.top - 0.5 || r.bottom > bar.bottom + 0.5) why.push(`toolbar control "${(c.textContent || c.id || '').trim().slice(0, 20)}" is clipped`);
@@ -128,6 +129,39 @@ export async function runViewportCheck(app: App, doc: Document): Promise<Check[]
     const zoom = (q('.zoombar') as HTMLElement).getBoundingClientRect();
     const canvas = (q('#canvas-wrap') as HTMLElement).getBoundingClientRect();
     state('diagram controls stay inside the diagram area', zoom.top < canvas.top || zoom.bottom > canvas.bottom || zoom.left < canvas.left || zoom.right > canvas.right || zoom.bottom > vh() ? ['the zoom bar leaves the diagram area'] : []);
+
+    // drop-downs of the toolbar open over the page: fully visible, not clipped by the toolbar, inside the window
+    const popup = (sel: string): string[] => {
+      const e = q(sel);
+      if (!e || e.hidden) return [`${sel} is not shown`];
+      const r = e.getBoundingClientRect();
+      const why: string[] = [];
+      if (r.width < 40 || r.height < 20) why.push(`${sel} has no room (${Math.round(r.width)}x${Math.round(r.height)})`);
+      if (r.left < -0.5 || r.top < -0.5 || r.right > vw() + 0.5 || r.bottom > vh() + 0.5) why.push(`${sel} leaves the window (${Math.round(r.left)},${Math.round(r.top)} – ${Math.round(r.right)},${Math.round(r.bottom)} of ${vw()}x${vh()})`);
+      // what is actually on top at three points of it is the drop-down itself
+      for (const [fx, fy] of [[0.5, 0.1], [0.5, 0.5], [0.5, 0.9]]) {
+        const hit = doc.elementFromPoint(r.left + r.width * fx, r.top + r.height * fy);
+        if (!hit || !e.contains(hit)) why.push(`${sel} is covered or clipped at ${Math.round(fy * 100)}% of its height`);
+      }
+      return why;
+    };
+    const search = q('#search') as HTMLInputElement;
+    search.value = 'hq';
+    search.dispatchEvent(new Event('input', { bubbles: true }));
+    await tick();
+    state('search results drop-down', popup('#search-results'));
+    search.value = '';
+    search.dispatchEvent(new Event('input', { bubbles: true }));
+    click('#menu-btn');
+    await tick();
+    const lastEntry = doc.querySelectorAll('#main-menu button');
+    const menu = q('#main-menu') as HTMLElement;
+    menu.scrollTop = menu.scrollHeight;
+    const le = lastEntry[lastEntry.length - 1].getBoundingClientRect();
+    state('File menu open', popup('#main-menu').concat(le.bottom > vh() + 0.5 ? ['the last example of the menu cannot be reached'] : []));
+    click('#menu-btn');
+    await tick();
+    state('File menu closed again', q('#main-menu') && !(q('#main-menu') as HTMLElement).hidden ? ['the menu did not close'] : []);
 
     // switching views and tabs
     for (const view of ['logical', 'physical']) {

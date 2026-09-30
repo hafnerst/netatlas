@@ -97,9 +97,9 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .topbar {
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
   padding: 6px 12px; background: var(--panel); border-bottom: 1px solid var(--border);
-  /* a narrow window wraps the toolbar onto more rows; in a very small one it
-     scrolls by itself rather than taking the whole window */
-  max-height: 45vh; max-height: 45dvh; overflow-y: auto; min-width: 0;
+  /* a narrow window wraps the toolbar onto more rows. It must not scroll or
+     clip: its menus and the search results open below it, over the page. */
+  min-width: 0;
 }
 .brand { display: flex; align-items: center; gap: 6px; font-weight: 700; font-size: 15px; margin-right: 6px; }
 .brand svg { fill: var(--accent); stroke: var(--accent); stroke-width: 1.6; }
@@ -115,7 +115,8 @@ body:not([data-view="logical"]) .logical-only { display: none; }
 .search-wrap { position: relative; }
 #search { width: 220px; padding: 4px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--canvas); }
 .dropdown {
-  position: absolute; top: 100%; left: 0; z-index: 20; min-width: 300px; max-height: 360px; overflow: auto;
+  position: absolute; top: 100%; left: 0; z-index: 20; min-width: min(300px, calc(100vw - 16px)); max-width: calc(100vw - 16px);
+  max-height: min(360px, calc(100vh - 90px)); max-height: min(360px, calc(100dvh - 90px)); overflow: auto;
   background: var(--panel); border: 1px solid var(--border); border-radius: 8px; margin-top: 4px; padding: 4px;
   box-shadow: 0 8px 24px rgba(0,0,0,.18);
 }
@@ -123,6 +124,22 @@ body:not([data-view="logical"]) .logical-only { display: none; }
 .dropdown button:hover { background: var(--accent-soft); }
 .dropdown .kind { color: var(--muted); min-width: 64px; font-size: 11px; text-transform: uppercase; letter-spacing: .03em; padding-top: 1px; }
 .dropdown > div { padding: 6px 8px; }
+/* the File menu */
+.menu-wrap { position: relative; }
+.menu-btn { font-weight: 600; }
+.menu-btn.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.menu-btn .caret { font-size: 10px; margin-left: 2px; }
+.dropdown.menu { min-width: min(270px, calc(100vw - 16px)); max-width: min(360px, calc(100vw - 16px)); max-height: calc(100vh - 70px); max-height: calc(100dvh - 70px); }
+.dropdown.menu button { align-items: baseline; justify-content: space-between; border-radius: 5px; background: none; }
+.dropdown.menu button:hover:not(:disabled), .dropdown.menu button:focus-visible { background: var(--accent-soft); }
+.dropdown.menu .mi-label { overflow-wrap: anywhere; }
+.dropdown.menu .mi-hint { color: var(--muted); font-size: 11px; white-space: nowrap; }
+.dropdown.menu > .menu-sep { height: 1px; padding: 0; margin: 4px 2px; background: var(--border); }
+.dropdown.menu > .menu-title { padding: 4px 8px 2px; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+.dropdown.menu > #menu-examples { padding: 0; }
+/* "Current model": opens the settings of the whole model */
+.model-btn { display: inline-flex; align-items: center; gap: 6px; }
+.model-btn.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 600; }
 
 main { display: grid; grid-template-columns: 250px minmax(0, 1fr) 410px; grid-template-rows: minmax(0, 1fr); min-height: 0; min-width: 0; overflow: hidden; }
 #canvas-wrap { position: relative; min-width: 0; min-height: 0; overflow: hidden; background: var(--canvas); }
@@ -216,6 +233,7 @@ button.ref:hover { text-decoration: underline; }
 @media (max-height: 560px) {
   .keys { display: none; }
   .topbar { padding-top: 3px; padding-bottom: 3px; gap: 5px; }
+  .dropdown.menu { max-height: calc(100vh - 44px); max-height: calc(100dvh - 44px); }
   #side-body { padding-top: 6px; padding-bottom: 8px; }
 }
 
@@ -304,7 +322,16 @@ body[data-dirty="true"] #btn-download { border-color: var(--warn); box-shadow: i
 .ol-item { display: flex; width: 100%; align-items: center; gap: 6px; border: 0; background: none; border-radius: 5px; padding: 3px 6px; text-align: left; }
 .ol-item:hover { background: var(--accent-soft); }
 .ol-item.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
-.ol-doc { font-weight: 600; }
+/* a section folds to its heading: the heading is a button (caret, title, count) next to "+ Add" */
+.ol-tools { display: flex; justify-content: flex-end; margin: 0 0 2px; }
+.ol-toggle { flex: 1; min-width: 0; display: flex; align-items: center; gap: 5px; border: 0; background: none; border-radius: 5px; padding: 2px 4px; text-align: left; font: inherit; text-transform: inherit; letter-spacing: inherit; color: inherit; }
+.ol-toggle:hover { background: var(--accent-soft); color: var(--text); }
+.ol-caret { width: 10px; flex: none; font-size: 10px; }
+.ol-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ol-related { flex: none; color: var(--accent); letter-spacing: 0; }
+.ol-toggle .ol-badge { letter-spacing: 0; }
+.ol-head { gap: 4px; }
+.ol-section.folded { margin-top: 4px; }
 /* selection context in the element lists: shape and weight as well as colour */
 .ctx-mark { width: 10px; flex: none; text-align: center; color: var(--accent); font-weight: 700; }
 .ol-item.ctx-selected { background: var(--accent-soft); color: var(--accent); font-weight: 600; box-shadow: inset 3px 0 0 var(--accent); }
@@ -451,13 +478,19 @@ dialog#modal::backdrop { background: rgba(0,0,0,.35); }
     <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="6" r="2.6"/><circle cx="19" cy="6" r="2.6"/><circle cx="12" cy="18" r="2.6"/><path d="M7.4 6.8h9.2M6.3 8.3l4.4 7.4M17.7 8.3l-4.4 7.4"/></svg>
     <span>netatlas</span><span class="version" title="netatlas version">v0.1.0</span>
   </div>
-  <div class="btn-group">
-    <button id="btn-new" type="button" title="Start a new model">New</button>
-    <button id="open" type="button" class="primary" title="Open a local YAML file (nothing is uploaded)">Open YAML…</button>
-    <button id="btn-download" type="button" title="Download the current model as YAML (Ctrl+S)" disabled>Download YAML</button>
+  <div class="menu-wrap">
+    <button id="menu-btn" type="button" class="menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="main-menu" title="New, open, download, examples">File <span class="caret" aria-hidden="true">▾</span></button>
+    <div id="main-menu" class="dropdown menu" role="menu" aria-label="File" hidden>
+      <button id="btn-new" type="button" role="menuitem"><span class="mi-label">New model</span><span class="mi-hint">start empty</span></button>
+      <button id="open" type="button" role="menuitem"><span class="mi-label">Open YAML file…</span><span class="mi-hint">from this computer</span></button>
+      <button id="btn-download" type="button" role="menuitem" disabled><span class="mi-label">Download YAML</span><span class="mi-hint">Ctrl+S</span></button>
+      <div class="menu-sep" role="separator"></div>
+      <div class="menu-title" id="menu-examples-title">Open an example</div>
+      <div id="menu-examples" role="group" aria-labelledby="menu-examples-title"></div>
+    </div>
   </div>
   <input id="file" type="file" accept=".yaml,.yml,application/yaml,application/x-yaml,text/yaml,text/plain" hidden>
-  <select id="examples" aria-label="Load a built-in example"><option value="">Examples…</option></select>
+  <button id="btn-model" type="button" class="model-btn" title="Edit the settings of the whole model (title, description)" disabled><span class="model-btn-label">Current model</span><span id="model-badge" class="ol-badge" hidden></span></button>
   <div class="btn-group">
     <button id="btn-undo" type="button" title="Undo (Ctrl+Z)" disabled aria-label="Undo">↶</button>
     <button id="btn-redo" type="button" title="Redo (Ctrl+Y)" disabled aria-label="Redo">↷</button>
@@ -684,10 +717,104 @@ class App {
     }
     newModel() {
         this.openDoc(document_1.ModelDoc.create());
+        this.editModel();
+    }
+    /** Open the edit view of the whole model (title, description, format version). */
+    editModel() {
+        if (!this.mdoc)
+            return;
         this.editor.sel = { kind: 'document', index: 0 };
         this.editorSelected(this.editor.sel);
         this.tab = 'edit';
+        this.renderOutline();
         this.renderSide();
+        this.updateChrome();
+    }
+    /** Is the File menu open? */
+    get menuOpen() {
+        return !this.$('main-menu').hidden;
+    }
+    /**
+     * Keep a drop-down that hangs under a toolbar control inside the window:
+     * it is left-aligned with its control unless that would push it over the
+     * right edge (a wrapped toolbar in a narrow window), then it is shifted left.
+     */
+    keepInWindow(popup) {
+        popup.style.left = '0px';
+        const r = popup.getBoundingClientRect();
+        const over = r.right - (this.doc.documentElement.clientWidth - 8);
+        if (over > 0)
+            popup.style.left = -Math.min(over, Math.max(0, r.left - 8)) + 'px';
+    }
+    /** Open or close the File menu; opening moves the focus to its first entry (keyboard use). */
+    setMenu(open, focus = false) {
+        const menu = this.$('main-menu');
+        const btn = this.$('menu-btn');
+        menu.hidden = !open;
+        btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+        btn.classList.toggle('active', open);
+        if (open)
+            this.keepInWindow(menu);
+        if (open && focus) {
+            const first = menu.querySelector('button:not(:disabled)');
+            if (first)
+                first.focus();
+        }
+    }
+    /**
+     * The File menu: a button that opens a list of entries. It closes after an
+     * entry is chosen, on Escape, and when anything outside it is pressed.
+     * Arrow keys move between the entries.
+     */
+    wireMenu() {
+        const btn = this.$('menu-btn');
+        const menu = this.$('main-menu');
+        const items = () => Array.prototype.slice.call(menu.querySelectorAll('button:not(:disabled)'));
+        btn.addEventListener('click', () => this.setMenu(!this.menuOpen));
+        btn.addEventListener('keydown', (e) => {
+            if (e.key === 'ArrowDown' || e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                this.setMenu(true, true);
+            }
+            else if (e.key === 'Escape' && this.menuOpen) {
+                e.stopPropagation();
+                this.setMenu(false);
+            }
+        });
+        // an entry acts through its own handler; the menu then gets out of the way
+        menu.addEventListener('click', (e) => {
+            if (e.target.closest('button'))
+                this.setMenu(false);
+        });
+        menu.addEventListener('keydown', (e) => {
+            const list = items();
+            const at = list.indexOf(this.doc.activeElement);
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                e.stopPropagation();
+                this.setMenu(false);
+                btn.focus();
+            }
+            else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                e.preventDefault();
+                e.stopPropagation();
+                const next = list[(at + (e.key === 'ArrowDown' ? 1 : list.length - 1)) % list.length];
+                if (next)
+                    next.focus();
+            }
+            else if (e.key === 'Home' || e.key === 'End') {
+                e.preventDefault();
+                const to = list[e.key === 'Home' ? 0 : list.length - 1];
+                if (to)
+                    to.focus();
+            }
+            else if (e.key === 'Tab')
+                this.setMenu(false);
+        });
+        this.doc.addEventListener('pointerdown', (e) => {
+            if (this.menuOpen && !e.target.closest('.menu-wrap'))
+                this.setMenu(false);
+        });
     }
     loadExample(i) {
         const ex = examples_1.EXAMPLES[i];
@@ -1131,6 +1258,20 @@ class App {
         this.$('btn-undo').disabled = !d || !d.canUndo();
         this.$('btn-redo').disabled = !d || !d.canRedo();
         this.$('btn-download').disabled = !d;
+        // "Current model": the whole model's settings, with the problems that belong to no single object
+        const mb = this.$('btn-model');
+        mb.disabled = !d;
+        const editing = !!d && !!this.editor.sel && this.editor.sel.kind === 'document';
+        mb.classList.toggle('active', editing);
+        mb.setAttribute('aria-pressed', editing ? 'true' : 'false');
+        mb.title = d ? `Edit the settings of the whole model: “${d.text(['title']) || 'Untitled'}”` : 'Edit the settings of the whole model (title, description)';
+        const general = d ? d.errors.concat(d.warnings).filter((i) => !d.issueEntity(i)) : [];
+        const generalErrors = general.filter((i) => i.severity === 'error').length;
+        const badge = this.$('model-badge');
+        badge.hidden = !general.length;
+        badge.textContent = String(generalErrors || general.length);
+        badge.className = 'ol-badge ' + (generalErrors ? 'err' : 'warn');
+        badge.title = `${generalErrors} error(s), ${general.length - generalErrors} warning(s) in the model settings`;
         this.$('btn-undo').title = d && d.canUndo() ? `Undo: ${d.canUndo()} (Ctrl+Z)` : 'Undo (Ctrl+Z)';
         this.$('btn-redo').title = d && d.canRedo() ? `Redo: ${d.canRedo()} (Ctrl+Y)` : 'Redo (Ctrl+Y)';
         const st = this.$('status');
@@ -1206,8 +1347,8 @@ class App {
         btn.title = LAYOUT_STATUS_MESSAGE[st] + ' ' + action;
     }
     fillExamples() {
-        const sel = this.$('examples');
-        examples_1.EXAMPLES.forEach((ex, i) => sel.appendChild((0, dom_1.el)(this.doc, 'option', { value: String(i) }, [ex.name])));
+        const menu = this.$('menu-examples');
+        examples_1.EXAMPLES.forEach((ex, i) => menu.appendChild((0, dom_1.el)(this.doc, 'button', { type: 'button', role: 'menuitem', 'data-example': String(i) }, [(0, dom_1.el)(this.doc, 'span', { class: 'mi-label' }, [ex.name])])));
         const list = this.$('example-buttons');
         examples_1.EXAMPLES.forEach((ex, i) => list.appendChild((0, dom_1.el)(this.doc, 'button', { type: 'button', class: 'linkish', 'data-example': String(i) }, [ex.name])));
     }
@@ -1248,13 +1389,13 @@ class App {
                 void this.loadFile(f);
             fileInput.value = '';
         });
-        this.$('examples').addEventListener('change', async (e) => {
-            const sel = e.target;
-            const v = sel.value;
-            sel.value = '';
-            if (v !== '' && (await this.confirmDiscard('Loading an example')))
-                this.loadExample(Number(v));
+        this.$('menu-examples').addEventListener('click', async (e) => {
+            const t = e.target.closest('[data-example]');
+            if (t && (await this.confirmDiscard('Loading an example')))
+                this.loadExample(Number(t.getAttribute('data-example')));
         });
+        this.$('btn-model').addEventListener('click', () => this.editModel());
+        this.wireMenu();
         this.$('example-buttons').addEventListener('click', (e) => {
             const t = e.target.closest('[data-example]');
             if (t)
@@ -1407,6 +1548,7 @@ class App {
                 results.appendChild((0, dom_1.el)(doc, 'button', { type: 'button', 'data-goto': hit.ref }, [(0, dom_1.el)(doc, 'span', { class: 'kind' }, [hit.kind]), hit.label]));
             }
             results.hidden = false;
+            this.keepInWindow(results);
         });
         q.addEventListener('keydown', (e) => {
             if (e.key === 'Enter') {
@@ -8706,6 +8848,12 @@ class Editor {
         /** open interface cards / collapsible sections, by path */
         this.open = new Set();
         this.filter = '';
+        /**
+         * Sections of the model outline that are folded to their heading. Links
+         * and protocols start folded: they are the longest lists and the ones
+         * least often picked from here.
+         */
+        this.collapsed = new Set(['link', 'protocol']);
         /** unapplied text in the YAML source tab */
         this.sourceDraft = null;
         this.sourceError = null;
@@ -8786,17 +8934,17 @@ class Editor {
             box.removeChild(box.firstChild);
         const doc = this.getDoc();
         if (!doc) {
-            box.appendChild(this.e('p', { class: 'muted small' }, ['No model open. Use New or Open YAML.']));
+            box.appendChild(this.e('p', { class: 'muted small' }, ['No model open. Use File → New model or Open YAML file.']));
             return;
         }
         const f = this.e('input', { type: 'search', class: 'outline-filter', placeholder: 'Filter…', 'data-t': 'outline-filter', value: this.filter, 'aria-label': 'Filter the model outline' });
         f.value = this.filter;
         box.appendChild(f);
         const counts = this.issueCounts();
-        const docIss = counts.get('document') || { e: 0, w: 0 };
-        box.appendChild(this.e('button', { type: 'button', class: 'ol-item ol-doc' + (this.sel && this.sel.kind === 'document' ? ' active' : ''), 'data-act': 'select', 'data-kind': 'document', 'data-index': '0' }, [
-            this.e('span', { class: 'ol-label' }, ['Document: ' + (doc.text(['title']) || 'Untitled')]),
-            this.badge(docIss.e, docIss.w),
+        const kinds = ['device', 'link', 'network', 'relation', 'group', 'protocol'];
+        const allFolded = kinds.every((k) => this.collapsed.has(k));
+        box.appendChild(this.e('div', { class: 'ol-tools' }, [
+            this.e('button', { type: 'button', class: 'mini', 'data-act': 'fold-all', 'data-kind': allFolded ? 'open' : 'close', title: allFolded ? 'Show the entries of every section' : 'Fold every section to its heading' }, [allFolded ? 'Expand all' : 'Collapse all']),
         ]));
         if (ctx) {
             box.appendChild(this.e('p', { class: 'ol-ctx-hint small', 'data-related': String(ctx.related.size) }, [
@@ -8807,20 +8955,44 @@ class Editor {
             ]));
         }
         const q = this.filter.toLowerCase();
-        for (const kind of ['device', 'link', 'network', 'relation', 'group', 'protocol']) {
+        for (const kind of kinds) {
             const ents = doc.entities(kind);
-            const sec = this.e('section', { class: 'ol-section' });
+            const folded = this.collapsed.has(kind);
+            // what a folded section still tells: problems inside it, and how many of its entries are related to the selection
+            let errs = 0;
+            let warns = 0;
+            let related = 0;
+            for (const ent of ents) {
+                const c = counts.get(kind + '#' + ent.index);
+                if (c) {
+                    errs += c.e;
+                    warns += c.w;
+                }
+                if (ctx && ent.id && (0, queries_1.contextState)(ctx, entityRef(kind, ent.id)) === 'related')
+                    related++;
+            }
+            const sec = this.e('section', { class: 'ol-section' + (folded ? ' folded' : ''), 'data-section': kind, 'data-folded': folded ? 'true' : 'false' });
+            const listId = 'ol-list-' + kind;
             sec.appendChild(this.e('div', { class: 'ol-head' }, [
-                this.e('span', {}, [`${KIND_TITLE[kind]} (${ents.length})`]),
+                this.e('button', { type: 'button', class: 'ol-toggle', 'data-act': 'fold', 'data-kind': kind, 'aria-expanded': folded ? 'false' : 'true', 'aria-controls': listId, title: (folded ? 'Show' : 'Hide') + ' the entries of this section' }, [
+                    this.e('span', { class: 'ol-caret', 'aria-hidden': 'true' }, [folded ? '▸' : '▾']),
+                    this.e('span', { class: 'ol-title' }, [`${KIND_TITLE[kind]} (${ents.length})`]),
+                    folded && related ? this.e('span', { class: 'ol-related', title: `${related} related to the selection` }, [`• ${related}`]) : null,
+                    folded ? this.badge(errs, warns) : null,
+                ]),
                 this.e('button', { type: 'button', class: 'mini', 'data-act': 'add-entity', 'data-kind': kind, title: 'Add ' + kind }, ['+ Add']),
             ]));
+            const list = this.e('div', { class: 'ol-list', id: listId });
+            sec.appendChild(list);
             for (const ent of ents) {
                 const label = this.entityLabel(kind, ent.index);
-                if (q && (label + ' ' + (ent.id || '')).toLowerCase().indexOf(q) < 0)
+                const active = !!this.sel && this.sel.kind === kind && this.sel.index === ent.index;
+                const st = ent.id ? (0, queries_1.contextState)(ctx, entityRef(kind, ent.id)) : ctx ? 'unrelated' : null;
+                // A folded section shows its heading only, except for what would otherwise be lost from
+                // view: the entry that is selected, and the matches of the filter.
+                if (q ? (label + ' ' + (ent.id || '')).toLowerCase().indexOf(q) < 0 : folded && !active && st !== 'selected')
                     continue;
                 const c = counts.get(kind + '#' + ent.index) || { e: 0, w: 0 };
-                const active = this.sel && this.sel.kind === kind && this.sel.index === ent.index;
-                const st = ent.id ? (0, queries_1.contextState)(ctx, entityRef(kind, ent.id)) : ctx ? 'unrelated' : null;
                 const attrs = { type: 'button', class: 'ol-item' + (active ? ' active' : '') + (st ? ' ctx-' + st : ''), 'data-act': 'select', 'data-kind': kind, 'data-index': String(ent.index), title: ent.id || '(no id)' };
                 if (ent.id)
                     attrs['data-ref'] = entityRef(kind, ent.id);
@@ -8828,7 +9000,7 @@ class Editor {
                     attrs['data-ctx'] = st;
                 if (st === 'selected' || (!st && active))
                     attrs['aria-current'] = 'true';
-                sec.appendChild(this.e('button', attrs, [
+                list.appendChild(this.e('button', attrs, [
                     st === 'selected' || st === 'related' ? this.e('span', { class: 'ctx-mark ' + (st === 'selected' ? 'sel' : 'rel'), 'aria-hidden': 'true' }, [st === 'selected' ? '▸' : '•']) : null,
                     this.e('span', { class: 'ol-label' }, [label]),
                     st ? this.e('span', { class: 'sr-only' }, [st === 'selected' ? ' (selected)' : st === 'related' ? ' (directly related)' : ' (not related)']) : null,
@@ -8905,7 +9077,7 @@ class Editor {
             wrap.appendChild(this.e('p', { class: 'muted' }, [
                 'Select an object in the diagram or in the Model outline to edit it, or add one with “+ Add”. Changes apply when you press Enter or leave a field, and can be undone (Ctrl+Z).',
             ]));
-            wrap.appendChild(this.e('button', { type: 'button', 'data-act': 'select', 'data-kind': 'document', 'data-index': '0' }, ['Edit document settings']));
+            wrap.appendChild(this.e('button', { type: 'button', 'data-act': 'select', 'data-kind': 'document', 'data-index': '0' }, ['Edit model settings']));
             return;
         }
         if (s.kind === 'document')
@@ -8914,7 +9086,7 @@ class Editor {
             this.renderEntity(wrap, s.kind, s.index);
     }
     renderDocument(w) {
-        w.appendChild(this.header('document', 'Document', null));
+        w.appendChild(this.header('model', this.doc.text(['title']) || 'Untitled model', null));
         w.appendChild(this.issueBox([]));
         w.appendChild(this.field('Format version', this.e('span', { class: 'ro' }, [this.doc.text(['netatlas']) || '(missing)']), ['netatlas'], 'Always 1 for this version of netatlas.'));
         if (document_1.ENTITY_KINDS.every((k) => this.doc.entities(k).length === 0)) {
@@ -9852,7 +10024,20 @@ class Editor {
                 this.selectEntity(kind, index);
                 this.host.changed('select');
                 return true;
+            case 'fold':
+                // fold or unfold one section of the outline (a view state: nothing in the model changes)
+                if (this.collapsed.has(kind))
+                    this.collapsed.delete(kind);
+                else
+                    this.collapsed.add(kind);
+                this.host.changed('filter');
+                return true;
+            case 'fold-all':
+                this.collapsed = new Set(kind === 'close' ? document_1.ENTITY_KINDS : []);
+                this.host.changed('filter');
+                return true;
             case 'add-entity': {
+                this.collapsed.delete(kind);
                 const i = doc.addEntity(kind);
                 this.selectEntity(kind, i);
                 this.host.changed(`Added ${kind} “${doc.entities(kind)[i].id}”. Fill in the highlighted fields.`);
@@ -12546,6 +12731,101 @@ async function runSelfTest(app, doc) {
                 shown().st === '' && shown().icon === '' && shown().desc === '' && !q('#layout-status') && !q('[data-view-status]') && !q('.lstat') &&
                 doc.querySelectorAll('header.topbar [data-view-btn]').length === 2, btn ? (btn.textContent || '') + (btn.disabled ? ' (disabled)' : '') : 'missing');
         }
+        // ------------------------------------------------ main menu (toolbar)
+        const textsOf = (sel) => Array.prototype.map.call(doc.querySelectorAll(sel), (e) => (e.textContent || '').trim());
+        /** show the entries of every section of the model outline (the tests below pick entries from all of them) */
+        const expandOutline = () => {
+            for (let n = 0; n < 2 && q('#outline [data-section][data-folded="true"]'); n++)
+                click('#outline [data-act="fold-all"]');
+        };
+        {
+            const bar = 'header.topbar';
+            const menuBtn = q('#menu-btn');
+            const menu = q('#main-menu');
+            const direct = ['#btn-undo', '#btn-redo', '[data-view-btn="physical"]', '[data-view-btn="logical"]', '#btn-arrange', '#search', '#btn-model', '#menu-btn'];
+            check('toolbar: logo and version, a File menu, "Current model", and undo/redo, Physical/Logical, Auto-arrange and Find as direct controls', !!q(bar + ' .brand svg') && /^v\d+\.\d+\.\d+/.test((q(bar + ' .brand .version') || { textContent: '' }).textContent || '') && !!menuBtn && /^File/.test((menuBtn.textContent || '').trim()) &&
+                direct.every((d) => !!q(bar + ' ' + d) && !q(bar + ' ' + d).closest('.dropdown') && q(bar + ' ' + d).getBoundingClientRect().width > 10) &&
+                /^Current model/.test(q('#btn-model').textContent || '') && q('#btn-model').disabled);
+            check('New, Open, Download and the examples are grouped in the File menu and nowhere else in the toolbar', !!menu && menu.hidden && menuBtn.getAttribute('aria-expanded') === 'false' && ['#btn-new', '#open', '#btn-download', '#menu-examples'].every((x) => !!q('#main-menu ' + x)) && !q('#examples') && !q(bar + ' select') &&
+                doc.querySelectorAll(bar + ' > button, ' + bar + ' > .btn-group > button').length === 3, String(doc.querySelectorAll(bar + ' > button, ' + bar + ' > .btn-group > button').length));
+            click('#menu-btn');
+            const entries = textsOf('#main-menu button');
+            const mr = menu.getBoundingClientRect();
+            check('the File menu opens under its button with plainly named entries: New model, Open YAML file…, Download YAML, then the examples', !menu.hidden && menuBtn.getAttribute('aria-expanded') === 'true' && mr.height > 100 && mr.top >= menuBtn.getBoundingClientRect().bottom - 1 && /^New model/.test(entries[0]) && /^Open YAML file…/.test(entries[1]) && /^Download YAML/.test(entries[2]) &&
+                entries.length === 3 + examples_1.EXAMPLES.length && entries.slice(3).join() === examples_1.EXAMPLES.map((e) => e.name).join() && /Open an example/.test(menu.textContent || '') && q('#btn-download').disabled, entries.join(' | '));
+            menuBtn.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+            const byEsc = menu.hidden;
+            click('#menu-btn');
+            q('#canvas').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, pointerId: 9 }));
+            const byOutside = menu.hidden;
+            menuBtn.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+            const focused = doc.activeElement === q('#btn-new');
+            q('#btn-new').dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+            const moved = doc.activeElement === q('#open');
+            q('#open').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+            check('the File menu closes with Escape and when something else is pressed; arrow keys open it and move between entries', byEsc && byOutside && focused && moved && menu.hidden && doc.activeElement === menuBtn, `${byEsc} ${byOutside} ${focused} ${moved}`);
+            click('#menu-btn');
+            click('#menu-examples [data-example="2"]');
+            await tick(10);
+            check('choosing an example from the menu loads it and closes the menu', menu.hidden && !!app.mdoc && app.mdoc.fileName === examples_1.EXAMPLES[2].name && !q('#btn-download').disabled, app.mdoc ? app.mdoc.fileName : 'nothing loaded');
+            // "Current model": the edit view of the whole model
+            const mb = q('#btn-model');
+            app.select('device:r1');
+            const before = mb.getAttribute('aria-pressed');
+            click('#btn-model');
+            await tick();
+            const head = (q('#side-body .insp-head') || { textContent: '' }).textContent || '';
+            check('"Current model" opens the edit view of the entire model (title, description), whatever was selected before', !mb.disabled && before === 'false' && mb.getAttribute('aria-pressed') === 'true' && doc.body.getAttribute('data-state') === 'loaded' && !!q('[data-tab="edit"].active') && /^model/.test(head) && /Minimal example/.test(head) &&
+                !!q('#side-body [data-p=\'["title"]\']') && !!q('#side-body [data-p=\'["description"]\']') && app.session.state.selected === null, head);
+            await setField('#side-body [data-p=\'["title"]\']', 'Renamed model');
+            check('the title is edited there and the button names the model', /Renamed model/.test(mb.title) && app.mdoc.text(['title']) === 'Renamed model' && mb.getAttribute('aria-pressed') === 'true');
+            check('the model outline has no "Document" entry, and the interface says "model", not "document"', !q('#outline .ol-doc') && !q('#outline [data-kind="document"]') && !/Document/.test(q('#outline').textContent || '') && !/[Dd]ocument/.test(q('#side-body').textContent || '') && !/[Dd]ocument/.test(q('header.topbar').textContent || ''));
+            app.mdoc.markSaved();
+            // ---------------------------------------------- collapsible outline sections
+            app.loadExample(examples_1.EXAMPLES.findIndex((e) => /enterprise-wan/.test(e.name)));
+            await tick();
+            const m0 = app.session.model;
+            const sec = (k) => q(`#outline [data-section="${k}"]`);
+            const folded = () => Array.prototype.map.call(doc.querySelectorAll('#outline [data-section]'), (e) => e.getAttribute('data-section') + '=' + e.getAttribute('data-folded')).join();
+            const shownIn = (k) => sec(k).querySelectorAll('.ol-item').length;
+            const toggle = (k) => sec(k).querySelector('[data-act="fold"]');
+            check('outline sections fold: Links and Protocols start folded to a heading with their count, the others are open', folded() === 'device=false,link=true,network=false,relation=false,group=false,protocol=true' && shownIn('link') === 0 && shownIn('device') === m0.devices.length && new RegExp(`\\(${m0.links.length}\\)`).test(toggle('link').textContent || '') &&
+                toggle('link').getAttribute('aria-expanded') === 'false' && toggle('device').getAttribute('aria-expanded') === 'true' && !!sec('link').querySelector('[data-act="add-entity"]'), folded());
+            toggle('link').click();
+            const opened = shownIn('link') === m0.links.length && toggle('link').getAttribute('aria-expanded') === 'true';
+            toggle('device').click();
+            check('a heading toggles its section; folding changes nothing in the model', opened && shownIn('device') === 0 && folded().indexOf('device=true,link=false') === 0 && !app.mdoc.dirty && app.mdoc.canUndo() === null, folded());
+            click('#outline [data-act="fold-all"]');
+            const allFolded = doc.querySelectorAll('#outline .ol-item').length === 0 && doc.querySelectorAll('#outline [data-section][data-folded="true"]').length === 6 && /Expand all/.test(q('#outline [data-act="fold-all"]').textContent || '');
+            // what would be lost from view stays: the selected entry, and what is related to it as a count
+            app.select('device:hq-rtr1');
+            const selShown = textsOf('#outline .ol-item .ol-label').join() === 'hq-rtr1' && !!q('#outline .ol-item.ctx-selected');
+            const relatedMark = (toggle('link').querySelector('.ol-related') || { textContent: '' }).textContent || '';
+            check('"Collapse all" folds every section; a folded section still shows the selected entry and how many of its entries are related', allFolded && selShown && /^• \d+$/.test(relatedMark), `${allFolded} ${selShown} "${relatedMark}"`);
+            app.select(null);
+            // the filter looks into folded sections
+            const filter = q('#outline [data-t="outline-filter"]');
+            filter.value = 'isp1';
+            filter.dispatchEvent(new Event('input', { bubbles: true }));
+            await tick();
+            const found = textsOf('#outline .ol-item');
+            const f2 = q('#outline [data-t="outline-filter"]');
+            f2.value = '';
+            f2.dispatchEvent(new Event('input', { bubbles: true }));
+            await tick();
+            check('the filter finds entries in folded sections', found.length >= 3 && found.every((x) => /isp1/i.test(x)) && doc.querySelectorAll('#outline .ol-item').length === 0, found.join(' | '));
+            // errors inside a folded section are counted on its heading
+            const broken = app.loadText('netatlas: 1\ndevices:\n  - {id: a, interfaces: [e0]}\nlinks:\n  - {id: l1, a: "a:e0", b: nowhere}\n', 'broken-link.yaml', 'file');
+            const badge = (sec('link').querySelector('[data-act="fold"] .ol-badge.err') || { textContent: '' }).textContent || '';
+            check('a folded section shows the number of problems inside it on its heading', broken.ok && badge === '1' && shownIn('link') === 0, badge);
+            // adding to a folded section opens it
+            sec('network').querySelector('[data-act="add-entity"]').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, pointerId: 4 }));
+            await tick();
+            check('"+ Add" on a folded section opens it and shows the new entry', sec('network').getAttribute('data-folded') === 'false' && shownIn('network') === 1);
+            app.mdoc.markSaved();
+            expandOutline();
+            check('"Expand all" opens every section again', doc.querySelectorAll('#outline [data-section][data-folded="true"]').length === 0 && /Collapse all/.test(q('#outline [data-act="fold-all"]').textContent || ''));
+        }
         // ------------------------------------------------ viewer: every example
         for (let i = 0; i < examples_1.EXAMPLES.length; i++) {
             const ex = examples_1.EXAMPLES[i];
@@ -12554,6 +12834,7 @@ async function runSelfTest(app, doc) {
             check(`${ex.name}: loads via File API without errors`, res.ok && !res.errors.length, res.errors.map((e) => `line ${e.line}: ${e.message}`).join('; '));
             if (!res.ok || !app.session)
                 continue;
+            expandOutline();
             const m = app.session.model;
             click('[data-view-btn="physical"]');
             check(`${ex.name}: physical view draws every device and cable, no relations`, doc.body.getAttribute('data-view') === 'physical' && count('.device') === m.devices.length && count('.cable') === m.links.length && count('.rel') === 0 && count('.port') === m.links.length * 2, `${count('.device')}/${m.devices.length} devices, ${count('.cable')}/${m.links.length} cables`);
@@ -12729,7 +13010,6 @@ async function runSelfTest(app, doc) {
                 check('the diagram on screen has no Networks box drawn into it (export only)', !q('#canvas .svg-networks'));
             }
             // a model with several disconnected components and an unconnected device
-            const cur = q('#examples').value;
             app.loadExample(examples_1.EXAMPLES.findIndex((e) => e.name === 'metro-ring.yaml'));
             const mP = measure(app.exportSvg());
             click('[data-view-btn="logical"]');
@@ -12756,7 +13036,6 @@ async function runSelfTest(app, doc) {
             }
             check('the diagram on screen has no legend drawn into it (export only)', !q('#canvas .svg-legend'));
             app.loadExample(examples_1.EXAMPLES.findIndex((e) => /enterprise-wan/.test(e.name)));
-            void cur;
             click('[data-view-btn="logical"]');
         }
         click('[data-view-btn="physical"]');
@@ -13440,9 +13719,7 @@ async function runSelfTest(app, doc) {
             check('import → edit → export → reload keeps the edits', false, 'no download captured');
         // unsaved-change guards
         await setField('#side-body [data-p=\'["devices",3,"description"]\']', 'Primary edge router (MX304)');
-        const sel = q('#examples');
-        sel.value = '0';
-        sel.dispatchEvent(new Event('change', { bubbles: true }));
+        click('#menu-examples [data-example="0"]');
         await tick(10);
         check('replacing a dirty model asks first', !!q('#modal[open]') && /Unsaved changes/.test(q('#modal').textContent || ''));
         await answerDialog('cancel');
@@ -13625,6 +13902,8 @@ async function runViewportCheck(app, doc) {
         const controls = doc.querySelectorAll('header.topbar button, header.topbar select, header.topbar input#search, header.topbar label.opt');
         for (let i = 0; i < controls.length; i++) {
             const c = controls[i];
+            if (c.closest('.dropdown'))
+                continue; // entries of an open drop-down lie below the toolbar by design (checked separately)
             const r = c.getBoundingClientRect();
             if (!r.width && !r.height)
                 continue; // not shown in this view (e.g. logical-only options)
@@ -13689,6 +13968,42 @@ async function runViewportCheck(app, doc) {
         const zoom = q('.zoombar').getBoundingClientRect();
         const canvas = q('#canvas-wrap').getBoundingClientRect();
         state('diagram controls stay inside the diagram area', zoom.top < canvas.top || zoom.bottom > canvas.bottom || zoom.left < canvas.left || zoom.right > canvas.right || zoom.bottom > vh() ? ['the zoom bar leaves the diagram area'] : []);
+        // drop-downs of the toolbar open over the page: fully visible, not clipped by the toolbar, inside the window
+        const popup = (sel) => {
+            const e = q(sel);
+            if (!e || e.hidden)
+                return [`${sel} is not shown`];
+            const r = e.getBoundingClientRect();
+            const why = [];
+            if (r.width < 40 || r.height < 20)
+                why.push(`${sel} has no room (${Math.round(r.width)}x${Math.round(r.height)})`);
+            if (r.left < -0.5 || r.top < -0.5 || r.right > vw() + 0.5 || r.bottom > vh() + 0.5)
+                why.push(`${sel} leaves the window (${Math.round(r.left)},${Math.round(r.top)} – ${Math.round(r.right)},${Math.round(r.bottom)} of ${vw()}x${vh()})`);
+            // what is actually on top at three points of it is the drop-down itself
+            for (const [fx, fy] of [[0.5, 0.1], [0.5, 0.5], [0.5, 0.9]]) {
+                const hit = doc.elementFromPoint(r.left + r.width * fx, r.top + r.height * fy);
+                if (!hit || !e.contains(hit))
+                    why.push(`${sel} is covered or clipped at ${Math.round(fy * 100)}% of its height`);
+            }
+            return why;
+        };
+        const search = q('#search');
+        search.value = 'hq';
+        search.dispatchEvent(new Event('input', { bubbles: true }));
+        await tick();
+        state('search results drop-down', popup('#search-results'));
+        search.value = '';
+        search.dispatchEvent(new Event('input', { bubbles: true }));
+        click('#menu-btn');
+        await tick();
+        const lastEntry = doc.querySelectorAll('#main-menu button');
+        const menu = q('#main-menu');
+        menu.scrollTop = menu.scrollHeight;
+        const le = lastEntry[lastEntry.length - 1].getBoundingClientRect();
+        state('File menu open', popup('#main-menu').concat(le.bottom > vh() + 0.5 ? ['the last example of the menu cannot be reached'] : []));
+        click('#menu-btn');
+        await tick();
+        state('File menu closed again', q('#main-menu') && !q('#main-menu').hidden ? ['the menu did not close'] : []);
         // switching views and tabs
         for (const view of ['logical', 'physical']) {
             click(`[data-view-btn="${view}"]`);

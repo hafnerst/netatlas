@@ -18,13 +18,19 @@
     <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="6" r="2.6"/><circle cx="19" cy="6" r="2.6"/><circle cx="12" cy="18" r="2.6"/><path d="M7.4 6.8h9.2M6.3 8.3l4.4 7.4M17.7 8.3l-4.4 7.4"/></svg>
     <span>netatlas</span><span class="version" title="netatlas version">v__VERSION__</span>
   </div>
-  <div class="btn-group">
-    <button id="btn-new" type="button" title="Start a new model">New</button>
-    <button id="open" type="button" class="primary" title="Open a local YAML file (nothing is uploaded)">Open YAML…</button>
-    <button id="btn-download" type="button" title="Download the current model as YAML (Ctrl+S)" disabled>Download YAML</button>
+  <div class="menu-wrap">
+    <button id="menu-btn" type="button" class="menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="main-menu" title="New, open, download, examples">File <span class="caret" aria-hidden="true">▾</span></button>
+    <div id="main-menu" class="dropdown menu" role="menu" aria-label="File" hidden>
+      <button id="btn-new" type="button" role="menuitem"><span class="mi-label">New model</span><span class="mi-hint">start empty</span></button>
+      <button id="open" type="button" role="menuitem"><span class="mi-label">Open YAML file…</span><span class="mi-hint">from this computer</span></button>
+      <button id="btn-download" type="button" role="menuitem" disabled><span class="mi-label">Download YAML</span><span class="mi-hint">Ctrl+S</span></button>
+      <div class="menu-sep" role="separator"></div>
+      <div class="menu-title" id="menu-examples-title">Open an example</div>
+      <div id="menu-examples" role="group" aria-labelledby="menu-examples-title"></div>
+    </div>
   </div>
   <input id="file" type="file" accept=".yaml,.yml,application/yaml,application/x-yaml,text/yaml,text/plain" hidden>
-  <select id="examples" aria-label="Load a built-in example"><option value="">Examples…</option></select>
+  <button id="btn-model" type="button" class="model-btn" title="Edit the settings of the whole model (title, description)" disabled><span class="model-btn-label">Current model</span><span id="model-badge" class="ol-badge" hidden></span></button>
   <div class="btn-group">
     <button id="btn-undo" type="button" title="Undo (Ctrl+Z)" disabled aria-label="Undo">↶</button>
     <button id="btn-redo" type="button" title="Redo (Ctrl+Y)" disabled aria-label="Redo">↷</button>

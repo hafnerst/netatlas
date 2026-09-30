@@ -148,6 +148,125 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       );
     }
 
+    // ------------------------------------------------ main menu (toolbar)
+    const textsOf = (sel: string): string[] => Array.prototype.map.call(doc.querySelectorAll(sel), (e: Element) => (e.textContent || '').trim()) as string[];
+    /** show the entries of every section of the model outline (the tests below pick entries from all of them) */
+    const expandOutline = (): void => {
+      for (let n = 0; n < 2 && q('#outline [data-section][data-folded="true"]'); n++) click('#outline [data-act="fold-all"]');
+    };
+    {
+      const bar = 'header.topbar';
+      const menuBtn = q('#menu-btn') as HTMLButtonElement | null;
+      const menu = q('#main-menu') as HTMLElement | null;
+      const direct = ['#btn-undo', '#btn-redo', '[data-view-btn="physical"]', '[data-view-btn="logical"]', '#btn-arrange', '#search', '#btn-model', '#menu-btn'];
+      check(
+        'toolbar: logo and version, a File menu, "Current model", and undo/redo, Physical/Logical, Auto-arrange and Find as direct controls',
+        !!q(bar + ' .brand svg') && /^v\d+\.\d+\.\d+/.test((q(bar + ' .brand .version') || { textContent: '' }).textContent || '') && !!menuBtn && /^File/.test((menuBtn.textContent || '').trim()) &&
+          direct.every((d) => !!q(bar + ' ' + d) && !(q(bar + ' ' + d) as HTMLElement).closest('.dropdown') && (q(bar + ' ' + d) as HTMLElement).getBoundingClientRect().width > 10) &&
+          /^Current model/.test((q('#btn-model') as HTMLElement).textContent || '') && (q('#btn-model') as HTMLButtonElement).disabled,
+      );
+      check(
+        'New, Open, Download and the examples are grouped in the File menu and nowhere else in the toolbar',
+        !!menu && menu.hidden && menuBtn!.getAttribute('aria-expanded') === 'false' && ['#btn-new', '#open', '#btn-download', '#menu-examples'].every((x) => !!q('#main-menu ' + x)) && !q('#examples') && !q(bar + ' select') &&
+          doc.querySelectorAll(bar + ' > button, ' + bar + ' > .btn-group > button').length === 3,
+        String(doc.querySelectorAll(bar + ' > button, ' + bar + ' > .btn-group > button').length),
+      );
+      click('#menu-btn');
+      const entries = textsOf('#main-menu button');
+      const mr = menu!.getBoundingClientRect();
+      check(
+        'the File menu opens under its button with plainly named entries: New model, Open YAML file…, Download YAML, then the examples',
+        !menu!.hidden && menuBtn!.getAttribute('aria-expanded') === 'true' && mr.height > 100 && mr.top >= menuBtn!.getBoundingClientRect().bottom - 1 && /^New model/.test(entries[0]) && /^Open YAML file…/.test(entries[1]) && /^Download YAML/.test(entries[2]) &&
+          entries.length === 3 + EXAMPLES.length && entries.slice(3).join() === EXAMPLES.map((e) => e.name).join() && /Open an example/.test(menu!.textContent || '') && (q('#btn-download') as HTMLButtonElement).disabled,
+        entries.join(' | '),
+      );
+      menuBtn!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      const byEsc = menu!.hidden;
+      click('#menu-btn');
+      (q('#canvas') as unknown as Element).dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, pointerId: 9 }));
+      const byOutside = menu!.hidden;
+      menuBtn!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+      const focused = doc.activeElement === q('#btn-new');
+      (q('#btn-new') as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+      const moved = doc.activeElement === q('#open');
+      (q('#open') as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      check('the File menu closes with Escape and when something else is pressed; arrow keys open it and move between entries', byEsc && byOutside && focused && moved && menu!.hidden && doc.activeElement === menuBtn, `${byEsc} ${byOutside} ${focused} ${moved}`);
+      click('#menu-btn');
+      click('#menu-examples [data-example="2"]');
+      await tick(10);
+      check('choosing an example from the menu loads it and closes the menu', menu!.hidden && !!app.mdoc && app.mdoc.fileName === EXAMPLES[2].name && !(q('#btn-download') as HTMLButtonElement).disabled, app.mdoc ? app.mdoc.fileName : 'nothing loaded');
+
+      // "Current model": the edit view of the whole model
+      const mb = q('#btn-model') as HTMLButtonElement;
+      app.select('device:r1');
+      const before = mb.getAttribute('aria-pressed');
+      click('#btn-model');
+      await tick();
+      const head = (q('#side-body .insp-head') || { textContent: '' }).textContent || '';
+      check(
+        '"Current model" opens the edit view of the entire model (title, description), whatever was selected before',
+        !mb.disabled && before === 'false' && mb.getAttribute('aria-pressed') === 'true' && doc.body.getAttribute('data-state') === 'loaded' && !!q('[data-tab="edit"].active') && /^model/.test(head) && /Minimal example/.test(head) &&
+          !!q('#side-body [data-p=\'["title"]\']') && !!q('#side-body [data-p=\'["description"]\']') && app.session!.state.selected === null,
+        head,
+      );
+      await setField('#side-body [data-p=\'["title"]\']', 'Renamed model');
+      check('the title is edited there and the button names the model', /Renamed model/.test(mb.title) && (app.mdoc as ModelDoc).text(['title']) === 'Renamed model' && mb.getAttribute('aria-pressed') === 'true');
+      check(
+        'the model outline has no "Document" entry, and the interface says "model", not "document"',
+        !q('#outline .ol-doc') && !q('#outline [data-kind="document"]') && !/Document/.test(q('#outline')!.textContent || '') && !/[Dd]ocument/.test(q('#side-body')!.textContent || '') && !/[Dd]ocument/.test(q('header.topbar')!.textContent || ''),
+      );
+      (app.mdoc as ModelDoc).markSaved();
+
+      // ---------------------------------------------- collapsible outline sections
+      app.loadExample(EXAMPLES.findIndex((e) => /enterprise-wan/.test(e.name)));
+      await tick();
+      const m0 = app.session!.model;
+      const sec = (k: string): HTMLElement => q(`#outline [data-section="${k}"]`) as HTMLElement;
+      const folded = (): string => (Array.prototype.map.call(doc.querySelectorAll('#outline [data-section]'), (e: Element) => e.getAttribute('data-section') + '=' + e.getAttribute('data-folded')) as string[]).join();
+      const shownIn = (k: string): number => sec(k).querySelectorAll('.ol-item').length;
+      const toggle = (k: string): HTMLElement => sec(k).querySelector('[data-act="fold"]') as HTMLElement;
+      check(
+        'outline sections fold: Links and Protocols start folded to a heading with their count, the others are open',
+        folded() === 'device=false,link=true,network=false,relation=false,group=false,protocol=true' && shownIn('link') === 0 && shownIn('device') === m0.devices.length && new RegExp(`\\(${m0.links.length}\\)`).test(toggle('link').textContent || '') &&
+          toggle('link').getAttribute('aria-expanded') === 'false' && toggle('device').getAttribute('aria-expanded') === 'true' && !!sec('link').querySelector('[data-act="add-entity"]'),
+        folded(),
+      );
+      toggle('link').click();
+      const opened = shownIn('link') === m0.links.length && toggle('link').getAttribute('aria-expanded') === 'true';
+      toggle('device').click();
+      check('a heading toggles its section; folding changes nothing in the model', opened && shownIn('device') === 0 && folded().indexOf('device=true,link=false') === 0 && !(app.mdoc as ModelDoc).dirty && (app.mdoc as ModelDoc).canUndo() === null, folded());
+      click('#outline [data-act="fold-all"]');
+      const allFolded = doc.querySelectorAll('#outline .ol-item').length === 0 && doc.querySelectorAll('#outline [data-section][data-folded="true"]').length === 6 && /Expand all/.test(q('#outline [data-act="fold-all"]')!.textContent || '');
+      // what would be lost from view stays: the selected entry, and what is related to it as a count
+      app.select('device:hq-rtr1');
+      const selShown = textsOf('#outline .ol-item .ol-label').join() === 'hq-rtr1' && !!q('#outline .ol-item.ctx-selected');
+      const relatedMark = (toggle('link').querySelector('.ol-related') || { textContent: '' }).textContent || '';
+      check('"Collapse all" folds every section; a folded section still shows the selected entry and how many of its entries are related', allFolded && selShown && /^• \d+$/.test(relatedMark), `${allFolded} ${selShown} "${relatedMark}"`);
+      app.select(null);
+      // the filter looks into folded sections
+      const filter = q('#outline [data-t="outline-filter"]') as HTMLInputElement;
+      filter.value = 'isp1';
+      filter.dispatchEvent(new Event('input', { bubbles: true }));
+      await tick();
+      const found = textsOf('#outline .ol-item');
+      const f2 = q('#outline [data-t="outline-filter"]') as HTMLInputElement;
+      f2.value = '';
+      f2.dispatchEvent(new Event('input', { bubbles: true }));
+      await tick();
+      check('the filter finds entries in folded sections', found.length >= 3 && found.every((x) => /isp1/i.test(x)) && doc.querySelectorAll('#outline .ol-item').length === 0, found.join(' | '));
+      // errors inside a folded section are counted on its heading
+      const broken = app.loadText('netatlas: 1\ndevices:\n  - {id: a, interfaces: [e0]}\nlinks:\n  - {id: l1, a: "a:e0", b: nowhere}\n', 'broken-link.yaml', 'file');
+      const badge = (sec('link').querySelector('[data-act="fold"] .ol-badge.err') || { textContent: '' }).textContent || '';
+      check('a folded section shows the number of problems inside it on its heading', broken.ok && badge === '1' && shownIn('link') === 0, badge);
+      // adding to a folded section opens it
+      sec('network').querySelector<HTMLElement>('[data-act="add-entity"]')!.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, pointerId: 4 }));
+      await tick();
+      check('"+ Add" on a folded section opens it and shows the new entry', sec('network').getAttribute('data-folded') === 'false' && shownIn('network') === 1);
+      (app.mdoc as ModelDoc).markSaved();
+      expandOutline();
+      check('"Expand all" opens every section again', doc.querySelectorAll('#outline [data-section][data-folded="true"]').length === 0 && /Collapse all/.test(q('#outline [data-act="fold-all"]')!.textContent || ''));
+    }
+
     // ------------------------------------------------ viewer: every example
     for (let i = 0; i < EXAMPLES.length; i++) {
       const ex = EXAMPLES[i];
@@ -155,6 +274,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const res = await app.loadFile(file);
       check(`${ex.name}: loads via File API without errors`, res.ok && !res.errors.length, res.errors.map((e) => `line ${e.line}: ${e.message}`).join('; '));
       if (!res.ok || !app.session) continue;
+      expandOutline();
       const m = app.session.model;
 
       click('[data-view-btn="physical"]');
@@ -361,7 +481,6 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         check('the diagram on screen has no Networks box drawn into it (export only)', !q('#canvas .svg-networks'));
       }
       // a model with several disconnected components and an unconnected device
-      const cur = (q('#examples') as HTMLSelectElement).value;
       app.loadExample(EXAMPLES.findIndex((e) => e.name === 'metro-ring.yaml'));
       const mP = measure(app.exportSvg());
       click('[data-view-btn="logical"]');
@@ -396,7 +515,6 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       }
       check('the diagram on screen has no legend drawn into it (export only)', !q('#canvas .svg-legend'));
       app.loadExample(EXAMPLES.findIndex((e) => /enterprise-wan/.test(e.name)));
-      void cur;
       click('[data-view-btn="logical"]');
     }
     click('[data-view-btn="physical"]');
@@ -1204,9 +1322,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
 
     // unsaved-change guards
     await setField('#side-body [data-p=\'["devices",3,"description"]\']', 'Primary edge router (MX304)');
-    const sel = q('#examples') as HTMLSelectElement;
-    sel.value = '0';
-    sel.dispatchEvent(new Event('change', { bubbles: true }));
+    click('#menu-examples [data-example="0"]');
     await tick(10);
     check('replacing a dirty model asks first', !!q('#modal[open]') && /Unsaved changes/.test(q('#modal')!.textContent || ''));
     await answerDialog('cancel');

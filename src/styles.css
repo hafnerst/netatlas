@@ -86,9 +86,9 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .topbar {
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
   padding: 6px 12px; background: var(--panel); border-bottom: 1px solid var(--border);
-  /* a narrow window wraps the toolbar onto more rows; in a very small one it
-     scrolls by itself rather than taking the whole window */
-  max-height: 45vh; max-height: 45dvh; overflow-y: auto; min-width: 0;
+  /* a narrow window wraps the toolbar onto more rows. It must not scroll or
+     clip: its menus and the search results open below it, over the page. */
+  min-width: 0;
 }
 .brand { display: flex; align-items: center; gap: 6px; font-weight: 700; font-size: 15px; margin-right: 6px; }
 .brand svg { fill: var(--accent); stroke: var(--accent); stroke-width: 1.6; }
@@ -104,7 +104,8 @@ body:not([data-view="logical"]) .logical-only { display: none; }
 .search-wrap { position: relative; }
 #search { width: 220px; padding: 4px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--canvas); }
 .dropdown {
-  position: absolute; top: 100%; left: 0; z-index: 20; min-width: 300px; max-height: 360px; overflow: auto;
+  position: absolute; top: 100%; left: 0; z-index: 20; min-width: min(300px, calc(100vw - 16px)); max-width: calc(100vw - 16px);
+  max-height: min(360px, calc(100vh - 90px)); max-height: min(360px, calc(100dvh - 90px)); overflow: auto;
   background: var(--panel); border: 1px solid var(--border); border-radius: 8px; margin-top: 4px; padding: 4px;
   box-shadow: 0 8px 24px rgba(0,0,0,.18);
 }
@@ -112,6 +113,22 @@ body:not([data-view="logical"]) .logical-only { display: none; }
 .dropdown button:hover { background: var(--accent-soft); }
 .dropdown .kind { color: var(--muted); min-width: 64px; font-size: 11px; text-transform: uppercase; letter-spacing: .03em; padding-top: 1px; }
 .dropdown > div { padding: 6px 8px; }
+/* the File menu */
+.menu-wrap { position: relative; }
+.menu-btn { font-weight: 600; }
+.menu-btn.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.menu-btn .caret { font-size: 10px; margin-left: 2px; }
+.dropdown.menu { min-width: min(270px, calc(100vw - 16px)); max-width: min(360px, calc(100vw - 16px)); max-height: calc(100vh - 70px); max-height: calc(100dvh - 70px); }
+.dropdown.menu button { align-items: baseline; justify-content: space-between; border-radius: 5px; background: none; }
+.dropdown.menu button:hover:not(:disabled), .dropdown.menu button:focus-visible { background: var(--accent-soft); }
+.dropdown.menu .mi-label { overflow-wrap: anywhere; }
+.dropdown.menu .mi-hint { color: var(--muted); font-size: 11px; white-space: nowrap; }
+.dropdown.menu > .menu-sep { height: 1px; padding: 0; margin: 4px 2px; background: var(--border); }
+.dropdown.menu > .menu-title { padding: 4px 8px 2px; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+.dropdown.menu > #menu-examples { padding: 0; }
+/* "Current model": opens the settings of the whole model */
+.model-btn { display: inline-flex; align-items: center; gap: 6px; }
+.model-btn.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 600; }
 
 main { display: grid; grid-template-columns: 250px minmax(0, 1fr) 410px; grid-template-rows: minmax(0, 1fr); min-height: 0; min-width: 0; overflow: hidden; }
 #canvas-wrap { position: relative; min-width: 0; min-height: 0; overflow: hidden; background: var(--canvas); }
@@ -205,6 +222,7 @@ button.ref:hover { text-decoration: underline; }
 @media (max-height: 560px) {
   .keys { display: none; }
   .topbar { padding-top: 3px; padding-bottom: 3px; gap: 5px; }
+  .dropdown.menu { max-height: calc(100vh - 44px); max-height: calc(100dvh - 44px); }
   #side-body { padding-top: 6px; padding-bottom: 8px; }
 }
 
@@ -293,7 +311,16 @@ body[data-dirty="true"] #btn-download { border-color: var(--warn); box-shadow: i
 .ol-item { display: flex; width: 100%; align-items: center; gap: 6px; border: 0; background: none; border-radius: 5px; padding: 3px 6px; text-align: left; }
 .ol-item:hover { background: var(--accent-soft); }
 .ol-item.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
-.ol-doc { font-weight: 600; }
+/* a section folds to its heading: the heading is a button (caret, title, count) next to "+ Add" */
+.ol-tools { display: flex; justify-content: flex-end; margin: 0 0 2px; }
+.ol-toggle { flex: 1; min-width: 0; display: flex; align-items: center; gap: 5px; border: 0; background: none; border-radius: 5px; padding: 2px 4px; text-align: left; font: inherit; text-transform: inherit; letter-spacing: inherit; color: inherit; }
+.ol-toggle:hover { background: var(--accent-soft); color: var(--text); }
+.ol-caret { width: 10px; flex: none; font-size: 10px; }
+.ol-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ol-related { flex: none; color: var(--accent); letter-spacing: 0; }
+.ol-toggle .ol-badge { letter-spacing: 0; }
+.ol-head { gap: 4px; }
+.ol-section.folded { margin-top: 4px; }
 /* selection context in the element lists: shape and weight as well as colour */
 .ctx-mark { width: 10px; flex: none; text-align: center; color: var(--accent); font-weight: 700; }
 .ol-item.ctx-selected { background: var(--accent-soft); color: var(--accent); font-weight: 600; box-shadow: inset 3px 0 0 var(--accent); }
