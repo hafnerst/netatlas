@@ -366,12 +366,87 @@ export class App {
       ],
     });
     if (a !== 'download') return false;
-    const name = safeYamlFileName(nameInput.value, this.suggestedFileName());
+    this.downloadNow(safeYamlFileName(nameInput.value, this.suggestedFileName()));
+    return true;
+  }
+
+  /** Export the current model as YAML into a download with this name, and mark it as saved. */
+  private downloadNow(name: string): void {
+    const d = this.mdoc;
+    if (!d) return;
     downloadText(this.doc, this.exportText(), name, 'application/yaml');
     d.markSaved();
     this.updateChrome();
     this.toast(`Downloaded “${name}”.`);
+  }
+
+  /**
+   * File → Close model: leave the current model and show the start screen.
+   * With unsaved changes it asks first: download the model and close, close
+   * without downloading, or stay. Resolves true when the model was closed.
+   */
+  async closeModelDialog(): Promise<boolean> {
+    const d = this.mdoc;
+    if (!d) return false;
+    if (d.dirty) {
+      const name = this.suggestedFileName();
+      const where =
+        d.origin === 'file'
+          ? `“Download and close” saves the current state as a new file, “${name}”, in your browser’s downloads location; the file you opened is not overwritten.`
+          : `“Download and close” saves it as “${name}” in your browser’s downloads location.`;
+      const body: Array<Node | string> = [
+        el(this.doc, 'p', {}, [`“${d.fileName}” has changes that have not been downloaded. They exist only in this page and are lost when the model is closed.`]),
+        el(this.doc, 'p', {}, [where]),
+      ];
+      if (d.errors.length) {
+        body.push(el(this.doc, 'div', { class: 'dl-warn' }, [el(this.doc, 'b', {}, [`The model has ${d.errors.length} validation error${d.errors.length > 1 ? 's' : ''}.`]), ' The file is saved exactly as it is; netatlas will report the errors when it is opened again.']));
+      }
+      const a = await this.dialog({
+        title: 'Close the model with unsaved changes?',
+        body,
+        buttons: [
+          { label: 'Cancel', value: 'cancel' },
+          { label: 'Discard changes', value: 'discard', kind: 'danger' },
+          { label: 'Download and close', value: 'download', kind: 'primary' },
+        ],
+      });
+      // the model may have been replaced while the dialog was open
+      if (this.mdoc !== d) return false;
+      if (a === 'download') this.downloadNow(name);
+      else if (a !== 'discard') return false;
+    }
+    this.closeModel();
     return true;
+  }
+
+  /**
+   * Close the current model without asking and show the start screen.
+   * Everything that belonged to it goes with it: selection, view, filters,
+   * zoom, open cards, the YAML draft. The next model starts clean.
+   */
+  closeModel(): void {
+    this.mdoc = null;
+    this.session = null;
+    this.loadErrors = [];
+    this.loadErrorName = '';
+    this.sourceLines = [];
+    this.errorRefs.clear();
+    this.editor.reset();
+    this.tab = 'legend';
+    this.zoom = { k: 1, tx: 0, ty: 0 };
+    this.bounds = { x: 0, y: 0, w: 1, h: 1 };
+    const search = this.$<HTMLInputElement>('search');
+    search.value = '';
+    const results = this.$('search-results');
+    results.hidden = true;
+    while (results.firstChild) results.removeChild(results.firstChild);
+    this.$('tooltip').hidden = true;
+    this.openMenu(null);
+    this.svg.classList.remove('has-selection');
+    this.render();
+    this.applyZoom();
+    this.renderOutline();
+    this.updateChrome();
   }
 
 
@@ -698,6 +773,7 @@ export class App {
     (this.$('btn-undo') as HTMLButtonElement).disabled = !d || !d.canUndo();
     (this.$('btn-redo') as HTMLButtonElement).disabled = !d || !d.canRedo();
     (this.$('btn-download') as HTMLButtonElement).disabled = !d;
+    (this.$('btn-close') as HTMLButtonElement).disabled = !d;
     // exporting needs a diagram: a model that could be drawn
     const ex = this.$('btn-export-svg') as HTMLButtonElement;
     ex.disabled = !s;
@@ -824,6 +900,7 @@ export class App {
     this.$('btn-new').addEventListener('click', () => void newModel());
     this.$('new-empty').addEventListener('click', () => void newModel());
     this.$('btn-download').addEventListener('click', () => void this.downloadDialog());
+    this.$('btn-close').addEventListener('click', () => void this.closeModelDialog());
     this.$('btn-undo').addEventListener('click', () => this.undo());
     this.$('btn-redo').addEventListener('click', () => this.redo());
     this.$('errors').addEventListener('click', (e) => {

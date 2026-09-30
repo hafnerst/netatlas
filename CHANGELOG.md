@@ -8,6 +8,23 @@ releases may still change behaviour; the YAML format has its own version
 
 ## [Unreleased]
 
+### Added: Close model, port ranges
+
+* **File → Close model**, right after *Download model…*: closes the current
+  model and shows the start screen. Unavailable while no model is open. With
+  unsaved changes it asks: **Download and close** (exports the YAML first),
+  **Discard changes** or **Cancel** (nothing changes). The prompt says that a
+  download is a new file and that an opened file is not overwritten. Closing
+  clears the selection, view, filters, folding, zoom and search.
+* **+ Port Range** beside **+ Interface** in a device's physical interfaces:
+  enter a *From* and a *To* name (`ge 1/1` … `ge 1/24`), see the ports in a
+  preview, and create them in one undoable step. The final number is the
+  port number and the prefix must match. Missing numbers, different
+  prefixes, a first number that isn't lower, duplicates on the device and
+  ranges above 256 ports are rejected as a whole with the reason. Only
+  physical interfaces are created; a name with characters an id can't have
+  (a space) becomes the label and gets an id with "-" instead.
+
 ### Changed: start screen and Export menu
 
 * **New start screen.** Before a model is open the page shows the NetAtlas

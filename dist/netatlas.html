@@ -479,6 +479,14 @@ dialog#modal::backdrop { background: rgba(0,0,0,.35); }
 .modal-inner h2 { margin: 0 0 10px; font-size: 17px; }
 .modal-body { flex: 1 1 auto; min-height: 0; max-height: 60vh; overflow: auto; }
 .modal-body p { margin: 0 0 8px; }
+/* "+ Port Range": two names, and a preview of what they create */
+.range-form { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.range-form label { flex: 1 1 160px; display: flex; flex-direction: column; gap: 3px; font-weight: 600; }
+.range-form input { width: 100%; padding: 4px 7px; border: 1px solid var(--border); border-radius: 5px; background: var(--canvas); font-weight: 400; }
+.range-preview { min-height: 58px; margin-bottom: 8px; padding: 7px 9px; border: 1px solid var(--border); border-radius: 7px; background: var(--canvas); }
+.range-preview[data-state="error"] { border-color: var(--error); }
+.range-count { font-weight: 600; margin-bottom: 3px; }
+.range-list { max-height: 96px; overflow: auto; font-size: 12px; overflow-wrap: anywhere; }
 .modal-btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
 .dl-label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--muted); }
 .dl-label input { padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--canvas); color: var(--text); font-size: 13px; }
@@ -517,6 +525,7 @@ dialog#modal::backdrop { background: rgba(0,0,0,.35); }
       <button id="btn-new" type="button" role="menuitem" title="Start a new, empty model"><span class="mi-label">New model</span></button>
       <button id="open" type="button" role="menuitem" title="Open a model from a YAML file on this computer (nothing is uploaded)"><span class="mi-label">Open model…</span></button>
       <button id="btn-download" type="button" role="menuitem" title="Download the current model as a YAML file (Ctrl+S)" disabled><span class="mi-label">Download model…</span><span class="mi-hint">Ctrl+S</span></button>
+      <button id="btn-close" type="button" role="menuitem" title="Close the current model and return to the start screen" disabled><span class="mi-label">Close model</span></button>
       <div class="menu-sep" role="separator"></div>
       <div class="menu-title" id="menu-examples-title">Examples</div>
       <div id="menu-examples" role="group" aria-labelledby="menu-examples-title"></div>
@@ -1021,12 +1030,89 @@ class App {
         });
         if (a !== 'download')
             return false;
-        const name = (0, files_1.safeYamlFileName)(nameInput.value, this.suggestedFileName());
+        this.downloadNow((0, files_1.safeYamlFileName)(nameInput.value, this.suggestedFileName()));
+        return true;
+    }
+    /** Export the current model as YAML into a download with this name, and mark it as saved. */
+    downloadNow(name) {
+        const d = this.mdoc;
+        if (!d)
+            return;
         (0, files_1.downloadText)(this.doc, this.exportText(), name, 'application/yaml');
         d.markSaved();
         this.updateChrome();
         this.toast(`Downloaded “${name}”.`);
+    }
+    /**
+     * File → Close model: leave the current model and show the start screen.
+     * With unsaved changes it asks first: download the model and close, close
+     * without downloading, or stay. Resolves true when the model was closed.
+     */
+    async closeModelDialog() {
+        const d = this.mdoc;
+        if (!d)
+            return false;
+        if (d.dirty) {
+            const name = this.suggestedFileName();
+            const where = d.origin === 'file'
+                ? `“Download and close” saves the current state as a new file, “${name}”, in your browser’s downloads location; the file you opened is not overwritten.`
+                : `“Download and close” saves it as “${name}” in your browser’s downloads location.`;
+            const body = [
+                (0, dom_1.el)(this.doc, 'p', {}, [`“${d.fileName}” has changes that have not been downloaded. They exist only in this page and are lost when the model is closed.`]),
+                (0, dom_1.el)(this.doc, 'p', {}, [where]),
+            ];
+            if (d.errors.length) {
+                body.push((0, dom_1.el)(this.doc, 'div', { class: 'dl-warn' }, [(0, dom_1.el)(this.doc, 'b', {}, [`The model has ${d.errors.length} validation error${d.errors.length > 1 ? 's' : ''}.`]), ' The file is saved exactly as it is; netatlas will report the errors when it is opened again.']));
+            }
+            const a = await this.dialog({
+                title: 'Close the model with unsaved changes?',
+                body,
+                buttons: [
+                    { label: 'Cancel', value: 'cancel' },
+                    { label: 'Discard changes', value: 'discard', kind: 'danger' },
+                    { label: 'Download and close', value: 'download', kind: 'primary' },
+                ],
+            });
+            // the model may have been replaced while the dialog was open
+            if (this.mdoc !== d)
+                return false;
+            if (a === 'download')
+                this.downloadNow(name);
+            else if (a !== 'discard')
+                return false;
+        }
+        this.closeModel();
         return true;
+    }
+    /**
+     * Close the current model without asking and show the start screen.
+     * Everything that belonged to it goes with it: selection, view, filters,
+     * zoom, open cards, the YAML draft. The next model starts clean.
+     */
+    closeModel() {
+        this.mdoc = null;
+        this.session = null;
+        this.loadErrors = [];
+        this.loadErrorName = '';
+        this.sourceLines = [];
+        this.errorRefs.clear();
+        this.editor.reset();
+        this.tab = 'legend';
+        this.zoom = { k: 1, tx: 0, ty: 0 };
+        this.bounds = { x: 0, y: 0, w: 1, h: 1 };
+        const search = this.$('search');
+        search.value = '';
+        const results = this.$('search-results');
+        results.hidden = true;
+        while (results.firstChild)
+            results.removeChild(results.firstChild);
+        this.$('tooltip').hidden = true;
+        this.openMenu(null);
+        this.svg.classList.remove('has-selection');
+        this.render();
+        this.applyZoom();
+        this.renderOutline();
+        this.updateChrome();
     }
     // ------------------------------------------------------------ rendering
     setView(v) {
@@ -1352,6 +1438,7 @@ class App {
         this.$('btn-undo').disabled = !d || !d.canUndo();
         this.$('btn-redo').disabled = !d || !d.canRedo();
         this.$('btn-download').disabled = !d;
+        this.$('btn-close').disabled = !d;
         // exporting needs a diagram: a model that could be drawn
         const ex = this.$('btn-export-svg');
         ex.disabled = !s;
@@ -1480,6 +1567,7 @@ class App {
         this.$('btn-new').addEventListener('click', () => void newModel());
         this.$('new-empty').addEventListener('click', () => void newModel());
         this.$('btn-download').addEventListener('click', () => void this.downloadDialog());
+        this.$('btn-close').addEventListener('click', () => void this.closeModelDialog());
         this.$('btn-undo').addEventListener('click', () => this.undo());
         this.$('btn-redo').addEventListener('click', () => this.redo());
         this.$('errors').addEventListener('click', (e) => {
@@ -2069,8 +2157,10 @@ function restoreFocus(doc, f) {
 __defs["editor/document"] = function (module, exports) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.ModelDoc = exports.NEW_MODEL_YAML = exports.KEY_ORDER = exports.SECTION = exports.ENTITY_KINDS = exports.MAX_INPUT_BYTES = exports.setKey = void 0;
+exports.MAX_PORT_RANGE = exports.ModelDoc = exports.NEW_MODEL_YAML = exports.KEY_ORDER = exports.SECTION = exports.ENTITY_KINDS = exports.MAX_INPUT_BYTES = exports.setKey = void 0;
 exports.kindOfSection = kindOfSection;
+exports.portIdFor = portIdFor;
+exports.portRange = portRange;
 exports.ifaceSchemaKind = ifaceSchemaKind;
 const positions_1 = __req("layout/positions");
 const input_1 = __req("layout/input");
@@ -3153,6 +3243,56 @@ class ModelDoc {
         return this.change('Add interface', () => this.newIface(devIndex, 'interfaces', fields, base));
     }
     /**
+     * What "+ Port Range" would create on a device: the ports of the range,
+     * checked against the device's existing interfaces. A name or id that is
+     * already used on the device (as the id or the label of any interface,
+     * physical or logical) makes the whole range invalid.
+     */
+    planPortRange(devIndex, from, to) {
+        const plan = portRange(from, to);
+        if (!plan.ok)
+            return plan;
+        const entries = this.interfaceEntries(devIndex);
+        const used = new Set();
+        for (const e of entries) {
+            if (e.id)
+                used.add(e.id);
+            const label = this.text(e.path.concat('label'));
+            if (label)
+                used.add(label);
+        }
+        const taken = plan.ports.filter((p) => used.has(p.id) || used.has(p.name));
+        if (taken.length) {
+            const shown = taken.slice(0, 4).map((p) => p.name);
+            return { ok: false, error: `Already on this device: ${shown.join(', ')}${taken.length > shown.length ? ` and ${taken.length - shown.length} more` : ''}. Nothing is created.` };
+        }
+        if (entries.length + plan.ports.length > MAX_DEVICE_INTERFACES) {
+            return { ok: false, error: `The device would have ${entries.length + plan.ports.length} interfaces; the limit is ${MAX_DEVICE_INTERFACES}.` };
+        }
+        return plan;
+    }
+    /**
+     * Add the physical interfaces of a range to a device, all in one undoable
+     * step, or none if the range is not valid. Each port is only an id (and a
+     * label, when its name as typed is not a valid id): no address, VLAN or
+     * link is created.
+     */
+    addPortRange(devIndex, from, to) {
+        const plan = this.planPortRange(devIndex, from, to);
+        if (!plan.ok)
+            return plan;
+        this.change(`Add ${plan.ports.length} ports`, () => {
+            const list = this.ensureSeq(['devices', devIndex, 'interfaces'], false, exports.KEY_ORDER.device);
+            for (const p of plan.ports) {
+                const entries = [['id', (0, parse_1.strNode)(p.id)]];
+                if (p.name !== p.id)
+                    entries.push(['label', (0, parse_1.strNode)(p.name)]);
+                list.items.push((0, parse_1.mapNode)(entries, true));
+            }
+        });
+        return plan;
+    }
+    /**
      * Add a logical interface of the given type (loopback, virtual or tunnel);
      * returns its index in the device's `logical_interfaces` list. Only the id
      * and the type are set unless fields are given.
@@ -3174,6 +3314,62 @@ class ModelDoc {
     }
 }
 exports.ModelDoc = ModelDoc;
+/** Largest number of ports one range may create. */
+exports.MAX_PORT_RANGE = 256;
+/** Interfaces a device may have in total (the validator's limit). */
+const MAX_DEVICE_INTERFACES = 512;
+/** The interface id for a port name: characters an id can't contain (a space …) become "-". */
+function portIdFor(name) {
+    return name.replace(/[^A-Za-z0-9_.\-\/]+/g, '-');
+}
+/**
+ * The ports of a range "from … to": the final number of each name is the
+ * port number, and everything before it must be identical in both names.
+ * "ge 1/1" to "ge 1/24" gives ge 1/1, ge 1/2 … ge 1/24. A number written
+ * with leading zeros ("port01") keeps its width. Returns either the whole
+ * list or the reason why there is none: never a part of a range.
+ */
+function portRange(from, to) {
+    const a = from.trim();
+    const b = to.trim();
+    if (!a || !b)
+        return { ok: false, error: 'Enter the first and the last port name, e.g. ge 1/1 and ge 1/24.' };
+    const pa = /^(.*?)([0-9]+)$/.exec(a);
+    const pb = /^(.*?)([0-9]+)$/.exec(b);
+    if (!pa)
+        return { ok: false, error: `“${a}” does not end in a port number (e.g. ge 1/1).` };
+    if (!pb)
+        return { ok: false, error: `“${b}” does not end in a port number (e.g. ge 1/24).` };
+    if (pa[1] !== pb[1])
+        return { ok: false, error: `The part before the port number must be the same in both names: “${pa[1]}” and “${pb[1]}” differ.` };
+    if (pa[2].length > 9 || pb[2].length > 9)
+        return { ok: false, error: 'The port number is too large.' };
+    const first = Number(pa[2]);
+    const last = Number(pb[2]);
+    if (first >= last)
+        return { ok: false, error: `The first port number (${first}) must be lower than the last (${last}).` };
+    const count = last - first + 1;
+    if (count > exports.MAX_PORT_RANGE)
+        return { ok: false, error: `This range has ${count} ports; one range can create at most ${exports.MAX_PORT_RANGE}.` };
+    // leading zeros in the first number fix the width ("01" … "24")
+    const width = pa[2].length > 1 && pa[2].charAt(0) === '0' ? pa[2].length : 0;
+    const ports = [];
+    for (let n = first; n <= last; n++) {
+        let num = String(n);
+        while (num.length < width)
+            num = '0' + num;
+        const name = pa[1] + num;
+        ports.push({ name, id: portIdFor(name) });
+    }
+    const bad = ports.filter((p) => !validate_1.IFACE_RE.test(p.id))[0];
+    if (bad) {
+        return {
+            ok: false,
+            error: `“${bad.name}” cannot be used as an interface name: an id has 1–64 characters from A–Z a–z 0–9 _ . - / and starts with a letter or digit.`,
+        };
+    }
+    return { ok: true, ports };
+}
 /** Schema kind of an interface path: devices[i].interfaces[k] or devices[i].logical_interfaces[k]. */
 function ifaceSchemaKind(path) {
     if (path.length !== 4 || path[0] !== 'devices' || typeof path[1] !== 'number' || typeof path[3] !== 'number')
@@ -8887,6 +9083,8 @@ function showDialog(doc, opts) {
             dlg.showModal();
         else
             dlg.setAttribute('open', '');
+        if (opts.ready)
+            opts.ready(dlg);
         const primary = btns.querySelector('.primary, .danger');
         if (primary && !bodyEl.querySelector('input'))
             primary.focus();
@@ -9356,7 +9554,10 @@ class Editor {
         const is = this.e('section', { class: 'sub', 'data-list': 'interfaces' }, [
             this.e('div', { class: 'sub-head' }, [
                 this.e('h4', {}, [`Physical interfaces (${phys.length})`]),
-                this.e('button', { type: 'button', class: 'mini', 'data-act': 'add-iface', 'data-index': String(devIndex) }, ['+ Interface']),
+                this.e('span', { class: 'ctl row' }, [
+                    this.e('button', { type: 'button', class: 'mini', 'data-act': 'add-iface', 'data-index': String(devIndex), title: 'Add one physical interface' }, ['+ Interface']),
+                    this.e('button', { type: 'button', class: 'mini', 'data-act': 'add-range', 'data-index': String(devIndex), title: 'Add a numbered range of physical interfaces, e.g. ge 1/1 to ge 1/24' }, ['+ Port Range']),
+                ]),
             ]),
             phys.length ? null : this.e('p', { class: 'muted small' }, ['The ports of the device. Only they can be cabled.']),
             notList('interfaces'),
@@ -9374,6 +9575,86 @@ class Editor {
         for (const e of logical)
             ls.appendChild(this.ifaceCard(devIndex, e));
         w.appendChild(ls);
+    }
+    /**
+     * "+ Port Range": ask for the first and the last port name, show what
+     * would be created while typing, and create the ports only when the whole
+     * range is valid. Cancel, or an invalid range, changes nothing.
+     */
+    async addPortRange(devIndex) {
+        const doc = this.doc;
+        const from = this.e('input', { type: 'text', id: 'range-from', spellcheck: 'false', autocomplete: 'off', placeholder: 'ge 1/1' });
+        const to = this.e('input', { type: 'text', id: 'range-to', spellcheck: 'false', autocomplete: 'off', placeholder: 'ge 1/24' });
+        const preview = this.e('div', { id: 'range-preview', class: 'range-preview', role: 'status', 'aria-live': 'polite' });
+        let create = null;
+        const refresh = () => {
+            while (preview.firstChild)
+                preview.removeChild(preview.firstChild);
+            const untouched = !from.value.trim() && !to.value.trim();
+            const plan = doc.planPortRange(devIndex, from.value, to.value);
+            preview.setAttribute('data-state', plan.ok ? 'ok' : untouched ? 'empty' : 'error');
+            if (plan.ok) {
+                const ports = plan.ports;
+                preview.appendChild(this.e('div', { class: 'range-count' }, [`${ports.length} physical interfaces will be created:`]));
+                preview.appendChild(this.e('div', { class: 'range-list ro' }, [ports.map((p) => p.name).join(', ')]));
+                if (ports.some((p) => p.id !== p.name)) {
+                    preview.appendChild(this.e('div', { class: 'help' }, [`An interface id cannot contain spaces: the ids are ${ports[0].id} … ${ports[ports.length - 1].id}, and the names as typed become the labels.`]));
+                }
+            }
+            else {
+                preview.appendChild(this.e('div', { class: untouched ? 'muted' : 'field-err' }, [untouched ? 'The last number of each name is the port number; everything before it must be the same.' : plan.error]));
+            }
+            if (create) {
+                create.disabled = !plan.ok;
+                create.textContent = plan.ok ? `Create ${plan.ports.length} ports` : 'Create ports';
+            }
+        };
+        const answer = await this.host.dialog({
+            title: 'Add a range of physical interfaces',
+            body: [
+                this.e('div', { class: 'range-form' }, [
+                    this.e('label', { class: 'dl-label' }, ['From ', from]),
+                    this.e('label', { class: 'dl-label' }, ['To ', to]),
+                ]),
+                preview,
+                this.e('p', { class: 'muted small' }, ['Only the interfaces are created: no addresses, VLANs or links. You can undo this with Ctrl+Z.']),
+            ],
+            buttons: [
+                { label: 'Cancel', value: 'cancel' },
+                { label: 'Create ports', value: 'create', kind: 'primary' },
+            ],
+            ready: (dialog) => {
+                create = dialog.querySelector('[data-value="create"]');
+                for (const input of [from, to]) {
+                    input.addEventListener('input', refresh);
+                    input.addEventListener('keydown', (e) => {
+                        if (e.key === 'Enter' && create && !create.disabled) {
+                            e.preventDefault();
+                            create.click();
+                        }
+                    });
+                }
+                refresh();
+            },
+        });
+        if (answer !== 'create')
+            return;
+        // checked again at the moment of creating: all ports, or none
+        const done = doc.addPortRange(devIndex, from.value, to.value);
+        if (!done.ok) {
+            this.host.toast(done.error);
+            return;
+        }
+        this.host.changed(`${done.ports.length} ports added (${done.ports[0].name} … ${done.ports[done.ports.length - 1].name}).`);
+    }
+    /** Forget everything that belonged to the model that was open: selection, open cards, filter, folded sections, YAML draft. */
+    reset() {
+        this.sel = null;
+        this.open.clear();
+        this.filter = '';
+        this.collapsed = new Set(['link', 'protocol']);
+        this.sourceDraft = null;
+        this.sourceError = null;
     }
     /** The kind of an interface entry: physical by its list, else the type written on it (virtual while it has none). */
     entryKind(e) {
@@ -10216,6 +10497,9 @@ class Editor {
                 this.host.changed('Physical interface added.');
                 return true;
             }
+            case 'add-range':
+                await this.addPortRange(index);
+                return true;
             case 'add-logical': {
                 const type = (btn.getAttribute('data-kind') || 'virtual');
                 const k = type === 'loopback' ? doc.addLoopback(index, []) : doc.addLogical(index, type);
@@ -12891,8 +13175,8 @@ async function runSelfTest(app, doc) {
             click('#menu-btn');
             const entries = textsOf('#main-menu button');
             const mr = menu.getBoundingClientRect();
-            check('the File menu opens under its button with consistently named entries: New model, Open model…, Download model…, then the examples', !menu.hidden && menuBtn.getAttribute('aria-expanded') === 'true' && mr.height > 100 && mr.top >= menuBtn.getBoundingClientRect().bottom - 1 && /^New model/.test(entries[0]) && /^Open model…$/.test(entries[1]) && /^Download model…/.test(entries[2]) && /Ctrl\+S$/.test(entries[2]) && entries[0] === 'New model' &&
-                entries.length === 3 + examples_1.EXAMPLES.length && entries.slice(3).join() === examples_1.EXAMPLES.map((e) => e.name).join() && /Examples/.test(q('#menu-examples-title').textContent || '') && examples_1.EXAMPLES.length === 6 && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(menu.textContent || '') && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(q('#empty').textContent || '') && q('#btn-download').disabled, entries.join(' | '));
+            check('the File menu opens under its button with consistently named entries: New model, Open model…, Download model…, Close model, then the examples', !menu.hidden && menuBtn.getAttribute('aria-expanded') === 'true' && mr.height > 100 && mr.top >= menuBtn.getBoundingClientRect().bottom - 1 && /^New model/.test(entries[0]) && /^Open model…$/.test(entries[1]) && /^Download model…/.test(entries[2]) && /Ctrl\+S$/.test(entries[2]) && entries[0] === 'New model' &&
+                entries.length === 4 + examples_1.EXAMPLES.length && entries[3] === 'Close model' && q('#btn-close').disabled && q('#btn-download').nextElementSibling === q('#btn-close') && entries.slice(4).join() === examples_1.EXAMPLES.map((e) => e.name).join() && /Examples/.test(q('#menu-examples-title').textContent || '') && examples_1.EXAMPLES.length === 6 && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(menu.textContent || '') && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(q('#empty').textContent || '') && q('#btn-download').disabled, entries.join(' | '));
             menuBtn.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
             const byEsc = menu.hidden;
             click('#menu-btn');
@@ -12932,15 +13216,8 @@ async function runSelfTest(app, doc) {
             }
             // ------------------------------------------------ start screen
             {
-                /** back to the state before any model was opened (the application has no "close model") */
-                const toStart = () => {
-                    const a = app;
-                    a.mdoc = null;
-                    a.session = null;
-                    a.render();
-                    a.renderOutline();
-                    a.updateChrome();
-                };
+                /** back to the start screen */
+                const toStart = () => app.closeModel();
                 const start = q('#empty');
                 const shownNow = (e) => !!e && e.getBoundingClientRect().width > 0 && e.getBoundingClientRect().height > 0;
                 const newBtn = q('#new-empty');
@@ -13066,6 +13343,175 @@ async function runSelfTest(app, doc) {
                 check('"Export current view as SVG" exports whichever view is selected, with the same content as before (legend and Networks box), and closes the menu', names.join() === 'minimal-logical.svg,minimal-physical.svg' && same.every((x) => x) && q('#export-menu').hidden, names.join() + ' ' + same.join());
                 check('the zoom bar has only zoom controls left', textsOf('.zoombar button').join('|') === '+|−|Fit' && !q('.zoombar #save-svg'));
                 toStart();
+            }
+            // ------------------------------------------------ File → Close model
+            {
+                const closeBtn = q('#btn-close');
+                const onStart = () => doc.body.getAttribute('data-state') === 'empty' && !app.mdoc && !app.session && q('#empty').getBoundingClientRect().height > 0;
+                const dialogText = () => (q('#modal[open]') ? q('#modal').textContent || '' : '');
+                const buttons = () => textsOf('#modal[open] .modal-btns button').join('|');
+                const choose = async () => {
+                    click('#menu-btn');
+                    closeBtn.click();
+                    await tick(20);
+                };
+                // a clean model closes at once: a new model, an opened file and an example alike
+                const clean = [];
+                click('#btn-new');
+                await tick(10);
+                const enabled = !closeBtn.disabled;
+                await choose();
+                clean.push(`new:${!q('#modal[open]') && onStart()}`);
+                await app.loadFile(new File([examples_1.EXAMPLES[2].text], 'mine.yaml'));
+                await choose();
+                clean.push(`file:${!q('#modal[open]') && onStart()}`);
+                app.loadExample(0);
+                await choose();
+                clean.push(`example:${!q('#modal[open]') && onStart()}`);
+                check('Close model is available once a model is open, and a model without unsaved changes closes at once and shows the start screen (new model, opened file, example)', enabled && closeBtn.disabled && clean.join() === 'new:true,file:true,example:true' && q('#main-menu').hidden, clean.join());
+                // unsaved changes: three choices. Cancel leaves the model and the editor untouched.
+                await app.loadFile(new File([examples_1.EXAMPLES[2].text], 'mine.yaml'));
+                app.select('device:r1');
+                await setField('#side-body [data-p=\'["devices",0,"label"]\']', 'Router one');
+                click('[data-view-btn="logical"]');
+                const kept = app.mdoc;
+                const stateBefore = [app.exportText(), app.session.state.view, app.session.state.selected, q('[data-tab].active').getAttribute('data-tab'), kept.canUndo(), q('#side-body [data-p=\'["devices",0,"label"]\']').value].join('|');
+                const had = downloads.length;
+                await choose();
+                const asked = dialogText();
+                const offered = buttons();
+                check('closing a model with unsaved changes asks: Cancel, Discard changes, or Download and close; it says the download is a new file and the opened file is not overwritten', /Close the model with unsaved changes\?/.test(asked) && offered === 'Cancel|Discard changes|Download and close' && /“mine\.yaml” has changes that have not been downloaded/.test(asked) && /saves the current state as a new file, “mine-edited\.yaml”, in your browser’s downloads location; the file you opened is not overwritten/.test(asked) &&
+                    !/save (it )?(back )?to the original|overwrite the original/i.test(asked), offered + ' // ' + asked);
+                await answerDialog('cancel');
+                await tick(30);
+                const stateAfter = [app.exportText(), app.session.state.view, app.session.state.selected, q('[data-tab].active').getAttribute('data-tab'), app.mdoc.canUndo(), q('#side-body [data-p=\'["devices",0,"label"]\']').value].join('|');
+                check('Cancel leaves the model and the editor untouched (same model, still unsaved, same view, selection, tab and form; nothing downloaded)', app.mdoc === kept && kept.dirty && stateAfter === stateBefore && downloads.length === had && doc.body.getAttribute('data-state') === 'loaded');
+                // Escape is Cancel
+                await choose();
+                q('#modal').dispatchEvent(new Event('cancel', { cancelable: true }));
+                await tick(30);
+                check('… and so does Escape', app.mdoc === kept && kept.dirty && !q('#modal[open]'));
+                // Download and close: the YAML is exported first, then the start screen
+                const yaml = app.exportText();
+                await choose();
+                await answerDialog('download');
+                for (let n = 0; n < 40 && downloads.length === had; n++)
+                    await tick(10);
+                const got = downloads[downloads.length - 1];
+                check('Download and close exports the current YAML (as a new file, not the original name) and then shows the start screen', downloads.length === had + 1 && !!got && got.name === 'mine-edited.yaml' && got.text === yaml && /label: Router one/.test(got.text) && onStart() && /Downloaded “mine-edited\.yaml”/.test(q('#toast').textContent || ''), got ? got.name : 'no download');
+                // Discard changes: nothing is exported
+                app.loadExample(2);
+                app.mdoc.setText(['title'], 'Changed example');
+                app.updateChrome();
+                await choose();
+                const exampleText = dialogText();
+                await answerDialog('discard');
+                await tick(30);
+                check('Discard changes closes without exporting; for an example the prompt does not talk about an opened file', onStart() && downloads.length === had + 1 && /“minimal\.yaml” has changes/.test(exampleText) && /saves it as “minimal\.yaml”/.test(exampleText) && !/file you opened/.test(exampleText), exampleText);
+                // a new model that was edited is asked about too, and keeps its errors in view
+                click('#btn-new');
+                await tick(10);
+                app.mdoc.addEntity('relation');
+                app.afterEdit();
+                await choose();
+                const newText = dialogText();
+                await answerDialog('cancel');
+                await tick(20);
+                check('a new model with unsaved changes is asked about as well, and the prompt mentions its validation errors', /“new-network\.yaml” has changes/.test(newText) && /The model has \d+ validation errors?\./.test(newText) && !!app.mdoc && app.mdoc.origin === 'new');
+                app.mdoc.markSaved();
+                // closing clears what belonged to the model, so the next one starts clean
+                app.loadExample(0);
+                click('[data-view-btn="logical"]');
+                app.select('device:hq-rtr1');
+                click('#outline [data-act="fold-all"]');
+                const filter = q('#outline [data-t="outline-filter"]');
+                filter.value = 'hq';
+                filter.dispatchEvent(new Event('input', { bubbles: true }));
+                q('#search').value = 'hq';
+                q('#search').dispatchEvent(new Event('input', { bubbles: true }));
+                q('#opt-networks').click();
+                click('#zoom-in');
+                click('[data-tab="yaml"]');
+                await choose();
+                const gone = onStart() && doc.querySelectorAll('#viewport *').length === 0 && q('#search').value === '' && q('#search-results').hidden && doc.body.getAttribute('data-view') === 'none';
+                app.loadExample(2);
+                const foldedNow = Array.prototype.map.call(doc.querySelectorAll('#outline [data-section]'), (e) => e.getAttribute('data-section') + '=' + e.getAttribute('data-folded')).join();
+                check('closing clears the selection and the view state: the next model opens in the physical view with nothing selected, no filter, default folding, all protocols and networks shown', gone && app.session.state.view === 'physical' && app.session.state.selected === null && app.session.state.showNetworks && app.session.state.hiddenProtocols.size === 0 && !q('#outline .ol-ctx-hint') &&
+                    q('#outline [data-t="outline-filter"]').value === '' && foldedNow === 'device=false,link=true,network=false,relation=false,group=false,protocol=true' && !q('[data-tab="yaml"].active') && !q('[data-tab="edit"].active') && !app.mdoc.dirty, `${gone} ${app.session.state.view} ${app.session.state.selected} ${foldedNow}`);
+                app.closeModel();
+            }
+            // ------------------------------------------------ + Port Range
+            {
+                click('#btn-new');
+                await tick(10);
+                click('#outline [data-act="add-entity"][data-kind="device"]');
+                await tick();
+                const m = () => app.mdoc;
+                const ports = () => m().result.model.devices[0].interfaces.map((i) => i.id);
+                const type = async (sel, value) => {
+                    const i = q(sel);
+                    i.value = value;
+                    i.dispatchEvent(new Event('input', { bubbles: true }));
+                    await tick();
+                };
+                const create = () => q('#modal[open] [data-value="create"]');
+                const preview = () => (q('#range-preview') || { textContent: '' }).textContent || '';
+                const head = '#side-body [data-list="interfaces"] .sub-head';
+                check('"+ Port Range" sits beside "+ Interface" in the Physical interfaces section', textsOf(head + ' button').join('|') === '+ Interface|+ Port Range' && !q('#side-body [data-list="logical"] [data-act="add-range"]'), textsOf(head + ' button').join('|'));
+                click(head + ' [data-act="add-range"]');
+                await tick(20);
+                check('it asks for From and To names; nothing can be created until the range is valid', /Add a range of physical interfaces/.test(q('#modal').textContent || '') && !!q('#range-from') && !!q('#range-to') && textsOf('#modal .range-form label').join('|') === 'From|To' && create().disabled && doc.activeElement === q('#range-from') &&
+                    q('#range-preview').getAttribute('data-state') === 'empty');
+                await type('#range-from', 'ge 1/1');
+                await type('#range-to', 'ge 1/24');
+                const list = (q('#range-preview .range-list') || { textContent: '' }).textContent || '';
+                check('the preview lists the ports that will be created before anything is committed (ge 1/1 … ge 1/24), and says how they are stored', q('#range-preview').getAttribute('data-state') === 'ok' && /^24 physical interfaces will be created:/.test(preview()) && list.split(', ').length === 24 && /^ge 1\/1, ge 1\/2, ge 1\/3,/.test(list) && /ge 1\/23, ge 1\/24$/.test(list) &&
+                    /the ids are ge-1\/1 … ge-1\/24/.test(preview()) && !create().disabled && create().textContent === 'Create 24 ports' && ports().length === 0 && m().canUndo() === 'Add device', preview());
+                const errors = [];
+                for (const [a, b] of [['ge 1/1', 'ge 2/24'], ['ge 1/24', 'ge 1/1'], ['uplink', 'ge 1/24'], ['p1', 'p5000']]) {
+                    await type('#range-from', a);
+                    await type('#range-to', b);
+                    errors.push(`${q('#range-preview').getAttribute('data-state')}:${create().disabled}:${preview()}`);
+                }
+                q('#range-to').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+                await tick(10);
+                check('invalid ranges show a clear error and cannot be created: different prefixes, reversed numbers, no port number, too large', errors.length === 4 && errors.every((x) => /^error:true:/.test(x)) && /must be the same in both names/.test(errors[0]) && /must be lower than the last/.test(errors[1]) && /does not end in a port number/.test(errors[2]) && /at most 256/.test(errors[3]) &&
+                    !!q('#modal[open]') && ports().length === 0, errors.join(' || '));
+                await answerDialog('cancel');
+                await tick(20);
+                check('Cancel creates nothing', ports().length === 0 && m().canUndo() === 'Add device' && !q('#modal[open]'));
+                click(head + ' [data-act="add-range"]');
+                await tick(20);
+                await type('#range-from', 'ge 1/1');
+                await type('#range-to', 'ge 1/24');
+                create().click();
+                await tick(30);
+                const cards = Array.prototype.map.call(doc.querySelectorAll('#side-body [data-list="interfaces"] > details.card'), (e) => e.getAttribute('data-iface'));
+                const dev = m().result.model.devices[0];
+                check('creating the range adds 24 physical interfaces in one undoable step, with nothing but an id and a label, shown in the usual alphabetical order', ports().length === 24 && ports()[0] === 'ge-1/1' && ports()[23] === 'ge-1/24' && dev.interfaces.every((i) => i.type === 'physical' && !i.addresses.length && /^ge 1\/\d+$/.test(i.label || '')) && dev.logical.length === 0 && m().result.model.links.length === 0 &&
+                    m().valid && m().canUndo() === 'Add 24 ports' && cards.length === 24 && cards.slice(0, 3).join() === 'ge-1/1,ge-1/2,ge-1/3' && cards[9] === 'ge-1/10' && cards[23] === 'ge-1/24' &&
+                    /Physical interfaces \(24\)/.test(q('#side-body [data-list="interfaces"] h4').textContent || '') && /24 ports added/.test(q('#toast').textContent || '') && /- \{id: ge-1\/1, label: ge 1\/1\}/.test(app.exportText()), `${ports().length} ${m().canUndo()} ${cards.slice(0, 4).join()}`);
+                // the same range again is a duplicate; the single-interface action still works as before
+                click(head + ' [data-act="add-range"]');
+                await tick(20);
+                await type('#range-from', 'ge 1/20');
+                await type('#range-to', 'ge 1/30');
+                const dup = preview();
+                const dupDisabled = create().disabled;
+                await answerDialog('cancel');
+                await tick(20);
+                click(head + ' [data-act="add-iface"]');
+                await tick();
+                check('a range that overlaps existing ports is rejected as a whole; "+ Interface" still adds a single interface', /Already on this device: ge 1\/20, ge 1\/21, ge 1\/22, ge 1\/23 and 1 more\. Nothing is created\./.test(dup) && dupDisabled && ports().length === 25 && ports()[24] === 'eth0' && m().canUndo() === 'Add interface', dup);
+                // export -> reload, then undo
+                const text = app.exportText();
+                const back = document_1.ModelDoc.fromText(text, 'ports.yaml', 'file').doc;
+                m().undo();
+                m().undo();
+                app.afterEdit();
+                check('the generated ports survive export → reload, and one undo removes the whole range', back.valid && back.exportText() === text && back.result.model.devices[0].interfaces.length === 25 && back.result.model.devices[0].interfaces[5].label === 'ge 1/6' && ports().length === 0);
+                m().markSaved();
+                app.closeModel();
             }
             click('#menu-btn');
             click('#menu-examples [data-example="2"]');

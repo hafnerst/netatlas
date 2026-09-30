@@ -449,7 +449,10 @@ export class Editor {
     const is = this.e('section', { class: 'sub', 'data-list': 'interfaces' }, [
       this.e('div', { class: 'sub-head' }, [
         this.e('h4', {}, [`Physical interfaces (${phys.length})`]),
-        this.e('button', { type: 'button', class: 'mini', 'data-act': 'add-iface', 'data-index': String(devIndex) }, ['+ Interface']),
+        this.e('span', { class: 'ctl row' }, [
+          this.e('button', { type: 'button', class: 'mini', 'data-act': 'add-iface', 'data-index': String(devIndex), title: 'Add one physical interface' }, ['+ Interface']),
+          this.e('button', { type: 'button', class: 'mini', 'data-act': 'add-range', 'data-index': String(devIndex), title: 'Add a numbered range of physical interfaces, e.g. ge 1/1 to ge 1/24' }, ['+ Port Range']),
+        ]),
       ]),
       phys.length ? null : this.e('p', { class: 'muted small' }, ['The ports of the device. Only they can be cabled.']),
       notList('interfaces'),
@@ -466,6 +469,85 @@ export class Editor {
     ]);
     for (const e of logical) ls.appendChild(this.ifaceCard(devIndex, e));
     w.appendChild(ls);
+  }
+
+  /**
+   * "+ Port Range": ask for the first and the last port name, show what
+   * would be created while typing, and create the ports only when the whole
+   * range is valid. Cancel, or an invalid range, changes nothing.
+   */
+  private async addPortRange(devIndex: number): Promise<void> {
+    const doc = this.doc;
+    const from = this.e('input', { type: 'text', id: 'range-from', spellcheck: 'false', autocomplete: 'off', placeholder: 'ge 1/1' }) as HTMLInputElement;
+    const to = this.e('input', { type: 'text', id: 'range-to', spellcheck: 'false', autocomplete: 'off', placeholder: 'ge 1/24' }) as HTMLInputElement;
+    const preview = this.e('div', { id: 'range-preview', class: 'range-preview', role: 'status', 'aria-live': 'polite' });
+    let create: HTMLButtonElement | null = null;
+    const refresh = (): void => {
+      while (preview.firstChild) preview.removeChild(preview.firstChild);
+      const untouched = !from.value.trim() && !to.value.trim();
+      const plan = doc.planPortRange(devIndex, from.value, to.value);
+      preview.setAttribute('data-state', plan.ok ? 'ok' : untouched ? 'empty' : 'error');
+      if (plan.ok) {
+        const ports = plan.ports;
+        preview.appendChild(this.e('div', { class: 'range-count' }, [`${ports.length} physical interfaces will be created:`]));
+        preview.appendChild(this.e('div', { class: 'range-list ro' }, [ports.map((p) => p.name).join(', ')]));
+        if (ports.some((p) => p.id !== p.name)) {
+          preview.appendChild(this.e('div', { class: 'help' }, [`An interface id cannot contain spaces: the ids are ${ports[0].id} … ${ports[ports.length - 1].id}, and the names as typed become the labels.`]));
+        }
+      } else {
+        preview.appendChild(this.e('div', { class: untouched ? 'muted' : 'field-err' }, [untouched ? 'The last number of each name is the port number; everything before it must be the same.' : plan.error]));
+      }
+      if (create) {
+        create.disabled = !plan.ok;
+        create.textContent = plan.ok ? `Create ${plan.ports.length} ports` : 'Create ports';
+      }
+    };
+    const answer = await this.host.dialog({
+      title: 'Add a range of physical interfaces',
+      body: [
+        this.e('div', { class: 'range-form' }, [
+          this.e('label', { class: 'dl-label' }, ['From ', from]),
+          this.e('label', { class: 'dl-label' }, ['To ', to]),
+        ]),
+        preview,
+        this.e('p', { class: 'muted small' }, ['Only the interfaces are created: no addresses, VLANs or links. You can undo this with Ctrl+Z.']),
+      ],
+      buttons: [
+        { label: 'Cancel', value: 'cancel' },
+        { label: 'Create ports', value: 'create', kind: 'primary' },
+      ],
+      ready: (dialog) => {
+        create = dialog.querySelector('[data-value="create"]') as HTMLButtonElement | null;
+        for (const input of [from, to]) {
+          input.addEventListener('input', refresh);
+          input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && create && !create.disabled) {
+              e.preventDefault();
+              create.click();
+            }
+          });
+        }
+        refresh();
+      },
+    });
+    if (answer !== 'create') return;
+    // checked again at the moment of creating: all ports, or none
+    const done = doc.addPortRange(devIndex, from.value, to.value);
+    if (!done.ok) {
+      this.host.toast(done.error);
+      return;
+    }
+    this.host.changed(`${done.ports.length} ports added (${done.ports[0].name} … ${done.ports[done.ports.length - 1].name}).`);
+  }
+
+  /** Forget everything that belonged to the model that was open: selection, open cards, filter, folded sections, YAML draft. */
+  reset(): void {
+    this.sel = null;
+    this.open.clear();
+    this.filter = '';
+    this.collapsed = new Set<EntityKind>(['link', 'protocol']);
+    this.sourceDraft = null;
+    this.sourceError = null;
   }
 
   /** The kind of an interface entry: physical by its list, else the type written on it (virtual while it has none). */
@@ -1307,6 +1389,9 @@ export class Editor {
         this.host.changed('Physical interface added.');
         return true;
       }
+      case 'add-range':
+        await this.addPortRange(index);
+        return true;
       case 'add-logical': {
         const type = (btn.getAttribute('data-kind') || 'virtual') as 'loopback' | 'virtual' | 'tunnel';
         const k = type === 'loopback' ? doc.addLoopback(index, []) : doc.addLogical(index, type);
