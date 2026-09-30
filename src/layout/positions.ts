@@ -57,7 +57,7 @@ export function viewNodes(view: LayoutView, input: LayoutInput): PlaceNode[] {
     byGroup.forEach((ids) => {
       for (const a of ids) for (const b of ids) add(a, b);
     });
-    return input.devices.map((d) => ({ id: d.id, ...physicalBaseSize(d.label), nbrs: Array.from(nbrs.get(d.id) as Set<string>).sort(cmp) }));
+    return input.devices.map((d) => ({ id: d.id, ...physicalBaseSize(d), nbrs: Array.from(nbrs.get(d.id) as Set<string>).sort(cmp) }));
   }
   const specs = logicalSpecs(input);
   const nbrs = new Map<string, Set<string>>();

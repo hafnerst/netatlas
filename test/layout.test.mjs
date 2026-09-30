@@ -368,10 +368,8 @@ test('determinism guard: layout code uses no randomness, time, locale or browser
       assert.ok(!src.includes(banned), `${f} uses ${banned}`);
     }
   }
-  // the geometry helpers used by the layout (textWidth) are pure arithmetic
-  const geo = readFileSync(join(root, 'src', 'layout', 'geometry.ts'), 'utf8');
-  const tw = geo.slice(geo.indexOf('export function textWidth'), geo.indexOf('export function ellipsize'));
-  assert.ok(!/Math\.(hypot|sin|cos|random)/.test(tw));
+  // text measuring and wrapping (what sizes are made of) live in the layout layer, so they are covered above
+  assert.ok(files.includes('text.ts') && files.includes('sizes.ts') && files.includes('bundles.ts'));
 });
 
 test('auto-arrange stays fast for a large model', () => {

@@ -214,13 +214,19 @@ adjustments.
 * **Physical view:** sites, racks and other groups become nested boxes;
   devices sit in rows by role (WAN/cloud on top, then routers, firewalls,
   core, access, servers); connected components are kept together and
-  disconnected ones apart; rows and groups are ordered to reduce crossings;
-  boxes grow to fit port labels.
+  disconnected ones apart; rows and groups are ordered to reduce crossings.
+  Cables between ports that face each other are straight, parallel cables
+  stay parallel, and a cable bends around a device instead of crossing it.
 * **Logical view:** each connected part of the logical graph is laid out
   with evenly spaced graph distances. Crossings, and lines passing through
   devices, are reduced. Devices keep room for parallel relation lanes and
   their labels, and separate components are packed apart. Tunnels (tubes),
   adjacencies, overlays and cables remain visually distinct.
+* **Sized for the text:** nothing is shortened with "…". Labels wrap (line
+  breaks in a label are kept), boxes grow to fit them, and Auto-arrange
+  leaves room for port labels, cable labels and relation labels. Every label
+  gets its own free place. The rules and their limits are in
+  [docs/FORMAT.md](docs/FORMAT.md#sizes-labels-and-routes).
 * **Deterministic:** the same model gives the same positions, whatever you
   loaded, selected or moved before. YAML key order and list order don't
   matter, and arranging twice moves nothing the second time.
@@ -311,6 +317,7 @@ YAML that is read and written is in
 | [`examples/metro-ring.yaml`](examples/metro-ring.yaml) | **Representative architecture for Auto-arrange.** Six PE routers in three POPs on a fibre ring, IPv4/IPv6 loopbacks (router IDs, iBGP and RSVP-TE endpoints), an OSPF area, LDP per link, a dense 15-session iBGP mesh, TE tunnels, an L3VPN overlay, customer eBGP, a disconnected out-of-band network and an unconnected spare router. No stored positions. |
 | [`examples/metro-ring-arranged.yaml`](examples/metro-ring-arranged.yaml) | `metro-ring.yaml` after **load → Auto-arrange (both views) → export**: identical network plus a `layout` section. A test checks it's reproducible, and the in-browser self-test checks that the browser computes the same positions. |
 | [`examples/device-types.yaml`](examples/device-types.yaml) | **Every device type.** A campus with internet edge, VPN gateway, firewall, inline IPS, a DMZ with load balancer and proxy, core/access switching with Wi-Fi and endpoints, and a server room with a hypervisor, a VM, a container, NAS and a monitoring appliance. |
+| [`examples/long-labels.yaml`](examples/long-labels.yaml) | **Sizing test case.** Device labels with line breaks, a very long label, a long host name without spaces, a long group title, three parallel cables, long cable labels, a network with several prefixes, and six labelled relations between the same two devices (three of them nested). Nothing is shortened. |
 | [`examples/broken/errors-demo.yaml`](examples/broken/errors-demo.yaml) | Intentionally invalid, to show error reporting. It opens as a draft you can fix. |
 
 `scripts/make-editor-examples.mjs` produces the two editor examples and `metro-ring-arranged.yaml` with the
@@ -390,6 +397,7 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/scr
 | Validation | `test/validate.test.mjs` (17 tests) | Examples valid; unknown keys, ids and references reported with suggestions; one cable per port; logical interfaces can't be cabled; `over` cycles; protocols; groups; limits; the broken demo file's exact errors |
 | **Editor core and round trips** | `test/editor.test.mjs` (22 tests) | **Example files written back byte-for-byte.** A torture document and 400 random trees round-trip. **Create → export → reload.** **Import → edit → export → reload** (untouched text identical). **Attributes no diagram shows, and unknown keys, survive.** Renames update every kind of reference. Deletes report broken references; undo/redo; shorthand expansion; canonical key order. **Multiple IPv4/IPv6 loopbacks.** Every class of invalid loopback address, with the error located at the exact address. `router_id` rules; duplicate-address warnings; compatibility with existing loopbacks; loopback display in both views and details; drafts with errors still draw; the editor examples are reproducible. |
 | **Auto-arrange** | `test/layout.test.mjs` (20 tests) | **Repeatability** (fresh documents give identical integer positions). **Order independence:** every example with shuffled keys, sections and lists and swapped cable ends, 3 seeds each, gives the same canonical input and identical positions in both views; fields that don't affect geometry don't matter. **Idempotence:** a second arrange changes nothing and adds no undo step. **Load → arrange → export → reload:** same positions and same rendered scene, and re-arranging after reload is a no-op; the arranged example is reproducible. **Manual moves:** only the moved node changes; the other view is untouched; arrange ignores manual positions; undo restores them. **Edits never re-arrange:** the first geometric edit freezes the shown positions; new nodes go next to their neighbors without overlap; renames carry positions; deletes drop them. The YAML tab is taken literally. **Semantics:** the model is identical with and without `layout`, and bad entries are warnings only. **Disconnected components** of different sizes: no overlaps in either view, and component bounding boxes are disjoint. **Dense relationships:** a 12-router full mesh with tunnels has no overlaps and gets a lane per relation. No overlaps for any example. **Static determinism guard:** no `Math.random`, time, `localeCompare`, `hypot`/`sin`/`cos`/`pow` or DOM measurement in layout code. Large-model runtime. **Layout status:** *auto / manual / edited* for each view after load, non-geometric edits, drags, undo/redo, a node moved back to its calculated position, export → reload, Auto-arrange and its repetition, model edits (never "manual"), renames and deletes; bad `layout.manual` entries are warnings only. |
+| **Sizing and readability** | `test/readability.test.mjs` (13 tests) | Text wrapping: explicit line breaks kept, wrap at spaces, long words broken after punctuation, nothing dropped, width bounded (also for 200 unbroken characters and CJK). Element sizes follow text within bounds. **Every example, both views:** no "…", device, network and group labels complete, every cable and relation labelled, text inside its box, no overlapping labels, no label on a node, no cable through a device. `long-labels.yaml`: multi-line labels, differing node sizes, three parallel straight cables with their own labels, a cable that bends around a device, four labelled relations between the same two devices (distinct labels, nested ones named in the carrier's label). **Determinism:** drag + select + arrange one view at a time gives the same positions *and the same drawn picture* as a fresh arrange; arranging again moves nothing; same picture after export and reload; drawn text is part of the layout input, undrawn text is not. Labels and cable bends lie inside the exported picture's bounds. |
 | Rendering | `test/render.test.mjs` (12 tests) | Physical view: devices, cables and ports, no relations. Logical view: relations, no cables; tunnels as tubes; GRE inside IPsec; parallel lanes; protocol matrix; hostile labels stay text; deterministic layout |
 | **Legend in exported SVG** | `test/legend.test.mjs` (5 tests) | For every example and both views: the legend lies to the right of everything drawn, inside the enlarged viewBox, with margins; every label fits its frame; a short diagram grows to the legend's height and a large one with many disconnected components keeps its size. Content: device types, media, speed, ports, locations, the VLAN-mismatch symbol only when used; protocols with their line styles, without the ones that are hidden; no references outside the file. The Legend tab and the SVG legend come from the same entries. |
 | View switching | `test/state.test.mjs` (8 tests) | Physical ↔ logical switching keeps the selection and positions; highlight sets; search, details and legend |
@@ -400,7 +408,7 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/scr
 | Selection context | `test/selection-context.test.mjs` (6 tests) | Each element type (device, port, link, network, relation, group, protocol) gives the documented direct relationships; indirect ones (a cable's far end, a sub-group's devices, the cables under a tunnel's carrier, built-in protocols) are excluded; symmetric and a subset of the diagram highlight in every example; view-independent; protocols can be selected; the Relations list shows the same states with screen-reader text |
 | Architecture | `test/architecture.test.mjs` (3 tests) | Every module lives in a layer folder; imports follow the allowed dependency direction (docs/ARCHITECTURE.md); the diagram, layout and UI layers never import the YAML layer |
 | Module APIs | `test/modules.test.mjs` (9 tests) | Document editing operations (typed values, lists, endpoints, attrs, key order, one undo step each); the format schema is the single source of allowed keys; model queries; export file names; `check:dist` accepts the current build and rejects a stale HTML file |
-| **End-to-end in a real browser** | `test/browser.test.mjs` → `dist/netatlas.html#selftest` (207 in-page checks) | Headless Chrome, Edge or Chromium opens the file from `file://` **with DNS resolution disabled** and drives the real UI. **Viewer:** every example loads through the File API path, both views are drawn, loopback chips appear only in the logical view, interaction works. **New model:** New is empty; a new device shows *Select device type* and saves no type until one is chosen; a new relation has no protocol and reports its missing protocol and endpoints (export then needs "Download anyway"); a new network is only an ID; add a device, **add two loopbacks, type IPv4/IPv6 addresses, see the error for an address without a prefix and fix it**, set `router_id`, add interfaces, a cable, a GRE tunnel between loopbacks with nested attrs, then **download and reload** the file. **Imported model:** rename a device (every reference follows), edit, add an IPv6 loopback, download as `…-edited.yaml`, **reload, and check that edits, hidden attributes and comments survived**. **Guards:** unsaved-changes dialog on replace; `beforeunload`; Ctrl+Z/Y; deleting a referenced device reports broken references; **exporting an invalid model requires "Download anyway"**; YAML-tab apply/reject; unknown keys kept and movable into attrs; typed text is committed before a button acts; **selection context in the lists:** selecting from the diagram, the left list and the right-hand Relations list keeps lists and diagram consistent for every element type (direct entries related, indirect ones dimmed), unrelated entries stay focusable and selectable, view switches leave no stale highlighting, and `Esc` clears everything; the device type is chosen from the 15 types by display name. **Auto-arrange:** the button is in the top toolbar, visible and labelled (disabled until a model is open); the status badges read *Auto-arranged* / *Manually adjusted* / *Edited since arranged* after loading, dragging, undo, switching views (the shown view is highlighted), Auto-arrange, moving a node back to its calculated position, export → reload of arranged and of manually adjusted layouts, a model edit, and New; loading stores nothing; the dialog shows the scope; arranging an automatic layout stores it without moving anything; repeating it is a no-op; a manual move changes only that node and is undone by arrange (and restored by undo); **arrange → export → reload is pixel-identical in both views**; a file with every list and key reversed arranges identically; **the browser reproduces the build-time positions of `metro-ring-arranged.yaml`** (a cross-engine determinism check when run in Firefox or Safari). **Safety:** hostile labels create no elements; YAML syntax errors are refused with the current model kept; **no network requests, no CSP violations**. The test is skipped if no Chromium-based browser is installed; set `NETATLAS_BROWSER` to choose one. |
+| **End-to-end in a real browser** | `test/browser.test.mjs` → `dist/netatlas.html#selftest` (242 in-page checks) | Headless Chrome, Edge or Chromium opens the file from `file://` **with DNS resolution disabled** and drives the real UI. **Viewer:** every example loads through the File API path, both views are drawn, loopback chips appear only in the logical view, interaction works. **New model:** New is empty; a new device shows *Select device type* and saves no type until one is chosen; a new relation has no protocol and reports its missing protocol and endpoints (export then needs "Download anyway"); a new network is only an ID; add a device, **add two loopbacks, type IPv4/IPv6 addresses, see the error for an address without a prefix and fix it**, set `router_id`, add interfaces, a cable, a GRE tunnel between loopbacks with nested attrs, then **download and reload** the file. **Imported model:** rename a device (every reference follows), edit, add an IPv6 loopback, download as `…-edited.yaml`, **reload, and check that edits, hidden attributes and comments survived**. **Guards:** unsaved-changes dialog on replace; `beforeunload`; Ctrl+Z/Y; deleting a referenced device reports broken references; **exporting an invalid model requires "Download anyway"**; YAML-tab apply/reject; unknown keys kept and movable into attrs; typed text is committed before a button acts; **selection context in the lists:** selecting from the diagram, the left list and the right-hand Relations list keeps lists and diagram consistent for every element type (direct entries related, indirect ones dimmed), unrelated entries stay focusable and selectable, view switches leave no stale highlighting, and `Esc` clears everything; the device type is chosen from the 15 types by display name. **Auto-arrange:** the button is in the top toolbar, visible and labelled (disabled until a model is open); the status badges read *Auto-arranged* / *Manually adjusted* / *Edited since arranged* after loading, dragging, undo, switching views (the shown view is highlighted), Auto-arrange, moving a node back to its calculated position, export → reload of arranged and of manually adjusted layouts, a model edit, and New; loading stores nothing; the dialog shows the scope; arranging an automatic layout stores it without moving anything; repeating it is a no-op; a manual move changes only that node and is undone by arrange (and restored by undo); **arrange → export → reload is pixel-identical in both views**; a file with every list and key reversed arranges identically; **the browser reproduces the build-time positions of `metro-ring-arranged.yaml`** (a cross-engine determinism check when run in Firefox or Safari). **Safety:** hostile labels create no elements; YAML syntax errors are refused with the current model kept; **no network requests, no CSP violations**. The test is skipped if no Chromium-based browser is installed; set `NETATLAS_BROWSER` to choose one. |
 
 ### Manual check (any browser, e.g. Firefox or Safari)
 
@@ -523,6 +531,32 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/scr
    * Repeat with `examples/metro-ring.yaml` (several separate components and
      an unconnected router): the legend is to the right of all of them.
 
+10. **Sizing and readability.** Choose `long-labels.yaml` from **Examples**.
+    * **Physical:** `core-a` shows three lines (as written in the YAML), the
+      firewall's long label is wrapped over several lines, the storage host
+      name is broken after a `-` or `.`, and the one-letter server `s` has the
+      smallest box. No text ends in "…" and none leaves its box. The group
+      title at the top is written out in full. The three cables between
+      `core-a` and `core-b` are parallel straight lines, each with its own
+      label (*peer link 1*, *peer link 2*, *keepalive*); the cable to `s`
+      carries a wrapped label with all eight VLANs.
+    * **Logical:** between the firewall and the branch router there are four
+      labels that don't overlap; the first names the nested stack with each
+      relation's own label (*IPsec · … › GRE · primary › OSPF · area
+      0.0.0.10*). The network shows all three prefixes.
+    * Drag the firewall far away, click another device, then
+      **Auto-arrange… → this view**: the picture is exactly as before the
+      drag. Choose Auto-arrange again: "Already arranged — nothing moved".
+      The button shows ✓.
+    * Select the device `s`, type a second line into **Label** (Enter makes a
+      new line; click elsewhere to apply): the box grows and shows two lines.
+    * **Save SVG** in both views and open the files on their own: the same
+      full text, the same label places, and the legend beside the diagram.
+    * Open `enterprise-wan.yaml`: in the physical view the two peer links
+      between `hq-core1` and `hq-core2` are straight, every cable has its
+      label, and the long uplinks bend around devices instead of crossing
+      them.
+
 ## Security model
 
 * Input is untrusted. Everything user-supplied (from files or typed into the
@@ -584,8 +618,21 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/scr
 * **VLAN lists are explicit.** A link end stores single IDs, not ranges; the
   editor expands `30-32` when you type it. A trunk of hundreds of VLANs is a
   long list.
-* **Text measurement is estimated** (no font metrics), so long labels are
-  shortened with "…". The full text is in the inspector and tooltips.
+* **Text measurement is estimated** (no font metrics, which keeps
+  Auto-arrange identical in every browser). Boxes therefore have a little
+  spare room, and with an unusually wide font a very long line can touch the
+  edge of its box.
+* **Label placement has limits.** Labels keep clear of nodes and of each
+  other, not of lines, so a label can lie on a cable or relation line that
+  isn't its own. In a very dense diagram, or after dragging nodes close
+  together, a label that finds no free place is put where it overlaps least
+  (it is never dropped).
+* **Routing is simple.** Cables bend around devices, not around group boxes,
+  titles or other cables; relation lines in the logical view are always
+  straight. Crossings are reduced, not eliminated.
+* **Layouts from earlier versions** keep their stored positions and show
+  *edited since arranged* until you use Auto-arrange again, because the
+  auto-arranged layout changed (elements are larger and further apart).
 * **Keyboard access:** forms and panels are keyboard-operable, but diagram
   elements aren't individually focusable.
 * **Narrow windows:** the model panel is always shown. Below 1100 px it and

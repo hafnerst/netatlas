@@ -106,7 +106,7 @@ endpoints. A link end written as a mapping accepts `device`, `interface` and
 | Key | Required | Description |
 |---|---|---|
 | `id` | yes | |
-| `label` | | Display name |
+| `label` | | Display name. Drawn in full: long labels wrap, and line breaks in the label are kept (see [Sizes, labels and routes](#sizes-labels-and-routes)). |
 | `type` | | One of the [device types](#device-types) below, written exactly as listed (lower case). Any other value is an error. Without a type the device gets a generic icon. |
 | `group` | | Id of the group the device is located in |
 | `tier` | | 0–9: vertical row in the physical view (0 = top). By default this comes from the type (see the table below). Set it to place a device elsewhere, e.g. `tier: 3` for core or spine switches above the access switches. |
@@ -447,7 +447,7 @@ layout:
 | A view has **no** stored positions | The **Auto-arrange** result for the current model. Opening or viewing a file never writes anything. |
 | A view has stored positions | Stored positions are used. A node without one (e.g. added by hand in the YAML) is placed next to its neighbors in free space, without moving anything else. |
 | You **drag** a node | Its new position is stored. If the view had no stored positions, all currently shown positions of that view are stored with it (one undo step). |
-| You make an edit that affects geometry (adding, removing or renaming objects, changing labels, groups, cables, relations, loopback count, or an address or prefix that changes who is a member of a network …) | The positions shown **before** the edit are stored for both views, in the same undo step. New objects are placed next to their neighbors; nothing else moves. Edits that don't affect geometry (vendor, attrs, descriptions, link VLANs, addresses that leave membership as it is …) store nothing. |
+| You make an edit that affects geometry (adding, removing or renaming objects, changing any text that is drawn — labels, type, role, model, cable speed or VLANs, relation labels —, groups, cables, relations, loopbacks, or an address or prefix that changes who is a member of a network …) | The positions shown **before** the edit are stored for both views, in the same undo step. New objects are placed next to their neighbors; nothing else moves. Edits that don't affect geometry (vendor, attrs, descriptions, cable medium, addresses that leave membership as it is …) store nothing. |
 | You click **Auto-arrange** | All positions of the chosen view(s) are recomputed for the whole model and stored (one undo step). If they already equal the stored ones, nothing happens at all. |
 | You edit the **YAML** tab | The text is taken literally, including its `layout` section. Deleting the section there returns to automatic positions. |
 
@@ -478,21 +478,84 @@ its calculated position always give the right status.
   overrides this. Ungrouped devices are split into connected components that
   are packed separately. Rows and sibling groups are reordered with barycenter
   sweeps to reduce crossings; groups with no outside connections go last.
-  Device boxes grow to fit their ports and port labels.
+  Device boxes are as large as their full label needs and grow further for
+  their ports and port labels. The gap between two neighbors of a row is
+  widened for the port labels on the facing sides and for the label of a
+  cable between them. A group box is at least as wide as its title.
 * **Logical view:** each connected component (devices, networks, multipoint
   hubs) is laid out on its own with stress majorization, which spaces graph
   distances evenly; very large components (over 300 nodes) use a
   force-directed layout instead. It is seeded from the auto-arranged
   *physical* positions, so the two views keep a similar mental map, but never
   from manual positions. Then:
-  * boxes are pushed apart with room for relation bundles and labels;
+  * every node is as large as its full text needs; the distance between two
+    connected nodes follows from their sizes and from the labels that must
+    fit between them, and boxes are pushed apart until that room exists
+    (a gap as wide as the widest label, or as high as all labels stacked);
   * node positions are swapped where that strictly reduces edge crossings and
     edges passing through nodes;
   * nodes that an edge would pass through are moved aside;
   * components are packed in rows, largest first.
 
+### Sizes, labels and routes
+
+Nothing in the diagram is shortened with "…". These rules decide sizes and
+places; they are the same on screen and in exported SVG files.
+
+* **Text.** A label is drawn in full. Line breaks in a label (a YAML block
+  scalar, or `\n` in a quoted string) are kept as lines. A line that is too
+  long wraps at spaces; a single word that is too long is broken, preferably
+  after `- _ / . : , ; | @ = +`. Maximum line widths: device label and
+  subtitle 220, network 210, relation label 240, cable label 190. Labels are
+  limited to 200 characters by the format, so an element can't grow without
+  bound: the longest possible device label gives a box about 280 wide.
+* **Devices** grow in width up to the wrap width and in height with the
+  number of lines; the subtitle (type · role · model) wraps the same way. In
+  the logical view a device is also as wide as its widest loopback chip.
+* **Networks** show their label and *all* prefixes, wrapped.
+* **Groups** wrap their title at the width of their content (at least 260)
+  and get a taller title area for it.
+* **Cables.** Ports are placed opposite the device they lead to. Where the
+  two ports of a cable face each other they are moved onto one line, so the
+  cable is a single straight segment; several cables between the same two
+  devices become parallel straight lines. Other cables leave each port at a
+  right angle and run straight between the two stubs. If that line would pass
+  through a device, the cable bends around it (at most a few bends).
+* **Cable labels** (speed · VLANs · label) are always drawn, on the cable's
+  longest segment. Each takes the first free place: the middle, then further
+  along the segment, then beside it.
+* **Relation labels.** Every relation between two devices that isn't nested
+  in a tunnel has its own label next to its own lane. A nested relation is
+  named in its carrier's label together with its own label
+  (`IPsec · site-to-site › GRE · primary › OSPF · area 1`), so it is neither
+  lost nor drawn twice. Labels are written one after the other along the
+  bundle, or stacked across it when the line is too short, and each then
+  takes the nearest place that is free of nodes and other labels.
+* **Order.** Labels are placed in id order, so the result depends only on
+  the model and the node positions, never on selection or on what was
+  dragged before.
+
+**Trade-offs and limits.**
+
+* Text widths are *estimated* (see Determinism), a little on the wide side,
+  so boxes have some spare room; with an unusually wide font a very long line
+  can still touch the edge of its box.
+* A label that finds no free place among its candidates is put where it
+  overlaps least. It is never dropped. This can happen in very dense
+  diagrams, or after nodes were dragged close together by hand.
+* Labels keep clear of nodes and of other labels, not of lines: a label can
+  lie on a cable or relation line that isn't its own.
+* Cables avoid devices, not group boxes, group titles or other cables.
+  Crossings are reduced by the ordering of rows and groups, not eliminated.
+* Relation lines in the logical view are always straight. Auto-arrange moves
+  nodes off the lines; with manual positions a line can pass under a node.
+* Diagrams are larger than before: spacing was preferred over density.
+* Files arranged with an earlier version keep their stored positions. Their
+  status shows *edited since arranged* until Auto-arrange is used again,
+  because the auto-arranged layout itself changed.
+
 **Determinism.** Auto-arrange is a pure function of a canonical *layout
-input* (`src/layout-input.ts`). It uses no randomness, no clock, no browser
+input* (`src/layout/input.ts`). It uses no randomness, no clock, no browser
 measurement (text widths are estimated from character classes) and no
 locale-dependent ordering. Every list is sorted by id with plain code-unit
 comparison, and every tie is broken by id. The arithmetic uses only `+ − × ÷`,
@@ -503,14 +566,18 @@ to vary, so they aren't used. Results are rounded to whole pixels.
 **Equivalent input.** Two files arrange identically (in the same netatlas
 version) when they have the same:
 
-* device ids, labels, tiers (explicit `tier`, else derived from `type`),
-  groups, and number of loopbacks;
-* groups (ids and parents);
+* device ids, labels, subtitles (type, role, model), tiers (explicit `tier`,
+  else derived from `type`), groups, the number of loopbacks and the width of
+  the widest loopback chip (loopback ids and addresses);
+* groups (ids, parents, labels and kinds);
 * cables (ids and their endpoints `device:interface`; which end is `a` and
-  which is `b` doesn't matter);
+  which is `b` doesn't matter) and the text drawn on them (speed, VLANs,
+  label);
 * networks (ids, labels, and the subtitle shown from `vlan`/`cidr`, plus the
   derived set of member devices);
-* relations (ids and the set of devices they connect).
+* relations (ids and the set of devices they connect), and per pair of
+  devices the label texts and the width of the bundle (protocol display
+  names and line styles, relation labels, nesting through `over`).
 
 **Not relevant:**
 * order of keys, sections and list items (devices, interfaces, cables,
@@ -518,9 +585,10 @@ version) when they have the same:
 * comments, quoting and formatting;
 * the `layout` section itself;
 * manual moves and load order;
-* protocols, categories, direction, attributes, vendors, descriptions,
-  speed, medium, link VLANs, and addresses as long as they don't change which
-  networks a device belongs to.
+* direction, attributes, vendors, descriptions, the medium of a cable, cable
+  ids (`cable:`), and interface addresses as long as they don't change which
+  networks a device belongs to. In short: what isn't drawn as text and
+  doesn't change a size.
 
 ## Validation and limits
 

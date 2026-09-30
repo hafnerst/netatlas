@@ -10,6 +10,27 @@ releases may still change behaviour; the YAML format has its own version
 
 ### Changed
 
+* **Diagram elements are sized for their text; nothing is shortened with
+  "…".** Labels wrap (line breaks in a device label are kept as lines),
+  long words are broken, and boxes, network pills, group titles and relation
+  labels grow to fit. Networks show all their prefixes. The device label
+  field in the editor accepts line breaks.
+* **Auto-arrange accounts for real sizes and labels.** Rows leave room for
+  port labels and cable labels; connected nodes in the logical view are
+  spaced for the labels between them. Diagrams are somewhat larger.
+* **Cables:** ports that face each other are lined up, so such cables (and
+  parallel cables between the same devices) are straight; a cable bends
+  around a device instead of crossing it. Every cable with a speed, VLANs or
+  a label now shows it (short cables used to lose their label).
+* **Labels get their own places:** cable labels, relation labels and
+  addresses on membership lines avoid nodes and each other. A relation
+  nested in a tunnel is named, with its own label, in the tunnel's label.
+* Auto-arranged positions differ from earlier versions. Stored layouts are
+  kept as they are and show *edited since arranged* until Auto-arrange is
+  used again.
+* New example `long-labels.yaml`. The two editor examples are now
+  auto-arranged at the end of their script.
+
 * **The model panel is always visible.** The *Model* toggle button in the
   toolbar is gone. In narrow windows the panel gets narrower (below 1100 px)
   or moves under the diagram next to the side panel (below 860 px) instead

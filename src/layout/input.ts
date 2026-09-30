@@ -12,8 +12,13 @@
  * localeCompare, which depends on the browser locale).
  */
 import { networkMembers } from '../model/derive';
-import { Model, loopbacks, relationDevices } from '../model/types';
-import { networkSubtitle } from './sizes';
+import { deviceSubtitle } from '../model/device-types';
+import { relationStyle } from '../model/protocols';
+import { vlanMismatch } from '../model/derive';
+import { Link, Model, loopbacks, relationDevices } from '../model/types';
+import { buildBundle, laneLabel, relationPairs } from './bundles';
+import { cmp } from './order';
+import { chipTextWidth, loopbackChipText, networkSubtitle } from './sizes';
 
 export interface LEnd {
   device: string;
@@ -27,13 +32,19 @@ export interface LLink {
 export interface LDev {
   id: string;
   label: string;
+  /** second line of the device box: type, role, model */
+  sub: string;
   tier: number;
   group: string | null;
   loopbacks: number;
+  /** width the widest loopback chip needs in the logical view (0 without loopbacks) */
+  chipW: number;
 }
 export interface LGroup {
   id: string;
   parent: string | null;
+  label: string;
+  kind: string;
 }
 export interface LNet {
   id: string;
@@ -44,6 +55,22 @@ export interface LNet {
 export interface LRel {
   id: string;
   devices: string[];
+  /** label of a multipoint relation's hub ('' for two-device relations, which are labelled per pair) */
+  hubLabel: string;
+}
+/** The relations between one pair of devices: what has to fit between the two. */
+export interface LPair {
+  a: string;
+  b: string;
+  /** label texts, one per lane that carries a label */
+  labels: string[];
+  /** width of the bundle of lanes */
+  width: number;
+}
+/** Text drawn on a cable. */
+export interface LLinkLabel {
+  id: string;
+  text: string;
 }
 export interface LayoutInput {
   devices: LDev[];
@@ -51,6 +78,8 @@ export interface LayoutInput {
   links: LLink[];
   networks: LNet[];
   relations: LRel[];
+  pairs: LPair[];
+  linkLabels: LLinkLabel[];
 }
 
 /** Vertical tier of a device type in the physical view (0 = top). */
@@ -77,10 +106,7 @@ export function defaultTier(type: string): number {
   return Object.prototype.hasOwnProperty.call(TIERS, type) ? TIERS[type] : 4;
 }
 
-/** Code-unit string order: the same in every browser and locale. */
-export function cmp(a: string, b: string): number {
-  return a < b ? -1 : a > b ? 1 : 0;
-}
+export { cmp };
 
 function byId<T extends { id: string }>(xs: T[]): T[] {
   return xs.slice().sort((p, q) => cmp(p.id, q.id));
@@ -96,12 +122,15 @@ export function layoutInput(m: Model): LayoutInput {
       m.devices.map((d) => ({
         id: d.id,
         label: d.label,
+        sub: deviceSubtitle(d.type, d.model, d.role),
         tier: d.tier !== undefined ? d.tier : defaultTier(d.type),
         group: d.group || null,
         loopbacks: loopbacks(d).length,
+        // over all loopbacks, not only the ones shown, so the order in the file doesn't matter
+        chipW: loopbacks(d).reduce((m, l) => Math.max(m, chipNeed(l.id, l.addresses, d.routerId === l.id)), 0),
       })),
     ),
-    groups: byId(m.groups.map((g) => ({ id: g.id, parent: g.parent || null }))),
+    groups: byId(m.groups.map((g) => ({ id: g.id, parent: g.parent || null, label: g.label, kind: g.kind }))),
     links: byId(
       m.links.map((l) => {
         // endpoints in canonical order so "a/b" swapped is the same cable
@@ -121,8 +150,38 @@ export function layoutInput(m: Model): LayoutInput {
         members: uniqSorted(networkMembers(m, n.id).map((x) => x.device)),
       })),
     ),
-    relations: byId(m.relations.map((r) => ({ id: r.id, devices: uniqSorted(relationDevices(r)) }))),
+    relations: byId(
+      m.relations.map((r) => {
+        const devices = uniqSorted(relationDevices(r));
+        return { id: r.id, devices, hubLabel: devices.length >= 3 ? relationStyle(m, r).label + (r.label ? ' · ' + r.label : '') : '' };
+      }),
+    ),
+    pairs: Array.from(relationPairs(m.relations).entries()).map(([key, rels]) => {
+      const bundle = buildBundle(m, key, rels);
+      return { a: bundle.a, b: bundle.b, labels: bundle.lanes.filter((p) => p.root).map(laneLabel), width: bundle.width };
+    }),
+    linkLabels: byId(m.links.map((l) => ({ id: l.id, text: linkLabelText(l) })).filter((x) => x.text !== '')),
   };
+}
+
+/** Width a loopback's chip needs whichever of its addresses is written first (the chip shows the first one). */
+function chipNeed(id: string, addresses: string[], routerId: boolean): number {
+  const firsts = addresses.length ? addresses : [''];
+  return firsts.reduce((m, a) => Math.max(m, Math.ceil(chipTextWidth(loopbackChipText(id, a ? [a].concat(addresses.slice(1)) : [], routerId)))), 0);
+}
+
+/** VLANs of a cable for its label: what both ends permit, "Trunk" for several, a note when the ends differ. */
+export function linkVlanLabel(l: Link): string {
+  if (vlanMismatch(l.a.vlans, l.b.vlans)) return 'VLAN mismatch';
+  const v = l.a.vlans;
+  if (!v.length) return '';
+  if (v.length === 1) return 'VLAN ' + v[0];
+  return 'Trunk ' + v.join(',');
+}
+
+/** The text drawn on a cable: speed, VLANs, label. */
+export function linkLabelText(l: Link): string {
+  return [l.speed, linkVlanLabel(l), l.label].filter((s) => !!s).join(' · ');
 }
 
 /** Stable text form of the input: equal signatures always give equal auto-arrange results. */

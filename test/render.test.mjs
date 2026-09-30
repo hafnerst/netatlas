@@ -85,7 +85,7 @@ test('logical view: GRE nested inside IPsec, OSPF inside GRE (same path, narrowe
   assert.equal(ospf.d, gre.d);
   assert.ok(+gre['stroke-width'] < +ipsec['stroke-width']);
   // label summarises the stack
-  assert.match(scene.textOf(v), /IPsec › GRE › OSPF/);
+  assert.match(scene.textOf(v), /IPsec · IKEv2 site-to-site › GRE › OSPF/);
 });
 
 test('logical view: parallel relations between the same devices get distinct lanes', () => {

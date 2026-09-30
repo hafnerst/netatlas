@@ -57,7 +57,7 @@ relations:
 layout:
   physical:
     edge-1: [75, 27]
-    r2: [301, 27]
+    r2: [336, 27]
   logical:
-    edge-1: [70, 25]
-    r2: [370, 25]
+    edge-1: [103, 37]
+    r2: [459, 37]

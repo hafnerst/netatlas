@@ -58,6 +58,8 @@ export function buildNewNetwork() {
     ['over', s('cable-1')],
     ['attrs', Y.mapNode([['key', Y.numNode(100)], ['keepalive', Y.mapNode([['interval', s('10s')], ['retries', Y.numNode(3)]])]])],
   ]);
+  // finally: Auto-arrange both views (while editing, new objects are only placed next to their neighbors)
+  d.arrange(['physical', 'logical']);
   return d;
 }
 
@@ -80,6 +82,7 @@ export function buildMinimalEdited() {
     ['over', s('ospf-1')],
     ['attrs', Y.mapNode([['asn', Y.numNode(65001)], ['update-source', s('lo0')]])],
   ]);
+  d.arrange(['physical', 'logical']);
   return d;
 }
 

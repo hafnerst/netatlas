@@ -12,8 +12,8 @@ Each layer has one responsibility and may only import the layers below it.
 | `model/` | The network model: types for devices, interfaces (incl. loopbacks), links, networks, relations, protocols and groups; the protocol registry; IP addresses; **derived facts** (network members and interface VLANs from addresses, link-end VLAN state); pure queries (references, related objects, search). No I/O, no YAML, no layout. | `types.ts`, `device-types.ts`, `protocols.ts`, `ip.ts`, `derive.ts`, `queries.ts` |
 | `yaml/` | The YAML boundary: the supported YAML subset (parser with line/column positions, comments and styles), the serializer (the inverse), and the format **schema** (which keys exist, in canonical order). Knows nothing about networks beyond key names. | `parse.ts`, `write.ts`, `schema.ts` |
 | `validation/` | Turns a parsed YAML tree into a `Model` plus errors and warnings. Every issue is attached to the YAML node it concerns. Structural and cross-reference checks, loopback/IP rules, the presentation-only `layout` section. Callable without any UI. | `validate.ts` (the format's rules), `reader.ts` (issue collector, typed reader, suggestions) |
-| `layout/` | Deterministic positions for both views: a canonical, order-independent input built from the model; auto-arrange for the physical and the logical view; placement of new nodes; the rule "stored positions else auto-arrange". Separates calculated positions from network semantics. | `input.ts`, `physical.ts`, `logical.ts`, `positions.ts`, `sizes.ts`, `geometry.ts` |
-| `diagram/` | Presentation: turns model + positions into a virtual SVG tree (`VNode`) for each view, and holds the DOM-free view state (current view, selection, filters, temporary drag positions). No parsing, no editing rules, no DOM. | `session.ts`, `physical.ts`, `logical.ts`, `legend.ts` (the legend as data, and its SVG form for exports), `scene.ts`, `style.ts`, `icons.ts` |
+| `layout/` | Deterministic positions for both views: a canonical, order-independent input built from the model; auto-arrange for the physical and the logical view; placement of new nodes; the rule "stored positions else auto-arrange". Separates calculated positions from network semantics. | `input.ts`, `physical.ts`, `logical.ts`, `positions.ts`, `text.ts` (width estimate, wrapping), `sizes.ts` (element sizes from their text), `bundles.ts` (lanes and labels of a device pair), `geometry.ts`, `order.ts` |
+| `diagram/` | Presentation: turns model + positions into a virtual SVG tree (`VNode`) for each view, and holds the DOM-free view state (current view, selection, filters, temporary drag positions). No parsing, no editing rules, no DOM. | `session.ts`, `physical.ts`, `logical.ts`, `legend.ts` (the legend as data, and its SVG form for exports), `labels.ts` (multi-line text, collision-free label placement), `scene.ts`, `style.ts`, `icons.ts` |
 | `editor/` | The editable document (`ModelDoc`): the YAML tree plus undo/redo, dirty state, validation after every change, and **explicit editing operations** (set a field, append to a list, point an endpoint at an interface, rename an id with all references, add a loopback, arrange, move a node, …). Also the layout section and the layout status. | `document.ts`, `tree.ts`, `layout-section.ts` |
 | `ui/` | The browser: application shell, canvas interaction, inspector forms and outline, side panels, dialogs, local file reading and download, and the only code that creates DOM elements (`dom.ts`). Uses the editor's operations and never builds YAML itself. | `app.ts`, `inspector.ts`, `panels.ts`, `dialogs.ts`, `files.ts`, `dom.ts` |
 | `app/` | Entry point and the in-browser self-test (`#selftest`). | `main.ts`, `selftest.ts` |
@@ -84,6 +84,17 @@ anything else.
   (`layout/input.ts`), so YAML order, comments and manual moves can't affect
   it. The layout status is derived by comparing stored positions with that
   result (see `docs/FORMAT.md`).
+* **One definition of every size.** `layout/sizes.ts` turns text into
+  wrapped lines and element sizes. Auto-arrange reserves exactly those sizes
+  and the renderers draw exactly those lines, so text fits its box without
+  either side measuring fonts. Widths are estimates from character classes;
+  that is what keeps the layout identical across browsers.
+  *Trade-off:* a little spare room in every box, and no pixel-exact fit.
+* **Labels are placed at render time, deterministically.** Floating labels
+  (cable labels, relation labels, addresses) go through a `LabelPlacer` in id
+  order: first free candidate, else least overlap. Routes and label places
+  are therefore a function of the model and the node positions only, also
+  for manually placed nodes.
 * **Rendering is data.** Renderers return a `VNode` tree, which keeps them
   testable in Node. `ui/dom.ts` is the single place that turns it into DOM,
   using only `createElementNS`, filtered `setAttribute` and text nodes. That
