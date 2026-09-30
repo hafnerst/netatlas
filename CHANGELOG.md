@@ -8,6 +8,15 @@ releases may still change behaviour; the YAML format has its own version
 
 ## [Unreleased]
 
+### Changed
+
+* **Layout status moved onto the Auto-arrange button.** The separate status
+  badges in the toolbar are gone. The button shows the status of the view on
+  screen with an icon (✓ matches the auto-arranged layout, ✎ manually
+  adjusted, ● edited since arranged), a colour and border, and a message
+  that is both the hover text and the button's accessible description. The
+  status rules and the Auto-arrange algorithm are unchanged.
+
 ### Breaking: restructured YAML format
 
 **Files written for release 0.1.x that use the removed keys are not

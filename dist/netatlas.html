@@ -393,19 +393,15 @@ dialog#modal::backdrop { background: rgba(0,0,0,.35); }
 .arrange-scope { margin: 6px 0 10px; padding-left: 20px; }
 /* auto-arrange button and per-view layout status */
 .arrange-group { display: inline-flex; align-items: center; gap: 6px; }
-.arrange-btn { font-weight: 600; border-color: var(--accent); color: var(--accent); }
+.arrange-btn { font-weight: 600; border-color: var(--accent); color: var(--accent); display: inline-flex; align-items: center; gap: 5px; }
 .arrange-btn:disabled { color: inherit; border-color: var(--border); }
-.layout-status { display: inline-flex; gap: 4px; }
-body:not([data-state="loaded"]) .layout-status { display: none; }
-.lstat { font-size: 11.5px; padding: 1px 7px; border-radius: 99px; border: 1px solid var(--border); color: var(--muted); white-space: nowrap; cursor: help; }
-.lstat.current { color: var(--text); font-weight: 600; }
-.lstat.st-auto.current { border-color: #2f9e44; }
-.lstat.st-manual.current { border-color: var(--warn); }
-.lstat.st-edited.current { border-color: var(--accent); }
-.lstat::before { margin-right: 4px; }
-.lstat.st-auto::before { content: "\2713"; color: #2f9e44; }
-.lstat.st-manual::before { content: "\270E"; color: var(--warn); }
-.lstat.st-edited::before { content: "\25CF"; color: var(--accent); }
+/* layout status of the shown view: icon + colour (the message is the title / description) */
+.arrange-icon { display: inline-block; min-width: 1em; text-align: center; font-weight: 700; }
+.arrange-icon:empty { display: none; }
+.arrange-btn[data-status="auto"] .arrange-icon { color: #2f9e44; }
+.arrange-btn[data-status="manual"] { border-color: var(--warn); border-style: dashed; box-shadow: inset 0 -2px 0 var(--warn); }
+.arrange-btn[data-status="manual"] .arrange-icon { color: var(--warn); }
+.arrange-btn[data-status="edited"] { border-style: dashed; }
 
 </style>
 </head>
@@ -431,11 +427,8 @@ body:not([data-state="loaded"]) .layout-status { display: none; }
     <button type="button" data-view-btn="logical" title="Logical view (L)">Logical</button>
   </div>
   <div class="arrange-group" role="group" aria-label="Layout">
-    <button id="btn-arrange" type="button" class="arrange-btn" disabled title="Recompute the positions of every object in the whole model, for the current view or both views (A)">Auto-arrange…</button>
-    <span id="layout-status" class="layout-status" aria-live="polite">
-      <span class="lstat" data-view-status="physical"></span>
-      <span class="lstat" data-view-status="logical"></span>
-    </span>
+    <button id="btn-arrange" type="button" class="arrange-btn" disabled aria-describedby="arrange-status" title="Recompute the positions of every object in the whole model, for the current view or both views (A)"><span class="arrange-icon" aria-hidden="true"></span><span class="arrange-label">Auto-arrange…</span></button>
+    <span id="arrange-status" class="sr-only" aria-live="polite"></span>
   </div>
   <div class="search-wrap">
     <input id="search" type="search" placeholder="Find… ( / )" aria-label="Find device, network, relation" autocomplete="off" spellcheck="false">
@@ -1126,36 +1119,42 @@ class App {
         this.updateLayoutStatus();
     }
     /**
-     * Per-view layout status next to the Auto-arrange button. Always derived
-     * from the document (current positions vs. the deterministic Auto-arrange
-     * result), never from the last action, so it is right after undo/reload.
+     * Layout status of the shown view, on the Auto-arrange button itself: an
+     * icon, a colour and a message (hover text and accessible description).
+     * Always derived from the document (current positions vs. the
+     * deterministic Auto-arrange result), never from the last action, so it is
+     * right after undo/reload. Both views are tracked independently; the
+     * button shows the one on screen.
      */
     updateLayoutStatus() {
         const d = this.mdoc;
         const s = this.session;
-        const texts = { auto: 'Auto-arranged', manual: 'Manually adjusted', edited: 'Edited since arranged' };
-        const tips = {
-            auto: 'Every object is exactly where Auto-arrange puts it for the current model.',
-            manual: 'Some objects were dragged away from their auto-arranged positions. Auto-arrange restores them (undoable).',
-            edited: 'The model changed after the layout was arranged. Existing objects kept their positions and new ones were placed next to their neighbors, so the diagram no longer matches a fresh Auto-arrange. No object was moved by hand.',
-        };
-        const views = ['physical', 'logical'];
-        for (const v of views) {
-            const badge = this.doc.querySelector(`[data-view-status="${v}"]`);
-            if (!badge)
-                continue;
-            if (!d || !s) {
-                badge.textContent = '';
-                badge.className = 'lstat';
-                continue;
-            }
-            const st = d.layoutStatus(v);
-            const name = v === 'physical' ? 'Physical' : 'Logical';
-            badge.textContent = `${name}: ${texts[st]}`;
-            badge.className = `lstat st-${st}${s.state.view === v ? ' current' : ''}`;
-            badge.setAttribute('data-status', st);
-            badge.title = `${name} view${s.state.view === v ? ' (shown)' : ''}: ${tips[st]}` + (d.hasStoredLayout(v) ? ' Positions are stored in the model and exported with it.' : ' Positions are not stored yet; the file shows the auto-arranged layout.');
+        const btn = this.$('btn-arrange');
+        const icon = btn.querySelector('.arrange-icon');
+        const desc = this.$('arrange-status');
+        const action = 'Auto-arrange recomputes the positions of every object, for this view or both (A).';
+        for (const v of ['physical', 'logical']) {
+            if (d && s)
+                btn.setAttribute('data-status-' + v, d.layoutStatus(v));
+            else
+                btn.removeAttribute('data-status-' + v);
         }
+        if (!d || !s) {
+            btn.removeAttribute('data-status');
+            btn.removeAttribute('data-view');
+            icon.textContent = '';
+            desc.textContent = '';
+            btn.title = action;
+            return;
+        }
+        const st = d.layoutStatus(s.state.view);
+        btn.setAttribute('data-status', st);
+        btn.setAttribute('data-view', s.state.view);
+        icon.textContent = LAYOUT_STATUS_ICON[st];
+        // the same message for hover and for assistive technology (aria-describedby)
+        if (desc.textContent !== LAYOUT_STATUS_MESSAGE[st])
+            desc.textContent = LAYOUT_STATUS_MESSAGE[st];
+        btn.title = LAYOUT_STATUS_MESSAGE[st] + ' ' + action;
     }
     fillExamples() {
         const sel = this.$('examples');
@@ -1671,6 +1670,13 @@ class App {
     }
 }
 exports.App = App;
+/** What the Auto-arrange button says about the shown view (icon + message, never colour alone). */
+const LAYOUT_STATUS_ICON = { auto: '\u2713', manual: '\u270E', edited: '\u25CF' };
+const LAYOUT_STATUS_MESSAGE = {
+    auto: 'This view matches the auto-arranged layout.',
+    manual: 'This view has manually adjusted positions. Auto-arrange will replace them.',
+    edited: 'This view no longer matches the auto-arranged layout: the model was edited after it was arranged. Auto-arrange will rearrange it.',
+};
 function statusText(st) {
     return st === 'auto' ? '“Auto-arranged”' : st === 'manual' ? '“Manually adjusted”' : '“Edited since arranged”';
 }
@@ -10419,9 +10425,22 @@ async function runSelfTest(app, doc) {
         await tick(10);
         return !!b;
     };
-    /** status shown next to the Auto-arrange button: "auto" | "manual" | "edited" */
-    const status = (v) => (q(`[data-view-status="${v}"]`) || { getAttribute: () => '' }).getAttribute('data-status') || '';
-    const statusText = (v) => (q(`[data-view-status="${v}"]`) || { textContent: '' }).textContent || '';
+    /** layout status of a view, as tracked on the Auto-arrange button: "auto" | "manual" | "edited" */
+    const status = (v) => (q('#btn-arrange') || { getAttribute: () => '' }).getAttribute('data-status-' + v) || '';
+    /** what the Auto-arrange button shows for the view on screen: status, icon, hover text, accessible description */
+    const shown = () => {
+        const b = q('#btn-arrange');
+        const d = doc.getElementById(b.getAttribute('aria-describedby') || '');
+        return { view: b.getAttribute('data-view') || '', st: b.getAttribute('data-status') || '', icon: b.querySelector('.arrange-icon').textContent || '', title: b.title, desc: d ? d.textContent || '' : '' };
+    };
+    const AUTO_MSG = 'This view matches the auto-arranged layout.';
+    const MANUAL_MSG = 'This view has manually adjusted positions. Auto-arrange will replace them.';
+    /** the button shows `st` for `view`: icon, hover text and description agree */
+    const shows = (view, st) => {
+        const x = shown();
+        const msg = st === 'auto' ? AUTO_MSG : MANUAL_MSG;
+        return x.view === view && x.st === st && x.icon === (st === 'auto' ? '\u2713' : '\u270E') && x.title.indexOf(msg) === 0 && x.desc === msg && x.st === status(view);
+    };
     let violations = 0;
     doc.addEventListener('securitypolicyviolation', () => violations++);
     // capture downloads instead of saving them
@@ -10449,7 +10468,9 @@ async function runSelfTest(app, doc) {
         {
             const btn = q('#btn-arrange');
             const r = btn ? btn.getBoundingClientRect() : null;
-            check('Auto-arrange button is in the top toolbar, visible and labelled (disabled until a model is open)', !!btn && !!btn.closest('header.topbar') && !!r && r.width > 40 && r.height > 10 && r.top < 60 && /^Auto-arrange/.test((btn.textContent || '').trim()) && btn.disabled, btn ? (btn.textContent || '') + (btn.disabled ? ' (disabled)' : '') : 'missing');
+            check('Auto-arrange button is in the top toolbar, visible and labelled (disabled, without a status, until a model is open); no separate status element', !!btn && !!btn.closest('header.topbar') && !!r && r.width > 40 && r.height > 10 && r.top < 60 && /^Auto-arrange/.test((btn.querySelector('.arrange-label').textContent || '').trim()) && btn.disabled &&
+                shown().st === '' && shown().icon === '' && shown().desc === '' && !q('#layout-status') && !q('[data-view-status]') && !q('.lstat') &&
+                doc.querySelectorAll('header.topbar [data-view-btn]').length === 2, btn ? (btn.textContent || '') + (btn.disabled ? ' (disabled)' : '') : 'missing');
         }
         // ------------------------------------------------ viewer: every example
         for (let i = 0; i < examples_1.EXAMPLES.length; i++) {
@@ -10510,7 +10531,13 @@ async function runSelfTest(app, doc) {
             const dm = app.mdoc;
             const fw = dm.result.model.layout.physical.get('hq-fw');
             check('dragging a device stores its position in the model (physical view only, one undo step)', !!fw && dm.dirty && dm.canUndo() === 'Move hq-fw' && dm.hasStoredLayout('physical') && !dm.hasStoredLayout('logical'), JSON.stringify(fw));
-            check('status after dragging: Physical "Manually adjusted", Logical still "Auto-arranged"', status('physical') === 'manual' && status('logical') === 'auto' && /Physical: Manually adjusted/.test(statusText('physical')), statusText('physical') + ' / ' + statusText('logical'));
+            check('status after dragging: Physical "Manually adjusted", Logical still "Auto-arranged"', status('physical') === 'manual' && status('logical') === 'auto', status('physical') + ' / ' + status('logical'));
+            {
+                const b = q('#btn-arrange');
+                const cs = doc.defaultView.getComputedStyle(b);
+                const br = b.getBoundingClientRect();
+                check('the Auto-arrange button shows it: pencil icon, warning colour, hover text and accessible description say "manually adjusted"; still a clickable button', shows('physical', 'manual') && !b.disabled && b.tagName === 'BUTTON' && br.width > 60 && /Auto-arrange/.test(b.textContent || '') && cs.borderTopStyle === 'dashed' && cs.cursor !== 'not-allowed' && b.getAttribute('aria-describedby') === 'arrange-status', JSON.stringify(shown()));
+            }
             check('Auto-arrange button is enabled once a model is open', !q('#btn-arrange').disabled);
         }
         const t0 = vp.getAttribute('transform');
@@ -10525,9 +10552,10 @@ async function runSelfTest(app, doc) {
         doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }));
         check('undo reverts the drag (and the stored positions)', !app.mdoc.hasStoredLayout('physical'));
         check('status after undo: back to "Auto-arranged"', status('physical') === 'auto' && status('logical') === 'auto');
+        check('… and the button shows the check mark and "matches the auto-arranged layout" (icon, hover text, description)', shows('physical', 'auto') && doc.defaultView.getComputedStyle(q('#btn-arrange')).borderTopStyle === 'solid', JSON.stringify(shown()));
         doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'l', bubbles: true }));
         check('keyboard shortcut L switches to the logical view', doc.body.getAttribute('data-view') === 'logical');
-        check('switching views highlights the status of the shown view', !!q('[data-view-status="logical"].current') && !q('[data-view-status="physical"].current'));
+        check('switching views: the button shows the status of the view on screen', shows('logical', 'auto'), JSON.stringify(shown()));
         doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
         check('Escape clears the selection', !!app.session && app.session.state.selected === null);
         click('[data-view-btn="logical"]');
@@ -10684,6 +10712,14 @@ async function runSelfTest(app, doc) {
             const moved = rects();
             check('a manual move changes only that node', moved !== logBefore && moved.split(' ').filter((x, i) => x !== logBefore.split(' ')[i]).every((x) => /device:hq-fw|iface:hq-fw/.test(x)));
             check('status after a logical move: Logical "Manually adjusted", Physical unchanged', status('logical') === 'manual' && status('physical') === 'auto');
+            {
+                // the views are tracked independently; the button follows the view on screen, and switching moves nothing
+                const inLogical = shows('logical', 'manual');
+                click('[data-view-btn="physical"]');
+                const inPhysical = shows('physical', 'auto');
+                click('[data-view-btn="logical"]');
+                check('the button follows the shown view (logical: manually adjusted, physical: matches); switching views rearranges nothing', inLogical && inPhysical && shows('logical', 'manual') && rects() === moved, JSON.stringify(shown()));
+            }
             // returning the node to its calculated position counts as auto-arranged again (derived, not a flag)
             ad.movePositions('logical', new Map([['hq-fw', ad.autoLayout('logical').get('hq-fw')]]), 'Move hq-fw back');
             app.afterEdit();
@@ -10696,7 +10732,7 @@ async function runSelfTest(app, doc) {
             doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }));
             check('undo restores the manual position', rects() === moved && status('logical') === 'manual');
             doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'y', ctrlKey: true, bubbles: true }));
-            check('redo: "Auto-arranged" again', status('logical') === 'auto');
+            check('redo: "Auto-arranged" again', status('logical') === 'auto' && shows('logical', 'auto'));
             // export -> reload: identical positions in both views
             const exported = app.exportText();
             app.loadText(exported, 'arranged.yaml', 'file');
@@ -10710,12 +10746,12 @@ async function runSelfTest(app, doc) {
                 const md = app.mdoc;
                 md.movePositions('physical', new Map([['hq-log', { x: -700, y: 40 }]]), 'Move hq-log');
                 app.loadText(md.exportText(), 'manual.yaml', 'file');
-                check('status after exporting and reloading a manually adjusted layout: Physical "Manually adjusted"', status('physical') === 'manual' && status('logical') === 'auto');
+                check('status after exporting and reloading a manually adjusted layout: Physical "Manually adjusted"', status('physical') === 'manual' && status('logical') === 'auto' && shows('physical', 'manual'), JSON.stringify(shown()));
                 const re = app.mdoc;
                 re.arrange(['physical', 'logical']);
                 re.addEntity('device', [['id', (0, parse_1.strNode)('hq-spare')], ['type', (0, parse_1.strNode)('switch')], ['group', (0, parse_1.strNode)('hq-core')]]);
                 app.afterEdit();
-                check('a model edit is not reported as a manual adjustment ("Edited since arranged")', status('physical') === 'edited' && status('logical') === 'edited', statusText('physical'));
+                check('a model edit is not reported as a manual adjustment ("Edited since arranged")', status('physical') === 'edited' && status('logical') === 'edited' && shown().st === 'edited' && shown().icon === '\u25CF' && /no longer matches the auto-arranged layout/.test(shown().desc), JSON.stringify(shown()));
                 re.markSaved();
             }
             // an equivalent file with every list reversed arranges identically
@@ -10755,7 +10791,7 @@ async function runSelfTest(app, doc) {
         await tick();
         const d0 = app.mdoc;
         check('New creates an empty, valid model: nothing is chosen for the user', !!d0 && d0.origin === 'new' && d0.valid && !d0.dirty && d0.exportText() === 'netatlas: 1\ntitle: New network\n' && !!q('#side-body .hint-empty'), d0 ? d0.exportText() : '');
-        check('status of a new model: both views "Auto-arranged"', status('physical') === 'auto' && status('logical') === 'auto');
+        check('status of a new model: both views "Auto-arranged"', status('physical') === 'auto' && status('logical') === 'auto' && shown().st === 'auto' && shown().desc === AUTO_MSG);
         // the first device: no type preselected, and nothing saved for it
         click('#outline [data-act="add-entity"][data-kind="device"]');
         await tick();
