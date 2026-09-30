@@ -4578,13 +4578,21 @@ exports.assignPorts = assignPorts;
  *
  * Auto-arrange (`autoPhysical`) is a deterministic, compound "tiered block"
  * layout computed only from the canonical LayoutInput:
- *   - every group is a box; child groups are packed inside their parent;
+ *   - every group is a box; child groups are arranged inside their parent;
+ *   - the blocks of one container (its own devices, its child groups and, at
+ *     the top level, the components of ungrouped devices) are placed by how
+ *     they are cabled: blocks that are connected form a stack of layers, a
+ *     block sits one layer below the block it is connected to, starting from
+ *     the block with the highest-ranking devices (lowest tier), and within a
+ *     layer each block is moved as close as possible to the point above or
+ *     below the devices it is cabled to. Blocks without any connection to the
+ *     others are packed beside these stacks;
  *   - inside a group, devices are arranged in rows by tier (cloud/WAN on top,
  *     routers, firewalls, core, access, endpoints at the bottom);
  *   - ungrouped devices are split into connected components, each packed as
  *     its own block (higher-tier and larger components first);
- *   - rows and sibling groups are reordered with barycenter sweeps to reduce
- *     crossings; every tie is broken by id;
+ *   - device rows are reordered with barycenter sweeps to reduce crossings;
+ *     every tie is broken by id;
  *   - device boxes are as large as their full (wrapped) label needs and grow
  *     further to fit their ports and port labels;
  *   - the gap between two devices of a row is widened for the port labels on
@@ -4604,6 +4612,14 @@ Object.defineProperty(exports, "GROUP_PAD", { enumerable: true, get: function ()
 const HGAP = 76;
 const VGAP = 110;
 const BLOCK_GAP = 48;
+/** vertical gap between two layers of connected blocks: room for the cables and their labels */
+const LAYER_GAP = 96;
+/** rounds of reordering, and what one crossing of two cables costs compared with cable length (px) */
+const ROUNDS = 6;
+const CROSSING_COST = 160;
+const MAX_EXCHANGES = 300;
+/** a layer below the top one may be at least this wide before it continues on a second line */
+const LOWER_LAYER_W = 1800;
 const MAX_PER_ROW = 6;
 const BASE_W = 150;
 const BASE_H = 54;
@@ -4812,38 +4828,256 @@ function autoPhysical(input) {
             },
         };
     };
-    const groupBlock = (n) => {
-        const rows = rowsBlock(n.tiers);
-        const kids = packBlocks(n.children.map(groupBlock), rows.w);
-        // at least as wide as the group's title needs; the title area grows with its lines
-        const contentW = Math.max(rows.w, kids.w, 140);
-        const head = (0, sizes_1.groupHeader)(n.label, n.kind, contentW);
-        const innerW = Math.max(contentW, head.minW - 2 * sizes_1.GROUP_PAD);
-        const innerH = rows.h + kids.h + (rows.h && kids.h ? BLOCK_GAP : 0);
+    // ---- blocks of one container, placed by their cabling
+    /** order of the blocks of every layer ("container|stack|layer" -> block keys), as last placed or as fixed */
+    let orders = new Map();
+    let frozen = false;
+    /** Mean x of the devices outside `inside` that are cabled to it (undefined before the first placement, or without any). */
+    const pullX = (inside) => {
+        if (!pos.size)
+            return undefined;
+        const set = new Set(inside);
+        let sum = 0;
+        let n = 0;
+        for (const id of inside) {
+            for (const o of nbrs.get(id)) {
+                if (set.has(o))
+                    continue;
+                sum += pos.get(o).x;
+                n++;
+            }
+        }
+        return n ? sum / n : undefined;
+    };
+    /**
+     * Centers along a line for blocks of the given widths, in the given order:
+     * as close as possible to `want`, at least GAP apart, inside [0, total].
+     */
+    const spreadLine = (want, widths, total) => {
+        const n = want.length;
+        const sep = (i) => (widths[i] + widths[i + 1]) / 2 + BLOCK_GAP;
+        const f = want.slice();
+        for (let i = 1; i < n; i++)
+            f[i] = Math.max(f[i], f[i - 1] + sep(i - 1));
+        const g = want.slice();
+        for (let i = n - 2; i >= 0; i--)
+            g[i] = Math.min(g[i], g[i + 1] - sep(i));
+        const at = f.map((v, i) => (v + g[i]) / 2);
+        at[0] = Math.max(at[0], widths[0] / 2);
+        for (let i = 1; i < n; i++)
+            at[i] = Math.max(at[i], at[i - 1] + sep(i - 1));
+        at[n - 1] = Math.min(at[n - 1], total - widths[n - 1] / 2);
+        for (let i = n - 2; i >= 0; i--)
+            at[i] = Math.min(at[i], at[i + 1] - sep(i));
+        return at;
+    };
+    /** A stack of layers of connected blocks. */
+    const layeredBlock = (layers, minW, linked, where) => {
+        const all = [];
+        for (const l of layers)
+            all.push(...l);
+        const maxW = Math.max(minW, all.reduce((m, u) => Math.max(m, u.block.w), 0));
+        // where each block is pulled by its cables, from the previous placement
+        const pull = new Map();
+        for (const u of all)
+            pull.set(u, pullX(u.devices));
+        let center = 0;
+        let count = 0;
+        if (pos.size) {
+            for (const u of all) {
+                for (const id of u.devices) {
+                    center += pos.get(id).x;
+                    count++;
+                }
+            }
+        }
+        center = count ? center / count : 0;
+        // lines: a layer that is too wide is continued on the next line
+        const lines = [];
+        layers.forEach((layer, depth) => {
+            // in the order of the pulls; blocks without any go last. Once the
+            // order of a layer has been fixed (see below), that order is used.
+            const ordered = layer.slice();
+            const fixed = frozen ? orders.get(where + '|' + depth) : undefined;
+            if (fixed)
+                stableSortBy(ordered, (u) => (fixed.indexOf(u.key) + fixed.length + 1) % (fixed.length + 1));
+            else {
+                stableSortBy(ordered, (u) => {
+                    const v = pull.get(u);
+                    return v === undefined ? Number.MAX_SAFE_INTEGER : v;
+                });
+                orders.set(where + '|' + depth, ordered.map((u) => u.key));
+            }
+            let cur = [];
+            let lw = 0;
+            let first = true;
+            // Below the top layer a continuation line lies under its own layer, so
+            // the cables from above would have to cross that layer: such layers
+            // are allowed to get considerably wider before they are continued.
+            const limit = depth === 0 ? maxW : Math.max(maxW * 1.6, LOWER_LAYER_W);
+            for (const u of ordered) {
+                if (cur.length && lw + BLOCK_GAP + u.block.w > limit) {
+                    lines.push({ units: cur, first, top: depth === 0 });
+                    first = false;
+                    cur = [u];
+                    lw = u.block.w;
+                }
+                else {
+                    lw += (cur.length ? BLOCK_GAP : 0) + u.block.w;
+                    cur.push(u);
+                }
+            }
+            lines.push({ units: cur, first, top: depth === 0 });
+        });
+        const lineW = lines.map((l) => l.units.reduce((sum, u) => sum + u.block.w, 0) + BLOCK_GAP * (l.units.length - 1));
+        const w = lineW.reduce((m, x) => Math.max(m, x), 0);
+        // Place line by line. Along its line a block goes as near to its pull as
+        // the others allow (centered without one). Vertically it goes as high as
+        // it can: below every block it is cabled to, with room for the cables and
+        // their labels, and below whatever already lies above its own width.
+        const spots = [];
+        lines.forEach((l, i) => {
+            const widths = l.units.map((u) => u.block.w);
+            let cx = (w - lineW[i]) / 2;
+            const want = l.units.map((u) => {
+                const packed = cx + u.block.w / 2;
+                cx += u.block.w + BLOCK_GAP;
+                const v = pull.get(u);
+                // the top layer has nothing above it to line up with: it stays packed, in the order of the pulls
+                return v === undefined || l.top ? packed : v - center + w / 2;
+            });
+            const at = spreadLine(want, widths, w);
+            const row = l.units.map((u, k) => {
+                const x = at[k] - u.block.w / 2;
+                let y = 0;
+                for (const sp of spots) {
+                    const bottom = sp.y + sp.u.block.h;
+                    if (linked(sp.u, u))
+                        y = Math.max(y, bottom + LAYER_GAP);
+                    else if (sp.x < x + u.block.w + BLOCK_GAP && x < sp.x + sp.u.block.w + BLOCK_GAP)
+                        y = Math.max(y, bottom + BLOCK_GAP);
+                }
+                return { u, x, y };
+            });
+            spots.push(...row);
+        });
+        const h = spots.reduce((m, sp) => Math.max(m, sp.y + sp.u.block.h), 0);
         return {
-            w: innerW + 2 * sizes_1.GROUP_PAD,
-            h: innerH + 2 * sizes_1.GROUP_PAD + head.h,
+            w,
+            h,
             place(x, y) {
-                const ix = x + sizes_1.GROUP_PAD;
-                const iy = y + sizes_1.GROUP_PAD + head.h;
-                rows.place(ix + (innerW - rows.w) / 2, iy);
-                kids.place(ix + (innerW - kids.w) / 2, iy + rows.h + (rows.h && kids.h ? BLOCK_GAP : 0));
+                for (const sp of spots)
+                    sp.u.block.place(x + sp.x, y + sp.y);
             },
         };
     };
-    const rootBlock = () => {
-        const top = packBlocks(root.comps.map(rowsBlock), 0);
-        const groups = packBlocks(root.children.map(groupBlock), top.w);
-        const w = Math.max(top.w, groups.w);
-        const gap = top.h && groups.h ? VGAP : 0;
+    /**
+     * Arrange the blocks of one container. Blocks that are cabled to each
+     * other (directly or through other blocks) form one stack of layers; the
+     * stacks, and blocks cabled to nothing in this container, are packed side
+     * by side.
+     */
+    const arrange = (units, minW, where) => {
+        // fixed starting order: own rows, then by rank (lowest tier first), size, id
+        const base = units.slice().sort((a, b) => Number(b.own) - Number(a.own) || minTier(a.devices) - minTier(b.devices) || b.devices.length - a.devices.length || (0, input_1.cmp)(a.key, b.key));
+        const unitOf = new Map();
+        base.forEach((u, i) => u.devices.forEach((d) => unitOf.set(d, i)));
+        const adj = base.map(() => []);
+        base.forEach((u, i) => {
+            const seen = new Set();
+            for (const d of u.devices) {
+                for (const o of nbrs.get(d)) {
+                    const j = unitOf.get(o);
+                    if (j !== undefined && j !== i)
+                        seen.add(j);
+                }
+            }
+            adj[i] = Array.from(seen).sort((p, q) => p - q);
+        });
+        // a layer wider than this continues on the next line (from the area of everything in the container)
+        const wrapW = Math.max(minW, Math.sqrt(base.reduce((sum, u) => sum + u.block.w * u.block.h, 0) * 3.2));
+        const done = new Set();
+        const stacks = [];
+        for (let start = 0; start < base.length; start++) {
+            if (done.has(start))
+                continue;
+            // the connected blocks
+            const comp = [];
+            const queue = [start];
+            done.add(start);
+            while (queue.length) {
+                const i = queue.shift();
+                comp.push(i);
+                for (const j of adj[i]) {
+                    if (!done.has(j)) {
+                        done.add(j);
+                        queue.push(j);
+                    }
+                }
+            }
+            comp.sort((p, q) => p - q);
+            // top layer: the container's own rows, else the blocks with the highest-ranking devices
+            const top = comp.some((i) => base[i].own) ? comp.filter((i) => base[i].own) : comp.filter((i) => minTier(base[i].devices) === minTier(base[comp[0]].devices));
+            const layerOf = new Map();
+            let frontier = top;
+            for (const i of top)
+                layerOf.set(i, 0);
+            for (let depth = 1; frontier.length; depth++) {
+                const next = [];
+                for (const i of frontier) {
+                    for (const j of adj[i]) {
+                        if (!layerOf.has(j)) {
+                            layerOf.set(j, depth);
+                            next.push(j);
+                        }
+                    }
+                }
+                frontier = next.sort((p, q) => p - q);
+            }
+            const layers = [];
+            for (const i of comp) {
+                const k = layerOf.get(i);
+                while (layers.length <= k)
+                    layers.push([]);
+                layers[k].push(base[i]);
+            }
+            const index = new Map(base.map((u, i) => [u, i]));
+            stacks.push(layeredBlock(layers, wrapW, (p, q) => adj[index.get(p)].indexOf(index.get(q)) >= 0, where + '|' + stacks.length));
+        }
+        return stacks.length === 1 ? stacks[0] : packBlocks(stacks, minW);
+    };
+    const groupBlock = (n) => {
+        const units = n.children.map((c) => ({ key: c.id, devices: subtreeDevices.get(c), own: false, block: groupBlock(c) }));
+        if (n.tiers.length) {
+            const own = [];
+            for (const t of n.tiers)
+                own.push(...t);
+            units.push({ key: '', devices: own.sort(input_1.cmp), own: true, block: rowsBlock(n.tiers) });
+        }
+        const content = arrange(units, 0, 'g:' + n.id);
+        // at least as wide as the group's title needs; the title area grows with its lines
+        const contentW = Math.max(content.w, 140);
+        const head = (0, sizes_1.groupHeader)(n.label, n.kind, contentW);
+        const innerW = Math.max(contentW, head.minW - 2 * sizes_1.GROUP_PAD);
         return {
-            w,
-            h: top.h + gap + groups.h,
+            w: innerW + 2 * sizes_1.GROUP_PAD,
+            h: content.h + 2 * sizes_1.GROUP_PAD + head.h,
             place(x, y) {
-                top.place(x + (w - top.w) / 2, y);
-                groups.place(x + (w - groups.w) / 2, y + top.h + gap);
+                content.place(x + sizes_1.GROUP_PAD + (innerW - content.w) / 2, y + sizes_1.GROUP_PAD + head.h);
             },
         };
+    };
+    /** Top level: the components of ungrouped devices and the top-level groups, arranged together. */
+    const rootBlock = () => {
+        const units = root.children.map((c) => ({ key: 'g:' + c.id, devices: subtreeDevices.get(c), own: false, block: groupBlock(c) }));
+        for (const c of root.comps) {
+            const ids = [];
+            for (const t of c)
+                ids.push(...t);
+            ids.sort(input_1.cmp);
+            units.push({ key: 'c:' + ids[0], devices: ids, own: false, block: rowsBlock(c) });
+        }
+        return arrange(units, 0, '');
     };
     const meanX = (ids, fallback) => {
         if (!ids.length)
@@ -4852,17 +5086,6 @@ function autoPhysical(input) {
         for (const id of ids)
             s += pos.get(id).x;
         return s / ids.length;
-    };
-    const externalNbrs = (inside) => {
-        const ext = [];
-        Array.from(inside)
-            .sort(input_1.cmp)
-            .forEach((id) => {
-            for (const o of nbrs.get(id))
-                if (!inside.has(o))
-                    ext.push(o);
-        });
-        return ext.sort(input_1.cmp);
     };
     const sweep = () => {
         // device rows: order by mean x of neighbors outside the row
@@ -4877,32 +5100,103 @@ function autoPhysical(input) {
             const inRow = new Set(t);
             stableSortBy(t, (id) => meanX(nbrs.get(id).filter((o) => !inRow.has(o)), pos.get(id).x));
         }
-        // sibling groups: order by mean x of their external neighbors; groups
-        // without any connection outside themselves (separate components) go last
-        for (const n of allNodes) {
-            if (n.children.length < 2)
-                continue;
-            stableSortBy(n.children, (c) => {
-                const ext = externalNbrs(new Set(subtreeDevices.get(c)));
-                return ext.length ? meanX(ext, 0) : Number.MAX_SAFE_INTEGER;
-            });
+        // (groups and components are ordered where they are arranged, by the pull of their cables)
+    };
+    // Each round reorders the rows and lets the blocks follow their cables,
+    // starting from the previous round's placement. The rounds don't always
+    // improve (rings pull both ways), so the round with the shortest, least
+    // crossing cabling is the one that is used.
+    const rowLists = () => {
+        const out = [];
+        for (const n of allNodes)
+            for (const t of n.tiers)
+                out.push(t);
+        for (const c of root.comps)
+            for (const t of c)
+                out.push(t);
+        return out;
+    };
+    const cables = input.links.filter((l) => l.a.device !== l.b.device && nbrs.has(l.a.device) && nbrs.has(l.b.device));
+    const cost = () => {
+        let total = 0;
+        const seg = cables.map((l) => [pos.get(l.a.device), pos.get(l.b.device)]);
+        for (const [a, b] of seg)
+            total += Math.sqrt((b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y));
+        if (seg.length <= 600) {
+            const side = (p, q, r) => {
+                const v = (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x);
+                return v > 0 ? 1 : v < 0 ? -1 : 0;
+            };
+            for (let i = 0; i < seg.length; i++) {
+                for (let j = i + 1; j < seg.length; j++) {
+                    const [a, b] = seg[i];
+                    const [c, d] = seg[j];
+                    if (side(a, b, c) * side(a, b, d) < 0 && side(c, d, a) * side(c, d, b) < 0)
+                        total += CROSSING_COST;
+                }
+            }
         }
-        // ungrouped components: next to what they connect to; unconnected ones last
-        if (root.comps.length > 1) {
-            stableSortBy(root.comps, (c) => {
-                const inside = new Set();
-                for (const t of c)
-                    for (const id of t)
-                        inside.add(id);
-                const ext = externalNbrs(inside);
-                return ext.length ? meanX(ext, 0) : Number.MAX_SAFE_INTEGER;
-            });
-        }
+        return total;
+    };
+    /** what a round is built from: the placement before it and the order of every row */
+    let best = { before: new Map(), rows: rowLists().map((r) => r.slice()), orders: new Map() };
+    const restore = () => {
+        pos.clear();
+        best.before.forEach((p, id) => pos.set(id, p));
+        rowLists().forEach((r, i) => r.splice(0, r.length, ...best.rows[i]));
     };
     rootBlock().place(0, 0);
-    for (let i = 0; i < 4; i++) {
+    let bestCost = cost();
+    best.orders = orders;
+    for (let i = 0; i < ROUNDS; i++) {
+        const before = new Map(pos);
         sweep();
+        const rows = rowLists().map((r) => r.slice());
+        orders = new Map();
         rootBlock().place(0, 0);
+        const c = cost();
+        if (c < bestCost - 0.5) {
+            bestCost = c;
+            best = { before, rows, orders };
+        }
+    }
+    // From the best round on, the order of the blocks in every layer is fixed.
+    // Then try exchanging two blocks of a layer: a ring, for instance, has no
+    // order that every cable agrees with, and an exchange can still shorten or
+    // uncross the cabling. (Bounded, and skipped for very large models.)
+    orders = best.orders;
+    frozen = true;
+    const place = () => {
+        restore();
+        rootBlock().place(0, 0);
+        return cost();
+    };
+    place();
+    if (input.devices.length <= 400) {
+        let tries = 0;
+        const keys = Array.from(orders.keys()).sort(input_1.cmp);
+        for (let pass = 0; pass < 2; pass++) {
+            let improved = false;
+            for (const k of keys) {
+                const list = orders.get(k);
+                for (let i = 0; i < list.length && tries < MAX_EXCHANGES; i++) {
+                    for (let j = i + 1; j < list.length && tries < MAX_EXCHANGES; j++) {
+                        tries++;
+                        [list[i], list[j]] = [list[j], list[i]];
+                        const c = place();
+                        if (c < bestCost - 0.5) {
+                            bestCost = c;
+                            improved = true;
+                        }
+                        else
+                            [list[i], list[j]] = [list[j], list[i]];
+                    }
+                }
+            }
+            if (!improved)
+                break;
+        }
+        place();
     }
     // grow boxes to fit their ports, then place again
     const boxesNow = () => {
@@ -4931,6 +5225,8 @@ function autoPhysical(input) {
             sidePad.set(p.device, (pad = { left: 0, right: 0 }));
         pad[p.side] = Math.max(pad[p.side], sideLabelWidth(p.iface));
     }
+    // the same arrangement again, with the grown boxes
+    restore();
     rootBlock().place(0, 0);
     const out = new Map();
     for (const d of input.devices) {
@@ -9564,7 +9860,7 @@ exports.EXAMPLES = [
     },
     {
         "name": "metro-ring-arranged.yaml",
-        "text": "# netatlas example: examples/metro-ring.yaml after Auto-arrange (both views) and export\n# (generated by scripts/make-editor-examples.mjs). The positions are in the\n# \"layout\" section at the end; the network itself is unchanged.\n# netatlas example: metro ring (for Auto-arrange)\n#\n# Six PE routers in three POPs on a fibre ring, each with IPv4/IPv6\n# loopbacks used as router IDs and as iBGP / RSVP-TE endpoints. The logical\n# layer is dense on purpose: an OSPF area, LDP on every ring link, a full\n# iBGP mesh between loopbacks (15 sessions), two RSVP-TE tunnels, an L3VPN\n# overlay and customer eBGP. An out-of-band management network forms a\n# separate, disconnected component, and a spare router is not connected at\n# all. There is no \"layout\" section: open it and use Auto-arrange.\nnetatlas: 1\ntitle: Metro ring MR-1\n\ngroups:\n  - {id: pop-north, label: POP North, kind: site}\n  - {id: pop-east, label: POP East, kind: site}\n  - {id: pop-south, label: POP South, kind: site}\n  - {id: oob, label: Out-of-band management, kind: zone}\n  - {id: cust-a, label: Customer A, kind: external}\n\ndevices:\n  - id: pe1\n    type: router\n    group: pop-north\n    router_id: lo0\n    interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.1/32, 2001:db8:0:ffff::1/128]}\n      - {id: et1, ip: 10.1.12.1/31}\n      - {id: et2, ip: 10.1.16.1/31}\n      - {id: et3, ip: 192.0.2.1/30, vrf: CUST-A}\n      - {id: et4}\n  - id: pe2\n    type: router\n    group: pop-north\n    router_id: lo0\n    interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.2/32, 2001:db8:0:ffff::2/128]}\n      - {id: et1, ip: 10.1.12.0/31}\n      - {id: et2, ip: 10.1.23.0/31}\n      - {id: et4}\n  - id: pe3\n    type: router\n    group: pop-east\n    router_id: lo0\n    interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.3/32, 2001:db8:0:ffff::3/128]}\n      - {id: lo1, type: loopback, label: VPN next-hop, ip: [10.0.1.3/32]}\n      - {id: et1, ip: 10.1.23.1/31}\n      - {id: et2, ip: 10.1.34.0/31}\n      - {id: et4}\n  - id: pe4\n    type: router\n    group: pop-east\n    router_id: lo0\n    interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.4/32, 2001:db8:0:ffff::4/128]}\n      - {id: et1, ip: 10.1.34.1/31}\n      - {id: et2, ip: 10.1.45.0/31}\n      - {id: et4}\n  - id: pe5\n    type: router\n    group: pop-south\n    router_id: lo0\n    interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.5/32, 2001:db8:0:ffff::5/128]}\n      - {id: lo1, type: loopback, label: VPN next-hop, ip: [10.0.1.5/32]}\n      - {id: et1, ip: 10.1.45.1/31}\n      - {id: et2, ip: 10.1.56.0/31}\n      - {id: et3, ip: 192.0.2.5/30, vrf: CUST-A}\n      - {id: et4}\n  - id: pe6\n    type: router\n    group: pop-south\n    router_id: lo0\n    interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.6/32, 2001:db8:0:ffff::6/128]}\n      - {id: et1, ip: 10.1.56.1/31}\n      - {id: et2, ip: 10.1.16.0/31}\n      - {id: et4}\n  - id: ce-a1\n    label: Customer A — HQ\n    type: router\n    group: cust-a\n    interfaces:\n      - {id: ge0, ip: 192.0.2.2/30}\n  - id: ce-a2\n    label: Customer A — Plant\n    type: router\n    group: cust-a\n    interfaces:\n      - {id: ge0, ip: 192.0.2.6/30}\n  - id: oob-sw\n    label: OOB switch\n    type: switch\n    group: oob\n    interfaces: [p1, p2, p3, {id: vlan1, type: svi, ip: 172.31.0.2/24}]\n  - id: oob-con1\n    label: Console server 1\n    type: system\n    group: oob\n    interfaces:\n      - {id: eth0, ip: 172.31.0.11/24}\n  - id: oob-con2\n    label: Console server 2\n    type: system\n    group: oob\n    interfaces:\n      - {id: eth0, ip: 172.31.0.12/24}\n  - id: oob-nms\n    label: NMS collector\n    type: server\n    group: oob\n    interfaces:\n      - {id: eth0, ip: 172.31.0.20/24}\n  - id: spare-pe\n    label: Spare PE (not in service)\n    type: router\n    interfaces:\n      - {id: lo0, type: loopback, ip: [10.0.0.99/32]}\n\nlinks:\n  # the ring\n  - {id: r12, a: \"pe1:et1\", b: \"pe2:et1\", medium: fiber, speed: 100G}\n  - {id: r23, a: \"pe2:et2\", b: \"pe3:et1\", medium: fiber, speed: 100G}\n  - {id: r34, a: \"pe3:et2\", b: \"pe4:et1\", medium: fiber, speed: 100G}\n  - {id: r45, a: \"pe4:et2\", b: \"pe5:et1\", medium: fiber, speed: 100G}\n  - {id: r56, a: \"pe5:et2\", b: \"pe6:et1\", medium: fiber, speed: 100G}\n  - {id: r61, a: \"pe6:et2\", b: \"pe1:et2\", medium: fiber, speed: 100G}\n  # intra-POP cross-connects\n  - {id: x-north, a: \"pe1:et4\", b: \"pe2:et4\", medium: dac, speed: 100G, cable: DAC 1m}\n  - {id: x-east, a: \"pe3:et4\", b: \"pe4:et4\", medium: dac, speed: 100G, cable: DAC 1m}\n  - {id: x-south, a: \"pe5:et4\", b: \"pe6:et4\", medium: dac, speed: 100G, cable: DAC 1m}\n  # customer access\n  - {id: acc-a1, a: \"pe1:et3\", b: \"ce-a1:ge0\", medium: fiber, speed: 10G}\n  - {id: acc-a2, a: \"pe5:et3\", b: \"ce-a2:ge0\", medium: fiber, speed: 10G}\n  # out-of-band island (not connected to the ring)\n  - {id: oob-1, a: \"oob-sw:p1\", b: \"oob-con1:eth0\", medium: copper}\n  - {id: oob-2, a: \"oob-sw:p2\", b: \"oob-con2:eth0\", medium: copper}\n  - {id: oob-3, a: \"oob-sw:p3\", b: \"oob-nms:eth0\", medium: copper}\n\nnetworks:\n  # members are derived from the addresses inside each prefix\n  - id: cust-a-access\n    label: Customer A access\n    cidr: [192.0.2.0/30, 192.0.2.4/30]\n    attrs: {vrf: CUST-A, rd: \"65000:100\", rt: \"65000:100\"}\n  - id: oob-mgmt\n    label: OOB management\n    cidr: 172.31.0.0/24\n\nrelations:\n  - id: ospf-core\n    protocol: ospf\n    label: area 0\n    endpoints: [pe1, pe2, pe3, pe4, pe5, pe6]\n  # LDP on every ring link\n  - {id: ldp-12, protocol: ldp, endpoints: [\"pe1:et1\", \"pe2:et1\"], over: r12}\n  - {id: ldp-23, protocol: ldp, endpoints: [\"pe2:et2\", \"pe3:et1\"], over: r23}\n  - {id: ldp-34, protocol: ldp, endpoints: [\"pe3:et2\", \"pe4:et1\"], over: r34}\n  - {id: ldp-45, protocol: ldp, endpoints: [\"pe4:et2\", \"pe5:et1\"], over: r45}\n  - {id: ldp-56, protocol: ldp, endpoints: [\"pe5:et2\", \"pe6:et1\"], over: r56}\n  - {id: ldp-61, protocol: ldp, endpoints: [\"pe6:et2\", \"pe1:et2\"], over: r61}\n  # full iBGP mesh between loopbacks (15 sessions)\n  - {id: ibgp-1-2, protocol: ibgp, endpoints: [\"pe1:lo0\", \"pe2:lo0\"]}\n  - {id: ibgp-1-3, protocol: ibgp, endpoints: [\"pe1:lo0\", \"pe3:lo0\"]}\n  - {id: ibgp-1-4, protocol: ibgp, endpoints: [\"pe1:lo0\", \"pe4:lo0\"]}\n  - {id: ibgp-1-5, protocol: ibgp, endpoints: [\"pe1:lo0\", \"pe5:lo0\"]}\n  - {id: ibgp-1-6, protocol: ibgp, endpoints: [\"pe1:lo0\", \"pe6:lo0\"]}\n  - {id: ibgp-2-3, protocol: ibgp, endpoints: [\"pe2:lo0\", \"pe3:lo0\"]}\n  - {id: ibgp-2-4, protocol: ibgp, endpoints: [\"pe2:lo0\", \"pe4:lo0\"]}\n  - {id: ibgp-2-5, protocol: ibgp, endpoints: [\"pe2:lo0\", \"pe5:lo0\"]}\n  - {id: ibgp-2-6, protocol: ibgp, endpoints: [\"pe2:lo0\", \"pe6:lo0\"]}\n  - {id: ibgp-3-4, protocol: ibgp, endpoints: [\"pe3:lo0\", \"pe4:lo0\"]}\n  - {id: ibgp-3-5, protocol: ibgp, endpoints: [\"pe3:lo0\", \"pe5:lo0\"]}\n  - {id: ibgp-3-6, protocol: ibgp, endpoints: [\"pe3:lo0\", \"pe6:lo0\"]}\n  - {id: ibgp-4-5, protocol: ibgp, endpoints: [\"pe4:lo0\", \"pe5:lo0\"]}\n  - {id: ibgp-4-6, protocol: ibgp, endpoints: [\"pe4:lo0\", \"pe6:lo0\"]}\n  - {id: ibgp-5-6, protocol: ibgp, endpoints: [\"pe5:lo0\", \"pe6:lo0\"]}\n  # traffic-engineered tunnels between loopbacks, riding the ring\n  - id: te-1-4\n    protocol: rsvp-te\n    label: primary north→east\n    directed: true\n    endpoints: [\"pe1:lo0\", \"pe4:lo0\"]\n    over: [r12, r23, r34]\n    attrs: {bandwidth: 40G, setup-priority: 3}\n  - id: te-2-5\n    protocol: rsvp-te\n    label: primary north→south\n    directed: true\n    endpoints: [\"pe2:lo0\", \"pe5:lo0\"]\n    over: [r61, r56, x-north]\n    attrs: {bandwidth: 20G}\n  # customer service\n  - id: l3vpn-a\n    protocol: l3vpn\n    label: CUST-A\n    endpoints: [\"pe1:lo0\", \"pe3:lo1\", \"pe5:lo1\"]\n    network: cust-a-access\n  - {id: ebgp-a1, protocol: ebgp, endpoints: [\"pe1:et3\", \"ce-a1:ge0\"], over: acc-a1, attrs: {peer-as: 64601}}\n  - {id: ebgp-a2, protocol: ebgp, endpoints: [\"pe5:et3\", \"ce-a2:ge0\"], over: acc-a2, attrs: {peer-as: 64601}}\n  # inside the OOB island\n  - {id: syslog-oob, protocol: syslog, directed: true, endpoints: [oob-con1, \"oob-nms:eth0\"]}\n  - {id: snmp-oob, protocol: snmp, directed: true, endpoints: [oob-nms, oob-sw]}\n\nlayout:\n  physical:\n    ce-a1: [114, 437]\n    ce-a2: [372, 437]\n    oob-con1: [262, 791]\n    oob-con2: [509, 791]\n    oob-nms: [749, 791]\n    oob-sw: [502, 627]\n    pe1: [377, 250]\n    pe2: [116, 250]\n    pe3: [642, 440]\n    pe4: [904, 440]\n    pe5: [889, 250]\n    pe6: [627, 250]\n    spare-pe: [502, 27]\n  logical:\n    ce-a1: [91, 671]\n    ce-a2: [585, 843]\n    cust-a-access: [915, 711]\n    l3vpn-a: [406, 444]\n    oob-con1: [1611, 713]\n    oob-con2: [1369, 233]\n    oob-mgmt: [1580, 398]\n    oob-nms: [1750, 236]\n    oob-sw: [1670, 26]\n    ospf-core: [519, 146]\n    pe1: [108, 435]\n    pe2: [594, 37]\n    pe3: [438, 637]\n    pe4: [970, 136]\n    pe5: [942, 580]\n    pe6: [1085, 355]\n    spare-pe: [114, 995]\n"
+        "text": "# netatlas example: examples/metro-ring.yaml after Auto-arrange (both views) and export\n# (generated by scripts/make-editor-examples.mjs). The positions are in the\n# \"layout\" section at the end; the network itself is unchanged.\n# netatlas example: metro ring (for Auto-arrange)\n#\n# Six PE routers in three POPs on a fibre ring, each with IPv4/IPv6\n# loopbacks used as router IDs and as iBGP / RSVP-TE endpoints. The logical\n# layer is dense on purpose: an OSPF area, LDP on every ring link, a full\n# iBGP mesh between loopbacks (15 sessions), two RSVP-TE tunnels, an L3VPN\n# overlay and customer eBGP. An out-of-band management network forms a\n# separate, disconnected component, and a spare router is not connected at\n# all. There is no \"layout\" section: open it and use Auto-arrange.\nnetatlas: 1\ntitle: Metro ring MR-1\n\ngroups:\n  - {id: pop-north, label: POP North, kind: site}\n  - {id: pop-east, label: POP East, kind: site}\n  - {id: pop-south, label: POP South, kind: site}\n  - {id: oob, label: Out-of-band management, kind: zone}\n  - {id: cust-a, label: Customer A, kind: external}\n\ndevices:\n  - id: pe1\n    type: router\n    group: pop-north\n    router_id: lo0\n    interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.1/32, 2001:db8:0:ffff::1/128]}\n      - {id: et1, ip: 10.1.12.1/31}\n      - {id: et2, ip: 10.1.16.1/31}\n      - {id: et3, ip: 192.0.2.1/30, vrf: CUST-A}\n      - {id: et4}\n  - id: pe2\n    type: router\n    group: pop-north\n    router_id: lo0\n    interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.2/32, 2001:db8:0:ffff::2/128]}\n      - {id: et1, ip: 10.1.12.0/31}\n      - {id: et2, ip: 10.1.23.0/31}\n      - {id: et4}\n  - id: pe3\n    type: router\n    group: pop-east\n    router_id: lo0\n    interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.3/32, 2001:db8:0:ffff::3/128]}\n      - {id: lo1, type: loopback, label: VPN next-hop, ip: [10.0.1.3/32]}\n      - {id: et1, ip: 10.1.23.1/31}\n      - {id: et2, ip: 10.1.34.0/31}\n      - {id: et4}\n  - id: pe4\n    type: router\n    group: pop-east\n    router_id: lo0\n    interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.4/32, 2001:db8:0:ffff::4/128]}\n      - {id: et1, ip: 10.1.34.1/31}\n      - {id: et2, ip: 10.1.45.0/31}\n      - {id: et4}\n  - id: pe5\n    type: router\n    group: pop-south\n    router_id: lo0\n    interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.5/32, 2001:db8:0:ffff::5/128]}\n      - {id: lo1, type: loopback, label: VPN next-hop, ip: [10.0.1.5/32]}\n      - {id: et1, ip: 10.1.45.1/31}\n      - {id: et2, ip: 10.1.56.0/31}\n      - {id: et3, ip: 192.0.2.5/30, vrf: CUST-A}\n      - {id: et4}\n  - id: pe6\n    type: router\n    group: pop-south\n    router_id: lo0\n    interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.6/32, 2001:db8:0:ffff::6/128]}\n      - {id: et1, ip: 10.1.56.1/31}\n      - {id: et2, ip: 10.1.16.0/31}\n      - {id: et4}\n  - id: ce-a1\n    label: Customer A — HQ\n    type: router\n    group: cust-a\n    interfaces:\n      - {id: ge0, ip: 192.0.2.2/30}\n  - id: ce-a2\n    label: Customer A — Plant\n    type: router\n    group: cust-a\n    interfaces:\n      - {id: ge0, ip: 192.0.2.6/30}\n  - id: oob-sw\n    label: OOB switch\n    type: switch\n    group: oob\n    interfaces: [p1, p2, p3, {id: vlan1, type: svi, ip: 172.31.0.2/24}]\n  - id: oob-con1\n    label: Console server 1\n    type: system\n    group: oob\n    interfaces:\n      - {id: eth0, ip: 172.31.0.11/24}\n  - id: oob-con2\n    label: Console server 2\n    type: system\n    group: oob\n    interfaces:\n      - {id: eth0, ip: 172.31.0.12/24}\n  - id: oob-nms\n    label: NMS collector\n    type: server\n    group: oob\n    interfaces:\n      - {id: eth0, ip: 172.31.0.20/24}\n  - id: spare-pe\n    label: Spare PE (not in service)\n    type: router\n    interfaces:\n      - {id: lo0, type: loopback, ip: [10.0.0.99/32]}\n\nlinks:\n  # the ring\n  - {id: r12, a: \"pe1:et1\", b: \"pe2:et1\", medium: fiber, speed: 100G}\n  - {id: r23, a: \"pe2:et2\", b: \"pe3:et1\", medium: fiber, speed: 100G}\n  - {id: r34, a: \"pe3:et2\", b: \"pe4:et1\", medium: fiber, speed: 100G}\n  - {id: r45, a: \"pe4:et2\", b: \"pe5:et1\", medium: fiber, speed: 100G}\n  - {id: r56, a: \"pe5:et2\", b: \"pe6:et1\", medium: fiber, speed: 100G}\n  - {id: r61, a: \"pe6:et2\", b: \"pe1:et2\", medium: fiber, speed: 100G}\n  # intra-POP cross-connects\n  - {id: x-north, a: \"pe1:et4\", b: \"pe2:et4\", medium: dac, speed: 100G, cable: DAC 1m}\n  - {id: x-east, a: \"pe3:et4\", b: \"pe4:et4\", medium: dac, speed: 100G, cable: DAC 1m}\n  - {id: x-south, a: \"pe5:et4\", b: \"pe6:et4\", medium: dac, speed: 100G, cable: DAC 1m}\n  # customer access\n  - {id: acc-a1, a: \"pe1:et3\", b: \"ce-a1:ge0\", medium: fiber, speed: 10G}\n  - {id: acc-a2, a: \"pe5:et3\", b: \"ce-a2:ge0\", medium: fiber, speed: 10G}\n  # out-of-band island (not connected to the ring)\n  - {id: oob-1, a: \"oob-sw:p1\", b: \"oob-con1:eth0\", medium: copper}\n  - {id: oob-2, a: \"oob-sw:p2\", b: \"oob-con2:eth0\", medium: copper}\n  - {id: oob-3, a: \"oob-sw:p3\", b: \"oob-nms:eth0\", medium: copper}\n\nnetworks:\n  # members are derived from the addresses inside each prefix\n  - id: cust-a-access\n    label: Customer A access\n    cidr: [192.0.2.0/30, 192.0.2.4/30]\n    attrs: {vrf: CUST-A, rd: \"65000:100\", rt: \"65000:100\"}\n  - id: oob-mgmt\n    label: OOB management\n    cidr: 172.31.0.0/24\n\nrelations:\n  - id: ospf-core\n    protocol: ospf\n    label: area 0\n    endpoints: [pe1, pe2, pe3, pe4, pe5, pe6]\n  # LDP on every ring link\n  - {id: ldp-12, protocol: ldp, endpoints: [\"pe1:et1\", \"pe2:et1\"], over: r12}\n  - {id: ldp-23, protocol: ldp, endpoints: [\"pe2:et2\", \"pe3:et1\"], over: r23}\n  - {id: ldp-34, protocol: ldp, endpoints: [\"pe3:et2\", \"pe4:et1\"], over: r34}\n  - {id: ldp-45, protocol: ldp, endpoints: [\"pe4:et2\", \"pe5:et1\"], over: r45}\n  - {id: ldp-56, protocol: ldp, endpoints: [\"pe5:et2\", \"pe6:et1\"], over: r56}\n  - {id: ldp-61, protocol: ldp, endpoints: [\"pe6:et2\", \"pe1:et2\"], over: r61}\n  # full iBGP mesh between loopbacks (15 sessions)\n  - {id: ibgp-1-2, protocol: ibgp, endpoints: [\"pe1:lo0\", \"pe2:lo0\"]}\n  - {id: ibgp-1-3, protocol: ibgp, endpoints: [\"pe1:lo0\", \"pe3:lo0\"]}\n  - {id: ibgp-1-4, protocol: ibgp, endpoints: [\"pe1:lo0\", \"pe4:lo0\"]}\n  - {id: ibgp-1-5, protocol: ibgp, endpoints: [\"pe1:lo0\", \"pe5:lo0\"]}\n  - {id: ibgp-1-6, protocol: ibgp, endpoints: [\"pe1:lo0\", \"pe6:lo0\"]}\n  - {id: ibgp-2-3, protocol: ibgp, endpoints: [\"pe2:lo0\", \"pe3:lo0\"]}\n  - {id: ibgp-2-4, protocol: ibgp, endpoints: [\"pe2:lo0\", \"pe4:lo0\"]}\n  - {id: ibgp-2-5, protocol: ibgp, endpoints: [\"pe2:lo0\", \"pe5:lo0\"]}\n  - {id: ibgp-2-6, protocol: ibgp, endpoints: [\"pe2:lo0\", \"pe6:lo0\"]}\n  - {id: ibgp-3-4, protocol: ibgp, endpoints: [\"pe3:lo0\", \"pe4:lo0\"]}\n  - {id: ibgp-3-5, protocol: ibgp, endpoints: [\"pe3:lo0\", \"pe5:lo0\"]}\n  - {id: ibgp-3-6, protocol: ibgp, endpoints: [\"pe3:lo0\", \"pe6:lo0\"]}\n  - {id: ibgp-4-5, protocol: ibgp, endpoints: [\"pe4:lo0\", \"pe5:lo0\"]}\n  - {id: ibgp-4-6, protocol: ibgp, endpoints: [\"pe4:lo0\", \"pe6:lo0\"]}\n  - {id: ibgp-5-6, protocol: ibgp, endpoints: [\"pe5:lo0\", \"pe6:lo0\"]}\n  # traffic-engineered tunnels between loopbacks, riding the ring\n  - id: te-1-4\n    protocol: rsvp-te\n    label: primary north→east\n    directed: true\n    endpoints: [\"pe1:lo0\", \"pe4:lo0\"]\n    over: [r12, r23, r34]\n    attrs: {bandwidth: 40G, setup-priority: 3}\n  - id: te-2-5\n    protocol: rsvp-te\n    label: primary north→south\n    directed: true\n    endpoints: [\"pe2:lo0\", \"pe5:lo0\"]\n    over: [r61, r56, x-north]\n    attrs: {bandwidth: 20G}\n  # customer service\n  - id: l3vpn-a\n    protocol: l3vpn\n    label: CUST-A\n    endpoints: [\"pe1:lo0\", \"pe3:lo1\", \"pe5:lo1\"]\n    network: cust-a-access\n  - {id: ebgp-a1, protocol: ebgp, endpoints: [\"pe1:et3\", \"ce-a1:ge0\"], over: acc-a1, attrs: {peer-as: 64601}}\n  - {id: ebgp-a2, protocol: ebgp, endpoints: [\"pe5:et3\", \"ce-a2:ge0\"], over: acc-a2, attrs: {peer-as: 64601}}\n  # inside the OOB island\n  - {id: syslog-oob, protocol: syslog, directed: true, endpoints: [oob-con1, \"oob-nms:eth0\"]}\n  - {id: snmp-oob, protocol: snmp, directed: true, endpoints: [oob-nms, oob-sw]}\n\nlayout:\n  physical:\n    ce-a1: [114, 365]\n    ce-a2: [372, 365]\n    oob-con1: [400, 763]\n    oob-con2: [647, 763]\n    oob-nms: [887, 763]\n    oob-sw: [640, 599]\n    pe1: [116, 108]\n    pe2: [377, 108]\n    pe3: [627, 86]\n    pe4: [889, 86]\n    pe5: [642, 390]\n    pe6: [904, 390]\n    spare-pe: [1166, 27]\n  logical:\n    ce-a1: [88, 515]\n    ce-a2: [576, 811]\n    cust-a-access: [330, 679]\n    l3vpn-a: [401, 331]\n    oob-con1: [1532, 713]\n    oob-con2: [1291, 233]\n    oob-mgmt: [1501, 398]\n    oob-nms: [1671, 236]\n    oob-sw: [1591, 26]\n    ospf-core: [715, 204]\n    pe1: [110, 180]\n    pe2: [902, 67]\n    pe3: [503, 45]\n    pe4: [1006, 267]\n    pe5: [473, 528]\n    pe6: [844, 460]\n    spare-pe: [114, 963]\n"
     },
     {
         "name": "device-types.yaml",
@@ -11343,7 +11639,7 @@ async function runSelfTest(app, doc) {
                 return;
             Array.prototype.forEach.call(g.querySelectorAll(text), (t) => {
                 if (!inside(bb(t), bb(frame)))
-                    out.push(`"${t.textContent}" leaves its box (${Math.round(bb(t).w)} > ${Math.round(bb(frame).w)})`);
+                    out.push(`"${t.textContent}" leaves its box (${Math.round(bb(t).w)} > ${Math.round(bb(frame).w)}; text x ${Math.round(bb(t).x)}, box x ${Math.round(bb(frame).x)})`);
             });
         });
         boxed('g.device', '.dev-box', 'text');
@@ -11529,7 +11825,9 @@ async function runSelfTest(app, doc) {
             const measure = (text) => {
                 const parsed = new DOMParser().parseFromString(text, 'image/svg+xml').documentElement;
                 const holder = doc.createElement('div');
-                holder.setAttribute('class', 'sr-only');
+                // off screen at its natural size (scaled down to nothing, text metrics become meaningless)
+                holder.setAttribute('style', 'position:absolute;left:-30000px;top:0;width:6000px;height:6000px;visibility:hidden');
+                parsed.setAttribute('id', 'export-canvas');
                 holder.appendChild(doc.importNode(parsed, true));
                 doc.body.appendChild(holder);
                 const root = holder.firstChild;
@@ -11740,7 +12038,9 @@ async function runSelfTest(app, doc) {
             const exported = (text) => {
                 const parsed = new DOMParser().parseFromString(text, 'image/svg+xml').documentElement;
                 const holder = doc.createElement('div');
-                holder.setAttribute('class', 'sr-only');
+                // off screen at its natural size (scaled down to nothing, text metrics become meaningless)
+                holder.setAttribute('style', 'position:absolute;left:-30000px;top:0;width:6000px;height:6000px;visibility:hidden');
+                parsed.setAttribute('id', 'export-canvas');
                 holder.id = 'export-probe';
                 holder.appendChild(doc.importNode(parsed, true));
                 doc.body.appendChild(holder);
@@ -11789,6 +12089,16 @@ async function runSelfTest(app, doc) {
             app.loadExample(wanIdx);
             click('[data-view-btn="physical"]');
             const physBefore = rects();
+            {
+                // groups are placed by their cabling: the providers between the Internet above and the HQ routers below
+                const top = (sel) => q('#viewport ' + sel).getBoundingClientRect();
+                const prov = top('g.group[data-ref="group:providers"] .group-box');
+                const hq = top('g.group[data-ref="group:hq"] .group-box');
+                const inet = top('g.device[data-ref="device:inet"] .dev-box');
+                const pe1 = top('g.device[data-ref="device:isp1-pe"] .dev-box');
+                const r1 = top('g.device[data-ref="device:hq-rtr1"] .dev-box');
+                check('Auto-arrange places the provider group by its cables: under the Internet, above the HQ routers it feeds, and over them', inet.bottom < prov.top && prov.bottom < hq.top && pe1.left + pe1.width / 2 > hq.left && pe1.left + pe1.width / 2 < hq.right && Math.abs(pe1.left - r1.left) < hq.width / 3 && !drawnProblems().length, JSON.stringify([Math.round(inet.bottom), Math.round(prov.top), Math.round(prov.bottom), Math.round(hq.top)]));
+            }
             click('[data-view-btn="logical"]');
             const logBefore = rects();
             check('loading a file does not store positions or mark it changed; status "Auto-arranged"', !app.mdoc.hasStoredLayout('physical') && !app.mdoc.dirty && status('physical') === 'auto' && status('logical') === 'auto');

@@ -473,18 +473,51 @@ its calculated position always give the right status.
 
 ### Auto-arrange
 
-* **Physical view:** tiered, nested group boxes. Cloud/WAN is on top, then
-  routers, firewalls, core, access, APs, and servers/hosts; a device's `tier`
-  overrides this. Ungrouped devices are split into connected components that
-  are packed separately. Rows and sibling groups are reordered with barycenter
-  sweeps to reduce crossings; groups with no outside connections go last.
+* **Physical view:** tiered, nested group boxes. Inside a group, devices
+  sit in rows by tier: cloud/WAN on top, then routers, firewalls, core,
+  access, APs, and servers/hosts; a device's `tier` overrides this. Rows are
+  reordered with barycenter sweeps to reduce crossings.
+  **Groups are placed by their cabling**, at every level of nesting. The
+  blocks of one container (its own device rows, its child groups and, at the
+  top level, the connected components of ungrouped devices) are arranged like
+  this:
+  * blocks that are cabled to each other, directly or through other blocks,
+    form one stack of layers. The top layer is the container's own device
+    rows if it has any, else the block or blocks whose devices rank highest
+    (lowest tier, e.g. a cloud). Every other block lies one layer below the
+    nearest block it is cabled to. No group kind or name plays a part: a
+    provider group cabled to a cloud above and routers below ends up between
+    them, and one cabled only to an access switch ends up under that switch;
+  * within a layer, blocks are ordered by the mean position of the devices
+    they are cabled to, and each block is moved as close to that point as its
+    neighbors allow, so its cables are short and steep. A block cabled to two
+    others lies between them;
+  * a block is placed as high as it can be: below every block it is cabled
+    to (with room for the cables and their labels) and below whatever already
+    occupies its own width. Blocks never overlap;
+  * a top layer that gets too wide continues on a second line; lower layers
+    may get considerably wider first, because a second line would put blocks
+    under their own layer and the cables would have to cross it;
+  * stacks that are not cabled to each other, and blocks without any cable
+    (a disconnected group, a spare device), are packed side by side in a
+    fixed order: highest-ranking first, then larger, then by id;
+  * several rounds are computed and the one with the shortest and least
+    crossing cabling is used; then pairs of blocks in a layer are exchanged
+    where that improves it further (rings have no order every cable agrees
+    with). This search is bounded, and skipped above 400 devices.
+
+  The diagram grows as needed: a tall block in one layer moves only the
+  blocks below its own width.
   Device boxes are as large as their full label needs and grow further for
   their ports and port labels. The gap between two neighbors of a row is
   widened for the port labels on the facing sides and for the label of a
   cable between them. A group box is at least as wide as its title.
 * **Logical view:** each connected component (devices, networks, multipoint
   hubs) is laid out on its own with stress majorization, which spaces graph
-  distances evenly; very large components (over 300 nodes) use a
+  distances evenly. Its edges are the logical relationships only (relations
+  between two devices, the spokes of multipoint relations, and network
+  membership); cables are not edges here, and groups don't exist in this
+  view; very large components (over 300 nodes) use a
   force-directed layout instead. It is seeded from the auto-arranged
   *physical* positions, so the two views keep a similar mental map, but never
   from manual positions. Then:
@@ -546,7 +579,13 @@ places; they are the same on screen and in exported SVG files.
 * Labels keep clear of nodes and of other labels, not of lines: a label can
   lie on a cable or relation line that isn't its own.
 * Cables avoid devices, not group boxes, group titles or other cables.
-  Crossings are reduced by the ordering of rows and groups, not eliminated.
+  Crossings are reduced by the placement of groups and the ordering of rows,
+  not eliminated: a full mesh or a ring between groups always crosses
+  somewhere.
+* Group placement is a heuristic. Layers come from the *nearest* connected
+  block, so a group cabled both to the top and far down lies near the top and
+  has one long cable. A chain of groups gives a tall diagram, a wide layer a
+  wide one; the shape follows the topology rather than the screen.
 * Relation lines in the logical view are always straight. Auto-arrange moves
   nodes off the lines; with manual positions a line can pass under a node.
 * Diagrams are larger than before: spacing was preferred over density.
