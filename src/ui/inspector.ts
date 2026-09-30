@@ -73,6 +73,12 @@ export class Editor {
   /** open interface cards / collapsible sections, by path */
   private open = new Set<string>();
   private filter = '';
+  /**
+   * Sections of the model outline that are folded to their heading. Links
+   * and protocols start folded: they are the longest lists and the ones
+   * least often picked from here.
+   */
+  private collapsed = new Set<EntityKind>(['link', 'protocol']);
   /** unapplied text in the YAML source tab */
   sourceDraft: string | null = null;
   sourceError: string | null = null;
@@ -154,18 +160,18 @@ export class Editor {
     while (box.firstChild) box.removeChild(box.firstChild);
     const doc = this.getDoc();
     if (!doc) {
-      box.appendChild(this.e('p', { class: 'muted small' }, ['No model open. Use New or Open YAML.']));
+      box.appendChild(this.e('p', { class: 'muted small' }, ['No model open. Use File → New model or Open YAML file.']));
       return;
     }
     const f = this.e('input', { type: 'search', class: 'outline-filter', placeholder: 'Filter…', 'data-t': 'outline-filter', value: this.filter, 'aria-label': 'Filter the model outline' });
     (f as HTMLInputElement).value = this.filter;
     box.appendChild(f);
     const counts = this.issueCounts();
-    const docIss = counts.get('document') || { e: 0, w: 0 };
+    const kinds: EntityKind[] = ['device', 'link', 'network', 'relation', 'group', 'protocol'];
+    const allFolded = kinds.every((k) => this.collapsed.has(k));
     box.appendChild(
-      this.e('button', { type: 'button', class: 'ol-item ol-doc' + (this.sel && this.sel.kind === 'document' ? ' active' : ''), 'data-act': 'select', 'data-kind': 'document', 'data-index': '0' }, [
-        this.e('span', { class: 'ol-label' }, ['Document: ' + (doc.text(['title']) || 'Untitled')]),
-        this.badge(docIss.e, docIss.w),
+      this.e('div', { class: 'ol-tools' }, [
+        this.e('button', { type: 'button', class: 'mini', 'data-act': 'fold-all', 'data-kind': allFolded ? 'open' : 'close', title: allFolded ? 'Show the entries of every section' : 'Fold every section to its heading' }, [allFolded ? 'Expand all' : 'Collapse all']),
       ]),
     );
     if (ctx) {
@@ -179,26 +185,49 @@ export class Editor {
       );
     }
     const q = this.filter.toLowerCase();
-    for (const kind of ['device', 'link', 'network', 'relation', 'group', 'protocol'] as EntityKind[]) {
+    for (const kind of kinds) {
       const ents = doc.entities(kind);
-      const sec = this.e('section', { class: 'ol-section' });
+      const folded = this.collapsed.has(kind);
+      // what a folded section still tells: problems inside it, and how many of its entries are related to the selection
+      let errs = 0;
+      let warns = 0;
+      let related = 0;
+      for (const ent of ents) {
+        const c = counts.get(kind + '#' + ent.index);
+        if (c) {
+          errs += c.e;
+          warns += c.w;
+        }
+        if (ctx && ent.id && contextState(ctx, entityRef(kind, ent.id)) === 'related') related++;
+      }
+      const sec = this.e('section', { class: 'ol-section' + (folded ? ' folded' : ''), 'data-section': kind, 'data-folded': folded ? 'true' : 'false' });
+      const listId = 'ol-list-' + kind;
       sec.appendChild(
         this.e('div', { class: 'ol-head' }, [
-          this.e('span', {}, [`${KIND_TITLE[kind]} (${ents.length})`]),
+          this.e('button', { type: 'button', class: 'ol-toggle', 'data-act': 'fold', 'data-kind': kind, 'aria-expanded': folded ? 'false' : 'true', 'aria-controls': listId, title: (folded ? 'Show' : 'Hide') + ' the entries of this section' }, [
+            this.e('span', { class: 'ol-caret', 'aria-hidden': 'true' }, [folded ? '▸' : '▾']),
+            this.e('span', { class: 'ol-title' }, [`${KIND_TITLE[kind]} (${ents.length})`]),
+            folded && related ? this.e('span', { class: 'ol-related', title: `${related} related to the selection` }, [`• ${related}`]) : null,
+            folded ? this.badge(errs, warns) : null,
+          ]),
           this.e('button', { type: 'button', class: 'mini', 'data-act': 'add-entity', 'data-kind': kind, title: 'Add ' + kind }, ['+ Add']),
         ]),
       );
+      const list = this.e('div', { class: 'ol-list', id: listId });
+      sec.appendChild(list);
       for (const ent of ents) {
         const label = this.entityLabel(kind, ent.index);
-        if (q && (label + ' ' + (ent.id || '')).toLowerCase().indexOf(q) < 0) continue;
-        const c = counts.get(kind + '#' + ent.index) || { e: 0, w: 0 };
-        const active = this.sel && this.sel.kind === kind && this.sel.index === ent.index;
+        const active = !!this.sel && this.sel.kind === kind && this.sel.index === ent.index;
         const st = ent.id ? contextState(ctx, entityRef(kind, ent.id)) : ctx ? 'unrelated' : null;
+        // A folded section shows its heading only, except for what would otherwise be lost from
+        // view: the entry that is selected, and the matches of the filter.
+        if (q ? (label + ' ' + (ent.id || '')).toLowerCase().indexOf(q) < 0 : folded && !active && st !== 'selected') continue;
+        const c = counts.get(kind + '#' + ent.index) || { e: 0, w: 0 };
         const attrs: { [k: string]: string } = { type: 'button', class: 'ol-item' + (active ? ' active' : '') + (st ? ' ctx-' + st : ''), 'data-act': 'select', 'data-kind': kind, 'data-index': String(ent.index), title: ent.id || '(no id)' };
         if (ent.id) attrs['data-ref'] = entityRef(kind, ent.id);
         if (st) attrs['data-ctx'] = st;
         if (st === 'selected' || (!st && active)) attrs['aria-current'] = 'true';
-        sec.appendChild(
+        list.appendChild(
           this.e('button', attrs, [
             st === 'selected' || st === 'related' ? this.e('span', { class: 'ctx-mark ' + (st === 'selected' ? 'sel' : 'rel'), 'aria-hidden': 'true' }, [st === 'selected' ? '▸' : '•']) : null,
             this.e('span', { class: 'ol-label' }, [label]),
@@ -279,7 +308,7 @@ export class Editor {
           'Select an object in the diagram or in the Model outline to edit it, or add one with “+ Add”. Changes apply when you press Enter or leave a field, and can be undone (Ctrl+Z).',
         ]),
       );
-      wrap.appendChild(this.e('button', { type: 'button', 'data-act': 'select', 'data-kind': 'document', 'data-index': '0' }, ['Edit document settings']));
+      wrap.appendChild(this.e('button', { type: 'button', 'data-act': 'select', 'data-kind': 'document', 'data-index': '0' }, ['Edit model settings']));
       return;
     }
     if (s.kind === 'document') this.renderDocument(wrap);
@@ -287,7 +316,7 @@ export class Editor {
   }
 
   private renderDocument(w: HTMLElement): void {
-    w.appendChild(this.header('document', 'Document', null));
+    w.appendChild(this.header('model', this.doc.text(['title']) || 'Untitled model', null));
     w.appendChild(this.issueBox([]));
     w.appendChild(this.field('Format version', this.e('span', { class: 'ro' }, [this.doc.text(['netatlas']) || '(missing)']), ['netatlas'], 'Always 1 for this version of netatlas.'));
     if (ENTITY_KINDS.every((k) => this.doc.entities(k).length === 0)) {
@@ -1226,7 +1255,18 @@ export class Editor {
         this.selectEntity(kind, index);
         this.host.changed('select');
         return true;
+      case 'fold':
+        // fold or unfold one section of the outline (a view state: nothing in the model changes)
+        if (this.collapsed.has(kind)) this.collapsed.delete(kind);
+        else this.collapsed.add(kind);
+        this.host.changed('filter');
+        return true;
+      case 'fold-all':
+        this.collapsed = new Set(kind === ('close' as string) ? ENTITY_KINDS : []);
+        this.host.changed('filter');
+        return true;
       case 'add-entity': {
+        this.collapsed.delete(kind);
         const i = doc.addEntity(kind);
         this.selectEntity(kind, i);
         this.host.changed(`Added ${kind} “${doc.entities(kind)[i].id}”. Fill in the highlighted fields.`);

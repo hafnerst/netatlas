@@ -122,10 +122,96 @@ export class App {
 
   newModel(): void {
     this.openDoc(ModelDoc.create());
+    this.editModel();
+  }
+
+  /** Open the edit view of the whole model (title, description, format version). */
+  editModel(): void {
+    if (!this.mdoc) return;
     this.editor.sel = { kind: 'document', index: 0 };
     this.editorSelected(this.editor.sel);
     this.tab = 'edit';
+    this.renderOutline();
     this.renderSide();
+    this.updateChrome();
+  }
+
+  /** Is the File menu open? */
+  get menuOpen(): boolean {
+    return !this.$('main-menu').hidden;
+  }
+
+  /**
+   * Keep a drop-down that hangs under a toolbar control inside the window:
+   * it is left-aligned with its control unless that would push it over the
+   * right edge (a wrapped toolbar in a narrow window), then it is shifted left.
+   */
+  private keepInWindow(popup: HTMLElement): void {
+    popup.style.left = '0px';
+    const r = popup.getBoundingClientRect();
+    const over = r.right - (this.doc.documentElement.clientWidth - 8);
+    if (over > 0) popup.style.left = -Math.min(over, Math.max(0, r.left - 8)) + 'px';
+  }
+
+  /** Open or close the File menu; opening moves the focus to its first entry (keyboard use). */
+  setMenu(open: boolean, focus = false): void {
+    const menu = this.$('main-menu');
+    const btn = this.$('menu-btn');
+    menu.hidden = !open;
+    btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    btn.classList.toggle('active', open);
+    if (open) this.keepInWindow(menu);
+    if (open && focus) {
+      const first = menu.querySelector('button:not(:disabled)') as HTMLElement | null;
+      if (first) first.focus();
+    }
+  }
+
+  /**
+   * The File menu: a button that opens a list of entries. It closes after an
+   * entry is chosen, on Escape, and when anything outside it is pressed.
+   * Arrow keys move between the entries.
+   */
+  private wireMenu(): void {
+    const btn = this.$('menu-btn');
+    const menu = this.$('main-menu');
+    const items = (): HTMLElement[] => Array.prototype.slice.call(menu.querySelectorAll('button:not(:disabled)')) as HTMLElement[];
+    btn.addEventListener('click', () => this.setMenu(!this.menuOpen));
+    btn.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowDown' || e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        this.setMenu(true, true);
+      } else if (e.key === 'Escape' && this.menuOpen) {
+        e.stopPropagation();
+        this.setMenu(false);
+      }
+    });
+    // an entry acts through its own handler; the menu then gets out of the way
+    menu.addEventListener('click', (e) => {
+      if ((e.target as Element).closest('button')) this.setMenu(false);
+    });
+    menu.addEventListener('keydown', (e) => {
+      const list = items();
+      const at = list.indexOf(this.doc.activeElement as HTMLElement);
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        this.setMenu(false);
+        btn.focus();
+      } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        e.stopPropagation();
+        const next = list[(at + (e.key === 'ArrowDown' ? 1 : list.length - 1)) % list.length];
+        if (next) next.focus();
+      } else if (e.key === 'Home' || e.key === 'End') {
+        e.preventDefault();
+        const to = list[e.key === 'Home' ? 0 : list.length - 1];
+        if (to) to.focus();
+      } else if (e.key === 'Tab') this.setMenu(false);
+    });
+    this.doc.addEventListener('pointerdown', (e) => {
+      if (this.menuOpen && !(e.target as Element).closest('.menu-wrap')) this.setMenu(false);
+    });
   }
 
   loadExample(i: number): LoadOutcome | null {
@@ -566,6 +652,20 @@ export class App {
     (this.$('btn-undo') as HTMLButtonElement).disabled = !d || !d.canUndo();
     (this.$('btn-redo') as HTMLButtonElement).disabled = !d || !d.canRedo();
     (this.$('btn-download') as HTMLButtonElement).disabled = !d;
+    // "Current model": the whole model's settings, with the problems that belong to no single object
+    const mb = this.$('btn-model') as HTMLButtonElement;
+    mb.disabled = !d;
+    const editing = !!d && !!this.editor.sel && this.editor.sel.kind === 'document';
+    mb.classList.toggle('active', editing);
+    mb.setAttribute('aria-pressed', editing ? 'true' : 'false');
+    mb.title = d ? `Edit the settings of the whole model: “${d.text(['title']) || 'Untitled'}”` : 'Edit the settings of the whole model (title, description)';
+    const general = d ? d.errors.concat(d.warnings).filter((i) => !d.issueEntity(i)) : [];
+    const generalErrors = general.filter((i) => i.severity === 'error').length;
+    const badge = this.$('model-badge');
+    badge.hidden = !general.length;
+    badge.textContent = String(generalErrors || general.length);
+    badge.className = 'ol-badge ' + (generalErrors ? 'err' : 'warn');
+    badge.title = `${generalErrors} error(s), ${general.length - generalErrors} warning(s) in the model settings`;
     this.$('btn-undo').title = d && d.canUndo() ? `Undo: ${d.canUndo()} (Ctrl+Z)` : 'Undo (Ctrl+Z)';
     this.$('btn-redo').title = d && d.canRedo() ? `Redo: ${d.canRedo()} (Ctrl+Y)` : 'Redo (Ctrl+Y)';
     const st = this.$('status');
@@ -636,8 +736,8 @@ export class App {
   }
 
   private fillExamples(): void {
-    const sel = this.$<HTMLSelectElement>('examples');
-    EXAMPLES.forEach((ex, i) => sel.appendChild(el(this.doc, 'option', { value: String(i) }, [ex.name])));
+    const menu = this.$('menu-examples');
+    EXAMPLES.forEach((ex, i) => menu.appendChild(el(this.doc, 'button', { type: 'button', role: 'menuitem', 'data-example': String(i) }, [el(this.doc, 'span', { class: 'mi-label' }, [ex.name])])));
     const list = this.$('example-buttons');
     EXAMPLES.forEach((ex, i) => list.appendChild(el(this.doc, 'button', { type: 'button', class: 'linkish', 'data-example': String(i) }, [ex.name])));
   }
@@ -679,12 +779,12 @@ export class App {
       if (f) void this.loadFile(f);
       fileInput.value = '';
     });
-    this.$<HTMLSelectElement>('examples').addEventListener('change', async (e) => {
-      const sel = e.target as HTMLSelectElement;
-      const v = sel.value;
-      sel.value = '';
-      if (v !== '' && (await this.confirmDiscard('Loading an example'))) this.loadExample(Number(v));
+    this.$('menu-examples').addEventListener('click', async (e) => {
+      const t = (e.target as Element).closest('[data-example]');
+      if (t && (await this.confirmDiscard('Loading an example'))) this.loadExample(Number(t.getAttribute('data-example')));
     });
+    this.$('btn-model').addEventListener('click', () => this.editModel());
+    this.wireMenu();
     this.$('example-buttons').addEventListener('click', (e) => {
       const t = (e.target as Element).closest('[data-example]');
       if (t) this.loadExample(Number(t.getAttribute('data-example')));
@@ -834,6 +934,7 @@ export class App {
         results.appendChild(el(doc, 'button', { type: 'button', 'data-goto': hit.ref }, [el(doc, 'span', { class: 'kind' }, [hit.kind]), hit.label]));
       }
       results.hidden = false;
+      this.keepInWindow(results);
     });
     q.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') {

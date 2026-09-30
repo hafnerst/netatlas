@@ -8,6 +8,25 @@ releases may still change behaviour; the YAML format has its own version
 
 ## [Unreleased]
 
+### Changed: toolbar and model outline
+
+* **One File menu.** *New*, *Open YAML…*, *Download YAML* and the examples
+  list are grouped in a **File** menu next to the logo (New model, Open YAML
+  file…, Download YAML, Open an example). Undo/redo, Physical/Logical,
+  Auto-arrange and Find stay direct controls.
+* **Current model** in the toolbar opens the edit view of the entire model
+  (title, description, format version). It replaces the "Document" entry at
+  the top of the left panel, and the interface now says "model" instead of
+  "document".
+* **Outline sections fold.** Each heading of the left panel folds its
+  section; Links and Protocols start folded, and *Collapse all* / *Expand
+  all* does every section. A folded section keeps its count, its problem
+  badge, the selected entry and the number of related entries; the filter
+  still searches it.
+* Fixed: the toolbar's drop-downs (search results) were cut off by the
+  toolbar since it became a scrolling box; the toolbar no longer scrolls or
+  clips, and drop-downs stay inside the window.
+
 ### Breaking: interfaces in two categories instead of a hierarchy
 
 The nesting of logical and tunnel interfaces under physical interfaces, and
@@ -44,7 +63,7 @@ their entries are not read, and the file keeps them until you move them.
   out against the page instead of their panel and made the document as tall
   as the list. The panels are now the containing blocks of their content,
   the document is clipped, the shell is sized by the viewport (`100dvh`)
-  with a middle row that may shrink, and dialogs and the toolbar are bounded
+  with a middle row that may shrink, and dialogs are bounded
   by the window. Long forms and lists scroll inside their panels.
 
 ### Breaking: fewer device fields, no interface type on ports
