@@ -1297,6 +1297,19 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     const bad2 = app.loadText('netatlas: 1\ndevices:\n  - id: r1\nlinks:\n  - {id: l1, a: "r1:eth0", b: r2}\n', 'bad2.yaml');
     check('a file with broken references opens as a draft listing its errors', bad2.ok && bad2.errors.length === 2 && /Problems \(2\)/.test(q('[data-tab="problems"]')!.textContent || ''));
 
+    {
+      // after everything above (long forms, every tab, both views, dialogs): the page still fits its window
+      const root = doc.documentElement;
+      (doc.defaultView as Window).scrollTo(0, 100000);
+      const scrolled = (doc.defaultView as Window).scrollY || root.scrollTop || doc.body.scrollTop;
+      const st = (q('#status') as HTMLElement).getBoundingClientRect();
+      const side = (q('#side') as HTMLElement).getBoundingClientRect();
+      check(
+        'the application fits the window: the document does not scroll, and the side panel ends at the status bar',
+        root.scrollHeight <= root.clientHeight && root.scrollWidth <= root.clientWidth && !scrolled && Math.abs(st.bottom - root.clientHeight) <= 1 && side.bottom <= st.top + 0.5,
+        `document ${root.scrollWidth}x${root.scrollHeight} in ${root.clientWidth}x${root.clientHeight}, scrolled ${scrolled}, side ends at ${side.bottom}, status ${st.top}–${st.bottom}`,
+      );
+    }
     const perf = (doc.defaultView as Window).performance;
     const resources = perf && perf.getEntriesByType ? perf.getEntriesByType('resource').length : 0;
     check('no network resources requested', resources === 0, String(resources));

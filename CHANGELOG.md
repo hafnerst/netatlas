@@ -35,6 +35,18 @@ their entries are not read, and the file keeps them until you move them.
 * The Networks box of a physical export counts, for a drawn port, the
   aggregates it is a member of and the VLAN interfaces it carries.
 
+### Fixed
+
+* **The application fits the browser viewport.** In a window that wasn't
+  maximized, the page could get a scrollbar of its own and the right-hand
+  panel could extend below the status bar. The cause was the hidden
+  screen-reader texts of list entries: far down a long list they were laid
+  out against the page instead of their panel and made the document as tall
+  as the list. The panels are now the containing blocks of their content,
+  the document is clipped, the shell is sized by the viewport (`100dvh`)
+  with a middle row that may shrink, and dialogs and the toolbar are bounded
+  by the window. Long forms and lists scroll inside their panels.
+
 ### Breaking: fewer device fields, no interface type on ports
 
 The YAML format changes incompatibly (the version line stays `netatlas: 1`;

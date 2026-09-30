@@ -8,6 +8,7 @@
     "build": "node scripts/gen-examples.mjs && tsc -p tsconfig.json && node scripts/build.mjs",
     "test": "npm run build && node --test test/",
     "selftest:browser": "node scripts/browser-selftest.mjs",
+    "selftest:viewport": "node scripts/browser-selftest.mjs --viewport",
     "typecheck": "node scripts/gen-examples.mjs && tsc -p tsconfig.json --noEmit",
     "check:dist": "node scripts/gen-examples.mjs --check && tsc -p tsconfig.json && node scripts/build.mjs --check"
   },
