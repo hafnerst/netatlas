@@ -21,78 +21,83 @@ devices:
   - id: pe1
     type: router
     group: pop-north
-    router_id: lo0
     interfaces:
+      - {id: et1, ip: 10.1.12.1/31}
+      - {id: et2, ip: 10.1.16.1/31}
+      - {id: et3, ip: 192.0.2.1/30, vrf: CUST-A}
+      - {id: et4}
+    logical_interfaces:
       - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.1/32, 2001:db8:0:ffff::1/128]}
-      - {id: et1, speed: 100G, media: fiber, ip: 10.1.12.1/31}
-      - {id: et2, speed: 100G, media: fiber, ip: 10.1.16.1/31}
-      - {id: et3, speed: 10G, media: fiber}
-      - {id: et4, speed: 100G, media: dac}
   - id: pe2
     type: router
     group: pop-north
-    router_id: lo0
     interfaces:
+      - {id: et1, ip: 10.1.12.0/31}
+      - {id: et2, ip: 10.1.23.0/31}
+      - {id: et4}
+    logical_interfaces:
       - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.2/32, 2001:db8:0:ffff::2/128]}
-      - {id: et1, speed: 100G, media: fiber, ip: 10.1.12.0/31}
-      - {id: et2, speed: 100G, media: fiber, ip: 10.1.23.0/31}
-      - {id: et4, speed: 100G, media: dac}
   - id: pe3
     type: router
     group: pop-east
-    router_id: lo0
     interfaces:
+      - {id: et1, ip: 10.1.23.1/31}
+      - {id: et2, ip: 10.1.34.0/31}
+      - {id: et4}
+    logical_interfaces:
       - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.3/32, 2001:db8:0:ffff::3/128]}
       - {id: lo1, type: loopback, label: VPN next-hop, ip: [10.0.1.3/32]}
-      - {id: et1, speed: 100G, media: fiber, ip: 10.1.23.1/31}
-      - {id: et2, speed: 100G, media: fiber, ip: 10.1.34.0/31}
-      - {id: et4, speed: 100G, media: dac}
   - id: pe4
     type: router
     group: pop-east
-    router_id: lo0
     interfaces:
+      - {id: et1, ip: 10.1.34.1/31}
+      - {id: et2, ip: 10.1.45.0/31}
+      - {id: et4}
+    logical_interfaces:
       - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.4/32, 2001:db8:0:ffff::4/128]}
-      - {id: et1, speed: 100G, media: fiber, ip: 10.1.34.1/31}
-      - {id: et2, speed: 100G, media: fiber, ip: 10.1.45.0/31}
-      - {id: et4, speed: 100G, media: dac}
   - id: pe5
     type: router
     group: pop-south
-    router_id: lo0
     interfaces:
+      - {id: et1, ip: 10.1.45.1/31}
+      - {id: et2, ip: 10.1.56.0/31}
+      - {id: et3, ip: 192.0.2.5/30, vrf: CUST-A}
+      - {id: et4}
+    logical_interfaces:
       - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.5/32, 2001:db8:0:ffff::5/128]}
       - {id: lo1, type: loopback, label: VPN next-hop, ip: [10.0.1.5/32]}
-      - {id: et1, speed: 100G, media: fiber, ip: 10.1.45.1/31}
-      - {id: et2, speed: 100G, media: fiber, ip: 10.1.56.0/31}
-      - {id: et3, speed: 10G, media: fiber}
-      - {id: et4, speed: 100G, media: dac}
   - id: pe6
     type: router
     group: pop-south
-    router_id: lo0
     interfaces:
+      - {id: et1, ip: 10.1.56.1/31}
+      - {id: et2, ip: 10.1.16.0/31}
+      - {id: et4}
+    logical_interfaces:
       - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.6/32, 2001:db8:0:ffff::6/128]}
-      - {id: et1, speed: 100G, media: fiber, ip: 10.1.56.1/31}
-      - {id: et2, speed: 100G, media: fiber, ip: 10.1.16.0/31}
-      - {id: et4, speed: 100G, media: dac}
   - id: ce-a1
     label: Customer A — HQ
     type: router
     group: cust-a
     interfaces:
-      - {id: ge0, speed: 10G, media: fiber, ip: 192.0.2.2/30}
+      - {id: ge0, ip: 192.0.2.2/30}
   - id: ce-a2
     label: Customer A — Plant
     type: router
     group: cust-a
     interfaces:
-      - {id: ge0, speed: 10G, media: fiber, ip: 192.0.2.6/30}
+      - {id: ge0, ip: 192.0.2.6/30}
   - id: oob-sw
     label: OOB switch
     type: switch
     group: oob
-    interfaces: [p1, p2, p3]
+    interfaces:
+      - {id: p1}
+      - p2
+      - p3
+    logical_interfaces:
+      - {id: vlan1, type: virtual, ip: 172.31.0.2/24}
   - id: oob-con1
     label: Console server 1
     type: system
@@ -114,39 +119,38 @@ devices:
   - id: spare-pe
     label: Spare PE (not in service)
     type: router
-    interfaces:
+    logical_interfaces:
       - {id: lo0, type: loopback, ip: [10.0.0.99/32]}
 
 links:
   # the ring
-  - {id: r12, a: "pe1:et1", b: "pe2:et1"}
-  - {id: r23, a: "pe2:et2", b: "pe3:et1"}
-  - {id: r34, a: "pe3:et2", b: "pe4:et1"}
-  - {id: r45, a: "pe4:et2", b: "pe5:et1"}
-  - {id: r56, a: "pe5:et2", b: "pe6:et1"}
-  - {id: r61, a: "pe6:et2", b: "pe1:et2"}
+  - {id: r12, a: "pe1:et1", b: "pe2:et1", medium: fiber, speed: 100G}
+  - {id: r23, a: "pe2:et2", b: "pe3:et1", medium: fiber, speed: 100G}
+  - {id: r34, a: "pe3:et2", b: "pe4:et1", medium: fiber, speed: 100G}
+  - {id: r45, a: "pe4:et2", b: "pe5:et1", medium: fiber, speed: 100G}
+  - {id: r56, a: "pe5:et2", b: "pe6:et1", medium: fiber, speed: 100G}
+  - {id: r61, a: "pe6:et2", b: "pe1:et2", medium: fiber, speed: 100G}
   # intra-POP cross-connects
-  - {id: x-north, a: "pe1:et4", b: "pe2:et4", cable: DAC 1m}
-  - {id: x-east, a: "pe3:et4", b: "pe4:et4", cable: DAC 1m}
-  - {id: x-south, a: "pe5:et4", b: "pe6:et4", cable: DAC 1m}
+  - {id: x-north, a: "pe1:et4", b: "pe2:et4", medium: dac, speed: 100G, cable: DAC 1m}
+  - {id: x-east, a: "pe3:et4", b: "pe4:et4", medium: dac, speed: 100G, cable: DAC 1m}
+  - {id: x-south, a: "pe5:et4", b: "pe6:et4", medium: dac, speed: 100G, cable: DAC 1m}
   # customer access
-  - {id: acc-a1, a: "pe1:et3", b: "ce-a1:ge0"}
-  - {id: acc-a2, a: "pe5:et3", b: "ce-a2:ge0"}
+  - {id: acc-a1, a: "pe1:et3", b: "ce-a1:ge0", medium: fiber, speed: 10G}
+  - {id: acc-a2, a: "pe5:et3", b: "ce-a2:ge0", medium: fiber, speed: 10G}
   # out-of-band island (not connected to the ring)
   - {id: oob-1, a: "oob-sw:p1", b: "oob-con1:eth0", medium: copper}
   - {id: oob-2, a: "oob-sw:p2", b: "oob-con2:eth0", medium: copper}
   - {id: oob-3, a: "oob-sw:p3", b: "oob-nms:eth0", medium: copper}
 
 networks:
-  - id: vrf-cust-a
-    label: VRF CUST-A
-    kind: vrf
-    attrs: {rd: "65000:100", rt: "65000:100"}
-    members: [pe1, pe5, ce-a1, ce-a2]
+  # members are derived from the addresses inside each prefix
+  - id: cust-a-access
+    label: Customer A access
+    cidr: [192.0.2.0/30, 192.0.2.4/30]
+    attrs: {vrf: CUST-A, rd: "65000:100", rt: "65000:100"}
   - id: oob-mgmt
     label: OOB management
     cidr: 172.31.0.0/24
-    members: ["oob-con1:eth0", "oob-con2:eth0", "oob-nms:eth0", oob-sw]
 
 relations:
   - id: ospf-core
@@ -196,7 +200,7 @@ relations:
     protocol: l3vpn
     label: CUST-A
     endpoints: ["pe1:lo0", "pe3:lo1", "pe5:lo1"]
-    network: vrf-cust-a
+    network: cust-a-access
   - {id: ebgp-a1, protocol: ebgp, endpoints: ["pe1:et3", "ce-a1:ge0"], over: acc-a1, attrs: {peer-as: 64601}}
   - {id: ebgp-a2, protocol: ebgp, endpoints: ["pe5:et3", "ce-a2:ge0"], over: acc-a2, attrs: {peer-as: 64601}}
   # inside the OOB island

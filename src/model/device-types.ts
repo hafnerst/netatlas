@@ -41,3 +41,8 @@ export function deviceTypeLabel(id: string): string {
   for (const t of DEVICE_TYPES) if (t.id === id) return t.label;
   return '';
 }
+
+/** Second line of a device box: the display name of its type. */
+export function deviceSubtitle(type: string): string {
+  return deviceTypeLabel(type);
+}

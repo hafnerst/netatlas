@@ -21,7 +21,7 @@ multi-line JSON is rejected.)
 | Double-quoted scalars with escapes `\\ \" \/ \n \t \r \0 \a \b \e \f \v \N \_ \L \P \xHH \uHHHH \UHHHHHHHH` | `label: "A\tB"` |
 | Literal block scalars `\|`, `\|-`, `\|+` | `description: \|` + indented lines |
 | Folded block scalars `>`, `>-`, `>+` | |
-| Flow sequences and mappings **on one line** (nesting allowed, trailing comma allowed) | `ip: [10.0.0.1/24, 2001:db8::1/64]`, `{id: eth0, speed: 1G}` |
+| Flow sequences and mappings **on one line** (nesting allowed, trailing comma allowed) | `ip: [10.0.0.1/24, 2001:db8::1/64]`, `{id: eth0, ip: 10.0.0.1/24}` |
 | Comments | `# …` on their own line or after a value (preceded by a space) |
 | Document markers | an optional leading `---` and an optional trailing `...` |
 | Empty values | `key:` → null |
@@ -39,7 +39,7 @@ multi-line JSON is rejected.)
 
 YAML 1.1 booleans (`yes`/`no`/`on`/`off`) are **strings**, so the "Norway
 problem" can't happen. netatlas also keeps the original text of every scalar,
-so values like `area: 0.0.0.1`, `vlan: 010` or `asn: 65001` show up exactly as
+so values like `area: 0.0.0.1`, `key: 010` or `asn: 65001` show up exactly as
 written.
 
 ## Rejected, with an explicit error
@@ -83,7 +83,7 @@ devices, links and so on) are listed in [FORMAT.md](FORMAT.md#validation-and-lim
 
 The editor never rebuilds the file from an internal data model. The parsed
 YAML tree *is* the document being edited: every edit changes that tree in
-place, and **Download YAML** serializes it with `src/yaml-write.ts`, which
+place, and **Download model…** serializes it with `src/yaml-write.ts`, which
 writes the same subset back out.
 
 **Preserved**
@@ -111,11 +111,14 @@ writes the same subset back out.
 
 **Edits**
 * Values changed in the forms keep their comments. Keys the editor adds are
-  inserted in the documented order (e.g. `router_id` after `mgmt`).
+  inserted in the documented order (e.g. `tier` after `group`, `type` right
+  after the `id` of a logical interface).
 * A shorthand is only expanded when you edit it. `interfaces: [eth0]` becomes
-  `[{id: eth0, speed: 10G}]` once you set a speed, and an endpoint
-  `"r1:eth0"` becomes `{device: r1, interface: eth0, role: …}` once you give
-  it a role.
+  `[{id: eth0, vrf: blue}]` once you set a VRF, an endpoint `"r1:eth0"`
+  becomes `{device: r1, interface: eth0, role: …}` once you give it a role,
+  and a link end `"r1:eth0"` becomes
+  `{device: r1, interface: eth0, vlans: [10, 20]}` once you add VLANs (and
+  goes back to `r1:eth0` when the last VLAN is removed).
 * Strings are quoted only when they'd otherwise read back differently
   (`"123"`, `"yes"`, `"a: b"`, `" padded"`). Text typed into a free-form
   attribute is typed like YAML would type it: `42` becomes a number, `true`

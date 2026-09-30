@@ -97,24 +97,34 @@ export function unionRect(rs: Rect[]): Rect {
   return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
 }
 
-/** Rough text width for the UI font at a given size (no DOM measuring needed). */
-export function textWidth(s: string, size: number): number {
-  let w = 0;
-  for (let i = 0; i < s.length; i++) {
-    const c = s.charAt(i);
-    w += /[ilj.,:;|!'\/1]/.test(c) ? 0.32 : /[mwMW@]/.test(c) ? 0.86 : /[A-Z0-9]/.test(c) ? 0.64 : 0.55;
-  }
-  return w * size;
+export { textWidth } from './text';
+
+/** Do two rectangles overlap (touching edges don't count)? */
+export function rectsOverlap(a: Rect, b: Rect): boolean {
+  return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
 }
 
-export function ellipsize(s: string, size: number, maxW: number): string {
-  if (textWidth(s, size) <= maxW) return s;
-  let lo = 0;
-  let hi = s.length;
-  while (lo < hi) {
-    const m = (lo + hi + 1) >> 1;
-    if (textWidth(s.slice(0, m) + '…', size) <= maxW) lo = m;
-    else hi = m - 1;
-  }
-  return s.slice(0, Math.max(1, lo)) + '…';
+export function boxRect(b: CBox, pad = 0): Rect {
+  return { x: b.cx - b.w / 2 - pad, y: b.cy - b.h / 2 - pad, w: b.w + 2 * pad, h: b.h + 2 * pad };
+}
+
+/** Does the segment a->b pass through the rectangle? (Liang-Barsky clipping) */
+export function segmentHitsRect(a: Pt, b: Pt, r: Rect): boolean {
+  let t0 = 0;
+  let t1 = 1;
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const clip = (p: number, q: number): boolean => {
+    if (p === 0) return q >= 0;
+    const t = q / p;
+    if (p < 0) {
+      if (t > t1) return false;
+      if (t > t0) t0 = t;
+    } else {
+      if (t < t0) return false;
+      if (t < t1) t1 = t;
+    }
+    return true;
+  };
+  return clip(-dx, a.x - r.x) && clip(dx, r.x + r.w - a.x) && clip(-dy, a.y - r.y) && clip(dy, r.y + r.h - a.y) && t0 <= t1;
 }

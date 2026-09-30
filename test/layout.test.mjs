@@ -16,6 +16,7 @@ const W = load('yaml/write.js');
 
 const exampleNames = readdirSync(join(root, 'examples')).filter((f) => /\.ya?ml$/.test(f));
 const read = (f) => readFileSync(join(root, 'examples', f), 'utf8');
+const readFixture = (f) => readFileSync(join(root, 'test', 'fixtures', f), 'utf8');
 const docOf = (text, name = 'x.yaml') => {
   const r = ModelDoc.fromText(text, name, 'file');
   assert.ok(r.doc, JSON.stringify(r.errors));
@@ -114,7 +115,7 @@ test('order independence: shuffled keys, sections, lists and swapped cable ends 
 test('fields that do not affect geometry do not change the layout', () => {
   const base = layoutInput(docOf(read('enterprise-wan.yaml')).result.model);
   const text = read('enterprise-wan.yaml')
-    .replace('vendor: Juniper', 'vendor: Someone Else')
+    .replace('description: ISP-1 uplink', 'description: some other uplink')
     .replace(/ip: 198\.51\.100\.2\/30/, 'ip: 198.51.100.66/30')
     .replace('encryption: aes-256-gcm', 'encryption: chacha20')
     .replace('# netatlas example: enterprise WAN', '# a different comment');
@@ -160,7 +161,7 @@ test('load -> arrange -> export -> reload keeps every position; reloading does n
 test('the arranged example file is exactly load -> arrange -> export of its source', () => {
   const d = docOf(read('metro-ring.yaml'));
   d.arrange(['physical', 'logical']);
-  const expected = read('metro-ring-arranged.yaml').replace(/\r\n/g, '\n');
+  const expected = readFixture('metro-ring-arranged.yaml').replace(/\r\n/g, '\n');
   const header = expected.slice(0, expected.indexOf('# netatlas example: metro ring'));
   assert.equal(header + d.exportText(), expected);
 });
@@ -195,7 +196,7 @@ test('edits never re-arrange: positions are frozen on the first geometric edit, 
   const shown = { physical: d.displayedPositions('physical'), logical: d.displayedPositions('logical') };
   // a non-geometric edit stores nothing
   const fw = d.findEntity('device', 'hq-fw').index;
-  d.change('vendor', () => d.setAt(['devices', fw, 'vendor'], yaml.strNode('Fortinet')));
+  d.change('description', () => d.setAt(['devices', fw, 'description'], yaml.strNode('Perimeter firewall')));
   assert.equal(d.root.entries.has('layout'), false);
   // adding a device changes geometry: everything shown stays where it was
   const i = d.addEntity('device', [['id', yaml.strNode('hq-fw2')], ['type', yaml.strNode('firewall')], ['group', yaml.strNode('hq-edge')]]);
@@ -223,7 +224,7 @@ test('edits never re-arrange: positions are frozen on the first geometric edit, 
 });
 
 test('the YAML tab is taken literally: removing the layout section returns to automatic positions', () => {
-  const d = docOf(read('minimal-edited.yaml'));
+  const d = docOf(readFixture('minimal-edited.yaml'));
   assert.ok(d.hasStoredLayout('physical'));
   const text = d.exportText().replace(/\n\nlayout:\n[\s\S]*$/, '\n');
   d.replaceRoot(yaml.parseYaml(text));
@@ -235,7 +236,7 @@ test('the YAML tab is taken literally: removing the layout section returns to au
 
 test('layout data never changes the network semantics', () => {
   const plain = validate.loadModel(read('metro-ring.yaml')).model;
-  const arranged = validate.loadModel(read('metro-ring-arranged.yaml')).model;
+  const arranged = validate.loadModel(readFixture('metro-ring-arranged.yaml')).model;
   const strip = (m) =>
     JSON.stringify({ devices: m.devices, links: m.links, networks: m.networks, relations: m.relations, groups: m.groups }, (k, v) => (k === 'line' ? undefined : v));
   assert.equal(strip(arranged), strip(plain));
@@ -274,7 +275,7 @@ function islands() {
   const links = [];
   const rels = [];
   const add = (prefix, n, group) => {
-    for (let i = 0; i < n; i++) t += `  - {id: ${prefix}${i}, type: ${i ? 'switch' : 'router'}${group ? ', group: ' + group : ''}, interfaces: [p0, p1, p2, {id: lo0, type: loopback, ip: [10.${prefix.length}.${n}.${i}/32]}]}\n`;
+    for (let i = 0; i < n; i++) t += `  - {id: ${prefix}${i}, type: ${i ? 'switch' : 'router'}${group ? ', group: ' + group : ''}, interfaces: [p0, p1, p2], logical_interfaces: [{id: lo0, type: loopback, ip: [10.${prefix.length}.${n}.${i}/32]}]}\n`;
     for (let i = 1; i < n; i++) links.push(`  - {id: ${prefix}l${i}, a: "${prefix}${i}:p0", b: "${prefix}${Math.floor((i - 1) / 2)}:p${i % 2 ? 1 : 2}"}`);
     for (let i = 1; i < n; i++) rels.push(`  - {id: ${prefix}r${i}, protocol: ospf, endpoints: ["${prefix}${i}:lo0", "${prefix}0:lo0"]}`);
   };
@@ -314,7 +315,7 @@ test('disconnected components of different sizes: no overlaps in either view, co
 test('dense relationships: a 12-router full mesh with tunnels stays readable', () => {
   const n = 12;
   let t = 'netatlas: 1\ndevices:\n';
-  for (let i = 0; i < n; i++) t += `  - {id: r${String(i).padStart(2, '0')}, type: router, interfaces: [{id: lo0, type: loopback, ip: [10.0.0.${i}/32, "2001:db8::${i}/128"]}]}\n`;
+  for (let i = 0; i < n; i++) t += `  - {id: r${String(i).padStart(2, '0')}, type: router, logical_interfaces: [{id: lo0, type: loopback, ip: [10.0.0.${i}/32, "2001:db8::${i}/128"]}]}\n`;
   t += 'relations:\n  - {id: ospf, protocol: ospf, endpoints: [' + Array.from({ length: n }, (_, i) => 'r' + String(i).padStart(2, '0')).join(', ') + ']}\n';
   for (let i = 0; i < n; i++) {
     for (let j = i + 1; j < n; j++) {
@@ -368,17 +369,15 @@ test('determinism guard: layout code uses no randomness, time, locale or browser
       assert.ok(!src.includes(banned), `${f} uses ${banned}`);
     }
   }
-  // the geometry helpers used by the layout (textWidth) are pure arithmetic
-  const geo = readFileSync(join(root, 'src', 'layout', 'geometry.ts'), 'utf8');
-  const tw = geo.slice(geo.indexOf('export function textWidth'), geo.indexOf('export function ellipsize'));
-  assert.ok(!/Math\.(hypot|sin|cos|random)/.test(tw));
+  // text measuring and wrapping (what sizes are made of) live in the layout layer, so they are covered above
+  assert.ok(files.includes('text.ts') && files.includes('sizes.ts') && files.includes('bundles.ts'));
 });
 
 test('auto-arrange stays fast for a large model', () => {
   let t = 'netatlas: 1\ngroups:\n';
   for (let g = 0; g < 10; g++) t += `  - {id: s${g}, kind: site}\n`;
   t += 'devices:\n';
-  for (let i = 0; i < 400; i++) t += `  - {id: d${String(i).padStart(3, '0')}, type: ${i % 10 ? 'switch' : 'router'}, group: s${i % 10}, interfaces: [a, b, c, {id: lo0, type: loopback, ip: [10.1.${i >> 8}.${i & 255}/32]}]}\n`;
+  for (let i = 0; i < 400; i++) t += `  - {id: d${String(i).padStart(3, '0')}, type: ${i % 10 ? 'switch' : 'router'}, group: s${i % 10}, interfaces: [a, b, c], logical_interfaces: [{id: lo0, type: loopback, ip: [10.1.${i >> 8}.${i & 255}/32]}]}\n`;
   t += 'links:\n';
   for (let i = 1; i < 400; i++) t += `  - {id: l${i}, a: "d${String(i).padStart(3, '0')}:a", b: "d${String(Math.floor(i / 2)).padStart(3, '0')}:${i % 2 ? 'b' : 'c'}"}\n`;
   t += 'relations:\n';
@@ -411,7 +410,7 @@ test('layout status is derived per view: auto-arranged, manually adjusted, edite
   assert.equal(st(), 'auto/auto', 'a file without stored positions shows the auto-arranged layout');
   // a non-geometric edit never changes the status
   const i = d.findEntity('device', 'pe1').index;
-  d.change('vendor', () => d.setAt(['devices', i, 'vendor'], yaml.strNode('Acme')));
+  d.change('description', () => d.setAt(['devices', i, 'description'], yaml.strNode('Acme')));
   assert.equal(st(), 'auto/auto');
   // dragging marks only that view as manually adjusted
   d.movePositions('physical', new Map([['pe3', { x: 9000, y: 9000 }]]), 'Move pe3');
@@ -449,7 +448,7 @@ test('layout status is derived per view: auto-arranged, manually adjusted, edite
   assert.ok(!/pe8/.test(d.exportText()));
   assert.equal(st(), 'auto/auto', 'without pe8 the stored layout equals Auto-arrange again');
   // an arranged example is auto-arranged when loaded
-  const arranged = docOf(read('metro-ring-arranged.yaml'));
+  const arranged = docOf(readFixture('metro-ring-arranged.yaml'));
   assert.equal(arranged.layoutStatus('physical') + '/' + arranged.layoutStatus('logical'), 'auto/auto');
 });
 

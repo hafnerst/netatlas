@@ -14,6 +14,7 @@ export const state = load('diagram/session.js');
 export const scene = load('diagram/scene.js');
 export const panels = load('ui/panels.js');
 export const queries = load('model/queries.js');
+export const derive = load('model/derive.js');
 
 /** Validate YAML and build a diagram session (null when there are errors), as the UI does. */
 export function sessionFromYaml(text) {
@@ -25,6 +26,12 @@ export function example(name) {
   return readFileSync(join(root, 'examples', name), 'utf8');
 }
 export const exampleNames = readdirSync(join(root, 'examples')).filter((f) => /\.ya?ml$/.test(f));
+
+/** Generated test data (scripts/make-fixtures.mjs); not offered as examples in the application. */
+export function fixture(name) {
+  return readFileSync(join(root, 'test', 'fixtures', name), 'utf8');
+}
+export const fixtureNames = readdirSync(join(root, 'test', 'fixtures')).filter((f) => /\.ya?ml$/.test(f));
 
 /** Parse+validate, failing loudly with the error list. */
 export function model(text) {

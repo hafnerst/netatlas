@@ -3,8 +3,135 @@
 All notable changes to NetAtlas are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [semantic versioning](https://semver.org/). While the version is 0.x, minor
-releases may still change behaviour; the YAML format has its own version
-(`netatlas: 1`) and stays readable across application versions.
+releases may still change behaviour.
+
+Two version numbers are involved. The **application version** (0.1.1) names
+a NetAtlas release and is shown next to the logo. The **model format
+version** (`netatlas: 1`) names the YAML format a model file is written in;
+it is described in [docs/FORMAT.md](docs/FORMAT.md).
+
+## [0.1.1] - 2026-09-30
+
+NetAtlas 0.1.1 is still one self-contained, offline HTML file
+(`dist/netatlas.html`). It reads and writes YAML model format 1.
+
+### YAML model format 1
+
+Model format 1 ([docs/FORMAT.md](docs/FORMAT.md)) is the only model format
+NetAtlas supports. Every file starts with `netatlas: 1`.
+
+* **Strict validation.** A missing `netatlas:` line, any other value, an
+  unknown key and the keys listed under
+  [Rejected keys and values](docs/FORMAT.md#rejected-keys-and-values) are
+  errors, located at the key, each saying what to write instead. Nothing is
+  converted, guessed or accepted as an alias. A file with errors opens as a
+  draft, keeps everything it contains, and is downloaded only after an
+  explicit **Download anyway**.
+* **Configure once, derive elsewhere.** Each fact has one place in the file;
+  everything that follows from it is shown read-only (marked *derived*) and
+  never written back:
+  * a network is its `cidr` prefixes (each with a prefix length) and an
+    optional `vlan` (1–4094); its **members are derived** from the interface
+    and loopback addresses inside a prefix;
+  * the **VLAN of an interface address** is derived from the network that
+    contains it; networks with different VLANs give an explicit *ambiguous*
+    and a warning;
+  * `speed` and `medium` are configured on the **link** only;
+  * each **link end** lists the VLANs it permits (`vlans`): several are a
+    *Trunk*, one is *VLAN n*, none is *No VLAN*; different lists at the two
+    ends give a warning and ⚠ on the cable;
+  * `vrf` is set on interfaces and loopbacks.
+* **Two categories of interfaces.** A device has `interfaces` (physical
+  ports, without a type) and `logical_interfaces` (`type: loopback`,
+  `virtual` or `tunnel`), with one set of ids per device. Only a physical
+  interface can be cabled. An aggregate lists its `members`; a VLAN
+  interface names its `vlan`, and the ports carrying it are derived from the
+  link ends; a tunnel names its `source` and `destination`.
+* **Devices** have `id`, `label`, `type` (one of 15), `group`, `tier`,
+  `description`, `attrs` and the two interface lists. Other facts go in
+  `attrs`.
+* **Groups:** `kind` is free text; `floor` is the kind for a storey.
+
+### Editor
+
+* **Start screen** with three ways to begin: **New model**, **Open YAML
+  file…** (also a drop target; a file dropped anywhere on the page is
+  opened) and **Load example** (a picker with the six examples). A file that
+  can't be opened is reported with the reason and a way back.
+* **File menu:** **New model**, **Open model…**, **Download model…**
+  (Ctrl+S), **Close model** and **Examples**. *Close model* asks first when
+  there are unsaved changes: **Download and close**, **Discard changes** or
+  **Cancel**.
+* **Interfaces** are edited in two sections, *Physical interfaces* and
+  *Logical interfaces*, with **+ Interface**, **+ Port Range**,
+  **+ Loopback**, **+ Virtual** and **+ Tunnel**. **+ Port Range** creates
+  a numbered range of ports (`ge 1/1` … `ge 1/24`) in one undoable step,
+  with a preview; invalid ranges are rejected as a whole with the reason.
+* Interfaces are listed alphabetically (digits by value) in the editor,
+  the details and the pickers; the order in the file is not changed.
+* VLAN pickers per link end; derived values are marked *derived* and can't
+  be edited.
+* The model outline's sections fold (*Collapse all* / *Expand all*); a
+  folded section still shows its count, problems and related entries.
+* The model's title and description are edited with **Edit model
+  settings** in the Edit tab. The model panel is always visible and adapts
+  to narrow windows.
+
+### Diagrams and Auto-arrange
+
+* **Sized for their text.** Labels wrap and nothing is shortened with "…";
+  boxes, network pills, group titles and relation labels grow to fit, and
+  networks show all their prefixes.
+* **Readable cabling.** Ports that face each other are lined up, cables bend
+  around devices instead of crossing them, and every cable with a speed,
+  VLANs or a label shows it. Cable, relation and address labels avoid nodes
+  and each other.
+* **Groups are placed by their cabling** in the physical view.
+* **Auto-arrange works on the view on screen only.** If that view has
+  positions set by hand, a confirmation names what moves; Cancel changes
+  nothing. The button shows the view's layout status (✓ auto-arranged,
+  ✎ manually adjusted, ● edited since arranged).
+* Selecting a logical interface highlights the ports it uses and their
+  cables; selecting a port highlights the logical interfaces that use it.
+
+### Export
+
+* **Export → Export view as… → PNG / SVG.** Both formats save the selected
+  view (Physical or Logical) as the same picture: the whole diagram
+  whatever the zoom, full labels, the legend and a **Networks overview**
+  that lists the networks relevant to that view, with a margin. Files are
+  named `<model>-<view>.png` / `.svg`. The PNG is drawn at twice the
+  diagram's size (less for very large diagrams). A failed export is
+  reported in a dialog and nothing is downloaded.
+* The submenu opens by click, tap, Enter, Space or arrow right, never on
+  hover; arrow left or Esc closes it.
+
+### Fixed
+
+* The application fits the browser viewport: in a window that isn't
+  maximized the page no longer gets a scrollbar of its own, and the
+  right-hand panel no longer extends below the status bar. Long forms and
+  lists scroll inside their panels.
+
+### Known limitations
+
+* **YAML:** not full YAML (anchors, aliases and multi-line plain scalars
+  are rejected); formatting is normalised on export, comments and key
+  order are kept.
+* **Saving** always downloads a new file; a web page can't overwrite the
+  file it opened.
+* **Auto-arrange** is heuristic: dense meshes still cross, and relation
+  lines are straight.
+* **Network semantics** are only partly checked; membership is by address
+  only (VRFs don't separate address spaces).
+* **Logical interfaces** have three kinds of association: member ports, a
+  VLAN, and a tunnel's source and destination.
+* **Very large diagrams** may exceed what a browser can draw as one PNG;
+  the SVG export has no such limit.
+* **Browsers:** diagram elements aren't individually keyboard-focusable;
+  the automated browser test runs in Chromium-based browsers only; Firefox
+  and Safari are covered by the manual `#selftest` check.
+* See the README's "Limitations" section for details.
 
 ## [0.1.0] - 2026-09-29
 
@@ -81,16 +208,5 @@ First release: a usable initial version, not a complete one.
     and Safari are covered by the manual `#selftest` check.
 * See the README's "Limitations" section for details.
 
-### Compatibility
-
-* This is the first release; there are no earlier versions to migrate from.
-* **Files written during development may need one change:** `type` must be
-  one of the 15 device types. Older values such as `l3switch`, `hypervisor`,
-  `host`, `leaf` or `spine` are reported as errors that name the type to use.
-  Spine/leaf roles belong in `role`; use `tier` to change the row.
-* **Changed meaning of a missing value:** a group or network without `kind` is
-  no longer treated as `site` / `subnet`; it is drawn without a kind.
-* **Positions:** stored positions are never changed by an upgrade. A later
-  version may arrange differently only when you press Auto-arrange again.
-
+[0.1.1]: https://github.com/hafnerst/netatlas/releases/tag/v0.1.1
 [0.1.0]: https://github.com/hafnerst/netatlas/releases/tag/v0.1.0

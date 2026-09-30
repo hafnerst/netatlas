@@ -9,8 +9,9 @@
 import { Pt } from '../layout/geometry';
 import { LAYOUT_VIEWS, LayoutView, autoPositions, resolvePositions, samePositions } from '../layout/positions';
 import { layoutInput, layoutSignature } from '../layout/input';
+import { parseAddress } from '../model/ip';
 import { Model } from '../model/types';
-import { Issue, LoadResult, loadModel, scalarText, validate } from '../validation/validate';
+import { IFACE_RE, Issue, LoadResult, loadModel, scalarText, validate } from '../validation/validate';
 import { SCHEMA } from '../yaml/schema';
 import { DEFAULT_YAML_LIMITS, YMap, YNode, YSeq, autoNode, boolNode, cloneNode, mapNode, nullNode, numNode, seqNode, strNode } from '../yaml/parse';
 import { stringifyYaml } from '../yaml/write';
@@ -324,24 +325,39 @@ export class ModelDoc {
 
 
   /**
+   * What Auto-arrange would do to one view, without doing it:
+   *   moved   nodes whose displayed position would change;
+   *   manual  of those, the nodes that were placed by hand (their positions would be overwritten).
+   * Both are empty when the view already shows the auto-arranged layout.
+   */
+  arrangeImpact(view: LayoutView): { moved: string[]; manual: string[] } {
+    const m = this.result.model;
+    if (!m) return { moved: [], manual: [] };
+    const auto = this.autoLayout(view);
+    const shown = this.displayedPositions(view);
+    const moved: string[] = [];
+    auto.forEach((p, id) => {
+      const q = shown.get(id);
+      if (!q || q.x !== p.x || q.y !== p.y) moved.push(id);
+    });
+    moved.sort();
+    return { moved, manual: moved.filter((id) => m.layout.manual[view].has(id)) };
+  }
+
+  /**
    * Auto-arrange: compute the deterministic layout of the whole model for the
-   * given views and store it (one undo step). Returns how many nodes moved on
-   * screen; nothing is changed at all if the stored layout already equals the
-   * auto-arrange result.
+   * given views and store it (one undo step). A view that is not listed is
+   * not touched. Returns how many nodes moved on screen; nothing is changed
+   * at all if the stored layout already equals the auto-arrange result.
    */
   arrange(views: LayoutView[]): { changed: boolean; moved: number } {
     const m = this.result.model;
     if (!m) return { changed: false, moved: 0 };
-    const input = layoutInput(m);
     const targets = new Map<LayoutView, Map<string, Pt>>();
     let moved = 0;
     for (const v of views) {
       const auto = this.autoLayout(v);
-      const shown = resolvePositions(v, input, m.layout[v]);
-      auto.forEach((p, id) => {
-        const q = shown.get(id);
-        if (!q || q.x !== p.x || q.y !== p.y) moved++;
-      });
+      moved += this.arrangeImpact(v).moved.length;
       if (!samePositions(auto, m.layout[v])) targets.set(v, auto);
     }
     if (!targets.size) return { changed: false, moved: 0 };
@@ -451,7 +467,7 @@ export class ModelDoc {
     let replacement: YMap;
     if (cur && cur.kind === 'scalar' && typeof seg === 'number' && String(parentPath[parentPath.length - 1]) === 'interfaces') {
       replacement = mapNode([['id', strNode(scalarText(cur) || '')]], true);
-    } else if (cur && cur.kind === 'scalar' && typeof seg === 'number' && scalarText(cur) !== undefined && /^(members|endpoints)$/.test(String(parentPath[parentPath.length - 1]))) {
+    } else if (cur && cur.kind === 'scalar' && scalarText(cur) !== undefined && (this.isLinkEnd(path) || (typeof seg === 'number' && parentPath[parentPath.length - 1] === 'endpoints'))) {
       // "dev:if" endpoint shorthand -> {device, interface}
       const t = scalarText(cur) as string;
       const i = t.indexOf(':');
@@ -542,12 +558,19 @@ export class ModelDoc {
   // UI never builds YAML nodes. New keys go into the canonical schema order,
   // which is derived from the path.
 
+  /** Is `path` one end of a physical link (links[i].a / links[i].b)? */
+  private isLinkEnd(path: Path): boolean {
+    return path.length === 3 && path[0] === 'links' && typeof path[1] === 'number' && (path[2] === 'a' || path[2] === 'b');
+  }
+
   /** Schema kind of the mapping at `path` (for key order), if the format defines one. */
   schemaKindOf(path: Path): string | undefined {
     if (path.length === 0) return 'top';
     if (path.length === 2 && typeof path[1] === 'number') return kindOfSection(String(path[0])) || undefined;
-    if (path.length === 4 && path[0] === 'devices' && path[2] === 'interfaces') return 'interface';
-    if (path.length === 4 && typeof path[3] === 'number' && (path[2] === 'members' || path[2] === 'endpoints')) return 'endpoint';
+    const ik = ifaceSchemaKind(path);
+    if (ik) return ik;
+    if (path.length === 4 && typeof path[3] === 'number' && path[0] === 'relations' && path[2] === 'endpoints') return 'endpoint';
+    if (this.isLinkEnd(path)) return 'linkEnd';
     if (path.length === 1 && path[0] === 'layout') return 'layout';
     return undefined;
   }
@@ -599,8 +622,8 @@ export class ModelDoc {
   }
 
   /**
-   * Point an endpoint (link end, relation endpoint or network member) at a
-   * device and optional interface. Short forms ("dev", "dev:if") stay short;
+   * Point an endpoint (link end or relation endpoint) at a device and
+   * optional interface. Short forms ("dev", "dev:if") stay short;
    * an endpoint written as a mapping keeps its other keys. An empty device
    * removes the endpoint.
    */
@@ -613,8 +636,9 @@ export class ModelDoc {
       }
       if (node && node.kind === 'map') {
         const m = this.ensureMap(path);
-        this.setAt(path.concat('device'), strNode(device), KEY_ORDER.endpoint);
-        if (iface) this.setAt(path.concat('interface'), strNode(iface), KEY_ORDER.endpoint);
+        const order = KEY_ORDER[this.schemaKindOf(path) || 'endpoint'];
+        this.setAt(path.concat('device'), strNode(device), order);
+        if (iface) this.setAt(path.concat('interface'), strNode(iface), order);
         else m.entries.delete('interface');
       } else {
         this.setAt(path, strNode(iface ? device + ':' + iface : device), this.orderFor(path.slice(0, -1)));
@@ -632,6 +656,61 @@ export class ModelDoc {
       } else {
         this.ensureMap(ep);
         this.setAt(path, strNode(text), KEY_ORDER.endpoint);
+      }
+    });
+  }
+
+  /** VLAN IDs written on one end of a link, as text, in file order (invalid entries included). */
+  endVlans(endPath: Path): string[] {
+    const n = this.get(endPath.concat('vlans'));
+    if (!n) return [];
+    if (n.kind === 'seq') return n.items.map((i) => scalarText(i)).filter((x): x is string => x !== undefined);
+    const t = scalarText(n);
+    return t === undefined ? [] : [t];
+  }
+
+  /**
+   * Permit more VLANs at one end of a link (`endPath` is links[i].a or .b).
+   * Only that end is written: the other end is never adjusted to match. The
+   * short "dev:if" form becomes a mapping; ids already listed are skipped.
+   * Returns false if the end has no device yet.
+   */
+  addEndVlans(endPath: Path, ids: number[]): boolean {
+    const cur = this.get(endPath);
+    if (!cur || (cur.kind === 'scalar' && scalarText(cur) === undefined)) return false;
+    const have = this.endVlans(endPath);
+    const add = ids.filter((v, k) => have.indexOf(String(v)) < 0 && ids.indexOf(v) === k);
+    if (!add.length) return true;
+    this.change('Add VLAN', () => {
+      this.ensureMap(endPath);
+      const list = this.ensureSeq(endPath.concat('vlans'), true, KEY_ORDER.linkEnd);
+      for (const v of add) list.items.push(numNode(v));
+      // keep the list ascending when every entry is a number (nothing invalid is reordered or dropped)
+      if (list.items.every((i) => i.kind === 'scalar' && typeof i.value === 'number')) {
+        list.items.sort((p, q) => ((p as { value: number }).value) - ((q as { value: number }).value));
+      }
+    });
+    return true;
+  }
+
+  /** Remove one VLAN (by its text) from one end of a link; the last one removes the `vlans` key. */
+  removeEndVlan(endPath: Path, id: string): void {
+    const vp = endPath.concat('vlans');
+    const n = this.get(vp);
+    if (!n) return;
+    this.change('Remove VLAN', () => {
+      if (n.kind === 'seq') {
+        const k = n.items.findIndex((i) => scalarText(i) === id);
+        if (k >= 0) n.items.splice(k, 1);
+        if (n.items.length) return;
+      } else if (scalarText(n) !== id) return;
+      this.removeAt(vp);
+      // an end with nothing but device/interface goes back to the short form
+      const end = this.get(endPath);
+      if (end && end.kind === 'map' && Array.from(end.entries.keys()).every((key) => key === 'device' || key === 'interface')) {
+        const dev = this.text(endPath.concat('device'));
+        const inf = this.text(endPath.concat('interface'));
+        if (dev) this.setAt(endPath, strNode(inf ? dev + ':' + inf : dev), KEY_ORDER.link);
       }
     });
   }
@@ -853,13 +932,30 @@ export class ModelDoc {
     };
     if (kind === 'device') {
       epRefs('links', 'a/b');
-      epRefs('networks', 'members');
       epRefs('relations', 'endpoints');
-      if (iface !== undefined) {
-        const dev = this.findEntity('device', id);
-        const rid = dev ? this.get(['devices', dev.index, 'router_id']) : undefined;
-        if (dev && rid && scalarText(rid) === iface) out.push(['devices', dev.index, 'router_id']);
-      }
+      // associations of logical interfaces: member ports and tunnel sources (same device), tunnel destinations (any device)
+      this.entities('device').forEach((dev) => {
+        const lp: Path = ['devices', dev.index, 'logical_interfaces'];
+        const list = this.get(lp);
+        if (!list || list.kind !== 'seq') return;
+        list.items.forEach((it, k) => {
+          if (it.kind !== 'map') return;
+          if (iface !== undefined && dev.id === id) {
+            const mem = it.entries.get('members');
+            if (mem && mem.value.kind === 'seq') mem.value.items.forEach((mn, j) => scalarText(mn) === iface && out.push(lp.concat(k, 'members', j)));
+            else if (mem && scalarText(mem.value) === iface) out.push(lp.concat(k, 'members'));
+            const src = it.entries.get('source');
+            if (src && scalarText(src.value) === iface) out.push(lp.concat(k, 'source'));
+          }
+          const dst = it.entries.get('destination');
+          const t = dst ? scalarText(dst.value) : undefined;
+          if (t === undefined || parseAddress(t)) return;
+          const c = t.indexOf(':');
+          const d = c < 0 ? t : t.slice(0, c);
+          const inf = c < 0 ? undefined : t.slice(c + 1);
+          if (d === id && (iface === undefined || inf === iface)) out.push(lp.concat(k, 'destination'));
+        });
+      });
     } else if (kind === 'group') {
       scalarRefs('groups', 'parent', (t) => t === id);
       scalarRefs('devices', 'group', (t) => t === id);
@@ -883,8 +979,11 @@ export class ModelDoc {
     if (n.kind === 'scalar') {
       const t = scalarText(n) as string;
       let nt = t;
-      if (p[p.length - 1] === 'router_id') nt = newIf as string;
-      else if (/^(a|b)$/.test(String(p[p.length - 1])) || /^(members|endpoints)$/.test(String(p[p.length - 2]))) {
+      const last = p[p.length - 1];
+      if (last === 'source' || last === 'members' || p[p.length - 2] === 'members') {
+        // an interface of the same device, written as its bare id
+        nt = newIf !== undefined ? newIf : t;
+      } else if (/^(a|b|destination)$/.test(String(last)) || p[p.length - 2] === 'endpoints') {
         const c = t.indexOf(':');
         const dev = c < 0 ? t : t.slice(0, c);
         const inf = c < 0 ? undefined : t.slice(c + 1);
@@ -919,17 +1018,20 @@ export class ModelDoc {
     });
   }
 
-  /** Rename an interface of a device and update references ("dev:if", {interface}, router_id). */
-  renameInterface(devIndex: number, ifIndex: number, newIf: string): number {
-    const dev = this.entities('device')[devIndex];
-    if (!dev || !dev.id) return 0;
-    const ipath: Path = ['devices', devIndex, 'interfaces', ifIndex];
+  /**
+   * Rename a physical or logical interface (by its path) and update every reference to it: link ends and relation
+   * endpoints ("dev:if", {interface}), member lists and tunnel sources on its device, tunnel destinations anywhere.
+   */
+  renameInterface(ipath: Path, newIf: string): number {
+    const kind = ifaceSchemaKind(ipath);
+    const dev = this.entities('device')[ipath[1] as number];
+    if (!kind || !dev || !dev.id) return 0;
     const cur = this.get(ipath);
     const oldIf = cur ? (cur.kind === 'map' ? this.text(ipath.concat('id')) : scalarText(cur)) : undefined;
     return this.change('Rename interface', () => {
       const refs = oldIf ? this.references('device', dev.id as string, oldIf) : [];
-      const m = this.ensureMap(ipath, KEY_ORDER.interface);
-      setKey(m, 'id', strNode(newIf), KEY_ORDER.interface);
+      const m = this.ensureMap(ipath, KEY_ORDER[kind]);
+      setKey(m, 'id', strNode(newIf), KEY_ORDER[kind]);
       for (const p of refs) this.rewriteRef(p, dev.id as string, dev.id as string, oldIf, newIf);
       return refs.length;
     });
@@ -937,36 +1039,184 @@ export class ModelDoc {
 
   // --------------------------------------------------------------- interfaces
 
+  /**
+   * Every interface entry of a device, in file order: the physical
+   * interfaces, then the logical ones. The order of the lists in the file
+   * is never changed by reading them.
+   */
+  interfaceEntries(devIndex: number): IfaceEntry[] {
+    const out: IfaceEntry[] = [];
+    const text = (n: YNode, key: string): string | undefined => (n.kind === 'map' && n.entries.get(key) ? scalarText((n.entries.get(key) as { value: YNode }).value) : undefined);
+    const base: Path = ['devices', devIndex];
+    const ifs = this.get(base.concat('interfaces'));
+    if (ifs && ifs.kind === 'seq') ifs.items.forEach((it, k) => out.push({ path: base.concat('interfaces', k), id: it.kind === 'map' ? text(it, 'id') : scalarText(it), kind: 'interface' }));
+    const logical = this.get(base.concat('logical_interfaces'));
+    if (logical && logical.kind === 'seq') logical.items.forEach((it, k) => out.push({ path: base.concat('logical_interfaces', k), id: text(it, 'id'), kind: 'logical', type: text(it, 'type') }));
+    return out;
+  }
+
+  /** Ids of all physical and logical interfaces of a device (one namespace per device). */
   interfaceIds(devIndex: number): string[] {
-    const l = this.get(['devices', devIndex, 'interfaces']);
-    if (!l || l.kind !== 'seq') return [];
-    return l.items
-      .map((it) => (it.kind === 'map' ? (it.entries.get('id') ? scalarText((it.entries.get('id') as { value: YNode }).value) : undefined) : scalarText(it)))
+    return this.interfaceEntries(devIndex)
+      .map((e) => e.id)
       .filter((x): x is string => !!x);
   }
 
-  /** Add an interface to a device; returns its index in the interfaces list. */
-  addInterface(devIndex: number, fields: Array<[string, YNode]> = [], base = 'eth0'): number {
-    return this.change(fields.some(([k, v]) => k === 'type' && scalarText(v) === 'loopback') ? 'Add loopback' : 'Add interface', () => {
-      const taken = new Set(this.interfaceIds(devIndex));
-      const idGiven = fields.find(([k]) => k === 'id');
-      const id = idGiven ? scalarText(idGiven[1]) || base : this.uniqueId(base, taken);
-      const entries: Array<[string, YNode]> = [['id', strNode(id)]];
-      for (const [k, v] of fields) if (k !== 'id') entries.push([k, v]);
-      const list = this.ensureSeq(['devices', devIndex, 'interfaces'], false, KEY_ORDER.device);
-      list.items.push(mapNode(entries, true));
-      return list.items.length - 1;
-    });
+  private newIface(devIndex: number, listKey: 'interfaces' | 'logical_interfaces', fields: Array<[string, YNode]>, base: string): number {
+    const taken = new Set(this.interfaceIds(devIndex));
+    const idGiven = fields.find(([k]) => k === 'id');
+    const id = idGiven ? scalarText(idGiven[1]) || base : this.uniqueId(base, taken);
+    const entries: Array<[string, YNode]> = [['id', strNode(id)]];
+    for (const [k, v] of fields) if (k !== 'id') entries.push([k, v]);
+    const list = this.ensureSeq(['devices', devIndex, listKey], false, KEY_ORDER.device);
+    list.items.push(mapNode(entries, true));
+    return list.items.length - 1;
   }
 
-  /** Add a loopback (type: loopback) with a name and addresses. */
+  /** Add a physical interface to a device; returns its index in the `interfaces` list. */
+  addInterface(devIndex: number, fields: Array<[string, YNode]> = [], base = 'eth0'): number {
+    return this.change('Add interface', () => this.newIface(devIndex, 'interfaces', fields, base));
+  }
+
+  /**
+   * What "+ Port Range" would create on a device: the ports of the range,
+   * checked against the device's existing interfaces. A name or id that is
+   * already used on the device (as the id or the label of any interface,
+   * physical or logical) makes the whole range invalid.
+   */
+  planPortRange(devIndex: number, from: string, to: string): PortRangePlan {
+    const plan = portRange(from, to);
+    if (!plan.ok) return plan;
+    const entries = this.interfaceEntries(devIndex);
+    const used = new Set<string>();
+    for (const e of entries) {
+      if (e.id) used.add(e.id);
+      const label = this.text(e.path.concat('label'));
+      if (label) used.add(label);
+    }
+    const taken = plan.ports.filter((p) => used.has(p.id) || used.has(p.name));
+    if (taken.length) {
+      const shown = taken.slice(0, 4).map((p) => p.name);
+      return { ok: false, error: `Already on this device: ${shown.join(', ')}${taken.length > shown.length ? ` and ${taken.length - shown.length} more` : ''}. Nothing is created.` };
+    }
+    if (entries.length + plan.ports.length > MAX_DEVICE_INTERFACES) {
+      return { ok: false, error: `The device would have ${entries.length + plan.ports.length} interfaces; the limit is ${MAX_DEVICE_INTERFACES}.` };
+    }
+    return plan;
+  }
+
+  /**
+   * Add the physical interfaces of a range to a device, all in one undoable
+   * step, or none if the range is not valid. Each port is only an id (and a
+   * label, when its name as typed is not a valid id): no address, VLAN or
+   * link is created.
+   */
+  addPortRange(devIndex: number, from: string, to: string): PortRangePlan {
+    const plan = this.planPortRange(devIndex, from, to);
+    if (!plan.ok) return plan;
+    this.change(`Add ${plan.ports.length} ports`, () => {
+      const list = this.ensureSeq(['devices', devIndex, 'interfaces'], false, KEY_ORDER.device);
+      for (const p of plan.ports) {
+        const entries: Array<[string, YNode]> = [['id', strNode(p.id)]];
+        if (p.name !== p.id) entries.push(['label', strNode(p.name)]);
+        list.items.push(mapNode(entries, true));
+      }
+    });
+    return plan;
+  }
+
+  /**
+   * Add a logical interface of the given type (loopback, virtual or tunnel);
+   * returns its index in the device's `logical_interfaces` list. Only the id
+   * and the type are set unless fields are given.
+   */
+  addLogical(devIndex: number, type: 'loopback' | 'virtual' | 'tunnel', fields: Array<[string, YNode]> = []): number {
+    const f = fields.filter(([k]) => k !== 'type');
+    f.splice(f.length && f[0][0] === 'id' ? 1 : 0, 0, ['type', strNode(type)]);
+    return this.change(`Add ${type} interface`, () => this.newIface(devIndex, 'logical_interfaces', f, type === 'loopback' ? 'lo0' : type === 'tunnel' ? 'tun0' : 'virtual0'));
+  }
+
+  /** Add a loopback with a name and addresses; returns its index in the `logical_interfaces` list. */
   addLoopback(devIndex: number, addresses: string[] = [], name?: string, id?: string): number {
     const f: Array<[string, YNode]> = [];
     if (id) f.push(['id', strNode(id)]);
-    f.push(['type', strNode('loopback')]);
     if (name) f.push(['label', strNode(name)]);
     f.push(['ip', seqNode(addresses.map(strNode), true)]);
-    return this.addInterface(devIndex, f, 'lo0');
+    return this.addLogical(devIndex, 'loopback', f);
   }
 }
 
+/** Largest number of ports one range may create. */
+export const MAX_PORT_RANGE = 256;
+/** Interfaces a device may have in total (the validator's limit). */
+const MAX_DEVICE_INTERFACES = 512;
+
+/** One port of a range: its name as typed, and the interface id made from it. */
+export interface RangePort {
+  name: string;
+  id: string;
+}
+
+export type PortRangePlan = { ok: true; ports: RangePort[] } | { ok: false; error: string };
+
+/** The interface id for a port name: characters an id can't contain (a space …) become "-". */
+export function portIdFor(name: string): string {
+  return name.replace(/[^A-Za-z0-9_.\-\/]+/g, '-');
+}
+
+/**
+ * The ports of a range "from … to": the final number of each name is the
+ * port number, and everything before it must be identical in both names.
+ * "ge 1/1" to "ge 1/24" gives ge 1/1, ge 1/2 … ge 1/24. A number written
+ * with leading zeros ("port01") keeps its width. Returns either the whole
+ * list or the reason why there is none: never a part of a range.
+ */
+export function portRange(from: string, to: string): PortRangePlan {
+  const a = from.trim();
+  const b = to.trim();
+  if (!a || !b) return { ok: false, error: 'Enter the first and the last port name, e.g. ge 1/1 and ge 1/24.' };
+  const pa = /^(.*?)([0-9]+)$/.exec(a);
+  const pb = /^(.*?)([0-9]+)$/.exec(b);
+  if (!pa) return { ok: false, error: `“${a}” does not end in a port number (e.g. ge 1/1).` };
+  if (!pb) return { ok: false, error: `“${b}” does not end in a port number (e.g. ge 1/24).` };
+  if (pa[1] !== pb[1]) return { ok: false, error: `The part before the port number must be the same in both names: “${pa[1]}” and “${pb[1]}” differ.` };
+  if (pa[2].length > 9 || pb[2].length > 9) return { ok: false, error: 'The port number is too large.' };
+  const first = Number(pa[2]);
+  const last = Number(pb[2]);
+  if (first >= last) return { ok: false, error: `The first port number (${first}) must be lower than the last (${last}).` };
+  const count = last - first + 1;
+  if (count > MAX_PORT_RANGE) return { ok: false, error: `This range has ${count} ports; one range can create at most ${MAX_PORT_RANGE}.` };
+  // leading zeros in the first number fix the width ("01" … "24")
+  const width = pa[2].length > 1 && pa[2].charAt(0) === '0' ? pa[2].length : 0;
+  const ports: RangePort[] = [];
+  for (let n = first; n <= last; n++) {
+    let num = String(n);
+    while (num.length < width) num = '0' + num;
+    const name = pa[1] + num;
+    ports.push({ name, id: portIdFor(name) });
+  }
+  const bad = ports.filter((p) => !IFACE_RE.test(p.id))[0];
+  if (bad) {
+    return {
+      ok: false,
+      error: `“${bad.name}” cannot be used as an interface name: an id has 1–64 characters from A–Z a–z 0–9 _ . - / and starts with a letter or digit.`,
+    };
+  }
+  return { ok: true, ports };
+}
+
+/** One interface entry of a device in the document tree. */
+export interface IfaceEntry {
+  path: Path;
+  id: string | undefined;
+  /** which list it is in: `interfaces` (physical) or `logical_interfaces` */
+  kind: 'interface' | 'logical';
+  /** logical only: its `type` as written */
+  type?: string;
+}
+
+/** Schema kind of an interface path: devices[i].interfaces[k] or devices[i].logical_interfaces[k]. */
+export function ifaceSchemaKind(path: Path): 'interface' | 'logical' | undefined {
+  if (path.length !== 4 || path[0] !== 'devices' || typeof path[1] !== 'number' || typeof path[3] !== 'number') return undefined;
+  return path[2] === 'interfaces' ? 'interface' : path[2] === 'logical_interfaces' ? 'logical' : undefined;
+}

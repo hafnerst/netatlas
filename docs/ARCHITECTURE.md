@@ -9,14 +9,14 @@ Each layer has one responsibility and may only import the layers below it.
 
 | Layer | Responsibility | Main modules |
 |---|---|---|
-| `model/` | The network model: types for devices, interfaces (incl. loopbacks), links, networks, relations, protocols and groups; the protocol registry; IP addresses; pure queries (references, related objects, search). No I/O, no YAML, no layout. | `types.ts`, `device-types.ts`, `protocols.ts`, `ip.ts`, `queries.ts` |
+| `model/` | The network model: types for devices, their physical and logical interfaces (loopback, virtual, tunnel) with the associations of each kind, links, networks, relations, protocols and groups; the display order of names (`order.ts`); the protocol registry; IP addresses; **derived facts** (network members and interface VLANs from addresses, link-end VLAN state); pure queries (references, related objects, search). No I/O, no YAML, no layout. | `types.ts`, `device-types.ts`, `protocols.ts`, `ip.ts`, `derive.ts`, `queries.ts`, `order.ts` |
 | `yaml/` | The YAML boundary: the supported YAML subset (parser with line/column positions, comments and styles), the serializer (the inverse), and the format **schema** (which keys exist, in canonical order). Knows nothing about networks beyond key names. | `parse.ts`, `write.ts`, `schema.ts` |
 | `validation/` | Turns a parsed YAML tree into a `Model` plus errors and warnings. Every issue is attached to the YAML node it concerns. Structural and cross-reference checks, loopback/IP rules, the presentation-only `layout` section. Callable without any UI. | `validate.ts` (the format's rules), `reader.ts` (issue collector, typed reader, suggestions) |
-| `layout/` | Deterministic positions for both views: a canonical, order-independent input built from the model; auto-arrange for the physical and the logical view; placement of new nodes; the rule "stored positions else auto-arrange". Separates calculated positions from network semantics. | `input.ts`, `physical.ts`, `logical.ts`, `positions.ts`, `sizes.ts`, `geometry.ts` |
-| `diagram/` | Presentation: turns model + positions into a virtual SVG tree (`VNode`) for each view, and holds the DOM-free view state (current view, selection, filters, temporary drag positions). No parsing, no editing rules, no DOM. | `session.ts`, `physical.ts`, `logical.ts`, `scene.ts`, `style.ts`, `icons.ts` |
-| `editor/` | The editable document (`ModelDoc`): the YAML tree plus undo/redo, dirty state, validation after every change, and **explicit editing operations** (set a field, append to a list, point an endpoint at an interface, rename an id with all references, add a loopback, arrange, move a node, …). Also the layout section and the layout status. | `document.ts`, `tree.ts`, `layout-section.ts` |
+| `layout/` | Deterministic positions for both views: a canonical, order-independent input built from the model; auto-arrange for the physical and the logical view; placement of new nodes; the rule "stored positions else auto-arrange". Separates calculated positions from network semantics. | `input.ts`, `physical.ts`, `logical.ts`, `positions.ts`, `text.ts` (width estimate, wrapping), `sizes.ts` (element sizes from their text), `bundles.ts` (lanes and labels of a device pair), `geometry.ts`, `order.ts` |
+| `diagram/` | Presentation: turns model + positions into a virtual SVG tree (`VNode`) for each view, and holds the DOM-free view state (current view, selection, filters, temporary drag positions). No parsing, no editing rules, no DOM. | `session.ts`, `physical.ts`, `logical.ts`, `legend.ts` (the legend as data, and its SVG form for exports), `networks-box.ts` (the networks relevant to a rendered view, and their overview box for exports), `labels.ts` (multi-line text, collision-free label placement), `scene.ts`, `style.ts`, `icons.ts` |
+| `editor/` | The editable document (`ModelDoc`): the YAML tree plus undo/redo, dirty state, validation after every change, and **explicit editing operations** (set a field, append to a list, point an endpoint at an interface, rename an id with all references, add a physical or logical interface, arrange one view, move a node, …). Also the layout section and the layout status. | `document.ts`, `tree.ts`, `layout-section.ts` |
 | `ui/` | The browser: application shell, canvas interaction, inspector forms and outline, side panels, dialogs, local file reading and download, and the only code that creates DOM elements (`dom.ts`). Uses the editor's operations and never builds YAML itself. | `app.ts`, `inspector.ts`, `panels.ts`, `dialogs.ts`, `files.ts`, `dom.ts` |
-| `app/` | Entry point and the in-browser self-test (`#selftest`). | `main.ts`, `selftest.ts` |
+| `app/` | Entry point, the in-browser self-test (`#selftest`) and the viewport check (`#viewportcheck`). | `main.ts`, `selftest.ts`, `viewport-check.ts` |
 | `generated/` | Built from `examples/*.yaml` by `scripts/gen-examples.mjs`; do not edit. | `examples.ts` |
 
 ## Allowed dependencies
@@ -64,13 +64,57 @@ anything else.
   operations and only reads the tree through the `DocNode` alias.
 * **One format schema.** `yaml/schema.ts` lists the keys of every mapping
   kind in canonical order. Validation (unknown keys), the editor (where new
-  keys go) and the inspector ("other properties") all use it.
+  keys go) and the inspector ("other properties") all use it. It also lists
+  keys that are not part of the format but are easily expected in a place
+  (a `speed` on a port, a `loopbacks` list), with the instruction shown when
+  one is found; they are rejected like any unknown key, never read or
+  converted.
+* **Configured versus derived.** A fact is stored in one place in the YAML
+  tree. Whatever follows from it is computed by `model/derive.ts` from the
+  typed `Model` (cached per model object, and a new model is built after
+  every edit), and is only ever displayed: network members, the VLAN of an
+  interface address, the trunk state and mismatch of a link's ends. No
+  editing operation writes a derived value, so it can't go stale or
+  contradict its source. The typed `Network` has no member list and the
+  typed `Interface` no VLAN, so nothing can read a stored copy by mistake.
+  *Trade-off:* membership is recomputed for the whole model after each edit
+  (addresses × networks); that is well inside the time validation already
+  takes.
+* **Interfaces are flat, in two lists.** `Device.interfaces` holds the
+  physical interfaces and `Device.logical` the loopback, virtual and tunnel
+  interfaces; nothing is nested and there is no generic parent. Both lists
+  share the per-device id namespace, so `index.interfaces` and
+  `device:interface` references are flat too. An association is a field of
+  the kind of interface it belongs to (`members`, `vlan`, `source`,
+  `destination`) or is derived in `model/derive.ts` (`interfaceVlans`,
+  `interfaceVlanPorts`, `associatedInterfaces`): the ports of a VLAN
+  interface come from the link ends and are never stored. The editor
+  addresses an interface by its document path (`interfaceEntries()`).
+* **Display order is not file order.** `model/order.ts` sorts names for
+  display (editor cards, details, loopback chips, the networks box). The
+  lists in the model and in the YAML tree keep the file's order, so viewing
+  can't rewrite a file.
+* **Exports describe the rendered scene.** The legend and the networks box
+  of an SVG export are computed from the model *and* the scene that was
+  rendered (`sceneRefs`), so they list what the picture shows, including the
+  effect of filters.
 * **Positions are separate from semantics.** Positions live in the optional
   `layout:` section, are only warnings when broken, and never change the
   model. Auto-arrange is a pure function of a canonical input
   (`layout/input.ts`), so YAML order, comments and manual moves can't affect
   it. The layout status is derived by comparing stored positions with that
   result (see `docs/FORMAT.md`).
+* **One definition of every size.** `layout/sizes.ts` turns text into
+  wrapped lines and element sizes. Auto-arrange reserves exactly those sizes
+  and the renderers draw exactly those lines, so text fits its box without
+  either side measuring fonts. Widths are estimates from character classes;
+  that is what keeps the layout identical across browsers.
+  *Trade-off:* a little spare room in every box, and no pixel-exact fit.
+* **Labels are placed at render time, deterministically.** Floating labels
+  (cable labels, relation labels, addresses) go through a `LabelPlacer` in id
+  order: first free candidate, else least overlap. Routes and label places
+  are therefore a function of the model and the node positions only, also
+  for manually placed nodes.
 * **Rendering is data.** Renderers return a `VNode` tree, which keeps them
   testable in Node. `ui/dom.ts` is the single place that turns it into DOM,
   using only `createElementNS`, filtered `setAttribute` and text nodes. That
@@ -95,7 +139,9 @@ anything else.
 * **New field on an entity:** add the key to `yaml/schema.ts`, read and
   check it in `validation/validate.ts` (and the model type), then show and
   edit it in `ui/inspector.ts` using an existing `ModelDoc` operation.
-  Round-tripping works automatically.
+  Round-tripping works automatically. First check that the fact isn't
+  already configured somewhere else: if it is, add a function to
+  `model/derive.ts` and show it read-only instead.
 * **New view:** add layout functions under `layout/` (fed by
   `layout/input.ts`), a renderer under `diagram/`, and switch between them in
   `diagram/session.ts`.

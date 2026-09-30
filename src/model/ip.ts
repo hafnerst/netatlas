@@ -108,6 +108,15 @@ export function prefixContains(net: IpPrefix, a: IpAddr): boolean {
   return true;
 }
 
+/** Does a prefix have bits set beyond its prefix length (e.g. 10.0.0.1/24)? */
+export function hasHostBits(p: IpPrefix): boolean {
+  for (let i = 0; i < p.bytes.length; i++) {
+    const keep = Math.max(0, Math.min(8, p.prefix - i * 8));
+    if (p.bytes[i] & (0xff >> keep)) return true;
+  }
+  return false;
+}
+
 /** Canonical text of an address (for duplicate detection). */
 export function addrKey(a: IpAddr): string {
   return a.version + ':' + a.bytes.join('.');

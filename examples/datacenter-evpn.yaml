@@ -41,133 +41,146 @@ groups:
 devices:
   - id: spine1
     type: switch
-    role: spine
     tier: 1
-    model: 7280R3
     group: rack-a01
     interfaces:
-      - {id: Et1, speed: 100G, media: fiber, ip: 10.1.0.0/31}
-      - {id: Et2, speed: 100G, media: fiber, ip: 10.1.0.2/31}
-      - {id: Et3, speed: 100G, media: fiber, ip: 10.1.0.4/31}
-      - {id: Et4, speed: 100G, media: fiber, ip: 10.1.0.6/31}
+      - {id: Et1, ip: 10.1.0.0/31}
+      - {id: Et2, ip: 10.1.0.2/31}
+      - {id: Et3, ip: 10.1.0.4/31}
+      - {id: Et4, ip: 10.1.0.6/31}
+    logical_interfaces:
       - {id: Lo0, type: loopback, ip: 10.0.250.1/32}
   - id: spine2
     type: switch
-    role: spine
     tier: 1
-    model: 7280R3
     group: rack-a01
     interfaces:
-      - {id: Et1, speed: 100G, media: fiber, ip: 10.1.1.0/31}
-      - {id: Et2, speed: 100G, media: fiber, ip: 10.1.1.2/31}
-      - {id: Et3, speed: 100G, media: fiber, ip: 10.1.1.4/31}
-      - {id: Et4, speed: 100G, media: fiber, ip: 10.1.1.6/31}
+      - {id: Et1, ip: 10.1.1.0/31}
+      - {id: Et2, ip: 10.1.1.2/31}
+      - {id: Et3, ip: 10.1.1.4/31}
+      - {id: Et4, ip: 10.1.1.6/31}
+    logical_interfaces:
       - {id: Lo0, type: loopback, ip: 10.0.250.2/32}
 
   - id: leaf1
     type: switch
-    role: leaf
     tier: 2
     group: rack-a02
     interfaces:
-      - {id: Et49, speed: 100G, media: fiber, ip: 10.1.0.1/31}
-      - {id: Et50, speed: 100G, media: fiber, ip: 10.1.1.1/31}
-      - {id: Et51, speed: 100G, media: dac}
-      - {id: Et1, speed: 25G, media: dac}
+      - {id: Et49, ip: 10.1.0.1/31}
+      - {id: Et50, ip: 10.1.1.1/31}
+      - {id: Et51}
+      - {id: Et1}
+    logical_interfaces:
       - {id: Lo0, type: loopback, ip: 10.0.250.11/32}
-      - {id: Vxlan1, type: virtual, description: VTEP 10.0.251.12}
+      - {id: Vxlan1, type: virtual, description: VTEP 10.0.251.12, attrs: {function: vtep}}
+      - {id: Vlan100, type: virtual, ip: 192.168.100.2/24, vrf: tenant-a}
   - id: leaf2
     type: switch
-    role: leaf
     tier: 2
     group: rack-a02
     interfaces:
-      - {id: Et49, speed: 100G, media: fiber, ip: 10.1.0.3/31}
-      - {id: Et50, speed: 100G, media: fiber, ip: 10.1.1.3/31}
-      - {id: Et51, speed: 100G, media: dac}
-      - {id: Et1, speed: 25G, media: dac}
+      - {id: Et49, ip: 10.1.0.3/31}
+      - {id: Et50, ip: 10.1.1.3/31}
+      - {id: Et51}
+      - {id: Et1}
+    logical_interfaces:
       - {id: Lo0, type: loopback, ip: 10.0.250.12/32}
-      - {id: Vxlan1, type: virtual, description: VTEP 10.0.251.12}
+      - {id: Vxlan1, type: virtual, description: VTEP 10.0.251.12, attrs: {function: vtep}}
+      - {id: Vlan100, type: virtual, ip: 192.168.100.3/24, vrf: tenant-a}
   - id: leaf3
     type: switch
-    role: border-leaf
     tier: 2
     group: rack-a03
     interfaces:
-      - {id: Et49, speed: 100G, media: fiber, ip: 10.1.0.5/31}
-      - {id: Et50, speed: 100G, media: fiber, ip: 10.1.1.5/31}
-      - {id: Et1, speed: 25G, media: dac}
-      - {id: Et48, speed: 10G, media: fiber, ip: 100.64.0.2/30}
+      - {id: Et49, ip: 10.1.0.5/31}
+      - {id: Et50, ip: 10.1.1.5/31}
+      - {id: Et1}
+      - {id: Et48, ip: 100.64.0.2/30}
+    logical_interfaces:
       - {id: Lo0, type: loopback, ip: 10.0.250.13/32}
-      - {id: Vxlan1, type: virtual, description: VTEP 10.0.251.13}
+      - {id: Vxlan1, type: virtual, description: VTEP 10.0.251.13, attrs: {function: vtep}}
+      - {id: Vlan100, type: virtual, ip: 192.168.100.4/24, vrf: tenant-a}
   - id: leaf4
     type: switch
-    role: leaf
     tier: 2
     group: rack-a03
     interfaces:
-      - {id: Et49, speed: 100G, media: fiber, ip: 10.1.0.7/31}
-      - {id: Et50, speed: 100G, media: fiber, ip: 10.1.1.7/31}
-      - {id: Et1, speed: 25G, media: dac}
+      - {id: Et49, ip: 10.1.0.7/31}
+      - {id: Et50, ip: 10.1.1.7/31}
+      - {id: Et1}
+    logical_interfaces:
       - {id: Lo0, type: loopback, ip: 10.0.250.14/32}
-      - {id: Vxlan1, type: virtual, description: VTEP 10.0.251.14}
+      - {id: Vxlan1, type: virtual, description: VTEP 10.0.251.14, attrs: {function: vtep}}
+      - {id: Vlan100, type: virtual, ip: 192.168.100.5/24, vrf: tenant-a}
 
   - id: esx01
     label: esx01
     type: server
     group: rack-a02
     interfaces:
-      - {id: vmnic0, speed: 25G, media: dac}
-      - {id: vmnic1, speed: 25G, media: dac}
+      - {id: vmnic0}
+      - {id: vmnic1}
   - id: esx02
     label: esx02
     type: server
     group: rack-a03
     interfaces:
-      - {id: vmnic0, speed: 25G, media: dac}
+      - {id: vmnic0}
   - id: k8s01
     label: k8s01
     type: server
     group: rack-a03
     interfaces:
-      - {id: ens1f0, speed: 25G, media: dac}
+      - {id: ens1f0}
 
   - id: wan-pe
     label: Carrier PE
     type: router
     group: wan
     interfaces:
-      - {id: xe-0/1/0, speed: 10G, media: fiber, ip: 100.64.0.1/30}
+      - {id: xe-0/1/0, ip: 100.64.0.1/30}
 
 links:
-  - {id: s1-l1, a: "spine1:Et1", b: "leaf1:Et49"}
-  - {id: s1-l2, a: "spine1:Et2", b: "leaf2:Et49"}
-  - {id: s1-l3, a: "spine1:Et3", b: "leaf3:Et49"}
-  - {id: s1-l4, a: "spine1:Et4", b: "leaf4:Et49"}
-  - {id: s2-l1, a: "spine2:Et1", b: "leaf1:Et50"}
-  - {id: s2-l2, a: "spine2:Et2", b: "leaf2:Et50"}
-  - {id: s2-l3, a: "spine2:Et3", b: "leaf3:Et50"}
-  - {id: s2-l4, a: "spine2:Et4", b: "leaf4:Et50"}
-  - {id: mlag-peer, a: "leaf1:Et51", b: "leaf2:Et51", cable: DAC 0.5m}
-  - {id: esx01-a, a: "esx01:vmnic0", b: "leaf1:Et1"}
-  - {id: esx01-b, a: "esx01:vmnic1", b: "leaf2:Et1"}
-  - {id: esx02-a, a: "esx02:vmnic0", b: "leaf3:Et1"}
-  - {id: k8s01-a, a: "k8s01:ens1f0", b: "leaf4:Et1"}
-  - {id: wan-uplink, a: "leaf3:Et48", b: "wan-pe:xe-0/1/0", cable: "Cross-connect MMR-2 #118"}
+  - {id: s1-l1, a: "spine1:Et1", b: "leaf1:Et49", medium: fiber, speed: 100G}
+  - {id: s1-l2, a: "spine1:Et2", b: "leaf2:Et49", medium: fiber, speed: 100G}
+  - {id: s1-l3, a: "spine1:Et3", b: "leaf3:Et49", medium: fiber, speed: 100G}
+  - {id: s1-l4, a: "spine1:Et4", b: "leaf4:Et49", medium: fiber, speed: 100G}
+  - {id: s2-l1, a: "spine2:Et1", b: "leaf1:Et50", medium: fiber, speed: 100G}
+  - {id: s2-l2, a: "spine2:Et2", b: "leaf2:Et50", medium: fiber, speed: 100G}
+  - {id: s2-l3, a: "spine2:Et3", b: "leaf3:Et50", medium: fiber, speed: 100G}
+  - {id: s2-l4, a: "spine2:Et4", b: "leaf4:Et50", medium: fiber, speed: 100G}
+  - {id: mlag-peer, a: "leaf1:Et51", b: "leaf2:Et51", medium: dac, speed: 100G, cable: DAC 0.5m}
+  - id: esx01-a
+    a: {device: esx01, interface: vmnic0, vlans: [100]}
+    b: {device: leaf1, interface: Et1, vlans: [100]}
+    medium: dac
+    speed: 25G
+  - id: esx01-b
+    a: {device: esx01, interface: vmnic1, vlans: [100]}
+    b: {device: leaf2, interface: Et1, vlans: [100]}
+    medium: dac
+    speed: 25G
+  - id: esx02-a
+    a: {device: esx02, interface: vmnic0, vlans: [100]}
+    b: {device: leaf3, interface: Et1, vlans: [100]}
+    medium: dac
+    speed: 25G
+  - id: k8s01-a
+    a: {device: k8s01, interface: ens1f0, vlans: [100]}
+    b: {device: leaf4, interface: Et1, vlans: [100]}
+    medium: dac
+    speed: 25G
+  - {id: wan-uplink, a: "leaf3:Et48", b: "wan-pe:xe-0/1/0", medium: fiber, speed: 10G, cable: "Cross-connect MMR-2 #118"}
 
 networks:
+  # One IP network. Its members are the leaves, because each has an SVI
+  # (Vlan100, in VRF tenant-a) with an address in the prefix.
   - id: vni-10100
     label: VNI 10100 (web)
-    kind: vni
-    vlan: 100
-    vrf: tenant-a
     cidr: 192.168.100.0/24
-    members: [leaf1, leaf2, leaf3, leaf4]
-  - id: vrf-tenant-a
-    label: VRF tenant-a
-    kind: vrf
-    attrs: {l3vni: 50001, route-target: "65000:50001"}
-    members: [leaf1, leaf2, leaf3, leaf4]
+    vlan: 100
+    attrs: {vni: 10100, l3vni: 50001, route-target: "65000:50001"}
 
 relations:
   # eBGP underlay: one session per fabric link

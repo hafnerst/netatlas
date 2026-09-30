@@ -20,10 +20,10 @@ const SHOTS = [
   ['wan-physical.png', 'example=0&view=physical'],
   ['wan-logical-gre-selected.png', 'example=0&view=logical&select=relation:gre-muc'],
   ['wan-physical-gre-path.png', 'example=0&view=physical&select=relation:gre-muc'],
-  ['device-types.png', 'example=7&view=physical'],
+  ['device-types.png', 'example=4&view=physical'],
   ['dc-physical.png', 'example=1&view=physical'],
-  ['metro-physical.png', 'example=6&view=physical'],
-  ['metro-logical.png', 'example=6&view=logical'],
+  ['metro-physical.png', 'example=3&view=physical'],
+  ['metro-logical.png', 'example=3&view=logical'],
 ];
 
 const browser = findBrowser();

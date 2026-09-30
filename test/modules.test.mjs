@@ -27,26 +27,26 @@ relations:
     protocol: ebgp
     endpoints: [r1, r2]
 networks:
-  - {id: n1, members: [r1]}
+  - {id: n1, cidr: 10.0.0.0/24}
 `;
 
 // ------------------------------------------------------------ editing operations
 
 test('text, integer, flag and value edits: canonical key order, empty removes, one undo step each', () => {
   const d = doc(base);
-  d.setText(['devices', 0, 'vendor'], 'Acme');
+  d.setText(['devices', 0, 'description'], 'Acme');
   d.setText(['devices', 0, 'label'], 'Router 1');
   d.setInteger(['devices', 0, 'tier'], '2');
   d.setFlag(['relations', 0, 'directed'], true);
   d.setValue(['devices', 0, 'attrs'], ''); // null value, key kept
   let out = d.exportText();
-  assert.match(out, /- id: r1 {3}# the router\n {4}label: Router 1\n {4}vendor: Acme\n {4}tier: 2\n {4}attrs:\n {4}interfaces: \[eth0\]/);
+  assert.match(out, /- id: r1 {3}# the router\n {4}label: Router 1\n {4}tier: 2\n {4}description: Acme\n {4}attrs:\n {4}interfaces: \[eth0\]/);
   assert.match(out, /directed: true/);
-  d.setText(['devices', 0, 'vendor'], '');
+  d.setText(['devices', 0, 'description'], '');
   d.setFlag(['relations', 0, 'directed'], false);
   d.setInteger(['devices', 0, 'tier'], 'high'); // kept as text, reported by validation
   out = d.exportText();
-  assert.ok(!/vendor:/.test(out) && !/directed:/.test(out));
+  assert.ok(!/description:/.test(out) && !/directed:/.test(out));
   assert.ok(d.errors.some((e) => /tier must be an integer/.test(e.message)));
   // every operation was one undo step
   let n = 0;
@@ -76,7 +76,8 @@ test('free-form values are typed like YAML and survive export -> reload', () => 
 test('lists and endpoints: short forms stay short, mappings keep their keys', () => {
   const d = doc(base);
   d.appendText(['devices', 1, 'interfaces', 1, 'ip'], '10.0.0.2/32');
-  d.appendText(['networks', 0, 'members'], 'r2:eth0');
+  d.appendText(['networks', 0, 'cidr'], '2001:db8::/64');
+  assert.match(d.exportText(), /cidr: \[10\.0\.0\.0\/24, 2001:db8::\/64\]/);
   d.setEndpoint(['relations', 0, 'endpoints', 0], 'r1', 'eth0');
   d.setEndpoint(['links', 0, 'b'], 'r2', '');
   assert.match(d.exportText(), /endpoints: \[r1:eth0, r2\]/);
@@ -87,8 +88,8 @@ test('lists and endpoints: short forms stay short, mappings keep their keys', ()
   assert.match(d.exportText(), /\{device: r2, interface: lo0, role: rr-client\}/);
   d.moveUp(['relations', 0, 'endpoints', 1]);
   assert.match(d.exportText(), /endpoints: \[\{device: r2, interface: lo0, role: rr-client\}, r1:eth0\]/);
-  d.setEndpoint(['networks', 0, 'members', 1], '', '');
-  assert.match(d.exportText(), /members: \[r1\]/);
+  d.setEndpoint(['relations', 0, 'endpoints', 1], '', '');
+  assert.match(d.exportText(), /endpoints: \[\{device: r2, interface: lo0, role: rr-client\}\]/);
   d.remove(['links', 0]);
   assert.ok(!/l1/.test(d.exportText()));
 });
@@ -108,7 +109,9 @@ test('schemaKindOf derives the canonical key order from a path', () => {
   assert.equal(d.schemaKindOf(['devices', 0]), 'device');
   assert.equal(d.schemaKindOf(['devices', 0, 'interfaces', 1]), 'interface');
   assert.equal(d.schemaKindOf(['relations', 0, 'endpoints', 0]), 'endpoint');
-  assert.equal(d.schemaKindOf(['networks', 0, 'members', 0]), 'endpoint');
+  assert.equal(d.schemaKindOf(['links', 0, 'a']), 'linkEnd');
+  assert.equal(d.schemaKindOf(['links', 0, 'b']), 'linkEnd');
+  assert.equal(d.schemaKindOf(['networks', 0, 'members', 0]), undefined);
   assert.equal(d.schemaKindOf(['devices', 0, 'attrs']), undefined);
 });
 
@@ -120,6 +123,7 @@ test('the format schema is the single source for allowed keys and key order', ()
     ['device', 'devices', '{id: d}'],
     ['link', 'links', '{id: l, a: d, b: d}'],
     ['group', 'groups', '{id: g}'],
+    ['network', 'networks', '{id: n}'],
   ]) {
     const text = `netatlas: 1\ndevices:\n  - {id: d}\n${section === 'devices' ? '' : section + ':\n  - ' + sample + '\n'}`;
     const withKey = (k) => text.replace(section === 'devices' ? '{id: d}' : sample, (m) => m.replace('}', `, ${k}: x}`));

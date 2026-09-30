@@ -7,9 +7,18 @@ title: Error reporting demo
 devices:
   - id: r1
     typ: router                 # typo: "type"
+    vendor: Acme                # not a device key (custom data goes under attrs)
+    loopbacks:                  # not a device key: a loopback is a logical interface
+      - {id: lo9, ip: 10.0.0.9/32}
     interfaces:
-      - {id: eth0}
-      - {id: tun0, type: tunnel}
+      - id: eth0
+        children:               # not an interface key: interfaces are not nested
+          - {id: tun9, type: tunnel}
+    logical_interfaces:
+      - {id: tun0, type: tunnel, source: eth7}              # r1 has no eth7
+      - {id: bond0, type: virtual, members: [eth0, tun0]}   # a member is a physical interface
+      - {id: lo0, type: loopback}                           # a loopback needs an address
+      - {id: x0, type: subinterface}                        # loopback, virtual or tunnel
   - id: r2
     interfaces: [eth0, eth1]
 

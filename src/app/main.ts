@@ -1,5 +1,6 @@
 import { App } from '../ui/app';
 import { runSelfTest } from './selftest';
+import { runViewportCheck } from './viewport-check';
 
 function start(): void {
   const app = new App(document);
@@ -7,6 +8,10 @@ function start(): void {
   const hash = location.hash.replace(/^#/, '');
   if (hash === 'selftest') {
     void runSelfTest(app, document);
+    return;
+  }
+  if (hash === 'viewportcheck') {
+    void runViewportCheck(app, document);
     return;
   }
   // Optional deep link to a built-in example, e.g. "#example=0&view=logical".

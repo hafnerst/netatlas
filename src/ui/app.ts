@@ -5,14 +5,15 @@
  * user action (file picker or drag-and-drop), edited in memory, and saved by
  * letting the browser download a new copy. Nothing is transmitted.
  */
-import { ModelDoc, Origin } from '../editor/document';
-import { downloadText, exportFileName, readTextFile, safeYamlFileName } from './files';
-import { el, mount } from './dom';
+import { ModelDoc, Origin, ifaceSchemaKind } from '../editor/document';
+import { PngPicture, downloadBlob, downloadText, exportFileName, pictureBaseName, readTextFile, safeYamlFileName, svgToPng } from './files';
+import { el, materialize, mount } from './dom';
 import { DialogOpts, showDialog, showToast } from './dialogs';
 import { Editor, EditorSel } from './inspector';
 import { EXAMPLES } from '../generated/examples';
 import { Rect } from '../layout/geometry';
 import { detailsFor, legendFor, relationList, tooltipFor } from './panels';
+import { exportBoxes } from '../diagram/networks-box';
 import { Session, View } from '../diagram/session';
 import { SelectionContext, search, selectionContext, splitRef } from '../model/queries';
 import { Issue } from '../validation/validate';
@@ -121,10 +122,179 @@ export class App {
 
   newModel(): void {
     this.openDoc(ModelDoc.create());
+    this.editModel();
+  }
+
+  /** Open the edit view of the whole model (title, description, format version). */
+  private editModel(): void {
+    if (!this.mdoc) return;
     this.editor.sel = { kind: 'document', index: 0 };
     this.editorSelected(this.editor.sel);
     this.tab = 'edit';
+    this.renderOutline();
     this.renderSide();
+    this.updateChrome();
+  }
+
+  /** Is the File menu open? */
+  get menuOpen(): boolean {
+    return !this.$('main-menu').hidden;
+  }
+
+  /**
+   * Keep a drop-down that hangs under a toolbar control inside the window:
+   * it is left-aligned with its control unless that would push it over the
+   * right edge (a wrapped toolbar in a narrow window), then it is shifted left.
+   */
+  private keepInWindow(popup: HTMLElement): void {
+    popup.style.left = '0px';
+    const r = popup.getBoundingClientRect();
+    const over = r.right - (this.doc.documentElement.clientWidth - 8);
+    if (over > 0) popup.style.left = -Math.min(over, Math.max(0, r.left - 8)) + 'px';
+  }
+
+  /** The menus of the toolbar, in their order: [button id, menu id]. */
+  private static readonly MENUS: Array<[string, string]> = [
+    ['menu-btn', 'main-menu'],
+    ['export-btn', 'export-menu'],
+  ];
+
+  /**
+   * Open one toolbar menu (by the id of its list) or, with null, close them
+   * all; at most one is open. Opening with `focus` moves the focus to its
+   * first available entry (keyboard use).
+   */
+  openMenu(menuId: string | null, focus = false): void {
+    for (const [btnId, id] of App.MENUS) {
+      const menu = this.$(id);
+      const btn = this.$(btnId);
+      const open = id === menuId;
+      menu.hidden = !open;
+      btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+      btn.classList.toggle('active', open);
+      // a menu always opens with its submenus closed
+      const subs = menu.querySelectorAll('[aria-haspopup="menu"]');
+      for (let i = 0; i < subs.length; i++) this.setSubmenu(subs[i] as HTMLElement, false);
+      if (!open) continue;
+      this.keepInWindow(menu);
+      if (focus) {
+        const first = menu.querySelector('button:not(:disabled)') as HTMLElement | null;
+        (first || btn).focus();
+      }
+    }
+  }
+
+  /**
+   * Open or close the submenu of a menu entry (the entry names it with
+   * aria-controls). It opens in place, under its entry. `focus` moves the
+   * focus to its first entry when it opens (keyboard use).
+   */
+  setSubmenu(entry: HTMLElement, open: boolean, focus = false): void {
+    const sub = this.doc.getElementById(entry.getAttribute('aria-controls') || '');
+    if (!sub) return;
+    const show = open && !(entry as HTMLButtonElement).disabled;
+    sub.hidden = !show;
+    entry.setAttribute('aria-expanded', show ? 'true' : 'false');
+    if (show) {
+      const menu = entry.closest('.dropdown') as HTMLElement | null;
+      if (menu) this.keepInWindow(menu);
+      if (focus) {
+        const first = sub.querySelector('button:not(:disabled)') as HTMLElement | null;
+        if (first) first.focus();
+      }
+    }
+  }
+
+  /** Open or close the File menu. */
+  setMenu(open: boolean, focus = false): void {
+    this.openMenu(open ? 'main-menu' : null, focus);
+  }
+
+  /**
+   * The toolbar menus (File, Export): a button that opens a list of entries.
+   * A menu closes after an entry is chosen, on Escape, and when anything
+   * outside it is pressed. Arrow up/down move between the entries, arrow
+   * left/right to the neighbouring menu. An entry with a submenu opens it
+   * when it is pressed (mouse, touch, Enter or Space) or with arrow right;
+   * arrow left or Escape closes the submenu again. Nothing opens on hover.
+   */
+  private wireMenus(): void {
+    App.MENUS.forEach(([btnId, menuId], at) => {
+      const btn = this.$(btnId);
+      const menu = this.$(menuId);
+      const isOpen = (): boolean => !menu.hidden;
+      // the entries that can be reached now: enabled, and not inside a closed submenu
+      const items = (): HTMLElement[] => (Array.prototype.slice.call(menu.querySelectorAll('button:not(:disabled)')) as HTMLElement[]).filter((b) => !b.closest('[hidden]'));
+      const parentEntry = (el: Element | null): HTMLElement | null => {
+        const sub = el ? el.closest('.submenu') : null;
+        return sub ? (menu.querySelector(`[aria-controls="${sub.id}"]`) as HTMLElement | null) : null;
+      };
+      const neighbour = (step: number): void => this.openMenu(App.MENUS[(at + step + App.MENUS.length) % App.MENUS.length][1], true);
+      btn.addEventListener('click', () => this.openMenu(isOpen() ? null : menuId));
+      btn.addEventListener('keydown', (e) => {
+        if (e.key === 'ArrowDown' || e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          this.openMenu(menuId, true);
+        } else if (e.key === 'Escape' && isOpen()) {
+          e.stopPropagation();
+          this.openMenu(null);
+        } else if (isOpen() && (e.key === 'ArrowRight' || e.key === 'ArrowLeft')) {
+          e.preventDefault();
+          e.stopPropagation();
+          neighbour(e.key === 'ArrowRight' ? 1 : -1);
+        }
+      });
+      // an entry acts through its own handler; the menu then gets out of the way
+      menu.addEventListener('click', (e) => {
+        const b = (e.target as Element).closest('button') as HTMLElement | null;
+        if (!b) return;
+        if (b.getAttribute('aria-haspopup') === 'menu') {
+          // an entry with a submenu: pressing it opens or closes the submenu, the menu stays
+          // (a click made with the keyboard has no pointer position: the focus then follows into the submenu)
+          const opening = b.getAttribute('aria-expanded') !== 'true';
+          this.setSubmenu(b, opening, opening && (e as MouseEvent).detail === 0);
+        } else this.openMenu(null);
+      });
+      menu.addEventListener('keydown', (e) => {
+        const list = items();
+        const pos = list.indexOf(this.doc.activeElement as HTMLElement);
+        const active = this.doc.activeElement as HTMLElement | null;
+        const owner = parentEntry(active);
+        const opensSub = !!active && active.getAttribute('aria-haspopup') === 'menu' && menu.contains(active);
+        if (owner && (e.key === 'Escape' || e.key === 'ArrowLeft')) {
+          // inside a submenu: back to its entry
+          e.preventDefault();
+          e.stopPropagation();
+          this.setSubmenu(owner, false);
+          owner.focus();
+        } else if (opensSub && e.key === 'ArrowRight') {
+          e.preventDefault();
+          e.stopPropagation();
+          this.setSubmenu(active as HTMLElement, true, true);
+        } else if (e.key === 'Escape') {
+          e.preventDefault();
+          e.stopPropagation();
+          this.openMenu(null);
+          btn.focus();
+        } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+          e.preventDefault();
+          e.stopPropagation();
+          const next = list[(pos + (e.key === 'ArrowDown' ? 1 : list.length - 1)) % list.length];
+          if (next) next.focus();
+        } else if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+          e.preventDefault();
+          e.stopPropagation();
+          neighbour(e.key === 'ArrowRight' ? 1 : -1);
+        } else if (e.key === 'Home' || e.key === 'End') {
+          e.preventDefault();
+          const to = list[e.key === 'Home' ? 0 : list.length - 1];
+          if (to) to.focus();
+        } else if (e.key === 'Tab') this.openMenu(null);
+      });
+    });
+    this.doc.addEventListener('pointerdown', (e) => {
+      if (!(e.target as Element).closest('.menu-wrap')) this.openMenu(null);
+    });
   }
 
   loadExample(i: number): LoadOutcome | null {
@@ -239,7 +409,7 @@ export class App {
       );
     }
     const a = await this.dialog({
-      title: invalid ? 'Download a model that has errors?' : 'Download YAML',
+      title: invalid ? 'Download a model that has errors?' : 'Download model',
       body,
       buttons: [
         { label: 'Cancel', value: 'cancel' },
@@ -247,12 +417,87 @@ export class App {
       ],
     });
     if (a !== 'download') return false;
-    const name = safeYamlFileName(nameInput.value, this.suggestedFileName());
+    this.downloadNow(safeYamlFileName(nameInput.value, this.suggestedFileName()));
+    return true;
+  }
+
+  /** Export the current model as YAML into a download with this name, and mark it as saved. */
+  private downloadNow(name: string): void {
+    const d = this.mdoc;
+    if (!d) return;
     downloadText(this.doc, this.exportText(), name, 'application/yaml');
     d.markSaved();
     this.updateChrome();
     this.toast(`Downloaded “${name}”.`);
+  }
+
+  /**
+   * File → Close model: leave the current model and show the start screen.
+   * With unsaved changes it asks first: download the model and close, close
+   * without downloading, or stay. Resolves true when the model was closed.
+   */
+  async closeModelDialog(): Promise<boolean> {
+    const d = this.mdoc;
+    if (!d) return false;
+    if (d.dirty) {
+      const name = this.suggestedFileName();
+      const where =
+        d.origin === 'file'
+          ? `“Download and close” saves the current state as a new file, “${name}”, in your browser’s downloads location; the file you opened is not overwritten.`
+          : `“Download and close” saves it as “${name}” in your browser’s downloads location.`;
+      const body: Array<Node | string> = [
+        el(this.doc, 'p', {}, [`“${d.fileName}” has changes that have not been downloaded. They exist only in this page and are lost when the model is closed.`]),
+        el(this.doc, 'p', {}, [where]),
+      ];
+      if (d.errors.length) {
+        body.push(el(this.doc, 'div', { class: 'dl-warn' }, [el(this.doc, 'b', {}, [`The model has ${d.errors.length} validation error${d.errors.length > 1 ? 's' : ''}.`]), ' The file is saved exactly as it is; netatlas will report the errors when it is opened again.']));
+      }
+      const a = await this.dialog({
+        title: 'Close the model with unsaved changes?',
+        body,
+        buttons: [
+          { label: 'Cancel', value: 'cancel' },
+          { label: 'Discard changes', value: 'discard', kind: 'danger' },
+          { label: 'Download and close', value: 'download', kind: 'primary' },
+        ],
+      });
+      // the model may have been replaced while the dialog was open
+      if (this.mdoc !== d) return false;
+      if (a === 'download') this.downloadNow(name);
+      else if (a !== 'discard') return false;
+    }
+    this.closeModel();
     return true;
+  }
+
+  /**
+   * Close the current model without asking and show the start screen.
+   * Everything that belonged to it goes with it: selection, view, filters,
+   * zoom, open cards, the YAML draft. The next model starts clean.
+   */
+  closeModel(): void {
+    this.mdoc = null;
+    this.session = null;
+    this.loadErrors = [];
+    this.loadErrorName = '';
+    this.sourceLines = [];
+    this.errorRefs.clear();
+    this.editor.reset();
+    this.tab = 'legend';
+    this.zoom = { k: 1, tx: 0, ty: 0 };
+    this.bounds = { x: 0, y: 0, w: 1, h: 1 };
+    const search = this.$<HTMLInputElement>('search');
+    search.value = '';
+    const results = this.$('search-results');
+    results.hidden = true;
+    while (results.firstChild) results.removeChild(results.firstChild);
+    this.$('tooltip').hidden = true;
+    this.openMenu(null);
+    this.svg.classList.remove('has-selection');
+    this.render();
+    this.applyZoom();
+    this.renderOutline();
+    this.updateChrome();
   }
 
 
@@ -510,8 +755,13 @@ export class App {
     if (!ent) this.editor.sel = { kind: 'document', index: 0 };
     else {
       this.editor.sel = { kind: ent.kind, index: ent.index };
-      const p = d.issuePath(is);
-      if (ent.kind === 'device' && p && p[2] === 'interfaces' && typeof p[3] === 'number') this.editor.sel.iface = p[3];
+      // open the interface the issue is in
+      const p = d.issuePath(is) || [];
+      const ip = [p.slice(0, 4)].find((x) => !!ifaceSchemaKind(x));
+      if (ent.kind === 'device' && ip) {
+        this.editor.sel.iface = ip;
+        this.editor.openIface(ip);
+      }
     }
     this.editorSelected(this.editor.sel);
     this.tab = 'edit';
@@ -532,7 +782,21 @@ export class App {
       ]),
     );
     box.appendChild(this.issueList(this.loadErrors, this.sourceLines));
-    box.appendChild(el(this.doc, 'p', {}, [el(this.doc, 'button', { type: 'button', 'data-act-top': 'new' }, ['Start a new model instead'])]));
+    box.appendChild(
+      el(this.doc, 'p', { class: 'error-actions' }, [
+        el(this.doc, 'button', { type: 'button', class: 'primary', 'data-act-top': 'open' }, ['Open another YAML file…']),
+        el(this.doc, 'button', { type: 'button', 'data-act-top': 'new' }, ['New model']),
+        el(this.doc, 'button', { type: 'button', 'data-act-top': 'start' }, ['Back to the start screen']),
+      ]),
+    );
+  }
+
+  /** Leave the "could not open" page and show the start screen again (only while no model is open). */
+  showStart(): void {
+    if (this.mdoc) return;
+    this.loadErrors = [];
+    this.loadErrorName = '';
+    this.updateChrome();
   }
 
   private updateChrome(): void {
@@ -560,6 +824,17 @@ export class App {
     (this.$('btn-undo') as HTMLButtonElement).disabled = !d || !d.canUndo();
     (this.$('btn-redo') as HTMLButtonElement).disabled = !d || !d.canRedo();
     (this.$('btn-download') as HTMLButtonElement).disabled = !d;
+    (this.$('btn-close') as HTMLButtonElement).disabled = !d;
+    // exporting needs a diagram: a model that could be drawn
+    const ex = this.$('btn-export-as') as HTMLButtonElement;
+    ex.disabled = !s;
+    ex.title = s ? `Save the ${s.state.view} view as a picture: the whole diagram with its legend and networks overview` : 'Open or create a model first';
+    if (!s) this.setSubmenu(ex, false);
+    for (const fmt of ['png', 'svg']) {
+      const b = this.$('btn-export-' + fmt) as HTMLButtonElement;
+      b.disabled = !s;
+      b.title = s ? `Save the ${s.state.view} view as ${fmt === 'png' ? 'a PNG image' : 'an SVG file'}` : 'Open or create a model first';
+    }
     this.$('btn-undo').title = d && d.canUndo() ? `Undo: ${d.canUndo()} (Ctrl+Z)` : 'Undo (Ctrl+Z)';
     this.$('btn-redo').title = d && d.canRedo() ? `Redo: ${d.canRedo()} (Ctrl+Y)` : 'Redo (Ctrl+Y)';
     const st = this.$('status');
@@ -594,43 +869,51 @@ export class App {
   }
 
   /**
-   * Per-view layout status next to the Auto-arrange button. Always derived
-   * from the document (current positions vs. the deterministic Auto-arrange
-   * result), never from the last action, so it is right after undo/reload.
+   * Layout status of the shown view, on the Auto-arrange button itself: an
+   * icon, a colour and a message (hover text and accessible description).
+   * Always derived from the document (current positions vs. the
+   * deterministic Auto-arrange result), never from the last action, so it is
+   * right after undo/reload. Both views are tracked independently; the
+   * button shows the one on screen.
    */
   private updateLayoutStatus(): void {
     const d = this.mdoc;
     const s = this.session;
-    const texts = { auto: 'Auto-arranged', manual: 'Manually adjusted', edited: 'Edited since arranged' };
-    const tips = {
-      auto: 'Every object is exactly where Auto-arrange puts it for the current model.',
-      manual: 'Some objects were dragged away from their auto-arranged positions. Auto-arrange restores them (undoable).',
-      edited:
-        'The model changed after the layout was arranged. Existing objects kept their positions and new ones were placed next to their neighbors, so the diagram no longer matches a fresh Auto-arrange. No object was moved by hand.',
-    };
-    const views: View[] = ['physical', 'logical'];
-    for (const v of views) {
-      const badge = this.doc.querySelector(`[data-view-status="${v}"]`) as HTMLElement | null;
-      if (!badge) continue;
-      if (!d || !s) {
-        badge.textContent = '';
-        badge.className = 'lstat';
-        continue;
-      }
-      const st = d.layoutStatus(v);
-      const name = v === 'physical' ? 'Physical' : 'Logical';
-      badge.textContent = `${name}: ${texts[st]}`;
-      badge.className = `lstat st-${st}${s.state.view === v ? ' current' : ''}`;
-      badge.setAttribute('data-status', st);
-      badge.title = `${name} view${s.state.view === v ? ' (shown)' : ''}: ${tips[st]}` + (d.hasStoredLayout(v) ? ' Positions are stored in the model and exported with it.' : ' Positions are not stored yet; the file shows the auto-arranged layout.');
+    const btn = this.$('btn-arrange') as HTMLButtonElement;
+    const icon = btn.querySelector('.arrange-icon') as HTMLElement;
+    const desc = this.$('arrange-status');
+    const action = 'Auto-arrange recomputes the positions of every object in this view; the other view is not changed (A).';
+    for (const v of ['physical', 'logical'] as View[]) {
+      if (d && s) btn.setAttribute('data-status-' + v, d.layoutStatus(v));
+      else btn.removeAttribute('data-status-' + v);
     }
+    if (!d || !s) {
+      btn.removeAttribute('data-status');
+      btn.removeAttribute('data-view');
+      icon.textContent = '';
+      desc.textContent = '';
+      btn.title = action;
+      return;
+    }
+    const st = d.layoutStatus(s.state.view);
+    btn.setAttribute('data-status', st);
+    btn.setAttribute('data-view', s.state.view);
+    icon.textContent = LAYOUT_STATUS_ICON[st];
+    // the same message for hover and for assistive technology (aria-describedby)
+    if (desc.textContent !== LAYOUT_STATUS_MESSAGE[st]) desc.textContent = LAYOUT_STATUS_MESSAGE[st];
+    btn.title = LAYOUT_STATUS_MESSAGE[st] + ' ' + action;
   }
 
   private fillExamples(): void {
-    const sel = this.$<HTMLSelectElement>('examples');
-    EXAMPLES.forEach((ex, i) => sel.appendChild(el(this.doc, 'option', { value: String(i) }, [ex.name])));
-    const list = this.$('example-buttons');
-    EXAMPLES.forEach((ex, i) => list.appendChild(el(this.doc, 'button', { type: 'button', class: 'linkish', 'data-example': String(i) }, [ex.name])));
+    const menu = this.$('menu-examples');
+    EXAMPLES.forEach((ex, i) => menu.appendChild(el(this.doc, 'button', { type: 'button', role: 'menuitem', 'data-example': String(i), title: `Open the example ${ex.name}` }, [el(this.doc, 'span', { class: 'mi-label' }, [ex.name])])));
+    // the start screen's picker names each example by its title
+    const pick = this.$('start-example');
+    EXAMPLES.forEach((ex, i) => {
+      const m = /^title:[ \t]*(.*)$/m.exec(ex.text);
+      const title = m ? m[1].replace(/^["']|["']$/g, '').trim() : '';
+      pick.appendChild(el(this.doc, 'option', { value: String(i) }, [title || ex.name]));
+    });
   }
 
   // ------------------------------------------------------ dialogs / toasts
@@ -660,31 +943,53 @@ export class App {
     this.$('btn-new').addEventListener('click', () => void newModel());
     this.$('new-empty').addEventListener('click', () => void newModel());
     this.$('btn-download').addEventListener('click', () => void this.downloadDialog());
+    this.$('btn-close').addEventListener('click', () => void this.closeModelDialog());
     this.$('btn-undo').addEventListener('click', () => this.undo());
     this.$('btn-redo').addEventListener('click', () => this.redo());
-    this.$('btn-outline').addEventListener('click', () => doc.body.classList.toggle('no-outline'));
     this.$('errors').addEventListener('click', (e) => {
-      if ((e.target as Element).closest('[data-act-top="new"]')) this.newModel();
+      const act = (e.target as Element).closest('[data-act-top]');
+      const what = act ? act.getAttribute('data-act-top') : '';
+      if (what === 'new') this.newModel();
+      else if (what === 'open') void open();
+      else if (what === 'start') this.showStart();
     });
     fileInput.addEventListener('change', () => {
       const f = fileInput.files && fileInput.files[0];
       if (f) void this.loadFile(f);
       fileInput.value = '';
     });
-    this.$<HTMLSelectElement>('examples').addEventListener('change', async (e) => {
-      const sel = e.target as HTMLSelectElement;
-      const v = sel.value;
-      sel.value = '';
-      if (v !== '' && (await this.confirmDiscard('Loading an example'))) this.loadExample(Number(v));
-    });
-    this.$('example-buttons').addEventListener('click', (e) => {
+    this.$('menu-examples').addEventListener('click', async (e) => {
       const t = (e.target as Element).closest('[data-example]');
-      if (t) this.loadExample(Number(t.getAttribute('data-example')));
+      if (t && (await this.confirmDiscard('Loading an example'))) this.loadExample(Number(t.getAttribute('data-example')));
+    });
+    this.wireMenus();
+    // start screen: choose an example, then load it (choosing alone loads nothing, so arrow keys can browse the list)
+    const pick = this.$<HTMLSelectElement>('start-example');
+    const loadBtn = this.$<HTMLButtonElement>('start-load');
+    pick.addEventListener('change', () => {
+      loadBtn.disabled = pick.value === '';
+    });
+    const loadPicked = async (): Promise<void> => {
+      if (pick.value === '' || !(await this.confirmDiscard('Loading an example'))) return;
+      const i = Number(pick.value);
+      pick.value = '';
+      loadBtn.disabled = true;
+      this.loadExample(i);
+    };
+    loadBtn.addEventListener('click', () => void loadPicked());
+    pick.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        void loadPicked();
+      }
     });
 
     // drag & drop a file anywhere
+    // Every drag over and drop on the page is taken over, whatever is dragged and wherever it lands:
+    // the browser's own reaction to a dropped file is to navigate to it, away from the app.
     doc.addEventListener('dragover', (e) => {
       e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
       doc.body.classList.add('dropping');
     });
     doc.addEventListener('dragleave', (e) => {
@@ -694,7 +999,8 @@ export class App {
       e.preventDefault();
       doc.body.classList.remove('dropping');
       const f = e.dataTransfer && e.dataTransfer.files[0];
-      if (f && (await this.confirmDiscard('Opening the dropped file'))) void this.loadFile(f);
+      if (!f) this.toast('Nothing was opened: drop a YAML file from this computer.');
+      else if (await this.confirmDiscard('Opening the dropped file')) void this.loadFile(f);
     });
 
     // closing / reloading the tab with unsaved edits
@@ -715,8 +1021,9 @@ export class App {
     this.$('zoom-in').addEventListener('click', () => this.zoomBy(1.25));
     this.$('zoom-out').addEventListener('click', () => this.zoomBy(0.8));
     this.$('zoom-fit').addEventListener('click', () => this.fit());
-    this.$('save-svg').addEventListener('click', () => this.downloadSvg());
-    this.$('btn-arrange').addEventListener('click', () => void this.arrangeDialog());
+    this.$('btn-export-svg').addEventListener('click', () => void this.exportView('svg'));
+    this.$('btn-export-png').addEventListener('click', () => void this.exportView('png'));
+    this.$('btn-arrange').addEventListener('click', () => void this.arrangeCurrentView());
 
     const opt = (id: string, fn: (v: boolean) => void): void => {
       this.$<HTMLInputElement>(id).addEventListener('change', (e) => {
@@ -826,6 +1133,7 @@ export class App {
         results.appendChild(el(doc, 'button', { type: 'button', 'data-goto': hit.ref }, [el(doc, 'span', { class: 'kind' }, [hit.kind]), hit.label]));
       }
       results.hidden = false;
+      this.keepInWindow(results);
     });
     q.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') {
@@ -873,7 +1181,7 @@ export class App {
       } else if (e.key === 'p' || e.key === '1') this.setView('physical');
       else if (e.key === 'l' || e.key === '2') this.setView('logical');
       else if (e.key === 'e') this.showTab('edit');
-      else if (e.key === 'a') void this.arrangeDialog();
+      else if (e.key === 'a') void this.arrangeCurrentView();
       else if (e.key === '+' || e.key === '=') this.zoomBy(1.25);
       else if (e.key === '-') this.zoomBy(0.8);
       else if (e.key === '0' || e.key === 'f') this.fit();
@@ -907,42 +1215,50 @@ export class App {
     }
   }
 
-  /** Explain the scope of Auto-arrange, let the user choose the view(s), then arrange. */
-  async arrangeDialog(): Promise<void> {
+  /**
+   * Auto-arrange the view on screen; the other view is never touched.
+   * Positions that were set by hand are only replaced after a confirmation
+   * that says what will change. A view that already shows the auto-arranged
+   * layout is left alone without asking.
+   */
+  async arrangeCurrentView(): Promise<void> {
     const d = this.mdoc;
     const s = this.session;
     if (!d || !s) return;
     const view = s.state.view;
     const other: View = view === 'physical' ? 'logical' : 'physical';
-    const counts = { physical: d.displayedPositions('physical').size, logical: d.displayedPositions('logical').size };
-    const body: Array<Node | string> = [
-      el(this.doc, 'p', {}, [
-        'Auto-arrange repositions every object of the whole model in the chosen view — including objects that are hidden by filters or outside the visible area. ' +
-          'The layout is deterministic: the same model always gives the same positions, whatever you moved before.',
-      ]),
-      el(this.doc, 'ul', { class: 'arrange-scope' }, [
-        el(this.doc, 'li', {}, [`Physical view: ${counts.physical} devices (group boxes follow their devices) — currently ${statusText(d.layoutStatus('physical'))}`]),
-        el(this.doc, 'li', {}, [`Logical view: ${counts.logical} devices, networks and hubs — currently ${statusText(d.layoutStatus('logical'))}`]),
-      ]),
-      el(this.doc, 'p', { class: 'muted' }, ['The positions are stored in the model’s layout section and exported with the YAML. Undo with Ctrl+Z.']),
-    ];
-    const a = await this.dialog({
-      title: 'Auto-arrange',
-      body,
-      buttons: [
-        { label: 'Cancel', value: 'cancel' },
-        { label: 'Arrange both views', value: 'both' },
-        { label: `Arrange ${view} view only`, value: view, kind: 'primary' },
-      ],
-    });
-    if (a === 'cancel') return;
-    const views: View[] = a === 'both' ? [view, other] : [view];
-    const res = d.arrange(views);
+    const impact = d.arrangeImpact(view);
+    if (impact.manual.length) {
+      const m = s.model;
+      const name = (id: string): string => (m.index.devices.get(id) || m.index.networks.get(id) || { label: id }).label;
+      const shown = impact.manual.slice(0, 6).map(name);
+      const rest = impact.moved.length - impact.manual.length;
+      const n = impact.manual.length;
+      const a = await this.dialog({
+        title: `Replace manual positions in the ${view} view?`,
+        body: [
+          el(this.doc, 'p', {}, [
+            `${n} object${n > 1 ? 's were' : ' was'} positioned by hand in the ${view} view: ${shown.join(', ')}${n > shown.length ? ` and ${n - shown.length} more` : ''}. ` +
+              `Auto-arrange moves ${n > 1 ? 'them' : 'it'} back to the calculated layout` +
+              (rest > 0 ? `, together with ${rest} other object${rest > 1 ? 's' : ''} that no longer match${rest > 1 ? '' : 'es'} it.` : '.'),
+          ]),
+          el(this.doc, 'p', { class: 'muted' }, [`The ${other} view is not changed. You can undo this with Ctrl+Z.`]),
+        ],
+        buttons: [
+          { label: 'Cancel', value: 'cancel' },
+          { label: `Arrange ${view} view`, value: 'arrange', kind: 'primary' },
+        ],
+      });
+      if (a !== 'arrange') return;
+      // the model or the view may have changed while the dialog was open
+      if (this.mdoc !== d || this.session !== s || s.state.view !== view) return;
+    }
+    const res = d.arrange([view]);
     const note = !res.changed
       ? 'Already arranged — nothing moved.'
       : res.moved === 0
         ? 'Positions saved in the model; nothing moved.'
-        : `Auto-arranged: ${res.moved} object${res.moved > 1 ? 's' : ''} moved. Undo with Ctrl+Z.`;
+        : `Auto-arranged the ${view} view: ${res.moved} object${res.moved > 1 ? 's' : ''} moved. Undo with Ctrl+Z.`;
     this.afterEdit(note);
     if (res.moved) this.fit();
   }
@@ -1088,12 +1404,38 @@ export class App {
     tip.style.top = Math.min(y, wrap.height - tip.offsetHeight - 8) + 'px';
   }
 
-  /** Serialize the current diagram as a standalone SVG string (for "Save SVG"). */
+  /**
+   * Serialize the current diagram as a standalone SVG string (Export → "Export current view as SVG").
+   * The legend of the shown view and the overview of the networks relevant
+   * to it are drawn into the file, beside the diagram, and the picture is
+   * enlarged to contain all of it.
+   */
   exportSvg(): string {
+    return this.buildExport().text;
+  }
+
+  /**
+   * The picture of the view on screen as a standalone SVG document, with
+   * its size in diagram units. Its bounds are those of everything drawn
+   * (they include a margin), not of the part that is scrolled or zoomed into
+   * view; the legend and the networks overview are added beside the diagram
+   * and the picture is enlarged to contain them. Both export formats are
+   * made from this one document, so they show the same thing.
+   */
+  private buildExport(): { text: string; width: number; height: number } {
     const clone = this.svg.cloneNode(true) as SVGSVGElement;
-    const b = this.bounds;
+    let b = this.bounds;
     const vp = clone.querySelector('#viewport');
     if (vp) vp.removeAttribute('transform');
+    if (this.session) {
+      const st = this.session.state;
+      // what the picture shows decides what its legend and its networks overview list
+      const scene = this.session.render();
+      const boxes = exportBoxes(this.session.model, st.view, st, { root: scene.root, bounds: b });
+      clone.appendChild(materialize(boxes.legend.root, this.doc, true));
+      clone.appendChild(materialize(boxes.networks.root, this.doc, true));
+      b = boxes.viewBox;
+    }
     clone.setAttribute('viewBox', `${round(b.x)} ${round(b.y)} ${round(b.w)} ${round(b.h)}`);
     clone.setAttribute('width', String(Math.round(b.w)));
     clone.setAttribute('height', String(Math.round(b.h)));
@@ -1104,19 +1446,68 @@ export class App {
     clone.insertBefore(st, clone.firstChild);
     clone.removeAttribute('class');
     clone.setAttribute('class', 'export ' + (this.svg.getAttribute('class') || ''));
-    return new XMLSerializer().serializeToString(clone);
+    return { text: new XMLSerializer().serializeToString(clone), width: Math.round(b.w), height: Math.round(b.h) };
+  }
+
+  /** The view on screen as a PNG: the SVG export, drawn onto the diagram's background colour. */
+  exportPng(): Promise<PngPicture> {
+    const pic = this.buildExport();
+    const win = this.doc.defaultView;
+    const bg = win ? win.getComputedStyle(this.$('canvas-wrap')).backgroundColor : '';
+    return svgToPng(this.doc, pic.text, pic.width, pic.height, bg && bg !== 'rgba(0, 0, 0, 0)' ? bg : '#ffffff');
+  }
+
+  /** Name of an exported picture: the model's file name and the view, e.g. "enterprise-wan-logical.png". */
+  exportName(format: 'png' | 'svg'): string {
+    const view = this.session ? this.session.state.view : 'view';
+    return `${pictureBaseName(this.mdoc ? this.mdoc.fileName : '')}-${view}.${format}`;
+  }
+
+  /**
+   * Export → Export view as… → PNG / SVG: save the view that is selected
+   * (Physical or Logical) as a picture. A failure is reported in a dialog,
+   * with what went wrong and what can be done instead.
+   */
+  async exportView(format: 'png' | 'svg'): Promise<boolean> {
+    if (!this.session || !this.mdoc) return false;
+    const name = this.exportName(format);
+    try {
+      if (format === 'svg') {
+        downloadText(this.doc, this.exportSvg(), name, 'image/svg+xml');
+        this.toast(`Exported “${name}”.`);
+      } else {
+        const png = await this.exportPng();
+        downloadBlob(this.doc, png.blob, name);
+        const reduced = png.scale < 1.999 ? `, drawn at ${Math.round(png.scale * 100)} % because of its size` : '';
+        this.toast(`Exported “${name}” (${png.width} × ${png.height} pixels${reduced}).`);
+      }
+      return true;
+    } catch (e) {
+      const why = e instanceof Error ? e.message : String(e);
+      void this.dialog({
+        title: `Could not export the view as ${format.toUpperCase()}`,
+        body: [
+          el(this.doc, 'p', {}, [`“${name}” was not created: ${why}.`]),
+          el(this.doc, 'p', { class: 'muted' }, [format === 'png' ? 'Nothing was downloaded. Very large diagrams can exceed what a browser can draw as one image; the SVG export has no such limit.' : 'Nothing was downloaded.']),
+        ],
+        buttons: [{ label: 'OK', value: 'ok', kind: 'primary' }],
+      });
+      return false;
+    }
   }
 
   downloadSvg(): void {
-    if (!this.session || !this.mdoc) return;
-    const base = this.mdoc.fileName.replace(/\.[^.]*$/, '') || 'netatlas';
-    downloadText(this.doc, this.exportSvg(), base + '-' + this.session.state.view + '.svg', 'image/svg+xml');
+    void this.exportView('svg');
   }
 }
 
-function statusText(st: 'auto' | 'manual' | 'edited'): string {
-  return st === 'auto' ? '“Auto-arranged”' : st === 'manual' ? '“Manually adjusted”' : '“Edited since arranged”';
-}
+/** What the Auto-arrange button says about the shown view (icon + message, never colour alone). */
+const LAYOUT_STATUS_ICON = { auto: '\u2713', manual: '\u270E', edited: '\u25CF' };
+const LAYOUT_STATUS_MESSAGE = {
+  auto: 'This view matches the auto-arranged layout.',
+  manual: 'This view has manually adjusted positions. Auto-arrange replaces them after a confirmation.',
+  edited: 'This view no longer matches the auto-arranged layout: the model was edited after it was arranged. Auto-arrange will rearrange it.',
+};
 
 function round(v: number): number {
   return Math.round(v * 100) / 100;

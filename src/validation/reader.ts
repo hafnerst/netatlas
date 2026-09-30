@@ -3,7 +3,7 @@
  * a typed reader over the parsed YAML tree that reports problems with the
  * node they concern. validate.ts holds the rules of the format itself.
  */
-import { Attrs } from '../model/types';
+import { Attrs, VLAN_MAX, VLAN_MIN } from '../model/types';
 import { YMap, YNode } from '../yaml/parse';
 
 export interface Issue {
@@ -28,7 +28,6 @@ export interface ModelLimits {
   maxNetworks: number;
   maxRelations: number;
   maxEndpoints: number;
-  maxMembers: number;
   maxProtocols: number;
   maxGroupDepth: number;
   maxAttrs: number;
@@ -46,7 +45,6 @@ export const DEFAULT_MODEL_LIMITS: ModelLimits = {
   maxNetworks: 2000,
   maxRelations: 5000,
   maxEndpoints: 64,
-  maxMembers: 1000,
   maxProtocols: 200,
   maxGroupDepth: 8,
   maxAttrs: 100,
@@ -162,9 +160,13 @@ export class Reader {
     return [];
   }
 
-  keys(m: YMap, allowed: string[], path: string, hint = ''): void {
+  /** Unknown keys are errors; `retired` keys get their own message saying what replaces them. */
+  keys(m: YMap, allowed: string[], path: string, hint = '', retired: { [key: string]: string } = {}): void {
     m.entries.forEach((e, k) => {
-      if (allowed.indexOf(k) < 0) {
+      if (allowed.indexOf(k) >= 0) return;
+      if (Object.prototype.hasOwnProperty.call(retired, k)) {
+        this.c.error(m, path ? path + '.' + k : k, `"${k}" is not part of the format — ${retired[k]}`, { key: k, line: e.keyLine });
+      } else {
         this.c.error(m, path ? path + '.' + k : k, `unknown key "${k}"${suggest(k, allowed, 20)}${hint}`, { key: k, line: e.keyLine });
       }
     });
@@ -208,6 +210,19 @@ export class Reader {
         `invalid ${what} "${v}": use 1–64 characters from A–Z a–z 0–9 _ . -${re === IFACE_RE ? ' /' : ''}, starting with a letter or digit` +
           (v.indexOf(':') >= 0 ? ' (":" is reserved to separate device and interface)' : ''),
       );
+      return undefined;
+    }
+    return v;
+  }
+
+  /** A VLAN ID: a whole number from 1 to 4094. */
+  vlanId(n: YNode | undefined, path: string): number | undefined {
+    if (isNull(n)) return undefined;
+    const node = n as YNode;
+    const t = node.kind === 'scalar' ? (scalarText(node) as string) : '';
+    const v = /^[1-9][0-9]{0,3}$/.test(t) ? Number(t) : 0;
+    if (v < VLAN_MIN || v > VLAN_MAX) {
+      this.c.error(node, path, `${node.kind === 'scalar' ? `"${t}"` : kindOf(node)} is not a VLAN ID: use a whole number from ${VLAN_MIN} to ${VLAN_MAX}`);
       return undefined;
     }
     return v;

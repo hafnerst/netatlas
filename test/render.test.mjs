@@ -85,7 +85,7 @@ test('logical view: GRE nested inside IPsec, OSPF inside GRE (same path, narrowe
   assert.equal(ospf.d, gre.d);
   assert.ok(+gre['stroke-width'] < +ipsec['stroke-width']);
   // label summarises the stack
-  assert.match(scene.textOf(v), /IPsec › GRE › OSPF/);
+  assert.match(scene.textOf(v), /IPsec · IKEv2 site-to-site › GRE › OSPF/);
 });
 
 test('logical view: parallel relations between the same devices get distinct lanes', () => {
@@ -109,8 +109,9 @@ test('logical view: multipoint relations use a hub; networks are nodes with memb
   const hubRel = byRef(v, 'relation:vxlan-10100').find((n) => scene.hasClass(n, 'rel'));
   assert.ok(scene.hasClass(hubRel, 'hub-rel'));
   assert.equal(byClass(hubRel, 'hub').length, 1);
-  assert.equal(byClass(v, 'network').length, 2);
-  assert.ok(byClass(v, 'member').length >= 8);
+  // one IP network; its four members (the leaves) follow from their Vlan100 addresses
+  assert.equal(byClass(v, 'network').length, 1);
+  assert.equal(byClass(v, 'member').length, 4);
   // custom protocol from the file's "protocols" section
   const srv6 = byRef(v, 'relation:srv6-dci').find((n) => scene.hasClass(n, 'rel'));
   assert.ok(scene.hasClass(srv6, 'cat-tunnel'));

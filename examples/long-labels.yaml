@@ -1,0 +1,121 @@
+# netatlas example: long and multi-line labels, nodes of different sizes
+#
+# A test case for diagram sizing and Auto-arrange: device labels with explicit
+# line breaks, a very long label, a long word without spaces, several cables
+# between the same two devices, long cable labels, and several labelled
+# relations between the same pair of devices. Nothing is shortened: every
+# element grows to fit its text, and Auto-arrange leaves room for the labels.
+netatlas: 1
+title: Long labels and mixed node sizes
+
+groups:
+  - id: dc
+    label: Primary data centre Frankfurt am Main, building B, second floor, cage 14 (shared with the storage team)
+    kind: site
+  - id: branch
+    label: Branch
+    kind: site
+
+devices:
+  - id: core-a
+    label: |
+      core-a
+      Core switch A
+      (rack 12, U30-U34)
+    type: switch
+    group: dc
+    tier: 3
+    interfaces:
+      - {id: Hu1/0/49}
+      - {id: Hu1/0/50}
+      - {id: Hu1/0/51}
+      - {id: TwentyFiveGigE1/0/1}
+      - {id: TwentyFiveGigE1/0/2}
+    logical_interfaces:
+      - {id: lo0, type: loopback, ip: [10.255.0.1/32, 2001:db8:ffff::1/128]}
+  - id: core-b
+    label: |-
+      core-b
+      Core switch B
+    type: switch
+    group: dc
+    tier: 3
+    interfaces:
+      - {id: Hu1/0/49}
+      - {id: Hu1/0/50}
+      - {id: Hu1/0/51}
+      - {id: TwentyFiveGigE1/0/1}
+    logical_interfaces:
+      - {id: lo0, type: loopback, ip: 10.255.0.2/32}
+  - id: fw
+    label: Perimeter firewall cluster for the production and the pre-production environment (active/passive)
+    type: firewall
+    group: dc
+    interfaces:
+      - {id: ethernet1/1, ip: 10.10.0.1/24}
+      - {id: ethernet1/2}
+    logical_interfaces:
+      - {id: tunnel.10, type: tunnel, source: ethernet1/1, destination: br-rtr:GigabitEthernet0/0/0}
+      - {id: tunnel.20, type: tunnel, source: ethernet1/1}
+  - id: srv
+    label: s
+    type: server
+    group: dc
+    interfaces:
+      - {id: eno1, ip: 10.10.0.20/24}
+  - id: storage
+    label: netapp-aff-a400-cluster01-node01.storage.infrastructure.example.internal
+    type: storage
+    group: dc
+    interfaces:
+      - {id: e0a, ip: 10.10.0.30/24}
+  - id: br-rtr
+    label: Branch router
+    type: router
+    group: branch
+    interfaces:
+      - {id: GigabitEthernet0/0/0}
+    logical_interfaces:
+      - {id: Tunnel10, type: tunnel, source: GigabitEthernet0/0/0, destination: fw:ethernet1/1}
+      - {id: Tunnel20, type: tunnel, source: GigabitEthernet0/0/0}
+
+links:
+  # three parallel cables between the two core switches
+  - {id: peer-1, a: "core-a:Hu1/0/49", b: "core-b:Hu1/0/49", medium: dac, speed: 100G, label: peer link 1}
+  - {id: peer-2, a: "core-a:Hu1/0/50", b: "core-b:Hu1/0/50", medium: dac, speed: 100G, label: peer link 2}
+  - {id: peer-3, a: "core-a:Hu1/0/51", b: "core-b:Hu1/0/51", medium: fiber, speed: 100G, label: keepalive}
+  - {id: fw-a, a: "fw:ethernet1/1", b: "core-a:TwentyFiveGigE1/0/1", medium: fiber, speed: 25G}
+  - {id: fw-b, a: "fw:ethernet1/2", b: "core-b:TwentyFiveGigE1/0/1", medium: fiber, speed: 25G}
+  - id: srv-a
+    a: {device: core-a, interface: TwentyFiveGigE1/0/2, vlans: [10, 20, 30, 40, 50, 60, 70, 80]}
+    b: {device: srv, interface: eno1, vlans: [10, 20, 30, 40, 50, 60, 70, 80]}
+    medium: dac
+    speed: 25G
+    label: hypervisor uplink, all tenant VLANs
+  - {id: sto-b, a: core-b, b: "storage:e0a", medium: fiber, speed: 25G, label: iSCSI}
+  - id: wan
+    a: fw
+    b: br-rtr:GigabitEthernet0/0/0
+    medium: fiber
+    speed: 1G
+    label: "carrier ethernet, circuit CID-2024-000173"
+    cable: CID-2024-000173
+
+networks:
+  - id: servers
+    label: Server network (production)
+    cidr: [10.10.0.0/24, "2001:db8:10::/64", "2001:db8:11::/64"]
+    vlan: 10
+
+relations:
+  # four labelled relations between the same two devices, two of them nested
+  - {id: ipsec-br, protocol: ipsec, label: IKEv2 site-to-site with certificate authentication, endpoints: [fw, br-rtr], over: wan}
+  - {id: gre-br, protocol: gre, label: primary, endpoints: ["fw:tunnel.10", "br-rtr:Tunnel10"], over: ipsec-br}
+  - {id: ospf-br, protocol: ospf, label: area 0.0.0.10, endpoints: ["fw:tunnel.10", "br-rtr:Tunnel10"], over: gre-br}
+  - {id: bgp-br, protocol: ebgp, label: AS 65010 ↔ AS 65020, endpoints: [fw, br-rtr]}
+  - {id: bfd-br, protocol: bfd, label: 300 ms × 3, endpoints: [fw, br-rtr]}
+  - {id: syslog-br, protocol: syslog, directed: true, label: audit log, endpoints: [br-rtr, fw]}
+  # relations between the core switches
+  - {id: mlag-core, protocol: mlag, label: domain 1, endpoints: [core-a, core-b], over: [peer-1, peer-2]}
+  - {id: ibgp-core, protocol: ibgp, endpoints: ["core-a:lo0", "core-b:lo0"]}
+  - {id: ospf-core, protocol: ospf, label: backbone, endpoints: [core-a, core-b, fw]}

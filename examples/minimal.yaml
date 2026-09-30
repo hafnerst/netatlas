@@ -7,25 +7,22 @@ devices:
   - id: r1
     type: router
     interfaces:
-      - id: eth0
-        speed: 1G
-        ip: 192.0.2.1/30
-      - id: tun0
-        type: tunnel
+      - {id: eth0, ip: 192.0.2.1/30}
+    logical_interfaces:
+      - {id: tun0, type: tunnel, source: eth0, destination: r2:eth0}
   - id: r2
     type: router
     interfaces:
-      - id: eth0
-        speed: 1G
-        ip: 192.0.2.2/30
-      - id: tun0
-        type: tunnel
+      - {id: eth0, ip: 192.0.2.2/30}
+    logical_interfaces:
+      - {id: tun0, type: tunnel, source: eth0, destination: r1:eth0}
 
 links:
   - id: cable-1
     a: r1:eth0
     b: r2:eth0
     medium: copper
+    speed: 1G
 
 relations:
   - id: gre-1

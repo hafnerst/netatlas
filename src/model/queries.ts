@@ -3,7 +3,8 @@
  * "what belongs to this object" (used for highlighting) and text search.
  * No layout, rendering or YAML knowledge.
  */
-import { Model, relationDevices } from './types';
+import { associatedInterfaces, deviceNetworks, interfaceNetworks, networkMembers } from './derive';
+import { Model, deviceInterfaces, ifaceKey, relationDevices } from './types';
 
 export function splitRef(ref: string): [string, string] {
   const i = ref.indexOf(':');
@@ -104,23 +105,36 @@ export function relatedRefs(model: Model, ref: string): Set<string> {
           g = g.parent ? ix.groups.get(g.parent) : undefined;
         }
       }
-      for (const i of dv.interfaces) out.add(`iface:${id}:${i.id}`);
+      for (const i of deviceInterfaces(dv)) out.add(`iface:${id}:${i.id}`);
       for (const l of model.links) if (l.a.device === id || l.b.device === id) addLink(l.id);
       for (const r of model.relations) if (r.endpoints.some((e) => e.device === id)) addRelation(r.id, false);
-      for (const n of model.networks) if (n.members.some((m) => m.device === id)) out.add('network:' + n.id);
+      for (const n of deviceNetworks(model, id)) out.add('network:' + n);
       break;
     }
     case 'iface': {
       const inf = ix.interfaces.get(id);
       if (!inf) break;
       addDevice(inf.device);
+      // what the interface is associated with on its device: member ports, ports carrying its VLAN, a tunnel's
+      // source (and, from the other side, the aggregates, VLAN interfaces and tunnels that use this interface)
+      for (const other of associatedInterfaces(model, inf)) {
+        out.add(`iface:${inf.device}:${other}`);
+        // a logical interface shows the cables of the ports it uses
+        const plid = inf.type === 'physical' ? undefined : ix.ifaceLink.get(ifaceKey(inf.device, other));
+        if (plid) addLink(plid);
+      }
+      // a tunnel's destination, when it is part of the model
+      if (inf.destination && inf.destination.device) {
+        addDevice(inf.destination.device);
+        if (inf.destination.iface) out.add(`iface:${inf.destination.device}:${inf.destination.iface}`);
+      }
       const lid = ix.ifaceLink.get(id);
       if (lid) {
         addLink(lid);
         for (const r of carriedOver(lid)) addRelation(r, false);
       }
       for (const r of model.relations) if (r.endpoints.some((e) => e.device === inf.device && e.iface === inf.id)) addRelation(r.id, true);
-      for (const n of model.networks) if (n.members.some((m) => m.device === inf.device && m.iface === inf.id)) out.add('network:' + n.id);
+      for (const n of interfaceNetworks(model, inf.device, inf.id)) out.add('network:' + n);
       break;
     }
     case 'link':
@@ -138,9 +152,9 @@ export function relatedRefs(model: Model, ref: string): Set<string> {
     case 'network': {
       const n = ix.networks.get(id);
       if (!n) break;
-      for (const m of n.members) {
+      for (const m of networkMembers(model, id)) {
         addDevice(m.device);
-        if (m.iface) out.add(`iface:${m.device}:${m.iface}`);
+        for (const x of m.matches) out.add(`iface:${x.device}:${x.iface}`);
       }
       for (const r of model.relations) if (r.network === id) addRelation(r.id, false);
       for (const r of carriedOver(id)) addRelation(r, false);
@@ -158,7 +172,7 @@ export function relatedRefs(model: Model, ref: string): Set<string> {
       for (const g of model.groups) if (inGroup(g.id)) out.add('group:' + g.id);
       for (const d of model.devices) if (inGroup(d.group)) {
         addDevice(d.id);
-        for (const i of d.interfaces) out.add(`iface:${d.id}:${i.id}`);
+        for (const i of deviceInterfaces(d)) out.add(`iface:${d.id}:${i.id}`);
       }
       for (const l of model.links) if (out.has('device:' + l.a.device) && out.has('device:' + l.b.device)) addLink(l.id);
       // the enclosing groups, as for a device
@@ -200,10 +214,10 @@ export function search(model: Model, query: string, limit = 12): SearchHit[] {
   };
   for (const d of model.devices) {
     const addrs: string[] = [];
-    for (const i of d.interfaces) addrs.push(...i.addresses);
-    consider('device:' + d.id, 'device', d.label, [d.id, d.label, d.type, d.model || '', d.mgmt || '', ...addrs]);
+    for (const i of deviceInterfaces(d)) addrs.push(...i.addresses);
+    consider('device:' + d.id, 'device', d.label, [d.id, d.label, d.type, ...addrs]);
   }
-  for (const n of model.networks) consider('network:' + n.id, 'network', n.label, [n.id, n.label, n.kind, n.vlan || '', ...n.cidr]);
+  for (const n of model.networks) consider('network:' + n.id, 'network', n.label, [n.id, n.label, n.vlan !== undefined ? 'vlan ' + n.vlan : '', ...n.cidr]);
   for (const r of model.relations) consider('relation:' + r.id, r.protocol, r.label || r.id, [r.id, r.protocol, r.label || '']);
   for (const l of model.links) consider('link:' + l.id, 'link', l.label || l.id, [l.id, l.label || '', l.cable || '']);
   for (const g of model.groups) consider('group:' + g.id, g.kind || 'group', g.label, [g.id, g.label]);
@@ -218,7 +232,7 @@ export function search(model: Model, query: string, limit = 12): SearchHit[] {
  *
  * Direct means one reference in the model, in either direction:
  * * device   — its own group (not the enclosing ones), links with an end on it,
- *              networks with it or one of its interfaces as a member, relations
+ *              networks that contain one of its addresses (derived membership), relations
  *              with it or one of its interfaces as an endpoint;
  * * link     — its two end devices, relations carried directly over it (`over`);
  * * network  — its member devices, relations whose `network` is it or that
@@ -231,8 +245,11 @@ export function search(model: Model, query: string, limit = 12): SearchHit[] {
  * * group    — its parent group, its child groups, devices placed directly in it;
  * * protocol — relations using exactly that protocol id.
  * An interface (a port selected in the diagram) selects its device, and its
- * context is that of the port: the link cabled to it, networks and relations
- * that name exactly that interface.
+ * context is that of the port: the link cabled to it, networks containing one
+ * of its addresses, and relations that name exactly that interface. A
+ * logical interface additionally has the links cabled to the ports it uses
+ * (member ports, ports carrying its VLAN, a tunnel's source) and the device
+ * a tunnel's destination names.
  * The relation is symmetric for entities, and a subset of relatedRefs(), which
  * the diagram additionally extends along underlay paths and nested groups.
  */
@@ -264,7 +281,7 @@ export function selectionContext(model: Model, ref: string): SelectionContext | 
       if (!d) break;
       add('group', d.group);
       for (const l of model.links) if (l.a.device === id || l.b.device === id) add('link', l.id);
-      for (const n of model.networks) if (n.members.some((m) => m.device === id)) add('network', n.id);
+      for (const n of deviceNetworks(model, id)) add('network', n);
       for (const r of model.relations) if (r.endpoints.some((e) => e.device === id)) add('relation', r.id);
       break;
     }
@@ -273,7 +290,10 @@ export function selectionContext(model: Model, ref: string): SelectionContext | 
       if (!inf) break;
       selected = 'device:' + inf.device;
       add('link', ix.ifaceLink.get(id));
-      for (const n of model.networks) if (n.members.some((m) => m.device === inf.device && m.iface === inf.id)) add('network', n.id);
+      // a logical interface: the cables of its member ports, of the ports carrying its VLAN, of its tunnel source
+      if (inf.type !== 'physical') for (const other of associatedInterfaces(model, inf)) add('link', ix.ifaceLink.get(ifaceKey(inf.device, other)));
+      if (inf.destination && inf.destination.device && inf.destination.device !== inf.device) add('device', inf.destination.device);
+      for (const n of interfaceNetworks(model, inf.device, inf.id)) add('network', n);
       for (const r of model.relations) if (r.endpoints.some((e) => e.device === inf.device && e.iface === inf.id)) add('relation', r.id);
       break;
     }
@@ -288,7 +308,7 @@ export function selectionContext(model: Model, ref: string): SelectionContext | 
     case 'network': {
       const n = ix.networks.get(id);
       if (!n) break;
-      for (const m of n.members) add('device', m.device);
+      for (const m of networkMembers(model, id)) add('device', m.device);
       for (const r of model.relations) if (r.network === id || r.over.indexOf(id) >= 0) add('relation', r.id);
       break;
     }

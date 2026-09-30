@@ -7,9 +7,9 @@ devices:
   - id: r1
     type: router
     interfaces:
-      - {id: eth0, speed: 1G}
+      - {id: eth0}
       - {id: eth1}
-      - {id: tun0, type: tunnel}
+    logical_interfaces: [{id: tun0, type: tunnel, source: eth1}]
   - id: r2
     interfaces: [eth0, eth1]
 `;
@@ -72,15 +72,17 @@ test('unknown device / interface references are reported with suggestions', () =
 
 test('physical rules: one cable per port, logical interfaces cannot be cabled', () => {
   expectError(base + 'links:\n  - {id: l1, a: "r1:eth0", b: "r2:eth0"}\n  - {id: l2, a: "r1:eth0", b: "r2:eth1"}\n', /already cabled by link "l1"/, 13);
-  expectError(base + 'links:\n  - {id: l1, a: "r1:tun0", b: "r2:eth0"}\n', /type "tunnel", which is logical/);
+  expectError(base + 'links:\n  - {id: l1, a: "r1:tun0", b: "r2:eth0"}\n', /"r1:tun0" is a tunnel interface, not a physical interface — a physical link must end on a physical interface\. Its source is "eth1"/);
   expectError(base + 'links:\n  - {id: l1, a: "r1:eth0", b: "r1:eth0"}\n', /already cabled|to itself/);
 });
 
-test('speed mismatch is a warning, not an error', () => {
-  const r = validate.loadModel(base.replace('interfaces: [eth0, eth1]', 'interfaces: [{id: eth0, speed: 10G}]') + 'links:\n  - {id: l1, a: "r1:eth0", b: "r2:eth0"}\n');
-  assert.equal(r.errors.length, 0);
-  assert.match(r.warnings[0].message, /speed mismatch/);
-  assert.equal(r.model.links[0].speed, '1G');
+test('speed and medium are configured on the link and nowhere else', () => {
+  const r = validate.loadModel(base + 'links:\n  - {id: l1, a: "r1:eth0", b: "r2:eth0", medium: Fiber, speed: 10G}\n  - {id: l2, a: "r1:eth1", b: "r2:eth1"}\n');
+  assert.deepEqual(r.errors, []);
+  assert.deepEqual(r.warnings, []);
+  assert.deepEqual(r.model.links.map((l) => [l.medium, l.speed]), [['fiber', '10G'], ['unspecified', undefined]]);
+  // nothing on an interface can supply them
+  for (const i of r.model.index.interfaces.values()) assert.ok(!('speed' in i) && !('media' in i) && !('vlan' in i));
 });
 
 test('relations: endpoints, over references and cycles', () => {
@@ -160,10 +162,17 @@ test('the broken demo file reports every problem with line numbers', async () =>
   const summary = errs.map((e) => `${e.line}: ${e.message}`);
   const expected = [
     [9, /unknown key "typ" — did you mean "type"/],
-    [17, /device "r1" has no interface "eth1" — did you mean "eth0"/],
-    [18, /type "tunnel", which is logical/],
-    [23, /unknown category "tunel" — did you mean "tunnel"/],
-    [25, /unknown link, relation or network "l3" — did you mean "l1"/],
+    [10, /"vendor" is not part of the format/],
+    [11, /"loopbacks" is not part of the format — loopbacks are logical interfaces/],
+    [15, /"children" is not part of the format — interfaces are not nested/],
+    [18, /tunnel source "eth7" is neither an IP address nor an interface of "r1" — did you mean "eth0"/],
+    [19, /"tun0" is a tunnel interface: the members of an aggregate are physical interfaces of the same device/],
+    [20, /loopback "lo0" needs at least one IPv4 or IPv6 address/],
+    [21, /"subinterface" is not a logical interface type: use "loopback", "virtual" or "tunnel"/],
+    [26, /device "r1" has no interface "eth1" — did you mean "eth0"/],
+    [27, /"r1:tun0" is a tunnel interface, not a physical interface/],
+    [32, /unknown category "tunel" — did you mean "tunnel"/],
+    [34, /unknown link, relation or network "l3" — did you mean "l1"/],
   ];
   for (const [line, re] of expected) assert.ok(errs.some((e) => e.line === line && re.test(e.message)), `${line} ${re}\n${summary.join('\n')}`);
   assert.equal(errs.length, expected.length, summary.join('\n'));

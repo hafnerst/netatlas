@@ -54,108 +54,101 @@ devices:
     group: providers
     attrs: {asn: 3320}
     interfaces:
-      - {id: xe-1/0/0, speed: 10G, media: fiber}
-      - {id: xe-1/0/1, speed: 1G, media: fiber}
+      - {id: xe-1/0/0}
+      - {id: xe-1/0/1}
   - id: isp2-pe
     label: ISP-2 PE
     type: router
     group: providers
     attrs: {asn: 1299}
     interfaces:
-      - {id: xe-2/0/0, speed: 10G, media: fiber}
-      - {id: xe-2/0/7, speed: 1G, media: fiber}
+      - {id: xe-2/0/0}
+      - {id: xe-2/0/7}
 
   - id: hq-rtr1
     label: hq-rtr1
     type: router
-    vendor: Juniper
-    model: MX204
     group: hq-edge
-    mgmt: 10.99.0.11
     interfaces:
-      - {id: ge-0/0/0, speed: 1G, media: fiber, ip: 198.51.100.2/30, description: ISP-1 uplink}
-      - {id: ge-0/0/1, speed: 1G, media: copper, ip: 10.0.0.2/28}
-      - {id: st0.10, type: tunnel, ip: 172.16.10.1/30, description: GRE to Munich}
+      - {id: ge-0/0/0, ip: 198.51.100.2/30, description: ISP-1 uplink}
+      - {id: ge-0/0/1, ip: 10.0.0.2/28}
+    logical_interfaces:
       - {id: lo0, type: loopback, ip: 10.255.0.1/32}
+      - {id: st0.10, type: tunnel, ip: 172.16.10.1/30, source: ge-0/0/0, destination: 192.0.2.10, description: GRE to Munich}
   - id: hq-rtr2
     label: hq-rtr2
     type: router
-    vendor: Juniper
-    model: MX204
     group: hq-edge
-    mgmt: 10.99.0.12
     interfaces:
-      - {id: ge-0/0/0, speed: 1G, media: fiber, ip: 203.0.113.2/30, description: ISP-2 uplink}
-      - {id: ge-0/0/1, speed: 1G, media: copper, ip: 10.0.0.3/28}
-      - {id: st0.11, type: tunnel, ip: 172.16.11.1/30, description: GRE to Hamburg}
-      - {id: wg0, type: tunnel, ip: 172.16.99.1/30}
+      - {id: ge-0/0/0, ip: 203.0.113.2/30, description: ISP-2 uplink}
+      - {id: ge-0/0/1, ip: 10.0.0.3/28}
+    logical_interfaces:
       - {id: lo0, type: loopback, ip: 10.255.0.2/32}
+      - {id: st0.11, type: tunnel, ip: 172.16.11.1/30, source: ge-0/0/0, destination: 192.0.2.34, description: GRE to Hamburg}
+      - {id: wg0, type: tunnel, ip: 172.16.99.1/30, source: ge-0/0/0, destination: ham-rtr:wan1}
   - id: hq-fw
     label: hq-fw
     type: firewall
-    vendor: Palo Alto
-    model: PA-3410
     group: hq-edge
     interfaces:
-      - {id: eth1, speed: 1G, ip: 10.0.0.1/28}
-      - {id: eth2, speed: 1G}
-      - {id: eth3, speed: 10G, media: fiber}
-      - {id: eth4, speed: 10G, media: fiber}
+      - {id: eth1, ip: 10.0.0.1/28}
+      - {id: eth2}
+      - {id: eth3}
+      - {id: eth4}
   - id: hq-core1
     label: hq-core1
     type: switch
-    vendor: Arista
-    model: 7050X3
     group: hq-core
     tier: 3
     interfaces:
-      - {id: Ethernet49, speed: 10G, media: fiber}
-      - {id: Ethernet51, speed: 100G, media: dac}
-      - {id: Ethernet52, speed: 100G, media: dac}
-      - {id: Ethernet1, speed: 10G, media: fiber}
-      - {id: Port-Channel1, type: lag}
-      - {id: Vlan10, type: svi, ip: 10.10.10.2/24}
-      - {id: Vlan20, type: svi, ip: 10.10.20.2/24}
+      - {id: Ethernet49}
+      - {id: Ethernet51}
+      - {id: Ethernet52}
+      - {id: Ethernet1}
+    logical_interfaces:
+      - {id: Port-Channel1, type: virtual, members: [Ethernet51, Ethernet52]}
+      - {id: Vlan10, type: virtual, ip: 10.10.10.2/24}
+      - {id: Vlan20, type: virtual, ip: 10.10.20.2/24}
   - id: hq-core2
     label: hq-core2
     type: switch
-    vendor: Arista
-    model: 7050X3
     group: hq-core
     tier: 3
     interfaces:
-      - {id: Ethernet49, speed: 10G, media: fiber}
-      - {id: Ethernet51, speed: 100G, media: dac}
-      - {id: Ethernet52, speed: 100G, media: dac}
-      - {id: Ethernet1, speed: 10G, media: fiber}
-      - {id: Port-Channel1, type: lag}
-      - {id: Vlan10, type: svi, ip: 10.10.10.3/24}
-      - {id: Vlan20, type: svi, ip: 10.10.20.3/24}
+      - {id: Ethernet49}
+      - {id: Ethernet51}
+      - {id: Ethernet52}
+      - {id: Ethernet1}
+    logical_interfaces:
+      - {id: Port-Channel1, type: virtual, members: [Ethernet51, Ethernet52]}
+      - {id: Vlan10, type: virtual, ip: 10.10.10.3/24}
+      - {id: Vlan20, type: virtual, ip: 10.10.20.3/24}
   - id: hq-acc1
     label: hq-acc1
     type: switch
-    model: Catalyst 9300
     group: hq-core
     interfaces:
-      - {id: Gi1/0/49, speed: 10G, media: fiber}
-      - {id: Gi1/0/50, speed: 10G, media: fiber}
-      - {id: Gi1/0/1, speed: 1G, media: copper}
+      - {id: Gi1/0/49}
+      - {id: Gi1/0/50}
+      - {id: Gi1/0/1}
+    logical_interfaces:
+      - {id: Vlan10, type: virtual, ip: 10.10.10.4/24, description: Switch management}
   - id: hq-log
     label: hq-log (syslog)
     type: server
     group: hq-core
     interfaces:
-      - {id: eno1, speed: 1G, media: copper, ip: 10.10.20.50/24}
+      - {id: eno1, ip: 10.10.20.50/24}
 
   - id: muc-rtr
     label: muc-rtr
     type: router
-    model: ISR 1100
     group: branch-muc
     interfaces:
-      - {id: wan0, speed: 250M, media: copper, ip: 192.0.2.10/29, description: VDSL}
-      - {id: lan0, speed: 1G, media: copper, ip: 10.20.0.1/24}
-      - {id: Tunnel10, type: tunnel, ip: 172.16.10.2/30}
+      - {id: wan0, ip: 192.0.2.10/29, description: VDSL}
+      - {id: lan0, ip: 10.20.0.1/24}
+    logical_interfaces:
+      - {id: Tunnel10, type: tunnel, ip: 172.16.10.2/30, source: wan0, destination: 198.51.100.2}
   - id: muc-sw
     label: muc-sw
     type: switch
@@ -166,19 +159,19 @@ devices:
     type: ap
     group: branch-muc
     interfaces:
-      - {id: eth0, speed: 1G, media: copper}
+      - {id: eth0, ip: 10.20.0.10/24}
 
   - id: ham-rtr
     label: ham-rtr
     type: router
-    model: ISR 1100
     group: branch-ham
     interfaces:
-      - {id: wan0, speed: 1G, media: fiber, ip: 192.0.2.34/29}
-      - {id: wan1, speed: 150M, media: lte, description: LTE backup modem}
-      - {id: lan0, speed: 1G, media: copper, ip: 10.30.0.1/24}
-      - {id: Tunnel11, type: tunnel, ip: 172.16.11.2/30}
-      - {id: wg0, type: tunnel, ip: 172.16.99.2/30}
+      - {id: wan0, ip: 192.0.2.34/29}
+      - {id: wan1, description: LTE backup modem}
+      - {id: lan0, ip: 10.30.0.1/24}
+    logical_interfaces:
+      - {id: Tunnel11, type: tunnel, ip: 172.16.11.2/30, source: wan0, destination: 203.0.113.2}
+      - {id: wg0, type: tunnel, ip: 172.16.99.2/30, source: wan1, destination: 203.0.113.2}
   - id: ham-sw
     label: ham-sw
     type: switch
@@ -187,57 +180,71 @@ devices:
 
 links:
   # provider side
-  - {id: l-isp1-inet, a: "isp1-pe:xe-1/0/0", b: inet, label: AS3320 transit}
-  - {id: l-isp2-inet, a: "isp2-pe:xe-2/0/0", b: inet, label: AS1299 transit}
-  - {id: l-hq-isp1, a: "hq-rtr1:ge-0/0/0", b: "isp1-pe:xe-1/0/1", cable: CID-4711}
-  - {id: l-hq-isp2, a: "hq-rtr2:ge-0/0/0", b: "isp2-pe:xe-2/0/7", cable: CID-0815}
-  - {id: l-muc-inet, a: "muc-rtr:wan0", b: inet, label: VDSL 250M}
-  - {id: l-ham-inet, a: "ham-rtr:wan0", b: inet, label: FTTH}
-  - {id: l-ham-lte, a: "ham-rtr:wan1", b: inet, medium: lte, label: LTE backup}
-  # HQ
-  - {id: l-rtr1-fw, a: "hq-rtr1:ge-0/0/1", b: "hq-fw:eth1"}
-  - {id: l-rtr2-fw, a: "hq-rtr2:ge-0/0/1", b: "hq-fw:eth2"}
-  - {id: l-fw-core1, a: "hq-fw:eth3", b: "hq-core1:Ethernet49"}
-  - {id: l-fw-core2, a: "hq-fw:eth4", b: "hq-core2:Ethernet49"}
-  - {id: l-peer1, a: "hq-core1:Ethernet51", b: "hq-core2:Ethernet51", cable: DAC 1m}
-  - {id: l-peer2, a: "hq-core1:Ethernet52", b: "hq-core2:Ethernet52", cable: DAC 1m}
-  - {id: l-core1-acc, a: "hq-core1:Ethernet1", b: "hq-acc1:Gi1/0/49"}
-  - {id: l-core2-acc, a: "hq-core2:Ethernet1", b: "hq-acc1:Gi1/0/50"}
-  - {id: l-acc-log, a: "hq-acc1:Gi1/0/1", b: "hq-log:eno1"}
+  - {id: l-isp1-inet, a: "isp1-pe:xe-1/0/0", b: inet, medium: fiber, speed: 10G, label: AS3320 transit}
+  - {id: l-isp2-inet, a: "isp2-pe:xe-2/0/0", b: inet, medium: fiber, speed: 10G, label: AS1299 transit}
+  - {id: l-hq-isp1, a: "hq-rtr1:ge-0/0/0", b: "isp1-pe:xe-1/0/1", medium: fiber, speed: 1G, cable: CID-4711}
+  - {id: l-hq-isp2, a: "hq-rtr2:ge-0/0/0", b: "isp2-pe:xe-2/0/7", medium: fiber, speed: 1G, cable: CID-0815}
+  - {id: l-muc-inet, a: "muc-rtr:wan0", b: inet, medium: copper, speed: 250M, label: VDSL 250M}
+  - {id: l-ham-inet, a: "ham-rtr:wan0", b: inet, medium: fiber, speed: 1G, label: FTTH}
+  - {id: l-ham-lte, a: "ham-rtr:wan1", b: inet, medium: lte, speed: 150M, label: LTE backup}
+  # HQ (the core/access cables are trunks: each end lists the VLANs it permits)
+  - {id: l-rtr1-fw, a: "hq-rtr1:ge-0/0/1", b: "hq-fw:eth1", medium: copper, speed: 1G}
+  - {id: l-rtr2-fw, a: "hq-rtr2:ge-0/0/1", b: "hq-fw:eth2", medium: copper, speed: 1G}
+  - {id: l-fw-core1, a: "hq-fw:eth3", b: "hq-core1:Ethernet49", medium: fiber, speed: 10G}
+  - {id: l-fw-core2, a: "hq-fw:eth4", b: "hq-core2:Ethernet49", medium: fiber, speed: 10G}
+  - id: l-peer1
+    a: {device: hq-core1, interface: Ethernet51, vlans: [10, 20]}
+    b: {device: hq-core2, interface: Ethernet51, vlans: [10, 20]}
+    medium: dac
+    speed: 100G
+    cable: DAC 1m
+  - id: l-peer2
+    a: {device: hq-core1, interface: Ethernet52, vlans: [10, 20]}
+    b: {device: hq-core2, interface: Ethernet52, vlans: [10, 20]}
+    medium: dac
+    speed: 100G
+    cable: DAC 1m
+  - id: l-core1-acc
+    a: {device: hq-core1, interface: Ethernet1, vlans: [10, 20]}
+    b: {device: hq-acc1, interface: Gi1/0/49, vlans: [10, 20]}
+    medium: fiber
+    speed: 10G
+  - id: l-core2-acc
+    a: {device: hq-core2, interface: Ethernet1, vlans: [10, 20]}
+    b: {device: hq-acc1, interface: Gi1/0/50, vlans: [10, 20]}
+    medium: fiber
+    speed: 10G
+  - id: l-acc-log
+    a: {device: hq-acc1, interface: Gi1/0/1, vlans: [20]}
+    b: {device: hq-log, interface: eno1, vlans: [20]}
+    medium: copper
+    speed: 1G
   # branches
-  - {id: l-muc-sw, a: "muc-rtr:lan0", b: "muc-sw:gi1"}
+  - {id: l-muc-sw, a: "muc-rtr:lan0", b: "muc-sw:gi1", medium: copper, speed: 1G}
   - {id: l-muc-ap, a: "muc-sw:gi8", b: "muc-ap:eth0", medium: copper, speed: 1G, label: PoE+}
-  - {id: l-ham-sw, a: "ham-rtr:lan0", b: "ham-sw:gi1", medium: copper}
+  - {id: l-ham-sw, a: "ham-rtr:lan0", b: "ham-sw:gi1", medium: copper, speed: 1G}
 
 networks:
+  # IP networks. Members are not listed: every device with an interface or
+  # loopback address inside "cidr" is a member. "vlan" is the VLAN the subnet
+  # lives in; interfaces with an address in it show that VLAN.
   - id: net-transit
     label: HQ transit
-    kind: subnet
     cidr: 10.0.0.0/28
-    members: ["hq-rtr1:ge-0/0/1", "hq-rtr2:ge-0/0/1", "hq-fw:eth1"]
   - id: net-users
     label: Users
-    kind: vlan
-    vlan: 10
     cidr: 10.10.10.0/24
-    members:
-      - {device: hq-core1, interface: Vlan10}
-      - {device: hq-core2, interface: Vlan10}
-      - hq-acc1
+    vlan: 10
   - id: net-servers
     label: Servers
-    kind: vlan
-    vlan: 20
     cidr: 10.10.20.0/24
-    members: ["hq-core1:Vlan20", "hq-core2:Vlan20", "hq-log:eno1"]
+    vlan: 20
   - id: net-muc-lan
     label: Munich LAN
     cidr: 10.20.0.0/24
-    members: ["muc-rtr:lan0", muc-ap]
   - id: net-ham-lan
     label: Hamburg LAN
     cidr: 10.30.0.0/24
-    members: ["ham-rtr:lan0"]
 
 relations:
   # --- Munich: IPsec carries GRE carries OSPF -----------------------------
