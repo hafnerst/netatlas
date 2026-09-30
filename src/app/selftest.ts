@@ -203,6 +203,27 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     check('undo reverts the drag (and the stored positions)', !(app.mdoc as ModelDoc).hasStoredLayout('physical'));
     check('status after undo: back to "Auto-arranged"', status('physical') === 'auto' && status('logical') === 'auto');
     check('… and the button shows the check mark and "matches the auto-arranged layout" (icon, hover text, description)', shows('physical', 'auto') && doc.defaultView!.getComputedStyle(q('#btn-arrange')!).borderTopStyle === 'solid', JSON.stringify(shown()));
+    {
+      const panelShown = (): boolean => {
+        const o = q('#outline') as HTMLElement;
+        const r = o.getBoundingClientRect();
+        const cs = doc.defaultView!.getComputedStyle(o);
+        const c = (q('#canvas-wrap') as HTMLElement).getBoundingClientRect();
+        // visible, with content, and beside the diagram (not on top of it)
+        return cs.display !== 'none' && cs.visibility === 'visible' && r.width >= 150 && r.height > 200 && o.querySelectorAll('.ol-item').length > 10 && (r.right <= c.left + 1 || r.top >= c.bottom - 1);
+      };
+      const noToggle = !q('#btn-outline') && !Array.prototype.some.call(doc.querySelectorAll('header.topbar button'), (b: Element) => /Model/.test(b.textContent || '')) && !doc.body.classList.contains('no-outline');
+      const a = panelShown();
+      app.select('device:hq-fw');
+      const b = panelShown();
+      click('[data-view-btn="logical"]');
+      const c = panelShown();
+      app.select('relation:gre-muc');
+      const d2 = panelShown();
+      click('[data-view-btn="physical"]');
+      app.select(null);
+      check('there is no Model toggle button; the model panel is always visible (while selecting objects and switching views) and never covers the diagram', noToggle && a && b && c && d2 && panelShown(), JSON.stringify([noToggle, a, b, c, d2]));
+    }
     doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'l', bubbles: true }));
     check('keyboard shortcut L switches to the logical view', doc.body.getAttribute('data-view') === 'logical');
     check('switching views: the button shows the status of the view on screen', shows('logical', 'auto'), JSON.stringify(shown()));
@@ -217,6 +238,68 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     check('custom protocol MACsec rendered', !!q('#viewport g.rel.proto-macsec'));
     const svgText = app.exportSvg();
     check('SVG export is standalone (inline style, no script, no external refs)', /^<svg[\s\S]*<style[\s\S]*relation:gre-muc[\s\S]*<\/svg>$/.test(svgText) && !/<script|https?:\/\/(?!www\.w3\.org)/.test(svgText));
+    {
+      // the exported file is parsed and laid out on its own, as a viewer would, and measured with real font metrics
+      const measure = (text: string): { ok: boolean; labels: string[]; why: string } => {
+        const parsed = new DOMParser().parseFromString(text, 'image/svg+xml').documentElement as unknown as SVGSVGElement;
+        const holder = doc.createElement('div');
+        holder.setAttribute('class', 'sr-only');
+        holder.appendChild(doc.importNode(parsed, true));
+        doc.body.appendChild(holder);
+        const root = holder.firstChild as SVGSVGElement;
+        const why: string[] = [];
+        const lg = root.querySelector('g.svg-legend') as SVGGElement | null;
+        const vpEl = root.querySelector('#viewport') as SVGGElement;
+        let labels: string[] = [];
+        if (!lg) why.push('no legend in the file');
+        else {
+          labels = Array.prototype.map.call(lg.querySelectorAll('text'), (t: Element) => t.textContent) as string[];
+          const vb = (root.getAttribute('viewBox') || '').split(' ').map(Number);
+          const tr = /translate\(([-0-9.]+) ([-0-9.]+)\)/.exec(lg.getAttribute('transform') || '') || ['', '0', '0'];
+          const lb = lg.getBBox();
+          const box = { x: Number(tr[1]) + lb.x, y: Number(tr[2]) + lb.y, w: lb.width, h: lb.height };
+          const db = vpEl.getBBox();
+          const frame = lg.querySelector('.lg-box') as SVGRectElement;
+          if (!(box.x >= db.x + db.width)) why.push(`legend (x ${box.x}) is not right of the diagram (ends at ${db.x + db.width})`);
+          if (!(box.x >= vb[0] && box.y >= vb[1] && box.x + box.w <= vb[0] + vb[2] && box.y + box.h <= vb[1] + vb[3])) why.push('legend is clipped by the viewBox ' + vb.join(' '));
+          if (!(db.x >= vb[0] - 1 && db.y >= vb[1] - 1 && db.x + db.width <= vb[0] + vb[2] + 1 && db.y + db.height <= vb[1] + vb[3] + 1)) why.push('diagram is clipped by the viewBox');
+          // measured text stays inside the legend's frame
+          if (lb.width > Number(frame.getAttribute('width')) + 1 || lb.height > Number(frame.getAttribute('height')) + 1) why.push(`text leaves the frame (${lb.width} > ${frame.getAttribute('width')})`);
+          const size = parseFloat(doc.defaultView!.getComputedStyle(lg.querySelector('.lg-label') as Element).fontSize);
+          if (!(size >= 11)) why.push('label font size ' + size);
+          if (lg.querySelector('use, image, foreignObject')) why.push('legend refers to content outside the file');
+          if (Number(root.getAttribute('width')) !== Math.round(vb[2]) || Number(root.getAttribute('height')) !== Math.round(vb[3])) why.push('width/height do not match the viewBox');
+        }
+        doc.body.removeChild(holder);
+        return { ok: !why.length, labels, why: why.join('; ') };
+      };
+      const lgL = measure(svgText);
+      check(
+        'SVG export (logical view) contains its own legend: protocols and symbols, beside the diagram, not clipped, text inside its frame',
+        lgL.ok && lgL.labels[0] === 'Legend — logical view' && ['IPsec', 'GRE', 'OSPF', 'MACsec *', 'IP network'].every((x) => lgL.labels.indexOf(x) >= 0),
+        lgL.why + ' // ' + lgL.labels.join(' | '),
+      );
+      click('[data-view-btn="physical"]');
+      const physText = app.exportSvg();
+      const lgP = measure(physText);
+      check(
+        'SVG export (physical view) contains its own legend: device types, cable media, speed, locations',
+        lgP.ok && lgP.labels[0] === 'Legend — physical view' && ['Router', 'Firewall', 'Fiber', 'Copper', '100G', 'site', 'rack'].every((x) => lgP.labels.indexOf(x) >= 0) && lgP.labels.indexOf('IPsec') < 0 &&
+          !/<script|https?:\/\/(?!www\.w3\.org)/.test(physText),
+        lgP.why + ' // ' + lgP.labels.join(' | '),
+      );
+      // a model with several disconnected components and an unconnected device
+      const cur = (q('#examples') as HTMLSelectElement).value;
+      app.loadExample(EXAMPLES.findIndex((e) => e.name === 'metro-ring.yaml'));
+      const mP = measure(app.exportSvg());
+      click('[data-view-btn="logical"]');
+      const mL = measure(app.exportSvg());
+      check('disconnected components (metro ring): the legend is beside all of them in both views', mP.ok && mL.ok, mP.why + ' // ' + mL.why);
+      check('the diagram on screen has no legend drawn into it (export only)', !q('#canvas .svg-legend'));
+      app.loadExample(EXAMPLES.findIndex((e) => /enterprise-wan/.test(e.name)));
+      void cur;
+      click('[data-view-btn="logical"]');
+    }
     click('[data-view-btn="physical"]');
     app.select('relation:gre-muc');
     check('selecting GRE tunnel highlights its physical path (3 cables)', count('.cable.hl') === 3, String(count('.cable.hl')));

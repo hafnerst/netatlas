@@ -1,22 +1,14 @@
 /** Side-panel content (details, legend, relation list) as HTML VNodes. */
-import { deviceIcon, iconName } from '../diagram/icons';
-import { DEVICE_TYPE_IDS, deviceTypeLabel } from '../model/device-types';
-import { Attrs, CATEGORIES, Category, Model, ProtocolDef, RelEndpoint, endpointText, ifaceKey, isLoopback, loopbacks, relationDevices } from '../model/types';
+import { deviceTypeLabel } from '../model/device-types';
+import { Attrs, CATEGORIES, Model, ProtocolDef, RelEndpoint, endpointText, ifaceKey, isLoopback, loopbacks, relationDevices } from '../model/types';
+import { LegendItem, SWATCH_H, SWATCH_W, legendOf, relationSwatchParts } from '../diagram/legend';
 import { VNode, h } from '../diagram/scene';
 import { View } from '../diagram/session';
 import { ContextState, SelectionContext, contextState, splitRef } from '../model/queries';
-import { NETWORK_COLOR, groupKindStyle, mediumStyle, speedWidth } from '../diagram/style';
+import { mediumStyle } from '../diagram/style';
 import { AddressAssoc, deviceNetworks, derivedVlanText, interfaceAddresses, interfaceVlanText, linkEndVlanText, networkMembers, vlanMismatch, vlanMismatchText } from '../model/derive';
 import { relationStyle } from '../model/protocols';
 
-const CATEGORY_TEXT: { [c in Category]: string } = {
-  tunnel: 'Tunnel (encapsulation) — hollow tube',
-  adjacency: 'Protocol adjacency / session',
-  overlay: 'Overlay / virtual network',
-  redundancy: 'Redundancy / bundling',
-  service: 'Service / dependency',
-  other: 'Other logical relation',
-};
 
 function refLink(ref: string, text: string): VNode {
   return h('button', { class: 'ref', type: 'button', 'data-goto': ref, title: 'Select ' + text }, text);
@@ -367,141 +359,47 @@ export function tooltipFor(model: Model, ref: string): string[] {
 }
 
 // ------------------------------------------------------------------ legend
+// What the legend contains is defined once, in diagram/legend.ts; this is its
+// HTML form for the Legend tab. Exported SVG files draw the same entries.
 
-function swatchSvg(children: VNode[]): VNode {
-  return h('svg', { class: 'swatch', width: 44, height: 18, viewBox: '0 0 44 18', 'aria-hidden': 'true' }, children);
+function swatchSvg(children: VNode[], height = SWATCH_H): VNode {
+  return h('svg', { class: 'swatch', width: SWATCH_W, height, viewBox: `0 0 ${SWATCH_W} ${height}`, 'aria-hidden': height === SWATCH_H ? 'true' : undefined }, children);
 }
 
 export function relationSwatch(def: ProtocolDef): VNode {
-  const d = 'M3 9H41';
-  if (def.style === 'tube') {
-    return swatchSvg([
-      h('path', { class: 'tube-outer', d, stroke: def.color, 'stroke-width': 10 }),
-      h('path', { class: 'tube-inner', d, 'stroke-width': 4.8 }),
-    ]);
-  }
-  const dash = def.style === 'dashed' ? '9 5' : def.style === 'dotted' ? '0.5 5' : def.style === 'dashdot' ? '10 4 2 4' : undefined;
-  return swatchSvg([
-    h('path', { class: 'rel-line', d, stroke: def.color, 'stroke-width': def.style === 'dotted' ? 3.2 : 2.4, 'stroke-dasharray': dash, 'stroke-linecap': def.style === 'dotted' ? 'round' : undefined }),
-  ]);
+  return swatchSvg(relationSwatchParts(def));
 }
 
-function row(sw: VNode, label: string, extra?: VNode | null): VNode {
-  return h('li', { class: 'legend-row' }, [sw, h('span', {}, label), extra || null]);
+function row(item: LegendItem): VNode {
+  return h('li', { class: 'legend-row' }, [swatchSvg(item.swatch, item.swatchH), h('span', {}, item.label)]);
 }
 
 export function legendFor(model: Model, view: View, hidden: Set<string>): VNode {
-  const sections: VNode[] = [];
-  if (view === 'physical') {
-    // in the format's order; devices without a type last
-    const rank = (t: string): number => (DEVICE_TYPE_IDS.indexOf(t) + DEVICE_TYPE_IDS.length + 1) % (DEVICE_TYPE_IDS.length + 1);
-    const types = Array.from(new Set(model.devices.map((d) => iconName(d.type)))).sort((p, q) => rank(p) - rank(q));
-    sections.push(
-      h('section', {}, [
-        h('h4', {}, 'Devices'),
-        h('ul', {}, types.map((t) => row(h('svg', { class: 'swatch', width: 44, height: 22, viewBox: '0 0 44 22' }, [deviceIcon(t, 11, 0, 22)]), deviceTypeLabel(t) || 'No type'))),
-      ]),
-    );
-    const media = new Map<string, { label: string; color: string; dash?: string }>();
-    for (const l of model.links) {
-      const m = mediumStyle(l.medium);
-      media.set(m.key, m);
-    }
-    if (media.size) {
-      sections.push(
-        h('section', {}, [
-          h('h4', {}, 'Cables (physical links)'),
-          h(
-            'ul',
-            {},
-            Array.from(media.values()).map((m) =>
-              row(swatchSvg([h('path', { d: 'M3 9H41', stroke: m.color, 'stroke-width': 2.6, 'stroke-dasharray': m.dash, fill: 'none' })]), m.label),
-            ),
-          ),
-          h('p', { class: 'muted' }, 'Line width grows with link speed (100M → 400G). Small squares are ports; labels show the interface name. “Trunk” on a cable means several VLANs are permitted; ⚠ marks a cable whose two ends permit different VLANs.'),
-          h('ul', {}, [
-            row(swatchSvg([h('path', { d: 'M3 9H41', stroke: '#868e96', 'stroke-width': speedWidth('1G'), fill: 'none' })]), '1G'),
-            row(swatchSvg([h('path', { d: 'M3 9H41', stroke: '#868e96', 'stroke-width': speedWidth('100G'), fill: 'none' })]), '100G'),
-          ]),
-        ]),
-      );
-    }
-    const kinds = Array.from(new Set(model.groups.map((g) => g.kind)));
-    if (kinds.length) {
-      sections.push(
-        h('section', {}, [
-          h('h4', {}, 'Locations / groups'),
-          h(
-            'ul',
-            {},
-            kinds.map((k) =>
-              row(
-                swatchSvg([
-                  h('rect', { class: 'group-box ' + (groupKindStyle(k).strong ? 'group-strong' : ''), x: 3, y: 2, width: 38, height: 14, rx: 4, 'stroke-dasharray': groupKindStyle(k).dash }),
-                ]),
-                k || '(no kind)',
-              ),
-            ),
-          ),
-        ]),
-      );
-    }
-    sections.push(h('p', { class: 'muted' }, 'Tunnels and protocol sessions are logical and are shown in the Logical view, not as cables. Select a tunnel in the Relations list to highlight the cables it rides on.'));
-  } else {
-    const used = new Map<string, { def: ProtocolDef; count: number }>();
-    for (const r of model.relations) {
-      const def = relationStyle(model, r);
-      const u = used.get(r.protocol);
-      if (u) u.count++;
-      else used.set(r.protocol, { def, count: 1 });
-    }
-    for (const cat of CATEGORIES) {
-      const protos = Array.from(used.entries()).filter(([, u]) => u.def.category === cat);
-      if (!protos.length) continue;
-      sections.push(
-        h('section', {}, [
-          h('h4', {}, CATEGORY_TEXT[cat]),
-          h(
-            'ul',
-            {},
-            protos.map(([p, u]) =>
-              h('li', { class: 'legend-row' }, [
+  const legend = legendOf(model, view);
+  const sections: VNode[] = legend.sections.map((s) =>
+    h('section', {}, [
+      h('h4', {}, s.title),
+      h(
+        'ul',
+        {},
+        s.items.map((i) =>
+          i.protocol === undefined
+            ? row(i)
+            : h('li', { class: 'legend-row' }, [
                 h('label', { class: 'legend-toggle' }, [
-                  h('input', { type: 'checkbox', 'data-proto': p, checked: hidden.has(p) ? undefined : 'checked', title: 'Show / hide ' + u.def.label }),
-                  relationSwatch(u.def),
-                  h('span', {}, `${u.def.label}${u.def.custom ? ' *' : ''}`),
-                  h('span', { class: 'count' }, String(u.count)),
+                  h('input', { type: 'checkbox', 'data-proto': i.protocol, checked: hidden.has(i.protocol) ? undefined : 'checked', title: 'Show / hide ' + i.label }),
+                  swatchSvg(i.swatch),
+                  h('span', {}, `${i.label}${i.custom ? ' *' : ''}`),
+                  h('span', { class: 'count' }, String(i.count)),
                 ]),
               ]),
-            ),
-          ),
-        ]),
-      );
-    }
-    sections.push(
-      h('section', {}, [
-        h('h4', {}, 'Other symbols'),
-        h('ul', {}, [
-          row(
-            swatchSvg([
-              h('path', { class: 'tube-outer', d: 'M3 9H41', stroke: '#7048e8', 'stroke-width': 14 }),
-              h('path', { class: 'tube-inner', d: 'M3 9H41', 'stroke-width': 8.8 }),
-              h('path', { class: 'tube-outer', d: 'M3 9H41', stroke: '#e8590c', 'stroke-width': 7 }),
-              h('path', { class: 'tube-inner', d: 'M3 9H41', 'stroke-width': 2 }),
-            ]),
-            'Carried inside (e.g. GRE over IPsec)',
-          ),
-          row(swatchSvg([h('circle', { class: 'hub', cx: 22, cy: 9, r: 7, stroke: '#0c8599' })]), 'Multipoint hub (3+ devices)'),
-          row(swatchSvg([h('rect', { class: 'net-box', x: 3, y: 2, width: 38, height: 14, rx: 7, stroke: NETWORK_COLOR })]), 'IP network'),
-          row(swatchSvg([h('path', { class: 'member', d: 'M3 9H41' })]), 'Network membership (from addresses)'),
-          row(swatchSvg([h('path', { class: 'underlay', d: 'M3 9H41' })]), 'Physical adjacency (optional underlay)'),
-        ]),
-        used.size && Array.from(used.values()).some((u) => u.def.custom)
-          ? h('p', { class: 'muted' }, '* defined in this file’s "protocols" section')
-          : null,
-      ]),
-    );
-  }
+        ),
+      ),
+      s.note ? h('p', { class: 'muted' }, s.note) : null,
+      s.more ? h('ul', {}, s.more.map(row)) : null,
+    ]),
+  );
+  if (legend.footer) sections.push(h('p', { class: 'muted' }, legend.footer));
   return h('div', { class: 'legend' }, sections);
 }
 

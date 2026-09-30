@@ -102,8 +102,6 @@ body:not([data-view="logical"]) .logical-only { display: none; }
 .dropdown > div { padding: 6px 8px; }
 
 main { display: grid; grid-template-columns: 250px minmax(0, 1fr) 410px; min-height: 0; }
-body.no-outline main { grid-template-columns: 0 minmax(0, 1fr) 410px; }
-body.no-outline #outline { display: none; }
 #canvas-wrap { position: relative; min-width: 0; min-height: 0; overflow: hidden; background: var(--canvas); }
 #canvas {
   width: 100%; height: 100%; display: block; cursor: grab; touch-action: none; user-select: none;
@@ -176,13 +174,17 @@ button.ref:hover { text-decoration: underline; }
 .issue pre.src { margin: 6px 0 0; padding: 4px 8px; background: var(--canvas); border-radius: 4px; overflow-x: auto; font-size: 12px; }
 #status { padding: 4px 12px; border-top: 1px solid var(--border); background: var(--panel); color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #selftest { position: fixed; inset: 40px; z-index: 100; overflow: auto; background: var(--panel); border: 2px solid var(--accent); padding: 12px; font-size: 11px; }
+/* The model panel (#outline) is always shown. Narrower windows give it and the
+   side panel less room; below 860px both move under the diagram, side by side,
+   so neither ever lies on top of the diagram or its controls. */
 @media (max-width: 1100px) {
-  main { grid-template-columns: 0 minmax(0, 1fr) 380px; }
-  #outline { display: none; }
+  main { grid-template-columns: 200px minmax(0, 1fr) 340px; }
 }
 @media (max-width: 860px) {
-  main { grid-template-columns: 1fr; grid-template-rows: 1fr 45%; }
-  #side { border-left: 0; border-top: 1px solid var(--border); }
+  main { grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); grid-template-rows: minmax(0, 1fr) 45%; }
+  #canvas-wrap { grid-column: 1 / -1; grid-row: 1; }
+  #outline { grid-column: 1; grid-row: 2; border-top: 1px solid var(--border); }
+  #side { grid-column: 2; grid-row: 2; border-top: 1px solid var(--border); }
   #search { width: 140px; }
 }
 
@@ -236,6 +238,13 @@ button.ref:hover { text-decoration: underline; }
 .selected .tube-outer, .selected .rel-line { filter: drop-shadow(0 0 3px var(--sel)); }
 .hl .cable-line { filter: drop-shadow(0 0 2px var(--sel)); }
 svg.export { background: var(--canvas); }
+/* legend drawn into exported SVG files */
+.svg-legend .lg-box { fill: var(--panel); stroke: var(--border); stroke-width: 1; }
+.svg-legend text { font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; fill: var(--text); }
+.svg-legend .lg-heading { font-size: 13px; font-weight: 700; }
+.svg-legend .lg-title { font-size: 11px; fill: var(--muted); letter-spacing: .04em; }
+.svg-legend .lg-label { font-size: 12px; }
+.svg-legend .vlan-warn { cursor: default; }
 
 /* ------------------------------------------------------------ editor */
 .btn-group { display: inline-flex; gap: 4px; }
