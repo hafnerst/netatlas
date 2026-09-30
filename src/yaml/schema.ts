@@ -32,16 +32,16 @@ export const SCHEMA = {
 export type SchemaKind = keyof typeof SCHEMA;
 
 /**
- * Keys that earlier files used and the format no longer has, with what to do
- * instead. They are rejected (never read, converted or written), and the
- * error says how to update the file by hand.
+ * Keys that aren't part of the format but are easily expected in a place, with
+ * what to write instead. They are rejected like any unknown key (never read,
+ * converted or written); the error says where the fact belongs.
  */
 const IFACE_VLAN =
   'the VLAN of a physical interface is derived from the network whose "cidr" contains its address: set "vlan:" on that network and delete it here ' +
   '(VLANs permitted on a cable are "vlans:" on the end of the link; a VLAN interface is a virtual interface under "logical_interfaces:")';
 const NOT_A_PORT = 'speed and medium belong to the physical link, and only a physical interface can be cabled: delete this key';
 const NO_NESTING =
-  'interfaces are no longer nested: move each entry into "logical_interfaces:" of the device and give it "type: virtual" or "type: tunnel". ' +
+  'interfaces are not nested: move each entry into "logical_interfaces:" of the device and give it "type: virtual" or "type: tunnel". ' +
   'A tunnel names the interface it is sourced from with "source:"; an aggregate lists its ports under "members:"; a VLAN interface names its VLAN with "vlan:"';
 
 export const RETIRED: { [kind: string]: { [key: string]: string } } = {
@@ -80,5 +80,5 @@ export const RETIRED: { [kind: string]: { [key: string]: string } } = {
   },
 };
 
-/** Group kinds that were renamed (old -> new). */
+/** Group kinds that are rejected, with the kind to write instead. */
 export const RENAMED_GROUP_KINDS: { [kind: string]: string } = { row: 'floor' };

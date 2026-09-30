@@ -165,7 +165,7 @@ export class Reader {
     m.entries.forEach((e, k) => {
       if (allowed.indexOf(k) >= 0) return;
       if (Object.prototype.hasOwnProperty.call(retired, k)) {
-        this.c.error(m, path ? path + '.' + k : k, `"${k}" is no longer part of the format — ${retired[k]}`, { key: k, line: e.keyLine });
+        this.c.error(m, path ? path + '.' + k : k, `"${k}" is not part of the format — ${retired[k]}`, { key: k, line: e.keyLine });
       } else {
         this.c.error(m, path ? path + '.' + k : k, `unknown key "${k}"${suggest(k, allowed, 20)}${hint}`, { key: k, line: e.keyLine });
       }

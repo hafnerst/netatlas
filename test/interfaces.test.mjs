@@ -83,7 +83,7 @@ test('a physical interface has no type; a logical interface has one of loopback,
   for (const t of ['physical', 'loopback', 'virtual', 'tunnel', 'svi']) {
     const m = messages(`netatlas: 1\ndevices:\n  - id: a\n    interfaces:\n      - {id: e0, type: ${t}}\n`);
     assert.equal(m.length, 1, t);
-    assert.match(m[0], /^"type" is no longer part of the format — an entry of "interfaces:" is always a physical interface and has no type: delete this key\. A loopback, virtual or tunnel interface belongs in the "logical_interfaces:" list/, t);
+    assert.match(m[0], /^"type" is not part of the format — an entry of "interfaces:" is always a physical interface and has no type: delete this key\. A loopback, virtual or tunnel interface belongs in the "logical_interfaces:" list/, t);
   }
   const logical = (body) => messages(`netatlas: 1\ndevices:\n  - id: a\n    logical_interfaces:\n      - {id: x0${body}}\n`);
   assert.deepEqual(logical(', type: virtual'), []);
@@ -140,7 +140,7 @@ test('loopbacks: logical interfaces with addresses and no physical parent', () =
   assert.match(lb(', ip: 10.0.0.1/32, members: [e0]')[0], /^"members" applies to a virtual interface only \(the member ports of a bond or aggregate\); "lo0" is a loopback interface — delete this key or change the type/);
   assert.match(lb(', ip: 10.0.0.1/32, vlan: 10')[0], /^"vlan" applies to a virtual interface only/);
   assert.match(lb(', ip: 10.0.0.1/32, source: e0')[0], /^"source" applies to a tunnel interface only/);
-  assert.match(lb(', ip: 10.0.0.1/32, parent: e0')[0], /^"parent" is no longer part of the format — a logical interface has no generic parent/);
+  assert.match(lb(', ip: 10.0.0.1/32, parent: e0')[0], /^"parent" is not part of the format — a logical interface has no generic parent/);
   // drawn as chips under the device in the logical view, never as ports
   const session = new state.Session(m);
   assert.equal(scene.findAll(session.render().root, (n) => /lo0$/.test(n.attrs['data-ref'] || '')).length, 0);
@@ -176,7 +176,7 @@ test('aggregate: a virtual interface references several member ports, and the re
   assert.deepEqual(messages(two), []);
   assert.deepEqual(warnings(two), ['port "Eth2" is also a member of "Po1"; a port normally belongs to one aggregate']);
   // members on a physical interface: the aggregate is a logical interface
-  assert.match(messages('netatlas: 1\ndevices:\n  - id: a\n    interfaces:\n      - {id: e0, members: [e1]}\n')[0], /^"members" is no longer part of the format — only a virtual interface \(an aggregate\) has member ports/);
+  assert.match(messages('netatlas: 1\ndevices:\n  - id: a\n    interfaces:\n      - {id: e0, members: [e1]}\n')[0], /^"members" is not part of the format — only a virtual interface \(an aggregate\) has member ports/);
 });
 
 // -------------------------------------------------- VLAN-derived port association
@@ -219,7 +219,7 @@ test('VLAN interface: it names its VLAN (or takes it from its network); the port
   // the VLAN written on the interface and the VLAN of its address's network must agree
   assert.deepEqual(warnings(net.replace('vlan: 10, ip: 10.10.0.2/24', 'vlan: 30, ip: 10.10.0.2/24')), ['"Vlan10" is the interface of VLAN 30, but its address 10.10.0.2/24 lies in a network of VLAN 10']);
   // a physical interface still has no vlan key
-  assert.match(messages('netatlas: 1\ndevices:\n  - id: a\n    interfaces:\n      - {id: e0, vlan: 10}\n')[0], /^"vlan" is no longer part of the format — the VLAN of a physical interface is derived/);
+  assert.match(messages('netatlas: 1\ndevices:\n  - id: a\n    interfaces:\n      - {id: e0, vlan: 10}\n')[0], /^"vlan" is not part of the format — the VLAN of a physical interface is derived/);
 });
 
 // ---------------------------------------------------------- tunnel sources
@@ -367,9 +367,9 @@ devices:
   assert.equal(layoutSignature(layoutInput(swapped)), layoutSignature(layoutInput(m)));
 });
 
-// ------------------------------------------------ outdated YAML is rejected
+// ------------------------------- structures outside the format are rejected
 
-test('the child-interface structure is rejected clearly, and nothing of it is dropped from the file', () => {
+test('nested child interfaces and a loopbacks list are rejected clearly, and nothing of them is dropped from the file', () => {
   const old = `netatlas: 1
 devices:
   - id: r1
@@ -385,9 +385,9 @@ devices:
 `;
   const r = validate.loadModel(old);
   assert.deepEqual(r.errors.map((e) => [e.line, e.path, e.key]), [[4, 'devices[0].loopbacks', 'loopbacks'], [9, 'devices.r1.interfaces[0].children', 'children']]);
-  assert.match(r.errors[0].message, /^"loopbacks" is no longer part of the format — loopbacks are logical interfaces: move each entry into "logical_interfaces:" of the device and add "type: loopback" to it$/);
-  assert.match(r.errors[1].message, /^"children" is no longer part of the format — interfaces are no longer nested: move each entry into "logical_interfaces:" of the device and give it "type: virtual" or "type: tunnel"\. A tunnel names the interface it is sourced from with "source:"; an aggregate lists its ports under "members:"; a VLAN interface names its VLAN with "vlan:"$/);
-  // no compatibility layer: the old entries are not read as interfaces …
+  assert.match(r.errors[0].message, /^"loopbacks" is not part of the format — loopbacks are logical interfaces: move each entry into "logical_interfaces:" of the device and add "type: loopback" to it$/);
+  assert.match(r.errors[1].message, /^"children" is not part of the format — interfaces are not nested: move each entry into "logical_interfaces:" of the device and give it "type: virtual" or "type: tunnel"\. A tunnel names the interface it is sourced from with "source:"; an aggregate lists its ports under "members:"; a VLAN interface names its VLAN with "vlan:"$/);
+  // nothing is accepted silently: those entries are not read as interfaces …
   assert.equal(ids(r.model.devices[0].interfaces), 'ge-0/0/0,ge-0/0/1');
   assert.deepEqual(r.model.devices[0].logical, []);
   assert.ok(!r.model.index.interfaces.has('r1:lo0') && !r.model.index.interfaces.has('r1:st0.10'));
@@ -401,10 +401,10 @@ devices:
   assert.deepEqual(doc(d.exportText()).errors.map((e) => e.key), ['loopbacks', 'children']);
   // what referred to them is reported as well, so nothing looks fine by accident
   assert.match(messages(old + 'relations:\n  - {id: x, protocol: gre, endpoints: ["r1:st0.10", r1]}\n')[2], /device "r1" has no interface "st0\.10"/);
-  // the retired keys are not part of the schema, and the old child type is not a type
+  // the rejected keys are not part of the schema
   for (const kind of Object.keys(RETIRED)) for (const k of Object.keys(RETIRED[kind])) assert.ok(!SCHEMA[kind].includes(k), `${kind}.${k}`);
   assert.ok('children' in RETIRED.interface && 'children' in RETIRED.logical && 'loopbacks' in RETIRED.device && 'parent' in RETIRED.logical);
-  assert.match(messages('netatlas: 1\ndevices:\n  - id: a\n    logical_interfaces:\n      - {id: x, type: virtual, children: [y]}\n')[0], /^"children" is no longer part of the format — interfaces are no longer nested/);
+  assert.match(messages('netatlas: 1\ndevices:\n  - id: a\n    logical_interfaces:\n      - {id: x, type: virtual, children: [y]}\n')[0], /^"children" is not part of the format — interfaces are not nested/);
   // "interfaces" as a mapping of categories is not the format either
   assert.match(messages('netatlas: 1\ndevices:\n  - id: a\n    interfaces: {physical: [e0]}\n')[0], /expected a list/);
 });
@@ -413,7 +413,7 @@ test('removed device fields stay removed', () => {
   for (const k of ['vendor', 'model', 'role', 'mgmt', 'router_id']) {
     const r = validate.loadModel(`netatlas: 1\ndevices:\n  - id: r1\n    ${k}: x\n`);
     assert.equal(r.errors.length, 1, k);
-    assert.match(r.errors[0].message, new RegExp(`^"${k}" is no longer part of the format — a device has no `), k);
+    assert.match(r.errors[0].message, new RegExp(`^"${k}" is not part of the format — a device has no `), k);
   }
   for (const f of exampleNames) {
     assert.doesNotMatch(example(f), /^\s*(- )?(vendor|model|role|mgmt|router_id|loopbacks|children):/m, f);

@@ -1,6 +1,6 @@
 // "Configure once, derive elsewhere": network membership and interface VLANs
 // are computed from addresses and prefixes (model/derive.ts), link-end VLANs
-// are configured per end, and the keys of the earlier format are rejected.
+// are configured per end, and keys that are not part of the format are rejected.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { validate, derive, queries, panels, scene, state, load, example, exampleNames, byClass, byRef } from './helpers.mjs';
@@ -354,10 +354,10 @@ test('details and logical view use derived membership and derived interface VLAN
   assert.equal(byClass(v, 'network').length, 4);
 });
 
-// ------------------------------------------------- retired keys and renames
+// ------------------------------------- keys outside the format are errors
 
-test('keys of the earlier format are rejected with what to do instead', () => {
-  const old = `netatlas: 1
+test('keys that are not part of the format are rejected with what to do instead', () => {
+  const wrong = `netatlas: 1
 groups:
   - {id: g1, kind: row}
 devices:
@@ -369,32 +369,32 @@ devices:
 networks:
   - {id: n1, kind: vlan, vrf: red, vlan: 10, cidr: 10.1.0.0/24, members: [r1, "r1:e0"]}
 `;
-  const r = load2(old);
+  const r = load2(wrong);
   const by = (re) => r.errors.filter((e) => re.test(e.message));
   assert.equal(r.errors.length, 8, r.errors.map((e) => e.message).join('\n'));
-  assert.match(by(/"speed"/)[0].message, /^"speed" is no longer part of the format — speed is configured once, on the physical link: set "speed:" on the link/);
+  assert.match(by(/"speed"/)[0].message, /^"speed" is not part of the format — speed is configured once, on the physical link: set "speed:" on the link/);
   assert.match(by(/"media"/)[0].message, /set "medium:" on the link cabled to this port/);
-  assert.equal(by(/"vlan" is no longer part of the format — the VLAN of a physical interface is derived from the network/).length, 1);
-  assert.match(by(/"loopbacks"/)[0].message, /^"loopbacks" is no longer part of the format — loopbacks are logical interfaces: move each entry into "logical_interfaces:" of the device and add "type: loopback"/);
-  assert.equal(r.model.devices[0].logical.length, 0, 'the old list is not read');
+  assert.equal(by(/"vlan" is not part of the format — the VLAN of a physical interface is derived from the network/).length, 1);
+  assert.match(by(/"loopbacks"/)[0].message, /^"loopbacks" is not part of the format — loopbacks are logical interfaces: move each entry into "logical_interfaces:" of the device and add "type: loopback"/);
+  assert.equal(r.model.devices[0].logical.length, 0, 'the list under an unknown key is not read');
   assert.match(by(/"kind"/)[0].message, /a network is always an IP network: delete this key/);
   assert.match(by(/"vrf"/)[0].message, /set "vrf:" on those interfaces/);
   assert.match(by(/"members"/)[0].message, /members are derived from the interface and loopback addresses/);
-  assert.match(by(/renamed/)[0].message, /group kind "row" was renamed to "floor" — write "kind: floor"/);
+  assert.match(by(/"row"/)[0].message, /group kind "row" is not accepted — write "kind: floor"/);
   // located at the key, with its line, for the editor and the problem list
   assert.deepEqual([by(/"members"/)[0].path, by(/"members"/)[0].key, by(/"members"/)[0].line], ['networks[0].members', 'members', 11]);
-  // nothing is converted: the old values are not read into the model …
+  // nothing is converted: the rejected values are not read into the model …
   const e0 = r.model.index.interfaces.get('r1:e0');
   assert.ok(!('speed' in e0) && !('vlan' in e0));
-  assert.deepEqual(members(r.model, 'n1'), ['r1'], 'membership comes from the address, not from the old list');
+  assert.deepEqual(members(r.model, 'n1'), ['r1'], 'membership comes from the address, not from the rejected list');
   // … and the file is written back unchanged, so the user can fix it
-  assert.equal(doc(old).exportText(), old);
+  assert.equal(doc(wrong).exportText(), wrong);
   // the same keys are rejected when written in block style, and link "speed"/"medium" stay valid
-  assert.match(errorsOf('netatlas: 1\ndevices:\n  - id: a\n    interfaces:\n      - id: e0\n        speed: 1G\n')[0], /"speed" is no longer part of the format/);
+  assert.match(errorsOf('netatlas: 1\ndevices:\n  - id: a\n    interfaces:\n      - id: e0\n        speed: 1G\n')[0], /"speed" is not part of the format/);
   assert.deepEqual(errorsOf('netatlas: 1\ndevices:\n  - id: a\n  - id: b\nlinks:\n  - {id: l, a: a, b: b, medium: fiber, speed: 1G}\n'), []);
 });
 
-test('the schema no longer contains retired keys, and the editor never writes them', () => {
+test('the schema contains none of the rejected keys, and the editor never writes them', () => {
   for (const kind of Object.keys(RETIRED)) for (const k of Object.keys(RETIRED[kind])) assert.ok(!SCHEMA[kind].includes(k), `${kind}.${k}`);
   assert.deepEqual(SCHEMA.network, ['id', 'label', 'cidr', 'vlan', 'description', 'attrs']);
   assert.deepEqual(SCHEMA.interface, ['id', 'label', 'ip', 'vrf', 'mac', 'description', 'attrs']);
@@ -417,15 +417,15 @@ test('VRF is assigned on interfaces (loopbacks included), not on networks', () =
   assert.deepEqual(matches(r.model, 'n'), ['pe:e0 10.1.0.1/24', 'pe:e1 10.1.0.2/24']);
 });
 
-test('group kind "floor" replaces "row"', () => {
+test('group kind "floor" is accepted, "row" is not', () => {
   const r = ok('netatlas: 1\ngroups:\n  - {id: b, kind: building}\n  - {id: f2, kind: Floor, parent: b}\n');
   assert.equal(r.model.groups[1].kind, 'floor');
-  assert.match(errorsOf('netatlas: 1\ngroups:\n  - {id: f2, kind: ROW}\n')[0], /group kind "row" was renamed to "floor"/);
+  assert.match(errorsOf('netatlas: 1\ngroups:\n  - {id: f2, kind: ROW}\n')[0], /group kind "row" is not accepted — write "kind: floor"/);
 });
 
 test('loopbacks stay logical: no physical-link properties, no cable', () => {
   const base = 'netatlas: 1\ndevices:\n  - id: a\n    logical_interfaces: [{id: lo0, type: loopback, ip: 10.0.0.1/32SPEED}]\n    interfaces: [e0]\n  - id: b\n    interfaces: [e0]\n';
-  assert.match(errorsOf(base.replace('SPEED', ', speed: 1G'))[0], /"speed" is no longer part of the format/);
+  assert.match(errorsOf(base.replace('SPEED', ', speed: 1G'))[0], /"speed" is not part of the format/);
   assert.match(errorsOf(base.replace('SPEED', '') + 'links:\n  - {id: l, a: "a:lo0", b: "b:e0"}\n')[0], /"a:lo0" is a loopback, not a physical interface/);
   assert.doesNotMatch(JSON.stringify(panels.detailsFor(ok(base.replace('SPEED', '')).model, 'iface:a:lo0')), /cable|speed|media/);
 });

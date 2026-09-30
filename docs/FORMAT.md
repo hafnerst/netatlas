@@ -1,15 +1,10 @@
 # netatlas YAML format (version 1)
 
-> **Breaking changes (after release 0.1.x).** The format was restructured:
-> each fact is configured in one place, devices lost five fields, and a
-> device's interfaces are stored in two lists, physical and logical (an
-> intermediate structure with `children` under physical interfaces and a
-> `loopbacks` list is gone again). The version line stays `netatlas: 1`,
-> because the tool isn't used in production yet, but files that use removed
-> keys or an old interface structure are **not converted** and no old key is
-> kept as an alias. They open as a draft with one error per key that has to
-> change; update them by hand as described in
-> [Changes from the earlier format](#changes-from-the-earlier-format).
+This document is the contract of **NetAtlas YAML model format version 1**,
+the only model format NetAtlas supports. Every file declares it with
+`netatlas: 1`; a missing line or any other value is an error. The model
+format version is independent of the application version: NetAtlas 0.1.1 is
+an application release, and it reads and writes model format 1.
 
 A netatlas file describes **one** network architecture. It separates two
 things that are often mixed up in diagrams:
@@ -108,7 +103,7 @@ name a physical interface; a **relation endpoint** can name any interface.
 |---|---|---|
 | `id` | yes | |
 | `label` | | Display name (defaults to the id) |
-| `kind` | | Free text, e.g. `site`, `building`, `floor`, `room`, `rack`, `provider`, `cloud`, `zone`. There is no default: a group without a kind is drawn as a plain box. `site`/`campus`/`building`/`datacenter`/`region` are emphasised; `provider`/`cloud`/`external` are drawn dashed. The kind is shown in the group's title bar and in the legend. `row` was renamed to `floor`; `kind: row` is an error. |
+| `kind` | | Free text, e.g. `site`, `building`, `floor`, `room`, `rack`, `provider`, `cloud`, `zone`. There is no default: a group without a kind is drawn as a plain box. `site`/`campus`/`building`/`datacenter`/`region` are emphasised; `provider`/`cloud`/`external` are drawn dashed. The kind is shown in the group's title bar and in the legend. `kind: row` is an error; write `floor` (see [Rejected keys and values](#rejected-keys-and-values)). |
 | `parent` | | Id of the enclosing group (at most 8 levels) |
 | `description`, `attrs` | | |
 
@@ -125,9 +120,10 @@ name a physical interface; a **relation endpoint** can name any interface.
 | `interfaces` | | List of the device's **physical interfaces** (its ports, below). The shorthand `interfaces: [eth0, eth1]` is allowed. |
 | `logical_interfaces` | | List of the device's **logical interfaces** (below): loopbacks, virtual interfaces and tunnel interfaces. |
 
-A device has no `vendor`, `model`, `role`, `mgmt` or `router_id` key (see
-[Changes from the earlier format](#changes-from-the-earlier-format)). Such
-facts can be kept as free-form `attrs`, which are shown in the details only.
+A device has no `vendor`, `model`, `role`, `mgmt` or `router_id` key; each
+of them is an error (see [Rejected keys and values](#rejected-keys-and-values)).
+Such facts can be kept as free-form `attrs`, which are shown in the details
+only.
 
 ### Device types
 
@@ -757,10 +753,10 @@ places; they are the same on screen and in exported SVG files.
   wide one; the shape follows the topology rather than the screen.
 * Relation lines in the logical view are always straight. Auto-arrange moves
   nodes off the lines; with manual positions a line can pass under a node.
-* Diagrams are larger than before: spacing was preferred over density.
-* Files arranged with an earlier version keep their stored positions. Their
-  status shows *edited since arranged* until Auto-arrange is used again,
-  because the auto-arranged layout itself changed.
+* Spacing is preferred over density, so diagrams are fairly large.
+* Stored positions are never changed by another NetAtlas application
+  version. If that version arranges differently, the view shows *edited
+  since arranged* until Auto-arrange is used again.
 
 **Determinism.** Auto-arrange is a pure function of a canonical *layout
 input* (`src/layout/input.ts`). It uses no randomness, no clock, no browser
@@ -806,6 +802,7 @@ and, where possible, a suggestion. In the editor the same problems are shown
 next to the object and field they concern.
 
 **Errors** cover:
+* a missing `netatlas:` line, or any value other than `1`;
 * missing required keys, wrong value types and unknown keys;
 * invalid or duplicate ids, and unknown references (devices, interfaces,
   groups, networks, `over`);
@@ -821,8 +818,9 @@ next to the object and field they concern.
 * `over` cycles;
 * invalid loopback addresses, invalid network prefixes, invalid or repeated
   VLAN IDs, and bad colours, categories or styles;
-* keys and values of the earlier format (see
-  [Changes from the earlier format](#changes-from-the-earlier-format)).
+* the keys and values listed under
+  [Rejected keys and values](#rejected-keys-and-values), each with an
+  instruction saying where the fact belongs.
 
 **Warnings** don't block rendering:
 * an unknown protocol without a category;
@@ -856,65 +854,31 @@ before editing.
 | Group nesting | 8 levels |
 | Attributes per entity | 100 |
 
-## Changes from the earlier format
+## Rejected keys and values
 
-The format version is unchanged (`netatlas: 1`). Files written for an earlier
-state of the format have to be updated by hand; netatlas doesn't convert
-them, and it doesn't keep the old keys or values as aliases. Opening such a
-file shows an error for every key or value below, each saying what to do.
-Nothing of the old keys is read into the model, and the file is kept as it
-is until you change it.
+Some keys are easily expected in a place where the format doesn't have them,
+because the fact they describe belongs somewhere else. Like every unknown key
+they are errors, but instead of a "did you mean" suggestion the error says
+where the fact belongs. netatlas never converts them, never reads them into
+the model and never treats them as aliases.
 
-### Interfaces and device fields
-
-| Before | Now | What to do |
+| Written in | Key or value | Where the fact belongs |
 |---|---|---|
-| `children:` under a physical interface | removed: interfaces are not nested | Move each entry into `logical_interfaces:` of the device. A `type: tunnel` child stays `type: tunnel`; write the interface it ran on as `source:`. A `type: logical` child becomes `type: virtual`; if it is a bond, list its ports under `members:`, if it is a VLAN interface, write `vlan:` (or rely on the network of its address). Nothing else has to name a port. |
-| `loopbacks:` on a device | removed | Move each entry into `logical_interfaces:` and add `type: loopback` to it. Its `id`, `label`, `ip`, `vrf`, `description` and `attrs` stay as they are; references such as `r1:lo0` keep working. |
-| child `type: logical` | `type: virtual` | Rename the value. |
-| a logical interface without `type` (children defaulted to `logical`) | `type` is required | Write `loopback`, `virtual` or `tunnel`. |
-| `type` on an entry of `interfaces` (any value, `physical` included) | error, as before | Delete the key; an entry that isn't a port belongs in `logical_interfaces:`. |
-| `type: vlan`, `svi`, `subinterface`, `lag`, `bundle`, `irb`, `bvi`, `vti` … on an interface (0.1.x) | `type: virtual` or `type: tunnel` in `logical_interfaces:` | Move and rename as above. |
-| a generic parent for every logical interface | none | Use the association that applies: `members` (aggregate), `vlan` (VLAN interface; its ports are derived), `source` (tunnel). A `parent:` key is an error. |
-| a cable on a logical interface | error, as before | The error names the member ports or the tunnel source to cable instead. |
-| `vendor`, `model`, `role`, `mgmt` on a device | removed | Delete them, or move the values into `attrs:` (shown in the details only). |
-| `router_id` on a device | removed | Delete it. The loopback and its addresses are unaffected; name its purpose in the loopback's `label` if you like. |
-| interface ids unique among a device's interfaces | unique among the physical and logical interfaces of the device | Rename one of two entries that share an id. |
+| a device | `vendor`, `model`, `role`, `mgmt` | Not part of the format. Keep the value under `attrs:` if you need it (shown in the details only). |
+| a device | `router_id` | Not part of the format. Declare the loopback under `logical_interfaces:` with `type: loopback`, and name its purpose in its `label` if you like. |
+| a device | `loopbacks` | A loopback is a logical interface: an entry of `logical_interfaces:` with `type: loopback`. |
+| an entry of `interfaces` | `type` (any value) | An entry of `interfaces` is always a physical interface. A loopback, virtual or tunnel interface belongs in `logical_interfaces:`. |
+| an entry of `interfaces` or `logical_interfaces` | `children` | Interfaces are not nested. Each logical interface is an entry of `logical_interfaces:` with its `type`; a tunnel names its `source`, an aggregate its `members`, a VLAN interface its `vlan`. |
+| an entry of `interfaces` | `members`, `source`, `destination` | Keys of a virtual (`members`) or tunnel (`source`, `destination`) interface in `logical_interfaces:`. |
+| an entry of `interfaces` | `speed`, `media` | `speed` and `medium` of the [link](#links-physical-cabling-only) cabled to the port. |
+| an entry of `interfaces` | `vlan` | Derived from the network containing the address: `vlan` on that [network](#networks). VLANs permitted on a cable are `vlans` on the link end. |
+| an entry of `logical_interfaces` | `parent` | There is no generic parent: `members` (aggregate), `vlan` (VLAN interface) or `source` (tunnel). |
+| an entry of `logical_interfaces` | `speed`, `media` | A logical interface has no cable; speed and medium are properties of a link. |
+| a network | `kind` | A network is always an IP network. |
+| a network | `vrf` | `vrf` on the interfaces (or loopbacks) that are in the VRF. |
+| a network | `members` | Derived from the addresses inside the network's `cidr` (see [Membership](#membership-derived)). |
+| a group | `kind: row` | `kind: floor`. |
 
-Entries under an old `children:` or `loopbacks:` key are **not read** (so
-references to them are reported too) and **not dropped**: the file keeps
-them, and exports them unchanged, until you move them.
-
-```yaml
-# before                                        # now
-- id: r1                                        - id: r1
-  loopbacks:                                      interfaces:
-    - {id: lo0, ip: 10.255.0.1/32}                  - {id: ge-0/0/0, ip: 192.0.2.1/30}
-  interfaces:                                       - {id: ge-0/0/1}
-    - id: ge-0/0/0                                logical_interfaces:
-      ip: 192.0.2.1/30                              - {id: lo0, type: loopback, ip: 10.255.0.1/32}
-      children:                                     - {id: st0.10, type: tunnel, source: ge-0/0/0}
-        - {id: st0.10, type: tunnel}                - {id: ae0, type: virtual, members: [ge-0/0/1]}
-    - id: ge-0/0/1
-      children:
-        - {id: ae0, type: logical}
-```
-
-### One place per fact (earlier change)
-
-| Before (0.1.x) | Now | What to do |
-|---|---|---|
-| `kind` on a network | removed | Delete it. A network is always an IP network. |
-| `vrf` on a network | removed | Delete it, and set `vrf:` on the interfaces (or loopbacks) that are in the VRF. |
-| `members` on a network | removed; derived | Delete it. Make sure each former member has an interface or loopback address inside the network's `cidr`, and that the network has a `cidr`. A "network" that was only a list of devices (a VRF, a zone) isn't an IP network: remove it, or model it as a relation or group. |
-| `cidr` that isn't a valid prefix | now an error (was a warning) | Write an address with a prefix length. |
-| `vlan` on a network: any text | a VLAN ID, 1–4094 | Write the number. |
-| `vlan` on an interface or loopback | removed; derived | Delete it. Set `vlan:` on the network that contains the interface's address. For VLANs a port carries on a cable, use `vlans:` on the link end. |
-| `speed` on an interface | removed | Move it to `speed:` of the link cabled to that port. |
-| `media` on an interface | removed | Move it to `medium:` of the link cabled to that port. |
-| a link without `medium`/`speed` took them from its interfaces | no fallback | Set them on the link. |
-| (none) | `vlans` on a link end | New: VLANs permitted per end. |
-| (none) | `vrf` on an interface | New. |
-| group `kind: row` | `kind: floor` | Rename. |
-| warning "speed mismatch" between two interfaces | gone | Speed exists once, on the link. |
-| warning "address … is outside" a network | gone | An address outside the prefix simply isn't a member. |
+Entries under a rejected key are **not read** (so references to them are
+reported as well) and **not dropped**: the file keeps them, and exports them
+unchanged, until you remove or move them.
