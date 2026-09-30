@@ -5,7 +5,7 @@
  * user action (file picker or drag-and-drop), edited in memory, and saved by
  * letting the browser download a new copy. Nothing is transmitted.
  */
-import { ModelDoc, Origin } from '../editor/document';
+import { ModelDoc, Origin, ifaceSchemaKind } from '../editor/document';
 import { downloadText, exportFileName, readTextFile, safeYamlFileName } from './files';
 import { el, materialize, mount } from './dom';
 import { DialogOpts, showDialog, showToast } from './dialogs';
@@ -13,7 +13,7 @@ import { Editor, EditorSel } from './inspector';
 import { EXAMPLES } from '../generated/examples';
 import { Rect } from '../layout/geometry';
 import { detailsFor, legendFor, relationList, tooltipFor } from './panels';
-import { svgLegend } from '../diagram/legend';
+import { exportBoxes } from '../diagram/networks-box';
 import { Session, View } from '../diagram/session';
 import { SelectionContext, search, selectionContext, splitRef } from '../model/queries';
 import { Issue } from '../validation/validate';
@@ -511,8 +511,13 @@ export class App {
     if (!ent) this.editor.sel = { kind: 'document', index: 0 };
     else {
       this.editor.sel = { kind: ent.kind, index: ent.index };
-      const p = d.issuePath(is);
-      if (ent.kind === 'device' && p && p[2] === 'interfaces' && typeof p[3] === 'number') this.editor.sel.iface = p[3];
+      // open the interface, child interface or loopback the issue is in
+      const p = d.issuePath(is) || [];
+      const ip = [6, 4].map((n) => p.slice(0, n)).find((x) => !!ifaceSchemaKind(x));
+      if (ent.kind === 'device' && ip) {
+        this.editor.sel.iface = ip;
+        this.editor.openIface(ip);
+      }
     }
     this.editorSelected(this.editor.sel);
     this.tab = 'edit';
@@ -608,7 +613,7 @@ export class App {
     const btn = this.$('btn-arrange') as HTMLButtonElement;
     const icon = btn.querySelector('.arrange-icon') as HTMLElement;
     const desc = this.$('arrange-status');
-    const action = 'Auto-arrange recomputes the positions of every object, for this view or both (A).';
+    const action = 'Auto-arrange recomputes the positions of every object in this view; the other view is not changed (A).';
     for (const v of ['physical', 'logical'] as View[]) {
       if (d && s) btn.setAttribute('data-status-' + v, d.layoutStatus(v));
       else btn.removeAttribute('data-status-' + v);
@@ -719,7 +724,7 @@ export class App {
     this.$('zoom-out').addEventListener('click', () => this.zoomBy(0.8));
     this.$('zoom-fit').addEventListener('click', () => this.fit());
     this.$('save-svg').addEventListener('click', () => this.downloadSvg());
-    this.$('btn-arrange').addEventListener('click', () => void this.arrangeDialog());
+    this.$('btn-arrange').addEventListener('click', () => void this.arrangeCurrentView());
 
     const opt = (id: string, fn: (v: boolean) => void): void => {
       this.$<HTMLInputElement>(id).addEventListener('change', (e) => {
@@ -876,7 +881,7 @@ export class App {
       } else if (e.key === 'p' || e.key === '1') this.setView('physical');
       else if (e.key === 'l' || e.key === '2') this.setView('logical');
       else if (e.key === 'e') this.showTab('edit');
-      else if (e.key === 'a') void this.arrangeDialog();
+      else if (e.key === 'a') void this.arrangeCurrentView();
       else if (e.key === '+' || e.key === '=') this.zoomBy(1.25);
       else if (e.key === '-') this.zoomBy(0.8);
       else if (e.key === '0' || e.key === 'f') this.fit();
@@ -910,42 +915,50 @@ export class App {
     }
   }
 
-  /** Explain the scope of Auto-arrange, let the user choose the view(s), then arrange. */
-  async arrangeDialog(): Promise<void> {
+  /**
+   * Auto-arrange the view on screen; the other view is never touched.
+   * Positions that were set by hand are only replaced after a confirmation
+   * that says what will change. A view that already shows the auto-arranged
+   * layout is left alone without asking.
+   */
+  async arrangeCurrentView(): Promise<void> {
     const d = this.mdoc;
     const s = this.session;
     if (!d || !s) return;
     const view = s.state.view;
     const other: View = view === 'physical' ? 'logical' : 'physical';
-    const counts = { physical: d.displayedPositions('physical').size, logical: d.displayedPositions('logical').size };
-    const body: Array<Node | string> = [
-      el(this.doc, 'p', {}, [
-        'Auto-arrange repositions every object of the whole model in the chosen view — including objects that are hidden by filters or outside the visible area. ' +
-          'The layout is deterministic: the same model always gives the same positions, whatever you moved before.',
-      ]),
-      el(this.doc, 'ul', { class: 'arrange-scope' }, [
-        el(this.doc, 'li', {}, [`Physical view: ${counts.physical} devices (group boxes follow their devices) — currently ${statusText(d.layoutStatus('physical'))}`]),
-        el(this.doc, 'li', {}, [`Logical view: ${counts.logical} devices, networks and hubs — currently ${statusText(d.layoutStatus('logical'))}`]),
-      ]),
-      el(this.doc, 'p', { class: 'muted' }, ['The positions are stored in the model’s layout section and exported with the YAML. Undo with Ctrl+Z.']),
-    ];
-    const a = await this.dialog({
-      title: 'Auto-arrange',
-      body,
-      buttons: [
-        { label: 'Cancel', value: 'cancel' },
-        { label: 'Arrange both views', value: 'both' },
-        { label: `Arrange ${view} view only`, value: view, kind: 'primary' },
-      ],
-    });
-    if (a === 'cancel') return;
-    const views: View[] = a === 'both' ? [view, other] : [view];
-    const res = d.arrange(views);
+    const impact = d.arrangeImpact(view);
+    if (impact.manual.length) {
+      const m = s.model;
+      const name = (id: string): string => (m.index.devices.get(id) || m.index.networks.get(id) || { label: id }).label;
+      const shown = impact.manual.slice(0, 6).map(name);
+      const rest = impact.moved.length - impact.manual.length;
+      const n = impact.manual.length;
+      const a = await this.dialog({
+        title: `Replace manual positions in the ${view} view?`,
+        body: [
+          el(this.doc, 'p', {}, [
+            `${n} object${n > 1 ? 's were' : ' was'} positioned by hand in the ${view} view: ${shown.join(', ')}${n > shown.length ? ` and ${n - shown.length} more` : ''}. ` +
+              `Auto-arrange moves ${n > 1 ? 'them' : 'it'} back to the calculated layout` +
+              (rest > 0 ? `, together with ${rest} other object${rest > 1 ? 's' : ''} that no longer match${rest > 1 ? '' : 'es'} it.` : '.'),
+          ]),
+          el(this.doc, 'p', { class: 'muted' }, [`The ${other} view is not changed. You can undo this with Ctrl+Z.`]),
+        ],
+        buttons: [
+          { label: 'Cancel', value: 'cancel' },
+          { label: `Arrange ${view} view`, value: 'arrange', kind: 'primary' },
+        ],
+      });
+      if (a !== 'arrange') return;
+      // the model or the view may have changed while the dialog was open
+      if (this.mdoc !== d || this.session !== s || s.state.view !== view) return;
+    }
+    const res = d.arrange([view]);
     const note = !res.changed
       ? 'Already arranged — nothing moved.'
       : res.moved === 0
         ? 'Positions saved in the model; nothing moved.'
-        : `Auto-arranged: ${res.moved} object${res.moved > 1 ? 's' : ''} moved. Undo with Ctrl+Z.`;
+        : `Auto-arranged the ${view} view: ${res.moved} object${res.moved > 1 ? 's' : ''} moved. Undo with Ctrl+Z.`;
     this.afterEdit(note);
     if (res.moved) this.fit();
   }
@@ -1093,8 +1106,9 @@ export class App {
 
   /**
    * Serialize the current diagram as a standalone SVG string (for "Save SVG").
-   * The legend of the shown view is drawn into the file, beside the diagram,
-   * and the picture is enlarged to contain both.
+   * The legend of the shown view and the overview of the networks relevant
+   * to it are drawn into the file, beside the diagram, and the picture is
+   * enlarged to contain all of it.
    */
   exportSvg(): string {
     const clone = this.svg.cloneNode(true) as SVGSVGElement;
@@ -1103,9 +1117,12 @@ export class App {
     if (vp) vp.removeAttribute('transform');
     if (this.session) {
       const st = this.session.state;
-      const legend = svgLegend(this.session.model, st.view, st, b);
-      clone.appendChild(materialize(legend.root, this.doc, true));
-      b = legend.viewBox;
+      // what the picture shows decides what its legend and its networks overview list
+      const scene = this.session.render();
+      const boxes = exportBoxes(this.session.model, st.view, st, { root: scene.root, bounds: b });
+      clone.appendChild(materialize(boxes.legend.root, this.doc, true));
+      clone.appendChild(materialize(boxes.networks.root, this.doc, true));
+      b = boxes.viewBox;
     }
     clone.setAttribute('viewBox', `${round(b.x)} ${round(b.y)} ${round(b.w)} ${round(b.h)}`);
     clone.setAttribute('width', String(Math.round(b.w)));
@@ -1131,13 +1148,9 @@ export class App {
 const LAYOUT_STATUS_ICON = { auto: '\u2713', manual: '\u270E', edited: '\u25CF' };
 const LAYOUT_STATUS_MESSAGE = {
   auto: 'This view matches the auto-arranged layout.',
-  manual: 'This view has manually adjusted positions. Auto-arrange will replace them.',
+  manual: 'This view has manually adjusted positions. Auto-arrange replaces them after a confirmation.',
   edited: 'This view no longer matches the auto-arranged layout: the model was edited after it was arranged. Auto-arrange will rearrange it.',
 };
-
-function statusText(st: 'auto' | 'manual' | 'edited'): string {
-  return st === 'auto' ? '“Auto-arranged”' : st === 'manual' ? '“Manually adjusted”' : '“Edited since arranged”';
-}
 
 function round(v: number): number {
   return Math.round(v * 100) / 100;

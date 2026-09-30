@@ -58,7 +58,7 @@ test('type is optional: no error, generic icon, the switch row, no type shown', 
   const d = r.model.devices[0];
   assert.equal(icons.iconName(d.type), 'generic');
   assert.equal(defaultTier(d.type), defaultTier('switch'));
-  assert.equal(deviceSubtitle(d.type, 'MX204', 'edge'), 'edge · MX204');
+  assert.equal(deviceSubtitle(d.type), '');
 });
 
 test('any other value is an error at the type, with a suggestion', () => {
@@ -94,7 +94,7 @@ test('any other value is an error at the type, with a suggestion', () => {
 
 test('display names in subtitles, details, tooltips and the legend', () => {
   const m = model(withType('load_balancer'));
-  assert.equal(deviceSubtitle('load_balancer', 'BIG-IP', undefined), 'Load balancer · BIG-IP');
+  assert.equal(deviceSubtitle('load_balancer'), 'Load balancer');
   const text = (v) => scene.textOf(v);
   assert.match(text(panels.detailsFor(m, 'device:d1')), /Load balancer/);
   assert.match(text(panels.legendFor(m, 'physical', new Set())), /Load balancer/);

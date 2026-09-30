@@ -324,24 +324,39 @@ export class ModelDoc {
 
 
   /**
+   * What Auto-arrange would do to one view, without doing it:
+   *   moved   nodes whose displayed position would change;
+   *   manual  of those, the nodes that were placed by hand (their positions would be overwritten).
+   * Both are empty when the view already shows the auto-arranged layout.
+   */
+  arrangeImpact(view: LayoutView): { moved: string[]; manual: string[] } {
+    const m = this.result.model;
+    if (!m) return { moved: [], manual: [] };
+    const auto = this.autoLayout(view);
+    const shown = this.displayedPositions(view);
+    const moved: string[] = [];
+    auto.forEach((p, id) => {
+      const q = shown.get(id);
+      if (!q || q.x !== p.x || q.y !== p.y) moved.push(id);
+    });
+    moved.sort();
+    return { moved, manual: moved.filter((id) => m.layout.manual[view].has(id)) };
+  }
+
+  /**
    * Auto-arrange: compute the deterministic layout of the whole model for the
-   * given views and store it (one undo step). Returns how many nodes moved on
-   * screen; nothing is changed at all if the stored layout already equals the
-   * auto-arrange result.
+   * given views and store it (one undo step). A view that is not listed is
+   * not touched. Returns how many nodes moved on screen; nothing is changed
+   * at all if the stored layout already equals the auto-arrange result.
    */
   arrange(views: LayoutView[]): { changed: boolean; moved: number } {
     const m = this.result.model;
     if (!m) return { changed: false, moved: 0 };
-    const input = layoutInput(m);
     const targets = new Map<LayoutView, Map<string, Pt>>();
     let moved = 0;
     for (const v of views) {
       const auto = this.autoLayout(v);
-      const shown = resolvePositions(v, input, m.layout[v]);
-      auto.forEach((p, id) => {
-        const q = shown.get(id);
-        if (!q || q.x !== p.x || q.y !== p.y) moved++;
-      });
+      moved += this.arrangeImpact(v).moved.length;
       if (!samePositions(auto, m.layout[v])) targets.set(v, auto);
     }
     if (!targets.size) return { changed: false, moved: 0 };
@@ -449,7 +464,7 @@ export class ModelDoc {
     const cur = this.get(path);
     if (cur && cur.kind === 'map') return cur;
     let replacement: YMap;
-    if (cur && cur.kind === 'scalar' && typeof seg === 'number' && String(parentPath[parentPath.length - 1]) === 'interfaces') {
+    if (cur && cur.kind === 'scalar' && typeof seg === 'number' && /^(interfaces|children)$/.test(String(parentPath[parentPath.length - 1]))) {
       replacement = mapNode([['id', strNode(scalarText(cur) || '')]], true);
     } else if (cur && cur.kind === 'scalar' && scalarText(cur) !== undefined && (this.isLinkEnd(path) || (typeof seg === 'number' && parentPath[parentPath.length - 1] === 'endpoints'))) {
       // "dev:if" endpoint shorthand -> {device, interface}
@@ -551,7 +566,8 @@ export class ModelDoc {
   schemaKindOf(path: Path): string | undefined {
     if (path.length === 0) return 'top';
     if (path.length === 2 && typeof path[1] === 'number') return kindOfSection(String(path[0])) || undefined;
-    if (path.length === 4 && path[0] === 'devices' && path[2] === 'interfaces') return 'interface';
+    const ik = ifaceSchemaKind(path);
+    if (ik) return ik;
     if (path.length === 4 && typeof path[3] === 'number' && path[0] === 'relations' && path[2] === 'endpoints') return 'endpoint';
     if (this.isLinkEnd(path)) return 'linkEnd';
     if (path.length === 1 && path[0] === 'layout') return 'layout';
@@ -916,11 +932,6 @@ export class ModelDoc {
     if (kind === 'device') {
       epRefs('links', 'a/b');
       epRefs('relations', 'endpoints');
-      if (iface !== undefined) {
-        const dev = this.findEntity('device', id);
-        const rid = dev ? this.get(['devices', dev.index, 'router_id']) : undefined;
-        if (dev && rid && scalarText(rid) === iface) out.push(['devices', dev.index, 'router_id']);
-      }
     } else if (kind === 'group') {
       scalarRefs('groups', 'parent', (t) => t === id);
       scalarRefs('devices', 'group', (t) => t === id);
@@ -944,8 +955,7 @@ export class ModelDoc {
     if (n.kind === 'scalar') {
       const t = scalarText(n) as string;
       let nt = t;
-      if (p[p.length - 1] === 'router_id') nt = newIf as string;
-      else if (/^(a|b)$/.test(String(p[p.length - 1])) || p[p.length - 2] === 'endpoints') {
+      if (/^(a|b)$/.test(String(p[p.length - 1])) || p[p.length - 2] === 'endpoints') {
         const c = t.indexOf(':');
         const dev = c < 0 ? t : t.slice(0, c);
         const inf = c < 0 ? undefined : t.slice(c + 1);
@@ -980,17 +990,17 @@ export class ModelDoc {
     });
   }
 
-  /** Rename an interface of a device and update references ("dev:if", {interface}, router_id). */
-  renameInterface(devIndex: number, ifIndex: number, newIf: string): number {
-    const dev = this.entities('device')[devIndex];
-    if (!dev || !dev.id) return 0;
-    const ipath: Path = ['devices', devIndex, 'interfaces', ifIndex];
+  /** Rename an interface, child interface or loopback (by its path) and update references ("dev:if", {interface}). */
+  renameInterface(ipath: Path, newIf: string): number {
+    const kind = ifaceSchemaKind(ipath);
+    const dev = this.entities('device')[ipath[1] as number];
+    if (!kind || !dev || !dev.id) return 0;
     const cur = this.get(ipath);
     const oldIf = cur ? (cur.kind === 'map' ? this.text(ipath.concat('id')) : scalarText(cur)) : undefined;
-    return this.change('Rename interface', () => {
+    return this.change('Rename ' + (kind === 'loopback' ? 'loopback' : 'interface'), () => {
       const refs = oldIf ? this.references('device', dev.id as string, oldIf) : [];
-      const m = this.ensureMap(ipath, KEY_ORDER.interface);
-      setKey(m, 'id', strNode(newIf), KEY_ORDER.interface);
+      const m = this.ensureMap(ipath, KEY_ORDER[kind]);
+      setKey(m, 'id', strNode(newIf), KEY_ORDER[kind]);
       for (const p of refs) this.rewriteRef(p, dev.id as string, dev.id as string, oldIf, newIf);
       return refs.length;
     });
@@ -998,36 +1008,101 @@ export class ModelDoc {
 
   // --------------------------------------------------------------- interfaces
 
+  /**
+   * Every interface entry of a device, in file order: each physical
+   * interface followed by its children, then the loopbacks. The order of
+   * the lists in the file is never changed by reading them.
+   */
+  interfaceEntries(devIndex: number): IfaceEntry[] {
+    const out: IfaceEntry[] = [];
+    const idOf = (n: YNode): string | undefined => (n.kind === 'map' ? (n.entries.get('id') ? scalarText((n.entries.get('id') as { value: YNode }).value) : undefined) : scalarText(n));
+    const base: Path = ['devices', devIndex];
+    const ifs = this.get(base.concat('interfaces'));
+    if (ifs && ifs.kind === 'seq') {
+      ifs.items.forEach((it, k) => {
+        const path = base.concat('interfaces', k);
+        out.push({ path, id: idOf(it), kind: 'interface' });
+        const ch = it.kind === 'map' ? it.entries.get('children') : undefined;
+        if (ch && ch.value.kind === 'seq') {
+          ch.value.items.forEach((c, j) => {
+            const type = c.kind === 'map' && c.entries.get('type') ? scalarText((c.entries.get('type') as { value: YNode }).value) : undefined;
+            out.push({ path: path.concat('children', j), id: idOf(c), kind: 'child', type, parent: path });
+          });
+        }
+      });
+    }
+    const loops = this.get(base.concat('loopbacks'));
+    if (loops && loops.kind === 'seq') loops.items.forEach((it, k) => out.push({ path: base.concat('loopbacks', k), id: idOf(it), kind: 'loopback' }));
+    return out;
+  }
+
+  /** Ids of all interfaces, children and loopbacks of a device (one namespace per device). */
   interfaceIds(devIndex: number): string[] {
-    const l = this.get(['devices', devIndex, 'interfaces']);
-    if (!l || l.kind !== 'seq') return [];
-    return l.items
-      .map((it) => (it.kind === 'map' ? (it.entries.get('id') ? scalarText((it.entries.get('id') as { value: YNode }).value) : undefined) : scalarText(it)))
+    return this.interfaceEntries(devIndex)
+      .map((e) => e.id)
       .filter((x): x is string => !!x);
   }
 
-  /** Add an interface to a device; returns its index in the interfaces list. */
+  private newIface(devIndex: number, listPath: Path, order: string[], fields: Array<[string, YNode]>, base: string): number {
+    const taken = new Set(this.interfaceIds(devIndex));
+    const idGiven = fields.find(([k]) => k === 'id');
+    const id = idGiven ? scalarText(idGiven[1]) || base : this.uniqueId(base, taken);
+    const entries: Array<[string, YNode]> = [['id', strNode(id)]];
+    for (const [k, v] of fields) if (k !== 'id') entries.push([k, v]);
+    const list = this.ensureSeq(listPath, false, order);
+    list.items.push(mapNode(entries, true));
+    return list.items.length - 1;
+  }
+
+  /** Add a physical interface to a device; returns its index in the `interfaces` list. */
   addInterface(devIndex: number, fields: Array<[string, YNode]> = [], base = 'eth0'): number {
-    return this.change(fields.some(([k, v]) => k === 'type' && scalarText(v) === 'loopback') ? 'Add loopback' : 'Add interface', () => {
-      const taken = new Set(this.interfaceIds(devIndex));
-      const idGiven = fields.find(([k]) => k === 'id');
-      const id = idGiven ? scalarText(idGiven[1]) || base : this.uniqueId(base, taken);
-      const entries: Array<[string, YNode]> = [['id', strNode(id)]];
-      for (const [k, v] of fields) if (k !== 'id') entries.push([k, v]);
-      const list = this.ensureSeq(['devices', devIndex, 'interfaces'], false, KEY_ORDER.device);
-      list.items.push(mapNode(entries, true));
-      return list.items.length - 1;
+    return this.change('Add interface', () => this.newIface(devIndex, ['devices', devIndex, 'interfaces'], KEY_ORDER.device, fields, base));
+  }
+
+  /**
+   * Add a logical or tunnel child to a physical interface (`ifPath`);
+   * returns its index in that interface's `children` list.
+   */
+  addChild(ifPath: Path, type: 'logical' | 'tunnel', fields: Array<[string, YNode]> = []): number {
+    const devIndex = ifPath[1] as number;
+    return this.change(`Add ${type} interface`, () => {
+      const parent = this.ensureMap(ifPath, KEY_ORDER.interface);
+      // an interface with children is written as a block, its children one per line
+      delete parent.flow;
+      const pid = parent.entries.get('id') ? scalarText((parent.entries.get('id') as { value: YNode }).value) : undefined;
+      const f = fields.filter(([k]) => k !== 'type');
+      f.splice(f.length && f[0][0] === 'id' ? 1 : 0, 0, ['type', strNode(type)]);
+      return this.newIface(devIndex, ifPath.concat('children'), KEY_ORDER.interface, f, type === 'tunnel' ? 'tun0' : (pid || 'if') + '.1');
     });
   }
 
-  /** Add a loopback (type: loopback) with a name and addresses. */
+  /** Add a loopback with a name and addresses; returns its index in the `loopbacks` list. */
   addLoopback(devIndex: number, addresses: string[] = [], name?: string, id?: string): number {
     const f: Array<[string, YNode]> = [];
     if (id) f.push(['id', strNode(id)]);
-    f.push(['type', strNode('loopback')]);
     if (name) f.push(['label', strNode(name)]);
     f.push(['ip', seqNode(addresses.map(strNode), true)]);
-    return this.addInterface(devIndex, f, 'lo0');
+    return this.change('Add loopback', () => this.newIface(devIndex, ['devices', devIndex, 'loopbacks'], KEY_ORDER.device, f, 'lo0'));
   }
 }
 
+/** One interface entry of a device in the document tree. */
+export interface IfaceEntry {
+  path: Path;
+  id: string | undefined;
+  /** which list it is in: `interfaces` (physical), `children` of one, or `loopbacks` */
+  kind: 'interface' | 'child' | 'loopback';
+  /** child only: its `type` as written */
+  type?: string;
+  /** child only: the path of its physical interface */
+  parent?: Path;
+}
+
+/** Schema kind of an interface path: devices[i].interfaces[k], …interfaces[k].children[j] or devices[i].loopbacks[k]. */
+export function ifaceSchemaKind(path: Path): 'interface' | 'child' | 'loopback' | undefined {
+  if (path[0] !== 'devices' || typeof path[1] !== 'number' || typeof path[path.length - 1] !== 'number') return undefined;
+  if (path.length === 4 && path[2] === 'interfaces') return 'interface';
+  if (path.length === 4 && path[2] === 'loopbacks') return 'loopback';
+  if (path.length === 6 && path[2] === 'interfaces' && typeof path[3] === 'number' && path[4] === 'children') return 'child';
+  return undefined;
+}

@@ -11,17 +11,19 @@
  * an interface, the trunk state of a link end) are computed from the current
  * model on every render, are read-only, and are never written to the file.
  */
-import { DocMap, DocNode, ENTITY_KINDS, EntityKind, KEY_ORDER, ModelDoc, Path, SECTION, kindOfSection } from '../editor/document';
+import { DocMap, DocNode, ENTITY_KINDS, EntityKind, IfaceEntry, KEY_ORDER, ModelDoc, Path, SECTION, ifaceSchemaKind, kindOfSection } from '../editor/document';
 import { DialogOpts } from './dialogs';
 import { el } from './dom';
-import { CATEGORIES, LINE_STYLES, LOGICAL_IFACE_TYPES, VLAN_MAX, VLAN_MIN, ifaceKey } from '../model/types';
+import { sortedByName } from '../model/order';
+import { CATEGORIES, CHILD_IFACE_TYPES, InterfaceKind, LINE_STYLES, VLAN_MAX, VLAN_MIN, ifaceKey, interfaceKindLabel } from '../model/types';
 import { derivedVlanText, interfaceAddresses, linkEndVlanText, networkMembers, vlanMismatch, vlanMismatchText } from '../model/derive';
 import { builtinProtocols, normalizeProtocol } from '../model/protocols';
 import { SelectionContext, contextState } from '../model/queries';
 import { DEVICE_TYPES, isDeviceType } from '../model/device-types';
 import { Issue, scalarText } from '../validation/validate';
 
-export type EditorSel = { kind: EntityKind | 'document'; index: number; iface?: number } | null;
+/** `iface`: the document path of the selected interface, child interface or loopback of a device. */
+export type EditorSel = { kind: EntityKind | 'document'; index: number; iface?: Path } | null;
 
 export interface EditorHost {
   /** called after every committed edit */
@@ -37,7 +39,6 @@ const J = (p: Path): string => JSON.stringify(p);
 const entityRef = (kind: EntityKind, id: string): string => kind + ':' + (kind === 'protocol' ? normalizeProtocol(id) : id);
 const P = (s: string | null): Path => (s ? (JSON.parse(s) as Path) : []);
 
-const IFACE_TYPES = ['physical'].concat(LOGICAL_IFACE_TYPES);
 const MEDIA = ['fiber', 'copper', 'dac', 'aoc', 'wireless', 'lte', '5g', 'microwave', 'serial', 'virtual'];
 const GROUP_KINDS = ['site', 'building', 'floor', 'room', 'rack', 'provider', 'cloud', 'zone', 'region'];
 
@@ -101,9 +102,9 @@ export class Editor {
       const c = id.indexOf(':');
       const dev = this.doc.findEntity('device', id.slice(0, c));
       if (!dev) return;
-      const ifIdx = this.doc.interfaceIds(dev.index).indexOf(id.slice(c + 1));
-      this.sel = { kind: 'device', index: dev.index, iface: ifIdx >= 0 ? ifIdx : undefined };
-      if (ifIdx >= 0) this.open.add(J(['devices', dev.index, 'interfaces', ifIdx]));
+      const entry = this.doc.interfaceEntries(dev.index).find((e) => e.id === id.slice(c + 1));
+      this.sel = { kind: 'device', index: dev.index, iface: entry ? entry.path : undefined };
+      if (entry) this.openIface(entry.path);
       return;
     }
     const k = (kind === 'hub' ? 'relation' : kind) as EntityKind;
@@ -125,10 +126,17 @@ export class Editor {
     const ent = this.doc.entities(s.kind)[s.index];
     if (!ent || !ent.id) return null;
     if (s.kind === 'device' && s.iface !== undefined) {
-      const ifs = this.doc.interfaceIds(s.index);
-      if (ifs[s.iface]) return `iface:${ent.id}:${ifs[s.iface]}`;
+      const want = J(s.iface);
+      const entry = this.doc.interfaceEntries(s.index).find((e) => J(e.path) === want);
+      if (entry && entry.id) return `iface:${ent.id}:${entry.id}`;
     }
     return entityRef(s.kind, ent.id);
+  }
+
+  /** Open the card of an interface (and, for a child, the card of its physical interface). */
+  openIface(path: Path): void {
+    this.open.add(J(path));
+    if (ifaceSchemaKind(path) === 'child') this.open.add(J(path.slice(0, 4)));
   }
 
   private selectEntity(kind: EntityKind | 'document', index: number): void {
@@ -338,12 +346,6 @@ export class Editor {
       add(this.textField(base.concat('label'), 'Label', o, 'textarea', undefined, 'Shown in full in the diagram; long labels wrap. Line breaks typed here are kept.'));
       add(this.typeField(base.concat('type'), o));
       add(this.refField(base.concat('group'), 'Group / location', o, this.ids('group')));
-      add(this.textField(base.concat('vendor'), 'Vendor', o));
-      add(this.textField(base.concat('model'), 'Model', o));
-      add(this.textField(base.concat('role'), 'Role', o));
-      add(this.textField(base.concat('mgmt'), 'Management address', o));
-      const loops = this.loopbackIds(index);
-      add(this.refField(base.concat('router_id'), 'Router ID (loopback)', o, loops, 'The loopback whose IPv4 address is this device’s router ID.'));
       add(this.intField(base.concat('tier'), 'Tier (0–9)', o, 'Row in the physical view; 0 = top. Leave empty for automatic.'));
       add(this.textField(base.concat('description'), 'Description', o, 'textarea'));
       this.renderInterfaces(w, index);
@@ -398,83 +400,95 @@ export class Editor {
       .filter((x): x is string => !!x);
   }
 
-  private loopbackIds(devIndex: number): string[] {
-    const l = this.doc.get(['devices', devIndex, 'interfaces']);
-    if (!l || l.kind !== 'seq') return [];
-    const out: string[] = [];
-    l.items.forEach((it, k) => {
-      if (it.kind === 'map' && this.doc.text(['devices', devIndex, 'interfaces', k, 'type']) === 'loopback') {
-        const id = this.doc.text(['devices', devIndex, 'interfaces', k, 'id']);
-        if (id) out.push(id);
-      }
-    });
-    return out;
-  }
-
   // ------------------------------------------------------- interface cards
 
+  /**
+   * Loopbacks and physical interfaces (with their children) of a device.
+   * Cards are shown in alphabetical order of their ids; identical ids keep
+   * their file order. Only the display is sorted: every card still edits
+   * its own entry, and the lists in the file stay in the order they have.
+   */
   private renderInterfaces(w: HTMLElement, devIndex: number): void {
     const doc = this.doc;
-    const lp: Path = ['devices', devIndex, 'interfaces'];
-    const list = doc.get(lp);
-    const items = list && list.kind === 'seq' ? list.items : [];
-    const isLoop = (k: number): boolean => items[k].kind === 'map' && doc.text(lp.concat(k, 'type')) === 'loopback';
-    const loopIdx = items.map((_, k) => k).filter(isLoop);
-    const otherIdx = items.map((_, k) => k).filter((k) => !isLoop(k));
+    const entries = doc.interfaceEntries(devIndex);
+    const sorted = (kind: IfaceEntry['kind'], parent?: Path): IfaceEntry[] =>
+      sortedByName(
+        entries.filter((e) => e.kind === kind && (!parent || (e.parent && J(e.parent) === J(parent)))),
+        (e) => e.id || '',
+      );
+    const notList = (key: string): HTMLElement | null => {
+      const n = doc.get(['devices', devIndex, key]);
+      return n && n.kind !== 'seq' && !(n.kind === 'scalar' && n.value === null) ? this.e('p', { class: 'field-err' }, [`"${key}" is not a list; fix it in the YAML tab.`]) : null;
+    };
 
-    const ls = this.e('section', { class: 'sub' }, [
+    const loops = sorted('loopback');
+    const ls = this.e('section', { class: 'sub', 'data-list': 'loopbacks' }, [
       this.e('div', { class: 'sub-head' }, [
-        this.e('h4', {}, [`Loopbacks (${loopIdx.length})`]),
+        this.e('h4', {}, [`Loopbacks (${loops.length})`]),
         this.e('button', { type: 'button', class: 'mini', 'data-act': 'add-loop', 'data-index': String(devIndex) }, ['+ Loopback']),
       ]),
-      loopIdx.length ? null : this.e('p', { class: 'muted small' }, ['Logical interfaces with one or more IPv4/IPv6 addresses. Not cabled; usable as router ID or as a relation endpoint.']),
+      loops.length ? null : this.e('p', { class: 'muted small' }, ['Logical endpoints of the device itself, each with one or more IPv4/IPv6 addresses. Not a port and never cabled; usable as a relation endpoint.']),
+      notList('loopbacks'),
     ]);
-    for (const k of loopIdx) ls.appendChild(this.ifaceCard(devIndex, k, true));
+    for (const e of loops) ls.appendChild(this.ifaceCard(devIndex, e, []));
     w.appendChild(ls);
 
-    const is = this.e('section', { class: 'sub' }, [
+    const phys = sorted('interface');
+    const is = this.e('section', { class: 'sub', 'data-list': 'interfaces' }, [
       this.e('div', { class: 'sub-head' }, [
-        this.e('h4', {}, [`Interfaces (${otherIdx.length})`]),
+        this.e('h4', {}, [`Physical interfaces (${phys.length})`]),
         this.e('button', { type: 'button', class: 'mini', 'data-act': 'add-iface', 'data-index': String(devIndex) }, ['+ Interface']),
       ]),
+      phys.length ? null : this.e('p', { class: 'muted small' }, ['Ports of the device. Logical and tunnel interfaces are added as children of the physical interface they run on.']),
+      notList('interfaces'),
     ]);
-    for (const k of otherIdx) is.appendChild(this.ifaceCard(devIndex, k, false));
-    if (list && list.kind !== 'seq') is.appendChild(this.e('p', { class: 'field-err' }, ['"interfaces" is not a list; fix it in the YAML tab.']));
+    for (const e of phys) is.appendChild(this.ifaceCard(devIndex, e, sorted('child', e.path)));
     w.appendChild(is);
   }
 
-  private ifaceCard(devIndex: number, k: number, loop: boolean): HTMLElement {
+  /** The kind of an interface entry: fixed by where it is declared, except a child's logical/tunnel choice. */
+  private entryKind(e: IfaceEntry): InterfaceKind {
+    if (e.kind === 'loopback') return 'loopback';
+    if (e.kind === 'interface') return 'physical';
+    return e.type === 'tunnel' ? 'tunnel' : 'logical';
+  }
+
+  private ifaceCard(devIndex: number, entry: IfaceEntry, children: IfaceEntry[]): HTMLElement {
     const doc = this.doc;
-    const p: Path = ['devices', devIndex, 'interfaces', k];
+    const p = entry.path;
+    const o = entry.kind;
+    const loop = o === 'loopback';
     const n = doc.get(p) as DocNode;
-    const id = n.kind === 'map' ? doc.text(p.concat('id')) : scalarText(n);
+    const id = entry.id;
     const iss = doc.issuesAt(p);
     const errs = iss.filter((i) => i.severity === 'error').length;
     const addrs = this.listTexts(p.concat('ip'));
-    const summary = [id || '(no id)', loop ? doc.text(p.concat('label')) : doc.text(p.concat('type')) || '', addrs.slice(0, 2).join(', ') + (addrs.length > 2 ? ' …' : '')]
+    const kindText = interfaceKindLabel(this.entryKind(entry));
+    const summary = [id || '(no id)', loop ? doc.text(p.concat('label')) : kindText, addrs.slice(0, 2).join(', ') + (addrs.length > 2 ? ' …' : ''), children.length ? `${children.length} child${children.length > 1 ? 'ren' : ''}` : '']
       .filter((x) => !!x)
       .join(' · ');
-    const card = this.e('details', { class: 'card' + (errs ? ' has-err' : ''), 'data-card': J(p) });
-    if (this.open.has(J(p)) || (this.sel && this.sel.iface === k)) card.setAttribute('open', '');
+    const card = this.e('details', { class: 'card' + (o === 'child' ? ' child-card' : '') + (errs ? ' has-err' : ''), 'data-card': J(p), 'data-iface': id || '', 'data-kind': o });
+    const selected = !!this.sel && !!this.sel.iface && (J(this.sel.iface) === J(p) || (o === 'interface' && J(this.sel.iface.slice(0, 4)) === J(p)));
+    if (this.open.has(J(p)) || selected) card.setAttribute('open', '');
+    const what = loop ? 'loopback' : o === 'child' ? 'child interface' : 'interface';
     card.appendChild(
       this.e('summary', {}, [
         this.e('span', { class: 'card-title' }, [summary]),
         iss.length ? this.badge(errs, iss.length - errs) : null,
-        this.e('button', { type: 'button', class: 'mini danger', 'data-act': 'del-iface', 'data-p': J(p), title: 'Delete this ' + (loop ? 'loopback' : 'interface') }, ['×']),
+        this.e('button', { type: 'button', class: 'mini danger', 'data-act': 'del-iface', 'data-p': J(p), title: 'Delete this ' + what }, ['×']),
       ]),
     );
-    const o = 'interface';
-    card.appendChild(this.ifIdField(p, devIndex, k));
-    card.appendChild(this.textField(p.concat('label'), loop ? 'Name' : 'Label', o, 'text', undefined, loop ? 'Descriptive name, e.g. “Router ID” or “BGP source”.' : undefined));
+    card.appendChild(this.ifIdField(p, loop ? 'lo0' : o === 'child' ? 'ge-0/0/1.100, tun0' : 'ge-0/0/1'));
+    card.appendChild(this.ifTypeField(p, entry));
+    card.appendChild(this.textField(p.concat('label'), loop ? 'Name' : 'Label', o, 'text', undefined, loop ? 'Descriptive name, e.g. “Router ID” or “BGP source”.' : o === 'child' ? 'What this interface is, e.g. “SVI VLAN 10” or “GRE to Munich”.' : undefined));
     card.appendChild(this.listField(p.concat('ip'), loop ? 'Addresses (IPv4 / IPv6 with prefix)' : 'Addresses', o, loop ? '10.255.0.1/32 or 2001:db8::1/128' : '192.0.2.1/24'));
-    card.appendChild(this.textField(p.concat('type'), 'Type', o, 'text', IFACE_TYPES, loop ? undefined : 'Without a type the interface is a physical port (format rule). Logical types (loopback, tunnel, svi, lag …) cannot be cabled.', 'Not set: physical port'));
-    card.appendChild(this.ifaceDerivedField(devIndex, k));
+    card.appendChild(this.ifaceDerivedField(devIndex, p));
     card.appendChild(this.textField(p.concat('vrf'), 'VRF', o, 'text', undefined, 'The VRF this interface is assigned to, if any.'));
-    if (!loop || doc.get(p.concat('mac'))) card.appendChild(this.textField(p.concat('mac'), 'MAC', o));
+    if (!loop) card.appendChild(this.textField(p.concat('mac'), 'MAC', o));
     card.appendChild(this.textField(p.concat('description'), 'Description', o, 'textarea'));
     if (id) {
       const dev = doc.text(['devices', devIndex, 'id']);
-      const refs = dev ? doc.references('device', dev, id).filter((r) => r[r.length - 1] !== 'router_id') : [];
+      const refs = dev ? doc.references('device', dev, id) : [];
       if (refs.length) {
         card.appendChild(
           this.e('div', { class: 'used-by muted small' }, [
@@ -490,8 +504,45 @@ export class Editor {
       }
     }
     card.appendChild(this.attrsField(p.concat('attrs'), 'Attributes (attrs)', o));
-    card.appendChild(this.otherProps(p, 'interface'));
+    if (o === 'interface') {
+      const cs = this.e('section', { class: 'sub children', 'data-list': 'children' }, [
+        this.e('div', { class: 'sub-head' }, [
+          this.e('h4', {}, [`Child interfaces (${children.length})`]),
+          this.e('span', { class: 'ctl row' }, [
+            this.e('button', { type: 'button', class: 'mini', 'data-act': 'add-child', 'data-p': J(p), 'data-kind': 'logical' }, ['+ Logical']),
+            this.e('button', { type: 'button', class: 'mini', 'data-act': 'add-child', 'data-p': J(p), 'data-kind': 'tunnel' }, ['+ Tunnel']),
+          ]),
+        ]),
+        children.length ? null : this.e('p', { class: 'muted small' }, ['None. A physical interface can carry any number of logical and tunnel interfaces.']),
+      ]);
+      const cn = n.kind === 'map' ? doc.get(p.concat('children')) : undefined;
+      if (cn && cn.kind !== 'seq' && !(cn.kind === 'scalar' && cn.value === null)) cs.appendChild(this.e('p', { class: 'field-err' }, ['"children" is not a list; fix it in the YAML tab.']));
+      for (const c of children) cs.appendChild(this.ifaceCard(devIndex, c, []));
+      card.appendChild(cs);
+    }
+    card.appendChild(this.otherProps(p, o, o === 'interface' ? ['children'] : []));
     return card;
+  }
+
+  /**
+   * The type of an interface. A physical interface and a loopback have no
+   * type to choose (read-only text); a child is logical or a tunnel.
+   */
+  private ifTypeField(p: Path, entry: IfaceEntry): HTMLElement {
+    if (entry.kind !== 'child') {
+      const text = entry.kind === 'loopback' ? 'Loopback' : 'Physical';
+      const help = entry.kind === 'loopback' ? 'A logical endpoint of the device itself; it is not a port and cannot be cabled.' : 'Entries of this list are physical interfaces (ports). Only they can be cabled.';
+      return this.e('div', { class: 'field', 'data-iface-type': text.toLowerCase() }, [this.e('label', {}, ['Type']), this.e('span', { class: 'ro' }, [text]), this.e('div', { class: 'help' }, [help])]);
+    }
+    const tp = p.concat('type');
+    const cur = this.doc.text(tp) || '';
+    const valid = (CHILD_IFACE_TYPES as readonly string[]).indexOf(cur) >= 0;
+    const s = this.e('select', { 'data-p': J(tp), 'data-t': 'child-type', 'data-o': 'child' }) as HTMLSelectElement;
+    if (cur && !valid) s.appendChild(this.e('option', { value: cur }, [cur + ' (not a valid type)']));
+    for (const t of CHILD_IFACE_TYPES) s.appendChild(this.e('option', { value: t }, [interfaceKindLabel(t)]));
+    // without a type a child is logical (format rule)
+    s.value = cur || 'logical';
+    return this.field('Type', s, tp, 'Logical (e.g. a subinterface or an SVI) or Tunnel. Describe anything more specific in the label, the description or attrs.');
   }
 
   private listTexts(p: Path): string[] {
@@ -566,10 +617,10 @@ export class Editor {
     return this.field('ID', this.input(base.concat('id'), 'id', val, { 'data-kind': kind, required: '' }), base.concat('id'), 'Stable identifier. Renaming updates every reference to it.');
   }
 
-  private ifIdField(p: Path, devIndex: number, k: number): HTMLElement {
+  private ifIdField(p: Path, example: string): HTMLElement {
     const n = this.doc.get(p) as DocNode;
     const val = n.kind === 'map' ? this.doc.text(p.concat('id')) || '' : scalarText(n) || '';
-    return this.field('ID', this.input(p.concat('id'), 'ifid', val, { 'data-dev': String(devIndex), 'data-if': String(k) }), p.concat('id'), 'Unique on this device (e.g. lo0, ge-0/0/1). Renaming updates references.');
+    return this.field('ID', this.input(p.concat('id'), 'ifid', val), p.concat('id'), `Unique on this device across interfaces, children and loopbacks (e.g. ${example}). Renaming updates references.`);
   }
 
   private intField(p: Path, label: string, order: string, help?: string): HTMLElement {
@@ -673,11 +724,10 @@ export class Editor {
   }
 
   /** Network and VLAN of each address of an interface, from the networks containing it. */
-  private ifaceDerivedField(devIndex: number, k: number): HTMLElement {
+  private ifaceDerivedField(devIndex: number, p: Path): HTMLElement {
     const doc = this.doc;
     const model = doc.result.model;
     const dev = doc.text(['devices', devIndex, 'id']);
-    const p: Path = ['devices', devIndex, 'interfaces', k];
     const n = doc.get(p) as DocNode;
     const id = n.kind === 'map' ? doc.text(p.concat('id')) : scalarText(n);
     const help = 'From the network whose prefix contains the address and that network’s VLAN. Change the address or the network to change it.';
@@ -784,20 +834,19 @@ export class Editor {
     return this.ids('device');
   }
 
-  /** interface ids (with a marker for logical ones) of a device id */
-  private ifaceOptions(devId: string): Array<{ id: string; label: string }> {
+  /**
+   * Interface ids of a device id, alphabetically, with a marker for the ones
+   * that are not physical. A link end (`physicalOnly`) can only name a
+   * physical interface.
+   */
+  private ifaceOptions(devId: string, physicalOnly: boolean): Array<{ id: string; label: string }> {
     const ent = this.doc.findEntity('device', devId);
     if (!ent) return [];
-    const lp: Path = ['devices', ent.index, 'interfaces'];
-    const l = this.doc.get(lp);
-    if (!l || l.kind !== 'seq') return [];
-    return l.items
-      .map((it, k) => {
-        const id = it.kind === 'map' ? this.doc.text(lp.concat(k, 'id')) : scalarText(it);
-        const type = it.kind === 'map' ? this.doc.text(lp.concat(k, 'type')) : undefined;
-        return id ? { id, label: type && type !== 'physical' ? `${id} (${type})` : id } : null;
-      })
-      .filter((x): x is { id: string; label: string } => !!x);
+    const entries = this.doc.interfaceEntries(ent.index).filter((e) => !!e.id && (!physicalOnly || e.kind === 'interface'));
+    return sortedByName(entries, (e) => e.id as string).map((e) => {
+      const id = e.id as string;
+      return { id, label: e.kind === 'interface' ? id : `${id} (${interfaceKindLabel(this.entryKind(e)).toLowerCase()})` };
+    });
   }
 
   private epParts(p: Path): { device: string; iface: string } {
@@ -811,7 +860,7 @@ export class Editor {
     const devSel = this.selectEl(p, 'ep-dev', order, this.deviceIds(), device, '(device)');
     const ifSel = this.e('select', { 'data-p': J(p), 'data-t': 'ep-if', 'data-o': order }) as HTMLSelectElement;
     ifSel.appendChild(this.e('option', { value: '' }, ['(whole device)']));
-    const opts = this.ifaceOptions(device);
+    const opts = this.ifaceOptions(device, order === 'link');
     if (iface && !opts.some((o) => o.id === iface)) ifSel.appendChild(this.e('option', { value: iface }, [iface + ' (missing!)']));
     for (const o of opts) ifSel.appendChild(this.e('option', { value: o.id }, [o.label]));
     ifSel.value = iface;
@@ -898,9 +947,9 @@ export class Editor {
   }
 
   /** Keys of the entity that the format does not define: shown and editable, never dropped. */
-  private otherProps(base: Path, kind: string): HTMLElement {
+  private otherProps(base: Path, kind: string, shownElsewhere: string[] = []): HTMLElement {
     const n = base.length ? this.doc.get(base) : this.doc.root;
-    const known = KNOWN[kind] || [];
+    const known = (KNOWN[kind] || []).concat(shownElsewhere);
     const box = this.e('div', { class: 'other' });
     if (!n || n.kind !== 'map') return box;
     const extra = Array.from(n.entries.keys()).filter((k) => known.indexOf(k) < 0);
@@ -1030,10 +1079,13 @@ export class Editor {
           this.host.toast('The interface ID cannot be empty.');
           break;
         }
-        const n = doc.renameInterface(Number(target.getAttribute('data-dev')), Number(target.getAttribute('data-if')), trimmed);
+        const n = doc.renameInterface(p.slice(0, -1), trimmed);
         note = n ? `Renamed; ${n} reference${n > 1 ? 's' : ''} updated.` : undefined;
         break;
       }
+      case 'child-type':
+        doc.setText(p, val);
+        break;
       case 'list-item':
       case 'list-scalar':
         doc.setText(p, trimmed);
@@ -1156,24 +1208,38 @@ export class Editor {
       }
       case 'add-loop': {
         const k = doc.addLoopback(index, []);
-        this.open.add(J(['devices', index, 'interfaces', k]));
+        this.open.add(J(['devices', index, 'loopbacks', k]));
         this.host.changed('Loopback added — enter its addresses.');
         return true;
       }
       case 'add-iface': {
         const k = doc.addInterface(index);
         this.open.add(J(['devices', index, 'interfaces', k]));
-        this.host.changed('Interface added.');
+        this.host.changed('Physical interface added.');
+        return true;
+      }
+      case 'add-child': {
+        const type = btn.getAttribute('data-kind') === 'tunnel' ? 'tunnel' : 'logical';
+        const k = doc.addChild(p, type);
+        this.openIface(p.concat('children', k));
+        this.host.changed(type === 'tunnel' ? 'Tunnel interface added.' : 'Logical interface added.');
         return true;
       }
       case 'del-iface': {
         const dev = doc.text(['devices', p[1], 'id']);
         const ifid = doc.text(p.concat('id')) || scalarText(doc.get(p) as DocNode);
         const refs = dev && ifid ? doc.references('device', dev, ifid) : [];
-        if (refs.length) {
+        // deleting a physical interface deletes its children with it
+        const kids = doc.interfaceEntries(p[1] as number).filter((e) => e.parent && J(e.parent) === J(p));
+        const kidRefs = kids.reduce((sum, e) => sum + (dev && e.id ? doc.references('device', dev, e.id).length : 0), 0);
+        if (refs.length || kids.length) {
           const a = await this.host.dialog({
             title: `Delete interface “${ifid}”?`,
-            body: [`${refs.length} reference${refs.length > 1 ? 's' : ''} to ${dev}:${ifid} will become invalid.`],
+            body: [
+              refs.length ? `${refs.length} reference${refs.length > 1 ? 's' : ''} to ${dev}:${ifid} will become invalid. ` : '',
+              kids.length ? `Its ${kids.length} child interface${kids.length > 1 ? 's are' : ' is'} deleted with it${kidRefs ? ` (${kidRefs} reference${kidRefs > 1 ? 's' : ''} to them will become invalid)` : ''}. ` : '',
+              'You can undo this with Ctrl+Z.',
+            ],
             buttons: [
               { label: 'Cancel', value: 'cancel' },
               { label: 'Delete', value: 'delete', kind: 'danger' },

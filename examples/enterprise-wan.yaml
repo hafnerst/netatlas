@@ -68,33 +68,33 @@ devices:
   - id: hq-rtr1
     label: hq-rtr1
     type: router
-    vendor: Juniper
-    model: MX204
     group: hq-edge
-    mgmt: 10.99.0.11
+    loopbacks:
+      - {id: lo0, ip: 10.255.0.1/32}
     interfaces:
-      - {id: ge-0/0/0, ip: 198.51.100.2/30, description: ISP-1 uplink}
+      - id: ge-0/0/0
+        ip: 198.51.100.2/30
+        description: ISP-1 uplink
+        children:
+          - {id: st0.10, type: tunnel, ip: 172.16.10.1/30, description: GRE to Munich}
       - {id: ge-0/0/1, ip: 10.0.0.2/28}
-      - {id: st0.10, type: tunnel, ip: 172.16.10.1/30, description: GRE to Munich}
-      - {id: lo0, type: loopback, ip: 10.255.0.1/32}
   - id: hq-rtr2
     label: hq-rtr2
     type: router
-    vendor: Juniper
-    model: MX204
     group: hq-edge
-    mgmt: 10.99.0.12
+    loopbacks:
+      - {id: lo0, ip: 10.255.0.2/32}
     interfaces:
-      - {id: ge-0/0/0, ip: 203.0.113.2/30, description: ISP-2 uplink}
+      - id: ge-0/0/0
+        ip: 203.0.113.2/30
+        description: ISP-2 uplink
+        children:
+          - {id: st0.11, type: tunnel, ip: 172.16.11.1/30, description: GRE to Hamburg}
+          - {id: wg0, type: tunnel, ip: 172.16.99.1/30}
       - {id: ge-0/0/1, ip: 10.0.0.3/28}
-      - {id: st0.11, type: tunnel, ip: 172.16.11.1/30, description: GRE to Hamburg}
-      - {id: wg0, type: tunnel, ip: 172.16.99.1/30}
-      - {id: lo0, type: loopback, ip: 10.255.0.2/32}
   - id: hq-fw
     label: hq-fw
     type: firewall
-    vendor: Palo Alto
-    model: PA-3410
     group: hq-edge
     interfaces:
       - {id: eth1, ip: 10.0.0.1/28}
@@ -104,43 +104,43 @@ devices:
   - id: hq-core1
     label: hq-core1
     type: switch
-    vendor: Arista
-    model: 7050X3
     group: hq-core
     tier: 3
     interfaces:
       - {id: Ethernet49}
-      - {id: Ethernet51}
+      - id: Ethernet51
+        children:
+          - {id: Port-Channel1, type: logical, attrs: {function: lag}}
       - {id: Ethernet52}
-      - {id: Ethernet1}
-      - {id: Port-Channel1, type: lag}
-      - {id: Vlan10, type: svi, ip: 10.10.10.2/24}
-      - {id: Vlan20, type: svi, ip: 10.10.20.2/24}
+      - id: Ethernet1
+        children:
+          - {id: Vlan10, type: logical, ip: 10.10.10.2/24, attrs: {function: svi}}
+          - {id: Vlan20, type: logical, ip: 10.10.20.2/24, attrs: {function: svi}}
   - id: hq-core2
     label: hq-core2
     type: switch
-    vendor: Arista
-    model: 7050X3
     group: hq-core
     tier: 3
     interfaces:
       - {id: Ethernet49}
-      - {id: Ethernet51}
+      - id: Ethernet51
+        children:
+          - {id: Port-Channel1, type: logical, attrs: {function: lag}}
       - {id: Ethernet52}
-      - {id: Ethernet1}
-      - {id: Port-Channel1, type: lag}
-      - {id: Vlan10, type: svi, ip: 10.10.10.3/24}
-      - {id: Vlan20, type: svi, ip: 10.10.20.3/24}
+      - id: Ethernet1
+        children:
+          - {id: Vlan10, type: logical, ip: 10.10.10.3/24, attrs: {function: svi}}
+          - {id: Vlan20, type: logical, ip: 10.10.20.3/24, attrs: {function: svi}}
   - id: hq-acc1
     label: hq-acc1
     type: switch
-    model: Catalyst 9300
     group: hq-core
     interfaces:
-      - {id: Gi1/0/49}
+      - id: Gi1/0/49
+        children:
+          - {id: Vlan10, type: logical, ip: 10.10.10.4/24, description: Switch management, attrs: {function: svi}}
       - {id: Gi1/0/50}
       - {id: Gi1/0/1}
-      - {id: Vlan10, type: svi, ip: 10.10.10.4/24, description: Switch management}
   - id: hq-log
     label: hq-log (syslog)
     type: server
@@ -151,12 +151,14 @@ devices:
   - id: muc-rtr
     label: muc-rtr
     type: router
-    model: ISR 1100
     group: branch-muc
     interfaces:
-      - {id: wan0, ip: 192.0.2.10/29, description: VDSL}
+      - id: wan0
+        ip: 192.0.2.10/29
+        description: VDSL
+        children:
+          - {id: Tunnel10, type: tunnel, ip: 172.16.10.2/30}
       - {id: lan0, ip: 10.20.0.1/24}
-      - {id: Tunnel10, type: tunnel, ip: 172.16.10.2/30}
   - id: muc-sw
     label: muc-sw
     type: switch
@@ -172,14 +174,17 @@ devices:
   - id: ham-rtr
     label: ham-rtr
     type: router
-    model: ISR 1100
     group: branch-ham
     interfaces:
-      - {id: wan0, ip: 192.0.2.34/29}
-      - {id: wan1, description: LTE backup modem}
+      - id: wan0
+        ip: 192.0.2.34/29
+        children:
+          - {id: Tunnel11, type: tunnel, ip: 172.16.11.2/30}
+      - id: wan1
+        description: LTE backup modem
+        children:
+          - {id: wg0, type: tunnel, ip: 172.16.99.2/30}
       - {id: lan0, ip: 10.30.0.1/24}
-      - {id: Tunnel11, type: tunnel, ip: 172.16.11.2/30}
-      - {id: wg0, type: tunnel, ip: 172.16.99.2/30}
   - id: ham-sw
     label: ham-sw
     type: switch

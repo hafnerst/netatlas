@@ -23,41 +23,41 @@ devices:
       Core switch A
       (rack 12, U30-U34)
     type: switch
-    role: core
-    model: Catalyst 9500-48Y4C
     group: dc
     tier: 3
+    loopbacks:
+      - {id: lo0, ip: [10.255.0.1/32, 2001:db8:ffff::1/128]}
     interfaces:
       - {id: Hu1/0/49}
       - {id: Hu1/0/50}
       - {id: Hu1/0/51}
       - {id: TwentyFiveGigE1/0/1}
       - {id: TwentyFiveGigE1/0/2}
-      - {id: lo0, type: loopback, ip: [10.255.0.1/32, 2001:db8:ffff::1/128]}
   - id: core-b
     label: |-
       core-b
       Core switch B
     type: switch
-    role: core
     group: dc
     tier: 3
+    loopbacks:
+      - {id: lo0, ip: 10.255.0.2/32}
     interfaces:
       - {id: Hu1/0/49}
       - {id: Hu1/0/50}
       - {id: Hu1/0/51}
       - {id: TwentyFiveGigE1/0/1}
-      - {id: lo0, type: loopback, ip: 10.255.0.2/32}
   - id: fw
     label: Perimeter firewall cluster for the production and the pre-production environment (active/passive)
     type: firewall
-    model: PA-5450
     group: dc
     interfaces:
-      - {id: ethernet1/1, ip: 10.10.0.1/24}
+      - id: ethernet1/1
+        ip: 10.10.0.1/24
+        children:
+          - {id: tunnel.10, type: tunnel}
+          - {id: tunnel.20, type: tunnel}
       - {id: ethernet1/2}
-      - {id: tunnel.10, type: tunnel}
-      - {id: tunnel.20, type: tunnel}
   - id: srv
     label: s
     type: server
@@ -75,9 +75,10 @@ devices:
     type: router
     group: branch
     interfaces:
-      - {id: GigabitEthernet0/0/0}
-      - {id: Tunnel10, type: tunnel}
-      - {id: Tunnel20, type: tunnel}
+      - id: GigabitEthernet0/0/0
+        children:
+          - {id: Tunnel10, type: tunnel}
+          - {id: Tunnel20, type: tunnel}
 
 links:
   # three parallel cables between the two core switches

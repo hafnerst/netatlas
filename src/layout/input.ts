@@ -4,7 +4,7 @@
  * Auto-arrange is a pure function of this structure and of nothing else, so
  * two models that differ only in YAML key order, section order, the order of
  * list items (devices, interfaces, links, members, endpoints …), comments,
- * formatting, or fields that do not affect geometry (vendor, attrs,
+ * formatting, or fields that do not affect geometry (attrs,
  * protocols, addresses that do not change which network a device belongs
  * to …) get exactly the same positions.
  *
@@ -15,7 +15,7 @@ import { networkMembers } from '../model/derive';
 import { deviceSubtitle } from '../model/device-types';
 import { relationStyle } from '../model/protocols';
 import { vlanMismatch } from '../model/derive';
-import { Link, Model, loopbacks, relationDevices } from '../model/types';
+import { Link, Model, relationDevices } from '../model/types';
 import { buildBundle, laneLabel, relationPairs } from './bundles';
 import { cmp } from './order';
 import { chipTextWidth, loopbackChipText, networkSubtitle } from './sizes';
@@ -32,7 +32,7 @@ export interface LLink {
 export interface LDev {
   id: string;
   label: string;
-  /** second line of the device box: type, role, model */
+  /** second line of the device box: the type's display name */
   sub: string;
   tier: number;
   group: string | null;
@@ -122,12 +122,12 @@ export function layoutInput(m: Model): LayoutInput {
       m.devices.map((d) => ({
         id: d.id,
         label: d.label,
-        sub: deviceSubtitle(d.type, d.model, d.role),
+        sub: deviceSubtitle(d.type),
         tier: d.tier !== undefined ? d.tier : defaultTier(d.type),
         group: d.group || null,
-        loopbacks: loopbacks(d).length,
+        loopbacks: d.loopbacks.length,
         // over all loopbacks, not only the ones shown, so the order in the file doesn't matter
-        chipW: loopbacks(d).reduce((m, l) => Math.max(m, chipNeed(l.id, l.addresses, d.routerId === l.id)), 0),
+        chipW: d.loopbacks.reduce((m, l) => Math.max(m, chipNeed(l.id, l.addresses)), 0),
       })),
     ),
     groups: byId(m.groups.map((g) => ({ id: g.id, parent: g.parent || null, label: g.label, kind: g.kind }))),
@@ -165,9 +165,9 @@ export function layoutInput(m: Model): LayoutInput {
 }
 
 /** Width a loopback's chip needs whichever of its addresses is written first (the chip shows the first one). */
-function chipNeed(id: string, addresses: string[], routerId: boolean): number {
+function chipNeed(id: string, addresses: string[]): number {
   const firsts = addresses.length ? addresses : [''];
-  return firsts.reduce((m, a) => Math.max(m, Math.ceil(chipTextWidth(loopbackChipText(id, a ? [a].concat(addresses.slice(1)) : [], routerId)))), 0);
+  return firsts.reduce((m, a) => Math.max(m, Math.ceil(chipTextWidth(loopbackChipText(id, a ? [a].concat(addresses.slice(1)) : [])))), 0);
 }
 
 /** VLANs of a cable for its label: what both ends permit, "Trunk" for several, a note when the ends differ. */

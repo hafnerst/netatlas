@@ -24,9 +24,9 @@ devices:
   - id: pe1
     type: router
     group: pop-north
-    router_id: lo0
+    loopbacks:
+      - {id: lo0, label: Router ID, ip: [10.0.0.1/32, 2001:db8:0:ffff::1/128]}
     interfaces:
-      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.1/32, 2001:db8:0:ffff::1/128]}
       - {id: et1, ip: 10.1.12.1/31}
       - {id: et2, ip: 10.1.16.1/31}
       - {id: et3, ip: 192.0.2.1/30, vrf: CUST-A}
@@ -34,38 +34,38 @@ devices:
   - id: pe2
     type: router
     group: pop-north
-    router_id: lo0
+    loopbacks:
+      - {id: lo0, label: Router ID, ip: [10.0.0.2/32, 2001:db8:0:ffff::2/128]}
     interfaces:
-      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.2/32, 2001:db8:0:ffff::2/128]}
       - {id: et1, ip: 10.1.12.0/31}
       - {id: et2, ip: 10.1.23.0/31}
       - {id: et4}
   - id: pe3
     type: router
     group: pop-east
-    router_id: lo0
+    loopbacks:
+      - {id: lo0, label: Router ID, ip: [10.0.0.3/32, 2001:db8:0:ffff::3/128]}
+      - {id: lo1, label: VPN next-hop, ip: [10.0.1.3/32]}
     interfaces:
-      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.3/32, 2001:db8:0:ffff::3/128]}
-      - {id: lo1, type: loopback, label: VPN next-hop, ip: [10.0.1.3/32]}
       - {id: et1, ip: 10.1.23.1/31}
       - {id: et2, ip: 10.1.34.0/31}
       - {id: et4}
   - id: pe4
     type: router
     group: pop-east
-    router_id: lo0
+    loopbacks:
+      - {id: lo0, label: Router ID, ip: [10.0.0.4/32, 2001:db8:0:ffff::4/128]}
     interfaces:
-      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.4/32, 2001:db8:0:ffff::4/128]}
       - {id: et1, ip: 10.1.34.1/31}
       - {id: et2, ip: 10.1.45.0/31}
       - {id: et4}
   - id: pe5
     type: router
     group: pop-south
-    router_id: lo0
+    loopbacks:
+      - {id: lo0, label: Router ID, ip: [10.0.0.5/32, 2001:db8:0:ffff::5/128]}
+      - {id: lo1, label: VPN next-hop, ip: [10.0.1.5/32]}
     interfaces:
-      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.5/32, 2001:db8:0:ffff::5/128]}
-      - {id: lo1, type: loopback, label: VPN next-hop, ip: [10.0.1.5/32]}
       - {id: et1, ip: 10.1.45.1/31}
       - {id: et2, ip: 10.1.56.0/31}
       - {id: et3, ip: 192.0.2.5/30, vrf: CUST-A}
@@ -73,9 +73,9 @@ devices:
   - id: pe6
     type: router
     group: pop-south
-    router_id: lo0
+    loopbacks:
+      - {id: lo0, label: Router ID, ip: [10.0.0.6/32, 2001:db8:0:ffff::6/128]}
     interfaces:
-      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.6/32, 2001:db8:0:ffff::6/128]}
       - {id: et1, ip: 10.1.56.1/31}
       - {id: et2, ip: 10.1.16.0/31}
       - {id: et4}
@@ -95,7 +95,12 @@ devices:
     label: OOB switch
     type: switch
     group: oob
-    interfaces: [p1, p2, p3, {id: vlan1, type: svi, ip: 172.31.0.2/24}]
+    interfaces:
+      - id: p1
+        children:
+          - {id: vlan1, type: logical, ip: 172.31.0.2/24, attrs: {function: svi}}
+      - p2
+      - p3
   - id: oob-con1
     label: Console server 1
     type: system
@@ -117,8 +122,8 @@ devices:
   - id: spare-pe
     label: Spare PE (not in service)
     type: router
-    interfaces:
-      - {id: lo0, type: loopback, ip: [10.0.0.99/32]}
+    loopbacks:
+      - {id: lo0, ip: [10.0.0.99/32]}
 
 links:
   # the ring
@@ -221,20 +226,20 @@ layout:
     pe6: [904, 390]
     spare-pe: [1166, 27]
   logical:
-    ce-a1: [88, 515]
-    ce-a2: [576, 811]
-    cust-a-access: [330, 679]
-    l3vpn-a: [401, 331]
-    oob-con1: [1532, 713]
-    oob-con2: [1291, 233]
-    oob-mgmt: [1501, 398]
-    oob-nms: [1671, 236]
-    oob-sw: [1591, 26]
-    ospf-core: [715, 204]
-    pe1: [110, 180]
-    pe2: [902, 67]
-    pe3: [503, 45]
-    pe4: [1006, 267]
-    pe5: [473, 528]
-    pe6: [844, 460]
-    spare-pe: [114, 963]
+    ce-a1: [567, 648]
+    ce-a2: [596, 821]
+    cust-a-access: [297, 751]
+    l3vpn-a: [240, 189]
+    oob-con1: [1546, 713]
+    oob-con2: [1305, 233]
+    oob-mgmt: [1515, 398]
+    oob-nms: [1685, 236]
+    oob-sw: [1605, 26]
+    ospf-core: [758, 275]
+    pe1: [659, 426]
+    pe2: [790, 37]
+    pe3: [435, 129]
+    pe4: [1026, 231]
+    pe5: [103, 532]
+    pe6: [1015, 464]
+    spare-pe: [114, 973]

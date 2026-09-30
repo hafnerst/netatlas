@@ -114,7 +114,7 @@ test('order independence: shuffled keys, sections, lists and swapped cable ends 
 test('fields that do not affect geometry do not change the layout', () => {
   const base = layoutInput(docOf(read('enterprise-wan.yaml')).result.model);
   const text = read('enterprise-wan.yaml')
-    .replace('vendor: Juniper', 'vendor: Someone Else')
+    .replace('description: ISP-1 uplink', 'description: some other uplink')
     .replace(/ip: 198\.51\.100\.2\/30/, 'ip: 198.51.100.66/30')
     .replace('encryption: aes-256-gcm', 'encryption: chacha20')
     .replace('# netatlas example: enterprise WAN', '# a different comment');
@@ -195,7 +195,7 @@ test('edits never re-arrange: positions are frozen on the first geometric edit, 
   const shown = { physical: d.displayedPositions('physical'), logical: d.displayedPositions('logical') };
   // a non-geometric edit stores nothing
   const fw = d.findEntity('device', 'hq-fw').index;
-  d.change('vendor', () => d.setAt(['devices', fw, 'vendor'], yaml.strNode('Fortinet')));
+  d.change('description', () => d.setAt(['devices', fw, 'description'], yaml.strNode('Perimeter firewall')));
   assert.equal(d.root.entries.has('layout'), false);
   // adding a device changes geometry: everything shown stays where it was
   const i = d.addEntity('device', [['id', yaml.strNode('hq-fw2')], ['type', yaml.strNode('firewall')], ['group', yaml.strNode('hq-edge')]]);
@@ -274,7 +274,7 @@ function islands() {
   const links = [];
   const rels = [];
   const add = (prefix, n, group) => {
-    for (let i = 0; i < n; i++) t += `  - {id: ${prefix}${i}, type: ${i ? 'switch' : 'router'}${group ? ', group: ' + group : ''}, interfaces: [p0, p1, p2, {id: lo0, type: loopback, ip: [10.${prefix.length}.${n}.${i}/32]}]}\n`;
+    for (let i = 0; i < n; i++) t += `  - {id: ${prefix}${i}, type: ${i ? 'switch' : 'router'}${group ? ', group: ' + group : ''}, interfaces: [p0, p1, p2], loopbacks: [{id: lo0, ip: [10.${prefix.length}.${n}.${i}/32]}]}\n`;
     for (let i = 1; i < n; i++) links.push(`  - {id: ${prefix}l${i}, a: "${prefix}${i}:p0", b: "${prefix}${Math.floor((i - 1) / 2)}:p${i % 2 ? 1 : 2}"}`);
     for (let i = 1; i < n; i++) rels.push(`  - {id: ${prefix}r${i}, protocol: ospf, endpoints: ["${prefix}${i}:lo0", "${prefix}0:lo0"]}`);
   };
@@ -314,7 +314,7 @@ test('disconnected components of different sizes: no overlaps in either view, co
 test('dense relationships: a 12-router full mesh with tunnels stays readable', () => {
   const n = 12;
   let t = 'netatlas: 1\ndevices:\n';
-  for (let i = 0; i < n; i++) t += `  - {id: r${String(i).padStart(2, '0')}, type: router, interfaces: [{id: lo0, type: loopback, ip: [10.0.0.${i}/32, "2001:db8::${i}/128"]}]}\n`;
+  for (let i = 0; i < n; i++) t += `  - {id: r${String(i).padStart(2, '0')}, type: router, loopbacks: [{id: lo0, ip: [10.0.0.${i}/32, "2001:db8::${i}/128"]}]}\n`;
   t += 'relations:\n  - {id: ospf, protocol: ospf, endpoints: [' + Array.from({ length: n }, (_, i) => 'r' + String(i).padStart(2, '0')).join(', ') + ']}\n';
   for (let i = 0; i < n; i++) {
     for (let j = i + 1; j < n; j++) {
@@ -376,7 +376,7 @@ test('auto-arrange stays fast for a large model', () => {
   let t = 'netatlas: 1\ngroups:\n';
   for (let g = 0; g < 10; g++) t += `  - {id: s${g}, kind: site}\n`;
   t += 'devices:\n';
-  for (let i = 0; i < 400; i++) t += `  - {id: d${String(i).padStart(3, '0')}, type: ${i % 10 ? 'switch' : 'router'}, group: s${i % 10}, interfaces: [a, b, c, {id: lo0, type: loopback, ip: [10.1.${i >> 8}.${i & 255}/32]}]}\n`;
+  for (let i = 0; i < 400; i++) t += `  - {id: d${String(i).padStart(3, '0')}, type: ${i % 10 ? 'switch' : 'router'}, group: s${i % 10}, interfaces: [a, b, c], loopbacks: [{id: lo0, ip: [10.1.${i >> 8}.${i & 255}/32]}]}\n`;
   t += 'links:\n';
   for (let i = 1; i < 400; i++) t += `  - {id: l${i}, a: "d${String(i).padStart(3, '0')}:a", b: "d${String(Math.floor(i / 2)).padStart(3, '0')}:${i % 2 ? 'b' : 'c'}"}\n`;
   t += 'relations:\n';
@@ -409,7 +409,7 @@ test('layout status is derived per view: auto-arranged, manually adjusted, edite
   assert.equal(st(), 'auto/auto', 'a file without stored positions shows the auto-arranged layout');
   // a non-geometric edit never changes the status
   const i = d.findEntity('device', 'pe1').index;
-  d.change('vendor', () => d.setAt(['devices', i, 'vendor'], yaml.strNode('Acme')));
+  d.change('description', () => d.setAt(['devices', i, 'description'], yaml.strNode('Acme')));
   assert.equal(st(), 'auto/auto');
   // dragging marks only that view as manually adjusted
   d.movePositions('physical', new Map([['pe3', { x: 9000, y: 9000 }]]), 'Move pe3');

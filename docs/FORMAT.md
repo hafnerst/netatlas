@@ -1,11 +1,14 @@
 # netatlas YAML format (version 1)
 
-> **Breaking change (after release 0.1.x).** The format was restructured so
-> that each fact is configured in one place. The version line stays
-> `netatlas: 1`, because the tool isn't used in production yet, but files
-> written for release 0.1.x that use the removed keys are **not converted**.
-> They open as a draft with one error per key that has to change; update
-> them by hand as described in
+> **Breaking changes (after release 0.1.x).** The format was restructured
+> twice: first so that each fact is configured in one place, then so that
+> interfaces form a hierarchy (physical interfaces with logical and tunnel
+> children, loopbacks in a list of their own) and devices lost five fields.
+> The version line stays `netatlas: 1`, because the tool isn't used in
+> production yet, but files that use the removed keys or the old interface
+> structure are **not converted** and no old key is kept as an alias. They
+> open as a draft with one error per key that has to change; update them by
+> hand as described in
 > [Changes from the earlier format](#changes-from-the-earlier-format).
 
 A netatlas file describes **one** network architecture. It separates two
@@ -74,7 +77,9 @@ Two of these are easy to confuse and are deliberately separate:
 * Ids: 1–64 characters from `A–Z a–z 0–9 _ . -`, starting with a letter or
   digit. `:` is reserved.
 * Interface ids are unique **within their device** and may also contain `/`
-  (`ge-0/0/1`, `Ethernet1/49`). Globally an interface is `device:interface`.
+  (`ge-0/0/1`, `Ethernet1/49`). Physical interfaces, their children and
+  loopbacks share that one set of ids, so `device:interface` names exactly
+  one of them, wherever it is declared.
 * Ids are the stable keys of the model. Labels can change freely.
 
 ## Endpoint references
@@ -83,13 +88,16 @@ Links and relation endpoints refer to devices or interfaces:
 
 ```yaml
 - r1                      # a device
-- r1:ge-0/0/1             # an interface of a device (quote it inside [ ] or { } if you like)
+- r1:ge-0/0/1             # an interface of a device: a physical interface, one of its
+                          # children, or a loopback (quote it inside [ ] or { } if you like)
 - {device: r1, interface: ge-0/0/1, role: hub, address: 10.0.0.1/30, attrs: {asn: 65001}}
 ```
 
 The mapping form with `role`, `address` and `attrs` is for relation
 endpoints. A link end written as a mapping accepts `device`, `interface` and
-`vlans` (see [links](#links-physical-cabling-only)).
+`vlans` (see [links](#links-physical-cabling-only)). A **link end** can only
+name a physical interface; a **relation endpoint** can name any interface or
+loopback.
 
 ## `groups`
 
@@ -110,10 +118,13 @@ endpoints. A link end written as a mapping accepts `device`, `interface` and
 | `type` | | One of the [device types](#device-types) below, written exactly as listed (lower case). Any other value is an error. Without a type the device gets a generic icon. |
 | `group` | | Id of the group the device is located in |
 | `tier` | | 0–9: vertical row in the physical view (0 = top). By default this comes from the type (see the table below). Set it to place a device elsewhere, e.g. `tier: 3` for core or spine switches above the access switches. |
-| `vendor`, `model`, `role`, `mgmt` | | Shown in the subtitle, tooltip and details |
-| `router_id` | | Id of one of **this device's loopbacks**. Its IPv4 address is the router ID. Must name an interface of `type: loopback`; a warning is given if that loopback has no IPv4 address. |
 | `description`, `attrs` | | |
-| `interfaces` | | List of interfaces (below), **including loopbacks**. The shorthand `interfaces: [eth0, eth1]` is allowed. |
+| `loopbacks` | | List of [loopbacks](#loopbacks): logical endpoints of the device itself. |
+| `interfaces` | | List of the device's **physical interfaces** (below); each may have `children`. The shorthand `interfaces: [eth0, eth1]` is allowed. |
+
+A device has no `vendor`, `model`, `role`, `mgmt` or `router_id` key (see
+[Changes from the earlier format](#changes-from-the-earlier-format)). Such
+facts can be kept as free-form `attrs`, which are shown in the details only.
 
 ### Device types
 
@@ -139,19 +150,71 @@ endpoints. A link end written as a mapping accepts `device`, `interface` and
 Each type has its own icon, and the display name appears in the diagram
 subtitle, the details, tooltips, the legend and the editor. The error for
 any other value suggests the closest type (`Router` → `router`,
-`load-balancer` → `load_balancer`) or lists all of them. Roles such as
-spine, leaf, core or border belong in `role`, which is free text.
+`load-balancer` → `load_balancer`) or lists all of them. A role such as
+spine, leaf, core or border is not a type: write it into the label, the
+description or `attrs`.
 
 ### Interfaces
 
+Interfaces form a hierarchy with two levels, and where an interface is
+written decides what it is:
+
+| Written in | It is | Can be cabled | `type` key |
+|---|---|---|---|
+| `interfaces` of a device | a **physical** interface (a port) | yes | none |
+| `children` of a physical interface | a **logical** or a **tunnel** interface that runs on that port | no | `logical` (default) or `tunnel` |
+| `loopbacks` of a device | a **loopback**: a logical endpoint of the device itself | no | none |
+
+```yaml
+devices:
+  - id: edge-a
+    type: router
+    loopbacks:
+      - {id: lo0, label: Router ID, ip: [10.255.0.1/32, 2001:db8:ffff::1/128]}
+    interfaces:
+      - id: ge-0/0/0                    # a physical interface with two children
+        ip: 198.51.100.2/30
+        children:
+          - {id: ge-0/0/0.100, type: logical, label: Management, ip: 10.100.0.1/24}
+          - {id: st0.10, type: tunnel, ip: 172.16.10.1/30, description: GRE to Munich}
+      - {id: ge-0/0/1}                  # a physical interface without children
+      - ge-0/0/2                        # the same, in the short form
+```
+
+**Physical interfaces** (`interfaces`):
+
 | Key | Description |
 |---|---|
-| `id` | required, unique within the device. This is the stable identifier and the interface name used in references (`r1:lo0`). |
-| `label` | optional display name (for loopbacks: the loopback's name, e.g. "Router ID"; defaults to the id) |
-| `type` | default `physical`. **Logical types cannot be cabled**: `loopback`, `tunnel`, `vlan`, `svi`, `subinterface`, `virtual`, `lag`, `bundle`, `irb`, `bvi`, `vti` |
-| `ip` | one address or a list: `ip: 10.0.0.1/30` or `ip: [192.0.2.1/24, 2001:db8::1/64]`. Addresses of ordinary interfaces that aren't valid IPv4/IPv6 addresses (e.g. `dhcp`) give a *warning* and are shown as written. **The addresses decide which networks the device belongs to.** |
-| `vrf` | name of the VRF the interface is assigned to (free text, display only; also valid on loopbacks). Membership in a network is decided by the address alone. |
+| `id` | required, unique within the device. This is the stable identifier and the interface name used in references (`r1:ge-0/0/0`). |
+| `label` | optional display name (defaults to the id) |
+| `ip` | one address or a list: `ip: 10.0.0.1/30` or `ip: [192.0.2.1/24, 2001:db8::1/64]`. Addresses that aren't valid IPv4/IPv6 addresses (e.g. `dhcp`) give a *warning* and are shown as written. **The addresses decide which networks the device belongs to.** |
+| `vrf` | name of the VRF the interface is assigned to (free text, display only). Membership in a network is decided by the address alone. |
 | `mac`, `description`, `attrs` | |
+| `children` | list of the logical and tunnel interfaces that run on this port: none, one or several. The shorthand `children: [ge-0/0/0.1]` is allowed (a logical child). |
+
+A physical interface has **no `type` key**: every entry of `interfaces` is a
+physical interface, and writing `type:` there is an error, whatever its
+value.
+
+**Child interfaces** (`children`) take the same keys as a physical
+interface, except `children` (they can't be nested), plus:
+
+| Key | Description |
+|---|---|
+| `type` | `logical` or `tunnel`; `logical` when the key is missing. **No other value is accepted.** |
+
+`logical` covers everything that is configured on top of a port and isn't a
+tunnel: a subinterface, an SVI or IRB interface, a LAG/bundle member view, a
+VTEP. `tunnel` is a tunnel endpoint (GRE, IPsec VTI, WireGuard …). The more
+specific function isn't a type of its own; say it with the `label`, the
+`description` or `attrs` (e.g. `attrs: {function: svi}`), and express what
+the interface *does* with a relation: a tunnel is a relation between two
+tunnel interfaces, a LAG is an `lacp` relation, a VXLAN VNI an overlay.
+
+A child always belongs to exactly one physical interface of its own device.
+An interface that really has no port of its own (an SVI on a switch, a VTEP)
+is written under the port it is reached through, or, if it is an address of
+the device itself, as a loopback.
 
 An interface has **no** `speed`, `media` or `vlan` key:
 
@@ -168,22 +231,40 @@ An interface has **no** `speed`, `media` or `vlan` key:
 
 An interface with several addresses gets one result per address, so it can
 be associated with several networks and VLANs. That is not an ambiguity.
+All of this applies to children and loopbacks in the same way.
+
+**In the diagrams.** The physical view draws a physical interface as a port
+when it is cabled; children and loopbacks are never ports. Selecting a child
+(in the details, the editor or through a relation) highlights its port and
+that port's cable, and selecting a port highlights its children. Tunnels and
+other relations between child interfaces are drawn in the logical view. The
+device details list every physical interface followed by its children.
+
+**Display order.** The editor and the details show loopbacks, physical
+interfaces and the children of each interface in alphabetical order of their
+ids: letters without regard to case, runs of digits by their value (`eth2`
+before `eth10`). Ids that are equal in that comparison are ordered by their
+exact spelling, and identical ids (possible only in a draft with errors) keep
+the order of the file. This is display only: the order of the lists in the
+YAML file means nothing to netatlas, is never changed by viewing or editing
+an entry, and new entries are appended to the end of their list.
 
 ### Loopbacks
 
-A loopback is an interface with `type: loopback`. There's no separate
-loopback structure: it uses the same interface abstraction, so files that
-already declare loopbacks this way need no changes. A device can have zero,
-one or several loopbacks.
+A loopback is a logical endpoint of the device itself: it has addresses, but
+no port and no cable. Loopbacks are written in the device's own `loopbacks`
+list, next to `interfaces`, because they don't belong to any physical
+interface. A device can have zero, one or several, and a device may have
+loopbacks and no interface at all.
 
 ```yaml
 devices:
   - id: edge-a
     type: router
-    router_id: lo0                      # optional: which loopback provides the router ID
+    loopbacks:
+      - {id: lo0, label: Router ID, ip: [10.255.0.1/32, 2001:db8:ffff::1/128]}
+      - {id: lo1, label: BGP source (IPv6), ip: [2001:db8:ffff::a/128]}
     interfaces:
-      - {id: lo0, type: loopback, label: Router ID, ip: [10.255.0.1/32, 2001:db8:ffff::1/128]}
-      - {id: lo1, type: loopback, label: BGP source (IPv6), ip: [2001:db8:ffff::a/128]}
       - {id: ge-0/0/0, ip: 192.0.2.1/31}
 relations:
   - id: ibgp-v6
@@ -194,27 +275,35 @@ relations:
     endpoints: [edge-a:lo0, edge-b:lo0]  # a tunnel whose endpoints are loopbacks
 ```
 
+| Key | Description |
+|---|---|
+| `id` | required, unique on the device (across interfaces, children and loopbacks) |
+| `label` | the loopback's name, e.g. "Router ID" (defaults to the id) |
+| `ip` | required: one address or a list |
+| `vrf`, `description`, `attrs` | |
+
 Rules (errors unless noted):
 
-* `id`: the stable identifier, unique on the device. `label` is the loopback's
-  name.
 * `ip`: at least one address. Each must be an IPv4 or IPv6 address **with a
   prefix length** (`10.255.0.1/32`, `2001:db8::1/128`); `/0–32` for IPv4 and
   `/0–128` for IPv6. The same address can't appear twice on one loopback.
   If the same address is used on another interface anywhere in the model, you
   get a *warning*.
-* A loopback is logical: it can't be the end of a physical link.
-* A loopback has no physical-link properties (no speed, no medium, no
-  cable). Its addresses count for network membership like any other
-  interface's, and it can have a `vrf`.
-* A loopback may be used anywhere an interface can be referenced: relation
-  endpoints (tunnel endpoints, BGP/LDP session sources) and `router_id`. It
-  doesn't have to be referenced at all.
+* A loopback has no `type` (the list says what it is), no `mac`, no
+  `children` and no physical-link properties; it can't be the end of a
+  physical link. Its addresses count for network membership like any other
+  interface's.
+* A loopback may be used anywhere an interface can be referenced in a
+  relation (tunnel endpoints, BGP/LDP session sources). It doesn't have to
+  be referenced at all.
+* There is no router-ID field. If a loopback provides the router ID, say so
+  in its `label`.
 * Display: in the **logical view** each device shows its loopbacks as small
-  chips under the device (★ marks the router-ID loopback; a device with
-  loopbacks is shown even if it has no relations). The device's **details**
-  list them in their own table with the relations that use them. The
-  **physical view** never draws them, because they have no port or cable.
+  chips under the device, in alphabetical order (the first three, then
+  "+N more"; a device with loopbacks is shown even if it has no relations).
+  The device's **details** list them in their own table with the relations
+  that use them. The **physical view** never draws them, because they have
+  no port or cable.
 
 ## `links` (physical cabling only)
 
@@ -226,8 +315,10 @@ Rules (errors unless noted):
 | `speed` | | e.g. `1G`, `10G`, `100G`, `250M`. **The only place the speed of the connection is configured**; it sets the line width. |
 | `label`, `cable` (cable/circuit id), `description`, `attrs` | | |
 
-Rules: a port can have at most one cable. Logical interfaces (see above) can't
-be cabled. A link can't connect a port to itself.
+Rules: a port can have at most one cable. Only physical interfaces can be
+cabled: a link end that names a child interface or a loopback is an error
+(cable the physical interface the child runs on instead). A link can't
+connect a port to itself.
 
 A link is the physical connection: one cable (or radio path) between two
 ports. `cable` is only its label or circuit id. There is no separate cable
@@ -287,7 +378,8 @@ is assigned on [interfaces](#interfaces)) and **no `members` list**.
 ### Membership (derived)
 
 A device is a member of a network when **at least one address assigned to one
-of its interfaces or loopbacks lies inside one of the network's prefixes**.
+of its interfaces (physical or child) or loopbacks lies inside one of the
+network's prefixes**.
 The list is computed from the current model every time it is shown. It names
 the device once, with every matching interface (or loopback) and address.
 
@@ -295,8 +387,11 @@ the device once, with every matching interface (or loopback) and address.
 devices:
   - id: core1
     interfaces:
-      - {id: Vlan10, type: svi, ip: 10.10.10.2/24}     # member of "users", derived VLAN 10
-      - {id: lo0, type: loopback, ip: 10.255.0.1/32}   # in no network
+      - id: Ethernet1
+        children:
+          - {id: Vlan10, ip: 10.10.10.2/24}            # member of "users", derived VLAN 10
+    loopbacks:
+      - {id: lo0, ip: 10.255.0.1/32}                   # in no network
 networks:
   - {id: users, cidr: 10.10.10.0/24, vlan: 10}         # members: core1 (Vlan10 10.10.10.2/24)
 ```
@@ -447,8 +542,8 @@ layout:
 | A view has **no** stored positions | The **Auto-arrange** result for the current model. Opening or viewing a file never writes anything. |
 | A view has stored positions | Stored positions are used. A node without one (e.g. added by hand in the YAML) is placed next to its neighbors in free space, without moving anything else. |
 | You **drag** a node | Its new position is stored. If the view had no stored positions, all currently shown positions of that view are stored with it (one undo step). |
-| You make an edit that affects geometry (adding, removing or renaming objects, changing any text that is drawn — labels, type, role, model, cable speed or VLANs, relation labels —, groups, cables, relations, loopbacks, or an address or prefix that changes who is a member of a network …) | The positions shown **before** the edit are stored for both views, in the same undo step. New objects are placed next to their neighbors; nothing else moves. Edits that don't affect geometry (vendor, attrs, descriptions, cable medium, addresses that leave membership as it is …) store nothing. |
-| You click **Auto-arrange** | All positions of the chosen view(s) are recomputed for the whole model and stored (one undo step). If they already equal the stored ones, nothing happens at all. |
+| You make an edit that affects geometry (adding, removing or renaming objects, changing any text that is drawn — labels, type, cable speed or VLANs, relation labels —, groups, cables, relations, loopbacks, or an address or prefix that changes who is a member of a network …) | The positions shown **before** the edit are stored for both views, in the same undo step. New objects are placed next to their neighbors; nothing else moves. Edits that don't affect geometry (attrs, descriptions, cable medium, child interfaces, addresses that leave membership as it is …) store nothing. |
+| You click **Auto-arrange** | All positions of **the view on screen** are recomputed for the whole model and stored (one undo step). The other view keeps its positions, stored or not. If the view has positions that were set by hand, netatlas first asks for confirmation (see [Auto-arrange](#auto-arrange)). If the positions already equal the stored ones, nothing happens at all. |
 | You edit the **YAML** tab | The text is taken literally, including its `layout` section. Deleting the section there returns to automatic positions. |
 
 So **load → arrange → export → reload** shows exactly the same picture. A
@@ -472,6 +567,18 @@ Because it's derived, undo/redo, export → reload and moving a node back to
 its calculated position always give the right status.
 
 ### Auto-arrange
+
+The **Auto-arrange** button arranges one view: the one on screen. There is no
+choice of views; to arrange the other view, switch to it and press the button
+there. What happens depends on the view's layout status:
+
+| Status of the view on screen | What the button does |
+|---|---|
+| **Auto-arranged** | Nothing moves and nothing is asked. If the view has no stored positions yet, the positions shown are stored. |
+| **Edited since arranged** | The view is arranged at once; no position in it was set by hand, so nothing is asked. |
+| **Manually adjusted** | A confirmation names the objects that were positioned by hand and says that they (and any other objects that no longer match) move back to the calculated layout, that the other view is not changed, and that the step can be undone. **Cancel** changes nothing in either view. |
+
+The layout itself is computed as follows.
 
 * **Physical view:** tiered, nested group boxes. Inside a group, devices
   sit in rows by tier: cloud/WAN on top, then routers, firewalls, core,
@@ -543,7 +650,7 @@ places; they are the same on screen and in exported SVG files.
   limited to 200 characters by the format, so an element can't grow without
   bound: the longest possible device label gives a box about 280 wide.
 * **Devices** grow in width up to the wrap width and in height with the
-  number of lines; the subtitle (type · role · model) wraps the same way. In
+  number of lines; the subtitle (the device type) wraps the same way. In
   the logical view a device is also as wide as its widest loopback chip.
 * **Networks** show their label and *all* prefixes, wrapped.
 * **Groups** wrap their title at the width of their content (at least 260)
@@ -605,7 +712,7 @@ to vary, so they aren't used. Results are rounded to whole pixels.
 **Equivalent input.** Two files arrange identically (in the same netatlas
 version) when they have the same:
 
-* device ids, labels, subtitles (type, role, model), tiers (explicit `tier`,
+* device ids, labels, types, tiers (explicit `tier`,
   else derived from `type`), groups, the number of loopbacks and the width of
   the widest loopback chip (loopback ids and addresses);
 * groups (ids, parents, labels and kinds);
@@ -619,13 +726,13 @@ version) when they have the same:
   names and line styles, relation labels, nesting through `over`).
 
 **Not relevant:**
-* order of keys, sections and list items (devices, interfaces, cables,
-  endpoints, prefixes, VLAN lists, `over`, …);
+* order of keys, sections and list items (devices, interfaces, children,
+  loopbacks, cables, endpoints, prefixes, VLAN lists, `over`, …);
 * comments, quoting and formatting;
 * the `layout` section itself;
 * manual moves and load order;
-* direction, attributes, vendors, descriptions, the medium of a cable, cable
-  ids (`cable:`), and interface addresses as long as they don't change which
+* direction, attributes, descriptions, the medium of a cable, cable
+  ids (`cable:`), child interfaces, and interface addresses as long as they don't change which
   networks a device belongs to. In short: what isn't drawn as text and
   doesn't change a size.
 
@@ -639,8 +746,11 @@ next to the object and field they concern.
 **Errors** cover:
 * missing required keys, wrong value types and unknown keys;
 * invalid or duplicate ids, and unknown references (devices, interfaces,
-  groups, networks, `over`, `router_id`);
-* two cables on one port, or a cable on a logical interface;
+  groups, networks, `over`);
+* two cables on one port, or a cable on a child interface or a loopback;
+* an interface id used twice on a device (across interfaces, children and
+  loopbacks), a `type` on a physical interface or a loopback, a child type
+  other than `logical` or `tunnel`, children of a child;
 * `over` cycles;
 * invalid loopback addresses, invalid network prefixes, invalid or repeated
   VLAN IDs, and bad colours, categories or styles;
@@ -655,8 +765,7 @@ next to the object and field they concern.
 * a network without a prefix, or a prefix with bits beyond its length;
 * a relation carried over another relation whose endpoints don't match;
 * an interface address that isn't a valid IP address;
-* the same address assigned twice;
-* a `router_id` loopback without IPv4.
+* the same address assigned twice.
 
 A file with **errors can still be opened and drawn**. Everything that
 validated is shown, so an incomplete draft stays usable. Only files that
@@ -671,20 +780,47 @@ before editing.
 | YAML nodes | 250 000 |
 | Scalar length | 10 000 characters |
 | Groups / devices / links / networks / relations | 500 / 1 000 / 5 000 / 2 000 / 5 000 |
-| Interfaces per device / total | 512 / 20 000 |
+| Interfaces per device / total (physical, children and loopbacks together) | 512 / 20 000 |
 | Endpoints per relation | 64 |
 | Group nesting | 8 levels |
 | Attributes per entity | 100 |
 
 ## Changes from the earlier format
 
-The format now applies one rule throughout: each fact is configured in one
-place and derived everywhere else. The format version is unchanged
-(`netatlas: 1`). Files written for release 0.1.x have to be updated by hand;
-netatlas doesn't convert them, and it doesn't keep the old keys as aliases.
-Opening such a file shows an error for every key below, each saying what to
-do. Nothing of the old keys is read into
-the model, and the file is kept as it is until you change it.
+The format version is unchanged (`netatlas: 1`). Files written for an earlier
+state of the format have to be updated by hand; netatlas doesn't convert
+them, and it doesn't keep the old keys or values as aliases. Opening such a
+file shows an error for every key or value below, each saying what to do.
+Nothing of the old keys is read into the model, and the file is kept as it
+is until you change it.
+
+### Interface hierarchy and device fields
+
+| Before | Now | What to do |
+|---|---|---|
+| `type` on an entry of `interfaces` (any value, `physical` included) | removed: the entry is always a physical interface | Delete the key. If the entry wasn't a port, move it (next two rows). |
+| `type: loopback` on an interface | a `loopbacks` list on the device | Move the entry into `loopbacks:` of the same device and delete its `type`. Its `id`, `label`, `ip`, `vrf`, `description` and `attrs` stay as they are; references such as `r1:lo0` keep working. |
+| `type: tunnel` on an interface | `type: tunnel` on a **child** | Move the entry into `children:` of the physical interface the tunnel runs on. |
+| `type: vlan`, `svi`, `subinterface`, `virtual`, `lag`, `bundle`, `irb`, `bvi`, `vti` (or any other text) | `type: logical` or `type: tunnel` on a child | Move the entry into `children:` of a physical interface and write `type: logical` (or `tunnel` for a tunnel endpoint such as a VTI). Keep the specific function in `label`, `description` or `attrs` if you need it. |
+| a cable on a logical interface was refused | a link end must name a physical interface | Unchanged in effect; the error now names the physical interface to cable. |
+| `mac` on a loopback | removed | Delete it. |
+| `vendor`, `model`, `role`, `mgmt` on a device | removed | Delete them, or move the values into `attrs:` (shown in the details only). They are no longer drawn in the device's subtitle, shown in tooltips or searched. |
+| `router_id` on a device | removed | Delete it. The loopback and its addresses are unaffected; name its purpose in the loopback's `label` if you like. The ★ marker and the "router ID" line in the details are gone. |
+| interface ids unique among a device's interfaces | unique among interfaces, children and loopbacks of the device | Rename one of two entries that share an id. |
+
+```yaml
+# before                                  # now
+- id: r1                                  - id: r1
+  vendor: Juniper                           loopbacks:
+  router_id: lo0                              - {id: lo0, ip: 10.255.0.1/32}
+  interfaces:                               interfaces:
+    - {id: ge-0/0/0, ip: 192.0.2.1/30}        - id: ge-0/0/0
+    - {id: st0.10, type: tunnel}                ip: 192.0.2.1/30
+    - {id: lo0, type: loopback,                 children:
+       ip: 10.255.0.1/32}                         - {id: st0.10, type: tunnel}
+```
+
+### One place per fact (earlier change)
 
 | Before (0.1.x) | Now | What to do |
 |---|---|---|

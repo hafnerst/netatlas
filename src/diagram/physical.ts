@@ -289,7 +289,7 @@ export function renderPhysical(model: Model, layout: PhysicalLayout, opts: ViewO
   // ---- devices
   const deviceNodes: VNode[] = model.devices.map((d) => {
     const b = boxes.get(d.id) as CBox;
-    return deviceNode('device:' + d.id, d.label, deviceSubtitle(d.type, d.model, d.role), d.type, b, 'type-' + cssToken(d.type));
+    return deviceNode('device:' + d.id, d.label, deviceSubtitle(d.type), d.type, b, 'type-' + cssToken(d.type));
   });
 
   // everything drawn is inside the bounds: boxes, groups, labels and cable bends

@@ -153,6 +153,8 @@ table.kv, table.ports { border-collapse: collapse; width: 100%; }
 .ports th { text-align: left; font-weight: 500; color: var(--muted); font-size: 11px; padding: 2px 4px; border-bottom: 1px solid var(--border); }
 .ports td { padding: 2px 4px; border-bottom: 1px solid var(--grid); font-size: 12px; overflow-wrap: anywhere; }
 .ports tr.unused td { color: var(--muted); }
+.ports tr.child td:first-child { padding-left: 14px; }
+.ports .child-mark { color: var(--muted); }
 .reflist { list-style: none; margin: 0; padding: 0; }
 .reflist li { padding: 2px 0; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 button.ref { border: 0; background: none; padding: 0; color: var(--accent); text-align: left; cursor: pointer; }
@@ -239,11 +241,14 @@ button.ref:hover { text-decoration: underline; }
 .hl .cable-line { filter: drop-shadow(0 0 2px var(--sel)); }
 svg.export { background: var(--canvas); }
 /* legend drawn into exported SVG files */
-.svg-legend .lg-box { fill: var(--panel); stroke: var(--border); stroke-width: 1; }
-.svg-legend text { font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; fill: var(--text); }
-.svg-legend .lg-heading { font-size: 13px; font-weight: 700; }
-.svg-legend .lg-title { font-size: 11px; fill: var(--muted); letter-spacing: .04em; }
-.svg-legend .lg-label { font-size: 12px; }
+/* … and, in the same style, the overview of the networks relevant to the exported view */
+.svg-legend .lg-box, .svg-networks .lg-box { fill: var(--panel); stroke: var(--border); stroke-width: 1; }
+.svg-legend text, .svg-networks text { font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; fill: var(--text); }
+.svg-legend .lg-heading, .svg-networks .lg-heading { font-size: 13px; font-weight: 700; }
+.svg-legend .lg-title, .svg-networks .lg-title { font-size: 11px; fill: var(--muted); letter-spacing: .04em; }
+.svg-legend .lg-label, .svg-networks .lg-label { font-size: 12px; }
+.svg-networks .nw-name { font-weight: 600; }
+.svg-networks .nw-sub { letter-spacing: 0; }
 .svg-legend .vlan-warn { cursor: default; }
 
 /* ------------------------------------------------------------ editor */
@@ -320,6 +325,9 @@ details.card > summary::before { content: "\25B8"; color: var(--muted); }
 details.card[open] > summary::before { content: "\25BE"; }
 details.card > .field, details.card > details, details.card > .other, details.card > .used-by { margin: 4px 10px; }
 details.card[open] { padding-bottom: 6px; }
+/* child interfaces inside the card of their physical interface */
+details.card > .sub.children { margin: 8px 10px 4px; }
+details.card.child-card { background: var(--panel); }
 .card-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; font-size: 12.5px; }
 details.attrs { border: 1px dashed var(--border); border-radius: 6px; padding: 3px 8px; margin-top: 4px; }
 details.attrs > summary { cursor: pointer; font-size: 12px; color: var(--muted); }
@@ -386,9 +394,7 @@ dialog#modal::backdrop { background: rgba(0,0,0,.35); }
 /* loopbacks in the logical view */
 .loop-chip rect { fill: var(--pill); stroke: var(--accent); stroke-width: 1; }
 .loop-chip text { font-size: 9.5px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-.loop-chip.rid rect { stroke-width: 1.8; }
 
-.arrange-scope { margin: 6px 0 10px; padding-left: 20px; }
 /* auto-arrange button and per-view layout status */
 .arrange-group { display: inline-flex; align-items: center; gap: 6px; }
 .arrange-btn { font-weight: 600; border-color: var(--accent); color: var(--accent); display: inline-flex; align-items: center; gap: 5px; }
