@@ -6,7 +6,7 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; connect-src 'none'; font-src 'none'; object-src 'none'; media-src 'none'; frame-src 'none'; worker-src 'none'; form-action 'none'; base-uri 'none'">
 <meta name="referrer" content="no-referrer">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="generator" content="netatlas 0.1.0">
+<meta name="generator" content="netatlas 0.1.1">
 <title>netatlas</title>
 <style id="app-style">
 :root {
@@ -517,9 +517,9 @@ dialog#modal::backdrop { background: rgba(0,0,0,.35); }
 </head>
 <body data-state="empty" data-view="none" data-dirty="false">
 <header class="topbar">
-  <div class="brand" title="netatlas 0.1.0 — offline network architecture diagrams and editor">
+  <div class="brand" title="netatlas 0.1.1 — offline network architecture diagrams and editor">
     <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="6" r="2.6"/><circle cx="19" cy="6" r="2.6"/><circle cx="12" cy="18" r="2.6"/><path d="M7.4 6.8h9.2M6.3 8.3l4.4 7.4M17.7 8.3l-4.4 7.4"/></svg>
-    <span>netatlas</span><span class="version" title="netatlas version">v0.1.0</span>
+    <span>netatlas</span><span class="version" title="netatlas version">v0.1.1</span>
   </div>
   <div class="menu-wrap">
     <button id="menu-btn" type="button" class="menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="main-menu" title="File: new model, open, download, examples">File <span class="caret" aria-hidden="true">▾</span></button>
@@ -6440,7 +6440,7 @@ function build(root, c) {
         c.error(top, 'netatlas', `missing format version — add "netatlas: ${schema_1.FORMAT_VERSION}" as the first line`, { key: 'netatlas', line: 1 });
     }
     else if (!(verNode.kind === 'scalar' && verNode.value === schema_1.FORMAT_VERSION)) {
-        c.error(verNode, 'netatlas', `unsupported format version; this build understands "netatlas: ${schema_1.FORMAT_VERSION}"`);
+        c.error(verNode, 'netatlas', `unsupported format version — the only supported model format is "netatlas: ${schema_1.FORMAT_VERSION}"`);
     }
     const title = r.field(top, 'title', '', L.maxLabel) || 'Untitled network';
     const description = r.field(top, 'description', '', L.maxDescription);
@@ -6538,7 +6538,7 @@ function build(root, c) {
         groupNodes.set(id, m);
         const kind = (r.field(m, 'kind', gpath, 40) || '').toLowerCase();
         if (Object.prototype.hasOwnProperty.call(schema_1.RENAMED_GROUP_KINDS, kind)) {
-            c.error((0, reader_1.get)(m, 'kind'), gpath + '.kind', `group kind "${kind}" was renamed to "${schema_1.RENAMED_GROUP_KINDS[kind]}" — write "kind: ${schema_1.RENAMED_GROUP_KINDS[kind]}"`);
+            c.error((0, reader_1.get)(m, 'kind'), gpath + '.kind', `group kind "${kind}" is not accepted — write "kind: ${schema_1.RENAMED_GROUP_KINDS[kind]}"`);
         }
         groups.push({
             id,
@@ -8314,14 +8314,14 @@ exports.SCHEMA = {
     layout: ['physical', 'logical', 'manual'],
 };
 /**
- * Keys that earlier files used and the format no longer has, with what to do
- * instead. They are rejected (never read, converted or written), and the
- * error says how to update the file by hand.
+ * Keys that aren't part of the format but are easily expected in a place, with
+ * what to write instead. They are rejected like any unknown key (never read,
+ * converted or written); the error says where the fact belongs.
  */
 const IFACE_VLAN = 'the VLAN of a physical interface is derived from the network whose "cidr" contains its address: set "vlan:" on that network and delete it here ' +
     '(VLANs permitted on a cable are "vlans:" on the end of the link; a VLAN interface is a virtual interface under "logical_interfaces:")';
 const NOT_A_PORT = 'speed and medium belong to the physical link, and only a physical interface can be cabled: delete this key';
-const NO_NESTING = 'interfaces are no longer nested: move each entry into "logical_interfaces:" of the device and give it "type: virtual" or "type: tunnel". ' +
+const NO_NESTING = 'interfaces are not nested: move each entry into "logical_interfaces:" of the device and give it "type: virtual" or "type: tunnel". ' +
     'A tunnel names the interface it is sourced from with "source:"; an aggregate lists its ports under "members:"; a VLAN interface names its VLAN with "vlan:"';
 exports.RETIRED = {
     device: {
@@ -8356,7 +8356,7 @@ exports.RETIRED = {
             'and give each member interface an address in the prefix',
     },
 };
-/** Group kinds that were renamed (old -> new). */
+/** Group kinds that are rejected, with the kind to write instead. */
 exports.RENAMED_GROUP_KINDS = { row: 'floor' };
 
 };
@@ -8505,7 +8505,7 @@ class Reader {
             if (allowed.indexOf(k) >= 0)
                 return;
             if (Object.prototype.hasOwnProperty.call(retired, k)) {
-                this.c.error(m, path ? path + '.' + k : k, `"${k}" is no longer part of the format — ${retired[k]}`, { key: k, line: e.keyLine });
+                this.c.error(m, path ? path + '.' + k : k, `"${k}" is not part of the format — ${retired[k]}`, { key: k, line: e.keyLine });
             }
             else {
                 this.c.error(m, path ? path + '.' + k : k, `unknown key "${k}"${suggest(k, allowed, 20)}${hint}`, { key: k, line: e.keyLine });
@@ -9596,7 +9596,7 @@ class Editor {
     renderDocument(w) {
         w.appendChild(this.header('model', this.doc.text(['title']) || 'Untitled model', null));
         w.appendChild(this.issueBox([]));
-        w.appendChild(this.field('Format version', this.e('span', { class: 'ro' }, [this.doc.text(['netatlas']) || '(missing)']), ['netatlas'], 'Always 1 for this version of netatlas.'));
+        w.appendChild(this.field('Model format version', this.e('span', { class: 'ro' }, [this.doc.text(['netatlas']) || '(missing)']), ['netatlas'], 'The version of the NetAtlas YAML model format, not of the application. The only supported value is 1.'));
         if (document_1.ENTITY_KINDS.every((k) => this.doc.entities(k).length === 0)) {
             w.appendChild(this.e('p', { class: 'hint-empty' }, ['This model is empty. Add a device, link, network, relation, group or protocol with “+ Add” in the Model outline; nothing is filled in for you.']));
         }
@@ -14782,12 +14782,12 @@ async function runSelfTest(app, doc) {
         click('#side-body [data-act="to-attrs"][data-k="colour"]');
         await tick();
         check('"move into attrs" fixes an unknown property', /attrs:\n\s+colour: blue/.test(app.exportText()));
-        // keys of the earlier format are rejected with what to do instead (never read or converted)
+        // keys that are not part of the format are rejected with what to do instead (never read or converted)
         {
-            const oldFile = app.loadText('netatlas: 1\ngroups:\n  - {id: g1, kind: row}\ndevices:\n  - id: r1\n    vendor: Acme\n    router_id: lo0\n    interfaces: [{id: e0, type: physical, speed: 1G, media: fiber, vlan: 5, ip: 10.0.0.1/24, children: [{id: t0, type: tunnel}]}]\n    loopbacks: [{id: lo0, ip: 10.9.9.9/32}]\nnetworks:\n  - {id: n1, kind: vlan, vrf: red, cidr: 10.0.0.0/24, members: [r1]}\n', 'old-format.yaml', 'file');
-            const msgs = oldFile.errors.map((e) => e.message).join(' | ');
-            check('a file in the earlier format opens as a draft with one actionable error per retired key', oldFile.ok && oldFile.errors.length === 12 && /"children" is no longer part of the format — interfaces are no longer nested/.test(msgs) && /"loopbacks" is no longer part of the format/.test(msgs) && /"speed" is no longer part of the format/.test(msgs) && /"vendor" is no longer part of the format/.test(msgs) && /"router_id" is no longer part of the format/.test(msgs) && /"type" is no longer part of the format/.test(msgs) &&
-                app.mdoc.result.model.devices[0].logical.length === 0 && app.mdoc.result.model.devices[0].interfaces.length === 1 && app.mdoc.result.model.devices[0].interfaces.every((i) => i.type === 'physical') && /"members" is no longer part of the format/.test(msgs) && /renamed to "floor"/.test(msgs) &&
+            const badFile = app.loadText('netatlas: 1\ngroups:\n  - {id: g1, kind: row}\ndevices:\n  - id: r1\n    vendor: Acme\n    router_id: lo0\n    interfaces: [{id: e0, type: physical, speed: 1G, media: fiber, vlan: 5, ip: 10.0.0.1/24, children: [{id: t0, type: tunnel}]}]\n    loopbacks: [{id: lo0, ip: 10.9.9.9/32}]\nnetworks:\n  - {id: n1, kind: vlan, vrf: red, cidr: 10.0.0.0/24, members: [r1]}\n', 'unsupported-keys.yaml', 'file');
+            const msgs = badFile.errors.map((e) => e.message).join(' | ');
+            check('a file with keys outside the format opens as a draft with one actionable error per key', badFile.ok && badFile.errors.length === 12 && /"children" is not part of the format — interfaces are not nested/.test(msgs) && /"loopbacks" is not part of the format/.test(msgs) && /"speed" is not part of the format/.test(msgs) && /"vendor" is not part of the format/.test(msgs) && /"router_id" is not part of the format/.test(msgs) && /"type" is not part of the format/.test(msgs) &&
+                app.mdoc.result.model.devices[0].logical.length === 0 && app.mdoc.result.model.devices[0].interfaces.length === 1 && app.mdoc.result.model.devices[0].interfaces.every((i) => i.type === 'physical') && /"members" is not part of the format/.test(msgs) && /write "kind: floor"/.test(msgs) &&
                 app.mdoc.result.model.networks[0].vlan === undefined && (0, derive_1.networkMembers)(app.mdoc.result.model, 'n1').length === 1, msgs);
         }
         // ------------------------------------------ safety / errors / offline

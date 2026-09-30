@@ -162,9 +162,9 @@ test('the broken demo file reports every problem with line numbers', async () =>
   const summary = errs.map((e) => `${e.line}: ${e.message}`);
   const expected = [
     [9, /unknown key "typ" — did you mean "type"/],
-    [10, /"vendor" is no longer part of the format/],
-    [11, /"loopbacks" is no longer part of the format — loopbacks are logical interfaces/],
-    [15, /"children" is no longer part of the format — interfaces are no longer nested/],
+    [10, /"vendor" is not part of the format/],
+    [11, /"loopbacks" is not part of the format — loopbacks are logical interfaces/],
+    [15, /"children" is not part of the format — interfaces are not nested/],
     [18, /tunnel source "eth7" is neither an IP address nor an interface of "r1" — did you mean "eth0"/],
     [19, /"tun0" is a tunnel interface: the members of an aggregate are physical interfaces of the same device/],
     [20, /loopback "lo0" needs at least one IPv4 or IPv6 address/],

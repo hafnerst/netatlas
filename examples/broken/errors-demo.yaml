@@ -7,12 +7,12 @@ title: Error reporting demo
 devices:
   - id: r1
     typ: router                 # typo: "type"
-    vendor: Acme                # no longer part of the format
-    loopbacks:                  # outdated: a loopback is a logical interface now
+    vendor: Acme                # not a device key (custom data goes under attrs)
+    loopbacks:                  # not a device key: a loopback is a logical interface
       - {id: lo9, ip: 10.0.0.9/32}
     interfaces:
       - id: eth0
-        children:               # outdated: interfaces are no longer nested
+        children:               # not an interface key: interfaces are not nested
           - {id: tun9, type: tunnel}
     logical_interfaces:
       - {id: tun0, type: tunnel, source: eth7}              # r1 has no eth7

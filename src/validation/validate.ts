@@ -113,7 +113,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
   if (isNull(verNode)) {
     c.error(top, 'netatlas', `missing format version — add "netatlas: ${FORMAT_VERSION}" as the first line`, { key: 'netatlas', line: 1 });
   } else if (!(verNode!.kind === 'scalar' && verNode!.value === FORMAT_VERSION)) {
-    c.error(verNode!, 'netatlas', `unsupported format version; this build understands "netatlas: ${FORMAT_VERSION}"`);
+    c.error(verNode!, 'netatlas', `unsupported format version — the only supported model format is "netatlas: ${FORMAT_VERSION}"`);
   }
   const title = r.field(top, 'title', '', L.maxLabel) || 'Untitled network';
   const description = r.field(top, 'description', '', L.maxDescription);
@@ -210,7 +210,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
     groupNodes.set(id, m);
     const kind = (r.field(m, 'kind', gpath, 40) || '').toLowerCase();
     if (Object.prototype.hasOwnProperty.call(RENAMED_GROUP_KINDS, kind)) {
-      c.error(get(m, 'kind') as YNode, gpath + '.kind', `group kind "${kind}" was renamed to "${RENAMED_GROUP_KINDS[kind]}" — write "kind: ${RENAMED_GROUP_KINDS[kind]}"`);
+      c.error(get(m, 'kind') as YNode, gpath + '.kind', `group kind "${kind}" is not accepted — write "kind: ${RENAMED_GROUP_KINDS[kind]}"`);
     }
     groups.push({
       id,

@@ -1873,18 +1873,18 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     await tick();
     check('"move into attrs" fixes an unknown property', /attrs:\n\s+colour: blue/.test(app.exportText()));
 
-    // keys of the earlier format are rejected with what to do instead (never read or converted)
+    // keys that are not part of the format are rejected with what to do instead (never read or converted)
     {
-      const oldFile = app.loadText(
+      const badFile = app.loadText(
         'netatlas: 1\ngroups:\n  - {id: g1, kind: row}\ndevices:\n  - id: r1\n    vendor: Acme\n    router_id: lo0\n    interfaces: [{id: e0, type: physical, speed: 1G, media: fiber, vlan: 5, ip: 10.0.0.1/24, children: [{id: t0, type: tunnel}]}]\n    loopbacks: [{id: lo0, ip: 10.9.9.9/32}]\nnetworks:\n  - {id: n1, kind: vlan, vrf: red, cidr: 10.0.0.0/24, members: [r1]}\n',
-        'old-format.yaml',
+        'unsupported-keys.yaml',
         'file',
       );
-      const msgs = oldFile.errors.map((e) => e.message).join(' | ');
+      const msgs = badFile.errors.map((e) => e.message).join(' | ');
       check(
-        'a file in the earlier format opens as a draft with one actionable error per retired key',
-        oldFile.ok && oldFile.errors.length === 12 && /"children" is no longer part of the format — interfaces are no longer nested/.test(msgs) && /"loopbacks" is no longer part of the format/.test(msgs) && /"speed" is no longer part of the format/.test(msgs) && /"vendor" is no longer part of the format/.test(msgs) && /"router_id" is no longer part of the format/.test(msgs) && /"type" is no longer part of the format/.test(msgs) &&
-          (app.mdoc as ModelDoc).result.model!.devices[0].logical.length === 0 && (app.mdoc as ModelDoc).result.model!.devices[0].interfaces.length === 1 && (app.mdoc as ModelDoc).result.model!.devices[0].interfaces.every((i) => i.type === 'physical') && /"members" is no longer part of the format/.test(msgs) && /renamed to "floor"/.test(msgs) &&
+        'a file with keys outside the format opens as a draft with one actionable error per key',
+        badFile.ok && badFile.errors.length === 12 && /"children" is not part of the format — interfaces are not nested/.test(msgs) && /"loopbacks" is not part of the format/.test(msgs) && /"speed" is not part of the format/.test(msgs) && /"vendor" is not part of the format/.test(msgs) && /"router_id" is not part of the format/.test(msgs) && /"type" is not part of the format/.test(msgs) &&
+          (app.mdoc as ModelDoc).result.model!.devices[0].logical.length === 0 && (app.mdoc as ModelDoc).result.model!.devices[0].interfaces.length === 1 && (app.mdoc as ModelDoc).result.model!.devices[0].interfaces.every((i) => i.type === 'physical') && /"members" is not part of the format/.test(msgs) && /write "kind: floor"/.test(msgs) &&
           (app.mdoc as ModelDoc).result.model!.networks[0].vlan === undefined && networkMembers((app.mdoc as ModelDoc).result.model!, 'n1').length === 1,
         msgs,
       );
