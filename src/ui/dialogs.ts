@@ -5,6 +5,8 @@ export interface DialogOpts {
   title: string;
   body: Array<Node | string>;
   buttons: Array<{ label: string; value: string; kind?: 'primary' | 'danger' }>;
+  /** called once the dialog is built and shown (e.g. to keep a button in step with what is typed) */
+  ready?: (dialog: HTMLElement) => void;
 }
 
 /**
@@ -41,6 +43,7 @@ export function showDialog(doc: Document, opts: DialogOpts): Promise<string> {
     }
     if (typeof dlg.showModal === 'function') dlg.showModal();
     else dlg.setAttribute('open', '');
+    if (opts.ready) opts.ready(dlg);
     const primary = btns.querySelector('.primary, .danger') as HTMLElement | null;
     if (primary && !bodyEl.querySelector('input')) primary.focus();
     else {

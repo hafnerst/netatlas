@@ -28,10 +28,12 @@ test('File menu: New, Open, Download and the examples in one menu with plain nam
   assert.match(header, /<button id="menu-btn"[^>]*aria-haspopup="menu"[^>]*aria-expanded="false"[^>]*aria-controls="main-menu"[^>]*>File /);
   assert.match(header, /<div id="main-menu" class="dropdown menu" role="menu"[^>]*hidden>/);
   const entries = [...menu.matchAll(/<button id="([^"]+)"[^>]*role="menuitem"[^>]*><span class="mi-label">([^<]+)</g)].map((m) => [m[1], m[2]]);
-  assert.deepEqual(entries, [['btn-new', 'New model'], ['open', 'Open model…'], ['btn-download', 'Download model…']]);
+  assert.deepEqual(entries, [['btn-new', 'New model'], ['open', 'Open model…'], ['btn-download', 'Download model…'], ['btn-close', 'Close model']]);
+  // Close model comes immediately after Download model…, and is unavailable until a model is open
+  assert.match(menu, /id="btn-download"[^\n]*\n\s*<button id="btn-close" type="button" role="menuitem" title="Close the current model and return to the start screen" disabled>/);
   // one wording rule for all three: verb + "model", sentence case, and "…" (the character, not three dots)
   // exactly where the command needs further input (a file to pick, a file name to confirm)
-  for (const [, label] of entries) assert.match(label, /^(New|Open|Download) model(…)?$/);
+  for (const [, label] of entries) assert.match(label, /^(New|Open|Download|Close) model(…)?$/);
   assert.doesNotMatch(menu, /\.\.\./);
   // tooltips say what each command does, and only Download has a shortcut hint
   assert.match(menu, /id="btn-new"[^>]*title="Start a new, empty model"/);

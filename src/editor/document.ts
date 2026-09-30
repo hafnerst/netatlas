@@ -11,7 +11,7 @@ import { LAYOUT_VIEWS, LayoutView, autoPositions, resolvePositions, samePosition
 import { layoutInput, layoutSignature } from '../layout/input';
 import { parseAddress } from '../model/ip';
 import { Model } from '../model/types';
-import { Issue, LoadResult, loadModel, scalarText, validate } from '../validation/validate';
+import { IFACE_RE, Issue, LoadResult, loadModel, scalarText, validate } from '../validation/validate';
 import { SCHEMA } from '../yaml/schema';
 import { DEFAULT_YAML_LIMITS, YMap, YNode, YSeq, autoNode, boolNode, cloneNode, mapNode, nullNode, numNode, seqNode, strNode } from '../yaml/parse';
 import { stringifyYaml } from '../yaml/write';
@@ -1079,6 +1079,53 @@ export class ModelDoc {
   }
 
   /**
+   * What "+ Port Range" would create on a device: the ports of the range,
+   * checked against the device's existing interfaces. A name or id that is
+   * already used on the device (as the id or the label of any interface,
+   * physical or logical) makes the whole range invalid.
+   */
+  planPortRange(devIndex: number, from: string, to: string): PortRangePlan {
+    const plan = portRange(from, to);
+    if (!plan.ok) return plan;
+    const entries = this.interfaceEntries(devIndex);
+    const used = new Set<string>();
+    for (const e of entries) {
+      if (e.id) used.add(e.id);
+      const label = this.text(e.path.concat('label'));
+      if (label) used.add(label);
+    }
+    const taken = plan.ports.filter((p) => used.has(p.id) || used.has(p.name));
+    if (taken.length) {
+      const shown = taken.slice(0, 4).map((p) => p.name);
+      return { ok: false, error: `Already on this device: ${shown.join(', ')}${taken.length > shown.length ? ` and ${taken.length - shown.length} more` : ''}. Nothing is created.` };
+    }
+    if (entries.length + plan.ports.length > MAX_DEVICE_INTERFACES) {
+      return { ok: false, error: `The device would have ${entries.length + plan.ports.length} interfaces; the limit is ${MAX_DEVICE_INTERFACES}.` };
+    }
+    return plan;
+  }
+
+  /**
+   * Add the physical interfaces of a range to a device, all in one undoable
+   * step, or none if the range is not valid. Each port is only an id (and a
+   * label, when its name as typed is not a valid id): no address, VLAN or
+   * link is created.
+   */
+  addPortRange(devIndex: number, from: string, to: string): PortRangePlan {
+    const plan = this.planPortRange(devIndex, from, to);
+    if (!plan.ok) return plan;
+    this.change(`Add ${plan.ports.length} ports`, () => {
+      const list = this.ensureSeq(['devices', devIndex, 'interfaces'], false, KEY_ORDER.device);
+      for (const p of plan.ports) {
+        const entries: Array<[string, YNode]> = [['id', strNode(p.id)]];
+        if (p.name !== p.id) entries.push(['label', strNode(p.name)]);
+        list.items.push(mapNode(entries, true));
+      }
+    });
+    return plan;
+  }
+
+  /**
    * Add a logical interface of the given type (loopback, virtual or tunnel);
    * returns its index in the device's `logical_interfaces` list. Only the id
    * and the type are set unless fields are given.
@@ -1097,6 +1144,65 @@ export class ModelDoc {
     f.push(['ip', seqNode(addresses.map(strNode), true)]);
     return this.addLogical(devIndex, 'loopback', f);
   }
+}
+
+/** Largest number of ports one range may create. */
+export const MAX_PORT_RANGE = 256;
+/** Interfaces a device may have in total (the validator's limit). */
+const MAX_DEVICE_INTERFACES = 512;
+
+/** One port of a range: its name as typed, and the interface id made from it. */
+export interface RangePort {
+  name: string;
+  id: string;
+}
+
+export type PortRangePlan = { ok: true; ports: RangePort[] } | { ok: false; error: string };
+
+/** The interface id for a port name: characters an id can't contain (a space …) become "-". */
+export function portIdFor(name: string): string {
+  return name.replace(/[^A-Za-z0-9_.\-\/]+/g, '-');
+}
+
+/**
+ * The ports of a range "from … to": the final number of each name is the
+ * port number, and everything before it must be identical in both names.
+ * "ge 1/1" to "ge 1/24" gives ge 1/1, ge 1/2 … ge 1/24. A number written
+ * with leading zeros ("port01") keeps its width. Returns either the whole
+ * list or the reason why there is none: never a part of a range.
+ */
+export function portRange(from: string, to: string): PortRangePlan {
+  const a = from.trim();
+  const b = to.trim();
+  if (!a || !b) return { ok: false, error: 'Enter the first and the last port name, e.g. ge 1/1 and ge 1/24.' };
+  const pa = /^(.*?)([0-9]+)$/.exec(a);
+  const pb = /^(.*?)([0-9]+)$/.exec(b);
+  if (!pa) return { ok: false, error: `“${a}” does not end in a port number (e.g. ge 1/1).` };
+  if (!pb) return { ok: false, error: `“${b}” does not end in a port number (e.g. ge 1/24).` };
+  if (pa[1] !== pb[1]) return { ok: false, error: `The part before the port number must be the same in both names: “${pa[1]}” and “${pb[1]}” differ.` };
+  if (pa[2].length > 9 || pb[2].length > 9) return { ok: false, error: 'The port number is too large.' };
+  const first = Number(pa[2]);
+  const last = Number(pb[2]);
+  if (first >= last) return { ok: false, error: `The first port number (${first}) must be lower than the last (${last}).` };
+  const count = last - first + 1;
+  if (count > MAX_PORT_RANGE) return { ok: false, error: `This range has ${count} ports; one range can create at most ${MAX_PORT_RANGE}.` };
+  // leading zeros in the first number fix the width ("01" … "24")
+  const width = pa[2].length > 1 && pa[2].charAt(0) === '0' ? pa[2].length : 0;
+  const ports: RangePort[] = [];
+  for (let n = first; n <= last; n++) {
+    let num = String(n);
+    while (num.length < width) num = '0' + num;
+    const name = pa[1] + num;
+    ports.push({ name, id: portIdFor(name) });
+  }
+  const bad = ports.filter((p) => !IFACE_RE.test(p.id))[0];
+  if (bad) {
+    return {
+      ok: false,
+      error: `“${bad.name}” cannot be used as an interface name: an id has 1–64 characters from A–Z a–z 0–9 _ . - / and starts with a letter or digit.`,
+    };
+  }
+  return { ok: true, ports };
 }
 
 /** One interface entry of a device in the document tree. */
