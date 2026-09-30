@@ -326,7 +326,7 @@ export class App {
       );
     }
     const a = await this.dialog({
-      title: invalid ? 'Download a model that has errors?' : 'Download YAML',
+      title: invalid ? 'Download a model that has errors?' : 'Download model',
       body,
       buttons: [
         { label: 'Cancel', value: 'cancel' },
@@ -737,7 +737,7 @@ export class App {
 
   private fillExamples(): void {
     const menu = this.$('menu-examples');
-    EXAMPLES.forEach((ex, i) => menu.appendChild(el(this.doc, 'button', { type: 'button', role: 'menuitem', 'data-example': String(i) }, [el(this.doc, 'span', { class: 'mi-label' }, [ex.name])])));
+    EXAMPLES.forEach((ex, i) => menu.appendChild(el(this.doc, 'button', { type: 'button', role: 'menuitem', 'data-example': String(i), title: `Open the example ${ex.name}` }, [el(this.doc, 'span', { class: 'mi-label' }, [ex.name])])));
     const list = this.$('example-buttons');
     EXAMPLES.forEach((ex, i) => list.appendChild(el(this.doc, 'button', { type: 'button', class: 'linkish', 'data-example': String(i) }, [ex.name])));
   }

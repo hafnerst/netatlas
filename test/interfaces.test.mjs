@@ -6,7 +6,7 @@
 // rejection of the earlier structures, and export -> reload.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { validate, queries, derive, panels, scene, state, load, example, exampleNames, model, byClass } from './helpers.mjs';
+import { validate, queries, derive, panels, scene, state, load, example, exampleNames, fixture, fixtureNames, model, byClass } from './helpers.mjs';
 
 const { ModelDoc } = load('editor/document.js');
 const { SCHEMA, RETIRED } = load('yaml/schema.js');
@@ -519,16 +519,18 @@ test('export -> reload: the format round-trips (both categories, members, VLAN, 
   assert.deepEqual(sw2.logical[2].source, { text: 'lo0', device: 'sw2', iface: 'lo0' });
 });
 
-test('every example uses the format and draws in both views', () => {
-  for (const f of exampleNames) {
-    const r = validate.loadModel(example(f));
+test('every example (and generated fixture) uses the format and draws in both views', () => {
+  const files = exampleNames.map((f) => [f, example(f)]).concat(fixtureNames.map((f) => [f, fixture(f)]));
+  assert.equal(files.length, 6 + 3);
+  for (const [f, text] of files) {
+    const r = validate.loadModel(text);
     assert.deepEqual(r.errors.concat(r.warnings).map((e) => `${e.line}: ${e.message}`), [], f);
     for (const dev of r.model.devices) {
       assert.ok(dev.interfaces.every((i) => i.type === 'physical'), f);
       assert.ok(dev.logical.every((i) => T.LOGICAL_IFACE_TYPES.includes(i.type)), f);
     }
-    const d = doc(example(f));
-    assert.equal(d.exportText(), example(f).replace(/\r\n/g, '\n'), f + ': written back unchanged');
+    const d = doc(text);
+    assert.equal(d.exportText(), text.replace(/\r\n/g, '\n'), f + ': written back unchanged');
     const session = new state.Session(r.model);
     assert.equal(byClass(session.render().root, 'device').length, r.model.devices.length, f);
     session.setView('logical');
@@ -543,7 +545,7 @@ test('every example uses the format and draws in both views', () => {
   assert.equal(core.logical.length, 3);
   assert.deepEqual(wan.index.interfaces.get('hq-rtr1:st0.10').source, { text: 'ge-0/0/0', device: 'hq-rtr1', iface: 'ge-0/0/0' });
   assert.deepEqual(wan.index.interfaces.get('hq-rtr1:st0.10').destination, { text: '192.0.2.10', address: '192.0.2.10', device: 'muc-rtr', iface: 'wan0' });
-  const lab = model(example('editor-new-network.yaml'));
+  const lab = model(fixture('editor-new-network.yaml'));
   assert.equal(lab.index.interfaces.get('edge-a:gr-0/0/0.1').source.iface, 'lo0', 'a tunnel sourced from a loopback');
   assert.deepEqual(derive.interfaceVlanPorts(lab, lab.index.interfaces.get('edge-a:irb.100')).map((p) => p.iface), ['ge-0/0/0']);
   assert.ok(model(example('datacenter-evpn.yaml')).index.interfaces.get('leaf1:Vxlan1').members.length === 0, 'a virtual interface that is neither a bond nor a VLAN interface');

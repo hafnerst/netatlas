@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { root, load, example, yaml } from './helpers.mjs';
+import { root, load, example, fixture, yaml } from './helpers.mjs';
 
 const { ModelDoc } = load('editor/document.js');
 const doc = (text) => ModelDoc.fromText(text, 't.yaml', 'file').doc;
@@ -118,9 +118,9 @@ test('a view that only differs because the model was edited has nothing placed b
 });
 
 test('auto-arrange stays deterministic and idempotent, and the status follows', () => {
-  for (const f of ['enterprise-wan.yaml', 'metro-ring.yaml', 'editor-new-network.yaml']) {
+  for (const [f, text] of [['enterprise-wan.yaml', example('enterprise-wan.yaml')], ['metro-ring.yaml', example('metro-ring.yaml')], ['editor-new-network.yaml', fixture('editor-new-network.yaml')]]) {
     for (const view of ['physical', 'logical']) {
-      const a = doc(example(f));
+      const a = doc(text);
       a.clearLayout();
       const first = a.arrange([view]);
       const stored = yamlOf(a, view);
@@ -132,7 +132,7 @@ test('auto-arrange stays deterministic and idempotent, and the status follows', 
       assert.equal(a.layoutStatus(view), 'auto');
       assert.equal(first.changed, true);
       // whatever was dragged before, the result is the same
-      const b = doc(example(f));
+      const b = doc(text);
       b.clearLayout();
       const some = Array.from(b.displayedPositions(view).keys()).slice(0, 3);
       b.movePositions(view, new Map(some.map((id, i) => [id, { x: 5000 + i * 300, y: -4000 }])), 'Move');

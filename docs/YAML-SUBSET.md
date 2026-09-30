@@ -83,7 +83,7 @@ devices, links and so on) are listed in [FORMAT.md](FORMAT.md#validation-and-lim
 
 The editor never rebuilds the file from an internal data model. The parsed
 YAML tree *is* the document being edited: every edit changes that tree in
-place, and **Download YAML** serializes it with `src/yaml-write.ts`, which
+place, and **Download model…** serializes it with `src/yaml-write.ts`, which
 writes the same subset back out.
 
 **Preserved**

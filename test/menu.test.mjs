@@ -28,8 +28,19 @@ test('File menu: New, Open, Download and the examples in one menu with plain nam
   assert.match(header, /<button id="menu-btn"[^>]*aria-haspopup="menu"[^>]*aria-expanded="false"[^>]*aria-controls="main-menu"[^>]*>File /);
   assert.match(header, /<div id="main-menu" class="dropdown menu" role="menu"[^>]*hidden>/);
   const entries = [...menu.matchAll(/<button id="([^"]+)"[^>]*role="menuitem"[^>]*><span class="mi-label">([^<]+)</g)].map((m) => [m[1], m[2]]);
-  assert.deepEqual(entries, [['btn-new', 'New model'], ['open', 'Open YAML file…'], ['btn-download', 'Download YAML']]);
-  assert.match(menu, /<div class="menu-title" id="menu-examples-title">Open an example<\/div>\s*<div id="menu-examples" role="group" aria-labelledby="menu-examples-title"><\/div>/);
+  assert.deepEqual(entries, [['btn-new', 'New model'], ['open', 'Open model…'], ['btn-download', 'Download model…']]);
+  // one wording rule for all three: verb + "model", sentence case, and "…" (the character, not three dots)
+  // exactly where the command needs further input (a file to pick, a file name to confirm)
+  for (const [, label] of entries) assert.match(label, /^(New|Open|Download) model(…)?$/);
+  assert.doesNotMatch(menu, /\.\.\./);
+  // tooltips say what each command does, and only Download has a shortcut hint
+  assert.match(menu, /id="btn-new"[^>]*title="Start a new, empty model"/);
+  assert.match(menu, /id="open"[^>]*title="Open a model from a YAML file on this computer \(nothing is uploaded\)"/);
+  assert.match(menu, /id="btn-download"[^>]*title="Download the current model as a YAML file \(Ctrl\+S\)"/);
+  assert.deepEqual([...menu.matchAll(/class="mi-hint">([^<]*)</g)].map((m) => m[1]), ['Ctrl+S']);
+  // the start page uses the same two labels
+  assert.match(html, /<button id="new-empty"[^>]*>New model<\/button> <button id="open-empty"[^>]*>Open model…<\/button>/);
+  assert.match(menu, /<div class="menu-title" id="menu-examples-title">Examples<\/div>\s*<div id="menu-examples" role="group" aria-labelledby="menu-examples-title"><\/div>/);
   // and nowhere else in the toolbar
   const outside = header.replace(menu, '');
   for (const gone of ['id="btn-new"', 'id="open"', 'id="btn-download"', 'id="examples"', '<select']) assert.ok(!outside.includes(gone), gone);
@@ -68,4 +79,26 @@ test('outline sections: folding is view state of the editor, with Links and Prot
   // the editing core knows nothing about it
   assert.doesNotMatch(readFileSync(join(root, 'src', 'editor', 'document.ts'), 'utf8'), /collapsed|fold/);
   assert.ok(load('ui/inspector.js').Editor);
+});
+
+test('examples: the File menu offers the six hand-written examples; the generated fixtures are test data only', async () => {
+  const { readdirSync } = await import('node:fs');
+  const { EXAMPLES, FIXTURES } = load('generated/examples.js');
+  assert.deepEqual(EXAMPLES.map((e) => e.name), ['enterprise-wan.yaml', 'datacenter-evpn.yaml', 'minimal.yaml', 'metro-ring.yaml', 'device-types.yaml', 'long-labels.yaml']);
+  assert.deepEqual(FIXTURES.map((e) => e.name).sort(), ['editor-new-network.yaml', 'metro-ring-arranged.yaml', 'minimal-edited.yaml']);
+  assert.deepEqual(readdirSync(join(root, 'examples')).filter((f) => /\.yaml$/.test(f)).sort(), EXAMPLES.map((e) => e.name).sort());
+  // nothing the user sees builds its list from FIXTURES: only the self-test imports them
+  const { readFileSync: read } = await import('node:fs');
+  for (const f of ['ui/app.ts', 'ui/inspector.ts', 'ui/panels.ts', 'app/main.ts', 'index.html']) assert.doesNotMatch(read(join(root, 'src', f), 'utf8'), /FIXTURES|editor-new-network|minimal-edited|metro-ring-arranged/, f);
+  assert.match(read(join(root, 'src', 'app', 'selftest.ts'), 'utf8'), /import \{ EXAMPLES, FIXTURES \} from/);
+});
+
+test('selection hint of the outline: "selected" and "related (n)", without a note about dimming', () => {
+  const inspector = readFileSync(join(root, 'src', 'ui', 'inspector.ts'), 'utf8');
+  assert.doesNotMatch(inspector, /others dimmed/);
+  const at = inspector.indexOf("class: 'ol-ctx-hint small'");
+  const hint = inspector.slice(at, inspector.indexOf('      );', at));
+  assert.match(hint, /' selected · ',/);
+  // the text ends after the count: no trailing separator, no empty element after it
+  assert.match(hint, /` related \(\$\{ctx\.related\.size\}\)`,\s*\]\),\s*$/);
 });

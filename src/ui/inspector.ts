@@ -160,7 +160,7 @@ export class Editor {
     while (box.firstChild) box.removeChild(box.firstChild);
     const doc = this.getDoc();
     if (!doc) {
-      box.appendChild(this.e('p', { class: 'muted small' }, ['No model open. Use File → New model or Open YAML file.']));
+      box.appendChild(this.e('p', { class: 'muted small' }, ['No model open. Use File → New model or Open model….']));
       return;
     }
     const f = this.e('input', { type: 'search', class: 'outline-filter', placeholder: 'Filter…', 'data-t': 'outline-filter', value: this.filter, 'aria-label': 'Filter the model outline' });
@@ -180,7 +180,7 @@ export class Editor {
           this.e('span', { class: 'ctx-mark sel', 'aria-hidden': 'true' }, ['▸']),
           ' selected · ',
           this.e('span', { class: 'ctx-mark rel', 'aria-hidden': 'true' }, ['•']),
-          ` related (${ctx.related.size}) · others dimmed`,
+          ` related (${ctx.related.size})`,
         ]),
       );
     }
