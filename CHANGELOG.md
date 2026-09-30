@@ -8,6 +8,28 @@ releases may still change behaviour; the YAML format has its own version
 
 ## [Unreleased]
 
+### Added: PNG export; Export view as… submenu
+
+* **Export → Export view as…** opens a submenu with **PNG** and **SVG**. Both
+  save the selected view (Physical or Logical) as the same picture: the whole
+  diagram whatever the zoom, full labels, the legend and the Networks
+  overview of that view, with a margin. Files are named
+  `<model>-<view>.png` / `.svg`. The PNG is drawn in the page at twice the
+  diagram's size (less for very large diagrams). A failed export is reported
+  in a dialog.
+* The submenu opens by click, tap, Enter, Space or arrow right, never by
+  hovering; arrow left or Esc closes it. Disabled while no model is open.
+
+### Changed
+
+* *Export current view as SVG* is now **Export view as… → SVG**.
+
+### Removed
+
+* The **Current model** toolbar button. The model panel and the open model
+  are unaffected; the model's settings open with **Edit model settings** in
+  the Edit tab.
+
 ### Added: Close model, port ranges
 
 * **File → Close model**, right after *Download model…*: closes the current

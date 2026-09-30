@@ -127,9 +127,11 @@ body:not([data-view="logical"]) .logical-only { display: none; }
 .dropdown.menu > .menu-sep { height: 1px; padding: 0; margin: 4px 2px; background: var(--border); }
 .dropdown.menu > .menu-title { padding: 4px 8px 2px; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
 .dropdown.menu > #menu-examples { padding: 0; }
-/* "Current model": opens the settings of the whole model */
-.model-btn { display: inline-flex; align-items: center; gap: 6px; }
-.model-btn.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 600; }
+/* a submenu opens in place, under its entry (a press or a key opens it; it never depends on hovering) */
+.dropdown.menu .submenu { margin: 0 0 2px 10px; padding: 0 0 0 6px; border-left: 2px solid var(--border); }
+.dropdown.menu [aria-haspopup="menu"][aria-expanded="true"] { background: var(--accent-soft); }
+.dropdown.menu .sub-caret { font-size: 10px; }
+.dropdown.menu [aria-expanded="true"] > .sub-caret { transform: rotate(90deg); }
 
 main { display: grid; grid-template-columns: 250px minmax(0, 1fr) 410px; grid-template-rows: minmax(0, 1fr); min-height: 0; min-width: 0; overflow: hidden; }
 #canvas-wrap { position: relative; min-width: 0; min-height: 0; overflow: hidden; background: var(--canvas); }

@@ -1,4 +1,4 @@
-// The toolbar (File menu, "Current model", direct controls) and the folding
+// The toolbar (File and Export menus, direct controls) and the folding
 // sections of the model outline, as far as they can be checked without a
 // browser. How they behave is checked in the browser self-test.
 import { test } from 'node:test';
@@ -12,16 +12,18 @@ const header = /<header class="topbar">([\s\S]*?)<\/header>/.exec(html)[1];
 const menu = /<div id="main-menu"[^>]*>([\s\S]*?)\n    <\/div>/.exec(header)[1];
 const css = readFileSync(join(root, 'src', 'styles.css'), 'utf8');
 
-test('toolbar: logo and version, then File, Current model, undo/redo, views, Auto-arrange, Find', () => {
-  const order = ['class="brand"', 'class="version"', 'id="menu-btn"', 'id="btn-model"', 'id="btn-undo"', 'id="btn-redo"', 'data-view-btn="physical"', 'data-view-btn="logical"', 'id="btn-arrange"', 'id="search"'];
+test('toolbar: logo and version, then File, Export, undo/redo, views, Auto-arrange, Find; no Current model button', () => {
+  const order = ['class="brand"', 'class="version"', 'id="menu-btn"', 'id="export-btn"', 'id="btn-undo"', 'id="btn-redo"', 'data-view-btn="physical"', 'data-view-btn="logical"', 'id="btn-arrange"', 'id="search"'];
   const at = order.map((x) => header.indexOf(x));
   assert.ok(at.every((p) => p >= 0), JSON.stringify(at));
   assert.deepEqual(at, at.slice().sort((p, q) => p - q), 'in this order');
   assert.match(header, /<span>netatlas<\/span><span class="version"[^>]*>v__VERSION__<\/span>/);
   // these stay direct controls: none of them is inside the menu
-  for (const id of ['btn-model', 'btn-undo', 'btn-redo', 'btn-arrange', 'search']) assert.ok(!menu.includes(`id="${id}"`), id);
+  for (const id of ['btn-undo', 'btn-redo', 'btn-arrange', 'search']) assert.ok(!menu.includes(`id="${id}"`), id);
   assert.ok(!/data-view-btn/.test(menu));
-  assert.match(header, /<button id="btn-model"[^>]*disabled[^>]*>.*Current model/);
+  // the "Current model" button is gone, with its styles, its handler and the state it showed
+  const appSrc = readFileSync(join(root, 'src', 'ui', 'app.ts'), 'utf8');
+  assert.doesNotMatch(html + css + appSrc, /btn-model|model-badge|model-btn|Current model/);
 });
 
 test('File menu: New, Open, Download and the examples in one menu with plain names', () => {
@@ -66,7 +68,9 @@ test('"model", not "document": the outline has no Document entry and the inspect
   assert.doesNotMatch(inspector, /ol-doc|'Document: '/);
   assert.match(inspector, /this\.header\('model', this\.doc\.text\(\['title'\]\) \|\| 'Untitled model', null\)/);
   assert.match(inspector, /\['Edit model settings'\]/);
-  assert.match(appSrc, /this\.\$\('btn-model'\)\.addEventListener\('click', \(\) => this\.editModel\(\)\);/);
+  // the model settings are still opened from the Edit tab and for a new model
+  assert.match(appSrc, /private editModel\(\): void \{/);
+  assert.match(appSrc, /editModel: \(\) => this\.editModel\(\)|this\.editModel\(\);/);
 });
 
 test('outline sections: folding is view state of the editor, with Links and Protocols folded at the start', () => {
@@ -105,21 +109,39 @@ test('selection hint of the outline: "selected" and "related (n)", without a not
   assert.match(hint, /` related \(\$\{ctx\.related\.size\}\)`,\s*\]\),\s*$/);
 });
 
-test('Export menu: next to File, one entry, built like the File menu; the zoom bar has no Save SVG', () => {
+test('Export menu: next to File, one entry "Export view as…" with a PNG / SVG submenu; the zoom bar has no Save SVG', () => {
   // order in the toolbar: File, Export, then the rest
-  const at = ['id="menu-btn"', 'id="export-btn"', 'id="btn-model"'].map((x) => header.indexOf(x));
+  const at = ['id="menu-btn"', 'id="export-btn"', 'id="btn-undo"'].map((x) => header.indexOf(x));
   assert.ok(at[0] >= 0 && at[0] < at[1] && at[1] < at[2], JSON.stringify(at));
   assert.match(header, /<button id="export-btn" type="button" class="menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="export-menu"[^>]*>Export <span class="caret"/);
   const exp = /<div id="export-menu" class="dropdown menu" role="menu" aria-label="Export" hidden>([\s\S]*?)\n    <\/div>/.exec(header)[1];
-  assert.deepEqual([...exp.matchAll(/<button id="([^"]+)"[^>]*role="menuitem"[^>]*disabled[^>]*><span class="mi-label">([^<]+)</g)].map((m) => [m[1], m[2]]), [['btn-export-svg', 'Export current view as SVG']]);
+  const entries = (s) => [...s.matchAll(/<button id="([^"]+)"[^>]*role="menuitem"[^>]*><span class="mi-label">([^<]+)</g)].map((m) => [m[1], m[2]]);
+  const sub = /<div id="export-formats" class="submenu" role="menu" aria-label="Export view as" hidden>([\s\S]*?)\n      <\/div>/.exec(exp);
+  assert.ok(sub, 'the submenu is part of the Export menu and closed at first');
+  // one entry in the menu itself; it opens the submenu and is disabled until there is a diagram
+  assert.deepEqual(entries(exp.replace(sub[0], '')), [['btn-export-as', 'Export view as…']]);
+  assert.match(exp, /<button id="btn-export-as" type="button" role="menuitem" aria-haspopup="menu" aria-expanded="false" aria-controls="export-formats"[^>]*disabled>/);
+  // the formats: PNG and SVG, nothing else
+  assert.deepEqual(entries(sub[1]), [['btn-export-png', 'PNG'], ['btn-export-svg', 'SVG']]);
+  assert.doesNotMatch(exp, /pdf/i);
   // the same markup pattern as the File menu, and the same code drives both
   const fileBtn = /<button id="menu-btn"[^>]*>/.exec(header)[0];
   for (const attr of ['class="menu-btn"', 'aria-haspopup="menu"', 'aria-expanded="false"']) assert.ok(fileBtn.includes(attr), attr);
   const app = readFileSync(join(root, 'src', 'ui', 'app.ts'), 'utf8');
   assert.match(app, /\['menu-btn', 'main-menu'\],\s*\['export-btn', 'export-menu'\],/);
-  assert.match(app, /this\.\$\('btn-export-svg'\)\.addEventListener\('click', \(\) => this\.downloadSvg\(\)\);/);
+  assert.match(app, /this\.\$\('btn-export-svg'\)\.addEventListener\('click', \(\) => void this\.exportView\('svg'\)\);/);
+  assert.match(app, /this\.\$\('btn-export-png'\)\.addEventListener\('click', \(\) => void this\.exportView\('png'\)\);/);
+  // the submenu opens on a press or a key, never on hover
+  assert.doesNotMatch(app, /mouseenter|mouseover|pointerenter/);
+  assert.doesNotMatch(css, /:hover[^{]*\.submenu|\.submenu[^{]*\{[^}]*display:\s*none/);
+  // both formats are made from one picture, entirely in the page
+  assert.match(app, /exportSvg\(\): string \{\s*return this\.buildExport\(\)\.text;/);
+  assert.match(app, /const pic = this\.buildExport\(\);[\s\S]*?return svgToPng\(this\.doc, pic\.text, pic\.width, pic\.height,/);
+  const files = readFileSync(join(root, 'src', 'ui', 'files.ts'), 'utf8');
+  assert.match(files, /img\.src = 'data:image\/svg\+xml;charset=utf-8,' \+ encodeURIComponent\(svgText\);/);
+  assert.doesNotMatch(files, /fetch\(|XMLHttpRequest|import\(/);
   // available only with a diagram
-  assert.match(app, /const ex = this\.\$\('btn-export-svg'\) as HTMLButtonElement;\s*ex\.disabled = !s;/);
+  assert.match(app, /const ex = this\.\$\('btn-export-as'\) as HTMLButtonElement;\s*ex\.disabled = !s;/);
   // the old button is gone everywhere
   assert.doesNotMatch(html + app, /save-svg|Save SVG/);
   const zoom = /<div class="zoombar"[^>]*>([\s\S]*?)<\/div>/.exec(html)[1];
@@ -151,4 +173,29 @@ test('start screen: name, one sentence, three ways to begin; no link row, no lon
   assert.match(app, /doc\.addEventListener\('dragover', \(e\) => \{\s*e\.preventDefault\(\);/);
   assert.match(app, /doc\.addEventListener\('drop', async \(e\) => \{\s*e\.preventDefault\(\);/);
   assert.match(app, /else if \(await this\.confirmDiscard\('Opening the dropped file'\)\) void this\.loadFile\(f\);/);
+});
+
+test('PNG export: scale and file names', () => {
+  const files = load('ui/files.js');
+  // twice the diagram's size, as long as the picture stays within what a canvas can hold
+  assert.equal(files.PNG_SCALE, 2);
+  assert.equal(files.pngScale(1200, 800), 2);
+  assert.equal(files.pngScale(3000, 3000), 2);
+  assert.equal(files.pngScale(8000, 2000), 2);
+  // too long on one side: reduced so the longest side is the limit
+  assert.equal(files.pngScale(20000, 1000), files.PNG_MAX_SIDE / 20000);
+  assert.ok(Math.round(20000 * files.pngScale(20000, 1000)) <= files.PNG_MAX_SIDE);
+  // too many pixels: reduced so the area is the limit
+  const s = files.pngScale(12000, 12000);
+  assert.ok(s < 2 && s > 0 && 12000 * s * 12000 * s <= files.PNG_MAX_PIXELS * 1.0000001, String(s));
+  // never enlarged beyond the preferred scale, never zero or NaN
+  for (const [w, h] of [[1, 1], [0, 0], [NaN, 5], [1e7, 1e7]]) {
+    const v = files.pngScale(w, h);
+    assert.ok(v > 0 && v <= 2, `${w}x${h}: ${v}`);
+  }
+  // file names: the model's file name without its extension
+  assert.equal(files.pictureBaseName('enterprise-wan.yaml'), 'enterprise-wan');
+  assert.equal(files.pictureBaseName('my.network.v2.yml'), 'my.network.v2');
+  assert.equal(files.pictureBaseName(''), 'netatlas');
+  assert.equal(files.pictureBaseName('a/b:c.yaml'), 'a_b_c');
 });
