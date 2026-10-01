@@ -118,18 +118,23 @@ test('logical view: multipoint relations use a hub; networks are nodes with memb
   assert.equal(byClass(srv6, 'tube-outer')[0].attrs.stroke, '#e03131');
 });
 
-test('logical view options: hide protocols, networks, show underlay', () => {
+test('logical view options: hide protocols, networks and group frames; there is no underlay', () => {
   const s = wan();
   s.setView('logical');
   s.toggleProtocol('ospf', false);
   let v = s.render().root;
   assert.equal(byClass(v, 'proto-ospf').length, 0);
   assert.ok(byClass(v, 'proto-gre').length > 0);
+  assert.ok(byClass(v, 'group').length > 0, 'groups are framed in the logical view');
+  const devicesBefore = byClass(v, 'device').length;
   s.state.showNetworks = false;
-  s.state.showUnderlay = true;
+  s.state.showGroups = false;
   v = s.render().root;
   assert.equal(byClass(v, 'network').length, 0);
-  assert.ok(byClass(v, 'underlay').length > 0);
+  assert.equal(byClass(v, 'group').length, 0);
+  assert.equal(byClass(v, 'device').length, devicesBefore, 'hiding frames keeps their devices');
+  assert.equal(byClass(v, 'underlay').length, 0);
+  assert.ok(!('showUnderlay' in s.state));
 });
 
 test('representative protocol and tunnel rendering (built-in, alias, unknown, custom)', () => {

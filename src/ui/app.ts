@@ -16,6 +16,7 @@ import { detailsFor, legendFor, relationList, tooltipFor } from './panels';
 import { exportBoxes } from '../diagram/networks-box';
 import { Session, View } from '../diagram/session';
 import { SelectionContext, search, selectionContext, splitRef } from '../model/queries';
+import { sortedByName } from '../model/order';
 import { Issue } from '../validation/validate';
 
 type Tab = 'edit' | 'details' | 'legend' | 'relations' | 'problems' | 'yaml';
@@ -669,7 +670,7 @@ export class App {
           },
         ]);
       }
-    } else if (this.tab === 'legend') mount(body, legendFor(s.model, s.state.view, s.state.hiddenProtocols));
+    } else if (this.tab === 'legend') mount(body, legendFor(s.viewModel(), s.state.view, s.state.hiddenProtocols));
     else mount(body, relationList(s.model, this.selectionContext()));
     restoreFocus(this.doc, focus);
   }
@@ -848,6 +849,7 @@ export class App {
         m ? `${m.title} · ${m.devices.length} devices · ${m.index.interfaces.size} interfaces · ${m.links.length} cables · ${m.networks.length} networks · ${m.relations.length} logical relations` : '',
         d.errors.length ? el(this.doc, 'span', { class: 'errcount' }, [` · ${d.errors.length} error${d.errors.length > 1 ? 's' : ''}`]) : '',
         d.warnings.length ? ` · ${d.warnings.length} warning${d.warnings.length > 1 ? 's' : ''}` : '',
+        s && s.isFiltered() ? el(this.doc, 'span', { class: 'filtered-note' }, [` · showing ${s.selectedDevices().size} of ${s.model.devices.length} devices`]) : '',
         ' · everything stays in this page',
       ];
       for (const p of parts) st.appendChild(typeof p === 'string' ? this.doc.createTextNode(p) : p);
@@ -859,12 +861,13 @@ export class App {
     const opts: Array<[string, boolean]> = s
       ? [
           ['opt-labels', s.state.showLabels],
+          ['opt-groups', s.state.showGroups],
           ['opt-networks', s.state.showNetworks],
-          ['opt-underlay', s.state.showUnderlay],
         ]
       : [];
     for (const [id, v] of opts) (this.$(id) as HTMLInputElement).checked = v;
     (this.$('btn-arrange') as HTMLButtonElement).disabled = !d || !s;
+    this.updateDevicesControl();
     this.updateLayoutStatus();
   }
 
@@ -884,7 +887,8 @@ export class App {
     const desc = this.$('arrange-status');
     const action = 'Auto-arrange recomputes the positions of every object in this view; the other view is not changed (A).';
     for (const v of ['physical', 'logical'] as View[]) {
-      if (d && s) btn.setAttribute('data-status-' + v, d.layoutStatus(v));
+      // a filtered view has its own, temporary layout status
+      if (d && s) btn.setAttribute('data-status-' + v, s.isFiltered() ? s.filteredStatus(v) : d.layoutStatus(v));
       else btn.removeAttribute('data-status-' + v);
     }
     if (!d || !s) {
@@ -895,6 +899,19 @@ export class App {
       btn.title = action;
       return;
     }
+    if (s.isFiltered()) {
+      // a filtered view: its own, temporary layout; the saved layout of the complete view is not involved
+      const fst = s.filteredStatus(s.state.view);
+      const msg = FILTERED_STATUS_MESSAGE[fst];
+      btn.setAttribute('data-status', fst);
+      btn.setAttribute('data-filtered', 'true');
+      btn.setAttribute('data-view', s.state.view);
+      icon.textContent = LAYOUT_STATUS_ICON[fst];
+      if (desc.textContent !== msg) desc.textContent = msg;
+      btn.title = msg + ' ' + FILTERED_ACTION;
+      return;
+    }
+    btn.removeAttribute('data-filtered');
     const st = d.layoutStatus(s.state.view);
     btn.setAttribute('data-status', st);
     btn.setAttribute('data-view', s.state.view);
@@ -902,6 +919,126 @@ export class App {
     // the same message for hover and for assistive technology (aria-describedby)
     if (desc.textContent !== LAYOUT_STATUS_MESSAGE[st]) desc.textContent = LAYOUT_STATUS_MESSAGE[st];
     btn.title = LAYOUT_STATUS_MESSAGE[st] + ' ' + action;
+  }
+
+  // ------------------------------------------------------------ device filter
+
+  /** The Devices control: its count, its state and the temporary-positions hint. */
+  private updateDevicesControl(): void {
+    const s = this.session;
+    const btn = this.$('devices-btn') as HTMLButtonElement;
+    const count = this.$('devices-count');
+    const hint = this.$('filter-hint');
+    btn.disabled = !s;
+    const filtered = !!s && s.isFiltered();
+    btn.classList.toggle('filtered', filtered);
+    btn.setAttribute('data-filtered', filtered ? 'true' : 'false');
+    count.textContent = !s ? 'all' : filtered ? `${s.selectedDevices().size} of ${s.model.devices.length}` : `all (${s.model.devices.length})`;
+    btn.title = filtered ? 'The diagram shows only the selected devices. Choose devices, or Select all for the complete diagram.' : 'Choose the devices the diagram shows';
+    hint.hidden = !filtered;
+    const none = filtered && !!s && s.selectedDevices().size === 0;
+    this.$('filter-hint-text').textContent = (none ? 'No devices selected: choose devices, or Select all. ' : '') + 'Filtered-view positions are temporary and are not saved in YAML.';
+    if (!s) this.$('devices-panel').hidden = true;
+    if (!this.$('devices-panel').hidden) this.syncDevicesList();
+  }
+
+  /**
+   * Bring the open list in step with the selection without rebuilding it,
+   * so the checkbox that has the focus keeps it. Rebuilt only when the
+   * model's devices changed.
+   */
+  private syncDevicesList(): void {
+    const s = this.session;
+    if (!s) return;
+    const boxes = this.$('devices-list').querySelectorAll('input[data-device]');
+    if (boxes.length !== s.model.devices.length || Array.prototype.some.call(boxes, (b: Element) => !s.model.index.devices.has(b.getAttribute('data-device') || ''))) {
+      this.renderDevicesList();
+      return;
+    }
+    const sel = s.selectedDevices();
+    for (let i = 0; i < boxes.length; i++) (boxes[i] as HTMLInputElement).checked = sel.has(boxes[i].getAttribute('data-device') || '');
+  }
+
+  /** The checkbox list of the Devices panel, alphabetically by name; the find box only hides rows. */
+  private renderDevicesList(): void {
+    const s = this.session;
+    const list = this.$('devices-list');
+    while (list.firstChild) list.removeChild(list.firstChild);
+    if (!s) return;
+    const sel = s.selectedDevices();
+    const q = this.$<HTMLInputElement>('devices-find').value.trim().toLowerCase();
+    for (const d of sortedByName(s.model.devices, (x) => x.label)) {
+      const name = d.label !== d.id ? `${d.label} (${d.id})` : d.id;
+      const cb = el(this.doc, 'input', { type: 'checkbox', 'data-device': d.id }) as HTMLInputElement;
+      cb.checked = sel.has(d.id);
+      const row = el(this.doc, 'label', { 'data-device-row': d.id }, [cb, el(this.doc, 'span', {}, [name])]);
+      if (q && name.toLowerCase().indexOf(q) < 0) row.hidden = true;
+      list.appendChild(row);
+    }
+  }
+
+  private openDevices(open: boolean, focus = false): void {
+    const panel = this.$('devices-panel');
+    const btn = this.$('devices-btn');
+    if (open && !this.session) return;
+    panel.hidden = !open;
+    btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    btn.classList.toggle('active', open);
+    if (open) {
+      this.openMenu(null);
+      this.renderDevicesList();
+      this.keepInWindow(panel);
+      if (focus) this.$('devices-find').focus();
+    }
+  }
+
+  /**
+   * Show only these devices (all of them: the complete diagram). A new
+   * subset is arranged for itself and fitted to the window; the saved layout
+   * is never touched. Nothing happens when the selection is unchanged.
+   */
+  setDevices(ids: Iterable<string>): boolean {
+    const s = this.session;
+    if (!s || !s.setDevices(ids)) return false;
+    this.render();
+    this.fit();
+    this.updateChrome();
+    return true;
+  }
+
+  private wireDevices(): void {
+    const btn = this.$('devices-btn');
+    const panel = this.$('devices-panel');
+    btn.addEventListener('click', () => this.openDevices(panel.hidden));
+    btn.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        this.openDevices(true, true);
+      }
+    });
+    panel.addEventListener('change', (e) => {
+      const cb = e.target as HTMLInputElement;
+      const id = cb.getAttribute('data-device');
+      if (!id || !this.session) return;
+      const ids = this.session.selectedDevices();
+      if (cb.checked) ids.add(id);
+      else ids.delete(id);
+      this.setDevices(ids);
+    });
+    this.$('devices-find').addEventListener('input', () => this.renderDevicesList());
+    this.$('devices-all').addEventListener('click', () => this.session && this.setDevices(this.session.model.devices.map((d) => d.id)));
+    this.$('devices-none').addEventListener('click', () => this.setDevices([]));
+    panel.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        this.openDevices(false);
+        btn.focus();
+      }
+    });
+    this.doc.addEventListener('pointerdown', (e) => {
+      if (!panel.hidden && !(e.target as Element).closest('.devices-wrap')) this.openDevices(false);
+    });
   }
 
   private fillExamples(): void {
@@ -1033,8 +1170,9 @@ export class App {
       });
     };
     opt('opt-labels', (v) => this.session && (this.session.state.showLabels = v));
+    opt('opt-groups', (v) => this.session && (this.session.state.showGroups = v));
     opt('opt-networks', (v) => this.session && (this.session.state.showNetworks = v));
-    opt('opt-underlay', (v) => this.session && (this.session.state.showUnderlay = v));
+    this.wireDevices();
 
     // side panel: tabs, reference links, protocol filters, editor
     const side = this.$('side');
@@ -1200,11 +1338,21 @@ export class App {
 
   // ------------------------------------------------------------- layout
 
-  /** A node was dragged: store its new position in the document (one undo step). */
+  /**
+   * A node was dragged: store its new position in the document (one undo
+   * step). In a filtered view the position is temporary: it stays in the
+   * session and the document is not changed.
+   */
   private commitDrag(ref: string): void {
     const s = this.session;
     const d = this.mdoc;
     if (!s || !d) return;
+    if (s.isFiltered()) {
+      s.commitTemporary(ref);
+      this.render();
+      this.updateChrome();
+      return;
+    }
     const view = s.state.view;
     const p = s.state.positions[view].get(ref);
     if (!p) return;
@@ -1226,6 +1374,15 @@ export class App {
     const s = this.session;
     if (!d || !s) return;
     const view = s.state.view;
+    if (s.isFiltered()) {
+      // only the devices shown, in this session only: the saved layout of the complete view is not changed
+      const moved = s.arrangeFiltered();
+      this.render();
+      if (moved) this.fit();
+      this.updateChrome();
+      this.toast(moved ? `Auto-arranged the filtered ${view} view: ${moved} object${moved > 1 ? 's' : ''} moved. Temporary; the saved layout is unchanged.` : 'Already arranged — nothing moved.');
+      return;
+    }
     const other: View = view === 'physical' ? 'logical' : 'physical';
     const impact = d.arrangeImpact(view);
     if (impact.manual.length) {
@@ -1431,7 +1588,7 @@ export class App {
       const st = this.session.state;
       // what the picture shows decides what its legend and its networks overview list
       const scene = this.session.render();
-      const boxes = exportBoxes(this.session.model, st.view, st, { root: scene.root, bounds: b });
+      const boxes = exportBoxes(this.session.viewModel(), st.view, st, { root: scene.root, bounds: b });
       clone.appendChild(materialize(boxes.legend.root, this.doc, true));
       clone.appendChild(materialize(boxes.networks.root, this.doc, true));
       b = boxes.viewBox;
@@ -1500,6 +1657,13 @@ export class App {
     void this.exportView('svg');
   }
 }
+
+/** What the Auto-arrange button says about a filtered view (its positions are temporary). */
+const FILTERED_STATUS_MESSAGE: { [k in 'auto' | 'manual']: string } = {
+  auto: 'This filtered view matches the auto-arranged layout of the devices shown.',
+  manual: 'This filtered view has temporarily moved positions. Auto-arrange re-arranges the devices shown.',
+};
+const FILTERED_ACTION = 'Auto-arrange arranges only the devices shown, for now; the saved layout of the complete view is not changed (A).';
 
 /** What the Auto-arrange button says about the shown view (icon + message, never colour alone). */
 const LAYOUT_STATUS_ICON = { auto: '\u2713', manual: '\u270E', edited: '\u25CF' };

@@ -281,7 +281,7 @@ test('standalone SVG export: legend placement still clears the (larger) diagram,
       assert.ok(within(x), `${view}: ${JSON.stringify(x)} outside ${JSON.stringify(b)}`);
     }
     for (const c of g.cables) for (const p of c.pts) assert.ok(p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h, 'cable bend inside the bounds');
-    const lg = legend.svgLegend(m, view, { hiddenProtocols: new Set(), showNetworks: true, showUnderlay: false }, b);
+    const lg = legend.svgLegend(m, view, { hiddenProtocols: new Set(), showNetworks: true, showGroups: true }, b);
     assert.ok(lg.box.x >= b.x + b.w && inside(lg.box, lg.viewBox) && inside(b, lg.viewBox));
   }
 });

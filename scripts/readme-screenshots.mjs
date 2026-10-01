@@ -1,6 +1,6 @@
 // Regenerates the README screenshots in docs/img/ from dist/netatlas.html,
 // using headless Chrome/Edge/Chromium and the page's deep links
-// (#example=<n>&view=<physical|logical>&select=<ref>). Run after "npm run build":
+// (#example=<n>&view=<physical|logical>&select=<ref>&devices=<id,…>). Run after "npm run build":
 //
 //   node scripts/readme-screenshots.mjs
 //
@@ -24,6 +24,8 @@ const SHOTS = [
   ['dc-physical.png', 'example=1&view=physical'],
   ['metro-physical.png', 'example=3&view=physical'],
   ['metro-logical.png', 'example=3&view=logical'],
+  ['wan-physical-filtered.png', 'example=0&view=physical&devices=inet,isp1-pe,hq-rtr1,hq-rtr2,hq-fw,hq-core1'],
+  ['wan-logical-filtered.png', 'example=0&view=logical&devices=inet,isp1-pe,hq-rtr1,hq-rtr2,hq-fw,hq-core1'],
 ];
 
 const browser = findBrowser();

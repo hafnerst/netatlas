@@ -16,7 +16,6 @@
   --group-stroke: #b6bec8;
   --halo: #fbfcfd;
   --member: #adb5bd;
-  --underlay: #ced4da;
   --pill: #ffffff;
   --error: #c92a2a;
   --warn: #b35900;
@@ -42,7 +41,6 @@
     --group-stroke: #3a424d;
     --halo: #0d1014;
     --member: #56606c;
-    --underlay: #3a424d;
     --pill: #1b2028;
     --error: #ff8787;
     --warn: #ffc078;
@@ -101,6 +99,23 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .spacer { flex: 1; }
 .opt { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); user-select: none; }
 body:not([data-view="logical"]) .logical-only { display: none; }
+/* Devices filter: a button with a checkbox panel, in the top-right diagram controls */
+.devices-wrap { position: relative; }
+#devices-btn.filtered { border-color: var(--accent); color: var(--accent); }
+.devices-panel { right: 0; left: auto; width: 290px; padding: 8px; display: flex; flex-direction: column; gap: 6px; }
+.devices-panel[hidden] { display: none; }
+.dp-tools { display: flex; gap: 4px; align-items: center; }
+.dp-tools input { flex: 1; min-width: 0; padding: 3px 7px; border: 1px solid var(--border); border-radius: 5px; background: var(--canvas); color: var(--text); }
+.dp-list { max-height: min(55vh, 420px); overflow: auto; display: flex; flex-direction: column; gap: 1px; border: 1px solid var(--border); border-radius: 6px; padding: 4px 6px; background: var(--canvas); }
+.dp-list label { display: flex; align-items: center; gap: 6px; padding: 2px 0; font-size: 12.5px; overflow-wrap: anywhere; cursor: pointer; }
+.dp-list label[hidden] { display: none; }
+.dp-note { margin: 0; font-size: 11.5px; }
+.devices-panel > .dp-tools { padding: 0; }
+.devices-panel > .dp-list { padding: 4px 6px; }
+.devices-panel .dp-tools button { width: auto; flex: none; padding: 2px 8px; border: 1px solid var(--border); border-radius: 5px; }
+/* subtle, accessible note while a filtered view is shown (outside the SVG: never exported) */
+.filter-hint { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); max-width: calc(100% - 40px); padding: 4px 10px; border: 1px solid var(--border); border-radius: 999px; background: var(--panel); color: var(--muted); font-size: 12px; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12); pointer-events: none; }
+.filter-hint[hidden] { display: none; }
 .search-wrap { position: relative; }
 #search { width: 220px; padding: 4px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--canvas); }
 .dropdown {
@@ -287,7 +302,6 @@ button.ref:hover { text-decoration: underline; }
 .vlan-warn { font-size: 14px; font-weight: 700; cursor: pointer; }
 .member { fill: none; stroke: var(--member); stroke-width: 1.3; }
 .member-label { font-size: 10px; fill: var(--muted) !important; }
-.underlay { fill: none; stroke: var(--underlay); stroke-width: 5; stroke-linecap: round; opacity: .65; }
 .tube-outer { fill: none; stroke-linecap: butt; }
 .tube-inner { fill: none; stroke: var(--canvas); stroke-linecap: butt; }
 .rel-line { fill: none; }

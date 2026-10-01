@@ -87,16 +87,8 @@ export function legendOf(model: Model, view: View): Legend {
         more: [width('1G'), width('100G')],
       });
     }
-    const kinds = Array.from(new Set(model.groups.map((g) => g.kind)));
-    if (kinds.length) {
-      sections.push({
-        title: 'Locations / groups',
-        items: kinds.map((k) => ({
-          swatch: [h('rect', { class: 'group-box ' + (groupKindStyle(k).strong ? 'group-strong' : ''), x: 3, y: 2, width: 38, height: 14, rx: 4, 'stroke-dasharray': groupKindStyle(k).dash })],
-          label: k || '(no kind)',
-        })),
-      });
-    }
+    const groups = groupSection(model);
+    if (groups) sections.push(groups);
     return {
       sections,
       footer: 'Tunnels and protocol sessions are logical and are shown in the Logical view, not as cables. Select a tunnel in the Relations list to highlight the cables it rides on.',
@@ -132,12 +124,28 @@ export function legendOf(model: Model, view: View): Legend {
       { swatch: [h('circle', { class: 'hub', cx: 22, cy: 9, r: 7, stroke: '#0c8599' })], label: 'Multipoint hub (3+ devices)' },
       { swatch: [h('rect', { class: 'net-box', x: 3, y: 2, width: 38, height: 14, rx: 7, stroke: NETWORK_COLOR })], label: 'IP network' },
       { swatch: [h('path', { class: 'member', d: LINE })], label: 'Network membership (from addresses)' },
-      { swatch: [h('path', { class: 'underlay', d: LINE })], label: 'Physical adjacency (optional underlay)' },
     ],
     note: Array.from(used.values()).some((u) => u.def.custom) ? '* defined in this file’s "protocols" section' : undefined,
   });
+  const groups = groupSection(model);
+  if (groups) sections.push(groups);
   return { sections };
 }
+
+/** The kinds of groups / locations: their frames are drawn in both views. */
+function groupSection(model: Model): LegendSection | null {
+  const kinds = Array.from(new Set(model.groups.map((g) => g.kind)));
+  if (!kinds.length) return null;
+  return {
+    title: GROUPS_TITLE,
+    items: kinds.map((k) => ({
+      swatch: [h('rect', { class: 'group-box ' + (groupKindStyle(k).strong ? 'group-strong' : ''), x: 3, y: 2, width: 38, height: 14, rx: 4, 'stroke-dasharray': groupKindStyle(k).dash })],
+      label: k || '(no kind)',
+    })),
+  };
+}
+
+const GROUPS_TITLE = 'Locations / groups';
 
 // ------------------------------------------------------- legend inside an SVG
 
@@ -145,7 +153,8 @@ export function legendOf(model: Model, view: View): Legend {
 export interface ExportOptions {
   hiddenProtocols: Set<string>;
   showNetworks: boolean;
-  showUnderlay: boolean;
+  /** group / location frames are drawn (default true) */
+  showGroups?: boolean;
 }
 
 const PAD = 14;
@@ -157,7 +166,7 @@ export const LEGEND_GAP = 28;
 
 /**
  * The sections an exported SVG needs: the Legend tab's content reduced to
- * what is drawn (hidden protocols, networks and underlay are left out), plus
+ * what is drawn (hidden protocols, networks and group frames are left out), plus
  * the symbols the tab explains in prose (ports, VLAN mismatch).
  */
 export function exportLegendSections(model: Model, view: View, opts: ExportOptions): LegendSection[] {
@@ -168,10 +177,10 @@ export function exportLegendSections(model: Model, view: View, opts: ExportOptio
       items = items.filter((i) => {
         if (i.protocol !== undefined) return !opts.hiddenProtocols.has(i.protocol);
         if (/^IP network|^Network membership/.test(i.label)) return opts.showNetworks && model.networks.length > 0;
-        if (/^Physical adjacency/.test(i.label)) return opts.showUnderlay;
         return true;
       });
     }
+    if (s.title === GROUPS_TITLE && opts.showGroups === false) items = [];
     if (items.length) out.push({ title: s.title, items: items.map((i) => (i.custom ? { ...i, label: i.label + ' *' } : i)), note: view === 'logical' ? s.note : undefined });
   }
   if (view === 'physical' && model.links.length) {

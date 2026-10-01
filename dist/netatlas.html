@@ -27,7 +27,6 @@
   --group-stroke: #b6bec8;
   --halo: #fbfcfd;
   --member: #adb5bd;
-  --underlay: #ced4da;
   --pill: #ffffff;
   --error: #c92a2a;
   --warn: #b35900;
@@ -53,7 +52,6 @@
     --group-stroke: #3a424d;
     --halo: #0d1014;
     --member: #56606c;
-    --underlay: #3a424d;
     --pill: #1b2028;
     --error: #ff8787;
     --warn: #ffc078;
@@ -112,6 +110,23 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .spacer { flex: 1; }
 .opt { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); user-select: none; }
 body:not([data-view="logical"]) .logical-only { display: none; }
+/* Devices filter: a button with a checkbox panel, in the top-right diagram controls */
+.devices-wrap { position: relative; }
+#devices-btn.filtered { border-color: var(--accent); color: var(--accent); }
+.devices-panel { right: 0; left: auto; width: 290px; padding: 8px; display: flex; flex-direction: column; gap: 6px; }
+.devices-panel[hidden] { display: none; }
+.dp-tools { display: flex; gap: 4px; align-items: center; }
+.dp-tools input { flex: 1; min-width: 0; padding: 3px 7px; border: 1px solid var(--border); border-radius: 5px; background: var(--canvas); color: var(--text); }
+.dp-list { max-height: min(55vh, 420px); overflow: auto; display: flex; flex-direction: column; gap: 1px; border: 1px solid var(--border); border-radius: 6px; padding: 4px 6px; background: var(--canvas); }
+.dp-list label { display: flex; align-items: center; gap: 6px; padding: 2px 0; font-size: 12.5px; overflow-wrap: anywhere; cursor: pointer; }
+.dp-list label[hidden] { display: none; }
+.dp-note { margin: 0; font-size: 11.5px; }
+.devices-panel > .dp-tools { padding: 0; }
+.devices-panel > .dp-list { padding: 4px 6px; }
+.devices-panel .dp-tools button { width: auto; flex: none; padding: 2px 8px; border: 1px solid var(--border); border-radius: 5px; }
+/* subtle, accessible note while a filtered view is shown (outside the SVG: never exported) */
+.filter-hint { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); max-width: calc(100% - 40px); padding: 4px 10px; border: 1px solid var(--border); border-radius: 999px; background: var(--panel); color: var(--muted); font-size: 12px; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12); pointer-events: none; }
+.filter-hint[hidden] { display: none; }
 .search-wrap { position: relative; }
 #search { width: 220px; padding: 4px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--canvas); }
 .dropdown {
@@ -298,7 +313,6 @@ button.ref:hover { text-decoration: underline; }
 .vlan-warn { font-size: 14px; font-weight: 700; cursor: pointer; }
 .member { fill: none; stroke: var(--member); stroke-width: 1.3; }
 .member-label { font-size: 10px; fill: var(--muted) !important; }
-.underlay { fill: none; stroke: var(--underlay); stroke-width: 5; stroke-linecap: round; opacity: .65; }
 .tube-outer { fill: none; stroke-linecap: butt; }
 .tube-inner { fill: none; stroke: var(--canvas); stroke-linecap: butt; }
 .rel-line { fill: none; }
@@ -578,9 +592,21 @@ dialog#modal::backdrop { background: rgba(0,0,0,.35); }
     <div id="search-results" class="dropdown" hidden></div>
   </div>
   <span class="spacer"></span>
+  <div class="devices-wrap">
+    <button id="devices-btn" type="button" class="menu-btn" aria-haspopup="dialog" aria-expanded="false" aria-controls="devices-panel" title="Choose the devices the diagram shows" disabled>Devices: <span id="devices-count">all</span> <span class="caret" aria-hidden="true">▾</span></button>
+    <div id="devices-panel" class="dropdown devices-panel" role="dialog" aria-label="Devices shown in the diagram" hidden>
+      <div class="dp-tools">
+        <input id="devices-find" type="search" placeholder="Filter the list…" aria-label="Filter the device list" autocomplete="off" spellcheck="false">
+        <button id="devices-all" type="button" class="mini" title="Show every device: the complete diagram with its saved positions">Select all</button>
+        <button id="devices-none" type="button" class="mini" title="Deselect every device">Clear</button>
+      </div>
+      <div id="devices-list" class="dp-list" role="group" aria-label="Devices"></div>
+      <p class="dp-note muted">A filtered diagram is arranged for the selected devices only. Its positions are temporary; the saved layout of the complete diagram is not changed.</p>
+    </div>
+  </div>
   <label class="opt"><input id="opt-labels" type="checkbox" checked> Labels</label>
+  <label class="opt"><input id="opt-groups" type="checkbox" checked> Groups / Locations</label>
   <label class="opt logical-only"><input id="opt-networks" type="checkbox" checked> Networks</label>
-  <label class="opt logical-only"><input id="opt-underlay" type="checkbox"> Underlay</label>
 </header>
 <main>
   <aside id="outline" aria-label="Model outline">
@@ -588,6 +614,7 @@ dialog#modal::backdrop { background: rgba(0,0,0,.35); }
   </aside>
   <section id="canvas-wrap">
     <svg id="canvas" role="img" aria-label="Network diagram"><g id="viewport"></g></svg>
+    <div id="filter-hint" class="filter-hint" role="status" hidden><span class="fh-icon" aria-hidden="true">⧉</span> <span id="filter-hint-text">Filtered-view positions are temporary and are not saved in YAML.</span></div>
     <div class="zoombar" role="toolbar" aria-label="Zoom">
       <button id="zoom-in" type="button" title="Zoom in (+)">+</button>
       <span id="zoom-level">100%</span>
@@ -672,7 +699,7 @@ function start() {
         void (0, viewport_check_1.runViewportCheck)(app, document);
         return;
     }
-    // Optional deep link to a built-in example, e.g. "#example=0&view=logical".
+    // Optional deep link to a built-in example, e.g. "#example=0&view=logical&devices=hq-rtr1,hq-fw".
     const params = {};
     for (const part of hash.split('&')) {
         const i = part.indexOf('=');
@@ -683,6 +710,9 @@ function start() {
         app.loadExample(Number(params.example));
         if (params.view === 'logical' || params.view === 'physical')
             app.setView(params.view);
+        // "devices=a,b": show only these devices (a temporary filtered view)
+        if (params.devices !== undefined)
+            app.setDevices(decodeURIComponent(params.devices).split(',').filter((x) => !!x));
         if (params.select)
             app.select(decodeURIComponent(params.select), true);
     }
@@ -714,6 +744,7 @@ const panels_1 = __req("ui/panels");
 const networks_box_1 = __req("diagram/networks-box");
 const session_1 = __req("diagram/session");
 const queries_1 = __req("model/queries");
+const order_1 = __req("model/order");
 class App {
     constructor(doc) {
         this.session = null;
@@ -1366,7 +1397,7 @@ class App {
             }
         }
         else if (this.tab === 'legend')
-            (0, dom_1.mount)(body, (0, panels_1.legendFor)(s.model, s.state.view, s.state.hiddenProtocols));
+            (0, dom_1.mount)(body, (0, panels_1.legendFor)(s.viewModel(), s.state.view, s.state.hiddenProtocols));
         else
             (0, dom_1.mount)(body, (0, panels_1.relationList)(s.model, this.selectionContext()));
         restoreFocus(this.doc, focus);
@@ -1544,6 +1575,7 @@ class App {
                 m ? `${m.title} · ${m.devices.length} devices · ${m.index.interfaces.size} interfaces · ${m.links.length} cables · ${m.networks.length} networks · ${m.relations.length} logical relations` : '',
                 d.errors.length ? (0, dom_1.el)(this.doc, 'span', { class: 'errcount' }, [` · ${d.errors.length} error${d.errors.length > 1 ? 's' : ''}`]) : '',
                 d.warnings.length ? ` · ${d.warnings.length} warning${d.warnings.length > 1 ? 's' : ''}` : '',
+                s && s.isFiltered() ? (0, dom_1.el)(this.doc, 'span', { class: 'filtered-note' }, [` · showing ${s.selectedDevices().size} of ${s.model.devices.length} devices`]) : '',
                 ' · everything stays in this page',
             ];
             for (const p of parts)
@@ -1557,13 +1589,14 @@ class App {
         const opts = s
             ? [
                 ['opt-labels', s.state.showLabels],
+                ['opt-groups', s.state.showGroups],
                 ['opt-networks', s.state.showNetworks],
-                ['opt-underlay', s.state.showUnderlay],
             ]
             : [];
         for (const [id, v] of opts)
             this.$(id).checked = v;
         this.$('btn-arrange').disabled = !d || !s;
+        this.updateDevicesControl();
         this.updateLayoutStatus();
     }
     /**
@@ -1582,8 +1615,9 @@ class App {
         const desc = this.$('arrange-status');
         const action = 'Auto-arrange recomputes the positions of every object in this view; the other view is not changed (A).';
         for (const v of ['physical', 'logical']) {
+            // a filtered view has its own, temporary layout status
             if (d && s)
-                btn.setAttribute('data-status-' + v, d.layoutStatus(v));
+                btn.setAttribute('data-status-' + v, s.isFiltered() ? s.filteredStatus(v) : d.layoutStatus(v));
             else
                 btn.removeAttribute('data-status-' + v);
         }
@@ -1595,6 +1629,20 @@ class App {
             btn.title = action;
             return;
         }
+        if (s.isFiltered()) {
+            // a filtered view: its own, temporary layout; the saved layout of the complete view is not involved
+            const fst = s.filteredStatus(s.state.view);
+            const msg = FILTERED_STATUS_MESSAGE[fst];
+            btn.setAttribute('data-status', fst);
+            btn.setAttribute('data-filtered', 'true');
+            btn.setAttribute('data-view', s.state.view);
+            icon.textContent = LAYOUT_STATUS_ICON[fst];
+            if (desc.textContent !== msg)
+                desc.textContent = msg;
+            btn.title = msg + ' ' + FILTERED_ACTION;
+            return;
+        }
+        btn.removeAttribute('data-filtered');
         const st = d.layoutStatus(s.state.view);
         btn.setAttribute('data-status', st);
         btn.setAttribute('data-view', s.state.view);
@@ -1603,6 +1651,133 @@ class App {
         if (desc.textContent !== LAYOUT_STATUS_MESSAGE[st])
             desc.textContent = LAYOUT_STATUS_MESSAGE[st];
         btn.title = LAYOUT_STATUS_MESSAGE[st] + ' ' + action;
+    }
+    // ------------------------------------------------------------ device filter
+    /** The Devices control: its count, its state and the temporary-positions hint. */
+    updateDevicesControl() {
+        const s = this.session;
+        const btn = this.$('devices-btn');
+        const count = this.$('devices-count');
+        const hint = this.$('filter-hint');
+        btn.disabled = !s;
+        const filtered = !!s && s.isFiltered();
+        btn.classList.toggle('filtered', filtered);
+        btn.setAttribute('data-filtered', filtered ? 'true' : 'false');
+        count.textContent = !s ? 'all' : filtered ? `${s.selectedDevices().size} of ${s.model.devices.length}` : `all (${s.model.devices.length})`;
+        btn.title = filtered ? 'The diagram shows only the selected devices. Choose devices, or Select all for the complete diagram.' : 'Choose the devices the diagram shows';
+        hint.hidden = !filtered;
+        const none = filtered && !!s && s.selectedDevices().size === 0;
+        this.$('filter-hint-text').textContent = (none ? 'No devices selected: choose devices, or Select all. ' : '') + 'Filtered-view positions are temporary and are not saved in YAML.';
+        if (!s)
+            this.$('devices-panel').hidden = true;
+        if (!this.$('devices-panel').hidden)
+            this.syncDevicesList();
+    }
+    /**
+     * Bring the open list in step with the selection without rebuilding it,
+     * so the checkbox that has the focus keeps it. Rebuilt only when the
+     * model's devices changed.
+     */
+    syncDevicesList() {
+        const s = this.session;
+        if (!s)
+            return;
+        const boxes = this.$('devices-list').querySelectorAll('input[data-device]');
+        if (boxes.length !== s.model.devices.length || Array.prototype.some.call(boxes, (b) => !s.model.index.devices.has(b.getAttribute('data-device') || ''))) {
+            this.renderDevicesList();
+            return;
+        }
+        const sel = s.selectedDevices();
+        for (let i = 0; i < boxes.length; i++)
+            boxes[i].checked = sel.has(boxes[i].getAttribute('data-device') || '');
+    }
+    /** The checkbox list of the Devices panel, alphabetically by name; the find box only hides rows. */
+    renderDevicesList() {
+        const s = this.session;
+        const list = this.$('devices-list');
+        while (list.firstChild)
+            list.removeChild(list.firstChild);
+        if (!s)
+            return;
+        const sel = s.selectedDevices();
+        const q = this.$('devices-find').value.trim().toLowerCase();
+        for (const d of (0, order_1.sortedByName)(s.model.devices, (x) => x.label)) {
+            const name = d.label !== d.id ? `${d.label} (${d.id})` : d.id;
+            const cb = (0, dom_1.el)(this.doc, 'input', { type: 'checkbox', 'data-device': d.id });
+            cb.checked = sel.has(d.id);
+            const row = (0, dom_1.el)(this.doc, 'label', { 'data-device-row': d.id }, [cb, (0, dom_1.el)(this.doc, 'span', {}, [name])]);
+            if (q && name.toLowerCase().indexOf(q) < 0)
+                row.hidden = true;
+            list.appendChild(row);
+        }
+    }
+    openDevices(open, focus = false) {
+        const panel = this.$('devices-panel');
+        const btn = this.$('devices-btn');
+        if (open && !this.session)
+            return;
+        panel.hidden = !open;
+        btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+        btn.classList.toggle('active', open);
+        if (open) {
+            this.openMenu(null);
+            this.renderDevicesList();
+            this.keepInWindow(panel);
+            if (focus)
+                this.$('devices-find').focus();
+        }
+    }
+    /**
+     * Show only these devices (all of them: the complete diagram). A new
+     * subset is arranged for itself and fitted to the window; the saved layout
+     * is never touched. Nothing happens when the selection is unchanged.
+     */
+    setDevices(ids) {
+        const s = this.session;
+        if (!s || !s.setDevices(ids))
+            return false;
+        this.render();
+        this.fit();
+        this.updateChrome();
+        return true;
+    }
+    wireDevices() {
+        const btn = this.$('devices-btn');
+        const panel = this.$('devices-panel');
+        btn.addEventListener('click', () => this.openDevices(panel.hidden));
+        btn.addEventListener('keydown', (e) => {
+            if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                this.openDevices(true, true);
+            }
+        });
+        panel.addEventListener('change', (e) => {
+            const cb = e.target;
+            const id = cb.getAttribute('data-device');
+            if (!id || !this.session)
+                return;
+            const ids = this.session.selectedDevices();
+            if (cb.checked)
+                ids.add(id);
+            else
+                ids.delete(id);
+            this.setDevices(ids);
+        });
+        this.$('devices-find').addEventListener('input', () => this.renderDevicesList());
+        this.$('devices-all').addEventListener('click', () => this.session && this.setDevices(this.session.model.devices.map((d) => d.id)));
+        this.$('devices-none').addEventListener('click', () => this.setDevices([]));
+        panel.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                e.stopPropagation();
+                this.openDevices(false);
+                btn.focus();
+            }
+        });
+        this.doc.addEventListener('pointerdown', (e) => {
+            if (!panel.hidden && !e.target.closest('.devices-wrap'))
+                this.openDevices(false);
+        });
     }
     fillExamples() {
         const menu = this.$('menu-examples');
@@ -1737,8 +1912,9 @@ class App {
             });
         };
         opt('opt-labels', (v) => this.session && (this.session.state.showLabels = v));
+        opt('opt-groups', (v) => this.session && (this.session.state.showGroups = v));
         opt('opt-networks', (v) => this.session && (this.session.state.showNetworks = v));
-        opt('opt-underlay', (v) => this.session && (this.session.state.showUnderlay = v));
+        this.wireDevices();
         // side panel: tabs, reference links, protocol filters, editor
         const side = this.$('side');
         side.addEventListener('click', (e) => {
@@ -1924,12 +2100,22 @@ class App {
             win.addEventListener('resize', () => this.applyZoom());
     }
     // ------------------------------------------------------------- layout
-    /** A node was dragged: store its new position in the document (one undo step). */
+    /**
+     * A node was dragged: store its new position in the document (one undo
+     * step). In a filtered view the position is temporary: it stays in the
+     * session and the document is not changed.
+     */
     commitDrag(ref) {
         const s = this.session;
         const d = this.mdoc;
         if (!s || !d)
             return;
+        if (s.isFiltered()) {
+            s.commitTemporary(ref);
+            this.render();
+            this.updateChrome();
+            return;
+        }
         const view = s.state.view;
         const p = s.state.positions[view].get(ref);
         if (!p)
@@ -1952,6 +2138,16 @@ class App {
         if (!d || !s)
             return;
         const view = s.state.view;
+        if (s.isFiltered()) {
+            // only the devices shown, in this session only: the saved layout of the complete view is not changed
+            const moved = s.arrangeFiltered();
+            this.render();
+            if (moved)
+                this.fit();
+            this.updateChrome();
+            this.toast(moved ? `Auto-arranged the filtered ${view} view: ${moved} object${moved > 1 ? 's' : ''} moved. Temporary; the saved layout is unchanged.` : 'Already arranged — nothing moved.');
+            return;
+        }
         const other = view === 'physical' ? 'logical' : 'physical';
         const impact = d.arrangeImpact(view);
         if (impact.manual.length) {
@@ -2161,7 +2357,7 @@ class App {
             const st = this.session.state;
             // what the picture shows decides what its legend and its networks overview list
             const scene = this.session.render();
-            const boxes = (0, networks_box_1.exportBoxes)(this.session.model, st.view, st, { root: scene.root, bounds: b });
+            const boxes = (0, networks_box_1.exportBoxes)(this.session.viewModel(), st.view, st, { root: scene.root, bounds: b });
             clone.appendChild((0, dom_1.materialize)(boxes.legend.root, this.doc, true));
             clone.appendChild((0, dom_1.materialize)(boxes.networks.root, this.doc, true));
             b = boxes.viewBox;
@@ -2235,6 +2431,12 @@ App.MENUS = [
     ['menu-btn', 'main-menu'],
     ['export-btn', 'export-menu'],
 ];
+/** What the Auto-arrange button says about a filtered view (its positions are temporary). */
+const FILTERED_STATUS_MESSAGE = {
+    auto: 'This filtered view matches the auto-arranged layout of the devices shown.',
+    manual: 'This filtered view has temporarily moved positions. Auto-arrange re-arranges the devices shown.',
+};
+const FILTERED_ACTION = 'Auto-arrange arranges only the devices shown, for now; the saved layout of the complete view is not changed (A).';
 /** What the Auto-arrange button says about the shown view (icon + message, never colour alone). */
 const LAYOUT_STATUS_ICON = { auto: '\u2713', manual: '\u270E', edited: '\u25CF' };
 const LAYOUT_STATUS_MESSAGE = {
@@ -5067,35 +5269,26 @@ const COMP_GAP = 90;
 /** Auto-arranged node centers for the logical view, keyed by ref. `physical` = auto physical centers. */
 function autoLogical(input, physical) {
     const specs = logicalSpecs(input);
-    const out = new Map();
     if (!specs.length)
-        return out;
+        return new Map();
     const edges = logicalEdges(input, specs);
-    const index = new Map(specs.map((s, i) => [s.ref, i]));
-    // --- connected components (union-find over edges), each sorted by ref
-    const parent = specs.map((_, i) => i);
-    const find = (i) => {
-        while (parent[i] !== i) {
-            parent[i] = parent[parent[i]];
-            i = parent[i];
-        }
-        return i;
-    };
-    for (const [a, b] of edges) {
-        const ra = find(index.get(a));
-        const rb = find(index.get(b));
-        if (ra !== rb)
-            parent[Math.max(ra, rb)] = Math.min(ra, rb);
-    }
-    const groups = new Map();
-    specs.forEach((_, i) => {
-        const r = find(i);
-        if (!groups.has(r))
-            groups.set(r, []);
-        groups.get(r).push(i);
-    });
-    const comps = Array.from(groups.values()).sort((a, b) => b.length - a.length || (0, input_1.cmp)(specs[a[0]].ref, specs[b[0]].ref));
-    // --- seed positions: physical auto positions; networks / hubs near their devices
+    const seed = seedPositions(specs, edges, physical);
+    const groupOf = new Map();
+    const groups = new Map(input.groups.map((g) => [g.id, g]));
+    for (const d of input.devices)
+        if (d.group && groups.has(d.group))
+            groupOf.set(d.id, d.group);
+    if (!specs.some((sp) => sp.kind === 'device' && groupOf.has(sp.id)))
+        return roundAll(arrange(specs, edges, seed));
+    return roundAll(clustered(specs, edges, seed, groupOf, groups));
+}
+function roundAll(pos) {
+    const out = new Map();
+    pos.forEach((p, ref) => out.set(ref, { x: Math.round(p.x), y: Math.round(p.y) }));
+    return out;
+}
+/** Seed positions: physical auto positions for devices; networks / hubs near their devices. */
+function seedPositions(specs, edges, physical) {
     const seed = new Map();
     for (const s of specs)
         if (s.kind === 'device')
@@ -5127,11 +5320,47 @@ function autoLogical(input, physical) {
         const r = s.kind === 'network' ? 90 : 30;
         seed.set(s.ref, { x: cx + dx * r, y: cy + dy * r });
     }
+    return seed;
+}
+/**
+ * Lay out a set of nodes: split into connected components, lay out each,
+ * pack the components in rows (largest first: by the number of nodes they
+ * hold, a group counting with everything inside it). The top-left corner of
+ * the packing is (0, 0).
+ */
+function arrange(specs, edges, seed, weight = () => 1) {
+    const out = new Map();
+    const index = new Map(specs.map((s, i) => [s.ref, i]));
+    const own = edges.filter(([a, b]) => index.has(a) && index.has(b));
+    // --- connected components (union-find over edges), each sorted by ref
+    const parent = specs.map((_, i) => i);
+    const find = (i) => {
+        while (parent[i] !== i) {
+            parent[i] = parent[parent[i]];
+            i = parent[i];
+        }
+        return i;
+    };
+    for (const [a, b] of own) {
+        const ra = find(index.get(a));
+        const rb = find(index.get(b));
+        if (ra !== rb)
+            parent[Math.max(ra, rb)] = Math.min(ra, rb);
+    }
+    const groups = new Map();
+    specs.forEach((_, i) => {
+        const r = find(i);
+        if (!groups.has(r))
+            groups.set(r, []);
+        groups.get(r).push(i);
+    });
+    const size = (c) => c.reduce((n, i) => n + weight(specs[i].ref), 0);
+    const comps = Array.from(groups.values()).sort((a, b) => size(b) - size(a) || (0, input_1.cmp)(specs[a[0]].ref, specs[b[0]].ref));
     // --- lay out each component, then pack the components
     const placed = [];
     for (const comp of comps) {
         const refs = comp.map((i) => specs[i].ref);
-        const pos = layoutComponent(comp.map((i) => specs[i]), edges.filter(([a]) => refs.indexOf(a) >= 0), seed);
+        const pos = layoutComponent(comp.map((i) => specs[i]), own.filter(([a]) => refs.indexOf(a) >= 0), seed);
         let x0 = Infinity;
         let y0 = Infinity;
         let x1 = -Infinity;
@@ -5163,6 +5392,156 @@ function autoLogical(input, physical) {
         }
         cx += c.w + COMP_GAP;
         rowH = Math.max(rowH, c.h);
+    }
+    return out;
+}
+/**
+ * The layout with devices clustered by group. Each group is a box of the
+ * size of its frame, laid out among its siblings; its content is placed
+ * inside it. Edges between nodes of different containers are lifted to the
+ * containers (the child of the current container that holds each end).
+ */
+function clustered(specs, edges, seed, groupOf, groups) {
+    /** the chain of groups of a node, innermost first (networks and hubs: none) */
+    const chain = (ref) => {
+        const out = [];
+        if (ref.indexOf('device:') !== 0)
+            return out;
+        const seen = new Set();
+        let g = groupOf.get(ref.slice(7));
+        while (g !== undefined && groups.has(g) && !seen.has(g)) {
+            seen.add(g);
+            out.push(g);
+            const p = groups.get(g).parent;
+            g = p === null ? undefined : p;
+        }
+        return out;
+    };
+    const chains = new Map(specs.map((sp) => [sp.ref, chain(sp.ref)]));
+    /** the item directly inside `container` (null = top level) that holds `ref`, or null if `ref` is not inside it */
+    const itemIn = (ref, container) => {
+        const c = chains.get(ref);
+        if (container === null)
+            return c.length ? 'group:' + c[c.length - 1] : ref;
+        const k = c.indexOf(container);
+        if (k < 0)
+            return null;
+        return k === 0 ? ref : 'group:' + c[k - 1];
+    };
+    /** every group that contains a node of the view, and its direct children */
+    const children = new Map();
+    const add = (container, item) => {
+        if (!children.has(container))
+            children.set(container, new Set());
+        children.get(container).add(item);
+    };
+    for (const sp of specs) {
+        const c = chains.get(sp.ref);
+        add(c.length ? c[0] : null, sp.ref);
+        for (let k = 0; k < c.length; k++)
+            add(k + 1 < c.length ? c[k + 1] : null, 'group:' + c[k]);
+    }
+    const specOf = new Map(specs.map((sp) => [sp.ref, sp]));
+    /** absolute positions of everything inside a placed item, relative to the item's center */
+    const inner = new Map();
+    const leaves = (item) => {
+        if (item.indexOf('group:') !== 0)
+            return [item];
+        return Array.from(inner.get(item).keys());
+    };
+    const layoutContainer = (container) => {
+        // children first (deepest groups are laid out before their parent)
+        const kids = Array.from(children.get(container) || []).sort(input_1.cmp);
+        const items = kids.map((ref) => {
+            if (ref.indexOf('group:') !== 0)
+                return specOf.get(ref);
+            const box = layoutGroup(ref.slice(6));
+            return { ref, kind: 'device', id: ref.slice(6), w: box.w, h: box.h };
+        });
+        // edges lifted to the items of this container; parallel ones merged
+        const merged = new Map();
+        for (const [a, b, w, rx, ry] of edges) {
+            const ia = itemIn(a, container);
+            const ib = itemIn(b, container);
+            if (ia === null || ib === null || ia === ib)
+                continue;
+            const [p, q] = (0, input_1.cmp)(ia, ib) <= 0 ? [ia, ib] : [ib, ia];
+            const key = p + '\u0000' + q;
+            const e = merged.get(key);
+            if (!e)
+                merged.set(key, [p, q, w, rx, ry]);
+            else
+                merged.set(key, [p, q, Math.min(2, Math.max(e[2], w)), Math.max(e[3], rx), Math.max(e[4], ry)]);
+        }
+        const lifted = Array.from(merged.values()).sort((p, q) => (0, input_1.cmp)(p[0], q[0]) || (0, input_1.cmp)(p[1], q[1]));
+        // a group is seeded at the mean seed of what it contains
+        const sd = new Map();
+        for (const it of items) {
+            if (it.ref.indexOf('group:') !== 0) {
+                sd.set(it.ref, seed.get(it.ref));
+                continue;
+            }
+            const ls = leaves(it.ref);
+            let x = 0;
+            let y = 0;
+            for (const l of ls) {
+                const p = seed.get(l);
+                x += p.x;
+                y += p.y;
+            }
+            sd.set(it.ref, { x: x / ls.length, y: y / ls.length });
+        }
+        return { items, pos: arrange(items, lifted, sd, (ref) => leaves(ref).length) };
+    };
+    /** lay out a group's content; returns the size of its frame */
+    const sizes = new Map();
+    const layoutGroup = (gid) => {
+        const known = sizes.get(gid);
+        if (known)
+            return known;
+        const { items, pos } = layoutContainer(gid);
+        let x0 = Infinity;
+        let y0 = Infinity;
+        let x1 = -Infinity;
+        let y1 = -Infinity;
+        for (const it of items) {
+            const p = pos.get(it.ref);
+            x0 = Math.min(x0, p.x - it.w / 2);
+            y0 = Math.min(y0, p.y - it.h / 2);
+            x1 = Math.max(x1, p.x + it.w / 2);
+            y1 = Math.max(y1, p.y + it.h / 2);
+        }
+        const g = groups.get(gid);
+        // the same frame geometry as the drawn group (diagram/physical.ts groupRects)
+        const uw = x1 - x0;
+        const head = (0, sizes_1.groupHeader)(g.label, g.kind, uw);
+        const w = Math.max(uw + 2 * sizes_1.GROUP_PAD, head.minW);
+        const h = y1 - y0 + 2 * sizes_1.GROUP_PAD + head.h;
+        // positions relative to the frame's center: content centred horizontally, below the title
+        const ox = -(x0 + uw / 2);
+        const oy = -h / 2 + head.h + sizes_1.GROUP_PAD - y0;
+        const rel = new Map();
+        for (const it of items) {
+            const p = pos.get(it.ref);
+            const c = { x: p.x + ox, y: p.y + oy };
+            if (it.ref.indexOf('group:') === 0)
+                inner.get(it.ref).forEach((q, ref) => rel.set(ref, { x: c.x + q.x, y: c.y + q.y }));
+            else
+                rel.set(it.ref, c);
+        }
+        inner.set('group:' + gid, rel);
+        const size = { w, h };
+        sizes.set(gid, size);
+        return size;
+    };
+    const top = layoutContainer(null);
+    const out = new Map();
+    for (const it of top.items) {
+        const c = top.pos.get(it.ref);
+        if (it.ref.indexOf('group:') === 0)
+            inner.get(it.ref).forEach((q, ref) => out.set(ref, { x: c.x + q.x, y: c.y + q.y }));
+        else
+            out.set(it.ref, c);
     }
     return out;
 }
@@ -11844,7 +12223,7 @@ exports.FIXTURES = [
     },
     {
         "name": "metro-ring-arranged.yaml",
-        "text": "# netatlas test fixture: examples/metro-ring.yaml after Auto-arrange (both views) and export\n# (generated by scripts/make-fixtures.mjs). The positions are in the\n# \"layout\" section at the end; the network itself is unchanged.\n# netatlas example: metro ring (for Auto-arrange)\n#\n# Six PE routers in three POPs on a fibre ring, each with IPv4/IPv6\n# loopbacks used as router IDs and as iBGP / RSVP-TE endpoints. The logical\n# layer is dense on purpose: an OSPF area, LDP on every ring link, a full\n# iBGP mesh between loopbacks (15 sessions), two RSVP-TE tunnels, an L3VPN\n# overlay and customer eBGP. An out-of-band management network forms a\n# separate, disconnected component, and a spare router is not connected at\n# all. There is no \"layout\" section: open it and use Auto-arrange.\nnetatlas: 1\ntitle: Metro ring MR-1\n\ngroups:\n  - {id: pop-north, label: POP North, kind: site}\n  - {id: pop-east, label: POP East, kind: site}\n  - {id: pop-south, label: POP South, kind: site}\n  - {id: oob, label: Out-of-band management, kind: zone}\n  - {id: cust-a, label: Customer A, kind: external}\n\ndevices:\n  - id: pe1\n    type: router\n    group: pop-north\n    interfaces:\n      - {id: et1, ip: 10.1.12.1/31}\n      - {id: et2, ip: 10.1.16.1/31}\n      - {id: et3, ip: 192.0.2.1/30, vrf: CUST-A}\n      - {id: et4}\n    logical_interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.1/32, 2001:db8:0:ffff::1/128]}\n  - id: pe2\n    type: router\n    group: pop-north\n    interfaces:\n      - {id: et1, ip: 10.1.12.0/31}\n      - {id: et2, ip: 10.1.23.0/31}\n      - {id: et4}\n    logical_interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.2/32, 2001:db8:0:ffff::2/128]}\n  - id: pe3\n    type: router\n    group: pop-east\n    interfaces:\n      - {id: et1, ip: 10.1.23.1/31}\n      - {id: et2, ip: 10.1.34.0/31}\n      - {id: et4}\n    logical_interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.3/32, 2001:db8:0:ffff::3/128]}\n      - {id: lo1, type: loopback, label: VPN next-hop, ip: [10.0.1.3/32]}\n  - id: pe4\n    type: router\n    group: pop-east\n    interfaces:\n      - {id: et1, ip: 10.1.34.1/31}\n      - {id: et2, ip: 10.1.45.0/31}\n      - {id: et4}\n    logical_interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.4/32, 2001:db8:0:ffff::4/128]}\n  - id: pe5\n    type: router\n    group: pop-south\n    interfaces:\n      - {id: et1, ip: 10.1.45.1/31}\n      - {id: et2, ip: 10.1.56.0/31}\n      - {id: et3, ip: 192.0.2.5/30, vrf: CUST-A}\n      - {id: et4}\n    logical_interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.5/32, 2001:db8:0:ffff::5/128]}\n      - {id: lo1, type: loopback, label: VPN next-hop, ip: [10.0.1.5/32]}\n  - id: pe6\n    type: router\n    group: pop-south\n    interfaces:\n      - {id: et1, ip: 10.1.56.1/31}\n      - {id: et2, ip: 10.1.16.0/31}\n      - {id: et4}\n    logical_interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.6/32, 2001:db8:0:ffff::6/128]}\n  - id: ce-a1\n    label: Customer A — HQ\n    type: router\n    group: cust-a\n    interfaces:\n      - {id: ge0, ip: 192.0.2.2/30}\n  - id: ce-a2\n    label: Customer A — Plant\n    type: router\n    group: cust-a\n    interfaces:\n      - {id: ge0, ip: 192.0.2.6/30}\n  - id: oob-sw\n    label: OOB switch\n    type: switch\n    group: oob\n    interfaces:\n      - {id: p1}\n      - p2\n      - p3\n    logical_interfaces:\n      - {id: vlan1, type: virtual, ip: 172.31.0.2/24}\n  - id: oob-con1\n    label: Console server 1\n    type: system\n    group: oob\n    interfaces:\n      - {id: eth0, ip: 172.31.0.11/24}\n  - id: oob-con2\n    label: Console server 2\n    type: system\n    group: oob\n    interfaces:\n      - {id: eth0, ip: 172.31.0.12/24}\n  - id: oob-nms\n    label: NMS collector\n    type: server\n    group: oob\n    interfaces:\n      - {id: eth0, ip: 172.31.0.20/24}\n  - id: spare-pe\n    label: Spare PE (not in service)\n    type: router\n    logical_interfaces:\n      - {id: lo0, type: loopback, ip: [10.0.0.99/32]}\n\nlinks:\n  # the ring\n  - {id: r12, a: \"pe1:et1\", b: \"pe2:et1\", medium: fiber, speed: 100G}\n  - {id: r23, a: \"pe2:et2\", b: \"pe3:et1\", medium: fiber, speed: 100G}\n  - {id: r34, a: \"pe3:et2\", b: \"pe4:et1\", medium: fiber, speed: 100G}\n  - {id: r45, a: \"pe4:et2\", b: \"pe5:et1\", medium: fiber, speed: 100G}\n  - {id: r56, a: \"pe5:et2\", b: \"pe6:et1\", medium: fiber, speed: 100G}\n  - {id: r61, a: \"pe6:et2\", b: \"pe1:et2\", medium: fiber, speed: 100G}\n  # intra-POP cross-connects\n  - {id: x-north, a: \"pe1:et4\", b: \"pe2:et4\", medium: dac, speed: 100G, cable: DAC 1m}\n  - {id: x-east, a: \"pe3:et4\", b: \"pe4:et4\", medium: dac, speed: 100G, cable: DAC 1m}\n  - {id: x-south, a: \"pe5:et4\", b: \"pe6:et4\", medium: dac, speed: 100G, cable: DAC 1m}\n  # customer access\n  - {id: acc-a1, a: \"pe1:et3\", b: \"ce-a1:ge0\", medium: fiber, speed: 10G}\n  - {id: acc-a2, a: \"pe5:et3\", b: \"ce-a2:ge0\", medium: fiber, speed: 10G}\n  # out-of-band island (not connected to the ring)\n  - {id: oob-1, a: \"oob-sw:p1\", b: \"oob-con1:eth0\", medium: copper}\n  - {id: oob-2, a: \"oob-sw:p2\", b: \"oob-con2:eth0\", medium: copper}\n  - {id: oob-3, a: \"oob-sw:p3\", b: \"oob-nms:eth0\", medium: copper}\n\nnetworks:\n  # members are derived from the addresses inside each prefix\n  - id: cust-a-access\n    label: Customer A access\n    cidr: [192.0.2.0/30, 192.0.2.4/30]\n    attrs: {vrf: CUST-A, rd: \"65000:100\", rt: \"65000:100\"}\n  - id: oob-mgmt\n    label: OOB management\n    cidr: 172.31.0.0/24\n\nrelations:\n  - id: ospf-core\n    protocol: ospf\n    label: area 0\n    endpoints: [pe1, pe2, pe3, pe4, pe5, pe6]\n  # LDP on every ring link\n  - {id: ldp-12, protocol: ldp, endpoints: [\"pe1:et1\", \"pe2:et1\"], over: r12}\n  - {id: ldp-23, protocol: ldp, endpoints: [\"pe2:et2\", \"pe3:et1\"], over: r23}\n  - {id: ldp-34, protocol: ldp, endpoints: [\"pe3:et2\", \"pe4:et1\"], over: r34}\n  - {id: ldp-45, protocol: ldp, endpoints: [\"pe4:et2\", \"pe5:et1\"], over: r45}\n  - {id: ldp-56, protocol: ldp, endpoints: [\"pe5:et2\", \"pe6:et1\"], over: r56}\n  - {id: ldp-61, protocol: ldp, endpoints: [\"pe6:et2\", \"pe1:et2\"], over: r61}\n  # full iBGP mesh between loopbacks (15 sessions)\n  - {id: ibgp-1-2, protocol: ibgp, endpoints: [\"pe1:lo0\", \"pe2:lo0\"]}\n  - {id: ibgp-1-3, protocol: ibgp, endpoints: [\"pe1:lo0\", \"pe3:lo0\"]}\n  - {id: ibgp-1-4, protocol: ibgp, endpoints: [\"pe1:lo0\", \"pe4:lo0\"]}\n  - {id: ibgp-1-5, protocol: ibgp, endpoints: [\"pe1:lo0\", \"pe5:lo0\"]}\n  - {id: ibgp-1-6, protocol: ibgp, endpoints: [\"pe1:lo0\", \"pe6:lo0\"]}\n  - {id: ibgp-2-3, protocol: ibgp, endpoints: [\"pe2:lo0\", \"pe3:lo0\"]}\n  - {id: ibgp-2-4, protocol: ibgp, endpoints: [\"pe2:lo0\", \"pe4:lo0\"]}\n  - {id: ibgp-2-5, protocol: ibgp, endpoints: [\"pe2:lo0\", \"pe5:lo0\"]}\n  - {id: ibgp-2-6, protocol: ibgp, endpoints: [\"pe2:lo0\", \"pe6:lo0\"]}\n  - {id: ibgp-3-4, protocol: ibgp, endpoints: [\"pe3:lo0\", \"pe4:lo0\"]}\n  - {id: ibgp-3-5, protocol: ibgp, endpoints: [\"pe3:lo0\", \"pe5:lo0\"]}\n  - {id: ibgp-3-6, protocol: ibgp, endpoints: [\"pe3:lo0\", \"pe6:lo0\"]}\n  - {id: ibgp-4-5, protocol: ibgp, endpoints: [\"pe4:lo0\", \"pe5:lo0\"]}\n  - {id: ibgp-4-6, protocol: ibgp, endpoints: [\"pe4:lo0\", \"pe6:lo0\"]}\n  - {id: ibgp-5-6, protocol: ibgp, endpoints: [\"pe5:lo0\", \"pe6:lo0\"]}\n  # traffic-engineered tunnels between loopbacks, riding the ring\n  - id: te-1-4\n    protocol: rsvp-te\n    label: primary north→east\n    directed: true\n    endpoints: [\"pe1:lo0\", \"pe4:lo0\"]\n    over: [r12, r23, r34]\n    attrs: {bandwidth: 40G, setup-priority: 3}\n  - id: te-2-5\n    protocol: rsvp-te\n    label: primary north→south\n    directed: true\n    endpoints: [\"pe2:lo0\", \"pe5:lo0\"]\n    over: [r61, r56, x-north]\n    attrs: {bandwidth: 20G}\n  # customer service\n  - id: l3vpn-a\n    protocol: l3vpn\n    label: CUST-A\n    endpoints: [\"pe1:lo0\", \"pe3:lo1\", \"pe5:lo1\"]\n    network: cust-a-access\n  - {id: ebgp-a1, protocol: ebgp, endpoints: [\"pe1:et3\", \"ce-a1:ge0\"], over: acc-a1, attrs: {peer-as: 64601}}\n  - {id: ebgp-a2, protocol: ebgp, endpoints: [\"pe5:et3\", \"ce-a2:ge0\"], over: acc-a2, attrs: {peer-as: 64601}}\n  # inside the OOB island\n  - {id: syslog-oob, protocol: syslog, directed: true, endpoints: [oob-con1, \"oob-nms:eth0\"]}\n  - {id: snmp-oob, protocol: snmp, directed: true, endpoints: [oob-nms, oob-sw]}\n\nlayout:\n  physical:\n    ce-a1: [114, 365]\n    ce-a2: [372, 365]\n    oob-con1: [400, 763]\n    oob-con2: [647, 763]\n    oob-nms: [887, 763]\n    oob-sw: [640, 599]\n    pe1: [116, 108]\n    pe2: [377, 108]\n    pe3: [627, 86]\n    pe4: [889, 86]\n    pe5: [642, 390]\n    pe6: [904, 390]\n    spare-pe: [1166, 27]\n  logical:\n    ce-a1: [567, 648]\n    ce-a2: [596, 821]\n    cust-a-access: [297, 751]\n    l3vpn-a: [240, 189]\n    oob-con1: [1546, 713]\n    oob-con2: [1305, 233]\n    oob-mgmt: [1515, 398]\n    oob-nms: [1685, 236]\n    oob-sw: [1605, 26]\n    ospf-core: [758, 275]\n    pe1: [659, 426]\n    pe2: [790, 37]\n    pe3: [435, 129]\n    pe4: [1026, 231]\n    pe5: [103, 532]\n    pe6: [1015, 464]\n    spare-pe: [114, 973]\n"
+        "text": "# netatlas test fixture: examples/metro-ring.yaml after Auto-arrange (both views) and export\n# (generated by scripts/make-fixtures.mjs). The positions are in the\n# \"layout\" section at the end; the network itself is unchanged.\n# netatlas example: metro ring (for Auto-arrange)\n#\n# Six PE routers in three POPs on a fibre ring, each with IPv4/IPv6\n# loopbacks used as router IDs and as iBGP / RSVP-TE endpoints. The logical\n# layer is dense on purpose: an OSPF area, LDP on every ring link, a full\n# iBGP mesh between loopbacks (15 sessions), two RSVP-TE tunnels, an L3VPN\n# overlay and customer eBGP. An out-of-band management network forms a\n# separate, disconnected component, and a spare router is not connected at\n# all. There is no \"layout\" section: open it and use Auto-arrange.\nnetatlas: 1\ntitle: Metro ring MR-1\n\ngroups:\n  - {id: pop-north, label: POP North, kind: site}\n  - {id: pop-east, label: POP East, kind: site}\n  - {id: pop-south, label: POP South, kind: site}\n  - {id: oob, label: Out-of-band management, kind: zone}\n  - {id: cust-a, label: Customer A, kind: external}\n\ndevices:\n  - id: pe1\n    type: router\n    group: pop-north\n    interfaces:\n      - {id: et1, ip: 10.1.12.1/31}\n      - {id: et2, ip: 10.1.16.1/31}\n      - {id: et3, ip: 192.0.2.1/30, vrf: CUST-A}\n      - {id: et4}\n    logical_interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.1/32, 2001:db8:0:ffff::1/128]}\n  - id: pe2\n    type: router\n    group: pop-north\n    interfaces:\n      - {id: et1, ip: 10.1.12.0/31}\n      - {id: et2, ip: 10.1.23.0/31}\n      - {id: et4}\n    logical_interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.2/32, 2001:db8:0:ffff::2/128]}\n  - id: pe3\n    type: router\n    group: pop-east\n    interfaces:\n      - {id: et1, ip: 10.1.23.1/31}\n      - {id: et2, ip: 10.1.34.0/31}\n      - {id: et4}\n    logical_interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.3/32, 2001:db8:0:ffff::3/128]}\n      - {id: lo1, type: loopback, label: VPN next-hop, ip: [10.0.1.3/32]}\n  - id: pe4\n    type: router\n    group: pop-east\n    interfaces:\n      - {id: et1, ip: 10.1.34.1/31}\n      - {id: et2, ip: 10.1.45.0/31}\n      - {id: et4}\n    logical_interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.4/32, 2001:db8:0:ffff::4/128]}\n  - id: pe5\n    type: router\n    group: pop-south\n    interfaces:\n      - {id: et1, ip: 10.1.45.1/31}\n      - {id: et2, ip: 10.1.56.0/31}\n      - {id: et3, ip: 192.0.2.5/30, vrf: CUST-A}\n      - {id: et4}\n    logical_interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.5/32, 2001:db8:0:ffff::5/128]}\n      - {id: lo1, type: loopback, label: VPN next-hop, ip: [10.0.1.5/32]}\n  - id: pe6\n    type: router\n    group: pop-south\n    interfaces:\n      - {id: et1, ip: 10.1.56.1/31}\n      - {id: et2, ip: 10.1.16.0/31}\n      - {id: et4}\n    logical_interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.6/32, 2001:db8:0:ffff::6/128]}\n  - id: ce-a1\n    label: Customer A — HQ\n    type: router\n    group: cust-a\n    interfaces:\n      - {id: ge0, ip: 192.0.2.2/30}\n  - id: ce-a2\n    label: Customer A — Plant\n    type: router\n    group: cust-a\n    interfaces:\n      - {id: ge0, ip: 192.0.2.6/30}\n  - id: oob-sw\n    label: OOB switch\n    type: switch\n    group: oob\n    interfaces:\n      - {id: p1}\n      - p2\n      - p3\n    logical_interfaces:\n      - {id: vlan1, type: virtual, ip: 172.31.0.2/24}\n  - id: oob-con1\n    label: Console server 1\n    type: system\n    group: oob\n    interfaces:\n      - {id: eth0, ip: 172.31.0.11/24}\n  - id: oob-con2\n    label: Console server 2\n    type: system\n    group: oob\n    interfaces:\n      - {id: eth0, ip: 172.31.0.12/24}\n  - id: oob-nms\n    label: NMS collector\n    type: server\n    group: oob\n    interfaces:\n      - {id: eth0, ip: 172.31.0.20/24}\n  - id: spare-pe\n    label: Spare PE (not in service)\n    type: router\n    logical_interfaces:\n      - {id: lo0, type: loopback, ip: [10.0.0.99/32]}\n\nlinks:\n  # the ring\n  - {id: r12, a: \"pe1:et1\", b: \"pe2:et1\", medium: fiber, speed: 100G}\n  - {id: r23, a: \"pe2:et2\", b: \"pe3:et1\", medium: fiber, speed: 100G}\n  - {id: r34, a: \"pe3:et2\", b: \"pe4:et1\", medium: fiber, speed: 100G}\n  - {id: r45, a: \"pe4:et2\", b: \"pe5:et1\", medium: fiber, speed: 100G}\n  - {id: r56, a: \"pe5:et2\", b: \"pe6:et1\", medium: fiber, speed: 100G}\n  - {id: r61, a: \"pe6:et2\", b: \"pe1:et2\", medium: fiber, speed: 100G}\n  # intra-POP cross-connects\n  - {id: x-north, a: \"pe1:et4\", b: \"pe2:et4\", medium: dac, speed: 100G, cable: DAC 1m}\n  - {id: x-east, a: \"pe3:et4\", b: \"pe4:et4\", medium: dac, speed: 100G, cable: DAC 1m}\n  - {id: x-south, a: \"pe5:et4\", b: \"pe6:et4\", medium: dac, speed: 100G, cable: DAC 1m}\n  # customer access\n  - {id: acc-a1, a: \"pe1:et3\", b: \"ce-a1:ge0\", medium: fiber, speed: 10G}\n  - {id: acc-a2, a: \"pe5:et3\", b: \"ce-a2:ge0\", medium: fiber, speed: 10G}\n  # out-of-band island (not connected to the ring)\n  - {id: oob-1, a: \"oob-sw:p1\", b: \"oob-con1:eth0\", medium: copper}\n  - {id: oob-2, a: \"oob-sw:p2\", b: \"oob-con2:eth0\", medium: copper}\n  - {id: oob-3, a: \"oob-sw:p3\", b: \"oob-nms:eth0\", medium: copper}\n\nnetworks:\n  # members are derived from the addresses inside each prefix\n  - id: cust-a-access\n    label: Customer A access\n    cidr: [192.0.2.0/30, 192.0.2.4/30]\n    attrs: {vrf: CUST-A, rd: \"65000:100\", rt: \"65000:100\"}\n  - id: oob-mgmt\n    label: OOB management\n    cidr: 172.31.0.0/24\n\nrelations:\n  - id: ospf-core\n    protocol: ospf\n    label: area 0\n    endpoints: [pe1, pe2, pe3, pe4, pe5, pe6]\n  # LDP on every ring link\n  - {id: ldp-12, protocol: ldp, endpoints: [\"pe1:et1\", \"pe2:et1\"], over: r12}\n  - {id: ldp-23, protocol: ldp, endpoints: [\"pe2:et2\", \"pe3:et1\"], over: r23}\n  - {id: ldp-34, protocol: ldp, endpoints: [\"pe3:et2\", \"pe4:et1\"], over: r34}\n  - {id: ldp-45, protocol: ldp, endpoints: [\"pe4:et2\", \"pe5:et1\"], over: r45}\n  - {id: ldp-56, protocol: ldp, endpoints: [\"pe5:et2\", \"pe6:et1\"], over: r56}\n  - {id: ldp-61, protocol: ldp, endpoints: [\"pe6:et2\", \"pe1:et2\"], over: r61}\n  # full iBGP mesh between loopbacks (15 sessions)\n  - {id: ibgp-1-2, protocol: ibgp, endpoints: [\"pe1:lo0\", \"pe2:lo0\"]}\n  - {id: ibgp-1-3, protocol: ibgp, endpoints: [\"pe1:lo0\", \"pe3:lo0\"]}\n  - {id: ibgp-1-4, protocol: ibgp, endpoints: [\"pe1:lo0\", \"pe4:lo0\"]}\n  - {id: ibgp-1-5, protocol: ibgp, endpoints: [\"pe1:lo0\", \"pe5:lo0\"]}\n  - {id: ibgp-1-6, protocol: ibgp, endpoints: [\"pe1:lo0\", \"pe6:lo0\"]}\n  - {id: ibgp-2-3, protocol: ibgp, endpoints: [\"pe2:lo0\", \"pe3:lo0\"]}\n  - {id: ibgp-2-4, protocol: ibgp, endpoints: [\"pe2:lo0\", \"pe4:lo0\"]}\n  - {id: ibgp-2-5, protocol: ibgp, endpoints: [\"pe2:lo0\", \"pe5:lo0\"]}\n  - {id: ibgp-2-6, protocol: ibgp, endpoints: [\"pe2:lo0\", \"pe6:lo0\"]}\n  - {id: ibgp-3-4, protocol: ibgp, endpoints: [\"pe3:lo0\", \"pe4:lo0\"]}\n  - {id: ibgp-3-5, protocol: ibgp, endpoints: [\"pe3:lo0\", \"pe5:lo0\"]}\n  - {id: ibgp-3-6, protocol: ibgp, endpoints: [\"pe3:lo0\", \"pe6:lo0\"]}\n  - {id: ibgp-4-5, protocol: ibgp, endpoints: [\"pe4:lo0\", \"pe5:lo0\"]}\n  - {id: ibgp-4-6, protocol: ibgp, endpoints: [\"pe4:lo0\", \"pe6:lo0\"]}\n  - {id: ibgp-5-6, protocol: ibgp, endpoints: [\"pe5:lo0\", \"pe6:lo0\"]}\n  # traffic-engineered tunnels between loopbacks, riding the ring\n  - id: te-1-4\n    protocol: rsvp-te\n    label: primary north→east\n    directed: true\n    endpoints: [\"pe1:lo0\", \"pe4:lo0\"]\n    over: [r12, r23, r34]\n    attrs: {bandwidth: 40G, setup-priority: 3}\n  - id: te-2-5\n    protocol: rsvp-te\n    label: primary north→south\n    directed: true\n    endpoints: [\"pe2:lo0\", \"pe5:lo0\"]\n    over: [r61, r56, x-north]\n    attrs: {bandwidth: 20G}\n  # customer service\n  - id: l3vpn-a\n    protocol: l3vpn\n    label: CUST-A\n    endpoints: [\"pe1:lo0\", \"pe3:lo1\", \"pe5:lo1\"]\n    network: cust-a-access\n  - {id: ebgp-a1, protocol: ebgp, endpoints: [\"pe1:et3\", \"ce-a1:ge0\"], over: acc-a1, attrs: {peer-as: 64601}}\n  - {id: ebgp-a2, protocol: ebgp, endpoints: [\"pe5:et3\", \"ce-a2:ge0\"], over: acc-a2, attrs: {peer-as: 64601}}\n  # inside the OOB island\n  - {id: syslog-oob, protocol: syslog, directed: true, endpoints: [oob-con1, \"oob-nms:eth0\"]}\n  - {id: snmp-oob, protocol: snmp, directed: true, endpoints: [oob-nms, oob-sw]}\n\nlayout:\n  physical:\n    ce-a1: [114, 365]\n    ce-a2: [372, 365]\n    oob-con1: [400, 763]\n    oob-con2: [647, 763]\n    oob-nms: [887, 763]\n    oob-sw: [640, 599]\n    pe1: [116, 108]\n    pe2: [377, 108]\n    pe3: [627, 86]\n    pe4: [889, 86]\n    pe5: [642, 390]\n    pe6: [904, 390]\n    spare-pe: [1166, 27]\n  logical:\n    ce-a1: [114, 674]\n    ce-a2: [121, 815]\n    cust-a-access: [446, 851]\n    l3vpn-a: [924, 471]\n    oob-con1: [111, 1585]\n    oob-con2: [612, 1044]\n    oob-mgmt: [916, 1090]\n    oob-nms: [264, 1326]\n    oob-sw: [366, 1044]\n    ospf-core: [630, 181]\n    pe1: [170, 403]\n    pe2: [526, 403]\n    pe3: [851, 101]\n    pe4: [1207, 101]\n    pe5: [626, 687]\n    pe6: [982, 687]\n    spare-pe: [1191, 999]\n"
     },
     {
         "name": "minimal-edited.yaml",
@@ -12390,16 +12769,9 @@ function legendOf(model, view) {
                 more: [width('1G'), width('100G')],
             });
         }
-        const kinds = Array.from(new Set(model.groups.map((g) => g.kind)));
-        if (kinds.length) {
-            sections.push({
-                title: 'Locations / groups',
-                items: kinds.map((k) => ({
-                    swatch: [(0, scene_1.h)('rect', { class: 'group-box ' + ((0, style_1.groupKindStyle)(k).strong ? 'group-strong' : ''), x: 3, y: 2, width: 38, height: 14, rx: 4, 'stroke-dasharray': (0, style_1.groupKindStyle)(k).dash })],
-                    label: k || '(no kind)',
-                })),
-            });
-        }
+        const groups = groupSection(model);
+        if (groups)
+            sections.push(groups);
         return {
             sections,
             footer: 'Tunnels and protocol sessions are logical and are shown in the Logical view, not as cables. Select a tunnel in the Relations list to highlight the cables it rides on.',
@@ -12438,12 +12810,28 @@ function legendOf(model, view) {
             { swatch: [(0, scene_1.h)('circle', { class: 'hub', cx: 22, cy: 9, r: 7, stroke: '#0c8599' })], label: 'Multipoint hub (3+ devices)' },
             { swatch: [(0, scene_1.h)('rect', { class: 'net-box', x: 3, y: 2, width: 38, height: 14, rx: 7, stroke: style_1.NETWORK_COLOR })], label: 'IP network' },
             { swatch: [(0, scene_1.h)('path', { class: 'member', d: LINE })], label: 'Network membership (from addresses)' },
-            { swatch: [(0, scene_1.h)('path', { class: 'underlay', d: LINE })], label: 'Physical adjacency (optional underlay)' },
         ],
         note: Array.from(used.values()).some((u) => u.def.custom) ? '* defined in this file’s "protocols" section' : undefined,
     });
+    const groups = groupSection(model);
+    if (groups)
+        sections.push(groups);
     return { sections };
 }
+/** The kinds of groups / locations: their frames are drawn in both views. */
+function groupSection(model) {
+    const kinds = Array.from(new Set(model.groups.map((g) => g.kind)));
+    if (!kinds.length)
+        return null;
+    return {
+        title: GROUPS_TITLE,
+        items: kinds.map((k) => ({
+            swatch: [(0, scene_1.h)('rect', { class: 'group-box ' + ((0, style_1.groupKindStyle)(k).strong ? 'group-strong' : ''), x: 3, y: 2, width: 38, height: 14, rx: 4, 'stroke-dasharray': (0, style_1.groupKindStyle)(k).dash })],
+            label: k || '(no kind)',
+        })),
+    };
+}
+const GROUPS_TITLE = 'Locations / groups';
 const PAD = 14;
 const ROW_GAP = 5;
 const TITLE_SIZE = 11;
@@ -12452,7 +12840,7 @@ const LABEL_SIZE = 12;
 exports.LEGEND_GAP = 28;
 /**
  * The sections an exported SVG needs: the Legend tab's content reduced to
- * what is drawn (hidden protocols, networks and underlay are left out), plus
+ * what is drawn (hidden protocols, networks and group frames are left out), plus
  * the symbols the tab explains in prose (ports, VLAN mismatch).
  */
 function exportLegendSections(model, view, opts) {
@@ -12465,11 +12853,11 @@ function exportLegendSections(model, view, opts) {
                     return !opts.hiddenProtocols.has(i.protocol);
                 if (/^IP network|^Network membership/.test(i.label))
                     return opts.showNetworks && model.networks.length > 0;
-                if (/^Physical adjacency/.test(i.label))
-                    return opts.showUnderlay;
                 return true;
             });
         }
+        if (s.title === GROUPS_TITLE && opts.showGroups === false)
+            items = [];
         if (items.length)
             out.push({ title: s.title, items: items.map((i) => (i.custom ? { ...i, label: i.label + ' *' } : i)), note: view === 'logical' ? s.note : undefined });
     }
@@ -13032,6 +13420,7 @@ const positions_1 = __req("layout/positions");
 const input_1 = __req("layout/input");
 const logical_1 = __req("layout/logical");
 const physical_1 = __req("layout/physical");
+const filter_1 = __req("model/filter");
 const queries_1 = __req("model/queries");
 const logical_2 = __req("diagram/logical");
 const physical_2 = __req("diagram/physical");
@@ -13040,9 +13429,10 @@ function createViewState() {
         view: 'physical',
         selected: null,
         showLabels: true,
-        showUnderlay: false,
         showNetworks: true,
+        showGroups: true,
         hiddenProtocols: new Set(),
+        devices: null,
         positions: { physical: new Map(), logical: new Map() },
     };
 }
@@ -13052,12 +13442,18 @@ class Session {
         this.state = createViewState();
         /** displayed positions per view (stored layout, else auto-arrange; new nodes placed incrementally) */
         this.resolved = { physical: null, logical: null };
+        /** the filtered model and its layout input, per view (only while a subset is selected) */
+        this.filtered = { physical: null, logical: null };
+        /** temporary positions of the filtered views, keyed by entity id; null = not arranged yet */
+        this.temp = { physical: null, logical: null };
         this.input = (0, input_1.layoutInput)(model);
     }
     /**
      * Swap in an updated model (after an edit) while keeping the view state:
      * view, options, filters and the selection (if it still exists). Positions
      * come from the model's layout, so temporary drag positions are dropped.
+     * A filtered view keeps its temporary positions; objects the edit added
+     * are placed next to their neighbours, nothing else moves.
      */
     setModel(model) {
         this.model = model;
@@ -13067,13 +13463,135 @@ class Session {
             this.state.selected = null;
         this.state.positions.physical.clear();
         this.state.positions.logical.clear();
+        const ids = this.state.devices;
+        if (ids) {
+            // deleted devices leave the selection; a renamed one is no longer selected
+            ids.forEach((id) => {
+                if (!model.index.devices.has(id))
+                    ids.delete(id);
+            });
+            if ((0, filter_1.selectsAll)(model, ids))
+                this.state.devices = null;
+        }
+        this.filtered = { physical: null, logical: null };
+        if (!this.isFiltered())
+            this.temp = { physical: null, logical: null };
+        else {
+            for (const v of ['physical', 'logical']) {
+                const old = this.temp[v];
+                this.temp[v] = old ? (0, positions_1.resolvePositions)(v, this.viewInput(v), old) : null;
+            }
+        }
     }
+    // ------------------------------------------------------------- the filter
+    /** Is a proper subset of the devices selected? */
+    isFiltered() {
+        return this.state.devices !== null;
+    }
+    /** The selected device ids (every device when there is no filter). */
+    selectedDevices() {
+        return this.state.devices ? new Set(this.state.devices) : new Set(this.model.devices.map((d) => d.id));
+    }
+    /**
+     * Choose the devices to show. Selecting every device removes the filter
+     * (the complete diagrams with their stored positions come back unchanged).
+     * A different subset is arranged afresh; the same subset changes nothing.
+     * Returns whether the selection changed.
+     */
+    setDevices(ids) {
+        const next = new Set();
+        for (const id of ids)
+            if (this.model.index.devices.has(id))
+                next.add(id);
+        const norm = (0, filter_1.selectsAll)(this.model, next) ? null : next;
+        const cur = this.state.devices;
+        if (norm === null ? cur === null : cur !== null && cur.size === norm.size && Array.from(norm).every((id) => cur.has(id)))
+            return false;
+        this.state.devices = norm;
+        this.filtered = { physical: null, logical: null };
+        this.temp = { physical: null, logical: null };
+        this.state.positions.physical.clear();
+        this.state.positions.logical.clear();
+        return true;
+    }
+    /** The model a view draws: the complete model, or its filtered part. */
+    viewModel(view = this.state.view) {
+        return this.cache(view).model;
+    }
+    /** Layout input of what a view draws. */
+    viewInput(view = this.state.view) {
+        return this.cache(view).input;
+    }
+    cache(view) {
+        if (!this.state.devices)
+            return { model: this.model, input: this.input };
+        let c = this.filtered[view];
+        if (!c) {
+            const model = (0, filter_1.filterModel)(this.model, this.state.devices, view);
+            c = this.filtered[view] = { model, input: (0, input_1.layoutInput)(model) };
+        }
+        return c;
+    }
+    // -------------------------------------------------------------- positions
     /** Displayed node centers of a view, keyed by entity id (without temporary drags). */
     positionsFor(view) {
+        if (this.isFiltered()) {
+            let t = this.temp[view];
+            // a filtered view is arranged once, when it is first shown; afterwards it only changes when the user moves or arranges it
+            if (!t)
+                t = this.temp[view] = (0, positions_1.autoPositions)(view, this.viewInput(view));
+            return t;
+        }
         let p = this.resolved[view];
         if (!p)
             p = this.resolved[view] = (0, positions_1.resolvePositions)(view, this.input, this.model.layout[view]);
         return p;
+    }
+    /**
+     * End a drag in a filtered view: the node keeps its new place for this
+     * session only (never in the document). Returns false when not filtered.
+     */
+    commitTemporary(ref) {
+        if (!this.isFiltered())
+            return false;
+        const view = this.state.view;
+        const p = this.state.positions[view].get(ref);
+        if (!p)
+            return false;
+        const next = new Map(this.positionsFor(view));
+        const id = ref.slice(ref.indexOf(':') + 1);
+        if (!next.has(id))
+            return false;
+        next.set(id, { x: Math.round(p.x), y: Math.round(p.y) });
+        this.temp[view] = next;
+        this.state.positions[view].delete(ref);
+        return true;
+    }
+    /**
+     * Layout status of a filtered view: 'auto' while it shows Auto-arrange of
+     * its subset, 'manual' after a node was moved. (The complete views get
+     * theirs from the document.)
+     */
+    filteredStatus(view) {
+        return (0, positions_1.samePositions)(this.positionsFor(view), (0, positions_1.autoPositions)(view, this.viewInput(view))) ? 'auto' : 'manual';
+    }
+    /**
+     * Auto-arrange the filtered view on screen: the shown subset only, in
+     * this session only. Returns how many nodes moved.
+     */
+    arrangeFiltered() {
+        const view = this.state.view;
+        const auto = (0, positions_1.autoPositions)(view, this.viewInput(view));
+        const cur = this.positionsFor(view);
+        let moved = 0;
+        auto.forEach((p, id) => {
+            const q = cur.get(id);
+            if (!q || q.x !== p.x || q.y !== p.y)
+                moved++;
+        });
+        this.temp[view] = auto;
+        this.state.positions[view].clear();
+        return moved;
     }
     setView(v) {
         this.state.view = v;
@@ -13095,13 +13613,14 @@ class Session {
     }
     logicalLayout() {
         const pos = this.positionsFor('logical');
+        const input = this.viewInput('logical');
         const byRef = new Map();
-        for (const sp of (0, logical_1.logicalSpecs)(this.input)) {
+        for (const sp of (0, logical_1.logicalSpecs)(input)) {
             const p = pos.get(sp.id);
             if (p)
                 byRef.set(sp.ref, p);
         }
-        return (0, logical_1.logicalLayoutFrom)(this.input, byRef);
+        return (0, logical_1.logicalLayoutFrom)(input, byRef);
     }
     physicalLayout() {
         const pos = new Map(this.positionsFor('physical'));
@@ -13109,27 +13628,175 @@ class Session {
             if (ref.indexOf('device:') === 0)
                 pos.set(ref.slice(7), p);
         });
-        return { boxes: (0, physical_1.physicalBoxes)(this.input, pos) };
+        return { boxes: (0, physical_1.physicalBoxes)(this.viewInput('physical'), pos) };
     }
     render() {
         const s = this.state;
         if (s.view === 'physical') {
-            return (0, physical_2.renderPhysical)(this.model, this.physicalLayout(), { showLabels: s.showLabels, positions: new Map() });
+            return (0, physical_2.renderPhysical)(this.viewModel('physical'), this.physicalLayout(), { showLabels: s.showLabels, showGroups: s.showGroups, positions: new Map() });
         }
-        return (0, logical_2.renderLogical)(this.model, this.logicalLayout(), {
+        return (0, logical_2.renderLogical)(this.viewModel('logical'), this.logicalLayout(), {
             showLabels: s.showLabels,
-            showUnderlay: s.showUnderlay,
             showNetworks: s.showNetworks,
+            showGroups: s.showGroups,
             hiddenProtocols: s.hiddenProtocols,
             positions: s.positions.logical,
         });
     }
-    /** Refs to keep highlighted for the current selection (null = nothing selected). */
+    /**
+     * Refs to keep highlighted for the current selection (null = nothing
+     * selected, or the selection is not part of the filtered view).
+     */
     highlight() {
-        return this.state.selected ? (0, queries_1.relatedRefs)(this.model, this.state.selected) : null;
+        const sel = this.state.selected;
+        if (!sel)
+            return null;
+        const m = this.viewModel();
+        return (0, queries_1.refExists)(m, sel) ? (0, queries_1.relatedRefs)(m, sel) : null;
     }
 }
 exports.Session = Session;
+
+};
+__defs["model/filter"] = function (module, exports) {
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.allDeviceIds = allDeviceIds;
+exports.selectsAll = selectsAll;
+exports.filterModel = filterModel;
+/**
+ * Device filter: the part of a model that a diagram shows when only some
+ * devices are selected. The result is a new, self-consistent Model (its own
+ * index, no reference to anything left out), so the renderers, the legend,
+ * the networks overview and the export work on it unchanged. The model that
+ * is filtered is never modified, and the result carries no stored positions:
+ * a filtered diagram is always arranged from scratch (see diagram/session.ts).
+ *
+ * Relevance rules (the same for the screen and for exports):
+ *
+ *   devices    the selected ones (unknown ids are ignored), in file order.
+ *   interfaces all interfaces of the included devices. A tunnel destination
+ *              on a left-out device keeps its text but no longer points at
+ *              that device.
+ *   links      only links whose two ends are on included devices; a cable to
+ *              a left-out device is not drawn at all (no dangling stub).
+ *   relations  only relations whose every endpoint device is included. A
+ *              relation that also reaches a left-out device is left out
+ *              entirely, never drawn as if it were complete.
+ *              `over` keeps only included links, relations and networks;
+ *              `network` is kept only if that network is included.
+ *   networks   physical view: a network with at least one included member,
+ *              or whose VLAN is permitted on an end of an included link.
+ *              logical view: a network with at least one included member, or
+ *              named by an included relation (`network` or `over`).
+ *              Membership is derived again from the included devices'
+ *              addresses, so a network with members on both sides shows only
+ *              its included members.
+ *   groups     a group that contains an included device, directly or through
+ *              a child group, with its parent chain. A group with members on
+ *              both sides contains only its included devices.
+ *   protocols  a protocol is relevant when an included relation uses it: the
+ *              legend, its protocol toggles and the exported legend list
+ *              exactly those. (The registry itself is kept whole, so styles
+ *              resolve as in the full model.) Protocols have no device of
+ *              their own; this is the only reference they have.
+ */
+const derive_1 = __req("model/derive");
+const types_1 = __req("model/types");
+/** Device ids of a model, in file order. */
+function allDeviceIds(model) {
+    return model.devices.map((d) => d.id);
+}
+/** Does `ids` select every device of the model (the unfiltered view)? */
+function selectsAll(model, ids) {
+    return model.devices.every((d) => ids.has(d.id));
+}
+function filterModel(model, ids, view) {
+    const ix = model.index;
+    const devices = model.devices
+        .filter((d) => ids.has(d.id))
+        .map((d) => {
+        const fix = (i) => i.destination && i.destination.device !== undefined && !ids.has(i.destination.device) ? { ...i, destination: { text: i.destination.text, address: i.destination.address } } : i;
+        return { ...d, interfaces: d.interfaces.map(fix), logical: d.logical.map(fix) };
+    });
+    const devIds = new Set(devices.map((d) => d.id));
+    const links = model.links.filter((l) => devIds.has(l.a.device) && devIds.has(l.b.device));
+    const linkIds = new Set(links.map((l) => l.id));
+    const rels0 = model.relations.filter((r) => (0, types_1.relationDevices)(r).every((d) => devIds.has(d)));
+    const relIds = new Set(rels0.map((r) => r.id));
+    // networks: membership is decided by the included devices' addresses only
+    const draft = { ...model, devices, links, relations: [], networks: model.networks, groups: [], index: indexOf(devices, links, model.networks, [], []), layout: emptyLayout() };
+    const members = (0, derive_1.derive)(draft).members;
+    const netIds = new Set();
+    for (const n of model.networks) {
+        if ((members.get(n.id) || []).length)
+            netIds.add(n.id);
+        else if (view === 'physical' && n.vlan !== undefined && links.some((l) => l.a.vlans.indexOf(n.vlan) >= 0 || l.b.vlans.indexOf(n.vlan) >= 0))
+            netIds.add(n.id);
+    }
+    if (view === 'logical') {
+        for (const r of rels0) {
+            if (r.network !== undefined && ix.networks.has(r.network))
+                netIds.add(r.network);
+            for (const o of r.over)
+                if (ix.networks.has(o))
+                    netIds.add(o);
+        }
+    }
+    const networks = model.networks.filter((n) => netIds.has(n.id));
+    const relations = rels0.map((r) => ({
+        ...r,
+        over: r.over.filter((o) => linkIds.has(o) || relIds.has(o) || netIds.has(o)),
+        network: r.network !== undefined && netIds.has(r.network) ? r.network : undefined,
+    }));
+    // groups: those holding an included device, with their parents
+    const keep = new Set();
+    for (const d of devices) {
+        const seen = new Set();
+        let g = d.group !== undefined ? ix.groups.get(d.group) : undefined;
+        while (g && !seen.has(g.id)) {
+            seen.add(g.id);
+            keep.add(g.id);
+            g = g.parent !== undefined ? ix.groups.get(g.parent) : undefined;
+        }
+    }
+    const groups = model.groups.filter((g) => keep.has(g.id));
+    return {
+        ...model,
+        devices,
+        links,
+        networks,
+        relations,
+        groups,
+        layout: emptyLayout(),
+        index: indexOf(devices, links, networks, relations, groups),
+    };
+}
+function emptyLayout() {
+    return { physical: new Map(), logical: new Map(), manual: { physical: new Set(), logical: new Set() } };
+}
+function indexOf(devices, links, networks, relations, groups) {
+    const interfaces = new Map();
+    for (const d of devices)
+        for (const i of d.interfaces.concat(d.logical))
+            interfaces.set((0, types_1.ifaceKey)(d.id, i.id), i);
+    const ifaceLink = new Map();
+    for (const l of links) {
+        if (l.a.iface !== undefined)
+            ifaceLink.set((0, types_1.ifaceKey)(l.a.device, l.a.iface), l.id);
+        if (l.b.iface !== undefined)
+            ifaceLink.set((0, types_1.ifaceKey)(l.b.device, l.b.iface), l.id);
+    }
+    return {
+        groups: new Map(groups.map((g) => [g.id, g])),
+        devices: new Map(devices.map((d) => [d.id, d])),
+        interfaces,
+        links: new Map(links.map((l) => [l.id, l])),
+        networks: new Map(networks.map((n) => [n.id, n])),
+        relations: new Map(relations.map((r) => [r.id, r])),
+        ifaceLink,
+    };
+}
 
 };
 __defs["diagram/logical"] = function (module, exports) {
@@ -13149,6 +13816,8 @@ exports.renderLogical = renderLogical;
  * - Relations with 3+ devices get a hub node with spokes.
  * - Networks are pill nodes connected to member devices by thin lines. Members
  *   are derived from the addresses inside the network's prefixes.
+ * - Groups / locations are frames around their devices, as in the physical
+ *   view (auto-arrange keeps the devices of a group together).
  * - All text is drawn in full. Every relation label gets its own place along
  *   (or, on a short line, beside) its bundle, clear of nodes and of the labels
  *   placed before it; see diagram/labels.ts.
@@ -13254,34 +13923,25 @@ function renderLogical(model, layout, opts) {
     // labels keep clear of every node, and of each other
     const placer = new labels_1.LabelPlacer();
     const labelRects = [];
+    // group frames around the device nodes (with their loopback chips), the same geometry as in the physical view
+    const showGroups = opts.showGroups !== false;
+    const deviceBoxes = new Map();
+    nodes.forEach((n) => {
+        if (n.kind === 'device')
+            deviceBoxes.set(n.id, n);
+    });
+    const grects = showGroups ? (0, physical_1.groupRects)(model, deviceBoxes) : new Map();
+    const groupNodes = showGroups ? (0, physical_1.groupFrames)(model, grects, placer) : [];
     nodes.forEach((n) => {
         if (n.kind === 'network' && !opts.showNetworks)
             return;
         placer.block((0, geometry_1.boxRect)(n, 3));
     });
-    const underlay = [];
     const members = [];
     const relNodes = [];
     const labels = [];
     const nodeLayer = [];
     const memberLabels = [];
-    // ---- faint physical underlay (optional)
-    if (opts.showUnderlay) {
-        const seen = new Set();
-        for (const l of model.links) {
-            const a = dev(l.a.device);
-            const b = dev(l.b.device);
-            if (!a || !b || a === b)
-                continue;
-            const key = [l.a.device, l.b.device].sort().join('\u0000');
-            if (seen.has(key))
-                continue;
-            seen.add(key);
-            const s = (0, geometry_1.clipToBox)(a, { x: b.cx, y: b.cy });
-            const e = (0, geometry_1.clipToBox)(b, { x: a.cx, y: a.cy });
-            underlay.push((0, scene_1.h)('path', { class: 'underlay', 'data-ref': 'link:' + l.id, d: lineD(s, e) }));
-        }
-    }
     // ---- network membership
     if (opts.showNetworks) {
         for (const nw of model.networks) {
@@ -13435,6 +14095,7 @@ function renderLogical(model, layout, opts) {
         }
     });
     const rects = [];
+    grects.forEach((r) => rects.push({ x: r.x - 20, y: r.y - 20, w: r.w + 40, h: r.h + 40 }));
     nodes.forEach((n) => {
         if (n.kind === 'network' && !opts.showNetworks)
             return;
@@ -13445,7 +14106,7 @@ function renderLogical(model, layout, opts) {
         rects.push({ x: r.x - 14, y: r.y - 14, w: r.w + 28, h: r.h + 28 });
     return {
         root: (0, scene_1.h)('g', { class: 'scene scene-logical' }, [
-            (0, scene_1.h)('g', { class: 'layer-underlay' }, underlay),
+            (0, scene_1.h)('g', { class: 'layer-groups' }, groupNodes),
             (0, scene_1.h)('g', { class: 'layer-members' }, members),
             (0, scene_1.h)('g', { class: 'layer-relations' }, relNodes),
             (0, scene_1.h)('g', { class: 'layer-nodes' }, nodeLayer),
@@ -13499,6 +14160,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.linkVlanLabel = exports.deviceSubtitle = void 0;
 exports.physicalBoxes = physicalBoxes;
 exports.groupRects = groupRects;
+exports.groupFrames = groupFrames;
 exports.deviceNode = deviceNode;
 exports.cableRoute = cableRoute;
 exports.renderPhysical = renderPhysical;
@@ -13555,9 +14217,10 @@ function groupRects(model, boxes) {
     for (const g of deepestFirst) {
         const parts = [];
         for (const d of model.devices) {
-            if (d.group !== g.id)
-                continue;
-            parts.push((0, geometry_1.boxRect)(boxes.get(d.id)));
+            // a device that isn't drawn (the logical view leaves out devices without logical relations) has no box
+            const b = d.group === g.id ? boxes.get(d.id) : undefined;
+            if (b)
+                parts.push((0, geometry_1.boxRect)(b));
         }
         for (const c of model.groups)
             if (c.parent === g.id && rects.has(c.id))
@@ -13570,6 +14233,37 @@ function groupRects(model, boxes) {
         rects.set(g.id, { x: u.x + u.w / 2 - w / 2, y: u.y - physical_1.GROUP_PAD - head.h, w, h: u.h + 2 * physical_1.GROUP_PAD + head.h });
     }
     return rects;
+}
+/**
+ * The frames of groups / locations (outermost first, so children draw on
+ * top), with title and kind. Used by both views. Each title is blocked for
+ * the label placer, so no label is placed on it.
+ */
+function groupFrames(model, grects, placer) {
+    const out = [];
+    const depthSorted = model.groups.filter((g) => grects.has(g.id));
+    const depthOf = (id) => {
+        let d = 0;
+        let g = model.index.groups.get(id);
+        while (g && g.parent) {
+            d++;
+            g = model.index.groups.get(g.parent);
+        }
+        return d;
+    };
+    depthSorted.sort((a, b) => depthOf(a.id) - depthOf(b.id));
+    for (const g of depthSorted) {
+        const r = grects.get(g.id);
+        const ks = (0, style_1.groupKindStyle)(g.kind);
+        const head = (0, sizes_1.groupHeader)(g.label, g.kind, r.w - 2 * physical_1.GROUP_PAD);
+        out.push((0, scene_1.h)('g', { class: `group kind-${cssToken(g.kind)} ${ks.strong ? 'group-strong' : ''}`, 'data-ref': 'group:' + g.id }, [
+            (0, scene_1.h)('rect', { class: 'group-box', x: r.x, y: r.y, width: r.w, height: r.h, rx: 12, 'stroke-dasharray': ks.dash }),
+            (0, labels_1.textLines)({ class: 'group-title' }, head.title, r.x + 14, r.y + 7),
+            head.kind ? (0, scene_1.h)('text', { class: 'group-kind', x: r.x + r.w - 12, y: r.y + 20, 'text-anchor': 'end' }, head.kind) : null,
+        ]));
+        placer.block({ x: r.x + 10, y: r.y + 5, w: head.title.w + 8, h: head.title.h + 4 });
+    }
+    return out;
 }
 /** A device box with its icon and its full, wrapped label and subtitle. */
 function deviceNode(ref, label, sub, type, b, extraClass = '') {
@@ -13672,29 +14366,8 @@ function renderPhysical(model, layout, opts) {
         obstacles.set(d.id, (0, geometry_1.boxRect)(b, 5));
     });
     // ---- groups (outermost first so children draw on top)
-    const groupNodes = [];
-    const depthSorted = model.groups.filter((g) => grects.has(g.id));
-    const depthOf = (id) => {
-        let d = 0;
-        let g = model.index.groups.get(id);
-        while (g && g.parent) {
-            d++;
-            g = model.index.groups.get(g.parent);
-        }
-        return d;
-    };
-    depthSorted.sort((a, b) => depthOf(a.id) - depthOf(b.id));
-    for (const g of depthSorted) {
-        const r = grects.get(g.id);
-        const ks = (0, style_1.groupKindStyle)(g.kind);
-        const head = (0, sizes_1.groupHeader)(g.label, g.kind, r.w - 2 * physical_1.GROUP_PAD);
-        groupNodes.push((0, scene_1.h)('g', { class: `group kind-${cssToken(g.kind)} ${ks.strong ? 'group-strong' : ''}`, 'data-ref': 'group:' + g.id }, [
-            (0, scene_1.h)('rect', { class: 'group-box', x: r.x, y: r.y, width: r.w, height: r.h, rx: 12, 'stroke-dasharray': ks.dash }),
-            (0, labels_1.textLines)({ class: 'group-title' }, head.title, r.x + 14, r.y + 7),
-            head.kind ? (0, scene_1.h)('text', { class: 'group-kind', x: r.x + r.w - 12, y: r.y + 20, 'text-anchor': 'end' }, head.kind) : null,
-        ]));
-        placer.block({ x: r.x + 10, y: r.y + 5, w: head.title.w + 8, h: head.title.h + 4 });
-    }
+    const showGroups = opts.showGroups !== false;
+    const groupNodes = showGroups ? groupFrames(model, grects, placer) : [];
     // ---- ports and cables: port labels first, they have fixed places
     const linkNodes = [];
     const labelNodes = [];
@@ -13786,7 +14459,8 @@ function renderPhysical(model, layout, opts) {
     });
     // everything drawn is inside the bounds: boxes, groups, labels and cable bends
     const rects = [];
-    grects.forEach((r) => rects.push({ x: r.x - 20, y: r.y - 20, w: r.w + 40, h: r.h + 40 }));
+    if (showGroups)
+        grects.forEach((r) => rects.push({ x: r.x - 20, y: r.y - 20, w: r.w + 40, h: r.h + 40 }));
     boxes.forEach((b) => rects.push({ x: b.cx - b.w / 2 - 50, y: b.cy - b.h / 2 - 40, w: b.w + 100, h: b.h + 80 }));
     for (const r of extra)
         rects.push({ x: r.x - 12, y: r.y - 12, w: r.w + 24, h: r.h + 24 });
@@ -14772,6 +15446,82 @@ async function runSelfTest(app, doc) {
         app.select('relation:gre-muc');
         check('selecting GRE tunnel highlights its physical path (3 cables)', count('.cable.hl') === 3, String(count('.cable.hl')));
         app.select(null);
+        // ------------------------------------ device filter: Devices, Labels, Groups / Locations, Networks
+        {
+            if (app.mdoc)
+                app.mdoc.markSaved();
+            app.loadExample(examples_1.EXAMPLES.findIndex((e) => e.name === 'enterprise-wan.yaml'));
+            click('[data-view-btn="physical"]');
+            const s = () => app.session;
+            const md = () => app.mdoc;
+            const hint = q('#filter-hint');
+            const btn = q('#devices-btn');
+            const right = Array.prototype.map.call(doc.querySelectorAll('header > .devices-wrap, header > label.opt'), (e) => (e.textContent || '').replace(/\s+/g, ' ').trim());
+            const vis = (sel) => !!q(sel) && q(sel).offsetParent !== null;
+            check('top-right diagram controls: Devices (all selected), Labels and Groups / Locations on, in both views; Networks only in the logical view; no Underlay', /^Devices: all \(15\)/.test(right[0] || '') && right[1] === 'Labels' && right[2] === 'Groups / Locations' && right[3] === 'Networks' && right.length === 4 && !q('#opt-underlay') &&
+                q('#opt-labels').checked && q('#opt-groups').checked && vis('#opt-groups') && !vis('#opt-networks') && !btn.disabled && hint.hidden && !s().isFiltered(), right.join(' | '));
+            const fullPhys = JSON.stringify(Array.from(s().positionsFor('physical')));
+            const yaml = app.exportText();
+            const undo = md().canUndo();
+            btn.click();
+            await tick();
+            const boxes = () => Array.prototype.slice.call(doc.querySelectorAll('#devices-list input[type="checkbox"]'));
+            check('the Devices panel lists every device, all selected, with Select all and Clear', !q('#devices-panel').hidden && boxes().length === 15 && boxes().every((b) => b.checked) && btn.getAttribute('aria-expanded') === 'true' && !!q('#devices-all') && !!q('#devices-none'));
+            const keep = ['hq-rtr1', 'hq-rtr2', 'hq-fw', 'hq-core1', 'isp1-pe', 'inet'];
+            for (const b of boxes()) {
+                if (keep.indexOf(b.getAttribute('data-device') || '') >= 0)
+                    continue;
+                b.checked = false;
+                b.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+            await tick();
+            const shownDevices = () => Array.prototype.map.call(doc.querySelectorAll('#viewport g.device'), (e) => (e.getAttribute('data-ref') || '').slice(7)).sort();
+            check('deselecting devices shows a filtered physical view of the 6 selected devices, with the temporary-positions hint and the count on the button', shownDevices().join() === keep.slice().sort().join() && !hint.hidden && (hint.textContent || '').indexOf('Filtered-view positions are temporary and are not saved in YAML.') >= 0 && hint.getAttribute('role') === 'status' &&
+                /Devices: 6 of 15/.test(btn.textContent || '') && btn.classList.contains('filtered') && /showing 6 of 15 devices/.test(q('#status').textContent || '') &&
+                !q('#viewport [data-ref="link:l-hq-isp2"]') && !!q('#viewport [data-ref="link:l-rtr1-fw"]') && !q('#viewport [data-ref="group:branch-muc"]') && !!q('#viewport [data-ref="group:hq-core"]'), shownDevices().join());
+            check('the hint is outside the diagram (never part of an export)', !q('#canvas #filter-hint') && !/not saved in YAML/.test(app.exportSvg()));
+            q('#devices-find').value = 'hq-';
+            q('#devices-find').dispatchEvent(new Event('input', { bubbles: true }));
+            const rows = Array.prototype.filter.call(doc.querySelectorAll('#devices-list label'), (l) => !l.hidden).length;
+            q('#devices-panel').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+            check('the panel filters its list without changing the selection, and Esc closes it', rows === 7 && q('#devices-panel').hidden && doc.activeElement === btn && s().selectedDevices().size === 6, String(rows));
+            // a move in the filtered view is temporary
+            check('the filtered view starts auto-arranged for its devices; the button says so', status('physical') === 'auto' && q('#btn-arrange').getAttribute('data-filtered') === 'true' && /filtered view matches/.test(shown().desc), shown().desc);
+            {
+                const el2 = q('#viewport g.device[data-ref="device:hq-fw"] .dev-box');
+                const rr = el2.getBoundingClientRect();
+                const x = rr.left + rr.width / 2;
+                const y = rr.top + rr.height / 2;
+                el2.dispatchEvent(pe('pointerdown', x, y));
+                svg.dispatchEvent(pe('pointermove', x + 80, y + 40));
+                svg.dispatchEvent(pe('pointermove', x + 160, y + 80));
+                svg.dispatchEvent(pe('pointerup', x + 160, y + 80));
+            }
+            const moved = JSON.stringify(s().positionsFor('physical').get('hq-fw'));
+            check('dragging in a filtered view moves the device for now only: no undo step, no stored position, the YAML unchanged; the status says "moved"', app.exportText() === yaml && md().canUndo() === undo && !md().hasStoredLayout('physical') && status('physical') === 'manual' && /temporarily moved/.test(shown().desc) && !md().dirty, `${moved} ${md().canUndo()} ${status('physical')}`);
+            click('[data-view-btn="logical"]');
+            await tick();
+            const logShown = shownDevices();
+            check('switching views: the logical view of the same devices, auto-arranged on its own (no move leaks), relations only among them', status('logical') === 'auto' && logShown.every((d) => keep.indexOf(d) >= 0) && logShown.indexOf('hq-rtr1') >= 0 && !q('#viewport [data-ref="relation:gre-muc"]') && !!q('#viewport [data-ref="relation:ibgp-hq"]') && vis('#opt-networks'), logShown.join());
+            click('[data-view-btn="physical"]');
+            check('back in the physical view, its temporary move is still there', JSON.stringify(s().positionsFor('physical').get('hq-fw')) === moved && status('physical') === 'manual');
+            // Groups / Locations hides frames, never devices
+            q('#opt-groups').click();
+            const hiddenFrames = count('g.group');
+            const devsNoFrames = shownDevices().join();
+            q('#opt-groups').click();
+            check('Groups / Locations off hides the frames and keeps every device in place; on brings them back', hiddenFrames === 0 && devsNoFrames === keep.slice().sort().join() && count('g.group') >= 3 && JSON.stringify(s().positionsFor('physical').get('hq-fw')) === moved);
+            // Auto-arrange in a filtered view: the subset only, temporary, no confirmation needed
+            click('#btn-arrange');
+            await tick(10);
+            check('Auto-arrange in a filtered view re-arranges the shown devices only, temporarily: no dialog, YAML and undo unchanged', !q('#modal[open]') && status('physical') === 'auto' && app.exportText() === yaml && md().canUndo() === undo, status('physical'));
+            // Select all: the complete diagram with its saved positions, unchanged
+            btn.click();
+            click('#devices-all');
+            await tick();
+            check('Select all restores the complete diagram exactly as it was, hides the hint and gives Auto-arrange its normal meaning back', !s().isFiltered() && hint.hidden && JSON.stringify(Array.from(s().positionsFor('physical'))) === fullPhys && count('g.device') === 15 && /Devices: all \(15\)/.test(btn.textContent || '') && q('#btn-arrange').getAttribute('data-filtered') === null && shown().desc === AUTO_MSG && app.exportText() === yaml);
+            q('#devices-panel').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+        }
         // ------------------------------------ selection context in the element lists
         {
             const olItems = () => Array.from(doc.querySelectorAll('#outline-body .ol-item[data-ref]'));
@@ -15691,6 +16441,26 @@ async function runSelfTest(app, doc) {
                 check(`PNG and SVG of the ${view} view (enterprise WAN, zoomed in): the whole diagram with a margin, full labels, the legend and the Networks box of that view; the PNG is the SVG at ${res[view].scale}× and shows the same picture`, res[view].ok, `${res[view].why} svg ${res[view].svg.w}x${res[view].svg.h} png ${res[view].png.w}x${res[view].png.h}`);
             }
             check('each view exports its own picture: different legends and sizes, the Networks box headed by the view, and interface names only in the physical one', res.physical.svg.heading !== res.logical.svg.heading && res.physical.svg.texts.join('|') !== res.logical.svg.texts.join('|') && res.physical.svg.netCount > 0 && res.logical.svg.netCount > 0, `${res.physical.svg.heading} (${res.physical.svg.netCount}) / ${res.logical.svg.heading} (${res.logical.svg.netCount})`);
+            {
+                // a filtered view: the picture is the subset (devices, relations, legend, Networks box), never the hint
+                const yaml = app.exportText();
+                app.setDevices(['hq-rtr1', 'hq-rtr2', 'hq-fw', 'hq-core1', 'hq-core2', 'isp1-pe', 'inet']);
+                const sub = {};
+                for (const view of ['physical', 'logical']) {
+                    click(`[data-view-btn="${view}"]`);
+                    await tick();
+                    for (let n = 0; n < 3; n++)
+                        click('#zoom-in');
+                    sub[view] = await both('enterprise-wan', view);
+                    click('#zoom-fit');
+                }
+                const t = (v) => sub[v].svg.texts.join('|');
+                check('PNG and SVG of a filtered view: the whole subset (not the part on screen), its legend and Networks box only, no temporary-positions hint; the YAML is unchanged', sub.physical.ok && sub.logical.ok && sub.physical.svg.devices === 7 && sub.logical.svg.devices < 15 &&
+                    sub.physical.svg.netCount < res.physical.svg.netCount && sub.logical.svg.netCount < res.logical.svg.netCount &&
+                    !/not saved in YAML|temporary/.test(t('physical') + t('logical')) && !/\|GRE\||\|IPsec\||WireGuard/.test('|' + t('logical') + '|') && /\|iBGP\|/.test('|' + t('logical') + '|') &&
+                    !/Branch Munich|Hamburg LAN|Munich LAN/.test(t('physical') + t('logical')) && app.exportText() === yaml, `${sub.physical.why} / ${sub.logical.why} / devices ${sub.physical.svg.devices}, ${sub.logical.svg.devices} / nets ${sub.physical.svg.netCount}<${res.physical.svg.netCount}, ${sub.logical.svg.netCount}<${res.logical.svg.netCount}`);
+                app.setDevices(app.session.model.devices.map((d) => d.id));
+            }
             {
                 // view-specific network information: a network that only loopbacks are in belongs to the logical picture alone
                 app.loadText(examples_1.FIXTURES.find((e) => e.name === 'editor-new-network.yaml').text, 'editor-new-network.yaml', 'example');
