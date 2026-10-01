@@ -466,6 +466,23 @@ details.card > .field.derived { margin: 4px 10px; }
 .vlan-state.trunk { color: var(--accent); }
 .vlan-state.muted { font-weight: 400; font-style: italic; }
 .vlan-chips { display: flex; flex-wrap: wrap; gap: 3px; }
+/* DHCP switch beside the addresses of an interface; while it is on, manual addresses are greyed out */
+.field[data-dhcp] { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; column-gap: 6px; row-gap: 2px; }
+.field[data-dhcp] > :not(label):not(.dhcp-switch) { grid-column: 1 / -1; }
+button.dhcp-switch { white-space: nowrap; }
+button.dhcp-switch.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+@media (prefers-color-scheme: dark) { button.dhcp-switch.on { color: #0d1014; } }
+.dhcp-state { font-weight: 600; }
+.list-ed.disabled input { background: var(--grid); color: var(--muted); border-style: solid; cursor: not-allowed; }
+/* DNS names of a device */
+.dns-entry { border: 1px solid var(--border); border-radius: 7px; margin: 5px 0; padding: 5px 7px; background: var(--canvas); display: flex; flex-direction: column; gap: 4px; }
+.dns-entry.invalid { border-left: 3px solid var(--error); }
+.dns-entry select { padding: 3px 6px; border: 1px solid var(--border); border-radius: 5px; background: var(--canvas); font-size: 12px; }
+.dns-name-row input { flex: 1; min-width: 0; padding: 4px 7px; border: 1px solid var(--border); border-radius: 5px; background: var(--panel); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; }
+.dns-ifaces .ref-chip { flex: none; display: inline-flex; align-items: center; gap: 4px; }
+.dns-pick { display: flex; flex-direction: column; gap: 2px; max-height: 180px; overflow: auto; margin: 3px 0 8px; padding: 5px 8px; border: 1px solid var(--border); border-radius: 7px; background: var(--canvas); font-size: 12.5px; }
+.dns-pick-row { display: flex; align-items: center; gap: 4px; overflow-wrap: anywhere; }
+ul.dhcp-loss { margin: 2px 0 8px; padding-left: 20px; }
 .vlan-chip { flex: none; display: inline-flex; align-items: center; gap: 3px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .vlan-ed .list-row > * { flex: 1; min-width: 0; }
 .vlan-mismatch-note { border: 1px solid var(--warn); border-radius: 6px; padding: 4px 7px; }
@@ -2275,6 +2292,7 @@ exports.portRange = portRange;
 exports.ifaceSchemaKind = ifaceSchemaKind;
 const positions_1 = __req("layout/positions");
 const input_1 = __req("layout/input");
+const dns_1 = __req("model/dns");
 const ip_1 = __req("model/ip");
 const validate_1 = __req("validation/validate");
 const schema_1 = __req("yaml/schema");
@@ -2796,6 +2814,8 @@ class ModelDoc {
             return ik;
         if (path.length === 4 && typeof path[3] === 'number' && path[0] === 'relations' && path[2] === 'endpoints')
             return 'endpoint';
+        if (path.length === 4 && typeof path[3] === 'number' && path[0] === 'devices' && path[2] === 'dns_names')
+            return 'dnsName';
         if (this.isLinkEnd(path))
             return 'linkEnd';
         if (path.length === 1 && path[0] === 'layout')
@@ -3188,6 +3208,12 @@ class ModelDoc {
             });
         };
         if (kind === 'device') {
+            // DNS names of the same device that are associated with the interface
+            if (iface !== undefined) {
+                const dev = this.findEntity('device', id);
+                if (dev)
+                    out.push(...this.dnsRefs(dev.index, iface));
+            }
             epRefs('links', 'a/b');
             epRefs('relations', 'endpoints');
             // associations of logical interfaces: member ports and tunnel sources (same device), tunnel destinations (any device)
@@ -3248,7 +3274,7 @@ class ModelDoc {
             const t = (0, validate_1.scalarText)(n);
             let nt = t;
             const last = p[p.length - 1];
-            if (last === 'source' || last === 'members' || p[p.length - 2] === 'members') {
+            if (last === 'source' || last === 'members' || p[p.length - 2] === 'members' || p[2] === 'dns_names') {
                 // an interface of the same device, written as its bare id
                 nt = newIf !== undefined ? newIf : t;
             }
@@ -3422,6 +3448,164 @@ class ModelDoc {
             f.push(['label', (0, parse_1.strNode)(name)]);
         f.push(['ip', (0, parse_1.seqNode)(addresses.map(parse_1.strNode), true)]);
         return this.addLogical(devIndex, 'loopback', f);
+    }
+    /**
+     * Delete a physical or logical interface. Its DNS-name associations are
+     * removed in the same step (a DNS name left without any interface is
+     * removed with them), so none of them can point at a missing interface.
+     * Other references (links, relations, member lists, tunnels) are left as
+     * they are and reported by validation.
+     */
+    deleteInterface(ipath) {
+        const iface = this.ifaceIdAt(ipath);
+        this.change('Delete interface', () => {
+            if (iface)
+                this.dropDnsRefs(ipath[1], iface);
+            this.removeAt(ipath);
+        });
+    }
+    // --------------------------------------------------------------------- DHCP
+    /** Does the interface at `ipath` have `dhcp: true`? */
+    dhcpOn(ipath) {
+        const n = this.get(ipath.concat('dhcp'));
+        return !!n && n.kind === 'scalar' && n.value === true;
+    }
+    /**
+     * What turning DHCP on for an interface would remove: its manually
+     * configured addresses and its DNS-name associations (`removed`: the name
+     * is associated with this interface only, so it would be removed too).
+     */
+    dhcpImpact(ipath) {
+        const n = this.get(ipath.concat('ip'));
+        const addresses = !n ? [] : n.kind === 'seq' ? n.items.map((i) => (0, validate_1.scalarText)(i) || '').filter((x) => x) : (0, validate_1.scalarText)(n) !== undefined ? [(0, validate_1.scalarText)(n)] : [];
+        const iface = this.ifaceIdAt(ipath);
+        return { addresses, dns: iface ? this.dnsAffected(ipath[1], iface) : [] };
+    }
+    /**
+     * Turn DHCP on or off for an interface, as one undoable step. On: the
+     * manual addresses and the DNS-name associations of the interface are
+     * removed (see dhcpImpact; the UI asks first) and `dhcp: true` is written.
+     * Off: the key is removed (false is the format's default); nothing that
+     * was removed when it was turned on comes back.
+     */
+    setDhcp(ipath, on) {
+        const kind = ifaceSchemaKind(ipath);
+        if (!kind || on === this.dhcpOn(ipath))
+            return;
+        const iface = this.ifaceIdAt(ipath);
+        this.change(on ? 'Turn DHCP on' : 'Turn DHCP off', () => {
+            if (!on) {
+                this.removeAt(ipath.concat('dhcp'));
+                return;
+            }
+            if (iface)
+                this.dropDnsRefs(ipath[1], iface);
+            this.removeAt(ipath.concat('ip'));
+            this.setAt(ipath.concat('dhcp'), (0, parse_1.boolNode)(true), exports.KEY_ORDER[kind]);
+        });
+    }
+    // ---------------------------------------------------------------- DNS names
+    /** Id of the interface at `ipath` (also for the "- eth0" short form). */
+    ifaceIdAt(ipath) {
+        const n = this.get(ipath);
+        if (!n)
+            return undefined;
+        return n.kind === 'map' ? this.text(ipath.concat('id')) : (0, validate_1.scalarText)(n);
+    }
+    /** The `dns_names` entries of a device, as written. */
+    dnsEntries(devIndex) {
+        const list = this.get(['devices', devIndex, 'dns_names']);
+        if (!list || list.kind !== 'seq')
+            return [];
+        return list.items.map((it, k) => {
+            const path = ['devices', devIndex, 'dns_names', k];
+            const ifs = this.get(path.concat('interfaces'));
+            const interfaces = !ifs ? [] : ifs.kind === 'seq' ? ifs.items.map((i) => (0, validate_1.scalarText)(i) || '') : (0, validate_1.scalarText)(ifs) !== undefined ? [(0, validate_1.scalarText)(ifs)] : [];
+            return { path, name: it.kind === 'map' ? this.text(path.concat('name')) : undefined, interfaces };
+        });
+    }
+    /** Paths of the DNS-name associations of a device that name `iface` (list items, or the single value). */
+    dnsRefs(devIndex, iface) {
+        const out = [];
+        for (const e of this.dnsEntries(devIndex)) {
+            const ifs = this.get(e.path.concat('interfaces'));
+            if (ifs && ifs.kind === 'seq')
+                ifs.items.forEach((it, j) => (0, validate_1.scalarText)(it) === iface && out.push(e.path.concat('interfaces', j)));
+            else if (ifs && (0, validate_1.scalarText)(ifs) === iface)
+                out.push(e.path.concat('interfaces'));
+        }
+        return out;
+    }
+    /** DNS names associated with `iface`; `removed` when it is their only interface. */
+    dnsAffected(devIndex, iface) {
+        return this.dnsEntries(devIndex)
+            .filter((e) => e.interfaces.indexOf(iface) >= 0)
+            .map((e) => ({ name: e.name || '(no name)', removed: e.interfaces.every((x) => x === iface) }));
+    }
+    /** Remove every association with `iface` (call inside change()); names left without an interface go, and so does an empty list. */
+    dropDnsRefs(devIndex, iface) {
+        const entries = this.dnsEntries(devIndex);
+        for (let k = entries.length - 1; k >= 0; k--) {
+            const e = entries[k];
+            if (e.interfaces.indexOf(iface) < 0)
+                continue;
+            if (e.interfaces.every((x) => x === iface)) {
+                this.removeAt(e.path);
+                continue;
+            }
+            const ifs = this.get(e.path.concat('interfaces'));
+            if (ifs && ifs.kind === 'seq')
+                ifs.items = ifs.items.filter((it) => (0, validate_1.scalarText)(it) !== iface);
+        }
+        const list = this.get(['devices', devIndex, 'dns_names']);
+        if (list && list.kind === 'seq' && !list.items.length)
+            this.removeAt(['devices', devIndex, 'dns_names']);
+    }
+    /**
+     * Interfaces of a device a DNS name can be associated with: every
+     * physical and logical interface with an id, except the ones with DHCP on.
+     */
+    dnsEligible(devIndex) {
+        return this.interfaceEntries(devIndex).filter((e) => !!e.id && !this.dhcpOn(e.path));
+    }
+    /**
+     * Why a new DNS name can't be added to a device as given, or null if it
+     * can: the name's syntax, a name the device already has, and at least one
+     * eligible interface.
+     */
+    dnsNameError(devIndex, name, ifaces) {
+        const why = (0, dns_1.dnsNameProblem)(name);
+        if (why)
+            return name ? `Not a valid DNS name: ${why}.` : 'Enter a DNS name, e.g. www.example.com.';
+        const key = (0, dns_1.dnsNameKey)(name);
+        if (this.dnsEntries(devIndex).some((e) => e.name !== undefined && (0, dns_1.dnsNameKey)(e.name) === key))
+            return `This device already has the DNS name “${name}”. Associate that entry with more interfaces instead.`;
+        if (!ifaces.length)
+            return 'Select at least one interface.';
+        const ok = this.dnsEligible(devIndex).map((e) => e.id);
+        const bad = ifaces.filter((x) => ok.indexOf(x) < 0);
+        if (bad.length)
+            return `Not an interface with manual addressing on this device: ${bad.join(', ')}.`;
+        return null;
+    }
+    /** Add a DNS name associated with the given interfaces (one undoable step); returns its index, or -1 if it is not valid. */
+    addDnsName(devIndex, name, ifaces) {
+        if (this.dnsNameError(devIndex, name, ifaces))
+            return -1;
+        return this.change('Add DNS name', () => {
+            const list = this.ensureSeq(['devices', devIndex, 'dns_names'], false, exports.KEY_ORDER.device);
+            list.items.push((0, parse_1.mapNode)([['name', (0, parse_1.strNode)(name)], ['interfaces', (0, parse_1.seqNode)(ifaces.map(parse_1.strNode), true)]], true));
+            return list.items.length - 1;
+        });
+    }
+    /** Remove a DNS name of a device; the list goes when it is empty. */
+    removeDnsName(devIndex, k) {
+        this.change('Remove DNS name', () => {
+            this.removeAt(['devices', devIndex, 'dns_names', k]);
+            const list = this.get(['devices', devIndex, 'dns_names']);
+            if (list && list.kind === 'seq' && !list.items.length)
+                this.removeAt(['devices', devIndex, 'dns_names']);
+        });
     }
 }
 exports.ModelDoc = ModelDoc;
@@ -6360,6 +6544,53 @@ function segmentHitsRect(a, b, r) {
 }
 
 };
+__defs["model/dns"] = function (module, exports) {
+"use strict";
+/**
+ * DNS names of a device: syntax and comparison. A name is a host name in the
+ * letter-digit-hyphen form (RFC 1123): dot-separated labels of 1–63
+ * characters, 253 characters in total, optionally ending in a dot. Nothing is
+ * resolved and no record is created; the name is configuration only.
+ */
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.DNS_NAME_MAX = void 0;
+exports.dnsNameProblem = dnsNameProblem;
+exports.dnsNameKey = dnsNameKey;
+const LABEL_RE = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/;
+/** Longest name, without the trailing dot. */
+exports.DNS_NAME_MAX = 253;
+/** Why `name` is not a valid DNS name, or null when it is. */
+function dnsNameProblem(name) {
+    if (!name)
+        return 'the name is empty';
+    if (/\s/.test(name))
+        return 'a DNS name cannot contain spaces';
+    const bare = name.charAt(name.length - 1) === '.' ? name.slice(0, -1) : name;
+    if (!bare)
+        return 'a DNS name needs at least one label';
+    if (bare.length > exports.DNS_NAME_MAX)
+        return `a DNS name has at most ${exports.DNS_NAME_MAX} characters`;
+    const labels = bare.split('.');
+    for (const l of labels) {
+        if (!l)
+            return 'a DNS name cannot contain an empty label (two dots in a row, or a leading dot)';
+        if (l.length > 63)
+            return `the label "${l.slice(0, 20)}…" is longer than 63 characters`;
+        if (!LABEL_RE.test(l)) {
+            return `the label "${l}" may only contain letters, digits and hyphens, and cannot start or end with a hyphen`;
+        }
+    }
+    if (/^[0-9]+$/.test(labels[labels.length - 1]))
+        return 'the last label of a DNS name cannot be all digits (an IP address is not a DNS name)';
+    return null;
+}
+/** Comparison key: DNS names are case-insensitive, and a trailing dot does not make a different name. */
+function dnsNameKey(name) {
+    const n = name.toLowerCase();
+    return n.charAt(n.length - 1) === '.' ? n.slice(0, -1) : n;
+}
+
+};
 __defs["validation/validate"] = function (module, exports) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
@@ -6369,6 +6600,7 @@ exports.validate = validate;
 const ip_1 = __req("model/ip");
 const derive_1 = __req("model/derive");
 const types_1 = __req("model/types");
+const dns_1 = __req("model/dns");
 const device_types_1 = __req("model/device-types");
 const protocols_1 = __req("model/protocols");
 const parse_1 = __req("yaml/parse");
@@ -6591,6 +6823,8 @@ function build(root, c) {
     const addrOwner = new Map();
     /** "device:iface" -> the node of a virtual interface's "vlan" */
     const vlanNodes = new Map();
+    /** DNS name key -> the device that configures it first */
+    const dnsOwner = new Map();
     /** tunnel destinations: checked once every device is read */
     const destinations = [];
     capped(r.list((0, reader_1.get)(top, 'devices'), 'devices'), L.maxDevices, 'devices', 'devices').forEach((n, i) => {
@@ -6629,6 +6863,7 @@ function build(root, c) {
             attrs: r.attrs((0, reader_1.get)(m, 'attrs'), dpath + '.attrs'),
             interfaces: [],
             logical: [],
+            dnsNames: [],
             line: m.line,
         };
         let count = 0;
@@ -6688,6 +6923,8 @@ function build(root, c) {
             }
             const isLoop = type === 'loopback';
             const kind = isLoop ? 'loopback' : 'interface';
+            // DHCP is a flag, never an address: omitted means false
+            const dhcp = r.bool((0, reader_1.get)(im, 'dhcp'), ipath + '.dhcp') === true;
             const ipNode = (0, reader_1.get)(im, 'ip');
             const addrNodes = r.list(ipNode, ipath + '.ip', true);
             const addrs = [];
@@ -6704,7 +6941,9 @@ function build(root, c) {
                 addrsAt.push(an);
                 const p = (0, ip_1.parsePrefix)(a, !isLoop ? false : true);
                 if (!p) {
-                    const why = (0, ip_1.prefixProblem)(a) || `"${a}" is not a valid address`;
+                    const why = a.toLowerCase() === 'dhcp'
+                        ? '"dhcp" is not an address: to say that the interface obtains its address by DHCP, delete it here and set "dhcp: true"'
+                        : (0, ip_1.prefixProblem)(a) || `"${a}" is not a valid address`;
                     if (isLoop)
                         c.error(an, `${ipath}.ip[${j}]`, `invalid loopback address: ${why}`);
                     else
@@ -6725,7 +6964,11 @@ function build(root, c) {
                 else
                     addrOwner.set(k2, { where: key, node: an });
             });
-            if (isLoop && !addrs.length) {
+            if (dhcp && addrNodes.length) {
+                // both are kept as written and reported: neither the flag nor the addresses are discarded
+                c.error(ipNode, ipath + '.ip', `${kind} "${iid}" has "dhcp: true" and manually configured addresses; an interface either obtains its address by DHCP or has addresses configured — delete "ip:" or set "dhcp: false"`);
+            }
+            if (isLoop && !addrs.length && !dhcp) {
                 c.error(ipNode && !(0, reader_1.isNull)(ipNode) ? ipNode : im, ipath + '.ip', `loopback "${iid}" needs at least one IPv4 or IPv6 address with prefix length (e.g. 10.255.0.1/32 or 2001:db8::1/128)`, ipNode && !(0, reader_1.isNull)(ipNode) ? {} : { key: 'ip' });
             }
             const iface = {
@@ -6733,6 +6976,7 @@ function build(root, c) {
                 device: id,
                 label: r.field(im, 'label', ipath, L.maxLabel),
                 type,
+                dhcp,
                 addresses: addrs,
                 vrf: r.field(im, 'vrf', ipath, 100),
                 mac: r.field(im, 'mac', ipath, 40),
@@ -6817,6 +7061,7 @@ function build(root, c) {
             if (i)
                 dev.logical.push(i);
         });
+        dev.dnsNames = readDnsNames(r, c, m, dpath, dev, dnsOwner);
         // tunnel sources: an address (its interface is then derived), or any other interface of this device
         for (const s of sources) {
             const end = s.iface.source;
@@ -7307,6 +7552,79 @@ function build(root, c) {
         }
     }
     return model;
+}
+/**
+ * The DNS names of a device: each a valid name, configured once on the
+ * device, associated with one or more of its interfaces that have DHCP off.
+ * The association is to an interface, not to one of its addresses.
+ */
+function readDnsNames(r, c, m, dpath, dev, owner) {
+    const out = [];
+    const seen = new Map();
+    const all = (0, types_1.deviceInterfaces)(dev);
+    r.list((0, reader_1.get)(m, 'dns_names'), dpath + '.dns_names').forEach((n, k) => {
+        const path = `${dpath}.dns_names[${k}]`;
+        const nm = r.map(n, path);
+        if (!nm)
+            return;
+        r.keys(nm, schema_1.SCHEMA.dnsName, path);
+        const name = r.reqStr(nm, 'name', path, 300);
+        const nameNode = (0, reader_1.get)(nm, 'name');
+        let ok = name !== undefined;
+        if (name !== undefined) {
+            const why = (0, dns_1.dnsNameProblem)(name);
+            const key = (0, dns_1.dnsNameKey)(name);
+            if (why) {
+                c.error(nameNode, path + '.name', `invalid DNS name "${name}": ${why}`);
+                ok = false;
+            }
+            else if (seen.has(key)) {
+                c.error(nameNode, path + '.name', `DNS name "${name}" is listed twice on device "${dev.id}" (also as "${seen.get(key)}"); write it once and associate it with every interface it applies to`);
+                ok = false;
+            }
+            else {
+                seen.set(key, name);
+                const prev = owner.get(key);
+                if (prev !== undefined)
+                    c.warn(nameNode, path + '.name', `DNS name "${name}" is also configured on device "${prev}"`);
+                else
+                    owner.set(key, dev.id);
+            }
+        }
+        const ifNode = (0, reader_1.get)(nm, 'interfaces');
+        const ifaces = [];
+        const items = r.list(ifNode, path + '.interfaces', true);
+        items.forEach((x, j) => {
+            const ip = `${path}.interfaces[${j}]`;
+            const id = r.str(x, ip, 200);
+            if (id === undefined)
+                return;
+            const target = all.find((i) => i.id === id);
+            if (!target) {
+                const names = all.map((i) => i.id);
+                c.error(x, ip, `device "${dev.id}" has no interface "${id}"` + (names.length ? (0, reader_1.suggest)(id, names) : ' (the device declares no interfaces)'));
+            }
+            else if (target.dhcp) {
+                c.error(x, ip, `interface "${id}" obtains its address by DHCP, so a DNS name can't be associated with it; associate the name with an interface whose addresses are configured, or set "dhcp: false" on "${id}"`);
+            }
+            else if (ifaces.indexOf(id) >= 0) {
+                c.error(x, ip, `interface "${id}" is listed twice for this DNS name`);
+            }
+            else {
+                ifaces.push(id);
+                return;
+            }
+            ok = false;
+        });
+        if (!items.length) {
+            const has = ifNode && !(0, reader_1.isNull)(ifNode);
+            c.error(has ? ifNode : nm, path + '.interfaces', `DNS name "${name || '?'}" is associated with no interface — list one or more interfaces of "${dev.id}" under "interfaces:"`, has ? {} : { key: 'interfaces' });
+            ok = false;
+        }
+        if (ok && name !== undefined)
+            out.push({ name, interfaces: ifaces, line: nm.line });
+    });
+    return out;
 }
 /** "a loopback", "a tunnel interface of eth0" … for messages. */
 function describeIface(i) {
@@ -8298,11 +8616,13 @@ exports.SCHEMA = {
     top: ['netatlas', 'title', 'description', 'protocols', 'groups', 'devices', 'links', 'networks', 'relations', 'layout'],
     protocol: ['id', 'label', 'category', 'color', 'style', 'description'],
     group: ['id', 'label', 'kind', 'parent', 'description', 'attrs'],
-    device: ['id', 'label', 'type', 'group', 'tier', 'description', 'attrs', 'interfaces', 'logical_interfaces'],
+    device: ['id', 'label', 'type', 'group', 'tier', 'description', 'attrs', 'interfaces', 'logical_interfaces', 'dns_names'],
     /** a physical interface (a port): an entry of a device's `interfaces` */
-    interface: ['id', 'label', 'ip', 'vrf', 'mac', 'description', 'attrs'],
+    interface: ['id', 'label', 'dhcp', 'ip', 'vrf', 'mac', 'description', 'attrs'],
     /** a loopback, virtual or tunnel interface: an entry of a device's `logical_interfaces` */
-    logical: ['id', 'type', 'label', 'ip', 'vrf', 'mac', 'members', 'vlan', 'source', 'destination', 'description', 'attrs'],
+    logical: ['id', 'type', 'label', 'dhcp', 'ip', 'vrf', 'mac', 'members', 'vlan', 'source', 'destination', 'description', 'attrs'],
+    /** a DNS name of a device: an entry of a device's `dns_names` */
+    dnsName: ['name', 'interfaces'],
     link: ['id', 'a', 'b', 'medium', 'speed', 'label', 'cable', 'description', 'attrs'],
     /** one end of a link written as a mapping */
     linkEnd: ['device', 'interface', 'vlans'],
@@ -9749,6 +10069,204 @@ class Editor {
         for (const e of logical)
             ls.appendChild(this.ifaceCard(devIndex, e));
         w.appendChild(ls);
+        w.appendChild(this.dnsSection(devIndex));
+    }
+    // ------------------------------------------------------------ DNS names
+    /** How an interface is shown in DNS-name selectors: its name (label), with the id it is stored as. */
+    ifaceName(devIndex, id) {
+        const e = this.doc.interfaceEntries(devIndex).find((x) => x.id === id);
+        const label = e ? this.doc.text(e.path.concat('label')) : undefined;
+        return label && label !== id ? `${label} (${id})` : id;
+    }
+    /** Manually configured addresses of an interface of a device, as written. */
+    ifaceAddrs(devIndex, id) {
+        const e = this.doc.interfaceEntries(devIndex).find((x) => x.id === id);
+        return e ? this.listTexts(e.path.concat('ip')) : [];
+    }
+    /** The note for interfaces with several addresses: the name belongs to the interface, not to one address. */
+    multiAddrNote(devIndex, ids) {
+        const multi = ids.filter((id) => this.ifaceAddrs(devIndex, id).length > 1);
+        if (!multi.length)
+            return null;
+        return this.e('div', { class: 'help dns-multi', 'data-dns-multi': multi.join(',') }, [
+            `${multi.map((id) => `${id} has ${this.ifaceAddrs(devIndex, id).length} addresses`).join('; ')}: the name is associated with the interface, not with one particular address.`,
+        ]);
+    }
+    /**
+     * The DNS names of a device, after its interfaces. Each name is entered
+     * once and associated with one or more interfaces of the device (stored by
+     * interface id). Interfaces with DHCP on can't be selected. Only the
+     * association is stored: no DNS record is created or derived.
+     */
+    dnsSection(devIndex) {
+        const doc = this.doc;
+        const entries = (0, order_1.sortedByName)(doc.dnsEntries(devIndex), (e) => e.name || '');
+        const listPath = ['devices', devIndex, 'dns_names'];
+        const n = doc.get(listPath);
+        const sec = this.e('section', { class: 'sub', 'data-list': 'dns-names' }, [
+            this.e('div', { class: 'sub-head' }, [
+                this.e('h4', {}, [`DNS names (${entries.length})`]),
+                this.e('span', { class: 'ctl row' }, [this.e('button', { type: 'button', class: 'mini', 'data-act': 'add-dns', 'data-index': String(devIndex), title: 'Add a DNS name and associate it with interfaces of this device' }, ['+ DNS name'])]),
+            ]),
+            entries.length ? null : this.e('p', { class: 'muted small' }, ['Names of this device, each associated with one or more of its interfaces that have DHCP off. Only the name and its interfaces are stored; no DNS record is created.']),
+            n && n.kind !== 'seq' && !(n.kind === 'scalar' && n.value === null) ? this.e('p', { class: 'field-err' }, ['"dns_names" is not a list; fix it in the YAML tab.']) : null,
+        ]);
+        const eligible = (0, order_1.sortedByName)(doc.dnsEligible(devIndex), (e) => e.id).map((e) => e.id);
+        for (const e of entries) {
+            const k = e.path[3];
+            const iss = doc.issuesAt(e.path);
+            const box = this.e('div', { class: 'dns-entry' + (iss.some((i) => i.severity === 'error') ? ' invalid' : ''), 'data-dns': e.name || '' });
+            const node = doc.get(e.path);
+            if (!node || node.kind !== 'map') {
+                box.appendChild(this.e('div', { class: 'field-err' }, ['This entry is not a mapping with "name:" and "interfaces:"; fix it in the YAML tab or delete it.']));
+                box.appendChild(this.e('button', { type: 'button', class: 'mini danger', 'data-act': 'del-dns', 'data-index': String(devIndex), 'data-k': String(k) }, ['Delete']));
+                sec.appendChild(box);
+                continue;
+            }
+            const nameInput = this.input(e.path.concat('name'), 'text', e.name || '', { 'data-o': 'dnsName', placeholder: 'www.example.com', 'aria-label': 'DNS name' });
+            box.appendChild(this.e('div', { class: 'list-row dns-name-row' }, [
+                nameInput,
+                this.e('button', { type: 'button', class: 'mini danger', 'data-act': 'del-dns', 'data-index': String(devIndex), 'data-k': String(k), title: `Delete the DNS name ${e.name || ''}` }, ['×']),
+            ]));
+            for (const is of doc.issuesAt(e.path.concat('name')))
+                box.appendChild(this.e('div', { class: is.severity === 'error' ? 'field-err' : 'field-warn' }, [is.message]));
+            const ip = e.path.concat('interfaces');
+            const ifn = doc.get(ip);
+            const chips = this.e('div', { class: 'vlan-chips dns-ifaces' });
+            e.interfaces.forEach((id, j) => {
+                const at = ifn && ifn.kind === 'seq' ? ip.concat(j) : ip;
+                const last = e.interfaces.length === 1;
+                chips.appendChild(this.e('span', { class: 'ref-chip' + (eligible.indexOf(id) < 0 ? ' invalid' : ''), 'data-dns-iface': id }, [
+                    this.ifaceName(devIndex, id),
+                    last
+                        ? null
+                        : this.e('button', { type: 'button', class: 'mini', 'data-act': 'del-item', 'data-p': J(at), title: `Remove the association with ${id}` }, ['×']),
+                ]));
+            });
+            box.appendChild(chips);
+            const pick = this.e('select', { 'data-p': J(ip), 'data-t': 'dns-iface-append', 'aria-label': `Associate ${e.name || 'this name'} with another interface` });
+            const more = eligible.filter((id) => e.interfaces.indexOf(id) < 0);
+            pick.appendChild(this.e('option', { value: '' }, [more.length ? '+ associate an interface…' : '(no other interface with manual addressing)']));
+            for (const id of more)
+                pick.appendChild(this.e('option', { value: id }, [this.ifaceName(devIndex, id)]));
+            box.appendChild(pick);
+            for (const is of doc.issuesAt(ip))
+                box.appendChild(this.e('div', { class: is.severity === 'error' ? 'field-err' : 'field-warn' }, [is.message]));
+            const note = this.multiAddrNote(devIndex, e.interfaces);
+            if (note)
+                box.appendChild(note);
+            sec.appendChild(box);
+        }
+        if (entries.length) {
+            sec.appendChild(this.e('p', { class: 'muted small' }, [
+                'A name is associated with whole interfaces (physical or logical), not with one of their addresses, and only names what is configured: no A or AAAA record is created. The last interface of a name can’t be removed: delete the name instead. Interfaces with DHCP on are not offered.',
+            ]));
+        }
+        return sec;
+    }
+    /**
+     * "+ DNS name": ask for the name and the interfaces it belongs to, and
+     * create the entry only when both are valid. Cancel changes nothing.
+     */
+    async addDnsName(devIndex) {
+        const doc = this.doc;
+        const nameIn = this.e('input', { type: 'text', id: 'dns-name', spellcheck: 'false', autocomplete: 'off', placeholder: 'www.example.com' });
+        const eligible = (0, order_1.sortedByName)(doc.dnsEligible(devIndex), (e) => e.id).map((e) => e.id);
+        const dhcp = (0, order_1.sortedByName)(doc.interfaceEntries(devIndex).filter((e) => !!e.id && doc.dhcpOn(e.path)), (e) => e.id).map((e) => e.id);
+        const boxes = eligible.map((id) => this.e('input', { type: 'checkbox', value: id }));
+        const list = this.e('div', { id: 'dns-ifaces', class: 'dns-pick' }, eligible.length ? eligible.map((id, k) => this.e('label', { class: 'dns-pick-row' }, [boxes[k], ' ' + this.ifaceName(devIndex, id)])) : [this.e('span', { class: 'muted' }, ['This device has no interface with manual addressing.'])]);
+        const preview = this.e('div', { id: 'dns-preview', class: 'range-preview', role: 'status', 'aria-live': 'polite' });
+        let create = null;
+        const chosen = () => boxes.filter((b) => b.checked).map((b) => b.value);
+        const refresh = () => {
+            while (preview.firstChild)
+                preview.removeChild(preview.firstChild);
+            const err = doc.dnsNameError(devIndex, nameIn.value.trim(), chosen());
+            const untouched = !nameIn.value.trim() && !chosen().length;
+            preview.setAttribute('data-state', err ? (untouched ? 'empty' : 'error') : 'ok');
+            if (err)
+                preview.appendChild(this.e('div', { class: untouched ? 'muted' : 'field-err' }, [untouched ? 'Enter the name once and select every interface it belongs to.' : err]));
+            else
+                preview.appendChild(this.e('div', {}, [`“${nameIn.value.trim()}” will be associated with ${chosen().map((id) => this.ifaceName(devIndex, id)).join(', ')}.`]));
+            const note = this.multiAddrNote(devIndex, chosen());
+            if (note)
+                preview.appendChild(note);
+            if (create)
+                create.disabled = !!err;
+        };
+        const answer = await this.host.dialog({
+            title: 'Add a DNS name',
+            body: [
+                this.e('div', { class: 'range-form' }, [this.e('label', { class: 'dl-label' }, ['Name ', nameIn])]),
+                this.e('div', { class: 'dl-label' }, ['Interfaces']),
+                list,
+                dhcp.length ? this.e('p', { class: 'muted small', 'data-dns-excluded': dhcp.join(',') }, [`Not offered because DHCP is on: ${dhcp.join(', ')}.`]) : null,
+                preview,
+                this.e('p', { class: 'muted small' }, ['Only the name and its interfaces are stored: no DNS record is created. You can undo this with Ctrl+Z.']),
+            ].filter((x) => !!x),
+            buttons: [
+                { label: 'Cancel', value: 'cancel' },
+                { label: 'Add DNS name', value: 'create', kind: 'primary' },
+            ],
+            ready: (dialog) => {
+                create = dialog.querySelector('[data-value="create"]');
+                nameIn.addEventListener('input', refresh);
+                for (const b of boxes)
+                    b.addEventListener('change', refresh);
+                nameIn.addEventListener('keydown', (e) => {
+                    if (e.key === 'Enter' && create && !create.disabled) {
+                        e.preventDefault();
+                        create.click();
+                    }
+                });
+                refresh();
+            },
+        });
+        if (answer !== 'create')
+            return;
+        const name = nameIn.value.trim();
+        if (doc.addDnsName(devIndex, name, chosen()) < 0) {
+            this.host.toast(doc.dnsNameError(devIndex, name, chosen()) || 'The DNS name was not added.');
+            return;
+        }
+        this.host.changed(`DNS name “${name}” added.`);
+    }
+    /**
+     * The DHCP switch of an interface. Turning it on removes the manual
+     * addresses and the DNS-name associations of the interface, so when there
+     * are any, it asks first and lists them; Cancel changes nothing.
+     */
+    async toggleDhcp(p) {
+        const doc = this.doc;
+        const on = !doc.dhcpOn(p);
+        const ifid = doc.text(p.concat('id')) || (0, validate_1.scalarText)(doc.get(p)) || '?';
+        if (on) {
+            const imp = doc.dhcpImpact(p);
+            if (imp.addresses.length || imp.dns.length) {
+                const body = [];
+                if (imp.addresses.length) {
+                    body.push(this.e('p', {}, [`An interface that obtains its address by DHCP has no manually configured addresses. ${imp.addresses.length === 1 ? 'This address is' : `These ${imp.addresses.length} addresses are`} deleted:`]));
+                    body.push(this.e('ul', { class: 'dhcp-loss', 'data-loss': 'addresses' }, imp.addresses.map((a) => this.e('li', { class: 'ro' }, [a]))));
+                }
+                if (imp.dns.length) {
+                    body.push(this.e('p', {}, ['A DNS name can only be associated with an interface whose addresses are configured. These associations are removed:']));
+                    body.push(this.e('ul', { class: 'dhcp-loss', 'data-loss': 'dns' }, imp.dns.map((x) => this.e('li', {}, [this.e('span', { class: 'ro' }, [x.name]), x.removed ? ' — it has no other interface, so the name is deleted too' : '']))));
+                }
+                body.push(this.e('p', { class: 'muted small' }, ['Turning DHCP off later does not bring them back. You can undo this with Ctrl+Z.']));
+                const a = await this.host.dialog({
+                    title: `Turn DHCP on for “${ifid}”?`,
+                    body,
+                    buttons: [
+                        { label: 'Cancel', value: 'cancel' },
+                        { label: 'Delete and turn DHCP on', value: 'dhcp', kind: 'danger' },
+                    ],
+                });
+                if (a !== 'dhcp')
+                    return;
+            }
+        }
+        doc.setDhcp(p, on);
+        this.host.changed(on ? `DHCP on for ${ifid}: it has no manually configured addresses.` : `DHCP off for ${ifid}: addresses can be entered again.`);
     }
     /**
      * "+ Port Range": ask for the first and the last port name, show what
@@ -9846,7 +10364,8 @@ class Editor {
         const iss = doc.issuesAt(p);
         const errs = iss.filter((i) => i.severity === 'error').length;
         const addrs = this.listTexts(p.concat('ip'));
-        const summary = [id || '(no id)', o === 'logical' && !entry.type ? '(no type)' : (0, types_1.interfaceKindLabel)(kind), doc.text(p.concat('label')), addrs.slice(0, 2).join(', ') + (addrs.length > 2 ? ' …' : '')].filter((x) => !!x).join(' · ');
+        const dhcp = doc.dhcpOn(p);
+        const summary = [id || '(no id)', o === 'logical' && !entry.type ? '(no type)' : (0, types_1.interfaceKindLabel)(kind), doc.text(p.concat('label')), dhcp && !addrs.length ? 'DHCP' : addrs.slice(0, 2).join(', ') + (addrs.length > 2 ? ' …' : '')].filter((x) => !!x).join(' · ');
         const card = this.e('details', { class: 'card' + (errs ? ' has-err' : ''), 'data-card': J(p), 'data-iface': id || '', 'data-kind': kind });
         const selected = !!this.sel && !!this.sel.iface && J(this.sel.iface) === J(p);
         if (this.open.has(J(p)) || selected)
@@ -9859,7 +10378,7 @@ class Editor {
         card.appendChild(this.ifIdField(p, loop ? 'lo0' : kind === 'tunnel' ? 'tun0' : kind === 'virtual' ? 'Vlan10, bond0' : 'ge-0/0/1'));
         card.appendChild(this.ifTypeField(p, entry));
         card.appendChild(this.textField(p.concat('label'), loop ? 'Name' : 'Label', o, 'text', undefined, loop ? 'Descriptive name, e.g. “Router ID” or “BGP source”.' : undefined));
-        card.appendChild(this.listField(p.concat('ip'), loop ? 'Addresses (IPv4 / IPv6 with prefix)' : 'Addresses', o, loop ? '10.255.0.1/32 or 2001:db8::1/128' : '192.0.2.1/24'));
+        card.appendChild(this.addressField(p, loop, o));
         card.appendChild(this.ifaceDerivedField(devIndex, p));
         if (o === 'logical') {
             // Each association belongs to one type. A field of another type is only shown while the file still has it, so it can be removed.
@@ -9894,7 +10413,7 @@ class Editor {
                 for (const r of refs) {
                     // a logical interface (member port, tunnel source or destination) is named as device:interface
                     const sk = (0, document_1.kindOfSection)(String(r[0]));
-                    const name = r[0] === 'devices' ? `${doc.text([r[0], r[1], 'id']) || '?'}:${doc.text(r.slice(0, 4).concat('id')) || '?'}` : sk ? doc.text([r[0], r[1], 'id']) || sk : '?';
+                    const name = r[0] === 'devices' && r[2] === 'dns_names' ? `DNS name ${doc.text(r.slice(0, 4).concat('name')) || '?'}` : r[0] === 'devices' ? `${doc.text([r[0], r[1], 'id']) || '?'}:${doc.text(r.slice(0, 4).concat('id')) || '?'}` : sk ? doc.text([r[0], r[1], 'id']) || sk : '?';
                     if (names.indexOf(name) < 0)
                         names.push(name);
                 }
@@ -9904,6 +10423,37 @@ class Editor {
         card.appendChild(this.attrsField(p.concat('attrs'), 'Attributes (attrs)', o));
         card.appendChild(this.otherProps(p, o));
         return card;
+    }
+    /**
+     * The addresses of an interface, with the DHCP switch next to them. While
+     * DHCP is on, manual addresses can't be entered (a file that has both shows
+     * them, with the error, so they can be removed).
+     */
+    addressField(p, loop, o) {
+        const doc = this.doc;
+        const on = doc.dhcpOn(p);
+        const addrs = this.listTexts(p.concat('ip'));
+        const locked = on && !addrs.length;
+        const sw = this.e('button', {
+            type: 'button',
+            class: 'mini dhcp-switch' + (on ? ' on' : ''),
+            role: 'switch',
+            'aria-checked': on ? 'true' : 'false',
+            'data-act': 'dhcp',
+            'data-p': J(p),
+            title: on ? 'Turn DHCP off: addresses can then be configured manually' : 'Turn DHCP on: the interface obtains its address by DHCP (its manual addresses are deleted after a confirmation)',
+        }, ['DHCP ', this.e('span', { class: 'dhcp-state' }, [on ? 'on' : 'off'])]);
+        const label = loop ? 'Addresses (IPv4 / IPv6 with prefix)' : 'Addresses';
+        const help = on
+            ? 'Obtained by DHCP. The address is not known to NetAtlas, so this interface is in no network and has no derived VLAN until an address is configured.'
+            : undefined;
+        const f = this.listField(p.concat('ip'), label, o, loop ? '10.255.0.1/32 or 2001:db8::1/128' : '192.0.2.1/24', help, locked);
+        f.setAttribute('data-dhcp', on ? 'on' : 'off');
+        // the switch sits beside the label (see .field[data-dhcp] in the styles)
+        f.insertBefore(sw, f.firstChild ? f.firstChild.nextSibling : null);
+        for (const is of doc.issuesAt(p.concat('dhcp')))
+            f.appendChild(this.e('div', { class: is.severity === 'error' ? 'field-err' : 'field-warn' }, [is.message]));
+        return f;
     }
     /**
      * The type of an interface. A physical interface has none to choose
@@ -10116,9 +10666,14 @@ class Editor {
         return this.field(label, this.e('span', { class: 'ctl row' }, [picker, this.input(p, 'text', val, { 'data-o': order, placeholder: '#rrggbb' })]), p);
     }
     /** Editable list of scalars (addresses, prefixes). Also handles a single scalar value. */
-    listField(p, label, order, placeholder, help) {
+    listField(p, label, order, placeholder, help, disabled = false) {
         const n = this.doc.get(p);
-        const box = this.e('div', { class: 'list-ed' });
+        const box = this.e('div', { class: 'list-ed' + (disabled ? ' disabled' : '') });
+        if (disabled) {
+            const i = this.input(p, 'list-append', '', { placeholder: 'Obtained by DHCP — no manual address', class: 'append', disabled: '', 'aria-disabled': 'true' });
+            box.appendChild(i);
+            return this.field(label, box, p, help);
+        }
         const row = (ip, val, t) => this.e('div', { class: 'list-row' + (this.doc.issuesAt(ip).some((i) => i.severity === 'error') ? ' invalid' : '') }, [
             this.input(ip, t, val),
             this.e('button', { type: 'button', class: 'mini', 'data-act': 'del-item', 'data-p': J(ip), title: 'Remove' }, ['×']),
@@ -10173,6 +10728,8 @@ class Editor {
         if (!model || !inf)
             return this.derivedField(label, 'iface-vlan', [this.e('span', { class: 'muted' }, ['Not available while this interface has errors.'])], help);
         const assocs = (0, derive_1.interfaceAddresses)(model, inf.device, inf.id);
+        if (!assocs.length && inf.dhcp)
+            return this.derivedField(label, 'iface-vlan', [this.e('span', { class: 'muted' }, ['Address obtained by DHCP and not known here, so no network and no VLAN can be derived.'])], help);
         if (!assocs.length)
             return this.derivedField(label, 'iface-vlan', [this.e('span', { class: 'muted' }, ['No address, so no network and no VLAN.'])], help);
         const rows = assocs.map((a) => {
@@ -10522,6 +11079,11 @@ class Editor {
                     return true;
                 doc.appendText(p, val, 'Add member port');
                 break;
+            case 'dns-iface-append':
+                if (!val)
+                    return true;
+                doc.appendText(p, val, 'Associate interface with DNS name');
+                break;
             case 'list-item':
             case 'list-scalar':
                 doc.setText(p, trimmed);
@@ -10684,14 +11246,22 @@ class Editor {
             case 'del-iface': {
                 const dev = doc.text(['devices', p[1], 'id']);
                 const ifid = doc.text(p.concat('id')) || (0, validate_1.scalarText)(doc.get(p));
-                const refs = dev && ifid ? doc.references('device', dev, ifid) : [];
-                if (refs.length) {
+                // DNS-name associations go with the interface; every other reference becomes an error to fix
+                const refs = (dev && ifid ? doc.references('device', dev, ifid) : []).filter((r) => r[2] !== 'dns_names');
+                const dns = ifid ? doc.dnsAffected(p[1], ifid) : [];
+                if (refs.length || dns.length) {
+                    const body = [];
+                    if (refs.length)
+                        body.push(`${refs.length} reference${refs.length > 1 ? 's' : ''} to ${dev}:${ifid} (links, relations, member lists, tunnel sources or destinations) will become invalid and will be listed as errors. `);
+                    if (dns.length) {
+                        const gone = dns.filter((x) => x.removed).map((x) => x.name);
+                        body.push(`Its association with the DNS name${dns.length > 1 ? 's' : ''} ${dns.map((x) => x.name).join(', ')} is removed` +
+                            (gone.length ? `; ${gone.join(', ')} ${gone.length > 1 ? 'have' : 'has'} no other interface and ${gone.length > 1 ? 'are' : 'is'} deleted too. ` : '. '));
+                    }
+                    body.push('You can undo this with Ctrl+Z.');
                     const a = await this.host.dialog({
                         title: `Delete interface “${ifid}”?`,
-                        body: [
-                            `${refs.length} reference${refs.length > 1 ? 's' : ''} to ${dev}:${ifid} (links, relations, member lists, tunnel sources or destinations) will become invalid and will be listed as errors. `,
-                            'You can undo this with Ctrl+Z.',
-                        ],
+                        body,
                         buttons: [
                             { label: 'Cancel', value: 'cancel' },
                             { label: 'Delete', value: 'delete', kind: 'danger' },
@@ -10700,10 +11270,20 @@ class Editor {
                     if (a !== 'delete')
                         return true;
                 }
-                doc.remove(p, 'Delete interface');
+                doc.deleteInterface(p);
                 this.host.changed('Interface deleted.');
                 return true;
             }
+            case 'dhcp':
+                await this.toggleDhcp(p);
+                return true;
+            case 'add-dns':
+                await this.addDnsName(index);
+                return true;
+            case 'del-dns':
+                doc.removeDnsName(index, Number(btn.getAttribute('data-k')));
+                this.host.changed('DNS name deleted.');
+                return true;
             case 'del-item':
                 doc.remove(p);
                 this.host.changed();
@@ -11043,7 +11623,7 @@ function relatedRefs(model, ref) {
     }
     return out;
 }
-/** Case-insensitive search over ids, labels, protocols and addresses. */
+/** Case-insensitive search over ids, labels, protocols, addresses and DNS names. */
 function search(model, query, limit = 12) {
     const q = query.trim().toLowerCase();
     if (!q)
@@ -11067,7 +11647,7 @@ function search(model, query, limit = 12) {
         const addrs = [];
         for (const i of (0, types_1.deviceInterfaces)(d))
             addrs.push(...i.addresses);
-        consider('device:' + d.id, 'device', d.label, [d.id, d.label, d.type, ...addrs]);
+        consider('device:' + d.id, 'device', d.label, [d.id, d.label, d.type, ...addrs, ...d.dnsNames.map((x) => x.name)]);
     }
     for (const n of model.networks)
         consider('network:' + n.id, 'network', n.label, [n.id, n.label, n.vlan !== undefined ? 'vlan ' + n.vlan : '', ...n.cidr]);
@@ -11215,7 +11795,7 @@ exports.FIXTURES = exports.EXAMPLES = void 0;
 exports.EXAMPLES = [
     {
         "name": "enterprise-wan.yaml",
-        "text": "# netatlas example: enterprise WAN\n#\n# Headquarters with redundant edge routers and two branches. The same physical\n# internet uplinks carry several logical layers:\n#   IPsec (encryption)  ->  GRE (tunnel)  ->  OSPF (routing adjacency)\n# plus eBGP to two ISPs, a WireGuard backup tunnel over LTE, VRRP, LACP,\n# syslog, and a custom protocol (MACsec) defined in the \"protocols\" section.\nnetatlas: 1\ntitle: ACME Corp — enterprise WAN\ndescription: |\n  HQ Berlin with dual ISPs; branches Munich and Hamburg reach HQ over\n  GRE-over-IPsec tunnels across the public internet.\n\nprotocols:\n  - id: macsec\n    label: MACsec\n    category: other\n    color: \"#2b8a3e\"\n    style: solid\n    description: IEEE 802.1AE hop-by-hop link encryption\n\ngroups:\n  - id: providers\n    label: Service providers\n    kind: provider\n  - id: hq\n    label: HQ Berlin\n    kind: site\n    attrs:\n      address: Alexanderplatz 1, Berlin\n  - id: hq-edge\n    label: Edge rack E1\n    kind: rack\n    parent: hq\n  - id: hq-core\n    label: Core rack C1\n    kind: rack\n    parent: hq\n  - id: branch-muc\n    label: Branch Munich\n    kind: site\n  - id: branch-ham\n    label: Branch Hamburg\n    kind: site\n\ndevices:\n  - id: inet\n    label: Internet\n    type: cloud\n\n  - id: isp1-pe\n    label: ISP-1 PE\n    type: router\n    group: providers\n    attrs: {asn: 3320}\n    interfaces:\n      - {id: xe-1/0/0}\n      - {id: xe-1/0/1}\n  - id: isp2-pe\n    label: ISP-2 PE\n    type: router\n    group: providers\n    attrs: {asn: 1299}\n    interfaces:\n      - {id: xe-2/0/0}\n      - {id: xe-2/0/7}\n\n  - id: hq-rtr1\n    label: hq-rtr1\n    type: router\n    group: hq-edge\n    interfaces:\n      - {id: ge-0/0/0, ip: 198.51.100.2/30, description: ISP-1 uplink}\n      - {id: ge-0/0/1, ip: 10.0.0.2/28}\n    logical_interfaces:\n      - {id: lo0, type: loopback, ip: 10.255.0.1/32}\n      - {id: st0.10, type: tunnel, ip: 172.16.10.1/30, source: ge-0/0/0, destination: 192.0.2.10, description: GRE to Munich}\n  - id: hq-rtr2\n    label: hq-rtr2\n    type: router\n    group: hq-edge\n    interfaces:\n      - {id: ge-0/0/0, ip: 203.0.113.2/30, description: ISP-2 uplink}\n      - {id: ge-0/0/1, ip: 10.0.0.3/28}\n    logical_interfaces:\n      - {id: lo0, type: loopback, ip: 10.255.0.2/32}\n      - {id: st0.11, type: tunnel, ip: 172.16.11.1/30, source: ge-0/0/0, destination: 192.0.2.34, description: GRE to Hamburg}\n      - {id: wg0, type: tunnel, ip: 172.16.99.1/30, source: ge-0/0/0, destination: ham-rtr:wan1}\n  - id: hq-fw\n    label: hq-fw\n    type: firewall\n    group: hq-edge\n    interfaces:\n      - {id: eth1, ip: 10.0.0.1/28}\n      - {id: eth2}\n      - {id: eth3}\n      - {id: eth4}\n  - id: hq-core1\n    label: hq-core1\n    type: switch\n    group: hq-core\n    tier: 3\n    interfaces:\n      - {id: Ethernet49}\n      - {id: Ethernet51}\n      - {id: Ethernet52}\n      - {id: Ethernet1}\n    logical_interfaces:\n      - {id: Port-Channel1, type: virtual, members: [Ethernet51, Ethernet52]}\n      - {id: Vlan10, type: virtual, ip: 10.10.10.2/24}\n      - {id: Vlan20, type: virtual, ip: 10.10.20.2/24}\n  - id: hq-core2\n    label: hq-core2\n    type: switch\n    group: hq-core\n    tier: 3\n    interfaces:\n      - {id: Ethernet49}\n      - {id: Ethernet51}\n      - {id: Ethernet52}\n      - {id: Ethernet1}\n    logical_interfaces:\n      - {id: Port-Channel1, type: virtual, members: [Ethernet51, Ethernet52]}\n      - {id: Vlan10, type: virtual, ip: 10.10.10.3/24}\n      - {id: Vlan20, type: virtual, ip: 10.10.20.3/24}\n  - id: hq-acc1\n    label: hq-acc1\n    type: switch\n    group: hq-core\n    interfaces:\n      - {id: Gi1/0/49}\n      - {id: Gi1/0/50}\n      - {id: Gi1/0/1}\n    logical_interfaces:\n      - {id: Vlan10, type: virtual, ip: 10.10.10.4/24, description: Switch management}\n  - id: hq-log\n    label: hq-log (syslog)\n    type: server\n    group: hq-core\n    interfaces:\n      - {id: eno1, ip: 10.10.20.50/24}\n\n  - id: muc-rtr\n    label: muc-rtr\n    type: router\n    group: branch-muc\n    interfaces:\n      - {id: wan0, ip: 192.0.2.10/29, description: VDSL}\n      - {id: lan0, ip: 10.20.0.1/24}\n    logical_interfaces:\n      - {id: Tunnel10, type: tunnel, ip: 172.16.10.2/30, source: wan0, destination: 198.51.100.2}\n  - id: muc-sw\n    label: muc-sw\n    type: switch\n    group: branch-muc\n    interfaces: [gi1, gi8]\n  - id: muc-ap\n    label: muc-ap\n    type: ap\n    group: branch-muc\n    interfaces:\n      - {id: eth0, ip: 10.20.0.10/24}\n\n  - id: ham-rtr\n    label: ham-rtr\n    type: router\n    group: branch-ham\n    interfaces:\n      - {id: wan0, ip: 192.0.2.34/29}\n      - {id: wan1, description: LTE backup modem}\n      - {id: lan0, ip: 10.30.0.1/24}\n    logical_interfaces:\n      - {id: Tunnel11, type: tunnel, ip: 172.16.11.2/30, source: wan0, destination: 203.0.113.2}\n      - {id: wg0, type: tunnel, ip: 172.16.99.2/30, source: wan1, destination: 203.0.113.2}\n  - id: ham-sw\n    label: ham-sw\n    type: switch\n    group: branch-ham\n    interfaces: [gi1, gi2]\n\nlinks:\n  # provider side\n  - {id: l-isp1-inet, a: \"isp1-pe:xe-1/0/0\", b: inet, medium: fiber, speed: 10G, label: AS3320 transit}\n  - {id: l-isp2-inet, a: \"isp2-pe:xe-2/0/0\", b: inet, medium: fiber, speed: 10G, label: AS1299 transit}\n  - {id: l-hq-isp1, a: \"hq-rtr1:ge-0/0/0\", b: \"isp1-pe:xe-1/0/1\", medium: fiber, speed: 1G, cable: CID-4711}\n  - {id: l-hq-isp2, a: \"hq-rtr2:ge-0/0/0\", b: \"isp2-pe:xe-2/0/7\", medium: fiber, speed: 1G, cable: CID-0815}\n  - {id: l-muc-inet, a: \"muc-rtr:wan0\", b: inet, medium: copper, speed: 250M, label: VDSL 250M}\n  - {id: l-ham-inet, a: \"ham-rtr:wan0\", b: inet, medium: fiber, speed: 1G, label: FTTH}\n  - {id: l-ham-lte, a: \"ham-rtr:wan1\", b: inet, medium: lte, speed: 150M, label: LTE backup}\n  # HQ (the core/access cables are trunks: each end lists the VLANs it permits)\n  - {id: l-rtr1-fw, a: \"hq-rtr1:ge-0/0/1\", b: \"hq-fw:eth1\", medium: copper, speed: 1G}\n  - {id: l-rtr2-fw, a: \"hq-rtr2:ge-0/0/1\", b: \"hq-fw:eth2\", medium: copper, speed: 1G}\n  - {id: l-fw-core1, a: \"hq-fw:eth3\", b: \"hq-core1:Ethernet49\", medium: fiber, speed: 10G}\n  - {id: l-fw-core2, a: \"hq-fw:eth4\", b: \"hq-core2:Ethernet49\", medium: fiber, speed: 10G}\n  - id: l-peer1\n    a: {device: hq-core1, interface: Ethernet51, vlans: [10, 20]}\n    b: {device: hq-core2, interface: Ethernet51, vlans: [10, 20]}\n    medium: dac\n    speed: 100G\n    cable: DAC 1m\n  - id: l-peer2\n    a: {device: hq-core1, interface: Ethernet52, vlans: [10, 20]}\n    b: {device: hq-core2, interface: Ethernet52, vlans: [10, 20]}\n    medium: dac\n    speed: 100G\n    cable: DAC 1m\n  - id: l-core1-acc\n    a: {device: hq-core1, interface: Ethernet1, vlans: [10, 20]}\n    b: {device: hq-acc1, interface: Gi1/0/49, vlans: [10, 20]}\n    medium: fiber\n    speed: 10G\n  - id: l-core2-acc\n    a: {device: hq-core2, interface: Ethernet1, vlans: [10, 20]}\n    b: {device: hq-acc1, interface: Gi1/0/50, vlans: [10, 20]}\n    medium: fiber\n    speed: 10G\n  - id: l-acc-log\n    a: {device: hq-acc1, interface: Gi1/0/1, vlans: [20]}\n    b: {device: hq-log, interface: eno1, vlans: [20]}\n    medium: copper\n    speed: 1G\n  # branches\n  - {id: l-muc-sw, a: \"muc-rtr:lan0\", b: \"muc-sw:gi1\", medium: copper, speed: 1G}\n  - {id: l-muc-ap, a: \"muc-sw:gi8\", b: \"muc-ap:eth0\", medium: copper, speed: 1G, label: PoE+}\n  - {id: l-ham-sw, a: \"ham-rtr:lan0\", b: \"ham-sw:gi1\", medium: copper, speed: 1G}\n\nnetworks:\n  # IP networks. Members are not listed: every device with an interface or\n  # loopback address inside \"cidr\" is a member. \"vlan\" is the VLAN the subnet\n  # lives in; interfaces with an address in it show that VLAN.\n  - id: net-transit\n    label: HQ transit\n    cidr: 10.0.0.0/28\n  - id: net-users\n    label: Users\n    cidr: 10.10.10.0/24\n    vlan: 10\n  - id: net-servers\n    label: Servers\n    cidr: 10.10.20.0/24\n    vlan: 20\n  - id: net-muc-lan\n    label: Munich LAN\n    cidr: 10.20.0.0/24\n  - id: net-ham-lan\n    label: Hamburg LAN\n    cidr: 10.30.0.0/24\n\nrelations:\n  # --- Munich: IPsec carries GRE carries OSPF -----------------------------\n  - id: ipsec-muc\n    protocol: ipsec\n    label: IKEv2 site-to-site\n    endpoints: [\"hq-rtr1:ge-0/0/0\", \"muc-rtr:wan0\"]\n    over: [l-hq-isp1, l-isp1-inet, l-muc-inet]\n    attrs:\n      ike: v2\n      encryption: aes-256-gcm\n      dh-group: 20\n      lifetime: 8h\n  - id: gre-muc\n    protocol: gre\n    endpoints: [\"hq-rtr1:st0.10\", \"muc-rtr:Tunnel10\"]\n    over: ipsec-muc\n    attrs: {key: 10, mtu: 1400, keepalive: \"10 3\"}\n  - id: ospf-muc\n    protocol: ospf\n    endpoints: [\"hq-rtr1:st0.10\", \"muc-rtr:Tunnel10\"]\n    over: gre-muc\n    attrs: {area: 0.0.0.1, cost: 100, network-type: point-to-point}\n\n  # --- Hamburg: same stack via ISP-2, plus a WireGuard backup over LTE ------\n  - id: ipsec-ham\n    protocol: ipsec\n    endpoints: [\"hq-rtr2:ge-0/0/0\", \"ham-rtr:wan0\"]\n    over: [l-hq-isp2, l-isp2-inet, l-ham-inet]\n    attrs: {ike: v2, encryption: aes-256-gcm}\n  - id: gre-ham\n    protocol: gre\n    endpoints: [\"hq-rtr2:st0.11\", \"ham-rtr:Tunnel11\"]\n    over: ipsec-ham\n    attrs: {key: 11, mtu: 1400}\n  - id: ospf-ham\n    protocol: ospf\n    endpoints: [\"hq-rtr2:st0.11\", \"ham-rtr:Tunnel11\"]\n    over: gre-ham\n    attrs: {area: 0.0.0.2, cost: 100}\n  - id: wg-ham-backup\n    protocol: wireguard\n    label: LTE backup\n    endpoints: [\"hq-rtr2:wg0\", \"ham-rtr:wg0\"]\n    over: [l-ham-lte, l-isp2-inet, l-hq-isp2]\n    attrs: {listen-port: 51820, persistent-keepalive: 25}\n  - id: ospf-ham-backup\n    protocol: ospf\n    endpoints: [\"hq-rtr2:wg0\", \"ham-rtr:wg0\"]\n    over: wg-ham-backup\n    attrs: {area: 0.0.0.2, cost: 1000}\n\n  # --- Internet edge ---------------------------------------------------------\n  - id: bgp-isp1\n    protocol: ebgp\n    endpoints:\n      - {device: hq-rtr1, interface: ge-0/0/0, attrs: {asn: 65010}}\n      - {device: isp1-pe, interface: xe-1/0/1, attrs: {asn: 3320}}\n    over: l-hq-isp1\n    attrs: {prefixes-out: 1, max-prefix: 1000000}\n  - id: bgp-isp2\n    protocol: ebgp\n    endpoints:\n      - {device: hq-rtr2, interface: ge-0/0/0, attrs: {asn: 65010}}\n      - {device: isp2-pe, interface: xe-2/0/7, attrs: {asn: 1299}}\n    over: l-hq-isp2\n  - id: ibgp-hq\n    protocol: ibgp\n    endpoints: [\"hq-rtr1:lo0\", \"hq-rtr2:lo0\"]\n    over: net-transit\n  - id: bfd-isp1\n    protocol: bfd\n    endpoints: [\"hq-rtr1:ge-0/0/0\", \"isp1-pe:xe-1/0/1\"]\n    over: l-hq-isp1\n    attrs: {interval: 300ms, multiplier: 3}\n\n  # --- HQ campus ------------------------------------------------------------\n  - id: ospf-hq-area0\n    protocol: ospf\n    label: area 0\n    endpoints: [hq-rtr1, hq-rtr2, hq-fw, hq-core1, hq-core2]\n    network: net-transit\n    attrs: {area: 0.0.0.0}\n  - id: lag-peer\n    protocol: lacp\n    label: Po1 peer-link\n    endpoints: [\"hq-core1:Port-Channel1\", \"hq-core2:Port-Channel1\"]\n    over: [l-peer1, l-peer2]\n    attrs: {mode: active, members: 2}\n  - id: macsec-peer\n    protocol: macsec\n    endpoints: [\"hq-core1:Ethernet51\", \"hq-core2:Ethernet51\"]\n    over: l-peer1\n    attrs: {cipher: GCM-AES-XPN-256}\n  - id: vrrp-users\n    protocol: vrrp\n    label: VIP 10.10.10.1\n    endpoints:\n      - {device: hq-core1, interface: Vlan10, role: master, attrs: {priority: 200}}\n      - {device: hq-core2, interface: Vlan10, role: backup, attrs: {priority: 100}}\n    network: net-users\n    attrs: {vrid: 10, virtual-ip: 10.10.10.1}\n  - id: syslog-fw\n    protocol: syslog\n    directed: true\n    endpoints: [hq-fw, \"hq-log:eno1\"]\n    attrs: {transport: tcp/6514, format: RFC5424}\n  - id: twamp-muc\n    protocol: twamp\n    category: service\n    label: SLA probe\n    directed: true\n    endpoints: [muc-rtr, hq-rtr1]\n"
+        "text": "# netatlas example: enterprise WAN\n#\n# Headquarters with redundant edge routers and two branches. The same physical\n# internet uplinks carry several logical layers:\n#   IPsec (encryption)  ->  GRE (tunnel)  ->  OSPF (routing adjacency)\n# plus eBGP to two ISPs, a WireGuard backup tunnel over LTE, VRRP, LACP,\n# syslog, and a custom protocol (MACsec) defined in the \"protocols\" section.\n# The Hamburg LTE uplink obtains its address by DHCP (\"dhcp: true\"), and a\n# few devices have DNS names (\"dns_names\"), each associated with interfaces.\nnetatlas: 1\ntitle: ACME Corp — enterprise WAN\ndescription: |\n  HQ Berlin with dual ISPs; branches Munich and Hamburg reach HQ over\n  GRE-over-IPsec tunnels across the public internet.\n\nprotocols:\n  - id: macsec\n    label: MACsec\n    category: other\n    color: \"#2b8a3e\"\n    style: solid\n    description: IEEE 802.1AE hop-by-hop link encryption\n\ngroups:\n  - id: providers\n    label: Service providers\n    kind: provider\n  - id: hq\n    label: HQ Berlin\n    kind: site\n    attrs:\n      address: Alexanderplatz 1, Berlin\n  - id: hq-edge\n    label: Edge rack E1\n    kind: rack\n    parent: hq\n  - id: hq-core\n    label: Core rack C1\n    kind: rack\n    parent: hq\n  - id: branch-muc\n    label: Branch Munich\n    kind: site\n  - id: branch-ham\n    label: Branch Hamburg\n    kind: site\n\ndevices:\n  - id: inet\n    label: Internet\n    type: cloud\n\n  - id: isp1-pe\n    label: ISP-1 PE\n    type: router\n    group: providers\n    attrs: {asn: 3320}\n    interfaces:\n      - {id: xe-1/0/0}\n      - {id: xe-1/0/1}\n  - id: isp2-pe\n    label: ISP-2 PE\n    type: router\n    group: providers\n    attrs: {asn: 1299}\n    interfaces:\n      - {id: xe-2/0/0}\n      - {id: xe-2/0/7}\n\n  - id: hq-rtr1\n    label: hq-rtr1\n    type: router\n    group: hq-edge\n    interfaces:\n      - {id: ge-0/0/0, ip: 198.51.100.2/30, description: ISP-1 uplink}\n      - {id: ge-0/0/1, ip: 10.0.0.2/28}\n    logical_interfaces:\n      - {id: lo0, type: loopback, ip: 10.255.0.1/32}\n      - {id: st0.10, type: tunnel, ip: 172.16.10.1/30, source: ge-0/0/0, destination: 192.0.2.10, description: GRE to Munich}\n    dns_names:\n      - {name: vpn1.acme.example, interfaces: [ge-0/0/0]}\n      - {name: hq-rtr1.acme.example, interfaces: [lo0, ge-0/0/1]}   # one name, two interfaces\n  - id: hq-rtr2\n    label: hq-rtr2\n    type: router\n    group: hq-edge\n    interfaces:\n      - {id: ge-0/0/0, ip: 203.0.113.2/30, description: ISP-2 uplink}\n      - {id: ge-0/0/1, ip: 10.0.0.3/28}\n    logical_interfaces:\n      - {id: lo0, type: loopback, ip: 10.255.0.2/32}\n      - {id: st0.11, type: tunnel, ip: 172.16.11.1/30, source: ge-0/0/0, destination: 192.0.2.34, description: GRE to Hamburg}\n      - {id: wg0, type: tunnel, ip: 172.16.99.1/30, source: ge-0/0/0, destination: ham-rtr:wan1}\n  - id: hq-fw\n    label: hq-fw\n    type: firewall\n    group: hq-edge\n    interfaces:\n      - {id: eth1, ip: 10.0.0.1/28}\n      - {id: eth2}\n      - {id: eth3}\n      - {id: eth4}\n  - id: hq-core1\n    label: hq-core1\n    type: switch\n    group: hq-core\n    tier: 3\n    interfaces:\n      - {id: Ethernet49}\n      - {id: Ethernet51}\n      - {id: Ethernet52}\n      - {id: Ethernet1}\n    logical_interfaces:\n      - {id: Port-Channel1, type: virtual, members: [Ethernet51, Ethernet52]}\n      - {id: Vlan10, type: virtual, ip: 10.10.10.2/24}\n      - {id: Vlan20, type: virtual, ip: 10.10.20.2/24}\n  - id: hq-core2\n    label: hq-core2\n    type: switch\n    group: hq-core\n    tier: 3\n    interfaces:\n      - {id: Ethernet49}\n      - {id: Ethernet51}\n      - {id: Ethernet52}\n      - {id: Ethernet1}\n    logical_interfaces:\n      - {id: Port-Channel1, type: virtual, members: [Ethernet51, Ethernet52]}\n      - {id: Vlan10, type: virtual, ip: 10.10.10.3/24}\n      - {id: Vlan20, type: virtual, ip: 10.10.20.3/24}\n  - id: hq-acc1\n    label: hq-acc1\n    type: switch\n    group: hq-core\n    interfaces:\n      - {id: Gi1/0/49}\n      - {id: Gi1/0/50}\n      - {id: Gi1/0/1}\n    logical_interfaces:\n      - {id: Vlan10, type: virtual, ip: 10.10.10.4/24, description: Switch management}\n  - id: hq-log\n    label: hq-log (syslog)\n    type: server\n    group: hq-core\n    interfaces:\n      - {id: eno1, ip: 10.10.20.50/24}\n    dns_names:\n      - {name: syslog.acme.example, interfaces: [eno1]}\n\n  - id: muc-rtr\n    label: muc-rtr\n    type: router\n    group: branch-muc\n    interfaces:\n      - {id: wan0, ip: 192.0.2.10/29, description: VDSL}\n      - {id: lan0, ip: 10.20.0.1/24}\n    logical_interfaces:\n      - {id: Tunnel10, type: tunnel, ip: 172.16.10.2/30, source: wan0, destination: 198.51.100.2}\n  - id: muc-sw\n    label: muc-sw\n    type: switch\n    group: branch-muc\n    interfaces: [gi1, gi8]\n  - id: muc-ap\n    label: muc-ap\n    type: ap\n    group: branch-muc\n    interfaces:\n      - {id: eth0, ip: 10.20.0.10/24}\n\n  - id: ham-rtr\n    label: ham-rtr\n    type: router\n    group: branch-ham\n    interfaces:\n      - {id: wan0, ip: 192.0.2.34/29}\n      - {id: wan1, dhcp: true, description: LTE backup modem}   # address assigned by the carrier\n      - {id: lan0, ip: 10.30.0.1/24}\n    logical_interfaces:\n      - {id: Tunnel11, type: tunnel, ip: 172.16.11.2/30, source: wan0, destination: 203.0.113.2}\n      - {id: wg0, type: tunnel, ip: 172.16.99.2/30, source: wan1, destination: 203.0.113.2}\n  - id: ham-sw\n    label: ham-sw\n    type: switch\n    group: branch-ham\n    interfaces: [gi1, gi2]\n\nlinks:\n  # provider side\n  - {id: l-isp1-inet, a: \"isp1-pe:xe-1/0/0\", b: inet, medium: fiber, speed: 10G, label: AS3320 transit}\n  - {id: l-isp2-inet, a: \"isp2-pe:xe-2/0/0\", b: inet, medium: fiber, speed: 10G, label: AS1299 transit}\n  - {id: l-hq-isp1, a: \"hq-rtr1:ge-0/0/0\", b: \"isp1-pe:xe-1/0/1\", medium: fiber, speed: 1G, cable: CID-4711}\n  - {id: l-hq-isp2, a: \"hq-rtr2:ge-0/0/0\", b: \"isp2-pe:xe-2/0/7\", medium: fiber, speed: 1G, cable: CID-0815}\n  - {id: l-muc-inet, a: \"muc-rtr:wan0\", b: inet, medium: copper, speed: 250M, label: VDSL 250M}\n  - {id: l-ham-inet, a: \"ham-rtr:wan0\", b: inet, medium: fiber, speed: 1G, label: FTTH}\n  - {id: l-ham-lte, a: \"ham-rtr:wan1\", b: inet, medium: lte, speed: 150M, label: LTE backup}\n  # HQ (the core/access cables are trunks: each end lists the VLANs it permits)\n  - {id: l-rtr1-fw, a: \"hq-rtr1:ge-0/0/1\", b: \"hq-fw:eth1\", medium: copper, speed: 1G}\n  - {id: l-rtr2-fw, a: \"hq-rtr2:ge-0/0/1\", b: \"hq-fw:eth2\", medium: copper, speed: 1G}\n  - {id: l-fw-core1, a: \"hq-fw:eth3\", b: \"hq-core1:Ethernet49\", medium: fiber, speed: 10G}\n  - {id: l-fw-core2, a: \"hq-fw:eth4\", b: \"hq-core2:Ethernet49\", medium: fiber, speed: 10G}\n  - id: l-peer1\n    a: {device: hq-core1, interface: Ethernet51, vlans: [10, 20]}\n    b: {device: hq-core2, interface: Ethernet51, vlans: [10, 20]}\n    medium: dac\n    speed: 100G\n    cable: DAC 1m\n  - id: l-peer2\n    a: {device: hq-core1, interface: Ethernet52, vlans: [10, 20]}\n    b: {device: hq-core2, interface: Ethernet52, vlans: [10, 20]}\n    medium: dac\n    speed: 100G\n    cable: DAC 1m\n  - id: l-core1-acc\n    a: {device: hq-core1, interface: Ethernet1, vlans: [10, 20]}\n    b: {device: hq-acc1, interface: Gi1/0/49, vlans: [10, 20]}\n    medium: fiber\n    speed: 10G\n  - id: l-core2-acc\n    a: {device: hq-core2, interface: Ethernet1, vlans: [10, 20]}\n    b: {device: hq-acc1, interface: Gi1/0/50, vlans: [10, 20]}\n    medium: fiber\n    speed: 10G\n  - id: l-acc-log\n    a: {device: hq-acc1, interface: Gi1/0/1, vlans: [20]}\n    b: {device: hq-log, interface: eno1, vlans: [20]}\n    medium: copper\n    speed: 1G\n  # branches\n  - {id: l-muc-sw, a: \"muc-rtr:lan0\", b: \"muc-sw:gi1\", medium: copper, speed: 1G}\n  - {id: l-muc-ap, a: \"muc-sw:gi8\", b: \"muc-ap:eth0\", medium: copper, speed: 1G, label: PoE+}\n  - {id: l-ham-sw, a: \"ham-rtr:lan0\", b: \"ham-sw:gi1\", medium: copper, speed: 1G}\n\nnetworks:\n  # IP networks. Members are not listed: every device with an interface or\n  # loopback address inside \"cidr\" is a member. \"vlan\" is the VLAN the subnet\n  # lives in; interfaces with an address in it show that VLAN.\n  - id: net-transit\n    label: HQ transit\n    cidr: 10.0.0.0/28\n  - id: net-users\n    label: Users\n    cidr: 10.10.10.0/24\n    vlan: 10\n  - id: net-servers\n    label: Servers\n    cidr: 10.10.20.0/24\n    vlan: 20\n  - id: net-muc-lan\n    label: Munich LAN\n    cidr: 10.20.0.0/24\n  - id: net-ham-lan\n    label: Hamburg LAN\n    cidr: 10.30.0.0/24\n\nrelations:\n  # --- Munich: IPsec carries GRE carries OSPF -----------------------------\n  - id: ipsec-muc\n    protocol: ipsec\n    label: IKEv2 site-to-site\n    endpoints: [\"hq-rtr1:ge-0/0/0\", \"muc-rtr:wan0\"]\n    over: [l-hq-isp1, l-isp1-inet, l-muc-inet]\n    attrs:\n      ike: v2\n      encryption: aes-256-gcm\n      dh-group: 20\n      lifetime: 8h\n  - id: gre-muc\n    protocol: gre\n    endpoints: [\"hq-rtr1:st0.10\", \"muc-rtr:Tunnel10\"]\n    over: ipsec-muc\n    attrs: {key: 10, mtu: 1400, keepalive: \"10 3\"}\n  - id: ospf-muc\n    protocol: ospf\n    endpoints: [\"hq-rtr1:st0.10\", \"muc-rtr:Tunnel10\"]\n    over: gre-muc\n    attrs: {area: 0.0.0.1, cost: 100, network-type: point-to-point}\n\n  # --- Hamburg: same stack via ISP-2, plus a WireGuard backup over LTE ------\n  - id: ipsec-ham\n    protocol: ipsec\n    endpoints: [\"hq-rtr2:ge-0/0/0\", \"ham-rtr:wan0\"]\n    over: [l-hq-isp2, l-isp2-inet, l-ham-inet]\n    attrs: {ike: v2, encryption: aes-256-gcm}\n  - id: gre-ham\n    protocol: gre\n    endpoints: [\"hq-rtr2:st0.11\", \"ham-rtr:Tunnel11\"]\n    over: ipsec-ham\n    attrs: {key: 11, mtu: 1400}\n  - id: ospf-ham\n    protocol: ospf\n    endpoints: [\"hq-rtr2:st0.11\", \"ham-rtr:Tunnel11\"]\n    over: gre-ham\n    attrs: {area: 0.0.0.2, cost: 100}\n  - id: wg-ham-backup\n    protocol: wireguard\n    label: LTE backup\n    endpoints: [\"hq-rtr2:wg0\", \"ham-rtr:wg0\"]\n    over: [l-ham-lte, l-isp2-inet, l-hq-isp2]\n    attrs: {listen-port: 51820, persistent-keepalive: 25}\n  - id: ospf-ham-backup\n    protocol: ospf\n    endpoints: [\"hq-rtr2:wg0\", \"ham-rtr:wg0\"]\n    over: wg-ham-backup\n    attrs: {area: 0.0.0.2, cost: 1000}\n\n  # --- Internet edge ---------------------------------------------------------\n  - id: bgp-isp1\n    protocol: ebgp\n    endpoints:\n      - {device: hq-rtr1, interface: ge-0/0/0, attrs: {asn: 65010}}\n      - {device: isp1-pe, interface: xe-1/0/1, attrs: {asn: 3320}}\n    over: l-hq-isp1\n    attrs: {prefixes-out: 1, max-prefix: 1000000}\n  - id: bgp-isp2\n    protocol: ebgp\n    endpoints:\n      - {device: hq-rtr2, interface: ge-0/0/0, attrs: {asn: 65010}}\n      - {device: isp2-pe, interface: xe-2/0/7, attrs: {asn: 1299}}\n    over: l-hq-isp2\n  - id: ibgp-hq\n    protocol: ibgp\n    endpoints: [\"hq-rtr1:lo0\", \"hq-rtr2:lo0\"]\n    over: net-transit\n  - id: bfd-isp1\n    protocol: bfd\n    endpoints: [\"hq-rtr1:ge-0/0/0\", \"isp1-pe:xe-1/0/1\"]\n    over: l-hq-isp1\n    attrs: {interval: 300ms, multiplier: 3}\n\n  # --- HQ campus ------------------------------------------------------------\n  - id: ospf-hq-area0\n    protocol: ospf\n    label: area 0\n    endpoints: [hq-rtr1, hq-rtr2, hq-fw, hq-core1, hq-core2]\n    network: net-transit\n    attrs: {area: 0.0.0.0}\n  - id: lag-peer\n    protocol: lacp\n    label: Po1 peer-link\n    endpoints: [\"hq-core1:Port-Channel1\", \"hq-core2:Port-Channel1\"]\n    over: [l-peer1, l-peer2]\n    attrs: {mode: active, members: 2}\n  - id: macsec-peer\n    protocol: macsec\n    endpoints: [\"hq-core1:Ethernet51\", \"hq-core2:Ethernet51\"]\n    over: l-peer1\n    attrs: {cipher: GCM-AES-XPN-256}\n  - id: vrrp-users\n    protocol: vrrp\n    label: VIP 10.10.10.1\n    endpoints:\n      - {device: hq-core1, interface: Vlan10, role: master, attrs: {priority: 200}}\n      - {device: hq-core2, interface: Vlan10, role: backup, attrs: {priority: 100}}\n    network: net-users\n    attrs: {vrid: 10, virtual-ip: 10.10.10.1}\n  - id: syslog-fw\n    protocol: syslog\n    directed: true\n    endpoints: [hq-fw, \"hq-log:eno1\"]\n    attrs: {transport: tcp/6514, format: RFC5424}\n  - id: twamp-muc\n    protocol: twamp\n    category: service\n    label: SLA probe\n    directed: true\n    endpoints: [muc-rtr, hq-rtr1]\n"
     },
     {
         "name": "datacenter-evpn.yaml",
@@ -11375,11 +11955,20 @@ function list(title, items) {
         return null;
     return (0, scene_1.h)('section', {}, [(0, scene_1.h)('h4', {}, `${title} (${items.length})`), (0, scene_1.h)('ul', { class: 'reflist' }, items)]);
 }
+/** The addresses of an interface as shown in the details: its manual addresses, or that DHCP provides them. */
+function addressText(i, sep) {
+    return i.dhcp && !i.addresses.length ? 'DHCP' : i.addresses.join(sep);
+}
 function header(kind, title) {
     return (0, scene_1.h)('div', { class: 'det-head' }, [
         (0, scene_1.h)('span', { class: 'badge', 'data-kind': kind }, kind),
         (0, scene_1.h)('h3', {}, title),
     ]);
+}
+/** DNS names of its device that are associated with an interface, alphabetically. */
+function dnsOf(model, i) {
+    const d = model.index.devices.get(i.device);
+    return d ? (0, order_1.sortedByName)(d.dnsNames.filter((x) => x.interfaces.indexOf(i.id) >= 0).map((x) => x.name), (x) => x) : [];
 }
 /** Details for the selected entity. */
 function detailsFor(model, ref) {
@@ -11411,7 +12000,7 @@ function detailsFor(model, ref) {
                         const peer = l ? (l.a.device === d.id && l.a.iface === i.id ? l.b : l.a) : undefined;
                         return (0, scene_1.h)('tr', { class: l ? '' : 'unused', 'data-iface': i.id, 'data-kind': i.type }, [
                             (0, scene_1.h)('td', {}, [refLink(`iface:${d.id}:${i.id}`, i.id)]),
-                            (0, scene_1.h)('td', {}, i.addresses.join(', ')),
+                            (0, scene_1.h)('td', {}, addressText(i, ', ')),
                             (0, scene_1.h)('td', {}, (0, derive_1.interfaceVlanText)((0, derive_1.interfaceAddresses)(model, d.id, i.id)).replace(/VLAN /g, '')),
                             (0, scene_1.h)('td', {}, peer ? [refLink('link:' + lid, '→ ' + (0, types_1.endpointText)(peer))] : []),
                         ]);
@@ -11428,10 +12017,25 @@ function detailsFor(model, ref) {
                     ...logical.map((i) => (0, scene_1.h)('tr', { 'data-iface': i.id, 'data-kind': i.type }, [
                         (0, scene_1.h)('td', {}, [refLink(`iface:${d.id}:${i.id}`, i.id), i.label ? (0, scene_1.h)('span', { class: 'muted' }, ' ' + i.label) : null]),
                         (0, scene_1.h)('td', {}, (0, types_1.interfaceKindLabel)(i.type)),
-                        (0, scene_1.h)('td', {}, i.addresses.join('\n')),
+                        (0, scene_1.h)('td', {}, addressText(i, '\n')),
                         (0, scene_1.h)('td', { 'data-assoc': '' }, associationText(model, i)),
                     ])),
                 ]),
+            ]));
+        }
+        // DNS names: each configured once, with the interfaces it is associated with (not with an address)
+        const names = (0, order_1.sortedByName)(d.dnsNames, (x) => x.name);
+        if (names.length) {
+            kids.push((0, scene_1.h)('section', { 'data-list': 'dns-names' }, [
+                (0, scene_1.h)('h4', {}, `DNS names (${names.length})`),
+                (0, scene_1.h)('table', { class: 'ports' }, [
+                    (0, scene_1.h)('tr', {}, [(0, scene_1.h)('th', {}, 'name'), (0, scene_1.h)('th', { title: 'The name is associated with these interfaces, not with one particular address' }, 'interfaces')]),
+                    ...names.map((x) => (0, scene_1.h)('tr', { 'data-dns': x.name }, [
+                        (0, scene_1.h)('td', {}, x.name),
+                        (0, scene_1.h)('td', {}, (0, order_1.sortedByName)(x.interfaces, (y) => y).reduce((acc, y, k) => acc.concat(k ? [(0, scene_1.h)('span', {}, ', '), refLink(`iface:${d.id}:${y}`, y)] : [refLink(`iface:${d.id}:${y}`, y)]), [])),
+                    ])),
+                ]),
+                (0, scene_1.h)('p', { class: 'muted small' }, 'Configured names only: no DNS record is derived from them.'),
             ]));
         }
         kids.push(list('Logical relations', model.relations
@@ -11450,7 +12054,8 @@ function detailsFor(model, ref) {
             ['device', refLink('device:' + i.device, ((_b = ix.devices.get(i.device)) === null || _b === void 0 ? void 0 : _b.label) || i.device)],
             ['label', i.label],
             ['type', (0, types_1.interfaceKindLabel)(i.type)],
-            ['addresses', i.addresses.join(', ')],
+            ['addresses', i.dhcp && !i.addresses.length ? 'obtained by DHCP (not known, so in no network)' : i.addresses.join(', ')],
+            ['DNS names', dnsOf(model, i).join(', ') || undefined],
             ['vrf', i.vrf],
             ['mac', i.mac],
             ['cable', i.type !== 'physical' ? undefined : lid ? refLink('link:' + lid, lid) : 'not cabled'],
@@ -11612,7 +12217,7 @@ function tooltipFor(model, ref) {
         if (!i)
             return [];
         const used = i.type === 'physical' ? (0, derive_1.associatedInterfaces)(model, i) : [];
-        return [`${i.device} ${i.id}`, (0, types_1.interfaceKindLabel)(i.type), associationText(model, i), used.length ? 'used by ' + (0, order_1.sortedByName)(used, (x) => x).join(', ') : '', i.addresses.join(', '), (0, derive_1.interfaceVlanText)((0, derive_1.interfaceAddresses)(model, i.device, i.id)), i.description || ''].filter((s) => s);
+        return [`${i.device} ${i.id}`, (0, types_1.interfaceKindLabel)(i.type), associationText(model, i), used.length ? 'used by ' + (0, order_1.sortedByName)(used, (x) => x).join(', ') : '', addressText(i, ', '), dnsOf(model, i).join(', '), (0, derive_1.interfaceVlanText)((0, derive_1.interfaceAddresses)(model, i.device, i.id)), i.description || ''].filter((s) => s);
     }
     if (kind === 'link') {
         const l = ix.links.get(id);
@@ -13763,6 +14368,102 @@ async function runSelfTest(app, doc) {
                 m().undo();
                 app.afterEdit();
                 check('the generated ports survive export → reload, and one undo removes the whole range', back.valid && back.exportText() === text && back.result.model.devices[0].interfaces.length === 25 && back.result.model.devices[0].interfaces[5].label === 'ge 1/6' && ports().length === 0);
+                m().markSaved();
+                app.closeModel();
+            }
+            // ------------------------------------------------ DHCP and DNS names
+            {
+                app.loadText([
+                    'netatlas: 1',
+                    'devices:',
+                    '  - id: web1',
+                    '    interfaces:',
+                    '      - {id: eth0, label: Front, ip: [192.0.2.10/24, 2001:db8::10/64]}',
+                    '      - {id: eth1, ip: 198.51.100.10/24}',
+                    '      - eth2',
+                    '    logical_interfaces:',
+                    '      - {id: lo0, type: loopback, ip: 10.255.0.10/32}',
+                    '    dns_names:',
+                    '      - {name: mgmt.example.net, interfaces: [eth1]}',
+                    '',
+                ].join('\n'), 'dhcp.yaml');
+                await tick(10);
+                click('#outline [data-act="select"][data-kind="device"][data-index="0"]');
+                await tick(10);
+                const m = () => app.mdoc;
+                const inf = (id) => m().result.model.index.interfaces.get('web1:' + id);
+                const card = (id) => `#side-body details.card[data-iface="${id}"]`;
+                const sw = (id) => q(card(id) + ' [data-act="dhcp"]');
+                const modal = () => (q('#modal[open]') || { textContent: '' }).textContent || '';
+                const sections = textsOf('#side-body .inspector > section.sub h4');
+                check('every physical and logical interface has a DHCP switch beside its addresses, off by default; DNS names follow the interface sections', doc.querySelectorAll('#side-body details.card > .field[data-dhcp] > label + [data-act="dhcp"]').length === 4 &&
+                    Array.prototype.every.call(doc.querySelectorAll('#side-body [data-act="dhcp"]'), (b) => b.getAttribute('aria-checked') === 'false' && b.getAttribute('role') === 'switch') &&
+                    !inf('eth2').dhcp && /^Physical interfaces/.test(sections[0]) && /^Logical interfaces/.test(sections[1]) && sections[2] === 'DNS names (1)', sections.join('|'));
+                const before = app.exportText();
+                sw('eth1').click();
+                await tick(20);
+                const asked = modal();
+                await answerDialog('cancel');
+                await tick(10);
+                check('turning DHCP on for an interface with addresses asks first and lists the addresses and DNS names it deletes; Cancel changes nothing', /Turn DHCP on for “eth1”\?/.test(asked) && /198\.51\.100\.10\/24/.test(asked) && /mgmt\.example\.net — it has no other interface, so the name is deleted too/.test(asked) && app.exportText() === before && m().canUndo() === null && !inf('eth1').dhcp, asked);
+                sw('eth1').click();
+                await tick(20);
+                await answerDialog('dhcp');
+                await tick(20);
+                const field = q(card('eth1') + ' .field[data-dhcp]');
+                const inputs = Array.prototype.slice.call(field.querySelectorAll('input'));
+                check('confirming deletes the addresses and the association and turns DHCP on in one undo step; manual addresses are greyed out and disabled', inf('eth1').dhcp && !inf('eth1').addresses.length && m().result.model.devices[0].dnsNames.length === 0 && m().canUndo() === 'Turn DHCP on' && m().valid &&
+                    field.getAttribute('data-dhcp') === 'on' && sw('eth1').getAttribute('aria-checked') === 'true' && inputs.length === 1 && inputs[0].disabled && !!field.querySelector('.list-ed.disabled') &&
+                    /DHCP/.test(q(card('eth1') + ' .card-title').textContent || '') && /no network and no VLAN can be derived/.test(q(card('eth1') + ' [data-derived="iface-vlan"]').textContent || ''), `${inf('eth1').dhcp} ${inputs.length} ${m().canUndo()}`);
+                // an interface without addresses or DNS names: nothing to lose, so nothing is asked
+                sw('eth2').click();
+                await tick(20);
+                check('DHCP on for an interface with nothing to delete needs no confirmation', inf('eth2').dhcp && !q('#modal[open]') && m().canUndo() === 'Turn DHCP on');
+                sw('eth1').click();
+                await tick(20);
+                const field2 = q(card('eth1') + ' .field[data-dhcp]');
+                check('turning DHCP off brings back manual editing, not the deleted addresses', !inf('eth1').dhcp && !inf('eth1').addresses.length && !q('#modal[open]') && field2.getAttribute('data-dhcp') === 'off' && !field2.querySelector('input.append').disabled && m().canUndo() === 'Turn DHCP off');
+                // + DNS name
+                click('#side-body [data-act="add-dns"]');
+                await tick(20);
+                const offered = Array.prototype.map.call(doc.querySelectorAll('#dns-ifaces input[type="checkbox"]'), (b) => b.value);
+                const labels = textsOf('#dns-ifaces label');
+                const createBtn = () => q('#modal[open] [data-value="create"]');
+                const disabledFirst = createBtn().disabled;
+                const nameIn = q('#dns-name');
+                nameIn.value = 'api.example.com';
+                nameIn.dispatchEvent(new Event('input', { bubbles: true }));
+                for (const id of ['eth0', 'lo0']) {
+                    const b = q(`#dns-ifaces input[value="${id}"]`);
+                    b.checked = true;
+                    b.dispatchEvent(new Event('change', { bubbles: true }));
+                }
+                await tick();
+                const preview = (q('#dns-preview') || { textContent: '' }).textContent || '';
+                check('"+ DNS name" offers the interfaces with DHCP off by name, says which are excluded, and explains that a name belongs to the interface, not one of its addresses', offered.join() === 'eth0,eth1,lo0' && labels[0] === 'Front (eth0)' && /DHCP is on: eth2/.test(q('[data-dns-excluded]').textContent || '') && disabledFirst && !createBtn().disabled &&
+                    /eth0 has 2 addresses: the name is associated with the interface, not with one particular address/.test(preview), offered.join() + ' | ' + preview);
+                createBtn().click();
+                await tick(30);
+                const chips = textsOf('#side-body [data-dns="api.example.com"] [data-dns-iface]');
+                check('the name is stored once with both interfaces (by id), shown with their names', JSON.stringify(m().result.model.devices[0].dnsNames.map((x) => [x.name, x.interfaces])) === '[["api.example.com",["eth0","lo0"]]]' && m().canUndo() === 'Add DNS name' &&
+                    chips.length === 2 && /^Front \(eth0\)/.test(chips[0]) && /^lo0/.test(chips[1]) && /DNS names \(1\)/.test(textsOf('#side-body section[data-list="dns-names"] h4')[0] || ''), chips.join('|'));
+                // DHCP on an associated interface: the association is part of the confirmation
+                sw('lo0').click();
+                await tick(20);
+                const asked2 = modal();
+                await answerDialog('cancel');
+                await tick(10);
+                // deleting an associated interface removes the association with it
+                click(card('lo0') + ' [data-act="del-iface"]');
+                await tick(20);
+                const asked3 = modal();
+                await answerDialog('delete');
+                await tick(20);
+                check('enabling DHCP or deleting an interface names the DNS associations it removes; after deleting, no reference is left', /api\.example\.com/.test(asked2) && !/deleted too/.test(asked2) && /association with the DNS name api\.example\.com is removed/.test(asked3) &&
+                    JSON.stringify(m().result.model.devices[0].dnsNames.map((x) => x.interfaces)) === '[["eth0"]]' && m().valid && !inf('lo0'), asked3);
+                const text = app.exportText();
+                const back = document_1.ModelDoc.fromText(text, 'dhcp.yaml', 'file').doc;
+                check('DHCP and DNS names survive export → reload', back.valid && back.exportText() === text && /- \{id: eth2, dhcp: true\}/.test(text) && /dns_names:\n {6}- \{name: api\.example\.com, interfaces: \[eth0\]\}/.test(text), text);
                 m().markSaved();
                 app.closeModel();
             }

@@ -679,6 +679,137 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         app.closeModel();
       }
 
+      // ------------------------------------------------ DHCP and DNS names
+      {
+        app.loadText(
+          [
+            'netatlas: 1',
+            'devices:',
+            '  - id: web1',
+            '    interfaces:',
+            '      - {id: eth0, label: Front, ip: [192.0.2.10/24, 2001:db8::10/64]}',
+            '      - {id: eth1, ip: 198.51.100.10/24}',
+            '      - eth2',
+            '    logical_interfaces:',
+            '      - {id: lo0, type: loopback, ip: 10.255.0.10/32}',
+            '    dns_names:',
+            '      - {name: mgmt.example.net, interfaces: [eth1]}',
+            '',
+          ].join('\n'),
+          'dhcp.yaml',
+        );
+        await tick(10);
+        click('#outline [data-act="select"][data-kind="device"][data-index="0"]');
+        await tick(10);
+        const m = (): ModelDoc => app.mdoc as ModelDoc;
+        const inf = (id: string): Interface => m().result.model!.index.interfaces.get('web1:' + id) as Interface;
+        const card = (id: string): string => `#side-body details.card[data-iface="${id}"]`;
+        const sw = (id: string): HTMLElement => q(card(id) + ' [data-act="dhcp"]') as HTMLElement;
+        const modal = (): string => (q('#modal[open]') || { textContent: '' }).textContent || '';
+        const sections = textsOf('#side-body .inspector > section.sub h4');
+        check(
+          'every physical and logical interface has a DHCP switch beside its addresses, off by default; DNS names follow the interface sections',
+          doc.querySelectorAll('#side-body details.card > .field[data-dhcp] > label + [data-act="dhcp"]').length === 4 &&
+            Array.prototype.every.call(doc.querySelectorAll('#side-body [data-act="dhcp"]'), (b: Element) => b.getAttribute('aria-checked') === 'false' && b.getAttribute('role') === 'switch') &&
+            !inf('eth2').dhcp && /^Physical interfaces/.test(sections[0]) && /^Logical interfaces/.test(sections[1]) && sections[2] === 'DNS names (1)',
+          sections.join('|'),
+        );
+        const before = app.exportText();
+        sw('eth1').click();
+        await tick(20);
+        const asked = modal();
+        await answerDialog('cancel');
+        await tick(10);
+        check(
+          'turning DHCP on for an interface with addresses asks first and lists the addresses and DNS names it deletes; Cancel changes nothing',
+          /Turn DHCP on for “eth1”\?/.test(asked) && /198\.51\.100\.10\/24/.test(asked) && /mgmt\.example\.net — it has no other interface, so the name is deleted too/.test(asked) && app.exportText() === before && m().canUndo() === null && !inf('eth1').dhcp,
+          asked,
+        );
+        sw('eth1').click();
+        await tick(20);
+        await answerDialog('dhcp');
+        await tick(20);
+        const field = q(card('eth1') + ' .field[data-dhcp]') as HTMLElement;
+        const inputs = Array.prototype.slice.call(field.querySelectorAll('input')) as HTMLInputElement[];
+        check(
+          'confirming deletes the addresses and the association and turns DHCP on in one undo step; manual addresses are greyed out and disabled',
+          inf('eth1').dhcp && !inf('eth1').addresses.length && m().result.model!.devices[0].dnsNames.length === 0 && m().canUndo() === 'Turn DHCP on' && m().valid &&
+            field.getAttribute('data-dhcp') === 'on' && sw('eth1').getAttribute('aria-checked') === 'true' && inputs.length === 1 && inputs[0].disabled && !!field.querySelector('.list-ed.disabled') &&
+            /DHCP/.test(q(card('eth1') + ' .card-title')!.textContent || '') && /no network and no VLAN can be derived/.test(q(card('eth1') + ' [data-derived="iface-vlan"]')!.textContent || ''),
+          `${inf('eth1').dhcp} ${inputs.length} ${m().canUndo()}`,
+        );
+        // an interface without addresses or DNS names: nothing to lose, so nothing is asked
+        sw('eth2').click();
+        await tick(20);
+        check('DHCP on for an interface with nothing to delete needs no confirmation', inf('eth2').dhcp && !q('#modal[open]') && m().canUndo() === 'Turn DHCP on');
+        sw('eth1').click();
+        await tick(20);
+        const field2 = q(card('eth1') + ' .field[data-dhcp]') as HTMLElement;
+        check(
+          'turning DHCP off brings back manual editing, not the deleted addresses',
+          !inf('eth1').dhcp && !inf('eth1').addresses.length && !q('#modal[open]') && field2.getAttribute('data-dhcp') === 'off' && !(field2.querySelector('input.append') as HTMLInputElement).disabled && m().canUndo() === 'Turn DHCP off',
+        );
+        // + DNS name
+        click('#side-body [data-act="add-dns"]');
+        await tick(20);
+        const offered = Array.prototype.map.call(doc.querySelectorAll('#dns-ifaces input[type="checkbox"]'), (b: Element) => (b as HTMLInputElement).value) as string[];
+        const labels = textsOf('#dns-ifaces label');
+        const createBtn = (): HTMLButtonElement => q('#modal[open] [data-value="create"]') as HTMLButtonElement;
+        const disabledFirst = createBtn().disabled;
+        const nameIn = q('#dns-name') as HTMLInputElement;
+        nameIn.value = 'api.example.com';
+        nameIn.dispatchEvent(new Event('input', { bubbles: true }));
+        for (const id of ['eth0', 'lo0']) {
+          const b = q(`#dns-ifaces input[value="${id}"]`) as HTMLInputElement;
+          b.checked = true;
+          b.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        await tick();
+        const preview = (q('#dns-preview') || { textContent: '' }).textContent || '';
+        check(
+          '"+ DNS name" offers the interfaces with DHCP off by name, says which are excluded, and explains that a name belongs to the interface, not one of its addresses',
+          offered.join() === 'eth0,eth1,lo0' && labels[0] === 'Front (eth0)' && /DHCP is on: eth2/.test(q('[data-dns-excluded]')!.textContent || '') && disabledFirst && !createBtn().disabled &&
+            /eth0 has 2 addresses: the name is associated with the interface, not with one particular address/.test(preview),
+          offered.join() + ' | ' + preview,
+        );
+        createBtn().click();
+        await tick(30);
+        const chips = textsOf('#side-body [data-dns="api.example.com"] [data-dns-iface]');
+        check(
+          'the name is stored once with both interfaces (by id), shown with their names',
+          JSON.stringify(m().result.model!.devices[0].dnsNames.map((x) => [x.name, x.interfaces])) === '[["api.example.com",["eth0","lo0"]]]' && m().canUndo() === 'Add DNS name' &&
+            chips.length === 2 && /^Front \(eth0\)/.test(chips[0]) && /^lo0/.test(chips[1]) && /DNS names \(1\)/.test(textsOf('#side-body section[data-list="dns-names"] h4')[0] || ''),
+          chips.join('|'),
+        );
+        // DHCP on an associated interface: the association is part of the confirmation
+        sw('lo0').click();
+        await tick(20);
+        const asked2 = modal();
+        await answerDialog('cancel');
+        await tick(10);
+        // deleting an associated interface removes the association with it
+        click(card('lo0') + ' [data-act="del-iface"]');
+        await tick(20);
+        const asked3 = modal();
+        await answerDialog('delete');
+        await tick(20);
+        check(
+          'enabling DHCP or deleting an interface names the DNS associations it removes; after deleting, no reference is left',
+          /api\.example\.com/.test(asked2) && !/deleted too/.test(asked2) && /association with the DNS name api\.example\.com is removed/.test(asked3) &&
+            JSON.stringify(m().result.model!.devices[0].dnsNames.map((x) => x.interfaces)) === '[["eth0"]]' && m().valid && !inf('lo0'),
+          asked3,
+        );
+        const text = app.exportText();
+        const back = ModelDoc.fromText(text, 'dhcp.yaml', 'file').doc as ModelDoc;
+        check(
+          'DHCP and DNS names survive export → reload',
+          back.valid && back.exportText() === text && /- \{id: eth2, dhcp: true\}/.test(text) && /dns_names:\n {6}- \{name: api\.example\.com, interfaces: \[eth0\]\}/.test(text),
+          text,
+        );
+        m().markSaved();
+        app.closeModel();
+      }
+
       click('#menu-btn');
       click('#menu-examples [data-example="2"]');
       await tick(10);

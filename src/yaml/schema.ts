@@ -13,11 +13,13 @@ export const SCHEMA = {
   top: ['netatlas', 'title', 'description', 'protocols', 'groups', 'devices', 'links', 'networks', 'relations', 'layout'],
   protocol: ['id', 'label', 'category', 'color', 'style', 'description'],
   group: ['id', 'label', 'kind', 'parent', 'description', 'attrs'],
-  device: ['id', 'label', 'type', 'group', 'tier', 'description', 'attrs', 'interfaces', 'logical_interfaces'],
+  device: ['id', 'label', 'type', 'group', 'tier', 'description', 'attrs', 'interfaces', 'logical_interfaces', 'dns_names'],
   /** a physical interface (a port): an entry of a device's `interfaces` */
-  interface: ['id', 'label', 'ip', 'vrf', 'mac', 'description', 'attrs'],
+  interface: ['id', 'label', 'dhcp', 'ip', 'vrf', 'mac', 'description', 'attrs'],
   /** a loopback, virtual or tunnel interface: an entry of a device's `logical_interfaces` */
-  logical: ['id', 'type', 'label', 'ip', 'vrf', 'mac', 'members', 'vlan', 'source', 'destination', 'description', 'attrs'],
+  logical: ['id', 'type', 'label', 'dhcp', 'ip', 'vrf', 'mac', 'members', 'vlan', 'source', 'destination', 'description', 'attrs'],
+  /** a DNS name of a device: an entry of a device's `dns_names` */
+  dnsName: ['name', 'interfaces'],
   link: ['id', 'a', 'b', 'medium', 'speed', 'label', 'cable', 'description', 'attrs'],
   /** one end of a link written as a mapping */
   linkEnd: ['device', 'interface', 'vlans'],

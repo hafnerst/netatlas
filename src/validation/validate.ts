@@ -5,6 +5,7 @@ import {
   CATEGORIES,
   Category,
   Device,
+  DnsName,
   Group,
   Interface,
   InterfaceKind,
@@ -24,6 +25,7 @@ import {
   ifaceKey,
   relationDevices,
 } from '../model/types';
+import { dnsNameKey, dnsNameProblem } from '../model/dns';
 import { DEVICE_TYPE_IDS, NO_DEVICE_TYPE, isDeviceType } from '../model/device-types';
 import { COLOR_RE, DEFAULT_STYLE, builtinProtocols, lookupProtocol, normalizeProtocol } from '../model/protocols';
 import { YMap, YNode, YamlError, YamlLimits, parseYaml } from '../yaml/parse';
@@ -263,6 +265,8 @@ function build(root: YNode | null, c: Ctx): Model | null {
   const addrOwner = new Map<string, { where: string; node: YNode }>();
   /** "device:iface" -> the node of a virtual interface's "vlan" */
   const vlanNodes = new Map<string, YNode>();
+  /** DNS name key -> the device that configures it first */
+  const dnsOwner = new Map<string, string>();
   /** tunnel destinations: checked once every device is read */
   const destinations: Array<{ iface: Interface; node: YNode; path: string }> = [];
   capped(r.list(get(top, 'devices'), 'devices'), L.maxDevices, 'devices', 'devices').forEach((n, i) => {
@@ -296,6 +300,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
       attrs: r.attrs(get(m, 'attrs'), dpath + '.attrs'),
       interfaces: [],
       logical: [],
+      dnsNames: [],
       line: m.line,
     };
     let count = 0;
@@ -358,6 +363,8 @@ function build(root: YNode | null, c: Ctx): Model | null {
       }
       const isLoop = type === 'loopback';
       const kind = isLoop ? 'loopback' : 'interface';
+      // DHCP is a flag, never an address: omitted means false
+      const dhcp = r.bool(get(im, 'dhcp'), ipath + '.dhcp') === true;
       const ipNode = get(im, 'ip');
       const addrNodes = r.list(ipNode, ipath + '.ip', true);
       const addrs: string[] = [];
@@ -373,7 +380,10 @@ function build(root: YNode | null, c: Ctx): Model | null {
         addrsAt.push(an);
         const p = parsePrefix(a, !isLoop ? false : true);
         if (!p) {
-          const why = prefixProblem(a) || `"${a}" is not a valid address`;
+          const why =
+            a.toLowerCase() === 'dhcp'
+              ? '"dhcp" is not an address: to say that the interface obtains its address by DHCP, delete it here and set "dhcp: true"'
+              : prefixProblem(a) || `"${a}" is not a valid address`;
           if (isLoop) c.error(an, `${ipath}.ip[${j}]`, `invalid loopback address: ${why}`);
           else c.warn(an, `${ipath}.ip[${j}]`, `${why}; it is shown as written`);
           return;
@@ -389,7 +399,15 @@ function build(root: YNode | null, c: Ctx): Model | null {
         if (owner) c.warn(an, `${ipath}.ip[${j}]`, `address ${a.split('/')[0]} is also assigned to ${owner.where}`);
         else addrOwner.set(k2, { where: key, node: an });
       });
-      if (isLoop && !addrs.length) {
+      if (dhcp && addrNodes.length) {
+        // both are kept as written and reported: neither the flag nor the addresses are discarded
+        c.error(
+          ipNode as YNode,
+          ipath + '.ip',
+          `${kind} "${iid}" has "dhcp: true" and manually configured addresses; an interface either obtains its address by DHCP or has addresses configured — delete "ip:" or set "dhcp: false"`,
+        );
+      }
+      if (isLoop && !addrs.length && !dhcp) {
         c.error(ipNode && !isNull(ipNode) ? ipNode : im, ipath + '.ip', `loopback "${iid}" needs at least one IPv4 or IPv6 address with prefix length (e.g. 10.255.0.1/32 or 2001:db8::1/128)`, ipNode && !isNull(ipNode) ? {} : { key: 'ip' });
       }
       const iface: Interface = {
@@ -397,6 +415,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
         device: id,
         label: r.field(im, 'label', ipath, L.maxLabel),
         type,
+        dhcp,
         addresses: addrs,
         vrf: r.field(im, 'vrf', ipath, 100),
         mac: r.field(im, 'mac', ipath, 40),
@@ -466,6 +485,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
       const i = readIface(inode, `${dpath}.logical_interfaces[${k}]`, 'logical');
       if (i) dev.logical.push(i);
     });
+    dev.dnsNames = readDnsNames(r, c, m, dpath, dev, dnsOwner);
     // tunnel sources: an address (its interface is then derived), or any other interface of this device
     for (const s of sources) {
       const end = s.iface.source as TunnelEnd;
@@ -932,6 +952,70 @@ function build(root: YNode | null, c: Ctx): Model | null {
     }
   }
   return model;
+}
+
+/**
+ * The DNS names of a device: each a valid name, configured once on the
+ * device, associated with one or more of its interfaces that have DHCP off.
+ * The association is to an interface, not to one of its addresses.
+ */
+function readDnsNames(r: Reader, c: Ctx, m: YMap, dpath: string, dev: Device, owner: Map<string, string>): DnsName[] {
+  const out: DnsName[] = [];
+  const seen = new Map<string, string>();
+  const all = deviceInterfaces(dev);
+  r.list(get(m, 'dns_names'), dpath + '.dns_names').forEach((n, k) => {
+    const path = `${dpath}.dns_names[${k}]`;
+    const nm = r.map(n, path);
+    if (!nm) return;
+    r.keys(nm, SCHEMA.dnsName, path);
+    const name = r.reqStr(nm, 'name', path, 300);
+    const nameNode = get(nm, 'name') as YNode;
+    let ok = name !== undefined;
+    if (name !== undefined) {
+      const why = dnsNameProblem(name);
+      const key = dnsNameKey(name);
+      if (why) {
+        c.error(nameNode, path + '.name', `invalid DNS name "${name}": ${why}`);
+        ok = false;
+      } else if (seen.has(key)) {
+        c.error(nameNode, path + '.name', `DNS name "${name}" is listed twice on device "${dev.id}" (also as "${seen.get(key)}"); write it once and associate it with every interface it applies to`);
+        ok = false;
+      } else {
+        seen.set(key, name);
+        const prev = owner.get(key);
+        if (prev !== undefined) c.warn(nameNode, path + '.name', `DNS name "${name}" is also configured on device "${prev}"`);
+        else owner.set(key, dev.id);
+      }
+    }
+    const ifNode = get(nm, 'interfaces');
+    const ifaces: string[] = [];
+    const items = r.list(ifNode, path + '.interfaces', true);
+    items.forEach((x, j) => {
+      const ip = `${path}.interfaces[${j}]`;
+      const id = r.str(x, ip, 200);
+      if (id === undefined) return;
+      const target = all.find((i) => i.id === id);
+      if (!target) {
+        const names = all.map((i) => i.id);
+        c.error(x, ip, `device "${dev.id}" has no interface "${id}"` + (names.length ? suggest(id, names) : ' (the device declares no interfaces)'));
+      } else if (target.dhcp) {
+        c.error(x, ip, `interface "${id}" obtains its address by DHCP, so a DNS name can't be associated with it; associate the name with an interface whose addresses are configured, or set "dhcp: false" on "${id}"`);
+      } else if (ifaces.indexOf(id) >= 0) {
+        c.error(x, ip, `interface "${id}" is listed twice for this DNS name`);
+      } else {
+        ifaces.push(id);
+        return;
+      }
+      ok = false;
+    });
+    if (!items.length) {
+      const has = ifNode && !isNull(ifNode);
+      c.error(has ? (ifNode as YNode) : nm, path + '.interfaces', `DNS name "${name || '?'}" is associated with no interface — list one or more interfaces of "${dev.id}" under "interfaces:"`, has ? {} : { key: 'interfaces' });
+      ok = false;
+    }
+    if (ok && name !== undefined) out.push({ name, interfaces: ifaces, line: nm.line });
+  });
+  return out;
 }
 
 /** "a loopback", "a tunnel interface of eth0" … for messages. */

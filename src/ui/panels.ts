@@ -108,11 +108,22 @@ function list(title: string, items: VNode[]): VNode | null {
   return h('section', {}, [h('h4', {}, `${title} (${items.length})`), h('ul', { class: 'reflist' }, items)]);
 }
 
+/** The addresses of an interface as shown in the details: its manual addresses, or that DHCP provides them. */
+function addressText(i: Interface, sep: string): string {
+  return i.dhcp && !i.addresses.length ? 'DHCP' : i.addresses.join(sep);
+}
+
 function header(kind: string, title: string): VNode {
   return h('div', { class: 'det-head' }, [
     h('span', { class: 'badge', 'data-kind': kind }, kind),
     h('h3', {}, title),
   ]);
+}
+
+/** DNS names of its device that are associated with an interface, alphabetically. */
+function dnsOf(model: Model, i: Interface): string[] {
+  const d = model.index.devices.get(i.device);
+  return d ? sortedByName(d.dnsNames.filter((x) => x.interfaces.indexOf(i.id) >= 0).map((x) => x.name), (x) => x) : [];
 }
 
 /** Details for the selected entity. */
@@ -146,7 +157,7 @@ export function detailsFor(model: Model, ref: string): VNode {
               const peer = l ? (l.a.device === d.id && l.a.iface === i.id ? l.b : l.a) : undefined;
               return h('tr', { class: l ? '' : 'unused', 'data-iface': i.id, 'data-kind': i.type }, [
                 h('td', {}, [refLink(`iface:${d.id}:${i.id}`, i.id)]),
-                h('td', {}, i.addresses.join(', ')),
+                h('td', {}, addressText(i, ', ')),
                 h('td', {}, interfaceVlanText(interfaceAddresses(model, d.id, i.id)).replace(/VLAN /g, '')),
                 h('td', {}, peer ? [refLink('link:' + (lid as string), '→ ' + endpointText(peer))] : []),
               ]);
@@ -166,11 +177,30 @@ export function detailsFor(model: Model, ref: string): VNode {
               h('tr', { 'data-iface': i.id, 'data-kind': i.type }, [
                 h('td', {}, [refLink(`iface:${d.id}:${i.id}`, i.id), i.label ? h('span', { class: 'muted' }, ' ' + i.label) : null]),
                 h('td', {}, interfaceKindLabel(i.type)),
-                h('td', {}, i.addresses.join('\n')),
+                h('td', {}, addressText(i, '\n')),
                 h('td', { 'data-assoc': '' }, associationText(model, i)),
               ]),
             ),
           ]),
+        ]),
+      );
+    }
+    // DNS names: each configured once, with the interfaces it is associated with (not with an address)
+    const names = sortedByName(d.dnsNames, (x) => x.name);
+    if (names.length) {
+      kids.push(
+        h('section', { 'data-list': 'dns-names' }, [
+          h('h4', {}, `DNS names (${names.length})`),
+          h('table', { class: 'ports' }, [
+            h('tr', {}, [h('th', {}, 'name'), h('th', { title: 'The name is associated with these interfaces, not with one particular address' }, 'interfaces')]),
+            ...names.map((x) =>
+              h('tr', { 'data-dns': x.name }, [
+                h('td', {}, x.name),
+                h('td', {}, sortedByName(x.interfaces, (y) => y).reduce((acc: VNode[], y, k) => acc.concat(k ? [h('span', {}, ', '), refLink(`iface:${d.id}:${y}`, y)] : [refLink(`iface:${d.id}:${y}`, y)]), [])),
+              ]),
+            ),
+          ]),
+          h('p', { class: 'muted small' }, 'Configured names only: no DNS record is derived from them.'),
         ]),
       );
     }
@@ -199,7 +229,8 @@ export function detailsFor(model: Model, ref: string): VNode {
         ['device', refLink('device:' + i.device, ix.devices.get(i.device)?.label || i.device)],
         ['label', i.label],
         ['type', interfaceKindLabel(i.type)],
-        ['addresses', i.addresses.join(', ')],
+        ['addresses', i.dhcp && !i.addresses.length ? 'obtained by DHCP (not known, so in no network)' : i.addresses.join(', ')],
+        ['DNS names', dnsOf(model, i).join(', ') || undefined],
         ['vrf', i.vrf],
         ['mac', i.mac],
         ['cable', i.type !== 'physical' ? undefined : lid ? refLink('link:' + lid, lid) : 'not cabled'],
@@ -389,7 +420,7 @@ export function tooltipFor(model: Model, ref: string): string[] {
     const i = ix.interfaces.get(id);
     if (!i) return [];
     const used = i.type === 'physical' ? associatedInterfaces(model, i) : [];
-    return [`${i.device} ${i.id}`, interfaceKindLabel(i.type), associationText(model, i), used.length ? 'used by ' + sortedByName(used, (x) => x).join(', ') : '', i.addresses.join(', '), interfaceVlanText(interfaceAddresses(model, i.device, i.id)), i.description || ''].filter((s) => s);
+    return [`${i.device} ${i.id}`, interfaceKindLabel(i.type), associationText(model, i), used.length ? 'used by ' + sortedByName(used, (x) => x).join(', ') : '', addressText(i, ', '), dnsOf(model, i).join(', '), interfaceVlanText(interfaceAddresses(model, i.device, i.id)), i.description || ''].filter((s) => s);
   }
   if (kind === 'link') {
     const l = ix.links.get(id);
