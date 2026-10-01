@@ -10,6 +10,14 @@ export const CATEGORIES: readonly Category[] = ['tunnel', 'adjacency', 'overlay'
 export type LineStyle = 'tube' | 'solid' | 'dashed' | 'dotted' | 'dashdot';
 export const LINE_STYLES: readonly LineStyle[] = ['tube', 'solid', 'dashed', 'dotted', 'dashdot'];
 
+/**
+ * Whether a relation flows both ways or one way. Unidirectional: from the
+ * first endpoint to the last (drawn with an arrow), so the endpoint order
+ * carries meaning. Bidirectional is the default when nothing is written.
+ */
+export type Direction = 'bidirectional' | 'unidirectional';
+export const DIRECTIONS: readonly Direction[] = ['bidirectional', 'unidirectional'];
+
 /** Free-form, display-only key/value pairs (flattened, e.g. "tunnel.key"). */
 export type Attrs = Array<[string, string]>;
 
@@ -174,7 +182,7 @@ export interface Relation {
   endpoints: RelEndpoint[];
   /** ids of links, relations or networks this relation is carried over (its underlay). */
   over: string[];
-  directed: boolean;
+  direction: Direction;
   description?: string;
   attrs: Attrs;
   line: number;

@@ -351,12 +351,12 @@ relations:
     attrs: {vrid: 10, virtual-ip: 10.10.10.1, master: "hq-core1 (priority 200)", backup: "hq-core2 (priority 100)"}
   - id: syslog-fw
     protocol: syslog
-    directed: true
+    direction: unidirectional
     endpoints: [hq-fw, "hq-log:eno1"]
     attrs: {transport: tcp/6514, format: RFC5424}
   - id: twamp-muc
     protocol: twamp
     category: service
     label: SLA probe
-    directed: true
+    direction: unidirectional
     endpoints: [muc-rtr, hq-rtr1]

@@ -189,14 +189,14 @@ relations:
   - id: te-1-4
     protocol: rsvp-te
     label: primary north→east
-    directed: true
+    direction: unidirectional
     endpoints: ["pe1:lo0", "pe4:lo0"]
     over: [r12, r23, r34]
     attrs: {bandwidth: 40G, setup-priority: 3}
   - id: te-2-5
     protocol: rsvp-te
     label: primary north→south
-    directed: true
+    direction: unidirectional
     endpoints: ["pe2:lo0", "pe5:lo0"]
     over: [r61, r56, x-north]
     attrs: {bandwidth: 20G}
@@ -209,5 +209,5 @@ relations:
   - {id: ebgp-a1, protocol: ebgp, endpoints: ["pe1:et3", "ce-a1:ge0"], over: acc-a1, attrs: {peer-as: 64601}}
   - {id: ebgp-a2, protocol: ebgp, endpoints: ["pe5:et3", "ce-a2:ge0"], over: acc-a2, attrs: {peer-as: 64601}}
   # inside the OOB island
-  - {id: syslog-oob, protocol: syslog, directed: true, endpoints: [oob-con1, "oob-nms:eth0"]}
-  - {id: snmp-oob, protocol: snmp, directed: true, endpoints: [oob-nms, oob-sw]}
+  - {id: syslog-oob, protocol: syslog, direction: unidirectional, endpoints: [oob-con1, "oob-nms:eth0"]}
+  - {id: snmp-oob, protocol: snmp, direction: unidirectional, endpoints: [oob-nms, oob-sw]}

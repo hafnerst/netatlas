@@ -599,7 +599,7 @@ The exact rules:
 | `category` | | Overrides the protocol's category. One of `tunnel`, `adjacency`, `overlay`, `redundancy`, `service`, `other`. |
 | `endpoints` | yes | Two or more endpoint references. With 3+ distinct devices the relation is drawn as a hub with spokes (e.g. an OSPF area, a VXLAN VNI, DMVPN). |
 | `over` | | Id, or list of ids, of the **links, relations or networks this relation is carried over** (its underlay: what it depends on). This is how GRE-over-IPsec, OSPF-over-GRE, a tunnel over specific internet uplinks, LACP over member cables, or VRRP and OSPF on a LAN segment (`over: net-users`) is expressed. Nothing is assumed when it is left out. Cycles are rejected. |
-| `directed` | | `true`: drawn with an arrow from the first to the last endpoint (e.g. syslog, replication) |
+| `direction` | | `bidirectional` (the default when the key is left out) or `unidirectional`: the relation flows one way, **from the first endpoint to the last**, and is drawn with an arrow at the last endpoint's device (e.g. syslog, replication). The order of the endpoints then carries meaning. A multipoint relation (3+ devices, drawn as a hub) gets no arrow. Any other value is an error. |
 | `label`, `description` | | |
 | `attrs` | | **Protocol-specific attributes**, free-form (see below) |
 
@@ -1005,6 +1005,7 @@ next to the object and field they concern.
   no interface, names an unknown interface or one with `dhcp: true`, or
   lists an interface twice;
 * `over` cycles;
+* a relation `direction` other than `bidirectional` or `unidirectional`;
 * a network without exactly one valid prefix (missing, an empty list,
   several prefixes, not a prefix);
 * an unknown network on a link end, or one listed twice on an end;
@@ -1073,6 +1074,7 @@ the model and never treats them as aliases.
 | a network | `prefixes`, or `cidr` as a list | Exactly one prefix: `cidr: 10.0.0.0/24`. Make a network for each other prefix. |
 | a link end | `vlans` | `networks: [network ids]`; the VLAN ID belongs on the network (`vlan`). |
 | a relation | `network` | If the relation runs over the network, list it in `over`; if it carries or serves it, keep that in `attrs`. |
+| a relation | `directed` | `direction: unidirectional` for `directed: true`; for `directed: false` nothing (bidirectional is the default). |
 | a relation endpoint | `role`, `address`, `attrs` | The relation's `attrs`. An endpoint is only a device and, optionally, an interface. |
 | a group | `kind: row` | `kind: floor`. |
 

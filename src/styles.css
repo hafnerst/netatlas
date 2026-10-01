@@ -95,6 +95,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .seg button { border-radius: 0; margin-left: -1px; }
 .seg button:first-child { border-radius: 6px 0 0 6px; }
 .seg button:last-child { border-radius: 0 6px 6px 0; }
+.dir-switch button { font-size: 12px; padding: 3px 10px; }
 .seg button.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 600; position: relative; }
 .spacer { flex: 1; }
 .opt { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); user-select: none; }

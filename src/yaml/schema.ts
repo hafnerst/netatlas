@@ -24,7 +24,7 @@ export const SCHEMA = {
   /** one end of a link written as a mapping */
   linkEnd: ['device', 'interface', 'networks'],
   network: ['id', 'label', 'cidr', 'vlan', 'description', 'attrs'],
-  relation: ['id', 'protocol', 'category', 'label', 'endpoints', 'over', 'directed', 'description', 'attrs'],
+  relation: ['id', 'protocol', 'category', 'label', 'endpoints', 'over', 'direction', 'description', 'attrs'],
   /** a relation endpoint written as a mapping (the same as "device:interface") */
   endpoint: ['device', 'interface'],
   /** the presentation-only layout section */
@@ -86,6 +86,9 @@ export const RETIRED: { [kind: string]: { [key: string]: string } } = {
 /** keys retired from relations, relation endpoints and link ends */
 const ENDPOINT_EXTRA = 'move what it says into the relation\'s "attrs:" (e.g. attrs: {primary: leaf1}) and delete it here';
 RETIRED.relation = {
+  directed:
+    'a relation has a "direction", not "directed": write "direction: unidirectional" for "directed: true" ' +
+    '(from the first endpoint to the last); for "directed: false" delete the key, bidirectional is the default',
   network:
     'a relation has no "network" field: if the relation runs over the network (its underlay), list the network in "over:"; ' +
     'if it is a network the relation carries or serves (e.g. the VNI of a VXLAN), keep that in "attrs:". Delete this key',

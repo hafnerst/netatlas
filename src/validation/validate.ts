@@ -3,7 +3,9 @@ import { derive, interfaceAddresses, networkMismatch, networkMismatchText } from
 import {
   CATEGORIES,
   Category,
+  DIRECTIONS,
   Device,
+  Direction,
   DnsName,
   Group,
   Interface,
@@ -811,7 +813,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
       label: r.field(m, 'label', rpath, L.maxLabel),
       endpoints,
       over,
-      directed: r.bool(get(m, 'directed'), rpath + '.directed') || false,
+      direction: relationDirection(r, c, m, rpath),
       description: r.field(m, 'description', rpath, L.maxDescription),
       attrs: r.attrs(get(m, 'attrs'), rpath + '.attrs'),
       line: m.line,
@@ -1048,6 +1050,15 @@ function readDnsNames(r: Reader, c: Ctx, m: YMap, dpath: string, dev: Device, ow
     if (ok && name !== undefined) out.push({ name, interfaces: ifaces, line: nm.line });
   });
   return out;
+}
+
+/** A relation's direction: bidirectional unless "direction: unidirectional" is written. Anything else is an error. */
+function relationDirection(r: Reader, c: Ctx, m: YMap, rpath: string): Direction {
+  const d = r.field(m, 'direction', rpath, 40);
+  if (d === undefined) return 'bidirectional';
+  if ((DIRECTIONS as readonly string[]).indexOf(d) >= 0) return d as Direction;
+  c.error(get(m, 'direction') as YNode, rpath + '.direction', `unknown direction "${d}": use "bidirectional" (the default) or "unidirectional" (from the first endpoint to the last)${suggest(d, DIRECTIONS)}`);
+  return 'bidirectional';
 }
 
 /** "a loopback", "a tunnel interface of eth0" … for messages. */

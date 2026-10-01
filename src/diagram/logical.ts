@@ -190,7 +190,7 @@ export function renderLogical(model: Model, layout: LogicalLayout, opts: Logical
       const [s, e] = laneSegment(A, B, p.offset);
       const d = lineD(s, e);
       const children: VNode[] = [h('path', { class: 'hit', d, 'stroke-width': Math.max(10, p.width) }), ...relationStroke(p.def, d, p.width)];
-      if (p.rel.directed) children.push(arrowHead(endTip(p.rel, s, e, da), endFrom(p.rel, s, e, da), p.def.color));
+      if (p.rel.direction === 'unidirectional') children.push(arrowHead(endTip(p.rel, s, e, da), endFrom(p.rel, s, e, da), p.def.color));
       relNodes.push(
         h(
           'g',
@@ -372,7 +372,7 @@ function localNodes(model: Model, nodes: Map<string, LNode>): Map<string, Rect[]
   return out;
 }
 
-/** For a directed relation the arrow points at the last endpoint's device. */
+/** For a unidirectional relation the arrow points at the last endpoint's device. */
 function endTip(r: Relation, s: Pt, e: Pt, firstSorted: string): Pt {
   const target = r.endpoints[r.endpoints.length - 1].device;
   return target === firstSorted ? s : e;

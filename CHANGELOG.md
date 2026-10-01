@@ -88,6 +88,12 @@ it is described in [docs/FORMAT.md](docs/FORMAT.md).
   serves stays in `attrs` — a documented limitation).
 - Logical view: a network or multipoint hub whose devices all lie in one
   group is placed inside that group's frame.
+- **Relation direction.** `directed: true|false` is replaced by
+  `direction: bidirectional|unidirectional` (omitted = bidirectional), and
+  the editor's *Directed* checkbox by a **Bidirectional / Unidirectional**
+  switch. Unidirectional relations flow from the first endpoint to the last
+  and are drawn with an arrow. `directed` is rejected with an error saying
+  what to write instead; the examples are migrated.
 - The examples are migrated: networks split per prefix, link ends name
   networks, VRRP and OSPF run `over` their LAN segments, endpoint roles and
   ASNs moved into relation attributes.
@@ -96,7 +102,7 @@ it is described in [docs/FORMAT.md](docs/FORMAT.md).
 
 - The **Underlay** option of the logical view (a faint line per cabled
   device pair).
-- Link-end `vlans`, relation `network`, endpoint `role` / `address` /
+- Relation `directed` (see *direction*). Link-end `vlans`, relation `network`, endpoint `role` / `address` /
   `attrs`, and lists in a network's `cidr`. Old files are rejected with an
   error saying what to write instead; nothing is converted or dropped.
 

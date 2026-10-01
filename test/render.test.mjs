@@ -152,7 +152,7 @@ relations:
   - {id: t-bgp, protocol: iBGP, endpoints: [a, b]}
   - {id: t-ospf, protocol: ospf, endpoints: [a, b]}
   - {id: t-lacp, protocol: lacp, endpoints: [a, b]}
-  - {id: t-dns, protocol: dns, directed: true, endpoints: [a, b]}
+  - {id: t-dns, protocol: dns, direction: unidirectional, endpoints: [a, b]}
   - {id: t-custom, protocol: quic-tun, endpoints: [a, b]}
   - {id: t-unknown, protocol: mysterious, endpoints: [a, b]}
   - {id: t-unknown-tun, protocol: vendor-x, category: tunnel, endpoints: [a, b]}
@@ -166,7 +166,7 @@ relations:
     't-vx': 'style-dashed', 't-bgp': 'style-solid', 't-ospf': 'style-solid', 't-lacp': 'style-dotted', 't-dns': 'style-dashdot', 't-unknown': 'style-dashdot',
   };
   for (const [id, cls] of Object.entries(expect)) assert.ok(scene.hasClass(g(id), cls), `${id} should have ${cls}: ${g(id).attrs.class}`);
-  assert.equal(byClass(g('t-dns'), 'arrow').length, 1, 'directed relation has an arrow');
+  assert.equal(byClass(g('t-dns'), 'arrow').length, 1, 'a unidirectional relation has an arrow');
   // 11 relations between the same two devices -> 11 distinct lanes
   const ds = new Set(Object.keys(expect).map((id) => byClass(g(id), 'hit')[0].attrs.d));
   assert.equal(ds.size, 11);

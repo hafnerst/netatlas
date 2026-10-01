@@ -37,16 +37,16 @@ test('text, integer, flag and value edits: canonical key order, empty removes, o
   d.setText(['devices', 0, 'description'], 'Acme');
   d.setText(['devices', 0, 'label'], 'Router 1');
   d.setInteger(['devices', 0, 'tier'], '2');
-  d.setFlag(['relations', 0, 'directed'], true);
+  d.setText(['relations', 0, 'direction'], 'unidirectional');
   d.setValue(['devices', 0, 'attrs'], ''); // null value, key kept
   let out = d.exportText();
   assert.match(out, /- id: r1 {3}# the router\n {4}label: Router 1\n {4}tier: 2\n {4}description: Acme\n {4}attrs:\n {4}interfaces: \[eth0\]/);
-  assert.match(out, /directed: true/);
+  assert.match(out, /direction: unidirectional/);
   d.setText(['devices', 0, 'description'], '');
-  d.setFlag(['relations', 0, 'directed'], false);
+  d.setText(['relations', 0, 'direction'], '');
   d.setInteger(['devices', 0, 'tier'], 'high'); // kept as text, reported by validation
   out = d.exportText();
-  assert.ok(!/description:/.test(out) && !/directed:/.test(out));
+  assert.ok(!/description:/.test(out) && !/direction:/.test(out));
   assert.ok(d.errors.some((e) => /tier must be an integer/.test(e.message)));
   // every operation was one undo step
   let n = 0;
@@ -176,4 +176,15 @@ test('check:dist accepts the current build and rejects a stale HTML file', () =>
   // the generated examples module is current as well
   execFileSync(process.execPath, [join(root, 'scripts', 'gen-examples.mjs'), '--check'], { stdio: 'pipe' });
   assert.ok(readFileSync(html, 'utf8').includes('__req("app/main")'));
+});
+
+test('the editor writes "direction: unidirectional" and removes the key for bidirectional (the default)', () => {
+  const { ModelDoc } = load('editor/document.js');
+  const d = ModelDoc.fromText('netatlas: 1\ndevices:\n  - id: a\n  - id: b\nrelations:\n  - {id: s, protocol: syslog, endpoints: [a, b]}\n', 'd.yaml', 'file').doc;
+  d.setText(['relations', 0, 'direction'], 'unidirectional');
+  assert.match(d.exportText(), /\{id: s, protocol: syslog, endpoints: \[a, b\], direction: unidirectional\}/);
+  assert.equal(d.result.model.relations[0].direction, 'unidirectional');
+  d.setText(['relations', 0, 'direction'], '');
+  assert.ok(!/direction/.test(d.exportText()));
+  assert.equal(d.result.model.relations[0].direction, 'bidirectional');
 });
