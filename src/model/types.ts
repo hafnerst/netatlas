@@ -19,11 +19,8 @@ export interface Endpoint {
   iface?: string;
 }
 
-export interface RelEndpoint extends Endpoint {
-  role?: string;
-  address?: string;
-  attrs: Attrs;
-}
+/** A relation endpoint: a device, or one interface of it. Nothing else is stored on an endpoint. */
+export type RelEndpoint = Endpoint;
 
 export interface Group {
   id: string;
@@ -128,9 +125,15 @@ export interface DnsName {
 }
 
 /** One end of a physical link, with the VLAN IDs that end permits on the cable. */
+/**
+ * One end of a physical link, with the networks the cable carries at that
+ * end (physical / layer-2 carriage). Configured per end: the two ends may
+ * differ, and nothing is copied from one to the other. An assignment is not
+ * membership (that follows from addresses) and says nothing about tagging.
+ */
 export interface LinkEnd extends Endpoint {
-  /** as configured for this end, ascending; empty = no VLAN configured */
-  vlans: number[];
+  /** ids of networks, in file order; empty = none assigned */
+  networks: string[];
 }
 
 export interface Link {
@@ -154,8 +157,8 @@ export interface Link {
 export interface Network {
   id: string;
   label: string;
-  /** prefixes as written */
-  cidr: string[];
+  /** the network's one IPv4 or IPv6 prefix, as written (undefined while missing or invalid in a draft) */
+  cidr?: string;
   /** the VLAN this IP network lives in, if any */
   vlan?: number;
   description?: string;
@@ -171,7 +174,6 @@ export interface Relation {
   endpoints: RelEndpoint[];
   /** ids of links, relations or networks this relation is carried over (its underlay). */
   over: string[];
-  network?: string;
   directed: boolean;
   description?: string;
   attrs: Attrs;

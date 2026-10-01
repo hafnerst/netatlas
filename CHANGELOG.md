@@ -63,10 +63,42 @@ it is described in [docs/FORMAT.md](docs/FORMAT.md).
   logical view that was auto-arranged before may now show *Edited since
   arranged* until it is arranged again.
 
+- **Networks have exactly one prefix.** `cidr` is one required value
+  (**IP network (CIDR)** in the editor). A missing prefix, an empty list, a
+  list of several (even of one) and an invalid prefix are errors that keep
+  the value in the file; make one network per prefix. Two networks with the
+  same prefix are a warning. Membership is unchanged in principle: a device
+  is a member when a configured address lies inside the prefix (DHCP
+  interfaces count for nothing); an address inside overlapping networks
+  belongs to all of them, and its VLAN is derived only when they agree.
+- **Link ends carry networks, not VLAN IDs.** `vlans` on a link end is
+  replaced by `networks: [network ids]` — the networks the cable carries at
+  that end (physical / layer-2 carriage). Any network can be assigned; the
+  ends are configured and validated separately and a difference is a
+  warning, never synchronized. Carriage is not membership, and several
+  networks are not called a trunk: the "Trunk" wording is gone. Cable labels
+  name the networks; selecting a network highlights the cables that carry
+  it; a VLAN interface's *Ports carrying its networks* (formerly *Ports
+  carrying VLAN*) are derived from the link ends; filtered views and the
+  exported Networks box use the assignments.
+- **Relations: endpoints are only what they connect, and `over` is the one
+  dependency field.** Endpoints lose `role`, `address` and `attrs` (keep such
+  facts in the relation's `attrs`); the relation's `network` field is
+  removed (a network it runs over goes into `over`; a network it carries or
+  serves stays in `attrs` — a documented limitation).
+- Logical view: a network or multipoint hub whose devices all lie in one
+  group is placed inside that group's frame.
+- The examples are migrated: networks split per prefix, link ends name
+  networks, VRRP and OSPF run `over` their LAN segments, endpoint roles and
+  ASNs moved into relation attributes.
+
 ### Removed
 
 - The **Underlay** option of the logical view (a faint line per cabled
   device pair).
+- Link-end `vlans`, relation `network`, endpoint `role` / `address` /
+  `attrs`, and lists in a network's `cidr`. Old files are rejected with an
+  error saying what to write instead; nothing is converted or dropped.
 
 ## [0.1.1] - 2026-09-30
 

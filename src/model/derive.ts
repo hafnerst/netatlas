@@ -4,18 +4,30 @@
  *
  *   configured (authoritative)            derived
  *   ------------------------------------  ------------------------------------
- *   network `cidr`, interface `ip`        members of a network
+ *   network `cidr`, interface `ip`        members of a network (IP containment)
  *   network `vlan` (+ the two above)      VLAN of an interface address
- *   link end `vlans`                      "Trunk" / single / no VLAN, mismatch
- *   virtual interface `vlan` (or the      the physical ports carrying that VLAN
- *     VLAN derived from its address)
- *     + link end `vlans`
+ *   link end `networks`                   the networks a cable carries at each
+ *                                         end, and whether the two ends differ
+ *   the networks of a virtual interface   the physical ports carrying them
+ *     (from its addresses, or the
+ *     networks of its `vlan`)
+ *     + link end `networks`
  *
- * Membership rule: an address belongs to a network when one of the network's
- * prefixes contains it. The network's prefix is the authority; the prefix
- * length written on the interface is ignored. IPv4 and IPv6 never match each
- * other. An address that is not a valid IPv4/IPv6 address (with an optional,
- * valid prefix length) belongs to no network.
+ * Membership rule: an address belongs to a network when the network's prefix
+ * contains it. The network's prefix is the authority; the prefix length
+ * written on the interface is ignored. IPv4 and IPv6 never match each other.
+ * An address that is not a valid IPv4/IPv6 address (with an optional, valid
+ * prefix length) belongs to no network, and an interface with DHCP on has no
+ * configured address, so it makes its device a member of nothing.
+ *
+ * Overlapping networks: an address inside the prefixes of several networks
+ * (e.g. a /24 inside a /16) belongs to every one of them; nothing is chosen.
+ * Where the distinction matters, the result is reported instead of guessed:
+ * the VLAN of such an address is derived only when all those networks agree
+ * on it, otherwise it is "ambiguous" (with a validation warning).
+ *
+ * Membership (containment) and link-end assignment (carriage) are separate
+ * facts: neither is derived from the other.
  */
 import { IpPrefix, parsePrefix, prefixContains } from './ip';
 import { Interface, Model, Network, deviceInterfaces, ifaceKey, isLoopback } from './types';
@@ -60,9 +72,10 @@ export interface Derived {
   addresses: Map<string, AddressAssoc[]>;
 }
 
-/** The valid prefixes of a network (invalid entries define nothing). */
+/** The valid prefix of a network as a list: empty while it is missing or invalid. */
 export function networkPrefixes(n: Network): IpPrefix[] {
-  return n.cidr.map((c) => parsePrefix(c)).filter((p): p is IpPrefix => !!p);
+  const p = n.cidr !== undefined ? parsePrefix(n.cidr) : null;
+  return p ? [p] : [];
 }
 
 /** Networks whose prefix contains `address` ("a.b.c.d", "a.b.c.d/len", IPv6 likewise). */
@@ -154,40 +167,53 @@ export function interfaceVlanText(assocs: AddressAssoc[]): string {
   return parts.join(', ');
 }
 
-// ------------------------------------------------------------ link-end VLANs
+// ---------------------------------------------------- link-end networks
 
-/** How one end of a link is labelled: no VLAN, a single VLAN, or a trunk. */
-export function linkEndVlanText(vlans: number[]): string {
-  if (!vlans.length) return 'No VLAN';
-  if (vlans.length === 1) return 'VLAN ' + vlans[0];
-  return 'Trunk · VLANs ' + vlans.join(', ');
+/** Networks assigned to one end of a link but not to the other (null: the ends agree). */
+export interface NetworkMismatch {
+  onlyA: string[];
+  onlyB: string[];
 }
 
-export interface VlanMismatch {
-  onlyA: number[];
-  onlyB: number[];
-}
-
-/** VLANs permitted at one end of a link but not at the other (null: the ends agree). */
-export function vlanMismatch(a: number[], b: number[]): VlanMismatch | null {
+export function networkMismatch(a: string[], b: string[]): NetworkMismatch | null {
   const onlyA = a.filter((v) => b.indexOf(v) < 0);
   const onlyB = b.filter((v) => a.indexOf(v) < 0);
   return onlyA.length || onlyB.length ? { onlyA, onlyB } : null;
 }
 
-export function vlanMismatchText(m: VlanMismatch): string {
-  const side = (name: string, only: number[]): string => (only.length ? `only on end ${name}: ${only.join(', ')}` : '');
-  return [side('A', m.onlyA), side('B', m.onlyB)].filter((s) => s).join('; ');
+/** Display name of a network id (its label; the id when it is unknown). */
+export function networkName(model: Model, id: string): string {
+  const n = model.index.networks.get(id);
+  return n ? n.label : id;
+}
+
+export function networkMismatchText(m: NetworkMismatch, name: (id: string) => string): string {
+  const side = (end: string, only: string[]): string => (only.length ? `only at end ${end}: ${only.map(name).join(', ')}` : '');
+  return [side('A', m.onlyA), side('B', m.onlyB)].filter((x) => x).join('; ');
+}
+
+/** "No network" or the names of the networks one end carries. Several networks are just several networks: no tagging is implied. */
+export function linkEndNetworksText(model: Model, ids: string[]): string {
+  if (!ids.length) return 'No network';
+  return ids.map((id) => networkName(model, id)).join(', ');
 }
 
 // --------------------------------------------- associations of logical interfaces
 
 /**
- * The VLANs a virtual interface is the interface of: the `vlan` written on
- * it, or else the VLANs derived from its addresses (the networks containing
- * them). Empty for every other kind of interface, and for a virtual
- * interface that has nothing to do with a VLAN (e.g. a bond or a VTEP).
+ * The networks a virtual interface is in: the networks containing its
+ * addresses, and (when `vlan` is written on it) the networks of that VLAN.
+ * Empty for every other kind of interface. A virtual interface that has no
+ * address and no VLAN (e.g. a plain bond or a VTEP) is in no network.
  */
+export function interfaceCarriedNetworks(model: Model, i: Interface): string[] {
+  if (i.type !== 'virtual') return [];
+  const ids = new Set(interfaceNetworks(model, i.device, i.id));
+  if (i.vlan !== undefined) for (const n of model.networks) if (n.vlan === i.vlan) ids.add(n.id);
+  return model.networks.filter((n) => ids.has(n.id)).map((n) => n.id);
+}
+
+/** The VLAN IDs of a virtual interface: the `vlan` written on it, or else those of the networks containing its addresses. */
 export function interfaceVlans(model: Model, i: Interface): number[] {
   if (i.type !== 'virtual') return [];
   if (i.vlan !== undefined) return [i.vlan];
@@ -196,41 +222,42 @@ export function interfaceVlans(model: Model, i: Interface): number[] {
   return out.sort((p, q) => p - q);
 }
 
-/** A physical port whose link permits a VLAN at the port's end. */
-export interface VlanPort {
+/** A physical port whose link end carries a network. */
+export interface NetworkPort {
   iface: string;
   link: string;
-  vlan: number;
+  network: string;
 }
 
 /**
- * The physical ports of a device that carry one of `vlans`: the ports whose
- * end of a link lists the VLAN. Derived from the links; in link order.
+ * The physical ports of a device that carry one of `networks`: the ports
+ * whose end of a link lists the network. Derived from the links; in link order.
  */
-export function portsCarryingVlans(model: Model, device: string, vlans: number[]): VlanPort[] {
-  const out: VlanPort[] = [];
-  if (!vlans.length) return out;
+export function portsCarryingNetworks(model: Model, device: string, networks: string[]): NetworkPort[] {
+  const out: NetworkPort[] = [];
+  if (!networks.length) return out;
   for (const l of model.links) {
     for (const e of [l.a, l.b]) {
       if (e.device !== device || !e.iface) continue;
-      for (const v of vlans) if (e.vlans.indexOf(v) >= 0) out.push({ iface: e.iface, link: l.id, vlan: v });
+      for (const n of networks) if (e.networks.indexOf(n) >= 0) out.push({ iface: e.iface, link: l.id, network: n });
     }
   }
   return out;
 }
 
-/** The ports carrying the VLAN(s) of a virtual interface (read-only; nothing is configured for it). */
-export function interfaceVlanPorts(model: Model, i: Interface): VlanPort[] {
-  return portsCarryingVlans(model, i.device, interfaceVlans(model, i));
+/** The ports carrying the networks of a virtual interface (read-only; nothing is configured for it). */
+export function interfaceNetworkPorts(model: Model, i: Interface): NetworkPort[] {
+  return portsCarryingNetworks(model, i.device, interfaceCarriedNetworks(model, i));
 }
 
 /**
  * Interfaces of the same device that an interface is associated with, in
  * either direction, as ids:
- *   a virtual interface  -> its member ports and the ports carrying its VLAN;
+ *   a virtual interface  -> its member ports and the ports carrying its networks;
  *   a tunnel             -> the interface it is sourced from;
- *   any interface        -> the aggregates it is a member of, the VLAN
- *                           interfaces it carries, the tunnels sourced from it.
+ *   any interface        -> the aggregates it is a member of, the virtual
+ *                           interfaces whose networks it carries, the tunnels
+ *                           sourced from it.
  */
 export function associatedInterfaces(model: Model, i: Interface): string[] {
   const d = model.index.devices.get(i.device);
@@ -240,13 +267,13 @@ export function associatedInterfaces(model: Model, i: Interface): string[] {
     if (id !== undefined && id !== i.id && out.indexOf(id) < 0 && model.index.interfaces.has(ifaceKey(i.device, id))) out.push(id);
   };
   for (const m of i.members) add(m);
-  for (const p of interfaceVlanPorts(model, i)) add(p.iface);
+  for (const p of interfaceNetworkPorts(model, i)) add(p.iface);
   if (i.source) add(i.source.iface);
   for (const o of d.logical) {
     if (o.id === i.id) continue;
     if (o.members.indexOf(i.id) >= 0) add(o.id);
     if (o.source && o.source.iface === i.id) add(o.id);
-    if (i.type === 'physical' && interfaceVlanPorts(model, o).some((p) => p.iface === i.id)) add(o.id);
+    if (i.type === 'physical' && interfaceNetworkPorts(model, o).some((p) => p.iface === i.id)) add(o.id);
   }
   return out;
 }

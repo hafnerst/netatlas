@@ -18,7 +18,7 @@
  */
 import { CBox, Pt, Rect, boxRect, clipToBox, clipToCircle, lineBoxExit, normal, textWidth, unionRect } from '../layout/geometry';
 import { LINE_W, TUBE_MIN, TUBE_WALL, buildBundle, laneLabel, relationPairs } from '../layout/bundles';
-import { CHIP_H, HUB_R, LNode, LogicalLayout, MAX_CHIPS, deviceRect, isMultipoint, networkSubtitle } from '../layout/logical';
+import { CHIP_H, HUB_R, LNode, LogicalLayout, MAX_CHIPS, commonChain, deviceRect, isMultipoint, networkSubtitle } from '../layout/logical';
 import { CHIP_FONT, MEMBER_LABEL_SIZE, NET_LABEL_SIZE, loopbackChipText, networkBody, pillBox } from '../layout/sizes';
 import { TextBlock } from '../layout/text';
 import { networkMembers } from '../model/derive';
@@ -143,7 +143,7 @@ export function renderLogical(model: Model, layout: LogicalLayout, opts: Logical
   nodes.forEach((n) => {
     if (n.kind === 'device') deviceBoxes.set(n.id, n);
   });
-  const grects = showGroups ? groupRects(model, deviceBoxes) : new Map<string, Rect>();
+  const grects = showGroups ? groupRects(model, deviceBoxes, localNodes(model, nodes)) : new Map<string, Rect>();
   const groupNodes = showGroups ? groupFrames(model, grects, placer) : [];
   nodes.forEach((n) => {
     if (n.kind === 'network' && !opts.showNetworks) return;
@@ -290,7 +290,8 @@ export function renderLogical(model: Model, layout: LogicalLayout, opts: Logical
   // ---- addresses on membership lines: near the device, moved along the line where that spot is taken
   for (const ml of memberLabels) {
     const w = textWidth(ml.text, MEMBER_LABEL_SIZE) + 4;
-    const c = placer.place(alongSegment(ml.s, ml.e, 0.22, [0, 22, 44, 70, 100, -14], [0, -12, 12]), w, 12);
+    // fallbacks, tried only when every usual spot is taken: right beside the device, where the line leaves it (or across it)
+    const c = placer.place(alongSegment(ml.s, ml.e, 0.22, [0, 22, 44, 70, 100, -14], [0, -12, 12]).concat(alongSegment(ml.s, ml.e, 0, [w / 2 + 6, w / 2 + 20], [0, -12, 12, -24, 24])), w, 12);
     labelRects.push(centerRect(c, w, 12));
     labels.push(h('text', { class: 'halo member-label', 'data-ref': ml.ref, x: c.x, y: c.y + 3.5, 'text-anchor': 'middle' }, ml.text));
   }
@@ -340,6 +341,35 @@ export function renderLogical(model: Model, layout: LogicalLayout, opts: Logical
     ]),
     bounds: unionRect(rects),
   };
+}
+
+/**
+ * Networks and hubs local to one group: all the devices they connect to lie
+ * in it. Auto-arrange places them inside that group (the innermost one
+ * holding all of them), so its frame includes them. Keyed by group id.
+ */
+function localNodes(model: Model, nodes: Map<string, LNode>): Map<string, Rect[]> {
+  const chain = (d: string): string[] => {
+    const out: string[] = [];
+    const seen = new Set<string>();
+    let g = model.index.devices.get(d)?.group;
+    while (g !== undefined && model.index.groups.has(g) && !seen.has(g)) {
+      seen.add(g);
+      out.push(g);
+      g = model.index.groups.get(g)?.parent;
+    }
+    return out;
+  };
+  const out = new Map<string, Rect[]>();
+  nodes.forEach((n) => {
+    if (n.kind === 'device') return;
+    const devs = n.kind === 'network' ? networkMembers(model, n.id).map((m) => m.device) : relationDevices(model.index.relations.get(n.id) as Relation);
+    const inner = commonChain(devs.filter((d) => nodes.has('device:' + d)).map(chain))[0];
+    if (inner === undefined) return;
+    if (!out.has(inner)) out.set(inner, []);
+    (out.get(inner) as Rect[]).push({ x: n.cx - n.w / 2, y: n.cy - n.h / 2, w: n.w, h: n.h });
+  });
+  return out;
 }
 
 /** For a directed relation the arrow points at the last endpoint's device. */

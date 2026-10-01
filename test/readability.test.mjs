@@ -63,10 +63,11 @@ test('element sizes follow their text, within bounds', () => {
   const huge = S.deviceBody('W'.repeat(200), 'x', 150, 54);
   assert.ok(huge.w <= S.DEVICE_TEXT_X + S.DEVICE_TEXT_MAX_W + 20, 'width is capped by the wrap width: ' + huge.w);
   assert.ok(huge.h < 300, 'height stays moderate: ' + huge.h);
-  // networks show all prefixes
-  assert.equal(S.networkSubtitle(['10.0.2.0/24', '10.0.1.0/24', '2001:db8::/64'], 7), 'VLAN 7 · 10.0.1.0/24, 10.0.2.0/24, 2001:db8::/64');
-  const net = S.networkBody('Server network', S.networkSubtitle(['10.0.2.0/24', '10.0.1.0/24', '2001:db8::/64', '2001:db8:1::/64'], 7));
-  assert.ok(net.sub.lines.length >= 2 && net.h > 42);
+  // a network shows its one prefix (and VLAN); a long label wraps
+  assert.equal(S.networkSubtitle('10.0.2.0/24', 7), 'VLAN 7 · 10.0.2.0/24');
+  assert.equal(S.networkSubtitle(undefined, 7), 'VLAN 7');
+  const net = S.networkBody('Server network for the production hypervisor cluster in hall 2', S.networkSubtitle('2001:db8:aaaa:bbbb::/64', 7));
+  assert.ok(net.label.lines.length >= 2 && net.h > 42);
   // a long relation label wraps inside its pill
   const pill = S.pillBox('IPsec › GRE › OSPF · IKEv2 site-to-site with certificate authentication');
   assert.ok(pill.block.lines.length === 2 && pill.w <= S.PILL_MAX_W + 16 && pill.h > 18);
@@ -90,13 +91,13 @@ test('no diagram text is shortened: every example, both views, draws its labels 
       for (const n of g.networks) {
         const nw = m.index.networks.get(n.ref.slice(8));
         assert.equal(flat(n.texts[0].lines.join('')), flat(nw.label));
-        for (const c of nw.cidr) assert.ok(n.texts[1].lines.join(' ').includes(c), `${f}: prefix ${c} of ${nw.id} is shown`);
+        assert.ok(n.texts[1].lines.join(' ').includes(nw.cidr), `${f}: prefix ${nw.cidr} of ${nw.id} is shown`);
       }
       if (view === 'physical') {
         for (const gr of g.groups) assert.equal(flat(gr.title.lines.join('')), flat(m.index.groups.get(gr.ref.slice(6)).label));
         // every cable that has something to say is labelled (it used to be dropped when the cable was short)
         const labelled = new Set(g.linkLabels.map((l) => l.ref));
-        for (const l of m.links) if (l.speed || l.label || l.a.vlans.length) assert.ok(labelled.has('link:' + l.id), `${f}: cable ${l.id} has its label`);
+        for (const l of m.links) if (l.speed || l.label || l.a.networks.length) assert.ok(labelled.has('link:' + l.id), `${f}: cable ${l.id} has its label`);
       } else {
         const pills = new Set(g.pills.map((p) => p.ref));
         for (const r of m.relations) {
@@ -156,9 +157,9 @@ test('several point-to-point cables between the same devices: parallel, straight
   // each label lies on its own cable
   labels.forEach((l, i) => assert.ok(Math.abs(l.rect.y + l.rect.h / 2 - ys[i]) < 8, 'label ' + i + ' is on its cable'));
   // a long cable label wraps instead of being cut
-  const trunk = g.linkLabels.find((l) => l.ref === 'link:srv-a');
-  assert.ok(trunk.lines.length >= 2);
-  assert.match(trunk.lines.join(' '), /25G · Trunk 10,20,30,40,50,60,70,80 · hypervisor uplink, all tenant VLANs/);
+  const uplink = g.linkLabels.find((l) => l.ref === 'link:srv-a');
+  assert.ok(uplink.lines.length >= 2);
+  assert.match(uplink.lines.join(' '), /25G · Server network \(production\), Server network \(production, IPv6\), Server network \(production, legacy IPv6 prefix\) · hypervisor uplink, all tenant VLANs/);
   // most cables of this example need no bend at all
   assert.ok(g.cables.filter((c) => c.straight).length >= 5, String(g.cables.filter((c) => c.straight).length));
   // port labels have room: none overlaps another one or a cable label

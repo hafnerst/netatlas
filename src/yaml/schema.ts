@@ -22,11 +22,11 @@ export const SCHEMA = {
   dnsName: ['name', 'interfaces'],
   link: ['id', 'a', 'b', 'medium', 'speed', 'label', 'cable', 'description', 'attrs'],
   /** one end of a link written as a mapping */
-  linkEnd: ['device', 'interface', 'vlans'],
+  linkEnd: ['device', 'interface', 'networks'],
   network: ['id', 'label', 'cidr', 'vlan', 'description', 'attrs'],
-  relation: ['id', 'protocol', 'category', 'label', 'endpoints', 'over', 'network', 'directed', 'description', 'attrs'],
-  /** a relation endpoint written as a mapping */
-  endpoint: ['device', 'interface', 'role', 'address', 'attrs'],
+  relation: ['id', 'protocol', 'category', 'label', 'endpoints', 'over', 'directed', 'description', 'attrs'],
+  /** a relation endpoint written as a mapping (the same as "device:interface") */
+  endpoint: ['device', 'interface'],
   /** the presentation-only layout section */
   layout: ['physical', 'logical', 'manual'],
 };
@@ -40,7 +40,7 @@ export type SchemaKind = keyof typeof SCHEMA;
  */
 const IFACE_VLAN =
   'the VLAN of a physical interface is derived from the network whose "cidr" contains its address: set "vlan:" on that network and delete it here ' +
-  '(VLANs permitted on a cable are "vlans:" on the end of the link; a VLAN interface is a virtual interface under "logical_interfaces:")';
+  '(the networks a cable carries are "networks:" on the end of the link; a VLAN interface is a virtual interface under "logical_interfaces:")';
 const NOT_A_PORT = 'speed and medium belong to the physical link, and only a physical interface can be cabled: delete this key';
 const NO_NESTING =
   'interfaces are not nested: move each entry into "logical_interfaces:" of the device and give it "type: virtual" or "type: tunnel". ' +
@@ -74,12 +74,31 @@ export const RETIRED: { [kind: string]: { [key: string]: string } } = {
     media: NOT_A_PORT,
   },
   network: {
+    prefixes: 'a network has exactly one prefix: write it as "cidr: 10.0.0.0/24" and delete this key (use one network object per prefix)',
     kind: 'a network is always an IP network: delete this key',
     vrf: 'a VRF is assigned on the interfaces that belong to it: set "vrf:" on those interfaces and delete it here',
     members:
       'members are derived from the interface and loopback addresses inside the "cidr" of the network: delete this key ' +
       'and give each member interface an address in the prefix',
   },
+};
+
+/** keys retired from relations, relation endpoints and link ends */
+const ENDPOINT_EXTRA = 'move what it says into the relation\'s "attrs:" (e.g. attrs: {primary: leaf1}) and delete it here';
+RETIRED.relation = {
+  network:
+    'a relation has no "network" field: if the relation runs over the network (its underlay), list the network in "over:"; ' +
+    'if it is a network the relation carries or serves (e.g. the VNI of a VXLAN), keep that in "attrs:". Delete this key',
+};
+RETIRED.endpoint = {
+  role: 'a relation endpoint has no role: ' + ENDPOINT_EXTRA,
+  address: 'a relation endpoint has no address: ' + ENDPOINT_EXTRA,
+  attrs: 'a relation endpoint has no attrs: ' + ENDPOINT_EXTRA,
+};
+RETIRED.linkEnd = {
+  vlans:
+    'a link end lists the networks the cable carries there, not VLAN IDs: replace "vlans:" by "networks: [network ids]" ' +
+    '(the VLAN ID belongs on the network, as its "vlan:")',
 };
 
 /** Group kinds that are rejected, with the kind to write instead. */

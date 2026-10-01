@@ -11,10 +11,10 @@
  *   devices, port labels and other cable labels.
  */
 import { CBox, Pt, Rect, boxRect, segmentHitsRect, textWidth, unionRect } from '../layout/geometry';
-import { linkLabelText, linkVlanLabel } from '../layout/input';
+import { linkLabelText, linkNetworkLabel } from '../layout/input';
 import { GROUP_PAD, PORT_FONT, PORT_LABEL_GAP, PhysicalLayout, PortPos, assignPorts } from '../layout/physical';
 import { DEVICE_ICON, DEVICE_TEXT_X, deviceBody, groupHeader, linkLabelBox } from '../layout/sizes';
-import { vlanMismatch } from '../model/derive';
+import { networkMismatch } from '../model/derive';
 import { deviceSubtitle } from '../model/device-types';
 import { Model } from '../model/types';
 import { deviceIcon } from './icons';
@@ -22,7 +22,7 @@ import { LabelPlacer, alongSegment, centerRect, textLines } from './labels';
 import { VNode, h } from './scene';
 import { groupKindStyle, mediumStyle, speedWidth } from './style';
 
-export { deviceSubtitle, linkVlanLabel };
+export { deviceSubtitle, linkNetworkLabel };
 
 export interface ViewOptions {
   showLabels: boolean;
@@ -50,7 +50,7 @@ export function physicalBoxes(layout: PhysicalLayout, positions: Map<string, Pt>
 }
 
 /** Group rectangles derived bottom-up from their contents; wide enough for their title. */
-export function groupRects(model: Model, boxes: Map<string, CBox>): Map<string, Rect> {
+export function groupRects(model: Model, boxes: Map<string, CBox>, extra: Map<string, Rect[]> = new Map()): Map<string, Rect> {
   const depth = new Map<string, number>();
   const depthOf = (id: string): number => {
     const known = depth.get(id);
@@ -70,6 +70,8 @@ export function groupRects(model: Model, boxes: Map<string, CBox>): Map<string, 
       const b = d.group === g.id ? boxes.get(d.id) : undefined;
       if (b) parts.push(boxRect(b));
     }
+    // other nodes that belong in the group (the logical view's site-local networks and hubs)
+    for (const r of extra.get(g.id) || []) parts.push(r);
     for (const c of model.groups) if (c.parent === g.id && rects.has(c.id)) parts.push(rects.get(c.id) as Rect);
     if (!parts.length) continue;
     const u = unionRect(parts);
@@ -252,8 +254,8 @@ export function renderPhysical(model: Model, layout: PhysicalLayout, opts: ViewO
       }
     }
     const out: VNode[] = [];
-    const mismatch = !!vlanMismatch(l.a.vlans, l.b.vlans);
-    const text = opts.showLabels ? linkLabelText(l) : '';
+    const mismatch = !!networkMismatch(l.a.networks, l.b.networks);
+    const text = opts.showLabels ? linkLabelText(model, l) : '';
     let center = { x: (pts[seg].x + pts[seg + 1].x) / 2, y: (pts[seg].y + pts[seg + 1].y) / 2 };
     if (text) {
       const box = linkLabelBox(text);
@@ -261,19 +263,19 @@ export function renderPhysical(model: Model, layout: PhysicalLayout, opts: ViewO
       center = placer.place(alongSegment(pts[seg], pts[seg + 1], 0.5, [0, -26, 26, -52, 52, -80, 80, -110, 110], [0, -step, step, -2 * step, 2 * step]), box.w, box.h);
       const r = centerRect(center, box.w, box.h);
       extra.push(r);
-      out.push(textLines({ class: 'halo link-label' + (mismatch ? ' vlan-mismatch' : ''), 'data-ref': 'link:' + l.id, 'text-anchor': 'middle' }, box.block, center.x, r.y + 1));
-      // a VLAN mismatch is marked next to the label
-      if (mismatch) out.push(h('text', { class: 'halo vlan-warn', 'data-ref': 'link:' + l.id, x: center.x, y: r.y - 3, 'text-anchor': 'middle' }, '⚠'));
+      out.push(textLines({ class: 'halo link-label' + (mismatch ? ' net-mismatch' : ''), 'data-ref': 'link:' + l.id, 'text-anchor': 'middle' }, box.block, center.x, r.y + 1));
+      // ends that carry different networks are marked next to the label
+      if (mismatch) out.push(h('text', { class: 'halo net-warn', 'data-ref': 'link:' + l.id, x: center.x, y: r.y - 3, 'text-anchor': 'middle' }, '⚠'));
     } else if (mismatch) {
       // … and on the cable itself when labels are off
-      out.push(h('text', { class: 'halo vlan-warn', 'data-ref': 'link:' + l.id, x: center.x, y: center.y - 8, 'text-anchor': 'middle' }, '⚠'));
+      out.push(h('text', { class: 'halo net-warn', 'data-ref': 'link:' + l.id, x: center.x, y: center.y - 8, 'text-anchor': 'middle' }, '⚠'));
     }
     labelAt.set(l.id, out);
     for (const p of pts) extra.push({ x: p.x - 8, y: p.y - 8, w: 16, h: 16 });
     const ms = mediumStyle(l.medium);
     const d = pts.map((p, i) => (i ? 'L' : 'M') + n(p.x) + ' ' + n(p.y)).join('');
     labelAt.set(l.id + '\u0000path', [
-      h('g', { class: `link cable medium-${cssToken(ms.key)}${mismatch ? ' vlan-mismatch' : ''}${pts.length === 2 ? ' straight' : ''}`, 'data-ref': 'link:' + l.id }, [
+      h('g', { class: `link cable medium-${cssToken(ms.key)}${mismatch ? ' net-mismatch' : ''}${pts.length === 2 ? ' straight' : ''}`, 'data-ref': 'link:' + l.id }, [
         h('path', { class: 'hit', d }),
         h('path', { class: 'cable-line', d, stroke: ms.color, 'stroke-width': speedWidth(l.speed), 'stroke-dasharray': ms.dash }),
       ]),

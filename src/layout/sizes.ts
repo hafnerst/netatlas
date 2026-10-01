@@ -97,12 +97,10 @@ export function networkBody(label: string, sub: string): NetworkBody {
 }
 
 /** Second line of a network: its VLAN and all of its prefixes (in a fixed order). */
-export function networkSubtitle(cidr: string[], vlan?: number): string {
+export function networkSubtitle(cidr: string | undefined, vlan?: number): string {
   const parts: string[] = [];
   if (vlan !== undefined) parts.push('VLAN ' + vlan);
-  // sorted, so the order of the list in the file affects neither text nor size
-  const sorted = cidr.slice().sort();
-  if (sorted.length) parts.push(sorted.join(', '));
+  if (cidr) parts.push(cidr);
   return parts.join(' · ');
 }
 

@@ -152,23 +152,23 @@ links:
   - {id: s2-l4, a: "spine2:Et4", b: "leaf4:Et50", medium: fiber, speed: 100G}
   - {id: mlag-peer, a: "leaf1:Et51", b: "leaf2:Et51", medium: dac, speed: 100G, cable: DAC 0.5m}
   - id: esx01-a
-    a: {device: esx01, interface: vmnic0, vlans: [100]}
-    b: {device: leaf1, interface: Et1, vlans: [100]}
+    a: {device: esx01, interface: vmnic0, networks: [vni-10100]}
+    b: {device: leaf1, interface: Et1, networks: [vni-10100]}
     medium: dac
     speed: 25G
   - id: esx01-b
-    a: {device: esx01, interface: vmnic1, vlans: [100]}
-    b: {device: leaf2, interface: Et1, vlans: [100]}
+    a: {device: esx01, interface: vmnic1, networks: [vni-10100]}
+    b: {device: leaf2, interface: Et1, networks: [vni-10100]}
     medium: dac
     speed: 25G
   - id: esx02-a
-    a: {device: esx02, interface: vmnic0, vlans: [100]}
-    b: {device: leaf3, interface: Et1, vlans: [100]}
+    a: {device: esx02, interface: vmnic0, networks: [vni-10100]}
+    b: {device: leaf3, interface: Et1, networks: [vni-10100]}
     medium: dac
     speed: 25G
   - id: k8s01-a
-    a: {device: k8s01, interface: ens1f0, vlans: [100]}
-    b: {device: leaf4, interface: Et1, vlans: [100]}
+    a: {device: k8s01, interface: ens1f0, networks: [vni-10100]}
+    b: {device: leaf4, interface: Et1, networks: [vni-10100]}
     medium: dac
     speed: 25G
   - {id: wan-uplink, a: "leaf3:Et48", b: "wan-pe:xe-0/1/0", medium: fiber, speed: 10G, cable: "Cross-connect MMR-2 #118"}
@@ -204,17 +204,14 @@ relations:
     protocol: vxlan
     label: VNI 10100
     endpoints: ["leaf1:Vxlan1", "leaf2:Vxlan1", "leaf3:Vxlan1", "leaf4:Vxlan1"]
-    network: vni-10100
     attrs: {vni: 10100, replication: ingress, udp-port: 4789}
 
   - id: mlag-12
     protocol: mlag
     label: MLAG domain 1
-    endpoints:
-      - {device: leaf1, role: primary}
-      - {device: leaf2, role: secondary}
+    endpoints: [leaf1, leaf2]
     over: mlag-peer
-    attrs: {domain-id: 1, peer-address: 10.255.255.2}
+    attrs: {domain-id: 1, peer-address: 10.255.255.2, primary: leaf1, secondary: leaf2}
   - id: lacp-esx01
     protocol: lacp
     endpoints: [esx01, leaf1, leaf2]
