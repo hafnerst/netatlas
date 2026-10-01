@@ -58,9 +58,21 @@
     <div id="search-results" class="dropdown" hidden></div>
   </div>
   <span class="spacer"></span>
+  <div class="devices-wrap">
+    <button id="devices-btn" type="button" class="menu-btn" aria-haspopup="dialog" aria-expanded="false" aria-controls="devices-panel" title="Choose the devices the diagram shows" disabled>Devices: <span id="devices-count">all</span> <span class="caret" aria-hidden="true">▾</span></button>
+    <div id="devices-panel" class="dropdown devices-panel" role="dialog" aria-label="Devices shown in the diagram" hidden>
+      <div class="dp-tools">
+        <input id="devices-find" type="search" placeholder="Filter the list…" aria-label="Filter the device list" autocomplete="off" spellcheck="false">
+        <button id="devices-all" type="button" class="mini" title="Show every device: the complete diagram with its saved positions">Select all</button>
+        <button id="devices-none" type="button" class="mini" title="Deselect every device">Clear</button>
+      </div>
+      <div id="devices-list" class="dp-list" role="group" aria-label="Devices"></div>
+      <p class="dp-note muted">A filtered diagram is arranged for the selected devices only. Its positions are temporary; the saved layout of the complete diagram is not changed.</p>
+    </div>
+  </div>
   <label class="opt"><input id="opt-labels" type="checkbox" checked> Labels</label>
+  <label class="opt"><input id="opt-groups" type="checkbox" checked> Groups / Locations</label>
   <label class="opt logical-only"><input id="opt-networks" type="checkbox" checked> Networks</label>
-  <label class="opt logical-only"><input id="opt-underlay" type="checkbox"> Underlay</label>
 </header>
 <main>
   <aside id="outline" aria-label="Model outline">
@@ -68,6 +80,7 @@
   </aside>
   <section id="canvas-wrap">
     <svg id="canvas" role="img" aria-label="Network diagram"><g id="viewport"></g></svg>
+    <div id="filter-hint" class="filter-hint" role="status" hidden><span class="fh-icon" aria-hidden="true">⧉</span> <span id="filter-hint-text">Filtered-view positions are temporary and are not saved in YAML.</span></div>
     <div class="zoombar" role="toolbar" aria-label="Zoom">
       <button id="zoom-in" type="button" title="Zoom in (+)">+</button>
       <span id="zoom-level">100%</span>

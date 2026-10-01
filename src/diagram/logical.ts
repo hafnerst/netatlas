@@ -10,6 +10,8 @@
  * - Relations with 3+ devices get a hub node with spokes.
  * - Networks are pill nodes connected to member devices by thin lines. Members
  *   are derived from the addresses inside the network's prefixes.
+ * - Groups / locations are frames around their devices, as in the physical
+ *   view (auto-arrange keeps the devices of a group together).
  * - All text is drawn in full. Every relation label gets its own place along
  *   (or, on a short line, beside) its bundle, clear of nodes and of the labels
  *   placed before it; see diagram/labels.ts.
@@ -23,15 +25,16 @@ import { networkMembers } from '../model/derive';
 import { sortedByName } from '../model/order';
 import { Device, LineStyle, Model, ProtocolDef, Relation, loopbacks, relationDevices } from '../model/types';
 import { LabelPlacer, alongSegment, centerRect, textLines } from './labels';
-import { cssToken, deviceNode, deviceSubtitle, SceneResult } from './physical';
+import { cssToken, deviceNode, deviceSubtitle, groupFrames, groupRects, SceneResult } from './physical';
 import { VNode, h } from './scene';
 import { NETWORK_COLOR } from './style';
 import { relationStyle } from '../model/protocols';
 
 export interface LogicalOptions {
   showLabels: boolean;
-  showUnderlay: boolean;
   showNetworks: boolean;
+  /** draw the frames of groups / locations (default true); hiding them never moves a node */
+  showGroups?: boolean;
   hiddenProtocols: Set<string>;
   positions: Map<string, Pt>;
 }
@@ -134,33 +137,24 @@ export function renderLogical(model: Model, layout: LogicalLayout, opts: Logical
   // labels keep clear of every node, and of each other
   const placer = new LabelPlacer();
   const labelRects: Rect[] = [];
+  // group frames around the device nodes (with their loopback chips), the same geometry as in the physical view
+  const showGroups = opts.showGroups !== false;
+  const deviceBoxes = new Map<string, CBox>();
+  nodes.forEach((n) => {
+    if (n.kind === 'device') deviceBoxes.set(n.id, n);
+  });
+  const grects = showGroups ? groupRects(model, deviceBoxes) : new Map<string, Rect>();
+  const groupNodes = showGroups ? groupFrames(model, grects, placer) : [];
   nodes.forEach((n) => {
     if (n.kind === 'network' && !opts.showNetworks) return;
     placer.block(boxRect(n, 3));
   });
 
-  const underlay: VNode[] = [];
   const members: VNode[] = [];
   const relNodes: VNode[] = [];
   const labels: VNode[] = [];
   const nodeLayer: VNode[] = [];
   const memberLabels: Array<{ ref: string; s: Pt; e: Pt; text: string }> = [];
-
-  // ---- faint physical underlay (optional)
-  if (opts.showUnderlay) {
-    const seen = new Set<string>();
-    for (const l of model.links) {
-      const a = dev(l.a.device);
-      const b = dev(l.b.device);
-      if (!a || !b || a === b) continue;
-      const key = [l.a.device, l.b.device].sort().join('\u0000');
-      if (seen.has(key)) continue;
-      seen.add(key);
-      const s = clipToBox(a, { x: b.cx, y: b.cy });
-      const e = clipToBox(b, { x: a.cx, y: a.cy });
-      underlay.push(h('path', { class: 'underlay', 'data-ref': 'link:' + l.id, d: lineD(s, e) }));
-    }
-  }
 
   // ---- network membership
   if (opts.showNetworks) {
@@ -329,6 +323,7 @@ export function renderLogical(model: Model, layout: LogicalLayout, opts: Logical
   });
 
   const rects: Rect[] = [];
+  grects.forEach((r) => rects.push({ x: r.x - 20, y: r.y - 20, w: r.w + 40, h: r.h + 40 }));
   nodes.forEach((n) => {
     if (n.kind === 'network' && !opts.showNetworks) return;
     rects.push({ x: n.cx - n.w / 2 - 60, y: n.cy - n.h / 2 - 50, w: n.w + 120, h: n.h + 100 });
@@ -337,7 +332,7 @@ export function renderLogical(model: Model, layout: LogicalLayout, opts: Logical
   for (const r of labelRects) rects.push({ x: r.x - 14, y: r.y - 14, w: r.w + 28, h: r.h + 28 });
   return {
     root: h('g', { class: 'scene scene-logical' }, [
-      h('g', { class: 'layer-underlay' }, underlay),
+      h('g', { class: 'layer-groups' }, groupNodes),
       h('g', { class: 'layer-members' }, members),
       h('g', { class: 'layer-relations' }, relNodes),
       h('g', { class: 'layer-nodes' }, nodeLayer),

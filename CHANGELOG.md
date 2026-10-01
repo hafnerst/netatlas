@@ -39,6 +39,34 @@ it is described in [docs/FORMAT.md](docs/FORMAT.md).
   don't.
 - The `enterprise-wan.yaml` example uses both: the Hamburg LTE uplink has
   `dhcp: true`, and three DNS names are configured at HQ.
+- **Device-filtered views.** A **Devices** control at the top right of both
+  views chooses which devices the diagram shows (all by default; check
+  boxes, a filter box, *Select all*, *Clear*). A filtered view shows the
+  selected devices, the cables and relations entirely among them, the
+  networks, groups and protocols relevant to them, and only the included
+  members of mixed groups and networks. It is auto-arranged for the subset,
+  deterministically. Its positions and moves are temporary (per view, never
+  written to the YAML file; a note on the diagram says so), and *Select all*
+  restores the complete diagram with its saved positions. Auto-arrange in a
+  filtered view arranges only the shown devices. PNG and SVG exports show
+  the filtered view with a legend and Networks overview of what is drawn.
+- **Groups / Locations** option in both views (on by default): shows or
+  hides group frames without moving devices.
+
+### Changed
+
+- **Logical view: devices are clustered by group.** Auto-arrange keeps the
+  devices of each group / location together and draws the group's frame
+  around them, as in the physical view; networks and multipoint hubs are
+  placed around the groups. Models without groups are arranged as before.
+  Stored logical positions are not changed; for a model with groups, a
+  logical view that was auto-arranged before may now show *Edited since
+  arranged* until it is arranged again.
+
+### Removed
+
+- The **Underlay** option of the logical view (a faint line per cabled
+  device pair).
 
 ## [0.1.1] - 2026-09-30
 

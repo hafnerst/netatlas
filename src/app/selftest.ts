@@ -1149,6 +1149,100 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     check('selecting GRE tunnel highlights its physical path (3 cables)', count('.cable.hl') === 3, String(count('.cable.hl')));
     app.select(null);
 
+    // ------------------------------------ device filter: Devices, Labels, Groups / Locations, Networks
+    {
+      if (app.mdoc) app.mdoc.markSaved();
+      app.loadExample(EXAMPLES.findIndex((e) => e.name === 'enterprise-wan.yaml'));
+      click('[data-view-btn="physical"]');
+      const s = (): NonNullable<typeof app.session> => app.session!;
+      const md = (): ModelDoc => app.mdoc as ModelDoc;
+      const hint = q('#filter-hint') as HTMLElement;
+      const btn = q('#devices-btn') as HTMLButtonElement;
+      const right = (Array.prototype.map.call(doc.querySelectorAll('header > .devices-wrap, header > label.opt'), (e: Element) => (e.textContent || '').replace(/\s+/g, ' ').trim()) as string[]);
+      const vis = (sel: string): boolean => !!q(sel) && (q(sel) as HTMLElement).offsetParent !== null;
+      check(
+        'top-right diagram controls: Devices (all selected), Labels and Groups / Locations on, in both views; Networks only in the logical view; no Underlay',
+        /^Devices: all \(15\)/.test(right[0] || '') && right[1] === 'Labels' && right[2] === 'Groups / Locations' && right[3] === 'Networks' && right.length === 4 && !q('#opt-underlay') &&
+          (q('#opt-labels') as HTMLInputElement).checked && (q('#opt-groups') as HTMLInputElement).checked && vis('#opt-groups') && !vis('#opt-networks') && !btn.disabled && hint.hidden && !s().isFiltered(),
+        right.join(' | '),
+      );
+      const fullPhys = JSON.stringify(Array.from(s().positionsFor('physical')));
+      const yaml = app.exportText();
+      const undo = md().canUndo();
+      btn.click();
+      await tick();
+      const boxes = (): HTMLInputElement[] => Array.prototype.slice.call(doc.querySelectorAll('#devices-list input[type="checkbox"]'));
+      check('the Devices panel lists every device, all selected, with Select all and Clear', !(q('#devices-panel') as HTMLElement).hidden && boxes().length === 15 && boxes().every((b) => b.checked) && btn.getAttribute('aria-expanded') === 'true' && !!q('#devices-all') && !!q('#devices-none'));
+      const keep = ['hq-rtr1', 'hq-rtr2', 'hq-fw', 'hq-core1', 'isp1-pe', 'inet'];
+      for (const b of boxes()) {
+        if (keep.indexOf(b.getAttribute('data-device') || '') >= 0) continue;
+        b.checked = false;
+        b.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+      await tick();
+      const shownDevices = (): string[] => (Array.prototype.map.call(doc.querySelectorAll('#viewport g.device'), (e: Element) => (e.getAttribute('data-ref') || '').slice(7)) as string[]).sort();
+      check(
+        'deselecting devices shows a filtered physical view of the 6 selected devices, with the temporary-positions hint and the count on the button',
+        shownDevices().join() === keep.slice().sort().join() && !hint.hidden && (hint.textContent || '').indexOf('Filtered-view positions are temporary and are not saved in YAML.') >= 0 && hint.getAttribute('role') === 'status' &&
+          /Devices: 6 of 15/.test(btn.textContent || '') && btn.classList.contains('filtered') && /showing 6 of 15 devices/.test(q('#status')!.textContent || '') &&
+          !q('#viewport [data-ref="link:l-hq-isp2"]') && !!q('#viewport [data-ref="link:l-rtr1-fw"]') && !q('#viewport [data-ref="group:branch-muc"]') && !!q('#viewport [data-ref="group:hq-core"]'),
+        shownDevices().join(),
+      );
+      check('the hint is outside the diagram (never part of an export)', !q('#canvas #filter-hint') && !/not saved in YAML/.test(app.exportSvg()));
+      (q('#devices-find') as HTMLInputElement).value = 'hq-';
+      q('#devices-find')!.dispatchEvent(new Event('input', { bubbles: true }));
+      const rows = (Array.prototype.filter.call(doc.querySelectorAll('#devices-list label'), (l: HTMLElement) => !l.hidden) as HTMLElement[]).length;
+      (q('#devices-panel') as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      check('the panel filters its list without changing the selection, and Esc closes it', rows === 7 && (q('#devices-panel') as HTMLElement).hidden && doc.activeElement === btn && s().selectedDevices().size === 6, String(rows));
+      // a move in the filtered view is temporary
+      check('the filtered view starts auto-arranged for its devices; the button says so', status('physical') === 'auto' && (q('#btn-arrange') as HTMLElement).getAttribute('data-filtered') === 'true' && /filtered view matches/.test(shown().desc), shown().desc);
+      {
+        const el2 = q('#viewport g.device[data-ref="device:hq-fw"] .dev-box') as unknown as SVGGraphicsElement;
+        const rr = el2.getBoundingClientRect();
+        const x = rr.left + rr.width / 2;
+        const y = rr.top + rr.height / 2;
+        el2.dispatchEvent(pe('pointerdown', x, y));
+        svg.dispatchEvent(pe('pointermove', x + 80, y + 40));
+        svg.dispatchEvent(pe('pointermove', x + 160, y + 80));
+        svg.dispatchEvent(pe('pointerup', x + 160, y + 80));
+      }
+      const moved = JSON.stringify(s().positionsFor('physical').get('hq-fw'));
+      check(
+        'dragging in a filtered view moves the device for now only: no undo step, no stored position, the YAML unchanged; the status says "moved"',
+        app.exportText() === yaml && md().canUndo() === undo && !md().hasStoredLayout('physical') && status('physical') === 'manual' && /temporarily moved/.test(shown().desc) && !md().dirty,
+        `${moved} ${md().canUndo()} ${status('physical')}`,
+      );
+      click('[data-view-btn="logical"]');
+      await tick();
+      const logShown = shownDevices();
+      check(
+        'switching views: the logical view of the same devices, auto-arranged on its own (no move leaks), relations only among them',
+        status('logical') === 'auto' && logShown.every((d) => keep.indexOf(d) >= 0) && logShown.indexOf('hq-rtr1') >= 0 && !q('#viewport [data-ref="relation:gre-muc"]') && !!q('#viewport [data-ref="relation:ibgp-hq"]') && vis('#opt-networks'),
+        logShown.join(),
+      );
+      click('[data-view-btn="physical"]');
+      check('back in the physical view, its temporary move is still there', JSON.stringify(s().positionsFor('physical').get('hq-fw')) === moved && status('physical') === 'manual');
+      // Groups / Locations hides frames, never devices
+      (q('#opt-groups') as HTMLInputElement).click();
+      const hiddenFrames = count('g.group');
+      const devsNoFrames = shownDevices().join();
+      (q('#opt-groups') as HTMLInputElement).click();
+      check('Groups / Locations off hides the frames and keeps every device in place; on brings them back', hiddenFrames === 0 && devsNoFrames === keep.slice().sort().join() && count('g.group') >= 3 && JSON.stringify(s().positionsFor('physical').get('hq-fw')) === moved);
+      // Auto-arrange in a filtered view: the subset only, temporary, no confirmation needed
+      click('#btn-arrange');
+      await tick(10);
+      check('Auto-arrange in a filtered view re-arranges the shown devices only, temporarily: no dialog, YAML and undo unchanged', !q('#modal[open]') && status('physical') === 'auto' && app.exportText() === yaml && md().canUndo() === undo, status('physical'));
+      // Select all: the complete diagram with its saved positions, unchanged
+      btn.click();
+      click('#devices-all');
+      await tick();
+      check(
+        'Select all restores the complete diagram exactly as it was, hides the hint and gives Auto-arrange its normal meaning back',
+        !s().isFiltered() && hint.hidden && JSON.stringify(Array.from(s().positionsFor('physical'))) === fullPhys && count('g.device') === 15 && /Devices: all \(15\)/.test(btn.textContent || '') && (q('#btn-arrange') as HTMLElement).getAttribute('data-filtered') === null && shown().desc === AUTO_MSG && app.exportText() === yaml,
+      );
+      (q('#devices-panel') as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    }
+
     // ------------------------------------ selection context in the element lists
     {
       const olItems = (): HTMLButtonElement[] => Array.from(doc.querySelectorAll('#outline-body .ol-item[data-ref]')) as HTMLButtonElement[];
@@ -2192,6 +2286,29 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         res.physical.svg.heading !== res.logical.svg.heading && res.physical.svg.texts.join('|') !== res.logical.svg.texts.join('|') && res.physical.svg.netCount > 0 && res.logical.svg.netCount > 0,
         `${res.physical.svg.heading} (${res.physical.svg.netCount}) / ${res.logical.svg.heading} (${res.logical.svg.netCount})`,
       );
+      {
+        // a filtered view: the picture is the subset (devices, relations, legend, Networks box), never the hint
+        const yaml = app.exportText();
+        app.setDevices(['hq-rtr1', 'hq-rtr2', 'hq-fw', 'hq-core1', 'hq-core2', 'isp1-pe', 'inet']);
+        const sub: { [view: string]: Awaited<ReturnType<typeof both>> } = {};
+        for (const view of ['physical', 'logical']) {
+          click(`[data-view-btn="${view}"]`);
+          await tick();
+          for (let n = 0; n < 3; n++) click('#zoom-in');
+          sub[view] = await both('enterprise-wan', view);
+          click('#zoom-fit');
+        }
+        const t = (v: string): string => sub[v].svg.texts.join('|');
+        check(
+          'PNG and SVG of a filtered view: the whole subset (not the part on screen), its legend and Networks box only, no temporary-positions hint; the YAML is unchanged',
+          sub.physical.ok && sub.logical.ok && sub.physical.svg.devices === 7 && sub.logical.svg.devices < 15 &&
+            sub.physical.svg.netCount < res.physical.svg.netCount && sub.logical.svg.netCount < res.logical.svg.netCount &&
+            !/not saved in YAML|temporary/.test(t('physical') + t('logical')) && !/\|GRE\||\|IPsec\||WireGuard/.test('|' + t('logical') + '|') && /\|iBGP\|/.test('|' + t('logical') + '|') &&
+            !/Branch Munich|Hamburg LAN|Munich LAN/.test(t('physical') + t('logical')) && app.exportText() === yaml,
+          `${sub.physical.why} / ${sub.logical.why} / devices ${sub.physical.svg.devices}, ${sub.logical.svg.devices} / nets ${sub.physical.svg.netCount}<${res.physical.svg.netCount}, ${sub.logical.svg.netCount}<${res.logical.svg.netCount}`,
+        );
+        app.setDevices(app.session!.model.devices.map((d) => d.id));
+      }
       {
         // view-specific network information: a network that only loopbacks are in belongs to the logical picture alone
         app.loadText(FIXTURES.find((e) => e.name === 'editor-new-network.yaml')!.text, 'editor-new-network.yaml', 'example');

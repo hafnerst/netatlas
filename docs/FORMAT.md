@@ -662,6 +662,9 @@ layout:
   node dropped exactly on its auto-arranged position is removed from it.
 * Group boxes, ports, cables, relation lines and labels are never stored.
   They're derived from the node positions.
+* Only the positions of the **complete** diagrams are stored. A view filtered
+  to some devices (see [Filtered views](#filtered-views)) has temporary
+  positions that are never written to the file.
 * **Layout data never changes what the network is.** A malformed entry, an
   unknown view, or a position for an id that doesn't exist (or isn't a node of
   that view) is only a *warning* and is ignored. The model is the same with or
@@ -758,9 +761,18 @@ The layout itself is computed as follows.
   hubs) is laid out on its own with stress majorization, which spaces graph
   distances evenly. Its edges are the logical relationships only (relations
   between two devices, the spokes of multipoint relations, and network
-  membership); cables are not edges here, and groups don't exist in this
-  view; very large components (over 300 nodes) use a
-  force-directed layout instead. It is seeded from the auto-arranged
+  membership); cables are not edges here. Very large components (over 300
+  nodes) use a force-directed layout instead.
+  **Devices are clustered by group.** Each group's content (its devices and
+  its child groups) is laid out on its own, deepest groups first; the group
+  then takes part in the layout around it as one box, exactly the size of its
+  frame (content, padding and title). So a group's frame never covers a
+  device of another group, and sibling frames never overlap. Relationships
+  between devices of different groups count as edges between the groups
+  that hold them. Networks and multipoint hubs belong to no group and are
+  placed around the groups. Components are ordered by how many nodes they
+  hold, a group counting with everything inside it. A model without groups is
+  laid out without this step. The layout is seeded from the auto-arranged
   *physical* positions, so the two views keep a similar mental map, but never
   from manual positions. Then:
   * every node is as large as its full text needs; the distance between two
@@ -771,6 +783,65 @@ The layout itself is computed as follows.
     edges passing through nodes;
   * nodes that an edge would pass through are moved aside;
   * components are packed in rows, largest first.
+
+### Filtered views
+
+The **Devices** control (top right, in both views) chooses the devices the
+diagram shows. Every device is selected by default.
+
+* **All devices selected:** the complete diagram, with its stored positions,
+  exactly as without a filter. Dragging stores positions and Auto-arrange
+  works on the complete view, as described above.
+* **Some devices selected:** each view shows the part of the model relevant
+  to them, and that part is **auto-arranged for itself**. The result depends
+  only on the model and the set of selected devices (not on the order they
+  were chosen in, earlier filters or earlier drags). It is computed when the
+  filtered view is first shown and stays as it is until you move a node,
+  press Auto-arrange or change the selection; options such as Labels,
+  selecting objects or switching views don't re-arrange it. An edit to the
+  model keeps it stable and places new objects next to their neighbours.
+
+What a filtered view contains:
+
+| Element | Shown when |
+|---|---|
+| Devices | selected |
+| Physical links | both ends are on selected devices. A cable to a hidden device is not drawn at all. |
+| Relations (logical view) | every endpoint is on a selected device. A relation that also reaches a hidden device (including a multipoint relation) is left out, never drawn as if it were complete. Its `over` and `network` keep only what is shown. |
+| Networks, physical view | a selected device has an address in it, or its VLAN is permitted on an end of a shown link |
+| Networks, logical view | a selected device has an address in it, or a shown relation names it (`network`, `over`) |
+| Network members | only the selected devices with an address in the network |
+| Groups / locations | they contain a selected device (directly or in a child group); they frame only their selected devices |
+| Protocols | a shown relation uses them: the Legend, its protocol switches and the exported legend list only those |
+
+A tunnel interface whose destination is on a hidden device keeps its
+destination text, but nothing is highlighted on the hidden side.
+
+**Positions in a filtered view are temporary.** A note on the diagram says
+so: *Filtered-view positions are temporary and are not saved in YAML.*
+Dragging a node there moves it for the session only: there is no undo step
+and nothing is written to the file. Each view keeps its own temporary
+positions, so switching views moves nothing in the other one. Selecting all
+devices again shows the complete diagram with its stored positions,
+unchanged; a filtered view chosen again later is arranged afresh.
+
+**Auto-arrange in a filtered view** arranges the shown devices only, at
+once and without confirmation (the positions it replaces are temporary). The
+stored layout of the complete view is not changed. Its status on the button
+is *Auto-arranged* while the filtered view matches that result, or
+*Manually adjusted* after a node was moved there; the hover text and the
+accessible description say that the view is filtered.
+
+**Export** (PNG and SVG) shows the filtered view: the selected devices and
+what is relevant to them, with the current Labels, Groups / Locations and
+Networks settings, the whole filtered diagram (not just the part on screen),
+a legend of what is drawn and a Networks overview of the networks relevant
+to it. The note about temporary positions is not part of the picture.
+
+**Groups / Locations** (both views, on by default) shows or hides the
+frames of groups. Hiding them never hides or moves a device. **Networks**
+(logical view) shows or hides network nodes and their membership lines; the
+addresses in the editor are not affected.
 
 ### Sizes, labels and routes
 

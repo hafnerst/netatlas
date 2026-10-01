@@ -249,7 +249,7 @@ test('every example, both views: still no overlaps, clipped text or cables throu
           if (!nested(a, b) && !nested(b, a)) assert.ok(!overlap(boxes[i], boxes[j]), `${f}: ${a.id} / ${b.id}`);
         }
       }
-      const lg = legend.svgLegend(m, view, { hiddenProtocols: new Set(), showNetworks: true, showUnderlay: false }, r.bounds);
+      const lg = legend.svgLegend(m, view, { hiddenProtocols: new Set(), showNetworks: true, showGroups: true }, r.bounds);
       assert.ok(lg.box.x >= r.bounds.x + r.bounds.w, `${f} ${view}: legend beside the diagram`);
       for (const b of g.devices.map((x) => x.box).concat(boxes)) assert.ok(b.x >= r.bounds.x && b.x + b.w <= r.bounds.x + r.bounds.w && b.y >= r.bounds.y && b.y + b.h <= r.bounds.y + r.bounds.h, `${f} ${view}: inside the picture`);
     }

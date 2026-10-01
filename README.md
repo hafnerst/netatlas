@@ -51,9 +51,13 @@ Two version numbers are involved, and they are independent:
 |---|---|
 | ![Campus example using every device type, with the legend](docs/img/device-types.png) | ![Data-center fabric, physical view](docs/img/dc-physical.png) |
 
-| **Auto-arrange**, physical: POP sites, customer, separate OOB island | **Auto-arrange**, logical: iBGP mesh between loopbacks, tunnels, OOB component |
+| **Auto-arrange**, physical: POP sites, customer, separate OOB island | **Auto-arrange**, logical: iBGP mesh between loopbacks, tunnels, devices kept in their groups |
 |---|---|
 | ![Metro ring after Auto-arrange, physical view](docs/img/metro-physical.png) | ![Metro ring after Auto-arrange, logical view](docs/img/metro-logical.png) |
+
+| **Devices** filter, physical: six HQ devices, only their cables and frames | The same devices, logical: only the relations among them, groups framed |
+|---|---|
+| ![Enterprise WAN filtered to six devices, physical view](docs/img/wan-physical-filtered.png) | ![Enterprise WAN filtered to six devices, logical view](docs/img/wan-logical-filtered.png) |
 
 The **Auto-arrange** button sits in the top toolbar and arranges the view on
 screen. Its icon shows that view's layout status (✓ matches the
@@ -99,6 +103,10 @@ auto-arranged layout, ✎ manually adjusted).
 | **Physical** / **Logical** | the two views |
 | **Auto-arrange** | arranges the view on screen; its icon shows the layout status |
 | **Find…** | search by id, label, address, prefix, protocol or cable id (`/`) |
+| **Devices ▾** (right) | which devices the diagram shows; all by default. Opens a list with a check box per device, a filter box, **Select all** and **Clear**. See [Showing part of the network](#showing-part-of-the-network). |
+| **Labels** | cable, relation and address labels (on by default) |
+| **Groups / Locations** | the frames of groups / locations, in both views (on by default). Hiding them never hides or moves a device. |
+| **Networks** (logical view) | network nodes and their membership lines (on by default) |
 
 ### The model outline
 
@@ -301,10 +309,10 @@ written back byte-for-byte. The details are in
 | Highlight | selecting something dims everything unrelated. For a tunnel this includes its carriers, what it carries, its endpoints and, in the physical view, **the cables it rides on**. The selection is kept across views. |
 | Selection context in the lists | the element lists on the left and the **Relations** tab show the same selection: the selected entry is marked **▸** (bold, with a bar), entries **directly** related to it are marked **•**, and all others are greyed out but stay readable, clickable and keyboard-focusable. Select from either list or the diagram; `Esc` clears it. See *Which entries count as related* below. |
 | Hover | tooltip with a short summary |
-| Rearrange | drag devices or networks. The position is stored in the model (one undo step each) and exported with it. |
-| Auto-arrange | **Auto-arrange** in the top toolbar (or `A`): recomputes the positions of the **whole model** in the view on screen. The other view is not changed. If the view has positions you set by hand, it asks before replacing them. The button itself shows whether the view on screen matches the auto-arranged layout (icon, colour and hover text). |
+| Rearrange | drag devices or networks. The position is stored in the model (one undo step each) and exported with it. In a [filtered view](#showing-part-of-the-network) the move is temporary and not stored. |
+| Auto-arrange | **Auto-arrange** in the top toolbar (or `A`): recomputes the positions of the **whole model** in the view on screen. The other view is not changed. If the view has positions you set by hand, it asks before replacing them. In a filtered view it arranges the shown devices only, temporarily. The button itself shows whether the view on screen matches the auto-arranged layout (icon, colour and hover text). |
 | Find | `/` or the search box: ids, labels, IP addresses, CIDRs, protocols, cable ids |
-| Filter | **Legend** tab (logical view): turn protocols on and off; top-bar toggles for labels, networks and a faint physical underlay |
+| Filter | **Devices** (top right): show only some devices. **Legend** tab (logical view): turn protocols on and off. Top-right toggles for **Labels**, **Groups / Locations** and (logical view) **Networks**. |
 | Export picture | **Export → Export view as… → PNG** or **SVG** in the toolbar saves the selected view (Physical or Logical) as a picture; see [Exporting pictures](#exporting-pictures). The picture always contains the **legend** of that view (device types, cable media and speed, locations; or protocols and line styles) and, in a second box beside it, a **Networks** overview. Both are drawn to the right of the diagram so they cover nothing, and the picture is enlarged to include them. They list what is drawn: protocols you have hidden are left out. See [Networks in exported pictures](#networks-in-exported-pictures). |
 
 ### Which entries count as related
@@ -339,9 +347,14 @@ Both come from the same model references, in `src/model/queries.ts`
 The **Auto-arrange** button in the top toolbar, next to *Physical* /
 *Logical* (or press `A`), lays out the entire model **in the view on
 screen**, not just what is visible or selected. It includes objects hidden by
-filters. The other view keeps its positions; to arrange it, switch to it and
-press the button there. The result is one undo step (Ctrl+Z). It never runs
-by itself.
+the Legend's protocol switches. The other view keeps its positions; to
+arrange it, switch to it and press the button there. The result is one undo
+step (Ctrl+Z). It never runs by itself. In a view filtered to some devices
+it does something else: see [Showing part of the network](#showing-part-of-the-network).
+
+In the logical view, Auto-arrange keeps the devices of each group / location
+together and draws the group's frame around them, as in the physical view;
+networks and multipoint hubs are placed around the groups.
 
 There is no dialog unless something of yours would be lost:
 
@@ -419,6 +432,44 @@ network, and a broken entry is only a warning.
   the same status.
 
 The complete rules are in [docs/FORMAT.md](docs/FORMAT.md#layout-diagram-positions).
+
+## Showing part of the network
+
+**Devices ▾** at the top right of both views chooses which devices the
+diagram shows; every device is selected by default. Use it to look at, or
+export, one site, one rack or one service without changing the model.
+
+* **Select or deselect** devices with their check boxes (the filter box
+  narrows the list, it doesn't change the selection). **Select all** returns
+  to the complete diagram; **Clear** deselects everything. The button shows
+  *Devices: 6 of 15* while a filter is active, and so does the status bar.
+* **What is shown:** the selected devices; cables whose two ends are
+  selected; relations whose every endpoint is selected (a relation that also
+  reaches a hidden device is left out, never drawn as if it were complete);
+  networks that a selected device has an address in, plus networks whose
+  VLAN a shown cable carries (physical view) or that a shown relation names
+  (logical view); only their selected members; groups that contain a
+  selected device, framing only those; protocols that a shown relation uses.
+  The full rules are in [docs/FORMAT.md](docs/FORMAT.md#filtered-views).
+* **Layout:** a filtered view is auto-arranged for the selected devices. The
+  result depends only on the model and the selected devices, not on the
+  order you picked them in or on earlier moves. It is not re-arranged when
+  you change Labels, select something or switch views.
+* **Positions are temporary.** A note above the diagram says so:
+  *Filtered-view positions are temporary and are not saved in YAML.* You can
+  drag nodes to tidy a picture for export; that changes nothing in the
+  model, adds no undo step, and each view keeps its own moves. **Select
+  all** brings back the complete diagram with its saved positions,
+  unchanged. Only the complete diagrams' positions are ever saved.
+* **Auto-arrange** in a filtered view re-arranges the shown devices at once
+  (no confirmation: the positions are temporary); the saved layout is not
+  touched. Its icon and description say whether the filtered view matches
+  that arrangement.
+* **Export** saves what the filtered view shows: the selected devices and
+  what belongs to them, with the current Labels / Groups / Networks
+  settings, the whole filtered diagram (not just the part on screen), a
+  legend of what is drawn and a Networks overview of the networks relevant
+  to it. The note about temporary positions is not in the picture.
 
 ## Networks in exported pictures
 
@@ -568,7 +619,7 @@ To regenerate the test fixtures after changing the editing core, run
 To retake the README screenshots in `docs/img/` after a UI change, run
 `node scripts/readme-screenshots.mjs` after `npm run build`. It needs Chrome,
 Edge or Chromium and uses the page's deep links
-(`#example=<n>&view=<physical|logical>&select=<ref>`).
+(`#example=<n>&view=<physical|logical>&select=<ref>&devices=<id,…>`).
 
 ### Is the checked-in HTML current?
 
@@ -606,6 +657,7 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/scr
 | **Sizing and readability** | `test/readability.test.mjs` (13 tests) | Text wrapping: explicit line breaks kept, wrap at spaces, long words broken after punctuation, nothing dropped, width bounded (also for 200 unbroken characters and CJK). Element sizes follow text within bounds. **Every example, both views:** no "…", device, network and group labels complete, every cable and relation labelled, text inside its box, no overlapping labels, no label on a node, no cable through a device. `long-labels.yaml`: multi-line labels, differing node sizes, three parallel straight cables with their own labels, a cable that bends around a device, four labelled relations between the same two devices (distinct labels, nested ones named in the carrier's label). **Determinism:** drag + select + arrange one view at a time gives the same positions *and the same drawn picture* as a fresh arrange; arranging again moves nothing; same picture after export and reload; drawn text is part of the layout input, undrawn text is not. Labels and cable bends lie inside the exported picture's bounds. |
 | **Physical and logical interfaces** | `test/interfaces.test.mjs` (16 tests) | **Two categories** stored once per device, zero or more of either; a physical interface has no type, a logical one requires `loopback`, `virtual` or `tunnel`; one id namespace per device; a cable ends on a physical interface only. **Loopbacks:** addresses, no parent, no other type's keys. **Aggregates:** several member ports; unknown, non-physical, duplicate and foreign-device members are errors at the entry; a port in two aggregates is a warning. **VLAN interfaces:** `vlan` or the VLAN of the address's network; *ports carrying VLAN* derived from link ends, following every link change, never stored; nothing assumed for other virtual interfaces. **Tunnels:** source is a port, a loopback or an address (its interface derived), destination an address, device or interface; invalid ones are errors. **Diagrams and selection** follow each association in both directions; details show only the association that applies. **Alphabetical display** in both categories with the file untouched. **Structures outside the format:** `children` and `loopbacks` are errors, not read, not dropped from the file. **Editing and export → reload**, renames across members, sources and destinations; every example. |
 | **DHCP and DNS names** | `test/dhcp-dns.test.mjs` (15 tests), and the browser self-test | **DHCP:** off by default for new physical and logical interfaces and for interfaces without addresses; `dhcp: true` on both categories; only true/false; not on a loopback (an error that keeps the flag, refused by the editor, no switch on the card, repairable by turning it off); DHCP together with addresses is an error that keeps both values; a DHCP interface is in no network; `ip: dhcp` points to the flag. Turning it on lists the addresses and DNS associations it deletes, then deletes them in one undo step; turning it off doesn't bring them back. **DNS names:** syntax; one name with several interfaces of both categories; duplicates, unknown and DHCP interfaces, repeated interfaces and an empty list are errors; a name on two devices warns; adding is checked first; enabling DHCP, deleting an interface and renaming it keep every association valid. Details, tooltips and search; nothing in the diagrams; export → reload. **In the browser:** the switch on every card except the loopback's, Cancel changes nothing, confirming greys the field out, no question when nothing is lost, the *+ DNS name* dialog (eligible interfaces by name, excluded DHCP interfaces, the several-addresses note), deleting an associated interface. |
+| **Filtered views** | `test/filter.test.mjs` (10 tests), and the browser self-test | **Relevance**, both views, on a model with a group and a network that have members on both sides, a cable, a relation and a multipoint relation crossing the boundary, `over` / `network` references and a tunnel destination on the hidden side: only links and relations entirely among the selected devices; networks by membership, cable VLAN (physical) or relation (logical); only included members; groups with their parents; protocols from shown relations only; the complete model unchanged. **Layout:** no filter = stored positions; a subset is auto-arranged for itself, the same for any selection order and after earlier moves and filters; moves are temporary, per view, never in the document (no undo step, YAML and stored layout unchanged, export → reload identical); unrelated actions don't re-arrange; Auto-arrange restores the subset's layout; Select all restores the complete positions; edits keep a filtered layout stable. **Export** of a subset: devices, links, relations, legend and Networks overview of the subset only, no hint. **Groups / Locations** off hides frames, never devices, in both views; **logical clustering**: no frame covers a device of another group, sibling frames never overlap (every example). **In the browser:** the top-right controls (Devices, Labels, Groups / Locations; Networks in the logical view; no Underlay), the panel, the hint (outside the SVG), a temporary drag, view switching, Auto-arrange, Select all, and PNG + SVG of a filtered view in both views. |
 | **Auto-arrange: current view, confirmation** | `test/arrange.test.mjs` (6 tests) | Arranging one view leaves the other's displayed positions, stored positions, hand-placed list and YAML untouched (both directions, also without stored positions). What would be overwritten: hand-placed nodes that differ from the auto layout, none for an auto-arranged or merely edited view; asking changes nothing (what Cancel relies on). Deterministic and idempotent per view, status follows. The UI has no "both views" choice and calls arrange with the current view only. |
 | **Networks box in exported SVG** | `test/networks-box.test.mjs` (9 tests) | **Relevance per view**, from the drawn elements: ports, the aggregates and VLAN interfaces that use them, cable VLANs (physical); network nodes, relations' `network`/`over`/endpoint interfaces, loopbacks (logical); hidden protocols and switched-off network nodes excluded; not every network of the file. Content: title per view, name, prefixes, VLAN, id for equal names, sorted. Empty states. **Every example, both views:** beside the legend, no overlap with diagram or legend, inside the viewBox with margins, every line inside the frame. Long names wrap without being shortened; 150 networks flow into columns without overlap. Deterministic. |
 | Rendering | `test/render.test.mjs` (12 tests) | Physical view: devices, cables and ports, no relations. Logical view: relations, no cables; tunnels as tubes; GRE inside IPsec; parallel lanes; protocol matrix; hostile labels stay text; deterministic layout |
@@ -622,7 +674,7 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/scr
 | Architecture | `test/architecture.test.mjs` (3 tests) | Every module lives in a layer folder; imports follow the allowed dependency direction (docs/ARCHITECTURE.md); the diagram, layout and UI layers never import the YAML layer |
 | **Port ranges** | `test/port-range.test.mjs` (7 tests) | The final number is the port number (also with leading zeros and multi-part names); ids follow the model's convention, with the typed name as label when it isn't a valid id. Rejected with a clear reason: missing number, different prefixes, first not lower than last, more than 256 ports, names that can't become ids. Duplicate names or ids on the device (ids and labels, physical and logical) reject the whole range; other devices don't count. Creation is all or nothing, one undo step, physical interfaces only (no addresses, VLANs, links); alphabetical display; **export → reload** of generated ports. |
 | Module APIs | `test/modules.test.mjs` (9 tests) | Document editing operations (typed values, lists, endpoints, attrs, key order, one undo step each); the format schema is the single source of allowed keys; model queries; export file names; `check:dist` accepts the current build and rejects a stale HTML file |
-| **End-to-end in a real browser** | `test/browser.test.mjs` → `dist/netatlas.html#selftest` (303 in-page checks) | Headless Chrome, Edge or Chromium opens the file from `file://` **with DNS resolution disabled** and drives the real UI. **Viewer:** every example loads through the File API path, both views are drawn, loopback chips appear only in the logical view, interaction works. **New model:** New is empty; a new device shows *Select device type* and saves no type until one is chosen; a new relation has no protocol and reports its missing protocol and endpoints (export then needs "Download anyway"); a new network is only an ID; add a device, **add two loopbacks, type IPv4/IPv6 addresses, see the error for an address without a prefix and fix it**, add physical interfaces (type shown as read-only *Physical*), **a bond with two member ports, a VLAN interface whose *Ports carrying VLAN* follow the cable's VLANs, and a tunnel sourced from a loopback, an address and a port (an unknown source is an error)**, all listed alphabetically while the file keeps its order, a cable (link ends offer physical interfaces only), a GRE tunnel between loopbacks with nested attrs, then **download and reload** the file. **Imported model:** rename a device (every reference follows), edit, add an IPv6 loopback, download as `…-edited.yaml`, **reload, and check that edits, hidden attributes and comments survived**. **Guards:** unsaved-changes dialog on replace; `beforeunload`; Ctrl+Z/Y; deleting a referenced device reports broken references; **exporting an invalid model requires "Download anyway"**; YAML-tab apply/reject; unknown keys kept and movable into attrs; typed text is committed before a button acts; **selection context in the lists:** selecting from the diagram, the left list and the right-hand Relations list keeps lists and diagram consistent for every element type (direct entries related, indirect ones dimmed), unrelated entries stay focusable and selectable, view switches leave no stale highlighting, and `Esc` clears everything; the device type is chosen from the 15 types by display name. **Auto-arrange:** the button is in the top toolbar, visible and labelled (disabled until a model is open); the status badges read *Auto-arranged* / *Manually adjusted* / *Edited since arranged* after loading, dragging, undo, switching views (the shown view is highlighted), Auto-arrange, moving a node back to its calculated position, export → reload of arranged and of manually adjusted layouts, a model edit, and New; loading stores nothing; the dialog shows the scope; arranging an automatic layout stores it without moving anything; repeating it is a no-op; a manual move changes only that node and is undone by arrange (and restored by undo); **arrange → export → reload is pixel-identical in both views**; a file with every list and key reversed arranges identically; **the browser reproduces the build-time positions of `metro-ring-arranged.yaml`** (a cross-engine determinism check when run in Firefox or Safari). **Safety:** hostile labels create no elements; YAML syntax errors are refused with the current model kept; **no network requests, no CSP violations**. The test is skipped if no Chromium-based browser is installed; set `NETATLAS_BROWSER` to choose one. |
+| **End-to-end in a real browser** | `test/browser.test.mjs` → `dist/netatlas.html#selftest` (316 in-page checks) | Headless Chrome, Edge or Chromium opens the file from `file://` **with DNS resolution disabled** and drives the real UI. **Viewer:** every example loads through the File API path, both views are drawn, loopback chips appear only in the logical view, interaction works. **New model:** New is empty; a new device shows *Select device type* and saves no type until one is chosen; a new relation has no protocol and reports its missing protocol and endpoints (export then needs "Download anyway"); a new network is only an ID; add a device, **add two loopbacks, type IPv4/IPv6 addresses, see the error for an address without a prefix and fix it**, add physical interfaces (type shown as read-only *Physical*), **a bond with two member ports, a VLAN interface whose *Ports carrying VLAN* follow the cable's VLANs, and a tunnel sourced from a loopback, an address and a port (an unknown source is an error)**, all listed alphabetically while the file keeps its order, a cable (link ends offer physical interfaces only), a GRE tunnel between loopbacks with nested attrs, then **download and reload** the file. **Imported model:** rename a device (every reference follows), edit, add an IPv6 loopback, download as `…-edited.yaml`, **reload, and check that edits, hidden attributes and comments survived**. **Guards:** unsaved-changes dialog on replace; `beforeunload`; Ctrl+Z/Y; deleting a referenced device reports broken references; **exporting an invalid model requires "Download anyway"**; YAML-tab apply/reject; unknown keys kept and movable into attrs; typed text is committed before a button acts; **selection context in the lists:** selecting from the diagram, the left list and the right-hand Relations list keeps lists and diagram consistent for every element type (direct entries related, indirect ones dimmed), unrelated entries stay focusable and selectable, view switches leave no stale highlighting, and `Esc` clears everything; the device type is chosen from the 15 types by display name. **Auto-arrange:** the button is in the top toolbar, visible and labelled (disabled until a model is open); the status badges read *Auto-arranged* / *Manually adjusted* / *Edited since arranged* after loading, dragging, undo, switching views (the shown view is highlighted), Auto-arrange, moving a node back to its calculated position, export → reload of arranged and of manually adjusted layouts, a model edit, and New; loading stores nothing; the dialog shows the scope; arranging an automatic layout stores it without moving anything; repeating it is a no-op; a manual move changes only that node and is undone by arrange (and restored by undo); **arrange → export → reload is pixel-identical in both views**; a file with every list and key reversed arranges identically; **the browser reproduces the build-time positions of `metro-ring-arranged.yaml`** (a cross-engine determinism check when run in Firefox or Safari). **Safety:** hostile labels create no elements; YAML syntax errors are refused with the current model kept; **no network requests, no CSP violations**. The test is skipped if no Chromium-based browser is installed; set `NETATLAS_BROWSER` to choose one. |
 
 ### Manual check (any browser, e.g. Firefox or Safari)
 
@@ -898,6 +950,23 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/scr
     * *ham-rtr* → *wan1* shows **DHCP on**; its **Details** say the address
       is obtained by DHCP.
 
+17. **Showing part of the network.** Open `enterprise-wan.yaml`.
+    * Top right: **Devices: all (15)**, **Labels** and **Groups /
+      Locations** (both on); in the Logical view also **Networks**; no
+      Underlay.
+    * Open **Devices** and leave only *Internet*, *ISP-1 PE*, *hq-rtr1*,
+      *hq-rtr2*, *hq-fw* and *hq-core1* ticked. The Physical view shows
+      those six, the cables between them only, and the HQ frames around
+      just them; the note *Filtered-view positions are temporary and are not
+      saved in YAML* appears above the diagram.
+    * Drag *hq-fw*: Ctrl+Z has nothing to undo and the file is not marked
+      unsaved. Switch to Logical: only eBGP, BFD and iBGP among those
+      routers, no GRE or IPsec; back in Physical, *hq-fw* is where you put
+      it. **Auto-arrange** puts it back without asking.
+    * Export the view as SVG and PNG: only the six devices, a legend and
+      Networks box for them, no note.
+    * **Select all**: the complete diagram returns exactly as before.
+
 ## Security model
 
 * Input is untrusted. Everything user-supplied (from files or typed into the
@@ -1009,6 +1078,12 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/scr
   record is derived or checked against a DNS server. DHCP is an on/off flag
   per interface (not available on loopbacks); a DHCP server, scope or
   reservation is not modelled.
+* **Filtered views are not saved.** The device selection and the positions
+  of a filtered view last until the model is closed or reloaded; only the
+  complete diagrams' positions are stored in the YAML file.
+* **Logical group frames can be crossed by relation lines.** Devices of a
+  group are kept together, but a relation between two groups is drawn
+  straight and may pass over a third group's frame.
 * **Alphabetical means natural order:** letters ignore case and digit runs
   compare by value (`eth2` before `eth10`); it is not locale-aware.
 * **No other import or export formats** (only YAML in; YAML, PNG and SVG

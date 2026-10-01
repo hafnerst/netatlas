@@ -9,7 +9,7 @@ const nb = load('diagram/networks-box.js');
 const legend = load('diagram/legend.js');
 const { textWidth } = load('layout/geometry.js');
 
-const ALL = { hiddenProtocols: new Set(), showNetworks: true, showUnderlay: false };
+const ALL = { hiddenProtocols: new Set(), showNetworks: true, showGroups: true };
 const inside = (inner, outer) => inner.x >= outer.x && inner.y >= outer.y && inner.x + inner.w <= outer.x + outer.w + 0.01 && inner.y + inner.h <= outer.y + outer.h + 0.01;
 const overlap = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
 
