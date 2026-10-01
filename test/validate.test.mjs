@@ -177,3 +177,17 @@ test('the broken demo file reports every problem with line numbers', async () =>
   for (const [line, re] of expected) assert.ok(errs.some((e) => e.line === line && re.test(e.message)), `${line} ${re}\n${summary.join('\n')}`);
   assert.equal(errs.length, expected.length, summary.join('\n'));
 });
+
+test('direction: bidirectional by default, unidirectional runs from the first endpoint to the last; "directed" is rejected', () => {
+  const rel = (extra) => base + `relations:\n  - {id: x, protocol: syslog, endpoints: [r1, r2]${extra}}\n`;
+  const dir = (extra) => validate.loadModel(rel(extra)).model.relations[0].direction;
+  assert.equal(dir(''), 'bidirectional', 'omitted: bidirectional');
+  assert.equal(dir(', direction: bidirectional'), 'bidirectional');
+  assert.equal(dir(', direction: unidirectional'), 'unidirectional');
+  assert.deepEqual(errorsOf(rel(', direction: unidirectional')), []);
+  expectError(rel(', direction: one-way'), /unknown direction "one-way": use "bidirectional" \(the default\) or "unidirectional" \(from the first endpoint to the last\)/);
+  expectError(rel(', directed: true'), /"directed" is not part of the format — a relation has a "direction", not "directed": write "direction: unidirectional" for "directed: true"/);
+  // nothing is converted: the rejected key is kept in the file and the relation is bidirectional
+  assert.equal(dir(', directed: true'), 'bidirectional');
+  assert.ok(!('directed' in validate.loadModel(rel('')).model.relations[0]));
+});

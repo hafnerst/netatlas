@@ -15,7 +15,7 @@ import { DocMap, DocNode, ENTITY_KINDS, EntityKind, IfaceEntry, KEY_ORDER, Model
 import { DialogOpts } from './dialogs';
 import { el } from './dom';
 import { sortedByName } from '../model/order';
-import { CATEGORIES, InterfaceKind, LINE_STYLES, LOGICAL_IFACE_TYPES, VLAN_MAX, VLAN_MIN, ifaceKey, interfaceKindLabel } from '../model/types';
+import { CATEGORIES, DIRECTIONS, Direction, InterfaceKind, LINE_STYLES, LOGICAL_IFACE_TYPES, VLAN_MAX, VLAN_MIN, ifaceKey, interfaceKindLabel } from '../model/types';
 import { derivedVlanText, interfaceAddresses, interfaceCarriedNetworks, interfaceNetworkPorts, interfaceVlans, networkMembers, networkMismatch, networkMismatchText } from '../model/derive';
 import { builtinProtocols, normalizeProtocol } from '../model/protocols';
 import { SelectionContext, contextState } from '../model/queries';
@@ -387,7 +387,7 @@ export class Editor {
       add(this.textField(base.concat('label'), 'Label', o));
       add(this.endpointList(base.concat('endpoints'), 'Endpoints', o));
       add(this.overField(base.concat('over'), 'Carried over (underlay)', o, index));
-      add(this.boolField(base.concat('directed'), 'Directed (first → last endpoint)', o));
+      add(this.directionField(base.concat('direction')));
       add(this.textField(base.concat('description'), 'Description', o, 'textarea'));
     } else if (kind === 'group') {
       add(this.textField(base.concat('label'), 'Label', o));
@@ -1029,14 +1029,6 @@ export class Editor {
     return this.field(label, this.input(p, 'int', val, { 'data-o': order, inputmode: 'numeric' }), p, help);
   }
 
-  private boolField(p: Path, label: string, order: string): HTMLElement {
-    const n = this.doc.get(p);
-    const cb = this.e('input', { type: 'checkbox', 'data-p': J(p), 'data-t': 'bool', 'data-o': order }) as HTMLInputElement;
-    cb.checked = !!n && n.kind === 'scalar' && n.value === true;
-    const bad = n && !(n.kind === 'scalar' && typeof n.value === 'boolean') && !(n.kind === 'scalar' && n.value === null);
-    return this.field(label, this.e('span', { class: 'ctl' }, [cb, bad ? this.e('span', { class: 'field-err' }, [` current value "${this.doc.text(p) || '?'}" is not true/false`]) : null]), p);
-  }
-
   private selectEl(p: Path, t: string, order: string, options: string[], current: string, emptyLabel: string, extra: { [k: string]: string } = {}): HTMLSelectElement {
     const s = this.e('select', { 'data-p': J(p), 'data-t': t, 'data-o': order, ...extra }) as HTMLSelectElement;
     s.appendChild(this.e('option', { value: '' }, [emptyLabel]));
@@ -1226,6 +1218,30 @@ export class Editor {
     const model = this.doc.result.model;
     const name = (id: string): string => (model && model.index.networks.get(id) ? (model.index.networks.get(id) as { label: string }).label : id);
     return this.e('div', { class: 'net-mismatch-note field-warn', 'data-net-mismatch': 'yes', role: 'status' }, ['⚠ The two ends carry different networks (' + networkMismatchText(mm, name) + '). Nothing is changed automatically.']);
+  }
+
+  /**
+   * A relation's direction as a two-way switch. Bidirectional is the default
+   * and is not written; unidirectional runs from the first endpoint to the
+   * last, so the endpoint order matters (↑ reorders).
+   */
+  private directionField(p: Path): HTMLElement {
+    const cur = this.doc.text(p);
+    const on = cur === undefined ? 'bidirectional' : cur;
+    const valid = (DIRECTIONS as readonly string[]).indexOf(on) >= 0;
+    const label: { [k in Direction]: string } = { bidirectional: 'Bidirectional', unidirectional: 'Unidirectional' };
+    const sw = this.e(
+      'div',
+      { class: 'seg dir-switch', role: 'radiogroup', 'aria-label': 'Direction', 'data-direction': valid ? on : 'invalid' },
+      DIRECTIONS.map((d) =>
+        this.e('button', { type: 'button', class: 'mini' + (d === on ? ' active' : ''), role: 'radio', 'aria-checked': d === on ? 'true' : 'false', 'data-act': 'direction', 'data-p': J(p), 'data-k': d }, [label[d]]),
+      ),
+    );
+    const help =
+      on === 'unidirectional'
+        ? 'One way: from the first endpoint to the last, drawn with an arrow. Reorder the endpoints with ↑ to change it.'
+        : 'Both ways (the default; nothing is written to the file). Choose Unidirectional for a flow from the first endpoint to the last, e.g. syslog or replication.';
+    return this.field('Direction', sw, p, valid ? help : `"${on}" is not a direction: choose one.`);
   }
 
   /** The network's one prefix. */
@@ -1465,9 +1481,6 @@ export class Editor {
       case 'int':
         doc.setInteger(p, trimmed);
         break;
-      case 'bool':
-        doc.setFlag(p, (target as HTMLInputElement).checked);
-        break;
       case 'auto':
         doc.setValue(p, trimmed);
         break;
@@ -1680,6 +1693,13 @@ export class Editor {
         doc.remove(p);
         this.host.changed();
         return true;
+      case 'direction': {
+        const k = btn.getAttribute('data-k');
+        // bidirectional is the default: the key is removed
+        doc.setText(p, k === 'unidirectional' ? 'unidirectional' : '');
+        this.host.changed();
+        return true;
+      }
       case 'del-net':
         doc.removeEndNetwork(p, btn.getAttribute('data-k') as string);
         this.host.changed();

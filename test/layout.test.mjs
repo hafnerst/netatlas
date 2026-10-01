@@ -39,9 +39,9 @@ function shuffleTree(node, seed) {
   };
   const walk = (n, parentKey, owner) => {
     if (n.kind === 'seq') {
-      // endpoint order of directed relations is meaningful
-      const directed = parentKey === 'endpoints' && owner && owner.entries.get('directed') && owner.entries.get('directed').value.value === true;
-      if (!directed) perm(n.items);
+      // endpoint order of unidirectional relations is meaningful
+      const oneWay = parentKey === 'endpoints' && owner && owner.entries.get('direction') && owner.entries.get('direction').value.value === 'unidirectional';
+      if (!oneWay) perm(n.items);
       n.items.forEach((it) => walk(it, null, null));
     } else if (n.kind === 'map') {
       const e = Array.from(n.entries.entries());

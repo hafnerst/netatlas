@@ -319,7 +319,7 @@ export function detailsFor(model: Model, ref: string): VNode {
         ['id', r.id],
         ['protocol', def.label + (def.label.toLowerCase() !== r.protocol ? ` (${r.protocol})` : '')],
         ['category', r.category],
-        ['directed', r.directed ? 'yes (first → last endpoint)' : undefined],
+        ['direction', r.direction === 'unidirectional' ? 'unidirectional (first → last endpoint)' : 'bidirectional'],
         ['description', r.description],
       ]),
     );
@@ -407,7 +407,7 @@ export function relationTitle(model: Model, id: string): string {
   if (!r) return id;
   const def = relationStyle(model, r);
   const devs = relationDevices(r).map((d) => model.index.devices.get(d)?.label || d);
-  const pair = devs.length <= 3 ? devs.join(r.directed ? ' → ' : ' ↔ ') : `${devs.length} devices`;
+  const pair = devs.length <= 3 ? devs.join(r.direction === 'unidirectional' ? ' → ' : ' ↔ ') : `${devs.length} devices`;
   return `${def.label}${r.label ? ' “' + r.label + '”' : ''}: ${pair}`;
 }
 

@@ -1583,9 +1583,9 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         }
       };
       rev(shuffled.root);
-      // endpoint order of directed relations carries meaning: restore those
+      // endpoint order of unidirectional relations carries meaning: restore those
       const revText = shuffled.exportText().replace('endpoints: [hq-rtr1, muc-rtr]', 'endpoints: [muc-rtr, hq-rtr1]').replace('endpoints: ["hq-log:eno1", hq-fw]', 'endpoints: [hq-fw, "hq-log:eno1"]');
-      check('reversed file keeps the direction of directed relations', /endpoints: \[muc-rtr, hq-rtr1\]/.test(revText) && /endpoints: \[hq-fw, "hq-log:eno1"\]/.test(revText));
+      check('reversed file keeps the direction of unidirectional relations', /endpoints: \[muc-rtr, hq-rtr1\]/.test(revText) && /endpoints: \[hq-fw, "hq-log:eno1"\]/.test(revText));
       app.loadText(revText, 'reversed.yaml', 'file');
       const rd = app.mdoc as ModelDoc;
       rd.arrange(['physical', 'logical']);
@@ -1834,6 +1834,30 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     await setField('#side-body select[data-t="ep-if"][data-p=\'["relations",0,"endpoints",0]\']', 'lo0');
     await setField('#side-body select[data-t="ep-if"][data-p=\'["relations",0,"endpoints",1]\']', 'lo0');
     await setField('#side-body select[data-t="over-append"]', 'link1');
+    {
+      // direction: a two-way switch, bidirectional by default and not written
+      const dirBtns = (): HTMLElement[] => Array.prototype.slice.call(doc.querySelectorAll('#side-body .dir-switch [data-act="direction"]'));
+      const state = (): string => dirBtns().map((b) => `${b.textContent}:${b.getAttribute('aria-checked')}`).join(',');
+      const before = state();
+      const ex0 = (app.mdoc as ModelDoc).exportText();
+      click('#side-body .dir-switch [data-k="unidirectional"]');
+      await tick();
+      const one = state();
+      const ex1 = (app.mdoc as ModelDoc).exportText();
+      click('[data-view-btn="logical"]');
+      const arrows = count('.arrow');
+      click('[data-view-btn="physical"]');
+      click('#outline [data-act="select"][data-kind="relation"][data-index="0"]');
+      await tick();
+      click('#side-body .dir-switch [data-k="bidirectional"]');
+      await tick();
+      check(
+        'a relation\'s Direction is a switch: Bidirectional (default, nothing written) or Unidirectional (written, drawn with an arrow); back to Bidirectional removes the key',
+        before === 'Bidirectional:true,Unidirectional:false' && !/direction|directed/.test(ex0) && one === 'Bidirectional:false,Unidirectional:true' && /\n {4}direction: unidirectional\n/.test(ex1) &&
+          arrows === 1 && state() === before && !/direction/.test((app.mdoc as ModelDoc).exportText()) && !!q('#side-body .dir-switch[role="radiogroup"]'),
+        `${before} / ${one} / ${arrows} / ${state()}`,
+      );
+    }
     // protocol-specific attributes, including a nested group
     await setField('#side-body [data-t="g-newkey"][data-p=\'["relations",0,"attrs"]\']', 'key');
     await setField('#side-body [data-t="auto"][data-p=\'["relations",0,"attrs","key"]\']', '42');
