@@ -188,8 +188,8 @@ devices:
 |---|---|
 | `id` | required, unique within the device across both lists. This is the stable identifier and the interface name used in references (`core1:Vlan10`). |
 | `label` | optional display name (defaults to the id) |
-| `dhcp` | `true` or `false`; **omitted means `false`**. `true`: the interface obtains its address by DHCP, so it has no manually configured addresses. See [DHCP](#dhcp). |
-| `ip` | the manually configured addresses: one address or a list, `ip: 10.0.0.1/30` or `ip: [192.0.2.1/24, 2001:db8::1/64]`. Addresses that aren't valid IPv4/IPv6 addresses give a *warning* and are shown as written (on a loopback they are an error); for `ip: dhcp` the warning says to write `dhcp: true` instead. **The addresses decide which networks the device belongs to.** |
+| `dhcp` | `true` or `false`; **omitted means `false`**. `true`: the interface obtains its address by DHCP, so it has no manually configured addresses. Not on a loopback. See [DHCP](#dhcp). |
+| `ip` | the manually configured addresses: one address or a list, `ip: 10.0.0.1/30` or `ip: [192.0.2.1/24, 2001:db8::1/64]`. Addresses that aren't valid IPv4/IPv6 addresses give a *warning* and are shown as written (on a loopback they are an error); for `ip: dhcp` the warning says to write `dhcp: true` instead (on a loopback: to write its address). **The addresses decide which networks the device belongs to.** |
 | `vrf` | name of the VRF the interface is assigned to (free text, display only). Membership in a network is decided by the address alone. |
 | `mac`, `description`, `attrs` | |
 
@@ -370,7 +370,7 @@ Rules (errors unless noted):
 
 ### DHCP
 
-Every interface, physical or logical, has an explicit DHCP state:
+Every physical interface and every virtual or tunnel interface has an explicit DHCP state (a loopback can't use DHCP, below):
 
 ```yaml
     interfaces:
@@ -389,8 +389,13 @@ Every interface, physical or logical, has an explicit DHCP state:
 * DHCP is not an address. The address the interface will obtain is unknown,
   so it contributes to no network's membership and has no derived VLAN until
   an address is written. It can't carry a DNS name (below).
-* A loopback with `dhcp: true` needs no address.
-* In the editor the **DHCP** switch sits next to the addresses. While it is
+* **A loopback can't use DHCP.** It is an address of the device itself and is
+  always configured, so `dhcp: true` on a loopback is an **error** (kept in
+  the file, not dropped), and the loopback still needs its address.
+  `dhcp: false` on a loopback is accepted. The editor shows no DHCP switch on
+  a loopback card; if the file has `dhcp: true` there, the switch is shown
+  only so that it can be turned off.
+* In the editor the **DHCP** switch sits next to the addresses (not on a loopback). While it is
   on, manual addresses can't be entered. Turning it on for an interface that
   has addresses or DNS names first lists what will be deleted, and deletes
   it in the same undo step only after confirmation. Turning it off does not
@@ -887,8 +892,8 @@ next to the object and field they concern.
   of the device; a tunnel destination that is neither an address nor a
   device or interface of the model; `members`, `vlan`, `source` or
   `destination` on an interface of another type;
-* `dhcp` that isn't `true` or `false`, and `dhcp: true` on an interface
-  that also has addresses;
+* `dhcp` that isn't `true` or `false`, `dhcp: true` on an interface
+  that also has addresses, and `dhcp: true` on a loopback;
 * a DNS name that isn't a valid host name, is listed twice on a device, has
   no interface, names an unknown interface or one with `dhcp: true`, or
   lists an interface twice;

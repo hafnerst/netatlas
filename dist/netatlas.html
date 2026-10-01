@@ -3470,6 +3470,10 @@ class ModelDoc {
         const n = this.get(ipath.concat('dhcp'));
         return !!n && n.kind === 'scalar' && n.value === true;
     }
+    /** Can the interface at `ipath` use DHCP? Every physical and logical interface except a loopback. */
+    dhcpAllowed(ipath) {
+        return ifaceSchemaKind(ipath) === 'interface' || (ifaceSchemaKind(ipath) === 'logical' && this.text(ipath.concat('type')) !== 'loopback');
+    }
     /**
      * What turning DHCP on for an interface would remove: its manually
      * configured addresses and its DNS-name associations (`removed`: the name
@@ -3486,11 +3490,12 @@ class ModelDoc {
      * manual addresses and the DNS-name associations of the interface are
      * removed (see dhcpImpact; the UI asks first) and `dhcp: true` is written.
      * Off: the key is removed (false is the format's default); nothing that
-     * was removed when it was turned on comes back.
+     * was removed when it was turned on comes back. A loopback can't use
+     * DHCP: turning it on is refused (turning it off repairs a file that has it).
      */
     setDhcp(ipath, on) {
         const kind = ifaceSchemaKind(ipath);
-        if (!kind || on === this.dhcpOn(ipath))
+        if (!kind || on === this.dhcpOn(ipath) || (on && !this.dhcpAllowed(ipath)))
             return;
         const iface = this.ifaceIdAt(ipath);
         this.change(on ? 'Turn DHCP on' : 'Turn DHCP off', () => {
@@ -6942,7 +6947,9 @@ function build(root, c) {
                 const p = (0, ip_1.parsePrefix)(a, !isLoop ? false : true);
                 if (!p) {
                     const why = a.toLowerCase() === 'dhcp'
-                        ? '"dhcp" is not an address: to say that the interface obtains its address by DHCP, delete it here and set "dhcp: true"'
+                        ? isLoop
+                            ? '"dhcp" is not an address, and a loopback cannot obtain its address by DHCP: write its address with prefix length'
+                            : '"dhcp" is not an address: to say that the interface obtains its address by DHCP, delete it here and set "dhcp: true"'
                         : (0, ip_1.prefixProblem)(a) || `"${a}" is not a valid address`;
                     if (isLoop)
                         c.error(an, `${ipath}.ip[${j}]`, `invalid loopback address: ${why}`);
@@ -6964,11 +6971,15 @@ function build(root, c) {
                 else
                     addrOwner.set(k2, { where: key, node: an });
             });
-            if (dhcp && addrNodes.length) {
+            if (dhcp && isLoop) {
+                // an address of the device itself is always configured; the flag is reported, not dropped
+                c.error((0, reader_1.get)(im, 'dhcp'), ipath + '.dhcp', `loopback "${iid}" cannot obtain its address by DHCP: a loopback's addresses are always configured — delete "dhcp: true" and write its address under "ip:"`);
+            }
+            else if (dhcp && addrNodes.length) {
                 // both are kept as written and reported: neither the flag nor the addresses are discarded
                 c.error(ipNode, ipath + '.ip', `${kind} "${iid}" has "dhcp: true" and manually configured addresses; an interface either obtains its address by DHCP or has addresses configured — delete "ip:" or set "dhcp: false"`);
             }
-            if (isLoop && !addrs.length && !dhcp) {
+            if (isLoop && !addrs.length) {
                 c.error(ipNode && !(0, reader_1.isNull)(ipNode) ? ipNode : im, ipath + '.ip', `loopback "${iid}" needs at least one IPv4 or IPv6 address with prefix length (e.g. 10.255.0.1/32 or 2001:db8::1/128)`, ipNode && !(0, reader_1.isNull)(ipNode) ? {} : { key: 'ip' });
             }
             const iface = {
@@ -10427,11 +10438,17 @@ class Editor {
     /**
      * The addresses of an interface, with the DHCP switch next to them. While
      * DHCP is on, manual addresses can't be entered (a file that has both shows
-     * them, with the error, so they can be removed).
+     * them, with the error, so they can be removed). A loopback can't use
+     * DHCP, so it has no switch, unless its file says "dhcp: true": then the
+     * switch is shown so that it can be turned off.
      */
     addressField(p, loop, o) {
         const doc = this.doc;
         const on = doc.dhcpOn(p);
+        const label = loop ? 'Addresses (IPv4 / IPv6 with prefix)' : 'Addresses';
+        const example = loop ? '10.255.0.1/32 or 2001:db8::1/128' : '192.0.2.1/24';
+        if (!on && !doc.dhcpAllowed(p))
+            return this.listField(p.concat('ip'), label, o, example);
         const addrs = this.listTexts(p.concat('ip'));
         const locked = on && !addrs.length;
         const sw = this.e('button', {
@@ -10443,11 +10460,12 @@ class Editor {
             'data-p': J(p),
             title: on ? 'Turn DHCP off: addresses can then be configured manually' : 'Turn DHCP on: the interface obtains its address by DHCP (its manual addresses are deleted after a confirmation)',
         }, ['DHCP ', this.e('span', { class: 'dhcp-state' }, [on ? 'on' : 'off'])]);
-        const label = loop ? 'Addresses (IPv4 / IPv6 with prefix)' : 'Addresses';
-        const help = on
-            ? 'Obtained by DHCP. The address is not known to NetAtlas, so this interface is in no network and has no derived VLAN until an address is configured.'
-            : undefined;
-        const f = this.listField(p.concat('ip'), label, o, loop ? '10.255.0.1/32 or 2001:db8::1/128' : '192.0.2.1/24', help, locked);
+        const help = !on
+            ? undefined
+            : loop
+                ? 'A loopback cannot obtain its address by DHCP. Turn DHCP off and enter its address.'
+                : 'Obtained by DHCP. The address is not known to NetAtlas, so this interface is in no network and has no derived VLAN until an address is configured.';
+        const f = this.listField(p.concat('ip'), label, o, example, help, locked);
         f.setAttribute('data-dhcp', on ? 'on' : 'off');
         // the switch sits beside the label (see .field[data-dhcp] in the styles)
         f.insertBefore(sw, f.firstChild ? f.firstChild.nextSibling : null);
@@ -14383,6 +14401,7 @@ async function runSelfTest(app, doc) {
                     '      - eth2',
                     '    logical_interfaces:',
                     '      - {id: lo0, type: loopback, ip: 10.255.0.10/32}',
+                    '      - {id: vlan30, type: virtual}',
                     '    dns_names:',
                     '      - {name: mgmt.example.net, interfaces: [eth1]}',
                     '',
@@ -14396,7 +14415,8 @@ async function runSelfTest(app, doc) {
                 const sw = (id) => q(card(id) + ' [data-act="dhcp"]');
                 const modal = () => (q('#modal[open]') || { textContent: '' }).textContent || '';
                 const sections = textsOf('#side-body .inspector > section.sub h4');
-                check('every physical and logical interface has a DHCP switch beside its addresses, off by default; DNS names follow the interface sections', doc.querySelectorAll('#side-body details.card > .field[data-dhcp] > label + [data-act="dhcp"]').length === 4 &&
+                check('every physical and logical interface except a loopback has a DHCP switch beside its addresses, off by default; DNS names follow the interface sections', Array.prototype.map.call(doc.querySelectorAll('#side-body details.card > .field[data-dhcp] > label + [data-act="dhcp"]'), (b) => b.closest('details.card').getAttribute('data-iface')).join() === 'eth0,eth1,eth2,vlan30' &&
+                    !q(card('lo0') + ' [data-act="dhcp"]') && !!q(card('lo0') + ' .field input.append') && !q(card('lo0') + ' .field input.append').disabled &&
                     Array.prototype.every.call(doc.querySelectorAll('#side-body [data-act="dhcp"]'), (b) => b.getAttribute('aria-checked') === 'false' && b.getAttribute('role') === 'switch') &&
                     !inf('eth2').dhcp && /^Physical interfaces/.test(sections[0]) && /^Logical interfaces/.test(sections[1]) && sections[2] === 'DNS names (1)', sections.join('|'));
                 const before = app.exportText();
@@ -14440,7 +14460,7 @@ async function runSelfTest(app, doc) {
                 }
                 await tick();
                 const preview = (q('#dns-preview') || { textContent: '' }).textContent || '';
-                check('"+ DNS name" offers the interfaces with DHCP off by name, says which are excluded, and explains that a name belongs to the interface, not one of its addresses', offered.join() === 'eth0,eth1,lo0' && labels[0] === 'Front (eth0)' && /DHCP is on: eth2/.test(q('[data-dns-excluded]').textContent || '') && disabledFirst && !createBtn().disabled &&
+                check('"+ DNS name" offers the interfaces with DHCP off by name, says which are excluded, and explains that a name belongs to the interface, not one of its addresses', offered.join() === 'eth0,eth1,lo0,vlan30' && labels[0] === 'Front (eth0)' && /DHCP is on: eth2/.test(q('[data-dns-excluded]').textContent || '') && disabledFirst && !createBtn().disabled &&
                     /eth0 has 2 addresses: the name is associated with the interface, not with one particular address/.test(preview), offered.join() + ' | ' + preview);
                 createBtn().click();
                 await tick(30);
@@ -14448,7 +14468,7 @@ async function runSelfTest(app, doc) {
                 check('the name is stored once with both interfaces (by id), shown with their names', JSON.stringify(m().result.model.devices[0].dnsNames.map((x) => [x.name, x.interfaces])) === '[["api.example.com",["eth0","lo0"]]]' && m().canUndo() === 'Add DNS name' &&
                     chips.length === 2 && /^Front \(eth0\)/.test(chips[0]) && /^lo0/.test(chips[1]) && /DNS names \(1\)/.test(textsOf('#side-body section[data-list="dns-names"] h4')[0] || ''), chips.join('|'));
                 // DHCP on an associated interface: the association is part of the confirmation
-                sw('lo0').click();
+                sw('eth0').click();
                 await tick(20);
                 const asked2 = modal();
                 await answerDialog('cancel');

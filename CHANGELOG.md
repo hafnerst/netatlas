@@ -14,9 +14,10 @@ it is described in [docs/FORMAT.md](docs/FORMAT.md).
 
 ### Added
 
-- **DHCP on interfaces.** Every physical and logical interface has a
-  `dhcp` flag (`true` / `false`, omitted = `false`) and a **DHCP** switch
-  next to its addresses in the editor. It is off for new interfaces and is
+- **DHCP on interfaces.** Every physical interface and every virtual or
+  tunnel interface has a `dhcp` flag (`true` / `false`, omitted = `false`)
+  and a **DHCP** switch next to its addresses in the editor. A loopback
+  can't use DHCP: it has no switch, and `dhcp: true` on it is an error. It is off for new interfaces and is
   never inferred from an empty address list. While it is on, manual
   addresses can't be entered. Turning it on for an interface with
   addresses or DNS names asks first and deletes them in one undo step;

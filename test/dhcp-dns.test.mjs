@@ -99,16 +99,43 @@ test('DHCP is not an address: such an interface is in no network, and "ip: dhcp"
   assert.deepEqual(derive.deviceNetworks(m, 'web2'), []);
   const w = warnings(base.replace('{id: eth0, dhcp: true}', '{id: eth0, ip: dhcp}'));
   assert.ok(w.some((x) => /"dhcp" is not an address: .*set "dhcp: true"/.test(x)), w.join('\n'));
-  // a loopback that obtains its address by DHCP doesn't need a written address
-  const lo = base.replace('{id: lo0, type: loopback, ip: 10.255.0.10/32}', '{id: lo0, type: loopback, dhcp: true}');
-  assert.deepEqual(errors(lo), []);
   assert.ok(errors(base.replace('{id: lo0, type: loopback, ip: 10.255.0.10/32}', '{id: lo0, type: loopback}')).some((x) => /needs at least one/.test(x)));
+});
+
+test('a loopback cannot use DHCP: "dhcp: true" on it is an error (kept, not dropped), and the editor never turns it on', () => {
+  const lo = (entry) => base.replace('{id: lo0, type: loopback, ip: 10.255.0.10/32}', entry);
+  // with or without an address, the flag itself is the error; the missing address is reported as for any loopback
+  const alone = errors(lo('{id: lo0, type: loopback, dhcp: true}'));
+  assert.ok(alone.some((x) => /loopback "lo0" cannot obtain its address by DHCP/.test(x)), alone.join('\n'));
+  assert.ok(alone.some((x) => /needs at least one/.test(x)));
+  const both = errors(lo('{id: lo0, type: loopback, dhcp: true, ip: 10.255.0.10/32}'));
+  assert.deepEqual(both.filter((x) => /DHCP|dhcp/.test(x)).length, 1, both.join('\n'));
+  assert.equal(validate.loadModel(lo('{id: lo0, type: loopback, dhcp: true, ip: 10.255.0.10/32}')).model.index.interfaces.get('web1:lo0').dhcp, true);
+  // "dhcp: false" is harmless; "ip: dhcp" on a loopback doesn't suggest the flag
+  assert.deepEqual(errors(lo('{id: lo0, type: loopback, dhcp: false, ip: 10.255.0.10/32}')), []);
+  const word = errors(lo('{id: lo0, type: loopback, ip: dhcp}'));
+  assert.ok(word.some((x) => /a loopback cannot obtain its address by DHCP: write its address/.test(x)) && !word.some((x) => /set "dhcp: true"/.test(x)), word.join('\n'));
+  // editor: refused for a loopback (nothing changes, nothing to undo), allowed for every other kind
+  const d = doc(base);
+  const lp = ['devices', 0, 'logical_interfaces', 0];
+  assert.equal(d.dhcpAllowed(lp), false);
+  assert.equal(d.dhcpAllowed(['devices', 0, 'logical_interfaces', 1]), true);
+  assert.equal(d.dhcpAllowed(['devices', 0, 'interfaces', 2]), true);
+  const before = d.exportText();
+  d.setDhcp(lp, true);
+  assert.equal(d.exportText(), before);
+  assert.equal(d.canUndo(), null);
+  // a file that has it can be repaired by turning it off
+  const bad = doc(lo('{id: lo0, type: loopback, dhcp: true, ip: 10.255.0.10/32}'));
+  bad.setDhcp(lp, false);
+  assert.ok(bad.valid, bad.errors.map((e) => e.message).join());
+  assert.equal(bad.canUndo(), 'Turn DHCP off');
 });
 
 test('turning DHCP on lists what it deletes, then removes the addresses and sets the flag in one undo step (physical and logical)', () => {
   for (const [list, k, id, addrs] of [
     ['interfaces', 1, 'eth1', ['198.51.100.10/24']],
-    ['logical_interfaces', 0, 'lo0', ['10.255.0.10/32']],
+    ['logical_interfaces', 1, 'bond0', ['203.0.113.10/24']],
   ]) {
     const d = doc(base);
     const before = d.exportText();

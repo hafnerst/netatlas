@@ -1175,6 +1175,11 @@ export class ModelDoc {
     return !!n && n.kind === 'scalar' && n.value === true;
   }
 
+  /** Can the interface at `ipath` use DHCP? Every physical and logical interface except a loopback. */
+  dhcpAllowed(ipath: Path): boolean {
+    return ifaceSchemaKind(ipath) === 'interface' || (ifaceSchemaKind(ipath) === 'logical' && this.text(ipath.concat('type')) !== 'loopback');
+  }
+
   /**
    * What turning DHCP on for an interface would remove: its manually
    * configured addresses and its DNS-name associations (`removed`: the name
@@ -1192,11 +1197,12 @@ export class ModelDoc {
    * manual addresses and the DNS-name associations of the interface are
    * removed (see dhcpImpact; the UI asks first) and `dhcp: true` is written.
    * Off: the key is removed (false is the format's default); nothing that
-   * was removed when it was turned on comes back.
+   * was removed when it was turned on comes back. A loopback can't use
+   * DHCP: turning it on is refused (turning it off repairs a file that has it).
    */
   setDhcp(ipath: Path, on: boolean): void {
     const kind = ifaceSchemaKind(ipath);
-    if (!kind || on === this.dhcpOn(ipath)) return;
+    if (!kind || on === this.dhcpOn(ipath) || (on && !this.dhcpAllowed(ipath))) return;
     const iface = this.ifaceIdAt(ipath);
     this.change(on ? 'Turn DHCP on' : 'Turn DHCP off', () => {
       if (!on) {

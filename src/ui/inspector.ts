@@ -831,11 +831,16 @@ export class Editor {
   /**
    * The addresses of an interface, with the DHCP switch next to them. While
    * DHCP is on, manual addresses can't be entered (a file that has both shows
-   * them, with the error, so they can be removed).
+   * them, with the error, so they can be removed). A loopback can't use
+   * DHCP, so it has no switch, unless its file says "dhcp: true": then the
+   * switch is shown so that it can be turned off.
    */
   private addressField(p: Path, loop: boolean, o: string): HTMLElement {
     const doc = this.doc;
     const on = doc.dhcpOn(p);
+    const label = loop ? 'Addresses (IPv4 / IPv6 with prefix)' : 'Addresses';
+    const example = loop ? '10.255.0.1/32 or 2001:db8::1/128' : '192.0.2.1/24';
+    if (!on && !doc.dhcpAllowed(p)) return this.listField(p.concat('ip'), label, o, example);
     const addrs = this.listTexts(p.concat('ip'));
     const locked = on && !addrs.length;
     const sw = this.e(
@@ -851,11 +856,12 @@ export class Editor {
       },
       ['DHCP ', this.e('span', { class: 'dhcp-state' }, [on ? 'on' : 'off'])],
     );
-    const label = loop ? 'Addresses (IPv4 / IPv6 with prefix)' : 'Addresses';
-    const help = on
-      ? 'Obtained by DHCP. The address is not known to NetAtlas, so this interface is in no network and has no derived VLAN until an address is configured.'
-      : undefined;
-    const f = this.listField(p.concat('ip'), label, o, loop ? '10.255.0.1/32 or 2001:db8::1/128' : '192.0.2.1/24', help, locked);
+    const help = !on
+      ? undefined
+      : loop
+        ? 'A loopback cannot obtain its address by DHCP. Turn DHCP off and enter its address.'
+        : 'Obtained by DHCP. The address is not known to NetAtlas, so this interface is in no network and has no derived VLAN until an address is configured.';
+    const f = this.listField(p.concat('ip'), label, o, example, help, locked);
     f.setAttribute('data-dhcp', on ? 'on' : 'off');
     // the switch sits beside the label (see .field[data-dhcp] in the styles)
     f.insertBefore(sw, f.firstChild ? f.firstChild.nextSibling : null);

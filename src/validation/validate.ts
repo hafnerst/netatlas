@@ -382,7 +382,9 @@ function build(root: YNode | null, c: Ctx): Model | null {
         if (!p) {
           const why =
             a.toLowerCase() === 'dhcp'
-              ? '"dhcp" is not an address: to say that the interface obtains its address by DHCP, delete it here and set "dhcp: true"'
+              ? isLoop
+                ? '"dhcp" is not an address, and a loopback cannot obtain its address by DHCP: write its address with prefix length'
+                : '"dhcp" is not an address: to say that the interface obtains its address by DHCP, delete it here and set "dhcp: true"'
               : prefixProblem(a) || `"${a}" is not a valid address`;
           if (isLoop) c.error(an, `${ipath}.ip[${j}]`, `invalid loopback address: ${why}`);
           else c.warn(an, `${ipath}.ip[${j}]`, `${why}; it is shown as written`);
@@ -399,7 +401,14 @@ function build(root: YNode | null, c: Ctx): Model | null {
         if (owner) c.warn(an, `${ipath}.ip[${j}]`, `address ${a.split('/')[0]} is also assigned to ${owner.where}`);
         else addrOwner.set(k2, { where: key, node: an });
       });
-      if (dhcp && addrNodes.length) {
+      if (dhcp && isLoop) {
+        // an address of the device itself is always configured; the flag is reported, not dropped
+        c.error(
+          get(im, 'dhcp') as YNode,
+          ipath + '.dhcp',
+          `loopback "${iid}" cannot obtain its address by DHCP: a loopback's addresses are always configured — delete "dhcp: true" and write its address under "ip:"`,
+        );
+      } else if (dhcp && addrNodes.length) {
         // both are kept as written and reported: neither the flag nor the addresses are discarded
         c.error(
           ipNode as YNode,
@@ -407,7 +416,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
           `${kind} "${iid}" has "dhcp: true" and manually configured addresses; an interface either obtains its address by DHCP or has addresses configured — delete "ip:" or set "dhcp: false"`,
         );
       }
-      if (isLoop && !addrs.length && !dhcp) {
+      if (isLoop && !addrs.length) {
         c.error(ipNode && !isNull(ipNode) ? ipNode : im, ipath + '.ip', `loopback "${iid}" needs at least one IPv4 or IPv6 address with prefix length (e.g. 10.255.0.1/32 or 2001:db8::1/128)`, ipNode && !isNull(ipNode) ? {} : { key: 'ip' });
       }
       const iface: Interface = {

@@ -692,6 +692,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
             '      - eth2',
             '    logical_interfaces:',
             '      - {id: lo0, type: loopback, ip: 10.255.0.10/32}',
+            '      - {id: vlan30, type: virtual}',
             '    dns_names:',
             '      - {name: mgmt.example.net, interfaces: [eth1]}',
             '',
@@ -708,8 +709,9 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         const modal = (): string => (q('#modal[open]') || { textContent: '' }).textContent || '';
         const sections = textsOf('#side-body .inspector > section.sub h4');
         check(
-          'every physical and logical interface has a DHCP switch beside its addresses, off by default; DNS names follow the interface sections',
-          doc.querySelectorAll('#side-body details.card > .field[data-dhcp] > label + [data-act="dhcp"]').length === 4 &&
+          'every physical and logical interface except a loopback has a DHCP switch beside its addresses, off by default; DNS names follow the interface sections',
+          (Array.prototype.map.call(doc.querySelectorAll('#side-body details.card > .field[data-dhcp] > label + [data-act="dhcp"]'), (b: Element) => (b.closest('details.card') as Element).getAttribute('data-iface')) as string[]).join() === 'eth0,eth1,eth2,vlan30' &&
+            !q(card('lo0') + ' [data-act="dhcp"]') && !!q(card('lo0') + ' .field input.append') && !(q(card('lo0') + ' .field input.append') as HTMLInputElement).disabled &&
             Array.prototype.every.call(doc.querySelectorAll('#side-body [data-act="dhcp"]'), (b: Element) => b.getAttribute('aria-checked') === 'false' && b.getAttribute('role') === 'switch') &&
             !inf('eth2').dhcp && /^Physical interfaces/.test(sections[0]) && /^Logical interfaces/.test(sections[1]) && sections[2] === 'DNS names (1)',
           sections.join('|'),
@@ -768,7 +770,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         const preview = (q('#dns-preview') || { textContent: '' }).textContent || '';
         check(
           '"+ DNS name" offers the interfaces with DHCP off by name, says which are excluded, and explains that a name belongs to the interface, not one of its addresses',
-          offered.join() === 'eth0,eth1,lo0' && labels[0] === 'Front (eth0)' && /DHCP is on: eth2/.test(q('[data-dns-excluded]')!.textContent || '') && disabledFirst && !createBtn().disabled &&
+          offered.join() === 'eth0,eth1,lo0,vlan30' && labels[0] === 'Front (eth0)' && /DHCP is on: eth2/.test(q('[data-dns-excluded]')!.textContent || '') && disabledFirst && !createBtn().disabled &&
             /eth0 has 2 addresses: the name is associated with the interface, not with one particular address/.test(preview),
           offered.join() + ' | ' + preview,
         );
@@ -782,7 +784,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
           chips.join('|'),
         );
         // DHCP on an associated interface: the association is part of the confirmation
-        sw('lo0').click();
+        sw('eth0').click();
         await tick(20);
         const asked2 = modal();
         await answerDialog('cancel');
