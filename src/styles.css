@@ -455,6 +455,23 @@ details.card > .field.derived { margin: 4px 10px; }
 .vlan-state.trunk { color: var(--accent); }
 .vlan-state.muted { font-weight: 400; font-style: italic; }
 .vlan-chips { display: flex; flex-wrap: wrap; gap: 3px; }
+/* DHCP switch beside the addresses of an interface; while it is on, manual addresses are greyed out */
+.field[data-dhcp] { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; column-gap: 6px; row-gap: 2px; }
+.field[data-dhcp] > :not(label):not(.dhcp-switch) { grid-column: 1 / -1; }
+button.dhcp-switch { white-space: nowrap; }
+button.dhcp-switch.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+@media (prefers-color-scheme: dark) { button.dhcp-switch.on { color: #0d1014; } }
+.dhcp-state { font-weight: 600; }
+.list-ed.disabled input { background: var(--grid); color: var(--muted); border-style: solid; cursor: not-allowed; }
+/* DNS names of a device */
+.dns-entry { border: 1px solid var(--border); border-radius: 7px; margin: 5px 0; padding: 5px 7px; background: var(--canvas); display: flex; flex-direction: column; gap: 4px; }
+.dns-entry.invalid { border-left: 3px solid var(--error); }
+.dns-entry select { padding: 3px 6px; border: 1px solid var(--border); border-radius: 5px; background: var(--canvas); font-size: 12px; }
+.dns-name-row input { flex: 1; min-width: 0; padding: 4px 7px; border: 1px solid var(--border); border-radius: 5px; background: var(--panel); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; }
+.dns-ifaces .ref-chip { flex: none; display: inline-flex; align-items: center; gap: 4px; }
+.dns-pick { display: flex; flex-direction: column; gap: 2px; max-height: 180px; overflow: auto; margin: 3px 0 8px; padding: 5px 8px; border: 1px solid var(--border); border-radius: 7px; background: var(--canvas); font-size: 12.5px; }
+.dns-pick-row { display: flex; align-items: center; gap: 4px; overflow-wrap: anywhere; }
+ul.dhcp-loss { margin: 2px 0 8px; padding-left: 20px; }
 .vlan-chip { flex: none; display: inline-flex; align-items: center; gap: 3px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .vlan-ed .list-row > * { flex: 1; min-width: 0; }
 .vlan-mismatch-note { border: 1px solid var(--warn); border-radius: 6px; padding: 4px 7px; }

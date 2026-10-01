@@ -10,6 +10,36 @@ a NetAtlas release and is shown next to the logo. The **model format
 version** (`netatlas: 1`) names the YAML format a model file is written in;
 it is described in [docs/FORMAT.md](docs/FORMAT.md).
 
+## [Unreleased]
+
+### Added
+
+- **DHCP on interfaces.** Every physical interface and every virtual or
+  tunnel interface has a `dhcp` flag (`true` / `false`, omitted = `false`)
+  and a **DHCP** switch next to its addresses in the editor. A loopback
+  can't use DHCP: it has no switch, and `dhcp: true` on it is an error. It is off for new interfaces and is
+  never inferred from an empty address list. While it is on, manual
+  addresses can't be entered. Turning it on for an interface with
+  addresses or DNS names asks first and deletes them in one undo step;
+  turning it off doesn't bring them back. A file with `dhcp: true` and
+  addresses on the same interface is rejected with an error that keeps
+  both values. A DHCP interface is in no network, because its address is
+  not known.
+- **DNS names on devices.** `dns_names` on a device lists names, each
+  entered once and associated with one or more of the device's physical or
+  logical interfaces (by interface id). The editor has a **DNS names**
+  section after the interface sections, with **+ DNS name** (interfaces
+  picked by name; DHCP interfaces are not offered). Names are checked for
+  host-name syntax, duplicates, unknown or DHCP interfaces and an empty
+  interface list. Renaming an interface updates its associations; deleting
+  it or turning DHCP on removes them in the same step, and a name left
+  without interfaces goes with them. A name belongs to the interface, not
+  one of its addresses, and no DNS record is derived. Device details,
+  interface details, tooltips and **Find…** show the names; the diagrams
+  don't.
+- The `enterprise-wan.yaml` example uses both: the Hamburg LTE uplink has
+  `dhcp: true`, and three DNS names are configured at HQ.
+
 ## [0.1.1] - 2026-09-30
 
 NetAtlas 0.1.1 is still one self-contained, offline HTML file

@@ -196,7 +196,7 @@ export interface SearchHit {
   kind: string;
 }
 
-/** Case-insensitive search over ids, labels, protocols and addresses. */
+/** Case-insensitive search over ids, labels, protocols, addresses and DNS names. */
 export function search(model: Model, query: string, limit = 12): SearchHit[] {
   const q = query.trim().toLowerCase();
   if (!q) return [];
@@ -215,7 +215,7 @@ export function search(model: Model, query: string, limit = 12): SearchHit[] {
   for (const d of model.devices) {
     const addrs: string[] = [];
     for (const i of deviceInterfaces(d)) addrs.push(...i.addresses);
-    consider('device:' + d.id, 'device', d.label, [d.id, d.label, d.type, ...addrs]);
+    consider('device:' + d.id, 'device', d.label, [d.id, d.label, d.type, ...addrs, ...d.dnsNames.map((x) => x.name)]);
   }
   for (const n of model.networks) consider('network:' + n.id, 'network', n.label, [n.id, n.label, n.vlan !== undefined ? 'vlan ' + n.vlan : '', ...n.cidr]);
   for (const r of model.relations) consider('relation:' + r.id, r.protocol, r.label || r.id, [r.id, r.protocol, r.label || '']);

@@ -469,6 +469,210 @@ export class Editor {
     ]);
     for (const e of logical) ls.appendChild(this.ifaceCard(devIndex, e));
     w.appendChild(ls);
+    w.appendChild(this.dnsSection(devIndex));
+  }
+
+  // ------------------------------------------------------------ DNS names
+
+  /** How an interface is shown in DNS-name selectors: its name (label), with the id it is stored as. */
+  private ifaceName(devIndex: number, id: string): string {
+    const e = this.doc.interfaceEntries(devIndex).find((x) => x.id === id);
+    const label = e ? this.doc.text(e.path.concat('label')) : undefined;
+    return label && label !== id ? `${label} (${id})` : id;
+  }
+
+  /** Manually configured addresses of an interface of a device, as written. */
+  private ifaceAddrs(devIndex: number, id: string): string[] {
+    const e = this.doc.interfaceEntries(devIndex).find((x) => x.id === id);
+    return e ? this.listTexts(e.path.concat('ip')) : [];
+  }
+
+  /** The note for interfaces with several addresses: the name belongs to the interface, not to one address. */
+  private multiAddrNote(devIndex: number, ids: string[]): HTMLElement | null {
+    const multi = ids.filter((id) => this.ifaceAddrs(devIndex, id).length > 1);
+    if (!multi.length) return null;
+    return this.e('div', { class: 'help dns-multi', 'data-dns-multi': multi.join(',') }, [
+      `${multi.map((id) => `${id} has ${this.ifaceAddrs(devIndex, id).length} addresses`).join('; ')}: the name is associated with the interface, not with one particular address.`,
+    ]);
+  }
+
+  /**
+   * The DNS names of a device, after its interfaces. Each name is entered
+   * once and associated with one or more interfaces of the device (stored by
+   * interface id). Interfaces with DHCP on can't be selected. Only the
+   * association is stored: no DNS record is created or derived.
+   */
+  private dnsSection(devIndex: number): HTMLElement {
+    const doc = this.doc;
+    const entries = sortedByName(doc.dnsEntries(devIndex), (e) => e.name || '');
+    const listPath: Path = ['devices', devIndex, 'dns_names'];
+    const n = doc.get(listPath);
+    const sec = this.e('section', { class: 'sub', 'data-list': 'dns-names' }, [
+      this.e('div', { class: 'sub-head' }, [
+        this.e('h4', {}, [`DNS names (${entries.length})`]),
+        this.e('span', { class: 'ctl row' }, [this.e('button', { type: 'button', class: 'mini', 'data-act': 'add-dns', 'data-index': String(devIndex), title: 'Add a DNS name and associate it with interfaces of this device' }, ['+ DNS name'])]),
+      ]),
+      entries.length ? null : this.e('p', { class: 'muted small' }, ['Names of this device, each associated with one or more of its interfaces that have DHCP off. Only the name and its interfaces are stored; no DNS record is created.']),
+      n && n.kind !== 'seq' && !(n.kind === 'scalar' && n.value === null) ? this.e('p', { class: 'field-err' }, ['"dns_names" is not a list; fix it in the YAML tab.']) : null,
+    ]);
+    const eligible = sortedByName(doc.dnsEligible(devIndex), (e) => e.id as string).map((e) => e.id as string);
+    for (const e of entries) {
+      const k = e.path[3] as number;
+      const iss = doc.issuesAt(e.path);
+      const box = this.e('div', { class: 'dns-entry' + (iss.some((i) => i.severity === 'error') ? ' invalid' : ''), 'data-dns': e.name || '' });
+      const node = doc.get(e.path);
+      if (!node || node.kind !== 'map') {
+        box.appendChild(this.e('div', { class: 'field-err' }, ['This entry is not a mapping with "name:" and "interfaces:"; fix it in the YAML tab or delete it.']));
+        box.appendChild(this.e('button', { type: 'button', class: 'mini danger', 'data-act': 'del-dns', 'data-index': String(devIndex), 'data-k': String(k) }, ['Delete']));
+        sec.appendChild(box);
+        continue;
+      }
+      const nameInput = this.input(e.path.concat('name'), 'text', e.name || '', { 'data-o': 'dnsName', placeholder: 'www.example.com', 'aria-label': 'DNS name' });
+      box.appendChild(
+        this.e('div', { class: 'list-row dns-name-row' }, [
+          nameInput,
+          this.e('button', { type: 'button', class: 'mini danger', 'data-act': 'del-dns', 'data-index': String(devIndex), 'data-k': String(k), title: `Delete the DNS name ${e.name || ''}` }, ['×']),
+        ]),
+      );
+      for (const is of doc.issuesAt(e.path.concat('name'))) box.appendChild(this.e('div', { class: is.severity === 'error' ? 'field-err' : 'field-warn' }, [is.message]));
+      const ip = e.path.concat('interfaces');
+      const ifn = doc.get(ip);
+      const chips = this.e('div', { class: 'vlan-chips dns-ifaces' });
+      e.interfaces.forEach((id, j) => {
+        const at = ifn && ifn.kind === 'seq' ? ip.concat(j) : ip;
+        const last = e.interfaces.length === 1;
+        chips.appendChild(
+          this.e('span', { class: 'ref-chip' + (eligible.indexOf(id) < 0 ? ' invalid' : ''), 'data-dns-iface': id }, [
+            this.ifaceName(devIndex, id),
+            last
+              ? null
+              : this.e('button', { type: 'button', class: 'mini', 'data-act': 'del-item', 'data-p': J(at), title: `Remove the association with ${id}` }, ['×']),
+          ]),
+        );
+      });
+      box.appendChild(chips);
+      const pick = this.e('select', { 'data-p': J(ip), 'data-t': 'dns-iface-append', 'aria-label': `Associate ${e.name || 'this name'} with another interface` }) as HTMLSelectElement;
+      const more = eligible.filter((id) => e.interfaces.indexOf(id) < 0);
+      pick.appendChild(this.e('option', { value: '' }, [more.length ? '+ associate an interface…' : '(no other interface with manual addressing)']));
+      for (const id of more) pick.appendChild(this.e('option', { value: id }, [this.ifaceName(devIndex, id)]));
+      box.appendChild(pick);
+      for (const is of doc.issuesAt(ip)) box.appendChild(this.e('div', { class: is.severity === 'error' ? 'field-err' : 'field-warn' }, [is.message]));
+      const note = this.multiAddrNote(devIndex, e.interfaces);
+      if (note) box.appendChild(note);
+      sec.appendChild(box);
+    }
+    if (entries.length) {
+      sec.appendChild(
+        this.e('p', { class: 'muted small' }, [
+          'A name is associated with whole interfaces (physical or logical), not with one of their addresses, and only names what is configured: no A or AAAA record is created. The last interface of a name can’t be removed: delete the name instead. Interfaces with DHCP on are not offered.',
+        ]),
+      );
+    }
+    return sec;
+  }
+
+  /**
+   * "+ DNS name": ask for the name and the interfaces it belongs to, and
+   * create the entry only when both are valid. Cancel changes nothing.
+   */
+  private async addDnsName(devIndex: number): Promise<void> {
+    const doc = this.doc;
+    const nameIn = this.e('input', { type: 'text', id: 'dns-name', spellcheck: 'false', autocomplete: 'off', placeholder: 'www.example.com' }) as HTMLInputElement;
+    const eligible = sortedByName(doc.dnsEligible(devIndex), (e) => e.id as string).map((e) => e.id as string);
+    const dhcp = sortedByName(doc.interfaceEntries(devIndex).filter((e) => !!e.id && doc.dhcpOn(e.path)), (e) => e.id as string).map((e) => e.id as string);
+    const boxes = eligible.map((id) => this.e('input', { type: 'checkbox', value: id }) as HTMLInputElement);
+    const list = this.e('div', { id: 'dns-ifaces', class: 'dns-pick' }, eligible.length ? eligible.map((id, k) => this.e('label', { class: 'dns-pick-row' }, [boxes[k], ' ' + this.ifaceName(devIndex, id)])) : [this.e('span', { class: 'muted' }, ['This device has no interface with manual addressing.'])]);
+    const preview = this.e('div', { id: 'dns-preview', class: 'range-preview', role: 'status', 'aria-live': 'polite' });
+    let create: HTMLButtonElement | null = null;
+    const chosen = (): string[] => boxes.filter((b) => b.checked).map((b) => b.value);
+    const refresh = (): void => {
+      while (preview.firstChild) preview.removeChild(preview.firstChild);
+      const err = doc.dnsNameError(devIndex, nameIn.value.trim(), chosen());
+      const untouched = !nameIn.value.trim() && !chosen().length;
+      preview.setAttribute('data-state', err ? (untouched ? 'empty' : 'error') : 'ok');
+      if (err) preview.appendChild(this.e('div', { class: untouched ? 'muted' : 'field-err' }, [untouched ? 'Enter the name once and select every interface it belongs to.' : err]));
+      else preview.appendChild(this.e('div', {}, [`“${nameIn.value.trim()}” will be associated with ${chosen().map((id) => this.ifaceName(devIndex, id)).join(', ')}.`]));
+      const note = this.multiAddrNote(devIndex, chosen());
+      if (note) preview.appendChild(note);
+      if (create) create.disabled = !!err;
+    };
+    const answer = await this.host.dialog({
+      title: 'Add a DNS name',
+      body: [
+        this.e('div', { class: 'range-form' }, [this.e('label', { class: 'dl-label' }, ['Name ', nameIn])]),
+        this.e('div', { class: 'dl-label' }, ['Interfaces']),
+        list,
+        dhcp.length ? this.e('p', { class: 'muted small', 'data-dns-excluded': dhcp.join(',') }, [`Not offered because DHCP is on: ${dhcp.join(', ')}.`]) : null,
+        preview,
+        this.e('p', { class: 'muted small' }, ['Only the name and its interfaces are stored: no DNS record is created. You can undo this with Ctrl+Z.']),
+      ].filter((x): x is HTMLElement => !!x),
+      buttons: [
+        { label: 'Cancel', value: 'cancel' },
+        { label: 'Add DNS name', value: 'create', kind: 'primary' },
+      ],
+      ready: (dialog) => {
+        create = dialog.querySelector('[data-value="create"]') as HTMLButtonElement | null;
+        nameIn.addEventListener('input', refresh);
+        for (const b of boxes) b.addEventListener('change', refresh);
+        nameIn.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter' && create && !create.disabled) {
+            e.preventDefault();
+            create.click();
+          }
+        });
+        refresh();
+      },
+    });
+    if (answer !== 'create') return;
+    const name = nameIn.value.trim();
+    if (doc.addDnsName(devIndex, name, chosen()) < 0) {
+      this.host.toast(doc.dnsNameError(devIndex, name, chosen()) || 'The DNS name was not added.');
+      return;
+    }
+    this.host.changed(`DNS name “${name}” added.`);
+  }
+
+  /**
+   * The DHCP switch of an interface. Turning it on removes the manual
+   * addresses and the DNS-name associations of the interface, so when there
+   * are any, it asks first and lists them; Cancel changes nothing.
+   */
+  private async toggleDhcp(p: Path): Promise<void> {
+    const doc = this.doc;
+    const on = !doc.dhcpOn(p);
+    const ifid = doc.text(p.concat('id')) || scalarText(doc.get(p) as DocNode) || '?';
+    if (on) {
+      const imp = doc.dhcpImpact(p);
+      if (imp.addresses.length || imp.dns.length) {
+        const body: Array<Node | string> = [];
+        if (imp.addresses.length) {
+          body.push(this.e('p', {}, [`An interface that obtains its address by DHCP has no manually configured addresses. ${imp.addresses.length === 1 ? 'This address is' : `These ${imp.addresses.length} addresses are`} deleted:`]));
+          body.push(this.e('ul', { class: 'dhcp-loss', 'data-loss': 'addresses' }, imp.addresses.map((a) => this.e('li', { class: 'ro' }, [a]))));
+        }
+        if (imp.dns.length) {
+          body.push(this.e('p', {}, ['A DNS name can only be associated with an interface whose addresses are configured. These associations are removed:']));
+          body.push(
+            this.e(
+              'ul',
+              { class: 'dhcp-loss', 'data-loss': 'dns' },
+              imp.dns.map((x) => this.e('li', {}, [this.e('span', { class: 'ro' }, [x.name]), x.removed ? ' — it has no other interface, so the name is deleted too' : ''])),
+            ),
+          );
+        }
+        body.push(this.e('p', { class: 'muted small' }, ['Turning DHCP off later does not bring them back. You can undo this with Ctrl+Z.']));
+        const a = await this.host.dialog({
+          title: `Turn DHCP on for “${ifid}”?`,
+          body,
+          buttons: [
+            { label: 'Cancel', value: 'cancel' },
+            { label: 'Delete and turn DHCP on', value: 'dhcp', kind: 'danger' },
+          ],
+        });
+        if (a !== 'dhcp') return;
+      }
+    }
+    doc.setDhcp(p, on);
+    this.host.changed(on ? `DHCP on for ${ifid}: it has no manually configured addresses.` : `DHCP off for ${ifid}: addresses can be entered again.`);
   }
 
   /**
@@ -566,7 +770,8 @@ export class Editor {
     const iss = doc.issuesAt(p);
     const errs = iss.filter((i) => i.severity === 'error').length;
     const addrs = this.listTexts(p.concat('ip'));
-    const summary = [id || '(no id)', o === 'logical' && !entry.type ? '(no type)' : interfaceKindLabel(kind), doc.text(p.concat('label')), addrs.slice(0, 2).join(', ') + (addrs.length > 2 ? ' …' : '')].filter((x) => !!x).join(' · ');
+    const dhcp = doc.dhcpOn(p);
+    const summary = [id || '(no id)', o === 'logical' && !entry.type ? '(no type)' : interfaceKindLabel(kind), doc.text(p.concat('label')), dhcp && !addrs.length ? 'DHCP' : addrs.slice(0, 2).join(', ') + (addrs.length > 2 ? ' …' : '')].filter((x) => !!x).join(' · ');
     const card = this.e('details', { class: 'card' + (errs ? ' has-err' : ''), 'data-card': J(p), 'data-iface': id || '', 'data-kind': kind });
     const selected = !!this.sel && !!this.sel.iface && J(this.sel.iface) === J(p);
     if (this.open.has(J(p)) || selected) card.setAttribute('open', '');
@@ -580,7 +785,7 @@ export class Editor {
     card.appendChild(this.ifIdField(p, loop ? 'lo0' : kind === 'tunnel' ? 'tun0' : kind === 'virtual' ? 'Vlan10, bond0' : 'ge-0/0/1'));
     card.appendChild(this.ifTypeField(p, entry));
     card.appendChild(this.textField(p.concat('label'), loop ? 'Name' : 'Label', o, 'text', undefined, loop ? 'Descriptive name, e.g. “Router ID” or “BGP source”.' : undefined));
-    card.appendChild(this.listField(p.concat('ip'), loop ? 'Addresses (IPv4 / IPv6 with prefix)' : 'Addresses', o, loop ? '10.255.0.1/32 or 2001:db8::1/128' : '192.0.2.1/24'));
+    card.appendChild(this.addressField(p, loop, o));
     card.appendChild(this.ifaceDerivedField(devIndex, p));
     if (o === 'logical') {
       // Each association belongs to one type. A field of another type is only shown while the file still has it, so it can be removed.
@@ -612,7 +817,7 @@ export class Editor {
         for (const r of refs) {
           // a logical interface (member port, tunnel source or destination) is named as device:interface
           const sk = kindOfSection(String(r[0]));
-          const name = r[0] === 'devices' ? `${doc.text([r[0], r[1], 'id']) || '?'}:${doc.text(r.slice(0, 4).concat('id')) || '?'}` : sk ? doc.text([r[0], r[1], 'id']) || sk : '?';
+          const name = r[0] === 'devices' && r[2] === 'dns_names' ? `DNS name ${doc.text(r.slice(0, 4).concat('name')) || '?'}` : r[0] === 'devices' ? `${doc.text([r[0], r[1], 'id']) || '?'}:${doc.text(r.slice(0, 4).concat('id')) || '?'}` : sk ? doc.text([r[0], r[1], 'id']) || sk : '?';
           if (names.indexOf(name) < 0) names.push(name);
         }
         card.appendChild(this.e('div', { class: 'used-by muted small' }, ['Used by: ' + names.join(', ')]));
@@ -621,6 +826,47 @@ export class Editor {
     card.appendChild(this.attrsField(p.concat('attrs'), 'Attributes (attrs)', o));
     card.appendChild(this.otherProps(p, o));
     return card;
+  }
+
+  /**
+   * The addresses of an interface, with the DHCP switch next to them. While
+   * DHCP is on, manual addresses can't be entered (a file that has both shows
+   * them, with the error, so they can be removed). A loopback can't use
+   * DHCP, so it has no switch, unless its file says "dhcp: true": then the
+   * switch is shown so that it can be turned off.
+   */
+  private addressField(p: Path, loop: boolean, o: string): HTMLElement {
+    const doc = this.doc;
+    const on = doc.dhcpOn(p);
+    const label = loop ? 'Addresses (IPv4 / IPv6 with prefix)' : 'Addresses';
+    const example = loop ? '10.255.0.1/32 or 2001:db8::1/128' : '192.0.2.1/24';
+    if (!on && !doc.dhcpAllowed(p)) return this.listField(p.concat('ip'), label, o, example);
+    const addrs = this.listTexts(p.concat('ip'));
+    const locked = on && !addrs.length;
+    const sw = this.e(
+      'button',
+      {
+        type: 'button',
+        class: 'mini dhcp-switch' + (on ? ' on' : ''),
+        role: 'switch',
+        'aria-checked': on ? 'true' : 'false',
+        'data-act': 'dhcp',
+        'data-p': J(p),
+        title: on ? 'Turn DHCP off: addresses can then be configured manually' : 'Turn DHCP on: the interface obtains its address by DHCP (its manual addresses are deleted after a confirmation)',
+      },
+      ['DHCP ', this.e('span', { class: 'dhcp-state' }, [on ? 'on' : 'off'])],
+    );
+    const help = !on
+      ? undefined
+      : loop
+        ? 'A loopback cannot obtain its address by DHCP. Turn DHCP off and enter its address.'
+        : 'Obtained by DHCP. The address is not known to NetAtlas, so this interface is in no network and has no derived VLAN until an address is configured.';
+    const f = this.listField(p.concat('ip'), label, o, example, help, locked);
+    f.setAttribute('data-dhcp', on ? 'on' : 'off');
+    // the switch sits beside the label (see .field[data-dhcp] in the styles)
+    f.insertBefore(sw, f.firstChild ? f.firstChild.nextSibling : null);
+    for (const is of doc.issuesAt(p.concat('dhcp'))) f.appendChild(this.e('div', { class: is.severity === 'error' ? 'field-err' : 'field-warn' }, [is.message]));
+    return f;
   }
 
   /**
@@ -838,9 +1084,14 @@ export class Editor {
   }
 
   /** Editable list of scalars (addresses, prefixes). Also handles a single scalar value. */
-  private listField(p: Path, label: string, order: string, placeholder: string, help?: string): HTMLElement {
+  private listField(p: Path, label: string, order: string, placeholder: string, help?: string, disabled = false): HTMLElement {
     const n = this.doc.get(p);
-    const box = this.e('div', { class: 'list-ed' });
+    const box = this.e('div', { class: 'list-ed' + (disabled ? ' disabled' : '') });
+    if (disabled) {
+      const i = this.input(p, 'list-append', '', { placeholder: 'Obtained by DHCP — no manual address', class: 'append', disabled: '', 'aria-disabled': 'true' });
+      box.appendChild(i);
+      return this.field(label, box, p, help);
+    }
     const row = (ip: Path, val: string, t: string): HTMLElement =>
       this.e('div', { class: 'list-row' + (this.doc.issuesAt(ip).some((i) => i.severity === 'error') ? ' invalid' : '') }, [
         this.input(ip, t, val),
@@ -896,6 +1147,7 @@ export class Editor {
     const inf = model && dev && id ? model.index.interfaces.get(ifaceKey(dev, id)) : undefined;
     if (!model || !inf) return this.derivedField(label, 'iface-vlan', [this.e('span', { class: 'muted' }, ['Not available while this interface has errors.'])], help);
     const assocs = interfaceAddresses(model, inf.device, inf.id);
+    if (!assocs.length && inf.dhcp) return this.derivedField(label, 'iface-vlan', [this.e('span', { class: 'muted' }, ['Address obtained by DHCP and not known here, so no network and no VLAN can be derived.'])], help);
     if (!assocs.length) return this.derivedField(label, 'iface-vlan', [this.e('span', { class: 'muted' }, ['No address, so no network and no VLAN.'])], help);
     const rows = assocs.map((a) => {
       let text: string;
@@ -1252,6 +1504,10 @@ export class Editor {
         if (!val) return true;
         doc.appendText(p, val, 'Add member port');
         break;
+      case 'dns-iface-append':
+        if (!val) return true;
+        doc.appendText(p, val, 'Associate interface with DNS name');
+        break;
       case 'list-item':
       case 'list-scalar':
         doc.setText(p, trimmed);
@@ -1402,14 +1658,23 @@ export class Editor {
       case 'del-iface': {
         const dev = doc.text(['devices', p[1], 'id']);
         const ifid = doc.text(p.concat('id')) || scalarText(doc.get(p) as DocNode);
-        const refs = dev && ifid ? doc.references('device', dev, ifid) : [];
-        if (refs.length) {
+        // DNS-name associations go with the interface; every other reference becomes an error to fix
+        const refs = (dev && ifid ? doc.references('device', dev, ifid) : []).filter((r) => r[2] !== 'dns_names');
+        const dns = ifid ? doc.dnsAffected(p[1] as number, ifid) : [];
+        if (refs.length || dns.length) {
+          const body: string[] = [];
+          if (refs.length) body.push(`${refs.length} reference${refs.length > 1 ? 's' : ''} to ${dev}:${ifid} (links, relations, member lists, tunnel sources or destinations) will become invalid and will be listed as errors. `);
+          if (dns.length) {
+            const gone = dns.filter((x) => x.removed).map((x) => x.name);
+            body.push(
+              `Its association with the DNS name${dns.length > 1 ? 's' : ''} ${dns.map((x) => x.name).join(', ')} is removed` +
+                (gone.length ? `; ${gone.join(', ')} ${gone.length > 1 ? 'have' : 'has'} no other interface and ${gone.length > 1 ? 'are' : 'is'} deleted too. ` : '. '),
+            );
+          }
+          body.push('You can undo this with Ctrl+Z.');
           const a = await this.host.dialog({
             title: `Delete interface “${ifid}”?`,
-            body: [
-              `${refs.length} reference${refs.length > 1 ? 's' : ''} to ${dev}:${ifid} (links, relations, member lists, tunnel sources or destinations) will become invalid and will be listed as errors. `,
-              'You can undo this with Ctrl+Z.',
-            ],
+            body,
             buttons: [
               { label: 'Cancel', value: 'cancel' },
               { label: 'Delete', value: 'delete', kind: 'danger' },
@@ -1417,10 +1682,20 @@ export class Editor {
           });
           if (a !== 'delete') return true;
         }
-        doc.remove(p, 'Delete interface');
+        doc.deleteInterface(p);
         this.host.changed('Interface deleted.');
         return true;
       }
+      case 'dhcp':
+        await this.toggleDhcp(p);
+        return true;
+      case 'add-dns':
+        await this.addDnsName(index);
+        return true;
+      case 'del-dns':
+        doc.removeDnsName(index, Number(btn.getAttribute('data-k')));
+        this.host.changed('DNS name deleted.');
+        return true;
       case 'del-item':
         doc.remove(p);
         this.host.changed();

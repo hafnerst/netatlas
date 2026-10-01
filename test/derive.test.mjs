@@ -397,8 +397,8 @@ networks:
 test('the schema contains none of the rejected keys, and the editor never writes them', () => {
   for (const kind of Object.keys(RETIRED)) for (const k of Object.keys(RETIRED[kind])) assert.ok(!SCHEMA[kind].includes(k), `${kind}.${k}`);
   assert.deepEqual(SCHEMA.network, ['id', 'label', 'cidr', 'vlan', 'description', 'attrs']);
-  assert.deepEqual(SCHEMA.interface, ['id', 'label', 'ip', 'vrf', 'mac', 'description', 'attrs']);
-  assert.deepEqual(SCHEMA.logical, ['id', 'type', 'label', 'ip', 'vrf', 'mac', 'members', 'vlan', 'source', 'destination', 'description', 'attrs']);
+  assert.deepEqual(SCHEMA.interface, ['id', 'label', 'dhcp', 'ip', 'vrf', 'mac', 'description', 'attrs']);
+  assert.deepEqual(SCHEMA.logical, ['id', 'type', 'label', 'dhcp', 'ip', 'vrf', 'mac', 'members', 'vlan', 'source', 'destination', 'description', 'attrs']);
   assert.ok(!('child' in SCHEMA) && !('loopback' in SCHEMA));
   assert.deepEqual(SCHEMA.linkEnd, ['device', 'interface', 'vlans']);
   assert.ok(SCHEMA.link.includes('medium') && SCHEMA.link.includes('speed'));

@@ -48,7 +48,7 @@ the YAML file**.
 
 | Fact | Configured in (authoritative) | Derived, read-only |
 |---|---|---|
-| Which devices belong to a network | the network's `cidr` and the `ip` addresses of interfaces and loopbacks | the network's member list (details, editor, membership lines in the logical view, selection context, layout) |
+| Which devices belong to a network | the network's `cidr` and the `ip` addresses of interfaces and loopbacks (an interface with `dhcp: true` has none, so it is in no network) | the network's member list (details, editor, membership lines in the logical view, selection context, layout) |
 | The VLAN of an IP network | `vlan` on the network | the VLAN shown for each interface address inside that network |
 | The VLANs permitted on a cable | `vlans` on each end of the link (`a`, `b`) | *Trunk* / single VLAN / *No VLAN* per end; the mismatch warning |
 | Speed and medium of a physical connection | `speed` and `medium` on the link | cable width, colour and label |
@@ -119,6 +119,7 @@ name a physical interface; a **relation endpoint** can name any interface.
 | `description`, `attrs` | | |
 | `interfaces` | | List of the device's **physical interfaces** (its ports, below). The shorthand `interfaces: [eth0, eth1]` is allowed. |
 | `logical_interfaces` | | List of the device's **logical interfaces** (below): loopbacks, virtual interfaces and tunnel interfaces. |
+| `dns_names` | | List of the device's **DNS names**, each associated with one or more of its interfaces. See [DNS names](#dns-names). |
 
 A device has no `vendor`, `model`, `role`, `mgmt` or `router_id` key; each
 of them is an error (see [Rejected keys and values](#rejected-keys-and-values)).
@@ -187,7 +188,8 @@ devices:
 |---|---|
 | `id` | required, unique within the device across both lists. This is the stable identifier and the interface name used in references (`core1:Vlan10`). |
 | `label` | optional display name (defaults to the id) |
-| `ip` | one address or a list: `ip: 10.0.0.1/30` or `ip: [192.0.2.1/24, 2001:db8::1/64]`. Addresses that aren't valid IPv4/IPv6 addresses (e.g. `dhcp`) give a *warning* and are shown as written (on a loopback they are an error). **The addresses decide which networks the device belongs to.** |
+| `dhcp` | `true` or `false`; **omitted means `false`**. `true`: the interface obtains its address by DHCP, so it has no manually configured addresses. Not on a loopback. See [DHCP](#dhcp). |
+| `ip` | the manually configured addresses: one address or a list, `ip: 10.0.0.1/30` or `ip: [192.0.2.1/24, 2001:db8::1/64]`. Addresses that aren't valid IPv4/IPv6 addresses give a *warning* and are shown as written (on a loopback they are an error); for `ip: dhcp` the warning says to write `dhcp: true` instead (on a loopback: to write its address). **The addresses decide which networks the device belongs to.** |
 | `vrf` | name of the VRF the interface is assigned to (free text, display only). Membership in a network is decided by the address alone. |
 | `mac`, `description`, `attrs` | |
 
@@ -365,6 +367,81 @@ Rules (errors unless noted):
   "+N more"; a device with loopbacks is shown even if it has no relations).
   The device's **details** list them with the other logical interfaces. The
   **physical view** never draws them, because they have no port or cable.
+
+### DHCP
+
+Every physical interface and every virtual or tunnel interface has an explicit DHCP state (a loopback can't use DHCP, below):
+
+```yaml
+    interfaces:
+      - {id: wan1, dhcp: true, description: LTE modem}   # address assigned by DHCP
+      - {id: lan0, ip: 10.30.0.1/24}                     # dhcp omitted: false
+      - {id: eth3}                                       # no address, and not DHCP either
+```
+
+* `dhcp` is `true` or `false`, and an omitted `dhcp` is `false`. An
+  interface without addresses is **not** assumed to use DHCP. The editor
+  creates every interface with DHCP off and writes nothing for it; switching
+  DHCP on writes `dhcp: true`, switching it off removes the key again.
+* DHCP and manual addresses exclude each other. `dhcp: true` together with
+  an `ip` is an **error** (attached to the addresses). Neither value is
+  dropped or chosen: fix the file by deleting one of them.
+* DHCP is not an address. The address the interface will obtain is unknown,
+  so it contributes to no network's membership and has no derived VLAN until
+  an address is written. It can't carry a DNS name (below).
+* **A loopback can't use DHCP.** It is an address of the device itself and is
+  always configured, so `dhcp: true` on a loopback is an **error** (kept in
+  the file, not dropped), and the loopback still needs its address.
+  `dhcp: false` on a loopback is accepted. The editor shows no DHCP switch on
+  a loopback card; if the file has `dhcp: true` there, the switch is shown
+  only so that it can be turned off.
+* In the editor the **DHCP** switch sits next to the addresses (not on a loopback). While it is
+  on, manual addresses can't be entered. Turning it on for an interface that
+  has addresses or DNS names first lists what will be deleted, and deletes
+  it in the same undo step only after confirmation. Turning it off does not
+  bring deleted addresses back.
+
+### DNS names
+
+`dns_names` lists names of the device. Each entry is a name and the
+interfaces of the same device it is associated with, by interface id; a
+name is written once, however many interfaces it belongs to:
+
+```yaml
+devices:
+  - id: hq-rtr1
+    interfaces:
+      - {id: ge-0/0/0, ip: 198.51.100.2/30}
+      - {id: ge-0/0/1, ip: 10.0.0.2/28}
+    logical_interfaces:
+      - {id: lo0, type: loopback, ip: 10.255.0.1/32}
+    dns_names:
+      - {name: vpn1.acme.example, interfaces: [ge-0/0/0]}
+      - {name: hq-rtr1.acme.example, interfaces: [lo0, ge-0/0/1]}
+```
+
+| Key | Description |
+|---|---|
+| `name` | required. A host name: dot-separated labels of letters, digits and hyphens (1–63 characters each, not starting or ending with a hyphen), at most 253 characters, optionally ending in a dot; the last label is not all digits. |
+| `interfaces` | required, at least one: ids of physical or logical interfaces of this device. A single id may be written without brackets. |
+
+* The association is to the **interface**, not to one of its addresses: an
+  interface with several addresses is associated as a whole. Nothing is
+  derived from it: no A or AAAA record is created or implied, and no DNS
+  server is consulted. Associating a name with one particular address would
+  be a separate, future addition to the format.
+* An interface with `dhcp: true` can't be associated; that is an error.
+* Errors: an invalid name; the same name twice on one device (names are
+  compared without case and without a trailing dot); an unknown interface;
+  an interface listed twice for a name; no interface. The same name on
+  another device is a *warning*.
+* Editing keeps every association valid. Renaming an interface updates its
+  associations. Deleting an interface, or turning DHCP on for it, removes
+  its associations in the same undo step (the editor says so first); a name
+  that is left without interfaces is deleted with them.
+* Display: the device's **details** list its names with their interfaces,
+  and an interface's details and tooltip name its DNS names. The diagrams
+  don't show them. **Find…** finds a device by a DNS name.
 
 ## `links` (physical cabling only)
 
@@ -600,7 +677,7 @@ layout:
 | A view has **no** stored positions | The **Auto-arrange** result for the current model. Opening or viewing a file never writes anything. |
 | A view has stored positions | Stored positions are used. A node without one (e.g. added by hand in the YAML) is placed next to its neighbors in free space, without moving anything else. |
 | You **drag** a node | Its new position is stored. If the view had no stored positions, all currently shown positions of that view are stored with it (one undo step). |
-| You make an edit that affects geometry (adding, removing or renaming objects, changing any text that is drawn — labels, type, cable speed or VLANs, relation labels —, groups, cables, relations, loopbacks, or an address or prefix that changes who is a member of a network …) | The positions shown **before** the edit are stored for both views, in the same undo step. New objects are placed next to their neighbors; nothing else moves. Edits that don't affect geometry (attrs, descriptions, cable medium, virtual and tunnel interfaces and their associations, addresses that leave membership as it is …) store nothing. |
+| You make an edit that affects geometry (adding, removing or renaming objects, changing any text that is drawn — labels, type, cable speed or VLANs, relation labels —, groups, cables, relations, loopbacks, or an address or prefix that changes who is a member of a network …) | The positions shown **before** the edit are stored for both views, in the same undo step. New objects are placed next to their neighbors; nothing else moves. Edits that don't affect geometry (attrs, descriptions, DNS names, cable medium, virtual and tunnel interfaces and their associations, addresses that leave membership as it is …) store nothing. |
 | You click **Auto-arrange** | All positions of **the view on screen** are recomputed for the whole model and stored (one undo step). The other view keeps its positions, stored or not. If the view has positions that were set by hand, netatlas first asks for confirmation (see [Auto-arrange](#auto-arrange)). If the positions already equal the stored ones, nothing happens at all. |
 | You edit the **YAML** tab | The text is taken literally, including its `layout` section. Deleting the section there returns to automatic positions. |
 
@@ -815,6 +892,11 @@ next to the object and field they concern.
   of the device; a tunnel destination that is neither an address nor a
   device or interface of the model; `members`, `vlan`, `source` or
   `destination` on an interface of another type;
+* `dhcp` that isn't `true` or `false`, `dhcp: true` on an interface
+  that also has addresses, and `dhcp: true` on a loopback;
+* a DNS name that isn't a valid host name, is listed twice on a device, has
+  no interface, names an unknown interface or one with `dhcp: true`, or
+  lists an interface twice;
 * `over` cycles;
 * invalid loopback addresses, invalid network prefixes, invalid or repeated
   VLAN IDs, and bad colours, categories or styles;
@@ -834,7 +916,8 @@ next to the object and field they concern.
 * a port that is a member of two aggregates;
 * a VLAN interface whose `vlan` differs from the VLAN of the network its
   address lies in;
-* a tunnel source address that no interface of the device has.
+* a tunnel source address that no interface of the device has;
+* the same DNS name on two devices.
 
 A file with **errors can still be opened and drawn**. Everything that
 validated is shown, so an incomplete draft stays usable. Only files that

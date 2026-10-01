@@ -5,6 +5,8 @@
 #   IPsec (encryption)  ->  GRE (tunnel)  ->  OSPF (routing adjacency)
 # plus eBGP to two ISPs, a WireGuard backup tunnel over LTE, VRRP, LACP,
 # syslog, and a custom protocol (MACsec) defined in the "protocols" section.
+# The Hamburg LTE uplink obtains its address by DHCP ("dhcp: true"), and a
+# few devices have DNS names ("dns_names"), each associated with interfaces.
 netatlas: 1
 title: ACME Corp — enterprise WAN
 description: |
@@ -75,6 +77,9 @@ devices:
     logical_interfaces:
       - {id: lo0, type: loopback, ip: 10.255.0.1/32}
       - {id: st0.10, type: tunnel, ip: 172.16.10.1/30, source: ge-0/0/0, destination: 192.0.2.10, description: GRE to Munich}
+    dns_names:
+      - {name: vpn1.acme.example, interfaces: [ge-0/0/0]}
+      - {name: hq-rtr1.acme.example, interfaces: [lo0, ge-0/0/1]}   # one name, two interfaces
   - id: hq-rtr2
     label: hq-rtr2
     type: router
@@ -139,6 +144,8 @@ devices:
     group: hq-core
     interfaces:
       - {id: eno1, ip: 10.10.20.50/24}
+    dns_names:
+      - {name: syslog.acme.example, interfaces: [eno1]}
 
   - id: muc-rtr
     label: muc-rtr
@@ -167,7 +174,7 @@ devices:
     group: branch-ham
     interfaces:
       - {id: wan0, ip: 192.0.2.34/29}
-      - {id: wan1, description: LTE backup modem}
+      - {id: wan1, dhcp: true, description: LTE backup modem}   # address assigned by the carrier
       - {id: lan0, ip: 10.30.0.1/24}
     logical_interfaces:
       - {id: Tunnel11, type: tunnel, ip: 172.16.11.2/30, source: wan0, destination: 203.0.113.2}

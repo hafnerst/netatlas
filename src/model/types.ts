@@ -72,6 +72,13 @@ export interface Interface {
   device: string;
   label?: string;
   type: InterfaceKind;
+  /**
+   * The interface obtains its address by DHCP (`dhcp: true`; omitted = false).
+   * It is a configuration flag, not an address: nothing about the address it
+   * may obtain is known, so it is in no network until an address is written.
+   */
+  dhcp: boolean;
+  /** manually configured addresses; always empty when `dhcp` is true in a valid model */
   addresses: string[];
   /** name of the VRF this interface is assigned to (display only) */
   vrf?: string;
@@ -101,6 +108,22 @@ export interface Device {
   interfaces: Interface[];
   /** loopback, virtual and tunnel interfaces, in file order */
   logical: Interface[];
+  /** DNS names configured for the device, in file order */
+  dnsNames: DnsName[];
+  line: number;
+}
+
+/**
+ * A DNS name of a device, associated with one or more of its interfaces
+ * (physical or logical), each named by its interface id. The association is
+ * to the interface as a whole, not to one of its addresses, and it states
+ * only what is configured: no A/AAAA record is derived from it.
+ */
+export interface DnsName {
+  /** as written (trailing dot included, if any) */
+  name: string;
+  /** ids of interfaces of the same device, in file order */
+  interfaces: string[];
   line: number;
 }
 

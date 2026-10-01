@@ -66,7 +66,7 @@ test('interfaces are stored once under their device, as physical and logical; ze
   assert.equal(d.logical.map((i) => i.id + ':' + i.type).join(), 'lo0:loopback,Po1:virtual,Vlan10:virtual,Vlan20:virtual,nve1:virtual,tun0:tunnel,tun1:tunnel,tun2:tunnel');
   // no nesting and no generic parent anywhere in the model
   for (const i of T.deviceInterfaces(d)) assert.ok(!('parent' in i) && !('children' in i), i.id);
-  assert.deepEqual(Object.keys(d).sort(), ['attrs', 'description', 'group', 'id', 'interfaces', 'label', 'line', 'logical', 'tier', 'type']);
+  assert.deepEqual(Object.keys(d).sort(), ['attrs', 'description', 'dnsNames', 'group', 'id', 'interfaces', 'label', 'line', 'logical', 'tier', 'type']);
   // each interface exists once: one flat index, stable "device:interface" ids
   assert.equal(r.model.index.interfaces.size, 12 + 3);
   assert.equal(r.model.index.interfaces.get('sw1:Po1').type, 'virtual');
@@ -75,7 +75,7 @@ test('interfaces are stored once under their device, as physical and logical; ze
   const none = validate.loadModel('netatlas: 1\ndevices:\n  - {id: a}\n  - {id: b, interfaces: [e0]}\n  - {id: c, logical_interfaces: [{id: lo0, type: loopback, ip: 10.0.0.1/32}]}\n');
   assert.deepEqual(none.errors, []);
   assert.deepEqual(none.model.devices.map((x) => [x.interfaces.length, x.logical.length]), [[0, 0], [1, 0], [0, 1]]);
-  assert.deepEqual(SCHEMA.device.slice(-2), ['interfaces', 'logical_interfaces']);
+  assert.deepEqual(SCHEMA.device.slice(-3), ['interfaces', 'logical_interfaces', 'dns_names']);
 });
 
 test('a physical interface has no type; a logical interface has one of loopback, virtual, tunnel', () => {
