@@ -648,23 +648,9 @@ export class ModelDoc {
     });
   }
 
-  /** Set role / address of an endpoint (expands a short endpoint to a mapping); empty removes it. */
-  setEndpointField(path: Path, text: string): void {
-    const ep = path.slice(0, -1);
-    this.change('Edit endpoint', () => {
-      if (text === '') {
-        const m = this.get(ep);
-        if (m && m.kind === 'map') m.entries.delete(String(path[path.length - 1]));
-      } else {
-        this.ensureMap(ep);
-        this.setAt(path, strNode(text), KEY_ORDER.endpoint);
-      }
-    });
-  }
-
-  /** VLAN IDs written on one end of a link, as text, in file order (invalid entries included). */
-  endVlans(endPath: Path): string[] {
-    const n = this.get(endPath.concat('vlans'));
+  /** Network ids assigned to one end of a link, as written, in file order (invalid entries included). */
+  endNetworks(endPath: Path): string[] {
+    const n = this.get(endPath.concat('networks'));
     if (!n) return [];
     if (n.kind === 'seq') return n.items.map((i) => scalarText(i)).filter((x): x is string => x !== undefined);
     const t = scalarText(n);
@@ -672,44 +658,37 @@ export class ModelDoc {
   }
 
   /**
-   * Permit more VLANs at one end of a link (`endPath` is links[i].a or .b).
+   * Assign a network to one end of a link (`endPath` is links[i].a or .b).
    * Only that end is written: the other end is never adjusted to match. The
-   * short "dev:if" form becomes a mapping; ids already listed are skipped.
-   * Returns false if the end has no device yet.
+   * short "dev:if" form becomes a mapping; a network already listed is
+   * skipped. Returns false if the end has no device yet.
    */
-  addEndVlans(endPath: Path, ids: number[]): boolean {
+  addEndNetwork(endPath: Path, id: string): boolean {
     const cur = this.get(endPath);
     if (!cur || (cur.kind === 'scalar' && scalarText(cur) === undefined)) return false;
-    const have = this.endVlans(endPath);
-    const add = ids.filter((v, k) => have.indexOf(String(v)) < 0 && ids.indexOf(v) === k);
-    if (!add.length) return true;
-    this.change('Add VLAN', () => {
+    if (this.endNetworks(endPath).indexOf(id) >= 0) return true;
+    this.change('Assign network', () => {
       this.ensureMap(endPath);
-      const list = this.ensureSeq(endPath.concat('vlans'), true, KEY_ORDER.linkEnd);
-      for (const v of add) list.items.push(numNode(v));
-      // keep the list ascending when every entry is a number (nothing invalid is reordered or dropped)
-      if (list.items.every((i) => i.kind === 'scalar' && typeof i.value === 'number')) {
-        list.items.sort((p, q) => ((p as { value: number }).value) - ((q as { value: number }).value));
-      }
+      this.ensureSeq(endPath.concat('networks'), true, KEY_ORDER.linkEnd).items.push(strNode(id));
     });
     return true;
   }
 
-  /** Remove one VLAN (by its text) from one end of a link; the last one removes the `vlans` key. */
-  removeEndVlan(endPath: Path, id: string): void {
-    const vp = endPath.concat('vlans');
-    const n = this.get(vp);
+  /** Remove one network (by its id) from one end of a link; the last one removes the `networks` key. */
+  removeEndNetwork(endPath: Path, id: string): void {
+    const np = endPath.concat('networks');
+    const n = this.get(np);
     if (!n) return;
-    this.change('Remove VLAN', () => {
+    this.change('Remove network', () => {
       if (n.kind === 'seq') {
         const k = n.items.findIndex((i) => scalarText(i) === id);
         if (k >= 0) n.items.splice(k, 1);
         if (n.items.length) return;
       } else if (scalarText(n) !== id) return;
-      this.removeAt(vp);
+      this.removeAt(np);
       // an end with nothing but device/interface goes back to the short form
-      const end = this.get(endPath);
-      if (end && end.kind === 'map' && Array.from(end.entries.keys()).every((key) => key === 'device' || key === 'interface')) {
+      const e = this.get(endPath);
+      if (e && e.kind === 'map' && Array.from(e.entries.keys()).every((key) => key === 'device' || key === 'interface')) {
         const dev = this.text(endPath.concat('device'));
         const inf = this.text(endPath.concat('interface'));
         if (dev) this.setAt(endPath, strNode(inf ? dev + ':' + inf : dev), KEY_ORDER.link);
@@ -968,7 +947,22 @@ export class ModelDoc {
       scalarRefs('devices', 'group', (t) => t === id);
     } else if (kind === 'link' || kind === 'relation' || kind === 'network') {
       scalarRefs('relations', 'over', (t) => t === id);
-      if (kind === 'network') scalarRefs('relations', 'network', (t) => t === id);
+      if (kind === 'network') {
+        // the link ends that carry it
+        const ls = this.root.entries.get('links');
+        if (ls && ls.value.kind === 'seq') {
+          ls.value.items.forEach((ent, i) => {
+            if (ent.kind !== 'map') return;
+            for (const side of ['a', 'b']) {
+              const e = ent.entries.get(side);
+              const nl = e && e.value.kind === 'map' ? e.value.entries.get('networks') : undefined;
+              if (!nl) continue;
+              if (nl.value.kind === 'seq') nl.value.items.forEach((it, k) => scalarText(it) === id && out.push(['links', i, side, 'networks', k]));
+              else if (scalarText(nl.value) === id) out.push(['links', i, side, 'networks']);
+            }
+          });
+        }
+      }
     } else if (kind === 'protocol') {
       scalarRefs('relations', 'protocol', (t) => t.toLowerCase() === id.toLowerCase());
     }

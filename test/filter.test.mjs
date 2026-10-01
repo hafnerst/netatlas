@@ -46,7 +46,7 @@ devices:
     logical_interfaces: [{id: lo0, type: loopback, ip: 10.255.0.3/32}]
 links:
   - {id: l12, a: "r1:e0", b: "r2:e0", medium: fiber}
-  - {id: l1s, a: {device: r1, interface: e2, vlans: [30]}, b: {device: sw, interface: p1, vlans: [30]}}
+  - {id: l1s, a: {device: r1, interface: e2, networks: [v30]}, b: {device: sw, interface: p1, networks: [v30]}}
   - {id: l3s, a: "r3:e0", b: "sw:p2"}
 networks:
   - {id: lan, cidr: 10.1.0.0/24}
@@ -58,7 +58,7 @@ relations:
   - {id: ospf12, protocol: ospf, endpoints: ["r1:e0", "r2:e0"], over: l12}
   - {id: gre13, protocol: gre, endpoints: ["r1:lo0", "r3:lo0"]}
   - {id: ibgp, protocol: ibgp, endpoints: [r1, r2, r3]}
-  - {id: svc, protocol: custom-x, endpoints: [r1, r2], network: overlay, over: [ospf12, gre13]}
+  - {id: svc, protocol: custom-x, endpoints: [r1, r2], over: [ospf12, gre13, overlay]}
 `;
 const SUBSET = ['r1', 'r2', 'sw'];
 const ids = (xs) => xs.map((x) => x.id).join(',');
@@ -75,7 +75,7 @@ test('physical view of a subset: only the selected devices, links with both ends
   assert.equal(sorted(f.index.ifaceLink.keys()), 'r1:e0,r1:e2,r2:e0,sw:p1');
   // mixed group "site": kept, with only its included devices; "far" holds only r3
   assert.equal(ids(f.groups), 'site,rack1,rack2');
-  // networks: included members, or a VLAN permitted on an included cable; not named-by-relation only
+  // networks: included members, or carried at an end of an included cable; not named-by-relation only
   assert.equal(ids(f.networks), 'lan,p2p,v30');
   // a network with members on both sides shows only its included members
   assert.deepEqual(networkMembers(m, 'lan').map((x) => x.device), ['r1', 'r2', 'sw', 'r3']);
@@ -88,9 +88,9 @@ test('logical view of a subset: only relations entirely among the selected devic
   // gre13 and the multipoint ibgp reach r3: left out entirely, not drawn as partial relations
   assert.equal(ids(f.relations), 'ospf12,svc');
   const svc = f.index.relations.get('svc');
-  assert.deepEqual(svc.over, ['ospf12'], 'the carrier that reaches r3 is dropped from "over"');
-  assert.equal(svc.network, 'overlay');
-  // networks: included members, or named by an included relation; not a cable VLAN only
+  assert.deepEqual(svc.over, ['ospf12', 'overlay'], 'the carrier that reaches r3 is dropped from "over"');
+  assert.ok(!('network' in svc));
+  // networks: included members, or in the "over" of an included relation; not carried on a cable only
   assert.equal(ids(f.networks), 'lan,p2p,overlay');
   // a tunnel destination on a left-out device keeps its text and no longer points at it
   const tun = f.index.interfaces.get('r1:tun0');
@@ -307,6 +307,9 @@ test('logical auto-arrange keeps each group together: no frame covers a device o
     rects.forEach((r, gid) => {
       nodes.forEach((n) => {
         if (n.kind === 'device' && within(n.id, gid)) return;
+        // a network or hub whose devices all lie in the group is local to it, and placed inside its frame
+        const devs = n.kind === 'network' ? networkMembers(m, n.id).map((x) => x.device) : n.kind === 'hub' ? Array.from(new Set(m.index.relations.get(n.id).endpoints.map((e) => e.device))) : [];
+        if (devs.length && devs.every((d) => !boxes.has(d) || within(d, gid))) return;
         assert.ok(!hit(r, { x: n.cx - n.w / 2, y: n.cy - n.h / 2, w: n.w, h: n.h }), `${f}: frame of ${gid} covers ${n.ref}`);
       });
       rects.forEach((q, other) => {

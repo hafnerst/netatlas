@@ -1404,7 +1404,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         four.map(pillText).join(' | '),
       );
       const netLines = lines('network:servers', 'net-sub').join(' ');
-      check('a network shows all of its prefixes', ['10.10.0.0/24', '2001:db8:10::/64', '2001:db8:11::/64'].every((c) => netLines.indexOf(c) >= 0), netLines);
+      check('a network shows its one prefix and its VLAN', netLines === 'VLAN 10 · 10.10.0.0/24' && lines('network:servers-v6', 'net-sub').join(' ').indexOf('2001:db8:10::/64') >= 0, netLines);
       // the standalone SVG files: same full text, measured on their own
       const logSvg = app.exportSvg();
       const exported = (text: string): { full: boolean; problems: string[] } => {
@@ -1728,7 +1728,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
           !q('#side-body [data-act="add-child"]') && !/Child interfaces|Parent/.test(q('#side-body')!.textContent || ''),
         typeOptions,
       );
-      check('a loopback has no parent, member or tunnel fields', !/Member ports|Ports carrying VLAN|Tunnel source|Tunnel destination/.test(labels(lg(0))) && /Addresses/.test(labels(lg(0))), labels(lg(0)));
+      check('a loopback has no parent, member or tunnel fields', !/Member ports|Ports carrying|Tunnel source|Tunnel destination/.test(labels(lg(0))) && /Addresses/.test(labels(lg(0))), labels(lg(0)));
 
       // an aggregate: a virtual interface that names several member ports
       click('#side-body [data-act="add-iface"]');
@@ -1748,34 +1748,20 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         `${before} / ${offered()} / ${chips()} / ${app.exportText()}`,
       );
 
-      // a VLAN interface: it names its VLAN; the ports carrying that VLAN come from the link ends
+      // a VLAN interface: it names its VLAN; the ports carrying its networks come from the link ends (checked below, once there are networks)
       click('#side-body [data-act="add-logical"][data-kind="virtual"]');
       await tick();
-      const vlanPorts = card(lg(2)) + ' > [data-derived="vlan-ports"]';
+      const netPorts = card(lg(2)) + ' > [data-derived="net-ports"]';
       // a virtual interface is not assumed to be a bond or a VLAN interface: until it is one, both are offered and no ports are shown
       const plain = labels(lg(2));
-      const noVlanYet = !q(vlanPorts);
+      const noPortsYet = !q(netPorts);
       await setField(field(2, 'vlan'), '30');
-      const noPort = (q(vlanPorts) || { textContent: '' }).textContent || '';
-      click('#outline [data-act="select"][data-kind="link"][data-index="0"]');
-      await tick();
-      await setField(`#side-body [data-t="vlan-add"][data-p='["links",0,"a"]']`, '30');
-      await selectDev(0);
-      const ports = (Array.prototype.map.call(doc.querySelectorAll(vlanPorts + ' li[data-port]'), (e: Element) => e.getAttribute('data-port')) as string[]).join();
       check(
-        'a VLAN interface shows "Ports carrying VLAN" read-only, derived from the VLANs on the link ends; no port is entered on the interface',
-        /Member ports/.test(plain) && /VLAN ID/.test(plain) && noVlanYet && /No link end of this device permits VLAN 30/.test(noPort) && ports === 'eth0' && !/Member ports/.test(labels(lg(2))) && /Ports carrying VLAN 30/.test(labels(lg(2))) &&
-          !/VLAN ID|Ports carrying VLAN/.test(labels(lg(1))) && /VLAN 30 on/.test(q(vlanPorts)!.textContent || '') && !q(vlanPorts + ' input, ' + vlanPorts + ' select, ' + vlanPorts + ' [data-act]') &&
-          !!q(vlanPorts + ' .derived-tag') && /- \{id: virtual1, type: virtual, vlan: 30\}/.test(app.exportText()) && r1().logical[2].members.length === 0 && dh().valid,
-        `${plain} / ${noPort} / ${ports} / ${labels(lg(2))} / ${labels(lg(1))}`,
+        'a VLAN interface names its VLAN; with no network of that VLAN it has no "Ports carrying its networks"; no port is entered on the interface',
+        /Member ports/.test(plain) && /VLAN ID/.test(plain) && noPortsYet && !q(netPorts) && !/Member ports/.test(labels(lg(2))) &&
+          !/VLAN ID|Ports carrying/.test(labels(lg(1))) && /- \{id: virtual1, type: virtual, vlan: 30\}/.test(app.exportText()) && r1().logical[2].members.length === 0 && dh().valid,
+        `${plain} / ${labels(lg(2))} / ${labels(lg(1))}`,
       );
-      // taking the VLAN off the link takes the port out of the list; nothing on the interface changes
-      click('#outline [data-act="select"][data-kind="link"][data-index="0"]');
-      await tick();
-      click('#side-body [data-act="del-vlan"][data-p=\'["links",0,"a"]\'][data-k="30"]');
-      await tick();
-      await selectDev(0);
-      check('… and follows the links: without the VLAN on the cable no port is listed', doc.querySelectorAll(vlanPorts + ' li[data-port]').length === 0 && /- \{id: virtual1, type: virtual, vlan: 30\}/.test(app.exportText()) && !/vlans:/.test(app.exportText()));
 
       // a tunnel: its source is any interface of the device (here a loopback) or an address
       click('#side-body [data-act="add-logical"][data-kind="tunnel"]');
@@ -1880,14 +1866,17 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     {
       const dn = app.mdoc as ModelDoc;
       check(
-        'a new network is an id only: no kind, VRF or member fields, nothing invented; the member list is read-only',
+        'a new network is an id only (its required prefix is reported, not invented): no kind, VRF or member fields; the member list is read-only',
         !q('#side-body [data-p=\'["networks",0,"kind"]\']') && !q('#side-body [data-p=\'["networks",0,"vrf"]\']') && !q('#side-body [data-p=\'["networks",0,"members"]\']') &&
-          /- id: net1\n/.test(dn.exportText()) && !/kind:|vlan:|members:|cidr:/.test(dn.exportText().slice(dn.exportText().indexOf('networks:'))) && dn.valid && readOnly(members) && /Members \(0\)/.test(text(members)),
+          /- id: net1\n/.test(dn.exportText()) && !/kind:|vlan:|members:|cidr:/.test(dn.exportText().slice(dn.exportText().indexOf('networks:'))) && dn.errors.length === 1 && /needs its IP network/.test(dn.errors[0].message) && readOnly(members) && /Members \(0\)/.test(text(members)),
         dn.exportText() + ' // ' + text(members),
       );
-      await setField('#side-body [data-t="list-append"][data-p=\'["networks",0,"cidr"]\']', '10.77.0.0/24');
+      const cidrIn = q('#side-body input[data-t="text"][data-p=\'["networks",0,"cidr"]\']');
+      const cidrLabel = cidrIn ? ((cidrIn.closest('.field') as HTMLElement).querySelector('label') as HTMLElement).textContent || '' : '';
+      check('a network has one "IP network (CIDR)" text field, not a list', !!cidrIn && cidrLabel === 'IP network (CIDR)' && !q('#side-body [data-t="list-append"][data-p=\'["networks",0,"cidr"]\']') && (app.mdoc as ModelDoc).errors.some((e) => /needs its IP network/.test(e.message)), cidrLabel);
+      await setField('#side-body input[data-t="text"][data-p=\'["networks",0,"cidr"]\']', '10.77.0.0/24');
       await setField('#side-body [data-t="int"][data-p=\'["networks",0,"vlan"]\']', '77');
-      check('a prefix alone adds no member', /Members \(0\)/.test(text(members)) && count('.member') === 0 && /cidr: \[10\.77\.0\.0\/24\]\n {4}vlan: 77\n/.test((app.mdoc as ModelDoc).exportText()), (app.mdoc as ModelDoc).exportText());
+      check('a prefix alone adds no member; it is stored as one value', /Members \(0\)/.test(text(members)) && count('.member') === 0 && /cidr: 10\.77\.0\.0\/24\n {4}vlan: 77\n/.test((app.mdoc as ModelDoc).exportText()), (app.mdoc as ModelDoc).exportText());
       // an address on router1:eth0 makes router1 a member and gives the port the network's VLAN, at once
       await selectDevice(0);
       check('an interface without an address shows no derived network or VLAN (read-only)', readOnly(ifVlan(0, 0)) && /No address/.test(text(ifVlan(0, 0))), text(ifVlan(0, 0)));
@@ -1921,7 +1910,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       // an overlapping network with another VLAN: an explicit ambiguity, nothing chosen
       click('#outline [data-act="add-entity"][data-kind="network"]');
       await tick();
-      await setField('#side-body [data-t="list-append"][data-p=\'["networks",1,"cidr"]\']', '10.77.0.0/25');
+      await setField('#side-body input[data-t="text"][data-p=\'["networks",1,"cidr"]\']', '10.77.0.0/25');
       await setField('#side-body [data-t="int"][data-p=\'["networks",1,"vlan"]\']', '99');
       await selectDevice(0);
       {
@@ -1933,54 +1922,81 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         );
       }
       await selectNetwork(1);
-      await setField('#side-body [data-t="list-item"][data-p=\'["networks",1,"cidr",0]\']', '10.99.0.0/24');
+      await setField('#side-body input[data-t="text"][data-p=\'["networks",1,"cidr"]\']', '10.99.0.0/24');
       await selectDevice(0);
       check('moving the second network away resolves it again (VLAN 78), and membership follows', !!q(ifVlan(0, 0) + ' li[data-vlan="78"]') && count('.member') === 2, text(ifVlan(0, 0)));
       const ex = (app.mdoc as ModelDoc).exportText();
       check('derived members and interface VLANs are never written to the YAML', !/\n {4}members:|kind:/.test(ex) && (ex.match(/vlan: /g) || []).length === 3 && !/eth0[^\n]*vlan/.test(ex), ex);
     }
 
-    // ------------------------------------ per-end VLANs on a link (trunk)
+    // ------------------------------------ per-end networks on a link
     {
+      // a third network without a VLAN: the picker is not limited to networks with VLAN IDs
+      click('#outline [data-act="add-entity"][data-kind="network"]');
+      await tick();
+      await setField('#side-body input[data-t="text"][data-p=\'["networks",2,"cidr"]\']', '192.0.2.0/24');
       click('#outline [data-act="select"][data-kind="link"][data-index="0"]');
       await tick();
-      const end = (side: string): string => `#side-body [data-vlan-end="${side}"]`;
-      const st = (side: string): string => (q(end(side)) || { getAttribute: () => '' }).getAttribute('data-vlan-state') || '';
-      const mismatch = (): string => (q('#side-body [data-vlan-mismatch]') || { getAttribute: () => '' }).getAttribute('data-vlan-mismatch') || '';
-      const addTo = (side: string): string => `#side-body [data-t="vlan-add"][data-p='["links",0,"${side}"]']`;
-      const lk = (): { a: number[]; b: number[] } => {
+      const end = (side: string): string => `#side-body [data-net-end="${side}"]`;
+      const n = (side: string): number => Number((q(end(side)) || { getAttribute: () => '-1' }).getAttribute('data-net-count'));
+      const mismatch = (): string => (q('#side-body [data-net-mismatch]') || { getAttribute: () => '' }).getAttribute('data-net-mismatch') || '';
+      const pick = (side: string): string => `#side-body select[data-t="net-pick"][data-p='["links",0,"${side}"]']`;
+      const options = (side: string): string => (Array.prototype.map.call((q(pick(side)) as HTMLSelectElement).options, (o: HTMLOptionElement) => o.value) as string[]).filter((x) => x).join();
+      const lk = (): { a: string[]; b: string[] } => {
         const l = (app.mdoc as ModelDoc).result.model!.links[0];
-        return { a: l.a.vlans, b: l.b.vlans };
+        return { a: l.a.networks, b: l.b.networks };
       };
-      check('a link end without VLANs says "No VLAN"; none is assumed', st('A') === 'none' && st('B') === 'none' && /No VLAN/.test(text(end('A'))) && mismatch() === 'no' && !/vlans/.test((app.mdoc as ModelDoc).exportText()));
-      check('speed and medium are fields of the link', !!q('#side-body [data-p=\'["links",0,"speed"]\']') && !!q('#side-body [data-p=\'["links",0,"medium"]\']'));
-      await setField(addTo('a'), '10, 20');
+      const label = (): string => (Array.prototype.map.call(doc.querySelectorAll('#viewport .link-label'), (e: Element) => e.textContent || '') as string[]).join('|');
       check(
-        'several VLANs on end A: labelled Trunk with its IDs; end B is not touched',
-        st('A') === 'trunk' && /Trunk · VLANs 10, 20/.test(text(end('A'))) && st('B') === 'none' && JSON.stringify(lk()) === '{"a":[10,20],"b":[]}' &&
-          /a: \{device: router1, interface: eth0, vlans: \[10, 20\]\}, b: edge2:eth0/.test((app.mdoc as ModelDoc).exportText()),
+        'a link end without networks says "No network"; nothing is assumed; the picker offers every network, with or without a VLAN',
+        n('A') === 0 && n('B') === 0 && /No network/.test(text(end('A'))) && mismatch() === 'no' && !/networks: \[|vlans/.test((app.mdoc as ModelDoc).exportText()) && options('a') === 'net1,net2,net3' && !q('#side-body [data-t="vlan-add"]'),
+        options('a'),
+      );
+      check('speed and medium are fields of the link', !!q('#side-body [data-p=\'["links",0,"speed"]\']') && !!q('#side-body [data-p=\'["links",0,"medium"]\']'));
+      await setField(pick('a'), 'net1');
+      await setField(pick('a'), 'net3');
+      check(
+        'two networks on end A, by id: listed as networks (the VLAN of a network is only shown with it), never as a trunk; end B is not touched',
+        n('A') === 2 && /2 networks/.test(text(end('A'))) && /net1 · VLAN 78/.test(text(end('A'))) && !/trunk/i.test(text(end('A'))) && n('B') === 0 && JSON.stringify(lk()) === '{"a":["net1","net3"],"b":[]}' &&
+          /a: \{device: router1, interface: eth0, networks: \[net1, net3\]\}, b: edge2:eth0/.test((app.mdoc as ModelDoc).exportText()),
         (app.mdoc as ModelDoc).exportText(),
       );
       click('[data-view-btn="physical"]');
       check(
-        'the difference between the ends is highlighted (editor, problems, physical view) and not repaired',
-        mismatch() === 'yes' && /only on end A: 10, 20/.test(text('#side-body [data-vlan-mismatch]')) && (app.mdoc as ModelDoc).warnings.some((w) => /VLAN mismatch/.test(w.message)) && count('.cable.vlan-mismatch') === 1 && count('.vlan-warn') === 1,
-        text('#side-body [data-vlan-mismatch]'),
+        'the difference between the ends is shown (editor, problems, physical view) and not repaired',
+        mismatch() === 'yes' && /only at end A: net1, net3/.test(text('#side-body [data-net-mismatch]')) && (app.mdoc as ModelDoc).warnings.some((w) => /carry different networks/.test(w.message)) &&
+          count('.cable.net-mismatch') === 1 && count('.net-warn') === 1 && /networks differ/.test(label()) && !/trunk/i.test(label()),
+        text('#side-body [data-net-mismatch]') + ' / ' + label(),
       );
-      // end B: pick a network's VLAN from the list -> a single VLAN
-      await setField('#side-body select[data-t="vlan-pick"][data-p=\'["links",0,"b"]\']', '78');
-      check('one VLAN on end B (picked from the networks\' VLANs): shown as a single VLAN, not a trunk', st('B') === 'single' && /VLAN 78/.test(text(end('B'))) && !/Trunk/.test(text(end('B'))) && JSON.stringify(lk()) === '{"a":[10,20],"b":[78]}' && mismatch() === 'yes');
-      await setField(addTo('b'), '10 20');
-      click('#side-body [data-act="del-vlan"][data-p=\'["links",0,"b"]\'][data-k="78"]');
+      await setField(pick('b'), 'net3');
+      await setField(pick('b'), 'net1');
+      check(
+        'the same networks at both ends (in any order): no difference; the cable is labelled with them, not as a trunk',
+        JSON.stringify(lk()) === '{"a":["net1","net3"],"b":["net3","net1"]}' && mismatch() === 'no' && count('.cable.net-mismatch') === 0 && count('.net-warn') === 0 &&
+          /net1, net3/.test(label()) && !/trunk/i.test(label() + text('#side-body')) && !(app.mdoc as ModelDoc).warnings.some((w) => /carry different networks/.test(w.message)),
+        label(),
+      );
+      click('#side-body [data-act="del-net"][data-p=\'["links",0,"a"]\'][data-k="net3"]');
       await tick();
-      check('both ends permit the same VLANs: no mismatch, the cable is a trunk', JSON.stringify(lk()) === '{"a":[10,20],"b":[10,20]}' && mismatch() === 'no' && st('B') === 'trunk' && count('.cable.vlan-mismatch') === 0 && count('.vlan-warn') === 0 && !(app.mdoc as ModelDoc).warnings.some((w) => /VLAN mismatch/.test(w.message)));
-      click('#side-body [data-act="del-vlan"][data-p=\'["links",0,"a"]\'][data-k="20"]');
+      check('removing a network from one end leaves the other end as it was (the difference is shown again)', JSON.stringify(lk()) === '{"a":["net1"],"b":["net3","net1"]}' && n('A') === 1 && n('B') === 2 && mismatch() === 'yes');
+      // selecting a network highlights the cables that carry it, with their ports
+      app.select('network:net3');
+      check('selecting a network highlights the cable that carries it at an end', count('.cable.hl') === 1, String(count('.cable.hl')));
+      app.select(null);
+      click('#outline [data-act="select"][data-kind="link"][data-index="0"]');
       await tick();
-      check('removing a VLAN from one end leaves the other end as it was (mismatch shown again)', JSON.stringify(lk()) === '{"a":[10],"b":[10,20]}' && st('A') === 'single' && st('B') === 'trunk' && mismatch() === 'yes');
-      await setField(addTo('a'), '4095');
-      check('an invalid VLAN ID is refused and nothing changes', JSON.stringify(lk()) === '{"a":[10],"b":[10,20]}' && /1 to 4094/.test(q('#toast')!.textContent || ''), q('#toast')!.textContent || '');
-      await setField(addTo('a'), '20');
-      check('link-end VLANs and network VLANs stay separate facts', (app.mdoc as ModelDoc).result.model!.networks[0].vlan === 78 && JSON.stringify(lk()) === '{"a":[10,20],"b":[10,20]}');
+      await setField(pick('a'), 'net3');
+      // a VLAN interface in a network carried on a port: "Ports carrying its networks" follows the link ends
+      await selectDevice(0);
+      await setField("#side-body [data-p='[\"devices\",0,\"logical_interfaces\",2,\"vlan\"]']", '78');
+      const netPorts = `#side-body [data-card='["devices",0,"logical_interfaces",2]'] > [data-derived="net-ports"]`;
+      const ports = (Array.prototype.map.call(doc.querySelectorAll(netPorts + ' li[data-port]'), (e: Element) => e.getAttribute('data-port')) as string[]).join();
+      check(
+        'a VLAN interface shows "Ports carrying its networks" read-only, derived from the networks on the link ends',
+        ports === 'eth0' && /Ports carrying its networks \(net1\)/.test(text(netPorts)) && /net1 on/.test(text(netPorts)) && readOnly(netPorts) && /- \{id: virtual1, type: virtual, vlan: 78\}/.test(app.exportText()),
+        text(netPorts),
+      );
+      check('link-end networks and network VLANs stay separate facts', (app.mdoc as ModelDoc).result.model!.networks[0].vlan === 78 && JSON.stringify(lk()) === '{"a":["net1","net3"],"b":["net3","net1"]}');
       click('[data-view-btn="logical"]');
     }
 
@@ -2000,20 +2016,20 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         !!rd && rd.valid && rd.exportText() === created.text && !!rm && rm.index.devices.get('edge2')!.logical.map((l) => l.id + ':' + l.type).join() === 'lo0:loopback,lo1:loopback' &&
           rm.index.interfaces.get('edge2:lo0')!.addresses.join(',') === '10.255.0.2/32,2001:db8:ffff::2/128,10.255.0.3/32' && rm.index.interfaces.get('edge2:lo0')!.type === 'loopback' &&
           rm.index.devices.get('router1')!.interfaces.map((i) => `${i.id}:${i.type}`).join() === 'eth0:physical,eth9:physical' &&
-          rm.index.devices.get('router1')!.logical.map((i) => `${i.id}:${i.type}:${i.members.join('+')}:${i.vlan || ''}:${i.source ? i.source.iface : ''}>${i.destination ? i.destination.text : ''}`).join() === 'lo0:loopback:::>,virtual0:virtual:eth9+eth0::>,virtual1:virtual::30:>,tun0:tunnel:::eth0>edge2:lo0' &&
+          rm.index.devices.get('router1')!.logical.map((i) => `${i.id}:${i.type}:${i.members.join('+')}:${i.vlan || ''}:${i.source ? i.source.iface : ''}>${i.destination ? i.destination.text : ''}`).join() === 'lo0:loopback:::>,virtual0:virtual:eth9+eth0::>,virtual1:virtual::78:>,tun0:tunnel:::eth0>edge2:lo0' &&
           rm.relations[0].attrs.some(([k, v]) => k === 'keepalive.interval' && v === '10s') && /key: 42/.test(created.text),
         created.text);
       check(
-        'export → reload: per-end VLANs are in the file; members and interface VLANs are derived again, not stored',
-        !!rm && JSON.stringify([rm.links[0].a.vlans, rm.links[0].b.vlans]) === '[[10,20],[10,20]]' && networkMembers(rm, 'net1').map((m) => m.device).join() === 'router1,edge2' &&
-          interfaceVlanText(interfaceAddresses(rm, 'router1', 'eth0')) === 'VLAN 78' && !/\n {4}members:|kind:/.test(created.text) && /b: \{device: edge2, interface: eth0, vlans: \[10, 20\]\}/.test(created.text),
+        'export → reload: per-end networks are in the file; members and interface VLANs are derived again, not stored',
+        !!rm && JSON.stringify([rm.links[0].a.networks, rm.links[0].b.networks]) === '[["net1","net3"],["net3","net1"]]' && networkMembers(rm, 'net1').map((m) => m.device).join() === 'router1,edge2' &&
+          interfaceVlanText(interfaceAddresses(rm, 'router1', 'eth0')) === 'VLAN 78' && !/\n {4}members:|kind:/.test(created.text) && /b: \{device: edge2, interface: eth0, networks: \[net3, net1\]\}/.test(created.text),
         created.text);
       if (rd) {
         app.loadText(created.text, 'reloaded.yaml', 'file');
         click('[data-view-btn="physical"]');
-        const physOk = count('.cable') === 1 && count('.vlan-warn') === 0;
+        const physOk = count('.cable') === 1 && count('.net-warn') === 0;
         click('[data-view-btn="logical"]');
-        check('… and both views draw the reloaded file the same way (cable without mismatch; 2 membership lines)', physOk && count('.member') === 2 && count('g.network') === 2, `${count('.member')} member lines`);
+        check('… and both views draw the reloaded file the same way (cable with matching ends; 2 membership lines)', physOk && count('.member') === 2 && count('g.network') === 3, `${count('.member')} member lines`);
       }
     }
 

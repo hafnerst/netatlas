@@ -58,8 +58,8 @@ devices:
     type: switch
     interfaces: [p1, p2]
 links:
-  - {id: c1, a: {device: r1, interface: eth0, vlans: [20]}, b: {device: r2, interface: eth0, vlans: [20]}}
-  - {id: c2, a: {device: sw, interface: p1, vlans: [30, 31]}, b: {device: r2, vlans: [30, 31]}}
+  - {id: c1, a: {device: r1, interface: eth0, networks: [sub-net]}, b: {device: r2, interface: eth0, networks: [sub-net]}}
+  - {id: c2, a: {device: sw, interface: p1, networks: [vlan-net]}, b: {device: r2, networks: [vlan-net]}}
 networks:
   - {id: port-net, label: Core link, cidr: 10.1.0.0/24}
   - {id: sub-net, label: VLAN interface, cidr: 10.20.0.0/24, vlan: 20}
@@ -72,18 +72,18 @@ networks:
   - {id: orphan, label: Unused, cidr: 10.99.0.0/24, vlan: 99}
 relations:
   - {id: gre, protocol: gre, endpoints: ["r1:tun0", "r2:tun0"], over: c1}
-  - {id: vrrp, protocol: vrrp, endpoints: [r1, r2], network: rel-net}
+  - {id: vrrp, protocol: vrrp, endpoints: [r1, r2], over: rel-net}
   - {id: ospf, protocol: ospf, endpoints: [r1, r2], over: port-net}
 `;
 
 test('relevance: the physical picture lists the networks of its ports and cables, not every network in the file', () => {
   const m = model(nets);
-  // ports, the virtual interfaces that use them (an aggregate's members, a VLAN carried on the port) and the VLANs permitted on the cables
+  // ports, the virtual interfaces that use them (an aggregate's members, a network carried on the port) and the networks assigned to the cable ends
   assert.deepEqual(ids(m, 'physical').sort(), ['agg-net', 'port-net', 'sub-net', 'vlan-net']);
   // not: networks reached only through a loopback, a tunnel interface, a relation or an uncabled interface
   for (const out of ['lo-net', 'tun-net', 'rel-net', 'uncabled-net', 'orphan']) assert.ok(!ids(m, 'physical').includes(out), out);
-  // cabling the spare port brings its network in; removing the VLAN from the cable takes that one out
-  const recabled = model(nets.replace('b: {device: r2, vlans: [30, 31]}', 'b: {device: r1, interface: eth9, vlans: [31]}').replace('vlans: [30, 31]}', 'vlans: [31]}'));
+  // cabling the spare port brings its network in; removing the network from the cable ends takes that one out
+  const recabled = model(nets.replace('b: {device: r2, networks: [vlan-net]}', 'b: "r1:eth9"').replace('a: {device: sw, interface: p1, networks: [vlan-net]}', 'a: "sw:p1"'));
   assert.deepEqual(ids(recabled, 'physical').sort(), ['agg-net', 'port-net', 'sub-net', 'uncabled-net']);
 });
 
@@ -92,7 +92,7 @@ test('relevance: the logical picture lists the networks it draws; without networ
   // network nodes are part of the logical picture, so each drawn network is listed
   assert.deepEqual(ids(m, 'logical').sort(), ['agg-net', 'lo-net', 'orphan', 'port-net', 'rel-net', 'sub-net', 'tun-net', 'uncabled-net', 'vlan-net']);
   const noNodes = { ...ALL, showNetworks: false };
-  // gre: its tunnel interfaces' network; vrrp: its "network"; ospf: "over" a network; devices: their loopbacks
+  // gre: its tunnel interfaces' network; vrrp and ospf: "over" a network; devices: their loopbacks
   assert.deepEqual(ids(m, 'logical', noNodes).sort(), ['lo-net', 'port-net', 'rel-net', 'tun-net']);
   // a hidden protocol is not in the picture, so neither are the networks only it uses
   assert.deepEqual(ids(m, 'logical', { ...noNodes, hiddenProtocols: new Set(['vrrp', 'gre']) }).sort(), ['lo-net', 'port-net']);
@@ -131,10 +131,10 @@ test('content: a titled box per view with name, prefix and VLAN of each network,
   assert.equal(p.legend.root.attrs.class, 'svg-legend');
   assert.equal(scene.findAll(p.legend.root, (n) => scene.hasClass(n, 'nw-entry')).length, 0);
   for (const cls of ['lg-box', 'lg-heading', 'lg-label', 'lg-title']) assert.ok(scene.findAll(p.networks.root, (n) => scene.hasClass(n, cls)).length > 0 && scene.findAll(p.legend.root, (n) => scene.hasClass(n, cls)).length > 0, cls);
-  // several prefixes, no prefix, and two networks with the same name (told apart by their ids)
-  const same = model('netatlas: 1\ndevices:\n  - {id: a, interfaces: [{id: e0, ip: [10.0.0.1/24, 10.0.1.1/24, "2001:db8::1/64", 10.5.0.1/24]}]}\n  - {id: b, interfaces: [e0]}\nlinks:\n  - {id: l, a: {device: a, interface: e0, vlans: [7]}, b: "b:e0"}\nnetworks:\n  - {id: n2, label: Users, cidr: 10.0.1.0/24, vlan: 12}\n  - {id: n1, label: Users, cidr: [10.0.0.0/24, "2001:db8::/64"], vlan: 11}\n  - {id: n3, vlan: 7}\n  - {id: n10, cidr: 10.5.0.0/24}\n');
-  assert.deepEqual(lines(exported(same, 'physical').networks.root).slice(2).map((l) => l[1]), ['n3', 'no prefix · VLAN 7', 'n10', '10.5.0.0/24', 'Users', 'id n1 · 10.0.0.0/24, 2001:db8::/64 · VLAN 11', 'Users', 'id n2 · 10.0.1.0/24 · VLAN 12']);
-  assert.equal(nb.networkIdentity(same.networks[1], false), '10.0.0.0/24, 2001:db8::/64 · VLAN 11');
+  // one prefix per network, a network carried on the cable only, and two networks with the same name (told apart by their ids)
+  const same = model('netatlas: 1\ndevices:\n  - {id: a, interfaces: [{id: e0, ip: [10.0.0.1/24, 10.0.1.1/24, "2001:db8::1/64", 10.5.0.1/24]}]}\n  - {id: b, interfaces: [e0]}\nlinks:\n  - {id: l, a: {device: a, interface: e0, networks: [n3]}, b: "b:e0"}\nnetworks:\n  - {id: n2, label: Users, cidr: 10.0.1.0/24, vlan: 12}\n  - {id: n1, label: Users, cidr: 10.0.0.0/24, vlan: 11}\n  - {id: n3, cidr: 10.7.0.0/24, vlan: 7}\n  - {id: n10, cidr: 10.5.0.0/24}\n');
+  assert.deepEqual(lines(exported(same, 'physical').networks.root).slice(2).map((l) => l[1]), ['n3', '10.7.0.0/24 · VLAN 7', 'n10', '10.5.0.0/24', 'Users', 'id n1 · 10.0.0.0/24 · VLAN 11', 'Users', 'id n2 · 10.0.1.0/24 · VLAN 12']);
+  assert.equal(nb.networkIdentity(same.networks[1], false), '10.0.0.0/24 · VLAN 11');
 });
 
 test('empty state: a view without relevant networks says so', () => {
@@ -188,15 +188,15 @@ test('every example, both views: the box is beside the legend, covers nothing, a
 
 test('long names wrap inside the box instead of widening it without bound', () => {
   const long = 'Customer access network for the north-east metropolitan region including the legacy frame-relay migration sites and/or_a_very_long_unbroken_identifier_that_has_no_spaces_at_all';
-  const m = model(`netatlas: 1\ndevices:\n  - {id: a, interfaces: [{id: e0, ip: 10.0.0.1/24}]}\n  - {id: b, interfaces: [e0]}\nlinks:\n  - {id: l, a: "a:e0", b: "b:e0"}\nnetworks:\n  - id: n\n    label: ${long}\n    cidr: [10.0.0.0/24, 10.0.1.0/24, 10.0.2.0/24, 10.0.3.0/24, 10.0.4.0/24, "2001:db8:aaaa:bbbb::/64", "2001:db8:cccc:dddd::/64"]\n    vlan: 4000\n`);
+  const m = model(`netatlas: 1\ndevices:\n  - {id: a, interfaces: [{id: e0, ip: 10.0.0.1/24}]}\n  - {id: b, interfaces: [e0]}\nlinks:\n  - {id: l, a: "a:e0", b: "b:e0"}\nnetworks:\n  - id: n\n    label: ${long}\n    cidr: 10.0.0.0/24\n    vlan: 4000\n`);
   const x = exported(m, 'physical');
   const entry = scene.findAll(x.networks.root, (n) => scene.hasClass(n, 'nw-entry'))[0];
   const name = scene.findAll(entry, (n) => scene.hasClass(n, 'nw-name'))[0];
   const sub = scene.findAll(entry, (n) => scene.hasClass(n, 'nw-sub'))[0];
-  assert.ok(name.children.length >= 4 && sub.children.length >= 2, 'both the name and the prefixes wrap');
-  // nothing is shortened: every word and every prefix is there
+  assert.ok(name.children.length >= 4, 'the name wraps');
+  // nothing is shortened: every word and the prefix are there
   assert.equal(name.children.map((c) => c.text).join(' ').replace(/ /g, ''), long.replace(/ /g, ''));
-  assert.match(sub.children.map((c) => c.text).join(' '), /10\.0\.4\.0\/24.*2001:db8:cccc:dddd::\/64 · VLAN 4000$/);
+  assert.equal(scene.textOf(sub).trim(), '10.0.0.0/24 · VLAN 4000');
   assert.ok(!/…/.test(scene.textOf(x.networks.root)));
   assert.ok(x.networks.box.w <= 300, String(x.networks.box.w));
   for (const [tx, text, size] of lines(x.networks.root)) assert.ok(tx + textWidth(text, size) <= x.networks.box.w, text);
@@ -206,10 +206,10 @@ test('long names wrap inside the box instead of widening it without bound', () =
 });
 
 test('a large list continues in further columns; every network is listed once, readable and unclipped', () => {
-  // 150 VLAN interfaces on one switch, all carried on its uplink
+  // 150 VLAN interfaces on one switch, all their networks carried on its uplink
   let t = 'netatlas: 1\ndevices:\n  - id: a\n    interfaces: [e0]\n    logical_interfaces:\n';
   for (let i = 0; i < 150; i++) t += `      - {id: Vlan${100 + i}, type: virtual, ip: 10.${i}.0.1/24}\n`;
-  t += `  - {id: b, interfaces: [e0]}\nlinks:\n  - {id: l, a: {device: a, interface: e0, vlans: [${Array.from({ length: 150 }, (_, i) => 100 + i).join(', ')}]}, b: "b:e0"}\nnetworks:\n`;
+  t += `  - {id: b, interfaces: [e0]}\nlinks:\n  - {id: l, a: {device: a, interface: e0, networks: [${Array.from({ length: 150 }, (_, i) => 'n' + i).join(', ')}]}, b: "b:e0"}\nnetworks:\n`;
   for (let i = 0; i < 150; i++) t += `  - {id: n${i}, label: "Segment ${i} of the campus", cidr: 10.${i}.0.0/24, vlan: ${100 + i}}\n`;
   const m = model(t);
   const x = exported(m, 'physical');

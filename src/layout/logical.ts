@@ -157,6 +157,16 @@ export function autoLogical(input: LayoutInput, physical: Map<string, Pt>): Map<
   return roundAll(clustered(specs, edges, seed, groupOf, groups));
 }
 
+/**
+ * The groups every one of the given chains (innermost first) passes through,
+ * innermost first: where a node connected to those devices belongs. Empty
+ * when there are no chains or one of them is ungrouped.
+ */
+export function commonChain(chains: string[][]): string[] {
+  if (!chains.length) return [];
+  return chains[0].filter((g) => chains.every((c) => c.indexOf(g) >= 0));
+}
+
 function roundAll(pos: Map<string, Pt>): Map<string, Pt> {
   const out = new Map<string, Pt>();
   pos.forEach((p, ref) => out.set(ref, { x: Math.round(p.x), y: Math.round(p.y) }));
@@ -295,6 +305,18 @@ function clustered(specs: LSpec[], edges: LEdge[], seed: Map<string, Pt>, groupO
     return out;
   };
   const chains = new Map(specs.map((sp) => [sp.ref, chain(sp.ref)] as [string, string[]]));
+  // a network or hub whose devices all lie in one group is local to it: it goes into the innermost group holding all of them
+  const neighbours = new Map<string, string[]>();
+  for (const [a, b] of edges) {
+    if (a.indexOf('device:') !== 0 && b.indexOf('device:') === 0) {
+      if (!neighbours.has(a)) neighbours.set(a, []);
+      (neighbours.get(a) as string[]).push(b);
+    }
+  }
+  for (const sp of specs) {
+    if (sp.kind === 'device') continue;
+    chains.set(sp.ref, commonChain((neighbours.get(sp.ref) || []).map((d) => chains.get(d) as string[])));
+  }
   /** the item directly inside `container` (null = top level) that holds `ref`, or null if `ref` is not inside it */
   const itemIn = (ref: string, container: string | null): string | null => {
     const c = chains.get(ref) as string[];

@@ -6,7 +6,7 @@
  */
 import { Rect, textWidth } from '../layout/geometry';
 import { DEVICE_TYPE_IDS, deviceTypeLabel } from '../model/device-types';
-import { vlanMismatch } from '../model/derive';
+import { networkMismatch } from '../model/derive';
 import { relationStyle } from '../model/protocols';
 import { CATEGORIES, Category, Model, ProtocolDef } from '../model/types';
 import { deviceIcon, iconName } from './icons';
@@ -83,7 +83,7 @@ export function legendOf(model: Model, view: View): Legend {
       sections.push({
         title: 'Cables (physical links)',
         items: Array.from(media.values()).map((m) => ({ swatch: [h('path', { d: LINE, stroke: m.color, 'stroke-width': 2.6, 'stroke-dasharray': m.dash, fill: 'none' })], label: m.label })),
-        note: 'Line width grows with link speed (100M → 400G). Small squares are ports; labels show the interface name. “Trunk” on a cable means several VLANs are permitted; ⚠ marks a cable whose two ends permit different VLANs.',
+        note: 'Line width grows with link speed (100M → 400G). Small squares are ports; labels show the interface name. A cable label names the networks the cable carries (as assigned to its ends); ⚠ marks a cable whose two ends carry different networks.',
         more: [width('1G'), width('100G')],
       });
     }
@@ -167,7 +167,7 @@ export const LEGEND_GAP = 28;
 /**
  * The sections an exported SVG needs: the Legend tab's content reduced to
  * what is drawn (hidden protocols, networks and group frames are left out), plus
- * the symbols the tab explains in prose (ports, VLAN mismatch).
+ * the symbols the tab explains in prose (ports, ends carrying different networks).
  */
 export function exportLegendSections(model: Model, view: View, opts: ExportOptions): LegendSection[] {
   const out: LegendSection[] = [];
@@ -189,8 +189,8 @@ export function exportLegendSections(model: Model, view: View, opts: ExportOptio
       const n = cables.items.length - 2;
       cables.items[n] = { ...cables.items[n], label: '1G (width grows with speed)' };
       cables.items.push({ swatch: [h('rect', { class: 'port', x: 17.5, y: 4.5, width: 9, height: 9, rx: 1.5, fill: '#868e96' })], label: 'Port (label: interface name)' });
-      if (model.links.some((l) => !!vlanMismatch(l.a.vlans, l.b.vlans))) {
-        cables.items.push({ swatch: [h('text', { class: 'vlan-warn', x: 22, y: 14, 'text-anchor': 'middle' }, '⚠')], label: 'VLAN mismatch between the two ends' });
+      if (model.links.some((l) => !!networkMismatch(l.a.networks, l.b.networks))) {
+        cables.items.push({ swatch: [h('text', { class: 'net-warn', x: 22, y: 14, 'text-anchor': 'middle' }, '⚠')], label: 'The two ends carry different networks' });
       }
     }
   }

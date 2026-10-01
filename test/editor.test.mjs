@@ -242,7 +242,8 @@ test('renaming ids updates every reference (device, interface, group, link, rela
   assert.equal(d.renameEntity('group', d.findEntity('group', 'hq').index, 'berlin'), 2);
   assert.equal(d.renameEntity('link', d.findEntity('link', 'l-hq-isp1').index, 'uplink-1'), 3);
   assert.equal(d.renameEntity('relation', d.findEntity('relation', 'ipsec-muc').index, 'ipsec-munich'), 1);
-  assert.equal(d.renameEntity('network', d.findEntity('network', 'net-users').index, 'vlan10'), 1);
+  // the network is named by the link ends that carry it (5 cables, both ends) and by VRRP's "over"
+  assert.equal(d.renameEntity('network', d.findEntity('network', 'net-users').index, 'vlan10'), 9);
   assert.equal(d.renameEntity('protocol', d.findEntity('protocol', 'macsec').index, 'macsec2'), 1);
   assert.ok(d.valid, d.errors.map((e) => e.message).join('\n'));
   const m = d.result.model;
@@ -284,15 +285,14 @@ test('shorthand forms are expanded only when edited, keeping their data', () => 
   d.change('edit', () => {
     d.ensureMap(['devices', 0, 'interfaces', 1]);
     d.setAt(['devices', 0, 'interfaces', 1, 'vrf'], yaml.strNode('blue'), KEY_ORDER.interface);
-    d.ensureMap(['relations', 0, 'endpoints', 0]);
-    d.setAt(['relations', 0, 'endpoints', 0, 'role'], yaml.strNode('gateway'), KEY_ORDER.endpoint);
   });
-  // a link end becomes a mapping only when it gets VLANs; the other end is left as written
-  assert.ok(d.addEndVlans(['links', 0, 'a'], [20, 10]));
+  // a link end becomes a mapping only when it gets networks; the other end is left as written
+  d.addEntity('network', [['id', yaml.strNode('n1')], ['cidr', yaml.strNode('10.0.0.0/24')]]);
+  assert.ok(d.addEndNetwork(['links', 0, 'a'], 'n1'));
   const out = d.exportText();
   assert.match(out, /interfaces: \[eth0, \{id: eth1, vrf: blue\}\]/);
-  assert.match(out, /endpoints: \[\{device: r1, interface: eth0, role: gateway\}, r2\]/);
-  assert.match(out, /a: \{device: r1, interface: eth1, vlans: \[10, 20\]\}, b: r2:eth0\}/);
+  assert.match(out, /endpoints: \["r1:eth0", r2\]/, 'endpoints stay short');
+  assert.match(out, /a: \{device: r1, interface: eth1, networks: \[n1\]\}, b: r2:eth0\}/);
   assert.ok(d.valid);
 });
 
@@ -440,7 +440,8 @@ devices:
   - id: a
     interfaces: [{id: e0, ip: 10.9.0.1/24}]
 networks:
-  - {id: n, cidr: [10.1.0.0/24, 2001:db8::/64]}
+  - {id: n, cidr: 10.1.0.0/24}
+  - {id: n6, cidr: "2001:db8::/64"}
 `);
   assert.deepEqual(r.errors.concat(r.warnings), []);
   assert.deepEqual(load('model/derive.js').networkMembers(r.model, 'n'), []);

@@ -13,16 +13,16 @@
  *              on a left-out device keeps its text but no longer points at
  *              that device.
  *   links      only links whose two ends are on included devices; a cable to
- *              a left-out device is not drawn at all (no dangling stub).
+ *              a left-out device is not drawn at all (no dangling stub). The
+ *              networks of their ends keep only included networks.
  *   relations  only relations whose every endpoint device is included. A
  *              relation that also reaches a left-out device is left out
  *              entirely, never drawn as if it were complete.
- *              `over` keeps only included links, relations and networks;
- *              `network` is kept only if that network is included.
+ *              `over` keeps only included links, relations and networks.
  *   networks   physical view: a network with at least one included member,
- *              or whose VLAN is permitted on an end of an included link.
+ *              or assigned to an end of an included link.
  *              logical view: a network with at least one included member, or
- *              named by an included relation (`network` or `over`).
+ *              in the `over` of an included relation.
  *              Membership is derived again from the included devices'
  *              addresses, so a network with members on both sides shows only
  *              its included members.
@@ -72,20 +72,18 @@ export function filterModel(model: Model, ids: Set<string>, view: FilterView): M
   const netIds = new Set<string>();
   for (const n of model.networks) {
     if ((members.get(n.id) || []).length) netIds.add(n.id);
-    else if (view === 'physical' && n.vlan !== undefined && links.some((l) => l.a.vlans.indexOf(n.vlan as number) >= 0 || l.b.vlans.indexOf(n.vlan as number) >= 0)) netIds.add(n.id);
+    else if (view === 'physical' && links.some((l) => l.a.networks.indexOf(n.id) >= 0 || l.b.networks.indexOf(n.id) >= 0)) netIds.add(n.id);
   }
   if (view === 'logical') {
-    for (const r of rels0) {
-      if (r.network !== undefined && ix.networks.has(r.network)) netIds.add(r.network);
-      for (const o of r.over) if (ix.networks.has(o)) netIds.add(o);
-    }
+    for (const r of rels0) for (const o of r.over) if (ix.networks.has(o)) netIds.add(o);
   }
   const networks: Network[] = model.networks.filter((n) => netIds.has(n.id));
   const relations: Relation[] = rels0.map((r) => ({
     ...r,
     over: r.over.filter((o) => linkIds.has(o) || relIds.has(o) || netIds.has(o)),
-    network: r.network !== undefined && netIds.has(r.network) ? r.network : undefined,
   }));
+  // link ends name only networks of the filtered model
+  const links2: Link[] = links.map((l) => ({ ...l, a: { ...l.a, networks: l.a.networks.filter((n) => netIds.has(n)) }, b: { ...l.b, networks: l.b.networks.filter((n) => netIds.has(n)) } }));
 
   // groups: those holding an included device, with their parents
   const keep = new Set<string>();
@@ -103,12 +101,12 @@ export function filterModel(model: Model, ids: Set<string>, view: FilterView): M
   return {
     ...model,
     devices,
-    links,
+    links: links2,
     networks,
     relations,
     groups,
     layout: emptyLayout(),
-    index: indexOf(devices, links, networks, relations, groups),
+    index: indexOf(devices, links2, networks, relations, groups),
   };
 }
 

@@ -9,7 +9,7 @@ Each layer has one responsibility and may only import the layers below it.
 
 | Layer | Responsibility | Main modules |
 |---|---|---|
-| `model/` | The network model: types for devices, their physical and logical interfaces (loopback, virtual, tunnel) with the associations of each kind, links, networks, relations, protocols and groups; the display order of names (`order.ts`); the protocol registry; IP addresses; DNS-name syntax; the **device filter** (the part of a model relevant to some devices, as a self-consistent sub-model); **derived facts** (network members and interface VLANs from addresses, link-end VLAN state); pure queries (references, related objects, search). No I/O, no YAML, no layout. | `types.ts`, `device-types.ts`, `protocols.ts`, `ip.ts`, `dns.ts`, `filter.ts`, `derive.ts`, `queries.ts`, `order.ts` |
+| `model/` | The network model: types for devices, their physical and logical interfaces (loopback, virtual, tunnel) with the associations of each kind, links, networks, relations, protocols and groups; the display order of names (`order.ts`); the protocol registry; IP addresses; DNS-name syntax; the **device filter** (the part of a model relevant to some devices, as a self-consistent sub-model); **derived facts** (network members and interface VLANs from addresses and each network's one prefix, the networks a cable carries at each end and whether the ends differ); pure queries (references, related objects, search). No I/O, no YAML, no layout. | `types.ts`, `device-types.ts`, `protocols.ts`, `ip.ts`, `dns.ts`, `filter.ts`, `derive.ts`, `queries.ts`, `order.ts` |
 | `yaml/` | The YAML boundary: the supported YAML subset (parser with line/column positions, comments and styles), the serializer (the inverse), and the format **schema** (which keys exist, in canonical order). Knows nothing about networks beyond key names. | `parse.ts`, `write.ts`, `schema.ts` |
 | `validation/` | Turns a parsed YAML tree into a `Model` plus errors and warnings. Every issue is attached to the YAML node it concerns. Structural and cross-reference checks, loopback/IP rules, the presentation-only `layout` section. Callable without any UI. | `validate.ts` (the format's rules), `reader.ts` (issue collector, typed reader, suggestions) |
 | `layout/` | Deterministic positions for both views: a canonical, order-independent input built from the model; auto-arrange for the physical and the logical view; placement of new nodes; the rule "stored positions else auto-arrange". Separates calculated positions from network semantics. | `input.ts`, `physical.ts`, `logical.ts`, `positions.ts`, `text.ts` (width estimate, wrapping), `sizes.ts` (element sizes from their text), `bundles.ts` (lanes and labels of a device pair), `geometry.ts`, `order.ts` |
@@ -73,10 +73,13 @@ anything else.
   tree. Whatever follows from it is computed by `model/derive.ts` from the
   typed `Model` (cached per model object, and a new model is built after
   every edit), and is only ever displayed: network members, the VLAN of an
-  interface address, the trunk state and mismatch of a link's ends. No
+  interface address, the difference between the networks of a link's two ends, the ports carrying a VLAN interface's networks. No
   editing operation writes a derived value, so it can't go stale or
   contradict its source. The typed `Network` has no member list and the
   typed `Interface` no VLAN, so nothing can read a stored copy by mistake.
+  Membership (IP containment, derived), link-end `networks` (physical
+  carriage, configured per end) and a relation's `over` (its underlay,
+  configured) are three separate facts; none is derived from another.
   *Trade-off:* membership is recomputed for the whole model after each edit
   (addresses × networks); that is well inside the time validation already
   takes.
@@ -87,7 +90,7 @@ anything else.
   `device:interface` references are flat too. An association is a field of
   the kind of interface it belongs to (`members`, `vlan`, `source`,
   `destination`) or is derived in `model/derive.ts` (`interfaceVlans`,
-  `interfaceVlanPorts`, `associatedInterfaces`): the ports of a VLAN
+  `interfaceNetworkPorts`, `associatedInterfaces`): the ports of a VLAN
   interface come from the link ends and are never stored. The editor
   addresses an interface by its document path (`interfaceEntries()`).
 * **Display order is not file order.** `model/order.ts` sorts names for
