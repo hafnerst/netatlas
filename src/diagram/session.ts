@@ -12,6 +12,15 @@
  * by hand in a filtered view, are temporary session state, separate per
  * view: they are never written to the document, so the YAML file keeps only
  * the positions of the complete diagrams.
+ *
+ * Device-type visibility. `state.hiddenTypes` holds device types switched
+ * off with the toolbar's type controls (Endpoints, Servers). It narrows the
+ * device selection further without changing it: the diagrams show the
+ * selected devices (all of them without a filter) that are not of a hidden
+ * type. When that is every device, nothing is filtered. Switching a type
+ * off or on keeps the other devices where they are (only the hidden ones
+ * leave, and returning ones are placed next to their neighbours), and
+ * switching it on again restores the device selection as it was.
  */
 import { Pt } from '../layout/geometry';
 import { LayoutView, autoPositions, resolvePositions, samePositions } from '../layout/positions';
@@ -36,6 +45,8 @@ export interface ViewState {
   hiddenProtocols: Set<string>;
   /** devices the diagrams show; null = every device (no filter) */
   devices: Set<string> | null;
+  /** device types (model identifiers, e.g. "server") whose devices the diagrams leave out */
+  hiddenTypes: Set<string>;
   /**
    * Temporary positions while a node is being dragged, keyed by ref
    * ("device:x", "network:y"). The editor commits them to the document's
@@ -54,6 +65,7 @@ export function createViewState(): ViewState {
     showGroups: true,
     hiddenProtocols: new Set(),
     devices: null,
+    hiddenTypes: new Set(),
     positions: { physical: new Map(), logical: new Map() },
   };
 }
@@ -73,6 +85,12 @@ export class Session {
   private filtered: { physical: ViewCache | null; logical: ViewCache | null } = { physical: null, logical: null };
   /** temporary positions of the filtered views, keyed by entity id; null = not arranged yet */
   private temp: { physical: Map<string, Pt> | null; logical: Map<string, Pt> | null } = { physical: null, logical: null };
+  /**
+   * Places of the filtered views' nodes as they were when a device type was
+   * switched off, so that switching it on again brings its devices back
+   * where they were (until the subset is chosen or arranged anew).
+   */
+  private parked: { physical: Map<string, Pt> | null; logical: Map<string, Pt> | null } = { physical: null, logical: null };
 
   constructor(public model: Model) {
     this.input = layoutInput(model);
@@ -101,8 +119,10 @@ export class Session {
       if (selectsAll(model, ids)) this.state.devices = null;
     }
     this.filtered = { physical: null, logical: null };
-    if (!this.isFiltered()) this.temp = { physical: null, logical: null };
-    else {
+    if (!this.isFiltered()) {
+      this.temp = { physical: null, logical: null };
+      this.parked = { physical: null, logical: null };
+    } else {
       for (const v of ['physical', 'logical'] as LayoutView[]) {
         const old = this.temp[v];
         this.temp[v] = old ? resolvePositions(v, this.viewInput(v), old) : null;
@@ -112,14 +132,75 @@ export class Session {
 
   // ------------------------------------------------------------- the filter
 
-  /** Is a proper subset of the devices selected? */
+  /** Do the diagrams show a proper subset of the devices (by selection or by type)? */
   isFiltered(): boolean {
-    return this.state.devices !== null;
+    return this.shownSet() !== null;
   }
 
-  /** The selected device ids (every device when there is no filter). */
+  /** The selected device ids (every device when there is no filter); device types switched off do not change it. */
   selectedDevices(): Set<string> {
     return this.state.devices ? new Set(this.state.devices) : new Set(this.model.devices.map((d) => d.id));
+  }
+
+  /** The device ids the diagrams show: the selected ones that are not of a hidden type. */
+  shownDevices(): Set<string> {
+    return this.shownSet() || new Set(this.model.devices.map((d) => d.id));
+  }
+
+  /** Is this device type switched off? */
+  isTypeHidden(type: string): boolean {
+    return this.state.hiddenTypes.has(type);
+  }
+
+  /** The shown devices, or null when that is every device (no filter). */
+  private shownSet(): Set<string> | null {
+    const sel = this.state.devices;
+    const hidden = this.state.hiddenTypes;
+    if (!sel && !hidden.size) return null;
+    const out = new Set<string>();
+    for (const d of this.model.devices) if ((!sel || sel.has(d.id)) && !hidden.has(d.type)) out.add(d.id);
+    return out.size === this.model.devices.length ? null : out;
+  }
+
+  /**
+   * Show or hide the devices of one type. The device selection is not
+   * changed, so showing the type again brings back exactly what was
+   * selected. The devices that stay keep their places on screen; when the
+   * result is the complete model, its stored positions apply unchanged.
+   * Returns whether anything changed.
+   */
+  setTypeVisible(type: string, visible: boolean): boolean {
+    const hidden = this.state.hiddenTypes;
+    if (hidden.has(type) === !visible) return false;
+    const views: LayoutView[] = ['physical', 'logical'];
+    // where everything is now, plus where hidden nodes were when they left: the start for the new subset
+    const seeds = views.map((v) => {
+      const seed = new Map(this.parked[v] || []);
+      this.positionsFor(v).forEach((p, id) => seed.set(id, p));
+      return seed;
+    });
+    if (visible) hidden.delete(type);
+    else hidden.add(type);
+    this.filtered = { physical: null, logical: null };
+    this.state.positions.physical.clear();
+    this.state.positions.logical.clear();
+    if (!this.isFiltered()) {
+      this.temp = { physical: null, logical: null };
+      this.parked = { physical: null, logical: null };
+      return true;
+    }
+    views.forEach((v, i) => {
+      this.parked[v] = seeds[i];
+      this.temp[v] = resolvePositions(v, this.viewInput(v), seeds[i]);
+    });
+    return true;
+  }
+
+  /** Positions of the complete diagram of a view (stored layout, else auto-arrange). */
+  private resolvedPositions(view: LayoutView): Map<string, Pt> {
+    let p = this.resolved[view];
+    if (!p) p = this.resolved[view] = resolvePositions(view, this.input, this.model.layout[view]);
+    return p;
   }
 
   /**
@@ -137,6 +218,7 @@ export class Session {
     this.state.devices = norm;
     this.filtered = { physical: null, logical: null };
     this.temp = { physical: null, logical: null };
+    this.parked = { physical: null, logical: null };
     this.state.positions.physical.clear();
     this.state.positions.logical.clear();
     return true;
@@ -153,13 +235,12 @@ export class Session {
   }
 
   private cache(view: View): ViewCache {
-    if (!this.state.devices) return { model: this.model, input: this.input };
-    let c = this.filtered[view];
-    if (!c) {
-      const model = filterModel(this.model, this.state.devices, view);
-      c = this.filtered[view] = { model, input: layoutInput(model) };
-    }
-    return c;
+    const c = this.filtered[view];
+    if (c) return c;
+    const shown = this.shownSet();
+    if (!shown) return { model: this.model, input: this.input };
+    const model = filterModel(this.model, shown, view);
+    return (this.filtered[view] = { model, input: layoutInput(model) });
   }
 
   // -------------------------------------------------------------- positions
@@ -172,9 +253,7 @@ export class Session {
       if (!t) t = this.temp[view] = autoPositions(view, this.viewInput(view));
       return t;
     }
-    let p = this.resolved[view];
-    if (!p) p = this.resolved[view] = resolvePositions(view, this.input, this.model.layout[view]);
-    return p;
+    return this.resolvedPositions(view);
   }
 
   /**
@@ -218,6 +297,7 @@ export class Session {
       if (!q || q.x !== p.x || q.y !== p.y) moved++;
     });
     this.temp[view] = auto;
+    this.parked[view] = null;
     this.state.positions[view].clear();
     return moved;
   }

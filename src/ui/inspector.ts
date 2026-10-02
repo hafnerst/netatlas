@@ -12,8 +12,9 @@
  * model on every render, are read-only, and are never written to the file.
  */
 import { DocMap, DocNode, ENTITY_KINDS, EntityKind, IfaceEntry, KEY_ORDER, ModelDoc, Path, SECTION, kindOfSection } from '../editor/document';
+import { BlockTarget } from '../editor/yaml-block';
 import { DialogOpts } from './dialogs';
-import { el } from './dom';
+import { el, icon } from './dom';
 import { sortedByName } from '../model/order';
 import { CATEGORIES, DIRECTIONS, Direction, InterfaceKind, LINE_STYLES, LOGICAL_IFACE_TYPES, VLAN_MAX, VLAN_MIN, ifaceKey, interfaceKindLabel } from '../model/types';
 import { derivedVlanText, interfaceAddresses, interfaceCarriedNetworks, interfaceNetworkPorts, interfaceVlans, networkMembers, networkMismatch, networkMismatchText } from '../model/derive';
@@ -125,6 +126,24 @@ export class Editor {
     return entityRef(s.kind, ent.id);
   }
 
+  /**
+   * The selected object as a YAML location target: its kind and stable id
+   * (and the interface, when one is selected). Null for the model settings,
+   * or an entry without an id.
+   */
+  selectedTarget(): BlockTarget | null {
+    const s = this.sel;
+    if (!s || s.kind === 'document' || !this.getDoc()) return null;
+    const ent = this.doc.entities(s.kind)[s.index];
+    if (!ent || !ent.id) return null;
+    if (s.kind === 'device' && s.iface !== undefined) {
+      const want = J(s.iface);
+      const entry = this.doc.interfaceEntries(s.index).find((e) => J(e.path) === want);
+      return entry && entry.id ? { kind: s.kind, id: ent.id, iface: entry.id } : null;
+    }
+    return { kind: s.kind, id: ent.id };
+  }
+
   /** Open the card of an interface. */
   openIface(path: Path): void {
     this.open.add(J(path));
@@ -155,21 +174,25 @@ export class Editor {
     const counts = this.issueCounts();
     const kinds: EntityKind[] = ['device', 'link', 'network', 'relation', 'group', 'protocol'];
     const allFolded = kinds.every((k) => this.collapsed.has(k));
+    // The selection hint shares the row of "Collapse all", which is always there: selecting,
+    // switching and clearing change its text only, never the position of anything below it.
     box.appendChild(
       this.e('div', { class: 'ol-tools' }, [
+        this.e(
+          'span',
+          ctx ? { class: 'ol-ctx-hint small', 'data-related': String(ctx.related.size), title: `▸ selected · • ${ctx.related.size} directly related` } : { class: 'ol-ctx-hint small', 'data-related': '' },
+          ctx
+            ? [
+                this.e('span', { class: 'ctx-mark sel', 'aria-hidden': 'true' }, ['▸']),
+                ' selected · ',
+                this.e('span', { class: 'ctx-mark rel', 'aria-hidden': 'true' }, ['•']),
+                ` related (${ctx.related.size})`,
+              ]
+            : [],
+        ),
         this.e('button', { type: 'button', class: 'mini', 'data-act': 'fold-all', 'data-kind': allFolded ? 'open' : 'close', title: allFolded ? 'Show the entries of every section' : 'Fold every section to its heading' }, [allFolded ? 'Expand all' : 'Collapse all']),
       ]),
     );
-    if (ctx) {
-      box.appendChild(
-        this.e('p', { class: 'ol-ctx-hint small', 'data-related': String(ctx.related.size) }, [
-          this.e('span', { class: 'ctx-mark sel', 'aria-hidden': 'true' }, ['▸']),
-          ' selected · ',
-          this.e('span', { class: 'ctx-mark rel', 'aria-hidden': 'true' }, ['•']),
-          ` related (${ctx.related.size})`,
-        ]),
-      );
-    }
     const q = this.filter.toLowerCase();
     for (const kind of kinds) {
       const ents = doc.entities(kind);
@@ -215,7 +238,8 @@ export class Editor {
         if (st === 'selected' || (!st && active)) attrs['aria-current'] = 'true';
         list.appendChild(
           this.e('button', attrs, [
-            st === 'selected' || st === 'related' ? this.e('span', { class: 'ctx-mark ' + (st === 'selected' ? 'sel' : 'rel'), 'aria-hidden': 'true' }, [st === 'selected' ? '▸' : '•']) : null,
+            // every entry keeps the slot of the mark, so its label never moves when a selection starts or ends
+            this.e('span', { class: 'ctx-mark' + (st === 'selected' ? ' sel' : st === 'related' ? ' rel' : ''), 'aria-hidden': 'true' }, [st === 'selected' ? '▸' : st === 'related' ? '•' : '']),
             this.e('span', { class: 'ol-label' }, [label]),
             st ? this.e('span', { class: 'sr-only' }, [st === 'selected' ? ' (selected)' : st === 'related' ? ' (directly related)' : ' (not related)']) : null,
             this.badge(c.e, c.w),
@@ -302,8 +326,9 @@ export class Editor {
   }
 
   private renderDocument(w: HTMLElement): void {
-    w.appendChild(this.header('model', this.doc.text(['title']) || 'Untitled model', null));
-    w.appendChild(this.issueBox([]));
+    const docIssues = this.doc.errors.concat(this.doc.warnings).filter((i) => !this.doc.issueEntity(i));
+    w.appendChild(this.header('model', this.doc.text(['title']) || 'Untitled model', null, docIssues));
+    if (docIssues.length) w.appendChild(this.issueBox(docIssues));
     w.appendChild(this.field('Model format version', this.e('span', { class: 'ro' }, [this.doc.text(['netatlas']) || '(missing)']), ['netatlas'], 'The version of the NetAtlas YAML model format, not of the application. The only supported value is 1.'));
     if (ENTITY_KINDS.every((k) => this.doc.entities(k).length === 0)) {
       w.appendChild(this.e('p', { class: 'hint-empty' }, ['This model is empty. Add a device, link, network, relation, group or protocol with “+ Add” in the Model outline; nothing is filled in for you.']));
@@ -318,22 +343,46 @@ export class Editor {
     );
   }
 
-  private header(kind: string, title: string, actions: HTMLElement | null): HTMLElement {
-    return this.e('div', { class: 'insp-head' }, [this.e('span', { class: 'badge' }, [kind]), this.e('h3', {}, [title]), actions]);
-  }
-
-  private entityActions(kind: EntityKind, index: number): HTMLElement {
-    return this.e('div', { class: 'insp-actions' }, [
-      this.e('button', { type: 'button', class: 'mini', 'data-act': 'dup-entity', 'data-kind': kind, 'data-index': String(index) }, ['Duplicate']),
-      this.e('button', { type: 'button', class: 'mini danger', 'data-act': 'del-entity', 'data-kind': kind, 'data-index': String(index) }, ['Delete']),
+  /**
+   * The header of the edit panel: one row with the object's type, its
+   * validation state and its actions, and the object's name below it at full
+   * width (long names wrap; nothing is cut off). The row wraps in a narrow
+   * panel, and the action buttons drop their text, keeping icon, accessible
+   * name and tooltip.
+   */
+  private header(kind: string, title: string, actions: HTMLElement | null, issues: Issue[]): HTMLElement {
+    const errs = issues.filter((i) => i.severity === 'error').length;
+    const warns = issues.length - errs;
+    const state = errs ? 'error' : warns ? 'warning' : 'ok';
+    const parts: string[] = [];
+    if (errs) parts.push(`${errs} error${errs > 1 ? 's' : ''}`);
+    if (warns) parts.push(`${warns} warning${warns > 1 ? 's' : ''}`);
+    const text = parts.length ? parts.join(' · ') : 'No problems';
+    const status = this.e('span', { class: 'ih-status ' + state, 'data-state': state, title: parts.length ? `This ${kind} has ${text}; they are listed below.` : `This ${kind} has no validation problems.` }, [
+      icon(this.d, state) as unknown as Node,
+      this.e('span', {}, [text]),
+    ]);
+    return this.e('div', { class: 'insp-head', 'data-kind': kind }, [
+      this.e('div', { class: 'ih-row' }, [this.e('span', { class: 'badge' }, [kind]), status, actions]),
+      this.e('h3', {}, [title]),
     ]);
   }
 
-  /** All issues of the entity, summarized at the top. */
-  private issueBox(issues: Issue[]): HTMLElement {
-    const doc = this.doc;
-    const list = issues.length || this.sel?.kind !== 'document' ? issues : doc.errors.concat(doc.warnings).filter((i) => !doc.issueEntity(i));
-    if (!list.length) return this.e('div', { class: 'issue-ok' }, ['✓ No problems']);
+  private entityActions(kind: EntityKind, index: number): HTMLElement {
+    const id = this.doc.entities(kind)[index]?.id || '(no id)';
+    const btn = (act: string, name: string, label: string, tip: string, extra: string): HTMLElement =>
+      this.e('button', { type: 'button', class: 'icon-btn' + extra, 'data-act': act, 'data-kind': kind, 'data-index': String(index), 'aria-label': `${label} ${kind} ${id}`, title: tip }, [
+        icon(this.d, name) as unknown as Node,
+        this.e('span', { class: 'ib-label', 'aria-hidden': 'true' }, [label]),
+      ]);
+    return this.e('div', { class: 'insp-actions', role: 'group', 'aria-label': `Actions for ${kind} ${id}` }, [
+      btn('dup-entity', 'duplicate', 'Duplicate', `Duplicate this ${kind}: add a copy with a new id`, ''),
+      btn('del-entity', 'delete', 'Delete', `Delete this ${kind} (asks first; can be undone)`, ' danger'),
+    ]);
+  }
+
+  /** The issues of the object, listed under the header (which counts them). */
+  private issueBox(list: Issue[]): HTMLElement {
     const ul = this.e('ul', { class: 'issue-list' });
     for (const is of list.slice(0, 30)) ul.appendChild(this.e('li', { class: is.severity }, [this.e('b', {}, [is.severity === 'error' ? 'Error: ' : 'Warning: ']), is.message]));
     if (list.length > 30) ul.appendChild(this.e('li', {}, [`… and ${list.length - 30} more`]));
@@ -344,8 +393,9 @@ export class Editor {
     const doc = this.doc;
     const base: Path = [SECTION[kind], index];
     const node = doc.get(base);
-    w.appendChild(this.header(kind, this.entityLabel(kind, index), this.entityActions(kind, index)));
-    w.appendChild(this.issueBox(doc.issuesAt(base)));
+    const issues = doc.issuesAt(base);
+    w.appendChild(this.header(kind, this.entityLabel(kind, index), this.entityActions(kind, index), issues));
+    if (issues.length) w.appendChild(this.issueBox(issues));
     if (!node || node.kind !== 'map') {
       w.appendChild(this.e('p', { class: 'muted' }, ['This entry is not a mapping; edit it in the YAML tab or delete it.']));
       if (node) w.appendChild(this.generic(base, node, 0));

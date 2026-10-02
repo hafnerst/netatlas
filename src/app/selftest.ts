@@ -578,7 +578,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         const foldedNow = (Array.prototype.map.call(doc.querySelectorAll('#outline [data-section]'), (e: Element) => e.getAttribute('data-section') + '=' + e.getAttribute('data-folded')) as string[]).join();
         check(
           'closing clears the selection and the view state: the next model opens in the physical view with nothing selected, no filter, default folding, all protocols and networks shown',
-          gone && app.session!.state.view === 'physical' && app.session!.state.selected === null && app.session!.state.showNetworks && app.session!.state.hiddenProtocols.size === 0 && !q('#outline .ol-ctx-hint') &&
+          gone && app.session!.state.view === 'physical' && app.session!.state.selected === null && app.session!.state.showNetworks && app.session!.state.hiddenProtocols.size === 0 && !(q('#outline .ol-ctx-hint') || { textContent: '' }).textContent &&
             (q('#outline [data-t="outline-filter"]') as HTMLInputElement).value === '' && foldedNow === 'device=false,link=true,network=false,relation=false,group=false,protocol=true' && !q('[data-tab="yaml"].active') && !q('[data-tab="edit"].active') && !app.mdoc!.dirty,
           `${gone} ${app.session!.state.view} ${app.session!.state.selected} ${foldedNow}`,
         );
@@ -1161,9 +1161,10 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const right = (Array.prototype.map.call(doc.querySelectorAll('header > .devices-wrap, header > label.opt'), (e: Element) => (e.textContent || '').replace(/\s+/g, ' ').trim()) as string[]);
       const vis = (sel: string): boolean => !!q(sel) && (q(sel) as HTMLElement).offsetParent !== null;
       check(
-        'top-right diagram controls: Devices (all selected), Labels and Groups / Locations on, in both views; Networks only in the logical view; no Underlay',
-        /^Devices: all \(15\)/.test(right[0] || '') && right[1] === 'Labels' && right[2] === 'Groups / Locations' && right[3] === 'Networks' && right.length === 4 && !q('#opt-underlay') &&
-          (q('#opt-labels') as HTMLInputElement).checked && (q('#opt-groups') as HTMLInputElement).checked && vis('#opt-groups') && !vis('#opt-networks') && !btn.disabled && hint.hidden && !s().isFiltered(),
+        'top-right diagram controls: Devices (all selected), Labels, Groups / Locations, Endpoints and Servers on, in both views; Networks only in the logical view; no Underlay',
+        /^Devices: all \(15\)/.test(right[0] || '') && right[1] === 'Labels' && right[2] === 'Groups / Locations' && right[3] === 'Networks' && right[4] === 'Endpoints' && right[5] === 'Servers' && right.length === 6 && !q('#opt-underlay') &&
+          (q('#opt-labels') as HTMLInputElement).checked && (q('#opt-groups') as HTMLInputElement).checked && vis('#opt-groups') && !vis('#opt-networks') && !btn.disabled && hint.hidden && !s().isFiltered() &&
+          (q('#opt-type-endpoint') as HTMLInputElement).checked && (q('#opt-type-server') as HTMLInputElement).checked && vis('#opt-type-endpoint') && vis('#opt-type-server'),
         right.join(' | '),
       );
       const fullPhys = JSON.stringify(Array.from(s().positionsFor('physical')));
@@ -1286,8 +1287,26 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         svg.dispatchEvent(pe('pointerup', b.left + b.width / 2, b.top + b.height / 2));
       };
 
-      check('no selection: list entries at normal prominence', olItems().every((b) => !b.hasAttribute('data-ctx')) && !q('#outline-body .ol-ctx-hint'));
+      check('no selection: list entries at normal prominence', olItems().every((b) => !b.hasAttribute('data-ctx')) && !(q('#outline-body .ol-ctx-hint') || { textContent: '' }).textContent);
+      /** where every entry and its label is, and how wide the menu is: must not change with the selection */
+      const geo = (): string => {
+        const ol = q('#outline') as HTMLElement;
+        const rows = olItems().map((b) => {
+          const r = b.getBoundingClientRect();
+          const l = (b.querySelector('.ol-label') as HTMLElement).getBoundingClientRect();
+          return `${b.getAttribute('data-ref')}@${Math.round(r.left)},${Math.round(r.top)},${Math.round(r.width)}/${Math.round(l.left)}`;
+        });
+        return rows.join(';') + `|${ol.clientWidth}|${ol.scrollWidth}|${ol.offsetWidth}`;
+      };
+      const firstDiff = (a: string, b: string): string => {
+        const x = a.split(';');
+        const y = b.split(';');
+        for (let i = 0; i < Math.max(x.length, y.length); i++) if (x[i] !== y[i]) return `${x[i]} → ${y[i]}`;
+        return '';
+      };
+      const geo0 = geo();
       clickDevice('device:muc-sw');
+      const geoSel = geo();
       let [ok, why] = ctxOk('device:muc-sw');
       check('diagram click on muc-sw: lists and diagram show the same selection context', ok, why);
       check(
@@ -1302,7 +1321,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       check(
         'states differ without colour: marker / bar / weight, and text for screen readers',
         selEl.getAttribute('aria-current') === 'true' && !!selEl.querySelector('.ctx-mark.sel') && view.getComputedStyle(selEl).fontWeight === '600' && view.getComputedStyle(selEl).boxShadow !== 'none' &&
-          !!relEl.querySelector('.ctx-mark.rel') && !unEl.querySelector('.ctx-mark') &&
+          !!relEl.querySelector('.ctx-mark.rel') && !unEl.querySelector('.ctx-mark.sel, .ctx-mark.rel') && !(unEl.querySelector('.ctx-mark') as HTMLElement).textContent &&
           /\(selected\)/.test(selEl.textContent || '') && /\(directly related\)/.test(relEl.textContent || '') && /\(not related\)/.test(unEl.textContent || ''),
       );
       check('dimmed entries stay readable (not transparent, not hidden)', view.getComputedStyle(unEl).opacity === '1' && view.getComputedStyle(unEl).visibility === 'visible');
@@ -1311,6 +1330,14 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       unEl.click();
       [ok, why] = ctxOk('device:hq-fw');
       check('an unrelated entry is focusable and selectable; the context moves to it', focused && ok && stateOf('device:hq-fw') === 'selected' && stateOf('device:muc-sw') === 'unrelated', why);
+      const geoSwitch = geo();
+      doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      const geoClear = geo();
+      check(
+        'the left menu does not move when selecting, switching or clearing: same width, every entry and its label in the same place; the selection hint has its own fixed row',
+        geoSel === geo0 && geoSwitch === geo0 && geoClear === geo0 && !!q('#outline-body .ol-tools .ol-ctx-hint'),
+        firstDiff(geo0, geoSel) || firstDiff(geo0, geoSwitch) || firstDiff(geo0, geoClear),
+      );
 
       const fromOutline: Array<[string, () => boolean]> = [
         ['link:l-muc-sw', () => stateOf('device:muc-sw') === 'related' && stateOf('device:muc-rtr') === 'related' && stateOf('link:l-muc-ap') === 'unrelated'],
@@ -1348,8 +1375,98 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
       check(
         'clearing the selection returns every entry to normal prominence',
-        app.session!.state.selected === null && olItems().every((b) => !b.hasAttribute('data-ctx')) && !q('#outline-body .ol-ctx-hint') && count('.dim') === 0 && count('.hl') === 0,
+        app.session!.state.selected === null && olItems().every((b) => !b.hasAttribute('data-ctx')) && !(q('#outline-body .ol-ctx-hint') || { textContent: '' }).textContent && count('.dim') === 0 && count('.hl') === 0,
       );
+    }
+
+    // ------------------------------------ device-type visibility: Endpoints, Servers
+    {
+      if (app.mdoc) app.mdoc.markSaved();
+      app.loadExample(EXAMPLES.findIndex((e) => e.name === 'device-types.yaml'));
+      const s = (): NonNullable<typeof app.session> => app.session!;
+      const md = (): ModelDoc => app.mdoc as ModelDoc;
+      const ep = q('#opt-type-endpoint') as HTMLInputElement;
+      const sv = q('#opt-type-server') as HTMLInputElement;
+      const m = s().model;
+      const typed = (t: string): string[] => m.devices.filter((d) => d.type === t).map((d) => d.id);
+      const eps = typed('endpoint');
+      const srv = typed('server');
+      const onScreen = (): string[] => (Array.prototype.map.call(doc.querySelectorAll('#viewport g.device'), (e: Element) => (e.getAttribute('data-ref') || '').slice(7)) as string[]).sort();
+      const inSvg = (svgText: string, id: string): boolean => svgText.indexOf(`data-ref="device:${id}"`) >= 0;
+      const posOf = (view: 'physical' | 'logical'): string => JSON.stringify(Array.from(s().positionsFor(view)));
+      const yaml = app.exportText();
+      const undo = md().canUndo();
+      const full = { physical: posOf('physical'), logical: posOf('logical') };
+      check(
+        'Endpoints and Servers are on for a newly opened model; they switch the model types "endpoint" and "server"',
+        ep.checked && sv.checked && !ep.disabled && !sv.disabled && eps.length === 2 && srv.length === 1 && ep.getAttribute('data-device-type') === 'endpoint' && sv.getAttribute('data-device-type') === 'server' && DEVICE_TYPES.some((t) => t.id === 'endpoint') && DEVICE_TYPES.some((t) => t.id === 'server'),
+      );
+      for (const view of ['physical', 'logical'] as const) {
+        click(`[data-view-btn="${view}"]`);
+        await tick();
+        const before = onScreen();
+        const pos = new Map(s().positionsFor(view));
+        ep.click();
+        await tick();
+        const noEp = onScreen();
+        const svgNoEp = app.exportSvg();
+        const png = await app.exportPng();
+        const kept = Array.from(s().positionsFor(view)).every(([id, p]) => !m.index.devices.has(id) || (!!pos.get(id) && pos.get(id)!.x === p.x && pos.get(id)!.y === p.y));
+        const epLinks = m.links.filter((l) => eps.indexOf(l.a.device) >= 0 || eps.indexOf(l.b.device) >= 0);
+        check(
+          `${view} view: Endpoints off hides the endpoints and what depends on them, on screen and in the SVG and PNG exports; every other device stays where it was`,
+          eps.every((id) => noEp.indexOf(id) < 0 && !inSvg(svgNoEp, id)) && noEp.every((id) => before.indexOf(id) >= 0) && noEp.length > 0 && kept && png.width > 0 && png.height > 0 && s().isFiltered() &&
+            !(q('#filter-hint') as HTMLElement).hidden && epLinks.every((l) => !q(`#viewport [data-ref="link:${l.id}"]`) && svgNoEp.indexOf(`data-ref="link:${l.id}"`) < 0) && (view === 'logical' || epLinks.length > 0),
+          `${noEp.join()} kept=${kept}`,
+        );
+        sv.click();
+        await tick();
+        const none = onScreen();
+        const svgNone = app.exportSvg();
+        check(`${view} view: Servers off as well hides both types; the export follows`, eps.concat(srv).every((id) => none.indexOf(id) < 0 && !inSvg(svgNone, id)) && none.length > 0 && !sv.checked && !ep.checked, none.join());
+        ep.click();
+        await tick();
+        const epBack = onScreen();
+        check(`${view} view: Endpoints on again while Servers stays off brings back the endpoints only`, srv.every((id) => epBack.indexOf(id) < 0) && eps.every((id) => (before.indexOf(id) >= 0) === (epBack.indexOf(id) >= 0)), epBack.join());
+        sv.click();
+        await tick();
+        check(
+          `${view} view: both on again: the complete diagram with its saved positions; the YAML, the undo history and the saved layout are unchanged`,
+          onScreen().join() === before.join() && !s().isFiltered() && posOf(view) === full[view] && app.exportText() === yaml && md().canUndo() === undo && (q('#filter-hint') as HTMLElement).hidden && ep.checked && sv.checked,
+        );
+      }
+      // combined with the Devices selection
+      click('[data-view-btn="physical"]');
+      const btn = q('#devices-btn') as HTMLButtonElement;
+      const pick = ['edge', eps[0], srv[0]];
+      app.setDevices(pick);
+      await tick();
+      const subsetPos = posOf('physical');
+      sv.click();
+      await tick();
+      btn.click();
+      await tick();
+      const row = q(`#devices-list [data-device-row="${srv[0]}"]`);
+      const total = m.devices.length;
+      check(
+        'with a device selection, Servers off narrows it: the selected server leaves the diagram, the selection itself is kept (its row stays checked and says why it is hidden), and the counts say what is shown',
+        onScreen().join() === ['edge', eps[0]].sort().join() && s().selectedDevices().size === 3 && new RegExp(`Devices: 2 of ${total}`).test(btn.textContent || '') && !!row && row.classList.contains('type-hidden') && /hidden: Server off/.test(row.textContent || '') &&
+          (row.querySelector('input') as HTMLInputElement).checked && new RegExp(`showing 2 of ${total} devices`).test(q('#status')!.textContent || ''),
+        `${onScreen().join()} ${btn.textContent}`,
+      );
+      ep.click();
+      await tick();
+      check('… Endpoints off as well leaves only the selected router', onScreen().join() === 'edge' && s().selectedDevices().size === 3);
+      ep.click();
+      sv.click();
+      await tick();
+      check(
+        '… both on again: exactly the previous selection, with its devices where they were; the saved layout is untouched',
+        onScreen().join() === pick.slice().sort().join() && posOf('physical') === subsetPos && s().selectedDevices().size === 3 && app.exportText() === yaml && !md().dirty && !(row && (q(`#devices-list [data-device-row="${srv[0]}"]`) as HTMLElement).classList.contains('type-hidden')),
+      );
+      (q('#devices-panel') as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      app.setDevices(m.devices.map((d) => d.id));
+      check('Select all brings back the complete diagram', !s().isFiltered() && posOf('physical') === full.physical);
     }
 
     // ------------------------ sizing and readability: long and multi-line labels
@@ -2437,6 +2554,198 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         await answerDialog('ok');
         check('a failing SVG export is reported the same way', /Could not export the view as SVG/.test(saidSvg) && /“large-network-logical\.svg” was not created: out of memory\./.test(saidSvg) && downloads.length === had, saidSvg);
       }
+    }
+
+    // ------------------------- the edit header, the interaction help, the YAML mark
+    {
+      const view = doc.defaultView as Window;
+      const main = q('main') as HTMLElement;
+      const rect = (e: Element): DOMRect => e.getBoundingClientRect();
+      const LONG = 'a-very-long-device-identifier-that-keeps-going-' + 'x'.repeat(17);
+      const LABEL = 'Long label '.repeat(12).trim();
+      app.loadText(`netatlas: 1\ntitle: Header test\ndevices:\n  - id: ${LONG}\n    label: ${LABEL}\n    group: no-such-group\n    type: server\n  - id: b\n`, 'header.yaml', 'file');
+      app.select('device:' + LONG);
+      await tick();
+      const head = (): HTMLElement => q('#side-body .insp-head') as HTMLElement;
+      const part = (sel: string): HTMLElement => head().querySelector(sel) as HTMLElement;
+      /** what does not fit: anything outside the header, a clipped name, a page or panel that scrolls sideways */
+      const misfits = (): string[] => {
+        const bad: string[] = [];
+        const h = rect(head());
+        if (head().scrollWidth > head().clientWidth + 1) bad.push('header overflows');
+        for (const [name, sel] of [['type', '.badge'], ['state', '.ih-status'], ['Duplicate', '[data-act="dup-entity"]'], ['Delete', '[data-act="del-entity"]'], ['name', 'h3']]) {
+          const r = rect(part(sel));
+          if (r.left < h.left - 0.5 || r.right > h.right + 0.5 || r.width < 1) bad.push(name + ' outside the header');
+        }
+        const h3 = part('h3');
+        if (h3.scrollWidth > h3.clientWidth + 1 || (h3.textContent || '').indexOf(LONG) < 0) bad.push('name clipped');
+        const body = q('#side-body') as HTMLElement;
+        if (body.scrollWidth > body.clientWidth + 1) {
+          const edge = rect(body).left + body.clientWidth;
+          const wide = Array.prototype.filter.call(body.querySelectorAll('*'), (e: Element) => rect(e).right > edge + 1).map((e: Element) => e.tagName + '.' + e.getAttribute('class') + (e.getAttribute('data-t') ? '[' + e.getAttribute('data-t') + ']' : ''));
+          bad.push('panel scrolls sideways: ' + wide.slice(0, 4).join(', '));
+        }
+        if (doc.documentElement.scrollWidth > doc.documentElement.clientWidth || doc.documentElement.scrollHeight > doc.documentElement.clientHeight) bad.push('page scrolls');
+        return bad;
+      };
+      const dup = (): HTMLButtonElement => part('[data-act="dup-entity"]') as HTMLButtonElement;
+      const del = (): HTMLButtonElement => part('[data-act="del-entity"]') as HTMLButtonElement;
+      const labelShown = (b: HTMLElement): boolean => view.getComputedStyle(b.querySelector('.ib-label') as HTMLElement).display !== 'none';
+      const st = part('.ih-status');
+      check(
+        'edit header: type, validation state and actions in one row, the full name below it; actions with accessible names and tooltips; Delete looks destructive',
+        !!head() && part('.ih-row .badge').textContent === 'device' && st.getAttribute('data-state') === 'error' && /^1 error$/.test((st.textContent || '').trim()) && !!st.title &&
+          dup().getAttribute('aria-label') === `Duplicate device ${LONG}` && /Duplicate/.test(dup().title) && del().getAttribute('aria-label') === `Delete device ${LONG}` && /Delete/.test(del().title) &&
+          del().classList.contains('danger') && view.getComputedStyle(del()).color !== view.getComputedStyle(dup()).color && !!dup().querySelector('svg') && !!del().querySelector('svg') &&
+          Math.abs(rect(dup()).top - rect(part('.badge')).top) < 12 && rect(part('h3')).top >= rect(dup()).bottom - 1 && labelShown(dup()) && labelShown(del()) && !!q('#side-body .issue-list') && misfits().length === 0,
+        misfits().join('; ') + ' ' + (st.textContent || ''),
+      );
+      for (const w of [300, 240]) {
+        main.style.gridTemplateColumns = `150px minmax(0, 1fr) ${w}px`;
+        await tick(30);
+        check(
+          `edit header in a ${w}px side panel: nothing clipped or outside, no page or panel scrolling; the actions keep their icon, accessible name and tooltip`,
+          misfits().length === 0 && !labelShown(dup()) && !!dup().getAttribute('aria-label') && !!del().title && rect(dup()).width >= 20 && rect(del()).width >= 20,
+          misfits().join('; '),
+        );
+      }
+      main.style.gridTemplateColumns = '';
+      await tick(30);
+      // a model without problems says so in the same place
+      app.select('device:b');
+      await tick();
+      check('an object without problems: the header says "No problems" and no issue list follows', part('.ih-status').getAttribute('data-state') === 'ok' && /No problems/.test(part('.ih-status').textContent || '') && !q('#side-body .issue-list'));
+
+      // interaction help: grouped, every documented action, readable, adapting to the room
+      const keys = q('#keys') as HTMLDetailsElement;
+      const groups = Array.prototype.slice.call(keys.querySelectorAll('.keys-group')) as HTMLElement[];
+      const pairs = (Array.prototype.map.call(keys.querySelectorAll('dl > div'), (d: Element) => `${((d.querySelector('dt') as HTMLElement).textContent || '').replace(/\s+/g, ' ').trim()}: ${(d.querySelector('dd') as HTMLElement).textContent}`) as string[]).join(' | ');
+      const keyMisfits = (): string[] => {
+        const bad: string[] = [];
+        const k = rect(keys);
+        if (keys.scrollWidth > keys.clientWidth + 1) bad.push('help scrolls sideways');
+        Array.prototype.forEach.call(keys.querySelectorAll('dt, dd, h4, summary'), (e: HTMLElement) => {
+          const r = rect(e);
+          if (r.right > k.right + 0.5 || r.left < k.left - 0.5) bad.push(`"${e.textContent}" outside`);
+          if (parseFloat(view.getComputedStyle(e).fontSize) < 10.5) bad.push(`"${e.textContent}" too small`);
+        });
+        return bad;
+      };
+      check(
+        'interaction help: open, in two labelled groups (Pointer, Keyboard) listing every documented action',
+        keys.open && keys.tagName === 'DETAILS' && /Mouse & keyboard/.test((keys.querySelector('summary') as HTMLElement).textContent || '') && groups.length === 2 &&
+          groups.map((g) => (g.querySelector('h4') as HTMLElement).textContent).join() === 'Pointer,Keyboard' &&
+          pairs === 'Drag background: pan | Wheel: zoom | Drag node: move | Click: select | Esc: clear | P / L: view | Ctrl+Z / Y: undo / redo | Ctrl+S: download',
+        pairs,
+      );
+      check('… readable: side by side in a wide panel, nothing outside it, no text below 10.5px', Math.abs(rect(groups[0]).top - rect(groups[1]).top) < 2 && keyMisfits().length === 0, keyMisfits().join('; '));
+      main.style.gridTemplateColumns = '150px minmax(0, 1fr) 240px';
+      await tick(30);
+      check('… in a narrow panel the groups stack, and still nothing is cut off', rect(groups[1]).top >= rect(groups[0]).bottom - 1 && keyMisfits().length === 0, keyMisfits().join('; '));
+      main.style.gridTemplateColumns = '';
+      await tick(30);
+      const openHeight = rect(keys).height;
+      (keys.querySelector('summary') as HTMLElement).click();
+      const folded = !keys.open && rect(keys).height < openHeight - 30;
+      (keys.querySelector('summary') as HTMLElement).click();
+      check('… it folds to its heading and opens again', folded && keys.open);
+
+      // the YAML mark: the entry of the selected object, found by structure, never by searching for its id
+      const TRAP =
+        'netatlas: 1\ntitle: core\n# - id: core   (a comment that looks like an entry)\ndevices:\n  - id: edge\n    label: core\n    description: "id: core"\n    interfaces: [{id: e0}]\n' +
+        '  - id: core\n    label: Core switch\n    interfaces:\n      - {id: e0}\n      - id: e1\n        description: uplink\n  - id: access\n    description: |\n      - id: core\n        not: an entry\n    interfaces: [{id: e0}]\n' +
+        'links:\n  - id: l1\n    a: {device: edge, interface: e0}\n    b: {device: core, interface: e0}\n';
+      app.loadText(TRAP, 'trap.yaml', 'file');
+      click('[data-tab="yaml"]');
+      app.select('device:core');
+      await tick();
+      const ta = (): HTMLTextAreaElement => q('#yaml-src') as HTMLTextAreaElement;
+      const band = (): HTMLElement => q('.yaml-hl') as HTMLElement;
+      const lines = (): string[] => ta().value.split('\n');
+      /** the expected entry: from its "- id:" line up to the next entry of the list */
+      const entry = (id: string, next: string): string => `${lines().indexOf('  - id: ' + id) + 1}-${lines().indexOf(next)}`;
+      const mark = (): string => ta().getAttribute('data-mark') || '';
+      /** the band lies exactly behind the marked lines, inside the text area */
+      const bandOk = (): boolean => {
+        const [a, b] = mark().split('-').map(Number);
+        if (!a || band().hidden) return false;
+        const cs = view.getComputedStyle(ta());
+        const lh = parseFloat(cs.lineHeight);
+        const top = rect(ta()).top + ta().clientTop + parseFloat(cs.paddingTop) + (a - 1) * lh - ta().scrollTop;
+        return Math.abs(rect(band()).top - top) < 1 && Math.abs(rect(band()).height - (b - a + 1) * lh) < 1 && rect(band()).left >= rect(ta()).left;
+      };
+      const text0 = ta().value;
+      const mentions = lines().filter((l) => /\bcore\b/.test(l)).length;
+      check(
+        'YAML tab: selecting a device marks its entry and nothing else, although its id also appears as a title, label, quoted text, comment, reference and inside another entry’s text',
+        !!q('[data-tab="yaml"].active') && mentions >= 6 && mark() === entry('core', '  - id: access') && bandOk() && ta().value === app.exportText() && /Device “core”: lines \d+–\d+ \(marked\)/.test(q('#yaml-sel')!.textContent || ''),
+        `${mark()} ≠ ${entry('core', '  - id: access')} (${mentions})`,
+      );
+      // the mark never changes the text, the caret, the text selection or the scroll position
+      ta().focus();
+      ta().setSelectionRange(3, 8);
+      app.select('device:edge');
+      await tick();
+      check(
+        'selecting another object (diagram or search) moves the mark and keeps the YAML tab, the text, the focus, the caret and the text selection',
+        !!q('[data-tab="yaml"].active') && mark() === entry('edge', '  - id: core') && bandOk() && ta().value === text0 && doc.activeElement === ta() && ta().selectionStart === 3 && ta().selectionEnd === 8,
+        mark(),
+      );
+      (q('#outline-body .ol-item[data-ref="device:access"]') as HTMLElement).click();
+      await tick();
+      check('selecting in the left list keeps the YAML tab too, and marks the entry (its text is not mistaken for another entry)', !!q('[data-tab="yaml"].active') && mark() === `${lines().indexOf('  - id: access') + 1}-${lines().indexOf('links:')}`, mark());
+      app.select('iface:core:e1');
+      await tick();
+      check('an interface: the mark covers that interface’s entry only', mark() === `${lines().indexOf('      - id: e1') + 1}-${lines().indexOf('      - id: e1') + 2}` && bandOk(), mark());
+      app.select('device:core');
+      await tick();
+      // typing: the entry is found again in the changed text; the text area is left alone
+      ta().scrollTop = 0;
+      const typed = '# a line typed above\n' + text0;
+      ta().value = typed;
+      ta().dispatchEvent(new Event('input', { bubbles: true }));
+      await tick(250);
+      check('typing above the entry moves the mark with it, without touching the text or the scroll position', mark() === entry('core', '  - id: access') && ta().value === typed && ta().scrollTop === 0 && bandOk(), mark());
+      ta().value = typed.replace('  - id: access', '  - &x id: access');
+      ta().dispatchEvent(new Event('input', { bubbles: true }));
+      await tick(250);
+      check('while the YAML is not valid nothing is marked, and the note says why', mark() === '' && band().hidden && q('#yaml-sel')!.getAttribute('data-state') === 'unmarked' && /not marked/.test(q('#yaml-sel')!.textContent || ''));
+      ta().value = typed;
+      ta().dispatchEvent(new Event('input', { bubbles: true }));
+      await tick(250);
+      check('… and the mark is back once it is valid again', mark() === entry('core', '  - id: access') && bandOk());
+      click('[data-yaml="apply"]');
+      await tick();
+      check('after Apply (the text is reformatted) the mark follows the entry in the new text', ta().value === app.exportText() && mark() === entry('core', '  - id: access') && bandOk(), mark());
+      app.undo();
+      await tick();
+      check('after undo as well', !!q('[data-tab="yaml"].active') && ta().value === app.exportText() && ta().value.indexOf('# a line typed above') < 0 && mark() === entry('core', '  - id: access'), mark());
+      app.redo();
+      app.undo();
+      // renaming: the mark follows the object to its new id
+      click('[data-tab="edit"]');
+      await setField('#side-body [data-t="id"]', 'core-renamed');
+      click('[data-tab="yaml"]');
+      await tick();
+      check('after renaming the object, the mark is on its entry under the new id', mark() === entry('core-renamed', '  - id: access') && /“core-renamed”/.test(q('#yaml-sel')!.textContent || ''), mark());
+      // a long file: a selected entry out of sight is scrolled into view once; afterwards the reader's scroll position is respected
+      if (app.mdoc) app.mdoc.markSaved();
+      app.loadExample(EXAMPLES.findIndex((e) => e.name === 'enterprise-wan.yaml'));
+      check('opening another file: no selection, nothing marked', mark() === '' && q('#yaml-sel')!.getAttribute('data-state') === 'none' && !!q('[data-tab="yaml"].active'));
+      app.select('device:hq-log');
+      await tick();
+      const shownAt = ta().scrollTop;
+      const visible = rect(band()).bottom > rect(ta()).top && rect(band()).top < rect(ta()).bottom;
+      ta().scrollTop = 0;
+      app.select('device:hq-log');
+      await tick();
+      check(
+        'in a long file the newly selected entry is scrolled into view once; re-rendering the same selection keeps the scroll position the reader chose',
+        shownAt > 0 && visible && ta().scrollTop === 0 && bandOk(),
+        `${shownAt} ${visible} ${ta().scrollTop}`,
+      );
+      app.select(null);
+      click('[data-tab="legend"]');
     }
 
     const perf = (doc.defaultView as Window).performance;

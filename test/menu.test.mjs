@@ -66,7 +66,7 @@ test('"model", not "document": the outline has no Document entry and the inspect
     assert.deepEqual(strings, [], name);
   }
   assert.doesNotMatch(inspector, /ol-doc|'Document: '/);
-  assert.match(inspector, /this\.header\('model', this\.doc\.text\(\['title'\]\) \|\| 'Untitled model', null\)/);
+  assert.match(inspector, /this\.header\('model', this\.doc\.text\(\['title'\]\) \|\| 'Untitled model', null, docIssues\)/);
   assert.match(inspector, /\['Edit model settings'\]/);
   // the model settings are still opened from the Edit tab and for a new model
   assert.match(appSrc, /private editModel\(\): void \{/);
@@ -99,14 +99,20 @@ test('examples: the File menu offers the six hand-written examples; the generate
   assert.match(read(join(root, 'src', 'app', 'selftest.ts'), 'utf8'), /import \{ EXAMPLES, FIXTURES \} from/);
 });
 
-test('selection hint of the outline: "selected" and "related (n)", without a note about dimming', () => {
+test('selection hint of the outline: "selected" and "related (n)" in the always-present tools row, without a note about dimming', () => {
   const inspector = readFileSync(join(root, 'src', 'ui', 'inspector.ts'), 'utf8');
   assert.doesNotMatch(inspector, /others dimmed/);
   const at = inspector.indexOf("class: 'ol-ctx-hint small'");
-  const hint = inspector.slice(at, inspector.indexOf('      );', at));
+  const hint = inspector.slice(at, inspector.indexOf("'fold-all'", at));
   assert.match(hint, /' selected · ',/);
   // the text ends after the count: no trailing separator, no empty element after it
-  assert.match(hint, /` related \(\$\{ctx\.related\.size\}\)`,\s*\]\),\s*$/);
+  assert.match(hint, /` related \(\$\{ctx\.related\.size\}\)`,\s*\]\s*: \[\],/);
+  // it shares the row of "Collapse all", which is there with or without a selection: nothing below it moves
+  const row = inspector.slice(inspector.lastIndexOf("this.e('div', { class: 'ol-tools' }", at), at);
+  assert.ok(row.length > 0 && row.length < 200, String(row.length));
+  assert.doesNotMatch(inspector, /if \(ctx\) \{\s*box\.appendChild/);
+  // every entry keeps the slot of the selection mark, so its label never moves sideways
+  assert.match(inspector, /this\.e\('span', \{ class: 'ctx-mark' \+ \(st === 'selected' \? ' sel' : st === 'related' \? ' rel' : ''\), 'aria-hidden': 'true' \}/);
 });
 
 test('Export menu: next to File, one entry "Export view as…" with a PNG / SVG submenu; the zoom bar has no Save SVG', () => {
