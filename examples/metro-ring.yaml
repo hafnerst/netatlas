@@ -144,9 +144,14 @@ links:
 
 networks:
   # members are derived from the addresses inside each prefix
-  - id: cust-a-access
-    label: Customer A access
-    cidr: [192.0.2.0/30, 192.0.2.4/30]
+  # one network per prefix: the two access circuits of customer A
+  - id: cust-a-access-1
+    label: Customer A access 1
+    cidr: 192.0.2.0/30
+    attrs: {vrf: CUST-A, rd: "65000:100", rt: "65000:100"}
+  - id: cust-a-access-2
+    label: Customer A access 2
+    cidr: 192.0.2.4/30
     attrs: {vrf: CUST-A, rd: "65000:100", rt: "65000:100"}
   - id: oob-mgmt
     label: OOB management
@@ -184,14 +189,14 @@ relations:
   - id: te-1-4
     protocol: rsvp-te
     label: primary north→east
-    directed: true
+    direction: unidirectional
     endpoints: ["pe1:lo0", "pe4:lo0"]
     over: [r12, r23, r34]
     attrs: {bandwidth: 40G, setup-priority: 3}
   - id: te-2-5
     protocol: rsvp-te
     label: primary north→south
-    directed: true
+    direction: unidirectional
     endpoints: ["pe2:lo0", "pe5:lo0"]
     over: [r61, r56, x-north]
     attrs: {bandwidth: 20G}
@@ -200,9 +205,9 @@ relations:
     protocol: l3vpn
     label: CUST-A
     endpoints: ["pe1:lo0", "pe3:lo1", "pe5:lo1"]
-    network: cust-a-access
+    attrs: {access-networks: "cust-a-access-1, cust-a-access-2"}
   - {id: ebgp-a1, protocol: ebgp, endpoints: ["pe1:et3", "ce-a1:ge0"], over: acc-a1, attrs: {peer-as: 64601}}
   - {id: ebgp-a2, protocol: ebgp, endpoints: ["pe5:et3", "ce-a2:ge0"], over: acc-a2, attrs: {peer-as: 64601}}
   # inside the OOB island
-  - {id: syslog-oob, protocol: syslog, directed: true, endpoints: [oob-con1, "oob-nms:eth0"]}
-  - {id: snmp-oob, protocol: snmp, directed: true, endpoints: [oob-nms, oob-sw]}
+  - {id: syslog-oob, protocol: syslog, direction: unidirectional, endpoints: [oob-con1, "oob-nms:eth0"]}
+  - {id: snmp-oob, protocol: snmp, direction: unidirectional, endpoints: [oob-nms, oob-sw]}

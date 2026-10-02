@@ -39,9 +39,9 @@ function shuffleTree(node, seed) {
   };
   const walk = (n, parentKey, owner) => {
     if (n.kind === 'seq') {
-      // endpoint order of directed relations is meaningful
-      const directed = parentKey === 'endpoints' && owner && owner.entries.get('directed') && owner.entries.get('directed').value.value === true;
-      if (!directed) perm(n.items);
+      // endpoint order of unidirectional relations is meaningful
+      const oneWay = parentKey === 'endpoints' && owner && owner.entries.get('direction') && owner.entries.get('direction').value.value === 'unidirectional';
+      if (!oneWay) perm(n.items);
       n.items.forEach((it) => walk(it, null, null));
     } else if (n.kind === 'map') {
       const e = Array.from(n.entries.entries());
@@ -308,8 +308,9 @@ test('disconnected components of different sizes: no overlaps in either view, co
       assert.ok(a.x1 <= b.x0 || b.x1 <= a.x0 || a.y1 <= b.y0 || b.y1 <= a.y0, `components ${i} and ${j} intersect`);
     }
   }
-  // the largest component is placed first (top-left)
-  assert.ok(cs[0].x0 <= cs[1].x0 && cs[0].y0 <= cs[1].y0 + 1);
+  // the largest component is placed first (top-left); it is the grouped one, so its devices sit inside its frame, GROUP_PAD in from the edge
+  const { GROUP_PAD } = load('layout/sizes.js');
+  assert.ok(cs[0].x0 <= cs[1].x0 + GROUP_PAD + 1 && cs[0].y0 <= cs[1].y0 + 1);
 });
 
 test('dense relationships: a 12-router full mesh with tunnels stays readable', () => {

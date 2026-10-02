@@ -5,6 +5,8 @@
 #   IPsec (encryption)  ->  GRE (tunnel)  ->  OSPF (routing adjacency)
 # plus eBGP to two ISPs, a WireGuard backup tunnel over LTE, VRRP, LACP,
 # syslog, and a custom protocol (MACsec) defined in the "protocols" section.
+# The Hamburg LTE uplink obtains its address by DHCP ("dhcp: true"), and a
+# few devices have DNS names ("dns_names"), each associated with interfaces.
 netatlas: 1
 title: ACME Corp — enterprise WAN
 description: |
@@ -75,6 +77,9 @@ devices:
     logical_interfaces:
       - {id: lo0, type: loopback, ip: 10.255.0.1/32}
       - {id: st0.10, type: tunnel, ip: 172.16.10.1/30, source: ge-0/0/0, destination: 192.0.2.10, description: GRE to Munich}
+    dns_names:
+      - {name: vpn1.acme.example, interfaces: [ge-0/0/0]}
+      - {name: hq-rtr1.acme.example, interfaces: [lo0, ge-0/0/1]}   # one name, two interfaces
   - id: hq-rtr2
     label: hq-rtr2
     type: router
@@ -139,6 +144,8 @@ devices:
     group: hq-core
     interfaces:
       - {id: eno1, ip: 10.10.20.50/24}
+    dns_names:
+      - {name: syslog.acme.example, interfaces: [eno1]}
 
   - id: muc-rtr
     label: muc-rtr
@@ -167,7 +174,7 @@ devices:
     group: branch-ham
     interfaces:
       - {id: wan0, ip: 192.0.2.34/29}
-      - {id: wan1, description: LTE backup modem}
+      - {id: wan1, dhcp: true, description: LTE backup modem}   # address assigned by the carrier
       - {id: lan0, ip: 10.30.0.1/24}
     logical_interfaces:
       - {id: Tunnel11, type: tunnel, ip: 172.16.11.2/30, source: wan0, destination: 203.0.113.2}
@@ -193,30 +200,30 @@ links:
   - {id: l-fw-core1, a: "hq-fw:eth3", b: "hq-core1:Ethernet49", medium: fiber, speed: 10G}
   - {id: l-fw-core2, a: "hq-fw:eth4", b: "hq-core2:Ethernet49", medium: fiber, speed: 10G}
   - id: l-peer1
-    a: {device: hq-core1, interface: Ethernet51, vlans: [10, 20]}
-    b: {device: hq-core2, interface: Ethernet51, vlans: [10, 20]}
+    a: {device: hq-core1, interface: Ethernet51, networks: [net-users, net-servers]}
+    b: {device: hq-core2, interface: Ethernet51, networks: [net-users, net-servers]}
     medium: dac
     speed: 100G
     cable: DAC 1m
   - id: l-peer2
-    a: {device: hq-core1, interface: Ethernet52, vlans: [10, 20]}
-    b: {device: hq-core2, interface: Ethernet52, vlans: [10, 20]}
+    a: {device: hq-core1, interface: Ethernet52, networks: [net-users, net-servers]}
+    b: {device: hq-core2, interface: Ethernet52, networks: [net-users, net-servers]}
     medium: dac
     speed: 100G
     cable: DAC 1m
   - id: l-core1-acc
-    a: {device: hq-core1, interface: Ethernet1, vlans: [10, 20]}
-    b: {device: hq-acc1, interface: Gi1/0/49, vlans: [10, 20]}
+    a: {device: hq-core1, interface: Ethernet1, networks: [net-users, net-servers]}
+    b: {device: hq-acc1, interface: Gi1/0/49, networks: [net-users, net-servers]}
     medium: fiber
     speed: 10G
   - id: l-core2-acc
-    a: {device: hq-core2, interface: Ethernet1, vlans: [10, 20]}
-    b: {device: hq-acc1, interface: Gi1/0/50, vlans: [10, 20]}
+    a: {device: hq-core2, interface: Ethernet1, networks: [net-users, net-servers]}
+    b: {device: hq-acc1, interface: Gi1/0/50, networks: [net-users, net-servers]}
     medium: fiber
     speed: 10G
   - id: l-acc-log
-    a: {device: hq-acc1, interface: Gi1/0/1, vlans: [20]}
-    b: {device: hq-log, interface: eno1, vlans: [20]}
+    a: {device: hq-acc1, interface: Gi1/0/1, networks: [net-servers]}
+    b: {device: hq-log, interface: eno1, networks: [net-servers]}
     medium: copper
     speed: 1G
   # branches
@@ -225,9 +232,10 @@ links:
   - {id: l-ham-sw, a: "ham-rtr:lan0", b: "ham-sw:gi1", medium: copper, speed: 1G}
 
 networks:
-  # IP networks. Members are not listed: every device with an interface or
-  # loopback address inside "cidr" is a member. "vlan" is the VLAN the subnet
-  # lives in; interfaces with an address in it show that VLAN.
+  # IP networks, one prefix each. Members are not listed: every device with an
+  # interface or loopback address inside "cidr" is a member. "vlan" is the VLAN
+  # the subnet lives in; interfaces with an address in it show that VLAN.
+  # Which cables carry a network is set on the link ends ("networks:").
   - id: net-transit
     label: HQ transit
     cidr: 10.0.0.0/28
@@ -300,16 +308,12 @@ relations:
   # --- Internet edge ---------------------------------------------------------
   - id: bgp-isp1
     protocol: ebgp
-    endpoints:
-      - {device: hq-rtr1, interface: ge-0/0/0, attrs: {asn: 65010}}
-      - {device: isp1-pe, interface: xe-1/0/1, attrs: {asn: 3320}}
+    endpoints: ["hq-rtr1:ge-0/0/0", "isp1-pe:xe-1/0/1"]
     over: l-hq-isp1
     attrs: {prefixes-out: 1, max-prefix: 1000000}
   - id: bgp-isp2
     protocol: ebgp
-    endpoints:
-      - {device: hq-rtr2, interface: ge-0/0/0, attrs: {asn: 65010}}
-      - {device: isp2-pe, interface: xe-2/0/7, attrs: {asn: 1299}}
+    endpoints: ["hq-rtr2:ge-0/0/0", "isp2-pe:xe-2/0/7"]
     over: l-hq-isp2
   - id: ibgp-hq
     protocol: ibgp
@@ -326,7 +330,7 @@ relations:
     protocol: ospf
     label: area 0
     endpoints: [hq-rtr1, hq-rtr2, hq-fw, hq-core1, hq-core2]
-    network: net-transit
+    over: net-transit
     attrs: {area: 0.0.0.0}
   - id: lag-peer
     protocol: lacp
@@ -342,19 +346,17 @@ relations:
   - id: vrrp-users
     protocol: vrrp
     label: VIP 10.10.10.1
-    endpoints:
-      - {device: hq-core1, interface: Vlan10, role: master, attrs: {priority: 200}}
-      - {device: hq-core2, interface: Vlan10, role: backup, attrs: {priority: 100}}
-    network: net-users
-    attrs: {vrid: 10, virtual-ip: 10.10.10.1}
+    endpoints: ["hq-core1:Vlan10", "hq-core2:Vlan10"]
+    over: net-users
+    attrs: {vrid: 10, virtual-ip: 10.10.10.1, master: "hq-core1 (priority 200)", backup: "hq-core2 (priority 100)"}
   - id: syslog-fw
     protocol: syslog
-    directed: true
+    direction: unidirectional
     endpoints: [hq-fw, "hq-log:eno1"]
     attrs: {transport: tcp/6514, format: RFC5424}
   - id: twamp-muc
     protocol: twamp
     category: service
     label: SLA probe
-    directed: true
+    direction: unidirectional
     endpoints: [muc-rtr, hq-rtr1]

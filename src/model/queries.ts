@@ -76,7 +76,6 @@ export function relatedRefs(model: Model, ref: string): Set<string> {
     out.add('hub:' + rid);
     for (const d of relationDevices(r)) addDevice(d);
     for (const e of r.endpoints) if (e.iface) out.add(`iface:${e.device}:${e.iface}`);
-    if (r.network) out.add('network:' + r.network);
     if (!withUnderlay) return;
     // walk the underlay chain: carriers and the links/networks they ride on
     const stack = r.over.slice();
@@ -137,10 +136,14 @@ export function relatedRefs(model: Model, ref: string): Set<string> {
       for (const n of interfaceNetworks(model, inf.device, inf.id)) out.add('network:' + n);
       break;
     }
-    case 'link':
+    case 'link': {
       addLink(id);
       for (const r of carriedOver(id)) addRelation(r, false);
+      // the networks the cable carries at its ends
+      const l = ix.links.get(id);
+      if (l) for (const n of l.a.networks.concat(l.b.networks)) if (ix.networks.has(n)) out.add('network:' + n);
       break;
+    }
     case 'hub':
     case 'relation': {
       addRelation(id, true);
@@ -156,7 +159,8 @@ export function relatedRefs(model: Model, ref: string): Set<string> {
         addDevice(m.device);
         for (const x of m.matches) out.add(`iface:${x.device}:${x.iface}`);
       }
-      for (const r of model.relations) if (r.network === id) addRelation(r.id, false);
+      // the cables that carry it at an end, with their ports
+      for (const l of model.links) if (l.a.networks.indexOf(id) >= 0 || l.b.networks.indexOf(id) >= 0) addLink(l.id);
       for (const r of carriedOver(id)) addRelation(r, false);
       break;
     }
@@ -196,7 +200,7 @@ export interface SearchHit {
   kind: string;
 }
 
-/** Case-insensitive search over ids, labels, protocols and addresses. */
+/** Case-insensitive search over ids, labels, protocols, addresses and DNS names. */
 export function search(model: Model, query: string, limit = 12): SearchHit[] {
   const q = query.trim().toLowerCase();
   if (!q) return [];
@@ -215,9 +219,9 @@ export function search(model: Model, query: string, limit = 12): SearchHit[] {
   for (const d of model.devices) {
     const addrs: string[] = [];
     for (const i of deviceInterfaces(d)) addrs.push(...i.addresses);
-    consider('device:' + d.id, 'device', d.label, [d.id, d.label, d.type, ...addrs]);
+    consider('device:' + d.id, 'device', d.label, [d.id, d.label, d.type, ...addrs, ...d.dnsNames.map((x) => x.name)]);
   }
-  for (const n of model.networks) consider('network:' + n.id, 'network', n.label, [n.id, n.label, n.vlan !== undefined ? 'vlan ' + n.vlan : '', ...n.cidr]);
+  for (const n of model.networks) consider('network:' + n.id, 'network', n.label, [n.id, n.label, n.vlan !== undefined ? 'vlan ' + n.vlan : '', n.cidr || '']);
   for (const r of model.relations) consider('relation:' + r.id, r.protocol, r.label || r.id, [r.id, r.protocol, r.label || '']);
   for (const l of model.links) consider('link:' + l.id, 'link', l.label || l.id, [l.id, l.label || '', l.cable || '']);
   for (const g of model.groups) consider('group:' + g.id, g.kind || 'group', g.label, [g.id, g.label]);
@@ -302,6 +306,7 @@ export function selectionContext(model: Model, ref: string): SelectionContext | 
       if (!l) break;
       add('device', l.a.device);
       add('device', l.b.device);
+      for (const n of l.a.networks.concat(l.b.networks)) if (ix.networks.has(n)) add('network', n);
       for (const r of model.relations) if (r.over.indexOf(id) >= 0) add('relation', r.id);
       break;
     }
@@ -309,14 +314,14 @@ export function selectionContext(model: Model, ref: string): SelectionContext | 
       const n = ix.networks.get(id);
       if (!n) break;
       for (const m of networkMembers(model, id)) add('device', m.device);
-      for (const r of model.relations) if (r.network === id || r.over.indexOf(id) >= 0) add('relation', r.id);
+      for (const l of model.links) if (l.a.networks.indexOf(id) >= 0 || l.b.networks.indexOf(id) >= 0) add('link', l.id);
+      for (const r of model.relations) if (r.over.indexOf(id) >= 0) add('relation', r.id);
       break;
     }
     case 'relation': {
       const r = ix.relations.get(id);
       if (!r) break;
       for (const e of r.endpoints) add('device', e.device);
-      add('network', r.network);
       for (const o of r.over) overTarget(o);
       for (const x of model.relations) if (x.over.indexOf(id) >= 0) add('relation', x.id);
       const def = model.protocols.get(r.protocol);

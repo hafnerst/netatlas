@@ -11,10 +11,10 @@
  *   devices, port labels and other cable labels.
  */
 import { CBox, Pt, Rect, boxRect, segmentHitsRect, textWidth, unionRect } from '../layout/geometry';
-import { linkLabelText, linkVlanLabel } from '../layout/input';
+import { linkLabelText, linkNetworkLabel } from '../layout/input';
 import { GROUP_PAD, PORT_FONT, PORT_LABEL_GAP, PhysicalLayout, PortPos, assignPorts } from '../layout/physical';
 import { DEVICE_ICON, DEVICE_TEXT_X, deviceBody, groupHeader, linkLabelBox } from '../layout/sizes';
-import { vlanMismatch } from '../model/derive';
+import { networkMismatch } from '../model/derive';
 import { deviceSubtitle } from '../model/device-types';
 import { Model } from '../model/types';
 import { deviceIcon } from './icons';
@@ -22,10 +22,12 @@ import { LabelPlacer, alongSegment, centerRect, textLines } from './labels';
 import { VNode, h } from './scene';
 import { groupKindStyle, mediumStyle, speedWidth } from './style';
 
-export { deviceSubtitle, linkVlanLabel };
+export { deviceSubtitle, linkNetworkLabel };
 
 export interface ViewOptions {
   showLabels: boolean;
+  /** draw the frames of groups / locations (default true); hiding them never moves a device */
+  showGroups?: boolean;
   /** user-dragged node centers, keyed by ref ("device:x", "network:y", "hub:z") */
   positions: Map<string, Pt>;
 }
@@ -48,7 +50,7 @@ export function physicalBoxes(layout: PhysicalLayout, positions: Map<string, Pt>
 }
 
 /** Group rectangles derived bottom-up from their contents; wide enough for their title. */
-export function groupRects(model: Model, boxes: Map<string, CBox>): Map<string, Rect> {
+export function groupRects(model: Model, boxes: Map<string, CBox>, extra: Map<string, Rect[]> = new Map()): Map<string, Rect> {
   const depth = new Map<string, number>();
   const depthOf = (id: string): number => {
     const known = depth.get(id);
@@ -64,9 +66,12 @@ export function groupRects(model: Model, boxes: Map<string, CBox>): Map<string, 
   for (const g of deepestFirst) {
     const parts: Rect[] = [];
     for (const d of model.devices) {
-      if (d.group !== g.id) continue;
-      parts.push(boxRect(boxes.get(d.id) as CBox));
+      // a device that isn't drawn (the logical view leaves out devices without logical relations) has no box
+      const b = d.group === g.id ? boxes.get(d.id) : undefined;
+      if (b) parts.push(boxRect(b));
     }
+    // other nodes that belong in the group (the logical view's site-local networks and hubs)
+    for (const r of extra.get(g.id) || []) parts.push(r);
     for (const c of model.groups) if (c.parent === g.id && rects.has(c.id)) parts.push(rects.get(c.id) as Rect);
     if (!parts.length) continue;
     const u = unionRect(parts);
@@ -75,6 +80,40 @@ export function groupRects(model: Model, boxes: Map<string, CBox>): Map<string, 
     rects.set(g.id, { x: u.x + u.w / 2 - w / 2, y: u.y - GROUP_PAD - head.h, w, h: u.h + 2 * GROUP_PAD + head.h });
   }
   return rects;
+}
+
+/**
+ * The frames of groups / locations (outermost first, so children draw on
+ * top), with title and kind. Used by both views. Each title is blocked for
+ * the label placer, so no label is placed on it.
+ */
+export function groupFrames(model: Model, grects: Map<string, Rect>, placer: LabelPlacer): VNode[] {
+  const out: VNode[] = [];
+  const depthSorted = model.groups.filter((g) => grects.has(g.id));
+  const depthOf = (id: string): number => {
+    let d = 0;
+    let g = model.index.groups.get(id);
+    while (g && g.parent) {
+      d++;
+      g = model.index.groups.get(g.parent);
+    }
+    return d;
+  };
+  depthSorted.sort((a, b) => depthOf(a.id) - depthOf(b.id));
+  for (const g of depthSorted) {
+    const r = grects.get(g.id) as Rect;
+    const ks = groupKindStyle(g.kind);
+    const head = groupHeader(g.label, g.kind, r.w - 2 * GROUP_PAD);
+    out.push(
+      h('g', { class: `group kind-${cssToken(g.kind)} ${ks.strong ? 'group-strong' : ''}`, 'data-ref': 'group:' + g.id }, [
+        h('rect', { class: 'group-box', x: r.x, y: r.y, width: r.w, height: r.h, rx: 12, 'stroke-dasharray': ks.dash }),
+        textLines({ class: 'group-title' }, head.title, r.x + 14, r.y + 7),
+        head.kind ? h('text', { class: 'group-kind', x: r.x + r.w - 12, y: r.y + 20, 'text-anchor': 'end' }, head.kind) : null,
+      ]),
+    );
+    placer.block({ x: r.x + 10, y: r.y + 5, w: head.title.w + 8, h: head.title.h + 4 });
+  }
+  return out;
 }
 
 /** A device box with its icon and its full, wrapped label and subtitle. */
@@ -177,31 +216,8 @@ export function renderPhysical(model: Model, layout: PhysicalLayout, opts: ViewO
   });
 
   // ---- groups (outermost first so children draw on top)
-  const groupNodes: VNode[] = [];
-  const depthSorted = model.groups.filter((g) => grects.has(g.id));
-  const depthOf = (id: string): number => {
-    let d = 0;
-    let g = model.index.groups.get(id);
-    while (g && g.parent) {
-      d++;
-      g = model.index.groups.get(g.parent);
-    }
-    return d;
-  };
-  depthSorted.sort((a, b) => depthOf(a.id) - depthOf(b.id));
-  for (const g of depthSorted) {
-    const r = grects.get(g.id) as Rect;
-    const ks = groupKindStyle(g.kind);
-    const head = groupHeader(g.label, g.kind, r.w - 2 * GROUP_PAD);
-    groupNodes.push(
-      h('g', { class: `group kind-${cssToken(g.kind)} ${ks.strong ? 'group-strong' : ''}`, 'data-ref': 'group:' + g.id }, [
-        h('rect', { class: 'group-box', x: r.x, y: r.y, width: r.w, height: r.h, rx: 12, 'stroke-dasharray': ks.dash }),
-        textLines({ class: 'group-title' }, head.title, r.x + 14, r.y + 7),
-        head.kind ? h('text', { class: 'group-kind', x: r.x + r.w - 12, y: r.y + 20, 'text-anchor': 'end' }, head.kind) : null,
-      ]),
-    );
-    placer.block({ x: r.x + 10, y: r.y + 5, w: head.title.w + 8, h: head.title.h + 4 });
-  }
+  const showGroups = opts.showGroups !== false;
+  const groupNodes = showGroups ? groupFrames(model, grects, placer) : [];
 
   // ---- ports and cables: port labels first, they have fixed places
   const linkNodes: VNode[] = [];
@@ -238,8 +254,8 @@ export function renderPhysical(model: Model, layout: PhysicalLayout, opts: ViewO
       }
     }
     const out: VNode[] = [];
-    const mismatch = !!vlanMismatch(l.a.vlans, l.b.vlans);
-    const text = opts.showLabels ? linkLabelText(l) : '';
+    const mismatch = !!networkMismatch(l.a.networks, l.b.networks);
+    const text = opts.showLabels ? linkLabelText(model, l) : '';
     let center = { x: (pts[seg].x + pts[seg + 1].x) / 2, y: (pts[seg].y + pts[seg + 1].y) / 2 };
     if (text) {
       const box = linkLabelBox(text);
@@ -247,19 +263,19 @@ export function renderPhysical(model: Model, layout: PhysicalLayout, opts: ViewO
       center = placer.place(alongSegment(pts[seg], pts[seg + 1], 0.5, [0, -26, 26, -52, 52, -80, 80, -110, 110], [0, -step, step, -2 * step, 2 * step]), box.w, box.h);
       const r = centerRect(center, box.w, box.h);
       extra.push(r);
-      out.push(textLines({ class: 'halo link-label' + (mismatch ? ' vlan-mismatch' : ''), 'data-ref': 'link:' + l.id, 'text-anchor': 'middle' }, box.block, center.x, r.y + 1));
-      // a VLAN mismatch is marked next to the label
-      if (mismatch) out.push(h('text', { class: 'halo vlan-warn', 'data-ref': 'link:' + l.id, x: center.x, y: r.y - 3, 'text-anchor': 'middle' }, '⚠'));
+      out.push(textLines({ class: 'halo link-label' + (mismatch ? ' net-mismatch' : ''), 'data-ref': 'link:' + l.id, 'text-anchor': 'middle' }, box.block, center.x, r.y + 1));
+      // ends that carry different networks are marked next to the label
+      if (mismatch) out.push(h('text', { class: 'halo net-warn', 'data-ref': 'link:' + l.id, x: center.x, y: r.y - 3, 'text-anchor': 'middle' }, '⚠'));
     } else if (mismatch) {
       // … and on the cable itself when labels are off
-      out.push(h('text', { class: 'halo vlan-warn', 'data-ref': 'link:' + l.id, x: center.x, y: center.y - 8, 'text-anchor': 'middle' }, '⚠'));
+      out.push(h('text', { class: 'halo net-warn', 'data-ref': 'link:' + l.id, x: center.x, y: center.y - 8, 'text-anchor': 'middle' }, '⚠'));
     }
     labelAt.set(l.id, out);
     for (const p of pts) extra.push({ x: p.x - 8, y: p.y - 8, w: 16, h: 16 });
     const ms = mediumStyle(l.medium);
     const d = pts.map((p, i) => (i ? 'L' : 'M') + n(p.x) + ' ' + n(p.y)).join('');
     labelAt.set(l.id + '\u0000path', [
-      h('g', { class: `link cable medium-${cssToken(ms.key)}${mismatch ? ' vlan-mismatch' : ''}${pts.length === 2 ? ' straight' : ''}`, 'data-ref': 'link:' + l.id }, [
+      h('g', { class: `link cable medium-${cssToken(ms.key)}${mismatch ? ' net-mismatch' : ''}${pts.length === 2 ? ' straight' : ''}`, 'data-ref': 'link:' + l.id }, [
         h('path', { class: 'hit', d }),
         h('path', { class: 'cable-line', d, stroke: ms.color, 'stroke-width': speedWidth(l.speed), 'stroke-dasharray': ms.dash }),
       ]),
@@ -294,7 +310,7 @@ export function renderPhysical(model: Model, layout: PhysicalLayout, opts: ViewO
 
   // everything drawn is inside the bounds: boxes, groups, labels and cable bends
   const rects: Rect[] = [];
-  grects.forEach((r) => rects.push({ x: r.x - 20, y: r.y - 20, w: r.w + 40, h: r.h + 40 }));
+  if (showGroups) grects.forEach((r) => rects.push({ x: r.x - 20, y: r.y - 20, w: r.w + 40, h: r.h + 40 }));
   boxes.forEach((b) => rects.push({ x: b.cx - b.w / 2 - 50, y: b.cy - b.h / 2 - 40, w: b.w + 100, h: b.h + 80 }));
   for (const r of extra) rects.push({ x: r.x - 12, y: r.y - 12, w: r.w + 24, h: r.h + 24 });
   const bounds = unionRect(rects);

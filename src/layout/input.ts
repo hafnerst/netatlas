@@ -11,10 +11,10 @@
  * Everything is sorted by id with plain code-unit string comparison (never
  * localeCompare, which depends on the browser locale).
  */
-import { networkMembers } from '../model/derive';
 import { deviceSubtitle } from '../model/device-types';
 import { relationStyle } from '../model/protocols';
-import { vlanMismatch } from '../model/derive';
+import { networkMembers, networkMismatch, networkName } from '../model/derive';
+import { compareNames } from '../model/order';
 import { Link, Model, loopbacks, relationDevices } from '../model/types';
 import { buildBundle, laneLabel, relationPairs } from './bundles';
 import { cmp } from './order';
@@ -39,6 +39,8 @@ export interface LDev {
   loopbacks: number;
   /** width the widest loopback chip needs in the logical view (0 without loopbacks) */
   chipW: number;
+  /** the device's DNS names, each once, sorted (shown under it in the logical view) */
+  dns: string[];
 }
 export interface LGroup {
   id: string;
@@ -128,6 +130,7 @@ export function layoutInput(m: Model): LayoutInput {
         loopbacks: loopbacks(d).length,
         // over all loopbacks, not only the ones shown, so the order in the file doesn't matter
         chipW: loopbacks(d).reduce((m, l) => Math.max(m, chipNeed(l.id, l.addresses)), 0),
+        dns: uniqSorted(d.dnsNames.map((n) => n.name).filter((n) => !!n)),
       })),
     ),
     groups: byId(m.groups.map((g) => ({ id: g.id, parent: g.parent || null, label: g.label, kind: g.kind }))),
@@ -160,7 +163,7 @@ export function layoutInput(m: Model): LayoutInput {
       const bundle = buildBundle(m, key, rels);
       return { a: bundle.a, b: bundle.b, labels: bundle.lanes.filter((p) => p.root).map(laneLabel), width: bundle.width };
     }),
-    linkLabels: byId(m.links.map((l) => ({ id: l.id, text: linkLabelText(l) })).filter((x) => x.text !== '')),
+    linkLabels: byId(m.links.map((l) => ({ id: l.id, text: linkLabelText(m, l) })).filter((x) => x.text !== '')),
   };
 }
 
@@ -170,18 +173,20 @@ function chipNeed(id: string, addresses: string[]): number {
   return firsts.reduce((m, a) => Math.max(m, Math.ceil(chipTextWidth(loopbackChipText(id, a ? [a].concat(addresses.slice(1)) : [])))), 0);
 }
 
-/** VLANs of a cable for its label: what both ends permit, "Trunk" for several, a note when the ends differ. */
-export function linkVlanLabel(l: Link): string {
-  if (vlanMismatch(l.a.vlans, l.b.vlans)) return 'VLAN mismatch';
-  const v = l.a.vlans;
-  if (!v.length) return '';
-  if (v.length === 1) return 'VLAN ' + v[0];
-  return 'Trunk ' + v.join(',');
+/**
+ * The networks a cable carries, for its label: the names of the networks
+ * both ends carry, or a note when the ends differ (see the link's details).
+ * Several networks are just listed: nothing about tagging is implied.
+ */
+export function linkNetworkLabel(m: Model, l: Link): string {
+  if (networkMismatch(l.a.networks, l.b.networks)) return 'networks differ';
+  // sorted, so the order of the list in the file affects neither text nor layout
+  return l.a.networks.map((id) => networkName(m, id)).sort(compareNames).join(', ');
 }
 
-/** The text drawn on a cable: speed, VLANs, label. */
-export function linkLabelText(l: Link): string {
-  return [l.speed, linkVlanLabel(l), l.label].filter((s) => !!s).join(' · ');
+/** The text drawn on a cable: speed, networks, label. */
+export function linkLabelText(m: Model, l: Link): string {
+  return [l.speed, linkNetworkLabel(m, l), l.label].filter((s) => !!s).join(' · ');
 }
 
 /** Stable text form of the input: equal signatures always give equal auto-arrange results. */

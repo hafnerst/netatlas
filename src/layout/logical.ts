@@ -11,13 +11,20 @@
  *     connected nodes is chosen from their sizes and from the labels that
  *     have to fit between them, and boxes are pushed apart to keep that room;
  *   - components are packed in rows, largest first (ties: smallest id);
+ *   - devices are clustered by group (location): each group's content (its
+ *     devices and child groups) is laid out on its own, deepest groups
+ *     first, and the group then takes part in the layout around it as one
+ *     box of exactly the size of its frame (content + GROUP_PAD + title), so
+ *     a group's frame never covers a device of another group. Networks and
+ *     multipoint hubs belong to no group and are placed around the groups.
+ *     A model without groups is laid out exactly as before;
  *   - nodes and edges are processed in id order; only + - * / and Math.sqrt
  *     are used (Math.hypot / sin / cos may differ between browsers), and the
  *     result is rounded to integers.
  */
 import { CBox, Pt } from './geometry';
-import { LayoutInput, cmp } from './input';
-import { HUB_R, logicalDeviceSize, networkBody, pillBox } from './sizes';
+import { LGroup, LayoutInput, cmp } from './input';
+import { GROUP_PAD, HUB_R, groupHeader, logicalDeviceSize, networkBody, pillBox } from './sizes';
 
 export { CHIP_H, HUB_R, MAX_CHIPS, chipRows, networkSubtitle } from './sizes';
 
@@ -70,7 +77,7 @@ export function logicalSpecs(input: LayoutInput): LSpec[] {
   for (const d of input.devices) if (d.loopbacks) involved.add(d.id);
   const devs = involved.size ? input.devices.filter((d) => involved.has(d.id)) : input.devices;
   const out: LSpec[] = [];
-  for (const d of devs) out.push({ ref: 'device:' + d.id, kind: 'device', id: d.id, ...logicalDeviceSize(d.label, d.sub, d.chipW, d.loopbacks) });
+  for (const d of devs) out.push({ ref: 'device:' + d.id, kind: 'device', id: d.id, ...logicalDeviceSize(d.label, d.sub, d.chipW, d.loopbacks, d.dns) });
   for (const n of input.networks) {
     const b = networkBody(n.label, n.sub);
     out.push({ ref: 'network:' + n.id, kind: 'network', id: n.id, w: b.w, h: b.h });
@@ -140,34 +147,34 @@ const COMP_GAP = 90;
 /** Auto-arranged node centers for the logical view, keyed by ref. `physical` = auto physical centers. */
 export function autoLogical(input: LayoutInput, physical: Map<string, Pt>): Map<string, Pt> {
   const specs = logicalSpecs(input);
-  const out = new Map<string, Pt>();
-  if (!specs.length) return out;
+  if (!specs.length) return new Map();
   const edges = logicalEdges(input, specs);
-  const index = new Map(specs.map((s, i) => [s.ref, i] as [string, number]));
+  const seed = seedPositions(specs, edges, physical);
+  const groupOf = new Map<string, string>();
+  const groups = new Map(input.groups.map((g) => [g.id, g] as [string, LGroup]));
+  for (const d of input.devices) if (d.group && groups.has(d.group)) groupOf.set(d.id, d.group);
+  if (!specs.some((sp) => sp.kind === 'device' && groupOf.has(sp.id))) return roundAll(arrange(specs, edges, seed));
+  return roundAll(clustered(specs, edges, seed, groupOf, groups));
+}
 
-  // --- connected components (union-find over edges), each sorted by ref
-  const parent = specs.map((_, i) => i);
-  const find = (i: number): number => {
-    while (parent[i] !== i) {
-      parent[i] = parent[parent[i]];
-      i = parent[i];
-    }
-    return i;
-  };
-  for (const [a, b] of edges) {
-    const ra = find(index.get(a) as number);
-    const rb = find(index.get(b) as number);
-    if (ra !== rb) parent[Math.max(ra, rb)] = Math.min(ra, rb);
-  }
-  const groups = new Map<number, number[]>();
-  specs.forEach((_, i) => {
-    const r = find(i);
-    if (!groups.has(r)) groups.set(r, []);
-    (groups.get(r) as number[]).push(i);
-  });
-  const comps = Array.from(groups.values()).sort((a, b) => b.length - a.length || cmp(specs[a[0]].ref, specs[b[0]].ref));
+/**
+ * The groups every one of the given chains (innermost first) passes through,
+ * innermost first: where a node connected to those devices belongs. Empty
+ * when there are no chains or one of them is ungrouped.
+ */
+export function commonChain(chains: string[][]): string[] {
+  if (!chains.length) return [];
+  return chains[0].filter((g) => chains.every((c) => c.indexOf(g) >= 0));
+}
 
-  // --- seed positions: physical auto positions; networks / hubs near their devices
+function roundAll(pos: Map<string, Pt>): Map<string, Pt> {
+  const out = new Map<string, Pt>();
+  pos.forEach((p, ref) => out.set(ref, { x: Math.round(p.x), y: Math.round(p.y) }));
+  return out;
+}
+
+/** Seed positions: physical auto positions for devices; networks / hubs near their devices. */
+function seedPositions(specs: LSpec[], edges: LEdge[], physical: Map<string, Pt>): Map<string, Pt> {
   const seed = new Map<string, Pt>();
   for (const s of specs) if (s.kind === 'device') seed.set(s.ref, physical.get(s.id) || { x: 0, y: 0 });
   const members = new Map<string, string[]>();
@@ -195,6 +202,42 @@ export function autoLogical(input: LayoutInput, physical: Map<string, Pt>): Map<
     const r = s.kind === 'network' ? 90 : 30;
     seed.set(s.ref, { x: cx + dx * r, y: cy + dy * r });
   }
+  return seed;
+}
+
+/**
+ * Lay out a set of nodes: split into connected components, lay out each,
+ * pack the components in rows (largest first: by the number of nodes they
+ * hold, a group counting with everything inside it). The top-left corner of
+ * the packing is (0, 0).
+ */
+function arrange(specs: LSpec[], edges: LEdge[], seed: Map<string, Pt>, weight: (ref: string) => number = () => 1): Map<string, Pt> {
+  const out = new Map<string, Pt>();
+  const index = new Map(specs.map((s, i) => [s.ref, i] as [string, number]));
+  const own = edges.filter(([a, b]) => index.has(a) && index.has(b));
+
+  // --- connected components (union-find over edges), each sorted by ref
+  const parent = specs.map((_, i) => i);
+  const find = (i: number): number => {
+    while (parent[i] !== i) {
+      parent[i] = parent[parent[i]];
+      i = parent[i];
+    }
+    return i;
+  };
+  for (const [a, b] of own) {
+    const ra = find(index.get(a) as number);
+    const rb = find(index.get(b) as number);
+    if (ra !== rb) parent[Math.max(ra, rb)] = Math.min(ra, rb);
+  }
+  const groups = new Map<number, number[]>();
+  specs.forEach((_, i) => {
+    const r = find(i);
+    if (!groups.has(r)) groups.set(r, []);
+    (groups.get(r) as number[]).push(i);
+  });
+  const size = (c: number[]): number => c.reduce((n, i) => n + weight(specs[i].ref), 0);
+  const comps = Array.from(groups.values()).sort((a, b) => size(b) - size(a) || cmp(specs[a[0]].ref, specs[b[0]].ref));
 
   // --- lay out each component, then pack the components
   const placed: Array<{ refs: string[]; pos: Map<string, Pt>; x0: number; y0: number; w: number; h: number }> = [];
@@ -202,7 +245,7 @@ export function autoLogical(input: LayoutInput, physical: Map<string, Pt>): Map<
     const refs = comp.map((i) => specs[i].ref);
     const pos = layoutComponent(
       comp.map((i) => specs[i]),
-      edges.filter(([a]) => refs.indexOf(a) >= 0),
+      own.filter(([a]) => refs.indexOf(a) >= 0),
       seed,
     );
     let x0 = Infinity;
@@ -236,6 +279,157 @@ export function autoLogical(input: LayoutInput, physical: Map<string, Pt>): Map<
     }
     cx += c.w + COMP_GAP;
     rowH = Math.max(rowH, c.h);
+  }
+  return out;
+}
+
+/**
+ * The layout with devices clustered by group. Each group is a box of the
+ * size of its frame, laid out among its siblings; its content is placed
+ * inside it. Edges between nodes of different containers are lifted to the
+ * containers (the child of the current container that holds each end).
+ */
+function clustered(specs: LSpec[], edges: LEdge[], seed: Map<string, Pt>, groupOf: Map<string, string>, groups: Map<string, LGroup>): Map<string, Pt> {
+  /** the chain of groups of a node, innermost first (networks and hubs: none) */
+  const chain = (ref: string): string[] => {
+    const out: string[] = [];
+    if (ref.indexOf('device:') !== 0) return out;
+    const seen = new Set<string>();
+    let g = groupOf.get(ref.slice(7));
+    while (g !== undefined && groups.has(g) && !seen.has(g)) {
+      seen.add(g);
+      out.push(g);
+      const p = (groups.get(g) as LGroup).parent;
+      g = p === null ? undefined : p;
+    }
+    return out;
+  };
+  const chains = new Map(specs.map((sp) => [sp.ref, chain(sp.ref)] as [string, string[]]));
+  // a network or hub whose devices all lie in one group is local to it: it goes into the innermost group holding all of them
+  const neighbours = new Map<string, string[]>();
+  for (const [a, b] of edges) {
+    if (a.indexOf('device:') !== 0 && b.indexOf('device:') === 0) {
+      if (!neighbours.has(a)) neighbours.set(a, []);
+      (neighbours.get(a) as string[]).push(b);
+    }
+  }
+  for (const sp of specs) {
+    if (sp.kind === 'device') continue;
+    chains.set(sp.ref, commonChain((neighbours.get(sp.ref) || []).map((d) => chains.get(d) as string[])));
+  }
+  /** the item directly inside `container` (null = top level) that holds `ref`, or null if `ref` is not inside it */
+  const itemIn = (ref: string, container: string | null): string | null => {
+    const c = chains.get(ref) as string[];
+    if (container === null) return c.length ? 'group:' + c[c.length - 1] : ref;
+    const k = c.indexOf(container);
+    if (k < 0) return null;
+    return k === 0 ? ref : 'group:' + c[k - 1];
+  };
+  /** every group that contains a node of the view, and its direct children */
+  const children = new Map<string | null, Set<string>>();
+  const add = (container: string | null, item: string): void => {
+    if (!children.has(container)) children.set(container, new Set());
+    (children.get(container) as Set<string>).add(item);
+  };
+  for (const sp of specs) {
+    const c = chains.get(sp.ref) as string[];
+    add(c.length ? c[0] : null, sp.ref);
+    for (let k = 0; k < c.length; k++) add(k + 1 < c.length ? c[k + 1] : null, 'group:' + c[k]);
+  }
+  const specOf = new Map(specs.map((sp) => [sp.ref, sp] as [string, LSpec]));
+  /** absolute positions of everything inside a placed item, relative to the item's center */
+  const inner = new Map<string, Map<string, Pt>>();
+  const leaves = (item: string): string[] => {
+    if (item.indexOf('group:') !== 0) return [item];
+    return Array.from((inner.get(item) as Map<string, Pt>).keys());
+  };
+
+  const layoutContainer = (container: string | null): { items: LSpec[]; pos: Map<string, Pt> } => {
+    // children first (deepest groups are laid out before their parent)
+    const kids = Array.from(children.get(container) || []).sort(cmp);
+    const items: LSpec[] = kids.map((ref) => {
+      if (ref.indexOf('group:') !== 0) return specOf.get(ref) as LSpec;
+      const box = layoutGroup(ref.slice(6));
+      return { ref, kind: 'device', id: ref.slice(6), w: box.w, h: box.h };
+    });
+    // edges lifted to the items of this container; parallel ones merged
+    const merged = new Map<string, LEdge>();
+    for (const [a, b, w, rx, ry] of edges) {
+      const ia = itemIn(a, container);
+      const ib = itemIn(b, container);
+      if (ia === null || ib === null || ia === ib) continue;
+      const [p, q] = cmp(ia, ib) <= 0 ? [ia, ib] : [ib, ia];
+      const key = p + '\u0000' + q;
+      const e = merged.get(key);
+      if (!e) merged.set(key, [p, q, w, rx, ry]);
+      else merged.set(key, [p, q, Math.min(2, Math.max(e[2], w)), Math.max(e[3], rx), Math.max(e[4], ry)]);
+    }
+    const lifted = Array.from(merged.values()).sort((p, q) => cmp(p[0], q[0]) || cmp(p[1], q[1]));
+    // a group is seeded at the mean seed of what it contains
+    const sd = new Map<string, Pt>();
+    for (const it of items) {
+      if (it.ref.indexOf('group:') !== 0) {
+        sd.set(it.ref, seed.get(it.ref) as Pt);
+        continue;
+      }
+      const ls = leaves(it.ref);
+      let x = 0;
+      let y = 0;
+      for (const l of ls) {
+        const p = seed.get(l) as Pt;
+        x += p.x;
+        y += p.y;
+      }
+      sd.set(it.ref, { x: x / ls.length, y: y / ls.length });
+    }
+    return { items, pos: arrange(items, lifted, sd, (ref) => leaves(ref).length) };
+  };
+
+  /** lay out a group's content; returns the size of its frame */
+  const sizes = new Map<string, { w: number; h: number }>();
+  const layoutGroup = (gid: string): { w: number; h: number } => {
+    const known = sizes.get(gid);
+    if (known) return known;
+    const { items, pos } = layoutContainer(gid);
+    let x0 = Infinity;
+    let y0 = Infinity;
+    let x1 = -Infinity;
+    let y1 = -Infinity;
+    for (const it of items) {
+      const p = pos.get(it.ref) as Pt;
+      x0 = Math.min(x0, p.x - it.w / 2);
+      y0 = Math.min(y0, p.y - it.h / 2);
+      x1 = Math.max(x1, p.x + it.w / 2);
+      y1 = Math.max(y1, p.y + it.h / 2);
+    }
+    const g = groups.get(gid) as LGroup;
+    // the same frame geometry as the drawn group (diagram/physical.ts groupRects)
+    const uw = x1 - x0;
+    const head = groupHeader(g.label, g.kind, uw);
+    const w = Math.max(uw + 2 * GROUP_PAD, head.minW);
+    const h = y1 - y0 + 2 * GROUP_PAD + head.h;
+    // positions relative to the frame's center: content centred horizontally, below the title
+    const ox = -(x0 + uw / 2);
+    const oy = -h / 2 + head.h + GROUP_PAD - y0;
+    const rel = new Map<string, Pt>();
+    for (const it of items) {
+      const p = pos.get(it.ref) as Pt;
+      const c = { x: p.x + ox, y: p.y + oy };
+      if (it.ref.indexOf('group:') === 0) (inner.get(it.ref) as Map<string, Pt>).forEach((q, ref) => rel.set(ref, { x: c.x + q.x, y: c.y + q.y }));
+      else rel.set(it.ref, c);
+    }
+    inner.set('group:' + gid, rel);
+    const size = { w, h };
+    sizes.set(gid, size);
+    return size;
+  };
+
+  const top = layoutContainer(null);
+  const out = new Map<string, Pt>();
+  for (const it of top.items) {
+    const c = top.pos.get(it.ref) as Pt;
+    if (it.ref.indexOf('group:') === 0) (inner.get(it.ref) as Map<string, Pt>).forEach((q, ref) => out.set(ref, { x: c.x + q.x, y: c.y + q.y }));
+    else out.set(it.ref, c);
   }
   return out;
 }

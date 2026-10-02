@@ -1,10 +1,12 @@
-import { IpPrefix, addrKey, hasHostBits, parsePrefix, prefixProblem } from '../model/ip';
-import { derive, interfaceAddresses, vlanMismatch, vlanMismatchText } from '../model/derive';
+import { IpPrefix, addrKey, hasHostBits, parsePrefix, prefixContains, prefixProblem } from '../model/ip';
+import { derive, interfaceAddresses, networkMismatch, networkMismatchText } from '../model/derive';
 import {
-  Attrs,
   CATEGORIES,
   Category,
+  DIRECTIONS,
   Device,
+  Direction,
+  DnsName,
   Group,
   Interface,
   InterfaceKind,
@@ -24,9 +26,10 @@ import {
   ifaceKey,
   relationDevices,
 } from '../model/types';
+import { dnsNameKey, dnsNameProblem } from '../model/dns';
 import { DEVICE_TYPE_IDS, NO_DEVICE_TYPE, isDeviceType } from '../model/device-types';
 import { COLOR_RE, DEFAULT_STYLE, builtinProtocols, lookupProtocol, normalizeProtocol } from '../model/protocols';
-import { YMap, YNode, YamlError, YamlLimits, parseYaml } from '../yaml/parse';
+import { YMap, YNode, YSeq, YamlError, YamlLimits, parseYaml } from '../yaml/parse';
 import { FORMAT_VERSION, RENAMED_GROUP_KINDS, RETIRED, SCHEMA } from '../yaml/schema';
 import { Ctx, DEFAULT_MODEL_LIMITS, ID_RE, IFACE_RE, Issue, ModelLimits, Reader, TooManyErrors, get, isNull, kindOf, scalarText, suggest } from './reader';
 
@@ -263,6 +266,8 @@ function build(root: YNode | null, c: Ctx): Model | null {
   const addrOwner = new Map<string, { where: string; node: YNode }>();
   /** "device:iface" -> the node of a virtual interface's "vlan" */
   const vlanNodes = new Map<string, YNode>();
+  /** DNS name key -> the device that configures it first */
+  const dnsOwner = new Map<string, string>();
   /** tunnel destinations: checked once every device is read */
   const destinations: Array<{ iface: Interface; node: YNode; path: string }> = [];
   capped(r.list(get(top, 'devices'), 'devices'), L.maxDevices, 'devices', 'devices').forEach((n, i) => {
@@ -296,6 +301,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
       attrs: r.attrs(get(m, 'attrs'), dpath + '.attrs'),
       interfaces: [],
       logical: [],
+      dnsNames: [],
       line: m.line,
     };
     let count = 0;
@@ -358,6 +364,8 @@ function build(root: YNode | null, c: Ctx): Model | null {
       }
       const isLoop = type === 'loopback';
       const kind = isLoop ? 'loopback' : 'interface';
+      // DHCP is a flag, never an address: omitted means false
+      const dhcp = r.bool(get(im, 'dhcp'), ipath + '.dhcp') === true;
       const ipNode = get(im, 'ip');
       const addrNodes = r.list(ipNode, ipath + '.ip', true);
       const addrs: string[] = [];
@@ -373,7 +381,12 @@ function build(root: YNode | null, c: Ctx): Model | null {
         addrsAt.push(an);
         const p = parsePrefix(a, !isLoop ? false : true);
         if (!p) {
-          const why = prefixProblem(a) || `"${a}" is not a valid address`;
+          const why =
+            a.toLowerCase() === 'dhcp'
+              ? isLoop
+                ? '"dhcp" is not an address, and a loopback cannot obtain its address by DHCP: write its address with prefix length'
+                : '"dhcp" is not an address: to say that the interface obtains its address by DHCP, delete it here and set "dhcp: true"'
+              : prefixProblem(a) || `"${a}" is not a valid address`;
           if (isLoop) c.error(an, `${ipath}.ip[${j}]`, `invalid loopback address: ${why}`);
           else c.warn(an, `${ipath}.ip[${j}]`, `${why}; it is shown as written`);
           return;
@@ -389,6 +402,21 @@ function build(root: YNode | null, c: Ctx): Model | null {
         if (owner) c.warn(an, `${ipath}.ip[${j}]`, `address ${a.split('/')[0]} is also assigned to ${owner.where}`);
         else addrOwner.set(k2, { where: key, node: an });
       });
+      if (dhcp && isLoop) {
+        // an address of the device itself is always configured; the flag is reported, not dropped
+        c.error(
+          get(im, 'dhcp') as YNode,
+          ipath + '.dhcp',
+          `loopback "${iid}" cannot obtain its address by DHCP: a loopback's addresses are always configured — delete "dhcp: true" and write its address under "ip:"`,
+        );
+      } else if (dhcp && addrNodes.length) {
+        // both are kept as written and reported: neither the flag nor the addresses are discarded
+        c.error(
+          ipNode as YNode,
+          ipath + '.ip',
+          `${kind} "${iid}" has "dhcp: true" and manually configured addresses; an interface either obtains its address by DHCP or has addresses configured — delete "ip:" or set "dhcp: false"`,
+        );
+      }
       if (isLoop && !addrs.length) {
         c.error(ipNode && !isNull(ipNode) ? ipNode : im, ipath + '.ip', `loopback "${iid}" needs at least one IPv4 or IPv6 address with prefix length (e.g. 10.255.0.1/32 or 2001:db8::1/128)`, ipNode && !isNull(ipNode) ? {} : { key: 'ip' });
       }
@@ -397,6 +425,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
         device: id,
         label: r.field(im, 'label', ipath, L.maxLabel),
         type,
+        dhcp,
         addresses: addrs,
         vrf: r.field(im, 'vrf', ipath, 100),
         mac: r.field(im, 'mac', ipath, 40),
@@ -466,6 +495,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
       const i = readIface(inode, `${dpath}.logical_interfaces[${k}]`, 'logical');
       if (i) dev.logical.push(i);
     });
+    dev.dnsNames = readDnsNames(r, c, m, dpath, dev, dnsOwner);
     // tunnel sources: an address (its interface is then derived), or any other interface of this device
     for (const s of sources) {
       const end = s.iface.source as TunnelEnd;
@@ -522,17 +552,17 @@ function build(root: YNode | null, c: Ctx): Model | null {
     }
   }
 
+  /** link ends whose network ids are checked once the networks are read */
+  const endNetworks: Array<{ end: LinkEnd; nodes: YNode[]; path: string }> = [];
   /**
-   * Parse "dev" / "dev:iface" / a mapping. A relation endpoint may carry
-   * role, address and attrs; a link end may carry the VLANs it permits.
+   * Parse "dev" / "dev:iface" / a mapping. A relation endpoint is nothing
+   * more; a link end may also list the networks the cable carries there.
    */
-  const endpoint = (n: YNode, path: string, extended: boolean): (RelEndpoint & { vlans: number[] }) | null => {
+  const endpoint = (n: YNode, path: string, extended: boolean): (RelEndpoint & { networks: string[]; netNodes: YNode[] }) | null => {
     let device: string | undefined;
     let iface: string | undefined;
-    let role: string | undefined;
-    let address: string | undefined;
-    let attrs: Attrs = [];
-    const vlans: number[] = [];
+    const networks: string[] = [];
+    const netNodes: YNode[] = [];
     if (n.kind === 'scalar') {
       const s = r.str(n, path, 200);
       if (s === undefined) {
@@ -543,22 +573,20 @@ function build(root: YNode | null, c: Ctx): Model | null {
       device = colon < 0 ? s : s.slice(0, colon);
       iface = colon < 0 ? undefined : s.slice(colon + 1);
     } else if (n.kind === 'map') {
-      r.keys(n, extended ? EP_KEYS : LINK_END_KEYS, path);
+      r.keys(n, extended ? EP_KEYS : LINK_END_KEYS, path, '', extended ? RETIRED.endpoint : RETIRED.linkEnd);
       device = r.reqStr(n, 'device', path, 200);
       iface = r.field(n, 'interface', path, 200);
-      if (extended) {
-        role = r.field(n, 'role', path, 60);
-        address = r.field(n, 'address', path, 100);
-        attrs = r.attrs(get(n, 'attrs'), path + '.attrs');
-      } else {
-        // VLANs permitted at this end of the cable: a fact of the link end, kept exactly as configured
-        r.list(get(n, 'vlans'), path + '.vlans', true).forEach((vn, k) => {
-          const v = r.vlanId(vn, `${path}.vlans[${k}]`);
-          if (v === undefined) return;
-          if (vlans.indexOf(v) >= 0) c.error(vn, `${path}.vlans[${k}]`, `VLAN ${v} is listed twice on this end`);
-          else vlans.push(v);
+      if (!extended) {
+        // networks the cable carries at this end: a fact of the link end, kept exactly as configured
+        r.list(get(n, 'networks'), path + '.networks', true).forEach((nn, k) => {
+          const id = r.str(nn, `${path}.networks[${k}]`, 200);
+          if (id === undefined) return;
+          if (networks.indexOf(id) >= 0) c.error(nn, `${path}.networks[${k}]`, `network "${id}" is listed twice on this end`);
+          else {
+            networks.push(id);
+            netNodes.push(nn);
+          }
         });
-        vlans.sort((p, q) => p - q);
       }
       if (device === undefined) return null;
     } else {
@@ -580,11 +608,12 @@ function build(root: YNode | null, c: Ctx): Model | null {
       );
       return null;
     }
-    return { device, iface, role, address, attrs, vlans };
+    return { device, iface, networks, netNodes };
   };
 
   // -------------------------------------------------------------- links
   const links: Link[] = [];
+  const linkNodes = new Map<string, YMap>();
   const ifaceLink = new Map<string, string>();
   capped(r.list(get(top, 'links'), 'links'), L.maxLinks, 'links', 'links').forEach((n, i) => {
     const path = `links[${i}]`;
@@ -623,7 +652,9 @@ function build(root: YNode | null, c: Ctx): Model | null {
         }
         ifaceLink.set(key, id);
       }
-      return { device: ep.device, iface: ep.iface, vlans: ep.vlans };
+      const end: LinkEnd = { device: ep.device, iface: ep.iface, networks: ep.networks };
+      endNetworks.push({ end, nodes: ep.netNodes, path: `${lpath}.${side}.networks` });
+      return end;
     });
     const [a, b] = ends;
     if (!a || !b) return;
@@ -631,9 +662,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
       c.error(m, lpath, 'a link cannot connect an endpoint to itself');
       return;
     }
-    // the two ends are configured independently; a difference is reported, never repaired
-    const mismatch = vlanMismatch(a.vlans, b.vlans);
-    if (mismatch) c.warn(m, lpath, `VLAN mismatch between the ends of this link (${vlanMismatchText(mismatch)})`);
+    linkNodes.set(id, m);
     links.push({
       id,
       a,
@@ -650,6 +679,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
 
   // ----------------------------------------------------------- networks
   const networks: Network[] = [];
+  const seenPrefixes: Array<{ id: string; p: IpPrefix }> = [];
   capped(r.list(get(top, 'networks'), 'networks'), L.maxNetworks, 'networks', 'networks').forEach((n, i) => {
     const path = `networks[${i}]`;
     const m = r.map(n, path);
@@ -659,19 +689,34 @@ function build(root: YNode | null, c: Ctx): Model | null {
     if (!id) return;
     const npath = `networks.${id}`;
     if (!claim(id, 'network', m, path)) return;
-    // the prefixes are the authority for membership, so each must be a real prefix
+    // the one prefix is the authority for membership, so it must be a real prefix: exactly one, never a list
     const cidrNode = get(m, 'cidr');
-    const cidr: string[] = [];
-    r.list(cidrNode, npath + '.cidr', true).forEach((x, k) => {
-      const s = r.str(x, `${npath}.cidr[${k}]`, 64);
-      if (s === undefined) return;
-      cidr.push(s);
-      const p = parsePrefix(s);
-      if (!p) c.error(x, `${npath}.cidr[${k}]`, `invalid network prefix: ${prefixProblem(s)}`);
-      else if (hasHostBits(p)) c.warn(x, `${npath}.cidr[${k}]`, `${s} has bits set beyond /${p.prefix}; the network is the whole /${p.prefix} that contains it`);
-    });
-    if (!cidr.length) {
-      c.warn(isNull(cidrNode) ? m : (cidrNode as YNode), npath + '.cidr', `network "${id}" has no prefix, so it has no members — add "cidr:" (e.g. 192.0.2.0/24 or 2001:db8::/64)`, isNull(cidrNode) ? { key: 'cidr' } : {});
+    let cidr: string | undefined;
+    if (isNull(cidrNode)) {
+      c.error(m, npath + '.cidr', `network "${id}" needs its IP network: add "cidr:" with one prefix (e.g. 192.0.2.0/24 or 2001:db8::/64)`, { key: 'cidr' });
+    } else if ((cidrNode as YNode).kind === 'seq') {
+      const items = (cidrNode as YSeq).items;
+      c.error(
+        cidrNode as YNode,
+        npath + '.cidr',
+        items.length
+          ? `"cidr" lists ${items.length} prefixes, but a network has exactly one: keep one here (written without brackets, e.g. cidr: 192.0.2.0/24) and make a separate network for each other prefix`
+          : 'a network needs exactly one prefix, e.g. cidr: 192.0.2.0/24 (not an empty list)',
+      );
+    } else {
+      const text = r.str(cidrNode, npath + '.cidr', 64);
+      const p = text !== undefined ? parsePrefix(text) : null;
+      if (text === undefined) {
+        // (r.str reported a non-text value)
+      } else if (!p) c.error(cidrNode as YNode, npath + '.cidr', `invalid network prefix: ${prefixProblem(text)}`);
+      else {
+        cidr = text;
+        if (hasHostBits(p)) c.warn(cidrNode as YNode, npath + '.cidr', `${text} has bits set beyond /${p.prefix}; the network is the whole /${p.prefix} that contains it`);
+        // the same prefix twice: two objects for one network, so membership would be listed twice
+        const same = seenPrefixes.find((x) => prefixContains(x.p, p) && prefixContains(p, x.p));
+        if (same) c.warn(cidrNode as YNode, npath + '.cidr', `network "${id}" has the same prefix as network "${same.id}"; both list the same members`);
+        else seenPrefixes.push({ id, p });
+      }
     }
     networks.push({
       id,
@@ -685,6 +730,20 @@ function build(root: YNode | null, c: Ctx): Model | null {
   });
   const networkMap = new Map(networks.map((x) => [x.id, x] as [string, Network]));
 
+  // link ends: every network id must name a network; the two ends are configured independently, a difference is reported, never repaired
+  for (const { end, nodes, path } of endNetworks) {
+    const ok: string[] = [];
+    end.networks.forEach((nid, k) => {
+      if (networkMap.has(nid)) ok.push(nid);
+      else c.error(nodes[k], `${path}[${k}]`, `unknown network "${nid}"${suggest(nid, networkMap.keys())}`);
+    });
+    end.networks = ok;
+  }
+  for (const l of links) {
+    const mm = networkMismatch(l.a.networks, l.b.networks);
+    if (mm) c.warn(linkNodes.get(l.id) as YMap, `links.${l.id}`, `the two ends of this link carry different networks (${networkMismatchText(mm, (nid) => (networkMap.get(nid) as Network).label)})`);
+  }
+
   // ---------------------------------------------------------- relations
   const relations: Relation[] = [];
   const overNodes = new Map<string, YNode>();
@@ -693,7 +752,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
     const path = `relations[${i}]`;
     const m = r.map(n, path);
     if (!m) return;
-    r.keys(m, REL_KEYS, path, ATTRS_HINT);
+    r.keys(m, REL_KEYS, path, ATTRS_HINT, RETIRED.relation);
     const id = r.id(m, path);
     if (!id) return;
     const rpath = `relations.${id}`;
@@ -734,7 +793,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
       .slice(0, L.maxEndpoints)
       .map((x, k): RelEndpoint | null => {
         const e = endpoint(x, `${rpath}.endpoints[${k}]`, true);
-        return e && { device: e.device, iface: e.iface, role: e.role, address: e.address, attrs: e.attrs };
+        return e && { device: e.device, iface: e.iface };
       })
       .filter((x): x is RelEndpoint => x !== null);
     if (epNodes.length < 2) {
@@ -747,10 +806,6 @@ function build(root: YNode | null, c: Ctx): Model | null {
       .filter((x): x is string => x !== undefined);
     if (overNode) overNodes.set(id, overNode);
     relNodes.set(id, m);
-    const network = r.field(m, 'network', rpath, 200);
-    if (network !== undefined && !networkMap.has(network)) {
-      c.error(get(m, 'network') as YNode, rpath + '.network', `unknown network "${network}"${suggest(network, networkMap.keys())}`);
-    }
     const rel: Relation = {
       id,
       protocol: proto,
@@ -758,8 +813,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
       label: r.field(m, 'label', rpath, L.maxLabel),
       endpoints,
       over,
-      network: network !== undefined && networkMap.has(network) ? network : undefined,
-      directed: r.bool(get(m, 'directed'), rpath + '.directed') || false,
+      direction: relationDirection(r, c, m, rpath),
       description: r.field(m, 'description', rpath, L.maxDescription),
       attrs: r.attrs(get(m, 'attrs'), rpath + '.attrs'),
       line: m.line,
@@ -932,6 +986,79 @@ function build(root: YNode | null, c: Ctx): Model | null {
     }
   }
   return model;
+}
+
+/**
+ * The DNS names of a device: each a valid name, configured once on the
+ * device, associated with one or more of its interfaces that have DHCP off.
+ * The association is to an interface, not to one of its addresses.
+ */
+function readDnsNames(r: Reader, c: Ctx, m: YMap, dpath: string, dev: Device, owner: Map<string, string>): DnsName[] {
+  const out: DnsName[] = [];
+  const seen = new Map<string, string>();
+  const all = deviceInterfaces(dev);
+  r.list(get(m, 'dns_names'), dpath + '.dns_names').forEach((n, k) => {
+    const path = `${dpath}.dns_names[${k}]`;
+    const nm = r.map(n, path);
+    if (!nm) return;
+    r.keys(nm, SCHEMA.dnsName, path);
+    const name = r.reqStr(nm, 'name', path, 300);
+    const nameNode = get(nm, 'name') as YNode;
+    let ok = name !== undefined;
+    if (name !== undefined) {
+      const why = dnsNameProblem(name);
+      const key = dnsNameKey(name);
+      if (why) {
+        c.error(nameNode, path + '.name', `invalid DNS name "${name}": ${why}`);
+        ok = false;
+      } else if (seen.has(key)) {
+        c.error(nameNode, path + '.name', `DNS name "${name}" is listed twice on device "${dev.id}" (also as "${seen.get(key)}"); write it once and associate it with every interface it applies to`);
+        ok = false;
+      } else {
+        seen.set(key, name);
+        const prev = owner.get(key);
+        if (prev !== undefined) c.warn(nameNode, path + '.name', `DNS name "${name}" is also configured on device "${prev}"`);
+        else owner.set(key, dev.id);
+      }
+    }
+    const ifNode = get(nm, 'interfaces');
+    const ifaces: string[] = [];
+    const items = r.list(ifNode, path + '.interfaces', true);
+    items.forEach((x, j) => {
+      const ip = `${path}.interfaces[${j}]`;
+      const id = r.str(x, ip, 200);
+      if (id === undefined) return;
+      const target = all.find((i) => i.id === id);
+      if (!target) {
+        const names = all.map((i) => i.id);
+        c.error(x, ip, `device "${dev.id}" has no interface "${id}"` + (names.length ? suggest(id, names) : ' (the device declares no interfaces)'));
+      } else if (target.dhcp) {
+        c.error(x, ip, `interface "${id}" obtains its address by DHCP, so a DNS name can't be associated with it; associate the name with an interface whose addresses are configured, or set "dhcp: false" on "${id}"`);
+      } else if (ifaces.indexOf(id) >= 0) {
+        c.error(x, ip, `interface "${id}" is listed twice for this DNS name`);
+      } else {
+        ifaces.push(id);
+        return;
+      }
+      ok = false;
+    });
+    if (!items.length) {
+      const has = ifNode && !isNull(ifNode);
+      c.error(has ? (ifNode as YNode) : nm, path + '.interfaces', `DNS name "${name || '?'}" is associated with no interface — list one or more interfaces of "${dev.id}" under "interfaces:"`, has ? {} : { key: 'interfaces' });
+      ok = false;
+    }
+    if (ok && name !== undefined) out.push({ name, interfaces: ifaces, line: nm.line });
+  });
+  return out;
+}
+
+/** A relation's direction: bidirectional unless "direction: unidirectional" is written. Anything else is an error. */
+function relationDirection(r: Reader, c: Ctx, m: YMap, rpath: string): Direction {
+  const d = r.field(m, 'direction', rpath, 40);
+  if (d === undefined) return 'bidirectional';
+  if ((DIRECTIONS as readonly string[]).indexOf(d) >= 0) return d as Direction;
+  c.error(get(m, 'direction') as YNode, rpath + '.direction', `unknown direction "${d}": use "bidirectional" (the default) or "unidirectional" (from the first endpoint to the last)${suggest(d, DIRECTIONS)}`);
+  return 'bidirectional';
 }
 
 /** "a loopback", "a tunnel interface of eth0" … for messages. */

@@ -8,15 +8,17 @@
  *
  * Fields come in two kinds. Configured fields edit the one place in the YAML
  * file where a fact is stored. Derived fields (network members, the VLAN of
- * an interface, the trunk state of a link end) are computed from the current
+ * an interface, the ports carrying a VLAN interface's networks) are computed from the current
  * model on every render, are read-only, and are never written to the file.
  */
 import { DocMap, DocNode, ENTITY_KINDS, EntityKind, IfaceEntry, KEY_ORDER, ModelDoc, Path, SECTION, kindOfSection } from '../editor/document';
+import { BlockTarget } from '../editor/yaml-block';
 import { DialogOpts } from './dialogs';
-import { el } from './dom';
+import { el, icon, materialize } from './dom';
+import { headOf, objectHead } from './panels';
 import { sortedByName } from '../model/order';
-import { CATEGORIES, InterfaceKind, LINE_STYLES, LOGICAL_IFACE_TYPES, VLAN_MAX, VLAN_MIN, ifaceKey, interfaceKindLabel } from '../model/types';
-import { derivedVlanText, interfaceAddresses, interfaceVlanPorts, interfaceVlans, linkEndVlanText, networkMembers, vlanMismatch, vlanMismatchText } from '../model/derive';
+import { CATEGORIES, DIRECTIONS, Direction, InterfaceKind, LINE_STYLES, LOGICAL_IFACE_TYPES, VLAN_MAX, VLAN_MIN, ifaceKey, interfaceKindLabel } from '../model/types';
+import { derivedVlanText, interfaceAddresses, interfaceCarriedNetworks, interfaceNetworkPorts, interfaceVlans, networkMembers, networkMismatch, networkMismatchText } from '../model/derive';
 import { builtinProtocols, normalizeProtocol } from '../model/protocols';
 import { SelectionContext, contextState } from '../model/queries';
 import { DEVICE_TYPES, isDeviceType } from '../model/device-types';
@@ -54,25 +56,13 @@ const KIND_TITLE: { [k in EntityKind]: string } = {
   protocol: 'Protocols',
 };
 
-/** "10, 20 30-32" -> [10, 20, 30, 31, 32]; null if anything is not a VLAN ID or range. */
-export function parseVlanList(text: string): number[] | null {
-  const out: number[] = [];
-  for (const part of text.split(/[\s,;]+/).filter((x) => x)) {
-    const m = /^([0-9]{1,4})(?:-([0-9]{1,4}))?$/.exec(part);
-    if (!m) return null;
-    const from = Number(m[1]);
-    const to = m[2] === undefined ? from : Number(m[2]);
-    if (from < VLAN_MIN || to > VLAN_MAX || to < from) return null;
-    for (let v = from; v <= to; v++) if (out.indexOf(v) < 0) out.push(v);
-  }
-  return out.length ? out : null;
-}
-
 export class Editor {
   sel: EditorSel = null;
   /** open interface cards / collapsible sections, by path */
   private open = new Set<string>();
   private filter = '';
+  /** the outline's filter box is shown (opened with View → Filter outline…; it stays while a filter is set) */
+  filterOpen = false;
   /**
    * Sections of the model outline that are folded to their heading. Links
    * and protocols start folded: they are the longest lists and the ones
@@ -139,6 +129,24 @@ export class Editor {
     return entityRef(s.kind, ent.id);
   }
 
+  /**
+   * The selected object as a YAML location target: its kind and stable id
+   * (and the interface, when one is selected). Null for the model settings,
+   * or an entry without an id.
+   */
+  selectedTarget(): BlockTarget | null {
+    const s = this.sel;
+    if (!s || s.kind === 'document' || !this.getDoc()) return null;
+    const ent = this.doc.entities(s.kind)[s.index];
+    if (!ent || !ent.id) return null;
+    if (s.kind === 'device' && s.iface !== undefined) {
+      const want = J(s.iface);
+      const entry = this.doc.interfaceEntries(s.index).find((e) => J(e.path) === want);
+      return entry && entry.id ? { kind: s.kind, id: ent.id, iface: entry.id } : null;
+    }
+    return { kind: s.kind, id: ent.id };
+  }
+
   /** Open the card of an interface. */
   openIface(path: Path): void {
     this.open.add(J(path));
@@ -163,27 +171,38 @@ export class Editor {
       box.appendChild(this.e('p', { class: 'muted small' }, ['No model open. Use File → New model or Open model….']));
       return;
     }
-    const f = this.e('input', { type: 'search', class: 'outline-filter', placeholder: 'Filter…', 'data-t': 'outline-filter', value: this.filter, 'aria-label': 'Filter the model outline' });
-    (f as HTMLInputElement).value = this.filter;
-    box.appendChild(f);
-    const counts = this.issueCounts();
-    const kinds: EntityKind[] = ['device', 'link', 'network', 'relation', 'group', 'protocol'];
-    const allFolded = kinds.every((k) => this.collapsed.has(k));
-    box.appendChild(
-      this.e('div', { class: 'ol-tools' }, [
-        this.e('button', { type: 'button', class: 'mini', 'data-act': 'fold-all', 'data-kind': allFolded ? 'open' : 'close', title: allFolded ? 'Show the entries of every section' : 'Fold every section to its heading' }, [allFolded ? 'Expand all' : 'Collapse all']),
-      ]),
-    );
-    if (ctx) {
+    if (this.filterOpen || this.filter) {
+      const f = this.e('input', { type: 'search', class: 'outline-filter', placeholder: 'Filter the outline…', 'data-t': 'outline-filter', value: this.filter, 'aria-label': 'Filter the model outline' });
+      (f as HTMLInputElement).value = this.filter;
       box.appendChild(
-        this.e('p', { class: 'ol-ctx-hint small', 'data-related': String(ctx.related.size) }, [
-          this.e('span', { class: 'ctx-mark sel', 'aria-hidden': 'true' }, ['▸']),
-          ' selected · ',
-          this.e('span', { class: 'ctx-mark rel', 'aria-hidden': 'true' }, ['•']),
-          ` related (${ctx.related.size})`,
+        this.e('div', { class: 'ol-filter' + (this.filter ? ' active' : ''), role: 'search' }, [
+          f,
+          this.e('button', { type: 'button', class: 'mini', 'data-act': 'filter-close', 'aria-label': 'Clear and close the outline filter', title: 'Clear and close (Esc)' }, ['×']),
         ]),
       );
     }
+    const counts = this.issueCounts();
+    const kinds: EntityKind[] = ['device', 'link', 'network', 'relation', 'group', 'protocol'];
+    const allFolded = kinds.every((k) => this.collapsed.has(k));
+    // The selection hint shares the row of "Collapse all", which is always there: selecting,
+    // switching and clearing change its text only, never the position of anything below it.
+    box.appendChild(
+      this.e('div', { class: 'ol-tools' }, [
+        this.e(
+          'span',
+          ctx ? { class: 'ol-ctx-hint small', 'data-related': String(ctx.related.size), title: `▸ selected · • ${ctx.related.size} directly related` } : { class: 'ol-ctx-hint small', 'data-related': '' },
+          ctx
+            ? [
+                this.e('span', { class: 'ctx-mark sel', 'aria-hidden': 'true' }, ['▸']),
+                ' selected · ',
+                this.e('span', { class: 'ctx-mark rel', 'aria-hidden': 'true' }, ['•']),
+                ` related (${ctx.related.size})`,
+              ]
+            : [],
+        ),
+        this.e('button', { type: 'button', class: 'mini', 'data-act': 'fold-all', 'data-kind': allFolded ? 'open' : 'close', title: allFolded ? 'Show the entries of every section' : 'Fold every section to its heading' }, [allFolded ? 'Expand all' : 'Collapse all']),
+      ]),
+    );
     const q = this.filter.toLowerCase();
     for (const kind of kinds) {
       const ents = doc.entities(kind);
@@ -229,7 +248,8 @@ export class Editor {
         if (st === 'selected' || (!st && active)) attrs['aria-current'] = 'true';
         list.appendChild(
           this.e('button', attrs, [
-            st === 'selected' || st === 'related' ? this.e('span', { class: 'ctx-mark ' + (st === 'selected' ? 'sel' : 'rel'), 'aria-hidden': 'true' }, [st === 'selected' ? '▸' : '•']) : null,
+            // every entry keeps the slot of the mark, so its label never moves when a selection starts or ends
+            this.e('span', { class: 'ctx-mark' + (st === 'selected' ? ' sel' : st === 'related' ? ' rel' : ''), 'aria-hidden': 'true' }, [st === 'selected' ? '▸' : st === 'related' ? '•' : '']),
             this.e('span', { class: 'ol-label' }, [label]),
             st ? this.e('span', { class: 'sr-only' }, [st === 'selected' ? ' (selected)' : st === 'related' ? ' (directly related)' : ' (not related)']) : null,
             this.badge(c.e, c.w),
@@ -316,9 +336,10 @@ export class Editor {
   }
 
   private renderDocument(w: HTMLElement): void {
-    w.appendChild(this.header('model', this.doc.text(['title']) || 'Untitled model', null));
-    w.appendChild(this.issueBox([]));
-    w.appendChild(this.field('Model format version', this.e('span', { class: 'ro' }, [this.doc.text(['netatlas']) || '(missing)']), ['netatlas'], 'The version of the NetAtlas YAML model format, not of the application. The only supported value is 1.'));
+    const docIssues = this.doc.errors.concat(this.doc.warnings).filter((i) => !this.doc.issueEntity(i));
+    w.appendChild(this.header('model', this.doc.text(['title']) || 'Untitled model', null, docIssues));
+    if (docIssues.length) w.appendChild(this.issueBox(docIssues));
+    w.appendChild(this.field('Model format version', this.e('span', { class: 'ro' }, [this.doc.text(['netatlas']) || '(missing)']), ['netatlas'], 'The YAML format version (not the app version). Only 1 is supported.'));
     if (ENTITY_KINDS.every((k) => this.doc.entities(k).length === 0)) {
       w.appendChild(this.e('p', { class: 'hint-empty' }, ['This model is empty. Add a device, link, network, relation, group or protocol with “+ Add” in the Model outline; nothing is filled in for you.']));
     }
@@ -332,22 +353,44 @@ export class Editor {
     );
   }
 
-  private header(kind: string, title: string, actions: HTMLElement | null): HTMLElement {
-    return this.e('div', { class: 'insp-head' }, [this.e('span', { class: 'badge' }, [kind]), this.e('h3', {}, [title]), actions]);
+  /**
+   * The header of the edit panel: one row with the object's type, its
+   * validation state and its actions, and the object's name below it at full
+   * width (long names wrap; nothing is cut off). The row wraps in a narrow
+   * panel, and the action buttons drop their text, keeping icon, accessible
+   * name and tooltip.
+   */
+  private header(kind: string, title: string, actions: HTMLElement | null, issues: Issue[], id?: string): HTMLElement {
+    const errors = issues.filter((i) => i.severity === 'error').length;
+    // the same header as in Details (panels.ts), with the actions added to its first row
+    const head = materialize(objectHead(kind, title, id, { errors, warnings: issues.length - errors }), this.d) as HTMLElement;
+    if (actions) (head.querySelector('.ih-row') as HTMLElement).appendChild(actions);
+    return head;
+  }
+
+  /** How the header names an entity: as Details does when the model has it, else from the file. */
+  private entityHead(kind: EntityKind, index: number): { kind: string; title: string; id?: string } {
+    const id = this.doc.entities(kind)[index]?.id;
+    const model = this.doc.result.model;
+    const fromModel = model && id ? headOf(model, entityRef(kind, id)) : null;
+    return fromModel || { kind, title: this.entityLabel(kind, index) };
   }
 
   private entityActions(kind: EntityKind, index: number): HTMLElement {
-    return this.e('div', { class: 'insp-actions' }, [
-      this.e('button', { type: 'button', class: 'mini', 'data-act': 'dup-entity', 'data-kind': kind, 'data-index': String(index) }, ['Duplicate']),
-      this.e('button', { type: 'button', class: 'mini danger', 'data-act': 'del-entity', 'data-kind': kind, 'data-index': String(index) }, ['Delete']),
+    const id = this.doc.entities(kind)[index]?.id || '(no id)';
+    const btn = (act: string, name: string, label: string, tip: string, extra: string): HTMLElement =>
+      this.e('button', { type: 'button', class: 'icon-btn' + extra, 'data-act': act, 'data-kind': kind, 'data-index': String(index), 'aria-label': `${label} ${kind} ${id}`, title: tip }, [
+        icon(this.d, name) as unknown as Node,
+        this.e('span', { class: 'ib-label', 'aria-hidden': 'true' }, [label]),
+      ]);
+    return this.e('div', { class: 'insp-actions', role: 'group', 'aria-label': `Actions for ${kind} ${id}` }, [
+      btn('dup-entity', 'duplicate', 'Duplicate', `Duplicate this ${kind}: add a copy with a new id`, ''),
+      btn('del-entity', 'delete', 'Delete', `Delete this ${kind} (asks first; can be undone)`, ' danger'),
     ]);
   }
 
-  /** All issues of the entity, summarized at the top. */
-  private issueBox(issues: Issue[]): HTMLElement {
-    const doc = this.doc;
-    const list = issues.length || this.sel?.kind !== 'document' ? issues : doc.errors.concat(doc.warnings).filter((i) => !doc.issueEntity(i));
-    if (!list.length) return this.e('div', { class: 'issue-ok' }, ['✓ No problems']);
+  /** The issues of the object, listed under the header (which counts them). */
+  private issueBox(list: Issue[]): HTMLElement {
     const ul = this.e('ul', { class: 'issue-list' });
     for (const is of list.slice(0, 30)) ul.appendChild(this.e('li', { class: is.severity }, [this.e('b', {}, [is.severity === 'error' ? 'Error: ' : 'Warning: ']), is.message]));
     if (list.length > 30) ul.appendChild(this.e('li', {}, [`… and ${list.length - 30} more`]));
@@ -358,8 +401,10 @@ export class Editor {
     const doc = this.doc;
     const base: Path = [SECTION[kind], index];
     const node = doc.get(base);
-    w.appendChild(this.header(kind, this.entityLabel(kind, index), this.entityActions(kind, index)));
-    w.appendChild(this.issueBox(doc.issuesAt(base)));
+    const issues = doc.issuesAt(base);
+    const head = this.entityHead(kind, index);
+    w.appendChild(this.header(head.kind, head.title, this.entityActions(kind, index), issues, head.id));
+    if (issues.length) w.appendChild(this.issueBox(issues));
     if (!node || node.kind !== 'map') {
       w.appendChild(this.e('p', { class: 'muted' }, ['This entry is not a mapping; edit it in the YAML tab or delete it.']));
       if (node) w.appendChild(this.generic(base, node, 0));
@@ -371,38 +416,37 @@ export class Editor {
     };
     add(this.idField(base, kind));
     if (kind === 'device') {
-      add(this.textField(base.concat('label'), 'Label', o, 'textarea', undefined, 'Shown in full in the diagram; long labels wrap. Line breaks typed here are kept.'));
+      add(this.textField(base.concat('label'), 'Label', o, 'textarea', undefined, 'Line breaks are kept.'));
       add(this.typeField(base.concat('type'), o));
       add(this.refField(base.concat('group'), 'Group / location', o, this.ids('group')));
-      add(this.intField(base.concat('tier'), 'Tier (0–9)', o, 'Row in the physical view; 0 = top. Leave empty for automatic.'));
+      add(this.intField(base.concat('tier'), 'Tier (0–9)', o, 'Row in the physical view (0 = top). Empty: automatic.'));
       add(this.textField(base.concat('description'), 'Description', o, 'textarea'));
       this.renderInterfaces(w, index);
     } else if (kind === 'link') {
       add(this.endpointField(base.concat('a'), 'End A', o, false));
-      add(this.endVlansField(base.concat('a'), 'A'));
+      add(this.endNetworksField(base.concat('a'), 'A'));
       add(this.endpointField(base.concat('b'), 'End B', o, false));
-      add(this.endVlansField(base.concat('b'), 'B'));
-      add(this.vlanMismatchNote(index));
-      add(this.textField(base.concat('medium'), 'Medium', o, 'text', MEDIA, 'The medium of the physical connection. It is configured here only; ports have no medium of their own.'));
-      add(this.textField(base.concat('speed'), 'Speed', o, 'text', ['100M', '1G', '10G', '25G', '40G', '100G', '400G'], 'The speed of the physical connection. It is configured here only; ports have no speed of their own.'));
+      add(this.endNetworksField(base.concat('b'), 'B'));
+      add(this.networkMismatchNote(index));
+      add(this.textField(base.concat('medium'), 'Medium', o, 'text', MEDIA, 'Set on the link only, not on ports.'));
+      add(this.textField(base.concat('speed'), 'Speed', o, 'text', ['100M', '1G', '10G', '25G', '40G', '100G', '400G'], 'Set on the link only, not on ports.'));
       add(this.textField(base.concat('label'), 'Label', o));
       add(this.textField(base.concat('cable'), 'Cable / circuit id', o));
       add(this.textField(base.concat('description'), 'Description', o, 'textarea'));
     } else if (kind === 'network') {
       add(this.textField(base.concat('label'), 'Label', o));
-      add(this.listField(base.concat('cidr'), 'Prefixes (CIDR)', o, '192.0.2.0/24 or 2001:db8::/64', 'An IP network is defined by its prefixes. Every device with an address inside one of them is a member.'));
-      add(this.intField(base.concat('vlan'), `VLAN ID (${VLAN_MIN}–${VLAN_MAX})`, o, 'The VLAN this IP network lives in. Interfaces with an address in the network show it as their VLAN. (VLANs permitted on a cable are set on the link’s ends.)'));
+      add(this.cidrField(base.concat('cidr'), o));
+      add(this.intField(base.concat('vlan'), `VLAN ID (${VLAN_MIN}–${VLAN_MAX})`, o, 'Interfaces addressed in this network show it as their VLAN.'));
       add(this.membersField(index));
       add(this.textField(base.concat('description'), 'Description', o, 'textarea'));
     } else if (kind === 'relation') {
       const protos = Array.from(builtinProtocols().keys()).concat(this.ids('protocol'));
-      add(this.textField(base.concat('protocol'), 'Protocol', o, 'text', protos, 'Required. Any name. Built-in protocols get a default category and colour; define new ones under Protocols.', 'Select or type a protocol'));
+      add(this.textField(base.concat('protocol'), 'Protocol', o, 'text', protos, 'Required. Built-in names get a default style; define others under Protocols.', 'Select or type a protocol'));
       add(this.enumField(base.concat('category'), 'Category', o, CATEGORIES as unknown as string[], '(from protocol)'));
       add(this.textField(base.concat('label'), 'Label', o));
       add(this.endpointList(base.concat('endpoints'), 'Endpoints', o));
       add(this.overField(base.concat('over'), 'Carried over (underlay)', o, index));
-      add(this.refField(base.concat('network'), 'Network', o, this.ids('network')));
-      add(this.boolField(base.concat('directed'), 'Directed (first → last endpoint)', o));
+      add(this.directionField(base.concat('direction')));
       add(this.textField(base.concat('description'), 'Description', o, 'textarea'));
     } else if (kind === 'group') {
       add(this.textField(base.concat('label'), 'Label', o));
@@ -454,7 +498,7 @@ export class Editor {
           this.e('button', { type: 'button', class: 'mini', 'data-act': 'add-range', 'data-index': String(devIndex), title: 'Add a numbered range of physical interfaces, e.g. ge 1/1 to ge 1/24' }, ['+ Port Range']),
         ]),
       ]),
-      phys.length ? null : this.e('p', { class: 'muted small' }, ['The ports of the device. Only they can be cabled.']),
+      phys.length ? null : this.e('p', { class: 'muted small' }, ['Ports: the only interfaces that can be cabled.']),
       notList('interfaces'),
     ]);
     for (const e of phys) is.appendChild(this.ifaceCard(devIndex, e));
@@ -464,11 +508,213 @@ export class Editor {
     const add = (type: string, label: string): HTMLElement => this.e('button', { type: 'button', class: 'mini', 'data-act': 'add-logical', 'data-index': String(devIndex), 'data-kind': type }, [label]);
     const ls = this.e('section', { class: 'sub', 'data-list': 'logical' }, [
       this.e('div', { class: 'sub-head' }, [this.e('h4', {}, [`Logical interfaces (${logical.length})`]), this.e('span', { class: 'ctl row' }, [add('loopback', '+ Loopback'), add('virtual', '+ Virtual'), add('tunnel', '+ Tunnel')])]),
-      logical.length ? null : this.e('p', { class: 'muted small' }, ['Loopbacks, virtual interfaces (a VLAN interface, a bond, a subinterface …) and tunnel interfaces. Not ports, never cabled; usable as relation endpoints.']),
+      logical.length ? null : this.e('p', { class: 'muted small' }, ['Loopbacks, VLAN interfaces, bonds, subinterfaces, tunnels. Never cabled.']),
       notList('logical_interfaces'),
     ]);
     for (const e of logical) ls.appendChild(this.ifaceCard(devIndex, e));
     w.appendChild(ls);
+    w.appendChild(this.dnsSection(devIndex));
+  }
+
+  // ------------------------------------------------------------ DNS names
+
+  /** How an interface is shown in DNS-name selectors: its name (label), with the id it is stored as. */
+  private ifaceName(devIndex: number, id: string): string {
+    const e = this.doc.interfaceEntries(devIndex).find((x) => x.id === id);
+    const label = e ? this.doc.text(e.path.concat('label')) : undefined;
+    return label && label !== id ? `${label} (${id})` : id;
+  }
+
+  /** Manually configured addresses of an interface of a device, as written. */
+  private ifaceAddrs(devIndex: number, id: string): string[] {
+    const e = this.doc.interfaceEntries(devIndex).find((x) => x.id === id);
+    return e ? this.listTexts(e.path.concat('ip')) : [];
+  }
+
+  /** The note for interfaces with several addresses: the name belongs to the interface, not to one address. */
+  private multiAddrNote(devIndex: number, ids: string[]): HTMLElement | null {
+    const multi = ids.filter((id) => this.ifaceAddrs(devIndex, id).length > 1);
+    if (!multi.length) return null;
+    return this.e('div', { class: 'help dns-multi', 'data-dns-multi': multi.join(',') }, [
+      `${multi.map((id) => `${id} has ${this.ifaceAddrs(devIndex, id).length} addresses`).join('; ')}: the name belongs to the interface, not to one address.`,
+    ]);
+  }
+
+  /**
+   * The DNS names of a device, after its interfaces. Each name is entered
+   * once and associated with one or more interfaces of the device (stored by
+   * interface id). Interfaces with DHCP on can't be selected. Only the
+   * association is stored: no DNS record is created or derived.
+   */
+  private dnsSection(devIndex: number): HTMLElement {
+    const doc = this.doc;
+    const entries = sortedByName(doc.dnsEntries(devIndex), (e) => e.name || '');
+    const listPath: Path = ['devices', devIndex, 'dns_names'];
+    const n = doc.get(listPath);
+    const sec = this.e('section', { class: 'sub', 'data-list': 'dns-names' }, [
+      this.e('div', { class: 'sub-head' }, [
+        this.e('h4', {}, [`DNS names (${entries.length})`]),
+        this.e('span', { class: 'ctl row' }, [this.e('button', { type: 'button', class: 'mini', 'data-act': 'add-dns', 'data-index': String(devIndex), title: 'Add a DNS name and associate it with interfaces of this device' }, ['+ DNS name'])]),
+      ]),
+      entries.length ? null : this.e('p', { class: 'muted small' }, ['Names of this device, each tied to one or more of its interfaces. No DNS record is created.']),
+      n && n.kind !== 'seq' && !(n.kind === 'scalar' && n.value === null) ? this.e('p', { class: 'field-err' }, ['"dns_names" is not a list; fix it in the YAML tab.']) : null,
+    ]);
+    const eligible = sortedByName(doc.dnsEligible(devIndex), (e) => e.id as string).map((e) => e.id as string);
+    for (const e of entries) {
+      const k = e.path[3] as number;
+      const iss = doc.issuesAt(e.path);
+      const box = this.e('div', { class: 'dns-entry' + (iss.some((i) => i.severity === 'error') ? ' invalid' : ''), 'data-dns': e.name || '' });
+      const node = doc.get(e.path);
+      if (!node || node.kind !== 'map') {
+        box.appendChild(this.e('div', { class: 'field-err' }, ['This entry is not a mapping with "name:" and "interfaces:"; fix it in the YAML tab or delete it.']));
+        box.appendChild(this.e('button', { type: 'button', class: 'mini danger', 'data-act': 'del-dns', 'data-index': String(devIndex), 'data-k': String(k) }, ['Delete']));
+        sec.appendChild(box);
+        continue;
+      }
+      const nameInput = this.input(e.path.concat('name'), 'text', e.name || '', { 'data-o': 'dnsName', placeholder: 'www.example.com', 'aria-label': 'DNS name' });
+      box.appendChild(
+        this.e('div', { class: 'list-row dns-name-row' }, [
+          nameInput,
+          this.e('button', { type: 'button', class: 'mini danger', 'data-act': 'del-dns', 'data-index': String(devIndex), 'data-k': String(k), title: `Delete the DNS name ${e.name || ''}` }, ['×']),
+        ]),
+      );
+      for (const is of doc.issuesAt(e.path.concat('name'))) box.appendChild(this.e('div', { class: is.severity === 'error' ? 'field-err' : 'field-warn' }, [is.message]));
+      const ip = e.path.concat('interfaces');
+      const ifn = doc.get(ip);
+      const chips = this.e('div', { class: 'vlan-chips dns-ifaces' });
+      e.interfaces.forEach((id, j) => {
+        const at = ifn && ifn.kind === 'seq' ? ip.concat(j) : ip;
+        const last = e.interfaces.length === 1;
+        chips.appendChild(
+          this.e('span', { class: 'ref-chip' + (eligible.indexOf(id) < 0 ? ' invalid' : ''), 'data-dns-iface': id }, [
+            this.ifaceName(devIndex, id),
+            last
+              ? null
+              : this.e('button', { type: 'button', class: 'mini', 'data-act': 'del-item', 'data-p': J(at), title: `Remove the association with ${id}` }, ['×']),
+          ]),
+        );
+      });
+      box.appendChild(chips);
+      const pick = this.e('select', { 'data-p': J(ip), 'data-t': 'dns-iface-append', 'aria-label': `Associate ${e.name || 'this name'} with another interface` }) as HTMLSelectElement;
+      const more = eligible.filter((id) => e.interfaces.indexOf(id) < 0);
+      pick.appendChild(this.e('option', { value: '' }, [more.length ? '+ associate an interface…' : '(no other interface with manual addressing)']));
+      for (const id of more) pick.appendChild(this.e('option', { value: id }, [this.ifaceName(devIndex, id)]));
+      box.appendChild(pick);
+      for (const is of doc.issuesAt(ip)) box.appendChild(this.e('div', { class: is.severity === 'error' ? 'field-err' : 'field-warn' }, [is.message]));
+      const note = this.multiAddrNote(devIndex, e.interfaces);
+      if (note) box.appendChild(note);
+      sec.appendChild(box);
+    }
+    if (entries.length) {
+      sec.appendChild(
+        this.e('p', { class: 'muted small' }, ['Tied to whole interfaces, not addresses. No DNS record is created.']),
+      );
+    }
+    return sec;
+  }
+
+  /**
+   * "+ DNS name": ask for the name and the interfaces it belongs to, and
+   * create the entry only when both are valid. Cancel changes nothing.
+   */
+  private async addDnsName(devIndex: number): Promise<void> {
+    const doc = this.doc;
+    const nameIn = this.e('input', { type: 'text', id: 'dns-name', spellcheck: 'false', autocomplete: 'off', placeholder: 'www.example.com' }) as HTMLInputElement;
+    const eligible = sortedByName(doc.dnsEligible(devIndex), (e) => e.id as string).map((e) => e.id as string);
+    const dhcp = sortedByName(doc.interfaceEntries(devIndex).filter((e) => !!e.id && doc.dhcpOn(e.path)), (e) => e.id as string).map((e) => e.id as string);
+    const boxes = eligible.map((id) => this.e('input', { type: 'checkbox', value: id }) as HTMLInputElement);
+    const list = this.e('div', { id: 'dns-ifaces', class: 'dns-pick' }, eligible.length ? eligible.map((id, k) => this.e('label', { class: 'dns-pick-row' }, [boxes[k], ' ' + this.ifaceName(devIndex, id)])) : [this.e('span', { class: 'muted' }, ['This device has no interface with manual addressing.'])]);
+    const preview = this.e('div', { id: 'dns-preview', class: 'range-preview', role: 'status', 'aria-live': 'polite' });
+    let create: HTMLButtonElement | null = null;
+    const chosen = (): string[] => boxes.filter((b) => b.checked).map((b) => b.value);
+    const refresh = (): void => {
+      while (preview.firstChild) preview.removeChild(preview.firstChild);
+      const err = doc.dnsNameError(devIndex, nameIn.value.trim(), chosen());
+      const untouched = !nameIn.value.trim() && !chosen().length;
+      preview.setAttribute('data-state', err ? (untouched ? 'empty' : 'error') : 'ok');
+      if (err) preview.appendChild(this.e('div', { class: untouched ? 'muted' : 'field-err' }, [untouched ? 'Enter the name once and select every interface it belongs to.' : err]));
+      else preview.appendChild(this.e('div', {}, [`“${nameIn.value.trim()}” will be associated with ${chosen().map((id) => this.ifaceName(devIndex, id)).join(', ')}.`]));
+      const note = this.multiAddrNote(devIndex, chosen());
+      if (note) preview.appendChild(note);
+      if (create) create.disabled = !!err;
+    };
+    const answer = await this.host.dialog({
+      title: 'Add a DNS name',
+      body: [
+        this.e('div', { class: 'range-form' }, [this.e('label', { class: 'dl-label' }, ['Name ', nameIn])]),
+        this.e('div', { class: 'dl-label' }, ['Interfaces']),
+        list,
+        dhcp.length ? this.e('p', { class: 'muted small', 'data-dns-excluded': dhcp.join(',') }, [`Not offered because DHCP is on: ${dhcp.join(', ')}.`]) : null,
+        preview,
+        this.e('p', { class: 'muted small' }, ['No DNS record is created. Undo with Ctrl+Z.']),
+      ].filter((x): x is HTMLElement => !!x),
+      buttons: [
+        { label: 'Cancel', value: 'cancel' },
+        { label: 'Add DNS name', value: 'create', kind: 'primary' },
+      ],
+      ready: (dialog) => {
+        create = dialog.querySelector('[data-value="create"]') as HTMLButtonElement | null;
+        nameIn.addEventListener('input', refresh);
+        for (const b of boxes) b.addEventListener('change', refresh);
+        nameIn.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter' && create && !create.disabled) {
+            e.preventDefault();
+            create.click();
+          }
+        });
+        refresh();
+      },
+    });
+    if (answer !== 'create') return;
+    const name = nameIn.value.trim();
+    if (doc.addDnsName(devIndex, name, chosen()) < 0) {
+      this.host.toast(doc.dnsNameError(devIndex, name, chosen()) || 'The DNS name was not added.');
+      return;
+    }
+    this.host.changed(`DNS name “${name}” added.`);
+  }
+
+  /**
+   * The DHCP switch of an interface. Turning it on removes the manual
+   * addresses and the DNS-name associations of the interface, so when there
+   * are any, it asks first and lists them; Cancel changes nothing.
+   */
+  private async toggleDhcp(p: Path): Promise<void> {
+    const doc = this.doc;
+    const on = !doc.dhcpOn(p);
+    const ifid = doc.text(p.concat('id')) || scalarText(doc.get(p) as DocNode) || '?';
+    if (on) {
+      const imp = doc.dhcpImpact(p);
+      if (imp.addresses.length || imp.dns.length) {
+        const body: Array<Node | string> = [];
+        if (imp.addresses.length) {
+          body.push(this.e('p', {}, [`An interface that obtains its address by DHCP has no manually configured addresses. ${imp.addresses.length === 1 ? 'This address is' : `These ${imp.addresses.length} addresses are`} deleted:`]));
+          body.push(this.e('ul', { class: 'dhcp-loss', 'data-loss': 'addresses' }, imp.addresses.map((a) => this.e('li', { class: 'ro' }, [a]))));
+        }
+        if (imp.dns.length) {
+          body.push(this.e('p', {}, ['A DNS name can only be associated with an interface whose addresses are configured. These associations are removed:']));
+          body.push(
+            this.e(
+              'ul',
+              { class: 'dhcp-loss', 'data-loss': 'dns' },
+              imp.dns.map((x) => this.e('li', {}, [this.e('span', { class: 'ro' }, [x.name]), x.removed ? ' — it has no other interface, so the name is deleted too' : ''])),
+            ),
+          );
+        }
+        body.push(this.e('p', { class: 'muted small' }, ['Turning DHCP off later does not bring them back. You can undo this with Ctrl+Z.']));
+        const a = await this.host.dialog({
+          title: `Turn DHCP on for “${ifid}”?`,
+          body,
+          buttons: [
+            { label: 'Cancel', value: 'cancel' },
+            { label: 'Delete and turn DHCP on', value: 'dhcp', kind: 'danger' },
+          ],
+        });
+        if (a !== 'dhcp') return;
+      }
+    }
+    doc.setDhcp(p, on);
+    this.host.changed(on ? `DHCP on for ${ifid}: it has no manually configured addresses.` : `DHCP off for ${ifid}: addresses can be entered again.`);
   }
 
   /**
@@ -545,6 +791,7 @@ export class Editor {
     this.sel = null;
     this.open.clear();
     this.filter = '';
+    this.filterOpen = false;
     this.collapsed = new Set<EntityKind>(['link', 'protocol']);
     this.sourceDraft = null;
     this.sourceError = null;
@@ -566,7 +813,8 @@ export class Editor {
     const iss = doc.issuesAt(p);
     const errs = iss.filter((i) => i.severity === 'error').length;
     const addrs = this.listTexts(p.concat('ip'));
-    const summary = [id || '(no id)', o === 'logical' && !entry.type ? '(no type)' : interfaceKindLabel(kind), doc.text(p.concat('label')), addrs.slice(0, 2).join(', ') + (addrs.length > 2 ? ' …' : '')].filter((x) => !!x).join(' · ');
+    const dhcp = doc.dhcpOn(p);
+    const summary = [id || '(no id)', o === 'logical' && !entry.type ? '(no type)' : interfaceKindLabel(kind), doc.text(p.concat('label')), dhcp && !addrs.length ? 'DHCP' : addrs.slice(0, 2).join(', ') + (addrs.length > 2 ? ' …' : '')].filter((x) => !!x).join(' · ');
     const card = this.e('details', { class: 'card' + (errs ? ' has-err' : ''), 'data-card': J(p), 'data-iface': id || '', 'data-kind': kind });
     const selected = !!this.sel && !!this.sel.iface && J(this.sel.iface) === J(p);
     if (this.open.has(J(p)) || selected) card.setAttribute('open', '');
@@ -580,7 +828,7 @@ export class Editor {
     card.appendChild(this.ifIdField(p, loop ? 'lo0' : kind === 'tunnel' ? 'tun0' : kind === 'virtual' ? 'Vlan10, bond0' : 'ge-0/0/1'));
     card.appendChild(this.ifTypeField(p, entry));
     card.appendChild(this.textField(p.concat('label'), loop ? 'Name' : 'Label', o, 'text', undefined, loop ? 'Descriptive name, e.g. “Router ID” or “BGP source”.' : undefined));
-    card.appendChild(this.listField(p.concat('ip'), loop ? 'Addresses (IPv4 / IPv6 with prefix)' : 'Addresses', o, loop ? '10.255.0.1/32 or 2001:db8::1/128' : '192.0.2.1/24'));
+    card.appendChild(this.addressField(p, loop, o));
     card.appendChild(this.ifaceDerivedField(devIndex, p));
     if (o === 'logical') {
       // Each association belongs to one type. A field of another type is only shown while the file still has it, so it can be removed.
@@ -590,15 +838,15 @@ export class Editor {
       const vlans = this.cardVlans(devIndex, p);
       if (has('members') || (kind === 'virtual' && !has('vlan') && !vlans.length)) card.appendChild(this.membersPortsField(devIndex, p));
       if (has('vlan') || (kind === 'virtual' && (!has('members') || vlans.length > 0))) {
-        card.appendChild(this.intField(p.concat('vlan'), `VLAN ID (${VLAN_MIN}–${VLAN_MAX})`, o, 'Only for a VLAN interface: the VLAN it belongs to. Leave it empty when an address above lies in a network that defines the VLAN; it is then taken from there.'));
-        if (vlans.length) card.appendChild(this.vlanPortsField(devIndex, p));
+        card.appendChild(this.intField(p.concat('vlan'), `VLAN ID (${VLAN_MIN}–${VLAN_MAX})`, o, 'VLAN interfaces only. Empty: taken from the network of an address above.'));
       }
+      if (kind === 'virtual' && this.cardNetworks(devIndex, p).length) card.appendChild(this.networkPortsField(devIndex, p));
       if (kind === 'tunnel' || has('source')) {
         const others = sortedByName(doc.interfaceEntries(devIndex).filter((e) => !!e.id && e.id !== id), (e) => e.id as string).map((e) => e.id as string);
-        card.appendChild(this.textField(p.concat('source'), 'Tunnel source', o, 'text', others, 'Where the tunnel is sourced from: an interface of this device (physical or logical, e.g. a loopback) or an IP address.', 'Interface or address'));
+        card.appendChild(this.textField(p.concat('source'), 'Tunnel source', o, 'text', others, 'An interface of this device (e.g. a loopback) or an IP address.', 'Interface or address'));
       }
       if (kind === 'tunnel' || has('destination')) {
-        card.appendChild(this.textField(p.concat('destination'), 'Tunnel destination', o, 'text', this.deviceIds().filter((x) => x !== doc.text(['devices', devIndex, 'id'])), 'The remote end: an IP address, or a device or device:interface of this model.', 'Address, device or device:interface'));
+        card.appendChild(this.textField(p.concat('destination'), 'Tunnel destination', o, 'text', this.deviceIds().filter((x) => x !== doc.text(['devices', devIndex, 'id'])), 'An IP address, a device, or device:interface.', 'Address, device or device:interface'));
       }
     }
     card.appendChild(this.textField(p.concat('vrf'), 'VRF', o, 'text', undefined, 'The VRF this interface is assigned to, if any.'));
@@ -612,7 +860,7 @@ export class Editor {
         for (const r of refs) {
           // a logical interface (member port, tunnel source or destination) is named as device:interface
           const sk = kindOfSection(String(r[0]));
-          const name = r[0] === 'devices' ? `${doc.text([r[0], r[1], 'id']) || '?'}:${doc.text(r.slice(0, 4).concat('id')) || '?'}` : sk ? doc.text([r[0], r[1], 'id']) || sk : '?';
+          const name = r[0] === 'devices' && r[2] === 'dns_names' ? `DNS name ${doc.text(r.slice(0, 4).concat('name')) || '?'}` : r[0] === 'devices' ? `${doc.text([r[0], r[1], 'id']) || '?'}:${doc.text(r.slice(0, 4).concat('id')) || '?'}` : sk ? doc.text([r[0], r[1], 'id']) || sk : '?';
           if (names.indexOf(name) < 0) names.push(name);
         }
         card.appendChild(this.e('div', { class: 'used-by muted small' }, ['Used by: ' + names.join(', ')]));
@@ -624,6 +872,47 @@ export class Editor {
   }
 
   /**
+   * The addresses of an interface, with the DHCP switch next to them. While
+   * DHCP is on, manual addresses can't be entered (a file that has both shows
+   * them, with the error, so they can be removed). A loopback can't use
+   * DHCP, so it has no switch, unless its file says "dhcp: true": then the
+   * switch is shown so that it can be turned off.
+   */
+  private addressField(p: Path, loop: boolean, o: string): HTMLElement {
+    const doc = this.doc;
+    const on = doc.dhcpOn(p);
+    const label = loop ? 'Addresses (IPv4 / IPv6 with prefix)' : 'Addresses';
+    const example = loop ? '10.255.0.1/32 or 2001:db8::1/128' : '192.0.2.1/24';
+    if (!on && !doc.dhcpAllowed(p)) return this.listField(p.concat('ip'), label, o, example);
+    const addrs = this.listTexts(p.concat('ip'));
+    const locked = on && !addrs.length;
+    const sw = this.e(
+      'button',
+      {
+        type: 'button',
+        class: 'mini dhcp-switch' + (on ? ' on' : ''),
+        role: 'switch',
+        'aria-checked': on ? 'true' : 'false',
+        'data-act': 'dhcp',
+        'data-p': J(p),
+        title: on ? 'Turn DHCP off: addresses can then be configured manually' : 'Turn DHCP on: the interface obtains its address by DHCP (its manual addresses are deleted after a confirmation)',
+      },
+      ['DHCP ', this.e('span', { class: 'dhcp-state' }, [on ? 'on' : 'off'])],
+    );
+    const help = !on
+      ? undefined
+      : loop
+        ? 'A loopback cannot obtain its address by DHCP. Turn DHCP off and enter its address.'
+        : 'Obtained by DHCP: unknown here, so no network or VLAN.';
+    const f = this.listField(p.concat('ip'), label, o, example, help, locked);
+    f.setAttribute('data-dhcp', on ? 'on' : 'off');
+    // the switch sits beside the label (see .field[data-dhcp] in the styles)
+    f.insertBefore(sw, f.firstChild ? f.firstChild.nextSibling : null);
+    for (const is of doc.issuesAt(p.concat('dhcp'))) f.appendChild(this.e('div', { class: is.severity === 'error' ? 'field-err' : 'field-warn' }, [is.message]));
+    return f;
+  }
+
+  /**
    * The type of an interface. A physical interface has none to choose
    * (read-only text); a logical interface is a loopback, virtual or tunnel.
    */
@@ -632,7 +921,7 @@ export class Editor {
       return this.e('div', { class: 'field', 'data-iface-type': 'physical' }, [
         this.e('label', {}, ['Type']),
         this.e('span', { class: 'ro' }, ['Physical']),
-        this.e('div', { class: 'help' }, ['A port of the device. Only physical interfaces can be cabled.']),
+        this.e('div', { class: 'help' }, ['A port: the only kind of interface that can be cabled.']),
       ]);
     }
     const tp = p.concat('type');
@@ -645,7 +934,7 @@ export class Editor {
     } else if (!valid) s.appendChild(this.e('option', { value: cur }, [cur + ' (not a valid type)']));
     for (const t of LOGICAL_IFACE_TYPES) s.appendChild(this.e('option', { value: t }, [interfaceKindLabel(t)]));
     s.value = cur;
-    return this.field('Type', s, tp, 'Loopback: an address of the device itself. Virtual: any other interface without a port of its own (VLAN interface, bond, subinterface, VTEP …). Tunnel: a tunnel endpoint.');
+    return this.field('Type', s, tp, 'Loopback: own address. Virtual: VLAN interface, bond, subinterface … Tunnel: tunnel end.');
   }
 
   /** Member ports of an aggregate (bond, LAG): physical interfaces of this device, picked from a list. */
@@ -670,7 +959,7 @@ export class Editor {
     s.appendChild(this.e('option', { value: '' }, [ports.length ? '+ add a physical interface…' : '(the device has no physical interfaces)']));
     for (const id of ports.filter((x) => cur.indexOf(x) < 0)) s.appendChild(this.e('option', { value: id }, [id]));
     box.appendChild(s);
-    return this.field('Member ports', box, mp, 'Only for a bond or aggregate: the physical interfaces of this device that belong to it. Leave empty for any other virtual interface.');
+    return this.field('Member ports', box, mp, 'Bonds / aggregates only: their physical member ports.');
   }
 
   /** The VLANs of the interface at `p` in the current model (written on it or derived from its addresses); none while it has errors. */
@@ -682,28 +971,37 @@ export class Editor {
     return model && inf ? interfaceVlans(model, inf) : [];
   }
 
-  /** The ports carrying the VLAN of a VLAN interface: derived from the link ends, never entered. */
-  private vlanPortsField(devIndex: number, p: Path): HTMLElement {
+  /** The networks of the virtual interface at `p` (from its addresses, or of its VLAN); none while it has errors. */
+  private cardNetworks(devIndex: number, p: Path): string[] {
+    const model = this.doc.result.model;
+    const dev = this.doc.text(['devices', devIndex, 'id']);
+    const id = this.doc.text(p.concat('id'));
+    const inf = model && dev && id ? model.index.interfaces.get(ifaceKey(dev, id)) : undefined;
+    return model && inf ? interfaceCarriedNetworks(model, inf) : [];
+  }
+
+  /** The ports carrying the networks of a virtual interface: derived from the link ends, never entered. */
+  private networkPortsField(devIndex: number, p: Path): HTMLElement {
     const doc = this.doc;
     const model = doc.result.model;
     const dev = doc.text(['devices', devIndex, 'id']);
     const id = doc.text(p.concat('id'));
-    const help = 'The physical interfaces of this device whose link permits the VLAN at their end. To change it, edit the VLANs on the link ends.';
-    const label = 'Ports carrying VLAN';
+    const help = 'Ports whose link end carries these networks (set on the links).';
+    const label = 'Ports carrying its networks';
     const inf = model && dev && id ? model.index.interfaces.get(ifaceKey(dev, id)) : undefined;
-    if (!model || !inf) return this.derivedField(label, 'vlan-ports', [this.e('span', { class: 'muted' }, ['Not available while this interface has errors.'])], help);
-    const vlans = interfaceVlans(model, inf);
-    const ports = sortedByName(interfaceVlanPorts(model, inf), (x) => x.iface);
-    const from = inf.vlan === undefined ? ' (from the network of its address)' : '';
+    if (!model || !inf) return this.derivedField(label, 'net-ports', [this.e('span', { class: 'muted' }, ['Not available while this interface has errors.'])], help);
+    const nets = interfaceCarriedNetworks(model, inf);
+    const name = (n: string): string => (model.index.networks.get(n) || { label: n }).label;
+    const ports = sortedByName(interfaceNetworkPorts(model, inf), (x) => x.iface);
     const rows = ports.map((x) =>
       this.e('li', { 'data-port': x.iface }, [
         this.e('button', { type: 'button', class: 'ref', 'data-goto': `iface:${inf.device}:${x.iface}` }, [x.iface]),
-        this.e('span', { class: 'ro small' }, [` VLAN ${x.vlan} on `]),
+        this.e('span', { class: 'ro small' }, [` ${name(x.network)} on `]),
         this.e('button', { type: 'button', class: 'ref', 'data-goto': 'link:' + x.link }, [x.link]),
       ]),
     );
-    const body = rows.length ? [this.e('ul', { class: 'derived-list' }, rows)] : [this.e('span', { class: 'muted' }, [`No link end of this device permits VLAN ${vlans.join(', ')}.`])];
-    return this.derivedField(`${label} ${vlans.join(', ')}${from}`, 'vlan-ports', body, help);
+    const body = rows.length ? [this.e('ul', { class: 'derived-list' }, rows)] : [this.e('span', { class: 'muted' }, [`No link end of this device carries ${nets.map(name).join(', ')}.`])];
+    return this.derivedField(`${label} (${nets.map(name).join(', ')})`, 'net-ports', body, help);
   }
 
   private listTexts(p: Path): string[] {
@@ -781,20 +1079,12 @@ export class Editor {
   private ifIdField(p: Path, example: string): HTMLElement {
     const n = this.doc.get(p) as DocNode;
     const val = n.kind === 'map' ? this.doc.text(p.concat('id')) || '' : scalarText(n) || '';
-    return this.field('ID', this.input(p.concat('id'), 'ifid', val), p.concat('id'), `Unique on this device across physical and logical interfaces (e.g. ${example}). Renaming updates references.`);
+    return this.field('ID', this.input(p.concat('id'), 'ifid', val), p.concat('id'), `Unique on this device, e.g. ${example}. Renaming updates references.`);
   }
 
   private intField(p: Path, label: string, order: string, help?: string): HTMLElement {
     const val = this.doc.text(p) || '';
     return this.field(label, this.input(p, 'int', val, { 'data-o': order, inputmode: 'numeric' }), p, help);
-  }
-
-  private boolField(p: Path, label: string, order: string): HTMLElement {
-    const n = this.doc.get(p);
-    const cb = this.e('input', { type: 'checkbox', 'data-p': J(p), 'data-t': 'bool', 'data-o': order }) as HTMLInputElement;
-    cb.checked = !!n && n.kind === 'scalar' && n.value === true;
-    const bad = n && !(n.kind === 'scalar' && typeof n.value === 'boolean') && !(n.kind === 'scalar' && n.value === null);
-    return this.field(label, this.e('span', { class: 'ctl' }, [cb, bad ? this.e('span', { class: 'field-err' }, [` current value "${this.doc.text(p) || '?'}" is not true/false`]) : null]), p);
   }
 
   private selectEl(p: Path, t: string, order: string, options: string[], current: string, emptyLabel: string, extra: { [k: string]: string } = {}): HTMLSelectElement {
@@ -838,9 +1128,14 @@ export class Editor {
   }
 
   /** Editable list of scalars (addresses, prefixes). Also handles a single scalar value. */
-  private listField(p: Path, label: string, order: string, placeholder: string, help?: string): HTMLElement {
+  private listField(p: Path, label: string, order: string, placeholder: string, help?: string, disabled = false): HTMLElement {
     const n = this.doc.get(p);
-    const box = this.e('div', { class: 'list-ed' });
+    const box = this.e('div', { class: 'list-ed' + (disabled ? ' disabled' : '') });
+    if (disabled) {
+      const i = this.input(p, 'list-append', '', { placeholder: 'Obtained by DHCP — no manual address', class: 'append', disabled: '', 'aria-disabled': 'true' });
+      box.appendChild(i);
+      return this.field(label, box, p, help);
+    }
     const row = (ip: Path, val: string, t: string): HTMLElement =>
       this.e('div', { class: 'list-row' + (this.doc.issuesAt(ip).some((i) => i.severity === 'error') ? ' invalid' : '') }, [
         this.input(ip, t, val),
@@ -868,7 +1163,7 @@ export class Editor {
     const model = this.doc.result.model;
     const id = this.doc.text(['networks', netIndex, 'id']);
     const net = model && id ? model.index.networks.get(id) : undefined;
-    const help = 'Devices with an interface or loopback address inside the prefixes above. To add a member, give one of its interfaces an address in the network.';
+    const help = 'Devices with an address in this prefix.';
     if (!model || !net) return this.derivedField('Members', 'members', [this.e('span', { class: 'muted' }, ['Not available while this network has errors.'])], help);
     const members = networkMembers(model, net.id);
     const rows = members.map((m) => {
@@ -880,7 +1175,7 @@ export class Editor {
     });
     const body = rows.length
       ? [this.e('ul', { class: 'derived-list' }, rows)]
-      : [this.e('span', { class: 'muted' }, [net.cidr.length ? 'No device has an address in this network.' : 'No prefix yet, so there are no members.'])];
+      : [this.e('span', { class: 'muted' }, [net.cidr ? 'No device has a configured address in this network.' : 'No valid prefix yet, so there are no members.'])];
     return this.derivedField(`Members (${members.length})`, 'members', body, help);
   }
 
@@ -891,11 +1186,12 @@ export class Editor {
     const dev = doc.text(['devices', devIndex, 'id']);
     const n = doc.get(p) as DocNode;
     const id = n.kind === 'map' ? doc.text(p.concat('id')) : scalarText(n);
-    const help = 'From the network whose prefix contains the address and that network’s VLAN. Change the address or the network to change it.';
+    const help = 'From the network that contains the address.';
     const label = 'Network / VLAN';
     const inf = model && dev && id ? model.index.interfaces.get(ifaceKey(dev, id)) : undefined;
     if (!model || !inf) return this.derivedField(label, 'iface-vlan', [this.e('span', { class: 'muted' }, ['Not available while this interface has errors.'])], help);
     const assocs = interfaceAddresses(model, inf.device, inf.id);
+    if (!assocs.length && inf.dhcp) return this.derivedField(label, 'iface-vlan', [this.e('span', { class: 'muted' }, ['Address obtained by DHCP and not known here, so no network and no VLAN can be derived.'])], help);
     if (!assocs.length) return this.derivedField(label, 'iface-vlan', [this.e('span', { class: 'muted' }, ['No address, so no network and no VLAN.'])], help);
     const rows = assocs.map((a) => {
       let text: string;
@@ -916,77 +1212,109 @@ export class Editor {
     return this.derivedField(label, 'iface-vlan', [this.e('ul', { class: 'derived-list' }, rows)], help);
   }
 
-  // --------------------------------------------------------- link-end VLANs
-
-  /** VLAN IDs that networks define, with the network labels (for the picker and the chips). */
-  private knownVlans(): Map<number, string[]> {
-    const out = new Map<number, string[]>();
-    const model = this.doc.result.model;
-    if (model) {
-      for (const n of model.networks) {
-        if (n.vlan === undefined) continue;
-        out.set(n.vlan, (out.get(n.vlan) || []).concat(n.label));
-      }
-    }
-    return out;
-  }
+  // ------------------------------------------------------ link-end networks
 
   /**
-   * VLANs permitted at one end of a link: any number, chosen per end and
-   * stored on that end. The other end is never changed to match.
+   * The networks a cable carries at one end: any number of the model's
+   * networks, chosen per end and stored on that end by network id. The other
+   * end is never changed to match. Several networks are just several
+   * networks; nothing about tagging is implied.
    */
-  private endVlansField(endPath: Path, side: string): HTMLElement {
+  private endNetworksField(endPath: Path, side: string): HTMLElement {
     const doc = this.doc;
-    const cur = doc.endVlans(endPath);
-    const known = this.knownVlans();
+    const cur = doc.endNetworks(endPath);
+    const model = doc.result.model;
+    const nets = new Map<string, { label: string; vlan?: number; cidr?: string }>();
+    for (const e of doc.entities('network')) {
+      if (!e.id) continue;
+      const n = model ? model.index.networks.get(e.id) : undefined;
+      nets.set(e.id, { label: n ? n.label : doc.text(['networks', e.index, 'label']) || e.id, vlan: n ? n.vlan : undefined, cidr: n ? n.cidr : undefined });
+    }
     const hasEnd = !!this.epParts(endPath).device;
-    const valid = cur.map(Number).filter((v) => Number.isInteger(v) && v >= VLAN_MIN && v <= VLAN_MAX);
-    const state = cur.length === 0 ? 'none' : cur.length === 1 ? 'single' : 'trunk';
-    const box = this.e('div', { class: 'vlan-ed', 'data-vlan-end': side, 'data-vlan-state': state });
-    box.appendChild(this.e('div', { class: 'vlan-state' + (state === 'trunk' ? ' trunk' : state === 'none' ? ' muted' : '') }, [cur.length === valid.length ? linkEndVlanText(valid) : `${cur.length} entries`]));
+    const box = this.e('div', { class: 'net-ed', 'data-net-end': side, 'data-net-count': String(cur.length) });
+    box.appendChild(this.e('div', { class: 'net-state' + (cur.length ? '' : ' muted') }, [cur.length ? `${cur.length} network${cur.length > 1 ? 's' : ''}` : 'No network']));
     if (cur.length) {
       const chips = this.e('div', { class: 'vlan-chips' });
       for (const id of cur) {
-        const names = known.get(Number(id));
+        const n = nets.get(id);
         chips.appendChild(
-          this.e('span', { class: 'ref-chip vlan-chip', title: names ? 'VLAN of ' + names.join(', ') : '' }, [
-            id,
-            this.e('button', { type: 'button', class: 'mini', 'data-act': 'del-vlan', 'data-p': J(endPath), 'data-k': id, title: `Remove VLAN ${id} from end ${side}` }, ['×']),
+          this.e('span', { class: 'ref-chip net-chip' + (n ? '' : ' invalid'), 'data-net': id, title: n ? [id, n.cidr, n.vlan !== undefined ? 'VLAN ' + n.vlan : ''].filter((x) => !!x).join(' · ') : 'unknown network' }, [
+            n ? n.label + (n.vlan !== undefined ? ` · VLAN ${n.vlan}` : '') : id + ' (missing!)',
+            this.e('button', { type: 'button', class: 'mini', 'data-act': 'del-net', 'data-p': J(endPath), 'data-k': id, title: `Remove ${n ? n.label : id} from end ${side}` }, ['×']),
           ]),
         );
       }
       box.appendChild(chips);
     }
     if (hasEnd) {
-      const pick = this.e('select', { 'data-p': J(endPath), 'data-t': 'vlan-pick', 'aria-label': `Add a VLAN to end ${side}` }) as HTMLSelectElement;
-      pick.appendChild(this.e('option', { value: '' }, ['+ network VLAN…']));
-      Array.from(known.keys())
-        .sort((p, q) => p - q)
-        .filter((v) => cur.indexOf(String(v)) < 0)
-        .forEach((v) => pick.appendChild(this.e('option', { value: String(v) }, [`${v} · ${(known.get(v) as string[]).join(', ')}`])));
-      box.appendChild(this.e('div', { class: 'list-row' }, [pick, this.input(endPath, 'vlan-add', '', { placeholder: '+ add IDs: 10, 20, 30-32', class: 'append', inputmode: 'numeric' })]));
+      const pick = this.e('select', { 'data-p': J(endPath), 'data-t': 'net-pick', 'aria-label': `Assign a network to end ${side}` }) as HTMLSelectElement;
+      const free = sortedByName(Array.from(nets.keys()).filter((id) => cur.indexOf(id) < 0), (id) => (nets.get(id) as { label: string }).label);
+      pick.appendChild(this.e('option', { value: '' }, [nets.size ? (free.length ? '+ assign a network…' : '(every network is assigned)') : '(the model has no networks)']));
+      for (const id of free) {
+        const n = nets.get(id) as { label: string; vlan?: number; cidr?: string };
+        pick.appendChild(this.e('option', { value: id }, [[n.label, n.cidr, n.vlan !== undefined ? 'VLAN ' + n.vlan : ''].filter((x) => !!x).join(' · ')]));
+      }
+      box.appendChild(pick);
     } else {
       box.appendChild(this.e('span', { class: 'muted small' }, ['Choose the device of this end first.']));
     }
-    const help =
-      state === 'none'
-        ? 'No VLAN is configured for this end, and none is assumed.'
-        : state === 'single'
-          ? 'One VLAN is permitted at this end.'
-          : 'Several VLANs are permitted at this end: a trunk.';
-    return this.field(`End ${side} VLANs`, box, endPath.concat('vlans'), help + ' Stored on this end only.');
+    const node = doc.get(endPath);
+    if (node && node.kind === 'map') box.appendChild(this.otherProps(endPath, 'linkEnd'));
+    return this.field(
+      `End ${side} networks`,
+      box,
+      endPath.concat('networks'),
+      'The networks the cable carries at this end (physical / layer 2). Separate from membership, which comes from addresses; several networks do not by themselves mean the port is tagged. Stored on this end only.',
+    );
   }
 
-  /** The difference between the two ends' VLANs, shown but never repaired. */
-  private vlanMismatchNote(linkIndex: number): HTMLElement {
-    const num = (side: string): number[] =>
-      this.doc
-        .endVlans(['links', linkIndex, side])
-        .map(Number)
-        .filter((v) => Number.isInteger(v));
-    const mm = vlanMismatch(num('a'), num('b'));
-    if (!mm) return this.e('div', { class: 'vlan-match', 'data-vlan-mismatch': 'no' });
-    return this.e('div', { class: 'vlan-mismatch-note field-warn', 'data-vlan-mismatch': 'yes', role: 'status' }, ['⚠ The two ends permit different VLANs (' + vlanMismatchText(mm) + '). Nothing is changed automatically.']);
+  /** The difference between the networks of the two ends, shown but never repaired. */
+  private networkMismatchNote(linkIndex: number): HTMLElement {
+    const ids = (side: string): string[] => this.doc.endNetworks(['links', linkIndex, side]);
+    const mm = networkMismatch(ids('a'), ids('b'));
+    if (!mm) return this.e('div', { class: 'net-match', 'data-net-mismatch': 'no' });
+    const model = this.doc.result.model;
+    const name = (id: string): string => (model && model.index.networks.get(id) ? (model.index.networks.get(id) as { label: string }).label : id);
+    return this.e('div', { class: 'net-mismatch-note field-warn', 'data-net-mismatch': 'yes', role: 'status' }, ['⚠ The two ends carry different networks (' + networkMismatchText(mm, name) + '). Nothing is changed automatically.']);
+  }
+
+  /**
+   * A relation's direction as a two-way switch. Bidirectional is the default
+   * and is not written; unidirectional runs from the first endpoint to the
+   * last, so the endpoint order matters (↑ reorders).
+   */
+  private directionField(p: Path): HTMLElement {
+    const cur = this.doc.text(p);
+    const on = cur === undefined ? 'bidirectional' : cur;
+    const valid = (DIRECTIONS as readonly string[]).indexOf(on) >= 0;
+    const label: { [k in Direction]: string } = { bidirectional: 'Bidirectional', unidirectional: 'Unidirectional' };
+    const sw = this.e(
+      'div',
+      { class: 'seg dir-switch', role: 'radiogroup', 'aria-label': 'Direction', 'data-direction': valid ? on : 'invalid' },
+      DIRECTIONS.map((d) =>
+        this.e('button', { type: 'button', class: 'mini' + (d === on ? ' active' : ''), role: 'radio', 'aria-checked': d === on ? 'true' : 'false', 'data-act': 'direction', 'data-p': J(p), 'data-k': d }, [label[d]]),
+      ),
+    );
+    const help =
+      on === 'unidirectional'
+        ? 'First endpoint → last, with an arrow. Reorder with ↑ to turn it.'
+        : 'The default. Unidirectional: first endpoint → last (e.g. syslog).';
+    return this.field('Direction', sw, p, valid ? help : `"${on}" is not a direction: choose one.`);
+  }
+
+  /** The network's one prefix. */
+  private cidrField(p: Path, order: string): HTMLElement {
+    const n = this.doc.get(p);
+    if (n && n.kind !== 'scalar') {
+      // a list from a file: shown, with the error, so it can be fixed in the YAML tab
+      return this.field('IP network (CIDR)', this.generic(p, n, 0), p, 'A network has exactly one prefix. Keep one here and make a network for each other prefix.');
+    }
+    return this.field(
+      'IP network (CIDR)',
+      this.input(p, 'text', this.doc.text(p) || '', { 'data-o': order, placeholder: '192.0.2.0/24 or 2001:db8::/64' }),
+      p,
+      'Required: exactly one IPv4 or IPv6 prefix. Every device with a configured address inside it is a member.',
+    );
   }
 
   // -------------------------------------------------------------- endpoints
@@ -1047,16 +1375,8 @@ export class Editor {
           this.e('button', { type: 'button', class: 'mini', 'data-act': 'del-item', 'data-p': J(ip), title: 'Remove endpoint' }, ['×']),
         ]),
       ]);
-      const more = this.e('details', { class: 'ep-more', 'data-card': J(ip) });
-      if (this.open.has(J(ip))) more.setAttribute('open', '');
-      const role = it.kind === 'map' ? doc.text(ip.concat('role')) : undefined;
-      const addr = it.kind === 'map' ? doc.text(ip.concat('address')) : undefined;
-      more.appendChild(this.e('summary', {}, [[role ? 'role ' + role : '', addr || ''].filter((x) => x).join(' · ') || 'role, address, attrs…']));
-      more.appendChild(this.field('Role', this.input(ip.concat('role'), 'ep-attr', role || '', { 'data-o': 'endpoint' }), ip.concat('role')));
-      more.appendChild(this.field('Address', this.input(ip.concat('address'), 'ep-attr', addr || '', { 'data-o': 'endpoint' }), ip.concat('address')));
-      more.appendChild(this.attrsField(ip.concat('attrs'), 'Endpoint attributes', 'endpoint'));
-      if (it.kind === 'map') more.appendChild(this.otherProps(ip, 'endpoint'));
-      rowEl.appendChild(more);
+      // an endpoint is a device and, optionally, one of its interfaces; keys a file adds beyond that are shown so they can be removed
+      if (it.kind === 'map') rowEl.appendChild(this.otherProps(ip, 'endpoint'));
       for (const is of iss) rowEl.appendChild(this.e('div', { class: is.severity === 'error' ? 'field-err' : 'field-warn' }, [is.message]));
       box.appendChild(rowEl);
     });
@@ -1087,7 +1407,7 @@ export class Editor {
     s.appendChild(this.e('option', { value: '' }, ['+ add link / relation / network…']));
     for (const id of opts) s.appendChild(this.e('option', { value: id }, [`${kinds.get(id)}: ${id}`]));
     box.appendChild(s);
-    return this.field(label, box, p, 'What this relation rides on: cables, networks, or another relation (e.g. GRE over IPsec).');
+    return this.field(label, box, p, 'What it rides on: cables, networks or relations (e.g. GRE over IPsec).');
   }
 
   // --------------------------------------------------- generic / attributes
@@ -1116,14 +1436,14 @@ export class Editor {
     const extra = Array.from(n.entries.keys()).filter((k) => known.indexOf(k) < 0);
     if (!extra.length) return box;
     box.appendChild(this.e('h4', {}, ['Other properties (not part of the format)']));
-    box.appendChild(this.e('p', { class: 'muted small' }, ['Kept exactly as they are and exported unchanged, but reported as errors. Move them into attrs, rename or delete them.']));
+    box.appendChild(this.e('p', { class: 'muted small' }, ['Kept and exported as they are, but reported as errors: move them into attrs, rename or delete them.']));
     for (const k of extra) {
       const vp = base.concat(k);
       box.appendChild(
         this.e('div', { class: 'g-row' }, [
           this.input(base, 'g-key', k, { 'data-k': k, class: 'g-key' }),
           this.generic(vp, (n.entries.get(k) as { value: DocNode }).value, 1),
-          kind !== 'document' ? this.e('button', { type: 'button', class: 'mini', 'data-act': 'to-attrs', 'data-p': J(base), 'data-k': k, title: 'Move into attrs' }, ['→ attrs']) : null,
+          kind !== 'document' && kind !== 'endpoint' && kind !== 'linkEnd' ? this.e('button', { type: 'button', class: 'mini', 'data-act': 'to-attrs', 'data-p': J(base), 'data-k': k, title: 'Move into attrs' }, ['→ attrs']) : null,
           this.e('button', { type: 'button', class: 'mini danger', 'data-act': 'del-item', 'data-p': J(vp), title: 'Delete property' }, ['×']),
         ]),
       );
@@ -1219,9 +1539,6 @@ export class Editor {
       case 'int':
         doc.setInteger(p, trimmed);
         break;
-      case 'bool':
-        doc.setFlag(p, (target as HTMLInputElement).checked);
-        break;
       case 'auto':
         doc.setValue(p, trimmed);
         break;
@@ -1252,6 +1569,10 @@ export class Editor {
         if (!val) return true;
         doc.appendText(p, val, 'Add member port');
         break;
+      case 'dns-iface-append':
+        if (!val) return true;
+        doc.appendText(p, val, 'Associate interface with DNS name');
+        break;
       case 'list-item':
       case 'list-scalar':
         doc.setText(p, trimmed);
@@ -1260,21 +1581,10 @@ export class Editor {
         if (trimmed === '') return true;
         doc.appendText(p, trimmed);
         break;
-      case 'vlan-pick':
+      case 'net-pick':
         if (!val) return true;
-        doc.addEndVlans(p, [Number(val)]);
+        doc.addEndNetwork(p, val);
         break;
-      case 'vlan-add': {
-        if (trimmed === '') return true;
-        const ids = parseVlanList(trimmed);
-        if (!ids) {
-          this.host.toast(`VLAN IDs are whole numbers from ${VLAN_MIN} to ${VLAN_MAX}, e.g. “10, 20, 30-32”.`);
-          this.host.changed();
-          return true;
-        }
-        doc.addEndVlans(p, ids);
-        break;
-      }
       case 'over-append':
         if (!val) return true;
         doc.appendText(p, val, 'Add underlay');
@@ -1289,9 +1599,6 @@ export class Editor {
         doc.setEndpoint(p, t === 'ep-dev' ? val : cur.device, t === 'ep-dev' ? '' : val);
         break;
       }
-      case 'ep-attr':
-        doc.setEndpointField(p, trimmed);
-        break;
       case 'g-key': {
         const oldKey = target.getAttribute('data-k') as string;
         if (trimmed === oldKey) return true;
@@ -1341,6 +1648,11 @@ export class Editor {
         // fold or unfold one section of the outline (a view state: nothing in the model changes)
         if (this.collapsed.has(kind)) this.collapsed.delete(kind);
         else this.collapsed.add(kind);
+        this.host.changed('filter');
+        return true;
+      case 'filter-close':
+        this.filter = '';
+        this.filterOpen = false;
         this.host.changed('filter');
         return true;
       case 'fold-all':
@@ -1402,14 +1714,23 @@ export class Editor {
       case 'del-iface': {
         const dev = doc.text(['devices', p[1], 'id']);
         const ifid = doc.text(p.concat('id')) || scalarText(doc.get(p) as DocNode);
-        const refs = dev && ifid ? doc.references('device', dev, ifid) : [];
-        if (refs.length) {
+        // DNS-name associations go with the interface; every other reference becomes an error to fix
+        const refs = (dev && ifid ? doc.references('device', dev, ifid) : []).filter((r) => r[2] !== 'dns_names');
+        const dns = ifid ? doc.dnsAffected(p[1] as number, ifid) : [];
+        if (refs.length || dns.length) {
+          const body: string[] = [];
+          if (refs.length) body.push(`${refs.length} reference${refs.length > 1 ? 's' : ''} to ${dev}:${ifid} (links, relations, member lists, tunnel sources or destinations) will become invalid and will be listed as errors. `);
+          if (dns.length) {
+            const gone = dns.filter((x) => x.removed).map((x) => x.name);
+            body.push(
+              `Its association with the DNS name${dns.length > 1 ? 's' : ''} ${dns.map((x) => x.name).join(', ')} is removed` +
+                (gone.length ? `; ${gone.join(', ')} ${gone.length > 1 ? 'have' : 'has'} no other interface and ${gone.length > 1 ? 'are' : 'is'} deleted too. ` : '. '),
+            );
+          }
+          body.push('You can undo this with Ctrl+Z.');
           const a = await this.host.dialog({
             title: `Delete interface “${ifid}”?`,
-            body: [
-              `${refs.length} reference${refs.length > 1 ? 's' : ''} to ${dev}:${ifid} (links, relations, member lists, tunnel sources or destinations) will become invalid and will be listed as errors. `,
-              'You can undo this with Ctrl+Z.',
-            ],
+            body,
             buttons: [
               { label: 'Cancel', value: 'cancel' },
               { label: 'Delete', value: 'delete', kind: 'danger' },
@@ -1417,16 +1738,33 @@ export class Editor {
           });
           if (a !== 'delete') return true;
         }
-        doc.remove(p, 'Delete interface');
+        doc.deleteInterface(p);
         this.host.changed('Interface deleted.');
         return true;
       }
+      case 'dhcp':
+        await this.toggleDhcp(p);
+        return true;
+      case 'add-dns':
+        await this.addDnsName(index);
+        return true;
+      case 'del-dns':
+        doc.removeDnsName(index, Number(btn.getAttribute('data-k')));
+        this.host.changed('DNS name deleted.');
+        return true;
       case 'del-item':
         doc.remove(p);
         this.host.changed();
         return true;
-      case 'del-vlan':
-        doc.removeEndVlan(p, btn.getAttribute('data-k') as string);
+      case 'direction': {
+        const k = btn.getAttribute('data-k');
+        // bidirectional is the default: the key is removed
+        doc.setText(p, k === 'unidirectional' ? 'unidirectional' : '');
+        this.host.changed();
+        return true;
+      }
+      case 'del-net':
+        doc.removeEndNetwork(p, btn.getAttribute('data-k') as string);
         this.host.changed();
         return true;
       case 'move-up': {

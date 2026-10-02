@@ -170,13 +170,68 @@ export async function runViewportCheck(app: App, doc: Document): Promise<Check[]
       }
       return why;
     };
+    click('#view-btn');
+    await tick();
+    state('View menu open', popup('#view-menu'));
+    click('#btn-find');
+    await tick();
     const search = q('#search') as HTMLInputElement;
     search.value = 'hq';
     search.dispatchEvent(new Event('input', { bubbles: true }));
     await tick();
-    state('search results drop-down', popup('#search-results'));
-    search.value = '';
-    search.dispatchEvent(new Event('input', { bubbles: true }));
+    state('Find bar with its results drop-down', popup('#find-bar').concat(popup('#search-results')));
+    app.closeFind();
+
+    // the diagram filters stay on one row; what does not fit is in the Filters drop-down, which says what is off
+    for (const view of ['logical', 'physical']) {
+      click(`[data-view-btn="${view}"]`);
+      await tick();
+      const group = q('#view-filters') as HTMLElement;
+      const parts = (Array.prototype.slice.call(group.children) as HTMLElement[]).filter((e) => e.offsetWidth > 0 && e.offsetHeight > 0);
+      const tops = parts.map((e) => Math.round(e.getBoundingClientRect().top + e.getBoundingClientRect().height / 2));
+      const why: string[] = [];
+      if (tops.some((t) => Math.abs(t - tops[0]) > 2)) why.push(`the filters are on more than one row (${tops.join(', ')})`);
+      const gr = group.getBoundingClientRect();
+      if (gr.right > vw() + 0.5 || gr.left < -0.5) why.push('the filters leave the window');
+      for (const e of parts) if (e.getBoundingClientRect().right > gr.right + 0.5) why.push(`${(e.textContent || '').trim()} sticks out of the filter group`);
+      const more = q('#more-filters-btn') as HTMLButtonElement;
+      if (!more.hidden) {
+        click('#more-filters-btn');
+        await tick();
+        why.push(...popup('#more-filters'));
+        // a switch that this view shows (Networks is there in the logical view only)
+        const box = (Array.prototype.slice.call(doc.querySelectorAll('#more-filters input:not(:disabled)')) as HTMLInputElement[]).find((x) => x.offsetParent !== null) || null;
+        if (box && (q('#more-filters') as HTMLElement).contains(box)) {
+          box.click();
+          await tick();
+          if (!/off/.test(more.textContent || '') || more.getAttribute('data-off') !== '1') why.push('the Filters button does not say that a filter inside it is off');
+          box.click();
+          await tick();
+        }
+        click('#more-filters-btn');
+        await tick();
+      }
+      state(`${view} view: diagram filters on one row (${more.hidden ? 'all shown' : 'some in Filters'})`, why);
+    }
+
+    // a long file name: a badge at the start of the status bar, shortened, never wider than the bar
+    {
+      app.mdoc && app.mdoc.markSaved();
+      const long = 'a-very-long-file-name-of-a-network-model-that-does-not-fit-anywhere-' + 'x'.repeat(80) + '.yaml';
+      app.loadText(EXAMPLES[0].text, long, 'file');
+      await tick();
+      const bar = (q('#status') as HTMLElement).getBoundingClientRect();
+      const badge = q('#status .fname') as HTMLElement;
+      const br = badge.getBoundingClientRect();
+      const why: string[] = [];
+      if (badge.title !== long) why.push('the full name is not its tooltip');
+      if (br.left < bar.left || br.right > bar.right + 0.5 || br.width > bar.width * 0.5 + 1) why.push(`the badge takes ${Math.round(br.width)} of ${Math.round(bar.width)}px`);
+      if ((q('#status') as HTMLElement).scrollHeight > (q('#status') as HTMLElement).clientHeight + 1) why.push('the status bar wraps');
+      state('a long file name in the status bar', why);
+      app.mdoc && app.mdoc.markSaved();
+      app.loadExample(0);
+      await tick();
+    }
     click('#menu-btn');
     await tick();
     const lastEntry = doc.querySelectorAll('#main-menu button');

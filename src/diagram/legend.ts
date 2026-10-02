@@ -6,7 +6,7 @@
  */
 import { Rect, textWidth } from '../layout/geometry';
 import { DEVICE_TYPE_IDS, deviceTypeLabel } from '../model/device-types';
-import { vlanMismatch } from '../model/derive';
+import { networkMismatch } from '../model/derive';
 import { relationStyle } from '../model/protocols';
 import { CATEGORIES, Category, Model, ProtocolDef } from '../model/types';
 import { deviceIcon, iconName } from './icons';
@@ -83,23 +83,14 @@ export function legendOf(model: Model, view: View): Legend {
       sections.push({
         title: 'Cables (physical links)',
         items: Array.from(media.values()).map((m) => ({ swatch: [h('path', { d: LINE, stroke: m.color, 'stroke-width': 2.6, 'stroke-dasharray': m.dash, fill: 'none' })], label: m.label })),
-        note: 'Line width grows with link speed (100M → 400G). Small squares are ports; labels show the interface name. “Trunk” on a cable means several VLANs are permitted; ⚠ marks a cable whose two ends permit different VLANs.',
-        more: [width('1G'), width('100G')],
+        more: [{ ...width('1G'), label: '1G (width grows with speed)' }, width('100G'), PORT_ITEM, ...(model.links.some((l) => !!networkMismatch(l.a.networks, l.b.networks)) ? [MISMATCH_ITEM] : [])],
       });
     }
-    const kinds = Array.from(new Set(model.groups.map((g) => g.kind)));
-    if (kinds.length) {
-      sections.push({
-        title: 'Locations / groups',
-        items: kinds.map((k) => ({
-          swatch: [h('rect', { class: 'group-box ' + (groupKindStyle(k).strong ? 'group-strong' : ''), x: 3, y: 2, width: 38, height: 14, rx: 4, 'stroke-dasharray': groupKindStyle(k).dash })],
-          label: k || '(no kind)',
-        })),
-      });
-    }
+    const groups = groupSection(model);
+    if (groups) sections.push(groups);
     return {
       sections,
-      footer: 'Tunnels and protocol sessions are logical and are shown in the Logical view, not as cables. Select a tunnel in the Relations list to highlight the cables it rides on.',
+      footer: 'Tunnels and protocol sessions are drawn in the Logical view.',
     };
   }
   const used = new Map<string, { def: ProtocolDef; count: number }>();
@@ -132,12 +123,40 @@ export function legendOf(model: Model, view: View): Legend {
       { swatch: [h('circle', { class: 'hub', cx: 22, cy: 9, r: 7, stroke: '#0c8599' })], label: 'Multipoint hub (3+ devices)' },
       { swatch: [h('rect', { class: 'net-box', x: 3, y: 2, width: 38, height: 14, rx: 7, stroke: NETWORK_COLOR })], label: 'IP network' },
       { swatch: [h('path', { class: 'member', d: LINE })], label: 'Network membership (from addresses)' },
-      { swatch: [h('path', { class: 'underlay', d: LINE })], label: 'Physical adjacency (optional underlay)' },
+      ...(model.devices.some((d) => d.dnsNames.length > 0) ? [DNS_ITEM] : []),
     ],
     note: Array.from(used.values()).some((u) => u.def.custom) ? '* defined in this file’s "protocols" section' : undefined,
   });
+  const groups = groupSection(model);
+  if (groups) sections.push(groups);
   return { sections };
 }
+
+/** The kinds of groups / locations: their frames are drawn in both views. */
+function groupSection(model: Model): LegendSection | null {
+  const kinds = Array.from(new Set(model.groups.map((g) => g.kind)));
+  if (!kinds.length) return null;
+  return {
+    title: GROUPS_TITLE,
+    items: kinds.map((k) => ({
+      swatch: [h('rect', { class: 'group-box ' + (groupKindStyle(k).strong ? 'group-strong' : ''), x: 3, y: 2, width: 38, height: 14, rx: 4, 'stroke-dasharray': groupKindStyle(k).dash })],
+      label: k || '(no kind)',
+    })),
+  };
+}
+
+const GROUPS_TITLE = 'Locations / groups';
+
+/** symbols of the physical view that the Legend tab and the exported legend share */
+const PORT_ITEM: LegendItem = { swatch: [h('rect', { class: 'port', x: 17.5, y: 4.5, width: 9, height: 9, rx: 1.5, fill: '#868e96' })], label: 'Port (label: interface name)' };
+const MISMATCH_ITEM: LegendItem = { swatch: [h('text', { class: 'net-warn', x: 22, y: 14, 'text-anchor': 'middle' }, '⚠')], label: 'The two ends carry different networks' };
+
+/** a device's DNS names, as written under it in the logical view */
+const DNS_LABEL = 'DNS name (as configured, not looked up)';
+const DNS_ITEM: LegendItem = {
+  swatch: [h('g', { class: 'dns-chip' }, [h('rect', { x: 2, y: 3, width: 40, height: 12, rx: 6 }), h('text', { x: 22, y: 12, 'text-anchor': 'middle', 'font-size': 8 }, 'a.b.c')])],
+  label: DNS_LABEL,
+};
 
 // ------------------------------------------------------- legend inside an SVG
 
@@ -145,7 +164,10 @@ export function legendOf(model: Model, view: View): Legend {
 export interface ExportOptions {
   hiddenProtocols: Set<string>;
   showNetworks: boolean;
-  showUnderlay: boolean;
+  /** group / location frames are drawn (default true) */
+  showGroups?: boolean;
+  /** DNS names are drawn under devices (logical view; default: if the model has any) */
+  dnsShown?: boolean;
 }
 
 const PAD = 14;
@@ -157,8 +179,8 @@ export const LEGEND_GAP = 28;
 
 /**
  * The sections an exported SVG needs: the Legend tab's content reduced to
- * what is drawn (hidden protocols, networks and underlay are left out), plus
- * the symbols the tab explains in prose (ports, VLAN mismatch).
+ * what is drawn (hidden protocols, networks and group frames are left out), plus
+ * the symbols the tab explains in prose (ports, ends carrying different networks).
  */
 export function exportLegendSections(model: Model, view: View, opts: ExportOptions): LegendSection[] {
   const out: LegendSection[] = [];
@@ -168,22 +190,12 @@ export function exportLegendSections(model: Model, view: View, opts: ExportOptio
       items = items.filter((i) => {
         if (i.protocol !== undefined) return !opts.hiddenProtocols.has(i.protocol);
         if (/^IP network|^Network membership/.test(i.label)) return opts.showNetworks && model.networks.length > 0;
-        if (/^Physical adjacency/.test(i.label)) return opts.showUnderlay;
+        if (i.label === DNS_LABEL) return opts.dnsShown !== false;
         return true;
       });
     }
+    if (s.title === GROUPS_TITLE && opts.showGroups === false) items = [];
     if (items.length) out.push({ title: s.title, items: items.map((i) => (i.custom ? { ...i, label: i.label + ' *' } : i)), note: view === 'logical' ? s.note : undefined });
-  }
-  if (view === 'physical' && model.links.length) {
-    const cables = out.find((s) => /^Cables/.test(s.title));
-    if (cables) {
-      const n = cables.items.length - 2;
-      cables.items[n] = { ...cables.items[n], label: '1G (width grows with speed)' };
-      cables.items.push({ swatch: [h('rect', { class: 'port', x: 17.5, y: 4.5, width: 9, height: 9, rx: 1.5, fill: '#868e96' })], label: 'Port (label: interface name)' });
-      if (model.links.some((l) => !!vlanMismatch(l.a.vlans, l.b.vlans))) {
-        cables.items.push({ swatch: [h('text', { class: 'vlan-warn', x: 22, y: 14, 'text-anchor': 'middle' }, '⚠')], label: 'VLAN mismatch between the two ends' });
-      }
-    }
   }
   return out;
 }

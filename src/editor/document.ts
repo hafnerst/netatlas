@@ -9,6 +9,7 @@
 import { Pt } from '../layout/geometry';
 import { LAYOUT_VIEWS, LayoutView, autoPositions, resolvePositions, samePositions } from '../layout/positions';
 import { layoutInput, layoutSignature } from '../layout/input';
+import { dnsNameKey, dnsNameProblem } from '../model/dns';
 import { parseAddress } from '../model/ip';
 import { Model } from '../model/types';
 import { IFACE_RE, Issue, LoadResult, loadModel, scalarText, validate } from '../validation/validate';
@@ -570,6 +571,7 @@ export class ModelDoc {
     const ik = ifaceSchemaKind(path);
     if (ik) return ik;
     if (path.length === 4 && typeof path[3] === 'number' && path[0] === 'relations' && path[2] === 'endpoints') return 'endpoint';
+    if (path.length === 4 && typeof path[3] === 'number' && path[0] === 'devices' && path[2] === 'dns_names') return 'dnsName';
     if (this.isLinkEnd(path)) return 'linkEnd';
     if (path.length === 1 && path[0] === 'layout') return 'layout';
     return undefined;
@@ -646,23 +648,9 @@ export class ModelDoc {
     });
   }
 
-  /** Set role / address of an endpoint (expands a short endpoint to a mapping); empty removes it. */
-  setEndpointField(path: Path, text: string): void {
-    const ep = path.slice(0, -1);
-    this.change('Edit endpoint', () => {
-      if (text === '') {
-        const m = this.get(ep);
-        if (m && m.kind === 'map') m.entries.delete(String(path[path.length - 1]));
-      } else {
-        this.ensureMap(ep);
-        this.setAt(path, strNode(text), KEY_ORDER.endpoint);
-      }
-    });
-  }
-
-  /** VLAN IDs written on one end of a link, as text, in file order (invalid entries included). */
-  endVlans(endPath: Path): string[] {
-    const n = this.get(endPath.concat('vlans'));
+  /** Network ids assigned to one end of a link, as written, in file order (invalid entries included). */
+  endNetworks(endPath: Path): string[] {
+    const n = this.get(endPath.concat('networks'));
     if (!n) return [];
     if (n.kind === 'seq') return n.items.map((i) => scalarText(i)).filter((x): x is string => x !== undefined);
     const t = scalarText(n);
@@ -670,44 +658,37 @@ export class ModelDoc {
   }
 
   /**
-   * Permit more VLANs at one end of a link (`endPath` is links[i].a or .b).
+   * Assign a network to one end of a link (`endPath` is links[i].a or .b).
    * Only that end is written: the other end is never adjusted to match. The
-   * short "dev:if" form becomes a mapping; ids already listed are skipped.
-   * Returns false if the end has no device yet.
+   * short "dev:if" form becomes a mapping; a network already listed is
+   * skipped. Returns false if the end has no device yet.
    */
-  addEndVlans(endPath: Path, ids: number[]): boolean {
+  addEndNetwork(endPath: Path, id: string): boolean {
     const cur = this.get(endPath);
     if (!cur || (cur.kind === 'scalar' && scalarText(cur) === undefined)) return false;
-    const have = this.endVlans(endPath);
-    const add = ids.filter((v, k) => have.indexOf(String(v)) < 0 && ids.indexOf(v) === k);
-    if (!add.length) return true;
-    this.change('Add VLAN', () => {
+    if (this.endNetworks(endPath).indexOf(id) >= 0) return true;
+    this.change('Assign network', () => {
       this.ensureMap(endPath);
-      const list = this.ensureSeq(endPath.concat('vlans'), true, KEY_ORDER.linkEnd);
-      for (const v of add) list.items.push(numNode(v));
-      // keep the list ascending when every entry is a number (nothing invalid is reordered or dropped)
-      if (list.items.every((i) => i.kind === 'scalar' && typeof i.value === 'number')) {
-        list.items.sort((p, q) => ((p as { value: number }).value) - ((q as { value: number }).value));
-      }
+      this.ensureSeq(endPath.concat('networks'), true, KEY_ORDER.linkEnd).items.push(strNode(id));
     });
     return true;
   }
 
-  /** Remove one VLAN (by its text) from one end of a link; the last one removes the `vlans` key. */
-  removeEndVlan(endPath: Path, id: string): void {
-    const vp = endPath.concat('vlans');
-    const n = this.get(vp);
+  /** Remove one network (by its id) from one end of a link; the last one removes the `networks` key. */
+  removeEndNetwork(endPath: Path, id: string): void {
+    const np = endPath.concat('networks');
+    const n = this.get(np);
     if (!n) return;
-    this.change('Remove VLAN', () => {
+    this.change('Remove network', () => {
       if (n.kind === 'seq') {
         const k = n.items.findIndex((i) => scalarText(i) === id);
         if (k >= 0) n.items.splice(k, 1);
         if (n.items.length) return;
       } else if (scalarText(n) !== id) return;
-      this.removeAt(vp);
+      this.removeAt(np);
       // an end with nothing but device/interface goes back to the short form
-      const end = this.get(endPath);
-      if (end && end.kind === 'map' && Array.from(end.entries.keys()).every((key) => key === 'device' || key === 'interface')) {
+      const e = this.get(endPath);
+      if (e && e.kind === 'map' && Array.from(e.entries.keys()).every((key) => key === 'device' || key === 'interface')) {
         const dev = this.text(endPath.concat('device'));
         const inf = this.text(endPath.concat('interface'));
         if (dev) this.setAt(endPath, strNode(inf ? dev + ':' + inf : dev), KEY_ORDER.link);
@@ -931,6 +912,11 @@ export class ModelDoc {
       });
     };
     if (kind === 'device') {
+      // DNS names of the same device that are associated with the interface
+      if (iface !== undefined) {
+        const dev = this.findEntity('device', id);
+        if (dev) out.push(...this.dnsRefs(dev.index, iface));
+      }
       epRefs('links', 'a/b');
       epRefs('relations', 'endpoints');
       // associations of logical interfaces: member ports and tunnel sources (same device), tunnel destinations (any device)
@@ -961,7 +947,22 @@ export class ModelDoc {
       scalarRefs('devices', 'group', (t) => t === id);
     } else if (kind === 'link' || kind === 'relation' || kind === 'network') {
       scalarRefs('relations', 'over', (t) => t === id);
-      if (kind === 'network') scalarRefs('relations', 'network', (t) => t === id);
+      if (kind === 'network') {
+        // the link ends that carry it
+        const ls = this.root.entries.get('links');
+        if (ls && ls.value.kind === 'seq') {
+          ls.value.items.forEach((ent, i) => {
+            if (ent.kind !== 'map') return;
+            for (const side of ['a', 'b']) {
+              const e = ent.entries.get(side);
+              const nl = e && e.value.kind === 'map' ? e.value.entries.get('networks') : undefined;
+              if (!nl) continue;
+              if (nl.value.kind === 'seq') nl.value.items.forEach((it, k) => scalarText(it) === id && out.push(['links', i, side, 'networks', k]));
+              else if (scalarText(nl.value) === id) out.push(['links', i, side, 'networks']);
+            }
+          });
+        }
+      }
     } else if (kind === 'protocol') {
       scalarRefs('relations', 'protocol', (t) => t.toLowerCase() === id.toLowerCase());
     }
@@ -980,7 +981,7 @@ export class ModelDoc {
       const t = scalarText(n) as string;
       let nt = t;
       const last = p[p.length - 1];
-      if (last === 'source' || last === 'members' || p[p.length - 2] === 'members') {
+      if (last === 'source' || last === 'members' || p[p.length - 2] === 'members' || p[2] === 'dns_names') {
         // an interface of the same device, written as its bare id
         nt = newIf !== undefined ? newIf : t;
       } else if (/^(a|b|destination)$/.test(String(last)) || p[p.length - 2] === 'endpoints') {
@@ -1144,6 +1145,183 @@ export class ModelDoc {
     f.push(['ip', seqNode(addresses.map(strNode), true)]);
     return this.addLogical(devIndex, 'loopback', f);
   }
+
+  /**
+   * Delete a physical or logical interface. Its DNS-name associations are
+   * removed in the same step (a DNS name left without any interface is
+   * removed with them), so none of them can point at a missing interface.
+   * Other references (links, relations, member lists, tunnels) are left as
+   * they are and reported by validation.
+   */
+  deleteInterface(ipath: Path): void {
+    const iface = this.ifaceIdAt(ipath);
+    this.change('Delete interface', () => {
+      if (iface) this.dropDnsRefs(ipath[1] as number, iface);
+      this.removeAt(ipath);
+    });
+  }
+
+  // --------------------------------------------------------------------- DHCP
+
+  /** Does the interface at `ipath` have `dhcp: true`? */
+  dhcpOn(ipath: Path): boolean {
+    const n = this.get(ipath.concat('dhcp'));
+    return !!n && n.kind === 'scalar' && n.value === true;
+  }
+
+  /** Can the interface at `ipath` use DHCP? Every physical and logical interface except a loopback. */
+  dhcpAllowed(ipath: Path): boolean {
+    return ifaceSchemaKind(ipath) === 'interface' || (ifaceSchemaKind(ipath) === 'logical' && this.text(ipath.concat('type')) !== 'loopback');
+  }
+
+  /**
+   * What turning DHCP on for an interface would remove: its manually
+   * configured addresses and its DNS-name associations (`removed`: the name
+   * is associated with this interface only, so it would be removed too).
+   */
+  dhcpImpact(ipath: Path): DhcpImpact {
+    const n = this.get(ipath.concat('ip'));
+    const addresses = !n ? [] : n.kind === 'seq' ? n.items.map((i) => scalarText(i) || '').filter((x) => x) : scalarText(n) !== undefined ? [scalarText(n) as string] : [];
+    const iface = this.ifaceIdAt(ipath);
+    return { addresses, dns: iface ? this.dnsAffected(ipath[1] as number, iface) : [] };
+  }
+
+  /**
+   * Turn DHCP on or off for an interface, as one undoable step. On: the
+   * manual addresses and the DNS-name associations of the interface are
+   * removed (see dhcpImpact; the UI asks first) and `dhcp: true` is written.
+   * Off: the key is removed (false is the format's default); nothing that
+   * was removed when it was turned on comes back. A loopback can't use
+   * DHCP: turning it on is refused (turning it off repairs a file that has it).
+   */
+  setDhcp(ipath: Path, on: boolean): void {
+    const kind = ifaceSchemaKind(ipath);
+    if (!kind || on === this.dhcpOn(ipath) || (on && !this.dhcpAllowed(ipath))) return;
+    const iface = this.ifaceIdAt(ipath);
+    this.change(on ? 'Turn DHCP on' : 'Turn DHCP off', () => {
+      if (!on) {
+        this.removeAt(ipath.concat('dhcp'));
+        return;
+      }
+      if (iface) this.dropDnsRefs(ipath[1] as number, iface);
+      this.removeAt(ipath.concat('ip'));
+      this.setAt(ipath.concat('dhcp'), boolNode(true), KEY_ORDER[kind]);
+    });
+  }
+
+  // ---------------------------------------------------------------- DNS names
+
+  /** Id of the interface at `ipath` (also for the "- eth0" short form). */
+  private ifaceIdAt(ipath: Path): string | undefined {
+    const n = this.get(ipath);
+    if (!n) return undefined;
+    return n.kind === 'map' ? this.text(ipath.concat('id')) : scalarText(n);
+  }
+
+  /** The `dns_names` entries of a device, as written. */
+  dnsEntries(devIndex: number): DnsEntry[] {
+    const list = this.get(['devices', devIndex, 'dns_names']);
+    if (!list || list.kind !== 'seq') return [];
+    return list.items.map((it, k) => {
+      const path: Path = ['devices', devIndex, 'dns_names', k];
+      const ifs = this.get(path.concat('interfaces'));
+      const interfaces = !ifs ? [] : ifs.kind === 'seq' ? ifs.items.map((i) => scalarText(i) || '') : scalarText(ifs) !== undefined ? [scalarText(ifs) as string] : [];
+      return { path, name: it.kind === 'map' ? this.text(path.concat('name')) : undefined, interfaces };
+    });
+  }
+
+  /** Paths of the DNS-name associations of a device that name `iface` (list items, or the single value). */
+  private dnsRefs(devIndex: number, iface: string): Path[] {
+    const out: Path[] = [];
+    for (const e of this.dnsEntries(devIndex)) {
+      const ifs = this.get(e.path.concat('interfaces'));
+      if (ifs && ifs.kind === 'seq') ifs.items.forEach((it, j) => scalarText(it) === iface && out.push(e.path.concat('interfaces', j)));
+      else if (ifs && scalarText(ifs) === iface) out.push(e.path.concat('interfaces'));
+    }
+    return out;
+  }
+
+  /** DNS names associated with `iface`; `removed` when it is their only interface. */
+  dnsAffected(devIndex: number, iface: string): Array<{ name: string; removed: boolean }> {
+    return this.dnsEntries(devIndex)
+      .filter((e) => e.interfaces.indexOf(iface) >= 0)
+      .map((e) => ({ name: e.name || '(no name)', removed: e.interfaces.every((x) => x === iface) }));
+  }
+
+  /** Remove every association with `iface` (call inside change()); names left without an interface go, and so does an empty list. */
+  private dropDnsRefs(devIndex: number, iface: string): void {
+    const entries = this.dnsEntries(devIndex);
+    for (let k = entries.length - 1; k >= 0; k--) {
+      const e = entries[k];
+      if (e.interfaces.indexOf(iface) < 0) continue;
+      if (e.interfaces.every((x) => x === iface)) {
+        this.removeAt(e.path);
+        continue;
+      }
+      const ifs = this.get(e.path.concat('interfaces'));
+      if (ifs && ifs.kind === 'seq') ifs.items = ifs.items.filter((it) => scalarText(it) !== iface);
+    }
+    const list = this.get(['devices', devIndex, 'dns_names']);
+    if (list && list.kind === 'seq' && !list.items.length) this.removeAt(['devices', devIndex, 'dns_names']);
+  }
+
+  /**
+   * Interfaces of a device a DNS name can be associated with: every
+   * physical and logical interface with an id, except the ones with DHCP on.
+   */
+  dnsEligible(devIndex: number): IfaceEntry[] {
+    return this.interfaceEntries(devIndex).filter((e) => !!e.id && !this.dhcpOn(e.path));
+  }
+
+  /**
+   * Why a new DNS name can't be added to a device as given, or null if it
+   * can: the name's syntax, a name the device already has, and at least one
+   * eligible interface.
+   */
+  dnsNameError(devIndex: number, name: string, ifaces: string[]): string | null {
+    const why = dnsNameProblem(name);
+    if (why) return name ? `Not a valid DNS name: ${why}.` : 'Enter a DNS name, e.g. www.example.com.';
+    const key = dnsNameKey(name);
+    if (this.dnsEntries(devIndex).some((e) => e.name !== undefined && dnsNameKey(e.name) === key)) return `This device already has the DNS name “${name}”. Associate that entry with more interfaces instead.`;
+    if (!ifaces.length) return 'Select at least one interface.';
+    const ok = this.dnsEligible(devIndex).map((e) => e.id);
+    const bad = ifaces.filter((x) => ok.indexOf(x) < 0);
+    if (bad.length) return `Not an interface with manual addressing on this device: ${bad.join(', ')}.`;
+    return null;
+  }
+
+  /** Add a DNS name associated with the given interfaces (one undoable step); returns its index, or -1 if it is not valid. */
+  addDnsName(devIndex: number, name: string, ifaces: string[]): number {
+    if (this.dnsNameError(devIndex, name, ifaces)) return -1;
+    return this.change('Add DNS name', () => {
+      const list = this.ensureSeq(['devices', devIndex, 'dns_names'], false, KEY_ORDER.device);
+      list.items.push(mapNode([['name', strNode(name)], ['interfaces', seqNode(ifaces.map(strNode), true)]], true));
+      return list.items.length - 1;
+    });
+  }
+
+  /** Remove a DNS name of a device; the list goes when it is empty. */
+  removeDnsName(devIndex: number, k: number): void {
+    this.change('Remove DNS name', () => {
+      this.removeAt(['devices', devIndex, 'dns_names', k]);
+      const list = this.get(['devices', devIndex, 'dns_names']);
+      if (list && list.kind === 'seq' && !list.items.length) this.removeAt(['devices', devIndex, 'dns_names']);
+    });
+  }
+}
+
+/** What turning DHCP on would remove (see ModelDoc.dhcpImpact). */
+export interface DhcpImpact {
+  addresses: string[];
+  dns: Array<{ name: string; removed: boolean }>;
+}
+
+/** One entry of a device's `dns_names` in the document tree. */
+export interface DnsEntry {
+  path: Path;
+  name: string | undefined;
+  /** interface ids as written */
+  interfaces: string[];
 }
 
 /** Largest number of ports one range may create. */

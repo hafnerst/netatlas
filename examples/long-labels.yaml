@@ -87,8 +87,8 @@ links:
   - {id: fw-a, a: "fw:ethernet1/1", b: "core-a:TwentyFiveGigE1/0/1", medium: fiber, speed: 25G}
   - {id: fw-b, a: "fw:ethernet1/2", b: "core-b:TwentyFiveGigE1/0/1", medium: fiber, speed: 25G}
   - id: srv-a
-    a: {device: core-a, interface: TwentyFiveGigE1/0/2, vlans: [10, 20, 30, 40, 50, 60, 70, 80]}
-    b: {device: srv, interface: eno1, vlans: [10, 20, 30, 40, 50, 60, 70, 80]}
+    a: {device: core-a, interface: TwentyFiveGigE1/0/2, networks: [servers, servers-v6, servers-v6-legacy]}
+    b: {device: srv, interface: eno1, networks: [servers, servers-v6, servers-v6-legacy]}
     medium: dac
     speed: 25G
     label: hypervisor uplink, all tenant VLANs
@@ -102,9 +102,18 @@ links:
     cable: CID-2024-000173
 
 networks:
+  # one network per prefix; the three share VLAN 10
   - id: servers
     label: Server network (production)
-    cidr: [10.10.0.0/24, "2001:db8:10::/64", "2001:db8:11::/64"]
+    cidr: 10.10.0.0/24
+    vlan: 10
+  - id: servers-v6
+    label: Server network (production, IPv6)
+    cidr: "2001:db8:10::/64"
+    vlan: 10
+  - id: servers-v6-legacy
+    label: Server network (production, legacy IPv6 prefix)
+    cidr: "2001:db8:11::/64"
     vlan: 10
 
 relations:
@@ -114,7 +123,7 @@ relations:
   - {id: ospf-br, protocol: ospf, label: area 0.0.0.10, endpoints: ["fw:tunnel.10", "br-rtr:Tunnel10"], over: gre-br}
   - {id: bgp-br, protocol: ebgp, label: AS 65010 ↔ AS 65020, endpoints: [fw, br-rtr]}
   - {id: bfd-br, protocol: bfd, label: 300 ms × 3, endpoints: [fw, br-rtr]}
-  - {id: syslog-br, protocol: syslog, directed: true, label: audit log, endpoints: [br-rtr, fw]}
+  - {id: syslog-br, protocol: syslog, direction: unidirectional, label: audit log, endpoints: [br-rtr, fw]}
   # relations between the core switches
   - {id: mlag-core, protocol: mlag, label: domain 1, endpoints: [core-a, core-b], over: [peer-1, peer-2]}
   - {id: ibgp-core, protocol: ibgp, endpoints: ["core-a:lo0", "core-b:lo0"]}

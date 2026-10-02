@@ -40,6 +40,13 @@
       </div>
     </div>
   </div>
+  <div class="menu-wrap">
+    <button id="view-btn" type="button" class="menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="view-menu" title="View: find objects, filter the model outline">View <span class="caret" aria-hidden="true">▾</span></button>
+    <div id="view-menu" class="dropdown menu" role="menu" aria-label="View" hidden>
+      <button id="btn-find" type="button" role="menuitem" title="Open or create a model first" disabled><span class="mi-label">Find…</span><span class="mi-hint">/</span></button>
+      <button id="btn-outline-filter" type="button" role="menuitem" title="Open or create a model first" disabled><span class="mi-label">Filter outline…</span></button>
+    </div>
+  </div>
   <input id="file" type="file" accept=".yaml,.yml,application/yaml,application/x-yaml,text/yaml,text/plain" hidden>
   <div class="btn-group">
     <button id="btn-undo" type="button" title="Undo (Ctrl+Z)" disabled aria-label="Undo">↶</button>
@@ -53,14 +60,29 @@
     <button id="btn-arrange" type="button" class="arrange-btn" disabled aria-describedby="arrange-status" title="Recompute the positions of every object in the view on screen (A)"><span class="arrange-icon" aria-hidden="true"></span><span class="arrange-label">Auto-arrange</span></button>
     <span id="arrange-status" class="sr-only" aria-live="polite"></span>
   </div>
-  <div class="search-wrap">
-    <input id="search" type="search" placeholder="Find… ( / )" aria-label="Find device, network, relation" autocomplete="off" spellcheck="false">
-    <div id="search-results" class="dropdown" hidden></div>
+  <div id="view-filters" class="view-filters" role="group" aria-label="Diagram filters">
+  <div class="devices-wrap">
+    <button id="devices-btn" type="button" class="menu-btn" aria-haspopup="dialog" aria-expanded="false" aria-controls="devices-panel" title="Choose the devices the diagram shows" disabled>Devices: <span id="devices-count">all</span> <span class="caret" aria-hidden="true">▾</span></button>
+    <div id="devices-panel" class="dropdown devices-panel" role="dialog" aria-label="Devices shown in the diagram" hidden>
+      <div class="dp-tools">
+        <input id="devices-find" type="search" placeholder="Filter the list…" aria-label="Filter the device list" autocomplete="off" spellcheck="false">
+        <button id="devices-all" type="button" class="mini" title="Show every device: the complete diagram with its saved positions">Select all</button>
+        <button id="devices-none" type="button" class="mini" title="Deselect every device">Clear</button>
+      </div>
+      <div id="devices-list" class="dp-list" role="group" aria-label="Devices"></div>
+      <p class="dp-note muted">A filtered diagram is arranged for the selected devices only. Its positions are temporary; the saved layout of the complete diagram is not changed.</p>
+    </div>
   </div>
-  <span class="spacer"></span>
-  <label class="opt"><input id="opt-labels" type="checkbox" checked> Labels</label>
-  <label class="opt logical-only"><input id="opt-networks" type="checkbox" checked> Networks</label>
-  <label class="opt logical-only"><input id="opt-underlay" type="checkbox"> Underlay</label>
+  <label class="opt" data-priority="5"><input id="opt-labels" type="checkbox" checked> Labels</label>
+  <label class="opt" data-priority="4"><input id="opt-groups" type="checkbox" checked> Groups / Locations</label>
+  <label class="opt logical-only" data-priority="3"><input id="opt-networks" type="checkbox" checked> Networks</label>
+  <label class="opt" data-priority="2" title="Show devices of type Endpoint (off: hidden with what only they connect; nothing is deleted)"><input id="opt-type-endpoint" type="checkbox" data-device-type="endpoint" checked> Endpoints</label>
+  <label class="opt" data-priority="1" title="Show devices of type Server (off: hidden with what only they connect; nothing is deleted)"><input id="opt-type-server" type="checkbox" data-device-type="server" checked> Servers</label>
+  <div class="more-filters-wrap">
+    <button id="more-filters-btn" type="button" class="menu-btn" aria-haspopup="true" aria-expanded="false" aria-controls="more-filters" hidden>Filters<span id="more-filters-count" class="mf-count"></span> <span class="caret" aria-hidden="true">▾</span></button>
+    <div id="more-filters" class="dropdown more-filters" role="group" aria-label="More diagram filters" hidden></div>
+  </div>
+  </div>
 </header>
 <main>
   <aside id="outline" aria-label="Model outline">
@@ -68,6 +90,12 @@
   </aside>
   <section id="canvas-wrap">
     <svg id="canvas" role="img" aria-label="Network diagram"><g id="viewport"></g></svg>
+    <div id="find-bar" class="find-bar" role="search" aria-label="Find" hidden>
+      <input id="search" type="search" placeholder="Find device, network, address…" aria-label="Find device, network, relation" autocomplete="off" spellcheck="false">
+      <button id="find-close" type="button" class="mini" aria-label="Close Find" title="Close (Esc)">×</button>
+      <div id="search-results" class="dropdown" hidden></div>
+    </div>
+    <div id="filter-hint" class="filter-hint" role="status" hidden><span class="fh-icon" aria-hidden="true">⧉</span> <span id="filter-hint-text">Filtered-view positions are temporary and are not saved in YAML.</span></div>
     <div class="zoombar" role="toolbar" aria-label="Zoom">
       <button id="zoom-in" type="button" title="Zoom in (+)">+</button>
       <span id="zoom-level">100%</span>
@@ -116,7 +144,29 @@
       <button type="button" data-tab="yaml">YAML</button>
     </nav>
     <div id="side-body"></div>
-    <div class="keys muted small">Drag background: pan · wheel: zoom · drag node: move · click: select · Esc: clear · P / L: view · Ctrl+Z / Y: undo / redo · Ctrl+S: download</div>
+    <details id="keys" class="keys" open>
+      <summary>Mouse &amp; keyboard</summary>
+      <div class="keys-groups">
+        <section class="keys-group" aria-labelledby="keys-pointer">
+          <h4 id="keys-pointer">Pointer</h4>
+          <dl>
+            <div><dt>Drag background</dt><dd>pan</dd></div>
+            <div><dt>Wheel</dt><dd>zoom</dd></div>
+            <div><dt>Drag node</dt><dd>move</dd></div>
+            <div><dt>Click</dt><dd>select</dd></div>
+          </dl>
+        </section>
+        <section class="keys-group" aria-labelledby="keys-keyboard">
+          <h4 id="keys-keyboard">Keyboard</h4>
+          <dl>
+            <div><dt><kbd>Esc</kbd></dt><dd>clear</dd></div>
+            <div><dt><kbd>P</kbd> / <kbd>L</kbd></dt><dd>view</dd></div>
+            <div><dt><kbd>Ctrl+Z</kbd> / <kbd>Y</kbd></dt><dd>undo / redo</dd></div>
+            <div><dt><kbd>Ctrl+S</kbd></dt><dd>download</dd></div>
+          </dl>
+        </section>
+      </div>
+    </details>
   </aside>
 </main>
 <footer id="status" aria-live="polite"></footer>

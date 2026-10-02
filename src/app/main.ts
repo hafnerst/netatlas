@@ -14,7 +14,7 @@ function start(): void {
     void runViewportCheck(app, document);
     return;
   }
-  // Optional deep link to a built-in example, e.g. "#example=0&view=logical".
+  // Optional deep link to a built-in example, e.g. "#example=0&view=logical&devices=hq-rtr1,hq-fw".
   const params: { [k: string]: string } = {};
   for (const part of hash.split('&')) {
     const i = part.indexOf('=');
@@ -23,6 +23,8 @@ function start(): void {
   if (params.example !== undefined && /^[0-9]+$/.test(params.example)) {
     app.loadExample(Number(params.example));
     if (params.view === 'logical' || params.view === 'physical') app.setView(params.view);
+    // "devices=a,b": show only these devices (a temporary filtered view)
+    if (params.devices !== undefined) app.setDevices(decodeURIComponent(params.devices).split(',').filter((x) => !!x));
     if (params.select) app.select(decodeURIComponent(params.select), true);
   }
 }

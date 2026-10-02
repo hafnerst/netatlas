@@ -147,9 +147,14 @@ links:
 
 networks:
   # members are derived from the addresses inside each prefix
-  - id: cust-a-access
-    label: Customer A access
-    cidr: [192.0.2.0/30, 192.0.2.4/30]
+  # one network per prefix: the two access circuits of customer A
+  - id: cust-a-access-1
+    label: Customer A access 1
+    cidr: 192.0.2.0/30
+    attrs: {vrf: CUST-A, rd: "65000:100", rt: "65000:100"}
+  - id: cust-a-access-2
+    label: Customer A access 2
+    cidr: 192.0.2.4/30
     attrs: {vrf: CUST-A, rd: "65000:100", rt: "65000:100"}
   - id: oob-mgmt
     label: OOB management
@@ -187,14 +192,14 @@ relations:
   - id: te-1-4
     protocol: rsvp-te
     label: primary north→east
-    directed: true
+    direction: unidirectional
     endpoints: ["pe1:lo0", "pe4:lo0"]
     over: [r12, r23, r34]
     attrs: {bandwidth: 40G, setup-priority: 3}
   - id: te-2-5
     protocol: rsvp-te
     label: primary north→south
-    directed: true
+    direction: unidirectional
     endpoints: ["pe2:lo0", "pe5:lo0"]
     over: [r61, r56, x-north]
     attrs: {bandwidth: 20G}
@@ -203,12 +208,12 @@ relations:
     protocol: l3vpn
     label: CUST-A
     endpoints: ["pe1:lo0", "pe3:lo1", "pe5:lo1"]
-    network: cust-a-access
+    attrs: {access-networks: "cust-a-access-1, cust-a-access-2"}
   - {id: ebgp-a1, protocol: ebgp, endpoints: ["pe1:et3", "ce-a1:ge0"], over: acc-a1, attrs: {peer-as: 64601}}
   - {id: ebgp-a2, protocol: ebgp, endpoints: ["pe5:et3", "ce-a2:ge0"], over: acc-a2, attrs: {peer-as: 64601}}
   # inside the OOB island
-  - {id: syslog-oob, protocol: syslog, directed: true, endpoints: [oob-con1, "oob-nms:eth0"]}
-  - {id: snmp-oob, protocol: snmp, directed: true, endpoints: [oob-nms, oob-sw]}
+  - {id: syslog-oob, protocol: syslog, direction: unidirectional, endpoints: [oob-con1, "oob-nms:eth0"]}
+  - {id: snmp-oob, protocol: snmp, direction: unidirectional, endpoints: [oob-nms, oob-sw]}
 
 layout:
   physical:
@@ -226,20 +231,21 @@ layout:
     pe6: [904, 390]
     spare-pe: [1166, 27]
   logical:
-    ce-a1: [567, 648]
-    ce-a2: [596, 821]
-    cust-a-access: [297, 751]
-    l3vpn-a: [240, 189]
-    oob-con1: [1546, 713]
-    oob-con2: [1305, 233]
-    oob-mgmt: [1515, 398]
-    oob-nms: [1685, 236]
-    oob-sw: [1605, 26]
-    ospf-core: [758, 275]
-    pe1: [659, 426]
-    pe2: [790, 37]
-    pe3: [435, 129]
-    pe4: [1026, 231]
-    pe5: [103, 532]
-    pe6: [1015, 464]
-    spare-pe: [114, 973]
+    ce-a1: [242, 635]
+    ce-a2: [249, 776]
+    cust-a-access-1: [91, 437]
+    cust-a-access-2: [568, 906]
+    l3vpn-a: [830, 310]
+    oob-con1: [1912, 769]
+    oob-con2: [1670, 289]
+    oob-mgmt: [1880, 454]
+    oob-nms: [2051, 292]
+    oob-sw: [1970, 82]
+    ospf-core: [706, 135]
+    pe1: [129, 257]
+    pe2: [485, 257]
+    pe3: [983, 101]
+    pe4: [1339, 101]
+    pe5: [649, 565]
+    pe6: [1005, 565]
+    spare-pe: [114, 1054]

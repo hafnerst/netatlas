@@ -10,28 +10,31 @@
  * - Relations with 3+ devices get a hub node with spokes.
  * - Networks are pill nodes connected to member devices by thin lines. Members
  *   are derived from the addresses inside the network's prefixes.
+ * - Groups / locations are frames around their devices, as in the physical
+ *   view (auto-arrange keeps the devices of a group together).
  * - All text is drawn in full. Every relation label gets its own place along
  *   (or, on a short line, beside) its bundle, clear of nodes and of the labels
  *   placed before it; see diagram/labels.ts.
  */
 import { CBox, Pt, Rect, boxRect, clipToBox, clipToCircle, lineBoxExit, normal, textWidth, unionRect } from '../layout/geometry';
 import { LINE_W, TUBE_MIN, TUBE_WALL, buildBundle, laneLabel, relationPairs } from '../layout/bundles';
-import { CHIP_H, HUB_R, LNode, LogicalLayout, MAX_CHIPS, deviceRect, isMultipoint, networkSubtitle } from '../layout/logical';
-import { CHIP_FONT, MEMBER_LABEL_SIZE, NET_LABEL_SIZE, loopbackChipText, networkBody, pillBox } from '../layout/sizes';
+import { CHIP_H, HUB_R, LNode, LogicalLayout, MAX_CHIPS, commonChain, deviceRect, isMultipoint, networkSubtitle } from '../layout/logical';
+import { CHIP_FONT, MEMBER_LABEL_SIZE, NET_LABEL_SIZE, chipRows, dnsNameLines, dnsShown, loopbackChipText, networkBody, pillBox } from '../layout/sizes';
 import { TextBlock } from '../layout/text';
 import { networkMembers } from '../model/derive';
 import { sortedByName } from '../model/order';
 import { Device, LineStyle, Model, ProtocolDef, Relation, loopbacks, relationDevices } from '../model/types';
 import { LabelPlacer, alongSegment, centerRect, textLines } from './labels';
-import { cssToken, deviceNode, deviceSubtitle, SceneResult } from './physical';
+import { cssToken, deviceNode, deviceSubtitle, groupFrames, groupRects, SceneResult } from './physical';
 import { VNode, h } from './scene';
 import { NETWORK_COLOR } from './style';
 import { relationStyle } from '../model/protocols';
 
 export interface LogicalOptions {
   showLabels: boolean;
-  showUnderlay: boolean;
   showNetworks: boolean;
+  /** draw the frames of groups / locations (default true); hiding them never moves a node */
+  showGroups?: boolean;
   hiddenProtocols: Set<string>;
   positions: Map<string, Pt>;
 }
@@ -134,33 +137,24 @@ export function renderLogical(model: Model, layout: LogicalLayout, opts: Logical
   // labels keep clear of every node, and of each other
   const placer = new LabelPlacer();
   const labelRects: Rect[] = [];
+  // group frames around the device nodes (with their loopback chips), the same geometry as in the physical view
+  const showGroups = opts.showGroups !== false;
+  const deviceBoxes = new Map<string, CBox>();
+  nodes.forEach((n) => {
+    if (n.kind === 'device') deviceBoxes.set(n.id, n);
+  });
+  const grects = showGroups ? groupRects(model, deviceBoxes, localNodes(model, nodes)) : new Map<string, Rect>();
+  const groupNodes = showGroups ? groupFrames(model, grects, placer) : [];
   nodes.forEach((n) => {
     if (n.kind === 'network' && !opts.showNetworks) return;
     placer.block(boxRect(n, 3));
   });
 
-  const underlay: VNode[] = [];
   const members: VNode[] = [];
   const relNodes: VNode[] = [];
   const labels: VNode[] = [];
   const nodeLayer: VNode[] = [];
   const memberLabels: Array<{ ref: string; s: Pt; e: Pt; text: string }> = [];
-
-  // ---- faint physical underlay (optional)
-  if (opts.showUnderlay) {
-    const seen = new Set<string>();
-    for (const l of model.links) {
-      const a = dev(l.a.device);
-      const b = dev(l.b.device);
-      if (!a || !b || a === b) continue;
-      const key = [l.a.device, l.b.device].sort().join('\u0000');
-      if (seen.has(key)) continue;
-      seen.add(key);
-      const s = clipToBox(a, { x: b.cx, y: b.cy });
-      const e = clipToBox(b, { x: a.cx, y: a.cy });
-      underlay.push(h('path', { class: 'underlay', 'data-ref': 'link:' + l.id, d: lineD(s, e) }));
-    }
-  }
 
   // ---- network membership
   if (opts.showNetworks) {
@@ -196,7 +190,7 @@ export function renderLogical(model: Model, layout: LogicalLayout, opts: Logical
       const [s, e] = laneSegment(A, B, p.offset);
       const d = lineD(s, e);
       const children: VNode[] = [h('path', { class: 'hit', d, 'stroke-width': Math.max(10, p.width) }), ...relationStroke(p.def, d, p.width)];
-      if (p.rel.directed) children.push(arrowHead(endTip(p.rel, s, e, da), endFrom(p.rel, s, e, da), p.def.color));
+      if (p.rel.direction === 'unidirectional') children.push(arrowHead(endTip(p.rel, s, e, da), endFrom(p.rel, s, e, da), p.def.color));
       relNodes.push(
         h(
           'g',
@@ -296,7 +290,8 @@ export function renderLogical(model: Model, layout: LogicalLayout, opts: Logical
   // ---- addresses on membership lines: near the device, moved along the line where that spot is taken
   for (const ml of memberLabels) {
     const w = textWidth(ml.text, MEMBER_LABEL_SIZE) + 4;
-    const c = placer.place(alongSegment(ml.s, ml.e, 0.22, [0, 22, 44, 70, 100, -14], [0, -12, 12]), w, 12);
+    // fallbacks, tried only when every usual spot is taken: right beside the device, where the line leaves it (or across it)
+    const c = placer.place(alongSegment(ml.s, ml.e, 0.22, [0, 22, 44, 70, 100, -14], [0, -12, 12]).concat(alongSegment(ml.s, ml.e, 0, [w / 2 + 6, w / 2 + 20], [0, -12, 12, -24, 24])), w, 12);
     labelRects.push(centerRect(c, w, 12));
     labels.push(h('text', { class: 'halo member-label', 'data-ref': ml.ref, x: c.x, y: c.y + 3.5, 'text-anchor': 'middle' }, ml.text));
   }
@@ -308,6 +303,8 @@ export function renderLogical(model: Model, layout: LogicalLayout, opts: Logical
       if (!d) return;
       nodeLayer.push(deviceNode(n.ref, d.label, deviceSubtitle(d.type), d.type, deviceRect(n), 'type-' + cssToken(d.type)));
       nodeLayer.push(...loopbackChips(d, n));
+      // the names are labels: hidden with Labels (their room stays, so nothing moves)
+      if (opts.showLabels) nodeLayer.push(...dnsChips(d, n));
     } else if (n.kind === 'network' && opts.showNetworks) {
       const nw = model.index.networks.get(n.id);
       if (!nw) return;
@@ -329,6 +326,7 @@ export function renderLogical(model: Model, layout: LogicalLayout, opts: Logical
   });
 
   const rects: Rect[] = [];
+  grects.forEach((r) => rects.push({ x: r.x - 20, y: r.y - 20, w: r.w + 40, h: r.h + 40 }));
   nodes.forEach((n) => {
     if (n.kind === 'network' && !opts.showNetworks) return;
     rects.push({ x: n.cx - n.w / 2 - 60, y: n.cy - n.h / 2 - 50, w: n.w + 120, h: n.h + 100 });
@@ -337,7 +335,7 @@ export function renderLogical(model: Model, layout: LogicalLayout, opts: Logical
   for (const r of labelRects) rects.push({ x: r.x - 14, y: r.y - 14, w: r.w + 28, h: r.h + 28 });
   return {
     root: h('g', { class: 'scene scene-logical' }, [
-      h('g', { class: 'layer-underlay' }, underlay),
+      h('g', { class: 'layer-groups' }, groupNodes),
       h('g', { class: 'layer-members' }, members),
       h('g', { class: 'layer-relations' }, relNodes),
       h('g', { class: 'layer-nodes' }, nodeLayer),
@@ -347,7 +345,36 @@ export function renderLogical(model: Model, layout: LogicalLayout, opts: Logical
   };
 }
 
-/** For a directed relation the arrow points at the last endpoint's device. */
+/**
+ * Networks and hubs local to one group: all the devices they connect to lie
+ * in it. Auto-arrange places them inside that group (the innermost one
+ * holding all of them), so its frame includes them. Keyed by group id.
+ */
+function localNodes(model: Model, nodes: Map<string, LNode>): Map<string, Rect[]> {
+  const chain = (d: string): string[] => {
+    const out: string[] = [];
+    const seen = new Set<string>();
+    let g = model.index.devices.get(d)?.group;
+    while (g !== undefined && model.index.groups.has(g) && !seen.has(g)) {
+      seen.add(g);
+      out.push(g);
+      g = model.index.groups.get(g)?.parent;
+    }
+    return out;
+  };
+  const out = new Map<string, Rect[]>();
+  nodes.forEach((n) => {
+    if (n.kind === 'device') return;
+    const devs = n.kind === 'network' ? networkMembers(model, n.id).map((m) => m.device) : relationDevices(model.index.relations.get(n.id) as Relation);
+    const inner = commonChain(devs.filter((d) => nodes.has('device:' + d)).map(chain))[0];
+    if (inner === undefined) return;
+    if (!out.has(inner)) out.set(inner, []);
+    (out.get(inner) as Rect[]).push({ x: n.cx - n.w / 2, y: n.cy - n.h / 2, w: n.w, h: n.h });
+  });
+  return out;
+}
+
+/** For a unidirectional relation the arrow points at the last endpoint's device. */
 function endTip(r: Relation, s: Pt, e: Pt, firstSorted: string): Pt {
   const target = r.endpoints[r.endpoints.length - 1].device;
   return target === firstSorted ? s : e;
@@ -363,6 +390,32 @@ function pill(ref: string, p: Pt, box: { block: TextBlock; w: number; h: number 
     h('rect', { class: 'pill-box', x: p.x - box.w / 2, y: p.y - box.h / 2, width: box.w, height: box.h, rx: 9, stroke: color }),
     textLines({ class: 'pill-text', 'text-anchor': 'middle' }, box.block, p.x, p.y - box.block.h / 2),
   ]);
+}
+
+/**
+ * The device's DNS names under its loopback chips: each name once, however
+ * many interfaces it is associated with; a long name continues on further
+ * lines; more than MAX_DNS names end in a "+N more names" row. They show
+ * what is configured in the model, nothing looked up.
+ */
+function dnsChips(d: Device, n: LNode): VNode[] {
+  const shown = dnsShown(d.dnsNames.map((x) => x.name).filter((x) => !!x));
+  if (!shown.names.length) return [];
+  const out: VNode[] = [];
+  let y = n.cy - n.h / 2 + (n.bodyH || 0) + 4 + chipRows(loopbacks(d).length) * CHIP_H;
+  const w = n.w - 16;
+  for (const name of shown.names) {
+    const lines = dnsNameLines(name);
+    out.push(
+      h('g', { class: 'dns-chip', 'data-ref': 'device:' + d.id, 'data-dns': name }, [
+        h('rect', { x: n.cx - w / 2, y, width: w, height: lines.length * CHIP_H - 3, rx: 6.5 }),
+        ...lines.map((l, i) => h('text', { x: n.cx, y: y + 9.5 + i * CHIP_H, 'text-anchor': 'middle', 'font-size': CHIP_FONT }, l)),
+      ]),
+    );
+    y += lines.length * CHIP_H;
+  }
+  if (shown.more) out.push(h('text', { class: 'loop-more dns-more', x: n.cx, y: y + 9, 'text-anchor': 'middle', 'data-ref': 'device:' + d.id }, `+${shown.more} more name${shown.more > 1 ? 's' : ''}`));
+  return out;
 }
 
 /** Loopbacks as small chips hanging under the device, in alphabetical order (logical view only; they are never cabled). */

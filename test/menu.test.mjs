@@ -12,14 +12,16 @@ const header = /<header class="topbar">([\s\S]*?)<\/header>/.exec(html)[1];
 const menu = /<div id="main-menu"[^>]*>([\s\S]*?)\n    <\/div>/.exec(header)[1];
 const css = readFileSync(join(root, 'src', 'styles.css'), 'utf8');
 
-test('toolbar: logo and version, then File, Export, undo/redo, views, Auto-arrange, Find; no Current model button', () => {
-  const order = ['class="brand"', 'class="version"', 'id="menu-btn"', 'id="export-btn"', 'id="btn-undo"', 'id="btn-redo"', 'data-view-btn="physical"', 'data-view-btn="logical"', 'id="btn-arrange"', 'id="search"'];
+test('toolbar: logo and version, then File, Export, View, undo/redo, views, Auto-arrange, the diagram filters; no Current model button', () => {
+  const order = ['class="brand"', 'class="version"', 'id="menu-btn"', 'id="export-btn"', 'id="view-btn"', 'id="btn-undo"', 'id="btn-redo"', 'data-view-btn="physical"', 'data-view-btn="logical"', 'id="btn-arrange"', 'id="view-filters"'];
   const at = order.map((x) => header.indexOf(x));
   assert.ok(at.every((p) => p >= 0), JSON.stringify(at));
   assert.deepEqual(at, at.slice().sort((p, q) => p - q), 'in this order');
   assert.match(header, /<span>netatlas<\/span><span class="version"[^>]*>v__VERSION__<\/span>/);
   // these stay direct controls: none of them is inside the menu
-  for (const id of ['btn-undo', 'btn-redo', 'btn-arrange', 'search']) assert.ok(!menu.includes(`id="${id}"`), id);
+  for (const id of ['btn-undo', 'btn-redo', 'btn-arrange']) assert.ok(!menu.includes(`id="${id}"`), id);
+  // Find is not in the toolbar any more: it opens from View (or "/") as a bar over the diagram
+  assert.ok(!header.includes('id="search"') && html.includes('id="find-bar"'));
   assert.ok(!/data-view-btn/.test(menu));
   // the "Current model" button is gone, with its styles, its handler and the state it showed
   const appSrc = readFileSync(join(root, 'src', 'ui', 'app.ts'), 'utf8');
@@ -66,7 +68,7 @@ test('"model", not "document": the outline has no Document entry and the inspect
     assert.deepEqual(strings, [], name);
   }
   assert.doesNotMatch(inspector, /ol-doc|'Document: '/);
-  assert.match(inspector, /this\.header\('model', this\.doc\.text\(\['title'\]\) \|\| 'Untitled model', null\)/);
+  assert.match(inspector, /this\.header\('model', this\.doc\.text\(\['title'\]\) \|\| 'Untitled model', null, docIssues\)/);
   assert.match(inspector, /\['Edit model settings'\]/);
   // the model settings are still opened from the Edit tab and for a new model
   assert.match(appSrc, /private editModel\(\): void \{/);
@@ -99,14 +101,47 @@ test('examples: the File menu offers the six hand-written examples; the generate
   assert.match(read(join(root, 'src', 'app', 'selftest.ts'), 'utf8'), /import \{ EXAMPLES, FIXTURES \} from/);
 });
 
-test('selection hint of the outline: "selected" and "related (n)", without a note about dimming', () => {
+test('selection hint of the outline: "selected" and "related (n)" in the always-present tools row, without a note about dimming', () => {
   const inspector = readFileSync(join(root, 'src', 'ui', 'inspector.ts'), 'utf8');
   assert.doesNotMatch(inspector, /others dimmed/);
   const at = inspector.indexOf("class: 'ol-ctx-hint small'");
-  const hint = inspector.slice(at, inspector.indexOf('      );', at));
+  const hint = inspector.slice(at, inspector.indexOf("'fold-all'", at));
   assert.match(hint, /' selected · ',/);
   // the text ends after the count: no trailing separator, no empty element after it
-  assert.match(hint, /` related \(\$\{ctx\.related\.size\}\)`,\s*\]\),\s*$/);
+  assert.match(hint, /` related \(\$\{ctx\.related\.size\}\)`,\s*\]\s*: \[\],/);
+  // it shares the row of "Collapse all", which is there with or without a selection: nothing below it moves
+  const row = inspector.slice(inspector.lastIndexOf("this.e('div', { class: 'ol-tools' }", at), at);
+  assert.ok(row.length > 0 && row.length < 200, String(row.length));
+  assert.doesNotMatch(inspector, /if \(ctx\) \{\s*box\.appendChild/);
+  // every entry keeps the slot of the selection mark, so its label never moves sideways
+  assert.match(inspector, /this\.e\('span', \{ class: 'ctx-mark' \+ \(st === 'selected' \? ' sel' : st === 'related' \? ' rel' : ''\), 'aria-hidden': 'true' \}/);
+});
+
+test('View menu: next to Export, with Find… (/) and Filter outline…, each the one place of its action', () => {
+  const at = ['id="export-btn"', 'id="view-btn"', 'id="btn-undo"'].map((x) => header.indexOf(x));
+  assert.ok(at[0] >= 0 && at[0] < at[1] && at[1] < at[2], JSON.stringify(at));
+  // the same markup as File and Export, driven by the same code
+  assert.match(header, /<button id="view-btn" type="button" class="menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="view-menu"[^>]*>View <span class="caret"/);
+  const view = /<div id="view-menu" class="dropdown menu" role="menu" aria-label="View" hidden>([\s\S]*?)\n    <\/div>/.exec(header)[1];
+  const entries = [...view.matchAll(/<button id="([^"]+)"[^>]*role="menuitem"[^>]*disabled><span class="mi-label">([^<]+)</g)].map((m) => [m[1], m[2]]);
+  assert.deepEqual(entries, [['btn-find', 'Find…'], ['btn-outline-filter', 'Filter outline…']], 'both disabled until a model is open');
+  assert.deepEqual([...view.matchAll(/class="mi-hint">([^<]*)</g)].map((m) => m[1]), ['/']);
+  const app = readFileSync(join(root, 'src', 'ui', 'app.ts'), 'utf8');
+  assert.match(app, /\['export-btn', 'export-menu'\],\s*\['view-btn', 'view-menu'\],/);
+  assert.match(app, /if \(e\.key === '\/'\) \{\s*e\.preventDefault\(\);\s*this\.openFind\(\);/);
+  // the old places are gone: no search box in the toolbar, no filter box always at the top of the outline
+  assert.ok(!header.includes('class="search-wrap"'));
+  const inspector = readFileSync(join(root, 'src', 'ui', 'inspector.ts'), 'utf8');
+  assert.match(inspector, /if \(this\.filterOpen \|\| this\.filter\) \{/);
+});
+
+test('diagram filters: one group at the right of the toolbar, with a Filters drop-down for what does not fit', () => {
+  const group = /<div id="view-filters" class="view-filters" role="group" aria-label="Diagram filters">([\s\S]*?)\n  <\/div>\n<\/header>/.exec(html);
+  assert.ok(group, 'the filters are one group, the last thing in the toolbar');
+  const opts = [...group[1].matchAll(/<label class="opt[^"]*" data-priority="(\d)"[^>]*><input id="([^"]+)"/g)].map((m) => [m[2], Number(m[1])]);
+  assert.deepEqual(opts, [['opt-labels', 5], ['opt-groups', 4], ['opt-networks', 3], ['opt-type-endpoint', 2], ['opt-type-server', 1]]);
+  assert.match(group[1], /<button id="more-filters-btn" type="button" class="menu-btn" aria-haspopup="true" aria-expanded="false" aria-controls="more-filters" hidden>Filters/);
+  assert.match(css, /\.view-filters \{[^}]*flex-wrap: nowrap;/);
 });
 
 test('Export menu: next to File, one entry "Export view as…" with a PNG / SVG submenu; the zoom bar has no Save SVG', () => {

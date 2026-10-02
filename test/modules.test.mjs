@@ -7,7 +7,7 @@ import { execFileSync } from 'node:child_process';
 import { copyFileSync, appendFileSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { root, load, validate, queries, example, model } from './helpers.mjs';
+import { root, load, validate, queries, example, model, yaml } from './helpers.mjs';
 
 const { ModelDoc, KEY_ORDER } = load('editor/document.js');
 const { SCHEMA } = load('yaml/schema.js');
@@ -37,16 +37,16 @@ test('text, integer, flag and value edits: canonical key order, empty removes, o
   d.setText(['devices', 0, 'description'], 'Acme');
   d.setText(['devices', 0, 'label'], 'Router 1');
   d.setInteger(['devices', 0, 'tier'], '2');
-  d.setFlag(['relations', 0, 'directed'], true);
+  d.setText(['relations', 0, 'direction'], 'unidirectional');
   d.setValue(['devices', 0, 'attrs'], ''); // null value, key kept
   let out = d.exportText();
   assert.match(out, /- id: r1 {3}# the router\n {4}label: Router 1\n {4}tier: 2\n {4}description: Acme\n {4}attrs:\n {4}interfaces: \[eth0\]/);
-  assert.match(out, /directed: true/);
+  assert.match(out, /direction: unidirectional/);
   d.setText(['devices', 0, 'description'], '');
-  d.setFlag(['relations', 0, 'directed'], false);
+  d.setText(['relations', 0, 'direction'], '');
   d.setInteger(['devices', 0, 'tier'], 'high'); // kept as text, reported by validation
   out = d.exportText();
-  assert.ok(!/description:/.test(out) && !/directed:/.test(out));
+  assert.ok(!/description:/.test(out) && !/direction:/.test(out));
   assert.ok(d.errors.some((e) => /tier must be an integer/.test(e.message)));
   // every operation was one undo step
   let n = 0;
@@ -76,20 +76,23 @@ test('free-form values are typed like YAML and survive export -> reload', () => 
 test('lists and endpoints: short forms stay short, mappings keep their keys', () => {
   const d = doc(base);
   d.appendText(['devices', 1, 'interfaces', 1, 'ip'], '10.0.0.2/32');
-  d.appendText(['networks', 0, 'cidr'], '2001:db8::/64');
-  assert.match(d.exportText(), /cidr: \[10\.0\.0\.0\/24, 2001:db8::\/64\]/);
+  // a network's prefix is one value: editing it replaces it, never makes a list
+  d.setText(['networks', 0, 'cidr'], '2001:db8::/64');
+  assert.match(d.exportText(), /cidr: 2001:db8::\/64/);
   d.setEndpoint(['relations', 0, 'endpoints', 0], 'r1', 'eth0');
   d.setEndpoint(['links', 0, 'b'], 'r2', '');
   assert.match(d.exportText(), /endpoints: \[r1:eth0, r2\]/);
   assert.match(d.exportText(), /b: r2\b/);
-  d.setEndpointField(['relations', 0, 'endpoints', 1, 'role'], 'rr-client');
-  assert.match(d.exportText(), /endpoints: \[r1:eth0, \{device: r2, role: rr-client\}\]/);
   d.setEndpoint(['relations', 0, 'endpoints', 1], 'r2', 'lo0');
-  assert.match(d.exportText(), /\{device: r2, interface: lo0, role: rr-client\}/);
+  assert.match(d.exportText(), /endpoints: \[r1:eth0, r2:lo0\]/);
+  // an endpoint written as a mapping stays a mapping (device and interface only)
+  d.change('as mapping', () => d.setAt(['relations', 0, 'endpoints', 1], yaml.mapNode([['device', yaml.strNode('r2')], ['interface', yaml.strNode('lo0')]], true)));
+  d.setEndpoint(['relations', 0, 'endpoints', 1], 'r2', 'eth1');
+  assert.match(d.exportText(), /\{device: r2, interface: eth1\}/);
   d.moveUp(['relations', 0, 'endpoints', 1]);
-  assert.match(d.exportText(), /endpoints: \[\{device: r2, interface: lo0, role: rr-client\}, r1:eth0\]/);
+  assert.match(d.exportText(), /endpoints: \[\{device: r2, interface: eth1\}, r1:eth0\]/);
   d.setEndpoint(['relations', 0, 'endpoints', 1], '', '');
-  assert.match(d.exportText(), /endpoints: \[\{device: r2, interface: lo0, role: rr-client\}\]/);
+  assert.match(d.exportText(), /endpoints: \[\{device: r2, interface: eth1\}\]/);
   d.remove(['links', 0]);
   assert.ok(!/l1/.test(d.exportText()));
 });
@@ -173,4 +176,15 @@ test('check:dist accepts the current build and rejects a stale HTML file', () =>
   // the generated examples module is current as well
   execFileSync(process.execPath, [join(root, 'scripts', 'gen-examples.mjs'), '--check'], { stdio: 'pipe' });
   assert.ok(readFileSync(html, 'utf8').includes('__req("app/main")'));
+});
+
+test('the editor writes "direction: unidirectional" and removes the key for bidirectional (the default)', () => {
+  const { ModelDoc } = load('editor/document.js');
+  const d = ModelDoc.fromText('netatlas: 1\ndevices:\n  - id: a\n  - id: b\nrelations:\n  - {id: s, protocol: syslog, endpoints: [a, b]}\n', 'd.yaml', 'file').doc;
+  d.setText(['relations', 0, 'direction'], 'unidirectional');
+  assert.match(d.exportText(), /\{id: s, protocol: syslog, endpoints: \[a, b\], direction: unidirectional\}/);
+  assert.equal(d.result.model.relations[0].direction, 'unidirectional');
+  d.setText(['relations', 0, 'direction'], '');
+  assert.ok(!/direction/.test(d.exportText()));
+  assert.equal(d.result.model.relations[0].direction, 'bidirectional');
 });

@@ -43,21 +43,20 @@ export function buildNewNetwork() {
   // (speed and medium belong to the cable, not to the ports)
   d.addInterface(0, [['id', s('ge-0/0/0')], ['ip', flowList('192.0.2.1/31')]]);
   d.addInterface(b, [['id', s('ge-0/0/0')], ['ip', flowList('192.0.2.0/31')]]);
-  // logical interfaces: a VLAN interface (its VLAN comes from the network of its address; the port carrying it is
-  // derived from the cable) and a tunnel interface sourced from the loopback, towards the other router's loopback
+  // logical interfaces: a VLAN interface (its VLAN comes from the network of its address; the port carrying its
+  // network is derived from the cable ends) and a tunnel interface sourced from the loopback, towards the other router's loopback
   for (const [dev, n, peer] of [[0, 1, 2], [b, 2, 1]]) {
     d.addLogical(dev, 'virtual', [['id', s('irb.100')], ['label', s('Management')], ['ip', flowList(`10.100.0.${n}/24`)]]);
     d.addLogical(dev, 'tunnel', [['id', s('gr-0/0/0.1')], ['ip', flowList(`172.16.0.${n}/30`)], ['source', s('lo0')], ['destination', s(`10.255.0.${peer}`)]]);
   }
   d.addEntity('link', [['id', s('cable-1')], ['a', s('edge-a:ge-0/0/0')], ['b', s('edge-b:ge-0/0/0')], ['medium', s('fiber')], ['speed', s('10G')], ['cable', s('LC-LC OM4 3m')]]);
-  // the cable carries VLAN 100 at both ends
-  d.addEndVlans(['links', 0, 'a'], [100]);
-  d.addEndVlans(['links', 0, 'b'], [100]);
   // an IP network: both routers become members through their port addresses
   d.addEntity('network', [['id', s('net-core')], ['label', s('Core link')], ['cidr', s('192.0.2.0/31')]]);
   d.addEntity('network', [['id', s('net-mgmt')], ['label', s('Management')], ['cidr', s('10.100.0.0/24')], ['vlan', Y.numNode(100)]]);
   // a network that only loopbacks are in: part of the logical view, not of the physical one
   d.addEntity('network', [['id', s('net-loopbacks')], ['label', s('Router loopbacks')], ['cidr', s('10.255.0.0/24')]]);
+  // the cable carries the core network and the management network at both ends (configured per end)
+  for (const side of ['a', 'b']) for (const net of ['net-core', 'net-mgmt']) d.addEndNetwork(['links', 0, side], net);
   // logical relations sourced from loopbacks
   d.addEntity('relation', [
     ['id', s('ibgp-v6')],

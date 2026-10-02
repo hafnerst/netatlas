@@ -118,18 +118,23 @@ test('logical view: multipoint relations use a hub; networks are nodes with memb
   assert.equal(byClass(srv6, 'tube-outer')[0].attrs.stroke, '#e03131');
 });
 
-test('logical view options: hide protocols, networks, show underlay', () => {
+test('logical view options: hide protocols, networks and group frames; there is no underlay', () => {
   const s = wan();
   s.setView('logical');
   s.toggleProtocol('ospf', false);
   let v = s.render().root;
   assert.equal(byClass(v, 'proto-ospf').length, 0);
   assert.ok(byClass(v, 'proto-gre').length > 0);
+  assert.ok(byClass(v, 'group').length > 0, 'groups are framed in the logical view');
+  const devicesBefore = byClass(v, 'device').length;
   s.state.showNetworks = false;
-  s.state.showUnderlay = true;
+  s.state.showGroups = false;
   v = s.render().root;
   assert.equal(byClass(v, 'network').length, 0);
-  assert.ok(byClass(v, 'underlay').length > 0);
+  assert.equal(byClass(v, 'group').length, 0);
+  assert.equal(byClass(v, 'device').length, devicesBefore, 'hiding frames keeps their devices');
+  assert.equal(byClass(v, 'underlay').length, 0);
+  assert.ok(!('showUnderlay' in s.state));
 });
 
 test('representative protocol and tunnel rendering (built-in, alias, unknown, custom)', () => {
@@ -147,7 +152,7 @@ relations:
   - {id: t-bgp, protocol: iBGP, endpoints: [a, b]}
   - {id: t-ospf, protocol: ospf, endpoints: [a, b]}
   - {id: t-lacp, protocol: lacp, endpoints: [a, b]}
-  - {id: t-dns, protocol: dns, directed: true, endpoints: [a, b]}
+  - {id: t-dns, protocol: dns, direction: unidirectional, endpoints: [a, b]}
   - {id: t-custom, protocol: quic-tun, endpoints: [a, b]}
   - {id: t-unknown, protocol: mysterious, endpoints: [a, b]}
   - {id: t-unknown-tun, protocol: vendor-x, category: tunnel, endpoints: [a, b]}
@@ -161,7 +166,7 @@ relations:
     't-vx': 'style-dashed', 't-bgp': 'style-solid', 't-ospf': 'style-solid', 't-lacp': 'style-dotted', 't-dns': 'style-dashdot', 't-unknown': 'style-dashdot',
   };
   for (const [id, cls] of Object.entries(expect)) assert.ok(scene.hasClass(g(id), cls), `${id} should have ${cls}: ${g(id).attrs.class}`);
-  assert.equal(byClass(g('t-dns'), 'arrow').length, 1, 'directed relation has an arrow');
+  assert.equal(byClass(g('t-dns'), 'arrow').length, 1, 'a unidirectional relation has an arrow');
   // 11 relations between the same two devices -> 11 distinct lanes
   const ds = new Set(Object.keys(expect).map((id) => byClass(g(id), 'hit')[0].attrs.d));
   assert.equal(ds.size, 11);

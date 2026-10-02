@@ -60,12 +60,13 @@ test('incomplete new elements: required values are reported, optional ones are s
   assert.ok(errs.some((e) => /^links\.link1: missing required key "a"/.test(e)));
   assert.ok(errs.some((e) => /^links\.link1: missing required key "b"/.test(e)));
   assert.ok(d.warnings.some((w) => /protocol "custom1" has no category/.test(w.message)));
-  // device type, group kind and a network's prefix/VLAN are optional: no error, and no value invented
-  assert.ok(!errs.some((e) => /device1|net1|site1/.test(e)), errs.join('\n'));
+  // a network needs its one prefix: reported, never invented
+  assert.ok(errs.some((e) => /^networks\.net1\.cidr: network "net1" needs its IP network/.test(e)), errs.join('\n'));
+  // device type, group kind and a network's VLAN are optional: no error, and no value invented
+  assert.ok(!errs.some((e) => /device1|site1/.test(e)), errs.join('\n'));
   const m = d.result.model;
   assert.equal(m.devices[0].type, 'generic', 'no device type (drawn with the generic icon)');
-  assert.deepEqual([m.networks[0].cidr, m.networks[0].vlan], [[], undefined], 'no prefix and no VLAN invented');
-  assert.ok(d.warnings.some((w) => /network "net1" has no prefix/.test(w.message)));
+  assert.deepEqual([m.networks[0].cidr, m.networks[0].vlan], [undefined, undefined], 'no prefix and no VLAN invented');
   assert.equal(m.groups[0].kind, '', 'no group kind (not "site")');
   // the issue is located at the relation, for the inline field feedback
   const e = d.errors.find((x) => /missing required key "protocol"/.test(x.message));

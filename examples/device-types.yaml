@@ -186,20 +186,20 @@ relations:
     protocol: https
     label: published API
     endpoints: [lb, api]
-    directed: true
+    direction: unidirectional
   - id: proxy-out
     protocol: https
     label: outbound web
     endpoints: [proxy, isp]
-    directed: true
+    direction: unidirectional
   - id: snmp-core
     protocol: snmp
     endpoints: [nms, core]
-    directed: true
+    direction: unidirectional
   - id: syslog-fw
     protocol: syslog
     endpoints: [fw, nms]
-    directed: true
+    direction: unidirectional
   - id: nfs
     protocol: nfs
     category: other

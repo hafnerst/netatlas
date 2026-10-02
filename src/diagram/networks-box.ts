@@ -12,9 +12,9 @@
  *   a port (physical view)                 networks containing an address of that physical
  *                                          interface, of an aggregate it is a member of, or
  *                                          of a VLAN interface whose VLAN it carries
- *   a cable (physical view)                networks whose VLAN is permitted on one of its ends
+ *   a cable (physical view)                the networks assigned to either of its ends
  *   a device with loopbacks (logical view) networks containing an address of those loopbacks
- *   a relation (logical view)              its `network`, the networks in its `over`, and the
+ *   a relation (logical view)              the networks in its `over`, and the
  *                                          networks containing an address of its endpoint interfaces
  *
  * So a network reached only through loopbacks or tunnel interfaces is not in
@@ -71,8 +71,7 @@ export function viewNetworks(model: Model, view: View, refs: Set<string>): Netwo
     } else if (kind === 'link') {
       const l = ix.links.get(id);
       if (!l) return;
-      const vlans = l.a.vlans.concat(l.b.vlans);
-      for (const n of model.networks) if (n.vlan !== undefined && vlans.indexOf(n.vlan) >= 0) ids.add(n.id);
+      for (const n of l.a.networks.concat(l.b.networks)) if (ix.networks.has(n)) ids.add(n);
     } else if (kind === 'device') {
       // loopbacks are drawn under their device in the logical view only
       const d = view === 'logical' ? ix.devices.get(id) : undefined;
@@ -80,7 +79,6 @@ export function viewNetworks(model: Model, view: View, refs: Set<string>): Netwo
     } else if (kind === 'relation' || kind === 'hub') {
       const r = ix.relations.get(id);
       if (!r) return;
-      if (r.network) ids.add(r.network);
       for (const o of r.over) if (ix.networks.has(o)) ids.add(o);
       for (const e of r.endpoints) if (e.iface && ix.interfaces.has(ifaceKey(e.device, e.iface))) addIface(e.device, e.iface);
     }
@@ -92,7 +90,7 @@ export function viewNetworks(model: Model, view: View, refs: Set<string>): Netwo
 export function networkIdentity(n: Network, showId: boolean): string {
   const parts: string[] = [];
   if (showId) parts.push('id ' + n.id);
-  parts.push(n.cidr.length ? n.cidr.slice().sort(compareNames).join(', ') : 'no prefix');
+  parts.push(n.cidr || 'no prefix');
   if (n.vlan !== undefined) parts.push('VLAN ' + n.vlan);
   return parts.join(' · ');
 }
@@ -204,7 +202,12 @@ export interface ExportBoxes {
 
 /** Everything an exported SVG gets in addition to the diagram: the legend and the networks overview of that view. */
 export function exportBoxes(model: Model, view: View, opts: ExportOptions, scene: SceneResult): ExportBoxes {
-  const legend = svgLegend(model, view, opts, scene.bounds);
+  // the legend names the DNS names only when the picture shows some (Labels on, a device with names drawn)
+  let dns = false;
+  walk(scene.root, (n) => {
+    if (/(^| )dns-chip( |$)/.test(n.attrs.class || '')) dns = true;
+  });
+  const legend = svgLegend(model, view, { ...opts, dnsShown: dns }, scene.bounds);
   const networks = svgNetworks(model, view, sceneRefs(scene.root), legend.box, legend.viewBox);
   return { legend, networks, viewBox: networks.viewBox };
 }

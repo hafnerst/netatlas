@@ -4,10 +4,11 @@ import { sortedByName } from '../model/order';
 import { Attrs, CATEGORIES, Interface, Model, ProtocolDef, RelEndpoint, TunnelEnd, endpointText, ifaceKey, interfaceKindLabel, relationDevices } from '../model/types';
 import { LegendItem, SWATCH_H, SWATCH_W, legendOf, relationSwatchParts } from '../diagram/legend';
 import { VNode, h } from '../diagram/scene';
+import { iconNode } from './dom';
 import { View } from '../diagram/session';
 import { ContextState, SelectionContext, contextState, splitRef } from '../model/queries';
 import { mediumStyle } from '../diagram/style';
-import { AddressAssoc, associatedInterfaces, deviceNetworks, derivedVlanText, interfaceAddresses, interfaceVlanPorts, interfaceVlanText, interfaceVlans, linkEndVlanText, networkMembers, vlanMismatch, vlanMismatchText } from '../model/derive';
+import { AddressAssoc, associatedInterfaces, deviceNetworks, derivedVlanText, interfaceAddresses, interfaceCarriedNetworks, interfaceNetworkPorts, interfaceVlanText, interfaceVlans, linkEndNetworksText, networkMembers, networkMismatch, networkMismatchText, networkName } from '../model/derive';
 import { relationStyle } from '../model/protocols';
 
 
@@ -33,11 +34,6 @@ function attrsTable(title: string, attrs: Attrs): VNode | null {
 function epNode(model: Model, e: RelEndpoint): VNode {
   const parts: VNode[] = [refLink('device:' + e.device, model.index.devices.get(e.device)?.label || e.device)];
   if (e.iface) parts.push(h('span', { class: 'muted' }, ' '), refLink(`iface:${e.device}:${e.iface}`, e.iface));
-  const extra: string[] = [];
-  if (e.role) extra.push(e.role);
-  if (e.address) extra.push(e.address);
-  for (const [k, v] of e.attrs) extra.push(`${k}=${v}`);
-  if (extra.length) parts.push(h('span', { class: 'muted' }, '  ' + extra.join(', ')));
   return h('li', {}, parts);
 }
 
@@ -62,25 +58,26 @@ function derivedAddressList(model: Model, assocs: AddressAssoc[]): VNode {
   );
 }
 
-/** The distinct ports carrying the VLAN(s) of a virtual interface, alphabetically. */
-function vlanPortIds(model: Model, i: Interface): string[] {
+/** The distinct ports carrying the networks of a virtual interface, alphabetically. */
+function networkPortIds(model: Model, i: Interface): string[] {
   const ids: string[] = [];
-  for (const p of interfaceVlanPorts(model, i)) if (ids.indexOf(p.iface) < 0) ids.push(p.iface);
+  for (const p of interfaceNetworkPorts(model, i)) if (ids.indexOf(p.iface) < 0) ids.push(p.iface);
   return sortedByName(ids, (x) => x);
 }
 
 /**
  * What a logical interface is associated with, in words: member ports of an
- * aggregate, the VLAN of a VLAN interface with the ports carrying it, the
+ * aggregate, the VLAN of a VLAN interface, the ports carrying its networks, the
  * source and destination of a tunnel. '' when there is nothing to say.
  */
 export function associationText(model: Model, i: Interface): string {
   const parts: string[] = [];
   if (i.members.length) parts.push('Member ports: ' + sortedByName(i.members, (x) => x).join(', '));
   const vlans = interfaceVlans(model, i);
-  if (vlans.length) {
-    const ports = vlanPortIds(model, i);
-    parts.push(`VLAN ${vlans.join(', ')} · ` + (ports.length ? 'ports carrying it: ' + ports.join(', ') : 'no port carries it'));
+  if (vlans.length) parts.push(`VLAN ${vlans.join(', ')}`);
+  if (interfaceCarriedNetworks(model, i).length) {
+    const ports = networkPortIds(model, i);
+    parts.push(ports.length ? 'ports carrying its networks: ' + ports.join(', ') : 'no port carries its networks');
   }
   if (i.source) parts.push('Tunnel source: ' + i.source.text + (i.source.address !== undefined && i.source.iface ? ` (${i.source.iface})` : ''));
   if (i.destination) parts.push('Destination: ' + i.destination.text + (i.destination.address !== undefined && i.destination.device ? ` (${i.destination.device}${i.destination.iface ? ':' + i.destination.iface : ''})` : ''));
@@ -108,25 +105,101 @@ function list(title: string, items: VNode[]): VNode | null {
   return h('section', {}, [h('h4', {}, `${title} (${items.length})`), h('ul', { class: 'reflist' }, items)]);
 }
 
-function header(kind: string, title: string): VNode {
-  return h('div', { class: 'det-head' }, [
-    h('span', { class: 'badge', 'data-kind': kind }, kind),
-    h('h3', {}, title),
+/** The addresses of an interface as shown in the details: its manual addresses, or that DHCP provides them. */
+function addressText(i: Interface, sep: string): string {
+  return i.dhcp && !i.addresses.length ? 'DHCP' : i.addresses.join(sep);
+}
+
+/** Errors and warnings of the object a header is about (from the editor's validation). */
+export interface IssueCount {
+  errors: number;
+  warnings: number;
+}
+
+/** The problem state of an object: "No problems", or how many errors and warnings it has. */
+export function statusChip(kind: string, c: IssueCount): VNode {
+  const state = c.errors ? 'error' : c.warnings ? 'warning' : 'ok';
+  const parts: string[] = [];
+  if (c.errors) parts.push(`${c.errors} error${c.errors > 1 ? 's' : ''}`);
+  if (c.warnings) parts.push(`${c.warnings} warning${c.warnings > 1 ? 's' : ''}`);
+  const text = parts.length ? parts.join(' · ') : 'No problems';
+  return h('span', { class: 'ih-status ' + state, 'data-state': state, title: parts.length ? `This ${kind} has ${text}.` : `This ${kind} has no validation problems.` }, [
+    iconNode(state),
+    h('span', {}, text),
   ]);
 }
 
+/** How the header of an object names it: its kind, its name, and its ID (shown beside the name when they differ). */
+export function headOf(model: Model, ref: string): { kind: string; title: string; id?: string } | null {
+  const [kind, id] = splitRef(ref);
+  const ix = model.index;
+  if (kind === 'device') {
+    const d = ix.devices.get(id);
+    return d ? { kind: 'device', title: d.label, id: d.id } : null;
+  }
+  if (kind === 'iface') {
+    const i = ix.interfaces.get(id);
+    return i ? { kind: 'interface', title: i.device + ' ' + i.id } : null;
+  }
+  if (kind === 'link') {
+    const l = ix.links.get(id);
+    return l ? { kind: 'physical link', title: l.label || l.id, id: l.id } : null;
+  }
+  if (kind === 'relation') {
+    const r = ix.relations.get(id);
+    return r ? { kind: r.category, title: relationTitle(model, r.id), id: r.id } : null;
+  }
+  if (kind === 'network') {
+    const n = ix.networks.get(id);
+    return n ? { kind: 'IP network', title: n.label, id: n.id } : null;
+  }
+  if (kind === 'group') {
+    const g = ix.groups.get(id);
+    return g ? { kind: g.kind || 'group', title: g.label, id: g.id } : null;
+  }
+  if (kind === 'protocol') {
+    const p = model.protocols.get(id);
+    return p ? { kind: 'protocol', title: p.label, id: p.id } : null;
+  }
+  return null;
+}
+
+/**
+ * The header of a selected object, the same in Details and Edit: one row
+ * with its type, its problem state and (in Edit) its actions, and below it
+ * the object's name with its stable ID beside it when the two differ. The
+ * ID is plain, selectable text, so it can be copied.
+ */
+export function objectHead(kind: string, title: string, id: string | undefined, status: IssueCount | null, actions: VNode | null = null): VNode {
+  return h('div', { class: 'insp-head', 'data-kind': kind }, [
+    h('div', { class: 'ih-row' }, [h('span', { class: 'badge', 'data-kind': kind }, kind), status ? statusChip(kind, status) : null, actions]),
+    h('h3', {}, [h('span', { class: 'ih-name' }, title), id !== undefined && id !== title ? h('code', { class: 'ih-id', title: 'ID (stable identifier)' }, id) : null]),
+  ]);
+}
+
+
+
+/** DNS names of its device that are associated with an interface, alphabetically. */
+function dnsOf(model: Model, i: Interface): string[] {
+  const d = model.index.devices.get(i.device);
+  return d ? sortedByName(d.dnsNames.filter((x) => x.interfaces.indexOf(i.id) >= 0).map((x) => x.name), (x) => x) : [];
+}
+
 /** Details for the selected entity. */
-export function detailsFor(model: Model, ref: string): VNode {
+export function detailsFor(model: Model, ref: string, status: IssueCount | null = null): VNode {
+  const header = (): VNode => {
+    const x = headOf(model, ref) || { kind, title: id };
+    return objectHead(x.kind, x.title, x.id, status);
+  };
   const [kind, id] = splitRef(ref);
   const ix = model.index;
   const kids: Array<VNode | null> = [];
   if (kind === 'device') {
     const d = ix.devices.get(id);
     if (!d) return h('div', {}, 'Not found');
-    kids.push(header('device', d.label));
+    kids.push(header());
     kids.push(
       kv([
-        ['id', d.id],
         ['type', deviceTypeLabel(d.type) || undefined],
         ['group', d.group ? refLink('group:' + d.group, ix.groups.get(d.group)?.label || d.group) : undefined],
         ['description', d.description],
@@ -146,7 +219,7 @@ export function detailsFor(model: Model, ref: string): VNode {
               const peer = l ? (l.a.device === d.id && l.a.iface === i.id ? l.b : l.a) : undefined;
               return h('tr', { class: l ? '' : 'unused', 'data-iface': i.id, 'data-kind': i.type }, [
                 h('td', {}, [refLink(`iface:${d.id}:${i.id}`, i.id)]),
-                h('td', {}, i.addresses.join(', ')),
+                h('td', {}, addressText(i, ', ')),
                 h('td', {}, interfaceVlanText(interfaceAddresses(model, d.id, i.id)).replace(/VLAN /g, '')),
                 h('td', {}, peer ? [refLink('link:' + (lid as string), '→ ' + endpointText(peer))] : []),
               ]);
@@ -166,11 +239,30 @@ export function detailsFor(model: Model, ref: string): VNode {
               h('tr', { 'data-iface': i.id, 'data-kind': i.type }, [
                 h('td', {}, [refLink(`iface:${d.id}:${i.id}`, i.id), i.label ? h('span', { class: 'muted' }, ' ' + i.label) : null]),
                 h('td', {}, interfaceKindLabel(i.type)),
-                h('td', {}, i.addresses.join('\n')),
+                h('td', {}, addressText(i, '\n')),
                 h('td', { 'data-assoc': '' }, associationText(model, i)),
               ]),
             ),
           ]),
+        ]),
+      );
+    }
+    // DNS names: each configured once, with the interfaces it is associated with (not with an address)
+    const names = sortedByName(d.dnsNames, (x) => x.name);
+    if (names.length) {
+      kids.push(
+        h('section', { 'data-list': 'dns-names' }, [
+          h('h4', {}, `DNS names (${names.length})`),
+          h('table', { class: 'ports' }, [
+            h('tr', {}, [h('th', {}, 'name'), h('th', { title: 'The name is associated with these interfaces, not with one particular address' }, 'interfaces')]),
+            ...names.map((x) =>
+              h('tr', { 'data-dns': x.name }, [
+                h('td', {}, x.name),
+                h('td', {}, sortedByName(x.interfaces, (y) => y).reduce((acc: VNode[], y, k) => acc.concat(k ? [h('span', {}, ', '), refLink(`iface:${d.id}:${y}`, y)] : [refLink(`iface:${d.id}:${y}`, y)]), [])),
+              ]),
+            ),
+          ]),
+          h('p', { class: 'muted small' }, 'Configured names only: no DNS record is derived from them.'),
         ]),
       );
     }
@@ -193,13 +285,14 @@ export function detailsFor(model: Model, ref: string): VNode {
     const i = ix.interfaces.get(id);
     if (!i) return h('div', {}, 'Not found');
     const lid = ix.ifaceLink.get(id);
-    kids.push(header('interface', i.device + ' ' + i.id));
+    kids.push(header());
     kids.push(
       kv([
         ['device', refLink('device:' + i.device, ix.devices.get(i.device)?.label || i.device)],
         ['label', i.label],
         ['type', interfaceKindLabel(i.type)],
-        ['addresses', i.addresses.join(', ')],
+        ['addresses', i.dhcp && !i.addresses.length ? 'obtained by DHCP (not known, so in no network)' : i.addresses.join(', ')],
+        ['DNS names', dnsOf(model, i).join(', ') || undefined],
         ['vrf', i.vrf],
         ['mac', i.mac],
         ['cable', i.type !== 'physical' ? undefined : lid ? refLink('link:' + lid, lid) : 'not cabled'],
@@ -211,30 +304,31 @@ export function detailsFor(model: Model, ref: string): VNode {
     const ifLink = (x: string): VNode => refLink(`iface:${i.device}:${x}`, x);
     const linked = (ids: string[]): VNode => h('span', {}, ids.reduce((acc: VNode[], x, k) => acc.concat(k ? [h('span', {}, ', '), ifLink(x)] : [ifLink(x)]), []));
     const vlans = interfaceVlans(model, i);
-    const ports = vlanPortIds(model, i);
+    const carried = interfaceCarriedNetworks(model, i);
+    const ports = networkPortIds(model, i);
     // only the associations that apply to this interface are shown
     kids.push(
       h('section', { 'data-assoc': i.type }, [
         kv([
           ['member ports', i.members.length ? linked(sortedByName(i.members, (x) => x)) : undefined],
           ['VLAN', vlans.length ? vlans.join(', ') + (i.vlan === undefined ? ' (from the network of its address)' : '') : undefined],
-          ['ports carrying VLAN', vlans.length ? (ports.length ? linked(ports) : 'none: no link end of this device permits the VLAN') : undefined],
+          ['ports carrying its networks', carried.length ? (ports.length ? linked(ports) : 'none: no link end of this device carries them') : undefined],
           ['tunnel source', i.source ? tunnelEndNode(model, i.source) : undefined],
           ['tunnel destination', i.destination ? tunnelEndNode(model, i.destination) : undefined],
         ]),
-        vlans.length ? h('p', { class: 'muted small' }, 'Ports carrying VLAN is derived from the VLANs permitted on the link ends of this device.') : null,
+        carried.length ? h('p', { class: 'muted small' }, 'Derived from the networks on this device’s link ends.') : null,
       ]),
     );
-    // the other direction: aggregates this port is a member of, VLAN interfaces it carries, tunnels sourced from it
+    // the other direction: aggregates this port is a member of, virtual interfaces whose networks it carries, tunnels sourced from it
     const d = ix.devices.get(i.device);
-    const users = d ? d.logical.filter((o) => o.id !== i.id && (o.members.indexOf(i.id) >= 0 || (!!o.source && o.source.iface === i.id) || interfaceVlanPorts(model, o).some((p) => p.iface === i.id))) : [];
+    const users = d ? d.logical.filter((o) => o.id !== i.id && (o.members.indexOf(i.id) >= 0 || (!!o.source && o.source.iface === i.id) || interfaceNetworkPorts(model, o).some((p) => p.iface === i.id))) : [];
     kids.push(
       list(
         'Used by logical interfaces',
         sortedByName(users, (o) => o.id).map((o) =>
           h('li', { 'data-iface': o.id }, [
             refLink(`iface:${i.device}:${o.id}`, o.id),
-            h('span', { class: 'muted' }, ' ' + (o.members.indexOf(i.id) >= 0 ? 'aggregate (member port)' : o.source && o.source.iface === i.id ? 'tunnel (source)' : 'VLAN interface (carried on this port)')),
+            h('span', { class: 'muted' }, ' ' + (o.members.indexOf(i.id) >= 0 ? 'aggregate (member port)' : o.source && o.source.iface === i.id ? 'tunnel (source)' : 'its networks are carried on this port')),
           ]),
         ),
       ),
@@ -251,21 +345,22 @@ export function detailsFor(model: Model, ref: string): VNode {
   } else if (kind === 'link') {
     const l = ix.links.get(id);
     if (!l) return h('div', {}, 'Not found');
-    kids.push(header('physical link', l.label || l.id));
-    const ep = (e: { device: string; iface?: string; vlans: number[] }): VNode =>
+    kids.push(header());
+    const nets = (ids: string[]): VNode[] => ids.reduce((acc: VNode[], n, k) => acc.concat(k ? [h('span', {}, ', '), refLink('network:' + n, networkName(model, n))] : [refLink('network:' + n, networkName(model, n))]), []);
+    const ep = (e: { device: string; iface?: string; networks: string[] }): VNode =>
       h('span', {}, [
         refLink('device:' + e.device, ix.devices.get(e.device)?.label || e.device),
         e.iface ? h('span', {}, ' ') : null,
         e.iface ? refLink(`iface:${e.device}:${e.iface}`, e.iface) : null,
-        h('span', { class: e.vlans.length ? 'vlan-end' : 'vlan-end muted' }, ' — ' + linkEndVlanText(e.vlans)),
+        h('span', { class: e.networks.length ? 'net-end' : 'net-end muted' }, e.networks.length ? ' — carries ' : ' — no network'),
+        ...nets(e.networks),
       ]);
-    const mm = vlanMismatch(l.a.vlans, l.b.vlans);
+    const mm = networkMismatch(l.a.networks, l.b.networks);
     kids.push(
       kv([
-        ['id', l.id],
         ['A', ep(l.a)],
         ['B', ep(l.b)],
-        ['VLANs', mm ? h('span', { class: 'warn-text', 'data-vlan-mismatch': 'yes' }, '⚠ mismatch — ' + vlanMismatchText(mm)) : undefined],
+        ['networks', mm ? h('span', { class: 'warn-text', 'data-net-mismatch': 'yes' }, '⚠ the ends differ — ' + networkMismatchText(mm, (n) => networkName(model, n))) : undefined],
         ['medium', mediumStyle(l.medium).label],
         ['speed', l.speed],
         ['cable', l.cable],
@@ -283,14 +378,12 @@ export function detailsFor(model: Model, ref: string): VNode {
     const r = ix.relations.get(id);
     if (!r) return h('div', {}, 'Not found');
     const def = relationStyle(model, r);
-    kids.push(header(r.category, relationTitle(model, r.id)));
+    kids.push(header());
     kids.push(
       kv([
-        ['id', r.id],
         ['protocol', def.label + (def.label.toLowerCase() !== r.protocol ? ` (${r.protocol})` : '')],
         ['category', r.category],
-        ['directed', r.directed ? 'yes (first → last endpoint)' : undefined],
-        ['network', r.network ? refLink('network:' + r.network, ix.networks.get(r.network)?.label || r.network) : undefined],
+        ['direction', r.direction === 'unidirectional' ? 'unidirectional (first → last endpoint)' : 'bidirectional'],
         ['description', r.description],
       ]),
     );
@@ -316,9 +409,9 @@ export function detailsFor(model: Model, ref: string): VNode {
   } else if (kind === 'network') {
     const n = ix.networks.get(id);
     if (!n) return h('div', {}, 'Not found');
-    kids.push(header('IP network', n.label));
-    kids.push(kv([['id', n.id], ['cidr', n.cidr.join(', ')], ['vlan', n.vlan !== undefined ? String(n.vlan) : undefined], ['description', n.description]]));
-    // derived: every device with an address inside the network's prefixes, once
+    kids.push(header());
+    kids.push(kv([['IP network', n.cidr || 'missing or invalid'], ['vlan', n.vlan !== undefined ? String(n.vlan) : undefined], ['description', n.description]]));
+    // derived: every device with a configured address inside the network's prefix, once
     kids.push(
       list(
         'Members',
@@ -336,24 +429,36 @@ export function detailsFor(model: Model, ref: string): VNode {
       list(
         'Relations',
         model.relations
-          .filter((r) => r.network === n.id || r.over.indexOf(n.id) >= 0)
+          .filter((r) => r.over.indexOf(n.id) >= 0)
           .map((r) => h('li', {}, [refLink('relation:' + r.id, relationTitle(model, r.id))])),
+      ),
+    );
+    // configured on the links: the cable ends that carry it (not membership)
+    kids.push(
+      list(
+        'Carried on cables',
+        model.links
+          .filter((l) => l.a.networks.indexOf(n.id) >= 0 || l.b.networks.indexOf(n.id) >= 0)
+          .map((l) => {
+            const ends = [l.a.networks.indexOf(n.id) >= 0 ? 'A' : '', l.b.networks.indexOf(n.id) >= 0 ? 'B' : ''].filter((x) => x);
+            return h('li', { 'data-link': l.id }, [refLink('link:' + l.id, l.label || l.id), h('span', { class: 'muted' }, ` ${endpointText(l.a)} ⟷ ${endpointText(l.b)}` + (ends.length < 2 ? ` (end ${ends[0]} only)` : ''))]);
+          }),
       ),
     );
     kids.push(attrsTable('Attributes', n.attrs));
   } else if (kind === 'group') {
     const g = ix.groups.get(id);
     if (!g) return h('div', {}, 'Not found');
-    kids.push(header(g.kind || 'group', g.label));
-    kids.push(kv([['id', g.id], ['kind', g.kind], ['parent', g.parent ? refLink('group:' + g.parent, ix.groups.get(g.parent)?.label || g.parent) : undefined], ['description', g.description]]));
+    kids.push(header());
+    kids.push(kv([['kind', g.kind], ['parent', g.parent ? refLink('group:' + g.parent, ix.groups.get(g.parent)?.label || g.parent) : undefined], ['description', g.description]]));
     kids.push(list('Sub-groups', model.groups.filter((c) => c.parent === g.id).map((c) => h('li', {}, [refLink('group:' + c.id, c.label)]))));
     kids.push(list('Devices', model.devices.filter((d) => d.group === g.id).map((d) => h('li', {}, [refLink('device:' + d.id, d.label)]))));
     kids.push(attrsTable('Attributes', g.attrs));
   } else if (kind === 'protocol') {
     const p = model.protocols.get(id);
     if (!p) return h('div', {}, 'Not found');
-    kids.push(header('protocol', p.label));
-    kids.push(kv([['id', p.id], ['category', p.category], ['description', p.description]]));
+    kids.push(header());
+    kids.push(kv([['category', p.category], ['description', p.description]]));
     kids.push(list('Relations', model.relations.filter((r) => r.protocol === id).map((r) => h('li', {}, [refLink('relation:' + r.id, relationTitle(model, r.id))]))));
   } else {
     return h('div', {}, 'Nothing selected');
@@ -366,7 +471,7 @@ export function relationTitle(model: Model, id: string): string {
   if (!r) return id;
   const def = relationStyle(model, r);
   const devs = relationDevices(r).map((d) => model.index.devices.get(d)?.label || d);
-  const pair = devs.length <= 3 ? devs.join(r.directed ? ' → ' : ' ↔ ') : `${devs.length} devices`;
+  const pair = devs.length <= 3 ? devs.join(r.direction === 'unidirectional' ? ' → ' : ' ↔ ') : `${devs.length} devices`;
   return `${def.label}${r.label ? ' “' + r.label + '”' : ''}: ${pair}`;
 }
 
@@ -389,7 +494,7 @@ export function tooltipFor(model: Model, ref: string): string[] {
     const i = ix.interfaces.get(id);
     if (!i) return [];
     const used = i.type === 'physical' ? associatedInterfaces(model, i) : [];
-    return [`${i.device} ${i.id}`, interfaceKindLabel(i.type), associationText(model, i), used.length ? 'used by ' + sortedByName(used, (x) => x).join(', ') : '', i.addresses.join(', '), interfaceVlanText(interfaceAddresses(model, i.device, i.id)), i.description || ''].filter((s) => s);
+    return [`${i.device} ${i.id}`, interfaceKindLabel(i.type), associationText(model, i), used.length ? 'used by ' + sortedByName(used, (x) => x).join(', ') : '', addressText(i, ', '), dnsOf(model, i).join(', '), interfaceVlanText(interfaceAddresses(model, i.device, i.id)), i.description || ''].filter((s) => s);
   }
   if (kind === 'link') {
     const l = ix.links.get(id);
@@ -398,8 +503,8 @@ export function tooltipFor(model: Model, ref: string): string[] {
     return [
       `${endpointText(l.a)}  ⟷  ${endpointText(l.b)}`,
       [mediumStyle(l.medium).label, l.speed, l.label, l.cable].filter((s) => s).join(' · '),
-      l.a.vlans.length || l.b.vlans.length ? `A: ${linkEndVlanText(l.a.vlans)}  |  B: ${linkEndVlanText(l.b.vlans)}` : '',
-      vlanMismatch(l.a.vlans, l.b.vlans) ? '⚠ VLAN mismatch between the ends' : '',
+      l.a.networks.length || l.b.networks.length ? `A: ${linkEndNetworksText(model, l.a.networks)}  |  B: ${linkEndNetworksText(model, l.b.networks)}` : '',
+      networkMismatch(l.a.networks, l.b.networks) ? '⚠ the two ends carry different networks' : '',
       carried ? `carries ${carried} logical relation${carried > 1 ? 's' : ''}` : '',
     ].filter((s) => s);
   }
@@ -414,7 +519,7 @@ export function tooltipFor(model: Model, ref: string): string[] {
     const n = ix.networks.get(id);
     if (!n) return [];
     const count = networkMembers(model, n.id).length;
-    return [n.label, [n.vlan !== undefined ? 'VLAN ' + n.vlan : '', n.cidr.join(', ')].filter((s) => s).join(' · '), `${count} member${count === 1 ? '' : 's'}`].filter((s) => s);
+    return [n.label, [n.vlan !== undefined ? 'VLAN ' + n.vlan : '', n.cidr || ''].filter((s) => s).join(' · '), `${count} member${count === 1 ? '' : 's'}`].filter((s) => s);
   }
   if (kind === 'group') {
     const g = ix.groups.get(id);

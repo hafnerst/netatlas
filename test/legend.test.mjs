@@ -9,7 +9,7 @@ import { load, model, example, exampleNames, state, scene, panels } from './help
 const legend = load('diagram/legend.js');
 const { textWidth } = load('layout/geometry.js');
 
-const ALL = { hiddenProtocols: new Set(), showNetworks: true, showUnderlay: false };
+const ALL = { hiddenProtocols: new Set(), showNetworks: true, showGroups: true };
 const texts = (v) => scene.findAll(v, (n) => n.tag === 'text').map((n) => n.text);
 const inside = (inner, outer) => inner.x >= outer.x && inner.y >= outer.y && inner.x + inner.w <= outer.x + outer.w && inner.y + inner.h <= outer.y + outer.h;
 const overlap = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
@@ -69,8 +69,8 @@ test('physical legend in the SVG: device types, cable media, speed, ports, locat
     assert.ok(t.includes(want), want + '\n' + t.join(' | '));
   }
   assert.ok(!t.some((x) => /mismatch/.test(x)), 'no mismatch symbol when no cable has one');
-  const mm = model('netatlas: 1\ndevices:\n  - {id: a, interfaces: [e0]}\n  - {id: b, interfaces: [e0]}\nlinks:\n  - {id: l, a: {device: a, interface: e0, vlans: [10]}, b: "b:e0"}\n');
-  assert.ok(texts(exported(mm, 'physical').root).includes('VLAN mismatch between the two ends'));
+  const mm = model('netatlas: 1\ndevices:\n  - {id: a, interfaces: [e0]}\n  - {id: b, interfaces: [e0]}\nnetworks:\n  - {id: n, cidr: 10.0.0.0/24}\nlinks:\n  - {id: l, a: {device: a, interface: e0, networks: [n]}, b: "b:e0"}\n');
+  assert.ok(texts(exported(mm, 'physical').root).includes('The two ends carry different networks'));
   // symbols are real SVG content of the file (icons, lines), not references to the page
   const root = exported(m, 'physical').root;
   assert.ok(scene.findAll(root, (n) => scene.hasClass(n, 'icon')).length >= 5);
@@ -84,14 +84,16 @@ test('logical legend in the SVG: the protocols that are drawn, with their line s
   for (const want of ['IPsec', 'GRE', 'OSPF', 'MACsec *', 'Multipoint hub (3+ devices)', 'IP network', 'Network membership (from addresses)', '* defined in this file’s "protocols" section']) {
     assert.ok(all.includes(want), want + '\n' + all.join(' | '));
   }
-  assert.ok(!all.includes('Physical adjacency (optional underlay)'), 'underlay is off');
+  assert.ok(!all.includes('Physical adjacency (optional underlay)'), 'there is no underlay any more');
   const root = exported(m, 'logical').root;
   assert.ok(scene.findAll(root, (n) => scene.hasClass(n, 'tube-outer')).length >= 2, 'tunnels keep their tube symbol');
   // what is switched off in the view is not in the picture, so it is not in its legend either
-  const some = texts(exported(m, 'logical', { hiddenProtocols: new Set(['ospf', 'gre']), showNetworks: false, showUnderlay: true }).root);
+  const some = texts(exported(m, 'logical', { hiddenProtocols: new Set(['ospf', 'gre']), showNetworks: false, showGroups: false }).root);
   assert.ok(!some.includes('OSPF') && !some.includes('GRE') && some.includes('IPsec'));
   assert.ok(!some.includes('IP network') && !some.includes('Network membership (from addresses)'));
-  assert.ok(some.includes('Physical adjacency (optional underlay)'));
+  // group frames are drawn in the logical view too; hidden frames leave the legend
+  const groupsTitle = (xs) => xs.some((x) => /^LOCATIONS \/ GROUPS/.test(x));
+  assert.ok(groupsTitle(all) && all.includes('rack') && !groupsTitle(some) && !some.includes('rack'));
 });
 
 test('the Legend tab and the SVG legend show the same entries', () => {
@@ -103,7 +105,7 @@ test('the Legend tab and the SVG legend show the same entries', () => {
         assert.ok(tab.includes(s.title), `${f} ${view}: tab lacks "${s.title}"`);
         for (const i of s.items.concat(s.more || [])) assert.ok(tab.includes(i.label), `${f} ${view}: tab lacks "${i.label}"`);
       }
-      const svg = texts(exported(m, view, { ...ALL, showUnderlay: true }).root);
+      const svg = texts(exported(m, view, ALL).root);
       for (const s of legend.legendOf(m, view).sections) {
         // (network symbols are left out of the picture's legend when the model has no network)
         for (const i of s.items) if (i.label !== '1G' && (m.networks.length || !/^IP network|^Network membership/.test(i.label))) assert.ok(svg.includes(i.label + (i.custom ? ' *' : '')), `${f} ${view}: SVG lacks "${i.label}"`);

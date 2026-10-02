@@ -1,6 +1,7 @@
 // "Configure once, derive elsewhere": network membership and interface VLANs
-// are computed from addresses and prefixes (model/derive.ts), link-end VLANs
-// are configured per end, and keys that are not part of the format are rejected.
+// are computed from addresses and each network's one prefix
+// (model/derive.ts), the networks a cable carries are configured per link
+// end, and keys that are not part of the format are rejected.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { validate, derive, queries, panels, scene, state, load, example, exampleNames, byClass, byRef } from './helpers.mjs';
@@ -8,7 +9,6 @@ import { validate, derive, queries, panels, scene, state, load, example, example
 const { ModelDoc } = load('editor/document.js');
 const { SCHEMA, RETIRED } = load('yaml/schema.js');
 const { layoutInput, layoutSignature } = load('layout/input.js');
-const { parseVlanList } = load('ui/inspector.js');
 
 const doc = (text) => ModelDoc.fromText(text, 't.yaml', 'file').doc;
 const load2 = (text) => validate.loadModel(text);
@@ -21,6 +21,8 @@ const members = (m, id) => derive.networkMembers(m, id).map((x) => x.device);
 const matches = (m, id) => derive.networkMembers(m, id).flatMap((x) => x.matches.map((a) => `${a.device}:${a.iface} ${a.address}`));
 const vlanOf = (m, dev, inf) => derive.interfaceAddresses(m, dev, inf).map((a) => (a.vlan.state === 'vlan' ? a.vlan.vlan : a.vlan.state === 'ambiguous' ? 'ambiguous:' + a.vlan.vlans.join('/') : 'none'));
 const errorsOf = (text) => load2(text).errors.map((e) => e.message);
+/** a network as the model holds it, for the pure functions */
+const n1 = (cidr) => [{ id: 'n', label: 'n', cidr, attrs: [], line: 0 }];
 
 // ------------------------------------------------------------------ membership
 
@@ -42,28 +44,32 @@ devices:
 networks:
   - {id: lan, cidr: 10.1.0.0/24, vlan: 10}
   - {id: lan6, cidr: "2001:db8:1::/64"}
-  - {id: loops, cidr: [10.255.0.0/24, "2001:db8:ffff::/48"]}
-  - {id: empty}
+  - {id: loops, cidr: 10.255.0.0/24}
+  - {id: loops6, cidr: "2001:db8:ffff::/48"}
 `;
 
 test('membership: a device is a member when one of its addresses lies in the network; listed once, with every match', () => {
-  const { model: m, warnings } = ok(net);
+  const { model: m } = ok(net);
   assert.deepEqual(members(m, 'lan'), ['r1', 'r2']);
   // r1 matches through two interfaces but appears once
   assert.deepEqual(matches(m, 'lan'), ['r1:eth0 10.1.0.1/24', 'r1:eth1 10.1.0.9/24', 'r2:eth0 10.1.0.2']);
   assert.deepEqual(members(m, 'lan6'), ['r1']);
-  // loopbacks count, for IPv4 and IPv6, and are marked as loopbacks
-  assert.deepEqual(derive.networkMembers(m, 'loops')[0].matches.map((x) => [x.iface, x.loopback, x.address]), [
-    ['lo0', true, '10.255.0.1/32'],
-    ['lo0', true, '2001:db8:ffff::1/128'],
-  ]);
-  // devices without addresses, and networks without a prefix, have no membership
+  // loopbacks count, for IPv4 and IPv6, and are marked as loopbacks; each network has its one prefix
+  assert.deepEqual(derive.networkMembers(m, 'loops')[0].matches.map((x) => [x.iface, x.loopback, x.address]), [['lo0', true, '10.255.0.1/32']]);
+  assert.deepEqual(derive.networkMembers(m, 'loops6')[0].matches.map((x) => [x.iface, x.loopback, x.address]), [['lo0', true, '2001:db8:ffff::1/128']]);
+  // devices without addresses have no membership
   assert.ok(!m.networks.some((n) => members(m, n.id).includes('sw')));
-  assert.deepEqual(members(m, 'empty'), []);
-  assert.deepEqual(warnings.map((w) => w.message).filter((t) => /no prefix/.test(t)).length, 1);
-  assert.deepEqual(derive.deviceNetworks(m, 'r1'), ['lan', 'lan6', 'loops']);
+  assert.deepEqual(derive.deviceNetworks(m, 'r1'), ['lan', 'lan6', 'loops', 'loops6']);
   assert.deepEqual(derive.interfaceNetworks(m, 'r1', 'eth0'), ['lan', 'lan6']);
   assert.deepEqual(derive.interfaceNetworks(m, 'r1', 'eth2'), []);
+  assert.equal(typeof m.networks[0].cidr, 'string');
+});
+
+test('membership: an interface with DHCP on and no known address makes its device a member of nothing', () => {
+  const { model: m } = ok(net.replace('{id: eth2}', '{id: eth2, dhcp: true}').replace('interfaces: [p1, p2]', 'interfaces: [{id: p1, dhcp: true}, p2]'));
+  assert.deepEqual(derive.interfaceNetworks(m, 'r1', 'eth2'), []);
+  assert.deepEqual(derive.deviceNetworks(m, 'sw'), []);
+  for (const n of m.networks) assert.ok(!members(m, n.id).includes('sw'), n.id);
 });
 
 test('membership: the network prefix is the authority; the interface\'s own prefix length is ignored', () => {
@@ -71,8 +77,7 @@ test('membership: the network prefix is the authority; the interface\'s own pref
   // 10.1.0.2 (no length) and 10.1.1.2/16 (shorter length, but outside 10.1.0.0/24)
   assert.ok(matches(m, 'lan').includes('r2:eth0 10.1.0.2'));
   assert.ok(!matches(m, 'lan').some((x) => x.startsWith('r2:eth1')));
-  const n = (cidr) => [{ id: 'n', label: 'n', cidr: [cidr], attrs: [], line: 0 }];
-  const inside = (addr, cidr) => derive.containingNetworks(addr, n(cidr)).length === 1;
+  const inside = (addr, cidr) => derive.containingNetworks(addr, n1(cidr)).length === 1;
   assert.ok(inside('10.1.0.200/32', '10.1.0.0/24'));
   assert.ok(inside('10.1.0.200/8', '10.1.0.0/24'), 'a wider interface mask still matches');
   assert.ok(inside('10.1.0.200/30', '10.1.0.0/24'), 'a narrower interface mask still matches');
@@ -80,8 +85,7 @@ test('membership: the network prefix is the authority; the interface\'s own pref
 });
 
 test('membership: prefix lengths and boundaries, IPv4', () => {
-  const n = (cidr) => [{ id: 'n', label: 'n', cidr: [cidr], attrs: [], line: 0 }];
-  const inside = (addr, cidr) => derive.containingNetworks(addr, n(cidr)).length === 1;
+  const inside = (addr, cidr) => derive.containingNetworks(addr, n1(cidr)).length === 1;
   assert.ok(inside('10.1.0.0', '10.1.0.0/24') && inside('10.1.0.255', '10.1.0.0/24'), 'first and last address');
   assert.ok(!inside('10.0.255.255', '10.1.0.0/24') && !inside('10.1.1.0', '10.1.0.0/24'));
   assert.ok(inside('192.0.2.5', '192.0.2.4/30') && !inside('192.0.2.8', '192.0.2.4/30'), 'a prefix that is not on a byte boundary');
@@ -89,11 +93,11 @@ test('membership: prefix lengths and boundaries, IPv4', () => {
   assert.ok(inside('192.0.2.0', '192.0.2.0/31') && inside('192.0.2.1', '192.0.2.0/31') && !inside('192.0.2.2', '192.0.2.0/31'), '/31');
   assert.ok(inside('8.8.8.8', '0.0.0.0/0'), '/0 contains every IPv4 address');
   assert.ok(inside('10.1.0.77', '10.1.0.9/24'), 'host bits in the configured prefix are ignored: the network is the /24');
+  assert.ok(!inside('10.1.0.1', undefined), 'a network without a (valid) prefix contains nothing');
 });
 
 test('membership: IPv6, and no matching across address families', () => {
-  const n = (cidr) => [{ id: 'n', label: 'n', cidr: [cidr], attrs: [], line: 0 }];
-  const inside = (addr, cidr) => derive.containingNetworks(addr, n(cidr)).length === 1;
+  const inside = (addr, cidr) => derive.containingNetworks(addr, n1(cidr)).length === 1;
   assert.ok(inside('2001:db8:1::1/64', '2001:db8:1::/64'));
   assert.ok(inside('2001:DB8:1:0:ffff:ffff:ffff:ffff', '2001:db8:1::/64') && !inside('2001:db8:2::1', '2001:db8:1::/64'));
   assert.ok(inside('2001:db8::1', '2001:db8::1/128') && !inside('2001:db8::2', '2001:db8::1/128'));
@@ -104,9 +108,9 @@ test('membership: IPv6, and no matching across address families', () => {
 });
 
 test('membership: invalid or incomplete addresses belong to no network', () => {
-  const n = [{ id: 'n', label: 'n', cidr: ['10.1.0.0/24', '::/0', '0.0.0.0/0'], attrs: [], line: 0 }];
+  const all = ['10.1.0.0/24', '::/0', '0.0.0.0/0'].map((c, i) => ({ id: 'n' + i, label: 'n', cidr: c, attrs: [], line: 0 }));
   for (const bad of ['', 'dhcp', '10.1.0', '10.1.0.256', '10.1.0.1/', '10.1.0.1/33', '10.1.0.1/x', '10.1.0.1/24/24', '2001:db8::1/129', '2001:db8:::1', 'fe80::1%eth0', '10.1.0.01']) {
-    assert.deepEqual(derive.containingNetworks(bad, n), [], JSON.stringify(bad));
+    assert.deepEqual(derive.containingNetworks(bad, all), [], JSON.stringify(bad));
   }
   // in a model: reported as a warning on the interface, shown as written, never a member
   const r = ok(net.replace('{id: eth2}', '{id: eth2, ip: [dhcp, 10.1.0.300/24]}'));
@@ -118,24 +122,44 @@ test('membership: invalid or incomplete addresses belong to no network', () => {
   assert.deepEqual(matches(r.model, 'lan').filter((x) => x.startsWith('r1:eth2')), []);
 });
 
-test('membership: an invalid network prefix is an error and defines nothing', () => {
-  const r = load2(net.replace('{id: empty}', '{id: bad, cidr: [10.1.0.0, 10.1.0.0/40, banana]}'));
-  assert.deepEqual(r.errors.map((e) => e.message), [
-    'invalid network prefix: "10.1.0.0" needs a prefix length, e.g. 10.1.0.0/32',
-    'invalid network prefix: prefix length "/40" is invalid for IPv4 (0–32)',
-    'invalid network prefix: "banana" is not a valid IPv4 or IPv6 address',
-  ]);
+test('a network has exactly one prefix: missing, empty, several or invalid is an error, and nothing is dropped', () => {
+  const add = (entry) => net + '  - ' + entry + '\n';
+  assert.deepEqual(errorsOf(add('{id: bad}')), ['network "bad" needs its IP network: add "cidr:" with one prefix (e.g. 192.0.2.0/24 or 2001:db8::/64)']);
+  assert.deepEqual(errorsOf(add('{id: bad, cidr: []}')), ['a network needs exactly one prefix, e.g. cidr: 192.0.2.0/24 (not an empty list)']);
+  const two = load2(add('{id: bad, cidr: [10.9.0.0/24, "2001:db8:9::/64"]}'));
+  assert.deepEqual(two.errors.map((e) => e.message), ['"cidr" lists 2 prefixes, but a network has exactly one: keep one here (written without brackets, e.g. cidr: 192.0.2.0/24) and make a separate network for each other prefix']);
+  assert.equal(two.errors[0].path, 'networks.bad.cidr');
+  // even a one-element list is a list
+  assert.match(errorsOf(add('{id: bad, cidr: [10.9.0.0/24]}'))[0], /lists 1 prefixes, but a network has exactly one/);
+  assert.match(errorsOf(add('{id: bad, prefixes: [10.9.0.0/24]}')).join('\n'), /"prefixes" is not part of the format — a network has exactly one prefix: write it as "cidr: 10.0.0.0\/24"/);
+  // invalid prefixes
+  assert.deepEqual(errorsOf(add('{id: bad, cidr: 10.1.0.0}')), ['invalid network prefix: "10.1.0.0" needs a prefix length, e.g. 10.1.0.0/32']);
+  assert.deepEqual(errorsOf(add('{id: bad, cidr: 10.1.0.0/40}')), ['invalid network prefix: prefix length "/40" is invalid for IPv4 (0–32)']);
+  assert.deepEqual(errorsOf(add('{id: bad, cidr: banana}')), ['invalid network prefix: "banana" is not a valid IPv4 or IPv6 address']);
+  // an invalid draft network is kept, with no prefix and no members; the file is written back unchanged
+  const r = load2(add('{id: bad, cidr: [10.1.0.0/24, 10.2.0.0/24]}'));
+  const bad = r.model.index.networks.get('bad');
+  assert.equal(bad.cidr, undefined);
   assert.deepEqual(members(r.model, 'bad'), []);
-  const hb = ok(net.replace('{id: empty}', '{id: hb, cidr: 10.1.0.9/24}'));
+  const text = add('{id: bad, cidr: [10.1.0.0/24, 10.2.0.0/24]}');
+  assert.equal(doc(text).exportText(), text);
+  // host bits: a warning, the network is the whole prefix
+  const hb = ok(add('{id: hb, cidr: 10.1.0.9/24}'));
   assert.ok(hb.warnings.some((w) => /10\.1\.0\.9\/24 has bits set beyond \/24/.test(w.message)));
   assert.deepEqual(members(hb.model, 'hb'), ['r1', 'r2']);
 });
 
-test('membership: overlapping networks each list the device', () => {
-  const { model: m } = ok(net.replace('{id: empty}', '{id: super, cidr: 10.0.0.0/8}'));
+test('overlapping networks: an address belongs to every network containing it; the same prefix twice is a warning', () => {
+  const { model: m, warnings } = ok(net + '  - {id: super, cidr: 10.0.0.0/8}\n');
   assert.deepEqual(members(m, 'super'), ['r1', 'r2']);
   assert.deepEqual(matches(m, 'super'), ['r1:eth0 10.1.0.1/24', 'r1:eth1 10.1.0.9/24', 'r1:lo0 10.255.0.1/32', 'r2:eth0 10.1.0.2', 'r2:eth1 10.1.1.2/16']);
   assert.deepEqual(derive.interfaceAddresses(m, 'r1', 'eth1')[0].networks, ['lan', 'super']);
+  assert.ok(!warnings.some((w) => /same prefix/.test(w.message)), 'a sub- and a supernet are two networks');
+  const dup = ok(net + '  - {id: lan-copy, cidr: 10.1.0.0/24}\n  - {id: lan-copy2, cidr: 10.1.0.5/24}\n');
+  assert.deepEqual(dup.warnings.filter((w) => /same prefix/.test(w.message)).map((w) => w.message), [
+    'network "lan-copy" has the same prefix as network "lan"; both list the same members',
+    'network "lan-copy2" has the same prefix as network "lan"; both list the same members',
+  ]);
 });
 
 // --------------------------------------------------------------- derived VLANs
@@ -151,14 +175,14 @@ test('interface VLAN: derived from the containing network, per address; never in
 });
 
 test('interface VLAN: several addresses can give several VLANs', () => {
-  const { model: m, warnings } = ok(net.replace('{id: eth1, ip: 10.1.0.9/24}', '{id: eth1, ip: [10.1.0.9/24, 10.2.0.9/24, "2001:db8:1::9/64"]}').replace('{id: empty}', '{id: lan2, cidr: 10.2.0.0/24, vlan: 20}'));
+  const { model: m, warnings } = ok(net.replace('{id: eth1, ip: 10.1.0.9/24}', '{id: eth1, ip: [10.1.0.9/24, 10.2.0.9/24, "2001:db8:1::9/64"]}') + '  - {id: lan2, cidr: 10.2.0.0/24, vlan: 20}\n');
   assert.deepEqual(vlanOf(m, 'r1', 'eth1'), [10, 20, 'none']);
   assert.equal(derive.interfaceVlanText(derive.interfaceAddresses(m, 'r1', 'eth1')), 'VLAN 10, VLAN 20');
   assert.ok(!warnings.some((w) => /ambiguous/.test(w.message)), 'different addresses in different VLANs are not an ambiguity');
 });
 
-test('interface VLAN: overlapping networks with conflicting VLANs are an explicit ambiguity', () => {
-  const r = ok(net.replace('{id: empty}', '{id: part, cidr: 10.1.0.0/28, vlan: 99}'));
+test('interface VLAN: overlapping networks with conflicting VLANs are an explicit ambiguity, nothing is chosen', () => {
+  const r = ok(net + '  - {id: part, cidr: 10.1.0.0/28, vlan: 99}\n');
   // 10.1.0.1 and 10.1.0.9 lie in both; 10.1.0.2 too
   assert.deepEqual(vlanOf(r.model, 'r1', 'eth0'), ['ambiguous:10/99', 'none']);
   assert.match(derive.interfaceVlanText(derive.interfaceAddresses(r.model, 'r1', 'eth0')), /^ambiguous: VLAN 10 or 99$/);
@@ -167,8 +191,8 @@ test('interface VLAN: overlapping networks with conflicting VLANs are an explici
   assert.match(w[0].message, /the VLAN of 10\.1\.0\.1\/24 on r1:eth0 is ambiguous: it lies in "lan" \(VLAN 10\) and "part" \(VLAN 99\); no VLAN is derived for it/);
   assert.equal(w[0].path, 'devices.r1.interfaces[0].ip');
   // overlapping networks that agree, or where only one defines a VLAN, are not ambiguous
-  assert.deepEqual(vlanOf(ok(net.replace('{id: empty}', '{id: part, cidr: 10.1.0.0/28, vlan: 10}')).model, 'r1', 'eth0'), [10, 'none']);
-  assert.deepEqual(vlanOf(ok(net.replace('{id: empty}', '{id: super, cidr: 10.0.0.0/8}')).model, 'r1', 'eth0'), [10, 'none']);
+  assert.deepEqual(vlanOf(ok(net + '  - {id: part, cidr: 10.1.0.0/28, vlan: 10}\n').model, 'r1', 'eth0'), [10, 'none']);
+  assert.deepEqual(vlanOf(ok(net + '  - {id: super, cidr: 10.0.0.0/8}\n').model, 'r1', 'eth0'), [10, 'none']);
 });
 
 test('derived values follow every edit at once and are never written to the YAML', () => {
@@ -180,6 +204,7 @@ test('derived values follow every edit at once and are never written to the YAML
   d.setInteger(['networks', 0, 'vlan'], '11');
   assert.deepEqual(vlanOf(m(), 'sw', 'p1'), [11]);
   d.setText(['networks', 0, 'cidr'], '10.9.0.0/24');
+  assert.match(d.exportText(), /\{id: lan, cidr: 10\.9\.0\.0\/24, vlan: 11\}/, 'one value, not a list');
   assert.deepEqual(members(m(), 'lan'), []);
   assert.deepEqual(vlanOf(m(), 'sw', 'p1'), ['none']);
   d.undo();
@@ -199,14 +224,15 @@ test('membership drives highlighting, the selection context, search and the layo
   assert.deepEqual([...queries.selectionContext(m, 'network:lan').related].sort(), ['device:r1', 'device:r2']);
   assert.deepEqual([...queries.selectionContext(m, 'iface:r2:eth1').related], []);
   assert.equal(queries.search(m, 'vlan 10')[0].ref, 'network:lan');
-  assert.deepEqual(layoutInput(m).networks.map((n) => [n.id, n.members]), [['empty', []], ['lan', ['r1', 'r2']], ['lan6', ['r1']], ['loops', ['r1']]]);
+  assert.equal(queries.search(m, '2001:db8:ffff::/48')[0].ref, 'network:loops6');
+  assert.deepEqual(layoutInput(m).networks.map((n) => [n.id, n.members]), [['lan', ['r1', 'r2']], ['lan6', ['r1']], ['loops', ['r1']], ['loops6', ['r1']]]);
   // an address change matters for the layout only when it changes membership
   const sig = (t) => layoutSignature(layoutInput(ok(t).model));
   assert.equal(sig(net.replace('10.1.0.9/24', '10.1.0.10/24')), sig(net));
   assert.notEqual(sig(net.replace('ip: 10.1.0.2}', 'ip: 10.7.0.2}')), sig(net));
 });
 
-// ---------------------------------------------------------- link-end VLANs
+// ---------------------------------------------------------- link-end networks
 
 const lk = `netatlas: 1
 devices:
@@ -215,128 +241,177 @@ devices:
   - id: b
     interfaces: [e0, e1, e2]
 networks:
-  - {id: users, cidr: 10.1.0.0/24, vlan: 10}
+  - {id: users, label: Users, cidr: 10.1.0.0/24, vlan: 10}
+  - {id: servers, label: Servers, cidr: 10.2.0.0/24, vlan: 20}
+  - {id: mgmt, label: Management, cidr: 10.9.0.0/24}
 links:
-  - {id: trunk, a: {device: a, interface: e0, vlans: [20, 10, 30]}, b: {device: b, interface: e0, vlans: [10, 20, 30]}, medium: fiber, speed: 10G}
-  - {id: access, a: {device: a, interface: e1, vlans: 10}, b: {device: b, interface: e1, vlans: [10]}}
+  - {id: multi, a: {device: a, interface: e0, networks: [servers, users, mgmt]}, b: {device: b, interface: e0, networks: [users, servers, mgmt]}, medium: fiber, speed: 10G}
+  - {id: access, a: {device: a, interface: e1, networks: users}, b: {device: b, interface: e1, networks: [users]}}
   - {id: plain, a: "a:e2", b: "b:e2"}
 `;
 
-test('link ends: VLANs are stored per end; several = Trunk, one = single VLAN, none = no VLAN', () => {
+test('link ends: networks are stored per end by id; any network can be assigned, with or without a VLAN; none = nothing assumed', () => {
   const r = ok(lk);
   assert.deepEqual(r.warnings, []);
-  const [trunk, access, plain] = r.model.links;
-  assert.deepEqual([trunk.a.vlans, trunk.b.vlans], [[10, 20, 30], [10, 20, 30]]);
-  assert.deepEqual([access.a.vlans, access.b.vlans], [[10], [10]], 'a single value is a one-element list');
-  assert.deepEqual([plain.a.vlans, plain.b.vlans], [[], []], 'nothing configured, nothing assumed');
-  assert.equal(derive.linkEndVlanText(trunk.a.vlans), 'Trunk · VLANs 10, 20, 30');
-  assert.equal(derive.linkEndVlanText(access.a.vlans), 'VLAN 10');
-  assert.equal(derive.linkEndVlanText(plain.a.vlans), 'No VLAN');
-  assert.deepEqual([trunk.medium, trunk.speed], ['fiber', '10G']);
+  const [multi, access, plain] = r.model.links;
+  assert.deepEqual([multi.a.networks, multi.b.networks], [['servers', 'users', 'mgmt'], ['users', 'servers', 'mgmt']]);
+  assert.deepEqual([access.a.networks, access.b.networks], [['users'], ['users']], 'a single value is a one-element list');
+  assert.deepEqual([plain.a.networks, plain.b.networks], [[], []], 'nothing configured, nothing assumed');
+  assert.equal(derive.linkEndNetworksText(r.model, multi.a.networks), 'Servers, Users, Management');
+  assert.equal(derive.linkEndNetworksText(r.model, plain.a.networks), 'No network');
+  assert.deepEqual([multi.medium, multi.speed], ['fiber', '10G']);
+});
+
+test('link ends: carriage is not membership, and several networks are not called a trunk', () => {
+  const r = ok(lk);
+  // no device has an address in any network: assigning networks to cable ends makes no one a member
+  for (const n of r.model.networks) assert.deepEqual(members(r.model, n.id), [], n.id);
+  const s = new state.Session(r.model);
+  const all = JSON.stringify(s.render().root) + JSON.stringify(panels.detailsFor(r.model, 'link:multi')) + panels.tooltipFor(r.model, 'link:multi').join('\n');
+  assert.ok(!/trunk/i.test(all), 'no "trunk" anywhere');
+  const { linkNetworkLabel } = load('diagram/physical.js');
+  // the cable label names the networks (sorted by name, so the order in the file changes nothing)
+  assert.deepEqual(r.model.links.map((l) => linkNetworkLabel(r.model, l)), ['Management, Servers, Users', 'Users', '']);
 });
 
 test('link ends: a difference between the ends is a warning; neither end is changed', () => {
-  const text = lk.replace('b: {device: b, interface: e0, vlans: [10, 20, 30]}', 'b: {device: b, interface: e0, vlans: [10, 40]}').replace('b: "b:e2"', 'b: {device: b, interface: e2, vlans: [7]}');
+  const text = lk.replace('b: {device: b, interface: e0, networks: [users, servers, mgmt]}', 'b: {device: b, interface: e0, networks: [users]}').replace('b: "b:e2"', 'b: {device: b, interface: e2, networks: [mgmt]}');
   const r = ok(text);
   assert.deepEqual(r.warnings.map((w) => [w.path, w.message]), [
-    ['links.trunk', 'VLAN mismatch between the ends of this link (only on end A: 20, 30; only on end B: 40)'],
-    ['links.plain', 'VLAN mismatch between the ends of this link (only on end B: 7)'],
+    ['links.multi', 'the two ends of this link carry different networks (only at end A: Servers, Management)'],
+    ['links.plain', 'the two ends of this link carry different networks (only at end B: Management)'],
   ]);
-  assert.deepEqual([r.model.links[0].a.vlans, r.model.links[0].b.vlans], [[10, 20, 30], [10, 40]]);
-  assert.deepEqual(derive.vlanMismatch([10, 20], [20, 10]), null);
-  assert.deepEqual(derive.vlanMismatch([], []), null);
-  assert.deepEqual(derive.vlanMismatch([10], []), { onlyA: [10], onlyB: [] });
-  // the file is written back exactly as it was (the unsorted list on end A too)
-  const short = text.replace(', medium: fiber, speed: 10G', '');
-  assert.equal(doc(short).exportText(), short);
+  assert.deepEqual([r.model.links[0].a.networks, r.model.links[0].b.networks], [['servers', 'users', 'mgmt'], ['users']]);
+  assert.deepEqual(derive.networkMismatch(['a', 'b'], ['b', 'a']), null);
+  assert.deepEqual(derive.networkMismatch([], []), null);
+  assert.deepEqual(derive.networkMismatch(['a'], []), { onlyA: ['a'], onlyB: [] });
+  // both ends are written back as they were (a long line may be re-wrapped)
+  const out = doc(text).exportText();
+  for (const want of ['a: {device: a, interface: e0, networks: [servers, users, mgmt]}', 'b: {device: b, interface: e0, networks: [users]}', 'b: {device: b, interface: e2, networks: [mgmt]}']) {
+    assert.ok(out.includes(want), want);
+  }
 });
 
-test('link ends: VLAN IDs are validated (1–4094, no duplicates)', () => {
-  const bad = (v) => errorsOf(lk.replace('vlans: [20, 10, 30]', 'vlans: ' + v));
-  assert.match(bad('[0]')[0], /"0" is not a VLAN ID: use a whole number from 1 to 4094/);
-  assert.match(bad('[4095]')[0], /"4095" is not a VLAN ID/);
-  assert.match(bad('[ten]')[0], /"ten" is not a VLAN ID/);
-  assert.match(bad('[1.5]')[0], /not a VLAN ID/);
-  assert.match(bad('[10, 10]')[0], /VLAN 10 is listed twice on this end/);
-  assert.match(bad('{x: 1}')[0], /expected a list/);
-  assert.deepEqual(bad('[1, 4094]'), []);
-  assert.match(errorsOf(lk.replace('vlan: 10}', 'vlan: users}'))[0], /"users" is not a VLAN ID/);
-  assert.match(errorsOf(lk.replace('a: "a:e2"', 'a: {device: a, interface: e2, vlan: 5}'))[0], /unknown key "vlan" — did you mean "vlans"\?/);
+test('link ends: network references are validated per end (unknown, repeated); unknown ones are reported, not drawn', () => {
+  const r = load2(lk.replace('networks: [servers, users, mgmt]}, b', 'networks: [servers, voice, servers]}, b'));
+  assert.deepEqual(r.errors.map((e) => [e.path, e.message]), [
+    ['links.multi.a.networks[2]', 'network "servers" is listed twice on this end'],
+    ['links.multi.a.networks[1]', 'unknown network "voice" (known: users, servers, mgmt)'],
+  ]);
+  assert.deepEqual(r.model.links[0].a.networks, ['servers']);
+  assert.match(errorsOf(lk.replace('networks: users}', 'networks: user}'))[0], /unknown network "user" — did you mean "users"\?/);
+  assert.match(errorsOf(lk.replace('a: "a:e2"', 'a: {device: a, interface: e2, network: users}'))[0], /unknown key "network" — did you mean "networks"\?/);
 });
 
-test('link-end VLANs and network VLANs are separate facts', () => {
-  // a VLAN may be permitted on a cable without any network defining it, and vice versa
-  const r = ok(lk.replace('vlan: 10}', 'vlan: 500}'));
-  assert.deepEqual(r.warnings, []);
-  assert.equal(r.model.networks[0].vlan, 500);
-  assert.deepEqual(r.model.links[0].a.vlans, [10, 20, 30]);
-  // changing a link end does not change any derived interface VLAN
-  const d = doc(lk.replace('interfaces: [e0, e1, e2]', 'interfaces: [{id: e0, ip: 10.1.0.1/24}, e1, e2]'));
-  assert.deepEqual(vlanOf(d.result.model, 'a', 'e0'), [10]);
-  d.removeEndVlan(['links', 0, 'a'], '10');
-  assert.deepEqual(vlanOf(d.result.model, 'a', 'e0'), [10]);
-  assert.deepEqual(d.result.model.links[0].a.vlans, [20, 30]);
+test('link-end VLAN IDs are not part of the format: rejected with what to write instead', () => {
+  const text = lk.replace('a: "a:e2"', 'a: {device: a, interface: e2, vlans: [10, 20]}');
+  const r = load2(text);
+  assert.deepEqual(r.errors.map((e) => e.message), ['"vlans" is not part of the format — a link end lists the networks the cable carries there, not VLAN IDs: replace "vlans:" by "networks: [network ids]" (the VLAN ID belongs on the network, as its "vlan:")']);
+  // the value is not converted or dropped: it is written back as it was
+  assert.deepEqual(r.model.links[2].a.networks, []);
+  assert.ok(doc(text).exportText().includes('a: {device: a, interface: e2, vlans: [10, 20]}'));
 });
 
-test('editing link-end VLANs: only the edited end is written; short form in, short form out', () => {
+test('editing link-end networks: only the edited end is written; short form in, short form out', () => {
   const d = doc(lk);
   const p = ['links', 2, 'a'];
-  assert.deepEqual(d.endVlans(p), []);
-  assert.ok(d.addEndVlans(p, [30, 10, 30]));
-  assert.match(d.exportText(), /\{id: plain, a: \{device: a, interface: e2, vlans: \[10, 30\]\}, b: "b:e2"\}/);
-  assert.deepEqual(d.result.model.links[2].b.vlans, [], 'the other end is untouched');
-  assert.ok(d.warnings.some((w) => /only on end A: 10, 30/.test(w.message)));
-  assert.ok(d.addEndVlans(p, [10]), 'already there: nothing to do');
-  assert.equal(d.canUndo(), 'Add VLAN');
-  d.addEndVlans(p, [20]);
-  assert.deepEqual(d.endVlans(p), ['10', '20', '30']);
-  d.removeEndVlan(p, '20');
-  d.removeEndVlan(p, '10');
-  assert.match(d.exportText(), /a: \{device: a, interface: e2, vlans: \[30\]\}/);
-  d.removeEndVlan(p, '30');
-  assert.match(d.exportText(), /\{id: plain, a: a:e2, b: "b:e2"\}/, 'no VLAN left: back to the short form, no empty list');
+  assert.deepEqual(d.endNetworks(p), []);
+  assert.ok(d.addEndNetwork(p, 'servers'));
+  assert.ok(d.addEndNetwork(p, 'mgmt'));
+  assert.match(d.exportText(), /\{id: plain, a: \{device: a, interface: e2, networks: \[servers, mgmt\]\}, b: "b:e2"\}/);
+  assert.deepEqual(d.result.model.links[2].b.networks, [], 'the other end is untouched');
+  assert.ok(d.warnings.some((w) => /only at end A: Servers, Management/.test(w.message)));
+  assert.ok(d.addEndNetwork(p, 'mgmt'), 'already there: nothing to do');
+  assert.equal(d.canUndo(), 'Assign network');
+  d.removeEndNetwork(p, 'servers');
+  assert.match(d.exportText(), /a: \{device: a, interface: e2, networks: \[mgmt\]\}/);
+  d.removeEndNetwork(p, 'mgmt');
+  assert.match(d.exportText(), /\{id: plain, a: a:e2, b: "b:e2"\}/, 'no network left: back to the short form, no empty list');
   assert.ok(d.valid && !d.warnings.length);
-  // an end without a device cannot get VLANs
+  // an end without a device cannot get networks
   const e = doc('netatlas: 1\ndevices:\n  - id: a\nlinks:\n  - {id: l}\n');
-  assert.equal(e.addEndVlans(['links', 0, 'a'], [10]), false);
+  assert.equal(e.addEndNetwork(['links', 0, 'a'], 'x'), false);
   assert.equal(e.exportText(), 'netatlas: 1\ndevices:\n  - id: a\nlinks:\n  - {id: l}\n');
-  // a device-only end works too, and an invalid entry in the file is kept, not dropped
-  const f = doc('netatlas: 1\ndevices:\n  - id: a\n  - id: b\nlinks:\n  - {id: l, a: a, b: {device: b, vlans: [x, 5]}}\n');
-  f.addEndVlans(['links', 0, 'a'], [5]);
-  f.addEndVlans(['links', 0, 'b'], [7]);
-  assert.match(f.exportText(), /a: \{device: a, vlans: \[5\]\}, b: \{device: b, vlans: \[x, 5, 7\]\}/);
-  // changing the device of an end keeps that end's VLANs
-  f.setEndpoint(['links', 0, 'a'], 'b', '');
-  assert.match(f.exportText(), /a: \{device: b, vlans: \[5\]\}/);
+  // changing the device of an end keeps that end's networks
+  d.addEndNetwork(['links', 2, 'b'], 'users');
+  d.setEndpoint(['links', 2, 'b'], 'a', '');
+  assert.match(d.exportText(), /b: \{device: a, networks: \[users\]\}/);
 });
 
-test('VLAN list input: ids, separators and ranges', () => {
-  assert.deepEqual(parseVlanList('10'), [10]);
-  assert.deepEqual(parseVlanList('10, 20;30  40'), [10, 20, 30, 40]);
-  assert.deepEqual(parseVlanList('30-32, 31, 5'), [30, 31, 32, 5]);
-  for (const bad of ['0', '4095', '10-5', 'a', '10,,x', '1.5', '-3']) assert.equal(parseVlanList(bad), null, bad);
+test('renaming a network updates the link ends that carry it; deleting it reports them', () => {
+  const d = doc(lk);
+  assert.equal(d.renameEntity('network', 0, 'staff'), 4);
+  assert.deepEqual(d.result.model.links.map((l) => [l.a.networks, l.b.networks]), [
+    [['servers', 'staff', 'mgmt'], ['staff', 'servers', 'mgmt']],
+    [['staff'], ['staff']],
+    [[], []],
+  ]);
+  assert.ok(d.valid);
+  assert.deepEqual(d.references('network', 'servers').map((p) => p.join('.')), ['links.0.a.networks.0', 'links.0.b.networks.1']);
+  d.deleteEntity('network', 1);
+  assert.deepEqual(d.errors.map((e) => e.message), ['unknown network "servers" (known: staff, mgmt)', 'unknown network "servers" (known: staff, mgmt)']);
 });
 
-test('physical view and details show per-end VLANs, Trunk, and the mismatch', () => {
-  const s = new state.Session(ok(lk.replace('b: {device: b, interface: e0, vlans: [10, 20, 30]}', 'b: {device: b, interface: e0, vlans: [10]}')).model);
+test('physical view, selection and details show per-end networks and the difference between the ends', () => {
+  const m = ok(lk.replace('b: {device: b, interface: e0, networks: [users, servers, mgmt]}', 'b: {device: b, interface: e0, networks: [users]}')).model;
+  const s = new state.Session(m);
   const v = s.render().root;
   const cable = (id) => byRef(v, 'link:' + id).find((n) => scene.hasClass(n, 'cable'));
-  assert.ok(scene.hasClass(cable('trunk'), 'vlan-mismatch'));
-  assert.ok(!scene.hasClass(cable('access'), 'vlan-mismatch') && !scene.hasClass(cable('plain'), 'vlan-mismatch'));
-  assert.equal(byClass(v, 'vlan-warn').length, 1);
-  const tip = panels.tooltipFor(s.model, 'link:trunk').join('\n');
-  assert.match(tip, /A: Trunk · VLANs 10, 20, 30 {2}\| {2}B: VLAN 10/);
-  assert.match(tip, /VLAN mismatch/);
-  assert.ok(!/VLAN/.test(panels.tooltipFor(s.model, 'link:plain').join('\n')), 'no VLAN configured: none shown');
-  const det = JSON.stringify(panels.detailsFor(s.model, 'link:trunk'));
-  assert.match(det, /Trunk · VLANs 10, 20, 30/);
-  assert.match(det, /mismatch — only on end A: 20, 30/);
-  assert.match(JSON.stringify(panels.detailsFor(s.model, 'link:plain')), /No VLAN/);
-  // the cable label names the trunk when both ends agree
-  const { linkVlanLabel } = load('diagram/physical.js');
-  const links = ok(lk).model.links;
-  assert.deepEqual(links.map(linkVlanLabel), ['Trunk 10,20,30', 'VLAN 10', '']);
-  assert.equal(linkVlanLabel(s.model.links[0]), 'VLAN mismatch');
+  assert.ok(scene.hasClass(cable('multi'), 'net-mismatch'));
+  assert.ok(!scene.hasClass(cable('access'), 'net-mismatch') && !scene.hasClass(cable('plain'), 'net-mismatch'));
+  assert.equal(byClass(v, 'net-warn').length, 1);
+  const tip = panels.tooltipFor(m, 'link:multi').join('\n');
+  assert.match(tip, /A: Servers, Users, Management {2}\| {2}B: Users/);
+  assert.match(tip, /the two ends carry different networks/);
+  assert.ok(!/network/i.test(panels.tooltipFor(m, 'link:plain').join('\n')), 'nothing configured: nothing shown');
+  const det = scene.textOf(panels.detailsFor(m, 'link:multi'));
+  assert.match(det, /carries \nServers\n, \nUsers\n, \nManagement/);
+  assert.match(det, /the ends differ — only at end A: Servers, Management/);
+  assert.match(scene.textOf(panels.detailsFor(m, 'link:plain')), /no network/);
+  // the network's details list the cables that carry it (and at which end), separately from its members
+  const nd = scene.textOf(panels.detailsFor(m, 'network:servers'));
+  assert.match(nd, /Carried on cables \(1\)/);
+  assert.match(nd, /a:e0 ⟷ b:e0 \(end A only\)/);
+  // selection: a network highlights the cables that carry it; a cable relates the networks it carries
+  assert.ok(queries.relatedRefs(m, 'network:users').has('link:access') && queries.relatedRefs(m, 'network:users').has('iface:a:e1'));
+  assert.ok(!queries.relatedRefs(m, 'network:users').has('link:plain'));
+  assert.ok(queries.relatedRefs(m, 'link:multi').has('network:mgmt'));
+  assert.ok(queries.selectionContext(m, 'network:mgmt').related.has('link:multi'));
+  assert.ok(queries.selectionContext(m, 'link:access').related.has('network:users'));
+});
+
+test('a virtual interface: the ports carrying its networks are derived from the link ends', () => {
+  const text = `netatlas: 1
+devices:
+  - id: sw
+    interfaces: [p1, p2, p3]
+    logical_interfaces:
+      - {id: Vlan10, type: virtual, ip: 10.1.0.1/24}
+      - {id: Vlan20, type: virtual, vlan: 20}
+      - {id: Po1, type: virtual, members: [p3]}
+  - id: h
+    interfaces: [e0, e1, e2]
+networks:
+  - {id: users, cidr: 10.1.0.0/24, vlan: 10}
+  - {id: servers, cidr: 10.2.0.0/24, vlan: 20}
+links:
+  - {id: l1, a: {device: sw, interface: p1, networks: [users]}, b: {device: h, interface: e0, networks: [users]}}
+  - {id: l2, a: {device: sw, interface: p2, networks: [users, servers]}, b: {device: h, interface: e1, networks: [users, servers]}}
+  - {id: l3, a: "sw:p3", b: "h:e2"}
+`;
+  const m = ok(text).model;
+  const ix = m.index.interfaces;
+  // in its network through its address; through its VLAN (the networks of that VLAN); a bond without either is in none
+  assert.deepEqual(derive.interfaceCarriedNetworks(m, ix.get('sw:Vlan10')), ['users']);
+  assert.deepEqual(derive.interfaceCarriedNetworks(m, ix.get('sw:Vlan20')), ['servers']);
+  assert.deepEqual(derive.interfaceCarriedNetworks(m, ix.get('sw:Po1')), []);
+  const ports = (id) => derive.interfaceNetworkPorts(m, ix.get(id)).map((p) => `${p.iface}/${p.link}/${p.network}`);
+  assert.deepEqual(ports('sw:Vlan10'), ['p1/l1/users', 'p2/l2/users']);
+  assert.deepEqual(ports('sw:Vlan20'), ['p2/l2/servers']);
+  assert.deepEqual(derive.associatedInterfaces(m, ix.get('sw:p2')).sort(), ['Vlan10', 'Vlan20']);
+  assert.match(panels.associationText(m, ix.get('sw:Vlan20')), /VLAN 20 · ports carrying its networks: p2/);
+  // a physical port's own address does not put its network on the cable (containment is not carriage)
+  assert.deepEqual(derive.portsCarryingNetworks(m, 'h', ['users']).map((p) => p.iface), ['e0', 'e1']);
 });
 
 test('details and logical view use derived membership and derived interface VLANs', () => {
@@ -344,13 +419,14 @@ test('details and logical view use derived membership and derived interface VLAN
   const netDet = JSON.stringify(panels.detailsFor(m, 'network:lan'));
   assert.match(netDet, /Members \(2\)/);
   assert.match(netDet, /10\.1\.0\.9\/24/);
+  assert.match(netDet, /IP network/);
   assert.match(JSON.stringify(panels.detailsFor(m, 'iface:r1:eth0')), /VLAN 10/);
   assert.match(JSON.stringify(panels.detailsFor(m, 'iface:r2:eth1')), /no network/);
   assert.deepEqual(panels.tooltipFor(m, 'network:lan'), ['lan', 'VLAN 10 · 10.1.0.0/24', '2 members']);
   const s = new state.Session(m);
   s.setView('logical');
   const v = s.render().root;
-  assert.equal(byClass(v, 'member').length, 4, 'lan: r1, r2; lan6: r1; loops: r1');
+  assert.equal(byClass(v, 'member').length, 5, 'lan: r1, r2; lan6, loops, loops6: r1');
   assert.equal(byClass(v, 'network').length, 4);
 });
 
@@ -397,15 +473,21 @@ networks:
 test('the schema contains none of the rejected keys, and the editor never writes them', () => {
   for (const kind of Object.keys(RETIRED)) for (const k of Object.keys(RETIRED[kind])) assert.ok(!SCHEMA[kind].includes(k), `${kind}.${k}`);
   assert.deepEqual(SCHEMA.network, ['id', 'label', 'cidr', 'vlan', 'description', 'attrs']);
-  assert.deepEqual(SCHEMA.interface, ['id', 'label', 'ip', 'vrf', 'mac', 'description', 'attrs']);
-  assert.deepEqual(SCHEMA.logical, ['id', 'type', 'label', 'ip', 'vrf', 'mac', 'members', 'vlan', 'source', 'destination', 'description', 'attrs']);
+  assert.deepEqual(SCHEMA.interface, ['id', 'label', 'dhcp', 'ip', 'vrf', 'mac', 'description', 'attrs']);
+  assert.deepEqual(SCHEMA.logical, ['id', 'type', 'label', 'dhcp', 'ip', 'vrf', 'mac', 'members', 'vlan', 'source', 'destination', 'description', 'attrs']);
   assert.ok(!('child' in SCHEMA) && !('loopback' in SCHEMA));
-  assert.deepEqual(SCHEMA.linkEnd, ['device', 'interface', 'vlans']);
+  assert.deepEqual(SCHEMA.linkEnd, ['device', 'interface', 'networks']);
+  assert.deepEqual(SCHEMA.endpoint, ['device', 'interface']);
+  assert.ok(!SCHEMA.relation.includes('network') && SCHEMA.relation.includes('over'));
   assert.ok(SCHEMA.link.includes('medium') && SCHEMA.link.includes('speed'));
   for (const f of exampleNames) {
     const r = load2(example(f));
-    for (const n of r.model.networks) assert.deepEqual(Object.keys(n).sort(), ['attrs', 'cidr', 'description', 'id', 'label', 'line', 'vlan'], f);
+    for (const n of r.model.networks) {
+      assert.deepEqual(Object.keys(n).sort(), ['attrs', 'cidr', 'description', 'id', 'label', 'line', 'vlan'], f);
+      assert.equal(typeof n.cidr, 'string', `${f}: ${n.id} has one prefix`);
+    }
     assert.ok(!/^\s*(members|kind: (subnet|vlan|vni|vrf))\b/m.test(example(f)), f);
+    assert.ok(!/vlans:|role:|^\s+network:/m.test(example(f)), f + ': no retired key');
   }
 });
 

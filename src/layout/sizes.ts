@@ -67,14 +67,66 @@ export function chipRows(loopbackCount: number): number {
   return loopbackCount === 0 ? 0 : Math.min(loopbackCount, MAX_CHIPS) + (loopbackCount > MAX_CHIPS ? 1 : 0);
 }
 
+/** DNS names shown under a device in the logical view; more are summed up in a "+N more names" row */
+export const MAX_DNS = 2;
+/** a DNS name longer than this many characters continues on a further line, broken after a dot */
+export const DNS_LINE_CHARS = 30;
+
+/** The lines a DNS name is written on: whole when it is short, else broken after dots (never shortened). */
+export function dnsNameLines(name: string): string[] {
+  if (name.length <= DNS_LINE_CHARS) return [name];
+  const lines: string[] = [];
+  let cur = '';
+  // the labels of the name, each with the dot that ends it
+  for (const part of name.match(/[^.]*\.|[^.]+$/g) || [name]) {
+    if (cur && cur.length + part.length > DNS_LINE_CHARS) {
+      lines.push(cur);
+      cur = '';
+    }
+    cur += part;
+    // a single label longer than a line is broken where it has to be
+    while (cur.length > DNS_LINE_CHARS) {
+      lines.push(cur.slice(0, DNS_LINE_CHARS));
+      cur = cur.slice(DNS_LINE_CHARS);
+    }
+  }
+  if (cur) lines.push(cur);
+  return lines;
+}
+
 /**
- * A device in the logical view: its body, plus the loopback chips hanging
- * under it. The node is as wide as its widest chip needs.
+ * The DNS names of a device as the logical view shows them: each name once
+ * (however many interfaces it belongs to), in a fixed order, at most
+ * MAX_DNS of them, and how many more there are.
  */
-export function logicalDeviceSize(label: string, sub: string, chipW: number, loopbackCount: number): { w: number; h: number; bodyH: number } {
+export function dnsShown(names: string[]): { names: string[]; more: number } {
+  const all = Array.from(new Set(names)).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  return { names: all.slice(0, MAX_DNS), more: Math.max(0, all.length - MAX_DNS) };
+}
+
+/** Rows (of CHIP_H) and width the DNS names of a device take under it. */
+export function dnsSize(names: string[]): { rows: number; w: number } {
+  const s = dnsShown(names);
+  let rows = s.more ? 1 : 0;
+  let w = 0;
+  for (const n of s.names) {
+    const lines = dnsNameLines(n);
+    rows += lines.length;
+    for (const l of lines) w = Math.max(w, Math.ceil(chipTextWidth(l)));
+  }
+  return { rows, w };
+}
+
+/**
+ * A device in the logical view: its body, plus the loopback chips and the
+ * DNS names hanging under it. The node is as wide as its widest chip needs.
+ */
+export function logicalDeviceSize(label: string, sub: string, chipW: number, loopbackCount: number, dnsNames: string[] = []): { w: number; h: number; bodyH: number } {
   const body = deviceBody(label, sub, LOGICAL_DEVICE_MIN_W, LOGICAL_DEVICE_MIN_H);
-  const rows = chipRows(loopbackCount);
-  return { w: Math.max(body.w, chipW ? chipW + 16 + 12 : 0), h: body.h + (rows ? rows * CHIP_H + 6 : 0), bodyH: body.h };
+  const dns = dnsSize(dnsNames);
+  const rows = chipRows(loopbackCount) + dns.rows;
+  const need = Math.max(chipW, dns.w);
+  return { w: Math.max(body.w, need ? need + 16 + 12 : 0), h: body.h + (rows ? rows * CHIP_H + 6 : 0), bodyH: body.h };
 }
 
 // ----------------------------------------------------------------- networks
@@ -97,12 +149,10 @@ export function networkBody(label: string, sub: string): NetworkBody {
 }
 
 /** Second line of a network: its VLAN and all of its prefixes (in a fixed order). */
-export function networkSubtitle(cidr: string[], vlan?: number): string {
+export function networkSubtitle(cidr: string | undefined, vlan?: number): string {
   const parts: string[] = [];
   if (vlan !== undefined) parts.push('VLAN ' + vlan);
-  // sorted, so the order of the list in the file affects neither text nor size
-  const sorted = cidr.slice().sort();
-  if (sorted.length) parts.push(sorted.join(', '));
+  if (cidr) parts.push(cidr);
   return parts.join(' · ');
 }
 

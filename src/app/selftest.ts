@@ -100,6 +100,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     boxed('g.group', '.group-box', '.group-title');
     boxed('g.pill', '.pill-box', 'text');
     boxed('g.loop-chip', 'rect', 'text');
+    boxed('g.dns-chip', 'rect', 'text');
     each('text', (t) => {
       if (/…$|\.\.\.$/.test(t.textContent || '')) out.push(`shortened text "${t.textContent}"`);
     });
@@ -167,9 +168,9 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const bar = 'header.topbar';
       const menuBtn = q('#menu-btn') as HTMLButtonElement | null;
       const menu = q('#main-menu') as HTMLElement | null;
-      const direct = ['#btn-undo', '#btn-redo', '[data-view-btn="physical"]', '[data-view-btn="logical"]', '#btn-arrange', '#search', '#menu-btn', '#export-btn'];
+      const direct = ['#btn-undo', '#btn-redo', '[data-view-btn="physical"]', '[data-view-btn="logical"]', '#btn-arrange', '#menu-btn', '#export-btn', '#view-btn'];
       check(
-        'toolbar: logo and version, the File and Export menus, and undo/redo, Physical/Logical, Auto-arrange and Find as direct controls; no "Current model" button',
+        'toolbar: logo and version, the File, Export and View menus, and undo/redo, Physical/Logical and Auto-arrange as direct controls; no "Current model" button',
         !!q(bar + ' .brand svg') && /^v\d+\.\d+\.\d+/.test((q(bar + ' .brand .version') || { textContent: '' }).textContent || '') && !!menuBtn && /^File/.test((menuBtn.textContent || '').trim()) &&
           direct.every((d) => !!q(bar + ' ' + d) && !(q(bar + ' ' + d) as HTMLElement).closest('.dropdown') && (q(bar + ' ' + d) as HTMLElement).getBoundingClientRect().width > 10) &&
           !q('#btn-model') && !q('#model-badge') && !/Current model/.test((q(bar) as HTMLElement).textContent || ''),
@@ -564,6 +565,8 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         click('[data-view-btn="logical"]');
         app.select('device:hq-rtr1');
         click('#outline [data-act="fold-all"]');
+        click('#view-btn');
+        click('#btn-outline-filter');
         const filter = q('#outline [data-t="outline-filter"]') as HTMLInputElement;
         filter.value = 'hq';
         filter.dispatchEvent(new Event('input', { bubbles: true }));
@@ -578,8 +581,8 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         const foldedNow = (Array.prototype.map.call(doc.querySelectorAll('#outline [data-section]'), (e: Element) => e.getAttribute('data-section') + '=' + e.getAttribute('data-folded')) as string[]).join();
         check(
           'closing clears the selection and the view state: the next model opens in the physical view with nothing selected, no filter, default folding, all protocols and networks shown',
-          gone && app.session!.state.view === 'physical' && app.session!.state.selected === null && app.session!.state.showNetworks && app.session!.state.hiddenProtocols.size === 0 && !q('#outline .ol-ctx-hint') &&
-            (q('#outline [data-t="outline-filter"]') as HTMLInputElement).value === '' && foldedNow === 'device=false,link=true,network=false,relation=false,group=false,protocol=true' && !q('[data-tab="yaml"].active') && !q('[data-tab="edit"].active') && !app.mdoc!.dirty,
+          gone && app.session!.state.view === 'physical' && app.session!.state.selected === null && app.session!.state.showNetworks && app.session!.state.hiddenProtocols.size === 0 && !(q('#outline .ol-ctx-hint') || { textContent: '' }).textContent &&
+            !q('#outline [data-t="outline-filter"]') && !app.findOpen && foldedNow === 'device=false,link=true,network=false,relation=false,group=false,protocol=true' && !q('[data-tab="yaml"].active') && !q('[data-tab="edit"].active') && !app.mdoc!.dirty,
           `${gone} ${app.session!.state.view} ${app.session!.state.selected} ${foldedNow}`,
         );
         app.closeModel();
@@ -679,6 +682,139 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         app.closeModel();
       }
 
+      // ------------------------------------------------ DHCP and DNS names
+      {
+        app.loadText(
+          [
+            'netatlas: 1',
+            'devices:',
+            '  - id: web1',
+            '    interfaces:',
+            '      - {id: eth0, label: Front, ip: [192.0.2.10/24, 2001:db8::10/64]}',
+            '      - {id: eth1, ip: 198.51.100.10/24}',
+            '      - eth2',
+            '    logical_interfaces:',
+            '      - {id: lo0, type: loopback, ip: 10.255.0.10/32}',
+            '      - {id: vlan30, type: virtual}',
+            '    dns_names:',
+            '      - {name: mgmt.example.net, interfaces: [eth1]}',
+            '',
+          ].join('\n'),
+          'dhcp.yaml',
+        );
+        await tick(10);
+        click('#outline [data-act="select"][data-kind="device"][data-index="0"]');
+        await tick(10);
+        const m = (): ModelDoc => app.mdoc as ModelDoc;
+        const inf = (id: string): Interface => m().result.model!.index.interfaces.get('web1:' + id) as Interface;
+        const card = (id: string): string => `#side-body details.card[data-iface="${id}"]`;
+        const sw = (id: string): HTMLElement => q(card(id) + ' [data-act="dhcp"]') as HTMLElement;
+        const modal = (): string => (q('#modal[open]') || { textContent: '' }).textContent || '';
+        const sections = textsOf('#side-body .inspector > section.sub h4');
+        check(
+          'every physical and logical interface except a loopback has a DHCP switch beside its addresses, off by default; DNS names follow the interface sections',
+          (Array.prototype.map.call(doc.querySelectorAll('#side-body details.card > .field[data-dhcp] > label + [data-act="dhcp"]'), (b: Element) => (b.closest('details.card') as Element).getAttribute('data-iface')) as string[]).join() === 'eth0,eth1,eth2,vlan30' &&
+            !q(card('lo0') + ' [data-act="dhcp"]') && !!q(card('lo0') + ' .field input.append') && !(q(card('lo0') + ' .field input.append') as HTMLInputElement).disabled &&
+            Array.prototype.every.call(doc.querySelectorAll('#side-body [data-act="dhcp"]'), (b: Element) => b.getAttribute('aria-checked') === 'false' && b.getAttribute('role') === 'switch') &&
+            !inf('eth2').dhcp && /^Physical interfaces/.test(sections[0]) && /^Logical interfaces/.test(sections[1]) && sections[2] === 'DNS names (1)',
+          sections.join('|'),
+        );
+        const before = app.exportText();
+        sw('eth1').click();
+        await tick(20);
+        const asked = modal();
+        await answerDialog('cancel');
+        await tick(10);
+        check(
+          'turning DHCP on for an interface with addresses asks first and lists the addresses and DNS names it deletes; Cancel changes nothing',
+          /Turn DHCP on for “eth1”\?/.test(asked) && /198\.51\.100\.10\/24/.test(asked) && /mgmt\.example\.net — it has no other interface, so the name is deleted too/.test(asked) && app.exportText() === before && m().canUndo() === null && !inf('eth1').dhcp,
+          asked,
+        );
+        sw('eth1').click();
+        await tick(20);
+        await answerDialog('dhcp');
+        await tick(20);
+        const field = q(card('eth1') + ' .field[data-dhcp]') as HTMLElement;
+        const inputs = Array.prototype.slice.call(field.querySelectorAll('input')) as HTMLInputElement[];
+        check(
+          'confirming deletes the addresses and the association and turns DHCP on in one undo step; manual addresses are greyed out and disabled',
+          inf('eth1').dhcp && !inf('eth1').addresses.length && m().result.model!.devices[0].dnsNames.length === 0 && m().canUndo() === 'Turn DHCP on' && m().valid &&
+            field.getAttribute('data-dhcp') === 'on' && sw('eth1').getAttribute('aria-checked') === 'true' && inputs.length === 1 && inputs[0].disabled && !!field.querySelector('.list-ed.disabled') &&
+            /DHCP/.test(q(card('eth1') + ' .card-title')!.textContent || '') && /no network and no VLAN can be derived/.test(q(card('eth1') + ' [data-derived="iface-vlan"]')!.textContent || ''),
+          `${inf('eth1').dhcp} ${inputs.length} ${m().canUndo()}`,
+        );
+        // an interface without addresses or DNS names: nothing to lose, so nothing is asked
+        sw('eth2').click();
+        await tick(20);
+        check('DHCP on for an interface with nothing to delete needs no confirmation', inf('eth2').dhcp && !q('#modal[open]') && m().canUndo() === 'Turn DHCP on');
+        sw('eth1').click();
+        await tick(20);
+        const field2 = q(card('eth1') + ' .field[data-dhcp]') as HTMLElement;
+        check(
+          'turning DHCP off brings back manual editing, not the deleted addresses',
+          !inf('eth1').dhcp && !inf('eth1').addresses.length && !q('#modal[open]') && field2.getAttribute('data-dhcp') === 'off' && !(field2.querySelector('input.append') as HTMLInputElement).disabled && m().canUndo() === 'Turn DHCP off',
+        );
+        // + DNS name
+        click('#side-body [data-act="add-dns"]');
+        await tick(20);
+        const offered = Array.prototype.map.call(doc.querySelectorAll('#dns-ifaces input[type="checkbox"]'), (b: Element) => (b as HTMLInputElement).value) as string[];
+        const labels = textsOf('#dns-ifaces label');
+        const createBtn = (): HTMLButtonElement => q('#modal[open] [data-value="create"]') as HTMLButtonElement;
+        const disabledFirst = createBtn().disabled;
+        const nameIn = q('#dns-name') as HTMLInputElement;
+        nameIn.value = 'api.example.com';
+        nameIn.dispatchEvent(new Event('input', { bubbles: true }));
+        for (const id of ['eth0', 'lo0']) {
+          const b = q(`#dns-ifaces input[value="${id}"]`) as HTMLInputElement;
+          b.checked = true;
+          b.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        await tick();
+        const preview = (q('#dns-preview') || { textContent: '' }).textContent || '';
+        check(
+          '"+ DNS name" offers the interfaces with DHCP off by name, says which are excluded, and notes that a name belongs to the interface, not one of its addresses',
+          offered.join() === 'eth0,eth1,lo0,vlan30' && labels[0] === 'Front (eth0)' && /DHCP is on: eth2/.test(q('[data-dns-excluded]')!.textContent || '') && disabledFirst && !createBtn().disabled &&
+            /eth0 has 2 addresses: the name belongs to the interface, not to one address/.test(preview),
+          offered.join() + ' | ' + preview,
+        );
+        createBtn().click();
+        await tick(30);
+        const chips = textsOf('#side-body [data-dns="api.example.com"] [data-dns-iface]');
+        check(
+          'the name is stored once with both interfaces (by id), shown with their names',
+          JSON.stringify(m().result.model!.devices[0].dnsNames.map((x) => [x.name, x.interfaces])) === '[["api.example.com",["eth0","lo0"]]]' && m().canUndo() === 'Add DNS name' &&
+            chips.length === 2 && /^Front \(eth0\)/.test(chips[0]) && /^lo0/.test(chips[1]) && /DNS names \(1\)/.test(textsOf('#side-body section[data-list="dns-names"] h4')[0] || ''),
+          chips.join('|'),
+        );
+        // DHCP on an associated interface: the association is part of the confirmation
+        sw('eth0').click();
+        await tick(20);
+        const asked2 = modal();
+        await answerDialog('cancel');
+        await tick(10);
+        // deleting an associated interface removes the association with it
+        click(card('lo0') + ' [data-act="del-iface"]');
+        await tick(20);
+        const asked3 = modal();
+        await answerDialog('delete');
+        await tick(20);
+        check(
+          'enabling DHCP or deleting an interface names the DNS associations it removes; after deleting, no reference is left',
+          /api\.example\.com/.test(asked2) && !/deleted too/.test(asked2) && /association with the DNS name api\.example\.com is removed/.test(asked3) &&
+            JSON.stringify(m().result.model!.devices[0].dnsNames.map((x) => x.interfaces)) === '[["eth0"]]' && m().valid && !inf('lo0'),
+          asked3,
+        );
+        const text = app.exportText();
+        const back = ModelDoc.fromText(text, 'dhcp.yaml', 'file').doc as ModelDoc;
+        check(
+          'DHCP and DNS names survive export → reload',
+          back.valid && back.exportText() === text && /- \{id: eth2, dhcp: true\}/.test(text) && /dns_names:\n {6}- \{name: api\.example\.com, interfaces: \[eth0\]\}/.test(text),
+          text,
+        );
+        m().markSaved();
+        app.closeModel();
+      }
+
       click('#menu-btn');
       click('#menu-examples [data-example="2"]');
       await tick(10);
@@ -737,7 +873,9 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const relatedMark = (toggle('link').querySelector('.ol-related') || { textContent: '' }).textContent || '';
       check('"Collapse all" folds every section; a folded section still shows the selected entry and how many of its entries are related', allFolded && selShown && /^• \d+$/.test(relatedMark), `${allFolded} ${selShown} "${relatedMark}"`);
       app.select(null);
-      // the filter looks into folded sections
+      // the filter (View → Filter outline…) looks into folded sections
+      click('#view-btn');
+      click('#btn-outline-filter');
       const filter = q('#outline [data-t="outline-filter"]') as HTMLInputElement;
       filter.value = 'isp1';
       filter.dispatchEvent(new Event('input', { bubbles: true }));
@@ -1016,6 +1154,101 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     check('selecting GRE tunnel highlights its physical path (3 cables)', count('.cable.hl') === 3, String(count('.cable.hl')));
     app.select(null);
 
+    // ------------------------------------ device filter: Devices, Labels, Groups / Locations, Networks
+    {
+      if (app.mdoc) app.mdoc.markSaved();
+      app.loadExample(EXAMPLES.findIndex((e) => e.name === 'enterprise-wan.yaml'));
+      click('[data-view-btn="physical"]');
+      const s = (): NonNullable<typeof app.session> => app.session!;
+      const md = (): ModelDoc => app.mdoc as ModelDoc;
+      const hint = q('#filter-hint') as HTMLElement;
+      const btn = q('#devices-btn') as HTMLButtonElement;
+      const right = (Array.prototype.map.call(doc.querySelectorAll('#view-filters > .devices-wrap, #view-filters > label.opt'), (e: Element) => (e.textContent || '').replace(/\s+/g, ' ').trim()) as string[]);
+      const vis = (sel: string): boolean => !!q(sel) && (q(sel) as HTMLElement).offsetParent !== null;
+      check(
+        'top-right diagram controls: Devices (all selected), Labels, Groups / Locations, Endpoints and Servers on, in both views; Networks only in the logical view; no Underlay',
+        /^Devices: all \(15\)/.test(right[0] || '') && right[1] === 'Labels' && right[2] === 'Groups / Locations' && right[3] === 'Networks' && right[4] === 'Endpoints' && right[5] === 'Servers' && right.length === 6 && !q('#opt-underlay') &&
+          (q('#opt-labels') as HTMLInputElement).checked && (q('#opt-groups') as HTMLInputElement).checked && vis('#opt-groups') && !vis('#opt-networks') && !btn.disabled && hint.hidden && !s().isFiltered() &&
+          (q('#opt-type-endpoint') as HTMLInputElement).checked && (q('#opt-type-server') as HTMLInputElement).checked && vis('#opt-type-endpoint') && vis('#opt-type-server'),
+        right.join(' | '),
+      );
+      const fullPhys = JSON.stringify(Array.from(s().positionsFor('physical')));
+      const yaml = app.exportText();
+      const undo = md().canUndo();
+      btn.click();
+      await tick();
+      const boxes = (): HTMLInputElement[] => Array.prototype.slice.call(doc.querySelectorAll('#devices-list input[type="checkbox"]'));
+      check('the Devices panel lists every device, all selected, with Select all and Clear', !(q('#devices-panel') as HTMLElement).hidden && boxes().length === 15 && boxes().every((b) => b.checked) && btn.getAttribute('aria-expanded') === 'true' && !!q('#devices-all') && !!q('#devices-none'));
+      const keep = ['hq-rtr1', 'hq-rtr2', 'hq-fw', 'hq-core1', 'isp1-pe', 'inet'];
+      for (const b of boxes()) {
+        if (keep.indexOf(b.getAttribute('data-device') || '') >= 0) continue;
+        b.checked = false;
+        b.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+      await tick();
+      const shownDevices = (): string[] => (Array.prototype.map.call(doc.querySelectorAll('#viewport g.device'), (e: Element) => (e.getAttribute('data-ref') || '').slice(7)) as string[]).sort();
+      check(
+        'deselecting devices shows a filtered physical view of the 6 selected devices, with the temporary-positions hint and the count on the button',
+        shownDevices().join() === keep.slice().sort().join() && !hint.hidden && (hint.textContent || '').indexOf('Filtered-view positions are temporary and are not saved in YAML.') >= 0 && hint.getAttribute('role') === 'status' &&
+          /Devices: 6 of 15/.test(btn.textContent || '') && btn.classList.contains('filtered') && /showing 6 of 15 devices/.test(q('#status')!.textContent || '') &&
+          !q('#viewport [data-ref="link:l-hq-isp2"]') && !!q('#viewport [data-ref="link:l-rtr1-fw"]') && !q('#viewport [data-ref="group:branch-muc"]') && !!q('#viewport [data-ref="group:hq-core"]'),
+        shownDevices().join(),
+      );
+      check('the hint is outside the diagram (never part of an export)', !q('#canvas #filter-hint') && !/not saved in YAML/.test(app.exportSvg()));
+      (q('#devices-find') as HTMLInputElement).value = 'hq-';
+      q('#devices-find')!.dispatchEvent(new Event('input', { bubbles: true }));
+      const rows = (Array.prototype.filter.call(doc.querySelectorAll('#devices-list label'), (l: HTMLElement) => !l.hidden) as HTMLElement[]).length;
+      (q('#devices-panel') as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      check('the panel filters its list without changing the selection, and Esc closes it', rows === 7 && (q('#devices-panel') as HTMLElement).hidden && doc.activeElement === btn && s().selectedDevices().size === 6, String(rows));
+      // a move in the filtered view is temporary
+      check('the filtered view starts auto-arranged for its devices; the button says so', status('physical') === 'auto' && (q('#btn-arrange') as HTMLElement).getAttribute('data-filtered') === 'true' && /filtered view matches/.test(shown().desc), shown().desc);
+      {
+        const el2 = q('#viewport g.device[data-ref="device:hq-fw"] .dev-box') as unknown as SVGGraphicsElement;
+        const rr = el2.getBoundingClientRect();
+        const x = rr.left + rr.width / 2;
+        const y = rr.top + rr.height / 2;
+        el2.dispatchEvent(pe('pointerdown', x, y));
+        svg.dispatchEvent(pe('pointermove', x + 80, y + 40));
+        svg.dispatchEvent(pe('pointermove', x + 160, y + 80));
+        svg.dispatchEvent(pe('pointerup', x + 160, y + 80));
+      }
+      const moved = JSON.stringify(s().positionsFor('physical').get('hq-fw'));
+      check(
+        'dragging in a filtered view moves the device for now only: no undo step, no stored position, the YAML unchanged; the status says "moved"',
+        app.exportText() === yaml && md().canUndo() === undo && !md().hasStoredLayout('physical') && status('physical') === 'manual' && /temporarily moved/.test(shown().desc) && !md().dirty,
+        `${moved} ${md().canUndo()} ${status('physical')}`,
+      );
+      click('[data-view-btn="logical"]');
+      await tick();
+      const logShown = shownDevices();
+      check(
+        'switching views: the logical view of the same devices, auto-arranged on its own (no move leaks), relations only among them',
+        status('logical') === 'auto' && logShown.every((d) => keep.indexOf(d) >= 0) && logShown.indexOf('hq-rtr1') >= 0 && !q('#viewport [data-ref="relation:gre-muc"]') && !!q('#viewport [data-ref="relation:ibgp-hq"]') && vis('#opt-networks'),
+        logShown.join(),
+      );
+      click('[data-view-btn="physical"]');
+      check('back in the physical view, its temporary move is still there', JSON.stringify(s().positionsFor('physical').get('hq-fw')) === moved && status('physical') === 'manual');
+      // Groups / Locations hides frames, never devices
+      (q('#opt-groups') as HTMLInputElement).click();
+      const hiddenFrames = count('g.group');
+      const devsNoFrames = shownDevices().join();
+      (q('#opt-groups') as HTMLInputElement).click();
+      check('Groups / Locations off hides the frames and keeps every device in place; on brings them back', hiddenFrames === 0 && devsNoFrames === keep.slice().sort().join() && count('g.group') >= 3 && JSON.stringify(s().positionsFor('physical').get('hq-fw')) === moved);
+      // Auto-arrange in a filtered view: the subset only, temporary, no confirmation needed
+      click('#btn-arrange');
+      await tick(10);
+      check('Auto-arrange in a filtered view re-arranges the shown devices only, temporarily: no dialog, YAML and undo unchanged', !q('#modal[open]') && status('physical') === 'auto' && app.exportText() === yaml && md().canUndo() === undo, status('physical'));
+      // Select all: the complete diagram with its saved positions, unchanged
+      btn.click();
+      click('#devices-all');
+      await tick();
+      check(
+        'Select all restores the complete diagram exactly as it was, hides the hint and gives Auto-arrange its normal meaning back',
+        !s().isFiltered() && hint.hidden && JSON.stringify(Array.from(s().positionsFor('physical'))) === fullPhys && count('g.device') === 15 && /Devices: all \(15\)/.test(btn.textContent || '') && (q('#btn-arrange') as HTMLElement).getAttribute('data-filtered') === null && shown().desc === AUTO_MSG && app.exportText() === yaml,
+      );
+      (q('#devices-panel') as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    }
+
     // ------------------------------------ selection context in the element lists
     {
       const olItems = (): HTMLButtonElement[] => Array.from(doc.querySelectorAll('#outline-body .ol-item[data-ref]')) as HTMLButtonElement[];
@@ -1059,8 +1292,26 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         svg.dispatchEvent(pe('pointerup', b.left + b.width / 2, b.top + b.height / 2));
       };
 
-      check('no selection: list entries at normal prominence', olItems().every((b) => !b.hasAttribute('data-ctx')) && !q('#outline-body .ol-ctx-hint'));
+      check('no selection: list entries at normal prominence', olItems().every((b) => !b.hasAttribute('data-ctx')) && !(q('#outline-body .ol-ctx-hint') || { textContent: '' }).textContent);
+      /** where every entry and its label is, and how wide the menu is: must not change with the selection */
+      const geo = (): string => {
+        const ol = q('#outline') as HTMLElement;
+        const rows = olItems().map((b) => {
+          const r = b.getBoundingClientRect();
+          const l = (b.querySelector('.ol-label') as HTMLElement).getBoundingClientRect();
+          return `${b.getAttribute('data-ref')}@${Math.round(r.left)},${Math.round(r.top)},${Math.round(r.width)}/${Math.round(l.left)}`;
+        });
+        return rows.join(';') + `|${ol.clientWidth}|${ol.scrollWidth}|${ol.offsetWidth}`;
+      };
+      const firstDiff = (a: string, b: string): string => {
+        const x = a.split(';');
+        const y = b.split(';');
+        for (let i = 0; i < Math.max(x.length, y.length); i++) if (x[i] !== y[i]) return `${x[i]} → ${y[i]}`;
+        return '';
+      };
+      const geo0 = geo();
       clickDevice('device:muc-sw');
+      const geoSel = geo();
       let [ok, why] = ctxOk('device:muc-sw');
       check('diagram click on muc-sw: lists and diagram show the same selection context', ok, why);
       check(
@@ -1075,7 +1326,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       check(
         'states differ without colour: marker / bar / weight, and text for screen readers',
         selEl.getAttribute('aria-current') === 'true' && !!selEl.querySelector('.ctx-mark.sel') && view.getComputedStyle(selEl).fontWeight === '600' && view.getComputedStyle(selEl).boxShadow !== 'none' &&
-          !!relEl.querySelector('.ctx-mark.rel') && !unEl.querySelector('.ctx-mark') &&
+          !!relEl.querySelector('.ctx-mark.rel') && !unEl.querySelector('.ctx-mark.sel, .ctx-mark.rel') && !(unEl.querySelector('.ctx-mark') as HTMLElement).textContent &&
           /\(selected\)/.test(selEl.textContent || '') && /\(directly related\)/.test(relEl.textContent || '') && /\(not related\)/.test(unEl.textContent || ''),
       );
       check('dimmed entries stay readable (not transparent, not hidden)', view.getComputedStyle(unEl).opacity === '1' && view.getComputedStyle(unEl).visibility === 'visible');
@@ -1084,6 +1335,14 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       unEl.click();
       [ok, why] = ctxOk('device:hq-fw');
       check('an unrelated entry is focusable and selectable; the context moves to it', focused && ok && stateOf('device:hq-fw') === 'selected' && stateOf('device:muc-sw') === 'unrelated', why);
+      const geoSwitch = geo();
+      doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      const geoClear = geo();
+      check(
+        'the left menu does not move when selecting, switching or clearing: same width, every entry and its label in the same place; the selection hint has its own fixed row',
+        geoSel === geo0 && geoSwitch === geo0 && geoClear === geo0 && !!q('#outline-body .ol-tools .ol-ctx-hint'),
+        firstDiff(geo0, geoSel) || firstDiff(geo0, geoSwitch) || firstDiff(geo0, geoClear),
+      );
 
       const fromOutline: Array<[string, () => boolean]> = [
         ['link:l-muc-sw', () => stateOf('device:muc-sw') === 'related' && stateOf('device:muc-rtr') === 'related' && stateOf('link:l-muc-ap') === 'unrelated'],
@@ -1121,8 +1380,98 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
       check(
         'clearing the selection returns every entry to normal prominence',
-        app.session!.state.selected === null && olItems().every((b) => !b.hasAttribute('data-ctx')) && !q('#outline-body .ol-ctx-hint') && count('.dim') === 0 && count('.hl') === 0,
+        app.session!.state.selected === null && olItems().every((b) => !b.hasAttribute('data-ctx')) && !(q('#outline-body .ol-ctx-hint') || { textContent: '' }).textContent && count('.dim') === 0 && count('.hl') === 0,
       );
+    }
+
+    // ------------------------------------ device-type visibility: Endpoints, Servers
+    {
+      if (app.mdoc) app.mdoc.markSaved();
+      app.loadExample(EXAMPLES.findIndex((e) => e.name === 'device-types.yaml'));
+      const s = (): NonNullable<typeof app.session> => app.session!;
+      const md = (): ModelDoc => app.mdoc as ModelDoc;
+      const ep = q('#opt-type-endpoint') as HTMLInputElement;
+      const sv = q('#opt-type-server') as HTMLInputElement;
+      const m = s().model;
+      const typed = (t: string): string[] => m.devices.filter((d) => d.type === t).map((d) => d.id);
+      const eps = typed('endpoint');
+      const srv = typed('server');
+      const onScreen = (): string[] => (Array.prototype.map.call(doc.querySelectorAll('#viewport g.device'), (e: Element) => (e.getAttribute('data-ref') || '').slice(7)) as string[]).sort();
+      const inSvg = (svgText: string, id: string): boolean => svgText.indexOf(`data-ref="device:${id}"`) >= 0;
+      const posOf = (view: 'physical' | 'logical'): string => JSON.stringify(Array.from(s().positionsFor(view)));
+      const yaml = app.exportText();
+      const undo = md().canUndo();
+      const full = { physical: posOf('physical'), logical: posOf('logical') };
+      check(
+        'Endpoints and Servers are on for a newly opened model; they switch the model types "endpoint" and "server"',
+        ep.checked && sv.checked && !ep.disabled && !sv.disabled && eps.length === 2 && srv.length === 1 && ep.getAttribute('data-device-type') === 'endpoint' && sv.getAttribute('data-device-type') === 'server' && DEVICE_TYPES.some((t) => t.id === 'endpoint') && DEVICE_TYPES.some((t) => t.id === 'server'),
+      );
+      for (const view of ['physical', 'logical'] as const) {
+        click(`[data-view-btn="${view}"]`);
+        await tick();
+        const before = onScreen();
+        const pos = new Map(s().positionsFor(view));
+        ep.click();
+        await tick();
+        const noEp = onScreen();
+        const svgNoEp = app.exportSvg();
+        const png = await app.exportPng();
+        const kept = Array.from(s().positionsFor(view)).every(([id, p]) => !m.index.devices.has(id) || (!!pos.get(id) && pos.get(id)!.x === p.x && pos.get(id)!.y === p.y));
+        const epLinks = m.links.filter((l) => eps.indexOf(l.a.device) >= 0 || eps.indexOf(l.b.device) >= 0);
+        check(
+          `${view} view: Endpoints off hides the endpoints and what depends on them, on screen and in the SVG and PNG exports; every other device stays where it was`,
+          eps.every((id) => noEp.indexOf(id) < 0 && !inSvg(svgNoEp, id)) && noEp.every((id) => before.indexOf(id) >= 0) && noEp.length > 0 && kept && png.width > 0 && png.height > 0 && s().isFiltered() &&
+            !(q('#filter-hint') as HTMLElement).hidden && epLinks.every((l) => !q(`#viewport [data-ref="link:${l.id}"]`) && svgNoEp.indexOf(`data-ref="link:${l.id}"`) < 0) && (view === 'logical' || epLinks.length > 0),
+          `${noEp.join()} kept=${kept}`,
+        );
+        sv.click();
+        await tick();
+        const none = onScreen();
+        const svgNone = app.exportSvg();
+        check(`${view} view: Servers off as well hides both types; the export follows`, eps.concat(srv).every((id) => none.indexOf(id) < 0 && !inSvg(svgNone, id)) && none.length > 0 && !sv.checked && !ep.checked, none.join());
+        ep.click();
+        await tick();
+        const epBack = onScreen();
+        check(`${view} view: Endpoints on again while Servers stays off brings back the endpoints only`, srv.every((id) => epBack.indexOf(id) < 0) && eps.every((id) => (before.indexOf(id) >= 0) === (epBack.indexOf(id) >= 0)), epBack.join());
+        sv.click();
+        await tick();
+        check(
+          `${view} view: both on again: the complete diagram with its saved positions; the YAML, the undo history and the saved layout are unchanged`,
+          onScreen().join() === before.join() && !s().isFiltered() && posOf(view) === full[view] && app.exportText() === yaml && md().canUndo() === undo && (q('#filter-hint') as HTMLElement).hidden && ep.checked && sv.checked,
+        );
+      }
+      // combined with the Devices selection
+      click('[data-view-btn="physical"]');
+      const btn = q('#devices-btn') as HTMLButtonElement;
+      const pick = ['edge', eps[0], srv[0]];
+      app.setDevices(pick);
+      await tick();
+      const subsetPos = posOf('physical');
+      sv.click();
+      await tick();
+      btn.click();
+      await tick();
+      const row = q(`#devices-list [data-device-row="${srv[0]}"]`);
+      const total = m.devices.length;
+      check(
+        'with a device selection, Servers off narrows it: the selected server leaves the diagram, the selection itself is kept (its row stays checked and says why it is hidden), and the counts say what is shown',
+        onScreen().join() === ['edge', eps[0]].sort().join() && s().selectedDevices().size === 3 && new RegExp(`Devices: 2 of ${total}`).test(btn.textContent || '') && !!row && row.classList.contains('type-hidden') && /hidden: Server off/.test(row.textContent || '') &&
+          (row.querySelector('input') as HTMLInputElement).checked && new RegExp(`showing 2 of ${total} devices`).test(q('#status')!.textContent || ''),
+        `${onScreen().join()} ${btn.textContent}`,
+      );
+      ep.click();
+      await tick();
+      check('… Endpoints off as well leaves only the selected router', onScreen().join() === 'edge' && s().selectedDevices().size === 3);
+      ep.click();
+      sv.click();
+      await tick();
+      check(
+        '… both on again: exactly the previous selection, with its devices where they were; the saved layout is untouched',
+        onScreen().join() === pick.slice().sort().join() && posOf('physical') === subsetPos && s().selectedDevices().size === 3 && app.exportText() === yaml && !md().dirty && !(row && (q(`#devices-list [data-device-row="${srv[0]}"]`) as HTMLElement).classList.contains('type-hidden')),
+      );
+      (q('#devices-panel') as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      app.setDevices(m.devices.map((d) => d.id));
+      check('Select all brings back the complete diagram', !s().isFiltered() && posOf('physical') === full.physical);
     }
 
     // ------------------------ sizing and readability: long and multi-line labels
@@ -1177,7 +1526,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         four.map(pillText).join(' | '),
       );
       const netLines = lines('network:servers', 'net-sub').join(' ');
-      check('a network shows all of its prefixes', ['10.10.0.0/24', '2001:db8:10::/64', '2001:db8:11::/64'].every((c) => netLines.indexOf(c) >= 0), netLines);
+      check('a network shows its one prefix and its VLAN', netLines === 'VLAN 10 · 10.10.0.0/24' && lines('network:servers-v6', 'net-sub').join(' ').indexOf('2001:db8:10::/64') >= 0, netLines);
       // the standalone SVG files: same full text, measured on their own
       const logSvg = app.exportSvg();
       const exported = (text: string): { full: boolean; problems: string[] } => {
@@ -1356,9 +1705,9 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         }
       };
       rev(shuffled.root);
-      // endpoint order of directed relations carries meaning: restore those
+      // endpoint order of unidirectional relations carries meaning: restore those
       const revText = shuffled.exportText().replace('endpoints: [hq-rtr1, muc-rtr]', 'endpoints: [muc-rtr, hq-rtr1]').replace('endpoints: ["hq-log:eno1", hq-fw]', 'endpoints: [hq-fw, "hq-log:eno1"]');
-      check('reversed file keeps the direction of directed relations', /endpoints: \[muc-rtr, hq-rtr1\]/.test(revText) && /endpoints: \[hq-fw, "hq-log:eno1"\]/.test(revText));
+      check('reversed file keeps the direction of unidirectional relations', /endpoints: \[muc-rtr, hq-rtr1\]/.test(revText) && /endpoints: \[hq-fw, "hq-log:eno1"\]/.test(revText));
       app.loadText(revText, 'reversed.yaml', 'file');
       const rd = app.mdoc as ModelDoc;
       rd.arrange(['physical', 'logical']);
@@ -1501,7 +1850,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
           !q('#side-body [data-act="add-child"]') && !/Child interfaces|Parent/.test(q('#side-body')!.textContent || ''),
         typeOptions,
       );
-      check('a loopback has no parent, member or tunnel fields', !/Member ports|Ports carrying VLAN|Tunnel source|Tunnel destination/.test(labels(lg(0))) && /Addresses/.test(labels(lg(0))), labels(lg(0)));
+      check('a loopback has no parent, member or tunnel fields', !/Member ports|Ports carrying|Tunnel source|Tunnel destination/.test(labels(lg(0))) && /Addresses/.test(labels(lg(0))), labels(lg(0)));
 
       // an aggregate: a virtual interface that names several member ports
       click('#side-body [data-act="add-iface"]');
@@ -1521,34 +1870,20 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         `${before} / ${offered()} / ${chips()} / ${app.exportText()}`,
       );
 
-      // a VLAN interface: it names its VLAN; the ports carrying that VLAN come from the link ends
+      // a VLAN interface: it names its VLAN; the ports carrying its networks come from the link ends (checked below, once there are networks)
       click('#side-body [data-act="add-logical"][data-kind="virtual"]');
       await tick();
-      const vlanPorts = card(lg(2)) + ' > [data-derived="vlan-ports"]';
+      const netPorts = card(lg(2)) + ' > [data-derived="net-ports"]';
       // a virtual interface is not assumed to be a bond or a VLAN interface: until it is one, both are offered and no ports are shown
       const plain = labels(lg(2));
-      const noVlanYet = !q(vlanPorts);
+      const noPortsYet = !q(netPorts);
       await setField(field(2, 'vlan'), '30');
-      const noPort = (q(vlanPorts) || { textContent: '' }).textContent || '';
-      click('#outline [data-act="select"][data-kind="link"][data-index="0"]');
-      await tick();
-      await setField(`#side-body [data-t="vlan-add"][data-p='["links",0,"a"]']`, '30');
-      await selectDev(0);
-      const ports = (Array.prototype.map.call(doc.querySelectorAll(vlanPorts + ' li[data-port]'), (e: Element) => e.getAttribute('data-port')) as string[]).join();
       check(
-        'a VLAN interface shows "Ports carrying VLAN" read-only, derived from the VLANs on the link ends; no port is entered on the interface',
-        /Member ports/.test(plain) && /VLAN ID/.test(plain) && noVlanYet && /No link end of this device permits VLAN 30/.test(noPort) && ports === 'eth0' && !/Member ports/.test(labels(lg(2))) && /Ports carrying VLAN 30/.test(labels(lg(2))) &&
-          !/VLAN ID|Ports carrying VLAN/.test(labels(lg(1))) && /VLAN 30 on/.test(q(vlanPorts)!.textContent || '') && !q(vlanPorts + ' input, ' + vlanPorts + ' select, ' + vlanPorts + ' [data-act]') &&
-          !!q(vlanPorts + ' .derived-tag') && /- \{id: virtual1, type: virtual, vlan: 30\}/.test(app.exportText()) && r1().logical[2].members.length === 0 && dh().valid,
-        `${plain} / ${noPort} / ${ports} / ${labels(lg(2))} / ${labels(lg(1))}`,
+        'a VLAN interface names its VLAN; with no network of that VLAN it has no "Ports carrying its networks"; no port is entered on the interface',
+        /Member ports/.test(plain) && /VLAN ID/.test(plain) && noPortsYet && !q(netPorts) && !/Member ports/.test(labels(lg(2))) &&
+          !/VLAN ID|Ports carrying/.test(labels(lg(1))) && /- \{id: virtual1, type: virtual, vlan: 30\}/.test(app.exportText()) && r1().logical[2].members.length === 0 && dh().valid,
+        `${plain} / ${labels(lg(2))} / ${labels(lg(1))}`,
       );
-      // taking the VLAN off the link takes the port out of the list; nothing on the interface changes
-      click('#outline [data-act="select"][data-kind="link"][data-index="0"]');
-      await tick();
-      click('#side-body [data-act="del-vlan"][data-p=\'["links",0,"a"]\'][data-k="30"]');
-      await tick();
-      await selectDev(0);
-      check('… and follows the links: without the VLAN on the cable no port is listed', doc.querySelectorAll(vlanPorts + ' li[data-port]').length === 0 && /- \{id: virtual1, type: virtual, vlan: 30\}/.test(app.exportText()) && !/vlans:/.test(app.exportText()));
 
       // a tunnel: its source is any interface of the device (here a loopback) or an address
       click('#side-body [data-act="add-logical"][data-kind="tunnel"]');
@@ -1621,6 +1956,30 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     await setField('#side-body select[data-t="ep-if"][data-p=\'["relations",0,"endpoints",0]\']', 'lo0');
     await setField('#side-body select[data-t="ep-if"][data-p=\'["relations",0,"endpoints",1]\']', 'lo0');
     await setField('#side-body select[data-t="over-append"]', 'link1');
+    {
+      // direction: a two-way switch, bidirectional by default and not written
+      const dirBtns = (): HTMLElement[] => Array.prototype.slice.call(doc.querySelectorAll('#side-body .dir-switch [data-act="direction"]'));
+      const state = (): string => dirBtns().map((b) => `${b.textContent}:${b.getAttribute('aria-checked')}`).join(',');
+      const before = state();
+      const ex0 = (app.mdoc as ModelDoc).exportText();
+      click('#side-body .dir-switch [data-k="unidirectional"]');
+      await tick();
+      const one = state();
+      const ex1 = (app.mdoc as ModelDoc).exportText();
+      click('[data-view-btn="logical"]');
+      const arrows = count('.arrow');
+      click('[data-view-btn="physical"]');
+      click('#outline [data-act="select"][data-kind="relation"][data-index="0"]');
+      await tick();
+      click('#side-body .dir-switch [data-k="bidirectional"]');
+      await tick();
+      check(
+        'a relation\'s Direction is a switch: Bidirectional (default, nothing written) or Unidirectional (written, drawn with an arrow); back to Bidirectional removes the key',
+        before === 'Bidirectional:true,Unidirectional:false' && !/direction|directed/.test(ex0) && one === 'Bidirectional:false,Unidirectional:true' && /\n {4}direction: unidirectional\n/.test(ex1) &&
+          arrows === 1 && state() === before && !/direction/.test((app.mdoc as ModelDoc).exportText()) && !!q('#side-body .dir-switch[role="radiogroup"]'),
+        `${before} / ${one} / ${arrows} / ${state()}`,
+      );
+    }
     // protocol-specific attributes, including a nested group
     await setField('#side-body [data-t="g-newkey"][data-p=\'["relations",0,"attrs"]\']', 'key');
     await setField('#side-body [data-t="auto"][data-p=\'["relations",0,"attrs","key"]\']', '42');
@@ -1653,14 +2012,17 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     {
       const dn = app.mdoc as ModelDoc;
       check(
-        'a new network is an id only: no kind, VRF or member fields, nothing invented; the member list is read-only',
+        'a new network is an id only (its required prefix is reported, not invented): no kind, VRF or member fields; the member list is read-only',
         !q('#side-body [data-p=\'["networks",0,"kind"]\']') && !q('#side-body [data-p=\'["networks",0,"vrf"]\']') && !q('#side-body [data-p=\'["networks",0,"members"]\']') &&
-          /- id: net1\n/.test(dn.exportText()) && !/kind:|vlan:|members:|cidr:/.test(dn.exportText().slice(dn.exportText().indexOf('networks:'))) && dn.valid && readOnly(members) && /Members \(0\)/.test(text(members)),
+          /- id: net1\n/.test(dn.exportText()) && !/kind:|vlan:|members:|cidr:/.test(dn.exportText().slice(dn.exportText().indexOf('networks:'))) && dn.errors.length === 1 && /needs its IP network/.test(dn.errors[0].message) && readOnly(members) && /Members \(0\)/.test(text(members)),
         dn.exportText() + ' // ' + text(members),
       );
-      await setField('#side-body [data-t="list-append"][data-p=\'["networks",0,"cidr"]\']', '10.77.0.0/24');
+      const cidrIn = q('#side-body input[data-t="text"][data-p=\'["networks",0,"cidr"]\']');
+      const cidrLabel = cidrIn ? ((cidrIn.closest('.field') as HTMLElement).querySelector('label') as HTMLElement).textContent || '' : '';
+      check('a network has one "IP network (CIDR)" text field, not a list', !!cidrIn && cidrLabel === 'IP network (CIDR)' && !q('#side-body [data-t="list-append"][data-p=\'["networks",0,"cidr"]\']') && (app.mdoc as ModelDoc).errors.some((e) => /needs its IP network/.test(e.message)), cidrLabel);
+      await setField('#side-body input[data-t="text"][data-p=\'["networks",0,"cidr"]\']', '10.77.0.0/24');
       await setField('#side-body [data-t="int"][data-p=\'["networks",0,"vlan"]\']', '77');
-      check('a prefix alone adds no member', /Members \(0\)/.test(text(members)) && count('.member') === 0 && /cidr: \[10\.77\.0\.0\/24\]\n {4}vlan: 77\n/.test((app.mdoc as ModelDoc).exportText()), (app.mdoc as ModelDoc).exportText());
+      check('a prefix alone adds no member; it is stored as one value', /Members \(0\)/.test(text(members)) && count('.member') === 0 && /cidr: 10\.77\.0\.0\/24\n {4}vlan: 77\n/.test((app.mdoc as ModelDoc).exportText()), (app.mdoc as ModelDoc).exportText());
       // an address on router1:eth0 makes router1 a member and gives the port the network's VLAN, at once
       await selectDevice(0);
       check('an interface without an address shows no derived network or VLAN (read-only)', readOnly(ifVlan(0, 0)) && /No address/.test(text(ifVlan(0, 0))), text(ifVlan(0, 0)));
@@ -1694,7 +2056,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       // an overlapping network with another VLAN: an explicit ambiguity, nothing chosen
       click('#outline [data-act="add-entity"][data-kind="network"]');
       await tick();
-      await setField('#side-body [data-t="list-append"][data-p=\'["networks",1,"cidr"]\']', '10.77.0.0/25');
+      await setField('#side-body input[data-t="text"][data-p=\'["networks",1,"cidr"]\']', '10.77.0.0/25');
       await setField('#side-body [data-t="int"][data-p=\'["networks",1,"vlan"]\']', '99');
       await selectDevice(0);
       {
@@ -1706,54 +2068,81 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         );
       }
       await selectNetwork(1);
-      await setField('#side-body [data-t="list-item"][data-p=\'["networks",1,"cidr",0]\']', '10.99.0.0/24');
+      await setField('#side-body input[data-t="text"][data-p=\'["networks",1,"cidr"]\']', '10.99.0.0/24');
       await selectDevice(0);
       check('moving the second network away resolves it again (VLAN 78), and membership follows', !!q(ifVlan(0, 0) + ' li[data-vlan="78"]') && count('.member') === 2, text(ifVlan(0, 0)));
       const ex = (app.mdoc as ModelDoc).exportText();
       check('derived members and interface VLANs are never written to the YAML', !/\n {4}members:|kind:/.test(ex) && (ex.match(/vlan: /g) || []).length === 3 && !/eth0[^\n]*vlan/.test(ex), ex);
     }
 
-    // ------------------------------------ per-end VLANs on a link (trunk)
+    // ------------------------------------ per-end networks on a link
     {
+      // a third network without a VLAN: the picker is not limited to networks with VLAN IDs
+      click('#outline [data-act="add-entity"][data-kind="network"]');
+      await tick();
+      await setField('#side-body input[data-t="text"][data-p=\'["networks",2,"cidr"]\']', '192.0.2.0/24');
       click('#outline [data-act="select"][data-kind="link"][data-index="0"]');
       await tick();
-      const end = (side: string): string => `#side-body [data-vlan-end="${side}"]`;
-      const st = (side: string): string => (q(end(side)) || { getAttribute: () => '' }).getAttribute('data-vlan-state') || '';
-      const mismatch = (): string => (q('#side-body [data-vlan-mismatch]') || { getAttribute: () => '' }).getAttribute('data-vlan-mismatch') || '';
-      const addTo = (side: string): string => `#side-body [data-t="vlan-add"][data-p='["links",0,"${side}"]']`;
-      const lk = (): { a: number[]; b: number[] } => {
+      const end = (side: string): string => `#side-body [data-net-end="${side}"]`;
+      const n = (side: string): number => Number((q(end(side)) || { getAttribute: () => '-1' }).getAttribute('data-net-count'));
+      const mismatch = (): string => (q('#side-body [data-net-mismatch]') || { getAttribute: () => '' }).getAttribute('data-net-mismatch') || '';
+      const pick = (side: string): string => `#side-body select[data-t="net-pick"][data-p='["links",0,"${side}"]']`;
+      const options = (side: string): string => (Array.prototype.map.call((q(pick(side)) as HTMLSelectElement).options, (o: HTMLOptionElement) => o.value) as string[]).filter((x) => x).join();
+      const lk = (): { a: string[]; b: string[] } => {
         const l = (app.mdoc as ModelDoc).result.model!.links[0];
-        return { a: l.a.vlans, b: l.b.vlans };
+        return { a: l.a.networks, b: l.b.networks };
       };
-      check('a link end without VLANs says "No VLAN"; none is assumed', st('A') === 'none' && st('B') === 'none' && /No VLAN/.test(text(end('A'))) && mismatch() === 'no' && !/vlans/.test((app.mdoc as ModelDoc).exportText()));
-      check('speed and medium are fields of the link', !!q('#side-body [data-p=\'["links",0,"speed"]\']') && !!q('#side-body [data-p=\'["links",0,"medium"]\']'));
-      await setField(addTo('a'), '10, 20');
+      const label = (): string => (Array.prototype.map.call(doc.querySelectorAll('#viewport .link-label'), (e: Element) => e.textContent || '') as string[]).join('|');
       check(
-        'several VLANs on end A: labelled Trunk with its IDs; end B is not touched',
-        st('A') === 'trunk' && /Trunk · VLANs 10, 20/.test(text(end('A'))) && st('B') === 'none' && JSON.stringify(lk()) === '{"a":[10,20],"b":[]}' &&
-          /a: \{device: router1, interface: eth0, vlans: \[10, 20\]\}, b: edge2:eth0/.test((app.mdoc as ModelDoc).exportText()),
+        'a link end without networks says "No network"; nothing is assumed; the picker offers every network, with or without a VLAN',
+        n('A') === 0 && n('B') === 0 && /No network/.test(text(end('A'))) && mismatch() === 'no' && !/networks: \[|vlans/.test((app.mdoc as ModelDoc).exportText()) && options('a') === 'net1,net2,net3' && !q('#side-body [data-t="vlan-add"]'),
+        options('a'),
+      );
+      check('speed and medium are fields of the link', !!q('#side-body [data-p=\'["links",0,"speed"]\']') && !!q('#side-body [data-p=\'["links",0,"medium"]\']'));
+      await setField(pick('a'), 'net1');
+      await setField(pick('a'), 'net3');
+      check(
+        'two networks on end A, by id: listed as networks (the VLAN of a network is only shown with it), never as a trunk; end B is not touched',
+        n('A') === 2 && /2 networks/.test(text(end('A'))) && /net1 · VLAN 78/.test(text(end('A'))) && !/trunk/i.test(text(end('A'))) && n('B') === 0 && JSON.stringify(lk()) === '{"a":["net1","net3"],"b":[]}' &&
+          /a: \{device: router1, interface: eth0, networks: \[net1, net3\]\}, b: edge2:eth0/.test((app.mdoc as ModelDoc).exportText()),
         (app.mdoc as ModelDoc).exportText(),
       );
       click('[data-view-btn="physical"]');
       check(
-        'the difference between the ends is highlighted (editor, problems, physical view) and not repaired',
-        mismatch() === 'yes' && /only on end A: 10, 20/.test(text('#side-body [data-vlan-mismatch]')) && (app.mdoc as ModelDoc).warnings.some((w) => /VLAN mismatch/.test(w.message)) && count('.cable.vlan-mismatch') === 1 && count('.vlan-warn') === 1,
-        text('#side-body [data-vlan-mismatch]'),
+        'the difference between the ends is shown (editor, problems, physical view) and not repaired',
+        mismatch() === 'yes' && /only at end A: net1, net3/.test(text('#side-body [data-net-mismatch]')) && (app.mdoc as ModelDoc).warnings.some((w) => /carry different networks/.test(w.message)) &&
+          count('.cable.net-mismatch') === 1 && count('.net-warn') === 1 && /networks differ/.test(label()) && !/trunk/i.test(label()),
+        text('#side-body [data-net-mismatch]') + ' / ' + label(),
       );
-      // end B: pick a network's VLAN from the list -> a single VLAN
-      await setField('#side-body select[data-t="vlan-pick"][data-p=\'["links",0,"b"]\']', '78');
-      check('one VLAN on end B (picked from the networks\' VLANs): shown as a single VLAN, not a trunk', st('B') === 'single' && /VLAN 78/.test(text(end('B'))) && !/Trunk/.test(text(end('B'))) && JSON.stringify(lk()) === '{"a":[10,20],"b":[78]}' && mismatch() === 'yes');
-      await setField(addTo('b'), '10 20');
-      click('#side-body [data-act="del-vlan"][data-p=\'["links",0,"b"]\'][data-k="78"]');
+      await setField(pick('b'), 'net3');
+      await setField(pick('b'), 'net1');
+      check(
+        'the same networks at both ends (in any order): no difference; the cable is labelled with them, not as a trunk',
+        JSON.stringify(lk()) === '{"a":["net1","net3"],"b":["net3","net1"]}' && mismatch() === 'no' && count('.cable.net-mismatch') === 0 && count('.net-warn') === 0 &&
+          /net1, net3/.test(label()) && !/trunk/i.test(label() + text('#side-body')) && !(app.mdoc as ModelDoc).warnings.some((w) => /carry different networks/.test(w.message)),
+        label(),
+      );
+      click('#side-body [data-act="del-net"][data-p=\'["links",0,"a"]\'][data-k="net3"]');
       await tick();
-      check('both ends permit the same VLANs: no mismatch, the cable is a trunk', JSON.stringify(lk()) === '{"a":[10,20],"b":[10,20]}' && mismatch() === 'no' && st('B') === 'trunk' && count('.cable.vlan-mismatch') === 0 && count('.vlan-warn') === 0 && !(app.mdoc as ModelDoc).warnings.some((w) => /VLAN mismatch/.test(w.message)));
-      click('#side-body [data-act="del-vlan"][data-p=\'["links",0,"a"]\'][data-k="20"]');
+      check('removing a network from one end leaves the other end as it was (the difference is shown again)', JSON.stringify(lk()) === '{"a":["net1"],"b":["net3","net1"]}' && n('A') === 1 && n('B') === 2 && mismatch() === 'yes');
+      // selecting a network highlights the cables that carry it, with their ports
+      app.select('network:net3');
+      check('selecting a network highlights the cable that carries it at an end', count('.cable.hl') === 1, String(count('.cable.hl')));
+      app.select(null);
+      click('#outline [data-act="select"][data-kind="link"][data-index="0"]');
       await tick();
-      check('removing a VLAN from one end leaves the other end as it was (mismatch shown again)', JSON.stringify(lk()) === '{"a":[10],"b":[10,20]}' && st('A') === 'single' && st('B') === 'trunk' && mismatch() === 'yes');
-      await setField(addTo('a'), '4095');
-      check('an invalid VLAN ID is refused and nothing changes', JSON.stringify(lk()) === '{"a":[10],"b":[10,20]}' && /1 to 4094/.test(q('#toast')!.textContent || ''), q('#toast')!.textContent || '');
-      await setField(addTo('a'), '20');
-      check('link-end VLANs and network VLANs stay separate facts', (app.mdoc as ModelDoc).result.model!.networks[0].vlan === 78 && JSON.stringify(lk()) === '{"a":[10,20],"b":[10,20]}');
+      await setField(pick('a'), 'net3');
+      // a VLAN interface in a network carried on a port: "Ports carrying its networks" follows the link ends
+      await selectDevice(0);
+      await setField("#side-body [data-p='[\"devices\",0,\"logical_interfaces\",2,\"vlan\"]']", '78');
+      const netPorts = `#side-body [data-card='["devices",0,"logical_interfaces",2]'] > [data-derived="net-ports"]`;
+      const ports = (Array.prototype.map.call(doc.querySelectorAll(netPorts + ' li[data-port]'), (e: Element) => e.getAttribute('data-port')) as string[]).join();
+      check(
+        'a VLAN interface shows "Ports carrying its networks" read-only, derived from the networks on the link ends',
+        ports === 'eth0' && /Ports carrying its networks \(net1\)/.test(text(netPorts)) && /net1 on/.test(text(netPorts)) && readOnly(netPorts) && /- \{id: virtual1, type: virtual, vlan: 78\}/.test(app.exportText()),
+        text(netPorts),
+      );
+      check('link-end networks and network VLANs stay separate facts', (app.mdoc as ModelDoc).result.model!.networks[0].vlan === 78 && JSON.stringify(lk()) === '{"a":["net1","net3"],"b":["net3","net1"]}');
       click('[data-view-btn="logical"]');
     }
 
@@ -1773,20 +2162,20 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         !!rd && rd.valid && rd.exportText() === created.text && !!rm && rm.index.devices.get('edge2')!.logical.map((l) => l.id + ':' + l.type).join() === 'lo0:loopback,lo1:loopback' &&
           rm.index.interfaces.get('edge2:lo0')!.addresses.join(',') === '10.255.0.2/32,2001:db8:ffff::2/128,10.255.0.3/32' && rm.index.interfaces.get('edge2:lo0')!.type === 'loopback' &&
           rm.index.devices.get('router1')!.interfaces.map((i) => `${i.id}:${i.type}`).join() === 'eth0:physical,eth9:physical' &&
-          rm.index.devices.get('router1')!.logical.map((i) => `${i.id}:${i.type}:${i.members.join('+')}:${i.vlan || ''}:${i.source ? i.source.iface : ''}>${i.destination ? i.destination.text : ''}`).join() === 'lo0:loopback:::>,virtual0:virtual:eth9+eth0::>,virtual1:virtual::30:>,tun0:tunnel:::eth0>edge2:lo0' &&
+          rm.index.devices.get('router1')!.logical.map((i) => `${i.id}:${i.type}:${i.members.join('+')}:${i.vlan || ''}:${i.source ? i.source.iface : ''}>${i.destination ? i.destination.text : ''}`).join() === 'lo0:loopback:::>,virtual0:virtual:eth9+eth0::>,virtual1:virtual::78:>,tun0:tunnel:::eth0>edge2:lo0' &&
           rm.relations[0].attrs.some(([k, v]) => k === 'keepalive.interval' && v === '10s') && /key: 42/.test(created.text),
         created.text);
       check(
-        'export → reload: per-end VLANs are in the file; members and interface VLANs are derived again, not stored',
-        !!rm && JSON.stringify([rm.links[0].a.vlans, rm.links[0].b.vlans]) === '[[10,20],[10,20]]' && networkMembers(rm, 'net1').map((m) => m.device).join() === 'router1,edge2' &&
-          interfaceVlanText(interfaceAddresses(rm, 'router1', 'eth0')) === 'VLAN 78' && !/\n {4}members:|kind:/.test(created.text) && /b: \{device: edge2, interface: eth0, vlans: \[10, 20\]\}/.test(created.text),
+        'export → reload: per-end networks are in the file; members and interface VLANs are derived again, not stored',
+        !!rm && JSON.stringify([rm.links[0].a.networks, rm.links[0].b.networks]) === '[["net1","net3"],["net3","net1"]]' && networkMembers(rm, 'net1').map((m) => m.device).join() === 'router1,edge2' &&
+          interfaceVlanText(interfaceAddresses(rm, 'router1', 'eth0')) === 'VLAN 78' && !/\n {4}members:|kind:/.test(created.text) && /b: \{device: edge2, interface: eth0, networks: \[net3, net1\]\}/.test(created.text),
         created.text);
       if (rd) {
         app.loadText(created.text, 'reloaded.yaml', 'file');
         click('[data-view-btn="physical"]');
-        const physOk = count('.cable') === 1 && count('.vlan-warn') === 0;
+        const physOk = count('.cable') === 1 && count('.net-warn') === 0;
         click('[data-view-btn="logical"]');
-        check('… and both views draw the reloaded file the same way (cable without mismatch; 2 membership lines)', physOk && count('.member') === 2 && count('g.network') === 2, `${count('.member')} member lines`);
+        check('… and both views draw the reloaded file the same way (cable with matching ends; 2 membership lines)', physOk && count('.member') === 2 && count('g.network') === 3, `${count('.member')} member lines`);
       }
     }
 
@@ -2060,6 +2449,29 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         `${res.physical.svg.heading} (${res.physical.svg.netCount}) / ${res.logical.svg.heading} (${res.logical.svg.netCount})`,
       );
       {
+        // a filtered view: the picture is the subset (devices, relations, legend, Networks box), never the hint
+        const yaml = app.exportText();
+        app.setDevices(['hq-rtr1', 'hq-rtr2', 'hq-fw', 'hq-core1', 'hq-core2', 'isp1-pe', 'inet']);
+        const sub: { [view: string]: Awaited<ReturnType<typeof both>> } = {};
+        for (const view of ['physical', 'logical']) {
+          click(`[data-view-btn="${view}"]`);
+          await tick();
+          for (let n = 0; n < 3; n++) click('#zoom-in');
+          sub[view] = await both('enterprise-wan', view);
+          click('#zoom-fit');
+        }
+        const t = (v: string): string => sub[v].svg.texts.join('|');
+        check(
+          'PNG and SVG of a filtered view: the whole subset (not the part on screen), its legend and Networks box only, no temporary-positions hint; the YAML is unchanged',
+          sub.physical.ok && sub.logical.ok && sub.physical.svg.devices === 7 && sub.logical.svg.devices < 15 &&
+            sub.physical.svg.netCount < res.physical.svg.netCount && sub.logical.svg.netCount < res.logical.svg.netCount &&
+            !/not saved in YAML|temporary/.test(t('physical') + t('logical')) && !/\|GRE\||\|IPsec\||WireGuard/.test('|' + t('logical') + '|') && /\|iBGP\|/.test('|' + t('logical') + '|') &&
+            !/Branch Munich|Hamburg LAN|Munich LAN/.test(t('physical') + t('logical')) && app.exportText() === yaml,
+          `${sub.physical.why} / ${sub.logical.why} / devices ${sub.physical.svg.devices}, ${sub.logical.svg.devices} / nets ${sub.physical.svg.netCount}<${res.physical.svg.netCount}, ${sub.logical.svg.netCount}<${res.logical.svg.netCount}`,
+        );
+        app.setDevices(app.session!.model.devices.map((d) => d.id));
+      }
+      {
         // view-specific network information: a network that only loopbacks are in belongs to the logical picture alone
         app.loadText(FIXTURES.find((e) => e.name === 'editor-new-network.yaml')!.text, 'editor-new-network.yaml', 'example');
         click('[data-view-btn="physical"]');
@@ -2147,6 +2559,398 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         await answerDialog('ok');
         check('a failing SVG export is reported the same way', /Could not export the view as SVG/.test(saidSvg) && /“large-network-logical\.svg” was not created: out of memory\./.test(saidSvg) && downloads.length === had, saidSvg);
       }
+    }
+
+    // ------------------------- the edit header, the interaction help, the YAML mark
+    {
+      const view = doc.defaultView as Window;
+      const main = q('main') as HTMLElement;
+      const rect = (e: Element): DOMRect => e.getBoundingClientRect();
+      const LONG = 'a-very-long-device-identifier-that-keeps-going-' + 'x'.repeat(17);
+      const LABEL = 'Long label '.repeat(12).trim();
+      app.loadText(`netatlas: 1\ntitle: Header test\ndevices:\n  - id: ${LONG}\n    label: ${LABEL}\n    group: no-such-group\n    type: server\n  - id: b\n`, 'header.yaml', 'file');
+      app.select('device:' + LONG);
+      await tick();
+      const head = (): HTMLElement => q('#side-body .insp-head') as HTMLElement;
+      const part = (sel: string): HTMLElement => head().querySelector(sel) as HTMLElement;
+      /** what does not fit: anything outside the header, a clipped name, a page or panel that scrolls sideways */
+      const misfits = (): string[] => {
+        const bad: string[] = [];
+        const h = rect(head());
+        if (head().scrollWidth > head().clientWidth + 1) bad.push('header overflows');
+        for (const [name, sel] of [['type', '.badge'], ['state', '.ih-status'], ['Duplicate', '[data-act="dup-entity"]'], ['Delete', '[data-act="del-entity"]'], ['name', 'h3']]) {
+          const r = rect(part(sel));
+          if (r.left < h.left - 0.5 || r.right > h.right + 0.5 || r.width < 1) bad.push(name + ' outside the header');
+        }
+        const h3 = part('h3');
+        if (h3.scrollWidth > h3.clientWidth + 1 || (h3.textContent || '').indexOf(LONG) < 0) bad.push('name clipped');
+        const body = q('#side-body') as HTMLElement;
+        if (body.scrollWidth > body.clientWidth + 1) {
+          const edge = rect(body).left + body.clientWidth;
+          const wide = Array.prototype.filter.call(body.querySelectorAll('*'), (e: Element) => rect(e).right > edge + 1).map((e: Element) => e.tagName + '.' + e.getAttribute('class') + (e.getAttribute('data-t') ? '[' + e.getAttribute('data-t') + ']' : ''));
+          bad.push('panel scrolls sideways: ' + wide.slice(0, 4).join(', '));
+        }
+        if (doc.documentElement.scrollWidth > doc.documentElement.clientWidth || doc.documentElement.scrollHeight > doc.documentElement.clientHeight) bad.push('page scrolls');
+        return bad;
+      };
+      const dup = (): HTMLButtonElement => part('[data-act="dup-entity"]') as HTMLButtonElement;
+      const del = (): HTMLButtonElement => part('[data-act="del-entity"]') as HTMLButtonElement;
+      const labelShown = (b: HTMLElement): boolean => view.getComputedStyle(b.querySelector('.ib-label') as HTMLElement).display !== 'none';
+      const st = part('.ih-status');
+      check(
+        'edit header: type, validation state and actions in one row, the full name below it; actions with accessible names and tooltips; Delete looks destructive',
+        !!head() && part('.ih-row .badge').textContent === 'device' && st.getAttribute('data-state') === 'error' && /^1 error$/.test((st.textContent || '').trim()) && !!st.title &&
+          dup().getAttribute('aria-label') === `Duplicate device ${LONG}` && /Duplicate/.test(dup().title) && del().getAttribute('aria-label') === `Delete device ${LONG}` && /Delete/.test(del().title) &&
+          del().classList.contains('danger') && view.getComputedStyle(del()).color !== view.getComputedStyle(dup()).color && !!dup().querySelector('svg') && !!del().querySelector('svg') &&
+          Math.abs(rect(dup()).top - rect(part('.badge')).top) < 12 && rect(part('h3')).top >= rect(dup()).bottom - 1 && labelShown(dup()) && labelShown(del()) && !!q('#side-body .issue-list') && misfits().length === 0,
+        misfits().join('; ') + ' ' + (st.textContent || ''),
+      );
+      for (const w of [300, 240]) {
+        main.style.gridTemplateColumns = `150px minmax(0, 1fr) ${w}px`;
+        await tick(30);
+        check(
+          `edit header in a ${w}px side panel: nothing clipped or outside, no page or panel scrolling; the actions keep their icon, accessible name and tooltip`,
+          misfits().length === 0 && !labelShown(dup()) && !!dup().getAttribute('aria-label') && !!del().title && rect(dup()).width >= 20 && rect(del()).width >= 20,
+          misfits().join('; '),
+        );
+      }
+      main.style.gridTemplateColumns = '';
+      await tick(30);
+      // a model without problems says so in the same place
+      app.select('device:b');
+      await tick();
+      check('an object without problems: the header says "No problems" and no issue list follows', part('.ih-status').getAttribute('data-state') === 'ok' && /No problems/.test(part('.ih-status').textContent || '') && !q('#side-body .issue-list'));
+
+      // interaction help: grouped, every documented action, readable, adapting to the room
+      const keys = q('#keys') as HTMLDetailsElement;
+      const groups = Array.prototype.slice.call(keys.querySelectorAll('.keys-group')) as HTMLElement[];
+      const pairs = (Array.prototype.map.call(keys.querySelectorAll('dl > div'), (d: Element) => `${((d.querySelector('dt') as HTMLElement).textContent || '').replace(/\s+/g, ' ').trim()}: ${(d.querySelector('dd') as HTMLElement).textContent}`) as string[]).join(' | ');
+      const keyMisfits = (): string[] => {
+        const bad: string[] = [];
+        const k = rect(keys);
+        if (keys.scrollWidth > keys.clientWidth + 1) bad.push('help scrolls sideways');
+        Array.prototype.forEach.call(keys.querySelectorAll('dt, dd, h4, summary'), (e: HTMLElement) => {
+          const r = rect(e);
+          if (r.right > k.right + 0.5 || r.left < k.left - 0.5) bad.push(`"${e.textContent}" outside`);
+          if (parseFloat(view.getComputedStyle(e).fontSize) < 10.5) bad.push(`"${e.textContent}" too small`);
+        });
+        return bad;
+      };
+      check(
+        'interaction help: open, in two labelled groups (Pointer, Keyboard) listing every documented action',
+        keys.open && keys.tagName === 'DETAILS' && /Mouse & keyboard/.test((keys.querySelector('summary') as HTMLElement).textContent || '') && groups.length === 2 &&
+          groups.map((g) => (g.querySelector('h4') as HTMLElement).textContent).join() === 'Pointer,Keyboard' &&
+          pairs === 'Drag background: pan | Wheel: zoom | Drag node: move | Click: select | Esc: clear | P / L: view | Ctrl+Z / Y: undo / redo | Ctrl+S: download',
+        pairs,
+      );
+      check('… readable: side by side in a wide panel, nothing outside it, no text below 10.5px', Math.abs(rect(groups[0]).top - rect(groups[1]).top) < 2 && keyMisfits().length === 0, keyMisfits().join('; '));
+      main.style.gridTemplateColumns = '150px minmax(0, 1fr) 240px';
+      await tick(30);
+      check('… in a narrow panel the groups stack, and still nothing is cut off', rect(groups[1]).top >= rect(groups[0]).bottom - 1 && keyMisfits().length === 0, keyMisfits().join('; '));
+      main.style.gridTemplateColumns = '';
+      await tick(30);
+      const openHeight = rect(keys).height;
+      (keys.querySelector('summary') as HTMLElement).click();
+      const folded = !keys.open && rect(keys).height < openHeight - 30;
+      (keys.querySelector('summary') as HTMLElement).click();
+      check('… it folds to its heading and opens again', folded && keys.open);
+
+      // the YAML mark: the entry of the selected object, found by structure, never by searching for its id
+      const TRAP =
+        'netatlas: 1\ntitle: core\n# - id: core   (a comment that looks like an entry)\ndevices:\n  - id: edge\n    label: core\n    description: "id: core"\n    interfaces: [{id: e0}]\n' +
+        '  - id: core\n    label: Core switch\n    interfaces:\n      - {id: e0}\n      - id: e1\n        description: uplink\n  - id: access\n    description: |\n      - id: core\n        not: an entry\n    interfaces: [{id: e0}]\n' +
+        'links:\n  - id: l1\n    a: {device: edge, interface: e0}\n    b: {device: core, interface: e0}\n';
+      app.loadText(TRAP, 'trap.yaml', 'file');
+      click('[data-tab="yaml"]');
+      app.select('device:core');
+      await tick();
+      const ta = (): HTMLTextAreaElement => q('#yaml-src') as HTMLTextAreaElement;
+      const band = (): HTMLElement => q('.yaml-hl') as HTMLElement;
+      const lines = (): string[] => ta().value.split('\n');
+      /** the expected entry: from its "- id:" line up to the next entry of the list */
+      const entry = (id: string, next: string): string => `${lines().indexOf('  - id: ' + id) + 1}-${lines().indexOf(next)}`;
+      const mark = (): string => ta().getAttribute('data-mark') || '';
+      /** the band lies exactly behind the marked lines, inside the text area */
+      const bandOk = (): boolean => {
+        const [a, b] = mark().split('-').map(Number);
+        if (!a || band().hidden) return false;
+        const cs = view.getComputedStyle(ta());
+        const lh = parseFloat(cs.lineHeight);
+        const top = rect(ta()).top + ta().clientTop + parseFloat(cs.paddingTop) + (a - 1) * lh - ta().scrollTop;
+        return Math.abs(rect(band()).top - top) < 1 && Math.abs(rect(band()).height - (b - a + 1) * lh) < 1 && rect(band()).left >= rect(ta()).left;
+      };
+      const text0 = ta().value;
+      const mentions = lines().filter((l) => /\bcore\b/.test(l)).length;
+      check(
+        'YAML tab: selecting a device marks its entry and nothing else, although its id also appears as a title, label, quoted text, comment, reference and inside another entry’s text',
+        !!q('[data-tab="yaml"].active') && mentions >= 6 && mark() === entry('core', '  - id: access') && bandOk() && ta().value === app.exportText() && /Device “core”: lines \d+–\d+ \(marked\)/.test(q('#yaml-sel')!.textContent || ''),
+        `${mark()} ≠ ${entry('core', '  - id: access')} (${mentions})`,
+      );
+      // the mark never changes the text, the caret, the text selection or the scroll position
+      ta().focus();
+      ta().setSelectionRange(3, 8);
+      app.select('device:edge');
+      await tick();
+      check(
+        'selecting another object (diagram or search) moves the mark and keeps the YAML tab, the text, the focus, the caret and the text selection',
+        !!q('[data-tab="yaml"].active') && mark() === entry('edge', '  - id: core') && bandOk() && ta().value === text0 && doc.activeElement === ta() && ta().selectionStart === 3 && ta().selectionEnd === 8,
+        mark(),
+      );
+      (q('#outline-body .ol-item[data-ref="device:access"]') as HTMLElement).click();
+      await tick();
+      check('selecting in the left list keeps the YAML tab too, and marks the entry (its text is not mistaken for another entry)', !!q('[data-tab="yaml"].active') && mark() === `${lines().indexOf('  - id: access') + 1}-${lines().indexOf('links:')}`, mark());
+      app.select('iface:core:e1');
+      await tick();
+      check('an interface: the mark covers that interface’s entry only', mark() === `${lines().indexOf('      - id: e1') + 1}-${lines().indexOf('      - id: e1') + 2}` && bandOk(), mark());
+      app.select('device:core');
+      await tick();
+      // typing: the entry is found again in the changed text; the text area is left alone
+      ta().scrollTop = 0;
+      const typed = '# a line typed above\n' + text0;
+      ta().value = typed;
+      ta().dispatchEvent(new Event('input', { bubbles: true }));
+      await tick(250);
+      check('typing above the entry moves the mark with it, without touching the text or the scroll position', mark() === entry('core', '  - id: access') && ta().value === typed && ta().scrollTop === 0 && bandOk(), mark());
+      ta().value = typed.replace('  - id: access', '  - &x id: access');
+      ta().dispatchEvent(new Event('input', { bubbles: true }));
+      await tick(250);
+      check('while the YAML is not valid nothing is marked, and the note says why', mark() === '' && band().hidden && q('#yaml-sel')!.getAttribute('data-state') === 'unmarked' && /not marked/.test(q('#yaml-sel')!.textContent || ''));
+      ta().value = typed;
+      ta().dispatchEvent(new Event('input', { bubbles: true }));
+      await tick(250);
+      check('… and the mark is back once it is valid again', mark() === entry('core', '  - id: access') && bandOk());
+      click('[data-yaml="apply"]');
+      await tick();
+      check('after Apply (the text is reformatted) the mark follows the entry in the new text', ta().value === app.exportText() && mark() === entry('core', '  - id: access') && bandOk(), mark());
+      app.undo();
+      await tick();
+      check('after undo as well', !!q('[data-tab="yaml"].active') && ta().value === app.exportText() && ta().value.indexOf('# a line typed above') < 0 && mark() === entry('core', '  - id: access'), mark());
+      app.redo();
+      app.undo();
+      // renaming: the mark follows the object to its new id
+      click('[data-tab="edit"]');
+      await setField('#side-body [data-t="id"]', 'core-renamed');
+      click('[data-tab="yaml"]');
+      await tick();
+      check('after renaming the object, the mark is on its entry under the new id', mark() === entry('core-renamed', '  - id: access') && /“core-renamed”/.test(q('#yaml-sel')!.textContent || ''), mark());
+      // a long file: a selected entry out of sight is scrolled into view once; afterwards the reader's scroll position is respected
+      if (app.mdoc) app.mdoc.markSaved();
+      app.loadExample(EXAMPLES.findIndex((e) => e.name === 'enterprise-wan.yaml'));
+      check('opening another file: no selection, nothing marked', mark() === '' && q('#yaml-sel')!.getAttribute('data-state') === 'none' && !!q('[data-tab="yaml"].active'));
+      app.select('device:hq-log');
+      await tick();
+      const shownAt = ta().scrollTop;
+      const visible = rect(band()).bottom > rect(ta()).top && rect(band()).top < rect(ta()).bottom;
+      ta().scrollTop = 0;
+      app.select('device:hq-log');
+      await tick();
+      check(
+        'in a long file the newly selected entry is scrolled into view once; re-rendering the same selection keeps the scroll position the reader chose',
+        shownAt > 0 && visible && ta().scrollTop === 0 && bandOk(),
+        `${shownAt} ${visible} ${ta().scrollTop}`,
+      );
+      app.select(null);
+      click('[data-tab="legend"]');
+    }
+
+    // ------------- DNS names (logical view), help texts, Details = Edit header, toolbar filters, file name, View menu
+    {
+      if (app.mdoc) app.mdoc.markSaved();
+      const view = doc.defaultView as Window;
+      const rect = (e: Element): DOMRect => e.getBoundingClientRect();
+      app.loadExample(EXAMPLES.findIndex((e) => e.name === 'enterprise-wan.yaml'));
+      click('[data-view-btn="logical"]');
+      await tick();
+      const m = app.session!.model;
+      const chips = (): string[] => (Array.prototype.map.call(doc.querySelectorAll('#viewport g.dns-chip'), (g: Element) => (Array.prototype.map.call(g.querySelectorAll('text'), (t: Element) => t.textContent || '') as string[]).join('')) as string[]).sort();
+      const drawnDevices = new Set(Array.prototype.map.call(doc.querySelectorAll('#viewport g.device'), (e: Element) => (e.getAttribute('data-ref') || '').slice(7)) as string[]);
+      const expected = Array.from(new Set(m.devices.filter((d) => drawnDevices.has(d.id)).reduce((a: string[], d) => a.concat(d.dnsNames.map((x) => x.name)), []))).sort();
+      const problemsNow = drawnProblems();
+      check(
+        'logical view: each configured DNS name once under its device (a name of two interfaces is not repeated), in its own dashed chip, readable and inside it; the physical view shows none',
+        expected.length >= 3 && chips().join() === expected.join() && problemsNow.length === 0 && !!q('#viewport g.dns-chip[data-ref="device:hq-rtr1"]'),
+        `${chips().join()} vs ${expected.join()} ${problemsNow.slice(0, 3).join('; ')}`,
+      );
+      const svgText = app.exportSvg();
+      const png = await app.exportPng();
+      check(
+        'the logical SVG and PNG exports carry the DNS names, and the legend names them as configured (not looked up)',
+        expected.every((n) => svgText.indexOf(`data-dns="${n}"`) >= 0) && /DNS name \(as configured, not looked up\)/.test(svgText) && png.width > 0,
+      );
+      (q('#opt-labels') as HTMLInputElement).click();
+      await tick();
+      const svgNoLabels = app.exportSvg();
+      check('Labels off hides the DNS names, on screen and in the export with its legend entry', chips().length === 0 && svgNoLabels.indexOf('data-dns=') < 0 && !/DNS name \(as configured/.test(svgNoLabels));
+      (q('#opt-labels') as HTMLInputElement).click();
+      app.setDevices(m.devices.map((d) => d.id).filter((id) => id !== 'hq-rtr1'));
+      await tick();
+      check('a device left out by the Devices filter takes its DNS names with it', chips().indexOf('hq-rtr1.acme.example') < 0 && chips().indexOf('syslog.acme.example') >= 0 === drawnDevices.has('hq-log'), chips().join());
+      app.setDevices(m.devices.map((d) => d.id));
+      click('[data-view-btn="physical"]');
+      await tick();
+      check('… and the physical view draws no DNS names', chips().length === 0);
+
+      // short help: no routine explanation longer than a line or two
+      app.select('device:hq-rtr1');
+      click('[data-tab="edit"]');
+      await tick();
+      const helps = Array.prototype.map.call(doc.querySelectorAll('#side-body .help, #side-body .muted.small:not(.used-by)'), (e: Element) => (e.textContent || '').trim()) as string[];
+      const long = helps.filter((t) => t.length > 90);
+      const labelField = Array.prototype.find.call(doc.querySelectorAll('#side-body .field'), (f: Element) => ((f.querySelector(':scope > label') || { textContent: '' }).textContent || '') === 'Label') as HTMLElement | undefined;
+      check(
+        'editor help is short: no hint over 90 characters in a device form; the label hint is just that line breaks are kept',
+        helps.length > 3 && long.length === 0 && !!labelField && ((labelField.querySelector('.help') || { textContent: '' }).textContent || '') === 'Line breaks are kept.',
+        long.join(' | '),
+      );
+      click('[data-tab="legend"]');
+      await tick();
+      const legendNotes = Array.prototype.map.call(doc.querySelectorAll('#side-body p'), (e: Element) => (e.textContent || '').trim()) as string[];
+      check(
+        'the physical legend shows ports and network differences as symbols, not as a paragraph',
+        legendNotes.every((t) => t.length <= 90) && !legendNotes.some((t) => /Small squares are ports/.test(t)) && /Port \(label: interface name\)/.test(q('#side-body')!.textContent || ''),
+        legendNotes.join(' | '),
+      );
+
+      // Details and Edit: one header design, the same identity and problem state; the id is in the header, not a first row
+      const headOf = (): { kind: string; name: string; id: string; state: string; text: string } => {
+        const h = q('#side-body .insp-head') as HTMLElement;
+        const t = (sel: string): string => ((h && h.querySelector(sel)) || { textContent: '' }).textContent || '';
+        return { kind: t('.badge'), name: t('.ih-name'), id: t('.ih-id'), state: h ? (h.querySelector('.ih-status') as HTMLElement).getAttribute('data-state') || '' : '', text: t('.ih-status') };
+      };
+      const sameHeads = async (ref: string): Promise<[boolean, string]> => {
+        app.select(ref);
+        click('[data-tab="edit"]');
+        await tick();
+        const e = headOf();
+        click('[data-tab="details"]');
+        await tick();
+        const d = headOf();
+        const firstRow = ((q('#side-body table.kv th') || { textContent: '' }).textContent || '').trim();
+        return [JSON.stringify(e) === JSON.stringify(d) && !!d.kind && !!d.name && d.state !== '' && firstRow !== 'id', `${JSON.stringify(e)} / ${JSON.stringify(d)} first row "${firstRow}"`];
+      };
+      for (const ref of ['device:hq-log', 'link:l-rtr1-fw', 'relation:gre-muc', 'network:net-transit']) {
+        const [ok, why] = await sameHeads(ref);
+        check(`Details and Edit show the same header for ${ref}: kind, name, ID beside it, problem state; Details no longer starts with an "id" row`, ok, why);
+      }
+      const idEl = q('#side-body .insp-head .ih-id') as HTMLElement;
+      check('the ID in the header is plain text that can be selected and copied on its own', !!idEl && idEl.textContent === 'net-transit' && view.getComputedStyle(idEl).userSelect !== 'none');
+      const broken = app.loadText('netatlas: 1\ndevices:\n  - id: r1\n    group: nowhere\n  - id: r2\n', 'broken.yaml', 'file');
+      const [okBroken, whyBroken] = await sameHeads('device:r1');
+      check('an object with an error: the same "1 error" state in Details and Edit', broken.ok && okBroken && headOf().state === 'error' && /1 error/.test(headOf().text), whyBroken);
+
+      // the bottom bar: the file name as a badge at its start; a long one is shortened and never widens the page
+      const LONGNAME = 'acme-'.repeat(30) + 'network.yaml';
+      app.loadText('netatlas: 1\ntitle: Long name\ndevices:\n  - id: a\n', LONGNAME, 'file');
+      await tick();
+      const badge = q('#status .fname') as HTMLElement;
+      const bar = rect(q('#status') as HTMLElement);
+      check(
+        'status bar: the file name is a badge at the start (full name as tooltip); a long name is cut with "…" inside the bar, the rest of the status follows on the same line, the page does not scroll',
+        !!badge && badge === (q('#status') as HTMLElement).firstElementChild && badge.title === LONGNAME && badge.scrollWidth > badge.clientWidth && view.getComputedStyle(badge).textOverflow === 'ellipsis' &&
+          rect(badge).right <= bar.right && /1 devices/.test(q('#status .status-rest')!.textContent || '') && Math.abs(rect(q('#status .status-rest') as HTMLElement).top - rect(badge).top) < 6 &&
+          doc.documentElement.scrollWidth <= doc.documentElement.clientWidth,
+      );
+
+      // the toolbar filters: one row; in a narrow toolbar the lower-priority ones go into "Filters", which says what is off
+      app.loadExample(EXAMPLES.findIndex((e) => e.name === 'enterprise-wan.yaml'));
+      click('[data-view-btn="logical"]');
+      await tick();
+      const top = q('header.topbar') as HTMLElement;
+      const more = q('#more-filters-btn') as HTMLButtonElement;
+      const group = q('#view-filters') as HTMLElement;
+      const inline = (): string[] => (Array.prototype.map.call(group.querySelectorAll(':scope > label.opt'), (e: Element) => (e.textContent || '').trim()) as string[]);
+      const oneRow = (): boolean => {
+        const parts = (Array.prototype.slice.call(group.children) as HTMLElement[]).filter((e) => e.offsetWidth > 0);
+        const mid = parts.map((e) => rect(e).top + rect(e).height / 2);
+        return mid.every((y) => Math.abs(y - mid[0]) < 2.5);
+      };
+      check('wide window: every filter on the toolbar, on one row, no Filters button', inline().join() === 'Labels,Groups / Locations,Networks,Endpoints,Servers' && more.hidden && oneRow(), inline().join());
+      top.style.maxWidth = '900px';
+      app.layoutFilters();
+      await tick();
+      const narrowInline = inline();
+      check(
+        'narrow toolbar: the filters stay on one row; Servers, then Endpoints, … move into the Filters drop-down by priority',
+        oneRow() && !more.hidden && narrowInline.length < 5 && narrowInline[0] === 'Labels' && !!q('#more-filters #opt-type-server') && rect(group).right <= rect(top).right + 0.5,
+        narrowInline.join(),
+      );
+      more.focus();
+      more.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }));
+      await tick();
+      const firstInside = doc.activeElement as HTMLInputElement;
+      const opened = !(q('#more-filters') as HTMLElement).hidden && more.getAttribute('aria-expanded') === 'true' && !!firstInside && (q('#more-filters') as HTMLElement).contains(firstInside);
+      const servers = q('#opt-type-server') as HTMLInputElement;
+      servers.click();
+      await tick();
+      const offShown = /1 off/.test(more.textContent || '') && more.classList.contains('filtered') && /Servers/.test(more.getAttribute('aria-label') || '') && app.session!.isTypeHidden('server');
+      (q('#more-filters') as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      await tick();
+      check(
+        'the Filters drop-down works from the keyboard (arrow down opens it at its first switch, Esc closes it and returns to the button), and its button says that a filter inside is off',
+        opened && offShown && (q('#more-filters') as HTMLElement).hidden && doc.activeElement === more,
+        `${opened} ${more.textContent}`,
+      );
+      top.style.maxWidth = '';
+      app.layoutFilters();
+      await tick();
+      check('back to a wide toolbar: every filter is inline again, with its state kept (Servers still off, shown unchecked)', inline().length === 5 && more.hidden && !servers.checked && servers.parentElement!.parentElement === group && oneRow());
+      servers.click();
+      await tick();
+
+      // the View menu: Find… and Filter outline… live there (and nowhere else), with the menus' keyboard rules
+      const viewBtn = q('#view-btn') as HTMLButtonElement;
+      click('#export-btn');
+      (q('#export-menu') as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true }));
+      await tick();
+      const viaArrow = !(q('#view-menu') as HTMLElement).hidden && viewBtn.getAttribute('aria-expanded') === 'true' && (q('#view-menu') as HTMLElement).contains(doc.activeElement);
+      const entries = textsOf('#view-menu button');
+      check(
+        'View menu next to Export: Find… (/) and Filter outline…, reached with the arrow keys like File and Export; no search box in the toolbar, no filter box always in the outline',
+        viaArrow && entries.join(' | ') === 'Find…/ | Filter outline…' && !q('header.topbar #search') && !q('header.topbar [data-t="outline-filter"]'),
+        `${viaArrow} ${entries.join(' | ')}`,
+      );
+      (q('#view-menu') as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      click('#view-btn');
+      click('#btn-find');
+      await tick();
+      const s = q('#search') as HTMLInputElement;
+      const findOpened = app.findOpen && doc.activeElement === s && (q('#view-menu') as HTMLElement).hidden;
+      s.value = 'hq-fw';
+      s.dispatchEvent(new Event('input', { bubbles: true }));
+      await tick();
+      const hits = doc.querySelectorAll('#search-results [data-goto]').length;
+      s.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+      await tick();
+      const picked = app.session!.state.selected === 'device:hq-fw';
+      s.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      await tick();
+      check('View → Find… opens the Find bar with the cursor in it; typing lists matches, Enter selects the first, Esc closes the bar', findOpened && hits >= 1 && picked && !app.findOpen && s.value === '', `${findOpened} ${hits} ${picked}`);
+      (doc.activeElement as HTMLElement | null)?.blur?.();
+      doc.dispatchEvent(new KeyboardEvent('keydown', { key: '/', bubbles: true, cancelable: true }));
+      await tick();
+      check('"/" still opens Find', app.findOpen && doc.activeElement === s);
+      app.closeFind();
+      click('#view-btn');
+      click('#btn-outline-filter');
+      await tick();
+      const of = q('#outline [data-t="outline-filter"]') as HTMLInputElement;
+      const ofOpened = !!of && doc.activeElement === of;
+      of.value = 'muc';
+      of.dispatchEvent(new Event('input', { bubbles: true }));
+      await tick();
+      const listed = textsOf('#outline .ol-item .ol-label');
+      const of2 = q('#outline [data-t="outline-filter"]') as HTMLInputElement;
+      of2.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      await tick();
+      check(
+        'View → Filter outline… shows the filter at the top of the outline with the cursor in it; it filters as before; Esc clears and removes it',
+        ofOpened && listed.indexOf('muc-rtr') >= 0 && listed.indexOf('hq-rtr1') < 0 && !q('#outline [data-t="outline-filter"]') && textsOf('#outline .ol-item').length > listed.length,
+        listed.join(' | '),
+      );
+      app.mdoc!.markSaved();
+      app.closeModel();
+      check('without a model both View entries are disabled, like Export', (q('#btn-find') as HTMLButtonElement).disabled && (q('#btn-outline-filter') as HTMLButtonElement).disabled && !app.openFind());
+      app.loadExample(0);
     }
 
     const perf = (doc.defaultView as Window).performance;

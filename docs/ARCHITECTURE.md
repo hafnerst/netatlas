@@ -9,12 +9,12 @@ Each layer has one responsibility and may only import the layers below it.
 
 | Layer | Responsibility | Main modules |
 |---|---|---|
-| `model/` | The network model: types for devices, their physical and logical interfaces (loopback, virtual, tunnel) with the associations of each kind, links, networks, relations, protocols and groups; the display order of names (`order.ts`); the protocol registry; IP addresses; **derived facts** (network members and interface VLANs from addresses, link-end VLAN state); pure queries (references, related objects, search). No I/O, no YAML, no layout. | `types.ts`, `device-types.ts`, `protocols.ts`, `ip.ts`, `derive.ts`, `queries.ts`, `order.ts` |
+| `model/` | The network model: types for devices, their physical and logical interfaces (loopback, virtual, tunnel) with the associations of each kind, links, networks, relations, protocols and groups; the display order of names (`order.ts`); the protocol registry; IP addresses; DNS-name syntax; the **device filter** (the part of a model relevant to some devices, as a self-consistent sub-model); **derived facts** (network members and interface VLANs from addresses and each network's one prefix, the networks a cable carries at each end and whether the ends differ); pure queries (references, related objects, search). No I/O, no YAML, no layout. | `types.ts`, `device-types.ts`, `protocols.ts`, `ip.ts`, `dns.ts`, `filter.ts`, `derive.ts`, `queries.ts`, `order.ts` |
 | `yaml/` | The YAML boundary: the supported YAML subset (parser with line/column positions, comments and styles), the serializer (the inverse), and the format **schema** (which keys exist, in canonical order). Knows nothing about networks beyond key names. | `parse.ts`, `write.ts`, `schema.ts` |
 | `validation/` | Turns a parsed YAML tree into a `Model` plus errors and warnings. Every issue is attached to the YAML node it concerns. Structural and cross-reference checks, loopback/IP rules, the presentation-only `layout` section. Callable without any UI. | `validate.ts` (the format's rules), `reader.ts` (issue collector, typed reader, suggestions) |
 | `layout/` | Deterministic positions for both views: a canonical, order-independent input built from the model; auto-arrange for the physical and the logical view; placement of new nodes; the rule "stored positions else auto-arrange". Separates calculated positions from network semantics. | `input.ts`, `physical.ts`, `logical.ts`, `positions.ts`, `text.ts` (width estimate, wrapping), `sizes.ts` (element sizes from their text), `bundles.ts` (lanes and labels of a device pair), `geometry.ts`, `order.ts` |
 | `diagram/` | Presentation: turns model + positions into a virtual SVG tree (`VNode`) for each view, and holds the DOM-free view state (current view, selection, filters, temporary drag positions). No parsing, no editing rules, no DOM. | `session.ts`, `physical.ts`, `logical.ts`, `legend.ts` (the legend as data, and its SVG form for exports), `networks-box.ts` (the networks relevant to a rendered view, and their overview box for exports), `labels.ts` (multi-line text, collision-free label placement), `scene.ts`, `style.ts`, `icons.ts` |
-| `editor/` | The editable document (`ModelDoc`): the YAML tree plus undo/redo, dirty state, validation after every change, and **explicit editing operations** (set a field, append to a list, point an endpoint at an interface, rename an id with all references, add a physical or logical interface, arrange one view, move a node, …). Also the layout section and the layout status. | `document.ts`, `tree.ts`, `layout-section.ts` |
+| `editor/` | The editable document (`ModelDoc`): the YAML tree plus undo/redo, dirty state, validation after every change, and **explicit editing operations** (set a field, append to a list, point an endpoint at an interface, switch DHCP on or off for an interface, add or remove a DNS name, rename an id with all references, add a physical or logical interface, arrange one view, move a node, …). Also the layout section and the layout status, and where an object's entry is in a YAML text (`yaml-block.ts`, found through the parsed structure). | `document.ts`, `tree.ts`, `layout-section.ts`, `yaml-block.ts` |
 | `ui/` | The browser: application shell, canvas interaction, inspector forms and outline, side panels, dialogs, local file reading and download, and the only code that creates DOM elements (`dom.ts`). Uses the editor's operations and never builds YAML itself. | `app.ts`, `inspector.ts`, `panels.ts`, `dialogs.ts`, `files.ts`, `dom.ts` |
 | `app/` | Entry point, the in-browser self-test (`#selftest`) and the viewport check (`#viewportcheck`). | `main.ts`, `selftest.ts`, `viewport-check.ts` |
 | `generated/` | Built from `examples/*.yaml` by `scripts/gen-examples.mjs`; do not edit. | `examples.ts` |
@@ -73,10 +73,13 @@ anything else.
   tree. Whatever follows from it is computed by `model/derive.ts` from the
   typed `Model` (cached per model object, and a new model is built after
   every edit), and is only ever displayed: network members, the VLAN of an
-  interface address, the trunk state and mismatch of a link's ends. No
+  interface address, the difference between the networks of a link's two ends, the ports carrying a VLAN interface's networks. No
   editing operation writes a derived value, so it can't go stale or
   contradict its source. The typed `Network` has no member list and the
   typed `Interface` no VLAN, so nothing can read a stored copy by mistake.
+  Membership (IP containment, derived), link-end `networks` (physical
+  carriage, configured per end) and a relation's `over` (its underlay,
+  configured) are three separate facts; none is derived from another.
   *Trade-off:* membership is recomputed for the whole model after each edit
   (addresses × networks); that is well inside the time validation already
   takes.
@@ -87,7 +90,7 @@ anything else.
   `device:interface` references are flat too. An association is a field of
   the kind of interface it belongs to (`members`, `vlan`, `source`,
   `destination`) or is derived in `model/derive.ts` (`interfaceVlans`,
-  `interfaceVlanPorts`, `associatedInterfaces`): the ports of a VLAN
+  `interfaceNetworkPorts`, `associatedInterfaces`): the ports of a VLAN
   interface come from the link ends and are never stored. The editor
   addresses an interface by its document path (`interfaceEntries()`).
 * **Display order is not file order.** `model/order.ts` sorts names for
@@ -98,6 +101,16 @@ anything else.
   of an SVG export are computed from the model *and* the scene that was
   rendered (`sceneRefs`), so they list what the picture shows, including the
   effect of filters.
+* **A filtered view is a filtered model.** Showing some devices builds a
+  sub-model (`model/filter.ts`) with its own index and no reference to
+  anything left out, and the session draws that instead of the complete
+  model. Renderers, legend, networks overview and export need no notion of a
+  filter, and the relevance rules live in one place. Its positions are the
+  auto-arranged layout of the sub-model plus the user's moves, kept per view
+  in the session (`diagram/session.ts`) and never handed to the document,
+  so the YAML file can only ever hold the complete diagrams' layout.
+  *Trade-off:* the sub-model is rebuilt after every edit while a filter is
+  active (cheap: it is a selection plus a new index).
 * **Positions are separate from semantics.** Positions live in the optional
   `layout:` section, are only warnings when broken, and never change the
   model. Auto-arrange is a pure function of a canonical input

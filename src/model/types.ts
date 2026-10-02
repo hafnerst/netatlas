@@ -10,6 +10,14 @@ export const CATEGORIES: readonly Category[] = ['tunnel', 'adjacency', 'overlay'
 export type LineStyle = 'tube' | 'solid' | 'dashed' | 'dotted' | 'dashdot';
 export const LINE_STYLES: readonly LineStyle[] = ['tube', 'solid', 'dashed', 'dotted', 'dashdot'];
 
+/**
+ * Whether a relation flows both ways or one way. Unidirectional: from the
+ * first endpoint to the last (drawn with an arrow), so the endpoint order
+ * carries meaning. Bidirectional is the default when nothing is written.
+ */
+export type Direction = 'bidirectional' | 'unidirectional';
+export const DIRECTIONS: readonly Direction[] = ['bidirectional', 'unidirectional'];
+
 /** Free-form, display-only key/value pairs (flattened, e.g. "tunnel.key"). */
 export type Attrs = Array<[string, string]>;
 
@@ -19,11 +27,8 @@ export interface Endpoint {
   iface?: string;
 }
 
-export interface RelEndpoint extends Endpoint {
-  role?: string;
-  address?: string;
-  attrs: Attrs;
-}
+/** A relation endpoint: a device, or one interface of it. Nothing else is stored on an endpoint. */
+export type RelEndpoint = Endpoint;
 
 export interface Group {
   id: string;
@@ -72,6 +77,13 @@ export interface Interface {
   device: string;
   label?: string;
   type: InterfaceKind;
+  /**
+   * The interface obtains its address by DHCP (`dhcp: true`; omitted = false).
+   * It is a configuration flag, not an address: nothing about the address it
+   * may obtain is known, so it is in no network until an address is written.
+   */
+  dhcp: boolean;
+  /** manually configured addresses; always empty when `dhcp` is true in a valid model */
   addresses: string[];
   /** name of the VRF this interface is assigned to (display only) */
   vrf?: string;
@@ -101,13 +113,35 @@ export interface Device {
   interfaces: Interface[];
   /** loopback, virtual and tunnel interfaces, in file order */
   logical: Interface[];
+  /** DNS names configured for the device, in file order */
+  dnsNames: DnsName[];
+  line: number;
+}
+
+/**
+ * A DNS name of a device, associated with one or more of its interfaces
+ * (physical or logical), each named by its interface id. The association is
+ * to the interface as a whole, not to one of its addresses, and it states
+ * only what is configured: no A/AAAA record is derived from it.
+ */
+export interface DnsName {
+  /** as written (trailing dot included, if any) */
+  name: string;
+  /** ids of interfaces of the same device, in file order */
+  interfaces: string[];
   line: number;
 }
 
 /** One end of a physical link, with the VLAN IDs that end permits on the cable. */
+/**
+ * One end of a physical link, with the networks the cable carries at that
+ * end (physical / layer-2 carriage). Configured per end: the two ends may
+ * differ, and nothing is copied from one to the other. An assignment is not
+ * membership (that follows from addresses) and says nothing about tagging.
+ */
 export interface LinkEnd extends Endpoint {
-  /** as configured for this end, ascending; empty = no VLAN configured */
-  vlans: number[];
+  /** ids of networks, in file order; empty = none assigned */
+  networks: string[];
 }
 
 export interface Link {
@@ -131,8 +165,8 @@ export interface Link {
 export interface Network {
   id: string;
   label: string;
-  /** prefixes as written */
-  cidr: string[];
+  /** the network's one IPv4 or IPv6 prefix, as written (undefined while missing or invalid in a draft) */
+  cidr?: string;
   /** the VLAN this IP network lives in, if any */
   vlan?: number;
   description?: string;
@@ -148,8 +182,7 @@ export interface Relation {
   endpoints: RelEndpoint[];
   /** ids of links, relations or networks this relation is carried over (its underlay). */
   over: string[];
-  network?: string;
-  directed: boolean;
+  direction: Direction;
   description?: string;
   attrs: Attrs;
   line: number;
