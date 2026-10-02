@@ -963,10 +963,10 @@ export class App {
     }
     const find = this.$('btn-find') as HTMLButtonElement;
     find.disabled = !s;
-    find.title = s ? 'Find a device, interface, network, relation … by id, label, address or protocol (/)' : 'Open or create a model first';
+    find.title = s ? 'Find a device, interface, network, relation … in the diagram by id, label, address or protocol, and select it (/)' : 'Open or create a model first';
     const olf = this.$('btn-outline-filter') as HTMLButtonElement;
     olf.disabled = !d;
-    olf.title = d ? 'Show only the outline entries whose name or id contains a text' : 'Open or create a model first';
+    olf.title = d ? 'Filter the object list (model outline) at the left: show only the entries whose name or id contains a text. The diagram is not changed.' : 'Open or create a model first';
     if (!s && this.findOpen) this.closeFind();
     this.$('btn-undo').title = d && d.canUndo() ? `Undo: ${d.canUndo()} (Ctrl+Z)` : 'Undo (Ctrl+Z)';
     this.$('btn-redo').title = d && d.canRedo() ? `Redo: ${d.canRedo()} (Ctrl+Y)` : 'Redo (Ctrl+Y)';
@@ -995,14 +995,17 @@ export class App {
       st.textContent = this.loadErrors.length ? `${this.loadErrorName}: ${this.loadErrors.length} error(s)` : 'No model open · everything runs locally in this page';
       this.doc.title = 'netatlas';
     }
-    const opts: Array<[string, boolean]> = s
-      ? [
-          ['opt-labels', s.state.showLabels],
-          ['opt-groups', s.state.showGroups],
-          ['opt-networks', s.state.showNetworks],
-        ]
-      : [];
-    for (const [id, v] of opts) (this.$(id) as HTMLInputElement).checked = v;
+    // the diagram filters need a drawn model: on the start screen they are greyed out and show their defaults
+    const opts: Array<[string, boolean]> = [
+      ['opt-labels', s ? s.state.showLabels : true],
+      ['opt-groups', s ? s.state.showGroups : true],
+      ['opt-networks', s ? s.state.showNetworks : true],
+    ];
+    for (const [id, v] of opts) {
+      const cb = this.$(id) as HTMLInputElement;
+      cb.checked = v;
+      cb.disabled = !s;
+    }
     const types = this.doc.querySelectorAll('input[data-device-type]');
     for (let i = 0; i < types.length; i++) {
       const cb = types[i] as HTMLInputElement;
@@ -1010,7 +1013,6 @@ export class App {
       // a new model starts with every type shown
       cb.checked = !s || !s.isTypeHidden(cb.getAttribute('data-device-type') || '');
     }
-    (this.$('btn-arrange') as HTMLButtonElement).disabled = !d || !s;
     this.updateDevicesControl();
     this.updateLayoutStatus();
     this.layoutFilters();
@@ -1022,7 +1024,8 @@ export class App {
    * Always derived from the document (current positions vs. the
    * deterministic Auto-arrange result), never from the last action, so it is
    * right after undo/reload. Both views are tracked independently; the
-   * button shows the one on screen.
+   * button shows the one on screen. A view that already matches is shown
+   * with its check mark on a disabled button: there is nothing to arrange.
    */
   private updateLayoutStatus(): void {
     const d = this.mdoc;
@@ -1037,6 +1040,7 @@ export class App {
       else btn.removeAttribute('data-status-' + v);
     }
     if (!d || !s) {
+      btn.disabled = true;
       btn.removeAttribute('data-status');
       btn.removeAttribute('data-view');
       icon.textContent = '';
@@ -1048,22 +1052,24 @@ export class App {
       // a filtered view: its own, temporary layout; the saved layout of the complete view is not involved
       const fst = s.filteredStatus(s.state.view);
       const msg = FILTERED_STATUS_MESSAGE[fst];
+      btn.disabled = fst === 'auto';
       btn.setAttribute('data-status', fst);
       btn.setAttribute('data-filtered', 'true');
       btn.setAttribute('data-view', s.state.view);
       icon.textContent = LAYOUT_STATUS_ICON[fst];
       if (desc.textContent !== msg) desc.textContent = msg;
-      btn.title = msg + ' ' + FILTERED_ACTION;
+      btn.title = fst === 'auto' ? msg : msg + ' ' + FILTERED_ACTION;
       return;
     }
     btn.removeAttribute('data-filtered');
     const st = d.layoutStatus(s.state.view);
+    btn.disabled = st === 'auto';
     btn.setAttribute('data-status', st);
     btn.setAttribute('data-view', s.state.view);
     icon.textContent = LAYOUT_STATUS_ICON[st];
     // the same message for hover and for assistive technology (aria-describedby)
     if (desc.textContent !== LAYOUT_STATUS_MESSAGE[st]) desc.textContent = LAYOUT_STATUS_MESSAGE[st];
-    btn.title = LAYOUT_STATUS_MESSAGE[st] + ' ' + action;
+    btn.title = st === 'auto' ? LAYOUT_STATUS_MESSAGE[st] : LAYOUT_STATUS_MESSAGE[st] + ' ' + action;
   }
 
   // ------------------------------------------------------------- View menu
@@ -1074,7 +1080,7 @@ export class App {
   }
 
   /**
-   * View → Find… (or "/"): open the Find bar over the top right of the
+   * View → Find in diagram… (or "/"): open the Find bar over the top right of the
    * diagram and put the cursor in it. Typing lists matching objects;
    * Enter or a click selects one. Needs a drawn model.
    */
@@ -1101,7 +1107,7 @@ export class App {
   }
 
   /**
-   * View → Filter outline…: show the filter box at the top of the model
+   * View → Filter object list…: show the filter box at the top of the model
    * outline and put the cursor in it. It stays while it holds text; × or
    * Esc clears and closes it.
    */
@@ -1181,7 +1187,9 @@ export class App {
     if (active && active !== this.doc.activeElement && this.doc.contains(active)) active.focus();
     const collapsed = opts.filter((o) => !inline.has(o) && shown(o));
     btn.hidden = collapsed.length === 0;
-    if (btn.hidden) this.openMoreFilters(false);
+    // like the switches inside it, the drop-down needs a drawn model
+    btn.disabled = !this.session;
+    if (btn.hidden || btn.disabled) this.openMoreFilters(false);
     const off = collapsed.filter((o) => !(o.querySelector('input') as HTMLInputElement).checked);
     const name = (o: HTMLElement): string => (o.textContent || '').trim();
     this.$('more-filters-count').textContent = off.length ? ` · ${off.length} off` : '';
@@ -1195,7 +1203,7 @@ export class App {
   openMoreFilters(open: boolean, focus = false): void {
     const panel = this.$('more-filters');
     const btn = this.$('more-filters-btn') as HTMLButtonElement;
-    const show = open && !btn.hidden;
+    const show = open && !btn.hidden && !btn.disabled;
     panel.hidden = !show;
     btn.setAttribute('aria-expanded', show ? 'true' : 'false');
     btn.classList.toggle('active', show);
@@ -1751,13 +1759,15 @@ export class App {
    * Auto-arrange the view on screen; the other view is never touched.
    * Positions that were set by hand are only replaced after a confirmation
    * that says what will change. A view that already shows the auto-arranged
-   * layout is left alone without asking.
+   * layout is left alone (the button is disabled then).
    */
   async arrangeCurrentView(): Promise<void> {
     const d = this.mdoc;
     const s = this.session;
     if (!d || !s) return;
     const view = s.state.view;
+    // nothing to arrange: the button is disabled, and the A key does nothing either
+    if ((s.isFiltered() ? s.filteredStatus(view) : d.layoutStatus(view)) === 'auto') return;
     if (s.isFiltered()) {
       // only the devices shown, in this session only: the saved layout of the complete view is not changed
       const moved = s.arrangeFiltered();
@@ -2044,15 +2054,18 @@ export class App {
 
 /** What the Auto-arrange button says about a filtered view (its positions are temporary). */
 const FILTERED_STATUS_MESSAGE: { [k in 'auto' | 'manual']: string } = {
-  auto: 'This filtered view matches the auto-arranged layout of the devices shown.',
+  auto: 'This filtered view already matches the auto-arranged layout of the devices shown, so Auto-arrange is not available.',
   manual: 'This filtered view has temporarily moved positions. Auto-arrange re-arranges the devices shown.',
 };
 const FILTERED_ACTION = 'Auto-arrange arranges only the devices shown, for now; the saved layout of the complete view is not changed (A).';
 
-/** What the Auto-arrange button says about the shown view (icon + message, never colour alone). */
-const LAYOUT_STATUS_ICON = { auto: '\u2713', manual: '\u270E', edited: '\u25CF' };
+/**
+ * What the Auto-arrange button says about the shown view (icon + message, never colour alone):
+ * a check mark on the disabled button when it matches, the edit icon when there is something to arrange.
+ */
+const LAYOUT_STATUS_ICON = { auto: '\u2713', manual: '\u270E', edited: '\u270E' };
 const LAYOUT_STATUS_MESSAGE = {
-  auto: 'This view matches the auto-arranged layout.',
+  auto: 'This view already matches the auto-arranged layout, so Auto-arrange is not available.',
   manual: 'This view has manually adjusted positions. Auto-arrange replaces them after a confirmation.',
   edited: 'This view no longer matches the auto-arranged layout: the model was edited after it was arranged. Auto-arrange will rearrange it.',
 };

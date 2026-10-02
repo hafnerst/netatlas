@@ -12,6 +12,25 @@ it is described in [docs/FORMAT.md](docs/FORMAT.md).
 
 ## [Unreleased]
 
+### Changed
+
+- The View menu says what its entries work on: **Find…** is now **Find in
+  diagram…** (`/`), **Filter outline…** is now **Filter object list…** (it
+  narrows the model outline; the diagram is not changed). Hover texts, the
+  Find bar's accessible name and the outline filter's placeholder follow.
+- **Auto-arrange** is disabled, in a neutral grey with its green ✓, while the
+  view on screen already matches the auto-arranged layout; its hover text
+  says why. When there is something to arrange it is enabled with the ✎ icon
+  and a normal blue border (no more orange, dashed border, and no ● icon).
+  The state is derived from the current positions of the complete or
+  filtered view, and the `A` key follows it.
+
+### Fixed
+
+- On the start screen, **Labels**, **Groups / Locations** and **Networks**
+  were still enabled; now every diagram filter (and the **Filters**
+  drop-down) is disabled until a model is open, and shows its default.
+
 ## [0.1.2] - 2026-10-02
 
 NetAtlas 0.1.2 is still one self-contained, offline HTML file

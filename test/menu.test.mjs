@@ -117,14 +117,18 @@ test('selection hint of the outline: "selected" and "related (n)" in the always-
   assert.match(inspector, /this\.e\('span', \{ class: 'ctx-mark' \+ \(st === 'selected' \? ' sel' : st === 'related' \? ' rel' : ''\), 'aria-hidden': 'true' \}/);
 });
 
-test('View menu: next to Export, with Find… (/) and Filter outline…, each the one place of its action', () => {
+test('View menu: next to Export, with Find in diagram… (/) and Filter object list…, each the one place of its action', () => {
   const at = ['id="export-btn"', 'id="view-btn"', 'id="btn-undo"'].map((x) => header.indexOf(x));
   assert.ok(at[0] >= 0 && at[0] < at[1] && at[1] < at[2], JSON.stringify(at));
   // the same markup as File and Export, driven by the same code
   assert.match(header, /<button id="view-btn" type="button" class="menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="view-menu"[^>]*>View <span class="caret"/);
   const view = /<div id="view-menu" class="dropdown menu" role="menu" aria-label="View" hidden>([\s\S]*?)\n    <\/div>/.exec(header)[1];
   const entries = [...view.matchAll(/<button id="([^"]+)"[^>]*role="menuitem"[^>]*disabled><span class="mi-label">([^<]+)</g)].map((m) => [m[1], m[2]]);
-  assert.deepEqual(entries, [['btn-find', 'Find…'], ['btn-outline-filter', 'Filter outline…']], 'both disabled until a model is open');
+  assert.deepEqual(entries, [['btn-find', 'Find in diagram…'], ['btn-outline-filter', 'Filter object list…']], 'both disabled until a model is open');
+  // the labels say what each one works on: Find searches the diagram, the filter narrows the object list (not the diagram)
+  assert.ok(!/Filter outline…|>Find…</.test(html), 'the old labels are gone');
+  assert.match(header, /title="View: find in the diagram, filter the object list"/);
+  assert.match(html, /<div id="find-bar" class="find-bar" role="search" aria-label="Find in diagram" hidden>/);
   assert.deepEqual([...view.matchAll(/class="mi-hint">([^<]*)</g)].map((m) => m[1]), ['/']);
   const app = readFileSync(join(root, 'src', 'ui', 'app.ts'), 'utf8');
   assert.match(app, /\['export-btn', 'export-menu'\],\s*\['view-btn', 'view-menu'\],/);
@@ -140,7 +144,12 @@ test('diagram filters: one group at the right of the toolbar, with a Filters dro
   assert.ok(group, 'the filters are one group, the last thing in the toolbar');
   const opts = [...group[1].matchAll(/<label class="opt[^"]*" data-priority="(\d)"[^>]*><input id="([^"]+)"/g)].map((m) => [m[2], Number(m[1])]);
   assert.deepEqual(opts, [['opt-labels', 5], ['opt-groups', 4], ['opt-networks', 3], ['opt-type-endpoint', 2], ['opt-type-server', 1]]);
-  assert.match(group[1], /<button id="more-filters-btn" type="button" class="menu-btn" aria-haspopup="true" aria-expanded="false" aria-controls="more-filters" hidden>Filters/);
+  assert.match(group[1], /<button id="more-filters-btn" type="button" class="menu-btn" aria-haspopup="true" aria-expanded="false" aria-controls="more-filters" hidden disabled>Filters/);
+  // on the start screen every filter is disabled; the app enables them once a model is drawn
+  const inputs = [...group[1].matchAll(/<input id="(opt-[^"]+)"[^>]*>/g)];
+  assert.equal(inputs.length, 5);
+  for (const m of inputs) assert.match(m[0], / disabled>$/, m[1]);
+  assert.match(group[1], /<button id="devices-btn"[^>]* disabled>/);
   assert.match(css, /\.view-filters \{[^}]*flex-wrap: nowrap;/);
 });
 
@@ -233,4 +242,20 @@ test('PNG export: scale and file names', () => {
   assert.equal(files.pictureBaseName('my.network.v2.yml'), 'my.network.v2');
   assert.equal(files.pictureBaseName(''), 'netatlas');
   assert.equal(files.pictureBaseName('a/b:c.yaml'), 'a_b_c');
+});
+
+test('Auto-arrange button: disabled and grey with the check mark when the view already matches, blue with the edit icon otherwise', () => {
+  const app = readFileSync(join(root, 'src', 'ui', 'app.ts'), 'utf8');
+  // the state comes from the positions (document or filtered session), never from the last action
+  assert.match(app, /btn\.disabled = st === 'auto';/);
+  assert.match(app, /btn\.disabled = fst === 'auto';/);
+  // the A key and any other caller go through the same check, so a disabled button cannot be bypassed
+  assert.match(app, /if \(\(s\.isFiltered\(\) \? s\.filteredStatus\(view\) : d\.layoutStatus\(view\)\) === 'auto'\) return;/);
+  // icons: the check mark as status, the edit icon whenever there is something to arrange
+  assert.match(app, /const LAYOUT_STATUS_ICON = \{ auto: '\\u2713', manual: '\\u270E', edited: '\\u270E' \};/);
+  assert.match(app, /auto: 'This view already matches the auto-arranged layout, so Auto-arrange is not available\.'/);
+  // a normal blue border, no orange or dashed treatment; the disabled state is grey but not faded
+  assert.match(css, /\.arrange-btn \{[^}]*border-color: var\(--accent\);/);
+  assert.match(css, /\.arrange-btn:disabled \{[^}]*opacity: 1;[^}]*color: var\(--muted\);[^}]*border-color: var\(--border\);/);
+  assert.doesNotMatch(css, /\.arrange-btn\[data-status="(manual|edited)"\]/);
 });

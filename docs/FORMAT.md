@@ -459,8 +459,8 @@ devices:
   and an interface's details and tooltip name its DNS names. The **logical
   view** writes each name once under its device (hidden with *Labels*); the
   physical view doesn't show them. Showing a name says only that it is
-  configured: no DNS record is looked up or derived. **Find…** finds a device
-  by a DNS name.
+  configured: no DNS record is looked up or derived. **Find in diagram…**
+  finds a device by a DNS name.
 
 ## `links` (physical cabling only)
 
