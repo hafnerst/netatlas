@@ -30,7 +30,7 @@ const snap = (s, v) => JSON.stringify(Array.from(s.positionsFor(v)));
 
 test('the toolbar controls name the model\'s type identifiers, and are on by default in both views', () => {
   const html = readFileSync(join(root, 'src', 'index.html'), 'utf8');
-  const controls = [...html.matchAll(/<label class="opt"[^>]*><input id="opt-type-([a-z_]+)" type="checkbox" data-device-type="([a-z_]+)" checked> ([^<]+)<\/label>/g)].map((m) => [m[1], m[2], m[3]]);
+  const controls = [...html.matchAll(/<label class="opt"[^>]*><input id="opt-type-([a-z_]+)" type="checkbox" data-device-type="([a-z_]+)" checked disabled> ([^<]+)<\/label>/g)].map((m) => [m[1], m[2], m[3]]);
   assert.deepEqual(controls, [['endpoint', 'endpoint', 'Endpoints'], ['server', 'server', 'Servers']]);
   for (const [, id] of controls) assert.ok(DEVICE_TYPES.some((t) => t.id === id), id);
   // shown in both views (not "logical-only"), next to Labels and Groups / Locations

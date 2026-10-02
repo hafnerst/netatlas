@@ -63,13 +63,33 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     const d = doc.getElementById(b.getAttribute('aria-describedby') || '');
     return { view: b.getAttribute('data-view') || '', st: b.getAttribute('data-status') || '', icon: (b.querySelector('.arrange-icon') as HTMLElement).textContent || '', title: b.title, desc: d ? d.textContent || '' : '' };
   };
-  const AUTO_MSG = 'This view matches the auto-arranged layout.';
+  const AUTO_MSG = 'This view already matches the auto-arranged layout, so Auto-arrange is not available.';
   const MANUAL_MSG = 'This view has manually adjusted positions. Auto-arrange replaces them after a confirmation.';
-  /** the button shows `st` for `view`: icon, hover text and description agree */
+  /**
+   * The Auto-arrange button's look: 'done' = disabled, neutral grey (not faded) with the green check mark;
+   * 'todo' = enabled, normal blue solid border with the edit icon.
+   */
+  const arrangeLook = (): string => {
+    const b = q('#btn-arrange') as HTMLButtonElement;
+    const win = doc.defaultView!;
+    const cs = win.getComputedStyle(b);
+    const icon = b.querySelector('.arrange-icon') as HTMLElement;
+    const accent = win.getComputedStyle(doc.documentElement).getPropertyValue('--accent').trim();
+    const probe = doc.createElement('span');
+    probe.style.color = accent;
+    doc.body.appendChild(probe);
+    const blue = win.getComputedStyle(probe).color;
+    doc.body.removeChild(probe);
+    const solid = cs.borderTopStyle === 'solid' && cs.boxShadow === 'none';
+    if (b.disabled && icon.textContent === '\u2713' && cs.opacity === '1' && cs.borderTopColor !== blue && cs.color !== blue && solid) return 'done';
+    if (!b.disabled && icon.textContent === '\u270E' && cs.borderTopColor === blue && solid) return 'todo';
+    return `other: disabled=${b.disabled} icon=${icon.textContent} opacity=${cs.opacity} border=${cs.borderTopStyle} ${cs.borderTopColor} colour=${cs.color} shadow=${cs.boxShadow}`;
+  };
+  /** the button shows `st` for `view`: icon, hover text, description and enabled state agree */
   const shows = (view: string, st: 'auto' | 'manual'): boolean => {
     const x = shown();
     const msg = st === 'auto' ? AUTO_MSG : MANUAL_MSG;
-    return x.view === view && x.st === st && x.icon === (st === 'auto' ? '\u2713' : '\u270E') && x.title.indexOf(msg) === 0 && x.desc === msg && x.st === status(view as 'physical' | 'logical');
+    return x.view === view && x.st === st && x.icon === (st === 'auto' ? '\u2713' : '\u270E') && x.title.indexOf(msg) === 0 && x.desc === msg && x.st === status(view as 'physical' | 'logical') && arrangeLook() === (st === 'auto' ? 'done' : 'todo');
   };
   /**
    * What a reader would see as wrong in the drawn diagram, measured with the
@@ -985,12 +1005,12 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         const cs = doc.defaultView!.getComputedStyle(b);
         const br = b.getBoundingClientRect();
         check(
-          'the Auto-arrange button shows it: pencil icon, warning colour, hover text and accessible description say "manually adjusted"; still a clickable button',
-          shows('physical', 'manual') && !b.disabled && b.tagName === 'BUTTON' && br.width > 60 && /Auto-arrange/.test(b.textContent || '') && cs.borderTopStyle === 'dashed' && cs.cursor !== 'not-allowed' && b.getAttribute('aria-describedby') === 'arrange-status',
-          JSON.stringify(shown()),
+          'the Auto-arrange button shows it: enabled, edit icon, normal blue solid border (no orange), hover text and accessible description say "manually adjusted"',
+          shows('physical', 'manual') && !b.disabled && b.tagName === 'BUTTON' && br.width > 60 && /Auto-arrange/.test(b.textContent || '') && cs.borderTopStyle === 'solid' && cs.cursor !== 'not-allowed' && b.getAttribute('aria-describedby') === 'arrange-status',
+          JSON.stringify(shown()) + ' ' + arrangeLook(),
         );
       }
-      check('Auto-arrange button is enabled once a model is open', !(q('#btn-arrange') as HTMLButtonElement).disabled);
+      check('Auto-arrange button is enabled while the view differs from the auto-arranged layout', !(q('#btn-arrange') as HTMLButtonElement).disabled);
     }
     const t0 = vp.getAttribute('transform');
     const sr = svg.getBoundingClientRect();
@@ -1004,7 +1024,31 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }));
     check('undo reverts the drag (and the stored positions)', !(app.mdoc as ModelDoc).hasStoredLayout('physical'));
     check('status after undo: back to "Auto-arranged"', status('physical') === 'auto' && status('logical') === 'auto');
-    check('… and the button shows the check mark and "matches the auto-arranged layout" (icon, hover text, description)', shows('physical', 'auto') && doc.defaultView!.getComputedStyle(q('#btn-arrange')!).borderTopStyle === 'solid', JSON.stringify(shown()));
+    check(
+      '… and the button is disabled and grey (not faded) with the green check mark; its hover text and description say why Auto-arrange is not available',
+      shows('physical', 'auto') && /not available/.test(shown().title) && /not available/.test(shown().desc),
+      JSON.stringify(shown()) + ' ' + arrangeLook(),
+    );
+    {
+      // a disabled Auto-arrange can't be triggered: not by a click, a touch / pointer press, Enter / Space on it, or the A key
+      const dm = app.mdoc as ModelDoc;
+      const undoBefore = dm.canUndo();
+      const yamlBefore = app.exportText();
+      const b = q('#btn-arrange') as HTMLButtonElement;
+      const r = b.getBoundingClientRect();
+      b.click();
+      b.dispatchEvent(pe('pointerdown', r.left + 5, r.top + 5));
+      b.dispatchEvent(pe('pointerup', r.left + 5, r.top + 5));
+      b.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      b.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }));
+      doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true }));
+      await tick(10);
+      check(
+        'a disabled Auto-arrange does nothing by mouse, touch, keyboard or the A shortcut (no dialog, no undo step, no stored layout, YAML unchanged)',
+        b.disabled && doc.activeElement !== b && !q('#modal[open]') && dm.canUndo() === undoBefore && !dm.hasStoredLayout('physical') && app.exportText() === yamlBefore,
+        `${dm.canUndo()}`,
+      );
+    }
     {
       const panelShown = (): boolean => {
         const o = q('#outline') as HTMLElement;
@@ -1201,7 +1245,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       (q('#devices-panel') as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
       check('the panel filters its list without changing the selection, and Esc closes it', rows === 7 && (q('#devices-panel') as HTMLElement).hidden && doc.activeElement === btn && s().selectedDevices().size === 6, String(rows));
       // a move in the filtered view is temporary
-      check('the filtered view starts auto-arranged for its devices; the button says so', status('physical') === 'auto' && (q('#btn-arrange') as HTMLElement).getAttribute('data-filtered') === 'true' && /filtered view matches/.test(shown().desc), shown().desc);
+      check('the filtered view starts auto-arranged for its devices; the button says so', status('physical') === 'auto' && (q('#btn-arrange') as HTMLElement).getAttribute('data-filtered') === 'true' && /filtered view already matches/.test(shown().desc) && /not available/.test(shown().title) && arrangeLook() === 'done', shown().desc + ' ' + arrangeLook());
       {
         const el2 = q('#viewport g.device[data-ref="device:hq-fw"] .dev-box') as unknown as SVGGraphicsElement;
         const rr = el2.getBoundingClientRect();
@@ -1559,9 +1603,11 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       click('#btn-arrange');
       await answerDialog('arrange');
       const again = snapshot() === before && status('logical') === 'auto';
+      const undoAfter = d.canUndo();
       click('#btn-arrange');
+      doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true }));
       await tick(10);
-      check('after dragging and selecting, Auto-arrange gives exactly the same picture (positions, routes, label places); repeating it moves nothing and asks nothing', dragged && again && !q('#modal[open]') && snapshot() === before && /Already arranged/.test(q('#toast')!.textContent || ''), `${dragged} ${again}`);
+      check('after dragging and selecting, Auto-arrange gives exactly the same picture (positions, routes, label places); then the button is disabled and A moves nothing and asks nothing', dragged && again && arrangeLook() === 'done' && !q('#modal[open]') && snapshot() === before && d.canUndo() === undoAfter, `${dragged} ${again} ${arrangeLook()}`);
       // a label typed with a line break in the editor
       app.select('device:srv');
       await setField('#side-body textarea[data-p=\'["devices",3,"label"]\']', 'srv-01\nhypervisor');
@@ -1603,24 +1649,26 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const ad = app.mdoc as ModelDoc;
       /** the positions shown in a view, and the view's part of the layout section */
       const viewState = (v: 'physical' | 'logical'): string => JSON.stringify([Array.from(ad.displayedPositions(v).entries()), Array.from(ad.result.model!.layout[v].entries()), Array.from(ad.result.model!.layout.manual[v])]);
-      click('#btn-arrange');
-      await tick(10);
-      check(
-        'Auto-arrange has no view chooser: it arranges the view on screen at once and leaves the other view alone',
-        !q('#modal[open]') && ad.hasStoredLayout('logical') && !ad.hasStoredLayout('physical') && rects() === logBefore && ad.canUndo() === 'Auto-arrange (logical view)' && /nothing moved/.test(q('#toast')!.textContent || ''),
-        `${ad.canUndo()} / ${q('#toast')!.textContent}`,
-      );
-      click('[data-view-btn="physical"]');
-      click('#btn-arrange');
-      await tick(10);
-      check('arranging an automatic layout stores it without moving anything', !q('#modal[open]') && ad.hasStoredLayout('physical') && ad.hasStoredLayout('logical') && rects() === physBefore && /nothing moved/.test(q('#toast')!.textContent || ''));
-      click('[data-view-btn="logical"]');
-      check('… in the logical view as well', rects() === logBefore);
-      check('status after Auto-arrange: both views "Auto-arranged"', status('physical') === 'auto' && status('logical') === 'auto');
-      const undoLabel = ad.canUndo();
-      doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true }));
-      await tick(10);
-      check('auto-arranging again changes nothing (no question, no move, no undo step)', !q('#modal[open]') && ad.canUndo() === undoLabel && rects() === logBefore && /Already arranged/.test(q('#toast')!.textContent || ''));
+      {
+        // a freshly loaded model already shows the auto-arranged layout in both views: nothing to arrange
+        const undoLabel = ad.canUndo();
+        const press = async (): Promise<void> => {
+          click('#btn-arrange');
+          doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true }));
+          await tick(10);
+        };
+        const logicalDone = shows('logical', 'auto');
+        await press();
+        click('[data-view-btn="physical"]');
+        const physicalDone = shows('physical', 'auto');
+        await press();
+        click('[data-view-btn="logical"]');
+        check(
+          'a freshly loaded model: Auto-arrange is disabled with the check mark in the logical and the physical view; a click or A changes nothing (no dialog, nothing stored, no undo step)',
+          logicalDone && physicalDone && !q('#modal[open]') && !ad.hasStoredLayout('logical') && !ad.hasStoredLayout('physical') && ad.canUndo() === undoLabel && rects() === logBefore && !ad.dirty,
+          JSON.stringify(shown()) + ' ' + arrangeLook(),
+        );
+      }
       // manual move, then arrange restores the deterministic positions; undo brings the manual one back
       ad.movePositions('logical', new Map([['hq-fw', { x: 4321, y: 1234 }]]), 'Move hq-fw');
       app.mdoc && app.select(null);
@@ -1689,7 +1737,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         re.arrange(['physical', 'logical']);
         re.addEntity('device', [['id', strNode('hq-spare')], ['type', strNode('switch')], ['group', strNode('hq-core')]]);
         (app as unknown as { afterEdit(n?: string): void }).afterEdit();
-        check('a model edit is not reported as a manual adjustment ("Edited since arranged")', status('physical') === 'edited' && status('logical') === 'edited' && shown().st === 'edited' && shown().icon === '\u25CF' && /no longer matches the auto-arranged layout/.test(shown().desc), JSON.stringify(shown()));
+        check('a model edit is not reported as a manual adjustment ("Edited since arranged")', status('physical') === 'edited' && status('logical') === 'edited' && shown().st === 'edited' && shown().icon === '\u270E' && arrangeLook() === 'todo' && /no longer matches the auto-arranged layout/.test(shown().desc), JSON.stringify(shown()) + ' ' + arrangeLook());
         re.markSaved();
       }
       // an equivalent file with every list reversed arranges identically
@@ -1712,7 +1760,10 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const rd = app.mdoc as ModelDoc;
       rd.arrange(['physical', 'logical']);
       const layoutText = (t: string): string => t.slice(t.indexOf('\nlayout:'));
-      check('an equivalent file with all lists and keys in reverse order arranges identically', layoutText(rd.exportText()) === layoutText(exported));
+      // the same model in its original order, with both views arranged
+      const straight = ModelDoc.fromText(EXAMPLES[wanIdx].text, 'straight.yaml', 'file').doc as ModelDoc;
+      straight.arrange(['physical', 'logical']);
+      check('an equivalent file with all lists and keys in reverse order arranges identically', layoutText(rd.exportText()) === layoutText(straight.exportText()) && /\n {2}physical:/.test(layoutText(rd.exportText())));
       rd.markSaved();
       // cross-engine determinism: metro-ring-arranged.yaml was computed in Node when the app was built
       const src = EXAMPLES.find((e) => e.name === 'metro-ring.yaml');
@@ -2897,7 +2948,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       servers.click();
       await tick();
 
-      // the View menu: Find… and Filter outline… live there (and nowhere else), with the menus' keyboard rules
+      // the View menu: Find in diagram… and Filter object list… live there (and nowhere else), with the menus' keyboard rules
       const viewBtn = q('#view-btn') as HTMLButtonElement;
       click('#export-btn');
       (q('#export-menu') as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true }));
@@ -2905,8 +2956,9 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const viaArrow = !(q('#view-menu') as HTMLElement).hidden && viewBtn.getAttribute('aria-expanded') === 'true' && (q('#view-menu') as HTMLElement).contains(doc.activeElement);
       const entries = textsOf('#view-menu button');
       check(
-        'View menu next to Export: Find… (/) and Filter outline…, reached with the arrow keys like File and Export; no search box in the toolbar, no filter box always in the outline',
-        viaArrow && entries.join(' | ') === 'Find…/ | Filter outline…' && !q('header.topbar #search') && !q('header.topbar [data-t="outline-filter"]'),
+        'View menu next to Export: Find in diagram… (/) and Filter object list…, reached with the arrow keys like File and Export; no search box in the toolbar, no filter box always in the outline',
+        viaArrow && entries.join(' | ') === 'Find in diagram…/ | Filter object list…' && !q('header.topbar #search') && !q('header.topbar [data-t="outline-filter"]') &&
+          /in the diagram/.test((q('#btn-find') as HTMLElement).title) && /object list/.test((q('#btn-outline-filter') as HTMLElement).title) && /diagram is not changed/.test((q('#btn-outline-filter') as HTMLElement).title),
         `${viaArrow} ${entries.join(' | ')}`,
       );
       (q('#view-menu') as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
@@ -2924,7 +2976,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const picked = app.session!.state.selected === 'device:hq-fw';
       s.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
       await tick();
-      check('View → Find… opens the Find bar with the cursor in it; typing lists matches, Enter selects the first, Esc closes the bar', findOpened && hits >= 1 && picked && !app.findOpen && s.value === '', `${findOpened} ${hits} ${picked}`);
+      check('View → Find in diagram… opens the Find bar with the cursor in it; typing lists matches, Enter selects the first, Esc closes the bar', findOpened && hits >= 1 && picked && !app.findOpen && s.value === '' && (q('#find-bar') as HTMLElement).getAttribute('aria-label') === 'Find in diagram', `${findOpened} ${hits} ${picked}`);
       (doc.activeElement as HTMLElement | null)?.blur?.();
       doc.dispatchEvent(new KeyboardEvent('keydown', { key: '/', bubbles: true, cancelable: true }));
       await tick();
@@ -2934,7 +2986,8 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       click('#btn-outline-filter');
       await tick();
       const of = q('#outline [data-t="outline-filter"]') as HTMLInputElement;
-      const ofOpened = !!of && doc.activeElement === of;
+      const ofOpened = !!of && doc.activeElement === of && of.placeholder === 'Filter the object list…';
+      const diagramBefore = new XMLSerializer().serializeToString(q('#viewport') as Element);
       of.value = 'muc';
       of.dispatchEvent(new Event('input', { bubbles: true }));
       await tick();
@@ -2943,14 +2996,76 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       of2.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
       await tick();
       check(
-        'View → Filter outline… shows the filter at the top of the outline with the cursor in it; it filters as before; Esc clears and removes it',
-        ofOpened && listed.indexOf('muc-rtr') >= 0 && listed.indexOf('hq-rtr1') < 0 && !q('#outline [data-t="outline-filter"]') && textsOf('#outline .ol-item').length > listed.length,
+        'View → Filter object list… shows the filter at the top of the outline with the cursor in it; it filters the list, not the diagram; Esc clears and removes it',
+        ofOpened && new XMLSerializer().serializeToString(q('#viewport') as Element) === diagramBefore && listed.indexOf('muc-rtr') >= 0 && listed.indexOf('hq-rtr1') < 0 && !q('#outline [data-t="outline-filter"]') && textsOf('#outline .ol-item').length > listed.length,
         listed.join(' | '),
       );
       app.mdoc!.markSaved();
+      // a filter switched off before closing: the start screen shows the defaults again
+      (q('#opt-labels') as HTMLInputElement).click();
+      const labelsOff = !(q('#opt-labels') as HTMLInputElement).checked && !app.session!.state.showLabels;
       app.closeModel();
       check('without a model both View entries are disabled, like Export', (q('#btn-find') as HTMLButtonElement).disabled && (q('#btn-outline-filter') as HTMLButtonElement).disabled && !app.openFind());
+      {
+        // the start screen: every diagram filter is greyed out and inert, inline or in the Filters drop-down, in either view
+        const ids = ['opt-labels', 'opt-groups', 'opt-networks', 'opt-type-endpoint', 'opt-type-server'];
+        const boxes = ids.map((id) => q('#' + id) as HTMLInputElement);
+        const devBtn = q('#devices-btn') as HTMLButtonElement;
+        const moreBtn = q('#more-filters-btn') as HTMLButtonElement;
+        const allOff = (): boolean => boxes.every((b) => b.disabled && b.checked) && devBtn.disabled && moreBtn.disabled;
+        const wide = allOff() && doc.body.getAttribute('data-state') === 'empty';
+        const faded = boxes.every((b) => Number(doc.defaultView!.getComputedStyle(b.closest('label.opt') as Element).opacity) < 1);
+        // clicks, keyboard focus and Space do nothing
+        const tried: string[] = [];
+        for (const b of boxes) {
+          b.click();
+          b.focus();
+          if (doc.activeElement === b) tried.push('focus ' + b.id);
+          b.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }));
+          (b.closest('label') as HTMLElement).click();
+          if (!b.checked) tried.push('changed ' + b.id);
+        }
+        // a narrow toolbar collapses filters into the drop-down: its button is disabled too, and it does not open
+        const top = q('header.topbar') as HTMLElement;
+        top.style.maxWidth = '360px';
+        app.layoutFilters();
+        await tick();
+        const collapsed = !moreBtn.hidden;
+        moreBtn.click();
+        app.openMoreFilters(true, true);
+        moreBtn.focus();
+        moreBtn.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }));
+        await tick();
+        const panelClosed = (q('#more-filters') as HTMLElement).hidden && moreBtn.getAttribute('aria-expanded') === 'false' && doc.activeElement !== moreBtn;
+        devBtn.click();
+        const devClosed = (q('#devices-panel') as HTMLElement).hidden;
+        top.style.maxWidth = '';
+        app.layoutFilters();
+        check(
+          'start screen: Devices, Labels, Groups / Locations, Networks, Endpoints and Servers are disabled and greyed out, also when collapsed into a disabled Filters drop-down; clicks, focus and keys change nothing',
+          labelsOff && wide && faded && !tried.length && collapsed && moreBtn.disabled && panelClosed && devClosed && allOff() && !app.session,
+          `${labelsOff} ${wide} ${faded} ${tried.join()} collapsed=${collapsed} ${panelClosed} ${devClosed}`,
+        );
+        // the Auto-arrange button: disabled, no status, and the A key does nothing
+        doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true }));
+        await tick(10);
+        check('start screen: Auto-arrange is disabled without a status, and A does nothing', (q('#btn-arrange') as HTMLButtonElement).disabled && shown().st === '' && shown().icon === '' && !q('#modal[open]') && !app.mdoc);
+      }
       app.loadExample(0);
+      {
+        const ids = ['opt-labels', 'opt-groups', 'opt-type-endpoint', 'opt-type-server'];
+        const ss = app.session!;
+        const physOk = ids.every((id) => !(q('#' + id) as HTMLInputElement).disabled && (q('#' + id) as HTMLInputElement).checked) && !(q('#devices-btn') as HTMLButtonElement).disabled && !(q('#more-filters-btn') as HTMLButtonElement).disabled;
+        click('[data-view-btn="logical"]');
+        const net = q('#opt-networks') as HTMLInputElement;
+        const logOk = !net.disabled && net.checked;
+        click('[data-view-btn="physical"]');
+        check(
+          'opening a model enables every diagram filter again with its default (all on), in the physical and the logical view',
+          physOk && logOk && ss.state.showLabels && ss.state.showGroups && ss.state.showNetworks && ss.state.hiddenTypes.size === 0 && !ss.isFiltered(),
+          `${physOk} ${logOk}`,
+        );
+      }
     }
 
     const perf = (doc.defaultView as Window).performance;
