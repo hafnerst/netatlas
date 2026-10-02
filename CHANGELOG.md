@@ -5,166 +5,127 @@ All notable changes to NetAtlas are listed here. The format follows
 [semantic versioning](https://semver.org/). While the version is 0.x, minor
 releases may still change behaviour.
 
-Two version numbers are involved. The **application version** (0.1.1) names
+Two version numbers are involved. The **application version** (0.1.2) names
 a NetAtlas release and is shown next to the logo. The **model format
 version** (`netatlas: 1`) names the YAML format a model file is written in;
 it is described in [docs/FORMAT.md](docs/FORMAT.md).
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-10-02
+
+NetAtlas 0.1.2 is still one self-contained, offline HTML file
+(`dist/netatlas.html`) with no third-party code. It reads and writes YAML
+model format 1 (`netatlas: 1`).
+
+### Upgrading from 0.1.1
+
+Model format 1 was tightened in this release. Some keys that 0.1.1 accepted
+are now rejected, each with an error that says what to write instead;
+nothing is converted, guessed or dropped, and a file with errors still opens
+as a draft so it can be fixed in the editor:
+
+- a network's `cidr` is **one** prefix (a list, even of one, is an error):
+  make one network per prefix;
+- a link end's `vlans` is replaced by `networks: [network ids]`;
+- a relation's `network` is removed (put a network it runs over in `over`),
+  and endpoints lose `role`, `address` and `attrs` (use the relation's
+  `attrs`);
+- a relation's `directed: true|false` is replaced by
+  `direction: bidirectional|unidirectional` (omitted = bidirectional).
+
+The built-in examples are already migrated.
+
 ### Added
 
-- **DNS names in the Logical view.** A device's configured DNS names are
-  written under it, after its loopback chips: each name once (however many
-  interfaces it belongs to), in a dashed chip; long names continue on a
-  further line, more than two end in *+n more names*. They follow Labels and
-  the device filters, are part of the logical PNG and SVG exports, and the
-  legend lists them as *DNS name (as configured, not looked up)*. The node is
-  sized for them, so a device with names is taller in the logical layout.
-- **View menu** next to Export, with **Find…** (`/`), which opens a Find bar
-  over the diagram instead of the search box in the toolbar, and **Filter
-  outline…**, which shows the outline's filter box instead of it always being
-  there. Both are disabled until a model is open.
-- **Filters ▾**: when the toolbar is too narrow, the diagram filters stay on
-  one row and the lower-priority switches move into a drop-down whose button
-  shows how many of them are off. A narrow toolbar also shows the logo
-  without its name and Auto-arrange as its status icon.
-
-- **Endpoints and Servers** controls next to Labels and Groups / Locations,
-  in both views, on by default. Switching one off hides the devices of type
-  `endpoint` or `server` (and their cables and relations, by the device-
-  filter rules) on screen and in PNG/SVG exports, without changing the
-  model, the YAML or the saved layout. They combine with **Devices**: the
-  diagram shows the selected devices that are not of a hidden type, the
-  selection itself is kept, and switching the type on again restores it,
-  with its devices in their places.
-- **The YAML tab marks the selected object's entry.** The entry is found by
-  the object's ID in the parsed text (never by a text search), follows
-  selection changes, typing, Apply, undo/redo, opening a file and renaming,
-  and disappears while the text doesn't parse. Selecting keeps the YAML tab
-  open. The text, caret, text selection and scroll position are left alone,
-  except that a newly selected entry out of sight is scrolled into view.
-
-### Changed
-
-- **Details** starts with the same header as Edit (type, problem state,
-  name, and the ID beside it when it differs); the *id* row at the top of
-  Details is gone.
-- **Shorter help** in the editor and the legend: routine explanations cut to
-  a line; the physical legend shows ports and the ⚠ for ends with different
-  networks as symbols instead of a paragraph. Validation messages are
-  unchanged.
-- **Bottom bar:** the file name is a badge at its start (shortened when long,
-  full name on hover).
-- **Edit header:** the object's type, its validation state (*No problems*,
-  or the number of errors and warnings) and the **Duplicate** / **Delete**
-  buttons (with icons, accessible names and tooltips; Delete in red) share
-  one row, with the full name below. In a narrow panel the buttons show
-  only their icons.
-- **Mouse & keyboard help** at the bottom right: a foldable box with a
-  *Pointer* and a *Keyboard* group instead of one line; side by side when
-  there is room. It starts folded in windows under 560 px of height (it
-  used to be hidden there). The shortcuts are unchanged.
-- **The model outline no longer shifts** when something is selected: the
-  *selected · related (n)* hint shares the row of *Collapse all*, every
-  entry keeps the place of its selection mark, and the scrollbar's room is
-  reserved.
-- The status bar no longer says "everything stays in this page".
-- A section heading of the editor (e.g. *Physical interfaces* with
-  **+ Interface** / **+ Port Range**) puts its buttons on a second line in a
-  narrow panel instead of past its edge.
-
-- **DHCP on interfaces.** Every physical interface and every virtual or
-  tunnel interface has a `dhcp` flag (`true` / `false`, omitted = `false`)
-  and a **DHCP** switch next to its addresses in the editor. A loopback
-  can't use DHCP: it has no switch, and `dhcp: true` on it is an error. It is off for new interfaces and is
-  never inferred from an empty address list. While it is on, manual
-  addresses can't be entered. Turning it on for an interface with
-  addresses or DNS names asks first and deletes them in one undo step;
-  turning it off doesn't bring them back. A file with `dhcp: true` and
-  addresses on the same interface is rejected with an error that keeps
-  both values. A DHCP interface is in no network, because its address is
-  not known.
-- **DNS names on devices.** `dns_names` on a device lists names, each
-  entered once and associated with one or more of the device's physical or
-  logical interfaces (by interface id). The editor has a **DNS names**
-  section after the interface sections, with **+ DNS name** (interfaces
-  picked by name; DHCP interfaces are not offered). Names are checked for
-  host-name syntax, duplicates, unknown or DHCP interfaces and an empty
-  interface list. Renaming an interface updates its associations; deleting
-  it or turning DHCP on removes them in the same step, and a name left
-  without interfaces goes with them. A name belongs to the interface, not
-  one of its addresses, and no DNS record is derived. Device details,
-  interface details, tooltips and **Find…** show the names; the diagrams
-  don't.
-- The `enterprise-wan.yaml` example uses both: the Hamburg LTE uplink has
-  `dhcp: true`, and three DNS names are configured at HQ.
-- **Device-filtered views.** A **Devices** control at the top right of both
-  views chooses which devices the diagram shows (all by default; check
-  boxes, a filter box, *Select all*, *Clear*). A filtered view shows the
-  selected devices, the cables and relations entirely among them, the
-  networks, groups and protocols relevant to them, and only the included
-  members of mixed groups and networks. It is auto-arranged for the subset,
-  deterministically. Its positions and moves are temporary (per view, never
-  written to the YAML file; a note on the diagram says so), and *Select all*
-  restores the complete diagram with its saved positions. Auto-arrange in a
-  filtered view arranges only the shown devices. PNG and SVG exports show
-  the filtered view with a legend and Networks overview of what is drawn.
-- **Groups / Locations** option in both views (on by default): shows or
-  hides group frames without moving devices.
+- **DHCP on interfaces.** Physical, virtual and tunnel interfaces have a
+  `dhcp` flag (omitted = `false`) and a **DHCP** switch next to their
+  addresses. While it is on, manual addresses can't be entered; turning it
+  on for an interface with addresses or DNS names asks first and removes
+  them in one undo step. A loopback can't use DHCP, and `dhcp: true` with
+  addresses on the same interface is an error that keeps both values. A
+  DHCP interface is in no network, because its address isn't known.
+- **DNS names on devices.** `dns_names` lists names, each entered once and
+  associated with one or more of the device's interfaces (DHCP interfaces
+  excluded). Names are checked for host-name syntax, duplicates and unknown
+  interfaces; renaming or deleting an interface keeps the associations
+  valid. Details, tooltips and **Find…** show them, and the **Logical view**
+  writes each name once under its device in a dashed chip (long names wrap,
+  more than two end in *+n more names*). They follow Labels and the device
+  filters and are part of the logical PNG and SVG exports, whose legend
+  calls them *DNS name (as configured, not looked up)*. No DNS record is
+  derived.
+- **Device-filtered views.** **Devices** at the top right chooses which
+  devices the diagram shows. A filtered view shows those devices with the
+  cables, relations, networks, groups and protocols relevant to them, is
+  auto-arranged for the subset, and keeps its positions only for the
+  session (never in the YAML file); *Select all* restores the complete
+  diagram with its saved positions. Exports show the filtered view.
+- **Endpoints** and **Servers** switches hide the devices of those types,
+  on screen and in exports, combined with the Devices selection, without
+  changing the model or the saved layout.
+- **Groups / Locations** switch in both views: shows or hides group frames
+  without moving devices.
+- **View menu** next to Export: **Find…** (`/`) opens a Find bar over the
+  diagram; **Filter outline…** shows the model outline's filter box.
+- **Filters ▾**: in a narrow toolbar the diagram filters stay on one row and
+  the switches that don't fit move into a drop-down that says how many of
+  them are off.
+- **The YAML tab marks the selected object's entry**, found by the object's
+  ID in the parsed text, and keeps the YAML tab open while you select.
 
 ### Changed
 
-- **Logical view: devices are clustered by group.** Auto-arrange keeps the
-  devices of each group / location together and draws the group's frame
-  around them, as in the physical view; networks and multipoint hubs are
-  placed around the groups. Models without groups are arranged as before.
-  Stored logical positions are not changed; for a model with groups, a
-  logical view that was auto-arranged before may now show *Edited since
-  arranged* until it is arranged again.
-
-- **Networks have exactly one prefix.** `cidr` is one required value
-  (**IP network (CIDR)** in the editor). A missing prefix, an empty list, a
-  list of several (even of one) and an invalid prefix are errors that keep
-  the value in the file; make one network per prefix. Two networks with the
-  same prefix are a warning. Membership is unchanged in principle: a device
-  is a member when a configured address lies inside the prefix (DHCP
-  interfaces count for nothing); an address inside overlapping networks
-  belongs to all of them, and its VLAN is derived only when they agree.
-- **Link ends carry networks, not VLAN IDs.** `vlans` on a link end is
-  replaced by `networks: [network ids]` — the networks the cable carries at
-  that end (physical / layer-2 carriage). Any network can be assigned; the
-  ends are configured and validated separately and a difference is a
-  warning, never synchronized. Carriage is not membership, and several
-  networks are not called a trunk: the "Trunk" wording is gone. Cable labels
-  name the networks; selecting a network highlights the cables that carry
-  it; a VLAN interface's *Ports carrying its networks* (formerly *Ports
-  carrying VLAN*) are derived from the link ends; filtered views and the
-  exported Networks box use the assignments.
-- **Relations: endpoints are only what they connect, and `over` is the one
-  dependency field.** Endpoints lose `role`, `address` and `attrs` (keep such
-  facts in the relation's `attrs`); the relation's `network` field is
-  removed (a network it runs over goes into `over`; a network it carries or
-  serves stays in `attrs` — a documented limitation).
-- Logical view: a network or multipoint hub whose devices all lie in one
-  group is placed inside that group's frame.
-- **Relation direction.** `directed: true|false` is replaced by
-  `direction: bidirectional|unidirectional` (omitted = bidirectional), and
-  the editor's *Directed* checkbox by a **Bidirectional / Unidirectional**
-  switch. Unidirectional relations flow from the first endpoint to the last
-  and are drawn with an arrow. `directed` is rejected with an error saying
-  what to write instead; the examples are migrated.
-- The examples are migrated: networks split per prefix, link ends name
-  networks, VRRP and OSPF run `over` their LAN segments, endpoint roles and
-  ASNs moved into relation attributes.
+- **Networks have exactly one prefix**, and **link ends carry networks**
+  (`networks: [...]` per end) instead of VLAN lists. Carriage is not
+  membership; a difference between the two ends is a warning, never
+  synchronized, and the "Trunk" wording is gone. Cable labels name the
+  networks, and a VLAN interface's *Ports carrying its networks* are derived
+  from the link ends.
+- **Relations:** endpoints are only what they connect, `over` is the one
+  dependency field, and **direction** is a *Bidirectional / Unidirectional*
+  switch (unidirectional relations are drawn with an arrow, from the first
+  endpoint to the last).
+- **Logical view:** devices are clustered by group, with the group's frame
+  around them; a network or hub whose devices all lie in one group is placed
+  inside its frame. Stored positions are not changed, but a logical view
+  that was auto-arranged with 0.1.1 may show *Edited since arranged* until it
+  is arranged again.
+- **Edit and Details headers:** one design for both tabs: the object's type,
+  its problem state (*No problems*, or the number of errors and warnings),
+  its name with its ID beside it, and, in Edit, **Duplicate** and **Delete**
+  (red) as icon buttons with names and tooltips. Details no longer starts
+  with an *id* row.
+- **Shorter help** in the editor and the legend; the physical legend shows
+  ports and the ⚠ for ends with different networks as symbols. Validation
+  messages are unchanged.
+- **Mouse & keyboard help** is a foldable box with *Pointer* and *Keyboard*
+  groups (folded at first in windows under 560 px of height).
+- **The model outline doesn't shift** when something is selected.
+- **Bottom bar:** the file name is a badge at its start (shortened when
+  long); "everything stays in this page" is gone.
+- Narrow editor panels put section buttons (*+ Interface*, *+ Port Range*)
+  on a second line instead of past the edge.
 
 ### Removed
 
-- The **Underlay** option of the logical view (a faint line per cabled
-  device pair).
-- Relation `directed` (see *direction*). Link-end `vlans`, relation `network`, endpoint `role` / `address` /
-  `attrs`, and lists in a network's `cidr`. Old files are rejected with an
-  error saying what to write instead; nothing is converted or dropped.
+- The **Underlay** option of the logical view.
+- The search box in the toolbar (now **View → Find…**) and the outline
+  filter box that was always shown (now **View → Filter outline…**).
+- The keys listed under *Upgrading from 0.1.1*.
+
+### Known limitations
+
+- A file that 0.1.1 accepted with the keys above opens with errors and must
+  be edited before it can be downloaded without *Download anyway*. The model
+  format version stays `netatlas: 1`.
+- In a very small window (about 620 px wide, e.g. a 1920×1080 screen at
+  300 % zoom) the diagram filters move to a second toolbar row as one group.
+- Adding the first DNS name to a device changes its size in the logical
+  view; like any such edit, it stores the shown positions in the file's
+  `layout` section.
+- The automated browser test runs in Chromium-based browsers only.
+- See the README's "Limitations" section for the full list.
 
 ## [0.1.1] - 2026-09-30
 
@@ -364,5 +325,6 @@ First release: a usable initial version, not a complete one.
     and Safari are covered by the manual `#selftest` check.
 * See the README's "Limitations" section for details.
 
+[0.1.2]: https://github.com/hafnerst/netatlas/releases/tag/v0.1.2
 [0.1.1]: https://github.com/hafnerst/netatlas/releases/tag/v0.1.1
 [0.1.0]: https://github.com/hafnerst/netatlas/releases/tag/v0.1.0
