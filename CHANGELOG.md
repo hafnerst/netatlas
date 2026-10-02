@@ -14,6 +14,22 @@ it is described in [docs/FORMAT.md](docs/FORMAT.md).
 
 ### Added
 
+- **DNS names in the Logical view.** A device's configured DNS names are
+  written under it, after its loopback chips: each name once (however many
+  interfaces it belongs to), in a dashed chip; long names continue on a
+  further line, more than two end in *+n more names*. They follow Labels and
+  the device filters, are part of the logical PNG and SVG exports, and the
+  legend lists them as *DNS name (as configured, not looked up)*. The node is
+  sized for them, so a device with names is taller in the logical layout.
+- **View menu** next to Export, with **Find…** (`/`), which opens a Find bar
+  over the diagram instead of the search box in the toolbar, and **Filter
+  outline…**, which shows the outline's filter box instead of it always being
+  there. Both are disabled until a model is open.
+- **Filters ▾**: when the toolbar is too narrow, the diagram filters stay on
+  one row and the lower-priority switches move into a drop-down whose button
+  shows how many of them are off. A narrow toolbar also shows the logo
+  without its name and Auto-arrange as its status icon.
+
 - **Endpoints and Servers** controls next to Labels and Groups / Locations,
   in both views, on by default. Switching one off hides the devices of type
   `endpoint` or `server` (and their cables and relations, by the device-
@@ -31,6 +47,15 @@ it is described in [docs/FORMAT.md](docs/FORMAT.md).
 
 ### Changed
 
+- **Details** starts with the same header as Edit (type, problem state,
+  name, and the ID beside it when it differs); the *id* row at the top of
+  Details is gone.
+- **Shorter help** in the editor and the legend: routine explanations cut to
+  a line; the physical legend shows ports and the ⚠ for ends with different
+  networks as symbols instead of a paragraph. Validation messages are
+  unchanged.
+- **Bottom bar:** the file name is a badge at its start (shortened when long,
+  full name on hover).
 - **Edit header:** the object's type, its validation state (*No problems*,
   or the number of errors and warnings) and the **Duplicate** / **Delete**
   buttons (with icons, accessible names and tooltips; Delete in red) share

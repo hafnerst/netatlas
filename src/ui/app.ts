@@ -13,11 +13,12 @@ import { Editor, EditorSel } from './inspector';
 import { LineRange, yamlBlock } from '../editor/yaml-block';
 import { EXAMPLES } from '../generated/examples';
 import { Rect } from '../layout/geometry';
-import { detailsFor, legendFor, relationList, tooltipFor } from './panels';
+import { IssueCount, detailsFor, legendFor, relationList, tooltipFor } from './panels';
 import { exportBoxes } from '../diagram/networks-box';
 import { Session, View } from '../diagram/session';
 import { SelectionContext, search, selectionContext, splitRef } from '../model/queries';
 import { sortedByName } from '../model/order';
+import { normalizeProtocol } from '../model/protocols';
 import { deviceTypeLabel } from '../model/device-types';
 import { Issue } from '../validation/validate';
 
@@ -160,6 +161,7 @@ export class App {
   private static readonly MENUS: Array<[string, string]> = [
     ['menu-btn', 'main-menu'],
     ['export-btn', 'export-menu'],
+    ['view-btn', 'view-menu'],
   ];
 
   /**
@@ -361,6 +363,35 @@ export class App {
     if (this.mdoc && this.mdoc.redo()) this.afterEdit('Redone.');
   }
 
+  /**
+   * Errors and warnings of the object a diagram ref names, as the Edit tab
+   * counts them: everything reported inside its entry (for an interface,
+   * inside the interface's entry of its device).
+   */
+  issueCount(ref: string): IssueCount {
+    const c: IssueCount = { errors: 0, warnings: 0 };
+    const d = this.mdoc;
+    if (!d) return c;
+    const [kind, id] = splitRef(ref);
+    const colon = id.indexOf(':');
+    const owner = kind === 'iface' ? id.slice(0, colon) : id;
+    const ownerKind = kind === 'iface' ? 'device' : kind;
+    for (const is of d.errors.concat(d.warnings)) {
+      const ent = d.issueEntity(is);
+      if (!ent || ent.kind !== ownerKind) continue;
+      const eid = d.entities(ent.kind)[ent.index]?.id;
+      if (!eid || (ent.kind === 'protocol' ? normalizeProtocol(eid) !== owner : eid !== owner)) continue;
+      if (kind === 'iface') {
+        const entry = d.interfaceEntries(ent.index).find((x) => x.id === id.slice(colon + 1));
+        const p = d.issuePath(is) || [];
+        if (!entry || JSON.stringify(p.slice(0, entry.path.length)) !== JSON.stringify(entry.path)) continue;
+      }
+      if (is.severity === 'error') c.errors++;
+      else c.warnings++;
+    }
+    return c;
+  }
+
   private computeErrorRefs(): void {
     this.errorRefs.clear();
     const d = this.mdoc;
@@ -490,11 +521,8 @@ export class App {
     this.tab = 'legend';
     this.zoom = { k: 1, tx: 0, ty: 0 };
     this.bounds = { x: 0, y: 0, w: 1, h: 1 };
-    const search = this.$<HTMLInputElement>('search');
-    search.value = '';
-    const results = this.$('search-results');
-    results.hidden = true;
-    while (results.firstChild) results.removeChild(results.firstChild);
+    this.closeFind();
+    this.openMoreFilters(false);
     this.$('tooltip').hidden = true;
     this.openMenu(null);
     this.svg.classList.remove('has-selection');
@@ -659,7 +687,7 @@ export class App {
     else if (this.tab === 'yaml') this.renderYaml(body);
     else if (!s) mount(body, { tag: 'p', attrs: { class: 'muted' }, children: [], text: 'Nothing to show: the model has too many errors to be drawn. See Problems.' });
     else if (this.tab === 'details') {
-      if (s.state.selected) mount(body, detailsFor(s.model, s.state.selected));
+      if (s.state.selected) mount(body, detailsFor(s.model, s.state.selected, this.issueCount(s.state.selected)));
       else {
         mount(body, [
           {
@@ -668,7 +696,7 @@ export class App {
             children: [
               { tag: 'h3', attrs: {}, children: [], text: s.model.title },
               { tag: 'p', attrs: { class: 'muted' }, children: [], text: s.model.description || '' },
-              { tag: 'p', attrs: { class: 'muted' }, children: [], text: 'Click any device, port, cable, tunnel or network to see its details and highlight everything connected to it. Drag devices to rearrange them.' },
+              { tag: 'p', attrs: { class: 'muted' }, children: [], text: 'Select an object in the diagram or a list to see its details.' },
             ],
           },
         ]);
@@ -690,7 +718,7 @@ export class App {
     body.appendChild(
       el(this.doc, 'div', { class: 'yaml-tab' }, [
         el(this.doc, 'p', { class: 'muted small' }, [
-          'The whole model as it will be exported. You can edit it here and press Apply; the forms remain the primary way to edit. Comments and key order are kept.',
+          'The whole model as exported. Edit it and press Apply; comments and key order are kept.',
         ]),
         this.editor.sourceDraft !== null ? el(this.doc, 'div', { class: 'field-warn' }, ['You have unapplied changes in this text.']) : null,
         this.editor.sourceError ? el(this.doc, 'div', { class: 'field-err' }, [this.editor.sourceError]) : null,
@@ -933,22 +961,35 @@ export class App {
       b.disabled = !s;
       b.title = s ? `Save the ${s.state.view} view as ${fmt === 'png' ? 'a PNG image' : 'an SVG file'}` : 'Open or create a model first';
     }
+    const find = this.$('btn-find') as HTMLButtonElement;
+    find.disabled = !s;
+    find.title = s ? 'Find a device, interface, network, relation … by id, label, address or protocol (/)' : 'Open or create a model first';
+    const olf = this.$('btn-outline-filter') as HTMLButtonElement;
+    olf.disabled = !d;
+    olf.title = d ? 'Show only the outline entries whose name or id contains a text' : 'Open or create a model first';
+    if (!s && this.findOpen) this.closeFind();
     this.$('btn-undo').title = d && d.canUndo() ? `Undo: ${d.canUndo()} (Ctrl+Z)` : 'Undo (Ctrl+Z)';
     this.$('btn-redo').title = d && d.canRedo() ? `Redo: ${d.canRedo()} (Ctrl+Y)` : 'Redo (Ctrl+Y)';
     const st = this.$('status');
     while (st.firstChild) st.removeChild(st.firstChild);
     if (d) {
       const m = s ? s.model : null;
-      const parts = [
-        el(this.doc, 'span', { class: 'fname' }, [d.fileName]),
-        d.dirty ? el(this.doc, 'span', { class: 'dirty' }, [' ● unsaved changes']) : el(this.doc, 'span', { class: 'saved' }, [d.origin === 'file' && !d.edited ? '' : '']),
-        ' — ',
+      // the file name first, as a badge (shortened with "…" when long; the full name is its tooltip), then the rest on one line
+      st.appendChild(el(this.doc, 'span', { class: 'fname', title: d.fileName }, [d.fileName]));
+      const rest = el(this.doc, 'span', { class: 'status-rest' });
+      st.appendChild(rest);
+      const parts: Array<HTMLElement | string> = [
+        d.dirty ? el(this.doc, 'span', { class: 'dirty' }, ['● unsaved changes']) : '',
         m ? `${m.title} · ${m.devices.length} devices · ${m.index.interfaces.size} interfaces · ${m.links.length} cables · ${m.networks.length} networks · ${m.relations.length} logical relations` : '',
-        d.errors.length ? el(this.doc, 'span', { class: 'errcount' }, [` · ${d.errors.length} error${d.errors.length > 1 ? 's' : ''}`]) : '',
-        d.warnings.length ? ` · ${d.warnings.length} warning${d.warnings.length > 1 ? 's' : ''}` : '',
-        s && s.isFiltered() ? el(this.doc, 'span', { class: 'filtered-note' }, [` · showing ${s.shownDevices().size} of ${s.model.devices.length} devices`]) : '',
-      ];
-      for (const p of parts) st.appendChild(typeof p === 'string' ? this.doc.createTextNode(p) : p);
+        d.errors.length ? el(this.doc, 'span', { class: 'errcount' }, [`${d.errors.length} error${d.errors.length > 1 ? 's' : ''}`]) : '',
+        d.warnings.length ? `${d.warnings.length} warning${d.warnings.length > 1 ? 's' : ''}` : '',
+        s && s.isFiltered() ? el(this.doc, 'span', { class: 'filtered-note' }, [`showing ${s.shownDevices().size} of ${s.model.devices.length} devices`]) : '',
+      ].filter((p) => p !== '');
+      parts.forEach((p, i) => {
+        if (i) rest.appendChild(this.doc.createTextNode(' · '));
+        rest.appendChild(typeof p === 'string' ? this.doc.createTextNode(p) : p);
+      });
+      rest.title = rest.textContent || '';
       this.doc.title = `${d.dirty ? '● ' : ''}${m ? m.title : d.fileName} — netatlas`;
     } else {
       st.textContent = this.loadErrors.length ? `${this.loadErrorName}: ${this.loadErrors.length} error(s)` : 'No model open · everything runs locally in this page';
@@ -972,6 +1013,7 @@ export class App {
     (this.$('btn-arrange') as HTMLButtonElement).disabled = !d || !s;
     this.updateDevicesControl();
     this.updateLayoutStatus();
+    this.layoutFilters();
   }
 
   /**
@@ -1022,6 +1064,178 @@ export class App {
     // the same message for hover and for assistive technology (aria-describedby)
     if (desc.textContent !== LAYOUT_STATUS_MESSAGE[st]) desc.textContent = LAYOUT_STATUS_MESSAGE[st];
     btn.title = LAYOUT_STATUS_MESSAGE[st] + ' ' + action;
+  }
+
+  // ------------------------------------------------------------- View menu
+
+  /** Is the Find bar open? */
+  get findOpen(): boolean {
+    return !this.$('find-bar').hidden;
+  }
+
+  /**
+   * View → Find… (or "/"): open the Find bar over the top right of the
+   * diagram and put the cursor in it. Typing lists matching objects;
+   * Enter or a click selects one. Needs a drawn model.
+   */
+  openFind(): boolean {
+    if (!this.session) return false;
+    this.openMenu(null);
+    this.$('find-bar').hidden = false;
+    const q = this.$<HTMLInputElement>('search');
+    q.focus();
+    q.select();
+    return true;
+  }
+
+  /** Close the Find bar: its text and results go; with `refocus`, the focus returns to the diagram. */
+  closeFind(refocus = false): void {
+    const q = this.$<HTMLInputElement>('search');
+    const hadFocus = this.doc.activeElement === q;
+    q.value = '';
+    const results = this.$('search-results');
+    results.hidden = true;
+    while (results.firstChild) results.removeChild(results.firstChild);
+    this.$('find-bar').hidden = true;
+    if (refocus && hadFocus) q.blur();
+  }
+
+  /**
+   * View → Filter outline…: show the filter box at the top of the model
+   * outline and put the cursor in it. It stays while it holds text; × or
+   * Esc clears and closes it.
+   */
+  openOutlineFilter(): boolean {
+    if (!this.mdoc) return false;
+    this.openMenu(null);
+    this.editor.filterOpen = true;
+    this.renderOutline();
+    const f = this.$('outline-body').querySelector('[data-t="outline-filter"]') as HTMLInputElement | null;
+    if (f) {
+      f.focus();
+      f.select();
+    }
+    return !!f;
+  }
+
+  // ------------------------------------------------------ toolbar filters
+
+  /** width of each filter switch as last measured in the toolbar (a collapsed one keeps its last width) */
+  private optWidth = new Map<HTMLElement, number>();
+  private moreBtnWidth = 0;
+
+  /** The filter switches of the toolbar, in page order (Labels … Servers). */
+  private filterOpts(): HTMLElement[] {
+    return Array.prototype.slice.call(this.doc.querySelectorAll('#view-filters label.opt')) as HTMLElement[];
+  }
+
+  /**
+   * Keep the diagram filters on one toolbar row. Devices always stays; the
+   * switches follow while they fit, by priority (Labels, Groups / Locations,
+   * Networks, Endpoints, Servers). The ones that don't fit move into the
+   * **Filters** drop-down beside them, whose button says how many of them
+   * are switched off. Recomputed when the window, the view or a filter
+   * changes. Only switches whose place changes are moved, so the one in use
+   * keeps the focus.
+   */
+  layoutFilters(): void {
+    const box = this.$('view-filters');
+    const panel = this.$('more-filters');
+    const btn = this.$('more-filters-btn') as HTMLButtonElement;
+    const wrap = btn.parentElement as HTMLElement;
+    const devices = box.querySelector('.devices-wrap') as HTMLElement;
+    const win = this.doc.defaultView as Window;
+    const opts = this.filterOpts();
+    const gap = parseFloat(win.getComputedStyle(box).columnGap) || 8;
+    for (const o of opts) if (o.parentElement === box && o.offsetWidth > 0) this.optWidth.set(o, o.getBoundingClientRect().width);
+    if (!btn.hidden && btn.offsetWidth > 0) this.moreBtnWidth = btn.getBoundingClientRect().width;
+    const logical = this.doc.body.getAttribute('data-view') === 'logical';
+    const shown = (o: HTMLElement): boolean => logical || !o.classList.contains('logical-only');
+    const width = (o: HTMLElement): number => this.optWidth.get(o) || 110;
+    const btnW = this.moreBtnWidth || 96;
+    const devW = devices.getBoundingClientRect().width;
+    // the group needs room for Devices and the Filters button at least; with less it moves to a row of its own, as one piece
+    box.style.minWidth = Math.ceil(devW + gap + btnW) + 'px';
+    const avail = box.clientWidth;
+    const byPriority = opts.slice().sort((a, b) => Number(b.getAttribute('data-priority')) - Number(a.getAttribute('data-priority')));
+    const inline = new Set<HTMLElement>();
+    const all = byPriority.filter(shown).reduce((m, o) => m + gap + width(o), devW);
+    if (all <= avail + 0.5) opts.forEach((o) => inline.add(o));
+    else {
+      let used = devW + gap + btnW;
+      for (const o of byPriority) {
+        if (!shown(o)) continue;
+        if (used + gap + width(o) > avail + 0.5) break;
+        inline.add(o);
+        used += gap + width(o);
+      }
+    }
+    // move only what changes place, in page order
+    const active = this.doc.activeElement as HTMLElement | null;
+    opts.forEach((o, i) => {
+      const home = inline.has(o) ? box : panel;
+      if (o.parentElement === home) return;
+      const next = opts.slice(i + 1).find((x) => x.parentElement === home);
+      home.insertBefore(o, next || (home === box ? wrap : null));
+    });
+    if (active && active !== this.doc.activeElement && this.doc.contains(active)) active.focus();
+    const collapsed = opts.filter((o) => !inline.has(o) && shown(o));
+    btn.hidden = collapsed.length === 0;
+    if (btn.hidden) this.openMoreFilters(false);
+    const off = collapsed.filter((o) => !(o.querySelector('input') as HTMLInputElement).checked);
+    const name = (o: HTMLElement): string => (o.textContent || '').trim();
+    this.$('more-filters-count').textContent = off.length ? ` · ${off.length} off` : '';
+    btn.classList.toggle('filtered', off.length > 0);
+    btn.setAttribute('data-off', String(off.length));
+    btn.setAttribute('aria-label', `More diagram filters: ${collapsed.map(name).join(', ')}${off.length ? ` (${off.map(name).join(', ')} off)` : ''}`);
+    btn.title = off.length ? `Switched off here: ${off.map(name).join(', ')}` : `More filters: ${collapsed.map(name).join(', ')}`;
+  }
+
+  /** Open or close the Filters drop-down; `focus` moves the focus to its first switch (keyboard use). */
+  openMoreFilters(open: boolean, focus = false): void {
+    const panel = this.$('more-filters');
+    const btn = this.$('more-filters-btn') as HTMLButtonElement;
+    const show = open && !btn.hidden;
+    panel.hidden = !show;
+    btn.setAttribute('aria-expanded', show ? 'true' : 'false');
+    btn.classList.toggle('active', show);
+    if (!show) return;
+    this.openMenu(null);
+    this.openDevices(false);
+    this.keepInWindow(panel);
+    if (focus) {
+      const first = panel.querySelector('input:not(:disabled)') as HTMLElement | null;
+      if (first) first.focus();
+    }
+  }
+
+  private wireMoreFilters(): void {
+    const btn = this.$('more-filters-btn');
+    const panel = this.$('more-filters');
+    // a click made with the keyboard (Enter, Space) has no pointer position: the focus then goes into the drop-down
+    btn.addEventListener('click', (e) => this.openMoreFilters(panel.hidden, (e as MouseEvent).detail === 0));
+    btn.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        this.openMoreFilters(true, true);
+      }
+    });
+    panel.addEventListener('keydown', (e) => {
+      const boxes = (Array.prototype.slice.call(panel.querySelectorAll('input')) as HTMLElement[]).filter((x) => x.offsetParent !== null);
+      const at = boxes.indexOf(this.doc.activeElement as HTMLElement);
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        this.openMoreFilters(false);
+        btn.focus();
+      } else if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && boxes.length) {
+        e.preventDefault();
+        boxes[(at + (e.key === 'ArrowDown' ? 1 : boxes.length - 1)) % boxes.length].focus();
+      }
+    });
+    this.doc.addEventListener('pointerdown', (e) => {
+      if (!panel.hidden && !(e.target as Element).closest('.more-filters-wrap')) this.openMoreFilters(false);
+    });
   }
 
   // ------------------------------------------------------------ device filter
@@ -1103,6 +1317,7 @@ export class App {
     btn.classList.toggle('active', open);
     if (open) {
       this.openMenu(null);
+      this.openMoreFilters(false);
       this.renderDevicesList();
       this.keepInWindow(panel);
       if (focus) this.$('devices-find').focus();
@@ -1299,6 +1514,7 @@ export class App {
         if (!this.session) return;
         fn((e.target as HTMLInputElement).checked);
         this.render();
+        this.layoutFilters();
       });
     };
     opt('opt-labels', (v) => this.session && (this.session.state.showLabels = v));
@@ -1310,6 +1526,7 @@ export class App {
       cb.addEventListener('change', () => this.setTypeVisible(cb.getAttribute('data-device-type') || '', cb.checked));
     }
     this.wireDevices();
+    this.wireMoreFilters();
 
     // side panel: tabs, reference links, protocol filters, editor
     const side = this.$('side');
@@ -1411,7 +1628,14 @@ export class App {
         results.appendChild(el(doc, 'button', { type: 'button', 'data-goto': hit.ref }, [el(doc, 'span', { class: 'kind' }, [hit.kind]), hit.label]));
       }
       results.hidden = false;
-      this.keepInWindow(results);
+      // the list hangs under the Find bar over the whole page (the diagram area may be too short for it), inside the window
+      const bar = this.$('find-bar').getBoundingClientRect();
+      const vw = this.doc.documentElement.clientWidth;
+      const vh = this.doc.documentElement.clientHeight;
+      results.style.top = Math.round(bar.bottom + 4) + 'px';
+      results.style.width = Math.round(Math.min(bar.width, vw - 16)) + 'px';
+      results.style.left = Math.round(Math.max(8, Math.min(bar.left, vw - 8 - bar.width))) + 'px';
+      results.style.maxHeight = Math.max(24, Math.floor(vh - bar.bottom - 12)) + 'px';
     });
     q.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') {
@@ -1419,9 +1643,20 @@ export class App {
         if (first) this.select(first.getAttribute('data-goto'), true);
         closeResults();
       } else if (e.key === 'Escape') {
-        q.value = '';
-        closeResults();
-        q.blur();
+        e.preventDefault();
+        this.closeFind(true);
+      }
+    });
+    this.$('find-close').addEventListener('click', () => this.closeFind(true));
+    // View menu
+    this.$('btn-find').addEventListener('click', () => this.openFind());
+    this.$('btn-outline-filter').addEventListener('click', () => this.openOutlineFilter());
+    outline.addEventListener('keydown', (e) => {
+      const t = e.target as HTMLElement;
+      if (e.key === 'Escape' && t.getAttribute('data-t') === 'outline-filter') {
+        e.preventDefault();
+        e.stopPropagation();
+        void this.editor.onClick(this.$('outline-body').querySelector('[data-act="filter-close"]') as HTMLElement);
       }
     });
     results.addEventListener('click', (e) => {
@@ -1455,7 +1690,7 @@ export class App {
       if (e.altKey) return;
       if (e.key === '/') {
         e.preventDefault();
-        q.focus();
+        this.openFind();
       } else if (e.key === 'p' || e.key === '1') this.setView('physical');
       else if (e.key === 'l' || e.key === '2') this.setView('logical');
       else if (e.key === 'e') this.showTab('edit');
@@ -1477,6 +1712,7 @@ export class App {
       win.addEventListener('resize', () => {
         this.applyZoom();
         this.placeYamlMark();
+        this.layoutFilters();
       });
       // a short window starts with the mouse and keyboard help folded (it stays one click away)
       const keys = doc.getElementById('keys') as HTMLDetailsElement | null;

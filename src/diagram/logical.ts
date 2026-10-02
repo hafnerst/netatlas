@@ -19,7 +19,7 @@
 import { CBox, Pt, Rect, boxRect, clipToBox, clipToCircle, lineBoxExit, normal, textWidth, unionRect } from '../layout/geometry';
 import { LINE_W, TUBE_MIN, TUBE_WALL, buildBundle, laneLabel, relationPairs } from '../layout/bundles';
 import { CHIP_H, HUB_R, LNode, LogicalLayout, MAX_CHIPS, commonChain, deviceRect, isMultipoint, networkSubtitle } from '../layout/logical';
-import { CHIP_FONT, MEMBER_LABEL_SIZE, NET_LABEL_SIZE, loopbackChipText, networkBody, pillBox } from '../layout/sizes';
+import { CHIP_FONT, MEMBER_LABEL_SIZE, NET_LABEL_SIZE, chipRows, dnsNameLines, dnsShown, loopbackChipText, networkBody, pillBox } from '../layout/sizes';
 import { TextBlock } from '../layout/text';
 import { networkMembers } from '../model/derive';
 import { sortedByName } from '../model/order';
@@ -303,6 +303,8 @@ export function renderLogical(model: Model, layout: LogicalLayout, opts: Logical
       if (!d) return;
       nodeLayer.push(deviceNode(n.ref, d.label, deviceSubtitle(d.type), d.type, deviceRect(n), 'type-' + cssToken(d.type)));
       nodeLayer.push(...loopbackChips(d, n));
+      // the names are labels: hidden with Labels (their room stays, so nothing moves)
+      if (opts.showLabels) nodeLayer.push(...dnsChips(d, n));
     } else if (n.kind === 'network' && opts.showNetworks) {
       const nw = model.index.networks.get(n.id);
       if (!nw) return;
@@ -388,6 +390,32 @@ function pill(ref: string, p: Pt, box: { block: TextBlock; w: number; h: number 
     h('rect', { class: 'pill-box', x: p.x - box.w / 2, y: p.y - box.h / 2, width: box.w, height: box.h, rx: 9, stroke: color }),
     textLines({ class: 'pill-text', 'text-anchor': 'middle' }, box.block, p.x, p.y - box.block.h / 2),
   ]);
+}
+
+/**
+ * The device's DNS names under its loopback chips: each name once, however
+ * many interfaces it is associated with; a long name continues on further
+ * lines; more than MAX_DNS names end in a "+N more names" row. They show
+ * what is configured in the model, nothing looked up.
+ */
+function dnsChips(d: Device, n: LNode): VNode[] {
+  const shown = dnsShown(d.dnsNames.map((x) => x.name).filter((x) => !!x));
+  if (!shown.names.length) return [];
+  const out: VNode[] = [];
+  let y = n.cy - n.h / 2 + (n.bodyH || 0) + 4 + chipRows(loopbacks(d).length) * CHIP_H;
+  const w = n.w - 16;
+  for (const name of shown.names) {
+    const lines = dnsNameLines(name);
+    out.push(
+      h('g', { class: 'dns-chip', 'data-ref': 'device:' + d.id, 'data-dns': name }, [
+        h('rect', { x: n.cx - w / 2, y, width: w, height: lines.length * CHIP_H - 3, rx: 6.5 }),
+        ...lines.map((l, i) => h('text', { x: n.cx, y: y + 9.5 + i * CHIP_H, 'text-anchor': 'middle', 'font-size': CHIP_FONT }, l)),
+      ]),
+    );
+    y += lines.length * CHIP_H;
+  }
+  if (shown.more) out.push(h('text', { class: 'loop-more dns-more', x: n.cx, y: y + 9, 'text-anchor': 'middle', 'data-ref': 'device:' + d.id }, `+${shown.more} more name${shown.more > 1 ? 's' : ''}`));
+  return out;
 }
 
 /** Loopbacks as small chips hanging under the device, in alphabetical order (logical view only; they are never cabled). */

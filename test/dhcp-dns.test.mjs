@@ -246,7 +246,7 @@ test('adding a DNS name: checked first, created in one step, only interfaces wit
   // a device without names gets the list after its interface lists
   const e = doc('netatlas: 1\ndevices:\n  - id: r1\n    interfaces: [ge0]\n    logical_interfaces:\n      - {id: lo0, type: loopback, ip: 10.0.0.1/32}\n    description: x\n');
   e.addDnsName(0, 'r1.example.com', ['ge0', 'lo0']);
-  assert.match(e.exportText(), /logical_interfaces:\n.*\n    description: x\n    dns_names:\n      - \{name: r1\.example\.com, interfaces: \[ge0, lo0\]\}\n$/);
+  assert.match(e.exportText(), /logical_interfaces:\n.*\n    description: x\n    dns_names:\n      - \{name: r1\.example\.com, interfaces: \[ge0, lo0\]\}\n(\nlayout:[\s\S]*)?$/);
   // remove: the list goes with its last entry
   e.removeDnsName(0, 0);
   assert.ok(!/dns_names/.test(e.exportText()));
@@ -319,13 +319,16 @@ test('details, tooltips and search show DHCP and DNS names; the diagrams stay as
   assert.ok(panels.tooltipFor(m, 'iface:web1:eth0').includes('www.example.com'));
   assert.ok(panels.tooltipFor(m, 'iface:web2:eth0').includes('DHCP'));
   assert.deepEqual(queries.search(m, 'mgmt.example').map((h) => h.ref), ['device:web1']);
-  // nothing about DNS names in the drawn diagrams
+  // the diagrams: no DNS names in the physical view; in the logical view each name once under its device, hidden with Labels
   const { Session } = load('diagram/session.js');
-  for (const view of ['physical', 'logical']) {
-    const s = new Session(m);
-    s.setView(view);
-    assert.ok(!/example\.(com|net)/.test(scene.textOf(s.render().root)), view);
-  }
+  const s = new Session(m);
+  assert.ok(!/example\.(com|net)/.test(scene.textOf(s.render().root)), 'physical');
+  s.setView('logical');
+  const text = scene.textOf(s.render().root);
+  assert.equal(text.split('www.example.com').length - 1, 1, 'one name, once, although it belongs to two interfaces');
+  assert.equal(text.split('mgmt.example.net').length - 1, 1);
+  s.state.showLabels = false;
+  assert.ok(!/example\.(com|net)/.test(scene.textOf(s.render().root)), 'Labels off');
 });
 
 test('DHCP and DNS names survive export -> reload unchanged', () => {

@@ -100,6 +100,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     boxed('g.group', '.group-box', '.group-title');
     boxed('g.pill', '.pill-box', 'text');
     boxed('g.loop-chip', 'rect', 'text');
+    boxed('g.dns-chip', 'rect', 'text');
     each('text', (t) => {
       if (/…$|\.\.\.$/.test(t.textContent || '')) out.push(`shortened text "${t.textContent}"`);
     });
@@ -167,9 +168,9 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const bar = 'header.topbar';
       const menuBtn = q('#menu-btn') as HTMLButtonElement | null;
       const menu = q('#main-menu') as HTMLElement | null;
-      const direct = ['#btn-undo', '#btn-redo', '[data-view-btn="physical"]', '[data-view-btn="logical"]', '#btn-arrange', '#search', '#menu-btn', '#export-btn'];
+      const direct = ['#btn-undo', '#btn-redo', '[data-view-btn="physical"]', '[data-view-btn="logical"]', '#btn-arrange', '#menu-btn', '#export-btn', '#view-btn'];
       check(
-        'toolbar: logo and version, the File and Export menus, and undo/redo, Physical/Logical, Auto-arrange and Find as direct controls; no "Current model" button',
+        'toolbar: logo and version, the File, Export and View menus, and undo/redo, Physical/Logical and Auto-arrange as direct controls; no "Current model" button',
         !!q(bar + ' .brand svg') && /^v\d+\.\d+\.\d+/.test((q(bar + ' .brand .version') || { textContent: '' }).textContent || '') && !!menuBtn && /^File/.test((menuBtn.textContent || '').trim()) &&
           direct.every((d) => !!q(bar + ' ' + d) && !(q(bar + ' ' + d) as HTMLElement).closest('.dropdown') && (q(bar + ' ' + d) as HTMLElement).getBoundingClientRect().width > 10) &&
           !q('#btn-model') && !q('#model-badge') && !/Current model/.test((q(bar) as HTMLElement).textContent || ''),
@@ -564,6 +565,8 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         click('[data-view-btn="logical"]');
         app.select('device:hq-rtr1');
         click('#outline [data-act="fold-all"]');
+        click('#view-btn');
+        click('#btn-outline-filter');
         const filter = q('#outline [data-t="outline-filter"]') as HTMLInputElement;
         filter.value = 'hq';
         filter.dispatchEvent(new Event('input', { bubbles: true }));
@@ -579,7 +582,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         check(
           'closing clears the selection and the view state: the next model opens in the physical view with nothing selected, no filter, default folding, all protocols and networks shown',
           gone && app.session!.state.view === 'physical' && app.session!.state.selected === null && app.session!.state.showNetworks && app.session!.state.hiddenProtocols.size === 0 && !(q('#outline .ol-ctx-hint') || { textContent: '' }).textContent &&
-            (q('#outline [data-t="outline-filter"]') as HTMLInputElement).value === '' && foldedNow === 'device=false,link=true,network=false,relation=false,group=false,protocol=true' && !q('[data-tab="yaml"].active') && !q('[data-tab="edit"].active') && !app.mdoc!.dirty,
+            !q('#outline [data-t="outline-filter"]') && !app.findOpen && foldedNow === 'device=false,link=true,network=false,relation=false,group=false,protocol=true' && !q('[data-tab="yaml"].active') && !q('[data-tab="edit"].active') && !app.mdoc!.dirty,
           `${gone} ${app.session!.state.view} ${app.session!.state.selected} ${foldedNow}`,
         );
         app.closeModel();
@@ -769,9 +772,9 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         await tick();
         const preview = (q('#dns-preview') || { textContent: '' }).textContent || '';
         check(
-          '"+ DNS name" offers the interfaces with DHCP off by name, says which are excluded, and explains that a name belongs to the interface, not one of its addresses',
+          '"+ DNS name" offers the interfaces with DHCP off by name, says which are excluded, and notes that a name belongs to the interface, not one of its addresses',
           offered.join() === 'eth0,eth1,lo0,vlan30' && labels[0] === 'Front (eth0)' && /DHCP is on: eth2/.test(q('[data-dns-excluded]')!.textContent || '') && disabledFirst && !createBtn().disabled &&
-            /eth0 has 2 addresses: the name is associated with the interface, not with one particular address/.test(preview),
+            /eth0 has 2 addresses: the name belongs to the interface, not to one address/.test(preview),
           offered.join() + ' | ' + preview,
         );
         createBtn().click();
@@ -870,7 +873,9 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const relatedMark = (toggle('link').querySelector('.ol-related') || { textContent: '' }).textContent || '';
       check('"Collapse all" folds every section; a folded section still shows the selected entry and how many of its entries are related', allFolded && selShown && /^• \d+$/.test(relatedMark), `${allFolded} ${selShown} "${relatedMark}"`);
       app.select(null);
-      // the filter looks into folded sections
+      // the filter (View → Filter outline…) looks into folded sections
+      click('#view-btn');
+      click('#btn-outline-filter');
       const filter = q('#outline [data-t="outline-filter"]') as HTMLInputElement;
       filter.value = 'isp1';
       filter.dispatchEvent(new Event('input', { bubbles: true }));
@@ -1158,7 +1163,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const md = (): ModelDoc => app.mdoc as ModelDoc;
       const hint = q('#filter-hint') as HTMLElement;
       const btn = q('#devices-btn') as HTMLButtonElement;
-      const right = (Array.prototype.map.call(doc.querySelectorAll('header > .devices-wrap, header > label.opt'), (e: Element) => (e.textContent || '').replace(/\s+/g, ' ').trim()) as string[]);
+      const right = (Array.prototype.map.call(doc.querySelectorAll('#view-filters > .devices-wrap, #view-filters > label.opt'), (e: Element) => (e.textContent || '').replace(/\s+/g, ' ').trim()) as string[]);
       const vis = (sel: string): boolean => !!q(sel) && (q(sel) as HTMLElement).offsetParent !== null;
       check(
         'top-right diagram controls: Devices (all selected), Labels, Groups / Locations, Endpoints and Servers on, in both views; Networks only in the logical view; no Underlay',
@@ -2746,6 +2751,206 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       );
       app.select(null);
       click('[data-tab="legend"]');
+    }
+
+    // ------------- DNS names (logical view), help texts, Details = Edit header, toolbar filters, file name, View menu
+    {
+      if (app.mdoc) app.mdoc.markSaved();
+      const view = doc.defaultView as Window;
+      const rect = (e: Element): DOMRect => e.getBoundingClientRect();
+      app.loadExample(EXAMPLES.findIndex((e) => e.name === 'enterprise-wan.yaml'));
+      click('[data-view-btn="logical"]');
+      await tick();
+      const m = app.session!.model;
+      const chips = (): string[] => (Array.prototype.map.call(doc.querySelectorAll('#viewport g.dns-chip'), (g: Element) => (Array.prototype.map.call(g.querySelectorAll('text'), (t: Element) => t.textContent || '') as string[]).join('')) as string[]).sort();
+      const drawnDevices = new Set(Array.prototype.map.call(doc.querySelectorAll('#viewport g.device'), (e: Element) => (e.getAttribute('data-ref') || '').slice(7)) as string[]);
+      const expected = Array.from(new Set(m.devices.filter((d) => drawnDevices.has(d.id)).reduce((a: string[], d) => a.concat(d.dnsNames.map((x) => x.name)), []))).sort();
+      const problemsNow = drawnProblems();
+      check(
+        'logical view: each configured DNS name once under its device (a name of two interfaces is not repeated), in its own dashed chip, readable and inside it; the physical view shows none',
+        expected.length >= 3 && chips().join() === expected.join() && problemsNow.length === 0 && !!q('#viewport g.dns-chip[data-ref="device:hq-rtr1"]'),
+        `${chips().join()} vs ${expected.join()} ${problemsNow.slice(0, 3).join('; ')}`,
+      );
+      const svgText = app.exportSvg();
+      const png = await app.exportPng();
+      check(
+        'the logical SVG and PNG exports carry the DNS names, and the legend names them as configured (not looked up)',
+        expected.every((n) => svgText.indexOf(`data-dns="${n}"`) >= 0) && /DNS name \(as configured, not looked up\)/.test(svgText) && png.width > 0,
+      );
+      (q('#opt-labels') as HTMLInputElement).click();
+      await tick();
+      const svgNoLabels = app.exportSvg();
+      check('Labels off hides the DNS names, on screen and in the export with its legend entry', chips().length === 0 && svgNoLabels.indexOf('data-dns=') < 0 && !/DNS name \(as configured/.test(svgNoLabels));
+      (q('#opt-labels') as HTMLInputElement).click();
+      app.setDevices(m.devices.map((d) => d.id).filter((id) => id !== 'hq-rtr1'));
+      await tick();
+      check('a device left out by the Devices filter takes its DNS names with it', chips().indexOf('hq-rtr1.acme.example') < 0 && chips().indexOf('syslog.acme.example') >= 0 === drawnDevices.has('hq-log'), chips().join());
+      app.setDevices(m.devices.map((d) => d.id));
+      click('[data-view-btn="physical"]');
+      await tick();
+      check('… and the physical view draws no DNS names', chips().length === 0);
+
+      // short help: no routine explanation longer than a line or two
+      app.select('device:hq-rtr1');
+      click('[data-tab="edit"]');
+      await tick();
+      const helps = Array.prototype.map.call(doc.querySelectorAll('#side-body .help, #side-body .muted.small:not(.used-by)'), (e: Element) => (e.textContent || '').trim()) as string[];
+      const long = helps.filter((t) => t.length > 90);
+      const labelField = Array.prototype.find.call(doc.querySelectorAll('#side-body .field'), (f: Element) => ((f.querySelector(':scope > label') || { textContent: '' }).textContent || '') === 'Label') as HTMLElement | undefined;
+      check(
+        'editor help is short: no hint over 90 characters in a device form; the label hint is just that line breaks are kept',
+        helps.length > 3 && long.length === 0 && !!labelField && ((labelField.querySelector('.help') || { textContent: '' }).textContent || '') === 'Line breaks are kept.',
+        long.join(' | '),
+      );
+      click('[data-tab="legend"]');
+      await tick();
+      const legendNotes = Array.prototype.map.call(doc.querySelectorAll('#side-body p'), (e: Element) => (e.textContent || '').trim()) as string[];
+      check(
+        'the physical legend shows ports and network differences as symbols, not as a paragraph',
+        legendNotes.every((t) => t.length <= 90) && !legendNotes.some((t) => /Small squares are ports/.test(t)) && /Port \(label: interface name\)/.test(q('#side-body')!.textContent || ''),
+        legendNotes.join(' | '),
+      );
+
+      // Details and Edit: one header design, the same identity and problem state; the id is in the header, not a first row
+      const headOf = (): { kind: string; name: string; id: string; state: string; text: string } => {
+        const h = q('#side-body .insp-head') as HTMLElement;
+        const t = (sel: string): string => ((h && h.querySelector(sel)) || { textContent: '' }).textContent || '';
+        return { kind: t('.badge'), name: t('.ih-name'), id: t('.ih-id'), state: h ? (h.querySelector('.ih-status') as HTMLElement).getAttribute('data-state') || '' : '', text: t('.ih-status') };
+      };
+      const sameHeads = async (ref: string): Promise<[boolean, string]> => {
+        app.select(ref);
+        click('[data-tab="edit"]');
+        await tick();
+        const e = headOf();
+        click('[data-tab="details"]');
+        await tick();
+        const d = headOf();
+        const firstRow = ((q('#side-body table.kv th') || { textContent: '' }).textContent || '').trim();
+        return [JSON.stringify(e) === JSON.stringify(d) && !!d.kind && !!d.name && d.state !== '' && firstRow !== 'id', `${JSON.stringify(e)} / ${JSON.stringify(d)} first row "${firstRow}"`];
+      };
+      for (const ref of ['device:hq-log', 'link:l-rtr1-fw', 'relation:gre-muc', 'network:net-transit']) {
+        const [ok, why] = await sameHeads(ref);
+        check(`Details and Edit show the same header for ${ref}: kind, name, ID beside it, problem state; Details no longer starts with an "id" row`, ok, why);
+      }
+      const idEl = q('#side-body .insp-head .ih-id') as HTMLElement;
+      check('the ID in the header is plain text that can be selected and copied on its own', !!idEl && idEl.textContent === 'net-transit' && view.getComputedStyle(idEl).userSelect !== 'none');
+      const broken = app.loadText('netatlas: 1\ndevices:\n  - id: r1\n    group: nowhere\n  - id: r2\n', 'broken.yaml', 'file');
+      const [okBroken, whyBroken] = await sameHeads('device:r1');
+      check('an object with an error: the same "1 error" state in Details and Edit', broken.ok && okBroken && headOf().state === 'error' && /1 error/.test(headOf().text), whyBroken);
+
+      // the bottom bar: the file name as a badge at its start; a long one is shortened and never widens the page
+      const LONGNAME = 'acme-'.repeat(30) + 'network.yaml';
+      app.loadText('netatlas: 1\ntitle: Long name\ndevices:\n  - id: a\n', LONGNAME, 'file');
+      await tick();
+      const badge = q('#status .fname') as HTMLElement;
+      const bar = rect(q('#status') as HTMLElement);
+      check(
+        'status bar: the file name is a badge at the start (full name as tooltip); a long name is cut with "…" inside the bar, the rest of the status follows on the same line, the page does not scroll',
+        !!badge && badge === (q('#status') as HTMLElement).firstElementChild && badge.title === LONGNAME && badge.scrollWidth > badge.clientWidth && view.getComputedStyle(badge).textOverflow === 'ellipsis' &&
+          rect(badge).right <= bar.right && /1 devices/.test(q('#status .status-rest')!.textContent || '') && Math.abs(rect(q('#status .status-rest') as HTMLElement).top - rect(badge).top) < 6 &&
+          doc.documentElement.scrollWidth <= doc.documentElement.clientWidth,
+      );
+
+      // the toolbar filters: one row; in a narrow toolbar the lower-priority ones go into "Filters", which says what is off
+      app.loadExample(EXAMPLES.findIndex((e) => e.name === 'enterprise-wan.yaml'));
+      click('[data-view-btn="logical"]');
+      await tick();
+      const top = q('header.topbar') as HTMLElement;
+      const more = q('#more-filters-btn') as HTMLButtonElement;
+      const group = q('#view-filters') as HTMLElement;
+      const inline = (): string[] => (Array.prototype.map.call(group.querySelectorAll(':scope > label.opt'), (e: Element) => (e.textContent || '').trim()) as string[]);
+      const oneRow = (): boolean => {
+        const parts = (Array.prototype.slice.call(group.children) as HTMLElement[]).filter((e) => e.offsetWidth > 0);
+        const mid = parts.map((e) => rect(e).top + rect(e).height / 2);
+        return mid.every((y) => Math.abs(y - mid[0]) < 2.5);
+      };
+      check('wide window: every filter on the toolbar, on one row, no Filters button', inline().join() === 'Labels,Groups / Locations,Networks,Endpoints,Servers' && more.hidden && oneRow(), inline().join());
+      top.style.maxWidth = '900px';
+      app.layoutFilters();
+      await tick();
+      const narrowInline = inline();
+      check(
+        'narrow toolbar: the filters stay on one row; Servers, then Endpoints, … move into the Filters drop-down by priority',
+        oneRow() && !more.hidden && narrowInline.length < 5 && narrowInline[0] === 'Labels' && !!q('#more-filters #opt-type-server') && rect(group).right <= rect(top).right + 0.5,
+        narrowInline.join(),
+      );
+      more.focus();
+      more.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }));
+      await tick();
+      const firstInside = doc.activeElement as HTMLInputElement;
+      const opened = !(q('#more-filters') as HTMLElement).hidden && more.getAttribute('aria-expanded') === 'true' && !!firstInside && (q('#more-filters') as HTMLElement).contains(firstInside);
+      const servers = q('#opt-type-server') as HTMLInputElement;
+      servers.click();
+      await tick();
+      const offShown = /1 off/.test(more.textContent || '') && more.classList.contains('filtered') && /Servers/.test(more.getAttribute('aria-label') || '') && app.session!.isTypeHidden('server');
+      (q('#more-filters') as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      await tick();
+      check(
+        'the Filters drop-down works from the keyboard (arrow down opens it at its first switch, Esc closes it and returns to the button), and its button says that a filter inside is off',
+        opened && offShown && (q('#more-filters') as HTMLElement).hidden && doc.activeElement === more,
+        `${opened} ${more.textContent}`,
+      );
+      top.style.maxWidth = '';
+      app.layoutFilters();
+      await tick();
+      check('back to a wide toolbar: every filter is inline again, with its state kept (Servers still off, shown unchecked)', inline().length === 5 && more.hidden && !servers.checked && servers.parentElement!.parentElement === group && oneRow());
+      servers.click();
+      await tick();
+
+      // the View menu: Find… and Filter outline… live there (and nowhere else), with the menus' keyboard rules
+      const viewBtn = q('#view-btn') as HTMLButtonElement;
+      click('#export-btn');
+      (q('#export-menu') as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true }));
+      await tick();
+      const viaArrow = !(q('#view-menu') as HTMLElement).hidden && viewBtn.getAttribute('aria-expanded') === 'true' && (q('#view-menu') as HTMLElement).contains(doc.activeElement);
+      const entries = textsOf('#view-menu button');
+      check(
+        'View menu next to Export: Find… (/) and Filter outline…, reached with the arrow keys like File and Export; no search box in the toolbar, no filter box always in the outline',
+        viaArrow && entries.join(' | ') === 'Find…/ | Filter outline…' && !q('header.topbar #search') && !q('header.topbar [data-t="outline-filter"]'),
+        `${viaArrow} ${entries.join(' | ')}`,
+      );
+      (q('#view-menu') as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      click('#view-btn');
+      click('#btn-find');
+      await tick();
+      const s = q('#search') as HTMLInputElement;
+      const findOpened = app.findOpen && doc.activeElement === s && (q('#view-menu') as HTMLElement).hidden;
+      s.value = 'hq-fw';
+      s.dispatchEvent(new Event('input', { bubbles: true }));
+      await tick();
+      const hits = doc.querySelectorAll('#search-results [data-goto]').length;
+      s.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+      await tick();
+      const picked = app.session!.state.selected === 'device:hq-fw';
+      s.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      await tick();
+      check('View → Find… opens the Find bar with the cursor in it; typing lists matches, Enter selects the first, Esc closes the bar', findOpened && hits >= 1 && picked && !app.findOpen && s.value === '', `${findOpened} ${hits} ${picked}`);
+      (doc.activeElement as HTMLElement | null)?.blur?.();
+      doc.dispatchEvent(new KeyboardEvent('keydown', { key: '/', bubbles: true, cancelable: true }));
+      await tick();
+      check('"/" still opens Find', app.findOpen && doc.activeElement === s);
+      app.closeFind();
+      click('#view-btn');
+      click('#btn-outline-filter');
+      await tick();
+      const of = q('#outline [data-t="outline-filter"]') as HTMLInputElement;
+      const ofOpened = !!of && doc.activeElement === of;
+      of.value = 'muc';
+      of.dispatchEvent(new Event('input', { bubbles: true }));
+      await tick();
+      const listed = textsOf('#outline .ol-item .ol-label');
+      const of2 = q('#outline [data-t="outline-filter"]') as HTMLInputElement;
+      of2.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      await tick();
+      check(
+        'View → Filter outline… shows the filter at the top of the outline with the cursor in it; it filters as before; Esc clears and removes it',
+        ofOpened && listed.indexOf('muc-rtr') >= 0 && listed.indexOf('hq-rtr1') < 0 && !q('#outline [data-t="outline-filter"]') && textsOf('#outline .ol-item').length > listed.length,
+        listed.join(' | '),
+      );
+      app.mdoc!.markSaved();
+      app.closeModel();
+      check('without a model both View entries are disabled, like Export', (q('#btn-find') as HTMLButtonElement).disabled && (q('#btn-outline-filter') as HTMLButtonElement).disabled && !app.openFind());
+      app.loadExample(0);
     }
 
     const perf = (doc.defaultView as Window).performance;
