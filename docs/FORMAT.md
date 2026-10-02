@@ -3,7 +3,7 @@
 This document is the contract of **NetAtlas YAML model format version 1**,
 the only model format NetAtlas supports. Every file declares it with
 `netatlas: 1`; a missing line or any other value is an error. The model
-format version is independent of the application version: NetAtlas 0.1.1 is
+format version is independent of the application version: NetAtlas 0.1.2 is
 an application release, and it reads and writes model format 1.
 
 A netatlas file describes **one** network architecture. It separates two
@@ -456,8 +456,11 @@ devices:
   its associations in the same undo step (the editor says so first); a name
   that is left without interfaces is deleted with them.
 * Display: the device's **details** list its names with their interfaces,
-  and an interface's details and tooltip name its DNS names. The diagrams
-  don't show them. **Find…** finds a device by a DNS name.
+  and an interface's details and tooltip name its DNS names. The **logical
+  view** writes each name once under its device (hidden with *Labels*); the
+  physical view doesn't show them. Showing a name says only that it is
+  configured: no DNS record is looked up or derived. **Find…** finds a device
+  by a DNS name.
 
 ## `links` (physical cabling only)
 

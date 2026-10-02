@@ -26,13 +26,13 @@ file, then:
 There's nothing to install, no server, and no network access. YAML remains
 the model: the page reads it, edits it and writes it back.
 
-**NetAtlas 0.1.1**, a usable initial version; see the
+**NetAtlas 0.1.2**, a usable initial version; see the
 [changelog](CHANGELOG.md) for what it covers, and
 [Limitations](#limitations-honest-list) for what it doesn't.
 
 Two version numbers are involved, and they are independent:
 
-* **0.1.1** is the version of the application, shown next to the logo.
+* **0.1.2** is the version of the application, shown next to the logo.
 * **1** is the version of the YAML model format. Every model file starts
   with `netatlas: 1`, and model format 1, described in
   [docs/FORMAT.md](docs/FORMAT.md), is the only format NetAtlas reads and
@@ -96,7 +96,7 @@ auto-arranged layout, ✎ manually adjusted).
 
 | Control | What it does |
 |---|---|
-| **netatlas** logo and version | the application version (v0.1.1), not the model format version |
+| **netatlas** logo and version | the application version (v0.1.2), not the model format version |
 | **File ▾** | one menu for everything about files: **New model**, **Open model…**, **Download model…** (Ctrl+S), **Close model** and, under **Examples**, the built-in files. *Close model* leaves the current model and returns to the start screen; it is greyed out while no model is open. An entry ends in “…” when it asks for something before it acts (a file to pick, a file name to confirm). It closes after a choice, with Esc, or when you click elsewhere; the arrow keys move through it. |
 | **Export ▾** | One entry, **Export view as…**, which opens a submenu with **PNG** and **SVG**. Either saves the selected view (Physical or Logical) as a picture; see [Exporting pictures](#exporting-pictures). Greyed out until a model is open. The submenu opens when the entry is clicked or tapped, or with Enter, Space or the right arrow key; the left arrow key or Esc closes it. The menu works like **File**; the left and right arrow keys move between the two. |
 | ↶ ↷ | undo and redo |
