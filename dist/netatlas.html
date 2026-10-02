@@ -31,6 +31,7 @@
   --error: #c92a2a;
   --warn: #b35900;
   --sel: #f59f00;
+  --ok: #2b8a3e;
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
@@ -54,6 +55,7 @@
     --member: #56606c;
     --pill: #1b2028;
     --error: #ff8787;
+    --ok: #69db7c;
     --warn: #ffc078;
     color-scheme: dark;
   }
@@ -121,6 +123,8 @@ body:not([data-view="logical"]) .logical-only { display: none; }
 .dp-list { max-height: min(55vh, 420px); overflow: auto; display: flex; flex-direction: column; gap: 1px; border: 1px solid var(--border); border-radius: 6px; padding: 4px 6px; background: var(--canvas); }
 .dp-list label { display: flex; align-items: center; gap: 6px; padding: 2px 0; font-size: 12.5px; overflow-wrap: anywhere; cursor: pointer; }
 .dp-list label[hidden] { display: none; }
+.dp-list label.type-hidden > span:first-of-type { color: var(--muted); }
+.dp-off { margin-left: auto; flex: none; font-size: 11px; color: var(--muted); font-style: italic; white-space: nowrap; }
 .dp-note { margin: 0; font-size: 11.5px; }
 .devices-panel > .dp-tools { padding: 0; }
 .devices-panel > .dp-list { padding: 4px 6px; }
@@ -234,7 +238,17 @@ body[data-state="empty"].dropping #drop-hint { display: none; }
 .tabs button.active { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
 /* the one scrolling region of the side panel: tabs above and hints below stay in place */
 #side-body { flex: 1 1 0; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 10px 14px 16px; }
-.keys { flex: none; padding: 8px 14px; border-top: 1px solid var(--border); }
+/* mouse and keyboard help: two labelled groups, side by side when there is room, foldable */
+.keys { flex: none; max-height: 45%; overflow: auto; padding: 4px 14px 8px; border-top: 1px solid var(--border); font-size: 11.5px; color: var(--muted); }
+.keys > summary { cursor: pointer; padding: 3px 0; font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; width: max-content; }
+.keys > summary:hover { color: var(--text); }
+.keys-groups { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 4px 18px; padding-top: 2px; }
+#side .keys-group h4 { margin: 0 0 2px; font-size: 10.5px; }
+.keys-group dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 1px 10px; margin: 0; }
+.keys-group dl > div { display: contents; }
+.keys-group dt { color: var(--text); white-space: nowrap; }
+.keys-group dd { margin: 0; overflow-wrap: anywhere; }
+.keys kbd { font: 10.5px/1.3 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; padding: 0 4px; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px; background: var(--canvas); color: var(--text); }
 #side h3 { margin: 4px 0 8px; font-size: 15px; overflow-wrap: anywhere; }
 #side h4 { margin: 14px 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
 .det-head { display: flex; flex-direction: column; gap: 2px; }
@@ -279,10 +293,10 @@ button.ref:hover { text-decoration: underline; }
   #side { grid-column: 2; grid-row: 2; border-top: 1px solid var(--border); }
   #search { width: 140px; }
 }
-/* Short windows (a small or strongly zoomed window): the shortcut hints give
-   their room to the panel's content, and the toolbar gets tighter. */
+/* Short windows (a small or strongly zoomed window): the shortcut help starts
+   folded (see App), giving its room to the panel's content, and the toolbar
+   gets tighter. */
 @media (max-height: 560px) {
-  .keys { display: none; }
   .topbar { padding-top: 3px; padding-bottom: 3px; gap: 5px; }
   .dropdown.menu { max-height: calc(100vh - 44px); max-height: calc(100dvh - 44px); }
   #side-body { padding-top: 6px; padding-bottom: 8px; }
@@ -364,7 +378,8 @@ body[data-dirty="true"] #btn-download { border-color: var(--warn); box-shadow: i
    of list entries). Without that, such an element far down a long list is
    laid out against the page and makes the whole document scrollable. */
 #outline, #side-body { position: relative; }
-#outline { background: var(--panel); border-right: 1px solid var(--border); overflow: auto; overscroll-behavior: contain; min-height: 0; min-width: 0; }
+/* the scrollbar's room is always reserved: a list that grows or shrinks (a folded section showing its selected entry) never shifts the entries sideways */
+#outline { background: var(--panel); border-right: 1px solid var(--border); overflow: auto; overscroll-behavior: contain; min-height: 0; min-width: 0; scrollbar-gutter: stable; }
 #outline-body { padding: 8px 8px 16px; }
 .outline-filter { width: 100%; margin-bottom: 6px; padding: 4px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--canvas); }
 .ol-section { margin-top: 10px; }
@@ -373,7 +388,8 @@ body[data-dirty="true"] #btn-download { border-color: var(--warn); box-shadow: i
 .ol-item:hover { background: var(--accent-soft); }
 .ol-item.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
 /* a section folds to its heading: the heading is a button (caret, title, count) next to "+ Add" */
-.ol-tools { display: flex; justify-content: flex-end; margin: 0 0 2px; }
+.ol-tools { display: flex; align-items: center; justify-content: space-between; gap: 6px; min-height: 22px; margin: 0 0 2px; }
+.ol-tools > button { flex: none; }
 .ol-toggle { flex: 1; min-width: 0; display: flex; align-items: center; gap: 5px; border: 0; background: none; border-radius: 5px; padding: 2px 4px; text-align: left; font: inherit; text-transform: inherit; letter-spacing: inherit; color: inherit; }
 .ol-toggle:hover { background: var(--accent-soft); color: var(--text); }
 .ol-caret { width: 10px; flex: none; font-size: 10px; }
@@ -384,10 +400,11 @@ body[data-dirty="true"] #btn-download { border-color: var(--warn); box-shadow: i
 .ol-section.folded { margin-top: 4px; }
 /* selection context in the element lists: shape and weight as well as colour */
 .ctx-mark { width: 10px; flex: none; text-align: center; color: var(--accent); font-weight: 700; }
+.ol-item .ctx-mark { width: 10px; }
 .ol-item.ctx-selected { background: var(--accent-soft); color: var(--accent); font-weight: 600; box-shadow: inset 3px 0 0 var(--accent); }
-.ol-item.ctx-unrelated { color: var(--muted); padding-left: 22px; }
+.ol-item.ctx-unrelated { color: var(--muted); }
 .ol-item.ctx-unrelated:hover, .ol-item.ctx-unrelated:focus-visible { color: var(--text); }
-.ol-ctx-hint { margin: 6px 2px 0; color: var(--muted); font-size: 11px; }
+.ol-ctx-hint { flex: 1; min-width: 0; padding-left: 2px; color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ol-ctx-hint .ctx-mark { display: inline-block; }
 .reflist li.ctx-selected { box-shadow: inset 3px 0 0 var(--accent); padding-left: 6px; }
 .reflist li.ctx-selected button.ref { font-weight: 700; }
@@ -400,10 +417,25 @@ body[data-dirty="true"] #btn-download { border-color: var(--warn); box-shadow: i
 .ol-badge.err { background: var(--error); }
 .ol-badge.warn { background: var(--warn); }
 .inspector { display: flex; flex-direction: column; gap: 6px; }
-.insp-head { display: flex; flex-direction: column; gap: 2px; }
-.insp-head h3 { margin: 2px 0 !important; overflow-wrap: anywhere; }
-.insp-actions { display: flex; gap: 6px; }
-.issue-ok { color: #2f9e44; font-size: 12px; }
+/* header of the edit panel: [type] [validation state] … [actions], the name below at full width */
+.insp-head { container-type: inline-size; display: flex; flex-direction: column; gap: 4px; min-width: 0; padding: 8px 10px 9px; border: 1px solid var(--border); border-radius: 9px; background: var(--canvas); }
+.ih-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.ih-row > .badge { align-self: center; flex: none; }
+.insp-head h3 { margin: 0 !important; font-size: 15px; line-height: 1.3; overflow-wrap: anywhere; }
+.ih-status { display: inline-flex; align-items: center; gap: 4px; min-width: 0; font-size: 11.5px; font-weight: 600; padding: 1px 8px 1px 5px; border-radius: 99px; border: 1px solid currentColor; overflow-wrap: anywhere; }
+.ih-status.ok { color: var(--ok); border-color: transparent; padding-left: 0; font-weight: 500; }
+.ih-status.warning { color: var(--warn); }
+.ih-status.error { color: var(--error); }
+.ih-status .icon-svg { flex: none; }
+.insp-actions { display: flex; gap: 4px; margin-left: auto; flex: none; }
+.icon-svg { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; display: block; }
+button.icon-btn { display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; font-size: 12px; border-radius: 6px; line-height: 1.2; }
+button.icon-btn.danger:hover:not(:disabled) { background: var(--error); border-color: var(--error); color: var(--panel); }
+/* a narrow panel: the actions keep their icon, name (aria-label) and tooltip, and give up their text */
+@container (max-width: 300px) {
+  button.icon-btn { padding: 4px 6px; }
+  button.icon-btn .ib-label { display: none; }
+}
 .issue-list { list-style: none; margin: 0; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--canvas); font-size: 12px; }
 .issue-list li { padding: 1px 0; overflow-wrap: anywhere; }
 .issue-list li.error b { color: var(--error); }
@@ -428,8 +460,9 @@ body[data-dirty="true"] #btn-download { border-color: var(--warn); box-shadow: i
 .sub { margin-top: 8px; border-top: 1px solid var(--border); padding-top: 6px; }
 .sub-head { display: flex; align-items: center; justify-content: space-between; }
 .sub-head h4 { margin: 4px 0 !important; }
-.sub-head { gap: 6px; }
-.sub-head .ctl.row { flex: none; }
+/* a narrow panel puts the add buttons under the heading instead of past the edge */
+.sub-head { gap: 4px 6px; flex-wrap: wrap; }
+.sub-head .ctl.row { flex: none; flex-wrap: wrap; margin-left: auto; }
 .sub-head .ctl.row > * { flex: none; }
 .sub-head button { white-space: nowrap; }
 details.card { border: 1px solid var(--border); border-radius: 7px; margin: 5px 0; background: var(--canvas); }
@@ -501,7 +534,14 @@ ul.dhcp-loss { margin: 2px 0 8px; padding-left: 20px; }
 .net-ed .list-row > * { flex: 1; min-width: 0; }
 .net-mismatch-note { border: 1px solid var(--warn); border-radius: 6px; padding: 4px 7px; }
 .yaml-tab { display: flex; flex-direction: column; gap: 6px; height: 100%; }
-#yaml-src { width: 100%; min-height: min(55vh, 100%); flex: 1; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: var(--canvas); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 8px; tab-size: 2; white-space: pre; }
+/* the YAML editor: a plain text area over a band that marks the selected object's lines (drawn behind the text, never part of it) */
+.yaml-edit { position: relative; flex: 1; min-height: min(55vh, 100%); display: flex; background: var(--canvas); border-radius: 6px; }
+#yaml-src { position: relative; z-index: 1; width: 100%; min-height: 0; flex: 1; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: transparent; color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 8px; tab-size: 2; white-space: pre; }
+.yaml-hl-clip { position: absolute; z-index: 0; overflow: hidden; pointer-events: none; }
+.yaml-hl { position: absolute; left: 0; right: 0; background: var(--accent-soft); box-shadow: inset 3px 0 0 var(--accent); }
+.yaml-hl[hidden] { display: none; }
+.yaml-sel { margin: 0; min-height: 1.45em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.yaml-sel[data-state="unmarked"] { font-style: italic; }
 .row-btns { display: flex; gap: 6px; }
 .issue.clickable { cursor: pointer; }
 .issue.clickable:hover { border-color: var(--accent); }
@@ -607,6 +647,8 @@ dialog#modal::backdrop { background: rgba(0,0,0,.35); }
   <label class="opt"><input id="opt-labels" type="checkbox" checked> Labels</label>
   <label class="opt"><input id="opt-groups" type="checkbox" checked> Groups / Locations</label>
   <label class="opt logical-only"><input id="opt-networks" type="checkbox" checked> Networks</label>
+  <label class="opt" title="Show devices of type Endpoint (switching this off hides them and what only they connect; nothing is deleted)"><input id="opt-type-endpoint" type="checkbox" data-device-type="endpoint" checked> Endpoints</label>
+  <label class="opt" title="Show devices of type Server (switching this off hides them and what only they connect; nothing is deleted)"><input id="opt-type-server" type="checkbox" data-device-type="server" checked> Servers</label>
 </header>
 <main>
   <aside id="outline" aria-label="Model outline">
@@ -663,7 +705,29 @@ dialog#modal::backdrop { background: rgba(0,0,0,.35); }
       <button type="button" data-tab="yaml">YAML</button>
     </nav>
     <div id="side-body"></div>
-    <div class="keys muted small">Drag background: pan · wheel: zoom · drag node: move · click: select · Esc: clear · P / L: view · Ctrl+Z / Y: undo / redo · Ctrl+S: download</div>
+    <details id="keys" class="keys" open>
+      <summary>Mouse &amp; keyboard</summary>
+      <div class="keys-groups">
+        <section class="keys-group" aria-labelledby="keys-pointer">
+          <h4 id="keys-pointer">Pointer</h4>
+          <dl>
+            <div><dt>Drag background</dt><dd>pan</dd></div>
+            <div><dt>Wheel</dt><dd>zoom</dd></div>
+            <div><dt>Drag node</dt><dd>move</dd></div>
+            <div><dt>Click</dt><dd>select</dd></div>
+          </dl>
+        </section>
+        <section class="keys-group" aria-labelledby="keys-keyboard">
+          <h4 id="keys-keyboard">Keyboard</h4>
+          <dl>
+            <div><dt><kbd>Esc</kbd></dt><dd>clear</dd></div>
+            <div><dt><kbd>P</kbd> / <kbd>L</kbd></dt><dd>view</dd></div>
+            <div><dt><kbd>Ctrl+Z</kbd> / <kbd>Y</kbd></dt><dd>undo / redo</dd></div>
+            <div><dt><kbd>Ctrl+S</kbd></dt><dd>download</dd></div>
+          </dl>
+        </section>
+      </div>
+    </details>
   </aside>
 </main>
 <footer id="status" aria-live="polite"></footer>
@@ -739,12 +803,14 @@ const files_1 = __req("ui/files");
 const dom_1 = __req("ui/dom");
 const dialogs_1 = __req("ui/dialogs");
 const inspector_1 = __req("ui/inspector");
+const yaml_block_1 = __req("editor/yaml-block");
 const examples_1 = __req("generated/examples");
 const panels_1 = __req("ui/panels");
 const networks_box_1 = __req("diagram/networks-box");
 const session_1 = __req("diagram/session");
 const queries_1 = __req("model/queries");
 const order_1 = __req("model/order");
+const device_types_1 = __req("model/device-types");
 class App {
     constructor(doc) {
         this.session = null;
@@ -758,6 +824,12 @@ class App {
         this.loadErrorName = '';
         this.rafPending = false;
         this.errorRefs = new Set();
+        // --------------------------------------------- the selection in the YAML text
+        /** the lines marked in the YAML editor (null: nothing marked) */
+        this.yamlRange = null;
+        /** the object the YAML editor was last marked for: it scrolls only when the selection changes */
+        this.yamlMarkKey = '';
+        this.yamlTimer = null;
         /** set when a pointerdown already performed an editor action; the following mouse click is ignored */
         this.clickHandled = false;
         this.doc = doc;
@@ -1062,7 +1134,8 @@ class App {
             this.render();
         }
         this.renderOutline();
-        if (note === 'select' && this.tab !== 'edit' && this.tab !== 'details')
+        // selecting opens the object's form, except where the panel already follows the selection (its details, its place in the YAML)
+        if (note === 'select' && this.tab !== 'edit' && this.tab !== 'details' && this.tab !== 'yaml')
             this.tab = 'edit';
         this.renderSide();
         this.updateChrome();
@@ -1288,7 +1361,7 @@ class App {
             return;
         this.session.select(ref);
         this.editor.selectRef(this.session.state.selected);
-        if (ref && this.session.state.selected && this.tab !== 'details')
+        if (ref && this.session.state.selected && this.tab !== 'details' && this.tab !== 'yaml')
             this.tab = 'edit';
         this.applyHighlight();
         this.renderOutline();
@@ -1403,10 +1476,14 @@ class App {
         restoreFocus(this.doc, focus);
     }
     renderYaml(body) {
+        // a re-render (after a selection, an edit, undo …) keeps the reader's place in the text:
+        // the scroll position always, and focus, caret and text selection while the text is unchanged
+        const old = body.querySelector('#yaml-src');
+        const keep = old ? { top: old.scrollTop, left: old.scrollLeft, value: old.value, focus: this.doc.activeElement === old, start: old.selectionStart, end: old.selectionEnd, dir: old.selectionDirection } : null;
         while (body.firstChild)
             body.removeChild(body.firstChild);
         const d = this.mdoc;
-        const ta = (0, dom_1.el)(this.doc, 'textarea', { id: 'yaml-src', spellcheck: 'false', 'aria-label': 'YAML source of the whole model', wrap: 'off' });
+        const ta = (0, dom_1.el)(this.doc, 'textarea', { id: 'yaml-src', spellcheck: 'false', 'aria-label': 'YAML source of the whole model', 'aria-describedby': 'yaml-sel', wrap: 'off' });
         ta.value = this.editor.sourceDraft !== null ? this.editor.sourceDraft : d.exportText();
         body.appendChild((0, dom_1.el)(this.doc, 'div', { class: 'yaml-tab' }, [
             (0, dom_1.el)(this.doc, 'p', { class: 'muted small' }, [
@@ -1414,12 +1491,98 @@ class App {
             ]),
             this.editor.sourceDraft !== null ? (0, dom_1.el)(this.doc, 'div', { class: 'field-warn' }, ['You have unapplied changes in this text.']) : null,
             this.editor.sourceError ? (0, dom_1.el)(this.doc, 'div', { class: 'field-err' }, [this.editor.sourceError]) : null,
-            ta,
+            (0, dom_1.el)(this.doc, 'p', { id: 'yaml-sel', class: 'yaml-sel muted small' }),
+            (0, dom_1.el)(this.doc, 'div', { class: 'yaml-edit' }, [(0, dom_1.el)(this.doc, 'div', { class: 'yaml-hl-clip', 'aria-hidden': 'true' }, [(0, dom_1.el)(this.doc, 'div', { class: 'yaml-hl', hidden: '' })]), ta]),
             (0, dom_1.el)(this.doc, 'div', { class: 'row-btns' }, [
                 (0, dom_1.el)(this.doc, 'button', { type: 'button', class: 'primary', 'data-yaml': 'apply' }, ['Apply']),
                 (0, dom_1.el)(this.doc, 'button', { type: 'button', 'data-yaml': 'revert' }, ['Revert to model']),
             ]),
         ]));
+        if (keep) {
+            ta.scrollTop = keep.top;
+            ta.scrollLeft = keep.left;
+            if (keep.focus && keep.value === ta.value) {
+                ta.focus();
+                ta.setSelectionRange(keep.start, keep.end, keep.dir || undefined);
+            }
+        }
+        ta.addEventListener('scroll', () => this.placeYamlMark());
+        // a tab that has just been opened shows the selected entry, wherever it is
+        if (!keep)
+            this.yamlMarkKey = '';
+        this.updateYamlMark(true);
+    }
+    /**
+     * Mark the selected object's entry in the full-file YAML editor. The entry
+     * is found through the parsed text by the object's id (yamlBlock), so a
+     * mention of the id elsewhere in the file is never marked; when the text
+     * can't be parsed, or the entry is not there exactly once, nothing is
+     * marked. The mark is a band drawn behind the text: the text, the caret,
+     * the text selection and the scroll position are left alone, except that
+     * with `reveal`, selecting another object scrolls its entry into view when
+     * none of it is visible.
+     */
+    updateYamlMark(reveal) {
+        const ta = this.doc.getElementById('yaml-src');
+        const note = this.doc.getElementById('yaml-sel');
+        if (!ta || !note)
+            return;
+        const target = this.editor.selectedTarget();
+        const range = target ? (0, yaml_block_1.yamlBlock)(ta.value, target) : null;
+        this.yamlRange = range;
+        const key = target ? JSON.stringify(target) : '';
+        const changed = key !== this.yamlMarkKey;
+        this.yamlMarkKey = key;
+        if (range)
+            ta.setAttribute('data-mark', range.first + '-' + range.last);
+        else
+            ta.removeAttribute('data-mark');
+        const what = !target ? '' : target.iface !== undefined ? `Interface “${target.iface}” of device “${target.id}”` : `${target.kind.charAt(0).toUpperCase() + target.kind.slice(1)} “${target.id}”`;
+        const lines = range ? (range.first === range.last ? 'line ' + range.first : `lines ${range.first}–${range.last}`) : '';
+        note.textContent = !target ? '' : range ? `${what}: ${lines} (marked)` : `${what} is not marked: its entry can't be found reliably in the text as it is now.`;
+        note.title = note.textContent;
+        note.setAttribute('data-state', !target ? 'none' : range ? 'marked' : 'unmarked');
+        if (reveal && changed && range) {
+            const g = this.yamlGeometry(ta);
+            const top = g.pad + (range.first - 1) * g.lh;
+            const bottom = g.pad + range.last * g.lh;
+            if (bottom <= ta.scrollTop || top >= ta.scrollTop + ta.clientHeight)
+                ta.scrollTop = Math.max(0, top - 2 * g.lh);
+        }
+        this.placeYamlMark();
+    }
+    yamlGeometry(ta) {
+        const cs = this.doc.defaultView.getComputedStyle(ta);
+        const lh = parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.45 || 17;
+        return { lh, pad: parseFloat(cs.paddingTop) || 0 };
+    }
+    /** Draw the band behind the marked lines, clipped to the inside of the text area. */
+    placeYamlMark() {
+        const ta = this.doc.getElementById('yaml-src');
+        const clip = this.doc.querySelector('.yaml-hl-clip');
+        const band = clip ? clip.firstChild : null;
+        if (!ta || !clip || !band)
+            return;
+        const r = this.yamlRange;
+        band.hidden = !r;
+        if (!r)
+            return;
+        clip.style.top = ta.offsetTop + ta.clientTop + 'px';
+        clip.style.left = ta.offsetLeft + ta.clientLeft + 'px';
+        clip.style.width = ta.clientWidth + 'px';
+        clip.style.height = ta.clientHeight + 'px';
+        const g = this.yamlGeometry(ta);
+        band.style.top = g.pad + (r.first - 1) * g.lh - ta.scrollTop + 'px';
+        band.style.height = (r.last - r.first + 1) * g.lh + 'px';
+    }
+    /** After typing in the YAML editor: find the entry again once typing pauses (never scrolls). */
+    scheduleYamlMark() {
+        if (this.yamlTimer !== null)
+            clearTimeout(this.yamlTimer);
+        this.yamlTimer = setTimeout(() => {
+            this.yamlTimer = null;
+            this.updateYamlMark(false);
+        }, 120);
     }
     applyYaml() {
         const d = this.mdoc;
@@ -1575,8 +1738,7 @@ class App {
                 m ? `${m.title} · ${m.devices.length} devices · ${m.index.interfaces.size} interfaces · ${m.links.length} cables · ${m.networks.length} networks · ${m.relations.length} logical relations` : '',
                 d.errors.length ? (0, dom_1.el)(this.doc, 'span', { class: 'errcount' }, [` · ${d.errors.length} error${d.errors.length > 1 ? 's' : ''}`]) : '',
                 d.warnings.length ? ` · ${d.warnings.length} warning${d.warnings.length > 1 ? 's' : ''}` : '',
-                s && s.isFiltered() ? (0, dom_1.el)(this.doc, 'span', { class: 'filtered-note' }, [` · showing ${s.selectedDevices().size} of ${s.model.devices.length} devices`]) : '',
-                ' · everything stays in this page',
+                s && s.isFiltered() ? (0, dom_1.el)(this.doc, 'span', { class: 'filtered-note' }, [` · showing ${s.shownDevices().size} of ${s.model.devices.length} devices`]) : '',
             ];
             for (const p of parts)
                 st.appendChild(typeof p === 'string' ? this.doc.createTextNode(p) : p);
@@ -1595,6 +1757,13 @@ class App {
             : [];
         for (const [id, v] of opts)
             this.$(id).checked = v;
+        const types = this.doc.querySelectorAll('input[data-device-type]');
+        for (let i = 0; i < types.length; i++) {
+            const cb = types[i];
+            cb.disabled = !s;
+            // a new model starts with every type shown
+            cb.checked = !s || !s.isTypeHidden(cb.getAttribute('data-device-type') || '');
+        }
         this.$('btn-arrange').disabled = !d || !s;
         this.updateDevicesControl();
         this.updateLayoutStatus();
@@ -1663,11 +1832,15 @@ class App {
         const filtered = !!s && s.isFiltered();
         btn.classList.toggle('filtered', filtered);
         btn.setAttribute('data-filtered', filtered ? 'true' : 'false');
-        count.textContent = !s ? 'all' : filtered ? `${s.selectedDevices().size} of ${s.model.devices.length}` : `all (${s.model.devices.length})`;
-        btn.title = filtered ? 'The diagram shows only the selected devices. Choose devices, or Select all for the complete diagram.' : 'Choose the devices the diagram shows';
+        const byType = !!s && s.state.hiddenTypes.size > 0;
+        count.textContent = !s ? 'all' : filtered ? `${s.shownDevices().size} of ${s.model.devices.length}` : `all (${s.model.devices.length})`;
+        btn.title = filtered
+            ? 'The diagram shows only the selected devices' + (byType ? ' that are not of a type switched off in the toolbar' : '') + '. Choose devices, or Select all for the complete diagram.'
+            : 'Choose the devices the diagram shows';
         hint.hidden = !filtered;
-        const none = filtered && !!s && s.selectedDevices().size === 0;
-        this.$('filter-hint-text').textContent = (none ? 'No devices selected: choose devices, or Select all. ' : '') + 'Filtered-view positions are temporary and are not saved in YAML.';
+        const none = filtered && !!s && s.shownDevices().size === 0;
+        this.$('filter-hint-text').textContent =
+            (none ? (s && s.selectedDevices().size ? 'No devices shown: the selected ones are of types switched off. ' : 'No devices selected: choose devices, or Select all. ') : '') + 'Filtered-view positions are temporary and are not saved in YAML.';
         if (!s)
             this.$('devices-panel').hidden = true;
         if (!this.$('devices-panel').hidden)
@@ -1683,7 +1856,11 @@ class App {
         if (!s)
             return;
         const boxes = this.$('devices-list').querySelectorAll('input[data-device]');
-        if (boxes.length !== s.model.devices.length || Array.prototype.some.call(boxes, (b) => !s.model.index.devices.has(b.getAttribute('data-device') || ''))) {
+        const stale = (b) => {
+            const d = s.model.index.devices.get(b.getAttribute('data-device') || '');
+            return !d || b.parentElement.classList.contains('type-hidden') !== s.isTypeHidden(d.type);
+        };
+        if (boxes.length !== s.model.devices.length || Array.prototype.some.call(boxes, stale)) {
             this.renderDevicesList();
             return;
         }
@@ -1705,7 +1882,13 @@ class App {
             const name = d.label !== d.id ? `${d.label} (${d.id})` : d.id;
             const cb = (0, dom_1.el)(this.doc, 'input', { type: 'checkbox', 'data-device': d.id });
             cb.checked = sel.has(d.id);
-            const row = (0, dom_1.el)(this.doc, 'label', { 'data-device-row': d.id }, [cb, (0, dom_1.el)(this.doc, 'span', {}, [name])]);
+            // a device of a type switched off stays selectable here; it is shown again with its type
+            const off = s.isTypeHidden(d.type);
+            const row = (0, dom_1.el)(this.doc, 'label', { 'data-device-row': d.id, class: off ? 'type-hidden' : '' }, [
+                cb,
+                (0, dom_1.el)(this.doc, 'span', {}, [name]),
+                off ? (0, dom_1.el)(this.doc, 'span', { class: 'dp-off' }, [`hidden: ${(0, device_types_1.deviceTypeLabel)(d.type)} off`]) : null,
+            ]);
             if (q && name.toLowerCase().indexOf(q) < 0)
                 row.hidden = true;
             list.appendChild(row);
@@ -1738,6 +1921,21 @@ class App {
             return false;
         this.render();
         this.fit();
+        this.updateChrome();
+        return true;
+    }
+    /**
+     * Show or hide the devices of one type (the toolbar's Endpoints / Servers
+     * controls). Like the device selection it only changes what the diagrams
+     * and their exports show; the model, the YAML and the saved layout stay as
+     * they are. The other devices keep their places, so the zoom is kept too.
+     */
+    setTypeVisible(type, visible) {
+        const s = this.session;
+        if (!s || !s.setTypeVisible(type, visible))
+            return false;
+        this.render();
+        this.renderOutline();
         this.updateChrome();
         return true;
     }
@@ -1914,6 +2112,11 @@ class App {
         opt('opt-labels', (v) => this.session && (this.session.state.showLabels = v));
         opt('opt-groups', (v) => this.session && (this.session.state.showGroups = v));
         opt('opt-networks', (v) => this.session && (this.session.state.showNetworks = v));
+        const types = doc.querySelectorAll('input[data-device-type]');
+        for (let i = 0; i < types.length; i++) {
+            const cb = types[i];
+            cb.addEventListener('change', () => this.setTypeVisible(cb.getAttribute('data-device-type') || '', cb.checked));
+        }
         this.wireDevices();
         // side panel: tabs, reference links, protocol filters, editor
         const side = this.$('side');
@@ -1962,8 +2165,10 @@ class App {
         });
         side.addEventListener('input', (e) => {
             const t = e.target;
-            if (t.id === 'yaml-src')
+            if (t.id === 'yaml-src') {
                 this.editor.sourceDraft = t.value;
+                this.scheduleYamlMark();
+            }
         });
         side.addEventListener('toggle', (e) => {
             this.editor.onToggle(e.target);
@@ -2096,8 +2301,16 @@ class App {
                 this.applyZoom();
             }
         });
-        if (win)
-            win.addEventListener('resize', () => this.applyZoom());
+        if (win) {
+            win.addEventListener('resize', () => {
+                this.applyZoom();
+                this.placeYamlMark();
+            });
+            // a short window starts with the mouse and keyboard help folded (it stays one click away)
+            const keys = doc.getElementById('keys');
+            if (keys && win.innerHeight <= 560)
+                keys.open = false;
+        }
     }
     // ------------------------------------------------------------- layout
     /**
@@ -10033,6 +10246,7 @@ exports.SVG_NS = void 0;
 exports.materialize = materialize;
 exports.mount = mount;
 exports.el = el;
+exports.icon = icon;
 exports.SVG_NS = 'http://www.w3.org/2000/svg';
 const SAFE_ATTR = /^(?:[a-z][a-z0-9-]*|viewBox|preserveAspectRatio)$/;
 function materialize(v, doc, inSvg = false) {
@@ -10068,6 +10282,28 @@ function el(doc, tag, attrs = {}, children = []) {
         e.appendChild(typeof c === 'string' ? doc.createTextNode(c) : c);
     }
     return e;
+}
+/** Line icons of the UI chrome (fixed path data, drawn in the current text colour). */
+const ICONS = {
+    duplicate: 'M9 9h11v11H9z M5 15H4V4h11v1',
+    delete: 'M4 7h16 M9.5 7V4.5h5V7 M6.5 7l1 13h9l1-13 M10.5 11v5.5 M13.5 11v5.5',
+    ok: 'M5 12.5l4.5 4.5L19 7.5',
+    warning: 'M12 3.5l9.5 17h-19z M12 10v4.5 M12 17.5v.5',
+    error: 'M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18z M12 7.5v6 M12 16.5v.5',
+};
+/** A small decorative icon; the control it sits in carries the accessible name. */
+function icon(doc, name) {
+    const svg = doc.createElementNS(exports.SVG_NS, 'svg');
+    svg.setAttribute('class', 'icon-svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('width', '15');
+    svg.setAttribute('height', '15');
+    svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('focusable', 'false');
+    const p = doc.createElementNS(exports.SVG_NS, 'path');
+    p.setAttribute('d', ICONS[name] || '');
+    svg.appendChild(p);
+    return svg;
 }
 
 };
@@ -10265,6 +10501,25 @@ class Editor {
         }
         return entityRef(s.kind, ent.id);
     }
+    /**
+     * The selected object as a YAML location target: its kind and stable id
+     * (and the interface, when one is selected). Null for the model settings,
+     * or an entry without an id.
+     */
+    selectedTarget() {
+        const s = this.sel;
+        if (!s || s.kind === 'document' || !this.getDoc())
+            return null;
+        const ent = this.doc.entities(s.kind)[s.index];
+        if (!ent || !ent.id)
+            return null;
+        if (s.kind === 'device' && s.iface !== undefined) {
+            const want = J(s.iface);
+            const entry = this.doc.interfaceEntries(s.index).find((e) => J(e.path) === want);
+            return entry && entry.id ? { kind: s.kind, id: ent.id, iface: entry.id } : null;
+        }
+        return { kind: s.kind, id: ent.id };
+    }
     /** Open the card of an interface. */
     openIface(path) {
         this.open.add(J(path));
@@ -10293,17 +10548,19 @@ class Editor {
         const counts = this.issueCounts();
         const kinds = ['device', 'link', 'network', 'relation', 'group', 'protocol'];
         const allFolded = kinds.every((k) => this.collapsed.has(k));
+        // The selection hint shares the row of "Collapse all", which is always there: selecting,
+        // switching and clearing change its text only, never the position of anything below it.
         box.appendChild(this.e('div', { class: 'ol-tools' }, [
+            this.e('span', ctx ? { class: 'ol-ctx-hint small', 'data-related': String(ctx.related.size), title: `▸ selected · • ${ctx.related.size} directly related` } : { class: 'ol-ctx-hint small', 'data-related': '' }, ctx
+                ? [
+                    this.e('span', { class: 'ctx-mark sel', 'aria-hidden': 'true' }, ['▸']),
+                    ' selected · ',
+                    this.e('span', { class: 'ctx-mark rel', 'aria-hidden': 'true' }, ['•']),
+                    ` related (${ctx.related.size})`,
+                ]
+                : []),
             this.e('button', { type: 'button', class: 'mini', 'data-act': 'fold-all', 'data-kind': allFolded ? 'open' : 'close', title: allFolded ? 'Show the entries of every section' : 'Fold every section to its heading' }, [allFolded ? 'Expand all' : 'Collapse all']),
         ]));
-        if (ctx) {
-            box.appendChild(this.e('p', { class: 'ol-ctx-hint small', 'data-related': String(ctx.related.size) }, [
-                this.e('span', { class: 'ctx-mark sel', 'aria-hidden': 'true' }, ['▸']),
-                ' selected · ',
-                this.e('span', { class: 'ctx-mark rel', 'aria-hidden': 'true' }, ['•']),
-                ` related (${ctx.related.size})`,
-            ]));
-        }
         const q = this.filter.toLowerCase();
         for (const kind of kinds) {
             const ents = doc.entities(kind);
@@ -10351,7 +10608,8 @@ class Editor {
                 if (st === 'selected' || (!st && active))
                     attrs['aria-current'] = 'true';
                 list.appendChild(this.e('button', attrs, [
-                    st === 'selected' || st === 'related' ? this.e('span', { class: 'ctx-mark ' + (st === 'selected' ? 'sel' : 'rel'), 'aria-hidden': 'true' }, [st === 'selected' ? '▸' : '•']) : null,
+                    // every entry keeps the slot of the mark, so its label never moves when a selection starts or ends
+                    this.e('span', { class: 'ctx-mark' + (st === 'selected' ? ' sel' : st === 'related' ? ' rel' : ''), 'aria-hidden': 'true' }, [st === 'selected' ? '▸' : st === 'related' ? '•' : '']),
                     this.e('span', { class: 'ol-label' }, [label]),
                     st ? this.e('span', { class: 'sr-only' }, [st === 'selected' ? ' (selected)' : st === 'related' ? ' (directly related)' : ' (not related)']) : null,
                     this.badge(c.e, c.w),
@@ -10436,8 +10694,10 @@ class Editor {
             this.renderEntity(wrap, s.kind, s.index);
     }
     renderDocument(w) {
-        w.appendChild(this.header('model', this.doc.text(['title']) || 'Untitled model', null));
-        w.appendChild(this.issueBox([]));
+        const docIssues = this.doc.errors.concat(this.doc.warnings).filter((i) => !this.doc.issueEntity(i));
+        w.appendChild(this.header('model', this.doc.text(['title']) || 'Untitled model', null, docIssues));
+        if (docIssues.length)
+            w.appendChild(this.issueBox(docIssues));
         w.appendChild(this.field('Model format version', this.e('span', { class: 'ro' }, [this.doc.text(['netatlas']) || '(missing)']), ['netatlas'], 'The version of the NetAtlas YAML model format, not of the application. The only supported value is 1.'));
         if (document_1.ENTITY_KINDS.every((k) => this.doc.entities(k).length === 0)) {
             w.appendChild(this.e('p', { class: 'hint-empty' }, ['This model is empty. Add a device, link, network, relation, group or protocol with “+ Add” in the Model outline; nothing is filled in for you.']));
@@ -10449,22 +10709,46 @@ class Editor {
             `File: ${this.doc.fileName} (${this.doc.origin === 'file' ? 'imported — downloads are saved as a new copy' : this.doc.origin === 'new' ? 'new model' : 'built-in example'}).`,
         ]));
     }
-    header(kind, title, actions) {
-        return this.e('div', { class: 'insp-head' }, [this.e('span', { class: 'badge' }, [kind]), this.e('h3', {}, [title]), actions]);
-    }
-    entityActions(kind, index) {
-        return this.e('div', { class: 'insp-actions' }, [
-            this.e('button', { type: 'button', class: 'mini', 'data-act': 'dup-entity', 'data-kind': kind, 'data-index': String(index) }, ['Duplicate']),
-            this.e('button', { type: 'button', class: 'mini danger', 'data-act': 'del-entity', 'data-kind': kind, 'data-index': String(index) }, ['Delete']),
+    /**
+     * The header of the edit panel: one row with the object's type, its
+     * validation state and its actions, and the object's name below it at full
+     * width (long names wrap; nothing is cut off). The row wraps in a narrow
+     * panel, and the action buttons drop their text, keeping icon, accessible
+     * name and tooltip.
+     */
+    header(kind, title, actions, issues) {
+        const errs = issues.filter((i) => i.severity === 'error').length;
+        const warns = issues.length - errs;
+        const state = errs ? 'error' : warns ? 'warning' : 'ok';
+        const parts = [];
+        if (errs)
+            parts.push(`${errs} error${errs > 1 ? 's' : ''}`);
+        if (warns)
+            parts.push(`${warns} warning${warns > 1 ? 's' : ''}`);
+        const text = parts.length ? parts.join(' · ') : 'No problems';
+        const status = this.e('span', { class: 'ih-status ' + state, 'data-state': state, title: parts.length ? `This ${kind} has ${text}; they are listed below.` : `This ${kind} has no validation problems.` }, [
+            (0, dom_1.icon)(this.d, state),
+            this.e('span', {}, [text]),
+        ]);
+        return this.e('div', { class: 'insp-head', 'data-kind': kind }, [
+            this.e('div', { class: 'ih-row' }, [this.e('span', { class: 'badge' }, [kind]), status, actions]),
+            this.e('h3', {}, [title]),
         ]);
     }
-    /** All issues of the entity, summarized at the top. */
-    issueBox(issues) {
+    entityActions(kind, index) {
         var _a;
-        const doc = this.doc;
-        const list = issues.length || ((_a = this.sel) === null || _a === void 0 ? void 0 : _a.kind) !== 'document' ? issues : doc.errors.concat(doc.warnings).filter((i) => !doc.issueEntity(i));
-        if (!list.length)
-            return this.e('div', { class: 'issue-ok' }, ['✓ No problems']);
+        const id = ((_a = this.doc.entities(kind)[index]) === null || _a === void 0 ? void 0 : _a.id) || '(no id)';
+        const btn = (act, name, label, tip, extra) => this.e('button', { type: 'button', class: 'icon-btn' + extra, 'data-act': act, 'data-kind': kind, 'data-index': String(index), 'aria-label': `${label} ${kind} ${id}`, title: tip }, [
+            (0, dom_1.icon)(this.d, name),
+            this.e('span', { class: 'ib-label', 'aria-hidden': 'true' }, [label]),
+        ]);
+        return this.e('div', { class: 'insp-actions', role: 'group', 'aria-label': `Actions for ${kind} ${id}` }, [
+            btn('dup-entity', 'duplicate', 'Duplicate', `Duplicate this ${kind}: add a copy with a new id`, ''),
+            btn('del-entity', 'delete', 'Delete', `Delete this ${kind} (asks first; can be undone)`, ' danger'),
+        ]);
+    }
+    /** The issues of the object, listed under the header (which counts them). */
+    issueBox(list) {
         const ul = this.e('ul', { class: 'issue-list' });
         for (const is of list.slice(0, 30))
             ul.appendChild(this.e('li', { class: is.severity }, [this.e('b', {}, [is.severity === 'error' ? 'Error: ' : 'Warning: ']), is.message]));
@@ -10476,8 +10760,10 @@ class Editor {
         const doc = this.doc;
         const base = [document_1.SECTION[kind], index];
         const node = doc.get(base);
-        w.appendChild(this.header(kind, this.entityLabel(kind, index), this.entityActions(kind, index)));
-        w.appendChild(this.issueBox(doc.issuesAt(base)));
+        const issues = doc.issuesAt(base);
+        w.appendChild(this.header(kind, this.entityLabel(kind, index), this.entityActions(kind, index), issues));
+        if (issues.length)
+            w.appendChild(this.issueBox(issues));
         if (!node || node.kind !== 'map') {
             w.appendChild(this.e('p', { class: 'muted' }, ['This entry is not a mapping; edit it in the YAML tab or delete it.']));
             if (node)
@@ -12272,6 +12558,107 @@ function contextState(ctx, ref) {
 }
 
 };
+__defs["editor/yaml-block"] = function (module, exports) {
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.yamlBlock = yamlBlock;
+/**
+ * Where an object is written in a YAML text: the lines of its entry, found
+ * through the parsed structure (never by searching for its id as text, which
+ * would also find references, comments and descriptions that mention it).
+ * Used to mark the selected object in the full-file YAML editor.
+ *
+ * The answer is null whenever it would not be reliable: the text is not
+ * valid YAML of the supported subset, the section is missing or written as
+ * a one-line flow list, or no entry, or more than one, has that id.
+ */
+const validate_1 = __req("validation/validate");
+const parse_1 = __req("yaml/parse");
+const document_1 = __req("editor/document");
+function yamlBlock(text, target) {
+    let root;
+    try {
+        root = (0, parse_1.parseYaml)(text);
+    }
+    catch (e) {
+        return null;
+    }
+    if (!root || root.kind !== 'map')
+        return null;
+    const lines = text.split(/\r\n|\r|\n/);
+    const sec = seqAt(root, document_1.SECTION[target.kind]);
+    const item = sec ? uniqueById(sec, target.id) : null;
+    if (!sec || !item)
+        return null;
+    if (target.iface === undefined)
+        return entryLines(lines, sec, item);
+    if (target.kind !== 'device' || item.kind !== 'map')
+        return null;
+    // the interface ids of a device share one namespace across both lists
+    const found = [];
+    for (const key of ['interfaces', 'logical_interfaces']) {
+        const s = seqAt(item, key);
+        const it = s ? matches(s, target.iface) : [];
+        for (const m of it)
+            found.push([s, m]);
+    }
+    return found.length === 1 ? entryLines(lines, found[0][0], found[0][1]) : null;
+}
+function seqAt(m, key) {
+    const e = m.entries.get(key);
+    return e && e.value.kind === 'seq' && !e.value.flow ? e.value : null;
+}
+function matches(seq, id) {
+    const out = [];
+    for (const it of seq.items) {
+        if (it.kind !== 'map')
+            continue;
+        const e = it.entries.get('id');
+        if (e && (0, validate_1.scalarText)(e.value) === id)
+            out.push(it);
+    }
+    return out;
+}
+function uniqueById(seq, id) {
+    const m = matches(seq, id);
+    return m.length === 1 ? m[0] : null;
+}
+const indentOf = (s) => s.length - s.replace(/^ +/, '').length;
+const isBlank = (s) => s.trim() === '';
+const isComment = (s) => s.trim().charAt(0) === '#';
+/**
+ * The lines of one entry of a block list: from its "-" line to its last
+ * line of content. The entry ends where a line is indented no deeper than
+ * its "-" (the next entry or the next key); comments and blank lines between
+ * two entries belong to neither.
+ */
+function entryLines(lines, seq, item) {
+    const dash = seq.col - 1;
+    // the "-" is on the entry's first line ("- id: x"), or alone on a line above it
+    let first = item.line;
+    const at = (n) => lines[n - 1] || '';
+    const isDash = (n) => indentOf(at(n)) === dash && at(n).charAt(dash) === '-';
+    if (!isDash(first)) {
+        first--;
+        while (first > 0 && (isBlank(at(first)) || isComment(at(first))))
+            first--;
+        if (first < 1 || !isDash(first) || at(first).trim() !== '-')
+            return null;
+    }
+    let end = first;
+    for (let n = first + 1; n <= lines.length; n++) {
+        const s = at(n);
+        if (isBlank(s) || isComment(s))
+            continue;
+        if (indentOf(s) <= dash)
+            break;
+        end = n;
+    }
+    // comments and blank lines inside the entry belong to it; those after its last content line do not
+    return end < item.line ? null : { first, last: end };
+}
+
+};
 __defs["generated/examples"] = function (module, exports) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
@@ -13520,6 +13907,7 @@ function createViewState() {
         showGroups: true,
         hiddenProtocols: new Set(),
         devices: null,
+        hiddenTypes: new Set(),
         positions: { physical: new Map(), logical: new Map() },
     };
 }
@@ -13533,6 +13921,12 @@ class Session {
         this.filtered = { physical: null, logical: null };
         /** temporary positions of the filtered views, keyed by entity id; null = not arranged yet */
         this.temp = { physical: null, logical: null };
+        /**
+         * Places of the filtered views' nodes as they were when a device type was
+         * switched off, so that switching it on again brings its devices back
+         * where they were (until the subset is chosen or arranged anew).
+         */
+        this.parked = { physical: null, logical: null };
         this.input = (0, input_1.layoutInput)(model);
     }
     /**
@@ -13561,8 +13955,10 @@ class Session {
                 this.state.devices = null;
         }
         this.filtered = { physical: null, logical: null };
-        if (!this.isFiltered())
+        if (!this.isFiltered()) {
             this.temp = { physical: null, logical: null };
+            this.parked = { physical: null, logical: null };
+        }
         else {
             for (const v of ['physical', 'logical']) {
                 const old = this.temp[v];
@@ -13571,13 +13967,76 @@ class Session {
         }
     }
     // ------------------------------------------------------------- the filter
-    /** Is a proper subset of the devices selected? */
+    /** Do the diagrams show a proper subset of the devices (by selection or by type)? */
     isFiltered() {
-        return this.state.devices !== null;
+        return this.shownSet() !== null;
     }
-    /** The selected device ids (every device when there is no filter). */
+    /** The selected device ids (every device when there is no filter); device types switched off do not change it. */
     selectedDevices() {
         return this.state.devices ? new Set(this.state.devices) : new Set(this.model.devices.map((d) => d.id));
+    }
+    /** The device ids the diagrams show: the selected ones that are not of a hidden type. */
+    shownDevices() {
+        return this.shownSet() || new Set(this.model.devices.map((d) => d.id));
+    }
+    /** Is this device type switched off? */
+    isTypeHidden(type) {
+        return this.state.hiddenTypes.has(type);
+    }
+    /** The shown devices, or null when that is every device (no filter). */
+    shownSet() {
+        const sel = this.state.devices;
+        const hidden = this.state.hiddenTypes;
+        if (!sel && !hidden.size)
+            return null;
+        const out = new Set();
+        for (const d of this.model.devices)
+            if ((!sel || sel.has(d.id)) && !hidden.has(d.type))
+                out.add(d.id);
+        return out.size === this.model.devices.length ? null : out;
+    }
+    /**
+     * Show or hide the devices of one type. The device selection is not
+     * changed, so showing the type again brings back exactly what was
+     * selected. The devices that stay keep their places on screen; when the
+     * result is the complete model, its stored positions apply unchanged.
+     * Returns whether anything changed.
+     */
+    setTypeVisible(type, visible) {
+        const hidden = this.state.hiddenTypes;
+        if (hidden.has(type) === !visible)
+            return false;
+        const views = ['physical', 'logical'];
+        // where everything is now, plus where hidden nodes were when they left: the start for the new subset
+        const seeds = views.map((v) => {
+            const seed = new Map(this.parked[v] || []);
+            this.positionsFor(v).forEach((p, id) => seed.set(id, p));
+            return seed;
+        });
+        if (visible)
+            hidden.delete(type);
+        else
+            hidden.add(type);
+        this.filtered = { physical: null, logical: null };
+        this.state.positions.physical.clear();
+        this.state.positions.logical.clear();
+        if (!this.isFiltered()) {
+            this.temp = { physical: null, logical: null };
+            this.parked = { physical: null, logical: null };
+            return true;
+        }
+        views.forEach((v, i) => {
+            this.parked[v] = seeds[i];
+            this.temp[v] = (0, positions_1.resolvePositions)(v, this.viewInput(v), seeds[i]);
+        });
+        return true;
+    }
+    /** Positions of the complete diagram of a view (stored layout, else auto-arrange). */
+    resolvedPositions(view) {
+        let p = this.resolved[view];
+        if (!p)
+            p = this.resolved[view] = (0, positions_1.resolvePositions)(view, this.input, this.model.layout[view]);
+        return p;
     }
     /**
      * Choose the devices to show. Selecting every device removes the filter
@@ -13597,6 +14056,7 @@ class Session {
         this.state.devices = norm;
         this.filtered = { physical: null, logical: null };
         this.temp = { physical: null, logical: null };
+        this.parked = { physical: null, logical: null };
         this.state.positions.physical.clear();
         this.state.positions.logical.clear();
         return true;
@@ -13610,14 +14070,14 @@ class Session {
         return this.cache(view).input;
     }
     cache(view) {
-        if (!this.state.devices)
+        const c = this.filtered[view];
+        if (c)
+            return c;
+        const shown = this.shownSet();
+        if (!shown)
             return { model: this.model, input: this.input };
-        let c = this.filtered[view];
-        if (!c) {
-            const model = (0, filter_1.filterModel)(this.model, this.state.devices, view);
-            c = this.filtered[view] = { model, input: (0, input_1.layoutInput)(model) };
-        }
-        return c;
+        const model = (0, filter_1.filterModel)(this.model, shown, view);
+        return (this.filtered[view] = { model, input: (0, input_1.layoutInput)(model) });
     }
     // -------------------------------------------------------------- positions
     /** Displayed node centers of a view, keyed by entity id (without temporary drags). */
@@ -13629,10 +14089,7 @@ class Session {
                 t = this.temp[view] = (0, positions_1.autoPositions)(view, this.viewInput(view));
             return t;
         }
-        let p = this.resolved[view];
-        if (!p)
-            p = this.resolved[view] = (0, positions_1.resolvePositions)(view, this.input, this.model.layout[view]);
-        return p;
+        return this.resolvedPositions(view);
     }
     /**
      * End a drag in a filtered view: the node keeps its new place for this
@@ -13677,6 +14134,7 @@ class Session {
                 moved++;
         });
         this.temp[view] = auto;
+        this.parked[view] = null;
         this.state.positions[view].clear();
         return moved;
     }
@@ -15107,7 +15565,7 @@ async function runSelfTest(app, doc) {
                 const gone = onStart() && doc.querySelectorAll('#viewport *').length === 0 && q('#search').value === '' && q('#search-results').hidden && doc.body.getAttribute('data-view') === 'none';
                 app.loadExample(2);
                 const foldedNow = Array.prototype.map.call(doc.querySelectorAll('#outline [data-section]'), (e) => e.getAttribute('data-section') + '=' + e.getAttribute('data-folded')).join();
-                check('closing clears the selection and the view state: the next model opens in the physical view with nothing selected, no filter, default folding, all protocols and networks shown', gone && app.session.state.view === 'physical' && app.session.state.selected === null && app.session.state.showNetworks && app.session.state.hiddenProtocols.size === 0 && !q('#outline .ol-ctx-hint') &&
+                check('closing clears the selection and the view state: the next model opens in the physical view with nothing selected, no filter, default folding, all protocols and networks shown', gone && app.session.state.view === 'physical' && app.session.state.selected === null && app.session.state.showNetworks && app.session.state.hiddenProtocols.size === 0 && !(q('#outline .ol-ctx-hint') || { textContent: '' }).textContent &&
                     q('#outline [data-t="outline-filter"]').value === '' && foldedNow === 'device=false,link=true,network=false,relation=false,group=false,protocol=true' && !q('[data-tab="yaml"].active') && !q('[data-tab="edit"].active') && !app.mdoc.dirty, `${gone} ${app.session.state.view} ${app.session.state.selected} ${foldedNow}`);
                 app.closeModel();
             }
@@ -15579,8 +16037,9 @@ async function runSelfTest(app, doc) {
             const btn = q('#devices-btn');
             const right = Array.prototype.map.call(doc.querySelectorAll('header > .devices-wrap, header > label.opt'), (e) => (e.textContent || '').replace(/\s+/g, ' ').trim());
             const vis = (sel) => !!q(sel) && q(sel).offsetParent !== null;
-            check('top-right diagram controls: Devices (all selected), Labels and Groups / Locations on, in both views; Networks only in the logical view; no Underlay', /^Devices: all \(15\)/.test(right[0] || '') && right[1] === 'Labels' && right[2] === 'Groups / Locations' && right[3] === 'Networks' && right.length === 4 && !q('#opt-underlay') &&
-                q('#opt-labels').checked && q('#opt-groups').checked && vis('#opt-groups') && !vis('#opt-networks') && !btn.disabled && hint.hidden && !s().isFiltered(), right.join(' | '));
+            check('top-right diagram controls: Devices (all selected), Labels, Groups / Locations, Endpoints and Servers on, in both views; Networks only in the logical view; no Underlay', /^Devices: all \(15\)/.test(right[0] || '') && right[1] === 'Labels' && right[2] === 'Groups / Locations' && right[3] === 'Networks' && right[4] === 'Endpoints' && right[5] === 'Servers' && right.length === 6 && !q('#opt-underlay') &&
+                q('#opt-labels').checked && q('#opt-groups').checked && vis('#opt-groups') && !vis('#opt-networks') && !btn.disabled && hint.hidden && !s().isFiltered() &&
+                q('#opt-type-endpoint').checked && q('#opt-type-server').checked && vis('#opt-type-endpoint') && vis('#opt-type-server'), right.join(' | '));
             const fullPhys = JSON.stringify(Array.from(s().positionsFor('physical')));
             const yaml = app.exportText();
             const undo = md().canUndo();
@@ -15695,8 +16154,28 @@ async function runSelfTest(app, doc) {
                 box.dispatchEvent(pe('pointerdown', b.left + b.width / 2, b.top + b.height / 2));
                 svg.dispatchEvent(pe('pointerup', b.left + b.width / 2, b.top + b.height / 2));
             };
-            check('no selection: list entries at normal prominence', olItems().every((b) => !b.hasAttribute('data-ctx')) && !q('#outline-body .ol-ctx-hint'));
+            check('no selection: list entries at normal prominence', olItems().every((b) => !b.hasAttribute('data-ctx')) && !(q('#outline-body .ol-ctx-hint') || { textContent: '' }).textContent);
+            /** where every entry and its label is, and how wide the menu is: must not change with the selection */
+            const geo = () => {
+                const ol = q('#outline');
+                const rows = olItems().map((b) => {
+                    const r = b.getBoundingClientRect();
+                    const l = b.querySelector('.ol-label').getBoundingClientRect();
+                    return `${b.getAttribute('data-ref')}@${Math.round(r.left)},${Math.round(r.top)},${Math.round(r.width)}/${Math.round(l.left)}`;
+                });
+                return rows.join(';') + `|${ol.clientWidth}|${ol.scrollWidth}|${ol.offsetWidth}`;
+            };
+            const firstDiff = (a, b) => {
+                const x = a.split(';');
+                const y = b.split(';');
+                for (let i = 0; i < Math.max(x.length, y.length); i++)
+                    if (x[i] !== y[i])
+                        return `${x[i]} → ${y[i]}`;
+                return '';
+            };
+            const geo0 = geo();
             clickDevice('device:muc-sw');
+            const geoSel = geo();
             let [ok, why] = ctxOk('device:muc-sw');
             check('diagram click on muc-sw: lists and diagram show the same selection context', ok, why);
             check('… muc-sw selected; its cables and group directly related; the neighbour router (only via a cable) and others dimmed', stateOf('device:muc-sw') === 'selected' && stateOf('link:l-muc-sw') === 'related' && stateOf('link:l-muc-ap') === 'related' && stateOf('group:branch-muc') === 'related' &&
@@ -15706,7 +16185,7 @@ async function runSelfTest(app, doc) {
             const unEl = olBtn('device:hq-fw');
             const view = doc.defaultView;
             check('states differ without colour: marker / bar / weight, and text for screen readers', selEl.getAttribute('aria-current') === 'true' && !!selEl.querySelector('.ctx-mark.sel') && view.getComputedStyle(selEl).fontWeight === '600' && view.getComputedStyle(selEl).boxShadow !== 'none' &&
-                !!relEl.querySelector('.ctx-mark.rel') && !unEl.querySelector('.ctx-mark') &&
+                !!relEl.querySelector('.ctx-mark.rel') && !unEl.querySelector('.ctx-mark.sel, .ctx-mark.rel') && !unEl.querySelector('.ctx-mark').textContent &&
                 /\(selected\)/.test(selEl.textContent || '') && /\(directly related\)/.test(relEl.textContent || '') && /\(not related\)/.test(unEl.textContent || ''));
             check('dimmed entries stay readable (not transparent, not hidden)', view.getComputedStyle(unEl).opacity === '1' && view.getComputedStyle(unEl).visibility === 'visible');
             unEl.focus();
@@ -15714,6 +16193,10 @@ async function runSelfTest(app, doc) {
             unEl.click();
             [ok, why] = ctxOk('device:hq-fw');
             check('an unrelated entry is focusable and selectable; the context moves to it', focused && ok && stateOf('device:hq-fw') === 'selected' && stateOf('device:muc-sw') === 'unrelated', why);
+            const geoSwitch = geo();
+            doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+            const geoClear = geo();
+            check('the left menu does not move when selecting, switching or clearing: same width, every entry and its label in the same place; the selection hint has its own fixed row', geoSel === geo0 && geoSwitch === geo0 && geoClear === geo0 && !!q('#outline-body .ol-tools .ol-ctx-hint'), firstDiff(geo0, geoSel) || firstDiff(geo0, geoSwitch) || firstDiff(geo0, geoClear));
             const fromOutline = [
                 ['link:l-muc-sw', () => stateOf('device:muc-sw') === 'related' && stateOf('device:muc-rtr') === 'related' && stateOf('link:l-muc-ap') === 'unrelated'],
                 ['network:net-transit', () => stateOf('device:hq-rtr1') === 'related' && stateOf('relation:ospf-hq-area0') === 'related' && stateOf('device:muc-rtr') === 'unrelated'],
@@ -15748,7 +16231,80 @@ async function runSelfTest(app, doc) {
             [ok, why] = ctxOk('iface:muc-rtr:wan0');
             check('selecting a port marks its device; its cable and relations are related', ok && stateOf('device:muc-rtr') === 'selected' && stateOf('link:l-muc-inet') === 'related' && stateOf('relation:ipsec-muc') === 'related' && stateOf('link:l-muc-sw') === 'unrelated', why);
             doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-            check('clearing the selection returns every entry to normal prominence', app.session.state.selected === null && olItems().every((b) => !b.hasAttribute('data-ctx')) && !q('#outline-body .ol-ctx-hint') && count('.dim') === 0 && count('.hl') === 0);
+            check('clearing the selection returns every entry to normal prominence', app.session.state.selected === null && olItems().every((b) => !b.hasAttribute('data-ctx')) && !(q('#outline-body .ol-ctx-hint') || { textContent: '' }).textContent && count('.dim') === 0 && count('.hl') === 0);
+        }
+        // ------------------------------------ device-type visibility: Endpoints, Servers
+        {
+            if (app.mdoc)
+                app.mdoc.markSaved();
+            app.loadExample(examples_1.EXAMPLES.findIndex((e) => e.name === 'device-types.yaml'));
+            const s = () => app.session;
+            const md = () => app.mdoc;
+            const ep = q('#opt-type-endpoint');
+            const sv = q('#opt-type-server');
+            const m = s().model;
+            const typed = (t) => m.devices.filter((d) => d.type === t).map((d) => d.id);
+            const eps = typed('endpoint');
+            const srv = typed('server');
+            const onScreen = () => Array.prototype.map.call(doc.querySelectorAll('#viewport g.device'), (e) => (e.getAttribute('data-ref') || '').slice(7)).sort();
+            const inSvg = (svgText, id) => svgText.indexOf(`data-ref="device:${id}"`) >= 0;
+            const posOf = (view) => JSON.stringify(Array.from(s().positionsFor(view)));
+            const yaml = app.exportText();
+            const undo = md().canUndo();
+            const full = { physical: posOf('physical'), logical: posOf('logical') };
+            check('Endpoints and Servers are on for a newly opened model; they switch the model types "endpoint" and "server"', ep.checked && sv.checked && !ep.disabled && !sv.disabled && eps.length === 2 && srv.length === 1 && ep.getAttribute('data-device-type') === 'endpoint' && sv.getAttribute('data-device-type') === 'server' && device_types_1.DEVICE_TYPES.some((t) => t.id === 'endpoint') && device_types_1.DEVICE_TYPES.some((t) => t.id === 'server'));
+            for (const view of ['physical', 'logical']) {
+                click(`[data-view-btn="${view}"]`);
+                await tick();
+                const before = onScreen();
+                const pos = new Map(s().positionsFor(view));
+                ep.click();
+                await tick();
+                const noEp = onScreen();
+                const svgNoEp = app.exportSvg();
+                const png = await app.exportPng();
+                const kept = Array.from(s().positionsFor(view)).every(([id, p]) => !m.index.devices.has(id) || (!!pos.get(id) && pos.get(id).x === p.x && pos.get(id).y === p.y));
+                const epLinks = m.links.filter((l) => eps.indexOf(l.a.device) >= 0 || eps.indexOf(l.b.device) >= 0);
+                check(`${view} view: Endpoints off hides the endpoints and what depends on them, on screen and in the SVG and PNG exports; every other device stays where it was`, eps.every((id) => noEp.indexOf(id) < 0 && !inSvg(svgNoEp, id)) && noEp.every((id) => before.indexOf(id) >= 0) && noEp.length > 0 && kept && png.width > 0 && png.height > 0 && s().isFiltered() &&
+                    !q('#filter-hint').hidden && epLinks.every((l) => !q(`#viewport [data-ref="link:${l.id}"]`) && svgNoEp.indexOf(`data-ref="link:${l.id}"`) < 0) && (view === 'logical' || epLinks.length > 0), `${noEp.join()} kept=${kept}`);
+                sv.click();
+                await tick();
+                const none = onScreen();
+                const svgNone = app.exportSvg();
+                check(`${view} view: Servers off as well hides both types; the export follows`, eps.concat(srv).every((id) => none.indexOf(id) < 0 && !inSvg(svgNone, id)) && none.length > 0 && !sv.checked && !ep.checked, none.join());
+                ep.click();
+                await tick();
+                const epBack = onScreen();
+                check(`${view} view: Endpoints on again while Servers stays off brings back the endpoints only`, srv.every((id) => epBack.indexOf(id) < 0) && eps.every((id) => (before.indexOf(id) >= 0) === (epBack.indexOf(id) >= 0)), epBack.join());
+                sv.click();
+                await tick();
+                check(`${view} view: both on again: the complete diagram with its saved positions; the YAML, the undo history and the saved layout are unchanged`, onScreen().join() === before.join() && !s().isFiltered() && posOf(view) === full[view] && app.exportText() === yaml && md().canUndo() === undo && q('#filter-hint').hidden && ep.checked && sv.checked);
+            }
+            // combined with the Devices selection
+            click('[data-view-btn="physical"]');
+            const btn = q('#devices-btn');
+            const pick = ['edge', eps[0], srv[0]];
+            app.setDevices(pick);
+            await tick();
+            const subsetPos = posOf('physical');
+            sv.click();
+            await tick();
+            btn.click();
+            await tick();
+            const row = q(`#devices-list [data-device-row="${srv[0]}"]`);
+            const total = m.devices.length;
+            check('with a device selection, Servers off narrows it: the selected server leaves the diagram, the selection itself is kept (its row stays checked and says why it is hidden), and the counts say what is shown', onScreen().join() === ['edge', eps[0]].sort().join() && s().selectedDevices().size === 3 && new RegExp(`Devices: 2 of ${total}`).test(btn.textContent || '') && !!row && row.classList.contains('type-hidden') && /hidden: Server off/.test(row.textContent || '') &&
+                row.querySelector('input').checked && new RegExp(`showing 2 of ${total} devices`).test(q('#status').textContent || ''), `${onScreen().join()} ${btn.textContent}`);
+            ep.click();
+            await tick();
+            check('… Endpoints off as well leaves only the selected router', onScreen().join() === 'edge' && s().selectedDevices().size === 3);
+            ep.click();
+            sv.click();
+            await tick();
+            check('… both on again: exactly the previous selection, with its devices where they were; the saved layout is untouched', onScreen().join() === pick.slice().sort().join() && posOf('physical') === subsetPos && s().selectedDevices().size === 3 && app.exportText() === yaml && !md().dirty && !(row && q(`#devices-list [data-device-row="${srv[0]}"]`).classList.contains('type-hidden')));
+            q('#devices-panel').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+            app.setDevices(m.devices.map((d) => d.id));
+            check('Select all brings back the complete diagram', !s().isFiltered() && posOf('physical') === full.physical);
         }
         // ------------------------ sizing and readability: long and multi-line labels
         {
@@ -16695,6 +17251,179 @@ async function runSelfTest(app, doc) {
                 await answerDialog('ok');
                 check('a failing SVG export is reported the same way', /Could not export the view as SVG/.test(saidSvg) && /“large-network-logical\.svg” was not created: out of memory\./.test(saidSvg) && downloads.length === had, saidSvg);
             }
+        }
+        // ------------------------- the edit header, the interaction help, the YAML mark
+        {
+            const view = doc.defaultView;
+            const main = q('main');
+            const rect = (e) => e.getBoundingClientRect();
+            const LONG = 'a-very-long-device-identifier-that-keeps-going-' + 'x'.repeat(17);
+            const LABEL = 'Long label '.repeat(12).trim();
+            app.loadText(`netatlas: 1\ntitle: Header test\ndevices:\n  - id: ${LONG}\n    label: ${LABEL}\n    group: no-such-group\n    type: server\n  - id: b\n`, 'header.yaml', 'file');
+            app.select('device:' + LONG);
+            await tick();
+            const head = () => q('#side-body .insp-head');
+            const part = (sel) => head().querySelector(sel);
+            /** what does not fit: anything outside the header, a clipped name, a page or panel that scrolls sideways */
+            const misfits = () => {
+                const bad = [];
+                const h = rect(head());
+                if (head().scrollWidth > head().clientWidth + 1)
+                    bad.push('header overflows');
+                for (const [name, sel] of [['type', '.badge'], ['state', '.ih-status'], ['Duplicate', '[data-act="dup-entity"]'], ['Delete', '[data-act="del-entity"]'], ['name', 'h3']]) {
+                    const r = rect(part(sel));
+                    if (r.left < h.left - 0.5 || r.right > h.right + 0.5 || r.width < 1)
+                        bad.push(name + ' outside the header');
+                }
+                const h3 = part('h3');
+                if (h3.scrollWidth > h3.clientWidth + 1 || (h3.textContent || '').indexOf(LONG) < 0)
+                    bad.push('name clipped');
+                const body = q('#side-body');
+                if (body.scrollWidth > body.clientWidth + 1) {
+                    const edge = rect(body).left + body.clientWidth;
+                    const wide = Array.prototype.filter.call(body.querySelectorAll('*'), (e) => rect(e).right > edge + 1).map((e) => e.tagName + '.' + e.getAttribute('class') + (e.getAttribute('data-t') ? '[' + e.getAttribute('data-t') + ']' : ''));
+                    bad.push('panel scrolls sideways: ' + wide.slice(0, 4).join(', '));
+                }
+                if (doc.documentElement.scrollWidth > doc.documentElement.clientWidth || doc.documentElement.scrollHeight > doc.documentElement.clientHeight)
+                    bad.push('page scrolls');
+                return bad;
+            };
+            const dup = () => part('[data-act="dup-entity"]');
+            const del = () => part('[data-act="del-entity"]');
+            const labelShown = (b) => view.getComputedStyle(b.querySelector('.ib-label')).display !== 'none';
+            const st = part('.ih-status');
+            check('edit header: type, validation state and actions in one row, the full name below it; actions with accessible names and tooltips; Delete looks destructive', !!head() && part('.ih-row .badge').textContent === 'device' && st.getAttribute('data-state') === 'error' && /^1 error$/.test((st.textContent || '').trim()) && !!st.title &&
+                dup().getAttribute('aria-label') === `Duplicate device ${LONG}` && /Duplicate/.test(dup().title) && del().getAttribute('aria-label') === `Delete device ${LONG}` && /Delete/.test(del().title) &&
+                del().classList.contains('danger') && view.getComputedStyle(del()).color !== view.getComputedStyle(dup()).color && !!dup().querySelector('svg') && !!del().querySelector('svg') &&
+                Math.abs(rect(dup()).top - rect(part('.badge')).top) < 12 && rect(part('h3')).top >= rect(dup()).bottom - 1 && labelShown(dup()) && labelShown(del()) && !!q('#side-body .issue-list') && misfits().length === 0, misfits().join('; ') + ' ' + (st.textContent || ''));
+            for (const w of [300, 240]) {
+                main.style.gridTemplateColumns = `150px minmax(0, 1fr) ${w}px`;
+                await tick(30);
+                check(`edit header in a ${w}px side panel: nothing clipped or outside, no page or panel scrolling; the actions keep their icon, accessible name and tooltip`, misfits().length === 0 && !labelShown(dup()) && !!dup().getAttribute('aria-label') && !!del().title && rect(dup()).width >= 20 && rect(del()).width >= 20, misfits().join('; '));
+            }
+            main.style.gridTemplateColumns = '';
+            await tick(30);
+            // a model without problems says so in the same place
+            app.select('device:b');
+            await tick();
+            check('an object without problems: the header says "No problems" and no issue list follows', part('.ih-status').getAttribute('data-state') === 'ok' && /No problems/.test(part('.ih-status').textContent || '') && !q('#side-body .issue-list'));
+            // interaction help: grouped, every documented action, readable, adapting to the room
+            const keys = q('#keys');
+            const groups = Array.prototype.slice.call(keys.querySelectorAll('.keys-group'));
+            const pairs = Array.prototype.map.call(keys.querySelectorAll('dl > div'), (d) => `${(d.querySelector('dt').textContent || '').replace(/\s+/g, ' ').trim()}: ${d.querySelector('dd').textContent}`).join(' | ');
+            const keyMisfits = () => {
+                const bad = [];
+                const k = rect(keys);
+                if (keys.scrollWidth > keys.clientWidth + 1)
+                    bad.push('help scrolls sideways');
+                Array.prototype.forEach.call(keys.querySelectorAll('dt, dd, h4, summary'), (e) => {
+                    const r = rect(e);
+                    if (r.right > k.right + 0.5 || r.left < k.left - 0.5)
+                        bad.push(`"${e.textContent}" outside`);
+                    if (parseFloat(view.getComputedStyle(e).fontSize) < 10.5)
+                        bad.push(`"${e.textContent}" too small`);
+                });
+                return bad;
+            };
+            check('interaction help: open, in two labelled groups (Pointer, Keyboard) listing every documented action', keys.open && keys.tagName === 'DETAILS' && /Mouse & keyboard/.test(keys.querySelector('summary').textContent || '') && groups.length === 2 &&
+                groups.map((g) => g.querySelector('h4').textContent).join() === 'Pointer,Keyboard' &&
+                pairs === 'Drag background: pan | Wheel: zoom | Drag node: move | Click: select | Esc: clear | P / L: view | Ctrl+Z / Y: undo / redo | Ctrl+S: download', pairs);
+            check('… readable: side by side in a wide panel, nothing outside it, no text below 10.5px', Math.abs(rect(groups[0]).top - rect(groups[1]).top) < 2 && keyMisfits().length === 0, keyMisfits().join('; '));
+            main.style.gridTemplateColumns = '150px minmax(0, 1fr) 240px';
+            await tick(30);
+            check('… in a narrow panel the groups stack, and still nothing is cut off', rect(groups[1]).top >= rect(groups[0]).bottom - 1 && keyMisfits().length === 0, keyMisfits().join('; '));
+            main.style.gridTemplateColumns = '';
+            await tick(30);
+            const openHeight = rect(keys).height;
+            keys.querySelector('summary').click();
+            const folded = !keys.open && rect(keys).height < openHeight - 30;
+            keys.querySelector('summary').click();
+            check('… it folds to its heading and opens again', folded && keys.open);
+            // the YAML mark: the entry of the selected object, found by structure, never by searching for its id
+            const TRAP = 'netatlas: 1\ntitle: core\n# - id: core   (a comment that looks like an entry)\ndevices:\n  - id: edge\n    label: core\n    description: "id: core"\n    interfaces: [{id: e0}]\n' +
+                '  - id: core\n    label: Core switch\n    interfaces:\n      - {id: e0}\n      - id: e1\n        description: uplink\n  - id: access\n    description: |\n      - id: core\n        not: an entry\n    interfaces: [{id: e0}]\n' +
+                'links:\n  - id: l1\n    a: {device: edge, interface: e0}\n    b: {device: core, interface: e0}\n';
+            app.loadText(TRAP, 'trap.yaml', 'file');
+            click('[data-tab="yaml"]');
+            app.select('device:core');
+            await tick();
+            const ta = () => q('#yaml-src');
+            const band = () => q('.yaml-hl');
+            const lines = () => ta().value.split('\n');
+            /** the expected entry: from its "- id:" line up to the next entry of the list */
+            const entry = (id, next) => `${lines().indexOf('  - id: ' + id) + 1}-${lines().indexOf(next)}`;
+            const mark = () => ta().getAttribute('data-mark') || '';
+            /** the band lies exactly behind the marked lines, inside the text area */
+            const bandOk = () => {
+                const [a, b] = mark().split('-').map(Number);
+                if (!a || band().hidden)
+                    return false;
+                const cs = view.getComputedStyle(ta());
+                const lh = parseFloat(cs.lineHeight);
+                const top = rect(ta()).top + ta().clientTop + parseFloat(cs.paddingTop) + (a - 1) * lh - ta().scrollTop;
+                return Math.abs(rect(band()).top - top) < 1 && Math.abs(rect(band()).height - (b - a + 1) * lh) < 1 && rect(band()).left >= rect(ta()).left;
+            };
+            const text0 = ta().value;
+            const mentions = lines().filter((l) => /\bcore\b/.test(l)).length;
+            check('YAML tab: selecting a device marks its entry and nothing else, although its id also appears as a title, label, quoted text, comment, reference and inside another entry’s text', !!q('[data-tab="yaml"].active') && mentions >= 6 && mark() === entry('core', '  - id: access') && bandOk() && ta().value === app.exportText() && /Device “core”: lines \d+–\d+ \(marked\)/.test(q('#yaml-sel').textContent || ''), `${mark()} ≠ ${entry('core', '  - id: access')} (${mentions})`);
+            // the mark never changes the text, the caret, the text selection or the scroll position
+            ta().focus();
+            ta().setSelectionRange(3, 8);
+            app.select('device:edge');
+            await tick();
+            check('selecting another object (diagram or search) moves the mark and keeps the YAML tab, the text, the focus, the caret and the text selection', !!q('[data-tab="yaml"].active') && mark() === entry('edge', '  - id: core') && bandOk() && ta().value === text0 && doc.activeElement === ta() && ta().selectionStart === 3 && ta().selectionEnd === 8, mark());
+            q('#outline-body .ol-item[data-ref="device:access"]').click();
+            await tick();
+            check('selecting in the left list keeps the YAML tab too, and marks the entry (its text is not mistaken for another entry)', !!q('[data-tab="yaml"].active') && mark() === `${lines().indexOf('  - id: access') + 1}-${lines().indexOf('links:')}`, mark());
+            app.select('iface:core:e1');
+            await tick();
+            check('an interface: the mark covers that interface’s entry only', mark() === `${lines().indexOf('      - id: e1') + 1}-${lines().indexOf('      - id: e1') + 2}` && bandOk(), mark());
+            app.select('device:core');
+            await tick();
+            // typing: the entry is found again in the changed text; the text area is left alone
+            ta().scrollTop = 0;
+            const typed = '# a line typed above\n' + text0;
+            ta().value = typed;
+            ta().dispatchEvent(new Event('input', { bubbles: true }));
+            await tick(250);
+            check('typing above the entry moves the mark with it, without touching the text or the scroll position', mark() === entry('core', '  - id: access') && ta().value === typed && ta().scrollTop === 0 && bandOk(), mark());
+            ta().value = typed.replace('  - id: access', '  - &x id: access');
+            ta().dispatchEvent(new Event('input', { bubbles: true }));
+            await tick(250);
+            check('while the YAML is not valid nothing is marked, and the note says why', mark() === '' && band().hidden && q('#yaml-sel').getAttribute('data-state') === 'unmarked' && /not marked/.test(q('#yaml-sel').textContent || ''));
+            ta().value = typed;
+            ta().dispatchEvent(new Event('input', { bubbles: true }));
+            await tick(250);
+            check('… and the mark is back once it is valid again', mark() === entry('core', '  - id: access') && bandOk());
+            click('[data-yaml="apply"]');
+            await tick();
+            check('after Apply (the text is reformatted) the mark follows the entry in the new text', ta().value === app.exportText() && mark() === entry('core', '  - id: access') && bandOk(), mark());
+            app.undo();
+            await tick();
+            check('after undo as well', !!q('[data-tab="yaml"].active') && ta().value === app.exportText() && ta().value.indexOf('# a line typed above') < 0 && mark() === entry('core', '  - id: access'), mark());
+            app.redo();
+            app.undo();
+            // renaming: the mark follows the object to its new id
+            click('[data-tab="edit"]');
+            await setField('#side-body [data-t="id"]', 'core-renamed');
+            click('[data-tab="yaml"]');
+            await tick();
+            check('after renaming the object, the mark is on its entry under the new id', mark() === entry('core-renamed', '  - id: access') && /“core-renamed”/.test(q('#yaml-sel').textContent || ''), mark());
+            // a long file: a selected entry out of sight is scrolled into view once; afterwards the reader's scroll position is respected
+            if (app.mdoc)
+                app.mdoc.markSaved();
+            app.loadExample(examples_1.EXAMPLES.findIndex((e) => e.name === 'enterprise-wan.yaml'));
+            check('opening another file: no selection, nothing marked', mark() === '' && q('#yaml-sel').getAttribute('data-state') === 'none' && !!q('[data-tab="yaml"].active'));
+            app.select('device:hq-log');
+            await tick();
+            const shownAt = ta().scrollTop;
+            const visible = rect(band()).bottom > rect(ta()).top && rect(band()).top < rect(ta()).bottom;
+            ta().scrollTop = 0;
+            app.select('device:hq-log');
+            await tick();
+            check('in a long file the newly selected entry is scrolled into view once; re-rendering the same selection keeps the scroll position the reader chose', shownAt > 0 && visible && ta().scrollTop === 0 && bandOk(), `${shownAt} ${visible} ${ta().scrollTop}`);
+            app.select(null);
+            click('[data-tab="legend"]');
         }
         const perf = doc.defaultView.performance;
         const resources = perf && perf.getEntriesByType ? perf.getEntriesByType('resource').length : 0;

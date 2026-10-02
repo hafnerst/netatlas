@@ -10,6 +10,7 @@ import { PngPicture, downloadBlob, downloadText, exportFileName, pictureBaseName
 import { el, materialize, mount } from './dom';
 import { DialogOpts, showDialog, showToast } from './dialogs';
 import { Editor, EditorSel } from './inspector';
+import { LineRange, yamlBlock } from '../editor/yaml-block';
 import { EXAMPLES } from '../generated/examples';
 import { Rect } from '../layout/geometry';
 import { detailsFor, legendFor, relationList, tooltipFor } from './panels';
@@ -17,6 +18,7 @@ import { exportBoxes } from '../diagram/networks-box';
 import { Session, View } from '../diagram/session';
 import { SelectionContext, search, selectionContext, splitRef } from '../model/queries';
 import { sortedByName } from '../model/order';
+import { deviceTypeLabel } from '../model/device-types';
 import { Issue } from '../validation/validate';
 
 type Tab = 'edit' | 'details' | 'legend' | 'relations' | 'problems' | 'yaml';
@@ -339,7 +341,8 @@ export class App {
       this.render();
     }
     this.renderOutline();
-    if (note === 'select' && this.tab !== 'edit' && this.tab !== 'details') this.tab = 'edit';
+    // selecting opens the object's form, except where the panel already follows the selection (its details, its place in the YAML)
+    if (note === 'select' && this.tab !== 'edit' && this.tab !== 'details' && this.tab !== 'yaml') this.tab = 'edit';
     this.renderSide();
     this.updateChrome();
     if (note && note !== 'filter' && note !== 'select') this.toast(note);
@@ -563,7 +566,7 @@ export class App {
     if (!this.session) return;
     this.session.select(ref);
     this.editor.selectRef(this.session.state.selected);
-    if (ref && this.session.state.selected && this.tab !== 'details') this.tab = 'edit';
+    if (ref && this.session.state.selected && this.tab !== 'details' && this.tab !== 'yaml') this.tab = 'edit';
     this.applyHighlight();
     this.renderOutline();
     this.renderSide();
@@ -676,9 +679,13 @@ export class App {
   }
 
   private renderYaml(body: HTMLElement): void {
+    // a re-render (after a selection, an edit, undo …) keeps the reader's place in the text:
+    // the scroll position always, and focus, caret and text selection while the text is unchanged
+    const old = body.querySelector('#yaml-src') as HTMLTextAreaElement | null;
+    const keep = old ? { top: old.scrollTop, left: old.scrollLeft, value: old.value, focus: this.doc.activeElement === old, start: old.selectionStart, end: old.selectionEnd, dir: old.selectionDirection } : null;
     while (body.firstChild) body.removeChild(body.firstChild);
     const d = this.mdoc as ModelDoc;
-    const ta = el(this.doc, 'textarea', { id: 'yaml-src', spellcheck: 'false', 'aria-label': 'YAML source of the whole model', wrap: 'off' }) as HTMLTextAreaElement;
+    const ta = el(this.doc, 'textarea', { id: 'yaml-src', spellcheck: 'false', 'aria-label': 'YAML source of the whole model', 'aria-describedby': 'yaml-sel', wrap: 'off' }) as HTMLTextAreaElement;
     ta.value = this.editor.sourceDraft !== null ? this.editor.sourceDraft : d.exportText();
     body.appendChild(
       el(this.doc, 'div', { class: 'yaml-tab' }, [
@@ -687,13 +694,103 @@ export class App {
         ]),
         this.editor.sourceDraft !== null ? el(this.doc, 'div', { class: 'field-warn' }, ['You have unapplied changes in this text.']) : null,
         this.editor.sourceError ? el(this.doc, 'div', { class: 'field-err' }, [this.editor.sourceError]) : null,
-        ta,
+        el(this.doc, 'p', { id: 'yaml-sel', class: 'yaml-sel muted small' }),
+        el(this.doc, 'div', { class: 'yaml-edit' }, [el(this.doc, 'div', { class: 'yaml-hl-clip', 'aria-hidden': 'true' }, [el(this.doc, 'div', { class: 'yaml-hl', hidden: '' })]), ta]),
         el(this.doc, 'div', { class: 'row-btns' }, [
           el(this.doc, 'button', { type: 'button', class: 'primary', 'data-yaml': 'apply' }, ['Apply']),
           el(this.doc, 'button', { type: 'button', 'data-yaml': 'revert' }, ['Revert to model']),
         ]),
       ]),
     );
+    if (keep) {
+      ta.scrollTop = keep.top;
+      ta.scrollLeft = keep.left;
+      if (keep.focus && keep.value === ta.value) {
+        ta.focus();
+        ta.setSelectionRange(keep.start, keep.end, keep.dir || undefined);
+      }
+    }
+    ta.addEventListener('scroll', () => this.placeYamlMark());
+    // a tab that has just been opened shows the selected entry, wherever it is
+    if (!keep) this.yamlMarkKey = '';
+    this.updateYamlMark(true);
+  }
+
+  // --------------------------------------------- the selection in the YAML text
+
+  /** the lines marked in the YAML editor (null: nothing marked) */
+  private yamlRange: LineRange | null = null;
+  /** the object the YAML editor was last marked for: it scrolls only when the selection changes */
+  private yamlMarkKey = '';
+  private yamlTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /**
+   * Mark the selected object's entry in the full-file YAML editor. The entry
+   * is found through the parsed text by the object's id (yamlBlock), so a
+   * mention of the id elsewhere in the file is never marked; when the text
+   * can't be parsed, or the entry is not there exactly once, nothing is
+   * marked. The mark is a band drawn behind the text: the text, the caret,
+   * the text selection and the scroll position are left alone, except that
+   * with `reveal`, selecting another object scrolls its entry into view when
+   * none of it is visible.
+   */
+  private updateYamlMark(reveal: boolean): void {
+    const ta = this.doc.getElementById('yaml-src') as HTMLTextAreaElement | null;
+    const note = this.doc.getElementById('yaml-sel');
+    if (!ta || !note) return;
+    const target = this.editor.selectedTarget();
+    const range = target ? yamlBlock(ta.value, target) : null;
+    this.yamlRange = range;
+    const key = target ? JSON.stringify(target) : '';
+    const changed = key !== this.yamlMarkKey;
+    this.yamlMarkKey = key;
+    if (range) ta.setAttribute('data-mark', range.first + '-' + range.last);
+    else ta.removeAttribute('data-mark');
+    const what = !target ? '' : target.iface !== undefined ? `Interface “${target.iface}” of device “${target.id}”` : `${target.kind.charAt(0).toUpperCase() + target.kind.slice(1)} “${target.id}”`;
+    const lines = range ? (range.first === range.last ? 'line ' + range.first : `lines ${range.first}–${range.last}`) : '';
+    note.textContent = !target ? '' : range ? `${what}: ${lines} (marked)` : `${what} is not marked: its entry can't be found reliably in the text as it is now.`;
+    note.title = note.textContent;
+    note.setAttribute('data-state', !target ? 'none' : range ? 'marked' : 'unmarked');
+    if (reveal && changed && range) {
+      const g = this.yamlGeometry(ta);
+      const top = g.pad + (range.first - 1) * g.lh;
+      const bottom = g.pad + range.last * g.lh;
+      if (bottom <= ta.scrollTop || top >= ta.scrollTop + ta.clientHeight) ta.scrollTop = Math.max(0, top - 2 * g.lh);
+    }
+    this.placeYamlMark();
+  }
+
+  private yamlGeometry(ta: HTMLTextAreaElement): { lh: number; pad: number } {
+    const cs = (this.doc.defaultView as Window).getComputedStyle(ta);
+    const lh = parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.45 || 17;
+    return { lh, pad: parseFloat(cs.paddingTop) || 0 };
+  }
+
+  /** Draw the band behind the marked lines, clipped to the inside of the text area. */
+  private placeYamlMark(): void {
+    const ta = this.doc.getElementById('yaml-src') as HTMLTextAreaElement | null;
+    const clip = this.doc.querySelector('.yaml-hl-clip') as HTMLElement | null;
+    const band = clip ? (clip.firstChild as HTMLElement) : null;
+    if (!ta || !clip || !band) return;
+    const r = this.yamlRange;
+    band.hidden = !r;
+    if (!r) return;
+    clip.style.top = ta.offsetTop + ta.clientTop + 'px';
+    clip.style.left = ta.offsetLeft + ta.clientLeft + 'px';
+    clip.style.width = ta.clientWidth + 'px';
+    clip.style.height = ta.clientHeight + 'px';
+    const g = this.yamlGeometry(ta);
+    band.style.top = g.pad + (r.first - 1) * g.lh - ta.scrollTop + 'px';
+    band.style.height = (r.last - r.first + 1) * g.lh + 'px';
+  }
+
+  /** After typing in the YAML editor: find the entry again once typing pauses (never scrolls). */
+  private scheduleYamlMark(): void {
+    if (this.yamlTimer !== null) clearTimeout(this.yamlTimer);
+    this.yamlTimer = setTimeout(() => {
+      this.yamlTimer = null;
+      this.updateYamlMark(false);
+    }, 120);
   }
 
   private applyYaml(): void {
@@ -849,8 +946,7 @@ export class App {
         m ? `${m.title} · ${m.devices.length} devices · ${m.index.interfaces.size} interfaces · ${m.links.length} cables · ${m.networks.length} networks · ${m.relations.length} logical relations` : '',
         d.errors.length ? el(this.doc, 'span', { class: 'errcount' }, [` · ${d.errors.length} error${d.errors.length > 1 ? 's' : ''}`]) : '',
         d.warnings.length ? ` · ${d.warnings.length} warning${d.warnings.length > 1 ? 's' : ''}` : '',
-        s && s.isFiltered() ? el(this.doc, 'span', { class: 'filtered-note' }, [` · showing ${s.selectedDevices().size} of ${s.model.devices.length} devices`]) : '',
-        ' · everything stays in this page',
+        s && s.isFiltered() ? el(this.doc, 'span', { class: 'filtered-note' }, [` · showing ${s.shownDevices().size} of ${s.model.devices.length} devices`]) : '',
       ];
       for (const p of parts) st.appendChild(typeof p === 'string' ? this.doc.createTextNode(p) : p);
       this.doc.title = `${d.dirty ? '● ' : ''}${m ? m.title : d.fileName} — netatlas`;
@@ -866,6 +962,13 @@ export class App {
         ]
       : [];
     for (const [id, v] of opts) (this.$(id) as HTMLInputElement).checked = v;
+    const types = this.doc.querySelectorAll('input[data-device-type]');
+    for (let i = 0; i < types.length; i++) {
+      const cb = types[i] as HTMLInputElement;
+      cb.disabled = !s;
+      // a new model starts with every type shown
+      cb.checked = !s || !s.isTypeHidden(cb.getAttribute('data-device-type') || '');
+    }
     (this.$('btn-arrange') as HTMLButtonElement).disabled = !d || !s;
     this.updateDevicesControl();
     this.updateLayoutStatus();
@@ -933,11 +1036,15 @@ export class App {
     const filtered = !!s && s.isFiltered();
     btn.classList.toggle('filtered', filtered);
     btn.setAttribute('data-filtered', filtered ? 'true' : 'false');
-    count.textContent = !s ? 'all' : filtered ? `${s.selectedDevices().size} of ${s.model.devices.length}` : `all (${s.model.devices.length})`;
-    btn.title = filtered ? 'The diagram shows only the selected devices. Choose devices, or Select all for the complete diagram.' : 'Choose the devices the diagram shows';
+    const byType = !!s && s.state.hiddenTypes.size > 0;
+    count.textContent = !s ? 'all' : filtered ? `${s.shownDevices().size} of ${s.model.devices.length}` : `all (${s.model.devices.length})`;
+    btn.title = filtered
+      ? 'The diagram shows only the selected devices' + (byType ? ' that are not of a type switched off in the toolbar' : '') + '. Choose devices, or Select all for the complete diagram.'
+      : 'Choose the devices the diagram shows';
     hint.hidden = !filtered;
-    const none = filtered && !!s && s.selectedDevices().size === 0;
-    this.$('filter-hint-text').textContent = (none ? 'No devices selected: choose devices, or Select all. ' : '') + 'Filtered-view positions are temporary and are not saved in YAML.';
+    const none = filtered && !!s && s.shownDevices().size === 0;
+    this.$('filter-hint-text').textContent =
+      (none ? (s && s.selectedDevices().size ? 'No devices shown: the selected ones are of types switched off. ' : 'No devices selected: choose devices, or Select all. ') : '') + 'Filtered-view positions are temporary and are not saved in YAML.';
     if (!s) this.$('devices-panel').hidden = true;
     if (!this.$('devices-panel').hidden) this.syncDevicesList();
   }
@@ -951,7 +1058,11 @@ export class App {
     const s = this.session;
     if (!s) return;
     const boxes = this.$('devices-list').querySelectorAll('input[data-device]');
-    if (boxes.length !== s.model.devices.length || Array.prototype.some.call(boxes, (b: Element) => !s.model.index.devices.has(b.getAttribute('data-device') || ''))) {
+    const stale = (b: Element): boolean => {
+      const d = s.model.index.devices.get(b.getAttribute('data-device') || '');
+      return !d || (b.parentElement as Element).classList.contains('type-hidden') !== s.isTypeHidden(d.type);
+    };
+    if (boxes.length !== s.model.devices.length || Array.prototype.some.call(boxes, stale)) {
       this.renderDevicesList();
       return;
     }
@@ -971,7 +1082,13 @@ export class App {
       const name = d.label !== d.id ? `${d.label} (${d.id})` : d.id;
       const cb = el(this.doc, 'input', { type: 'checkbox', 'data-device': d.id }) as HTMLInputElement;
       cb.checked = sel.has(d.id);
-      const row = el(this.doc, 'label', { 'data-device-row': d.id }, [cb, el(this.doc, 'span', {}, [name])]);
+      // a device of a type switched off stays selectable here; it is shown again with its type
+      const off = s.isTypeHidden(d.type);
+      const row = el(this.doc, 'label', { 'data-device-row': d.id, class: off ? 'type-hidden' : '' }, [
+        cb,
+        el(this.doc, 'span', {}, [name]),
+        off ? el(this.doc, 'span', { class: 'dp-off' }, [`hidden: ${deviceTypeLabel(d.type)} off`]) : null,
+      ]);
       if (q && name.toLowerCase().indexOf(q) < 0) row.hidden = true;
       list.appendChild(row);
     }
@@ -1002,6 +1119,21 @@ export class App {
     if (!s || !s.setDevices(ids)) return false;
     this.render();
     this.fit();
+    this.updateChrome();
+    return true;
+  }
+
+  /**
+   * Show or hide the devices of one type (the toolbar's Endpoints / Servers
+   * controls). Like the device selection it only changes what the diagrams
+   * and their exports show; the model, the YAML and the saved layout stay as
+   * they are. The other devices keep their places, so the zoom is kept too.
+   */
+  setTypeVisible(type: string, visible: boolean): boolean {
+    const s = this.session;
+    if (!s || !s.setTypeVisible(type, visible)) return false;
+    this.render();
+    this.renderOutline();
     this.updateChrome();
     return true;
   }
@@ -1172,6 +1304,11 @@ export class App {
     opt('opt-labels', (v) => this.session && (this.session.state.showLabels = v));
     opt('opt-groups', (v) => this.session && (this.session.state.showGroups = v));
     opt('opt-networks', (v) => this.session && (this.session.state.showNetworks = v));
+    const types = doc.querySelectorAll('input[data-device-type]');
+    for (let i = 0; i < types.length; i++) {
+      const cb = types[i] as HTMLInputElement;
+      cb.addEventListener('change', () => this.setTypeVisible(cb.getAttribute('data-device-type') || '', cb.checked));
+    }
     this.wireDevices();
 
     // side panel: tabs, reference links, protocol filters, editor
@@ -1219,7 +1356,10 @@ export class App {
     });
     side.addEventListener('input', (e) => {
       const t = e.target as HTMLElement;
-      if (t.id === 'yaml-src') this.editor.sourceDraft = (t as HTMLTextAreaElement).value;
+      if (t.id === 'yaml-src') {
+        this.editor.sourceDraft = (t as HTMLTextAreaElement).value;
+        this.scheduleYamlMark();
+      }
     });
     side.addEventListener(
       'toggle',
@@ -1333,7 +1473,15 @@ export class App {
         this.applyZoom();
       }
     });
-    if (win) win.addEventListener('resize', () => this.applyZoom());
+    if (win) {
+      win.addEventListener('resize', () => {
+        this.applyZoom();
+        this.placeYamlMark();
+      });
+      // a short window starts with the mouse and keyboard help folded (it stays one click away)
+      const keys = doc.getElementById('keys') as HTMLDetailsElement | null;
+      if (keys && win.innerHeight <= 560) keys.open = false;
+    }
   }
 
   // ------------------------------------------------------------- layout

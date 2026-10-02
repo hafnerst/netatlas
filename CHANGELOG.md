@@ -14,6 +14,41 @@ it is described in [docs/FORMAT.md](docs/FORMAT.md).
 
 ### Added
 
+- **Endpoints and Servers** controls next to Labels and Groups / Locations,
+  in both views, on by default. Switching one off hides the devices of type
+  `endpoint` or `server` (and their cables and relations, by the device-
+  filter rules) on screen and in PNG/SVG exports, without changing the
+  model, the YAML or the saved layout. They combine with **Devices**: the
+  diagram shows the selected devices that are not of a hidden type, the
+  selection itself is kept, and switching the type on again restores it,
+  with its devices in their places.
+- **The YAML tab marks the selected object's entry.** The entry is found by
+  the object's ID in the parsed text (never by a text search), follows
+  selection changes, typing, Apply, undo/redo, opening a file and renaming,
+  and disappears while the text doesn't parse. Selecting keeps the YAML tab
+  open. The text, caret, text selection and scroll position are left alone,
+  except that a newly selected entry out of sight is scrolled into view.
+
+### Changed
+
+- **Edit header:** the object's type, its validation state (*No problems*,
+  or the number of errors and warnings) and the **Duplicate** / **Delete**
+  buttons (with icons, accessible names and tooltips; Delete in red) share
+  one row, with the full name below. In a narrow panel the buttons show
+  only their icons.
+- **Mouse & keyboard help** at the bottom right: a foldable box with a
+  *Pointer* and a *Keyboard* group instead of one line; side by side when
+  there is room. It starts folded in windows under 560 px of height (it
+  used to be hidden there). The shortcuts are unchanged.
+- **The model outline no longer shifts** when something is selected: the
+  *selected · related (n)* hint shares the row of *Collapse all*, every
+  entry keeps the place of its selection mark, and the scrollbar's room is
+  reserved.
+- The status bar no longer says "everything stays in this page".
+- A section heading of the editor (e.g. *Physical interfaces* with
+  **+ Interface** / **+ Port Range**) puts its buttons on a second line in a
+  narrow panel instead of past its edge.
+
 - **DHCP on interfaces.** Every physical interface and every virtual or
   tunnel interface has a `dhcp` flag (`true` / `false`, omitted = `false`)
   and a **DHCP** switch next to its addresses in the editor. A loopback

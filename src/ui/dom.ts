@@ -43,3 +43,27 @@ export function el(
   }
   return e;
 }
+
+/** Line icons of the UI chrome (fixed path data, drawn in the current text colour). */
+const ICONS: { [name: string]: string } = {
+  duplicate: 'M9 9h11v11H9z M5 15H4V4h11v1',
+  delete: 'M4 7h16 M9.5 7V4.5h5V7 M6.5 7l1 13h9l1-13 M10.5 11v5.5 M13.5 11v5.5',
+  ok: 'M5 12.5l4.5 4.5L19 7.5',
+  warning: 'M12 3.5l9.5 17h-19z M12 10v4.5 M12 17.5v.5',
+  error: 'M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18z M12 7.5v6 M12 16.5v.5',
+};
+
+/** A small decorative icon; the control it sits in carries the accessible name. */
+export function icon(doc: Document, name: string): Element {
+  const svg = doc.createElementNS(SVG_NS, 'svg');
+  svg.setAttribute('class', 'icon-svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('width', '15');
+  svg.setAttribute('height', '15');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.setAttribute('focusable', 'false');
+  const p = doc.createElementNS(SVG_NS, 'path');
+  p.setAttribute('d', ICONS[name] || '');
+  svg.appendChild(p);
+  return svg;
+}
