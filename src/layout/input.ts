@@ -39,6 +39,8 @@ export interface LDev {
   loopbacks: number;
   /** width the widest loopback chip needs in the logical view (0 without loopbacks) */
   chipW: number;
+  /** the device's DNS names, each once, sorted (shown under it in the logical view) */
+  dns: string[];
 }
 export interface LGroup {
   id: string;
@@ -128,6 +130,7 @@ export function layoutInput(m: Model): LayoutInput {
         loopbacks: loopbacks(d).length,
         // over all loopbacks, not only the ones shown, so the order in the file doesn't matter
         chipW: loopbacks(d).reduce((m, l) => Math.max(m, chipNeed(l.id, l.addresses)), 0),
+        dns: uniqSorted(d.dnsNames.map((n) => n.name).filter((n) => !!n)),
       })),
     ),
     groups: byId(m.groups.map((g) => ({ id: g.id, parent: g.parent || null, label: g.label, kind: g.kind }))),

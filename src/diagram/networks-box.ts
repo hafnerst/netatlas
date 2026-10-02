@@ -202,7 +202,12 @@ export interface ExportBoxes {
 
 /** Everything an exported SVG gets in addition to the diagram: the legend and the networks overview of that view. */
 export function exportBoxes(model: Model, view: View, opts: ExportOptions, scene: SceneResult): ExportBoxes {
-  const legend = svgLegend(model, view, opts, scene.bounds);
+  // the legend names the DNS names only when the picture shows some (Labels on, a device with names drawn)
+  let dns = false;
+  walk(scene.root, (n) => {
+    if (/(^| )dns-chip( |$)/.test(n.attrs.class || '')) dns = true;
+  });
+  const legend = svgLegend(model, view, { ...opts, dnsShown: dns }, scene.bounds);
   const networks = svgNetworks(model, view, sceneRefs(scene.root), legend.box, legend.viewBox);
   return { legend, networks, viewBox: networks.viewBox };
 }

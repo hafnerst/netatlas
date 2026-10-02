@@ -4,6 +4,7 @@ import { sortedByName } from '../model/order';
 import { Attrs, CATEGORIES, Interface, Model, ProtocolDef, RelEndpoint, TunnelEnd, endpointText, ifaceKey, interfaceKindLabel, relationDevices } from '../model/types';
 import { LegendItem, SWATCH_H, SWATCH_W, legendOf, relationSwatchParts } from '../diagram/legend';
 import { VNode, h } from '../diagram/scene';
+import { iconNode } from './dom';
 import { View } from '../diagram/session';
 import { ContextState, SelectionContext, contextState, splitRef } from '../model/queries';
 import { mediumStyle } from '../diagram/style';
@@ -109,12 +110,74 @@ function addressText(i: Interface, sep: string): string {
   return i.dhcp && !i.addresses.length ? 'DHCP' : i.addresses.join(sep);
 }
 
-function header(kind: string, title: string): VNode {
-  return h('div', { class: 'det-head' }, [
-    h('span', { class: 'badge', 'data-kind': kind }, kind),
-    h('h3', {}, title),
+/** Errors and warnings of the object a header is about (from the editor's validation). */
+export interface IssueCount {
+  errors: number;
+  warnings: number;
+}
+
+/** The problem state of an object: "No problems", or how many errors and warnings it has. */
+export function statusChip(kind: string, c: IssueCount): VNode {
+  const state = c.errors ? 'error' : c.warnings ? 'warning' : 'ok';
+  const parts: string[] = [];
+  if (c.errors) parts.push(`${c.errors} error${c.errors > 1 ? 's' : ''}`);
+  if (c.warnings) parts.push(`${c.warnings} warning${c.warnings > 1 ? 's' : ''}`);
+  const text = parts.length ? parts.join(' · ') : 'No problems';
+  return h('span', { class: 'ih-status ' + state, 'data-state': state, title: parts.length ? `This ${kind} has ${text}.` : `This ${kind} has no validation problems.` }, [
+    iconNode(state),
+    h('span', {}, text),
   ]);
 }
+
+/** How the header of an object names it: its kind, its name, and its ID (shown beside the name when they differ). */
+export function headOf(model: Model, ref: string): { kind: string; title: string; id?: string } | null {
+  const [kind, id] = splitRef(ref);
+  const ix = model.index;
+  if (kind === 'device') {
+    const d = ix.devices.get(id);
+    return d ? { kind: 'device', title: d.label, id: d.id } : null;
+  }
+  if (kind === 'iface') {
+    const i = ix.interfaces.get(id);
+    return i ? { kind: 'interface', title: i.device + ' ' + i.id } : null;
+  }
+  if (kind === 'link') {
+    const l = ix.links.get(id);
+    return l ? { kind: 'physical link', title: l.label || l.id, id: l.id } : null;
+  }
+  if (kind === 'relation') {
+    const r = ix.relations.get(id);
+    return r ? { kind: r.category, title: relationTitle(model, r.id), id: r.id } : null;
+  }
+  if (kind === 'network') {
+    const n = ix.networks.get(id);
+    return n ? { kind: 'IP network', title: n.label, id: n.id } : null;
+  }
+  if (kind === 'group') {
+    const g = ix.groups.get(id);
+    return g ? { kind: g.kind || 'group', title: g.label, id: g.id } : null;
+  }
+  if (kind === 'protocol') {
+    const p = model.protocols.get(id);
+    return p ? { kind: 'protocol', title: p.label, id: p.id } : null;
+  }
+  return null;
+}
+
+/**
+ * The header of a selected object, the same in Details and Edit: one row
+ * with its type, its problem state and (in Edit) its actions, and below it
+ * the object's name with its stable ID beside it when the two differ. The
+ * ID is plain, selectable text, so it can be copied.
+ */
+export function objectHead(kind: string, title: string, id: string | undefined, status: IssueCount | null, actions: VNode | null = null): VNode {
+  return h('div', { class: 'insp-head', 'data-kind': kind }, [
+    h('div', { class: 'ih-row' }, [h('span', { class: 'badge', 'data-kind': kind }, kind), status ? statusChip(kind, status) : null, actions]),
+    h('h3', {}, [h('span', { class: 'ih-name' }, title), id !== undefined && id !== title ? h('code', { class: 'ih-id', title: 'ID (stable identifier)' }, id) : null]),
+  ]);
+}
+
+
 
 /** DNS names of its device that are associated with an interface, alphabetically. */
 function dnsOf(model: Model, i: Interface): string[] {
@@ -123,17 +186,20 @@ function dnsOf(model: Model, i: Interface): string[] {
 }
 
 /** Details for the selected entity. */
-export function detailsFor(model: Model, ref: string): VNode {
+export function detailsFor(model: Model, ref: string, status: IssueCount | null = null): VNode {
+  const header = (): VNode => {
+    const x = headOf(model, ref) || { kind, title: id };
+    return objectHead(x.kind, x.title, x.id, status);
+  };
   const [kind, id] = splitRef(ref);
   const ix = model.index;
   const kids: Array<VNode | null> = [];
   if (kind === 'device') {
     const d = ix.devices.get(id);
     if (!d) return h('div', {}, 'Not found');
-    kids.push(header('device', d.label));
+    kids.push(header());
     kids.push(
       kv([
-        ['id', d.id],
         ['type', deviceTypeLabel(d.type) || undefined],
         ['group', d.group ? refLink('group:' + d.group, ix.groups.get(d.group)?.label || d.group) : undefined],
         ['description', d.description],
@@ -219,7 +285,7 @@ export function detailsFor(model: Model, ref: string): VNode {
     const i = ix.interfaces.get(id);
     if (!i) return h('div', {}, 'Not found');
     const lid = ix.ifaceLink.get(id);
-    kids.push(header('interface', i.device + ' ' + i.id));
+    kids.push(header());
     kids.push(
       kv([
         ['device', refLink('device:' + i.device, ix.devices.get(i.device)?.label || i.device)],
@@ -250,7 +316,7 @@ export function detailsFor(model: Model, ref: string): VNode {
           ['tunnel source', i.source ? tunnelEndNode(model, i.source) : undefined],
           ['tunnel destination', i.destination ? tunnelEndNode(model, i.destination) : undefined],
         ]),
-        carried.length ? h('p', { class: 'muted small' }, 'Ports carrying its networks is derived from the networks assigned to the link ends of this device.') : null,
+        carried.length ? h('p', { class: 'muted small' }, 'Derived from the networks on this device’s link ends.') : null,
       ]),
     );
     // the other direction: aggregates this port is a member of, virtual interfaces whose networks it carries, tunnels sourced from it
@@ -279,7 +345,7 @@ export function detailsFor(model: Model, ref: string): VNode {
   } else if (kind === 'link') {
     const l = ix.links.get(id);
     if (!l) return h('div', {}, 'Not found');
-    kids.push(header('physical link', l.label || l.id));
+    kids.push(header());
     const nets = (ids: string[]): VNode[] => ids.reduce((acc: VNode[], n, k) => acc.concat(k ? [h('span', {}, ', '), refLink('network:' + n, networkName(model, n))] : [refLink('network:' + n, networkName(model, n))]), []);
     const ep = (e: { device: string; iface?: string; networks: string[] }): VNode =>
       h('span', {}, [
@@ -292,7 +358,6 @@ export function detailsFor(model: Model, ref: string): VNode {
     const mm = networkMismatch(l.a.networks, l.b.networks);
     kids.push(
       kv([
-        ['id', l.id],
         ['A', ep(l.a)],
         ['B', ep(l.b)],
         ['networks', mm ? h('span', { class: 'warn-text', 'data-net-mismatch': 'yes' }, '⚠ the ends differ — ' + networkMismatchText(mm, (n) => networkName(model, n))) : undefined],
@@ -313,10 +378,9 @@ export function detailsFor(model: Model, ref: string): VNode {
     const r = ix.relations.get(id);
     if (!r) return h('div', {}, 'Not found');
     const def = relationStyle(model, r);
-    kids.push(header(r.category, relationTitle(model, r.id)));
+    kids.push(header());
     kids.push(
       kv([
-        ['id', r.id],
         ['protocol', def.label + (def.label.toLowerCase() !== r.protocol ? ` (${r.protocol})` : '')],
         ['category', r.category],
         ['direction', r.direction === 'unidirectional' ? 'unidirectional (first → last endpoint)' : 'bidirectional'],
@@ -345,8 +409,8 @@ export function detailsFor(model: Model, ref: string): VNode {
   } else if (kind === 'network') {
     const n = ix.networks.get(id);
     if (!n) return h('div', {}, 'Not found');
-    kids.push(header('IP network', n.label));
-    kids.push(kv([['id', n.id], ['IP network', n.cidr || 'missing or invalid'], ['vlan', n.vlan !== undefined ? String(n.vlan) : undefined], ['description', n.description]]));
+    kids.push(header());
+    kids.push(kv([['IP network', n.cidr || 'missing or invalid'], ['vlan', n.vlan !== undefined ? String(n.vlan) : undefined], ['description', n.description]]));
     // derived: every device with a configured address inside the network's prefix, once
     kids.push(
       list(
@@ -385,16 +449,16 @@ export function detailsFor(model: Model, ref: string): VNode {
   } else if (kind === 'group') {
     const g = ix.groups.get(id);
     if (!g) return h('div', {}, 'Not found');
-    kids.push(header(g.kind || 'group', g.label));
-    kids.push(kv([['id', g.id], ['kind', g.kind], ['parent', g.parent ? refLink('group:' + g.parent, ix.groups.get(g.parent)?.label || g.parent) : undefined], ['description', g.description]]));
+    kids.push(header());
+    kids.push(kv([['kind', g.kind], ['parent', g.parent ? refLink('group:' + g.parent, ix.groups.get(g.parent)?.label || g.parent) : undefined], ['description', g.description]]));
     kids.push(list('Sub-groups', model.groups.filter((c) => c.parent === g.id).map((c) => h('li', {}, [refLink('group:' + c.id, c.label)]))));
     kids.push(list('Devices', model.devices.filter((d) => d.group === g.id).map((d) => h('li', {}, [refLink('device:' + d.id, d.label)]))));
     kids.push(attrsTable('Attributes', g.attrs));
   } else if (kind === 'protocol') {
     const p = model.protocols.get(id);
     if (!p) return h('div', {}, 'Not found');
-    kids.push(header('protocol', p.label));
-    kids.push(kv([['id', p.id], ['category', p.category], ['description', p.description]]));
+    kids.push(header());
+    kids.push(kv([['category', p.category], ['description', p.description]]));
     kids.push(list('Relations', model.relations.filter((r) => r.protocol === id).map((r) => h('li', {}, [refLink('relation:' + r.id, relationTitle(model, r.id))]))));
   } else {
     return h('div', {}, 'Nothing selected');

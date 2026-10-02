@@ -3,7 +3,7 @@
  * Text is always assigned via text nodes; attribute names are restricted so
  * that no event handler or script URL can ever be produced from input data.
  */
-import { VNode } from '../diagram/scene';
+import { VNode, h } from '../diagram/scene';
 
 export const SVG_NS = 'http://www.w3.org/2000/svg';
 
@@ -53,17 +53,12 @@ const ICONS: { [name: string]: string } = {
   error: 'M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18z M12 7.5v6 M12 16.5v.5',
 };
 
+/** A small decorative icon as a VNode; the control it sits in carries the accessible name. */
+export function iconNode(name: string): VNode {
+  return h('svg', { class: 'icon-svg', viewBox: '0 0 24 24', width: 15, height: 15, 'aria-hidden': 'true', focusable: 'false' }, [h('path', { d: ICONS[name] || '' })]);
+}
+
 /** A small decorative icon; the control it sits in carries the accessible name. */
 export function icon(doc: Document, name: string): Element {
-  const svg = doc.createElementNS(SVG_NS, 'svg');
-  svg.setAttribute('class', 'icon-svg');
-  svg.setAttribute('viewBox', '0 0 24 24');
-  svg.setAttribute('width', '15');
-  svg.setAttribute('height', '15');
-  svg.setAttribute('aria-hidden', 'true');
-  svg.setAttribute('focusable', 'false');
-  const p = doc.createElementNS(SVG_NS, 'path');
-  p.setAttribute('d', ICONS[name] || '');
-  svg.appendChild(p);
-  return svg;
+  return materialize(iconNode(name), doc, true);
 }
