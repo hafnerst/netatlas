@@ -154,6 +154,23 @@ export async function runViewportCheck(app: App, doc: Document): Promise<Check[]
     const zoom = (q('.zoombar') as HTMLElement).getBoundingClientRect();
     const canvas = (q('#canvas-wrap') as HTMLElement).getBoundingClientRect();
     state('diagram controls stay inside the diagram area', zoom.top < canvas.top || zoom.bottom > canvas.bottom || zoom.left < canvas.left || zoom.right > canvas.right || zoom.bottom > vh() ? ['the zoom bar leaves the diagram area'] : []);
+    {
+      // the Auto-arrange group: its label above one row of three buttons, inside a dashed frame, within the window
+      const g = q('#arrange-group') as HTMLElement;
+      const gr = g.getBoundingClientRect();
+      const tr = (q('#arrange-title') as HTMLElement).getBoundingClientRect();
+      const bs = ['default', 'compact', 'spacious'].map((s) => (q('#btn-arrange-' + s) as HTMLElement).getBoundingClientRect());
+      const why: string[] = [];
+      const cs = (doc.defaultView as Window).getComputedStyle(g);
+      if (cs.borderTopStyle !== 'dashed') why.push('the group has no dashed frame');
+      if (tr.width < 1 || tr.height < 1) why.push('the label is not shown');
+      if (bs.some((b) => b.top < tr.bottom - 0.5)) why.push('the label is not above the buttons');
+      if (bs.some((b) => Math.abs(b.top - bs[0].top) > 0.5 || Math.abs(b.height - bs[0].height) > 0.5)) why.push('the buttons are not on one row');
+      if (bs[1].left < bs[0].right - 1.5 || bs[2].left < bs[1].right - 1.5 || bs[1].left > bs[0].right + 0.5 || bs[2].left > bs[1].right + 0.5) why.push('the buttons are not side by side');
+      if ([tr].concat(bs).some((r) => r.left < gr.left - 0.5 || r.right > gr.right + 0.5 || r.top < gr.top - 0.5 || r.bottom > gr.bottom + 0.5)) why.push('the label or a button leaves the frame');
+      if (gr.left < -0.5 || gr.right > vw() + 0.5 || gr.top < -0.5) why.push('the group leaves the window');
+      state('the Auto-arrange group: label above the three buttons, in one dashed frame', why);
+    }
 
     // drop-downs of the toolbar open over the page: fully visible, not clipped by the toolbar, inside the window
     const popup = (sel: string): string[] => {

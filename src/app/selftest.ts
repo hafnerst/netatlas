@@ -2952,7 +2952,9 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const narrowInline = inline();
       check(
         'narrow toolbar: the filters stay on one row; Servers, then Endpoints, … move into the Filters drop-down by priority',
-        oneRow() && !more.hidden && narrowInline.length < 5 && narrowInline[0] === 'Labels' && !!q('#more-filters #opt-type-server') && rect(group).right <= rect(top).right + 0.5,
+        // the ones that stay inline are the highest-priority ones, in order (possibly none at this width)
+        oneRow() && !more.hidden && narrowInline.length < 5 && narrowInline.join() === ['Labels', 'Groups / Locations', 'Networks', 'Endpoints', 'Servers'].slice(0, narrowInline.length).join() &&
+          !!q('#more-filters #opt-type-server') && rect(group).right <= rect(top).right + 0.5 && doc.documentElement.scrollWidth <= doc.documentElement.clientWidth,
         narrowInline.join(),
       );
       more.focus();

@@ -103,12 +103,9 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .seg button.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 600; position: relative; }
 .spacer { flex: 1; }
 .opt { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); user-select: none; white-space: nowrap; }
-/* a narrower toolbar: the logo without name and version, and the Auto-arrange title (the group keeps it as its accessible name) */
+/* a narrower toolbar: the logo without name and version (the Auto-arrange label sits above its buttons, so it takes no width and stays) */
 @container (max-width: 1180px) {
   .brand > span { display: none; }
-}
-@container (max-width: 1000px) {
-  .arrange-title { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 }
 /* the diagram filters: one row at the right of the toolbar; what doesn't fit goes into the Filters drop-down (App.layoutFilters) */
 .view-filters { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex: 1 1 0; flex-wrap: nowrap; }
@@ -645,11 +642,13 @@ dialog#modal::backdrop { background: rgba(0,0,0,.35); }
 .dns-chip text { font-size: 9.5px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: var(--muted) !important; }
 
 /* Auto-arrange: three options in one labelled group; the one the view is arranged with is pressed and disabled */
-.arrange-group { display: inline-flex; align-items: center; gap: 0; }
-.arrange-title { font-size: 11px; color: var(--muted); margin-right: 6px; white-space: nowrap; }
-.arrange-btn { border-radius: 0; margin-left: -1px; padding-left: 9px; padding-right: 9px; white-space: nowrap; }
-.arrange-group .arrange-btn:first-of-type { border-radius: 6px 0 0 6px; margin-left: 0; }
-.arrange-group .arrange-btn:last-of-type { border-radius: 0 6px 6px 0; }
+/* the label above the buttons, both inside a subtle dashed frame that reads as one control */
+.arrange-group { display: inline-flex; flex-direction: column; align-items: stretch; gap: 2px; padding: 2px 5px 4px; border: 1px dashed var(--border); border-radius: 8px; flex: none; }
+.arrange-title { font-size: 10px; line-height: 12px; color: var(--muted); text-align: center; letter-spacing: .03em; white-space: nowrap; }
+.arrange-btns { display: flex; }
+.arrange-btn { flex: 1 1 0; border-radius: 0; margin-left: -1px; padding: 2px 9px; white-space: nowrap; }
+.arrange-btns .arrange-btn:first-child { border-radius: 6px 0 0 6px; margin-left: 0; }
+.arrange-btns .arrange-btn:last-child { border-radius: 0 6px 6px 0; }
 /* the current option: marked like the active view switch, and not clickable (nothing to do) */
 .arrange-btn.current, .arrange-btn.current:disabled { opacity: 1; background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 600; position: relative; z-index: 1; cursor: default; }
 /* an option that gives the same positions as the current one: disabled, plain */

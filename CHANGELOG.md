@@ -53,6 +53,8 @@ it is described in [docs/FORMAT.md](docs/FORMAT.md).
 - **Modified** is now a comparison with what was opened or last saved: undo
   back to that state clears it. The file name in the status bar shows a small
   dot and says how the model is saved; no button changes its border colour.
+- The *Auto-arrange* label sits above its three buttons, and label and buttons
+  share a subtle dashed frame; the label stays visible in a narrow toolbar.
 - The Auto-arrange option the view on screen is arranged with is selected and
   disabled; the check mark and edit icons are gone. The state is derived
   from the current positions of the complete or filtered view, and the `A`
