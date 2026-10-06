@@ -163,13 +163,47 @@ export async function runViewportCheck(app: App, doc: Document): Promise<Check[]
       const why: string[] = [];
       const cs = (doc.defaultView as Window).getComputedStyle(g);
       if (cs.borderTopStyle !== 'dashed') why.push('the group has no dashed frame');
-      if (tr.width < 1 || tr.height < 1) why.push('the label is not shown');
-      if (bs.some((b) => b.top < tr.bottom - 0.5)) why.push('the label is not above the buttons');
+      // in a very short window the label is hidden (it stays the group's accessible name)
+      const short = (doc.defaultView as Window).matchMedia('(max-height: 400px)').matches;
+      if (short) {
+        if (tr.width > 1 || (q('#arrange-title') as HTMLElement).textContent !== 'Auto-arrange') why.push('in a very short window the label should be hidden, not removed');
+      } else {
+        if (tr.width < 1 || tr.height < 1) why.push('the label is not shown');
+        if (bs.some((b) => b.top < tr.bottom - 0.5)) why.push('the label is not above the buttons');
+      }
       if (bs.some((b) => Math.abs(b.top - bs[0].top) > 0.5 || Math.abs(b.height - bs[0].height) > 0.5)) why.push('the buttons are not on one row');
       if (bs[1].left < bs[0].right - 1.5 || bs[2].left < bs[1].right - 1.5 || bs[1].left > bs[0].right + 0.5 || bs[2].left > bs[1].right + 0.5) why.push('the buttons are not side by side');
       if ([tr].concat(bs).some((r) => r.left < gr.left - 0.5 || r.right > gr.right + 0.5 || r.top < gr.top - 0.5 || r.bottom > gr.bottom + 0.5)) why.push('the label or a button leaves the frame');
       if (gr.left < -0.5 || gr.right > vw() + 0.5 || gr.top < -0.5) why.push('the group leaves the window');
       state('the Auto-arrange group: label above the three buttons, in one dashed frame', why);
+    }
+    {
+      // View, Auto-arrange and Filters: each a label above its controls in a dashed frame, all three alike
+      const win = doc.defaultView as Window;
+      const why: string[] = [];
+      const look: string[] = [];
+      for (const [id, controls] of [['view-group', '.seg button'], ['arrange-group', '.arrange-btn'], ['filters-group', '#view-filters > *']] as Array<[string, string]>) {
+        const g = q('#' + id) as HTMLElement;
+        const gr = g.getBoundingClientRect();
+        const title = g.querySelector('.tool-group-title') as HTMLElement;
+        const tr = title.getBoundingClientRect();
+        const cs = win.getComputedStyle(g);
+        const ts = win.getComputedStyle(title);
+        look.push([cs.borderTopStyle, cs.borderTopWidth, cs.borderTopColor, cs.borderTopLeftRadius, cs.paddingTop, cs.paddingLeft, cs.rowGap, ts.fontSize, ts.color].join(' '));
+        if (cs.borderTopStyle !== 'dashed') why.push(`${id} has no dashed frame`);
+        const short = win.matchMedia('(max-height: 400px)').matches;
+        if (short ? tr.width > 1 || !(title.textContent || '').trim() : tr.width < 1 || tr.height < 1) why.push(short ? `the ${id} label should be hidden but kept in a very short window` : `the ${id} label is not shown`);
+        const shown = (Array.prototype.slice.call(g.querySelectorAll(controls)) as HTMLElement[]).filter((e) => e.offsetWidth > 0);
+        if (!shown.length) why.push(`${id} shows no controls`);
+        for (const e of shown) {
+          const r = e.getBoundingClientRect();
+          if (!short && r.top < tr.bottom - 0.5) why.push(`the ${id} label is not above "${(e.textContent || '').trim().slice(0, 16)}"`);
+          if (r.left < gr.left - 0.5 || r.right > gr.right + 0.5 || r.bottom > gr.bottom + 0.5) why.push(`"${(e.textContent || '').trim().slice(0, 16)}" leaves the ${id} frame`);
+        }
+        if (gr.left < -0.5 || gr.right > vw() + 0.5 || gr.top < -0.5) why.push(`${id} leaves the window`);
+      }
+      if (look.some((l) => l !== look[0])) why.push('the groups differ: ' + look.join(' | '));
+      state('the View, Auto-arrange and Filters groups: labels above their controls, the same dashed frame', why);
     }
 
     // drop-downs of the toolbar open over the page: fully visible, not clipped by the toolbar, inside the window

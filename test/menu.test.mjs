@@ -152,8 +152,8 @@ test('View menu: next to Export, with Find in diagram… (/) and Filter object l
 });
 
 test('diagram filters: one group at the right of the toolbar, with a Filters drop-down for what does not fit', () => {
-  const group = /<div id="view-filters" class="view-filters" role="group" aria-label="Diagram filters">([\s\S]*?)\n  <\/div>\n<\/header>/.exec(html);
-  assert.ok(group, 'the filters are one group, the last thing in the toolbar');
+  const group = /<div id="filters-slot" class="filters-slot">\s*<div id="filters-group" class="tool-group filters-group" role="group" aria-label="Diagram filters">\s*<span id="filters-title" class="tool-group-title">Filters<\/span>\s*<div id="view-filters" class="view-filters">([\s\S]*?)\n  <\/div>\n  <\/div>\n  <\/div>\n<\/header>/.exec(html);
+  assert.ok(group, 'the filters are one labelled group, the last thing in the toolbar');
   const opts = [...group[1].matchAll(/<label class="opt[^"]*" data-priority="(\d)"[^>]*><input id="([^"]+)"/g)].map((m) => [m[2], Number(m[1])]);
   assert.deepEqual(opts, [['opt-labels', 5], ['opt-groups', 4], ['opt-networks', 3], ['opt-type-endpoint', 2], ['opt-type-server', 1]]);
   assert.match(group[1], /<button id="more-filters-btn" type="button" class="menu-btn" aria-haspopup="true" aria-expanded="false" aria-controls="more-filters" hidden disabled>Filters/);
@@ -262,8 +262,8 @@ test('Auto-arrange: three direct options (Default, Compact, Spacious) in one lab
   const app = readFileSync(join(root, 'src', 'ui', 'app.ts'), 'utf8');
   const group = /<div id="arrange-group"[^>]*>([\s\S]*?)\n  <\/div>/.exec(header);
   assert.ok(group, 'the group is in the toolbar');
-  assert.match(header, /<div id="arrange-group" class="arrange-group" role="group" aria-labelledby="arrange-title" aria-describedby="arrange-status">/);
-  assert.match(group[1], /<span id="arrange-title" class="arrange-title">Auto-arrange<\/span>/);
+  assert.match(header, /<div id="arrange-group" class="tool-group arrange-group" role="group" aria-labelledby="arrange-title" aria-describedby="arrange-status">/);
+  assert.match(group[1], /<span id="arrange-title" class="tool-group-title arrange-title">Auto-arrange<\/span>/);
   // three buttons, directly in the toolbar (no menu, no dialog to pick one), each named for assistive technology
   const buttons = [...group[1].matchAll(/<button id="btn-arrange-(\w+)" type="button" class="arrange-btn" data-strategy="(\w+)" aria-label="Auto-arrange: (\w+)" aria-pressed="false" disabled>(\w+)<\/button>/g)].map((m) => [m[1], m[2], m[3], m[4]]);
   assert.deepEqual(buttons, [['default', 'default', 'Default', 'Default'], ['compact', 'compact', 'Compact', 'Compact'], ['spacious', 'spacious', 'Spacious', 'Spacious']]);
@@ -282,8 +282,26 @@ test('Auto-arrange: three direct options (Default, Compact, Spacious) in one lab
   assert.doesNotMatch(css, /\.arrange-btn\[data-status/);
   // presentation: the label above one row of the three buttons, the whole group in a subtle dashed frame
   assert.match(group[1], /<span id="arrange-title"[^>]*>Auto-arrange<\/span>\s*<div class="arrange-btns">\s*<button id="btn-arrange-default"[\s\S]*?<button id="btn-arrange-spacious"[^>]*>Spacious<\/button>\s*<\/div>/);
-  assert.match(css, /\.arrange-group \{[^}]*flex-direction: column;[^}]*border: 1px dashed var\(--border\);/);
+  assert.match(css, /\.tool-group \{[^}]*flex-direction: column;[^}]*border: 1px dashed var\(--border\);/);
   assert.match(css, /\.arrange-btns \{ display: flex; \}/);
   // the label takes no width above the buttons, so no narrow toolbar hides it
-  assert.doesNotMatch(css, /@container[^{]*\{[^@]*\.arrange-title/);
+  assert.doesNotMatch(css, /@container[^{]*\{[^@]*\.(arrange-title|tool-group-title)/);
+});
+
+test('toolbar groups: View, Auto-arrange and Filters each have a label above their controls, in the same dashed frame', () => {
+  // the same classes, so one CSS definition gives all three the same frame, spacing and label
+  assert.match(header, /<div id="view-group" class="tool-group view-group" role="group" aria-labelledby="view-title">\s*<span id="view-title" class="tool-group-title">View<\/span>\s*<div class="seg">\s*<button type="button" data-view-btn="physical" title="Physical view \(P\)">Physical<\/button>\s*<button type="button" data-view-btn="logical" title="Logical view \(L\)">Logical<\/button>\s*<\/div>\s*<\/div>/);
+  assert.match(header, /<div id="arrange-group" class="tool-group arrange-group"[^>]*>\s*<span id="arrange-title" class="tool-group-title arrange-title">Auto-arrange<\/span>/);
+  assert.match(header, /<div id="filters-group" class="tool-group filters-group" role="group" aria-label="Diagram filters">\s*<span id="filters-title" class="tool-group-title">Filters<\/span>/);
+  assert.equal((header.match(/class="tool-group /g) || []).length, 3);
+  assert.equal((header.match(/class="tool-group-title/g) || []).length, 3);
+  // order unchanged: the views, then Auto-arrange, then the filters
+  const at = ['id="view-group"', 'data-view-btn="physical"', 'data-view-btn="logical"', 'id="arrange-group"', 'id="filters-group"', 'id="devices-btn"', 'id="opt-labels"', 'id="opt-type-server"', 'id="more-filters-btn"'].map((x) => header.indexOf(x));
+  assert.deepEqual(at, at.slice().sort((p, q) => p - q));
+  // frame, label and padding are defined once, so the groups can't drift apart
+  assert.doesNotMatch(css, /\.(view-group|arrange-group|filters-group) \{[^}]*(border|padding)/);
+  assert.match(css, /\.tool-group-title \{[^}]*font-size: 10px;/);
+  // the filter row keeps its collapsing (App.layoutFilters); it now measures the slot that holds the group
+  const app = readFileSync(join(root, 'src', 'ui', 'app.ts'), 'utf8');
+  assert.match(app, /const avail = slot\.clientWidth - chrome;/);
 });

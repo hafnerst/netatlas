@@ -152,7 +152,7 @@ test('the application has no "both views" choice: the button arranges the view o
   assert.deepEqual(app.match(/\.arrange\([^)]*\)/g), ['.arrange([view], strategy)']);
   assert.match(app, /const impact = d\.arrangeImpact\(view, strategy\);\s+if \(impact\.manual\.length\) \{/);
   assert.match(app, /if \(a !== 'arrange'\) return;/);
-  assert.match(html, /<span id="arrange-title" class="arrange-title">Auto-arrange<\/span>/);
+  assert.match(html, /<span id="arrange-title" class="tool-group-title arrange-title">Auto-arrange<\/span>/);
   const dist = readFileSync(join(root, 'dist', 'netatlas.html'), 'utf8');
   assert.doesNotMatch(dist, /Arrange both views/);
   assert.match(dist, /Replace manual positions in the \$\{view\} view\?/);
