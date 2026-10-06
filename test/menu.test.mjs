@@ -280,4 +280,10 @@ test('Auto-arrange: three direct options (Default, Compact, Spacious) in one lab
   // the selected option looks like the active view switch; the CSS has no orange or dashed treatment
   assert.match(css, /\.arrange-btn\.current, \.arrange-btn\.current:disabled \{[^}]*background: var\(--accent-soft\);[^}]*border-color: var\(--accent\);/);
   assert.doesNotMatch(css, /\.arrange-btn\[data-status/);
+  // presentation: the label above one row of the three buttons, the whole group in a subtle dashed frame
+  assert.match(group[1], /<span id="arrange-title"[^>]*>Auto-arrange<\/span>\s*<div class="arrange-btns">\s*<button id="btn-arrange-default"[\s\S]*?<button id="btn-arrange-spacious"[^>]*>Spacious<\/button>\s*<\/div>/);
+  assert.match(css, /\.arrange-group \{[^}]*flex-direction: column;[^}]*border: 1px dashed var\(--border\);/);
+  assert.match(css, /\.arrange-btns \{ display: flex; \}/);
+  // the label takes no width above the buttons, so no narrow toolbar hides it
+  assert.doesNotMatch(css, /@container[^{]*\{[^@]*\.arrange-title/);
 });

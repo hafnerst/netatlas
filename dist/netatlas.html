@@ -114,12 +114,9 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .seg button.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 600; position: relative; }
 .spacer { flex: 1; }
 .opt { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); user-select: none; white-space: nowrap; }
-/* a narrower toolbar: the logo without name and version, and the Auto-arrange title (the group keeps it as its accessible name) */
+/* a narrower toolbar: the logo without name and version (the Auto-arrange label sits above its buttons, so it takes no width and stays) */
 @container (max-width: 1180px) {
   .brand > span { display: none; }
-}
-@container (max-width: 1000px) {
-  .arrange-title { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 }
 /* the diagram filters: one row at the right of the toolbar; what doesn't fit goes into the Filters drop-down (App.layoutFilters) */
 .view-filters { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex: 1 1 0; flex-wrap: nowrap; }
@@ -656,11 +653,13 @@ dialog#modal::backdrop { background: rgba(0,0,0,.35); }
 .dns-chip text { font-size: 9.5px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: var(--muted) !important; }
 
 /* Auto-arrange: three options in one labelled group; the one the view is arranged with is pressed and disabled */
-.arrange-group { display: inline-flex; align-items: center; gap: 0; }
-.arrange-title { font-size: 11px; color: var(--muted); margin-right: 6px; white-space: nowrap; }
-.arrange-btn { border-radius: 0; margin-left: -1px; padding-left: 9px; padding-right: 9px; white-space: nowrap; }
-.arrange-group .arrange-btn:first-of-type { border-radius: 6px 0 0 6px; margin-left: 0; }
-.arrange-group .arrange-btn:last-of-type { border-radius: 0 6px 6px 0; }
+/* the label above the buttons, both inside a subtle dashed frame that reads as one control */
+.arrange-group { display: inline-flex; flex-direction: column; align-items: stretch; gap: 2px; padding: 2px 5px 4px; border: 1px dashed var(--border); border-radius: 8px; flex: none; }
+.arrange-title { font-size: 10px; line-height: 12px; color: var(--muted); text-align: center; letter-spacing: .03em; white-space: nowrap; }
+.arrange-btns { display: flex; }
+.arrange-btn { flex: 1 1 0; border-radius: 0; margin-left: -1px; padding: 2px 9px; white-space: nowrap; }
+.arrange-btns .arrange-btn:first-child { border-radius: 6px 0 0 6px; margin-left: 0; }
+.arrange-btns .arrange-btn:last-child { border-radius: 0 6px 6px 0; }
 /* the current option: marked like the active view switch, and not clickable (nothing to do) */
 .arrange-btn.current, .arrange-btn.current:disabled { opacity: 1; background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 600; position: relative; z-index: 1; cursor: default; }
 /* an option that gives the same positions as the current one: disabled, plain */
@@ -719,9 +718,11 @@ dialog#modal::backdrop { background: rgba(0,0,0,.35); }
   </div>
   <div id="arrange-group" class="arrange-group" role="group" aria-labelledby="arrange-title" aria-describedby="arrange-status">
     <span id="arrange-title" class="arrange-title">Auto-arrange</span>
-    <button id="btn-arrange-default" type="button" class="arrange-btn" data-strategy="default" aria-label="Auto-arrange: Default" aria-pressed="false" disabled>Default</button>
-    <button id="btn-arrange-compact" type="button" class="arrange-btn" data-strategy="compact" aria-label="Auto-arrange: Compact" aria-pressed="false" disabled>Compact</button>
-    <button id="btn-arrange-spacious" type="button" class="arrange-btn" data-strategy="spacious" aria-label="Auto-arrange: Spacious" aria-pressed="false" disabled>Spacious</button>
+    <div class="arrange-btns">
+      <button id="btn-arrange-default" type="button" class="arrange-btn" data-strategy="default" aria-label="Auto-arrange: Default" aria-pressed="false" disabled>Default</button>
+      <button id="btn-arrange-compact" type="button" class="arrange-btn" data-strategy="compact" aria-label="Auto-arrange: Compact" aria-pressed="false" disabled>Compact</button>
+      <button id="btn-arrange-spacious" type="button" class="arrange-btn" data-strategy="spacious" aria-label="Auto-arrange: Spacious" aria-pressed="false" disabled>Spacious</button>
+    </div>
     <span id="arrange-status" class="sr-only" aria-live="polite"></span>
   </div>
   <div id="view-filters" class="view-filters" role="group" aria-label="Diagram filters">
@@ -19573,7 +19574,10 @@ async function runSelfTest(app, doc) {
             app.layoutFilters();
             await tick();
             const narrowInline = inline();
-            check('narrow toolbar: the filters stay on one row; Servers, then Endpoints, … move into the Filters drop-down by priority', oneRow() && !more.hidden && narrowInline.length < 5 && narrowInline[0] === 'Labels' && !!q('#more-filters #opt-type-server') && rect(group).right <= rect(top).right + 0.5, narrowInline.join());
+            check('narrow toolbar: the filters stay on one row; Servers, then Endpoints, … move into the Filters drop-down by priority', 
+            // the ones that stay inline are the highest-priority ones, in order (possibly none at this width)
+            oneRow() && !more.hidden && narrowInline.length < 5 && narrowInline.join() === ['Labels', 'Groups / Locations', 'Networks', 'Endpoints', 'Servers'].slice(0, narrowInline.length).join() &&
+                !!q('#more-filters #opt-type-server') && rect(group).right <= rect(top).right + 0.5 && doc.documentElement.scrollWidth <= doc.documentElement.clientWidth, narrowInline.join());
             more.focus();
             more.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }));
             await tick();
@@ -20276,6 +20280,30 @@ async function runViewportCheck(app, doc) {
         const zoom = q('.zoombar').getBoundingClientRect();
         const canvas = q('#canvas-wrap').getBoundingClientRect();
         state('diagram controls stay inside the diagram area', zoom.top < canvas.top || zoom.bottom > canvas.bottom || zoom.left < canvas.left || zoom.right > canvas.right || zoom.bottom > vh() ? ['the zoom bar leaves the diagram area'] : []);
+        {
+            // the Auto-arrange group: its label above one row of three buttons, inside a dashed frame, within the window
+            const g = q('#arrange-group');
+            const gr = g.getBoundingClientRect();
+            const tr = q('#arrange-title').getBoundingClientRect();
+            const bs = ['default', 'compact', 'spacious'].map((s) => q('#btn-arrange-' + s).getBoundingClientRect());
+            const why = [];
+            const cs = doc.defaultView.getComputedStyle(g);
+            if (cs.borderTopStyle !== 'dashed')
+                why.push('the group has no dashed frame');
+            if (tr.width < 1 || tr.height < 1)
+                why.push('the label is not shown');
+            if (bs.some((b) => b.top < tr.bottom - 0.5))
+                why.push('the label is not above the buttons');
+            if (bs.some((b) => Math.abs(b.top - bs[0].top) > 0.5 || Math.abs(b.height - bs[0].height) > 0.5))
+                why.push('the buttons are not on one row');
+            if (bs[1].left < bs[0].right - 1.5 || bs[2].left < bs[1].right - 1.5 || bs[1].left > bs[0].right + 0.5 || bs[2].left > bs[1].right + 0.5)
+                why.push('the buttons are not side by side');
+            if ([tr].concat(bs).some((r) => r.left < gr.left - 0.5 || r.right > gr.right + 0.5 || r.top < gr.top - 0.5 || r.bottom > gr.bottom + 0.5))
+                why.push('the label or a button leaves the frame');
+            if (gr.left < -0.5 || gr.right > vw() + 0.5 || gr.top < -0.5)
+                why.push('the group leaves the window');
+            state('the Auto-arrange group: label above the three buttons, in one dashed frame', why);
+        }
         // drop-downs of the toolbar open over the page: fully visible, not clipped by the toolbar, inside the window
         const popup = (sel) => {
             const e = q(sel);
