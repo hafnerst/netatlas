@@ -12,18 +12,56 @@ it is described in [docs/FORMAT.md](docs/FORMAT.md).
 
 ## [Unreleased]
 
+### Added
+
+- **Save model** and **Save model as…** replace *Download model…*. *Save
+  model as…* saves to a file name and place you choose and links the model
+  to that file; *Save model* (Ctrl+S) then updates it without asking (the
+  browser may ask once for permission). In browsers without a save picker
+  (Firefox, Safari) *Save model as…* says so and downloads a copy, which is
+  not linked. *Open model…* through the browser's picker (Chromium-based
+  browsers) links the opened file; a file read through a plain file input or
+  dropped without a handle is never linked. A cancelled picker, a refused
+  permission or a failed write is reported and keeps every change unsaved.
+- **Auto-arrange** has three options in the toolbar: **Default** (the
+  existing layout), **Compact** (the same arrangement with the empty space
+  taken out, group by group) and **Spacious** (spread out by 1.4). All are
+  deterministic and idempotent, in complete and filtered views.
+- **Every interface is drawn:** ports without a cable as chips in their
+  device box (physical view), every loopback and the virtual and tunnel
+  interfaces as chips (logical view). Each can be selected.
+- **Connecting in the diagram:** right-click a device or an interface, then a
+  second one, to open a new physical link (physical view) or logical relation
+  (logical view) in the Edit tab with both endpoints filled in; it is created
+  only when it is complete and you press *Create*. Compatible endpoints are
+  marked; incompatible ones are refused with the reason. Esc cancels. The
+  keyboard equivalent is **C** on a selected device or interface and the
+  connect bar. A logical interface can take part in several relations; only a
+  relation that repeats an existing one is refused.
+- The open example is marked in the **File** menu, with whether its model was
+  modified.
+
 ### Changed
 
 - The View menu says what its entries work on: **Find…** is now **Find in
   diagram…** (`/`), **Filter outline…** is now **Filter object list…** (it
   narrows the model outline; the diagram is not changed). Hover texts, the
   Find bar's accessible name and the outline filter's placeholder follow.
-- **Auto-arrange** is disabled, in a neutral grey with its green ✓, while the
-  view on screen already matches the auto-arranged layout; its hover text
-  says why. When there is something to arrange it is enabled with the ✎ icon
-  and a normal blue border (no more orange, dashed border, and no ● icon).
-  The state is derived from the current positions of the complete or
-  filtered view, and the `A` key follows it.
+- The File menu says *model* in every entry (New model, Open model…, Save
+  model, Save model as…, Close model) and uses "…" exactly where input
+  follows; the start screen's card is **Open model…**.
+- **Modified** is now a comparison with what was opened or last saved: undo
+  back to that state clears it. The file name in the status bar shows a small
+  dot and says how the model is saved; no button changes its border colour.
+- The Auto-arrange option the view on screen is arranged with is selected and
+  disabled; the check mark and edit icons are gone. The state is derived
+  from the current positions of the complete or filtered view, and the `A`
+  key (Default) follows it.
+- The **Edit** tab groups each object's fields into titled cards (Identity,
+  Placement, Ends, Cable, Addressing, Protocol, Endpoints, Underlay, Notes,
+  More); the **Details** tab shows its sections in the same cards.
+- The logical view shows every loopback (there was a limit of three).
+- The example *device-types.yaml* has six free ports on its access switch.
 
 ### Fixed
 

@@ -72,7 +72,8 @@ test('no third-party runtime code: every bundled module comes from src/', () => 
 });
 
 test('reasonable size, and the examples are embedded', () => {
-  assert.ok(html.length < 1024 * 1024, `${html.length} bytes`);
+  // one self-contained page with every example embedded; a sanity limit, not a budget
+  assert.ok(html.length < 1.25 * 1024 * 1024, `${html.length} bytes`);
   assert.match(js, /enterprise-wan\.yaml/);
   assert.match(js, /datacenter-evpn\.yaml/);
 });

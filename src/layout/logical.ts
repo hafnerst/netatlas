@@ -26,7 +26,7 @@ import { CBox, Pt } from './geometry';
 import { LGroup, LayoutInput, cmp } from './input';
 import { GROUP_PAD, HUB_R, groupHeader, logicalDeviceSize, networkBody, pillBox } from './sizes';
 
-export { CHIP_H, HUB_R, MAX_CHIPS, chipRows, networkSubtitle } from './sizes';
+export { CHIP_H, HUB_R, chipRows, networkSubtitle } from './sizes';
 
 export interface LNode extends CBox {
   /** "device:<id>" | "network:<id>" | "hub:<relationId>" */
@@ -73,11 +73,11 @@ export function logicalSpecs(input: LayoutInput): LSpec[] {
   const involved = new Set<string>();
   for (const r of input.relations) for (const d of r.devices) involved.add(d);
   for (const n of input.networks) for (const d of n.members) involved.add(d);
-  // loopbacks are logical: a device that has one belongs in the logical view
-  for (const d of input.devices) if (d.loopbacks) involved.add(d.id);
+  // loopbacks and other logical interfaces are logical: a device that has one belongs in the logical view
+  for (const d of input.devices) if (d.loopbacks || d.logical.length) involved.add(d.id);
   const devs = involved.size ? input.devices.filter((d) => involved.has(d.id)) : input.devices;
   const out: LSpec[] = [];
-  for (const d of devs) out.push({ ref: 'device:' + d.id, kind: 'device', id: d.id, ...logicalDeviceSize(d.label, d.sub, d.chipW, d.loopbacks, d.dns) });
+  for (const d of devs) out.push({ ref: 'device:' + d.id, kind: 'device', id: d.id, ...logicalDeviceSize(d.label, d.sub, d.chipW, d.loopbacks, d.dns, d.logical) });
   for (const n of input.networks) {
     const b = networkBody(n.label, n.sub);
     out.push({ ref: 'network:' + n.id, kind: 'network', id: n.id, w: b.w, h: b.h });

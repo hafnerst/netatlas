@@ -22,7 +22,9 @@ import { derivedVlanText, interfaceAddresses, interfaceCarriedNetworks, interfac
 import { builtinProtocols, normalizeProtocol } from '../model/protocols';
 import { SelectionContext, contextState } from '../model/queries';
 import { DEVICE_TYPES, isDeviceType } from '../model/device-types';
-import { Issue, scalarText } from '../validation/validate';
+import { ID_RE, Issue, PROTO_RE, scalarText } from '../validation/validate';
+import { duplicateRelation, endpointName, pairProblem } from '../model/connect';
+import { Endpoint, endpointText } from '../model/types';
 
 /** `iface`: the document path of the selected physical or logical interface of a device. */
 export type EditorSel = { kind: EntityKind | 'document'; index: number; iface?: Path } | null;
@@ -34,6 +36,20 @@ export interface EditorHost {
   selected(sel: EditorSel): void;
   dialog(opts: DialogOpts): Promise<string>;
   toast(msg: string): void;
+  /** how the model's file is saved, in words (for the model settings) */
+  fileState(): string;
+}
+
+/**
+ * A new physical link or logical relation whose endpoints were chosen in the
+ * diagram. It lives only in the Edit tab until it is created: nothing is in
+ * the model before the required fields are filled in and Create is pressed.
+ */
+export interface ConnectionDraft {
+  kind: 'link' | 'relation';
+  ends: Endpoint[];
+  /** the values typed so far, by field: id, protocol, label, direction, medium, speed */
+  values: { [k: string]: string };
 }
 
 const J = (p: Path): string => JSON.stringify(p);
@@ -69,6 +85,8 @@ export class Editor {
    * least often picked from here.
    */
   private collapsed = new Set<EntityKind>(['link', 'protocol']);
+  /** a new link or relation being completed in the Edit tab (not in the model yet) */
+  draft: ConnectionDraft | null = null;
   /** unapplied text in the YAML source tab */
   sourceDraft: string | null = null;
   sourceError: string | null = null;
@@ -87,6 +105,7 @@ export class Editor {
 
   /** Select by diagram ref ("device:x", "iface:dev:if", "relation:r" …). */
   selectRef(ref: string | null): void {
+    this.leaveDraft(ref);
     if (!ref || !this.getDoc()) {
       this.sel = null;
       return;
@@ -147,12 +166,21 @@ export class Editor {
     return { kind: s.kind, id: ent.id };
   }
 
+  /** Selecting something else (or nothing) leaves an open draft: it is discarded, and the user is told. */
+  private leaveDraft(to: string | null): void {
+    if (!this.draft) return;
+    const kind = this.draft.kind;
+    this.draft = null;
+    this.host.toast(`The new ${kind === 'link' ? 'physical link' : 'relation'} was discarded (nothing was added)${to ? ': another object was selected' : ''}.`);
+  }
+
   /** Open the card of an interface. */
   openIface(path: Path): void {
     this.open.add(J(path));
   }
 
   private selectEntity(kind: EntityKind | 'document', index: number): void {
+    this.leaveDraft(kind);
     this.sel = { kind, index };
     this.host.selected(this.sel);
   }
@@ -319,6 +347,10 @@ export class Editor {
       wrap.appendChild(this.e('p', { class: 'muted' }, ['No model open.']));
       return;
     }
+    if (this.draft) {
+      this.renderDraft(wrap, this.draft);
+      return;
+    }
     const s = this.sel;
     if (!s || (s.kind !== 'document' && !doc.entities(s.kind)[s.index])) {
       this.sel = null;
@@ -335,22 +367,177 @@ export class Editor {
     else this.renderEntity(wrap, s.kind, s.index);
   }
 
+  // ------------------------------------------------- a new link or relation
+
+  /** Open a new link or relation between two endpoints chosen in the diagram (not in the model yet). */
+  openDraft(kind: 'link' | 'relation', ends: Endpoint[]): void {
+    const taken = this.doc.allIds();
+    const base = (kind === 'relation' ? 'rel-' : '') + ends.map((e) => e.device).join('-');
+    this.draft = { kind, ends, values: { id: this.doc.uniqueId(base, taken), label: '', protocol: '', direction: 'bidirectional', medium: '', speed: '' } };
+  }
+
+  /** Put the cursor in the draft's first required field (its ID), with the suggestion selected. */
+  focusDraft(): void {
+    const i = this.d.getElementById('draft-id') as HTMLInputElement | null;
+    if (!i) return;
+    i.focus();
+    i.select();
+  }
+
+  /** Discard the draft (nothing was added to the model). */
+  cancelDraft(say = true): void {
+    if (!this.draft) return;
+    const kind = this.draft.kind;
+    this.draft = null;
+    if (say) this.host.toast(`The new ${kind === 'link' ? 'physical link' : 'relation'} was discarded; nothing was added.`);
+    this.host.changed('filter');
+  }
+
+  /** What still keeps the draft from being created, by field ('' fields are fine). */
+  draftProblems(): { [k: string]: string } {
+    const dr = this.draft;
+    if (!dr) return {};
+    const v = dr.values;
+    const out: { [k: string]: string } = {};
+    const id = v.id.trim();
+    const what = dr.kind === 'link' ? 'physical link' : 'relation';
+    if (!id) out.id = `Required: the new ${what} needs an ID.`;
+    else if (!ID_RE.test(id)) out.id = 'An ID uses letters, digits and _ . - (up to 64 characters), and starts with a letter, a digit or _.';
+    else if (this.doc.allIds().has(id)) out.id = `“${id}” is already used; IDs are unique across the model.`;
+    const model = this.doc.result.model;
+    if (dr.kind === 'relation') {
+      const p = v.protocol.trim();
+      if (!p) out.protocol = 'Required: choose or type the protocol.';
+      else if (!PROTO_RE.test(normalizeProtocol(p))) out.protocol = `“${p}” is not a protocol name: use letters, digits and _ . + -`;
+      else if (model) {
+        const dup = duplicateRelation(model, dr.ends, { protocol: p, label: v.label, direction: v.direction === 'unidirectional' ? 'unidirectional' : 'bidirectional' });
+        if (dup) out.ends = `The same relation already exists (“${dup.id}”: same endpoints, protocol, label and direction). Give this one another label or direction, or cancel.`;
+      }
+    }
+    if (!out.ends && model) {
+      const why = pairProblem(model, dr.kind === 'link' ? 'physical' : 'logical', dr.ends[0], dr.ends[1]);
+      if (why) out.ends = `These endpoints can no longer be connected: ${why}.`;
+    }
+    return out;
+  }
+
+  /** The form of a draft: its endpoints, its values, what is still missing, Create and Cancel. */
+  private renderDraft(w: HTMLElement, dr: ConnectionDraft): void {
+    const link = dr.kind === 'link';
+    const what = link ? 'physical link' : 'relation';
+    const model = this.doc.result.model;
+    w.appendChild(materialize(objectHead(link ? 'new physical link' : 'new relation', link ? 'New physical link' : 'New logical relation', undefined, null), this.d));
+    w.appendChild(this.e('p', { class: 'draft-note' }, [`Not in the model yet. Fill in the required fields (marked *) and press Create ${what}; Cancel discards it.`]));
+    const input = (k: string, label: string, required: boolean, suggestions?: string[], placeholder?: string): HTMLElement => {
+      const attrs: { [k: string]: string } = { type: 'text', id: 'draft-' + k, 'data-t': 'draft', 'data-k': k, spellcheck: 'false', autocomplete: 'off', 'aria-describedby': 'draft-err-' + k };
+      if (required) {
+        attrs.required = '';
+        attrs['aria-required'] = 'true';
+      }
+      if (placeholder) attrs.placeholder = placeholder;
+      let dl: { id: string; node: HTMLElement } | null = null;
+      if (suggestions) {
+        dl = this.datalist(suggestions);
+        attrs.list = dl.id;
+      }
+      const i = this.e('input', attrs) as HTMLInputElement;
+      i.value = dr.values[k] || '';
+      return this.e('div', { class: 'field' }, [this.e('label', { for: 'draft-' + k }, [label + (required ? ' *' : '')]), dl ? this.e('span', { class: 'ctl' }, [i, dl.node]) : i, this.e('div', { class: 'field-err', id: 'draft-err-' + k, role: 'status' })]);
+    };
+    w.appendChild(this.group('Identity', [input('id', 'ID', true), input('label', 'Label', false)], 'identity'));
+    const endRow = (e: Endpoint, side: string): HTMLElement =>
+      this.e('div', { class: 'field draft-end', 'data-end': side }, [
+        this.e('span', { class: 'draft-end-side' }, [link ? `End ${side}` : `Endpoint ${side === 'A' ? 1 : 2}`]),
+        this.e('span', { class: 'ro' }, [model ? endpointName(model, e) : endpointText(e)]),
+        this.e('code', { class: 'ih-id' }, [endpointText(e)]),
+      ]);
+    w.appendChild(this.group(link ? 'Ends' : 'Endpoints', [endRow(dr.ends[0], 'A'), endRow(dr.ends[1], 'B'), this.e('div', { class: 'field-err', id: 'draft-err-ends', role: 'status' })], 'ends'));
+    if (link) {
+      w.appendChild(this.group('Cable', [input('medium', 'Medium', false, MEDIA), input('speed', 'Speed', false, ['100M', '1G', '10G', '25G', '40G', '100G', '400G'])], 'cable'));
+    } else {
+      const protos = Array.from(builtinProtocols().keys()).concat(this.ids('protocol'));
+      const dir = this.e('select', { id: 'draft-direction', 'data-t': 'draft', 'data-k': 'direction' }, [
+        this.e('option', { value: 'bidirectional' }, ['Bidirectional']),
+        this.e('option', { value: 'unidirectional' }, ['Unidirectional (endpoint 1 → endpoint 2)']),
+      ]) as HTMLSelectElement;
+      dir.value = dr.values.direction === 'unidirectional' ? 'unidirectional' : 'bidirectional';
+      w.appendChild(this.group('Protocol', [input('protocol', 'Protocol', true, protos, 'Select or type a protocol'), this.e('div', { class: 'field' }, [this.e('label', { for: 'draft-direction' }, ['Direction']), dir])], 'protocol'));
+    }
+    w.appendChild(
+      this.e('div', { class: 'row-btns draft-actions' }, [
+        this.e('button', { type: 'button', class: 'primary', id: 'draft-create', 'data-act': 'draft-create' }, [`Create ${what}`]),
+        this.e('button', { type: 'button', 'data-act': 'draft-cancel' }, ['Cancel']),
+      ]),
+    );
+    this.updateDraftUi();
+  }
+
+  /** A value of the draft was typed or chosen: keep it, and update its messages and the Create button. */
+  draftInput(t: HTMLElement): void {
+    const k = t.getAttribute('data-k');
+    if (!this.draft || !k) return;
+    this.draft.values[k] = (t as HTMLInputElement).value;
+    this.updateDraftUi();
+  }
+
+  /** Messages of the draft form and whether Create is possible, without re-rendering it (the cursor stays). */
+  private updateDraftUi(): void {
+    const p = this.draftProblems();
+    for (const k of ['id', 'protocol', 'ends']) {
+      const m = this.d.getElementById('draft-err-' + k);
+      if (m) m.textContent = p[k] || '';
+      const i = this.d.getElementById('draft-' + k);
+      if (i) i.setAttribute('aria-invalid', p[k] ? 'true' : 'false');
+    }
+    const b = this.d.getElementById('draft-create') as HTMLButtonElement | null;
+    if (b) {
+      b.disabled = Object.keys(p).length > 0;
+      b.title = b.disabled ? 'Complete the required fields first' : `Add it to the model (one undo step)`;
+    }
+  }
+
+  /** Create the drafted link or relation (one undo step) and select it; refused while something is missing. */
+  createDraft(): boolean {
+    const dr = this.draft;
+    if (!dr) return false;
+    const p = this.draftProblems();
+    const first = ['id', 'protocol'].find((k) => p[k]);
+    if (Object.keys(p).length) {
+      this.updateDraftUi();
+      const f = first ? (this.d.getElementById('draft-' + first) as HTMLElement | null) : null;
+      if (f) f.focus();
+      return false;
+    }
+    const v = dr.values;
+    const id = v.id.trim();
+    const fields: Array<[string, string]> =
+      dr.kind === 'link'
+        ? [['medium', v.medium], ['speed', v.speed], ['label', v.label]]
+        : [['protocol', v.protocol], ['label', v.label], ['direction', v.direction === 'unidirectional' ? 'unidirectional' : '']];
+    const index = this.doc.addConnection(dr.kind, id, dr.ends.map(endpointText), fields);
+    this.draft = null;
+    this.sel = { kind: dr.kind, index };
+    this.host.selected(this.sel);
+    this.host.changed(`Added ${dr.kind === 'link' ? 'physical link' : 'relation'} “${id}”. Undo with Ctrl+Z.`);
+    return true;
+  }
+
   private renderDocument(w: HTMLElement): void {
     const docIssues = this.doc.errors.concat(this.doc.warnings).filter((i) => !this.doc.issueEntity(i));
     w.appendChild(this.header('model', this.doc.text(['title']) || 'Untitled model', null, docIssues));
     if (docIssues.length) w.appendChild(this.issueBox(docIssues));
-    w.appendChild(this.field('Model format version', this.e('span', { class: 'ro' }, [this.doc.text(['netatlas']) || '(missing)']), ['netatlas'], 'The YAML format version (not the app version). Only 1 is supported.'));
     if (ENTITY_KINDS.every((k) => this.doc.entities(k).length === 0)) {
       w.appendChild(this.e('p', { class: 'hint-empty' }, ['This model is empty. Add a device, link, network, relation, group or protocol with “+ Add” in the Model outline; nothing is filled in for you.']));
     }
-    w.appendChild(this.textField(['title'], 'Title', 'top'));
-    w.appendChild(this.textField(['description'], 'Description', 'top', 'textarea'));
-    w.appendChild(this.otherProps([], 'document'));
+    w.appendChild(this.group('Model', [this.textField(['title'], 'Title', 'top'), this.textField(['description'], 'Description', 'top', 'textarea')], 'model'));
     w.appendChild(
-      this.e('p', { class: 'muted small' }, [
-        `File: ${this.doc.fileName} (${this.doc.origin === 'file' ? 'imported — downloads are saved as a new copy' : this.doc.origin === 'new' ? 'new model' : 'built-in example'}).`,
-      ]),
+      this.group('File', [
+        this.field('Model format version', this.e('span', { class: 'ro' }, [this.doc.text(['netatlas']) || '(missing)']), ['netatlas'], 'The YAML format version (not the app version). Only 1 is supported.'),
+        this.e('p', { class: 'muted small file-note' }, [`File: ${this.doc.fileName} (${this.host.fileState()}).`]),
+      ], 'file'),
     );
+    const other = this.otherProps([], 'document');
+    if (other.firstChild) w.appendChild(this.group('More', [other], 'more'));
   }
 
   /**
@@ -411,58 +598,65 @@ export class Editor {
       return;
     }
     const o = kind;
-    const add = (x: HTMLElement): void => {
-      w.appendChild(x);
+    const g = (title: string, kids: Array<HTMLElement | null>, key: string): void => {
+      w.appendChild(this.group(title, kids, key));
     };
-    add(this.idField(base, kind));
+    const notes = (): void => g('Notes', [this.textField(base.concat('description'), 'Description', o, 'textarea')], 'notes');
     if (kind === 'device') {
-      add(this.textField(base.concat('label'), 'Label', o, 'textarea', undefined, 'Line breaks are kept.'));
-      add(this.typeField(base.concat('type'), o));
-      add(this.refField(base.concat('group'), 'Group / location', o, this.ids('group')));
-      add(this.intField(base.concat('tier'), 'Tier (0–9)', o, 'Row in the physical view (0 = top). Empty: automatic.'));
-      add(this.textField(base.concat('description'), 'Description', o, 'textarea'));
+      g('Identity', [this.idField(base, kind), this.textField(base.concat('label'), 'Label', o, 'textarea', undefined, 'Line breaks are kept.'), this.typeField(base.concat('type'), o)], 'identity');
+      g('Placement', [this.refField(base.concat('group'), 'Group / location', o, this.ids('group')), this.intField(base.concat('tier'), 'Tier (0–9)', o, 'Row in the physical view (0 = top). Empty: automatic.')], 'placement');
+      notes();
       this.renderInterfaces(w, index);
     } else if (kind === 'link') {
-      add(this.endpointField(base.concat('a'), 'End A', o, false));
-      add(this.endNetworksField(base.concat('a'), 'A'));
-      add(this.endpointField(base.concat('b'), 'End B', o, false));
-      add(this.endNetworksField(base.concat('b'), 'B'));
-      add(this.networkMismatchNote(index));
-      add(this.textField(base.concat('medium'), 'Medium', o, 'text', MEDIA, 'Set on the link only, not on ports.'));
-      add(this.textField(base.concat('speed'), 'Speed', o, 'text', ['100M', '1G', '10G', '25G', '40G', '100G', '400G'], 'Set on the link only, not on ports.'));
-      add(this.textField(base.concat('label'), 'Label', o));
-      add(this.textField(base.concat('cable'), 'Cable / circuit id', o));
-      add(this.textField(base.concat('description'), 'Description', o, 'textarea'));
+      g('Identity', [this.idField(base, kind), this.textField(base.concat('label'), 'Label', o)], 'identity');
+      g('Ends', [this.endpointField(base.concat('a'), 'End A', o, false), this.endNetworksField(base.concat('a'), 'A'), this.endpointField(base.concat('b'), 'End B', o, false), this.endNetworksField(base.concat('b'), 'B'), this.networkMismatchNote(index)], 'ends');
+      g('Cable', [
+        this.textField(base.concat('medium'), 'Medium', o, 'text', MEDIA, 'Set on the link only, not on ports.'),
+        this.textField(base.concat('speed'), 'Speed', o, 'text', ['100M', '1G', '10G', '25G', '40G', '100G', '400G'], 'Set on the link only, not on ports.'),
+        this.textField(base.concat('cable'), 'Cable / circuit id', o),
+      ], 'cable');
+      notes();
     } else if (kind === 'network') {
-      add(this.textField(base.concat('label'), 'Label', o));
-      add(this.cidrField(base.concat('cidr'), o));
-      add(this.intField(base.concat('vlan'), `VLAN ID (${VLAN_MIN}–${VLAN_MAX})`, o, 'Interfaces addressed in this network show it as their VLAN.'));
-      add(this.membersField(index));
-      add(this.textField(base.concat('description'), 'Description', o, 'textarea'));
+      g('Identity', [this.idField(base, kind), this.textField(base.concat('label'), 'Label', o)], 'identity');
+      g('Addressing', [this.cidrField(base.concat('cidr'), o), this.intField(base.concat('vlan'), `VLAN ID (${VLAN_MIN}–${VLAN_MAX})`, o, 'Interfaces addressed in this network show it as their VLAN.')], 'addressing');
+      g('Members', [this.membersField(index)], 'members');
+      notes();
     } else if (kind === 'relation') {
       const protos = Array.from(builtinProtocols().keys()).concat(this.ids('protocol'));
-      add(this.textField(base.concat('protocol'), 'Protocol', o, 'text', protos, 'Required. Built-in names get a default style; define others under Protocols.', 'Select or type a protocol'));
-      add(this.enumField(base.concat('category'), 'Category', o, CATEGORIES as unknown as string[], '(from protocol)'));
-      add(this.textField(base.concat('label'), 'Label', o));
-      add(this.endpointList(base.concat('endpoints'), 'Endpoints', o));
-      add(this.overField(base.concat('over'), 'Carried over (underlay)', o, index));
-      add(this.directionField(base.concat('direction')));
-      add(this.textField(base.concat('description'), 'Description', o, 'textarea'));
+      g('Identity', [this.idField(base, kind), this.textField(base.concat('label'), 'Label', o)], 'identity');
+      g('Protocol', [
+        this.textField(base.concat('protocol'), 'Protocol', o, 'text', protos, 'Required. Built-in names get a default style; define others under Protocols.', 'Select or type a protocol'),
+        this.enumField(base.concat('category'), 'Category', o, CATEGORIES as unknown as string[], '(from protocol)'),
+        this.directionField(base.concat('direction')),
+      ], 'protocol');
+      g('Endpoints', [this.endpointList(base.concat('endpoints'), 'Endpoints', o)], 'endpoints');
+      g('Underlay', [this.overField(base.concat('over'), 'Carried over (underlay)', o, index)], 'underlay');
+      notes();
     } else if (kind === 'group') {
-      add(this.textField(base.concat('label'), 'Label', o));
-      add(this.textField(base.concat('kind'), 'Kind', o, 'text', GROUP_KINDS, undefined, 'Select or type a group kind'));
       const self = doc.text(base.concat('id'));
-      add(this.refField(base.concat('parent'), 'Parent group', o, this.ids('group').filter((g) => g !== self)));
-      add(this.textField(base.concat('description'), 'Description', o, 'textarea'));
+      g('Identity', [this.idField(base, kind), this.textField(base.concat('label'), 'Label', o), this.textField(base.concat('kind'), 'Kind', o, 'text', GROUP_KINDS, undefined, 'Select or type a group kind')], 'identity');
+      g('Placement', [this.refField(base.concat('parent'), 'Parent group', o, this.ids('group').filter((x) => x !== self))], 'placement');
+      notes();
     } else if (kind === 'protocol') {
-      add(this.textField(base.concat('label'), 'Label', o));
-      add(this.enumField(base.concat('category'), 'Category', o, CATEGORIES as unknown as string[], 'Select category'));
-      add(this.colorField(base.concat('color'), 'Colour', o));
-      add(this.enumField(base.concat('style'), 'Line style', o, LINE_STYLES as unknown as string[], '(from category)'));
-      add(this.textField(base.concat('description'), 'Description', o, 'textarea'));
+      g('Identity', [this.idField(base, kind), this.textField(base.concat('label'), 'Label', o)], 'identity');
+      g('Drawing', [this.enumField(base.concat('category'), 'Category', o, CATEGORIES as unknown as string[], 'Select category'), this.colorField(base.concat('color'), 'Colour', o), this.enumField(base.concat('style'), 'Line style', o, LINE_STYLES as unknown as string[], '(from category)')], 'drawing');
+      notes();
     }
-    if (kind !== 'protocol') add(this.attrsField(base.concat('attrs'), kind === 'relation' ? 'Protocol-specific attributes (attrs)' : 'Attributes (attrs)', o));
-    add(this.otherProps(base, kind));
+    const extra: HTMLElement[] = [];
+    if (kind !== 'protocol') extra.push(this.attrsField(base.concat('attrs'), kind === 'relation' ? 'Protocol-specific attributes (attrs)' : 'Attributes (attrs)', o));
+    const other = this.otherProps(base, kind);
+    if (other.firstChild) extra.push(other);
+    if (extra.length) g('More', extra, 'more');
+  }
+
+  /**
+   * A titled group of fields in the Edit tab (a card). The same look as the
+   * sections of the Details tab, so both tabs read alike; every field keeps
+   * its own label, help and messages.
+   */
+  private group(title: string, kids: Array<HTMLElement | null>, key: string): HTMLElement {
+    const id = 'fg-' + key;
+    return this.e('section', { class: 'fgroup', 'data-group': key, 'aria-labelledby': id }, [this.e('h4', { class: 'fgroup-title', id }, [title]), ...kids]);
   }
 
   private ids(kind: EntityKind): string[] {
@@ -789,6 +983,7 @@ export class Editor {
   /** Forget everything that belonged to the model that was open: selection, open cards, filter, folded sections, YAML draft. */
   reset(): void {
     this.sel = null;
+    this.draft = null;
     this.open.clear();
     this.filter = '';
     this.filterOpen = false;
@@ -1526,6 +1721,11 @@ export class Editor {
       this.host.changed('filter');
       return true;
     }
+    // a draft's values stay in the draft until it is created
+    if (t === 'draft') {
+      this.draftInput(target);
+      return true;
+    }
     const doc = this.getDoc();
     if (!doc) return true;
     const p = P(target.getAttribute('data-p'));
@@ -1640,6 +1840,12 @@ export class Editor {
     const index = Number(btn.getAttribute('data-index'));
     const p = P(btn.getAttribute('data-p'));
     switch (act) {
+      case 'draft-create':
+        this.createDraft();
+        return true;
+      case 'draft-cancel':
+        this.cancelDraft();
+        return true;
       case 'select':
         this.selectEntity(kind, index);
         this.host.changed('select');

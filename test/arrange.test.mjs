@@ -148,11 +148,11 @@ test('the application has no "both views" choice: the button arranges the view o
   const app = readFileSync(join(root, 'src', 'ui', 'app.ts'), 'utf8');
   const html = readFileSync(join(root, 'src', 'index.html'), 'utf8');
   assert.doesNotMatch(app + html, /Arrange both views|value: 'both'|arrangeDialog|current view or both/);
-  // the only arrange call in the UI passes exactly the current view
-  assert.deepEqual(app.match(/\.arrange\([^)]*\)/g), ['.arrange([view])']);
-  assert.match(app, /const impact = d\.arrangeImpact\(view\);\s+if \(impact\.manual\.length\) \{/);
+  // the only arrange call in the UI passes exactly the current view (and the chosen strategy)
+  assert.deepEqual(app.match(/\.arrange\([^)]*\)/g), ['.arrange([view], strategy)']);
+  assert.match(app, /const impact = d\.arrangeImpact\(view, strategy\);\s+if \(impact\.manual\.length\) \{/);
   assert.match(app, /if \(a !== 'arrange'\) return;/);
-  assert.match(html, /<span class="arrange-label">Auto-arrange<\/span>/);
+  assert.match(html, /<span id="arrange-title" class="arrange-title">Auto-arrange<\/span>/);
   const dist = readFileSync(join(root, 'dist', 'netatlas.html'), 'utf8');
   assert.doesNotMatch(dist, /Arrange both views/);
   assert.match(dist, /Replace manual positions in the \$\{view\} view\?/);

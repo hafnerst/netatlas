@@ -13,13 +13,13 @@ const menu = /<div id="main-menu"[^>]*>([\s\S]*?)\n    <\/div>/.exec(header)[1];
 const css = readFileSync(join(root, 'src', 'styles.css'), 'utf8');
 
 test('toolbar: logo and version, then File, Export, View, undo/redo, views, Auto-arrange, the diagram filters; no Current model button', () => {
-  const order = ['class="brand"', 'class="version"', 'id="menu-btn"', 'id="export-btn"', 'id="view-btn"', 'id="btn-undo"', 'id="btn-redo"', 'data-view-btn="physical"', 'data-view-btn="logical"', 'id="btn-arrange"', 'id="view-filters"'];
+  const order = ['class="brand"', 'class="version"', 'id="menu-btn"', 'id="export-btn"', 'id="view-btn"', 'id="btn-undo"', 'id="btn-redo"', 'data-view-btn="physical"', 'data-view-btn="logical"', 'id="arrange-group"', 'id="view-filters"'];
   const at = order.map((x) => header.indexOf(x));
   assert.ok(at.every((p) => p >= 0), JSON.stringify(at));
   assert.deepEqual(at, at.slice().sort((p, q) => p - q), 'in this order');
   assert.match(header, /<span>netatlas<\/span><span class="version"[^>]*>v__VERSION__<\/span>/);
   // these stay direct controls: none of them is inside the menu
-  for (const id of ['btn-undo', 'btn-redo', 'btn-arrange']) assert.ok(!menu.includes(`id="${id}"`), id);
+  for (const id of ['btn-undo', 'btn-redo', 'arrange-group', 'btn-arrange-default', 'btn-arrange-compact', 'btn-arrange-spacious']) assert.ok(!menu.includes(`id="${id}"`), id);
   // Find is not in the toolbar any more: it opens from View (or "/") as a bar over the diagram
   assert.ok(!header.includes('id="search"') && html.includes('id="find-bar"'));
   assert.ok(!/data-view-btn/.test(menu));
@@ -28,31 +28,43 @@ test('toolbar: logo and version, then File, Export, View, undo/redo, views, Auto
   assert.doesNotMatch(html + css + appSrc, /btn-model|model-badge|model-btn|Current model/);
 });
 
-test('File menu: New, Open, Download and the examples in one menu with plain names', () => {
+test('File menu: New model, Open model…, Save model, Save model as…, Close model and the examples; "model" throughout, "…" only where input follows', () => {
   assert.match(header, /<button id="menu-btn"[^>]*aria-haspopup="menu"[^>]*aria-expanded="false"[^>]*aria-controls="main-menu"[^>]*>File /);
   assert.match(header, /<div id="main-menu" class="dropdown menu" role="menu"[^>]*hidden>/);
   const entries = [...menu.matchAll(/<button id="([^"]+)"[^>]*role="menuitem"[^>]*><span class="mi-label">([^<]+)</g)].map((m) => [m[1], m[2]]);
-  assert.deepEqual(entries, [['btn-new', 'New model'], ['open', 'Open model…'], ['btn-download', 'Download model…'], ['btn-close', 'Close model']]);
-  // Close model comes immediately after Download model…, and is unavailable until a model is open
-  assert.match(menu, /id="btn-download"[^\n]*\n\s*<button id="btn-close" type="button" role="menuitem" title="Close the current model and return to the start screen" disabled>/);
-  // one wording rule for all three: verb + "model", sentence case, and "…" (the character, not three dots)
-  // exactly where the command needs further input (a file to pick, a file name to confirm)
-  for (const [, label] of entries) assert.match(label, /^(New|Open|Download|Close) model(…)?$/);
-  assert.doesNotMatch(menu, /\.\.\./);
-  // tooltips say what each command does, and only Download has a shortcut hint
+  assert.deepEqual(entries, [['btn-new', 'New model'], ['open', 'Open model…'], ['btn-save', 'Save model'], ['btn-save-as', 'Save model as…'], ['btn-close', 'Close model']]);
+  // one wording rule for every entry: verb + "model", sentence case; "…" (the character, not three dots)
+  // exactly where the command asks for something first (a file to open, a name and place to save to);
+  // Save model and Close model act at once (Close asks only when there are unsaved changes)
+  for (const [, label] of entries) assert.match(label, /^(New|Open|Save|Close) model( as)?(…)?$/);
+  for (const [id, label] of entries) assert.equal(label.endsWith('…'), id === 'open' || id === 'btn-save-as', label);
+  assert.doesNotMatch(menu + header, /\.\.\.|YAML file…|Download model/);
+  // both save entries are always there; until a model is open, they (and Close) are unavailable
+  for (const id of ['btn-save', 'btn-save-as', 'btn-close']) assert.match(menu, new RegExp(`<button id="${id}" type="button" role="menuitem" title="[^"]*" disabled>`), id);
+  assert.match(menu, /id="btn-close"[^>]*title="Close the current model and return to the start screen"/);
+  // tooltips say what each command does; the shortcuts are on the save entries
   assert.match(menu, /id="btn-new"[^>]*title="Start a new, empty model"/);
   assert.match(menu, /id="open"[^>]*title="Open a model from a YAML file on this computer \(nothing is uploaded\)"/);
-  assert.match(menu, /id="btn-download"[^>]*title="Download the current model as a YAML file \(Ctrl\+S\)"/);
-  assert.deepEqual([...menu.matchAll(/class="mi-hint">([^<]*)</g)].map((m) => m[1]), ['Ctrl+S']);
-  // the ellipsis rule holds on the start screen too: opening a file asks for one
-  assert.match(html, /<button id="open-empty"[^>]*>\s*<span class="start-title">Open YAML file…<\/span>/);
+  assert.deepEqual([...menu.matchAll(/class="mi-hint">([^<]*)</g)].map((m) => m[1]), ['Ctrl+S', 'Ctrl+Shift+S']);
+  // the save entries' tooltips follow the state: linked or not, a browser that can save to a chosen file or only download
+  const app = readFileSync(join(root, 'src', 'ui', 'app.ts'), 'utf8');
+  assert.match(app, /save\.disabled = !this\.linked;/);
+  assert.match(app, /saveAs\.disabled = !d;/);
+  assert.match(app, /`Save the model to “\$\{this\.handle\.name\}” \(Ctrl\+S\)/);
+  assert.match(app, /'Not available: the model is not linked to a file this page may write\. Use Save model as… to choose one\.'/);
+  assert.match(app, /'Download a copy of the model as a YAML file: this browser can’t save to a file you choose \(Ctrl\+Shift\+S\)'/);
+  // the start screen and the error page use the same words
+  assert.match(html, /<button id="open-empty"[^>]*>\s*<span class="start-title">Open model…<\/span>\s*<span class="start-sub">Choose a YAML file, or drop one here<\/span>/);
+  assert.match(app, /\['Open another model…'\]/);
   assert.match(menu, /<div class="menu-title" id="menu-examples-title">Examples<\/div>\s*<div id="menu-examples" role="group" aria-labelledby="menu-examples-title"><\/div>/);
   // and nowhere else in the toolbar
   const outside = header.replace(menu, '');
-  for (const gone of ['id="btn-new"', 'id="open"', 'id="btn-download"', 'id="examples"', '<select']) assert.ok(!outside.includes(gone), gone);
-  // the examples are filled in from the embedded files, one entry each
-  const app = readFileSync(join(root, 'src', 'ui', 'app.ts'), 'utf8');
+  for (const gone of ['id="btn-new"', 'id="open"', 'id="btn-save"', 'id="btn-save-as"', 'id="btn-download"', 'id="examples"', '<select']) assert.ok(!outside.includes(gone), gone);
+  // the examples are filled in from the embedded files, one entry each, with a place for the "open · modified" state
   assert.match(app, /const menu = this\.\$\('menu-examples'\);\s+EXAMPLES\.forEach/);
+  assert.match(app, /el\(this\.doc, 'span', \{ class: 'mi-hint ex-state' \}\)/);
+  // modified state is shown by a dot, never by a different border colour of a button
+  assert.doesNotMatch(css, /data-dirty="true"\][^{]*\{[^}]*border-color/);
   // drop-downs open over the page: the toolbar must not clip or scroll them
   const topbar = /\n\.topbar \{([^}]*)\}/.exec(css)[1];
   assert.doesNotMatch(topbar, /overflow|max-height/);
@@ -198,7 +210,7 @@ test('start screen: name, one sentence, three ways to begin; no link row, no lon
   assert.match(start, /<div class="start-brand">\s*<svg /, 'a logo next to the name');
   assert.match(start, /<p class="start-tagline">Create and explore network architecture diagrams, fully offline\.<\/p>/);
   const titles = [...start.matchAll(/class="start-title"[^>]*>([^<]+)</g)].map((m) => m[1]);
-  assert.deepEqual(titles, ['New model', 'Open YAML file…', 'Load example']);
+  assert.deepEqual(titles, ['New model', 'Open model…', 'Load example']);
   assert.match(start, /<button id="open-empty" type="button" class="start-card start-drop">[\s\S]*?drop one here/);
   assert.match(start, /<label class="start-title" for="start-example">Load example<\/label>[\s\S]*?<select id="start-example"[^>]*><option value="">Choose an example…<\/option><\/select>\s*<button id="start-load" type="button" disabled>Load<\/button>/);
   // every action is a native, focusable control
@@ -216,7 +228,9 @@ test('start screen: name, one sentence, three ways to begin; no link row, no lon
   // drops are always taken over by the page, and replacing unsaved work is confirmed
   assert.match(app, /doc\.addEventListener\('dragover', \(e\) => \{\s*e\.preventDefault\(\);/);
   assert.match(app, /doc\.addEventListener\('drop', async \(e\) => \{\s*e\.preventDefault\(\);/);
-  assert.match(app, /else if \(await this\.confirmDiscard\('Opening the dropped file'\)\) void this\.loadFile\(f\);/);
+  assert.match(app, /else if \(await this\.confirmDiscard\('Opening the dropped file'\)\) \{/);
+  // a dropped file is linked for saving only when the browser hands over a handle the page may write
+  assert.match(app, /void this\.loadFile\(f, isWritable\(h\) \? h : null\);/);
 });
 
 test('PNG export: scale and file names', () => {
@@ -244,18 +258,26 @@ test('PNG export: scale and file names', () => {
   assert.equal(files.pictureBaseName('a/b:c.yaml'), 'a_b_c');
 });
 
-test('Auto-arrange button: disabled and grey with the check mark when the view already matches, blue with the edit icon otherwise', () => {
+test('Auto-arrange: three direct options (Default, Compact, Spacious) in one labelled group; the matching one is selected and disabled', () => {
   const app = readFileSync(join(root, 'src', 'ui', 'app.ts'), 'utf8');
-  // the state comes from the positions (document or filtered session), never from the last action
-  assert.match(app, /btn\.disabled = st === 'auto';/);
-  assert.match(app, /btn\.disabled = fst === 'auto';/);
-  // the A key and any other caller go through the same check, so a disabled button cannot be bypassed
-  assert.match(app, /if \(\(s\.isFiltered\(\) \? s\.filteredStatus\(view\) : d\.layoutStatus\(view\)\) === 'auto'\) return;/);
-  // icons: the check mark as status, the edit icon whenever there is something to arrange
-  assert.match(app, /const LAYOUT_STATUS_ICON = \{ auto: '\\u2713', manual: '\\u270E', edited: '\\u270E' \};/);
-  assert.match(app, /auto: 'This view already matches the auto-arranged layout, so Auto-arrange is not available\.'/);
-  // a normal blue border, no orange or dashed treatment; the disabled state is grey but not faded
-  assert.match(css, /\.arrange-btn \{[^}]*border-color: var\(--accent\);/);
-  assert.match(css, /\.arrange-btn:disabled \{[^}]*opacity: 1;[^}]*color: var\(--muted\);[^}]*border-color: var\(--border\);/);
-  assert.doesNotMatch(css, /\.arrange-btn\[data-status="(manual|edited)"\]/);
+  const group = /<div id="arrange-group"[^>]*>([\s\S]*?)\n  <\/div>/.exec(header);
+  assert.ok(group, 'the group is in the toolbar');
+  assert.match(header, /<div id="arrange-group" class="arrange-group" role="group" aria-labelledby="arrange-title" aria-describedby="arrange-status">/);
+  assert.match(group[1], /<span id="arrange-title" class="arrange-title">Auto-arrange<\/span>/);
+  // three buttons, directly in the toolbar (no menu, no dialog to pick one), each named for assistive technology
+  const buttons = [...group[1].matchAll(/<button id="btn-arrange-(\w+)" type="button" class="arrange-btn" data-strategy="(\w+)" aria-label="Auto-arrange: (\w+)" aria-pressed="false" disabled>(\w+)<\/button>/g)].map((m) => [m[1], m[2], m[3], m[4]]);
+  assert.deepEqual(buttons, [['default', 'default', 'Default', 'Default'], ['compact', 'compact', 'Compact', 'Compact'], ['spacious', 'spacious', 'Spacious', 'Spacious']]);
+  // no check mark or edit icon any more
+  assert.doesNotMatch(html + app + css, /arrange-icon|LAYOUT_STATUS_ICON|\\u270E/);
+  // the state comes from the positions (document or filtered session), never from the last button pressed
+  assert.match(app, /const matches = filtered \? s\.filteredArrangedWith\(view\) : d\.arrangedWith\(view\);/);
+  assert.match(app, /const isCurrent = st === current;\s+const same = !isCurrent && matches\.indexOf\(st\) >= 0;\s+b\.disabled = isCurrent \|\| same;\s+b\.setAttribute\('aria-pressed', isCurrent \? 'true' : 'false'\);/);
+  // the A key and any other caller go through the same check, so a disabled option cannot be bypassed
+  assert.match(app, /if \(\(s\.isFiltered\(\) \? s\.filteredArrangedWith\(view\) : d\.arrangedWith\(view\)\)\.indexOf\(strategy\) >= 0\) return;/);
+  assert.match(app, /else if \(e\.key === 'a'\) void this\.arrangeCurrentView\('default'\);/);
+  // identical results are never presented as different
+  assert.match(app, /gives exactly the same positions as \$\{STRATEGY_LABEL\[current as ArrangeStrategy\]\}/);
+  // the selected option looks like the active view switch; the CSS has no orange or dashed treatment
+  assert.match(css, /\.arrange-btn\.current, \.arrange-btn\.current:disabled \{[^}]*background: var\(--accent-soft\);[^}]*border-color: var\(--accent\);/);
+  assert.doesNotMatch(css, /\.arrange-btn\[data-status/);
 });

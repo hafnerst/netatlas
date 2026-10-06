@@ -6,7 +6,11 @@
  * letting the browser download a new copy. Nothing is transmitted.
  */
 import { ModelDoc, Origin, ifaceSchemaKind } from '../editor/document';
-import { PngPicture, downloadBlob, downloadText, exportFileName, pictureBaseName, readTextFile, safeYamlFileName, svgToPng } from './files';
+import { FileAccess, PngPicture, WritableFile, detectFileAccess, downloadBlob, downloadText, exportFileName, isCancel, isWritable, pictureBaseName, readTextFile, safeYamlFileName, svgToPng, writeFile } from './files';
+import { Pt } from '../layout/geometry';
+import { ArrangeStrategy, STRATEGIES, STRATEGY_LABEL } from '../layout/strategies';
+import { compatibleEndpoints, connectionKind, endpointName, endpointOfRef, endpointProblem, endpointRef, pairProblem } from '../model/connect';
+import { Endpoint } from '../model/types';
 import { el, materialize, mount } from './dom';
 import { DialogOpts, showDialog, showToast } from './dialogs';
 import { Editor, EditorSel } from './inspector';
@@ -48,6 +52,22 @@ export class App {
   private loadErrorName = '';
   private rafPending = false;
   private errorRefs = new Set<string>();
+  /** the browser's file pickers, where it has them (replaceable, e.g. by the self-test) */
+  fileAccess: FileAccess;
+  /**
+   * The file the model is linked to: Save model writes there. Set only when
+   * the page obtained a handle it can write (Save model as…, or opening with
+   * the browser's picker or by dropping a file where the browser hands one
+   * over); null for new models, examples and files read through the file
+   * input.
+   */
+  private handle: WritableFile | null = null;
+  /** the built-in example the model was loaded from, until it is saved as a file of the user's */
+  private example: number | null = null;
+  /** the name of the copy last downloaded by Save model as… (the browser couldn't write a chosen file) */
+  private copyName: string | null = null;
+  /** a connection being drawn in the diagram: its first endpoint and where the pointer is */
+  private conn: { view: View; first: Endpoint; ref: string; at: Pt | null } | null = null;
 
   constructor(doc: Document) {
     this.doc = doc;
@@ -58,11 +78,13 @@ export class App {
     };
     this.svg = this.$<SVGSVGElement>('canvas');
     this.viewport = this.$<SVGGElement>('viewport');
+    this.fileAccess = detectFileAccess(doc.defaultView);
     this.editor = new Editor(doc, {
       changed: (note) => this.afterEdit(note),
       selected: (sel) => this.editorSelected(sel),
       dialog: (o) => this.dialog(o),
       toast: (m) => this.toast(m),
+      fileState: () => this.fileState().text,
     }, () => this.mdoc);
     this.wire();
     this.fillExamples();
@@ -71,21 +93,56 @@ export class App {
 
   // ------------------------------------------------------------- loading
 
-  /** Read a user-chosen local file (size-checked, strict UTF-8). Does not ask about unsaved changes. */
-  async loadFile(file: File): Promise<LoadOutcome> {
+  /**
+   * Read a user-chosen local file (size-checked, strict UTF-8). Does not ask
+   * about unsaved changes. With `handle` (the browser's open picker, or a
+   * dropped file the browser gave a handle for), the model is linked to the
+   * file when the page may write to it; a file from the file input never is.
+   */
+  async loadFile(file: File, handle: WritableFile | null = null): Promise<LoadOutcome> {
     const r = await readTextFile(file);
     if ('error' in r) return this.fail(file.name, [{ severity: 'error', line: 0, path: '', message: r.error }], []);
-    return this.loadText(r.text, file.name, 'file');
+    return this.loadText(r.text, file.name, 'file', { handle: isWritable(handle) ? handle : null });
   }
 
   /** Open YAML text as the current document (replaces it without asking). */
-  loadText(text: string, name: string, origin: Origin = 'file'): LoadOutcome {
+  loadText(text: string, name: string, origin: Origin = 'file', link: { handle?: WritableFile | null; example?: number } = {}): LoadOutcome {
     const lines = text.split(/\r\n|\r|\n/);
     const { doc, errors } = ModelDoc.fromText(text, name, origin);
     if (!doc) return this.fail(name, errors, lines);
     this.sourceLines = lines;
-    this.openDoc(doc);
+    this.openDoc(doc, link);
     return { ok: true, errors: doc.errors, warnings: doc.warnings };
+  }
+
+  /**
+   * File → Open model…: the browser's open picker where there is one (the
+   * model is then linked to the file, if the page may write it), else the
+   * file input. Cancelling the picker changes nothing.
+   */
+  async openModel(): Promise<void> {
+    const pick = this.fileAccess.openFile;
+    if (!pick) {
+      this.$<HTMLInputElement>('file').click();
+      return;
+    }
+    let h: WritableFile;
+    try {
+      h = await pick();
+    } catch (e) {
+      // closed without choosing: nothing happens; a picker that can't be used here: the file input instead
+      if (!isCancel(e)) this.$<HTMLInputElement>('file').click();
+      return;
+    }
+    if (!h || typeof h.getFile !== 'function') return;
+    let f: File;
+    try {
+      f = await h.getFile();
+    } catch (e) {
+      this.fail(h.name, [{ severity: 'error', line: 0, path: '', message: 'the file could not be read' }], []);
+      return;
+    }
+    await this.loadFile(f, h);
   }
 
   /** Input that cannot be edited (YAML syntax error, not UTF-8 …): keep the current model, explain why. */
@@ -106,11 +163,16 @@ export class App {
     return { ok: false, errors, warnings: [] };
   }
 
-  private openDoc(doc: ModelDoc): void {
+  private openDoc(doc: ModelDoc, link: { handle?: WritableFile | null; example?: number } = {}): void {
     const prevView = this.session ? this.session.state.view : 'physical';
+    this.cancelConnection();
     this.mdoc = doc;
+    this.handle = link.handle || null;
+    this.example = link.example !== undefined ? link.example : null;
+    this.copyName = null;
     this.loadErrors = [];
     this.editor.sel = null;
+    this.editor.draft = null;
     this.editor.sourceDraft = null;
     this.editor.sourceError = null;
     const model = doc.result.model;
@@ -304,24 +366,25 @@ export class App {
 
   loadExample(i: number): LoadOutcome | null {
     const ex = EXAMPLES[i];
-    return ex ? this.loadText(ex.text, ex.name, 'example') : null;
+    return ex ? this.loadText(ex.text, ex.name, 'example', { example: i }) : null;
   }
 
   /** Ask before discarding unsaved edits. Resolves true when it is OK to continue. */
   async confirmDiscard(action: string): Promise<boolean> {
-    if (!this.mdoc || !this.mdoc.dirty) return true;
+    const d = this.mdoc;
+    if (!d || !d.dirty) return true;
     const a = await this.dialog({
       title: 'Unsaved changes',
-      body: [`The current model “${this.mdoc.fileName}” has changes that have not been downloaded. ${action} will replace it.`],
+      body: [`The current model “${d.fileName}” has changes that have not been saved. ${action} will replace it.`],
       buttons: [
         { label: 'Cancel', value: 'cancel' },
-        { label: 'Download first…', value: 'save' },
+        { label: this.linked ? 'Save first' : 'Save as first…', value: 'save' },
         { label: 'Discard changes', value: 'discard', kind: 'danger' },
       ],
     });
     if (a === 'save') {
-      await this.downloadDialog();
-      return !this.mdoc.dirty;
+      const r = await this.save();
+      return this.mdoc === d && (r === 'saved' || r === 'downloaded') && !d.dirty;
     }
     return a === 'discard';
   }
@@ -404,32 +467,159 @@ export class App {
     }
   }
 
-  // ---------------------------------------------------------------- export
+  // ------------------------------------------------------------------ saving
 
   /** The current model as YAML text. */
   exportText(): string {
     return this.mdoc ? this.mdoc.exportText() : '';
   }
 
+  /** Name offered for a downloaded copy (the fallback of Save model as…). */
   suggestedFileName(): string {
     return this.mdoc ? exportFileName(this.mdoc.fileName, this.mdoc.origin) : 'network.yaml';
   }
 
+  /** Is the model linked to a file that Save model writes to? */
+  get linked(): boolean {
+    return !!this.mdoc && !!this.handle;
+  }
+
+  /** The built-in example the open model came from, while it is still that example (null otherwise). */
+  get activeExample(): number | null {
+    return this.mdoc ? this.example : null;
+  }
+
+  /** How the model's file is described in the status bar and the model settings. */
+  fileState(): { kind: 'linked' | 'example' | 'copy' | 'unlinked' | 'new'; text: string } {
+    const d = this.mdoc;
+    if (!d) return { kind: 'new', text: '' };
+    if (this.handle) return { kind: 'linked', text: 'saved to this file: Save model updates it' };
+    if (this.copyName) return { kind: 'copy', text: `copy downloaded as “${this.copyName}”, not linked to a file` };
+    if (this.example !== null) return { kind: 'example', text: 'built-in example, not saved as a file of yours' };
+    if (d.origin === 'new') return { kind: 'new', text: 'new model, not saved yet' };
+    return { kind: 'unlinked', text: 'opened read-only: Save model as… to save it' };
+  }
 
   /**
-   * Explain what will happen (a new copy is downloaded; the original file is
-   * never overwritten), warn about validation errors, then download.
+   * File → Save model (Ctrl+S): write the model to the file it is linked to,
+   * without asking for a name or confirming (the browser may still ask for
+   * permission to write). Only available while the model is linked to a file
+   * the page may write. A refused or failed write keeps every change and the
+   * unsaved state, and says so.
    */
-  async downloadDialog(): Promise<boolean> {
+  async saveModel(): Promise<SaveResult> {
     const d = this.mdoc;
-    if (!d) return false;
-    const nameInput = el(this.doc, 'input', { type: 'text', id: 'dl-name', spellcheck: 'false', 'aria-label': 'File name' }) as HTMLInputElement;
+    const h = this.handle;
+    if (!d || !h) return 'failed';
+    const text = d.exportText();
+    const r = await writeFile(h, text);
+    if (this.mdoc !== d) return 'failed';
+    if (!r.ok) {
+      // a refused permission ends the link: Save model is no longer offered for this file
+      if (r.reason === 'denied') this.handle = null;
+      this.updateChrome();
+      await this.saveFailed(h.name, r.message, r.reason === 'denied');
+      return 'failed';
+    }
+    d.markSaved(text);
+    this.updateChrome();
+    this.toast(`Saved “${h.name}”.${this.errorNote(d)}`);
+    return 'saved';
+  }
+
+  /**
+   * File → Save model as… (Ctrl+Shift+S): choose a file name and place and
+   * save the model there; the model is then linked to that file, so Save
+   * model updates it. A browser without a save picker downloads a copy
+   * instead, after saying so: the copy is not linked, Save model stays
+   * unavailable. Cancelling changes nothing.
+   */
+  async saveModelAs(): Promise<SaveResult> {
+    const d = this.mdoc;
+    if (!d) return 'failed';
+    const pick = this.fileAccess.saveFile;
+    if (!pick) return this.downloadCopyDialog();
+    let h: WritableFile;
+    try {
+      h = await pick(this.handle ? this.handle.name : this.example !== null ? d.fileName : this.suggestedPickName());
+    } catch (e) {
+      if (isCancel(e)) {
+        this.toast('Save model as… was cancelled: nothing was saved.');
+        return 'canceled';
+      }
+      // the picker exists but can't be used here: downloading still works
+      return this.downloadCopyDialog('Your browser could not open its save dialog here.');
+    }
+    if (this.mdoc !== d) return 'failed';
+    if (!isWritable(h)) return this.downloadCopyDialog('Your browser did not give this page a file it can write.');
+    const text = d.exportText();
+    const r = await writeFile(h, text);
+    if (this.mdoc !== d) return 'failed';
+    if (!r.ok) {
+      // the earlier link (if any) stays as it was
+      await this.saveFailed(h.name, r.message, false);
+      return 'failed';
+    }
+    this.handle = h;
+    this.example = null;
+    this.copyName = null;
+    d.fileName = h.name;
+    d.origin = 'file';
+    d.markSaved(text);
+    this.updateChrome();
+    this.renderSide();
+    this.toast(`Saved as “${h.name}”. Save model now updates this file.${this.errorNote(d)}`);
+    return 'saved';
+  }
+
+  /** Ctrl+S, and "Save" in the questions before a model is replaced or closed: Save model when linked, else Save model as…. */
+  save(): Promise<SaveResult> {
+    return this.linked ? this.saveModel() : this.saveModelAs();
+  }
+
+  /** The name the save picker suggests for a model that isn't linked to a file. */
+  private suggestedPickName(): string {
+    const d = this.mdoc as ModelDoc;
+    return safeYamlFileName(d.fileName, 'network.yaml');
+  }
+
+  /** A short note for the confirmation of a save: the model was saved with validation errors. */
+  private errorNote(d: ModelDoc): string {
+    const n = d.errors.length;
+    return n ? ` It has ${n} validation error${n > 1 ? 's' : ''}, which NetAtlas reports when it is opened again.` : '';
+  }
+
+  /** A save that did not happen: say why, and that nothing was lost. Offers Save model as… instead. */
+  private async saveFailed(name: string, why: string, unlinked: boolean): Promise<void> {
+    const a = await this.dialog({
+      title: 'The model was not saved',
+      body: [
+        el(this.doc, 'p', {}, [`“${name}” was not saved: ${why}.`]),
+        el(this.doc, 'p', {}, ['Your changes are still here, and the model is still marked as modified.' + (unlinked ? ' Save model is no longer available for this file; use Save model as… to choose a file or to download a copy.' : '')]),
+      ],
+      buttons: [
+        { label: 'OK', value: 'ok' },
+        { label: 'Save model as…', value: 'save-as', kind: 'primary' },
+      ],
+    });
+    if (a === 'save-as') await this.saveModelAs();
+  }
+
+  /**
+   * The fallback of Save model as…: explain that the browser can only
+   * download a copy, let the user name it, warn about validation errors,
+   * then download. The copy is not linked to the model.
+   */
+  async downloadCopyDialog(reason = 'Your browser can’t save to a file you choose.'): Promise<SaveResult> {
+    const d = this.mdoc;
+    if (!d) return 'failed';
+    const nameInput = el(this.doc, 'input', { type: 'text', id: 'dl-name', spellcheck: 'false', 'aria-label': 'File name of the copy' }) as HTMLInputElement;
     nameInput.value = this.suggestedFileName();
     const body: Array<Node | string> = [
       el(this.doc, 'p', {}, [
-        d.origin === 'file'
-          ? `Your browser will save an updated copy of “${d.fileName}” into its downloads location. The original file on your disk is not modified — web pages cannot overwrite files they opened.`
-          : 'Your browser will save the model as a YAML file into its downloads location.',
+        `${reason} NetAtlas can download a copy of the model as a YAML file into your browser’s downloads location. ` +
+          (d.origin === 'file' ? `It is a new file: “${d.fileName}” on your disk is not changed. ` : '') +
+          'The copy is not linked to this model, so Save model stays unavailable and later changes need another download.',
       ]),
       el(this.doc, 'label', { class: 'dl-label' }, ['File name ', nameInput]),
     ];
@@ -438,54 +628,56 @@ export class App {
       body.push(
         el(this.doc, 'div', { class: 'dl-warn' }, [
           el(this.doc, 'b', {}, [`The model has ${d.errors.length} validation error${d.errors.length > 1 ? 's' : ''}.`]),
-          ' The file will be saved exactly as it is, but netatlas will report these errors when it is opened again:',
+          ' The file will be saved exactly as it is, but NetAtlas will report these errors when it is opened again:',
           this.issueList(d.errors.slice(0, 6), []),
         ]),
       );
     }
     const a = await this.dialog({
-      title: invalid ? 'Download a model that has errors?' : 'Download model',
+      title: invalid ? 'Download a copy of a model that has errors?' : 'Download a copy of the model',
       body,
       buttons: [
         { label: 'Cancel', value: 'cancel' },
-        invalid ? { label: 'Download anyway', value: 'download', kind: 'danger' } : { label: 'Download', value: 'download', kind: 'primary' },
+        invalid ? { label: 'Download anyway', value: 'download', kind: 'danger' } : { label: 'Download copy', value: 'download', kind: 'primary' },
       ],
     });
-    if (a !== 'download') return false;
-    this.downloadNow(safeYamlFileName(nameInput.value, this.suggestedFileName()));
-    return true;
-  }
-
-  /** Export the current model as YAML into a download with this name, and mark it as saved. */
-  private downloadNow(name: string): void {
-    const d = this.mdoc;
-    if (!d) return;
-    downloadText(this.doc, this.exportText(), name, 'application/yaml');
-    d.markSaved();
+    if (a !== 'download' || this.mdoc !== d) {
+      if (a !== 'download') this.toast('Nothing was downloaded.');
+      return 'canceled';
+    }
+    const name = safeYamlFileName(nameInput.value, this.suggestedFileName());
+    const text = d.exportText();
+    downloadText(this.doc, text, name, 'application/yaml');
+    d.markSaved(text);
+    this.copyName = name;
     this.updateChrome();
-    this.toast(`Downloaded “${name}”.`);
+    this.renderSide();
+    this.toast(`Downloaded a copy, “${name}”. It is not linked to this model: Save model stays unavailable.`);
+    return 'downloaded';
   }
 
   /**
    * File → Close model: leave the current model and show the start screen.
-   * With unsaved changes it asks first: download the model and close, close
-   * without downloading, or stay. Resolves true when the model was closed.
+   * With unsaved changes it asks first: save and close, close without
+   * saving, or stay. Resolves true when the model was closed.
    */
   async closeModelDialog(): Promise<boolean> {
     const d = this.mdoc;
     if (!d) return false;
     if (d.dirty) {
-      const name = this.suggestedFileName();
-      const where =
-        d.origin === 'file'
-          ? `“Download and close” saves the current state as a new file, “${name}”, in your browser’s downloads location; the file you opened is not overwritten.`
-          : `“Download and close” saves it as “${name}” in your browser’s downloads location.`;
+      const linked = this.linked;
+      const saveLabel = linked ? 'Save and close' : 'Save as and close…';
+      const where = linked
+        ? `“${saveLabel}” writes the changes to “${d.fileName}” first.`
+        : this.fileAccess.saveFile
+          ? `“${saveLabel}” lets you choose a file to save the model to first.`
+          : `“${saveLabel}” downloads a copy of the model first (this browser can’t save to a file you choose).`;
       const body: Array<Node | string> = [
-        el(this.doc, 'p', {}, [`“${d.fileName}” has changes that have not been downloaded. They exist only in this page and are lost when the model is closed.`]),
+        el(this.doc, 'p', {}, [`“${d.fileName}” has changes that have not been saved. They exist only in this page and are lost when the model is closed.`]),
         el(this.doc, 'p', {}, [where]),
       ];
       if (d.errors.length) {
-        body.push(el(this.doc, 'div', { class: 'dl-warn' }, [el(this.doc, 'b', {}, [`The model has ${d.errors.length} validation error${d.errors.length > 1 ? 's' : ''}.`]), ' The file is saved exactly as it is; netatlas will report the errors when it is opened again.']));
+        body.push(el(this.doc, 'div', { class: 'dl-warn' }, [el(this.doc, 'b', {}, [`The model has ${d.errors.length} validation error${d.errors.length > 1 ? 's' : ''}.`]), ' It is saved exactly as it is; NetAtlas will report the errors when it is opened again.']));
       }
       const a = await this.dialog({
         title: 'Close the model with unsaved changes?',
@@ -493,13 +685,16 @@ export class App {
         buttons: [
           { label: 'Cancel', value: 'cancel' },
           { label: 'Discard changes', value: 'discard', kind: 'danger' },
-          { label: 'Download and close', value: 'download', kind: 'primary' },
+          { label: saveLabel, value: 'save', kind: 'primary' },
         ],
       });
       // the model may have been replaced while the dialog was open
       if (this.mdoc !== d) return false;
-      if (a === 'download') this.downloadNow(name);
-      else if (a !== 'discard') return false;
+      if (a === 'save') {
+        const r = await this.save();
+        // a cancelled or failed save keeps the model open, with its changes
+        if (this.mdoc !== d || (r !== 'saved' && r !== 'downloaded') || d.dirty) return false;
+      } else if (a !== 'discard') return false;
     }
     this.closeModel();
     return true;
@@ -508,11 +703,16 @@ export class App {
   /**
    * Close the current model without asking and show the start screen.
    * Everything that belonged to it goes with it: selection, view, filters,
-   * zoom, open cards, the YAML draft. The next model starts clean.
+   * zoom, open cards, the YAML draft, the link to its file. The next model
+   * starts clean.
    */
   closeModel(): void {
+    this.cancelConnection();
     this.mdoc = null;
     this.session = null;
+    this.handle = null;
+    this.example = null;
+    this.copyName = null;
     this.loadErrors = [];
     this.loadErrorName = '';
     this.sourceLines = [];
@@ -532,13 +732,12 @@ export class App {
     this.updateChrome();
   }
 
-
-
   // ------------------------------------------------------------ rendering
 
   setView(v: View): void {
     if (!this.session) return;
     const changed = this.session.state.view !== v;
+    if (changed) this.cancelConnection();
     this.session.setView(v);
     this.render();
     if (changed) this.fit();
@@ -556,6 +755,7 @@ export class App {
     this.bounds = scene.bounds;
     mount(this.viewport, scene.root, true);
     this.applyHighlight();
+    this.applyConnection();
     this.applyZoom();
     this.renderSide();
   }
@@ -910,7 +1110,7 @@ export class App {
     box.appendChild(this.issueList(this.loadErrors, this.sourceLines));
     box.appendChild(
       el(this.doc, 'p', { class: 'error-actions' }, [
-        el(this.doc, 'button', { type: 'button', class: 'primary', 'data-act-top': 'open' }, ['Open another YAML file…']),
+        el(this.doc, 'button', { type: 'button', class: 'primary', 'data-act-top': 'open' }, ['Open another model…']),
         el(this.doc, 'button', { type: 'button', 'data-act-top': 'new' }, ['New model']),
         el(this.doc, 'button', { type: 'button', 'data-act-top': 'start' }, ['Back to the start screen']),
       ]),
@@ -923,6 +1123,47 @@ export class App {
     this.loadErrors = [];
     this.loadErrorName = '';
     this.updateChrome();
+  }
+
+  /**
+   * The File menu's state: Save model only while the model is linked to a
+   * file the page may write (with a dot while there is something to save),
+   * Save model as… whenever a model is open, and the loaded example marked
+   * (and whether its model was modified) until it is saved as a file.
+   */
+  private updateFileMenu(): void {
+    const d = this.mdoc;
+    const save = this.$('btn-save') as HTMLButtonElement;
+    const saveAs = this.$('btn-save-as') as HTMLButtonElement;
+    save.disabled = !this.linked;
+    save.setAttribute('data-modified', d && this.linked && d.dirty ? 'true' : 'false');
+    save.title = !d
+      ? 'Open or create a model first'
+      : this.handle
+        ? `Save the model to “${this.handle.name}” (Ctrl+S)${d.dirty ? '; it has unsaved changes' : ''}`
+        : 'Not available: the model is not linked to a file this page may write. Use Save model as… to choose one.';
+    saveAs.disabled = !d;
+    saveAs.title = !d
+      ? 'Open or create a model first'
+      : this.fileAccess.saveFile
+        ? 'Choose a file name and location, and save the model there as a YAML file; Save model then updates that file (Ctrl+Shift+S)'
+        : 'Download a copy of the model as a YAML file: this browser can’t save to a file you choose (Ctrl+Shift+S)';
+    (this.$('btn-close') as HTMLButtonElement).disabled = !d;
+    const active = this.activeExample;
+    const items = this.$('menu-examples').querySelectorAll('[data-example]');
+    for (let i = 0; i < items.length; i++) {
+      const b = items[i] as HTMLElement;
+      const n = Number(b.getAttribute('data-example'));
+      const on = active === n;
+      const modified = on && !!d && d.dirty;
+      b.classList.toggle('active-example', on);
+      if (on) b.setAttribute('aria-current', 'true');
+      else b.removeAttribute('aria-current');
+      b.setAttribute('data-modified', modified ? 'true' : 'false');
+      const hint = b.querySelector('.ex-state') as HTMLElement;
+      hint.textContent = on ? (modified ? 'open · modified' : 'open') : '';
+      b.title = on ? `The open model is this example${modified ? ', modified (not saved)' : ''}. Choosing it opens it again from the start.` : `Open the example ${EXAMPLES[n] ? EXAMPLES[n].name : ''}`;
+    }
   }
 
   private updateChrome(): void {
@@ -949,8 +1190,7 @@ export class App {
     }
     (this.$('btn-undo') as HTMLButtonElement).disabled = !d || !d.canUndo();
     (this.$('btn-redo') as HTMLButtonElement).disabled = !d || !d.canRedo();
-    (this.$('btn-download') as HTMLButtonElement).disabled = !d;
-    (this.$('btn-close') as HTMLButtonElement).disabled = !d;
+    this.updateFileMenu();
     // exporting needs a diagram: a model that could be drawn
     const ex = this.$('btn-export-as') as HTMLButtonElement;
     ex.disabled = !s;
@@ -974,12 +1214,21 @@ export class App {
     while (st.firstChild) st.removeChild(st.firstChild);
     if (d) {
       const m = s ? s.model : null;
-      // the file name first, as a badge (shortened with "…" when long; the full name is its tooltip), then the rest on one line
-      st.appendChild(el(this.doc, 'span', { class: 'fname', title: d.fileName }, [d.fileName]));
+      // The file name first, as a badge (shortened with "…" when long; the full name and where it is saved are its tooltip),
+      // with a small dot while the model is modified; then what the name stands for, and the rest on one line.
+      const fs = this.fileState();
+      st.appendChild(
+        el(this.doc, 'span', { class: 'fname', 'data-file': fs.kind, 'data-modified': d.dirty ? 'true' : 'false', title: `${d.fileName}: ${fs.text}${d.dirty ? ' · modified since it was opened or saved' : ''}` }, [
+          el(this.doc, 'span', { class: 'fname-text' }, [d.fileName]),
+          d.dirty ? el(this.doc, 'span', { class: 'mod-dot', 'aria-hidden': 'true' }, ['●']) : null,
+          d.dirty ? el(this.doc, 'span', { class: 'sr-only' }, [' (modified)']) : null,
+        ]),
+      );
       const rest = el(this.doc, 'span', { class: 'status-rest' });
       st.appendChild(rest);
       const parts: Array<HTMLElement | string> = [
-        d.dirty ? el(this.doc, 'span', { class: 'dirty' }, ['● unsaved changes']) : '',
+        el(this.doc, 'span', { class: 'file-state', 'data-file': fs.kind }, [fs.text]),
+        d.dirty ? el(this.doc, 'span', { class: 'dirty' }, ['unsaved changes']) : '',
         m ? `${m.title} · ${m.devices.length} devices · ${m.index.interfaces.size} interfaces · ${m.links.length} cables · ${m.networks.length} networks · ${m.relations.length} logical relations` : '',
         d.errors.length ? el(this.doc, 'span', { class: 'errcount' }, [`${d.errors.length} error${d.errors.length > 1 ? 's' : ''}`]) : '',
         d.warnings.length ? `${d.warnings.length} warning${d.warnings.length > 1 ? 's' : ''}` : '',
@@ -1019,57 +1268,77 @@ export class App {
   }
 
   /**
-   * Layout status of the shown view, on the Auto-arrange button itself: an
-   * icon, a colour and a message (hover text and accessible description).
-   * Always derived from the document (current positions vs. the
-   * deterministic Auto-arrange result), never from the last action, so it is
-   * right after undo/reload. Both views are tracked independently; the
-   * button shows the one on screen. A view that already matches is shown
-   * with its check mark on a disabled button: there is nothing to arrange.
+   * The Auto-arrange buttons (Default, Compact, Spacious) and the layout
+   * status of the shown view. The strategy whose result the view shows is
+   * marked as selected (aria-pressed) and disabled: there is nothing to do.
+   * A strategy that gives exactly the same positions for this model is
+   * disabled too and says so, instead of pretending to differ. When no
+   * strategy matches (positions moved by hand, or edits since arranging),
+   * all three are available. Always derived from the positions themselves
+   * (document, or the session for a filtered view), never from the last
+   * button pressed, so it is right after undo, reload and manual moves.
    */
   private updateLayoutStatus(): void {
     const d = this.mdoc;
     const s = this.session;
-    const btn = this.$('btn-arrange') as HTMLButtonElement;
-    const icon = btn.querySelector('.arrange-icon') as HTMLElement;
+    const group = this.$('arrange-group');
     const desc = this.$('arrange-status');
-    const action = 'Auto-arrange recomputes the positions of every object in this view; the other view is not changed (A).';
+    const buttons = STRATEGIES.map((st) => this.$('btn-arrange-' + st) as HTMLButtonElement);
     for (const v of ['physical', 'logical'] as View[]) {
       // a filtered view has its own, temporary layout status
-      if (d && s) btn.setAttribute('data-status-' + v, s.isFiltered() ? s.filteredStatus(v) : d.layoutStatus(v));
-      else btn.removeAttribute('data-status-' + v);
+      if (d && s) {
+        group.setAttribute('data-status-' + v, s.isFiltered() ? s.filteredStatus(v) : d.layoutStatus(v));
+        const m = s.isFiltered() ? s.filteredArrangedWith(v) : d.arrangedWith(v);
+        group.setAttribute('data-strategy-' + v, m.length ? m[0] : '');
+      } else {
+        group.removeAttribute('data-status-' + v);
+        group.removeAttribute('data-strategy-' + v);
+      }
     }
     if (!d || !s) {
-      btn.disabled = true;
-      btn.removeAttribute('data-status');
-      btn.removeAttribute('data-view');
-      icon.textContent = '';
+      group.removeAttribute('data-status');
+      group.removeAttribute('data-view');
+      group.removeAttribute('data-filtered');
+      for (const b of buttons) {
+        b.disabled = true;
+        b.setAttribute('aria-pressed', 'false');
+        b.classList.remove('current', 'same');
+        b.title = 'Open or create a model first';
+      }
       desc.textContent = '';
-      btn.title = action;
       return;
     }
-    if (s.isFiltered()) {
-      // a filtered view: its own, temporary layout; the saved layout of the complete view is not involved
-      const fst = s.filteredStatus(s.state.view);
-      const msg = FILTERED_STATUS_MESSAGE[fst];
-      btn.disabled = fst === 'auto';
-      btn.setAttribute('data-status', fst);
-      btn.setAttribute('data-filtered', 'true');
-      btn.setAttribute('data-view', s.state.view);
-      icon.textContent = LAYOUT_STATUS_ICON[fst];
-      if (desc.textContent !== msg) desc.textContent = msg;
-      btn.title = fst === 'auto' ? msg : msg + ' ' + FILTERED_ACTION;
-      return;
-    }
-    btn.removeAttribute('data-filtered');
-    const st = d.layoutStatus(s.state.view);
-    btn.disabled = st === 'auto';
-    btn.setAttribute('data-status', st);
-    btn.setAttribute('data-view', s.state.view);
-    icon.textContent = LAYOUT_STATUS_ICON[st];
-    // the same message for hover and for assistive technology (aria-describedby)
-    if (desc.textContent !== LAYOUT_STATUS_MESSAGE[st]) desc.textContent = LAYOUT_STATUS_MESSAGE[st];
-    btn.title = st === 'auto' ? LAYOUT_STATUS_MESSAGE[st] : LAYOUT_STATUS_MESSAGE[st] + ' ' + action;
+    const view = s.state.view;
+    const filtered = s.isFiltered();
+    const matches = filtered ? s.filteredArrangedWith(view) : d.arrangedWith(view);
+    const status = filtered ? s.filteredStatus(view) : d.layoutStatus(view);
+    const current = matches.length ? matches[0] : null;
+    group.setAttribute('data-status', status);
+    group.setAttribute('data-view', view);
+    if (filtered) group.setAttribute('data-filtered', 'true');
+    else group.removeAttribute('data-filtered');
+    STRATEGIES.forEach((st, i) => {
+      const b = buttons[i];
+      const isCurrent = st === current;
+      const same = !isCurrent && matches.indexOf(st) >= 0;
+      b.disabled = isCurrent || same;
+      b.setAttribute('aria-pressed', isCurrent ? 'true' : 'false');
+      b.classList.toggle('current', isCurrent);
+      b.classList.toggle('same', same);
+      const what = STRATEGY_HELP[st];
+      b.title = isCurrent
+        ? `${STRATEGY_LABEL[st]}: the ${view} view is arranged this way.`
+        : same
+          ? `${STRATEGY_LABEL[st]}: gives exactly the same positions as ${STRATEGY_LABEL[current as ArrangeStrategy]} for this ${filtered ? 'filtered view' : 'model'}, so there is nothing to change.`
+          : `${STRATEGY_LABEL[st]}: ${what} ${filtered ? 'Arranges the devices shown, temporarily; the saved layout is not changed.' : `Arranges the ${view} view; the other view is not changed.${st === 'default' ? ' (A)' : ''}`}`;
+    });
+    const msg = current
+      ? `The ${filtered ? 'filtered ' : ''}${view} view is arranged with ${STRATEGY_LABEL[current]}${matches.length > 1 ? ` (${matches.slice(1).map((x) => STRATEGY_LABEL[x]).join(', ')} give the same positions)` : ''}.`
+      : filtered
+        ? FILTERED_STATUS_MESSAGE.manual
+        : LAYOUT_STATUS_MESSAGE[status as 'manual' | 'edited'];
+    if (desc.textContent !== msg) desc.textContent = msg;
+    group.title = msg;
   }
 
   // ------------------------------------------------------------- View menu
@@ -1398,7 +1667,9 @@ export class App {
 
   private fillExamples(): void {
     const menu = this.$('menu-examples');
-    EXAMPLES.forEach((ex, i) => menu.appendChild(el(this.doc, 'button', { type: 'button', role: 'menuitem', 'data-example': String(i), title: `Open the example ${ex.name}` }, [el(this.doc, 'span', { class: 'mi-label' }, [ex.name])])));
+    EXAMPLES.forEach((ex, i) =>
+      menu.appendChild(el(this.doc, 'button', { type: 'button', role: 'menuitem', 'data-example': String(i), title: `Open the example ${ex.name}` }, [el(this.doc, 'span', { class: 'mi-label' }, [ex.name]), el(this.doc, 'span', { class: 'mi-hint ex-state' })])),
+    );
     // the start screen's picker names each example by its title
     const pick = this.$('start-example');
     EXAMPLES.forEach((ex, i) => {
@@ -1425,7 +1696,7 @@ export class App {
     const doc = this.doc;
     const fileInput = this.$<HTMLInputElement>('file');
     const open = async (): Promise<void> => {
-      if (await this.confirmDiscard('Opening another file')) fileInput.click();
+      if (await this.confirmDiscard('Opening another model')) await this.openModel();
     };
     const newModel = async (): Promise<void> => {
       if (await this.confirmDiscard('Creating a new model')) this.newModel();
@@ -1434,7 +1705,8 @@ export class App {
     this.$('open-empty').addEventListener('click', () => void open());
     this.$('btn-new').addEventListener('click', () => void newModel());
     this.$('new-empty').addEventListener('click', () => void newModel());
-    this.$('btn-download').addEventListener('click', () => void this.downloadDialog());
+    this.$('btn-save').addEventListener('click', () => void (this.linked && this.saveModel()));
+    this.$('btn-save-as').addEventListener('click', () => void (this.mdoc && this.saveModelAs()));
     this.$('btn-close').addEventListener('click', () => void this.closeModelDialog());
     this.$('btn-undo').addEventListener('click', () => this.undo());
     this.$('btn-redo').addEventListener('click', () => this.redo());
@@ -1491,8 +1763,15 @@ export class App {
       e.preventDefault();
       doc.body.classList.remove('dropping');
       const f = e.dataTransfer && e.dataTransfer.files[0];
+      // some browsers hand over a file handle for a dropped file; it has to be asked for during the drop
+      const item = e.dataTransfer && e.dataTransfer.items && e.dataTransfer.items[0];
+      const getHandle = item && (item as unknown as { getAsFileSystemHandle?: () => Promise<unknown> }).getAsFileSystemHandle;
+      const pending: Promise<unknown> | null = getHandle ? getHandle.call(item).catch(() => null) : null;
       if (!f) this.toast('Nothing was opened: drop a YAML file from this computer.');
-      else if (await this.confirmDiscard('Opening the dropped file')) void this.loadFile(f);
+      else if (await this.confirmDiscard('Opening the dropped file')) {
+        const h = pending ? await pending : null;
+        void this.loadFile(f, isWritable(h) ? h : null);
+      }
     });
 
     // closing / reloading the tab with unsaved edits
@@ -1515,7 +1794,7 @@ export class App {
     this.$('zoom-fit').addEventListener('click', () => this.fit());
     this.$('btn-export-svg').addEventListener('click', () => void this.exportView('svg'));
     this.$('btn-export-png').addEventListener('click', () => void this.exportView('png'));
-    this.$('btn-arrange').addEventListener('click', () => void this.arrangeCurrentView());
+    for (const st of STRATEGIES) this.$('btn-arrange-' + st).addEventListener('click', () => void this.arrangeCurrentView(st));
 
     const opt = (id: string, fn: (v: boolean) => void): void => {
       this.$<HTMLInputElement>(id).addEventListener('change', (e) => {
@@ -1581,9 +1860,26 @@ export class App {
     });
     side.addEventListener('input', (e) => {
       const t = e.target as HTMLElement;
+      if (t.getAttribute('data-t') === 'draft') {
+        this.editor.draftInput(t);
+        return;
+      }
       if (t.id === 'yaml-src') {
         this.editor.sourceDraft = (t as HTMLTextAreaElement).value;
         this.scheduleYamlMark();
+      }
+    });
+    // the form of a new link or relation: Enter creates it (when complete), Esc discards it
+    side.addEventListener('keydown', (e) => {
+      const t = e.target as HTMLElement;
+      if (t.getAttribute('data-t') !== 'draft') return;
+      if (e.key === 'Enter' && t.tagName === 'INPUT') {
+        e.preventDefault();
+        this.editor.createDraft();
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        this.editor.cancelDraft();
       }
     });
     side.addEventListener(
@@ -1674,6 +1970,7 @@ export class App {
     });
 
     this.wireCanvas();
+    this.wireConnect();
 
     doc.addEventListener('keydown', (e) => {
       const t = e.target as HTMLElement;
@@ -1681,7 +1978,7 @@ export class App {
       const mod = e.ctrlKey || e.metaKey;
       if (mod && !e.altKey && (e.key === 's' || e.key === 'S')) {
         e.preventDefault();
-        if (this.mdoc) void this.downloadDialog();
+        if (this.mdoc) void (e.shiftKey ? this.saveModelAs() : this.save());
         return;
       }
       if (typing) return;
@@ -1702,11 +1999,15 @@ export class App {
       } else if (e.key === 'p' || e.key === '1') this.setView('physical');
       else if (e.key === 'l' || e.key === '2') this.setView('logical');
       else if (e.key === 'e') this.showTab('edit');
-      else if (e.key === 'a') void this.arrangeCurrentView();
+      else if (e.key === 'a') void this.arrangeCurrentView('default');
+      else if (e.key === 'c') this.connectFromSelection();
       else if (e.key === '+' || e.key === '=') this.zoomBy(1.25);
       else if (e.key === '-') this.zoomBy(0.8);
       else if (e.key === '0' || e.key === 'f') this.fit();
-      else if (e.key === 'Escape') this.select(null);
+      else if (e.key === 'Escape') {
+        if (this.conn) this.cancelConnection(true);
+        else this.select(null);
+      }
       else if (e.key.indexOf('Arrow') === 0) {
         const d = 60;
         if (e.key === 'ArrowLeft') this.zoom.tx += d;
@@ -1726,6 +2027,236 @@ export class App {
       const keys = doc.getElementById('keys') as HTMLDetailsElement | null;
       if (keys && win.innerHeight <= 560) keys.open = false;
     }
+  }
+
+  // ------------------------------------------------------------ connections
+
+  /**
+   * Connecting two endpoints in the diagram. A right-click on a device or an
+   * interface (a port or a chip) starts a connection there and draws a line
+   * from it to the pointer; a right-click on a second, compatible endpoint
+   * opens a new physical link (physical view) or logical relation (logical
+   * view) with both endpoints in the Edit tab. Nothing is added to the model
+   * until it is completed there and created. Compatible endpoints are marked
+   * while a connection is drawn; an incompatible one is refused with a short
+   * message and the first endpoint is kept. Esc, switching views or models
+   * cancels. Left clicks only ever select. The keyboard equivalent is C
+   * (connect the selected device or interface) and the connect bar.
+   */
+
+  /** Is a connection being drawn? */
+  get connecting(): boolean {
+    return !!this.conn;
+  }
+
+  /** The endpoints drawn in the diagram on screen (their refs). */
+  private drawnEndpoints(): Set<string> {
+    const out = new Set<string>();
+    const els = this.viewport.querySelectorAll('[data-endpoint]');
+    for (let i = 0; i < els.length; i++) out.add(els[i].getAttribute('data-ref') as string);
+    return out;
+  }
+
+  /** Start a connection at an endpoint of the diagram on screen. False (with a short message) when it can't take part in one. */
+  startConnection(ref: string, focusBar = false): boolean {
+    const s = this.session;
+    if (!s || !this.mdoc) return false;
+    const view = s.state.view;
+    const model = s.viewModel();
+    const e = endpointOfRef(ref);
+    if (!e) {
+      this.toast('Only devices and interfaces can be connected.');
+      return false;
+    }
+    const why = endpointProblem(model, view, e) || (this.drawnEndpoints().has(ref) ? '' : `${endpointName(s.model, e)} is not shown in the ${view} view`);
+    if (why) {
+      this.toast(`No connection started: ${why}.`);
+      return false;
+    }
+    this.cancelConnection();
+    this.conn = { view, first: e, ref, at: null };
+    this.applyConnection();
+    this.fillConnectBar(focusBar);
+    this.toast(`New ${connectionKind(view) === 'link' ? 'physical link' : 'logical relation'} from ${endpointName(model, e)}: right-click a highlighted endpoint. Esc cancels.`);
+    return true;
+  }
+
+  /**
+   * Choose the second endpoint. A compatible one ends the drawing and opens
+   * the new link or relation in the Edit tab, its endpoints filled in and the
+   * first required field focused. An incompatible or hidden one is refused
+   * with the reason; the first endpoint stays chosen.
+   */
+  completeConnection(ref: string): boolean {
+    const c = this.conn;
+    const s = this.session;
+    if (!c || !s) return false;
+    const model = s.viewModel();
+    const e = endpointOfRef(ref);
+    if (ref === c.ref) {
+      this.toast('That is the first endpoint. Choose a highlighted one, or press Esc to cancel.');
+      return false;
+    }
+    const why = !e ? 'only devices and interfaces can be connected' : pairProblem(model, c.view, c.first, e) || (this.drawnEndpoints().has(ref) ? '' : 'that endpoint is not shown in this view');
+    if (why || !e) {
+      this.toast(`Not connected: ${why}. The first endpoint is kept; choose another, or press Esc.`);
+      return false;
+    }
+    const first = c.first;
+    this.cancelConnection();
+    this.editor.openDraft(connectionKind(c.view), [first, e]);
+    this.tab = 'edit';
+    this.renderOutline();
+    this.renderSide();
+    this.updateChrome();
+    this.editor.focusDraft();
+    return true;
+  }
+
+  /** Stop drawing a connection (nothing was added). */
+  cancelConnection(say = false): void {
+    if (!this.conn) return;
+    this.conn = null;
+    const bar = this.doc.getElementById('connect-bar');
+    if (bar) bar.hidden = true;
+    this.applyConnection();
+    if (say) this.toast('Connection cancelled; nothing was added.');
+  }
+
+  /** C: connect the selected device or interface (or, while connecting, go to the endpoint list). */
+  connectFromSelection(): void {
+    if (this.conn) {
+      this.$('connect-pick').focus();
+      return;
+    }
+    const s = this.session;
+    const ref = s ? s.state.selected : null;
+    if (!s || !ref || !endpointOfRef(ref)) {
+      this.toast('Select a device or an interface first, then press C to connect it.');
+      return;
+    }
+    this.startConnection(ref, true);
+  }
+
+  /** The connect bar: what is being connected, and the compatible endpoints shown, to pick from with the keyboard. */
+  private fillConnectBar(focus: boolean): void {
+    const c = this.conn;
+    const s = this.session;
+    const bar = this.$('connect-bar');
+    if (!c || !s) {
+      bar.hidden = true;
+      return;
+    }
+    const model = s.viewModel();
+    const drawn = this.drawnEndpoints();
+    const pick = this.$<HTMLSelectElement>('connect-pick');
+    while (pick.firstChild) pick.removeChild(pick.firstChild);
+    const options = compatibleEndpoints(model, c.view, c.first).filter((e) => drawn.has(endpointRef(e)));
+    for (const e of sortedByName(options, (x) => (x.iface ? `${x.device} ${x.iface}` : x.device))) {
+      pick.appendChild(el(this.doc, 'option', { value: endpointRef(e) }, [e.iface ? `${e.device} · ${e.iface}` : `${model.index.devices.get(e.device)?.label || e.device} (whole device)`]));
+    }
+    if (!options.length) pick.appendChild(el(this.doc, 'option', { value: '', disabled: '' }, ['No compatible endpoint is shown']));
+    (this.$('connect-go') as HTMLButtonElement).disabled = !options.length;
+    this.$('connect-text').textContent = `New ${c.view === 'physical' ? 'physical link' : 'logical relation'} from ${endpointName(model, c.first)}: right-click a highlighted endpoint, or pick one:`;
+    bar.hidden = false;
+    if (focus) pick.focus();
+  }
+
+  /**
+   * Mark the endpoints of the diagram for connecting (after every render):
+   * where a connection can start (a hover cue), and while one is drawn its
+   * first endpoint and which endpoints are compatible; then the line.
+   */
+  private applyConnection(): void {
+    const c = this.conn;
+    const s = this.session;
+    if (c && (!s || s.state.view !== c.view || !this.viewport.querySelector(`[data-endpoint][data-ref="${cssEscape(c.ref)}"]`))) {
+      // the first endpoint is gone (deleted, filtered out, another view): the connection ends
+      this.conn = null;
+      this.$('connect-bar').hidden = true;
+      if (s) this.toast('Connection cancelled: its first endpoint is no longer shown.');
+    }
+    const cur = this.conn;
+    const model = s ? s.viewModel() : null;
+    const ok = new Set<string>();
+    if (cur && model) for (const e of compatibleEndpoints(model, cur.view, cur.first)) ok.add(endpointRef(e));
+    const els = this.viewport.querySelectorAll('[data-endpoint]');
+    for (let i = 0; i < els.length; i++) {
+      const x = els[i];
+      const ref = x.getAttribute('data-ref') as string;
+      const e = endpointOfRef(ref);
+      x.classList.toggle('conn-source', !!cur && ref === cur.ref);
+      x.classList.toggle('conn-ok', !!cur && ref !== cur.ref && ok.has(ref));
+      x.classList.toggle('conn-no', !!cur && ref !== cur.ref && !ok.has(ref));
+      x.classList.toggle('conn-start', !cur && !!s && !!e && !!model && !endpointProblem(model, s.state.view, e));
+    }
+    this.svg.classList.toggle('connecting', !!cur);
+    this.drawConnLine();
+  }
+
+  /** The temporary line from the first endpoint to the pointer. */
+  private drawConnLine(): void {
+    let line = this.doc.getElementById('conn-line') as Element | null;
+    const c = this.conn;
+    if (!c || !c.at) {
+      if (line) line.remove();
+      return;
+    }
+    const src = this.viewport.querySelector(`[data-endpoint][data-ref="${cssEscape(c.ref)}"]`) as SVGGraphicsElement | null;
+    if (!src || typeof src.getBBox !== 'function') return;
+    let b: DOMRect;
+    try {
+      b = src.getBBox();
+    } catch (err) {
+      return;
+    }
+    if (!line || line.parentNode !== this.viewport) {
+      if (line) line.remove();
+      const fresh = this.doc.createElementNS('http://www.w3.org/2000/svg', 'line');
+      fresh.setAttribute('id', 'conn-line');
+      fresh.setAttribute('class', 'conn-line');
+      fresh.setAttribute('aria-hidden', 'true');
+      this.viewport.appendChild(fresh);
+      line = fresh;
+    }
+    line.setAttribute('x1', String(round(b.x + b.width / 2)));
+    line.setAttribute('y1', String(round(b.y + b.height / 2)));
+    line.setAttribute('x2', String(round(c.at.x)));
+    line.setAttribute('y2', String(round(c.at.y)));
+  }
+
+  private wireConnect(): void {
+    const bar = this.$('connect-bar');
+    const pick = this.$<HTMLSelectElement>('connect-pick');
+    const go = (): void => {
+      if (pick.value) this.completeConnection(pick.value);
+    };
+    this.$('connect-go').addEventListener('click', go);
+    this.$('connect-cancel').addEventListener('click', () => this.cancelConnection(true));
+    pick.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        go();
+      }
+    });
+    bar.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        this.cancelConnection(true);
+      }
+    });
+    // a right-click on a device or interface is ours; anywhere else the browser's menu stays
+    this.svg.addEventListener('contextmenu', (e) => {
+      if (!this.session) return;
+      const t = (e.target as Element).closest('[data-endpoint]');
+      if (!t) return;
+      e.preventDefault();
+      const ref = t.getAttribute('data-ref') as string;
+      this.$('tooltip').hidden = true;
+      if (this.conn) this.completeConnection(ref);
+      else this.startConnection(ref);
+    });
   }
 
   // ------------------------------------------------------------- layout
@@ -1756,29 +2287,30 @@ export class App {
   }
 
   /**
-   * Auto-arrange the view on screen; the other view is never touched.
-   * Positions that were set by hand are only replaced after a confirmation
-   * that says what will change. A view that already shows the auto-arranged
-   * layout is left alone (the button is disabled then).
+   * Auto-arrange the view on screen with a strategy; the other view is never
+   * touched. Positions that were set by hand are only replaced after a
+   * confirmation that says what will change. A view that already shows this
+   * strategy's layout is left alone (its button is disabled then).
    */
-  async arrangeCurrentView(): Promise<void> {
+  async arrangeCurrentView(strategy: ArrangeStrategy = 'default'): Promise<void> {
     const d = this.mdoc;
     const s = this.session;
     if (!d || !s) return;
     const view = s.state.view;
+    const how = strategy === 'default' ? '' : ` (${STRATEGY_LABEL[strategy]})`;
     // nothing to arrange: the button is disabled, and the A key does nothing either
-    if ((s.isFiltered() ? s.filteredStatus(view) : d.layoutStatus(view)) === 'auto') return;
+    if ((s.isFiltered() ? s.filteredArrangedWith(view) : d.arrangedWith(view)).indexOf(strategy) >= 0) return;
     if (s.isFiltered()) {
       // only the devices shown, in this session only: the saved layout of the complete view is not changed
-      const moved = s.arrangeFiltered();
+      const moved = s.arrangeFiltered(strategy);
       this.render();
       if (moved) this.fit();
       this.updateChrome();
-      this.toast(moved ? `Auto-arranged the filtered ${view} view: ${moved} object${moved > 1 ? 's' : ''} moved. Temporary; the saved layout is unchanged.` : 'Already arranged — nothing moved.');
+      this.toast(moved ? `Auto-arranged the filtered ${view} view${how}: ${moved} object${moved > 1 ? 's' : ''} moved. Temporary; the saved layout is unchanged.` : 'Already arranged — nothing moved.');
       return;
     }
     const other: View = view === 'physical' ? 'logical' : 'physical';
-    const impact = d.arrangeImpact(view);
+    const impact = d.arrangeImpact(view, strategy);
     if (impact.manual.length) {
       const m = s.model;
       const name = (id: string): string => (m.index.devices.get(id) || m.index.networks.get(id) || { label: id }).label;
@@ -1797,19 +2329,19 @@ export class App {
         ],
         buttons: [
           { label: 'Cancel', value: 'cancel' },
-          { label: `Arrange ${view} view`, value: 'arrange', kind: 'primary' },
+          { label: `Arrange ${view} view${how}`, value: 'arrange', kind: 'primary' },
         ],
       });
       if (a !== 'arrange') return;
       // the model or the view may have changed while the dialog was open
       if (this.mdoc !== d || this.session !== s || s.state.view !== view) return;
     }
-    const res = d.arrange([view]);
+    const res = d.arrange([view], strategy);
     const note = !res.changed
       ? 'Already arranged — nothing moved.'
       : res.moved === 0
         ? 'Positions saved in the model; nothing moved.'
-        : `Auto-arranged the ${view} view: ${res.moved} object${res.moved > 1 ? 's' : ''} moved. Undo with Ctrl+Z.`;
+        : `Auto-arranged the ${view} view${how}: ${res.moved} object${res.moved > 1 ? 's' : ''} moved. Undo with Ctrl+Z.`;
     this.afterEdit(note);
     if (res.moved) this.fit();
   }
@@ -1876,6 +2408,10 @@ export class App {
       }
     });
     svg.addEventListener('pointermove', (e) => {
+      if (this.conn) {
+        this.conn.at = this.toWorld(e.clientX, e.clientY);
+        this.drawConnLine();
+      }
       if (drag && drag.id === e.pointerId) {
         const dx = e.clientX - drag.sx;
         const dy = e.clientY - drag.sy;
@@ -1941,6 +2477,9 @@ export class App {
     if (ref.indexOf('hub:') === 0) ref = 'relation:' + ref.slice(4);
     const lines = tooltipFor(s.model, ref);
     if (this.errorRefs.has(ref)) lines.push('⚠ has validation errors — see the Edit tab');
+    if (target.classList.contains('conn-ok')) lines.push('Right-click: connect here');
+    else if (target.classList.contains('conn-no')) lines.push('Can’t be connected to the first endpoint');
+    else if (target.classList.contains('conn-start')) lines.push('Right-click: start a connection (or select it and press C)');
     if (!lines.length) {
       tip.hidden = true;
       return;
@@ -1978,6 +2517,11 @@ export class App {
     let b = this.bounds;
     const vp = clone.querySelector('#viewport');
     if (vp) vp.removeAttribute('transform');
+    // a connection being drawn is screen state, not part of the picture
+    const line = clone.querySelector('#conn-line');
+    if (line) line.remove();
+    const marked = clone.querySelectorAll('.conn-start, .conn-source, .conn-ok, .conn-no');
+    for (let i = 0; i < marked.length; i++) marked[i].classList.remove('conn-start', 'conn-source', 'conn-ok', 'conn-no');
     if (this.session) {
       const st = this.session.state;
       // what the picture shows decides what its legend and its networks overview list
@@ -1996,7 +2540,7 @@ export class App {
     st.textContent = (style && style.textContent) || '';
     clone.insertBefore(st, clone.firstChild);
     clone.removeAttribute('class');
-    clone.setAttribute('class', 'export ' + (this.svg.getAttribute('class') || ''));
+    clone.setAttribute('class', ('export ' + (this.svg.getAttribute('class') || '')).replace(/\bconnecting\b/, '').trim());
     return { text: new XMLSerializer().serializeToString(clone), width: Math.round(b.w), height: Math.round(b.h) };
   }
 
@@ -2052,23 +2596,31 @@ export class App {
   }
 }
 
-/** What the Auto-arrange button says about a filtered view (its positions are temporary). */
-const FILTERED_STATUS_MESSAGE: { [k in 'auto' | 'manual']: string } = {
-  auto: 'This filtered view already matches the auto-arranged layout of the devices shown, so Auto-arrange is not available.',
-  manual: 'This filtered view has temporarily moved positions. Auto-arrange re-arranges the devices shown.',
-};
-const FILTERED_ACTION = 'Auto-arrange arranges only the devices shown, for now; the saved layout of the complete view is not changed (A).';
+/** Outcome of a save: written to the linked or chosen file, downloaded as a copy, cancelled, or failed (changes kept). */
+export type SaveResult = 'saved' | 'downloaded' | 'canceled' | 'failed';
 
-/**
- * What the Auto-arrange button says about the shown view (icon + message, never colour alone):
- * a check mark on the disabled button when it matches, the edit icon when there is something to arrange.
- */
-const LAYOUT_STATUS_ICON = { auto: '\u2713', manual: '\u270E', edited: '\u270E' };
-const LAYOUT_STATUS_MESSAGE = {
-  auto: 'This view already matches the auto-arranged layout, so Auto-arrange is not available.',
-  manual: 'This view has manually adjusted positions. Auto-arrange replaces them after a confirmation.',
-  edited: 'This view no longer matches the auto-arranged layout: the model was edited after it was arranged. Auto-arrange will rearrange it.',
+/** What the Auto-arrange group says about a filtered view that matches no strategy (its positions are temporary). */
+const FILTERED_STATUS_MESSAGE: { [k in 'manual']: string } = {
+  manual: 'This filtered view has temporarily moved positions. Each Auto-arrange option re-arranges the devices shown.',
 };
+
+/** What the Auto-arrange group says when the view on screen matches no strategy (text, never colour alone). */
+const LAYOUT_STATUS_MESSAGE = {
+  manual: 'This view has manually adjusted positions. Each Auto-arrange option replaces them after a confirmation.',
+  edited: 'This view no longer matches an Auto-arrange option: the model was edited after it was arranged.',
+};
+
+/** What each strategy is for (hover text of its button; the trade-offs are in the README). */
+const STRATEGY_HELP: { [s in ArrangeStrategy]: string } = {
+  default: 'the standard layout: tiers and groups by cabling (physical), evenly spaced relations (logical).',
+  compact: 'the standard layout with the empty space taken out: smaller pictures for small architectures; labels sit closer to their lines.',
+  spacious: 'the standard layout spread out: more room for labels and lines in dense architectures; a larger picture.',
+};
+
+/** A value for use inside a quoted CSS attribute selector. */
+function cssEscape(s: string): string {
+  return s.replace(/["\\]/g, '\\$&');
+}
 
 function round(v: number): number {
   return Math.round(v * 100) / 100;

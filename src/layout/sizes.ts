@@ -8,8 +8,6 @@ import { TextBlock, lineHeight, textBlock, textWidth } from './text';
 
 export const HUB_R = 12;
 export const CHIP_H = 16;
-/** loopback chips shown under a device in the logical view */
-export const MAX_CHIPS = 3;
 
 // ------------------------------------------------------------------ devices
 
@@ -62,9 +60,9 @@ export function loopbackChipText(id: string, addresses: string[]): string {
   return id + '  ' + (addresses[0] || '(no address)') + (addresses.length > 1 ? ' +' + (addresses.length - 1) : '');
 }
 
-/** Number of chip rows below the device box (loopbacks, plus a "+N more" row). */
+/** Number of chip rows below the device box: one per loopback (every one is shown). */
 export function chipRows(loopbackCount: number): number {
-  return loopbackCount === 0 ? 0 : Math.min(loopbackCount, MAX_CHIPS) + (loopbackCount > MAX_CHIPS ? 1 : 0);
+  return loopbackCount;
 }
 
 /** DNS names shown under a device in the logical view; more are summed up in a "+N more names" row */
@@ -118,15 +116,25 @@ export function dnsSize(names: string[]): { rows: number; w: number } {
 }
 
 /**
- * A device in the logical view: its body, plus the loopback chips and the
- * DNS names hanging under it. The node is as wide as its widest chip needs.
+ * A device in the logical view: its body, plus what hangs under it: a row per
+ * loopback, the chips of its other logical interfaces (virtual, tunnel) and
+ * its DNS names. The node is as wide as its widest row needs.
  */
-export function logicalDeviceSize(label: string, sub: string, chipW: number, loopbackCount: number, dnsNames: string[] = []): { w: number; h: number; bodyH: number } {
+export function logicalDeviceSize(label: string, sub: string, chipW: number, loopbackCount: number, dnsNames: string[] = [], logicalIds: string[] = []): { w: number; h: number; bodyH: number } {
   const body = deviceBody(label, sub, LOGICAL_DEVICE_MIN_W, LOGICAL_DEVICE_MIN_H);
   const dns = dnsSize(dnsNames);
   const rows = chipRows(loopbackCount) + dns.rows;
   const need = Math.max(chipW, dns.w);
-  return { w: Math.max(body.w, need ? need + 16 + 12 : 0), h: body.h + (rows ? rows * CHIP_H + 6 : 0), bodyH: body.h };
+  let w = Math.max(body.w, need ? need + 16 + 12 : 0);
+  const flow = logicalChipFlow(logicalIds, w);
+  w = Math.max(w, flow.w + 16);
+  const under = (rows ? rows * CHIP_H : 0) + (flow.items.length ? flow.h + IFCHIP_GAP : 0);
+  return { w, h: body.h + (under ? under + 6 : 0), bodyH: body.h };
+}
+
+/** The chips of a logical-view device's virtual and tunnel interfaces, for a node `w` wide. */
+export function logicalChipFlow(ids: string[], w: number): ChipFlow {
+  return chipFlow(ids, Math.max(60, w - 16));
 }
 
 // ----------------------------------------------------------------- networks
@@ -207,3 +215,86 @@ export function linkLabelBox(text: string): { block: TextBlock; w: number; h: nu
 export const MEMBER_LABEL_SIZE = 10;
 
 export { lineHeight };
+
+// ---------------------------------------------------------- interface chips
+
+/**
+ * Interfaces that have no line of their own in a view are drawn as small
+ * chips: in the physical view the ports without a cable (a strip at the
+ * bottom of the device box), in the logical view the virtual and tunnel
+ * interfaces (under the loopbacks). Each chip is one interface, so it can be
+ * found, selected and right-clicked by itself.
+ */
+export const IFCHIP_FONT = 9;
+export const IFCHIP_H = 13;
+export const IFCHIP_GAP = 3;
+/** padding of a chip strip inside its device box (left, right, bottom) */
+export const IFCHIP_PAD = 8;
+/** from this many chips on, a prefix that all of them share is written once and each chip shows the rest */
+export const IFCHIP_SHORTEN_FROM = 6;
+
+export interface ChipItem {
+  /** the interface id ('' for the shared-prefix caption) */
+  id: string;
+  text: string;
+  /** top-left corner, relative to the flow's top-left */
+  x: number;
+  y: number;
+  w: number;
+}
+export interface ChipFlow {
+  items: ChipItem[];
+  w: number;
+  h: number;
+}
+
+function ifChipW(text: string): number {
+  return Math.ceil(text.length * IFCHIP_FONT * 0.62) + 8;
+}
+
+/**
+ * The texts of a row of interface chips: the ids, or, for a long run of
+ * similarly named ports (ge-0/0/1 … ge-0/0/24), the shared prefix once
+ * (ending before the trailing number, followed by "▸") and each chip with its own end.
+ */
+export function chipTexts(ids: string[]): { prefix: string; texts: string[] } {
+  if (ids.length < IFCHIP_SHORTEN_FROM) return { prefix: '', texts: ids.slice() };
+  let lcp = ids[0];
+  for (const id of ids) {
+    let k = 0;
+    while (k < lcp.length && k < id.length && lcp.charCodeAt(k) === id.charCodeAt(k)) k++;
+    lcp = lcp.slice(0, k);
+  }
+  const prefix = lcp.replace(/[0-9]+$/, '');
+  // only worth it when the prefix is substantial and every chip keeps some text of its own
+  if (prefix.length < 2 || ids.some((id) => id.length === prefix.length)) return { prefix: '', texts: ids.slice() };
+  return { prefix, texts: ids.map((id) => id.slice(prefix.length)) };
+}
+
+/** Chips flowed into rows no wider than `maxW` (a chip wider than that gets a row of its own). */
+export function chipFlow(ids: string[], maxW: number): ChipFlow {
+  if (!ids.length) return { items: [], w: 0, h: 0 };
+  const t = chipTexts(ids);
+  // the caption: the shared prefix and a marker that the chips continue it (nothing is cut off: each chip is the rest of one id)
+  const all: Array<{ id: string; text: string }> = (t.prefix ? [{ id: '', text: t.prefix + ' ▸' }] : []).concat(ids.map((id, i) => ({ id, text: t.texts[i] })));
+  const items: ChipItem[] = [];
+  let x = 0;
+  let y = 0;
+  let w = 0;
+  for (const c of all) {
+    const cw = ifChipW(c.text);
+    if (x > 0 && x + cw > maxW) {
+      x = 0;
+      y += IFCHIP_H + IFCHIP_GAP;
+    }
+    items.push({ id: c.id, text: c.text, x, y, w: cw });
+    x += cw + IFCHIP_GAP;
+    w = Math.max(w, x - IFCHIP_GAP);
+  }
+  return { items, w, h: y + IFCHIP_H };
+}
+
+/** Height a chip strip adds to a device box (0 without chips). */
+export function chipStripH(flow: ChipFlow): number {
+  return flow.items.length ? flow.h + IFCHIP_PAD : 0;
+}

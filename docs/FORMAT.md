@@ -378,11 +378,14 @@ Rules (errors unless noted):
   `source` of a tunnel interface. It doesn't have to be referenced at all.
 * There is no router-ID field. If a loopback provides the router ID, say so
   in its `label`.
-* Display: in the **logical view** each device shows its loopbacks as small
-  chips under the device, in alphabetical order (the first three, then
-  "+N more"; a device with loopbacks is shown even if it has no relations).
-  The device's **details** list them with the other logical interfaces. The
-  **physical view** never draws them, because they have no port or cable.
+* Display: in the **logical view** each device shows every loopback as a row
+  under the device, in alphabetical order, and its virtual and tunnel
+  interfaces as small chips under them (a device with any logical interface
+  is shown even if it has no relations). The device's **details** list them
+  with the other logical interfaces. The **physical view** never draws them,
+  because they have no port or cable; it draws every physical interface: a
+  cabled one as a port on its cable, an uncabled one as a chip at the bottom
+  of its device box.
 
 ### DHCP
 
@@ -695,7 +698,8 @@ layout:
 * `manual` lists, per view, the nodes the user dragged. It is used only for
   the layout status (see below): it tells *Manually adjusted* apart from
   *Edited since arranged*. Auto-arrange clears it for the arranged view. A
-  node dropped exactly on its auto-arranged position is removed from it.
+  node dropped exactly on the position one of the Auto-arrange strategies
+  gives it is removed from it.
 * Group boxes, ports, cables, relation lines and labels are never stored.
   They're derived from the node positions.
 * Only the positions of the **complete** diagrams are stored. A view filtered
@@ -716,8 +720,8 @@ layout:
 | A view has **no** stored positions | The **Auto-arrange** result for the current model. Opening or viewing a file never writes anything. |
 | A view has stored positions | Stored positions are used. A node without one (e.g. added by hand in the YAML) is placed next to its neighbors in free space, without moving anything else. |
 | You **drag** a node | Its new position is stored. If the view had no stored positions, all currently shown positions of that view are stored with it (one undo step). |
-| You make an edit that affects geometry (adding, removing or renaming objects, changing any text that is drawn — labels, type, cable speed or the networks of its ends, relation labels —, groups, cables, relations, loopbacks, or an address or prefix that changes who is a member of a network …) | The positions shown **before** the edit are stored for both views, in the same undo step. New objects are placed next to their neighbors; nothing else moves. Edits that don't affect geometry (attrs, descriptions, DNS names, cable medium, virtual and tunnel interfaces and their associations, addresses that leave membership as it is …) store nothing. |
-| You click **Auto-arrange** | All positions of **the view on screen** are recomputed for the whole model and stored (one undo step). The other view keeps its positions, stored or not. If the view has positions that were set by hand, netatlas first asks for confirmation (see [Auto-arrange](#auto-arrange)). If the positions already equal the stored ones, nothing happens at all. |
+| You make an edit that affects geometry (adding, removing or renaming objects, changing any text that is drawn — labels, type, cable speed or the networks of its ends, relation labels —, groups, cables, relations, loopbacks, or an address or prefix that changes who is a member of a network …) | The positions shown **before** the edit are stored for both views, in the same undo step. New objects are placed next to their neighbors; nothing else moves. Adding, removing, renaming or cabling an interface affects geometry (every interface is drawn). Edits that don't affect geometry (attrs, descriptions, DNS names, cable medium, the associations of virtual and tunnel interfaces, addresses that leave membership as it is …) store nothing. |
+| You click an **Auto-arrange** option (Default, Compact or Spacious) | All positions of **the view on screen** are recomputed with that strategy for the whole model and stored (one undo step). The other view keeps its positions, stored or not. If the view has positions that were set by hand, netatlas first asks for confirmation (see [Auto-arrange](#auto-arrange)). If the positions already equal the stored ones, nothing happens at all. The file stores positions only, never which strategy produced them. |
 | You edit the **YAML** tab | The text is taken literally, including its `layout` section. Deleting the section there returns to automatic positions. |
 
 So **load → arrange → export → reload** shows exactly the same picture. A
@@ -726,33 +730,58 @@ layout, which is itself deterministic.
 
 ### Layout status
 
-For each view the editor knows whether the diagram matches Auto-arrange, and
-shows the status of the view on screen on the **Auto-arrange** button (icon,
-colour, hover text and accessible description). The status is derived from
-the document, never from the last action:
+For each view the editor knows whether the diagram matches an Auto-arrange
+strategy, and shows the status of the view on screen on the **Auto-arrange**
+options (the matching one is selected and disabled; a hover text and
+accessible description say which applies). The status is derived from the
+document, never from the last action:
 
 | Status | Rule |
 |---|---|
-| **Auto-arranged** | No positions are stored for the view, or every displayed position equals the Auto-arrange result for the current model. |
-| **Manually adjusted** | Some positions differ, and at least one differing node is listed in `layout.manual`. |
-| **Edited since arranged** | Some positions differ, but none of the differing nodes was placed by hand. The model changed after arranging, and positions were kept stable rather than re-arranged. |
+| **Auto-arranged** (with a strategy) | No positions are stored for the view (it shows the Default result), or every displayed position equals the result of one strategy for the current model. When several strategies give the same positions, the first of Default, Compact, Spacious counts, and the others are shown as giving the same positions. |
+| **Manually adjusted** | The positions match no strategy, and a node of the view is listed in `layout.manual`. |
+| **Edited since arranged** | The positions match no strategy, but no node was placed by hand. The model changed after arranging, and positions were kept stable rather than re-arranged. |
 
 Because it's derived, undo/redo, export → reload and moving a node back to
 its calculated position always give the right status.
 
 ### Auto-arrange
 
-The **Auto-arrange** button arranges one view: the one on screen. There is no
-choice of views; to arrange the other view, switch to it and press the button
-there. What happens depends on the view's layout status:
+**Auto-arrange** has three options, **Default**, **Compact** and
+**Spacious**. Each arranges one view: the one on screen. There is no choice
+of views; to arrange the other view, switch to it and choose an option there.
+What happens depends on the view's layout status:
 
-| Status of the view on screen | What the button does |
+| Status of the view on screen | What an option does |
 |---|---|
-| **Auto-arranged** | Nothing moves and nothing is asked. If the view has no stored positions yet, the positions shown are stored. |
-| **Edited since arranged** | The view is arranged at once; no position in it was set by hand, so nothing is asked. |
-| **Manually adjusted** | A confirmation names the objects that were positioned by hand and says that they (and any other objects that no longer match) move back to the calculated layout, that the other view is not changed, and that the step can be undone. **Cancel** changes nothing in either view. |
+| **Auto-arranged with this option** | Nothing: the option is disabled. |
+| **Auto-arranged with another option**, or **Edited since arranged** | The view is arranged at once; no position in it was set by hand, so nothing is asked. |
+| **Manually adjusted** | A confirmation names the objects that were positioned by hand and says that they (and any other objects that no longer match) move to the calculated layout, that the other view is not changed, and that the step can be undone. **Cancel** changes nothing in either view. |
 
-The layout itself is computed as follows.
+The strategies:
+
+* **Default** is the layout described below.
+* **Compact** is the Default layout with the slack taken out, container by
+  container: the contents of each group are compacted first, and the group
+  then takes part in its parent's compaction as one rigid block the size of
+  its frame (with its title), so frames never overlap anything outside them.
+  Inside a container, the items are moved towards their middle by 55 % (by
+  centre along x, by top edge along y, so the tops of a row stay lined up)
+  and separated again: first along x, in x order, each pushed right of the
+  earlier ones it stands beside in the Default layout; then along y, in y
+  order, each pushed below the earlier ones it overlaps horizontally. The
+  gaps are 56 × 72 px (physical) and 64 × 64 px (logical) between items, plus
+  a little air around a frame. The order along each axis is kept, so rows
+  stay rows and stacks stay stacks. Cable and relation labels have less room
+  and may sit closer to their lines.
+* **Spacious** is the Default layout spread out from the centre of its node
+  centres by a factor of 1.4. Distances only grow, so nothing can come to
+  overlap; every line gets more room for its labels, and the picture grows.
+
+Compact and Spacious are pure functions of the Default result, so they are as
+deterministic as it is, and idempotent.
+
+The Default layout is computed as follows.
 
 * **Physical view:** tiered, nested group boxes. Inside a group, devices
   sit in rows by tier: cloud/WAN on top, then routers, firewalls, core,
@@ -861,11 +890,11 @@ positions, so switching views moves nothing in the other one. Selecting all
 devices again shows the complete diagram with its stored positions,
 unchanged; a filtered view chosen again later is arranged afresh.
 
-**Auto-arrange in a filtered view** arranges the shown devices only, at
-once and without confirmation (the positions it replaces are temporary). The
-stored layout of the complete view is not changed. Its status on the button
-is *Auto-arranged* while the filtered view matches that result, or
-*Manually adjusted* after a node was moved there; the hover text and the
+**Auto-arrange in a filtered view** (any option) arranges the shown devices
+only, at once and without confirmation (the positions it replaces are
+temporary). The stored layout of the complete view is not changed. The
+option whose result the filtered view shows is selected; after a node was
+moved there, none is (*Manually adjusted*); the hover text and the
 accessible description say that the view is filtered.
 
 **Export** (PNG and SVG) shows the filtered view: the selected devices and
@@ -893,7 +922,10 @@ places; they are the same on screen and in exported SVG files.
   bound: the longest possible device label gives a box about 280 wide.
 * **Devices** grow in width up to the wrap width and in height with the
   number of lines; the subtitle (the device type) wraps the same way. In
-  the logical view a device is also as wide as its widest loopback chip.
+  the logical view a device is also as wide as its widest loopback chip and
+  grows for the chips of its virtual and tunnel interfaces; in the physical
+  view it grows for the chips of its uncabled ports (rows as wide as the box,
+  a shared prefix of six or more similar names written once).
 * **Networks** show their label and their prefix (with the VLAN), wrapped.
   In the logical view a network or multipoint hub whose devices all lie in
   one group (a site LAN, a rack's LAG) is placed inside that group's frame,
@@ -940,7 +972,8 @@ places; they are the same on screen and in exported SVG files.
   wide one; the shape follows the topology rather than the screen.
 * Relation lines in the logical view are always straight. Auto-arrange moves
   nodes off the lines; with manual positions a line can pass under a node.
-* Spacing is preferred over density, so diagrams are fairly large.
+* Spacing is preferred over density, so Default diagrams are fairly large;
+  Compact takes the slack out.
 * Stored positions are never changed by another NetAtlas application
   version. If that version arranges differently, the view shows *edited
   since arranged* until Auto-arrange is used again.
@@ -959,7 +992,8 @@ version) when they have the same:
 
 * device ids, labels, types, tiers (explicit `tier`,
   else derived from `type`), groups, the number of loopbacks and the width of
-  the widest loopback chip (loopback ids and addresses);
+  the widest loopback chip (loopback ids and addresses), the ids of the
+  uncabled physical interfaces and of the virtual and tunnel interfaces;
 * groups (ids, parents, labels and kinds);
 * cables (ids and their endpoints `device:interface`; which end is `a` and
   which is `b` doesn't matter) and the text drawn on them (speed, the

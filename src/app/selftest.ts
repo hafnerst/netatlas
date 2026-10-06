@@ -14,7 +14,7 @@ import { interfaceAddresses, interfaceVlanText, networkMembers } from '../model/
 import { contextState, relatedRefs, selectionContext } from '../model/queries';
 import { strNode } from '../yaml/parse';
 import { EXAMPLES, FIXTURES } from '../generated/examples';
-import { PNG_MAX_PIXELS, PNG_MAX_SIDE, pngScale, svgToPng } from '../ui/files';
+import { PNG_MAX_PIXELS, PNG_MAX_SIDE, WritableFile, pngScale, svgToPng } from '../ui/files';
 import { App } from '../ui/app';
 
 interface Check {
@@ -55,41 +55,36 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     await tick(10);
     return !!b;
   };
-  /** layout status of a view, as tracked on the Auto-arrange button: "auto" | "manual" | "edited" */
-  const status = (v: 'physical' | 'logical'): string => (q('#btn-arrange') || { getAttribute: () => '' }).getAttribute('data-status-' + v) || '';
-  /** what the Auto-arrange button shows for the view on screen: status, icon, hover text, accessible description */
-  const shown = (): { view: string; st: string; icon: string; title: string; desc: string } => {
-    const b = q('#btn-arrange') as HTMLButtonElement;
-    const d = doc.getElementById(b.getAttribute('aria-describedby') || '');
-    return { view: b.getAttribute('data-view') || '', st: b.getAttribute('data-status') || '', icon: (b.querySelector('.arrange-icon') as HTMLElement).textContent || '', title: b.title, desc: d ? d.textContent || '' : '' };
+  /** layout status of a view, as tracked on the Auto-arrange group: "auto" | "manual" | "edited" */
+  const status = (v: 'physical' | 'logical'): string => (q('#arrange-group') || { getAttribute: () => '' }).getAttribute('data-status-' + v) || '';
+  const arrangeBtn = (s: string): HTMLButtonElement => q('#btn-arrange-' + s) as HTMLButtonElement;
+  const STRATS = ['default', 'compact', 'spacious'];
+  /** what the Auto-arrange group shows for the view on screen: status, the option pressed (the strategy that matches), hover text, accessible description */
+  const shown = (): { view: string; st: string; current: string; title: string; desc: string } => {
+    const g = q('#arrange-group') as HTMLElement;
+    const d = doc.getElementById(g.getAttribute('aria-describedby') || '');
+    const cur = STRATS.map(arrangeBtn).find((b) => b.getAttribute('aria-pressed') === 'true');
+    return { view: g.getAttribute('data-view') || '', st: g.getAttribute('data-status') || '', current: cur ? cur.getAttribute('data-strategy') || '' : '', title: g.title, desc: d ? d.textContent || '' : '' };
   };
-  const AUTO_MSG = 'This view already matches the auto-arranged layout, so Auto-arrange is not available.';
-  const MANUAL_MSG = 'This view has manually adjusted positions. Auto-arrange replaces them after a confirmation.';
+  /** the message for a view arranged with Default (complete or filtered) */
+  const AUTO_RE = /^The (filtered )?(physical|logical) view is arranged with Default/;
+  const MANUAL_MSG = 'This view has manually adjusted positions. Each Auto-arrange option replaces them after a confirmation.';
   /**
-   * The Auto-arrange button's look: 'done' = disabled, neutral grey (not faded) with the green check mark;
-   * 'todo' = enabled, normal blue solid border with the edit icon.
+   * The Auto-arrange options' look: 'done' = one option pressed (the matching one) and disabled, the others
+   * available unless they give the same positions; 'todo' = nothing pressed, all three available.
    */
   const arrangeLook = (): string => {
-    const b = q('#btn-arrange') as HTMLButtonElement;
-    const win = doc.defaultView!;
-    const cs = win.getComputedStyle(b);
-    const icon = b.querySelector('.arrange-icon') as HTMLElement;
-    const accent = win.getComputedStyle(doc.documentElement).getPropertyValue('--accent').trim();
-    const probe = doc.createElement('span');
-    probe.style.color = accent;
-    doc.body.appendChild(probe);
-    const blue = win.getComputedStyle(probe).color;
-    doc.body.removeChild(probe);
-    const solid = cs.borderTopStyle === 'solid' && cs.boxShadow === 'none';
-    if (b.disabled && icon.textContent === '\u2713' && cs.opacity === '1' && cs.borderTopColor !== blue && cs.color !== blue && solid) return 'done';
-    if (!b.disabled && icon.textContent === '\u270E' && cs.borderTopColor === blue && solid) return 'todo';
-    return `other: disabled=${b.disabled} icon=${icon.textContent} opacity=${cs.opacity} border=${cs.borderTopStyle} ${cs.borderTopColor} colour=${cs.color} shadow=${cs.boxShadow}`;
+    const bs = STRATS.map(arrangeBtn);
+    const pressed = bs.filter((b) => b.getAttribute('aria-pressed') === 'true');
+    if (pressed.length === 1 && pressed[0].disabled && pressed[0].classList.contains('current') && bs.every((b) => b === pressed[0] || b.disabled === b.classList.contains('same'))) return 'done';
+    if (!pressed.length && bs.every((b) => !b.disabled && !b.classList.contains('current'))) return 'todo';
+    return 'other: ' + bs.map((b) => `${b.getAttribute('data-strategy')} pressed=${b.getAttribute('aria-pressed')} disabled=${b.disabled}`).join(', ');
   };
-  /** the button shows `st` for `view`: icon, hover text, description and enabled state agree */
+  /** the group shows `st` for `view`: pressed option, hover text, description and enabled states agree */
   const shows = (view: string, st: 'auto' | 'manual'): boolean => {
     const x = shown();
-    const msg = st === 'auto' ? AUTO_MSG : MANUAL_MSG;
-    return x.view === view && x.st === st && x.icon === (st === 'auto' ? '\u2713' : '\u270E') && x.title.indexOf(msg) === 0 && x.desc === msg && x.st === status(view as 'physical' | 'logical') && arrangeLook() === (st === 'auto' ? 'done' : 'todo');
+    const ok = st === 'auto' ? AUTO_RE.test(x.desc) && x.current === 'default' : x.desc === MANUAL_MSG && x.current === '';
+    return x.view === view && x.st === st && ok && x.title === x.desc && x.st === status(view as 'physical' | 'logical') && arrangeLook() === (st === 'auto' ? 'done' : 'todo');
   };
   /**
    * What a reader would see as wrong in the drawn diagram, measured with the
@@ -162,19 +157,25 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     return downloads[downloads.length - 1];
   };
 
+  // Most of the run is a browser without a save picker (like Firefox or Safari): Save model as… downloads a
+  // copy, which the run captures. The picker path (a file the page may write) is checked with a stand-in below.
+  app.fileAccess = { saveFile: null, openFile: null };
+
   try {
     const csp = doc.querySelector('meta[http-equiv="Content-Security-Policy"]');
     const policy = csp ? csp.getAttribute('content') || '' : '';
     check('CSP meta present and blocks network', /default-src 'none'/.test(policy) && /connect-src 'none'/.test(policy), policy);
     {
-      const btn = q('#btn-arrange') as HTMLButtonElement | null;
-      const r = btn ? btn.getBoundingClientRect() : null;
+      const group = q('#arrange-group');
+      const bs = STRATS.map(arrangeBtn);
+      const rs = bs.map((b) => (b ? b.getBoundingClientRect() : null));
       check(
-        'Auto-arrange button is in the top toolbar, visible and labelled (disabled, without a status, until a model is open); no separate status element',
-        !!btn && !!btn.closest('header.topbar') && !!r && r.width > 40 && r.height > 10 && r.top < 60 && /^Auto-arrange/.test((btn.querySelector('.arrange-label')!.textContent || '').trim()) && btn.disabled &&
-          shown().st === '' && shown().icon === '' && shown().desc === '' && !q('#layout-status') && !q('[data-view-status]') && !q('.lstat') &&
+        'Auto-arrange: three options in the top toolbar (Default, Compact, Spacious), visible and labelled as one group, disabled without a status until a model is open; no check mark or edit icon',
+        !!group && !!group.closest('header.topbar') && /^Auto-arrange$/.test((q('#arrange-title') as HTMLElement).textContent || '') &&
+          bs.every((b, i) => !!b && b.disabled && b.getAttribute('aria-pressed') === 'false' && !!rs[i] && rs[i]!.width > 30 && rs[i]!.height > 10 && rs[i]!.top < 60 && b.getAttribute('aria-label') === 'Auto-arrange: ' + b.textContent) &&
+          bs.map((b) => b.textContent).join() === 'Default,Compact,Spacious' && !q('.arrange-icon') && shown().st === '' && shown().desc === '' && !q('#layout-status') && !q('#btn-arrange') &&
           doc.querySelectorAll('header.topbar [data-view-btn]').length === 2,
-        btn ? (btn.textContent || '') + (btn.disabled ? ' (disabled)' : '') : 'missing',
+        bs.map((b) => (b ? b.textContent + (b.disabled ? ' (disabled)' : '') : 'missing')).join(', '),
       );
     }
 
@@ -188,7 +189,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const bar = 'header.topbar';
       const menuBtn = q('#menu-btn') as HTMLButtonElement | null;
       const menu = q('#main-menu') as HTMLElement | null;
-      const direct = ['#btn-undo', '#btn-redo', '[data-view-btn="physical"]', '[data-view-btn="logical"]', '#btn-arrange', '#menu-btn', '#export-btn', '#view-btn'];
+      const direct = ['#btn-undo', '#btn-redo', '[data-view-btn="physical"]', '[data-view-btn="logical"]', '#btn-arrange-default', '#btn-arrange-compact', '#btn-arrange-spacious', '#menu-btn', '#export-btn', '#view-btn'];
       check(
         'toolbar: logo and version, the File, Export and View menus, and undo/redo, Physical/Logical and Auto-arrange as direct controls; no "Current model" button',
         !!q(bar + ' .brand svg') && /^v\d+\.\d+\.\d+/.test((q(bar + ' .brand .version') || { textContent: '' }).textContent || '') && !!menuBtn && /^File/.test((menuBtn.textContent || '').trim()) &&
@@ -196,18 +197,22 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
           !q('#btn-model') && !q('#model-badge') && !/Current model/.test((q(bar) as HTMLElement).textContent || ''),
       );
       check(
-        'New, Open, Download and the examples are grouped in the File menu and nowhere else in the toolbar',
-        !!menu && menu.hidden && menuBtn!.getAttribute('aria-expanded') === 'false' && ['#btn-new', '#open', '#btn-download', '#menu-examples'].every((x) => !!q('#main-menu ' + x)) && !q('#examples') && !q(bar + ' select') &&
+        'New, Open, Save, Save as, Close and the examples are grouped in the File menu and nowhere else in the toolbar',
+        !!menu && menu.hidden && menuBtn!.getAttribute('aria-expanded') === 'false' && ['#btn-new', '#open', '#btn-save', '#btn-save-as', '#btn-close', '#menu-examples'].every((x) => !!q('#main-menu ' + x)) && !q('#btn-download') && !q('#examples') && !q(bar + ' select') &&
           doc.querySelectorAll(bar + ' > button, ' + bar + ' > .btn-group > button').length === 2,
         String(doc.querySelectorAll(bar + ' > button, ' + bar + ' > .btn-group > button').length),
       );
       click('#menu-btn');
       const entries = textsOf('#main-menu button');
       const mr = menu!.getBoundingClientRect();
+      const labels = textsOf('#main-menu > button .mi-label');
       check(
-        'the File menu opens under its button with consistently named entries: New model, Open model…, Download model…, Close model, then the examples',
-        !menu!.hidden && menuBtn!.getAttribute('aria-expanded') === 'true' && mr.height > 100 && mr.top >= menuBtn!.getBoundingClientRect().bottom - 1 && /^New model/.test(entries[0]) && /^Open model…$/.test(entries[1]) && /^Download model…/.test(entries[2]) && /Ctrl\+S$/.test(entries[2]) && entries[0] === 'New model' &&
-          entries.length === 4 + EXAMPLES.length && entries[3] === 'Close model' && (q('#btn-close') as HTMLButtonElement).disabled && q('#btn-download')!.nextElementSibling === q('#btn-close') && entries.slice(4).join() === EXAMPLES.map((e) => e.name).join() && /Examples/.test(q('#menu-examples-title')!.textContent || '') && EXAMPLES.length === 6 && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(menu!.textContent || '') && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(q('#empty')!.textContent || '') && (q('#btn-download') as HTMLButtonElement).disabled,
+        'the File menu opens under its button with consistently named entries: New model, Open model…, Save model, Save model as…, Close model, then the examples; without a model only New and Open are available',
+        !menu!.hidden && menuBtn!.getAttribute('aria-expanded') === 'true' && mr.height > 100 && mr.top >= menuBtn!.getBoundingClientRect().bottom - 1 &&
+          labels.join('|') === 'New model|Open model…|Save model|Save model as…|Close model' && /Ctrl\+S$/.test(entries[2]) && /Ctrl\+Shift\+S$/.test(entries[3]) &&
+          entries.length === 5 + EXAMPLES.length && ['#btn-save', '#btn-save-as', '#btn-close'].every((x) => (q(x) as HTMLButtonElement).disabled && /Open or create a model first|Close the current model/.test(q(x)!.title)) &&
+          q('#btn-save')!.nextElementSibling === q('#btn-save-as') && q('#btn-save-as')!.nextElementSibling === q('#btn-close') &&
+          textsOf('#menu-examples .mi-label').join() === EXAMPLES.map((e) => e.name).join() && !q('#menu-examples .active-example') && /Examples/.test(q('#menu-examples-title')!.textContent || '') && EXAMPLES.length === 6 && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(menu!.textContent || '') && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(q('#empty')!.textContent || ''),
         entries.join(' | '),
       );
       menuBtn!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
@@ -287,8 +292,8 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         );
         const options = Array.prototype.map.call(pick.options, (o: HTMLOptionElement) => o.textContent) as string[];
         check(
-          'start screen: three ways to begin — New model, Open YAML file (also the drop target), Load example from a picker',
-          /^New model/.test((newBtn.textContent || '').trim()) && /^Open YAML file…/.test((openBtn.textContent || '').trim()) && /drop one here/.test(openBtn.textContent || '') && openBtn.classList.contains('start-drop') &&
+          'start screen: three ways to begin — New model, Open model… (also the drop target), Load example from a picker',
+          /^New model/.test((newBtn.textContent || '').trim()) && /^Open model…/.test((openBtn.textContent || '').trim()) && /Choose a YAML file, or drop one here/.test(openBtn.textContent || '') && /drop one here/.test(openBtn.textContent || '') && openBtn.classList.contains('start-drop') &&
             doc.defaultView!.getComputedStyle(openBtn).borderTopStyle === 'dashed' && (q('#empty label[for="start-example"]') as HTMLElement).textContent === 'Load example' && options[0] === 'Choose an example…' && options.length === 1 + EXAMPLES.length &&
             options.indexOf('Minimal example') === 3 && loadBtn.disabled && doc.querySelectorAll('#empty .start-card').length === 3 && [newBtn, openBtn, pick].every(shownNow),
           options.join(' | '),
@@ -321,7 +326,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         );
         toStart();
 
-        // Open YAML file: the file picker of the existing loader
+        // Open model…: the file picker of the existing loader (this browser has no open picker of its own)
         const inputClick = HTMLInputElement.prototype.click;
         let pickerOpened = 0;
         HTMLInputElement.prototype.click = function (this: HTMLInputElement): void {
@@ -330,7 +335,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         openBtn.click();
         await tick(10);
         HTMLInputElement.prototype.click = inputClick;
-        check('start screen → Open YAML file opens the file picker (for .yaml / .yml files)', pickerOpened === 1 && /\.yaml/.test((q('#file') as HTMLInputElement).accept) && doc.body.getAttribute('data-state') === 'empty');
+        check('start screen → Open model… opens the file picker (for .yaml / .yml files)', pickerOpened === 1 && /\.yaml/.test((q('#file') as HTMLInputElement).accept) && doc.body.getAttribute('data-state') === 'empty');
 
         // drag and drop: the page takes over every drag, so the browser never navigates to a dropped file
         const dragEvent = (type: string, files: File[], text?: string): DragEvent => {
@@ -348,14 +353,14 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         (q('#side') as HTMLElement).dispatchEvent(over);
         const marked = doc.body.classList.contains('dropping') && doc.defaultView!.getComputedStyle(openBtn).backgroundColor !== idleBg && doc.defaultView!.getComputedStyle(q('#drop-hint') as Element).display === 'none';
         doc.dispatchEvent(new DragEvent('dragleave', { bubbles: true }));
-        check('dragging a file over the page marks the "Open YAML file" card as the drop target; the drag is taken over by the page', over.defaultPrevented && marked && !doc.body.classList.contains('dropping'), `${over.defaultPrevented} ${marked}`);
+        check('dragging a file over the page marks the "Open model…" card as the drop target; the drag is taken over by the page', over.defaultPrevented && marked && !doc.body.classList.contains('dropping'), `${over.defaultPrevented} ${marked}`);
 
         const good = dragEvent('drop', [new File([EXAMPLES[2].text], 'dropped.yaml', { type: 'application/yaml' })]);
         (q('header.topbar') as HTMLElement).dispatchEvent(good);
         await until(() => !!app.mdoc);
         check(
-          'dropping a YAML file anywhere on the page opens it (the same loader as the file picker); the browser does not navigate',
-          good.defaultPrevented && !!app.mdoc && app.mdoc.fileName === 'dropped.yaml' && app.mdoc.origin === 'file' && app.mdoc.valid && doc.body.getAttribute('data-state') === 'loaded',
+          'dropping a YAML file anywhere on the page opens it (the same loader as the file picker); the browser does not navigate; without a writable file handle Save model stays unavailable',
+          good.defaultPrevented && !!app.mdoc && app.mdoc.fileName === 'dropped.yaml' && app.mdoc.origin === 'file' && app.mdoc.valid && doc.body.getAttribute('data-state') === 'loaded' && !app.linked && (q('#btn-save') as HTMLButtonElement).disabled && !(q('#btn-save-as') as HTMLButtonElement).disabled && app.fileState().kind === 'unlinked',
           `${good.defaultPrevented} ${app.mdoc ? app.mdoc.fileName + ' ' + app.mdoc.origin : 'no model'} ${doc.body.getAttribute('data-state')} files=${good.dataTransfer ? good.dataTransfer.files.length : -1}`,
         );
         toStart();
@@ -367,7 +372,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         check(
           'an invalid file gives clear feedback: what could not be opened, where and why, and how to go on',
           bad.defaultPrevented && doc.body.getAttribute('data-state') === 'error' && !app.mdoc && shownNow(q('#errors')) && /Could not open broken\.yaml/.test(errText) && /line 3/i.test(errText) && /anchor/.test(errText) &&
-            textsOf('#errors .error-actions button').join('|') === 'Open another YAML file…|New model|Back to the start screen',
+            textsOf('#errors .error-actions button').join('|') === 'Open another model…|New model|Back to the start screen',
           errText.slice(0, 300),
         );
         const notYaml = dragEvent('drop', [new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0xff, 0xfe, 0x00, 0x01])], 'picture.png', { type: 'image/png' })]);
@@ -532,8 +537,8 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         const asked = dialogText();
         const offered = buttons();
         check(
-          'closing a model with unsaved changes asks: Cancel, Discard changes, or Download and close; it says the download is a new file and the opened file is not overwritten',
-          /Close the model with unsaved changes\?/.test(asked) && offered === 'Cancel|Discard changes|Download and close' && /“mine\.yaml” has changes that have not been downloaded/.test(asked) && /saves the current state as a new file, “mine-edited\.yaml”, in your browser’s downloads location; the file you opened is not overwritten/.test(asked) &&
+          'closing a model with unsaved changes asks: Cancel, Discard changes, or Save as and close… (the model is not linked to a file); in a browser without a save picker it says that a copy is downloaded first',
+          /Close the model with unsaved changes\?/.test(asked) && offered === 'Cancel|Discard changes|Save as and close…' && /“mine\.yaml” has changes that have not been saved/.test(asked) && /“Save as and close…” downloads a copy of the model first \(this browser can’t save to a file you choose\)/.test(asked) &&
             !/save (it )?(back )?to the original|overwrite the original/i.test(asked),
           offered + ' // ' + asked,
         );
@@ -547,15 +552,18 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         await tick(30);
         check('… and so does Escape', app.mdoc === kept && kept!.dirty && !q('#modal[open]'));
 
-        // Download and close: the YAML is exported first, then the start screen
+        // Save as and close: here a copy is downloaded first (the dialog says so, and that the opened file is not changed), then the start screen
         const yaml = app.exportText();
         await choose();
+        await answerDialog('save');
+        const copyText = dialogText();
         await answerDialog('download');
         for (let n = 0; n < 40 && downloads.length === had; n++) await tick(10);
         const got = downloads[downloads.length - 1];
         check(
-          'Download and close exports the current YAML (as a new file, not the original name) and then shows the start screen',
-          downloads.length === had + 1 && !!got && got.name === 'mine-edited.yaml' && got.text === yaml && /label: Router one/.test(got.text) && onStart() && /Downloaded “mine-edited\.yaml”/.test(q('#toast')!.textContent || ''),
+          'Save as and close… downloads the current YAML as a copy (a new file, not the original name; the opened file is not changed) and then shows the start screen',
+          downloads.length === had + 1 && !!got && got.name === 'mine-edited.yaml' && got.text === yaml && /label: Router one/.test(got.text) && onStart() && /Downloaded a copy, “mine-edited\.yaml”/.test(q('#toast')!.textContent || '') &&
+            /can’t save to a file you choose/.test(copyText) && /“mine\.yaml” on your disk is not changed/.test(copyText) && /not linked to this model/.test(copyText),
           got ? got.name : 'no download',
         );
 
@@ -567,7 +575,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         const exampleText = dialogText();
         await answerDialog('discard');
         await tick(30);
-        check('Discard changes closes without exporting; for an example the prompt does not talk about an opened file', onStart() && downloads.length === had + 1 && /“minimal\.yaml” has changes/.test(exampleText) && /saves it as “minimal\.yaml”/.test(exampleText) && !/file you opened/.test(exampleText), exampleText);
+        check('Discard changes closes without exporting; for an example the prompt does not talk about an opened file', onStart() && downloads.length === had + 1 && /“minimal\.yaml” has changes/.test(exampleText) && /downloads a copy of the model first/.test(exampleText) && !/file you opened|on your disk/.test(exampleText), exampleText);
         // a new model that was edited is asked about too, and keeps its errors in view
         click('#btn-new');
         await tick(10);
@@ -838,7 +846,30 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       click('#menu-btn');
       click('#menu-examples [data-example="2"]');
       await tick(10);
-      check('choosing an example from the menu loads it and closes the menu', menu!.hidden && !!app.mdoc && app.mdoc.fileName === EXAMPLES[2].name && !(q('#btn-download') as HTMLButtonElement).disabled, app.mdoc ? app.mdoc.fileName : 'nothing loaded');
+      check('choosing an example from the menu loads it and closes the menu', menu!.hidden && !!app.mdoc && app.mdoc.fileName === EXAMPLES[2].name && !(q('#btn-save-as') as HTMLButtonElement).disabled, app.mdoc ? app.mdoc.fileName : 'nothing loaded');
+      {
+        // the loaded example is marked in the File menu, and so is whether its model was modified (also after undo / redo)
+        const ex = (i: number): HTMLElement => q(`#menu-examples [data-example="${i}"]`) as HTMLElement;
+        const exState = (i: number): string => `${ex(i).classList.contains('active-example')}/${ex(i).getAttribute('aria-current') || '-'}/${(ex(i).querySelector('.ex-state') as HTMLElement).textContent}/${ex(i).getAttribute('data-modified')}`;
+        const others = (): boolean => EXAMPLES.every((_, i) => i === 2 || exState(i) === 'false/-//false');
+        const loaded = exState(2);
+        const saveOff = (q('#btn-save') as HTMLButtonElement).disabled && /not linked/.test(q('#btn-save')!.title) && app.fileState().kind === 'example' && /built-in example/.test(q('#status .file-state')!.textContent || '');
+        app.mdoc!.setText(['title'], 'Minimal, edited');
+        (app as unknown as { afterEdit(n?: string): void }).afterEdit();
+        const edited = exState(2);
+        const dot = q('#status .fname .mod-dot') !== null && q('#status .fname')!.getAttribute('data-modified') === 'true';
+        app.undo();
+        const undone = exState(2);
+        const noDot = !q('#status .fname .mod-dot') && !app.mdoc!.dirty;
+        app.redo();
+        const redone = exState(2);
+        app.undo();
+        check(
+          'File menu: the loaded example is marked (open), and separately whether its model is modified; undo back to the loaded state clears "modified", redo sets it again; Save model stays unavailable for an example',
+          loaded === 'true/true/open/false' && edited === 'true/true/open · modified/true' && dot && undone === 'true/true/open/false' && noDot && redone === 'true/true/open · modified/true' && others() && saveOff && !app.mdoc!.dirty,
+          [loaded, edited, undone, redone, String(saveOff)].join(' | '),
+        );
+      }
 
       // the model and its settings without a "Current model" button: the model panel stays, the settings open from the Edit tab
       app.select('device:r1');
@@ -1001,16 +1032,14 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       );
       check('status after dragging: Physical "Manually adjusted", Logical still "Auto-arranged"', status('physical') === 'manual' && status('logical') === 'auto', status('physical') + ' / ' + status('logical'));
       {
-        const b = q('#btn-arrange') as HTMLButtonElement;
-        const cs = doc.defaultView!.getComputedStyle(b);
-        const br = b.getBoundingClientRect();
+        const bs = STRATS.map(arrangeBtn);
         check(
-          'the Auto-arrange button shows it: enabled, edit icon, normal blue solid border (no orange), hover text and accessible description say "manually adjusted"',
-          shows('physical', 'manual') && !b.disabled && b.tagName === 'BUTTON' && br.width > 60 && /Auto-arrange/.test(b.textContent || '') && cs.borderTopStyle === 'solid' && cs.cursor !== 'not-allowed' && b.getAttribute('aria-describedby') === 'arrange-status',
+          'the Auto-arrange options show it: none is selected, all three can be clicked; the group’s hover text and accessible description say "manually adjusted"',
+          shows('physical', 'manual') && bs.every((b) => !b.disabled && b.tagName === 'BUTTON' && b.getAttribute('aria-pressed') === 'false' && doc.defaultView!.getComputedStyle(b).cursor !== 'not-allowed') && q('#arrange-group')!.getAttribute('aria-describedby') === 'arrange-status',
           JSON.stringify(shown()) + ' ' + arrangeLook(),
         );
       }
-      check('Auto-arrange button is enabled while the view differs from the auto-arranged layout', !(q('#btn-arrange') as HTMLButtonElement).disabled);
+      check('every Auto-arrange option is enabled while the view matches none of them', STRATS.every((st) => !arrangeBtn(st).disabled));
     }
     const t0 = vp.getAttribute('transform');
     const sr = svg.getBoundingClientRect();
@@ -1025,16 +1054,16 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     check('undo reverts the drag (and the stored positions)', !(app.mdoc as ModelDoc).hasStoredLayout('physical'));
     check('status after undo: back to "Auto-arranged"', status('physical') === 'auto' && status('logical') === 'auto');
     check(
-      '… and the button is disabled and grey (not faded) with the green check mark; its hover text and description say why Auto-arrange is not available',
-      shows('physical', 'auto') && /not available/.test(shown().title) && /not available/.test(shown().desc),
+      '… and Default is selected and disabled (the view is arranged with it); the description says so',
+      shows('physical', 'auto') && /arranged with Default/.test(shown().desc) && arrangeBtn('default').getAttribute('aria-pressed') === 'true' && !arrangeBtn('compact').disabled && !arrangeBtn('spacious').disabled,
       JSON.stringify(shown()) + ' ' + arrangeLook(),
     );
     {
-      // a disabled Auto-arrange can't be triggered: not by a click, a touch / pointer press, Enter / Space on it, or the A key
+      // a disabled Auto-arrange option can't be triggered: not by a click, a touch / pointer press, Enter / Space on it, or the A key
       const dm = app.mdoc as ModelDoc;
       const undoBefore = dm.canUndo();
       const yamlBefore = app.exportText();
-      const b = q('#btn-arrange') as HTMLButtonElement;
+      const b = arrangeBtn('default');
       const r = b.getBoundingClientRect();
       b.click();
       b.dispatchEvent(pe('pointerdown', r.left + 5, r.top + 5));
@@ -1245,7 +1274,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       (q('#devices-panel') as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
       check('the panel filters its list without changing the selection, and Esc closes it', rows === 7 && (q('#devices-panel') as HTMLElement).hidden && doc.activeElement === btn && s().selectedDevices().size === 6, String(rows));
       // a move in the filtered view is temporary
-      check('the filtered view starts auto-arranged for its devices; the button says so', status('physical') === 'auto' && (q('#btn-arrange') as HTMLElement).getAttribute('data-filtered') === 'true' && /filtered view already matches/.test(shown().desc) && /not available/.test(shown().title) && arrangeLook() === 'done', shown().desc + ' ' + arrangeLook());
+      check('the filtered view starts auto-arranged (Default) for its devices; the Auto-arrange group says so', status('physical') === 'auto' && (q('#arrange-group') as HTMLElement).getAttribute('data-filtered') === 'true' && /^The filtered physical view is arranged with Default/.test(shown().desc) && shown().title === shown().desc && arrangeLook() === 'done', shown().desc + ' ' + arrangeLook());
       {
         const el2 = q('#viewport g.device[data-ref="device:hq-fw"] .dev-box') as unknown as SVGGraphicsElement;
         const rr = el2.getBoundingClientRect();
@@ -1279,7 +1308,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       (q('#opt-groups') as HTMLInputElement).click();
       check('Groups / Locations off hides the frames and keeps every device in place; on brings them back', hiddenFrames === 0 && devsNoFrames === keep.slice().sort().join() && count('g.group') >= 3 && JSON.stringify(s().positionsFor('physical').get('hq-fw')) === moved);
       // Auto-arrange in a filtered view: the subset only, temporary, no confirmation needed
-      click('#btn-arrange');
+      click('#btn-arrange-default');
       await tick(10);
       check('Auto-arrange in a filtered view re-arranges the shown devices only, temporarily: no dialog, YAML and undo unchanged', !q('#modal[open]') && status('physical') === 'auto' && app.exportText() === yaml && md().canUndo() === undo, status('physical'));
       // Select all: the complete diagram with its saved positions, unchanged
@@ -1288,7 +1317,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       await tick();
       check(
         'Select all restores the complete diagram exactly as it was, hides the hint and gives Auto-arrange its normal meaning back',
-        !s().isFiltered() && hint.hidden && JSON.stringify(Array.from(s().positionsFor('physical'))) === fullPhys && count('g.device') === 15 && /Devices: all \(15\)/.test(btn.textContent || '') && (q('#btn-arrange') as HTMLElement).getAttribute('data-filtered') === null && shown().desc === AUTO_MSG && app.exportText() === yaml,
+        !s().isFiltered() && hint.hidden && JSON.stringify(Array.from(s().positionsFor('physical'))) === fullPhys && count('g.device') === 15 && /Devices: all \(15\)/.test(btn.textContent || '') && (q('#arrange-group') as HTMLElement).getAttribute('data-filtered') === null && /^The physical view is arranged with Default/.test(shown().desc) && app.exportText() === yaml,
       );
       (q('#devices-panel') as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
     }
@@ -1600,11 +1629,11 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       app.select('device:br-rtr');
       const dragged = snapshot() !== before && status('logical') === 'manual';
       app.select(null);
-      click('#btn-arrange');
+      click('#btn-arrange-default');
       await answerDialog('arrange');
       const again = snapshot() === before && status('logical') === 'auto';
       const undoAfter = d.canUndo();
-      click('#btn-arrange');
+      click('#btn-arrange-default');
       doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true }));
       await tick(10);
       check('after dragging and selecting, Auto-arrange gives exactly the same picture (positions, routes, label places); then the button is disabled and A moves nothing and asks nothing', dragged && again && arrangeLook() === 'done' && !q('#modal[open]') && snapshot() === before && d.canUndo() === undoAfter, `${dragged} ${again} ${arrangeLook()}`);
@@ -1653,7 +1682,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         // a freshly loaded model already shows the auto-arranged layout in both views: nothing to arrange
         const undoLabel = ad.canUndo();
         const press = async (): Promise<void> => {
-          click('#btn-arrange');
+          click('#btn-arrange-default');
           doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true }));
           await tick(10);
         };
@@ -1696,7 +1725,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         const logState = viewState('logical');
         const textBefore = app.exportText();
         const undoBefore = ad.canUndo();
-        click('#btn-arrange');
+        click('#btn-arrange-default');
         await tick(10);
         const asked = q('#modal[open]') ? q('#modal')!.textContent || '' : '';
         check(
@@ -1710,7 +1739,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
           'Cancel leaves both views untouched (positions, stored layout, YAML, undo history, status)',
           rects() === moved && viewState('logical') === logState && viewState('physical') === physState && app.exportText() === textBefore && ad.canUndo() === undoBefore && status('logical') === 'manual' && status('physical') === 'auto',
         );
-        click('#btn-arrange');
+        click('#btn-arrange-default');
         await answerDialog('arrange');
         check('after confirming, Auto-arrange ignores manual positions (same result as before the move)', rects() === logBefore && status('logical') === 'auto');
         check('… and the other view is exactly as it was', viewState('physical') === physState);
@@ -1737,7 +1766,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         re.arrange(['physical', 'logical']);
         re.addEntity('device', [['id', strNode('hq-spare')], ['type', strNode('switch')], ['group', strNode('hq-core')]]);
         (app as unknown as { afterEdit(n?: string): void }).afterEdit();
-        check('a model edit is not reported as a manual adjustment ("Edited since arranged")', status('physical') === 'edited' && status('logical') === 'edited' && shown().st === 'edited' && shown().icon === '\u270E' && arrangeLook() === 'todo' && /no longer matches the auto-arranged layout/.test(shown().desc), JSON.stringify(shown()) + ' ' + arrangeLook());
+        check('a model edit is not reported as a manual adjustment ("Edited since arranged")', status('physical') === 'edited' && status('logical') === 'edited' && shown().st === 'edited' && shown().current === '' && arrangeLook() === 'todo' && /no longer matches an Auto-arrange option/.test(shown().desc), JSON.stringify(shown()) + ' ' + arrangeLook());
         re.markSaved();
       }
       // an equivalent file with every list reversed arranges identically
@@ -1784,7 +1813,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       !!d0 && d0.origin === 'new' && d0.valid && !d0.dirty && d0.exportText() === 'netatlas: 1\ntitle: New network\n' && !!q('#side-body .hint-empty'),
       d0 ? d0.exportText() : '',
     );
-    check('status of a new model: both views "Auto-arranged"', status('physical') === 'auto' && status('logical') === 'auto' && shown().st === 'auto' && shown().desc === AUTO_MSG);
+    check('status of a new model: both views "Auto-arranged"', status('physical') === 'auto' && status('logical') === 'auto' && shown().st === 'auto' && AUTO_RE.test(shown().desc));
     // the first device: no type preselected, and nothing saved for it
     click('#outline [data-act="add-entity"][data-kind="device"]');
     await tick();
@@ -1995,7 +2024,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
           /missing required key "protocol"/.test(errs) && /at least 2 endpoints/.test(errs) && /protocol/.test(fieldErr) && count('g.rel') === 0,
         errs + ' // ' + fieldErr,
       );
-      click('#btn-download');
+      click('#btn-save-as');
       await tick(10);
       check('the incomplete relation makes export warn explicitly ("Download anyway")', /has errors/.test(q('#modal h2')!.textContent || '') && !!q('#modal [data-value="download"].danger'));
       await answerDialog('cancel');
@@ -2198,7 +2227,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     }
 
     // export the new model
-    click('#btn-download');
+    click('#btn-save-as');
     await tick(10);
     const dlgText = q('#modal')!.textContent || '';
     check('download dialog explains the export', /downloads location/.test(dlgText) && (q('#dl-name') as HTMLInputElement).value === 'new-network.yaml');
@@ -2243,9 +2272,9 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     click('#side-body [data-act="add-logical"][data-kind="loopback"]');
     await tick();
     await setField(`#side-body [data-t="list-append"][data-p='["devices",3,"logical_interfaces",2,"ip"]']`, '2001:db8:0:ff::1/128');
-    click('#btn-download');
+    click('#btn-save-as');
     await tick(10);
-    check('export of an imported file is offered as a new copy', /original file on your disk is not modified/.test(q('#modal')!.textContent || '') && (q('#dl-name') as HTMLInputElement).value === 'acme-wan-edited.yaml');
+    check('without a save picker, Save model as… of an imported file offers a downloaded copy under a new name (the opened file is not changed)', /“acme-wan.yaml” on your disk is not changed/.test(q('#modal')!.textContent || '') && (q('#dl-name') as HTMLInputElement).value === 'acme-wan-edited.yaml');
     await answerDialog('download');
     const edited = await lastDownload();
     if (edited) {
@@ -2283,7 +2312,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     const dC = app.mdoc as ModelDoc;
     check('broken references are reported (not silently removed)', !dC.valid && dC.errors.some((e) => /unknown device "muc-rtr"/.test(e.message)) && /muc-rtr/.test(dC.exportText()));
     check('entities with errors are flagged in the outline', doc.querySelectorAll('#outline .ol-badge.err').length > 0);
-    click('#btn-download');
+    click('#btn-save-as');
     await tick(10);
     check('exporting an invalid model warns explicitly', /has errors/.test(q('#modal h2')!.textContent || '') && !!q('#modal [data-value="download"].danger'));
     await answerDialog('cancel');
@@ -2691,7 +2720,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         'interaction help: open, in two labelled groups (Pointer, Keyboard) listing every documented action',
         keys.open && keys.tagName === 'DETAILS' && /Mouse & keyboard/.test((keys.querySelector('summary') as HTMLElement).textContent || '') && groups.length === 2 &&
           groups.map((g) => (g.querySelector('h4') as HTMLElement).textContent).join() === 'Pointer,Keyboard' &&
-          pairs === 'Drag background: pan | Wheel: zoom | Drag node: move | Click: select | Esc: clear | P / L: view | Ctrl+Z / Y: undo / redo | Ctrl+S: download',
+          pairs === 'Drag background: pan | Wheel: zoom | Drag node: move | Click: select | Right-click: connect | Esc: clear | P / L: view | Ctrl+Z / Y: undo / redo | C: connect | Ctrl+S: save',
         pairs,
       );
       check('… readable: side by side in a wide panel, nothing outside it, no text below 10.5px', Math.abs(rect(groups[0]).top - rect(groups[1]).top) < 2 && keyMisfits().length === 0, keyMisfits().join('; '));
@@ -2896,8 +2925,9 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const badge = q('#status .fname') as HTMLElement;
       const bar = rect(q('#status') as HTMLElement);
       check(
-        'status bar: the file name is a badge at the start (full name as tooltip); a long name is cut with "…" inside the bar, the rest of the status follows on the same line, the page does not scroll',
-        !!badge && badge === (q('#status') as HTMLElement).firstElementChild && badge.title === LONGNAME && badge.scrollWidth > badge.clientWidth && view.getComputedStyle(badge).textOverflow === 'ellipsis' &&
+        'status bar: the file name is a badge at the start (full name and how it is saved as tooltip); a long name is cut with "…" inside the bar, the rest of the status follows on the same line, the page does not scroll',
+        !!badge && badge === (q('#status') as HTMLElement).firstElementChild && badge.title.indexOf(LONGNAME + ': ') === 0 && /opened read-only/.test(badge.title) &&
+          (q('#status .fname-text') as HTMLElement).scrollWidth > (q('#status .fname-text') as HTMLElement).clientWidth && view.getComputedStyle(q('#status .fname-text') as HTMLElement).textOverflow === 'ellipsis' &&
           rect(badge).right <= bar.right && /1 devices/.test(q('#status .status-rest')!.textContent || '') && Math.abs(rect(q('#status .status-rest') as HTMLElement).top - rect(badge).top) < 6 &&
           doc.documentElement.scrollWidth <= doc.documentElement.clientWidth,
       );
@@ -2916,7 +2946,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         return mid.every((y) => Math.abs(y - mid[0]) < 2.5);
       };
       check('wide window: every filter on the toolbar, on one row, no Filters button', inline().join() === 'Labels,Groups / Locations,Networks,Endpoints,Servers' && more.hidden && oneRow(), inline().join());
-      top.style.maxWidth = '900px';
+      top.style.maxWidth = '540px';
       app.layoutFilters();
       await tick();
       const narrowInline = inline();
@@ -3049,7 +3079,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         // the Auto-arrange button: disabled, no status, and the A key does nothing
         doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true }));
         await tick(10);
-        check('start screen: Auto-arrange is disabled without a status, and A does nothing', (q('#btn-arrange') as HTMLButtonElement).disabled && shown().st === '' && shown().icon === '' && !q('#modal[open]') && !app.mdoc);
+        check('start screen: the Auto-arrange options are disabled without a status, and A does nothing', STRATS.every((st) => arrangeBtn(st).disabled) && shown().st === '' && shown().current === '' && !q('#modal[open]') && !app.mdoc);
       }
       app.loadExample(0);
       {
@@ -3066,6 +3096,482 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
           `${physOk} ${logOk}`,
         );
       }
+    }
+
+    // ------------------------------------------------ saving to a file the page may write (a stand-in for the browser's file handles)
+    {
+      interface FakeHandle extends WritableFile {
+        text: string;
+        writes: number;
+        perm: string;
+        fail: boolean;
+      }
+      const handle = (name: string, text = '', perm = 'granted'): FakeHandle => {
+        const h: FakeHandle = {
+          kind: 'file',
+          name,
+          text,
+          writes: 0,
+          perm,
+          fail: false,
+          getFile: async () => new File([h.text], name),
+          queryPermission: async () => h.perm,
+          requestPermission: async () => (h.perm === 'prompt' ? (h.perm = 'granted') : h.perm),
+          createWritable: async () => {
+            let buf = '';
+            return {
+              write: async (d: string): Promise<void> => {
+                if (h.fail) throw new Error('the disk is full');
+                buf += d;
+              },
+              close: async (): Promise<void> => {
+                h.text = buf;
+                h.writes++;
+              },
+            };
+          },
+        };
+        return h;
+      };
+      let nextSave: FakeHandle | null = null;
+      let nextOpen: FakeHandle | null = null;
+      let suggested = '';
+      let picks = 0;
+      const abort = (): Error => Object.assign(new Error('The user aborted a request.'), { name: 'AbortError' });
+      app.fileAccess = {
+        saveFile: async (name: string) => {
+          picks++;
+          suggested = name;
+          const h = nextSave;
+          nextSave = null;
+          if (!h) throw abort();
+          return h;
+        },
+        openFile: async () => {
+          const h = nextOpen;
+          nextOpen = null;
+          if (!h) throw abort();
+          return h;
+        },
+      };
+      const md = (): ModelDoc => app.mdoc as ModelDoc;
+      const edit = (title: string): void => {
+        md().setText(['title'], title);
+        (app as unknown as { afterEdit(n?: string): void }).afterEdit();
+      };
+      const toastText = (): string => q('#toast')!.textContent || '';
+      const saveBtn = q('#btn-save') as HTMLButtonElement;
+      const saveAsBtn = q('#btn-save-as') as HTMLButtonElement;
+      const activeEx = (): string => (Array.prototype.map.call(doc.querySelectorAll('#menu-examples .active-example'), (e: Element) => e.getAttribute('data-example')) as string[]).join();
+      const had = downloads.length;
+
+      app.loadExample(2);
+      edit('Minimal, to be saved');
+      const before = { save: saveBtn.disabled, saveAs: saveAsBtn.disabled, ex: activeEx() };
+      // a cancelled picker changes nothing
+      click('#menu-btn');
+      saveAsBtn.click();
+      await tick(30);
+      check(
+        'Save model as…: closing the save picker without choosing saves nothing, keeps every edit and the unsaved state, and says so',
+        before.save && !before.saveAs && before.ex === '2' && picks === 1 && suggested === 'minimal.yaml' && md().dirty && !app.linked && activeEx() === '2' && /cancelled: nothing was saved/.test(toastText()) && downloads.length === had && !q('#modal[open]'),
+        `${JSON.stringify(before)} picks=${picks} ${toastText()}`,
+      );
+      // choosing a file saves there and links the model to it: the example becomes the user's file
+      const mine = handle('my-minimal.yaml');
+      nextSave = mine;
+      click('#menu-btn');
+      saveAsBtn.click();
+      await tick(30);
+      const fs = app.fileState();
+      check(
+        'Save model as… with a chosen file writes the YAML there, links the model to it (Save model becomes available) and stops marking the example; nothing is downloaded',
+        mine.writes === 1 && mine.text === app.exportText() && !md().dirty && app.linked && !saveBtn.disabled && md().fileName === 'my-minimal.yaml' && activeEx() === '' && fs.kind === 'linked' &&
+          (q('#status .fname-text') as HTMLElement).textContent === 'my-minimal.yaml' && !q('#status .fname .mod-dot') && /Saved as “my-minimal\.yaml”\. Save model now updates this file\./.test(toastText()) && downloads.length === had,
+        `${mine.writes} ${fs.kind} ${toastText()}`,
+      );
+      // Save model: no file name, no confirmation of the application
+      edit('Minimal, saved twice');
+      const dotOnSave = saveBtn.getAttribute('data-modified') === 'true' && !!q('#status .fname .mod-dot');
+      doc.dispatchEvent(new KeyboardEvent('keydown', { key: 's', ctrlKey: true, bubbles: true, cancelable: true }));
+      await tick(30);
+      check(
+        'Save model (Ctrl+S) updates the linked file at once: no file name asked, no dialog; the modified marks go away',
+        dotOnSave && mine.writes === 2 && /title: Minimal, saved twice/.test(mine.text) && !md().dirty && !q('#modal[open]') && picks === 2 && saveBtn.getAttribute('data-modified') === 'false' && /Saved “my-minimal\.yaml”\./.test(toastText()),
+        `${dotOnSave} writes=${mine.writes} picks=${picks}`,
+      );
+      // modified follows undo and redo against what was saved
+      app.undo();
+      const afterUndo = md().dirty && !!q('#status .fname .mod-dot');
+      app.redo();
+      check('after saving, undo marks the model modified again (it differs from the saved file) and redo returns to the saved state', afterUndo && !md().dirty && !q('#status .fname .mod-dot'));
+      // a failed write keeps everything, including the link
+      edit('Minimal, write fails');
+      mine.fail = true;
+      click('#menu-btn');
+      saveBtn.click();
+      await tick(30);
+      const failText = q('#modal[open]') ? q('#modal')!.textContent || '' : '';
+      await answerDialog('ok');
+      mine.fail = false;
+      check(
+        'a failed write is reported with the reason; the changes and the unsaved state are kept, and the model stays linked to its file',
+        /The model was not saved/.test(failText) && /“my-minimal\.yaml” was not saved: the disk is full\./.test(failText) && /still marked as modified/.test(failText) && md().dirty && app.linked && mine.writes === 2 && /title: Minimal, saved twice/.test(mine.text),
+        failText,
+      );
+      // a refused permission ends the link: Save model is no longer offered, Save model as… still is
+      mine.perm = 'denied';
+      click('#menu-btn');
+      saveBtn.click();
+      await tick(30);
+      const deniedText = q('#modal[open]') ? q('#modal')!.textContent || '' : '';
+      await answerDialog('ok');
+      check(
+        'a refused write permission is reported; the changes stay unsaved, Save model becomes unavailable and Save model as… stays available',
+        /did not allow this page to write to the file/.test(deniedText) && /Save model is no longer available for this file/.test(deniedText) && md().dirty && !app.linked && saveBtn.disabled && !saveAsBtn.disabled && mine.writes === 2,
+        deniedText,
+      );
+      // Open model… with the browser's picker links the model to the opened file (write permission is asked for on the first save)
+      const opened = handle('opened.yaml', EXAMPLES[3].text, 'prompt');
+      nextOpen = opened;
+      click('#menu-btn');
+      click('#open');
+      await tick(20);
+      await answerDialog('discard');
+      for (let n = 0; n < 50 && (!app.mdoc || md().fileName !== 'opened.yaml'); n++) await tick(10);
+      const linkedAfterOpen = app.linked && !saveBtn.disabled && app.fileState().kind === 'linked' && activeEx() === '';
+      edit('Opened and saved');
+      doc.dispatchEvent(new KeyboardEvent('keydown', { key: 's', ctrlKey: true, bubbles: true, cancelable: true }));
+      await tick(30);
+      check(
+        'Open model… through the browser’s picker links the model to the opened file; Save model asks the browser for write permission and updates that file',
+        linkedAfterOpen && opened.perm === 'granted' && opened.writes === 1 && /title: Opened and saved/.test(opened.text) && !md().dirty,
+        `${linkedAfterOpen} ${opened.perm} ${opened.writes}`,
+      );
+      // a file read through the file input (or dropped without a handle) is never linked
+      await app.loadFile(new File([EXAMPLES[2].text], 'from-input.yaml'));
+      const inputState = [app.linked, saveBtn.disabled, app.fileState().kind].join();
+      // Ctrl+S without a link means Save model as…; here the picker is cancelled
+      edit('From the input, edited');
+      doc.dispatchEvent(new KeyboardEvent('keydown', { key: 's', ctrlKey: true, bubbles: true, cancelable: true }));
+      await tick(30);
+      check(
+        'a file opened through the file input is not linked (Save model unavailable); Ctrl+S then opens Save model as…, and cancelling it keeps the changes',
+        inputState === 'false,true,unlinked' && picks === 3 && md().dirty && md().fileName === 'from-input.yaml',
+        inputState + ' picks=' + picks,
+      );
+      md().markSaved();
+      // the example mark follows what is open: another example, a new model, closing
+      app.loadExample(0);
+      const a0 = activeEx();
+      app.loadExample(3);
+      const a3 = activeEx();
+      app.newModel();
+      const aNew = activeEx();
+      app.loadExample(1);
+      const a1 = activeEx();
+      app.closeModel();
+      check('the example mark moves to another example, and is cleared by a new model and by closing the model', a0 === '0' && a3 === '3' && aNew === '' && a1 === '1' && activeEx() === '', [a0, a3, aNew, a1, activeEx()].join('|'));
+      // without a save picker, a downloaded copy is not a saved file: the example stays the example
+      app.fileAccess = { saveFile: null, openFile: null };
+      app.loadExample(2);
+      edit('Example, downloaded');
+      click('#menu-btn');
+      saveAsBtn.click();
+      await answerDialog('download');
+      await tick(30);
+      check(
+        'without a save picker, Save model as… downloads a copy: the status says it is a copy that is not linked, the example stays marked, Save model stays unavailable',
+        downloads.length === had + 1 && downloads[downloads.length - 1].name === 'minimal.yaml' && app.fileState().kind === 'copy' && /copy downloaded as “minimal\.yaml”, not linked to a file/.test(q('#status .file-state')!.textContent || '') && activeEx() === '2' && saveBtn.disabled && !md().dirty,
+        app.fileState().text,
+      );
+    }
+
+    // ------------------------------------------------ Auto-arrange options in the application
+    {
+      app.loadExample(3);
+      app.setView('physical');
+      const md = (): ModelDoc => app.mdoc as ModelDoc;
+      const pos =(v: 'physical' | 'logical'): string => JSON.stringify(Array.from(app.session!.positionsFor(v)));
+      const want = (v: 'physical' | 'logical', st: 'default' | 'compact' | 'spacious'): string => JSON.stringify(Array.from(md().autoLayout(v, st)));
+      const logBefore = pos('logical');
+      click('#btn-arrange-compact');
+      await tick(10);
+      const compactShown = pos('physical') === want('physical', 'compact') && shown().current === 'compact' && arrangeBtn('compact').disabled && !arrangeBtn('default').disabled && !arrangeBtn('spacious').disabled && /arranged with Compact/.test(shown().desc);
+      const undoLabel = md().canUndo();
+      click('#btn-arrange-spacious');
+      await tick(10);
+      const spaciousShown = pos('physical') === want('physical', 'spacious') && shown().current === 'spacious';
+      click('#btn-arrange-spacious');
+      await tick(10);
+      check(
+        'Auto-arrange → Compact and → Spacious arrange the physical view (one undo step each), the matching option is selected and disabled, the others stay available; the logical view is not changed',
+        compactShown && undoLabel === 'Auto-arrange (physical view, Compact)' && spaciousShown && md().canUndo() === 'Auto-arrange (physical view, Spacious)' && pos('logical') === logBefore && status('logical') === 'auto',
+        `${compactShown} ${undoLabel} ${spaciousShown}`,
+      );
+      // the match comes from the positions: undo brings Compact back as the selected option
+      app.undo();
+      const back = shown().current === 'compact';
+      // a manual move: nothing matches, all three can be used, and replacing it asks first
+      const sv = app.session!;
+      const id = sv.model.devices[0].id;
+      const p = sv.positionsFor('physical').get(id)!;
+      md().movePositions('physical', new Map([[id, { x: p.x + 333, y: p.y + 77 }]]), 'Move ' + id);
+      (app as unknown as { afterEdit(n?: string): void }).afterEdit();
+      const manual = shows('physical', 'manual');
+      click('#btn-arrange-compact');
+      await tick(10);
+      const asked = !!q('#modal[open]') && /Replace manual positions in the physical view\?/.test(q('#modal')!.textContent || '') && !!q('#modal [data-value="arrange"]') && /Compact/.test(q('#modal [data-value="arrange"]')!.textContent || '');
+      await answerDialog('cancel');
+      const kept = sv.positionsFor('physical').get(id)!.x === p.x + 333;
+      check('the selected option follows the positions (after undo: Compact); after a manual move no option is selected, and replacing manual positions with any option asks first (Cancel keeps them)', back && manual && asked && kept, `${back} ${manual} ${asked} ${kept}`);
+      // a filtered view: the options arrange the shown devices only, temporarily
+      const yaml = app.exportText();
+      app.setDevices(sv.model.devices.slice(0, 4).map((d) => d.id));
+      click('#btn-arrange-spacious');
+      await tick(10);
+      const filtered = app.session!.filteredArrangedWith('physical');
+      check('in a filtered view an option arranges the shown devices only, temporarily: the YAML is unchanged and the option is selected', filtered[0] === 'spacious' && shown().current === 'spacious' && app.exportText() === yaml && (q('#arrange-group') as HTMLElement).getAttribute('data-filtered') === 'true', filtered.join());
+      app.setDevices(sv.model.devices.map((d) => d.id));
+      md().markSaved();
+      // identical results: a model with one device gets the same positions from every strategy; the tie is resolved in favour of Default
+      app.newModel();
+      md().addEntity('device');
+      (app as unknown as { afterEdit(n?: string): void }).afterEdit();
+      const same = STRATS.map((st) => `${st}:${arrangeBtn(st).getAttribute('aria-pressed')}/${arrangeBtn(st).disabled}/${arrangeBtn(st).classList.contains('same')}`).join(' ');
+      check(
+        'when strategies give identical positions, Default is the selected one and the others are disabled and say they give the same positions (they never pretend to differ)',
+        same === 'default:true/true/false compact:false/true/true spacious:false/true/true' && /gives exactly the same positions as Default/.test(arrangeBtn('compact').title) && /Compact, Spacious give the same positions/.test(shown().desc),
+        same + ' ' + shown().desc,
+      );
+      md().markSaved();
+    }
+
+    // ------------------------------------------------ interfaces in the diagram, and connecting them
+    {
+      const md = (): ModelDoc => app.mdoc as ModelDoc;
+      const center = (e: Element): { x: number; y: number } => {
+        const r = e.getBoundingClientRect();
+        return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+      };
+      const ptr = (e: Element, type: string, button = 0): void => {
+        const c = center(e);
+        e.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, clientX: c.x, clientY: c.y, button, pointerId: 31, isPrimary: true }));
+      };
+      const leftClick = (e: Element): void => {
+        ptr(e, 'pointerdown');
+        ptr(e, 'pointerup');
+      };
+      const rightClick = (e: Element): MouseEvent => {
+        const c = center(e);
+        const ev = new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: c.x, clientY: c.y, button: 2 });
+        e.dispatchEvent(ev);
+        return ev;
+      };
+      const el = (ref: string): Element => q(`#viewport [data-endpoint][data-ref="${ref}"]`) as unknown as Element;
+      const cls = (ref: string): string => ['conn-source', 'conn-ok', 'conn-no', 'conn-start'].filter((c) => el(ref) && el(ref).classList.contains(c)).join();
+      const toastText = (): string => q('#toast')!.textContent || '';
+
+      // physical view: every port of a shown device, cabled or not
+      app.loadExample(4);
+      app.setView('physical');
+      await tick();
+      const chips = (Array.prototype.map.call(doc.querySelectorAll('#viewport g.port-chip'), (e: Element) => e.getAttribute('data-ref')) as string[]).join();
+      const caption = (q('#viewport .if-chip-prefix') as unknown as Element | null)?.textContent || '';
+      check(
+        'physical view: a device’s ports without a cable are drawn as selectable chips in its box (a long run of similar names shows the shared prefix once); ports with a cable stay ports',
+        chips === 'iface:access:Et3,iface:access:Et4,iface:access:Et5,iface:access:Et6,iface:access:Et7,iface:access:Et8' && caption === 'Et ▸' && !!q('#viewport rect.port[data-ref="iface:access:Et1"]') && drawnProblems().length === 0,
+        chips + ' ' + caption + ' ' + drawnProblems().slice(0, 3).join('; '),
+      );
+      // left click selects the interface and opens it in the Edit tab; it never starts a connection
+      leftClick(el('iface:access:Et5'));
+      await tick();
+      check(
+        'left-clicking an interface chip selects that interface and opens it in the Edit tab (its card open); no connection is started',
+        app.session!.state.selected === 'iface:access:Et5' && !!q('[data-tab="edit"].active') && !!q('#side-body details.card[open]') && /Et5/.test((q('#side-body details.card[open] .card-title') as HTMLElement).textContent || '') && !app.connecting && !q('#canvas.connecting'),
+        String(app.session!.state.selected),
+      );
+      app.select(null);
+      // where a connection can start: ports without a cable and devices, not a port that has one
+      const startable = cls('iface:access:Et3') === 'conn-start' && cls('device:nms') === 'conn-start' && cls('iface:access:Et1') === '';
+      // the right-click on the background is the browser's, not ours
+      const bg = new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2 });
+      (q('#canvas') as unknown as Element).dispatchEvent(bg);
+      // first right-click: the draft starts at that endpoint, with a line to the pointer
+      const first = rightClick(el('iface:access:Et3'));
+      const svg = q('#canvas') as unknown as Element;
+      const c3 = center(el('device:nms'));
+      svg.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX: c3.x, clientY: c3.y, pointerId: 32 }));
+      const line = q('#conn-line');
+      check(
+        'right-click on an eligible endpoint starts a connection: the browser menu is suppressed only there, the endpoint is marked, compatible endpoints are marked, incompatible ones are not, and a line follows the pointer',
+        startable && !bg.defaultPrevented && first.defaultPrevented && app.connecting && !!q('#canvas.connecting') && cls('iface:access:Et3') === 'conn-source' && cls('device:nms') === 'conn-ok' && cls('iface:access:Et4') === 'conn-ok' &&
+          cls('iface:access:Et1') === 'conn-no' && cls('device:access') === 'conn-no' && !!line && line.getAttribute('x2') !== null && !(q('#connect-bar') as HTMLElement).hidden,
+        [startable, bg.defaultPrevented, first.defaultPrevented, cls('iface:access:Et3'), cls('device:nms'), cls('iface:access:Et1'), cls('device:access'), !!line].join(' '),
+      );
+      // an incompatible second endpoint: refused with the reason, the first endpoint is kept
+      const refused = rightClick(el('iface:access:Et1'));
+      await tick();
+      check(
+        'right-clicking an incompatible endpoint creates nothing: a short message says why, and the first endpoint stays chosen',
+        refused.defaultPrevented && app.connecting && /Not connected: port “access:Et1” already has a cable/.test(toastText()) && cls('iface:access:Et3') === 'conn-source' && !md().dirty && md().canUndo() === null,
+        toastText(),
+      );
+      // Esc cancels
+      doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      check('Esc cancels an unfinished connection: no line, no marks, nothing added', !app.connecting && !q('#conn-line') && !q('#canvas.connecting') && cls('iface:access:Et3') === 'conn-start' && (q('#connect-bar') as HTMLElement).hidden && !md().dirty);
+      // switching views cancels too
+      rightClick(el('iface:access:Et3'));
+      app.setView('logical');
+      const cancelledBySwitch = !app.connecting && !q('#conn-line');
+      app.setView('physical');
+      check('switching views clears an unfinished connection safely', cancelledBySwitch && !app.connecting);
+      // second right-click on a compatible endpoint: a new link in the Edit tab, not yet in the model
+      rightClick(el('iface:access:Et3'));
+      rightClick(el('device:nms'));
+      await tick();
+      const idIn = q('#draft-id') as HTMLInputElement | null;
+      const draftText = (q('#side-body') as HTMLElement).textContent || '';
+      const create = q('#draft-create') as HTMLButtonElement | null;
+      check(
+        'the second right-click opens a new physical link in the Edit tab with both ends filled in (the device end stays the whole device) and the ID field focused; nothing is added before it is created',
+        !app.connecting && !!idIn && doc.activeElement === idIn && idIn.value === 'access-nms' && /New physical link/.test(draftText) && /interface access Et3/.test(draftText) && /device nms/.test(draftText) && /Not in the model yet/.test(draftText) &&
+          !!create && !create.disabled && !md().dirty && md().canUndo() === null && !/access-nms/.test(app.exportText()),
+        draftText.slice(0, 300),
+      );
+      // an invalid ID keeps Create disabled, with the reason; a valid one enables it
+      idIn!.value = 'bad id';
+      idIn!.dispatchEvent(new Event('input', { bubbles: true }));
+      const badId = create!.disabled && /An ID uses letters/.test(q('#draft-err-id')!.textContent || '') && idIn!.getAttribute('aria-invalid') === 'true';
+      idIn!.value = 'l-access-nms';
+      idIn!.dispatchEvent(new Event('input', { bubbles: true }));
+      const goodId = !create!.disabled && (q('#draft-err-id')!.textContent || '') === '';
+      click('#draft-create');
+      await tick();
+      const y = app.exportText();
+      check(
+        'Create adds the link with stable references (one undo step), selects it and draws it; the uncabled-port chip becomes a cabled port',
+        badId && goodId && /- \{id: l-access-nms, a: "access:Et3", b: nms\}/.test(y) && md().valid && md().canUndo() === 'Add link l-access-nms' && app.session!.state.selected === 'link:l-access-nms' &&
+          !!q('#viewport g.link[data-ref="link:l-access-nms"]') && !q('#viewport g.port-chip[data-ref="iface:access:Et3"]') && !!q('#viewport rect.port[data-ref="iface:access:Et3"]') && md().dirty,
+        y.split('\n').filter((l) => /l-access-nms/.test(l)).join(' / '),
+      );
+      app.undo();
+      check('undo removes the new link again; the port is an uncabled chip again', !/l-access-nms/.test(app.exportText()) && !!q('#viewport g.port-chip[data-ref="iface:access:Et3"]') && !md().dirty);
+      // the keyboard equivalent: select an endpoint, C, pick the second endpoint in the bar
+      app.select('iface:access:Et4');
+      doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'c', bubbles: true }));
+      await tick();
+      const pick = q('#connect-pick') as HTMLSelectElement;
+      const options = Array.prototype.map.call(pick.options, (o: HTMLOptionElement) => o.value) as string[];
+      const kb = app.connecting && doc.activeElement === pick && options.indexOf('device:nms') >= 0 && options.indexOf('iface:access:Et1') < 0 && options.indexOf('iface:access:Et4') < 0;
+      pick.value = 'device:nms';
+      pick.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+      await tick();
+      const kbDraft = !!q('#draft-id') && doc.activeElement === q('#draft-id');
+      (q('#draft-id') as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      await tick();
+      check(
+        'keyboard: C on a selected device or interface starts a connection and focuses the list of compatible endpoints; Enter opens the draft; Esc in the draft discards it (nothing added)',
+        kb && kbDraft && !q('#draft-id') && !md().dirty && /discarded; nothing was added/.test(toastText()),
+        `${kb} ${kbDraft} ${options.length}`,
+      );
+
+      // logical view: every logical interface, and relations between them
+      app.loadExample(1);
+      app.setView('logical');
+      await tick();
+      const vchips = (Array.prototype.map.call(doc.querySelectorAll('#viewport g.logical-chip'), (e: Element) => e.getAttribute('data-ref')) as string[]).sort();
+      check(
+        'logical view: every logical interface of a shown device is drawn and selectable (loopbacks as rows, virtual and tunnel interfaces as chips), also without a relation',
+        vchips.indexOf('iface:leaf1:Vlan100') >= 0 && vchips.indexOf('iface:leaf1:Vxlan1') >= 0 && !!q('#viewport g.loop-chip[data-ref^="iface:leaf1:"]') && !q('#viewport [data-endpoint][data-ref="iface:leaf1:Et1"]') && drawnProblems().length === 0,
+        vchips.join() + ' loop=' + !!q('#viewport g.loop-chip[data-ref^="iface:leaf1:"]') + ' et1=' + !!q('#viewport [data-endpoint][data-ref="iface:leaf1:Et1"]') + ' ' + drawnProblems().slice(0, 3).join('; '),
+      );
+      // a relation needs different devices
+      rightClick(el('device:leaf1'));
+      rightClick(el('iface:leaf1:Vlan100'));
+      await tick();
+      const selfRefused = app.connecting && /same device/.test(toastText());
+      doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      // two relations between the same logical interfaces
+      const relate = async (id: string, protocol: string, label: string): Promise<{ disabled: boolean; dup: string }> => {
+        rightClick(el('iface:leaf1:Vlan100'));
+        rightClick(el('iface:leaf2:Vlan100'));
+        await tick();
+        const set = (k: string, v: string): void => {
+          const i = q('#draft-' + k) as HTMLInputElement;
+          i.value = v;
+          i.dispatchEvent(new Event('input', { bubbles: true }));
+        };
+        const emptyProtocol = (q('#draft-create') as HTMLButtonElement).disabled && /Required: choose or type the protocol/.test(q('#draft-err-protocol')!.textContent || '');
+        set('id', id);
+        set('protocol', protocol);
+        set('label', label);
+        const r = { disabled: (q('#draft-create') as HTMLButtonElement).disabled || !emptyProtocol, dup: q('#draft-err-ends')!.textContent || '' };
+        if (!r.disabled) click('#draft-create');
+        await tick();
+        return r;
+      };
+      const r1 = await relate('bgp-vlan-a', 'bgp', 'tenant A');
+      const r2dup = await relate('bgp-vlan-b', 'bgp', 'tenant A');
+      const dupKept = !!q('#draft-id');
+      const setLabel = (v: string): void => {
+        const i = q('#draft-label') as HTMLInputElement;
+        i.value = v;
+        i.dispatchEvent(new Event('input', { bubbles: true }));
+      };
+      setLabel('tenant B');
+      const r2ok = !(q('#draft-create') as HTMLButtonElement).disabled;
+      click('#draft-create');
+      await tick();
+      const m = md().result.model!;
+      const both = ['bgp-vlan-a', 'bgp-vlan-b'].map((x) => m.index.relations.get(x));
+      check(
+        'a logical interface can take part in several relations: a second relation between the same interfaces is refused only while it repeats the first (same protocol, label, direction), and allowed with another label',
+        selfRefused && !r1.disabled && r2dup.disabled && /The same relation already exists \(“bgp-vlan-a”/.test(r2dup.dup) && dupKept && r2ok && both.every((r) => !!r && r.endpoints.map((e) => e.device + ':' + e.iface).join() === 'leaf1:Vlan100,leaf2:Vlan100') && md().valid,
+        `${selfRefused} ${JSON.stringify(r1)} ${JSON.stringify(r2dup)} ${r2ok}`,
+      );
+      // both are drawn separately and selectable, editable, exported and reloaded
+      const drawnA = !!q('#viewport g.rel[data-ref="relation:bgp-vlan-a"]') && !!q('#viewport g.rel[data-ref="relation:bgp-vlan-b"]');
+      app.select('relation:bgp-vlan-b');
+      await tick();
+      await setField('#side-body [data-p=\'["relations",' + md().findEntity('relation', 'bgp-vlan-b')!.index + ',"description"]\']', 'second session on the same VLAN interfaces');
+      const svgText = app.exportSvg();
+      const back = ModelDoc.fromText(app.exportText(), 'x.yaml', 'file').doc as ModelDoc;
+      const bm = back.result.model!;
+      check(
+        'two relations on the same interfaces are drawn as separate lanes, each selectable and editable; both are in the SVG export and survive export → reload',
+        drawnA && app.session!.state.selected === 'relation:bgp-vlan-b' && /data-ref="relation:bgp-vlan-a"/.test(svgText) && /data-ref="relation:bgp-vlan-b"/.test(svgText) && !/id="conn-line"|class="[^"]*conn-(start|source|ok|no)/.test(svgText) &&
+          back.valid && bm.index.relations.get('bgp-vlan-a')!.label === 'tenant A' && bm.index.relations.get('bgp-vlan-b')!.description === 'second session on the same VLAN interfaces',
+        `${drawnA} ${app.session!.state.selected}`,
+      );
+      md().markSaved();
+    }
+
+    // ------------------------------------------------ Edit and Details read alike
+    {
+      app.loadExample(0);
+      app.select('device:hq-rtr1');
+      click('[data-tab="edit"]');
+      await tick();
+      const editGroups = textsOf('#side-body .fgroup > .fgroup-title').join('|');
+      const editHead = !!q('#side-body .insp-head .badge') && !!q('#side-body .insp-head .ih-status');
+      const buttons = textsOf('#side-body .insp-actions .ib-label').join('|');
+      click('[data-tab="details"]');
+      await tick();
+      const detGroups = textsOf('#side-body .fgroup > .fgroup-title').join('|');
+      const detHead = !!q('#side-body .insp-head .badge') && !!q('#side-body .insp-head .ih-status');
+      const card = (sel: string): string => {
+        const e = q(sel);
+        if (!e) return '';
+        const cs = doc.defaultView!.getComputedStyle(e);
+        return `${cs.borderTopStyle} ${cs.borderTopLeftRadius}`;
+      };
+      check(
+        'Edit and Details share the object header and present their content in the same titled cards (Edit: Identity, Placement, Notes; Details: Overview and its sections); Duplicate and Delete keep their names',
+        editHead && detHead && /^Identity\|Placement\|Notes/.test(editGroups) && /^Overview\|Physical interfaces/.test(detGroups) && buttons === 'Duplicate|Delete' && card('#side-body .fgroup') === 'solid 9px' && doc.documentElement.scrollHeight <= doc.documentElement.clientHeight + 1,
+        editGroups + ' // ' + detGroups,
+      );
+      click('[data-tab="legend"]');
     }
 
     const perf = (doc.defaultView as Window).performance;

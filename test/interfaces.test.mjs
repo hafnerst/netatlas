@@ -286,16 +286,18 @@ test('diagrams and selection follow the associations, in both directions', () =>
   assert.deepEqual([...queries.selectionContext(m, 'iface:sw1:Po1').related].sort(), ['link:peer1', 'link:peer2', 'relation:lag']);
   assert.deepEqual([...queries.selectionContext(m, 'iface:sw1:Vlan10').related].sort(), ['link:peer1', 'link:peer2', 'network:users']);
   assert.deepEqual([...queries.selectionContext(m, 'iface:sw1:tun1').related].sort(), ['device:sw2']);
-  // physical view: ports are physical interfaces; logical interfaces are never ports
+  // physical view: every physical interface is drawn (cabled ones as ports, uncabled ones as chips); logical interfaces never are
   const session = new state.Session(m);
   const drawn = scene.findAll(session.render().root, (n) => /^iface:/.test(n.attrs['data-ref'] || '')).map((n) => n.attrs['data-ref']);
-  assert.deepEqual([...new Set(drawn)].sort(), ['iface:sw1:Eth1', 'iface:sw1:Eth2', 'iface:sw2:Eth1', 'iface:sw2:Eth2']);
+  assert.deepEqual([...new Set(drawn)].sort(), ['iface:sw1:Eth1', 'iface:sw1:Eth2', 'iface:sw1:Eth3', 'iface:sw1:Eth4', 'iface:sw2:Eth1', 'iface:sw2:Eth2']);
+  assert.deepEqual(byClass(session.render().root, 'port-chip').map((n) => n.attrs['data-ref']), ['iface:sw1:Eth3', 'iface:sw1:Eth4']);
   // details: two tables, and only the associations that apply, with accurate labels
   const det = (ref) => scene.textOf(panels.detailsFor(m, ref));
   assert.match(det('device:sw1'), /Physical interfaces \(4, 2 cabled\)/);
   assert.match(det('device:sw1'), /Logical interfaces \(8\)/);
   assert.doesNotMatch(det('device:sw1'), /child|Loopbacks \(/i);
-  assert.match(det('iface:sw1:Po1'), /type\nVirtual\nmember ports\nEth1\n, \nEth2\n/);
+  assert.match(det('iface:sw1:Po1'), /type\nVirtual\nAssociations\nmember ports\nEth1\n, \nEth2\n/);
+  assert.doesNotMatch(det('iface:sw1:nve1'), /Associations/, 'no empty card for an interface without associations');
   assert.doesNotMatch(det('iface:sw1:Po1'), /ports carrying its networks|tunnel source|physical interface\n/);
   assert.match(det('iface:sw1:Vlan20'), /VLAN\n20 \(from the network of its address\)\nports carrying its networks\nEth1\n/);
   assert.match(det('iface:sw1:Vlan10'), /VLAN\n10\nports carrying its networks\nEth1\n, \nEth2\n/);
@@ -346,12 +348,13 @@ devices:
   assert.deepEqual(rows('interfaces'), ['Eth1', 'eth2', 'eth10']);
   assert.deepEqual(rows('logical'), ['bond0', 'Lo1', 'lo2', 'lo3', 'lo10', 'tun0']);
   assert.match(scene.textOf(det), /Member ports: eth2, eth10/, 'member ports are shown sorted too');
-  // the logical view shows the first loopbacks of that same order
+  // the logical view shows every loopback in that same order, then the other logical interfaces as chips
   const session = new state.Session(m);
   session.setView('logical');
   const log = session.render().root;
-  assert.deepEqual(byClass(log, 'loop-chip').map((n) => n.attrs['data-ref']), ['iface:sw:Lo1', 'iface:sw:lo2', 'iface:sw:lo3']);
-  assert.match(scene.textOf(log), /\+1 more loopbacks/);
+  assert.deepEqual(byClass(log, 'loop-chip').map((n) => n.attrs['data-ref']), ['iface:sw:Lo1', 'iface:sw:lo2', 'iface:sw:lo3', 'iface:sw:lo10']);
+  assert.deepEqual(byClass(log, 'logical-chip').map((n) => n.attrs['data-ref']), ['iface:sw:bond0', 'iface:sw:tun0']);
+  assert.doesNotMatch(scene.textOf(log), /more loopbacks/);
   // only the display is sorted: the model keeps the file order, and viewing writes nothing
   assert.equal(ids(m.devices[0].interfaces), 'eth10,eth2,Eth1');
   assert.equal(ids(m.devices[0].logical), 'lo10,tun0,lo2,bond0,Lo1,lo3');

@@ -18,14 +18,14 @@
  */
 import { CBox, Pt, Rect, boxRect, clipToBox, clipToCircle, lineBoxExit, normal, textWidth, unionRect } from '../layout/geometry';
 import { LINE_W, TUBE_MIN, TUBE_WALL, buildBundle, laneLabel, relationPairs } from '../layout/bundles';
-import { CHIP_H, HUB_R, LNode, LogicalLayout, MAX_CHIPS, commonChain, deviceRect, isMultipoint, networkSubtitle } from '../layout/logical';
-import { CHIP_FONT, MEMBER_LABEL_SIZE, NET_LABEL_SIZE, chipRows, dnsNameLines, dnsShown, loopbackChipText, networkBody, pillBox } from '../layout/sizes';
+import { CHIP_H, HUB_R, LNode, LogicalLayout, commonChain, deviceRect, isMultipoint, networkSubtitle } from '../layout/logical';
+import { CHIP_FONT, IFCHIP_GAP, MEMBER_LABEL_SIZE, NET_LABEL_SIZE, chipRows, dnsNameLines, dnsShown, logicalChipFlow, loopbackChipText, networkBody, pillBox } from '../layout/sizes';
 import { TextBlock } from '../layout/text';
 import { networkMembers } from '../model/derive';
 import { sortedByName } from '../model/order';
 import { Device, LineStyle, Model, ProtocolDef, Relation, loopbacks, relationDevices } from '../model/types';
 import { LabelPlacer, alongSegment, centerRect, textLines } from './labels';
-import { cssToken, deviceNode, deviceSubtitle, groupFrames, groupRects, SceneResult } from './physical';
+import { chipNodes, cssToken, deviceNode, deviceSubtitle, groupFrames, groupRects, SceneResult } from './physical';
 import { VNode, h } from './scene';
 import { NETWORK_COLOR } from './style';
 import { relationStyle } from '../model/protocols';
@@ -303,8 +303,12 @@ export function renderLogical(model: Model, layout: LogicalLayout, opts: Logical
       if (!d) return;
       nodeLayer.push(deviceNode(n.ref, d.label, deviceSubtitle(d.type), d.type, deviceRect(n), 'type-' + cssToken(d.type)));
       nodeLayer.push(...loopbackChips(d, n));
+      // the other logical interfaces (virtual, tunnel) as chips under the loopbacks, each selectable
+      const flow = logicalChipFlow(otherLogical(d), n.w);
+      const flowTop = n.cy - n.h / 2 + (n.bodyH || 0) + 4 + chipRows(loopbacks(d).length) * CHIP_H;
+      if (flow.items.length) nodeLayer.push(...chipNodes(d.id, flow, n.cx - n.w / 2 + 8, flowTop, 'logical-chip', (id) => d.logical.find((x) => x.id === id)?.type || ''));
       // the names are labels: hidden with Labels (their room stays, so nothing moves)
-      if (opts.showLabels) nodeLayer.push(...dnsChips(d, n));
+      if (opts.showLabels) nodeLayer.push(...dnsChips(d, n, flow.items.length ? flow.h + IFCHIP_GAP : 0));
     } else if (n.kind === 'network' && opts.showNetworks) {
       const nw = model.index.networks.get(n.id);
       if (!nw) return;
@@ -398,11 +402,11 @@ function pill(ref: string, p: Pt, box: { block: TextBlock; w: number; h: number 
  * lines; more than MAX_DNS names end in a "+N more names" row. They show
  * what is configured in the model, nothing looked up.
  */
-function dnsChips(d: Device, n: LNode): VNode[] {
+function dnsChips(d: Device, n: LNode, chipsH: number): VNode[] {
   const shown = dnsShown(d.dnsNames.map((x) => x.name).filter((x) => !!x));
   if (!shown.names.length) return [];
   const out: VNode[] = [];
-  let y = n.cy - n.h / 2 + (n.bodyH || 0) + 4 + chipRows(loopbacks(d).length) * CHIP_H;
+  let y = n.cy - n.h / 2 + (n.bodyH || 0) + 4 + chipRows(loopbacks(d).length) * CHIP_H + chipsH;
   const w = n.w - 16;
   for (const name of shown.names) {
     const lines = dnsNameLines(name);
@@ -418,25 +422,27 @@ function dnsChips(d: Device, n: LNode): VNode[] {
   return out;
 }
 
-/** Loopbacks as small chips hanging under the device, in alphabetical order (logical view only; they are never cabled). */
+/** A device's virtual and tunnel interfaces, in display order (as the layout sized them). */
+function otherLogical(d: Device): string[] {
+  return sortedByName(d.logical.filter((i) => i.type !== 'loopback').map((i) => i.id), (x) => x);
+}
+
+/** Loopbacks as chips hanging under the device, every one, in alphabetical order (logical view only; they are never cabled). */
 function loopbackChips(d: Device, n: LNode): VNode[] {
   const loops = sortedByName(loopbacks(d), (l) => l.id);
   if (!loops.length) return [];
   const out: VNode[] = [];
   const top = n.cy - n.h / 2 + (n.bodyH || 0) + 4;
   const w = n.w - 16;
-  loops.slice(0, MAX_CHIPS).forEach((l, i) => {
+  loops.forEach((l, i) => {
     const text = loopbackChipText(l.id, l.addresses);
     const y = top + i * CHIP_H;
     out.push(
-      h('g', { class: 'loop-chip', 'data-ref': `iface:${d.id}:${l.id}` }, [
+      h('g', { class: 'loop-chip', 'data-ref': `iface:${d.id}:${l.id}`, 'data-endpoint': 'iface' }, [
         h('rect', { x: n.cx - w / 2, y, width: w, height: CHIP_H - 3, rx: 6.5 }),
         h('text', { x: n.cx, y: y + 9.5, 'text-anchor': 'middle', 'font-size': CHIP_FONT }, text),
       ]),
     );
   });
-  if (loops.length > MAX_CHIPS) {
-    out.push(h('text', { class: 'loop-more', x: n.cx, y: top + MAX_CHIPS * CHIP_H + 9, 'text-anchor': 'middle', 'data-ref': 'device:' + d.id }, `+${loops.length - MAX_CHIPS} more loopbacks`));
-  }
   return out;
 }

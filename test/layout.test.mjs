@@ -309,8 +309,10 @@ test('disconnected components of different sizes: no overlaps in either view, co
     }
   }
   // the largest component is placed first (top-left); it is the grouped one, so its devices sit inside its frame, GROUP_PAD in from the edge
-  const { GROUP_PAD } = load('layout/sizes.js');
-  assert.ok(cs[0].x0 <= cs[1].x0 + GROUP_PAD + 1 && cs[0].y0 <= cs[1].y0 + 1);
+  // (and below its title area: the frame, not the first device, lines up with the top of the next component)
+  const { GROUP_PAD, groupHeader } = load('layout/sizes.js');
+  const head = groupHeader('g-big', 'site', 0).h;
+  assert.ok(cs[0].x0 <= cs[1].x0 + GROUP_PAD + 1 && cs[0].y0 <= cs[1].y0 + GROUP_PAD + head + 1, JSON.stringify(cs.slice(0, 2)));
 });
 
 test('dense relationships: a 12-router full mesh with tunnels stays readable', () => {
