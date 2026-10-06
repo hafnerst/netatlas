@@ -223,7 +223,7 @@ export async function runViewportCheck(app: App, doc: Document): Promise<Check[]
     };
     click('#view-btn');
     await tick();
-    state('View menu open', popup('#view-menu'));
+    state('Find & Filter menu open', popup('#view-menu'));
     click('#btn-find');
     await tick();
     const search = q('#search') as HTMLInputElement;

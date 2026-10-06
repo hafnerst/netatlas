@@ -191,7 +191,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const menu = q('#main-menu') as HTMLElement | null;
       const direct = ['#btn-undo', '#btn-redo', '[data-view-btn="physical"]', '[data-view-btn="logical"]', '#btn-arrange-default', '#btn-arrange-compact', '#btn-arrange-spacious', '#menu-btn', '#export-btn', '#view-btn'];
       check(
-        'toolbar: logo and version, the File, Export and View menus, and undo/redo, Physical/Logical and Auto-arrange as direct controls; no "Current model" button',
+        'toolbar: logo and version, the File, Export and Find & Filter menus, and undo/redo, Physical/Logical and Auto-arrange as direct controls; no "Current model" button',
         !!q(bar + ' .brand svg') && /^v\d+\.\d+\.\d+/.test((q(bar + ' .brand .version') || { textContent: '' }).textContent || '') && !!menuBtn && /^File/.test((menuBtn.textContent || '').trim()) &&
           direct.every((d) => !!q(bar + ' ' + d) && !(q(bar + ' ' + d) as HTMLElement).closest('.dropdown') && (q(bar + ' ' + d) as HTMLElement).getBoundingClientRect().width > 10) &&
           !q('#btn-model') && !q('#model-badge') && !/Current model/.test((q(bar) as HTMLElement).textContent || ''),
@@ -924,7 +924,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const relatedMark = (toggle('link').querySelector('.ol-related') || { textContent: '' }).textContent || '';
       check('"Collapse all" folds every section; a folded section still shows the selected entry and how many of its entries are related', allFolded && selShown && /^• \d+$/.test(relatedMark), `${allFolded} ${selShown} "${relatedMark}"`);
       app.select(null);
-      // the filter (View → Filter outline…) looks into folded sections
+      // the filter (Find & Filter → Filter object list…) looks into folded sections
       click('#view-btn');
       click('#btn-outline-filter');
       const filter = q('#outline [data-t="outline-filter"]') as HTMLInputElement;
@@ -2833,7 +2833,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       click('[data-tab="legend"]');
     }
 
-    // ------------- DNS names (logical view), help texts, Details = Edit header, toolbar filters, file name, View menu
+    // ------------- DNS names (logical view), help texts, Details = Edit header, toolbar filters, file name, Find & Filter menu
     {
       if (app.mdoc) app.mdoc.markSaved();
       const view = doc.defaultView as Window;
@@ -2980,15 +2980,29 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       servers.click();
       await tick();
 
-      // the View menu: Find in diagram… and Filter object list… live there (and nowhere else), with the menus' keyboard rules
+      // the Find & Filter menu: Find in diagram… and Filter object list… live there (and nowhere else), with the menus' keyboard rules
       const viewBtn = q('#view-btn') as HTMLButtonElement;
+      {
+        // its name in both views: the visible text (which is also the button's accessible name), the tooltip and the menu's label;
+        // the View group of Physical / Logical keeps its own name
+        const names: string[] = [];
+        for (const v of ['physical', 'logical']) {
+          click(`[data-view-btn="${v}"]`);
+          names.push([(viewBtn.textContent || '').replace('▾', '').trim(), viewBtn.getAttribute('aria-label') === null, viewBtn.title, (q('#view-menu') as HTMLElement).getAttribute('aria-label'), (q('#view-title') as HTMLElement).textContent].join('|'));
+        }
+        check(
+          'the menu with Find in diagram… and Filter object list… is named "Find & Filter" in both views (text, accessible name, tooltip, the menu’s label); the Physical / Logical group is still "View"',
+          names.every((n) => n === 'Find & Filter|true|Find & Filter: find in the diagram, filter the object list|Find & Filter|View'),
+          names.join(' / '),
+        );
+      }
       click('#export-btn');
       (q('#export-menu') as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true }));
       await tick();
       const viaArrow = !(q('#view-menu') as HTMLElement).hidden && viewBtn.getAttribute('aria-expanded') === 'true' && (q('#view-menu') as HTMLElement).contains(doc.activeElement);
       const entries = textsOf('#view-menu button');
       check(
-        'View menu next to Export: Find in diagram… (/) and Filter object list…, reached with the arrow keys like File and Export; no search box in the toolbar, no filter box always in the outline',
+        'Find & Filter menu next to Export: Find in diagram… (/) and Filter object list…, reached with the arrow keys like File and Export; no search box in the toolbar, no filter box always in the outline',
         viaArrow && entries.join(' | ') === 'Find in diagram…/ | Filter object list…' && !q('header.topbar #search') && !q('header.topbar [data-t="outline-filter"]') &&
           /in the diagram/.test((q('#btn-find') as HTMLElement).title) && /object list/.test((q('#btn-outline-filter') as HTMLElement).title) && /diagram is not changed/.test((q('#btn-outline-filter') as HTMLElement).title),
         `${viaArrow} ${entries.join(' | ')}`,
@@ -3008,7 +3022,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const picked = app.session!.state.selected === 'device:hq-fw';
       s.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
       await tick();
-      check('View → Find in diagram… opens the Find bar with the cursor in it; typing lists matches, Enter selects the first, Esc closes the bar', findOpened && hits >= 1 && picked && !app.findOpen && s.value === '' && (q('#find-bar') as HTMLElement).getAttribute('aria-label') === 'Find in diagram', `${findOpened} ${hits} ${picked}`);
+      check('Find & Filter → Find in diagram… opens the Find bar with the cursor in it; typing lists matches, Enter selects the first, Esc closes the bar', findOpened && hits >= 1 && picked && !app.findOpen && s.value === '' && (q('#find-bar') as HTMLElement).getAttribute('aria-label') === 'Find in diagram', `${findOpened} ${hits} ${picked}`);
       (doc.activeElement as HTMLElement | null)?.blur?.();
       doc.dispatchEvent(new KeyboardEvent('keydown', { key: '/', bubbles: true, cancelable: true }));
       await tick();
@@ -3028,7 +3042,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       of2.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
       await tick();
       check(
-        'View → Filter object list… shows the filter at the top of the outline with the cursor in it; it filters the list, not the diagram; Esc clears and removes it',
+        'Find & Filter → Filter object list… shows the filter at the top of the outline with the cursor in it; it filters the list, not the diagram; Esc clears and removes it',
         ofOpened && new XMLSerializer().serializeToString(q('#viewport') as Element) === diagramBefore && listed.indexOf('muc-rtr') >= 0 && listed.indexOf('hq-rtr1') < 0 && !q('#outline [data-t="outline-filter"]') && textsOf('#outline .ol-item').length > listed.length,
         listed.join(' | '),
       );

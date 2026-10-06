@@ -43,7 +43,11 @@ it is described in [docs/FORMAT.md](docs/FORMAT.md).
 
 ### Changed
 
-- The View menu says what its entries work on: **Find…** is now **Find in
+- The **View** menu (Find in diagram…, Filter object list…) is now called
+  **Find & Filter** (also its tooltip and accessible name), so it isn't
+  mistaken for the **View** group of Physical / Logical. Its entries,
+  shortcuts and behaviour are unchanged.
+- The Find & Filter menu (then called View) says what its entries work on: **Find…** is now **Find in
   diagram…** (`/`), **Filter outline…** is now **Filter object list…** (it
   narrows the model outline; the diagram is not changed). Hover texts, the
   Find bar's accessible name and the outline filter's placeholder follow.
