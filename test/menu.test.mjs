@@ -129,17 +129,19 @@ test('selection hint of the outline: "selected" and "related (n)" in the always-
   assert.match(inspector, /this\.e\('span', \{ class: 'ctx-mark' \+ \(st === 'selected' \? ' sel' : st === 'related' \? ' rel' : ''\), 'aria-hidden': 'true' \}/);
 });
 
-test('View menu: next to Export, with Find in diagram… (/) and Filter object list…, each the one place of its action', () => {
+test('Find & Filter menu: next to Export, with Find in diagram… (/) and Filter object list…, each the one place of its action', () => {
   const at = ['id="export-btn"', 'id="view-btn"', 'id="btn-undo"'].map((x) => header.indexOf(x));
   assert.ok(at[0] >= 0 && at[0] < at[1] && at[1] < at[2], JSON.stringify(at));
-  // the same markup as File and Export, driven by the same code
-  assert.match(header, /<button id="view-btn" type="button" class="menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="view-menu"[^>]*>View <span class="caret"/);
-  const view = /<div id="view-menu" class="dropdown menu" role="menu" aria-label="View" hidden>([\s\S]*?)\n    <\/div>/.exec(header)[1];
+  // the same markup as File and Export, driven by the same code; named "Find & Filter" (visible, tooltip and the menu's accessible name),
+  // so it isn't mistaken for the View group of Physical / Logical
+  assert.match(header, /<button id="view-btn" type="button" class="menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="view-menu" title="Find &amp; Filter: find in the diagram, filter the object list">Find &amp; Filter <span class="caret"/);
+  assert.doesNotMatch(header, />View <span class="caret"|aria-label="View"|title="View:/);
+  assert.match(header, /<span id="view-title" class="tool-group-title">View<\/span>/, 'the View group of Physical / Logical keeps its name');
+  const view = /<div id="view-menu" class="dropdown menu" role="menu" aria-label="Find &amp; Filter" hidden>([\s\S]*?)\n    <\/div>/.exec(header)[1];
   const entries = [...view.matchAll(/<button id="([^"]+)"[^>]*role="menuitem"[^>]*disabled><span class="mi-label">([^<]+)</g)].map((m) => [m[1], m[2]]);
   assert.deepEqual(entries, [['btn-find', 'Find in diagram…'], ['btn-outline-filter', 'Filter object list…']], 'both disabled until a model is open');
   // the labels say what each one works on: Find searches the diagram, the filter narrows the object list (not the diagram)
   assert.ok(!/Filter outline…|>Find…</.test(html), 'the old labels are gone');
-  assert.match(header, /title="View: find in the diagram, filter the object list"/);
   assert.match(html, /<div id="find-bar" class="find-bar" role="search" aria-label="Find in diagram" hidden>/);
   assert.deepEqual([...view.matchAll(/class="mi-hint">([^<]*)</g)].map((m) => m[1]), ['/']);
   const app = readFileSync(join(root, 'src', 'ui', 'app.ts'), 'utf8');

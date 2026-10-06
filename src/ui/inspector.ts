@@ -77,7 +77,7 @@ export class Editor {
   /** open interface cards / collapsible sections, by path */
   private open = new Set<string>();
   private filter = '';
-  /** the outline's filter box is shown (opened with View → Filter object list…; it stays while a filter is set) */
+  /** the outline's filter box is shown (opened with Find & Filter → Filter object list…; it stays while a filter is set) */
   filterOpen = false;
   /**
    * Sections of the model outline that are folded to their heading. Links

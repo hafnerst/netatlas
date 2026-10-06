@@ -121,12 +121,12 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .more-filters[hidden] { display: none; }
 .more-filters .opt { color: var(--text); min-height: 24px; }
 .more-filters .opt input { width: 16px; height: 16px; }
-/* Find (View → Find…, "/"): a bar over the top right of the diagram */
+/* Find (Find & Filter → Find in diagram…, "/"): a bar over the top right of the diagram */
 .find-bar { position: absolute; top: 10px; right: 12px; z-index: 30; display: flex; align-items: center; gap: 4px; width: min(340px, calc(100% - 24px)); padding: 4px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); box-shadow: 0 4px 14px rgba(0, 0, 0, .14); }
 .find-bar[hidden] { display: none; }
 .find-bar #search { flex: 1; min-width: 0; width: auto; }
 .find-bar #search-results { position: fixed; z-index: 45; margin-top: 0; min-width: 0; max-width: none; }
-/* the outline filter (View → Filter outline…) */
+/* the outline filter (Find & Filter → Filter object list…) */
 .ol-filter { display: flex; gap: 4px; align-items: center; margin-bottom: 6px; }
 .ol-filter .outline-filter { flex: 1; min-width: 0; margin: 0; }
 .ol-filter.active .outline-filter { border-color: var(--accent); }

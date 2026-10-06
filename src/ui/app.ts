@@ -1341,7 +1341,7 @@ export class App {
     group.title = msg;
   }
 
-  // ------------------------------------------------------------- View menu
+  // ----------------------------------------------------- Find & Filter menu
 
   /** Is the Find bar open? */
   get findOpen(): boolean {
@@ -1349,7 +1349,7 @@ export class App {
   }
 
   /**
-   * View → Find in diagram… (or "/"): open the Find bar over the top right of the
+   * Find & Filter → Find in diagram… (or "/"): open the Find bar over the top right of the
    * diagram and put the cursor in it. Typing lists matching objects;
    * Enter or a click selects one. Needs a drawn model.
    */
@@ -1376,7 +1376,7 @@ export class App {
   }
 
   /**
-   * View → Filter object list…: show the filter box at the top of the model
+   * Find & Filter → Filter object list…: show the filter box at the top of the model
    * outline and put the cursor in it. It stays while it holds text; × or
    * Esc clears and closes it.
    */
@@ -1957,7 +1957,7 @@ export class App {
       }
     });
     this.$('find-close').addEventListener('click', () => this.closeFind(true));
-    // View menu
+    // Find & Filter menu
     this.$('btn-find').addEventListener('click', () => this.openFind());
     this.$('btn-outline-filter').addEventListener('click', () => this.openOutlineFilter());
     outline.addEventListener('keydown', (e) => {
