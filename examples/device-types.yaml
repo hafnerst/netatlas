@@ -102,6 +102,13 @@ devices:
       - {id: Et49}
       - {id: Et1}
       - {id: Et2}
+      # free ports: no cable yet (the physical view shows them as chips in the switch)
+      - {id: Et3}
+      - {id: Et4}
+      - {id: Et5}
+      - {id: Et6}
+      - {id: Et7}
+      - {id: Et8}
   - id: ap
     label: ap-1-01
     type: ap

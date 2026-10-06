@@ -7,7 +7,8 @@
  * This module has no DOM dependency and is fully testable in Node.
  */
 import { Pt } from '../layout/geometry';
-import { LAYOUT_VIEWS, LayoutView, autoPositions, resolvePositions, samePositions } from '../layout/positions';
+import { LAYOUT_VIEWS, LayoutView, resolvePositions, samePositions } from '../layout/positions';
+import { ArrangeStrategy, STRATEGIES, STRATEGY_LABEL, allStrategyPositions } from '../layout/strategies';
 import { layoutInput, layoutSignature } from '../layout/input';
 import { dnsNameKey, dnsNameProblem } from '../model/dns';
 import { parseAddress } from '../model/ip';
@@ -77,7 +78,13 @@ export class ModelDoc {
   root: YMap;
   fileName: string;
   origin: Origin;
-  dirty = false;
+  /**
+   * The YAML text the model had when it was opened or last saved. "Modified"
+   * is a comparison with it, not a flag set by edits: undoing back to the
+   * saved state makes the model unmodified again, and redoing modifies it.
+   */
+  private savedText = '';
+  private dirtyMemo: { version: number; dirty: boolean } | null = null;
   /** increments on every change; lets views know when to refresh */
   version = 0;
   result: LoadResult;
@@ -94,6 +101,16 @@ export class ModelDoc {
     this.fileName = fileName;
     this.origin = origin;
     this.result = this.revalidate();
+    this.savedText = this.exportText();
+  }
+
+  /** Does the model differ from the text it was opened or last saved with? */
+  get dirty(): boolean {
+    const m = this.dirtyMemo;
+    if (m && m.version === this.version) return m.dirty;
+    const dirty = this.exportText() !== this.savedText;
+    this.dirtyMemo = { version: this.version, dirty };
+    return dirty;
   }
 
   /** A new, valid, minimal model. */
@@ -216,7 +233,6 @@ export class ModelDoc {
   }
 
   private markChanged(): void {
-    this.dirty = true;
     this.edited = true;
     this.version++;
   }
@@ -278,17 +294,21 @@ export class ModelDoc {
 
   // ------------------------------------------------------------ layout status
 
-  private autoMemo = new Map<string, Map<string, Pt>>();
+  private autoMemo = new Map<string, Map<ArrangeStrategy, Map<string, Pt>>>();
 
-  /** Auto-arrange result for the current model (cached per layout signature). */
-  autoLayout(view: LayoutView): Map<string, Pt> {
+  /** Auto-arrange result of a strategy for the current model (cached per layout signature). */
+  autoLayout(view: LayoutView, strategy: ArrangeStrategy = 'default'): Map<string, Pt> {
+    return this.strategyLayouts(view).get(strategy) as Map<string, Pt>;
+  }
+
+  private strategyLayouts(view: LayoutView): Map<ArrangeStrategy, Map<string, Pt>> {
     const m = this.result.model;
-    if (!m) return new Map();
+    if (!m) return new Map(STRATEGIES.map((s) => [s, new Map()] as [ArrangeStrategy, Map<string, Pt>]));
     const input = layoutInput(m);
     const key = view + '\n' + layoutSignature(input);
     let r = this.autoMemo.get(key);
     if (!r) {
-      r = autoPositions(view, input);
+      r = allStrategyPositions(view, input);
       // keep only the latest result per view
       Array.from(this.autoMemo.keys()).forEach((k) => {
         if (k.indexOf(view + '\n') === 0) this.autoMemo.delete(k);
@@ -299,10 +319,22 @@ export class ModelDoc {
   }
 
   /**
-   * Does the diagram of a view match Auto-arrange for the current model?
-   *   'auto'    every node is exactly where Auto-arrange puts it;
-   *   'manual'  at least one node that was placed by hand differs from it;
-   *   'edited'  it differs only because the model changed after arranging
+   * The strategies whose result the view shows right now, in STRATEGIES
+   * order (empty when none matches). Several strategies match when they
+   * give identical positions for this model; the first is the one the
+   * view counts as arranged with. Derived from the positions every time,
+   * never from the last button pressed.
+   */
+  arrangedWith(view: LayoutView): ArrangeStrategy[] {
+    const shown = this.displayedPositions(view);
+    return STRATEGIES.filter((s) => samePositions(shown, this.autoLayout(view, s)));
+  }
+
+  /**
+   * Does the diagram of a view match an Auto-arrange strategy for the current model?
+   *   'auto'    every node is exactly where one of the strategies puts it;
+   *   'manual'  it matches none, and nodes were placed by hand;
+   *   'edited'  it matches none only because the model changed after arranging
    *             (edits keep existing positions stable instead of re-arranging).
    * Derived from the document every time: it is correct after undo, reload,
    * or when nodes are back at their calculated positions.
@@ -310,31 +342,21 @@ export class ModelDoc {
   layoutStatus(view: LayoutView): 'auto' | 'manual' | 'edited' {
     const m = this.result.model;
     if (!m || m.layout[view].size === 0) return 'auto';
-    const auto = this.autoLayout(view);
+    if (this.arrangedWith(view).length) return 'auto';
     const shown = this.displayedPositions(view);
-    const differing: string[] = [];
-    shown.forEach((p, id) => {
-      const q = auto.get(id);
-      if (!q || q.x !== p.x || q.y !== p.y) differing.push(id);
-    });
-    if (!differing.length) return 'auto';
-    return differing.some((id) => m.layout.manual[view].has(id)) ? 'manual' : 'edited';
+    return Array.from(m.layout.manual[view]).some((id) => shown.has(id)) ? 'manual' : 'edited';
   }
 
-
-
-
-
   /**
-   * What Auto-arrange would do to one view, without doing it:
+   * What Auto-arrange with a strategy would do to one view, without doing it:
    *   moved   nodes whose displayed position would change;
    *   manual  of those, the nodes that were placed by hand (their positions would be overwritten).
-   * Both are empty when the view already shows the auto-arranged layout.
+   * Both are empty when the view already shows that strategy's layout.
    */
-  arrangeImpact(view: LayoutView): { moved: string[]; manual: string[] } {
+  arrangeImpact(view: LayoutView, strategy: ArrangeStrategy = 'default'): { moved: string[]; manual: string[] } {
     const m = this.result.model;
     if (!m) return { moved: [], manual: [] };
-    const auto = this.autoLayout(view);
+    const auto = this.autoLayout(view, strategy);
     const shown = this.displayedPositions(view);
     const moved: string[] = [];
     auto.forEach((p, id) => {
@@ -351,18 +373,19 @@ export class ModelDoc {
    * not touched. Returns how many nodes moved on screen; nothing is changed
    * at all if the stored layout already equals the auto-arrange result.
    */
-  arrange(views: LayoutView[]): { changed: boolean; moved: number } {
+  arrange(views: LayoutView[], strategy: ArrangeStrategy = 'default'): { changed: boolean; moved: number } {
     const m = this.result.model;
     if (!m) return { changed: false, moved: 0 };
     const targets = new Map<LayoutView, Map<string, Pt>>();
     let moved = 0;
     for (const v of views) {
-      const auto = this.autoLayout(v);
-      moved += this.arrangeImpact(v).moved.length;
+      const auto = this.autoLayout(v, strategy);
+      moved += this.arrangeImpact(v, strategy).moved.length;
       if (!samePositions(auto, m.layout[v])) targets.set(v, auto);
     }
     if (!targets.size) return { changed: false, moved: 0 };
-    const label = views.length > 1 ? 'Auto-arrange (both views)' : `Auto-arrange (${views[0]} view)`;
+    const how = strategy === 'default' ? '' : `, ${STRATEGY_LABEL[strategy]}`;
+    const label = views.length > 1 ? `Auto-arrange (both views${how})` : `Auto-arrange (${views[0]} view${how})`;
     this.change(
       label,
       () =>
@@ -388,12 +411,11 @@ export class ModelDoc {
     updates.forEach((_, id) => {
       if (next.has(id)) manual.add(id);
     });
-    // a node put back exactly where Auto-arrange places it is no longer "placed by hand"
-    const auto = this.autoLayout(view);
+    // a node put back exactly where an Auto-arrange strategy places it is no longer "placed by hand"
+    const autos = STRATEGIES.map((s) => this.autoLayout(view, s));
     Array.from(manual).forEach((id) => {
       const p = next.get(id);
-      const q = auto.get(id);
-      if (!p || (q && q.x === p.x && q.y === p.y)) manual.delete(id);
+      if (!p || autos.some((auto) => { const q = auto.get(id); return !!q && q.x === p.x && q.y === p.y; })) manual.delete(id);
     });
     this.change(
       label,
@@ -436,8 +458,14 @@ export class ModelDoc {
     return true;
   }
 
-  markSaved(): void {
-    this.dirty = false;
+  /**
+   * The model was written to a file or downloaded: `text` (by default the
+   * current state) becomes the baseline for "modified". Passing the text that
+   * was written keeps an edit made while it was being written unsaved.
+   */
+  markSaved(text: string = this.exportText()): void {
+    this.savedText = text;
+    this.dirtyMemo = null;
   }
 
   exportText(): string {
@@ -819,6 +847,32 @@ export class ModelDoc {
       for (const [k, v] of defaults[kind]) if (!fields.some(([f]) => f === k)) entries.push([k, v]);
       for (const [k, v] of fields) if (k !== 'id') entries.push([k, v]);
       const node = mapNode(entries, kind === 'link' || kind === 'protocol');
+      const seq = this.ensureSeq([SECTION[kind]]);
+      seq.items.push(node);
+      return seq.items.length - 1;
+    });
+  }
+
+  /**
+   * Add a physical link or a logical relation between endpoints chosen in the
+   * diagram, in one undo step. Endpoints are written as "device" or
+   * "device:interface" (stable ids). `fields` are the other values entered
+   * for it (empty values are left out); they are written in the format's key
+   * order. Returns the new entry's index.
+   */
+  addConnection(kind: 'link' | 'relation', id: string, ends: string[], fields: Array<[string, string]> = []): number {
+    const value = (k: string): string => (fields.find(([f]) => f === k) || ['', ''])[1].trim();
+    // "device:interface" is written in double quotes, as in the format's examples
+    const ref = (e: string): YNode => (e.indexOf(':') >= 0 ? { ...strNode(e), quoted: true, style: 'double' } : strNode(e));
+    const entries: Array<[string, YNode]> = [];
+    for (const key of SCHEMA[kind]) {
+      if (key === 'id') entries.push(['id', strNode(id)]);
+      else if (kind === 'link' && (key === 'a' || key === 'b')) entries.push([key, ref(ends[key === 'a' ? 0 : 1])]);
+      else if (kind === 'relation' && key === 'endpoints') entries.push(['endpoints', seqNode(ends.map(ref), true)]);
+      else if (value(key)) entries.push([key, strNode(value(key))]);
+    }
+    return this.change(`Add ${kind} ${id}`, () => {
+      const node = mapNode(entries, kind === 'link');
       const seq = this.ensureSeq([SECTION[kind]]);
       seq.items.push(node);
       return seq.items.length - 1;

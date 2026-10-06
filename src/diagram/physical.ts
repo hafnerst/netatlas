@@ -12,11 +12,12 @@
  */
 import { CBox, Pt, Rect, boxRect, segmentHitsRect, textWidth, unionRect } from '../layout/geometry';
 import { linkLabelText, linkNetworkLabel } from '../layout/input';
-import { GROUP_PAD, PORT_FONT, PORT_LABEL_GAP, PhysicalLayout, PortPos, assignPorts } from '../layout/physical';
-import { DEVICE_ICON, DEVICE_TEXT_X, deviceBody, groupHeader, linkLabelBox } from '../layout/sizes';
+import { GROUP_PAD, PORT_FONT, PORT_LABEL_GAP, PhysicalLayout, PortPos, assignPorts, spareChipFlow } from '../layout/physical';
+import { ChipFlow, DEVICE_ICON, DEVICE_TEXT_X, IFCHIP_FONT, IFCHIP_H, IFCHIP_PAD, chipStripH, deviceBody, groupHeader, linkLabelBox } from '../layout/sizes';
+import { sortedByName } from '../model/order';
 import { networkMismatch } from '../model/derive';
 import { deviceSubtitle } from '../model/device-types';
-import { Model } from '../model/types';
+import { Device, Model, ifaceKey } from '../model/types';
 import { deviceIcon } from './icons';
 import { LabelPlacer, alongSegment, centerRect, textLines } from './labels';
 import { VNode, h } from './scene';
@@ -116,16 +117,21 @@ export function groupFrames(model: Model, grects: Map<string, Rect>, placer: Lab
   return out;
 }
 
-/** A device box with its icon and its full, wrapped label and subtitle. */
-export function deviceNode(ref: string, label: string, sub: string, type: string, b: CBox, extraClass = ''): VNode {
+/**
+ * A device box with its icon and its full, wrapped label and subtitle. With
+ * `bodyH`, the icon and text are centred in the top `bodyH` of the box (the
+ * rest holds the chips of its uncabled ports).
+ */
+export function deviceNode(ref: string, label: string, sub: string, type: string, b: CBox, extraClass = '', bodyH = b.h): VNode {
   const x = b.cx - b.w / 2;
   const y = b.cy - b.h / 2;
   const body = deviceBody(label, sub, 0, 0);
   const textX = x + DEVICE_TEXT_X;
-  const top = b.cy - body.textH / 2;
-  return h('g', { class: 'node device ' + extraClass, 'data-ref': ref }, [
+  const mid = y + bodyH / 2;
+  const top = mid - body.textH / 2;
+  return h('g', { class: 'node device ' + extraClass, 'data-ref': ref, 'data-endpoint': 'device' }, [
     h('rect', { class: 'dev-box', x, y, width: b.w, height: b.h, rx: 8 }),
-    deviceIcon(type, x + 12, b.cy - DEVICE_ICON / 2, DEVICE_ICON),
+    deviceIcon(type, x + 12, mid - DEVICE_ICON / 2, DEVICE_ICON),
     textLines({ class: 'dev-label' }, body.label, textX, top),
     body.sub.lines.length ? textLines({ class: 'dev-sub' }, body.sub, textX, top + body.textH - body.sub.h) : null,
   ]);
@@ -290,6 +296,7 @@ export function renderPhysical(model: Model, layout: PhysicalLayout, opts: ViewO
         h('rect', {
           class: 'port',
           'data-ref': p.iface ? `iface:${p.device}:${p.iface}` : 'device:' + p.device,
+          'data-endpoint': p.iface ? 'iface' : 'device',
           x: p.x - 4.5,
           y: p.y - 4.5,
           width: 9,
@@ -302,10 +309,12 @@ export function renderPhysical(model: Model, layout: PhysicalLayout, opts: ViewO
     labelNodes.push(...(labelAt.get(l.id) as VNode[]));
   }
 
-  // ---- devices
+  // ---- devices, with the chips of their uncabled ports at the bottom of the box
   const deviceNodes: VNode[] = model.devices.map((d) => {
     const b = boxes.get(d.id) as CBox;
-    return deviceNode('device:' + d.id, d.label, deviceSubtitle(d.type), d.type, b, 'type-' + cssToken(d.type));
+    const flow = spareChipFlow(spareIds(model, d), b.w);
+    if (flow.items.length) portNodes.push(...chipNodes(d.id, flow, b.cx - b.w / 2 + IFCHIP_PAD, b.cy + b.h / 2 - chipStripH(flow), 'port-chip', () => ''));
+    return deviceNode('device:' + d.id, d.label, deviceSubtitle(d.type), d.type, b, 'type-' + cssToken(d.type), b.h - chipStripH(flow));
   });
 
   // everything drawn is inside the bounds: boxes, groups, labels and cable bends
@@ -325,6 +334,28 @@ export function renderPhysical(model: Model, layout: PhysicalLayout, opts: ViewO
     ]),
     bounds,
   };
+}
+
+/** A device's physical interfaces without a cable, in display order (as the layout sized them). */
+export function spareIds(model: Model, d: Device): string[] {
+  return sortedByName(d.interfaces.filter((i) => !model.index.ifaceLink.has(ifaceKey(d.id, i.id))).map((i) => i.id), (x) => x);
+}
+
+/**
+ * Interface chips flowed from (x, y): one selectable chip per interface (ref
+ * "iface:<device>:<id>"), and the shared-prefix caption, when there is one,
+ * as plain text. `kindOf` adds a class per interface (e.g. its type).
+ */
+export function chipNodes(device: string, flow: ChipFlow, x: number, y: number, cls: string, kindOf: (id: string) => string): VNode[] {
+  return flow.items.map((c) => {
+    const ty = y + c.y + IFCHIP_H / 2 + IFCHIP_FONT * 0.35;
+    if (!c.id) return h('text', { class: 'if-chip-prefix', x: x + c.x + 1, y: ty, 'font-size': IFCHIP_FONT }, c.text);
+    const kind = kindOf(c.id);
+    return h('g', { class: `if-chip ${cls}${kind ? ' kind-' + cssToken(kind) : ''}`, 'data-ref': `iface:${device}:${c.id}`, 'data-endpoint': 'iface' }, [
+      h('rect', { x: x + c.x, y: y + c.y, width: c.w, height: IFCHIP_H, rx: 3 }),
+      h('text', { x: x + c.x + c.w / 2, y: ty, 'text-anchor': 'middle', 'font-size': IFCHIP_FONT }, c.text),
+    ]);
+  });
 }
 
 function n(v: number): string {

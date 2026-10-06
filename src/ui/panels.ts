@@ -463,7 +463,22 @@ export function detailsFor(model: Model, ref: string, status: IssueCount | null 
   } else {
     return h('div', {}, 'Nothing selected');
   }
-  return h('div', { class: 'details' }, kids);
+  return h('div', { class: 'details' }, kids.map((k, i) => (i === 0 || !k ? k : card(k))));
+}
+
+/**
+ * The sections of the Details tab as cards, like the field groups of the
+ * Edit tab: a section keeps its title; the overview table of an object gets
+ * the title "Overview", the untitled associations of an interface
+ * "Associations". A section with nothing in it is left out.
+ */
+function card(v: VNode): VNode | null {
+  if (v.tag === 'table') return h('section', { class: 'fgroup', 'data-group': 'overview' }, [h('h4', { class: 'fgroup-title' }, 'Overview'), v]);
+  if (v.tag !== 'section') return v;
+  const children = v.children.map((c) => (c.tag === 'h4' ? { ...c, attrs: { ...c.attrs, class: 'fgroup-title' } } : c));
+  const titled = children.some((c) => c.tag === 'h4');
+  if (!titled && children.every((c) => c.tag === 'table' && !c.children.length)) return null;
+  return { ...v, attrs: { ...v.attrs, class: ((v.attrs.class || '') + ' fgroup').trim(), 'data-group': v.attrs['data-group'] || (titled ? '' : 'more') }, children: titled ? children : [h('h4', { class: 'fgroup-title' }, 'Associations'), ...children] };
 }
 
 export function relationTitle(model: Model, id: string): string {

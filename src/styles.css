@@ -103,14 +103,12 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .seg button.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 600; position: relative; }
 .spacer { flex: 1; }
 .opt { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); user-select: none; white-space: nowrap; }
-/* a narrower toolbar: the logo without name and version, Auto-arrange as its status icon (the name stays its title and accessible name) */
+/* a narrower toolbar: the logo without name and version, and the Auto-arrange title (the group keeps it as its accessible name) */
 @container (max-width: 1180px) {
   .brand > span { display: none; }
 }
 @container (max-width: 1000px) {
-  .arrange-btn .arrange-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
-  .arrange-btn .arrange-icon:empty { display: inline-block; }
-  .arrange-btn .arrange-icon:empty::before { content: "\21BB"; }
+  .arrange-title { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 }
 /* the diagram filters: one row at the right of the toolbar; what doesn't fit goes into the Filters drop-down (App.layoutFilters) */
 .view-filters { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex: 1 1 0; flex-wrap: nowrap; }
@@ -393,8 +391,17 @@ button.ghost { background: none; }
 button.danger { color: var(--error); border-color: var(--error); }
 .modal-btns button.danger { background: var(--error); color: #fff; }
 button.mini { padding: 1px 7px; font-size: 11.5px; border-radius: 5px; }
-body[data-dirty="true"] #btn-download { border-color: var(--warn); box-shadow: inset 0 -2px 0 var(--warn); }
 #status .dirty { color: var(--warn); font-weight: 600; }
+/* the file name badge: a small dot while the model has unsaved changes (the badge itself keeps its colours) */
+#status .fname { display: inline-flex; align-items: center; gap: 5px; }
+#status .fname-text { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+#status .mod-dot { flex: none; font-size: 9px; line-height: 1; color: var(--warn); }
+#status .file-state { font-style: italic; }
+/* File menu: Save model shows a dot while there is something to save; the loaded example is marked */
+.dropdown.menu #btn-save[data-modified="true"] .mi-label::after { content: " \25CF"; color: var(--warn); font-size: 9px; vertical-align: 2px; }
+.dropdown.menu .active-example { box-shadow: inset 3px 0 0 var(--accent); background: var(--accent-soft); }
+.dropdown.menu .active-example .mi-label { font-weight: 600; }
+.dropdown.menu .active-example[data-modified="true"] .ex-state { color: var(--warn); }
 #status .errcount { color: var(--error); font-weight: 600; }
 .tabs button.has-errors { color: var(--error); }
 .tabs button { padding: 8px 2px; font-size: 12.5px; }
@@ -441,7 +448,21 @@ body[data-dirty="true"] #btn-download { border-color: var(--warn); box-shadow: i
 .ol-badge { font-size: 10.5px; font-weight: 700; border-radius: 99px; padding: 0 6px; color: #fff; }
 .ol-badge.err { background: var(--error); }
 .ol-badge.warn { background: var(--warn); }
-.inspector { display: flex; flex-direction: column; gap: 6px; }
+.inspector { display: flex; flex-direction: column; gap: 8px; }
+/* field groups (Edit) and sections (Details): titled cards, one look for both tabs */
+.fgroup { display: flex; flex-direction: column; gap: 7px; min-width: 0; padding: 8px 10px 10px; border: 1px solid var(--border); border-radius: 9px; background: var(--panel); }
+#side .fgroup > h4.fgroup-title { margin: 0 0 1px; font-size: 10.5px; color: var(--muted); }
+.details { display: flex; flex-direction: column; gap: 8px; }
+.details > .fgroup { gap: 4px; }
+.details > .fgroup > p { margin: 2px 0 0; }
+.inspector > .sub { margin-top: 0; padding: 8px 10px 10px; border: 1px solid var(--border); border-radius: 9px; }
+/* a new link or relation that is not in the model yet */
+.draft-note { margin: 0; padding: 6px 9px; border: 1px dashed var(--accent); border-radius: 7px; background: var(--accent-soft); font-size: 12px; }
+.draft-end { display: grid; grid-template-columns: max-content minmax(0, 1fr); align-items: baseline; column-gap: 8px; }
+.draft-end .ih-id { grid-column: 2; margin-left: 0; }
+.draft-end-side { font-size: 11.5px; color: var(--muted); font-weight: 500; }
+.field input[aria-invalid="true"] { border-color: var(--error); }
+.field-err:empty { display: none; }
 /* header of the edit panel: [type] [validation state] … [actions], the name below at full width */
 .insp-head { container-type: inline-size; display: flex; flex-direction: column; gap: 4px; min-width: 0; padding: 8px 10px 9px; border: 1px solid var(--border); border-radius: 9px; background: var(--canvas); }
 .ih-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; }
@@ -487,7 +508,7 @@ button.icon-btn.danger:hover:not(:disabled) { background: var(--error); border-c
 .sub-head h4 { margin: 4px 0 !important; }
 /* a narrow panel puts the add buttons under the heading instead of past the edge */
 .sub-head { gap: 4px 6px; flex-wrap: wrap; }
-.sub-head .ctl.row { flex: none; flex-wrap: wrap; margin-left: auto; }
+.sub-head .ctl.row { flex: 0 1 auto; min-width: 0; flex-wrap: wrap; justify-content: flex-end; margin-left: auto; }
 .sub-head .ctl.row > * { flex: none; }
 .sub-head button { white-space: nowrap; }
 details.card { border: 1px solid var(--border); border-radius: 7px; margin: 5px 0; background: var(--canvas); }
@@ -593,6 +614,29 @@ dialog#modal::backdrop { background: rgba(0,0,0,.35); }
 /* errors marked on the diagram */
 .device.has-error .dev-box, .network.has-error .net-box { stroke: var(--error) !important; stroke-width: 2.4 !important; stroke-dasharray: 5 3; }
 .rel.has-error .rel-line, .rel.has-error .tube-outer { stroke-dasharray: 3 3; }
+/* interfaces without a line of their own: uncabled ports (physical view), virtual and tunnel interfaces (logical view) */
+.if-chip { cursor: pointer; }
+.if-chip rect { fill: var(--pill); stroke: var(--dev-stroke); stroke-width: 1; }
+.if-chip text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: var(--muted) !important; }
+.if-chip.port-chip rect { stroke-dasharray: 2 2; }
+.if-chip.kind-virtual rect { stroke: var(--accent); }
+.if-chip.kind-tunnel rect { stroke: var(--accent); stroke-dasharray: 4 2; }
+.if-chip:hover rect { stroke: var(--accent); stroke-width: 1.6; }
+.if-chip-prefix { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: var(--muted) !important; }
+.selected.if-chip rect, .selected.loop-chip rect { stroke: var(--sel) !important; stroke-width: 2 !important; }
+/* connecting (right-click): where a connection can start, its first endpoint, and the compatible second endpoints */
+#canvas .conn-start { cursor: context-menu; }
+#canvas.connecting { cursor: crosshair; }
+#canvas.connecting .conn-source .dev-box, #canvas.connecting .conn-source > rect, #canvas.connecting rect.conn-source { stroke: var(--sel) !important; stroke-width: 3 !important; }
+#canvas.connecting .conn-ok .dev-box, #canvas.connecting .conn-ok > rect, #canvas.connecting rect.conn-ok { stroke: var(--ok) !important; stroke-width: 2.2 !important; stroke-dasharray: 5 3; }
+#canvas.connecting .conn-ok { cursor: copy; }
+#canvas.connecting .conn-no { opacity: .35; cursor: not-allowed; }
+.conn-line { stroke: var(--sel); stroke-width: 2; stroke-dasharray: 6 4; pointer-events: none; }
+/* the connect bar: the keyboard way to pick the second endpoint */
+.connect-bar { position: absolute; left: 12px; bottom: 12px; z-index: 30; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; max-width: calc(100% - 24px); padding: 6px 8px; border: 1px solid var(--sel); border-radius: 8px; background: var(--panel); box-shadow: 0 4px 14px rgba(0, 0, 0, .14); font-size: 12.5px; }
+.connect-bar[hidden] { display: none; }
+.connect-bar .cb-text { flex: 1 1 220px; min-width: 0; overflow-wrap: anywhere; }
+.connect-bar select { max-width: 100%; min-width: 0; }
 /* loopbacks in the logical view */
 .loop-chip rect { fill: var(--pill); stroke: var(--accent); stroke-width: 1; }
 .loop-chip text { font-size: 9.5px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
@@ -600,17 +644,17 @@ dialog#modal::backdrop { background: rgba(0,0,0,.35); }
 .dns-chip rect { fill: var(--pill); stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 2; }
 .dns-chip text { font-size: 9.5px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: var(--muted) !important; }
 
-/* auto-arrange button and per-view layout status */
-.arrange-group { display: inline-flex; align-items: center; gap: 6px; }
-/* something to arrange: a normal blue button with the edit icon */
-.arrange-btn { font-weight: 600; border-color: var(--accent); color: var(--accent); display: inline-flex; align-items: center; gap: 5px; }
-/* nothing to arrange (or no model): neutral grey, but text and icon stay readable (no fading) */
-.arrange-btn:disabled { opacity: 1; color: var(--muted); border-color: var(--border); background: var(--bg); }
-/* without a model there is no status: faded like the other controls that need a model */
-.arrange-btn:disabled:not([data-status]) { opacity: 0.45; background: var(--panel); }
-/* layout status of the shown view: icon + colour (the message is the title / description) */
-.arrange-icon { display: inline-block; min-width: 1em; text-align: center; font-weight: 700; }
-.arrange-icon:empty { display: none; }
-.arrange-btn[data-status="auto"] .arrange-icon { color: var(--ok); }
+/* Auto-arrange: three options in one labelled group; the one the view is arranged with is pressed and disabled */
+.arrange-group { display: inline-flex; align-items: center; gap: 0; }
+.arrange-title { font-size: 11px; color: var(--muted); margin-right: 6px; white-space: nowrap; }
+.arrange-btn { border-radius: 0; margin-left: -1px; padding-left: 9px; padding-right: 9px; white-space: nowrap; }
+.arrange-group .arrange-btn:first-of-type { border-radius: 6px 0 0 6px; margin-left: 0; }
+.arrange-group .arrange-btn:last-of-type { border-radius: 0 6px 6px 0; }
+/* the current option: marked like the active view switch, and not clickable (nothing to do) */
+.arrange-btn.current, .arrange-btn.current:disabled { opacity: 1; background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 600; position: relative; z-index: 1; cursor: default; }
+/* an option that gives the same positions as the current one: disabled, plain */
+.arrange-btn.same:disabled { opacity: .55; cursor: default; }
+/* without a model: faded like the other controls that need a model */
+.arrange-group:not([data-status]) .arrange-btn:disabled, .arrange-group:not([data-status]) .arrange-title { opacity: .45; }
 /* the diagram filters on the start screen: greyed out like the other controls that need a model */
 .opt:has(input:disabled) { opacity: 0.45; cursor: default; }

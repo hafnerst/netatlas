@@ -14,8 +14,8 @@
 import { deviceSubtitle } from '../model/device-types';
 import { relationStyle } from '../model/protocols';
 import { networkMembers, networkMismatch, networkName } from '../model/derive';
-import { compareNames } from '../model/order';
-import { Link, Model, loopbacks, relationDevices } from '../model/types';
+import { compareNames, sortedByName } from '../model/order';
+import { Link, Model, ifaceKey, loopbacks, relationDevices } from '../model/types';
 import { buildBundle, laneLabel, relationPairs } from './bundles';
 import { cmp } from './order';
 import { chipTextWidth, loopbackChipText, networkSubtitle } from './sizes';
@@ -41,6 +41,10 @@ export interface LDev {
   chipW: number;
   /** the device's DNS names, each once, sorted (shown under it in the logical view) */
   dns: string[];
+  /** physical interfaces without a cable, in display order (chips in the physical view's device box) */
+  spare: string[];
+  /** virtual and tunnel interfaces, in display order (chips under the device in the logical view) */
+  logical: string[];
 }
 export interface LGroup {
   id: string;
@@ -131,6 +135,8 @@ export function layoutInput(m: Model): LayoutInput {
         // over all loopbacks, not only the ones shown, so the order in the file doesn't matter
         chipW: loopbacks(d).reduce((m, l) => Math.max(m, chipNeed(l.id, l.addresses)), 0),
         dns: uniqSorted(d.dnsNames.map((n) => n.name).filter((n) => !!n)),
+        spare: sortedByName(d.interfaces.filter((i) => !m.index.ifaceLink.has(ifaceKey(d.id, i.id))).map((i) => i.id), (x) => x),
+        logical: sortedByName(d.logical.filter((i) => i.type !== 'loopback').map((i) => i.id), (x) => x),
       })),
     ),
     groups: byId(m.groups.map((g) => ({ id: g.id, parent: g.parent || null, label: g.label, kind: g.kind }))),

@@ -19,11 +19,12 @@
     <span>netatlas</span><span class="version" title="netatlas version">v__VERSION__</span>
   </div>
   <div class="menu-wrap">
-    <button id="menu-btn" type="button" class="menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="main-menu" title="File: new model, open, download, examples">File <span class="caret" aria-hidden="true">▾</span></button>
+    <button id="menu-btn" type="button" class="menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="main-menu" title="File: new, open, save and close models; examples">File <span class="caret" aria-hidden="true">▾</span></button>
     <div id="main-menu" class="dropdown menu" role="menu" aria-label="File" hidden>
       <button id="btn-new" type="button" role="menuitem" title="Start a new, empty model"><span class="mi-label">New model</span></button>
       <button id="open" type="button" role="menuitem" title="Open a model from a YAML file on this computer (nothing is uploaded)"><span class="mi-label">Open model…</span></button>
-      <button id="btn-download" type="button" role="menuitem" title="Download the current model as a YAML file (Ctrl+S)" disabled><span class="mi-label">Download model…</span><span class="mi-hint">Ctrl+S</span></button>
+      <button id="btn-save" type="button" role="menuitem" title="Open or create a model first" disabled><span class="mi-label">Save model</span><span class="mi-hint">Ctrl+S</span></button>
+      <button id="btn-save-as" type="button" role="menuitem" title="Open or create a model first" disabled><span class="mi-label">Save model as…</span><span class="mi-hint">Ctrl+Shift+S</span></button>
       <button id="btn-close" type="button" role="menuitem" title="Close the current model and return to the start screen" disabled><span class="mi-label">Close model</span></button>
       <div class="menu-sep" role="separator"></div>
       <div class="menu-title" id="menu-examples-title">Examples</div>
@@ -56,8 +57,11 @@
     <button type="button" data-view-btn="physical" title="Physical view (P)">Physical</button>
     <button type="button" data-view-btn="logical" title="Logical view (L)">Logical</button>
   </div>
-  <div class="arrange-group" role="group" aria-label="Layout">
-    <button id="btn-arrange" type="button" class="arrange-btn" disabled aria-describedby="arrange-status" title="Recompute the positions of every object in the view on screen (A)"><span class="arrange-icon" aria-hidden="true"></span><span class="arrange-label">Auto-arrange</span></button>
+  <div id="arrange-group" class="arrange-group" role="group" aria-labelledby="arrange-title" aria-describedby="arrange-status">
+    <span id="arrange-title" class="arrange-title">Auto-arrange</span>
+    <button id="btn-arrange-default" type="button" class="arrange-btn" data-strategy="default" aria-label="Auto-arrange: Default" aria-pressed="false" disabled>Default</button>
+    <button id="btn-arrange-compact" type="button" class="arrange-btn" data-strategy="compact" aria-label="Auto-arrange: Compact" aria-pressed="false" disabled>Compact</button>
+    <button id="btn-arrange-spacious" type="button" class="arrange-btn" data-strategy="spacious" aria-label="Auto-arrange: Spacious" aria-pressed="false" disabled>Spacious</button>
     <span id="arrange-status" class="sr-only" aria-live="polite"></span>
   </div>
   <div id="view-filters" class="view-filters" role="group" aria-label="Diagram filters">
@@ -95,6 +99,12 @@
       <button id="find-close" type="button" class="mini" aria-label="Close Find in diagram" title="Close (Esc)">×</button>
       <div id="search-results" class="dropdown" hidden></div>
     </div>
+    <div id="connect-bar" class="connect-bar" role="group" aria-labelledby="connect-text" hidden>
+      <span id="connect-text" class="cb-text"></span>
+      <select id="connect-pick" aria-label="Second endpoint of the new connection"></select>
+      <button id="connect-go" type="button" class="primary">Use endpoint</button>
+      <button id="connect-cancel" type="button" title="Cancel the connection (Esc)">Cancel</button>
+    </div>
     <div id="filter-hint" class="filter-hint" role="status" hidden><span class="fh-icon" aria-hidden="true">⧉</span> <span id="filter-hint-text">Filtered-view positions are temporary and are not saved in YAML.</span></div>
     <div class="zoombar" role="toolbar" aria-label="Zoom">
       <button id="zoom-in" type="button" title="Zoom in (+)">+</button>
@@ -115,8 +125,8 @@
             <span class="start-sub">Start with an empty model</span>
           </button>
           <button id="open-empty" type="button" class="start-card start-drop">
-            <span class="start-title">Open YAML file…</span>
-            <span class="start-sub">Choose a file, or drop one here</span>
+            <span class="start-title">Open model…</span>
+            <span class="start-sub">Choose a YAML file, or drop one here</span>
           </button>
           <div class="start-card start-example">
             <label class="start-title" for="start-example">Load example</label>
@@ -154,6 +164,7 @@
             <div><dt>Wheel</dt><dd>zoom</dd></div>
             <div><dt>Drag node</dt><dd>move</dd></div>
             <div><dt>Click</dt><dd>select</dd></div>
+            <div><dt>Right-click</dt><dd>connect</dd></div>
           </dl>
         </section>
         <section class="keys-group" aria-labelledby="keys-keyboard">
@@ -162,7 +173,8 @@
             <div><dt><kbd>Esc</kbd></dt><dd>clear</dd></div>
             <div><dt><kbd>P</kbd> / <kbd>L</kbd></dt><dd>view</dd></div>
             <div><dt><kbd>Ctrl+Z</kbd> / <kbd>Y</kbd></dt><dd>undo / redo</dd></div>
-            <div><dt><kbd>Ctrl+S</kbd></dt><dd>download</dd></div>
+            <div><dt><kbd>C</kbd></dt><dd>connect</dd></div>
+            <div><dt><kbd>Ctrl+S</kbd></dt><dd>save</dd></div>
           </dl>
         </section>
       </div>

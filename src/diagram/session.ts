@@ -24,6 +24,7 @@
  */
 import { Pt } from '../layout/geometry';
 import { LayoutView, autoPositions, resolvePositions, samePositions } from '../layout/positions';
+import { ArrangeStrategy, STRATEGIES, strategyPositions } from '../layout/strategies';
 import { LayoutInput, layoutInput } from '../layout/input';
 import { LogicalLayout, logicalLayoutFrom, logicalSpecs } from '../layout/logical';
 import { PhysicalLayout, physicalBoxes } from '../layout/physical';
@@ -280,16 +281,23 @@ export class Session {
    * theirs from the document.)
    */
   filteredStatus(view: LayoutView): 'auto' | 'manual' {
-    return samePositions(this.positionsFor(view), autoPositions(view, this.viewInput(view))) ? 'auto' : 'manual';
+    return this.filteredArrangedWith(view).length ? 'auto' : 'manual';
+  }
+
+  /** The strategies whose result a filtered view shows now, in STRATEGIES order (see ModelDoc.arrangedWith). */
+  filteredArrangedWith(view: LayoutView): ArrangeStrategy[] {
+    const cur = this.positionsFor(view);
+    const input = this.viewInput(view);
+    return STRATEGIES.filter((st) => samePositions(cur, strategyPositions(view, input, st)));
   }
 
   /**
    * Auto-arrange the filtered view on screen: the shown subset only, in
    * this session only. Returns how many nodes moved.
    */
-  arrangeFiltered(): number {
+  arrangeFiltered(strategy: ArrangeStrategy = 'default'): number {
     const view = this.state.view;
-    const auto = autoPositions(view, this.viewInput(view));
+    const auto = strategyPositions(view, this.viewInput(view), strategy);
     const cur = this.positionsFor(view);
     let moved = 0;
     auto.forEach((p, id) => {

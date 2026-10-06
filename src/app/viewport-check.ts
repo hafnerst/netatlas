@@ -224,7 +224,7 @@ export async function runViewportCheck(app: App, doc: Document): Promise<Check[]
       const badge = q('#status .fname') as HTMLElement;
       const br = badge.getBoundingClientRect();
       const why: string[] = [];
-      if (badge.title !== long) why.push('the full name is not its tooltip');
+      if (badge.title.indexOf(long + ':') !== 0) why.push('the full name is not its tooltip');
       if (br.left < bar.left || br.right > bar.right + 0.5 || br.width > bar.width * 0.5 + 1) why.push(`the badge takes ${Math.round(br.width)} of ${Math.round(bar.width)}px`);
       if ((q('#status') as HTMLElement).scrollHeight > (q('#status') as HTMLElement).clientHeight + 1) why.push('the status bar wraps');
       state('a long file name in the status bar', why);
@@ -276,7 +276,10 @@ export async function runViewportCheck(app: App, doc: Document): Promise<Check[]
     click('[data-tab="problems"]');
     await tick();
     state('problems list with 120 entries', scrollsInside('#side-body', true));
-    click('#btn-download');
+    // the largest dialog of saving: the download of a copy (a browser without a save picker), with the model's errors
+    app.fileAccess = { saveFile: null, openFile: null };
+    click('#menu-btn');
+    click('#btn-save-as');
     await tick(10);
     const dlg = q('#modal[open] .modal-inner');
     const dr = dlg ? dlg.getBoundingClientRect() : null;

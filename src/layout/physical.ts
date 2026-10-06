@@ -32,7 +32,7 @@
  */
 import { CBox, Pt, textWidth } from './geometry';
 import { LDev, LEnd, LayoutInput, cmp } from './input';
-import { GROUP_PAD, deviceBody, groupHeader, linkLabelBox } from './sizes';
+import { ChipFlow, GROUP_PAD, IFCHIP_PAD, chipFlow, chipStripH, deviceBody, groupHeader, linkLabelBox } from './sizes';
 
 export { GROUP_PAD };
 
@@ -99,10 +99,19 @@ interface Block {
   place(x: number, y: number): void;
 }
 
-/** Size of a device box for its label and subtitle alone (ports may enlarge it). */
+/**
+ * Size of a device box for its label and subtitle, and the strip of chips of
+ * its ports without a cable at its bottom (cabled ports may enlarge it).
+ */
 export function physicalBaseSize(d: LDev): { w: number; h: number } {
   const b = deviceBody(d.label, d.sub, BASE_W, BASE_H);
-  return { w: b.w, h: b.h };
+  const flow = spareChipFlow(d.spare, b.w);
+  return { w: Math.max(b.w, flow.w + 2 * IFCHIP_PAD), h: b.h + chipStripH(flow) };
+}
+
+/** The chips of a device's uncabled ports, for a box `w` wide. */
+export function spareChipFlow(ids: string[], w: number): ChipFlow {
+  return chipFlow(ids, Math.max(60, w - 2 * IFCHIP_PAD));
 }
 
 /** Stable sort by numeric key; equal keys keep their current order. */
