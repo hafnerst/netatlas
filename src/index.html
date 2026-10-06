@@ -53,12 +53,15 @@
     <button id="btn-undo" type="button" title="Undo (Ctrl+Z)" disabled aria-label="Undo">↶</button>
     <button id="btn-redo" type="button" title="Redo (Ctrl+Y)" disabled aria-label="Redo">↷</button>
   </div>
-  <div class="seg" role="group" aria-label="View">
-    <button type="button" data-view-btn="physical" title="Physical view (P)">Physical</button>
-    <button type="button" data-view-btn="logical" title="Logical view (L)">Logical</button>
+  <div id="view-group" class="tool-group view-group" role="group" aria-labelledby="view-title">
+    <span id="view-title" class="tool-group-title">View</span>
+    <div class="seg">
+      <button type="button" data-view-btn="physical" title="Physical view (P)">Physical</button>
+      <button type="button" data-view-btn="logical" title="Logical view (L)">Logical</button>
+    </div>
   </div>
-  <div id="arrange-group" class="arrange-group" role="group" aria-labelledby="arrange-title" aria-describedby="arrange-status">
-    <span id="arrange-title" class="arrange-title">Auto-arrange</span>
+  <div id="arrange-group" class="tool-group arrange-group" role="group" aria-labelledby="arrange-title" aria-describedby="arrange-status">
+    <span id="arrange-title" class="tool-group-title arrange-title">Auto-arrange</span>
     <div class="arrange-btns">
       <button id="btn-arrange-default" type="button" class="arrange-btn" data-strategy="default" aria-label="Auto-arrange: Default" aria-pressed="false" disabled>Default</button>
       <button id="btn-arrange-compact" type="button" class="arrange-btn" data-strategy="compact" aria-label="Auto-arrange: Compact" aria-pressed="false" disabled>Compact</button>
@@ -66,7 +69,10 @@
     </div>
     <span id="arrange-status" class="sr-only" aria-live="polite"></span>
   </div>
-  <div id="view-filters" class="view-filters" role="group" aria-label="Diagram filters">
+  <div id="filters-slot" class="filters-slot">
+  <div id="filters-group" class="tool-group filters-group" role="group" aria-label="Diagram filters">
+  <span id="filters-title" class="tool-group-title">Filters</span>
+  <div id="view-filters" class="view-filters">
   <div class="devices-wrap">
     <button id="devices-btn" type="button" class="menu-btn" aria-haspopup="dialog" aria-expanded="false" aria-controls="devices-panel" title="Choose the devices the diagram shows" disabled>Devices: <span id="devices-count">all</span> <span class="caret" aria-hidden="true">▾</span></button>
     <div id="devices-panel" class="dropdown devices-panel" role="dialog" aria-label="Devices shown in the diagram" hidden>
@@ -87,6 +93,8 @@
   <div class="more-filters-wrap">
     <button id="more-filters-btn" type="button" class="menu-btn" aria-haspopup="true" aria-expanded="false" aria-controls="more-filters" hidden disabled>Filters<span id="more-filters-count" class="mf-count"></span> <span class="caret" aria-hidden="true">▾</span></button>
     <div id="more-filters" class="dropdown more-filters" role="group" aria-label="More diagram filters" hidden></div>
+  </div>
+  </div>
   </div>
   </div>
 </header>

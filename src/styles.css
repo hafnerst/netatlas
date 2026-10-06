@@ -108,7 +108,10 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
   .brand > span { display: none; }
 }
 /* the diagram filters: one row at the right of the toolbar; what doesn't fit goes into the Filters drop-down (App.layoutFilters) */
-.view-filters { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex: 1 1 0; flex-wrap: nowrap; }
+/* the slot takes the rest of the toolbar row and holds the framed Filters group at its right end */
+.filters-slot { display: flex; justify-content: flex-end; flex: 1 1 0; min-width: 0; }
+.filters-group { flex: 0 1 auto; min-width: 0; }
+.view-filters { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: nowrap; min-height: 26px; }
 .view-filters > * { flex: none; }
 .more-filters-wrap { position: relative; }
 .more-filters-wrap > button[hidden] { display: none; }
@@ -320,6 +323,12 @@ button.ref:hover { text-decoration: underline; }
   .topbar { padding-top: 3px; padding-bottom: 3px; gap: 5px; }
   .dropdown.menu { max-height: calc(100vh - 44px); max-height: calc(100dvh - 44px); }
   #side-body { padding-top: 6px; padding-bottom: 8px; }
+}
+/* Very short windows (a strongly zoomed or tiny window): the toolbar groups keep their frames, and their
+   labels give their height to the diagram; they remain the groups' accessible names. */
+@media (max-height: 400px) {
+  .tool-group { padding-top: 2px; padding-bottom: 2px; gap: 0; }
+  .tool-group-title { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 }
 
 /* ------------------------------------------------------------ diagram */
@@ -642,10 +651,15 @@ dialog#modal::backdrop { background: rgba(0,0,0,.35); }
 .dns-chip text { font-size: 9.5px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: var(--muted) !important; }
 
 /* Auto-arrange: three options in one labelled group; the one the view is arranged with is pressed and disabled */
-/* the label above the buttons, both inside a subtle dashed frame that reads as one control */
-.arrange-group { display: inline-flex; flex-direction: column; align-items: stretch; gap: 2px; padding: 2px 5px 4px; border: 1px dashed var(--border); border-radius: 8px; flex: none; }
-.arrange-title { font-size: 10px; line-height: 12px; color: var(--muted); text-align: center; letter-spacing: .03em; white-space: nowrap; }
+/* Toolbar groups (View, Auto-arrange, Filters): a label above the controls, both inside a subtle dashed
+   frame that reads as one control. One definition, so the three look alike. */
+.tool-group { display: inline-flex; flex-direction: column; align-items: stretch; gap: 2px; padding: 2px 5px 4px; border: 1px dashed var(--border); border-radius: 8px; flex: none; }
+.tool-group-title { font-size: 10px; line-height: 12px; color: var(--muted); text-align: center; letter-spacing: .03em; white-space: nowrap; }
+/* the controls inside a group are as tall as the Auto-arrange buttons */
+.tool-group button { padding-top: 2px; padding-bottom: 2px; }
 .arrange-btns { display: flex; }
+/* without a model: the View and Filters labels fade like their controls */
+body:not([data-state="loaded"]) .view-group .tool-group-title, body:not([data-state="loaded"]) .filters-group .tool-group-title { opacity: .45; }
 .arrange-btn { flex: 1 1 0; border-radius: 0; margin-left: -1px; padding: 2px 9px; white-space: nowrap; }
 .arrange-btns .arrange-btn:first-child { border-radius: 6px 0 0 6px; margin-left: 0; }
 .arrange-btns .arrange-btn:last-child { border-radius: 0 6px 6px 0; }

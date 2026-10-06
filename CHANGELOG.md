@@ -55,6 +55,11 @@ it is described in [docs/FORMAT.md](docs/FORMAT.md).
   dot and says how the model is saved; no button changes its border colour.
 - The *Auto-arrange* label sits above its three buttons, and label and buttons
   share a subtle dashed frame; the label stays visible in a narrow toolbar.
+- **View** (Physical, Logical) and **Filters** (Devices, Labels, Groups /
+  Locations, Networks, Endpoints, Servers and the Filters drop-down) are
+  grouped the same way: a label above the controls, in the same dashed
+  frame. In a window 400 px high or less the three labels are hidden (they
+  remain the groups' accessible names); the frames stay.
 - The Auto-arrange option the view on screen is arranged with is selected and
   disabled; the check mark and edit icons are gone. The state is derived
   from the current positions of the complete or filtered view, and the `A`

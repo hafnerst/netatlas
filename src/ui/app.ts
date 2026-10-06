@@ -1429,9 +1429,14 @@ export class App {
     const width = (o: HTMLElement): number => this.optWidth.get(o) || 110;
     const btnW = this.moreBtnWidth || 96;
     const devW = devices.getBoundingClientRect().width;
+    // The row sits in the framed Filters group, which sits at the right of a slot taking the rest of the
+    // toolbar. The room for the row is the slot's width less the group's frame and padding.
+    const slot = this.$('filters-slot');
+    const frame = this.$('filters-group');
+    const chrome = frame.offsetWidth - box.offsetWidth;
     // the group needs room for Devices and the Filters button at least; with less it moves to a row of its own, as one piece
-    box.style.minWidth = Math.ceil(devW + gap + btnW) + 'px';
-    const avail = box.clientWidth;
+    slot.style.minWidth = Math.ceil(devW + gap + btnW + chrome) + 'px';
+    const avail = slot.clientWidth - chrome;
     const byPriority = opts.slice().sort((a, b) => Number(b.getAttribute('data-priority')) - Number(a.getAttribute('data-priority')));
     const inline = new Set<HTMLElement>();
     const all = byPriority.filter(shown).reduce((m, o) => m + gap + width(o), devW);
