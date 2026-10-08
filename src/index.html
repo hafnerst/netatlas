@@ -42,10 +42,17 @@
     </div>
   </div>
   <div class="menu-wrap">
-    <button id="view-btn" type="button" class="menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="view-menu" title="Find &amp; Filter: find in the diagram, filter the object list">Find &amp; Filter <span class="caret" aria-hidden="true">▾</span></button>
-    <div id="view-menu" class="dropdown menu" role="menu" aria-label="Find &amp; Filter" hidden>
+    <button id="find-btn" type="button" class="menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="find-menu" title="Find: find in the diagram, filter the object list">Find <span class="caret" aria-hidden="true">▾</span></button>
+    <div id="find-menu" class="dropdown menu" role="menu" aria-label="Find" hidden>
       <button id="btn-find" type="button" role="menuitem" title="Open or create a model first" disabled><span class="mi-label">Find in diagram…</span><span class="mi-hint">/</span></button>
       <button id="btn-outline-filter" type="button" role="menuitem" title="Open or create a model first" disabled><span class="mi-label">Filter object list…</span></button>
+    </div>
+  </div>
+  <div class="menu-wrap">
+    <button id="help-btn" type="button" class="menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="help-menu" title="Help: user manual and license">Help <span class="caret" aria-hidden="true">▾</span></button>
+    <div id="help-menu" class="dropdown menu" role="menu" aria-label="Help" hidden>
+      <button id="btn-manual" type="button" role="menuitem" aria-haspopup="dialog" title="A short guide to NetAtlas's basic tasks, with pictures"><span class="mi-label">User Manual</span></button>
+      <button id="btn-license" type="button" role="menuitem" aria-haspopup="dialog" title="The license NetAtlas is distributed under (Apache License, Version 2.0)"><span class="mi-label">License</span></button>
     </div>
   </div>
   <input id="file" type="file" accept=".yaml,.yml,application/yaml,application/x-yaml,text/yaml,text/plain" hidden>

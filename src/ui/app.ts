@@ -13,6 +13,7 @@ import { compatibleEndpoints, connectionKind, endpointName, endpointOfRef, endpo
 import { Endpoint } from '../model/types';
 import { el, materialize, mount } from './dom';
 import { DialogOpts, showDialog, showToast } from './dialogs';
+import { licenseBody, manualBody } from './help';
 import { Editor, EditorSel } from './inspector';
 import { LineRange, yamlBlock } from '../editor/yaml-block';
 import { EXAMPLES } from '../generated/examples';
@@ -223,7 +224,8 @@ export class App {
   private static readonly MENUS: Array<[string, string]> = [
     ['menu-btn', 'main-menu'],
     ['export-btn', 'export-menu'],
-    ['view-btn', 'view-menu'],
+    ['find-btn', 'find-menu'],
+    ['help-btn', 'help-menu'],
   ];
 
   /**
@@ -278,7 +280,7 @@ export class App {
   }
 
   /**
-   * The toolbar menus (File, Export): a button that opens a list of entries.
+   * The toolbar menus (File, Export, Find, Help): a button that opens a list of entries.
    * A menu closes after an entry is chosen, on Escape, and when anything
    * outside it is pressed. Arrow up/down move between the entries, arrow
    * left/right to the neighbouring menu. An entry with a submenu opens it
@@ -872,8 +874,21 @@ export class App {
     return s && s.state.selected ? selectionContext(s.model, s.state.selected) : null;
   }
 
+  /**
+   * Draw the model outline again. A keyboard user keeps their place: when an
+   * entry or one of its quick actions had the focus, the focus goes back to
+   * that entry (after Duplicate: to the copy, which is now selected).
+   */
   private renderOutline(): void {
-    this.editor.renderOutline(this.$('outline-body'), this.selectionContext());
+    const box = this.$('outline-body');
+    const a = this.doc.activeElement as HTMLElement | null;
+    const act = a && box.contains(a) ? a.getAttribute('data-act') : null;
+    const kind = a ? a.getAttribute('data-kind') : null;
+    const index = a ? a.getAttribute('data-index') : null;
+    this.editor.renderOutline(box, this.selectionContext());
+    if (act !== 'select' && act !== 'dup-entity' && act !== 'del-entity') return;
+    const entry = (act === 'dup-entity' ? box.querySelector(`.ol-item.active[data-kind="${kind}"]`) : null) || box.querySelector(`.ol-item[data-kind="${kind}"][data-index="${index}"]`);
+    if (entry) (entry as HTMLElement).focus();
   }
 
   private renderSide(): void {
@@ -1341,7 +1356,7 @@ export class App {
     group.title = msg;
   }
 
-  // ----------------------------------------------------- Find & Filter menu
+  // ------------------------------------------------------------ Find menu
 
   /** Is the Find bar open? */
   get findOpen(): boolean {
@@ -1349,7 +1364,7 @@ export class App {
   }
 
   /**
-   * Find & Filter → Find in diagram… (or "/"): open the Find bar over the top right of the
+   * Find → Find in diagram… (or "/"): open the Find bar over the top right of the
    * diagram and put the cursor in it. Typing lists matching objects;
    * Enter or a click selects one. Needs a drawn model.
    */
@@ -1376,7 +1391,7 @@ export class App {
   }
 
   /**
-   * Find & Filter → Filter object list…: show the filter box at the top of the model
+   * Find → Filter object list…: show the filter box at the top of the model
    * outline and put the cursor in it. It stays while it holds text; × or
    * Esc clears and closes it.
    */
@@ -1686,13 +1701,58 @@ export class App {
 
   // ------------------------------------------------------ dialogs / toasts
 
-  /** Modal dialog (see dialogs.ts); resolves with the clicked button's value. */
-  dialog(opts: DialogOpts): Promise<string> {
-    return showDialog(this.doc, opts);
+  /**
+   * Modal dialog (see dialogs.ts); resolves with the clicked button's value.
+   * A quick action of the object list that asks (Delete, from the keyboard)
+   * stays shown while its dialog is open, so the focus can return to it.
+   */
+  async dialog(opts: DialogOpts): Promise<string> {
+    const opener = this.doc.activeElement as HTMLElement | null;
+    const row = opener && opener.closest ? opener.closest('#outline .ol-row') : null;
+    if (row) row.classList.add('acting');
+    try {
+      return await showDialog(this.doc, opts);
+    } finally {
+      if (row) row.classList.remove('acting');
+    }
   }
 
   toast(msg: string): void {
     showToast(this.doc, msg);
+  }
+
+  // ------------------------------------------------------------ Help menu
+
+  /** Is a Help dialog (User Manual or License) open? */
+  get helpOpen(): string | null {
+    const dlg = this.doc.getElementById('modal') as HTMLDialogElement;
+    return dlg.open && dlg.classList.contains('help-dialog') ? dlg.getAttribute('data-help') : null;
+  }
+
+  /**
+   * Help → User Manual and Help → License: a dialog with a × and a Close
+   * button; Esc closes it too. The manual takes most of the window and
+   * scrolls inside itself; it starts with the focus on its text, so the
+   * keyboard scrolls it. Closing returns the focus to the Help menu button.
+   * Neither needs a model, and neither changes one.
+   */
+  async openHelp(which: 'manual' | 'license'): Promise<void> {
+    this.openMenu(null);
+    const manual = which === 'manual';
+    const done = this.dialog({
+      title: manual ? 'NetAtlas User Manual' : 'License',
+      body: [manual ? manualBody(this.doc) : licenseBody(this.doc)],
+      buttons: [{ label: 'Close', value: 'close', kind: 'primary' }],
+      className: 'help-dialog ' + (manual ? 'help-manual' : 'help-license'),
+      closeButton: true,
+      focus: manual ? '.manual' : undefined,
+    });
+    (this.doc.getElementById('modal') as HTMLElement).setAttribute('data-help', which);
+    await done;
+    const dlg = this.doc.getElementById('modal') as HTMLElement;
+    dlg.removeAttribute('data-help');
+    dlg.className = '';
+    this.$('help-btn').focus();
   }
 
   // ---------------------------------------------------------------- events
@@ -1957,9 +2017,12 @@ export class App {
       }
     });
     this.$('find-close').addEventListener('click', () => this.closeFind(true));
-    // Find & Filter menu
+    // Find menu
     this.$('btn-find').addEventListener('click', () => this.openFind());
     this.$('btn-outline-filter').addEventListener('click', () => this.openOutlineFilter());
+    // Help menu
+    this.$('btn-manual').addEventListener('click', () => void this.openHelp('manual'));
+    this.$('btn-license').addEventListener('click', () => void this.openHelp('license'));
     outline.addEventListener('keydown', (e) => {
       const t = e.target as HTMLElement;
       if (e.key === 'Escape' && t.getAttribute('data-t') === 'outline-filter') {
@@ -1979,6 +2042,8 @@ export class App {
 
     doc.addEventListener('keydown', (e) => {
       const t = e.target as HTMLElement;
+      // a modal dialog has the keyboard to itself: no shortcut acts on the page behind it
+      if (t && t.closest && t.closest('dialog[open]')) return;
       const typing = t && (t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.tagName === 'TEXTAREA');
       const mod = e.ctrlKey || e.metaKey;
       if (mod && !e.altKey && (e.key === 's' || e.key === 'S')) {

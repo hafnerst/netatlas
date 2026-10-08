@@ -21,11 +21,16 @@ test('exactly one inline script, no external script/style/link/img/iframe source
   assert.doesNotMatch(markup, /@import|url\(\s*['"]?(?!data:)[a-z]+:/i);
 });
 
-test('no remote URLs anywhere except XML namespace identifiers', () => {
-  const urls = [...html.matchAll(/\b(?:https?|wss?|ftp):\/\/[^\s"'`)<>]+/gi)].map((m) => m[0]);
+test('no remote URLs anywhere except XML namespace identifiers and the text of the license', () => {
+  const urls = [...html.matchAll(/\b(?:https?|wss?|ftp):\/\/[^\s"'`)<>\\]+/gi)].map((m) => m[0]);
   const allowed = /^http:\/\/www\.w3\.org\/(2000\/svg|1999\/xhtml|XML\/1998\/namespace|2000\/xmlns\/?|1999\/xlink)$/;
-  const bad = urls.filter((u) => !allowed.test(u));
+  // the embedded LICENSE (Help → License) quotes these two addresses; it is shown as plain text, never as a link
+  const license = readFileSync(join(root, 'LICENSE'), 'utf8');
+  const licenseUrls = new Set([...license.matchAll(/\bhttps?:\/\/[^\s"'`)<>]+/gi)].map((m) => m[0]));
+  assert.deepEqual([...licenseUrls].sort(), ['http://www.apache.org/licenses/', 'http://www.apache.org/licenses/LICENSE-2.0']);
+  const bad = urls.filter((u) => !allowed.test(u) && !licenseUrls.has(u));
   assert.deepEqual(bad, []);
+  assert.doesNotMatch(html, /href=["']?https?:/i);
 });
 
 test('no network-capable APIs are used by the application code', () => {
@@ -71,9 +76,15 @@ test('no third-party runtime code: every bundled module comes from src/', () => 
   assert.deepEqual(Object.keys(pkg.devDependencies), ['typescript']);
 });
 
-test('reasonable size, and the examples are embedded', () => {
-  // one self-contained page with every example embedded; a sanity limit, not a budget
-  assert.ok(html.length < 1.25 * 1024 * 1024, `${html.length} bytes`);
+test('reasonable size, and the examples, the manual and the license are embedded', () => {
+  // one self-contained page with every example, the manual's screenshots and the license embedded; a sanity limit, not a budget
+  assert.ok(html.length < 1.75 * 1024 * 1024, `${html.length} bytes`);
+  // the screenshots are small, cropped WebP images: together well under 400 KiB as data: URLs
+  const images = [...js.matchAll(/"src": "(data:image\/webp;base64,[A-Za-z0-9+/=]+)"/g)].map((m) => m[1]);
+  assert.ok(images.length >= 8, String(images.length));
+  const total = images.reduce((n, s) => n + s.length, 0);
+  assert.ok(total < 400 * 1024, `${total} bytes of screenshots`);
+  assert.match(js, /Apache License\\n\s+Version 2\.0, January 2004/);
   assert.match(js, /enterprise-wan\.yaml/);
   assert.match(js, /datacenter-evpn\.yaml/);
 });

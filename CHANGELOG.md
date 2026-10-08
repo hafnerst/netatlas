@@ -40,9 +40,31 @@ it is described in [docs/FORMAT.md](docs/FORMAT.md).
   relation that repeats an existing one is refused.
 - The open example is marked in the **File** menu, with whether its model was
   modified.
+- A **Help** menu next to **Find**. **User Manual** opens a large dialog with a
+  short, task-by-task guide to the basic features (opening or creating a
+  model, saving and exporting, the Physical and Logical views, finding and
+  filtering, selecting and editing, connecting, Auto-arrange, keyboard
+  shortcuts), illustrated with screenshots of the application. **License**
+  names the license, the Apache License, Version 2.0, and shows its full text.
+  Both are embedded in `netatlas.html` and work offline; they close with ×,
+  Close or Esc and return the focus to **Help**.
+- **Quick actions in the object list:** the row under the pointer shows
+  **Duplicate** and **Delete**, the same actions as in the Edit tab (same
+  confirmation, undo, selection and modified state). The row with the
+  keyboard focus shows them too, and on touch screens the selected row. Their
+  accessible names say the action and the object (*Delete device hq-fw*).
 
 ### Changed
 
+- The **Find & Filter** menu is now called **Find** (also its tooltip and
+  accessible name), to save room in the toolbar. *Find in diagram…* and
+  *Filter object list…* are unchanged.
+- The dashed frames of the **View**, **Auto-arrange** and **Filters** groups
+  are clearly visible: their colour has at least 3:1 contrast against the
+  toolbar in the light and the dark theme. Same frame and spacing for all
+  three.
+- While a dialog is open, the page's one-key shortcuts (P, L, A, C, arrows …)
+  no longer act on the page behind it.
 - The **View** menu (Find in diagram…, Filter object list…) is now called
   **Find & Filter** (also its tooltip and accessible name), so it isn't
   mistaken for the **View** group of Physical / Logical. Its entries,

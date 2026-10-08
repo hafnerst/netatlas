@@ -6,6 +6,8 @@
   --text: #1f2328;
   --muted: #667085;
   --border: #d0d7de;
+  /* the dashed frames of the toolbar groups: at least 3:1 against the toolbar, so a group reads as one */
+  --frame: #8c959f;
   --accent: #1864ab;
   --accent-soft: #e7f0fa;
   --dev-fill: #ffffff;
@@ -32,6 +34,7 @@
     --text: #e6e9ee;
     --muted: #97a1ad;
     --border: #2d333b;
+    --frame: #6e7781;
     --accent: #74c0fc;
     --accent-soft: #1a2837;
     --dev-fill: #1b2028;
@@ -121,12 +124,12 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .more-filters[hidden] { display: none; }
 .more-filters .opt { color: var(--text); min-height: 24px; }
 .more-filters .opt input { width: 16px; height: 16px; }
-/* Find (Find & Filter → Find in diagram…, "/"): a bar over the top right of the diagram */
+/* Find (Find → Find in diagram…, "/"): a bar over the top right of the diagram */
 .find-bar { position: absolute; top: 10px; right: 12px; z-index: 30; display: flex; align-items: center; gap: 4px; width: min(340px, calc(100% - 24px)); padding: 4px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); box-shadow: 0 4px 14px rgba(0, 0, 0, .14); }
 .find-bar[hidden] { display: none; }
 .find-bar #search { flex: 1; min-width: 0; width: auto; }
 .find-bar #search-results { position: fixed; z-index: 45; margin-top: 0; min-width: 0; max-width: none; }
-/* the outline filter (Find & Filter → Filter object list…) */
+/* the outline filter (Find → Filter object list…) */
 .ol-filter { display: flex; gap: 4px; align-items: center; margin-bottom: 6px; }
 .ol-filter .outline-filter { flex: 1; min-width: 0; margin: 0; }
 .ol-filter.active .outline-filter { border-color: var(--accent); }
@@ -422,8 +425,21 @@ button.mini { padding: 1px 7px; font-size: 11.5px; border-radius: 5px; }
 .outline-filter { width: 100%; margin-bottom: 6px; padding: 4px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--canvas); }
 .ol-section { margin-top: 10px; }
 .ol-head { display: flex; align-items: center; justify-content: space-between; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); padding: 2px 2px 4px; }
-.ol-item { display: flex; width: 100%; align-items: center; gap: 6px; border: 0; background: none; border-radius: 5px; padding: 3px 6px; text-align: left; }
-.ol-item:hover { background: var(--accent-soft); }
+/* a row of the outline: the entry, and its quick actions (Duplicate, Delete) at the right */
+.ol-row { display: flex; align-items: center; gap: 2px; min-width: 0; border-radius: 5px; }
+.ol-item { display: flex; flex: 1 1 auto; min-width: 0; width: 100%; align-items: center; gap: 6px; border: 0; background: none; border-radius: 5px; padding: 3px 6px; text-align: left; }
+.ol-item:hover, .ol-row:hover { background: var(--accent-soft); }
+/* The quick actions are shown for one row at a time: the row under the pointer, or the row that
+   has the keyboard focus. Touch screens have no hover: there, the selected row shows them. They
+   take no room while hidden, so no label moves; a shown pair narrows only its own row's label. */
+.ol-quick { display: none; flex: none; align-items: center; gap: 2px; padding-right: 2px; }
+.ol-quick .icon-btn { padding: 2px 4px; min-height: 22px; border-radius: 5px; background: var(--panel); }
+.ol-quick .icon-btn .icon-svg { width: 14px; height: 14px; }
+.ol-quick .ib-label { display: none; }
+@media (hover: hover) { .ol-row:hover .ol-quick { display: inline-flex; } }
+/* (a press with the mouse never focuses an outline button: the outline acts on pointerdown and prevents it) */
+.ol-row:focus-within .ol-quick, .ol-row.acting .ol-quick { display: inline-flex; }
+@media (hover: none) { .ol-row.current .ol-quick { display: inline-flex; } }
 .ol-item.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
 /* a section folds to its heading: the heading is a button (caret, title, count) next to "+ Add" */
 .ol-tools { display: flex; align-items: center; justify-content: space-between; gap: 6px; min-height: 22px; margin: 0 0 2px; }
@@ -604,6 +620,46 @@ dialog#modal::backdrop { background: rgba(0,0,0,.35); }
 .modal-inner h2 { margin: 0 0 10px; font-size: 17px; }
 .modal-body { flex: 1 1 auto; min-height: 0; max-height: 60vh; overflow: auto; }
 .modal-body p { margin: 0 0 8px; }
+/* a title row with a × (the Help dialogs) */
+.modal-head { flex: none; display: flex; align-items: flex-start; gap: 10px; margin: 0 0 10px; }
+.modal-head h2 { flex: 1; min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.modal-x { flex: none; width: 30px; height: 30px; padding: 0; margin: -4px -6px 0 0; font-size: 18px; line-height: 1; border-color: transparent; background: none; }
+.modal-x:hover { background: var(--accent-soft); }
+/* Help → User Manual: as large as the window allows, its text scrolls inside the dialog (never the page) */
+dialog#modal.help-manual { max-width: 980px; width: calc(100% - 24px); height: calc(100vh - 24px); height: calc(100dvh - 24px); }
+dialog#modal.help-manual .modal-inner { height: 100%; max-height: none; padding: 14px 16px 12px; }
+dialog#modal.help-manual .modal-body { max-height: none; display: flex; flex-direction: column; }
+dialog#modal.help-dialog .modal-btns { margin-top: 10px; }
+.manual { flex: 1 1 auto; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 2px 8px 12px 2px; line-height: 1.5; }
+.manual:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 6px; }
+.manual kbd, .man-keys kbd { display: inline-block; padding: 0 5px; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px; background: var(--canvas); font: 600 11.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: nowrap; }
+.man-lead { color: var(--muted); }
+.man-toc { margin: 0 0 6px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 9px; background: var(--canvas); }
+.man-toc ol { margin: 0; padding-left: 20px; columns: 2 220px; column-gap: 24px; }
+.man-toc li { break-inside: avoid; }
+.man-link { border: 0; background: none; padding: 1px 2px; color: var(--accent); text-align: left; text-decoration: underline; text-underline-offset: 2px; }
+.man-sec { padding-top: 10px; scroll-margin-top: 4px; }
+.man-sec + .man-sec { border-top: 1px solid var(--border); margin-top: 12px; }
+.man-sec h3 { margin: 4px 0 6px; font-size: 15px; }
+.man-sec h3:focus { outline: none; }
+.man-sec h3:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.man-steps { margin: 0 0 8px; padding-left: 22px; }
+.man-steps li { margin-bottom: 4px; }
+.man-note { color: var(--muted); }
+.man-figs { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; margin-top: 6px; }
+.man-figs.two { grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); align-items: start; }
+.man-fig { margin: 0; min-width: 0; }
+.man-fig img { display: block; max-width: 100%; height: auto; margin: 0 auto; border: 1px solid var(--border); border-radius: 6px; background: var(--canvas); }
+.man-fig figcaption { margin-top: 4px; font-size: 12px; color: var(--muted); text-align: center; }
+.man-keys { border-collapse: collapse; }
+.man-keys th { text-align: left; font-weight: 400; padding: 3px 14px 3px 0; white-space: nowrap; vertical-align: top; }
+.man-keys td { padding: 3px 0; }
+/* Help → License: a short note; the full text opens in place and scrolls inside itself */
+.license-full { margin-top: 4px; }
+.license-full summary { cursor: pointer; font-weight: 600; color: var(--accent); }
+.license-full > p { margin: 6px 0; }
+.license-text { max-height: min(320px, 45vh); max-height: min(320px, 45dvh); overflow: auto; margin: 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--canvas); font: 11.5px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.license-text:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 /* "+ Port Range": two names, and a preview of what they create */
 .range-form { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
 .range-form label { flex: 1 1 160px; display: flex; flex-direction: column; gap: 3px; font-weight: 600; }
@@ -651,9 +707,10 @@ dialog#modal::backdrop { background: rgba(0,0,0,.35); }
 .dns-chip text { font-size: 9.5px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: var(--muted) !important; }
 
 /* Auto-arrange: three options in one labelled group; the one the view is arranged with is pressed and disabled */
-/* Toolbar groups (View, Auto-arrange, Filters): a label above the controls, both inside a subtle dashed
-   frame that reads as one control. One definition, so the three look alike. */
-.tool-group { display: inline-flex; flex-direction: column; align-items: stretch; gap: 2px; padding: 2px 5px 4px; border: 1px dashed var(--border); border-radius: 8px; flex: none; }
+/* Toolbar groups (View, Auto-arrange, Filters): a label above the controls, both inside a dashed
+   frame that reads as one control: clearly visible against the toolbar (--frame), yet lighter than the
+   controls' own borders when they are hovered or pressed. One definition, so the three look alike. */
+.tool-group { display: inline-flex; flex-direction: column; align-items: stretch; gap: 2px; padding: 2px 6px 4px; border: 1px dashed var(--frame); border-radius: 8px; flex: none; }
 .tool-group-title { font-size: 10px; line-height: 12px; color: var(--muted); text-align: center; letter-spacing: .03em; white-space: nowrap; }
 /* the controls inside a group are as tall as the Auto-arrange buttons */
 .tool-group button { padding-top: 2px; padding-bottom: 2px; }

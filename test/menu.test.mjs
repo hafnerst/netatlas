@@ -12,15 +12,15 @@ const header = /<header class="topbar">([\s\S]*?)<\/header>/.exec(html)[1];
 const menu = /<div id="main-menu"[^>]*>([\s\S]*?)\n    <\/div>/.exec(header)[1];
 const css = readFileSync(join(root, 'src', 'styles.css'), 'utf8');
 
-test('toolbar: logo and version, then File, Export, View, undo/redo, views, Auto-arrange, the diagram filters; no Current model button', () => {
-  const order = ['class="brand"', 'class="version"', 'id="menu-btn"', 'id="export-btn"', 'id="view-btn"', 'id="btn-undo"', 'id="btn-redo"', 'data-view-btn="physical"', 'data-view-btn="logical"', 'id="arrange-group"', 'id="view-filters"'];
+test('toolbar: logo and version, then File, Export, Find, Help, undo/redo, views, Auto-arrange, the diagram filters; no Current model button', () => {
+  const order = ['class="brand"', 'class="version"', 'id="menu-btn"', 'id="export-btn"', 'id="find-btn"', 'id="help-btn"', 'id="btn-undo"', 'id="btn-redo"', 'data-view-btn="physical"', 'data-view-btn="logical"', 'id="arrange-group"', 'id="view-filters"'];
   const at = order.map((x) => header.indexOf(x));
   assert.ok(at.every((p) => p >= 0), JSON.stringify(at));
   assert.deepEqual(at, at.slice().sort((p, q) => p - q), 'in this order');
   assert.match(header, /<span>netatlas<\/span><span class="version"[^>]*>v__VERSION__<\/span>/);
   // these stay direct controls: none of them is inside the menu
   for (const id of ['btn-undo', 'btn-redo', 'arrange-group', 'btn-arrange-default', 'btn-arrange-compact', 'btn-arrange-spacious']) assert.ok(!menu.includes(`id="${id}"`), id);
-  // Find is not in the toolbar any more: it opens from View (or "/") as a bar over the diagram
+  // Find is not in the toolbar any more: it opens from the Find menu (or "/") as a bar over the diagram
   assert.ok(!header.includes('id="search"') && html.includes('id="find-bar"'));
   assert.ok(!/data-view-btn/.test(menu));
   // the "Current model" button is gone, with its styles, its handler and the state it showed
@@ -129,15 +129,16 @@ test('selection hint of the outline: "selected" and "related (n)" in the always-
   assert.match(inspector, /this\.e\('span', \{ class: 'ctx-mark' \+ \(st === 'selected' \? ' sel' : st === 'related' \? ' rel' : ''\), 'aria-hidden': 'true' \}/);
 });
 
-test('Find & Filter menu: next to Export, with Find in diagram… (/) and Filter object list…, each the one place of its action', () => {
-  const at = ['id="export-btn"', 'id="view-btn"', 'id="btn-undo"'].map((x) => header.indexOf(x));
+test('Find menu: next to Export, with Find in diagram… (/) and Filter object list…, each the one place of its action', () => {
+  const at = ['id="export-btn"', 'id="find-btn"', 'id="btn-undo"'].map((x) => header.indexOf(x));
   assert.ok(at[0] >= 0 && at[0] < at[1] && at[1] < at[2], JSON.stringify(at));
-  // the same markup as File and Export, driven by the same code; named "Find & Filter" (visible, tooltip and the menu's accessible name),
-  // so it isn't mistaken for the View group of Physical / Logical
-  assert.match(header, /<button id="view-btn" type="button" class="menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="view-menu" title="Find &amp; Filter: find in the diagram, filter the object list">Find &amp; Filter <span class="caret"/);
+  // the same markup as File and Export, driven by the same code; named "Find" (visible, tooltip and the menu's accessible name),
+  // so it isn't mistaken for the View group of Physical / Logical, and takes little room
+  assert.match(header, /<button id="find-btn" type="button" class="menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="find-menu" title="Find: find in the diagram, filter the object list">Find <span class="caret"/);
+  assert.doesNotMatch(html, /Find &amp; Filter|Find & Filter/, 'the old name is gone');
   assert.doesNotMatch(header, />View <span class="caret"|aria-label="View"|title="View:/);
   assert.match(header, /<span id="view-title" class="tool-group-title">View<\/span>/, 'the View group of Physical / Logical keeps its name');
-  const view = /<div id="view-menu" class="dropdown menu" role="menu" aria-label="Find &amp; Filter" hidden>([\s\S]*?)\n    <\/div>/.exec(header)[1];
+  const view = /<div id="find-menu" class="dropdown menu" role="menu" aria-label="Find" hidden>([\s\S]*?)\n    <\/div>/.exec(header)[1];
   const entries = [...view.matchAll(/<button id="([^"]+)"[^>]*role="menuitem"[^>]*disabled><span class="mi-label">([^<]+)</g)].map((m) => [m[1], m[2]]);
   assert.deepEqual(entries, [['btn-find', 'Find in diagram…'], ['btn-outline-filter', 'Filter object list…']], 'both disabled until a model is open');
   // the labels say what each one works on: Find searches the diagram, the filter narrows the object list (not the diagram)
@@ -145,7 +146,7 @@ test('Find & Filter menu: next to Export, with Find in diagram… (/) and Filter
   assert.match(html, /<div id="find-bar" class="find-bar" role="search" aria-label="Find in diagram" hidden>/);
   assert.deepEqual([...view.matchAll(/class="mi-hint">([^<]*)</g)].map((m) => m[1]), ['/']);
   const app = readFileSync(join(root, 'src', 'ui', 'app.ts'), 'utf8');
-  assert.match(app, /\['export-btn', 'export-menu'\],\s*\['view-btn', 'view-menu'\],/);
+  assert.match(app, /\['export-btn', 'export-menu'\],\s*\['find-btn', 'find-menu'\],\s*\['help-btn', 'help-menu'\],/);
   assert.match(app, /if \(e\.key === '\/'\) \{\s*e\.preventDefault\(\);\s*this\.openFind\(\);/);
   // the old places are gone: no search box in the toolbar, no filter box always at the top of the outline
   assert.ok(!header.includes('class="search-wrap"'));
@@ -282,9 +283,9 @@ test('Auto-arrange: three direct options (Default, Compact, Spacious) in one lab
   // the selected option looks like the active view switch; the CSS has no orange or dashed treatment
   assert.match(css, /\.arrange-btn\.current, \.arrange-btn\.current:disabled \{[^}]*background: var\(--accent-soft\);[^}]*border-color: var\(--accent\);/);
   assert.doesNotMatch(css, /\.arrange-btn\[data-status/);
-  // presentation: the label above one row of the three buttons, the whole group in a subtle dashed frame
+  // presentation: the label above one row of the three buttons, the whole group in a dashed frame
   assert.match(group[1], /<span id="arrange-title"[^>]*>Auto-arrange<\/span>\s*<div class="arrange-btns">\s*<button id="btn-arrange-default"[\s\S]*?<button id="btn-arrange-spacious"[^>]*>Spacious<\/button>\s*<\/div>/);
-  assert.match(css, /\.tool-group \{[^}]*flex-direction: column;[^}]*border: 1px dashed var\(--border\);/);
+  assert.match(css, /\.tool-group \{[^}]*flex-direction: column;[^}]*border: 1px dashed var\(--frame\);/);
   assert.match(css, /\.arrange-btns \{ display: flex; \}/);
   // the label takes no width above the buttons, so no narrow toolbar hides it
   assert.doesNotMatch(css, /@container[^{]*\{[^@]*\.(arrange-title|tool-group-title)/);
@@ -303,7 +304,61 @@ test('toolbar groups: View, Auto-arrange and Filters each have a label above the
   // frame, label and padding are defined once, so the groups can't drift apart
   assert.doesNotMatch(css, /\.(view-group|arrange-group|filters-group) \{[^}]*(border|padding)/);
   assert.match(css, /\.tool-group-title \{[^}]*font-size: 10px;/);
+  // the frame is clearly visible: its colour has at least 3:1 contrast against the toolbar, in the light and the dark theme,
+  // and stays a hairline, dashed, so it does not outweigh the controls
+  const lum = (hex) => {
+    const c = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255).map((v) => (v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4)));
+    return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+  };
+  const ratio = (a, b) => (Math.max(lum(a), lum(b)) + 0.05) / (Math.min(lum(a), lum(b)) + 0.05);
+  const light = /:root \{([^}]*)\}/.exec(css)[1];
+  const dark = /@media \(prefers-color-scheme: dark\) \{\s*:root \{([^}]*)\}/.exec(css)[1];
+  for (const [name, vars] of [['light', light], ['dark', dark]]) {
+    const v = (k) => new RegExp('--' + k + ': (#[0-9a-f]{6});').exec(vars)[1];
+    assert.ok(ratio(v('frame'), v('panel')) >= 3, `${name}: frame ${v('frame')} on ${v('panel')} = ${ratio(v('frame'), v('panel')).toFixed(2)}:1`);
+    assert.ok(ratio(v('frame'), v('panel')) > ratio(v('border'), v('panel')) + 1, `${name}: clearly stronger than the old border colour`);
+  }
+  assert.match(css, /\.tool-group \{[^}]*padding: 2px 6px 4px; border: 1px dashed var\(--frame\); border-radius: 8px;/);
   // the filter row keeps its collapsing (App.layoutFilters); it now measures the slot that holds the group
   const app = readFileSync(join(root, 'src', 'ui', 'app.ts'), 'utf8');
   assert.match(app, /const avail = slot\.clientWidth - chrome;/);
+});
+
+test('Help menu: right after Find, with User Manual and License (always available, each opening a dialog)', () => {
+  const at = ['id="find-btn"', 'id="help-btn"', 'id="btn-undo"'].map((x) => header.indexOf(x));
+  assert.ok(at[0] >= 0 && at[0] < at[1] && at[1] < at[2], JSON.stringify(at));
+  // nothing else stands between the Find menu and the Help menu
+  assert.match(header, /<div id="find-menu"[\s\S]*?\n    <\/div>\n  <\/div>\n  <div class="menu-wrap">\n    <button id="help-btn"/);
+  assert.match(header, /<button id="help-btn" type="button" class="menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="help-menu" title="Help: user manual and license">Help <span class="caret"/);
+  const help = /<div id="help-menu" class="dropdown menu" role="menu" aria-label="Help" hidden>([\s\S]*?)\n    <\/div>/.exec(header)[1];
+  const entries = [...help.matchAll(/<button id="([^"]+)" type="button" role="menuitem" aria-haspopup="dialog"[^>]*><span class="mi-label">([^<]+)</g)].map((m) => [m[1], m[2]]);
+  assert.deepEqual(entries, [['btn-manual', 'User Manual'], ['btn-license', 'License']]);
+  assert.doesNotMatch(help, /disabled/, 'Help needs no model');
+  const app = readFileSync(join(root, 'src', 'ui', 'app.ts'), 'utf8');
+  assert.match(app, /this\.\$\('btn-manual'\)\.addEventListener\('click', \(\) => void this\.openHelp\('manual'\)\);/);
+  assert.match(app, /this\.\$\('btn-license'\)\.addEventListener\('click', \(\) => void this\.openHelp\('license'\)\);/);
+  // both dialogs: a × as well as Close, Esc, and the focus back on the Help button afterwards
+  assert.match(app, /closeButton: true,/);
+  assert.match(app, /await done;[\s\S]{0,200}this\.\$\('help-btn'\)\.focus\(\);/);
+});
+
+test('Help → License names the license of LICENSE and package.json, and embeds its full text', () => {
+  const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
+  assert.equal(pkg.license, 'Apache-2.0');
+  const license = readFileSync(join(root, 'LICENSE'), 'utf8').replace(/\r\n/g, '\n');
+  assert.match(license, /^\s*Apache License\n\s*Version 2\.0, January 2004\n/);
+  const help = load('ui/help.js');
+  assert.equal(help.LICENSE_ID, pkg.license);
+  assert.equal(help.LICENSE_NAME, 'Apache License, Version 2.0');
+  const { LICENSE_TEXT, MANUAL_IMAGES } = load('generated/help-assets.js');
+  assert.equal(LICENSE_TEXT, license, 'the embedded text is the LICENSE file');
+  // every screenshot the manual refers to is embedded, as a data: URL (the page may load nothing else)
+  const src = readFileSync(join(root, 'src', 'ui', 'help.ts'), 'utf8');
+  const named = [...src.matchAll(/\['([a-z-]+)', '[^']+'\]/g)].map((m) => m[1]);
+  assert.ok(named.length >= 8, named.join());
+  for (const n of named) {
+    assert.ok(MANUAL_IMAGES[n], 'missing screenshot ' + n);
+    assert.match(MANUAL_IMAGES[n].src, /^data:image\/webp;base64,/);
+    assert.ok(MANUAL_IMAGES[n].width > 100 && MANUAL_IMAGES[n].height > 50, n);
+  }
 });
