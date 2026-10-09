@@ -9,23 +9,28 @@
  *   solid lines, overlays dashed, redundancy dotted, services dash-dotted.
  * - Relations with 3+ devices get a hub node with spokes.
  * - Networks are pill nodes connected to member devices by thin lines. Members
- *   are derived from the addresses inside the network's prefixes.
+ *   are derived from the addresses inside the network's prefixes; each line
+ *   carries every address of the device inside the network.
+ * - A device's box holds an entry per interface with its addresses and
+ *   identifiers (loopbacks, virtual and tunnel interfaces, and physical
+ *   ones with layer-3 facts; see model/addresses.ts), then its DNS names.
  * - Groups / locations are frames around their devices, as in the physical
  *   view (auto-arrange keeps the devices of a group together).
  * - All text is drawn in full. Every relation label gets its own place along
  *   (or, on a short line, beside) its bundle, clear of nodes and of the labels
  *   placed before it; see diagram/labels.ts.
  */
-import { CBox, Pt, Rect, boxRect, clipToBox, clipToCircle, lineBoxExit, normal, textWidth, unionRect } from '../layout/geometry';
+import { CBox, Pt, Rect, boxRect, clipToBox, clipToCircle, lineBoxExit, normal, unionRect } from '../layout/geometry';
 import { LINE_W, TUBE_MIN, TUBE_WALL, buildBundle, laneLabel, relationPairs } from '../layout/bundles';
 import { CHIP_H, HUB_R, LNode, LogicalLayout, commonChain, deviceRect, isMultipoint, networkSubtitle } from '../layout/logical';
-import { CHIP_FONT, IFCHIP_GAP, MEMBER_LABEL_SIZE, NET_LABEL_SIZE, chipRows, dnsNameLines, dnsShown, logicalChipFlow, loopbackChipText, networkBody, pillBox } from '../layout/sizes';
+import { memberAddresses } from '../layout/input';
+import { CHIP_FONT, ENTRY_GAP, ENTRY_MARGIN, NET_LABEL_SIZE, dnsNameLines, dnsShown, entriesSize, memberLabelBox, networkBody, pillBox } from '../layout/sizes';
+import { addressAttrLines } from '../model/addresses';
 import { TextBlock } from '../layout/text';
 import { networkMembers } from '../model/derive';
-import { sortedByName } from '../model/order';
-import { Device, LineStyle, Model, ProtocolDef, Relation, loopbacks, relationDevices } from '../model/types';
-import { LabelPlacer, alongSegment, centerRect, textLines } from './labels';
-import { chipNodes, cssToken, deviceNode, deviceSubtitle, groupFrames, groupRects, SceneResult } from './physical';
+import { Device, LineStyle, Model, ProtocolDef, Relation, relationDevices } from '../model/types';
+import { LabelPlacer, alongSegment, centerRect, leaderLine, textLines } from './labels';
+import { cssToken, deviceNode, deviceSubtitle, entryItems, entryNodes, groupFrames, groupRects, nodeOverlaps, SceneResult } from './physical';
 import { VNode, h } from './scene';
 import { NETWORK_COLOR } from './style';
 import { relationStyle } from '../model/protocols';
@@ -144,7 +149,8 @@ export function renderLogical(model: Model, layout: LogicalLayout, opts: Logical
     if (n.kind === 'device') deviceBoxes.set(n.id, n);
   });
   const grects = showGroups ? groupRects(model, deviceBoxes, localNodes(model, nodes)) : new Map<string, Rect>();
-  const groupNodes = showGroups ? groupFrames(model, grects, placer) : [];
+  const groupTitles: VNode[] = [];
+  const groupNodes = showGroups ? groupFrames(model, grects, placer, groupTitles) : [];
   nodes.forEach((n) => {
     if (n.kind === 'network' && !opts.showNetworks) return;
     placer.block(boxRect(n, 3));
@@ -154,7 +160,7 @@ export function renderLogical(model: Model, layout: LogicalLayout, opts: Logical
   const relNodes: VNode[] = [];
   const labels: VNode[] = [];
   const nodeLayer: VNode[] = [];
-  const memberLabels: Array<{ ref: string; s: Pt; e: Pt; text: string }> = [];
+  const memberLabels: Array<{ ref: string; s: Pt; e: Pt; addresses: string[] }> = [];
 
   // ---- network membership
   if (opts.showNetworks) {
@@ -167,11 +173,8 @@ export function renderLogical(model: Model, layout: LogicalLayout, opts: Logical
         const s = clipToBox(dn, { x: nn.cx, y: nn.cy }, 1);
         const e = clipToBox(nn, { x: dn.cx, y: dn.cy }, 1);
         members.push(h('path', { class: 'member', 'data-ref': 'network:' + nw.id, d: lineD(s, e) }));
-        if (opts.showLabels) {
-          // the address that makes the device a member (the first one, if several match)
-          const addr = m.matches[0].address + (m.matches.length > 1 ? ` +${m.matches.length - 1}` : '');
-          memberLabels.push({ ref: 'network:' + nw.id, s, e, text: addr });
-        }
+        // every address of the device inside the network, in full
+        if (opts.showLabels) memberLabels.push({ ref: 'network:' + nw.id, s, e, addresses: memberAddresses(model, nw.id, m.device) });
       }
     }
   }
@@ -213,7 +216,7 @@ export function renderLogical(model: Model, layout: LogicalLayout, opts: Logical
       const ux = dx / dl;
       const uy = dy / dl;
       const items = rootsPlaced.map((p) => {
-        const box = pillBox(laneLabel(p));
+        const box = pillBox(laneLabel(p), p.extra);
         return { p, box, ext: Math.abs(ux) * box.w + Math.abs(uy) * box.h + 6 };
       });
       const total = items.reduce((s, it) => s + it.ext, 0);
@@ -243,6 +246,7 @@ export function renderLogical(model: Model, layout: LogicalLayout, opts: Logical
           it.box.h,
         );
         labelRects.push(centerRect(c, it.box.w, it.box.h));
+        if (placer.leaderFrom) labels.push(leaderLine(placer.leaderFrom, centerRect(c, it.box.w, it.box.h), 'relation:' + it.p.rel.id));
         labels.push(pill('relation:' + it.p.rel.id, c, it.box, it.p.def.color));
       }
     }
@@ -262,10 +266,11 @@ export function renderLogical(model: Model, layout: LogicalLayout, opts: Logical
       kids.push(h('path', { class: 'hit', d: dd }), ...relationStroke(def, dd, TUBE_MIN));
     }
     kids.push(h('circle', { class: 'hub', cx: hub.cx, cy: hub.cy, r: HUB_R, stroke: def.color }));
-    kids.push(h('text', { class: 'hub-glyph', x: hub.cx, y: hub.cy + 4, 'text-anchor': 'middle', fill: def.color }, String(relationDevices(r).length)));
+    // the number of devices is text: written in the text colour (the ring around it has the protocol's colour)
+    kids.push(h('text', { class: 'hub-glyph', x: hub.cx, y: hub.cy + 4, 'text-anchor': 'middle' }, String(relationDevices(r).length)));
     relNodes.push(h('g', { class: `rel hub-rel cat-${def.category} style-${def.style} proto-${cssToken(r.protocol)}`, 'data-ref': 'relation:' + r.id }, kids));
     if (opts.showLabels) {
-      const box = pillBox(def.label + (r.label ? ' · ' + r.label : ''));
+      const box = pillBox(def.label + (r.label ? ' · ' + r.label : ''), addressAttrLines(r.attrs));
       const dyy = HUB_R + 5 + box.h / 2;
       const dxx = HUB_R + 6 + box.w / 2;
       const c = placer.place(
@@ -283,17 +288,23 @@ export function renderLogical(model: Model, layout: LogicalLayout, opts: Logical
         box.h,
       );
       labelRects.push(centerRect(c, box.w, box.h));
+      if (placer.leaderFrom) labels.push(leaderLine({ x: hub.cx, y: hub.cy }, centerRect(c, box.w, box.h), 'relation:' + r.id));
       labels.push(pill('relation:' + r.id, c, box, def.color));
     }
   }
 
   // ---- addresses on membership lines: near the device, moved along the line where that spot is taken
   for (const ml of memberLabels) {
-    const w = textWidth(ml.text, MEMBER_LABEL_SIZE) + 4;
+    const box = memberLabelBox(ml.addresses);
+    const w = box.w;
+    const hh = box.h;
+    const st = hh + 2;
     // fallbacks, tried only when every usual spot is taken: right beside the device, where the line leaves it (or across it)
-    const c = placer.place(alongSegment(ml.s, ml.e, 0.22, [0, 22, 44, 70, 100, -14], [0, -12, 12]).concat(alongSegment(ml.s, ml.e, 0, [w / 2 + 6, w / 2 + 20], [0, -12, 12, -24, 24])), w, 12);
-    labelRects.push(centerRect(c, w, 12));
-    labels.push(h('text', { class: 'halo member-label', 'data-ref': ml.ref, x: c.x, y: c.y + 3.5, 'text-anchor': 'middle' }, ml.text));
+    const c = placer.place(alongSegment(ml.s, ml.e, 0.22, [0, 22, 44, 70, 100, -14], [0, -st, st]).concat(alongSegment(ml.s, ml.e, 0, [w / 2 + 6, w / 2 + 20], [0, -st, st, -2 * st, 2 * st])), w, hh);
+    const r = centerRect(c, w, hh);
+    labelRects.push(r);
+    if (placer.leaderFrom) labels.push(leaderLine(placer.leaderFrom, r, ml.ref));
+    labels.push(textLines({ class: 'halo member-label', 'data-ref': ml.ref, 'text-anchor': 'middle' }, box.block, c.x, r.y));
   }
 
   // ---- nodes
@@ -301,21 +312,22 @@ export function renderLogical(model: Model, layout: LogicalLayout, opts: Logical
     if (n.kind === 'device') {
       const d = model.index.devices.get(n.id);
       if (!d) return;
-      nodeLayer.push(deviceNode(n.ref, d.label, deviceSubtitle(d.type), d.type, deviceRect(n), 'type-' + cssToken(d.type)));
-      nodeLayer.push(...loopbackChips(d, n));
-      // the other logical interfaces (virtual, tunnel) as chips under the loopbacks, each selectable
-      const flow = logicalChipFlow(otherLogical(d), n.w);
-      const flowTop = n.cy - n.h / 2 + (n.bodyH || 0) + 4 + chipRows(loopbacks(d).length) * CHIP_H;
-      if (flow.items.length) nodeLayer.push(...chipNodes(d.id, flow, n.cx - n.w / 2 + 8, flowTop, 'logical-chip', (id) => d.logical.find((x) => x.id === id)?.type || ''));
+      const bodyH = n.bodyH || n.h;
+      nodeLayer.push(deviceNode(n.ref, d.label, deviceSubtitle(d.type), d.type, deviceRect(n), 'type-' + cssToken(d.type), bodyH));
+      // the entries of its interfaces (loopbacks, virtual, tunnel, physical with addresses), each selectable
+      const items = entryItems(model, d, 'logical');
+      const listTop = n.cy - n.h / 2 + bodyH;
+      const listH = entriesSize(items)[1];
+      if (items.length) nodeLayer.push(...entryNodes(items, n.cx - n.w / 2 + ENTRY_MARGIN, listTop, n.w - 2 * ENTRY_MARGIN));
       // the names are labels: hidden with Labels (their room stays, so nothing moves)
-      if (opts.showLabels) nodeLayer.push(...dnsChips(d, n, flow.items.length ? flow.h + IFCHIP_GAP : 0));
+      if (opts.showLabels) nodeLayer.push(...dnsChips(d, n, listTop + listH + (listH ? ENTRY_GAP : 0)));
     } else if (n.kind === 'network' && opts.showNetworks) {
       const nw = model.index.networks.get(n.id);
       if (!nw) return;
       const color = NETWORK_COLOR;
       const x = n.cx - n.w / 2;
       const y = n.cy - n.h / 2;
-      const body = networkBody(nw.label, networkSubtitle(nw.cidr, nw.vlan));
+      const body = networkBody(nw.label, networkSubtitle(nw.cidr, nw.vlan), addressAttrLines(nw.attrs));
       const top = n.cy - (body.label.h + body.sub.h) / 2;
       const rx = Math.min(n.h / 2, 21);
       nodeLayer.push(
@@ -338,12 +350,13 @@ export function renderLogical(model: Model, layout: LogicalLayout, opts: Logical
   // labels can lie outside the nodes' surroundings; they belong to the picture too
   for (const r of labelRects) rects.push({ x: r.x - 14, y: r.y - 14, w: r.w + 28, h: r.h + 28 });
   return {
+    conflicts: placer.conflicts + nodeOverlaps(Array.from(nodes.values()).filter((n) => n.kind !== 'network' || opts.showNetworks).map((n) => boxRect(n))),
     root: h('g', { class: 'scene scene-logical' }, [
       h('g', { class: 'layer-groups' }, groupNodes),
       h('g', { class: 'layer-members' }, members),
       h('g', { class: 'layer-relations' }, relNodes),
       h('g', { class: 'layer-nodes' }, nodeLayer),
-      h('g', { class: 'layer-labels' }, labels),
+      h('g', { class: 'layer-labels' }, groupTitles.concat(labels)),
     ]),
     bounds: unionRect(rects),
   };
@@ -397,18 +410,18 @@ function pill(ref: string, p: Pt, box: { block: TextBlock; w: number; h: number 
 }
 
 /**
- * The device's DNS names under its loopback chips: each name once, however
- * many interfaces it is associated with; a long name continues on further
- * lines; more than MAX_DNS names end in a "+N more names" row. They show
- * what is configured in the model, nothing looked up.
+ * The device's DNS names in its box, under its interface entries: each name
+ * once, however many interfaces it is associated with, every one of them; a
+ * long name continues on further lines. They show what is configured in the
+ * model, nothing looked up.
  */
-function dnsChips(d: Device, n: LNode, chipsH: number): VNode[] {
-  const shown = dnsShown(d.dnsNames.map((x) => x.name).filter((x) => !!x));
-  if (!shown.names.length) return [];
+function dnsChips(d: Device, n: LNode, top: number): VNode[] {
+  const names = dnsShown(d.dnsNames.map((x) => x.name).filter((x) => !!x));
+  if (!names.length) return [];
   const out: VNode[] = [];
-  let y = n.cy - n.h / 2 + (n.bodyH || 0) + 4 + chipRows(loopbacks(d).length) * CHIP_H + chipsH;
+  let y = top;
   const w = n.w - 16;
-  for (const name of shown.names) {
+  for (const name of names) {
     const lines = dnsNameLines(name);
     out.push(
       h('g', { class: 'dns-chip', 'data-ref': 'device:' + d.id, 'data-dns': name }, [
@@ -418,31 +431,5 @@ function dnsChips(d: Device, n: LNode, chipsH: number): VNode[] {
     );
     y += lines.length * CHIP_H;
   }
-  if (shown.more) out.push(h('text', { class: 'loop-more dns-more', x: n.cx, y: y + 9, 'text-anchor': 'middle', 'data-ref': 'device:' + d.id }, `+${shown.more} more name${shown.more > 1 ? 's' : ''}`));
-  return out;
-}
-
-/** A device's virtual and tunnel interfaces, in display order (as the layout sized them). */
-function otherLogical(d: Device): string[] {
-  return sortedByName(d.logical.filter((i) => i.type !== 'loopback').map((i) => i.id), (x) => x);
-}
-
-/** Loopbacks as chips hanging under the device, every one, in alphabetical order (logical view only; they are never cabled). */
-function loopbackChips(d: Device, n: LNode): VNode[] {
-  const loops = sortedByName(loopbacks(d), (l) => l.id);
-  if (!loops.length) return [];
-  const out: VNode[] = [];
-  const top = n.cy - n.h / 2 + (n.bodyH || 0) + 4;
-  const w = n.w - 16;
-  loops.forEach((l, i) => {
-    const text = loopbackChipText(l.id, l.addresses);
-    const y = top + i * CHIP_H;
-    out.push(
-      h('g', { class: 'loop-chip', 'data-ref': `iface:${d.id}:${l.id}`, 'data-endpoint': 'iface' }, [
-        h('rect', { x: n.cx - w / 2, y, width: w, height: CHIP_H - 3, rx: 6.5 }),
-        h('text', { x: n.cx, y: y + 9.5, 'text-anchor': 'middle', 'font-size': CHIP_FONT }, text),
-      ]),
-    );
-  });
   return out;
 }

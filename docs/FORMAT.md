@@ -921,11 +921,14 @@ places; they are the same on screen and in exported SVG files.
   limited to 200 characters by the format, so an element can't grow without
   bound: the longest possible device label gives a box about 280 wide.
 * **Devices** grow in width up to the wrap width and in height with the
-  number of lines; the subtitle (the device type) wraps the same way. In
-  the logical view a device is also as wide as its widest loopback chip and
-  grows for the chips of its virtual and tunnel interfaces; in the physical
-  view it grows for the chips of its uncabled ports (rows as wide as the box,
-  a shared prefix of six or more similar names written once).
+  number of lines; the subtitle (the device type) wraps the same way. A
+  device also grows for the entries of its interfaces, which write out every
+  address and identifier in full (one line each, never wrapped inside an
+  address): in the physical view its ports with addresses, a VRF, DHCP or a
+  MAC address, in the logical view its loopbacks, virtual and tunnel
+  interfaces and its ports with layer-3 facts. In the physical view it grows
+  for the chips of its uncabled ports too (rows as wide as the box, each chip
+  with the full name).
 * **Networks** show their label and their prefix (with the VLAN), wrapped.
   In the logical view a network or multipoint hub whose devices all lie in
   one group (a site LAN, a rack's LAG) is placed inside that group's frame,

@@ -226,9 +226,10 @@ test('membership drives highlighting, the selection context, search and the layo
   assert.equal(queries.search(m, 'vlan 10')[0].ref, 'network:lan');
   assert.equal(queries.search(m, '2001:db8:ffff::/48')[0].ref, 'network:loops6');
   assert.deepEqual(layoutInput(m).networks.map((n) => [n.id, n.members]), [['lan', ['r1', 'r2']], ['lan6', ['r1']], ['loops', ['r1']], ['loops6', ['r1']]]);
-  // an address change matters for the layout only when it changes membership
+  // an address change matters for the layout only when it changes membership or the room the address takes (it is drawn in full)
   const sig = (t) => layoutSignature(layoutInput(ok(t).model));
-  assert.equal(sig(net.replace('10.1.0.9/24', '10.1.0.10/24')), sig(net));
+  assert.equal(sig(net.replace('10.1.0.9/24', '10.1.0.8/24')), sig(net));
+  assert.notEqual(sig(net.replace('10.1.0.9/24', '10.1.0.10/24')), sig(net));
   assert.notEqual(sig(net.replace('ip: 10.1.0.2}', 'ip: 10.7.0.2}')), sig(net));
 });
 

@@ -9,17 +9,21 @@
  *   around the device.
  * - Cable labels are placed on the cable's longest segment, away from
  *   devices, port labels and other cable labels.
+ * - The addresses and identifiers of a device's interfaces are entries in
+ *   its box (model/addresses.ts), each named by its interface, so its owner
+ *   is never in doubt and no floating label can cover it.
  */
-import { CBox, Pt, Rect, boxRect, segmentHitsRect, textWidth, unionRect } from '../layout/geometry';
-import { linkLabelText, linkNetworkLabel } from '../layout/input';
-import { GROUP_PAD, PORT_FONT, PORT_LABEL_GAP, PhysicalLayout, PortPos, assignPorts, spareChipFlow } from '../layout/physical';
-import { ChipFlow, DEVICE_ICON, DEVICE_TEXT_X, IFCHIP_FONT, IFCHIP_H, IFCHIP_PAD, chipStripH, deviceBody, groupHeader, linkLabelBox } from '../layout/sizes';
+import { CBox, Pt, Rect, boxRect, rectsOverlap, segmentHitsRect, textWidth, unionRect } from '../layout/geometry';
+import { entryTexts, linkLabelExtra, linkLabelText, linkNetworkLabel } from '../layout/input';
+import { GROUP_PAD, PORT_FONT, PORT_LABEL_GAP, PhysicalLayout, PortPos, assignPorts, physicalListH, spareChipFlow } from '../layout/physical';
+import { ChipFlow, DEVICE_ICON, DEVICE_TEXT_X, ENTRY_FONT, ENTRY_GAP, ENTRY_LH, ENTRY_MARGIN, ENTRY_PAD_X, ENTRY_PAD_Y, IFCHIP_FONT, IFCHIP_H, IFCHIP_PAD, chipStripH, deviceBody, entriesSize, entryBox, groupHeader, linkLabelBox } from '../layout/sizes';
+import { addressAttrLines, deviceEntries } from '../model/addresses';
 import { sortedByName } from '../model/order';
 import { networkMismatch } from '../model/derive';
 import { deviceSubtitle } from '../model/device-types';
 import { Device, Model, ifaceKey } from '../model/types';
 import { deviceIcon } from './icons';
-import { LabelPlacer, alongSegment, centerRect, textLines } from './labels';
+import { LabelPlacer, alongSegment, centerRect, leaderLine, textLines } from './labels';
 import { VNode, h } from './scene';
 import { groupKindStyle, mediumStyle, speedWidth } from './style';
 
@@ -36,6 +40,19 @@ export interface ViewOptions {
 export interface SceneResult {
   root: VNode;
   bounds: Rect;
+  /**
+   * What a reader would see as overlapping: labels that found no free place
+   * and pairs of overlapping nodes (after moving nodes by hand). 0 after
+   * Auto-arrange; the app reports any other number.
+   */
+  conflicts: number;
+}
+
+/** Pairs of overlapping rectangles (node boxes). */
+export function nodeOverlaps(rs: Rect[]): number {
+  let n = 0;
+  for (let i = 0; i < rs.length; i++) for (let j = i + 1; j < rs.length; j++) if (rectsOverlap(rs[i], rs[j])) n++;
+  return n;
 }
 
 const STUB = 20;
@@ -76,7 +93,7 @@ export function groupRects(model: Model, boxes: Map<string, CBox>, extra: Map<st
     for (const c of model.groups) if (c.parent === g.id && rects.has(c.id)) parts.push(rects.get(c.id) as Rect);
     if (!parts.length) continue;
     const u = unionRect(parts);
-    const head = groupHeader(g.label, g.kind, u.w);
+    const head = groupHeader(g.label, g.kind, u.w, addressAttrLines(g.attrs));
     const w = Math.max(u.w + 2 * GROUP_PAD, head.minW);
     rects.set(g.id, { x: u.x + u.w / 2 - w / 2, y: u.y - GROUP_PAD - head.h, w, h: u.h + 2 * GROUP_PAD + head.h });
   }
@@ -85,10 +102,12 @@ export function groupRects(model: Model, boxes: Map<string, CBox>, extra: Map<st
 
 /**
  * The frames of groups / locations (outermost first, so children draw on
- * top), with title and kind. Used by both views. Each title is blocked for
- * the label placer, so no label is placed on it.
+ * top). Used by both views. Their titles and kinds go to `titles`, which
+ * the renderers draw in the top layer with a halo, so no cable or relation
+ * line drawn across a frame's title can make it hard to read. Each title is
+ * blocked for the label placer, so no label is placed on it.
  */
-export function groupFrames(model: Model, grects: Map<string, Rect>, placer: LabelPlacer): VNode[] {
+export function groupFrames(model: Model, grects: Map<string, Rect>, placer: LabelPlacer, titles: VNode[] = []): VNode[] {
   const out: VNode[] = [];
   const depthSorted = model.groups.filter((g) => grects.has(g.id));
   const depthOf = (id: string): number => {
@@ -104,12 +123,16 @@ export function groupFrames(model: Model, grects: Map<string, Rect>, placer: Lab
   for (const g of depthSorted) {
     const r = grects.get(g.id) as Rect;
     const ks = groupKindStyle(g.kind);
-    const head = groupHeader(g.label, g.kind, r.w - 2 * GROUP_PAD);
+    const head = groupHeader(g.label, g.kind, r.w - 2 * GROUP_PAD, addressAttrLines(g.attrs));
     out.push(
       h('g', { class: `group kind-${cssToken(g.kind)} ${ks.strong ? 'group-strong' : ''}`, 'data-ref': 'group:' + g.id }, [
         h('rect', { class: 'group-box', x: r.x, y: r.y, width: r.w, height: r.h, rx: 12, 'stroke-dasharray': ks.dash }),
-        textLines({ class: 'group-title' }, head.title, r.x + 14, r.y + 7),
-        head.kind ? h('text', { class: 'group-kind', x: r.x + r.w - 12, y: r.y + 20, 'text-anchor': 'end' }, head.kind) : null,
+      ]),
+    );
+    titles.push(
+      h('g', { class: 'group-label', 'data-ref': 'group:' + g.id }, [
+        textLines({ class: 'halo group-title' }, head.title, r.x + 14, r.y + 7),
+        head.kind ? h('text', { class: 'halo group-kind', x: r.x + r.w - 12, y: r.y + 20, 'text-anchor': 'end' }, head.kind) : null,
       ]),
     );
     placer.block({ x: r.x + 10, y: r.y + 5, w: head.title.w + 8, h: head.title.h + 4 });
@@ -223,7 +246,8 @@ export function renderPhysical(model: Model, layout: PhysicalLayout, opts: ViewO
 
   // ---- groups (outermost first so children draw on top)
   const showGroups = opts.showGroups !== false;
-  const groupNodes = showGroups ? groupFrames(model, grects, placer) : [];
+  const groupTitles: VNode[] = [];
+  const groupNodes = showGroups ? groupFrames(model, grects, placer, groupTitles) : [];
 
   // ---- ports and cables: port labels first, they have fixed places
   const linkNodes: VNode[] = [];
@@ -262,13 +286,15 @@ export function renderPhysical(model: Model, layout: PhysicalLayout, opts: ViewO
     const out: VNode[] = [];
     const mismatch = !!networkMismatch(l.a.networks, l.b.networks);
     const text = opts.showLabels ? linkLabelText(model, l) : '';
+    const lines = opts.showLabels ? linkLabelExtra(l) : [];
     let center = { x: (pts[seg].x + pts[seg + 1].x) / 2, y: (pts[seg].y + pts[seg + 1].y) / 2 };
-    if (text) {
-      const box = linkLabelBox(text);
+    if (text || lines.length) {
+      const box = linkLabelBox(text, lines);
       const step = Math.max(14, box.h + 2);
       center = placer.place(alongSegment(pts[seg], pts[seg + 1], 0.5, [0, -26, 26, -52, 52, -80, 80, -110, 110], [0, -step, step, -2 * step, 2 * step]), box.w, box.h);
       const r = centerRect(center, box.w, box.h);
       extra.push(r);
+      if (placer.leaderFrom) out.push(leaderLine(placer.leaderFrom, r, 'link:' + l.id));
       out.push(textLines({ class: 'halo link-label' + (mismatch ? ' net-mismatch' : ''), 'data-ref': 'link:' + l.id, 'text-anchor': 'middle' }, box.block, center.x, r.y + 1));
       // ends that carry different networks are marked next to the label
       if (mismatch) out.push(h('text', { class: 'halo net-warn', 'data-ref': 'link:' + l.id, x: center.x, y: r.y - 3, 'text-anchor': 'middle' }, '⚠'));
@@ -309,12 +335,16 @@ export function renderPhysical(model: Model, layout: PhysicalLayout, opts: ViewO
     labelNodes.push(...(labelAt.get(l.id) as VNode[]));
   }
 
-  // ---- devices, with the chips of their uncabled ports at the bottom of the box
+  // ---- devices: label, the entries of their interfaces, and the chips of their uncabled ports at the bottom of the box
   const deviceNodes: VNode[] = model.devices.map((d) => {
     const b = boxes.get(d.id) as CBox;
     const flow = spareChipFlow(spareIds(model, d), b.w);
-    if (flow.items.length) portNodes.push(...chipNodes(d.id, flow, b.cx - b.w / 2 + IFCHIP_PAD, b.cy + b.h / 2 - chipStripH(flow), 'port-chip', () => ''));
-    return deviceNode('device:' + d.id, d.label, deviceSubtitle(d.type), d.type, b, 'type-' + cssToken(d.type), b.h - chipStripH(flow));
+    const chipsH = chipStripH(flow);
+    const items = entryItems(model, d, 'physical');
+    const listH = physicalListH(entriesSize(items));
+    if (flow.items.length) portNodes.push(...chipNodes(d.id, flow, b.cx - b.w / 2 + IFCHIP_PAD, b.cy + b.h / 2 - chipsH, 'port-chip', () => ''));
+    if (items.length) portNodes.push(...entryNodes(items, b.cx - b.w / 2 + ENTRY_MARGIN, b.cy + b.h / 2 - chipsH - listH, b.w - 2 * ENTRY_MARGIN));
+    return deviceNode('device:' + d.id, d.label, deviceSubtitle(d.type), d.type, b, 'type-' + cssToken(d.type), b.h - chipsH - listH);
   });
 
   // everything drawn is inside the bounds: boxes, groups, labels and cable bends
@@ -325,15 +355,66 @@ export function renderPhysical(model: Model, layout: PhysicalLayout, opts: ViewO
   const bounds = unionRect(rects);
 
   return {
+    conflicts: placer.conflicts + nodeOverlaps(Array.from(boxes.values()).map((b) => boxRect(b))),
     root: h('g', { class: 'scene scene-physical' }, [
       h('g', { class: 'layer-groups' }, groupNodes),
       h('g', { class: 'layer-links' }, linkNodes),
       h('g', { class: 'layer-nodes' }, deviceNodes),
       h('g', { class: 'layer-ports' }, portNodes),
-      h('g', { class: 'layer-labels' }, labelNodes),
+      h('g', { class: 'layer-labels' }, groupTitles.concat(labelNodes)),
     ]),
     bounds,
   };
+}
+
+/** An entry in a device's box: what it shows, and the object it belongs to. */
+export interface EntryItem {
+  header: string;
+  lines: string[];
+  ref: string;
+  /** classes: if-entry plus the kind (loop-chip, logical-chip kind-…, phys-entry, dev-addr) */
+  cls: string;
+  /** an interface can be an endpoint of a new connection; the device's own entry is not one */
+  endpoint: boolean;
+}
+
+/**
+ * The entries of a device's box in a view, in the order the layout sized
+ * them (layout/input.ts entryTexts): the device's own address lines, then
+ * its interfaces.
+ */
+export function entryItems(model: Model, d: Device, view: 'physical' | 'logical'): EntryItem[] {
+  const texts = entryTexts(model, d, view);
+  const ifaces = deviceEntries(model, d, view);
+  const own = texts.length > ifaces.length;
+  return texts.map((t, i) => {
+    if (own && i === 0) return { ...t, ref: 'device:' + d.id, cls: 'if-entry dev-addr', endpoint: false };
+    const e = ifaces[own ? i - 1 : i];
+    const kind = e.kind === 'loopback' ? 'loop-chip' : e.kind === 'physical' ? 'phys-entry' : 'logical-chip kind-' + e.kind;
+    return { ...t, ref: e.ref, cls: 'if-entry ' + kind, endpoint: true };
+  });
+}
+
+/**
+ * Entries stacked from (x, y), each `w` wide: a frame, the interface's name,
+ * and its addresses and identifiers, one per line, in the monospace font.
+ */
+export function entryNodes(items: EntryItem[], x: number, y: number, w: number): VNode[] {
+  const out: VNode[] = [];
+  let top = y;
+  for (const it of items) {
+    const b = entryBox(it);
+    const kids: VNode[] = [h('rect', { x, y: top, width: w, height: b.h, rx: 4 })];
+    let ty = top + ENTRY_PAD_Y;
+    if (it.header) {
+      kids.push(textLines({ class: 'if-name addr', 'font-size': ENTRY_FONT }, { lines: [it.header], size: ENTRY_FONT, w: 0, h: ENTRY_LH, mono: 0 }, x + ENTRY_PAD_X, ty));
+      ty += ENTRY_LH;
+    }
+    if (it.lines.length) kids.push(textLines({ class: 'if-lines', 'font-size': ENTRY_FONT }, { lines: it.lines, size: ENTRY_FONT, w: 0, h: it.lines.length * ENTRY_LH, mono: 0 }, x + ENTRY_PAD_X, ty));
+    out.push(h('g', { class: it.cls, 'data-ref': it.ref, 'data-endpoint': it.endpoint ? 'iface' : undefined }, kids));
+    top += b.h + ENTRY_GAP;
+  }
+  return out;
 }
 
 /** A device's physical interfaces without a cable, in display order (as the layout sized them). */
@@ -343,13 +424,11 @@ export function spareIds(model: Model, d: Device): string[] {
 
 /**
  * Interface chips flowed from (x, y): one selectable chip per interface (ref
- * "iface:<device>:<id>"), and the shared-prefix caption, when there is one,
- * as plain text. `kindOf` adds a class per interface (e.g. its type).
+ * "iface:<device>:<id>"), each with the interface's full name. `kindOf` adds a class per interface (e.g. its type).
  */
 export function chipNodes(device: string, flow: ChipFlow, x: number, y: number, cls: string, kindOf: (id: string) => string): VNode[] {
   return flow.items.map((c) => {
     const ty = y + c.y + IFCHIP_H / 2 + IFCHIP_FONT * 0.35;
-    if (!c.id) return h('text', { class: 'if-chip-prefix', x: x + c.x + 1, y: ty, 'font-size': IFCHIP_FONT }, c.text);
     const kind = kindOf(c.id);
     return h('g', { class: `if-chip ${cls}${kind ? ' kind-' + cssToken(kind) : ''}`, 'data-ref': `iface:${device}:${c.id}`, 'data-endpoint': 'iface' }, [
       h('rect', { x: x + c.x, y: y + c.y, width: c.w, height: IFCHIP_H, rx: 3 }),

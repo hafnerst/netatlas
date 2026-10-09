@@ -15,7 +15,17 @@ file, then:
   routing adjacencies, overlays, redundancy groups, services, and tunnels such
   as GRE and IPsec. Tunnels are drawn as hollow tubes; a relation carried over
   a tunnel (e.g. GRE over IPsec, OSPF over GRE) is drawn *inside* its tube.
-* **Editor:** a model outline plus a property inspector. It can create,
+* **Every address in the diagram:** each interface's IPv4 and IPv6 addresses
+  (with prefix length, secondary and dual-stack addresses together), VLAN,
+  VRF, MAC address, tunnel source and destination and member ports are
+  written in its device's box, next to the interface they belong to, in full;
+  prefixes and VLANs on the networks, cable ids on the cables, and addresses
+  kept in `attrs` (VRRP / HSRP virtual addresses, router IDs, NAT addresses,
+  peer addresses …) next to their device, interface, network, cable or
+  relation. See [Addresses and identifiers in the diagram](#addresses-and-identifiers-in-the-diagram).
+* **Light, Dark or System theme:** a switch at the right end of the toolbar;
+  exported pictures are drawn in the theme you see.
+* **Editor:** an object list (*Objects*) plus a property inspector. It can create,
   change and delete every part of the model: devices, their physical and
   logical interfaces (loopbacks, virtual interfaces, tunnel interfaces),
   links, networks, relations and tunnels, groups, protocol definitions,
@@ -60,6 +70,10 @@ Two version numbers are involved, and they are independent:
 |---|---|
 | ![Enterprise WAN filtered to six devices, physical view](docs/img/wan-physical-filtered.png) | ![Enterprise WAN filtered to six devices, logical view](docs/img/wan-logical-filtered.png) |
 
+| **Every address in the diagram**, physical: ports with their addresses and MACs, cable ids | The same model, logical, in the **dark theme**: interfaces, VRRP addresses, prefixes |
+|---|---|
+| ![Addressing example, physical view: every port's addresses and MAC address in its device's box](docs/img/addressing-physical.png) | ![Addressing example, logical view in the dark theme](docs/img/addressing-logical-dark.png) |
+
 **Auto-arrange** sits in the top toolbar as three options, **Default**,
 **Compact** and **Spacious**, and arranges the view on screen. The option the
 view is arranged with is shown selected (and is disabled: there is nothing to
@@ -76,7 +90,7 @@ do); after manual changes none is selected and all three can be used.
    build template.)
 2. The start screen offers three ways to begin:
    * **New model** creates an empty model and opens it in the editor; add
-     objects with **+ Add** in the model outline on the left;
+     objects with **+ Add** in the object list (*Objects*) on the left;
    * **Open model…** lets you pick a `.yaml` / `.yml` file. You can also
      drop a file onto that card, or anywhere on the page;
    * **Load example**: choose one of the built-in examples and press
@@ -87,7 +101,7 @@ do); after manual changes none is selected and all three can be used.
    which file, where and why, and lets you open another one. If the current
    model has unsaved changes, you are asked before it is replaced.
 3. Switch between **Physical** and **Logical** (or press `P` / `L`).
-4. Click anything in the diagram or in the model outline on the left. The
+4. Click anything in the diagram or in the object list on the left. The
    **Edit** tab on the right opens it in the inspector. With nothing
    selected, the Edit tab offers **Edit model settings** for the model as a
    whole (title, description).
@@ -112,11 +126,18 @@ do); after manual changes none is selected and all three can be used.
 | **Groups / Locations** | the frames of groups / locations, in both views (on by default). Hiding them never hides or moves a device. |
 | **Networks** (logical view) | network nodes and their membership lines (on by default) |
 | **Endpoints** / **Servers** | devices of type *Endpoint* (`endpoint`) and *Server* (`server`), in both views (on by default). Switching one off hides those devices and what only they connect, like deselecting them under **Devices**; see [Showing part of the network](#showing-part-of-the-network). Nothing is deleted. |
+| **Theme** ◐ / ☀ / ☾ (right end) | the colour theme of the whole application, the diagram and exported pictures: **System** (the default: follows the operating system's light or dark setting, also when it changes while NetAtlas is open), **Light** or **Dark**. Each press switches to the next one (System → Light → Dark → System); the icon shows the choice (half-filled circle, sun, moon). Its tooltip (on hover and on keyboard focus) and its accessible name say the theme in effect and what a press does, e.g. *Theme: System (dark). Switch to Light*. The switch is a direct control, never inside a menu, and stays at the right end of the toolbar at every window width. Switching repaints at once: nothing is reloaded, and the view, selection, zoom and layout stay as they are. The choice is remembered in this browser (its local storage), never in the model file or an export; where the browser offers no storage (some `file://` set-ups, private windows) it lasts for the session. |
 | **Filters ▾** | appears when the window is too narrow for all the switches: the diagram filters stay on one row, and the ones that don't fit (Servers first, then Endpoints, Networks, Groups / Locations, Labels) move into this drop-down. Its button says how many of them are off (*Filters · 1 off*). Arrow-down opens it from the keyboard, Esc closes it. In a narrow toolbar the logo drops its name. |
 
 The bottom bar starts with the file name as a badge (a long name is shortened; hover for the whole name and how it is saved), with a small dot while the model has unsaved changes. It is followed by what the name stands for (*saved to this file*, *built-in example*, *new model*, *opened read-only*, or *copy downloaded as …, not linked to a file*), the model's title and counts, unsaved changes, problems and the filter state.
 
-### The model outline
+### The object list (Objects)
+
+The panel on the left is titled **Objects**, with *Select, duplicate, or
+delete* beside it: it is where you browse and select the objects of the model
+and see which are related to the selection. For screen readers it is a
+region named *Objects* with a level-2 heading. (The panel on the right is
+named *Inspector*; its tabs are its title.)
 
 **Quick actions:** the row under the mouse pointer shows **Duplicate** and
 **Delete** at its end. They are the Edit tab's buttons: Duplicate adds a copy
@@ -244,7 +265,26 @@ Both are made from the same picture, so they show the same thing:
   anything from being cut off;
 * **every label in full**, as on screen;
 * the **legend** and the **Networks** overview of that view, beside the
-  diagram ([Networks in exported pictures](#networks-in-exported-pictures)).
+  diagram ([Networks in exported pictures](#networks-in-exported-pictures));
+* **the theme you selected**: with *Light* the picture is light, with *Dark*
+  it is dark, and with *System* it is the theme in effect on screen. It looks
+  like the diagram on screen: background, devices, networks, cables, tunnels,
+  labels, addresses, legend and the highlighting of a selection.
+
+The SVG file carries its colours as plain values (no stylesheet, no CSS
+variable, no `prefers-color-scheme` query) and an explicit background, so
+it looks the same in every browser, image viewer or document editor,
+whatever that program's own light or dark setting. The PNG is drawn from
+the same colours on an opaque background. Switch the theme and export
+again, and the new picture is in the new theme; exporting never changes the
+theme, the layout or the selection on screen.
+
+In the dark theme, the colours a model gives its cables and protocols are
+drawn a little calmer (less saturated) and, where needed, lighter, so every
+line has at least 3:1 contrast against the dark background; the light theme
+darkens a colour only when it would be too pale on white. Hues are kept
+(a red protocol stays red), and line styles, icons and labels still tell
+link types, tunnels and status apart, never colour alone.
 
 The file is named after the model and the view, for example
 `enterprise-wan-logical.png`, and lands in the browser's downloads location.
@@ -308,15 +348,50 @@ field. Each kind of association is modelled by what it means:
 Relations can use any interface as an endpoint. **Every interface of a shown
 device is drawn**, so it can be found, selected and connected: in the
 physical view, a cabled port sits on its cable and a port without a cable is
-a small chip in a strip at the bottom of its device box (a long run of
-similar names, such as `ge-0/0/1` … `ge-0/0/24`, writes the shared prefix once,
-`ge-0/0/ ▸`, and each chip its own number; the full name is in the tooltip).
-In the logical view, loopbacks are rows under the device (every one of them),
-and virtual and tunnel interfaces are chips under the loopbacks, whether or
-not a relation uses them. Logical interfaces are never drawn as ports, and
-physical interfaces don't appear in the logical view. A device has no vendor, model, role, management-address or router-ID
-field; keep such facts as free-form attributes if you need them. The full
-rules are in [docs/FORMAT.md](docs/FORMAT.md#interfaces).
+a small chip with its full name in a strip at the bottom of its device box;
+a port with addresses or identifiers also has an entry in the box (see
+below). In the logical view, every loopback, virtual and tunnel interface,
+and every port with an address, DHCP, a VRF or a VLAN, is an entry in its
+device's box, whether or not a relation uses it. Logical interfaces are never
+drawn as ports. A device has no vendor, model, role, management-address or router-ID
+field; keep such facts as free-form attributes if you need them (an address
+among them is drawn too). The full rules are in [docs/FORMAT.md](docs/FORMAT.md#interfaces).
+
+### Addresses and identifiers in the diagram
+
+Everything a model says about addressing is written in the diagram itself,
+not only in the details or the YAML, and nothing is shortened: a full IPv6
+address with its prefix length is one line, in a monospace font.
+
+| Field | Shown in | Where |
+|---|---|---|
+| `id` and `label` of an interface | the view it is drawn in | the name line of its entry (`ge-0/0/1 · Uplink`); also at its port (physical) or on its chip (uncabled port) |
+| `ip` (one or more addresses, IPv4 and IPv6, with prefix length) | physical: the device's ports; logical: every interface | one line per address in the interface's entry, IPv4 first, then IPv6, each in numeric order: primary and secondary addresses and the two stacks together |
+| the addresses inside a network | logical | on the membership line between the device and the network, every one of them |
+| `dhcp: true` | both, as above | *DHCP* in the entry |
+| `vrf` | both, as above | *VRF name* in the entry |
+| VLAN (`vlan` of a virtual interface, or derived from its networks) | logical | *VLAN n* in the entry |
+| `mac` | physical (ports), logical (the interfaces drawn there) | *MAC …* in the entry |
+| `source`, `destination` of a tunnel | logical | *src …*, *dst …* in the tunnel's entry |
+| `members` of an aggregate | logical | *members …* in its entry |
+| `cidr`, `vlan` of a network | logical | the network node (*VLAN 10 · 10.10.10.0/24*) |
+| `cable` of a link | physical | under the cable's label (*cable CID-…*) |
+| link-end `networks` | physical | the cable's label |
+| `dns_names` | logical | under the device's entries, every name |
+| addresses in `attrs` (an IPv4 / IPv6 address or prefix, or a MAC address, e.g. `virtual-ip`, `router-id`, `nat-pool`, `peer-address`) | where the owner is drawn | device: an entry without a name in its box; interface: its entry; network: its node; link: its cable label; relation: its label; group: under its title |
+
+An entry is a small frame in the device's box: the interface's name, then
+one line per fact. Its kind shows in its frame's line as well as its colour
+(loopback solid, virtual double, tunnel dashed, port dotted); like the chips,
+it can be clicked, selected and used to start a connection. The boxes grow
+to hold their entries, and Auto-arrange reserves that room, so no entry
+covers anything; labels that float over the diagram (cable, relation and
+address labels) take the nearest free place and, when they had to move away,
+are tied to their place by a thin dashed line. If moving nodes by hand makes
+anything overlap, a note over the diagram says how many overlaps there are
+(*2 overlaps in the diagram. Auto-arrange places everything without
+overlaps.*); it is never part of an export. The example
+`addressing.yaml` shows all of this on one router with many interfaces.
 
 ### DHCP and DNS names
 
@@ -839,6 +914,9 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/scr
 | **Quick actions (real input)** | `test/quick-actions.test.mjs` (3 tests), through the DevTools protocol (`scripts/cdp.mjs`) | **Pointer:** with nothing hovered no row shows Duplicate and Delete, not even the selected one; moving from row to row shows them on exactly the row under the pointer, inside it, the label still readable; Duplicate on another row adds and selects the copy without selecting that row; Ctrl+Z / Ctrl+Y; Delete asks, Cancel keeps model and selection, Delete deletes. **Keyboard:** Tab through the list: the focused row (and only it) shows its buttons, Tab reaches them, Enter duplicates and the focus moves to the copy, Delete asks and Esc returns the focus to the button, with a visible focus ring. **Touch** (hover: none): a tap selects a row and shows its buttons; Delete asks first. The browser self-test adds: every row has the pair, named with action and object; quick Duplicate and Delete on every kind of object (device, link, network, relation, group, protocol) export exactly what the Edit tab's buttons export. |
 | **Help** | `test/menu.test.mjs`, the browser self-test and the viewport check | The menu by arrow keys from Find; User Manual: title, ×, Close, Esc, focus on its text and back on **Help** afterwards, a section per basic task, the contents list moving to a section without changing the page address, every screenshot a decodable embedded image with alt text and caption, shortcuts of the page off while it is open; License: names the Apache License, Version 2.0 (SPDX Apache-2.0), the full text embedded and scrolling in place, no links; both without a model. |
 | **Viewport** | `test/viewport.test.mjs` (12 tests) → `dist/netatlas.html#viewportcheck` (33 states per window size, including the start screen's actions, the open File, Export, Find and Help menus, Help → User Manual and Help → License with its full text (inside the window, × and Close reachable, the text scrolling inside the dialog), the open PNG / SVG submenu, the Find bar with its results, the diagram filters on one row with the Filters drop-down and its "off" count in both views, and a long file name in the status bar) | Stylesheet: the shell is sized by the viewport (`100dvh`, shrinkable middle row), the document is clipped, no fixed pixel heights, the panels are the scrolling regions and positioned. **In a real browser at ten window sizes** (maximized, not maximized, short and wide, both narrow layouts, and the viewports of pages zoomed to 150 %, 200 % and 300 %): with a long device form, its last field focused, both views, every tab, long lists and a dialog, the document has nothing to scroll and cannot be scrolled; toolbar controls, diagram controls, tabs and status bar are inside the window; the side panel ends at the status bar; long panels scroll to their end inside themselves. |
+| **Themes and theme-aware export** | `test/theme.test.mjs` (11 tests), through the DevTools protocol for the browser part | **Tokens:** one set of names for both themes, no colour outside them; WCAG 2.2 AA pairs (text and muted text 4.5:1 on every surface, control borders, focus ring, selection and diagram lines 3:1); dark surfaces grey, not black, lighter as they rise. **Diagram colours:** every medium and protocol colour 3:1 on each surface in both themes, calmer in the dark, unchanged in the light when already readable. **System** follows the operating system while the app runs (no reload; view, selection, zoom, layout kept). **The button:** right end of the toolbar at 1440, 1024, 720 and 390 px, never in a menu, name and tooltip (hover and keyboard focus), System → Light → Dark. **Storage:** the choice survives a reload; without storage everything still works. **Exports:** Light, Dark and System with the OS light and dark × both views × PNG and SVG: background and colours as on screen, no stylesheet, variable or media query in the SVG, opaque PNG; exporting changes nothing on screen. **An exported SVG opened on its own in a browser with the other colour scheme** keeps its theme. **Automated contrast check** of the rendered application in both themes (start screen, both views, Edit, Details, YAML, File menu, User Manual, License). |
+| **Addresses in the diagram** | `test/addresses.test.mjs` (8 tests), and the browser self-test | **Inventory:** every address and identifier field of every example (`ip`, `mac`, `vrf`, `vlan`, tunnel `source` / `destination`, `members`, network `cidr` and `vlan`, `cable`, DNS names, address-like `attrs`) is drawn as text in its view, whole; no "+N", no "…". **Order:** IPv4 then IPv6, numeric, secondary and dual-stack together. **No overlaps:** no text over other text, no label over a node, entries inside their boxes, for every example, both views and all three Auto-arrange strategies (the self-test measures the same with the browser's fonts). **Determinism** with the room addresses need. **Dragging:** entries move with their device; an overlap made by hand is counted and shown; Auto-arrange removes it. |
+| **Objects title** | `test/objects-title.test.mjs` (2 tests), through the DevTools protocol for the browser part | The left panel is a complementary region named *Objects* by its level-2 heading, described by *Select, duplicate, or delete* (read from the browser's accessibility tree); the right panel is the region *Inspector*. The title is one compact row above the list at 1440, 1024 and 800 px. |
 | Offline / artifact | `test/build.test.mjs` (8 tests) | One inline script; no external references or remote URLs (the only exception: the two `apache.org` addresses quoted in the embedded license text, shown as plain text, never as a link); the manual's screenshots embedded as `data:` images, under 400 KiB together; no `fetch`, XHR, WebSocket, `eval`, `innerHTML` …; strict CSP before the script; compiled JavaScript only; every module comes from `src/`; one version in `package.json`, `package-lock.json`, the HTML (meta and UI) and `CHANGELOG.md` |
 | Device types | `test/device-types.test.mjs` (6 tests) | Exactly the 15 specified types with their display names; each is accepted, has its own icon and a default tier; no type is allowed (generic icon); any other value (old names such as `l3switch`, `hypervisor`, `host`, `leaf`, `spine`, wrong case, hostile text) is an error at the type line with a suggestion or the list of types; display names in subtitles, details and the legend; the examples use only these types |
 | New elements | `test/creation-defaults.test.mjs` (7 tests) | **New** is empty and valid; each new object gets only an ID (no type, kind, prefix, VLAN, protocol or category); missing required values are errors located at the object, optional ones stay unset; choosing a value saves exactly it and clearing removes the key; an empty group kind is not drawn as a site; **Duplicate** keeps all values; every example imports and exports byte-for-byte, with model values taken only from the file |
@@ -847,7 +925,7 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/scr
 | Architecture | `test/architecture.test.mjs` (3 tests) | Every module lives in a layer folder; imports follow the allowed dependency direction (docs/ARCHITECTURE.md); the diagram, layout and UI layers never import the YAML layer |
 | **Port ranges** | `test/port-range.test.mjs` (7 tests) | The final number is the port number (also with leading zeros and multi-part names); ids follow the model's convention, with the typed name as label when it isn't a valid id. Rejected with a clear reason: missing number, different prefixes, first not lower than last, more than 256 ports, names that can't become ids. Duplicate names or ids on the device (ids and labels, physical and logical) reject the whole range; other devices don't count. Creation is all or nothing, one undo step, physical interfaces only (no addresses, VLANs, links); alphabetical display; **export → reload** of generated ports. |
 | Module APIs | `test/modules.test.mjs` (10 tests) | Document editing operations (typed values, lists, endpoints, attrs, key order, one undo step each); the format schema is the single source of allowed keys; model queries; export file names; `check:dist` accepts the current build and rejects a stale HTML file |
-| **End-to-end in a real browser** | `test/browser.test.mjs` → `dist/netatlas.html#selftest` (415 in-page checks) | Headless Chrome, Edge or Chromium opens the file from `file://` **with DNS resolution disabled** and drives the real UI. **Viewer:** every example loads through the File API path, both views are drawn, loopback chips appear only in the logical view, interaction works. **New model:** New is empty; a new device shows *Select device type* and saves no type until one is chosen; a new relation has no protocol and reports its missing protocol and endpoints (saving then needs "Download anyway" in the download fallback); a new network is only an ID; add a device, **add two loopbacks, type IPv4/IPv6 addresses, see the error for an address without a prefix and fix it**, add physical interfaces (type shown as read-only *Physical*), **a bond with two member ports, a VLAN interface whose *Ports carrying its networks* follow the networks on the cable ends, and a tunnel sourced from a loopback, an address and a port (an unknown source is an error)**, all listed alphabetically while the file keeps its order, a cable (link ends offer physical interfaces only), a GRE tunnel between loopbacks with nested attrs, then **per-end networks on the link** (the picker offers every network, an end with several is never called a trunk, a difference is shown and not synchronized, removal from one end leaves the other), **save (download a copy) and reload** the file. **Imported model:** rename a device (every reference follows), edit, add an IPv6 loopback, save as a downloaded `…-edited.yaml`, **reload, and check that edits, hidden attributes and comments survived**. **Guards:** unsaved-changes dialog on replace; `beforeunload`; Ctrl+Z/Y; deleting a referenced device reports broken references; **exporting an invalid model requires "Download anyway"**; YAML-tab apply/reject; unknown keys kept and movable into attrs; typed text is committed before a button acts; **selection context in the lists:** selecting from the diagram, the left list and the right-hand Relations list keeps lists and diagram consistent for every element type (direct entries related, indirect ones dimmed), unrelated entries stay focusable and selectable, view switches leave no stale highlighting, and `Esc` clears everything; the device type is chosen from the 15 types by display name. **Auto-arrange:** the three options are in the top toolbar, visible and labelled (disabled until a model is open); the status reads *Auto-arranged* / *Manually adjusted* / *Edited since arranged* after loading, dragging, undo, switching views (the shown view is highlighted), Auto-arrange, moving a node back to its calculated position, export → reload of arranged and of manually adjusted layouts, a model edit, and New; loading stores nothing; the dialog shows the scope; arranging an automatic layout stores it without moving anything; repeating it is a no-op; a manual move changes only that node and is undone by arrange (and restored by undo); **arrange → export → reload is pixel-identical in both views**; a file with every list and key reversed arranges identically; **the browser reproduces the build-time positions of `metro-ring-arranged.yaml`** (a cross-engine determinism check when run in Firefox or Safari). **Safety:** hostile labels create no elements; YAML syntax errors are refused with the current model kept; **no network requests, no CSP violations**. The test is skipped if no Chromium-based browser is installed; set `NETATLAS_BROWSER` to choose one. |
+| **End-to-end in a real browser** | `test/browser.test.mjs` → `dist/netatlas.html#selftest` (440 in-page checks) | Headless Chrome, Edge or Chromium opens the file from `file://` **with DNS resolution disabled** and drives the real UI. **Viewer:** every example loads through the File API path, both views are drawn, loopback chips appear only in the logical view, interaction works. **New model:** New is empty; a new device shows *Select device type* and saves no type until one is chosen; a new relation has no protocol and reports its missing protocol and endpoints (saving then needs "Download anyway" in the download fallback); a new network is only an ID; add a device, **add two loopbacks, type IPv4/IPv6 addresses, see the error for an address without a prefix and fix it**, add physical interfaces (type shown as read-only *Physical*), **a bond with two member ports, a VLAN interface whose *Ports carrying its networks* follow the networks on the cable ends, and a tunnel sourced from a loopback, an address and a port (an unknown source is an error)**, all listed alphabetically while the file keeps its order, a cable (link ends offer physical interfaces only), a GRE tunnel between loopbacks with nested attrs, then **per-end networks on the link** (the picker offers every network, an end with several is never called a trunk, a difference is shown and not synchronized, removal from one end leaves the other), **save (download a copy) and reload** the file. **Imported model:** rename a device (every reference follows), edit, add an IPv6 loopback, save as a downloaded `…-edited.yaml`, **reload, and check that edits, hidden attributes and comments survived**. **Guards:** unsaved-changes dialog on replace; `beforeunload`; Ctrl+Z/Y; deleting a referenced device reports broken references; **exporting an invalid model requires "Download anyway"**; YAML-tab apply/reject; unknown keys kept and movable into attrs; typed text is committed before a button acts; **selection context in the lists:** selecting from the diagram, the left list and the right-hand Relations list keeps lists and diagram consistent for every element type (direct entries related, indirect ones dimmed), unrelated entries stay focusable and selectable, view switches leave no stale highlighting, and `Esc` clears everything; the device type is chosen from the 15 types by display name. **Auto-arrange:** the three options are in the top toolbar, visible and labelled (disabled until a model is open); the status reads *Auto-arranged* / *Manually adjusted* / *Edited since arranged* after loading, dragging, undo, switching views (the shown view is highlighted), Auto-arrange, moving a node back to its calculated position, export → reload of arranged and of manually adjusted layouts, a model edit, and New; loading stores nothing; the dialog shows the scope; arranging an automatic layout stores it without moving anything; repeating it is a no-op; a manual move changes only that node and is undone by arrange (and restored by undo); **arrange → export → reload is pixel-identical in both views**; a file with every list and key reversed arranges identically; **the browser reproduces the build-time positions of `metro-ring-arranged.yaml`** (a cross-engine determinism check when run in Firefox or Safari). **Safety:** hostile labels create no elements; YAML syntax errors are refused with the current model kept; **no network requests, no CSP violations**. The test is skipped if no Chromium-based browser is installed; set `NETATLAS_BROWSER` to choose one. |
 
 ### Manual check (any browser, e.g. Firefox or Safari)
 
@@ -1234,6 +1312,29 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/scr
       visible dashed frames of the same look, in the light and the dark theme
       and in both views.
 
+21. **Themes, theme-aware export, addresses, Objects.** Open
+    `addressing.yaml` from the **File** menu.
+    * The theme switch is at the right end of the toolbar. Hover it, or
+      reach it with Tab: the tooltip says *Theme: System (light). Switch to
+      Light* (or *dark*). Press it three times: Light, Dark, System. Every
+      panel, menu, dialog (**Help → User Manual**, **License**), the toolbar
+      frames, form fields, scrollbars and the diagram follow at once; the
+      selection and zoom stay. Choose *System* and switch the operating
+      system between light and dark: NetAtlas follows without a reload.
+      Reload the page: the choice is kept.
+    * In both themes, export both views as PNG and SVG: each picture is in
+      the theme on screen. Open an exported dark SVG in a browser or viewer
+      set to light (and a light one in a dark viewer): it keeps its theme.
+    * In both views, every address of *core-rtr-01* is in its box, next to
+      its interface's name, in full (also
+      `2001:0db8:85a3:0000:0000:8a2e:0370:7334/127`); the VRRP virtual
+      addresses are on the *VRRP* label, the cable ids under the cables, the
+      prefixes on the networks. Nothing overlaps; after **Compact** and
+      **Spacious** neither. Drag *core-rtr-01* onto *dist-sw-01*: a note
+      over the diagram says there are overlaps; **Default** removes them.
+    * The left panel is titled **Objects** (*Select, duplicate, or
+      delete*); a screen reader announces the region *Objects*.
+
 ## Security model
 
 * Input is untrusted. Everything user-supplied (from files or typed into the
@@ -1272,9 +1373,9 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/scr
   when it's shown.
 * **Connecting in the diagram** creates two-endpoint links and relations
   only; a relation with more endpoints, an underlay (`over`) or attributes is
-  completed in the Edit tab afterwards. Interfaces are chips without their
-  addresses (the tooltip and the Edit tab show them); a device with very many
-  uncabled ports gets a tall strip.
+  completed in the Edit tab afterwards. A device with very many uncabled
+  ports gets a tall strip of chips, and one with many addressed interfaces a
+  tall box: every address is written out.
 * **Auto-arrange is heuristic.** It reduces crossings and overlaps but
   doesn't minimize them, so dense meshes (e.g. a full iBGP mesh) still cross.
   Cables and relations are straight lines, not orthogonally routed. Positions
@@ -1318,11 +1419,24 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/scr
   Auto-arrange identical in every browser). Boxes therefore have a little
   spare room, and with an unusually wide font a very long line can touch the
   edge of its box.
-* **Label placement has limits.** Labels keep clear of nodes and of each
-  other, not of lines, so a label can lie on a cable or relation line that
-  isn't its own. In a very dense diagram, or after dragging nodes close
-  together, a label that finds no free place is put where it overlaps least
-  (it is never dropped).
+* **Label placement has limits.** Labels keep clear of nodes, of group
+  titles and of each other, not of lines, so a label can lie on a cable or
+  relation line that isn't its own (it has a halo that keeps it readable).
+  The addresses of a membership line are written on that line. A label that
+  finds no free place next to its line takes the nearest free place further
+  away, tied to its line by a dashed leader; only when there is none (after
+  dragging nodes close together) is it put where it overlaps least, and the
+  overlap is reported over the diagram (it is never dropped).
+* **Addresses in `attrs`** are recognised by their value (an IPv4 / IPv6
+  address or prefix, or a MAC address) and drawn with their key; other
+  identifiers kept there (a route target, a VNI, an AS number) are not
+  addresses and stay in the details. Descriptions are free text and are not
+  searched for addresses.
+* **Themes:** the theme switch is part of the toolbar; while a dialog is open
+  the page behind it can't be used (the dialog is modal), so the theme is
+  switched before or after. Colours of custom protocols are adjusted per
+  theme like the built-in ones (darker on light only when too pale, calmer
+  and lighter on dark).
 * **Group placement is a heuristic.** It follows the cabling layer by layer
   and tries a bounded number of alternatives. It gives short, mostly
   uncrossed cabling for trees and hub-and-spoke shapes; rings and meshes

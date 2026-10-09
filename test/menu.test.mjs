@@ -101,10 +101,10 @@ test('outline sections: folding is view state of the editor, with Links and Prot
   assert.ok(load('ui/inspector.js').Editor);
 });
 
-test('examples: the File menu offers the six hand-written examples; the generated fixtures are test data only', async () => {
+test('examples: the File menu offers the seven hand-written examples; the generated fixtures are test data only', async () => {
   const { readdirSync } = await import('node:fs');
   const { EXAMPLES, FIXTURES } = load('generated/examples.js');
-  assert.deepEqual(EXAMPLES.map((e) => e.name), ['enterprise-wan.yaml', 'datacenter-evpn.yaml', 'minimal.yaml', 'metro-ring.yaml', 'device-types.yaml', 'long-labels.yaml']);
+  assert.deepEqual(EXAMPLES.map((e) => e.name), ['enterprise-wan.yaml', 'datacenter-evpn.yaml', 'minimal.yaml', 'metro-ring.yaml', 'device-types.yaml', 'long-labels.yaml', 'addressing.yaml']);
   assert.deepEqual(FIXTURES.map((e) => e.name).sort(), ['editor-new-network.yaml', 'metro-ring-arranged.yaml', 'minimal-edited.yaml']);
   assert.deepEqual(readdirSync(join(root, 'examples')).filter((f) => /\.yaml$/.test(f)).sort(), EXAMPLES.map((e) => e.name).sort());
   // nothing the user sees builds its list from FIXTURES: only the self-test imports them
@@ -155,8 +155,8 @@ test('Find menu: next to Export, with Find in diagram… (/) and Filter object l
 });
 
 test('diagram filters: one group at the right of the toolbar, with a Filters drop-down for what does not fit', () => {
-  const group = /<div id="filters-slot" class="filters-slot">\s*<div id="filters-group" class="tool-group filters-group" role="group" aria-label="Diagram filters">\s*<span id="filters-title" class="tool-group-title">Filters<\/span>\s*<div id="view-filters" class="view-filters">([\s\S]*?)\n  <\/div>\n  <\/div>\n  <\/div>\n<\/header>/.exec(html);
-  assert.ok(group, 'the filters are one labelled group, the last thing in the toolbar');
+  const group = /<div id="filters-slot" class="filters-slot">\s*<div id="filters-group" class="tool-group filters-group" role="group" aria-label="Diagram filters">\s*<span id="filters-title" class="tool-group-title">Filters<\/span>\s*<div id="view-filters" class="view-filters">([\s\S]*?)\n  <\/div>\n  <\/div>\n  <\/div>\n  <div class="theme-wrap">[\s\S]*?<\/div>\n<\/header>/.exec(html);
+  assert.ok(group, 'the filters are one labelled group, the last thing in the toolbar before the theme switch');
   const opts = [...group[1].matchAll(/<label class="opt[^"]*" data-priority="(\d)"[^>]*><input id="([^"]+)"/g)].map((m) => [m[2], Number(m[1])]);
   assert.deepEqual(opts, [['opt-labels', 5], ['opt-groups', 4], ['opt-networks', 3], ['opt-type-endpoint', 2], ['opt-type-server', 1]]);
   assert.match(group[1], /<button id="more-filters-btn" type="button" class="menu-btn" aria-haspopup="true" aria-expanded="false" aria-controls="more-filters" hidden disabled>Filters/);
@@ -288,7 +288,7 @@ test('Auto-arrange: three direct options (Default, Compact, Spacious) in one lab
   assert.match(css, /\.tool-group \{[^}]*flex-direction: column;[^}]*border: 1px dashed var\(--frame\);/);
   assert.match(css, /\.arrange-btns \{ display: flex; \}/);
   // the label takes no width above the buttons, so no narrow toolbar hides it
-  assert.doesNotMatch(css, /@container[^{]*\{[^@]*\.(arrange-title|tool-group-title)/);
+  for (const block of css.match(/@container[^{]*\{(?:[^{}]*\{[^}]*\})*[^{}]*\}/g) || []) assert.doesNotMatch(block, /\.(arrange-title|tool-group-title)/);
 });
 
 test('toolbar groups: View, Auto-arrange and Filters each have a label above their controls, in the same dashed frame', () => {
@@ -311,8 +311,8 @@ test('toolbar groups: View, Auto-arrange and Filters each have a label above the
     return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
   };
   const ratio = (a, b) => (Math.max(lum(a), lum(b)) + 0.05) / (Math.min(lum(a), lum(b)) + 0.05);
-  const light = /:root \{([^}]*)\}/.exec(css)[1];
-  const dark = /@media \(prefers-color-scheme: dark\) \{\s*:root \{([^}]*)\}/.exec(css)[1];
+  const light = /:root, :root\[data-theme="light"\] \{([^}]*)\}/.exec(css)[1];
+  const dark = /:root\[data-theme="dark"\] \{([^}]*)\}/.exec(css)[1];
   for (const [name, vars] of [['light', light], ['dark', dark]]) {
     const v = (k) => new RegExp('--' + k + ': (#[0-9a-f]{6});').exec(vars)[1];
     assert.ok(ratio(v('frame'), v('panel')) >= 3, `${name}: frame ${v('frame')} on ${v('panel')} = ${ratio(v('frame'), v('panel')).toFixed(2)}:1`);

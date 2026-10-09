@@ -188,19 +188,21 @@ test('the diagrams draw every interface of a shown device, as selectable endpoin
   assert.ok(byClass(f.render().root, 'if-chip').every((n) => /^iface:r1:/.test(n.attrs['data-ref'])));
 });
 
-test('interface chips: a long run of similar names shows the shared prefix once; nothing is cut off', () => {
+test('interface chips: every chip shows its interface\'s full name, however many similar names there are; nothing is cut off', () => {
   const S = load('layout/sizes.js');
-  assert.deepEqual(S.chipTexts(['eth0', 'eth1']), { prefix: '', texts: ['eth0', 'eth1'] });
   const many = Array.from({ length: 12 }, (_, i) => `ge-0/0/${i + 1}`);
-  assert.deepEqual(S.chipTexts(many), { prefix: 'ge-0/0/', texts: many.map((x) => x.slice(7)) });
-  // a prefix is only used when every chip keeps text of its own
-  assert.equal(S.chipTexts(['p', 'p1', 'p2', 'p3', 'p4', 'p5']).prefix, '');
   const flow = S.chipFlow(many, 160);
-  assert.equal(flow.items[0].text, 'ge-0/0/ ▸');
+  // an interface name is an identifier: written in full on its chip, no shared prefix taken out
+  assert.deepEqual(flow.items.map((c) => c.text), many);
+  assert.deepEqual(flow.items.map((c) => c.id), many);
+  assert.equal(S.chipTexts, undefined);
   assert.ok(flow.items.every((c) => c.x + c.w <= 160 || c.x === 0), 'rows stay within the width');
   assert.ok(flow.items.every((c) => !/…/.test(c.text)));
   // the device box grows for the chips: its size depends on them, so Auto-arrange leaves room
   const { physicalBaseSize } = load('layout/physical.js');
-  const base = { id: 'x', label: 'x', sub: 'Switch', tier: 4, group: null, loopbacks: 0, chipW: 0, dns: [], logical: [] };
+  const base = { id: 'x', label: 'x', sub: 'Switch', tier: 4, group: null, loopbacks: 0, physList: [0, 0], logList: [0, 0], dns: [], logical: [] };
   assert.ok(physicalBaseSize({ ...base, spare: many }).h > physicalBaseSize({ ...base, spare: [] }).h);
+  // … and for the entries with its interfaces' addresses, so they never stick out of the box
+  const listed = physicalBaseSize({ ...base, spare: [], physList: [300, 80] });
+  assert.ok(listed.w >= 300 && listed.h >= physicalBaseSize({ ...base, spare: [] }).h + 80);
 });

@@ -7,11 +7,12 @@
  * checks what was drawn and what gets exported. It also verifies label
  * safety, error reporting and that the page made no network requests.
  */
-import { Device, Interface } from '../model/types';
+import { Device, Interface, Model } from '../model/types';
 import { ModelDoc } from '../editor/document';
 import { DEVICE_TYPES } from '../model/device-types';
 import { interfaceAddresses, interfaceVlanText, networkMembers } from '../model/derive';
 import { contextState, relatedRefs, selectionContext } from '../model/queries';
+import { addressInventory } from '../model/addresses';
 import { strNode } from '../yaml/parse';
 import { EXAMPLES, FIXTURES } from '../generated/examples';
 import { PNG_MAX_PIXELS, PNG_MAX_SIDE, WritableFile, pngScale, svgToPng } from '../ui/files';
@@ -112,7 +113,12 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       });
     boxed('g.device', '.dev-box', 'text');
     boxed('g.network', '.net-box', 'text');
-    boxed('g.group', '.group-box', '.group-title');
+    // a group's title is drawn above the lines (in the label layer), inside its frame
+    each('g.group-label', (gl) => {
+      const frame = root.querySelector(`g.group[data-ref="${gl.getAttribute('data-ref')}"] .group-box`);
+      const t = gl.querySelector('.group-title');
+      if (frame && t && !inside(bb(t), bb(frame))) out.push(`"${t.textContent}" leaves its group frame`);
+    });
     boxed('g.pill', '.pill-box', 'text');
     boxed('g.loop-chip', 'rect', 'text');
     boxed('g.dns-chip', 'rect', 'text');
@@ -128,7 +134,45 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       for (let j = i + 1; j < labels.length; j++) if (hit(labels[i][1], labels[j][1])) out.push(`labels overlap: "${labels[i][0]}" / "${labels[j][0]}"`);
       for (const n of nodes) if (hit(labels[i][1], n[1])) out.push(`label "${labels[i][0]}" covers ${n[0]}`);
     }
+    // the entries with the interfaces' addresses: their text inside their frame, the frame inside its device's box
+    boxed('g.if-entry', 'rect', 'text');
+    each('g.if-entry', (g) => {
+      const dev = root.querySelector(`g.device[data-ref="device:${(g.getAttribute('data-ref') || '').split(':')[1]}"] .dev-box`);
+      const frame = g.querySelector('rect');
+      if (dev && frame && !inside(bb(frame), bb(dev))) out.push(`entry ${g.getAttribute('data-ref')} leaves its device's box`);
+    });
+    // no text is drawn over other text: every pair of <text> elements, measured with the real font
+    const texts: Array<[string, R]> = [];
+    each('text', (t) => {
+      const r = bb(t);
+      if (r.w > 0 && r.h > 0) texts.push([(t.textContent || '').slice(0, 40), r]);
+    });
+    // (a text's box spans the font's whole ascent and descent, so the boxes of two lines set one under the
+    // other touch: what counts is an overlap of more than 30 % of a line's height, i.e. glyphs on glyphs)
+    const textHit = (a: R, b: R): boolean => Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x) > 1 && Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y) > 0.3 * Math.min(a.h, b.h);
+    for (let i = 0; i < texts.length; i++) for (let j = i + 1; j < texts.length; j++) if (textHit(texts[i][1], texts[j][1])) out.push(`text overlaps text: "${texts[i][0]}" / "${texts[j][0]}"`);
     return out;
+  };
+
+  /**
+   * The addresses and identifiers of the model that the diagram on screen
+   * does not show as text (model/addresses.ts says which belong in which
+   * view). A DNS name may continue on further lines; everything else is one
+   * whole line.
+   */
+  const missingAddresses = (m: Model, view: 'physical' | 'logical'): string[] => {
+    const lines: string[] = [];
+    Array.prototype.forEach.call(doc.querySelectorAll('#viewport text'), (t: Element) => {
+      const spans = t.querySelectorAll('tspan');
+      if (spans.length) Array.prototype.forEach.call(spans, (x: Element) => lines.push(x.textContent || ''));
+      else lines.push(t.textContent || '');
+    });
+    const all = '\n' + lines.join('\n') + '\n';
+    const flat = lines.join('');
+    return addressInventory(m)
+      .filter((a) => a.views.indexOf(view) >= 0)
+      .filter((a) => (a.field === 'dns_names' ? flat.indexOf(a.text) < 0 : all.indexOf(a.text) < 0))
+      .map((a) => `${a.owner} ${a.field} "${a.text}"`);
   };
 
   let violations = 0;
@@ -212,7 +256,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
           labels.join('|') === 'New model|Open model…|Save model|Save model as…|Close model' && /Ctrl\+S$/.test(entries[2]) && /Ctrl\+Shift\+S$/.test(entries[3]) &&
           entries.length === 5 + EXAMPLES.length && ['#btn-save', '#btn-save-as', '#btn-close'].every((x) => (q(x) as HTMLButtonElement).disabled && /Open or create a model first|Close the current model/.test(q(x)!.title)) &&
           q('#btn-save')!.nextElementSibling === q('#btn-save-as') && q('#btn-save-as')!.nextElementSibling === q('#btn-close') &&
-          textsOf('#menu-examples .mi-label').join() === EXAMPLES.map((e) => e.name).join() && !q('#menu-examples .active-example') && /Examples/.test(q('#menu-examples-title')!.textContent || '') && EXAMPLES.length === 6 && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(menu!.textContent || '') && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(q('#empty')!.textContent || ''),
+          textsOf('#menu-examples .mi-label').join() === EXAMPLES.map((e) => e.name).join() && !q('#menu-examples .active-example') && /Examples/.test(q('#menu-examples-title')!.textContent || '') && EXAMPLES.length === 7 && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(menu!.textContent || '') && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(q('#empty')!.textContent || ''),
         entries.join(' | '),
       );
       menuBtn!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
@@ -967,7 +1011,9 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       check(`${ex.name}: loopbacks are not drawn as ports in the physical view`, count('.loop-chip') === 0);
       // stored layouts (the "…-arranged"/edited examples are arranged too) and auto layouts alike
       const physProblems = drawnProblems();
-      check(`${ex.name}: physical view, measured in the browser: full text inside its boxes, no overlapping boxes or labels`, !physProblems.length, physProblems.slice(0, 5).join('; '));
+      check(`${ex.name}: physical view, measured in the browser: full text inside its boxes, no overlapping boxes, labels or text`, !physProblems.length, physProblems.slice(0, 5).join('; '));
+      const physMissing = missingAddresses(m, 'physical');
+      check(`${ex.name}: physical view shows every physical identifier and every address of a physical interface as text`, !physMissing.length, physMissing.slice(0, 5).join('; '));
 
       click('[data-view-btn="logical"]');
       const drawable = m.relations.filter((r) => new Set(r.endpoints.map((e) => e.device)).size >= 2).length;
@@ -977,7 +1023,9 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const loops = m.devices.reduce((s, d) => s + Math.min(3, d.logical.filter((x) => x.type === 'loopback').length), 0);
       check(`${ex.name}: loopbacks shown as chips in the logical view`, count('.loop-chip') === loops, `${count('.loop-chip')} / ${loops}`);
       const logProblems = drawnProblems();
-      check(`${ex.name}: logical view, measured in the browser: full text inside its boxes, no overlapping boxes or labels`, !logProblems.length, logProblems.slice(0, 5).join('; '));
+      check(`${ex.name}: logical view, measured in the browser: full text inside its boxes, no overlapping boxes, labels or text`, !logProblems.length, logProblems.slice(0, 5).join('; '));
+      const logMissing = missingAddresses(m, 'logical');
+      check(`${ex.name}: logical view shows every address, prefix, VLAN, VRF and tunnel endpoint as text`, !logMissing.length, logMissing.slice(0, 5).join('; '));
 
       const firstRel = m.relations[0];
       if (firstRel) {
@@ -1112,7 +1160,11 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     check('GRE drawn inside IPsec (narrower tube on the same path)', !!ipsec && !!gre && w(gre) < w(ipsec) && gre!.getAttribute('d') === ipsec!.getAttribute('d'));
     check('custom protocol MACsec rendered', !!q('#viewport g.rel.proto-macsec'));
     const svgText = app.exportSvg();
-    check('SVG export is standalone (inline style, no script, no external refs)', /^<svg[\s\S]*<style[\s\S]*relation:gre-muc[\s\S]*<\/svg>$/.test(svgText) && !/<script|https?:\/\/(?!www\.w3\.org)/.test(svgText));
+    check(
+      'SVG export is standalone: resolved colours as attributes, an explicit background, no stylesheet, no CSS variable, no prefers-color-scheme, no script, no external refs',
+      /^<svg[\s\S]*<rect class="export-background"[^>]*fill="#[0-9a-f]{6}"[\s\S]*relation:gre-muc[\s\S]*<\/svg>$/.test(svgText) && !/<style|var\(--|prefers-color-scheme|<script|https?:\/\/(?!www\.w3\.org)/.test(svgText),
+      (svgText.match(/<style|var\(--[a-z-]*|prefers-color-scheme/g) || []).slice(0, 5).join(', '),
+    );
     {
       // the exported file is parsed and laid out on its own, as a viewer would, and measured with real font metrics
       type Box = { x: number; y: number; w: number; h: number };
@@ -1571,7 +1623,13 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
           lines('group:dc', 'group-title').join(' ') === m.index.groups.get('dc')!.label,
         JSON.stringify([lines('device:core-a', 'dev-label'), lines('device:fw', 'dev-label'), lines('device:storage', 'dev-label'), lines('group:dc', 'group-title')]),
       );
-      check('boxes differ in size with their text (one-letter label < three lines < long wrapped label)', boxH('device:srv') < boxH('device:core-a') && boxH('device:core-a') < boxH('device:fw'), [boxH('device:srv'), boxH('device:core-a'), boxH('device:fw')].join(' '));
+      // the label part of a box grows with its lines; the entries with the interfaces' addresses come on top of that
+      const labelH = (ref: string): number => (q(`#viewport g[data-ref="${ref}"] .dev-label`) as unknown as SVGGraphicsElement).getBBox().height;
+      check(
+        'boxes differ in size with their text (one-letter label < three lines < long wrapped label), each grown around its label',
+        labelH('device:srv') < labelH('device:core-a') && labelH('device:core-a') < labelH('device:fw') && ['device:srv', 'device:core-a', 'device:fw'].every((r) => boxH(r) > labelH(r) + 12),
+        [labelH('device:srv'), labelH('device:core-a'), labelH('device:fw')].map(Math.round).join(' '),
+      );
       const straight = count('.cable.straight');
       const peerD = ['peer-1', 'peer-2', 'peer-3'].map((id) => (q(`#viewport g.cable[data-ref="link:${id}"] .cable-line`) as Element).getAttribute('d') || '');
       check(
@@ -3396,11 +3454,11 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       app.setView('physical');
       await tick();
       const chips = (Array.prototype.map.call(doc.querySelectorAll('#viewport g.port-chip'), (e: Element) => e.getAttribute('data-ref')) as string[]).join();
-      const caption = (q('#viewport .if-chip-prefix') as unknown as Element | null)?.textContent || '';
+      const chipTexts = (Array.prototype.map.call(doc.querySelectorAll('#viewport g.port-chip text'), (e: Element) => e.textContent) as string[]).join();
       check(
-        'physical view: a device’s ports without a cable are drawn as selectable chips in its box (a long run of similar names shows the shared prefix once); ports with a cable stay ports',
-        chips === 'iface:access:Et3,iface:access:Et4,iface:access:Et5,iface:access:Et6,iface:access:Et7,iface:access:Et8' && caption === 'Et ▸' && !!q('#viewport rect.port[data-ref="iface:access:Et1"]') && drawnProblems().length === 0,
-        chips + ' ' + caption + ' ' + drawnProblems().slice(0, 3).join('; '),
+        'physical view: a device’s ports without a cable are drawn as selectable chips in its box, each with its full name (also in a long run of similar names); ports with a cable stay ports',
+        chips === 'iface:access:Et3,iface:access:Et4,iface:access:Et5,iface:access:Et6,iface:access:Et7,iface:access:Et8' && chipTexts === 'Et3,Et4,Et5,Et6,Et7,Et8' && !q('#viewport .if-chip-prefix') && !!q('#viewport rect.port[data-ref="iface:access:Et1"]') && drawnProblems().length === 0,
+        chips + ' ' + chipTexts + ' ' + drawnProblems().slice(0, 3).join('; '),
       );
       // left click selects the interface and opens it in the Edit tab; it never starts a connection
       leftClick(el('iface:access:Et5'));
@@ -3611,7 +3669,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         ),
       );
       const secs = textsOf('#modal .man-sec > h3').join(' | ');
-      const topics = [/Open or create a model/, /Save or export/, /Physical and Logical/, /Find and filter/, /Select and edit/, /Create connections/, /Auto-arrange/];
+      const topics = [/Open or create a model/, /Save or export/, /Physical and Logical/, /light or dark theme/, /Find and filter/, /Select and edit/, /Create connections/, /Auto-arrange/];
       const r = dlg.getBoundingClientRect();
       const root = doc.documentElement;
       const fits = r.left >= 0 && r.top >= 0 && r.right <= root.clientWidth + 0.5 && r.bottom <= root.clientHeight + 0.5 && root.scrollHeight <= root.clientHeight && root.scrollWidth <= root.clientWidth;
