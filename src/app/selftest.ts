@@ -189,9 +189,9 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const bar = 'header.topbar';
       const menuBtn = q('#menu-btn') as HTMLButtonElement | null;
       const menu = q('#main-menu') as HTMLElement | null;
-      const direct = ['#btn-undo', '#btn-redo', '[data-view-btn="physical"]', '[data-view-btn="logical"]', '#btn-arrange-default', '#btn-arrange-compact', '#btn-arrange-spacious', '#menu-btn', '#export-btn', '#view-btn'];
+      const direct = ['#btn-undo', '#btn-redo', '[data-view-btn="physical"]', '[data-view-btn="logical"]', '#btn-arrange-default', '#btn-arrange-compact', '#btn-arrange-spacious', '#menu-btn', '#export-btn', '#find-btn', '#help-btn'];
       check(
-        'toolbar: logo and version, the File, Export and Find & Filter menus, and undo/redo, Physical/Logical and Auto-arrange as direct controls; no "Current model" button',
+        'toolbar: logo and version, the File, Export, Find and Help menus, and undo/redo, Physical/Logical and Auto-arrange as direct controls; no "Current model" button',
         !!q(bar + ' .brand svg') && /^v\d+\.\d+\.\d+/.test((q(bar + ' .brand .version') || { textContent: '' }).textContent || '') && !!menuBtn && /^File/.test((menuBtn.textContent || '').trim()) &&
           direct.every((d) => !!q(bar + ' ' + d) && !(q(bar + ' ' + d) as HTMLElement).closest('.dropdown') && (q(bar + ' ' + d) as HTMLElement).getBoundingClientRect().width > 10) &&
           !q('#btn-model') && !q('#model-badge') && !/Current model/.test((q(bar) as HTMLElement).textContent || ''),
@@ -593,7 +593,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         click('[data-view-btn="logical"]');
         app.select('device:hq-rtr1');
         click('#outline [data-act="fold-all"]');
-        click('#view-btn');
+        click('#find-btn');
         click('#btn-outline-filter');
         const filter = q('#outline [data-t="outline-filter"]') as HTMLInputElement;
         filter.value = 'hq';
@@ -924,8 +924,8 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const relatedMark = (toggle('link').querySelector('.ol-related') || { textContent: '' }).textContent || '';
       check('"Collapse all" folds every section; a folded section still shows the selected entry and how many of its entries are related', allFolded && selShown && /^• \d+$/.test(relatedMark), `${allFolded} ${selShown} "${relatedMark}"`);
       app.select(null);
-      // the filter (Find & Filter → Filter object list…) looks into folded sections
-      click('#view-btn');
+      // the filter (Find → Filter object list…) looks into folded sections
+      click('#find-btn');
       click('#btn-outline-filter');
       const filter = q('#outline [data-t="outline-filter"]') as HTMLInputElement;
       filter.value = 'isp1';
@@ -1366,11 +1366,14 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       };
 
       check('no selection: list entries at normal prominence', olItems().every((b) => !b.hasAttribute('data-ctx')) && !(q('#outline-body .ol-ctx-hint') || { textContent: '' }).textContent);
-      /** where every entry and its label is, and how wide the menu is: must not change with the selection */
+      /**
+       * where every row and its label is, and how wide the menu is: must not change with the selection
+       * (on a touch screen the selected row shows its quick actions at its end, which may only shorten its label)
+       */
       const geo = (): string => {
         const ol = q('#outline') as HTMLElement;
         const rows = olItems().map((b) => {
-          const r = b.getBoundingClientRect();
+          const r = (b.closest('.ol-row') as HTMLElement).getBoundingClientRect();
           const l = (b.querySelector('.ol-label') as HTMLElement).getBoundingClientRect();
           return `${b.getAttribute('data-ref')}@${Math.round(r.left)},${Math.round(r.top)},${Math.round(r.width)}/${Math.round(l.left)}`;
         });
@@ -2833,7 +2836,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       click('[data-tab="legend"]');
     }
 
-    // ------------- DNS names (logical view), help texts, Details = Edit header, toolbar filters, file name, Find & Filter menu
+    // ------------- DNS names (logical view), help texts, Details = Edit header, toolbar filters, file name, Find menu
     {
       if (app.mdoc) app.mdoc.markSaved();
       const view = doc.defaultView as Window;
@@ -2980,39 +2983,39 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       servers.click();
       await tick();
 
-      // the Find & Filter menu: Find in diagram… and Filter object list… live there (and nowhere else), with the menus' keyboard rules
-      const viewBtn = q('#view-btn') as HTMLButtonElement;
+      // the Find menu: Find in diagram… and Filter object list… live there (and nowhere else), with the menus' keyboard rules
+      const viewBtn = q('#find-btn') as HTMLButtonElement;
       {
         // its name in both views: the visible text (which is also the button's accessible name), the tooltip and the menu's label;
         // the View group of Physical / Logical keeps its own name
         const names: string[] = [];
         for (const v of ['physical', 'logical']) {
           click(`[data-view-btn="${v}"]`);
-          names.push([(viewBtn.textContent || '').replace('▾', '').trim(), viewBtn.getAttribute('aria-label') === null, viewBtn.title, (q('#view-menu') as HTMLElement).getAttribute('aria-label'), (q('#view-title') as HTMLElement).textContent].join('|'));
+          names.push([(viewBtn.textContent || '').replace('▾', '').trim(), viewBtn.getAttribute('aria-label') === null, viewBtn.title, (q('#find-menu') as HTMLElement).getAttribute('aria-label'), (q('#view-title') as HTMLElement).textContent].join('|'));
         }
         check(
-          'the menu with Find in diagram… and Filter object list… is named "Find & Filter" in both views (text, accessible name, tooltip, the menu’s label); the Physical / Logical group is still "View"',
-          names.every((n) => n === 'Find & Filter|true|Find & Filter: find in the diagram, filter the object list|Find & Filter|View'),
+          'the menu with Find in diagram… and Filter object list… is named "Find" in both views (text, accessible name, tooltip, the menu’s label); the Physical / Logical group is still "View"',
+          names.every((n) => n === 'Find|true|Find: find in the diagram, filter the object list|Find|View'),
           names.join(' / '),
         );
       }
       click('#export-btn');
       (q('#export-menu') as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true }));
       await tick();
-      const viaArrow = !(q('#view-menu') as HTMLElement).hidden && viewBtn.getAttribute('aria-expanded') === 'true' && (q('#view-menu') as HTMLElement).contains(doc.activeElement);
-      const entries = textsOf('#view-menu button');
+      const viaArrow = !(q('#find-menu') as HTMLElement).hidden && viewBtn.getAttribute('aria-expanded') === 'true' && (q('#find-menu') as HTMLElement).contains(doc.activeElement);
+      const entries = textsOf('#find-menu button');
       check(
-        'Find & Filter menu next to Export: Find in diagram… (/) and Filter object list…, reached with the arrow keys like File and Export; no search box in the toolbar, no filter box always in the outline',
+        'Find menu next to Export: Find in diagram… (/) and Filter object list…, reached with the arrow keys like File and Export; no search box in the toolbar, no filter box always in the outline',
         viaArrow && entries.join(' | ') === 'Find in diagram…/ | Filter object list…' && !q('header.topbar #search') && !q('header.topbar [data-t="outline-filter"]') &&
           /in the diagram/.test((q('#btn-find') as HTMLElement).title) && /object list/.test((q('#btn-outline-filter') as HTMLElement).title) && /diagram is not changed/.test((q('#btn-outline-filter') as HTMLElement).title),
         `${viaArrow} ${entries.join(' | ')}`,
       );
-      (q('#view-menu') as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
-      click('#view-btn');
+      (q('#find-menu') as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      click('#find-btn');
       click('#btn-find');
       await tick();
       const s = q('#search') as HTMLInputElement;
-      const findOpened = app.findOpen && doc.activeElement === s && (q('#view-menu') as HTMLElement).hidden;
+      const findOpened = app.findOpen && doc.activeElement === s && (q('#find-menu') as HTMLElement).hidden;
       s.value = 'hq-fw';
       s.dispatchEvent(new Event('input', { bubbles: true }));
       await tick();
@@ -3022,13 +3025,13 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const picked = app.session!.state.selected === 'device:hq-fw';
       s.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
       await tick();
-      check('Find & Filter → Find in diagram… opens the Find bar with the cursor in it; typing lists matches, Enter selects the first, Esc closes the bar', findOpened && hits >= 1 && picked && !app.findOpen && s.value === '' && (q('#find-bar') as HTMLElement).getAttribute('aria-label') === 'Find in diagram', `${findOpened} ${hits} ${picked}`);
+      check('Find → Find in diagram… opens the Find bar with the cursor in it; typing lists matches, Enter selects the first, Esc closes the bar', findOpened && hits >= 1 && picked && !app.findOpen && s.value === '' && (q('#find-bar') as HTMLElement).getAttribute('aria-label') === 'Find in diagram', `${findOpened} ${hits} ${picked}`);
       (doc.activeElement as HTMLElement | null)?.blur?.();
       doc.dispatchEvent(new KeyboardEvent('keydown', { key: '/', bubbles: true, cancelable: true }));
       await tick();
       check('"/" still opens Find', app.findOpen && doc.activeElement === s);
       app.closeFind();
-      click('#view-btn');
+      click('#find-btn');
       click('#btn-outline-filter');
       await tick();
       const of = q('#outline [data-t="outline-filter"]') as HTMLInputElement;
@@ -3042,7 +3045,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       of2.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
       await tick();
       check(
-        'Find & Filter → Filter object list… shows the filter at the top of the outline with the cursor in it; it filters the list, not the diagram; Esc clears and removes it',
+        'Find → Filter object list… shows the filter at the top of the outline with the cursor in it; it filters the list, not the diagram; Esc clears and removes it',
         ofOpened && new XMLSerializer().serializeToString(q('#viewport') as Element) === diagramBefore && listed.indexOf('muc-rtr') >= 0 && listed.indexOf('hq-rtr1') < 0 && !q('#outline [data-t="outline-filter"]') && textsOf('#outline .ol-item').length > listed.length,
         listed.join(' | '),
       );
@@ -3561,6 +3564,278 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         `${drawnA} ${app.session!.state.selected}`,
       );
       md().markSaved();
+    }
+
+    // ------------------------------------------------ Help: User Manual and License
+    {
+      app.mdoc && app.mdoc.markSaved();
+      app.loadExample(0);
+      app.setView('physical');
+      await tick();
+      const helpBtn = q('#help-btn') as HTMLButtonElement;
+      const dlg = q('#modal') as HTMLDialogElement;
+      const key = (target: Element, k: string): void => {
+        target.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true }));
+      };
+      // the menu: right after Find, reached with the arrow keys like every menu
+      click('#find-btn');
+      key(q('#find-menu') as HTMLElement, 'ArrowRight');
+      await tick();
+      const viaArrow = !(q('#help-menu') as HTMLElement).hidden && helpBtn.getAttribute('aria-expanded') === 'true' && doc.activeElement === q('#btn-manual');
+      const entries = textsOf('#help-menu button');
+      key(q('#help-menu') as HTMLElement, 'Escape');
+      await tick();
+      check(
+        'Help menu right after Find: User Manual and License, reached with the arrow keys; Esc closes it and returns to its button',
+        viaArrow && entries.join('|') === 'User Manual|License' && (q('#help-menu') as HTMLElement).hidden && doc.activeElement === helpBtn,
+        `${viaArrow} ${entries.join('|')}`,
+      );
+
+      // User Manual: a large dialog, its text focused and scrolling inside itself, the screenshots embedded and decodable
+      click('#help-btn');
+      click('#btn-manual');
+      await tick(20);
+      const man = q('#modal .manual') as HTMLElement;
+      const imgs = Array.prototype.slice.call(doc.querySelectorAll('#modal .manual img')) as HTMLImageElement[];
+      const decoded = await Promise.all(
+        imgs.map(
+          (i) =>
+            new Promise<boolean>((done) => {
+              // loaded from its data: URL, with the size the manual gives it (a broken image fails; nothing waits forever)
+              const im = new Image();
+              im.onload = () => done(im.naturalWidth === Number(i.getAttribute('width')) && im.naturalHeight === Number(i.getAttribute('height')));
+              im.onerror = () => done(false);
+              setTimeout(() => done(false), 5000);
+              im.src = i.src;
+            }),
+        ),
+      );
+      const secs = textsOf('#modal .man-sec > h3').join(' | ');
+      const topics = [/Open or create a model/, /Save or export/, /Physical and Logical/, /Find and filter/, /Select and edit/, /Create connections/, /Auto-arrange/];
+      const r = dlg.getBoundingClientRect();
+      const root = doc.documentElement;
+      const fits = r.left >= 0 && r.top >= 0 && r.right <= root.clientWidth + 0.5 && r.bottom <= root.clientHeight + 0.5 && root.scrollHeight <= root.clientHeight && root.scrollWidth <= root.clientWidth;
+      const scrolls = man.scrollHeight > man.clientHeight && getComputedStyle(man).overflowY === 'auto';
+      check(
+        'Help → User Manual: a large dialog titled "NetAtlas User Manual" with ×, Close and Esc; its text has the focus and scrolls inside the dialog; every basic task has a section; the screenshots are embedded data: images that decode, each with a caption and alt text',
+        dlg.open && app.helpOpen === 'manual' && dlg.getAttribute('aria-labelledby') === 'modal-title' && (q('#modal-title') as HTMLElement).textContent === 'NetAtlas User Manual' &&
+          !!q('#modal .modal-x[aria-label="Close"]') && !!q('#modal [data-value="close"]') && doc.activeElement === man &&
+          topics.every((t) => t.test(secs)) && imgs.length >= 8 && decoded.every(Boolean) &&
+          imgs.every((i) => /^data:image\/webp;base64,/.test(i.src) && !!i.alt && !!(i.closest('figure') as HTMLElement).querySelector('figcaption')) &&
+          fits && scrolls && r.width > root.clientWidth * 0.6,
+        `${secs} // ${imgs.length} images, decoded ${decoded.filter(Boolean).length}, fits ${fits}, scrolls ${scrolls}, focus ${doc.activeElement && doc.activeElement.className}`,
+      );
+      // the contents list scrolls to a section and puts the focus on its heading; the page's address does not change
+      const hash = location.hash;
+      man.scrollTop = 0;
+      click('#modal [data-man-goto="man-arrange"]');
+      await tick();
+      const toArrange = doc.activeElement === q('#man-h-arrange') && man.scrollTop > 0 && location.hash === hash;
+      // keys typed in the dialog never act on the page behind it (L would switch to the logical view)
+      key(man, 'l');
+      key(man, 'a');
+      await tick();
+      const behind = app.session!.state.view === 'physical' && !app.mdoc!.dirty;
+      dlg.dispatchEvent(new Event('cancel', { cancelable: true }));
+      await tick();
+      check(
+        'User Manual: the contents list moves to a section; the page’s shortcuts are off while it is open; Esc closes it and the focus returns to the Help button',
+        toArrange && behind && !dlg.open && app.helpOpen === null && doc.activeElement === helpBtn,
+        `${toArrange} ${behind} ${dlg.open} ${doc.activeElement && doc.activeElement.id}`,
+      );
+
+      // License: Apache License, Version 2.0, and the full LICENSE text embedded (no link to load anything)
+      click('#help-btn');
+      click('#btn-license');
+      await tick(20);
+      const lic = q('#modal .license') as HTMLElement;
+      const full = q('#modal .license-text') as HTMLElement;
+      const licText = full ? full.textContent || '' : '';
+      const smallDlg = dlg.getBoundingClientRect().width <= 562;
+      const named = /licensed under the Apache License, Version 2\.0 \(SPDX: Apache-2\.0\)/.test(lic.textContent || '');
+      const focusClose = doc.activeElement === q('#modal [data-value="close"]');
+      (q('#modal .license-full') as HTMLDetailsElement).open = true;
+      await tick();
+      const fullShown = full.getBoundingClientRect().height > 50 && full.scrollHeight > full.clientHeight;
+      click('#modal .modal-x');
+      await tick();
+      check(
+        'Help → License: a small dialog that names the Apache License, Version 2.0, with the full LICENSE text embedded (scrolling in place, no links); × closes it and the focus returns to the Help button',
+        named && smallDlg && focusClose && /^\s*Apache License\n\s*Version 2\.0, January 2004/.test(licText) && /END OF TERMS AND CONDITIONS/.test(licText) && licText.length > 10000 &&
+          !lic.querySelector('a') && fullShown && !dlg.open && doc.activeElement === helpBtn,
+        `${named} ${smallDlg} ${focusClose} ${licText.length} ${fullShown} ${dlg.open}`,
+      );
+      // without a model both entries work as well
+      app.closeModel();
+      click('#help-btn');
+      click('#btn-license');
+      await tick(20);
+      const noModel = dlg.open && app.helpOpen === 'license';
+      click('#modal [data-value="close"]');
+      await tick();
+      check('Help works without a model too (its entries are never disabled)', noModel && !dlg.open && !(q('#btn-manual') as HTMLButtonElement).disabled && !(q('#btn-license') as HTMLButtonElement).disabled);
+    }
+
+    // ------------------------------------------------ quick actions in the object list
+    {
+      const md = (): ModelDoc => app.mdoc as ModelDoc;
+      const fresh = async (): Promise<void> => {
+        app.mdoc && app.mdoc.markSaved();
+        app.loadExample(0);
+        app.setView('physical');
+        expandOutline();
+        await tick();
+      };
+      /** a press with the mouse: pointerdown (where the editor acts) and the click after it */
+      const press = (b: Element): void => {
+        b.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0 }));
+        (b as HTMLElement).click();
+      };
+      const quickBtn = (act: string, kind: string, index: number): HTMLElement | null => q(`#outline-body .ol-quick [data-act="${act}"][data-kind="${kind}"][data-index="${index}"]`);
+      await fresh();
+      app.select('device:hq-rtr1');
+      await tick();
+      {
+        // every row has the pair, named after the action and the object, and like the Edit tab's buttons;
+        // shown only for the row under the pointer or with the keyboard focus (on a touch screen: the selected row)
+        const rows = Array.prototype.slice.call(doc.querySelectorAll('#outline-body .ol-row')) as HTMLElement[];
+        const bad: string[] = [];
+        const touch = (doc.defaultView as Window).matchMedia('(hover: none)').matches;
+        for (const row of rows) {
+          const it = row.querySelector('.ol-item') as HTMLElement;
+          const kind = it.getAttribute('data-kind') || '';
+          const id = it.getAttribute('title') || '';
+          const bs = Array.prototype.slice.call(row.querySelectorAll('.ol-quick button')) as HTMLElement[];
+          if (bs.length !== 2 || bs[0].getAttribute('data-act') !== 'dup-entity' || bs[1].getAttribute('data-act') !== 'del-entity') bad.push(`${id}: not Duplicate and Delete`);
+          else if (bs[0].getAttribute('aria-label') !== `Duplicate ${kind} ${id}` || bs[1].getAttribute('aria-label') !== `Delete ${kind} ${id}`) bad.push(`${id}: named ${bs.map((b) => b.getAttribute('aria-label')).join(', ')}`);
+          if (it.contains(bs[0])) bad.push(`${id}: the actions are inside the entry`);
+          const shown = getComputedStyle(row.querySelector('.ol-quick') as HTMLElement).display !== 'none';
+          if (shown !== (touch && row.classList.contains('current'))) bad.push(`${id}: shown=${shown}`);
+        }
+        check(
+          'object list: each row has Duplicate and Delete beside (not inside) its entry, named with action and object; hidden unless the row is hovered, focused or (touch) selected',
+          rows.length > 30 && !bad.length,
+          `${rows.length} rows; ${bad.slice(0, 5).join('; ')}`,
+        );
+        // the rules that show them: hover (pointer devices), keyboard focus, and the selected row on touch screens
+        const css = Array.prototype.map.call(doc.querySelectorAll('style'), (s: Element) => s.textContent).join('\n');
+        check(
+          'the quick actions are shown by hover, by keyboard focus, and on touch screens for the selected row',
+          /\.ol-quick \{ display: none;/.test(css) && /@media \(hover: hover\) \{ \.ol-row:hover \.ol-quick \{ display: inline-flex; \} \}/.test(css) && /\.ol-row:focus-within \.ol-quick, \.ol-row\.acting \.ol-quick \{ display: inline-flex; \}/.test(css) && /@media \(hover: none\) \{ \.ol-row\.current \.ol-quick \{ display: inline-flex; \} \}/.test(css),
+        );
+      }
+      {
+        // Duplicate from the row of another object: the copy is added and selected, exactly as the Edit tab does it; the row's own select never runs
+        const before = md().exportText();
+        const count = md().entities('device').length;
+        const fw = md().entities('device').findIndex((e) => e.id === 'hq-fw');
+        press(quickBtn('dup-entity', 'device', fw) as HTMLElement);
+        await tick();
+        const viaQuick = md().exportText();
+        const selQuick = app.session!.state.selected;
+        const dirty = md().dirty && doc.body.getAttribute('data-dirty') === 'true';
+        app.undo();
+        await tick();
+        const undone = md().exportText() === before;
+        app.redo();
+        await tick();
+        const redone = md().exportText() === viaQuick;
+        // the same through the Edit tab
+        await fresh();
+        app.select('device:hq-fw');
+        click('[data-tab="edit"]');
+        await tick();
+        press(q('#side-body .insp-actions [data-act="dup-entity"]') as HTMLElement);
+        await tick();
+        check(
+          'quick Duplicate: the same copy as the Edit tab’s Duplicate (new id, selected), marks the model modified, one undo step, redo; it never selects the row it sits on',
+          md().entities('device').length === count + 1 && viaQuick === md().exportText() && selQuick === app.session!.state.selected && selQuick === 'device:hq-fw2' && dirty && undone && redone,
+          `${selQuick} ${app.session!.state.selected} ${dirty} ${undone} ${redone}`,
+        );
+      }
+      {
+        // Delete: the Edit tab's confirmation; Cancel changes nothing (not even the selection), Delete removes it, undo brings it back
+        await fresh();
+        app.select('device:hq-rtr1');
+        await tick();
+        const before = md().exportText();
+        const i2 = md().entities('device').findIndex((e) => e.id === 'hq-rtr2');
+        press(quickBtn('del-entity', 'device', i2) as HTMLElement);
+        await tick(10);
+        const asked = (q('#modal[open] #modal-title') || { textContent: '' }).textContent === 'Delete device “hq-rtr2”?';
+        await answerDialog('cancel');
+        const kept = md().exportText() === before && app.session!.state.selected === 'device:hq-rtr1' && !md().dirty;
+        press(quickBtn('del-entity', 'device', i2) as HTMLElement);
+        await answerDialog('delete');
+        await tick();
+        const gone = !md().entities('device').some((e) => e.id === 'hq-rtr2') && md().dirty && app.session!.state.selected === null;
+        const viaQuick = md().exportText();
+        app.undo();
+        await tick();
+        const back = md().exportText() === before;
+        await fresh();
+        app.select('device:hq-rtr2');
+        click('[data-tab="edit"]');
+        await tick();
+        press(q('#side-body .insp-actions [data-act="del-entity"]') as HTMLElement);
+        await answerDialog('delete');
+        await tick();
+        check(
+          'quick Delete: asks first like the Edit tab (Cancel keeps model and selection), deletes the same way, clears the selection, marks the model modified, and can be undone',
+          asked && kept && gone && back && md().exportText() === viaQuick,
+          `${asked} ${kept} ${gone} ${back}`,
+        );
+      }
+      {
+        // every kind of object: the quick actions give exactly what the Edit tab's buttons give
+        const bad: string[] = [];
+        for (const kind of ['device', 'link', 'network', 'relation', 'group', 'protocol'] as const) {
+          for (const act of ['dup-entity', 'del-entity']) {
+            await fresh();
+            const b = quickBtn(act, kind, 0);
+            if (!b) {
+              bad.push(`${kind}: no ${act}`);
+              continue;
+            }
+            press(b);
+            if (act === 'del-entity') await answerDialog('delete');
+            await tick();
+            const viaQuick = md().exportText();
+            await fresh();
+            click(`#outline-body .ol-item[data-kind="${kind}"][data-index="0"]`);
+            click('[data-tab="edit"]');
+            await tick();
+            const e = q(`#side-body .insp-actions [data-act="${act}"]`);
+            if (!e) {
+              bad.push(`${kind}: the Edit tab has no ${act}`);
+              continue;
+            }
+            press(e);
+            if (act === 'del-entity') await answerDialog('delete');
+            await tick();
+            if (md().exportText() !== viaQuick) bad.push(`${kind}: ${act} differs from the Edit tab`);
+          }
+        }
+        check('quick actions on every kind of object (device, link, network, relation, group, protocol) do exactly what the Edit tab’s Duplicate and Delete do', !bad.length, bad.join('; '));
+      }
+      {
+        // with the keyboard: Enter on a focused quick action acts (a click without pointerdown), and the focus stays in the list
+        await fresh();
+        const fw = md().entities('device').findIndex((e) => e.id === 'hq-fw');
+        const b = quickBtn('dup-entity', 'device', fw) as HTMLElement;
+        // (a keyboard user reaches it from its row, which shows it while the row has the focus; checked with real keys in test/quick-actions.test.mjs)
+        (b.parentElement as HTMLElement).style.display = 'inline-flex';
+        b.focus();
+        b.click();
+        await tick();
+        const focusAfter = doc.activeElement as HTMLElement | null;
+        check(
+          'a quick action used from the keyboard keeps the focus in the object list, on the entry it acted on (after Duplicate: the selected copy)',
+          !!focusAfter && focusAfter.classList.contains('ol-item') && focusAfter.getAttribute('data-ref') === 'device:hq-fw2' && app.session!.state.selected === 'device:hq-fw2',
+          focusAfter ? `${focusAfter.className} ${focusAfter.getAttribute('data-ref')}` : 'none',
+        );
+        md().markSaved();
+      }
     }
 
     // ------------------------------------------------ Edit and Details read alike

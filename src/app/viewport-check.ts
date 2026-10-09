@@ -221,9 +221,9 @@ export async function runViewportCheck(app: App, doc: Document): Promise<Check[]
       }
       return why;
     };
-    click('#view-btn');
+    click('#find-btn');
     await tick();
-    state('Find & Filter menu open', popup('#view-menu'));
+    state('Find menu open', popup('#find-menu'));
     click('#btn-find');
     await tick();
     const search = q('#search') as HTMLInputElement;
@@ -232,6 +232,45 @@ export async function runViewportCheck(app: App, doc: Document): Promise<Check[]
     await tick();
     state('Find bar with its results drop-down', popup('#find-bar').concat(popup('#search-results')));
     app.closeFind();
+
+    // Help: the menu, and both dialogs inside the window with their close buttons reachable; their text scrolls inside them
+    click('#help-btn');
+    await tick();
+    state('Help menu open', popup('#help-menu'));
+    const helpDialog = (scroller: string): string[] => {
+      const why: string[] = [];
+      const d = q('#modal[open]');
+      if (!d) return ['no dialog'];
+      const r = d.getBoundingClientRect();
+      if (r.left < -0.5 || r.top < -0.5 || r.right > vw() + 0.5 || r.bottom > vh() + 0.5) why.push(`the dialog leaves the window (${Math.round(r.left)},${Math.round(r.top)} – ${Math.round(r.right)},${Math.round(r.bottom)})`);
+      for (const sel of ['#modal .modal-x', '#modal [data-value="close"]']) {
+        const b = q(sel);
+        const br = b ? b.getBoundingClientRect() : null;
+        const hit = br ? doc.elementFromPoint(br.left + br.width / 2, br.top + br.height / 2) : null;
+        if (!b || !br || br.width < 1 || br.top < -0.5 || br.bottom > vh() + 0.5 || br.right > vw() + 0.5 || !hit || !b.contains(hit)) why.push(`${sel} cannot be reached`);
+      }
+      const s = q('#modal ' + scroller) as HTMLElement;
+      if (s && s.scrollHeight > s.clientHeight + 1) {
+        s.scrollTop = s.scrollHeight;
+        if (Math.abs(s.scrollTop + s.clientHeight - s.scrollHeight) > 1.5) why.push(`${scroller} does not scroll to its end`);
+        s.scrollTop = 0;
+      }
+      if (s && s.scrollWidth > s.clientWidth + 1) why.push(`${scroller} is wider than the dialog (${s.scrollWidth} > ${s.clientWidth})`);
+      return why;
+    };
+    click('#btn-manual');
+    await tick(20);
+    state('Help → User Manual open', helpDialog('.manual'));
+    (q('#modal') as HTMLElement).dispatchEvent(new Event('cancel', { cancelable: true }));
+    await tick();
+    click('#help-btn');
+    click('#btn-license');
+    await tick(20);
+    (q('#modal .license-full') as HTMLDetailsElement).open = true;
+    await tick();
+    state('Help → License open with the full text', helpDialog('.license-text'));
+    click('#modal .modal-x');
+    await tick();
 
     // the diagram filters stay on one row; what does not fit is in the Filters drop-down, which says what is off
     for (const view of ['logical', 'physical']) {

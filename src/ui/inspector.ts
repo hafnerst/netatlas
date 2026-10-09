@@ -77,7 +77,7 @@ export class Editor {
   /** open interface cards / collapsible sections, by path */
   private open = new Set<string>();
   private filter = '';
-  /** the outline's filter box is shown (opened with Find & Filter → Filter object list…; it stays while a filter is set) */
+  /** the outline's filter box is shown (opened with Find → Filter object list…; it stays while a filter is set) */
   filterOpen = false;
   /**
    * Sections of the model outline that are folded to their heading. Links
@@ -274,13 +274,18 @@ export class Editor {
         if (ent.id) attrs['data-ref'] = entityRef(kind, ent.id);
         if (st) attrs['data-ctx'] = st;
         if (st === 'selected' || (!st && active)) attrs['aria-current'] = 'true';
+        // a row: the entry (selects) and its quick actions, shown on the row under the pointer, the row
+        // with the keyboard focus and, on a touch screen, the selected row (styles.css)
         list.appendChild(
-          this.e('button', attrs, [
-            // every entry keeps the slot of the mark, so its label never moves when a selection starts or ends
-            this.e('span', { class: 'ctx-mark' + (st === 'selected' ? ' sel' : st === 'related' ? ' rel' : ''), 'aria-hidden': 'true' }, [st === 'selected' ? '▸' : st === 'related' ? '•' : '']),
-            this.e('span', { class: 'ol-label' }, [label]),
-            st ? this.e('span', { class: 'sr-only' }, [st === 'selected' ? ' (selected)' : st === 'related' ? ' (directly related)' : ' (not related)']) : null,
-            this.badge(c.e, c.w),
+          this.e('div', { class: 'ol-row' + (active || st === 'selected' ? ' current' : '') }, [
+            this.e('button', attrs, [
+              // every entry keeps the slot of the mark, so its label never moves when a selection starts or ends
+              this.e('span', { class: 'ctx-mark' + (st === 'selected' ? ' sel' : st === 'related' ? ' rel' : ''), 'aria-hidden': 'true' }, [st === 'selected' ? '▸' : st === 'related' ? '•' : '']),
+              this.e('span', { class: 'ol-label' }, [label]),
+              st ? this.e('span', { class: 'sr-only' }, [st === 'selected' ? ' (selected)' : st === 'related' ? ' (directly related)' : ' (not related)']) : null,
+              this.badge(c.e, c.w),
+            ]),
+            this.entityActions(kind, ent.index, 'ol-quick'),
           ]),
         );
       }
@@ -563,14 +568,20 @@ export class Editor {
     return fromModel || { kind, title: this.entityLabel(kind, index) };
   }
 
-  private entityActions(kind: EntityKind, index: number): HTMLElement {
+  /**
+   * Duplicate and Delete for one entity: in the Edit tab's header and, as
+   * quick actions, on its row of the model outline. Both are the same
+   * buttons ("dup-entity", "del-entity") and act through onClick, so the
+   * confirmation, undo, selection and modified state are the same too.
+   */
+  private entityActions(kind: EntityKind, index: number, cls = 'insp-actions'): HTMLElement {
     const id = this.doc.entities(kind)[index]?.id || '(no id)';
     const btn = (act: string, name: string, label: string, tip: string, extra: string): HTMLElement =>
       this.e('button', { type: 'button', class: 'icon-btn' + extra, 'data-act': act, 'data-kind': kind, 'data-index': String(index), 'aria-label': `${label} ${kind} ${id}`, title: tip }, [
         icon(this.d, name) as unknown as Node,
         this.e('span', { class: 'ib-label', 'aria-hidden': 'true' }, [label]),
       ]);
-    return this.e('div', { class: 'insp-actions', role: 'group', 'aria-label': `Actions for ${kind} ${id}` }, [
+    return this.e('div', { class: cls, role: 'group', 'aria-label': `Actions for ${kind} ${id}` }, [
       btn('dup-entity', 'duplicate', 'Duplicate', `Duplicate this ${kind}: add a copy with a new id`, ''),
       btn('del-entity', 'delete', 'Delete', `Delete this ${kind} (asks first; can be undone)`, ' danger'),
     ]);
