@@ -12,13 +12,13 @@
 /* Design tokens. Every colour of the application and of the diagram comes from
    these; the two themes define the same names. The theme in effect is the
    `data-theme` attribute of <html> ("light" or "dark"), set before the first
-   paint from the user's choice (Light, Dark) or, for System, from
-   prefers-color-scheme (see ui/theme.ts). Contrast (WCAG 2.2 AA): text and
+   paint from the user's choice; without it the tokens are the dark ones, the
+   default (see ui/theme.ts). Contrast (WCAG 2.2 AA): text and
    muted text at least 4.5:1 on every surface they are used on; control
    boundaries (--control-border), focus rings (--accent), selection (--sel) and
    diagram lines (--dev-stroke, --group-stroke, --member) at least 3:1 against
    the canvas and the panels. test/theme.test.mjs checks the pairs. */
-:root, :root[data-theme="light"] {
+:root[data-theme="light"] {
   /* surfaces: the page, panels, the diagram, and raised layers (menus, dialogs, tooltips) */
   --bg: #f6f7f9;
   --panel: #ffffff;
@@ -35,6 +35,9 @@
   --frame: #848d97;
   --accent: #1864ab;
   --accent-soft: #e7f0fa;
+  /* the part of the Edit tab that belongs to the selection: a tint and a bar (3:1 against the panel) */
+  --marked-bg: #f4f8fd;
+  --marked-bar: #1864ab;
   /* text and icons on a filled accent / danger control */
   --on-accent: #ffffff;
   --link: #1864ab;
@@ -53,13 +56,13 @@
   --ok: #2a7d3a;
   --shadow: rgba(0, 0, 0, 0.16);
   --backdrop: rgba(0, 0, 0, 0.35);
-  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
   color-scheme: light;
 }
 /* Dark: dark grey surfaces (never pure black) that get lighter as they rise
    (canvas < page < panel < raised), off-white text, and calmer, less
    saturated accent and status colours that keep their meaning. */
-:root[data-theme="dark"] {
+:root, :root[data-theme="dark"] {
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
   --bg: #1a1e24;
   --panel: #20252c;
   --canvas: #15181d;
@@ -72,6 +75,8 @@
   --frame: #737d88;
   --accent: #7fb2e5;
   --accent-soft: #22303f;
+  --marked-bg: #22303f;
+  --marked-bar: #7fb2e5;
   --on-accent: #15181d;
   --link: #7fb2e5;
   --dev-fill: #20252c;
@@ -783,13 +788,12 @@ body:not([data-state="loaded"]) .view-group .tool-group-title, body:not([data-st
 .opt:has(input:disabled) { opacity: 0.45; cursor: default; }
 
 /* The theme switch: an icon button at the right end of the toolbar, always shown (never in a menu).
-   The icon shows the choice (System: half-filled circle, Light: sun, Dark: moon); the tooltip and
-   the accessible name say the theme in effect and what a press does. */
+   A toggle between Light and Dark: the icon shows the theme in effect (sun: light, moon: dark); the
+   tooltip and the accessible name say that theme and what a press does. */
 .theme-wrap { position: relative; flex: none; margin-left: auto; }
 .theme-btn { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 30px; padding: 0; }
 .theme-btn .ti { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; display: none; }
-.theme-btn .ti-fill { fill: currentColor; stroke: none; }
-.theme-btn[data-pref="system"] .ti-system, .theme-btn[data-pref="light"] .ti-light, .theme-btn[data-pref="dark"] .ti-dark { display: block; }
+.theme-btn[data-theme-now="light"] .ti-light, .theme-btn[data-theme-now="dark"] .ti-dark { display: block; }
 .theme-wrap .tip {
   position: absolute; top: calc(100% + 6px); right: 0; z-index: 50; width: max-content; max-width: min(260px, calc(100vw - 24px));
   padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--raised); color: var(--text);
@@ -803,243 +807,29 @@ body:not([data-state="loaded"]) .view-group .tool-group-title, body:not([data-st
 .overlap-hint > span:first-child { color: var(--warn); font-weight: 700; }
 .overlap-hint[hidden] { display: none; }
 
-/* System theme before the script runs (derived by the build from :root[data-theme="dark"]) */
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme]) {
-  --bg: #1a1e24;
-  --panel: #20252c;
-  --canvas: #15181d;
-  --raised: #282e36;
-  --grid: #262b33;
-  --text: #e3e6ea;
-  --muted: #9ba4ae;
-  --border: #353c45;
-  --control-border: #737d88;
-  --frame: #737d88;
-  --accent: #7fb2e5;
-  --accent-soft: #22303f;
-  --on-accent: #15181d;
-  --link: #7fb2e5;
-  --dev-fill: #20252c;
-  --dev-stroke: #7a838e;
-  --icon: #c9cfd6;
-  --group-fill: rgba(255, 255, 255, 0.025);
-  --group-strong-fill: rgba(127, 178, 229, 0.05);
-  --group-stroke: #737d88;
-  --halo: #15181d;
-  --member: #737d88;
-  --pill: #20252c;
-  --error: #f08a8a;
-  --warn: #e0b07a;
-  --sel: #e3a857;
-  --ok: #7cc68a;
-  --shadow: rgba(0, 0, 0, 0.45);
-  --backdrop: rgba(0, 0, 0, 0.55);
-  color-scheme: dark;
-}
-}
+/* Segmented controls (View, Auto-arrange, and the direction switch in the editor): neighbouring
+   segments share one border column (margin-left: -1px), and a later segment paints over the column
+   it shares with the one before it. A segment whose border changes is therefore lifted above its
+   neighbours (stacking order only: nothing moves or changes size), so its border is complete on all
+   four sides: the selected one above the plain ones, the hovered one above both, the keyboard-
+   focused one (with its focus ring) on top. */
+.seg button, .arrange-btn { position: relative; z-index: 0; }
+.seg button.active, .arrange-btn.current, .arrange-btn.current:disabled { z-index: 1; }
+.seg button:hover:not(:disabled), .arrange-btn:hover:not(:disabled) { z-index: 2; }
+.seg button:focus-visible, .arrange-btn:focus-visible { z-index: 3; }
+
+/* The selection in the Edit tab: the section (the object's header, the selected interface's card, or
+   the field of the line it was clicked on) is tinted, has an accent bar on its left and a "Selected"
+   tag, so it does not depend on colour alone. It is not the error mark (a red outer border with an
+   error badge), a hover (border colour) or the focus ring (an outline around the control), and it
+   leaves all three visible. */
+.sel-mark { background: var(--marked-bg) !important; box-shadow: inset 3px 0 0 var(--marked-bar); }
+.field.sel-mark, .list-row.sel-mark, .g-row.sel-mark { border-radius: 5px; padding-left: 7px; margin-left: -7px; }
+.list-row.sel-mark, .g-row.sel-mark { padding-top: 2px; padding-bottom: 2px; margin-top: -2px; margin-bottom: -2px; }
+.sel-tag { flex: none; display: inline-block; margin-left: 6px; padding: 0 6px; border: 1px solid var(--marked-bar); border-radius: 99px; color: var(--accent); background: var(--panel); font-size: 10.5px; font-weight: 600; line-height: 1.5; letter-spacing: 0; text-transform: none; white-space: nowrap; vertical-align: 1px; }
 
 </style>
-</head>
-<body data-state="empty" data-view="none" data-dirty="false">
-<header class="topbar">
-  <div class="brand" title="netatlas 0.1.2 — offline network architecture diagrams and editor">
-    <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="6" r="2.6"/><circle cx="19" cy="6" r="2.6"/><circle cx="12" cy="18" r="2.6"/><path d="M7.4 6.8h9.2M6.3 8.3l4.4 7.4M17.7 8.3l-4.4 7.4"/></svg>
-    <span>netatlas</span><span class="version" title="netatlas version">v0.1.2</span>
-  </div>
-  <div class="menu-wrap">
-    <button id="menu-btn" type="button" class="menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="main-menu" title="File: new, open, save and close models; examples">File <span class="caret" aria-hidden="true">▾</span></button>
-    <div id="main-menu" class="dropdown menu" role="menu" aria-label="File" hidden>
-      <button id="btn-new" type="button" role="menuitem" title="Start a new, empty model"><span class="mi-label">New model</span></button>
-      <button id="open" type="button" role="menuitem" title="Open a model from a YAML file on this computer (nothing is uploaded)"><span class="mi-label">Open model…</span></button>
-      <button id="btn-save" type="button" role="menuitem" title="Open or create a model first" disabled><span class="mi-label">Save model</span><span class="mi-hint">Ctrl+S</span></button>
-      <button id="btn-save-as" type="button" role="menuitem" title="Open or create a model first" disabled><span class="mi-label">Save model as…</span><span class="mi-hint">Ctrl+Shift+S</span></button>
-      <button id="btn-close" type="button" role="menuitem" title="Close the current model and return to the start screen" disabled><span class="mi-label">Close model</span></button>
-      <div class="menu-sep" role="separator"></div>
-      <div class="menu-title" id="menu-examples-title">Examples</div>
-      <div id="menu-examples" role="group" aria-labelledby="menu-examples-title"></div>
-    </div>
-  </div>
-  <div class="menu-wrap">
-    <button id="export-btn" type="button" class="menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="export-menu" title="Export: save the current view as a picture">Export <span class="caret" aria-hidden="true">▾</span></button>
-    <div id="export-menu" class="dropdown menu" role="menu" aria-label="Export" hidden>
-      <button id="btn-export-as" type="button" role="menuitem" aria-haspopup="menu" aria-expanded="false" aria-controls="export-formats" title="Open or create a model first" disabled><span class="mi-label">Export view as…</span><span class="mi-hint sub-caret" aria-hidden="true">▸</span></button>
-      <div id="export-formats" class="submenu" role="menu" aria-label="Export view as" hidden>
-        <button id="btn-export-png" type="button" role="menuitem" data-format="png" title="Open or create a model first" disabled><span class="mi-label">PNG</span><span class="mi-hint">image</span></button>
-        <button id="btn-export-svg" type="button" role="menuitem" data-format="svg" title="Open or create a model first" disabled><span class="mi-label">SVG</span><span class="mi-hint">vector drawing</span></button>
-      </div>
-    </div>
-  </div>
-  <div class="menu-wrap">
-    <button id="find-btn" type="button" class="menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="find-menu" title="Find: find in the diagram, filter the object list">Find <span class="caret" aria-hidden="true">▾</span></button>
-    <div id="find-menu" class="dropdown menu" role="menu" aria-label="Find" hidden>
-      <button id="btn-find" type="button" role="menuitem" title="Open or create a model first" disabled><span class="mi-label">Find in diagram…</span><span class="mi-hint">/</span></button>
-      <button id="btn-outline-filter" type="button" role="menuitem" title="Open or create a model first" disabled><span class="mi-label">Filter object list…</span></button>
-    </div>
-  </div>
-  <div class="menu-wrap">
-    <button id="help-btn" type="button" class="menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="help-menu" title="Help: user manual and license">Help <span class="caret" aria-hidden="true">▾</span></button>
-    <div id="help-menu" class="dropdown menu" role="menu" aria-label="Help" hidden>
-      <button id="btn-manual" type="button" role="menuitem" aria-haspopup="dialog" title="A short guide to NetAtlas's basic tasks, with pictures"><span class="mi-label">User Manual</span></button>
-      <button id="btn-license" type="button" role="menuitem" aria-haspopup="dialog" title="The license NetAtlas is distributed under (Apache License, Version 2.0)"><span class="mi-label">License</span></button>
-    </div>
-  </div>
-  <input id="file" type="file" accept=".yaml,.yml,application/yaml,application/x-yaml,text/yaml,text/plain" hidden>
-  <div class="btn-group">
-    <button id="btn-undo" type="button" title="Undo (Ctrl+Z)" disabled aria-label="Undo">↶</button>
-    <button id="btn-redo" type="button" title="Redo (Ctrl+Y)" disabled aria-label="Redo">↷</button>
-  </div>
-  <div id="view-group" class="tool-group view-group" role="group" aria-labelledby="view-title">
-    <span id="view-title" class="tool-group-title">View</span>
-    <div class="seg">
-      <button type="button" data-view-btn="physical" title="Physical view (P)">Physical</button>
-      <button type="button" data-view-btn="logical" title="Logical view (L)">Logical</button>
-    </div>
-  </div>
-  <div id="arrange-group" class="tool-group arrange-group" role="group" aria-labelledby="arrange-title" aria-describedby="arrange-status">
-    <span id="arrange-title" class="tool-group-title arrange-title">Auto-arrange</span>
-    <div class="arrange-btns">
-      <button id="btn-arrange-default" type="button" class="arrange-btn" data-strategy="default" aria-label="Auto-arrange: Default" aria-pressed="false" disabled>Default</button>
-      <button id="btn-arrange-compact" type="button" class="arrange-btn" data-strategy="compact" aria-label="Auto-arrange: Compact" aria-pressed="false" disabled>Compact</button>
-      <button id="btn-arrange-spacious" type="button" class="arrange-btn" data-strategy="spacious" aria-label="Auto-arrange: Spacious" aria-pressed="false" disabled>Spacious</button>
-    </div>
-    <span id="arrange-status" class="sr-only" aria-live="polite"></span>
-  </div>
-  <div id="filters-slot" class="filters-slot">
-  <div id="filters-group" class="tool-group filters-group" role="group" aria-label="Diagram filters">
-  <span id="filters-title" class="tool-group-title">Filters</span>
-  <div id="view-filters" class="view-filters">
-  <div class="devices-wrap">
-    <button id="devices-btn" type="button" class="menu-btn" aria-haspopup="dialog" aria-expanded="false" aria-controls="devices-panel" title="Choose the devices the diagram shows" disabled>Devices: <span id="devices-count">all</span> <span class="caret" aria-hidden="true">▾</span></button>
-    <div id="devices-panel" class="dropdown devices-panel" role="dialog" aria-label="Devices shown in the diagram" hidden>
-      <div class="dp-tools">
-        <input id="devices-find" type="search" placeholder="Filter the list…" aria-label="Filter the device list" autocomplete="off" spellcheck="false">
-        <button id="devices-all" type="button" class="mini" title="Show every device: the complete diagram with its saved positions">Select all</button>
-        <button id="devices-none" type="button" class="mini" title="Deselect every device">Clear</button>
-      </div>
-      <div id="devices-list" class="dp-list" role="group" aria-label="Devices"></div>
-      <p class="dp-note muted">A filtered diagram is arranged for the selected devices only. Its positions are temporary; the saved layout of the complete diagram is not changed.</p>
-    </div>
-  </div>
-  <label class="opt" data-priority="5"><input id="opt-labels" type="checkbox" checked disabled> Labels</label>
-  <label class="opt" data-priority="4"><input id="opt-groups" type="checkbox" checked disabled> Groups / Locations</label>
-  <label class="opt logical-only" data-priority="3"><input id="opt-networks" type="checkbox" checked disabled> Networks</label>
-  <label class="opt" data-priority="2" title="Show devices of type Endpoint (off: hidden with what only they connect; nothing is deleted)"><input id="opt-type-endpoint" type="checkbox" data-device-type="endpoint" checked disabled> Endpoints</label>
-  <label class="opt" data-priority="1" title="Show devices of type Server (off: hidden with what only they connect; nothing is deleted)"><input id="opt-type-server" type="checkbox" data-device-type="server" checked disabled> Servers</label>
-  <div class="more-filters-wrap">
-    <button id="more-filters-btn" type="button" class="menu-btn" aria-haspopup="true" aria-expanded="false" aria-controls="more-filters" hidden disabled>Filters<span id="more-filters-count" class="mf-count"></span> <span class="caret" aria-hidden="true">▾</span></button>
-    <div id="more-filters" class="dropdown more-filters" role="group" aria-label="More diagram filters" hidden></div>
-  </div>
-  </div>
-  </div>
-  </div>
-  <div class="theme-wrap">
-    <button id="theme-btn" type="button" class="theme-btn" aria-label="Theme" aria-describedby="theme-tip" data-pref="system">
-      <svg class="ti ti-system" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 1 0 16z" class="ti-fill"/></svg>
-      <svg class="ti ti-light" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2.5M12 19v2.5M2.5 12H5M19 12h2.5M5.3 5.3l1.8 1.8M16.9 16.9l1.8 1.8M5.3 18.7l1.8-1.8M16.9 7.1l1.8-1.8"/></svg>
-      <svg class="ti ti-dark" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/></svg>
-    </button>
-    <span id="theme-tip" class="tip" role="tooltip">Theme</span>
-  </div>
-</header>
-<main>
-  <aside id="outline" aria-labelledby="outline-title" aria-describedby="outline-sub">
-    <div class="ol-header"><h2 id="outline-title" class="ol-heading">Objects</h2><span id="outline-sub" class="ol-sub">Select, duplicate, or delete</span></div>
-    <div id="outline-body"></div>
-  </aside>
-  <section id="canvas-wrap">
-    <svg id="canvas" role="img" aria-label="Network diagram"><g id="viewport"></g></svg>
-    <div id="find-bar" class="find-bar" role="search" aria-label="Find in diagram" hidden>
-      <input id="search" type="search" placeholder="Find device, network, address…" aria-label="Find in diagram: device, network, relation" autocomplete="off" spellcheck="false">
-      <button id="find-close" type="button" class="mini" aria-label="Close Find in diagram" title="Close (Esc)">×</button>
-      <div id="search-results" class="dropdown" hidden></div>
-    </div>
-    <div id="connect-bar" class="connect-bar" role="group" aria-labelledby="connect-text" hidden>
-      <span id="connect-text" class="cb-text"></span>
-      <select id="connect-pick" aria-label="Second endpoint of the new connection"></select>
-      <button id="connect-go" type="button" class="primary">Use endpoint</button>
-      <button id="connect-cancel" type="button" title="Cancel the connection (Esc)">Cancel</button>
-    </div>
-    <div id="filter-hint" class="filter-hint" role="status" hidden><span class="fh-icon" aria-hidden="true">⧉</span> <span id="filter-hint-text">Filtered-view positions are temporary and are not saved in YAML.</span></div>
-    <div id="overlap-hint" class="overlap-hint" role="status" hidden><span aria-hidden="true">⚠</span> <span id="overlap-hint-text"></span></div>
-    <div class="zoombar" role="toolbar" aria-label="Zoom">
-      <button id="zoom-in" type="button" title="Zoom in (+)">+</button>
-      <span id="zoom-level">100%</span>
-      <button id="zoom-out" type="button" title="Zoom out (−)">−</button>
-      <button id="zoom-fit" type="button" title="Fit to screen (0)">Fit</button>
-    </div>
-    <div id="empty" class="overlay">
-      <div class="start">
-        <div class="start-brand">
-          <svg width="52" height="52" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="6" r="2.6"/><circle cx="19" cy="6" r="2.6"/><circle cx="12" cy="18" r="2.6"/><path d="M7.4 6.8h9.2M6.3 8.3l4.4 7.4M17.7 8.3l-4.4 7.4"/></svg>
-          <h1>NetAtlas</h1>
-        </div>
-        <p class="start-tagline">Create and explore network architecture diagrams, fully offline.</p>
-        <div class="start-actions" role="group" aria-label="Ways to begin">
-          <button id="new-empty" type="button" class="start-card">
-            <span class="start-title">New model</span>
-            <span class="start-sub">Start with an empty model</span>
-          </button>
-          <button id="open-empty" type="button" class="start-card start-drop">
-            <span class="start-title">Open model…</span>
-            <span class="start-sub">Choose a YAML file, or drop one here</span>
-          </button>
-          <div class="start-card start-example">
-            <label class="start-title" for="start-example">Load example</label>
-            <span class="start-row">
-              <select id="start-example" aria-label="Example to load"><option value="">Choose an example…</option></select>
-              <button id="start-load" type="button" disabled>Load</button>
-            </span>
-          </div>
-        </div>
-        <p class="start-note muted small">Your files stay on this computer.</p>
-      </div>
-    </div>
-    <div id="errors" class="overlay error-overlay"></div>
-    <div id="tooltip" role="tooltip" hidden></div>
-    <div id="drop-hint" aria-hidden="true">Drop the YAML file to open it</div>
-    <div id="toast" role="status" aria-live="polite" hidden></div>
-  </section>
-  <aside id="side" aria-label="Inspector">
-    <nav class="tabs" role="tablist">
-      <button type="button" data-tab="edit" title="Edit the selected object (E)">Edit</button>
-      <button type="button" data-tab="details">Details</button>
-      <button type="button" data-tab="legend">Legend</button>
-      <button type="button" data-tab="relations">Relations</button>
-      <button type="button" data-tab="problems">Problems</button>
-      <button type="button" data-tab="yaml">YAML</button>
-    </nav>
-    <div id="side-body"></div>
-    <details id="keys" class="keys" open>
-      <summary>Mouse &amp; keyboard</summary>
-      <div class="keys-groups">
-        <section class="keys-group" aria-labelledby="keys-pointer">
-          <h4 id="keys-pointer">Pointer</h4>
-          <dl>
-            <div><dt>Drag background</dt><dd>pan</dd></div>
-            <div><dt>Wheel</dt><dd>zoom</dd></div>
-            <div><dt>Drag node</dt><dd>move</dd></div>
-            <div><dt>Click</dt><dd>select</dd></div>
-            <div><dt>Right-click</dt><dd>connect</dd></div>
-          </dl>
-        </section>
-        <section class="keys-group" aria-labelledby="keys-keyboard">
-          <h4 id="keys-keyboard">Keyboard</h4>
-          <dl>
-            <div><dt><kbd>Esc</kbd></dt><dd>clear</dd></div>
-            <div><dt><kbd>P</kbd> / <kbd>L</kbd></dt><dd>view</dd></div>
-            <div><dt><kbd>Ctrl+Z</kbd> / <kbd>Y</kbd></dt><dd>undo / redo</dd></div>
-            <div><dt><kbd>C</kbd></dt><dd>connect</dd></div>
-            <div><dt><kbd>Ctrl+S</kbd></dt><dd>save</dd></div>
-          </dl>
-        </section>
-      </div>
-    </details>
-  </aside>
-</main>
-<footer id="status" aria-live="polite"></footer>
-<dialog id="modal"></dialog>
-<pre id="selftest" hidden></pre>
+<!-- in <head>, so the stored theme is set before the first paint (the application itself starts on DOMContentLoaded) -->
 <script>
 (function () {
 "use strict";
@@ -1056,6 +846,7 @@ __defs["app/main"] = function (module, exports) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 const app_1 = __req("ui/app");
+const theme_1 = __req("ui/theme");
 const selftest_1 = __req("app/selftest");
 const viewport_check_1 = __req("app/viewport-check");
 function start() {
@@ -1088,6 +879,9 @@ function start() {
             app.select(decodeURIComponent(params.select), true);
     }
 }
+// The script runs in the document's <head>: the stored theme is in effect before the body is drawn
+// (no flash of the other theme); the application starts once the document is there.
+(0, theme_1.applyTheme)(document, (0, theme_1.readTheme)(window));
 if (document.readyState === 'loading')
     document.addEventListener('DOMContentLoaded', start);
 else
@@ -1195,12 +989,12 @@ class App {
         this.updateThemeButton();
         this.render();
     }
-    /** The theme button: its icon shows the choice, its name and tooltip the theme in effect and what a press does. */
+    /** The theme button: its icon shows the theme in effect (moon: dark, sun: light), its name and tooltip that theme and what a press does. */
     updateThemeButton() {
         const btn = this.$('theme-btn');
-        const text = (0, theme_1.themeButtonText)(this.theme.pref, this.theme.theme);
+        const text = (0, theme_1.themeButtonText)(this.theme.theme);
         btn.setAttribute('aria-label', text);
-        btn.setAttribute('data-pref', this.theme.pref);
+        btn.setAttribute('data-theme-now', this.theme.theme);
         this.$('theme-tip').textContent = text;
     }
     // ------------------------------------------------------------- loading
@@ -1945,11 +1739,17 @@ class App {
         }
     }
     /** Select from the diagram, search or details links. */
-    select(ref, reveal = false) {
+    /**
+     * `detail`: the line of the diagram the object was clicked on (an
+     * address, VRF, VLAN …): the Edit tab highlights that field. It never
+     * changes what is selected.
+     */
+    select(ref, reveal = false, detail = null) {
         if (!this.session)
             return;
         this.session.select(ref);
         this.editor.selectRef(this.session.state.selected);
+        this.editor.setDetail(this.session.state.selected ? detail : null);
         if (ref && this.session.state.selected && this.tab !== 'details' && this.tab !== 'yaml')
             this.tab = 'edit';
         this.applyHighlight();
@@ -3196,7 +2996,7 @@ class App {
         this.$('btn-outline-filter').addEventListener('click', () => this.openOutlineFilter());
         // Help menu
         this.$('btn-manual').addEventListener('click', () => void this.openHelp('manual'));
-        this.$('theme-btn').addEventListener('click', () => this.theme.cycle());
+        this.$('theme-btn').addEventListener('click', () => this.theme.toggle());
         this.$('btn-license').addEventListener('click', () => void this.openHelp('license'));
         outline.addEventListener('keydown', (e) => {
             const t = e.target;
@@ -3666,13 +3466,19 @@ class App {
             const node = e.target.closest('.node');
             const ref = target ? target.getAttribute('data-ref') : null;
             const nodeRef = node ? node.getAttribute('data-ref') : null;
+            // a line that shows one field of the object (an address, a VRF …): highlighted in the Edit tab (read here:
+            // once the pointer is captured, the release is reported on the canvas, not on the line)
+            const line = e.target.closest('[data-field]');
+            const holder = line ? line.closest('[data-ref]') : null;
+            const detail = line && holder ? { field: line.getAttribute('data-field'), value: line.getAttribute('data-value') || '' } : null;
+            const detailRef = holder ? holder.getAttribute('data-ref') : null;
             if (nodeRef && (nodeRef.indexOf('device:') === 0 || nodeRef.indexOf('network:') === 0)) {
                 const w = this.toWorld(e.clientX, e.clientY);
                 const center = this.nodeCenter(nodeRef);
-                drag = { mode: 'node', ref: nodeRef, sx: e.clientX, sy: e.clientY, ox: center.x - w.x, oy: center.y - w.y, moved: false, id: e.pointerId };
+                drag = { mode: 'node', ref: nodeRef, sx: e.clientX, sy: e.clientY, ox: center.x - w.x, oy: center.y - w.y, moved: false, id: e.pointerId, detail: detailRef === nodeRef ? detail : null };
             }
             else {
-                drag = { mode: 'pan', ref, sx: e.clientX, sy: e.clientY, ox: this.zoom.tx, oy: this.zoom.ty, moved: false, id: e.pointerId };
+                drag = { mode: 'pan', ref, sx: e.clientX, sy: e.clientY, ox: this.zoom.tx, oy: this.zoom.ty, moved: false, id: e.pointerId, detail: detailRef === ref ? detail : null };
             }
             try {
                 svg.setPointerCapture(e.pointerId);
@@ -3717,7 +3523,7 @@ class App {
             if (!d.moved) {
                 const target = e.target.closest('[data-ref]');
                 const ref = target ? target.getAttribute('data-ref') : d.ref;
-                this.select(ref && ref.indexOf('hub:') === 0 ? 'relation:' + ref.slice(4) : ref);
+                this.select(ref && ref.indexOf('hub:') === 0 ? 'relation:' + ref.slice(4) : ref, false, ref === d.ref ? d.detail : null);
             }
             else if (d.mode === 'node' && d.ref)
                 this.commitDrag(d.ref);
@@ -5620,6 +5426,7 @@ exports.layoutInput = layoutInput;
 exports.entryTexts = entryTexts;
 exports.memberAddresses = memberAddresses;
 exports.linkLabelExtra = linkLabelExtra;
+exports.linkLabelExtraFields = linkLabelExtraFields;
 exports.linkNetworkLabel = linkNetworkLabel;
 exports.linkLabelText = linkLabelText;
 exports.layoutSignature = layoutSignature;
@@ -5752,7 +5559,11 @@ function memberLabelSizes(m, networkId) {
 }
 /** Lines under a cable's label, kept whole: its cable id and its address-like attrs. */
 function linkLabelExtra(l) {
-    return (l.cable ? ['cable ' + l.cable] : []).concat((0, addresses_1.addressAttrLines)(l.attrs));
+    return linkLabelExtraFields(l).map((x) => x.line);
+}
+/** linkLabelExtra with the field each line is written from. */
+function linkLabelExtraFields(l) {
+    return (l.cable ? [{ line: 'cable ' + l.cable, field: 'cable', value: '' }] : []).concat((0, addresses_1.addressAttrEntries)(l.attrs).map((a) => ({ line: a.line, field: 'attr', value: a.key })));
 }
 /**
  * The networks a cable carries, for its label: the names of the networks
@@ -6469,6 +6280,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.isAddressToken = isAddressToken;
 exports.hasAddress = hasAddress;
 exports.addressAttrLines = addressAttrLines;
+exports.addressAttrEntries = addressAttrEntries;
 exports.orderedAddresses = orderedAddresses;
 exports.interfaceEntry = interfaceEntry;
 exports.deviceEntries = deviceEntries;
@@ -6522,11 +6334,14 @@ function cmp(a, b) {
 }
 /** The address-like attrs as "key value" lines, sorted by key (the order in the file changes nothing). */
 function addressAttrLines(attrs) {
+    return addressAttrEntries(attrs).map((x) => x.line);
+}
+/** The address-like attrs with their keys, in the order of addressAttrLines. */
+function addressAttrEntries(attrs) {
     return attrs
         .filter(([, v]) => hasAddress(v))
-        .map(([k, v]) => [k, k + ' ' + v.replace(/\s+/g, ' ').trim()])
-        .sort((p, q) => cmp(p[0], q[0]) || cmp(p[1], q[1]))
-        .map((x) => x[1]);
+        .map(([k, v]) => ({ key: k, line: k + ' ' + v.replace(/\s+/g, ' ').trim() }))
+        .sort((p, q) => cmp(p.key, q.key) || cmp(p.line, q.line));
 }
 /**
  * Addresses in display order: IPv4, then IPv6, each in numeric order (then
@@ -6564,7 +6379,7 @@ function listLines(head, items) {
     out.push(cur);
     return out;
 }
-/** The layer-3 facts of an interface (what puts a physical interface into the logical view). */
+/** The layer-3 facts of an interface (what puts a physical interface into the logical view), with their fields. */
 function l3Lines(model, i) {
     const tags = [];
     const vlan = i.type === 'virtual' ? (0, derive_1.interfaceVlans)(model, i).map((v) => 'VLAN ' + v).join(', ') : (0, derive_1.interfaceVlanText)((0, derive_1.interfaceAddresses)(model, i.device, i.id));
@@ -6574,24 +6389,31 @@ function l3Lines(model, i) {
         tags.push('VRF ' + i.vrf);
     if (i.dhcp)
         tags.push('DHCP');
-    const out = tags.length ? [tags.join(' · ')] : [];
-    return out.concat(orderedAddresses(i.addresses));
+    // the tags line stands for the first of them that is written on the interface (a derived VLAN is not)
+    const tagField = i.vlan !== undefined && i.type === 'virtual' ? 'vlan' : i.vrf ? 'vrf' : i.dhcp ? 'dhcp' : '';
+    const out = tags.length ? [[tags.join(' · '), { field: tagField, value: '' }]] : [];
+    return out.concat(orderedAddresses(i.addresses).map((a) => [a, { field: 'ip', value: a }]));
 }
 function interfaceEntry(model, i) {
-    const lines = l3Lines(model, i);
+    const rows = l3Lines(model, i);
+    const add = (line, field, value = '') => {
+        rows.push([line, { field, value }]);
+    };
     if (i.type === 'loopback' && !i.addresses.length)
-        lines.push('(no address)');
+        add('(no address)', 'ip');
     if (i.mac)
-        lines.push('MAC ' + i.mac);
+        add('MAC ' + i.mac, 'mac');
     if (i.source)
-        lines.push('src ' + i.source.text);
+        add('src ' + i.source.text, 'source');
     if (i.destination)
-        lines.push('dst ' + i.destination.text);
+        add('dst ' + i.destination.text, 'destination');
     if (i.members.length)
-        lines.push(...listLines('members', (0, order_1.sortedByName)(i.members, (x) => x)));
-    lines.push(...addressAttrLines(i.attrs));
+        for (const l of listLines('members', (0, order_1.sortedByName)(i.members, (x) => x)))
+            add(l, 'members');
+    for (const a of addressAttrEntries(i.attrs))
+        add(a.line, 'attr', a.key);
     const label = i.label && i.label !== i.id ? i.id + ' · ' + i.label : i.id;
-    return { ref: `iface:${i.device}:${i.id}`, device: i.device, id: i.id, kind: i.type, header: label, lines };
+    return { ref: `iface:${i.device}:${i.id}`, device: i.device, id: i.id, kind: i.type, header: label, lines: rows.map((r) => r[0]), fields: rows.map((r) => r[1]) };
 }
 /** Interfaces in display order: by name, numbers by value (lo2 before lo10; model/order.ts). */
 function byId(a, b) {
@@ -12639,102 +12461,87 @@ function textOf(v) {
 __defs["ui/theme"] = function (module, exports) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.ThemeController = exports.THEME_KEY = exports.THEME_PREFS = void 0;
-exports.resolveTheme = resolveTheme;
-exports.nextThemePref = nextThemePref;
-exports.themePrefLabel = themePrefLabel;
+exports.ThemeController = exports.DEFAULT_THEME = exports.THEME_KEY = void 0;
+exports.storedTheme = storedTheme;
+exports.otherTheme = otherTheme;
+exports.themeLabel = themeLabel;
 exports.themeButtonText = themeButtonText;
-exports.THEME_PREFS = ['system', 'light', 'dark'];
+exports.readTheme = readTheme;
+exports.applyTheme = applyTheme;
 exports.THEME_KEY = 'netatlas.theme';
-/** The theme in effect for a choice, given whether the system prefers dark. */
-function resolveTheme(pref, systemDark) {
-    return pref === 'system' ? (systemDark ? 'dark' : 'light') : pref;
+exports.DEFAULT_THEME = 'dark';
+/** The theme a stored value stands for: Light only when "light" is stored, else Dark. */
+function storedTheme(value) {
+    return value === 'light' ? 'light' : exports.DEFAULT_THEME;
 }
-/** The choice after `pref` when the theme button is pressed: System → Light → Dark → System. */
-function nextThemePref(pref) {
-    return exports.THEME_PREFS[(exports.THEME_PREFS.indexOf(pref) + 1) % exports.THEME_PREFS.length];
+function otherTheme(t) {
+    return t === 'dark' ? 'light' : 'dark';
 }
-function themePrefLabel(p) {
-    return p === 'system' ? 'System' : p === 'light' ? 'Light' : 'Dark';
+function themeLabel(t) {
+    return t === 'dark' ? 'Dark' : 'Light';
 }
 /** What the theme button says: the current theme, and what pressing it does. */
-function themeButtonText(pref, theme) {
-    const now = pref === 'system' ? `System (${theme === 'dark' ? 'dark' : 'light'})` : themePrefLabel(pref);
-    const next = nextThemePref(pref);
-    return `Theme: ${now}. Switch to ${next === 'system' ? 'System (follow the operating system)' : themePrefLabel(next)}`;
+function themeButtonText(t) {
+    return `Theme: ${themeLabel(t)}. Switch to the ${themeLabel(otherTheme(t)).toLowerCase()} theme`;
 }
-function readStored(win) {
+function storage(win) {
     try {
-        const v = win && win.localStorage ? win.localStorage.getItem(exports.THEME_KEY) : null;
-        return v === 'light' || v === 'dark' || v === 'system' ? v : 'system';
+        return win && win.localStorage ? win.localStorage : null;
     }
     catch {
-        return 'system';
+        return null;
     }
 }
-function store(win, pref) {
+/**
+ * Read the stored theme, tidying up what earlier versions or other tabs left
+ * (a stored "system" or an invalid value is removed: nothing stored means Dark).
+ */
+function readTheme(win) {
+    const s = storage(win);
+    if (!s)
+        return exports.DEFAULT_THEME;
     try {
-        if (!win || !win.localStorage)
-            return;
-        if (pref === 'system')
-            win.localStorage.removeItem(exports.THEME_KEY);
-        else
-            win.localStorage.setItem(exports.THEME_KEY, pref);
+        const v = s.getItem(exports.THEME_KEY);
+        if (v !== null && v !== 'light' && v !== 'dark')
+            s.removeItem(exports.THEME_KEY);
+        return storedTheme(v);
     }
     catch {
-        /* storage unavailable: the choice lasts for this session */
+        return exports.DEFAULT_THEME;
     }
+}
+/** Put a theme into effect: the attribute every token depends on (and with it CSS color-scheme). */
+function applyTheme(doc, t) {
+    doc.documentElement.setAttribute('data-theme', t);
 }
 class ThemeController {
     constructor(doc) {
         this.doc = doc;
-        this.theme = 'light';
-        this.mql = null;
         this.listeners = [];
-        const win = doc.defaultView;
-        this.pref = readStored(win);
-        try {
-            this.mql = win && win.matchMedia ? win.matchMedia('(prefers-color-scheme: dark)') : null;
-        }
-        catch {
-            this.mql = null;
-        }
-        const onSystem = () => {
-            if (this.pref === 'system')
-                this.apply();
-        };
-        if (this.mql) {
-            if (this.mql.addEventListener)
-                this.mql.addEventListener('change', onSystem);
-            else if (this.mql.addListener)
-                this.mql.addListener(onSystem);
-        }
-        this.apply(true);
+        this.theme = readTheme(doc.defaultView);
+        applyTheme(doc, this.theme);
     }
-    /** Called with the theme in effect after every change of the choice or of the system theme (not for the initial one). */
+    /** Called with the theme after every switch. */
     onChange(fn) {
         this.listeners.push(fn);
     }
-    systemDark() {
-        return !!this.mql && this.mql.matches;
+    set(t) {
+        this.theme = t;
+        const s = storage(this.doc.defaultView);
+        try {
+            if (s)
+                s.setItem(exports.THEME_KEY, t);
+        }
+        catch {
+            /* storage unavailable: the choice lasts for this session */
+        }
+        applyTheme(this.doc, t);
+        for (const fn of this.listeners)
+            fn(t);
     }
-    set(pref) {
-        this.pref = pref;
-        store(this.doc.defaultView, pref);
-        this.apply();
-    }
-    /** The theme button: System → Light → Dark → System. */
-    cycle() {
-        this.set(nextThemePref(this.pref));
-    }
-    apply(initial = false) {
-        this.theme = resolveTheme(this.pref, this.systemDark());
-        const root = this.doc.documentElement;
-        root.setAttribute('data-theme', this.theme);
-        root.setAttribute('data-theme-pref', this.pref);
-        if (!initial)
-            for (const fn of this.listeners)
-                fn(this.theme);
+    /** The theme button: Light ⇄ Dark. */
+    toggle() {
+        this.set(otherTheme(this.theme));
     }
 }
 exports.ThemeController = ThemeController;
@@ -13400,6 +13207,14 @@ class Editor {
         this.collapsed = new Set(['link', 'protocol']);
         /** a new link or relation being completed in the Edit tab (not in the model yet) */
         this.draft = null;
+        /**
+         * The field the selection was made on (an address line, a VRF …), with
+         * where it was found last: an address that is edited keeps its mark while
+         * its list keeps its length.
+         */
+        this.detail = null;
+        /** what the Edit tab marked last: it is scrolled into view only when that changes */
+        this.markedKey = '';
         /** unapplied text in the YAML source tab */
         this.sourceDraft = null;
         this.sourceError = null;
@@ -13493,8 +13308,13 @@ class Editor {
     openIface(path) {
         this.open.add(J(path));
     }
+    /** The field of the selected object that the selection was made on (null: the object as a whole). */
+    setDetail(d) {
+        this.detail = d ? { ...d, path: null, count: -1 } : null;
+    }
     selectEntity(kind, index) {
         this.leaveDraft(kind);
+        this.detail = null;
         this.sel = { kind, index };
         this.host.selected(this.sel);
     }
@@ -13665,6 +13485,7 @@ class Editor {
         const s = this.sel;
         if (!s || (s.kind !== 'document' && !doc.entities(s.kind)[s.index])) {
             this.sel = null;
+            this.markedKey = '';
             wrap.appendChild(this.e('h3', {}, ['Edit']));
             wrap.appendChild(this.e('p', { class: 'muted' }, [
                 'Select an object in the diagram or in the Objects list to edit it, or add one with “+ Add”. Changes apply when you press Enter or leave a field, and can be undone (Ctrl+Z).',
@@ -13674,8 +13495,131 @@ class Editor {
         }
         if (s.kind === 'document')
             this.renderDocument(wrap);
-        else
+        else {
             this.renderEntity(wrap, s.kind, s.index);
+            this.markSelection(wrap);
+        }
+    }
+    // ------------------------------------------------ the selection in the Edit tab
+    /**
+     * Mark the part of the Edit tab that belongs to what is selected, at the
+     * most specific level there is: the field of the line it was clicked on
+     * (an address, VRF, VLAN, tunnel end, attribute …), else the selected
+     * interface's card, else the object's header. The mark is a tinted
+     * background with an accent bar and a "Selected" tag (not colour alone),
+     * and aria-current for assistive technology. When it moves to another
+     * section, that section is scrolled into view if it is off screen
+     * (smoothly, unless reduced motion is preferred); the keyboard focus is
+     * never moved.
+     */
+    markSelection(wrap) {
+        const s = this.sel;
+        if (!s || s.kind === 'document')
+            return;
+        const base = [document_1.SECTION[s.kind], s.index];
+        const scope = s.iface || base;
+        let target = this.detail ? this.detailElement(wrap, scope, this.detail) : null;
+        if (!target && s.iface)
+            target = this.byPath(wrap, 'details.card', 'data-card', J(s.iface));
+        if (!target)
+            target = wrap.querySelector('.insp-head');
+        if (!target)
+            return;
+        target.classList.add('sel-mark');
+        target.setAttribute('aria-current', 'true');
+        const tag = this.e('span', { class: 'sel-tag' }, [this.e('span', { 'aria-hidden': 'true' }, ['▸ ']), 'Selected']);
+        if (target.tagName === 'DETAILS') {
+            const sum = target.querySelector('summary');
+            const title = sum.querySelector('.card-title');
+            sum.insertBefore(tag, title ? title.nextSibling : sum.firstChild);
+        }
+        else if (target.classList.contains('insp-head')) {
+            // after the name (the first row has no room to spare); the heading's accessible name stays the name, aria-current says it
+            const h3 = target.querySelector('h3');
+            tag.setAttribute('aria-hidden', 'true');
+            if (h3)
+                h3.appendChild(tag);
+            else
+                target.appendChild(tag);
+        }
+        else if (target.classList.contains('field')) {
+            const label = target.querySelector('label');
+            if (label)
+                label.appendChild(tag);
+            else
+                target.insertBefore(tag, target.firstChild);
+        }
+        else {
+            const btn = target.querySelector('button');
+            target.insertBefore(tag, btn);
+        }
+        // a mark inside a folded section (the attributes) opens it
+        for (let p = target.parentElement; p && p !== wrap; p = p.parentElement) {
+            if (p.tagName === 'DETAILS' && !p.hasAttribute('open')) {
+                p.setAttribute('open', '');
+                const key = p.getAttribute('data-card');
+                if (key)
+                    this.open.add(key);
+            }
+        }
+        const key = (this.selectedRef() || '') + '|' + (this.detail ? this.detail.field + '=' + this.detail.value : '') + '|' + (target.getAttribute('data-card') || '');
+        if (key === this.markedKey)
+            return;
+        this.markedKey = key;
+        this.reveal(target);
+    }
+    /** Scroll a marked section into view when it is not (wholly) visible in its scrolling panel. */
+    reveal(el) {
+        let box = el.parentElement;
+        while (box && box !== this.d.body) {
+            const st = this.d.defaultView ? this.d.defaultView.getComputedStyle(box) : null;
+            if (st && /auto|scroll/.test(st.overflowY) && box.scrollHeight > box.clientHeight)
+                break;
+            box = box.parentElement;
+        }
+        if (!box || box === this.d.body || typeof el.scrollIntoView !== 'function')
+            return;
+        const r = el.getBoundingClientRect();
+        const b = box.getBoundingClientRect();
+        if (r.top >= b.top && r.bottom <= b.bottom)
+            return;
+        const win = this.d.defaultView;
+        const reduce = !!win && typeof win.matchMedia === 'function' && win.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        el.scrollIntoView({ block: r.height > b.height ? 'start' : 'nearest', behavior: reduce ? 'auto' : 'smooth' });
+    }
+    /** The first element matching `sel` whose attribute `attr` is `value` (paths contain quotes: no attribute selector). */
+    byPath(wrap, sel, attr, value, more) {
+        const all = wrap.querySelectorAll(sel);
+        for (let i = 0; i < all.length; i++)
+            if (all[i].getAttribute(attr) === value && (!more || more(all[i])))
+                return all[i];
+        return null;
+    }
+    /** The row or field of `detail` in the section of `scope` (the selected interface, or the object). */
+    detailElement(wrap, scope, d) {
+        const near = (e, cls) => (e ? e.closest(cls) : null);
+        if (d.field === 'ip') {
+            const lp = scope.concat('ip');
+            const n = this.doc.get(lp);
+            const items = n && n.kind === 'seq' ? n.items.map((it) => (0, validate_1.scalarText)(it) || '') : n && n.kind === 'scalar' ? [(0, validate_1.scalarText)(n) || ''] : [];
+            if (!d.value)
+                return near(this.byPath(wrap, 'input', 'data-p', J(lp)), '.field');
+            const k = items.indexOf(d.value);
+            let path = k < 0 ? null : J(n && n.kind === 'seq' ? lp.concat(k) : lp);
+            // the address was edited since: the same place, while the list has as many addresses
+            if (!path && d.path && d.count === items.length)
+                path = d.path;
+            if (!path)
+                return null;
+            d.path = path;
+            d.count = items.length;
+            return near(this.byPath(wrap, 'input', 'data-p', path), '.list-row');
+        }
+        if (d.field === 'attr')
+            return near(this.byPath(wrap, 'input.g-key', 'data-p', J(scope.concat('attrs')), (e) => e.getAttribute('data-k') === d.value), '.g-row');
+        if (d.field === 'dhcp')
+            return near(this.byPath(wrap, 'button.dhcp-switch', 'data-p', J(scope)), '.field');
+        return near(this.byPath(wrap, '[data-p]', 'data-p', J(scope.concat(d.field))), '.field');
     }
     // ------------------------------------------------- a new link or relation
     /** Open a new link or relation between two endpoints chosen in the diagram (not in the model yet). */
@@ -16993,6 +16937,8 @@ __defs["diagram/labels"] = function (module, exports) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.LabelPlacer = void 0;
+exports.addressLineAttrs = addressLineAttrs;
+exports.fieldAttrs = fieldAttrs;
 exports.textLines = textLines;
 exports.centerRect = centerRect;
 exports.leaderLine = leaderLine;
@@ -17011,12 +16957,25 @@ exports.alongSegment = alongSegment;
 const geometry_1 = __req("layout/geometry");
 const text_1 = __req("layout/text");
 const scene_1 = __req("diagram/scene");
+/** Line attributes for a label followed by address lines (layout/text.ts labelWithAddresses): `fields` belong to the address lines. */
+function addressLineAttrs(block, fields) {
+    const out = [];
+    const mono = block.mono === undefined ? block.lines.length : block.mono;
+    for (let i = 0; i < block.lines.length; i++)
+        out.push(i >= mono ? fieldAttrs(fields[i - mono]) : undefined);
+    return out;
+}
+/** The attributes that tie a drawn line to the field of the configuration it shows (see model/addresses.ts LineField). */
+function fieldAttrs(f) {
+    return f && f.field ? { 'data-field': f.field, 'data-value': f.value || undefined } : undefined;
+}
 /**
  * A block of text lines starting at `top`. One line is a plain <text>;
  * several lines are <tspan>s with absolute positions, so the file renders
- * the same in every SVG viewer.
+ * the same in every SVG viewer. `lineAttrs` adds attributes to each line
+ * (e.g. which field of the configuration it shows).
  */
-function textLines(attrs, block, x, top) {
+function textLines(attrs, block, x, top, lineAttrs = []) {
     const lh = (0, text_1.lineHeight)(block.size);
     // baseline of a line inside its line box
     const base = lh / 2 + block.size * 0.35;
@@ -17024,9 +16983,9 @@ function textLines(attrs, block, x, top) {
     const mono = block.mono === undefined ? Infinity : block.mono;
     if (block.lines.length === 1) {
         const cls = mono === 0 ? ((attrs.class ? attrs.class + ' ' : '') + 'addr') : attrs.class;
-        return (0, scene_1.h)('text', { ...attrs, class: cls, x, y: top + base }, block.lines[0]);
+        return (0, scene_1.h)('text', { ...attrs, ...(lineAttrs[0] || {}), class: cls, x, y: top + base }, block.lines[0]);
     }
-    return (0, scene_1.h)('text', { ...attrs, x, y: top + base }, block.lines.map((l, i) => (0, scene_1.h)('tspan', { class: i >= mono ? 'addr' : undefined, x, y: top + i * lh + base }, l)));
+    return (0, scene_1.h)('text', { ...attrs, x, y: top + base }, block.lines.map((l, i) => (0, scene_1.h)('tspan', { ...(lineAttrs[i] || {}), class: i >= mono ? 'addr' : undefined, x, y: top + i * lh + base }, l)));
 }
 function centerRect(c, w, hgt) {
     return { x: c.x - w / 2, y: c.y - hgt / 2, w, h: hgt };
@@ -17837,7 +17796,8 @@ function renderLogical(model, layout, opts) {
                 labelRects.push((0, labels_1.centerRect)(c, it.box.w, it.box.h));
                 if (placer.leaderFrom)
                     labels.push((0, labels_1.leaderLine)(placer.leaderFrom, (0, labels_1.centerRect)(c, it.box.w, it.box.h), 'relation:' + it.p.rel.id));
-                labels.push(pill('relation:' + it.p.rel.id, c, it.box, it.p.def.color));
+                // the relation's own address lines name its attrs (those of relations nested in it belong to them)
+                labels.push(pill('relation:' + it.p.rel.id, c, it.box, it.p.def.color, (0, labels_1.addressLineAttrs)(it.box.block, attrFields(it.p.rel.attrs))));
             }
         }
     });
@@ -17876,7 +17836,7 @@ function renderLogical(model, layout, opts) {
             labelRects.push((0, labels_1.centerRect)(c, box.w, box.h));
             if (placer.leaderFrom)
                 labels.push((0, labels_1.leaderLine)({ x: hub.cx, y: hub.cy }, (0, labels_1.centerRect)(c, box.w, box.h), 'relation:' + r.id));
-            labels.push(pill('relation:' + r.id, c, box, def.color));
+            labels.push(pill('relation:' + r.id, c, box, def.color, (0, labels_1.addressLineAttrs)(box.block, attrFields(r.attrs))));
         }
     }
     // ---- addresses on membership lines: near the device, moved along the line where that spot is taken
@@ -17925,7 +17885,7 @@ function renderLogical(model, layout, opts) {
                 (0, scene_1.h)('rect', { class: 'net-box', x, y, width: n.w, height: n.h, rx, stroke: color }),
                 (0, scene_1.h)('rect', { class: 'net-tint', x, y, width: n.w, height: n.h, rx, fill: color }),
                 (0, labels_1.textLines)({ class: 'net-label', 'text-anchor': 'middle', 'font-size': sizes_1.NET_LABEL_SIZE }, body.label, n.cx, top),
-                body.sub.lines.length ? (0, labels_1.textLines)({ class: 'net-sub', 'text-anchor': 'middle' }, body.sub, n.cx, top + body.label.h) : null,
+                body.sub.lines.length ? (0, labels_1.textLines)({ class: 'net-sub', 'text-anchor': 'middle' }, body.sub, n.cx, top + body.label.h, ((0, logical_1.networkSubtitle)(nw.cidr, nw.vlan) ? [(0, labels_1.fieldAttrs)({ field: nw.cidr ? 'cidr' : 'vlan', value: '' })] : []).concat(attrFields(nw.attrs).map(labels_1.fieldAttrs))) : null,
             ]));
         }
     });
@@ -17983,6 +17943,10 @@ function localNodes(model, nodes) {
     });
     return out;
 }
+/** The fields of an object's address lines (its address-like attrs, by key). */
+function attrFields(attrs) {
+    return (0, addresses_1.addressAttrEntries)(attrs).map((a) => ({ field: 'attr', value: a.key }));
+}
 /** For a unidirectional relation the arrow points at the last endpoint's device. */
 function endTip(r, s, e, firstSorted) {
     const target = r.endpoints[r.endpoints.length - 1].device;
@@ -17993,10 +17957,10 @@ function endFrom(r, s, e, firstSorted) {
     return target === firstSorted ? e : s;
 }
 /** A relation label: its full text (wrapped if long) in a rounded box, centered at `p`. */
-function pill(ref, p, box, color) {
+function pill(ref, p, box, color, lineAttrs = []) {
     return (0, scene_1.h)('g', { class: 'pill', 'data-ref': ref }, [
         (0, scene_1.h)('rect', { class: 'pill-box', x: p.x - box.w / 2, y: p.y - box.h / 2, width: box.w, height: box.h, rx: 9, stroke: color }),
-        (0, labels_1.textLines)({ class: 'pill-text', 'text-anchor': 'middle' }, box.block, p.x, p.y - box.block.h / 2),
+        (0, labels_1.textLines)({ class: 'pill-text', 'text-anchor': 'middle' }, box.block, p.x, p.y - box.block.h / 2, lineAttrs),
     ]);
 }
 /**
@@ -18155,7 +18119,7 @@ function groupFrames(model, grects, placer, titles = []) {
             (0, scene_1.h)('rect', { class: 'group-box', x: r.x, y: r.y, width: r.w, height: r.h, rx: 12, 'stroke-dasharray': ks.dash }),
         ]));
         titles.push((0, scene_1.h)('g', { class: 'group-label', 'data-ref': 'group:' + g.id }, [
-            (0, labels_1.textLines)({ class: 'halo group-title' }, head.title, r.x + 14, r.y + 7),
+            (0, labels_1.textLines)({ class: 'halo group-title' }, head.title, r.x + 14, r.y + 7, (0, labels_1.addressLineAttrs)(head.title, (0, addresses_1.addressAttrEntries)(g.attrs).map((a) => ({ field: 'attr', value: a.key })))),
             head.kind ? (0, scene_1.h)('text', { class: 'halo group-kind', x: r.x + r.w - 12, y: r.y + 20, 'text-anchor': 'end' }, head.kind) : null,
         ]));
         placer.block({ x: r.x + 10, y: r.y + 5, w: head.title.w + 8, h: head.title.h + 4 });
@@ -18309,7 +18273,8 @@ function renderPhysical(model, layout, opts) {
         const out = [];
         const mismatch = !!(0, derive_1.networkMismatch)(l.a.networks, l.b.networks);
         const text = opts.showLabels ? (0, input_1.linkLabelText)(model, l) : '';
-        const lines = opts.showLabels ? (0, input_1.linkLabelExtra)(l) : [];
+        const lineFields = opts.showLabels ? (0, input_1.linkLabelExtraFields)(l) : [];
+        const lines = lineFields.map((x) => x.line);
         let center = { x: (pts[seg].x + pts[seg + 1].x) / 2, y: (pts[seg].y + pts[seg + 1].y) / 2 };
         if (text || lines.length) {
             const box = (0, sizes_1.linkLabelBox)(text, lines);
@@ -18319,7 +18284,7 @@ function renderPhysical(model, layout, opts) {
             extra.push(r);
             if (placer.leaderFrom)
                 out.push((0, labels_1.leaderLine)(placer.leaderFrom, r, 'link:' + l.id));
-            out.push((0, labels_1.textLines)({ class: 'halo link-label' + (mismatch ? ' net-mismatch' : ''), 'data-ref': 'link:' + l.id, 'text-anchor': 'middle' }, box.block, center.x, r.y + 1));
+            out.push((0, labels_1.textLines)({ class: 'halo link-label' + (mismatch ? ' net-mismatch' : ''), 'data-ref': 'link:' + l.id, 'text-anchor': 'middle' }, box.block, center.x, r.y + 1, (0, labels_1.addressLineAttrs)(box.block, lineFields)));
             // ends that carry different networks are marked next to the label
             if (mismatch)
                 out.push((0, scene_1.h)('text', { class: 'halo net-warn', 'data-ref': 'link:' + l.id, x: center.x, y: r.y - 3, 'text-anchor': 'middle' }, '⚠'));
@@ -18403,10 +18368,10 @@ function entryItems(model, d, view) {
     const own = texts.length > ifaces.length;
     return texts.map((t, i) => {
         if (own && i === 0)
-            return { ...t, ref: 'device:' + d.id, cls: 'if-entry dev-addr', endpoint: false };
+            return { ...t, ref: 'device:' + d.id, fields: (0, addresses_1.addressAttrEntries)(d.attrs).map((a) => ({ field: 'attr', value: a.key })), cls: 'if-entry dev-addr', endpoint: false };
         const e = ifaces[own ? i - 1 : i];
         const kind = e.kind === 'loopback' ? 'loop-chip' : e.kind === 'physical' ? 'phys-entry' : 'logical-chip kind-' + e.kind;
-        return { ...t, ref: e.ref, cls: 'if-entry ' + kind, endpoint: true };
+        return { ...t, ref: e.ref, fields: e.fields, cls: 'if-entry ' + kind, endpoint: true };
     });
 }
 /**
@@ -18425,7 +18390,7 @@ function entryNodes(items, x, y, w) {
             ty += sizes_1.ENTRY_LH;
         }
         if (it.lines.length)
-            kids.push((0, labels_1.textLines)({ class: 'if-lines', 'font-size': sizes_1.ENTRY_FONT }, { lines: it.lines, size: sizes_1.ENTRY_FONT, w: 0, h: it.lines.length * sizes_1.ENTRY_LH, mono: 0 }, x + sizes_1.ENTRY_PAD_X, ty));
+            kids.push((0, labels_1.textLines)({ class: 'if-lines', 'font-size': sizes_1.ENTRY_FONT }, { lines: it.lines, size: sizes_1.ENTRY_FONT, w: 0, h: it.lines.length * sizes_1.ENTRY_LH, mono: 0 }, x + sizes_1.ENTRY_PAD_X, ty, it.fields.map(labels_1.fieldAttrs)));
         out.push((0, scene_1.h)('g', { class: it.cls, 'data-ref': it.ref, 'data-endpoint': it.endpoint ? 'iface' : undefined }, kids));
         top += b.h + sizes_1.ENTRY_GAP;
     }
@@ -22271,5 +22236,204 @@ __req("app/main");
 })();
 
 </script>
+</head>
+<body data-state="empty" data-view="none" data-dirty="false">
+<header class="topbar">
+  <div class="brand" title="netatlas 0.1.2 — offline network architecture diagrams and editor">
+    <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="6" r="2.6"/><circle cx="19" cy="6" r="2.6"/><circle cx="12" cy="18" r="2.6"/><path d="M7.4 6.8h9.2M6.3 8.3l4.4 7.4M17.7 8.3l-4.4 7.4"/></svg>
+    <span>netatlas</span><span class="version" title="netatlas version">v0.1.2</span>
+  </div>
+  <div class="menu-wrap">
+    <button id="menu-btn" type="button" class="menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="main-menu" title="File: new, open, save and close models; examples">File <span class="caret" aria-hidden="true">▾</span></button>
+    <div id="main-menu" class="dropdown menu" role="menu" aria-label="File" hidden>
+      <button id="btn-new" type="button" role="menuitem" title="Start a new, empty model"><span class="mi-label">New model</span></button>
+      <button id="open" type="button" role="menuitem" title="Open a model from a YAML file on this computer (nothing is uploaded)"><span class="mi-label">Open model…</span></button>
+      <button id="btn-save" type="button" role="menuitem" title="Open or create a model first" disabled><span class="mi-label">Save model</span><span class="mi-hint">Ctrl+S</span></button>
+      <button id="btn-save-as" type="button" role="menuitem" title="Open or create a model first" disabled><span class="mi-label">Save model as…</span><span class="mi-hint">Ctrl+Shift+S</span></button>
+      <button id="btn-close" type="button" role="menuitem" title="Close the current model and return to the start screen" disabled><span class="mi-label">Close model</span></button>
+      <div class="menu-sep" role="separator"></div>
+      <div class="menu-title" id="menu-examples-title">Examples</div>
+      <div id="menu-examples" role="group" aria-labelledby="menu-examples-title"></div>
+    </div>
+  </div>
+  <div class="menu-wrap">
+    <button id="export-btn" type="button" class="menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="export-menu" title="Export: save the current view as a picture">Export <span class="caret" aria-hidden="true">▾</span></button>
+    <div id="export-menu" class="dropdown menu" role="menu" aria-label="Export" hidden>
+      <button id="btn-export-as" type="button" role="menuitem" aria-haspopup="menu" aria-expanded="false" aria-controls="export-formats" title="Open or create a model first" disabled><span class="mi-label">Export view as…</span><span class="mi-hint sub-caret" aria-hidden="true">▸</span></button>
+      <div id="export-formats" class="submenu" role="menu" aria-label="Export view as" hidden>
+        <button id="btn-export-png" type="button" role="menuitem" data-format="png" title="Open or create a model first" disabled><span class="mi-label">PNG</span><span class="mi-hint">image</span></button>
+        <button id="btn-export-svg" type="button" role="menuitem" data-format="svg" title="Open or create a model first" disabled><span class="mi-label">SVG</span><span class="mi-hint">vector drawing</span></button>
+      </div>
+    </div>
+  </div>
+  <div class="menu-wrap">
+    <button id="find-btn" type="button" class="menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="find-menu" title="Find: find in the diagram, filter the object list">Find <span class="caret" aria-hidden="true">▾</span></button>
+    <div id="find-menu" class="dropdown menu" role="menu" aria-label="Find" hidden>
+      <button id="btn-find" type="button" role="menuitem" title="Open or create a model first" disabled><span class="mi-label">Find in diagram…</span><span class="mi-hint">/</span></button>
+      <button id="btn-outline-filter" type="button" role="menuitem" title="Open or create a model first" disabled><span class="mi-label">Filter object list…</span></button>
+    </div>
+  </div>
+  <div class="menu-wrap">
+    <button id="help-btn" type="button" class="menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="help-menu" title="Help: user manual and license">Help <span class="caret" aria-hidden="true">▾</span></button>
+    <div id="help-menu" class="dropdown menu" role="menu" aria-label="Help" hidden>
+      <button id="btn-manual" type="button" role="menuitem" aria-haspopup="dialog" title="A short guide to NetAtlas's basic tasks, with pictures"><span class="mi-label">User Manual</span></button>
+      <button id="btn-license" type="button" role="menuitem" aria-haspopup="dialog" title="The license NetAtlas is distributed under (Apache License, Version 2.0)"><span class="mi-label">License</span></button>
+    </div>
+  </div>
+  <input id="file" type="file" accept=".yaml,.yml,application/yaml,application/x-yaml,text/yaml,text/plain" hidden>
+  <div class="btn-group">
+    <button id="btn-undo" type="button" title="Undo (Ctrl+Z)" disabled aria-label="Undo">↶</button>
+    <button id="btn-redo" type="button" title="Redo (Ctrl+Y)" disabled aria-label="Redo">↷</button>
+  </div>
+  <div id="view-group" class="tool-group view-group" role="group" aria-labelledby="view-title">
+    <span id="view-title" class="tool-group-title">View</span>
+    <div class="seg">
+      <button type="button" data-view-btn="physical" title="Physical view (P)">Physical</button>
+      <button type="button" data-view-btn="logical" title="Logical view (L)">Logical</button>
+    </div>
+  </div>
+  <div id="arrange-group" class="tool-group arrange-group" role="group" aria-labelledby="arrange-title" aria-describedby="arrange-status">
+    <span id="arrange-title" class="tool-group-title arrange-title">Auto-arrange</span>
+    <div class="arrange-btns">
+      <button id="btn-arrange-default" type="button" class="arrange-btn" data-strategy="default" aria-label="Auto-arrange: Default" aria-pressed="false" disabled>Default</button>
+      <button id="btn-arrange-compact" type="button" class="arrange-btn" data-strategy="compact" aria-label="Auto-arrange: Compact" aria-pressed="false" disabled>Compact</button>
+      <button id="btn-arrange-spacious" type="button" class="arrange-btn" data-strategy="spacious" aria-label="Auto-arrange: Spacious" aria-pressed="false" disabled>Spacious</button>
+    </div>
+    <span id="arrange-status" class="sr-only" aria-live="polite"></span>
+  </div>
+  <div id="filters-slot" class="filters-slot">
+  <div id="filters-group" class="tool-group filters-group" role="group" aria-label="Diagram filters">
+  <span id="filters-title" class="tool-group-title">Filters</span>
+  <div id="view-filters" class="view-filters">
+  <div class="devices-wrap">
+    <button id="devices-btn" type="button" class="menu-btn" aria-haspopup="dialog" aria-expanded="false" aria-controls="devices-panel" title="Choose the devices the diagram shows" disabled>Devices: <span id="devices-count">all</span> <span class="caret" aria-hidden="true">▾</span></button>
+    <div id="devices-panel" class="dropdown devices-panel" role="dialog" aria-label="Devices shown in the diagram" hidden>
+      <div class="dp-tools">
+        <input id="devices-find" type="search" placeholder="Filter the list…" aria-label="Filter the device list" autocomplete="off" spellcheck="false">
+        <button id="devices-all" type="button" class="mini" title="Show every device: the complete diagram with its saved positions">Select all</button>
+        <button id="devices-none" type="button" class="mini" title="Deselect every device">Clear</button>
+      </div>
+      <div id="devices-list" class="dp-list" role="group" aria-label="Devices"></div>
+      <p class="dp-note muted">A filtered diagram is arranged for the selected devices only. Its positions are temporary; the saved layout of the complete diagram is not changed.</p>
+    </div>
+  </div>
+  <label class="opt" data-priority="5"><input id="opt-labels" type="checkbox" checked disabled> Labels</label>
+  <label class="opt" data-priority="4"><input id="opt-groups" type="checkbox" checked disabled> Groups / Locations</label>
+  <label class="opt logical-only" data-priority="3"><input id="opt-networks" type="checkbox" checked disabled> Networks</label>
+  <label class="opt" data-priority="2" title="Show devices of type Endpoint (off: hidden with what only they connect; nothing is deleted)"><input id="opt-type-endpoint" type="checkbox" data-device-type="endpoint" checked disabled> Endpoints</label>
+  <label class="opt" data-priority="1" title="Show devices of type Server (off: hidden with what only they connect; nothing is deleted)"><input id="opt-type-server" type="checkbox" data-device-type="server" checked disabled> Servers</label>
+  <div class="more-filters-wrap">
+    <button id="more-filters-btn" type="button" class="menu-btn" aria-haspopup="true" aria-expanded="false" aria-controls="more-filters" hidden disabled>Filters<span id="more-filters-count" class="mf-count"></span> <span class="caret" aria-hidden="true">▾</span></button>
+    <div id="more-filters" class="dropdown more-filters" role="group" aria-label="More diagram filters" hidden></div>
+  </div>
+  </div>
+  </div>
+  </div>
+  <div class="theme-wrap">
+    <button id="theme-btn" type="button" class="theme-btn" aria-label="Theme" aria-describedby="theme-tip" data-theme-now="dark">
+      <svg class="ti ti-light" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2.5M12 19v2.5M2.5 12H5M19 12h2.5M5.3 5.3l1.8 1.8M16.9 16.9l1.8 1.8M5.3 18.7l1.8-1.8M16.9 7.1l1.8-1.8"/></svg>
+      <svg class="ti ti-dark" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/></svg>
+    </button>
+    <span id="theme-tip" class="tip" role="tooltip">Theme</span>
+  </div>
+</header>
+<main>
+  <aside id="outline" aria-labelledby="outline-title" aria-describedby="outline-sub">
+    <div class="ol-header"><h2 id="outline-title" class="ol-heading">Objects</h2><span id="outline-sub" class="ol-sub">Select, duplicate, or delete</span></div>
+    <div id="outline-body"></div>
+  </aside>
+  <section id="canvas-wrap">
+    <svg id="canvas" role="img" aria-label="Network diagram"><g id="viewport"></g></svg>
+    <div id="find-bar" class="find-bar" role="search" aria-label="Find in diagram" hidden>
+      <input id="search" type="search" placeholder="Find device, network, address…" aria-label="Find in diagram: device, network, relation" autocomplete="off" spellcheck="false">
+      <button id="find-close" type="button" class="mini" aria-label="Close Find in diagram" title="Close (Esc)">×</button>
+      <div id="search-results" class="dropdown" hidden></div>
+    </div>
+    <div id="connect-bar" class="connect-bar" role="group" aria-labelledby="connect-text" hidden>
+      <span id="connect-text" class="cb-text"></span>
+      <select id="connect-pick" aria-label="Second endpoint of the new connection"></select>
+      <button id="connect-go" type="button" class="primary">Use endpoint</button>
+      <button id="connect-cancel" type="button" title="Cancel the connection (Esc)">Cancel</button>
+    </div>
+    <div id="filter-hint" class="filter-hint" role="status" hidden><span class="fh-icon" aria-hidden="true">⧉</span> <span id="filter-hint-text">Filtered-view positions are temporary and are not saved in YAML.</span></div>
+    <div id="overlap-hint" class="overlap-hint" role="status" hidden><span aria-hidden="true">⚠</span> <span id="overlap-hint-text"></span></div>
+    <div class="zoombar" role="toolbar" aria-label="Zoom">
+      <button id="zoom-in" type="button" title="Zoom in (+)">+</button>
+      <span id="zoom-level">100%</span>
+      <button id="zoom-out" type="button" title="Zoom out (−)">−</button>
+      <button id="zoom-fit" type="button" title="Fit to screen (0)">Fit</button>
+    </div>
+    <div id="empty" class="overlay">
+      <div class="start">
+        <div class="start-brand">
+          <svg width="52" height="52" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="6" r="2.6"/><circle cx="19" cy="6" r="2.6"/><circle cx="12" cy="18" r="2.6"/><path d="M7.4 6.8h9.2M6.3 8.3l4.4 7.4M17.7 8.3l-4.4 7.4"/></svg>
+          <h1>NetAtlas</h1>
+        </div>
+        <p class="start-tagline">Create and explore network architecture diagrams, fully offline.</p>
+        <div class="start-actions" role="group" aria-label="Ways to begin">
+          <button id="new-empty" type="button" class="start-card">
+            <span class="start-title">New model</span>
+            <span class="start-sub">Start with an empty model</span>
+          </button>
+          <button id="open-empty" type="button" class="start-card start-drop">
+            <span class="start-title">Open model…</span>
+            <span class="start-sub">Choose a YAML file, or drop one here</span>
+          </button>
+          <div class="start-card start-example">
+            <label class="start-title" for="start-example">Load example</label>
+            <span class="start-row">
+              <select id="start-example" aria-label="Example to load"><option value="">Choose an example…</option></select>
+              <button id="start-load" type="button" disabled>Load</button>
+            </span>
+          </div>
+        </div>
+        <p class="start-note muted small">Your files stay on this computer.</p>
+      </div>
+    </div>
+    <div id="errors" class="overlay error-overlay"></div>
+    <div id="tooltip" role="tooltip" hidden></div>
+    <div id="drop-hint" aria-hidden="true">Drop the YAML file to open it</div>
+    <div id="toast" role="status" aria-live="polite" hidden></div>
+  </section>
+  <aside id="side" aria-label="Inspector">
+    <nav class="tabs" role="tablist">
+      <button type="button" data-tab="edit" title="Edit the selected object (E)">Edit</button>
+      <button type="button" data-tab="details">Details</button>
+      <button type="button" data-tab="legend">Legend</button>
+      <button type="button" data-tab="relations">Relations</button>
+      <button type="button" data-tab="problems">Problems</button>
+      <button type="button" data-tab="yaml">YAML</button>
+    </nav>
+    <div id="side-body"></div>
+    <details id="keys" class="keys" open>
+      <summary>Mouse &amp; keyboard</summary>
+      <div class="keys-groups">
+        <section class="keys-group" aria-labelledby="keys-pointer">
+          <h4 id="keys-pointer">Pointer</h4>
+          <dl>
+            <div><dt>Drag background</dt><dd>pan</dd></div>
+            <div><dt>Wheel</dt><dd>zoom</dd></div>
+            <div><dt>Drag node</dt><dd>move</dd></div>
+            <div><dt>Click</dt><dd>select</dd></div>
+            <div><dt>Right-click</dt><dd>connect</dd></div>
+          </dl>
+        </section>
+        <section class="keys-group" aria-labelledby="keys-keyboard">
+          <h4 id="keys-keyboard">Keyboard</h4>
+          <dl>
+            <div><dt><kbd>Esc</kbd></dt><dd>clear</dd></div>
+            <div><dt><kbd>P</kbd> / <kbd>L</kbd></dt><dd>view</dd></div>
+            <div><dt><kbd>Ctrl+Z</kbd> / <kbd>Y</kbd></dt><dd>undo / redo</dd></div>
+            <div><dt><kbd>C</kbd></dt><dd>connect</dd></div>
+            <div><dt><kbd>Ctrl+S</kbd></dt><dd>save</dd></div>
+          </dl>
+        </section>
+      </div>
+    </details>
+  </aside>
+</main>
+<footer id="status" aria-live="polite"></footer>
+<dialog id="modal"></dialog>
+<pre id="selftest" hidden></pre>
 </body>
 </html>

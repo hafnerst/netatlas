@@ -1,9 +1,9 @@
-// Light, Dark and System themes: the design tokens (one set of names, WCAG
-// 2.2 AA contrast in both themes), the diagram colours drawn for each theme,
-// and, in a headless Chrome/Edge/Chromium driven through the DevTools
-// protocol, the theme switch itself (System following the operating system
-// while the app runs, the button, remembering the choice, no storage) and
-// exports in every combination of theme, view and format. The browser part is
+// Light and Dark themes, Dark by default: the design tokens (one set of
+// names, WCAG 2.2 AA contrast in both themes), the diagram colours drawn for
+// each theme, and, in a headless Chrome/Edge/Chromium driven through the
+// DevTools protocol, the theme switch itself (Dark on first launch, stored
+// choices kept or migrated, the theme in effect before the first paint, the
+// toggle by mouse and keyboard, no storage) and exports in both themes. The browser part is
 // skipped when no Chromium-based browser is installed.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -28,21 +28,25 @@ function tokens(selector) {
   const body = css.slice(at, css.indexOf('}', at));
   return new Map([...body.matchAll(/--([a-z-]+):\s*([^;]+);/g)].map((m) => [m[1], m[2].trim()]));
 }
-const LIGHT = tokens(':root, :root[data-theme="light"]');
-const DARK = tokens(':root[data-theme="dark"]');
+const LIGHT = tokens(':root[data-theme="light"]');
+const DARK = tokens(':root, :root[data-theme="dark"]');
 
 test('one set of semantic tokens: both themes define the same names, and nothing else in the stylesheet has a colour of its own', () => {
-  assert.deepEqual([...DARK.keys()].sort(), [...LIGHT.keys()].filter((k) => k !== 'font-mono').sort());
-  for (const k of ['bg', 'panel', 'canvas', 'raised', 'text', 'muted', 'border', 'control-border', 'accent', 'link', 'error', 'warn', 'ok', 'sel', 'on-accent', 'dev-stroke', 'group-stroke', 'member', 'halo', 'grid', 'shadow', 'backdrop']) assert.ok(LIGHT.has(k), k);
-  assert.match(css, /:root, :root\[data-theme="light"\] \{[^}]*color-scheme: light;/);
-  assert.match(css, /:root\[data-theme="dark"\] \{[^}]*color-scheme: dark;/);
-  // outside the two token blocks: no hex, rgb() or hsl() colour, and no prefers-color-scheme (the build derives that one rule)
-  const rest = css.replace(/\/\*[\s\S]*?\*\//g, '').replace(/:root, :root\[data-theme="light"\] \{[^}]*\}/, '').replace(/:root\[data-theme="dark"\] \{[^}]*\}/, '');
-  assert.doesNotMatch(rest, /#[0-9a-fA-F]{3,6}\b|rgba?\(|hsla?\(|prefers-color-scheme/);
-  // the system theme before the script has run: the build adds the dark tokens once more, for :root without data-theme
+  assert.deepEqual([...LIGHT.keys()].sort(), [...DARK.keys()].filter((k) => k !== 'font-mono').sort());
+  for (const k of ['bg', 'panel', 'canvas', 'raised', 'text', 'muted', 'border', 'control-border', 'accent', 'link', 'error', 'warn', 'ok', 'sel', 'on-accent', 'dev-stroke', 'group-stroke', 'member', 'halo', 'grid', 'shadow', 'backdrop', 'marked-bg', 'marked-bar']) assert.ok(DARK.has(k), k);
+  // Dark is the default: the tokens of :root without data-theme are the dark ones
+  assert.match(css, /:root, :root\[data-theme="dark"\] \{[^}]*color-scheme: dark;/);
+  assert.match(css, /:root\[data-theme="light"\] \{[^}]*color-scheme: light;/);
+  // outside the two token blocks: no hex, rgb() or hsl() colour; and nothing anywhere picks the theme from the system
+  const rest = css.replace(/\/\*[\s\S]*?\*\//g, '').replace(/:root\[data-theme="light"\] \{[^}]*\}/, '').replace(/:root, :root\[data-theme="dark"\] \{[^}]*\}/, '');
+  assert.doesNotMatch(rest, /#[0-9a-fA-F]{3,6}\b|rgba?\(|hsla?\(/);
   const html = readFileSync(join(root, 'dist', 'netatlas.html'), 'utf8');
-  assert.match(html, /@media \(prefers-color-scheme: dark\) \{\s*:root:not\(\[data-theme\]\) \{/);
-  // the surfaces the diagram colours are adjusted for are the canvas, panel and raised tokens
+  const code = ['ui/theme.ts', 'ui/app.ts', 'app/main.ts'].map((x) => readFileSync(join(root, 'src', x), 'utf8')).join('\n');
+  assert.doesNotMatch(css + code, /prefers-color-scheme|matchMedia\('\(prefers-color/);
+  assert.doesNotMatch(html.replace(/<script>[\s\S]*<\/script>/, ''), /prefers-color-scheme/);
+  // the script that sets the theme runs in <head>, before the body exists
+  assert.ok(html.indexOf('<script>') < html.indexOf('<body'), 'the script is in <head>');
+    // the surfaces the diagram colours are adjusted for are the canvas, panel and raised tokens
   assert.deepEqual(P.SURFACES.light, [LIGHT.get('canvas'), LIGHT.get('panel')]);
   assert.deepEqual(P.SURFACES.dark, [DARK.get('canvas'), DARK.get('panel'), DARK.get('raised')]);
 });
@@ -55,6 +59,9 @@ test('WCAG 2.2 AA in both themes: 4.5:1 for text, 3:1 for control boundaries, fo
     for (const fg of ['accent', 'link', 'error', 'warn', 'ok']) for (const s of ['panel', 'raised', 'canvas']) assert.ok(P.contrast(v(fg), v(s)) >= 4.5, `${name}: ${fg} on ${s} ${P.contrast(v(fg), v(s)).toFixed(2)}`);
     for (const fg of ['text', 'accent', 'muted']) assert.ok(P.contrast(v(fg), v('accent-soft')) >= 4.5, `${name}: ${fg} on accent-soft`);
     for (const bg of ['accent', 'error', 'warn']) assert.ok(P.contrast(v('on-accent'), v(bg)) >= 4.5, `${name}: on-accent on ${bg}`);
+    // the selection in the Edit tab: text of every kind stays readable on its tint, and its bar is a 3:1 boundary
+    for (const fg of ['text', 'muted', 'accent', 'link', 'error', 'warn', 'ok']) assert.ok(P.contrast(v(fg), v('marked-bg')) >= 4.5, `${name}: ${fg} on marked-bg ${P.contrast(v(fg), v('marked-bg')).toFixed(2)}`);
+    for (const s2 of ['panel', 'canvas', 'marked-bg']) assert.ok(P.contrast(v('marked-bar'), v(s2)) >= 3, `${name}: marked-bar on ${s2}`);
     for (const fg of ['control-border', 'frame', 'accent', 'sel', 'dev-stroke', 'group-stroke', 'member']) for (const s of ['panel', 'canvas', 'bg']) assert.ok(P.contrast(v(fg), v(s)) >= 3, `${name}: ${fg} on ${s} ${P.contrast(v(fg), v(s)).toFixed(2)}`);
   }
   // dark: dark grey, never pure black; off-white, never pure white; surfaces lighter as they rise
@@ -98,18 +105,18 @@ test('diagram colours per theme: every medium and protocol colour stands out (3:
   assert.equal(P.themedColor('none', 'dark'), 'none');
 });
 
-test('the theme choice: System by default, then Light, Dark, System; the button says what is in effect and what a press does', () => {
-  assert.equal(T.resolveTheme('system', true), 'dark');
-  assert.equal(T.resolveTheme('system', false), 'light');
-  assert.equal(T.resolveTheme('light', true), 'light');
-  assert.equal(T.resolveTheme('dark', false), 'dark');
-  assert.deepEqual(['system', 'light', 'dark'].map(T.nextThemePref), ['light', 'dark', 'system']);
-  assert.equal(T.themeButtonText('system', 'dark'), 'Theme: System (dark). Switch to Light');
-  assert.equal(T.themeButtonText('light', 'light'), 'Theme: Light. Switch to Dark');
-  assert.equal(T.themeButtonText('dark', 'dark'), 'Theme: Dark. Switch to System (follow the operating system)');
+test('the theme choice: Dark by default; a stored Light or Dark is kept, anything else is Dark; the button says the theme and what a press does', () => {
+  assert.equal(T.DEFAULT_THEME, 'dark');
+  assert.deepEqual([null, undefined, '', 'system', 'auto', 'LIGHT', 'dark', 'light'].map(T.storedTheme), ['dark', 'dark', 'dark', 'dark', 'dark', 'dark', 'dark', 'light']);
+  assert.equal(T.otherTheme('dark'), 'light');
+  assert.equal(T.otherTheme('light'), 'dark');
+  assert.equal(T.themeButtonText('dark'), 'Theme: Dark. Switch to the light theme');
+  assert.equal(T.themeButtonText('light'), 'Theme: Light. Switch to the dark theme');
+  assert.equal(T.resolveTheme, undefined, 'no System option is left');
+  assert.equal(T.nextThemePref, undefined);
   // never written into a model or an export: only this browser's storage
-  const src = ['editor/document.ts', 'yaml/write.ts', 'ui/files.ts'].map((f) => readFileSync(join(root, 'src', f), 'utf8')).join('\n');
-  assert.doesNotMatch(src, /data-theme|netatlas\.theme|ThemePref/);
+  const src = ['editor/document.ts', 'yaml/write.ts', 'ui/files.ts'].map((x) => readFileSync(join(root, 'src', x), 'utf8')).join('\n');
+  assert.doesNotMatch(src, /data-theme|netatlas\.theme/);
 });
 
 test('export colours: rgb()/rgba() become #rrggbb plus an opacity; other values stay as they are', () => {
@@ -126,7 +133,7 @@ const skip = findBrowser() ? false : 'no Chromium-based browser found (set NETAT
 const BG = { light: LIGHT.get('canvas'), dark: DARK.get('canvas') };
 
 const os = (page, dark) => page.cmd('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: dark ? 'dark' : 'light' }] });
-const themeOf = (page) => page.eval(`({ theme: document.documentElement.getAttribute('data-theme'), pref: document.documentElement.getAttribute('data-theme-pref') })`);
+const themeOf = (page) => page.eval(`({ theme: document.documentElement.getAttribute('data-theme'), scheme: getComputedStyle(document.documentElement).colorScheme, stored: (() => { try { return localStorage.getItem('netatlas.theme'); } catch { return 'no storage'; } })() })`);
 /** what must not change when the theme changes or a picture is exported */
 const STATE = `({ view: netatlas.session.state.view, sel: netatlas.session.state.selected, zoom: document.getElementById('viewport').getAttribute('transform'), pos: JSON.stringify([...netatlas.session.positionsFor(netatlas.session.state.view)]), dirty: netatlas.mdoc.dirty, marker: window.__marker })`;
 const hex = `(v) => { const m = /rgba?\\(([\\d.]+),\\s*([\\d.]+),\\s*([\\d.]+)/.exec(v); return m ? '#' + [m[1], m[2], m[3]].map((x) => (+x).toString(16).padStart(2, '0')).join('') : v; }`;
@@ -146,38 +153,38 @@ async function reload(page) {
   throw new Error('page did not load');
 }
 
-test('System follows the operating system, also while the app runs: instantly, without a reload, keeping view, selection, zoom and layout', { skip, timeout: 120000 }, async () => {
-  const page = await openPage(url);
-  try {
-    await page.eval(`netatlas.loadExample(0), netatlas.setView('logical'), netatlas.select('device:hq-rtr1'), window.__marker = 42, true`);
-    await page.settle(150);
-    assert.deepEqual(await themeOf(page), { theme: 'light', pref: 'system' });
-    const before = await page.eval(STATE);
-    const bg = (sel) => page.eval(`(${hex})(getComputedStyle(document.querySelector(${JSON.stringify(sel)})).backgroundColor)`);
-    assert.equal(await bg('#canvas-wrap'), BG.light);
-    await os(page, true);
-    await page.settle(100);
-    assert.deepEqual(await themeOf(page), { theme: 'dark', pref: 'system' });
-    assert.equal(await bg('#canvas-wrap'), BG.dark);
-    assert.equal(await bg('body'), DARK.get('bg'));
-    assert.equal(await page.eval(`getComputedStyle(document.documentElement).colorScheme`), 'dark');
-    assert.deepEqual(await page.eval(STATE), before, 'nothing else changed, and the page was not reloaded');
-    // the diagram is repainted: a cable or relation colour is the dark theme's
-    const stroke = await page.eval(`document.querySelector('#viewport .rel .tube-outer, #viewport .rel .rel-line').getAttribute('stroke')`);
-    assert.ok(P.contrast(stroke, BG.dark) >= 3, stroke);
-    await os(page, false);
-    await page.settle(100);
-    assert.deepEqual(await themeOf(page), { theme: 'light', pref: 'system' });
-    assert.equal(await page.eval(`getComputedStyle(document.documentElement).colorScheme`), 'light');
-  } finally {
-    await page.close();
+/** Before anything of the page runs: record the theme in effect when the <body> is created (the first paint comes after that). */
+const WATCH = `window.__atBody = null; window.__errors = []; addEventListener('error', (e) => __errors.push(String(e.message)));
+new MutationObserver((ms, o) => { if (document.body) { window.__atBody = { theme: document.documentElement.getAttribute('data-theme'), scheme: getComputedStyle(document.documentElement).colorScheme, bg: getComputedStyle(document.documentElement).getPropertyValue('--bg').trim() }; o.disconnect(); } }).observe(document, { childList: true, subtree: true });`;
+
+test('first launch is Dark; a stored Light stays Light, a stored Dark Dark; System, invalid or nothing becomes Dark; set before the first paint, whatever the OS prefers', { skip, timeout: 180000 }, async () => {
+  for (const osDark of [false, true]) {
+    const page = await openPage(url, { dark: osDark });
+    try {
+      await page.cmd('Page.addScriptToEvaluateOnNewDocument', { source: WATCH });
+      await reload(page);
+      // the first launch: nothing stored
+      assert.deepEqual(await themeOf(page), { theme: 'dark', scheme: 'dark', stored: null }, `OS ${osDark ? 'dark' : 'light'}: first launch`);
+      assert.deepEqual(await page.eval('window.__atBody'), { theme: 'dark', scheme: 'dark', bg: DARK.get('bg') }, 'dark from the start: no flash of the light theme');
+      for (const [stored, theme, after] of [['light', 'light', 'light'], ['dark', 'dark', 'dark'], ['system', 'dark', null], ['auto', 'dark', null], ['', 'dark', null]]) {
+        await page.eval(`localStorage.setItem('netatlas.theme', ${JSON.stringify(stored)}), true`);
+        await reload(page);
+        const what = `OS ${osDark ? 'dark' : 'light'}, stored "${stored}"`;
+        assert.deepEqual(await themeOf(page), { theme, scheme: theme, stored: after }, what);
+        // already in effect when the body was created: no flash of the other theme
+        assert.deepEqual(await page.eval('window.__atBody'), { theme, scheme: theme, bg: (theme === 'dark' ? DARK : LIGHT).get('bg') }, what + ': before the first paint');
+        assert.deepEqual(await page.eval('window.__errors'), [], what);
+      }
+    } finally {
+      await page.close();
+    }
   }
 });
 
-test('the theme button: at the right end of the toolbar, never in a menu, with a name and tooltip saying the theme and what a press does; keyboard too', { skip, timeout: 120000 }, async () => {
+test('the theme button: a Light / Dark toggle at the right end of the toolbar, never in a menu; name, tooltip and icon say the theme and what a press does; mouse and keyboard; nothing else changes', { skip, timeout: 120000 }, async () => {
   const page = await openPage(url);
   try {
-    await page.eval(`netatlas.loadExample(0), true`);
+    await page.eval(`netatlas.loadExample(0), netatlas.setView('logical'), netatlas.select('device:hq-rtr1'), window.__marker = 42, true`);
     await page.settle(150);
     for (const [w, h] of [[1440, 900], [1024, 768], [720, 700], [390, 800]]) {
       await page.cmd('Emulation.setDeviceMetricsOverride', { width: w, height: h, deviceScaleFactor: 1, mobile: false });
@@ -189,64 +196,62 @@ test('the theme button: at the right end of the toolbar, never in a menu, with a
     }
     await page.cmd('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
     await page.settle(100);
-    const btn = () => page.eval(`(() => { const b = document.getElementById('theme-btn'); const tip = document.getElementById('theme-tip'); return { name: b.getAttribute('aria-label'), described: b.getAttribute('aria-describedby'), tip: tip.textContent, tipShown: getComputedStyle(tip).visibility === 'visible', role: tip.getAttribute('role'), icon: [...b.querySelectorAll('svg')].filter((s) => getComputedStyle(s).display !== 'none').map((s) => s.getAttribute('class')) }; })()`);
+    const btn = () => page.eval(`(() => { const b = document.getElementById('theme-btn'); const tip = document.getElementById('theme-tip'); return { name: b.getAttribute('aria-label'), described: b.getAttribute('aria-describedby'), tip: tip.textContent, tipShown: getComputedStyle(tip).visibility === 'visible', role: tip.getAttribute('role'), icon: [...b.querySelectorAll('svg')].filter((s) => getComputedStyle(s).display !== 'none').map((s) => s.getAttribute('class')), svgs: b.querySelectorAll('svg').length }; })()`);
     let b = await btn();
-    assert.equal(b.name, 'Theme: System (light). Switch to Light');
-    assert.equal(b.tip, b.name);
-    assert.equal(b.described, 'theme-tip');
-    assert.equal(b.role, 'tooltip');
-    assert.deepEqual(b.icon, ['ti ti-system']);
-    assert.equal(b.tipShown, false, 'the tooltip waits for the pointer or the keyboard');
+    assert.deepEqual(b, { name: 'Theme: Dark. Switch to the light theme', described: 'theme-tip', tip: 'Theme: Dark. Switch to the light theme', tipShown: false, role: 'tooltip', icon: ['ti ti-dark'], svgs: 2 });
     await page.hover('#theme-btn');
     assert.equal((await btn()).tipShown, true, 'shown on hover');
-    // a press: System -> Light -> Dark -> System
-    const seq = [];
-    for (let i = 0; i < 3; i++) {
-      await page.click('#theme-btn');
-      b = await btn();
-      seq.push([(await themeOf(page)).pref, (await themeOf(page)).theme, b.icon[0], b.name]);
-    }
-    assert.deepEqual(seq, [
-      ['light', 'light', 'ti ti-light', 'Theme: Light. Switch to Dark'],
-      ['dark', 'dark', 'ti ti-dark', 'Theme: Dark. Switch to System (follow the operating system)'],
-      ['system', 'light', 'ti ti-system', 'Theme: System (light). Switch to Light'],
-    ]);
-    // the keyboard: Tab from the control before it reaches it, the tooltip shows with the focus ring, Enter switches
+    const before = await page.eval(STATE);
+    const bg = (sel) => page.eval(`(${hex})(getComputedStyle(document.querySelector(${JSON.stringify(sel)})).backgroundColor)`);
+    assert.equal(await bg('#canvas-wrap'), BG.dark);
+    // a press: Dark -> Light -> Dark
+    await page.click('#theme-btn');
+    b = await btn();
+    assert.deepEqual([b.name, b.icon], ['Theme: Light. Switch to the dark theme', ['ti ti-light']]);
+    assert.deepEqual(await themeOf(page), { theme: 'light', scheme: 'light', stored: 'light' });
+    assert.equal(await bg('#canvas-wrap'), BG.light);
+    assert.equal(await bg('body'), LIGHT.get('bg'));
+    assert.deepEqual(await page.eval(STATE), before, 'nothing else changed, and the page was not reloaded');
+    // the diagram is repainted: a relation colour is the light theme's
+    const stroke = await page.eval(`document.querySelector('#viewport .rel .tube-outer, #viewport .rel .rel-line').getAttribute('stroke')`);
+    assert.ok(P.contrast(stroke, BG.light) >= 3, stroke);
+    await page.click('#theme-btn');
+    assert.deepEqual(await themeOf(page), { theme: 'dark', scheme: 'dark', stored: 'dark' });
+    // the keyboard: Tab from the control before it reaches it, the tooltip shows with the focus ring, Enter and Space switch
     await page.mouse('mouseMoved', 700, 600);
     await page.eval(`(() => { const all = [...document.querySelectorAll('header.topbar button, header.topbar input, header.topbar select')].filter((e) => !e.disabled && e.getClientRects().length && !e.closest('[hidden]')); all[all.indexOf(document.getElementById('theme-btn')) - 1].focus(); return true; })()`);
     await page.key('Tab', 'Tab', 9);
     assert.ok(await page.eval(`document.activeElement === document.getElementById('theme-btn')`), 'Tab reaches the theme button');
     const focus = await page.eval(`(() => { const b = document.getElementById('theme-btn'); const cs = getComputedStyle(b); return { visible: b.matches(':focus-visible'), outline: cs.outlineStyle, colour: (${hex})(cs.outlineColor) }; })()`);
-    assert.ok(focus.visible && focus.outline === 'solid' && P.contrast(focus.colour, LIGHT.get('panel')) >= 3, JSON.stringify(focus));
+    assert.ok(focus.visible && focus.outline === 'solid' && P.contrast(focus.colour, DARK.get('panel')) >= 3, JSON.stringify(focus));
     assert.equal((await btn()).tipShown, true, 'shown with the keyboard focus');
     await page.key('Enter', 'Enter', 13);
-    assert.equal((await themeOf(page)).pref, 'light');
+    assert.equal((await themeOf(page)).theme, 'light');
+    await page.key(' ', 'Space', 32);
+    assert.equal((await themeOf(page)).theme, 'dark');
+    assert.equal(await page.eval(`document.activeElement === document.getElementById('theme-btn')`), true, 'the focus stays on the button');
   } finally {
     await page.close();
   }
 });
 
-test('the choice is remembered in this browser (not in the model); without storage it simply lasts for the session', { skip, timeout: 120000 }, async () => {
+test('the choice is remembered in this browser (not in the model); without storage the theme is Dark and a switch lasts for the session', { skip, timeout: 120000 }, async () => {
   const page = await openPage(url);
   try {
     await page.eval(`netatlas.loadExample(2), true`);
     await page.click('#theme-btn');
-    await page.click('#theme-btn');
-    assert.equal((await themeOf(page)).pref, 'dark');
-    assert.equal(await page.eval(`localStorage.getItem('netatlas.theme')`), 'dark');
+    assert.deepEqual(await themeOf(page), { theme: 'light', scheme: 'light', stored: 'light' });
     assert.doesNotMatch(await page.eval(`netatlas.exportText()`), /theme|dark/i, 'nothing about the theme in the model');
     await reload(page);
-    assert.deepEqual(await themeOf(page), { theme: 'dark', pref: 'dark' });
-    await page.click('#theme-btn');
-    assert.equal((await themeOf(page)).pref, 'system');
-    assert.equal(await page.eval(`localStorage.getItem('netatlas.theme')`), null, 'System is the default: nothing stored');
-    // no storage at all (some file:// set-ups, private windows): System, and switching still works
+    assert.equal((await themeOf(page)).theme, 'light');
+    // no storage at all (some file:// set-ups, private windows): Dark, and switching still works
     await page.cmd('Page.addScriptToEvaluateOnNewDocument', { source: `window.__errors = []; addEventListener('error', (e) => __errors.push(String(e.message))); Object.defineProperty(window, 'localStorage', { get() { throw new Error('storage denied'); } });` });
     await reload(page);
-    assert.deepEqual(await themeOf(page), { theme: 'light', pref: 'system' });
+    assert.deepEqual(await themeOf(page), { theme: 'dark', scheme: 'dark', stored: 'no storage' });
     await page.click('#theme-btn');
+    assert.equal((await themeOf(page)).theme, 'light');
     await page.click('#theme-btn');
-    assert.deepEqual(await themeOf(page), { theme: 'dark', pref: 'dark' });
+    assert.equal((await themeOf(page)).theme, 'dark');
     assert.deepEqual(await page.eval(`window.__errors`), []);
   } finally {
     await page.close();
@@ -286,28 +291,27 @@ const EXPORT = `(async () => {
   };
 })()`;
 
-test('exports: every theme (Light, Dark, System with the OS light and dark) x view x format is drawn in the theme on screen, with resolved colours and an opaque background', { skip, timeout: 300000 }, async () => {
+test('exports: Light and Dark x view x format are drawn in the theme on screen (whatever the OS prefers), with resolved colours and an opaque background', { skip, timeout: 300000 }, async () => {
   const page = await openPage(url);
   try {
     await page.eval(`netatlas.loadExample(6), netatlas.select('iface:core:lo0'), window.__marker = 7, true`);
-    for (const [pref, osDark] of [['light', false], ['light', true], ['dark', false], ['dark', true], ['system', false], ['system', true]]) {
+    for (const [theme, osDark] of [['light', false], ['light', true], ['dark', false], ['dark', true]]) {
       await os(page, osDark);
-      await page.eval(`netatlas.theme.set(${JSON.stringify(pref)}), true`);
-      const expected = pref === 'system' ? (osDark ? 'dark' : 'light') : pref;
+      await page.eval(`netatlas.theme.set(${JSON.stringify(theme)}), true`);
       for (const view of ['physical', 'logical']) {
         await page.eval(`netatlas.setView(${JSON.stringify(view)}), true`);
         await page.settle(80);
         const before = await page.eval(STATE);
         const themeBefore = await themeOf(page);
         const x = await page.eval(EXPORT);
-        const what = `${pref} (OS ${osDark ? 'dark' : 'light'}) ${view}`;
-        assert.equal(x.svgTheme, expected, what);
-        assert.equal(x.background, BG[expected], `${what}: SVG background`);
+        const what = `${theme} (OS ${osDark ? 'dark' : 'light'}) ${view}`;
+        assert.equal(x.svgTheme, theme, what);
+        assert.equal(x.background, BG[theme], `${what}: SVG background`);
         assert.ok(x.backCovers && x.firstChild === 'export-background', `${what}: the background covers the whole picture`);
         assert.deepEqual(x.unresolved, [], `${what}: no stylesheet, variable or media query`);
         assert.ok(x.textFill, `${what}: text has a resolved fill`);
         for (const [what2, screen, file] of x.pairs) if (screen) assert.equal(file, screen, `${what}: ${what2} as on screen`);
-        assert.equal(x.pngCorner, BG[expected], `${what}: PNG background`);
+        assert.equal(x.pngCorner, BG[theme], `${what}: PNG background`);
         assert.ok(x.pngOpaque, `${what}: PNG is opaque`);
         // exporting changed nothing on screen
         assert.deepEqual(await page.eval(STATE), before, what);

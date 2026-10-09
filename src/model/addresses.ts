@@ -51,11 +51,27 @@ function cmp(a: string, b: string): number {
 
 /** The address-like attrs as "key value" lines, sorted by key (the order in the file changes nothing). */
 export function addressAttrLines(attrs: Attrs): string[] {
+  return addressAttrEntries(attrs).map((x) => x.line);
+}
+
+/** The address-like attrs with their keys, in the order of addressAttrLines. */
+export function addressAttrEntries(attrs: Attrs): Array<{ key: string; line: string }> {
   return attrs
     .filter(([, v]) => hasAddress(v))
-    .map(([k, v]) => [k, k + ' ' + v.replace(/\s+/g, ' ').trim()])
-    .sort((p, q) => cmp(p[0], q[0]) || cmp(p[1], q[1]))
-    .map((x) => x[1]);
+    .map(([k, v]) => ({ key: k, line: k + ' ' + v.replace(/\s+/g, ' ').trim() }))
+    .sort((p, q) => cmp(p.key, q.key) || cmp(p.line, q.line));
+}
+
+/**
+ * What a line of the diagram shows of its object's configuration: the key
+ * it is written from ("ip", "vrf", "vlan", "dhcp", "mac", "source",
+ * "destination", "members", "cidr", "cable", or "attr" with the attribute's
+ * key as value; "" for a derived line). The Edit tab highlights that field
+ * when the line is clicked.
+ */
+export interface LineField {
+  field: string;
+  value: string;
 }
 
 /**
@@ -104,29 +120,36 @@ export interface IfaceEntry {
   /** the name line: id, and the label when it says something else */
   header: string;
   lines: string[];
+  /** the field each line is written from (same order as `lines`) */
+  fields: LineField[];
 }
 
-/** The layer-3 facts of an interface (what puts a physical interface into the logical view). */
-function l3Lines(model: Model, i: Interface): string[] {
+/** The layer-3 facts of an interface (what puts a physical interface into the logical view), with their fields. */
+function l3Lines(model: Model, i: Interface): Array<[string, LineField]> {
   const tags: string[] = [];
   const vlan = i.type === 'virtual' ? interfaceVlans(model, i).map((v) => 'VLAN ' + v).join(', ') : interfaceVlanText(interfaceAddresses(model, i.device, i.id));
   if (vlan) tags.push(vlan);
   if (i.vrf) tags.push('VRF ' + i.vrf);
   if (i.dhcp) tags.push('DHCP');
-  const out = tags.length ? [tags.join(' · ')] : [];
-  return out.concat(orderedAddresses(i.addresses));
+  // the tags line stands for the first of them that is written on the interface (a derived VLAN is not)
+  const tagField = i.vlan !== undefined && i.type === 'virtual' ? 'vlan' : i.vrf ? 'vrf' : i.dhcp ? 'dhcp' : '';
+  const out: Array<[string, LineField]> = tags.length ? [[tags.join(' · '), { field: tagField, value: '' }]] : [];
+  return out.concat(orderedAddresses(i.addresses).map((a): [string, LineField] => [a, { field: 'ip', value: a }]));
 }
 
 export function interfaceEntry(model: Model, i: Interface): IfaceEntry {
-  const lines = l3Lines(model, i);
-  if (i.type === 'loopback' && !i.addresses.length) lines.push('(no address)');
-  if (i.mac) lines.push('MAC ' + i.mac);
-  if (i.source) lines.push('src ' + i.source.text);
-  if (i.destination) lines.push('dst ' + i.destination.text);
-  if (i.members.length) lines.push(...listLines('members', sortedByName(i.members, (x) => x)));
-  lines.push(...addressAttrLines(i.attrs));
+  const rows = l3Lines(model, i);
+  const add = (line: string, field: string, value = ''): void => {
+    rows.push([line, { field, value }]);
+  };
+  if (i.type === 'loopback' && !i.addresses.length) add('(no address)', 'ip');
+  if (i.mac) add('MAC ' + i.mac, 'mac');
+  if (i.source) add('src ' + i.source.text, 'source');
+  if (i.destination) add('dst ' + i.destination.text, 'destination');
+  if (i.members.length) for (const l of listLines('members', sortedByName(i.members, (x) => x))) add(l, 'members');
+  for (const a of addressAttrEntries(i.attrs)) add(a.line, 'attr', a.key);
   const label = i.label && i.label !== i.id ? i.id + ' · ' + i.label : i.id;
-  return { ref: `iface:${i.device}:${i.id}`, device: i.device, id: i.id, kind: i.type, header: label, lines };
+  return { ref: `iface:${i.device}:${i.id}`, device: i.device, id: i.id, kind: i.type, header: label, lines: rows.map((r) => r[0]), fields: rows.map((r) => r[1]) };
 }
 
 /** Interfaces in display order: by name, numbers by value (lo2 before lo10; model/order.ts). */

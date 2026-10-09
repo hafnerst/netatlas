@@ -17,7 +17,7 @@ import { inlineComputedStyles, resolvedPaint } from './export-style';
 import { SURFACES, themedColor } from '../diagram/palette';
 import { DialogOpts, showDialog, showToast } from './dialogs';
 import { licenseBody, manualBody } from './help';
-import { Editor, EditorSel } from './inspector';
+import { Editor, EditorSel, SelDetail } from './inspector';
 import { LineRange, yamlBlock } from '../editor/yaml-block';
 import { EXAMPLES } from '../generated/examples';
 import { Rect } from '../layout/geometry';
@@ -72,7 +72,7 @@ export class App {
   private copyName: string | null = null;
   /** a connection being drawn in the diagram: its first endpoint and where the pointer is */
   private conn: { view: View; first: Endpoint; ref: string; at: Pt | null } | null = null;
-  /** Light, Dark or System; switching repaints in place (state, selection, zoom and layout are kept) */
+  /** Light or Dark (the default); switching repaints in place (state, selection, zoom and layout are kept) */
   readonly theme: ThemeController;
 
   constructor(doc: Document) {
@@ -109,12 +109,12 @@ export class App {
     this.render();
   }
 
-  /** The theme button: its icon shows the choice, its name and tooltip the theme in effect and what a press does. */
+  /** The theme button: its icon shows the theme in effect (moon: dark, sun: light), its name and tooltip that theme and what a press does. */
   private updateThemeButton(): void {
     const btn = this.$('theme-btn');
-    const text = themeButtonText(this.theme.pref, this.theme.theme);
+    const text = themeButtonText(this.theme.theme);
     btn.setAttribute('aria-label', text);
-    btn.setAttribute('data-pref', this.theme.pref);
+    btn.setAttribute('data-theme-now', this.theme.theme);
     this.$('theme-tip').textContent = text;
   }
 
@@ -832,10 +832,16 @@ export class App {
   }
 
   /** Select from the diagram, search or details links. */
-  select(ref: string | null, reveal = false): void {
+  /**
+   * `detail`: the line of the diagram the object was clicked on (an
+   * address, VRF, VLAN …): the Edit tab highlights that field. It never
+   * changes what is selected.
+   */
+  select(ref: string | null, reveal = false, detail: SelDetail | null = null): void {
     if (!this.session) return;
     this.session.select(ref);
     this.editor.selectRef(this.session.state.selected);
+    this.editor.setDetail(this.session.state.selected ? detail : null);
     if (ref && this.session.state.selected && this.tab !== 'details' && this.tab !== 'yaml') this.tab = 'edit';
     this.applyHighlight();
     this.renderOutline();
@@ -2062,7 +2068,7 @@ export class App {
     this.$('btn-outline-filter').addEventListener('click', () => this.openOutlineFilter());
     // Help menu
     this.$('btn-manual').addEventListener('click', () => void this.openHelp('manual'));
-    this.$('theme-btn').addEventListener('click', () => this.theme.cycle());
+    this.$('theme-btn').addEventListener('click', () => this.theme.toggle());
     this.$('btn-license').addEventListener('click', () => void this.openHelp('license'));
     outline.addEventListener('keydown', (e) => {
       const t = e.target as HTMLElement;
@@ -2484,7 +2490,7 @@ export class App {
   private wireCanvas(): void {
     const svg = this.svg;
     const tip = this.$('tooltip');
-    let drag: null | { mode: 'pan' | 'node'; ref: string | null; sx: number; sy: number; ox: number; oy: number; moved: boolean; id: number } = null;
+    let drag: null | { mode: 'pan' | 'node'; ref: string | null; sx: number; sy: number; ox: number; oy: number; moved: boolean; id: number; detail: SelDetail | null } = null;
 
     svg.addEventListener(
       'wheel',
@@ -2505,12 +2511,18 @@ export class App {
       const node = (e.target as Element).closest('.node');
       const ref = target ? target.getAttribute('data-ref') : null;
       const nodeRef = node ? node.getAttribute('data-ref') : null;
+      // a line that shows one field of the object (an address, a VRF …): highlighted in the Edit tab (read here:
+      // once the pointer is captured, the release is reported on the canvas, not on the line)
+      const line = (e.target as Element).closest('[data-field]');
+      const holder = line ? line.closest('[data-ref]') : null;
+      const detail = line && holder ? { field: line.getAttribute('data-field') as string, value: line.getAttribute('data-value') || '' } : null;
+      const detailRef = holder ? holder.getAttribute('data-ref') : null;
       if (nodeRef && (nodeRef.indexOf('device:') === 0 || nodeRef.indexOf('network:') === 0)) {
         const w = this.toWorld(e.clientX, e.clientY);
         const center = this.nodeCenter(nodeRef);
-        drag = { mode: 'node', ref: nodeRef, sx: e.clientX, sy: e.clientY, ox: center.x - w.x, oy: center.y - w.y, moved: false, id: e.pointerId };
+        drag = { mode: 'node', ref: nodeRef, sx: e.clientX, sy: e.clientY, ox: center.x - w.x, oy: center.y - w.y, moved: false, id: e.pointerId, detail: detailRef === nodeRef ? detail : null };
       } else {
-        drag = { mode: 'pan', ref, sx: e.clientX, sy: e.clientY, ox: this.zoom.tx, oy: this.zoom.ty, moved: false, id: e.pointerId };
+        drag = { mode: 'pan', ref, sx: e.clientX, sy: e.clientY, ox: this.zoom.tx, oy: this.zoom.ty, moved: false, id: e.pointerId, detail: detailRef === ref ? detail : null };
       }
       try {
         svg.setPointerCapture(e.pointerId);
@@ -2551,7 +2563,7 @@ export class App {
       if (!d.moved) {
         const target = (e.target as Element).closest('[data-ref]');
         const ref = target ? target.getAttribute('data-ref') : d.ref;
-        this.select(ref && ref.indexOf('hub:') === 0 ? 'relation:' + ref.slice(4) : ref);
+        this.select(ref && ref.indexOf('hub:') === 0 ? 'relation:' + ref.slice(4) : ref, false, ref === d.ref ? d.detail : null);
       } else if (d.mode === 'node' && d.ref) this.commitDrag(d.ref);
     };
     svg.addEventListener('pointerup', end);

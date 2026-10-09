@@ -70,7 +70,18 @@ test('several addresses of an interface: a compact, ordered list (IPv4, then IPv
   assert.deepEqual(A.orderedAddresses(['2001:db8::10/64', '10.0.0.10/24', 'fe80::1/64', '10.0.0.9/24', '2001:db8::9/64', 'bogus']), ['10.0.0.9/24', '10.0.0.10/24', '2001:db8::9/64', '2001:db8::10/64', 'fe80::1/64', 'bogus']);
   const m = model(example('addressing.yaml'));
   const entry = (dev, id, view) => A.deviceEntries(m, m.index.devices.get(dev), view).find((e) => e.id === id);
-  assert.deepEqual(entry('core', 'lo0', 'logical'), { ref: 'iface:core:lo0', device: 'core', id: 'lo0', kind: 'loopback', header: 'lo0 · Router ID', lines: ['10.255.255.1/32', '2001:db8:ffff:ffff::1/128'] });
+  assert.deepEqual(entry('core', 'lo0', 'logical'), {
+    ref: 'iface:core:lo0',
+    device: 'core',
+    id: 'lo0',
+    kind: 'loopback',
+    header: 'lo0 · Router ID',
+    lines: ['10.255.255.1/32', '2001:db8:ffff:ffff::1/128'],
+    // each line knows the field it is written from (the Edit tab highlights it when the line is clicked)
+    fields: [{ field: 'ip', value: '10.255.255.1/32' }, { field: 'ip', value: '2001:db8:ffff:ffff::1/128' }],
+  });
+  assert.deepEqual(entry('core', 'ge-0/0/2.10', 'logical').fields.map((f) => f.field), ['vlan', 'ip', 'ip', 'attr', 'attr']);
+  assert.deepEqual(entry('core', 'gr-0/0/0.0', 'logical').fields.map((f) => f.field), ['ip', 'ip', 'source', 'destination']);
   assert.deepEqual(entry('core', 'ge-0/0/3', 'physical').lines, ['VRF MGMT', '10.20.0.1/24', '10.20.1.1/24', 'MAC 00:1c:73:aa:00:04'], 'secondary address after the primary');
   assert.deepEqual(entry('core', 'ge-0/0/2.10', 'logical').lines, ['VLAN 10 · VRF CORP', '10.10.10.2/24', '2001:db8:10:10::2/64', 'vrrp-virtual-ip 10.10.10.1', 'vrrp-virtual-ipv6 2001:db8:10:10::1']);
   assert.deepEqual(entry('core', 'gr-0/0/0.0', 'logical').lines, ['172.31.255.1/30', 'fd00:dead:beef:0:0:0:0:1/126', 'src lo0', 'dst 2001:db8:ffff:ffff::2']);

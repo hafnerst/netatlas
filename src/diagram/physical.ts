@@ -14,16 +14,16 @@
  *   is never in doubt and no floating label can cover it.
  */
 import { CBox, Pt, Rect, boxRect, rectsOverlap, segmentHitsRect, textWidth, unionRect } from '../layout/geometry';
-import { entryTexts, linkLabelExtra, linkLabelText, linkNetworkLabel } from '../layout/input';
+import { entryTexts, linkLabelExtraFields, linkLabelText, linkNetworkLabel } from '../layout/input';
 import { GROUP_PAD, PORT_FONT, PORT_LABEL_GAP, PhysicalLayout, PortPos, assignPorts, physicalListH, spareChipFlow } from '../layout/physical';
 import { ChipFlow, DEVICE_ICON, DEVICE_TEXT_X, ENTRY_FONT, ENTRY_GAP, ENTRY_LH, ENTRY_MARGIN, ENTRY_PAD_X, ENTRY_PAD_Y, IFCHIP_FONT, IFCHIP_H, IFCHIP_PAD, chipStripH, deviceBody, entriesSize, entryBox, groupHeader, linkLabelBox } from '../layout/sizes';
-import { addressAttrLines, deviceEntries } from '../model/addresses';
+import { LineField, addressAttrEntries, addressAttrLines, deviceEntries } from '../model/addresses';
 import { sortedByName } from '../model/order';
 import { networkMismatch } from '../model/derive';
 import { deviceSubtitle } from '../model/device-types';
 import { Device, Model, ifaceKey } from '../model/types';
 import { deviceIcon } from './icons';
-import { LabelPlacer, alongSegment, centerRect, leaderLine, textLines } from './labels';
+import { LabelPlacer, addressLineAttrs, alongSegment, centerRect, fieldAttrs, leaderLine, textLines } from './labels';
 import { VNode, h } from './scene';
 import { groupKindStyle, mediumStyle, speedWidth } from './style';
 
@@ -131,7 +131,7 @@ export function groupFrames(model: Model, grects: Map<string, Rect>, placer: Lab
     );
     titles.push(
       h('g', { class: 'group-label', 'data-ref': 'group:' + g.id }, [
-        textLines({ class: 'halo group-title' }, head.title, r.x + 14, r.y + 7),
+        textLines({ class: 'halo group-title' }, head.title, r.x + 14, r.y + 7, addressLineAttrs(head.title, addressAttrEntries(g.attrs).map((a) => ({ field: 'attr', value: a.key })))),
         head.kind ? h('text', { class: 'halo group-kind', x: r.x + r.w - 12, y: r.y + 20, 'text-anchor': 'end' }, head.kind) : null,
       ]),
     );
@@ -286,7 +286,8 @@ export function renderPhysical(model: Model, layout: PhysicalLayout, opts: ViewO
     const out: VNode[] = [];
     const mismatch = !!networkMismatch(l.a.networks, l.b.networks);
     const text = opts.showLabels ? linkLabelText(model, l) : '';
-    const lines = opts.showLabels ? linkLabelExtra(l) : [];
+    const lineFields = opts.showLabels ? linkLabelExtraFields(l) : [];
+    const lines = lineFields.map((x) => x.line);
     let center = { x: (pts[seg].x + pts[seg + 1].x) / 2, y: (pts[seg].y + pts[seg + 1].y) / 2 };
     if (text || lines.length) {
       const box = linkLabelBox(text, lines);
@@ -295,7 +296,7 @@ export function renderPhysical(model: Model, layout: PhysicalLayout, opts: ViewO
       const r = centerRect(center, box.w, box.h);
       extra.push(r);
       if (placer.leaderFrom) out.push(leaderLine(placer.leaderFrom, r, 'link:' + l.id));
-      out.push(textLines({ class: 'halo link-label' + (mismatch ? ' net-mismatch' : ''), 'data-ref': 'link:' + l.id, 'text-anchor': 'middle' }, box.block, center.x, r.y + 1));
+      out.push(textLines({ class: 'halo link-label' + (mismatch ? ' net-mismatch' : ''), 'data-ref': 'link:' + l.id, 'text-anchor': 'middle' }, box.block, center.x, r.y + 1, addressLineAttrs(box.block, lineFields)));
       // ends that carry different networks are marked next to the label
       if (mismatch) out.push(h('text', { class: 'halo net-warn', 'data-ref': 'link:' + l.id, x: center.x, y: r.y - 3, 'text-anchor': 'middle' }, '⚠'));
     } else if (mismatch) {
@@ -372,6 +373,8 @@ export interface EntryItem {
   header: string;
   lines: string[];
   ref: string;
+  /** the field of the configuration each line shows (same order as `lines`) */
+  fields: LineField[];
   /** classes: if-entry plus the kind (loop-chip, logical-chip kind-…, phys-entry, dev-addr) */
   cls: string;
   /** an interface can be an endpoint of a new connection; the device's own entry is not one */
@@ -388,10 +391,10 @@ export function entryItems(model: Model, d: Device, view: 'physical' | 'logical'
   const ifaces = deviceEntries(model, d, view);
   const own = texts.length > ifaces.length;
   return texts.map((t, i) => {
-    if (own && i === 0) return { ...t, ref: 'device:' + d.id, cls: 'if-entry dev-addr', endpoint: false };
+    if (own && i === 0) return { ...t, ref: 'device:' + d.id, fields: addressAttrEntries(d.attrs).map((a) => ({ field: 'attr', value: a.key })), cls: 'if-entry dev-addr', endpoint: false };
     const e = ifaces[own ? i - 1 : i];
     const kind = e.kind === 'loopback' ? 'loop-chip' : e.kind === 'physical' ? 'phys-entry' : 'logical-chip kind-' + e.kind;
-    return { ...t, ref: e.ref, cls: 'if-entry ' + kind, endpoint: true };
+    return { ...t, ref: e.ref, fields: e.fields, cls: 'if-entry ' + kind, endpoint: true };
   });
 }
 
@@ -410,7 +413,7 @@ export function entryNodes(items: EntryItem[], x: number, y: number, w: number):
       kids.push(textLines({ class: 'if-name addr', 'font-size': ENTRY_FONT }, { lines: [it.header], size: ENTRY_FONT, w: 0, h: ENTRY_LH, mono: 0 }, x + ENTRY_PAD_X, ty));
       ty += ENTRY_LH;
     }
-    if (it.lines.length) kids.push(textLines({ class: 'if-lines', 'font-size': ENTRY_FONT }, { lines: it.lines, size: ENTRY_FONT, w: 0, h: it.lines.length * ENTRY_LH, mono: 0 }, x + ENTRY_PAD_X, ty));
+    if (it.lines.length) kids.push(textLines({ class: 'if-lines', 'font-size': ENTRY_FONT }, { lines: it.lines, size: ENTRY_FONT, w: 0, h: it.lines.length * ENTRY_LH, mono: 0 }, x + ENTRY_PAD_X, ty, it.fields.map(fieldAttrs)));
     out.push(h('g', { class: it.cls, 'data-ref': it.ref, 'data-endpoint': it.endpoint ? 'iface' : undefined }, kids));
     top += b.h + ENTRY_GAP;
   }

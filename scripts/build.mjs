@@ -47,13 +47,7 @@ bundle += '__req("app/main");\n})();\n';
 bundle = bundle.replace(/<\/(script)/gi, (_m, s) => '<\\/' + s).replace(/<!--/g, () => '<\\!--');
 if (/<\/script/i.test(bundle) || bundle.includes('<!--')) throw new Error('unsafe sequence left in bundle');
 
-let css = readFileSync(join(root, 'src', 'styles.css'), 'utf8');
-// The dark tokens are written once, for :root[data-theme="dark"]. Until the script has set
-// data-theme (the first paint), the system's preference picks the theme: the same tokens,
-// derived here so that the stylesheet has a single definition of each theme.
-const dark = /:root\[data-theme="dark"\] \{([^}]*)\}/.exec(css);
-if (!dark) throw new Error('dark theme tokens (:root[data-theme="dark"]) missing in styles.css');
-css += `\n/* System theme before the script runs (derived by the build from :root[data-theme="dark"]) */\n@media (prefers-color-scheme: dark) {\n  :root:not([data-theme]) {${dark[1]}}\n}\n`;
+const css = readFileSync(join(root, 'src', 'styles.css'), 'utf8');
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
 let html = readFileSync(join(root, 'src', 'index.html'), 'utf8');
 if (!html.includes('/*__CSS__*/') || !html.includes('/*__JS__*/')) throw new Error('template markers missing');

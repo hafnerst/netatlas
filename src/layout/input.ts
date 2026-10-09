@@ -18,7 +18,7 @@ import { relationStyle } from '../model/protocols';
 import { networkMembers, networkMismatch, networkName } from '../model/derive';
 import { compareNames, sortedByName } from '../model/order';
 import { Device, Link, Model, ifaceKey, loopbacks, relationDevices } from '../model/types';
-import { addressAttrLines, deviceAddressLines, deviceEntries, orderedAddresses } from '../model/addresses';
+import { addressAttrEntries, addressAttrLines, deviceAddressLines, deviceEntries, orderedAddresses } from '../model/addresses';
 import { buildBundle, laneLabel, relationPairs } from './bundles';
 import { cmp } from './order';
 import { EntryText, entriesSize, memberLabelBox, networkSubtitle } from './sizes';
@@ -225,7 +225,12 @@ function memberLabelSizes(m: Model, networkId: string): Array<[string, number, n
 
 /** Lines under a cable's label, kept whole: its cable id and its address-like attrs. */
 export function linkLabelExtra(l: Link): string[] {
-  return (l.cable ? ['cable ' + l.cable] : []).concat(addressAttrLines(l.attrs));
+  return linkLabelExtraFields(l).map((x) => x.line);
+}
+
+/** linkLabelExtra with the field each line is written from. */
+export function linkLabelExtraFields(l: Link): Array<{ line: string; field: string; value: string }> {
+  return (l.cable ? [{ line: 'cable ' + l.cable, field: 'cable', value: '' }] : []).concat(addressAttrEntries(l.attrs).map((a) => ({ line: a.line, field: 'attr', value: a.key })));
 }
 
 /**

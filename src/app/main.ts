@@ -1,4 +1,5 @@
 import { App } from '../ui/app';
+import { applyTheme, readTheme } from '../ui/theme';
 import { runSelfTest } from './selftest';
 import { runViewportCheck } from './viewport-check';
 
@@ -29,5 +30,8 @@ function start(): void {
   }
 }
 
+// The script runs in the document's <head>: the stored theme is in effect before the body is drawn
+// (no flash of the other theme); the application starts once the document is there.
+applyTheme(document, readTheme(window));
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
 else start();
