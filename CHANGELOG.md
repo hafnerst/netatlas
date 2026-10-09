@@ -53,11 +53,12 @@ it is described in [docs/FORMAT.md](docs/FORMAT.md).
   confirmation, undo, selection and modified state). The row with the
   keyboard focus shows them too, and on touch screens the selected row. Their
   accessible names say the action and the object (*Delete device hq-fw*).
-- **Light, Dark and System themes.** A switch at the right end of the
-  toolbar (System → Light → Dark) with a tooltip and an accessible name that
-  say the theme in effect and what a press does. *System* is the default and
-  follows the operating system, also while NetAtlas is open. The choice is
-  remembered in the browser, never in the model. The whole application and
+- **Dark and Light themes, Dark by default.** A toggle at the right end of
+  the toolbar with a tooltip and an accessible name that say the theme in
+  effect and what a press does. The choice is remembered in the browser,
+  never in the model, and is in effect before the first paint (no flash of
+  the other theme); without a stored choice, or without storage, the theme
+  is Dark. The whole application and
   the diagram are drawn from one set of design tokens (WCAG 2.2 AA in both
   themes; dark grey surfaces, off-white text, calmer accent and status
   colours); cable and protocol colours are adjusted per theme so every line
@@ -81,6 +82,15 @@ it is described in [docs/FORMAT.md](docs/FORMAT.md).
 - The left panel is titled **Objects** (*Select, duplicate, or delete*), a
   region with that name and a heading for assistive technology; the right
   panel is named *Inspector* for screen readers.
+- **The selection in the Edit tab.** The part of the configuration that
+  belongs to what is selected (in either view or the object list) is marked
+  with a tint, an accent bar and a *▸ Selected* tag, and `aria-current`: the
+  object's header, the selected interface's card, or the very field of the
+  line that was clicked in the diagram (an address, VLAN, VRF, DHCP, MAC,
+  tunnel end, member ports, a network's prefix, a cable id, an attribute).
+  It is scrolled into view when off screen (smoothly, unless reduced motion
+  is preferred), never moves the focus, and follows edits, undo / redo,
+  renames and view switches.
 - The example **addressing.yaml**: a router with many interfaces, dual-stack
   and secondary addresses, VLAN subinterfaces, tunnels and long IPv6
   addresses.
@@ -142,6 +152,11 @@ it is described in [docs/FORMAT.md](docs/FORMAT.md).
 
 ### Fixed
 
+- In the **View** and **Auto-arrange** groups, a hovered or keyboard-focused
+  segment lost part of its border (e.g. the right edge of *Default*): the
+  next segment, which shares that border column, was drawn over it. A
+  segment whose border changes is now drawn above its neighbours, in every
+  state and at every zoom.
 - On the start screen, **Labels**, **Groups / Locations** and **Networks**
   were still enabled; now every diagram filter (and the **Filters**
   drop-down) is disabled until a model is open, and shows its default.
