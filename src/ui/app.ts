@@ -14,7 +14,7 @@ import { Endpoint } from '../model/types';
 import { el, materialize, mount, setPaint } from './dom';
 import { ThemeController, themeButtonText } from './theme';
 import { inlineComputedStyles, resolvedPaint } from './export-style';
-import { themedColor } from '../diagram/palette';
+import { SURFACES, themedColor } from '../diagram/palette';
 import { DialogOpts, showDialog, showToast } from './dialogs';
 import { licenseBody, manualBody } from './help';
 import { Editor, EditorSel } from './inspector';
@@ -2671,7 +2671,7 @@ export class App {
     const win = this.doc.defaultView;
     const v = win ? win.getComputedStyle(this.$('canvas-wrap')).backgroundColor : '';
     const p = resolvedPaint(v || '');
-    return p.color.charAt(0) === '#' && p.alpha === 1 ? p.color : this.theme.theme === 'dark' ? '#15181d' : '#fbfcfd';
+    return p.color.charAt(0) === '#' && p.alpha === 1 ? p.color : SURFACES[this.theme.theme][0];
   }
 
   /**

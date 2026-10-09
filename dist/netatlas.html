@@ -26,7 +26,7 @@
   --raised: #ffffff;
   --grid: #e9ecef;
   --text: #1f2328;
-  --muted: #667085;
+  --muted: #5f6879;
   /* separators and decorative outlines (not a control's only boundary) */
   --border: #d0d7de;
   /* the boundary of an input, select or button: 3:1 against the panels */
@@ -3845,7 +3845,7 @@ class App {
         const win = this.doc.defaultView;
         const v = win ? win.getComputedStyle(this.$('canvas-wrap')).backgroundColor : '';
         const p = (0, export_style_1.resolvedPaint)(v || '');
-        return p.color.charAt(0) === '#' && p.alpha === 1 ? p.color : this.theme.theme === 'dark' ? '#15181d' : '#fbfcfd';
+        return p.color.charAt(0) === '#' && p.alpha === 1 ? p.color : palette_1.SURFACES[this.theme.theme][0];
     }
     /**
      * Run `fn` while `svg` is part of the document (off screen, at its natural
@@ -17832,7 +17832,8 @@ function renderLogical(model, layout, opts) {
             kids.push((0, scene_1.h)('path', { class: 'hit', d: dd }), ...relationStroke(def, dd, bundles_1.TUBE_MIN));
         }
         kids.push((0, scene_1.h)('circle', { class: 'hub', cx: hub.cx, cy: hub.cy, r: logical_1.HUB_R, stroke: def.color }));
-        kids.push((0, scene_1.h)('text', { class: 'hub-glyph', x: hub.cx, y: hub.cy + 4, 'text-anchor': 'middle', fill: def.color }, String((0, types_1.relationDevices)(r).length)));
+        // the number of devices is text: written in the text colour (the ring around it has the protocol's colour)
+        kids.push((0, scene_1.h)('text', { class: 'hub-glyph', x: hub.cx, y: hub.cy + 4, 'text-anchor': 'middle' }, String((0, types_1.relationDevices)(r).length)));
         relNodes.push((0, scene_1.h)('g', { class: `rel hub-rel cat-${def.category} style-${def.style} proto-${(0, physical_1.cssToken)(r.protocol)}`, 'data-ref': 'relation:' + r.id }, kids));
         if (opts.showLabels) {
             const box = (0, sizes_1.pillBox)(def.label + (r.label ? ' · ' + r.label : ''), (0, addresses_1.addressAttrLines)(r.attrs));

@@ -266,7 +266,8 @@ export function renderLogical(model: Model, layout: LogicalLayout, opts: Logical
       kids.push(h('path', { class: 'hit', d: dd }), ...relationStroke(def, dd, TUBE_MIN));
     }
     kids.push(h('circle', { class: 'hub', cx: hub.cx, cy: hub.cy, r: HUB_R, stroke: def.color }));
-    kids.push(h('text', { class: 'hub-glyph', x: hub.cx, y: hub.cy + 4, 'text-anchor': 'middle', fill: def.color }, String(relationDevices(r).length)));
+    // the number of devices is text: written in the text colour (the ring around it has the protocol's colour)
+    kids.push(h('text', { class: 'hub-glyph', x: hub.cx, y: hub.cy + 4, 'text-anchor': 'middle' }, String(relationDevices(r).length)));
     relNodes.push(h('g', { class: `rel hub-rel cat-${def.category} style-${def.style} proto-${cssToken(r.protocol)}`, 'data-ref': 'relation:' + r.id }, kids));
     if (opts.showLabels) {
       const box = pillBox(def.label + (r.label ? ' · ' + r.label : ''), addressAttrLines(r.attrs));
