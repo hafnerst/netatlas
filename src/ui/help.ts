@@ -70,11 +70,11 @@ const MANUAL: Section[] = [
     id: 'theme',
     title: 'Choose a light or dark theme',
     steps: [
-      'The theme switch is at the right end of the toolbar. Each press switches to the next theme: **System** (the default, which follows your computer\'s light or dark setting), **Light**, **Dark**.',
-      'Its tooltip says which theme is in effect and what the next press does. The whole application and the diagram change at once; your selection, zoom and layout stay.',
+      'NetAtlas opens in the **Dark** theme. The theme switch at the right end of the toolbar toggles between **Dark** and **Light** (also with `Enter` or `Space`).',
+      'Its tooltip says which theme is in effect and what a press does. The whole application and the diagram change at once; your selection, zoom and layout stay.',
       'NetAtlas remembers your choice in this browser. It is never stored in the model file.',
     ],
-    figures: [['theme', 'The theme switch with its tooltip, in the dark theme.']],
+    figures: [['theme', 'The theme switch with its tooltip, in the dark theme (the default).']],
   },
   {
     id: 'find',
@@ -98,10 +98,14 @@ const MANUAL: Section[] = [
       '**+ Add** next to a section of the object list adds a device, link, network, relation, group or protocol. Fill in the highlighted fields.',
       '**Duplicate** copies an object under a new ID; **Delete** asks first and can be undone. Both are at the top of the Edit tab, and on the row under the pointer in the object list (also on the focused row, and on the selected row of a touch screen).',
     ],
-    notes: ['The **Problems** tab lists every error and warning; click one to go to the object.'],
+    notes: [
+      'The Edit tab marks what is selected with **▸ Selected** and a bar on the left: the object\'s header, the selected interface\'s card, or, when you clicked a line of the diagram such as an address, VLAN or VRF, that very field. It scrolls there if needed.',
+      'The **Problems** tab lists every error and warning; click one to go to the object.',
+    ],
     figures: [
       ['edit', 'The Edit tab of a device: the header with Duplicate and Delete, then the fields in titled cards.'],
       ['quick-actions', 'Duplicate and Delete on the row under the pointer in the object list.'],
+      ['edit-mark', 'An address clicked in the diagram: the Edit tab marks that address of the interface.'],
     ],
   },
   {

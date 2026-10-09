@@ -311,8 +311,8 @@ test('toolbar groups: View, Auto-arrange and Filters each have a label above the
     return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
   };
   const ratio = (a, b) => (Math.max(lum(a), lum(b)) + 0.05) / (Math.min(lum(a), lum(b)) + 0.05);
-  const light = /:root, :root\[data-theme="light"\] \{([^}]*)\}/.exec(css)[1];
-  const dark = /:root\[data-theme="dark"\] \{([^}]*)\}/.exec(css)[1];
+  const light = /:root\[data-theme="light"\] \{([^}]*)\}/.exec(css)[1];
+  const dark = /:root, :root\[data-theme="dark"\] \{([^}]*)\}/.exec(css)[1];
   for (const [name, vars] of [['light', light], ['dark', dark]]) {
     const v = (k) => new RegExp('--' + k + ': (#[0-9a-f]{6});').exec(vars)[1];
     assert.ok(ratio(v('frame'), v('panel')) >= 3, `${name}: frame ${v('frame')} on ${v('panel')} = ${ratio(v('frame'), v('panel')).toFixed(2)}:1`);

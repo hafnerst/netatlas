@@ -1,111 +1,101 @@
 /**
- * The colour theme: Light, Dark, or System (the default: follows the
- * operating system's prefers-color-scheme, also while the app runs).
+ * The colour theme: Light or Dark. Dark is the default.
  *
  * The theme in effect is written to <html data-theme="light|dark">, which
  * switches every design token in styles.css at once; nothing is reloaded or
- * re-laid out. The user's choice is remembered in this browser's local
- * storage (never in the model file or an export); where storage is not
- * available (some file:// setups, private windows) the choice simply lasts
- * for the session.
+ * re-laid out. The stylesheet's tokens without that attribute are the dark
+ * ones, and the script that sets it runs in the document's <head>, before
+ * anything is drawn (see app/main.ts), so a stored Light theme is in effect
+ * from the first paint and there is never a flash of the other theme.
+ *
+ * The choice is remembered in this browser's local storage (never in the
+ * model file or an export). A stored "light" or "dark" is kept; anything else
+ * (the "system" of earlier versions, an invalid value, nothing) means Dark.
+ * Where storage is not available (some file:// setups, private windows),
+ * the theme is Dark and a switch lasts for the session.
  */
 import { Theme } from '../diagram/palette';
 
 export type { Theme };
-export type ThemePref = 'light' | 'dark' | 'system';
 
-export const THEME_PREFS: readonly ThemePref[] = ['system', 'light', 'dark'];
 export const THEME_KEY = 'netatlas.theme';
+export const DEFAULT_THEME: Theme = 'dark';
 
-/** The theme in effect for a choice, given whether the system prefers dark. */
-export function resolveTheme(pref: ThemePref, systemDark: boolean): Theme {
-  return pref === 'system' ? (systemDark ? 'dark' : 'light') : pref;
+/** The theme a stored value stands for: Light only when "light" is stored, else Dark. */
+export function storedTheme(value: string | null | undefined): Theme {
+  return value === 'light' ? 'light' : DEFAULT_THEME;
 }
 
-/** The choice after `pref` when the theme button is pressed: System → Light → Dark → System. */
-export function nextThemePref(pref: ThemePref): ThemePref {
-  return THEME_PREFS[(THEME_PREFS.indexOf(pref) + 1) % THEME_PREFS.length];
+export function otherTheme(t: Theme): Theme {
+  return t === 'dark' ? 'light' : 'dark';
 }
 
-export function themePrefLabel(p: ThemePref): string {
-  return p === 'system' ? 'System' : p === 'light' ? 'Light' : 'Dark';
+export function themeLabel(t: Theme): string {
+  return t === 'dark' ? 'Dark' : 'Light';
 }
 
 /** What the theme button says: the current theme, and what pressing it does. */
-export function themeButtonText(pref: ThemePref, theme: Theme): string {
-  const now = pref === 'system' ? `System (${theme === 'dark' ? 'dark' : 'light'})` : themePrefLabel(pref);
-  const next = nextThemePref(pref);
-  return `Theme: ${now}. Switch to ${next === 'system' ? 'System (follow the operating system)' : themePrefLabel(next)}`;
+export function themeButtonText(t: Theme): string {
+  return `Theme: ${themeLabel(t)}. Switch to the ${themeLabel(otherTheme(t)).toLowerCase()} theme`;
 }
 
-function readStored(win: Window | null): ThemePref {
+function storage(win: Window | null): Storage | null {
   try {
-    const v = win && win.localStorage ? win.localStorage.getItem(THEME_KEY) : null;
-    return v === 'light' || v === 'dark' || v === 'system' ? v : 'system';
+    return win && win.localStorage ? win.localStorage : null;
   } catch {
-    return 'system';
+    return null;
   }
 }
 
-function store(win: Window | null, pref: ThemePref): void {
+/**
+ * Read the stored theme, tidying up what earlier versions or other tabs left
+ * (a stored "system" or an invalid value is removed: nothing stored means Dark).
+ */
+export function readTheme(win: Window | null): Theme {
+  const s = storage(win);
+  if (!s) return DEFAULT_THEME;
   try {
-    if (!win || !win.localStorage) return;
-    if (pref === 'system') win.localStorage.removeItem(THEME_KEY);
-    else win.localStorage.setItem(THEME_KEY, pref);
+    const v = s.getItem(THEME_KEY);
+    if (v !== null && v !== 'light' && v !== 'dark') s.removeItem(THEME_KEY);
+    return storedTheme(v);
   } catch {
-    /* storage unavailable: the choice lasts for this session */
+    return DEFAULT_THEME;
   }
+}
+
+/** Put a theme into effect: the attribute every token depends on (and with it CSS color-scheme). */
+export function applyTheme(doc: Document, t: Theme): void {
+  doc.documentElement.setAttribute('data-theme', t);
 }
 
 export class ThemeController {
-  pref: ThemePref;
-  theme: Theme = 'light';
-  private mql: MediaQueryList | null = null;
+  theme: Theme;
   private listeners: Array<(theme: Theme) => void> = [];
 
   constructor(private doc: Document) {
-    const win = doc.defaultView;
-    this.pref = readStored(win);
-    try {
-      this.mql = win && win.matchMedia ? win.matchMedia('(prefers-color-scheme: dark)') : null;
-    } catch {
-      this.mql = null;
-    }
-    const onSystem = (): void => {
-      if (this.pref === 'system') this.apply();
-    };
-    if (this.mql) {
-      if (this.mql.addEventListener) this.mql.addEventListener('change', onSystem);
-      else if ((this.mql as MediaQueryList & { addListener?: (f: () => void) => void }).addListener) (this.mql as MediaQueryList & { addListener: (f: () => void) => void }).addListener(onSystem);
-    }
-    this.apply(true);
+    this.theme = readTheme(doc.defaultView);
+    applyTheme(doc, this.theme);
   }
 
-  /** Called with the theme in effect after every change of the choice or of the system theme (not for the initial one). */
+  /** Called with the theme after every switch. */
   onChange(fn: (theme: Theme) => void): void {
     this.listeners.push(fn);
   }
 
-  systemDark(): boolean {
-    return !!this.mql && this.mql.matches;
+  set(t: Theme): void {
+    this.theme = t;
+    const s = storage(this.doc.defaultView);
+    try {
+      if (s) s.setItem(THEME_KEY, t);
+    } catch {
+      /* storage unavailable: the choice lasts for this session */
+    }
+    applyTheme(this.doc, t);
+    for (const fn of this.listeners) fn(t);
   }
 
-  set(pref: ThemePref): void {
-    this.pref = pref;
-    store(this.doc.defaultView, pref);
-    this.apply();
-  }
-
-  /** The theme button: System → Light → Dark → System. */
-  cycle(): void {
-    this.set(nextThemePref(this.pref));
-  }
-
-  private apply(initial = false): void {
-    this.theme = resolveTheme(this.pref, this.systemDark());
-    const root = this.doc.documentElement;
-    root.setAttribute('data-theme', this.theme);
-    root.setAttribute('data-theme-pref', this.pref);
-    if (!initial) for (const fn of this.listeners) fn(this.theme);
+  /** The theme button: Light ⇄ Dark. */
+  toggle(): void {
+    this.set(otherTheme(this.theme));
   }
 }

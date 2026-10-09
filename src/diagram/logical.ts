@@ -25,11 +25,11 @@ import { LINE_W, TUBE_MIN, TUBE_WALL, buildBundle, laneLabel, relationPairs } fr
 import { CHIP_H, HUB_R, LNode, LogicalLayout, commonChain, deviceRect, isMultipoint, networkSubtitle } from '../layout/logical';
 import { memberAddresses } from '../layout/input';
 import { CHIP_FONT, ENTRY_GAP, ENTRY_MARGIN, NET_LABEL_SIZE, dnsNameLines, dnsShown, entriesSize, memberLabelBox, networkBody, pillBox } from '../layout/sizes';
-import { addressAttrLines } from '../model/addresses';
+import { addressAttrEntries, addressAttrLines } from '../model/addresses';
 import { TextBlock } from '../layout/text';
 import { networkMembers } from '../model/derive';
 import { Device, LineStyle, Model, ProtocolDef, Relation, relationDevices } from '../model/types';
-import { LabelPlacer, alongSegment, centerRect, leaderLine, textLines } from './labels';
+import { Attrs, LabelPlacer, addressLineAttrs, alongSegment, centerRect, fieldAttrs, leaderLine, textLines } from './labels';
 import { cssToken, deviceNode, deviceSubtitle, entryItems, entryNodes, groupFrames, groupRects, nodeOverlaps, SceneResult } from './physical';
 import { VNode, h } from './scene';
 import { NETWORK_COLOR } from './style';
@@ -247,7 +247,8 @@ export function renderLogical(model: Model, layout: LogicalLayout, opts: Logical
         );
         labelRects.push(centerRect(c, it.box.w, it.box.h));
         if (placer.leaderFrom) labels.push(leaderLine(placer.leaderFrom, centerRect(c, it.box.w, it.box.h), 'relation:' + it.p.rel.id));
-        labels.push(pill('relation:' + it.p.rel.id, c, it.box, it.p.def.color));
+        // the relation's own address lines name its attrs (those of relations nested in it belong to them)
+        labels.push(pill('relation:' + it.p.rel.id, c, it.box, it.p.def.color, addressLineAttrs(it.box.block, attrFields(it.p.rel.attrs))));
       }
     }
   });
@@ -289,7 +290,7 @@ export function renderLogical(model: Model, layout: LogicalLayout, opts: Logical
       );
       labelRects.push(centerRect(c, box.w, box.h));
       if (placer.leaderFrom) labels.push(leaderLine({ x: hub.cx, y: hub.cy }, centerRect(c, box.w, box.h), 'relation:' + r.id));
-      labels.push(pill('relation:' + r.id, c, box, def.color));
+      labels.push(pill('relation:' + r.id, c, box, def.color, addressLineAttrs(box.block, attrFields(r.attrs))));
     }
   }
 
@@ -335,7 +336,7 @@ export function renderLogical(model: Model, layout: LogicalLayout, opts: Logical
           h('rect', { class: 'net-box', x, y, width: n.w, height: n.h, rx, stroke: color }),
           h('rect', { class: 'net-tint', x, y, width: n.w, height: n.h, rx, fill: color }),
           textLines({ class: 'net-label', 'text-anchor': 'middle', 'font-size': NET_LABEL_SIZE }, body.label, n.cx, top),
-          body.sub.lines.length ? textLines({ class: 'net-sub', 'text-anchor': 'middle' }, body.sub, n.cx, top + body.label.h) : null,
+          body.sub.lines.length ? textLines({ class: 'net-sub', 'text-anchor': 'middle' }, body.sub, n.cx, top + body.label.h, (networkSubtitle(nw.cidr, nw.vlan) ? [fieldAttrs({ field: nw.cidr ? 'cidr' : 'vlan', value: '' })] : []).concat(attrFields(nw.attrs).map(fieldAttrs))) : null,
         ]),
       );
     }
@@ -391,6 +392,11 @@ function localNodes(model: Model, nodes: Map<string, LNode>): Map<string, Rect[]
   return out;
 }
 
+/** The fields of an object's address lines (its address-like attrs, by key). */
+function attrFields(attrs: Model['relations'][number]['attrs']): Array<{ field: string; value: string }> {
+  return addressAttrEntries(attrs).map((a) => ({ field: 'attr', value: a.key }));
+}
+
 /** For a unidirectional relation the arrow points at the last endpoint's device. */
 function endTip(r: Relation, s: Pt, e: Pt, firstSorted: string): Pt {
   const target = r.endpoints[r.endpoints.length - 1].device;
@@ -402,10 +408,10 @@ function endFrom(r: Relation, s: Pt, e: Pt, firstSorted: string): Pt {
 }
 
 /** A relation label: its full text (wrapped if long) in a rounded box, centered at `p`. */
-function pill(ref: string, p: Pt, box: { block: TextBlock; w: number; h: number }, color: string): VNode {
+function pill(ref: string, p: Pt, box: { block: TextBlock; w: number; h: number }, color: string, lineAttrs: Array<Attrs | undefined> = []): VNode {
   return h('g', { class: 'pill', 'data-ref': ref }, [
     h('rect', { class: 'pill-box', x: p.x - box.w / 2, y: p.y - box.h / 2, width: box.w, height: box.h, rx: 9, stroke: color }),
-    textLines({ class: 'pill-text', 'text-anchor': 'middle' }, box.block, p.x, p.y - box.block.h / 2),
+    textLines({ class: 'pill-text', 'text-anchor': 'middle' }, box.block, p.x, p.y - box.block.h / 2, lineAttrs),
   ]);
 }
 

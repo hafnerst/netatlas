@@ -11,6 +11,10 @@
 <style id="app-style">
 /*__CSS__*/
 </style>
+<!-- in <head>, so the stored theme is set before the first paint (the application itself starts on DOMContentLoaded) -->
+<script>
+/*__JS__*/
+</script>
 </head>
 <body data-state="empty" data-view="none" data-dirty="false">
 <header class="topbar">
@@ -105,8 +109,7 @@
   </div>
   </div>
   <div class="theme-wrap">
-    <button id="theme-btn" type="button" class="theme-btn" aria-label="Theme" aria-describedby="theme-tip" data-pref="system">
-      <svg class="ti ti-system" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 1 0 16z" class="ti-fill"/></svg>
+    <button id="theme-btn" type="button" class="theme-btn" aria-label="Theme" aria-describedby="theme-tip" data-theme-now="dark">
       <svg class="ti ti-light" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2.5M12 19v2.5M2.5 12H5M19 12h2.5M5.3 5.3l1.8 1.8M16.9 16.9l1.8 1.8M5.3 18.7l1.8-1.8M16.9 7.1l1.8-1.8"/></svg>
       <svg class="ti ti-dark" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/></svg>
     </button>
@@ -211,8 +214,5 @@
 <footer id="status" aria-live="polite"></footer>
 <dialog id="modal"></dialog>
 <pre id="selftest" hidden></pre>
-<script>
-/*__JS__*/
-</script>
 </body>
 </html>

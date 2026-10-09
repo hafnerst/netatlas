@@ -13,14 +13,28 @@ import { Pt, Rect, rectsOverlap } from '../layout/geometry';
 import { TextBlock, lineHeight } from '../layout/text';
 import { VNode, h } from './scene';
 
-type Attrs = { [name: string]: string | number | undefined | null | false };
+export type Attrs = { [name: string]: string | number | undefined | null | false };
+
+/** Line attributes for a label followed by address lines (layout/text.ts labelWithAddresses): `fields` belong to the address lines. */
+export function addressLineAttrs(block: TextBlock, fields: Array<{ field: string; value: string }>): Array<Attrs | undefined> {
+  const out: Array<Attrs | undefined> = [];
+  const mono = block.mono === undefined ? block.lines.length : block.mono;
+  for (let i = 0; i < block.lines.length; i++) out.push(i >= mono ? fieldAttrs(fields[i - mono]) : undefined);
+  return out;
+}
+
+/** The attributes that tie a drawn line to the field of the configuration it shows (see model/addresses.ts LineField). */
+export function fieldAttrs(f: { field: string; value: string } | undefined): Attrs | undefined {
+  return f && f.field ? { 'data-field': f.field, 'data-value': f.value || undefined } : undefined;
+}
 
 /**
  * A block of text lines starting at `top`. One line is a plain <text>;
  * several lines are <tspan>s with absolute positions, so the file renders
- * the same in every SVG viewer.
+ * the same in every SVG viewer. `lineAttrs` adds attributes to each line
+ * (e.g. which field of the configuration it shows).
  */
-export function textLines(attrs: Attrs, block: TextBlock, x: number, top: number): VNode {
+export function textLines(attrs: Attrs, block: TextBlock, x: number, top: number, lineAttrs: Array<Attrs | undefined> = []): VNode {
   const lh = lineHeight(block.size);
   // baseline of a line inside its line box
   const base = lh / 2 + block.size * 0.35;
@@ -28,12 +42,12 @@ export function textLines(attrs: Attrs, block: TextBlock, x: number, top: number
   const mono = block.mono === undefined ? Infinity : block.mono;
   if (block.lines.length === 1) {
     const cls = mono === 0 ? ((attrs.class ? attrs.class + ' ' : '') + 'addr') : attrs.class;
-    return h('text', { ...attrs, class: cls, x, y: top + base }, block.lines[0]);
+    return h('text', { ...attrs, ...(lineAttrs[0] || {}), class: cls, x, y: top + base }, block.lines[0]);
   }
   return h(
     'text',
     { ...attrs, x, y: top + base },
-    block.lines.map((l, i) => h('tspan', { class: i >= mono ? 'addr' : undefined, x, y: top + i * lh + base }, l)),
+    block.lines.map((l, i) => h('tspan', { ...(lineAttrs[i] || {}), class: i >= mono ? 'addr' : undefined, x, y: top + i * lh + base }, l)),
   );
 }
 

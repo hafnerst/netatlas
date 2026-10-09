@@ -1,13 +1,13 @@
 /* Design tokens. Every colour of the application and of the diagram comes from
    these; the two themes define the same names. The theme in effect is the
    `data-theme` attribute of <html> ("light" or "dark"), set before the first
-   paint from the user's choice (Light, Dark) or, for System, from
-   prefers-color-scheme (see ui/theme.ts). Contrast (WCAG 2.2 AA): text and
+   paint from the user's choice; without it the tokens are the dark ones, the
+   default (see ui/theme.ts). Contrast (WCAG 2.2 AA): text and
    muted text at least 4.5:1 on every surface they are used on; control
    boundaries (--control-border), focus rings (--accent), selection (--sel) and
    diagram lines (--dev-stroke, --group-stroke, --member) at least 3:1 against
    the canvas and the panels. test/theme.test.mjs checks the pairs. */
-:root, :root[data-theme="light"] {
+:root[data-theme="light"] {
   /* surfaces: the page, panels, the diagram, and raised layers (menus, dialogs, tooltips) */
   --bg: #f6f7f9;
   --panel: #ffffff;
@@ -24,6 +24,9 @@
   --frame: #848d97;
   --accent: #1864ab;
   --accent-soft: #e7f0fa;
+  /* the part of the Edit tab that belongs to the selection: a tint and a bar (3:1 against the panel) */
+  --marked-bg: #f4f8fd;
+  --marked-bar: #1864ab;
   /* text and icons on a filled accent / danger control */
   --on-accent: #ffffff;
   --link: #1864ab;
@@ -42,13 +45,13 @@
   --ok: #2a7d3a;
   --shadow: rgba(0, 0, 0, 0.16);
   --backdrop: rgba(0, 0, 0, 0.35);
-  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
   color-scheme: light;
 }
 /* Dark: dark grey surfaces (never pure black) that get lighter as they rise
    (canvas < page < panel < raised), off-white text, and calmer, less
    saturated accent and status colours that keep their meaning. */
-:root[data-theme="dark"] {
+:root, :root[data-theme="dark"] {
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
   --bg: #1a1e24;
   --panel: #20252c;
   --canvas: #15181d;
@@ -61,6 +64,8 @@
   --frame: #737d88;
   --accent: #7fb2e5;
   --accent-soft: #22303f;
+  --marked-bg: #22303f;
+  --marked-bar: #7fb2e5;
   --on-accent: #15181d;
   --link: #7fb2e5;
   --dev-fill: #20252c;
@@ -772,13 +777,12 @@ body:not([data-state="loaded"]) .view-group .tool-group-title, body:not([data-st
 .opt:has(input:disabled) { opacity: 0.45; cursor: default; }
 
 /* The theme switch: an icon button at the right end of the toolbar, always shown (never in a menu).
-   The icon shows the choice (System: half-filled circle, Light: sun, Dark: moon); the tooltip and
-   the accessible name say the theme in effect and what a press does. */
+   A toggle between Light and Dark: the icon shows the theme in effect (sun: light, moon: dark); the
+   tooltip and the accessible name say that theme and what a press does. */
 .theme-wrap { position: relative; flex: none; margin-left: auto; }
 .theme-btn { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 30px; padding: 0; }
 .theme-btn .ti { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; display: none; }
-.theme-btn .ti-fill { fill: currentColor; stroke: none; }
-.theme-btn[data-pref="system"] .ti-system, .theme-btn[data-pref="light"] .ti-light, .theme-btn[data-pref="dark"] .ti-dark { display: block; }
+.theme-btn[data-theme-now="light"] .ti-light, .theme-btn[data-theme-now="dark"] .ti-dark { display: block; }
 .theme-wrap .tip {
   position: absolute; top: calc(100% + 6px); right: 0; z-index: 50; width: max-content; max-width: min(260px, calc(100vw - 24px));
   padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--raised); color: var(--text);
@@ -791,3 +795,24 @@ body:not([data-state="loaded"]) .view-group .tool-group-title, body:not([data-st
 .overlap-hint { position: absolute; right: 12px; bottom: 12px; z-index: 25; max-width: min(420px, calc(100% - 200px)); padding: 5px 10px; border: 1px solid var(--warn); border-radius: 8px; background: var(--raised); color: var(--text); font-size: 12px; box-shadow: 0 2px 8px var(--shadow); }
 .overlap-hint > span:first-child { color: var(--warn); font-weight: 700; }
 .overlap-hint[hidden] { display: none; }
+
+/* Segmented controls (View, Auto-arrange, and the direction switch in the editor): neighbouring
+   segments share one border column (margin-left: -1px), and a later segment paints over the column
+   it shares with the one before it. A segment whose border changes is therefore lifted above its
+   neighbours (stacking order only: nothing moves or changes size), so its border is complete on all
+   four sides: the selected one above the plain ones, the hovered one above both, the keyboard-
+   focused one (with its focus ring) on top. */
+.seg button, .arrange-btn { position: relative; z-index: 0; }
+.seg button.active, .arrange-btn.current, .arrange-btn.current:disabled { z-index: 1; }
+.seg button:hover:not(:disabled), .arrange-btn:hover:not(:disabled) { z-index: 2; }
+.seg button:focus-visible, .arrange-btn:focus-visible { z-index: 3; }
+
+/* The selection in the Edit tab: the section (the object's header, the selected interface's card, or
+   the field of the line it was clicked on) is tinted, has an accent bar on its left and a "Selected"
+   tag, so it does not depend on colour alone. It is not the error mark (a red outer border with an
+   error badge), a hover (border colour) or the focus ring (an outline around the control), and it
+   leaves all three visible. */
+.sel-mark { background: var(--marked-bg) !important; box-shadow: inset 3px 0 0 var(--marked-bar); }
+.field.sel-mark, .list-row.sel-mark, .g-row.sel-mark { border-radius: 5px; padding-left: 7px; margin-left: -7px; }
+.list-row.sel-mark, .g-row.sel-mark { padding-top: 2px; padding-bottom: 2px; margin-top: -2px; margin-bottom: -2px; }
+.sel-tag { flex: none; display: inline-block; margin-left: 6px; padding: 0 6px; border: 1px solid var(--marked-bar); border-radius: 99px; color: var(--accent); background: var(--panel); font-size: 10.5px; font-weight: 600; line-height: 1.5; letter-spacing: 0; text-transform: none; white-space: nowrap; vertical-align: 1px; }

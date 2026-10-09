@@ -29,6 +29,12 @@ import { Endpoint, endpointText } from '../model/types';
 /** `iface`: the document path of the selected physical or logical interface of a device. */
 export type EditorSel = { kind: EntityKind | 'document'; index: number; iface?: Path } | null;
 
+/** A field of the selected object that the selection was made on in the diagram (see model/addresses.ts LineField). */
+export interface SelDetail {
+  field: string;
+  value: string;
+}
+
 export interface EditorHost {
   /** called after every committed edit */
   changed(note?: string): void;
@@ -87,6 +93,14 @@ export class Editor {
   private collapsed = new Set<EntityKind>(['link', 'protocol']);
   /** a new link or relation being completed in the Edit tab (not in the model yet) */
   draft: ConnectionDraft | null = null;
+  /**
+   * The field the selection was made on (an address line, a VRF …), with
+   * where it was found last: an address that is edited keeps its mark while
+   * its list keeps its length.
+   */
+  private detail: (SelDetail & { path: string | null; count: number }) | null = null;
+  /** what the Edit tab marked last: it is scrolled into view only when that changes */
+  private markedKey = '';
   /** unapplied text in the YAML source tab */
   sourceDraft: string | null = null;
   sourceError: string | null = null;
@@ -179,8 +193,14 @@ export class Editor {
     this.open.add(J(path));
   }
 
+  /** The field of the selected object that the selection was made on (null: the object as a whole). */
+  setDetail(d: SelDetail | null): void {
+    this.detail = d ? { ...d, path: null, count: -1 } : null;
+  }
+
   private selectEntity(kind: EntityKind | 'document', index: number): void {
     this.leaveDraft(kind);
+    this.detail = null;
     this.sel = { kind, index };
     this.host.selected(this.sel);
   }
@@ -359,6 +379,7 @@ export class Editor {
     const s = this.sel;
     if (!s || (s.kind !== 'document' && !doc.entities(s.kind)[s.index])) {
       this.sel = null;
+      this.markedKey = '';
       wrap.appendChild(this.e('h3', {}, ['Edit']));
       wrap.appendChild(
         this.e('p', { class: 'muted' }, [
@@ -369,7 +390,113 @@ export class Editor {
       return;
     }
     if (s.kind === 'document') this.renderDocument(wrap);
-    else this.renderEntity(wrap, s.kind, s.index);
+    else {
+      this.renderEntity(wrap, s.kind, s.index);
+      this.markSelection(wrap);
+    }
+  }
+
+  // ------------------------------------------------ the selection in the Edit tab
+
+  /**
+   * Mark the part of the Edit tab that belongs to what is selected, at the
+   * most specific level there is: the field of the line it was clicked on
+   * (an address, VRF, VLAN, tunnel end, attribute …), else the selected
+   * interface's card, else the object's header. The mark is a tinted
+   * background with an accent bar and a "Selected" tag (not colour alone),
+   * and aria-current for assistive technology. When it moves to another
+   * section, that section is scrolled into view if it is off screen
+   * (smoothly, unless reduced motion is preferred); the keyboard focus is
+   * never moved.
+   */
+  private markSelection(wrap: HTMLElement): void {
+    const s = this.sel;
+    if (!s || s.kind === 'document') return;
+    const base: Path = [SECTION[s.kind], s.index];
+    const scope = s.iface || base;
+    let target = this.detail ? this.detailElement(wrap, scope, this.detail) : null;
+    if (!target && s.iface) target = this.byPath(wrap, 'details.card', 'data-card', J(s.iface));
+    if (!target) target = wrap.querySelector('.insp-head');
+    if (!target) return;
+    target.classList.add('sel-mark');
+    target.setAttribute('aria-current', 'true');
+    const tag = this.e('span', { class: 'sel-tag' }, [this.e('span', { 'aria-hidden': 'true' }, ['▸ ']), 'Selected']);
+    if (target.tagName === 'DETAILS') {
+      const sum = target.querySelector('summary') as HTMLElement;
+      const title = sum.querySelector('.card-title');
+      sum.insertBefore(tag, title ? title.nextSibling : sum.firstChild);
+    } else if (target.classList.contains('insp-head')) {
+      // after the name (the first row has no room to spare); the heading's accessible name stays the name, aria-current says it
+      const h3 = target.querySelector('h3');
+      tag.setAttribute('aria-hidden', 'true');
+      if (h3) h3.appendChild(tag);
+      else target.appendChild(tag);
+    } else if (target.classList.contains('field')) {
+      const label = target.querySelector('label');
+      if (label) label.appendChild(tag);
+      else target.insertBefore(tag, target.firstChild);
+    } else {
+      const btn = target.querySelector('button');
+      target.insertBefore(tag, btn);
+    }
+    // a mark inside a folded section (the attributes) opens it
+    for (let p = target.parentElement; p && p !== wrap; p = p.parentElement) {
+      if (p.tagName === 'DETAILS' && !p.hasAttribute('open')) {
+        p.setAttribute('open', '');
+        const key = p.getAttribute('data-card');
+        if (key) this.open.add(key);
+      }
+    }
+    const key = (this.selectedRef() || '') + '|' + (this.detail ? this.detail.field + '=' + this.detail.value : '') + '|' + (target.getAttribute('data-card') || '');
+    if (key === this.markedKey) return;
+    this.markedKey = key;
+    this.reveal(target);
+  }
+
+  /** Scroll a marked section into view when it is not (wholly) visible in its scrolling panel. */
+  private reveal(el: HTMLElement): void {
+    let box: HTMLElement | null = el.parentElement;
+    while (box && box !== this.d.body) {
+      const st = this.d.defaultView ? this.d.defaultView.getComputedStyle(box) : null;
+      if (st && /auto|scroll/.test(st.overflowY) && box.scrollHeight > box.clientHeight) break;
+      box = box.parentElement;
+    }
+    if (!box || box === this.d.body || typeof el.scrollIntoView !== 'function') return;
+    const r = el.getBoundingClientRect();
+    const b = box.getBoundingClientRect();
+    if (r.top >= b.top && r.bottom <= b.bottom) return;
+    const win = this.d.defaultView;
+    const reduce = !!win && typeof win.matchMedia === 'function' && win.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    el.scrollIntoView({ block: r.height > b.height ? 'start' : 'nearest', behavior: reduce ? 'auto' : 'smooth' });
+  }
+
+  /** The first element matching `sel` whose attribute `attr` is `value` (paths contain quotes: no attribute selector). */
+  private byPath(wrap: HTMLElement, sel: string, attr: string, value: string, more?: (e: Element) => boolean): HTMLElement | null {
+    const all = wrap.querySelectorAll(sel);
+    for (let i = 0; i < all.length; i++) if (all[i].getAttribute(attr) === value && (!more || more(all[i]))) return all[i] as HTMLElement;
+    return null;
+  }
+
+  /** The row or field of `detail` in the section of `scope` (the selected interface, or the object). */
+  private detailElement(wrap: HTMLElement, scope: Path, d: SelDetail & { path: string | null; count: number }): HTMLElement | null {
+    const near = (e: Element | null, cls: string): HTMLElement | null => (e ? (e.closest(cls) as HTMLElement | null) : null);
+    if (d.field === 'ip') {
+      const lp = scope.concat('ip');
+      const n = this.doc.get(lp);
+      const items = n && n.kind === 'seq' ? n.items.map((it) => scalarText(it) || '') : n && n.kind === 'scalar' ? [scalarText(n) || ''] : [];
+      if (!d.value) return near(this.byPath(wrap, 'input', 'data-p', J(lp)), '.field');
+      const k = items.indexOf(d.value);
+      let path: string | null = k < 0 ? null : J(n && n.kind === 'seq' ? lp.concat(k) : lp);
+      // the address was edited since: the same place, while the list has as many addresses
+      if (!path && d.path && d.count === items.length) path = d.path;
+      if (!path) return null;
+      d.path = path;
+      d.count = items.length;
+      return near(this.byPath(wrap, 'input', 'data-p', path), '.list-row');
+    }
+    if (d.field === 'attr') return near(this.byPath(wrap, 'input.g-key', 'data-p', J(scope.concat('attrs')), (e) => e.getAttribute('data-k') === d.value), '.g-row');
+    if (d.field === 'dhcp') return near(this.byPath(wrap, 'button.dhcp-switch', 'data-p', J(scope)), '.field');
+    return near(this.byPath(wrap, '[data-p]', 'data-p', J(scope.concat(d.field))), '.field');
   }
 
   // ------------------------------------------------- a new link or relation

@@ -148,8 +148,21 @@ async function main() {
       await save('addresses', { x, y, w: Math.min(c.x + c.w, b.x + b.w + 150) - x, h: Math.min(c.y + c.h, y + 470) - y });
     }
 
-    // the theme switch with its tooltip, in the dark theme
-    await page.eval('netatlas.theme.set("dark"), true');
+    // the Edit tab marks what was clicked: an address of an interface (addressing example, logical view)
+    await page.eval('netatlas.showTab("edit"), netatlas.select("iface:core:lo0", true), netatlas.select(null), true');
+    await page.settle(150);
+    await page.click('#viewport [data-ref="iface:core:lo0"] tspan[data-value="2001:db8:ffff:ffff::1/128"]');
+    await page.mouse('mouseMoved', 700, 890);
+    await page.settle(700);
+    {
+      const card = await page.rect('#side-body details.card[open]');
+      const mark = await page.rect('#side-body .sel-mark');
+      const side = await page.rect('#side');
+      const y = Math.max(side.y, Math.min(card.y, mark.y - 140) - 6);
+      await save('edit-mark', { x: side.x, y, w: side.w, h: Math.min(mark.y + mark.h + 24, side.y + side.h) - y });
+    }
+
+    // the theme switch with its tooltip, in the dark theme (the default)
     await page.hover('#theme-btn');
     await page.settle(150);
     {
@@ -158,7 +171,6 @@ async function main() {
       const x = Math.min(tip.x, bar.x + bar.w - 380);
       await save('theme', { x, y: 0, w: bar.x + bar.w - x, h: tip.y + tip.h + 10 });
     }
-    await page.eval('netatlas.theme.set("system"), true');
   } finally {
     await page.close();
   }
