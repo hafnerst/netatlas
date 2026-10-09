@@ -53,6 +53,37 @@ it is described in [docs/FORMAT.md](docs/FORMAT.md).
   confirmation, undo, selection and modified state). The row with the
   keyboard focus shows them too, and on touch screens the selected row. Their
   accessible names say the action and the object (*Delete device hq-fw*).
+- **Light, Dark and System themes.** A switch at the right end of the
+  toolbar (System → Light → Dark) with a tooltip and an accessible name that
+  say the theme in effect and what a press does. *System* is the default and
+  follows the operating system, also while NetAtlas is open. The choice is
+  remembered in the browser, never in the model. The whole application and
+  the diagram are drawn from one set of design tokens (WCAG 2.2 AA in both
+  themes; dark grey surfaces, off-white text, calmer accent and status
+  colours); cable and protocol colours are adjusted per theme so every line
+  keeps 3:1 contrast.
+- **Exports in the selected theme.** PNG and SVG are drawn in the theme on
+  screen. The SVG carries resolved colours and an explicit background (no
+  stylesheet, CSS variable or `prefers-color-scheme`), so it looks the same in
+  every viewer; the PNG has the same colours on an opaque background.
+- **Every address in the diagram.** Each device's box holds an entry per
+  interface with its name, addresses (IPv4 then IPv6, secondary and dual
+  stack together), VLAN, VRF, DHCP, MAC address, tunnel source and
+  destination and member ports, in a monospace font and never shortened.
+  Membership lines carry every address of the device in the network; cables
+  show their cable id; addresses in `attrs` (VRRP / HSRP virtual addresses,
+  router IDs, NAT and peer addresses …) are written next to their device,
+  interface, network, cable, relation or group. Auto-arrange reserves the
+  room they need.
+- **No overlaps, or a note when there are.** A label with no free place next
+  to its line takes the nearest free place, tied to it by a dashed leader
+  line; an overlap made by moving nodes by hand is reported over the diagram.
+- The left panel is titled **Objects** (*Select, duplicate, or delete*), a
+  region with that name and a heading for assistive technology; the right
+  panel is named *Inspector* for screen readers.
+- The example **addressing.yaml**: a router with many interfaces, dual-stack
+  and secondary addresses, VLAN subinterfaces, tunnels and long IPv6
+  addresses.
 
 ### Changed
 
@@ -93,7 +124,20 @@ it is described in [docs/FORMAT.md](docs/FORMAT.md).
 - The **Edit** tab groups each object's fields into titled cards (Identity,
   Placement, Ends, Cable, Addressing, Protocol, Endpoints, Underlay, Notes,
   More); the **Details** tab shows its sections in the same cards.
-- The logical view shows every loopback (there was a limit of three).
+- The logical view shows every loopback (there was a limit of three), and
+  every address of a loopback (it showed the first one and "+N").
+- Chips of uncabled ports show their full names; a long run of similar names
+  no longer writes the shared prefix once.
+- The logical view shows every DNS name of a device (it showed two and
+  "+N more names").
+- In the logical view a device's box holds its interfaces and DNS names, and
+  lines attach to the whole box. Group titles are drawn above the lines, with
+  a halo.
+- **Compact** keeps room for the port labels on the facing sides of two
+  devices side by side, as **Default** does.
+- The number in a multipoint hub is written in the text colour (the ring
+  keeps the protocol's colour), and the light theme's muted text, selection
+  and line colours are a little darker, for WCAG AA contrast.
 - The example *device-types.yaml* has six free ports on its access switch.
 
 ### Fixed

@@ -131,6 +131,34 @@ async function main() {
     await page.mouse('mouseMoved', 700, 890);
     await page.settle();
     await save('toolbar-groups', around([await page.rect('#view-group'), await page.rect('#filters-group')], 8));
+
+    // the addresses of a router in the logical view, at 100 % (addressing example)
+    await page.eval('netatlas.loadExample(6), netatlas.setView("logical"), netatlas.select("device:core", true), netatlas.select(null), true');
+    await page.eval(`(() => { const m = /scale\\(([\\d.]+)\\)/.exec(document.getElementById('viewport').getAttribute('transform')); netatlas.zoomBy(1 / Number(m[1])); return true; })()`);
+    await page.eval('netatlas.select("device:core", true), netatlas.select(null), true');
+    await page.mouse('mouseMoved', 700, 890);
+    // (a message left over from the connection above is not part of this picture)
+    await page.eval("document.getElementById('toast').hidden = true");
+    await page.settle(200);
+    {
+      const c = await page.rect('#canvas-wrap');
+      const b = await page.rect('#viewport [data-ref="device:core"] .dev-box');
+      const x = Math.max(c.x, b.x - 150);
+      const y = Math.max(c.y, b.y - 20);
+      await save('addresses', { x, y, w: Math.min(c.x + c.w, b.x + b.w + 150) - x, h: Math.min(c.y + c.h, y + 470) - y });
+    }
+
+    // the theme switch with its tooltip, in the dark theme
+    await page.eval('netatlas.theme.set("dark"), true');
+    await page.hover('#theme-btn');
+    await page.settle(150);
+    {
+      const bar = await page.rect('header.topbar');
+      const tip = await page.rect('#theme-tip');
+      const x = Math.min(tip.x, bar.x + bar.w - 380);
+      await save('theme', { x, y: 0, w: bar.x + bar.w - x, h: tip.y + tip.h + 10 });
+    }
+    await page.eval('netatlas.theme.set("system"), true');
   } finally {
     await page.close();
   }

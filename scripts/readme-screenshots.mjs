@@ -14,7 +14,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const html = resolve(root, 'dist', 'netatlas.html');
 const outDir = join(root, 'docs', 'img');
 
-// file name -> deep link (example numbers follow the Examples menu)
+// file name -> deep link (example numbers follow the Examples menu) [, extra browser flags]
 const SHOTS = [
   ['editor.png', 'example=0&view=logical&select=device:hq-rtr1'],
   ['wan-physical.png', 'example=0&view=physical'],
@@ -26,6 +26,9 @@ const SHOTS = [
   ['metro-logical.png', 'example=3&view=logical'],
   ['wan-physical-filtered.png', 'example=0&view=physical&devices=inet,isp1-pe,hq-rtr1,hq-rtr2,hq-fw,hq-core1'],
   ['wan-logical-filtered.png', 'example=0&view=logical&devices=inet,isp1-pe,hq-rtr1,hq-rtr2,hq-fw,hq-core1'],
+  ['addressing-physical.png', 'example=6&view=physical'],
+  // the System theme (the default) in a browser set to dark
+  ['addressing-logical-dark.png', 'example=6&view=logical', ['--blink-settings=preferredColorScheme=0']],
 ];
 
 const browser = findBrowser();
@@ -38,8 +41,10 @@ if (!existsSync(html)) {
   process.exit(1);
 }
 mkdirSync(outDir, { recursive: true });
-for (const [name, link] of SHOTS) {
+// the screenshots show the light theme (System in a browser set to light) unless a shot says otherwise,
+// whatever the colour scheme of the computer they are taken on
+for (const [name, link, flags = ['--blink-settings=preferredColorScheme=1']] of SHOTS) {
   const file = join(outDir, name);
-  run(browser, pathToFileURL(html).href + '#' + link, ['--window-size=1700,1050', '--hide-scrollbars', `--screenshot=${file}`]);
+  run(browser, pathToFileURL(html).href + '#' + link, ['--window-size=1700,1050', '--hide-scrollbars', ...flags, `--screenshot=${file}`]);
   console.log('wrote docs/img/' + name);
 }

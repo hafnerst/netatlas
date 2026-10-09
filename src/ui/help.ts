@@ -40,7 +40,7 @@ const MANUAL: Section[] = [
     steps: [
       '**File → Save model as…** (`Ctrl+Shift+S`) saves the model under a name and in a place you choose, and links the model to that file.',
       '**File → Save model** (`Ctrl+S`) then updates the linked file without asking. In browsers without a save picker (Firefox, Safari), *Save model as…* downloads a copy instead.',
-      '**Export → Export view as… → PNG** or **SVG** saves the view on screen as a picture: the whole diagram, with its legend and networks overview.',
+      '**Export → Export view as… → PNG** or **SVG** saves the view on screen as a picture: the whole diagram, with its legend and networks overview, in the theme you see (Light or Dark). The picture looks the same in any viewer, whatever that viewer\'s own light or dark setting.',
     ],
     notes: ['A small dot on the file name in the status bar means that there are unsaved changes.'],
     figures: [
@@ -57,11 +57,24 @@ const MANUAL: Section[] = [
       '**Logical** (`L`) shows relations such as tunnels and routing sessions, networks and loopbacks.',
       'Drag the background or use the arrow keys to pan. Zoom with the mouse wheel, `+` / `−`, or **Fit** (`0`) to see everything.',
       'Hover over an object for a short summary. A selection is kept when you switch views.',
+      'Every address is written in the diagram. A device\'s box lists its interfaces, each with its name and then its addresses (IPv4, then IPv6), VLAN, VRF, MAC address and tunnel ends. Networks show their prefix, cables their cable ID, and addresses kept in attributes (such as a VRRP virtual address) are written next to their object.',
     ],
+    notes: ['If moving objects by hand makes labels or boxes overlap, a note over the diagram says so; **Auto-arrange** places everything without overlaps again.'],
     figures: [
-      ['physical', 'The physical view. Toolbar at the top, object list on the left, diagram in the middle, panels (Edit, Details, Legend …) on the right.'],
+      ['physical', 'The physical view. Toolbar at the top, the object list (Objects) on the left, diagram in the middle, panels (Edit, Details, Legend …) on the right.'],
       ['logical', 'Part of the logical view (metro ring example): routers with their loopbacks, and the iBGP, LDP and RSVP-TE relations between them.'],
+      ['addresses', 'A router in the logical view (addressing example): each interface with its addresses, VLAN, VRF and tunnel ends.'],
     ],
+  },
+  {
+    id: 'theme',
+    title: 'Choose a light or dark theme',
+    steps: [
+      'The theme switch is at the right end of the toolbar. Each press switches to the next theme: **System** (the default, which follows your computer\'s light or dark setting), **Light**, **Dark**.',
+      'Its tooltip says which theme is in effect and what the next press does. The whole application and the diagram change at once; your selection, zoom and layout stay.',
+      'NetAtlas remembers your choice in this browser. It is never stored in the model file.',
+    ],
+    figures: [['theme', 'The theme switch with its tooltip, in the dark theme.']],
   },
   {
     id: 'find',
@@ -80,7 +93,7 @@ const MANUAL: Section[] = [
     id: 'edit',
     title: 'Select and edit objects',
     steps: [
-      'Click an object in the diagram or in the object list. The **Edit** tab on the right opens it; **Details** gives a read-only summary.',
+      'Click an object in the diagram or in the object list (**Objects**, on the left). The **Edit** tab on the right opens it; **Details** gives a read-only summary.',
       'Type in a field. A change applies when you press `Enter` or leave the field. Undo and redo with `Ctrl+Z` / `Ctrl+Y` or the arrows in the toolbar.',
       '**+ Add** next to a section of the object list adds a device, link, network, relation, group or protocol. Fill in the highlighted fields.',
       '**Duplicate** copies an object under a new ID; **Delete** asks first and can be undone. Both are at the top of the Edit tab, and on the row under the pointer in the object list (also on the focused row, and on the selected row of a touch screen).',

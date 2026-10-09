@@ -3669,7 +3669,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         ),
       );
       const secs = textsOf('#modal .man-sec > h3').join(' | ');
-      const topics = [/Open or create a model/, /Save or export/, /Physical and Logical/, /Find and filter/, /Select and edit/, /Create connections/, /Auto-arrange/];
+      const topics = [/Open or create a model/, /Save or export/, /Physical and Logical/, /light or dark theme/, /Find and filter/, /Select and edit/, /Create connections/, /Auto-arrange/];
       const r = dlg.getBoundingClientRect();
       const root = doc.documentElement;
       const fits = r.left >= 0 && r.top >= 0 && r.right <= root.clientWidth + 0.5 && r.bottom <= root.clientHeight + 0.5 && root.scrollHeight <= root.clientHeight && root.scrollWidth <= root.clientWidth;

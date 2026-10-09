@@ -2649,6 +2649,7 @@ export class App {
     clone.removeAttribute('id');
     clone.removeAttribute('role');
     clone.removeAttribute('aria-label');
+    clone.removeAttribute('data-conflicts');
     clone.setAttribute('class', ('export ' + (this.svg.getAttribute('class') || '')).replace(/\bconnecting\b|\bdragging\b/g, '').replace(/\s+/g, ' ').trim());
     // the picture is drawn in the theme in effect, with resolved colours and an explicit background
     const bg = this.exportBackground();
