@@ -114,7 +114,8 @@
   </div>
 </header>
 <main>
-  <aside id="outline" aria-label="Model outline">
+  <aside id="outline" aria-labelledby="outline-title" aria-describedby="outline-sub">
+    <div class="ol-header"><h2 id="outline-title" class="ol-heading">Objects</h2><span id="outline-sub" class="ol-sub">Select, duplicate, or delete</span></div>
     <div id="outline-body"></div>
   </aside>
   <section id="canvas-wrap">
@@ -170,7 +171,7 @@
     <div id="drop-hint" aria-hidden="true">Drop the YAML file to open it</div>
     <div id="toast" role="status" aria-live="polite" hidden></div>
   </section>
-  <aside id="side">
+  <aside id="side" aria-label="Inspector">
     <nav class="tabs" role="tablist">
       <button type="button" data-tab="edit" title="Edit the selected object (E)">Edit</button>
       <button type="button" data-tab="details">Details</button>

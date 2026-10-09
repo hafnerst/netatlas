@@ -29,7 +29,7 @@
 import { Pt } from './geometry';
 import { LayoutInput, cmp } from './input';
 import { commonChain, logicalSpecs } from './logical';
-import { physicalBoxes } from './physical';
+import { assignPorts, physicalBoxes, sideLabelWidth } from './physical';
 import { LayoutView, autoPositions } from './positions';
 import { GROUP_PAD, groupHeader } from './sizes';
 
@@ -58,6 +58,9 @@ interface SNode {
   id: string;
   w: number;
   h: number;
+  /** room the labels of the ports on its left / right side take beside it (physical view) */
+  left: number;
+  right: number;
   /** the groups the node lies in, innermost first */
   chain: string[];
 }
@@ -122,9 +125,19 @@ function viewSNodes(view: LayoutView, input: LayoutInput, base: Map<string, Pt>)
   };
   if (view === 'physical') {
     const boxes = physicalBoxes(input, base);
+    // the labels of the ports on the left and right sides stand beside the box (sides as in the default
+    // layout): two devices side by side keep room for the labels on their facing sides, as there
+    const room = new Map<string, { left: number; right: number }>();
+    for (const p of assignPorts(input.links, boxes)) {
+      if (p.side !== 'left' && p.side !== 'right') continue;
+      const r = room.get(p.device) || { left: 0, right: 0 };
+      r[p.side] = Math.max(r[p.side], sideLabelWidth(p.iface));
+      room.set(p.device, r);
+    }
     return input.devices.map((d) => {
       const b = boxes.get(d.id) as { w: number; h: number };
-      return { id: d.id, w: b.w, h: b.h, chain: devChain(d.id) };
+      const r = room.get(d.id) || { left: 0, right: 0 };
+      return { id: d.id, w: b.w, h: b.h, left: r.left, right: r.right, chain: devChain(d.id) };
     });
   }
   const specs = logicalSpecs(input);
@@ -138,7 +151,7 @@ function viewSNodes(view: LayoutView, input: LayoutInput, base: Map<string, Pt>)
       const inner = commonChain(devs.filter((d) => shownDevs.has(d)).map(devChain));
       chain = inner;
     }
-    return { id: s.id, w: s.w, h: s.h, chain };
+    return { id: s.id, w: s.w, h: s.h, left: 0, right: 0, chain };
   });
 }
 
@@ -151,6 +164,9 @@ interface Item {
   top: number;
   w: number;
   h: number;
+  /** room for port labels beside it (see SNode) */
+  left: number;
+  right: number;
   /** a block: the positions of the nodes inside it, and its centre in those coordinates */
   inner?: Map<string, Pt>;
   at?: Pt;
@@ -223,11 +239,11 @@ function compact(view: LayoutView, input: LayoutInput, base: Map<string, Pt>): M
       const now = frame(g, inner);
       const was = frame(g, deep(g));
       // a frame keeps a little air around it, like the room between two nodes
-      items.push({ id: 'group:' + g, base: was.c, top: was.c.y - was.h / 2, w: now.w + 12, h: now.h + 12, inner, at: now.c });
+      items.push({ id: 'group:' + g, base: was.c, top: was.c.y - was.h / 2, w: now.w + 12, h: now.h + 12, left: 0, right: 0, inner, at: now.c });
     }
     for (const n of ownNodes(c)) {
       const p = base.get(n.id) as Pt;
-      items.push({ id: n.id, base: p, top: p.y - n.h / 2, w: n.w, h: n.h });
+      items.push({ id: n.id, base: p, top: p.y - n.h / 2, w: n.w, h: n.h, left: n.left, right: n.right });
     }
     const out = new Map<string, Pt>();
     if (!items.length) return out;
@@ -250,7 +266,11 @@ function compact(view: LayoutView, input: LayoutInput, base: Map<string, Pt>): M
       X.set(it, mid.x + (it.base.x - mid.x) * COMPACT_SHRINK);
       Y.set(it, mid.y + (it.top - mid.y) * COMPACT_SHRINK + it.h / 2);
     }
-    const sepX = (a: Item, b: Item): number => (a.w + b.w) / 2 + gx;
+    // side by side, the gap holds at least the port labels on the two facing sides
+    const sepX = (a: Item, b: Item): number => {
+      const [l, r] = a.base.x < b.base.x || (a.base.x === b.base.x && cmp(a.id, b.id) < 0) ? [a, b] : [b, a];
+      return (a.w + b.w) / 2 + Math.max(gx, l.right + r.left + 8);
+    };
     const sepY = (a: Item, b: Item): number => (a.h + b.h) / 2 + gy;
     const byX = items.slice().sort((a, b) => (X.get(a) as number) - (X.get(b) as number) || cmp(a.id, b.id));
     for (let i = 0; i < byX.length; i++) {

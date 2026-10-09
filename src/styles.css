@@ -450,7 +450,11 @@ button.mini { padding: 1px 7px; font-size: 11.5px; border-radius: 5px; }
 #outline, #side-body { position: relative; }
 /* the scrollbar's room is always reserved: a list that grows or shrinks (a folded section showing its selected entry) never shifts the entries sideways */
 #outline { background: var(--panel); border-right: 1px solid var(--border); overflow: auto; overscroll-behavior: contain; min-height: 0; min-width: 0; scrollbar-gutter: stable; }
-#outline-body { padding: 8px 8px 16px; }
+/* the title of the object list: what it is for, in one compact row above it */
+.ol-header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 8px; padding: 7px 10px 0; }
+.ol-heading { margin: 0; font-size: 13px; font-weight: 700; line-height: 1.3; }
+.ol-sub { font-size: 11px; color: var(--muted); }
+#outline-body { padding: 4px 8px 16px; }
 .outline-filter { width: 100%; margin-bottom: 6px; padding: 4px 8px; border: 1px solid var(--control-border); border-radius: 6px; background: var(--canvas); }
 .ol-section { margin-top: 10px; }
 .ol-head { display: flex; align-items: center; justify-content: space-between; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); padding: 2px 2px 4px; }
@@ -712,7 +716,6 @@ dialog#modal.help-dialog .modal-btns { margin-top: 10px; }
 .if-chip.kind-virtual rect { stroke: var(--accent); }
 .if-chip.kind-tunnel rect { stroke: var(--accent); stroke-dasharray: 4 2; }
 .if-chip:hover rect { stroke: var(--accent); stroke-width: 1.6; }
-.if-chip-prefix { font-family: var(--font-mono); fill: var(--muted) !important; }
 .selected.if-chip rect, .selected.if-entry rect { stroke: var(--sel) !important; stroke-width: 2 !important; }
 /* connecting (right-click): where a connection can start, its first endpoint, and the compatible second endpoints */
 #canvas .conn-start { cursor: context-menu; }

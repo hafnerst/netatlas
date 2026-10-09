@@ -7,11 +7,12 @@
  * checks what was drawn and what gets exported. It also verifies label
  * safety, error reporting and that the page made no network requests.
  */
-import { Device, Interface } from '../model/types';
+import { Device, Interface, Model } from '../model/types';
 import { ModelDoc } from '../editor/document';
 import { DEVICE_TYPES } from '../model/device-types';
 import { interfaceAddresses, interfaceVlanText, networkMembers } from '../model/derive';
 import { contextState, relatedRefs, selectionContext } from '../model/queries';
+import { addressInventory } from '../model/addresses';
 import { strNode } from '../yaml/parse';
 import { EXAMPLES, FIXTURES } from '../generated/examples';
 import { PNG_MAX_PIXELS, PNG_MAX_SIDE, WritableFile, pngScale, svgToPng } from '../ui/files';
@@ -133,7 +134,45 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       for (let j = i + 1; j < labels.length; j++) if (hit(labels[i][1], labels[j][1])) out.push(`labels overlap: "${labels[i][0]}" / "${labels[j][0]}"`);
       for (const n of nodes) if (hit(labels[i][1], n[1])) out.push(`label "${labels[i][0]}" covers ${n[0]}`);
     }
+    // the entries with the interfaces' addresses: their text inside their frame, the frame inside its device's box
+    boxed('g.if-entry', 'rect', 'text');
+    each('g.if-entry', (g) => {
+      const dev = root.querySelector(`g.device[data-ref="device:${(g.getAttribute('data-ref') || '').split(':')[1]}"] .dev-box`);
+      const frame = g.querySelector('rect');
+      if (dev && frame && !inside(bb(frame), bb(dev))) out.push(`entry ${g.getAttribute('data-ref')} leaves its device's box`);
+    });
+    // no text is drawn over other text: every pair of <text> elements, measured with the real font
+    const texts: Array<[string, R]> = [];
+    each('text', (t) => {
+      const r = bb(t);
+      if (r.w > 0 && r.h > 0) texts.push([(t.textContent || '').slice(0, 40), r]);
+    });
+    // (a text's box spans the font's whole ascent and descent, so the boxes of two lines set one under the
+    // other touch: what counts is an overlap of more than 30 % of a line's height, i.e. glyphs on glyphs)
+    const textHit = (a: R, b: R): boolean => Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x) > 1 && Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y) > 0.3 * Math.min(a.h, b.h);
+    for (let i = 0; i < texts.length; i++) for (let j = i + 1; j < texts.length; j++) if (textHit(texts[i][1], texts[j][1])) out.push(`text overlaps text: "${texts[i][0]}" / "${texts[j][0]}"`);
     return out;
+  };
+
+  /**
+   * The addresses and identifiers of the model that the diagram on screen
+   * does not show as text (model/addresses.ts says which belong in which
+   * view). A DNS name may continue on further lines; everything else is one
+   * whole line.
+   */
+  const missingAddresses = (m: Model, view: 'physical' | 'logical'): string[] => {
+    const lines: string[] = [];
+    Array.prototype.forEach.call(doc.querySelectorAll('#viewport text'), (t: Element) => {
+      const spans = t.querySelectorAll('tspan');
+      if (spans.length) Array.prototype.forEach.call(spans, (x: Element) => lines.push(x.textContent || ''));
+      else lines.push(t.textContent || '');
+    });
+    const all = '\n' + lines.join('\n') + '\n';
+    const flat = lines.join('');
+    return addressInventory(m)
+      .filter((a) => a.views.indexOf(view) >= 0)
+      .filter((a) => (a.field === 'dns_names' ? flat.indexOf(a.text) < 0 : all.indexOf(a.text) < 0))
+      .map((a) => `${a.owner} ${a.field} "${a.text}"`);
   };
 
   let violations = 0;
@@ -972,7 +1011,9 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       check(`${ex.name}: loopbacks are not drawn as ports in the physical view`, count('.loop-chip') === 0);
       // stored layouts (the "…-arranged"/edited examples are arranged too) and auto layouts alike
       const physProblems = drawnProblems();
-      check(`${ex.name}: physical view, measured in the browser: full text inside its boxes, no overlapping boxes or labels`, !physProblems.length, physProblems.slice(0, 5).join('; '));
+      check(`${ex.name}: physical view, measured in the browser: full text inside its boxes, no overlapping boxes, labels or text`, !physProblems.length, physProblems.slice(0, 5).join('; '));
+      const physMissing = missingAddresses(m, 'physical');
+      check(`${ex.name}: physical view shows every physical identifier and every address of a physical interface as text`, !physMissing.length, physMissing.slice(0, 5).join('; '));
 
       click('[data-view-btn="logical"]');
       const drawable = m.relations.filter((r) => new Set(r.endpoints.map((e) => e.device)).size >= 2).length;
@@ -982,7 +1023,9 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const loops = m.devices.reduce((s, d) => s + Math.min(3, d.logical.filter((x) => x.type === 'loopback').length), 0);
       check(`${ex.name}: loopbacks shown as chips in the logical view`, count('.loop-chip') === loops, `${count('.loop-chip')} / ${loops}`);
       const logProblems = drawnProblems();
-      check(`${ex.name}: logical view, measured in the browser: full text inside its boxes, no overlapping boxes or labels`, !logProblems.length, logProblems.slice(0, 5).join('; '));
+      check(`${ex.name}: logical view, measured in the browser: full text inside its boxes, no overlapping boxes, labels or text`, !logProblems.length, logProblems.slice(0, 5).join('; '));
+      const logMissing = missingAddresses(m, 'logical');
+      check(`${ex.name}: logical view shows every address, prefix, VLAN, VRF and tunnel endpoint as text`, !logMissing.length, logMissing.slice(0, 5).join('; '));
 
       const firstRel = m.relations[0];
       if (firstRel) {
@@ -3411,11 +3454,11 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       app.setView('physical');
       await tick();
       const chips = (Array.prototype.map.call(doc.querySelectorAll('#viewport g.port-chip'), (e: Element) => e.getAttribute('data-ref')) as string[]).join();
-      const caption = (q('#viewport .if-chip-prefix') as unknown as Element | null)?.textContent || '';
+      const chipTexts = (Array.prototype.map.call(doc.querySelectorAll('#viewport g.port-chip text'), (e: Element) => e.textContent) as string[]).join();
       check(
-        'physical view: a device’s ports without a cable are drawn as selectable chips in its box (a long run of similar names shows the shared prefix once); ports with a cable stay ports',
-        chips === 'iface:access:Et3,iface:access:Et4,iface:access:Et5,iface:access:Et6,iface:access:Et7,iface:access:Et8' && caption === 'Et ▸' && !!q('#viewport rect.port[data-ref="iface:access:Et1"]') && drawnProblems().length === 0,
-        chips + ' ' + caption + ' ' + drawnProblems().slice(0, 3).join('; '),
+        'physical view: a device’s ports without a cable are drawn as selectable chips in its box, each with its full name (also in a long run of similar names); ports with a cable stay ports',
+        chips === 'iface:access:Et3,iface:access:Et4,iface:access:Et5,iface:access:Et6,iface:access:Et7,iface:access:Et8' && chipTexts === 'Et3,Et4,Et5,Et6,Et7,Et8' && !q('#viewport .if-chip-prefix') && !!q('#viewport rect.port[data-ref="iface:access:Et1"]') && drawnProblems().length === 0,
+        chips + ' ' + chipTexts + ' ' + drawnProblems().slice(0, 3).join('; '),
       );
       // left click selects the interface and opens it in the Edit tab; it never starts a connection
       leftClick(el('iface:access:Et5'));

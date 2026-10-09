@@ -362,7 +362,7 @@ export class Editor {
       wrap.appendChild(this.e('h3', {}, ['Edit']));
       wrap.appendChild(
         this.e('p', { class: 'muted' }, [
-          'Select an object in the diagram or in the Model outline to edit it, or add one with “+ Add”. Changes apply when you press Enter or leave a field, and can be undone (Ctrl+Z).',
+          'Select an object in the diagram or in the Objects list to edit it, or add one with “+ Add”. Changes apply when you press Enter or leave a field, and can be undone (Ctrl+Z).',
         ]),
       );
       wrap.appendChild(this.e('button', { type: 'button', 'data-act': 'select', 'data-kind': 'document', 'data-index': '0' }, ['Edit model settings']));
@@ -532,7 +532,7 @@ export class Editor {
     w.appendChild(this.header('model', this.doc.text(['title']) || 'Untitled model', null, docIssues));
     if (docIssues.length) w.appendChild(this.issueBox(docIssues));
     if (ENTITY_KINDS.every((k) => this.doc.entities(k).length === 0)) {
-      w.appendChild(this.e('p', { class: 'hint-empty' }, ['This model is empty. Add a device, link, network, relation, group or protocol with “+ Add” in the Model outline; nothing is filled in for you.']));
+      w.appendChild(this.e('p', { class: 'hint-empty' }, ['This model is empty. Add a device, link, network, relation, group or protocol with “+ Add” in the Objects list; nothing is filled in for you.']));
     }
     w.appendChild(this.group('Model', [this.textField(['title'], 'Title', 'top'), this.textField(['description'], 'Description', 'top', 'textarea')], 'model'));
     w.appendChild(

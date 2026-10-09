@@ -719,7 +719,7 @@ export function physicalBoxes(input: LayoutInput, positions: Map<string, Pt>): M
 }
 
 /** Room a label of a left/right port takes beside its device. */
-function sideLabelWidth(iface: string | undefined): number {
+export function sideLabelWidth(iface: string | undefined): number {
   return iface ? PORT_LABEL_GAP + textWidth(iface, PORT_FONT) + 4 : 0;
 }
 

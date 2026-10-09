@@ -424,13 +424,11 @@ export function spareIds(model: Model, d: Device): string[] {
 
 /**
  * Interface chips flowed from (x, y): one selectable chip per interface (ref
- * "iface:<device>:<id>"), and the shared-prefix caption, when there is one,
- * as plain text. `kindOf` adds a class per interface (e.g. its type).
+ * "iface:<device>:<id>"), each with the interface's full name. `kindOf` adds a class per interface (e.g. its type).
  */
 export function chipNodes(device: string, flow: ChipFlow, x: number, y: number, cls: string, kindOf: (id: string) => string): VNode[] {
   return flow.items.map((c) => {
     const ty = y + c.y + IFCHIP_H / 2 + IFCHIP_FONT * 0.35;
-    if (!c.id) return h('text', { class: 'if-chip-prefix', x: x + c.x + 1, y: ty, 'font-size': IFCHIP_FONT }, c.text);
     const kind = kindOf(c.id);
     return h('g', { class: `if-chip ${cls}${kind ? ' kind-' + cssToken(kind) : ''}`, 'data-ref': `iface:${device}:${c.id}`, 'data-endpoint': 'iface' }, [
       h('rect', { x: x + c.x, y: y + c.y, width: c.w, height: IFCHIP_H, rx: 3 }),

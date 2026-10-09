@@ -253,22 +253,19 @@ export { lineHeight };
 // ---------------------------------------------------------- interface chips
 
 /**
- * Interfaces that have no line of their own in a view are drawn as small
- * chips: in the physical view the ports without a cable (a strip at the
- * bottom of the device box), in the logical view the virtual and tunnel
- * interfaces (under the loopbacks). Each chip is one interface, so it can be
- * found, selected and right-clicked by itself.
+ * The physical view draws the ports without a cable as small chips (a strip
+ * at the bottom of the device box). Each chip is one interface, written with
+ * its full name (an identifier is never shortened), so it can be found,
+ * selected and right-clicked by itself.
  */
 export const IFCHIP_FONT = 9;
 export const IFCHIP_H = 13;
 export const IFCHIP_GAP = 3;
 /** padding of a chip strip inside its device box (left, right, bottom) */
 export const IFCHIP_PAD = 8;
-/** from this many chips on, a prefix that all of them share is written once and each chip shows the rest */
-export const IFCHIP_SHORTEN_FROM = 6;
 
 export interface ChipItem {
-  /** the interface id ('' for the shared-prefix caption) */
+  /** the interface id */
   id: string;
   text: string;
   /** top-left corner, relative to the flow's top-left */
@@ -286,31 +283,10 @@ function ifChipW(text: string): number {
   return Math.ceil(text.length * IFCHIP_FONT * 0.62) + 8;
 }
 
-/**
- * The texts of a row of interface chips: the ids, or, for a long run of
- * similarly named ports (ge-0/0/1 … ge-0/0/24), the shared prefix once
- * (ending before the trailing number, followed by "▸") and each chip with its own end.
- */
-export function chipTexts(ids: string[]): { prefix: string; texts: string[] } {
-  if (ids.length < IFCHIP_SHORTEN_FROM) return { prefix: '', texts: ids.slice() };
-  let lcp = ids[0];
-  for (const id of ids) {
-    let k = 0;
-    while (k < lcp.length && k < id.length && lcp.charCodeAt(k) === id.charCodeAt(k)) k++;
-    lcp = lcp.slice(0, k);
-  }
-  const prefix = lcp.replace(/[0-9]+$/, '');
-  // only worth it when the prefix is substantial and every chip keeps some text of its own
-  if (prefix.length < 2 || ids.some((id) => id.length === prefix.length)) return { prefix: '', texts: ids.slice() };
-  return { prefix, texts: ids.map((id) => id.slice(prefix.length)) };
-}
-
-/** Chips flowed into rows no wider than `maxW` (a chip wider than that gets a row of its own). */
+/** Chips flowed into rows no wider than `maxW` (a chip wider than that gets a row of its own), each with its interface's full name. */
 export function chipFlow(ids: string[], maxW: number): ChipFlow {
   if (!ids.length) return { items: [], w: 0, h: 0 };
-  const t = chipTexts(ids);
-  // the caption: the shared prefix and a marker that the chips continue it (nothing is cut off: each chip is the rest of one id)
-  const all: Array<{ id: string; text: string }> = (t.prefix ? [{ id: '', text: t.prefix + ' ▸' }] : []).concat(ids.map((id, i) => ({ id, text: t.texts[i] })));
+  const all = ids.map((id) => ({ id, text: id }));
   const items: ChipItem[] = [];
   let x = 0;
   let y = 0;
