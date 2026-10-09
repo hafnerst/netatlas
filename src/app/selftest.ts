@@ -112,7 +112,12 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       });
     boxed('g.device', '.dev-box', 'text');
     boxed('g.network', '.net-box', 'text');
-    boxed('g.group', '.group-box', '.group-title');
+    // a group's title is drawn above the lines (in the label layer), inside its frame
+    each('g.group-label', (gl) => {
+      const frame = root.querySelector(`g.group[data-ref="${gl.getAttribute('data-ref')}"] .group-box`);
+      const t = gl.querySelector('.group-title');
+      if (frame && t && !inside(bb(t), bb(frame))) out.push(`"${t.textContent}" leaves its group frame`);
+    });
     boxed('g.pill', '.pill-box', 'text');
     boxed('g.loop-chip', 'rect', 'text');
     boxed('g.dns-chip', 'rect', 'text');
@@ -212,7 +217,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
           labels.join('|') === 'New model|Open model…|Save model|Save model as…|Close model' && /Ctrl\+S$/.test(entries[2]) && /Ctrl\+Shift\+S$/.test(entries[3]) &&
           entries.length === 5 + EXAMPLES.length && ['#btn-save', '#btn-save-as', '#btn-close'].every((x) => (q(x) as HTMLButtonElement).disabled && /Open or create a model first|Close the current model/.test(q(x)!.title)) &&
           q('#btn-save')!.nextElementSibling === q('#btn-save-as') && q('#btn-save-as')!.nextElementSibling === q('#btn-close') &&
-          textsOf('#menu-examples .mi-label').join() === EXAMPLES.map((e) => e.name).join() && !q('#menu-examples .active-example') && /Examples/.test(q('#menu-examples-title')!.textContent || '') && EXAMPLES.length === 6 && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(menu!.textContent || '') && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(q('#empty')!.textContent || ''),
+          textsOf('#menu-examples .mi-label').join() === EXAMPLES.map((e) => e.name).join() && !q('#menu-examples .active-example') && /Examples/.test(q('#menu-examples-title')!.textContent || '') && EXAMPLES.length === 7 && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(menu!.textContent || '') && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(q('#empty')!.textContent || ''),
         entries.join(' | '),
       );
       menuBtn!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
@@ -1112,7 +1117,11 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     check('GRE drawn inside IPsec (narrower tube on the same path)', !!ipsec && !!gre && w(gre) < w(ipsec) && gre!.getAttribute('d') === ipsec!.getAttribute('d'));
     check('custom protocol MACsec rendered', !!q('#viewport g.rel.proto-macsec'));
     const svgText = app.exportSvg();
-    check('SVG export is standalone (inline style, no script, no external refs)', /^<svg[\s\S]*<style[\s\S]*relation:gre-muc[\s\S]*<\/svg>$/.test(svgText) && !/<script|https?:\/\/(?!www\.w3\.org)/.test(svgText));
+    check(
+      'SVG export is standalone: resolved colours as attributes, an explicit background, no stylesheet, no CSS variable, no prefers-color-scheme, no script, no external refs',
+      /^<svg[\s\S]*<rect class="export-background"[^>]*fill="#[0-9a-f]{6}"[\s\S]*relation:gre-muc[\s\S]*<\/svg>$/.test(svgText) && !/<style|var\(--|prefers-color-scheme|<script|https?:\/\/(?!www\.w3\.org)/.test(svgText),
+      (svgText.match(/<style|var\(--[a-z-]*|prefers-color-scheme/g) || []).slice(0, 5).join(', '),
+    );
     {
       // the exported file is parsed and laid out on its own, as a viewer would, and measured with real font metrics
       type Box = { x: number; y: number; w: number; h: number };
@@ -1571,7 +1580,13 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
           lines('group:dc', 'group-title').join(' ') === m.index.groups.get('dc')!.label,
         JSON.stringify([lines('device:core-a', 'dev-label'), lines('device:fw', 'dev-label'), lines('device:storage', 'dev-label'), lines('group:dc', 'group-title')]),
       );
-      check('boxes differ in size with their text (one-letter label < three lines < long wrapped label)', boxH('device:srv') < boxH('device:core-a') && boxH('device:core-a') < boxH('device:fw'), [boxH('device:srv'), boxH('device:core-a'), boxH('device:fw')].join(' '));
+      // the label part of a box grows with its lines; the entries with the interfaces' addresses come on top of that
+      const labelH = (ref: string): number => (q(`#viewport g[data-ref="${ref}"] .dev-label`) as unknown as SVGGraphicsElement).getBBox().height;
+      check(
+        'boxes differ in size with their text (one-letter label < three lines < long wrapped label), each grown around its label',
+        labelH('device:srv') < labelH('device:core-a') && labelH('device:core-a') < labelH('device:fw') && ['device:srv', 'device:core-a', 'device:fw'].every((r) => boxH(r) > labelH(r) + 12),
+        [labelH('device:srv'), labelH('device:core-a'), labelH('device:fw')].map(Math.round).join(' '),
+      );
       const straight = count('.cable.straight');
       const peerD = ['peer-1', 'peer-2', 'peer-3'].map((id) => (q(`#viewport g.cable[data-ref="link:${id}"] .cable-line`) as Element).getAttribute('d') || '');
       check(

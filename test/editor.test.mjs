@@ -411,7 +411,9 @@ test('logical_interfaces: shown as chips in the logical view and in device detai
   assert.equal(chips.length, 4);
   assert.equal(byClass(log, 'rid').length, 0, 'no router-ID marker');
   assert.ok(!/★/.test(scene.textOf(log)));
-  assert.match(scene.textOf(log), /lo0  10\.255\.0\.2\/32 \+1/);
+  // every address in full under the loopback's name (dual stack together), nothing summed up as "+1"
+  assert.match(scene.textOf(log), /lo0[^\n]*\n10\.255\.0\.2\/32\n2001:db8:ffff::2\/128/);
+  assert.doesNotMatch(scene.textOf(log), /\+\d/);
   const det = scene.textOf(load('ui/panels.js').detailsFor(d.result.model, 'device:edge-b'));
   assert.match(det, /Logical interfaces \(4\)/);
   assert.match(det, /10\.255\.0\.2\/32\n2001:db8:ffff::2\/128/);

@@ -4,7 +4,7 @@
  * same lines at the same sizes), so what Auto-arrange reserves is what gets
  * drawn. Every element grows to fit its full text; nothing is shortened.
  */
-import { TextBlock, lineHeight, textBlock, textWidth } from './text';
+import { TextBlock, labelWithAddresses, lineHeight, monoWidth, textBlock, textWidth } from './text';
 
 export const HUB_R = 12;
 export const CHIP_H = 16;
@@ -52,22 +52,10 @@ export const CHIP_FONT = 9.5;
 
 /** Chips use a monospace font. */
 export function chipTextWidth(s: string): number {
-  return s.length * CHIP_FONT * 0.62;
+  return monoWidth(s, CHIP_FONT);
 }
 
-/** Text of a loopback chip: id, first address, number of further addresses. */
-export function loopbackChipText(id: string, addresses: string[]): string {
-  return id + '  ' + (addresses[0] || '(no address)') + (addresses.length > 1 ? ' +' + (addresses.length - 1) : '');
-}
-
-/** Number of chip rows below the device box: one per loopback (every one is shown). */
-export function chipRows(loopbackCount: number): number {
-  return loopbackCount;
-}
-
-/** DNS names shown under a device in the logical view; more are summed up in a "+N more names" row */
-export const MAX_DNS = 2;
-/** a DNS name longer than this many characters continues on a further line, broken after a dot */
+/** A DNS name longer than this many characters continues on a further line, broken after a dot */
 export const DNS_LINE_CHARS = 30;
 
 /** The lines a DNS name is written on: whole when it is short, else broken after dots (never shortened). */
@@ -92,22 +80,16 @@ export function dnsNameLines(name: string): string[] {
   return lines;
 }
 
-/**
- * The DNS names of a device as the logical view shows them: each name once
- * (however many interfaces it belongs to), in a fixed order, at most
- * MAX_DNS of them, and how many more there are.
- */
-export function dnsShown(names: string[]): { names: string[]; more: number } {
-  const all = Array.from(new Set(names)).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
-  return { names: all.slice(0, MAX_DNS), more: Math.max(0, all.length - MAX_DNS) };
+/** The DNS names of a device as the logical view shows them: every one, each once, in a fixed order. */
+export function dnsShown(names: string[]): string[] {
+  return Array.from(new Set(names)).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
 }
 
-/** Rows (of CHIP_H) and width the DNS names of a device take under it. */
+/** Rows (of CHIP_H) and width the DNS names of a device take in its box. */
 export function dnsSize(names: string[]): { rows: number; w: number } {
-  const s = dnsShown(names);
-  let rows = s.more ? 1 : 0;
+  let rows = 0;
   let w = 0;
-  for (const n of s.names) {
+  for (const n of dnsShown(names)) {
     const lines = dnsNameLines(n);
     rows += lines.length;
     for (const l of lines) w = Math.max(w, Math.ceil(chipTextWidth(l)));
@@ -115,26 +97,63 @@ export function dnsSize(names: string[]): { rows: number; w: number } {
   return { rows, w };
 }
 
+// -------------------------------------------------------- interface entries
+
 /**
- * A device in the logical view: its body, plus what hangs under it: a row per
- * loopback, the chips of its other logical interfaces (virtual, tunnel) and
- * its DNS names. The node is as wide as its widest row needs.
+ * An interface's addresses and identifiers are an entry in its device's box
+ * (model/addresses.ts says which): a name line, then one line per fact, in
+ * the monospace font, never wrapped or shortened. The entries of a device
+ * are stacked under its label; the box is as wide as the widest line needs.
  */
-export function logicalDeviceSize(label: string, sub: string, chipW: number, loopbackCount: number, dnsNames: string[] = [], logicalIds: string[] = []): { w: number; h: number; bodyH: number } {
-  const body = deviceBody(label, sub, LOGICAL_DEVICE_MIN_W, LOGICAL_DEVICE_MIN_H);
-  const dns = dnsSize(dnsNames);
-  const rows = chipRows(loopbackCount) + dns.rows;
-  const need = Math.max(chipW, dns.w);
-  let w = Math.max(body.w, need ? need + 16 + 12 : 0);
-  const flow = logicalChipFlow(logicalIds, w);
-  w = Math.max(w, flow.w + 16);
-  const under = (rows ? rows * CHIP_H : 0) + (flow.items.length ? flow.h + IFCHIP_GAP : 0);
-  return { w, h: body.h + (under ? under + 6 : 0), bodyH: body.h };
+export const ENTRY_FONT = 10;
+export const ENTRY_LH = lineHeight(ENTRY_FONT);
+export const ENTRY_PAD_X = 5;
+export const ENTRY_PAD_Y = 3;
+export const ENTRY_GAP = 3;
+/** distance of the entries from the sides of the device box */
+export const ENTRY_MARGIN = 8;
+
+/** What an entry shows: its name line ('' for none) and its lines. */
+export interface EntryText {
+  header: string;
+  lines: string[];
 }
 
-/** The chips of a logical-view device's virtual and tunnel interfaces, for a node `w` wide. */
-export function logicalChipFlow(ids: string[], w: number): ChipFlow {
-  return chipFlow(ids, Math.max(60, w - 16));
+export function entryBox(e: EntryText): { w: number; h: number } {
+  const all = e.header ? [e.header].concat(e.lines) : e.lines;
+  const w = all.reduce((m, l) => Math.max(m, monoWidth(l, ENTRY_FONT)), 0);
+  return { w: Math.ceil(w) + 2 * ENTRY_PAD_X, h: all.length * ENTRY_LH + 2 * ENTRY_PAD_Y };
+}
+
+/** Width and height of a device's stacked entries ([0, 0] without any). */
+export function entriesSize(es: EntryText[]): [number, number] {
+  if (!es.length) return [0, 0];
+  let w = 0;
+  let h = 0;
+  for (const e of es) {
+    const b = entryBox(e);
+    w = Math.max(w, b.w);
+    h += b.h;
+  }
+  return [w, h + ENTRY_GAP * (es.length - 1)];
+}
+
+/**
+ * A device in the logical view: its label, the entries of its interfaces
+ * and its DNS names, all inside its box. `list` is entriesSize() of its
+ * entries. `bodyH` is the height of the label part (icon and name).
+ */
+export function logicalDeviceSize(label: string, sub: string, list: [number, number], dnsNames: string[] = []): { w: number; h: number; bodyH: number } {
+  const body = deviceBody(label, sub, LOGICAL_DEVICE_MIN_W, LOGICAL_DEVICE_MIN_H);
+  const dns = dnsSize(dnsNames);
+  const w = Math.max(body.w, list[0] ? list[0] + 2 * ENTRY_MARGIN : 0, dns.w ? dns.w + 16 + 12 : 0);
+  return { w, h: body.h + underBody(list[1], dns.rows), bodyH: body.h };
+}
+
+/** Height under a device's label: its entries, then its DNS names, then a margin. */
+export function underBody(listH: number, dnsRows: number): number {
+  if (!listH && !dnsRows) return 0;
+  return listH + (listH && dnsRows ? ENTRY_GAP : 0) + dnsRows * CHIP_H + ENTRY_MARGIN;
 }
 
 // ----------------------------------------------------------------- networks
@@ -150,9 +169,16 @@ export interface NetworkBody {
   h: number;
 }
 
-export function networkBody(label: string, sub: string): NetworkBody {
+/**
+ * A network node: its name (wrapped), its prefix and VLAN on one line that
+ * is never broken (the prefix is an address), and address-like attrs.
+ */
+export function networkBody(label: string, sub: string, extra: string[] = []): NetworkBody {
   const l = textBlock(label, NET_LABEL_SIZE, NET_TEXT_MAX_W);
-  const s = textBlock(sub, NET_SUB_SIZE, NET_TEXT_MAX_W);
+  const lines = (sub ? [sub] : []).concat(extra);
+  const w = lines.reduce((m, x, i) => Math.max(m, i >= (sub ? 1 : 0) ? monoWidth(x, NET_SUB_SIZE) : textWidth(x, NET_SUB_SIZE)), 0);
+  const s: TextBlock = { lines, size: NET_SUB_SIZE, w, h: lines.length * lineHeight(NET_SUB_SIZE), mono: extra.length ? (sub ? 1 : 0) : undefined };
+  if (s.mono === undefined) delete s.mono;
   return { label: l, sub: s, w: Math.max(120, Math.ceil(Math.max(l.w, s.w) + 36)), h: Math.max(32, l.h + s.h + 14) };
 }
 
@@ -182,14 +208,15 @@ export interface GroupHeader {
 /**
  * Title area of a group box whose content is `innerW` wide. The title wraps
  * at the width the content gives it (at least 260), and the kind keeps its
- * place at the right of the first line.
+ * place at the right of the first line. Address-like attrs of the group
+ * follow the title, each on a line of its own.
  */
-export function groupHeader(label: string, kind: string, innerW: number): GroupHeader {
+export function groupHeader(label: string, kind: string, innerW: number, extra: string[] = []): GroupHeader {
   const kindText = kind.toUpperCase();
   const kindW = kindText ? textWidth(kindText, GROUP_KIND_SIZE) * 1.1 + 18 : 0;
   const boxW = innerW + 2 * GROUP_PAD;
   const avail = Math.max(260, boxW - 28 - kindW);
-  const title = textBlock(label, GROUP_TITLE_SIZE, avail);
+  const title = labelWithAddresses(label, extra, GROUP_TITLE_SIZE, avail);
   return { title, kind: kindText, h: Math.max(30, title.h + 14), minW: Math.ceil(title.w + 28 + kindW) };
 }
 
@@ -198,21 +225,28 @@ export function groupHeader(label: string, kind: string, innerW: number): GroupH
 export const PILL_SIZE = 10;
 export const PILL_MAX_W = 240;
 
-/** A relation label ("pill"): its wrapped text and outer size. */
-export function pillBox(text: string): { block: TextBlock; w: number; h: number } {
-  const block = textBlock(text, PILL_SIZE, PILL_MAX_W);
+/** A relation label ("pill"): its wrapped text, then its address lines (kept whole), and its outer size. */
+export function pillBox(text: string, extra: string[] = []): { block: TextBlock; w: number; h: number } {
+  const block = labelWithAddresses(text, extra, PILL_SIZE, PILL_MAX_W);
   return { block, w: Math.ceil(block.w + 16), h: Math.max(18, block.h + 6) };
 }
 
 export const LINK_LABEL_SIZE = 10.5;
 export const LINK_LABEL_MAX_W = 190;
 
-export function linkLabelBox(text: string): { block: TextBlock; w: number; h: number } {
-  const block = textBlock(text, LINK_LABEL_SIZE, LINK_LABEL_MAX_W);
+/** A cable label: speed, networks and label (wrapped), then its cable id and address lines (kept whole). */
+export function linkLabelBox(text: string, extra: string[] = []): { block: TextBlock; w: number; h: number } {
+  const block = labelWithAddresses(text, extra, LINK_LABEL_SIZE, LINK_LABEL_MAX_W);
   return { block, w: Math.ceil(block.w + 8), h: block.h + 2 };
 }
 
 export const MEMBER_LABEL_SIZE = 10;
+
+/** The addresses on a membership line: every address of the device inside the network, one per line, whole. */
+export function memberLabelBox(addresses: string[]): { block: TextBlock; w: number; h: number } {
+  const block = labelWithAddresses('', addresses, MEMBER_LABEL_SIZE, Infinity);
+  return { block, w: Math.ceil(block.w + 4), h: block.h };
+}
 
 export { lineHeight };
 

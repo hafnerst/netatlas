@@ -206,7 +206,7 @@ function compact(view: LayoutView, input: LayoutInput, base: Map<string, Pt>): M
       add(f.c.x, f.c.y, f.w, f.h);
     }
     const gr = groups.get(g) as (typeof input.groups)[number];
-    const head = groupHeader(gr.label, gr.kind, x1 - x0);
+    const head = groupHeader(gr.label, gr.kind, x1 - x0, gr.extra);
     const w = Math.max(x1 - x0 + 2 * GROUP_PAD, head.minW);
     const h = y1 - y0 + 2 * GROUP_PAD + head.h;
     return { c: { x: (x0 + x1) / 2, y: y0 - GROUP_PAD - head.h + h / 2 }, w, h };

@@ -4,7 +4,7 @@
 // browser self-test repeats the important checks with real font metrics.
 import { load, scene } from './helpers.mjs';
 
-const { textWidth, lineHeight } = load('layout/text.js');
+const { textWidth, lineHeight, monoWidth } = load('layout/text.js');
 
 const has = (n, c) => scene.hasClass(n, c);
 const all = (v, pred) => scene.findAll(v, pred);
@@ -15,10 +15,16 @@ export function linesOf(t) {
   return t.children.length ? t.children.map((c) => c.text) : [t.text];
 }
 
+/** Estimated width of each line of a <text>: address lines (class "addr") are in the monospace font. */
+function lineWidths(t, size) {
+  if (t.children.length) return t.children.map((c) => (has(c, 'addr') ? monoWidth(c.text, size) : textWidth(c.text, size)));
+  return [has(t, 'addr') ? monoWidth(t.text, size) : textWidth(t.text, size)];
+}
+
 /** Rectangle covered by a <text> node (estimated), given its font size. */
 export function textRect(t, size) {
   const lines = linesOf(t);
-  const w = lines.reduce((m, l) => Math.max(m, textWidth(l, size)), 0);
+  const w = lineWidths(t, size).reduce((m, x) => Math.max(m, x), 0);
   const anchor = t.attrs['text-anchor'] || 'start';
   const x = num(t, 'x') - (anchor === 'middle' ? w / 2 : anchor === 'end' ? w : 0);
   const lh = lineHeight(size);
@@ -50,17 +56,27 @@ export function geometry(root) {
   });
   const groups = all(root, (n) => has(n, 'group')).map((g) => {
     const box = rectOf(g.children.find((c) => has(c, 'group-box')));
-    const t = g.children.find((c) => has(c, 'group-title'));
+    // the title is drawn in the label layer (above the lines), under the group's ref
+    const lbl = all(root, (n) => has(n, 'group-label') && n.attrs['data-ref'] === g.attrs['data-ref'])[0];
+    const t = lbl.children.find((c) => has(c, 'group-title'));
     return { ref: g.attrs['data-ref'], box, title: { lines: linesOf(t), rect: textRect(t, 13) } };
   });
   const pills = all(root, (n) => has(n, 'pill')).map((g) => {
     const t = g.children.find((c) => c.tag === 'text');
     return { ref: g.attrs['data-ref'], box: rectOf(g.children.find((c) => has(c, 'pill-box'))), lines: linesOf(t), rect: textRect(t, 10) };
   });
-  const chips = all(root, (n) => has(n, 'loop-chip')).map((g) => {
-    const t = g.children.find((c) => c.tag === 'text');
-    const w = t.text.length * 9.5 * 0.62;
-    return { ref: g.attrs['data-ref'], box: rectOf(g.children.find((c) => c.tag === 'rect')), text: t.text, rect: { x: num(t, 'x') - w / 2, y: num(t, 'y') - 9, w, h: 12 } };
+  // interface entries in device boxes: their frame and their text (name line, address lines)
+  const entries = all(root, (n) => has(n, 'if-entry')).map((g) => {
+    const ts = g.children.filter((c) => c.tag === 'text');
+    return { ref: g.attrs['data-ref'], cls: g.attrs.class, box: rectOf(g.children.find((c) => c.tag === 'rect')), texts: ts.map((t) => ({ lines: linesOf(t), rect: textRect(t, num(t, 'font-size')) })) };
+  });
+  // the loopbacks' entries
+  const chips = entries.filter((e) => /(^| )loop-chip( |$)/.test(e.cls)).map((e) => ({ ref: e.ref, box: e.box, text: e.texts.map((t) => t.lines.join(' ')).join(' '), rect: e.texts[0].rect }));
+  // every piece of text drawn (for the overlap check)
+  const texts = all(root, (n) => n.tag === 'text').map((t) => {
+    const cls = (t.attrs.class || '').split(' ').find((c) => SIZES[c]);
+    const size = cls ? SIZES[cls] : num(t, 'font-size') || (has(t, 'group-kind') ? 9.5 : has(t, 'hub-glyph') ? 11 : has(t, 'net-warn') ? 14 : 10);
+    return { lines: linesOf(t), rect: textRect(t, size) };
   });
   const label = (cls) => all(root, (n) => n.tag === 'text' && has(n, cls)).map((t) => ({ ref: t.attrs['data-ref'], lines: linesOf(t), rect: textRect(t, SIZES[cls]) }));
   const path = (p) =>
@@ -71,7 +87,7 @@ export function geometry(root) {
       .map(([x, y]) => ({ x, y }));
   const cables = all(root, (n) => has(n, 'cable')).map((g) => ({ ref: g.attrs['data-ref'], straight: has(g, 'straight'), pts: path(g.children.find((c) => has(c, 'cable-line'))) }));
   const rels = all(root, (n) => has(n, 'rel') && !has(n, 'hub-rel')).map((g) => ({ ref: g.attrs['data-ref'], pts: path(g.children.find((c) => has(c, 'hit'))) }));
-  return { devices, networks, groups, pills, chips, linkLabels: label('link-label'), memberLabels: label('member-label'), portLabels: label('port-label'), cables, rels };
+  return { devices, networks, groups, pills, chips, entries, texts, linkLabels: label('link-label'), memberLabels: label('member-label'), portLabels: label('port-label'), cables, rels };
 }
 
 /** Does segment a->b pass through rectangle r? */
@@ -103,7 +119,16 @@ export function problems(root) {
   for (const n of nodes) for (const t of n.texts) if (!inside(t.rect, n.box)) out.push(`text of ${n.ref} leaves its box: ${t.lines.join(' / ')}`);
   for (const gr of g.groups) if (!inside(gr.title.rect, gr.box)) out.push(`title of ${gr.ref} leaves its box`);
   for (const p of g.pills) if (!inside(p.rect, p.box)) out.push(`label text leaves its pill: ${p.lines.join(' / ')}`);
-  for (const c of g.chips) if (!inside(c.rect, c.box)) out.push(`chip text leaves its chip: ${c.text}`);
+  for (const c of g.entries) for (const t of c.texts) if (!inside(t.rect, c.box)) out.push(`entry text leaves its frame: ${c.ref} ${t.lines.join(' / ')}`);
+  // an entry lies inside its device's box
+  for (const c of g.entries) {
+    const dev = g.devices.find((d) => d.ref === 'device:' + c.ref.split(':')[1]);
+    if (dev && !inside(c.box, dev.box)) out.push(`entry ${c.ref} leaves the box of ${dev.ref}`);
+  }
+  // no text is drawn over other text (addresses, names, labels, titles …)
+  for (let i = 0; i < g.texts.length; i++) {
+    for (let j = i + 1; j < g.texts.length; j++) if (overlap(g.texts[i].rect, g.texts[j].rect, 1)) out.push(`text overlaps text: "${g.texts[i].lines.join(' / ')}" / "${g.texts[j].lines.join(' / ')}"`);
+  }
   for (let i = 0; i < g.devices.length; i++) for (let j = i + 1; j < g.devices.length; j++) if (overlap(g.devices[i].box, g.devices[j].box)) out.push(`${g.devices[i].ref} overlaps ${g.devices[j].ref}`);
   // floating labels: clear of nodes and of each other
   const floating = g.pills.map((p) => ({ what: 'label ' + p.lines.join(' '), rect: p.box })).concat(g.linkLabels.map((l) => ({ what: 'cable label ' + l.lines.join(' '), rect: l.rect })), g.memberLabels.map((l) => ({ what: 'address ' + l.lines.join(' '), rect: l.rect })));

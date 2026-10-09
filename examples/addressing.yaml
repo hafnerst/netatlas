@@ -1,0 +1,133 @@
+# netatlas example: every kind of address in one small network.
+# A core router with many interfaces: dual-stack and secondary addresses,
+# VLAN subinterfaces with VRRP / HSRP virtual addresses, an aggregate,
+# loopbacks, GRE and IPsec tunnels with their endpoints, long IPv6 addresses,
+# MAC addresses, VRFs, a DHCP client port and NAT addresses. Every one of
+# them is written in the diagram, next to the interface, cable, network or
+# relation it belongs to.
+netatlas: 1
+title: Addressing in detail
+
+groups:
+  - {id: hq, label: Headquarters, kind: site}
+  - {id: branch, label: Branch office, kind: site, attrs: {site-prefix: 10.30.0.0/16}}
+
+devices:
+  - id: isp
+    label: ISP edge
+    type: cloud
+    interfaces:
+      - {id: pe-1, ip: [203.0.113.1/30, "2001:db8:ffff:100::1/64"]}
+
+  - id: core
+    label: core-rtr-01
+    type: router
+    group: hq
+    attrs: {router-id: 10.255.255.1, nat-pool: 203.0.113.64/28}
+    interfaces:
+      - id: xe-0/0/0
+        label: Uplink ISP
+        ip: [203.0.113.2/30, "2001:db8:ffff:100::2/64"]
+        mac: 00:1c:73:aa:00:01
+        attrs: {nat-outside: 203.0.113.65}
+      - id: xe-0/0/1
+        label: Branch WAN
+        ip: [198.51.100.1/30, "2001:0db8:85a3:0000:0000:8a2e:0370:7334/127"]
+        mac: 00:1c:73:aa:00:02
+      - {id: ge-0/0/2, mac: 00:1c:73:aa:00:03, description: Trunk to the distribution switch}
+      - {id: ge-0/0/3, ip: [10.20.0.1/24, 10.20.1.1/24], vrf: MGMT, mac: 00:1c:73:aa:00:04}
+      - {id: ge-0/0/4, dhcp: true, description: Out-of-band console network}
+      - {id: ge-0/0/6, mac: 00:1c:73:aa:00:06}
+      - {id: ge-0/0/7, mac: 00:1c:73:aa:00:07}
+      - {id: ge-0/0/9, mac: 00:1c:73:aa:00:09, description: Spare}
+    logical_interfaces:
+      - {id: lo0, type: loopback, label: Router ID, ip: [10.255.255.1/32, "2001:db8:ffff:ffff::1/128"]}
+      - {id: lo1, type: loopback, label: Anycast DNS, ip: [192.0.2.53/32, "2001:db8:53::53/128"]}
+      - id: ge-0/0/2.10
+        type: virtual
+        vlan: 10
+        vrf: CORP
+        ip: [10.10.10.2/24, "2001:db8:10:10::2/64"]
+        attrs: {vrrp-virtual-ip: 10.10.10.1, vrrp-virtual-ipv6: "2001:db8:10:10::1"}
+      - id: ge-0/0/2.20
+        type: virtual
+        vlan: 20
+        vrf: CORP
+        ip: [10.10.20.2/24, 10.10.21.2/24]
+        attrs: {hsrp-virtual-ip: 10.10.20.1}
+      - {id: ae0, type: virtual, members: [ge-0/0/6, ge-0/0/7], mac: 02:00:00:00:ae:00}
+      - id: gr-0/0/0.0
+        type: tunnel
+        ip: [172.31.255.1/30, "fd00:dead:beef:0:0:0:0:1/126"]
+        source: lo0
+        destination: "2001:db8:ffff:ffff::2"
+      - id: st0.1
+        type: tunnel
+        ip: 169.254.10.1/30
+        source: xe-0/0/1
+        destination: 198.51.100.2
+
+  - id: dist
+    label: dist-sw-01
+    type: switch
+    group: hq
+    interfaces:
+      - {id: xe-1, mac: 3c:fd:fe:00:10:01}
+      - {id: xe-2, mac: 3c:fd:fe:00:10:02}
+      - {id: xe-3, mac: 3c:fd:fe:00:10:03}
+    logical_interfaces:
+      - {id: Vlan10, type: virtual, vlan: 10, ip: [10.10.10.3/24, "2001:db8:10:10::3/64"], attrs: {vrrp-virtual-ip: 10.10.10.1}}
+      - {id: Po1, type: virtual, members: [xe-2, xe-3]}
+
+  - id: srv
+    label: srv-mgmt-01
+    type: server
+    group: hq
+    interfaces:
+      - {id: eth0, ip: 10.20.0.10/24, mac: "52:54:00:12:34:56"}
+
+  - id: remote
+    label: branch-rtr
+    type: router
+    group: branch
+    interfaces:
+      - {id: wan0, ip: [198.51.100.2/30, "2001:0db8:85a3:0000:0000:8a2e:0370:7335/127"], mac: 00:50:56:01:00:01}
+    logical_interfaces:
+      - {id: lo0, type: loopback, ip: [10.255.255.2/32, "2001:db8:ffff:ffff::2/128"]}
+      - id: gr-1
+        type: tunnel
+        ip: [172.31.255.2/30, "fd00:dead:beef:0:0:0:0:2/126"]
+        source: lo0
+        destination: "2001:db8:ffff:ffff::1"
+      - {id: st0.1, type: tunnel, ip: 169.254.10.2/30, source: wan0, destination: core:xe-0/0/1}
+
+links:
+  - {id: uplink, a: "isp:pe-1", b: "core:xe-0/0/0", medium: fiber, speed: 10G, cable: "CID-4711-ISP / MMR-2 #12"}
+  - {id: wan, a: "core:xe-0/0/1", b: "remote:wan0", medium: fiber, speed: 1G, cable: "Carrier circuit 77-ABCD-0042"}
+  - id: trunk
+    a: {device: core, interface: ge-0/0/2, networks: [corp, corp6, voice]}
+    b: {device: dist, interface: xe-1, networks: [corp, corp6, voice]}
+    medium: copper
+    speed: 10G
+  - {id: mgmt-link, a: "core:ge-0/0/3", b: "srv:eth0", medium: copper, speed: 1G}
+
+networks:
+  - {id: uplink4, label: ISP uplink, cidr: 203.0.113.0/30}
+  - {id: uplink6, label: ISP uplink v6, cidr: "2001:db8:ffff:100::/64"}
+  - {id: wan4, label: Branch WAN, cidr: 198.51.100.0/30}
+  - {id: wan6, label: Branch WAN v6, cidr: "2001:db8:85a3::8a2e:370:7334/127"}
+  - {id: corp, label: Corporate, cidr: 10.10.10.0/24, vlan: 10, attrs: {dhcp-relay: 10.20.0.10}}
+  - {id: corp6, label: Corporate v6, cidr: "2001:db8:10:10::/64", vlan: 10}
+  - {id: voice, label: Voice, cidr: 10.10.20.0/24, vlan: 20}
+  - {id: mgmt, label: Management, cidr: 10.20.0.0/24}
+  - {id: overlay, label: GRE overlay, cidr: 172.31.255.0/30}
+
+relations:
+  - {id: ipsec, protocol: ipsec, endpoints: ["core:st0.1", "remote:st0.1"], over: [wan], attrs: {peer-address: 198.51.100.2}}
+  - {id: gre, protocol: gre, endpoints: ["core:gr-0/0/0.0", "remote:gr-1"], over: [ipsec]}
+  - {id: ospf, protocol: ospf, label: area 0, endpoints: ["core:gr-0/0/0.0", "remote:gr-1"], over: [gre]}
+  - {id: ebgp, protocol: ebgp, endpoints: ["isp:pe-1", "core:xe-0/0/0"], attrs: {peer-address: "2001:db8:ffff:100::1", peer-as: 64496}}
+  - id: vrrp
+    protocol: vrrp
+    endpoints: ["core:ge-0/0/2.10", "dist:Vlan10"]
+    attrs: {vrid: 10, virtual-ip: 10.10.10.1, virtual-ipv6: "2001:db8:10:10::1"}

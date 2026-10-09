@@ -116,10 +116,14 @@ test('fields that do not affect geometry do not change the layout', () => {
   const base = layoutInput(docOf(read('enterprise-wan.yaml')).result.model);
   const text = read('enterprise-wan.yaml')
     .replace('description: ISP-1 uplink', 'description: some other uplink')
-    .replace(/ip: 198\.51\.100\.2\/30/, 'ip: 198.51.100.66/30')
+    // an address replaced by one just as long (addresses are drawn in full, so their length takes room)
+    .replace(/ip: 198\.51\.100\.2\/30/, 'ip: 198.51.100.6/30')
     .replace('encryption: aes-256-gcm', 'encryption: chacha20')
     .replace('# netatlas example: enterprise WAN', '# a different comment');
   assert.equal(layoutSignature(layoutInput(docOf(text).result.model)), layoutSignature(base));
+  // a longer address needs more room in its device's box: the layout input says so
+  const longer = read('enterprise-wan.yaml').replace(/ip: 198\.51\.100\.2\/30/, 'ip: 198.51.100.66/30');
+  assert.notEqual(layoutSignature(layoutInput(docOf(longer).result.model)), layoutSignature(base));
 });
 
 // --------------------------------------------------------------- idempotence

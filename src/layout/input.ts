@@ -4,9 +4,11 @@
  * Auto-arrange is a pure function of this structure and of nothing else, so
  * two models that differ only in YAML key order, section order, the order of
  * list items (devices, interfaces, links, members, endpoints …), comments,
- * formatting, or fields that do not affect geometry (attrs,
- * protocols, addresses that do not change which network a device belongs
- * to …) get exactly the same positions.
+ * formatting, or fields that do not affect geometry (attrs without an
+ * address, protocols, an address replaced by one just as long that is in the
+ * same networks …) get exactly the same positions. Addresses and identifiers
+ * are drawn in full (model/addresses.ts), so the input holds the sizes they
+ * need, never the text itself.
  *
  * Everything is sorted by id with plain code-unit string comparison (never
  * localeCompare, which depends on the browser locale).
@@ -15,10 +17,11 @@ import { deviceSubtitle } from '../model/device-types';
 import { relationStyle } from '../model/protocols';
 import { networkMembers, networkMismatch, networkName } from '../model/derive';
 import { compareNames, sortedByName } from '../model/order';
-import { Link, Model, ifaceKey, loopbacks, relationDevices } from '../model/types';
+import { Device, Link, Model, ifaceKey, loopbacks, relationDevices } from '../model/types';
+import { addressAttrLines, deviceAddressLines, deviceEntries, orderedAddresses } from '../model/addresses';
 import { buildBundle, laneLabel, relationPairs } from './bundles';
 import { cmp } from './order';
-import { chipTextWidth, loopbackChipText, networkSubtitle } from './sizes';
+import { EntryText, entriesSize, memberLabelBox, networkSubtitle } from './sizes';
 
 export interface LEnd {
   device: string;
@@ -37,8 +40,10 @@ export interface LDev {
   tier: number;
   group: string | null;
   loopbacks: number;
-  /** width the widest loopback chip needs in the logical view (0 without loopbacks) */
-  chipW: number;
+  /** size [w, h] of the device's address entries in the physical view ([0, 0]: none) */
+  physList: [number, number];
+  /** size [w, h] of the device's address entries in the logical view ([0, 0]: none) */
+  logList: [number, number];
   /** the device's DNS names, each once, sorted (shown under it in the logical view) */
   dns: string[];
   /** physical interfaces without a cable, in display order (chips in the physical view's device box) */
@@ -51,18 +56,26 @@ export interface LGroup {
   parent: string | null;
   label: string;
   kind: string;
+  /** address lines under the title */
+  extra: string[];
 }
 export interface LNet {
   id: string;
   label: string;
   sub: string;
+  /** address lines under the prefix */
+  extra: string[];
   members: string[];
+  /** size [w, h] of the addresses written on each membership line, by member device (sorted) */
+  memberLabels: Array<[string, number, number]>;
 }
 export interface LRel {
   id: string;
   devices: string[];
   /** label of a multipoint relation's hub ('' for two-device relations, which are labelled per pair) */
   hubLabel: string;
+  /** address lines of the hub's label */
+  hubExtra: string[];
 }
 /** The relations between one pair of devices: what has to fit between the two. */
 export interface LPair {
@@ -70,6 +83,8 @@ export interface LPair {
   b: string;
   /** label texts, one per lane that carries a label */
   labels: string[];
+  /** the address lines of each of those labels */
+  extras: string[][];
   /** width of the bundle of lanes */
   width: number;
 }
@@ -77,6 +92,8 @@ export interface LPair {
 export interface LLinkLabel {
   id: string;
   text: string;
+  /** cable id and address lines, kept whole */
+  extra: string[];
 }
 export interface LayoutInput {
   devices: LDev[];
@@ -132,14 +149,14 @@ export function layoutInput(m: Model): LayoutInput {
         tier: d.tier !== undefined ? d.tier : defaultTier(d.type),
         group: d.group || null,
         loopbacks: loopbacks(d).length,
-        // over all loopbacks, not only the ones shown, so the order in the file doesn't matter
-        chipW: loopbacks(d).reduce((m, l) => Math.max(m, chipNeed(l.id, l.addresses)), 0),
+        physList: entriesSize(entryTexts(m, d, 'physical')),
+        logList: entriesSize(entryTexts(m, d, 'logical')),
         dns: uniqSorted(d.dnsNames.map((n) => n.name).filter((n) => !!n)),
         spare: sortedByName(d.interfaces.filter((i) => !m.index.ifaceLink.has(ifaceKey(d.id, i.id))).map((i) => i.id), (x) => x),
         logical: sortedByName(d.logical.filter((i) => i.type !== 'loopback').map((i) => i.id), (x) => x),
       })),
     ),
-    groups: byId(m.groups.map((g) => ({ id: g.id, parent: g.parent || null, label: g.label, kind: g.kind }))),
+    groups: byId(m.groups.map((g) => ({ id: g.id, parent: g.parent || null, label: g.label, kind: g.kind, extra: addressAttrLines(g.attrs) }))),
     links: byId(
       m.links.map((l) => {
         // endpoints in canonical order so "a/b" swapped is the same cable
@@ -155,28 +172,60 @@ export function layoutInput(m: Model): LayoutInput {
         id: n.id,
         label: n.label,
         sub: networkSubtitle(n.cidr, n.vlan),
+        extra: addressAttrLines(n.attrs),
         // derived from the addresses inside the network's prefixes
         members: uniqSorted(networkMembers(m, n.id).map((x) => x.device)),
+        memberLabels: memberLabelSizes(m, n.id),
       })),
     ),
     relations: byId(
       m.relations.map((r) => {
         const devices = uniqSorted(relationDevices(r));
-        return { id: r.id, devices, hubLabel: devices.length >= 3 ? relationStyle(m, r).label + (r.label ? ' · ' + r.label : '') : '' };
+        const hub = devices.length >= 3;
+        return { id: r.id, devices, hubLabel: hub ? relationStyle(m, r).label + (r.label ? ' · ' + r.label : '') : '', hubExtra: hub ? addressAttrLines(r.attrs) : [] };
       }),
     ),
     pairs: Array.from(relationPairs(m.relations).entries()).map(([key, rels]) => {
       const bundle = buildBundle(m, key, rels);
-      return { a: bundle.a, b: bundle.b, labels: bundle.lanes.filter((p) => p.root).map(laneLabel), width: bundle.width };
+      const roots = bundle.lanes.filter((p) => p.root);
+      return { a: bundle.a, b: bundle.b, labels: roots.map(laneLabel), extras: roots.map((p) => p.extra), width: bundle.width };
     }),
-    linkLabels: byId(m.links.map((l) => ({ id: l.id, text: linkLabelText(m, l) })).filter((x) => x.text !== '')),
+    linkLabels: byId(m.links.map((l) => ({ id: l.id, text: linkLabelText(m, l), extra: linkLabelExtra(l) })).filter((x) => x.text !== '' || x.extra.length > 0)),
   };
 }
 
-/** Width a loopback's chip needs whichever of its addresses is written first (the chip shows the first one). */
-function chipNeed(id: string, addresses: string[]): number {
-  const firsts = addresses.length ? addresses : [''];
-  return firsts.reduce((m, a) => Math.max(m, Math.ceil(chipTextWidth(loopbackChipText(id, a ? [a].concat(addresses.slice(1)) : [])))), 0);
+/**
+ * The entries a device's box holds in a view: its own address lines (an
+ * entry without a name), then one entry per interface (model/addresses.ts).
+ */
+export function entryTexts(m: Model, d: Device, view: 'physical' | 'logical'): EntryText[] {
+  const own = deviceAddressLines(d);
+  const out: EntryText[] = own.length ? [{ header: '', lines: own }] : [];
+  for (const e of deviceEntries(m, d, view)) out.push({ header: e.header, lines: e.lines });
+  return out;
+}
+
+/**
+ * The addresses written on the membership line of a device and a network:
+ * every address of the device that lies in the network, in display order.
+ */
+export function memberAddresses(m: Model, networkId: string, device: string): string[] {
+  const mem = networkMembers(m, networkId).find((x) => x.device === device);
+  if (!mem) return [];
+  const all = mem.matches.map((x) => x.address);
+  return orderedAddresses(Array.from(new Set(all)));
+}
+
+function memberLabelSizes(m: Model, networkId: string): Array<[string, number, number]> {
+  return uniqSorted(networkMembers(m, networkId).map((x) => x.device)).map((d) => {
+    const b = memberLabelBox(memberAddresses(m, networkId, d));
+    return [d, b.w, b.h] as [string, number, number];
+  });
+}
+
+/** Lines under a cable's label, kept whole: its cable id and its address-like attrs. */
+export function linkLabelExtra(l: Link): string[] {
+  return (l.cable ? ['cable ' + l.cable] : []).concat(addressAttrLines(l.attrs));
 }
 
 /**

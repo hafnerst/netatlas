@@ -20,8 +20,9 @@
  * So a network reached only through loopbacks or tunnel interfaces is not in
  * the physical picture's list, and with the network nodes switched off the
  * logical list holds only what the drawn relations and loopbacks use. The
- * chips of interfaces without a line of their own (uncabled ports, virtual
- * and tunnel interfaces) bring no networks in.
+ * chips of interfaces without a line of their own (uncabled ports) and the
+ * entries with the addresses of interfaces in device boxes bring no networks
+ * in: they name an interface so it can be found and selected.
  */
 import { Rect } from '../layout/geometry';
 import { TextBlock, textBlock, textWidth } from '../layout/text';
@@ -37,14 +38,15 @@ import { View } from './session';
 
 /**
  * Every `data-ref` of a rendered scene: the elements the picture represents.
- * Interface chips (uncabled ports, virtual and tunnel interfaces) only name
- * an interface so it can be found and selected; they bring no networks in.
+ * Interface chips (uncabled ports) and interface entries (the addresses in
+ * device boxes) only name an interface so it can be found and selected;
+ * they bring no networks in.
  */
 export function sceneRefs(root: VNode): Set<string> {
   const out = new Set<string>();
   walk(root, (n) => {
     const r = n.attrs['data-ref'];
-    if (r && !/(^| )if-chip( |$)/.test(n.attrs.class || '')) out.add(r);
+    if (r && !/(^| )(if-chip|if-entry)( |$)/.test(n.attrs.class || '')) out.add(r);
   });
   return out;
 }

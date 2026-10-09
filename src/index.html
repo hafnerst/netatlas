@@ -104,6 +104,14 @@
   </div>
   </div>
   </div>
+  <div class="theme-wrap">
+    <button id="theme-btn" type="button" class="theme-btn" aria-label="Theme" aria-describedby="theme-tip" data-pref="system">
+      <svg class="ti ti-system" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 1 0 16z" class="ti-fill"/></svg>
+      <svg class="ti ti-light" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2.5M12 19v2.5M2.5 12H5M19 12h2.5M5.3 5.3l1.8 1.8M16.9 16.9l1.8 1.8M5.3 18.7l1.8-1.8M16.9 7.1l1.8-1.8"/></svg>
+      <svg class="ti ti-dark" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/></svg>
+    </button>
+    <span id="theme-tip" class="tip" role="tooltip">Theme</span>
+  </div>
 </header>
 <main>
   <aside id="outline" aria-label="Model outline">
@@ -123,6 +131,7 @@
       <button id="connect-cancel" type="button" title="Cancel the connection (Esc)">Cancel</button>
     </div>
     <div id="filter-hint" class="filter-hint" role="status" hidden><span class="fh-icon" aria-hidden="true">⧉</span> <span id="filter-hint-text">Filtered-view positions are temporary and are not saved in YAML.</span></div>
+    <div id="overlap-hint" class="overlap-hint" role="status" hidden><span aria-hidden="true">⚠</span> <span id="overlap-hint-text"></span></div>
     <div class="zoombar" role="toolbar" aria-label="Zoom">
       <button id="zoom-in" type="button" title="Zoom in (+)">+</button>
       <span id="zoom-level">100%</span>

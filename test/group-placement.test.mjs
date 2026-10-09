@@ -73,8 +73,9 @@ test('enterprise-wan: the provider group lies between the Internet above it and 
   for (const [pe, rtr] of [['isp1-pe', 'hq-rtr1'], ['isp2-pe', 'hq-rtr2']]) {
     const dx = Math.abs(cx(dev(g, pe)) - cx(dev(g, rtr)));
     const dy = Math.abs(cy(dev(g, pe)) - cy(dev(g, rtr)));
-    // (the HQ box sits below the Munich branch's column: its core rack is as wide as the network names on its cables need)
-    assert.ok(dx < 160 && dy < 600, `${pe} - ${rtr}: ${dx} x ${dy}`);
+    // (the HQ box sits below the Munich branch's column: its core rack is as wide as the network names on its cables need;
+    // the routers' boxes hold the entries with their interfaces' addresses, which makes the HQ rows taller)
+    assert.ok(dx < 160 && dy < 800, `${pe} - ${rtr}: ${dx} x ${dy}`);
   }
   // the branches hang under the Internet too: the top of the diagram is the cloud
   for (const id of ['branch-muc', 'branch-ham']) assert.ok(group(g, id).y > cy(dev(g, 'inet')), id);
@@ -93,7 +94,8 @@ test('enterprise-wan: shorter, clearer cabling than with the provider group at t
   assert.ok(now.length < before.length * 0.75, `cable length ${now.length} vs ${before.length}`);
   assert.ok(now.crossings < before.crossings, `crossings ${now.crossings} vs ${before.crossings}`);
   // measured with the previous release of the layout: length 7385, 16 crossings, 6 bends around devices
-  assert.ok(now.length < 7385 * 0.6, 'cable length: ' + now.length);
+  // (the device boxes now also hold their interfaces' addresses, so the rows are a little further apart)
+  assert.ok(now.length < 7385 * 0.65, 'cable length: ' + now.length);
   assert.equal(now.crossings, 0, 'no two cables cross');
   assert.equal(now.bends, 0, 'no cable has to go around a device');
 });

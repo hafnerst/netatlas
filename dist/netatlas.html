@@ -9,59 +9,87 @@
 <meta name="generator" content="netatlas 0.1.2">
 <title>netatlas</title>
 <style id="app-style">
-:root {
+/* Design tokens. Every colour of the application and of the diagram comes from
+   these; the two themes define the same names. The theme in effect is the
+   `data-theme` attribute of <html> ("light" or "dark"), set before the first
+   paint from the user's choice (Light, Dark) or, for System, from
+   prefers-color-scheme (see ui/theme.ts). Contrast (WCAG 2.2 AA): text and
+   muted text at least 4.5:1 on every surface they are used on; control
+   boundaries (--control-border), focus rings (--accent), selection (--sel) and
+   diagram lines (--dev-stroke, --group-stroke, --member) at least 3:1 against
+   the canvas and the panels. test/theme.test.mjs checks the pairs. */
+:root, :root[data-theme="light"] {
+  /* surfaces: the page, panels, the diagram, and raised layers (menus, dialogs, tooltips) */
   --bg: #f6f7f9;
   --panel: #ffffff;
   --canvas: #fbfcfd;
+  --raised: #ffffff;
   --grid: #e9ecef;
   --text: #1f2328;
   --muted: #667085;
+  /* separators and decorative outlines (not a control's only boundary) */
   --border: #d0d7de;
+  /* the boundary of an input, select or button: 3:1 against the panels */
+  --control-border: #848d97;
   /* the dashed frames of the toolbar groups: at least 3:1 against the toolbar, so a group reads as one */
-  --frame: #8c959f;
+  --frame: #848d97;
   --accent: #1864ab;
   --accent-soft: #e7f0fa;
+  /* text and icons on a filled accent / danger control */
+  --on-accent: #ffffff;
+  --link: #1864ab;
   --dev-fill: #ffffff;
-  --dev-stroke: #8c959f;
+  --dev-stroke: #848d97;
   --icon: #343a40;
   --group-fill: rgba(27, 31, 36, 0.025);
   --group-strong-fill: rgba(24, 100, 171, 0.045);
-  --group-stroke: #b6bec8;
+  --group-stroke: #868e96;
   --halo: #fbfcfd;
-  --member: #adb5bd;
+  --member: #868e96;
   --pill: #ffffff;
   --error: #c92a2a;
   --warn: #b35900;
-  --sel: #f59f00;
-  --ok: #2b8a3e;
+  --sel: #d9730d;
+  --ok: #2a7d3a;
+  --shadow: rgba(0, 0, 0, 0.16);
+  --backdrop: rgba(0, 0, 0, 0.35);
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
   color-scheme: light;
 }
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #111418;
-    --panel: #171b21;
-    --canvas: #0d1014;
-    --grid: #1c2129;
-    --text: #e6e9ee;
-    --muted: #97a1ad;
-    --border: #2d333b;
-    --frame: #6e7781;
-    --accent: #74c0fc;
-    --accent-soft: #1a2837;
-    --dev-fill: #1b2028;
-    --dev-stroke: #56606c;
-    --icon: #ced4da;
-    --group-fill: rgba(255, 255, 255, 0.025);
-    --group-strong-fill: rgba(116, 192, 252, 0.05);
-    --group-stroke: #3a424d;
-    --halo: #0d1014;
-    --member: #56606c;
-    --pill: #1b2028;
-    --error: #ff8787;
-    --ok: #69db7c;
-    --warn: #ffc078;
-    color-scheme: dark;
-  }
+/* Dark: dark grey surfaces (never pure black) that get lighter as they rise
+   (canvas < page < panel < raised), off-white text, and calmer, less
+   saturated accent and status colours that keep their meaning. */
+:root[data-theme="dark"] {
+  --bg: #1a1e24;
+  --panel: #20252c;
+  --canvas: #15181d;
+  --raised: #282e36;
+  --grid: #262b33;
+  --text: #e3e6ea;
+  --muted: #9ba4ae;
+  --border: #353c45;
+  --control-border: #737d88;
+  --frame: #737d88;
+  --accent: #7fb2e5;
+  --accent-soft: #22303f;
+  --on-accent: #15181d;
+  --link: #7fb2e5;
+  --dev-fill: #20252c;
+  --dev-stroke: #7a838e;
+  --icon: #c9cfd6;
+  --group-fill: rgba(255, 255, 255, 0.025);
+  --group-strong-fill: rgba(127, 178, 229, 0.05);
+  --group-stroke: #737d88;
+  --halo: #15181d;
+  --member: #737d88;
+  --pill: #20252c;
+  --error: #f08a8a;
+  --warn: #e0b07a;
+  --sel: #e3a857;
+  --ok: #7cc68a;
+  --shadow: rgba(0, 0, 0, 0.45);
+  --backdrop: rgba(0, 0, 0, 0.55);
+  color-scheme: dark;
 }
 * { box-sizing: border-box; }
 /* The application shell is exactly as large as the browser viewport, whatever
@@ -90,10 +118,10 @@ button, select {
   cursor: pointer;
 }
 button:hover:not(:disabled), select:hover { border-color: var(--accent); }
+select { border-color: var(--control-border); }
 button:disabled { opacity: 0.45; cursor: default; }
 button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-@media (prefers-color-scheme: dark) { button.primary { color: #0d1014; } }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 .muted { color: var(--muted); }
 .small { font-size: 11.5px; }
 
@@ -136,7 +164,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .more-filters .opt { color: var(--text); min-height: 24px; }
 .more-filters .opt input { width: 16px; height: 16px; }
 /* Find (Find → Find in diagram…, "/"): a bar over the top right of the diagram */
-.find-bar { position: absolute; top: 10px; right: 12px; z-index: 30; display: flex; align-items: center; gap: 4px; width: min(340px, calc(100% - 24px)); padding: 4px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); box-shadow: 0 4px 14px rgba(0, 0, 0, .14); }
+.find-bar { position: absolute; top: 10px; right: 12px; z-index: 30; display: flex; align-items: center; gap: 4px; width: min(340px, calc(100% - 24px)); padding: 4px; border: 1px solid var(--border); border-radius: 8px; background: var(--raised); box-shadow: 0 4px 14px var(--shadow); }
 .find-bar[hidden] { display: none; }
 .find-bar #search { flex: 1; min-width: 0; width: auto; }
 .find-bar #search-results { position: fixed; z-index: 45; margin-top: 0; min-width: 0; max-width: none; }
@@ -151,7 +179,7 @@ body:not([data-view="logical"]) .logical-only { display: none; }
 .devices-panel { right: 0; left: auto; width: 290px; padding: 8px; display: flex; flex-direction: column; gap: 6px; }
 .devices-panel[hidden] { display: none; }
 .dp-tools { display: flex; gap: 4px; align-items: center; }
-.dp-tools input { flex: 1; min-width: 0; padding: 3px 7px; border: 1px solid var(--border); border-radius: 5px; background: var(--canvas); color: var(--text); }
+.dp-tools input { flex: 1; min-width: 0; padding: 3px 7px; border: 1px solid var(--control-border); border-radius: 5px; background: var(--canvas); color: var(--text); }
 .dp-list { max-height: min(55vh, 420px); overflow: auto; display: flex; flex-direction: column; gap: 1px; border: 1px solid var(--border); border-radius: 6px; padding: 4px 6px; background: var(--canvas); }
 .dp-list label { display: flex; align-items: center; gap: 6px; padding: 2px 0; font-size: 12.5px; overflow-wrap: anywhere; cursor: pointer; }
 .dp-list label[hidden] { display: none; }
@@ -162,15 +190,15 @@ body:not([data-view="logical"]) .logical-only { display: none; }
 .devices-panel > .dp-list { padding: 4px 6px; }
 .devices-panel .dp-tools button { width: auto; flex: none; padding: 2px 8px; border: 1px solid var(--border); border-radius: 5px; }
 /* subtle, accessible note while a filtered view is shown (outside the SVG: never exported) */
-.filter-hint { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); max-width: calc(100% - 40px); padding: 4px 10px; border: 1px solid var(--border); border-radius: 999px; background: var(--panel); color: var(--muted); font-size: 12px; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12); pointer-events: none; }
+.filter-hint { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); max-width: calc(100% - 40px); padding: 4px 10px; border: 1px solid var(--border); border-radius: 999px; background: var(--panel); color: var(--muted); font-size: 12px; box-shadow: 0 1px 4px var(--shadow); pointer-events: none; }
 .filter-hint[hidden] { display: none; }
 .search-wrap { position: relative; }
-#search { padding: 4px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--canvas); }
+#search { padding: 4px 8px; border: 1px solid var(--control-border); border-radius: 6px; background: var(--canvas); }
 .dropdown {
   position: absolute; top: 100%; left: 0; z-index: 20; min-width: min(300px, calc(100vw - 16px)); max-width: calc(100vw - 16px);
   max-height: min(360px, calc(100vh - 90px)); max-height: min(360px, calc(100dvh - 90px)); overflow: auto;
-  background: var(--panel); border: 1px solid var(--border); border-radius: 8px; margin-top: 4px; padding: 4px;
-  box-shadow: 0 8px 24px rgba(0,0,0,.18);
+  background: var(--raised); border: 1px solid var(--border); border-radius: 8px; margin-top: 4px; padding: 4px;
+  box-shadow: 0 8px 24px var(--shadow);
 }
 .dropdown button { display: flex; gap: 8px; width: 100%; text-align: left; border: 0; padding: 5px 8px; }
 .dropdown button:hover { background: var(--accent-soft); }
@@ -207,7 +235,7 @@ main { display: grid; grid-template-columns: 250px minmax(0, 1fr) 410px; grid-te
 .zoombar {
   position: absolute; left: 12px; bottom: 12px; display: flex; gap: 4px; align-items: center;
   background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 4px;
-  box-shadow: 0 2px 8px rgba(0,0,0,.08);
+  box-shadow: 0 2px 8px var(--shadow);
 }
 .zoombar button { padding: 2px 9px; }
 #zoom-level { min-width: 44px; text-align: center; color: var(--muted); font-variant-numeric: tabular-nums; }
@@ -258,8 +286,8 @@ body[data-state="empty"].dropping #drop-hint { display: none; }
 
 #tooltip {
   position: absolute; z-index: 30; pointer-events: none; max-width: 340px;
-  background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 6px 9px;
-  box-shadow: 0 6px 18px rgba(0,0,0,.16); font-size: 12px;
+  background: var(--raised); border: 1px solid var(--border); border-radius: 8px; padding: 6px 9px;
+  box-shadow: 0 6px 18px var(--shadow); font-size: 12px;
 }
 #tooltip .tt-title { font-weight: 600; }
 #tooltip .tt-line { color: var(--muted); overflow-wrap: anywhere; }
@@ -280,11 +308,11 @@ body[data-state="empty"].dropping #drop-hint { display: none; }
 .keys-group dl > div { display: contents; }
 .keys-group dt { color: var(--text); white-space: nowrap; }
 .keys-group dd { margin: 0; overflow-wrap: anywhere; }
-.keys kbd { font: 10.5px/1.3 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; padding: 0 4px; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px; background: var(--canvas); color: var(--text); }
+.keys kbd { font: 10.5px/1.3 var(--font-mono); padding: 0 4px; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px; background: var(--canvas); color: var(--text); }
 #side h3 { margin: 4px 0 8px; font-size: 15px; overflow-wrap: anywhere; }
 #side h4 { margin: 14px 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
 /* the ID beside an object's name in its header: selectable on its own (the brackets are not part of the text) */
-.ih-id { margin-left: 6px; font: 500 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--muted); user-select: all; overflow-wrap: anywhere; }
+.ih-id { margin-left: 6px; font: 500 12px var(--font-mono); color: var(--muted); user-select: all; overflow-wrap: anywhere; }
 .ih-id::before { content: "("; user-select: none; }
 .ih-id::after { content: ")"; user-select: none; }
 .badge { align-self: flex-start; font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; padding: 1px 7px; border-radius: 99px; background: var(--accent-soft); color: var(--accent); }
@@ -296,7 +324,7 @@ table.kv, table.ports { border-collapse: collapse; width: 100%; }
 .ports tr.unused td { color: var(--muted); }
 .reflist { list-style: none; margin: 0; padding: 0; }
 .reflist li { padding: 2px 0; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-button.ref { border: 0; background: none; padding: 0; color: var(--accent); text-align: left; cursor: pointer; }
+button.ref { border: 0; background: none; padding: 0; color: var(--link); text-align: left; cursor: pointer; }
 button.ref:hover { text-decoration: underline; }
 .legend ul { list-style: none; padding: 0; margin: 0; }
 .legend-row { display: flex; align-items: center; gap: 8px; padding: 2px 0; }
@@ -315,7 +343,7 @@ button.ref:hover { text-decoration: underline; }
 .issue pre.src { margin: 6px 0 0; padding: 4px 8px; background: var(--canvas); border-radius: 4px; overflow-x: auto; font-size: 12px; }
 #status { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 3px 12px; border-top: 1px solid var(--border); background: var(--panel); color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* the open file: a compact badge at the start; a long name is shortened in the middle of the bar, never pushing it wider */
-#status .fname { flex: 0 1 auto; min-width: 4em; max-width: 45%; overflow: hidden; text-overflow: ellipsis; padding: 0 8px; border: 1px solid var(--border); border-radius: 99px; background: var(--canvas); color: var(--text); font-weight: 600; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11.5px; line-height: 18px; }
+#status .fname { flex: 0 1 auto; min-width: 4em; max-width: 45%; overflow: hidden; text-overflow: ellipsis; padding: 0 8px; border: 1px solid var(--border); border-radius: 99px; background: var(--canvas); color: var(--text); font-weight: 600; font-family: var(--font-mono); font-size: 11.5px; line-height: 18px; }
 #status .status-rest { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 #selftest { position: fixed; inset: 40px; z-index: 100; overflow: auto; background: var(--panel); border: 2px solid var(--accent); padding: 12px; font-size: 11px; }
 /* The model panel (#outline) is always shown. Narrower windows give it and the
@@ -347,7 +375,9 @@ button.ref:hover { text-decoration: underline; }
 
 /* ------------------------------------------------------------ diagram */
 .scene text:not([fill]) { fill: var(--text); }
-.scene text { font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; }
+.scene text { font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; font-variant-numeric: tabular-nums; }
+/* addresses and identifiers: the monospace font (kept whole, never wrapped inside) */
+.scene text.addr, .scene tspan.addr { font-family: var(--font-mono); }
 .hit { fill: none; stroke: transparent; stroke-width: 12; pointer-events: stroke; }
 .group-box { fill: var(--group-fill); stroke: var(--group-stroke); stroke-width: 1.2; }
 .group-strong .group-box, .group-box.group-strong { fill: var(--group-strong-fill); stroke-width: 1.6; }
@@ -388,12 +418,11 @@ button.ref:hover { text-decoration: underline; }
 .pill { cursor: pointer; }
 /* selection / highlight */
 .has-selection .dim { opacity: .16; transition: opacity .15s; }
-.has-selection .group.dim { opacity: .45; }
+.has-selection .group.dim, .has-selection .group-label.dim { opacity: .45; }
 .selected .dev-box, .selected .net-box { stroke: var(--sel) !important; stroke-width: 3 !important; }
 .selected .cable-line, .selected.port { filter: drop-shadow(0 0 3px var(--sel)); }
 .selected .tube-outer, .selected .rel-line { filter: drop-shadow(0 0 3px var(--sel)); }
 .hl .cable-line { filter: drop-shadow(0 0 2px var(--sel)); }
-svg.export { background: var(--canvas); }
 /* legend drawn into exported SVG files */
 /* … and, in the same style, the overview of the networks relevant to the exported view */
 .svg-legend .lg-box, .svg-networks .lg-box { fill: var(--panel); stroke: var(--border); stroke-width: 1; }
@@ -409,7 +438,7 @@ svg.export { background: var(--canvas); }
 .btn-group { display: inline-flex; gap: 4px; }
 button.ghost { background: none; }
 button.danger { color: var(--error); border-color: var(--error); }
-.modal-btns button.danger { background: var(--error); color: #fff; }
+.modal-btns button.danger { background: var(--error); color: var(--on-accent); }
 button.mini { padding: 1px 7px; font-size: 11.5px; border-radius: 5px; }
 #status .dirty { color: var(--warn); font-weight: 600; }
 /* the file name badge: a small dot while the model has unsaved changes (the badge itself keeps its colours) */
@@ -433,7 +462,7 @@ button.mini { padding: 1px 7px; font-size: 11.5px; border-radius: 5px; }
 /* the scrollbar's room is always reserved: a list that grows or shrinks (a folded section showing its selected entry) never shifts the entries sideways */
 #outline { background: var(--panel); border-right: 1px solid var(--border); overflow: auto; overscroll-behavior: contain; min-height: 0; min-width: 0; scrollbar-gutter: stable; }
 #outline-body { padding: 8px 8px 16px; }
-.outline-filter { width: 100%; margin-bottom: 6px; padding: 4px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--canvas); }
+.outline-filter { width: 100%; margin-bottom: 6px; padding: 4px 8px; border: 1px solid var(--control-border); border-radius: 6px; background: var(--canvas); }
 .ol-section { margin-top: 10px; }
 .ol-head { display: flex; align-items: center; justify-content: space-between; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); padding: 2px 2px 4px; }
 /* a row of the outline: the entry, and its quick actions (Duplicate, Delete) at the right */
@@ -478,7 +507,7 @@ button.mini { padding: 1px 7px; font-size: 11.5px; border-radius: 5px; }
 .reflist li.ctx-unrelated button.ref:hover, .reflist li.ctx-unrelated button.ref:focus-visible { color: var(--text); }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 .ol-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ol-badge { font-size: 10.5px; font-weight: 700; border-radius: 99px; padding: 0 6px; color: #fff; }
+.ol-badge { font-size: 10.5px; font-weight: 700; border-radius: 99px; padding: 0 6px; color: var(--on-accent); }
 .ol-badge.err { background: var(--error); }
 .ol-badge.warn { background: var(--warn); }
 .inspector { display: flex; flex-direction: column; gap: 8px; }
@@ -521,7 +550,7 @@ button.icon-btn.danger:hover:not(:disabled) { background: var(--error); border-c
 .issue-list li.warning b { color: var(--warn); }
 .field { display: flex; flex-direction: column; gap: 2px; }
 .field > label { font-size: 11.5px; color: var(--muted); font-weight: 500; }
-.field input[type="text"], .field textarea, .field select, .g-row input[type="text"], .list-ed input, .ep-row select { width: 100%; padding: 4px 7px; border: 1px solid var(--border); border-radius: 5px; background: var(--canvas); min-width: 0; }
+.field input[type="text"], .field textarea, .field select, .g-row input[type="text"], .list-ed input, .ep-row select { width: 100%; padding: 4px 7px; border: 1px solid var(--control-border); border-radius: 5px; background: var(--canvas); min-width: 0; }
 .field textarea { resize: vertical; font: inherit; }
 /* nothing chosen yet: the prompt must not look like a saved value */
 .field select.unset { color: var(--muted); font-style: italic; }
@@ -534,8 +563,8 @@ button.icon-btn.danger:hover:not(:disabled) { background: var(--error); border-c
 .help { color: var(--muted); font-size: 11px; }
 .ctl { display: flex; align-items: center; gap: 4px; }
 .ctl.row > * { flex: 1; min-width: 0; }
-.ctl.row > input[type="color"] { flex: none; width: 36px; height: 28px; padding: 1px; border: 1px solid var(--border); border-radius: 5px; background: var(--canvas); }
-.ro { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.ctl.row > input[type="color"] { flex: none; width: 36px; height: 28px; padding: 1px; border: 1px solid var(--control-border); border-radius: 5px; background: var(--canvas); }
+.ro { font-family: var(--font-mono); }
 .sub { margin-top: 8px; border-top: 1px solid var(--border); padding-top: 6px; }
 .sub-head { display: flex; align-items: center; justify-content: space-between; }
 .sub-head h4 { margin: 4px 0 !important; }
@@ -569,13 +598,13 @@ details.attrs > summary { cursor: pointer; font-size: 12px; color: var(--muted);
 .ep-more { margin: 0 2px; }
 .g-map, .g-seq { display: flex; flex-direction: column; gap: 3px; padding-left: 4px; border-left: 2px solid var(--grid); margin: 2px 0; }
 .g-row { display: flex; gap: 4px; align-items: flex-start; }
-.g-row > .g-key { flex: 0 0 34%; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+.g-row > .g-key { flex: 0 0 34%; font-family: var(--font-mono); font-size: 12px; }
 .g-row > .g-val, .g-row > .g-map, .g-row > .g-seq { flex: 1; min-width: 0; }
 .g-val input { flex: 1; }
 .g-type { font-size: 10px; color: var(--muted); border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; }
 .g-idx { color: var(--muted); padding-top: 4px; }
 .g-add { display: flex; gap: 4px; align-items: center; }
-.g-add .g-key { flex: 1; border-style: dashed !important; padding: 3px 7px; border: 1px solid var(--border); border-radius: 5px; background: var(--canvas); min-width: 0; }
+.g-add .g-key { flex: 1; border-style: dashed !important; padding: 3px 7px; border: 1px solid var(--control-border); border-radius: 5px; background: var(--canvas); min-width: 0; }
 .g-add select { padding: 2px 4px; font-size: 12px; }
 .other { margin-top: 4px; }
 .other h4 { color: var(--warn) !important; }
@@ -596,26 +625,25 @@ details.card > .field.derived { margin: 4px 10px; }
 .field[data-dhcp] { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; column-gap: 6px; row-gap: 2px; }
 .field[data-dhcp] > :not(label):not(.dhcp-switch) { grid-column: 1 / -1; }
 button.dhcp-switch { white-space: nowrap; }
-button.dhcp-switch.on { background: var(--accent); border-color: var(--accent); color: #fff; }
-@media (prefers-color-scheme: dark) { button.dhcp-switch.on { color: #0d1014; } }
+button.dhcp-switch.on { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 .dhcp-state { font-weight: 600; }
 .list-ed.disabled input { background: var(--grid); color: var(--muted); border-style: solid; cursor: not-allowed; }
 /* DNS names of a device */
 .dns-entry { border: 1px solid var(--border); border-radius: 7px; margin: 5px 0; padding: 5px 7px; background: var(--canvas); display: flex; flex-direction: column; gap: 4px; }
 .dns-entry.invalid { border-left: 3px solid var(--error); }
-.dns-entry select { padding: 3px 6px; border: 1px solid var(--border); border-radius: 5px; background: var(--canvas); font-size: 12px; }
-.dns-name-row input { flex: 1; min-width: 0; padding: 4px 7px; border: 1px solid var(--border); border-radius: 5px; background: var(--panel); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; }
+.dns-entry select { padding: 3px 6px; border: 1px solid var(--control-border); border-radius: 5px; background: var(--canvas); font-size: 12px; }
+.dns-name-row input { flex: 1; min-width: 0; padding: 4px 7px; border: 1px solid var(--control-border); border-radius: 5px; background: var(--panel); font-family: var(--font-mono); font-size: 12.5px; }
 .dns-ifaces .ref-chip { flex: none; display: inline-flex; align-items: center; gap: 4px; }
 .dns-pick { display: flex; flex-direction: column; gap: 2px; max-height: 180px; overflow: auto; margin: 3px 0 8px; padding: 5px 8px; border: 1px solid var(--border); border-radius: 7px; background: var(--canvas); font-size: 12.5px; }
 .dns-pick-row { display: flex; align-items: center; gap: 4px; overflow-wrap: anywhere; }
 ul.dhcp-loss { margin: 2px 0 8px; padding-left: 20px; }
-.vlan-chip { flex: none; display: inline-flex; align-items: center; gap: 3px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.vlan-chip { flex: none; display: inline-flex; align-items: center; gap: 3px; font-family: var(--font-mono); }
 .net-ed .list-row > * { flex: 1; min-width: 0; }
 .net-mismatch-note { border: 1px solid var(--warn); border-radius: 6px; padding: 4px 7px; }
 .yaml-tab { display: flex; flex-direction: column; gap: 6px; height: 100%; }
 /* the YAML editor: a plain text area over a band that marks the selected object's lines (drawn behind the text, never part of it) */
 .yaml-edit { position: relative; flex: 1; min-height: min(55vh, 100%); display: flex; background: var(--canvas); border-radius: 6px; }
-#yaml-src { position: relative; z-index: 1; width: 100%; min-height: 0; flex: 1; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: transparent; color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 8px; tab-size: 2; white-space: pre; }
+#yaml-src { position: relative; z-index: 1; width: 100%; min-height: 0; flex: 1; font: 12px/1.45 var(--font-mono); background: transparent; color: var(--text); border: 1px solid var(--control-border); border-radius: 6px; padding: 8px; tab-size: 2; white-space: pre; }
 .yaml-hl-clip { position: absolute; z-index: 0; overflow: hidden; pointer-events: none; }
 .yaml-hl { position: absolute; left: 0; right: 0; background: var(--accent-soft); box-shadow: inset 3px 0 0 var(--accent); }
 .yaml-hl[hidden] { display: none; }
@@ -624,8 +652,8 @@ ul.dhcp-loss { margin: 2px 0 8px; padding-left: 20px; }
 .row-btns { display: flex; gap: 6px; }
 .issue.clickable { cursor: pointer; }
 .issue.clickable:hover { border-color: var(--accent); }
-dialog#modal { border: 1px solid var(--border); border-radius: 12px; padding: 0; max-width: 560px; width: calc(100% - 32px); max-height: calc(100vh - 24px); max-height: calc(100dvh - 24px); overflow: hidden; background: var(--panel); color: var(--text); box-shadow: 0 16px 48px rgba(0,0,0,.3); }
-dialog#modal::backdrop { background: rgba(0,0,0,.35); }
+dialog#modal { border: 1px solid var(--border); border-radius: 12px; padding: 0; max-width: 560px; width: calc(100% - 32px); max-height: calc(100vh - 24px); max-height: calc(100dvh - 24px); overflow: hidden; background: var(--raised); color: var(--text); box-shadow: 0 16px 48px var(--shadow); }
+dialog#modal::backdrop { background: var(--backdrop); }
 .modal-inner { display: flex; flex-direction: column; max-height: calc(100vh - 26px); max-height: calc(100dvh - 26px); padding: 18px 20px; }
 .modal-inner h2, .modal-btns { flex: none; }
 .modal-inner h2 { margin: 0 0 10px; font-size: 17px; }
@@ -643,12 +671,12 @@ dialog#modal.help-manual .modal-body { max-height: none; display: flex; flex-dir
 dialog#modal.help-dialog .modal-btns { margin-top: 10px; }
 .manual { flex: 1 1 auto; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 2px 8px 12px 2px; line-height: 1.5; }
 .manual:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 6px; }
-.manual kbd, .man-keys kbd { display: inline-block; padding: 0 5px; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px; background: var(--canvas); font: 600 11.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: nowrap; }
+.manual kbd, .man-keys kbd { display: inline-block; padding: 0 5px; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px; background: var(--canvas); font: 600 11.5px/1.5 var(--font-mono); white-space: nowrap; }
 .man-lead { color: var(--muted); }
 .man-toc { margin: 0 0 6px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 9px; background: var(--canvas); }
 .man-toc ol { margin: 0; padding-left: 20px; columns: 2 220px; column-gap: 24px; }
 .man-toc li { break-inside: avoid; }
-.man-link { border: 0; background: none; padding: 1px 2px; color: var(--accent); text-align: left; text-decoration: underline; text-underline-offset: 2px; }
+.man-link { border: 0; background: none; padding: 1px 2px; color: var(--link); text-align: left; text-decoration: underline; text-underline-offset: 2px; }
 .man-sec { padding-top: 10px; scroll-margin-top: 4px; }
 .man-sec + .man-sec { border-top: 1px solid var(--border); margin-top: 12px; }
 .man-sec h3 { margin: 4px 0 6px; font-size: 15px; }
@@ -669,34 +697,34 @@ dialog#modal.help-dialog .modal-btns { margin-top: 10px; }
 .license-full { margin-top: 4px; }
 .license-full summary { cursor: pointer; font-weight: 600; color: var(--accent); }
 .license-full > p { margin: 6px 0; }
-.license-text { max-height: min(320px, 45vh); max-height: min(320px, 45dvh); overflow: auto; margin: 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--canvas); font: 11.5px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.license-text { max-height: min(320px, 45vh); max-height: min(320px, 45dvh); overflow: auto; margin: 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--canvas); font: 11.5px/1.45 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
 .license-text:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 /* "+ Port Range": two names, and a preview of what they create */
 .range-form { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
 .range-form label { flex: 1 1 160px; display: flex; flex-direction: column; gap: 3px; font-weight: 600; }
-.range-form input { width: 100%; padding: 4px 7px; border: 1px solid var(--border); border-radius: 5px; background: var(--canvas); font-weight: 400; }
+.range-form input { width: 100%; padding: 4px 7px; border: 1px solid var(--control-border); border-radius: 5px; background: var(--canvas); font-weight: 400; }
 .range-preview { min-height: 58px; margin-bottom: 8px; padding: 7px 9px; border: 1px solid var(--border); border-radius: 7px; background: var(--canvas); }
 .range-preview[data-state="error"] { border-color: var(--error); }
 .range-count { font-weight: 600; margin-bottom: 3px; }
 .range-list { max-height: 96px; overflow: auto; font-size: 12px; overflow-wrap: anywhere; }
 .modal-btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
 .dl-label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--muted); }
-.dl-label input { padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--canvas); color: var(--text); font-size: 13px; }
+.dl-label input { padding: 5px 8px; border: 1px solid var(--control-border); border-radius: 6px; background: var(--canvas); color: var(--text); font-size: 13px; }
 .dl-warn { margin-top: 10px; border-left: 4px solid var(--error); padding: 6px 10px; background: var(--canvas); border-radius: 4px; }
-#toast { position: absolute; left: 50%; top: 12px; transform: translateX(-50%); z-index: 40; background: var(--text); color: var(--panel); padding: 6px 14px; border-radius: 8px; font-size: 12.5px; box-shadow: 0 6px 18px rgba(0,0,0,.2); max-width: 80%; }
+#toast { position: absolute; left: 50%; top: 12px; transform: translateX(-50%); z-index: 40; background: var(--text); color: var(--panel); padding: 6px 14px; border-radius: 8px; font-size: 12.5px; box-shadow: 0 6px 18px var(--shadow); max-width: 80%; }
 /* errors marked on the diagram */
 .device.has-error .dev-box, .network.has-error .net-box { stroke: var(--error) !important; stroke-width: 2.4 !important; stroke-dasharray: 5 3; }
 .rel.has-error .rel-line, .rel.has-error .tube-outer { stroke-dasharray: 3 3; }
 /* interfaces without a line of their own: uncabled ports (physical view), virtual and tunnel interfaces (logical view) */
 .if-chip { cursor: pointer; }
 .if-chip rect { fill: var(--pill); stroke: var(--dev-stroke); stroke-width: 1; }
-.if-chip text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: var(--muted) !important; }
+.if-chip text { font-family: var(--font-mono); fill: var(--muted) !important; }
 .if-chip.port-chip rect { stroke-dasharray: 2 2; }
 .if-chip.kind-virtual rect { stroke: var(--accent); }
 .if-chip.kind-tunnel rect { stroke: var(--accent); stroke-dasharray: 4 2; }
 .if-chip:hover rect { stroke: var(--accent); stroke-width: 1.6; }
-.if-chip-prefix { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: var(--muted) !important; }
-.selected.if-chip rect, .selected.loop-chip rect { stroke: var(--sel) !important; stroke-width: 2 !important; }
+.if-chip-prefix { font-family: var(--font-mono); fill: var(--muted) !important; }
+.selected.if-chip rect, .selected.if-entry rect { stroke: var(--sel) !important; stroke-width: 2 !important; }
 /* connecting (right-click): where a connection can start, its first endpoint, and the compatible second endpoints */
 #canvas .conn-start { cursor: context-menu; }
 #canvas.connecting { cursor: crosshair; }
@@ -706,16 +734,27 @@ dialog#modal.help-dialog .modal-btns { margin-top: 10px; }
 #canvas.connecting .conn-no { opacity: .35; cursor: not-allowed; }
 .conn-line { stroke: var(--sel); stroke-width: 2; stroke-dasharray: 6 4; pointer-events: none; }
 /* the connect bar: the keyboard way to pick the second endpoint */
-.connect-bar { position: absolute; left: 12px; bottom: 12px; z-index: 30; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; max-width: calc(100% - 24px); padding: 6px 8px; border: 1px solid var(--sel); border-radius: 8px; background: var(--panel); box-shadow: 0 4px 14px rgba(0, 0, 0, .14); font-size: 12.5px; }
+.connect-bar { position: absolute; left: 12px; bottom: 12px; z-index: 30; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; max-width: calc(100% - 24px); padding: 6px 8px; border: 1px solid var(--sel); border-radius: 8px; background: var(--raised); box-shadow: 0 4px 14px var(--shadow); font-size: 12.5px; }
 .connect-bar[hidden] { display: none; }
 .connect-bar .cb-text { flex: 1 1 220px; min-width: 0; overflow-wrap: anywhere; }
 .connect-bar select { max-width: 100%; min-width: 0; }
-/* loopbacks in the logical view */
-.loop-chip rect { fill: var(--pill); stroke: var(--accent); stroke-width: 1; }
-.loop-chip text { font-size: 9.5px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+/* interface entries in a device box: the name, then its addresses and identifiers, in the monospace font.
+   The kind is told by the frame's line as well as its colour: loopback solid, virtual double weight, tunnel dashed,
+   physical port dotted; the device's own address lines have no frame of their own. */
+.if-entry { cursor: pointer; }
+.if-entry rect { fill: var(--pill); stroke: var(--dev-stroke); stroke-width: 1; }
+.if-entry text { font-family: var(--font-mono); fill: var(--text); }
+.if-entry .if-name { font-weight: 700; }
+.if-entry.loop-chip rect { stroke: var(--accent); }
+.if-entry.kind-virtual rect { stroke: var(--accent); stroke-width: 1.8; }
+.if-entry.kind-tunnel rect { stroke: var(--accent); stroke-dasharray: 5 2; }
+.if-entry.phys-entry rect { stroke-dasharray: 1.5 2; }
+.if-entry.dev-addr { cursor: default; }
+.if-entry.dev-addr rect { fill: none; stroke: none; }
+.if-entry:hover rect { stroke: var(--accent); stroke-width: 1.8; }
 /* configured DNS names under a device (logical view): dashed, unlike the loopback chips */
 .dns-chip rect { fill: var(--pill); stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 2; }
-.dns-chip text { font-size: 9.5px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: var(--muted) !important; }
+.dns-chip text { font-size: 9.5px; font-family: var(--font-mono); fill: var(--muted) !important; }
 
 /* Auto-arrange: three options in one labelled group; the one the view is arranged with is pressed and disabled */
 /* Toolbar groups (View, Auto-arrange, Filters): a label above the controls, both inside a dashed
@@ -739,6 +778,63 @@ body:not([data-state="loaded"]) .view-group .tool-group-title, body:not([data-st
 .arrange-group:not([data-status]) .arrange-btn:disabled, .arrange-group:not([data-status]) .arrange-title { opacity: .45; }
 /* the diagram filters on the start screen: greyed out like the other controls that need a model */
 .opt:has(input:disabled) { opacity: 0.45; cursor: default; }
+
+/* The theme switch: an icon button at the right end of the toolbar, always shown (never in a menu).
+   The icon shows the choice (System: half-filled circle, Light: sun, Dark: moon); the tooltip and
+   the accessible name say the theme in effect and what a press does. */
+.theme-wrap { position: relative; flex: none; margin-left: auto; }
+.theme-btn { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 30px; padding: 0; }
+.theme-btn .ti { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; display: none; }
+.theme-btn .ti-fill { fill: currentColor; stroke: none; }
+.theme-btn[data-pref="system"] .ti-system, .theme-btn[data-pref="light"] .ti-light, .theme-btn[data-pref="dark"] .ti-dark { display: block; }
+.theme-wrap .tip {
+  position: absolute; top: calc(100% + 6px); right: 0; z-index: 50; width: max-content; max-width: min(260px, calc(100vw - 24px));
+  padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--raised); color: var(--text);
+  box-shadow: 0 4px 14px var(--shadow); font-size: 12px; white-space: normal; pointer-events: none; visibility: hidden; opacity: 0; transition: opacity .12s;
+}
+.theme-wrap:hover .tip, .theme-btn:focus-visible + .tip { visibility: visible; opacity: 1; }
+/* a label placed away from what it belongs to (no free place next to it) is tied to it by a thin dashed line */
+.leader { fill: none; stroke: var(--member); stroke-width: 1; stroke-dasharray: 2 2; pointer-events: none; }
+/* overlaps after moving nodes by hand: said in words, outside the picture (never exported) */
+.overlap-hint { position: absolute; right: 12px; bottom: 12px; z-index: 25; max-width: min(420px, calc(100% - 200px)); padding: 5px 10px; border: 1px solid var(--warn); border-radius: 8px; background: var(--raised); color: var(--text); font-size: 12px; box-shadow: 0 2px 8px var(--shadow); }
+.overlap-hint > span:first-child { color: var(--warn); font-weight: 700; }
+.overlap-hint[hidden] { display: none; }
+
+/* System theme before the script runs (derived by the build from :root[data-theme="dark"]) */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+  --bg: #1a1e24;
+  --panel: #20252c;
+  --canvas: #15181d;
+  --raised: #282e36;
+  --grid: #262b33;
+  --text: #e3e6ea;
+  --muted: #9ba4ae;
+  --border: #353c45;
+  --control-border: #737d88;
+  --frame: #737d88;
+  --accent: #7fb2e5;
+  --accent-soft: #22303f;
+  --on-accent: #15181d;
+  --link: #7fb2e5;
+  --dev-fill: #20252c;
+  --dev-stroke: #7a838e;
+  --icon: #c9cfd6;
+  --group-fill: rgba(255, 255, 255, 0.025);
+  --group-strong-fill: rgba(127, 178, 229, 0.05);
+  --group-stroke: #737d88;
+  --halo: #15181d;
+  --member: #737d88;
+  --pill: #20252c;
+  --error: #f08a8a;
+  --warn: #e0b07a;
+  --sel: #e3a857;
+  --ok: #7cc68a;
+  --shadow: rgba(0, 0, 0, 0.45);
+  --backdrop: rgba(0, 0, 0, 0.55);
+  color-scheme: dark;
+}
+}
 
 </style>
 </head>
@@ -834,6 +930,14 @@ body:not([data-state="loaded"]) .view-group .tool-group-title, body:not([data-st
   </div>
   </div>
   </div>
+  <div class="theme-wrap">
+    <button id="theme-btn" type="button" class="theme-btn" aria-label="Theme" aria-describedby="theme-tip" data-pref="system">
+      <svg class="ti ti-system" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 1 0 16z" class="ti-fill"/></svg>
+      <svg class="ti ti-light" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2.5M12 19v2.5M2.5 12H5M19 12h2.5M5.3 5.3l1.8 1.8M16.9 16.9l1.8 1.8M5.3 18.7l1.8-1.8M16.9 7.1l1.8-1.8"/></svg>
+      <svg class="ti ti-dark" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/></svg>
+    </button>
+    <span id="theme-tip" class="tip" role="tooltip">Theme</span>
+  </div>
 </header>
 <main>
   <aside id="outline" aria-label="Model outline">
@@ -853,6 +957,7 @@ body:not([data-state="loaded"]) .view-group .tool-group-title, body:not([data-st
       <button id="connect-cancel" type="button" title="Cancel the connection (Esc)">Cancel</button>
     </div>
     <div id="filter-hint" class="filter-hint" role="status" hidden><span class="fh-icon" aria-hidden="true">⧉</span> <span id="filter-hint-text">Filtered-view positions are temporary and are not saved in YAML.</span></div>
+    <div id="overlap-hint" class="overlap-hint" role="status" hidden><span aria-hidden="true">⚠</span> <span id="overlap-hint-text"></span></div>
     <div class="zoombar" role="toolbar" aria-label="Zoom">
       <button id="zoom-in" type="button" title="Zoom in (+)">+</button>
       <span id="zoom-level">100%</span>
@@ -1001,6 +1106,9 @@ const files_1 = __req("ui/files");
 const strategies_1 = __req("layout/strategies");
 const connect_1 = __req("model/connect");
 const dom_1 = __req("ui/dom");
+const theme_1 = __req("ui/theme");
+const export_style_1 = __req("ui/export-style");
+const palette_1 = __req("diagram/palette");
 const dialogs_1 = __req("ui/dialogs");
 const help_1 = __req("ui/help");
 const inspector_1 = __req("ui/inspector");
@@ -1061,6 +1169,9 @@ class App {
         };
         this.svg = this.$('canvas');
         this.viewport = this.$('viewport');
+        this.theme = new theme_1.ThemeController(doc);
+        (0, dom_1.setPaint)((c) => (0, palette_1.themedColor)(c, this.theme.theme));
+        this.theme.onChange(() => this.themeChanged());
         this.fileAccess = (0, files_1.detectFileAccess)(doc.defaultView);
         this.editor = new inspector_1.Editor(doc, {
             changed: (note) => this.afterEdit(note),
@@ -1071,7 +1182,22 @@ class App {
         }, () => this.mdoc);
         this.wire();
         this.fillExamples();
+        this.updateThemeButton();
         this.updateChrome();
+    }
+    // ---------------------------------------------------------------- theme
+    /** The theme in effect changed: the design tokens switched already; the diagram and legend are repainted in place. */
+    themeChanged() {
+        this.updateThemeButton();
+        this.render();
+    }
+    /** The theme button: its icon shows the choice, its name and tooltip the theme in effect and what a press does. */
+    updateThemeButton() {
+        const btn = this.$('theme-btn');
+        const text = (0, theme_1.themeButtonText)(this.theme.pref, this.theme.theme);
+        btn.setAttribute('aria-label', text);
+        btn.setAttribute('data-pref', this.theme.pref);
+        this.$('theme-tip').textContent = text;
     }
     // ------------------------------------------------------------- loading
     /**
@@ -1765,10 +1891,23 @@ class App {
         const scene = s.render();
         this.bounds = scene.bounds;
         (0, dom_1.mount)(this.viewport, scene.root, true);
+        this.showConflicts(scene.conflicts);
         this.applyHighlight();
         this.applyConnection();
         this.applyZoom();
         this.renderSide();
+    }
+    /**
+     * Overlaps a reader would see (after nodes were moved by hand: labels with
+     * no free place, boxes on top of each other) are never left silent: a note
+     * over the diagram says how many there are and how to remove them. It is
+     * not part of the picture, so no export carries it.
+     */
+    showConflicts(n) {
+        const hint = this.$('overlap-hint');
+        this.svg.setAttribute('data-conflicts', String(n));
+        hint.hidden = n === 0;
+        this.$('overlap-hint-text').textContent = `${n} overlap${n === 1 ? '' : 's'} in the diagram. Auto-arrange places everything without overlaps.`;
     }
     scheduleRender() {
         if (this.rafPending)
@@ -3053,6 +3192,7 @@ class App {
         this.$('btn-outline-filter').addEventListener('click', () => this.openOutlineFilter());
         // Help menu
         this.$('btn-manual').addEventListener('click', () => void this.openHelp('manual'));
+        this.$('theme-btn').addEventListener('click', () => this.theme.cycle());
         this.$('btn-license').addEventListener('click', () => void this.openHelp('license'));
         outline.addEventListener('keydown', (e) => {
             const t = e.target;
@@ -3668,7 +3808,7 @@ class App {
             const st = this.session.state;
             // what the picture shows decides what its legend and its networks overview list
             const scene = this.session.render();
-            const boxes = (0, networks_box_1.exportBoxes)(this.session.viewModel(), st.view, st, { root: scene.root, bounds: b });
+            const boxes = (0, networks_box_1.exportBoxes)(this.session.viewModel(), st.view, st, { root: scene.root, bounds: b, conflicts: scene.conflicts });
             clone.appendChild((0, dom_1.materialize)(boxes.legend.root, this.doc, true));
             clone.appendChild((0, dom_1.materialize)(boxes.networks.root, this.doc, true));
             b = boxes.viewBox;
@@ -3677,20 +3817,55 @@ class App {
         clone.setAttribute('width', String(Math.round(b.w)));
         clone.setAttribute('height', String(Math.round(b.h)));
         clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
-        const style = this.doc.getElementById('app-style');
-        const st = this.doc.createElementNS('http://www.w3.org/2000/svg', 'style');
-        st.textContent = (style && style.textContent) || '';
-        clone.insertBefore(st, clone.firstChild);
-        clone.removeAttribute('class');
-        clone.setAttribute('class', ('export ' + (this.svg.getAttribute('class') || '')).replace(/\bconnecting\b/, '').trim());
-        return { text: new XMLSerializer().serializeToString(clone), width: Math.round(b.w), height: Math.round(b.h) };
+        clone.removeAttribute('id');
+        clone.removeAttribute('role');
+        clone.removeAttribute('aria-label');
+        clone.setAttribute('class', ('export ' + (this.svg.getAttribute('class') || '')).replace(/\bconnecting\b|\bdragging\b/g, '').replace(/\s+/g, ' ').trim());
+        // the picture is drawn in the theme in effect, with resolved colours and an explicit background
+        const bg = this.exportBackground();
+        clone.setAttribute('data-theme', this.theme.theme);
+        const back = this.doc.createElementNS('http://www.w3.org/2000/svg', 'rect');
+        back.setAttribute('class', 'export-background');
+        back.setAttribute('x', String(round(b.x)));
+        back.setAttribute('y', String(round(b.y)));
+        back.setAttribute('width', String(round(b.w)));
+        back.setAttribute('height', String(round(b.h)));
+        clone.insertBefore(back, clone.firstChild);
+        this.withProbe(clone, () => (0, export_style_1.inlineComputedStyles)(clone, this.doc.defaultView));
+        back.setAttribute('fill', bg);
+        back.removeAttribute('stroke');
+        return { text: new XMLSerializer().serializeToString(clone), width: Math.round(b.w), height: Math.round(b.h), background: bg };
     }
-    /** The view on screen as a PNG: the SVG export, drawn onto the diagram's background colour. */
+    /** The diagram's background colour in the theme in effect, as #rrggbb (opaque). */
+    exportBackground() {
+        const win = this.doc.defaultView;
+        const v = win ? win.getComputedStyle(this.$('canvas-wrap')).backgroundColor : '';
+        const p = (0, export_style_1.resolvedPaint)(v || '');
+        return p.color.charAt(0) === '#' && p.alpha === 1 ? p.color : this.theme.theme === 'dark' ? '#15181d' : '#fbfcfd';
+    }
+    /**
+     * Run `fn` while `svg` is part of the document (off screen, at its natural
+     * size), where the stylesheet applies to it as to the diagram on screen.
+     */
+    withProbe(svg, fn) {
+        const holder = this.doc.createElement('div');
+        holder.className = 'export-probe';
+        holder.setAttribute('aria-hidden', 'true');
+        holder.style.cssText = 'position:fixed;left:-100000px;top:0;width:10px;height:10px;overflow:hidden;pointer-events:none';
+        holder.appendChild(svg);
+        this.doc.body.appendChild(holder);
+        try {
+            fn();
+        }
+        finally {
+            holder.removeChild(svg);
+            this.doc.body.removeChild(holder);
+        }
+    }
+    /** The view on screen as a PNG: the SVG export (same resolved colours) on its opaque background. */
     exportPng() {
         const pic = this.buildExport();
-        const win = this.doc.defaultView;
-        const bg = win ? win.getComputedStyle(this.$('canvas-wrap')).backgroundColor : '';
-        return (0, files_1.svgToPng)(this.doc, pic.text, pic.width, pic.height, bg && bg !== 'rgba(0, 0, 0, 0)' ? bg : '#ffffff');
+        return (0, files_1.svgToPng)(this.doc, pic.text, pic.width, pic.height, pic.background);
     }
     /** Name of an exported picture: the model's file name and the view, e.g. "enterprise-wan-logical.png". */
     exportName(format) {
@@ -5437,6 +5612,9 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.cmp = void 0;
 exports.defaultTier = defaultTier;
 exports.layoutInput = layoutInput;
+exports.entryTexts = entryTexts;
+exports.memberAddresses = memberAddresses;
+exports.linkLabelExtra = linkLabelExtra;
 exports.linkNetworkLabel = linkNetworkLabel;
 exports.linkLabelText = linkLabelText;
 exports.layoutSignature = layoutSignature;
@@ -5446,9 +5624,11 @@ exports.layoutSignature = layoutSignature;
  * Auto-arrange is a pure function of this structure and of nothing else, so
  * two models that differ only in YAML key order, section order, the order of
  * list items (devices, interfaces, links, members, endpoints …), comments,
- * formatting, or fields that do not affect geometry (attrs,
- * protocols, addresses that do not change which network a device belongs
- * to …) get exactly the same positions.
+ * formatting, or fields that do not affect geometry (attrs without an
+ * address, protocols, an address replaced by one just as long that is in the
+ * same networks …) get exactly the same positions. Addresses and identifiers
+ * are drawn in full (model/addresses.ts), so the input holds the sizes they
+ * need, never the text itself.
  *
  * Everything is sorted by id with plain code-unit string comparison (never
  * localeCompare, which depends on the browser locale).
@@ -5458,6 +5638,7 @@ const protocols_1 = __req("model/protocols");
 const derive_1 = __req("model/derive");
 const order_1 = __req("model/order");
 const types_1 = __req("model/types");
+const addresses_1 = __req("model/addresses");
 const bundles_1 = __req("layout/bundles");
 const order_2 = __req("layout/order");
 Object.defineProperty(exports, "cmp", { enumerable: true, get: function () { return order_2.cmp; } });
@@ -5499,13 +5680,13 @@ function layoutInput(m) {
             tier: d.tier !== undefined ? d.tier : defaultTier(d.type),
             group: d.group || null,
             loopbacks: (0, types_1.loopbacks)(d).length,
-            // over all loopbacks, not only the ones shown, so the order in the file doesn't matter
-            chipW: (0, types_1.loopbacks)(d).reduce((m, l) => Math.max(m, chipNeed(l.id, l.addresses)), 0),
+            physList: (0, sizes_1.entriesSize)(entryTexts(m, d, 'physical')),
+            logList: (0, sizes_1.entriesSize)(entryTexts(m, d, 'logical')),
             dns: uniqSorted(d.dnsNames.map((n) => n.name).filter((n) => !!n)),
             spare: (0, order_1.sortedByName)(d.interfaces.filter((i) => !m.index.ifaceLink.has((0, types_1.ifaceKey)(d.id, i.id))).map((i) => i.id), (x) => x),
             logical: (0, order_1.sortedByName)(d.logical.filter((i) => i.type !== 'loopback').map((i) => i.id), (x) => x),
         }))),
-        groups: byId(m.groups.map((g) => ({ id: g.id, parent: g.parent || null, label: g.label, kind: g.kind }))),
+        groups: byId(m.groups.map((g) => ({ id: g.id, parent: g.parent || null, label: g.label, kind: g.kind, extra: (0, addresses_1.addressAttrLines)(g.attrs) }))),
         links: byId(m.links.map((l) => {
             // endpoints in canonical order so "a/b" swapped is the same cable
             const ea = l.a.iface ? { device: l.a.device, iface: l.a.iface } : { device: l.a.device };
@@ -5518,24 +5699,55 @@ function layoutInput(m) {
             id: n.id,
             label: n.label,
             sub: (0, sizes_1.networkSubtitle)(n.cidr, n.vlan),
+            extra: (0, addresses_1.addressAttrLines)(n.attrs),
             // derived from the addresses inside the network's prefixes
             members: uniqSorted((0, derive_1.networkMembers)(m, n.id).map((x) => x.device)),
+            memberLabels: memberLabelSizes(m, n.id),
         }))),
         relations: byId(m.relations.map((r) => {
             const devices = uniqSorted((0, types_1.relationDevices)(r));
-            return { id: r.id, devices, hubLabel: devices.length >= 3 ? (0, protocols_1.relationStyle)(m, r).label + (r.label ? ' · ' + r.label : '') : '' };
+            const hub = devices.length >= 3;
+            return { id: r.id, devices, hubLabel: hub ? (0, protocols_1.relationStyle)(m, r).label + (r.label ? ' · ' + r.label : '') : '', hubExtra: hub ? (0, addresses_1.addressAttrLines)(r.attrs) : [] };
         })),
         pairs: Array.from((0, bundles_1.relationPairs)(m.relations).entries()).map(([key, rels]) => {
             const bundle = (0, bundles_1.buildBundle)(m, key, rels);
-            return { a: bundle.a, b: bundle.b, labels: bundle.lanes.filter((p) => p.root).map(bundles_1.laneLabel), width: bundle.width };
+            const roots = bundle.lanes.filter((p) => p.root);
+            return { a: bundle.a, b: bundle.b, labels: roots.map(bundles_1.laneLabel), extras: roots.map((p) => p.extra), width: bundle.width };
         }),
-        linkLabels: byId(m.links.map((l) => ({ id: l.id, text: linkLabelText(m, l) })).filter((x) => x.text !== '')),
+        linkLabels: byId(m.links.map((l) => ({ id: l.id, text: linkLabelText(m, l), extra: linkLabelExtra(l) })).filter((x) => x.text !== '' || x.extra.length > 0)),
     };
 }
-/** Width a loopback's chip needs whichever of its addresses is written first (the chip shows the first one). */
-function chipNeed(id, addresses) {
-    const firsts = addresses.length ? addresses : [''];
-    return firsts.reduce((m, a) => Math.max(m, Math.ceil((0, sizes_1.chipTextWidth)((0, sizes_1.loopbackChipText)(id, a ? [a].concat(addresses.slice(1)) : [])))), 0);
+/**
+ * The entries a device's box holds in a view: its own address lines (an
+ * entry without a name), then one entry per interface (model/addresses.ts).
+ */
+function entryTexts(m, d, view) {
+    const own = (0, addresses_1.deviceAddressLines)(d);
+    const out = own.length ? [{ header: '', lines: own }] : [];
+    for (const e of (0, addresses_1.deviceEntries)(m, d, view))
+        out.push({ header: e.header, lines: e.lines });
+    return out;
+}
+/**
+ * The addresses written on the membership line of a device and a network:
+ * every address of the device that lies in the network, in display order.
+ */
+function memberAddresses(m, networkId, device) {
+    const mem = (0, derive_1.networkMembers)(m, networkId).find((x) => x.device === device);
+    if (!mem)
+        return [];
+    const all = mem.matches.map((x) => x.address);
+    return (0, addresses_1.orderedAddresses)(Array.from(new Set(all)));
+}
+function memberLabelSizes(m, networkId) {
+    return uniqSorted((0, derive_1.networkMembers)(m, networkId).map((x) => x.device)).map((d) => {
+        const b = (0, sizes_1.memberLabelBox)(memberAddresses(m, networkId, d));
+        return [d, b.w, b.h];
+    });
+}
+/** Lines under a cable's label, kept whole: its cable id and its address-like attrs. */
+function linkLabelExtra(l) {
+    return (l.cable ? ['cable ' + l.cable] : []).concat((0, addresses_1.addressAttrLines)(l.attrs));
 }
 /**
  * The networks a cable carries, for its label: the names of the networks
@@ -6246,6 +6458,222 @@ function sortedByName(items, name) {
 }
 
 };
+__defs["model/addresses"] = function (module, exports) {
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.isAddressToken = isAddressToken;
+exports.hasAddress = hasAddress;
+exports.addressAttrLines = addressAttrLines;
+exports.orderedAddresses = orderedAddresses;
+exports.interfaceEntry = interfaceEntry;
+exports.deviceEntries = deviceEntries;
+exports.deviceAddressLines = deviceAddressLines;
+exports.addressInventory = addressInventory;
+/**
+ * The addresses and identifiers the diagrams show, and where.
+ *
+ * Every address or identifier of the model is written into the diagram
+ * itself, next to the object it belongs to, in full (never shortened):
+ *
+ *   interface   (an entry in its device's box)  id, label, VLAN, VRF, DHCP,
+ *               addresses (IPv4 first, then IPv6, each with its prefix
+ *               length, in file order within a family), MAC, a tunnel's
+ *               source and destination, an aggregate's member ports, and
+ *               address-like attrs;
+ *   device      address-like attrs (an entry without a name in its box);
+ *   network     prefix and VLAN (the network node), address-like attrs;
+ *   link        cable id, address-like attrs (the cable label; the link-end
+ *               networks are named there already);
+ *   relation    address-like attrs (its label; e.g. a VRRP virtual-ip, a BGP
+ *               peer address, an SR-TE endpoint);
+ *   group       address-like attrs (under its title).
+ *
+ * Views: the physical view shows the physical interfaces that have anything
+ * to show; the logical view shows every loopback, virtual and tunnel
+ * interface and the physical interfaces with layer-3 facts (address, DHCP,
+ * VRF, VLAN). An interface drawn in both views shows the same entry in both.
+ *
+ * "Address-like" attrs are those whose value contains an IPv4 or IPv6
+ * address or prefix, or a MAC address. Free-form attrs are display-only, so
+ * this is a display rule; nothing about the model changes.
+ */
+const derive_1 = __req("model/derive");
+const ip_1 = __req("model/ip");
+const order_1 = __req("model/order");
+const MAC = /^(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}$|^(?:[0-9a-f]{4}\.){2}[0-9a-f]{4}$/i;
+/** Is this one token an IPv4/IPv6 address or prefix, or a MAC address? */
+function isAddressToken(t) {
+    const s = t.trim().replace(/^[\[(]|[\]),;]$/g, '');
+    if (!s)
+        return false;
+    return !!(0, ip_1.parseAddress)(s) || !!(0, ip_1.parsePrefix)(s) || MAC.test(s);
+}
+/** Does a free-form value contain an address (IPv4/IPv6 address or prefix, MAC)? */
+function hasAddress(v) {
+    return v.split(/[\s,;]+/).some(isAddressToken);
+}
+function cmp(a, b) {
+    return a < b ? -1 : a > b ? 1 : 0;
+}
+/** The address-like attrs as "key value" lines, sorted by key (the order in the file changes nothing). */
+function addressAttrLines(attrs) {
+    return attrs
+        .filter(([, v]) => hasAddress(v))
+        .map(([k, v]) => [k, k + ' ' + v.replace(/\s+/g, ' ').trim()])
+        .sort((p, q) => cmp(p[0], q[0]) || cmp(p[1], q[1]))
+        .map((x) => x[1]);
+}
+/**
+ * Addresses in display order: IPv4, then IPv6, each in numeric order (then
+ * by prefix length), then anything that is not an address, as written. The
+ * order in the file changes nothing, so dual-stack addresses always read the
+ * same way.
+ */
+function orderedAddresses(addrs) {
+    const key = (a) => {
+        const p = (0, ip_1.parsePrefix)(a, false);
+        if (!p)
+            return { f: 2, k: a };
+        const hex = (b) => (b < 16 ? '0' : '') + b.toString(16);
+        return { f: p.version === 4 ? 0 : 1, k: p.bytes.map(hex).join('') + '/' + hex(p.prefix) };
+    };
+    return addrs
+        .map((a) => ({ a, ...key(a) }))
+        .sort((p, q) => p.f - q.f || cmp(p.k, q.k) || cmp(p.a, q.a))
+        .map((x) => x.a);
+}
+/** Longest line a list such as an aggregate's members is written on (the list continues on the next line). */
+const LIST_LINE = 44;
+function listLines(head, items) {
+    const out = [];
+    let cur = head;
+    for (const it of items) {
+        const sep = cur === head ? ' ' : ', ';
+        if (cur !== head && (cur + sep + it).length > LIST_LINE) {
+            out.push(cur + ',');
+            cur = '  ' + it;
+        }
+        else
+            cur += sep + it;
+    }
+    out.push(cur);
+    return out;
+}
+/** The layer-3 facts of an interface (what puts a physical interface into the logical view). */
+function l3Lines(model, i) {
+    const tags = [];
+    const vlan = i.type === 'virtual' ? (0, derive_1.interfaceVlans)(model, i).map((v) => 'VLAN ' + v).join(', ') : (0, derive_1.interfaceVlanText)((0, derive_1.interfaceAddresses)(model, i.device, i.id));
+    if (vlan)
+        tags.push(vlan);
+    if (i.vrf)
+        tags.push('VRF ' + i.vrf);
+    if (i.dhcp)
+        tags.push('DHCP');
+    const out = tags.length ? [tags.join(' · ')] : [];
+    return out.concat(orderedAddresses(i.addresses));
+}
+function interfaceEntry(model, i) {
+    const lines = l3Lines(model, i);
+    if (i.type === 'loopback' && !i.addresses.length)
+        lines.push('(no address)');
+    if (i.mac)
+        lines.push('MAC ' + i.mac);
+    if (i.source)
+        lines.push('src ' + i.source.text);
+    if (i.destination)
+        lines.push('dst ' + i.destination.text);
+    if (i.members.length)
+        lines.push(...listLines('members', (0, order_1.sortedByName)(i.members, (x) => x)));
+    lines.push(...addressAttrLines(i.attrs));
+    const label = i.label && i.label !== i.id ? i.id + ' · ' + i.label : i.id;
+    return { ref: `iface:${i.device}:${i.id}`, device: i.device, id: i.id, kind: i.type, header: label, lines };
+}
+/** Interfaces in display order: by name, numbers by value (lo2 before lo10; model/order.ts). */
+function byId(a, b) {
+    return (0, order_1.compareNames)(a.id, b.id);
+}
+/**
+ * The interface entries of a device in a view, in a fixed order (that of
+ * the names, so the file's order changes nothing): in the logical view
+ * loopbacks, then virtual and tunnel interfaces, then physical ones.
+ */
+function deviceEntries(model, d, view) {
+    if (view === 'physical') {
+        return d.interfaces
+            .slice()
+            .sort(byId)
+            .map((i) => interfaceEntry(model, i))
+            .filter((e) => e.lines.length > 0 || e.header !== e.id);
+    }
+    const rank = (i) => (i.type === 'loopback' ? 0 : i.type === 'physical' ? 2 : 1);
+    const logical = d.logical.slice().sort((a, b) => rank(a) - rank(b) || byId(a, b));
+    const phys = d.interfaces.filter((i) => l3Lines(model, i).length > 0).sort(byId);
+    return logical.concat(phys).map((i) => interfaceEntry(model, i));
+}
+/** Lines of a device's own address-like attrs (drawn in its box, in both views). */
+function deviceAddressLines(d) {
+    return addressAttrLines(d.attrs);
+}
+function addressInventory(model) {
+    const out = [];
+    const add = (owner, field, text, views) => {
+        if (text)
+            out.push({ owner, field, text, views });
+    };
+    const attrs = (owner, a, views) => {
+        for (const [k, v] of a)
+            if (hasAddress(v))
+                add(owner, 'attrs.' + k, v.replace(/\s+/g, ' ').trim(), views);
+    };
+    for (const g of model.groups)
+        attrs('group:' + g.id, g.attrs, ['physical', 'logical']);
+    for (const d of model.devices) {
+        attrs('device:' + d.id, d.attrs, ['physical', 'logical']);
+        for (const i of d.interfaces.concat(d.logical)) {
+            const owner = `iface:${d.id}:${i.id}`;
+            const physical = i.type === 'physical';
+            const inLogical = !physical || l3Lines(model, i).length > 0;
+            const views = physical ? (inLogical ? ['physical', 'logical'] : ['physical']) : ['logical'];
+            add(owner, 'id', i.id, views);
+            for (const a of i.addresses)
+                add(owner, 'ip', a, views);
+            if (i.mac)
+                add(owner, 'mac', i.mac, views);
+            if (i.vrf)
+                add(owner, 'vrf', i.vrf, views);
+            if (i.vlan !== undefined)
+                add(owner, 'vlan', 'VLAN ' + i.vlan, views);
+            if (i.source)
+                add(owner, 'source', i.source.text, views);
+            if (i.destination)
+                add(owner, 'destination', i.destination.text, views);
+            for (const m of i.members)
+                add(owner, 'members', m, views);
+            attrs(owner, i.attrs, views);
+        }
+        for (const n of d.dnsNames)
+            add('device:' + d.id, 'dns_names', n.name, ['logical']);
+    }
+    for (const n of model.networks) {
+        if (n.cidr)
+            add('network:' + n.id, 'cidr', n.cidr, ['logical']);
+        if (n.vlan !== undefined)
+            add('network:' + n.id, 'vlan', 'VLAN ' + n.vlan, ['logical']);
+        attrs('network:' + n.id, n.attrs, ['logical']);
+    }
+    for (const l of model.links) {
+        if (l.cable)
+            add('link:' + l.id, 'cable', l.cable, ['physical']);
+        attrs('link:' + l.id, l.attrs, ['physical']);
+    }
+    // a relation is drawn between two or more devices (a nested one is named in its carrier's label)
+    for (const r of model.relations)
+        if (new Set(r.endpoints.map((e) => e.device)).size >= 2)
+            attrs('relation:' + r.id, r.attrs, ['logical']);
+    return out;
+}
+
+};
 __defs["layout/bundles"] = function (module, exports) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
@@ -6260,6 +6688,7 @@ exports.buildBundle = buildBundle;
  * tunnel's tube. Both the layout (to reserve room for the lanes and their
  * labels) and the logical renderer (to draw them) use this one definition.
  */
+const addresses_1 = __req("model/addresses");
 const protocols_1 = __req("model/protocols");
 const types_1 = __req("model/types");
 const order_1 = __req("layout/order");
@@ -6331,8 +6760,11 @@ function buildBundle(model, key, rels) {
     const stackLabel = (ln) => ln.def.label +
         (ln.rel.label ? ' · ' + ln.rel.label : '') +
         (ln.children.length === 1 ? ' › ' + stackLabel(ln.children[0]) : ln.children.length > 1 ? ' › (' + ln.children.map(stackLabel).join(', ') + ')' : '');
+    const stackExtra = (ln, nested) => (0, addresses_1.addressAttrLines)(ln.rel.attrs)
+        .map((l) => (nested ? ln.def.label + ': ' + l : l))
+        .concat(...ln.children.map((c) => stackExtra(c, true)));
     const place = (ln, offset, depth, root) => {
-        placed.push({ rel: ln.rel, def: ln.def, offset, width: ln.width, depth, stack: stackLabel(ln), root });
+        placed.push({ rel: ln.rel, def: ln.def, offset, width: ln.width, depth, stack: stackLabel(ln), root, extra: stackExtra(ln, false) });
         if (!ln.children.length)
             return;
         const inner = ln.children.reduce((s, c) => s + c.width, 0) + 3 * (ln.children.length - 1);
@@ -6364,21 +6796,22 @@ function cmp(a, b) {
 __defs["layout/sizes"] = function (module, exports) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.IFCHIP_SHORTEN_FROM = exports.IFCHIP_PAD = exports.IFCHIP_GAP = exports.IFCHIP_H = exports.IFCHIP_FONT = exports.lineHeight = exports.MEMBER_LABEL_SIZE = exports.LINK_LABEL_MAX_W = exports.LINK_LABEL_SIZE = exports.PILL_MAX_W = exports.PILL_SIZE = exports.GROUP_KIND_SIZE = exports.GROUP_TITLE_SIZE = exports.GROUP_PAD = exports.NET_TEXT_MAX_W = exports.NET_SUB_SIZE = exports.NET_LABEL_SIZE = exports.DNS_LINE_CHARS = exports.MAX_DNS = exports.CHIP_FONT = exports.LOGICAL_DEVICE_MIN_H = exports.LOGICAL_DEVICE_MIN_W = exports.DEVICE_TEXT_X = exports.DEVICE_ICON = exports.DEVICE_TEXT_MAX_W = exports.DEVICE_SUB_SIZE = exports.DEVICE_LABEL_SIZE = exports.CHIP_H = exports.HUB_R = void 0;
+exports.IFCHIP_SHORTEN_FROM = exports.IFCHIP_PAD = exports.IFCHIP_GAP = exports.IFCHIP_H = exports.IFCHIP_FONT = exports.lineHeight = exports.MEMBER_LABEL_SIZE = exports.LINK_LABEL_MAX_W = exports.LINK_LABEL_SIZE = exports.PILL_MAX_W = exports.PILL_SIZE = exports.GROUP_KIND_SIZE = exports.GROUP_TITLE_SIZE = exports.GROUP_PAD = exports.NET_TEXT_MAX_W = exports.NET_SUB_SIZE = exports.NET_LABEL_SIZE = exports.ENTRY_MARGIN = exports.ENTRY_GAP = exports.ENTRY_PAD_Y = exports.ENTRY_PAD_X = exports.ENTRY_LH = exports.ENTRY_FONT = exports.DNS_LINE_CHARS = exports.CHIP_FONT = exports.LOGICAL_DEVICE_MIN_H = exports.LOGICAL_DEVICE_MIN_W = exports.DEVICE_TEXT_X = exports.DEVICE_ICON = exports.DEVICE_TEXT_MAX_W = exports.DEVICE_SUB_SIZE = exports.DEVICE_LABEL_SIZE = exports.CHIP_H = exports.HUB_R = void 0;
 exports.deviceBody = deviceBody;
 exports.chipTextWidth = chipTextWidth;
-exports.loopbackChipText = loopbackChipText;
-exports.chipRows = chipRows;
 exports.dnsNameLines = dnsNameLines;
 exports.dnsShown = dnsShown;
 exports.dnsSize = dnsSize;
+exports.entryBox = entryBox;
+exports.entriesSize = entriesSize;
 exports.logicalDeviceSize = logicalDeviceSize;
-exports.logicalChipFlow = logicalChipFlow;
+exports.underBody = underBody;
 exports.networkBody = networkBody;
 exports.networkSubtitle = networkSubtitle;
 exports.groupHeader = groupHeader;
 exports.pillBox = pillBox;
 exports.linkLabelBox = linkLabelBox;
+exports.memberLabelBox = memberLabelBox;
 exports.chipTexts = chipTexts;
 exports.chipFlow = chipFlow;
 exports.chipStripH = chipStripH;
@@ -6422,19 +6855,9 @@ exports.LOGICAL_DEVICE_MIN_H = 50;
 exports.CHIP_FONT = 9.5;
 /** Chips use a monospace font. */
 function chipTextWidth(s) {
-    return s.length * exports.CHIP_FONT * 0.62;
+    return (0, text_1.monoWidth)(s, exports.CHIP_FONT);
 }
-/** Text of a loopback chip: id, first address, number of further addresses. */
-function loopbackChipText(id, addresses) {
-    return id + '  ' + (addresses[0] || '(no address)') + (addresses.length > 1 ? ' +' + (addresses.length - 1) : '');
-}
-/** Number of chip rows below the device box: one per loopback (every one is shown). */
-function chipRows(loopbackCount) {
-    return loopbackCount;
-}
-/** DNS names shown under a device in the logical view; more are summed up in a "+N more names" row */
-exports.MAX_DNS = 2;
-/** a DNS name longer than this many characters continues on a further line, broken after a dot */
+/** A DNS name longer than this many characters continues on a further line, broken after a dot */
 exports.DNS_LINE_CHARS = 30;
 /** The lines a DNS name is written on: whole when it is short, else broken after dots (never shortened). */
 function dnsNameLines(name) {
@@ -6459,21 +6882,15 @@ function dnsNameLines(name) {
         lines.push(cur);
     return lines;
 }
-/**
- * The DNS names of a device as the logical view shows them: each name once
- * (however many interfaces it belongs to), in a fixed order, at most
- * MAX_DNS of them, and how many more there are.
- */
+/** The DNS names of a device as the logical view shows them: every one, each once, in a fixed order. */
 function dnsShown(names) {
-    const all = Array.from(new Set(names)).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
-    return { names: all.slice(0, exports.MAX_DNS), more: Math.max(0, all.length - exports.MAX_DNS) };
+    return Array.from(new Set(names)).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
 }
-/** Rows (of CHIP_H) and width the DNS names of a device take under it. */
+/** Rows (of CHIP_H) and width the DNS names of a device take in its box. */
 function dnsSize(names) {
-    const s = dnsShown(names);
-    let rows = s.more ? 1 : 0;
+    let rows = 0;
     let w = 0;
-    for (const n of s.names) {
+    for (const n of dnsShown(names)) {
         const lines = dnsNameLines(n);
         rows += lines.length;
         for (const l of lines)
@@ -6481,33 +6898,70 @@ function dnsSize(names) {
     }
     return { rows, w };
 }
+// -------------------------------------------------------- interface entries
 /**
- * A device in the logical view: its body, plus what hangs under it: a row per
- * loopback, the chips of its other logical interfaces (virtual, tunnel) and
- * its DNS names. The node is as wide as its widest row needs.
+ * An interface's addresses and identifiers are an entry in its device's box
+ * (model/addresses.ts says which): a name line, then one line per fact, in
+ * the monospace font, never wrapped or shortened. The entries of a device
+ * are stacked under its label; the box is as wide as the widest line needs.
  */
-function logicalDeviceSize(label, sub, chipW, loopbackCount, dnsNames = [], logicalIds = []) {
+exports.ENTRY_FONT = 10;
+exports.ENTRY_LH = (0, text_1.lineHeight)(exports.ENTRY_FONT);
+exports.ENTRY_PAD_X = 5;
+exports.ENTRY_PAD_Y = 3;
+exports.ENTRY_GAP = 3;
+/** distance of the entries from the sides of the device box */
+exports.ENTRY_MARGIN = 8;
+function entryBox(e) {
+    const all = e.header ? [e.header].concat(e.lines) : e.lines;
+    const w = all.reduce((m, l) => Math.max(m, (0, text_1.monoWidth)(l, exports.ENTRY_FONT)), 0);
+    return { w: Math.ceil(w) + 2 * exports.ENTRY_PAD_X, h: all.length * exports.ENTRY_LH + 2 * exports.ENTRY_PAD_Y };
+}
+/** Width and height of a device's stacked entries ([0, 0] without any). */
+function entriesSize(es) {
+    if (!es.length)
+        return [0, 0];
+    let w = 0;
+    let h = 0;
+    for (const e of es) {
+        const b = entryBox(e);
+        w = Math.max(w, b.w);
+        h += b.h;
+    }
+    return [w, h + exports.ENTRY_GAP * (es.length - 1)];
+}
+/**
+ * A device in the logical view: its label, the entries of its interfaces
+ * and its DNS names, all inside its box. `list` is entriesSize() of its
+ * entries. `bodyH` is the height of the label part (icon and name).
+ */
+function logicalDeviceSize(label, sub, list, dnsNames = []) {
     const body = deviceBody(label, sub, exports.LOGICAL_DEVICE_MIN_W, exports.LOGICAL_DEVICE_MIN_H);
     const dns = dnsSize(dnsNames);
-    const rows = chipRows(loopbackCount) + dns.rows;
-    const need = Math.max(chipW, dns.w);
-    let w = Math.max(body.w, need ? need + 16 + 12 : 0);
-    const flow = logicalChipFlow(logicalIds, w);
-    w = Math.max(w, flow.w + 16);
-    const under = (rows ? rows * exports.CHIP_H : 0) + (flow.items.length ? flow.h + exports.IFCHIP_GAP : 0);
-    return { w, h: body.h + (under ? under + 6 : 0), bodyH: body.h };
+    const w = Math.max(body.w, list[0] ? list[0] + 2 * exports.ENTRY_MARGIN : 0, dns.w ? dns.w + 16 + 12 : 0);
+    return { w, h: body.h + underBody(list[1], dns.rows), bodyH: body.h };
 }
-/** The chips of a logical-view device's virtual and tunnel interfaces, for a node `w` wide. */
-function logicalChipFlow(ids, w) {
-    return chipFlow(ids, Math.max(60, w - 16));
+/** Height under a device's label: its entries, then its DNS names, then a margin. */
+function underBody(listH, dnsRows) {
+    if (!listH && !dnsRows)
+        return 0;
+    return listH + (listH && dnsRows ? exports.ENTRY_GAP : 0) + dnsRows * exports.CHIP_H + exports.ENTRY_MARGIN;
 }
 // ----------------------------------------------------------------- networks
 exports.NET_LABEL_SIZE = 12;
 exports.NET_SUB_SIZE = 10;
 exports.NET_TEXT_MAX_W = 210;
-function networkBody(label, sub) {
+/**
+ * A network node: its name (wrapped), its prefix and VLAN on one line that
+ * is never broken (the prefix is an address), and address-like attrs.
+ */
+function networkBody(label, sub, extra = []) {
     const l = (0, text_1.textBlock)(label, exports.NET_LABEL_SIZE, exports.NET_TEXT_MAX_W);
-    const s = (0, text_1.textBlock)(sub, exports.NET_SUB_SIZE, exports.NET_TEXT_MAX_W);
+    const lines = (sub ? [sub] : []).concat(extra);
+    const w = lines.reduce((m, x, i) => Math.max(m, i >= (sub ? 1 : 0) ? (0, text_1.monoWidth)(x, exports.NET_SUB_SIZE) : (0, text_1.textWidth)(x, exports.NET_SUB_SIZE)), 0);
+    const s = { lines, size: exports.NET_SUB_SIZE, w, h: lines.length * (0, text_1.lineHeight)(exports.NET_SUB_SIZE), mono: extra.length ? (sub ? 1 : 0) : undefined };
+    if (s.mono === undefined)
+        delete s.mono;
     return { label: l, sub: s, w: Math.max(120, Math.ceil(Math.max(l.w, s.w) + 36)), h: Math.max(32, l.h + s.h + 14) };
 }
 /** Second line of a network: its VLAN and all of its prefixes (in a fixed order). */
@@ -6526,31 +6980,38 @@ exports.GROUP_KIND_SIZE = 9.5;
 /**
  * Title area of a group box whose content is `innerW` wide. The title wraps
  * at the width the content gives it (at least 260), and the kind keeps its
- * place at the right of the first line.
+ * place at the right of the first line. Address-like attrs of the group
+ * follow the title, each on a line of its own.
  */
-function groupHeader(label, kind, innerW) {
+function groupHeader(label, kind, innerW, extra = []) {
     const kindText = kind.toUpperCase();
     const kindW = kindText ? (0, text_1.textWidth)(kindText, exports.GROUP_KIND_SIZE) * 1.1 + 18 : 0;
     const boxW = innerW + 2 * exports.GROUP_PAD;
     const avail = Math.max(260, boxW - 28 - kindW);
-    const title = (0, text_1.textBlock)(label, exports.GROUP_TITLE_SIZE, avail);
+    const title = (0, text_1.labelWithAddresses)(label, extra, exports.GROUP_TITLE_SIZE, avail);
     return { title, kind: kindText, h: Math.max(30, title.h + 14), minW: Math.ceil(title.w + 28 + kindW) };
 }
 // ------------------------------------------------------------------- labels
 exports.PILL_SIZE = 10;
 exports.PILL_MAX_W = 240;
-/** A relation label ("pill"): its wrapped text and outer size. */
-function pillBox(text) {
-    const block = (0, text_1.textBlock)(text, exports.PILL_SIZE, exports.PILL_MAX_W);
+/** A relation label ("pill"): its wrapped text, then its address lines (kept whole), and its outer size. */
+function pillBox(text, extra = []) {
+    const block = (0, text_1.labelWithAddresses)(text, extra, exports.PILL_SIZE, exports.PILL_MAX_W);
     return { block, w: Math.ceil(block.w + 16), h: Math.max(18, block.h + 6) };
 }
 exports.LINK_LABEL_SIZE = 10.5;
 exports.LINK_LABEL_MAX_W = 190;
-function linkLabelBox(text) {
-    const block = (0, text_1.textBlock)(text, exports.LINK_LABEL_SIZE, exports.LINK_LABEL_MAX_W);
+/** A cable label: speed, networks and label (wrapped), then its cable id and address lines (kept whole). */
+function linkLabelBox(text, extra = []) {
+    const block = (0, text_1.labelWithAddresses)(text, extra, exports.LINK_LABEL_SIZE, exports.LINK_LABEL_MAX_W);
     return { block, w: Math.ceil(block.w + 8), h: block.h + 2 };
 }
 exports.MEMBER_LABEL_SIZE = 10;
+/** The addresses on a membership line: every address of the device inside the network, one per line, whole. */
+function memberLabelBox(addresses) {
+    const block = (0, text_1.labelWithAddresses)('', addresses, exports.MEMBER_LABEL_SIZE, Infinity);
+    return { block, w: Math.ceil(block.w + 4), h: block.h };
+}
 // ---------------------------------------------------------- interface chips
 /**
  * Interfaces that have no line of their own in a view are drawn as small
@@ -6631,11 +7092,14 @@ __defs["layout/text"] = function (module, exports) {
  * Auto-arrange deterministic. The estimate is deliberately a little wide.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.MONO_EM = void 0;
 exports.textWidth = textWidth;
 exports.lineHeight = lineHeight;
 exports.explicitLines = explicitLines;
 exports.wrapText = wrapText;
 exports.textBlock = textBlock;
+exports.monoWidth = monoWidth;
+exports.labelWithAddresses = labelWithAddresses;
 /** Estimated advance of one character, in em, for the UI font at label weight. */
 function charEm(c) {
     const code = c.charCodeAt(0);
@@ -6738,12 +7202,35 @@ function textBlock(s, size, maxW) {
     const lines = wrapText(s, size, maxW);
     return { lines, size, w: lines.reduce((m, l) => Math.max(m, textWidth(l, size)), 0), h: lines.length * lineHeight(size) };
 }
+/**
+ * Estimated advance of a monospace character, in em. Addresses are drawn in
+ * the monospace font; real monospace fonts advance 0.55–0.60 em, so this
+ * estimate is a little wide, like the one above.
+ */
+exports.MONO_EM = 0.62;
+/** Estimated width of a line in the monospace font. */
+function monoWidth(s, size) {
+    return s.length * size * exports.MONO_EM;
+}
+/**
+ * A label followed by address lines: the label wraps as usual, the address
+ * lines are kept whole (an address is never broken across lines or
+ * shortened) and are drawn in the monospace font. `mono` is the index of the
+ * first address line; the block is as wide as its widest line.
+ */
+function labelWithAddresses(label, addresses, size, maxW) {
+    const lines = label ? wrapText(label, size, maxW) : [];
+    const mono = lines.length;
+    const all = lines.concat(addresses);
+    const w = all.reduce((m, l, i) => Math.max(m, i >= mono ? monoWidth(l, size) : textWidth(l, size)), 0);
+    return addresses.length ? { lines: all, size, w, h: all.length * lineHeight(size), mono } : { lines: all, size, w, h: all.length * lineHeight(size) };
+}
 
 };
 __defs["layout/logical"] = function (module, exports) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.networkSubtitle = exports.chipRows = exports.HUB_R = exports.CHIP_H = void 0;
+exports.networkSubtitle = exports.HUB_R = exports.CHIP_H = void 0;
 exports.isMultipoint = isMultipoint;
 exports.deviceRect = deviceRect;
 exports.logicalSpecs = logicalSpecs;
@@ -6757,17 +7244,18 @@ const sizes_1 = __req("layout/sizes");
 var sizes_2 = __req("layout/sizes");
 Object.defineProperty(exports, "CHIP_H", { enumerable: true, get: function () { return sizes_2.CHIP_H; } });
 Object.defineProperty(exports, "HUB_R", { enumerable: true, get: function () { return sizes_2.HUB_R; } });
-Object.defineProperty(exports, "chipRows", { enumerable: true, get: function () { return sizes_2.chipRows; } });
 Object.defineProperty(exports, "networkSubtitle", { enumerable: true, get: function () { return sizes_2.networkSubtitle; } });
 /** Relations with 3+ distinct devices are drawn as a hub with spokes. */
 function isMultipoint(devs) {
     return devs.length >= 3;
 }
-/** The drawn device rectangle inside a (possibly taller) logical node. */
+/**
+ * The drawn device rectangle of a logical node: the whole node, since the
+ * device's box holds its label, its interface entries and its DNS names
+ * (lines attach to the box, so none crosses an entry).
+ */
 function deviceRect(n) {
-    if (n.kind !== 'device' || n.bodyH === undefined || n.h <= n.bodyH)
-        return n;
-    return { ...n, cy: n.cy - n.h / 2 + n.bodyH / 2, h: n.bodyH };
+    return n;
 }
 /** Nodes of the logical view with their sizes, sorted by ref. */
 function logicalSpecs(input) {
@@ -6778,16 +7266,16 @@ function logicalSpecs(input) {
     for (const n of input.networks)
         for (const d of n.members)
             involved.add(d);
-    // loopbacks and other logical interfaces are logical: a device that has one belongs in the logical view
+    // loopbacks and other logical interfaces are logical, and so are addresses: a device that has one belongs in the logical view
     for (const d of input.devices)
-        if (d.loopbacks || d.logical.length)
+        if (d.loopbacks || d.logical.length || d.logList[1])
             involved.add(d.id);
     const devs = involved.size ? input.devices.filter((d) => involved.has(d.id)) : input.devices;
     const out = [];
     for (const d of devs)
-        out.push({ ref: 'device:' + d.id, kind: 'device', id: d.id, ...(0, sizes_1.logicalDeviceSize)(d.label, d.sub, d.chipW, d.loopbacks, d.dns, d.logical) });
+        out.push({ ref: 'device:' + d.id, kind: 'device', id: d.id, ...(0, sizes_1.logicalDeviceSize)(d.label, d.sub, d.logList, d.dns) });
     for (const n of input.networks) {
-        const b = (0, sizes_1.networkBody)(n.label, n.sub);
+        const b = (0, sizes_1.networkBody)(n.label, n.sub, n.extra);
         out.push({ ref: 'network:' + n.id, kind: 'network', id: n.id, w: b.w, h: b.h });
     }
     const devSet = new Set(devs.map((d) => d.id));
@@ -6798,25 +7286,30 @@ function logicalSpecs(input) {
     }
     return out.sort((a, b) => (0, input_1.cmp)(a.ref, b.ref));
 }
-/** room for the address written on a membership line, and for a hub's spokes */
+/** least room for the addresses written on a membership line (more when they need it), and room for a hub's spokes */
 const MEMBER_ROOM = [120, 56];
 const SPOKE_ROOM = [80, 50];
 /**
  * Room the labels of a device pair need between the two boxes: as wide as
  * the widest label, or as high as all of them stacked.
  */
-function pairLabelRoom(labels) {
-    const boxes = labels.map(sizes_1.pillBox);
+function pairLabelRoom(labels, extras = []) {
+    const boxes = labels.map((l, i) => (0, sizes_1.pillBox)(l, extras[i] || []));
     return [boxes.reduce((m, b) => Math.max(m, b.w), 0) + 40, boxes.reduce((s, b) => s + b.h + 4, 0) + 44];
 }
 /** Weighted edges between node refs (canonical order), each with the room its labels need. */
 function logicalEdges(input, specs) {
     const has = new Set(specs.map((s) => s.ref));
     const edges = [];
-    for (const n of input.networks)
-        for (const d of n.members)
-            if (has.has('device:' + d))
-                edges.push(['network:' + n.id, 'device:' + d, 1, MEMBER_ROOM[0], MEMBER_ROOM[1]]);
+    for (const n of input.networks) {
+        const sizes = new Map(n.memberLabels.map(([d, w, h]) => [d, [w, h]]));
+        for (const d of n.members) {
+            if (!has.has('device:' + d))
+                continue;
+            const [w, h] = sizes.get(d) || [0, 0];
+            edges.push(['network:' + n.id, 'device:' + d, 1, Math.max(MEMBER_ROOM[0], w + 40), Math.max(MEMBER_ROOM[1], h + 44)]);
+        }
+    }
     for (const r of input.relations) {
         const ds = r.devices.filter((d) => has.has('device:' + d));
         if (isMultipoint(ds))
@@ -6826,7 +7319,7 @@ function logicalEdges(input, specs) {
     for (const p of input.pairs) {
         if (!has.has('device:' + p.a) || !has.has('device:' + p.b))
             continue;
-        const [rx, ry] = pairLabelRoom(p.labels);
+        const [rx, ry] = pairLabelRoom(p.labels, p.extras);
         edges.push(['device:' + p.a, 'device:' + p.b, Math.min(2, 0.7 + p.labels.length * 0.15), rx, ry]);
     }
     return edges.sort((p, q) => (0, input_1.cmp)(p[0], q[0]) || (0, input_1.cmp)(p[1], q[1]));
@@ -7123,7 +7616,7 @@ function clustered(specs, edges, seed, groupOf, groups) {
         const g = groups.get(gid);
         // the same frame geometry as the drawn group (diagram/physical.ts groupRects)
         const uw = x1 - x0;
-        const head = (0, sizes_1.groupHeader)(g.label, g.kind, uw);
+        const head = (0, sizes_1.groupHeader)(g.label, g.kind, uw, g.extra);
         const w = Math.max(uw + 2 * sizes_1.GROUP_PAD, head.minW);
         const h = y1 - y0 + 2 * sizes_1.GROUP_PAD + head.h;
         // positions relative to the frame's center: content centred horizontally, below the title
@@ -7554,6 +8047,7 @@ __defs["layout/physical"] = function (module, exports) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.PORT_LABEL_GAP = exports.PORT_FONT = exports.GROUP_PAD = void 0;
 exports.physicalBaseSize = physicalBaseSize;
+exports.physicalListH = physicalListH;
 exports.spareChipFlow = spareChipFlow;
 exports.autoPhysical = autoPhysical;
 exports.physicalBoxes = physicalBoxes;
@@ -7615,13 +8109,19 @@ const MAX_PORT_H = 800;
 /** distance from a side port to the start of its label */
 exports.PORT_LABEL_GAP = 7;
 /**
- * Size of a device box for its label and subtitle, and the strip of chips of
- * its ports without a cable at its bottom (cabled ports may enlarge it).
+ * Size of a device box for its label and subtitle, the entries with its
+ * interfaces' addresses and identifiers under them, and the strip of chips
+ * of its ports without a cable at its bottom (cabled ports may enlarge it).
  */
 function physicalBaseSize(d) {
     const b = (0, sizes_1.deviceBody)(d.label, d.sub, BASE_W, BASE_H);
-    const flow = spareChipFlow(d.spare, b.w);
-    return { w: Math.max(b.w, flow.w + 2 * sizes_1.IFCHIP_PAD), h: b.h + (0, sizes_1.chipStripH)(flow) };
+    const w = Math.max(b.w, d.physList[0] ? d.physList[0] + 2 * sizes_1.ENTRY_MARGIN : 0);
+    const flow = spareChipFlow(d.spare, w);
+    return { w: Math.max(w, flow.w + 2 * sizes_1.IFCHIP_PAD), h: b.h + physicalListH(d.physList) + (0, sizes_1.chipStripH)(flow) };
+}
+/** Height a device's address entries take in its physical box (0 without any). */
+function physicalListH(list) {
+    return list[1] ? list[1] + sizes_1.ENTRY_MARGIN : 0;
 }
 /** The chips of a device's uncabled ports, for a box `w` wide. */
 function spareChipFlow(ids, w) {
@@ -7670,9 +8170,9 @@ function autoPhysical(input) {
     nbrs.forEach((v) => v.sort(input_1.cmp));
     // --- group tree
     const nodes = new Map();
-    const root = { id: null, label: '', kind: '', tiers: [], children: [], comps: [] };
+    const root = { id: null, label: '', kind: '', extra: [], tiers: [], children: [], comps: [] };
     for (const g of input.groups)
-        nodes.set(g.id, { id: g.id, label: g.label, kind: g.kind, tiers: [], children: [], comps: [] });
+        nodes.set(g.id, { id: g.id, label: g.label, kind: g.kind, extra: g.extra, tiers: [], children: [], comps: [] });
     for (const g of input.groups) {
         const parent = g.parent && nodes.has(g.parent) ? nodes.get(g.parent) : root;
         parent.children.push(nodes.get(g.id));
@@ -7739,7 +8239,7 @@ function autoPhysical(input) {
     // facing sides (known once ports are assigned) and the label of a cable
     // that joins the two directly
     const sidePad = new Map();
-    const labelW = new Map(input.linkLabels.map((l) => [l.id, (0, sizes_1.linkLabelBox)(l.text).w]));
+    const labelW = new Map(input.linkLabels.map((l) => [l.id, (0, sizes_1.linkLabelBox)(l.text, l.extra).w]));
     const between = new Map();
     for (const l of input.links) {
         const w = labelW.get(l.id);
@@ -8050,7 +8550,7 @@ function autoPhysical(input) {
         const content = arrange(units, 0, 'g:' + n.id);
         // at least as wide as the group's title needs; the title area grows with its lines
         const contentW = Math.max(content.w, 140);
-        const head = (0, sizes_1.groupHeader)(n.label, n.kind, contentW);
+        const head = (0, sizes_1.groupHeader)(n.label, n.kind, contentW, n.extra);
         const innerW = Math.max(contentW, head.minW - 2 * sizes_1.GROUP_PAD);
         return {
             w: innerW + 2 * sizes_1.GROUP_PAD,
@@ -8707,7 +9207,7 @@ function compact(view, input, base) {
             add(f.c.x, f.c.y, f.w, f.h);
         }
         const gr = groups.get(g);
-        const head = (0, sizes_1.groupHeader)(gr.label, gr.kind, x1 - x0);
+        const head = (0, sizes_1.groupHeader)(gr.label, gr.kind, x1 - x0, gr.extra);
         const w = Math.max(x1 - x0 + 2 * sizes_1.GROUP_PAD, head.minW);
         const h = y1 - y0 + 2 * sizes_1.GROUP_PAD + head.h;
         return { c: { x: (x0 + x1) / 2, y: y0 - sizes_1.GROUP_PAD - head.h + h / 2 }, w, h };
@@ -12010,6 +12510,7 @@ __defs["ui/dom"] = function (module, exports) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.SVG_NS = void 0;
+exports.setPaint = setPaint;
 exports.materialize = materialize;
 exports.mount = mount;
 exports.el = el;
@@ -12023,13 +12524,24 @@ exports.icon = icon;
 const scene_1 = __req("diagram/scene");
 exports.SVG_NS = 'http://www.w3.org/2000/svg';
 const SAFE_ATTR = /^(?:[a-z][a-z0-9-]*|viewBox|preserveAspectRatio)$/;
+/** Attributes that hold a colour a scene element is painted with. */
+const PAINT_ATTR = /^(?:fill|stroke|stop-color|color)$/;
+let paint = null;
+/**
+ * The colour mapping of the theme in effect (diagram/palette.ts): applied to
+ * the fill and stroke colours of every element created from scene data, so
+ * the diagram, the legends and the exports are drawn in the theme's colours.
+ */
+function setPaint(fn) {
+    paint = fn;
+}
 function materialize(v, doc, inSvg = false) {
     const svg = inSvg || v.tag === 'svg';
     const el = svg ? doc.createElementNS(exports.SVG_NS, v.tag) : doc.createElement(v.tag);
     for (const name of Object.keys(v.attrs)) {
         if (!SAFE_ATTR.test(name) || /^on/i.test(name) || name === 'href' || name === 'src' || name === 'style')
             continue;
-        el.setAttribute(name, v.attrs[name]);
+        el.setAttribute(name, paint && PAINT_ATTR.test(name) ? paint(v.attrs[name]) : v.attrs[name]);
     }
     if (v.text !== undefined)
         el.appendChild(doc.createTextNode(v.text));
@@ -12127,6 +12639,318 @@ function textOf(v) {
             s += n.text + '\n';
     });
     return s;
+}
+
+};
+__defs["ui/theme"] = function (module, exports) {
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.ThemeController = exports.THEME_KEY = exports.THEME_PREFS = void 0;
+exports.resolveTheme = resolveTheme;
+exports.nextThemePref = nextThemePref;
+exports.themePrefLabel = themePrefLabel;
+exports.themeButtonText = themeButtonText;
+exports.THEME_PREFS = ['system', 'light', 'dark'];
+exports.THEME_KEY = 'netatlas.theme';
+/** The theme in effect for a choice, given whether the system prefers dark. */
+function resolveTheme(pref, systemDark) {
+    return pref === 'system' ? (systemDark ? 'dark' : 'light') : pref;
+}
+/** The choice after `pref` when the theme button is pressed: System → Light → Dark → System. */
+function nextThemePref(pref) {
+    return exports.THEME_PREFS[(exports.THEME_PREFS.indexOf(pref) + 1) % exports.THEME_PREFS.length];
+}
+function themePrefLabel(p) {
+    return p === 'system' ? 'System' : p === 'light' ? 'Light' : 'Dark';
+}
+/** What the theme button says: the current theme, and what pressing it does. */
+function themeButtonText(pref, theme) {
+    const now = pref === 'system' ? `System (${theme === 'dark' ? 'dark' : 'light'})` : themePrefLabel(pref);
+    const next = nextThemePref(pref);
+    return `Theme: ${now}. Switch to ${next === 'system' ? 'System (follow the operating system)' : themePrefLabel(next)}`;
+}
+function readStored(win) {
+    try {
+        const v = win && win.localStorage ? win.localStorage.getItem(exports.THEME_KEY) : null;
+        return v === 'light' || v === 'dark' || v === 'system' ? v : 'system';
+    }
+    catch {
+        return 'system';
+    }
+}
+function store(win, pref) {
+    try {
+        if (!win || !win.localStorage)
+            return;
+        if (pref === 'system')
+            win.localStorage.removeItem(exports.THEME_KEY);
+        else
+            win.localStorage.setItem(exports.THEME_KEY, pref);
+    }
+    catch {
+        /* storage unavailable: the choice lasts for this session */
+    }
+}
+class ThemeController {
+    constructor(doc) {
+        this.doc = doc;
+        this.theme = 'light';
+        this.mql = null;
+        this.listeners = [];
+        const win = doc.defaultView;
+        this.pref = readStored(win);
+        try {
+            this.mql = win && win.matchMedia ? win.matchMedia('(prefers-color-scheme: dark)') : null;
+        }
+        catch {
+            this.mql = null;
+        }
+        const onSystem = () => {
+            if (this.pref === 'system')
+                this.apply();
+        };
+        if (this.mql) {
+            if (this.mql.addEventListener)
+                this.mql.addEventListener('change', onSystem);
+            else if (this.mql.addListener)
+                this.mql.addListener(onSystem);
+        }
+        this.apply(true);
+    }
+    /** Called with the theme in effect after every change of the choice or of the system theme (not for the initial one). */
+    onChange(fn) {
+        this.listeners.push(fn);
+    }
+    systemDark() {
+        return !!this.mql && this.mql.matches;
+    }
+    set(pref) {
+        this.pref = pref;
+        store(this.doc.defaultView, pref);
+        this.apply();
+    }
+    /** The theme button: System → Light → Dark → System. */
+    cycle() {
+        this.set(nextThemePref(this.pref));
+    }
+    apply(initial = false) {
+        this.theme = resolveTheme(this.pref, this.systemDark());
+        const root = this.doc.documentElement;
+        root.setAttribute('data-theme', this.theme);
+        root.setAttribute('data-theme-pref', this.pref);
+        if (!initial)
+            for (const fn of this.listeners)
+                fn(this.theme);
+    }
+}
+exports.ThemeController = ThemeController;
+
+};
+__defs["ui/export-style"] = function (module, exports) {
+"use strict";
+/**
+ * Self-contained SVG for export: every style the browser computed for the
+ * diagram on screen (from the stylesheet, its design tokens and the theme in
+ * effect) is written onto the elements as plain presentation attributes with
+ * resolved values. The file carries no stylesheet, no CSS custom property and
+ * no prefers-color-scheme query, so it looks the same in every viewer,
+ * whatever that viewer's own colour scheme, and always shows the theme that
+ * was selected in NetAtlas when it was exported.
+ */
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.resolvedPaint = resolvedPaint;
+exports.inlineComputedStyles = inlineComputedStyles;
+/** Inherited properties, written where an element's value differs from its parent's. */
+const INHERITED = [
+    'fill',
+    'fill-opacity',
+    'stroke',
+    'stroke-width',
+    'stroke-opacity',
+    'stroke-dasharray',
+    'stroke-linecap',
+    'stroke-linejoin',
+    'paint-order',
+    'font-family',
+    'font-size',
+    'font-weight',
+    'font-style',
+    'letter-spacing',
+    'text-anchor',
+    'visibility',
+];
+/** Properties that are not inherited, written where they are not the default. */
+const OWN = [
+    ['opacity', '1'],
+    ['display', 'inline'],
+];
+/** "rgb(1, 2, 3)" / "rgba(1, 2, 3, 0.5)" → hex colour and alpha; other values (none, url(…)) as they are. */
+function resolvedPaint(v) {
+    const m = /^rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)(?:\s*[,/]\s*([\d.]+%?))?\s*\)$/.exec(v.trim());
+    if (!m)
+        return { color: v, alpha: 1 };
+    const hex = '#' + [m[1], m[2], m[3]].map((x) => Math.max(0, Math.min(255, Math.round(parseFloat(x)))).toString(16).padStart(2, '0')).join('');
+    let a = m[4] === undefined ? 1 : parseFloat(m[4]);
+    if (m[4] && m[4].endsWith('%'))
+        a /= 100;
+    return { color: a === 0 ? 'none' : hex, alpha: a };
+}
+function round(v) {
+    return v.replace(/(\d+\.\d{3})\d+/g, (_m, d) => String(parseFloat(d)));
+}
+/**
+ * Write the computed styles of `svg` (and every element in it) as attributes.
+ * The SVG must be in the document while this runs (that is where its styles
+ * are computed); afterwards it needs no stylesheet. Class attributes are
+ * kept: they name what an element is, and style nothing any more.
+ */
+function inlineComputedStyles(svg, win) {
+    const visit = (e, parent) => {
+        const cs = win.getComputedStyle(e);
+        const mine = new Map();
+        // the alpha of an rgba() colour goes into fill-opacity / stroke-opacity (understood by every SVG viewer)
+        const alpha = {};
+        for (const p of INHERITED) {
+            let v = cs.getPropertyValue(p).trim();
+            if (p === 'fill' || p === 'stroke') {
+                const pv = resolvedPaint(v);
+                v = pv.color;
+                alpha[p + '-opacity'] = pv.alpha;
+            }
+            else if (alpha[p] !== undefined) {
+                const base = parseFloat(v);
+                v = String(Math.round((isNaN(base) ? 1 : base) * alpha[p] * 1000) / 1000);
+            }
+            v = round(v);
+            mine.set(p, v);
+            if (!parent || parent.get(p) !== v || e.hasAttribute(p))
+                e.setAttribute(p, v);
+        }
+        for (const [p, def] of OWN) {
+            const v = cs.getPropertyValue(p).trim();
+            if (v && v !== def)
+                e.setAttribute(p, p === 'display' ? (v === 'none' ? 'none' : 'inline') : v);
+        }
+        // a glow (selection, highlight): a CSS filter function with its colour resolved
+        const f = cs.getPropertyValue('filter').trim();
+        if (f && f !== 'none')
+            e.setAttribute('style', 'filter: ' + f);
+        else
+            e.removeAttribute('style');
+        for (let i = 0; i < e.children.length; i++)
+            visit(e.children[i], mine);
+    };
+    visit(svg, null);
+}
+
+};
+__defs["diagram/palette"] = function (module, exports) {
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.GRAPHIC_CONTRAST = exports.SURFACES = void 0;
+exports.parseHex = parseHex;
+exports.luminance = luminance;
+exports.contrast = contrast;
+exports.themedColor = themedColor;
+/** Surfaces diagram graphics are drawn on, per theme (canvas, panel, raised: see styles.css). */
+exports.SURFACES = {
+    light: ['#fbfcfd', '#ffffff'],
+    dark: ['#15181d', '#20252c', '#282e36'],
+};
+/** Minimum contrast of a diagram graphic against the surfaces it lies on. */
+exports.GRAPHIC_CONTRAST = 3;
+function parseHex(s) {
+    const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(s.trim());
+    if (!m)
+        return null;
+    const h = m[1].length === 3 ? m[1].replace(/./g, (c) => c + c) : m[1];
+    return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
+}
+function hex(c) {
+    return '#' + c.map((v) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0')).join('');
+}
+function channel(v) {
+    const c = v / 255;
+    return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+}
+/** Relative luminance (WCAG). */
+function luminance(c) {
+    return 0.2126 * channel(c[0]) + 0.7152 * channel(c[1]) + 0.0722 * channel(c[2]);
+}
+/** Contrast ratio of two colours (WCAG), 1 … 21. */
+function contrast(a, b) {
+    const x = parseHex(a);
+    const y = parseHex(b);
+    if (!x || !y)
+        return 1;
+    const [l1, l2] = [luminance(x), luminance(y)].sort((p, q) => q - p);
+    return (l1 + 0.05) / (l2 + 0.05);
+}
+function toHsl([r, g, b]) {
+    const R = r / 255;
+    const G = g / 255;
+    const B = b / 255;
+    const max = Math.max(R, G, B);
+    const min = Math.min(R, G, B);
+    const l = (max + min) / 2;
+    if (max === min)
+        return [0, 0, l];
+    const d = max - min;
+    const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    let h = max === R ? (G - B) / d + (G < B ? 6 : 0) : max === G ? (B - R) / d + 2 : (R - G) / d + 4;
+    h /= 6;
+    return [h, s, l];
+}
+function toRgb([h, s, l]) {
+    if (s === 0)
+        return [l * 255, l * 255, l * 255];
+    const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+    const p = 2 * l - q;
+    const f = (t) => {
+        if (t < 0)
+            t += 1;
+        if (t > 1)
+            t -= 1;
+        if (t < 1 / 6)
+            return p + (q - p) * 6 * t;
+        if (t < 1 / 2)
+            return q;
+        if (t < 2 / 3)
+            return p + (q - p) * (2 / 3 - t) * 6;
+        return p;
+    };
+    return [f(h + 1 / 3) * 255, f(h) * 255, f(h - 1 / 3) * 255];
+}
+function worst(c, theme) {
+    return exports.SURFACES[theme].reduce((m, s) => Math.min(m, contrast(c, s)), Infinity);
+}
+const cache = { light: new Map(), dark: new Map() };
+/**
+ * The colour a diagram graphic is drawn in for a theme. Anything that is not
+ * a #rgb / #rrggbb colour (none, a gradient reference …) is returned as is.
+ */
+function themedColor(color, theme) {
+    const key = color.toLowerCase();
+    const known = cache[theme].get(key);
+    if (known !== undefined)
+        return known;
+    const rgb = parseHex(color);
+    let out = color;
+    // a light-theme colour that already stands out is kept exactly as written
+    if (rgb && !(theme === 'light' && worst(color, theme) >= exports.GRAPHIC_CONTRAST)) {
+        let [h, s, l] = toHsl(rgb);
+        if (theme === 'dark')
+            s = Math.min(s * 0.78, 0.72);
+        out = hex(toRgb([h, s, l]));
+        // lighten (dark) or darken (light) in small steps until the graphic stands out from every surface
+        const step = theme === 'dark' ? 0.02 : -0.02;
+        for (let i = 0; i < 60 && worst(out, theme) < exports.GRAPHIC_CONTRAST + 0.05; i++) {
+            l = Math.max(0, Math.min(1, l + step));
+            out = hex(toRgb([h, s, l]));
+        }
+    }
+    cache[theme].set(key, out);
+    return out;
 }
 
 };
@@ -15927,21 +16751,25 @@ exports.EXAMPLES = [
     {
         "name": "long-labels.yaml",
         "text": "# netatlas example: long and multi-line labels, nodes of different sizes\n#\n# A test case for diagram sizing and Auto-arrange: device labels with explicit\n# line breaks, a very long label, a long word without spaces, several cables\n# between the same two devices, long cable labels, and several labelled\n# relations between the same pair of devices. Nothing is shortened: every\n# element grows to fit its text, and Auto-arrange leaves room for the labels.\nnetatlas: 1\ntitle: Long labels and mixed node sizes\n\ngroups:\n  - id: dc\n    label: Primary data centre Frankfurt am Main, building B, second floor, cage 14 (shared with the storage team)\n    kind: site\n  - id: branch\n    label: Branch\n    kind: site\n\ndevices:\n  - id: core-a\n    label: |\n      core-a\n      Core switch A\n      (rack 12, U30-U34)\n    type: switch\n    group: dc\n    tier: 3\n    interfaces:\n      - {id: Hu1/0/49}\n      - {id: Hu1/0/50}\n      - {id: Hu1/0/51}\n      - {id: TwentyFiveGigE1/0/1}\n      - {id: TwentyFiveGigE1/0/2}\n    logical_interfaces:\n      - {id: lo0, type: loopback, ip: [10.255.0.1/32, 2001:db8:ffff::1/128]}\n  - id: core-b\n    label: |-\n      core-b\n      Core switch B\n    type: switch\n    group: dc\n    tier: 3\n    interfaces:\n      - {id: Hu1/0/49}\n      - {id: Hu1/0/50}\n      - {id: Hu1/0/51}\n      - {id: TwentyFiveGigE1/0/1}\n    logical_interfaces:\n      - {id: lo0, type: loopback, ip: 10.255.0.2/32}\n  - id: fw\n    label: Perimeter firewall cluster for the production and the pre-production environment (active/passive)\n    type: firewall\n    group: dc\n    interfaces:\n      - {id: ethernet1/1, ip: 10.10.0.1/24}\n      - {id: ethernet1/2}\n    logical_interfaces:\n      - {id: tunnel.10, type: tunnel, source: ethernet1/1, destination: br-rtr:GigabitEthernet0/0/0}\n      - {id: tunnel.20, type: tunnel, source: ethernet1/1}\n  - id: srv\n    label: s\n    type: server\n    group: dc\n    interfaces:\n      - {id: eno1, ip: 10.10.0.20/24}\n  - id: storage\n    label: netapp-aff-a400-cluster01-node01.storage.infrastructure.example.internal\n    type: storage\n    group: dc\n    interfaces:\n      - {id: e0a, ip: 10.10.0.30/24}\n  - id: br-rtr\n    label: Branch router\n    type: router\n    group: branch\n    interfaces:\n      - {id: GigabitEthernet0/0/0}\n    logical_interfaces:\n      - {id: Tunnel10, type: tunnel, source: GigabitEthernet0/0/0, destination: fw:ethernet1/1}\n      - {id: Tunnel20, type: tunnel, source: GigabitEthernet0/0/0}\n\nlinks:\n  # three parallel cables between the two core switches\n  - {id: peer-1, a: \"core-a:Hu1/0/49\", b: \"core-b:Hu1/0/49\", medium: dac, speed: 100G, label: peer link 1}\n  - {id: peer-2, a: \"core-a:Hu1/0/50\", b: \"core-b:Hu1/0/50\", medium: dac, speed: 100G, label: peer link 2}\n  - {id: peer-3, a: \"core-a:Hu1/0/51\", b: \"core-b:Hu1/0/51\", medium: fiber, speed: 100G, label: keepalive}\n  - {id: fw-a, a: \"fw:ethernet1/1\", b: \"core-a:TwentyFiveGigE1/0/1\", medium: fiber, speed: 25G}\n  - {id: fw-b, a: \"fw:ethernet1/2\", b: \"core-b:TwentyFiveGigE1/0/1\", medium: fiber, speed: 25G}\n  - id: srv-a\n    a: {device: core-a, interface: TwentyFiveGigE1/0/2, networks: [servers, servers-v6, servers-v6-legacy]}\n    b: {device: srv, interface: eno1, networks: [servers, servers-v6, servers-v6-legacy]}\n    medium: dac\n    speed: 25G\n    label: hypervisor uplink, all tenant VLANs\n  - {id: sto-b, a: core-b, b: \"storage:e0a\", medium: fiber, speed: 25G, label: iSCSI}\n  - id: wan\n    a: fw\n    b: br-rtr:GigabitEthernet0/0/0\n    medium: fiber\n    speed: 1G\n    label: \"carrier ethernet, circuit CID-2024-000173\"\n    cable: CID-2024-000173\n\nnetworks:\n  # one network per prefix; the three share VLAN 10\n  - id: servers\n    label: Server network (production)\n    cidr: 10.10.0.0/24\n    vlan: 10\n  - id: servers-v6\n    label: Server network (production, IPv6)\n    cidr: \"2001:db8:10::/64\"\n    vlan: 10\n  - id: servers-v6-legacy\n    label: Server network (production, legacy IPv6 prefix)\n    cidr: \"2001:db8:11::/64\"\n    vlan: 10\n\nrelations:\n  # four labelled relations between the same two devices, two of them nested\n  - {id: ipsec-br, protocol: ipsec, label: IKEv2 site-to-site with certificate authentication, endpoints: [fw, br-rtr], over: wan}\n  - {id: gre-br, protocol: gre, label: primary, endpoints: [\"fw:tunnel.10\", \"br-rtr:Tunnel10\"], over: ipsec-br}\n  - {id: ospf-br, protocol: ospf, label: area 0.0.0.10, endpoints: [\"fw:tunnel.10\", \"br-rtr:Tunnel10\"], over: gre-br}\n  - {id: bgp-br, protocol: ebgp, label: AS 65010 ↔ AS 65020, endpoints: [fw, br-rtr]}\n  - {id: bfd-br, protocol: bfd, label: 300 ms × 3, endpoints: [fw, br-rtr]}\n  - {id: syslog-br, protocol: syslog, direction: unidirectional, label: audit log, endpoints: [br-rtr, fw]}\n  # relations between the core switches\n  - {id: mlag-core, protocol: mlag, label: domain 1, endpoints: [core-a, core-b], over: [peer-1, peer-2]}\n  - {id: ibgp-core, protocol: ibgp, endpoints: [\"core-a:lo0\", \"core-b:lo0\"]}\n  - {id: ospf-core, protocol: ospf, label: backbone, endpoints: [core-a, core-b, fw]}\n"
+    },
+    {
+        "name": "addressing.yaml",
+        "text": "# netatlas example: every kind of address in one small network.\n# A core router with many interfaces: dual-stack and secondary addresses,\n# VLAN subinterfaces with VRRP / HSRP virtual addresses, an aggregate,\n# loopbacks, GRE and IPsec tunnels with their endpoints, long IPv6 addresses,\n# MAC addresses, VRFs, a DHCP client port and NAT addresses. Every one of\n# them is written in the diagram, next to the interface, cable, network or\n# relation it belongs to.\nnetatlas: 1\ntitle: Addressing in detail\n\ngroups:\n  - {id: hq, label: Headquarters, kind: site}\n  - {id: branch, label: Branch office, kind: site, attrs: {site-prefix: 10.30.0.0/16}}\n\ndevices:\n  - id: isp\n    label: ISP edge\n    type: cloud\n    interfaces:\n      - {id: pe-1, ip: [203.0.113.1/30, \"2001:db8:ffff:100::1/64\"]}\n\n  - id: core\n    label: core-rtr-01\n    type: router\n    group: hq\n    attrs: {router-id: 10.255.255.1, nat-pool: 203.0.113.64/28}\n    interfaces:\n      - id: xe-0/0/0\n        label: Uplink ISP\n        ip: [203.0.113.2/30, \"2001:db8:ffff:100::2/64\"]\n        mac: 00:1c:73:aa:00:01\n        attrs: {nat-outside: 203.0.113.65}\n      - id: xe-0/0/1\n        label: Branch WAN\n        ip: [198.51.100.1/30, \"2001:0db8:85a3:0000:0000:8a2e:0370:7334/127\"]\n        mac: 00:1c:73:aa:00:02\n      - {id: ge-0/0/2, mac: 00:1c:73:aa:00:03, description: Trunk to the distribution switch}\n      - {id: ge-0/0/3, ip: [10.20.0.1/24, 10.20.1.1/24], vrf: MGMT, mac: 00:1c:73:aa:00:04}\n      - {id: ge-0/0/4, dhcp: true, description: Out-of-band console network}\n      - {id: ge-0/0/6, mac: 00:1c:73:aa:00:06}\n      - {id: ge-0/0/7, mac: 00:1c:73:aa:00:07}\n      - {id: ge-0/0/9, mac: 00:1c:73:aa:00:09, description: Spare}\n    logical_interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.255.255.1/32, \"2001:db8:ffff:ffff::1/128\"]}\n      - {id: lo1, type: loopback, label: Anycast DNS, ip: [192.0.2.53/32, \"2001:db8:53::53/128\"]}\n      - id: ge-0/0/2.10\n        type: virtual\n        vlan: 10\n        vrf: CORP\n        ip: [10.10.10.2/24, \"2001:db8:10:10::2/64\"]\n        attrs: {vrrp-virtual-ip: 10.10.10.1, vrrp-virtual-ipv6: \"2001:db8:10:10::1\"}\n      - id: ge-0/0/2.20\n        type: virtual\n        vlan: 20\n        vrf: CORP\n        ip: [10.10.20.2/24, 10.10.21.2/24]\n        attrs: {hsrp-virtual-ip: 10.10.20.1}\n      - {id: ae0, type: virtual, members: [ge-0/0/6, ge-0/0/7], mac: 02:00:00:00:ae:00}\n      - id: gr-0/0/0.0\n        type: tunnel\n        ip: [172.31.255.1/30, \"fd00:dead:beef:0:0:0:0:1/126\"]\n        source: lo0\n        destination: \"2001:db8:ffff:ffff::2\"\n      - id: st0.1\n        type: tunnel\n        ip: 169.254.10.1/30\n        source: xe-0/0/1\n        destination: 198.51.100.2\n\n  - id: dist\n    label: dist-sw-01\n    type: switch\n    group: hq\n    interfaces:\n      - {id: xe-1, mac: 3c:fd:fe:00:10:01}\n      - {id: xe-2, mac: 3c:fd:fe:00:10:02}\n      - {id: xe-3, mac: 3c:fd:fe:00:10:03}\n    logical_interfaces:\n      - {id: Vlan10, type: virtual, vlan: 10, ip: [10.10.10.3/24, \"2001:db8:10:10::3/64\"], attrs: {vrrp-virtual-ip: 10.10.10.1}}\n      - {id: Po1, type: virtual, members: [xe-2, xe-3]}\n\n  - id: srv\n    label: srv-mgmt-01\n    type: server\n    group: hq\n    interfaces:\n      - {id: eth0, ip: 10.20.0.10/24, mac: \"52:54:00:12:34:56\"}\n\n  - id: remote\n    label: branch-rtr\n    type: router\n    group: branch\n    interfaces:\n      - {id: wan0, ip: [198.51.100.2/30, \"2001:0db8:85a3:0000:0000:8a2e:0370:7335/127\"], mac: 00:50:56:01:00:01}\n    logical_interfaces:\n      - {id: lo0, type: loopback, ip: [10.255.255.2/32, \"2001:db8:ffff:ffff::2/128\"]}\n      - id: gr-1\n        type: tunnel\n        ip: [172.31.255.2/30, \"fd00:dead:beef:0:0:0:0:2/126\"]\n        source: lo0\n        destination: \"2001:db8:ffff:ffff::1\"\n      - {id: st0.1, type: tunnel, ip: 169.254.10.2/30, source: wan0, destination: core:xe-0/0/1}\n\nlinks:\n  - {id: uplink, a: \"isp:pe-1\", b: \"core:xe-0/0/0\", medium: fiber, speed: 10G, cable: \"CID-4711-ISP / MMR-2 #12\"}\n  - {id: wan, a: \"core:xe-0/0/1\", b: \"remote:wan0\", medium: fiber, speed: 1G, cable: \"Carrier circuit 77-ABCD-0042\"}\n  - id: trunk\n    a: {device: core, interface: ge-0/0/2, networks: [corp, corp6, voice]}\n    b: {device: dist, interface: xe-1, networks: [corp, corp6, voice]}\n    medium: copper\n    speed: 10G\n  - {id: mgmt-link, a: \"core:ge-0/0/3\", b: \"srv:eth0\", medium: copper, speed: 1G}\n\nnetworks:\n  - {id: uplink4, label: ISP uplink, cidr: 203.0.113.0/30}\n  - {id: uplink6, label: ISP uplink v6, cidr: \"2001:db8:ffff:100::/64\"}\n  - {id: wan4, label: Branch WAN, cidr: 198.51.100.0/30}\n  - {id: wan6, label: Branch WAN v6, cidr: \"2001:db8:85a3::8a2e:370:7334/127\"}\n  - {id: corp, label: Corporate, cidr: 10.10.10.0/24, vlan: 10, attrs: {dhcp-relay: 10.20.0.10}}\n  - {id: corp6, label: Corporate v6, cidr: \"2001:db8:10:10::/64\", vlan: 10}\n  - {id: voice, label: Voice, cidr: 10.10.20.0/24, vlan: 20}\n  - {id: mgmt, label: Management, cidr: 10.20.0.0/24}\n  - {id: overlay, label: GRE overlay, cidr: 172.31.255.0/30}\n\nrelations:\n  - {id: ipsec, protocol: ipsec, endpoints: [\"core:st0.1\", \"remote:st0.1\"], over: [wan], attrs: {peer-address: 198.51.100.2}}\n  - {id: gre, protocol: gre, endpoints: [\"core:gr-0/0/0.0\", \"remote:gr-1\"], over: [ipsec]}\n  - {id: ospf, protocol: ospf, label: area 0, endpoints: [\"core:gr-0/0/0.0\", \"remote:gr-1\"], over: [gre]}\n  - {id: ebgp, protocol: ebgp, endpoints: [\"isp:pe-1\", \"core:xe-0/0/0\"], attrs: {peer-address: \"2001:db8:ffff:100::1\", peer-as: 64496}}\n  - id: vrrp\n    protocol: vrrp\n    endpoints: [\"core:ge-0/0/2.10\", \"dist:Vlan10\"]\n    attrs: {vrid: 10, virtual-ip: 10.10.10.1, virtual-ipv6: \"2001:db8:10:10::1\"}\n"
     }
 ];
 /** Test data for the in-browser self-test; not offered in the application. */
 exports.FIXTURES = [
     {
         "name": "editor-new-network.yaml",
-        "text": "# netatlas test fixture: a model created with \"New\" in the editor and built up\n# with the editor operations (generated by scripts/make-fixtures.mjs).\nnetatlas: 1\ntitle: \"Lab: two edge routers\"\ndescription: \"Created in the netatlas editor: loopbacks, ports, a VLAN interface and a tunnel interface per router, one cable, IP networks, iBGP and a GRE tunnel between loopbacks.\"\ndevices:\n  - id: edge-a\n    type: router\n    interfaces:\n      - {id: ge-0/0/0, ip: [192.0.2.1/31]}\n    logical_interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.255.0.1/32]}\n      - {id: lo1, type: loopback, label: BGP source (IPv6), ip: [2001:db8:ffff::a/128]}\n      - {id: irb.100, type: virtual, label: Management, ip: [10.100.0.1/24]}\n      - {id: gr-0/0/0.1, type: tunnel, ip: [172.16.0.1/30], source: lo0, destination: 10.255.0.2}\n  - id: edge-b\n    label: Edge B\n    type: router\n    interfaces:\n      - {id: ge-0/0/0, ip: [192.0.2.0/31]}\n    logical_interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.255.0.2/32, 2001:db8:ffff::2/128]}\n      - {id: lo1, type: loopback, label: BGP source (IPv6), ip: [2001:db8:ffff::b/128]}\n      - {id: irb.100, type: virtual, label: Management, ip: [10.100.0.2/24]}\n      - {id: gr-0/0/0.1, type: tunnel, ip: [172.16.0.2/30], source: lo0, destination: 10.255.0.1}\nlinks:\n  - id: cable-1\n    a: {device: edge-a, interface: ge-0/0/0, networks: [net-core, net-mgmt]}\n    b: {device: edge-b, interface: ge-0/0/0, networks: [net-core, net-mgmt]}\n    medium: fiber\n    speed: 10G\n    cable: LC-LC OM4 3m\nnetworks:\n  - id: net-core\n    label: Core link\n    cidr: 192.0.2.0/31\n  - id: net-mgmt\n    label: Management\n    cidr: 10.100.0.0/24\n    vlan: 100\n  - id: net-loopbacks\n    label: Router loopbacks\n    cidr: 10.255.0.0/24\nrelations:\n  - id: ibgp-v6\n    protocol: ibgp\n    endpoints: [edge-a:lo1, edge-b:lo1]\n    over: cable-1\n    attrs:\n      asn: 65000\n      address-family: [ipv6-unicast, evpn]\n  - id: gre-lab\n    protocol: gre\n    endpoints: [edge-a:lo0, edge-b:lo0]\n    over: cable-1\n    attrs:\n      key: 100\n      keepalive:\n        interval: 10s\n        retries: 3\n\nlayout:\n  physical:\n    edge-a: [75, 27]\n    edge-b: [519, 27]\n  logical:\n    edge-a: [88, 325]\n    edge-b: [424, 292]\n    net-core: [90, 570]\n    net-loopbacks: [496, 504]\n    net-mgmt: [209, 21]\n"
+        "text": "# netatlas test fixture: a model created with \"New\" in the editor and built up\n# with the editor operations (generated by scripts/make-fixtures.mjs).\nnetatlas: 1\ntitle: \"Lab: two edge routers\"\ndescription: \"Created in the netatlas editor: loopbacks, ports, a VLAN interface and a tunnel interface per router, one cable, IP networks, iBGP and a GRE tunnel between loopbacks.\"\ndevices:\n  - id: edge-a\n    type: router\n    interfaces:\n      - {id: ge-0/0/0, ip: [192.0.2.1/31]}\n    logical_interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.255.0.1/32]}\n      - {id: lo1, type: loopback, label: BGP source (IPv6), ip: [2001:db8:ffff::a/128]}\n      - {id: irb.100, type: virtual, label: Management, ip: [10.100.0.1/24]}\n      - {id: gr-0/0/0.1, type: tunnel, ip: [172.16.0.1/30], source: lo0, destination: 10.255.0.2}\n  - id: edge-b\n    label: Edge B\n    type: router\n    interfaces:\n      - {id: ge-0/0/0, ip: [192.0.2.0/31]}\n    logical_interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.255.0.2/32, 2001:db8:ffff::2/128]}\n      - {id: lo1, type: loopback, label: BGP source (IPv6), ip: [2001:db8:ffff::b/128]}\n      - {id: irb.100, type: virtual, label: Management, ip: [10.100.0.2/24]}\n      - {id: gr-0/0/0.1, type: tunnel, ip: [172.16.0.2/30], source: lo0, destination: 10.255.0.1}\nlinks:\n  - id: cable-1\n    a: {device: edge-a, interface: ge-0/0/0, networks: [net-core, net-mgmt]}\n    b: {device: edge-b, interface: ge-0/0/0, networks: [net-core, net-mgmt]}\n    medium: fiber\n    speed: 10G\n    cable: LC-LC OM4 3m\nnetworks:\n  - id: net-core\n    label: Core link\n    cidr: 192.0.2.0/31\n  - id: net-mgmt\n    label: Management\n    cidr: 10.100.0.0/24\n    vlan: 100\n  - id: net-loopbacks\n    label: Router loopbacks\n    cidr: 10.255.0.0/24\nrelations:\n  - id: ibgp-v6\n    protocol: ibgp\n    endpoints: [edge-a:lo1, edge-b:lo1]\n    over: cable-1\n    attrs:\n      asn: 65000\n      address-family: [ipv6-unicast, evpn]\n  - id: gre-lab\n    protocol: gre\n    endpoints: [edge-a:lo0, edge-b:lo0]\n    over: cable-1\n    attrs:\n      key: 100\n      keepalive:\n        interval: 10s\n        retries: 3\n\nlayout:\n  physical:\n    edge-a: [75, 47]\n    edge-b: [519, 47]\n  logical:\n    edge-a: [85, 341]\n    edge-b: [413, 291]\n    net-core: [84, 589]\n    net-loopbacks: [488, 534]\n    net-mgmt: [196, 21]\n"
     },
     {
         "name": "metro-ring-arranged.yaml",
-        "text": "# netatlas test fixture: examples/metro-ring.yaml after Auto-arrange (both views) and export\n# (generated by scripts/make-fixtures.mjs). The positions are in the\n# \"layout\" section at the end; the network itself is unchanged.\n# netatlas example: metro ring (for Auto-arrange)\n#\n# Six PE routers in three POPs on a fibre ring, each with IPv4/IPv6\n# loopbacks used as router IDs and as iBGP / RSVP-TE endpoints. The logical\n# layer is dense on purpose: an OSPF area, LDP on every ring link, a full\n# iBGP mesh between loopbacks (15 sessions), two RSVP-TE tunnels, an L3VPN\n# overlay and customer eBGP. An out-of-band management network forms a\n# separate, disconnected component, and a spare router is not connected at\n# all. There is no \"layout\" section: open it and use Auto-arrange.\nnetatlas: 1\ntitle: Metro ring MR-1\n\ngroups:\n  - {id: pop-north, label: POP North, kind: site}\n  - {id: pop-east, label: POP East, kind: site}\n  - {id: pop-south, label: POP South, kind: site}\n  - {id: oob, label: Out-of-band management, kind: zone}\n  - {id: cust-a, label: Customer A, kind: external}\n\ndevices:\n  - id: pe1\n    type: router\n    group: pop-north\n    interfaces:\n      - {id: et1, ip: 10.1.12.1/31}\n      - {id: et2, ip: 10.1.16.1/31}\n      - {id: et3, ip: 192.0.2.1/30, vrf: CUST-A}\n      - {id: et4}\n    logical_interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.1/32, 2001:db8:0:ffff::1/128]}\n  - id: pe2\n    type: router\n    group: pop-north\n    interfaces:\n      - {id: et1, ip: 10.1.12.0/31}\n      - {id: et2, ip: 10.1.23.0/31}\n      - {id: et4}\n    logical_interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.2/32, 2001:db8:0:ffff::2/128]}\n  - id: pe3\n    type: router\n    group: pop-east\n    interfaces:\n      - {id: et1, ip: 10.1.23.1/31}\n      - {id: et2, ip: 10.1.34.0/31}\n      - {id: et4}\n    logical_interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.3/32, 2001:db8:0:ffff::3/128]}\n      - {id: lo1, type: loopback, label: VPN next-hop, ip: [10.0.1.3/32]}\n  - id: pe4\n    type: router\n    group: pop-east\n    interfaces:\n      - {id: et1, ip: 10.1.34.1/31}\n      - {id: et2, ip: 10.1.45.0/31}\n      - {id: et4}\n    logical_interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.4/32, 2001:db8:0:ffff::4/128]}\n  - id: pe5\n    type: router\n    group: pop-south\n    interfaces:\n      - {id: et1, ip: 10.1.45.1/31}\n      - {id: et2, ip: 10.1.56.0/31}\n      - {id: et3, ip: 192.0.2.5/30, vrf: CUST-A}\n      - {id: et4}\n    logical_interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.5/32, 2001:db8:0:ffff::5/128]}\n      - {id: lo1, type: loopback, label: VPN next-hop, ip: [10.0.1.5/32]}\n  - id: pe6\n    type: router\n    group: pop-south\n    interfaces:\n      - {id: et1, ip: 10.1.56.1/31}\n      - {id: et2, ip: 10.1.16.0/31}\n      - {id: et4}\n    logical_interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.6/32, 2001:db8:0:ffff::6/128]}\n  - id: ce-a1\n    label: Customer A — HQ\n    type: router\n    group: cust-a\n    interfaces:\n      - {id: ge0, ip: 192.0.2.2/30}\n  - id: ce-a2\n    label: Customer A — Plant\n    type: router\n    group: cust-a\n    interfaces:\n      - {id: ge0, ip: 192.0.2.6/30}\n  - id: oob-sw\n    label: OOB switch\n    type: switch\n    group: oob\n    interfaces:\n      - {id: p1}\n      - p2\n      - p3\n    logical_interfaces:\n      - {id: vlan1, type: virtual, ip: 172.31.0.2/24}\n  - id: oob-con1\n    label: Console server 1\n    type: system\n    group: oob\n    interfaces:\n      - {id: eth0, ip: 172.31.0.11/24}\n  - id: oob-con2\n    label: Console server 2\n    type: system\n    group: oob\n    interfaces:\n      - {id: eth0, ip: 172.31.0.12/24}\n  - id: oob-nms\n    label: NMS collector\n    type: server\n    group: oob\n    interfaces:\n      - {id: eth0, ip: 172.31.0.20/24}\n  - id: spare-pe\n    label: Spare PE (not in service)\n    type: router\n    logical_interfaces:\n      - {id: lo0, type: loopback, ip: [10.0.0.99/32]}\n\nlinks:\n  # the ring\n  - {id: r12, a: \"pe1:et1\", b: \"pe2:et1\", medium: fiber, speed: 100G}\n  - {id: r23, a: \"pe2:et2\", b: \"pe3:et1\", medium: fiber, speed: 100G}\n  - {id: r34, a: \"pe3:et2\", b: \"pe4:et1\", medium: fiber, speed: 100G}\n  - {id: r45, a: \"pe4:et2\", b: \"pe5:et1\", medium: fiber, speed: 100G}\n  - {id: r56, a: \"pe5:et2\", b: \"pe6:et1\", medium: fiber, speed: 100G}\n  - {id: r61, a: \"pe6:et2\", b: \"pe1:et2\", medium: fiber, speed: 100G}\n  # intra-POP cross-connects\n  - {id: x-north, a: \"pe1:et4\", b: \"pe2:et4\", medium: dac, speed: 100G, cable: DAC 1m}\n  - {id: x-east, a: \"pe3:et4\", b: \"pe4:et4\", medium: dac, speed: 100G, cable: DAC 1m}\n  - {id: x-south, a: \"pe5:et4\", b: \"pe6:et4\", medium: dac, speed: 100G, cable: DAC 1m}\n  # customer access\n  - {id: acc-a1, a: \"pe1:et3\", b: \"ce-a1:ge0\", medium: fiber, speed: 10G}\n  - {id: acc-a2, a: \"pe5:et3\", b: \"ce-a2:ge0\", medium: fiber, speed: 10G}\n  # out-of-band island (not connected to the ring)\n  - {id: oob-1, a: \"oob-sw:p1\", b: \"oob-con1:eth0\", medium: copper}\n  - {id: oob-2, a: \"oob-sw:p2\", b: \"oob-con2:eth0\", medium: copper}\n  - {id: oob-3, a: \"oob-sw:p3\", b: \"oob-nms:eth0\", medium: copper}\n\nnetworks:\n  # members are derived from the addresses inside each prefix\n  # one network per prefix: the two access circuits of customer A\n  - id: cust-a-access-1\n    label: Customer A access 1\n    cidr: 192.0.2.0/30\n    attrs: {vrf: CUST-A, rd: \"65000:100\", rt: \"65000:100\"}\n  - id: cust-a-access-2\n    label: Customer A access 2\n    cidr: 192.0.2.4/30\n    attrs: {vrf: CUST-A, rd: \"65000:100\", rt: \"65000:100\"}\n  - id: oob-mgmt\n    label: OOB management\n    cidr: 172.31.0.0/24\n\nrelations:\n  - id: ospf-core\n    protocol: ospf\n    label: area 0\n    endpoints: [pe1, pe2, pe3, pe4, pe5, pe6]\n  # LDP on every ring link\n  - {id: ldp-12, protocol: ldp, endpoints: [\"pe1:et1\", \"pe2:et1\"], over: r12}\n  - {id: ldp-23, protocol: ldp, endpoints: [\"pe2:et2\", \"pe3:et1\"], over: r23}\n  - {id: ldp-34, protocol: ldp, endpoints: [\"pe3:et2\", \"pe4:et1\"], over: r34}\n  - {id: ldp-45, protocol: ldp, endpoints: [\"pe4:et2\", \"pe5:et1\"], over: r45}\n  - {id: ldp-56, protocol: ldp, endpoints: [\"pe5:et2\", \"pe6:et1\"], over: r56}\n  - {id: ldp-61, protocol: ldp, endpoints: [\"pe6:et2\", \"pe1:et2\"], over: r61}\n  # full iBGP mesh between loopbacks (15 sessions)\n  - {id: ibgp-1-2, protocol: ibgp, endpoints: [\"pe1:lo0\", \"pe2:lo0\"]}\n  - {id: ibgp-1-3, protocol: ibgp, endpoints: [\"pe1:lo0\", \"pe3:lo0\"]}\n  - {id: ibgp-1-4, protocol: ibgp, endpoints: [\"pe1:lo0\", \"pe4:lo0\"]}\n  - {id: ibgp-1-5, protocol: ibgp, endpoints: [\"pe1:lo0\", \"pe5:lo0\"]}\n  - {id: ibgp-1-6, protocol: ibgp, endpoints: [\"pe1:lo0\", \"pe6:lo0\"]}\n  - {id: ibgp-2-3, protocol: ibgp, endpoints: [\"pe2:lo0\", \"pe3:lo0\"]}\n  - {id: ibgp-2-4, protocol: ibgp, endpoints: [\"pe2:lo0\", \"pe4:lo0\"]}\n  - {id: ibgp-2-5, protocol: ibgp, endpoints: [\"pe2:lo0\", \"pe5:lo0\"]}\n  - {id: ibgp-2-6, protocol: ibgp, endpoints: [\"pe2:lo0\", \"pe6:lo0\"]}\n  - {id: ibgp-3-4, protocol: ibgp, endpoints: [\"pe3:lo0\", \"pe4:lo0\"]}\n  - {id: ibgp-3-5, protocol: ibgp, endpoints: [\"pe3:lo0\", \"pe5:lo0\"]}\n  - {id: ibgp-3-6, protocol: ibgp, endpoints: [\"pe3:lo0\", \"pe6:lo0\"]}\n  - {id: ibgp-4-5, protocol: ibgp, endpoints: [\"pe4:lo0\", \"pe5:lo0\"]}\n  - {id: ibgp-4-6, protocol: ibgp, endpoints: [\"pe4:lo0\", \"pe6:lo0\"]}\n  - {id: ibgp-5-6, protocol: ibgp, endpoints: [\"pe5:lo0\", \"pe6:lo0\"]}\n  # traffic-engineered tunnels between loopbacks, riding the ring\n  - id: te-1-4\n    protocol: rsvp-te\n    label: primary north→east\n    direction: unidirectional\n    endpoints: [\"pe1:lo0\", \"pe4:lo0\"]\n    over: [r12, r23, r34]\n    attrs: {bandwidth: 40G, setup-priority: 3}\n  - id: te-2-5\n    protocol: rsvp-te\n    label: primary north→south\n    direction: unidirectional\n    endpoints: [\"pe2:lo0\", \"pe5:lo0\"]\n    over: [r61, r56, x-north]\n    attrs: {bandwidth: 20G}\n  # customer service\n  - id: l3vpn-a\n    protocol: l3vpn\n    label: CUST-A\n    endpoints: [\"pe1:lo0\", \"pe3:lo1\", \"pe5:lo1\"]\n    attrs: {access-networks: \"cust-a-access-1, cust-a-access-2\"}\n  - {id: ebgp-a1, protocol: ebgp, endpoints: [\"pe1:et3\", \"ce-a1:ge0\"], over: acc-a1, attrs: {peer-as: 64601}}\n  - {id: ebgp-a2, protocol: ebgp, endpoints: [\"pe5:et3\", \"ce-a2:ge0\"], over: acc-a2, attrs: {peer-as: 64601}}\n  # inside the OOB island\n  - {id: syslog-oob, protocol: syslog, direction: unidirectional, endpoints: [oob-con1, \"oob-nms:eth0\"]}\n  - {id: snmp-oob, protocol: snmp, direction: unidirectional, endpoints: [oob-nms, oob-sw]}\n\nlayout:\n  physical:\n    ce-a1: [114, 365]\n    ce-a2: [372, 365]\n    oob-con1: [400, 763]\n    oob-con2: [647, 763]\n    oob-nms: [887, 763]\n    oob-sw: [640, 599]\n    pe1: [116, 108]\n    pe2: [377, 108]\n    pe3: [627, 86]\n    pe4: [889, 86]\n    pe5: [642, 390]\n    pe6: [904, 390]\n    spare-pe: [1166, 27]\n  logical:\n    ce-a1: [242, 635]\n    ce-a2: [249, 776]\n    cust-a-access-1: [91, 437]\n    cust-a-access-2: [568, 906]\n    l3vpn-a: [830, 310]\n    oob-con1: [1912, 780]\n    oob-con2: [1670, 300]\n    oob-mgmt: [1880, 465]\n    oob-nms: [2051, 303]\n    oob-sw: [1970, 93]\n    ospf-core: [706, 135]\n    pe1: [129, 257]\n    pe2: [485, 257]\n    pe3: [983, 101]\n    pe4: [1339, 101]\n    pe5: [649, 565]\n    pe6: [1005, 565]\n    spare-pe: [114, 1054]\n"
+        "text": "# netatlas test fixture: examples/metro-ring.yaml after Auto-arrange (both views) and export\n# (generated by scripts/make-fixtures.mjs). The positions are in the\n# \"layout\" section at the end; the network itself is unchanged.\n# netatlas example: metro ring (for Auto-arrange)\n#\n# Six PE routers in three POPs on a fibre ring, each with IPv4/IPv6\n# loopbacks used as router IDs and as iBGP / RSVP-TE endpoints. The logical\n# layer is dense on purpose: an OSPF area, LDP on every ring link, a full\n# iBGP mesh between loopbacks (15 sessions), two RSVP-TE tunnels, an L3VPN\n# overlay and customer eBGP. An out-of-band management network forms a\n# separate, disconnected component, and a spare router is not connected at\n# all. There is no \"layout\" section: open it and use Auto-arrange.\nnetatlas: 1\ntitle: Metro ring MR-1\n\ngroups:\n  - {id: pop-north, label: POP North, kind: site}\n  - {id: pop-east, label: POP East, kind: site}\n  - {id: pop-south, label: POP South, kind: site}\n  - {id: oob, label: Out-of-band management, kind: zone}\n  - {id: cust-a, label: Customer A, kind: external}\n\ndevices:\n  - id: pe1\n    type: router\n    group: pop-north\n    interfaces:\n      - {id: et1, ip: 10.1.12.1/31}\n      - {id: et2, ip: 10.1.16.1/31}\n      - {id: et3, ip: 192.0.2.1/30, vrf: CUST-A}\n      - {id: et4}\n    logical_interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.1/32, 2001:db8:0:ffff::1/128]}\n  - id: pe2\n    type: router\n    group: pop-north\n    interfaces:\n      - {id: et1, ip: 10.1.12.0/31}\n      - {id: et2, ip: 10.1.23.0/31}\n      - {id: et4}\n    logical_interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.2/32, 2001:db8:0:ffff::2/128]}\n  - id: pe3\n    type: router\n    group: pop-east\n    interfaces:\n      - {id: et1, ip: 10.1.23.1/31}\n      - {id: et2, ip: 10.1.34.0/31}\n      - {id: et4}\n    logical_interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.3/32, 2001:db8:0:ffff::3/128]}\n      - {id: lo1, type: loopback, label: VPN next-hop, ip: [10.0.1.3/32]}\n  - id: pe4\n    type: router\n    group: pop-east\n    interfaces:\n      - {id: et1, ip: 10.1.34.1/31}\n      - {id: et2, ip: 10.1.45.0/31}\n      - {id: et4}\n    logical_interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.4/32, 2001:db8:0:ffff::4/128]}\n  - id: pe5\n    type: router\n    group: pop-south\n    interfaces:\n      - {id: et1, ip: 10.1.45.1/31}\n      - {id: et2, ip: 10.1.56.0/31}\n      - {id: et3, ip: 192.0.2.5/30, vrf: CUST-A}\n      - {id: et4}\n    logical_interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.5/32, 2001:db8:0:ffff::5/128]}\n      - {id: lo1, type: loopback, label: VPN next-hop, ip: [10.0.1.5/32]}\n  - id: pe6\n    type: router\n    group: pop-south\n    interfaces:\n      - {id: et1, ip: 10.1.56.1/31}\n      - {id: et2, ip: 10.1.16.0/31}\n      - {id: et4}\n    logical_interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.6/32, 2001:db8:0:ffff::6/128]}\n  - id: ce-a1\n    label: Customer A — HQ\n    type: router\n    group: cust-a\n    interfaces:\n      - {id: ge0, ip: 192.0.2.2/30}\n  - id: ce-a2\n    label: Customer A — Plant\n    type: router\n    group: cust-a\n    interfaces:\n      - {id: ge0, ip: 192.0.2.6/30}\n  - id: oob-sw\n    label: OOB switch\n    type: switch\n    group: oob\n    interfaces:\n      - {id: p1}\n      - p2\n      - p3\n    logical_interfaces:\n      - {id: vlan1, type: virtual, ip: 172.31.0.2/24}\n  - id: oob-con1\n    label: Console server 1\n    type: system\n    group: oob\n    interfaces:\n      - {id: eth0, ip: 172.31.0.11/24}\n  - id: oob-con2\n    label: Console server 2\n    type: system\n    group: oob\n    interfaces:\n      - {id: eth0, ip: 172.31.0.12/24}\n  - id: oob-nms\n    label: NMS collector\n    type: server\n    group: oob\n    interfaces:\n      - {id: eth0, ip: 172.31.0.20/24}\n  - id: spare-pe\n    label: Spare PE (not in service)\n    type: router\n    logical_interfaces:\n      - {id: lo0, type: loopback, ip: [10.0.0.99/32]}\n\nlinks:\n  # the ring\n  - {id: r12, a: \"pe1:et1\", b: \"pe2:et1\", medium: fiber, speed: 100G}\n  - {id: r23, a: \"pe2:et2\", b: \"pe3:et1\", medium: fiber, speed: 100G}\n  - {id: r34, a: \"pe3:et2\", b: \"pe4:et1\", medium: fiber, speed: 100G}\n  - {id: r45, a: \"pe4:et2\", b: \"pe5:et1\", medium: fiber, speed: 100G}\n  - {id: r56, a: \"pe5:et2\", b: \"pe6:et1\", medium: fiber, speed: 100G}\n  - {id: r61, a: \"pe6:et2\", b: \"pe1:et2\", medium: fiber, speed: 100G}\n  # intra-POP cross-connects\n  - {id: x-north, a: \"pe1:et4\", b: \"pe2:et4\", medium: dac, speed: 100G, cable: DAC 1m}\n  - {id: x-east, a: \"pe3:et4\", b: \"pe4:et4\", medium: dac, speed: 100G, cable: DAC 1m}\n  - {id: x-south, a: \"pe5:et4\", b: \"pe6:et4\", medium: dac, speed: 100G, cable: DAC 1m}\n  # customer access\n  - {id: acc-a1, a: \"pe1:et3\", b: \"ce-a1:ge0\", medium: fiber, speed: 10G}\n  - {id: acc-a2, a: \"pe5:et3\", b: \"ce-a2:ge0\", medium: fiber, speed: 10G}\n  # out-of-band island (not connected to the ring)\n  - {id: oob-1, a: \"oob-sw:p1\", b: \"oob-con1:eth0\", medium: copper}\n  - {id: oob-2, a: \"oob-sw:p2\", b: \"oob-con2:eth0\", medium: copper}\n  - {id: oob-3, a: \"oob-sw:p3\", b: \"oob-nms:eth0\", medium: copper}\n\nnetworks:\n  # members are derived from the addresses inside each prefix\n  # one network per prefix: the two access circuits of customer A\n  - id: cust-a-access-1\n    label: Customer A access 1\n    cidr: 192.0.2.0/30\n    attrs: {vrf: CUST-A, rd: \"65000:100\", rt: \"65000:100\"}\n  - id: cust-a-access-2\n    label: Customer A access 2\n    cidr: 192.0.2.4/30\n    attrs: {vrf: CUST-A, rd: \"65000:100\", rt: \"65000:100\"}\n  - id: oob-mgmt\n    label: OOB management\n    cidr: 172.31.0.0/24\n\nrelations:\n  - id: ospf-core\n    protocol: ospf\n    label: area 0\n    endpoints: [pe1, pe2, pe3, pe4, pe5, pe6]\n  # LDP on every ring link\n  - {id: ldp-12, protocol: ldp, endpoints: [\"pe1:et1\", \"pe2:et1\"], over: r12}\n  - {id: ldp-23, protocol: ldp, endpoints: [\"pe2:et2\", \"pe3:et1\"], over: r23}\n  - {id: ldp-34, protocol: ldp, endpoints: [\"pe3:et2\", \"pe4:et1\"], over: r34}\n  - {id: ldp-45, protocol: ldp, endpoints: [\"pe4:et2\", \"pe5:et1\"], over: r45}\n  - {id: ldp-56, protocol: ldp, endpoints: [\"pe5:et2\", \"pe6:et1\"], over: r56}\n  - {id: ldp-61, protocol: ldp, endpoints: [\"pe6:et2\", \"pe1:et2\"], over: r61}\n  # full iBGP mesh between loopbacks (15 sessions)\n  - {id: ibgp-1-2, protocol: ibgp, endpoints: [\"pe1:lo0\", \"pe2:lo0\"]}\n  - {id: ibgp-1-3, protocol: ibgp, endpoints: [\"pe1:lo0\", \"pe3:lo0\"]}\n  - {id: ibgp-1-4, protocol: ibgp, endpoints: [\"pe1:lo0\", \"pe4:lo0\"]}\n  - {id: ibgp-1-5, protocol: ibgp, endpoints: [\"pe1:lo0\", \"pe5:lo0\"]}\n  - {id: ibgp-1-6, protocol: ibgp, endpoints: [\"pe1:lo0\", \"pe6:lo0\"]}\n  - {id: ibgp-2-3, protocol: ibgp, endpoints: [\"pe2:lo0\", \"pe3:lo0\"]}\n  - {id: ibgp-2-4, protocol: ibgp, endpoints: [\"pe2:lo0\", \"pe4:lo0\"]}\n  - {id: ibgp-2-5, protocol: ibgp, endpoints: [\"pe2:lo0\", \"pe5:lo0\"]}\n  - {id: ibgp-2-6, protocol: ibgp, endpoints: [\"pe2:lo0\", \"pe6:lo0\"]}\n  - {id: ibgp-3-4, protocol: ibgp, endpoints: [\"pe3:lo0\", \"pe4:lo0\"]}\n  - {id: ibgp-3-5, protocol: ibgp, endpoints: [\"pe3:lo0\", \"pe5:lo0\"]}\n  - {id: ibgp-3-6, protocol: ibgp, endpoints: [\"pe3:lo0\", \"pe6:lo0\"]}\n  - {id: ibgp-4-5, protocol: ibgp, endpoints: [\"pe4:lo0\", \"pe5:lo0\"]}\n  - {id: ibgp-4-6, protocol: ibgp, endpoints: [\"pe4:lo0\", \"pe6:lo0\"]}\n  - {id: ibgp-5-6, protocol: ibgp, endpoints: [\"pe5:lo0\", \"pe6:lo0\"]}\n  # traffic-engineered tunnels between loopbacks, riding the ring\n  - id: te-1-4\n    protocol: rsvp-te\n    label: primary north→east\n    direction: unidirectional\n    endpoints: [\"pe1:lo0\", \"pe4:lo0\"]\n    over: [r12, r23, r34]\n    attrs: {bandwidth: 40G, setup-priority: 3}\n  - id: te-2-5\n    protocol: rsvp-te\n    label: primary north→south\n    direction: unidirectional\n    endpoints: [\"pe2:lo0\", \"pe5:lo0\"]\n    over: [r61, r56, x-north]\n    attrs: {bandwidth: 20G}\n  # customer service\n  - id: l3vpn-a\n    protocol: l3vpn\n    label: CUST-A\n    endpoints: [\"pe1:lo0\", \"pe3:lo1\", \"pe5:lo1\"]\n    attrs: {access-networks: \"cust-a-access-1, cust-a-access-2\"}\n  - {id: ebgp-a1, protocol: ebgp, endpoints: [\"pe1:et3\", \"ce-a1:ge0\"], over: acc-a1, attrs: {peer-as: 64601}}\n  - {id: ebgp-a2, protocol: ebgp, endpoints: [\"pe5:et3\", \"ce-a2:ge0\"], over: acc-a2, attrs: {peer-as: 64601}}\n  # inside the OOB island\n  - {id: syslog-oob, protocol: syslog, direction: unidirectional, endpoints: [oob-con1, \"oob-nms:eth0\"]}\n  - {id: snmp-oob, protocol: snmp, direction: unidirectional, endpoints: [oob-nms, oob-sw]}\n\nlayout:\n  physical:\n    ce-a1: [126, 458]\n    ce-a2: [384, 458]\n    oob-con1: [439, 929]\n    oob-con2: [686, 929]\n    oob-nms: [926, 929]\n    oob-sw: [679, 745]\n    pe1: [101, 145]\n    pe2: [417, 145]\n    pe3: [667, 121]\n    pe4: [982, 121]\n    pe5: [970, 500]\n    pe6: [654, 500]\n    spare-pe: [1245, 27]\n  logical:\n    ce-a1: [113, 862]\n    ce-a2: [385, 862]\n    cust-a-access-1: [97, 549]\n    cust-a-access-2: [660, 1044]\n    l3vpn-a: [859, 385]\n    oob-con1: [1857, 790]\n    oob-con2: [1611, 310]\n    oob-mgmt: [1825, 475]\n    oob-nms: [1995, 314]\n    oob-sw: [1917, 102]\n    ospf-core: [741, 245]\n    pe1: [219, 286]\n    pe2: [533, 286]\n    pe3: [988, 161]\n    pe4: [1302, 161]\n    pe5: [1079, 728]\n    pe6: [765, 728]\n    spare-pe: [114, 1200]\n"
     },
     {
         "name": "minimal-edited.yaml",
-        "text": "# netatlas test fixture: examples/minimal.yaml after being imported and edited\n# (generated by scripts/make-fixtures.mjs): loopbacks with IPv4 + IPv6,\n# r1 renamed to edge-1 (references updated), cable attributes and an iBGP\n# session between the loopbacks. Original comments are preserved.\n# netatlas example: the smallest useful file.\n# Two routers, one cable, one GRE tunnel with an OSPF adjacency inside it.\nnetatlas: 1\ntitle: Minimal example (edited in netatlas)\n\ndevices:\n  - id: edge-1\n    type: router\n    interfaces:\n      - {id: eth0, ip: 192.0.2.1/30}\n    logical_interfaces:\n      - {id: tun0, type: tunnel, source: eth0, destination: r2:eth0}\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.255.0.1/32, 2001:db8:ffff::1/128]}\n  - id: r2\n    type: router\n    interfaces:\n      - {id: eth0, ip: 192.0.2.2/30}\n    logical_interfaces:\n      - {id: tun0, type: tunnel, source: eth0, destination: edge-1:eth0}\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.255.0.2/32, 2001:db8:ffff::2/128]}\n\nlinks:\n  - id: cable-1\n    a: edge-1:eth0\n    b: r2:eth0\n    medium: copper\n    speed: 1G\n    attrs:\n      patch-panel: PP-3 port 14\n      length: 2m\n\nrelations:\n  - id: gre-1\n    protocol: gre\n    endpoints: [edge-1:tun0, r2:tun0]\n    over: cable-1\n  - id: ospf-1\n    protocol: ospf\n    endpoints: [edge-1:tun0, r2:tun0]\n    over: gre-1\n  - id: bgp-1\n    protocol: ibgp\n    endpoints: [edge-1:lo0, r2:lo0]\n    over: ospf-1\n    attrs:\n      asn: 65001\n      update-source: lo0\n\nlayout:\n  physical:\n    edge-1: [75, 27]\n    r2: [336, 27]\n  logical:\n    edge-1: [97, 45]\n    r2: [441, 45]\n"
+        "text": "# netatlas test fixture: examples/minimal.yaml after being imported and edited\n# (generated by scripts/make-fixtures.mjs): loopbacks with IPv4 + IPv6,\n# r1 renamed to edge-1 (references updated), cable attributes and an iBGP\n# session between the loopbacks. Original comments are preserved.\n# netatlas example: the smallest useful file.\n# Two routers, one cable, one GRE tunnel with an OSPF adjacency inside it.\nnetatlas: 1\ntitle: Minimal example (edited in netatlas)\n\ndevices:\n  - id: edge-1\n    type: router\n    interfaces:\n      - {id: eth0, ip: 192.0.2.1/30}\n    logical_interfaces:\n      - {id: tun0, type: tunnel, source: eth0, destination: r2:eth0}\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.255.0.1/32, 2001:db8:ffff::1/128]}\n  - id: r2\n    type: router\n    interfaces:\n      - {id: eth0, ip: 192.0.2.2/30}\n    logical_interfaces:\n      - {id: tun0, type: tunnel, source: eth0, destination: edge-1:eth0}\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.255.0.2/32, 2001:db8:ffff::2/128]}\n\nlinks:\n  - id: cable-1\n    a: edge-1:eth0\n    b: r2:eth0\n    medium: copper\n    speed: 1G\n    attrs:\n      patch-panel: PP-3 port 14\n      length: 2m\n\nrelations:\n  - id: gre-1\n    protocol: gre\n    endpoints: [edge-1:tun0, r2:tun0]\n    over: cable-1\n  - id: ospf-1\n    protocol: ospf\n    endpoints: [edge-1:tun0, r2:tun0]\n    over: gre-1\n  - id: bgp-1\n    protocol: ibgp\n    endpoints: [edge-1:lo0, r2:lo0]\n    over: ospf-1\n    attrs:\n      asn: 65001\n      update-source: lo0\n\nlayout:\n  physical:\n    edge-1: [75, 47]\n    r2: [336, 47]\n  logical:\n    edge-1: [75, 94]\n    r2: [394, 94]\n"
     }
 ];
 
@@ -15964,14 +16792,15 @@ const legend_1 = __req("diagram/legend");
 const scene_1 = __req("diagram/scene");
 /**
  * Every `data-ref` of a rendered scene: the elements the picture represents.
- * Interface chips (uncabled ports, virtual and tunnel interfaces) only name
- * an interface so it can be found and selected; they bring no networks in.
+ * Interface chips (uncabled ports) and interface entries (the addresses in
+ * device boxes) only name an interface so it can be found and selected;
+ * they bring no networks in.
  */
 function sceneRefs(root) {
     const out = new Set();
     (0, scene_1.walk)(root, (n) => {
         const r = n.attrs['data-ref'];
-        if (r && !/(^| )if-chip( |$)/.test(n.attrs.class || ''))
+        if (r && !/(^| )(if-chip|if-entry)( |$)/.test(n.attrs.class || ''))
             out.add(r);
     });
     return out;
@@ -16149,6 +16978,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.LabelPlacer = void 0;
 exports.textLines = textLines;
 exports.centerRect = centerRect;
+exports.leaderLine = leaderLine;
 exports.alongSegment = alongSegment;
 /**
  * Drawing text and placing labels.
@@ -16173,9 +17003,13 @@ function textLines(attrs, block, x, top) {
     const lh = (0, text_1.lineHeight)(block.size);
     // baseline of a line inside its line box
     const base = lh / 2 + block.size * 0.35;
-    if (block.lines.length === 1)
-        return (0, scene_1.h)('text', { ...attrs, x, y: top + base }, block.lines[0]);
-    return (0, scene_1.h)('text', { ...attrs, x, y: top + base }, block.lines.map((l, i) => (0, scene_1.h)('tspan', { x, y: top + i * lh + base }, l)));
+    // address lines (from block.mono on) are drawn in the monospace font
+    const mono = block.mono === undefined ? Infinity : block.mono;
+    if (block.lines.length === 1) {
+        const cls = mono === 0 ? ((attrs.class ? attrs.class + ' ' : '') + 'addr') : attrs.class;
+        return (0, scene_1.h)('text', { ...attrs, class: cls, x, y: top + base }, block.lines[0]);
+    }
+    return (0, scene_1.h)('text', { ...attrs, x, y: top + base }, block.lines.map((l, i) => (0, scene_1.h)('tspan', { class: i >= mono ? 'addr' : undefined, x, y: top + i * lh + base }, l)));
 }
 function centerRect(c, w, hgt) {
     return { x: c.x - w / 2, y: c.y - hgt / 2, w, h: hgt };
@@ -16191,27 +17025,41 @@ class LabelPlacer {
         this.taken = [];
         /** rectangles of the labels placed so far */
         this.labels = [];
+        /** labels that could not be placed without covering something (see `place`) */
+        this.conflicts = 0;
+        /** where the last placed label was moved away from its candidates: the point it belongs to (draw a leader line) */
+        this.leaderFrom = null;
     }
     /** Reserve a rectangle (a node, fixed text). */
     block(r) {
         this.taken.push(r);
     }
+    area(c, w, hgt) {
+        const r = centerRect(c, w + 4, hgt + 4);
+        let area = 0;
+        for (const t of this.taken) {
+            if ((0, geometry_1.rectsOverlap)(r, t))
+                area += overlapArea(r, t);
+        }
+        return area;
+    }
     /**
      * Place a label of size w × h at the first candidate center that overlaps
-     * nothing. If none is free, the candidate with the smallest overlap is
-     * used: a label is never dropped.
+     * nothing. If none is free, the nearest free spot around the first
+     * candidate is searched for (rings of growing radius, fixed directions:
+     * deterministic); the label is then connected to its place by a leader
+     * line (`leaderFrom`). Only when even that finds nothing is the candidate
+     * with the smallest overlap used, and counted in `conflicts`: a label is
+     * never dropped.
      */
     place(candidates, w, hgt) {
         let best = candidates[0];
         let bestArea = Infinity;
+        this.leaderFrom = null;
         for (const c of candidates) {
-            const r = centerRect(c, w + 4, hgt + 4);
-            let area = 0;
-            for (const t of this.taken) {
-                if ((0, geometry_1.rectsOverlap)(r, t))
-                    area += overlapArea(r, t);
-            }
+            const area = this.area(c, w, hgt);
             if (area === 0) {
+                bestArea = 0;
                 best = c;
                 break;
             }
@@ -16220,6 +17068,22 @@ class LabelPlacer {
                 best = c;
             }
         }
+        if (bestArea > 0) {
+            const c0 = candidates[0];
+            search: for (let r = 16; r <= 480; r += 16) {
+                for (const [dx, dy] of RING) {
+                    const c = { x: c0.x + dx * (r + w / 2), y: c0.y + dy * (r + hgt / 2) };
+                    if (this.area(c, w, hgt) === 0) {
+                        best = c;
+                        bestArea = 0;
+                        this.leaderFrom = c0;
+                        break search;
+                    }
+                }
+            }
+            if (bestArea > 0)
+                this.conflicts++;
+        }
         const r = centerRect(best, w, hgt);
         this.taken.push(r);
         this.labels.push(r);
@@ -16227,6 +17091,22 @@ class LabelPlacer {
     }
 }
 exports.LabelPlacer = LabelPlacer;
+/** 16 unit directions (k · 22.5°) as constants: no trigonometry, the same result in every browser. */
+const RING = [
+    [0, -1], [0, 1], [1, 0], [-1, 0],
+    [0.7071067812, -0.7071067812], [-0.7071067812, -0.7071067812], [0.7071067812, 0.7071067812], [-0.7071067812, 0.7071067812],
+    [0.3826834324, -0.9238795325], [-0.3826834324, -0.9238795325], [0.3826834324, 0.9238795325], [-0.3826834324, 0.9238795325],
+    [0.9238795325, -0.3826834324], [-0.9238795325, -0.3826834324], [0.9238795325, 0.3826834324], [-0.9238795325, 0.3826834324],
+];
+/**
+ * A thin line from the point a label belongs to, to the nearest point of
+ * the label's rectangle (for a label that had to be placed further away).
+ */
+function leaderLine(from, label, ref) {
+    const x = Math.max(label.x, Math.min(label.x + label.w, from.x));
+    const y = Math.max(label.y, Math.min(label.y + label.h, from.y));
+    return (0, scene_1.h)('path', { class: 'leader', 'data-ref': ref, d: `M${Math.round(from.x * 10) / 10} ${Math.round(from.y * 10) / 10}L${Math.round(x * 10) / 10} ${Math.round(y * 10) / 10}` });
+}
 /**
  * Candidate label centers on the segment a->b: around the preferred point
  * first, then further along the segment in both directions, then beside it.
@@ -16728,7 +17608,11 @@ exports.renderLogical = renderLogical;
  *   solid lines, overlays dashed, redundancy dotted, services dash-dotted.
  * - Relations with 3+ devices get a hub node with spokes.
  * - Networks are pill nodes connected to member devices by thin lines. Members
- *   are derived from the addresses inside the network's prefixes.
+ *   are derived from the addresses inside the network's prefixes; each line
+ *   carries every address of the device inside the network.
+ * - A device's box holds an entry per interface with its addresses and
+ *   identifiers (loopbacks, virtual and tunnel interfaces, and physical
+ *   ones with layer-3 facts; see model/addresses.ts), then its DNS names.
  * - Groups / locations are frames around their devices, as in the physical
  *   view (auto-arrange keeps the devices of a group together).
  * - All text is drawn in full. Every relation label gets its own place along
@@ -16738,9 +17622,10 @@ exports.renderLogical = renderLogical;
 const geometry_1 = __req("layout/geometry");
 const bundles_1 = __req("layout/bundles");
 const logical_1 = __req("layout/logical");
+const input_1 = __req("layout/input");
 const sizes_1 = __req("layout/sizes");
+const addresses_1 = __req("model/addresses");
 const derive_1 = __req("model/derive");
-const order_1 = __req("model/order");
 const types_1 = __req("model/types");
 const labels_1 = __req("diagram/labels");
 const physical_1 = __req("diagram/physical");
@@ -16844,7 +17729,8 @@ function renderLogical(model, layout, opts) {
             deviceBoxes.set(n.id, n);
     });
     const grects = showGroups ? (0, physical_1.groupRects)(model, deviceBoxes, localNodes(model, nodes)) : new Map();
-    const groupNodes = showGroups ? (0, physical_1.groupFrames)(model, grects, placer) : [];
+    const groupTitles = [];
+    const groupNodes = showGroups ? (0, physical_1.groupFrames)(model, grects, placer, groupTitles) : [];
     nodes.forEach((n) => {
         if (n.kind === 'network' && !opts.showNetworks)
             return;
@@ -16868,11 +17754,9 @@ function renderLogical(model, layout, opts) {
                 const s = (0, geometry_1.clipToBox)(dn, { x: nn.cx, y: nn.cy }, 1);
                 const e = (0, geometry_1.clipToBox)(nn, { x: dn.cx, y: dn.cy }, 1);
                 members.push((0, scene_1.h)('path', { class: 'member', 'data-ref': 'network:' + nw.id, d: lineD(s, e) }));
-                if (opts.showLabels) {
-                    // the address that makes the device a member (the first one, if several match)
-                    const addr = m.matches[0].address + (m.matches.length > 1 ? ` +${m.matches.length - 1}` : '');
-                    memberLabels.push({ ref: 'network:' + nw.id, s, e, text: addr });
-                }
+                // every address of the device inside the network, in full
+                if (opts.showLabels)
+                    memberLabels.push({ ref: 'network:' + nw.id, s, e, addresses: (0, input_1.memberAddresses)(model, nw.id, m.device) });
             }
         }
     }
@@ -16907,7 +17791,7 @@ function renderLogical(model, layout, opts) {
             const ux = dx / dl;
             const uy = dy / dl;
             const items = rootsPlaced.map((p) => {
-                const box = (0, sizes_1.pillBox)((0, bundles_1.laneLabel)(p));
+                const box = (0, sizes_1.pillBox)((0, bundles_1.laneLabel)(p), p.extra);
                 return { p, box, ext: Math.abs(ux) * box.w + Math.abs(uy) * box.h + 6 };
             });
             const total = items.reduce((s, it) => s + it.ext, 0);
@@ -16934,6 +17818,8 @@ function renderLogical(model, layout, opts) {
                 const step = it.box.h + 4;
                 const c = placer.place((0, labels_1.alongSegment)(s, e, 0.5, [shift, shift - 24, shift + 24, shift - 48, shift + 48, shift - 80, shift + 80, shift - 120, shift + 120].map((v) => Math.max(-len / 2 + 8, Math.min(len / 2 - 8, v))), [side, side - step, side + step, side - 2 * step, side + 2 * step]), it.box.w, it.box.h);
                 labelRects.push((0, labels_1.centerRect)(c, it.box.w, it.box.h));
+                if (placer.leaderFrom)
+                    labels.push((0, labels_1.leaderLine)(placer.leaderFrom, (0, labels_1.centerRect)(c, it.box.w, it.box.h), 'relation:' + it.p.rel.id));
                 labels.push(pill('relation:' + it.p.rel.id, c, it.box, it.p.def.color));
             }
         }
@@ -16956,7 +17842,7 @@ function renderLogical(model, layout, opts) {
         kids.push((0, scene_1.h)('text', { class: 'hub-glyph', x: hub.cx, y: hub.cy + 4, 'text-anchor': 'middle', fill: def.color }, String((0, types_1.relationDevices)(r).length)));
         relNodes.push((0, scene_1.h)('g', { class: `rel hub-rel cat-${def.category} style-${def.style} proto-${(0, physical_1.cssToken)(r.protocol)}`, 'data-ref': 'relation:' + r.id }, kids));
         if (opts.showLabels) {
-            const box = (0, sizes_1.pillBox)(def.label + (r.label ? ' · ' + r.label : ''));
+            const box = (0, sizes_1.pillBox)(def.label + (r.label ? ' · ' + r.label : ''), (0, addresses_1.addressAttrLines)(r.attrs));
             const dyy = logical_1.HUB_R + 5 + box.h / 2;
             const dxx = logical_1.HUB_R + 6 + box.w / 2;
             const c = placer.place([
@@ -16970,16 +17856,24 @@ function renderLogical(model, layout, opts) {
                 { x: hub.cx - dxx, y: hub.cy - dyy },
             ], box.w, box.h);
             labelRects.push((0, labels_1.centerRect)(c, box.w, box.h));
+            if (placer.leaderFrom)
+                labels.push((0, labels_1.leaderLine)({ x: hub.cx, y: hub.cy }, (0, labels_1.centerRect)(c, box.w, box.h), 'relation:' + r.id));
             labels.push(pill('relation:' + r.id, c, box, def.color));
         }
     }
     // ---- addresses on membership lines: near the device, moved along the line where that spot is taken
     for (const ml of memberLabels) {
-        const w = (0, geometry_1.textWidth)(ml.text, sizes_1.MEMBER_LABEL_SIZE) + 4;
+        const box = (0, sizes_1.memberLabelBox)(ml.addresses);
+        const w = box.w;
+        const hh = box.h;
+        const st = hh + 2;
         // fallbacks, tried only when every usual spot is taken: right beside the device, where the line leaves it (or across it)
-        const c = placer.place((0, labels_1.alongSegment)(ml.s, ml.e, 0.22, [0, 22, 44, 70, 100, -14], [0, -12, 12]).concat((0, labels_1.alongSegment)(ml.s, ml.e, 0, [w / 2 + 6, w / 2 + 20], [0, -12, 12, -24, 24])), w, 12);
-        labelRects.push((0, labels_1.centerRect)(c, w, 12));
-        labels.push((0, scene_1.h)('text', { class: 'halo member-label', 'data-ref': ml.ref, x: c.x, y: c.y + 3.5, 'text-anchor': 'middle' }, ml.text));
+        const c = placer.place((0, labels_1.alongSegment)(ml.s, ml.e, 0.22, [0, 22, 44, 70, 100, -14], [0, -st, st]).concat((0, labels_1.alongSegment)(ml.s, ml.e, 0, [w / 2 + 6, w / 2 + 20], [0, -st, st, -2 * st, 2 * st])), w, hh);
+        const r = (0, labels_1.centerRect)(c, w, hh);
+        labelRects.push(r);
+        if (placer.leaderFrom)
+            labels.push((0, labels_1.leaderLine)(placer.leaderFrom, r, ml.ref));
+        labels.push((0, labels_1.textLines)({ class: 'halo member-label', 'data-ref': ml.ref, 'text-anchor': 'middle' }, box.block, c.x, r.y));
     }
     // ---- nodes
     nodes.forEach((n) => {
@@ -16987,16 +17881,17 @@ function renderLogical(model, layout, opts) {
             const d = model.index.devices.get(n.id);
             if (!d)
                 return;
-            nodeLayer.push((0, physical_1.deviceNode)(n.ref, d.label, (0, physical_1.deviceSubtitle)(d.type), d.type, (0, logical_1.deviceRect)(n), 'type-' + (0, physical_1.cssToken)(d.type)));
-            nodeLayer.push(...loopbackChips(d, n));
-            // the other logical interfaces (virtual, tunnel) as chips under the loopbacks, each selectable
-            const flow = (0, sizes_1.logicalChipFlow)(otherLogical(d), n.w);
-            const flowTop = n.cy - n.h / 2 + (n.bodyH || 0) + 4 + (0, sizes_1.chipRows)((0, types_1.loopbacks)(d).length) * logical_1.CHIP_H;
-            if (flow.items.length)
-                nodeLayer.push(...(0, physical_1.chipNodes)(d.id, flow, n.cx - n.w / 2 + 8, flowTop, 'logical-chip', (id) => { var _a; return ((_a = d.logical.find((x) => x.id === id)) === null || _a === void 0 ? void 0 : _a.type) || ''; }));
+            const bodyH = n.bodyH || n.h;
+            nodeLayer.push((0, physical_1.deviceNode)(n.ref, d.label, (0, physical_1.deviceSubtitle)(d.type), d.type, (0, logical_1.deviceRect)(n), 'type-' + (0, physical_1.cssToken)(d.type), bodyH));
+            // the entries of its interfaces (loopbacks, virtual, tunnel, physical with addresses), each selectable
+            const items = (0, physical_1.entryItems)(model, d, 'logical');
+            const listTop = n.cy - n.h / 2 + bodyH;
+            const listH = (0, sizes_1.entriesSize)(items)[1];
+            if (items.length)
+                nodeLayer.push(...(0, physical_1.entryNodes)(items, n.cx - n.w / 2 + sizes_1.ENTRY_MARGIN, listTop, n.w - 2 * sizes_1.ENTRY_MARGIN));
             // the names are labels: hidden with Labels (their room stays, so nothing moves)
             if (opts.showLabels)
-                nodeLayer.push(...dnsChips(d, n, flow.items.length ? flow.h + sizes_1.IFCHIP_GAP : 0));
+                nodeLayer.push(...dnsChips(d, n, listTop + listH + (listH ? sizes_1.ENTRY_GAP : 0)));
         }
         else if (n.kind === 'network' && opts.showNetworks) {
             const nw = model.index.networks.get(n.id);
@@ -17005,7 +17900,7 @@ function renderLogical(model, layout, opts) {
             const color = style_1.NETWORK_COLOR;
             const x = n.cx - n.w / 2;
             const y = n.cy - n.h / 2;
-            const body = (0, sizes_1.networkBody)(nw.label, (0, logical_1.networkSubtitle)(nw.cidr, nw.vlan));
+            const body = (0, sizes_1.networkBody)(nw.label, (0, logical_1.networkSubtitle)(nw.cidr, nw.vlan), (0, addresses_1.addressAttrLines)(nw.attrs));
             const top = n.cy - (body.label.h + body.sub.h) / 2;
             const rx = Math.min(n.h / 2, 21);
             nodeLayer.push((0, scene_1.h)('g', { class: 'node network', 'data-ref': n.ref }, [
@@ -17027,12 +17922,13 @@ function renderLogical(model, layout, opts) {
     for (const r of labelRects)
         rects.push({ x: r.x - 14, y: r.y - 14, w: r.w + 28, h: r.h + 28 });
     return {
+        conflicts: placer.conflicts + (0, physical_1.nodeOverlaps)(Array.from(nodes.values()).filter((n) => n.kind !== 'network' || opts.showNetworks).map((n) => (0, geometry_1.boxRect)(n))),
         root: (0, scene_1.h)('g', { class: 'scene scene-logical' }, [
             (0, scene_1.h)('g', { class: 'layer-groups' }, groupNodes),
             (0, scene_1.h)('g', { class: 'layer-members' }, members),
             (0, scene_1.h)('g', { class: 'layer-relations' }, relNodes),
             (0, scene_1.h)('g', { class: 'layer-nodes' }, nodeLayer),
-            (0, scene_1.h)('g', { class: 'layer-labels' }, labels),
+            (0, scene_1.h)('g', { class: 'layer-labels' }, groupTitles.concat(labels)),
         ]),
         bounds: (0, geometry_1.unionRect)(rects),
     };
@@ -17086,19 +17982,19 @@ function pill(ref, p, box, color) {
     ]);
 }
 /**
- * The device's DNS names under its loopback chips: each name once, however
- * many interfaces it is associated with; a long name continues on further
- * lines; more than MAX_DNS names end in a "+N more names" row. They show
- * what is configured in the model, nothing looked up.
+ * The device's DNS names in its box, under its interface entries: each name
+ * once, however many interfaces it is associated with, every one of them; a
+ * long name continues on further lines. They show what is configured in the
+ * model, nothing looked up.
  */
-function dnsChips(d, n, chipsH) {
-    const shown = (0, sizes_1.dnsShown)(d.dnsNames.map((x) => x.name).filter((x) => !!x));
-    if (!shown.names.length)
+function dnsChips(d, n, top) {
+    const names = (0, sizes_1.dnsShown)(d.dnsNames.map((x) => x.name).filter((x) => !!x));
+    if (!names.length)
         return [];
     const out = [];
-    let y = n.cy - n.h / 2 + (n.bodyH || 0) + 4 + (0, sizes_1.chipRows)((0, types_1.loopbacks)(d).length) * logical_1.CHIP_H + chipsH;
+    let y = top;
     const w = n.w - 16;
-    for (const name of shown.names) {
+    for (const name of names) {
         const lines = (0, sizes_1.dnsNameLines)(name);
         out.push((0, scene_1.h)('g', { class: 'dns-chip', 'data-ref': 'device:' + d.id, 'data-dns': name }, [
             (0, scene_1.h)('rect', { x: n.cx - w / 2, y, width: w, height: lines.length * logical_1.CHIP_H - 3, rx: 6.5 }),
@@ -17106,30 +18002,6 @@ function dnsChips(d, n, chipsH) {
         ]));
         y += lines.length * logical_1.CHIP_H;
     }
-    if (shown.more)
-        out.push((0, scene_1.h)('text', { class: 'loop-more dns-more', x: n.cx, y: y + 9, 'text-anchor': 'middle', 'data-ref': 'device:' + d.id }, `+${shown.more} more name${shown.more > 1 ? 's' : ''}`));
-    return out;
-}
-/** A device's virtual and tunnel interfaces, in display order (as the layout sized them). */
-function otherLogical(d) {
-    return (0, order_1.sortedByName)(d.logical.filter((i) => i.type !== 'loopback').map((i) => i.id), (x) => x);
-}
-/** Loopbacks as chips hanging under the device, every one, in alphabetical order (logical view only; they are never cabled). */
-function loopbackChips(d, n) {
-    const loops = (0, order_1.sortedByName)((0, types_1.loopbacks)(d), (l) => l.id);
-    if (!loops.length)
-        return [];
-    const out = [];
-    const top = n.cy - n.h / 2 + (n.bodyH || 0) + 4;
-    const w = n.w - 16;
-    loops.forEach((l, i) => {
-        const text = (0, sizes_1.loopbackChipText)(l.id, l.addresses);
-        const y = top + i * logical_1.CHIP_H;
-        out.push((0, scene_1.h)('g', { class: 'loop-chip', 'data-ref': `iface:${d.id}:${l.id}`, 'data-endpoint': 'iface' }, [
-            (0, scene_1.h)('rect', { x: n.cx - w / 2, y, width: w, height: logical_1.CHIP_H - 3, rx: 6.5 }),
-            (0, scene_1.h)('text', { x: n.cx, y: y + 9.5, 'text-anchor': 'middle', 'font-size': sizes_1.CHIP_FONT }, text),
-        ]));
-    });
     return out;
 }
 
@@ -17138,12 +18010,15 @@ __defs["diagram/physical"] = function (module, exports) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.linkNetworkLabel = exports.deviceSubtitle = void 0;
+exports.nodeOverlaps = nodeOverlaps;
 exports.physicalBoxes = physicalBoxes;
 exports.groupRects = groupRects;
 exports.groupFrames = groupFrames;
 exports.deviceNode = deviceNode;
 exports.cableRoute = cableRoute;
 exports.renderPhysical = renderPhysical;
+exports.entryItems = entryItems;
+exports.entryNodes = entryNodes;
 exports.spareIds = spareIds;
 exports.chipNodes = chipNodes;
 exports.cssToken = cssToken;
@@ -17158,12 +18033,16 @@ exports.cssToken = cssToken;
  *   around the device.
  * - Cable labels are placed on the cable's longest segment, away from
  *   devices, port labels and other cable labels.
+ * - The addresses and identifiers of a device's interfaces are entries in
+ *   its box (model/addresses.ts), each named by its interface, so its owner
+ *   is never in doubt and no floating label can cover it.
  */
 const geometry_1 = __req("layout/geometry");
 const input_1 = __req("layout/input");
 Object.defineProperty(exports, "linkNetworkLabel", { enumerable: true, get: function () { return input_1.linkNetworkLabel; } });
 const physical_1 = __req("layout/physical");
 const sizes_1 = __req("layout/sizes");
+const addresses_1 = __req("model/addresses");
 const order_1 = __req("model/order");
 const derive_1 = __req("model/derive");
 const device_types_1 = __req("model/device-types");
@@ -17173,6 +18052,15 @@ const icons_1 = __req("diagram/icons");
 const labels_1 = __req("diagram/labels");
 const scene_1 = __req("diagram/scene");
 const style_1 = __req("diagram/style");
+/** Pairs of overlapping rectangles (node boxes). */
+function nodeOverlaps(rs) {
+    let n = 0;
+    for (let i = 0; i < rs.length; i++)
+        for (let j = i + 1; j < rs.length; j++)
+            if ((0, geometry_1.rectsOverlap)(rs[i], rs[j]))
+                n++;
+    return n;
+}
 const STUB = 20;
 /** Device boxes after applying user drags. */
 function physicalBoxes(layout, positions) {
@@ -17215,7 +18103,7 @@ function groupRects(model, boxes, extra = new Map()) {
         if (!parts.length)
             continue;
         const u = (0, geometry_1.unionRect)(parts);
-        const head = (0, sizes_1.groupHeader)(g.label, g.kind, u.w);
+        const head = (0, sizes_1.groupHeader)(g.label, g.kind, u.w, (0, addresses_1.addressAttrLines)(g.attrs));
         const w = Math.max(u.w + 2 * physical_1.GROUP_PAD, head.minW);
         rects.set(g.id, { x: u.x + u.w / 2 - w / 2, y: u.y - physical_1.GROUP_PAD - head.h, w, h: u.h + 2 * physical_1.GROUP_PAD + head.h });
     }
@@ -17223,10 +18111,12 @@ function groupRects(model, boxes, extra = new Map()) {
 }
 /**
  * The frames of groups / locations (outermost first, so children draw on
- * top), with title and kind. Used by both views. Each title is blocked for
- * the label placer, so no label is placed on it.
+ * top). Used by both views. Their titles and kinds go to `titles`, which
+ * the renderers draw in the top layer with a halo, so no cable or relation
+ * line drawn across a frame's title can make it hard to read. Each title is
+ * blocked for the label placer, so no label is placed on it.
  */
-function groupFrames(model, grects, placer) {
+function groupFrames(model, grects, placer, titles = []) {
     const out = [];
     const depthSorted = model.groups.filter((g) => grects.has(g.id));
     const depthOf = (id) => {
@@ -17242,11 +18132,13 @@ function groupFrames(model, grects, placer) {
     for (const g of depthSorted) {
         const r = grects.get(g.id);
         const ks = (0, style_1.groupKindStyle)(g.kind);
-        const head = (0, sizes_1.groupHeader)(g.label, g.kind, r.w - 2 * physical_1.GROUP_PAD);
+        const head = (0, sizes_1.groupHeader)(g.label, g.kind, r.w - 2 * physical_1.GROUP_PAD, (0, addresses_1.addressAttrLines)(g.attrs));
         out.push((0, scene_1.h)('g', { class: `group kind-${cssToken(g.kind)} ${ks.strong ? 'group-strong' : ''}`, 'data-ref': 'group:' + g.id }, [
             (0, scene_1.h)('rect', { class: 'group-box', x: r.x, y: r.y, width: r.w, height: r.h, rx: 12, 'stroke-dasharray': ks.dash }),
-            (0, labels_1.textLines)({ class: 'group-title' }, head.title, r.x + 14, r.y + 7),
-            head.kind ? (0, scene_1.h)('text', { class: 'group-kind', x: r.x + r.w - 12, y: r.y + 20, 'text-anchor': 'end' }, head.kind) : null,
+        ]));
+        titles.push((0, scene_1.h)('g', { class: 'group-label', 'data-ref': 'group:' + g.id }, [
+            (0, labels_1.textLines)({ class: 'halo group-title' }, head.title, r.x + 14, r.y + 7),
+            head.kind ? (0, scene_1.h)('text', { class: 'halo group-kind', x: r.x + r.w - 12, y: r.y + 20, 'text-anchor': 'end' }, head.kind) : null,
         ]));
         placer.block({ x: r.x + 10, y: r.y + 5, w: head.title.w + 8, h: head.title.h + 4 });
     }
@@ -17359,7 +18251,8 @@ function renderPhysical(model, layout, opts) {
     });
     // ---- groups (outermost first so children draw on top)
     const showGroups = opts.showGroups !== false;
-    const groupNodes = showGroups ? groupFrames(model, grects, placer) : [];
+    const groupTitles = [];
+    const groupNodes = showGroups ? groupFrames(model, grects, placer, groupTitles) : [];
     // ---- ports and cables: port labels first, they have fixed places
     const linkNodes = [];
     const labelNodes = [];
@@ -17398,13 +18291,16 @@ function renderPhysical(model, layout, opts) {
         const out = [];
         const mismatch = !!(0, derive_1.networkMismatch)(l.a.networks, l.b.networks);
         const text = opts.showLabels ? (0, input_1.linkLabelText)(model, l) : '';
+        const lines = opts.showLabels ? (0, input_1.linkLabelExtra)(l) : [];
         let center = { x: (pts[seg].x + pts[seg + 1].x) / 2, y: (pts[seg].y + pts[seg + 1].y) / 2 };
-        if (text) {
-            const box = (0, sizes_1.linkLabelBox)(text);
+        if (text || lines.length) {
+            const box = (0, sizes_1.linkLabelBox)(text, lines);
             const step = Math.max(14, box.h + 2);
             center = placer.place((0, labels_1.alongSegment)(pts[seg], pts[seg + 1], 0.5, [0, -26, 26, -52, 52, -80, 80, -110, 110], [0, -step, step, -2 * step, 2 * step]), box.w, box.h);
             const r = (0, labels_1.centerRect)(center, box.w, box.h);
             extra.push(r);
+            if (placer.leaderFrom)
+                out.push((0, labels_1.leaderLine)(placer.leaderFrom, r, 'link:' + l.id));
             out.push((0, labels_1.textLines)({ class: 'halo link-label' + (mismatch ? ' net-mismatch' : ''), 'data-ref': 'link:' + l.id, 'text-anchor': 'middle' }, box.block, center.x, r.y + 1));
             // ends that carry different networks are marked next to the label
             if (mismatch)
@@ -17445,13 +18341,18 @@ function renderPhysical(model, layout, opts) {
         }
         labelNodes.push(...labelAt.get(l.id));
     }
-    // ---- devices, with the chips of their uncabled ports at the bottom of the box
+    // ---- devices: label, the entries of their interfaces, and the chips of their uncabled ports at the bottom of the box
     const deviceNodes = model.devices.map((d) => {
         const b = boxes.get(d.id);
         const flow = (0, physical_1.spareChipFlow)(spareIds(model, d), b.w);
+        const chipsH = (0, sizes_1.chipStripH)(flow);
+        const items = entryItems(model, d, 'physical');
+        const listH = (0, physical_1.physicalListH)((0, sizes_1.entriesSize)(items));
         if (flow.items.length)
-            portNodes.push(...chipNodes(d.id, flow, b.cx - b.w / 2 + sizes_1.IFCHIP_PAD, b.cy + b.h / 2 - (0, sizes_1.chipStripH)(flow), 'port-chip', () => ''));
-        return deviceNode('device:' + d.id, d.label, (0, device_types_1.deviceSubtitle)(d.type), d.type, b, 'type-' + cssToken(d.type), b.h - (0, sizes_1.chipStripH)(flow));
+            portNodes.push(...chipNodes(d.id, flow, b.cx - b.w / 2 + sizes_1.IFCHIP_PAD, b.cy + b.h / 2 - chipsH, 'port-chip', () => ''));
+        if (items.length)
+            portNodes.push(...entryNodes(items, b.cx - b.w / 2 + sizes_1.ENTRY_MARGIN, b.cy + b.h / 2 - chipsH - listH, b.w - 2 * sizes_1.ENTRY_MARGIN));
+        return deviceNode('device:' + d.id, d.label, (0, device_types_1.deviceSubtitle)(d.type), d.type, b, 'type-' + cssToken(d.type), b.h - chipsH - listH);
     });
     // everything drawn is inside the bounds: boxes, groups, labels and cable bends
     const rects = [];
@@ -17462,15 +18363,55 @@ function renderPhysical(model, layout, opts) {
         rects.push({ x: r.x - 12, y: r.y - 12, w: r.w + 24, h: r.h + 24 });
     const bounds = (0, geometry_1.unionRect)(rects);
     return {
+        conflicts: placer.conflicts + nodeOverlaps(Array.from(boxes.values()).map((b) => (0, geometry_1.boxRect)(b))),
         root: (0, scene_1.h)('g', { class: 'scene scene-physical' }, [
             (0, scene_1.h)('g', { class: 'layer-groups' }, groupNodes),
             (0, scene_1.h)('g', { class: 'layer-links' }, linkNodes),
             (0, scene_1.h)('g', { class: 'layer-nodes' }, deviceNodes),
             (0, scene_1.h)('g', { class: 'layer-ports' }, portNodes),
-            (0, scene_1.h)('g', { class: 'layer-labels' }, labelNodes),
+            (0, scene_1.h)('g', { class: 'layer-labels' }, groupTitles.concat(labelNodes)),
         ]),
         bounds,
     };
+}
+/**
+ * The entries of a device's box in a view, in the order the layout sized
+ * them (layout/input.ts entryTexts): the device's own address lines, then
+ * its interfaces.
+ */
+function entryItems(model, d, view) {
+    const texts = (0, input_1.entryTexts)(model, d, view);
+    const ifaces = (0, addresses_1.deviceEntries)(model, d, view);
+    const own = texts.length > ifaces.length;
+    return texts.map((t, i) => {
+        if (own && i === 0)
+            return { ...t, ref: 'device:' + d.id, cls: 'if-entry dev-addr', endpoint: false };
+        const e = ifaces[own ? i - 1 : i];
+        const kind = e.kind === 'loopback' ? 'loop-chip' : e.kind === 'physical' ? 'phys-entry' : 'logical-chip kind-' + e.kind;
+        return { ...t, ref: e.ref, cls: 'if-entry ' + kind, endpoint: true };
+    });
+}
+/**
+ * Entries stacked from (x, y), each `w` wide: a frame, the interface's name,
+ * and its addresses and identifiers, one per line, in the monospace font.
+ */
+function entryNodes(items, x, y, w) {
+    const out = [];
+    let top = y;
+    for (const it of items) {
+        const b = (0, sizes_1.entryBox)(it);
+        const kids = [(0, scene_1.h)('rect', { x, y: top, width: w, height: b.h, rx: 4 })];
+        let ty = top + sizes_1.ENTRY_PAD_Y;
+        if (it.header) {
+            kids.push((0, labels_1.textLines)({ class: 'if-name addr', 'font-size': sizes_1.ENTRY_FONT }, { lines: [it.header], size: sizes_1.ENTRY_FONT, w: 0, h: sizes_1.ENTRY_LH, mono: 0 }, x + sizes_1.ENTRY_PAD_X, ty));
+            ty += sizes_1.ENTRY_LH;
+        }
+        if (it.lines.length)
+            kids.push((0, labels_1.textLines)({ class: 'if-lines', 'font-size': sizes_1.ENTRY_FONT }, { lines: it.lines, size: sizes_1.ENTRY_FONT, w: 0, h: it.lines.length * sizes_1.ENTRY_LH, mono: 0 }, x + sizes_1.ENTRY_PAD_X, ty));
+        out.push((0, scene_1.h)('g', { class: it.cls, 'data-ref': it.ref, 'data-endpoint': it.endpoint ? 'iface' : undefined }, kids));
+        top += b.h + sizes_1.ENTRY_GAP;
+    }
+    return out;
 }
 /** A device's physical interfaces without a cable, in display order (as the layout sized them). */
 function spareIds(model, d) {
@@ -17607,7 +18548,13 @@ async function runSelfTest(app, doc) {
         });
         boxed('g.device', '.dev-box', 'text');
         boxed('g.network', '.net-box', 'text');
-        boxed('g.group', '.group-box', '.group-title');
+        // a group's title is drawn above the lines (in the label layer), inside its frame
+        each('g.group-label', (gl) => {
+            const frame = root.querySelector(`g.group[data-ref="${gl.getAttribute('data-ref')}"] .group-box`);
+            const t = gl.querySelector('.group-title');
+            if (frame && t && !inside(bb(t), bb(frame)))
+                out.push(`"${t.textContent}" leaves its group frame`);
+        });
         boxed('g.pill', '.pill-box', 'text');
         boxed('g.loop-chip', 'rect', 'text');
         boxed('g.dns-chip', 'rect', 'text');
@@ -17702,7 +18649,7 @@ async function runSelfTest(app, doc) {
                 labels.join('|') === 'New model|Open model…|Save model|Save model as…|Close model' && /Ctrl\+S$/.test(entries[2]) && /Ctrl\+Shift\+S$/.test(entries[3]) &&
                 entries.length === 5 + examples_1.EXAMPLES.length && ['#btn-save', '#btn-save-as', '#btn-close'].every((x) => q(x).disabled && /Open or create a model first|Close the current model/.test(q(x).title)) &&
                 q('#btn-save').nextElementSibling === q('#btn-save-as') && q('#btn-save-as').nextElementSibling === q('#btn-close') &&
-                textsOf('#menu-examples .mi-label').join() === examples_1.EXAMPLES.map((e) => e.name).join() && !q('#menu-examples .active-example') && /Examples/.test(q('#menu-examples-title').textContent || '') && examples_1.EXAMPLES.length === 6 && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(menu.textContent || '') && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(q('#empty').textContent || ''), entries.join(' | '));
+                textsOf('#menu-examples .mi-label').join() === examples_1.EXAMPLES.map((e) => e.name).join() && !q('#menu-examples .active-example') && /Examples/.test(q('#menu-examples-title').textContent || '') && examples_1.EXAMPLES.length === 7 && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(menu.textContent || '') && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(q('#empty').textContent || ''), entries.join(' | '));
             menuBtn.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
             const byEsc = menu.hidden;
             click('#menu-btn');
@@ -18434,7 +19381,7 @@ async function runSelfTest(app, doc) {
         check('GRE drawn inside IPsec (narrower tube on the same path)', !!ipsec && !!gre && w(gre) < w(ipsec) && gre.getAttribute('d') === ipsec.getAttribute('d'));
         check('custom protocol MACsec rendered', !!q('#viewport g.rel.proto-macsec'));
         const svgText = app.exportSvg();
-        check('SVG export is standalone (inline style, no script, no external refs)', /^<svg[\s\S]*<style[\s\S]*relation:gre-muc[\s\S]*<\/svg>$/.test(svgText) && !/<script|https?:\/\/(?!www\.w3\.org)/.test(svgText));
+        check('SVG export is standalone: resolved colours as attributes, an explicit background, no stylesheet, no CSS variable, no prefers-color-scheme, no script, no external refs', /^<svg[\s\S]*<rect class="export-background"[^>]*fill="#[0-9a-f]{6}"[\s\S]*relation:gre-muc[\s\S]*<\/svg>$/.test(svgText) && !/<style|var\(--|prefers-color-scheme|<script|https?:\/\/(?!www\.w3\.org)/.test(svgText), (svgText.match(/<style|var\(--[a-z-]*|prefers-color-scheme/g) || []).slice(0, 5).join(', '));
         {
             const measure = (text, sel = 'g.svg-legend') => {
                 const parsed = new DOMParser().parseFromString(text, 'image/svg+xml').documentElement;
@@ -18832,7 +19779,9 @@ async function runSelfTest(app, doc) {
                 lines('device:fw', 'dev-label').length >= 3 && lines('device:fw', 'dev-label').join(' ') === m.index.devices.get('fw').label &&
                 lines('device:storage', 'dev-label').length >= 2 && lines('device:storage', 'dev-label').join('') === m.index.devices.get('storage').label &&
                 lines('group:dc', 'group-title').join(' ') === m.index.groups.get('dc').label, JSON.stringify([lines('device:core-a', 'dev-label'), lines('device:fw', 'dev-label'), lines('device:storage', 'dev-label'), lines('group:dc', 'group-title')]));
-            check('boxes differ in size with their text (one-letter label < three lines < long wrapped label)', boxH('device:srv') < boxH('device:core-a') && boxH('device:core-a') < boxH('device:fw'), [boxH('device:srv'), boxH('device:core-a'), boxH('device:fw')].join(' '));
+            // the label part of a box grows with its lines; the entries with the interfaces' addresses come on top of that
+            const labelH = (ref) => q(`#viewport g[data-ref="${ref}"] .dev-label`).getBBox().height;
+            check('boxes differ in size with their text (one-letter label < three lines < long wrapped label), each grown around its label', labelH('device:srv') < labelH('device:core-a') && labelH('device:core-a') < labelH('device:fw') && ['device:srv', 'device:core-a', 'device:fw'].every((r) => boxH(r) > labelH(r) + 12), [labelH('device:srv'), labelH('device:core-a'), labelH('device:fw')].map(Math.round).join(' '));
             const straight = count('.cable.straight');
             const peerD = ['peer-1', 'peer-2', 'peer-3'].map((id) => q(`#viewport g.cable[data-ref="link:${id}"] .cable-line`).getAttribute('d') || '');
             check('three cables between the same two devices are parallel straight lines, each with its own label on it', peerD.every((d) => /^M[-0-9.]+ ([-0-9.]+)L[-0-9.]+ \1$/.test(d)) && new Set(peerD).size === 3 && straight >= 5 &&

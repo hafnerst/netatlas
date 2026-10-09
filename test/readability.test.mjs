@@ -12,6 +12,7 @@ const { layoutInput, layoutSignature } = load('layout/input.js');
 const { autoPositions } = load('layout/positions.js');
 const { ModelDoc } = load('editor/document.js');
 const legend = load('diagram/legend.js');
+const { addressAttrLines } = load('model/addresses.js');
 
 const render = (m, view, opts = {}) => {
   const s = new state.Session(m);
@@ -94,7 +95,11 @@ test('no diagram text is shortened: every example, both views, draws its labels 
         assert.ok(n.texts[1].lines.join(' ').includes(nw.cidr), `${f}: prefix ${nw.cidr} of ${nw.id} is shown`);
       }
       if (view === 'physical') {
-        for (const gr of g.groups) assert.equal(flat(gr.title.lines.join('')), flat(m.index.groups.get(gr.ref.slice(6)).label));
+        // the title, then the group's address-like attrs, each line whole
+        for (const gr of g.groups) {
+          const grp = m.index.groups.get(gr.ref.slice(6));
+          assert.equal(flat(gr.title.lines.join('')), flat(grp.label + addressAttrLines(grp.attrs).join('')));
+        }
         // every cable that has something to say is labelled (it used to be dropped when the cable was short)
         const labelled = new Set(g.linkLabels.map((l) => l.ref));
         for (const l of m.links) if (l.speed || l.label || l.a.networks.length) assert.ok(labelled.has('link:' + l.id), `${f}: cable ${l.id} has its label`);
@@ -119,11 +124,13 @@ test('multi-line and long labels: lines preserved, boxes grown, everything insid
     assert.ok(dev('fw').texts[0].lines.length >= 3, 'a long label wraps');
     assert.ok(dev('storage').texts[0].lines.length >= 2, 'a long word is broken');
     assert.equal(dev('storage').texts[0].lines.join(''), m.index.devices.get('storage').label);
-    // differing node sizes
-    const hs = ['srv', 'core-a', 'fw'].map((id) => dev(id).box.h);
-    assert.ok(hs[0] < hs[1] && hs[1] < hs[2], 'box heights follow the text: ' + hs);
+    // differing node sizes: the label part of a box grows with its lines (the entries with the
+    // interfaces' addresses come on top of that), and every box holds its whole label
+    const hs = ['srv', 'core-a', 'fw'].map((id) => dev(id).texts[0].rect.h);
+    assert.ok(hs[0] < hs[1] && hs[1] < hs[2], 'label heights follow the text: ' + hs);
+    for (const id of ['srv', 'core-a', 'fw']) assert.ok(dev(id).box.h >= dev(id).texts[0].rect.h + 16, id + ': the box is grown around its label');
     assert.ok(dev('srv').box.w < dev('fw').box.w);
-    assert.ok(dev('fw').box.w <= 1200 && dev('fw').box.h <= 200, 'growth is bounded');
+    assert.ok(dev('fw').box.w <= 1200 && dev('fw').texts[0].rect.h <= 200, 'growth of the label is bounded');
     assert.deepEqual(problems(render(m, view).root), [], view);
   }
   const g = geometry(render(m, 'physical').root);
@@ -262,7 +269,9 @@ test('sizes are part of the layout input: text that changes a box changes the la
   assert.notEqual(sig(base.replace('type: firewall', 'type: load_balancer')), sig(base), 'the subtitle (the type) is drawn, so it counts');
   assert.notEqual(sig(base.replace('label: peer link 1', 'label: a much longer label for this cable')), sig(base), 'cable labels need room');
   assert.notEqual(sig(base.replace('label: area 0.0.0.10', 'label: area 0.0.0.10 (totally stubby)')), sig(base), 'relation labels need room');
-  assert.equal(sig(base.replace('cable: CID-2024-000173', 'cable: something-else')), sig(base), 'text that is not drawn does not count');
+  // the cable id is an identifier: it is written under the cable's label, so it needs room too
+  assert.notEqual(sig(base.replace('cable: CID-2024-000173', 'cable: CID-2024-000173-and-a-patch-panel-port')), sig(base), 'the cable id is drawn, so it counts');
+  assert.equal(sig(base.replace('title: Long labels and mixed node sizes', 'title: something else')), sig(base), 'text that is not drawn does not count');
   assert.equal(sig(base.replace('medium: dac, speed: 100G, label: keepalive', 'medium: fiber, speed: 100G, label: keepalive')), sig(base));
   // a bigger box moves its neighbors, deterministically
   const a = autoPositions('physical', layoutInput(model(base)));

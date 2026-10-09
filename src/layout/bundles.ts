@@ -4,6 +4,7 @@
  * tunnel's tube. Both the layout (to reserve room for the lanes and their
  * labels) and the logical renderer (to draw them) use this one definition.
  */
+import { addressAttrLines } from '../model/addresses';
 import { relationStyle } from '../model/protocols';
 import { Model, ProtocolDef, Relation, relationDevices } from '../model/types';
 import { cmp } from './order';
@@ -31,6 +32,12 @@ export interface PlacedLane {
   stack: string;
   /** true for lanes that are not nested in another one; these carry the label */
   root: boolean;
+  /**
+   * address lines of the stack (address-like attrs), drawn under the label:
+   * the lane's own, then those of the relations nested in it, each of those
+   * named by its protocol so the owner is clear
+   */
+  extra: string[];
 }
 
 export interface Bundle {
@@ -101,8 +108,12 @@ export function buildBundle(model: Model, key: string, rels: Relation[]): Bundle
     ln.def.label +
     (ln.rel.label ? ' · ' + ln.rel.label : '') +
     (ln.children.length === 1 ? ' › ' + stackLabel(ln.children[0]) : ln.children.length > 1 ? ' › (' + ln.children.map(stackLabel).join(', ') + ')' : '');
+  const stackExtra = (ln: Lane, nested: boolean): string[] =>
+    addressAttrLines(ln.rel.attrs)
+      .map((l) => (nested ? ln.def.label + ': ' + l : l))
+      .concat(...ln.children.map((c) => stackExtra(c, true)));
   const place = (ln: Lane, offset: number, depth: number, root: boolean): void => {
-    placed.push({ rel: ln.rel, def: ln.def, offset, width: ln.width, depth, stack: stackLabel(ln), root });
+    placed.push({ rel: ln.rel, def: ln.def, offset, width: ln.width, depth, stack: stackLabel(ln), root, extra: stackExtra(ln, false) });
     if (!ln.children.length) return;
     const inner = ln.children.reduce((s, c) => s + c.width, 0) + 3 * (ln.children.length - 1);
     let cur = offset - inner / 2;

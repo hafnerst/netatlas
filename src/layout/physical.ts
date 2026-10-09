@@ -32,7 +32,7 @@
  */
 import { CBox, Pt, textWidth } from './geometry';
 import { LDev, LEnd, LayoutInput, cmp } from './input';
-import { ChipFlow, GROUP_PAD, IFCHIP_PAD, chipFlow, chipStripH, deviceBody, groupHeader, linkLabelBox } from './sizes';
+import { ChipFlow, ENTRY_MARGIN, GROUP_PAD, IFCHIP_PAD, chipFlow, chipStripH, deviceBody, groupHeader, linkLabelBox } from './sizes';
 
 export { GROUP_PAD };
 
@@ -87,6 +87,8 @@ interface GNode {
   id: string | null;
   label: string;
   kind: string;
+  /** address lines under the title */
+  extra: string[];
   tiers: string[][];
   children: GNode[];
   /** root only: ungrouped devices, tier rows per connected component */
@@ -100,13 +102,20 @@ interface Block {
 }
 
 /**
- * Size of a device box for its label and subtitle, and the strip of chips of
- * its ports without a cable at its bottom (cabled ports may enlarge it).
+ * Size of a device box for its label and subtitle, the entries with its
+ * interfaces' addresses and identifiers under them, and the strip of chips
+ * of its ports without a cable at its bottom (cabled ports may enlarge it).
  */
 export function physicalBaseSize(d: LDev): { w: number; h: number } {
   const b = deviceBody(d.label, d.sub, BASE_W, BASE_H);
-  const flow = spareChipFlow(d.spare, b.w);
-  return { w: Math.max(b.w, flow.w + 2 * IFCHIP_PAD), h: b.h + chipStripH(flow) };
+  const w = Math.max(b.w, d.physList[0] ? d.physList[0] + 2 * ENTRY_MARGIN : 0);
+  const flow = spareChipFlow(d.spare, w);
+  return { w: Math.max(w, flow.w + 2 * IFCHIP_PAD), h: b.h + physicalListH(d.physList) + chipStripH(flow) };
+}
+
+/** Height a device's address entries take in its physical box (0 without any). */
+export function physicalListH(list: [number, number]): number {
+  return list[1] ? list[1] + ENTRY_MARGIN : 0;
 }
 
 /** The chips of a device's uncabled ports, for a box `w` wide. */
@@ -157,8 +166,8 @@ export function autoPhysical(input: LayoutInput): Map<string, Pt> {
 
   // --- group tree
   const nodes = new Map<string, GNode>();
-  const root: GNode = { id: null, label: '', kind: '', tiers: [], children: [], comps: [] };
-  for (const g of input.groups) nodes.set(g.id, { id: g.id, label: g.label, kind: g.kind, tiers: [], children: [], comps: [] });
+  const root: GNode = { id: null, label: '', kind: '', extra: [], tiers: [], children: [], comps: [] };
+  for (const g of input.groups) nodes.set(g.id, { id: g.id, label: g.label, kind: g.kind, extra: g.extra, tiers: [], children: [], comps: [] });
   for (const g of input.groups) {
     const parent = g.parent && nodes.has(g.parent) ? (nodes.get(g.parent) as GNode) : root;
     parent.children.push(nodes.get(g.id) as GNode);
@@ -225,7 +234,7 @@ export function autoPhysical(input: LayoutInput): Map<string, Pt> {
   // facing sides (known once ports are assigned) and the label of a cable
   // that joins the two directly
   const sidePad = new Map<string, { left: number; right: number }>();
-  const labelW = new Map(input.linkLabels.map((l) => [l.id, linkLabelBox(l.text).w] as [string, number]));
+  const labelW = new Map(input.linkLabels.map((l) => [l.id, linkLabelBox(l.text, l.extra).w] as [string, number]));
   const between = new Map<string, number>();
   for (const l of input.links) {
     const w = labelW.get(l.id);
@@ -528,7 +537,7 @@ export function autoPhysical(input: LayoutInput): Map<string, Pt> {
     const content = arrange(units, 0, 'g:' + (n.id as string));
     // at least as wide as the group's title needs; the title area grows with its lines
     const contentW = Math.max(content.w, 140);
-    const head = groupHeader(n.label, n.kind, contentW);
+    const head = groupHeader(n.label, n.kind, contentW, n.extra);
     const innerW = Math.max(contentW, head.minW - 2 * GROUP_PAD);
     return {
       w: innerW + 2 * GROUP_PAD,

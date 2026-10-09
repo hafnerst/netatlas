@@ -26,14 +26,14 @@ import { CBox, Pt } from './geometry';
 import { LGroup, LayoutInput, cmp } from './input';
 import { GROUP_PAD, HUB_R, groupHeader, logicalDeviceSize, networkBody, pillBox } from './sizes';
 
-export { CHIP_H, HUB_R, chipRows, networkSubtitle } from './sizes';
+export { CHIP_H, HUB_R, networkSubtitle } from './sizes';
 
 export interface LNode extends CBox {
   /** "device:<id>" | "network:<id>" | "hub:<relationId>" */
   ref: string;
   kind: 'device' | 'network' | 'hub';
   id: string;
-  /** devices: height of the device box itself (the node also holds the loopback chips) */
+  /** devices: height of the label part of the box (the entries and DNS names follow it) */
   bodyH?: number;
 }
 
@@ -62,10 +62,13 @@ export function isMultipoint(devs: string[]): boolean {
   return devs.length >= 3;
 }
 
-/** The drawn device rectangle inside a (possibly taller) logical node. */
+/**
+ * The drawn device rectangle of a logical node: the whole node, since the
+ * device's box holds its label, its interface entries and its DNS names
+ * (lines attach to the box, so none crosses an entry).
+ */
 export function deviceRect(n: LNode): LNode {
-  if (n.kind !== 'device' || n.bodyH === undefined || n.h <= n.bodyH) return n;
-  return { ...n, cy: n.cy - n.h / 2 + n.bodyH / 2, h: n.bodyH };
+  return n;
 }
 
 /** Nodes of the logical view with their sizes, sorted by ref. */
@@ -73,13 +76,13 @@ export function logicalSpecs(input: LayoutInput): LSpec[] {
   const involved = new Set<string>();
   for (const r of input.relations) for (const d of r.devices) involved.add(d);
   for (const n of input.networks) for (const d of n.members) involved.add(d);
-  // loopbacks and other logical interfaces are logical: a device that has one belongs in the logical view
-  for (const d of input.devices) if (d.loopbacks || d.logical.length) involved.add(d.id);
+  // loopbacks and other logical interfaces are logical, and so are addresses: a device that has one belongs in the logical view
+  for (const d of input.devices) if (d.loopbacks || d.logical.length || d.logList[1]) involved.add(d.id);
   const devs = involved.size ? input.devices.filter((d) => involved.has(d.id)) : input.devices;
   const out: LSpec[] = [];
-  for (const d of devs) out.push({ ref: 'device:' + d.id, kind: 'device', id: d.id, ...logicalDeviceSize(d.label, d.sub, d.chipW, d.loopbacks, d.dns, d.logical) });
+  for (const d of devs) out.push({ ref: 'device:' + d.id, kind: 'device', id: d.id, ...logicalDeviceSize(d.label, d.sub, d.logList, d.dns) });
   for (const n of input.networks) {
-    const b = networkBody(n.label, n.sub);
+    const b = networkBody(n.label, n.sub, n.extra);
     out.push({ ref: 'network:' + n.id, kind: 'network', id: n.id, w: b.w, h: b.h });
   }
   const devSet = new Set(devs.map((d) => d.id));
@@ -90,7 +93,7 @@ export function logicalSpecs(input: LayoutInput): LSpec[] {
   return out.sort((a, b) => cmp(a.ref, b.ref));
 }
 
-/** room for the address written on a membership line, and for a hub's spokes */
+/** least room for the addresses written on a membership line (more when they need it), and room for a hub's spokes */
 const MEMBER_ROOM: [number, number] = [120, 56];
 const SPOKE_ROOM: [number, number] = [80, 50];
 
@@ -98,8 +101,8 @@ const SPOKE_ROOM: [number, number] = [80, 50];
  * Room the labels of a device pair need between the two boxes: as wide as
  * the widest label, or as high as all of them stacked.
  */
-export function pairLabelRoom(labels: string[]): [number, number] {
-  const boxes = labels.map(pillBox);
+export function pairLabelRoom(labels: string[], extras: string[][] = []): [number, number] {
+  const boxes = labels.map((l, i) => pillBox(l, extras[i] || []));
   return [boxes.reduce((m, b) => Math.max(m, b.w), 0) + 40, boxes.reduce((s, b) => s + b.h + 4, 0) + 44];
 }
 
@@ -107,14 +110,21 @@ export function pairLabelRoom(labels: string[]): [number, number] {
 export function logicalEdges(input: LayoutInput, specs: LSpec[]): LEdge[] {
   const has = new Set(specs.map((s) => s.ref));
   const edges: LEdge[] = [];
-  for (const n of input.networks) for (const d of n.members) if (has.has('device:' + d)) edges.push(['network:' + n.id, 'device:' + d, 1, MEMBER_ROOM[0], MEMBER_ROOM[1]]);
+  for (const n of input.networks) {
+    const sizes = new Map(n.memberLabels.map(([d, w, h]) => [d, [w, h]] as [string, [number, number]]));
+    for (const d of n.members) {
+      if (!has.has('device:' + d)) continue;
+      const [w, h] = sizes.get(d) || [0, 0];
+      edges.push(['network:' + n.id, 'device:' + d, 1, Math.max(MEMBER_ROOM[0], w + 40), Math.max(MEMBER_ROOM[1], h + 44)]);
+    }
+  }
   for (const r of input.relations) {
     const ds = r.devices.filter((d) => has.has('device:' + d));
     if (isMultipoint(ds)) for (const d of ds) edges.push(['hub:' + r.id, 'device:' + d, 0.8, SPOKE_ROOM[0], SPOKE_ROOM[1]]);
   }
   for (const p of input.pairs) {
     if (!has.has('device:' + p.a) || !has.has('device:' + p.b)) continue;
-    const [rx, ry] = pairLabelRoom(p.labels);
+    const [rx, ry] = pairLabelRoom(p.labels, p.extras);
     edges.push(['device:' + p.a, 'device:' + p.b, Math.min(2, 0.7 + p.labels.length * 0.15), rx, ry]);
   }
   return edges.sort((p, q) => cmp(p[0], q[0]) || cmp(p[1], q[1]));
@@ -405,7 +415,7 @@ function clustered(specs: LSpec[], edges: LEdge[], seed: Map<string, Pt>, groupO
     const g = groups.get(gid) as LGroup;
     // the same frame geometry as the drawn group (diagram/physical.ts groupRects)
     const uw = x1 - x0;
-    const head = groupHeader(g.label, g.kind, uw);
+    const head = groupHeader(g.label, g.kind, uw, g.extra);
     const w = Math.max(uw + 2 * GROUP_PAD, head.minW);
     const h = y1 - y0 + 2 * GROUP_PAD + head.h;
     // positions relative to the frame's center: content centred horizontally, below the title

@@ -201,6 +201,9 @@ test('interface chips: a long run of similar names shows the shared prefix once;
   assert.ok(flow.items.every((c) => !/…/.test(c.text)));
   // the device box grows for the chips: its size depends on them, so Auto-arrange leaves room
   const { physicalBaseSize } = load('layout/physical.js');
-  const base = { id: 'x', label: 'x', sub: 'Switch', tier: 4, group: null, loopbacks: 0, chipW: 0, dns: [], logical: [] };
+  const base = { id: 'x', label: 'x', sub: 'Switch', tier: 4, group: null, loopbacks: 0, physList: [0, 0], logList: [0, 0], dns: [], logical: [] };
   assert.ok(physicalBaseSize({ ...base, spare: many }).h > physicalBaseSize({ ...base, spare: [] }).h);
+  // … and for the entries with its interfaces' addresses, so they never stick out of the box
+  const listed = physicalBaseSize({ ...base, spare: [], physList: [300, 80] });
+  assert.ok(listed.w >= 300 && listed.h >= physicalBaseSize({ ...base, spare: [] }).h + 80);
 });

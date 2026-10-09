@@ -11,7 +11,10 @@ import { Pt } from '../layout/geometry';
 import { ArrangeStrategy, STRATEGIES, STRATEGY_LABEL } from '../layout/strategies';
 import { compatibleEndpoints, connectionKind, endpointName, endpointOfRef, endpointProblem, endpointRef, pairProblem } from '../model/connect';
 import { Endpoint } from '../model/types';
-import { el, materialize, mount } from './dom';
+import { el, materialize, mount, setPaint } from './dom';
+import { ThemeController, themeButtonText } from './theme';
+import { inlineComputedStyles, resolvedPaint } from './export-style';
+import { themedColor } from '../diagram/palette';
 import { DialogOpts, showDialog, showToast } from './dialogs';
 import { licenseBody, manualBody } from './help';
 import { Editor, EditorSel } from './inspector';
@@ -69,6 +72,8 @@ export class App {
   private copyName: string | null = null;
   /** a connection being drawn in the diagram: its first endpoint and where the pointer is */
   private conn: { view: View; first: Endpoint; ref: string; at: Pt | null } | null = null;
+  /** Light, Dark or System; switching repaints in place (state, selection, zoom and layout are kept) */
+  readonly theme: ThemeController;
 
   constructor(doc: Document) {
     this.doc = doc;
@@ -79,6 +84,9 @@ export class App {
     };
     this.svg = this.$<SVGSVGElement>('canvas');
     this.viewport = this.$<SVGGElement>('viewport');
+    this.theme = new ThemeController(doc);
+    setPaint((c) => themedColor(c, this.theme.theme));
+    this.theme.onChange(() => this.themeChanged());
     this.fileAccess = detectFileAccess(doc.defaultView);
     this.editor = new Editor(doc, {
       changed: (note) => this.afterEdit(note),
@@ -89,7 +97,25 @@ export class App {
     }, () => this.mdoc);
     this.wire();
     this.fillExamples();
+    this.updateThemeButton();
     this.updateChrome();
+  }
+
+  // ---------------------------------------------------------------- theme
+
+  /** The theme in effect changed: the design tokens switched already; the diagram and legend are repainted in place. */
+  private themeChanged(): void {
+    this.updateThemeButton();
+    this.render();
+  }
+
+  /** The theme button: its icon shows the choice, its name and tooltip the theme in effect and what a press does. */
+  private updateThemeButton(): void {
+    const btn = this.$('theme-btn');
+    const text = themeButtonText(this.theme.pref, this.theme.theme);
+    btn.setAttribute('aria-label', text);
+    btn.setAttribute('data-pref', this.theme.pref);
+    this.$('theme-tip').textContent = text;
   }
 
   // ------------------------------------------------------------- loading
@@ -756,10 +782,24 @@ export class App {
     const scene = s.render();
     this.bounds = scene.bounds;
     mount(this.viewport, scene.root, true);
+    this.showConflicts(scene.conflicts);
     this.applyHighlight();
     this.applyConnection();
     this.applyZoom();
     this.renderSide();
+  }
+
+  /**
+   * Overlaps a reader would see (after nodes were moved by hand: labels with
+   * no free place, boxes on top of each other) are never left silent: a note
+   * over the diagram says how many there are and how to remove them. It is
+   * not part of the picture, so no export carries it.
+   */
+  private showConflicts(n: number): void {
+    const hint = this.$('overlap-hint');
+    this.svg.setAttribute('data-conflicts', String(n));
+    hint.hidden = n === 0;
+    this.$('overlap-hint-text').textContent = `${n} overlap${n === 1 ? '' : 's'} in the diagram. Auto-arrange places everything without overlaps.`;
   }
 
   private scheduleRender(): void {
@@ -2022,6 +2062,7 @@ export class App {
     this.$('btn-outline-filter').addEventListener('click', () => this.openOutlineFilter());
     // Help menu
     this.$('btn-manual').addEventListener('click', () => void this.openHelp('manual'));
+    this.$('theme-btn').addEventListener('click', () => this.theme.cycle());
     this.$('btn-license').addEventListener('click', () => void this.openHelp('license'));
     outline.addEventListener('keydown', (e) => {
       const t = e.target as HTMLElement;
@@ -2582,7 +2623,7 @@ export class App {
    * and the picture is enlarged to contain them. Both export formats are
    * made from this one document, so they show the same thing.
    */
-  private buildExport(): { text: string; width: number; height: number } {
+  private buildExport(): { text: string; width: number; height: number; background: string } {
     const clone = this.svg.cloneNode(true) as SVGSVGElement;
     let b = this.bounds;
     const vp = clone.querySelector('#viewport');
@@ -2596,7 +2637,7 @@ export class App {
       const st = this.session.state;
       // what the picture shows decides what its legend and its networks overview list
       const scene = this.session.render();
-      const boxes = exportBoxes(this.session.viewModel(), st.view, st, { root: scene.root, bounds: b });
+      const boxes = exportBoxes(this.session.viewModel(), st.view, st, { root: scene.root, bounds: b, conflicts: scene.conflicts });
       clone.appendChild(materialize(boxes.legend.root, this.doc, true));
       clone.appendChild(materialize(boxes.networks.root, this.doc, true));
       b = boxes.viewBox;
@@ -2605,21 +2646,57 @@ export class App {
     clone.setAttribute('width', String(Math.round(b.w)));
     clone.setAttribute('height', String(Math.round(b.h)));
     clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
-    const style = this.doc.getElementById('app-style');
-    const st = this.doc.createElementNS('http://www.w3.org/2000/svg', 'style');
-    st.textContent = (style && style.textContent) || '';
-    clone.insertBefore(st, clone.firstChild);
-    clone.removeAttribute('class');
-    clone.setAttribute('class', ('export ' + (this.svg.getAttribute('class') || '')).replace(/\bconnecting\b/, '').trim());
-    return { text: new XMLSerializer().serializeToString(clone), width: Math.round(b.w), height: Math.round(b.h) };
+    clone.removeAttribute('id');
+    clone.removeAttribute('role');
+    clone.removeAttribute('aria-label');
+    clone.setAttribute('class', ('export ' + (this.svg.getAttribute('class') || '')).replace(/\bconnecting\b|\bdragging\b/g, '').replace(/\s+/g, ' ').trim());
+    // the picture is drawn in the theme in effect, with resolved colours and an explicit background
+    const bg = this.exportBackground();
+    clone.setAttribute('data-theme', this.theme.theme);
+    const back = this.doc.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    back.setAttribute('class', 'export-background');
+    back.setAttribute('x', String(round(b.x)));
+    back.setAttribute('y', String(round(b.y)));
+    back.setAttribute('width', String(round(b.w)));
+    back.setAttribute('height', String(round(b.h)));
+    clone.insertBefore(back, clone.firstChild);
+    this.withProbe(clone, () => inlineComputedStyles(clone, this.doc.defaultView as Window));
+    back.setAttribute('fill', bg);
+    back.removeAttribute('stroke');
+    return { text: new XMLSerializer().serializeToString(clone), width: Math.round(b.w), height: Math.round(b.h), background: bg };
   }
 
-  /** The view on screen as a PNG: the SVG export, drawn onto the diagram's background colour. */
+  /** The diagram's background colour in the theme in effect, as #rrggbb (opaque). */
+  private exportBackground(): string {
+    const win = this.doc.defaultView;
+    const v = win ? win.getComputedStyle(this.$('canvas-wrap')).backgroundColor : '';
+    const p = resolvedPaint(v || '');
+    return p.color.charAt(0) === '#' && p.alpha === 1 ? p.color : this.theme.theme === 'dark' ? '#15181d' : '#fbfcfd';
+  }
+
+  /**
+   * Run `fn` while `svg` is part of the document (off screen, at its natural
+   * size), where the stylesheet applies to it as to the diagram on screen.
+   */
+  private withProbe(svg: SVGSVGElement, fn: () => void): void {
+    const holder = this.doc.createElement('div');
+    holder.className = 'export-probe';
+    holder.setAttribute('aria-hidden', 'true');
+    holder.style.cssText = 'position:fixed;left:-100000px;top:0;width:10px;height:10px;overflow:hidden;pointer-events:none';
+    holder.appendChild(svg);
+    this.doc.body.appendChild(holder);
+    try {
+      fn();
+    } finally {
+      holder.removeChild(svg);
+      this.doc.body.removeChild(holder);
+    }
+  }
+
+  /** The view on screen as a PNG: the SVG export (same resolved colours) on its opaque background. */
   exportPng(): Promise<PngPicture> {
     const pic = this.buildExport();
-    const win = this.doc.defaultView;
-    const bg = win ? win.getComputedStyle(this.$('canvas-wrap')).backgroundColor : '';
-    return svgToPng(this.doc, pic.text, pic.width, pic.height, bg && bg !== 'rgba(0, 0, 0, 0)' ? bg : '#ffffff');
+    return svgToPng(this.doc, pic.text, pic.width, pic.height, pic.background);
   }
 
   /** Name of an exported picture: the model's file name and the view, e.g. "enterprise-wan-logical.png". */
