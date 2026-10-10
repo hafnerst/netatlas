@@ -410,6 +410,17 @@ button.ref:hover { text-decoration: underline; }
 .pill-box { fill: var(--pill); stroke-width: 1.3; }
 .pill-text { font-size: 10px; font-weight: 600; }
 .pill { cursor: pointer; }
+/* logical view: the port beside the row a relation is bound to (an interface: a solid bar; the device itself: a hollow
+   bar beside its name), and the end label naming the interface (the underlay a tunnel is sourced from on a second
+   line, after "src:"). Told apart by shape and text, not by colour alone. */
+.lport { fill: var(--text); stroke: var(--canvas); stroke-width: 1; cursor: pointer; }
+.lport.dev-port { fill: var(--canvas); stroke: var(--text); stroke-width: 1.4; }
+.end-label { font-family: var(--font-mono); font-size: 9.5px; font-weight: 600; fill: var(--text) !important; cursor: pointer; }
+.end-label [data-field="source"], .end-label[data-field="source"] { font-weight: 400; font-style: italic; fill: var(--muted) !important; }
+/* physical view: an aggregate (LAG / port-channel) is a bracket around its member ports, named by its interface */
+.lag-mark { fill: none; stroke: var(--text); stroke-width: 1.4; cursor: pointer; }
+.lag-label { font-family: var(--font-mono); font-size: 9.5px; font-weight: 700; fill: var(--text) !important; cursor: pointer; }
+.port.dev-end { fill: var(--canvas) !important; stroke: var(--text); stroke-width: 1.4; }
 /* selection / highlight */
 .has-selection .dim { opacity: .16; transition: opacity .15s; }
 .has-selection .group.dim, .has-selection .group-label.dim { opacity: .45; }
@@ -417,6 +428,16 @@ button.ref:hover { text-decoration: underline; }
 .selected .cable-line, .selected.port { filter: drop-shadow(0 0 3px var(--sel)); }
 .selected .tube-outer, .selected .rel-line { filter: drop-shadow(0 0 3px var(--sel)); }
 .hl .cable-line { filter: drop-shadow(0 0 2px var(--sel)); }
+/* the interfaces at the ends of a selected relation or link (and those of a selected interface): their entry, port and end label */
+.has-selection .hl.if-entry rect, .has-selection .hl.if-chip rect { stroke: var(--sel) !important; stroke-width: 2 !important; }
+.has-selection rect.hl.lport, .has-selection rect.hl.port, .has-selection .hl.lag-mark { stroke: var(--sel); stroke-width: 2.2; }
+.has-selection .hl.end-label, .has-selection .hl.lag-label { text-decoration: underline; }
+.selected.lport, .selected.lag-mark { stroke: var(--sel) !important; stroke-width: 2.6 !important; }
+/* pointing at an interface, relation or link: what it is attached to (outline and weight, not colour alone) */
+.hover-hl .tube-outer, .hover-hl .rel-line, .hover-hl .cable-line { filter: drop-shadow(0 0 2.5px var(--accent)); }
+.hover-hl.if-entry rect, .hover-hl.if-chip rect { stroke: var(--accent) !important; stroke-width: 2 !important; }
+rect.hover-hl.lport, rect.hover-hl.port, .hover-hl.lag-mark { stroke: var(--accent); stroke-width: 2.2; }
+.hover-hl.end-label, .hover-hl.port-label, .hover-hl.lag-label { text-decoration: underline; }
 /* legend drawn into exported SVG files */
 /* … and, in the same style, the overview of the networks relevant to the exported view */
 .svg-legend .lg-box, .svg-networks .lg-box { fill: var(--panel); stroke: var(--border); stroke-width: 1; }
@@ -813,6 +834,9 @@ body:not([data-state="loaded"]) .view-group .tool-group-title, body:not([data-st
    error badge), a hover (border colour) or the focus ring (an outline around the control), and it
    leaves all three visible. */
 .sel-mark { background: var(--marked-bg) !important; box-shadow: inset 3px 0 0 var(--marked-bar); }
+/* the ends of a selected relation or link: where it is attached (an accent bar and the "↔" note, not colour alone) */
+.end-mark { background: var(--marked-bg); box-shadow: inset 3px 0 0 var(--marked-bar); border-radius: 5px; padding-left: 7px; margin-left: -7px; }
+.ep-bind { margin-top: 2px; overflow-wrap: anywhere; }
 .field.sel-mark, .list-row.sel-mark, .g-row.sel-mark { border-radius: 5px; padding-left: 7px; margin-left: -7px; }
 .list-row.sel-mark, .g-row.sel-mark { padding-top: 2px; padding-bottom: 2px; margin-top: -2px; margin-bottom: -2px; }
 .sel-tag { flex: none; display: inline-block; margin-left: 6px; padding: 0 6px; border: 1px solid var(--marked-bar); border-radius: 99px; color: var(--accent); background: var(--panel); font-size: 10.5px; font-weight: 600; line-height: 1.5; letter-spacing: 0; text-transform: none; white-space: nowrap; vertical-align: 1px; }

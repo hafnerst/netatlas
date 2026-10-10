@@ -148,6 +148,24 @@ async function main() {
       await save('addresses', { x, y, w: Math.min(c.x + c.w, b.x + b.w + 150) - x, h: Math.min(c.y + c.h, y + 470) - y });
     }
 
+    // ports: the branch router of the long-labels example at 100 %, GRE and OSPF leaving from the port of Tunnel10
+    await page.eval('netatlas.loadExample(5), netatlas.setView("logical"), true');
+    await page.eval(`(() => { const m = /scale\\(([\\d.]+)\\)/.exec(document.getElementById('viewport').getAttribute('transform')); netatlas.zoomBy(1 / Number(m[1])); return true; })()`);
+    await page.eval('netatlas.select("device:br-rtr", true), netatlas.select(null), true');
+    await page.mouse('mouseMoved', 700, 890);
+    await page.settle(200);
+    {
+      const c = await page.rect('#canvas-wrap');
+      const b = await page.rect('#viewport [data-ref="device:br-rtr"] .dev-box');
+      const x = Math.max(c.x, b.x - 30);
+      const y = Math.max(c.y, b.y - 46);
+      await save('ports', { x, y, w: Math.min(c.x + c.w, b.x + b.w + 320) - x, h: Math.min(c.y + c.h, b.y + b.h + 40) - y });
+    }
+    await page.eval('netatlas.loadExample(6), netatlas.setView("logical"), true');
+    await page.eval(`(() => { const m = /scale\\(([\\d.]+)\\)/.exec(document.getElementById('viewport').getAttribute('transform')); netatlas.zoomBy(1 / Number(m[1])); return true; })()`);
+    await page.eval('netatlas.select("device:core", true), netatlas.select(null), true');
+    await page.settle(150);
+
     // the Edit tab marks what was clicked: an address of an interface (addressing example, logical view)
     await page.eval('netatlas.showTab("edit"), netatlas.select("iface:core:lo0", true), netatlas.select(null), true');
     await page.settle(150);

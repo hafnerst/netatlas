@@ -17,6 +17,7 @@ import { strNode } from '../yaml/parse';
 import { EXAMPLES, FIXTURES } from '../generated/examples';
 import { PNG_MAX_PIXELS, PNG_MAX_SIDE, WritableFile, pngScale, svgToPng } from '../ui/files';
 import { App } from '../ui/app';
+import { contrast } from '../diagram/palette';
 
 interface Check {
   name: string;
@@ -256,7 +257,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
           labels.join('|') === 'New model|Open model…|Save model|Save model as…|Close model' && /Ctrl\+S$/.test(entries[2]) && /Ctrl\+Shift\+S$/.test(entries[3]) &&
           entries.length === 5 + EXAMPLES.length && ['#btn-save', '#btn-save-as', '#btn-close'].every((x) => (q(x) as HTMLButtonElement).disabled && /Open or create a model first|Close the current model/.test(q(x)!.title)) &&
           q('#btn-save')!.nextElementSibling === q('#btn-save-as') && q('#btn-save-as')!.nextElementSibling === q('#btn-close') &&
-          textsOf('#menu-examples .mi-label').join() === EXAMPLES.map((e) => e.name).join() && !q('#menu-examples .active-example') && /Examples/.test(q('#menu-examples-title')!.textContent || '') && EXAMPLES.length === 7 && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(menu!.textContent || '') && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(q('#empty')!.textContent || ''),
+          textsOf('#menu-examples .mi-label').join() === EXAMPLES.map((e) => e.name).join() && !q('#menu-examples .active-example') && /Examples/.test(q('#menu-examples-title')!.textContent || '') && EXAMPLES.length === 8 && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(menu!.textContent || '') && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(q('#empty')!.textContent || ''),
         entries.join(' | '),
       );
       menuBtn!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
@@ -1156,8 +1157,12 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     click('[data-view-btn="logical"]');
     const ipsec = q('#viewport g.rel[data-ref="relation:ipsec-muc"] .tube-outer');
     const gre = q('#viewport g.rel[data-ref="relation:gre-muc"] .tube-outer');
+    const ospf = q('#viewport g.rel[data-ref="relation:ospf-muc"] .rel-line');
     const w = (e: Element | null): number => (e ? parseFloat(e.getAttribute('stroke-width') || '0') : 0);
-    check('GRE drawn inside IPsec (narrower tube on the same path)', !!ipsec && !!gre && w(gre) < w(ipsec) && gre!.getAttribute('d') === ipsec!.getAttribute('d'));
+    check(
+      'OSPF drawn inside GRE (both bound to the tunnel interfaces: narrower, on the same path); IPsec, bound to the underlay ports, on its own path',
+      !!ipsec && !!gre && !!ospf && w(ospf) < w(gre) && ospf!.getAttribute('d') === gre!.getAttribute('d') && gre!.getAttribute('d') !== ipsec!.getAttribute('d'),
+    );
     check('custom protocol MACsec rendered', !!q('#viewport g.rel.proto-macsec'));
     const svgText = app.exportSvg();
     check(
@@ -1647,16 +1652,16 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         return spans.length ? (Array.prototype.map.call(spans, (x: Element) => x.textContent) as string[]).join(' ') : t.textContent || '';
       };
       const pillRect = (id: string): DOMRect => (q(`#viewport g.pill[data-ref="relation:${id}"] .pill-box`) as Element).getBoundingClientRect();
-      const four = ['ipsec-br', 'bgp-br', 'bfd-br', 'syslog-br'];
+      const four = ['ipsec-br', 'gre-br', 'bgp-br', 'bfd-br', 'syslog-br'];
       const apart = four.every((a, i) => four.slice(i + 1).every((b) => {
         const ra = pillRect(a);
         const rb = pillRect(b);
         return ra.right <= rb.left || rb.right <= ra.left || ra.bottom <= rb.top || rb.bottom <= ra.top;
       }));
       check(
-        'four labelled relations between the same two devices: four labels, each complete, at its own place; nested relations are named in their carrier\'s label',
-        apart && pillText('ipsec-br') === 'IPsec · IKEv2 site-to-site with certificate authentication › GRE · primary › OSPF · area 0.0.0.10' &&
-          pillText('bgp-br') === 'eBGP · AS 65010 ↔ AS 65020' && pillText('bfd-br') === 'BFD · 300 ms × 3' && pillText('syslog-br') === 'Syslog · audit log' && !q('#viewport g.pill[data-ref="relation:gre-br"]'),
+        'five labelled lanes between the same two devices: five labels, each complete, at its own place; a nested relation is named in its carrier\'s label, a carrier on other ports in the label of what it carries',
+        apart && pillText('ipsec-br') === 'IPsec · IKEv2 site-to-site with certificate authentication' && pillText('gre-br') === 'GRE · primary › OSPF · area 0.0.0.10 (over IPsec)' &&
+          pillText('bgp-br') === 'eBGP · AS 65010 ↔ AS 65020' && pillText('bfd-br') === 'BFD · 300 ms × 3' && pillText('syslog-br') === 'Syslog · audit log' && !q('#viewport g.pill[data-ref="relation:ospf-br"]'),
         four.map(pillText).join(' | '),
       );
       const netLines = lines('network:servers', 'net-sub').join(' ');
@@ -3920,6 +3925,184 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         editHead && detHead && /^Identity\|Placement\|Notes/.test(editGroups) && /^Overview\|Physical interfaces/.test(detGroups) && buttons === 'Duplicate|Delete' && card('#side-body .fgroup') === 'solid 9px' && doc.documentElement.scrollHeight <= doc.documentElement.clientHeight + 1,
         editGroups + ' // ' + detGroups,
       );
+      click('[data-tab="legend"]');
+    }
+
+    // ---- ports: relations and links attached to the interfaces they reference, measured with real font metrics,
+    // in both themes, in the exported SVG, and with the pointer on them
+    {
+      const exIndex = (name: string): number => EXAMPLES.findIndex((e) => e.name === name);
+      app.loadExample(exIndex('long-labels.yaml'));
+      app.setView('logical');
+      await tick(30);
+      const vp = q('#viewport') as unknown as SVGGElement;
+      type P = { x: number; y: number };
+      type R = { x: number; y: number; w: number; h: number };
+      const num = (e: Element, k: string): number => parseFloat(e.getAttribute(k) || 'NaN');
+      const pts = (g: Element): P[] =>
+        ((g.querySelector('.hit') as Element).getAttribute('d') || '')
+          .slice(1)
+          .split('L')
+          .map((s) => s.trim().split(' ').map(Number))
+          .map(([x, y]) => ({ x, y }));
+      const portRects = (root: ParentNode, ref: string): R[] => Array.prototype.map.call(root.querySelectorAll(`rect.lport[data-ref="${ref}"]`), (r: Element) => ({ x: num(r, 'x'), y: num(r, 'y'), w: num(r, 'width'), h: num(r, 'height') })) as R[];
+      const inAny = (p: P, rs: R[]): boolean => rs.some((r) => p.x >= r.x - 0.6 && p.x <= r.x + r.w + 0.6 && p.y >= r.y - 0.6 && p.y <= r.y + r.h + 0.6);
+      /** GRE and OSPF of the branch router: from the port of Tunnel10 to the firewall's tunnel.10; Tunnel20 has none */
+      const bound = (root: ParentNode): boolean =>
+        ['gre-br', 'ospf-br'].every((id) => {
+          const g = root.querySelector(`g.rel[data-ref="relation:${id}"]`);
+          if (!g) return false;
+          const p = pts(g);
+          const a = p[0];
+          const b = p[p.length - 1];
+          const t10 = portRects(root, 'iface:br-rtr:Tunnel10');
+          const fw = portRects(root, 'iface:fw:tunnel.10');
+          return (inAny(a, t10) && inAny(b, fw)) || (inAny(b, t10) && inAny(a, fw));
+        }) && portRects(root, 'iface:br-rtr:Tunnel20').length === 0;
+      check('ports: in long-labels.yaml the branch router\'s GRE and OSPF end at the port of Tunnel10 (and at the firewall\'s tunnel.10); Tunnel20 has no port', bound(vp));
+      // with the browser's fonts: no end label over other text, no line through an end label
+      const segHit = (a: P, b: P, r: R): boolean => {
+        let t0 = 0;
+        let t1 = 1;
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const clip = (p: number, qq: number): boolean => {
+          if (p === 0) return qq >= 0;
+          const t = qq / p;
+          if (p < 0) {
+            if (t > t1) return false;
+            if (t > t0) t0 = t;
+          } else {
+            if (t < t0) return false;
+            if (t < t1) t1 = t;
+          }
+          return true;
+        };
+        return clip(-dx, a.x - r.x) && clip(dx, r.x + r.w - a.x) && clip(-dy, a.y - r.y) && clip(dy, r.y + r.h - a.y) && t0 <= t1;
+      };
+      const labelClashes = (root: SVGGElement): string[] => {
+        const out: string[] = [];
+        const texts = Array.prototype.slice.call(root.querySelectorAll('text')) as SVGTextElement[];
+        const rects = texts.map((t) => {
+          const b = t.getBBox();
+          return { x: b.x, y: b.y, w: b.width, h: b.height };
+        });
+        const lanes = Array.prototype.map.call(root.querySelectorAll('g.rel'), (g: Element) => ({ ref: g.getAttribute('data-ref'), pts: pts(g) })) as Array<{ ref: string; pts: P[] }>;
+        texts.forEach((t, i) => {
+          if (!t.classList.contains('end-label')) return;
+          const a = rects[i];
+          rects.forEach((b, j) => {
+            if (j !== i && a.x + 1 < b.x + b.w && b.x + 1 < a.x + a.w && a.y + 1 < b.y + b.h && b.y + 1 < a.y + a.h) out.push(`${t.textContent} / ${texts[j].textContent}`);
+          });
+          const inner = { x: a.x + 0.5, y: a.y + 0.5, w: a.w - 1, h: a.h - 1 };
+          for (const l of lanes) for (let k = 0; k + 1 < l.pts.length; k++) if (segHit(l.pts[k], l.pts[k + 1], inner)) out.push(`${t.textContent} crossed by ${l.ref}`);
+        });
+        return out;
+      };
+      const clashLong = labelClashes(vp);
+      check('ports: with the browser\'s fonts no end label covers other text or is crossed by a line (long-labels.yaml)', clashLong.length === 0 && !!vp.querySelector('text.end-label'), clashLong.slice(0, 4).join(' | '));
+      app.loadExample(exIndex('port-bindings.yaml'));
+      app.setView('logical');
+      await tick(30);
+      const clashPb = labelClashes(vp);
+      check('ports: … and in the stress example (port-bindings.yaml)', clashPb.length === 0 && vp.querySelectorAll('text.end-label').length >= 10, clashPb.slice(0, 4).join(' | '));
+
+      // both themes: the marks of ports, end labels and aggregates have the contrast WCAG 2.2 AA asks for
+      const hex = (s: string): string => {
+        const m = /rgba?\(([^)]+)\)/.exec(s);
+        if (!m) return s.trim().toLowerCase();
+        return '#' + m[1].split(',').slice(0, 3).map((v) => Math.round(parseFloat(v)).toString(16).padStart(2, '0')).join('');
+      };
+      const html = doc.documentElement;
+      const before = html.getAttribute('data-theme');
+      const themeRows: string[] = [];
+      let themesOk = true;
+      for (const theme of ['light', 'dark']) {
+        html.setAttribute('data-theme', theme);
+        app.setView('logical');
+        for (let n = 0; n < 40 && !q('#viewport rect.lport'); n++) await tick(10);
+        const canvas = hex(getComputedStyle(html).getPropertyValue('--canvas'));
+        // (read at once: a computed style is live, and empty once its element is gone)
+        const cs = (sel: string, prop: 'fill' | 'stroke'): string | undefined => {
+          const e = q(sel);
+          return e ? hex(getComputedStyle(e)[prop]) : undefined;
+        };
+        const port = cs('#viewport rect.lport:not(.dev-port)', 'fill');
+        const devPort = cs('#viewport rect.lport.dev-port', 'stroke');
+        const label = cs('#viewport text.end-label', 'fill');
+        const src = cs('#viewport text.end-label tspan[data-field="source"]', 'fill');
+        app.setView('physical');
+        for (let n = 0; n < 40 && !q('#viewport rect.lag-mark'); n++) await tick(10);
+        const pairs: Array<[string, string | undefined, number]> = [
+          ['port', port, 3],
+          ['device-level port', devPort, 3],
+          ['end label', label, 4.5],
+          ['src line', src, 4.5],
+          ['LAG bracket', cs('#viewport rect.lag-mark', 'stroke'), 3],
+          ['LAG name', cs('#viewport text.lag-label', 'fill'), 4.5],
+          ['device end', cs('#viewport rect.port.dev-end', 'stroke'), 3],
+        ];
+        for (const [what, color, min] of pairs) {
+          const c = color ? contrast(color, canvas) : 0;
+          if (!(c >= min)) themesOk = false;
+          themeRows.push(`${theme} ${what} ${color} ${c.toFixed(2)}`);
+        }
+      }
+      check('ports: in the light and the dark theme, ports, aggregate brackets and device-level ends have 3:1 against the diagram, end labels and aggregate names 4.5:1', themesOk, themeRows.filter((r) => /0\.00|\b[0-2]\.\d\d$/.test(r)).join(' | ') || themeRows.slice(0, 3).join(' | '));
+
+      // the exported SVG, in either theme: the same bindings, with the theme's colours written into the file
+      app.loadExample(exIndex('long-labels.yaml'));
+      app.setView('logical');
+      const exportRows: string[] = [];
+      let exportOk = true;
+      for (const theme of ['light', 'dark']) {
+        html.setAttribute('data-theme', theme);
+        await tick(20);
+        const text = app.exportSvg();
+        const parsed = new DOMParser().parseFromString(text, 'image/svg+xml').documentElement;
+        const p = parsed.querySelector('rect.lport[data-ref="iface:br-rtr:Tunnel10"]');
+        const fill = p ? hex(p.getAttribute('fill') || '') : '';
+        const want = hex(getComputedStyle(html).getPropertyValue('--text'));
+        const ok = bound(parsed) && fill === want && !/hover-hl/.test(text);
+        if (!ok) exportOk = false;
+        exportRows.push(`${theme}: bound ${bound(parsed)} fill ${fill} want ${want}`);
+      }
+      check('ports: the exported SVG (light and dark) attaches GRE and OSPF to the port of Tunnel10 as on screen, and carries the theme\'s colour of the ports', exportOk, exportRows.join(' | '));
+      if (before === null) html.removeAttribute('data-theme');
+      else html.setAttribute('data-theme', before);
+      await tick(20);
+
+      // the pointer on a port marks its interface's entry and every relation attached to it, and nothing at Tunnel20
+      const svgEl = q('#canvas') as unknown as SVGSVGElement;
+      const t10port = q('#viewport rect.lport[data-ref="iface:br-rtr:Tunnel10"]') as unknown as Element;
+      t10port.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, pointerId: 1 }));
+      await tick(10);
+      const hov = (sel: string): boolean => !!q(sel) && (q(sel) as unknown as Element).classList.contains('hover-hl');
+      const pointed = hov('#viewport g.rel[data-ref="relation:gre-br"]') && hov('#viewport g.rel[data-ref="relation:ospf-br"]') && hov('#viewport g.if-entry[data-ref="iface:br-rtr:Tunnel10"]') && !hov('#viewport g.if-entry[data-ref="iface:br-rtr:Tunnel20"]') && !hov('#viewport g.rel[data-ref="relation:bgp-br"]');
+      svgEl.dispatchEvent(new PointerEvent('pointerleave', { pointerId: 1 }));
+      await tick(10);
+      const cleared = !vp.querySelector('.hover-hl');
+      check('ports: pointing at the port of Tunnel10 marks its entry and its relations (GRE, OSPF), not Tunnel20 or the device-level ones; leaving clears the marks', pointed && cleared);
+      // … and pointing at a relation in the Objects list marks the interfaces at its ends in the diagram
+      const item = q('#outline .ol-item[data-ref="relation:ospf-br"]');
+      if (item) item.dispatchEvent(new PointerEvent('pointerover', { bubbles: true, pointerId: 1 }));
+      await tick(10);
+      const listMarks = hov('#viewport rect.lport[data-ref="iface:br-rtr:Tunnel10"]') && hov('#viewport text.end-label[data-ref="iface:fw:tunnel.10"]') && hov('#viewport g.rel[data-ref="relation:ospf-br"]');
+      (q('#outline') as HTMLElement).dispatchEvent(new PointerEvent('pointerleave', { pointerId: 1 }));
+      await tick(10);
+      check('ports: pointing at a relation in the Objects list marks it and the ports and end labels of the interfaces at its ends', !!item && listMarks && !vp.querySelector('.hover-hl'));
+      // selecting it: the Edit tab marks its two ends and says which port each is drawn from
+      app.select('relation:ospf-br');
+      click('[data-tab="edit"]');
+      await tick(20);
+      const ends = Array.prototype.map.call(doc.querySelectorAll('#side-body .end-mark .ep-bind'), (e: Element) => e.textContent || '') as string[];
+      const selHl = (q('#viewport rect.lport[data-ref="iface:br-rtr:Tunnel10"]') as unknown as Element).classList.contains('hl') && (q('#viewport g.if-entry[data-ref="iface:fw:tunnel.10"]') as unknown as Element).classList.contains('hl');
+      check(
+        'ports: a selected relation highlights the interfaces at both ends in the diagram, and the Edit tab marks its two endpoints with the port each is drawn from',
+        ends.length === 2 && /Tunnel10 on br-rtr/.test(ends.join(' ')) && /tunnel\.10 on fw/.test(ends.join(' ')) && selHl,
+        ends.join(' | '),
+      );
+      app.select(null);
       click('[data-tab="legend"]');
     }
 

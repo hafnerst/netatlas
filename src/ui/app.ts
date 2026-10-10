@@ -24,7 +24,7 @@ import { Rect } from '../layout/geometry';
 import { IssueCount, detailsFor, legendFor, relationList, tooltipFor } from './panels';
 import { exportBoxes } from '../diagram/networks-box';
 import { Session, View } from '../diagram/session';
-import { SelectionContext, search, selectionContext, splitRef } from '../model/queries';
+import { SelectionContext, attachedRefs, search, selectionContext, splitRef } from '../model/queries';
 import { sortedByName } from '../model/order';
 import { normalizeProtocol } from '../model/protocols';
 import { deviceTypeLabel } from '../model/device-types';
@@ -814,9 +814,28 @@ export class App {
     else run();
   }
 
+  /** what the pointer is on (an interface, relation or link, in the diagram or the Objects list) */
+  private pointed: string | null = null;
+
+  /**
+   * Mark what is attached to `ref` (model/queries.ts attachedRefs): its
+   * interfaces' entries, ports and end labels, and its relations and cables.
+   * The mark is an outline and a heavier line, not a colour alone.
+   */
+  markAttached(ref: string | null, force = false): void {
+    if (!force && ref === this.pointed) return;
+    this.pointed = ref;
+    const s = this.session;
+    const on = s && ref ? attachedRefs(s.viewModel(), ref) : null;
+    const els = this.viewport.querySelectorAll('[data-ref]');
+    for (let i = 0; i < els.length; i++) els[i].classList.toggle('hover-hl', !!on && on.has(els[i].getAttribute('data-ref') as string));
+    this.svg.classList.toggle('has-pointed', !!on);
+  }
+
   private applyHighlight(): void {
     const s = this.session;
     if (!s) return;
+    if (this.pointed) this.markAttached(this.pointed, true);
     const keep = s.highlight();
     this.svg.classList.toggle('has-selection', !!keep);
     const els = this.viewport.querySelectorAll('[data-ref]');
@@ -2001,6 +2020,18 @@ export class App {
       true,
     );
     const outline = this.$('outline');
+    // pointing at a relation, a link (or a device) in the Objects list marks what it is attached to in the diagram
+    outline.addEventListener('pointerover', (e) => {
+      const item = (e.target as Element).closest('.ol-item[data-ref]');
+      this.markAttached(item ? item.getAttribute('data-ref') : null);
+    });
+    outline.addEventListener('pointerleave', () => this.markAttached(null));
+    // … and so does pointing at an end of the selected relation or link in the Edit tab
+    side.addEventListener('pointerover', (e) => {
+      const end = (e.target as Element).closest('.ep-bind[data-end]');
+      this.markAttached(end ? end.getAttribute('data-end') : null);
+    });
+    side.addEventListener('pointerleave', () => this.markAttached(null));
     outline.addEventListener('click', (e) => {
       if (this.swallowClick(e)) return;
       void this.editor.onClick(e.target as HTMLElement);
@@ -2570,6 +2601,7 @@ export class App {
     svg.addEventListener('pointercancel', end);
     svg.addEventListener('pointerleave', () => {
       tip.hidden = true;
+      this.markAttached(null);
     });
   }
 
@@ -2594,10 +2626,12 @@ export class App {
     const target = (e.target as Element).closest('[data-ref]');
     if (!s || !target) {
       tip.hidden = true;
+      this.markAttached(null);
       return;
     }
     let ref = target.getAttribute('data-ref') as string;
     if (ref.indexOf('hub:') === 0) ref = 'relation:' + ref.slice(4);
+    this.markAttached(ref);
     const lines = tooltipFor(s.model, ref);
     if (this.errorRefs.has(ref)) lines.push('⚠ has validation errors — see the Edit tab');
     if (target.classList.contains('conn-ok')) lines.push('Right-click: connect here');
@@ -2643,8 +2677,10 @@ export class App {
     // a connection being drawn is screen state, not part of the picture
     const line = clone.querySelector('#conn-line');
     if (line) line.remove();
-    const marked = clone.querySelectorAll('.conn-start, .conn-source, .conn-ok, .conn-no');
-    for (let i = 0; i < marked.length; i++) marked[i].classList.remove('conn-start', 'conn-source', 'conn-ok', 'conn-no');
+    const marked = clone.querySelectorAll('.conn-start, .conn-source, .conn-ok, .conn-no, .hover-hl');
+    for (let i = 0; i < marked.length; i++) marked[i].classList.remove('conn-start', 'conn-source', 'conn-ok', 'conn-no', 'hover-hl');
+    // … and so is what the pointer is on
+    clone.classList.remove('has-pointed');
     if (this.session) {
       const st = this.session.state;
       // what the picture shows decides what its legend and its networks overview list

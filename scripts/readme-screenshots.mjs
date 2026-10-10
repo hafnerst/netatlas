@@ -32,6 +32,8 @@ const SHOTS = [
   ['wan-logical-filtered.png', 'dark', 'example=0&view=logical&devices=inet,isp1-pe,hq-rtr1,hq-rtr2,hq-fw,hq-core1'],
   ['addressing-physical.png', 'light', 'example=6&view=physical'],
   ['addressing-logical-dark.png', 'dark', 'example=6&view=logical'],
+  ['ports-logical.png', 'dark', 'example=7&view=logical&select=relation:ospf-s1'],
+  ['ports-physical-lag.png', 'light', 'example=7&view=physical&select=iface:core-a:Po1'],
 ];
 
 async function main() {

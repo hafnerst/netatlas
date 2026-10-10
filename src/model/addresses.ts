@@ -19,8 +19,10 @@
  *
  * Views: the physical view shows the physical interfaces that have anything
  * to show; the logical view shows every loopback, virtual and tunnel
- * interface and the physical interfaces with layer-3 facts (address, DHCP,
- * VRF, VLAN). An interface drawn in both views shows the same entry in both.
+ * interface, the physical interfaces with layer-3 facts (address, DHCP,
+ * VRF, VLAN) and those a relation is bound to (its line attaches to the
+ * interface's entry). An interface drawn in both views shows the same entry
+ * in both.
  *
  * "Address-like" attrs are those whose value contains an IPv4 or IPv6
  * address or prefix, or a MAC address. Free-form attrs are display-only, so
@@ -172,8 +174,16 @@ export function deviceEntries(model: Model, d: Device, view: 'physical' | 'logic
   }
   const rank = (i: Interface): number => (i.type === 'loopback' ? 0 : i.type === 'physical' ? 2 : 1);
   const logical = d.logical.slice().sort((a, b) => rank(a) - rank(b) || byId(a, b));
-  const phys = d.interfaces.filter((i) => l3Lines(model, i).length > 0).sort(byId);
+  const bound = boundInterfaces(model, d.id);
+  const phys = d.interfaces.filter((i) => l3Lines(model, i).length > 0 || bound.has(i.id)).sort(byId);
   return logical.concat(phys).map((i) => interfaceEntry(model, i));
+}
+
+/** Ids of a device's interfaces that a relation endpoint references (the relation is bound to them). */
+export function boundInterfaces(model: Model, device: string): Set<string> {
+  const out = new Set<string>();
+  for (const r of model.relations) for (const e of r.endpoints) if (e.device === device && e.iface !== undefined) out.add(e.iface);
+  return out;
 }
 
 /** Lines of a device's own address-like attrs (drawn in its box, in both views). */
@@ -206,10 +216,11 @@ export function addressInventory(model: Model): AddressField[] {
   for (const g of model.groups) attrs('group:' + g.id, g.attrs, ['physical', 'logical']);
   for (const d of model.devices) {
     attrs('device:' + d.id, d.attrs, ['physical', 'logical']);
+    const bound = boundInterfaces(model, d.id);
     for (const i of d.interfaces.concat(d.logical)) {
       const owner = `iface:${d.id}:${i.id}`;
       const physical = i.type === 'physical';
-      const inLogical = !physical || l3Lines(model, i).length > 0;
+      const inLogical = !physical || l3Lines(model, i).length > 0 || bound.has(i.id);
       const views: Array<'physical' | 'logical'> = physical ? (inLogical ? ['physical', 'logical'] : ['physical']) : ['logical'];
       add(owner, 'id', i.id, views);
       for (const a of i.addresses) add(owner, 'ip', a, views);

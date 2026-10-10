@@ -286,10 +286,12 @@ test('diagrams and selection follow the associations, in both directions', () =>
   assert.deepEqual([...queries.selectionContext(m, 'iface:sw1:Po1').related].sort(), ['link:peer1', 'link:peer2', 'relation:lag']);
   assert.deepEqual([...queries.selectionContext(m, 'iface:sw1:Vlan10').related].sort(), ['link:peer1', 'link:peer2', 'network:users']);
   assert.deepEqual([...queries.selectionContext(m, 'iface:sw1:tun1').related].sort(), ['device:sw2']);
-  // physical view: every physical interface is drawn (cabled ones as ports, uncabled ones as chips); logical interfaces never are
+  // physical view: every physical interface is drawn (cabled ones as ports, uncabled ones as chips); of the logical
+  // interfaces only an aggregate is, as the bracket around its cabled member ports (sw1:Po1 over Eth1, Eth2)
   const session = new state.Session(m);
   const drawn = scene.findAll(session.render().root, (n) => /^iface:/.test(n.attrs['data-ref'] || '')).map((n) => n.attrs['data-ref']);
-  assert.deepEqual([...new Set(drawn)].sort(), ['iface:sw1:Eth1', 'iface:sw1:Eth2', 'iface:sw1:Eth3', 'iface:sw1:Eth4', 'iface:sw2:Eth1', 'iface:sw2:Eth2']);
+  assert.deepEqual([...new Set(drawn)].sort(), ['iface:sw1:Eth1', 'iface:sw1:Eth2', 'iface:sw1:Eth3', 'iface:sw1:Eth4', 'iface:sw1:Po1', 'iface:sw2:Eth1', 'iface:sw2:Eth2']);
+  assert.deepEqual(byClass(session.render().root, 'lag-mark').map((n) => n.attrs['data-ref']), ['iface:sw1:Po1']);
   assert.deepEqual(byClass(session.render().root, 'port-chip').map((n) => n.attrs['data-ref']), ['iface:sw1:Eth3', 'iface:sw1:Eth4']);
   // details: two tables, and only the associations that apply, with accurate labels
   const det = (ref) => scene.textOf(panels.detailsFor(m, ref));
@@ -528,7 +530,7 @@ test('export -> reload: the format round-trips (both categories, members, VLAN, 
 
 test('every example (and generated fixture) uses the format and draws in both views', () => {
   const files = exampleNames.map((f) => [f, example(f)]).concat(fixtureNames.map((f) => [f, fixture(f)]));
-  assert.equal(files.length, 7 + 3);
+  assert.equal(files.length, 8 + 3);
   for (const [f, text] of files) {
     const r = validate.loadModel(text);
     assert.deepEqual(r.errors.concat(r.warnings).map((e) => `${e.line}: ${e.message}`), [], f);

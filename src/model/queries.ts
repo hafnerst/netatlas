@@ -35,6 +35,74 @@ export function refExists(model: Model, ref: string): boolean {
   }
 }
 
+/**
+ * What is attached to an interface, relation or link, by binding: shown
+ * while the pointer is on it (the selection shows the wider relatedRefs).
+ *
+ *   interface  itself (its entry, port and end label), every relation bound
+ *              to it and the cable plugged into it; an aggregate also the
+ *              cables of its member ports, a member port its aggregate;
+ *   relation   itself (lanes, hub, label) and the interfaces it is bound to
+ *              at every end (the device, where it is bound to the device);
+ *   link       itself and the ports at both ends, with their aggregates.
+ *
+ * Null for anything else (devices, networks, groups …): nothing to show.
+ */
+export function attachedRefs(model: Model, ref: string): Set<string> | null {
+  const ix = model.index;
+  let [kind, id] = splitRef(ref);
+  if (kind === 'hub') kind = 'relation';
+  const out = new Set<string>();
+  const endRef = (device: string, iface: string | undefined): string => (iface === undefined ? 'device:' + device : `iface:${device}:${iface}`);
+  const aggregates = (device: string, iface: string): string[] => {
+    const d = ix.devices.get(device);
+    return d ? d.logical.filter((i) => i.members.indexOf(iface) >= 0).map((i) => `iface:${device}:${i.id}`) : [];
+  };
+  const addLink = (lid: string): void => {
+    const l = ix.links.get(lid);
+    if (!l) return;
+    out.add('link:' + lid);
+    for (const e of [l.a, l.b]) {
+      out.add(endRef(e.device, e.iface));
+      if (e.iface !== undefined) for (const a of aggregates(e.device, e.iface)) out.add(a);
+    }
+  };
+  switch (kind) {
+    case 'iface': {
+      const inf = ix.interfaces.get(id);
+      if (!inf) return null;
+      out.add('iface:' + id);
+      for (const r of model.relations) {
+        if (!r.endpoints.some((e) => e.device === inf.device && e.iface === inf.id)) continue;
+        out.add('relation:' + r.id);
+        out.add('hub:' + r.id);
+      }
+      const lid = ix.ifaceLink.get(id);
+      if (lid) addLink(lid);
+      for (const m of inf.members) {
+        const ml = ix.ifaceLink.get(ifaceKey(inf.device, m));
+        if (ml) addLink(ml);
+      }
+      for (const a of aggregates(inf.device, inf.id)) out.add(a);
+      return out;
+    }
+    case 'relation': {
+      const r = ix.relations.get(id);
+      if (!r) return null;
+      out.add('relation:' + id);
+      out.add('hub:' + id);
+      for (const e of r.endpoints) out.add(endRef(e.device, e.iface));
+      return out;
+    }
+    case 'link':
+      if (!ix.links.has(id)) return null;
+      addLink(id);
+      return out;
+    default:
+      return null;
+  }
+}
+
 /** Everything that should stay highlighted when `ref` is selected. */
 export function relatedRefs(model: Model, ref: string): Set<string> {
   const out = new Set<string>([ref]);

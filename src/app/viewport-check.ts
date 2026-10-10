@@ -379,6 +379,48 @@ export async function runViewportCheck(app: App, doc: Document): Promise<Check[]
     state('the dialog buttons can be reached', !cr || cr.bottom > vh() + 0.5 || cr.top < 0 ? ['the dialog buttons are outside the window'] : []);
     if (cancel) cancel.click();
     await tick(10);
+
+    // the ports of the stress example, at this window size (and so at this zoom of the browser): every lane ends at a
+    // port mark, every port is drawn, and no end label covers other text, measured with the browser's fonts
+    for (const view of ['logical', 'physical']) {
+      app.mdoc && app.mdoc.markSaved();
+      app.loadExample(EXAMPLES.findIndex((e) => e.name === 'port-bindings.yaml'));
+      click(`[data-view-btn="${view}"]`);
+      await tick(20);
+      const why: string[] = [];
+      const vp = q('#viewport') as unknown as SVGGElement;
+      const marks = view === 'logical' ? 'rect.lport' : 'rect.port';
+      const rects = (Array.prototype.slice.call(vp.querySelectorAll(marks)) as SVGRectElement[]).map((r) => r.getBBox());
+      if (rects.length < (view === 'logical' ? 20 : 14)) why.push(`only ${rects.length} port marks`);
+      const lines = Array.prototype.slice.call(vp.querySelectorAll(view === 'logical' ? 'g.rel:not(.hub-rel) .hit' : 'g.cable .cable-line')) as SVGPathElement[];
+      for (const l of lines) {
+        const p = (l.getAttribute('d') || '').slice(1).split('L').map((s) => s.trim().split(' ').map(Number));
+        for (const [x, y] of [p[0], p[p.length - 1]]) {
+          if (!rects.some((b) => x >= b.x - 0.6 && x <= b.x + b.width + 0.6 && y >= b.y - 0.6 && y <= b.y + b.height + 0.6)) why.push(`a line ends at ${x},${y}, at no port`);
+        }
+      }
+      // text measured at the diagram's own size (100 %): at the tiny zoom "Fit" gives in a small window the browser's
+      // text boxes grow by a pixel or two (font hinting), which says nothing about what a reader sees
+      const z = app as unknown as { zoom: { k: number; tx: number; ty: number }; applyZoom(): void };
+      const was = z.zoom;
+      z.zoom = { k: 1, tx: was.tx, ty: was.ty };
+      z.applyZoom();
+      await tick();
+      const texts = Array.prototype.slice.call(vp.querySelectorAll('text')) as SVGTextElement[];
+      const boxes = texts.map((t) => t.getBBox());
+      z.zoom = was;
+      z.applyZoom();
+      texts.forEach((t, i) => {
+        if (!t.classList.contains('end-label') && !t.classList.contains('lag-label')) return;
+        const a = boxes[i];
+        boxes.forEach((b, j) => {
+          if (j !== i && a.x + 1 < b.x + b.width && b.x + 1 < a.x + a.width && a.y + 1 < b.y + b.height && b.y + 1 < a.y + a.height) why.push(`"${t.textContent}" covers "${texts[j].textContent}"`);
+        });
+      });
+      const c = (q('#canvas-wrap') as HTMLElement).getBoundingClientRect();
+      if (c.width < 40 || c.height < 40) why.push('the diagram has no room');
+      state(`${view} view of port-bindings.yaml: every line at a port, end labels over no other text`, why.slice(0, 6));
+    }
     app.mdoc && app.mdoc.markSaved();
   } catch (e) {
     checks.push({ name: 'viewport check crashed', ok: false, detail: String((e as Error).stack || e) });

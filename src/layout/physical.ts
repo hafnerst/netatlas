@@ -761,6 +761,8 @@ function layoutPorts(links: PortLink[], boxes: Map<string, CBox>): { ports: Port
     /** position along the side (x for top/bottom, y for left/right), absolute */
     at: number;
     list: Pending[];
+    /** the aggregate the port is a member of ('' for none) */
+    lag: string;
   }
   const bySide = new Map<string, Pending[]>();
   const byKey = new Map<string, Pending>();
@@ -795,7 +797,7 @@ function layoutPorts(links: PortLink[], boxes: Map<string, CBox>): { ports: Port
       const k = me.device + '|' + side;
       if (!bySide.has(k)) bySide.set(k, []);
       const list = bySide.get(k) as Pending[];
-      const e: Pending = { p, peer: { x: ob.cx, y: ob.cy }, slot: vertical ? portLabelWidth(me.iface) : 22, at: 0, list };
+      const e: Pending = { p, peer: { x: ob.cx, y: ob.cy }, slot: vertical ? portLabelWidth(me.iface) : 22, at: 0, list, lag: me.lag || '' };
       list.push(e);
       byKey.set(p.key, e);
       out.push(p);
@@ -812,7 +814,8 @@ function layoutPorts(links: PortLink[], boxes: Map<string, CBox>): { ports: Port
   bySide.forEach((list) => {
     const horiz = isHoriz(list[0]);
     const [lo, hi] = range(list[0]);
-    list.sort((u, v) => (horiz ? u.peer.x - v.peer.x : u.peer.y - v.peer.y) || cmp(u.p.key, v.p.key));
+    // (the members of an aggregate to the same peer next to each other)
+    list.sort((u, v) => (horiz ? u.peer.x - v.peer.x : u.peer.y - v.peer.y) || cmp(u.lag, v.lag) || cmp(u.p.key, v.p.key));
     const total = list.reduce((s, e) => s + e.slot, 0);
     const n = list.length;
     const sep = (i: number): number => (list[i].slot + list[i + 1].slot) / 2;

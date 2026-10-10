@@ -24,7 +24,7 @@
  */
 import { CBox, Pt } from './geometry';
 import { LGroup, LayoutInput, cmp } from './input';
-import { GROUP_PAD, HUB_R, groupHeader, logicalDeviceSize, networkBody, pillBox } from './sizes';
+import { GROUP_PAD, HUB_R, PORT_STUB, groupHeader, logicalDeviceSize, networkBody, pillBox } from './sizes';
 
 export { CHIP_H, HUB_R, networkSubtitle } from './sizes';
 
@@ -48,6 +48,8 @@ export interface LSpec {
   w: number;
   h: number;
   bodyH?: number;
+  /** devices: how far their ports and end labels reach out from the sides (layout/input.ts portReach) */
+  reach?: number;
 }
 
 /**
@@ -80,7 +82,7 @@ export function logicalSpecs(input: LayoutInput): LSpec[] {
   for (const d of input.devices) if (d.loopbacks || d.logical.length || d.logList[1]) involved.add(d.id);
   const devs = involved.size ? input.devices.filter((d) => involved.has(d.id)) : input.devices;
   const out: LSpec[] = [];
-  for (const d of devs) out.push({ ref: 'device:' + d.id, kind: 'device', id: d.id, ...logicalDeviceSize(d.label, d.sub, d.logList, d.dns) });
+  for (const d of devs) out.push({ ref: 'device:' + d.id, kind: 'device', id: d.id, ...logicalDeviceSize(d.label, d.sub, d.logList, d.dns, d.bodyMin), reach: d.reach });
   for (const n of input.networks) {
     const b = networkBody(n.label, n.sub, n.extra);
     out.push({ ref: 'network:' + n.id, kind: 'network', id: n.id, w: b.w, h: b.h });
@@ -120,11 +122,15 @@ export function logicalEdges(input: LayoutInput, specs: LSpec[]): LEdge[] {
   }
   for (const r of input.relations) {
     const ds = r.devices.filter((d) => has.has('device:' + d));
-    if (isMultipoint(ds)) for (const d of ds) edges.push(['hub:' + r.id, 'device:' + d, 0.8, SPOKE_ROOM[0], SPOKE_ROOM[1]]);
+    // the spoke leaves its port with a stub, and the port's end label sits beside it
+    const spokeX = r.endW ? Math.max(SPOKE_ROOM[0], r.endW + PORT_STUB + 40) : SPOKE_ROOM[0];
+    if (isMultipoint(ds)) for (const d of ds) edges.push(['hub:' + r.id, 'device:' + d, 0.8, spokeX, SPOKE_ROOM[1]]);
   }
   for (const p of input.pairs) {
     if (!has.has('device:' + p.a) || !has.has('device:' + p.b)) continue;
-    const [rx, ry] = pairLabelRoom(p.labels, p.extras);
+    const [lx, ry] = pairLabelRoom(p.labels, p.extras);
+    // the end labels at the two ports lie along the same line as the relation labels, beside the stubs
+    const rx = lx + p.ends.reduce((s, w) => s + (w ? w + 12 : 0), 0);
     edges.push(['device:' + p.a, 'device:' + p.b, Math.min(2, 0.7 + p.labels.length * 0.15), rx, ry]);
   }
   return edges.sort((p, q) => cmp(p[0], q[0]) || cmp(p[1], q[1]));
@@ -250,7 +256,7 @@ function arrange(specs: LSpec[], edges: LEdge[], seed: Map<string, Pt>, weight: 
   const comps = Array.from(groups.values()).sort((a, b) => size(b) - size(a) || cmp(specs[a[0]].ref, specs[b[0]].ref));
 
   // --- lay out each component, then pack the components
-  const placed: Array<{ refs: string[]; pos: Map<string, Pt>; x0: number; y0: number; w: number; h: number }> = [];
+  const placed: Array<{ refs: string[]; pos: Map<string, Pt>; x0: number; y0: number; w: number; h: number; reach: number }> = [];
   for (const comp of comps) {
     const refs = comp.map((i) => specs[i].ref);
     const pos = layoutComponent(
@@ -270,14 +276,19 @@ function arrange(specs: LSpec[], edges: LEdge[], seed: Map<string, Pt>, weight: 
       x1 = Math.max(x1, p.x + s.w / 2);
       y1 = Math.max(y1, p.y + s.h / 2);
     }
-    placed.push({ refs, pos, x0, y0, w: x1 - x0, h: y1 - y0 });
+    // how far the ports of its devices reach out beside it
+    const reach = comp.reduce((m, i) => Math.max(m, specs[i].reach || 0), 0);
+    placed.push({ refs, pos, x0, y0, w: x1 - x0, h: y1 - y0, reach });
   }
   const area = placed.reduce((s, c) => s + (c.w + COMP_GAP) * (c.h + COMP_GAP), 0);
   const maxW = Math.max(placed.reduce((m, c) => Math.max(m, c.w), 0), Math.sqrt(area) * 1.5);
   let cx = 0;
   let cy = 0;
   let rowH = 0;
+  let prevReach = 0;
   for (const c of placed) {
+    // side by side, two components leave room for the ports and end labels of both
+    if (cx > 0) cx += prevReach + c.reach;
     if (cx > 0 && cx + c.w > maxW) {
       cx = 0;
       cy += rowH + COMP_GAP;
@@ -289,6 +300,7 @@ function arrange(specs: LSpec[], edges: LEdge[], seed: Map<string, Pt>, weight: 
     }
     cx += c.w + COMP_GAP;
     rowH = Math.max(rowH, c.h);
+    prevReach = c.reach;
   }
   return out;
 }
@@ -360,7 +372,9 @@ function clustered(specs: LSpec[], edges: LEdge[], seed: Map<string, Pt>, groupO
     const items: LSpec[] = kids.map((ref) => {
       if (ref.indexOf('group:') !== 0) return specOf.get(ref) as LSpec;
       const box = layoutGroup(ref.slice(6));
-      return { ref, kind: 'device', id: ref.slice(6), w: box.w, h: box.h };
+      // a group passes on the reach of its devices' ports, as far as its padding doesn't hold it
+      const reach = Math.max(0, leaves(ref).reduce((m, l) => Math.max(m, (specOf.get(l) as LSpec).reach || 0), 0) - GROUP_PAD);
+      return { ref, kind: 'device', id: ref.slice(6), w: box.w, h: box.h, reach };
     });
     // edges lifted to the items of this container; parallel ones merged
     const merged = new Map<string, LEdge>();
@@ -694,9 +708,12 @@ function forceLayout(N: number, E: Array<[number, number, number]>, X: Float64Ar
 function removeOverlaps(list: LSpec[], X: Float64Array, Y: Float64Array, room: Map<number, [number, number]>): void {
   const N = list.length;
   const margin = (i: number, j: number): [number, number] => {
-    const base = list[i].kind === 'device' && list[j].kind === 'device' ? 150 : 40;
+    const devs = list[i].kind === 'device' && list[j].kind === 'device';
+    // side by side, two devices leave room for the ports (stubs and end labels) of both facing sides and the
+    // lanes between; a network or hub keeps clear of a device's ports too
+    const base = devs ? Math.max(150, (list[i].reach || 0) + (list[j].reach || 0) + 40) : Math.max(40, (list[i].reach || 0) + (list[j].reach || 0) + 12);
     const r = room.get(i * N + j);
-    return r === undefined ? [base, base * 0.8] : [Math.max(base, r[0]), Math.max(base * 0.8, r[1])];
+    return r === undefined ? [base, (devs ? 150 : base) * 0.8] : [Math.max(base, r[0]), Math.max((devs ? 150 : base) * 0.8, r[1])];
   };
   const passes = Math.max(4, Math.min(120, Math.floor(6e7 / (N * N))));
   for (let pass = 0; pass < passes; pass++) {

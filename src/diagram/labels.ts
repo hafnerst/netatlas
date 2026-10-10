@@ -9,7 +9,7 @@
  * processed in a fixed order, so the result depends only on the model and
  * the node positions.
  */
-import { Pt, Rect, rectsOverlap } from '../layout/geometry';
+import { Pt, Rect, rectsOverlap, segmentHitsRect } from '../layout/geometry';
 import { TextBlock, lineHeight } from '../layout/text';
 import { VNode, h } from './scene';
 
@@ -67,9 +67,17 @@ export class LabelPlacer {
   /** rectangles of the labels placed so far */
   readonly labels: Rect[] = [];
 
+  /** lines that labels placed with `clearOfLines` keep clear of: [from, to, half the line's width] */
+  private lines: Array<[Pt, Pt, number]> = [];
+
   /** Reserve a rectangle (a node, fixed text). */
   block(r: Rect): void {
     this.taken.push(r);
+  }
+
+  /** Reserve a line, `halfW` to either side of it, for the labels that must not cover any line (end labels). */
+  blockLine(a: Pt, b: Pt, halfW: number): void {
+    this.lines.push([a, b, halfW]);
   }
 
   /** labels that could not be placed without covering something (see `place`) */
@@ -77,11 +85,17 @@ export class LabelPlacer {
   /** where the last placed label was moved away from its candidates: the point it belongs to (draw a leader line) */
   leaderFrom: Pt | null = null;
 
-  private area(c: Pt, w: number, hgt: number): number {
+  private area(c: Pt, w: number, hgt: number, clearOfLines: boolean): number {
     const r = centerRect(c, w + 4, hgt + 4);
     let area = 0;
     for (const t of this.taken) {
       if (rectsOverlap(r, t)) area += overlapArea(r, t);
+    }
+    if (clearOfLines) {
+      for (const [a, b, hw] of this.lines) {
+        // a line through the label costs as much as a third of the label covered
+        if (segmentHitsRect(a, b, { x: r.x - hw, y: r.y - hw, w: r.w + 2 * hw, h: r.h + 2 * hw })) area += (w * hgt) / 3 + 1;
+      }
     }
     return area;
   }
@@ -93,14 +107,15 @@ export class LabelPlacer {
    * deterministic); the label is then connected to its place by a leader
    * line (`leaderFrom`). Only when even that finds nothing is the candidate
    * with the smallest overlap used, and counted in `conflicts`: a label is
-   * never dropped.
+   * never dropped. With `clearOfLines`, the lines reserved by blockLine()
+   * count as taken too.
    */
-  place(candidates: Pt[], w: number, hgt: number): Pt {
+  place(candidates: Pt[], w: number, hgt: number, clearOfLines = false): Pt {
     let best = candidates[0];
     let bestArea = Infinity;
     this.leaderFrom = null;
     for (const c of candidates) {
-      const area = this.area(c, w, hgt);
+      const area = this.area(c, w, hgt, clearOfLines);
       if (area === 0) {
         bestArea = 0;
         best = c;
@@ -116,7 +131,7 @@ export class LabelPlacer {
       search: for (let r = 16; r <= 480; r += 16) {
         for (const [dx, dy] of RING) {
           const c = { x: c0.x + dx * (r + w / 2), y: c0.y + dy * (r + hgt / 2) };
-          if (this.area(c, w, hgt) === 0) {
+          if (this.area(c, w, hgt, clearOfLines) === 0) {
             best = c;
             bestArea = 0;
             this.leaderFrom = c0;

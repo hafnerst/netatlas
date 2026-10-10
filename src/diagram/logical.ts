@@ -20,11 +20,12 @@
  *   (or, on a short line, beside) its bundle, clear of nodes and of the labels
  *   placed before it; see diagram/labels.ts.
  */
-import { CBox, Pt, Rect, boxRect, clipToBox, clipToCircle, lineBoxExit, normal, unionRect } from '../layout/geometry';
-import { LINE_W, TUBE_MIN, TUBE_WALL, buildBundle, laneLabel, relationPairs } from '../layout/bundles';
+import { CBox, Pt, Rect, boxRect, clipToBox, normal, unionRect } from '../layout/geometry';
+import { LINE_W, TUBE_WALL, buildBundle, laneLabel, relationPairs, spokeWidth } from '../layout/bundles';
 import { CHIP_H, HUB_R, LNode, LogicalLayout, commonChain, deviceRect, isMultipoint, networkSubtitle } from '../layout/logical';
-import { memberAddresses } from '../layout/input';
-import { CHIP_FONT, ENTRY_GAP, ENTRY_MARGIN, NET_LABEL_SIZE, dnsNameLines, dnsShown, entriesSize, memberLabelBox, networkBody, pillBox } from '../layout/sizes';
+import { endLabelLines, memberAddresses } from '../layout/input';
+import { CHIP_FONT, END_LABEL_GAP, ENTRY_GAP, ENTRY_MARGIN, NET_LABEL_SIZE, dnsNameLines, dnsShown, endLabelBox, entriesSize, memberLabelBox, networkBody, pillBox } from '../layout/sizes';
+import { END_LABEL_X, RowSpan, deviceRows, middleSegment, offsetPolyline, polylineD, routeLogical } from './logical-ports';
 import { addressAttrEntries, addressAttrLines } from '../model/addresses';
 import { TextBlock } from '../layout/text';
 import { networkMembers } from '../model/derive';
@@ -111,24 +112,8 @@ function lineD(a: Pt, b: Pt): string {
   return `M${r1(a.x)} ${r1(a.y)}L${r1(b.x)} ${r1(b.y)}`;
 }
 
-/** Segment between two boxes along the center line shifted by `offset` (parallel lanes). */
-function laneSegment(A: CBox, B: CBox, offset: number): [Pt, Pt] {
-  const ca = { x: A.cx, y: A.cy };
-  const cb = { x: B.cx, y: B.cy };
-  const nrm = normal(ca, cb);
-  const pa = { x: ca.x + nrm.x * offset, y: ca.y + nrm.y * offset };
-  const pb = { x: cb.x + nrm.x * offset, y: cb.y + nrm.y * offset };
-  const ta = lineBoxExit(A, pa, pb, 2);
-  const tb = lineBoxExit(B, pb, pa, 2);
-  // If the shifted line misses a box (very wide bundles), fan the lane out from the box edge instead.
-  const s = ta !== null && ta < 1 ? { x: pa.x + (pb.x - pa.x) * ta, y: pa.y + (pb.y - pa.y) * ta } : clipToBox(A, pb, 2);
-  const e = tb !== null && tb < 1 ? { x: pb.x + (pa.x - pb.x) * tb, y: pb.y + (pa.y - pb.y) * tb } : clipToBox(B, pa, 2);
-  return [s, e];
-}
-
-function nodeBorder(n: LNode, toward: Pt): Pt {
-  return n.kind === 'hub' ? clipToCircle({ x: n.cx, y: n.cy }, HUB_R, toward) : clipToBox(n, toward, 2);
-}
+/** width of the mark of a port on the side of a device box */
+const PORT_W = 6;
 
 export function renderLogical(model: Model, layout: LogicalLayout, opts: LogicalOptions): SceneResult {
   const nodes = logicalNodes(layout, opts.positions);
@@ -179,98 +164,172 @@ export function renderLogical(model: Model, layout: LogicalLayout, opts: Logical
     }
   }
 
-  // ---- two-device relations: group by device pair, nest carried relations
+  // ---- relations: every strand and spoke routed from the ports of the interfaces it is bound to
   const multi: Relation[] = visible.filter((r) => isMultipoint(relationDevices(r)));
-  const byPair = relationPairs(visible);
+  const bundles = Array.from(relationPairs(visible).entries()).map(([key, rels]) => buildBundle(model, key, rels));
+  const rows = new Map<string, Map<string, RowSpan>>();
+  const netBoxes: Rect[] = [];
+  nodes.forEach((n) => {
+    if (n.kind === 'device') {
+      const d = model.index.devices.get(n.id);
+      if (d) rows.set(n.id, deviceRows(model, d, n));
+    } else if (n.kind === 'network' && opts.showNetworks) netBoxes.push(boxRect(n, 4));
+  });
+  const routes = routeLogical(model, nodes, rows, bundles, multi, netBoxes);
+  const routeRects: Rect[] = [];
+  const keepLine = (pts: Pt[], halfW: number): void => {
+    for (let k = 0; k + 1 < pts.length; k++) placer.blockLine(pts[k], pts[k + 1], halfW);
+    for (const p of pts) routeRects.push({ x: p.x - halfW, y: p.y - halfW, w: 2 * halfW, h: 2 * halfW });
+  };
 
-  byPair.forEach((rels, key) => {
-    const [da, db] = key.split('\u0000');
-    const A = dev(da) as LNode;
-    const B = dev(db) as LNode;
-    const placed = buildBundle(model, key, rels).lanes;
-    const rootsPlaced = placed.filter((p) => p.root);
-    for (const p of placed) {
-      const [s, e] = laneSegment(A, B, p.offset);
-      const d = lineD(s, e);
-      const children: VNode[] = [h('path', { class: 'hit', d, 'stroke-width': Math.max(10, p.width) }), ...relationStroke(p.def, d, p.width)];
-      if (p.rel.direction === 'unidirectional') children.push(arrowHead(endTip(p.rel, s, e, da), endFrom(p.rel, s, e, da), p.def.color));
-      relNodes.push(
-        h(
-          'g',
-          {
-            class: `rel cat-${p.def.category} style-${p.def.style} proto-${cssToken(p.rel.protocol)} depth-${p.depth}`,
-            'data-ref': 'relation:' + p.rel.id,
-          },
-          children,
-        ),
-      );
-    }
-    if (opts.showLabels) {
-      // One label per lane that is not nested. They are written one after the
-      // other along the bundle, each next to its own lane; on a line too short
-      // for that they are stacked across it. Each then takes the nearest free
-      // place, so no two labels (and no label and node) share a spot.
-      const dx = B.cx - A.cx;
-      const dy = B.cy - A.cy;
-      const dl = Math.hypot(dx, dy) || 1;
-      const ux = dx / dl;
-      const uy = dy / dl;
-      const items = rootsPlaced.map((p) => {
-        const box = pillBox(laneLabel(p), p.extra);
-        return { p, box, ext: Math.abs(ux) * box.w + Math.abs(uy) * box.h + 6 };
-      });
-      const total = items.reduce((s, it) => s + it.ext, 0);
-      const [cs, ce] = laneSegment(A, B, 0);
-      const room = Math.hypot(ce.x - cs.x, ce.y - cs.y) - 16;
-      const alongOk = items.length === 1 || total <= room;
-      let along = -total / 2;
-      let across = -items.reduce((s, it) => s + it.box.h + 3, 0) / 2;
-      for (const it of items) {
-        const [s, e] = laneSegment(A, B, it.p.offset);
-        const len = Math.hypot(e.x - s.x, e.y - s.y) || 1;
-        let shift: number;
-        let side: number;
-        if (alongOk) {
-          shift = along + it.ext / 2;
-          side = 0;
-          along += it.ext;
-        } else {
-          shift = 0;
-          side = across + (it.box.h + 3) / 2 - it.p.offset;
-          across += it.box.h + 3;
+  bundles.forEach((b, bi) => {
+    b.strands.forEach((st, si) => {
+      const pts = routes.strands.get(bi + ':' + si);
+      if (!pts) return;
+      for (const p of st.lanes) {
+        const lane = offsetPolyline(pts, p.offset);
+        const d = polylineD(lane);
+        const children: VNode[] = [h('path', { class: 'hit', d, 'stroke-width': Math.max(10, p.width) }), ...relationStroke(p.def, d, p.width)];
+        if (p.rel.direction === 'unidirectional') {
+          // the arrow points at the last endpoint's port
+          const toA = p.rel.endpoints[p.rel.endpoints.length - 1].device === b.a;
+          children.push(toA ? arrowHead(lane[0], lane[1], p.def.color) : arrowHead(lane[lane.length - 1], lane[lane.length - 2], p.def.color));
         }
-        const step = it.box.h + 4;
-        const c = placer.place(
-          alongSegment(s, e, 0.5, [shift, shift - 24, shift + 24, shift - 48, shift + 48, shift - 80, shift + 80, shift - 120, shift + 120].map((v) => Math.max(-len / 2 + 8, Math.min(len / 2 - 8, v))), [side, side - step, side + step, side - 2 * step, side + 2 * step]),
-          it.box.w,
-          it.box.h,
+        relNodes.push(
+          h(
+            'g',
+            {
+              class: `rel cat-${p.def.category} style-${p.def.style} proto-${cssToken(p.rel.protocol)} depth-${p.depth}`,
+              'data-ref': 'relation:' + p.rel.id,
+            },
+            children,
+          ),
         );
-        labelRects.push(centerRect(c, it.box.w, it.box.h));
-        if (placer.leaderFrom) labels.push(leaderLine(placer.leaderFrom, centerRect(c, it.box.w, it.box.h), 'relation:' + it.p.rel.id));
-        // the relation's own address lines name its attrs (those of relations nested in it belong to them)
-        labels.push(pill('relation:' + it.p.rel.id, c, it.box, it.p.def.color, addressLineAttrs(it.box.block, attrFields(it.p.rel.attrs))));
+        if (p.root) keepLine(lane, p.width / 2);
       }
-    }
+    });
   });
 
-  // ---- multipoint relations: hub + spokes
   for (const r of multi) {
     const hub = nodes.get('hub:' + r.id);
     if (!hub) continue;
     const def = relationStyle(model, r);
     const kids: VNode[] = [];
     for (const d of relationDevices(r)) {
-      const dn = dev(d) as LNode;
-      const s = clipToBox(dn, { x: hub.cx, y: hub.cy }, 2);
-      const e = nodeBorder(hub, { x: dn.cx, y: dn.cy });
-      const dd = lineD(s, e);
-      kids.push(h('path', { class: 'hit', d: dd }), ...relationStroke(def, dd, TUBE_MIN));
+      const pts = routes.spokes.get(r.id + ':' + d);
+      if (!pts) continue;
+      const dd = polylineD(pts);
+      kids.push(h('path', { class: 'hit', d: dd }), ...relationStroke(def, dd, spokeWidth(model, r)));
+      keepLine(pts, spokeWidth(model, r) / 2);
     }
     kids.push(h('circle', { class: 'hub', cx: hub.cx, cy: hub.cy, r: HUB_R, stroke: def.color }));
     // the number of devices is text: written in the text colour (the ring around it has the protocol's colour)
     kids.push(h('text', { class: 'hub-glyph', x: hub.cx, y: hub.cy + 4, 'text-anchor': 'middle' }, String(relationDevices(r).length)));
     relNodes.push(h('g', { class: `rel hub-rel cat-${def.category} style-${def.style} proto-${cssToken(r.protocol)}`, 'data-ref': 'relation:' + r.id }, kids));
-    if (opts.showLabels) {
+  }
+
+  // ---- ports, and the end label at each: which interface the lanes there are bound to
+  const portNodes: VNode[] = [];
+  for (const port of routes.ports) {
+    const ref = port.iface === undefined ? 'device:' + port.device : `iface:${port.device}:${port.iface}`;
+    portNodes.push(
+      h('rect', {
+        class: 'lport' + (port.iface === undefined ? ' dev-port' : ''),
+        'data-ref': ref,
+        'data-endpoint': port.iface === undefined ? 'device' : 'iface',
+        'data-side': port.side,
+        x: port.x - PORT_W / 2,
+        y: port.top - 2,
+        width: PORT_W,
+        height: port.bottom - port.top + 4,
+        rx: 1.5,
+      }),
+    );
+    if (!opts.showLabels || port.iface === undefined) continue;
+    const lines = endLabelLines(model, port.device, port.iface);
+    const box = endLabelBox(lines);
+    // beside its row, on the side of the stubs the lanes turn away from (the row has room for it); elsewhere near them only when that is taken
+    const dir = port.side === 'right' ? 1 : -1;
+    const above = port.top - END_LABEL_GAP - box.h / 2;
+    const below = port.bottom + END_LABEL_GAP + box.h / 2;
+    const ys = port.labelBelow ? [below, above, below + 8, above - 8, below + 18, above - 18] : [above, below, above - 8, below + 8, above - 18, below + 18];
+    const cands: Pt[] = [];
+    for (const dx of [0, 10, 22]) for (const y of ys) cands.push({ x: port.x + dir * (END_LABEL_X + dx + box.w / 2), y });
+    const c = placer.place(cands, box.w, box.h, true);
+    const r = centerRect(c, box.w, box.h);
+    labelRects.push(r);
+    if (placer.leaderFrom) labels.push(leaderLine({ x: port.x + dir * 4, y: (port.top + port.bottom) / 2 }, r, ref));
+    labels.push(
+      textLines(
+        { class: 'halo end-label', 'data-ref': ref, 'data-side': port.side, 'text-anchor': port.side === 'right' ? 'start' : 'end' },
+        box.block,
+        port.side === 'right' ? r.x + 2 : r.x + r.w - 2,
+        r.y + 1,
+        lines.map((_, i) => (i === 0 ? undefined : fieldAttrs({ field: 'source', value: '' }))),
+      ),
+    );
+  }
+
+  // ---- relation labels: one per lane that is not nested, along the middle of its strand
+  if (opts.showLabels) {
+    bundles.forEach((b, bi) => {
+      b.strands.forEach((st, si) => {
+        const pts = routes.strands.get(bi + ':' + si);
+        if (!pts) return;
+        // One label per lane that is not nested. They are written one after the
+        // other along the strand, each next to its own lane; on a line too short
+        // for that they are stacked across it. Each then takes the nearest free
+        // place, so no two labels (and no label and node) share a spot.
+        const [cs, ce] = middleSegment(pts);
+        const dx = ce.x - cs.x;
+        const dy = ce.y - cs.y;
+        const len = Math.hypot(dx, dy) || 1;
+        const ux = dx / len;
+        const uy = dy / len;
+        const nrm = normal(cs, ce);
+        const items = st.lanes
+          .filter((p) => p.root)
+          .map((p) => {
+            const box = pillBox(laneLabel(p), p.extra);
+            return { p, box, ext: Math.abs(ux) * box.w + Math.abs(uy) * box.h + 6 };
+          });
+        const total = items.reduce((sum, it) => sum + it.ext, 0);
+        const room = len - 16;
+        const alongOk = items.length === 1 || total <= room;
+        let along = -total / 2;
+        let across = -items.reduce((sum, it) => sum + it.box.h + 3, 0) / 2;
+        for (const it of items) {
+          const s = { x: cs.x + nrm.x * it.p.offset, y: cs.y + nrm.y * it.p.offset };
+          const e = { x: ce.x + nrm.x * it.p.offset, y: ce.y + nrm.y * it.p.offset };
+          let shift: number;
+          let side: number;
+          if (alongOk) {
+            shift = along + it.ext / 2;
+            side = 0;
+            along += it.ext;
+          } else {
+            shift = 0;
+            side = across + (it.box.h + 3) / 2 - it.p.offset;
+            across += it.box.h + 3;
+          }
+          const step = it.box.h + 4;
+          const c = placer.place(
+            alongSegment(s, e, 0.5, [shift, shift - 24, shift + 24, shift - 48, shift + 48, shift - 80, shift + 80, shift - 120, shift + 120].map((v) => Math.max(-len / 2 + 8, Math.min(len / 2 - 8, v))), [side, side - step, side + step, side - 2 * step, side + 2 * step]),
+            it.box.w,
+            it.box.h,
+          );
+          labelRects.push(centerRect(c, it.box.w, it.box.h));
+          if (placer.leaderFrom) labels.push(leaderLine(placer.leaderFrom, centerRect(c, it.box.w, it.box.h), 'relation:' + it.p.rel.id));
+          // the relation's own address lines name its attrs (those of relations nested in it belong to them)
+          labels.push(pill('relation:' + it.p.rel.id, c, it.box, it.p.def.color, addressLineAttrs(it.box.block, attrFields(it.p.rel.attrs))));
+        }
+      });
+    });
+    // multipoint relations: the label beside the hub
+    for (const r of multi) {
+      const hub = nodes.get('hub:' + r.id);
+      if (!hub) continue;
+      const def = relationStyle(model, r);
       const box = pillBox(def.label + (r.label ? ' · ' + r.label : ''), addressAttrLines(r.attrs));
       const dyy = HUB_R + 5 + box.h / 2;
       const dxx = HUB_R + 6 + box.w / 2;
@@ -350,6 +409,8 @@ export function renderLogical(model: Model, layout: LogicalLayout, opts: Logical
   });
   // labels can lie outside the nodes' surroundings; they belong to the picture too
   for (const r of labelRects) rects.push({ x: r.x - 14, y: r.y - 14, w: r.w + 28, h: r.h + 28 });
+  // and so do the bends of routes led around other boxes
+  for (const r of routeRects) rects.push({ x: r.x - 12, y: r.y - 12, w: r.w + 24, h: r.h + 24 });
   return {
     conflicts: placer.conflicts + nodeOverlaps(Array.from(nodes.values()).filter((n) => n.kind !== 'network' || opts.showNetworks).map((n) => boxRect(n))),
     root: h('g', { class: 'scene scene-logical' }, [
@@ -357,6 +418,7 @@ export function renderLogical(model: Model, layout: LogicalLayout, opts: Logical
       h('g', { class: 'layer-members' }, members),
       h('g', { class: 'layer-relations' }, relNodes),
       h('g', { class: 'layer-nodes' }, nodeLayer),
+      h('g', { class: 'layer-ports' }, portNodes),
       h('g', { class: 'layer-labels' }, groupTitles.concat(labels)),
     ]),
     bounds: unionRect(rects),
@@ -397,16 +459,6 @@ function attrFields(attrs: Model['relations'][number]['attrs']): Array<{ field: 
   return addressAttrEntries(attrs).map((a) => ({ field: 'attr', value: a.key }));
 }
 
-/** For a unidirectional relation the arrow points at the last endpoint's device. */
-function endTip(r: Relation, s: Pt, e: Pt, firstSorted: string): Pt {
-  const target = r.endpoints[r.endpoints.length - 1].device;
-  return target === firstSorted ? s : e;
-}
-function endFrom(r: Relation, s: Pt, e: Pt, firstSorted: string): Pt {
-  const target = r.endpoints[r.endpoints.length - 1].device;
-  return target === firstSorted ? e : s;
-}
-
 /** A relation label: its full text (wrapped if long) in a rounded box, centered at `p`. */
 function pill(ref: string, p: Pt, box: { block: TextBlock; w: number; h: number }, color: string, lineAttrs: Array<Attrs | undefined> = []): VNode {
   return h('g', { class: 'pill', 'data-ref': ref }, [
@@ -431,8 +483,9 @@ function dnsChips(d: Device, n: LNode, top: number): VNode[] {
     const lines = dnsNameLines(name);
     out.push(
       h('g', { class: 'dns-chip', 'data-ref': 'device:' + d.id, 'data-dns': name }, [
-        h('rect', { x: n.cx - w / 2, y, width: w, height: lines.length * CHIP_H - 3, rx: 6.5 }),
-        ...lines.map((l, i) => h('text', { x: n.cx, y: y + 9.5 + i * CHIP_H, 'text-anchor': 'middle', 'font-size': CHIP_FONT }, l)),
+        // (a little higher than the text: at a small zoom the browser's text box grows by a pixel or so)
+        h('rect', { x: n.cx - w / 2, y, width: w, height: lines.length * CHIP_H - 1.5, rx: 6.5 }),
+        ...lines.map((l, i) => h('text', { x: n.cx, y: y + 10 + i * CHIP_H, 'text-anchor': 'middle', 'font-size': CHIP_FONT }, l)),
       ]),
     );
     y += lines.length * CHIP_H;

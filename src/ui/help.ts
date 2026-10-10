@@ -58,12 +58,15 @@ const MANUAL: Section[] = [
       'Drag the background or use the arrow keys to pan. Zoom with the mouse wheel, `+` / `−`, or **Fit** (`0`) to see everything.',
       'Hover over an object for a short summary. A selection is kept when you switch views.',
       'Every address is written in the diagram. A device\'s box lists its interfaces, each with its name and then its addresses (IPv4, then IPv6), VLAN, VRF, MAC address and tunnel ends. Networks show their prefix, cables their cable ID, and addresses kept in attributes (such as a VRRP virtual address) are written next to their object.',
+      'Every relation starts at the **port** of the interface it names: a solid bar on the side of the device box, beside that interface\'s row, with the interface\'s name next to it (for a tunnel also its source, after `src:`). A relation that names only the device starts at the hollow port beside the device\'s name. In the physical view a cable ends at the port it is plugged into, and the member ports of a LAG sit in a bracket named by the LAG.',
+      'Point at an interface, a relation or a cable to see what belongs together: the interface\'s row, its port and every relation and cable attached to it are outlined. Selecting a relation or cable highlights the interfaces at both of its ends.',
     ],
     notes: ['If moving objects by hand makes labels or boxes overlap, a note over the diagram says so; **Auto-arrange** places everything without overlaps again.'],
     figures: [
       ['physical', 'The physical view. Toolbar at the top, the object list (Objects) on the left, diagram in the middle, panels (Edit, Details, Legend …) on the right.'],
       ['logical', 'Part of the logical view (metro ring example): routers with their loopbacks, and the iBGP, LDP and RSVP-TE relations between them.'],
       ['addresses', 'A router in the logical view (addressing example): each interface with its addresses, VLAN, VRF and tunnel ends.'],
+      ['ports', 'The branch router of the long-labels example: GRE and OSPF leave from the port beside Tunnel10, the relations bound to the router as a whole from the hollow port beside its name.'],
     ],
   },
   {

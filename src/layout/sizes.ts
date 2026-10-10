@@ -117,12 +117,44 @@ export const ENTRY_MARGIN = 8;
 export interface EntryText {
   header: string;
   lines: string[];
+  /**
+   * least height of the entry: in the logical view, room for the lanes that
+   * leave the interface's port beside it (see portRowH)
+   */
+  minH?: number;
 }
 
 export function entryBox(e: EntryText): { w: number; h: number } {
   const all = e.header ? [e.header].concat(e.lines) : e.lines;
   const w = all.reduce((m, l) => Math.max(m, monoWidth(l, ENTRY_FONT)), 0);
-  return { w: Math.ceil(w) + 2 * ENTRY_PAD_X, h: all.length * ENTRY_LH + 2 * ENTRY_PAD_Y };
+  return { w: Math.ceil(w) + 2 * ENTRY_PAD_X, h: Math.max(all.length * ENTRY_LH + 2 * ENTRY_PAD_Y, e.minH || 0) };
+}
+
+/**
+ * Logical view: where an interface (or the device itself) is bound to
+ * relations, a port on the side of the device box beside its entry (or
+ * beside the device's name). The lanes leave the port side by side, so its
+ * row is at least as high as they are wide together, plus PORT_INSET at
+ * either end.
+ */
+export const PORT_INSET = 3;
+
+/** Height a row (an entry, or the name part of a device) needs for lanes `span` wide together (0: no port). */
+export function portRowH(span: number): number {
+  return span > 0 ? Math.ceil(span + 2 * PORT_INSET) : 0;
+}
+
+/** The end label at a port in the logical view: the interface's name, and the underlay it is sourced from. */
+export const END_LABEL_SIZE = 9.5;
+/** between an end label and the lanes under it */
+export const END_LABEL_GAP = 3;
+/** distance between the side of the device and the stub's end, where the lanes turn toward their peer */
+export const PORT_STUB = 22;
+
+/** Lines and size of an end label (whole: an interface name or an address is never shortened). */
+export function endLabelBox(lines: string[]): { block: TextBlock; w: number; h: number } {
+  const block = labelWithAddresses('', lines, END_LABEL_SIZE, Infinity);
+  return { block, w: Math.ceil(block.w + 4), h: Math.ceil(block.h + 2) };
 }
 
 /** Width and height of a device's stacked entries ([0, 0] without any). */
@@ -141,10 +173,12 @@ export function entriesSize(es: EntryText[]): [number, number] {
 /**
  * A device in the logical view: its label, the entries of its interfaces
  * and its DNS names, all inside its box. `list` is entriesSize() of its
- * entries. `bodyH` is the height of the label part (icon and name).
+ * entries. `bodyH` is the height of the label part (icon and name), at
+ * least `minBodyH` (the device-level port's row).
  */
-export function logicalDeviceSize(label: string, sub: string, list: [number, number], dnsNames: string[] = []): { w: number; h: number; bodyH: number } {
-  const body = deviceBody(label, sub, LOGICAL_DEVICE_MIN_W, LOGICAL_DEVICE_MIN_H);
+export function logicalDeviceSize(label: string, sub: string, list: [number, number], dnsNames: string[] = [], minBodyH = 0): { w: number; h: number; bodyH: number } {
+  // a device-level port beside the name part needs room for its lanes
+  const body = deviceBody(label, sub, LOGICAL_DEVICE_MIN_W, Math.max(LOGICAL_DEVICE_MIN_H, minBodyH));
   const dns = dnsSize(dnsNames);
   const w = Math.max(body.w, list[0] ? list[0] + 2 * ENTRY_MARGIN : 0, dns.w ? dns.w + 16 + 12 : 0);
   return { w, h: body.h + underBody(list[1], dns.rows), bodyH: body.h };

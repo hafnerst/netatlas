@@ -14,6 +14,40 @@ it is described in [docs/FORMAT.md](docs/FORMAT.md).
 
 ### Added
 
+- **Relations and links attached to their interfaces.** In the logical view
+  every interface a relation is bound to has a **port** beside its row on the
+  side of the device box, and every relation starts and ends exactly there,
+  found by the interface's id. Several relations on one interface leave its
+  port side by side in parallel lanes; a relation bound to the device as a
+  whole leaves from a separate, hollow **device-level port** beside the
+  device's name. Each port has an **end label** with the interface's name and,
+  for a tunnel, the underlay it is sourced from (`src: Gi0/0 203.0.113.1`).
+  Routes leave the port on the side facing the peer, never cross another row
+  or box, nest so that no route passes another port's stub or end label, and
+  go around boxes corner by corner without two routes sharing a corner.
+- **Physical view:** a cable to a device as a whole ends in a hollow square;
+  the member ports of an aggregate (LAG, port-channel) are kept together and
+  drawn in a bracket named by the aggregate; bending cables go around other
+  devices together with their ports and port labels.
+- **Pointing marks what belongs together:** an interface's row, port and end
+  label and every relation and cable attached to it; for a relation or
+  cable, the interfaces at its ends. In the diagram, in the Objects list and
+  on the endpoints of the Edit tab, which also marks the two ends of a
+  selected relation or link and says which port each is drawn from.
+- Example **`port-bindings.yaml`**: several tunnel interfaces and
+  subinterfaces per router, three relations on one interface, tunnels
+  sourced from an interface and from an address, device-level relations, a
+  LAG and a three-device relation.
+- Legend entries for interface ports, device-level ports, LAG brackets and
+  device-level cable ends.
+- Tests: `test/ports.test.mjs` checks for every example, every Auto-arrange
+  option, after dragging, with labels off and protocols hidden that every
+  lane and cable end lies in the port area of the interface it references,
+  that no lane crosses a box and no cable another port, and that end labels
+  are beside their port and clear of text and lines; the browser self-test
+  repeats this with real fonts, in both themes and on the exported SVG, and
+  the viewport check at every window size and zoom.
+
 - **Save model** and **Save model as…** replace *Download model…*. *Save
   model as…* saves to a file name and place you choose and links the model
   to that file; *Save model* (Ctrl+S) then updates it without asking (the
@@ -96,6 +130,21 @@ it is described in [docs/FORMAT.md](docs/FORMAT.md).
   addresses.
 
 ### Changed
+
+- **A relation is nested in a tunnel's tube only when both are bound to the
+  same interfaces.** GRE on a tunnel interface carried over IPsec between the
+  WAN ports is drawn from its own ports, and its label says *(over IPsec)*;
+  OSPF on the same tunnel interface as GRE is still drawn inside it.
+- A physical interface a relation is bound to has an entry in the logical
+  view even without an address (its relations attach to it).
+- **Auto-arrange** (all three options) leaves room for ports, stubs and end
+  labels: rows with ports are taller, and devices, networks and hubs keep
+  their ports' reach apart. Logical diagrams get somewhat larger (8–35 % per
+  side for the examples); stored positions don't change, but a view arranged
+  with an earlier version shows *edited since arranged* until it is arranged
+  again.
+- A group's kind (e.g. *SITE*) is kept free of labels, like its title.
+- DNS chips are a little higher, so their text stays inside at small zoom.
 
 - The **Find & Filter** menu is now called **Find** (also its tooltip and
   accessible name), to save room in the toolbar. *Find in diagram…* and
