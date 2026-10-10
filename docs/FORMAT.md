@@ -111,6 +111,17 @@ mapping accepts `device`, `interface` and `networks` (see
 [links](#links-physical-cabling-only)). A link end can only name a physical
 interface; a relation endpoint can name any interface.
 
+**An endpoint binds its relation or link to what it names.** The diagrams
+draw it from there and from nowhere else: a relation endpoint
+`r1:Tunnel10` is drawn from the port of `Tunnel10` (beside that interface's
+row in `r1`'s box in the logical view), a link end `r1:ge-0/0/1` ends at the
+port `ge-0/0/1`, and an endpoint that names only the device (`r1`) is drawn
+from the device as a whole (its device-level port beside its name, or a
+hollow cable end). The interface is found by its id, never by a position.
+An endpoint that names an interface the device doesn't have is an error at
+that endpoint, and nothing is attached in its place. A relation with more
+than one endpoint on the same device is bound by the first of them.
+
 ## `groups`
 
 | Key | Required | Description |
@@ -267,6 +278,11 @@ physical interfaces that belong to it:
   nothing about the aggregate.
 * What the aggregate *does* (LACP towards another device, MLAG) is a
   relation with the aggregate as its endpoint.
+* The physical view draws an aggregate as a bracket around its cabled member
+  ports on each side of the device, named by the aggregate's id (`Po1`); the
+  member ports keep their own names and cables. The logical view draws the
+  aggregate as an entry of its own, and relations bound to it (LACP) start
+  from its port.
 
 #### VLAN interfaces: ports carrying the VLAN
 
@@ -944,13 +960,49 @@ places; they are the same on screen and in exported SVG files.
 * **Cable labels** (speed · networks · label) are always drawn, on the cable's
   longest segment. Each takes the first free place: the middle, then further
   along the segment, then beside it.
+* **Ports (logical view).** Every row of a device's box that relations are
+  bound to has a port on the side of the box beside it: an interface's entry
+  (a solid bar), or the device's name part for relations bound to the device
+  itself (a hollow bar). Relations of a pair of devices that are bound to the
+  same interfaces at both ends form a *strand*; its relations are parallel
+  lanes that leave the port side by side. The row is high enough for every
+  lane bound to it and for its end label. A port is on the side of the box
+  that gives the shorter way to the other end without crossing either box;
+  several strands at one port are stacked in the order of the directions
+  they head in, which keeps them from crossing each other. A physical
+  interface a relation is bound to has an entry in the logical view even
+  without an address.
+* **Routes (logical view).** A strand leaves its port at a right angle, runs
+  a stub straight out and then goes to the other stub, around the boxes in
+  its way, never across a box (so never across another row of a device).
+  Stubs nest: of the routes leaving one side, the one that turns from nearer
+  the side is the one nearest to where it is going, and a route that passes
+  other rows of its device turns beyond their end labels. Routes keep a
+  stub and an end label's room from the boxes of other devices, and routes
+  around the same corner of a box run side by side, never on top of each
+  other.
+* **End labels.** Next to each interface port, on the side of the stubs the
+  lanes turn away from, the interface's id is written, and for a tunnel
+  interface the underlay it is sourced from (`src: Gi0/0 203.0.113.1`, the
+  source interface and its address, or the source address). A device-level
+  port has no end label. End labels keep clear of all text and of every line.
 * **Relation labels.** Every relation between two devices that isn't nested
-  in a tunnel has its own label next to its own lane. A nested relation is
-  named in its carrier's label together with its own label
-  (`IPsec · site-to-site › GRE · primary › OSPF · area 1`), so it is neither
-  lost nor drawn twice. Labels are written one after the other along the
-  bundle, or stacked across it when the line is too short, and each then
-  takes the nearest place that is free of nodes and other labels.
+  in a tunnel has its own label next to its own lane, along the middle of
+  its strand. A relation is nested in a tunnel it is carried over (`over`)
+  only when both are bound to the same interfaces: it is then named in its
+  carrier's label together with its own label
+  (`IPsec · site-to-site › OSPF · area 1`), so it is neither lost nor drawn
+  twice. A relation carried over a tunnel bound to other interfaces (GRE on
+  `Tunnel10`, carried over IPsec between the underlay ports) runs from its own
+  ports and says so in its label: `GRE › OSPF (over IPsec)`. Labels are
+  written one after the other along the strand, or stacked across it when
+  the line is too short, and each then takes the nearest place that is free
+  of nodes and other labels.
+* **Aggregates (physical view).** The member ports of an aggregate are kept
+  next to each other along a side and drawn inside a bracket named by the
+  aggregate. A cable whose end names no port ends in a hollow square on the
+  device. Cables that bend go around other devices together with their
+  ports and port labels, and across no other port of their own devices.
 * **Order.** Labels are placed in id order, so the result depends only on
   the model and the node positions, never on selection or on what was
   dragged before.
@@ -973,8 +1025,12 @@ places; they are the same on screen and in exported SVG files.
   block, so a group cabled both to the top and far down lies near the top and
   has one long cable. A chain of groups gives a tall diagram, a wide layer a
   wide one; the shape follows the topology rather than the screen.
-* Relation lines in the logical view are always straight. Auto-arrange moves
-  nodes off the lines; with manual positions a line can pass under a node.
+* Relation lines in the logical view are routed: straight where nothing is
+  in the way, else around the boxes (at most a few bends). After dragging
+  boxes onto each other, a line can't avoid them; the overlap is reported.
+* Network membership lines still run from the border of the device box to
+  the network; they are not attached to the interface holding the address
+  (its addresses are written on the line, and in the interface's entry).
 * Spacing is preferred over density, so Default diagrams are fairly large;
   Compact takes the slack out.
 * Stored positions are never changed by another NetAtlas application
@@ -1003,9 +1059,12 @@ version) when they have the same:
   networks of the ends, label);
 * networks (ids, labels, and the subtitle shown from `vlan`/`cidr`, plus the
   derived set of member devices);
-* relations (ids and the set of devices they connect), and per pair of
-  devices the label texts and the width of the bundle (protocol display
-  names and line styles, relation labels, nesting through `over`).
+* relations (ids, the set of devices they connect and the interfaces they
+  are bound to), and per pair of devices the label texts and the width of
+  the bundle (protocol display names and line styles, relation labels,
+  nesting through `over`), with the end labels at its ports (interface ids,
+  tunnel sources);
+* the members of aggregates (they are kept together along a side).
 
 **Not relevant:**
 * order of keys, sections and list items (devices, physical and logical

@@ -90,10 +90,6 @@ export interface LPort {
   /** the extent the lanes take at the port */
   top: number;
   bottom: number;
-  /** the shortest stub of the routes leaving it: room for its end label beside them */
-  stub: number;
-  /** which way most of its routes turn after their stubs (-1 up, 1 down, 0 straight on) */
-  turn: number;
   /** its end label is written under the lanes (they turn up), else above them */
   labelBelow: boolean;
 }
@@ -104,8 +100,6 @@ export interface LogicalRoutes {
   /** each spoke, from its device's port to the hub's circle, by "<relation id>:<device>" */
   spokes: Map<string, Pt[]>;
   ports: LPort[];
-  /** strands and spokes that could not be attached (an endpoint without a row); they are not drawn */
-  unattached: string[];
 }
 
 /** how far routes keep from the sides of devices other than their own, at least */
@@ -190,7 +184,6 @@ export function routeLogical(
     return c;
   };
   const ends: End[] = [];
-  const unattached: string[] = [];
   const strandEnds = new Map<string, [End, End]>();
   bundles.forEach((b, bi) => {
     const A = dev(b.a);
@@ -200,11 +193,8 @@ export function routeLogical(
       const id = bi + ':' + si;
       const ra = rowOf(b.a, s.ia);
       const rb = rowOf(b.b, s.ib);
-      // a binding without a row is never drawn somewhere else instead
-      if (!ra || !rb) {
-        unattached.push(id);
-        return;
-      }
+      // a binding without a row is not drawn at all, never somewhere else instead
+      if (!ra || !rb) return;
       let best: [PortSide, PortSide] = SIDES[0];
       let bestCost = Infinity;
       for (const [sa, sb] of SIDES) {
@@ -233,10 +223,7 @@ export function routeLogical(
       const iface = bindingOn(r, d);
       const row = rowOf(d, iface);
       const id = r.id + ':' + d;
-      if (!D || !row) {
-        unattached.push('h:' + id);
-        continue;
-      }
+      if (!D || !row) continue;
       let side: PortSide = 'right';
       let bestCost = Infinity;
       for (const s of ['right', 'left'] as PortSide[]) {
@@ -293,7 +280,7 @@ export function routeLogical(
         start += e.width + STRAND_GAP;
       }
       const n = dev(first.device) as LNode;
-      ports.push({ device: first.device, iface: first.iface, side: first.side, x: sideX(n, first.side), row, top, bottom: top + total, stub: 0, turn: 0, labelBelow, ends: list } as LPort & { ends: End[] });
+      ports.push({ device: first.device, iface: first.iface, side: first.side, x: sideX(n, first.side), row, top, bottom: top + total, labelBelow });
     });
 
   // ---- stubs. Where the routes of one side of a box turn the same way,
@@ -402,14 +389,7 @@ export function routeLogical(
       spokes.set(r.id + ':' + d, clean(elbow(clean([p, q, ...way, clipToCircle(c, HUB_R, last)]), dirOf(e.side), obstacles, boxRect(D))));
     }
   }
-  for (const p of ports as Array<LPort & { ends?: End[] }>) {
-    const list = p.ends as End[];
-    delete p.ends;
-    p.stub = list.reduce((m, e) => Math.min(m, e.stub), Infinity);
-    const t = list.reduce((sum, e) => sum + e.turn, 0);
-    p.turn = t > 0 ? 1 : t < 0 ? -1 : 0;
-  }
-  return { strands, spokes, ports, unattached };
+  return { strands, spokes, ports };
 }
 
 /**
