@@ -709,8 +709,9 @@ function removeOverlaps(list: LSpec[], X: Float64Array, Y: Float64Array, room: M
   const N = list.length;
   const margin = (i: number, j: number): [number, number] => {
     const devs = list[i].kind === 'device' && list[j].kind === 'device';
-    // side by side, two devices leave room for the ports (stubs and end labels) of both facing sides and the lanes between
-    const base = devs ? Math.max(150, (list[i].reach || 0) + (list[j].reach || 0) + 40) : 40;
+    // side by side, two devices leave room for the ports (stubs and end labels) of both facing sides and the
+    // lanes between; a network or hub keeps clear of a device's ports too
+    const base = devs ? Math.max(150, (list[i].reach || 0) + (list[j].reach || 0) + 40) : Math.max(40, (list[i].reach || 0) + (list[j].reach || 0) + 12);
     const r = room.get(i * N + j);
     return r === undefined ? [base, (devs ? 150 : base) * 0.8] : [Math.max(base, r[0]), Math.max((devs ? 150 : base) * 0.8, r[1])];
   };

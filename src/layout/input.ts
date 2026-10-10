@@ -19,7 +19,7 @@ import { networkMembers, networkMismatch, networkName } from '../model/derive';
 import { compareNames, sortedByName } from '../model/order';
 import { Device, Link, Model, ifaceKey, loopbacks, relationDevices } from '../model/types';
 import { addressAttrEntries, addressAttrLines, deviceAddressLines, deviceEntries, orderedAddresses } from '../model/addresses';
-import { bindingKey, bindingOn, buildBundle, laneLabel, portSpans, relationPairs } from './bundles';
+import { STRAND_GAP, bindingKey, bindingOn, buildBundle, laneLabel, portSpans, relationPairs } from './bundles';
 import { cmp } from './order';
 import { END_LABEL_GAP, EntryText, PORT_STUB, endLabelBox, entriesSize, memberLabelBox, networkSubtitle, portRowH } from './sizes';
 
@@ -279,8 +279,9 @@ export function endLabelLines(m: Model, device: string, iface: string | undefine
   if (i && i.source) {
     const src = i.source;
     if (src.iface) {
+      // the address as written, else the underlay interface's first one
       const under = m.index.interfaces.get(ifaceKey(device, src.iface));
-      const addr = under ? orderedAddresses(under.addresses)[0] : undefined;
+      const addr = src.address || (under ? orderedAddresses(under.addresses)[0] : undefined);
       out.push('src: ' + src.iface + (addr ? ' ' + addr.replace(/\/\d+$/, '') : ''));
     } else if (src.address) out.push('src: ' + src.address);
     else out.push('src: ' + src.text);
@@ -289,18 +290,25 @@ export function endLabelLines(m: Model, device: string, iface: string | undefine
 }
 
 /**
- * How far the ports of a device reach out from the side of its logical box:
- * a stub, or an end label (the widest of the device), whichever is longer.
+ * How far the ports of a device reach out from the side of its logical box,
+ * at most: the routes leaving a side nest, each turning beyond the ones
+ * nearer its row and beyond the end labels of the rows it passes, so the
+ * outermost one turns past the widest end label of the device and the lanes
+ * of all the others (as if all of them left on one side).
  */
 export function portReach(m: Model, device: string): number {
-  let r = 0;
+  let label = 0;
+  let lanes = 0;
+  let any = false;
   const prefix = bindingKey(device, undefined);
-  modelPortSpans(m).forEach((_, k) => {
+  modelPortSpans(m).forEach((span, k) => {
     if (k.indexOf(prefix) !== 0) return;
+    any = true;
     const iface = k.slice(prefix.length);
-    r = Math.max(r, PORT_STUB + 8, iface ? endLabelWidth(m, device, iface) + 15 : 0);
+    if (iface) label = Math.max(label, endLabelWidth(m, device, iface) + 7);
+    lanes += span + STRAND_GAP;
   });
-  return r;
+  return any ? Math.max(PORT_STUB, label + 6) + lanes + 8 : 0;
 }
 
 /** Height an end label takes beside its row, above the lanes (0: none). */

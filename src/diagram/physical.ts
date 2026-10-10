@@ -298,8 +298,19 @@ export function renderPhysical(model: Model, layout: PhysicalLayout, opts: ViewO
   // cables in id order, so label placement never depends on the order in the file
   const byId = drawn.slice().sort((p, q) => (p.l.id < q.l.id ? -1 : p.l.id > q.l.id ? 1 : 0));
   const labelAt = new Map<string, VNode[]>();
+  // a device other than the cable's own two is gone around together with its ports and their labels
+  const withPorts = new Map<string, Rect>();
+  obstacles.forEach((r, id) => {
+    const parts = [r];
+    for (const p of ports) if (p.device === id) parts.push(...(portArea.get(p.key) || []));
+    withPorts.set(id, unionRect(parts));
+  });
   const routes = new Map<string, Pt[]>();
-  for (const { l, pa, pb } of byId) routes.set(l.id, cableRoute(pa, pb, obstacles, otherPorts([pa.key, pb.key])));
+  for (const { l, pa, pb } of byId) {
+    const around = new Map<string, Rect>();
+    obstacles.forEach((r, id) => around.set(id, id === pa.device || id === pb.device ? r : (withPorts.get(id) as Rect)));
+    routes.set(l.id, cableRoute(pa, pb, around, otherPorts([pa.key, pb.key])));
+  }
   // an aggregate's name keeps clear of the cables
   routes.forEach((pts) => {
     for (let k = 0; k + 1 < pts.length; k++) placer.blockLine(pts[k], pts[k + 1], 2);

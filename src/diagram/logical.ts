@@ -483,8 +483,9 @@ function dnsChips(d: Device, n: LNode, top: number): VNode[] {
     const lines = dnsNameLines(name);
     out.push(
       h('g', { class: 'dns-chip', 'data-ref': 'device:' + d.id, 'data-dns': name }, [
-        h('rect', { x: n.cx - w / 2, y, width: w, height: lines.length * CHIP_H - 3, rx: 6.5 }),
-        ...lines.map((l, i) => h('text', { x: n.cx, y: y + 9.5 + i * CHIP_H, 'text-anchor': 'middle', 'font-size': CHIP_FONT }, l)),
+        // (a little higher than the text: at a small zoom the browser's text box grows by a pixel or so)
+        h('rect', { x: n.cx - w / 2, y, width: w, height: lines.length * CHIP_H - 1.5, rx: 6.5 }),
+        ...lines.map((l, i) => h('text', { x: n.cx, y: y + 10 + i * CHIP_H, 'text-anchor': 'middle', 'font-size': CHIP_FONT }, l)),
       ]),
     );
     y += lines.length * CHIP_H;

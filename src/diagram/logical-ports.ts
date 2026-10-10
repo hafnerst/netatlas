@@ -167,10 +167,17 @@ export function routeLogical(
     far.set(n.id, boxRect(n, PORT_CLEAR));
   });
   /** what the route between these devices keeps clear of */
-  const obstaclesFor = (own: string[]): Rect[] => {
+  const obstaclesFor = (own: string[], a?: Pt, b?: Pt): Rect[] => {
     const out: Rect[] = [];
-    far.forEach((r, id) => out.push(own.indexOf(id) >= 0 ? (near.get(id) as Rect) : r));
-    return out.concat(others);
+    // a device whose ports' room holds the route's own start or end (two devices close together) is kept
+    // clear of by its box only; a box that holds one (overlapping boxes, moved by hand) can't be avoided
+    const holds = (r: Rect): boolean => !!a && !!b && (inside(a, r) || inside(b, r));
+    far.forEach((r, id) => {
+      const n = near.get(id) as Rect;
+      const o = own.indexOf(id) >= 0 || holds(r) ? n : r;
+      if (!holds(o)) out.push(o);
+    });
+    return out.concat(a && b ? clearOf(others, a, b) : others);
   };
   /** what a straight piece between two stubs costs: its length, and more for every box it crosses */
   const pieceCost = (p: Pt, q: Pt, own: string[]): number => {
@@ -254,6 +261,8 @@ export function routeLogical(
     (byPort.get(k) as End[]).push(e);
   }
   const ports: LPort[] = [];
+  /** by port key: is its end label under the lanes */
+  const labelSide = new Map<string, boolean>();
   Array.from(byPort.keys())
     .sort((p, q) => (p < q ? -1 : p > q ? 1 : 0))
     .forEach((k) => {
@@ -271,6 +280,7 @@ export function routeLogical(
       // the label goes on the side of the lanes away from where most of them turn (they leave it behind)
       const t = list.reduce((sum, e) => sum + turnOf(e.far.y - mid(row)), 0);
       const labelBelow = t < 0;
+      labelSide.set(k, labelBelow);
       const lab = endLabelH(model, first.device, first.iface);
       const lo = row.top + PORT_INSET + (labelBelow ? 0 : lab);
       const hi = row.bottom - PORT_INSET - (labelBelow ? lab : 0);
@@ -306,7 +316,11 @@ export function routeLogical(
   const labelReach = (d: string, iface: string | undefined): number => (iface === undefined ? 0 : END_LABEL_X + endLabelWidth(model, d, iface) + 2);
   bySide.forEach((list) => {
     // the own end label is on the side the lanes turn away from: it needs no longer stub
-    const base = (): number => PORT_STUB;
+    // … unless it turns toward that side (a port with lanes turning both ways): then it turns beyond the label
+    const base = (e: End): number => {
+      const below = labelSide.get(bindingKey(e.device, e.iface) + '|' + e.side);
+      return (below ? e.turn > 0 : e.turn < 0) ? Math.max(PORT_STUB, labelReach(e.device, e.iface) + 8 + e.width / 2) : PORT_STUB;
+    };
     // A route that turns up passes beside every row above its own, one that turns down every row below:
     // it turns beyond the end labels written there.
     const rowTop = (e: End): number => (rowOf(e.device, e.iface) as RowSpan).top;
@@ -321,7 +335,7 @@ export function routeLogical(
     const nest = (seq: End[]): void => {
       let prev: End | null = null;
       for (const e of seq) {
-        e.stub = Math.max(base(), passed(e), prev ? prev.stub + prev.width / 2 + STRAND_GAP + e.width / 2 : 0);
+        e.stub = Math.max(base(e), passed(e), prev ? prev.stub + prev.width / 2 + STRAND_GAP + e.width / 2 : 0);
         prev = e;
       }
     };
@@ -361,13 +375,13 @@ export function routeLogical(
     const qa = { x: pa.x + dirOf(ea.side) * ea.stub, y: pa.y };
     const qb = { x: pb.x + dirOf(eb.side) * eb.stub, y: pb.y };
     const width = b.strands[Number(id.split(':')[1])].width;
-    const obstacles = clearOf(obstaclesFor([b.a, b.b]), qa, qb);
+    const obstacles = obstaclesFor([b.a, b.b], qa, qb);
     // heading back past its own box: first out of the box's reach, then on (around whatever is in the way)
     const ca = pastOwnBox(qa, qb, dirOf(ea.side), boxRect(A), obstacles);
-    const cb = pastOwnBox(qb, ca || qa, dirOf(eb.side), boxRect(B), obstacles);
-    const s0 = ca || qa;
-    const e0 = cb || qb;
-    const pts = clean([pa, qa, ...(ca ? [ca] : []), ...laneDetour(s0, e0, obstacles, width, corners), ...(cb ? [cb] : []), qb, pb]);
+    const s0 = ca.length ? ca[ca.length - 1] : qa;
+    const cb = pastOwnBox(qb, s0, dirOf(eb.side), boxRect(B), obstacles).reverse();
+    const e0 = cb.length ? cb[0] : qb;
+    const pts = clean([pa, qa, ...ca, ...laneDetour(s0, e0, obstacles, width, corners), ...cb, qb, pb]);
     strands.set(id, clean(elbow(elbow(pts, dirOf(ea.side), obstacles, boxRect(A)).reverse(), dirOf(eb.side), obstacles, boxRect(B)).reverse()));
   });
   const spokes = new Map<string, Pt[]>();
@@ -381,9 +395,9 @@ export function routeLogical(
       const p = { x: sideX(D, e.side), y: e.y };
       const q = { x: p.x + dirOf(e.side) * e.stub, y: p.y };
       const c = { x: hub.cx, y: hub.cy };
-      const obstacles = clearOf(obstaclesFor([d]), q, { x: hub.cx, y: hub.cy });
+      const obstacles = obstaclesFor([d], q, { x: hub.cx, y: hub.cy });
       const cq = pastOwnBox(q, c, dirOf(e.side), boxRect(D), obstacles);
-      const way = (cq ? [cq] : []).concat(laneDetour(cq || q, c, obstacles, e.width, corners));
+      const way = cq.concat(laneDetour(cq.length ? cq[cq.length - 1] : q, c, obstacles, e.width, corners));
       const last = way.length ? way[way.length - 1] : q;
       spokes.set(r.id + ':' + d, clean(elbow(clean([p, q, ...way, clipToCircle(c, HUB_R, last)]), dirOf(e.side), obstacles, boxRect(D))));
     }
@@ -446,23 +460,32 @@ function elbow(pts: Pt[], dir: number, obstacles: Rect[], own: Rect): Pt[] {
  * lies in (two devices close together), which it could not avoid anyway.
  */
 function clearOf(obstacles: Rect[], a: Pt, b: Pt): Rect[] {
-  const inside = (p: Pt, r: Rect): boolean => p.x > r.x && p.x < r.x + r.w && p.y > r.y && p.y < r.y + r.h;
   return obstacles.filter((r) => !inside(a, r) && !inside(b, r));
+}
+
+function inside(p: Pt, r: Rect): boolean {
+  return p.x > r.x && p.x < r.x + r.w && p.y > r.y && p.y < r.y + r.h;
 }
 
 /**
  * Where a route that heads back past its own box (its target lies behind
  * the side it leaves from) first goes: straight up or down from the end of
- * its stub to beyond the box, so it does not pass beside the box's rows.
- * Null when it is not heading back, or that way is not free.
+ * its stub to beyond the box, so it does not pass beside the box's rows;
+ * if something is in that way, the stub first runs further out. Empty when
+ * it is not heading back, or no such way is free.
  */
-function pastOwnBox(q: Pt, target: Pt, dir: number, own: Rect, obstacles: Rect[]): Pt | null {
-  if ((target.x - q.x) * dir >= 0) return null;
+function pastOwnBox(q: Pt, target: Pt, dir: number, own: Rect, obstacles: Rect[]): Pt[] {
+  if ((target.x - q.x) * dir >= 0) return [];
   const down = target.y > q.y;
   const y = down ? own.y + own.h + 16 : own.y - 16;
-  if (down ? y >= target.y : y <= target.y) return null;
-  const corner = { x: q.x, y };
-  return obstacles.some((o) => segmentHitsRect(q, corner, o)) ? null : corner;
+  if (down ? y >= target.y : y <= target.y) return [];
+  for (let k = 0; k <= 12; k++) {
+    const out = { x: q.x + dir * k * 14, y: q.y };
+    const corner = { x: out.x, y };
+    if (obstacles.some((o) => segmentHitsRect(q, out, o) || segmentHitsRect(out, corner, o))) continue;
+    return k ? [out, corner] : [corner];
+  }
+  return [];
 }
 
 function grow(r: Rect, d: number): Rect {

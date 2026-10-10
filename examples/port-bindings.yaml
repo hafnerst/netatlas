@@ -7,7 +7,8 @@
 #   - several relations on one interface (IPsec, OSPF over it and BFD all on
 #     hub-rtr:Tunnel10 <-> spoke1:Tunnel10),
 #   - tunnels sourced from an underlay interface (Tunnel10, Tunnel20) and from
-#     an address (Tunnel30): the end label names that source after "src:",
+#     an address of one (Tunnel30): the end label names that source after
+#     "src:", the interface and its address,
 #   - relations bound to a device as a whole (syslog, SNMP, MLAG): they leave
 #     from the device-level port beside the device's name,
 #   - an aggregate (LAG) of two cables between the core switches, and a

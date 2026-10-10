@@ -58,7 +58,7 @@ interface SNode {
   id: string;
   w: number;
   h: number;
-  /** room the labels of the ports on its left / right side take beside it (physical view) */
+  /** room the ports on its left / right side take beside it: their labels (physical view), their stubs and end labels (logical view) */
   left: number;
   right: number;
   /** the groups the node lies in, innermost first */
@@ -151,7 +151,9 @@ function viewSNodes(view: LayoutView, input: LayoutInput, base: Map<string, Pt>)
       const inner = commonChain(devs.filter((d) => shownDevs.has(d)).map(devChain));
       chain = inner;
     }
-    return { id: s.id, w: s.w, h: s.h, left: 0, right: 0, chain };
+    // the stubs and end labels of a device's ports reach out beside it (layout/input.ts portReach)
+    const reach = s.reach || 0;
+    return { id: s.id, w: s.w, h: s.h, left: reach, right: reach, chain };
   });
 }
 
@@ -239,7 +241,11 @@ function compact(view: LayoutView, input: LayoutInput, base: Map<string, Pt>): M
       const now = frame(g, inner);
       const was = frame(g, deep(g));
       // a frame keeps a little air around it, like the room between two nodes
-      items.push({ id: 'group:' + g, base: was.c, top: was.c.y - was.h / 2, w: now.w + 12, h: now.h + 12, left: 0, right: 0, inner, at: now.c });
+      // (the ports of the nodes inside reach beyond the frame as far as its padding doesn't hold them)
+      const within = nodes.filter((n) => n.chain.indexOf(g) >= 0);
+      const left = Math.max(0, within.reduce((m, n) => Math.max(m, n.left), 0) - GROUP_PAD);
+      const right = Math.max(0, within.reduce((m, n) => Math.max(m, n.right), 0) - GROUP_PAD);
+      items.push({ id: 'group:' + g, base: was.c, top: was.c.y - was.h / 2, w: now.w + 12, h: now.h + 12, left, right, inner, at: now.c });
     }
     for (const n of ownNodes(c)) {
       const p = base.get(n.id) as Pt;

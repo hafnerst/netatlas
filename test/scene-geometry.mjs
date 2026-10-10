@@ -5,6 +5,8 @@
 import { load, scene } from './helpers.mjs';
 
 const { textWidth, lineHeight, monoWidth } = load('layout/text.js');
+const { bindingOn } = load('layout/bundles.js');
+const { relationDevices } = load('model/types.js');
 
 const has = (n, c) => scene.hasClass(n, c);
 const all = (v, pred) => scene.findAll(v, pred);
@@ -144,6 +146,186 @@ export function problems(root) {
         if (!own && segHits(c.pts[k], c.pts[k + 1], shrunk)) out.push(`cable ${c.ref} runs through ${d.ref}`);
       }
     }
+  }
+  return out;
+}
+
+// ------------------------------------------------- bindings to interfaces (ports)
+
+const pathPts = (d) =>
+  d
+    .slice(1)
+    .split('L')
+    .map((s) => s.trim().split(' ').map(Number))
+    .map(([x, y]) => ({ x, y }));
+
+/** Everything about the ports of a logical scene: boxes, rows, ports, lanes, end labels, leader lines. */
+export function logicalScene(root) {
+  const g = geometry(root);
+  const boxes = new Map(g.devices.map((d) => [d.ref.slice(7), d.box]));
+  const rows = new Map();
+  for (const e of g.entries) {
+    if (!/^iface:/.test(e.ref)) continue;
+    const [, dev, ...rest] = e.ref.split(':');
+    rows.set(dev + ':' + rest.join(':'), { top: e.box.y, bottom: e.box.y + e.box.h, ref: e.ref });
+  }
+  // the device-level row: the name part, above the first entry
+  for (const [id, b] of boxes) {
+    const first = g.entries.filter((e) => e.ref.split(':')[1] === id || e.ref === 'device:' + id).reduce((m, e) => Math.min(m, e.box.y), b.y + b.h);
+    rows.set(id + ':', { top: b.y, bottom: first, ref: 'device:' + id });
+  }
+  const ports = all(root, (n) => n.tag === 'rect' && has(n, 'lport')).map((n) => ({ ref: n.attrs['data-ref'], side: n.attrs['data-side'], r: rectOf(n), dev: has(n, 'dev-port') }));
+  const lanes = [];
+  for (const grp of all(root, (n) => has(n, 'rel'))) {
+    const ref = grp.attrs['data-ref'];
+    const hub = has(grp, 'hub-rel');
+    for (const c of grp.children.filter((x) => has(x, 'hit'))) {
+      const stroke = grp.children.find((x) => has(x, 'tube-outer') || has(x, 'rel-line'));
+      lanes.push({ ref, hub, pts: pathPts(c.attrs.d), half: stroke ? num(stroke, 'stroke-width') / 2 : 1.2 });
+    }
+  }
+  const endLabels = all(root, (n) => n.tag === 'text' && has(n, 'end-label')).map((t) => ({ ref: t.attrs['data-ref'], side: t.attrs['data-side'], rect: textRect(t, 9.5), lines: linesOf(t) }));
+  const leaders = all(root, (n) => has(n, 'leader')).map((n) => n.attrs['data-ref']);
+  return { g, boxes, rows, ports, lanes, endLabels, leaders };
+}
+
+/** The device whose side `p` lies on, and which side (null: on none). */
+export function sideOf(boxes, p) {
+  for (const [id, b] of boxes) {
+    if (p.y < b.y - 0.6 || p.y > b.y + b.h + 0.6) continue;
+    if (Math.abs(p.x - b.x) <= 0.6) return { id, side: 'left', x: b.x };
+    if (Math.abs(p.x - (b.x + b.w)) <= 0.6) return { id, side: 'right', x: b.x + b.w };
+  }
+  return null;
+}
+
+/**
+ * Problems with the bindings of a logical scene: an end outside the port
+ * area of the interface it references (the side of the box beside that
+ * interface's row, or beside the name part for a device-level endpoint), a
+ * lane through a box (so across another row), a port that leaves its row, an
+ * end label that is not beside its port, names something else, or is
+ * crossed by a line.
+ */
+export function logicalBindingProblems(m, root) {
+  const out = [];
+  const L = logicalScene(root);
+  for (const lane of L.lanes) {
+    const rid = lane.ref.slice(9);
+    const r = m.index.relations.get(rid);
+    const ends = lane.hub ? [lane.pts[0]] : [lane.pts[0], lane.pts[lane.pts.length - 1]];
+    const seen = [];
+    for (const p of ends) {
+      const at = sideOf(L.boxes, p);
+      if (!at) {
+        out.push(`${lane.ref}: an end at ${p.x},${p.y} is on no device's side`);
+        continue;
+      }
+      seen.push(at.id);
+      if (relationDevices(r).indexOf(at.id) < 0) {
+        out.push(`${lane.ref}: ends at ${at.id}, which is not one of its devices`);
+        continue;
+      }
+      const iface = bindingOn(r, at.id);
+      const row = L.rows.get(at.id + ':' + (iface === undefined ? '' : iface));
+      if (!row) {
+        out.push(`${lane.ref}: no row for ${at.id}:${iface}`);
+        continue;
+      }
+      if (p.y < row.top - 0.6 || p.y > row.bottom + 0.6) out.push(`${lane.ref}: the end at ${at.id} (y ${p.y}) is not beside ${row.ref} (${row.top}..${row.bottom})`);
+      const port = L.ports.find((q) => q.ref === row.ref && q.side === at.side && p.y >= q.r.y - 0.6 && p.y <= q.r.y + q.r.h + 0.6 && Math.abs(q.r.x + q.r.w / 2 - at.x) < 0.6);
+      if (!port) out.push(`${lane.ref}: no port of ${row.ref} on the ${at.side} of ${at.id} holds its end`);
+      else if (port.dev !== (iface === undefined)) out.push(`${lane.ref}: the port at ${at.id} has the wrong kind (device-level: ${port.dev})`);
+    }
+    if (!lane.hub && seen.length === 2 && seen[0] === seen[1] && relationDevices(r).length > 1) out.push(`${lane.ref}: both ends at ${seen[0]}`);
+    for (let k = 0; k + 1 < lane.pts.length; k++) {
+      for (const [id, b] of L.boxes) {
+        if (segHits(lane.pts[k], lane.pts[k + 1], { x: b.x + 1, y: b.y + 1, w: b.w - 2, h: b.h - 2 })) out.push(`${lane.ref} crosses the box of ${id}`);
+      }
+    }
+  }
+  for (const p of L.ports) {
+    const parts = p.ref.split(':');
+    const key = p.ref.indexOf('iface:') === 0 ? parts[1] + ':' + parts.slice(2).join(':') : parts[1] + ':';
+    const row = L.rows.get(key);
+    if (!row) out.push(`port ${p.ref} has no row`);
+    else if (p.r.y < row.top - 0.6 || p.r.y + p.r.h > row.bottom + 0.6) out.push(`port ${p.ref} leaves its row`);
+  }
+  for (const e of L.endLabels) {
+    const port = L.ports.find((p) => p.ref === e.ref && p.side === e.side);
+    if (!port) {
+      out.push(`end label ${e.lines[0]} has no port`);
+      continue;
+    }
+    const x = port.r.x + port.r.w / 2;
+    const near = e.side === 'right' ? e.rect.x - x : x - (e.rect.x + e.rect.w);
+    if (near < 0 || near > 34) out.push(`end label ${e.ref} is not beside its port (${near})`);
+    const parts = e.ref.split(':');
+    const row = L.rows.get(parts[1] + ':' + parts.slice(2).join(':'));
+    if (row && (e.rect.y + e.rect.h < row.top - 30 || e.rect.y > row.bottom + 30)) out.push(`end label ${e.ref} is far from its row`);
+    if (e.lines[0] !== parts.slice(2).join(':')) out.push(`end label ${e.ref} names ${e.lines[0]}`);
+    for (const lane of L.lanes) {
+      for (let k = 0; k + 1 < lane.pts.length; k++) {
+        const r = { x: e.rect.x - lane.half + 0.5, y: e.rect.y - lane.half + 0.5, w: e.rect.w + 2 * lane.half - 1, h: e.rect.h + 2 * lane.half - 1 };
+        if (segHits(lane.pts[k], lane.pts[k + 1], r)) {
+          out.push(`end label ${e.ref} is crossed by ${lane.ref}`);
+          break;
+        }
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Problems with the bindings of a physical scene: a cable end not at the
+ * port of the interface it references (or a device-level end not hollow), a
+ * port off its device's side, a cable across another port's square or label,
+ * a LAG bracket around a port that is not a member.
+ */
+export function physicalBindingProblems(m, root) {
+  const out = [];
+  const g = geometry(root);
+  const boxes = new Map(g.devices.map((d) => [d.ref.slice(7), d.box]));
+  const ports = all(root, (n) => n.tag === 'rect' && has(n, 'port')).map((n) => ({ ref: n.attrs['data-ref'], r: rectOf(n), devEnd: has(n, 'dev-end') }));
+  const labels = all(root, (n) => n.tag === 'text' && has(n, 'port-label')).map((n) => ({ ref: n.attrs['data-ref'], r: textRect(n, 10) }));
+  const holds = (r, p) => p.x >= r.x - 0.5 && p.x <= r.x + r.w + 0.5 && p.y >= r.y - 0.5 && p.y <= r.y + r.h + 0.5;
+  for (const c of g.cables) {
+    const l = m.index.links.get(c.ref.slice(5));
+    const ends = [c.pts[0], c.pts[c.pts.length - 1]];
+    const own = [];
+    for (const e of [l.a, l.b]) {
+      const ref = e.iface ? `iface:${e.device}:${e.iface}` : 'device:' + e.device;
+      const port = ports.find((p) => p.ref === ref && ends.some((q) => Math.abs(p.r.x + p.r.w / 2 - q.x) < 0.6 && Math.abs(p.r.y + p.r.h / 2 - q.y) < 0.6));
+      if (!port) {
+        out.push(`${c.ref}: no port ${ref} at an end`);
+        continue;
+      }
+      own.push(port);
+      if (port.devEnd !== !e.iface) out.push(`${c.ref}: the end at ${ref} has the wrong kind`);
+      const b = boxes.get(e.device);
+      const cx = port.r.x + port.r.w / 2;
+      const cy = port.r.y + port.r.h / 2;
+      const vertical = Math.abs(cx - b.x) < 0.6 || Math.abs(cx - b.x - b.w) < 0.6;
+      const horizontal = Math.abs(cy - b.y) < 0.6 || Math.abs(cy - b.y - b.h) < 0.6;
+      const onSide = (vertical && cy >= b.y - 0.6 && cy <= b.y + b.h + 0.6) || (horizontal && cx >= b.x - 0.6 && cx <= b.x + b.w + 0.6);
+      if (!onSide) out.push(`${c.ref}: port ${ref} is not on the side of ${e.device}`);
+    }
+    for (let k = 0; k + 1 < c.pts.length; k++) {
+      for (const p of ports.concat(labels)) {
+        if (own.indexOf(p) >= 0 || own.some((o) => o.ref === p.ref && o.ref.indexOf('iface:') === 0)) continue;
+        if (holds(p.r, ends[0]) || holds(p.r, ends[1])) continue;
+        if (segHits(c.pts[k], c.pts[k + 1], { x: p.r.x + 1, y: p.r.y + 1, w: p.r.w - 2, h: p.r.h - 2 })) out.push(`${c.ref} crosses ${p.ref}`);
+      }
+    }
+  }
+  for (const mk of all(root, (n) => n.tag === 'rect' && has(n, 'lag-mark'))) {
+    const [, dev, ...rest] = mk.attrs['data-ref'].split(':');
+    const agg = m.index.interfaces.get(dev + ':' + rest.join(':'));
+    const r = rectOf(mk);
+    const inside = ports.filter((p) => p.ref.split(':')[1] === dev && holds(r, { x: p.r.x + p.r.w / 2, y: p.r.y + p.r.h / 2 }));
+    if (!inside.length) out.push(`bracket ${mk.attrs['data-ref']} holds no port`);
+    for (const p of inside) if (agg.members.indexOf(p.ref.split(':').slice(2).join(':')) < 0) out.push(`bracket ${mk.attrs['data-ref']} holds ${p.ref}, not a member`);
   }
   return out;
 }

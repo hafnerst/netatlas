@@ -5672,8 +5672,9 @@ function endLabelLines(m, device, iface) {
     if (i && i.source) {
         const src = i.source;
         if (src.iface) {
+            // the address as written, else the underlay interface's first one
             const under = m.index.interfaces.get((0, types_1.ifaceKey)(device, src.iface));
-            const addr = under ? (0, addresses_1.orderedAddresses)(under.addresses)[0] : undefined;
+            const addr = src.address || (under ? (0, addresses_1.orderedAddresses)(under.addresses)[0] : undefined);
             out.push('src: ' + src.iface + (addr ? ' ' + addr.replace(/\/\d+$/, '') : ''));
         }
         else if (src.address)
@@ -5684,19 +5685,27 @@ function endLabelLines(m, device, iface) {
     return out;
 }
 /**
- * How far the ports of a device reach out from the side of its logical box:
- * a stub, or an end label (the widest of the device), whichever is longer.
+ * How far the ports of a device reach out from the side of its logical box,
+ * at most: the routes leaving a side nest, each turning beyond the ones
+ * nearer its row and beyond the end labels of the rows it passes, so the
+ * outermost one turns past the widest end label of the device and the lanes
+ * of all the others (as if all of them left on one side).
  */
 function portReach(m, device) {
-    let r = 0;
+    let label = 0;
+    let lanes = 0;
+    let any = false;
     const prefix = (0, bundles_1.bindingKey)(device, undefined);
-    modelPortSpans(m).forEach((_, k) => {
+    modelPortSpans(m).forEach((span, k) => {
         if (k.indexOf(prefix) !== 0)
             return;
+        any = true;
         const iface = k.slice(prefix.length);
-        r = Math.max(r, sizes_1.PORT_STUB + 8, iface ? endLabelWidth(m, device, iface) + 15 : 0);
+        if (iface)
+            label = Math.max(label, endLabelWidth(m, device, iface) + 7);
+        lanes += span + bundles_1.STRAND_GAP;
     });
-    return r;
+    return any ? Math.max(sizes_1.PORT_STUB, label + 6) + lanes + 8 : 0;
 }
 /** Height an end label takes beside its row, above the lanes (0: none). */
 function endLabelH(m, device, iface) {
@@ -8041,8 +8050,9 @@ function removeOverlaps(list, X, Y, room) {
     const N = list.length;
     const margin = (i, j) => {
         const devs = list[i].kind === 'device' && list[j].kind === 'device';
-        // side by side, two devices leave room for the ports (stubs and end labels) of both facing sides and the lanes between
-        const base = devs ? Math.max(150, (list[i].reach || 0) + (list[j].reach || 0) + 40) : 40;
+        // side by side, two devices leave room for the ports (stubs and end labels) of both facing sides and the
+        // lanes between; a network or hub keeps clear of a device's ports too
+        const base = devs ? Math.max(150, (list[i].reach || 0) + (list[j].reach || 0) + 40) : Math.max(40, (list[i].reach || 0) + (list[j].reach || 0) + 12);
         const r = room.get(i * N + j);
         return r === undefined ? [base, (devs ? 150 : base) * 0.8] : [Math.max(base, r[0]), Math.max((devs ? 150 : base) * 0.8, r[1])];
     };
@@ -9301,7 +9311,9 @@ function viewSNodes(view, input, base) {
             const inner = (0, logical_1.commonChain)(devs.filter((d) => shownDevs.has(d)).map(devChain));
             chain = inner;
         }
-        return { id: s.id, w: s.w, h: s.h, left: 0, right: 0, chain };
+        // the stubs and end labels of a device's ports reach out beside it (layout/input.ts portReach)
+        const reach = s.reach || 0;
+        return { id: s.id, w: s.w, h: s.h, left: reach, right: reach, chain };
     });
 }
 /**
@@ -9377,7 +9389,11 @@ function compact(view, input, base) {
             const now = frame(g, inner);
             const was = frame(g, deep(g));
             // a frame keeps a little air around it, like the room between two nodes
-            items.push({ id: 'group:' + g, base: was.c, top: was.c.y - was.h / 2, w: now.w + 12, h: now.h + 12, left: 0, right: 0, inner, at: now.c });
+            // (the ports of the nodes inside reach beyond the frame as far as its padding doesn't hold them)
+            const within = nodes.filter((n) => n.chain.indexOf(g) >= 0);
+            const left = Math.max(0, within.reduce((m, n) => Math.max(m, n.left), 0) - sizes_1.GROUP_PAD);
+            const right = Math.max(0, within.reduce((m, n) => Math.max(m, n.right), 0) - sizes_1.GROUP_PAD);
+            items.push({ id: 'group:' + g, base: was.c, top: was.c.y - was.h / 2, w: now.w + 12, h: now.h + 12, left, right, inner, at: now.c });
         }
         for (const n of ownNodes(c)) {
             const p = base.get(n.id);
@@ -17215,18 +17231,18 @@ exports.EXAMPLES = [
     },
     {
         "name": "port-bindings.yaml",
-        "text": "# netatlas example: relations and links bound to the interfaces they belong to\n#\n# A stress test for ports: every relation is drawn from the port of the\n# interface it references (the row of that interface in its device's box),\n# and every cable from the port it is plugged into. It has\n#   - several tunnel interfaces and subinterfaces per router,\n#   - several relations on one interface (IPsec, OSPF over it and BFD all on\n#     hub-rtr:Tunnel10 <-> spoke1:Tunnel10),\n#   - tunnels sourced from an underlay interface (Tunnel10, Tunnel20) and from\n#     an address (Tunnel30): the end label names that source after \"src:\",\n#   - relations bound to a device as a whole (syslog, SNMP, MLAG): they leave\n#     from the device-level port beside the device's name,\n#   - an aggregate (LAG) of two cables between the core switches, and a\n#     relation between three devices (VRRP).\nnetatlas: 1\ntitle: Port bindings — tunnels, subinterfaces, a LAG\n\ngroups:\n  - id: hq\n    label: HQ\n    kind: site\n  - id: branches\n    label: Branches\n    kind: site\n\ndevices:\n  - id: inet\n    label: Internet\n    type: cloud\n\n  - id: hub-rtr\n    label: hub-rtr\n    type: router\n    group: hq\n    interfaces:\n      - {id: Gi0/0, ip: 203.0.113.1/30, description: WAN uplink}\n      - {id: Gi0/1, description: trunk to the core}\n    logical_interfaces:\n      - {id: Lo0, type: loopback, ip: 10.255.0.1/32}\n      - {id: Gi0/1.100, type: virtual, vlan: 100, ip: 10.100.0.1/24}\n      - {id: Gi0/1.200, type: virtual, vlan: 200, ip: 10.200.0.1/24}\n      - {id: Tunnel10, type: tunnel, ip: 172.16.10.1/30, source: Gi0/0, destination: spoke1:Gi0/0}\n      - {id: Tunnel20, type: tunnel, ip: 172.16.20.1/30, source: Gi0/0, destination: spoke2:Gi0/0}\n      - {id: Tunnel30, type: tunnel, ip: 172.16.30.1/30, source: 203.0.113.1, destination: 198.51.100.22}\n\n  - id: spoke1\n    label: spoke1\n    type: router\n    group: branches\n    interfaces:\n      - {id: Gi0/0, ip: 198.51.100.10/30}\n    logical_interfaces:\n      - {id: Lo0, type: loopback, ip: 10.255.0.11/32}\n      - {id: Tunnel10, type: tunnel, ip: 172.16.10.2/30, source: Gi0/0, destination: hub-rtr:Gi0/0}\n  - id: spoke2\n    label: spoke2\n    type: router\n    group: branches\n    interfaces:\n      - {id: Gi0/0, ip: 198.51.100.22/30}\n    logical_interfaces:\n      - {id: Lo0, type: loopback, ip: 10.255.0.12/32}\n      - {id: Tunnel20, type: tunnel, ip: 172.16.20.2/30, source: Gi0/0, destination: hub-rtr:Gi0/0}\n      - {id: Tunnel30, type: tunnel, ip: 172.16.30.2/30, source: 198.51.100.22, destination: 203.0.113.1}\n\n  - id: core-a\n    label: core-a\n    type: switch\n    group: hq\n    interfaces:\n      - {id: Et1}\n      - {id: Et2}\n      - {id: Et10}\n    logical_interfaces:\n      - {id: Po1, type: virtual, members: [Et1, Et2]}\n      - {id: Vlan100, type: virtual, vlan: 100, ip: 10.100.0.2/24}\n      - {id: Vlan200, type: virtual, vlan: 200, ip: 10.200.0.2/24}\n  - id: core-b\n    label: core-b\n    type: switch\n    group: hq\n    interfaces:\n      - {id: Et1}\n      - {id: Et2}\n      - {id: Et20}\n    logical_interfaces:\n      - {id: Po1, type: virtual, members: [Et1, Et2]}\n      - {id: Vlan100, type: virtual, vlan: 100, ip: 10.100.0.3/24}\n      - {id: Vlan200, type: virtual, vlan: 200, ip: 10.200.0.3/24}\n  - id: nms\n    label: nms (monitoring)\n    type: server\n    group: hq\n    interfaces:\n      - {id: eth0, ip: 10.200.0.50/24}\n\nlinks:\n  - {id: wan-hub, a: \"hub-rtr:Gi0/0\", b: inet, medium: fiber, speed: 1G, label: carrier A}\n  - {id: wan-s1, a: \"spoke1:Gi0/0\", b: inet, medium: copper, speed: 250M}\n  - {id: wan-s2, a: \"spoke2:Gi0/0\", b: inet, medium: lte, speed: 150M}\n  - id: trunk\n    a: {device: hub-rtr, interface: Gi0/1, networks: [vlan100, vlan200]}\n    b: {device: core-a, interface: Et10, networks: [vlan100, vlan200]}\n    medium: fiber\n    speed: 10G\n  # the two members of Po1 on either side: one aggregate\n  - id: lag-1\n    a: {device: core-a, interface: Et1, networks: [vlan100, vlan200]}\n    b: {device: core-b, interface: Et1, networks: [vlan100, vlan200]}\n    medium: dac\n    speed: 100G\n  - id: lag-2\n    a: {device: core-a, interface: Et2, networks: [vlan100, vlan200]}\n    b: {device: core-b, interface: Et2, networks: [vlan100, vlan200]}\n    medium: dac\n    speed: 100G\n  - id: nms-link\n    a: {device: core-b, interface: Et20, networks: [vlan200]}\n    b: {device: nms, interface: eth0, networks: [vlan200]}\n    medium: copper\n    speed: 1G\n\nnetworks:\n  - {id: vlan100, label: Users, cidr: 10.100.0.0/24, vlan: 100}\n  - {id: vlan200, label: Management, cidr: 10.200.0.0/24, vlan: 200}\n\nrelations:\n  # three relations on one tunnel interface: IPsec carries OSPF, BFD beside them\n  - id: ipsec-s1\n    protocol: ipsec\n    label: tunnel protection\n    endpoints: [\"hub-rtr:Tunnel10\", \"spoke1:Tunnel10\"]\n    over: [wan-hub, wan-s1]\n  - id: ospf-s1\n    protocol: ospf\n    label: area 1\n    endpoints: [\"hub-rtr:Tunnel10\", \"spoke1:Tunnel10\"]\n    over: ipsec-s1\n  - id: bfd-s1\n    protocol: bfd\n    endpoints: [\"hub-rtr:Tunnel10\", \"spoke1:Tunnel10\"]\n  # a second tunnel to the second branch, and a third one sourced from an address\n  - id: gre-s2\n    protocol: gre\n    endpoints: [\"hub-rtr:Tunnel20\", \"spoke2:Tunnel20\"]\n    over: [wan-hub, wan-s2]\n  - id: ospf-s2\n    protocol: ospf\n    label: area 2\n    endpoints: [\"hub-rtr:Tunnel20\", \"spoke2:Tunnel20\"]\n    over: gre-s2\n  - id: wg-s2\n    protocol: wireguard\n    label: backup\n    endpoints: [\"hub-rtr:Tunnel30\", \"spoke2:Tunnel30\"]\n    over: [wan-hub, wan-s2]\n  # iBGP between loopbacks\n  - {id: ibgp-s1, protocol: ibgp, endpoints: [\"hub-rtr:Lo0\", \"spoke1:Lo0\"]}\n  - {id: ibgp-s2, protocol: ibgp, endpoints: [\"hub-rtr:Lo0\", \"spoke2:Lo0\"]}\n  # routing on the subinterfaces\n  - {id: ospf-v100, protocol: ospf, label: area 0, endpoints: [\"hub-rtr:Gi0/1.100\", \"core-a:Vlan100\"], over: vlan100}\n  - {id: ospf-v200, protocol: ospf, label: area 0, endpoints: [\"hub-rtr:Gi0/1.200\", \"core-a:Vlan200\"], over: vlan200}\n  # the aggregate and the switch pair\n  - {id: lacp-po1, protocol: lacp, endpoints: [\"core-a:Po1\", \"core-b:Po1\"], over: [lag-1, lag-2]}\n  - {id: mlag, protocol: mlag, label: domain 1, endpoints: [core-a, core-b]}\n  - id: vrrp-100\n    protocol: vrrp\n    label: VIP 10.100.0.254\n    endpoints: [\"core-a:Vlan100\", \"core-b:Vlan100\", \"hub-rtr:Gi0/1.100\"]\n    over: vlan100\n  # bound to devices as a whole: the device-level port\n  - {id: syslog-hub, protocol: syslog, direction: unidirectional, endpoints: [hub-rtr, \"nms:eth0\"]}\n  - id: snmp-core\n    protocol: snmp\n    category: service\n    direction: unidirectional\n    endpoints: [core-a, \"nms:eth0\"]\n"
+        "text": "# netatlas example: relations and links bound to the interfaces they belong to\n#\n# A stress test for ports: every relation is drawn from the port of the\n# interface it references (the row of that interface in its device's box),\n# and every cable from the port it is plugged into. It has\n#   - several tunnel interfaces and subinterfaces per router,\n#   - several relations on one interface (IPsec, OSPF over it and BFD all on\n#     hub-rtr:Tunnel10 <-> spoke1:Tunnel10),\n#   - tunnels sourced from an underlay interface (Tunnel10, Tunnel20) and from\n#     an address of one (Tunnel30): the end label names that source after\n#     \"src:\", the interface and its address,\n#   - relations bound to a device as a whole (syslog, SNMP, MLAG): they leave\n#     from the device-level port beside the device's name,\n#   - an aggregate (LAG) of two cables between the core switches, and a\n#     relation between three devices (VRRP).\nnetatlas: 1\ntitle: Port bindings — tunnels, subinterfaces, a LAG\n\ngroups:\n  - id: hq\n    label: HQ\n    kind: site\n  - id: branches\n    label: Branches\n    kind: site\n\ndevices:\n  - id: inet\n    label: Internet\n    type: cloud\n\n  - id: hub-rtr\n    label: hub-rtr\n    type: router\n    group: hq\n    interfaces:\n      - {id: Gi0/0, ip: 203.0.113.1/30, description: WAN uplink}\n      - {id: Gi0/1, description: trunk to the core}\n    logical_interfaces:\n      - {id: Lo0, type: loopback, ip: 10.255.0.1/32}\n      - {id: Gi0/1.100, type: virtual, vlan: 100, ip: 10.100.0.1/24}\n      - {id: Gi0/1.200, type: virtual, vlan: 200, ip: 10.200.0.1/24}\n      - {id: Tunnel10, type: tunnel, ip: 172.16.10.1/30, source: Gi0/0, destination: spoke1:Gi0/0}\n      - {id: Tunnel20, type: tunnel, ip: 172.16.20.1/30, source: Gi0/0, destination: spoke2:Gi0/0}\n      - {id: Tunnel30, type: tunnel, ip: 172.16.30.1/30, source: 203.0.113.1, destination: 198.51.100.22}\n\n  - id: spoke1\n    label: spoke1\n    type: router\n    group: branches\n    interfaces:\n      - {id: Gi0/0, ip: 198.51.100.10/30}\n    logical_interfaces:\n      - {id: Lo0, type: loopback, ip: 10.255.0.11/32}\n      - {id: Tunnel10, type: tunnel, ip: 172.16.10.2/30, source: Gi0/0, destination: hub-rtr:Gi0/0}\n  - id: spoke2\n    label: spoke2\n    type: router\n    group: branches\n    interfaces:\n      - {id: Gi0/0, ip: 198.51.100.22/30}\n    logical_interfaces:\n      - {id: Lo0, type: loopback, ip: 10.255.0.12/32}\n      - {id: Tunnel20, type: tunnel, ip: 172.16.20.2/30, source: Gi0/0, destination: hub-rtr:Gi0/0}\n      - {id: Tunnel30, type: tunnel, ip: 172.16.30.2/30, source: 198.51.100.22, destination: 203.0.113.1}\n\n  - id: core-a\n    label: core-a\n    type: switch\n    group: hq\n    interfaces:\n      - {id: Et1}\n      - {id: Et2}\n      - {id: Et10}\n    logical_interfaces:\n      - {id: Po1, type: virtual, members: [Et1, Et2]}\n      - {id: Vlan100, type: virtual, vlan: 100, ip: 10.100.0.2/24}\n      - {id: Vlan200, type: virtual, vlan: 200, ip: 10.200.0.2/24}\n  - id: core-b\n    label: core-b\n    type: switch\n    group: hq\n    interfaces:\n      - {id: Et1}\n      - {id: Et2}\n      - {id: Et20}\n    logical_interfaces:\n      - {id: Po1, type: virtual, members: [Et1, Et2]}\n      - {id: Vlan100, type: virtual, vlan: 100, ip: 10.100.0.3/24}\n      - {id: Vlan200, type: virtual, vlan: 200, ip: 10.200.0.3/24}\n  - id: nms\n    label: nms (monitoring)\n    type: server\n    group: hq\n    interfaces:\n      - {id: eth0, ip: 10.200.0.50/24}\n\nlinks:\n  - {id: wan-hub, a: \"hub-rtr:Gi0/0\", b: inet, medium: fiber, speed: 1G, label: carrier A}\n  - {id: wan-s1, a: \"spoke1:Gi0/0\", b: inet, medium: copper, speed: 250M}\n  - {id: wan-s2, a: \"spoke2:Gi0/0\", b: inet, medium: lte, speed: 150M}\n  - id: trunk\n    a: {device: hub-rtr, interface: Gi0/1, networks: [vlan100, vlan200]}\n    b: {device: core-a, interface: Et10, networks: [vlan100, vlan200]}\n    medium: fiber\n    speed: 10G\n  # the two members of Po1 on either side: one aggregate\n  - id: lag-1\n    a: {device: core-a, interface: Et1, networks: [vlan100, vlan200]}\n    b: {device: core-b, interface: Et1, networks: [vlan100, vlan200]}\n    medium: dac\n    speed: 100G\n  - id: lag-2\n    a: {device: core-a, interface: Et2, networks: [vlan100, vlan200]}\n    b: {device: core-b, interface: Et2, networks: [vlan100, vlan200]}\n    medium: dac\n    speed: 100G\n  - id: nms-link\n    a: {device: core-b, interface: Et20, networks: [vlan200]}\n    b: {device: nms, interface: eth0, networks: [vlan200]}\n    medium: copper\n    speed: 1G\n\nnetworks:\n  - {id: vlan100, label: Users, cidr: 10.100.0.0/24, vlan: 100}\n  - {id: vlan200, label: Management, cidr: 10.200.0.0/24, vlan: 200}\n\nrelations:\n  # three relations on one tunnel interface: IPsec carries OSPF, BFD beside them\n  - id: ipsec-s1\n    protocol: ipsec\n    label: tunnel protection\n    endpoints: [\"hub-rtr:Tunnel10\", \"spoke1:Tunnel10\"]\n    over: [wan-hub, wan-s1]\n  - id: ospf-s1\n    protocol: ospf\n    label: area 1\n    endpoints: [\"hub-rtr:Tunnel10\", \"spoke1:Tunnel10\"]\n    over: ipsec-s1\n  - id: bfd-s1\n    protocol: bfd\n    endpoints: [\"hub-rtr:Tunnel10\", \"spoke1:Tunnel10\"]\n  # a second tunnel to the second branch, and a third one sourced from an address\n  - id: gre-s2\n    protocol: gre\n    endpoints: [\"hub-rtr:Tunnel20\", \"spoke2:Tunnel20\"]\n    over: [wan-hub, wan-s2]\n  - id: ospf-s2\n    protocol: ospf\n    label: area 2\n    endpoints: [\"hub-rtr:Tunnel20\", \"spoke2:Tunnel20\"]\n    over: gre-s2\n  - id: wg-s2\n    protocol: wireguard\n    label: backup\n    endpoints: [\"hub-rtr:Tunnel30\", \"spoke2:Tunnel30\"]\n    over: [wan-hub, wan-s2]\n  # iBGP between loopbacks\n  - {id: ibgp-s1, protocol: ibgp, endpoints: [\"hub-rtr:Lo0\", \"spoke1:Lo0\"]}\n  - {id: ibgp-s2, protocol: ibgp, endpoints: [\"hub-rtr:Lo0\", \"spoke2:Lo0\"]}\n  # routing on the subinterfaces\n  - {id: ospf-v100, protocol: ospf, label: area 0, endpoints: [\"hub-rtr:Gi0/1.100\", \"core-a:Vlan100\"], over: vlan100}\n  - {id: ospf-v200, protocol: ospf, label: area 0, endpoints: [\"hub-rtr:Gi0/1.200\", \"core-a:Vlan200\"], over: vlan200}\n  # the aggregate and the switch pair\n  - {id: lacp-po1, protocol: lacp, endpoints: [\"core-a:Po1\", \"core-b:Po1\"], over: [lag-1, lag-2]}\n  - {id: mlag, protocol: mlag, label: domain 1, endpoints: [core-a, core-b]}\n  - id: vrrp-100\n    protocol: vrrp\n    label: VIP 10.100.0.254\n    endpoints: [\"core-a:Vlan100\", \"core-b:Vlan100\", \"hub-rtr:Gi0/1.100\"]\n    over: vlan100\n  # bound to devices as a whole: the device-level port\n  - {id: syslog-hub, protocol: syslog, direction: unidirectional, endpoints: [hub-rtr, \"nms:eth0\"]}\n  - id: snmp-core\n    protocol: snmp\n    category: service\n    direction: unidirectional\n    endpoints: [core-a, \"nms:eth0\"]\n"
     }
 ];
 /** Test data for the in-browser self-test; not offered in the application. */
 exports.FIXTURES = [
     {
         "name": "editor-new-network.yaml",
-        "text": "# netatlas test fixture: a model created with \"New\" in the editor and built up\n# with the editor operations (generated by scripts/make-fixtures.mjs).\nnetatlas: 1\ntitle: \"Lab: two edge routers\"\ndescription: \"Created in the netatlas editor: loopbacks, ports, a VLAN interface and a tunnel interface per router, one cable, IP networks, iBGP and a GRE tunnel between loopbacks.\"\ndevices:\n  - id: edge-a\n    type: router\n    interfaces:\n      - {id: ge-0/0/0, ip: [192.0.2.1/31]}\n    logical_interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.255.0.1/32]}\n      - {id: lo1, type: loopback, label: BGP source (IPv6), ip: [2001:db8:ffff::a/128]}\n      - {id: irb.100, type: virtual, label: Management, ip: [10.100.0.1/24]}\n      - {id: gr-0/0/0.1, type: tunnel, ip: [172.16.0.1/30], source: lo0, destination: 10.255.0.2}\n  - id: edge-b\n    label: Edge B\n    type: router\n    interfaces:\n      - {id: ge-0/0/0, ip: [192.0.2.0/31]}\n    logical_interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.255.0.2/32, 2001:db8:ffff::2/128]}\n      - {id: lo1, type: loopback, label: BGP source (IPv6), ip: [2001:db8:ffff::b/128]}\n      - {id: irb.100, type: virtual, label: Management, ip: [10.100.0.2/24]}\n      - {id: gr-0/0/0.1, type: tunnel, ip: [172.16.0.2/30], source: lo0, destination: 10.255.0.1}\nlinks:\n  - id: cable-1\n    a: {device: edge-a, interface: ge-0/0/0, networks: [net-core, net-mgmt]}\n    b: {device: edge-b, interface: ge-0/0/0, networks: [net-core, net-mgmt]}\n    medium: fiber\n    speed: 10G\n    cable: LC-LC OM4 3m\nnetworks:\n  - id: net-core\n    label: Core link\n    cidr: 192.0.2.0/31\n  - id: net-mgmt\n    label: Management\n    cidr: 10.100.0.0/24\n    vlan: 100\n  - id: net-loopbacks\n    label: Router loopbacks\n    cidr: 10.255.0.0/24\nrelations:\n  - id: ibgp-v6\n    protocol: ibgp\n    endpoints: [edge-a:lo1, edge-b:lo1]\n    over: cable-1\n    attrs:\n      asn: 65000\n      address-family: [ipv6-unicast, evpn]\n  - id: gre-lab\n    protocol: gre\n    endpoints: [edge-a:lo0, edge-b:lo0]\n    over: cable-1\n    attrs:\n      key: 100\n      keepalive:\n        interval: 10s\n        retries: 3\n\nlayout:\n  physical:\n    edge-a: [75, 47]\n    edge-b: [519, 47]\n  logical:\n    edge-a: [407, 301]\n    edge-b: [85, 338]\n    net-core: [93, 589]\n    net-loopbacks: [476, 543]\n    net-mgmt: [201, 21]\n"
+        "text": "# netatlas test fixture: a model created with \"New\" in the editor and built up\n# with the editor operations (generated by scripts/make-fixtures.mjs).\nnetatlas: 1\ntitle: \"Lab: two edge routers\"\ndescription: \"Created in the netatlas editor: loopbacks, ports, a VLAN interface and a tunnel interface per router, one cable, IP networks, iBGP and a GRE tunnel between loopbacks.\"\ndevices:\n  - id: edge-a\n    type: router\n    interfaces:\n      - {id: ge-0/0/0, ip: [192.0.2.1/31]}\n    logical_interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.255.0.1/32]}\n      - {id: lo1, type: loopback, label: BGP source (IPv6), ip: [2001:db8:ffff::a/128]}\n      - {id: irb.100, type: virtual, label: Management, ip: [10.100.0.1/24]}\n      - {id: gr-0/0/0.1, type: tunnel, ip: [172.16.0.1/30], source: lo0, destination: 10.255.0.2}\n  - id: edge-b\n    label: Edge B\n    type: router\n    interfaces:\n      - {id: ge-0/0/0, ip: [192.0.2.0/31]}\n    logical_interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.255.0.2/32, 2001:db8:ffff::2/128]}\n      - {id: lo1, type: loopback, label: BGP source (IPv6), ip: [2001:db8:ffff::b/128]}\n      - {id: irb.100, type: virtual, label: Management, ip: [10.100.0.2/24]}\n      - {id: gr-0/0/0.1, type: tunnel, ip: [172.16.0.2/30], source: lo0, destination: 10.255.0.1}\nlinks:\n  - id: cable-1\n    a: {device: edge-a, interface: ge-0/0/0, networks: [net-core, net-mgmt]}\n    b: {device: edge-b, interface: ge-0/0/0, networks: [net-core, net-mgmt]}\n    medium: fiber\n    speed: 10G\n    cable: LC-LC OM4 3m\nnetworks:\n  - id: net-core\n    label: Core link\n    cidr: 192.0.2.0/31\n  - id: net-mgmt\n    label: Management\n    cidr: 10.100.0.0/24\n    vlan: 100\n  - id: net-loopbacks\n    label: Router loopbacks\n    cidr: 10.255.0.0/24\nrelations:\n  - id: ibgp-v6\n    protocol: ibgp\n    endpoints: [edge-a:lo1, edge-b:lo1]\n    over: cable-1\n    attrs:\n      asn: 65000\n      address-family: [ipv6-unicast, evpn]\n  - id: gre-lab\n    protocol: gre\n    endpoints: [edge-a:lo0, edge-b:lo0]\n    over: cable-1\n    attrs:\n      key: 100\n      keepalive:\n        interval: 10s\n        retries: 3\n\nlayout:\n  physical:\n    edge-a: [75, 47]\n    edge-b: [519, 47]\n  logical:\n    edge-a: [85, 338]\n    edge-b: [435, 306]\n    net-core: [109, 589]\n    net-loopbacks: [492, 543]\n    net-mgmt: [217, 21]\n"
     },
     {
         "name": "metro-ring-arranged.yaml",
-        "text": "# netatlas test fixture: examples/metro-ring.yaml after Auto-arrange (both views) and export\n# (generated by scripts/make-fixtures.mjs). The positions are in the\n# \"layout\" section at the end; the network itself is unchanged.\n# netatlas example: metro ring (for Auto-arrange)\n#\n# Six PE routers in three POPs on a fibre ring, each with IPv4/IPv6\n# loopbacks used as router IDs and as iBGP / RSVP-TE endpoints. The logical\n# layer is dense on purpose: an OSPF area, LDP on every ring link, a full\n# iBGP mesh between loopbacks (15 sessions), two RSVP-TE tunnels, an L3VPN\n# overlay and customer eBGP. An out-of-band management network forms a\n# separate, disconnected component, and a spare router is not connected at\n# all. There is no \"layout\" section: open it and use Auto-arrange.\nnetatlas: 1\ntitle: Metro ring MR-1\n\ngroups:\n  - {id: pop-north, label: POP North, kind: site}\n  - {id: pop-east, label: POP East, kind: site}\n  - {id: pop-south, label: POP South, kind: site}\n  - {id: oob, label: Out-of-band management, kind: zone}\n  - {id: cust-a, label: Customer A, kind: external}\n\ndevices:\n  - id: pe1\n    type: router\n    group: pop-north\n    interfaces:\n      - {id: et1, ip: 10.1.12.1/31}\n      - {id: et2, ip: 10.1.16.1/31}\n      - {id: et3, ip: 192.0.2.1/30, vrf: CUST-A}\n      - {id: et4}\n    logical_interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.1/32, 2001:db8:0:ffff::1/128]}\n  - id: pe2\n    type: router\n    group: pop-north\n    interfaces:\n      - {id: et1, ip: 10.1.12.0/31}\n      - {id: et2, ip: 10.1.23.0/31}\n      - {id: et4}\n    logical_interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.2/32, 2001:db8:0:ffff::2/128]}\n  - id: pe3\n    type: router\n    group: pop-east\n    interfaces:\n      - {id: et1, ip: 10.1.23.1/31}\n      - {id: et2, ip: 10.1.34.0/31}\n      - {id: et4}\n    logical_interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.3/32, 2001:db8:0:ffff::3/128]}\n      - {id: lo1, type: loopback, label: VPN next-hop, ip: [10.0.1.3/32]}\n  - id: pe4\n    type: router\n    group: pop-east\n    interfaces:\n      - {id: et1, ip: 10.1.34.1/31}\n      - {id: et2, ip: 10.1.45.0/31}\n      - {id: et4}\n    logical_interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.4/32, 2001:db8:0:ffff::4/128]}\n  - id: pe5\n    type: router\n    group: pop-south\n    interfaces:\n      - {id: et1, ip: 10.1.45.1/31}\n      - {id: et2, ip: 10.1.56.0/31}\n      - {id: et3, ip: 192.0.2.5/30, vrf: CUST-A}\n      - {id: et4}\n    logical_interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.5/32, 2001:db8:0:ffff::5/128]}\n      - {id: lo1, type: loopback, label: VPN next-hop, ip: [10.0.1.5/32]}\n  - id: pe6\n    type: router\n    group: pop-south\n    interfaces:\n      - {id: et1, ip: 10.1.56.1/31}\n      - {id: et2, ip: 10.1.16.0/31}\n      - {id: et4}\n    logical_interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.6/32, 2001:db8:0:ffff::6/128]}\n  - id: ce-a1\n    label: Customer A — HQ\n    type: router\n    group: cust-a\n    interfaces:\n      - {id: ge0, ip: 192.0.2.2/30}\n  - id: ce-a2\n    label: Customer A — Plant\n    type: router\n    group: cust-a\n    interfaces:\n      - {id: ge0, ip: 192.0.2.6/30}\n  - id: oob-sw\n    label: OOB switch\n    type: switch\n    group: oob\n    interfaces:\n      - {id: p1}\n      - p2\n      - p3\n    logical_interfaces:\n      - {id: vlan1, type: virtual, ip: 172.31.0.2/24}\n  - id: oob-con1\n    label: Console server 1\n    type: system\n    group: oob\n    interfaces:\n      - {id: eth0, ip: 172.31.0.11/24}\n  - id: oob-con2\n    label: Console server 2\n    type: system\n    group: oob\n    interfaces:\n      - {id: eth0, ip: 172.31.0.12/24}\n  - id: oob-nms\n    label: NMS collector\n    type: server\n    group: oob\n    interfaces:\n      - {id: eth0, ip: 172.31.0.20/24}\n  - id: spare-pe\n    label: Spare PE (not in service)\n    type: router\n    logical_interfaces:\n      - {id: lo0, type: loopback, ip: [10.0.0.99/32]}\n\nlinks:\n  # the ring\n  - {id: r12, a: \"pe1:et1\", b: \"pe2:et1\", medium: fiber, speed: 100G}\n  - {id: r23, a: \"pe2:et2\", b: \"pe3:et1\", medium: fiber, speed: 100G}\n  - {id: r34, a: \"pe3:et2\", b: \"pe4:et1\", medium: fiber, speed: 100G}\n  - {id: r45, a: \"pe4:et2\", b: \"pe5:et1\", medium: fiber, speed: 100G}\n  - {id: r56, a: \"pe5:et2\", b: \"pe6:et1\", medium: fiber, speed: 100G}\n  - {id: r61, a: \"pe6:et2\", b: \"pe1:et2\", medium: fiber, speed: 100G}\n  # intra-POP cross-connects\n  - {id: x-north, a: \"pe1:et4\", b: \"pe2:et4\", medium: dac, speed: 100G, cable: DAC 1m}\n  - {id: x-east, a: \"pe3:et4\", b: \"pe4:et4\", medium: dac, speed: 100G, cable: DAC 1m}\n  - {id: x-south, a: \"pe5:et4\", b: \"pe6:et4\", medium: dac, speed: 100G, cable: DAC 1m}\n  # customer access\n  - {id: acc-a1, a: \"pe1:et3\", b: \"ce-a1:ge0\", medium: fiber, speed: 10G}\n  - {id: acc-a2, a: \"pe5:et3\", b: \"ce-a2:ge0\", medium: fiber, speed: 10G}\n  # out-of-band island (not connected to the ring)\n  - {id: oob-1, a: \"oob-sw:p1\", b: \"oob-con1:eth0\", medium: copper}\n  - {id: oob-2, a: \"oob-sw:p2\", b: \"oob-con2:eth0\", medium: copper}\n  - {id: oob-3, a: \"oob-sw:p3\", b: \"oob-nms:eth0\", medium: copper}\n\nnetworks:\n  # members are derived from the addresses inside each prefix\n  # one network per prefix: the two access circuits of customer A\n  - id: cust-a-access-1\n    label: Customer A access 1\n    cidr: 192.0.2.0/30\n    attrs: {vrf: CUST-A, rd: \"65000:100\", rt: \"65000:100\"}\n  - id: cust-a-access-2\n    label: Customer A access 2\n    cidr: 192.0.2.4/30\n    attrs: {vrf: CUST-A, rd: \"65000:100\", rt: \"65000:100\"}\n  - id: oob-mgmt\n    label: OOB management\n    cidr: 172.31.0.0/24\n\nrelations:\n  - id: ospf-core\n    protocol: ospf\n    label: area 0\n    endpoints: [pe1, pe2, pe3, pe4, pe5, pe6]\n  # LDP on every ring link\n  - {id: ldp-12, protocol: ldp, endpoints: [\"pe1:et1\", \"pe2:et1\"], over: r12}\n  - {id: ldp-23, protocol: ldp, endpoints: [\"pe2:et2\", \"pe3:et1\"], over: r23}\n  - {id: ldp-34, protocol: ldp, endpoints: [\"pe3:et2\", \"pe4:et1\"], over: r34}\n  - {id: ldp-45, protocol: ldp, endpoints: [\"pe4:et2\", \"pe5:et1\"], over: r45}\n  - {id: ldp-56, protocol: ldp, endpoints: [\"pe5:et2\", \"pe6:et1\"], over: r56}\n  - {id: ldp-61, protocol: ldp, endpoints: [\"pe6:et2\", \"pe1:et2\"], over: r61}\n  # full iBGP mesh between loopbacks (15 sessions)\n  - {id: ibgp-1-2, protocol: ibgp, endpoints: [\"pe1:lo0\", \"pe2:lo0\"]}\n  - {id: ibgp-1-3, protocol: ibgp, endpoints: [\"pe1:lo0\", \"pe3:lo0\"]}\n  - {id: ibgp-1-4, protocol: ibgp, endpoints: [\"pe1:lo0\", \"pe4:lo0\"]}\n  - {id: ibgp-1-5, protocol: ibgp, endpoints: [\"pe1:lo0\", \"pe5:lo0\"]}\n  - {id: ibgp-1-6, protocol: ibgp, endpoints: [\"pe1:lo0\", \"pe6:lo0\"]}\n  - {id: ibgp-2-3, protocol: ibgp, endpoints: [\"pe2:lo0\", \"pe3:lo0\"]}\n  - {id: ibgp-2-4, protocol: ibgp, endpoints: [\"pe2:lo0\", \"pe4:lo0\"]}\n  - {id: ibgp-2-5, protocol: ibgp, endpoints: [\"pe2:lo0\", \"pe5:lo0\"]}\n  - {id: ibgp-2-6, protocol: ibgp, endpoints: [\"pe2:lo0\", \"pe6:lo0\"]}\n  - {id: ibgp-3-4, protocol: ibgp, endpoints: [\"pe3:lo0\", \"pe4:lo0\"]}\n  - {id: ibgp-3-5, protocol: ibgp, endpoints: [\"pe3:lo0\", \"pe5:lo0\"]}\n  - {id: ibgp-3-6, protocol: ibgp, endpoints: [\"pe3:lo0\", \"pe6:lo0\"]}\n  - {id: ibgp-4-5, protocol: ibgp, endpoints: [\"pe4:lo0\", \"pe5:lo0\"]}\n  - {id: ibgp-4-6, protocol: ibgp, endpoints: [\"pe4:lo0\", \"pe6:lo0\"]}\n  - {id: ibgp-5-6, protocol: ibgp, endpoints: [\"pe5:lo0\", \"pe6:lo0\"]}\n  # traffic-engineered tunnels between loopbacks, riding the ring\n  - id: te-1-4\n    protocol: rsvp-te\n    label: primary north→east\n    direction: unidirectional\n    endpoints: [\"pe1:lo0\", \"pe4:lo0\"]\n    over: [r12, r23, r34]\n    attrs: {bandwidth: 40G, setup-priority: 3}\n  - id: te-2-5\n    protocol: rsvp-te\n    label: primary north→south\n    direction: unidirectional\n    endpoints: [\"pe2:lo0\", \"pe5:lo0\"]\n    over: [r61, r56, x-north]\n    attrs: {bandwidth: 20G}\n  # customer service\n  - id: l3vpn-a\n    protocol: l3vpn\n    label: CUST-A\n    endpoints: [\"pe1:lo0\", \"pe3:lo1\", \"pe5:lo1\"]\n    attrs: {access-networks: \"cust-a-access-1, cust-a-access-2\"}\n  - {id: ebgp-a1, protocol: ebgp, endpoints: [\"pe1:et3\", \"ce-a1:ge0\"], over: acc-a1, attrs: {peer-as: 64601}}\n  - {id: ebgp-a2, protocol: ebgp, endpoints: [\"pe5:et3\", \"ce-a2:ge0\"], over: acc-a2, attrs: {peer-as: 64601}}\n  # inside the OOB island\n  - {id: syslog-oob, protocol: syslog, direction: unidirectional, endpoints: [oob-con1, \"oob-nms:eth0\"]}\n  - {id: snmp-oob, protocol: snmp, direction: unidirectional, endpoints: [oob-nms, oob-sw]}\n\nlayout:\n  physical:\n    ce-a1: [126, 458]\n    ce-a2: [384, 458]\n    oob-con1: [439, 929]\n    oob-con2: [686, 929]\n    oob-nms: [926, 929]\n    oob-sw: [679, 745]\n    pe1: [101, 145]\n    pe2: [417, 145]\n    pe3: [667, 121]\n    pe4: [982, 121]\n    pe5: [970, 500]\n    pe6: [654, 500]\n    spare-pe: [1245, 27]\n  logical:\n    ce-a1: [259, 919]\n    ce-a2: [266, 1100]\n    cust-a-access-1: [81, 684]\n    cust-a-access-2: [590, 1167]\n    l3vpn-a: [925, 476]\n    oob-con1: [1985, 790]\n    oob-con2: [1739, 310]\n    oob-mgmt: [1953, 475]\n    oob-nms: [2123, 314]\n    oob-sw: [2045, 102]\n    ospf-core: [748, 302]\n    pe1: [122, 363]\n    pe2: [506, 363]\n    pe3: [1029, 173]\n    pe4: [1402, 173]\n    pe5: [1035, 855]\n    pe6: [650, 855]\n    spare-pe: [114, 1323]\n"
+        "text": "# netatlas test fixture: examples/metro-ring.yaml after Auto-arrange (both views) and export\n# (generated by scripts/make-fixtures.mjs). The positions are in the\n# \"layout\" section at the end; the network itself is unchanged.\n# netatlas example: metro ring (for Auto-arrange)\n#\n# Six PE routers in three POPs on a fibre ring, each with IPv4/IPv6\n# loopbacks used as router IDs and as iBGP / RSVP-TE endpoints. The logical\n# layer is dense on purpose: an OSPF area, LDP on every ring link, a full\n# iBGP mesh between loopbacks (15 sessions), two RSVP-TE tunnels, an L3VPN\n# overlay and customer eBGP. An out-of-band management network forms a\n# separate, disconnected component, and a spare router is not connected at\n# all. There is no \"layout\" section: open it and use Auto-arrange.\nnetatlas: 1\ntitle: Metro ring MR-1\n\ngroups:\n  - {id: pop-north, label: POP North, kind: site}\n  - {id: pop-east, label: POP East, kind: site}\n  - {id: pop-south, label: POP South, kind: site}\n  - {id: oob, label: Out-of-band management, kind: zone}\n  - {id: cust-a, label: Customer A, kind: external}\n\ndevices:\n  - id: pe1\n    type: router\n    group: pop-north\n    interfaces:\n      - {id: et1, ip: 10.1.12.1/31}\n      - {id: et2, ip: 10.1.16.1/31}\n      - {id: et3, ip: 192.0.2.1/30, vrf: CUST-A}\n      - {id: et4}\n    logical_interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.1/32, 2001:db8:0:ffff::1/128]}\n  - id: pe2\n    type: router\n    group: pop-north\n    interfaces:\n      - {id: et1, ip: 10.1.12.0/31}\n      - {id: et2, ip: 10.1.23.0/31}\n      - {id: et4}\n    logical_interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.2/32, 2001:db8:0:ffff::2/128]}\n  - id: pe3\n    type: router\n    group: pop-east\n    interfaces:\n      - {id: et1, ip: 10.1.23.1/31}\n      - {id: et2, ip: 10.1.34.0/31}\n      - {id: et4}\n    logical_interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.3/32, 2001:db8:0:ffff::3/128]}\n      - {id: lo1, type: loopback, label: VPN next-hop, ip: [10.0.1.3/32]}\n  - id: pe4\n    type: router\n    group: pop-east\n    interfaces:\n      - {id: et1, ip: 10.1.34.1/31}\n      - {id: et2, ip: 10.1.45.0/31}\n      - {id: et4}\n    logical_interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.4/32, 2001:db8:0:ffff::4/128]}\n  - id: pe5\n    type: router\n    group: pop-south\n    interfaces:\n      - {id: et1, ip: 10.1.45.1/31}\n      - {id: et2, ip: 10.1.56.0/31}\n      - {id: et3, ip: 192.0.2.5/30, vrf: CUST-A}\n      - {id: et4}\n    logical_interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.5/32, 2001:db8:0:ffff::5/128]}\n      - {id: lo1, type: loopback, label: VPN next-hop, ip: [10.0.1.5/32]}\n  - id: pe6\n    type: router\n    group: pop-south\n    interfaces:\n      - {id: et1, ip: 10.1.56.1/31}\n      - {id: et2, ip: 10.1.16.0/31}\n      - {id: et4}\n    logical_interfaces:\n      - {id: lo0, type: loopback, label: Router ID, ip: [10.0.0.6/32, 2001:db8:0:ffff::6/128]}\n  - id: ce-a1\n    label: Customer A — HQ\n    type: router\n    group: cust-a\n    interfaces:\n      - {id: ge0, ip: 192.0.2.2/30}\n  - id: ce-a2\n    label: Customer A — Plant\n    type: router\n    group: cust-a\n    interfaces:\n      - {id: ge0, ip: 192.0.2.6/30}\n  - id: oob-sw\n    label: OOB switch\n    type: switch\n    group: oob\n    interfaces:\n      - {id: p1}\n      - p2\n      - p3\n    logical_interfaces:\n      - {id: vlan1, type: virtual, ip: 172.31.0.2/24}\n  - id: oob-con1\n    label: Console server 1\n    type: system\n    group: oob\n    interfaces:\n      - {id: eth0, ip: 172.31.0.11/24}\n  - id: oob-con2\n    label: Console server 2\n    type: system\n    group: oob\n    interfaces:\n      - {id: eth0, ip: 172.31.0.12/24}\n  - id: oob-nms\n    label: NMS collector\n    type: server\n    group: oob\n    interfaces:\n      - {id: eth0, ip: 172.31.0.20/24}\n  - id: spare-pe\n    label: Spare PE (not in service)\n    type: router\n    logical_interfaces:\n      - {id: lo0, type: loopback, ip: [10.0.0.99/32]}\n\nlinks:\n  # the ring\n  - {id: r12, a: \"pe1:et1\", b: \"pe2:et1\", medium: fiber, speed: 100G}\n  - {id: r23, a: \"pe2:et2\", b: \"pe3:et1\", medium: fiber, speed: 100G}\n  - {id: r34, a: \"pe3:et2\", b: \"pe4:et1\", medium: fiber, speed: 100G}\n  - {id: r45, a: \"pe4:et2\", b: \"pe5:et1\", medium: fiber, speed: 100G}\n  - {id: r56, a: \"pe5:et2\", b: \"pe6:et1\", medium: fiber, speed: 100G}\n  - {id: r61, a: \"pe6:et2\", b: \"pe1:et2\", medium: fiber, speed: 100G}\n  # intra-POP cross-connects\n  - {id: x-north, a: \"pe1:et4\", b: \"pe2:et4\", medium: dac, speed: 100G, cable: DAC 1m}\n  - {id: x-east, a: \"pe3:et4\", b: \"pe4:et4\", medium: dac, speed: 100G, cable: DAC 1m}\n  - {id: x-south, a: \"pe5:et4\", b: \"pe6:et4\", medium: dac, speed: 100G, cable: DAC 1m}\n  # customer access\n  - {id: acc-a1, a: \"pe1:et3\", b: \"ce-a1:ge0\", medium: fiber, speed: 10G}\n  - {id: acc-a2, a: \"pe5:et3\", b: \"ce-a2:ge0\", medium: fiber, speed: 10G}\n  # out-of-band island (not connected to the ring)\n  - {id: oob-1, a: \"oob-sw:p1\", b: \"oob-con1:eth0\", medium: copper}\n  - {id: oob-2, a: \"oob-sw:p2\", b: \"oob-con2:eth0\", medium: copper}\n  - {id: oob-3, a: \"oob-sw:p3\", b: \"oob-nms:eth0\", medium: copper}\n\nnetworks:\n  # members are derived from the addresses inside each prefix\n  # one network per prefix: the two access circuits of customer A\n  - id: cust-a-access-1\n    label: Customer A access 1\n    cidr: 192.0.2.0/30\n    attrs: {vrf: CUST-A, rd: \"65000:100\", rt: \"65000:100\"}\n  - id: cust-a-access-2\n    label: Customer A access 2\n    cidr: 192.0.2.4/30\n    attrs: {vrf: CUST-A, rd: \"65000:100\", rt: \"65000:100\"}\n  - id: oob-mgmt\n    label: OOB management\n    cidr: 172.31.0.0/24\n\nrelations:\n  - id: ospf-core\n    protocol: ospf\n    label: area 0\n    endpoints: [pe1, pe2, pe3, pe4, pe5, pe6]\n  # LDP on every ring link\n  - {id: ldp-12, protocol: ldp, endpoints: [\"pe1:et1\", \"pe2:et1\"], over: r12}\n  - {id: ldp-23, protocol: ldp, endpoints: [\"pe2:et2\", \"pe3:et1\"], over: r23}\n  - {id: ldp-34, protocol: ldp, endpoints: [\"pe3:et2\", \"pe4:et1\"], over: r34}\n  - {id: ldp-45, protocol: ldp, endpoints: [\"pe4:et2\", \"pe5:et1\"], over: r45}\n  - {id: ldp-56, protocol: ldp, endpoints: [\"pe5:et2\", \"pe6:et1\"], over: r56}\n  - {id: ldp-61, protocol: ldp, endpoints: [\"pe6:et2\", \"pe1:et2\"], over: r61}\n  # full iBGP mesh between loopbacks (15 sessions)\n  - {id: ibgp-1-2, protocol: ibgp, endpoints: [\"pe1:lo0\", \"pe2:lo0\"]}\n  - {id: ibgp-1-3, protocol: ibgp, endpoints: [\"pe1:lo0\", \"pe3:lo0\"]}\n  - {id: ibgp-1-4, protocol: ibgp, endpoints: [\"pe1:lo0\", \"pe4:lo0\"]}\n  - {id: ibgp-1-5, protocol: ibgp, endpoints: [\"pe1:lo0\", \"pe5:lo0\"]}\n  - {id: ibgp-1-6, protocol: ibgp, endpoints: [\"pe1:lo0\", \"pe6:lo0\"]}\n  - {id: ibgp-2-3, protocol: ibgp, endpoints: [\"pe2:lo0\", \"pe3:lo0\"]}\n  - {id: ibgp-2-4, protocol: ibgp, endpoints: [\"pe2:lo0\", \"pe4:lo0\"]}\n  - {id: ibgp-2-5, protocol: ibgp, endpoints: [\"pe2:lo0\", \"pe5:lo0\"]}\n  - {id: ibgp-2-6, protocol: ibgp, endpoints: [\"pe2:lo0\", \"pe6:lo0\"]}\n  - {id: ibgp-3-4, protocol: ibgp, endpoints: [\"pe3:lo0\", \"pe4:lo0\"]}\n  - {id: ibgp-3-5, protocol: ibgp, endpoints: [\"pe3:lo0\", \"pe5:lo0\"]}\n  - {id: ibgp-3-6, protocol: ibgp, endpoints: [\"pe3:lo0\", \"pe6:lo0\"]}\n  - {id: ibgp-4-5, protocol: ibgp, endpoints: [\"pe4:lo0\", \"pe5:lo0\"]}\n  - {id: ibgp-4-6, protocol: ibgp, endpoints: [\"pe4:lo0\", \"pe6:lo0\"]}\n  - {id: ibgp-5-6, protocol: ibgp, endpoints: [\"pe5:lo0\", \"pe6:lo0\"]}\n  # traffic-engineered tunnels between loopbacks, riding the ring\n  - id: te-1-4\n    protocol: rsvp-te\n    label: primary north→east\n    direction: unidirectional\n    endpoints: [\"pe1:lo0\", \"pe4:lo0\"]\n    over: [r12, r23, r34]\n    attrs: {bandwidth: 40G, setup-priority: 3}\n  - id: te-2-5\n    protocol: rsvp-te\n    label: primary north→south\n    direction: unidirectional\n    endpoints: [\"pe2:lo0\", \"pe5:lo0\"]\n    over: [r61, r56, x-north]\n    attrs: {bandwidth: 20G}\n  # customer service\n  - id: l3vpn-a\n    protocol: l3vpn\n    label: CUST-A\n    endpoints: [\"pe1:lo0\", \"pe3:lo1\", \"pe5:lo1\"]\n    attrs: {access-networks: \"cust-a-access-1, cust-a-access-2\"}\n  - {id: ebgp-a1, protocol: ebgp, endpoints: [\"pe1:et3\", \"ce-a1:ge0\"], over: acc-a1, attrs: {peer-as: 64601}}\n  - {id: ebgp-a2, protocol: ebgp, endpoints: [\"pe5:et3\", \"ce-a2:ge0\"], over: acc-a2, attrs: {peer-as: 64601}}\n  # inside the OOB island\n  - {id: syslog-oob, protocol: syslog, direction: unidirectional, endpoints: [oob-con1, \"oob-nms:eth0\"]}\n  - {id: snmp-oob, protocol: snmp, direction: unidirectional, endpoints: [oob-nms, oob-sw]}\n\nlayout:\n  physical:\n    ce-a1: [126, 458]\n    ce-a2: [384, 458]\n    oob-con1: [439, 929]\n    oob-con2: [686, 929]\n    oob-nms: [926, 929]\n    oob-sw: [679, 745]\n    pe1: [101, 145]\n    pe2: [417, 145]\n    pe3: [667, 121]\n    pe4: [982, 121]\n    pe5: [970, 500]\n    pe6: [654, 500]\n    spare-pe: [1245, 27]\n  logical:\n    ce-a1: [317, 977]\n    ce-a2: [324, 1158]\n    cust-a-access-1: [171, 748]\n    cust-a-access-2: [681, 1228]\n    l3vpn-a: [1077, 505]\n    oob-con1: [2388, 790]\n    oob-con2: [2142, 310]\n    oob-mgmt: [2356, 475]\n    oob-nms: [2526, 314]\n    oob-sw: [2448, 102]\n    ospf-core: [895, 313]\n    pe1: [108, 399]\n    pe2: [623, 399]\n    pe3: [1165, 173]\n    pe4: [1650, 173]\n    pe5: [1257, 891]\n    pe6: [761, 891]\n    spare-pe: [114, 1385]\n"
     },
     {
         "name": "minimal-edited.yaml",
@@ -18549,8 +18565,9 @@ function dnsChips(d, n, top) {
     for (const name of names) {
         const lines = (0, sizes_1.dnsNameLines)(name);
         out.push((0, scene_1.h)('g', { class: 'dns-chip', 'data-ref': 'device:' + d.id, 'data-dns': name }, [
-            (0, scene_1.h)('rect', { x: n.cx - w / 2, y, width: w, height: lines.length * logical_1.CHIP_H - 3, rx: 6.5 }),
-            ...lines.map((l, i) => (0, scene_1.h)('text', { x: n.cx, y: y + 9.5 + i * logical_1.CHIP_H, 'text-anchor': 'middle', 'font-size': sizes_1.CHIP_FONT }, l)),
+            // (a little higher than the text: at a small zoom the browser's text box grows by a pixel or so)
+            (0, scene_1.h)('rect', { x: n.cx - w / 2, y, width: w, height: lines.length * logical_1.CHIP_H - 1.5, rx: 6.5 }),
+            ...lines.map((l, i) => (0, scene_1.h)('text', { x: n.cx, y: y + 10 + i * logical_1.CHIP_H, 'text-anchor': 'middle', 'font-size': sizes_1.CHIP_FONT }, l)),
         ]));
         y += lines.length * logical_1.CHIP_H;
     }
@@ -18666,10 +18683,18 @@ function routeLogical(model, nodes, rows, bundles, hubs, others) {
         far.set(n.id, (0, geometry_1.boxRect)(n, PORT_CLEAR));
     });
     /** what the route between these devices keeps clear of */
-    const obstaclesFor = (own) => {
+    const obstaclesFor = (own, a, b) => {
         const out = [];
-        far.forEach((r, id) => out.push(own.indexOf(id) >= 0 ? near.get(id) : r));
-        return out.concat(others);
+        // a device whose ports' room holds the route's own start or end (two devices close together) is kept
+        // clear of by its box only; a box that holds one (overlapping boxes, moved by hand) can't be avoided
+        const holds = (r) => !!a && !!b && (inside(a, r) || inside(b, r));
+        far.forEach((r, id) => {
+            const n = near.get(id);
+            const o = own.indexOf(id) >= 0 || holds(r) ? n : r;
+            if (!holds(o))
+                out.push(o);
+        });
+        return out.concat(a && b ? clearOf(others, a, b) : others);
     };
     /** what a straight piece between two stubs costs: its length, and more for every box it crosses */
     const pieceCost = (p, q, own) => {
@@ -18758,6 +18783,8 @@ function routeLogical(model, nodes, rows, bundles, hubs, others) {
         byPort.get(k).push(e);
     }
     const ports = [];
+    /** by port key: is its end label under the lanes */
+    const labelSide = new Map();
     Array.from(byPort.keys())
         .sort((p, q) => (p < q ? -1 : p > q ? 1 : 0))
         .forEach((k) => {
@@ -18775,6 +18802,7 @@ function routeLogical(model, nodes, rows, bundles, hubs, others) {
         // the label goes on the side of the lanes away from where most of them turn (they leave it behind)
         const t = list.reduce((sum, e) => sum + turnOf(e.far.y - mid(row)), 0);
         const labelBelow = t < 0;
+        labelSide.set(k, labelBelow);
         const lab = (0, input_1.endLabelH)(model, first.device, first.iface);
         const lo = row.top + sizes_1.PORT_INSET + (labelBelow ? 0 : lab);
         const hi = row.bottom - sizes_1.PORT_INSET - (labelBelow ? lab : 0);
@@ -18812,7 +18840,11 @@ function routeLogical(model, nodes, rows, bundles, hubs, others) {
     const labelReach = (d, iface) => (iface === undefined ? 0 : exports.END_LABEL_X + (0, input_1.endLabelWidth)(model, d, iface) + 2);
     bySide.forEach((list) => {
         // the own end label is on the side the lanes turn away from: it needs no longer stub
-        const base = () => sizes_1.PORT_STUB;
+        // … unless it turns toward that side (a port with lanes turning both ways): then it turns beyond the label
+        const base = (e) => {
+            const below = labelSide.get((0, bundles_1.bindingKey)(e.device, e.iface) + '|' + e.side);
+            return (below ? e.turn > 0 : e.turn < 0) ? Math.max(sizes_1.PORT_STUB, labelReach(e.device, e.iface) + 8 + e.width / 2) : sizes_1.PORT_STUB;
+        };
         // A route that turns up passes beside every row above its own, one that turns down every row below:
         // it turns beyond the end labels written there.
         const rowTop = (e) => rowOf(e.device, e.iface).top;
@@ -18829,7 +18861,7 @@ function routeLogical(model, nodes, rows, bundles, hubs, others) {
         const nest = (seq) => {
             let prev = null;
             for (const e of seq) {
-                e.stub = Math.max(base(), passed(e), prev ? prev.stub + prev.width / 2 + bundles_1.STRAND_GAP + e.width / 2 : 0);
+                e.stub = Math.max(base(e), passed(e), prev ? prev.stub + prev.width / 2 + bundles_1.STRAND_GAP + e.width / 2 : 0);
                 prev = e;
             }
         };
@@ -18868,13 +18900,13 @@ function routeLogical(model, nodes, rows, bundles, hubs, others) {
         const qa = { x: pa.x + dirOf(ea.side) * ea.stub, y: pa.y };
         const qb = { x: pb.x + dirOf(eb.side) * eb.stub, y: pb.y };
         const width = b.strands[Number(id.split(':')[1])].width;
-        const obstacles = clearOf(obstaclesFor([b.a, b.b]), qa, qb);
+        const obstacles = obstaclesFor([b.a, b.b], qa, qb);
         // heading back past its own box: first out of the box's reach, then on (around whatever is in the way)
         const ca = pastOwnBox(qa, qb, dirOf(ea.side), (0, geometry_1.boxRect)(A), obstacles);
-        const cb = pastOwnBox(qb, ca || qa, dirOf(eb.side), (0, geometry_1.boxRect)(B), obstacles);
-        const s0 = ca || qa;
-        const e0 = cb || qb;
-        const pts = clean([pa, qa, ...(ca ? [ca] : []), ...laneDetour(s0, e0, obstacles, width, corners), ...(cb ? [cb] : []), qb, pb]);
+        const s0 = ca.length ? ca[ca.length - 1] : qa;
+        const cb = pastOwnBox(qb, s0, dirOf(eb.side), (0, geometry_1.boxRect)(B), obstacles).reverse();
+        const e0 = cb.length ? cb[0] : qb;
+        const pts = clean([pa, qa, ...ca, ...laneDetour(s0, e0, obstacles, width, corners), ...cb, qb, pb]);
         strands.set(id, clean(elbow(elbow(pts, dirOf(ea.side), obstacles, (0, geometry_1.boxRect)(A)).reverse(), dirOf(eb.side), obstacles, (0, geometry_1.boxRect)(B)).reverse()));
     });
     const spokes = new Map();
@@ -18890,9 +18922,9 @@ function routeLogical(model, nodes, rows, bundles, hubs, others) {
             const p = { x: sideX(D, e.side), y: e.y };
             const q = { x: p.x + dirOf(e.side) * e.stub, y: p.y };
             const c = { x: hub.cx, y: hub.cy };
-            const obstacles = clearOf(obstaclesFor([d]), q, { x: hub.cx, y: hub.cy });
+            const obstacles = obstaclesFor([d], q, { x: hub.cx, y: hub.cy });
             const cq = pastOwnBox(q, c, dirOf(e.side), (0, geometry_1.boxRect)(D), obstacles);
-            const way = (cq ? [cq] : []).concat(laneDetour(cq || q, c, obstacles, e.width, corners));
+            const way = cq.concat(laneDetour(cq.length ? cq[cq.length - 1] : q, c, obstacles, e.width, corners));
             const last = way.length ? way[way.length - 1] : q;
             spokes.set(r.id + ':' + d, clean(elbow(clean([p, q, ...way, (0, geometry_1.clipToCircle)(c, logical_1.HUB_R, last)]), dirOf(e.side), obstacles, (0, geometry_1.boxRect)(D))));
         }
@@ -18956,24 +18988,33 @@ function elbow(pts, dir, obstacles, own) {
  * lies in (two devices close together), which it could not avoid anyway.
  */
 function clearOf(obstacles, a, b) {
-    const inside = (p, r) => p.x > r.x && p.x < r.x + r.w && p.y > r.y && p.y < r.y + r.h;
     return obstacles.filter((r) => !inside(a, r) && !inside(b, r));
+}
+function inside(p, r) {
+    return p.x > r.x && p.x < r.x + r.w && p.y > r.y && p.y < r.y + r.h;
 }
 /**
  * Where a route that heads back past its own box (its target lies behind
  * the side it leaves from) first goes: straight up or down from the end of
- * its stub to beyond the box, so it does not pass beside the box's rows.
- * Null when it is not heading back, or that way is not free.
+ * its stub to beyond the box, so it does not pass beside the box's rows;
+ * if something is in that way, the stub first runs further out. Empty when
+ * it is not heading back, or no such way is free.
  */
 function pastOwnBox(q, target, dir, own, obstacles) {
     if ((target.x - q.x) * dir >= 0)
-        return null;
+        return [];
     const down = target.y > q.y;
     const y = down ? own.y + own.h + 16 : own.y - 16;
     if (down ? y >= target.y : y <= target.y)
-        return null;
-    const corner = { x: q.x, y };
-    return obstacles.some((o) => (0, geometry_1.segmentHitsRect)(q, corner, o)) ? null : corner;
+        return [];
+    for (let k = 0; k <= 12; k++) {
+        const out = { x: q.x + dir * k * 14, y: q.y };
+        const corner = { x: out.x, y };
+        if (obstacles.some((o) => (0, geometry_1.segmentHitsRect)(q, out, o) || (0, geometry_1.segmentHitsRect)(out, corner, o)))
+            continue;
+        return k ? [out, corner] : [corner];
+    }
+    return [];
 }
 function grow(r, d) {
     return { x: r.x - d, y: r.y - d, w: r.w + 2 * d, h: r.h + 2 * d };
@@ -19396,9 +19437,21 @@ function renderPhysical(model, layout, opts) {
     // cables in id order, so label placement never depends on the order in the file
     const byId = drawn.slice().sort((p, q) => (p.l.id < q.l.id ? -1 : p.l.id > q.l.id ? 1 : 0));
     const labelAt = new Map();
+    // a device other than the cable's own two is gone around together with its ports and their labels
+    const withPorts = new Map();
+    obstacles.forEach((r, id) => {
+        const parts = [r];
+        for (const p of ports)
+            if (p.device === id)
+                parts.push(...(portArea.get(p.key) || []));
+        withPorts.set(id, (0, geometry_1.unionRect)(parts));
+    });
     const routes = new Map();
-    for (const { l, pa, pb } of byId)
-        routes.set(l.id, cableRoute(pa, pb, obstacles, otherPorts([pa.key, pb.key])));
+    for (const { l, pa, pb } of byId) {
+        const around = new Map();
+        obstacles.forEach((r, id) => around.set(id, id === pa.device || id === pb.device ? r : withPorts.get(id)));
+        routes.set(l.id, cableRoute(pa, pb, around, otherPorts([pa.key, pb.key])));
+    }
     // an aggregate's name keeps clear of the cables
     routes.forEach((pts) => {
         for (let k = 0; k + 1 < pts.length; k++)
@@ -19662,6 +19715,7 @@ const addresses_1 = __req("model/addresses");
 const parse_1 = __req("yaml/parse");
 const examples_1 = __req("generated/examples");
 const files_1 = __req("ui/files");
+const palette_1 = __req("diagram/palette");
 const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms));
 async function runSelfTest(app, doc) {
     var _a, _b, _c;
@@ -22999,6 +23053,192 @@ async function runSelfTest(app, doc) {
             check('Edit and Details share the object header and present their content in the same titled cards (Edit: Identity, Placement, Notes; Details: Overview and its sections); Duplicate and Delete keep their names', editHead && detHead && /^Identity\|Placement\|Notes/.test(editGroups) && /^Overview\|Physical interfaces/.test(detGroups) && buttons === 'Duplicate|Delete' && card('#side-body .fgroup') === 'solid 9px' && doc.documentElement.scrollHeight <= doc.documentElement.clientHeight + 1, editGroups + ' // ' + detGroups);
             click('[data-tab="legend"]');
         }
+        // ---- ports: relations and links attached to the interfaces they reference, measured with real font metrics,
+        // in both themes, in the exported SVG, and with the pointer on them
+        {
+            const exIndex = (name) => examples_1.EXAMPLES.findIndex((e) => e.name === name);
+            app.loadExample(exIndex('long-labels.yaml'));
+            app.setView('logical');
+            await tick(30);
+            const vp = q('#viewport');
+            const num = (e, k) => parseFloat(e.getAttribute(k) || 'NaN');
+            const pts = (g) => (g.querySelector('.hit').getAttribute('d') || '')
+                .slice(1)
+                .split('L')
+                .map((s) => s.trim().split(' ').map(Number))
+                .map(([x, y]) => ({ x, y }));
+            const portRects = (root, ref) => Array.prototype.map.call(root.querySelectorAll(`rect.lport[data-ref="${ref}"]`), (r) => ({ x: num(r, 'x'), y: num(r, 'y'), w: num(r, 'width'), h: num(r, 'height') }));
+            const inAny = (p, rs) => rs.some((r) => p.x >= r.x - 0.6 && p.x <= r.x + r.w + 0.6 && p.y >= r.y - 0.6 && p.y <= r.y + r.h + 0.6);
+            /** GRE and OSPF of the branch router: from the port of Tunnel10 to the firewall's tunnel.10; Tunnel20 has none */
+            const bound = (root) => ['gre-br', 'ospf-br'].every((id) => {
+                const g = root.querySelector(`g.rel[data-ref="relation:${id}"]`);
+                if (!g)
+                    return false;
+                const p = pts(g);
+                const a = p[0];
+                const b = p[p.length - 1];
+                const t10 = portRects(root, 'iface:br-rtr:Tunnel10');
+                const fw = portRects(root, 'iface:fw:tunnel.10');
+                return (inAny(a, t10) && inAny(b, fw)) || (inAny(b, t10) && inAny(a, fw));
+            }) && portRects(root, 'iface:br-rtr:Tunnel20').length === 0;
+            check('ports: in long-labels.yaml the branch router\'s GRE and OSPF end at the port of Tunnel10 (and at the firewall\'s tunnel.10); Tunnel20 has no port', bound(vp));
+            // with the browser's fonts: no end label over other text, no line through an end label
+            const segHit = (a, b, r) => {
+                let t0 = 0;
+                let t1 = 1;
+                const dx = b.x - a.x;
+                const dy = b.y - a.y;
+                const clip = (p, qq) => {
+                    if (p === 0)
+                        return qq >= 0;
+                    const t = qq / p;
+                    if (p < 0) {
+                        if (t > t1)
+                            return false;
+                        if (t > t0)
+                            t0 = t;
+                    }
+                    else {
+                        if (t < t0)
+                            return false;
+                        if (t < t1)
+                            t1 = t;
+                    }
+                    return true;
+                };
+                return clip(-dx, a.x - r.x) && clip(dx, r.x + r.w - a.x) && clip(-dy, a.y - r.y) && clip(dy, r.y + r.h - a.y) && t0 <= t1;
+            };
+            const labelClashes = (root) => {
+                const out = [];
+                const texts = Array.prototype.slice.call(root.querySelectorAll('text'));
+                const rects = texts.map((t) => {
+                    const b = t.getBBox();
+                    return { x: b.x, y: b.y, w: b.width, h: b.height };
+                });
+                const lanes = Array.prototype.map.call(root.querySelectorAll('g.rel'), (g) => ({ ref: g.getAttribute('data-ref'), pts: pts(g) }));
+                texts.forEach((t, i) => {
+                    if (!t.classList.contains('end-label'))
+                        return;
+                    const a = rects[i];
+                    rects.forEach((b, j) => {
+                        if (j !== i && a.x + 1 < b.x + b.w && b.x + 1 < a.x + a.w && a.y + 1 < b.y + b.h && b.y + 1 < a.y + a.h)
+                            out.push(`${t.textContent} / ${texts[j].textContent}`);
+                    });
+                    const inner = { x: a.x + 0.5, y: a.y + 0.5, w: a.w - 1, h: a.h - 1 };
+                    for (const l of lanes)
+                        for (let k = 0; k + 1 < l.pts.length; k++)
+                            if (segHit(l.pts[k], l.pts[k + 1], inner))
+                                out.push(`${t.textContent} crossed by ${l.ref}`);
+                });
+                return out;
+            };
+            const clashLong = labelClashes(vp);
+            check('ports: with the browser\'s fonts no end label covers other text or is crossed by a line (long-labels.yaml)', clashLong.length === 0 && !!vp.querySelector('text.end-label'), clashLong.slice(0, 4).join(' | '));
+            app.loadExample(exIndex('port-bindings.yaml'));
+            app.setView('logical');
+            await tick(30);
+            const clashPb = labelClashes(vp);
+            check('ports: … and in the stress example (port-bindings.yaml)', clashPb.length === 0 && vp.querySelectorAll('text.end-label').length >= 10, clashPb.slice(0, 4).join(' | '));
+            // both themes: the marks of ports, end labels and aggregates have the contrast WCAG 2.2 AA asks for
+            const hex = (s) => {
+                const m = /rgba?\(([^)]+)\)/.exec(s);
+                if (!m)
+                    return s.trim().toLowerCase();
+                return '#' + m[1].split(',').slice(0, 3).map((v) => Math.round(parseFloat(v)).toString(16).padStart(2, '0')).join('');
+            };
+            const html = doc.documentElement;
+            const before = html.getAttribute('data-theme');
+            const themeRows = [];
+            let themesOk = true;
+            for (const theme of ['light', 'dark']) {
+                html.setAttribute('data-theme', theme);
+                app.setView('logical');
+                for (let n = 0; n < 40 && !q('#viewport rect.lport'); n++)
+                    await tick(10);
+                const canvas = hex(getComputedStyle(html).getPropertyValue('--canvas'));
+                // (read at once: a computed style is live, and empty once its element is gone)
+                const cs = (sel, prop) => {
+                    const e = q(sel);
+                    return e ? hex(getComputedStyle(e)[prop]) : undefined;
+                };
+                const port = cs('#viewport rect.lport:not(.dev-port)', 'fill');
+                const devPort = cs('#viewport rect.lport.dev-port', 'stroke');
+                const label = cs('#viewport text.end-label', 'fill');
+                const src = cs('#viewport text.end-label tspan[data-field="source"]', 'fill');
+                app.setView('physical');
+                for (let n = 0; n < 40 && !q('#viewport rect.lag-mark'); n++)
+                    await tick(10);
+                const pairs = [
+                    ['port', port, 3],
+                    ['device-level port', devPort, 3],
+                    ['end label', label, 4.5],
+                    ['src line', src, 4.5],
+                    ['LAG bracket', cs('#viewport rect.lag-mark', 'stroke'), 3],
+                    ['LAG name', cs('#viewport text.lag-label', 'fill'), 4.5],
+                    ['device end', cs('#viewport rect.port.dev-end', 'stroke'), 3],
+                ];
+                for (const [what, color, min] of pairs) {
+                    const c = color ? (0, palette_1.contrast)(color, canvas) : 0;
+                    if (!(c >= min))
+                        themesOk = false;
+                    themeRows.push(`${theme} ${what} ${color} ${c.toFixed(2)}`);
+                }
+            }
+            check('ports: in the light and the dark theme, ports, aggregate brackets and device-level ends have 3:1 against the diagram, end labels and aggregate names 4.5:1', themesOk, themeRows.filter((r) => /0\.00|\b[0-2]\.\d\d$/.test(r)).join(' | ') || themeRows.slice(0, 3).join(' | '));
+            // the exported SVG, in either theme: the same bindings, with the theme's colours written into the file
+            app.loadExample(exIndex('long-labels.yaml'));
+            app.setView('logical');
+            const exportRows = [];
+            let exportOk = true;
+            for (const theme of ['light', 'dark']) {
+                html.setAttribute('data-theme', theme);
+                await tick(20);
+                const text = app.exportSvg();
+                const parsed = new DOMParser().parseFromString(text, 'image/svg+xml').documentElement;
+                const p = parsed.querySelector('rect.lport[data-ref="iface:br-rtr:Tunnel10"]');
+                const fill = p ? hex(p.getAttribute('fill') || '') : '';
+                const want = hex(getComputedStyle(html).getPropertyValue('--text'));
+                const ok = bound(parsed) && fill === want && !/hover-hl/.test(text);
+                if (!ok)
+                    exportOk = false;
+                exportRows.push(`${theme}: bound ${bound(parsed)} fill ${fill} want ${want}`);
+            }
+            check('ports: the exported SVG (light and dark) attaches GRE and OSPF to the port of Tunnel10 as on screen, and carries the theme\'s colour of the ports', exportOk, exportRows.join(' | '));
+            if (before === null)
+                html.removeAttribute('data-theme');
+            else
+                html.setAttribute('data-theme', before);
+            await tick(20);
+            // the pointer on a port marks its interface's entry and every relation attached to it, and nothing at Tunnel20
+            const svgEl = q('#canvas');
+            const t10port = q('#viewport rect.lport[data-ref="iface:br-rtr:Tunnel10"]');
+            t10port.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, pointerId: 1 }));
+            await tick(10);
+            const hov = (sel) => !!q(sel) && q(sel).classList.contains('hover-hl');
+            const pointed = hov('#viewport g.rel[data-ref="relation:gre-br"]') && hov('#viewport g.rel[data-ref="relation:ospf-br"]') && hov('#viewport g.if-entry[data-ref="iface:br-rtr:Tunnel10"]') && !hov('#viewport g.if-entry[data-ref="iface:br-rtr:Tunnel20"]') && !hov('#viewport g.rel[data-ref="relation:bgp-br"]');
+            svgEl.dispatchEvent(new PointerEvent('pointerleave', { pointerId: 1 }));
+            await tick(10);
+            const cleared = !vp.querySelector('.hover-hl');
+            check('ports: pointing at the port of Tunnel10 marks its entry and its relations (GRE, OSPF), not Tunnel20 or the device-level ones; leaving clears the marks', pointed && cleared);
+            // … and pointing at a relation in the Objects list marks the interfaces at its ends in the diagram
+            const item = q('#outline .ol-item[data-ref="relation:ospf-br"]');
+            if (item)
+                item.dispatchEvent(new PointerEvent('pointerover', { bubbles: true, pointerId: 1 }));
+            await tick(10);
+            const listMarks = hov('#viewport rect.lport[data-ref="iface:br-rtr:Tunnel10"]') && hov('#viewport text.end-label[data-ref="iface:fw:tunnel.10"]') && hov('#viewport g.rel[data-ref="relation:ospf-br"]');
+            q('#outline').dispatchEvent(new PointerEvent('pointerleave', { pointerId: 1 }));
+            await tick(10);
+            check('ports: pointing at a relation in the Objects list marks it and the ports and end labels of the interfaces at its ends', !!item && listMarks && !vp.querySelector('.hover-hl'));
+            // selecting it: the Edit tab marks its two ends and says which port each is drawn from
+            app.select('relation:ospf-br');
+            click('[data-tab="edit"]');
+            await tick(20);
+            const ends = Array.prototype.map.call(doc.querySelectorAll('#side-body .end-mark .ep-bind'), (e) => e.textContent || '');
+            const selHl = q('#viewport rect.lport[data-ref="iface:br-rtr:Tunnel10"]').classList.contains('hl') && q('#viewport g.if-entry[data-ref="iface:fw:tunnel.10"]').classList.contains('hl');
+            check('ports: a selected relation highlights the interfaces at both ends in the diagram, and the Edit tab marks its two endpoints with the port each is drawn from', ends.length === 2 && /Tunnel10 on br-rtr/.test(ends.join(' ')) && /tunnel\.10 on fw/.test(ends.join(' ')) && selHl, ends.join(' | '));
+            app.select(null);
+            click('[data-tab="legend"]');
+        }
         const perf = doc.defaultView.performance;
         const resources = perf && perf.getEntriesByType ? perf.getEntriesByType('resource').length : 0;
         check('no network resources requested', resources === 0, String(resources));
@@ -23446,6 +23686,52 @@ async function runViewportCheck(app, doc) {
         if (cancel)
             cancel.click();
         await tick(10);
+        // the ports of the stress example, at this window size (and so at this zoom of the browser): every lane ends at a
+        // port mark, every port is drawn, and no end label covers other text, measured with the browser's fonts
+        for (const view of ['logical', 'physical']) {
+            app.mdoc && app.mdoc.markSaved();
+            app.loadExample(examples_1.EXAMPLES.findIndex((e) => e.name === 'port-bindings.yaml'));
+            click(`[data-view-btn="${view}"]`);
+            await tick(20);
+            const why = [];
+            const vp = q('#viewport');
+            const marks = view === 'logical' ? 'rect.lport' : 'rect.port';
+            const rects = Array.prototype.slice.call(vp.querySelectorAll(marks)).map((r) => r.getBBox());
+            if (rects.length < (view === 'logical' ? 20 : 14))
+                why.push(`only ${rects.length} port marks`);
+            const lines = Array.prototype.slice.call(vp.querySelectorAll(view === 'logical' ? 'g.rel:not(.hub-rel) .hit' : 'g.cable .cable-line'));
+            for (const l of lines) {
+                const p = (l.getAttribute('d') || '').slice(1).split('L').map((s) => s.trim().split(' ').map(Number));
+                for (const [x, y] of [p[0], p[p.length - 1]]) {
+                    if (!rects.some((b) => x >= b.x - 0.6 && x <= b.x + b.width + 0.6 && y >= b.y - 0.6 && y <= b.y + b.height + 0.6))
+                        why.push(`a line ends at ${x},${y}, at no port`);
+                }
+            }
+            // text measured at the diagram's own size (100 %): at the tiny zoom "Fit" gives in a small window the browser's
+            // text boxes grow by a pixel or two (font hinting), which says nothing about what a reader sees
+            const z = app;
+            const was = z.zoom;
+            z.zoom = { k: 1, tx: was.tx, ty: was.ty };
+            z.applyZoom();
+            await tick();
+            const texts = Array.prototype.slice.call(vp.querySelectorAll('text'));
+            const boxes = texts.map((t) => t.getBBox());
+            z.zoom = was;
+            z.applyZoom();
+            texts.forEach((t, i) => {
+                if (!t.classList.contains('end-label') && !t.classList.contains('lag-label'))
+                    return;
+                const a = boxes[i];
+                boxes.forEach((b, j) => {
+                    if (j !== i && a.x + 1 < b.x + b.width && b.x + 1 < a.x + a.width && a.y + 1 < b.y + b.height && b.y + 1 < a.y + a.height)
+                        why.push(`"${t.textContent}" covers "${texts[j].textContent}"`);
+                });
+            });
+            const c = q('#canvas-wrap').getBoundingClientRect();
+            if (c.width < 40 || c.height < 40)
+                why.push('the diagram has no room');
+            state(`${view} view of port-bindings.yaml: every line at a port, end labels over no other text`, why.slice(0, 6));
+        }
         app.mdoc && app.mdoc.markSaved();
     }
     catch (e) {

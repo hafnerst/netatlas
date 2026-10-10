@@ -64,8 +64,8 @@ layout:
     edge-a: [75, 47]
     edge-b: [519, 47]
   logical:
-    edge-a: [407, 301]
-    edge-b: [85, 338]
-    net-core: [93, 589]
-    net-loopbacks: [476, 543]
-    net-mgmt: [201, 21]
+    edge-a: [85, 338]
+    edge-b: [435, 306]
+    net-core: [109, 589]
+    net-loopbacks: [492, 543]
+    net-mgmt: [217, 21]
