@@ -41,7 +41,7 @@ export function inside(inner, outer, slack = 0.5) {
   return inner.x >= outer.x - slack && inner.y >= outer.y - slack && inner.x + inner.w <= outer.x + outer.w + slack && inner.y + inner.h <= outer.y + outer.h + slack;
 }
 
-const SIZES = { 'dev-label': 13, 'dev-sub': 10.5, 'net-label': 12, 'net-sub': 10, 'group-title': 13, 'pill-text': 10, 'link-label': 10.5, 'member-label': 10, 'port-label': 10 };
+const SIZES = { 'dev-label': 13, 'dev-sub': 10.5, 'net-label': 12, 'net-sub': 10, 'group-title': 13, 'pill-text': 10, 'link-label': 10.5, 'member-label': 10, 'port-label': 10, 'end-label': 9.5, 'lag-label': 9.5 };
 
 /** Everything measurable in a scene. */
 export function geometry(root) {

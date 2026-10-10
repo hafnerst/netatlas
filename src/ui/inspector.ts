@@ -412,6 +412,14 @@ export class Editor {
   private markSelection(wrap: HTMLElement): void {
     const s = this.sel;
     if (!s || s.kind === 'document') return;
+    // the ends of a selected relation or link: the interfaces (or devices) it is attached to in the diagram
+    if (s.kind === 'relation' || s.kind === 'link') {
+      const ends = wrap.querySelectorAll('.ep-bind');
+      for (let i = 0; i < ends.length; i++) {
+        const row = (ends[i].closest('.ep-row') || ends[i].closest('.field')) as HTMLElement | null;
+        if (row) row.classList.add('end-mark');
+      }
+    }
     const base: Path = [SECTION[s.kind], s.index];
     const scope = s.iface || base;
     let target = this.detail ? this.detailElement(wrap, scope, this.detail) : null;
@@ -1690,7 +1698,28 @@ export class Editor {
   }
 
   private endpointField(p: Path, label: string, order: string, _ext: boolean): HTMLElement {
-    return this.field(label, this.epControls(p, order), p, undefined);
+    const f = this.field(label, this.epControls(p, order), p, undefined);
+    f.appendChild(this.bindingNote(p, order === 'link'));
+    return f;
+  }
+
+  /**
+   * Where the diagram attaches an endpoint: the port of the interface it
+   * names, or the device-level port (a relation) / the device itself (a
+   * cable). Marked as an end of the selection in the Edit tab (markSelection).
+   */
+  private bindingNote(p: Path, cable: boolean): HTMLElement {
+    const { device, iface } = this.epParts(p);
+    const text = !device
+      ? ''
+      : iface
+        ? cable
+          ? `Plugged into the port ${iface} of ${device}.`
+          : `Drawn from the port of ${iface} on ${device} (beside its row; its name is the end label).`
+        : cable
+          ? `Plugged into ${device} as a whole (no port named): a hollow end in the diagram.`
+          : `Bound to ${device} as a whole: drawn from its device-level port, beside its name.`;
+    return this.e('div', { class: 'ep-bind small muted', 'data-end': iface ? `iface:${device}:${iface}` : 'device:' + device }, [this.e('span', { 'aria-hidden': 'true' }, ['↔ ']), text]);
   }
 
   private endpointList(p: Path, label: string, order: string): HTMLElement {
@@ -1707,6 +1736,7 @@ export class Editor {
           this.e('button', { type: 'button', class: 'mini', 'data-act': 'move-up', 'data-p': J(ip), title: 'Move up' }, ['↑']),
           this.e('button', { type: 'button', class: 'mini', 'data-act': 'del-item', 'data-p': J(ip), title: 'Remove endpoint' }, ['×']),
         ]),
+        this.bindingNote(ip, false),
       ]);
       // an endpoint is a device and, optionally, one of its interfaces; keys a file adds beyond that are shown so they can be removed
       if (it.kind === 'map') rowEl.appendChild(this.otherProps(ip, 'endpoint'));

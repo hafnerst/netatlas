@@ -256,7 +256,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
           labels.join('|') === 'New model|Open model…|Save model|Save model as…|Close model' && /Ctrl\+S$/.test(entries[2]) && /Ctrl\+Shift\+S$/.test(entries[3]) &&
           entries.length === 5 + EXAMPLES.length && ['#btn-save', '#btn-save-as', '#btn-close'].every((x) => (q(x) as HTMLButtonElement).disabled && /Open or create a model first|Close the current model/.test(q(x)!.title)) &&
           q('#btn-save')!.nextElementSibling === q('#btn-save-as') && q('#btn-save-as')!.nextElementSibling === q('#btn-close') &&
-          textsOf('#menu-examples .mi-label').join() === EXAMPLES.map((e) => e.name).join() && !q('#menu-examples .active-example') && /Examples/.test(q('#menu-examples-title')!.textContent || '') && EXAMPLES.length === 7 && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(menu!.textContent || '') && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(q('#empty')!.textContent || ''),
+          textsOf('#menu-examples .mi-label').join() === EXAMPLES.map((e) => e.name).join() && !q('#menu-examples .active-example') && /Examples/.test(q('#menu-examples-title')!.textContent || '') && EXAMPLES.length === 8 && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(menu!.textContent || '') && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(q('#empty')!.textContent || ''),
         entries.join(' | '),
       );
       menuBtn!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
@@ -1156,8 +1156,12 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     click('[data-view-btn="logical"]');
     const ipsec = q('#viewport g.rel[data-ref="relation:ipsec-muc"] .tube-outer');
     const gre = q('#viewport g.rel[data-ref="relation:gre-muc"] .tube-outer');
+    const ospf = q('#viewport g.rel[data-ref="relation:ospf-muc"] .rel-line');
     const w = (e: Element | null): number => (e ? parseFloat(e.getAttribute('stroke-width') || '0') : 0);
-    check('GRE drawn inside IPsec (narrower tube on the same path)', !!ipsec && !!gre && w(gre) < w(ipsec) && gre!.getAttribute('d') === ipsec!.getAttribute('d'));
+    check(
+      'OSPF drawn inside GRE (both bound to the tunnel interfaces: narrower, on the same path); IPsec, bound to the underlay ports, on its own path',
+      !!ipsec && !!gre && !!ospf && w(ospf) < w(gre) && ospf!.getAttribute('d') === gre!.getAttribute('d') && gre!.getAttribute('d') !== ipsec!.getAttribute('d'),
+    );
     check('custom protocol MACsec rendered', !!q('#viewport g.rel.proto-macsec'));
     const svgText = app.exportSvg();
     check(
@@ -1647,16 +1651,16 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         return spans.length ? (Array.prototype.map.call(spans, (x: Element) => x.textContent) as string[]).join(' ') : t.textContent || '';
       };
       const pillRect = (id: string): DOMRect => (q(`#viewport g.pill[data-ref="relation:${id}"] .pill-box`) as Element).getBoundingClientRect();
-      const four = ['ipsec-br', 'bgp-br', 'bfd-br', 'syslog-br'];
+      const four = ['ipsec-br', 'gre-br', 'bgp-br', 'bfd-br', 'syslog-br'];
       const apart = four.every((a, i) => four.slice(i + 1).every((b) => {
         const ra = pillRect(a);
         const rb = pillRect(b);
         return ra.right <= rb.left || rb.right <= ra.left || ra.bottom <= rb.top || rb.bottom <= ra.top;
       }));
       check(
-        'four labelled relations between the same two devices: four labels, each complete, at its own place; nested relations are named in their carrier\'s label',
-        apart && pillText('ipsec-br') === 'IPsec · IKEv2 site-to-site with certificate authentication › GRE · primary › OSPF · area 0.0.0.10' &&
-          pillText('bgp-br') === 'eBGP · AS 65010 ↔ AS 65020' && pillText('bfd-br') === 'BFD · 300 ms × 3' && pillText('syslog-br') === 'Syslog · audit log' && !q('#viewport g.pill[data-ref="relation:gre-br"]'),
+        'five labelled lanes between the same two devices: five labels, each complete, at its own place; a nested relation is named in its carrier\'s label, a carrier on other ports in the label of what it carries',
+        apart && pillText('ipsec-br') === 'IPsec · IKEv2 site-to-site with certificate authentication' && pillText('gre-br') === 'GRE · primary › OSPF · area 0.0.0.10 (over IPsec)' &&
+          pillText('bgp-br') === 'eBGP · AS 65010 ↔ AS 65020' && pillText('bfd-br') === 'BFD · 300 ms × 3' && pillText('syslog-br') === 'Syslog · audit log' && !q('#viewport g.pill[data-ref="relation:ospf-br"]'),
         four.map(pillText).join(' | '),
       );
       const netLines = lines('network:servers', 'net-sub').join(' ');

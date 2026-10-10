@@ -101,10 +101,10 @@ test('outline sections: folding is view state of the editor, with Links and Prot
   assert.ok(load('ui/inspector.js').Editor);
 });
 
-test('examples: the File menu offers the seven hand-written examples; the generated fixtures are test data only', async () => {
+test('examples: the File menu offers the eight hand-written examples; the generated fixtures are test data only', async () => {
   const { readdirSync } = await import('node:fs');
   const { EXAMPLES, FIXTURES } = load('generated/examples.js');
-  assert.deepEqual(EXAMPLES.map((e) => e.name), ['enterprise-wan.yaml', 'datacenter-evpn.yaml', 'minimal.yaml', 'metro-ring.yaml', 'device-types.yaml', 'long-labels.yaml', 'addressing.yaml']);
+  assert.deepEqual(EXAMPLES.map((e) => e.name), ['enterprise-wan.yaml', 'datacenter-evpn.yaml', 'minimal.yaml', 'metro-ring.yaml', 'device-types.yaml', 'long-labels.yaml', 'addressing.yaml', 'port-bindings.yaml']);
   assert.deepEqual(FIXTURES.map((e) => e.name).sort(), ['editor-new-network.yaml', 'metro-ring-arranged.yaml', 'minimal-edited.yaml']);
   assert.deepEqual(readdirSync(join(root, 'examples')).filter((f) => /\.yaml$/.test(f)).sort(), EXAMPLES.map((e) => e.name).sort());
   // nothing the user sees builds its list from FIXTURES: only the self-test imports them

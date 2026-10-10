@@ -1,0 +1,177 @@
+# netatlas example: relations and links bound to the interfaces they belong to
+#
+# A stress test for ports: every relation is drawn from the port of the
+# interface it references (the row of that interface in its device's box),
+# and every cable from the port it is plugged into. It has
+#   - several tunnel interfaces and subinterfaces per router,
+#   - several relations on one interface (IPsec, OSPF over it and BFD all on
+#     hub-rtr:Tunnel10 <-> spoke1:Tunnel10),
+#   - tunnels sourced from an underlay interface (Tunnel10, Tunnel20) and from
+#     an address (Tunnel30): the end label names that source after "src:",
+#   - relations bound to a device as a whole (syslog, SNMP, MLAG): they leave
+#     from the device-level port beside the device's name,
+#   - an aggregate (LAG) of two cables between the core switches, and a
+#     relation between three devices (VRRP).
+netatlas: 1
+title: Port bindings — tunnels, subinterfaces, a LAG
+
+groups:
+  - id: hq
+    label: HQ
+    kind: site
+  - id: branches
+    label: Branches
+    kind: site
+
+devices:
+  - id: inet
+    label: Internet
+    type: cloud
+
+  - id: hub-rtr
+    label: hub-rtr
+    type: router
+    group: hq
+    interfaces:
+      - {id: Gi0/0, ip: 203.0.113.1/30, description: WAN uplink}
+      - {id: Gi0/1, description: trunk to the core}
+    logical_interfaces:
+      - {id: Lo0, type: loopback, ip: 10.255.0.1/32}
+      - {id: Gi0/1.100, type: virtual, vlan: 100, ip: 10.100.0.1/24}
+      - {id: Gi0/1.200, type: virtual, vlan: 200, ip: 10.200.0.1/24}
+      - {id: Tunnel10, type: tunnel, ip: 172.16.10.1/30, source: Gi0/0, destination: spoke1:Gi0/0}
+      - {id: Tunnel20, type: tunnel, ip: 172.16.20.1/30, source: Gi0/0, destination: spoke2:Gi0/0}
+      - {id: Tunnel30, type: tunnel, ip: 172.16.30.1/30, source: 203.0.113.1, destination: 198.51.100.22}
+
+  - id: spoke1
+    label: spoke1
+    type: router
+    group: branches
+    interfaces:
+      - {id: Gi0/0, ip: 198.51.100.10/30}
+    logical_interfaces:
+      - {id: Lo0, type: loopback, ip: 10.255.0.11/32}
+      - {id: Tunnel10, type: tunnel, ip: 172.16.10.2/30, source: Gi0/0, destination: hub-rtr:Gi0/0}
+  - id: spoke2
+    label: spoke2
+    type: router
+    group: branches
+    interfaces:
+      - {id: Gi0/0, ip: 198.51.100.22/30}
+    logical_interfaces:
+      - {id: Lo0, type: loopback, ip: 10.255.0.12/32}
+      - {id: Tunnel20, type: tunnel, ip: 172.16.20.2/30, source: Gi0/0, destination: hub-rtr:Gi0/0}
+      - {id: Tunnel30, type: tunnel, ip: 172.16.30.2/30, source: 198.51.100.22, destination: 203.0.113.1}
+
+  - id: core-a
+    label: core-a
+    type: switch
+    group: hq
+    interfaces:
+      - {id: Et1}
+      - {id: Et2}
+      - {id: Et10}
+    logical_interfaces:
+      - {id: Po1, type: virtual, members: [Et1, Et2]}
+      - {id: Vlan100, type: virtual, vlan: 100, ip: 10.100.0.2/24}
+      - {id: Vlan200, type: virtual, vlan: 200, ip: 10.200.0.2/24}
+  - id: core-b
+    label: core-b
+    type: switch
+    group: hq
+    interfaces:
+      - {id: Et1}
+      - {id: Et2}
+      - {id: Et20}
+    logical_interfaces:
+      - {id: Po1, type: virtual, members: [Et1, Et2]}
+      - {id: Vlan100, type: virtual, vlan: 100, ip: 10.100.0.3/24}
+      - {id: Vlan200, type: virtual, vlan: 200, ip: 10.200.0.3/24}
+  - id: nms
+    label: nms (monitoring)
+    type: server
+    group: hq
+    interfaces:
+      - {id: eth0, ip: 10.200.0.50/24}
+
+links:
+  - {id: wan-hub, a: "hub-rtr:Gi0/0", b: inet, medium: fiber, speed: 1G, label: carrier A}
+  - {id: wan-s1, a: "spoke1:Gi0/0", b: inet, medium: copper, speed: 250M}
+  - {id: wan-s2, a: "spoke2:Gi0/0", b: inet, medium: lte, speed: 150M}
+  - id: trunk
+    a: {device: hub-rtr, interface: Gi0/1, networks: [vlan100, vlan200]}
+    b: {device: core-a, interface: Et10, networks: [vlan100, vlan200]}
+    medium: fiber
+    speed: 10G
+  # the two members of Po1 on either side: one aggregate
+  - id: lag-1
+    a: {device: core-a, interface: Et1, networks: [vlan100, vlan200]}
+    b: {device: core-b, interface: Et1, networks: [vlan100, vlan200]}
+    medium: dac
+    speed: 100G
+  - id: lag-2
+    a: {device: core-a, interface: Et2, networks: [vlan100, vlan200]}
+    b: {device: core-b, interface: Et2, networks: [vlan100, vlan200]}
+    medium: dac
+    speed: 100G
+  - id: nms-link
+    a: {device: core-b, interface: Et20, networks: [vlan200]}
+    b: {device: nms, interface: eth0, networks: [vlan200]}
+    medium: copper
+    speed: 1G
+
+networks:
+  - {id: vlan100, label: Users, cidr: 10.100.0.0/24, vlan: 100}
+  - {id: vlan200, label: Management, cidr: 10.200.0.0/24, vlan: 200}
+
+relations:
+  # three relations on one tunnel interface: IPsec carries OSPF, BFD beside them
+  - id: ipsec-s1
+    protocol: ipsec
+    label: tunnel protection
+    endpoints: ["hub-rtr:Tunnel10", "spoke1:Tunnel10"]
+    over: [wan-hub, wan-s1]
+  - id: ospf-s1
+    protocol: ospf
+    label: area 1
+    endpoints: ["hub-rtr:Tunnel10", "spoke1:Tunnel10"]
+    over: ipsec-s1
+  - id: bfd-s1
+    protocol: bfd
+    endpoints: ["hub-rtr:Tunnel10", "spoke1:Tunnel10"]
+  # a second tunnel to the second branch, and a third one sourced from an address
+  - id: gre-s2
+    protocol: gre
+    endpoints: ["hub-rtr:Tunnel20", "spoke2:Tunnel20"]
+    over: [wan-hub, wan-s2]
+  - id: ospf-s2
+    protocol: ospf
+    label: area 2
+    endpoints: ["hub-rtr:Tunnel20", "spoke2:Tunnel20"]
+    over: gre-s2
+  - id: wg-s2
+    protocol: wireguard
+    label: backup
+    endpoints: ["hub-rtr:Tunnel30", "spoke2:Tunnel30"]
+    over: [wan-hub, wan-s2]
+  # iBGP between loopbacks
+  - {id: ibgp-s1, protocol: ibgp, endpoints: ["hub-rtr:Lo0", "spoke1:Lo0"]}
+  - {id: ibgp-s2, protocol: ibgp, endpoints: ["hub-rtr:Lo0", "spoke2:Lo0"]}
+  # routing on the subinterfaces
+  - {id: ospf-v100, protocol: ospf, label: area 0, endpoints: ["hub-rtr:Gi0/1.100", "core-a:Vlan100"], over: vlan100}
+  - {id: ospf-v200, protocol: ospf, label: area 0, endpoints: ["hub-rtr:Gi0/1.200", "core-a:Vlan200"], over: vlan200}
+  # the aggregate and the switch pair
+  - {id: lacp-po1, protocol: lacp, endpoints: ["core-a:Po1", "core-b:Po1"], over: [lag-1, lag-2]}
+  - {id: mlag, protocol: mlag, label: domain 1, endpoints: [core-a, core-b]}
+  - id: vrrp-100
+    protocol: vrrp
+    label: VIP 10.100.0.254
+    endpoints: ["core-a:Vlan100", "core-b:Vlan100", "hub-rtr:Gi0/1.100"]
+    over: vlan100
+  # bound to devices as a whole: the device-level port
+  - {id: syslog-hub, protocol: syslog, direction: unidirectional, endpoints: [hub-rtr, "nms:eth0"]}
+  - id: snmp-core
+    protocol: snmp
+    category: service
+    direction: unidirectional
+    endpoints: [core-a, "nms:eth0"]

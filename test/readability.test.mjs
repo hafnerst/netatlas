@@ -196,21 +196,24 @@ test('multiple labelled relations between the same devices: one distinct, readab
   const g = geometry(render(m, 'logical').root);
   const mine = ['ipsec-br', 'bgp-br', 'bfd-br', 'syslog-br'].map((id) => g.pills.find((p) => p.ref === 'relation:' + id));
   assert.deepEqual(mine.map((p) => p.lines.join(' ')), [
-    'IPsec · IKEv2 site-to-site with certificate authentication › GRE · primary › OSPF · area 0.0.0.10',
+    'IPsec · IKEv2 site-to-site with certificate authentication',
     'eBGP · AS 65010 ↔ AS 65020',
     'BFD · 300 ms × 3',
     'Syslog · audit log',
   ]);
   assert.ok(mine[0].lines.length >= 2, 'the long one wraps inside its pill');
-  // nested relations keep their own labels: they are named in their carrier's label
-  assert.match(mine[0].lines.join(' '), /GRE · primary › OSPF · area 0\.0\.0\.10/);
+  // GRE and OSPF are bound to the tunnel interfaces (IPsec to the devices): their own strand, OSPF named in GRE's label,
+  // and the label says what GRE is carried over
+  const gre = g.pills.find((p) => p.ref === 'relation:gre-br');
+  assert.equal(gre.lines.join(' '), 'GRE · primary › OSPF · area 0.0.0.10 (over IPsec)');
+  mine.push(gre);
   for (let i = 0; i < mine.length; i++) for (let j = i + 1; j < mine.length; j++) assert.ok(!overlap(mine[i].box, mine[j].box), `${i}/${j}`);
   // no duplicates: nested relations are named in their carrier's label, not drawn a second time
   assert.equal(g.pills.filter((p) => /GRE/.test(p.lines.join(' '))).length, 1);
   assert.equal(new Set(g.pills.map((p) => p.ref)).size, g.pills.length);
   // their lanes are distinct lines
-  const lanes = ['ipsec-br', 'bgp-br', 'bfd-br', 'syslog-br'].map((id) => JSON.stringify(g.rels.find((r) => r.ref === 'relation:' + id).pts));
-  assert.equal(new Set(lanes).size, 4);
+  const lanes = ['ipsec-br', 'gre-br', 'bgp-br', 'bfd-br', 'syslog-br'].map((id) => JSON.stringify(g.rels.find((r) => r.ref === 'relation:' + id).pts));
+  assert.equal(new Set(lanes).size, 5);
   // the two devices are far enough apart for the labels
   const a = g.devices.find((d) => d.ref === 'device:fw').box;
   const b = g.devices.find((d) => d.ref === 'device:br-rtr').box;

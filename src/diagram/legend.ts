@@ -83,7 +83,14 @@ export function legendOf(model: Model, view: View): Legend {
       sections.push({
         title: 'Cables (physical links)',
         items: Array.from(media.values()).map((m) => ({ swatch: [h('path', { d: LINE, stroke: m.color, 'stroke-width': 2.6, 'stroke-dasharray': m.dash, fill: 'none' })], label: m.label })),
-        more: [{ ...width('1G'), label: '1G (width grows with speed)' }, width('100G'), PORT_ITEM, ...(model.links.some((l) => !!networkMismatch(l.a.networks, l.b.networks)) ? [MISMATCH_ITEM] : [])],
+        more: [
+          { ...width('1G'), label: '1G (width grows with speed)' },
+          width('100G'),
+          PORT_ITEM,
+          ...(model.links.some((l) => !l.a.iface || !l.b.iface) ? [DEVICE_END_ITEM] : []),
+          ...(model.devices.some((d) => d.logical.some((i) => i.members.length > 0)) ? [LAG_ITEM] : []),
+          ...(model.links.some((l) => !!networkMismatch(l.a.networks, l.b.networks)) ? [MISMATCH_ITEM] : []),
+        ],
       });
     }
     const groups = groupSection(model);
@@ -118,8 +125,10 @@ export function legendOf(model: Model, view: View): Legend {
           h('path', { class: 'tube-outer', d: LINE, stroke: '#e8590c', 'stroke-width': 7 }),
           h('path', { class: 'tube-inner', d: LINE, 'stroke-width': 2 }),
         ],
-        label: 'Carried inside (e.g. GRE over IPsec)',
+        label: 'Carried inside (e.g. OSPF over GRE, bound to the same interfaces)',
       },
+      IFACE_PORT_ITEM,
+      ...(model.relations.some((r) => r.endpoints.some((e) => !e.iface)) ? [DEVICE_PORT_ITEM] : []),
       { swatch: [h('circle', { class: 'hub', cx: 22, cy: 9, r: 7, stroke: '#0c8599' })], label: 'Multipoint hub (3+ devices)' },
       { swatch: [h('rect', { class: 'net-box', x: 3, y: 2, width: 38, height: 14, rx: 7, stroke: NETWORK_COLOR })], label: 'IP network' },
       { swatch: [h('path', { class: 'member', d: LINE })], label: 'Network membership (from addresses)' },
@@ -149,6 +158,35 @@ const GROUPS_TITLE = 'Locations / groups';
 
 /** symbols of the physical view that the Legend tab and the exported legend share */
 const PORT_ITEM: LegendItem = { swatch: [h('rect', { class: 'port', x: 17.5, y: 4.5, width: 9, height: 9, rx: 1.5, fill: '#868e96' })], label: 'Port (label: interface name)' };
+/** a cable end without an interface: plugged into the device as a whole */
+const DEVICE_END_ITEM: LegendItem = { swatch: [h('rect', { class: 'port dev-end', x: 17.5, y: 4.5, width: 9, height: 9, rx: 1.5 })], label: 'Cable end at the device (no port named)' };
+/** an aggregate's bracket around its member ports */
+const LAG_ITEM: LegendItem = {
+  swatch: [
+    h('rect', { class: 'port', x: 9, y: 4.5, width: 9, height: 9, rx: 1.5, fill: '#868e96' }),
+    h('rect', { class: 'port', x: 26, y: 4.5, width: 9, height: 9, rx: 1.5, fill: '#868e96' }),
+    h('rect', { class: 'lag-mark', x: 4, y: 3, width: 36, height: 12, rx: 6 }),
+  ],
+  label: 'Aggregate (LAG): its member ports, named by the aggregate',
+};
+/** the port beside an interface's row in the logical view, with its end label */
+const IFACE_PORT_ITEM: LegendItem = {
+  swatch: [
+    h('rect', { class: 'dev-box', x: 1, y: 1, width: 14, height: 16, rx: 2 }),
+    h('rect', { class: 'lport', x: 12, y: 5, width: 6, height: 8, rx: 1.5 }),
+    h('path', { class: 'rel-line', d: 'M18 9H43', stroke: '#868e96', 'stroke-width': 2.4 }),
+  ],
+  label: 'Port of an interface: its relations start there (end label: its name, "src:" the underlay)',
+};
+/** the device-level port beside a device's name */
+const DEVICE_PORT_ITEM: LegendItem = {
+  swatch: [
+    h('rect', { class: 'dev-box', x: 1, y: 1, width: 14, height: 16, rx: 2 }),
+    h('rect', { class: 'lport dev-port', x: 12, y: 5, width: 6, height: 8, rx: 1.5 }),
+    h('path', { class: 'rel-line', d: 'M18 9H43', stroke: '#868e96', 'stroke-width': 2.4 }),
+  ],
+  label: 'Device-level port: relations bound to the device as a whole',
+};
 const MISMATCH_ITEM: LegendItem = { swatch: [h('text', { class: 'net-warn', x: 22, y: 14, 'text-anchor': 'middle' }, '⚠')], label: 'The two ends carry different networks' };
 
 /** a device's DNS names, as written under it in the logical view */
