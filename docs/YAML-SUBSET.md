@@ -39,8 +39,8 @@ multi-line JSON is rejected.)
 
 YAML 1.1 booleans (`yes`/`no`/`on`/`off`) are **strings**, so the "Norway
 problem" can't happen. netatlas also keeps the original text of every scalar,
-so values like `area: 0.0.0.1`, `key: 010` or `asn: 65001` show up exactly as
-written.
+so values like `area: 0.0.0.1`, `key: 010` or `peer-as: 65001` show up exactly as
+written, and `off` in `checks: {duplicate-mac: off}` is the word "off".
 
 ## Rejected, with an explicit error
 

@@ -34,6 +34,7 @@ devices: [...]
 links: [...]
 networks: [...]
 relations: [...]
+checks: {...}          # optional: switch consistency checks off or change their severity
 ```
 
 Unknown keys are errors (with "did you mean …?" suggestions), so typos never
@@ -145,14 +146,17 @@ than one endpoint on the same device is bound by the first of them.
 | `type` | | One of the [device types](#device-types) below, written exactly as listed (lower case). Any other value is an error. Without a type the device gets a generic icon. |
 | `group` | | Id of the group the device is located in |
 | `tier` | | 0–9: vertical row in the physical view (0 = top). By default this comes from the type (see the table below). Set it to place a device elsewhere, e.g. `tier: 3` for core or spine switches above the access switches. |
+| `router_id` | | The device's router ID, as OSPF and BGP use it: an IPv4 address without a prefix length (`10.255.0.1`), also on an IPv6-only device. It is an address of its own: it need not be (and is not looked up as) an address of an interface. Drawn as `router-id 10.255.0.1` in the device's box. |
+| `asn` | | The device's own BGP AS number, 1–4294967295 (a plain number, also for 4-byte AS numbers). Drawn as `AS 65001` in the device's box. |
 | `description`, `attrs` | | |
 | `interfaces` | | List of the device's **physical interfaces** (its ports, below). The shorthand `interfaces: [eth0, eth1]` is allowed. |
 | `logical_interfaces` | | List of the device's **logical interfaces** (below): loopbacks, virtual interfaces and tunnel interfaces. |
 | `dns_names` | | List of the device's **DNS names**, each associated with one or more of its interfaces. See [DNS names](#dns-names). |
 | `routes` | | List of the device's **static routes**. See [Static routes](#static-routes). Only devices whose type has a routing table may have them. |
 
-A device has no `vendor`, `model`, `role`, `mgmt` or `router_id` key; like
-every key the format doesn't define, each is an error ("unknown key").
+A device has no `vendor`, `model`, `role` or `mgmt` key; like every key the
+format doesn't define, each is an error ("unknown key"). `router_id` is not
+a reference to a loopback: `router_id: lo0` is an error ("not a router ID").
 Such facts can be kept as free-form `attrs`, which are shown in the details
 only.
 
@@ -229,6 +233,7 @@ devices:
 | `dhcp` | `true` or `false`; **omitted means `false`**. `true`: the interface obtains its address by DHCP, so it has no manually configured addresses. Not on a loopback. See [DHCP](#dhcp). |
 | `ip` | the manually configured addresses: one address or a list, `ip: 10.0.0.1/30` or `ip: [192.0.2.1/24, 2001:db8::1/64]`. Addresses that aren't valid IPv4/IPv6 addresses give a *warning* and are shown as written (on a loopback they are an error); for `ip: dhcp` the warning says to write `dhcp: true` instead (on a loopback: to write its address). **The addresses decide which networks the device belongs to.** |
 | `vrf` | name of the VRF the interface is assigned to (free text, display only). Membership in a network is decided by the address alone. |
+| `mtu` | the interface's MTU in bytes, a whole number from 68 to 65535. Omitted: not modelled (no MTU is assumed, so nothing is compared). Read by the [consistency checks](#consistency-checks) `link-mtu-mismatch` and `tunnel-mtu`. |
 | `mac`, `description`, `attrs` | |
 
 A **physical interface** has no other keys. In particular it has **no `type`
@@ -241,6 +246,7 @@ A **logical interface** additionally has:
 |---|---|
 | `type` | required: `loopback`, `virtual` or `tunnel`. No other value is accepted. |
 | `members` | `virtual` only. See [Aggregates](#aggregates-member-ports). |
+| `min_links` | `virtual` with `members` only: how many member links must be up for the aggregate to be up (1–64). See [Aggregates](#aggregates-member-ports). |
 | `vlan` | `virtual` only. See [VLAN interfaces](#vlan-interfaces-ports-carrying-the-vlan). |
 | `source`, `destination` | `tunnel` only. See [Tunnel interfaces](#tunnel-interfaces-source-and-destination). |
 
@@ -260,6 +266,8 @@ An interface has **no** `speed` or `media` key, and a physical interface has
 no `vlan` key:
 
 * speed and medium belong to the cable and are set on the [link](#links-physical-cabling-only);
+  what a port is *set to* (its speed and duplex) is a setting of the link end
+  (see [Port settings on a link end](#port-settings-on-a-link-end));
 * the VLAN of an address is derived. For each address, netatlas looks up the
   networks whose prefix contains it and shows that network's `vlan`:
 
@@ -287,6 +295,15 @@ physical interfaces that belong to it:
   interface of the same device**; an unknown id, a logical interface and an
   id listed twice are errors, located at the entry.
 * A port that is a member of two aggregates gives a *warning*.
+* `min_links` is the number of member links that must be up for the
+  aggregate to be up (LACP "minimum links"). An aggregate whose `min_links`
+  is larger than its number of cabled member ports can never be up (the
+  check `lag-min-links`). `min_links` on an interface without members is an
+  error.
+* Members whose cables end on **several devices** make a multi-chassis
+  aggregate: that is consistent only when an `mlag` (or `vpc`) relation pairs
+  those devices; otherwise the check `lag-peer-devices` reports it. Members
+  with different speeds are reported by `lag-member-speed`.
 * The members are the only place this is written. The ports themselves say
   nothing about the aggregate.
 * What the aggregate *does* (LACP towards another device, MLAG) is a
@@ -592,7 +609,7 @@ devices:
 | Key | Required | Description |
 |---|---|---|
 | `id` | yes | |
-| `a`, `b` | yes | The two ends. `device:interface`, or just `device` when the port is unknown or irrelevant (e.g. "Internet"), or a mapping `{device, interface, mode, untagged, tagged}`. |
+| `a`, `b` | yes | The two ends. `device:interface`, or just `device` when the port is unknown or irrelevant (e.g. "Internet"), or a mapping `{device, interface, speed, duplex, mode, untagged, tagged}`. |
 | `medium` | | `fiber`, `copper`, `dac`, `aoc`, `wireless`/`lte`/`5g`/`microwave`, `serial`, `virtual`, or any other text (it gets its own colour). **The only place the medium of the connection is configured**; without it the cable is drawn as "Unspecified". |
 | `speed` | | e.g. `1G`, `10G`, `100G`, `250M`. **The only place the speed of the connection is configured**; it sets the line width. |
 | `label`, `cable` (cable/circuit id), `description`, `attrs` | | |
@@ -605,6 +622,35 @@ A link can't connect a port to itself.
 A link is the physical connection: one cable (or radio path) between two
 ports. `cable` is only its label or circuit id. There is no separate cable
 object, so `medium` and `speed` exist exactly once per connection.
+
+### Port settings on a link end
+
+What each port is **set to** is written at its end of the link, because the
+two ends can be set differently (and a mismatch is the point of recording
+them):
+
+```yaml
+links:
+  - id: srv-7
+    a: {device: acc1, interface: Gi1/0/7, speed: 1G, duplex: full}
+    b: {device: srv7, interface: eno1, speed: 1G, duplex: full}
+    speed: 1G
+```
+
+| Key | Description |
+|---|---|
+| `speed` | the speed the port is set to, written like the link's `speed` (`100M`, `1G`, `2.5G`, `10G` …). Compared by value: `1000M` is `1G`. |
+| `duplex` | `full`, `half` or `auto`. Any other value is an error. |
+
+* The link's own `speed` stays **the** speed of the connection: it sets the
+  line width and the legend. The ends' settings are only compared: with each
+  other and with the link's speed (`link-speed-mismatch`), and the duplex of
+  the two ends with each other (`link-duplex-mismatch`; `auto` against a
+  fixed setting is reported too, since the auto end usually falls back to
+  half duplex).
+* Omitted: not modelled. Nothing is assumed, nothing is compared.
+* The details of a link list each end's settings; the diagram doesn't draw
+  them.
 
 ### VLAN tagging on a link end
 
@@ -752,6 +798,37 @@ endpoint (endpoints themselves carry nothing but what they connect):
     encryption: aes-256-gcm
     local-id: {hq-rtr1: hq.example, br-rtr: branch.example}
 ```
+
+**Parameters the consistency checks read.** A few attribute keys have a
+meaning for the [consistency checks](#consistency-checks). A value that
+belongs to one endpoint is written keyed by its device (it is then
+flattened to `area.r1`, `area.r2`); a single value is the same at both ends,
+so it can't disagree:
+
+```yaml
+- id: ospf-r1-r2
+  protocol: ospf
+  endpoints: ["r1:e0", "r2:e0"]
+  attrs:
+    area: {r1: 0.0.0.0, r2: 0.0.0.0}            # compared: 0 and 0.0.0.0 are the same area
+    network-type: {r1: point-to-point, r2: point-to-point}
+    hello: {r1: 10, r2: 10}                      # seconds; and dead
+- id: ebgp-r1-isp
+  protocol: ebgp
+  endpoints: ["r1:xe0", "isp:xe1"]
+  attrs:
+    peer-as: {r1: 64500, isp: 65001}             # the AS each device expects the other to be in
+- {id: vrrp-10, protocol: vrrp, endpoints: ["r1:Vlan10", "r2:Vlan10"], over: users, attrs: {vrid: 10, virtual-ip: 10.10.10.1}}
+```
+
+| Relations | Keys | Compared with |
+|---|---|---|
+| `ospf` (and its aliases) | `area`, `network-type`, `hello`, `dead`, per device | the same key of the other endpoint |
+| `bgp`, `ebgp`, `ibgp` | `peer-as` per device; `type: ibgp`/`ebgp` on a plain `bgp` relation | the other device's `asn` |
+| category `redundancy` (VRRP, HSRP, CARP …) | keys ending in `virtual-ip`, `virtual-ipv6`, or `vip` | the networks in `over`, or else the subnets of the bound interfaces |
+
+An interface's own attribute ending in `virtual-ip` (`vrrp-virtual-ip`) is
+compared with the interface's subnets.
 
 **A relation names only what it rides on.** There is no field for a network
 that a relation *carries* or *serves* (the VNI network of a VXLAN, the
@@ -1236,6 +1313,12 @@ next to the object and field they concern.
 * a link end's tagging: a mode other than `access` or `trunk`, VLAN IDs
   outside 1–4094, a bad range, a VLAN listed twice, VLANs without a mode;
 * static routes: see [Static routes](#static-routes);
+* `mtu` outside 68–65535, `min_links` outside 1–64 or on an interface
+  without members, a `router_id` that isn't an IPv4 address (without prefix
+  length), an `asn` outside 1–4294967295, a link end's `duplex` other than
+  `full`, `half` or `auto`;
+* in `checks:`, an id that isn't a check, or a value other than `off`,
+  `error`, `warning` or `info`;
 * invalid loopback addresses, invalid VLAN IDs, and bad colours, categories
   or styles.
 
@@ -1286,6 +1369,58 @@ missing, it says nothing; no default is assumed (an end without a mode is not
 | `vlan-access-tagged` | error | an access port with tagged VLANs | links: `mode`, `tagged` |
 | `vlan-untagged-tagged` | error | a VLAN untagged at one end and tagged at the other | links: `mode`, `untagged`, `tagged` |
 | `vlan-unknown` | warning | VLANs on a port that no network and no VLAN interface defines | links: `untagged`, `tagged`; networks and VLAN interfaces: `vlan` |
+| `link-mtu-mismatch` | warning | different MTUs at the two ends of a cable | interfaces: `mtu`; links |
+| `tunnel-mtu` | warning | a tunnel interface whose MTU plus the encapsulation overhead (table below) is larger than the MTU of its underlay; the message names the overhead assumed and the largest MTU that fits | tunnel interfaces: `mtu`, `source`; the MTU of the source interface, else of the device's ports on the links in `over`; the tunnel relations bound to it and the tunnels they ride on |
+| `link-speed-mismatch` | warning | port speeds that differ between the ends, or from the link's speed | links: `speed`, `a`/`b` `speed` |
+| `link-duplex-mismatch` | error | duplex that differs between the ends | links: `a`/`b` `duplex` |
+| `lag-member-speed` | warning | member links of one aggregate with different speeds | virtual interfaces: `members`; links: `speed`, `a`/`b` `speed` |
+| `lag-peer-devices` | error | an aggregate whose member links end on several devices, which no `mlag` (or `vpc`) relation pairs | virtual interfaces: `members`; links; `mlag` relations |
+| `lag-min-links` | warning | an aggregate with fewer cabled member ports than `min_links` | virtual interfaces: `members`, `min_links`; links |
+| `link-subnet-mismatch` | error | addresses at the two ends of a cable in different subnets (per IP version, where both ends have one with a prefix length) | interfaces: `ip`; links |
+| `address-reserved` | error | an IPv4 network or broadcast address used as an interface address (not for /31 and /32) | interfaces: `ip`; networks: `cidr` (for an address without a prefix length) |
+| `vip-outside-subnet` | error | a virtual (gateway) address outside its subnet | redundancy relations: `attrs` (see [parameters](#protocol-specific-attributes)), `over`, bound interfaces; interfaces: `attrs` ending in `virtual-ip` |
+| `duplicate-router-id` | error | the same router ID on two devices | devices: `router_id` |
+| `duplicate-mac` | warning | the same MAC address on two interfaces (compared without separators and case) | interfaces: `mac` |
+| `ospf-area-mismatch` | error | an OSPF adjacency whose ends are in different areas | OSPF relations: `area.<device>` |
+| `ospf-network-type-mismatch` | warning | different OSPF network types at the two ends | OSPF relations: `network-type.<device>` |
+| `ospf-timer-mismatch` | error | different hello or dead intervals at the two ends | OSPF relations: `hello.<device>`, `dead.<device>` |
+| `bgp-peer-as` | error | a peer AS that is not the other device's AS | BGP relations: `peer-as.<device>`; devices: `asn` |
+| `bgp-session-type` | error | iBGP between devices in different AS numbers, or eBGP within one | `ibgp`/`ebgp` relations (or `bgp` with `type`); devices: `asn` |
+| `tunnel-endpoint-mismatch` | error | a tunnel whose destination is not what its peer is sourced from | tunnel relations between two tunnel interfaces; tunnel interfaces: `source`, `destination`; interfaces: `ip` |
+| `tunnel-underlay` | warning | a tunnel whose `over` does not connect its endpoints (links join their two devices, networks their members, relations their devices) | tunnel relations: endpoints, `over` |
+| `relation-vrf-mismatch` | warning | a relation between interfaces in different VRFs (only where both name a VRF: a VRF interface facing one without, as a provider edge facing a customer, is normal) | relation endpoints; interfaces: `vrf` |
+
+**Encapsulation overhead** assumed by `tunnel-mtu`, per packet, with an IPv4
+outer header (an IPv6 outer header adds 20 bytes more, which the check
+doesn't assume). A tunnel stack (GRE over IPsec) adds up the overheads of
+all its layers; a tunnel protocol not in the table is not checked.
+
+| Protocol | Bytes | Made of |
+|---|---|---|
+| `gre` | 24 | 20 IP + 4 GRE |
+| `ipip` | 20 | 20 IP |
+| `ipsec` | 73 | ESP tunnel mode, worst case: 20 IP + 8 ESP + 16 IV + 15 padding + 2 trailer + 12 ICV (the real figure depends on cipher and padding) |
+| `wireguard` | 60 | 20 IP + 8 UDP + 32 WireGuard |
+| `vxlan` | 50 | 14 Ethernet + 20 IP + 8 UDP + 8 VXLAN |
+| `geneve` | 50 | without options: 14 Ethernet + 20 IP + 8 UDP + 8 Geneve |
+| `l2tp` | 40 | L2TPv3 over UDP: 20 IP + 8 UDP + 12 L2TP |
+| `gtp` | 36 | GTP-U: 20 IP + 8 UDP + 8 GTP |
+
+#### `checks`: switching checks off
+
+A model can switch a check off or give it another severity, in the
+top-level `checks` mapping (check id → `off`, `error`, `warning` or `info`):
+
+```yaml
+checks:
+  relation-vrf-mismatch: off        # route leaking between VRFs is intended here
+  duplicate-mac: info
+```
+
+A check that isn't listed keeps its default. In the editor, **Model
+settings → Consistency checks** lists every check with its default and
+writes this section (choosing the default removes the entry); the Problems
+tab names the checks the model changes.
 
 | Limit | Value |
 |---|---|

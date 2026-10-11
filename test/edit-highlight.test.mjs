@@ -67,7 +67,8 @@ test('each selectable element, from the physical view, the logical view and the 
       one(await clickLine(page, 'iface:core:xe-0/0/1', 'tspan[data-value="2001:0db8:85a3:0000:0000:8a2e:0370:7334/127"]'), { kind: 'row', value: '2001:0db8:85a3:0000:0000:8a2e:0370:7334/127' }, 'an address of a port');
       one(await clickLine(page, 'iface:core:ge-0/0/3', 'tspan[data-field="vrf"]'), { kind: 'field', field: 'vrf' }, 'a VRF');
       one(await clickLine(page, 'iface:core:ge-0/0/9', 'tspan[data-field="mac"], text[data-field="mac"]'), { kind: 'field', field: 'mac' }, 'a MAC address');
-      one(await clickLine(page, 'device:core', '&.dev-addr [data-value="router-id"]'), { kind: 'attr', value: 'router-id' }, "a device's address attribute");
+      one(await clickLine(page, 'device:core', '&.dev-addr [data-field="router_id"]'), { kind: 'field', field: 'router_id' }, "a device's router ID");
+      one(await clickLine(page, 'device:core', '&.dev-addr [data-value="nat-pool"]'), { kind: 'attr', value: 'nat-pool' }, "a device's address attribute");
       one(await clickLine(page, 'link:wan', '&.link-label [data-field="cable"]'), { kind: 'field', field: 'cable' }, 'a cable id');
       one(await clickLine(page, 'link:wan', 'path.cable-line'), { kind: 'header' }, 'a link');
       one(await clickLine(page, 'group:branch', '[data-value="site-prefix"]'), { kind: 'attr', value: 'site-prefix' }, "a group's address attribute");

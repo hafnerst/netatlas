@@ -364,12 +364,12 @@ test('logical_interfaces: invalid addresses are errors with an explanation at th
   assert.deepEqual(d.issuePath(d.errors[0]), ['devices', 0, 'logical_interfaces', 0, 'ip', 1]);
 });
 
-test('logical_interfaces: the router-ID field is gone, loopbacks and their addresses are not', () => {
+test('logical_interfaces: a router ID is an address of its own, not a reference to a loopback', () => {
   const r = validate.loadModel(loopDoc('[10.0.0.1/32, 2001:db8::1/128]', '    router_id: lo0\n'));
   assert.equal(r.errors.length, 1);
-  assert.match(r.errors[0].message, /^unknown key "router_id"/);
+  assert.match(r.errors[0].message, /"lo0" is not a router ID/);
   assert.deepEqual(r.model.devices[0].logical.map((l) => [l.id, l.label, l.addresses]), [['lo0', 'Router ID', ['10.0.0.1/32', '2001:db8::1/128']]]);
-  assert.ok(!('routerId' in r.model.devices[0]));
+  assert.equal(r.model.devices[0].routerId, undefined);
   // a loopback without IPv4 is fine: nothing depends on it being a router ID
   const v6 = validate.loadModel(loopDoc('[2001:db8::1/128]'));
   assert.deepEqual(v6.errors.concat(v6.warnings), []);

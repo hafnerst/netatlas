@@ -42,7 +42,7 @@ test('the address fields of the format: what the inventory finds in the addressi
   const m = model(example('addressing.yaml'));
   const inv = A.addressInventory(m);
   const fields = new Set(inv.map((a) => a.field.replace(/^attrs\..*/, 'attrs')));
-  assert.deepEqual([...fields].sort(), ['attrs', 'cable', 'cidr', 'destination', 'dns_names', 'id', 'ip', 'mac', 'members', 'source', 'vlan', 'vrf'].filter((f) => f !== 'dns_names').sort());
+  assert.deepEqual([...fields].sort(), ['attrs', 'cable', 'cidr', 'destination', 'dns_names', 'id', 'ip', 'mac', 'members', 'router_id', 'source', 'vlan', 'vrf'].filter((f) => f !== 'dns_names').sort());
   const where = (owner, field) => inv.find((a) => a.owner === owner && a.field === field).views.join('+');
   // physical identifiers in the physical view, layer 3 in the logical view, both where the interface is drawn in both
   assert.equal(where('iface:core:ge-0/0/9', 'mac'), 'physical');
@@ -53,7 +53,7 @@ test('the address fields of the format: what the inventory finds in the addressi
   assert.equal(where('network:corp', 'cidr'), 'logical');
   assert.equal(where('link:wan', 'cable'), 'physical');
   assert.equal(where('relation:vrrp', 'attrs.virtual-ip'), 'logical');
-  assert.equal(where('device:core', 'attrs.router-id'), 'physical+logical');
+  assert.equal(where('device:core', 'router_id'), 'physical+logical');
   assert.equal(where('group:branch', 'attrs.site-prefix'), 'physical+logical');
   // attrs without an address are not addresses (they stay in the details)
   assert.ok(!inv.some((a) => a.field === 'attrs.vrid' || a.field === 'attrs.peer-as'));
@@ -181,5 +181,5 @@ test('entries are selectable interfaces: the same refs as before, in the logical
   // the device's own address lines are an entry too, but not a connection endpoint
   const own = byClass(log, 'dev-addr').find((n) => n.attrs['data-ref'] === 'device:core');
   assert.ok(own && own.attrs['data-endpoint'] === undefined);
-  assert.match(scene.textOf(own), /nat-pool 203\.0\.113\.64\/28\nrouter-id 10\.255\.255\.1/);
+  assert.match(scene.textOf(own), /router-id 10\.255\.255\.1\nnat-pool 203\.0\.113\.64\/28/);
 });

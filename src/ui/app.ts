@@ -21,7 +21,7 @@ import { Editor, EditorSel, SelDetail } from './inspector';
 import { LineRange, yamlBlock } from '../editor/yaml-block';
 import { EXAMPLES } from '../generated/examples';
 import { Rect } from '../layout/geometry';
-import { IssueCount, detailsFor, legendFor, relationList, tooltipFor } from './panels';
+import { IssueCount, detailsFor, headOf, legendFor, relationList, tooltipFor } from './panels';
 import { exportBoxes } from '../diagram/networks-box';
 import { Session, View } from '../diagram/session';
 import { SelectionContext, attachedRefs, search, selectionContext, splitRef } from '../model/queries';
@@ -29,6 +29,10 @@ import { sortedByName } from '../model/order';
 import { normalizeProtocol } from '../model/protocols';
 import { deviceTypeLabel } from '../model/device-types';
 import { Issue } from '../validation/validate';
+import { SEVERITIES, Severity, checkById } from '../analysis/checks';
+
+/** How a severity is named in the Problems tab's filter. */
+const SEV_NAME: { [s in Severity]: string } = { error: 'Errors', warning: 'Warnings', info: 'Info' };
 
 type Tab = 'edit' | 'details' | 'legend' | 'relations' | 'problems' | 'yaml';
 
@@ -1120,16 +1124,100 @@ export class App {
     this.afterEdit('YAML applied.');
   }
 
+  /** which severities of check findings the Problems tab lists (a view setting; all by default) */
+  private problemsShown: { [s in Severity]: boolean } = { error: true, warning: true, info: true };
+
+  /**
+   * The Problems tab: first what breaks the file's format (errors and
+   * warnings with line numbers), then the findings of the consistency
+   * checks, which describe the network and never make the file invalid.
+   * Findings can be narrowed to errors, warnings and info; each names its
+   * check and the objects it concerns, and a click goes to its place. The
+   * checks this model switches off or changes (its `checks:` section) are
+   * listed, with a way to the model settings where they are changed.
+   */
   private renderProblems(body: HTMLElement): void {
     while (body.firstChild) body.removeChild(body.firstChild);
     const d = this.mdoc;
-    const all = d ? d.errors.concat(d.warnings, d.findings) : this.loadErrors;
-    if (!all.length) {
-      body.appendChild(el(this.doc, 'p', { class: 'muted' }, [d ? '✓ No problems found.' : 'No model open.']));
+    if (!d) {
+      body.appendChild(this.loadErrors.length ? this.issueList(this.loadErrors, this.sourceLines) : el(this.doc, 'p', { class: 'muted' }, ['No model open.']));
       return;
     }
-    if (d && d.edited) body.appendChild(el(this.doc, 'p', { class: 'muted small' }, ['Line numbers refer to the file as it was opened; the model has been edited since. Click a problem to jump to the object.']));
-    body.appendChild(this.issueList(all, d && !d.edited ? this.sourceLines : [], !!d));
+    const format = d.errors.concat(d.warnings);
+    const findings = d.findings;
+    if (!format.length && !findings.length && !this.checkOverrides().length) {
+      body.appendChild(el(this.doc, 'p', { class: 'muted' }, ['✓ No problems found.']));
+      return;
+    }
+    if (d.edited && format.length) body.appendChild(el(this.doc, 'p', { class: 'muted small' }, ['Line numbers refer to the file as it was opened; the model has been edited since. Click a problem to jump to the object.']));
+    // the format
+    const fsec = el(this.doc, 'section', { class: 'problems-sec', 'data-problems': 'format', 'aria-labelledby': 'pr-format' }, [
+      el(this.doc, 'h4', { id: 'pr-format', class: 'fgroup-title' }, [`The file (${format.length ? format.length : 'no problems'})`]),
+    ]);
+    fsec.appendChild(format.length ? this.issueList(format, d.edited ? [] : this.sourceLines, true) : el(this.doc, 'p', { class: 'muted small' }, ['✓ The file follows the format.']));
+    body.appendChild(fsec);
+    // the consistency checks
+    const count = (s: Severity): number => findings.filter((f) => f.severity === s).length;
+    const csec = el(this.doc, 'section', { class: 'problems-sec', 'data-problems': 'checks', 'aria-labelledby': 'pr-checks' }, [
+      el(this.doc, 'h4', { id: 'pr-checks', class: 'fgroup-title' }, [`Consistency checks (${findings.length ? findings.length : d.errors.length ? 'not run' : 'nothing found'})`]),
+    ]);
+    if (d.errors.length) csec.appendChild(el(this.doc, 'p', { class: 'muted small' }, ['The checks run once the file has no format errors.']));
+    if (findings.length) {
+      const bar = el(this.doc, 'div', { class: 'pr-filter', role: 'group', 'aria-label': 'Show findings of these severities' });
+      for (const s of SEVERITIES) {
+        const on = this.problemsShown[s];
+        bar.appendChild(el(this.doc, 'button', { type: 'button', class: 'mini pr-sev sev-' + s + (on ? ' active' : ''), 'aria-pressed': on ? 'true' : 'false', 'data-problems-filter': s, title: `${on ? 'Hide' : 'Show'} the ${s} findings` }, [`${on ? '☑' : '☐'} ${SEV_NAME[s]} (${count(s)})`]));
+      }
+      csec.appendChild(bar);
+    }
+    const overrides = this.checkOverrides();
+    if (overrides.length) {
+      csec.appendChild(
+        el(this.doc, 'p', { class: 'pr-overrides small', 'data-overrides': overrides.map((o) => o.id + '=' + o.value).join(',') }, [
+          'This model changes ' + (overrides.length === 1 ? 'one check' : overrides.length + ' checks') + ': ',
+          overrides.map((o) => (o.value === 'off' ? `${o.id} switched off` : `${o.id} as ${o.value}`)).join(', ') + '. ',
+          el(this.doc, 'button', { type: 'button', class: 'ref', 'data-problems-settings': '' }, ['Change in the model settings']),
+        ]),
+      );
+    }
+    const shown = findings.map((f, i) => ({ f, i: format.length + i })).filter((x) => this.problemsShown[x.f.severity]);
+    if (findings.length && !shown.length) csec.appendChild(el(this.doc, 'p', { class: 'muted small' }, ['Every finding is hidden by the filter above.']));
+    if (shown.length) {
+      const ul = el(this.doc, 'ul', { class: 'issues' });
+      const m = this.session ? this.session.model : null;
+      for (const { f, i } of shown) {
+        const def = f.check ? checkById(f.check) : undefined;
+        const objects = (f.refs || []).filter((r, k, a) => a.indexOf(r) === k);
+        ul.appendChild(
+          el(this.doc, 'li', { class: 'issue clickable ' + f.severity, 'data-issue': String(i), 'data-check': f.check || '' }, [
+            el(this.doc, 'div', { class: 'issue-head' }, [
+              el(this.doc, 'span', { class: 'sev' }, [f.severity]),
+              el(this.doc, 'code', { class: 'check-id', title: 'Consistency check' }, [f.check || '']),
+              def ? el(this.doc, 'span', { class: 'check-title' }, [def.title]) : null,
+            ]),
+            el(this.doc, 'div', { class: 'msg' }, [f.message]),
+            objects.length && m
+              ? el(this.doc, 'div', { class: 'issue-objects small' }, [
+                  'Concerns: ',
+                  ...objects.map((r, k) => {
+                    const h = headOf(m, r);
+                    return el(this.doc, 'span', {}, [k ? ', ' : '', el(this.doc, 'button', { type: 'button', class: 'ref', 'data-goto': r }, [h ? h.title : r])]);
+                  }),
+                ])
+              : null,
+          ]),
+        );
+      }
+      csec.appendChild(ul);
+    }
+    body.appendChild(csec);
+  }
+
+  /** The checks this model's `checks:` section switches off or gives another severity. */
+  private checkOverrides(): Array<{ id: string; value: string }> {
+    const m = this.mdoc ? this.mdoc.result.model : null;
+    if (!m) return [];
+    return Array.from(m.checks.entries()).map(([id, value]) => ({ id, value })).sort((a, b) => (a.id < b.id ? -1 : 1));
   }
 
   private issueList(issues: Issue[], lines: string[], clickable = false): HTMLElement {
@@ -1975,14 +2063,30 @@ export class App {
         }
         return;
       }
-      const iss = t.closest('[data-issue]');
-      if (iss && iss.classList.contains('clickable')) {
-        this.gotoIssue(Number(iss.getAttribute('data-issue')));
-        return;
-      }
+      // an object named in a problem goes to that object; the problem itself to its place
       const go = t.closest('[data-goto]');
       if (go) {
         this.select(go.getAttribute('data-goto'), true);
+        return;
+      }
+      const filter = t.closest('[data-problems-filter]');
+      if (filter) {
+        const s = filter.getAttribute('data-problems-filter') as Severity;
+        this.problemsShown[s] = !this.problemsShown[s];
+        this.renderSide();
+        const again = this.doc.querySelector(`[data-problems-filter="${s}"]`) as HTMLElement | null;
+        if (again) again.focus();
+        return;
+      }
+      if (t.closest('[data-problems-settings]')) {
+        this.editModel();
+        const g = this.doc.querySelector('#side-body [data-group="checks"]') as HTMLElement | null;
+        if (g && typeof g.scrollIntoView === 'function') g.scrollIntoView({ block: 'start' });
+        return;
+      }
+      const iss = t.closest('[data-issue]');
+      if (iss && iss.classList.contains('clickable')) {
+        this.gotoIssue(Number(iss.getAttribute('data-issue')));
         return;
       }
       void this.editor.onClick(t);

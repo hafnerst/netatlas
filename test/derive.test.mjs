@@ -278,17 +278,18 @@ networks:
   // … and the file is written back unchanged, so the user can fix it
   assert.equal(doc(wrong).exportText(), wrong);
   // the same keys are reported when written in block style, and link "speed"/"medium" stay valid
+  // (a port's speed is a setting of the link end, not of the interface)
   assert.match(errorsOf('netatlas: 1\ndevices:\n  - id: a\n    interfaces:\n      - id: e0\n        speed: 1G\n')[0], /unknown key "speed"/);
   assert.deepEqual(errorsOf('netatlas: 1\ndevices:\n  - id: a\n  - id: b\nlinks:\n  - {id: l, a: a, b: b, medium: fiber, speed: 1G}\n'), []);
 });
 
 test('the schema: each fact has one key, in one place', () => {
   assert.deepEqual(SCHEMA.network, ['id', 'label', 'cidr', 'vlan', 'description', 'attrs']);
-  assert.deepEqual(SCHEMA.interface, ['id', 'label', 'dhcp', 'ip', 'vrf', 'mac', 'description', 'attrs']);
-  assert.deepEqual(SCHEMA.logical, ['id', 'type', 'label', 'dhcp', 'ip', 'vrf', 'mac', 'members', 'vlan', 'source', 'destination', 'description', 'attrs']);
+  assert.deepEqual(SCHEMA.interface, ['id', 'label', 'dhcp', 'ip', 'vrf', 'mac', 'mtu', 'description', 'attrs']);
+  assert.deepEqual(SCHEMA.logical, ['id', 'type', 'label', 'dhcp', 'ip', 'vrf', 'mac', 'mtu', 'members', 'min_links', 'vlan', 'source', 'destination', 'description', 'attrs']);
   assert.deepEqual(SCHEMA.route, ['prefix', 'via', 'interface', 'blackhole', 'distance', 'metric', 'vrf', 'name', 'description', 'attrs']);
   assert.ok(!('child' in SCHEMA) && !('loopback' in SCHEMA));
-  assert.deepEqual(SCHEMA.linkEnd, ['device', 'interface', 'mode', 'untagged', 'tagged']);
+  assert.deepEqual(SCHEMA.linkEnd, ['device', 'interface', 'speed', 'duplex', 'mode', 'untagged', 'tagged']);
   assert.deepEqual(SCHEMA.endpoint, ['device', 'interface']);
   assert.ok(!SCHEMA.relation.includes('network') && SCHEMA.relation.includes('over'));
   assert.ok(SCHEMA.link.includes('medium') && SCHEMA.link.includes('speed'));

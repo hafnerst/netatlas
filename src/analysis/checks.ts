@@ -18,6 +18,7 @@ import { endVlans, tagMismatch, vlanIds, vlanRangesText } from '../model/derive'
 import { compareAddr, formatAddr, inPrefix, prefixText } from './ipmath';
 import { parseAddress } from '../model/ip';
 import { Link, LinkEnd, Model, Route, ifaceKey } from '../model/types';
+import { MORE_CHECKS } from './checks-more';
 import { DEFAULT_STATIC_DISTANCE, connectedOf, isOwnAddress, resolveEntry, routeRef, routeText, staticEntry, vrfKey, vrfName } from './routing';
 
 export type Severity = 'error' | 'warning' | 'info';
@@ -356,7 +357,7 @@ const vlanChecks: CheckDef[] = [
 // ------------------------------------------------------------- registry
 
 /** Every check, in the order findings are listed. */
-export const CHECKS: CheckDef[] = routeChecks.concat(vlanChecks);
+export const CHECKS: CheckDef[] = routeChecks.concat(vlanChecks, MORE_CHECKS);
 
 export function checkById(id: string): CheckDef | undefined {
   return CHECKS.find((c) => c.id === id);

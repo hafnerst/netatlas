@@ -128,6 +128,22 @@ const MANUAL: Section[] = [
     ],
   },
   {
+    id: 'checks',
+    title: 'Find inconsistencies',
+    steps: [
+      'Open the **Problems** tab. **The file** lists what breaks the format; **Consistency checks** lists where the network the model describes contradicts itself: MTUs, speeds or duplex that differ across a cable, addresses in different subnets, a duplicate router ID, OSPF or BGP parameters that disagree, a tunnel that doesn\'t fit its underlay …',
+      'Each finding shows its **severity**, its **check id** and the objects it concerns. Click a finding to open its object in the Edit tab, where the message is at the field; click an object to select it. The **Errors**, **Warnings** and **Info** buttons narrow the list.',
+      'To switch a check off or change its severity for this model, press **Change in the model settings** (or **Edit model settings** in the Edit tab) and choose under **Consistency checks**. The choice is written to the model\'s `checks:` section.',
+    ],
+    notes: [
+      'A check only compares what the model writes down: an interface\'s **MTU**, a link end\'s port **speed** and **duplex**, a device\'s **router ID** and **AS number**, protocol parameters in a relation\'s attributes. Where a value is missing, nothing is assumed. The example **consistency-checks.yaml** has a mistake for every check.',
+    ],
+    figures: [
+      ['problems', 'The Problems tab of the consistency-checks example: the file has no problems; the findings with their check id, the severity filter and the check the model changes.'],
+      ['checks', 'Model settings → Consistency checks: each check with its default severity and what this model makes of it.'],
+    ],
+  },
+  {
     id: 'connect',
     title: 'Create connections',
     steps: [

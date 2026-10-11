@@ -54,7 +54,7 @@ devices:
     label: ISP-1 PE
     type: router
     group: providers
-    attrs: {asn: 3320}
+    asn: 3320
     interfaces:
       - {id: xe-1/0/0}
       - {id: xe-1/0/1}
@@ -62,7 +62,7 @@ devices:
     label: ISP-2 PE
     type: router
     group: providers
-    attrs: {asn: 1299}
+    asn: 1299
     interfaces:
       - {id: xe-2/0/0}
       - {id: xe-2/0/7}
@@ -71,12 +71,14 @@ devices:
     label: hq-rtr1
     type: router
     group: hq-edge
+    router_id: 10.255.0.1
+    asn: 65010
     interfaces:
-      - {id: ge-0/0/0, ip: 198.51.100.2/30, description: ISP-1 uplink}
+      - {id: ge-0/0/0, ip: 198.51.100.2/30, mtu: 1500, description: ISP-1 uplink}
       - {id: ge-0/0/1, ip: 10.0.0.2/28}
     logical_interfaces:
       - {id: lo0, type: loopback, ip: 10.255.0.1/32}
-      - {id: st0.10, type: tunnel, ip: 172.16.10.1/30, source: ge-0/0/0, destination: 192.0.2.10, description: GRE to Munich}
+      - {id: st0.10, type: tunnel, ip: 172.16.10.1/30, mtu: 1400, source: ge-0/0/0, destination: 192.0.2.10, description: GRE to Munich}
     dns_names:
       - {name: vpn1.acme.example, interfaces: [ge-0/0/0]}
       - {name: hq-rtr1.acme.example, interfaces: [lo0, ge-0/0/1]}   # one name, two interfaces
@@ -84,12 +86,14 @@ devices:
     label: hq-rtr2
     type: router
     group: hq-edge
+    router_id: 10.255.0.2
+    asn: 65010
     interfaces:
-      - {id: ge-0/0/0, ip: 203.0.113.2/30, description: ISP-2 uplink}
+      - {id: ge-0/0/0, ip: 203.0.113.2/30, mtu: 1500, description: ISP-2 uplink}
       - {id: ge-0/0/1, ip: 10.0.0.3/28}
     logical_interfaces:
       - {id: lo0, type: loopback, ip: 10.255.0.2/32}
-      - {id: st0.11, type: tunnel, ip: 172.16.11.1/30, source: ge-0/0/0, destination: 192.0.2.34, description: GRE to Hamburg}
+      - {id: st0.11, type: tunnel, ip: 172.16.11.1/30, mtu: 1400, source: ge-0/0/0, destination: 192.0.2.34, description: GRE to Hamburg}
       - {id: wg0, type: tunnel, ip: 172.16.99.1/30, source: ge-0/0/0, destination: ham-rtr:wan1}
   - id: hq-fw
     label: hq-fw
@@ -155,7 +159,7 @@ devices:
       - {id: wan0, ip: 192.0.2.10/29, description: VDSL}
       - {id: lan0, ip: 10.20.0.1/24}
     logical_interfaces:
-      - {id: Tunnel10, type: tunnel, ip: 172.16.10.2/30, source: wan0, destination: 198.51.100.2}
+      - {id: Tunnel10, type: tunnel, ip: 172.16.10.2/30, mtu: 1400, source: wan0, destination: 198.51.100.2}
   - id: muc-sw
     label: muc-sw
     type: switch
@@ -271,7 +275,7 @@ relations:
     protocol: gre
     endpoints: ["hq-rtr1:st0.10", "muc-rtr:Tunnel10"]
     over: ipsec-muc
-    attrs: {key: 10, mtu: 1400, keepalive: "10 3"}
+    attrs: {key: 10, keepalive: "10 3"}
   - id: ospf-muc
     protocol: ospf
     endpoints: ["hq-rtr1:st0.10", "muc-rtr:Tunnel10"]
@@ -288,7 +292,7 @@ relations:
     protocol: gre
     endpoints: ["hq-rtr2:st0.11", "ham-rtr:Tunnel11"]
     over: ipsec-ham
-    attrs: {key: 11, mtu: 1400}
+    attrs: {key: 11}
   - id: ospf-ham
     protocol: ospf
     endpoints: ["hq-rtr2:st0.11", "ham-rtr:Tunnel11"]

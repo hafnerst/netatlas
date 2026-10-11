@@ -23,7 +23,8 @@ devices:
     label: core-rtr-01
     type: router
     group: hq
-    attrs: {router-id: 10.255.255.1, nat-pool: 203.0.113.64/28}
+    router_id: 10.255.255.1
+    attrs: {nat-pool: 203.0.113.64/28}
     interfaces:
       - id: xe-0/0/0
         label: Uplink ISP

@@ -79,7 +79,7 @@ test('details, tooltips and legend describe the selection', () => {
   assert.match(det, /GRE/);
   assert.match(det, /Carried over \(underlay\)/);
   assert.match(det, /IPsec/);
-  assert.match(det, /mtu/);
+  assert.match(det, /keepalive/);
   const port = scene.textOf(panels.detailsFor(m, 'device:hq-rtr1'));
   assert.match(port, /ge-0\/0\/0/);
   assert.match(port, /198\.51\.100\.2\/30/);

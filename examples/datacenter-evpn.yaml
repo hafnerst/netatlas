@@ -92,6 +92,7 @@ devices:
     type: switch
     tier: 2
     group: rack-a03
+    asn: 65100
     interfaces:
       - {id: Et49, ip: 10.1.0.5/31}
       - {id: Et50, ip: 10.1.1.5/31}
@@ -138,6 +139,7 @@ devices:
     label: Carrier PE
     type: router
     group: wan
+    asn: 64512
     interfaces:
       - {id: xe-0/1/0, ip: 100.64.0.1/30}
 
@@ -228,4 +230,4 @@ relations:
     protocol: ebgp
     endpoints: ["leaf3:Et48", "wan-pe:xe-0/1/0"]
     over: wan-uplink
-    attrs: {local-as: 65100, peer-as: 64512}
+    attrs: {peer-as: {leaf3: 64512, wan-pe: 65100}}

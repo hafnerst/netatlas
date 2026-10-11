@@ -753,6 +753,22 @@ export class ModelDoc {
     return true;
   }
 
+  /** Set a text value of one link end (its port's `speed` or `duplex`); '' removes it, and an end left plain goes back to "dev:if". */
+  setEndText(endPath: Path, key: 'speed' | 'duplex', text: string): boolean {
+    const cur = this.get(endPath);
+    if (!cur || (cur.kind === 'scalar' && scalarText(cur) === undefined)) return false;
+    this.change('Set port ' + key, () => {
+      if (text === '') {
+        this.removeAt(endPath.concat(key));
+        this.shortEnd(endPath);
+        return;
+      }
+      this.ensureMap(endPath);
+      this.setAt(endPath.concat(key), strNode(text), KEY_ORDER.linkEnd);
+    });
+    return true;
+  }
+
   /** An end written as a mapping with nothing but device and interface goes back to "dev:if". */
   private shortEnd(endPath: Path): void {
     const e = this.get(endPath);
@@ -1123,6 +1139,31 @@ export class ModelDoc {
       setKey(m, 'id', strNode(newIf), KEY_ORDER[kind]);
       for (const p of refs) this.rewriteRef(p, dev.id as string, dev.id as string, oldIf, newIf);
       return refs.length;
+    });
+  }
+
+  // ------------------------------------------------------------- checks
+
+  /** The model's setting for a consistency check as written ('' when it has none: the check's default applies). */
+  checkSetting(id: string): string {
+    return this.text(['checks', id]) || '';
+  }
+
+  /**
+   * Switch a check off or give it another severity in the model's `checks:`
+   * section ('' removes the entry: the default applies again; the section
+   * goes when it is empty). One undo step.
+   */
+  setCheck(id: string, value: string): void {
+    this.change(value ? 'Set check ' + id : 'Reset check ' + id, () => {
+      if (value) {
+        this.ensureMap(['checks'], KEY_ORDER.top);
+        this.setAt(['checks', id], strNode(value));
+        return;
+      }
+      this.removeAt(['checks', id]);
+      const c = this.get(['checks']);
+      if (c && c.kind === 'map' && !c.entries.size) this.removeAt(['checks']);
     });
   }
 

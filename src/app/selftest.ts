@@ -14,6 +14,7 @@ import { interfaceAddresses, interfaceVlanText, networkMembers, vlanIds, vlanRan
 import { contextState, relatedRefs, selectionContext } from '../model/queries';
 import { addressInventory } from '../model/addresses';
 import { strNode } from '../yaml/parse';
+import { CHECKS } from '../analysis/checks';
 import { EXAMPLES, FIXTURES } from '../generated/examples';
 import { PNG_MAX_PIXELS, PNG_MAX_SIDE, WritableFile, pngScale, svgToPng } from '../ui/files';
 import { App } from '../ui/app';
@@ -257,7 +258,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
           labels.join('|') === 'New model|Open model…|Save model|Save model as…|Close model' && /Ctrl\+S$/.test(entries[2]) && /Ctrl\+Shift\+S$/.test(entries[3]) &&
           entries.length === 5 + EXAMPLES.length && ['#btn-save', '#btn-save-as', '#btn-close'].every((x) => (q(x) as HTMLButtonElement).disabled && /Open or create a model first|Close the current model/.test(q(x)!.title)) &&
           q('#btn-save')!.nextElementSibling === q('#btn-save-as') && q('#btn-save-as')!.nextElementSibling === q('#btn-close') &&
-          textsOf('#menu-examples .mi-label').join() === EXAMPLES.map((e) => e.name).join() && !q('#menu-examples .active-example') && /Examples/.test(q('#menu-examples-title')!.textContent || '') && EXAMPLES.length === 9 && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(menu!.textContent || '') && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(q('#empty')!.textContent || ''),
+          textsOf('#menu-examples .mi-label').join() === EXAMPLES.map((e) => e.name).join() && !q('#menu-examples .active-example') && /Examples/.test(q('#menu-examples-title')!.textContent || '') && EXAMPLES.length === 10 && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(menu!.textContent || '') && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(q('#empty')!.textContent || ''),
         entries.join(' | '),
       );
       menuBtn!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
@@ -1129,6 +1130,99 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       app.undo();
       app.undo();
       (app.mdoc as ModelDoc).markSaved();
+    }
+
+    // ------------------------------------------------ consistency checks: Problems tab, settings, fields
+    {
+      app.loadExample(EXAMPLES.findIndex((e) => e.name === 'consistency-checks.yaml'));
+      click('[data-view-btn="physical"]');
+      click('[data-tab="problems"]');
+      await tick();
+      const md = (): ModelDoc => app.mdoc as ModelDoc;
+      const items = (): HTMLElement[] => Array.from(doc.querySelectorAll('#side-body [data-problems="checks"] .issue')) as HTMLElement[];
+      const all = md().findings.length;
+      const ids = new Set(items().map((i) => i.getAttribute('data-check')));
+      check(
+        'Problems: the file’s own problems and the consistency checks are listed apart; the demo shows a finding of every check, each with its id, title, message and the objects it concerns',
+        md().valid && !!q('#side-body [data-problems="format"]') && items().length === all && CHECKS.every((c) => ids.has(c.id)) &&
+          items().every((i) => !!i.querySelector('.check-id') && !!i.querySelector('.check-title') && !!i.querySelector('.msg')) && !!q('#side-body [data-problems="checks"] .issue-objects [data-goto]'),
+        `${items().length} of ${all}; missing: ${CHECKS.filter((c) => !ids.has(c.id)).map((c) => c.id).join(',')}`,
+      );
+      check('the severity of a finding is written, not only coloured', items().every((i) => /^(error|warning|info)$/.test((i.querySelector('.sev') || { textContent: '' }).textContent || '')));
+      const warnings = md().findings.filter((f) => f.severity === 'warning').length;
+      const wBtn = q('#side-body [data-problems-filter="warning"]') as HTMLElement;
+      wBtn.click();
+      await tick();
+      const again = q('#side-body [data-problems-filter="warning"]') as HTMLElement;
+      check(
+        'the severity filter hides the warnings (a toggle button with aria-pressed, focus kept) and shows them again',
+        items().length === all - warnings && again.getAttribute('aria-pressed') === 'false' && doc.activeElement === again && items().every((i) => !i.classList.contains('warning')),
+        `${items().length} / ${all - warnings}`,
+      );
+      again.click();
+      await tick();
+      check('… all findings again', items().length === all && q('#side-body [data-problems-filter="warning"]')!.getAttribute('aria-pressed') === 'true');
+      const ov = q('#side-body .pr-overrides');
+      check('the checks the model changes are named: duplicate-mac as info', !!ov && ov.getAttribute('data-overrides') === 'duplicate-mac=info' && /duplicate-mac as info/.test(ov.textContent || ''));
+      // an object a finding concerns: a click selects it
+      const goto = q('#side-body [data-check="duplicate-router-id"] [data-goto="device:r2"]') as HTMLElement | null;
+      if (goto) goto.click();
+      await tick();
+      check('an object named in a finding is a link that selects it', !!goto && app.session!.state.selected === 'device:r2');
+      // the finding itself goes to its field
+      click('[data-tab="problems"]');
+      await tick();
+      const mtuItem = q('#side-body .issue[data-check="link-mtu-mismatch"]') as HTMLElement;
+      mtuItem.click();
+      await tick();
+      const mtuIn = q(`#side-body input[data-p$='"mtu"]']`) as HTMLInputElement | null;
+      const mtuField = mtuIn ? (mtuIn.closest('.field') as HTMLElement) : null;
+      check(
+        'clicking a finding opens its object in the Edit tab; the field it concerns shows the message',
+        app.session!.state.selected === 'iface:r1:e0' && !!mtuIn && mtuIn.value === '9000' && !!mtuField && /MTU 9000 at r1:e0, 1500 at r2:e0/.test(mtuField.textContent || ''),
+        mtuField ? mtuField.textContent || '' : 'no MTU field',
+      );
+      // fix it in the field: the finding goes
+      await setField(`#side-body input[data-p$='"mtu"]']`, '1500');
+      check('editing the MTU to match removes the finding (one undo step)', !md().findings.some((f) => f.check === 'link-mtu-mismatch') && md().findings.length === all - 1);
+      app.undo();
+      await tick();
+      // the model's check settings
+      click('[data-tab="problems"]');
+      await tick();
+      click('#side-body [data-problems-settings]');
+      await tick();
+      const sel = (id: string): HTMLSelectElement | null => q(`#side-body [data-group="checks"] select[data-t="check-setting"][data-k="${id}"]`) as HTMLSelectElement | null;
+      check(
+        'the model settings list every check with its default and what this model makes of it',
+        !!q('#side-body [data-group="checks"]') && doc.querySelectorAll('#side-body [data-group="checks"] select[data-t="check-setting"]').length === CHECKS.length && sel('duplicate-mac')!.value === 'info' && sel('lag-min-links')!.value === '' && !!sel('lag-min-links')!.getAttribute('aria-label'),
+      );
+      await setField('#side-body [data-group="checks"] select[data-k="lag-min-links"]', 'off');
+      check('a check switched off writes the checks section and its findings go', /\nchecks:\n {2}duplicate-mac: info\n {2}lag-min-links: off\n/.test(app.exportText()) && !md().findings.some((f) => f.check === 'lag-min-links'), app.exportText().slice(-120));
+      await setField('#side-body [data-group="checks"] select[data-k="lag-min-links"]', 'error');
+      check('… another severity changes the findings’ severity', md().findings.filter((f) => f.check === 'lag-min-links').every((f) => f.severity === 'error') && /lag-min-links: error/.test(app.exportText()));
+      app.undo();
+      app.undo();
+      await tick();
+      check('… and undo restores the defaults', !/lag-min-links:/.test(app.exportText()) && md().findings.length === all);
+      // a port's speed and duplex at a link end
+      app.select('link:t4');
+      click('[data-tab="edit"]');
+      await tick();
+      const lIndex = md().findEntity('link', 't4')!.index;
+      const dpx = q(`#side-body select[data-t="end-duplex"][data-p='["links",${lIndex},"b"]']`) as HTMLSelectElement | null;
+      const spd = q(`#side-body input[data-t="end-text"][data-p='["links",${lIndex},"b","speed"]']`) as HTMLInputElement | null;
+      check('a link end has its port’s speed and duplex in the Edit tab', !!dpx && dpx.value === 'half' && !!spd && spd.value === '100M');
+      await setField(`#side-body select[data-t="end-duplex"][data-p='["links",${lIndex},"b"]']`, 'full');
+      await setField(`#side-body input[data-t="end-text"][data-p='["links",${lIndex},"b","speed"]']`, '1G');
+      check(
+        'setting them to match the other end clears the duplex and speed findings',
+        !md().findings.some((f) => f.check === 'link-duplex-mismatch' || f.check === 'link-speed-mismatch') && /b: \{device: sw2, interface: p4, speed: 1G, duplex: full\}/.test(app.exportText()),
+        app.exportText().match(/- id: t4[\s\S]{0,160}/)?.[0],
+      );
+      app.undo();
+      app.undo();
+      md().markSaved();
     }
 
     // ------------------------------------------------ viewer interactions
@@ -2003,8 +2097,9 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       app.exportText(),
     );
     check(
-      'devices have no vendor, model, role, management-address or router-ID field',
-      ['vendor', 'model', 'role', 'mgmt', 'router_id'].every((k) => !q(`#side-body [data-p='["devices",0,"${k}"]']`)) && !/Router ID \(loopback\)|Vendor|Management address/.test(q('#side-body')!.textContent || ''),
+      'devices have no vendor, model, role or management-address field; the router ID is an address of its own (not a loopback reference), next to the AS number',
+      ['vendor', 'model', 'role', 'mgmt'].every((k) => !q(`#side-body [data-p='["devices",0,"${k}"]']`)) && !/Router ID \(loopback\)|Vendor|Management address/.test(q('#side-body')!.textContent || '') &&
+        !!q(`#side-body [data-group="routing"] [data-p='["devices",0,"router_id"]']`) && !!q(`#side-body [data-group="routing"] [data-p='["devices",0,"asn"]']`),
     );
 
     click('#outline [data-act="add-entity"][data-kind="device"]');
@@ -2498,7 +2593,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const msgs = badFile.errors.map((e) => e.message).join(' | ');
       check(
         'a file with keys outside the format opens as a draft with one error per key',
-        badFile.ok && badFile.errors.length === 11 && ['children', 'loopbacks', 'speed', 'vendor', 'router_id', 'type', 'members'].every((k) => msgs.indexOf(`unknown key "${k}"`) >= 0) &&
+        badFile.ok && badFile.errors.length === 11 && ['children', 'loopbacks', 'speed', 'vendor', 'type', 'members'].every((k) => msgs.indexOf(`unknown key "${k}"`) >= 0) && msgs.indexOf('"lo0" is not a router ID') >= 0 &&
           (app.mdoc as ModelDoc).result.model!.devices[0].logical.length === 0 && (app.mdoc as ModelDoc).result.model!.devices[0].interfaces.length === 1 && (app.mdoc as ModelDoc).result.model!.devices[0].interfaces.every((i) => i.type === 'physical') && (app.mdoc as ModelDoc).result.model!.groups[0].kind === 'row' &&
           (app.mdoc as ModelDoc).result.model!.networks[0].vlan === undefined && networkMembers((app.mdoc as ModelDoc).result.model!, 'n1').length === 1,
         msgs,
@@ -4011,8 +4106,8 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         return `${cs.borderTopStyle} ${cs.borderTopLeftRadius}`;
       };
       check(
-        'Edit and Details share the object header and present their content in the same titled cards (Edit: Identity, Placement, Notes; Details: Overview and its sections); Duplicate and Delete keep their names',
-        editHead && detHead && /^Identity\|Placement\|Notes/.test(editGroups) && /^Overview\|Physical interfaces/.test(detGroups) && buttons === 'Duplicate|Delete' && card('#side-body .fgroup') === 'solid 9px' && doc.documentElement.scrollHeight <= doc.documentElement.clientHeight + 1,
+        'Edit and Details share the object header and present their content in the same titled cards (Edit: Identity, Placement, Routing identity, Notes; Details: Overview and its sections); Duplicate and Delete keep their names',
+        editHead && detHead && /^Identity\|Placement\|Routing identity\|Notes/.test(editGroups) && /^Overview\|Physical interfaces/.test(detGroups) && buttons === 'Duplicate|Delete' && card('#side-body .fgroup') === 'solid 9px' && doc.documentElement.scrollHeight <= doc.documentElement.clientHeight + 1,
         editGroups + ' // ' + detGroups,
       );
       click('[data-tab="legend"]');

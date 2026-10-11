@@ -266,9 +266,21 @@ export function routeTables(d: Device): RouteTable[] {
     });
 }
 
-/** Lines of a device's own address-like attrs (drawn in its box, in both views). */
+/**
+ * The device's own lines in its box (both views), with the field each is
+ * written from: its router ID and AS number, then its address-like attrs.
+ */
+export function deviceOwnLines(d: Device): Array<{ line: string; field: LineField }> {
+  const out: Array<{ line: string; field: LineField }> = [];
+  if (d.routerId !== undefined) out.push({ line: 'router-id ' + d.routerId, field: { field: 'router_id', value: '' } });
+  if (d.asn !== undefined) out.push({ line: 'AS ' + d.asn, field: { field: 'asn', value: '' } });
+  for (const a of addressAttrEntries(d.attrs)) out.push({ line: a.line, field: { field: 'attr', value: a.key } });
+  return out;
+}
+
+/** Lines of a device's own entry (drawn in its box, in both views). */
 export function deviceAddressLines(d: Device): string[] {
-  return addressAttrLines(d.attrs);
+  return deviceOwnLines(d).map((x) => x.line);
 }
 
 /**
@@ -296,6 +308,7 @@ export function addressInventory(model: Model): AddressField[] {
   for (const g of model.groups) attrs('group:' + g.id, g.attrs, ['physical', 'logical']);
   for (const d of model.devices) {
     attrs('device:' + d.id, d.attrs, ['physical', 'logical']);
+    if (d.routerId !== undefined) add('device:' + d.id, 'router_id', d.routerId, ['physical', 'logical']);
     const bound = boundInterfaces(model, d.id);
     for (const i of d.interfaces.concat(d.logical)) {
       const owner = `iface:${d.id}:${i.id}`;

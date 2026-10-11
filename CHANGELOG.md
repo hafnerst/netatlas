@@ -31,11 +31,19 @@ there is no conversion of files written for the earlier drafts.
   `100-199`). VLANs are referenced by ID, as on networks and VLAN interfaces;
   the networks a cable carries are now derived from its tagging. `networks`
   on a link end is an unknown key.
+- **Consistency facts as fields:** an interface may have `mtu`; an aggregate
+  (a virtual interface with members) `min_links`; a device `router_id` (an
+  IPv4 address) and `asn`; a link end the port's `speed` and `duplex`
+  (`full`, `half`, `auto`). The examples write these as fields instead of
+  `attrs` (`router-id`, `asn`, `local-as`, a GRE relation's `mtu`).
+- **`checks:`** (top level) switches consistency checks off or changes their
+  severity: `checks: {duplicate-mac: info, relation-vrf-mismatch: off}`.
 - **No compatibility messages for earlier drafts:** keys that earlier
   development versions used (`loopbacks`, `children`, `directed`, `prefixes`,
-  `vlans`, `router_id`, `vendor` …) are reported like any other unknown key,
-  with the closest known key as a suggestion; group kind `row` is free text
-  like every other kind.
+  `vlans`, `vendor` …) are reported like any other unknown key, with the
+  closest known key as a suggestion; group kind `row` is free text like
+  every other kind. `router_id` is an address now: the earlier
+  `router_id: lo0` is an error ("not a router ID").
 
 ### Added
 
@@ -66,6 +74,24 @@ there is no conversion of files written for the earlier drafts.
   `route-nexthop-interface`, `route-exit-interface`, `route-duplicate`,
   `route-conflict`, `vlan-native-mismatch`, `vlan-tagged-mismatch`,
   `vlan-access-tagged`, `vlan-untagged-tagged`, `vlan-unknown`.
+- **More consistency checks**, each with a positive and a negative test:
+  `link-mtu-mismatch`, `tunnel-mtu` (with the encapsulation overhead it
+  assumes in the message, added up over a tunnel stack),
+  `link-speed-mismatch`, `link-duplex-mismatch`, `lag-member-speed`,
+  `lag-peer-devices` (unless an MLAG pairs the peers), `lag-min-links`,
+  `link-subnet-mismatch`, `address-reserved`, `vip-outside-subnet`,
+  `duplicate-router-id`, `duplicate-mac`, `ospf-area-mismatch`,
+  `ospf-network-type-mismatch`, `ospf-timer-mismatch`, `bgp-peer-as`,
+  `bgp-session-type`, `tunnel-endpoint-mismatch`, `tunnel-underlay`,
+  `relation-vrf-mismatch`.
+- **Problems tab** in two parts, the file's own problems and the consistency
+  checks; findings can be narrowed by severity and name the objects they
+  concern as links; the checks a model changes are listed. **Model settings
+  → Consistency checks** sets each check to its default, another severity or
+  off. The Edit tab has MTU, minimum links, router ID, AS number, and per link
+  end the port's speed and duplex; the device box shows `router-id` and `AS`.
+- Example **`consistency-checks.yaml`**: one deliberate inconsistency per
+  check.
 - Example **`branch-routing.yaml`**: a dual-homed branch with a floating
   static default route, equal-cost routes to HQ, a blackhole, a guest VRF,
   host default gateways and a router-on-a-stick trunk with a native VLAN.
@@ -272,6 +298,10 @@ there is no conversion of files written for the earlier drafts.
 
 ### Fixed
 
+- Physical view: a tagged port's VLAN line no longer overlaps the name of
+  the untagged port below it, the ⚠ of a cable whose tagging differs is
+  kept clear of other labels, and a cable no longer runs through a device
+  when its way around starts at another port of that device.
 - In the **View** and **Auto-arrange** groups, a hovered or keyboard-focused
   segment lost part of its border (e.g. the right edge of *Default*): the
   next segment, which shares that border column, was drawn over it. A

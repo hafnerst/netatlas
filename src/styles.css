@@ -334,6 +334,19 @@ button.ref:hover { text-decoration: underline; }
 .issue.warning .sev { color: var(--warn); }
 .issue.info .sev { color: var(--accent); }
 .issue .check-id { color: var(--muted); font-size: 11px; }
+.issue .check-title { font-weight: 600; }
+.issue .issue-objects { margin-top: 3px; color: var(--muted); }
+.issue-list .check-id { color: var(--muted); font-size: 11px; }
+/* the Problems tab: the file's own problems, then the consistency checks with a severity filter */
+.problems-sec { margin-bottom: 14px; }
+.problems-sec > .fgroup-title { margin: 4px 0 6px; }
+.pr-filter { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 8px; }
+.pr-filter .pr-sev[aria-pressed="false"] { color: var(--muted); }
+.pr-filter .pr-sev.active { border-color: var(--accent); }
+.pr-overrides { margin: 0 0 8px; }
+.checks-table select { max-width: 100%; }
+.checks-table .check-id { display: block; overflow-wrap: anywhere; }
+.checks-table tr.changed td:first-child { font-weight: 600; }
 .issue .loc { font-weight: 600; }
 .issue .path { color: var(--muted); }
 .issue .msg { margin-top: 2px; overflow-wrap: anywhere; }

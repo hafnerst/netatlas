@@ -85,6 +85,18 @@ export function normalizeProtocol(name: string): string {
 }
 
 /**
+ * The protocol a name stands for: itself when the registry defines it (a
+ * file's own definition of "ebgp" included), else the built-in protocol it
+ * is an alias of ("ibgp" → "bgp", "vpc" → "mlag"), else itself.
+ */
+export function protocolBase(registry: Map<string, ProtocolDef>, name: string): string {
+  const key = normalizeProtocol(name);
+  if (registry.has(key)) return key;
+  const alias = ALIASES.get(key);
+  return alias && registry.has(alias) ? alias : key;
+}
+
+/**
  * Look up the definition for a protocol name. Exact match wins (so a user
  * definition of "ebgp" overrides the alias to "bgp"); then aliases; then a
  * generated definition for unknown protocols.
