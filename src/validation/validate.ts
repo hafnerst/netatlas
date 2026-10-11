@@ -1,5 +1,6 @@
-import { IpPrefix, addrKey, hasHostBits, parsePrefix, prefixContains, prefixProblem } from '../model/ip';
-import { derive, interfaceAddresses, networkMismatch, networkMismatchText } from '../model/derive';
+import { IpPrefix, addrKey, hasHostBits, parseAddress, parsePrefix, prefixContains, prefixProblem } from '../model/ip';
+import { derive, interfaceAddresses } from '../model/derive';
+import { Target, runChecks } from '../analysis/checks';
 import {
   CATEGORIES,
   Category,
@@ -19,18 +20,25 @@ import {
   ModelIndex,
   ModelLayout,
   Network,
+  PORT_MODES,
+  PortMode,
   RelEndpoint,
   Relation,
+  Route,
   TunnelEnd,
+  VLAN_MAX,
+  VLAN_MIN,
+  VlanRange,
   deviceInterfaces,
   ifaceKey,
   relationDevices,
+  routeKey,
 } from '../model/types';
 import { dnsNameKey, dnsNameProblem } from '../model/dns';
-import { DEVICE_TYPE_IDS, NO_DEVICE_TYPE, isDeviceType } from '../model/device-types';
+import { DEVICE_TYPE_IDS, NO_DEVICE_TYPE, ROUTE_DEVICE_TYPES, deviceTypeLabel, isDeviceType, routingRole } from '../model/device-types';
 import { COLOR_RE, DEFAULT_STYLE, builtinProtocols, lookupProtocol, normalizeProtocol } from '../model/protocols';
 import { YMap, YNode, YSeq, YamlError, YamlLimits, parseYaml } from '../yaml/parse';
-import { FORMAT_VERSION, RENAMED_GROUP_KINDS, RETIRED, SCHEMA } from '../yaml/schema';
+import { FORMAT_VERSION, SCHEMA } from '../yaml/schema';
 import { Ctx, DEFAULT_MODEL_LIMITS, ID_RE, IFACE_RE, Issue, ModelLimits, Reader, TooManyErrors, get, isNull, kindOf, scalarText, suggest } from './reader';
 
 export { DEFAULT_MODEL_LIMITS, ID_RE, IFACE_RE, scalarText, suggest };
@@ -51,6 +59,12 @@ export interface LoadResult {
   root: YNode | null;
   errors: Issue[];
   warnings: Issue[];
+  /**
+   * Findings of the consistency checks (analysis/checks.ts), each attached
+   * to the place it is about. They describe the network, not the format:
+   * they never make a model invalid. Empty while the format has errors.
+   */
+  findings: Issue[];
 }
 
 /** largest accepted coordinate in the layout section */
@@ -62,6 +76,7 @@ const GROUP_KEYS = SCHEMA.group;
 const DEVICE_KEYS = SCHEMA.device;
 const LINK_KEYS = SCHEMA.link;
 const LINK_END_KEYS = SCHEMA.linkEnd;
+const ROUTE_KEYS = SCHEMA.route;
 const NET_KEYS = SCHEMA.network;
 const REL_KEYS = SCHEMA.relation;
 const EP_KEYS = SCHEMA.endpoint;
@@ -80,7 +95,7 @@ export function loadModel(
     root = parseYaml(text, yamlLimits);
   } catch (e) {
     if (e instanceof YamlError) {
-      return { model: null, root: null, errors: [{ severity: 'error', line: e.line, path: '', message: 'YAML: ' + e.message }], warnings: [] };
+      return { model: null, root: null, errors: [{ severity: 'error', line: e.line, path: '', message: 'YAML: ' + e.message }], warnings: [], findings: [] };
     }
     throw e;
   }
@@ -97,7 +112,7 @@ export function validate(root: YNode | null, modelLimits: Partial<ModelLimits> =
     c.errors.push({ severity: 'error', line: 0, path: '', message: `stopped after ${c.errors.length} errors` });
     model = null;
   }
-  return { model, root, errors: c.errors, warnings: c.warnings };
+  return { model, root, errors: c.errors, warnings: c.warnings, findings: c.findings };
 }
 
 function build(root: YNode | null, c: Ctx): Model | null {
@@ -212,9 +227,6 @@ function build(root: YNode | null, c: Ctx): Model | null {
     const gpath = `groups.${id}`;
     groupNodes.set(id, m);
     const kind = (r.field(m, 'kind', gpath, 40) || '').toLowerCase();
-    if (Object.prototype.hasOwnProperty.call(RENAMED_GROUP_KINDS, kind)) {
-      c.error(get(m, 'kind') as YNode, gpath + '.kind', `group kind "${kind}" is not accepted — write "kind: ${RENAMED_GROUP_KINDS[kind]}"`);
-    }
     groups.push({
       id,
       label: r.field(m, 'label', gpath, L.maxLabel) || id,
@@ -270,11 +282,15 @@ function build(root: YNode | null, c: Ctx): Model | null {
   const dnsOwner = new Map<string, string>();
   /** tunnel destinations: checked once every device is read */
   const destinations: Array<{ iface: Interface; node: YNode; path: string }> = [];
+  /** where things are declared, for attaching check findings: device id / "device:iface" / "device:index" -> entry and path */
+  const devNodes = new Map<string, { node: YMap; path: string }>();
+  const ifaceNodes = new Map<string, YMap>();
+  const routeNodes = new Map<string, { node: YMap; path: string }>();
   capped(r.list(get(top, 'devices'), 'devices'), L.maxDevices, 'devices', 'devices').forEach((n, i) => {
     const path = `devices[${i}]`;
     const m = r.map(n, path);
     if (!m) return;
-    r.keys(m, DEVICE_KEYS, path, ATTRS_HINT, RETIRED.device);
+    r.keys(m, DEVICE_KEYS, path, ATTRS_HINT);
     const id = r.id(m, path);
     if (!id) return;
     const dpath = `devices.${id}`;
@@ -302,8 +318,10 @@ function build(root: YNode | null, c: Ctx): Model | null {
       interfaces: [],
       logical: [],
       dnsNames: [],
+      routes: [],
       line: m.line,
     };
+    devNodes.set(id, { node: m, path: dpath });
     let count = 0;
     /** address -> id of the interface of this device that has it (first one) */
     const ownAddrs = new Map<string, string>();
@@ -324,7 +342,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
         im = { kind: 'map', entries: new Map([['id', { key: 'id', keyLine: inode.line, value: inode }]]), line: inode.line, col: inode.col };
       } else im = r.map(inode, ipath);
       if (!im) return null;
-      r.keys(im, SCHEMA[where], ipath, ATTRS_HINT, RETIRED[where]);
+      r.keys(im, SCHEMA[where], ipath, ATTRS_HINT);
       const iid = r.id(im, ipath, IFACE_RE, 'interface id');
       if (!iid) return null;
       const key = ifaceKey(id, iid);
@@ -485,6 +503,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
       interfaces.set(key, iface);
       ifaceAddrNodes.set(key, addrsAt);
       ifacePaths.set(key, ipath);
+      ifaceNodes.set(key, im);
       return iface;
     };
     r.list(get(m, 'interfaces'), dpath + '.interfaces').forEach((inode, k) => {
@@ -496,6 +515,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
       if (i) dev.logical.push(i);
     });
     dev.dnsNames = readDnsNames(r, c, m, dpath, dev, dnsOwner);
+    dev.routes = readRoutes(r, c, m, dpath, dev, routeNodes);
     // tunnel sources: an address (its interface is then derived), or any other interface of this device
     for (const s of sources) {
       const end = s.iface.source as TunnelEnd;
@@ -552,17 +572,14 @@ function build(root: YNode | null, c: Ctx): Model | null {
     }
   }
 
-  /** link ends whose network ids are checked once the networks are read */
-  const endNetworks: Array<{ end: LinkEnd; nodes: YNode[]; path: string }> = [];
   /**
    * Parse "dev" / "dev:iface" / a mapping. A relation endpoint is nothing
-   * more; a link end may also list the networks the cable carries there.
+   * more; a link end may also have the layer-2 tagging of its port.
    */
-  const endpoint = (n: YNode, path: string, extended: boolean): (RelEndpoint & { networks: string[]; netNodes: YNode[] }) | null => {
+  const endpoint = (n: YNode, path: string, extended: boolean): (RelEndpoint & { tag: L2Tag }) | null => {
     let device: string | undefined;
     let iface: string | undefined;
-    const networks: string[] = [];
-    const netNodes: YNode[] = [];
+    let tag: L2Tag = { tagged: [] };
     if (n.kind === 'scalar') {
       const s = r.str(n, path, 200);
       if (s === undefined) {
@@ -573,21 +590,11 @@ function build(root: YNode | null, c: Ctx): Model | null {
       device = colon < 0 ? s : s.slice(0, colon);
       iface = colon < 0 ? undefined : s.slice(colon + 1);
     } else if (n.kind === 'map') {
-      r.keys(n, extended ? EP_KEYS : LINK_END_KEYS, path, '', extended ? RETIRED.endpoint : RETIRED.linkEnd);
+      r.keys(n, extended ? EP_KEYS : LINK_END_KEYS, path, '');
       device = r.reqStr(n, 'device', path, 200);
       iface = r.field(n, 'interface', path, 200);
-      if (!extended) {
-        // networks the cable carries at this end: a fact of the link end, kept exactly as configured
-        r.list(get(n, 'networks'), path + '.networks', true).forEach((nn, k) => {
-          const id = r.str(nn, `${path}.networks[${k}]`, 200);
-          if (id === undefined) return;
-          if (networks.indexOf(id) >= 0) c.error(nn, `${path}.networks[${k}]`, `network "${id}" is listed twice on this end`);
-          else {
-            networks.push(id);
-            netNodes.push(nn);
-          }
-        });
-      }
+      // the layer-2 tagging of the port at this end: a fact of the link end, kept exactly as configured
+      if (!extended) tag = readTagging(r, c, n, path);
       if (device === undefined) return null;
     } else {
       c.error(n, path, `expected "device", "device:interface" or a mapping with "device:" but found ${kindOf(n)}`);
@@ -608,12 +615,14 @@ function build(root: YNode | null, c: Ctx): Model | null {
       );
       return null;
     }
-    return { device, iface, networks, netNodes };
+    return { device, iface, tag };
   };
 
   // -------------------------------------------------------------- links
   const links: Link[] = [];
   const linkNodes = new Map<string, YMap>();
+  /** "<link id>.a" / ".b" -> the node of that end */
+  const endNodes = new Map<string, YNode>();
   const ifaceLink = new Map<string, string>();
   capped(r.list(get(top, 'links'), 'links'), L.maxLinks, 'links', 'links').forEach((n, i) => {
     const path = `links[${i}]`;
@@ -652,8 +661,10 @@ function build(root: YNode | null, c: Ctx): Model | null {
         }
         ifaceLink.set(key, id);
       }
-      const end: LinkEnd = { device: ep.device, iface: ep.iface, networks: ep.networks };
-      endNetworks.push({ end, nodes: ep.netNodes, path: `${lpath}.${side}.networks` });
+      const end: LinkEnd = { device: ep.device, iface: ep.iface, tagged: ep.tag.tagged };
+      if (ep.tag.mode !== undefined) end.mode = ep.tag.mode;
+      if (ep.tag.untagged !== undefined) end.untagged = ep.tag.untagged;
+      endNodes.set(`${id}.${side}`, en as YNode);
       return end;
     });
     const [a, b] = ends;
@@ -679,16 +690,18 @@ function build(root: YNode | null, c: Ctx): Model | null {
 
   // ----------------------------------------------------------- networks
   const networks: Network[] = [];
+  const netNodes = new Map<string, YMap>();
   const seenPrefixes: Array<{ id: string; p: IpPrefix }> = [];
   capped(r.list(get(top, 'networks'), 'networks'), L.maxNetworks, 'networks', 'networks').forEach((n, i) => {
     const path = `networks[${i}]`;
     const m = r.map(n, path);
     if (!m) return;
-    r.keys(m, NET_KEYS, path, ATTRS_HINT, RETIRED.network);
+    r.keys(m, NET_KEYS, path, ATTRS_HINT);
     const id = r.id(m, path);
     if (!id) return;
     const npath = `networks.${id}`;
     if (!claim(id, 'network', m, path)) return;
+    netNodes.set(id, m);
     // the one prefix is the authority for membership, so it must be a real prefix: exactly one, never a list
     const cidrNode = get(m, 'cidr');
     let cidr: string | undefined;
@@ -730,20 +743,6 @@ function build(root: YNode | null, c: Ctx): Model | null {
   });
   const networkMap = new Map(networks.map((x) => [x.id, x] as [string, Network]));
 
-  // link ends: every network id must name a network; the two ends are configured independently, a difference is reported, never repaired
-  for (const { end, nodes, path } of endNetworks) {
-    const ok: string[] = [];
-    end.networks.forEach((nid, k) => {
-      if (networkMap.has(nid)) ok.push(nid);
-      else c.error(nodes[k], `${path}[${k}]`, `unknown network "${nid}"${suggest(nid, networkMap.keys())}`);
-    });
-    end.networks = ok;
-  }
-  for (const l of links) {
-    const mm = networkMismatch(l.a.networks, l.b.networks);
-    if (mm) c.warn(linkNodes.get(l.id) as YMap, `links.${l.id}`, `the two ends of this link carry different networks (${networkMismatchText(mm, (nid) => (networkMap.get(nid) as Network).label)})`);
-  }
-
   // ---------------------------------------------------------- relations
   const relations: Relation[] = [];
   const overNodes = new Map<string, YNode>();
@@ -752,7 +751,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
     const path = `relations[${i}]`;
     const m = r.map(n, path);
     if (!m) return;
-    r.keys(m, REL_KEYS, path, ATTRS_HINT, RETIRED.relation);
+    r.keys(m, REL_KEYS, path, ATTRS_HINT);
     const id = r.id(m, path);
     if (!id) return;
     const rpath = `relations.${id}`;
@@ -943,6 +942,8 @@ function build(root: YNode | null, c: Ctx): Model | null {
     }
   }
 
+  const routes = new Map<string, Route>();
+  for (const d of devices) for (const rt of d.routes) routes.set(routeKey(d.id, rt.index), rt);
   const index: ModelIndex = {
     groups: groupMap,
     devices: deviceMap,
@@ -951,6 +952,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
     networks: networkMap,
     relations: relationMap,
     ifaceLink,
+    routes,
   };
   const model: Model = {
     version: FORMAT_VERSION,
@@ -985,7 +987,191 @@ function build(root: YNode | null, c: Ctx): Model | null {
       if (vn) c.warn(vn, `${ifacePaths.get(key)}.vlan`, `"${i.id}" is the interface of VLAN ${i.vlan}, but its address ${other.address} lies in a network of VLAN ${other.vlan.vlan}`);
     }
   }
+
+  // ------------------------------------------------------ consistency checks
+  // They describe the network, not the format, so they run on a model whose format is valid; each finding is
+  // attached to the entry (and field) it is about.
+  if (!c.errors.length) {
+    const place = (t: Target): { node: YNode; path: string; key?: string } | null => {
+      const colon = t.ref.indexOf(':');
+      const kind = t.ref.slice(0, colon);
+      const id = t.ref.slice(colon + 1);
+      let base: { node: YNode; path: string } | null = null;
+      let field = t.field;
+      if (kind === 'device') base = devNodes.get(id) || null;
+      else if (kind === 'iface') {
+        const n = ifaceNodes.get(id);
+        if (n) base = { node: n, path: ifacePaths.get(id) as string };
+      } else if (kind === 'route') base = routeNodes.get(id) || null;
+      else if (kind === 'link') {
+        const n = linkNodes.get(id);
+        if (n) base = { node: n, path: `links.${id}` };
+        // a field of one end ("a.untagged"): the end, then its key
+        const dot = field ? field.indexOf('.') : -1;
+        if (field && dot > 0) {
+          const side = field.slice(0, dot);
+          const en = endNodes.get(`${id}.${side}`);
+          if (en) {
+            base = { node: en, path: `links.${id}.${side}` };
+            field = field.slice(dot + 1);
+          }
+        }
+      } else if (kind === 'network') {
+        const n = netNodes.get(id);
+        if (n) base = { node: n, path: `networks.${id}` };
+      } else if (kind === 'relation') {
+        const n = relNodes.get(id);
+        if (n) base = { node: n, path: `relations.${id}` };
+      } else if (kind === 'group') {
+        const n = groupNodes.get(id);
+        if (n) base = { node: n, path: `groups.${id}` };
+      }
+      if (!base) return null;
+      if (!field) return base;
+      const fv = base.node.kind === 'map' ? get(base.node, field) : undefined;
+      if (fv && !isNull(fv)) return { node: fv, path: `${base.path}.${field}` };
+      // the field isn't written there (a missing value is part of the finding): the entry, about that key
+      return base.node.kind === 'map' ? { node: base.node, path: `${base.path}.${field}`, key: field } : base;
+    };
+    for (const f of runChecks(model)) {
+      const at = place(f.at);
+      if (!at) continue;
+      c.finding(f.severity, at.node, at.path, f.message, at.key !== undefined ? { key: at.key } : {}, f.check, f.refs);
+    }
+  }
   return model;
+}
+
+/** The layer-2 tagging written on a link end. */
+interface L2Tag {
+  mode?: PortMode;
+  untagged?: number;
+  tagged: VlanRange[];
+}
+
+/**
+ * The tagging of a link end's port: `mode` (access or trunk), the untagged
+ * VLAN (an access port's VLAN, a trunk's native VLAN) and the tagged VLANs,
+ * each an ID or a range "100-199". VLAN IDs are 1–4094. Tagging needs a
+ * mode, so nothing is assumed about a port that doesn't say what it is.
+ */
+function readTagging(r: Reader, c: Ctx, n: YMap, path: string): L2Tag {
+  const out: L2Tag = { tagged: [] };
+  const mode = r.field(n, 'mode', path, 40);
+  if (mode !== undefined) {
+    if ((PORT_MODES as readonly string[]).indexOf(mode) >= 0) out.mode = mode as PortMode;
+    else c.error(get(n, 'mode') as YNode, path + '.mode', `unknown port mode "${mode}": use "access" (one untagged VLAN) or "trunk" (tagged VLANs, plus a native one)${suggest(mode, PORT_MODES)}`);
+  }
+  out.untagged = r.vlanId(get(n, 'untagged'), path + '.untagged');
+  const seen: number[] = [];
+  r.list(get(n, 'tagged'), path + '.tagged', true).forEach((item, k) => {
+    const ip = `${path}.tagged[${k}]`;
+    const t = item.kind === 'scalar' ? scalarText(item) : undefined;
+    const m = t !== undefined ? /^([0-9]{1,4})(?:\s*-\s*([0-9]{1,4}))?$/.exec(t) : null;
+    const from = m ? Number(m[1]) : NaN;
+    const to = m ? Number(m[2] !== undefined ? m[2] : m[1]) : NaN;
+    if (!m || !(from >= VLAN_MIN && to <= VLAN_MAX && from <= to) || /^0/.test(m[1]) || (m[2] !== undefined && /^0/.test(m[2]))) {
+      c.error(item, ip, `${t !== undefined ? `"${t}"` : kindOf(item)} is not a VLAN ID or range: use a whole number from ${VLAN_MIN} to ${VLAN_MAX}, or a range such as 100-199`);
+      return;
+    }
+    const twice: number[] = [];
+    for (let v = from; v <= to; v++) if (seen.indexOf(v) >= 0) twice.push(v);
+    if (twice.length) {
+      c.error(item, ip, `VLAN ${twice[0]}${twice.length > 1 ? ' and others' : ''} listed twice in "tagged" on this end`);
+      return;
+    }
+    for (let v = from; v <= to; v++) seen.push(v);
+    out.tagged.push({ from, to });
+  });
+  if (out.mode === undefined && mode === undefined && (out.untagged !== undefined || !isNull(get(n, 'tagged')))) {
+    const k = out.untagged !== undefined ? 'untagged' : 'tagged';
+    c.error(get(n, k) as YNode, path + '.' + k, 'VLAN tagging needs the port mode: add "mode: access" (one untagged VLAN) or "mode: trunk" (tagged VLANs, plus an untagged native VLAN)');
+  }
+  return out;
+}
+
+/**
+ * The static routes of a device. Each has a destination prefix and a next
+ * hop: an address (`via`), an exit interface of this device, both, or
+ * `blackhole: true`. Only devices whose type routes may have them (see
+ * model/device-types.ts routingRole). A route with errors is reported and
+ * left out of the model; its entry stays in the file.
+ */
+function readRoutes(r: Reader, c: Ctx, m: YMap, dpath: string, dev: Device, nodes: Map<string, { node: YMap; path: string }>): Route[] {
+  const out: Route[] = [];
+  const listNode = get(m, 'routes');
+  const items = r.list(listNode, dpath + '.routes');
+  if (!items.length) return out;
+  const role = routingRole(dev.type);
+  if (role === null) {
+    const what = dev.type === NO_DEVICE_TYPE ? 'has no type' : `is of type ${deviceTypeLabel(dev.type)}`;
+    c.error(listNode as YNode, dpath + '.routes', `device "${dev.id}" ${what}, which has no routing table: static routes are allowed on ${ROUTE_DEVICE_TYPES.join(', ')} devices — set the type or delete the routes`);
+    return out;
+  }
+  const L = c.limits;
+  const ifaceIds = deviceInterfaces(dev).map((i) => i.id);
+  items.forEach((n, k) => {
+    const path = `${dpath}.routes[${k}]`;
+    const rm = r.map(n, path);
+    if (!rm) return;
+    r.keys(rm, ROUTE_KEYS, path, ATTRS_HINT);
+    let ok = true;
+    const prefixText = r.reqStr(rm, 'prefix', path, 64);
+    const p = prefixText !== undefined ? parsePrefix(prefixText) : null;
+    if (prefixText === undefined) ok = false;
+    else if (!p) {
+      c.error(get(rm, 'prefix') as YNode, path + '.prefix', `invalid destination prefix: ${prefixProblem(prefixText)} (a default route is 0.0.0.0/0 or ::/0)`);
+      ok = false;
+    } else if (hasHostBits(p)) {
+      c.warn(get(rm, 'prefix') as YNode, path + '.prefix', `${prefixText} has bits set beyond /${p.prefix}; the route is for the whole /${p.prefix} that contains it`);
+    }
+    const via = r.field(rm, 'via', path, 64);
+    if (via !== undefined) {
+      const a = parseAddress(via);
+      if (!a) {
+        c.error(get(rm, 'via') as YNode, path + '.via', via.indexOf('/') >= 0 && parseAddress(via.slice(0, via.indexOf('/'))) ? `write the next-hop address without a prefix length: ${via.slice(0, via.indexOf('/'))}` : `"${via}" is not an IPv4 or IPv6 address`);
+        ok = false;
+      } else if (p && a.version !== p.version) {
+        c.error(get(rm, 'via') as YNode, path + '.via', `the next hop ${via} is an IPv${a.version} address, the destination ${prefixText} an IPv${p.version} prefix`);
+        ok = false;
+      }
+    }
+    const iface = r.field(rm, 'interface', path, 200);
+    if (iface !== undefined && ifaceIds.indexOf(iface) < 0) {
+      c.error(get(rm, 'interface') as YNode, path + '.interface', `device "${dev.id}" has no interface "${iface}"` + (ifaceIds.length ? suggest(iface, ifaceIds) : ' (the device declares no interfaces)'));
+      ok = false;
+    }
+    const blackhole = r.bool(get(rm, 'blackhole'), path + '.blackhole') === true;
+    if (blackhole && (via !== undefined || iface !== undefined)) {
+      c.error(get(rm, 'blackhole') as YNode, path + '.blackhole', 'a blackhole route drops the traffic and has no next hop: delete "via" and "interface", or delete "blackhole: true"');
+      ok = false;
+    } else if (!blackhole && via === undefined && iface === undefined) {
+      c.error(rm, path, `${prefixText ? 'route ' + prefixText : 'a route'} needs a next hop: "via" (an address), "interface" (an exit interface of "${dev.id}"), both, or "blackhole: true"`, { key: 'via' });
+      ok = false;
+    }
+    const distance = r.int(get(rm, 'distance'), path + '.distance', 1, 255, 'administrative distance');
+    if (!isNull(get(rm, 'distance')) && distance === undefined) ok = false;
+    const metric = r.int(get(rm, 'metric'), path + '.metric', 0, 4294967295, 'metric');
+    if (!isNull(get(rm, 'metric')) && metric === undefined) ok = false;
+    const route: Route = {
+      device: dev.id,
+      index: k,
+      prefix: prefixText || '',
+      blackhole,
+      vrf: r.field(rm, 'vrf', path, 100),
+      name: r.field(rm, 'name', path, L.maxLabel),
+      description: r.field(rm, 'description', path, L.maxDescription),
+      attrs: r.attrs(get(rm, 'attrs'), path + '.attrs'),
+      line: rm.line,
+    };
+    if (via !== undefined) route.via = via;
+    if (iface !== undefined) route.iface = iface;
+    if (distance !== undefined) route.distance = distance;
+    if (metric !== undefined) route.metric = metric;
+    nodes.set(routeKey(dev.id, k), { node: rm, path });
+    if (ok) out.push(route);
+  });
+  return out;
 }
 
 /**

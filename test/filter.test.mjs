@@ -46,7 +46,7 @@ devices:
     logical_interfaces: [{id: lo0, type: loopback, ip: 10.255.0.3/32}]
 links:
   - {id: l12, a: "r1:e0", b: "r2:e0", medium: fiber}
-  - {id: l1s, a: {device: r1, interface: e2, networks: [v30]}, b: {device: sw, interface: p1, networks: [v30]}}
+  - {id: l1s, a: {device: r1, interface: e2, mode: access, untagged: 30}, b: {device: sw, interface: p1, mode: access, untagged: 30}}
   - {id: l3s, a: "r3:e0", b: "sw:p2"}
 networks:
   - {id: lan, cidr: 10.1.0.0/24}
@@ -75,7 +75,7 @@ test('physical view of a subset: only the selected devices, links with both ends
   assert.equal(sorted(f.index.ifaceLink.keys()), 'r1:e0,r1:e2,r2:e0,sw:p1');
   // mixed group "site": kept, with only its included devices; "far" holds only r3
   assert.equal(ids(f.groups), 'site,rack1,rack2');
-  // networks: included members, or carried at an end of an included cable; not named-by-relation only
+  // networks: included members, or whose VLAN an end of an included cable carries; not named-by-relation only
   assert.equal(ids(f.networks), 'lan,p2p,v30');
   // a network with members on both sides shows only its included members
   assert.deepEqual(networkMembers(m, 'lan').map((x) => x.device), ['r1', 'r2', 'sw', 'r3']);

@@ -44,6 +44,8 @@ export interface PortPos {
   linkId: string;
   device: string;
   iface?: string;
+  /** the port's layer-2 tagging, written as a second line of its label */
+  tag?: string;
   side: Side;
   x: number;
   y: number;
@@ -689,7 +691,7 @@ export function autoPhysical(input: LayoutInput): Map<string, Pt> {
     if (p.side !== 'left' && p.side !== 'right') continue;
     let pad = sidePad.get(p.device);
     if (!pad) sidePad.set(p.device, (pad = { left: 0, right: 0 }));
-    pad[p.side] = Math.max(pad[p.side], sideLabelWidth(p.iface));
+    pad[p.side] = Math.max(pad[p.side], sideLabelWidth(p.iface, p.tag));
   }
   // the same arrangement again, with the grown boxes
   restore();
@@ -718,14 +720,23 @@ export function physicalBoxes(input: LayoutInput, positions: Map<string, Pt>): M
   return boxes;
 }
 
-/** Room a label of a left/right port takes beside its device. */
-export function sideLabelWidth(iface: string | undefined): number {
-  return iface ? PORT_LABEL_GAP + textWidth(iface, PORT_FONT) + 4 : 0;
+/** Width of a port's label: its name, and its tagging under it. */
+export function portLabelTextWidth(iface: string | undefined, tag: string | undefined): number {
+  return Math.max(iface ? textWidth(iface, PORT_FONT) : 0, tag ? textWidth(tag, PORT_FONT) : 0);
 }
 
-function portLabelWidth(iface: string | undefined): number {
-  return iface ? textWidth(iface, PORT_FONT) + 12 : 14;
+/** Room a label of a left/right port takes beside its device. */
+export function sideLabelWidth(iface: string | undefined, tag?: string): number {
+  return iface || tag ? PORT_LABEL_GAP + portLabelTextWidth(iface, tag) + 4 : 0;
 }
+
+function portLabelWidth(iface: string | undefined, tag: string | undefined): number {
+  return iface || tag ? portLabelTextWidth(iface, tag) + 12 : 14;
+}
+
+/** Room a port on the left or right side needs along it: its label above the cable, and its tagging under it. */
+const SIDE_SLOT = 22;
+const SIDE_SLOT_TAGGED = 34;
 
 /**
  * Place a port for every link end on the side of its device facing the peer.
@@ -788,6 +799,7 @@ function layoutPorts(links: PortLink[], boxes: Map<string, CBox>): { ports: Port
         linkId: l.id,
         device: me.device,
         iface: me.iface,
+        tag: me.tag,
         side,
         x: 0,
         y: 0,
@@ -797,7 +809,7 @@ function layoutPorts(links: PortLink[], boxes: Map<string, CBox>): { ports: Port
       const k = me.device + '|' + side;
       if (!bySide.has(k)) bySide.set(k, []);
       const list = bySide.get(k) as Pending[];
-      const e: Pending = { p, peer: { x: ob.cx, y: ob.cy }, slot: vertical ? portLabelWidth(me.iface) : 22, at: 0, list, lag: me.lag || '' };
+      const e: Pending = { p, peer: { x: ob.cx, y: ob.cy }, slot: vertical ? portLabelWidth(me.iface, me.tag) : me.tag ? SIDE_SLOT_TAGGED : SIDE_SLOT, at: 0, list, lag: me.lag || '' };
       list.push(e);
       byKey.set(p.key, e);
       out.push(p);

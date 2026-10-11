@@ -328,9 +328,12 @@ button.ref:hover { text-decoration: underline; }
 .issues { list-style: none; padding: 0; margin: 12px 0; }
 .issue { border: 1px solid var(--border); border-left: 4px solid var(--error); border-radius: 6px; padding: 7px 10px; margin-bottom: 8px; background: var(--panel); }
 .issue.warning { border-left-color: var(--warn); }
+.issue.info { border-left-color: var(--accent); }
 .issue-head { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; font-size: 11.5px; }
 .issue .sev { font-weight: 700; text-transform: uppercase; color: var(--error); }
 .issue.warning .sev { color: var(--warn); }
+.issue.info .sev { color: var(--accent); }
+.issue .check-id { color: var(--muted); font-size: 11px; }
 .issue .loc { font-weight: 600; }
 .issue .path { color: var(--muted); }
 .issue .msg { margin-top: 2px; overflow-wrap: anywhere; }
@@ -357,7 +360,7 @@ button.ref:hover { text-decoration: underline; }
    gets tighter. */
 @media (max-height: 560px) {
   .topbar { padding-top: 3px; padding-bottom: 3px; gap: 5px; }
-  .dropdown.menu { max-height: calc(100vh - 44px); max-height: calc(100dvh - 44px); }
+  .dropdown.menu { max-height: calc(100vh - 52px); max-height: calc(100dvh - 52px); }
   #side-body { padding-top: 6px; padding-bottom: 8px; }
 }
 /* Very short windows (a strongly zoomed or tiny window): the toolbar groups keep their frames, and their
@@ -390,6 +393,20 @@ button.ref:hover { text-decoration: underline; }
 .port { stroke: var(--dev-fill); stroke-width: 1.2; cursor: pointer; }
 .halo { paint-order: stroke; stroke: var(--halo); stroke-width: 3.5px; stroke-linejoin: round; }
 .port-label { font-size: 10px; fill: var(--muted) !important; }
+/* the layer-2 tagging of a link end, under its port's name: "U 10 · T 20,30" */
+.port-tag { font-size: 10px; fill: var(--text) !important; cursor: pointer; }
+.has-selection .hl.port-tag, .hover-hl.port-tag { text-decoration: underline; }
+/* static routes (logical view): a route table in the device box, a line per route, and a dotted line to each next hop */
+.if-entry.route-table { cursor: default; }
+.if-entry.route-table rect { stroke: var(--member); stroke-dasharray: 4 2; }
+.if-entry.route-table [data-ref^="route:"] { cursor: pointer; }
+.has-selection tspan.dim, .has-selection text.dim[data-ref^="route:"] { fill-opacity: .25; }
+.has-selection [data-ref^="route:"].hl:not(g), .selected[data-ref^="route:"]:not(g) { font-weight: 700; text-decoration: underline; }
+.next-hop { cursor: pointer; }
+.nh-line { fill: none; stroke: var(--member); stroke-width: 1.3; stroke-dasharray: 1.5 3.5; stroke-linecap: round; }
+.nh-arrow { fill: var(--member); }
+.has-selection .hl .nh-line, .selected .nh-line, .hover-hl .nh-line { stroke: var(--sel); stroke-width: 2; }
+.has-selection .hl .nh-arrow, .selected .nh-arrow { fill: var(--sel); }
 .link-label { font-size: 10.5px; font-weight: 600; }
 .link-label.net-mismatch, .net-warn { fill: var(--warn) !important; }
 .net-warn { font-size: 14px; font-weight: 700; cursor: pointer; }

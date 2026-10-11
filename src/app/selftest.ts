@@ -10,7 +10,7 @@
 import { Device, Interface, Model } from '../model/types';
 import { ModelDoc } from '../editor/document';
 import { DEVICE_TYPES } from '../model/device-types';
-import { interfaceAddresses, interfaceVlanText, networkMembers } from '../model/derive';
+import { interfaceAddresses, interfaceVlanText, networkMembers, vlanIds, vlanRangesText } from '../model/derive';
 import { contextState, relatedRefs, selectionContext } from '../model/queries';
 import { addressInventory } from '../model/addresses';
 import { strNode } from '../yaml/parse';
@@ -257,7 +257,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
           labels.join('|') === 'New model|Open model…|Save model|Save model as…|Close model' && /Ctrl\+S$/.test(entries[2]) && /Ctrl\+Shift\+S$/.test(entries[3]) &&
           entries.length === 5 + EXAMPLES.length && ['#btn-save', '#btn-save-as', '#btn-close'].every((x) => (q(x) as HTMLButtonElement).disabled && /Open or create a model first|Close the current model/.test(q(x)!.title)) &&
           q('#btn-save')!.nextElementSibling === q('#btn-save-as') && q('#btn-save-as')!.nextElementSibling === q('#btn-close') &&
-          textsOf('#menu-examples .mi-label').join() === EXAMPLES.map((e) => e.name).join() && !q('#menu-examples .active-example') && /Examples/.test(q('#menu-examples-title')!.textContent || '') && EXAMPLES.length === 8 && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(menu!.textContent || '') && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(q('#empty')!.textContent || ''),
+          textsOf('#menu-examples .mi-label').join() === EXAMPLES.map((e) => e.name).join() && !q('#menu-examples .active-example') && /Examples/.test(q('#menu-examples-title')!.textContent || '') && EXAMPLES.length === 9 && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(menu!.textContent || '') && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(q('#empty')!.textContent || ''),
         entries.join(' | '),
       );
       menuBtn!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
@@ -1043,6 +1043,94 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       }
     }
 
+    // ------------------------------------------------ static routes in the diagram and the Edit tab
+    {
+      app.loadExample(EXAMPLES.findIndex((e) => e.name === 'branch-routing.yaml'));
+      click('[data-view-btn="logical"]');
+      await tick();
+      const m = app.session!.model;
+      const routeCount = m.devices.reduce((s, d) => s + d.routes.length, 0);
+      const routeLines = (): number => doc.querySelectorAll('#viewport .route-table [data-ref^="route:"]').length;
+      const txt = (sel: string): string => (q(sel) || { textContent: '' }).textContent || '';
+      const boxOf = (id: string): string => {
+        const r = (q(`#viewport g.device[data-ref="device:${id}"] .dev-box`) as unknown as SVGGraphicsElement).getBBox();
+        return [r.x, r.y, r.width, r.height].map((v) => Math.round(v)).join(',');
+      };
+      const nhLines = count('.next-hop');
+      check(
+        'logical view: every static route is a line of its device’s route table (one table per VRF), with dotted next-hop lines to the interfaces of other devices',
+        routeLines() === routeCount && count('.route-table') === 8 && nhLines === 13 && /Routes · VRF GUEST/.test(txt('#viewport')),
+        `${routeLines()} / ${routeCount} lines, ${nhLines} next-hop lines`,
+      );
+      const before = boxOf('br-rtr');
+      const routes = q('#opt-routes') as HTMLInputElement;
+      check('the Routes switch is a logical-view filter, on by default', routes.checked && !routes.disabled && (routes.parentElement as HTMLElement).classList.contains('logical-only'));
+      routes.click();
+      await tick();
+      check('Routes off: no route table and no next-hop line; the device boxes keep their size (nothing moves)', routeLines() === 0 && count('.next-hop') === 0 && boxOf('br-rtr') === before && !app.session!.state.showRoutes);
+      const expOff = app.exportSvg();
+      routes.click();
+      await tick();
+      check('Routes on again: tables and lines are back', routeLines() === routeCount && count('.next-hop') === nhLines);
+      const exp = app.exportSvg();
+      check(
+        'an export shows what is on screen: the route tables, next-hop lines and their legend entries with Routes on, none of them with Routes off',
+        /0\.0\.0\.0\/0 via 203\.0\.113\.5 AD 250/.test(exp) && /class="[^"]*next-hop/.test(exp) && /Static routes \(route table in the device, per VRF\)/.test(exp) && !/0\.0\.0\.0\/0 via 203\.0\.113\.5 AD 250/.test(expOff) && !/Static routes \(route table/.test(expOff),
+      );
+      // selecting a route: its line, its device, the interface of its next hop; the Edit tab opens its card
+      app.select('route:br-rtr:1');
+      click('[data-tab="edit"]');
+      await tick();
+      const card = q('#side-body details.route-card[open][data-route="1"]');
+      const viaIn = card ? (card.querySelector('input[data-p$=\'"via"]\']') as HTMLInputElement | null) : null;
+      check(
+        'selecting a route marks it and its next hop, and opens its card in the Edit tab, marked as selected',
+        !!card && card.classList.contains('sel-mark') && !!viaIn && /203\.0\.113\.5/.test(viaIn.value) &&
+          !!q('#viewport [data-ref="route:br-rtr:1"].selected') && !!q('#viewport [data-ref="iface:isp-b-pe:ge-0/0/1"].hl'),
+        card ? card.className + ' / ' + (card.textContent || '').slice(0, 200) : 'no card: ' + txt('#side-body').slice(0, 200),
+      );
+      // duplicate it (the copy is selected), change the copy's distance, undo
+      const dupBtn = q('#side-body details.route-card[data-route="1"] [data-act="dup-route"]') as HTMLElement;
+      dupBtn.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, pointerId: 5 }));
+      await tick();
+      const copies = (app.mdoc as ModelDoc).routeEntries(0).filter((e) => e.via === '203.0.113.5' && e.prefix === '0.0.0.0/0').length;
+      await setField('#side-body details.route-card[open][data-route="2"] input[data-p=\'["devices",0,"routes",2,"distance"]\']', '240');
+      check('Duplicate adds a copy right after the route and selects it; its fields edit the copy', copies === 2 && /distance: 240/.test(app.exportText()) && app.session!.state.selected === 'route:br-rtr:2');
+      app.undo();
+      app.undo();
+      await tick();
+      check('… and undo removes the edit and the copy again', (app.mdoc as ModelDoc).routeEntries(0).length === 6 && !/distance: 240/.test(app.exportText()));
+      // "+ Route" on a host: a new, empty route to fill in; the check finds a next hop that is not connected
+      app.select('device:pc1');
+      click('[data-tab="edit"]');
+      await tick();
+      const add = q('#side-body [data-act="add-route"]') as HTMLElement;
+      add.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, pointerId: 6 }));
+      await tick();
+      const pcIndex = (app.mdoc as ModelDoc).findEntity('device', 'pc1')!.index;
+      const base = `["devices",${pcIndex},"routes",1`;
+      await setField(`#side-body input[data-p='${base},"prefix"]']`, '10.30.0.0/16');
+      await setField(`#side-body input[data-p='${base},"via"]']`, '10.99.0.1');
+      const f = (app.mdoc as ModelDoc).findings.filter((x) => x.check === 'route-nexthop-unresolved');
+      const msg = txt('#side-body details.route-card[open]');
+      check(
+        '"+ Route" adds an empty route to the device; the fields write it; a next hop that is not connected is reported at the field (a consistency check) and listed in Problems',
+        /routes:\n {6}- \{prefix: 0\.0\.0\.0\/0, via: 10\.20\.10\.1, name: default gateway\}\n {6}- \{prefix: 10\.30\.0\.0\/16, via: 10\.99\.0\.1\}/.test(app.exportText()) && f.length === 1 && /not in a network directly connected to pc1/.test(msg) && /Problems \(1\)/.test(q('[data-tab="problems"]')!.textContent || ''),
+        msg,
+      );
+      click('[data-tab="problems"]');
+      await tick();
+      const item = q('#side-body .issue.error.clickable');
+      check('the finding is in the Problems tab with its check id, and clicking it opens the route', !!item && /route-nexthop-unresolved/.test(item.textContent || ''));
+      if (item) item.click();
+      await tick();
+      check('… the Edit tab shows that route’s card', !!q(`#side-body details.route-card[open][data-route="1"]`));
+      app.undo();
+      app.undo();
+      app.undo();
+      (app.mdoc as ModelDoc).markSaved();
+    }
+
     // ------------------------------------------------ viewer interactions
     app.loadExample(EXAMPLES.findIndex((e) => /enterprise-wan/.test(e.name)));
     click('[data-view-btn="physical"]');
@@ -1296,9 +1384,9 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const right = (Array.prototype.map.call(doc.querySelectorAll('#view-filters > .devices-wrap, #view-filters > label.opt'), (e: Element) => (e.textContent || '').replace(/\s+/g, ' ').trim()) as string[]);
       const vis = (sel: string): boolean => !!q(sel) && (q(sel) as HTMLElement).offsetParent !== null;
       check(
-        'top-right diagram controls: Devices (all selected), Labels, Groups / Locations, Endpoints and Servers on, in both views; Networks only in the logical view; no Underlay',
-        /^Devices: all \(15\)/.test(right[0] || '') && right[1] === 'Labels' && right[2] === 'Groups / Locations' && right[3] === 'Networks' && right[4] === 'Endpoints' && right[5] === 'Servers' && right.length === 6 && !q('#opt-underlay') &&
-          (q('#opt-labels') as HTMLInputElement).checked && (q('#opt-groups') as HTMLInputElement).checked && vis('#opt-groups') && !vis('#opt-networks') && !btn.disabled && hint.hidden && !s().isFiltered() &&
+        'top-right diagram controls: Devices (all selected), Labels, Groups / Locations, Endpoints and Servers on, in both views; Networks and Routes only in the logical view; no Underlay',
+        /^Devices: all \(15\)/.test(right[0] || '') && right[1] === 'Labels' && right[2] === 'Groups / Locations' && right[3] === 'Networks' && right[4] === 'Routes' && right[5] === 'Endpoints' && right[6] === 'Servers' && right.length === 7 && !q('#opt-underlay') &&
+          (q('#opt-labels') as HTMLInputElement).checked && (q('#opt-groups') as HTMLInputElement).checked && vis('#opt-groups') && !vis('#opt-networks') && !vis('#opt-routes') && (q('#opt-routes') as HTMLInputElement).checked && !btn.disabled && hint.hidden && !s().isFiltered() &&
           (q('#opt-type-endpoint') as HTMLInputElement).checked && (q('#opt-type-server') as HTMLInputElement).checked && vis('#opt-type-endpoint') && vis('#opt-type-server'),
         right.join(' | '),
       );
@@ -2221,74 +2309,66 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       check('derived members and interface VLANs are never written to the YAML', !/\n {4}members:|kind:/.test(ex) && (ex.match(/vlan: /g) || []).length === 3 && !/eth0[^\n]*vlan/.test(ex), ex);
     }
 
-    // ------------------------------------ per-end networks on a link
+    // ------------------------------------ layer-2 tagging on the link ends
     {
-      // a third network without a VLAN: the picker is not limited to networks with VLAN IDs
-      click('#outline [data-act="add-entity"][data-kind="network"]');
-      await tick();
-      await setField('#side-body input[data-t="text"][data-p=\'["networks",2,"cidr"]\']', '192.0.2.0/24');
       click('#outline [data-act="select"][data-kind="link"][data-index="0"]');
       await tick();
-      const end = (side: string): string => `#side-body [data-net-end="${side}"]`;
-      const n = (side: string): number => Number((q(end(side)) || { getAttribute: () => '-1' }).getAttribute('data-net-count'));
-      const mismatch = (): string => (q('#side-body [data-net-mismatch]') || { getAttribute: () => '' }).getAttribute('data-net-mismatch') || '';
-      const pick = (side: string): string => `#side-body select[data-t="net-pick"][data-p='["links",0,"${side}"]']`;
-      const options = (side: string): string => (Array.prototype.map.call((q(pick(side)) as HTMLSelectElement).options, (o: HTMLOptionElement) => o.value) as string[]).filter((x) => x).join();
-      const lk = (): { a: string[]; b: string[] } => {
+      const end = (side: string): string => `#side-body [data-tag-end="${side}"]`;
+      const mode = (side: string): string => (q(end(side)) || { getAttribute: () => '?' }).getAttribute('data-mode') || '';
+      const mismatch = (): string => (q('#side-body [data-tag-mismatch]') || { getAttribute: () => '' }).getAttribute('data-tag-mismatch') || '';
+      const modeSel = (side: string): string => `#side-body select[data-t="end-mode"][data-p='["links",0,"${side}"]']`;
+      const taggedIn = (side: string): string => `#side-body input[data-t="end-tagged"][data-p='["links",0,"${side}","tagged"]']`;
+      const lk = (): string => {
         const l = (app.mdoc as ModelDoc).result.model!.links[0];
-        return { a: l.a.networks, b: l.b.networks };
+        const e = (x: typeof l.a): string => `${x.mode || '-'}/${x.untagged === undefined ? '-' : x.untagged}/${vlanRangesText(vlanIds(x.tagged))}`;
+        return e(l.a) + ' ' + e(l.b);
       };
       const label = (): string => (Array.prototype.map.call(doc.querySelectorAll('#viewport .link-label'), (e: Element) => e.textContent || '') as string[]).join('|');
+      const tags = (): string => (Array.prototype.map.call(doc.querySelectorAll('#viewport .port-tag'), (e: Element) => e.textContent || '') as string[]).sort().join('|');
       check(
-        'a link end without networks says "No network"; nothing is assumed; the picker offers every network, with or without a VLAN',
-        n('A') === 0 && n('B') === 0 && /No network/.test(text(end('A'))) && mismatch() === 'no' && !/networks: \[|vlans/.test((app.mdoc as ModelDoc).exportText()) && options('a') === 'net1,net2,net3' && !q('#side-body [data-t="vlan-add"]'),
-        options('a'),
+        'a link end without a mode says nothing about layer 2; nothing is assumed, nothing is written',
+        mode('A') === 'none' && mode('B') === 'none' && mismatch() === 'no' && !/mode:|tagged:|untagged:/.test((app.mdoc as ModelDoc).exportText()) && lk() === '-/-/ -/-/',
+        lk(),
       );
       check('speed and medium are fields of the link', !!q('#side-body [data-p=\'["links",0,"speed"]\']') && !!q('#side-body [data-p=\'["links",0,"medium"]\']'));
-      await setField(pick('a'), 'net1');
-      await setField(pick('a'), 'net3');
+      await setField(modeSel('a'), 'trunk');
+      await setField(taggedIn('a'), '78, 100-110');
       check(
-        'two networks on end A, by id: listed as networks (the VLAN of a network is only shown with it), never as a trunk; end B is not touched',
-        n('A') === 2 && /2 networks/.test(text(end('A'))) && /net1 · VLAN 78/.test(text(end('A'))) && !/trunk/i.test(text(end('A'))) && n('B') === 0 && JSON.stringify(lk()) === '{"a":["net1","net3"],"b":[]}' &&
-          /a: \{device: router1, interface: eth0, networks: \[net1, net3\]\}, b: edge2:eth0/.test((app.mdoc as ModelDoc).exportText()),
+        'end A becomes a trunk with tagged VLANs (a range kept as a range); end B is not touched',
+        mode('A') === 'trunk' && mode('B') === 'none' && lk() === 'trunk/-/78,100-110 -/-/' && /a: \{device: router1, interface: eth0, mode: trunk, tagged: \[78, 100-110\]\}, b: edge2:eth0/.test((app.mdoc as ModelDoc).exportText()),
         (app.mdoc as ModelDoc).exportText(),
       );
+      await setField(modeSel('b'), 'trunk');
+      await setField(taggedIn('b'), '78');
       click('[data-view-btn="physical"]');
       check(
-        'the difference between the ends is shown (editor, problems, physical view) and not repaired',
-        mismatch() === 'yes' && /only at end A: net1, net3/.test(text('#side-body [data-net-mismatch]')) && (app.mdoc as ModelDoc).warnings.some((w) => /carry different networks/.test(w.message)) &&
-          count('.cable.net-mismatch') === 1 && count('.net-warn') === 1 && /networks differ/.test(label()) && !/trunk/i.test(label()),
-        text('#side-body [data-net-mismatch]') + ' / ' + label(),
+        'trunks tagging different VLANs: shown in the editor, in Problems (a check) and on the cable, never repaired',
+        mismatch() === 'yes' && /tagged only at end A: 100-110/.test(text('#side-body [data-tag-mismatch]')) && (app.mdoc as ModelDoc).findings.some((f) => f.check === 'vlan-tagged-mismatch') &&
+          count('.cable.net-mismatch') === 1 && count('.net-warn') === 1 && /VLANs differ/.test(label()) && tags() === 'T 78|T 78,100-110',
+        text('#side-body [data-tag-mismatch]') + ' / ' + label() + ' / ' + tags(),
       );
-      await setField(pick('b'), 'net3');
-      await setField(pick('b'), 'net1');
+      check('VLANs 100-110 exist nowhere in the model: a warning names them', (app.mdoc as ModelDoc).findings.some((f) => f.check === 'vlan-unknown' && /100-110/.test(f.message)));
+      await setField(taggedIn('b'), '100-110, 78');
       check(
-        'the same networks at both ends (in any order): no difference; the cable is labelled with them, not as a trunk',
-        JSON.stringify(lk()) === '{"a":["net1","net3"],"b":["net3","net1"]}' && mismatch() === 'no' && count('.cable.net-mismatch') === 0 && count('.net-warn') === 0 &&
-          /net1, net3/.test(label()) && !/trunk/i.test(label() + text('#side-body')) && !(app.mdoc as ModelDoc).warnings.some((w) => /carry different networks/.test(w.message)),
+        'the same VLANs at both ends (in any order): no difference, no mark on the cable',
+        lk() === 'trunk/-/78,100-110 trunk/-/78,100-110' && mismatch() === 'no' && count('.cable.net-mismatch') === 0 && count('.net-warn') === 0 && !/VLANs differ/.test(label()) && !(app.mdoc as ModelDoc).findings.some((f) => f.check === 'vlan-tagged-mismatch'),
         label(),
       );
-      click('#side-body [data-act="del-net"][data-p=\'["links",0,"a"]\'][data-k="net3"]');
-      await tick();
-      check('removing a network from one end leaves the other end as it was (the difference is shown again)', JSON.stringify(lk()) === '{"a":["net1"],"b":["net3","net1"]}' && n('A') === 1 && n('B') === 2 && mismatch() === 'yes');
-      // selecting a network highlights the cables that carry it, with their ports
-      app.select('network:net3');
-      check('selecting a network highlights the cable that carries it at an end', count('.cable.hl') === 1, String(count('.cable.hl')));
+      // selecting a network highlights the cables that carry its VLAN, with their ports
+      app.select('network:net1');
+      check('selecting a network highlights the cable that carries its VLAN', count('.cable.hl') === 1, String(count('.cable.hl')));
       app.select(null);
-      click('#outline [data-act="select"][data-kind="link"][data-index="0"]');
-      await tick();
-      await setField(pick('a'), 'net3');
-      // a VLAN interface in a network carried on a port: "Ports carrying its networks" follows the link ends
+      // a VLAN interface: "Ports carrying its VLAN" follows the tagging of the link ends
       await selectDevice(0);
       await setField("#side-body [data-p='[\"devices\",0,\"logical_interfaces\",2,\"vlan\"]']", '78');
-      const netPorts = `#side-body [data-card='["devices",0,"logical_interfaces",2]'] > [data-derived="net-ports"]`;
-      const ports = (Array.prototype.map.call(doc.querySelectorAll(netPorts + ' li[data-port]'), (e: Element) => e.getAttribute('data-port')) as string[]).join();
+      const vlanPorts = `#side-body [data-card='["devices",0,"logical_interfaces",2]'] > [data-derived="vlan-ports"]`;
+      const ports = (Array.prototype.map.call(doc.querySelectorAll(vlanPorts + ' li[data-port]'), (e: Element) => e.getAttribute('data-port')) as string[]).join();
       check(
-        'a VLAN interface shows "Ports carrying its networks" read-only, derived from the networks on the link ends',
-        ports === 'eth0' && /Ports carrying its networks \(net1\)/.test(text(netPorts)) && /net1 on/.test(text(netPorts)) && readOnly(netPorts) && /- \{id: virtual1, type: virtual, vlan: 78\}/.test(app.exportText()),
-        text(netPorts),
+        'a VLAN interface shows "Ports carrying its VLAN" read-only, derived from the tagging of the link ends',
+        ports === 'eth0' && /Ports carrying its VLAN \(VLAN 78\)/.test(text(vlanPorts)) && /VLAN 78 tagged on/.test(text(vlanPorts)) && readOnly(vlanPorts) && /- \{id: virtual1, type: virtual, vlan: 78\}/.test(app.exportText()),
+        text(vlanPorts),
       );
-      check('link-end networks and network VLANs stay separate facts', (app.mdoc as ModelDoc).result.model!.networks[0].vlan === 78 && JSON.stringify(lk()) === '{"a":["net1","net3"],"b":["net3","net1"]}');
+      check('link-end tagging and network VLANs stay separate facts', (app.mdoc as ModelDoc).result.model!.networks[0].vlan === 78 && lk() === 'trunk/-/78,100-110 trunk/-/78,100-110');
       click('[data-view-btn="logical"]');
     }
 
@@ -2312,16 +2392,16 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
           rm.relations[0].attrs.some(([k, v]) => k === 'keepalive.interval' && v === '10s') && /key: 42/.test(created.text),
         created.text);
       check(
-        'export → reload: per-end networks are in the file; members and interface VLANs are derived again, not stored',
-        !!rm && JSON.stringify([rm.links[0].a.networks, rm.links[0].b.networks]) === '[["net1","net3"],["net3","net1"]]' && networkMembers(rm, 'net1').map((m) => m.device).join() === 'router1,edge2' &&
-          interfaceVlanText(interfaceAddresses(rm, 'router1', 'eth0')) === 'VLAN 78' && !/\n {4}members:|kind:/.test(created.text) && /b: \{device: edge2, interface: eth0, networks: \[net3, net1\]\}/.test(created.text),
+        'export → reload: the tagging of both ends is in the file; members and interface VLANs are derived again, not stored',
+        !!rm && JSON.stringify([rm.links[0].a.tagged, rm.links[0].b.tagged]) === '[[{"from":78,"to":78},{"from":100,"to":110}],[{"from":100,"to":110},{"from":78,"to":78}]]' && networkMembers(rm, 'net1').map((m) => m.device).join() === 'router1,edge2' &&
+          interfaceVlanText(interfaceAddresses(rm, 'router1', 'eth0')) === 'VLAN 78' && !/\n {4}members:|kind:/.test(created.text) && /b: \{device: edge2, interface: eth0, mode: trunk, tagged: \[100-110, 78\]\}/.test(created.text),
         created.text);
       if (rd) {
         app.loadText(created.text, 'reloaded.yaml', 'file');
         click('[data-view-btn="physical"]');
         const physOk = count('.cable') === 1 && count('.net-warn') === 0;
         click('[data-view-btn="logical"]');
-        check('… and both views draw the reloaded file the same way (cable with matching ends; 2 membership lines)', physOk && count('.member') === 2 && count('g.network') === 3, `${count('.member')} member lines`);
+        check('… and both views draw the reloaded file the same way (cable with matching ends; 2 membership lines)', physOk && count('.member') === 2 && count('g.network') === 2, `${count('.member')} member lines, ${count('g.network')} networks`);
       }
     }
 
@@ -2408,7 +2488,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     await tick();
     check('"move into attrs" fixes an unknown property', /attrs:\n\s+colour: blue/.test(app.exportText()));
 
-    // keys that are not part of the format are rejected with what to do instead (never read or converted)
+    // keys that are not part of the format are unknown keys (never read or converted)
     {
       const badFile = app.loadText(
         'netatlas: 1\ngroups:\n  - {id: g1, kind: row}\ndevices:\n  - id: r1\n    vendor: Acme\n    router_id: lo0\n    interfaces: [{id: e0, type: physical, speed: 1G, media: fiber, vlan: 5, ip: 10.0.0.1/24, children: [{id: t0, type: tunnel}]}]\n    loopbacks: [{id: lo0, ip: 10.9.9.9/32}]\nnetworks:\n  - {id: n1, kind: vlan, vrf: red, cidr: 10.0.0.0/24, members: [r1]}\n',
@@ -2417,9 +2497,9 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       );
       const msgs = badFile.errors.map((e) => e.message).join(' | ');
       check(
-        'a file with keys outside the format opens as a draft with one actionable error per key',
-        badFile.ok && badFile.errors.length === 12 && /"children" is not part of the format — interfaces are not nested/.test(msgs) && /"loopbacks" is not part of the format/.test(msgs) && /"speed" is not part of the format/.test(msgs) && /"vendor" is not part of the format/.test(msgs) && /"router_id" is not part of the format/.test(msgs) && /"type" is not part of the format/.test(msgs) &&
-          (app.mdoc as ModelDoc).result.model!.devices[0].logical.length === 0 && (app.mdoc as ModelDoc).result.model!.devices[0].interfaces.length === 1 && (app.mdoc as ModelDoc).result.model!.devices[0].interfaces.every((i) => i.type === 'physical') && /"members" is not part of the format/.test(msgs) && /write "kind: floor"/.test(msgs) &&
+        'a file with keys outside the format opens as a draft with one error per key',
+        badFile.ok && badFile.errors.length === 11 && ['children', 'loopbacks', 'speed', 'vendor', 'router_id', 'type', 'members'].every((k) => msgs.indexOf(`unknown key "${k}"`) >= 0) &&
+          (app.mdoc as ModelDoc).result.model!.devices[0].logical.length === 0 && (app.mdoc as ModelDoc).result.model!.devices[0].interfaces.length === 1 && (app.mdoc as ModelDoc).result.model!.devices[0].interfaces.every((i) => i.type === 'physical') && (app.mdoc as ModelDoc).result.model!.groups[0].kind === 'row' &&
           (app.mdoc as ModelDoc).result.model!.networks[0].vlan === undefined && networkMembers((app.mdoc as ModelDoc).result.model!, 'n1').length === 1,
         msgs,
       );
@@ -3011,7 +3091,13 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         const mid = parts.map((e) => rect(e).top + rect(e).height / 2);
         return mid.every((y) => Math.abs(y - mid[0]) < 2.5);
       };
-      check('wide window: every filter on the toolbar, on one row, no Filters button', inline().join() === 'Labels,Groups / Locations,Networks,Endpoints,Servers' && more.hidden && oneRow(), inline().join());
+      const ORDER = ['Labels', 'Groups / Locations', 'Networks', 'Routes', 'Endpoints', 'Servers'];
+      const wideInline = inline();
+      check(
+        'wide window: the filters on one row, by priority; whatever does not fit is in the Filters drop-down (none in a window wide enough)',
+        wideInline.length >= 3 && wideInline.join() === ORDER.slice(0, wideInline.length).join() && more.hidden === (wideInline.length === ORDER.length) && oneRow(),
+        wideInline.join(),
+      );
       top.style.maxWidth = '540px';
       app.layoutFilters();
       await tick();
@@ -3019,7 +3105,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       check(
         'narrow toolbar: the filters stay on one row; Servers, then Endpoints, … move into the Filters drop-down by priority',
         // the ones that stay inline are the highest-priority ones, in order (possibly none at this width)
-        oneRow() && !more.hidden && narrowInline.length < 5 && narrowInline.join() === ['Labels', 'Groups / Locations', 'Networks', 'Endpoints', 'Servers'].slice(0, narrowInline.length).join() &&
+        oneRow() && !more.hidden && narrowInline.length < wideInline.length && narrowInline.join() === ORDER.slice(0, narrowInline.length).join() &&
           !!q('#more-filters #opt-type-server') && rect(group).right <= rect(top).right + 0.5 && doc.documentElement.scrollWidth <= doc.documentElement.clientWidth,
         narrowInline.join(),
       );
@@ -3042,7 +3128,11 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       top.style.maxWidth = '';
       app.layoutFilters();
       await tick();
-      check('back to a wide toolbar: every filter is inline again, with its state kept (Servers still off, shown unchecked)', inline().length === 5 && more.hidden && !servers.checked && servers.parentElement!.parentElement === group && oneRow());
+      check(
+        'back to a wide toolbar: the same filters are inline again, with their state kept (Servers still off, shown unchecked)',
+        inline().join() === wideInline.join() && !servers.checked && (wideInline.length === ORDER.length ? more.hidden && servers.parentElement!.parentElement === group : !more.hidden && /1 off/.test(more.textContent || '')) && oneRow(),
+        inline().join(),
+      );
       servers.click();
       await tick();
 

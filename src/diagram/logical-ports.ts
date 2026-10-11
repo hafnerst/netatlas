@@ -301,7 +301,7 @@ export function routeLogical(
   }
   /** how far the end label of a binding reaches out from the side of its box (0: none) */
   const labelReach = (d: string, iface: string | undefined): number => (iface === undefined ? 0 : END_LABEL_X + endLabelWidth(model, d, iface) + 2);
-  bySide.forEach((list) => {
+  const nestStubs = (): void => bySide.forEach((list) => {
     // the own end label is on the side the lanes turn away from: it needs no longer stub
     // … unless it turns toward that side (a port with lanes turning both ways): then it turns beyond the label
     const base = (e: End): number => {
@@ -333,63 +333,102 @@ export function routeLogical(
   });
 
   // Other devices are kept clear of as far as their stubs reach out (and a little above and below).
-  const reach = new Map<string, { left: number; right: number }>();
-  for (const e of ends) {
-    const r = reach.get(e.device) || { left: 0, right: 0 };
-    r[e.side] = Math.max(r[e.side], e.stub + e.width / 2, labelReach(e.device, e.iface));
-    reach.set(e.device, r);
-  }
-  nodes.forEach((n) => {
-    if (n.kind !== 'device') return;
-    const r = reach.get(n.id) || { left: 0, right: 0 };
-    const b = boxRect(n);
-    const l = Math.max(PORT_CLEAR, r.left + 6);
-    const rr = Math.max(PORT_CLEAR, r.right + 6);
-    far.set(n.id, { x: b.x - l, y: b.y - 10, w: b.w + l + rr, h: b.h + 20 });
-  });
+  const keepClear = (): void => {
+    const reach = new Map<string, { left: number; right: number }>();
+    for (const e of ends) {
+      const r = reach.get(e.device) || { left: 0, right: 0 };
+      r[e.side] = Math.max(r[e.side], e.stub + e.width / 2, labelReach(e.device, e.iface));
+      reach.set(e.device, r);
+    }
+    nodes.forEach((n) => {
+      if (n.kind !== 'device') return;
+      const r = reach.get(n.id) || { left: 0, right: 0 };
+      const b = boxRect(n);
+      const l = Math.max(PORT_CLEAR, r.left + 6);
+      const rr = Math.max(PORT_CLEAR, r.right + 6);
+      far.set(n.id, { x: b.x - l, y: b.y - 10, w: b.w + l + rr, h: b.h + 20 });
+    });
+  };
 
   // ---- routes: port, stub, around the boxes in the way, stub, port
-  /** the corners of obstacles routes go around, and how far out the next one has to go (see laneDetour) */
-  const corners = new Map<string, number>();
-  const strands = new Map<string, Pt[]>();
+  /**
+   * The routes are laid out twice when needed. The stubs nest by the turn
+   * each route makes after its stub, first judged from where its other end
+   * is; a route that has to go around a box may turn the other way (a level
+   * route led over a box in between climbs, and passes beside the rows
+   * above its own). Where a route turns differently from what was judged,
+   * the stubs are nested again with its real turn, so it turns beyond the
+   * end labels it passes, and every route is laid out again.
+   */
+  nestStubs();
+  keepClear();
+  let routed = routeAll();
+  const realTurn = (pts: Pt[]): number => {
+    // after the port (0) and the end of its stub (1): the first point at another height
+    for (let k = 2; k < pts.length; k++) if (Math.abs(pts[k].y - pts[1].y) > 1) return turnOf(pts[k].y - pts[1].y);
+    return 0;
+  };
+  let changed = false;
   strandEnds.forEach(([ea, eb], id) => {
-    const [bi] = id.split(':');
-    const b = bundles[Number(bi)];
-    const A = dev(b.a) as LNode;
-    const B = dev(b.b) as LNode;
-    const pa = { x: sideX(A, ea.side), y: ea.y };
-    const pb = { x: sideX(B, eb.side), y: eb.y };
-    const qa = { x: pa.x + dirOf(ea.side) * ea.stub, y: pa.y };
-    const qb = { x: pb.x + dirOf(eb.side) * eb.stub, y: pb.y };
-    const width = b.strands[Number(id.split(':')[1])].width;
-    const obstacles = obstaclesFor([b.a, b.b], qa, qb);
-    // heading back past its own box: first out of the box's reach, then on (around whatever is in the way)
-    const ca = pastOwnBox(qa, qb, dirOf(ea.side), boxRect(A), obstacles);
-    const s0 = ca.length ? ca[ca.length - 1] : qa;
-    const cb = pastOwnBox(qb, s0, dirOf(eb.side), boxRect(B), obstacles).reverse();
-    const e0 = cb.length ? cb[0] : qb;
-    const pts = clean([pa, qa, ...ca, ...laneDetour(s0, e0, obstacles, width, corners), ...cb, qb, pb]);
-    strands.set(id, clean(elbow(elbow(pts, dirOf(ea.side), obstacles, boxRect(A)).reverse(), dirOf(eb.side), obstacles, boxRect(B)).reverse()));
+    const pts = routed.strands.get(id);
+    if (!pts || pts.length < 3) return;
+    const ta = realTurn(pts);
+    const tb = realTurn(pts.slice().reverse());
+    if (ta !== ea.turn || tb !== eb.turn) changed = true;
+    ea.turn = ta;
+    eb.turn = tb;
   });
-  const spokes = new Map<string, Pt[]>();
-  for (const r of hubs) {
-    const hub = nodes.get('hub:' + r.id);
-    if (!hub) continue;
-    for (const d of relationDevices(r)) {
-      const e = spokeEnds.get(r.id + ':' + d);
-      if (!e) continue;
-      const D = dev(d) as LNode;
-      const p = { x: sideX(D, e.side), y: e.y };
-      const q = { x: p.x + dirOf(e.side) * e.stub, y: p.y };
-      const c = { x: hub.cx, y: hub.cy };
-      const obstacles = obstaclesFor([d], q, { x: hub.cx, y: hub.cy });
-      const cq = pastOwnBox(q, c, dirOf(e.side), boxRect(D), obstacles);
-      const way = cq.concat(laneDetour(cq.length ? cq[cq.length - 1] : q, c, obstacles, e.width, corners));
-      const last = way.length ? way[way.length - 1] : q;
-      spokes.set(r.id + ':' + d, clean(elbow(clean([p, q, ...way, clipToCircle(c, HUB_R, last)]), dirOf(e.side), obstacles, boxRect(D))));
-    }
+  if (changed) {
+    for (const e of ends) e.stub = PORT_STUB;
+    nestStubs();
+    keepClear();
+    routed = routeAll();
   }
-  return { strands, spokes, ports };
+  return { strands: routed.strands, spokes: routed.spokes, ports };
+
+  function routeAll(): { strands: Map<string, Pt[]>; spokes: Map<string, Pt[]> } {
+    /** the corners of obstacles routes go around, and how far out the next one has to go (see laneDetour) */
+    const corners = new Map<string, number>();
+    const strands = new Map<string, Pt[]>();
+    strandEnds.forEach(([ea, eb], id) => {
+      const [bi] = id.split(':');
+      const b = bundles[Number(bi)];
+      const A = dev(b.a) as LNode;
+      const B = dev(b.b) as LNode;
+      const pa = { x: sideX(A, ea.side), y: ea.y };
+      const pb = { x: sideX(B, eb.side), y: eb.y };
+      const qa = { x: pa.x + dirOf(ea.side) * ea.stub, y: pa.y };
+      const qb = { x: pb.x + dirOf(eb.side) * eb.stub, y: pb.y };
+      const width = b.strands[Number(id.split(':')[1])].width;
+      const obstacles = obstaclesFor([b.a, b.b], qa, qb);
+      // heading back past its own box: first out of the box's reach, then on (around whatever is in the way)
+      const ca = pastOwnBox(qa, qb, dirOf(ea.side), boxRect(A), obstacles);
+      const s0 = ca.length ? ca[ca.length - 1] : qa;
+      const cb = pastOwnBox(qb, s0, dirOf(eb.side), boxRect(B), obstacles).reverse();
+      const e0 = cb.length ? cb[0] : qb;
+      const pts = clean([pa, qa, ...ca, ...laneDetour(s0, e0, obstacles, width, corners), ...cb, qb, pb]);
+      strands.set(id, clean(elbow(elbow(pts, dirOf(ea.side), obstacles, boxRect(A)).reverse(), dirOf(eb.side), obstacles, boxRect(B)).reverse()));
+    });
+    const spokes = new Map<string, Pt[]>();
+    for (const r of hubs) {
+      const hub = nodes.get('hub:' + r.id);
+      if (!hub) continue;
+      for (const d of relationDevices(r)) {
+        const e = spokeEnds.get(r.id + ':' + d);
+        if (!e) continue;
+        const D = dev(d) as LNode;
+        const p = { x: sideX(D, e.side), y: e.y };
+        const q = { x: p.x + dirOf(e.side) * e.stub, y: p.y };
+        const c = { x: hub.cx, y: hub.cy };
+        const obstacles = obstaclesFor([d], q, { x: hub.cx, y: hub.cy });
+        const cq = pastOwnBox(q, c, dirOf(e.side), boxRect(D), obstacles);
+        const way = cq.concat(laneDetour(cq.length ? cq[cq.length - 1] : q, c, obstacles, e.width, corners));
+        const last = way.length ? way[way.length - 1] : q;
+        spokes.set(r.id + ':' + d, clean(elbow(clean([p, q, ...way, clipToCircle(c, HUB_R, last)]), dirOf(e.side), obstacles, boxRect(D))));
+      }
+    }
+    return { strands, spokes };
+  }
 }
 
 /**

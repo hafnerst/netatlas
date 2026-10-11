@@ -467,7 +467,8 @@ export class App {
     const colon = id.indexOf(':');
     const owner = kind === 'iface' ? id.slice(0, colon) : id;
     const ownerKind = kind === 'iface' ? 'device' : kind;
-    for (const is of d.errors.concat(d.warnings)) {
+    for (const is of d.errors.concat(d.warnings, d.findings)) {
+      if (is.severity === 'info') continue;
       const ent = d.issueEntity(is);
       if (!ent || ent.kind !== ownerKind) continue;
       const eid = d.entities(ent.kind)[ent.index]?.id;
@@ -1122,7 +1123,7 @@ export class App {
   private renderProblems(body: HTMLElement): void {
     while (body.firstChild) body.removeChild(body.firstChild);
     const d = this.mdoc;
-    const all = d ? d.errors.concat(d.warnings) : this.loadErrors;
+    const all = d ? d.errors.concat(d.warnings, d.findings) : this.loadErrors;
     if (!all.length) {
       body.appendChild(el(this.doc, 'p', { class: 'muted' }, [d ? '✓ No problems found.' : 'No model open.']));
       return;
@@ -1138,6 +1139,7 @@ export class App {
       const li = el(this.doc, 'li', { class: 'issue ' + is.severity + (clickable ? ' clickable' : ''), 'data-issue': String(n) }, [
         el(this.doc, 'div', { class: 'issue-head' }, [
           el(this.doc, 'span', { class: 'sev' }, [is.severity]),
+          is.check ? el(this.doc, 'code', { class: 'check-id', title: 'Consistency check' }, [is.check]) : null,
           loc ? el(this.doc, 'span', { class: 'loc' }, [loc]) : null,
           is.path ? el(this.doc, 'code', { class: 'path' }, [is.path]) : null,
         ]),
@@ -1155,18 +1157,21 @@ export class App {
   private gotoIssue(n: number): void {
     const d = this.mdoc;
     if (!d) return;
-    const is = d.errors.concat(d.warnings)[n];
+    const is = d.errors.concat(d.warnings, d.findings)[n];
     if (!is) return;
     const ent = d.issueEntity(is);
     if (!ent) this.editor.sel = { kind: 'document', index: 0 };
     else {
       this.editor.sel = { kind: ent.kind, index: ent.index };
-      // open the interface the issue is in
+      // open the interface or route the issue is in
       const p = d.issuePath(is) || [];
       const ip = [p.slice(0, 4)].find((x) => !!ifaceSchemaKind(x));
       if (ent.kind === 'device' && ip) {
         this.editor.sel.iface = ip;
         this.editor.openIface(ip);
+      } else if (ent.kind === 'device' && p[2] === 'routes' && typeof p[3] === 'number') {
+        this.editor.sel.route = p.slice(0, 4);
+        this.editor.openIface(p.slice(0, 4));
       }
     }
     this.editorSelected(this.editor.sel);
@@ -1265,8 +1270,9 @@ export class App {
     if (pb) {
       const e = d ? d.errors.length : this.loadErrors.length;
       const w = d ? d.warnings.length : 0;
-      pb.textContent = e + w ? `Problems (${e + w})` : 'Problems';
-      pb.classList.toggle('has-errors', e > 0);
+      const f = d ? d.findings.length : 0;
+      pb.textContent = e + w + f ? `Problems (${e + w + f})` : 'Problems';
+      pb.classList.toggle('has-errors', e > 0 || (!!d && d.findings.some((x) => x.severity === 'error')));
     }
     (this.$('btn-undo') as HTMLButtonElement).disabled = !d || !d.canUndo();
     (this.$('btn-redo') as HTMLButtonElement).disabled = !d || !d.canRedo();
@@ -1312,6 +1318,7 @@ export class App {
         m ? `${m.title} · ${m.devices.length} devices · ${m.index.interfaces.size} interfaces · ${m.links.length} cables · ${m.networks.length} networks · ${m.relations.length} logical relations` : '',
         d.errors.length ? el(this.doc, 'span', { class: 'errcount' }, [`${d.errors.length} error${d.errors.length > 1 ? 's' : ''}`]) : '',
         d.warnings.length ? `${d.warnings.length} warning${d.warnings.length > 1 ? 's' : ''}` : '',
+        d.findings.length ? `${d.findings.length} check finding${d.findings.length > 1 ? 's' : ''}` : '',
         s && s.isFiltered() ? el(this.doc, 'span', { class: 'filtered-note' }, [`showing ${s.shownDevices().size} of ${s.model.devices.length} devices`]) : '',
       ].filter((p) => p !== '');
       parts.forEach((p, i) => {
@@ -1329,6 +1336,7 @@ export class App {
       ['opt-labels', s ? s.state.showLabels : true],
       ['opt-groups', s ? s.state.showGroups : true],
       ['opt-networks', s ? s.state.showNetworks : true],
+      ['opt-routes', s ? s.state.showRoutes : true],
     ];
     for (const [id, v] of opts) {
       const cb = this.$(id) as HTMLInputElement;
@@ -1487,7 +1495,7 @@ export class App {
   /**
    * Keep the diagram filters on one toolbar row. Devices always stays; the
    * switches follow while they fit, by priority (Labels, Groups / Locations,
-   * Networks, Endpoints, Servers). The ones that don't fit move into the
+   * Networks, Routes, Endpoints, Servers). The ones that don't fit move into the
    * **Filters** drop-down beside them, whose button says how many of them
    * are switched off. Recomputed when the window, the view or a filter
    * changes. Only switches whose place changes are moved, so the one in use
@@ -1937,6 +1945,7 @@ export class App {
     opt('opt-labels', (v) => this.session && (this.session.state.showLabels = v));
     opt('opt-groups', (v) => this.session && (this.session.state.showGroups = v));
     opt('opt-networks', (v) => this.session && (this.session.state.showNetworks = v));
+    opt('opt-routes', (v) => this.session && (this.session.state.showRoutes = v));
     const types = doc.querySelectorAll('input[data-device-type]');
     for (let i = 0; i < types.length; i++) {
       const cb = types[i] as HTMLInputElement;

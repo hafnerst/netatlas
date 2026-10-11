@@ -6,12 +6,14 @@
  *   ------------------------------------  ------------------------------------
  *   network `cidr`, interface `ip`        members of a network (IP containment)
  *   network `vlan` (+ the two above)      VLAN of an interface address
- *   link end `networks`                   the networks a cable carries at each
- *                                         end, and whether the two ends differ
- *   the networks of a virtual interface   the physical ports carrying them
- *     (from its addresses, or the
- *     networks of its `vlan`)
- *     + link end `networks`
+ *   link end `mode`/`untagged`/`tagged`   the VLANs a cable carries at each
+ *     + network `vlan`                    end, the networks of those VLANs,
+ *                                         and how the two ends differ
+ *   the VLANs of a virtual interface      the physical ports carrying them
+ *     (its `vlan`, or the VLAN of the
+ *     network of its address)
+ *     + link end tagging
+ *   interface `ip`                        which interfaces own an address
  *
  * Membership rule: an address belongs to a network when the network's prefix
  * contains it. The network's prefix is the authority; the prefix length
@@ -26,11 +28,12 @@
  * the VLAN of such an address is derived only when all those networks agree
  * on it, otherwise it is "ambiguous" (with a validation warning).
  *
- * Membership (containment) and link-end assignment (carriage) are separate
- * facts: neither is derived from the other.
+ * Membership (containment) and link-end tagging (layer-2 carriage) are
+ * separate facts: neither is derived from the other. The networks a cable
+ * carries follow from its tagging and the networks' VLANs.
  */
-import { IpPrefix, parsePrefix, prefixContains } from './ip';
-import { Interface, Model, Network, deviceInterfaces, ifaceKey, isLoopback } from './types';
+import { IpPrefix, addrKey, parsePrefix, prefixContains } from './ip';
+import { Interface, Link, LinkEnd, Model, Network, VLAN_MAX, VlanRange, deviceInterfaces, ifaceKey, isLoopback } from './types';
 
 /** One assigned address that lies inside a network. */
 export interface AddressMatch {
@@ -65,11 +68,19 @@ export interface AddressAssoc {
   vlan: DerivedVlan;
 }
 
+/** An interface that has an address configured. */
+export interface AddressOwner {
+  device: string;
+  iface: string;
+}
+
 export interface Derived {
   /** network id -> member devices, in device order (each device once) */
   members: Map<string, NetworkMember[]>;
   /** "device:iface" -> one entry per assigned address, in address order */
   addresses: Map<string, AddressAssoc[]>;
+  /** canonical address (ip.addrKey, prefix length ignored) -> the interfaces that have it, in model order */
+  owners: Map<string, AddressOwner[]>;
 }
 
 /** The valid prefix of a network as a list: empty while it is missing or invalid. */
@@ -104,11 +115,18 @@ export function derive(model: Model): Derived {
   const members = new Map<string, NetworkMember[]>();
   for (const { n } of nets) members.set(n.id, []);
   const addresses = new Map<string, AddressAssoc[]>();
+  const owners = new Map<string, AddressOwner[]>();
   for (const d of model.devices) {
     for (const i of deviceInterfaces(d)) {
       const assocs: AddressAssoc[] = [];
       for (const address of i.addresses) {
         const a = parsePrefix(address, false);
+        if (a) {
+          const k = addrKey(a);
+          const list = owners.get(k) || [];
+          if (!list.some((o) => o.device === d.id && o.iface === i.id)) list.push({ device: d.id, iface: i.id });
+          owners.set(k, list);
+        }
         const inside = a ? nets.filter((x) => x.prefixes.some((p) => prefixContains(p, a))).map((x) => x.n) : [];
         assocs.push({ address, valid: !!a, networks: inside.map((n) => n.id), vlan: derivedVlan(inside) });
         for (const n of inside) {
@@ -124,9 +142,15 @@ export function derive(model: Model): Derived {
       addresses.set(ifaceKey(d.id, i.id), assocs);
     }
   }
-  const out = { members, addresses };
+  const out = { members, addresses, owners };
   cache.set(model, out);
   return out;
+}
+
+/** The interfaces that have `address` configured (a prefix length on it is ignored), in model order. */
+export function addressOwners(model: Model, address: string): AddressOwner[] {
+  const a = parsePrefix(address, false);
+  return a ? derive(model).owners.get(addrKey(a)) || [] : [];
 }
 
 export function networkMembers(model: Model, networkId: string): NetworkMember[] {
@@ -167,18 +191,100 @@ export function interfaceVlanText(assocs: AddressAssoc[]): string {
   return parts.join(', ');
 }
 
-// ---------------------------------------------------- link-end networks
+// ------------------------------------------------------- link-end tagging
 
-/** Networks assigned to one end of a link but not to the other (null: the ends agree). */
-export interface NetworkMismatch {
-  onlyA: string[];
-  onlyB: string[];
+/** The VLAN IDs of a list of ranges, each once, ascending. */
+export function vlanIds(ranges: VlanRange[]): number[] {
+  const seen = new Set<number>();
+  for (const r of ranges) for (let v = Math.max(1, r.from); v <= Math.min(VLAN_MAX, r.to); v++) seen.add(v);
+  return Array.from(seen).sort((p, q) => p - q);
 }
 
-export function networkMismatch(a: string[], b: string[]): NetworkMismatch | null {
-  const onlyA = a.filter((v) => b.indexOf(v) < 0);
-  const onlyB = b.filter((v) => a.indexOf(v) < 0);
-  return onlyA.length || onlyB.length ? { onlyA, onlyB } : null;
+/** IDs as the shortest list of ranges: "20,30,100-199" (ascending; adjacent IDs merged). */
+export function vlanRangesText(ids: number[]): string {
+  const xs = Array.from(new Set(ids)).sort((p, q) => p - q);
+  const out: string[] = [];
+  for (let i = 0; i < xs.length; ) {
+    let j = i;
+    while (j + 1 < xs.length && xs[j + 1] === xs[j] + 1) j++;
+    out.push(j > i ? `${xs[i]}-${xs[j]}` : String(xs[i]));
+    i = j + 1;
+  }
+  return out.join(',');
+}
+
+/** The VLANs a cable carries at one end: its untagged VLAN and its tagged ones, ascending. */
+export function endVlans(e: LinkEnd): number[] {
+  const out = vlanIds(e.tagged);
+  if (e.untagged !== undefined && out.indexOf(e.untagged) < 0) out.push(e.untagged);
+  return out.sort((p, q) => p - q);
+}
+
+/**
+ * The tagging of a link end as the physical view writes it next to the
+ * port: "U 10" (access), "U 1 · T 20,30,100-199" (trunk: native and tagged
+ * VLANs), the mode alone when no VLAN is written, '' without a mode.
+ */
+export function endTagText(e: LinkEnd): string {
+  if (!e.mode) return '';
+  const parts: string[] = [];
+  if (e.untagged !== undefined) parts.push('U ' + e.untagged);
+  const t = vlanIds(e.tagged);
+  if (t.length) parts.push('T ' + vlanRangesText(t));
+  return parts.length ? parts.join(' · ') : e.mode;
+}
+
+/** The networks of the VLANs a link end carries (derived: the networks whose `vlan` is one of them), in model order. */
+export function endNetworks(model: Model, e: LinkEnd): string[] {
+  const vlans = endVlans(e);
+  if (!vlans.length) return [];
+  return model.networks.filter((n) => n.vlan !== undefined && vlans.indexOf(n.vlan) >= 0).map((n) => n.id);
+}
+
+/** The networks a cable carries at either end, in model order. */
+export function linkNetworks(model: Model, l: Link): string[] {
+  const ids = new Set(endNetworks(model, l.a).concat(endNetworks(model, l.b)));
+  return model.networks.filter((n) => ids.has(n.id)).map((n) => n.id);
+}
+
+/**
+ * How the layer-2 tagging of a link's two ends disagrees (null: it agrees).
+ * Only what is written at both ends is compared: an end without a mode says
+ * nothing about layer 2, and nothing is assumed for it.
+ */
+export interface TagMismatch {
+  /** both ends have an untagged VLAN, and they differ */
+  native: [number, number] | null;
+  /** tagged at one end and not at the other (compared when both ends are trunks) */
+  onlyA: number[];
+  onlyB: number[];
+  /** untagged at one end, tagged at the other */
+  crossed: number[];
+}
+
+export function tagMismatch(a: LinkEnd, b: LinkEnd): TagMismatch | null {
+  if (!a.mode || !b.mode) return null;
+  const native: [number, number] | null = a.untagged !== undefined && b.untagged !== undefined && a.untagged !== b.untagged ? [a.untagged, b.untagged] : null;
+  const ta = vlanIds(a.tagged);
+  const tb = vlanIds(b.tagged);
+  const trunks = a.mode === 'trunk' && b.mode === 'trunk';
+  const onlyA = trunks ? ta.filter((v) => tb.indexOf(v) < 0) : [];
+  const onlyB = trunks ? tb.filter((v) => ta.indexOf(v) < 0) : [];
+  const crossed: number[] = [];
+  if (a.untagged !== undefined && tb.indexOf(a.untagged) >= 0) crossed.push(a.untagged);
+  if (b.untagged !== undefined && ta.indexOf(b.untagged) >= 0 && crossed.indexOf(b.untagged) < 0) crossed.push(b.untagged);
+  crossed.sort((p, q) => p - q);
+  return native || onlyA.length || onlyB.length || crossed.length ? { native, onlyA, onlyB, crossed } : null;
+}
+
+/** The differences of a TagMismatch in words, separated by "; ". */
+export function tagMismatchText(m: TagMismatch): string {
+  const out: string[] = [];
+  if (m.native) out.push(`untagged VLAN ${m.native[0]} at end A, ${m.native[1]} at end B`);
+  if (m.onlyA.length) out.push(`tagged only at end A: ${vlanRangesText(m.onlyA)}`);
+  if (m.onlyB.length) out.push(`tagged only at end B: ${vlanRangesText(m.onlyB)}`);
+  if (m.crossed.length) out.push(`untagged at one end and tagged at the other: ${vlanRangesText(m.crossed)}`);
+  return out.join('; ');
 }
 
 /** Display name of a network id (its label; the id when it is unknown). */
@@ -187,31 +293,7 @@ export function networkName(model: Model, id: string): string {
   return n ? n.label : id;
 }
 
-export function networkMismatchText(m: NetworkMismatch, name: (id: string) => string): string {
-  const side = (end: string, only: string[]): string => (only.length ? `only at end ${end}: ${only.map(name).join(', ')}` : '');
-  return [side('A', m.onlyA), side('B', m.onlyB)].filter((x) => x).join('; ');
-}
-
-/** "No network" or the names of the networks one end carries. Several networks are just several networks: no tagging is implied. */
-export function linkEndNetworksText(model: Model, ids: string[]): string {
-  if (!ids.length) return 'No network';
-  return ids.map((id) => networkName(model, id)).join(', ');
-}
-
 // --------------------------------------------- associations of logical interfaces
-
-/**
- * The networks a virtual interface is in: the networks containing its
- * addresses, and (when `vlan` is written on it) the networks of that VLAN.
- * Empty for every other kind of interface. A virtual interface that has no
- * address and no VLAN (e.g. a plain bond or a VTEP) is in no network.
- */
-export function interfaceCarriedNetworks(model: Model, i: Interface): string[] {
-  if (i.type !== 'virtual') return [];
-  const ids = new Set(interfaceNetworks(model, i.device, i.id));
-  if (i.vlan !== undefined) for (const n of model.networks) if (n.vlan === i.vlan) ids.add(n.id);
-  return model.networks.filter((n) => ids.has(n.id)).map((n) => n.id);
-}
 
 /** The VLAN IDs of a virtual interface: the `vlan` written on it, or else those of the networks containing its addresses. */
 export function interfaceVlans(model: Model, i: Interface): number[] {
@@ -222,41 +304,48 @@ export function interfaceVlans(model: Model, i: Interface): number[] {
   return out.sort((p, q) => p - q);
 }
 
-/** A physical port whose link end carries a network. */
-export interface NetworkPort {
+/** A physical port whose link end carries a VLAN (untagged or tagged). */
+export interface VlanPort {
   iface: string;
   link: string;
-  network: string;
+  vlan: number;
+  tagged: boolean;
 }
 
 /**
- * The physical ports of a device that carry one of `networks`: the ports
- * whose end of a link lists the network. Derived from the links; in link order.
+ * The physical ports of a device that carry one of `vlans`: the ports whose
+ * end of a link has the VLAN untagged or tagged. Derived from the links; in
+ * link order, then VLAN order.
  */
-export function portsCarryingNetworks(model: Model, device: string, networks: string[]): NetworkPort[] {
-  const out: NetworkPort[] = [];
-  if (!networks.length) return out;
+export function portsCarryingVlans(model: Model, device: string, vlans: number[]): VlanPort[] {
+  const out: VlanPort[] = [];
+  if (!vlans.length) return out;
+  const want = vlans.slice().sort((p, q) => p - q);
   for (const l of model.links) {
     for (const e of [l.a, l.b]) {
       if (e.device !== device || !e.iface) continue;
-      for (const n of networks) if (e.networks.indexOf(n) >= 0) out.push({ iface: e.iface, link: l.id, network: n });
+      const tagged = vlanIds(e.tagged);
+      for (const v of want) {
+        if (e.untagged === v) out.push({ iface: e.iface, link: l.id, vlan: v, tagged: false });
+        else if (tagged.indexOf(v) >= 0) out.push({ iface: e.iface, link: l.id, vlan: v, tagged: true });
+      }
     }
   }
   return out;
 }
 
-/** The ports carrying the networks of a virtual interface (read-only; nothing is configured for it). */
-export function interfaceNetworkPorts(model: Model, i: Interface): NetworkPort[] {
-  return portsCarryingNetworks(model, i.device, interfaceCarriedNetworks(model, i));
+/** The ports carrying the VLANs of a virtual interface (read-only; nothing is configured for it). */
+export function interfaceVlanPorts(model: Model, i: Interface): VlanPort[] {
+  return portsCarryingVlans(model, i.device, interfaceVlans(model, i));
 }
 
 /**
  * Interfaces of the same device that an interface is associated with, in
  * either direction, as ids:
- *   a virtual interface  -> its member ports and the ports carrying its networks;
+ *   a virtual interface  -> its member ports and the ports carrying its VLANs;
  *   a tunnel             -> the interface it is sourced from;
  *   any interface        -> the aggregates it is a member of, the virtual
- *                           interfaces whose networks it carries, the tunnels
+ *                           interfaces whose VLANs it carries, the tunnels
  *                           sourced from it.
  */
 export function associatedInterfaces(model: Model, i: Interface): string[] {
@@ -267,13 +356,13 @@ export function associatedInterfaces(model: Model, i: Interface): string[] {
     if (id !== undefined && id !== i.id && out.indexOf(id) < 0 && model.index.interfaces.has(ifaceKey(i.device, id))) out.push(id);
   };
   for (const m of i.members) add(m);
-  for (const p of interfaceNetworkPorts(model, i)) add(p.iface);
+  for (const p of interfaceVlanPorts(model, i)) add(p.iface);
   if (i.source) add(i.source.iface);
   for (const o of d.logical) {
     if (o.id === i.id) continue;
     if (o.members.indexOf(i.id) >= 0) add(o.id);
     if (o.source && o.source.iface === i.id) add(o.id);
-    if (i.type === 'physical' && interfaceNetworkPorts(model, o).some((p) => p.iface === i.id)) add(o.id);
+    if (i.type === 'physical' && interfaceVlanPorts(model, o).some((p) => p.iface === i.id)) add(o.id);
   }
   return out;
 }

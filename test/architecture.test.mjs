@@ -11,12 +11,13 @@ import { root } from './helpers.mjs';
 export const ALLOWED = {
   model: [],
   yaml: [],
-  validation: ['model', 'yaml'],
+  analysis: ['model'],
+  validation: ['model', 'yaml', 'analysis'],
   layout: ['model'],
-  diagram: ['model', 'layout'],
-  editor: ['model', 'yaml', 'validation', 'layout'],
-  ui: ['model', 'validation', 'layout', 'diagram', 'editor', 'generated'],
-  app: ['model', 'yaml', 'validation', 'layout', 'diagram', 'editor', 'ui', 'generated'],
+  diagram: ['model', 'layout', 'analysis'],
+  editor: ['model', 'yaml', 'validation', 'layout', 'analysis'],
+  ui: ['model', 'validation', 'layout', 'diagram', 'editor', 'analysis', 'generated'],
+  app: ['model', 'yaml', 'validation', 'layout', 'diagram', 'editor', 'ui', 'analysis', 'generated'],
   generated: [],
 };
 

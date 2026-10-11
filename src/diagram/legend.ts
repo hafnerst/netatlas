@@ -6,7 +6,7 @@
  */
 import { Rect, textWidth } from '../layout/geometry';
 import { DEVICE_TYPE_IDS, deviceTypeLabel } from '../model/device-types';
-import { networkMismatch } from '../model/derive';
+import { tagMismatch } from '../model/derive';
 import { relationStyle } from '../model/protocols';
 import { CATEGORIES, Category, Model, ProtocolDef } from '../model/types';
 import { deviceIcon, iconName } from './icons';
@@ -89,7 +89,8 @@ export function legendOf(model: Model, view: View): Legend {
           PORT_ITEM,
           ...(model.links.some((l) => !l.a.iface || !l.b.iface) ? [DEVICE_END_ITEM] : []),
           ...(model.devices.some((d) => d.logical.some((i) => i.members.length > 0)) ? [LAG_ITEM] : []),
-          ...(model.links.some((l) => !!networkMismatch(l.a.networks, l.b.networks)) ? [MISMATCH_ITEM] : []),
+          ...(model.links.some((l) => !!l.a.mode || !!l.b.mode) ? [TAG_ITEM] : []),
+          ...(model.links.some((l) => !!tagMismatch(l.a, l.b)) ? [MISMATCH_ITEM] : []),
         ],
       });
     }
@@ -133,6 +134,7 @@ export function legendOf(model: Model, view: View): Legend {
       { swatch: [h('rect', { class: 'net-box', x: 3, y: 2, width: 38, height: 14, rx: 7, stroke: NETWORK_COLOR })], label: 'IP network' },
       { swatch: [h('path', { class: 'member', d: LINE })], label: 'Network membership (from addresses)' },
       ...(model.devices.some((d) => d.dnsNames.length > 0) ? [DNS_ITEM] : []),
+      ...(model.devices.some((d) => d.routes.length > 0) ? [ROUTES_ITEM, NEXT_HOP_ITEM] : []),
     ],
     note: Array.from(used.values()).some((u) => u.def.custom) ? '* defined in this file’s "protocols" section' : undefined,
   });
@@ -187,7 +189,24 @@ const DEVICE_PORT_ITEM: LegendItem = {
   ],
   label: 'Device-level port: relations bound to the device as a whole',
 };
-const MISMATCH_ITEM: LegendItem = { swatch: [h('text', { class: 'net-warn', x: 22, y: 14, 'text-anchor': 'middle' }, '⚠')], label: 'The two ends carry different networks' };
+const MISMATCH_ITEM: LegendItem = { swatch: [h('text', { class: 'net-warn', x: 22, y: 14, 'text-anchor': 'middle' }, '⚠')], label: 'VLANs differ: the tagging of the two ends disagrees' };
+/** the tagging of a port, as its label's second line */
+const TAG_ITEM: LegendItem = {
+  swatch: [h('text', { class: 'port-tag', x: 22, y: 13, 'text-anchor': 'middle', 'font-size': 9 }, 'U·T')],
+  label: 'Port tagging: U untagged (access / native) VLAN · T tagged VLANs',
+};
+
+/** a device's route table and the line from a route to its next hop (logical view; hidden with Routes) */
+export const ROUTES_LABEL = 'Static routes (route table in the device, per VRF)';
+export const NEXT_HOP_LABEL = 'Route → next hop (dotted, to the interface that has the next-hop address)';
+const ROUTES_ITEM: LegendItem = {
+  swatch: [h('g', { class: 'if-entry route-table' }, [h('rect', { x: 3, y: 2, width: 38, height: 14, rx: 3 }), h('text', { x: 6, y: 12, 'font-size': 8 }, '0/0 via')])],
+  label: ROUTES_LABEL,
+};
+const NEXT_HOP_ITEM: LegendItem = {
+  swatch: [h('path', { class: 'nh-line', d: LINE }), h('path', { class: 'nh-arrow', d: 'M41 9L35 5.5L35 12.5Z' })],
+  label: NEXT_HOP_LABEL,
+};
 
 /** a device's DNS names, as written under it in the logical view */
 const DNS_LABEL = 'DNS name (as configured, not looked up)';
@@ -206,6 +225,8 @@ export interface ExportOptions {
   showGroups?: boolean;
   /** DNS names are drawn under devices (logical view; default: if the model has any) */
   dnsShown?: boolean;
+  /** route tables and next-hop lines are drawn (logical view; default true) */
+  showRoutes?: boolean;
 }
 
 const PAD = 14;
@@ -229,6 +250,7 @@ export function exportLegendSections(model: Model, view: View, opts: ExportOptio
         if (i.protocol !== undefined) return !opts.hiddenProtocols.has(i.protocol);
         if (/^IP network|^Network membership/.test(i.label)) return opts.showNetworks && model.networks.length > 0;
         if (i.label === DNS_LABEL) return opts.dnsShown !== false;
+        if (i.label === ROUTES_LABEL || i.label === NEXT_HOP_LABEL) return opts.showRoutes !== false;
         return true;
       });
     }

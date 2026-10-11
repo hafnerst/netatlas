@@ -242,8 +242,8 @@ test('renaming ids updates every reference (device, interface, group, link, rela
   assert.equal(d.renameEntity('group', d.findEntity('group', 'hq').index, 'berlin'), 2);
   assert.equal(d.renameEntity('link', d.findEntity('link', 'l-hq-isp1').index, 'uplink-1'), 3);
   assert.equal(d.renameEntity('relation', d.findEntity('relation', 'ipsec-muc').index, 'ipsec-munich'), 1);
-  // the network is named by the link ends that carry it (5 cables, both ends) and by VRRP's "over"
-  assert.equal(d.renameEntity('network', d.findEntity('network', 'net-users').index, 'vlan10'), 9);
+  // the network is named by VRRP's "over" (link ends name VLAN IDs, not networks)
+  assert.equal(d.renameEntity('network', d.findEntity('network', 'net-users').index, 'vlan10'), 1);
   assert.equal(d.renameEntity('protocol', d.findEntity('protocol', 'macsec').index, 'macsec2'), 1);
   assert.ok(d.valid, d.errors.map((e) => e.message).join('\n'));
   const m = d.result.model;
@@ -286,13 +286,12 @@ test('shorthand forms are expanded only when edited, keeping their data', () => 
     d.ensureMap(['devices', 0, 'interfaces', 1]);
     d.setAt(['devices', 0, 'interfaces', 1, 'vrf'], yaml.strNode('blue'), KEY_ORDER.interface);
   });
-  // a link end becomes a mapping only when it gets networks; the other end is left as written
-  d.addEntity('network', [['id', yaml.strNode('n1')], ['cidr', yaml.strNode('10.0.0.0/24')]]);
-  assert.ok(d.addEndNetwork(['links', 0, 'a'], 'n1'));
+  // a link end becomes a mapping only when it gets a port mode; the other end is left as written
+  assert.ok(d.setEndMode(['links', 0, 'a'], 'access'));
   const out = d.exportText();
   assert.match(out, /interfaces: \[eth0, \{id: eth1, vrf: blue\}\]/);
   assert.match(out, /endpoints: \["r1:eth0", r2\]/, 'endpoints stay short');
-  assert.match(out, /a: \{device: r1, interface: eth1, networks: \[n1\]\}, b: r2:eth0\}/);
+  assert.match(out, /a: \{device: r1, interface: eth1, mode: access\}, b: r2:eth0\}/);
   assert.ok(d.valid);
 });
 
@@ -368,7 +367,7 @@ test('logical_interfaces: invalid addresses are errors with an explanation at th
 test('logical_interfaces: the router-ID field is gone, loopbacks and their addresses are not', () => {
   const r = validate.loadModel(loopDoc('[10.0.0.1/32, 2001:db8::1/128]', '    router_id: lo0\n'));
   assert.equal(r.errors.length, 1);
-  assert.match(r.errors[0].message, /^"router_id" is not part of the format — a device has no router-ID field: delete this key/);
+  assert.match(r.errors[0].message, /^unknown key "router_id"/);
   assert.deepEqual(r.model.devices[0].logical.map((l) => [l.id, l.label, l.addresses]), [['lo0', 'Router ID', ['10.0.0.1/32', '2001:db8::1/128']]]);
   assert.ok(!('routerId' in r.model.devices[0]));
   // a loopback without IPv4 is fine: nothing depends on it being a router ID

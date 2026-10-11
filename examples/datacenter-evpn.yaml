@@ -152,23 +152,23 @@ links:
   - {id: s2-l4, a: "spine2:Et4", b: "leaf4:Et50", medium: fiber, speed: 100G}
   - {id: mlag-peer, a: "leaf1:Et51", b: "leaf2:Et51", medium: dac, speed: 100G, cable: DAC 0.5m}
   - id: esx01-a
-    a: {device: esx01, interface: vmnic0, networks: [vni-10100]}
-    b: {device: leaf1, interface: Et1, networks: [vni-10100]}
+    a: {device: esx01, interface: vmnic0, mode: trunk, tagged: [100]}
+    b: {device: leaf1, interface: Et1, mode: trunk, tagged: [100]}
     medium: dac
     speed: 25G
   - id: esx01-b
-    a: {device: esx01, interface: vmnic1, networks: [vni-10100]}
-    b: {device: leaf2, interface: Et1, networks: [vni-10100]}
+    a: {device: esx01, interface: vmnic1, mode: trunk, tagged: [100]}
+    b: {device: leaf2, interface: Et1, mode: trunk, tagged: [100]}
     medium: dac
     speed: 25G
   - id: esx02-a
-    a: {device: esx02, interface: vmnic0, networks: [vni-10100]}
-    b: {device: leaf3, interface: Et1, networks: [vni-10100]}
+    a: {device: esx02, interface: vmnic0, mode: trunk, tagged: [100]}
+    b: {device: leaf3, interface: Et1, mode: trunk, tagged: [100]}
     medium: dac
     speed: 25G
   - id: k8s01-a
-    a: {device: k8s01, interface: ens1f0, networks: [vni-10100]}
-    b: {device: leaf4, interface: Et1, networks: [vni-10100]}
+    a: {device: k8s01, interface: ens1f0, mode: trunk, tagged: [100]}
+    b: {device: leaf4, interface: Et1, mode: trunk, tagged: [100]}
     medium: dac
     speed: 25G
   - {id: wan-uplink, a: "leaf3:Et48", b: "wan-pe:xe-0/1/0", medium: fiber, speed: 10G, cable: "Cross-connect MMR-2 #118"}

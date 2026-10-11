@@ -26,7 +26,7 @@
  */
 import { Rect } from '../layout/geometry';
 import { TextBlock, textBlock, textWidth } from '../layout/text';
-import { associatedInterfaces, interfaceNetworks } from '../model/derive';
+import { associatedInterfaces, interfaceNetworks, linkNetworks } from '../model/derive';
 import { compareNames } from '../model/order';
 import { splitRef } from '../model/queries';
 import { Model, Network, ifaceKey, loopbacks } from '../model/types';
@@ -79,7 +79,7 @@ export function viewNetworks(model: Model, view: View, refs: Set<string>): Netwo
     } else if (kind === 'link') {
       const l = ix.links.get(id);
       if (!l) return;
-      for (const n of l.a.networks.concat(l.b.networks)) if (ix.networks.has(n)) ids.add(n);
+      for (const n of linkNetworks(model, l)) ids.add(n);
     } else if (kind === 'device') {
       // loopbacks are drawn under their device in the logical view only
       const d = view === 'logical' ? ix.devices.get(id) : undefined;

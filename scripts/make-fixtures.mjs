@@ -55,8 +55,11 @@ export function buildNewNetwork() {
   d.addEntity('network', [['id', s('net-mgmt')], ['label', s('Management')], ['cidr', s('10.100.0.0/24')], ['vlan', Y.numNode(100)]]);
   // a network that only loopbacks are in: part of the logical view, not of the physical one
   d.addEntity('network', [['id', s('net-loopbacks')], ['label', s('Router loopbacks')], ['cidr', s('10.255.0.0/24')]]);
-  // the cable carries the core network and the management network at both ends (configured per end)
-  for (const side of ['a', 'b']) for (const net of ['net-core', 'net-mgmt']) d.addEndNetwork(['links', 0, side], net);
+  // the cable is a trunk at both ends tagging the management VLAN (configured per end); the core network is routed on the ports
+  for (const side of ['a', 'b']) {
+    d.setEndMode(['links', 0, side], 'trunk');
+    d.setEndTagged(['links', 0, side], '100');
+  }
   // logical relations sourced from loopbacks
   d.addEntity('relation', [
     ['id', s('ibgp-v6')],

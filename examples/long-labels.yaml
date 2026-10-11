@@ -87,11 +87,11 @@ links:
   - {id: fw-a, a: "fw:ethernet1/1", b: "core-a:TwentyFiveGigE1/0/1", medium: fiber, speed: 25G}
   - {id: fw-b, a: "fw:ethernet1/2", b: "core-b:TwentyFiveGigE1/0/1", medium: fiber, speed: 25G}
   - id: srv-a
-    a: {device: core-a, interface: TwentyFiveGigE1/0/2, networks: [servers, servers-v6, servers-v6-legacy]}
-    b: {device: srv, interface: eno1, networks: [servers, servers-v6, servers-v6-legacy]}
+    a: {device: core-a, interface: TwentyFiveGigE1/0/2, mode: access, untagged: 10}
+    b: "srv:eno1"
     medium: dac
     speed: 25G
-    label: hypervisor uplink, all tenant VLANs
+    label: hypervisor uplink carrying the production server networks of every tenant (VLAN 10, IPv4 and both IPv6 prefixes)
   - {id: sto-b, a: core-b, b: "storage:e0a", medium: fiber, speed: 25G, label: iSCSI}
   - id: wan
     a: fw

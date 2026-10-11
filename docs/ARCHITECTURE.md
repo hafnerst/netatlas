@@ -9,11 +9,12 @@ Each layer has one responsibility and may only import the layers below it.
 
 | Layer | Responsibility | Main modules |
 |---|---|---|
-| `model/` | The network model: types for devices, their physical and logical interfaces (loopback, virtual, tunnel) with the associations of each kind, links, networks, relations, protocols and groups; the display order of names (`order.ts`); the protocol registry; IP addresses; DNS-name syntax; the **device filter** (the part of a model relevant to some devices, as a self-consistent sub-model); **derived facts** (network members and interface VLANs from addresses and each network's one prefix, the networks a cable carries at each end and whether the ends differ); pure queries (references, related objects, search); the **rules for connecting two endpoints** in a diagram (which endpoints and pairs are compatible, when a relation repeats an existing one); **which addresses and identifiers the diagrams write out, for which object and in which view** (the entries of an interface, address-like attrs, the inventory the tests compare with the drawing). No I/O, no YAML, no layout. | `types.ts`, `device-types.ts`, `protocols.ts`, `ip.ts`, `dns.ts`, `filter.ts`, `derive.ts`, `queries.ts`, `order.ts`, `connect.ts`, `addresses.ts` |
+| `model/` | The network model: types for devices, their physical and logical interfaces (loopback, virtual, tunnel) with the associations of each kind, links, networks, relations, protocols and groups; the display order of names (`order.ts`); the protocol registry; IP addresses; DNS-name syntax; the **device filter** (the part of a model relevant to some devices, as a self-consistent sub-model); **derived facts** (network members and interface VLANs from addresses and each network's one prefix, the VLANs and networks a cable carries at each end from the tagging of its ends and how the ends differ, which interfaces own an address); the **device types' routing roles**; pure queries (references, related objects, search); the **rules for connecting two endpoints** in a diagram (which endpoints and pairs are compatible, when a relation repeats an existing one); **which addresses and identifiers the diagrams write out, for which object and in which view** (the entries of an interface, a device's route tables, address-like attrs, the inventory the tests compare with the drawing). No I/O, no YAML, no layout. | `types.ts`, `device-types.ts`, `protocols.ts`, `ip.ts`, `dns.ts`, `filter.ts`, `derive.ts`, `queries.ts`, `order.ts`, `connect.ts`, `addresses.ts` |
+| `analysis/` | **All network logic**, pure and DOM-free, on the typed `Model`: address arithmetic for IPv4 and IPv6 (`ipmath.ts`: integers, canonical text, prefix ranges, sizes, free ranges); routing (`routing.ts`: connected networks, per-VRF tables, longest-prefix match, distance, metric, equal-cost multipath, recursive next hops, the hook for interfaces that are down); the **consistency checks** (`checks.ts`: a registry of checks with stable ids, severities and the fields they read, and the run that returns findings). Deterministic: results are sorted by values, never by the order of the file. | `ipmath.ts`, `routing.ts`, `checks.ts` |
 | `yaml/` | The YAML boundary: the supported YAML subset (parser with line/column positions, comments and styles), the serializer (the inverse), and the format **schema** (which keys exist, in canonical order). Knows nothing about networks beyond key names. | `parse.ts`, `write.ts`, `schema.ts` |
-| `validation/` | Turns a parsed YAML tree into a `Model` plus errors and warnings. Every issue is attached to the YAML node it concerns. Structural and cross-reference checks, loopback/IP rules, the presentation-only `layout` section. Callable without any UI. | `validate.ts` (the format's rules), `reader.ts` (issue collector, typed reader, suggestions) |
+| `validation/` | Turns a parsed YAML tree into a `Model` plus errors and warnings. Every issue is attached to the YAML node it concerns. Structural and cross-reference checks, loopback/IP rules, static routes and link-end tagging, the presentation-only `layout` section. Then it runs the consistency checks of `analysis/` on the model and attaches each finding to the entry and field it is about. Callable without any UI. | `validate.ts` (the format's rules), `reader.ts` (issue collector, typed reader, suggestions) |
 | `layout/` | Deterministic positions for both views: a canonical, order-independent input built from the model; auto-arrange for the physical and the logical view, and the strategies built on it (Default, Compact, Spacious); placement of new nodes; the rule "stored positions else auto-arrange". Separates calculated positions from network semantics. | `input.ts`, `physical.ts`, `logical.ts`, `positions.ts`, `strategies.ts`, `text.ts` (width estimate, wrapping), `sizes.ts` (element sizes from their text, including the rows and end labels of ports), `bundles.ts` (the strands of a device pair, grouped by the interfaces they are bound to, with their lanes and labels; the room each port needs), `geometry.ts`, `order.ts` |
-| `diagram/` | Presentation: turns model + positions into a virtual SVG tree (`VNode`) for each view, and holds the DOM-free view state (current view, selection, filters, temporary drag positions). No parsing, no editing rules, no DOM. | `session.ts`, `physical.ts`, `logical.ts`, `logical-ports.ts` (the ports of the logical view: rows, sides, stacking, stubs and routes), `legend.ts` (the legend as data, and its SVG form for exports), `networks-box.ts` (the networks relevant to a rendered view, and their overview box for exports), `labels.ts` (multi-line text, collision-free label placement with leader lines), `palette.ts` (the colours of the model drawn per theme, WCAG contrast), `scene.ts`, `style.ts`, `icons.ts` |
+| `diagram/` | Presentation: turns model + positions into a virtual SVG tree (`VNode`) for each view, and holds the DOM-free view state (current view, selection, filters, temporary drag positions). Uses `analysis/` for what it shows of the network's behaviour (where a route's next hop is). No parsing, no editing rules, no DOM. | `session.ts`, `physical.ts`, `logical.ts`, `logical-ports.ts` (the ports of the logical view: rows, sides, stacking, stubs and routes), `legend.ts` (the legend as data, and its SVG form for exports), `networks-box.ts` (the networks relevant to a rendered view, and their overview box for exports), `labels.ts` (multi-line text, collision-free label placement with leader lines), `palette.ts` (the colours of the model drawn per theme, WCAG contrast), `scene.ts`, `style.ts`, `icons.ts` |
 | `editor/` | The editable document (`ModelDoc`): the YAML tree plus undo/redo, dirty state, validation after every change, and **explicit editing operations** (set a field, append to a list, point an endpoint at an interface, switch DHCP on or off for an interface, add or remove a DNS name, rename an id with all references, add a physical or logical interface, arrange one view, move a node, …). Also the layout section and the layout status, and where an object's entry is in a YAML text (`yaml-block.ts`, found through the parsed structure). | `document.ts`, `tree.ts`, `layout-section.ts`, `yaml-block.ts` |
 | `ui/` | The browser: application shell, canvas interaction (selection, dragging, connecting endpoints), inspector forms and outline, side panels, dialogs, the Help menu's manual and license (`help.ts`), local files (reading, writing through a file handle the user chose, download), and the only code that creates DOM elements (`dom.ts`). Uses the editor's operations and never builds YAML itself. | `app.ts`, `inspector.ts`, `panels.ts`, `dialogs.ts`, `help.ts`, `files.ts`, `dom.ts`, `theme.ts` (Light / Dark, Dark by default), `export-style.ts` (resolved colours for exports) |
 | `app/` | Entry point, the in-browser self-test (`#selftest`) and the viewport check (`#viewportcheck`). | `main.ts`, `selftest.ts`, `viewport-check.ts` |
@@ -34,6 +35,8 @@ Each layer has one responsibility and may only import the layers below it.
              │                 │    │              │            │
              └───────────► yaml ◄───┘              │            │
                                                    ▼            ▼
+             analysis  (imported by validation, diagram, editor, ui, app)
+                                                   │
                               model  (imported by every layer except yaml)
 ```
 
@@ -41,11 +44,12 @@ Each layer has one responsibility and may only import the layers below it.
 |---|---|
 | `model` | — |
 | `yaml` | — |
-| `validation` | `model`, `yaml` |
+| `analysis` | `model` |
+| `validation` | `model`, `yaml`, `analysis` |
 | `layout` | `model` |
-| `diagram` | `model`, `layout` |
-| `editor` | `model`, `yaml`, `validation`, `layout` |
-| `ui` | `model`, `validation`, `layout`, `diagram`, `editor`, `generated` |
+| `diagram` | `model`, `layout`, `analysis` |
+| `editor` | `model`, `yaml`, `validation`, `layout`, `analysis` |
+| `ui` | `model`, `validation`, `layout`, `diagram`, `editor`, `analysis`, `generated` |
 | `app` | everything |
 
 `diagram/`, `layout/` and `ui/` never import `yaml/`. There are no
@@ -64,11 +68,10 @@ anything else.
   operations and only reads the tree through the `DocNode` alias.
 * **One format schema.** `yaml/schema.ts` lists the keys of every mapping
   kind in canonical order. Validation (unknown keys), the editor (where new
-  keys go) and the inspector ("other properties") all use it. It also lists
-  keys that are not part of the format but are easily expected in a place
-  (a `speed` on a port, a `loopbacks` list), with the instruction shown when
-  one is found; they are rejected like any unknown key, never read or
-  converted.
+  keys go) and the inspector ("other properties") all use it. Any other key
+  is an "unknown key" error with the closest known key as a suggestion; it is
+  never read or converted, and the file keeps it. There is no compatibility
+  layer for earlier development versions of the format.
 * **Configured versus derived.** A fact is stored in one place in the YAML
   tree. Whatever follows from it is computed by `model/derive.ts` from the
   typed `Model` (cached per model object, and a new model is built after
@@ -77,9 +80,10 @@ anything else.
   editing operation writes a derived value, so it can't go stale or
   contradict its source. The typed `Network` has no member list and the
   typed `Interface` no VLAN, so nothing can read a stored copy by mistake.
-  Membership (IP containment, derived), link-end `networks` (physical
-  carriage, configured per end) and a relation's `over` (its underlay,
-  configured) are three separate facts; none is derived from another.
+  Membership (IP containment, derived), link-end tagging (layer-2
+  carriage, configured per end, by VLAN ID; the networks a cable carries
+  are derived from it) and a relation's `over` (its underlay, configured)
+  are separate facts; none is derived from another.
   *Trade-off:* membership is recomputed for the whole model after each edit
   (addresses × networks); that is well inside the time validation already
   takes.
@@ -125,6 +129,19 @@ anything else.
   so the YAML file can only ever hold the complete diagrams' layout.
   *Trade-off:* the sub-model is rebuilt after every edit while a filter is
   active (cheap: it is a selection plus a new index).
+* **One place for network logic.** Everything that reasons about the
+  network (route resolution, address arithmetic, the consistency checks)
+  lives in `analysis/`, works on the typed `Model` and returns plain data.
+  Validation, the diagram, the editor and the UI call it; none of them
+  re-implements a part of it. Its results are sorted by values (prefix,
+  distance, interface id, address), so they never depend on the order of
+  the YAML file.
+* **Checks are findings, not format errors.** The format's rules make a file
+  valid or not; the consistency checks describe the network and never block
+  anything. Validation runs them on a valid model and attaches each finding to
+  the YAML entry and field it is about (`Issue.check`, `Issue.refs`), so the
+  Problems tab, the Edit tab and "jump to" treat them like any other issue,
+  in their own list (`LoadResult.findings`).
 * **Positions are separate from semantics.** Positions live in the optional
   `layout:` section, are only warnings when broken, and never change the
   model. Auto-arrange is a pure function of a canonical input

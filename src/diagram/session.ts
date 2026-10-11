@@ -41,6 +41,8 @@ export interface ViewState {
   selected: string | null;
   showLabels: boolean;
   showNetworks: boolean;
+  /** route tables in the device boxes and next-hop lines (logical view); hiding them never moves anything */
+  showRoutes: boolean;
   /** frames of groups / locations, in both views (hiding them never moves a device) */
   showGroups: boolean;
   hiddenProtocols: Set<string>;
@@ -63,6 +65,7 @@ export function createViewState(): ViewState {
     selected: null,
     showLabels: true,
     showNetworks: true,
+    showRoutes: true,
     showGroups: true,
     hiddenProtocols: new Set(),
     devices: null,
@@ -358,6 +361,7 @@ export class Session {
     return renderLogical(this.viewModel('logical'), this.logicalLayout(), {
       showLabels: s.showLabels,
       showNetworks: s.showNetworks,
+      showRoutes: s.showRoutes,
       showGroups: s.showGroups,
       hiddenProtocols: s.hiddenProtocols,
       positions: s.positions.logical,

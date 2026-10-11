@@ -162,9 +162,9 @@ test('the broken demo file reports every problem with line numbers', async () =>
   const summary = errs.map((e) => `${e.line}: ${e.message}`);
   const expected = [
     [9, /unknown key "typ" — did you mean "type"/],
-    [10, /"vendor" is not part of the format/],
-    [11, /"loopbacks" is not part of the format — loopbacks are logical interfaces/],
-    [15, /"children" is not part of the format — interfaces are not nested/],
+    [10, /unknown key "vendor"/],
+    [11, /unknown key "loopbacks"/],
+    [15, /unknown key "children"/],
     [18, /tunnel source "eth7" is neither an IP address nor an interface of "r1" — did you mean "eth0"/],
     [19, /"tun0" is a tunnel interface: the members of an aggregate are physical interfaces of the same device/],
     [20, /loopback "lo0" needs at least one IPv4 or IPv6 address/],
@@ -178,7 +178,7 @@ test('the broken demo file reports every problem with line numbers', async () =>
   assert.equal(errs.length, expected.length, summary.join('\n'));
 });
 
-test('direction: bidirectional by default, unidirectional runs from the first endpoint to the last; "directed" is rejected', () => {
+test('direction: bidirectional by default, unidirectional runs from the first endpoint to the last; "directed" is an unknown key', () => {
   const rel = (extra) => base + `relations:\n  - {id: x, protocol: syslog, endpoints: [r1, r2]${extra}}\n`;
   const dir = (extra) => validate.loadModel(rel(extra)).model.relations[0].direction;
   assert.equal(dir(''), 'bidirectional', 'omitted: bidirectional');
@@ -186,8 +186,8 @@ test('direction: bidirectional by default, unidirectional runs from the first en
   assert.equal(dir(', direction: unidirectional'), 'unidirectional');
   assert.deepEqual(errorsOf(rel(', direction: unidirectional')), []);
   expectError(rel(', direction: one-way'), /unknown direction "one-way": use "bidirectional" \(the default\) or "unidirectional" \(from the first endpoint to the last\)/);
-  expectError(rel(', directed: true'), /"directed" is not part of the format — a relation has a "direction", not "directed": write "direction: unidirectional" for "directed: true"/);
-  // nothing is converted: the rejected key is kept in the file and the relation is bidirectional
+  expectError(rel(', directed: true'), /unknown key "directed"/);
+  // nothing is converted: the unknown key is kept in the file and the relation is bidirectional
   assert.equal(dir(', directed: true'), 'bidirectional');
   assert.ok(!('directed' in validate.loadModel(rel('')).model.relations[0]));
 });

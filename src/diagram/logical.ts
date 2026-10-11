@@ -13,7 +13,12 @@
  *   carries every address of the device inside the network.
  * - A device's box holds an entry per interface with its addresses and
  *   identifiers (loopbacks, virtual and tunnel interfaces, and physical
- *   ones with layer-3 facts; see model/addresses.ts), then its DNS names.
+ *   ones with layer-3 facts; see model/addresses.ts), its route tables (one
+ *   per VRF, a line per static route), then its DNS names.
+ * - A static route whose next hop is an interface of another drawn device
+ *   has a thin dotted line from its line in the route table to that
+ *   interface's row (an arrow at the next hop). Routes switch both off; the
+ *   room of the tables stays, so nothing moves.
  * - Groups / locations are frames around their devices, as in the physical
  *   view (auto-arrange keeps the devices of a group together).
  * - All text is drawn in full. Every relation label gets its own place along
@@ -24,14 +29,15 @@ import { CBox, Pt, Rect, boxRect, clipToBox, normal, unionRect } from '../layout
 import { LINE_W, TUBE_WALL, buildBundle, laneLabel, relationPairs, spokeWidth } from '../layout/bundles';
 import { CHIP_H, HUB_R, LNode, LogicalLayout, commonChain, deviceRect, isMultipoint, networkSubtitle } from '../layout/logical';
 import { endLabelLines, memberAddresses } from '../layout/input';
-import { CHIP_FONT, END_LABEL_GAP, ENTRY_GAP, ENTRY_MARGIN, NET_LABEL_SIZE, dnsNameLines, dnsShown, endLabelBox, entriesSize, memberLabelBox, networkBody, pillBox } from '../layout/sizes';
+import { CHIP_FONT, END_LABEL_GAP, ENTRY_GAP, ENTRY_LH, ENTRY_MARGIN, ENTRY_PAD_Y, NET_LABEL_SIZE, dnsNameLines, dnsShown, endLabelBox, entriesSize, entryBox, memberLabelBox, networkBody, pillBox } from '../layout/sizes';
 import { END_LABEL_X, RowSpan, deviceRows, middleSegment, offsetPolyline, polylineD, routeLogical } from './logical-ports';
 import { addressAttrEntries, addressAttrLines } from '../model/addresses';
 import { TextBlock } from '../layout/text';
 import { networkMembers } from '../model/derive';
 import { Device, LineStyle, Model, ProtocolDef, Relation, relationDevices } from '../model/types';
 import { Attrs, LabelPlacer, addressLineAttrs, alongSegment, centerRect, fieldAttrs, leaderLine, textLines } from './labels';
-import { cssToken, deviceNode, deviceSubtitle, entryItems, entryNodes, groupFrames, groupRects, nodeOverlaps, SceneResult } from './physical';
+import { EntryItem, cssToken, detour, deviceNode, deviceSubtitle, entryItems, entryNodes, groupFrames, groupRects, nodeOverlaps, SceneResult } from './physical';
+import { nextHopTargets } from '../analysis/routing';
 import { VNode, h } from './scene';
 import { NETWORK_COLOR } from './style';
 import { relationStyle } from '../model/protocols';
@@ -39,6 +45,8 @@ import { relationStyle } from '../model/protocols';
 export interface LogicalOptions {
   showLabels: boolean;
   showNetworks: boolean;
+  /** draw the route tables in the device boxes and the next-hop lines (default true); their room stays when off */
+  showRoutes?: boolean;
   /** draw the frames of groups / locations (default true); hiding them never moves a node */
   showGroups?: boolean;
   hiddenProtocols: Set<string>;
@@ -123,6 +131,7 @@ export function renderLogical(model: Model, layout: LogicalLayout, opts: Logical
     return n ? deviceRect(n) : undefined;
   };
   const visible = model.relations.filter((r) => !opts.hiddenProtocols.has(r.protocol) && relationDevices(r).every((d) => !!dev(d)));
+  const showRoutes = opts.showRoutes !== false;
 
   // labels keep clear of every node, and of each other
   const placer = new LabelPlacer();
@@ -367,6 +376,10 @@ export function renderLogical(model: Model, layout: LogicalLayout, opts: Logical
     labels.push(textLines({ class: 'halo member-label', 'data-ref': ml.ref, 'text-anchor': 'middle' }, box.block, c.x, r.y));
   }
 
+  // ---- static routes: a dotted line from a route's line in its table to the interface of its next hop
+  const nhLines = showRoutes ? nextHopLines(model, nodes, rows) : { nodes: [], points: [] };
+  for (const p of nhLines.points) routeRects.push({ x: p.x - 4, y: p.y - 4, w: 8, h: 8 });
+
   // ---- nodes
   nodes.forEach((n) => {
     if (n.kind === 'device') {
@@ -374,11 +387,13 @@ export function renderLogical(model: Model, layout: LogicalLayout, opts: Logical
       if (!d) return;
       const bodyH = n.bodyH || n.h;
       nodeLayer.push(deviceNode(n.ref, d.label, deviceSubtitle(d.type), d.type, deviceRect(n), 'type-' + cssToken(d.type), bodyH));
-      // the entries of its interfaces (loopbacks, virtual, tunnel, physical with addresses), each selectable
+      // the entries of its interfaces (loopbacks, virtual, tunnel, physical with addresses) and its route tables, each selectable
       const items = entryItems(model, d, 'logical');
       const listTop = n.cy - n.h / 2 + bodyH;
       const listH = entriesSize(items)[1];
-      if (items.length) nodeLayer.push(...entryNodes(items, n.cx - n.w / 2 + ENTRY_MARGIN, listTop, n.w - 2 * ENTRY_MARGIN));
+      // the route tables are the last entries: switched off, they leave their room (nothing moves)
+      const shown = showRoutes ? items : items.filter((it) => !it.lineRefs);
+      if (shown.length) nodeLayer.push(...entryNodes(shown, n.cx - n.w / 2 + ENTRY_MARGIN, listTop, n.w - 2 * ENTRY_MARGIN));
       // the names are labels: hidden with Labels (their room stays, so nothing moves)
       if (opts.showLabels) nodeLayer.push(...dnsChips(d, n, listTop + listH + (listH ? ENTRY_GAP : 0)));
     } else if (n.kind === 'network' && opts.showNetworks) {
@@ -417,12 +432,90 @@ export function renderLogical(model: Model, layout: LogicalLayout, opts: Logical
       h('g', { class: 'layer-groups' }, groupNodes),
       h('g', { class: 'layer-members' }, members),
       h('g', { class: 'layer-relations' }, relNodes),
+      h('g', { class: 'layer-next-hops' }, nhLines.nodes),
       h('g', { class: 'layer-nodes' }, nodeLayer),
       h('g', { class: 'layer-ports' }, portNodes),
       h('g', { class: 'layer-labels' }, groupTitles.concat(labels)),
     ]),
     bounds: unionRect(rects),
   };
+}
+
+/** Where each line of a device's route tables is (its middle), by the route's ref; the geometry entryNodes draws. */
+export function routeLineRows(items: EntryItem[], top: number): Map<string, number> {
+  const out = new Map<string, number>();
+  let y = top;
+  for (const it of items) {
+    const b = entryBox(it);
+    if (it.lineRefs) {
+      const first = y + ENTRY_PAD_Y + (it.header ? ENTRY_LH : 0);
+      it.lineRefs.forEach((ref, i) => out.set(ref, first + i * ENTRY_LH + ENTRY_LH / 2));
+    }
+    y += b.h + ENTRY_GAP;
+  }
+  return out;
+}
+
+/**
+ * The next-hop lines of the static routes: from the side of the route's
+ * device beside its line in the route table to the side of the next hop's
+ * device beside that interface's row (its name part when the interface has
+ * no row), around the boxes in between, with an arrow at the next hop.
+ * Drawn under the boxes; in route order (device, then route ref), so the
+ * result depends only on the model and the positions.
+ */
+function nextHopLines(model: Model, nodes: Map<string, LNode>, rows: Map<string, Map<string, RowSpan>>): { nodes: VNode[]; points: Pt[] } {
+  const out: VNode[] = [];
+  const points: Pt[] = [];
+  const boxes: Array<{ id: string; r: Rect }> = [];
+  nodes.forEach((n) => {
+    if (n.kind === 'device') boxes.push({ id: n.id, r: boxRect(deviceRect(n), 6) });
+  });
+  const devices = model.devices.slice().sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  for (const d of devices) {
+    const n = nodes.get('device:' + d.id);
+    if (!n || !d.routes.length) continue;
+    const box = deviceRect(n);
+    const lineY = routeLineRows(entryItems(model, d, 'logical'), n.cy - n.h / 2 + (n.bodyH || n.h));
+    for (const r of d.routes) {
+      const ref = 'route:' + d.id + ':' + r.index;
+      const y = lineY.get(ref);
+      if (y === undefined) continue;
+      for (const t of nextHopTargets(model, r)) {
+        const tn = nodes.get('device:' + t.device);
+        if (!tn) continue;
+        const tb = deviceRect(tn);
+        const trows = rows.get(t.device);
+        const row = (t.iface !== undefined && trows && trows.get(t.iface)) || (trows && trows.get('')) || { top: tb.cy - tb.h / 2, bottom: tb.cy + tb.h / 2 };
+        const ty = (row.top + row.bottom) / 2;
+        // leave on the side facing the next hop, arrive on the side facing the route's device
+        const right = tb.cx >= box.cx;
+        const s = { x: box.cx + (right ? box.w / 2 : -box.w / 2), y };
+        const e = { x: tb.cx + (right ? -tb.w / 2 : tb.w / 2), y: ty };
+        const s1 = { x: s.x + (right ? 10 : -10), y };
+        const e1 = { x: e.x + (right ? -12 : 12), y: ty };
+        const others = boxes.filter((b) => b.id !== d.id && b.id !== t.device).map((b) => b.r);
+        const pts = [s, s1, ...detour(s1, e1, others, 0, 10), e1, e];
+        const dd = pts.map((p, i) => (i ? 'L' : 'M') + r1(p.x) + ' ' + r1(p.y)).join('');
+        out.push(
+          h('g', { class: 'next-hop', 'data-ref': ref, 'data-target': t.iface !== undefined ? `iface:${t.device}:${t.iface}` : 'device:' + t.device }, [
+            h('path', { class: 'hit', d: dd }),
+            h('path', { class: 'nh-line', d: dd }),
+            nhArrow(e, right ? 1 : -1),
+          ]),
+        );
+        points.push(...pts);
+      }
+    }
+  }
+  return { nodes: out, points };
+}
+
+/** The arrow of a next-hop line at the side of the next hop's box, pointing into it (`dir` 1: rightwards). */
+function nhArrow(tip: Pt, dir: number): VNode {
+  const L = 7;
+  const W = 3.5;
+  return h('path', { class: 'nh-arrow', d: `M${r1(tip.x)} ${r1(tip.y)}L${r1(tip.x - dir * L)} ${r1(tip.y - W)}L${r1(tip.x - dir * L)} ${r1(tip.y + W)}Z` });
 }
 
 /**

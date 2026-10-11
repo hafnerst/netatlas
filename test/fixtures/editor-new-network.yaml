@@ -25,8 +25,8 @@ devices:
       - {id: gr-0/0/0.1, type: tunnel, ip: [172.16.0.2/30], source: lo0, destination: 10.255.0.1}
 links:
   - id: cable-1
-    a: {device: edge-a, interface: ge-0/0/0, networks: [net-core, net-mgmt]}
-    b: {device: edge-b, interface: ge-0/0/0, networks: [net-core, net-mgmt]}
+    a: {device: edge-a, interface: ge-0/0/0, mode: trunk, tagged: [100]}
+    b: {device: edge-b, interface: ge-0/0/0, mode: trunk, tagged: [100]}
     medium: fiber
     speed: 10G
     cable: LC-LC OM4 3m
@@ -62,10 +62,10 @@ relations:
 layout:
   physical:
     edge-a: [75, 47]
-    edge-b: [519, 47]
+    edge-b: [483, 47]
   logical:
-    edge-a: [85, 338]
-    edge-b: [435, 306]
-    net-core: [109, 589]
-    net-loopbacks: [492, 543]
-    net-mgmt: [217, 21]
+    edge-a: [85, 339]
+    edge-b: [436, 304]
+    net-core: [111, 590]
+    net-loopbacks: [494, 540]
+    net-mgmt: [214, 21]
