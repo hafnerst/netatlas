@@ -146,7 +146,7 @@ test('Find menu: next to Export, with Find in diagram… (/) and Filter object l
   assert.match(html, /<div id="find-bar" class="find-bar" role="search" aria-label="Find in diagram" hidden>/);
   assert.deepEqual([...view.matchAll(/class="mi-hint">([^<]*)</g)].map((m) => m[1]), ['/']);
   const app = readFileSync(join(root, 'src', 'ui', 'app.ts'), 'utf8');
-  assert.match(app, /\['export-btn', 'export-menu'\],\s*\['find-btn', 'find-menu'\],\s*\['help-btn', 'help-menu'\],/);
+  assert.match(app, /\['export-btn', 'export-menu'\],\s*\['find-btn', 'find-menu'\],\s*\['analyze-btn', 'analyze-menu'\],\s*\['help-btn', 'help-menu'\],/);
   assert.match(app, /if \(e\.key === '\/'\) \{\s*e\.preventDefault\(\);\s*this\.openFind\(\);/);
   // the old places are gone: no search box in the toolbar, no filter box always at the top of the outline
   assert.ok(!header.includes('class="search-wrap"'));
@@ -361,4 +361,16 @@ test('Help → License names the license of LICENSE and package.json, and embeds
     assert.match(MANUAL_IMAGES[n].src, /^data:image\/webp;base64,/);
     assert.ok(MANUAL_IMAGES[n].width > 100 && MANUAL_IMAGES[n].height > 50, n);
   }
+});
+
+test('Analyze menu: between Find and Help, built like the others; Addressing overview… (I) opens a dialog and needs a model', () => {
+  const header = /<header class="topbar">([\s\S]*?)<\/header>/.exec(html)[1];
+  const order = [...header.matchAll(/<button id="([a-z-]+-btn)" type="button" class="menu-btn"/g)].map((m) => m[1]);
+  assert.deepEqual(order.slice(0, 5), ['menu-btn', 'export-btn', 'find-btn', 'analyze-btn', 'help-btn']);
+  const menu = /<div id="analyze-menu" class="dropdown menu" role="menu" aria-label="Analyze" hidden>([\s\S]*?)<\/div>/.exec(header);
+  assert.ok(menu, 'the Analyze menu');
+  assert.match(menu[1], /<button id="btn-addressing" type="button" role="menuitem" aria-haspopup="dialog" title="Open or create a model first" disabled><span class="mi-label">Addressing overview…<\/span><span class="mi-hint">I<\/span><\/button>/);
+  const app = readFileSync(join(root, 'src', 'ui', 'app.ts'), 'utf8');
+  assert.match(app, /else if \(e\.key === 'i'\) void this\.openAddressing\(\);/);
+  assert.match(app, /addr\.disabled = !s;/);
 });

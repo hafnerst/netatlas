@@ -22,6 +22,7 @@ import { derivedVlanText, endNetworks, interfaceAddresses, interfaceVlanPorts, i
 import { routingRole, ROUTE_DEVICE_TYPES } from '../model/device-types';
 import { deviceVrfs, nextHopCandidates, vrfKey } from '../analysis/routing';
 import { CHECKS } from '../analysis/checks';
+import { nextFreeChoices } from '../analysis/addressing';
 import { builtinProtocols, normalizeProtocol } from '../model/protocols';
 import { SelectionContext, contextState } from '../model/queries';
 import { DEVICE_TYPES, isDeviceType } from '../model/device-types';
@@ -1228,6 +1229,10 @@ export class Editor {
     card.appendChild(this.ifTypeField(p, entry));
     card.appendChild(this.textField(p.concat('label'), loop ? 'Name' : 'Label', o, 'text', undefined, loop ? 'Descriptive name, e.g. “Router ID” or “BGP source”.' : undefined));
     card.appendChild(this.addressField(p, loop, o));
+    if (!loop && !dhcp && id) {
+      const nf = this.nextFreeField(devIndex, p, id);
+      if (nf) card.appendChild(nf);
+    }
     card.appendChild(this.ifaceDerivedField(devIndex, p));
     if (o === 'logical') {
       // Each association belongs to one type. A field of another type is only shown while the file still has it, so it can be removed.
@@ -1311,6 +1316,29 @@ export class Editor {
     f.insertBefore(sw, f.firstChild ? f.firstChild.nextSibling : null);
     for (const is of doc.issuesAt(p.concat('dhcp'))) f.appendChild(this.e('div', { class: is.severity === 'error' ? 'field-err' : 'field-warn' }, [is.message]));
     return f;
+  }
+
+  /**
+   * Adding an address: the next free address of a network, chosen from the
+   * networks of the interface's VRF that have one, those its cable carries
+   * or its peer port is in first (see analysis/addressing.ts). Pressing
+   * "Add" appends it with the network's prefix length (one undo step). Not
+   * shown when the model has no such network.
+   */
+  private nextFreeField(devIndex: number, p: Path, ifaceId: string): HTMLElement | null {
+    const model = this.doc.result.model;
+    const dev = this.doc.text(['devices', devIndex, 'id']);
+    if (!model || !dev) return null;
+    const choices = nextFreeChoices(model, dev, ifaceId);
+    if (!choices.length) return null;
+    const sel = this.e('select', { 'data-next-free': '', 'aria-label': 'Network to take the next free address from' }) as HTMLSelectElement;
+    for (const c of choices) sel.appendChild(this.e('option', { value: c.id }, [`${c.text} ${c.label}${c.suggested ? ' (on this cable)' : ''} → ${c.nextFree}`]));
+    const btn = this.e('button', { type: 'button', class: 'mini', 'data-act': 'add-next-free', 'data-p': J(p.concat('ip')), 'data-iface': ifaceId, 'data-dev': dev, title: 'Add the next free address of the chosen network to this interface' }, ['+ Add']);
+    return this.e('div', { class: 'field next-free', 'data-next-free-field': '' }, [
+      this.e('label', {}, ['Next free address']),
+      this.e('span', { class: 'ctl row' }, [sel, btn]),
+      this.e('div', { class: 'help' }, ['The lowest address no interface or VIP of the network uses.']),
+    ]);
   }
 
   /**
@@ -2307,6 +2335,17 @@ export class Editor {
         doc.remove(p);
         this.host.changed();
         return true;
+      case 'add-next-free': {
+        // the address is looked up now, from the model as it is
+        const model = doc.result.model;
+        const field = btn.closest('[data-next-free-field]');
+        const sel = field ? (field.querySelector('select[data-next-free]') as HTMLSelectElement | null) : null;
+        const pick = model && sel ? nextFreeChoices(model, btn.getAttribute('data-dev') as string, btn.getAttribute('data-iface') as string).find((c) => c.id === sel.value) : undefined;
+        if (!pick) return true;
+        doc.appendText(p, pick.nextFree);
+        this.host.changed(`Added ${pick.nextFree} from ${pick.text}.`);
+        return true;
+      }
       case 'direction': {
         const k = btn.getAttribute('data-k');
         // bidirectional is the default: the key is removed

@@ -15,6 +15,8 @@ import { contextState, relatedRefs, selectionContext } from '../model/queries';
 import { addressInventory } from '../model/addresses';
 import { strNode } from '../yaml/parse';
 import { CHECKS } from '../analysis/checks';
+import { addressingOverview } from '../analysis/addressing';
+import { addressingCsv } from '../ui/addressing';
 import { EXAMPLES, FIXTURES } from '../generated/examples';
 import { PNG_MAX_PIXELS, PNG_MAX_SIDE, WritableFile, pngScale, svgToPng } from '../ui/files';
 import { App } from '../ui/app';
@@ -1223,6 +1225,118 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       app.undo();
       app.undo();
       md().markSaved();
+    }
+
+    // ------------------------------------------------ Analyze → Addressing overview
+    {
+      app.loadExample(EXAMPLES.findIndex((e) => e.name === 'addressing.yaml'));
+      click('[data-view-btn="logical"]');
+      await tick();
+      const yamlBefore = app.exportText();
+      const undoBefore = (q('#btn-undo') as HTMLButtonElement).disabled;
+      const entry = q('#btn-addressing') as HTMLButtonElement;
+      check('Analyze → Addressing overview… is in the menu with its key, enabled with a model', !!entry && !entry.disabled && /Addressing overview…/.test(entry.textContent || '') && /\bI\b/.test(entry.textContent || '') && entry.closest('#analyze-menu') !== null);
+      click('#analyze-btn');
+      entry.click();
+      await tick();
+      const dlgOpen = (): boolean => app.addressingOpen;
+      const rows = (): HTMLElement[] => Array.from(doc.querySelectorAll('#modal .addr-row')) as HTMLElement[];
+      const m = app.session!.model;
+      const ov = addressingOverview(m);
+      const listings = ov.vrfs.reduce((s, g) => s + g.networks.length, 0);
+      check(
+        'the overview lists the networks of each VRF (default table first) with prefix, VLAN, name, gateway / VIP, use, utilization, next free and free ranges; the filter has the focus',
+        dlgOpen() && rows().length === listings && doc.querySelectorAll('#modal .addr-vrf').length === ov.vrfs.length && /Default table/.test(q('#modal .addr-vrf h3')!.textContent || '') &&
+          ['Prefix', 'VLAN', 'Name', 'Gateway / VIP', 'Used / size', 'Utilization', 'Next free', 'Free ranges'].every((h) => (q('#modal .addr-table thead')!.textContent || '').indexOf(h) >= 0) &&
+          doc.activeElement === q('#addr-filter') && /10\.10\.10\.1/.test(q('#modal .addr-row[data-addr-net="corp"] .addr-gw')!.textContent || '') && /0\.8 %/.test(q('#modal .addr-row[data-addr-net="corp"]')!.textContent || '') && /× \/64/.test(q('#modal .addr-row[data-addr-net="corp6"]')!.textContent || ''),
+        `${rows().length} rows / ${listings}`,
+      );
+      // utilization is text, not only a bar
+      check('utilization is written as text (the bar is only decoration)', rows().every((r) => /%|\/64|\/\d+/.test((r.querySelector('.addr-util') as HTMLElement).textContent || '')) && Array.from(doc.querySelectorAll('#modal .addr-bar')).every((b) => b.getAttribute('aria-hidden') === 'true'));
+      // filter
+      const filter = q('#addr-filter') as HTMLInputElement;
+      filter.value = 'srv';
+      filter.dispatchEvent(new Event('input', { bubbles: true }));
+      await tick();
+      const shownIds = rows().map((r) => r.getAttribute('data-addr-net'));
+      check('the filter narrows the rows (by member device here) and the status line says how many are shown; the focus stays in the filter', shownIds.join() === 'mgmt' && /^1 of \d+ network listings shown/.test(q('#addr-status')!.textContent || '') && doc.activeElement === filter, shownIds.join());
+      filter.value = '';
+      filter.dispatchEvent(new Event('input', { bubbles: true }));
+      await tick();
+      // sort
+      (q('#modal [data-addr-sort="util"]') as HTMLElement).click();
+      await tick();
+      const th = (q('#modal [data-addr-sort="util"]') as HTMLElement).closest('th') as HTMLElement;
+      const firstAsc = rows()[0].getAttribute('data-addr-net');
+      (q('#modal [data-addr-sort="util"]') as HTMLElement).click();
+      await tick();
+      const th2 = (q('#modal [data-addr-sort="util"]') as HTMLElement).closest('th') as HTMLElement;
+      check(
+        'a column header sorts (aria-sort ascending, then descending on a second press), and keeps the focus',
+        th.getAttribute('aria-sort') === 'ascending' && th2.getAttribute('aria-sort') === 'descending' && rows()[0].getAttribute('data-addr-net') !== firstAsc && doc.activeElement === q('#modal [data-addr-sort="util"]'),
+      );
+      (q('#modal [data-addr-sort="prefix"]') as HTMLElement).click();
+      await tick();
+      // members
+      const tog = q('#modal .addr-row[data-addr-net="corp"] [data-addr-toggle]') as HTMLElement;
+      const mrow = doc.getElementById(tog.getAttribute('aria-controls') as string) as HTMLElement;
+      const hiddenBefore = mrow.hidden;
+      tog.click();
+      await tick();
+      check(
+        'a network’s members open below it (aria-expanded): device, interface, address, DNS name, DHCP',
+        hiddenBefore && !mrow.hidden && tog.getAttribute('aria-expanded') === 'true' && /dist/.test(mrow.textContent || '') && /10\.10\.10\.3\/24/.test(mrow.textContent || '') && /DHCP/.test(mrow.textContent || ''),
+      );
+      tog.click();
+      await tick();
+      check('duplicates, overlaps and addresses in no network are listed', !!q('#modal [data-addr-list="duplicates"]') && !!q('#modal [data-addr-list="overlaps"]') && doc.querySelectorAll('#modal [data-addr-list="orphans"] li').length === ov.orphans.length && ov.orphans.length > 0);
+      // the page does not scroll sideways (the tables do, inside their region)
+      check('the dialog fits the window: no sideways scrolling of the page', doc.documentElement.scrollWidth <= doc.documentElement.clientWidth + 1 && !!q('#modal .addr-scroll[role="region"][aria-label]'));
+      // CSV
+      const csv = addressingCsv(ov);
+      check('the table as CSV: a header and a line per listing', csv.split('\r\n').length === listings + 2 && /^vrf,prefix,vlan,name,network_id/.test(csv));
+      // a click on a network: the dialog closes and the network is selected
+      (q('#modal .addr-row[data-addr-net="corp"] [data-addr-goto="network:corp"]') as HTMLElement).click();
+      await tick();
+      check('clicking a network closes the overview and selects it in the diagram', !dlgOpen() && app.session!.state.selected === 'network:corp');
+      // the key I opens it again, with its state; Esc closes it and the focus returns
+      app.select(null);
+      (q('#canvas') as unknown as HTMLElement).focus();
+      doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'i', bubbles: true }));
+      await tick();
+      check('the key I opens the overview', dlgOpen());
+      const modal = q('#modal') as HTMLDialogElement;
+      modal.dispatchEvent(new Event('cancel', { cancelable: true }));
+      await tick();
+      check('Esc closes it; the model is unchanged and no undo step was added', !dlgOpen() && app.exportText() === yamlBefore && (q('#btn-undo') as HTMLButtonElement).disabled === undoBefore);
+      // both themes: the overview is drawn with the theme's colours
+      for (const theme of ['light', 'dark']) {
+        app.theme.set(theme as 'light' | 'dark');
+        void app.openAddressing();
+        await tick();
+        const cs = doc.defaultView!.getComputedStyle(q('#modal') as HTMLElement);
+        const link = doc.defaultView!.getComputedStyle(q('#modal .addr-row .ref') as HTMLElement).color;
+        check(`${theme} theme: the overview uses the theme’s background and link colours`, cs.backgroundColor !== '' && link !== cs.backgroundColor && dlgOpen());
+        (q('#modal') as HTMLDialogElement).dispatchEvent(new Event('cancel', { cancelable: true }));
+        await tick();
+      }
+      // the Inspector offers the next free address
+      app.select('iface:srv:eth0');
+      click('[data-tab="edit"]');
+      await tick();
+      const nf = q('#side-body [data-next-free-field] select') as HTMLSelectElement | null;
+      check('Edit tab: an interface offers the next free address of a network of its VRF', !!nf && Array.from(nf.options).some((o) => o.value === 'mgmt' && /→ 10\.20\.0\.1\/24/.test(o.textContent || '')), nf ? Array.from(nf.options).map((o) => o.textContent).join(' | ') : 'none');
+      if (nf) {
+        nf.value = 'mgmt';
+        (q('#side-body [data-act="add-next-free"]') as HTMLElement).dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, pointerId: 11 }));
+        await tick();
+      }
+      check('“+ Add” appends that address to the interface (one undo step)', /- \{id: eth0, ip: \[10\.20\.0\.10\/24, 10\.20\.0\.1\/24\]/.test(app.exportText()) || /10\.20\.0\.1\/24/.test(app.exportText().slice(app.exportText().indexOf('id: srv'))), app.exportText().slice(app.exportText().indexOf('id: srv'), app.exportText().indexOf('id: srv') + 200));
+      app.undo();
+      await tick();
+      check('… undo removes it', app.exportText() === yamlBefore);
+      app.theme.set('dark');
+      (app.mdoc as ModelDoc).markSaved();
     }
 
     // ------------------------------------------------ viewer interactions
@@ -3825,16 +3939,16 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const key = (target: Element, k: string): void => {
         target.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true }));
       };
-      // the menu: right after Find, reached with the arrow keys like every menu
-      click('#find-btn');
-      key(q('#find-menu') as HTMLElement, 'ArrowRight');
+      // the menu: right after Analyze, reached with the arrow keys like every menu
+      click('#analyze-btn');
+      key(q('#analyze-menu') as HTMLElement, 'ArrowRight');
       await tick();
       const viaArrow = !(q('#help-menu') as HTMLElement).hidden && helpBtn.getAttribute('aria-expanded') === 'true' && doc.activeElement === q('#btn-manual');
       const entries = textsOf('#help-menu button');
       key(q('#help-menu') as HTMLElement, 'Escape');
       await tick();
       check(
-        'Help menu right after Find: User Manual and License, reached with the arrow keys; Esc closes it and returns to its button',
+        'Help menu right after Analyze: User Manual and License, reached with the arrow keys; Esc closes it and returns to its button',
         viaArrow && entries.join('|') === 'User Manual|License' && (q('#help-menu') as HTMLElement).hidden && doc.activeElement === helpBtn,
         `${viaArrow} ${entries.join('|')}`,
       );

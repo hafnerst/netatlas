@@ -97,6 +97,19 @@ export const ENCAP_OVERHEAD: { [protocol: string]: { bytes: number; what: string
   gtp: { bytes: 36, what: 'GTP-U: 20 IP + 8 UDP + 8 GTP' },
 };
 
+/** Is an attribute key one that holds a virtual (gateway) address: ends in "virtual-ip", "virtual-ipv6" or "vip"? */
+export function vipKey(k: string): boolean {
+  return /(^|[-.])(virtual-ip|virtual-ipv6|vip)$/.test(k);
+}
+
+/** The addresses in an attribute value ("10.0.0.1", "10.0.0.1, 2001:db8::1"; a prefix length is dropped). */
+export function addrsOf(v: string): IpAddr[] {
+  return v
+    .split(/[\s,;]+/)
+    .map((t) => parseAddress(t.replace(/\/[0-9]+$/, '')))
+    .filter((a): a is IpAddr => !!a);
+}
+
 // ------------------------------------------------------------ the checks
 
 export const MORE_CHECKS: MoreCheck[] = [
@@ -349,8 +362,6 @@ export const MORE_CHECKS: MoreCheck[] = [
     title: 'Virtual (gateway) address outside its subnet',
     reads: 'relations of category redundancy: attrs ending in "virtual-ip" / "virtual-ipv6", or "vip", and their `over` networks or bound interfaces (ip); interfaces: attrs ending in "virtual-ip" / "virtual-ipv6"',
     run(model, emit) {
-      const vipKey = (k: string): boolean => /(^|[-.])(virtual-ip|virtual-ipv6|vip)$/.test(k);
-      const addrsOf = (v: string): IpAddr[] => v.split(/[\s,;]+/).map((t) => parseAddress(t.replace(/\/[0-9]+$/, ''))).filter((a): a is IpAddr => !!a);
       for (const r of model.relations) {
         if (r.category !== 'redundancy') continue;
         const nets = r.over.map((o) => model.index.networks.get(o)).filter((n): n is NonNullable<typeof n> => !!n && !!n.cidr).map((n) => ({ n, p: parsePrefix(n.cidr as string) as NonNullable<ReturnType<typeof parsePrefix>> }));

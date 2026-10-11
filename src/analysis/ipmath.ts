@@ -139,27 +139,31 @@ export function rangeSize(r: AddrRange): bigint {
 
 /**
  * The free host addresses of a prefix as ranges, ascending: every address
- * of the prefix that is neither in `used` nor reserved (reservedOf).
- * Addresses outside the prefix are ignored.
+ * of the prefix that is neither in `used`, nor in one of the `blocks`
+ * (ranges already given away, such as the prefixes of subnets), nor
+ * reserved (reservedOf). Addresses outside the prefix are ignored.
  */
-export function freeRanges(p: IpPrefix, used: bigint[]): AddrRange[] {
+export function freeRanges(p: IpPrefix, used: bigint[], blocks: AddrRange[] = []): AddrRange[] {
   const r = prefixRange(p);
-  const taken = Array.from(new Set(used.concat(reservedOf(p)).filter((v) => v >= r.first && v <= r.last).map((v) => v.toString())))
-    .map((s) => BigInt(s))
-    .sort((x, y) => (x < y ? -1 : x > y ? 1 : 0));
+  const taken = used
+    .concat(reservedOf(p))
+    .map((v) => ({ first: v, last: v }))
+    .concat(blocks)
+    .filter((x) => x.last >= r.first && x.first <= r.last)
+    .sort((x, y) => (x.first < y.first ? -1 : x.first > y.first ? 1 : 0));
   const out: AddrRange[] = [];
   let cur = r.first;
   for (const t of taken) {
-    if (t > cur) out.push({ first: cur, last: t - ONE });
-    cur = t + ONE;
+    if (t.first > cur) out.push({ first: cur, last: t.first - ONE });
+    if (t.last + ONE > cur) cur = t.last + ONE;
   }
   if (cur <= r.last) out.push({ first: cur, last: r.last });
   return out;
 }
 
 /** The lowest free host address of a prefix (null: none is free). */
-export function nextFree(p: IpPrefix, used: bigint[]): IpAddr | null {
-  const f = freeRanges(p, used);
+export function nextFree(p: IpPrefix, used: bigint[], blocks: AddrRange[] = []): IpAddr | null {
+  const f = freeRanges(p, used, blocks);
   return f.length ? bigAddr(f[0].first, p.version) : null;
 }
 
