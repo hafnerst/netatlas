@@ -77,7 +77,7 @@ async function main() {
       const v = await page.rect('#viewport');
       const x = Math.max(c.x, v.x - 16);
       const y = Math.max(c.y, v.y - 16);
-      await save('logical', { x, y, w: Math.min(c.x + c.w, v.x + v.w + 16) - x, h: Math.min(c.y + c.h, v.y + v.h + 16) - y }, { quality: 68 });
+      await save('logical', { x, y, w: Math.min(c.x + c.w, v.x + v.w + 16) - x, h: Math.min(c.y + c.h, v.y + v.h + 16) - y }, { quality: 60 });
     }
     await page.eval('netatlas.loadExample(0), netatlas.setView("logical"), true');
     await page.settle(200);
@@ -124,7 +124,7 @@ async function main() {
       await page.mouse('mouseMoved', c.x + c.w * 0.27, c.y + c.h * 0.6);
     }
     await page.settle(100);
-    await save('connect', around([await page.rect('#canvas-wrap')], 0), { scale: 0.85 });
+    await save('connect', around([await page.rect('#canvas-wrap')], 0), { scale: 0.85, quality: 65 });
     await page.key('Escape', 'Escape', 27);
 
     // the View, Auto-arrange and Filters groups of the toolbar
@@ -145,7 +145,7 @@ async function main() {
       const b = await page.rect('#viewport [data-ref="device:core"] .dev-box');
       const x = Math.max(c.x, b.x - 150);
       const y = Math.max(c.y, b.y - 20);
-      await save('addresses', { x, y, w: Math.min(c.x + c.w, b.x + b.w + 150) - x, h: Math.min(c.y + c.h, y + 470) - y });
+      await save('addresses', { x, y, w: Math.min(c.x + c.w, b.x + b.w + 150) - x, h: Math.min(c.y + c.h, y + 470) - y }, { quality: 65 });
     }
 
     // ports: the branch router of the long-labels example at 100 %, GRE and OSPF leaving from the port of Tunnel10
@@ -193,7 +193,7 @@ async function main() {
       const b = await page.rect('#viewport [data-ref="device:br-rtr"] .dev-box');
       const x = Math.max(c.x, b.x - 120);
       const y = Math.max(c.y, b.y - 30);
-      await save('routes', { x, y, w: Math.min(c.x + c.w, b.x + b.w + 120) - x, h: Math.min(c.y + c.h, b.y + b.h + 30) - y });
+      await save('routes', { x, y, w: Math.min(c.x + c.w, b.x + b.w + 120) - x, h: Math.min(c.y + c.h, b.y + b.h + 30) - y }, { quality: 65 });
     }
     // VLAN tagging: the trunk between the branch router and the access switch, physical view, at 100 %
     await page.eval('netatlas.setView("physical"), true');
@@ -297,6 +297,19 @@ async function main() {
       await save('simulation', { x: x0, y: c.y, w: side.x + side.w - x0, h: Math.min(c.h, 350) }, { quality: 40 });
       await page.eval(`document.getElementById('sim-exit-banner').click(), true`);
       await page.settle(100);
+    }
+
+    // routing services: r3's Protocols card (suggestions, BGP, Enable a protocol) in the Edit tab
+    {
+      const demo2 = await page.eval("Array.from(document.querySelectorAll('#menu-examples [data-example]')).findIndex((b) => /consistency-checks/.test(b.textContent))");
+      await page.eval(`netatlas.loadExample(${demo2}), netatlas.setView("physical"), netatlas.select("device:r3"), netatlas.showTab("edit"), true`);
+      await page.eval("document.getElementById('toast').hidden = true");
+      await page.settle(200);
+      await page.eval(`(() => { const g = document.querySelector('#side-body [data-group="protocols"]'); g.scrollIntoView({ block: 'start' }); return true; })()`);
+      await page.settle(150);
+      const g = await page.rect('#side-body [data-group="protocols"]');
+      const sb = await page.rect('#side-body');
+      await save('protocols', { x: g.x - 4, y: Math.max(sb.y, g.y - 4), w: g.w + 8, h: Math.min(g.h + 8, sb.y + sb.h - g.y, 330) }, { quality: 45 });
     }
 
     // consistency checks: the Problems tab of the consistency-checks example, then its check settings

@@ -68,6 +68,7 @@ test('each selectable element, from the physical view, the logical view and the 
       one(await clickLine(page, 'iface:core:ge-0/0/3', 'tspan[data-field="vrf"]'), { kind: 'field', field: 'vrf' }, 'a VRF');
       one(await clickLine(page, 'iface:core:ge-0/0/9', 'tspan[data-field="mac"], text[data-field="mac"]'), { kind: 'field', field: 'mac' }, 'a MAC address');
       one(await clickLine(page, 'device:core', '&.dev-addr [data-field="router_id"]'), { kind: 'field', field: 'router_id' }, "a device's router ID");
+      one(await clickLine(page, 'device:core', '&.dev-addr [data-field="protocols.bgp.asn"]'), { kind: 'field', field: 'asn' }, "a device's BGP AS number (in its BGP card)");
       one(await clickLine(page, 'device:core', '&.dev-addr [data-value="nat-pool"]'), { kind: 'attr', value: 'nat-pool' }, "a device's address attribute");
       one(await clickLine(page, 'link:wan', '&.link-label [data-field="cable"]'), { kind: 'field', field: 'cable' }, 'a cable id');
       one(await clickLine(page, 'link:wan', 'path.cable-line'), { kind: 'header' }, 'a link');
@@ -76,7 +77,7 @@ test('each selectable element, from the physical view, the logical view and the 
       await page.eval(`netatlas.setView('logical'), true`);
       one(await clickLine(page, 'iface:core:lo0', 'tspan[data-value="2001:db8:ffff:ffff::1/128"]'), { kind: 'row', value: '2001:db8:ffff:ffff::1/128' }, 'a loopback address (dual stack)');
       one(await clickLine(page, 'iface:core:ge-0/0/2.10', '[data-field="vlan"]'), { kind: 'field', field: 'vlan' }, 'a VLAN');
-      one(await clickLine(page, 'iface:core:ge-0/0/2.10', '[data-value="vrrp-virtual-ip"]'), { kind: 'attr', value: 'vrrp-virtual-ip' }, 'a VRRP virtual address');
+      one(await clickLine(page, 'iface:core:ge-0/0/2.10', '[data-field="protocols.vrrp.virtual_ip"]'), { kind: 'field', field: 'virtual_ip' }, 'a VRRP virtual address (in the interface’s VRRP card)');
       one(await clickLine(page, 'iface:core:gr-0/0/0.0', '[data-field="destination"]'), { kind: 'field', field: 'destination' }, 'a tunnel destination');
       one(await clickLine(page, 'iface:core:gr-0/0/0.0', '[data-field="source"]'), { kind: 'field', field: 'source' }, 'a tunnel source');
       one(await clickLine(page, 'iface:core:ae0', '[data-field="members"]'), { kind: 'field', field: 'members' }, 'member ports');
@@ -84,8 +85,7 @@ test('each selectable element, from the physical view, the logical view and the 
       one(await clickLine(page, 'iface:core:st0.1', '.if-name'), { kind: 'card', iface: 'st0.1' }, 'a tunnel interface (its name)');
       one(await clickLine(page, 'network:corp', '[data-field="cidr"]'), { kind: 'field', field: 'cidr' }, "a network's prefix");
       one(await clickLine(page, 'network:corp', '.net-label'), { kind: 'header' }, 'a network');
-      one(await clickLine(page, 'relation:vrrp', '&.pill [data-value="virtual-ip"]'), { kind: 'attr', value: 'virtual-ip' }, "a relation's virtual address");
-      one(await clickLine(page, 'relation:vrrp', '&.pill tspan:not([data-field])'), { kind: 'header' }, 'a relation');
+      one(await clickLine(page, 'relation:vrrp', '&.pill text'), { kind: 'header' }, 'a relation');
       // ---- the object list: whole objects
       await page.click('#outline .ol-item[data-kind="device"][data-index="2"]');
       await page.settle(80);

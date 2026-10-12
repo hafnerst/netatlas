@@ -54,7 +54,9 @@ devices:
     label: ISP-1 PE
     type: router
     group: providers
-    asn: 3320
+    protocols:
+      bfd: {}
+      bgp: {asn: 3320}
     interfaces:
       - {id: xe-1/0/0}
       - {id: xe-1/0/1}
@@ -62,7 +64,8 @@ devices:
     label: ISP-2 PE
     type: router
     group: providers
-    asn: 1299
+    protocols:
+      bgp: {asn: 1299}
     interfaces:
       - {id: xe-2/0/0}
       - {id: xe-2/0/7}
@@ -71,8 +74,11 @@ devices:
     label: hq-rtr1
     type: router
     group: hq-edge
-    router_id: 10.255.0.1
-    asn: 65010
+    router_id: lo0
+    protocols:
+      bfd: {}
+      bgp: {asn: 65010}
+      ospf: {}
     interfaces:
       - {id: ge-0/0/0, ip: 198.51.100.2/30, mtu: 1500, description: ISP-1 uplink}
       - {id: ge-0/0/1, ip: 10.0.0.2/28}
@@ -86,8 +92,11 @@ devices:
     label: hq-rtr2
     type: router
     group: hq-edge
-    router_id: 10.255.0.2
-    asn: 65010
+    router_id: lo0
+    protocols:
+      bgp: {asn: 65010}
+      ospf: {}
+      static: {}
     interfaces:
       - {id: ge-0/0/0, ip: 203.0.113.2/30, mtu: 1500, description: ISP-2 uplink}
       - {id: ge-0/0/1, ip: 10.0.0.3/28}
@@ -102,6 +111,9 @@ devices:
     label: hq-fw
     type: firewall
     group: hq-edge
+    router_id: 10.255.0.3
+    protocols:
+      ospf: {}
     interfaces:
       - {id: eth1}
       - {id: eth2}
@@ -114,6 +126,10 @@ devices:
     type: switch
     group: hq-core
     tier: 3
+    router_id: 10.255.0.11
+    protocols:
+      ospf: {}
+      vrrp: {}
     interfaces:
       - {id: Ethernet49, ip: 10.0.1.2/30}
       - {id: Ethernet51}
@@ -121,13 +137,25 @@ devices:
       - {id: Ethernet1}
     logical_interfaces:
       - {id: Port-Channel1, type: virtual, members: [Ethernet51, Ethernet52]}
-      - {id: Vlan10, type: virtual, ip: 10.10.10.2/24}
-      - {id: Vlan20, type: virtual, ip: 10.10.20.2/24}
+      - id: Vlan10
+        type: virtual
+        ip: 10.10.10.2/24
+        protocols:
+          vrrp: {group: 10, virtual_ip: 10.10.10.1, priority: 200}
+      - id: Vlan20
+        type: virtual
+        ip: 10.10.20.2/24
+        protocols:
+          vrrp: {group: 20, virtual_ip: 10.10.20.1, priority: 200}
   - id: hq-core2
     label: hq-core2
     type: switch
     group: hq-core
     tier: 3
+    router_id: 10.255.0.12
+    protocols:
+      ospf: {}
+      vrrp: {}
     interfaces:
       - {id: Ethernet49, ip: 10.0.1.6/30}
       - {id: Ethernet51}
@@ -135,8 +163,16 @@ devices:
       - {id: Ethernet1}
     logical_interfaces:
       - {id: Port-Channel1, type: virtual, members: [Ethernet51, Ethernet52]}
-      - {id: Vlan10, type: virtual, ip: 10.10.10.3/24}
-      - {id: Vlan20, type: virtual, ip: 10.10.20.3/24}
+      - id: Vlan10
+        type: virtual
+        ip: 10.10.10.3/24
+        protocols:
+          vrrp: {group: 10, virtual_ip: 10.10.10.1, priority: 100}
+      - id: Vlan20
+        type: virtual
+        ip: 10.10.20.3/24
+        protocols:
+          vrrp: {group: 20, virtual_ip: 10.10.20.1, priority: 100}
   - id: hq-acc1
     label: hq-acc1
     type: switch
@@ -162,6 +198,9 @@ devices:
     label: muc-rtr
     type: router
     group: branch-muc
+    router_id: 10.255.1.1
+    protocols:
+      ospf: {}
     interfaces:
       - {id: wan0, ip: 192.0.2.10/29, description: VDSL}
       - {id: lan0, ip: 10.20.0.1/24}
@@ -183,6 +222,10 @@ devices:
     label: ham-rtr
     type: router
     group: branch-ham
+    router_id: 10.255.2.1
+    protocols:
+      ospf: {}
+      static: {}
     interfaces:
       - {id: wan0, ip: 192.0.2.34/29}
       - {id: wan1, dhcp: true, description: LTE backup modem}   # address assigned by the carrier
@@ -364,13 +407,11 @@ relations:
     label: VIP 10.10.10.1
     endpoints: ["hq-core1:Vlan10", "hq-core2:Vlan10"]
     over: net-users
-    attrs: {vrid: 10, virtual-ip: 10.10.10.1, master: "hq-core1 (priority 200)", backup: "hq-core2 (priority 100)"}
   - id: vrrp-servers
     protocol: vrrp
     label: VIP 10.10.20.1
     endpoints: ["hq-core1:Vlan20", "hq-core2:Vlan20"]
     over: net-servers
-    attrs: {vrid: 20, virtual-ip: 10.10.20.1, master: "hq-core1 (priority 200)", backup: "hq-core2 (priority 100)"}
   - id: syslog-fw
     protocol: syslog
     direction: unidirectional

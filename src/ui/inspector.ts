@@ -23,12 +23,16 @@ import { routingRole, ROUTE_DEVICE_TYPES } from '../model/device-types';
 import { deviceVrfs, nextHopCandidates, vrfKey } from '../analysis/routing';
 import { CHECKS } from '../analysis/checks';
 import { nextFreeChoices } from '../analysis/addressing';
-import { builtinProtocols, normalizeProtocol } from '../model/protocols';
+import { builtinProtocols, normalizeProtocol, protocolBase } from '../model/protocols';
 import { SelectionContext, contextState } from '../model/queries';
 import { DEVICE_TYPES, isDeviceType } from '../model/device-types';
 import { ID_RE, Issue, PROTO_RE, scalarText } from '../validation/validate';
 import { duplicateRelation, endpointName, pairProblem } from '../model/connect';
 import { Endpoint, endpointText } from '../model/types';
+import { ParamDef, ROUTER_ID_KEY, ServiceDef, paramsAt } from '../model/services';
+import { parsePrefix } from '../model/ip';
+import { suggestedServices } from '../analysis/identity';
+import { relationDevices } from '../model/types';
 
 /** `iface`: the document path of the selected physical or logical interface of a device; `route`: of the selected static route. */
 export type EditorSel = { kind: EntityKind | 'document'; index: number; iface?: Path; route?: Path } | null;
@@ -524,7 +528,8 @@ export class Editor {
     }
     if (d.field === 'attr') return near(this.byPath(wrap, 'input.g-key', 'data-p', J(scope.concat('attrs')), (e) => e.getAttribute('data-k') === d.value), '.g-row');
     if (d.field === 'dhcp') return near(this.byPath(wrap, 'button.dhcp-switch', 'data-p', J(scope)), '.field');
-    return near(this.byPath(wrap, '[data-p]', 'data-p', J(scope.concat(d.field))), '.field');
+    // a field inside a block ("protocols.bgp.asn")
+    return near(this.byPath(wrap, '[data-p]', 'data-p', J(scope.concat(d.field.split('.')))), '.field');
   }
 
   // ------------------------------------------------- a new link or relation
@@ -808,7 +813,8 @@ export class Editor {
     if (kind === 'device') {
       g('Identity', [this.idField(base, kind), this.textField(base.concat('label'), 'Label', o, 'textarea', undefined, 'Line breaks are kept.'), this.typeField(base.concat('type'), o)], 'identity');
       g('Placement', [this.refField(base.concat('group'), 'Group / location', o, this.ids('group')), this.intField(base.concat('tier'), 'Tier (0–9)', o, 'Row in the physical view (0 = top). Empty: automatic.')], 'placement');
-      g('Routing identity', [this.textField(base.concat('router_id'), 'Router ID', o, 'text', undefined, 'An IPv4 address, e.g. 10.255.0.1.', '10.255.0.1'), this.intField(base.concat('asn'), 'BGP AS number', o, 'The device’s own AS (1–4294967295).')], 'routing');
+      const protos = this.protocolsGroup(base, index);
+      if (protos) w.appendChild(protos);
       notes();
       this.renderInterfaces(w, index);
       this.renderRoutes(w, index);
@@ -836,6 +842,8 @@ export class Editor {
       ], 'protocol');
       g('Endpoints', [this.endpointList(base.concat('endpoints'), 'Endpoints', o)], 'endpoints');
       g('Underlay', [this.overField(base.concat('over'), 'Carried over (underlay)', o, index)], 'underlay');
+      const params = this.endpointParamsGroup(base);
+      if (params) w.appendChild(params);
       notes();
     } else if (kind === 'group') {
       const self = doc.text(base.concat('id'));
@@ -852,6 +860,200 @@ export class Editor {
     const other = this.otherProps(base, kind);
     if (other.firstChild) extra.push(other);
     if (extra.length) g('More', extra, 'more');
+  }
+
+  // ------------------------------------------------------ routing services
+
+  /** The loopbacks of a device that have an IPv4 address (they can be the router ID), as "id" and "id — address". */
+  private ridLoopbacks(devIndex: number): Array<{ id: string; text: string }> {
+    const model = this.doc.result.model;
+    const devId = this.doc.text(['devices', devIndex, 'id']);
+    const d = model && devId ? model.index.devices.get(devId) : undefined;
+    if (!d) return [];
+    return d.logical
+      .filter((i) => i.type === 'loopback')
+      .map((i) => ({ i, a: i.addresses.map((x) => parsePrefix(x, true)).find((x) => !!x && x.version === 4) }))
+      .filter((x) => !!x.a)
+      .map((x) => ({ id: x.i.id, text: `${x.i.id} — ${(x.a as NonNullable<typeof x.a>).bytes.join('.')}` }));
+  }
+
+  /**
+   * A device's routing services (its `protocols:`). Only Layer 3+ devices
+   * have the section; on another device enabled protocols are listed so
+   * they can be removed. Each enabled protocol shows its parameters at the
+   * device; the router ID its protocols share is shown while one of them
+   * uses it. Protocols the device's relations (or its static routes) use
+   * but that are not enabled are offered with one click.
+   */
+  private protocolsGroup(base: Path, devIndex: number): HTMLElement | null {
+    const doc = this.doc;
+    const reg = doc.servicesRegistry();
+    const type = doc.text(base.concat('type')) || '';
+    const devId = doc.text(base.concat('id')) || '';
+    const block = doc.get(base.concat('protocols'));
+    const enabled = block && block.kind === 'map' ? Array.from(block.entries.keys()).sort() : [];
+    const kids: Array<HTMLElement | null> = [];
+    const label = (id: string): string => (reg.get(id) || { label: id }).label;
+    if (routingRole(type) !== 'router') {
+      if (!enabled.length && !doc.get(base.concat('router_id'))) return null;
+      kids.push(this.e('p', { class: 'field-err' }, [`Only Layer 3+ devices (router, switch, firewall, load balancer, proxy, gateway) run routing protocols. Remove ${enabled.length ? 'them' : 'the router ID'}, or change the device type.`]));
+      for (const id of enabled) kids.push(this.e('div', { class: 'svc-row' }, [this.e('span', {}, [label(id)]), this.disableButton(devIndex, devId, id, label(id))]));
+      if (doc.get(base.concat('router_id'))) kids.push(this.textField(base.concat('router_id'), 'Router ID', 'device'));
+      return this.group('Protocols (routing services)', kids, 'protocols');
+    }
+    // what the device's relations and routes use, offered with one click
+    const model = doc.result.model;
+    const sugg = model && devId ? suggestedServices(model, devId) : [];
+    if (sugg.length) {
+      const chips = this.e('div', { class: 'svc-suggest', role: 'group', 'aria-label': `Protocols ${devId} uses but does not enable` });
+      for (const s of sugg) {
+        const why = s.relations.length ? `used by ${s.relations.join(', ')}` : `${s.routes} static route${s.routes === 1 ? '' : 's'}`;
+        chips.appendChild(
+          this.e('button', { type: 'button', class: 'chip', 'data-act': 'enable-service', 'data-index': String(devIndex), 'data-svc': s.service, 'aria-label': `Enable ${label(s.service)} on ${devId} (${why})`, title: `Enable ${label(s.service)}: ${why}` }, [
+            this.e('span', { 'aria-hidden': 'true' }, ['+ ']),
+            `Enable ${label(s.service)}`,
+            this.e('span', { class: 'chip-why' }, [' · ' + why]),
+          ]),
+        );
+      }
+      kids.push(this.field('Suggested', chips, [], 'Used by its relations or routes, not enabled.'));
+    }
+    // the router ID the enabled protocols share
+    const users = enabled.filter((id) => {
+      const d = reg.get(id);
+      return !!d && d.routerId !== 'none';
+    });
+    if (users.length || doc.get(base.concat('router_id'))) {
+      const req = users.filter((id) => (reg.get(id) as ServiceDef).routerId === 'required').map(label);
+      const loops = this.ridLoopbacks(devIndex);
+      const help = users.length
+        ? `Shared by ${users.map(label).join(', ')}: a loopback (its IPv4 address) or an IPv4 address${req.length ? '; required' : ''}.`
+        : 'Not applicable: no enabled protocol uses a router ID.';
+      kids.push(this.textField(base.concat('router_id'), 'Router ID', 'device', 'text', loops.map((x) => x.id), help, loops.length ? loops[0].id + ' or 10.255.0.1' : '10.255.0.1'));
+    }
+    for (const id of enabled) kids.push(this.serviceCard(base, devIndex, devId, id));
+    // enable another
+    const avail = Array.from(reg.values())
+      .filter((s) => enabled.indexOf(s.id) < 0)
+      .sort((a, b) => (a.label.toLowerCase() < b.label.toLowerCase() ? -1 : 1));
+    const sel = this.e('select', { 'data-t': 'enable-service', 'data-index': String(devIndex), 'aria-label': `Enable a protocol on ${devId}` }) as HTMLSelectElement;
+    sel.appendChild(this.e('option', { value: '' }, ['Enable a protocol…']));
+    for (const s of avail) sel.appendChild(this.e('option', { value: s.id }, [s.label + (s.builtin ? '' : ' (defined in this model)')]));
+    sel.classList.add('unset');
+    kids.push(this.field('Enable a protocol', sel, [], 'Required parameters show as errors until filled in.'));
+    return this.group('Protocols (routing services)', kids, 'protocols');
+  }
+
+  private disableButton(devIndex: number, devId: string, id: string, name: string): HTMLElement {
+    return this.e('button', { type: 'button', class: 'mini', 'data-act': 'disable-service', 'data-index': String(devIndex), 'data-svc': id, 'aria-label': `Disable ${name} on ${devId}`, title: `Disable ${name} (asks first when it has values)` }, ['Disable']);
+  }
+
+  /** One enabled protocol: its device parameters, its own router ID, and where its other parameters are set. */
+  private serviceCard(base: Path, devIndex: number, devId: string, id: string): HTMLElement {
+    const def = this.doc.servicesRegistry().get(id);
+    const name = def ? def.label : id;
+    const sp = base.concat('protocols', id);
+    const card = this.e('div', { class: 'svc-card', 'data-svc': id, role: 'group', 'aria-label': `${name} on ${devId}` }, [this.e('div', { class: 'svc-head' }, [this.e('span', { class: 'svc-name' }, [name]), this.disableButton(devIndex, devId, id, name)])]);
+    if (!def) return card;
+    for (const p of paramsAt(def, 'device')) card.appendChild(this.paramField(sp.concat(p.key), p));
+    if (def.routerId !== 'none') {
+      // an own router ID is rare: behind a disclosure, open while one is written
+      const loops = this.ridLoopbacks(devIndex);
+      const own = this.e('details', { class: 'svc-own-rid' }, [this.e('summary', {}, [`Own router ID for ${name}`]), this.textField(sp.concat(ROUTER_ID_KEY), `Own router ID for ${name}`, '', 'text', loops.map((x) => x.id), `Only when ${name} uses another router ID than the device’s; empty: the device’s.`)]);
+      if (this.doc.get(sp.concat(ROUTER_ID_KEY)) || this.fieldIssues(sp.concat(ROUTER_ID_KEY)).length) own.setAttribute('open', '');
+      card.appendChild(own);
+    }
+    const atIf = paramsAt(def, 'interface');
+    if (atIf.length) {
+      const where = this.doc.interfaceEntries(devIndex).filter((e) => !!this.doc.get(e.path.concat('protocols', id))).map((e) => e.id as string);
+      card.appendChild(this.e('p', { class: 'muted small' }, [where.length ? `Groups per interface: ${where.join(', ')}.` : 'Groups are set per interface: none yet.']));
+    }
+    const atEp = paramsAt(def, 'endpoint');
+    if (atEp.length) card.appendChild(this.e('p', { class: 'muted small' }, [`${atEp[0].label}${atEp.length > 1 ? ' and more' : ''}: per ${name} relation.`]));
+    return card;
+  }
+
+  /** A protocol parameter's field, by its type: a choice for an enum, a number field for an int, else text; suggestions offered. */
+  private paramField(path: Path, p: ParamDef, labelPrefix = ''): HTMLElement {
+    const label = `${labelPrefix}${p.label}${p.required ? ' (required)' : ''}`;
+    const range = p.type === 'int' && p.min !== undefined && (p.help || '').indexOf(`${p.min}–${p.max}`) < 0 ? ` ${p.min}–${p.max}.` : '';
+    const help = ((p.help || '') + range).trim() || undefined;
+    if (p.type === 'enum') return this.field(label, this.selectEl(path, 'text', '', p.values || [], this.doc.text(path) || '', '(not set)'), path, help);
+    if (p.type === 'int') {
+      const val = this.doc.text(path) || '';
+      const extra: { [k: string]: string } = { inputmode: 'numeric' };
+      if (p.required) extra['aria-required'] = 'true';
+      let dl: { id: string; node: HTMLElement } | null = null;
+      if (p.suggest) {
+        dl = this.datalist(p.suggest);
+        extra.list = dl.id;
+      }
+      const inp = this.input(path, 'int', val, extra);
+      return this.field(label, dl ? this.e('span', { class: 'ctl' }, [inp, dl.node]) : inp, path, help);
+    }
+    return this.textField(path, label, '', 'text', p.suggest, help);
+  }
+
+  /** The settings of the device's services on one interface (a VRRP group …): offered for the services the device enables. */
+  private ifaceServiceCards(devIndex: number, p: Path, ifId: string): HTMLElement[] {
+    const doc = this.doc;
+    const reg = doc.servicesRegistry();
+    const block = doc.get(['devices', devIndex, 'protocols']);
+    const enabled = block && block.kind === 'map' ? Array.from(block.entries.keys()) : [];
+    const ib = doc.get(p.concat('protocols'));
+    const here = ib && ib.kind === 'map' ? Array.from(ib.entries.keys()) : [];
+    const ids = Array.from(new Set(enabled.concat(here))).sort();
+    const out: HTMLElement[] = [];
+    for (const id of ids) {
+      const def = reg.get(id);
+      const atIf = def ? paramsAt(def, 'interface') : [];
+      if (def && !atIf.length && here.indexOf(id) < 0) continue;
+      const name = def ? def.label : id;
+      if (here.indexOf(id) < 0) {
+        out.push(this.e('div', { class: 'field' }, [this.e('button', { type: 'button', class: 'mini', 'data-act': 'iface-svc-on', 'data-p': J(p), 'data-svc': id, 'aria-label': `Add a ${name} group on ${ifId}` }, [`+ ${name} group`])]));
+        continue;
+      }
+      const sp = p.concat('protocols', id);
+      const card = this.e('div', { class: 'svc-card', 'data-svc': id, role: 'group', 'aria-label': `${name} on ${ifId}` }, [
+        this.e('div', { class: 'svc-head' }, [
+          this.e('span', { class: 'svc-name' }, [name]),
+          this.e('button', { type: 'button', class: 'mini', 'data-act': 'iface-svc-off', 'data-p': J(p), 'data-svc': id, 'aria-label': `Remove the ${name} group from ${ifId}` }, ['Remove']),
+        ]),
+      ]);
+      for (const prm of atIf) card.appendChild(this.paramField(sp.concat(prm.key), prm));
+      for (const is of this.fieldIssues(sp)) if (is.path && !atIf.some((x) => (is.message || '').indexOf(x.label) >= 0)) card.appendChild(this.e('div', { class: is.severity === 'error' ? 'field-err' : 'field-warn' }, [is.message]));
+      out.push(card);
+    }
+    return out;
+  }
+
+  /** A relation of a protocol with parameters per endpoint (OSPF area, cost …): a field per endpoint device, or one for both ends when one value is written. */
+  private endpointParamsGroup(base: Path): HTMLElement | null {
+    const doc = this.doc;
+    const model = doc.result.model;
+    const proto = doc.text(base.concat('protocol'));
+    if (!model || !proto) return null;
+    const def = model.services.get(protocolBase(model.protocols, proto));
+    const params = def ? paramsAt(def, 'endpoint') : [];
+    if (!def || !params.length) return null;
+    const id = doc.text(base.concat('id')) || '';
+    const r = model.index.relations.get(id);
+    const devs = r ? relationDevices(r) : [];
+    const kids: HTMLElement[] = [];
+    for (const p of params) {
+      const ap = base.concat('attrs', p.key);
+      const n = doc.get(ap);
+      if (n && n.kind === 'scalar') {
+        kids.push(this.paramField(ap, p, ''));
+        continue;
+      }
+      const row = this.e('div', { class: 'ep-params', role: 'group', 'aria-label': p.label });
+      row.appendChild(this.e('div', { class: 'ep-params-label' }, [p.label]));
+      for (const dv of devs) row.appendChild(this.paramField(ap.concat(dv), p, `${dv}: `));
+      kids.push(row);
+    }
+    kids.push(this.e('p', { class: 'muted small' }, ['Per endpoint device, in the relation’s attrs; the checks compare the ends.']));
+    return this.group(`${def.label} parameters`, kids, 'endpoint-params');
   }
 
   /**
@@ -1257,6 +1459,7 @@ export class Editor {
     card.appendChild(this.textField(p.concat('vrf'), 'VRF', o, 'text', undefined, 'The VRF this interface is assigned to, if any.'));
     if (!loop || doc.get(p.concat('mtu'))) card.appendChild(this.intField(p.concat('mtu'), 'MTU (bytes)', o, 'Empty: not modelled (no MTU is assumed).'));
     if (!loop || doc.get(p.concat('mac'))) card.appendChild(this.textField(p.concat('mac'), 'MAC', o));
+    for (const sc of this.ifaceServiceCards(devIndex, p, id || '')) card.appendChild(sc);
     card.appendChild(this.textField(p.concat('description'), 'Description', o, 'textarea'));
     if (id) {
       const dev = doc.text(['devices', devIndex, 'id']);
@@ -2152,6 +2355,13 @@ export class Editor {
       case 'check-setting':
         doc.setCheck(target.getAttribute('data-k') as string, val);
         break;
+      case 'enable-service': {
+        if (!val) return true;
+        doc.enableService(Number(target.getAttribute('data-index')), val);
+        const def = doc.servicesRegistry().get(val);
+        note = `${def ? def.label : val} enabled${def && def.params.some((x) => x.required && x.scope === 'device') ? ' — fill in its required parameters' : ''}.`;
+        break;
+      }
       case 'end-untagged':
         doc.setEndUntagged(p.slice(0, -1), trimmed);
         break;
@@ -2335,6 +2545,44 @@ export class Editor {
         doc.remove(p);
         this.host.changed();
         return true;
+      case 'enable-service': {
+        const svc = btn.getAttribute('data-svc') as string;
+        doc.enableService(index, svc);
+        const def = doc.servicesRegistry().get(svc);
+        this.host.changed(`${def ? def.label : svc} enabled${def && def.params.some((x) => x.required && x.scope === 'device') ? ' — fill in its required parameters' : ''}.`);
+        return true;
+      }
+      case 'disable-service': {
+        const svc = btn.getAttribute('data-svc') as string;
+        const def = doc.servicesRegistry().get(svc);
+        const name = def ? def.label : svc;
+        const dev = doc.text(['devices', index, 'id']) || '';
+        const lost = doc.serviceRemoval(index, svc);
+        if (lost.length) {
+          const list = this.e('ul', { class: 'removal-list' });
+          for (const l of lost) list.appendChild(this.e('li', {}, [l]));
+          const a = await this.host.dialog({
+            title: `Disable ${name} on ${dev}?`,
+            body: [`These values are removed with it (nothing is kept hidden in the model):`, list as unknown as string, 'You can undo this with Ctrl+Z.'],
+            buttons: [
+              { label: 'Cancel', value: 'cancel' },
+              { label: `Disable ${name}`, value: 'disable', kind: 'danger' },
+            ],
+          });
+          if (a !== 'disable') return true;
+        }
+        doc.disableService(index, svc);
+        this.host.changed(`${name} disabled${lost.length ? '; its values were removed' : ''}.`);
+        return true;
+      }
+      case 'iface-svc-on':
+      case 'iface-svc-off': {
+        const svc = btn.getAttribute('data-svc') as string;
+        doc.setIfaceService(p, svc, act === 'iface-svc-on');
+        const def = doc.servicesRegistry().get(svc);
+        this.host.changed(act === 'iface-svc-on' ? `${def ? def.label : svc} added on the interface — fill in its group.` : undefined);
+        return true;
+      }
       case 'add-next-free': {
         // the address is looked up now, from the model as it is
         const model = doc.result.model;

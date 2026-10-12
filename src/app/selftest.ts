@@ -1578,6 +1578,104 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       (app.mdoc as ModelDoc).markSaved();
     }
 
+    // ------------------------------------------------ routing services (protocols) in the Edit tab
+    {
+      app.loadExample(EXAMPLES.findIndex((e) => e.name === 'consistency-checks.yaml'));
+      await tick();
+      const md = app.mdoc as ModelDoc;
+      const yamlBefore = app.exportText();
+      app.select('device:r3');
+      click('[data-tab="edit"]');
+      await tick();
+      const sec = (): HTMLElement | null => q('#side-body [data-group="protocols"]');
+      const chips = Array.from(doc.querySelectorAll('#side-body [data-group="protocols"] button.chip')) as HTMLButtonElement[];
+      check(
+        'a device’s Protocols section: what its relations and routes use but it does not enable is offered with one click (OSPF for ospf-13, static routing for its route), with an accessible name',
+        !!sec() && chips.length === 2 && chips[0].getAttribute('aria-label') === 'Enable OSPF on r3 (used by ospf-13)' && chips[1].getAttribute('aria-label') === 'Enable Static routing on r3 (1 static route)' && chips.every((c) => c.tagName === 'BUTTON' && c.tabIndex >= 0),
+        chips.map((c) => c.getAttribute('aria-label')).join(' | '),
+      );
+      // the same in the Problems tab
+      check('… and the Problems tab reports them (protocol-not-enabled, static-not-enabled)', md.findings.some((f) => f.check === 'protocol-not-enabled' && /r3 is an endpoint of OSPF ospf-13/.test(f.message)) && md.findings.some((f) => f.check === 'static-not-enabled' && /r3/.test(f.message)));
+      chips[0].focus();
+      chips[0].click();
+      await tick();
+      const err = (): string => Array.from(doc.querySelectorAll('#side-body [data-group="protocols"] .field-err, #side-body .issue-list li.error')).map((e) => e.textContent || '').join(' | ');
+      check(
+        'Enable OSPF: one undo step; OSPF’s mandatory router ID is an error in the Edit tab and the Problems tab until it is filled in; the router ID field appears',
+        /\n {6}ospf: \{\}\n/.test(app.exportText()) && md.canUndo() === 'Enable OSPF' && /OSPF needs a router ID/.test(err()) && md.errors.some((e) => /OSPF needs a router ID/.test(e.message)) && !!q(`#side-body [data-p='["devices",2,"router_id"]']`),
+        err(),
+      );
+      await setField(`#side-body [data-p='["devices",2,"router_id"]']`, '10.255.0.3');
+      check('the router ID filled in: the error is gone', !md.errors.length && /router_id: 10\.255\.0\.3/.test(app.exportText()) && !/OSPF needs a router ID/.test(err()), err());
+      // enabling from the keyboard: the "Enable a protocol" choice
+      const pick = q('#side-body select[data-t="enable-service"]') as HTMLSelectElement;
+      check('“Enable a protocol” is a labelled choice of the protocols not enabled yet', !!pick && pick.getAttribute('aria-label') === 'Enable a protocol on r3' && Array.from(pick.options).some((o) => o.value === 'isis') && !Array.from(pick.options).some((o) => o.value === 'ospf' || o.value === 'bgp'));
+      pick.focus();
+      pick.value = 'isis';
+      pick.dispatchEvent(new Event('change', { bubbles: true }));
+      await tick();
+      check('IS-IS enabled: its NET is required (an error at its field); its level offers level-2', md.errors.some((e) => /IS-IS needs net \(system ID\) \(net\)|IS-IS needs/.test(e.message)) && !!q(`#side-body [data-svc="isis"] [data-p='["devices",2,"protocols","isis","net"]']`) && !!q(`#side-body [data-svc="isis"] select[data-p='["devices",2,"protocols","isis","level"]']`));
+      md.undo();
+      md.undo();
+      md.undo();
+      (app as unknown as { afterEdit(n?: string): void }).afterEdit();
+      await tick();
+      check('three undo steps: the file is as it was', app.exportText() === yamlBefore);
+      // disabling a protocol that has values asks first and lists them; one undo step
+      app.select('device:r1');
+      click('[data-tab="edit"]');
+      await tick();
+      const dis = q('#side-body [data-act="disable-service"][data-svc="vrrp"]') as HTMLElement;
+      check('each enabled protocol has a Disable button with an accessible name', !!dis && dis.getAttribute('aria-label') === 'Disable VRRP on r1');
+      dis.click();
+      await tick(10);
+      const dlg = q('#modal[open]');
+      const listed = dlg ? Array.from(dlg.querySelectorAll('.removal-list li')).map((l) => l.textContent || '') : [];
+      check('disabling VRRP asks first and lists what goes with it (its group on e0)', !!dlg && /Disable VRRP on r1\?/.test(dlg.textContent || '') && listed.join() === 'e0: {group: 12, virtual_ip: 10.9.9.9, priority: 200}', listed.join(' | '));
+      await answerDialog('disable');
+      check('… confirmed: removed in one undo step, nothing kept hidden', !/group: 12/.test(app.exportText()) && md.canUndo() === 'Disable VRRP');
+      md.undo();
+      (app as unknown as { afterEdit(n?: string): void }).afterEdit();
+      await tick();
+      check('… and undo brings it back', app.exportText() === yamlBefore);
+      // both themes: the suggestion chips and the cards are drawn in the theme's colours
+      app.select('device:r3');
+      click('[data-tab="edit"]');
+      await tick();
+      for (const theme of ['light', 'dark']) {
+        app.theme.set(theme as 'light' | 'dark');
+        await tick();
+        const c = q('#side-body button.chip') as HTMLElement;
+        // the colours as #rrggbb; the background as seen: the element's and its ancestors' layered
+        const rgba = (s: string): number[] | null => {
+          const m = /rgba?\(([^)]+)\)/.exec(s);
+          if (!m) return null;
+          const v = m[1].split(',').map((x) => parseFloat(x));
+          return [v[0], v[1], v[2], v.length > 3 ? v[3] : 1];
+        };
+        const toHex = (v: number[]): string => '#' + v.slice(0, 3).map((x) => Math.round(x).toString(16).padStart(2, '0')).join('');
+        const layers: number[][] = [];
+        for (let e: HTMLElement | null = c; e; e = e.parentElement) {
+          const b = rgba(doc.defaultView!.getComputedStyle(e).backgroundColor);
+          if (b && b[3] > 0) layers.push(b);
+          if (b && b[3] >= 1) break;
+        }
+        let seen = [255, 255, 255];
+        for (const l of layers.reverse()) seen = seen.map((v, i) => l[i] * l[3] + v * (1 - l[3]));
+        const fg = toHex(rgba(doc.defaultView!.getComputedStyle(c).color) || [0, 0, 0]);
+        const bg = toHex(seen);
+        check(`${theme} theme: the suggestion chips are readable (AA)`, contrast(fg, bg) >= 4.5, `${fg} on ${bg}: ${contrast(fg, bg).toFixed(2)}`);
+      }
+      // the palette offers it too
+      app.select('device:r3');
+      check('the command palette has “Enable a protocol on the selected device…”', !!app.command('protocol.enable') && app.command('protocol.enable')!.state(app).enabled);
+      app.runCommand('protocol.enable');
+      await tick();
+      check('… which opens the Edit tab at the protocol choice', doc.activeElement === q('#side-body select[data-t="enable-service"]'));
+      app.select(null);
+      md.markSaved();
+    }
+
     // ------------------------------------------------ failure simulation
     {
       app.loadExample(EXAMPLES.findIndex((e) => e.name === 'enterprise-wan.yaml'));
@@ -2560,9 +2658,9 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       app.exportText(),
     );
     check(
-      'devices have no vendor, model, role or management-address field; the router ID is an address of its own (not a loopback reference), next to the AS number',
+      'devices have no vendor, model, role or management-address field; a router has a Protocols section; its router ID and AS number appear only with a protocol that uses them',
       ['vendor', 'model', 'role', 'mgmt'].every((k) => !q(`#side-body [data-p='["devices",0,"${k}"]']`)) && !/Router ID \(loopback\)|Vendor|Management address/.test(q('#side-body')!.textContent || '') &&
-        !!q(`#side-body [data-group="routing"] [data-p='["devices",0,"router_id"]']`) && !!q(`#side-body [data-group="routing"] [data-p='["devices",0,"asn"]']`),
+        !!q('#side-body [data-group="protocols"] select[data-t="enable-service"]') && !q(`#side-body [data-p='["devices",0,"router_id"]']`) && !q(`#side-body [data-p='["devices",0,"asn"]']`),
     );
 
     click('#outline [data-act="add-entity"][data-kind="device"]');
@@ -4569,8 +4667,8 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         return `${cs.borderTopStyle} ${cs.borderTopLeftRadius}`;
       };
       check(
-        'Edit and Details share the object header and present their content in the same titled cards (Edit: Identity, Placement, Routing identity, Notes; Details: Overview and its sections); Duplicate and Delete keep their names',
-        editHead && detHead && /^Identity\|Placement\|Routing identity\|Notes/.test(editGroups) && /^Overview\|Physical interfaces/.test(detGroups) && buttons === 'Duplicate|Delete' && card('#side-body .fgroup') === 'solid 9px' && doc.documentElement.scrollHeight <= doc.documentElement.clientHeight + 1,
+        'Edit and Details share the object header and present their content in the same titled cards (Edit: Identity, Placement, Protocols, Notes; Details: Overview and its sections); Duplicate and Delete keep their names',
+        editHead && detHead && /^Identity\|Placement\|Protocols \(routing services\)\|Notes/.test(editGroups) && /^Overview\|Physical interfaces/.test(detGroups) && buttons === 'Duplicate|Delete' && card('#side-body .fgroup') === 'solid 9px' && doc.documentElement.scrollHeight <= doc.documentElement.clientHeight + 1,
         editGroups + ' // ' + detGroups,
       );
       click('[data-tab="legend"]');

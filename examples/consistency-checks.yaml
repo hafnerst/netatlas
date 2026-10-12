@@ -9,7 +9,8 @@ title: Consistency checks demo
 description: |
   One deliberate inconsistency per check: static routes, VLAN tagging, MTU,
   speed and duplex, aggregates, addressing, router IDs, MAC addresses,
-  OSPF, BGP, tunnels, virtual addresses and VRFs.
+  OSPF, BGP, tunnels, virtual addresses, VRFs and the protocols each
+  device enables.
 
 groups:
   - {id: core, label: Core routers, kind: site}
@@ -19,10 +20,21 @@ devices:
   - id: r1
     type: router
     group: core
-    router_id: 10.255.0.1
-    asn: 65001
+    router_id: lo0                                            # the router ID is the address of lo0
+    protocols:
+      bfd: {}
+      bgp: {asn: 65001}
+      ospf: {}
+      static: {}
+      vrrp: {}
     interfaces:
-      - {id: e0, ip: 10.0.12.1/30, mtu: 9000, mac: "00:11:22:33:44:55"}   # link-mtu-mismatch (r2:e0 has 1500)
+      # link-mtu-mismatch (r2:e0 has 1500); vip-outside-subnet: 10.9.9.9 is not in 10.0.12.0/30
+      - id: e0
+        ip: 10.0.12.1/30
+        mtu: 9000
+        mac: "00:11:22:33:44:55"
+        protocols:
+          vrrp: {group: 12, virtual_ip: 10.9.9.9, priority: 200}
       - {id: e1, ip: 10.0.13.1/30}                                        # link-subnet-mismatch (r3:e0 is in 10.0.31.0/30)
       - {id: e2, ip: 10.0.20.0/24}                                        # address-reserved: the network address
       - e3                                                                # Po1 member, to r2
@@ -49,10 +61,21 @@ devices:
   - id: r2
     type: router
     group: core
-    router_id: 10.255.0.1                                     # duplicate-router-id (r1 has it)
-    asn: 65002
+    router_id: 10.255.0.1                                     # duplicate-router-id (r1's lo0 has it, in one OSPF domain)
+    protocols:
+      bfd: {}
+      bgp: {asn: 65002}
+      ospf: {}
+      rip: {version: 2}                                       # protocol-unused (info): no RIP relation
+      vrrp: {}
     interfaces:
-      - {id: e0, ip: 10.0.12.2/30, mtu: 1500, mac: "00-11-22-33-44-55"}   # duplicate-mac (r1:e0)
+      # duplicate-mac (r1:e0); fhrp-group-mismatch: group 13 for the same virtual address as r1's group 12
+      - id: e0
+        ip: 10.0.12.2/30
+        mtu: 1500
+        mac: "00-11-22-33-44-55"
+        protocols:
+          vrrp: {group: 13, virtual_ip: 10.9.9.9}
       - e3
       - {id: e6, ip: 10.0.16.2/30, mtu: 1500}
       - {id: e7, ip: 10.0.17.2/30, vrf: blue}
@@ -62,10 +85,13 @@ devices:
   - id: r3
     type: router
     group: core
-    asn: 65003
+    protocols:
+      bgp: {asn: 65003}                                       # protocol-not-enabled: OSPF (ospf-13) is not enabled
     interfaces:
       - {id: e0, ip: 10.0.31.2/30}
       - e4
+    routes:
+      - {prefix: 0.0.0.0/0, via: 10.0.31.1}                   # static-not-enabled (info)
   - id: sw1
     type: switch
     group: access
@@ -123,8 +149,10 @@ relations:
       peer-as: {r1: 65099, r2: 65001}
   # bgp-session-type: iBGP between AS 65001 and AS 65003
   - {id: ibgp-13, protocol: ibgp, endpoints: ["r1:lo0", r3]}
-  # vip-outside-subnet: 10.9.9.9 is not in core-12
-  - {id: vrrp-12, protocol: vrrp, endpoints: ["r1:e0", "r2:e0"], over: core-12, attrs: {vrid: 12, virtual-ip: 10.9.9.9}}
+  # the VRRP group of r1:e0 and r2:e0 (its virtual address and groups are set at the interfaces)
+  - {id: vrrp-12, protocol: vrrp, endpoints: ["r1:e0", "r2:e0"], over: core-12}
+  # protocol-not-enabled: r3 does not enable OSPF
+  - {id: ospf-13, protocol: ospf, endpoints: ["r1:e1", "r3:e0"], over: l13}
   # tunnel-endpoint-mismatch (see r1:tun0); tunnel-underlay: l13 joins r1 and r3, not r2
   - {id: gre-12, protocol: gre, endpoints: ["r1:tun0", "r2:tun0"], over: l13}
   # relation-vrf-mismatch: VRF red at r1, VRF blue at r2

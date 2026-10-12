@@ -40,6 +40,9 @@ devices:
     label: edge-rtr
     type: router
     group: campus
+    router_id: lo0
+    protocols:
+      bgp: {asn: 64500}
     interfaces:
       - {id: wan0, ip: 198.51.100.2/30}
       - {id: lan0, ip: 10.0.0.1/30}
@@ -56,12 +59,16 @@ devices:
     label: fw1
     type: firewall
     group: campus
+    protocols:
+      static: {}
     interfaces:
       - {id: outside, ip: 10.0.0.2/30}
       - {id: vpn, ip: 10.0.0.6/30}
       - {id: inside}
       - {id: dmz1}
       - {id: dmz2}
+    routes:
+      - {prefix: 0.0.0.0/0, via: 10.0.0.1, name: default via the edge router}
   - id: ips
     label: ips1
     type: ids_ips

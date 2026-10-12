@@ -238,7 +238,9 @@ test('renaming ids updates every reference (device, interface, group, link, rela
   const before = d.references('device', 'hq-rtr2').length;
   assert.equal(d.renameEntity('device', d.findEntity('device', 'hq-rtr2').index, 'edge-b'), before);
   const dev = d.findEntity('device', 'edge-b').index;
-  assert.equal(d.renameInterface(d.interfaceEntries(dev).find((e) => e.id === 'lo0').path, 'loopback0'), 1);
+  // the loopback: the iBGP relation and the router ID that name it
+  assert.equal(d.renameInterface(d.interfaceEntries(dev).find((e) => e.id === 'lo0').path, 'loopback0'), 2);
+  assert.equal(d.text(['devices', dev, 'router_id']), 'loopback0');
   assert.equal(d.renameEntity('group', d.findEntity('group', 'hq').index, 'berlin'), 2);
   assert.equal(d.renameEntity('link', d.findEntity('link', 'l-hq-isp1').index, 'uplink-1'), 3);
   assert.equal(d.renameEntity('relation', d.findEntity('relation', 'ipsec-muc').index, 'ipsec-munich'), 1);
@@ -364,13 +366,14 @@ test('logical_interfaces: invalid addresses are errors with an explanation at th
   assert.deepEqual(d.issuePath(d.errors[0]), ['devices', 0, 'logical_interfaces', 0, 'ip', 1]);
 });
 
-test('logical_interfaces: a router ID is an address of its own, not a reference to a loopback', () => {
-  const r = validate.loadModel(loopDoc('[10.0.0.1/32, 2001:db8::1/128]', '    router_id: lo0\n'));
-  assert.equal(r.errors.length, 1);
-  assert.match(r.errors[0].message, /"lo0" is not a router ID/);
-  assert.deepEqual(r.model.devices[0].logical.map((l) => [l.id, l.label, l.addresses]), [['lo0', 'Router ID', ['10.0.0.1/32', '2001:db8::1/128']]]);
-  assert.equal(r.model.devices[0].routerId, undefined);
-  // a loopback without IPv4 is fine: nothing depends on it being a router ID
+test('logical_interfaces: a router ID may name a loopback: it stands for the loopback’s IPv4 address', () => {
+  const r = validate.loadModel(loopDoc('[10.0.0.1/32, 2001:db8::1/128]', '    type: router\n    router_id: lo0\n    protocols: {ospf: {}}\n'));
+  assert.deepEqual(r.errors.concat(r.warnings).map((e) => e.message), []);
+  assert.deepEqual(r.model.devices[0].routerId, { text: 'lo0', iface: 'lo0', address: '10.0.0.1' });
+  // a loopback without IPv4 can't be one; a port isn't a loopback
+  assert.match(validate.loadModel(loopDoc('[2001:db8::1/128]', '    type: router\n    router_id: lo0\n    protocols: {ospf: {}}\n')).errors[0].message, /loopback "lo0" has no IPv4 address to be the router ID/);
+  assert.match(validate.loadModel(loopDoc('[10.0.0.1/32]', '    type: router\n    router_id: eth0\n    protocols: {ospf: {}}\n')).errors[0].message, /"eth0" is a port: a router ID is an IPv4 address or a loopback of "r1"/);
+  // a loopback without IPv4 is fine when nothing names it
   const v6 = validate.loadModel(loopDoc('[2001:db8::1/128]'));
   assert.deepEqual(v6.errors.concat(v6.warnings), []);
 });

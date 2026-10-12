@@ -284,6 +284,17 @@ export function buildCommands(): Command[] {
       state: (app) => (app.currentSim() ? on('End the failure simulation: the normal view (Esc)') : off('No simulation is on')),
       run: (app) => app.exitSimulation(),
     },
+    {
+      id: 'protocol.enable',
+      label: 'Enable a protocol on the selected device…',
+      group: 'Edit',
+      keywords: 'routing service bgp ospf isis vrrp hsrp bfd static router id as number',
+      state: (app) => {
+        const why = app.protocolTargetBlocked();
+        return why ? off(why) : on('Open the selected device’s Protocols section, at the list of protocols to enable');
+      },
+      run: (app) => app.openEnableProtocol(),
+    },
     // ---------------------------------------------------------------- Help
     { id: 'help.manual', label: 'User Manual', group: 'Help', keywords: 'guide documentation', state: () => on('A short guide to NetAtlas’s basic tasks, with pictures'), run: (app) => void app.openHelp('manual') },
     { id: 'help.license', label: 'License', group: 'Help', keywords: 'apache', state: () => on('The license NetAtlas is distributed under (Apache License, Version 2.0)'), run: (app) => void app.openHelp('license') },

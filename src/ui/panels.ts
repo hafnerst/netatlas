@@ -10,7 +10,7 @@ import { ContextState, SelectionContext, contextState, routeRefOf, routesUsing, 
 import { mediumStyle } from '../diagram/style';
 import { AddressAssoc, addressOwners, associatedInterfaces, deviceNetworks, derivedVlanText, endNetworks, interfaceAddresses, interfaceVlanPorts, interfaceVlanText, interfaceVlans, networkMembers, networkName, tagMismatch, tagMismatchText, vlanIds, vlanRangesText } from '../model/derive';
 import { relationStyle } from '../model/protocols';
-import { compareRoutes, routeLine } from '../model/addresses';
+import { compareRoutes, identityLines, routeLine } from '../model/addresses';
 import { formatAddr } from '../analysis/ipmath';
 import { DEFAULT_STATIC_DISTANCE, resolveRoute } from '../analysis/routing';
 
@@ -231,8 +231,8 @@ export function detailsFor(model: Model, ref: string, status: IssueCount | null 
       kv([
         ['type', deviceTypeLabel(d.type) || undefined],
         ['group', d.group ? refLink('group:' + d.group, ix.groups.get(d.group)?.label || d.group) : undefined],
-        ['router ID', d.routerId],
-        ['AS', d.asn !== undefined ? String(d.asn) : undefined],
+        ['protocols', d.services.length ? d.services.map((s) => (model.services.get(s.id) || { label: s.id }).label).join(', ') : undefined],
+        ...identityLines(d, model.services).map((x): [string, string] => ['identity', x.line]),
         ['description', d.description],
       ]),
     );

@@ -23,13 +23,17 @@ const net = `netatlas: 1
 devices:
   - id: r1
     type: router
-    interfaces: [{id: p1}, {id: p2}, {id: p3, ip: 192.0.2.1/30}, {id: lan, ip: 10.0.0.2/24}]
+    router_id: 10.255.0.1
+    protocols: {ospf: {}, vrrp: {}}
+    interfaces: [{id: p1}, {id: p2}, {id: p3, ip: 192.0.2.1/30}, {id: lan, ip: 10.0.0.2/24, protocols: {vrrp: {group: 1, virtual_ip: 10.0.0.1, priority: 200}}}]
     logical_interfaces:
       - {id: po1, type: virtual, members: [p1, p2], ip: 10.12.0.1/30}
       - {id: t0, type: tunnel, ip: 172.16.0.1/30, source: p3, destination: 192.0.2.2}
   - id: r2
     type: router
-    interfaces: [{id: p1}, {id: p2}, {id: p3, ip: 192.0.2.2/30}, {id: lan, ip: 10.0.0.3/24}]
+    router_id: 10.255.0.2
+    protocols: {ospf: {}, vrrp: {}}
+    interfaces: [{id: p1}, {id: p2}, {id: p3, ip: 192.0.2.2/30}, {id: lan, ip: 10.0.0.3/24, protocols: {vrrp: {group: 1, virtual_ip: 10.0.0.1, priority: 100}}}]
     logical_interfaces:
       - {id: po1, type: virtual, members: [p1, p2], min_links: 2, ip: 10.12.0.2/30}
       - {id: t0, type: tunnel, ip: 172.16.0.2/30, source: p3, destination: 192.0.2.1}
@@ -55,7 +59,7 @@ relations:
   - {id: ipsec, protocol: ipsec, endpoints: ["r1:p3", "r2:p3"], over: c3}
   - {id: gre, protocol: gre, endpoints: ["r1:t0", "r2:t0"], over: ipsec}
   - {id: ospf, protocol: ospf, endpoints: ["r1:t0", "r2:t0"], over: gre}
-  - {id: vrrp, protocol: vrrp, endpoints: ["r1:lan", "r2:lan"], over: lan, attrs: {virtual-ip: 10.0.0.1, priority: {r1: 200, r2: 100}}}
+  - {id: vrrp, protocol: vrrp, endpoints: ["r1:lan", "r2:lan"], over: lan}
   - {id: syslog, protocol: syslog, endpoints: [h, r1]}
 `;
 

@@ -24,6 +24,11 @@ devices:
   - id: pe1
     type: router
     group: pop-north
+    router_id: lo0
+    protocols:
+      bgp: {asn: 65000}
+      ldp: {}
+      ospf: {}
     interfaces:
       - {id: et1, ip: 10.1.12.1/31}
       - {id: et2, ip: 10.1.16.1/31}
@@ -34,6 +39,11 @@ devices:
   - id: pe2
     type: router
     group: pop-north
+    router_id: lo0
+    protocols:
+      bgp: {asn: 65000}
+      ldp: {}
+      ospf: {}
     interfaces:
       - {id: et1, ip: 10.1.12.0/31}
       - {id: et2, ip: 10.1.23.0/31}
@@ -43,6 +53,11 @@ devices:
   - id: pe3
     type: router
     group: pop-east
+    router_id: lo0
+    protocols:
+      bgp: {asn: 65000}
+      ldp: {}
+      ospf: {}
     interfaces:
       - {id: et1, ip: 10.1.23.1/31}
       - {id: et2, ip: 10.1.34.0/31}
@@ -53,6 +68,11 @@ devices:
   - id: pe4
     type: router
     group: pop-east
+    router_id: lo0
+    protocols:
+      bgp: {asn: 65000}
+      ldp: {}
+      ospf: {}
     interfaces:
       - {id: et1, ip: 10.1.34.1/31}
       - {id: et2, ip: 10.1.45.0/31}
@@ -62,6 +82,11 @@ devices:
   - id: pe5
     type: router
     group: pop-south
+    router_id: lo0
+    protocols:
+      bgp: {asn: 65000}
+      ldp: {}
+      ospf: {}
     interfaces:
       - {id: et1, ip: 10.1.45.1/31}
       - {id: et2, ip: 10.1.56.0/31}
@@ -73,6 +98,11 @@ devices:
   - id: pe6
     type: router
     group: pop-south
+    router_id: lo0
+    protocols:
+      bgp: {asn: 65000}
+      ldp: {}
+      ospf: {}
     interfaces:
       - {id: et1, ip: 10.1.56.1/31}
       - {id: et2, ip: 10.1.16.0/31}
@@ -83,12 +113,16 @@ devices:
     label: Customer A — HQ
     type: router
     group: cust-a
+    protocols:
+      bgp: {asn: 64601}
     interfaces:
       - {id: ge0, ip: 192.0.2.2/30}
   - id: ce-a2
     label: Customer A — Plant
     type: router
     group: cust-a
+    protocols:
+      bgp: {asn: 64601}
     interfaces:
       - {id: ge0, ip: 192.0.2.6/30}
   - id: oob-sw
@@ -217,35 +251,35 @@ relations:
 
 layout:
   physical:
-    ce-a1: [126, 458]
-    ce-a2: [384, 458]
-    oob-con1: [439, 929]
-    oob-con2: [686, 929]
-    oob-nms: [926, 929]
-    oob-sw: [679, 745]
-    pe1: [101, 145]
-    pe2: [417, 145]
-    pe3: [667, 121]
-    pe4: [982, 121]
-    pe5: [970, 500]
-    pe6: [654, 500]
+    ce-a1: [126, 114]
+    ce-a2: [384, 114]
+    oob-con1: [439, 999]
+    oob-con2: [686, 999]
+    oob-nms: [926, 999]
+    oob-sw: [679, 815]
+    pe1: [667, 552]
+    pe2: [982, 552]
+    pe3: [101, 528]
+    pe4: [417, 528]
+    pe5: [654, 162]
+    pe6: [970, 162]
     spare-pe: [1245, 27]
   logical:
-    ce-a1: [317, 977]
-    ce-a2: [324, 1158]
-    cust-a-access-1: [171, 748]
-    cust-a-access-2: [681, 1228]
-    l3vpn-a: [1077, 505]
-    oob-con1: [2388, 790]
-    oob-con2: [2142, 310]
-    oob-mgmt: [2356, 475]
-    oob-nms: [2526, 314]
-    oob-sw: [2448, 102]
-    ospf-core: [895, 313]
-    pe1: [108, 399]
-    pe2: [623, 399]
-    pe3: [1165, 173]
-    pe4: [1650, 173]
-    pe5: [1257, 891]
-    pe6: [761, 891]
-    spare-pe: [114, 1385]
+    ce-a1: [855, 113]
+    ce-a2: [862, 316]
+    cust-a-access-1: [506, 309]
+    cust-a-access-2: [1226, 282]
+    l3vpn-a: [1041, 1118]
+    oob-con1: [2394, 790]
+    oob-con2: [2148, 310]
+    oob-mgmt: [2362, 475]
+    oob-nms: [2532, 314]
+    oob-sw: [2454, 102]
+    ospf-core: [759, 1128]
+    pe1: [108, 811]
+    pe2: [623, 811]
+    pe3: [682, 1489]
+    pe4: [1167, 1489]
+    pe5: [1159, 789]
+    pe6: [1655, 789]
+    spare-pe: [114, 1785]

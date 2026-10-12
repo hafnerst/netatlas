@@ -25,6 +25,8 @@ import {
   PORT_MODES,
   PortMode,
   RelEndpoint,
+  RouterIdValue,
+  ServiceConfig,
   Relation,
   Route,
   TunnelEnd,
@@ -37,6 +39,7 @@ import {
   routeKey,
 } from '../model/types';
 import { dnsNameKey, dnsNameProblem } from '../model/dns';
+import { BUILTIN_SERVICES, PARAM_SCOPES, PARAM_TYPES, ParamDef, ParamScope, ParamType, ROUTER_ID_KEY, RouterIdUse, ServiceDef, ServiceRegistry, builtinServices, paramProblem, paramsAt, routerIdAddress, usesRouterId } from '../model/services';
 import { DEVICE_TYPE_IDS, NO_DEVICE_TYPE, ROUTE_DEVICE_TYPES, deviceTypeLabel, isDeviceType, routingRole } from '../model/device-types';
 import { COLOR_RE, DEFAULT_STYLE, builtinProtocols, lookupProtocol, normalizeProtocol } from '../model/protocols';
 import { YMap, YNode, YSeq, YamlError, YamlLimits, parseYaml } from '../yaml/parse';
@@ -164,6 +167,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
 
   // ---------------------------------------------------------- protocols
   const protocols = builtinProtocols();
+  const services = builtinServices();
   const protoItems = capped(r.list(get(top, 'protocols'), 'protocols'), L.maxProtocols, 'protocols', 'protocol definitions');
   const seenProto = new Set<string>();
   protoItems.forEach((n, i) => {
@@ -204,6 +208,11 @@ function build(root: YNode | null, c: Ctx): Model | null {
       if (LINE_STYLES.indexOf(styleS as LineStyle) < 0) {
         c.error(get(m, 'style') as YNode, path + '.style', `unknown style "${styleS}"${suggest(styleS, LINE_STYLES)}`);
       } else style = styleS as LineStyle;
+    }
+    const service = readServiceDefinition(r, c, m, path, id, rawId, r.field(m, 'label', path, 60) || (base ? base.label : rawId));
+    if (service) {
+      if (BUILTIN_SERVICE_IDS.indexOf(id) >= 0) c.error(get(m, get(m, 'params') ? 'params' : 'router_id') as YNode, path + '.params', `"${id}" is a built-in routing service: its parameters are fixed (define a protocol of your own to declare others)`);
+      else services.set(id, service);
     }
     protocols.set(id, {
       id,
@@ -292,7 +301,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
     const path = `devices[${i}]`;
     const m = r.map(n, path);
     if (!m) return;
-    r.keys(m, DEVICE_KEYS, path, ATTRS_HINT);
+    r.keys(m, DEVICE_KEYS, path, ATTRS_HINT, { asn: 'the AS number belongs to BGP: enable it with protocols: {bgp: {asn: …}}' });
     const id = r.id(m, path);
     if (!id) return;
     const dpath = `devices.${id}`;
@@ -321,17 +330,18 @@ function build(root: YNode | null, c: Ctx): Model | null {
       logical: [],
       dnsNames: [],
       routes: [],
+      services: [],
       line: m.line,
     };
-    // the routing identity of the device: its router ID (an IPv4 address) and its BGP AS number
-    const rid = r.field(m, 'router_id', dpath, 40);
-    if (rid !== undefined) {
-      const a = parsePrefix(rid, false);
-      if (!a || a.version !== 4 || rid.indexOf('/') >= 0) c.error(get(m, 'router_id') as YNode, dpath + '.router_id', `"${rid}" is not a router ID: write it as an IPv4 address without a prefix length, e.g. 10.255.0.1`);
-      else dev.routerId = rid;
+    // the routing services it enables (Layer 3+ devices only); the router IDs are resolved once its loopbacks are read
+    const svcRids: Array<{ svc: ServiceConfig; text: string; node: YNode; path: string }> = [];
+    const protoNode = get(m, 'protocols');
+    if (!isNull(protoNode)) {
+      if (routingRole(dev.type) !== 'router') {
+        const what = dev.type === NO_DEVICE_TYPE ? 'a device without a type' : `a ${deviceTypeLabel(dev.type) || dev.type} (${dev.type})`;
+        c.error(protoNode as YNode, dpath + '.protocols', `"${id}" is ${what}: only Layer 3+ devices (${ROUTER_TYPES.join(', ')}) run routing protocols`);
+      } else dev.services = readServices(r, c, protoNode as YNode, dpath + '.protocols', services, 'device', id, svcRids);
     }
-    const asn = r.int(get(m, 'asn'), dpath + '.asn', 1, 4294967295, 'AS number');
-    if (asn !== undefined) dev.asn = asn;
     devNodes.set(id, { node: m, path: dpath });
     let count = 0;
     /** address -> id of the interface of this device that has it (first one) */
@@ -460,10 +470,14 @@ function build(root: YNode | null, c: Ctx): Model | null {
         mac: r.field(im, 'mac', ipath, 40),
         mtu: r.int(get(im, 'mtu'), ipath + '.mtu', 68, 65535, 'MTU'),
         members: [],
+        services: [],
         description: r.field(im, 'description', ipath, L.maxDescription),
         attrs: r.attrs(get(im, 'attrs'), ipath + '.attrs'),
         line: im.line,
       };
+      // settings per interface of services the device enables (a VRRP group …)
+      const ip = get(im, 'protocols');
+      if (!isNull(ip)) iface.services = readServices(r, c, ip as YNode, ipath + '.protocols', services, 'interface', id, [], dev);
       if (where === 'logical') {
         // Each association belongs to one type; on another type it is an error, not silently ignored.
         const only = (k: string, t: InterfaceKind, what: string): boolean => {
@@ -533,6 +547,31 @@ function build(root: YNode | null, c: Ctx): Model | null {
     });
     dev.dnsNames = readDnsNames(r, c, m, dpath, dev, dnsOwner);
     dev.routes = readRoutes(r, c, m, dpath, dev, routeNodes);
+    // the router IDs: the device's (shared by its protocols) and a protocol's own; applicable only with a protocol that uses one
+    const ridNode = get(m, 'router_id');
+    const ridText = r.field(m, 'router_id', dpath, 64);
+    if (ridText !== undefined) {
+      const v = resolveRouterId(c, dev, ridText, ridNode as YNode, dpath + '.router_id');
+      if (v) dev.routerId = v;
+      const users = dev.services.filter((s) => {
+        const def = services.get(s.id);
+        return !!def && usesRouterId(def);
+      });
+      if (!users.length) {
+        const which = Array.from(services.values()).filter(usesRouterId).map((s) => s.label);
+        c.warn(ridNode as YNode, dpath + '.router_id', `router_id is not applicable: none of the protocols "${id}" enables uses a router ID (${which.join(', ')} do); enable one or remove it`);
+      }
+    }
+    for (const s of svcRids) {
+      const v = resolveRouterId(c, dev, s.text, s.node, s.path);
+      if (v) s.svc.routerId = v;
+    }
+    for (const s of dev.services) {
+      const def = services.get(s.id);
+      if (!def || def.routerId !== 'required' || s.routerId || dev.routerId || svcRids.some((x) => x.svc === s) || ridText !== undefined) continue;
+      const sn = protoNode && !isNull(protoNode) && (protoNode as YNode).kind === 'map' ? get(protoNode as YMap, s.id) : undefined;
+      c.error(sn && !isNull(sn) ? (sn as YNode) : (protoNode as YNode), `${dpath}.protocols.${s.id}`, `${def.label} needs a router ID: set the device's router_id (a loopback or an IPv4 address), or ${def.label}'s own router_id`, sn && !isNull(sn) ? { key: ROUTER_ID_KEY } : {});
+    }
     // tunnel sources: an address (its interface is then derived), or any other interface of this device
     for (const s of sources) {
       const end = s.iface.source as TunnelEnd;
@@ -1006,6 +1045,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
     networks,
     relations,
     protocols,
+    services,
     layout,
     checks: checkSettings,
     index,
@@ -1071,10 +1111,14 @@ function build(root: YNode | null, c: Ctx): Model | null {
       }
       if (!base) return null;
       if (!field) return base;
-      const fv = base.node.kind === 'map' ? get(base.node, field) : undefined;
-      if (fv && !isNull(fv)) return { node: fv, path: `${base.path}.${field}` };
-      // the field isn't written there (a missing value is part of the finding): the entry, about that key
-      return base.node.kind === 'map' ? { node: base.node, path: `${base.path}.${field}`, key: field } : base;
+      // a field inside a block ("protocols.bgp.asn"): as deep as it is written, then about the next key
+      let at: { node: YNode; path: string } = base;
+      for (const k of field.split('.')) {
+        const fv = at.node.kind === 'map' ? get(at.node, k) : undefined;
+        if (fv && !isNull(fv)) at = { node: fv, path: `${at.path}.${k}` };
+        else return at.node.kind === 'map' ? { node: at.node, path: `${at.path}.${k}`, key: k } : at;
+      }
+      return at;
     };
     for (const f of runChecks(model, checkSettings)) {
       const at = place(f.at);
@@ -1313,4 +1357,170 @@ function deviceType(r: Reader, m: YMap, dpath: string, c: Ctx): string {
   if (isDeviceType(t)) return t;
   c.error(get(m, 'type') as YNode, dpath + '.type', `unknown device type "${t}"${suggest(t, DEVICE_TYPE_IDS, 20)}`);
   return NO_DEVICE_TYPE;
+}
+
+// ------------------------------------------------------------ routing services
+
+const ROUTER_TYPES = ROUTE_DEVICE_TYPES.filter((t) => routingRole(t) === 'router');
+const BUILTIN_SERVICE_IDS = BUILTIN_SERVICES.map((s) => s.id);
+
+/**
+ * A protocol of the model's `protocols:` section that declares `params` (a
+ * list, possibly empty) or `router_id` is a routing service devices can
+ * enable; its parameters are declared like the built-in ones.
+ */
+function readServiceDefinition(r: Reader, c: Ctx, m: YMap, path: string, id: string, rawId: string, label: string): ServiceDef | null {
+  const pn = get(m, 'params');
+  const rn = get(m, 'router_id');
+  if (isNull(pn) && isNull(rn)) return null;
+  let routerId: RouterIdUse = 'none';
+  const ru = r.field(m, 'router_id', path, 20);
+  if (ru !== undefined) {
+    if (ru === 'required' || ru === 'optional' || ru === 'none') routerId = ru;
+    else c.error(rn as YNode, path + '.router_id', `router_id of a protocol says whether it uses a router ID: "required", "optional" or "none"`);
+  }
+  const params: ParamDef[] = [];
+  r.list(pn, path + '.params').forEach((n, i) => {
+    const ppath = `${path}.params[${i}]`;
+    const pm = r.map(n, ppath);
+    if (!pm) return;
+    r.keys(pm, SCHEMA.param, ppath);
+    const key = r.reqStr(pm, 'key', ppath, 40);
+    if (key === undefined) return;
+    if (!/^[a-z][a-z0-9_-]{0,39}$/.test(key) || key === ROUTER_ID_KEY) {
+      c.error(get(pm, 'key') as YNode, ppath + '.key', key === ROUTER_ID_KEY ? '"router_id" is the shared router ID: declare it with the protocol\'s router_id instead' : `invalid parameter key "${key}": use lowercase letters, digits, _ and -, starting with a letter`);
+      return;
+    }
+    if (params.some((p) => p.key === key)) {
+      c.error(get(pm, 'key') as YNode, ppath + '.key', `parameter "${key}" is declared twice`);
+      return;
+    }
+    const typeS = r.field(pm, 'type', ppath, 20) || 'text';
+    if (PARAM_TYPES.indexOf(typeS as ParamType) < 0) c.error(get(pm, 'type') as YNode, ppath + '.type', `unknown parameter type "${typeS}"${suggest(typeS, PARAM_TYPES)}`);
+    const scopeS = r.field(pm, 'scope', ppath, 20) || 'device';
+    if (PARAM_SCOPES.indexOf(scopeS as ParamScope) < 0) c.error(get(pm, 'scope') as YNode, ppath + '.scope', `unknown scope "${scopeS}": use device, interface or endpoint`);
+    const p: ParamDef = { key, label: r.field(pm, 'label', ppath, 60) || key, type: (PARAM_TYPES.indexOf(typeS as ParamType) >= 0 ? typeS : 'text') as ParamType, scope: (PARAM_SCOPES.indexOf(scopeS as ParamScope) >= 0 ? scopeS : 'device') as ParamScope };
+    if (r.bool(get(pm, 'required'), ppath + '.required')) p.required = true;
+    if (p.type === 'int') {
+      p.min = r.int(get(pm, 'min'), ppath + '.min', 0, 4294967295, 'minimum') ?? 0;
+      p.max = r.int(get(pm, 'max'), ppath + '.max', 0, 4294967295, 'maximum') ?? 4294967295;
+    }
+    const vals = r.list(get(pm, 'values'), ppath + '.values', true).map((x, j) => r.str(x, `${ppath}.values[${j}]`, 60)).filter((x): x is string => x !== undefined);
+    if (p.type === 'enum') {
+      if (!vals.length) c.error(pm, ppath + '.values', `an enum parameter needs its values`, { key: 'values' });
+      p.values = vals;
+    }
+    const sug = r.list(get(pm, 'suggest'), ppath + '.suggest', true).map((x, j) => r.str(x, `${ppath}.suggest[${j}]`, 60)).filter((x): x is string => x !== undefined);
+    if (sug.length) p.suggest = sug;
+    const help = r.field(pm, 'description', ppath, 300);
+    if (help) p.help = help;
+    params.push(p);
+  });
+  return { id, label: label || rawId, routerId, params, sessions: true, builtin: false };
+}
+
+/**
+ * A `protocols:` block of a device (the services it enables, each a mapping
+ * of parameters, `{}` without any) or of an interface (its settings of the
+ * device's services that have interface parameters). Values are kept as
+ * written when valid; a missing mandatory parameter is an error.
+ */
+function readServices(
+  r: Reader,
+  c: Ctx,
+  node: YNode,
+  path: string,
+  services: ServiceRegistry,
+  scope: 'device' | 'interface',
+  device: string,
+  rids: Array<{ svc: ServiceConfig; text: string; node: YNode; path: string }>,
+  dev?: Device,
+): ServiceConfig[] {
+  const m = r.map(node, path);
+  if (!m) return [];
+  const out: ServiceConfig[] = [];
+  m.entries.forEach((e, key) => {
+    const spath = `${path}.${key}`;
+    const def = services.get(key);
+    if (!def) {
+      c.error(m, spath, `"${key}" is not a routing service${suggest(key, services.keys(), 20)} (a protocol of the model becomes one when its definition declares params)`, { key, line: e.keyLine });
+      return;
+    }
+    const svc: ServiceConfig = { id: key, values: new Map(), line: e.keyLine };
+    const own = paramsAt(def, scope);
+    if (scope === 'interface') {
+      if (!own.length) {
+        c.error(m, spath, `${def.label} has no settings per interface; enable it on the device (its protocols:)`, { key, line: e.keyLine });
+        return;
+      }
+      if (dev && !dev.services.some((s) => s.id === key)) {
+        c.error(m, spath, `${def.label} is not enabled on "${device}": enable it in the device's protocols: first`, { key, line: e.keyLine });
+      }
+    }
+    const v = e.value;
+    if (!isNull(v)) {
+      const pm = r.map(v, spath);
+      if (pm) {
+        const allowed = own.map((p) => p.key).concat(scope === 'device' && def.routerId !== 'none' ? [ROUTER_ID_KEY] : []);
+        const where: { [k: string]: string } = {};
+        for (const p of def.params) {
+          if (p.scope === scope) continue;
+          where[p.key] = p.scope === 'interface' ? `${p.label} is set per interface, in the interface's protocols:` : p.scope === 'endpoint' ? `${p.label} is set on ${def.label} relations, in their attrs (per device: ${p.key}: {${device}: …})` : `${p.label} is set on the device, in its protocols:`;
+        }
+        if (scope === 'interface' || def.routerId === 'none') where[ROUTER_ID_KEY] = `${def.label} uses no router ID`;
+        r.keys(pm, allowed, spath, '', where);
+        pm.entries.forEach((pe, pk) => {
+          if (pk === ROUTER_ID_KEY && allowed.indexOf(pk) >= 0) {
+            const t = r.str(pe.value, `${spath}.${pk}`, 64);
+            if (t !== undefined) rids.push({ svc, text: t, node: pe.value, path: `${spath}.${pk}` });
+            return;
+          }
+          const p = own.find((x) => x.key === pk);
+          if (!p) return;
+          const pv = pe.value;
+          if (isNull(pv) || pv.kind !== 'scalar') {
+            c.error(pv && !isNull(pv) ? pv : pm, `${spath}.${pk}`, `${p.label} needs a single value`, isNull(pv) ? { key: pk } : {});
+            return;
+          }
+          const t = scalarText(pv) || '';
+          const why = paramProblem(p, t);
+          if (why) c.error(pv, `${spath}.${pk}`, why);
+          else svc.values.set(pk, t.trim());
+        });
+      }
+    }
+    // mandatory parameters: nothing is chosen for the user
+    for (const p of own) {
+      if (!p.required || svc.values.has(p.key)) continue;
+      const pm = !isNull(v) && v.kind === 'map' ? (v as YMap) : null;
+      if (pm && pm.entries.has(p.key)) continue;
+      c.error(pm || m, spath, `${def.label} needs ${p.label.charAt(0).toLowerCase() + p.label.slice(1)} (${p.key})${p.help ? ': ' + p.help : ''}`, pm ? { key: p.key } : { key, line: e.keyLine });
+    }
+    out.push(svc);
+  });
+  return out.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+}
+
+/** A router ID as written: an IPv4 address, or a loopback of the device that has an IPv4 address. */
+function resolveRouterId(c: Ctx, dev: Device, text: string, node: YNode, path: string): RouterIdValue | null {
+  if (routerIdAddress(text)) return { text, address: text.trim() };
+  const lo = dev.logical.find((i) => i.id === text);
+  if (lo && lo.type === 'loopback') {
+    const v4 = lo.addresses.map((a) => parsePrefix(a, true)).find((p) => !!p && p.version === 4);
+    if (!v4) {
+      c.error(node, path, `loopback "${text}" has no IPv4 address to be the router ID`);
+      return { text, iface: text };
+    }
+    return { text, iface: text, address: (v4 as IpPrefix).bytes.join('.') };
+  }
+  const any = deviceInterfaces(dev).find((i) => i.id === text);
+  const loops = dev.logical.filter((i) => i.type === 'loopback').map((i) => i.id);
+  c.error(
+    node,
+    path,
+    any
+      ? `"${text}" is ${any.type === 'physical' ? 'a port' : 'not a loopback'}: a router ID is an IPv4 address or a loopback of "${dev.id}"`
+      : `"${text}" is not a router ID: write an IPv4 address (e.g. 10.255.0.1) or the id of a loopback of "${dev.id}"${loops.length ? suggest(text, loops) : ''}`,
+  );
+  return null;
 }

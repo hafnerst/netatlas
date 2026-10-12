@@ -33,12 +33,23 @@ devices:
     label: hub-rtr
     type: router
     group: hq
+    router_id: Lo0
+    protocols:
+      bfd: {}
+      bgp: {asn: 65000}
+      ospf: {}
+      vrrp: {}
     interfaces:
       - {id: Gi0/0, ip: 203.0.113.1/30, description: WAN uplink}
       - {id: Gi0/1, description: trunk to the core}
     logical_interfaces:
       - {id: Lo0, type: loopback, ip: 10.255.0.1/32}
-      - {id: Gi0/1.100, type: virtual, vlan: 100, ip: 10.100.0.1/24}
+      - id: Gi0/1.100
+        type: virtual
+        vlan: 100
+        ip: 10.100.0.1/24
+        protocols:
+          vrrp: {group: 100, virtual_ip: 10.100.0.254, priority: 100}
       - {id: Gi0/1.200, type: virtual, vlan: 200, ip: 10.200.0.1/24}
       - {id: Tunnel10, type: tunnel, ip: 172.16.10.1/30, source: Gi0/0, destination: spoke1:Gi0/0}
       - {id: Tunnel20, type: tunnel, ip: 172.16.20.1/30, source: Gi0/0, destination: spoke2:Gi0/0}
@@ -48,6 +59,11 @@ devices:
     label: spoke1
     type: router
     group: branches
+    router_id: Lo0
+    protocols:
+      bfd: {}
+      bgp: {asn: 65000}
+      ospf: {}
     interfaces:
       - {id: Gi0/0, ip: 198.51.100.10/30}
     logical_interfaces:
@@ -57,6 +73,10 @@ devices:
     label: spoke2
     type: router
     group: branches
+    router_id: Lo0
+    protocols:
+      bgp: {asn: 65000}
+      ospf: {}
     interfaces:
       - {id: Gi0/0, ip: 198.51.100.22/30}
     logical_interfaces:
@@ -68,25 +88,41 @@ devices:
     label: core-a
     type: switch
     group: hq
+    router_id: 10.255.0.21
+    protocols:
+      ospf: {}
+      vrrp: {}
     interfaces:
       - {id: Et1}
       - {id: Et2}
       - {id: Et10}
     logical_interfaces:
       - {id: Po1, type: virtual, members: [Et1, Et2]}
-      - {id: Vlan100, type: virtual, vlan: 100, ip: 10.100.0.2/24}
+      - id: Vlan100
+        type: virtual
+        vlan: 100
+        ip: 10.100.0.2/24
+        protocols:
+          vrrp: {group: 100, virtual_ip: 10.100.0.254, priority: 200}
       - {id: Vlan200, type: virtual, vlan: 200, ip: 10.200.0.2/24}
   - id: core-b
     label: core-b
     type: switch
     group: hq
+    protocols:
+      vrrp: {}
     interfaces:
       - {id: Et1}
       - {id: Et2}
       - {id: Et20}
     logical_interfaces:
       - {id: Po1, type: virtual, members: [Et1, Et2]}
-      - {id: Vlan100, type: virtual, vlan: 100, ip: 10.100.0.3/24}
+      - id: Vlan100
+        type: virtual
+        vlan: 100
+        ip: 10.100.0.3/24
+        protocols:
+          vrrp: {group: 100, virtual_ip: 10.100.0.254, priority: 150}
       - {id: Vlan200, type: virtual, vlan: 200, ip: 10.200.0.3/24}
   - id: nms
     label: nms (monitoring)

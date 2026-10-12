@@ -4,7 +4,7 @@
  * No layout, rendering or YAML knowledge.
  */
 import { addressOwners, associatedInterfaces, deviceNetworks, endNetworks, endVlans, interfaceNetworks, linkNetworks, networkMembers, vlanRangesText } from './derive';
-import { Model, Route, deviceInterfaces, ifaceKey, relationDevices, routeKey } from './types';
+import { Device, Model, Route, deviceInterfaces, ifaceKey, relationDevices, routeKey } from './types';
 
 export function splitRef(ref: string): [string, string] {
   const i = ref.indexOf(':');
@@ -346,7 +346,15 @@ export function search(model: Model, query: string, limit = 12): SearchHit[] {
   for (const d of model.devices) {
     const addrs: string[] = [];
     for (const i of deviceInterfaces(d)) addrs.push(...i.addresses);
-    consider('device:' + d.id, 'device', d.label, [d.id, d.label, d.type, ...addrs, ...d.dnsNames.map((x) => x.name)]);
+    consider('device:' + d.id, 'device', d.label, [d.id, d.label, d.type, ...addrs, ...d.dnsNames.map((x) => x.name), ...serviceWords(model, d)]);
+  }
+  // the virtual gateway addresses of interfaces (VRRP …)
+  for (const d of model.devices) {
+    for (const i of deviceInterfaces(d)) {
+      const words: string[] = [];
+      for (const s of i.services) s.values.forEach((v, k) => words.push(v, `${s.id} ${k === 'group' ? 'group ' : ''}${v}`));
+      if (words.length) consider(`iface:${d.id}:${i.id}`, 'interface', `${d.id}:${i.id}`, words);
+    }
   }
   for (const n of model.networks) consider('network:' + n.id, 'network', n.label, [n.id, n.label, n.vlan !== undefined ? 'vlan ' + n.vlan : '', n.cidr || '']);
   for (const r of model.relations) consider('relation:' + r.id, r.protocol, r.label || r.id, [r.id, r.protocol, r.label || '']);
@@ -503,4 +511,24 @@ export function contextState(ctx: SelectionContext | null, ref: string): Context
   if (!ctx) return null;
   if (ref === ctx.selected) return 'selected';
   return ctx.related.has(ref) ? 'related' : 'unrelated';
+}
+
+/**
+ * The words a device's routing services are found by: the protocols it
+ * enables ("bgp", "BGP"), its AS numbers ("65010", "as 65010"), NETs, and
+ * its router IDs ("10.255.0.1", "router-id 10.255.0.1", the loopback).
+ */
+export function serviceWords(model: Model, d: Device): string[] {
+  const out: string[] = [];
+  for (const s of d.services) {
+    const def = model.services.get(s.id);
+    out.push(s.id, def ? def.label : s.id);
+    s.values.forEach((v, k) => {
+      out.push(v);
+      if (k === 'asn') out.push('as ' + v, 'as' + v);
+    });
+    if (s.routerId) out.push(s.routerId.text, s.routerId.address || '', 'router-id ' + (s.routerId.address || s.routerId.text));
+  }
+  if (d.routerId) out.push(d.routerId.text, d.routerId.address || '', 'router-id ' + (d.routerId.address || d.routerId.text));
+  return out.filter((x) => x !== '');
 }
