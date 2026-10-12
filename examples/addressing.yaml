@@ -117,6 +117,8 @@ networks:
   - {id: uplink6, label: ISP uplink v6, cidr: "2001:db8:ffff:100::/64"}
   - {id: wan4, label: Branch WAN, cidr: 198.51.100.0/30}
   - {id: wan6, label: Branch WAN v6, cidr: "2001:db8:85a3::8a2e:370:7334/127"}
+  # a supernet: the Addressing overview nests corp and voice under it
+  - {id: campus, label: Campus, cidr: 10.10.0.0/16}
   - {id: corp, label: Corporate, cidr: 10.10.10.0/24, vlan: 10, attrs: {dhcp-relay: 10.20.0.10}}
   - {id: corp6, label: Corporate v6, cidr: "2001:db8:10:10::/64", vlan: 10}
   - {id: voice, label: Voice, cidr: 10.10.20.0/24, vlan: 20}

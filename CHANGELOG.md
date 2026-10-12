@@ -74,6 +74,16 @@ there is no conversion of files written for the earlier drafts.
   `route-nexthop-interface`, `route-exit-interface`, `route-duplicate`,
   `route-conflict`, `vlan-native-mismatch`, `vlan-tagged-mismatch`,
   `vlan-access-tagged`, `vlan-untagged-tagged`, `vlan-unknown`.
+- **Addressing overview** (Analyze → Addressing overview…, `I`): the
+  networks of each VRF nested by containing prefix, with VLAN, name,
+  members (device, interface, address, DNS name, DHCP), gateway or VIP, used
+  addresses and size, utilization (IPv4 percent; IPv6 number of /64s), free
+  ranges and the next free address; duplicate addresses, overlapping
+  prefixes and addresses in no network. Filter, sort, a click selects the
+  object in the diagram, Copy CSV and Save CSV. The Edit tab offers the next
+  free address of a network when an address is added to an interface.
+  Computed in `src/analysis/addressing.ts`.
+- **Analyze menu** between Find and Help, for the analysis views.
 - **More consistency checks**, each with a positive and a negative test:
   `link-mtu-mismatch`, `tunnel-mtu` (with the encapsulation overhead it
   assumes in the message, added up over a tunnel stack),
@@ -298,6 +308,10 @@ there is no conversion of files written for the earlier drafts.
 
 ### Fixed
 
+- In a narrow toolbar, switching off a filter that sits in the **Filters**
+  drop-down could move the filter group to another row, after which the
+  button no longer counted it (*Filters · 1 off*). The group now keeps room
+  for the button's longest label, and the row settles in one pass.
 - Physical view: a tagged port's VLAN line no longer overlaps the name of
   the untagged port below it, the ⚠ of a cable whose tagging differs is
   kept clear of other labels, and a cable no longer runs through a device

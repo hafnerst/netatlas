@@ -144,6 +144,20 @@ const MANUAL: Section[] = [
     ],
   },
   {
+    id: 'addressing',
+    title: 'See the addressing',
+    steps: [
+      'Choose **Analyze → Addressing overview…** (or press `I`). It lists the networks of each VRF, the default table first, each network under the network that contains it.',
+      'A row shows the **prefix**, **VLAN**, **name**, the **gateway or VIP**, how many addresses are **used** of the network\'s **size**, the **utilization** (a percentage for IPv4; for IPv6 the number of /64 subnets), the **next free** address and the **free ranges**. **▸ members** opens the device, interface, address, DNS name and DHCP flag of each member.',
+      'Type in **Filter** to narrow the rows (prefix, name, VLAN, device, address …); press a column header to sort, again to reverse. Click a network, device or interface to close the overview and select it in the diagram.',
+      'Below the tables: **duplicate addresses**, **overlapping prefixes** and **addresses in no network**. **Copy CSV** and **Save CSV** give the table to a spreadsheet.',
+    ],
+    notes: [
+      'When you add an address in the Edit tab, **Next free address** offers the lowest free address of a network of the interface\'s VRF, the networks on its cable first; **+ Add** adds it.',
+    ],
+    figures: [['addressing', 'The Addressing overview of the addressing example: the default table with nested networks, gateways and VIPs, use, utilization and free ranges, one network\'s members opened.']],
+  },
+  {
     id: 'connect',
     title: 'Create connections',
     steps: [
@@ -173,6 +187,7 @@ const SHORTCUTS: Array<[string, string]> = [
   ['Ctrl+Z / Ctrl+Y', 'Undo / redo'],
   ['E', 'Edit tab'],
   ['C', 'Connect the selected object'],
+  ['I', 'Addressing overview'],
   ['A', 'Auto-arrange: Default'],
   ['+ / − / 0', 'Zoom in / out / fit'],
   ['Esc', 'Clear the selection, cancel, close'],

@@ -18,7 +18,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const html = resolve(root, 'dist', 'netatlas.html');
 const outDir = join(root, 'docs', 'img');
 
-// file name -> theme, deep link (example numbers follow the Examples menu)
+// file name -> theme, deep link (example numbers follow the Examples menu), and what to do before the shot
 const SHOTS = [
   ['editor.png', 'dark', 'example=0&view=logical&select=device:hq-rtr1'],
   ['wan-physical.png', 'light', 'example=0&view=physical'],
@@ -36,6 +36,7 @@ const SHOTS = [
   ['ports-physical-lag.png', 'light', 'example=7&view=physical&select=iface:core-a:Po1'],
   ['routes-logical.png', 'dark', 'example=8&view=logical&select=route:br-rtr:1'],
   ['tagging-physical.png', 'light', 'example=8&view=physical'],
+  ['addressing-overview.png', 'light', 'example=6&view=logical', `document.getElementById('btn-addressing').click(); document.querySelector('[data-addr-toggle="|corp"]').click()`],
 ];
 
 async function main() {
@@ -47,7 +48,7 @@ async function main() {
   const base = pathToFileURL(html).href;
   const page = await openPage(base, { width: 1700, height: 1050 });
   try {
-    for (const [name, theme, link] of SHOTS) {
+    for (const [name, theme, link, action] of SHOTS) {
       await page.eval(`localStorage.setItem('netatlas.theme', ${JSON.stringify(theme)}), window.__old = true`);
       // a new document each time (a changed '#…' alone would not load the page again)
       await page.cmd('Page.navigate', { url: base + '?' + name + '#' + link });
@@ -59,6 +60,7 @@ async function main() {
         }
         await new Promise((r) => setTimeout(r, 50));
       }
+      if (action) await page.eval(`(() => { ${action}; return true; })()`);
       await page.mouse('mouseMoved', 1690, 1040);
       await page.settle(300);
       const shot = await page.cmd('Page.captureScreenshot', { format: 'png' });

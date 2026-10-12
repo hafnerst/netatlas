@@ -15,7 +15,7 @@ import { el, materialize, mount, setPaint } from './dom';
 import { ThemeController, themeButtonText } from './theme';
 import { inlineComputedStyles, resolvedPaint } from './export-style';
 import { SURFACES, themedColor } from '../diagram/palette';
-import { DialogOpts, showDialog, showToast } from './dialogs';
+import { DialogOpts, closeDialogWith, showDialog, showToast } from './dialogs';
 import { licenseBody, manualBody } from './help';
 import { Editor, EditorSel, SelDetail } from './inspector';
 import { LineRange, yamlBlock } from '../editor/yaml-block';
@@ -30,6 +30,8 @@ import { normalizeProtocol } from '../model/protocols';
 import { deviceTypeLabel } from '../model/device-types';
 import { Issue } from '../validation/validate';
 import { SEVERITIES, Severity, checkById } from '../analysis/checks';
+import { addressingOverview } from '../analysis/addressing';
+import { AddrSort, AddrViewState, addressingBody, addressingCsv, addressingTables, newAddrViewState, shownText } from './addressing';
 
 /** How a severity is named in the Problems tab's filter. */
 const SEV_NAME: { [s in Severity]: string } = { error: 'Errors', warning: 'Warnings', info: 'Info' };
@@ -255,6 +257,7 @@ export class App {
     ['menu-btn', 'main-menu'],
     ['export-btn', 'export-menu'],
     ['find-btn', 'find-menu'],
+    ['analyze-btn', 'analyze-menu'],
     ['help-btn', 'help-menu'],
   ];
 
@@ -1375,6 +1378,9 @@ export class App {
       b.disabled = !s;
       b.title = s ? `Save the ${s.state.view} view as ${fmt === 'png' ? 'a PNG image' : 'an SVG file'}` : 'Open or create a model first';
     }
+    const addr = this.$('btn-addressing') as HTMLButtonElement;
+    addr.disabled = !s;
+    addr.title = s ? 'The networks of each VRF with their members, gateways, use and free addresses; duplicates, overlaps and addresses in no network (I)' : 'Open or create a model first';
     const find = this.$('btn-find') as HTMLButtonElement;
     find.disabled = !s;
     find.title = s ? 'Find a device, interface, network, relation … in the diagram by id, label, address or protocol, and select it (/)' : 'Open or create a model first';
@@ -1574,6 +1580,9 @@ export class App {
   /** width of each filter switch as last measured in the toolbar (a collapsed one keeps its last width) */
   private optWidth = new Map<HTMLElement, number>();
   private moreBtnWidth = 0;
+  /** the width of the Filters button with its longest label (measured once): the room the filter group keeps for it */
+  private moreBtnFull = 0;
+  private relayingFilters = false;
 
   /** The filter switches of the toolbar, in page order (Labels … Servers). */
   private filterOpts(): HTMLElement[] {
@@ -1599,7 +1608,17 @@ export class App {
     const opts = this.filterOpts();
     const gap = parseFloat(win.getComputedStyle(box).columnGap) || 8;
     for (const o of opts) if (o.parentElement === box && o.offsetWidth > 0) this.optWidth.set(o, o.getBoundingClientRect().width);
-    if (!btn.hidden && btn.offsetWidth > 0) this.moreBtnWidth = btn.getBoundingClientRect().width;
+    if (!btn.hidden && btn.offsetWidth > 0) {
+      this.moreBtnWidth = btn.getBoundingClientRect().width;
+      // and once, its width with the longest label ("Filters · 9 off")
+      if (!this.moreBtnFull) {
+        const count = this.$('more-filters-count');
+        const keep = count.textContent;
+        count.textContent = ' · 9 off';
+        this.moreBtnFull = Math.ceil(btn.getBoundingClientRect().width);
+        count.textContent = keep;
+      }
+    }
     const logical = this.doc.body.getAttribute('data-view') === 'logical';
     const shown = (o: HTMLElement): boolean => logical || !o.classList.contains('logical-only');
     const width = (o: HTMLElement): number => this.optWidth.get(o) || 110;
@@ -1611,7 +1630,8 @@ export class App {
     const frame = this.$('filters-group');
     const chrome = frame.offsetWidth - box.offsetWidth;
     // the group needs room for Devices and the Filters button at least; with less it moves to a row of its own, as one piece
-    slot.style.minWidth = Math.ceil(devW + gap + btnW + chrome) + 'px';
+    // (counted with the button's longest label, so switching a filter off never moves the group to another row)
+    slot.style.minWidth = Math.ceil(devW + gap + Math.max(btnW, this.moreBtnFull) + chrome) + 'px';
     const avail = slot.clientWidth - chrome;
     const byPriority = opts.slice().sort((a, b) => Number(b.getAttribute('data-priority')) - Number(a.getAttribute('data-priority')));
     const inline = new Set<HTMLElement>();
@@ -1647,6 +1667,15 @@ export class App {
     btn.setAttribute('data-off', String(off.length));
     btn.setAttribute('aria-label', `More diagram filters: ${collapsed.map(name).join(', ')}${off.length ? ` (${off.map(name).join(', ')} off)` : ''}`);
     btn.title = off.length ? `Switched off here: ${off.map(name).join(', ')}` : `More filters: ${collapsed.map(name).join(', ')}`;
+    // the button just appeared, or its label changed its width: once more with the measured widths, so the row settles now
+    if (!this.relayingFilters && !btn.hidden && btn.offsetWidth > 0 && (!this.moreBtnFull || Math.abs(btn.getBoundingClientRect().width - btnW) > 0.5)) {
+      this.relayingFilters = true;
+      try {
+        this.layoutFilters();
+      } finally {
+        this.relayingFilters = false;
+      }
+    }
   }
 
   /** Open or close the Filters drop-down; `focus` moves the focus to its first switch (keyboard use). */
@@ -1880,6 +1909,133 @@ export class App {
 
   toast(msg: string): void {
     showToast(this.doc, msg);
+  }
+
+  // ------------------------------------------------------------ Analyze menu
+
+  /** what the Addressing overview shows (filter, sort, open member lists): kept while the page is open, never saved */
+  private addrState: AddrViewState = newAddrViewState();
+
+  /** Is the Addressing overview open? */
+  get addressingOpen(): boolean {
+    const dlg = this.doc.getElementById('modal') as HTMLDialogElement;
+    return dlg.open && dlg.classList.contains('addr-dialog');
+  }
+
+  /**
+   * Analyze → Addressing overview (I): the networks of every VRF with their
+   * members, gateways, use and free space, and the duplicate, overlapping
+   * and stray addresses, in a dialog that takes most of the window. Filter,
+   * sort and the open member lists are kept for the next opening. A click on
+   * an object closes it and selects that object in the diagram; Close (or
+   * Esc) returns to where it was opened from. It never changes the model.
+   */
+  async openAddressing(): Promise<void> {
+    const s = this.session;
+    if (!s || this.addressingOpen) return;
+    this.openMenu(null);
+    const opener = this.doc.activeElement as HTMLElement | null;
+    const ov = addressingOverview(s.model);
+    const st = this.addrState;
+    const body = addressingBody(this.doc, ov, st);
+    const redraw = (): void => {
+      const tables = body.querySelector('.addr-tables') as HTMLElement;
+      body.replaceChild(addressingTables(this.doc, ov, st), tables);
+      (body.querySelector('#addr-status') as HTMLElement).textContent = shownText(ov, st);
+      const all = body.querySelector('[data-addr-all]') as HTMLElement;
+      all.setAttribute('data-addr-all', st.open.size ? 'close' : 'open');
+      all.textContent = st.open.size ? 'Collapse all members' : 'Expand all members';
+    };
+    body.addEventListener('input', (e) => {
+      const t = e.target as HTMLInputElement;
+      if (!t.hasAttribute('data-addr-filter')) return;
+      st.filter = t.value;
+      redraw();
+    });
+    body.addEventListener('click', (e) => {
+      const t = e.target as Element;
+      const go = t.closest('[data-addr-goto]');
+      if (go) {
+        closeDialogWith(go, 'goto:' + go.getAttribute('data-addr-goto'));
+        return;
+      }
+      const sort = t.closest('[data-addr-sort]');
+      if (sort) {
+        const k = sort.getAttribute('data-addr-sort') as AddrSort;
+        st.desc = st.sort === k ? !st.desc : false;
+        st.sort = k;
+        redraw();
+        const again = body.querySelector(`[data-addr-sort="${k}"]`) as HTMLElement | null;
+        if (again) again.focus();
+        return;
+      }
+      const tog = t.closest('[data-addr-toggle]');
+      if (tog) {
+        const key = tog.getAttribute('data-addr-toggle') as string;
+        const open = !st.open.has(key);
+        if (open) st.open.add(key);
+        else st.open.delete(key);
+        tog.setAttribute('aria-expanded', open ? 'true' : 'false');
+        tog.setAttribute('title', open ? 'Hide the members' : 'Show the members');
+        tog.textContent = tog.textContent!.replace(/^[▸▾]/, open ? '▾' : '▸');
+        const row = this.doc.getElementById(tog.getAttribute('aria-controls') as string);
+        if (row) row.hidden = !open;
+        const all = body.querySelector('[data-addr-all]') as HTMLElement;
+        all.setAttribute('data-addr-all', st.open.size ? 'close' : 'open');
+        all.textContent = st.open.size ? 'Collapse all members' : 'Expand all members';
+        return;
+      }
+      const all = t.closest('[data-addr-all]');
+      if (all) {
+        if (all.getAttribute('data-addr-all') === 'open') for (const g of ov.vrfs) for (const n of g.networks) st.open.add(g.vrf + '|' + n.id);
+        else st.open.clear();
+        redraw();
+        (body.querySelector('[data-addr-all]') as HTMLElement).focus();
+        return;
+      }
+      const csvBtn = t.closest('[data-addr-csv]');
+      if (csvBtn) {
+        if (csvBtn.getAttribute('data-addr-csv') === 'save') this.saveAddressingCsv();
+        else void this.copyText(addressingCsv(ov), 'The network table was copied as CSV.');
+      }
+    });
+    const res = await this.dialog({
+      title: 'Addressing overview',
+      body: [body],
+      buttons: [{ label: 'Close', value: 'close', kind: 'primary' }],
+      className: 'addr-dialog',
+      closeButton: true,
+      focus: '#addr-filter',
+    });
+    const dlg = this.doc.getElementById('modal') as HTMLElement;
+    dlg.className = '';
+    if (res.indexOf('goto:') === 0) {
+      this.select(res.slice(5), true);
+      (this.doc.getElementById('canvas') as unknown as HTMLElement).focus();
+    } else if (opener && this.doc.contains(opener) && opener.closest('#analyze-menu') === null) opener.focus();
+    else this.$('analyze-btn').focus();
+  }
+
+  /** Save the Addressing overview's network table as "<model>-addressing.csv", downloaded like an exported picture (the overview's Save CSV). */
+  saveAddressingCsv(): boolean {
+    const s = this.session;
+    if (!s || !this.mdoc) return false;
+    const name = `${pictureBaseName(this.mdoc.fileName)}-addressing.csv`;
+    downloadText(this.doc, addressingCsv(addressingOverview(s.model)), name, 'text/csv');
+    this.toast(`Exported “${name}”.`);
+    return true;
+  }
+
+  /** Put text on the clipboard; where the browser refuses, say so (nothing else happens). */
+  private async copyText(text: string, done: string): Promise<void> {
+    const nav = this.doc.defaultView ? this.doc.defaultView.navigator : null;
+    try {
+      if (!nav || !nav.clipboard) throw new Error('no clipboard');
+      await nav.clipboard.writeText(text);
+      this.toast(done);
+    } catch (e) {
+      this.toast('The browser did not allow copying to the clipboard here; use Save CSV instead.');
+    }
   }
 
   // ------------------------------------------------------------ Help menu
@@ -2210,6 +2366,8 @@ export class App {
     // Find menu
     this.$('btn-find').addEventListener('click', () => this.openFind());
     this.$('btn-outline-filter').addEventListener('click', () => this.openOutlineFilter());
+    // Analyze menu
+    this.$('btn-addressing').addEventListener('click', () => void this.openAddressing());
     // Help menu
     this.$('btn-manual').addEventListener('click', () => void this.openHelp('manual'));
     this.$('theme-btn').addEventListener('click', () => this.theme.toggle());
@@ -2262,6 +2420,7 @@ export class App {
       else if (e.key === 'e') this.showTab('edit');
       else if (e.key === 'a') void this.arrangeCurrentView('default');
       else if (e.key === 'c') this.connectFromSelection();
+      else if (e.key === 'i') void this.openAddressing();
       else if (e.key === '+' || e.key === '=') this.zoomBy(1.25);
       else if (e.key === '-') this.zoomBy(0.8);
       else if (e.key === '0' || e.key === 'f') this.fit();

@@ -211,6 +211,21 @@ async function main() {
       await save('tagging', { x, y, w: Math.min(c.x + c.w, r.x + r.w + 60) - x, h: Math.min(c.y + c.h, r.y + r.h) - y });
     }
 
+    // the Addressing overview of the addressing example, with one network's members open
+    {
+      const ex = await page.eval("Array.from(document.querySelectorAll('#menu-examples [data-example]')).findIndex((b) => /addressing\.yaml/.test(b.textContent))");
+      await page.eval(`netatlas.loadExample(${ex}), netatlas.setView("logical"), true`);
+      await page.eval("document.getElementById('toast').hidden = true");
+      await page.eval(`document.getElementById('btn-addressing').click(), document.querySelector('[data-addr-toggle="|corp"]').click(), true`);
+      await page.mouse('mouseMoved', 700, 890);
+      await page.settle(300);
+      const d = await page.rect('#modal');
+      const sec = await page.rect('#modal .addr-vrf');
+      await save('addressing', { x: d.x, y: d.y, w: d.w, h: Math.min(d.y + d.h, sec.y + 330) - d.y }, { quality: 70 });
+      await page.key('Escape', 'Escape', 27);
+      await page.settle(100);
+    }
+
     // consistency checks: the Problems tab of the consistency-checks example, then its check settings
     const demo = await page.eval("Array.from(document.querySelectorAll('#menu-examples [data-example]')).findIndex((b) => /consistency-checks/.test(b.textContent))");
     await page.eval(`netatlas.loadExample(${demo}), netatlas.setView("physical"), netatlas.showTab("problems"), true`);
