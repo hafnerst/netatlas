@@ -103,6 +103,55 @@ export function addrsOf(v: string): IpAddr[] {
     .filter((a): a is IpAddr => !!a);
 }
 
+/**
+ * What a tunnel interface's packets carry on top of them, and the underlay
+ * they leave by: the tunnel relations bound to it and the tunnels that carry
+ * those (GRE over IPsec …), their overheads added up (ENCAP_OVERHEAD), and
+ * the interface the tunnel is sourced from (else the device's port with the
+ * smallest MTU on the links the stack rides on), when it has an MTU. Null
+ * when no tunnel relation is bound to it or an encapsulation has no known
+ * overhead (nothing is assumed then).
+ */
+export function tunnelBudget(model: Model, t: Interface): { stack: Relation[]; overhead: number; what: string[]; under?: Interface } | null {
+  const stack: Relation[] = [];
+  const add = (r: Relation): void => {
+    if (stack.indexOf(r) >= 0 || r.category !== 'tunnel') return;
+    stack.push(r);
+    for (const o of r.over) {
+      const c = model.index.relations.get(o);
+      if (c) add(c);
+    }
+  };
+  for (const r of model.relations) if (r.endpoints.some((e) => e.device === t.device && e.iface === t.id)) add(r);
+  if (!stack.length) return null;
+  const parts = stack.map((r) => ENCAP_OVERHEAD[baseProtocol(model, r)]);
+  if (parts.some((p) => !p)) return null;
+  const overhead = parts.reduce((s, p) => s + p.bytes, 0);
+  let under: Interface | undefined = t.source && t.source.iface ? model.index.interfaces.get(ifaceKey(t.device, t.source.iface)) : undefined;
+  if (!under || under.mtu === undefined) {
+    under = undefined;
+    for (const p of stack) {
+      for (const o of p.over) {
+        const l = model.index.links.get(o);
+        if (!l) continue;
+        for (const e of [l.a, l.b]) {
+          const i = e.device === t.device ? endIface(model, e) : undefined;
+          if (i && i.mtu !== undefined && (!under || (i.mtu as number) < (under.mtu as number))) under = i;
+        }
+      }
+    }
+  }
+  const out: { stack: Relation[]; overhead: number; what: string[]; under?: Interface } = { stack, overhead, what: parts.map((p) => p.what) };
+  if (under) out.under = under;
+  return out;
+}
+
+function push<T>(m: Map<string, T[]>, name: string, v: T): void {
+  const k = name.toLowerCase();
+  if (!m.has(k)) m.set(k, []);
+  (m.get(k) as T[]).push(v);
+}
+
 // ------------------------------------------------------------ the checks
 
 export const MORE_CHECKS: MoreCheck[] = [
@@ -129,41 +178,11 @@ export const MORE_CHECKS: MoreCheck[] = [
       for (const d of model.devices) {
         for (const t of d.logical) {
           if (t.type !== 'tunnel' || t.mtu === undefined) continue;
-          // the tunnel relations bound to it, and the tunnels that carry them (GRE over IPsec …)
-          const stack: Relation[] = [];
-          const add = (r: Relation): void => {
-            if (stack.indexOf(r) >= 0 || r.category !== 'tunnel') return;
-            stack.push(r);
-            for (const o of r.over) {
-              const c = model.index.relations.get(o);
-              if (c) add(c);
-            }
-          };
-          for (const r of model.relations) if (r.endpoints.some((e) => e.device === d.id && e.iface === t.id)) add(r);
-          if (!stack.length) continue;
-          const parts = stack.map((r) => ({ r, o: ENCAP_OVERHEAD[baseProtocol(model, r)] }));
-          // an unknown encapsulation: nothing is assumed
-          if (parts.some((p) => !p.o)) continue;
-          const overhead = parts.reduce((s, p) => s + p.o.bytes, 0);
-          // the underlay: the interface the tunnel is sourced from, else the device's ports on the links it rides on
-          let under: Interface | undefined = t.source && t.source.iface ? model.index.interfaces.get(ifaceKey(d.id, t.source.iface)) : undefined;
-          if (!under || under.mtu === undefined) {
-            under = undefined;
-            for (const p of stack) {
-              for (const o of p.over) {
-                const l = model.index.links.get(o);
-                if (!l) continue;
-                for (const e of [l.a, l.b]) {
-                  const i = e.device === d.id ? endIface(model, e) : undefined;
-                  if (i && i.mtu !== undefined && (!under || (i.mtu as number) < (under.mtu as number))) under = i;
-                }
-              }
-            }
-          }
-          if (!under || under.mtu === undefined || t.mtu + overhead <= under.mtu) continue;
+          const b = tunnelBudget(model, t);
+          if (!b || !b.under || b.under.mtu === undefined || t.mtu + b.overhead <= b.under.mtu) continue;
           emit({
-            message: `tunnel ${d.id}:${t.id}: MTU ${t.mtu} plus ${overhead} bytes of encapsulation is ${t.mtu + overhead}, more than the MTU ${under.mtu} of its underlay ${under.id} (assumed overhead: ${parts.map((p) => p.o.what).join('; ')}); the largest MTU that fits is ${under.mtu - overhead}`,
-            refs: [iref(t), iref(under)].concat(stack.map((r) => 'relation:' + r.id)),
+            message: `tunnel ${d.id}:${t.id}: MTU ${t.mtu} plus ${b.overhead} bytes of encapsulation is ${t.mtu + b.overhead}, more than the MTU ${b.under.mtu} of its underlay ${b.under.id} (assumed overhead: ${b.what.join('; ')}); the largest MTU that fits is ${b.under.mtu - b.overhead}`,
+            refs: [iref(t), iref(b.under)].concat(b.stack.map((r) => 'relation:' + r.id)),
             at: { ref: iref(t), field: 'mtu' },
           });
         }
@@ -518,6 +537,31 @@ export const MORE_CHECKS: MoreCheck[] = [
           at: { ref: 'relation:' + r.id, field: 'over' },
         });
       }
+    },
+  },
+  {
+    id: 'vrf-name-case',
+    severity: 'warning',
+    title: 'VRF names that differ only in case',
+    reads: 'interfaces: vrf; routes: vrf',
+    run(model, emit) {
+      // every place a VRF is named, by its name in lower case
+      const by = new Map<string, Array<{ name: string; ref: string; field: string }>>();
+      for (const d of model.devices.slice().sort((a, b) => (a.id < b.id ? -1 : 1))) {
+        for (const i of deviceInterfaces(d)) if (i.vrf) push(by, i.vrf, { name: i.vrf, ref: iref(i), field: 'vrf' });
+        for (const r of d.routes) if (r.vrf) push(by, r.vrf, { name: r.vrf, ref: 'route:' + r.device + ':' + r.index, field: 'vrf' });
+      }
+      by.forEach((uses) => {
+        const names = Array.from(new Set(uses.map((u) => u.name))).sort();
+        if (names.length < 2) return;
+        // the spelling used most is taken as meant; the others are reported where they are written
+        const count = (n: string): number => uses.filter((u) => u.name === n).length;
+        const main = names.slice().sort((a, b) => count(b) - count(a) || (a < b ? -1 : 1))[0];
+        for (const u of uses) {
+          if (u.name === main) continue;
+          emit({ message: `VRF "${u.name}" differs from "${main}" only in case: probably a typo (VRF names are compared exactly, so these are two VRFs)`, refs: [u.ref], at: { ref: u.ref, field: u.field } });
+        }
+      });
     },
   },
   {

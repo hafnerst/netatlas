@@ -70,6 +70,22 @@ there is no conversion of files written for the earlier drafts.
 
 ### Added
 
+- **Input helpers in the Edit tab** (each an explicit action, one undo
+  step, validated like typing, nothing written by itself): MTU chips (1500,
+  9000, and for tunnels 1476, 1400 and the underlay's MTU less the
+  encapsulation overhead), **Generate** for a MAC address (random, locally
+  administered unicast, unique in the model, in the model's style, from
+  `crypto.getRandomValues`), a **VRF combobox** (the VRFs in use with their
+  counts; case-only differences flagged), VLAN IDs (next free, defined),
+  an interface name that follows the device's pattern, the router ID from
+  the loopbacks, AS numbers in use, VRRP / HSRP group numbers and virtual
+  IPs on the segment, the registry's common parameter values, default
+  route prefixes and a floating distance, an IS-IS NET from the router ID,
+  a BGP end's peer AS from the other device. The palette offers *Generate a
+  MAC address* and *MTU 1500* for the selected interface. A protocol
+  defined in the model has a *Routing service* card (*Uses a router ID*).
+- **Check `vrf-name-case`:** VRF names that differ only in case.
+
 - **Routing services in the Edit tab:** a device's **Protocols** card shows
   the protocols it runs with their parameters (typed fields, choices,
   suggestions), the shared **Router ID** while one of them uses it (its

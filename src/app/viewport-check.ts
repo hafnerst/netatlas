@@ -169,6 +169,31 @@ export async function runViewportCheck(app: App, doc: Document): Promise<Check[]
       const sb = q('#side-body') as HTMLElement;
       if (sb.scrollWidth > sb.clientWidth + 1) why.push(`the Edit tab scrolls sideways (${sb.scrollWidth} > ${sb.clientWidth})`);
       state('a device’s Protocols section and its suggestions fit the panel', why.concat(problems()));
+      // an interface with its input helpers and the VRF combobox, open
+      app.loadExample(EXAMPLES.findIndex((e) => /addressing/.test(e.name)));
+      app.select('iface:core:ge-0/0/3');
+      app.showTab('edit');
+      await tick();
+      const vrf = q('#side-body input[role="combobox"]') as HTMLInputElement | null;
+      const hw: string[] = [];
+      if (vrf) {
+        vrf.focus();
+        vrf.value = '';
+        vrf.dispatchEvent(new Event('input', { bubbles: true }));
+        await tick();
+      } else hw.push('no VRF combobox');
+      const side2 = (q('#side-body') as HTMLElement).getBoundingClientRect();
+      const parts = doc.querySelectorAll('#side-body .helpers button, #side-body ul.combo-list, #side-body input[role="combobox"]');
+      if (parts.length < 3) hw.push(`the helpers show ${parts.length} parts`);
+      for (let i = 0; i < parts.length; i++) {
+        const r = parts[i].getBoundingClientRect();
+        if (r.width < 1) continue;
+        if (r.left < side2.left - 0.5 || r.right > side2.right + 0.5) hw.push(`"${(parts[i].textContent || parts[i].getAttribute('aria-label') || '').trim().slice(0, 24)}" leaves the panel sideways`);
+      }
+      const sb2 = q('#side-body') as HTMLElement;
+      if (sb2.scrollWidth > sb2.clientWidth + 1) hw.push(`the Edit tab scrolls sideways (${sb2.scrollWidth} > ${sb2.clientWidth})`);
+      state('an interface’s input helpers and the open VRF combobox fit the panel', hw.concat(problems()));
+      if (vrf) vrf.blur();
       app.loadExample(EXAMPLES.findIndex((e) => /enterprise-wan/.test(e.name)));
       await tick();
     }

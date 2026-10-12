@@ -1520,6 +1520,7 @@ missing, it says nothing; no default is assumed (an end without a mode is not
 | `bgp-session-type` | error | iBGP between devices in different AS numbers, or eBGP within one | `ibgp`/`ebgp` relations (or `bgp` with `type`); devices: `protocols.bgp.asn` |
 | `tunnel-endpoint-mismatch` | error | a tunnel whose destination is not what its peer is sourced from | tunnel relations between two tunnel interfaces; tunnel interfaces: `source`, `destination`; interfaces: `ip` |
 | `tunnel-underlay` | warning | a tunnel whose `over` does not connect its endpoints (links join their two devices, networks their members, relations their devices) | tunnel relations: endpoints, `over` |
+| `vrf-name-case` | warning | VRF names that differ only in case (the spelling used most is taken as meant; the others are reported) | interfaces: `vrf`; routes: `vrf` |
 | `relation-vrf-mismatch` | warning | a relation between interfaces in different VRFs (only where both name a VRF: a VRF interface facing one without, as a provider edge facing a customer, is normal) | relation endpoints; interfaces: `vrf` |
 
 **Encapsulation overhead** assumed by `tunnel-mtu`, per packet, with an IPv4

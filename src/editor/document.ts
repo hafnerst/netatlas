@@ -1463,10 +1463,10 @@ export class ModelDoc {
    * returns its index in the device's `logical_interfaces` list. Only the id
    * and the type are set unless fields are given.
    */
-  addLogical(devIndex: number, type: 'loopback' | 'virtual' | 'tunnel', fields: Array<[string, YNode]> = []): number {
+  addLogical(devIndex: number, type: 'loopback' | 'virtual' | 'tunnel', fields: Array<[string, YNode]> = [], base?: string): number {
     const f = fields.filter(([k]) => k !== 'type');
     f.splice(f.length && f[0][0] === 'id' ? 1 : 0, 0, ['type', strNode(type)]);
-    return this.change(`Add ${type} interface`, () => this.newIface(devIndex, 'logical_interfaces', f, type === 'loopback' ? 'lo0' : type === 'tunnel' ? 'tun0' : 'virtual0'));
+    return this.change(`Add ${type} interface`, () => this.newIface(devIndex, 'logical_interfaces', f, base || (type === 'loopback' ? 'lo0' : type === 'tunnel' ? 'tun0' : 'virtual0')));
   }
 
   /** Add a loopback with a name and addresses; returns its index in the `logical_interfaces` list. */

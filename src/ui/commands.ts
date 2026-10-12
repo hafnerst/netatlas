@@ -295,6 +295,28 @@ export function buildCommands(): Command[] {
       },
       run: (app) => app.openEnableProtocol(),
     },
+    {
+      id: 'helper.mac',
+      label: 'Generate a MAC address for the selected interface',
+      group: 'Edit',
+      keywords: 'mac address random locally administered',
+      state: (app) => {
+        const why = app.interfaceHelperBlocked('mac');
+        return why ? off(why) : on('A random, locally administered unicast MAC address that no interface has, in the model’s style (one undo step)');
+      },
+      run: (app) => app.applyInterfaceHelper('mac'),
+    },
+    {
+      id: 'helper.mtu',
+      label: 'Set the MTU of the selected interface to 1500',
+      group: 'Edit',
+      keywords: 'mtu ethernet standard 1500',
+      state: (app) => {
+        const why = app.interfaceHelperBlocked('mtu');
+        return why ? off(why) : on('The standard Ethernet MTU (one undo step)');
+      },
+      run: (app) => app.applyInterfaceHelper('mtu'),
+    },
     // ---------------------------------------------------------------- Help
     { id: 'help.manual', label: 'User Manual', group: 'Help', keywords: 'guide documentation', state: () => on('A short guide to NetAtlas’s basic tasks, with pictures'), run: (app) => void app.openHelp('manual') },
     { id: 'help.license', label: 'License', group: 'Help', keywords: 'apache', state: () => on('The license NetAtlas is distributed under (Apache License, Version 2.0)'), run: (app) => void app.openHelp('license') },

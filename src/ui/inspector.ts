@@ -20,7 +20,7 @@ import { sortedByName } from '../model/order';
 import { CATEGORIES, DIRECTIONS, DUPLEXES, Direction, InterfaceKind, LINE_STYLES, LOGICAL_IFACE_TYPES, PORT_MODES, VLAN_MAX, VLAN_MIN, ifaceKey, interfaceKindLabel, routeKey } from '../model/types';
 import { derivedVlanText, endNetworks, interfaceAddresses, interfaceVlanPorts, interfaceVlans, networkMembers, tagMismatch, tagMismatchText } from '../model/derive';
 import { routingRole, ROUTE_DEVICE_TYPES } from '../model/device-types';
-import { deviceVrfs, nextHopCandidates, vrfKey } from '../analysis/routing';
+import { nextHopCandidates, vrfKey } from '../analysis/routing';
 import { CHECKS } from '../analysis/checks';
 import { nextFreeChoices } from '../analysis/addressing';
 import { builtinProtocols, normalizeProtocol, protocolBase } from '../model/protocols';
@@ -29,9 +29,10 @@ import { DEVICE_TYPES, isDeviceType } from '../model/device-types';
 import { ID_RE, Issue, PROTO_RE, scalarText } from '../validation/validate';
 import { duplicateRelation, endpointName, pairProblem } from '../model/connect';
 import { Endpoint, endpointText } from '../model/types';
-import { ParamDef, ROUTER_ID_KEY, ServiceDef, paramsAt } from '../model/services';
+import { BUILTIN_SERVICES, ParamDef, ROUTER_ID_KEY, ServiceDef, paramsAt } from '../model/services';
 import { parsePrefix } from '../model/ip';
 import { suggestedServices } from '../analysis/identity';
+import { Suggestion, netSuggestions, peerAsSuggestions, asnSuggestions, distanceSuggestions, generateMac, groupSuggestions, mtuSuggestions, nextInterfaceName, routePrefixSuggestions, routerIdSuggestions, virtualIpSuggestions, vlanSuggestions, vrfCaseVariants, vrfChoices } from '../analysis/helpers';
 import { relationDevices } from '../model/types';
 
 /** `iface`: the document path of the selected physical or logical interface of a device; `route`: of the selected static route. */
@@ -829,7 +830,9 @@ export class Editor {
       notes();
     } else if (kind === 'network') {
       g('Identity', [this.idField(base, kind), this.textField(base.concat('label'), 'Label', o)], 'identity');
-      g('Addressing', [this.cidrField(base.concat('cidr'), o), this.intField(base.concat('vlan'), `VLAN ID (${VLAN_MIN}–${VLAN_MAX})`, o, 'Interfaces addressed in this network show it as their VLAN.')], 'addressing');
+      const nm = doc.result.model;
+      const nv = Number(doc.text(base.concat('vlan')));
+      g('Addressing', [this.cidrField(base.concat('cidr'), o), this.withHelpers(this.intField(base.concat('vlan'), `VLAN ID (${VLAN_MIN}–${VLAN_MAX})`, o, 'Interfaces addressed in this network show it as their VLAN.'), base.concat('vlan'), 'int', nm ? vlanSuggestions(nm, nv).filter((s) => / \(next free\)$/.test(s.label)) : [], 'VLAN ID', 'network ' + (doc.text(base.concat('id')) || ''))], 'addressing');
       g('Members', [this.membersField(index)], 'members');
       notes();
     } else if (kind === 'relation') {
@@ -853,6 +856,15 @@ export class Editor {
     } else if (kind === 'protocol') {
       g('Identity', [this.idField(base, kind), this.textField(base.concat('label'), 'Label', o)], 'identity');
       g('Drawing', [this.enumField(base.concat('category'), 'Category', o, CATEGORIES as unknown as string[], 'Select category'), this.colorField(base.concat('color'), 'Colour', o), this.enumField(base.concat('style'), 'Line style', o, LINE_STYLES as unknown as string[], '(from category)')], 'drawing');
+      // a protocol of the model as a routing service devices can enable
+      const pm = doc.result.model;
+      const pid = doc.text(base.concat('id')) || '';
+      const svc = pm ? pm.services.get(pid) : undefined;
+      const declared = svc && !svc.builtin ? svc.params.map((x) => `${x.key} (${x.type}, ${x.scope}${x.required ? ', required' : ''})`) : [];
+      if (!(svc && svc.builtin) && !BUILTIN_SERVICES.some((b) => b.id === pid)) g('Routing service', [
+        this.field('Uses a router ID', this.selectEl(base.concat('router_id'), 'text', o, ['required', 'optional', 'none'], doc.text(base.concat('router_id')) || '', '(not a routing service)'), base.concat('router_id'), 'With a choice here (or parameters), devices can enable this protocol in their Protocols card.'),
+        this.e('p', { class: 'muted small' }, [declared.length ? `Parameters: ${declared.join('; ')}. Edit them in the YAML tab (params:).` : 'Parameters are declared in the YAML tab (params:).']),
+      ], 'service');
       notes();
     }
     const extra: HTMLElement[] = [];
@@ -860,6 +872,130 @@ export class Editor {
     const other = this.otherProps(base, kind);
     if (other.firstChild) extra.push(other);
     if (extra.length) g('More', extra, 'more');
+  }
+
+  // ------------------------------------------------------ input helpers
+
+  /**
+   * Suggestion chips under a field: each is a button that writes its value
+   * (one undo step; normal validation follows). The row is a labelled group
+   * placed right after the field's control; without suggestions, the field
+   * is returned as it is. `kind`: how the value is written (text, an integer,
+   * a link end's untagged VLAN).
+   */
+  private withHelpers(field: HTMLElement, path: Path, kind: 'text' | 'int' | 'end-untagged' | 'ifid', items: Suggestion[], what: string, owner: string): HTMLElement {
+    if (!items.length) return field;
+    const row = this.e('div', { class: 'helpers', role: 'group', 'aria-label': `Suggestions for the ${what}${owner ? ' of ' + owner : ''}` });
+    for (const s of items) {
+      row.appendChild(
+        this.e('button', { type: 'button', class: 'chip helper', 'data-act': 'set-value', 'data-p': J(path), 'data-kind': kind, 'data-v': s.value, title: s.title, 'aria-label': `Set the ${what}${owner ? ' of ' + owner : ''} to ${s.label}` }, [s.label]),
+      );
+    }
+    const ctl = field.querySelector(':scope > label') ? field.children[1] : null;
+    field.insertBefore(row, ctl ? ctl.nextSibling : field.firstChild);
+    return field;
+  }
+
+  /** The MAC field with a Generate button: a random, locally administered unicast address no interface has, in the model's style. */
+  private macField(p: Path, owner: string, order: string): HTMLElement {
+    const f = this.textField(p.concat('mac'), 'MAC', order);
+    const btn = this.e('button', { type: 'button', class: 'chip helper', 'data-act': 'gen-mac', 'data-p': J(p.concat('mac')), 'aria-label': `Generate MAC address for ${owner}`, title: 'A random, locally administered unicast address that no interface of the model has, written like the model’s other MAC addresses' }, ['Generate']);
+    const row = this.e('div', { class: 'helpers', role: 'group', 'aria-label': `MAC address helpers for ${owner}` }, [btn]);
+    const ctl = f.children[1];
+    f.insertBefore(row, ctl ? ctl.nextSibling : null);
+    return f;
+  }
+
+  /**
+   * A VRF field as an ARIA combobox: it offers the VRFs the model uses
+   * (sorted, with how often each is used) and takes a new name as typed.
+   * Arrow keys move through the list, Enter picks, Esc closes it. A name
+   * that differs from one in use only in case is flagged as a probable typo.
+   */
+  private vrfField(path: Path, owner: string, help: string): HTMLElement {
+    const model = this.doc.result.model;
+    const choices = model ? vrfChoices(model) : [];
+    const val = this.doc.text(path) || '';
+    const uid = 'vrf-' + Math.random().toString(36).slice(2, 9);
+    const input = this.input(path, 'text', val, {
+      role: 'combobox',
+      'aria-autocomplete': 'list',
+      'aria-expanded': 'false',
+      'aria-controls': uid + '-list',
+      'aria-label': `VRF of ${owner}`,
+      placeholder: '(default table)',
+    });
+    const list = this.e('ul', { id: uid + '-list', role: 'listbox', class: 'combo-list', 'aria-label': 'VRFs of the model' }) as HTMLUListElement;
+    list.hidden = true;
+    const note = this.e('div', { class: 'field-warn combo-note', 'aria-live': 'polite' });
+    const variants = (name: string): string[] => (model ? vrfCaseVariants(model, name) : []);
+    const showNote = (): void => {
+      const v = variants(input.value);
+      note.textContent = v.length ? `“${input.value.trim()}” differs from ${v.map((x) => `“${x}”`).join(', ')} only in case: probably a typo.` : '';
+      note.hidden = !v.length;
+    };
+    let active = -1;
+    const options = (): HTMLElement[] => Array.from(list.querySelectorAll('[role="option"]')) as HTMLElement[];
+    const render = (): void => {
+      while (list.firstChild) list.removeChild(list.firstChild);
+      const q = input.value.trim().toLowerCase();
+      const shown = choices.filter((c) => !q || c.name.toLowerCase().indexOf(q) >= 0);
+      shown.forEach((c, k) => {
+        const li = this.e('li', { role: 'option', id: `${uid}-o${k}`, 'data-value': c.name, 'aria-selected': 'false', class: 'combo-opt' }, [this.e('span', {}, [c.name]), this.e('span', { class: 'combo-count' }, [` ${c.count} use${c.count === 1 ? '' : 's'}`])]);
+        li.addEventListener('mousedown', (ev) => {
+          ev.preventDefault();
+          pick(c.name);
+        });
+        list.appendChild(li);
+      });
+      if (!shown.length) list.appendChild(this.e('li', { class: 'combo-empty', role: 'presentation' }, [input.value.trim() ? 'A new VRF: press Enter to use it' : 'No VRF is used yet: type a name']));
+      active = -1;
+      input.removeAttribute('aria-activedescendant');
+    };
+    const open = (on: boolean): void => {
+      list.hidden = !on;
+      input.setAttribute('aria-expanded', on ? 'true' : 'false');
+      if (on) render();
+    };
+    const move = (d: number): void => {
+      const os = options();
+      if (!os.length) return;
+      active = (active + d + os.length) % os.length;
+      os.forEach((o, k) => o.setAttribute('aria-selected', k === active ? 'true' : 'false'));
+      input.setAttribute('aria-activedescendant', os[active].id);
+      if (typeof os[active].scrollIntoView === 'function') os[active].scrollIntoView({ block: 'nearest' });
+    };
+    const pick = (name: string): void => {
+      input.value = name;
+      open(false);
+      showNote();
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    };
+    input.addEventListener('input', () => {
+      open(true);
+      showNote();
+    });
+    input.addEventListener('focus', () => showNote());
+    input.addEventListener('blur', () => open(false));
+    input.addEventListener('keydown', (ev) => {
+      if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
+        ev.preventDefault();
+        if (list.hidden) open(true);
+        move(ev.key === 'ArrowDown' ? 1 : -1);
+      } else if (ev.key === 'Enter' && !list.hidden && active >= 0) {
+        ev.preventDefault();
+        pick(options()[active].getAttribute('data-value') as string);
+      } else if (ev.key === 'Escape' && !list.hidden) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        open(false);
+      }
+    });
+    const ctl = this.e('span', { class: 'ctl combo' }, [input, list]);
+    const f = this.field('VRF', ctl, path, help);
+    f.appendChild(note);
+    showNote();
+    return f;
   }
 
   // ------------------------------------------------------ routing services
@@ -929,7 +1065,8 @@ export class Editor {
       const help = users.length
         ? `Shared by ${users.map(label).join(', ')}: a loopback (its IPv4 address) or an IPv4 address${req.length ? '; required' : ''}.`
         : 'Not applicable: no enabled protocol uses a router ID.';
-      kids.push(this.textField(base.concat('router_id'), 'Router ID', 'device', 'text', loops.map((x) => x.id), help, loops.length ? loops[0].id + ' or 10.255.0.1' : '10.255.0.1'));
+      const rmodel = doc.result.model;
+      kids.push(this.withHelpers(this.textField(base.concat('router_id'), 'Router ID', 'device', 'text', undefined, help, loops.length ? loops[0].id + ' or 10.255.0.1' : '10.255.0.1'), base.concat('router_id'), 'text', rmodel && devId ? routerIdSuggestions(rmodel, devId, doc.text(base.concat('router_id'))) : [], 'router ID', devId));
     }
     for (const id of enabled) kids.push(this.serviceCard(base, devIndex, devId, id));
     // enable another
@@ -955,11 +1092,17 @@ export class Editor {
     const sp = base.concat('protocols', id);
     const card = this.e('div', { class: 'svc-card', 'data-svc': id, role: 'group', 'aria-label': `${name} on ${devId}` }, [this.e('div', { class: 'svc-head' }, [this.e('span', { class: 'svc-name' }, [name]), this.disableButton(devIndex, devId, id, name)])]);
     if (!def) return card;
-    for (const p of paramsAt(def, 'device')) card.appendChild(this.paramField(sp.concat(p.key), p));
+    const m = this.doc.result.model;
+    for (const p of paramsAt(def, 'device')) {
+      const extra = !m ? undefined : p.key === 'asn' && id === 'bgp' ? asnSuggestions(m, devId) : p.type === 'net' ? netSuggestions(m, devId, this.doc.text(sp.concat(p.key))) : undefined;
+      card.appendChild(this.paramField(sp.concat(p.key), p, '', `${name} on ${devId}`, extra));
+    }
     if (def.routerId !== 'none') {
       // an own router ID is rare: behind a disclosure, open while one is written
-      const loops = this.ridLoopbacks(devIndex);
-      const own = this.e('details', { class: 'svc-own-rid' }, [this.e('summary', {}, [`Own router ID for ${name}`]), this.textField(sp.concat(ROUTER_ID_KEY), `Own router ID for ${name}`, '', 'text', loops.map((x) => x.id), `Only when ${name} uses another router ID than the device’s; empty: the device’s.`)]);
+      const own = this.e('details', { class: 'svc-own-rid' }, [
+        this.e('summary', {}, [`Own router ID for ${name}`]),
+        this.withHelpers(this.textField(sp.concat(ROUTER_ID_KEY), `Own router ID for ${name}`, '', 'text', undefined, `Only when ${name} uses another router ID than the device’s; empty: the device’s.`), sp.concat(ROUTER_ID_KEY), 'text', this.doc.result.model ? routerIdSuggestions(this.doc.result.model, devId, this.doc.text(sp.concat(ROUTER_ID_KEY))) : [], `${name} router ID`, devId),
+      ]);
       if (this.doc.get(sp.concat(ROUTER_ID_KEY)) || this.fieldIssues(sp.concat(ROUTER_ID_KEY)).length) own.setAttribute('open', '');
       card.appendChild(own);
     }
@@ -974,7 +1117,13 @@ export class Editor {
   }
 
   /** A protocol parameter's field, by its type: a choice for an enum, a number field for an int, else text; suggestions offered. */
-  private paramField(path: Path, p: ParamDef, labelPrefix = ''): HTMLElement {
+  private paramField(path: Path, p: ParamDef, labelPrefix = '', owner = '', extra?: Suggestion[]): HTMLElement {
+    const cur = this.doc.text(path);
+    const sugg = (extra || []).concat((p.suggest || []).filter((v) => v !== cur && !(extra || []).some((x) => x.value === v)).map((v) => ({ value: v, label: v, title: `A common value for ${p.label}` })));
+    return this.withHelpers(this.paramControl(path, p, labelPrefix), path, p.type === 'int' ? 'int' : 'text', sugg, p.label, owner || labelPrefix.replace(/: $/, ''));
+  }
+
+  private paramControl(path: Path, p: ParamDef, labelPrefix = ''): HTMLElement {
     const label = `${labelPrefix}${p.label}${p.required ? ' (required)' : ''}`;
     const range = p.type === 'int' && p.min !== undefined && (p.help || '').indexOf(`${p.min}–${p.max}`) < 0 ? ` ${p.min}–${p.max}.` : '';
     const help = ((p.help || '') + range).trim() || undefined;
@@ -983,15 +1132,9 @@ export class Editor {
       const val = this.doc.text(path) || '';
       const extra: { [k: string]: string } = { inputmode: 'numeric' };
       if (p.required) extra['aria-required'] = 'true';
-      let dl: { id: string; node: HTMLElement } | null = null;
-      if (p.suggest) {
-        dl = this.datalist(p.suggest);
-        extra.list = dl.id;
-      }
-      const inp = this.input(path, 'int', val, extra);
-      return this.field(label, dl ? this.e('span', { class: 'ctl' }, [inp, dl.node]) : inp, path, help);
+      return this.field(label, this.input(path, 'int', val, extra), path, help);
     }
-    return this.textField(path, label, '', 'text', p.suggest, help);
+    return this.textField(path, label, '', 'text', undefined, help);
   }
 
   /** The settings of the device's services on one interface (a VRRP group …): offered for the services the device enables. */
@@ -1020,7 +1163,13 @@ export class Editor {
           this.e('button', { type: 'button', class: 'mini', 'data-act': 'iface-svc-off', 'data-p': J(p), 'data-svc': id, 'aria-label': `Remove the ${name} group from ${ifId}` }, ['Remove']),
         ]),
       ]);
-      for (const prm of atIf) card.appendChild(this.paramField(sp.concat(prm.key), prm));
+      const gm = doc.result.model;
+      const dn = doc.text(['devices', devIndex, 'id']) || '';
+      const li = gm ? gm.index.interfaces.get(dn + ':' + ifId) : undefined;
+      for (const prm of atIf) {
+        const extra = gm && li && def ? (prm.key === 'group' ? groupSuggestions(gm, li, def) : prm.key === 'virtual_ip' ? virtualIpSuggestions(gm, li, def) : undefined) : undefined;
+        card.appendChild(this.paramField(sp.concat(prm.key), prm, '', `${name} on ${dn} ${ifId}`, extra));
+      }
       for (const is of this.fieldIssues(sp)) if (is.path && !atIf.some((x) => (is.message || '').indexOf(x.label) >= 0)) card.appendChild(this.e('div', { class: is.severity === 'error' ? 'field-err' : 'field-warn' }, [is.message]));
       out.push(card);
     }
@@ -1044,12 +1193,17 @@ export class Editor {
       const ap = base.concat('attrs', p.key);
       const n = doc.get(ap);
       if (n && n.kind === 'scalar') {
-        kids.push(this.paramField(ap, p, ''));
+        kids.push(this.paramField(ap, p, '', `relation ${id}`));
         continue;
       }
       const row = this.e('div', { class: 'ep-params', role: 'group', 'aria-label': p.label });
       row.appendChild(this.e('div', { class: 'ep-params-label' }, [p.label]));
-      for (const dv of devs) row.appendChild(this.paramField(ap.concat(dv), p, `${dv}: `));
+      for (const dv of devs) {
+        // a BGP end expects the other device's AS
+        const other = devs.length === 2 ? devs[devs[0] === dv ? 1 : 0] : '';
+        const extra = p.key === 'peer-as' && other ? peerAsSuggestions(model, other, doc.text(ap.concat(dv))) : undefined;
+        row.appendChild(this.paramField(ap.concat(dv), p, `${dv}: `, `${dv} in ${id}`, extra));
+      }
       kids.push(row);
     }
     kids.push(this.e('p', { class: 'muted small' }, ['Per endpoint device, in the relation’s attrs; the checks compare the ends.']));
@@ -1445,7 +1599,9 @@ export class Editor {
       if (has('members') || (kind === 'virtual' && !has('vlan') && !vlans.length)) card.appendChild(this.membersPortsField(devIndex, p));
       if (has('min_links') || has('members')) card.appendChild(this.intField(p.concat('min_links'), 'Minimum links', o, 'How many member links must be up for the aggregate to be up.'));
       if (has('vlan') || (kind === 'virtual' && (!has('members') || vlans.length > 0))) {
-        card.appendChild(this.intField(p.concat('vlan'), `VLAN ID (${VLAN_MIN}–${VLAN_MAX})`, o, 'VLAN interfaces only. Empty: taken from the network of an address above.'));
+        const model = doc.result.model;
+        const cur = Number(doc.text(p.concat('vlan')));
+        card.appendChild(this.withHelpers(this.intField(p.concat('vlan'), `VLAN ID (${VLAN_MIN}–${VLAN_MAX})`, o, 'VLAN interfaces only. Empty: taken from the network of an address above.'), p.concat('vlan'), 'int', model ? vlanSuggestions(model, cur) : [], 'VLAN ID', `${doc.text(['devices', devIndex, 'id']) || ''} ${id || ''}`.trim()));
       }
       if (kind === 'virtual' && vlans.length) card.appendChild(this.vlanPortsField(devIndex, p));
       if (kind === 'tunnel' || has('source')) {
@@ -1456,9 +1612,15 @@ export class Editor {
         card.appendChild(this.textField(p.concat('destination'), 'Tunnel destination', o, 'text', this.deviceIds().filter((x) => x !== doc.text(['devices', devIndex, 'id'])), 'An IP address, a device, or device:interface.', 'Address, device or device:interface'));
       }
     }
-    card.appendChild(this.textField(p.concat('vrf'), 'VRF', o, 'text', undefined, 'The VRF this interface is assigned to, if any.'));
-    if (!loop || doc.get(p.concat('mtu'))) card.appendChild(this.intField(p.concat('mtu'), 'MTU (bytes)', o, 'Empty: not modelled (no MTU is assumed).'));
-    if (!loop || doc.get(p.concat('mac'))) card.appendChild(this.textField(p.concat('mac'), 'MAC', o));
+    const devName = doc.text(['devices', devIndex, 'id']) || '';
+    const owner = `${devName} ${id || ''}`.trim();
+    card.appendChild(this.vrfField(p.concat('vrf'), owner, 'The VRF this interface is assigned to, if any.'));
+    const model = doc.result.model;
+    const live = model && devName && id ? model.index.interfaces.get(devName + ':' + id) : undefined;
+    if (!loop || doc.get(p.concat('mtu'))) {
+      card.appendChild(this.withHelpers(this.intField(p.concat('mtu'), 'MTU (bytes)', o, 'Empty: not modelled (no MTU is assumed).'), p.concat('mtu'), 'int', model && live ? mtuSuggestions(model, live) : [], 'MTU', owner));
+    }
+    if (!loop || doc.get(p.concat('mac'))) card.appendChild(this.macField(p, owner, o));
     for (const sc of this.ifaceServiceCards(devIndex, p, id || '')) card.appendChild(sc);
     card.appendChild(this.textField(p.concat('description'), 'Description', o, 'textarea'));
     if (id) {
@@ -1701,7 +1863,17 @@ export class Editor {
   private ifIdField(p: Path, example: string): HTMLElement {
     const n = this.doc.get(p) as DocNode;
     const val = n.kind === 'map' ? this.doc.text(p.concat('id')) || '' : scalarText(n) || '';
-    return this.field('ID', this.input(p.concat('id'), 'ifid', val), p.concat('id'), `Unique on this device, e.g. ${example}. Renaming updates references.`);
+    const f = this.field('ID', this.input(p.concat('id'), 'ifid', val), p.concat('id'), `Unique on this device, e.g. ${example}. Renaming updates references.`);
+    // a name that follows the device's other names of this kind (ge-0/0/3 after ge-0/0/2), when this one doesn't
+    const model = this.doc.result.model;
+    const dev = this.doc.text(['devices', p[1] as number, 'id']) || '';
+    const live = model && dev ? model.index.interfaces.get(dev + ':' + val) : undefined;
+    if (model && live) {
+      const next = nextInterfaceName(model, dev, live.type);
+      const stem = (s: string): string => s.replace(/[0-9]+$/, '');
+      if (stem(next) !== stem(val)) return this.withHelpers(f, p.concat('id'), 'ifid', [{ value: next, label: next, title: `Named like this device’s other ${live.type} interfaces; every reference follows the rename` }], 'name', `${dev} ${val}`);
+    }
+    return f;
   }
 
   private intField(p: Path, label: string, order: string, help?: string): HTMLElement {
@@ -1869,7 +2041,9 @@ export class Editor {
     box.appendChild(this.field('Mode', mode, endPath.concat('mode')));
     if (t.mode || t.untagged) {
       const u = this.input(endPath.concat('untagged'), 'end-untagged', t.untagged, { inputmode: 'numeric', placeholder: t.mode === 'trunk' ? 'e.g. 1' : 'e.g. 10', 'aria-label': `${t.mode === 'trunk' ? 'Native' : 'Untagged'} VLAN at end ${side}` });
-      box.appendChild(this.field(t.mode === 'trunk' ? `Native VLAN (untagged, ${VLAN_MIN}–${VLAN_MAX})` : `Untagged VLAN (${VLAN_MIN}–${VLAN_MAX})`, u, endPath.concat('untagged')));
+      const lm = this.doc.result.model;
+      const defined = lm ? vlanSuggestions(lm, t.untagged ? Number(t.untagged) : undefined).filter((s) => !/ \(next free\)$/.test(s.label)) : [];
+      box.appendChild(this.withHelpers(this.field(t.mode === 'trunk' ? `Native VLAN (untagged, ${VLAN_MIN}–${VLAN_MAX})` : `Untagged VLAN (${VLAN_MIN}–${VLAN_MAX})`, u, endPath.concat('untagged')), endPath.concat('untagged'), 'end-untagged', defined, t.mode === 'trunk' ? 'native VLAN' : 'untagged VLAN', `end ${side}`));
     }
     if (t.mode === 'trunk' || t.tagged.length) {
       const tg = this.input(endPath.concat('tagged'), 'end-tagged', t.tagged.join(', '), { placeholder: '10, 20, 100-199', 'aria-label': `Tagged VLANs at end ${side}` });
@@ -1969,7 +2143,10 @@ export class Editor {
       return card;
     }
     const o = 'route';
-    card.appendChild(this.textField(p.concat('prefix'), 'Destination prefix', o, 'text', ['0.0.0.0/0', '::/0'], 'IPv4 or IPv6 prefix; 0.0.0.0/0 or ::/0 for a default route.', '10.0.0.0/8'));
+    const rm = doc.result.model;
+    const rdev = doc.text(['devices', devIndex, 'id']) || '';
+    const rname = `route ${e.prefix || '(new)'} of ${rdev}`;
+    card.appendChild(this.withHelpers(this.textField(p.concat('prefix'), 'Destination prefix', o, 'text', undefined, 'IPv4 or IPv6 prefix; 0.0.0.0/0 or ::/0 for a default route.', '10.0.0.0/8'), p.concat('prefix'), 'text', rm ? routePrefixSuggestions(rm, rdev, e.prefix) : [], 'destination prefix', rname));
     // the blackhole switch: a route either has a next hop or drops the traffic
     const sw = this.e(
       'button',
@@ -1985,12 +2162,11 @@ export class Editor {
       const ifs = sortedByName(doc.interfaceEntries(devIndex).filter((x) => !!x.id), (x) => x.id as string).map((x) => x.id as string);
       card.appendChild(this.refField(p.concat('interface'), 'Exit interface', o, ifs, 'Optional with an address; alone for a point-to-point or tunnel interface.'));
     }
-    card.appendChild(this.intField(p.concat('distance'), 'Administrative distance (1–255)', o, 'Empty: route selection takes 1. A higher distance makes a floating (backup) route.'));
+    card.appendChild(this.withHelpers(this.intField(p.concat('distance'), 'Administrative distance (1–255)', o, 'Empty: route selection takes 1. A higher distance makes a floating (backup) route.'), p.concat('distance'), 'int', distanceSuggestions(e.distance), 'administrative distance', rname));
     card.appendChild(this.intField(p.concat('metric'), 'Metric', o, 'Optional: among routes with the same distance, the lower metric is used.'));
     const model = doc.result.model;
     const dev = doc.text(['devices', devIndex, 'id']) || '';
-    const vrfs = model ? deviceVrfs(model, dev).filter((v) => !!v) : [];
-    card.appendChild(this.textField(p.concat('vrf'), 'VRF', o, 'text', vrfs, 'Empty: the default table.'));
+    card.appendChild(this.vrfField(p.concat('vrf'), model && dev ? rname : 'route', 'Empty: the default table.'));
     card.appendChild(this.textField(p.concat('name'), 'Name', o));
     card.appendChild(this.textField(p.concat('description'), 'Description', o, 'textarea'));
     card.appendChild(this.attrsField(p.concat('attrs'), 'Attributes (attrs)', o));
@@ -2545,6 +2721,29 @@ export class Editor {
         doc.remove(p);
         this.host.changed();
         return true;
+      case 'set-value': {
+        // a suggestion chip: one undo step; validation follows as for typing
+        const v = btn.getAttribute('data-v') as string;
+        const k = btn.getAttribute('data-kind');
+        if (k === 'int') doc.setInteger(p, v);
+        else if (k === 'end-untagged') doc.setEndUntagged(p.slice(0, -1), v);
+        else if (k === 'ifid') {
+          const n = doc.renameInterface(p.slice(0, -1), v);
+          this.host.changed(n ? `Renamed; ${n} reference${n > 1 ? 's' : ''} updated.` : undefined);
+          return true;
+        }
+        else doc.setText(p, v);
+        this.host.changed();
+        return true;
+      }
+      case 'gen-mac': {
+        const model = doc.result.model;
+        const cr = this.d.defaultView ? this.d.defaultView.crypto : undefined;
+        if (!model || !cr) return true;
+        doc.setText(p, generateMac(model, (n) => cr.getRandomValues(new Uint8Array(n))));
+        this.host.changed('A MAC address was generated.');
+        return true;
+      }
       case 'enable-service': {
         const svc = btn.getAttribute('data-svc') as string;
         doc.enableService(index, svc);
