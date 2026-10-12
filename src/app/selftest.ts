@@ -1588,7 +1588,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       click('[data-tab="edit"]');
       await tick();
       const sec = (): HTMLElement | null => q('#side-body [data-group="protocols"]');
-      const chips = Array.from(doc.querySelectorAll('#side-body [data-group="protocols"] button.chip')) as HTMLButtonElement[];
+      const chips = Array.from(doc.querySelectorAll('#side-body [data-group="protocols"] .svc-suggest button.chip')) as HTMLButtonElement[];
       check(
         'a device’s Protocols section: what its relations and routes use but it does not enable is offered with one click (OSPF for ospf-13, static routing for its route), with an accessible name',
         !!sec() && chips.length === 2 && chips[0].getAttribute('aria-label') === 'Enable OSPF on r3 (used by ospf-13)' && chips[1].getAttribute('aria-label') === 'Enable Static routing on r3 (1 static route)' && chips.every((c) => c.tagName === 'BUTTON' && c.tabIndex >= 0),
@@ -1672,6 +1672,123 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       app.runCommand('protocol.enable');
       await tick();
       check('… which opens the Edit tab at the protocol choice', doc.activeElement === q('#side-body select[data-t="enable-service"]'));
+      app.select(null);
+      md.markSaved();
+    }
+
+    // ------------------------------------------------ input helpers in the Edit tab
+    {
+      app.loadExample(EXAMPLES.findIndex((e) => e.name === 'addressing.yaml'));
+      await tick();
+      const md = app.mdoc as ModelDoc;
+      const yamlBefore = app.exportText();
+      app.select('iface:core:ge-0/0/9');
+      click('[data-tab="edit"]');
+      await tick();
+      const card = (): HTMLElement | null => q('#side-body details[open][data-card*="ge-0/0/9"]') || q('#side-body details[open]');
+      const chip = (label: string): HTMLButtonElement | null => (Array.from(doc.querySelectorAll('#side-body .helpers button')) as HTMLButtonElement[]).find((b) => b.getAttribute('aria-label') === label) || null;
+      const mtu = chip('Set the MTU of core ge-0/0/9 to 1500');
+      check(
+        'MTU helpers sit right under the field: 1500 and 9000 (jumbo), each a button with an accessible name, in a labelled group',
+        !!card() && !!mtu && !!chip('Set the MTU of core ge-0/0/9 to 9000 (jumbo)') && (mtu.closest('.helpers') as HTMLElement).getAttribute('aria-label') === 'Suggestions for the MTU of core ge-0/0/9' && (mtu.closest('.field') as HTMLElement).querySelector('input[data-p*="mtu"]') !== null,
+        Array.from(doc.querySelectorAll('#side-body .helpers button')).map((b) => b.getAttribute('aria-label')).join(' | '),
+      );
+      mtu!.focus();
+      mtu!.click();
+      await tick();
+      check('a chip writes its value: one undo step, validated like typing', /\{id: ge-0\/0\/9, mac: 00:1c:73:aa:00:09, mtu: 1500, description: Spare\}|mtu: 1500/.test(app.exportText()) && md.canUndo() === 'Edit mtu' && md.valid);
+      md.undo();
+      (app as unknown as { afterEdit(n?: string): void }).afterEdit();
+      await tick();
+      // MAC: Generate on an interface without one
+      app.select('iface:core:ge-0/0/4');
+      await tick();
+      const gen = q('#side-body [data-act="gen-mac"][aria-label="Generate MAC address for core ge-0/0/4"]') as HTMLButtonElement | null;
+      check('a MAC field has Generate, named for its interface', !!gen && gen.textContent === 'Generate');
+      gen!.click();
+      await tick();
+      const mac = (/ge-0\/0\/4[^\n]*mac: ([0-9a-f:]+)/.exec(app.exportText()) || ['', ''])[1];
+      const b0 = parseInt(mac.slice(0, 2), 16);
+      check('Generate writes a locally administered unicast MAC in the model’s style, unique, in one undo step', /^([0-9a-f]{2}:){5}[0-9a-f]{2}$/.test(mac) && (b0 & 3) === 2 && md.canUndo() === 'Edit mac' && !md.findings.some((f) => f.check === 'duplicate-mac'), mac);
+      md.undo();
+      (app as unknown as { afterEdit(n?: string): void }).afterEdit();
+      await tick();
+      check('… undone: the file as it was', app.exportText() === yamlBefore);
+      // VRF: a combobox of the VRFs in use, from the keyboard
+      app.select('iface:core:ge-0/0/3');
+      await tick();
+      const vrf = q('#side-body input[role="combobox"][aria-label="VRF of core ge-0/0/3"]') as HTMLInputElement | null;
+      const list = (): HTMLElement | null => (vrf ? doc.getElementById(vrf.getAttribute('aria-controls') || '') : null);
+      check('the VRF field is an ARIA combobox (role, aria-autocomplete, aria-expanded, aria-controls a listbox), closed at first', !!vrf && vrf.getAttribute('aria-autocomplete') === 'list' && vrf.getAttribute('aria-expanded') === 'false' && !!list() && list()!.getAttribute('role') === 'listbox' && list()!.hidden);
+      vrf!.focus();
+      vrf!.value = 'c';
+      vrf!.dispatchEvent(new Event('input', { bubbles: true }));
+      await tick();
+      const opts = Array.from(list()!.querySelectorAll('[role="option"]')).map((o) => o.textContent || '');
+      check('typing opens the list: the VRFs whose name contains it, each with how often it is used', vrf!.getAttribute('aria-expanded') === 'true' && !list()!.hidden && opts.length === 1 && /^CORP\s*2 uses$/.test(opts[0]), opts.join(' | '));
+      vrf!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }));
+      await tick();
+      const act = doc.getElementById(vrf!.getAttribute('aria-activedescendant') || '');
+      check('↓ moves to an option (aria-activedescendant, aria-selected)', !!act && act.getAttribute('aria-selected') === 'true' && act.getAttribute('data-value') === 'CORP');
+      vrf!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+      await tick();
+      check('Enter picks it: the VRF is written (one undo step)', /\{id: ge-0\/0\/3, ip: \[10\.20\.0\.1\/24, 10\.20\.1\.1\/24\], vrf: CORP/.test(app.exportText()) && md.canUndo() === 'Edit vrf');
+      md.undo();
+      (app as unknown as { afterEdit(n?: string): void }).afterEdit();
+      await tick();
+      // a name that differs only in case: flagged
+      const vrf2 = q('#side-body input[role="combobox"][aria-label="VRF of core ge-0/0/3"]') as HTMLInputElement;
+      vrf2.focus();
+      vrf2.value = 'corp';
+      vrf2.dispatchEvent(new Event('input', { bubbles: true }));
+      await tick();
+      const note = (vrf2.closest('.field') as HTMLElement).querySelector('.combo-note') as HTMLElement;
+      check('a VRF name differing only in case from one in use is flagged as a probable typo (live)', !note.hidden && /“corp” differs from “CORP” only in case: probably a typo/.test(note.textContent || '') && note.getAttribute('aria-live') === 'polite');
+      vrf2.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      await tick();
+      const list2 = doc.getElementById(vrf2.getAttribute('aria-controls') || '') as HTMLElement | null;
+      check('Esc closes the list and keeps the selection', !!list2 && list2.hidden && vrf2.getAttribute('aria-expanded') === 'false' && app.session!.state.selected === 'iface:core:ge-0/0/3');
+      vrf2.value = 'MGMT';
+      vrf2.blur();
+      // a new interface gets a placeholder id; a chip renames it after the device's pattern
+      app.select('device:dist');
+      await tick();
+      click('#side-body [data-act="add-iface"]');
+      await tick();
+      const named = chip('Set the name of dist eth0 to xe-4');
+      check('a new port can be named after the device’s other ports with one click (xe-4 after xe-3)', !!named, Array.from(doc.querySelectorAll('#side-body .helpers button')).map((b) => b.getAttribute('aria-label')).join(' | '));
+      if (named) named.click();
+      await tick();
+      check('… a rename: one undo step', /id: xe-4|- xe-4/.test(app.exportText()) && md.canUndo() === 'Rename interface');
+      md.undo();
+      if (named) md.undo();
+      (app as unknown as { afterEdit(n?: string): void }).afterEdit();
+      await tick();
+      // both themes: the chips are readable
+      app.select('iface:core:ge-0/0/9');
+      await tick();
+      for (const theme of ['light', 'dark']) {
+        app.theme.set(theme as 'light' | 'dark');
+        await tick();
+        const c = q('#side-body .helpers button') as HTMLElement;
+        const cs = doc.defaultView!.getComputedStyle(c);
+        const rgb = (s: string): number[] => ((/rgba?\(([^)]+)\)/.exec(s) || ['', '0,0,0'])[1].split(',').map((x) => parseFloat(x)));
+        let bgEl: HTMLElement | null = c;
+        let bg = rgb(cs.backgroundColor);
+        while (bgEl && (rgb(doc.defaultView!.getComputedStyle(bgEl).backgroundColor)[3] === 0 || doc.defaultView!.getComputedStyle(bgEl).backgroundColor === 'transparent')) {
+          bgEl = bgEl.parentElement;
+          if (bgEl) bg = rgb(doc.defaultView!.getComputedStyle(bgEl).backgroundColor);
+        }
+        const hex = (v: number[]): string => '#' + v.slice(0, 3).map((x) => Math.round(x).toString(16).padStart(2, '0')).join('');
+        const ratio = contrast(hex(rgb(cs.color)), hex(bg));
+        check(`${theme} theme: the helper chips are readable (AA) and focusable buttons`, ratio >= 4.5 && c.tagName === 'BUTTON', ratio.toFixed(2));
+      }
+      check('the palette has the main helpers: Generate a MAC address (unavailable here: it has one, and says so), MTU 1500 for the selected interface', !!app.command('helper.mac') && /It has a MAC address already/.test(app.command('helper.mac')!.state(app).reason || '') && !!app.command('helper.mtu') && app.command('helper.mtu')!.state(app).enabled);
+      app.runCommand('helper.mtu');
+      await tick();
+      check('… run from the palette: one undo step', md.canUndo() === 'Edit mtu' && /mtu: 1500/.test(app.exportText()));
+      md.undo();
+      (app as unknown as { afterEdit(n?: string): void }).afterEdit();
       app.select(null);
       md.markSaved();
     }

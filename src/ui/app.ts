@@ -36,6 +36,7 @@ import { Trace, TraceRequest, pathRefs, returnRequest, tracePath, traceRefs, tra
 import { TraceForm, TraceRun, formRequest, newTraceForm, tracePanel, traceSummary } from './trace';
 import { failableRef, failedText, failureRefs, lostReachability, refLabel, simulate, singlePointsOfFailure, summarize } from '../analysis/failure';
 import { SimView, simPanel, simSummary, spofBody } from './failure';
+import { generateMac } from '../analysis/helpers';
 import { Command, buildCommands, isMac, keyLabel, matchesKey } from './commands';
 import { PaletteItem, commandItems, objectItems, paletteList, rankItems, resultsText } from './palette';
 import { AddrSort, AddrViewState, addressingBody, addressingCsv, addressingTables, newAddrViewState, shownText } from './addressing';
@@ -2173,6 +2174,44 @@ export class App {
       if (typeof sel.scrollIntoView === 'function') sel.scrollIntoView({ block: 'center' });
       sel.focus();
     }
+  }
+
+  /** The selected interface's entry in the document (path and kind), or why there is none. */
+  private selectedInterfacePath(): { path: (string | number)[]; loop: boolean } | string {
+    const s = this.session;
+    const d = this.mdoc;
+    if (!s || !d) return 'Open or create a model first';
+    const sel = s.state.selected;
+    if (!sel || sel.indexOf('iface:') !== 0) return 'Select an interface first';
+    const rest = sel.slice(6);
+    const i = s.model.index.interfaces.get(rest);
+    const dev = i ? d.findEntity('device', i.device) : null;
+    const e = dev ? d.interfaceEntries(dev.index).find((x) => x.id === (i as { id: string }).id) : undefined;
+    if (!i || !e) return 'Select an interface first';
+    return { path: e.path, loop: i.type === 'loopback' };
+  }
+
+  /** Why an interface helper of the palette can't run now ('' = it can). */
+  interfaceHelperBlocked(kind: 'mac' | 'mtu'): string {
+    const t = this.selectedInterfacePath();
+    if (typeof t === 'string') return t;
+    if (t.loop) return 'A loopback has no ' + (kind === 'mac' ? 'MAC address' : 'MTU') + ' here';
+    const cur = (this.mdoc as ModelDoc).text(t.path.concat(kind));
+    if (kind === 'mtu' && cur === '1500') return 'Its MTU is 1500 already';
+    if (kind === 'mac' && cur) return 'It has a MAC address already (' + cur + ')';
+    return '';
+  }
+
+  /** Generate a MAC address for the selected interface, or set its MTU to 1500 (one undo step each). */
+  applyInterfaceHelper(kind: 'mac' | 'mtu'): void {
+    if (this.interfaceHelperBlocked(kind)) return;
+    const t = this.selectedInterfacePath() as { path: (string | number)[] };
+    const d = this.mdoc as ModelDoc;
+    const model = d.result.model;
+    const cr = this.doc.defaultView ? this.doc.defaultView.crypto : undefined;
+    if (kind === 'mtu') d.setInteger(t.path.concat('mtu'), '1500');
+    else if (model && cr) d.setText(t.path.concat('mac'), generateMac(model, (n) => cr.getRandomValues(new Uint8Array(n))));
+    this.afterEdit(kind === 'mtu' ? 'MTU set to 1500.' : 'A MAC address was generated.');
   }
 
   // ------------------------------------------------------------ failure simulation

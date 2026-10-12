@@ -90,6 +90,7 @@ devices:
     interfaces:
       - {id: e0, ip: 10.0.31.2/30}
       - e4
+      - {id: e9, vrf: Red}                                    # vrf-name-case: r1:e7 is in VRF red
     routes:
       - {prefix: 0.0.0.0/0, via: 10.0.31.1}                   # static-not-enabled (info)
   - id: sw1

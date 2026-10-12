@@ -299,6 +299,18 @@ async function main() {
       await page.settle(100);
     }
 
+    // input helpers: a tunnel interface's MTU suggestions and MAC Generate (enterprise WAN, hq-rtr1 st0.10)
+    {
+      await page.eval('netatlas.loadExample(0), netatlas.setView("physical"), netatlas.select("iface:hq-rtr1:st0.10"), netatlas.showTab("edit"), true');
+      await page.eval("document.getElementById('toast').hidden = true");
+      await page.settle(200);
+      await page.eval(`(() => { const f = document.querySelector('#side-body details[open] .helpers').closest('.field'); f.scrollIntoView({ block: 'start' }); return true; })()`);
+      await page.settle(150);
+      const f1 = await page.rect('#side-body details[open] .helpers');
+      const sb = await page.rect('#side-body');
+      await save('helpers', { x: sb.x + 4, y: Math.max(sb.y, f1.y - 52), w: sb.w - 8, h: 205 }, { quality: 45 });
+    }
+
     // routing services: r3's Protocols card (suggestions, BGP, Enable a protocol) in the Edit tab
     {
       const demo2 = await page.eval("Array.from(document.querySelectorAll('#menu-examples [data-example]')).findIndex((b) => /consistency-checks/.test(b.textContent))");

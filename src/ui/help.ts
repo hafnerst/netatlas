@@ -179,6 +179,18 @@ const MANUAL: Section[] = [
     figures: [['protocols', 'r3’s Protocols card: the suggestions to enable OSPF and static routing, BGP with its AS number, and Enable a protocol.']],
   },
   {
+    id: 'helpers',
+    title: 'Fill in fields faster',
+    steps: [
+      'Under many fields of the Edit tab, small buttons offer values that fit: for an MTU *1500* or *9000 (jumbo)*, for a tunnel the MTU its underlay leaves room for; for a VLAN the next free ID; for a router ID the device’s loopbacks.',
+      'Press one (or Tab to it and press Enter) to write that value. It is one step you can undo, and it is checked like anything you type.',
+      'A MAC field has **Generate**: a random, locally administered address no other interface has, written like the model’s other MAC addresses.',
+      'A VRF field lists the VRFs in use as you type: ↑ / ↓ to choose, Enter to take it, Esc to close. A name that differs only in upper and lower case from one in use is flagged.',
+    ],
+    notes: ['Nothing is filled in by itself: a helper only acts when you press it.'],
+    figures: [['helpers', 'A tunnel interface: the MTU suggestions, among them its underlay’s MTU less the GRE and IPsec overhead, and Generate under the MAC field.']],
+  },
+  {
     id: 'failure',
     title: 'Simulate a failure',
     steps: [
