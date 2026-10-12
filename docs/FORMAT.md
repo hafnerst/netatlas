@@ -34,6 +34,7 @@ devices: [...]
 links: [...]
 networks: [...]
 relations: [...]
+scenarios: [...]       # optional: saved what-if simulations (never change the network)
 checks: {...}          # optional: switch consistency checks off or change their severity
 ```
 
@@ -1005,7 +1006,49 @@ Built-in protocol ids: `gre`, `ipsec`, `ipip`, `wireguard`, `openvpn`, `l2tp`,
 `is-is`, `wg`, `ikev2`, `mpls-te`, `pw`, `lag`, `port-channel`, `vpc`,
 `tacacs+`, `ipfix` and `sflow`.
 
-## `layout` (diagram positions)
+## `scenarios` (what-if steps)
+
+Optional. Saved **simulation scenarios**: named, ordered lists of steps that
+NetAtlas plays as an overlay on the model (**Simulate** menu, **Simulation**
+tab). They are presentation and analysis data only: playing a scenario
+never changes the network objects above, and a file means the same network
+with or without them.
+
+```yaml
+scenarios:
+  - id: isp1-outage              # required, unique among the scenarios
+    label: ISP 1 outage          # optional display name (default: the id)
+    description: The uplink to ISP 1 is cut, then hq-rtr1 fails as well.
+    steps:                       # played in this order
+      - fail: {cable: l-hq-isp1}
+        note: the carrier reports a fibre cut   # optional, shown with the step
+      - fail: {device: hq-rtr1}
+      - restore: {device: hq-rtr1}
+      - fail: {lag: hq-core1:Port-Channel1}
+```
+
+Each step has exactly **one action** key, `fail` or `restore`, whose value
+names **one target** as a mapping with one key:
+
+| Target key | Value | Fails (or restores) |
+|---|---|---|
+| `device` | a device id | the device, its interfaces and the cables at it |
+| `cable` | a `links` id | the cable and the ports at both ends |
+| `port` | `device:interface` | the interface and its cable |
+| `relation` | a relation id | the relation and what runs `over` it |
+| `lag` | `device:interface` of an aggregate | all its member cables at once |
+
+The state after step *k* is the model with the targets of the first *k*
+steps failed (a `restore` takes an earlier failure back); what that takes
+down is computed as described in the README (*Failure propagation*).
+
+Validation checks the form like everywhere else: unknown keys, a step with
+no action or two, an action with no target or two, a duplicate scenario id
+are **errors**. A step whose target doesn't exist (a device renamed outside
+NetAtlas, a deleted cable) is a **warning**: the scenario stays and the
+step is skipped when it is played. Renaming an object in NetAtlas updates
+the steps that name it. At most 500 scenarios of 500 steps each.
+
 
 Optional and **purely presentational**. It stores node centers per view,
 keyed by entity id:
@@ -1463,7 +1506,8 @@ next to the object and field they concern.
 * a VLAN interface whose `vlan` differs from the VLAN of the network its
   address lies in;
 * a tunnel source address that no interface of the device has;
-* the same DNS name on two devices.
+* the same DNS name on two devices;
+* a scenario step whose object doesn't exist (the step is skipped).
 
 A file with **errors can still be opened and drawn**. Everything that
 validated is shown, so an incomplete draft stays usable. Only files that

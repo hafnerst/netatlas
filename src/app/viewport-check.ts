@@ -196,6 +196,50 @@ export async function runViewportCheck(app: App, doc: Document): Promise<Check[]
       if (vrf) vrf.blur();
       app.loadExample(EXAMPLES.findIndex((e) => /enterprise-wan/.test(e.name)));
       await tick();
+      // a simulation: the banner, the frame and the badge within the diagram area; the Simulation tab and the
+      // read-only Edit tab within the panel, nothing cut off sideways
+      app.playScenario('isp1-outage');
+      app.runCommand('sim.next');
+      await tick();
+      const sw: string[] = [];
+      const area = (q('#canvas-wrap') as HTMLElement).getBoundingClientRect();
+      // a very short window shows a one-line banner that says "Simulated state" in place of the badge
+      const tiny = (doc.defaultView as Window).matchMedia('(max-height: 420px)').matches;
+      if (tiny && !/^Simulated state · “ISP 1 outage” · step 2 of 3$/.test((q('#sim-short') as HTMLElement).textContent || '')) sw.push('the short banner does not say "Simulated state"');
+      for (const sel of ['#mode-banner', tiny ? '#sim-short' : '#sim-badge', '#sim-exit-banner', '#sim-next-banner']) {
+        const e = q(sel);
+        const r = e ? e.getBoundingClientRect() : null;
+        if (!r || r.width < 1) sw.push(`${sel} is not shown`);
+        else if (r.left < area.left - 0.5 || r.right > area.right + 0.5 || r.top < area.top - 0.5 || r.bottom > area.bottom + 0.5) sw.push(`${sel} leaves the diagram area (${[r.left, r.top, r.right, r.bottom].map(Math.round).join(',')} in ${[area.left, area.top, area.right, area.bottom].map(Math.round).join(',')})`);
+      }
+      const banner = (q('#mode-banner') as HTMLElement).getBoundingClientRect();
+      if (!tiny) {
+        const badge = (q('#sim-badge') as HTMLElement).getBoundingClientRect();
+        const zb = (q('.zoombar') as HTMLElement).getBoundingClientRect();
+        if (badge.top < banner.bottom - 0.5) sw.push('the badge is under the banner');
+        if (badge.left < zb.right && badge.top < zb.bottom && badge.bottom > zb.top) sw.push('the badge covers the zoom bar');
+      }
+      const fit = (what: string): void => {
+        const side = (q('#side-body') as HTMLElement).getBoundingClientRect();
+        const els = doc.querySelectorAll('#side-body button, #side-body h3, #side-body li, #side-body .lock-note');
+        for (let i = 0; i < els.length; i++) {
+          const r = els[i].getBoundingClientRect();
+          if (r.width < 1) continue;
+          if (r.left < side.left - 0.5 || r.right > side.right + 0.5) sw.push(`${what}: "${(els[i].textContent || els[i].getAttribute('aria-label') || '').trim().slice(0, 24)}" leaves the panel sideways`);
+        }
+        const sb = q('#side-body') as HTMLElement;
+        if (sb.scrollWidth > sb.clientWidth + 1) sw.push(`${what} scrolls sideways (${sb.scrollWidth} > ${sb.clientWidth})`);
+      };
+      fit('the Simulation tab');
+      app.select('device:hq-rtr1');
+      app.showTab('edit');
+      await tick();
+      if (!q('#side-body .lock-note')) sw.push('the Edit tab does not say that editing is paused');
+      fit('the read-only Edit tab');
+      state('a simulation: the banner, frame and badge in the diagram area; the Simulation and the read-only Edit tab fit the panel', sw.concat(problems()));
+      app.exitSimulation();
+      app.select(null);
+      await tick();
     }
     const zoom = (q('.zoombar') as HTMLElement).getBoundingClientRect();
     const canvas = (q('#canvas-wrap') as HTMLElement).getBoundingClientRect();

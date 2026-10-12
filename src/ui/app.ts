@@ -5,12 +5,12 @@
  * user action (file picker or drag-and-drop), edited in memory, and saved by
  * letting the browser download a new copy. Nothing is transmitted.
  */
-import { ModelDoc, Origin, ifaceSchemaKind } from '../editor/document';
+import { EditLocked, ModelDoc, Origin, ifaceSchemaKind } from '../editor/document';
 import { FileAccess, PngPicture, WritableFile, detectFileAccess, downloadBlob, downloadText, exportFileName, isCancel, isWritable, pictureBaseName, readTextFile, safeYamlFileName, svgToPng, writeFile } from './files';
 import { Pt } from '../layout/geometry';
 import { ArrangeStrategy, STRATEGIES, STRATEGY_LABEL } from '../layout/strategies';
 import { compatibleEndpoints, connectionKind, endpointName, endpointOfRef, endpointProblem, endpointRef, pairProblem } from '../model/connect';
-import { Endpoint, Model } from '../model/types';
+import { Endpoint, Model, ScenarioStep } from '../model/types';
 import { el, materialize, mount, setPaint } from './dom';
 import { ThemeController, themeButtonText } from './theme';
 import { inlineComputedStyles, resolvedPaint } from './export-style';
@@ -34,17 +34,21 @@ import { addressingOverview } from '../analysis/addressing';
 import { focusSeeds } from '../analysis/focus';
 import { Trace, TraceRequest, pathRefs, returnRequest, tracePath, traceRefs, traceText } from '../analysis/trace';
 import { TraceForm, TraceRun, formRequest, newTraceForm, tracePanel, traceSummary } from './trace';
-import { failableRef, failedText, failureRefs, lostReachability, refLabel, simulate, singlePointsOfFailure, summarize } from '../analysis/failure';
-import { SimView, simPanel, simSummary, spofBody } from './failure';
+import { failureRefs, singlePointsOfFailure } from '../analysis/failure';
+import { resolveTarget, scenarioId, stepDiff, stepView, targetLabel, targetOfRef } from '../analysis/scenario';
+import { SimState, simSummary, simulationPanel, spofBody, stepPosition } from './simulation';
 import { generateMac } from '../analysis/helpers';
 import { Command, buildCommands, isMac, keyLabel, matchesKey } from './commands';
-import { PaletteItem, commandItems, objectItems, paletteList, rankItems, resultsText } from './palette';
+import { PaletteItem, commandItems, objectItems, paletteList, rankItems, resultsText, scenarioItems } from './palette';
 import { AddrSort, AddrViewState, addressingBody, addressingCsv, addressingTables, newAddrViewState, shownText } from './addressing';
 
 /** How a severity is named in the Problems tab's filter. */
 const SEV_NAME: { [s in Severity]: string } = { error: 'Errors', warning: 'Warnings', info: 'Info' };
 
-type Tab = 'edit' | 'details' | 'legend' | 'relations' | 'problems' | 'yaml' | 'analysis';
+type Tab = 'edit' | 'details' | 'legend' | 'relations' | 'problems' | 'yaml' | 'analysis' | 'simulation';
+
+/** Why the model can't be edited while a simulation is on (the lock's reason). */
+const SIM_LOCK = 'Editing is paused during a simulation: the diagram shows a simulated state, not the model. Exit the simulation (Esc) to edit.';
 
 export interface LoadOutcome {
   /** the document was opened (it may still have validation errors to fix) */
@@ -221,8 +225,8 @@ export class App {
     if (this.session) this.session.setView(prevView);
     this.traceRun = null;
     this.traceError = '';
-    this.simFailed = [];
-    this.simCache = null;
+    this.sim = null;
+    this.simAt = 0;
     this.tab = doc.errors.length || doc.warnings.length ? 'problems' : this.tab === 'yaml' ? 'yaml' : 'legend';
     this.computeErrorRefs();
     this.render();
@@ -270,6 +274,7 @@ export class App {
     ['export-btn', 'export-menu'],
     ['find-btn', 'find-menu'],
     ['analyze-btn', 'analyze-menu'],
+    ['simulate-btn', 'simulate-menu'],
     ['help-btn', 'help-menu'],
   ];
 
@@ -454,7 +459,7 @@ export class App {
     }
     this.renderOutline();
     // selecting opens the object's form, except where the panel already follows the selection (its details, its place in the YAML)
-    if (note === 'select' && this.tab !== 'edit' && this.tab !== 'details' && this.tab !== 'yaml' && this.tab !== 'analysis') this.tab = 'edit';
+    if (note === 'select' && this.tab !== 'edit' && this.tab !== 'details' && this.tab !== 'yaml' && this.tab !== 'analysis' && this.tab !== 'simulation') this.tab = 'edit';
     this.renderSide();
     this.updateChrome();
     if (note && note !== 'filter' && note !== 'select') this.toast(note);
@@ -468,9 +473,11 @@ export class App {
 
   undo(): void {
     if (this.mdoc && this.mdoc.undo()) this.afterEdit('Undone.');
+    this.syncLock();
   }
   redo(): void {
     if (this.mdoc && this.mdoc.redo()) this.afterEdit('Redone.');
+    this.syncLock();
   }
 
   /**
@@ -769,8 +776,8 @@ export class App {
     this.tab = 'legend';
     this.traceRun = null;
     this.traceError = '';
-    this.simFailed = [];
-    this.simCache = null;
+    this.sim = null;
+    this.simAt = 0;
     this.zoom = { k: 1, tx: 0, ty: 0 };
     this.bounds = { x: 0, y: 0, w: 1, h: 1 };
     this.closeFind();
@@ -866,7 +873,7 @@ export class App {
     const ret = run && run.back && !run.back.error && run.back.paths.length ? pathRefs(run.back.paths[0]) : null;
     const keep = tr ? null : s.highlight();
     const sim = this.currentSim();
-    const failed = sim ? failureRefs(sim.res) : null;
+    const failed = sim ? failureRefs(sim.view.res) : null;
     this.svg.classList.toggle('has-selection', !!keep);
     this.svg.classList.toggle('has-trace', !!tr);
     this.svg.classList.toggle('has-sim', !!failed);
@@ -904,7 +911,7 @@ export class App {
     this.session.select(ref);
     this.editor.selectRef(this.session.state.selected);
     this.editor.setDetail(this.session.state.selected ? detail : null);
-    if (ref && this.session.state.selected && this.tab !== 'details' && this.tab !== 'yaml' && this.tab !== 'analysis') this.tab = 'edit';
+    if (ref && this.session.state.selected && this.tab !== 'details' && this.tab !== 'yaml' && this.tab !== 'analysis' && this.tab !== 'simulation') this.tab = 'edit';
     this.applyHighlight();
     this.renderOutline();
     this.renderSide();
@@ -1004,6 +1011,13 @@ export class App {
     const kind = a ? a.getAttribute('data-kind') : null;
     const index = a ? a.getAttribute('data-index') : null;
     this.editor.renderOutline(box, this.selectionContext());
+    if (this.editLock()) {
+      const edits = box.querySelectorAll('[data-act="add-entity"], [data-act="dup-entity"], [data-act="del-entity"]');
+      for (let i = 0; i < edits.length; i++) {
+        (edits[i] as HTMLButtonElement).disabled = true;
+        edits[i].setAttribute('title', 'Editing is paused during the simulation');
+      }
+    }
     if (act !== 'select' && act !== 'dup-entity' && act !== 'del-entity') return;
     const entry = (act === 'dup-entity' ? box.querySelector(`.ol-item.active[data-kind="${kind}"]`) : null) || box.querySelector(`.ol-item[data-kind="${kind}"][data-index="${index}"]`);
     if (entry) (entry as HTMLElement).focus();
@@ -1016,6 +1030,7 @@ export class App {
     for (let i = 0; i < tabs.length; i++) tabs[i].classList.toggle('active', tabs[i].getAttribute('data-tab') === this.tab);
     const focus = captureFocus(this.doc);
     if (this.tab === 'problems' || !this.mdoc) this.renderProblems(body);
+    else if (this.tab === 'edit' && this.mdoc.lock) this.renderLockedEdit(body);
     else if (this.tab === 'edit') this.editor.renderInspector(body);
     else if (this.tab === 'yaml') this.renderYaml(body);
     else if (!s) mount(body, { tag: 'p', attrs: { class: 'muted' }, children: [], text: 'Nothing to show: the model has too many errors to be drawn. See Problems.' });
@@ -1036,8 +1051,30 @@ export class App {
       }
     } else if (this.tab === 'legend') mount(body, legendFor(s.viewModel(), s.state.view, s.state.hiddenProtocols));
     else if (this.tab === 'analysis') this.renderAnalysis(body);
+    else if (this.tab === 'simulation') this.renderSimulation(body);
     else mount(body, relationList(s.model, this.selectionContext()));
     restoreFocus(this.doc, focus);
+  }
+
+  /** A notice that editing is paused, with a way out, above the Edit tab's form (read-only: every control in it is disabled). */
+  private lockNotice(what: string): HTMLElement {
+    const exit = el(this.doc, 'button', { type: 'button', class: 'primary', 'data-command': 'sim.exit' }, ['Exit simulation']);
+    exit.addEventListener('click', () => void this.exitSimulation());
+    return el(this.doc, 'div', { class: 'lock-note', role: 'note' }, [
+      el(this.doc, 'p', {}, [el(this.doc, 'span', { 'aria-hidden': 'true' }, ['◈ ']), el(this.doc, 'strong', {}, ['Editing is paused during the simulation.']), ` ${what}`]),
+      exit,
+    ]);
+  }
+
+  private renderLockedEdit(body: HTMLElement): void {
+    while (body.firstChild) body.removeChild(body.firstChild);
+    body.appendChild(this.lockNotice('The diagram shows a simulated state, not the model. Exit the simulation to edit; the form below is read-only.'));
+    const fs = el(this.doc, 'fieldset', { class: 'locked-form', disabled: '' });
+    fs.appendChild(el(this.doc, 'legend', { class: 'sr-only' }, ['The selected object (read-only during the simulation)']));
+    const box = el(this.doc, 'div');
+    fs.appendChild(box);
+    body.appendChild(fs);
+    this.editor.renderInspector(box);
   }
 
   private renderYaml(body: HTMLElement): void {
@@ -1049,8 +1086,10 @@ export class App {
     const d = this.mdoc as ModelDoc;
     const ta = el(this.doc, 'textarea', { id: 'yaml-src', spellcheck: 'false', 'aria-label': 'YAML source of the whole model', 'aria-describedby': 'yaml-sel', wrap: 'off' }) as HTMLTextAreaElement;
     ta.value = this.editor.sourceDraft !== null ? this.editor.sourceDraft : d.exportText();
+    if (d.lock) ta.readOnly = true;
     body.appendChild(
       el(this.doc, 'div', { class: 'yaml-tab' }, [
+        d.lock ? this.lockNotice('The text is read-only until you exit the simulation.') : null,
         el(this.doc, 'p', { class: 'muted small' }, [
           'The whole model as exported. Edit it and press Apply; comments and key order are kept.',
         ]),
@@ -1396,8 +1435,8 @@ export class App {
       pb.textContent = e + w + f ? `Problems (${e + w + f})` : 'Problems';
       pb.classList.toggle('has-errors', e > 0 || (!!d && d.findings.some((x) => x.severity === 'error')));
     }
-    (this.$('btn-undo') as HTMLButtonElement).disabled = !d || !d.canUndo();
-    (this.$('btn-redo') as HTMLButtonElement).disabled = !d || !d.canRedo();
+    (this.$('btn-undo') as HTMLButtonElement).disabled = !d || !d.canUndo() || d.undoLocked();
+    (this.$('btn-redo') as HTMLButtonElement).disabled = !d || !d.canRedo() || d.undoLocked(true);
     this.updateFileMenu();
     // exporting needs a diagram: a model that could be drawn
     const ex = this.$('btn-export-as') as HTMLButtonElement;
@@ -1407,8 +1446,8 @@ export class App {
     this.syncCommands();
     this.updateModeBanner();
     if (!s && this.findOpen) this.closeFind();
-    this.$('btn-undo').title = d && d.canUndo() ? `Undo: ${d.canUndo()} (Ctrl+Z)` : 'Undo (Ctrl+Z)';
-    this.$('btn-redo').title = d && d.canRedo() ? `Redo: ${d.canRedo()} (Ctrl+Y)` : 'Redo (Ctrl+Y)';
+    this.$('btn-undo').title = d && d.canUndo() ? (d.undoLocked() ? 'Undo: paused during the simulation' : `Undo: ${d.canUndo()} (Ctrl+Z)`) : 'Undo (Ctrl+Z)';
+    this.$('btn-redo').title = d && d.canRedo() ? (d.undoLocked(true) ? 'Redo: paused during the simulation' : `Redo: ${d.canRedo()} (Ctrl+Y)`) : 'Redo (Ctrl+Y)';
     const st = this.$('status');
     while (st.firstChild) st.removeChild(st.firstChild);
     if (d) {
@@ -1423,6 +1462,8 @@ export class App {
           d.dirty ? el(this.doc, 'span', { class: 'sr-only' }, [' (modified)']) : null,
         ]),
       );
+      const sim = this.currentSim();
+      if (sim) st.appendChild(el(this.doc, 'span', { class: 'sim-marker', title: 'A simulation is on: the diagram shows a simulated state; the model is unchanged' }, [el(this.doc, 'span', { 'aria-hidden': 'true' }, ['◈ ']), `Simulation · step ${sim.at} of ${sim.steps.length}`]));
       const rest = el(this.doc, 'span', { class: 'status-rest' });
       st.appendChild(rest);
       const parts: Array<HTMLElement | string> = [
@@ -2094,23 +2135,23 @@ export class App {
     const f = s ? s.state.focus : null;
     if (!s || !f) return '';
     const sense = s.state.view === 'physical' ? 'cables' : 'relations';
-    return `Focus: ${this.refName(f.ref)} and what is within ${f.hops} hop${f.hops === 1 ? '' : 's'} (${sense}) · ${s.shownDevices().size} of ${s.model.devices.length} devices`;
+    return `Focus: ${this.refName(f.ref)} and what is within ${f.hops} hop${f.hops === 1 ? '' : 's'} (${sense}${this.sim ? ' that are up in the simulated state' : ''}) · ${s.shownDevices().size} of ${s.model.devices.length} devices`;
   }
 
   /** The text of the path trace in the banner and in exported pictures ('' = no trace). */
   private traceNote(): string {
     const r = this.currentTrace();
     if (!r) return '';
-    let note = `Path trace: ${r.req.from} → ${r.req.to}${r.req.vrf !== undefined ? ' (' + (r.req.vrf ? 'VRF ' + r.req.vrf : 'default table') + ')' : ''} · ${traceSummary(r.trace)}`;
+    let note = `Path trace${this.sim ? ' in the simulated state' : ''}: ${r.req.from} → ${r.req.to}${r.req.vrf !== undefined ? ' (' + (r.req.vrf ? 'VRF ' + r.req.vrf : 'default table') + ')' : ''} · ${traceSummary(r.trace)}`;
     if (r.trace.paths.length > 1) note += ' (alternatives dashed)';
     if (r.back) note += ' · return path: ' + (r.back.error ? 'not traced' : traceSummary(r.back)) + ' (dotted)';
     return note;
   }
 
-  /** The text of the failure simulation in the banner and in exported pictures ('' = no simulation). */
+  /** The text of the simulation in the banner and in exported pictures ('' = no simulation). */
   private simNote(): string {
-    const v = this.currentSim();
-    return v ? `Simulation: failed ${failedText((this.session as Session).model, v.res)} · ${simSummary(v)}` : '';
+    const st = this.currentSim();
+    return st ? `Simulation: scenario “${st.name}”, ${stepPosition((this.session as Session).model, st)} · ${simSummary(st.view)}` : '';
   }
 
   /** The notes of the analysis modes that are on (simulation, focus, path trace), for the banner and for exported pictures. */
@@ -2135,8 +2176,16 @@ export class App {
     this.$('mb-trace').hidden = !t;
     this.$('mb-sim').hidden = !v;
     this.doc.body.setAttribute('data-mode', [v ? 'simulation' : '', f ? 'focus' : '', t ? 'trace' : ''].filter((x) => x).join(' ') || 'none');
+    // the diagram says whose state it shows: the model's, or a simulated one
+    this.$('sim-badge').hidden = !v;
+    this.svg.setAttribute('aria-label', v && s ? `Network diagram — simulated state: ${this.simNote().replace(/^Simulation: /, '')}` : 'Network diagram');
     if (!s || (!f && !t && !v)) return;
-    if (v) this.$('sim-text').textContent = `Simulation active: failed ${failedText(s.model, v.res)} · ${simSummary(v)}. The model is unchanged.`;
+    if (v) {
+      this.$('sim-text').textContent = `${this.simNote()}. The model is unchanged; editing is paused.`;
+      this.$('sim-short').textContent = `Simulated state · “${v.name}” · step ${v.at} of ${v.steps.length}`;
+      (this.$('sim-prev-banner') as HTMLButtonElement).disabled = v.at === 0;
+      (this.$('sim-next-banner') as HTMLButtonElement).disabled = v.at >= v.steps.length;
+    }
     if (f) {
       this.$('mode-text').textContent = this.focusNote() + '. Positions here are temporary and are not saved.';
       this.$('focus-hops').textContent = `${f.hops} hop${f.hops === 1 ? '' : 's'}`;
@@ -2214,74 +2263,240 @@ export class App {
     this.afterEdit(kind === 'mtu' ? 'MTU set to 1500.' : 'A MAC address was generated.');
   }
 
-  // ------------------------------------------------------------ failure simulation
+  // ------------------------------------------------------------ simulation
 
-  /** the failed objects (refs) of the simulation on screen; empty: no simulation */
-  private simFailed: string[] = [];
-  /** its result, for one model and one set of failed objects */
-  private simCache: { model: Model; key: string; view: SimView } | null = null;
+  /**
+   * The scenario played: a saved one (`saved`: its id; its steps are read
+   * from the model, so editing it shows at once) or an ad-hoc one (its steps
+   * kept here until it is saved); null: no simulation.
+   */
+  private sim: { saved: string; name: string; steps: ScenarioStep[] } | null = null;
+  /** the step shown (0: before the first step) */
+  private simAt = 0;
 
   /** The simulation on screen (computed again after an edit), or null. */
-  currentSim(): SimView | null {
+  currentSim(): SimState | null {
     const s = this.session;
-    if (!s || !this.simFailed.length) return null;
-    // an edit may have removed a failed object
-    const live = this.simFailed.filter((r) => failableRef(s.model, r));
-    if (live.length !== this.simFailed.length) this.simFailed = live;
-    if (!live.length) return null;
-    const key = live.join('\n');
-    const c = this.simCache;
-    if (c && c.model === s.model && c.key === key) return c.view;
-    const res = simulate(s.model, live);
-    const view: SimView = { res, summary: summarize(s.model, res), lost: lostReachability(s.model, res) };
-    this.simCache = { model: s.model, key, view };
-    return view;
+    const sim = this.sim;
+    if (!s || !sim) return null;
+    if (sim.saved) {
+      const sc = s.model.scenarios.find((x) => x.id === sim.saved);
+      // a saved scenario that is gone (its saving undone, removed in the YAML) goes on as an ad-hoc one
+      if (sc) {
+        sim.steps = sc.steps;
+        sim.name = sc.label;
+      } else sim.saved = '';
+    }
+    const at = Math.max(0, Math.min(sim.steps.length, this.simAt));
+    this.simAt = at;
+    const view = stepView(s.model, sim.steps, at);
+    const diff = at > 0 ? stepDiff(stepView(s.model, sim.steps, at - 1), view) : null;
+    return { name: sim.name, saved: sim.saved, steps: sim.steps, at, view, diff };
   }
 
-  /** Why the selection can't be failed ('' = it can). */
+  /** Why the model can't be edited now ('' = it can). */
+  editLock(): string {
+    return this.mdoc ? this.mdoc.lock : '';
+  }
+
+  /** Why the selection can't be failed in a new step ('' = it can). */
   simAddBlocked(): string {
     const s = this.session;
     if (!s) return 'Open or create a model first';
     const sel = s.state.selected;
     if (!sel) return 'Select a cable, port, device or relation first';
-    if (!failableRef(s.model, sel)) return 'Only a cable, a port (an interface), a device or a relation can fail';
-    if (this.simFailed.indexOf(sel) >= 0) return `${refLabel(s.model, sel)} has failed already`;
+    const t = targetOfRef(s.model, sel);
+    if (!t) return 'Only a cable, a port (an interface), a device or a relation can fail';
+    const cur = this.currentSim();
+    const r = resolveTarget(s.model, t);
+    if (cur && 'refs' in r && r.refs.every((x) => cur.view.failed.indexOf(x) >= 0)) return `${targetLabel(s.model, t)} has failed already at this step`;
     return '';
   }
 
-  /** Show a simulation of these failed objects (none: end it). Nothing in the model changes; no undo step. */
-  setSimulation(refs: string[]): void {
-    this.simFailed = Array.from(new Set(refs)).sort();
+  /** Show the simulation as it is now: the diagram's marks, the side panel, the banner, the lock. */
+  private simChanged(): void {
+    this.syncLock();
     this.applyHighlight();
     this.renderSide();
     this.updateChrome();
   }
 
+  /** The editing core is locked while a simulation is on (scenario edits stay possible). */
+  private syncLock(): void {
+    const d = this.mdoc;
+    if (d) d.lock = this.sim && this.session ? SIM_LOCK : '';
+    if (this.session) this.session.setSimulated(this.sim ? (this.currentSim() as SimState).view.res : null);
+  }
+
+  /** Replace the steps of the scenario played and show step `at` (a saved scenario: one undoable edit of it). */
+  private setSimSteps(steps: ScenarioStep[], at: number, label: string): void {
+    const sim = this.sim;
+    if (!sim) return;
+    this.simAt = at;
+    if (sim.saved && this.mdoc) {
+      this.mdoc.setScenarioSteps(sim.saved, steps, label);
+      this.afterEdit();
+      this.syncLock();
+      this.applyHighlight();
+      return;
+    }
+    sim.steps = steps;
+    this.simChanged();
+  }
+
+  /** Insert a step after the one shown, and show it. */
+  private insertStep(step: ScenarioStep): void {
+    const sim = this.sim;
+    if (!sim) return;
+    const steps = sim.steps.slice();
+    steps.splice(this.simAt, 0, step);
+    this.setSimSteps(steps, this.simAt + 1, step.action === 'fail' ? 'Add a failure to the scenario' : 'Add a restore to the scenario');
+  }
+
   /**
-   * Analyze → Simulate failure of selection (X): the selected cable, port,
-   * device or relation fails too; the Analysis tab shows what is down or
-   * degraded, and both views mark it.
+   * Simulate → Fail selection (X): the selected cable, port, device or
+   * relation fails in a new step (after the step shown). Without a
+   * simulation this starts an ad-hoc scenario at once, which can be saved.
    */
   simulateSelection(): boolean {
     const s = this.session;
     if (!s || this.simAddBlocked()) return false;
-    this.tab = 'analysis';
-    this.setSimulation(this.simFailed.concat([s.state.selected as string]));
+    const t = targetOfRef(s.model, s.state.selected as string);
+    if (!t) return false;
+    const step: ScenarioStep = { action: 'fail', target: t, line: 0 };
+    this.tab = 'simulation';
+    if (!this.sim) {
+      this.sim = { saved: '', name: 'Ad-hoc scenario', steps: [step] };
+      this.simAt = 1;
+      this.simChanged();
+    } else this.insertStep(step);
     return true;
   }
 
-  /** End the failure simulation: the normal view. */
+  /** Restore a failed object (a ref of the Failed now list) in a new step. */
+  restoreInSim(ref: string): void {
+    const s = this.session;
+    if (!s || !this.sim) return;
+    const t = targetOfRef(s.model, ref);
+    if (t) this.insertStep({ action: 'restore', target: t, line: 0 });
+  }
+
+  /** Remove step k (1-based) of the scenario played. */
+  removeSimStep(k: number): void {
+    const sim = this.sim;
+    if (!sim || k < 1 || k > sim.steps.length) return;
+    const steps = sim.steps.slice();
+    steps.splice(k - 1, 1);
+    this.setSimSteps(steps, this.simAt >= k ? this.simAt - 1 : this.simAt, 'Remove a scenario step');
+  }
+
+  /** Show step k (0: before the first step) of the scenario played. Adds no undo step. */
+  simGo(k: number): boolean {
+    const sim = this.sim;
+    if (!sim) return false;
+    const at = Math.max(0, Math.min(sim.steps.length, k));
+    if (at === this.simAt) return false;
+    this.simAt = at;
+    this.simChanged();
+    return true;
+  }
+
+  /** The step before / after the one shown. */
+  simStepBlocked(dir: 1 | -1): string {
+    const st = this.currentSim();
+    if (!st) return 'No simulation is on';
+    if (dir < 0 && st.at === 0) return 'This is before the first step';
+    if (dir > 0 && st.at >= st.steps.length) return 'This is the last step';
+    return '';
+  }
+
+  /** Play a saved scenario from its first step. */
+  playScenario(id: string): boolean {
+    const s = this.session;
+    const sc = s ? s.model.scenarios.find((x) => x.id === id) : undefined;
+    if (!sc) return false;
+    this.sim = { saved: sc.id, name: sc.label, steps: sc.steps };
+    this.simAt = sc.steps.length ? 1 : 0;
+    this.tab = 'simulation';
+    this.simChanged();
+    return true;
+  }
+
+  /** End the simulation: the model's own state, and editing again. */
   exitSimulation(): boolean {
-    if (!this.simFailed.length) return false;
-    this.setSimulation([]);
+    if (!this.sim) return false;
+    this.sim = null;
+    this.simAt = 0;
+    this.simChanged();
     const back = this.doc.activeElement;
     if (!back || back === this.doc.body) (this.doc.getElementById('canvas') as unknown as HTMLElement).focus();
     return true;
   }
 
+  /**
+   * Save the scenario played in the model (an ad-hoc one), or change a
+   * saved one's name and description: a dialog, then one undoable edit of
+   * the scenarios section (allowed during the simulation).
+   */
+  async saveScenarioDialog(): Promise<void> {
+    const s = this.session;
+    const d = this.mdoc;
+    const st = this.currentSim();
+    if (!s || !d || !st) return;
+    this.openMenu(null);
+    const saved = st.saved ? s.model.scenarios.find((x) => x.id === st.saved) : undefined;
+    const name = el(this.doc, 'input', { id: 'sc-name', type: 'text', value: saved ? saved.label : '', autocomplete: 'off', 'aria-describedby': 'sc-name-help' }) as HTMLInputElement;
+    const desc = el(this.doc, 'textarea', { id: 'sc-desc', rows: '3' }) as HTMLTextAreaElement;
+    desc.value = saved && saved.description ? saved.description : '';
+    const res = await this.dialog({
+      title: saved ? 'Rename scenario' : 'Save scenario',
+      body: [
+        el(this.doc, 'p', { class: 'muted small' }, [saved ? 'The scenario’s name and description in the model.' : `The ${st.steps.length} step${st.steps.length === 1 ? '' : 's'} of the scenario are saved in the model (its scenarios section), to replay in design reviews. They never change the network objects. You can undo this.`]),
+        el(this.doc, 'div', { class: 'field' }, [el(this.doc, 'label', { for: 'sc-name' }, ['Name']), name, el(this.doc, 'p', { id: 'sc-name-help', class: 'muted small' }, ['For example: “Loss of the core switch”.'])]),
+        el(this.doc, 'div', { class: 'field' }, [el(this.doc, 'label', { for: 'sc-desc' }, ['Description (optional)']), desc]),
+      ],
+      buttons: [
+        { label: 'Cancel', value: 'cancel' },
+        { label: saved ? 'Rename' : 'Save', value: 'save', kind: 'primary' },
+      ],
+      focus: '#sc-name',
+    });
+    const label = name.value.trim() || (saved ? saved.label : 'Scenario');
+    if (res !== 'save' || this.mdoc !== d || !this.sim) return;
+    const id = saved ? saved.id : scenarioId(label, s.model.scenarios.map((x) => x.id));
+    d.saveScenario({ id, label, description: desc.value.trim() || undefined, steps: st.steps });
+    this.sim.saved = id;
+    this.afterEdit(saved ? `Scenario renamed “${label}”.` : `Scenario “${label}” saved in the model. Undo with Ctrl+Z.`);
+    this.syncLock();
+  }
+
+  /** Delete a saved scenario after a confirmation (one undo step); playing it ends. */
+  async deleteScenarioDialog(id: string): Promise<void> {
+    const s = this.session;
+    const d = this.mdoc;
+    const sc = s ? s.model.scenarios.find((x) => x.id === id) : undefined;
+    if (!s || !d || !sc) return;
+    const res = await this.dialog({
+      title: 'Delete scenario?',
+      body: [el(this.doc, 'p', {}, [`“${sc.label}” and its ${sc.steps.length} step${sc.steps.length === 1 ? '' : 's'} are removed from the model. You can undo this.`])],
+      buttons: [
+        { label: 'Cancel', value: 'cancel' },
+        { label: 'Delete', value: 'delete', kind: 'danger' },
+      ],
+    });
+    if (res !== 'delete' || this.mdoc !== d) return;
+    if (this.sim && this.sim.saved === id) {
+      this.sim = null;
+      this.simAt = 0;
+    }
+    d.deleteScenario(id);
+    this.afterEdit(`Scenario “${sc.label}” deleted.`);
+    this.syncLock();
+  }
+
   private spofOpen = false;
 
-  /** Analyze → Single points of failure…: the report; choosing an entry simulates its failure. */
+  /** Simulate → Single points of failure…: the report; choosing an entry starts an ad-hoc scenario that fails it. */
   async openSpof(): Promise<void> {
     const s = this.session;
     if (!s || this.spofOpen) return;
@@ -2291,7 +2506,7 @@ export class App {
     const body = spofBody(this.doc, s.model, list);
     body.addEventListener('click', (e) => {
       const b = (e.target as Element).closest('[data-spof]');
-      if (b) closeDialogWith(b, 'spof:' + b.getAttribute('data-spof'));
+      if (b) closeDialogWith(b, `spof:${b.getAttribute('data-spof-kind')}:${b.getAttribute('data-spof')}`);
     });
     const res = await this.dialog({
       title: 'Single points of failure',
@@ -2303,9 +2518,65 @@ export class App {
     const dlg = this.doc.getElementById('modal') as HTMLElement;
     dlg.className = '';
     this.spofOpen = false;
-    if (res.indexOf('spof:') === 0) {
-      this.tab = 'analysis';
-      this.setSimulation(res.slice(5).split(' '));
+    if (res.indexOf('spof:') === 0 && this.session) {
+      const rest = res.slice(5);
+      const kind = rest.slice(0, rest.indexOf(':'));
+      const ref = rest.slice(kind.length + 1);
+      const t = kind === 'lag' ? { kind: 'lag' as const, id: ref.slice(6) } : targetOfRef(this.session.model, ref);
+      if (!t) return;
+      this.sim = { saved: '', name: 'Ad-hoc scenario', steps: [{ action: 'fail', target: t, line: 0 }] };
+      this.simAt = 1;
+      this.tab = 'simulation';
+      this.simChanged();
+    }
+  }
+
+  private renderSimulation(body: HTMLElement): void {
+    const s = this.session as Session;
+    mount(body, []);
+    body.appendChild(
+      simulationPanel(this.doc, s.model, this.currentSim(), {
+        addBlocked: this.simAddBlocked(),
+        add: () => void this.simulateSelection(),
+        go: (k) => {
+          this.simGo(k);
+          const cur = this.doc.querySelector('#side-body [aria-current="step"]') as HTMLElement | null;
+          if (cur) cur.focus();
+        },
+        removeStep: (k) => {
+          this.removeSimStep(k);
+          const next = this.doc.querySelector('#side-body [aria-current="step"]') as HTMLElement | null;
+          if (next) next.focus();
+        },
+        restore: (ref) => this.restoreInSim(ref),
+        save: () => void this.saveScenarioDialog(),
+        exit: () => void this.exitSimulation(),
+        play: (id) => {
+          this.playScenario(id);
+          const cur = this.doc.querySelector('#side-body [aria-current="step"]') as HTMLElement | null;
+          if (cur) cur.focus();
+        },
+        remove: (id) => void this.deleteScenarioDialog(id),
+        spof: () => void this.openSpof(),
+      }),
+    );
+  }
+
+  /** An edit that the lock refused (a safety net: the controls that edit are disabled during a simulation). */
+  private refusedEdit(e: unknown): void {
+    if (!(e instanceof EditLocked)) throw e;
+    this.toast(e.message);
+    this.renderSide();
+    this.renderOutline();
+  }
+
+  /** Run an editor action; an edit refused by the lock only says why. */
+  private guarded(run: () => unknown): void {
+    try {
+      const r = run();
+      if (r && typeof (r as Promise<unknown>).then === 'function') (r as Promise<unknown>).catch((e) => this.refusedEdit(e));
+    } catch (e) {
+      this.refusedEdit(e);
     }
   }
 
@@ -2325,16 +2596,22 @@ export class App {
     const s = this.session;
     const r = this.traceRun;
     if (!s || !r) return null;
-    const sk = this.simFailed.join('\n');
+    const sk = this.simKey();
     if (r.model !== s.model || r.sim !== sk) this.traceRun = { ...this.computeTrace(r.req, !!r.back), model: s.model, sim: sk };
     return this.traceRun;
   }
 
-  /** A trace of the model, under the failure simulation when one is on. */
+  /** What the simulated state depends on ('' = no simulation): a trace is computed again when it changes. */
+  private simKey(): string {
+    const st = this.currentSim();
+    return st ? st.view.failed.join('\n') + '\n#' + st.at : '';
+  }
+
+  /** A trace of the model, in the simulated state when a simulation is on. */
   private computeTrace(req: TraceRequest, withBack: boolean): TraceRun {
     const model = (this.session as Session).model;
     const sim = this.currentSim();
-    const ctx = sim ? sim.res.ctx : undefined;
+    const ctx = sim ? sim.view.res.ctx : undefined;
     const trace = tracePath(model, req, ctx);
     let back: Trace | null = null;
     if (withBack) {
@@ -2395,7 +2672,7 @@ export class App {
       return false;
     }
     this.traceError = '';
-    this.traceRun = { ...run, model: s.model, sim: this.simFailed.join('\n') };
+    this.traceRun = { ...run, model: s.model, sim: this.simKey() };
     this.tracePathShown = 0;
     this.tab = 'analysis';
     this.applyHighlight();
@@ -2439,19 +2716,7 @@ export class App {
     const s = this.session as Session;
     const run = this.currentTrace();
     mount(body, []);
-    body.appendChild(
-      simPanel(this.doc, s.model, this.currentSim(), {
-        remove: (ref) => {
-          this.setSimulation(this.simFailed.filter((r) => r !== ref));
-          const next = this.doc.querySelector('[data-sim-remove]') || this.doc.getElementById('sim-add');
-          if (next) (next as HTMLElement).focus();
-        },
-        addBlocked: this.simAddBlocked(),
-        add: () => void this.simulateSelection(),
-        exit: () => void this.exitSimulation(),
-        spof: () => void this.openSpof(),
-      }),
-    );
+    if (this.sim) body.appendChild(el(this.doc, 'p', { class: 'sim-in-analysis small', role: 'note' }, [el(this.doc, 'span', { 'aria-hidden': 'true' }, ['◈ ']), 'A simulation is on: a path traced here takes the simulated state (Simulation tab).']));
     body.appendChild(
       tracePanel(this.doc, s.model, this.traceForm, run, this.tracePathShown, this.traceError, {
         input: (field, value) => {
@@ -2533,7 +2798,7 @@ export class App {
     if (!this.recent.length) this.loadRecent();
     const opener = this.doc.activeElement as HTMLElement | null;
     const mac = isMac(this.doc.defaultView);
-    const objects = this.session ? objectItems(this.session.model) : [];
+    const objects = this.session ? scenarioItems(this.session.model).concat(objectItems(this.session.model)) : [];
     const items = (): PaletteItem[] => commandItems(this.commands, (c) => c.state(this), mac).concat(objects);
     const known = new Set(items().map((x) => x.key));
     const recent = this.recent.filter((k) => known.has(k));
@@ -2636,6 +2901,11 @@ export class App {
       // back where the palette was opened from, then the command (it may move the focus itself)
       if (opener && this.doc.contains(opener) && !opener.closest('[role="menu"]')) opener.focus();
       this.runCommand(res.slice(4));
+    } else if (res.indexOf('play:') === 0) {
+      this.rememberRecent(res);
+      this.playScenario(res.slice(5));
+      const cur = this.doc.querySelector('#side-body [aria-current="step"]') as HTMLElement | null;
+      if (cur) cur.focus();
     } else if (res.indexOf('ref:') === 0) {
       this.rememberRecent(res);
       this.select(res.slice(4), true);
@@ -2977,7 +3247,7 @@ export class App {
         this.gotoIssue(Number(iss.getAttribute('data-issue')));
         return;
       }
-      void this.editor.onClick(t);
+      this.guarded(() => this.editor.onClick(t));
     });
     side.addEventListener('change', (e) => {
       const t = e.target as HTMLInputElement;
@@ -2987,7 +3257,7 @@ export class App {
         this.render();
         return;
       }
-      this.editor.onChange(t);
+      this.guarded(() => this.editor.onChange(t));
     });
     side.addEventListener('input', (e) => {
       const t = e.target as HTMLElement;
@@ -3035,7 +3305,7 @@ export class App {
     side.addEventListener('pointerleave', () => this.markAttached(null));
     outline.addEventListener('click', (e) => {
       if (this.swallowClick(e)) return;
-      void this.editor.onClick(e.target as HTMLElement);
+      this.guarded(() => this.editor.onClick(e.target as HTMLElement));
     });
     // Editor buttons act on pointerdown: first commit the field being typed in, then act.
     // (Acting on "click" would lose the click, because committing re-renders the panel.)
@@ -3047,7 +3317,7 @@ export class App {
         e.preventDefault();
         this.commitActiveField();
         this.clickHandled = true;
-        void this.editor.onClick(btn);
+        this.guarded(() => this.editor.onClick(btn));
       });
     }
     outline.addEventListener('input', (e) => {
@@ -3134,7 +3404,7 @@ export class App {
       if (e.key === 'Escape') {
         if (this.conn) this.cancelConnection(true);
         else if (this.traceRun) this.exitTrace();
-        else if (this.simFailed.length) this.exitSimulation();
+        else if (this.sim) this.exitSimulation();
         else if (this.session && this.session.state.focus) this.exitFocus();
         else this.select(null);
       }
@@ -3382,6 +3652,10 @@ export class App {
       const t = (e.target as Element).closest('[data-endpoint]');
       if (!t) return;
       e.preventDefault();
+      if (this.editLock()) {
+        this.toast(this.editLock());
+        return;
+      }
       const ref = t.getAttribute('data-ref') as string;
       this.$('tooltip').hidden = true;
       if (this.conn) this.completeConnection(ref);
@@ -3530,7 +3804,7 @@ export class App {
       const holder = line ? line.closest('[data-ref]') : null;
       const detail = line && holder ? { field: line.getAttribute('data-field') as string, value: line.getAttribute('data-value') || '' } : null;
       const detailRef = holder ? holder.getAttribute('data-ref') : null;
-      if (nodeRef && (nodeRef.indexOf('device:') === 0 || nodeRef.indexOf('network:') === 0)) {
+      if (nodeRef && !this.sim && (nodeRef.indexOf('device:') === 0 || nodeRef.indexOf('network:') === 0)) {
         const w = this.toWorld(e.clientX, e.clientY);
         const center = this.nodeCenter(nodeRef);
         drag = { mode: 'node', ref: nodeRef, sx: e.clientX, sy: e.clientY, ox: center.x - w.x, oy: center.y - w.y, moved: false, id: e.pointerId, detail: detailRef === nodeRef ? detail : null };
@@ -3703,6 +3977,15 @@ export class App {
     back.setAttribute('width', String(round(b.w)));
     back.setAttribute('height', String(round(b.h)));
     clone.insertBefore(back, clone.firstChild);
+    if (this.sim) {
+      const frame = this.doc.createElementNS('http://www.w3.org/2000/svg', 'rect');
+      frame.setAttribute('class', 'export-sim-frame');
+      frame.setAttribute('x', String(round(b.x + 3)));
+      frame.setAttribute('y', String(round(b.y + 3)));
+      frame.setAttribute('width', String(round(b.w - 6)));
+      frame.setAttribute('height', String(round(b.h - 6)));
+      clone.appendChild(frame);
+    }
     this.withProbe(clone, () => inlineComputedStyles(clone, this.doc.defaultView as Window));
     back.setAttribute('fill', bg);
     back.removeAttribute('stroke');

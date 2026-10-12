@@ -18,6 +18,7 @@ import { CHECKS } from '../analysis/checks';
 import { addressingOverview } from '../analysis/addressing';
 import { traceText } from '../analysis/trace';
 import { addressingCsv } from '../ui/addressing';
+import { scenarioItems } from '../ui/palette';
 import { EXAMPLES, FIXTURES } from '../generated/examples';
 import { PNG_MAX_PIXELS, PNG_MAX_SIDE, WritableFile, pngScale, svgToPng } from '../ui/files';
 import { App } from '../ui/app';
@@ -1793,7 +1794,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       md.markSaved();
     }
 
-    // ------------------------------------------------ failure simulation
+    // ------------------------------------------------ simulation: the Simulate menu, the Simulation tab, scenarios, the mode
     {
       app.loadExample(EXAMPLES.findIndex((e) => e.name === 'enterprise-wan.yaml'));
       click('[data-view-btn="physical"]');
@@ -1803,13 +1804,26 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         Array.from(doc.querySelectorAll('#viewport .' + cls))
           .map((e) => e.getAttribute('data-ref') || '')
           .filter((r, i, a) => a.indexOf(r) === i);
+      const menuIds = (id: string): string[] => Array.from(doc.querySelectorAll(`#${id} [data-command]`)).map((e) => e.getAttribute('data-command') || '');
+      check(
+        'Analyze keeps “what is” (Addressing, Focus, Trace path); a Simulate menu right after it holds “what if” (fail, scenarios, single points of failure, steps, save, exit)',
+        menuIds('analyze-menu').join(' ') === 'analyze.addressing focus.enter focus.exit trace.open trace.exit' &&
+          menuIds('simulate-menu').join(' ') === 'sim.add panel.simulation sim.spof sim.prev sim.next sim.save sim.exit' &&
+          (q('#analyze-btn') as HTMLElement).closest('.menu-wrap')!.nextElementSibling === (q('#simulate-btn') as HTMLElement).closest('.menu-wrap'),
+        menuIds('analyze-menu').join(' ') + ' | ' + menuIds('simulate-menu').join(' '),
+      );
+      check('the side panel has a Simulation tab of its own, besides Analysis', !!q('#side .tabs [data-tab="simulation"]') && !!q('#side .tabs [data-tab="analysis"]'));
       const simBtn = q('#btn-sim') as HTMLButtonElement;
       check('Simulate failure is unavailable without a selection, and says why', simBtn.disabled && /Select a cable, port, device or relation first/.test(simBtn.title), simBtn.title);
-      // a network can't fail
       app.select('network:net-users');
       await tick();
       check('… and for an object that can’t fail (a network)', simBtn.disabled && /Only a cable, a port/.test(simBtn.title));
-      // X on a cable starts the simulation
+      // the Simulation tab without a simulation: the saved scenarios
+      app.showTab('simulation');
+      await tick();
+      const saved = Array.from(doc.querySelectorAll('#side-body [data-sim-play]')).map((b) => b.getAttribute('data-sim-play'));
+      check('the Simulation tab lists the model’s saved scenarios, each with Play and Delete', saved.join(' ') === 'isp1-outage core-peer-loss' && doc.querySelectorAll('#side-body [data-sim-delete]').length === 2, saved.join(' '));
+      // X on a cable starts an ad-hoc scenario
       app.select('link:l-hq-isp1');
       await tick();
       (q('#canvas') as unknown as HTMLElement).focus();
@@ -1817,17 +1831,25 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       await tick();
       const simText = (): string => (q('#sim-text') ? q('#sim-text')!.textContent || '' : '');
       check(
-        'X fails the selected cable: a banner marks the simulation as active, names what failed and counts what is down, degraded, and the device pairs that lose reachability',
-        !(q('#mb-sim') as HTMLElement).hidden && /^Simulation active: failed cable l-hq-isp1 · \d+ down · \d+ degraded or taken over · \d+ device pairs? loses? reachability/.test(simText()) && /The model is unchanged/.test(simText()) && !!q('[data-tab="analysis"].active'),
+        'X fails the selected cable at once: an ad-hoc scenario, step 1 of 1, with what is down, degraded and the device pairs that lose reachability; the Simulation tab shows it',
+        !(q('#mb-sim') as HTMLElement).hidden && /^Simulation: scenario “Ad-hoc scenario”, step 1 of 1: Fail cable l-hq-isp1 · \d+ down · \d+ degraded or taken over · \d+ device pairs? loses? reachability/.test(simText()) && /The model is unchanged; editing is paused/.test(simText()) && !!q('[data-tab="simulation"].active'),
         simText(),
       );
-      const panel = q('#side-body .sim-panel') as HTMLElement;
+      // the mode, recognisable beyond colour: the frame, the badge, the status marker, the diagram's name
+      const wrapAfter = doc.defaultView!.getComputedStyle(q('#canvas-wrap') as Element, '::after');
       check(
-        'the results panel counts and lists the affected relations, tunnels, networks and routes, and the device pairs that lose reachability',
-        !!panel && /Relations\s*3 down/.test(panel.textContent || '') && /Tunnels\s*2 down/.test(panel.textContent || '') && /Networks/.test(panel.textContent || '') && /Static routes/.test(panel.textContent || '') && /Device pairs\s*\d+ lose reachability/.test(panel.textContent || '') &&
-          /Down\s*OSPF ospf-muc — it runs over gre-muc/.test(panel.textContent || '') && /Lost\s*hq-fw → muc-rtr/.test(panel.textContent || ''),
-        (panel ? panel.textContent || '' : '').slice(0, 400),
+        'simulation mode shows everywhere: a hatched frame round the diagram, a “Simulated state” badge, a Simulation marker in the status bar, the diagram named a simulated state',
+        doc.body.getAttribute('data-mode') === 'simulation' && wrapAfter.borderImageSource !== 'none' && !(q('#sim-badge') as HTMLElement).hidden && /Simulated state/.test(q('#sim-badge')!.textContent || '') &&
+          /Simulation · step 1 of 1/.test(q('#status .sim-marker') ? q('#status .sim-marker')!.textContent || '' : '') && /simulated state/.test((q('#canvas') as unknown as Element).getAttribute('aria-label') || ''),
+        `${wrapAfter.borderImageSource} | ${(q('#canvas') as unknown as Element).getAttribute('aria-label')}`,
       );
+      const panel = (): string => (q('#side-body .sim-panel') as HTMLElement).textContent || '';
+      check(
+        'the Simulation tab: the steps, what changed, what is failed, the counts and lists, and the device pairs that lose reachability',
+        /Scenario: Ad-hoc scenario \(not saved\)/.test(panel()) && /Before the first step/.test(panel()) && /Changed by this step/.test(panel()) && /Now down \(\d+\)/.test(panel()) && /Relations\s*3 down/.test(panel()) && /Tunnels\s*2 down/.test(panel()) && /Down\s*OSPF ospf-muc — it runs over gre-muc/.test(panel()) && /Lost\s*hq-fw → muc-rtr/.test(panel()),
+        panel().slice(0, 400),
+      );
+      check('it says what the simulation approximates', /What the simulation approximates/.test(panel()) && /No ACLs, NAT or QoS/.test(panel()));
       // both views: down and degraded, by line style, not colour alone
       const down = marked('sim-down');
       check('physical view: the cable and what runs over it are marked down; the routers at it degraded', down.indexOf('link:l-hq-isp1') >= 0 && marked('sim-degraded').indexOf('device:hq-rtr1') >= 0 && (q('#canvas') as unknown as Element).classList.contains('has-sim'), down.join(' '));
@@ -1836,69 +1858,155 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       click('[data-view-btn="logical"]');
       await tick();
       check('logical view: the IPsec, GRE and OSPF stack over the cable is marked down', ['relation:ipsec-muc', 'relation:gre-muc', 'relation:ospf-muc', 'relation:bgp-isp1'].every((r) => marked('sim-down').indexOf(r) >= 0), marked('sim-down').join(' '));
-      // path tracing under the simulation shows the loss
+      // editing is paused: the Edit tab read-only with a way out, the YAML read-only, the edit commands say why, the lock refuses edits
+      app.select('device:hq-fw');
+      app.showTab('edit');
+      await tick();
+      const lockNote = q('#side-body .lock-note') as HTMLElement | null;
+      const fs = q('#side-body fieldset.locked-form') as HTMLFieldSetElement | null;
+      check(
+        'during a simulation the Edit tab is read-only: a notice says why, with Exit simulation; every control of the form is disabled',
+        !!lockNote && /Editing is paused during the simulation/.test(lockNote.textContent || '') && !!lockNote.querySelector('[data-command="sim.exit"]') && !!fs && fs.disabled && !!fs.querySelector('input'),
+      );
+      check('… so are the outline’s Add buttons, Connect, Auto-arrange and the palette helpers, each saying why', (q('#outline-body [data-act="add-entity"]') as HTMLButtonElement).disabled && /Editing is paused/.test(app.commands.find((c) => c.id === 'edit.connect')!.state(app).reason || '') && /Editing is paused/.test(app.commands.find((c) => c.id === 'arrange.default')!.state(app).reason || ''));
+      app.showTab('yaml');
+      await tick();
+      check('… and the YAML text is read-only, with the same notice', (q('#yaml-src') as HTMLTextAreaElement).readOnly && !!q('#side-body .lock-note'));
+      let refused = '';
+      try {
+        (app.mdoc as ModelDoc).setText(['title'], 'changed');
+      } catch (e) {
+        refused = (e as Error).name;
+      }
+      check('the editing core refuses any edit of the network during the simulation and changes nothing', refused === 'EditLocked' && app.exportText() === yamlBefore, refused);
+      // Trace path works on the simulated state, and says so
       app.setTraceForm({ from: 'muc-rtr:lan0', to: 'hq-log', back: false });
       app.runTrace();
       await tick();
-      check('a path traced under the simulation shows the loss: Munich has no way to HQ', /Stops at muc-rtr/.test(q('#trace-text')!.textContent || ''), q('#trace-text')!.textContent || '');
+      check('a path traced during the simulation takes the simulated state and says so: Munich has no way to HQ', /^Path trace in the simulated state: /.test(q('#trace-text')!.textContent || '') && /Stops at muc-rtr/.test(q('#trace-text')!.textContent || '') && !!q('#side-body .sim-in-analysis'), q('#trace-text')!.textContent || '');
       app.exitTrace();
-      // more failures: a core switch and a cable of the peer LAG; the VRRP groups fail over, the trace reroutes
-      app.setSimulation(['device:hq-core1', 'link:l-peer2']);
+      // more steps: a core switch and a cable of the peer LAG; play back and forth
+      app.select('device:hq-core1');
+      app.runCommand('sim.add');
+      app.select('link:l-peer2');
+      app.runCommand('sim.add');
       await tick();
-      const ptext = (q('#side-body .sim-panel') as HTMLElement).textContent || '';
       check(
-        'two failures: the LAG goes down with its last member, the VRRP groups fail over (degraded, not down), the networks lose a member',
-        /Down\s*LACP \/ LAG lag-peer/.test(ptext) && /Degraded\s*VRRP vrrp-servers — fails over: hq-core1 is down, hq-core2 left/.test(ptext) && /Degraded\s*network net-servers — lost hq-core1/.test(ptext) && doc.querySelectorAll('#side-body [data-sim-remove]').length === 2,
-        ptext.slice(0, 300),
+        'more failures are new steps of the scenario (after the step shown): the LAG goes down with its last member, the VRRP groups fail over',
+        /step 3 of 3: Fail cable l-peer2/.test(simText()) && /Down\s*LACP \/ LAG lag-peer/.test(panel()) && /Degraded\s*VRRP vrrp-servers — fails over: hq-core1 is down, hq-core2 left/.test(panel()) && doc.querySelectorAll('#side-body [data-sim-restore]').length === 3,
+        simText(),
       );
       app.setTraceForm({ from: 'hq-log', to: 'muc-rtr', back: false });
       app.runTrace();
       await tick();
-      check('the path traced under it takes the rerouted way: through hq-core2', /Reached muc-rtr/.test(q('#trace-text')!.textContent || '') && /hq-core2/.test(q('#side-body ol.trace-hops')!.textContent || ''), q('#trace-text')!.textContent || '');
-      // exports show the simulation and say so, in both themes
+      // exports show the simulated state and say so, in both themes
       for (const theme of ['light', 'dark']) {
         app.theme.set(theme as 'light' | 'dark');
         await tick();
         const parsed = new DOMParser().parseFromString(app.exportSvg(), 'image/svg+xml');
-        // the notes from the top of the picture down
         const notes = Array.from(parsed.querySelectorAll('text.export-note'))
           .sort((x, y) => Number(x.getAttribute('y')) - Number(y.getAttribute('y')))
           .map((t) => t.textContent || '');
+        const frame = parsed.querySelector('.export-sim-frame');
         const cs = doc.defaultView!.getComputedStyle(q('#mb-sim') as Element);
         check(
-          `${theme} theme: the export shows the failed objects and a visible “Simulation” note (and the trace note); the banner is readable`,
-          notes.length === 2 && /^Simulation: failed hq-core1, cable l-peer2/.test(notes[0]) && /^Path trace/.test(notes[1]) && parsed.querySelectorAll('.sim-down').length > 3 && parsed.querySelectorAll('.sim-degraded').length > 3 && cs.color !== cs.backgroundColor,
+          `${theme} theme: the export shows the simulated state, framed (dashed), with a “Simulation: scenario …” note (and the trace note); the banner is readable`,
+          notes.length === 2 && /^Simulation: scenario “Ad-hoc scenario”, step 3 of 3: Fail cable l-peer2/.test(notes[0]) && /^Path trace in the simulated state/.test(notes[1]) && !!frame && /\d/.test(frame.getAttribute('stroke-dasharray') || '') && parsed.querySelectorAll('.sim-down').length > 3 && cs.color !== cs.backgroundColor,
           notes.join(' | '),
         );
       }
       app.exitTrace();
-      // Restore takes one failure back
-      (q('#side-body [data-sim-remove="link:l-peer2"]') as HTMLElement).click();
+      app.showTab('simulation');
+      // back and forth: [ and ]; each step's results and what changed
+      doc.dispatchEvent(new KeyboardEvent('keydown', { key: '[', bubbles: true, cancelable: true }));
       await tick();
-      check('Restore takes a failure out of the simulation', doc.querySelectorAll('#side-body [data-sim-remove]').length === 1 && /failed hq-core1 ·/.test(simText()));
-      check('the simulation changes nothing in the model and adds no undo step', app.exportText() === yamlBefore && (q('#btn-undo') as HTMLButtonElement).disabled);
-      // Esc exits: the normal view
+      check('[ shows the step before: its own state and what it changed', /step 2 of 3: Fail hq-core1/.test(simText()) && /Changed by this step/.test(panel()) && !!q('#side-body li.current [aria-current="step"]'), simText());
+      doc.dispatchEvent(new KeyboardEvent('keydown', { key: '[', bubbles: true, cancelable: true }));
+      doc.dispatchEvent(new KeyboardEvent('keydown', { key: '[', bubbles: true, cancelable: true }));
+      await tick();
+      check('… down to before the first step: the model’s state, nothing failed, nothing marked; still in simulation mode', /before the first of 3 steps/.test(simText()) && marked('sim-down').length === 0 && /Nothing is failed at this step/.test(panel()) && doc.body.getAttribute('data-mode') === 'simulation' && (q('#btn-sim-prev') as HTMLButtonElement).disabled, simText());
+      doc.dispatchEvent(new KeyboardEvent('keydown', { key: ']', bubbles: true, cancelable: true }));
+      await tick();
+      check('] plays forward again: the same result as the first time (deterministic)', /step 1 of 3: Fail cable l-hq-isp1/.test(simText()) && marked('sim-down').indexOf('relation:ospf-muc') >= 0, simText());
+      // Restore adds a step; Remove takes one out
+      (q('#side-body [data-sim-step="3"]') as HTMLElement).click();
+      await tick();
+      (q('#side-body [data-sim-restore="device:hq-core1"]') as HTMLElement).click();
+      await tick();
+      check('Restore adds a step that restores the object, after the step shown', /step 4 of 4: Restore hq-core1/.test(simText()) && !q('#side-body [data-sim-restore="device:hq-core1"]'), simText());
+      (q('#side-body [data-sim-remove-step="4"]') as HTMLElement).click();
+      await tick();
+      check('Remove takes a step out of the scenario', /step 3 of 3: Fail cable l-peer2/.test(simText()), simText());
+      check('playing and editing an unsaved scenario changes nothing in the model and adds no undo step', app.exportText() === yamlBefore && (q('#btn-undo') as HTMLButtonElement).disabled);
+      // save it: one undo step of the scenarios section, allowed during the simulation; it can be undone during it too
+      app.runCommand('sim.save');
+      await tick();
+      const nameIn = q('#modal #sc-name') as HTMLInputElement;
+      check('Save scenario… asks for a name (a labelled field, focused)', !!nameIn && doc.activeElement === nameIn && !!q('#modal label[for="sc-name"]'));
+      nameIn.value = 'Core loss with ISP cut';
+      (q('#modal button.primary') as HTMLElement).click();
+      await tick(30);
+      const md = app.mdoc as ModelDoc;
+      check(
+        'the scenario is saved in the model’s scenarios section (one undo step that can be undone during the simulation); the simulation goes on with it',
+        /- id: core-loss-with-isp-cut\n {4}label: Core loss with ISP cut\n {4}steps:\n {6}- fail: \{cable: l-hq-isp1\}\n {6}- fail: \{device: hq-core1\}\n {6}- fail: \{cable: l-peer2\}\n/.test(app.exportText()) && md.canUndo() === 'Save scenario Core loss with ISP cut' && !(q('#btn-undo') as HTMLButtonElement).disabled && /scenario “Core loss with ISP cut”, step 3 of 3/.test(simText()),
+        simText(),
+      );
+      // a step added to a saved scenario edits it (undoable)
+      app.select('device:hq-rtr2');
+      app.runCommand('sim.add');
+      await tick();
+      check('a step added to a saved scenario is an undoable edit of it', md.result.model!.scenarios.find((x) => x.id === 'core-loss-with-isp-cut')!.steps.length === 4 && /Add a failure/.test(md.canUndo() || ''));
+      app.undo();
+      app.undo();
+      await tick();
+      check('undoing the save during the simulation: the scenario goes on, unsaved, with its steps; the model is as before', app.exportText() === yamlBefore && /scenario “Core loss with ISP cut”, step 3 of 3/.test(simText()) && /\(not saved\)/.test(panel()), simText());
+      // Esc exits: the normal view, editing again
       (q('#canvas') as unknown as HTMLElement).focus();
       doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
       await tick();
-      check('Esc exits the simulation: the banner is gone, nothing is marked', (q('#mode-banner') as HTMLElement).hidden && marked('sim-down').length === 0 && marked('sim-degraded').length === 0 && !(q('#canvas') as unknown as Element).classList.contains('has-sim'));
-      // the single points of failure: a click starts the simulation for it
-      click('#analyze-btn');
+      check('Esc exits the simulation: no banner, frame, badge or marker; nothing marked; the model can be edited again', (q('#mode-banner') as HTMLElement).hidden && marked('sim-down').length === 0 && !(q('#canvas') as unknown as Element).classList.contains('has-sim') && (q('#sim-badge') as HTMLElement).hidden && !q('#status .sim-marker') && doc.body.getAttribute('data-mode') === 'none' && md.lock === '');
+      // replay a saved scenario: Play, from its first step
+      app.showTab('simulation');
+      await tick();
+      (q('#side-body [data-sim-play="isp1-outage"]') as HTMLElement).click();
+      await tick();
+      check(
+        'Play replays a saved scenario from its first step; its notes are shown with the steps',
+        /scenario “ISP 1 outage”, step 1 of 3: Fail cable l-hq-isp1/.test(simText()) && /the carrier reports a fibre cut/.test(panel()) && doc.activeElement === q('#side-body [aria-current="step"]'),
+        simText(),
+      );
+      app.runCommand('sim.next');
+      app.runCommand('sim.next');
+      await tick();
+      check('… step by step: hq-rtr1 comes back while its ISP cable is still cut (recovered, but degraded)', /step 3 of 3: Restore hq-rtr1/.test(simText()) && /Recovered \(\d+\)/.test(panel()) && marked('sim-degraded').indexOf('device:hq-rtr1') >= 0, simText());
+      app.exitSimulation();
+      // the palette plays saved scenarios too
+      const items = scenarioItems(app.session!.model);
+      check('the command palette offers each saved scenario (Play scenario: …)', items.map((i) => i.label).join(' | ') === 'Play scenario: ISP 1 outage | Play scenario: Core peer link and core switch');
+      // the single points of failure: a click starts an ad-hoc scenario for it
+      click('#simulate-btn');
       (q('#btn-spof') as HTMLElement).click();
       await tick();
       const rows = doc.querySelectorAll('#modal .spof-table tbody tr');
       const fw = q('#modal [data-spof="device:hq-fw"]') as HTMLElement | null;
       check(
         'Single points of failure lists the cables, devices and LAGs that cut the network or bring relations down, with what they cut off',
-        rows.length > 5 && !!fw && /hq-acc1, hq-core1, hq-core2, hq-log/.test((fw.closest('tr') as Element).textContent || '') && !!q('#modal [data-spof="link:l-peer1 link:l-peer2"]') && /single points of failure/.test(q('#modal .spof-count')!.textContent || ''),
+        rows.length > 5 && !!fw && /hq-acc1, hq-core1, hq-core2, hq-log/.test((fw.closest('tr') as Element).textContent || '') && !!q('#modal [data-spof="iface:hq-core1:Port-Channel1"][data-spof-kind="lag"]') && /single points of failure/.test(q('#modal .spof-count')!.textContent || ''),
         `${rows.length}`,
       );
-      fw!.click();
+      (q('#modal [data-spof="iface:hq-core1:Port-Channel1"]') as HTMLElement).click();
       await tick();
-      check('choosing an entry starts the simulation for it', !(q('#mb-sim') as HTMLElement).hidden && /failed hq-fw ·/.test(simText()) && !(q('#modal') as HTMLDialogElement).open);
+      check('choosing an entry starts an ad-hoc scenario that fails it (a LAG: its member cables, so the LAG relation is down)', /step 1 of 1: Fail LAG hq-core1:Port-Channel1/.test(simText()) && !(q('#modal') as HTMLDialogElement).open && marked('sim-down').indexOf('relation:lag-peer') >= 0, simText());
+      // focus mode inside the simulation: over what is up
+      app.select('device:hq-core2');
+      app.runCommand('focus.enter');
+      await tick();
+      check('Focus works inside the simulation, over what is up in the simulated state, and says so', /that are up in the simulated state/.test(q('#mode-text')!.textContent || ''), q('#mode-text')!.textContent || '');
+      app.runCommand('focus.exit');
       app.runCommand('sim.exit');
       await tick();
-      check('Simulate failure, Single points of failure and Exit simulation are commands of the Analyze menu', !!q('#btn-sim[data-command="sim.add"]') && !!q('#btn-spof[data-command="sim.spof"]') && (q('#btn-sim-exit') as HTMLButtonElement).disabled && (q('#mode-banner') as HTMLElement).hidden);
+      check('Exit simulation is unavailable without a simulation', (q('#btn-sim-exit') as HTMLButtonElement).disabled && (q('#mode-banner') as HTMLElement).hidden);
       app.select(null);
       (app.mdoc as ModelDoc).markSaved();
     }
@@ -4503,16 +4611,19 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const key = (target: Element, k: string): void => {
         target.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true }));
       };
-      // the menu: right after Analyze, reached with the arrow keys like every menu
+      // the menu: Analyze, then Simulate, then Help, reached with the arrow keys like every menu
       click('#analyze-btn');
       key(q('#analyze-menu') as HTMLElement, 'ArrowRight');
       await tick();
-      const viaArrow = !(q('#help-menu') as HTMLElement).hidden && helpBtn.getAttribute('aria-expanded') === 'true' && doc.activeElement === q('#btn-manual');
+      const simNext = !(q('#simulate-menu') as HTMLElement).hidden && (q('#simulate-btn') as HTMLElement).getAttribute('aria-expanded') === 'true';
+      key(q('#simulate-menu') as HTMLElement, 'ArrowRight');
+      await tick();
+      const viaArrow = simNext && !(q('#help-menu') as HTMLElement).hidden && helpBtn.getAttribute('aria-expanded') === 'true' && doc.activeElement === q('#btn-manual');
       const entries = textsOf('#help-menu button');
       key(q('#help-menu') as HTMLElement, 'Escape');
       await tick();
       check(
-        'Help menu right after Analyze: User Manual and License, reached with the arrow keys; Esc closes it and returns to its button',
+        'the Simulate menu right after Analyze, then Help: User Manual and License, reached with the arrow keys; Esc closes it and returns to its button',
         viaArrow && entries.join('|') === 'User Manual|License' && (q('#help-menu') as HTMLElement).hidden && doc.activeElement === helpBtn,
         `${viaArrow} ${entries.join('|')}`,
       );

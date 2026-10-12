@@ -192,15 +192,17 @@ const MANUAL: Section[] = [
   },
   {
     id: 'failure',
-    title: 'Simulate a failure',
+    title: 'Simulate: what if something fails',
     steps: [
-      'Select a cable, a port, a device or a relation and press `X` (or **Analyze → Simulate failure of selection**). Select more and press `X` again to fail them too.',
-      'Both views mark what fails with it: **down** dotted and faded, **degraded** dash-dot (a LAG with members left, a VRRP group failing over). A banner says the simulation is on.',
-      'The **Analysis** tab counts and lists the affected relations, tunnels, networks and routes, and the device pairs that can no longer reach each other. **Trace path** below it shows the way traffic takes now.',
-      '**Restore** takes one failure back; **Exit simulation** or `Esc` ends it. **Analyze → Single points of failure…** lists the cables, devices and LAGs whose failure alone cuts the network; choose one to simulate it.',
+      'Select a cable, a port, a device or a relation and press `X` (or **Simulate → Simulate failure of selection**). A scenario starts at once; select more and press `X` again to add steps.',
+      'The window is in **simulation mode**: a banner with the scenario and the step, a hatched frame around the diagram, a **Simulation** marker in the status bar and the label *Simulated state*. Both views mark what fails: **down** dotted and faded, **degraded** dash-dot.',
+      'The **Simulation** tab lists the steps, what changed with the step shown, what is down or degraded and the device pairs that can no longer reach each other. `[` and `]` (or ◀ ▶) step back and forward; **Restore** adds a step that brings an object back.',
+      '**Save scenario…** keeps it in the model for design reviews; **Simulate → Scenarios** lists the saved ones with **Play**. **Exit simulation** or `Esc` ends it. **Simulate → Single points of failure…** lists what alone cuts the network.',
     ],
-    notes: ['A simulation never changes the model. Exports show it, with a *Simulation* note.'],
-    figures: [['simulation', 'A core switch and a peer-link cable failed: the LAG down, the VRRP groups failing over (dash-dot), and the results in the Analysis tab.']],
+    notes: [
+      'A simulation never changes the model, and editing is paused while it is on: **Exit simulation** edits again. **Trace path** and **Focus** work on the simulated state; exports show it with a *Simulation* note.',
+    ],
+    figures: [['simulation', 'A scenario at its second step: the peer LAG and a core switch failed, the VRRP groups failing over (dash-dot), the banner with the step, and the Simulation tab.']],
   },
   {
     id: 'trace',
@@ -263,6 +265,7 @@ const SHORTCUTS: Array<[string, string]> = [
   ['Shift+F', 'Focus on the selection (Esc exits)'],
   ['T', 'Trace path (Esc removes it)'],
   ['X', 'Simulate failure of the selection (Esc ends it)'],
+  ['[ / ]', 'Previous / next simulation step'],
   ['Ctrl+K → enable', 'Enable a protocol on the selected device'],
   ['A', 'Auto-arrange: Default'],
   ['+ / − / 0', 'Zoom in / out / fit'],

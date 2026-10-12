@@ -43,6 +43,9 @@
   --warn: #b35900;
   --sel: #d9730d;
   --trace: #a61e8a;
+  /* a simulated state: the frame around the diagram, its badge and banner (with a pattern and words, not colour alone) */
+  --sim: #5f3dc4;
+  --sim-soft: #f3f0ff;
   --ok: #2a7d3a;
   --shadow: rgba(0, 0, 0, 0.16);
   --backdrop: rgba(0, 0, 0, 0.35);
@@ -82,6 +85,8 @@
   --warn: #e0b07a;
   --sel: #e3a857;
   --trace: #f38bd9;
+  --sim: #b197fc;
+  --sim-soft: #2a2540;
   --ok: #7cc68a;
   --shadow: rgba(0, 0, 0, 0.45);
   --backdrop: rgba(0, 0, 0, 0.55);
@@ -142,8 +147,12 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .spacer { flex: 1; }
 .opt { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); user-select: none; white-space: nowrap; }
 /* a narrower toolbar: the logo without name and version (the Auto-arrange label sits above its buttons, so it takes no width and stays) */
-@container (max-width: 1180px) {
+@container (max-width: 1700px) {
   .brand > span { display: none; }
+}
+/* a very narrow toolbar: the menus' carets go (decorative: each menu button says it opens a menu, aria-haspopup) */
+@container (max-width: 700px) {
+  .menu-btn .caret { display: none; }
 }
 /* the diagram filters: one row at the right of the toolbar; what doesn't fit goes into the Filters drop-down (App.layoutFilters) */
 /* the slot takes the rest of the toolbar row and holds the framed Filters group at its right end */
@@ -965,8 +974,54 @@ body:not([data-state="loaded"]) .view-group .tool-group-title, body:not([data-st
 .has-sim text.sim-down[data-ref^="route:"], .has-sim tspan.sim-down[data-ref^="route:"] { text-decoration: line-through; }
 .has-sim text.sim-degraded[data-ref^="route:"], .has-sim tspan.sim-degraded[data-ref^="route:"] { font-style: italic; text-decoration: underline dotted; }
 
-/* ---- the Analysis tab: Failure simulation */
+/* ---- simulation mode: recognisable beyond colour. A hatched frame round the diagram, the "Simulated state"
+   badge, the banner with its ◈ mark, a marker in the status bar; editing is paused (the Edit tab is read-only). */
+body[data-mode~="simulation"] #canvas-wrap::after { content: ""; position: absolute; inset: 0; z-index: 24; pointer-events: none; border: 6px solid transparent; border-image: repeating-linear-gradient(45deg, var(--sim) 0 6px, transparent 6px 12px) 6; }
+.sim-badge { position: absolute; right: 12px; bottom: 12px; z-index: 25; padding: 3px 10px; border: 2px dashed var(--sim); border-radius: 6px; background: var(--raised); color: var(--text); font-size: 12.5px; font-weight: 700; letter-spacing: .02em; pointer-events: none; }
+.sim-badge[hidden] { display: none; }
+.sim-badge-mark { color: var(--sim); }
+body[data-mode~="simulation"] .mode-banner { border-bottom-color: var(--sim); }
+.mode-banner #mb-sim { background: var(--sim-soft); margin: -6px -12px 0; padding: 6px 12px; border-bottom: 2px dashed var(--sim); }
+.mode-banner #mb-sim .mb-icon { color: var(--sim); }
+.mode-banner #mb-sim + .mb-row { border-top: 0; }
+.mode-banner .mb-short { display: none; }
+body[data-mode~="simulation"] .overlap-hint { bottom: 50px; }
+/* a very short window: the simulation's banner is one short line that says "Simulated state" itself (the full
+   text stays there for screen readers), in place of the badge, so the diagram keeps some room */
+@media (max-height: 420px) {
+  .mode-banner #mb-sim .mb-text:not(.mb-short) { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .mode-banner #mb-sim .mb-short { display: block; flex: 1 1 120px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+  .mode-banner #sim-results { display: none; }
+  .sim-badge { display: none; }
+}
+#status .sim-marker { flex: none; padding: 0 7px; border: 2px dashed var(--sim); border-radius: 6px; color: var(--text); font-weight: 700; white-space: nowrap; }
+#status .sim-marker > span { color: var(--sim); }
+.lock-note { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 0 0 10px; padding: 8px 10px; border: 2px dashed var(--sim); border-radius: 8px; background: var(--sim-soft); color: var(--text); }
+.lock-note p { flex: 1 1 200px; margin: 0; overflow-wrap: anywhere; }
+.lock-note p > span { color: var(--sim); }
+fieldset.locked-form { margin: 0; padding: 0; border: 0; min-width: 0; }
+.sim-in-analysis { margin: 0 0 8px; padding: 4px 8px; border-left: 3px dashed var(--sim); background: var(--sim-soft); color: var(--text); }
+.sim-in-analysis > span { color: var(--sim); }
+.export-sim-frame { fill: none; stroke: var(--sim); stroke-width: 4; stroke-dasharray: 12 6; }
+
+/* ---- the Simulation tab */
 .sim-panel { margin-bottom: 14px; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
+.sim-panel h3 { overflow-wrap: anywhere; }
+.sim-player { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 6px 0; }
+.sim-at { font-weight: 600; min-width: 6.5em; text-align: center; }
+ol.sim-steps { margin: 4px 0 8px; padding-left: 2.2em; }
+ol.sim-steps li { padding: 2px 0; overflow-wrap: anywhere; }
+ol.sim-steps li.current { background: var(--marked-bg); box-shadow: inset 3px 0 0 var(--marked-bar); }
+ol.sim-steps li.current .sim-go { font-weight: 700; }
+.sim-cur { color: var(--accent); }
+.sim-problem { color: var(--warn); }
+ul.sim-saved li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 6px; border-left: 3px solid var(--sim); }
+ul.sim-saved .sim-sc-name { font-weight: 600; }
+ul.sim-saved .sim-desc { flex-basis: 100%; }
+ul.sim-saved .sim-sc-act { margin-left: auto; }
+ul.sim-list li.sim-up { border-left: 3px solid var(--ok); }
+.sim-approx { margin-top: 10px; font-size: 12.5px; }
+.sim-approx ul { margin: 4px 0; padding-left: 1.4em; }
 .sim-status { font-weight: 600; margin: 6px 0; }
 ul.sim-failed { list-style: none; margin: 4px 0; padding: 0; }
 ul.sim-failed li { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 2px 0; }

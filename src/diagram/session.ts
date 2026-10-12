@@ -38,7 +38,8 @@ import { LayoutInput, layoutInput } from '../layout/input';
 import { LogicalLayout, logicalLayoutFrom, logicalSpecs } from '../layout/logical';
 import { PhysicalLayout, physicalBoxes } from '../layout/physical';
 import { filterModel, selectsAll } from '../model/filter';
-import { FOCUS_MAX_HOPS, FOCUS_MIN_HOPS, focusNeighbourhood, focusSeeds } from '../analysis/focus';
+import { FOCUS_MAX_HOPS, FOCUS_MIN_HOPS, FocusUp, focusNeighbourhood, focusSeeds } from '../analysis/focus';
+import type { FailureResult } from '../analysis/failure';
 import { refExists, relatedRefs } from '../model/queries';
 import { Model } from '../model/types';
 import { renderLogical } from './logical';
@@ -109,8 +110,39 @@ export class Session {
    */
   private parked: { physical: Map<string, Pt> | null; logical: Map<string, Pt> | null } = { physical: null, logical: null };
 
+  /** what is up in the simulated state (null: no simulation); focus mode counts hops over it */
+  private simUp: FocusUp | null = null;
+  private simUpKey = '';
+
   constructor(public model: Model) {
     this.input = layoutInput(model);
+  }
+
+  /**
+   * The simulated state on screen (null: none). Focus mode then shows what
+   * is within its hops over what is up; a change of the state keeps the
+   * positions of what stays shown, like a change of the hops.
+   */
+  setSimulated(res: FailureResult | null): void {
+    const key = res ? res.failed.join(' ') : '';
+    if (key === this.simUpKey && !!res === !!this.simUp) return;
+    this.simUpKey = key;
+    this.simUp = res
+      ? {
+          device: (id) => res.devices.get(id) !== 'down',
+          link: (id) => res.links.get(id) !== 'down',
+          relation: (id) => res.relations.get(id) !== 'down',
+        }
+      : null;
+    if (!this.state.focus) return;
+    const views: LayoutView[] = ['physical', 'logical'];
+    const seeds = views.map((v) => new Map(this.positionsFor(v)));
+    this.filtered = { physical: null, logical: null };
+    this.state.positions.physical.clear();
+    this.state.positions.logical.clear();
+    views.forEach((v, i) => {
+      this.temp[v] = this.isFiltered(v) ? resolvePositions(v, this.viewInput(v), seeds[i]) : null;
+    });
   }
 
   /**
@@ -177,7 +209,7 @@ export class Session {
     const hidden = this.state.hiddenTypes;
     const focus = this.state.focus;
     if (!sel && !hidden.size && !focus) return null;
-    const near = focus ? focusNeighbourhood(this.model, focus.ref, focus.hops, view) : null;
+    const near = focus ? focusNeighbourhood(this.model, focus.ref, focus.hops, view, this.simUp || undefined) : null;
     const out = new Set<string>();
     for (const d of this.model.devices) if ((!sel || sel.has(d.id)) && !hidden.has(d.type) && (!near || near.has(d.id))) out.add(d.id);
     return out.size === this.model.devices.length ? null : out;

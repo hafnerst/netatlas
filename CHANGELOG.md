@@ -57,6 +57,12 @@ there is no conversion of files written for the earlier drafts.
   (also `virtual_ipv6`) replaces the virtual addresses in relation `attrs`
   (`virtual-ip`, `vip`, `master`, `priority`) and interface attributes
   (`vrrp-virtual-ip`), which nothing reads any more.
+- **`scenarios:`** (top level, optional): saved simulation scenarios, each
+  an `id`, an optional `label` and `description`, and `steps`, each step
+  `fail:` or `restore:` with one target (`device`, `cable`, `port`,
+  `relation` or `lag`) and an optional `note`. Presentation and analysis
+  data only: they never change the network objects. A step whose object is
+  gone is a warning, and is skipped when played.
 - **A protocol of the model can declare `params`** (key, label, type,
   scope, required, range or values, suggestions, description) and
   `router_id` (`required` / `optional` / `none`); it is then a routing
@@ -70,6 +76,32 @@ there is no conversion of files written for the earlier drafts.
 
 ### Added
 
+- **Simulate ▾ menu and Simulation tab:** simulation is separated from
+  analysis. *Analyze* (Addressing overview, Focus, Trace path) shows the
+  model as written; *Simulate* (Simulate failure of selection `X`,
+  Scenarios, Single points of failure…, Previous / Next step `[` `]`, Save
+  scenario…, Exit simulation) shows a hypothetical state that never changes
+  the model. The new **Simulation** side tab holds the scenarios, their
+  steps and results; the **Analysis** tab keeps the path tracer.
+- **Simulation mode is visible beyond colour:** a banner with the scenario,
+  the step, ◀ / ▶ and Exit simulation; a hatched frame around the diagram;
+  a *◈ Simulation · step k of n* marker in the status bar; the diagram
+  labelled *Simulated state*. Exports show the simulated state with a dashed
+  frame and a *Simulation: scenario “…”, step k of n …* note.
+- **Scenarios:** named, ordered lists of fail / restore steps (device,
+  cable, port, relation, LAG) played as an overlay. Play forward and back;
+  each step shows what changed since the step before (down, degraded,
+  recovered, device pairs lost and regained) and its full result. `X`
+  starts an ad-hoc scenario at once; **Save scenario…** stores it in the
+  model (one undoable edit) to replay in design reviews; saved scenarios
+  are listed with Play and Delete and offered in the command palette.
+  Computed in `src/analysis/scenario.ts` on top of the failure propagation.
+- **Editing is blocked during a simulation**, with an explanation and a
+  one-click Exit simulation: the Edit tab is read-only, the YAML text too,
+  and every command that edits says why it is unavailable. Edits of the
+  scenarios themselves stay possible and undoable.
+- **Focus inside a simulation** counts hops over what is up in the
+  simulated state; **Trace path** traces in it; both say so.
 - **Input helpers in the Edit tab** (each an explicit action, one undo
   step, validated like typing, nothing written by itself): MTU chips (1500,
   9000, and for tunnels 1476, 1400 and the underlay's MTU less the
@@ -329,6 +361,10 @@ there is no conversion of files written for the earlier drafts.
 
 ### Changed
 
+- The simulation entries moved from **Analyze ▾** to the new **Simulate ▾**
+  menu, and the failure results from the Analysis tab to the Simulation
+  tab. A one-off failure is now an ad-hoc scenario: **Restore** adds a
+  restore step instead of dropping the failure.
 - The path tracer and the failure analysis use only the protocols a device
   enables (an adjacency forms between devices that both enable its
   protocol); iBGP or eBGP follows from the two local AS numbers; a VRRP

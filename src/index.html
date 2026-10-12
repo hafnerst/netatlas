@@ -63,9 +63,19 @@
       <div class="menu-sep" role="separator"></div>
       <button id="btn-trace" type="button" role="menuitem" data-command="trace.open" title="Open or create a model first" disabled><span class="mi-label">Trace path…</span><span class="mi-hint">T</span></button>
       <button id="btn-trace-exit" type="button" role="menuitem" data-command="trace.exit" title="No path is traced" disabled><span class="mi-label">Exit path trace</span><span class="mi-hint">Esc</span></button>
-      <div class="menu-sep" role="separator"></div>
+    </div>
+  </div>
+  <div class="menu-wrap">
+    <button id="simulate-btn" type="button" class="menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="simulate-menu" title="Simulate: what if objects fail? A simulated state never changes the model">Simulate <span class="caret" aria-hidden="true">▾</span></button>
+    <div id="simulate-menu" class="dropdown menu" role="menu" aria-label="Simulate" hidden>
       <button id="btn-sim" type="button" role="menuitem" data-command="sim.add" title="Open or create a model first" disabled><span class="mi-label">Simulate failure of selection</span><span class="mi-hint">X</span></button>
+      <button id="btn-scenarios" type="button" role="menuitem" data-command="panel.simulation" title="Open or create a model first" disabled><span class="mi-label">Scenarios</span></button>
       <button id="btn-spof" type="button" role="menuitem" data-command="sim.spof" aria-haspopup="dialog" title="Open or create a model first" disabled><span class="mi-label">Single points of failure…</span></button>
+      <div class="menu-sep" role="separator"></div>
+      <button id="btn-sim-prev" type="button" role="menuitem" data-command="sim.prev" title="No simulation is on" disabled><span class="mi-label">Previous step</span><span class="mi-hint">[</span></button>
+      <button id="btn-sim-next" type="button" role="menuitem" data-command="sim.next" title="No simulation is on" disabled><span class="mi-label">Next step</span><span class="mi-hint">]</span></button>
+      <button id="btn-sim-save" type="button" role="menuitem" data-command="sim.save" aria-haspopup="dialog" title="No simulation is on" disabled><span class="mi-label">Save scenario…</span></button>
+      <div class="menu-sep" role="separator"></div>
       <button id="btn-sim-exit" type="button" role="menuitem" data-command="sim.exit" title="No simulation is on" disabled><span class="mi-label">Exit simulation</span><span class="mi-hint">Esc</span></button>
     </div>
   </div>
@@ -164,9 +174,14 @@
         <button id="focus-exit" type="button" class="mini" data-command="focus.exit">Exit focus</button>
       </div>
       <div id="mb-sim" class="mb-row" hidden>
-        <span class="mb-icon" aria-hidden="true">⚠</span>
+        <span class="mb-icon" aria-hidden="true">◈</span>
         <span id="sim-text" class="mb-text" role="status"></span>
-        <button id="sim-results" type="button" class="mini" data-command="panel.analysis">Results</button>
+        <span id="sim-short" class="mb-text mb-short" aria-hidden="true"></span>
+        <span class="mb-hops" role="group" aria-label="Scenario steps">
+          <button id="sim-prev-banner" type="button" class="mini" data-command="sim.prev" aria-label="Previous step">◀</button>
+          <button id="sim-next-banner" type="button" class="mini" data-command="sim.next" aria-label="Next step">▶</button>
+        </span>
+        <button id="sim-results" type="button" class="mini" data-command="panel.simulation">Results</button>
         <button id="sim-exit-banner" type="button" class="mini" data-command="sim.exit">Exit simulation</button>
       </div>
       <div id="mb-trace" class="mb-row" hidden>
@@ -213,6 +228,7 @@
       </div>
     </div>
     <div id="errors" class="overlay error-overlay"></div>
+    <div id="sim-badge" class="sim-badge" aria-hidden="true" hidden><span class="sim-badge-mark">◈</span> Simulated state</div>
     <div id="tooltip" role="tooltip" hidden></div>
     <div id="drop-hint" aria-hidden="true">Drop the YAML file to open it</div>
     <div id="toast" role="status" aria-live="polite" hidden></div>
@@ -225,7 +241,8 @@
       <button type="button" data-tab="relations">Relations</button>
       <button type="button" data-tab="problems">Problems</button>
       <button type="button" data-tab="yaml">YAML</button>
-      <button type="button" data-tab="analysis" title="Failure simulation and Trace path">Analysis</button>
+      <button type="button" data-tab="analysis" title="Trace path: the model as it is">Analysis</button>
+      <button type="button" data-tab="simulation" title="Scenarios: what if objects fail">Simulation</button>
     </nav>
     <div id="side-body"></div>
     <details id="keys" class="keys" open>

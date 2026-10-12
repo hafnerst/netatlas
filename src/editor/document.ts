@@ -13,7 +13,7 @@ import { ArrangeStrategy, STRATEGIES, STRATEGY_LABEL, allStrategyPositions } fro
 import { layoutInput, layoutSignature } from '../layout/input';
 import { dnsNameKey, dnsNameProblem } from '../model/dns';
 import { parseAddress } from '../model/ip';
-import { Model } from '../model/types';
+import { Model, ScenarioStep } from '../model/types';
 import { IFACE_RE, Issue, LoadResult, loadModel, scalarText, validate } from '../validation/validate';
 import { SCHEMA } from '../yaml/schema';
 import { flowText } from '../yaml/write';
@@ -66,6 +66,14 @@ title: New network
 
 const MAX_UNDO = 100;
 
+/** An edit was refused: the model is locked (a simulation is on). */
+export class EditLocked extends Error {
+  constructor(reason: string) {
+    super(reason);
+    this.name = 'EditLocked';
+  }
+}
+
 
 
 
@@ -90,8 +98,16 @@ export class ModelDoc {
   /** increments on every change; lets views know when to refresh */
   version = 0;
   result: LoadResult;
-  private undoStack: Array<{ root: YMap; label: string }> = [];
-  private redoStack: Array<{ root: YMap; label: string }> = [];
+  /** undo entries; `scenario`: the edit only changed the scenarios section */
+  private undoStack: Array<{ root: YMap; label: string; scenario?: boolean }> = [];
+  private redoStack: Array<{ root: YMap; label: string; scenario?: boolean }> = [];
+  /**
+   * While set, the network objects of the model can't be edited (a
+   * simulation is on): the reason. Edits of the scenarios section (and
+   * undoing or redoing them) are still allowed; any other edit throws
+   * EditLocked and changes nothing.
+   */
+  lock = '';
   private paths = new Map<YNode, Path>();
   /** true once the document differs structurally from the loaded file (line numbers become stale) */
   edited = false;
@@ -224,12 +240,13 @@ export class ModelDoc {
    * the same undo step), new nodes are placed next to their neighbors and
    * positions of removed nodes are dropped. Nothing ever re-arranges itself.
    */
-  change<T>(label: string, fn: () => T, opts: { layout?: boolean } = {}): T {
+  change<T>(label: string, fn: () => T, opts: { layout?: boolean; scenario?: boolean } = {}): T {
+    if (this.lock && !opts.scenario) throw new EditLocked(this.lock);
     const snapshot = cloneNode(this.root);
     const pre = this.result.model;
     this.renames = new Map();
     const out = fn();
-    this.undoStack.push({ root: snapshot, label });
+    this.undoStack.push({ root: snapshot, label, scenario: opts.scenario });
     if (this.undoStack.length > MAX_UNDO) this.undoStack.shift();
     this.redoStack = [];
     this.revalidate();
@@ -447,18 +464,25 @@ export class ModelDoc {
   canRedo(): string | null {
     return this.redoStack.length ? this.redoStack[this.redoStack.length - 1].label : null;
   }
+  /** Is undoing (or redoing) the next step refused by the lock? (Only scenario edits can be undone while it is set.) */
+  undoLocked(redo = false): boolean {
+    const st = redo ? this.redoStack : this.undoStack;
+    return !!this.lock && !!st.length && !st[st.length - 1].scenario;
+  }
   undo(): boolean {
+    if (this.undoLocked()) return false;
     const s = this.undoStack.pop();
     if (!s) return false;
-    this.redoStack.push({ root: this.root, label: s.label });
+    this.redoStack.push({ root: this.root, label: s.label, scenario: s.scenario });
     this.root = s.root;
     this.touch();
     return true;
   }
   redo(): boolean {
+    if (this.undoLocked(true)) return false;
     const s = this.redoStack.pop();
     if (!s) return false;
-    this.undoStack.push({ root: this.root, label: s.label });
+    this.undoStack.push({ root: this.root, label: s.label, scenario: s.scenario });
     this.root = s.root;
     this.touch();
     return true;
@@ -1189,6 +1213,39 @@ export class ModelDoc {
     } else if (kind === 'protocol') {
       scalarRefs('relations', 'protocol', (t) => t.toLowerCase() === id.toLowerCase());
     }
+    out.push(...this.scenarioRefs(kind, id, iface));
+    return out;
+  }
+
+  /** The targets of scenario steps that name an entity (or an interface when `iface` is given). */
+  private scenarioRefs(kind: EntityKind, id: string, iface?: string): Path[] {
+    const out: Path[] = [];
+    const sec = this.root.entries.get('scenarios');
+    if (!sec || sec.value.kind !== 'seq') return out;
+    sec.value.items.forEach((ent, i) => {
+      const steps = ent.kind === 'map' ? ent.entries.get('steps') : undefined;
+      if (!steps || steps.value.kind !== 'seq') return;
+      steps.value.items.forEach((st, k) => {
+        if (st.kind !== 'map') return;
+        st.entries.forEach((e, action) => {
+          if (e.value.kind !== 'map') return;
+          e.value.entries.forEach((tv, tk) => {
+            const t = scalarText(tv.value);
+            if (t === undefined) return;
+            const p: Path = ['scenarios', i, 'steps', k, action, tk];
+            if (kind === 'device') {
+              if (tk === 'device' && iface === undefined && t === id) out.push(p);
+              else if (tk === 'port' || tk === 'lag') {
+                const c = t.indexOf(':');
+                if (c > 0 && t.slice(0, c) === id && (iface === undefined || t.slice(c + 1) === iface)) out.push(p);
+              }
+            } else if ((kind === 'link' && tk === 'cable') || (kind === 'relation' && tk === 'relation') || (kind === 'group' && tk === 'group')) {
+              if (t === id) out.push(p);
+            }
+          });
+        });
+      });
+    });
     return out;
   }
 
@@ -1207,7 +1264,7 @@ export class ModelDoc {
       if (last === 'source' || last === 'members' || p[p.length - 2] === 'members' || p[2] === 'dns_names' || (p[2] === 'routes' && last === 'interface')) {
         // an interface of the same device, written as its bare id
         nt = newIf !== undefined ? newIf : t;
-      } else if (/^(a|b|destination)$/.test(String(last)) || p[p.length - 2] === 'endpoints') {
+      } else if (/^(a|b|destination)$/.test(String(last)) || p[p.length - 2] === 'endpoints' || (p[0] === 'scenarios' && (last === 'port' || last === 'lag'))) {
         const c = t.indexOf(':');
         const dev = c < 0 ? t : t.slice(0, c);
         const inf = c < 0 ? undefined : t.slice(c + 1);
@@ -1270,6 +1327,73 @@ export class ModelDoc {
       }
       return refs.length + rids;
     });
+  }
+
+  // ---------------------------------------------------------- scenarios
+
+  /** The position of a scenario in the `scenarios` section (-1: none). */
+  scenarioIndex(id: string): number {
+    const sec = this.get(['scenarios']);
+    if (!sec || sec.kind !== 'seq') return -1;
+    return sec.items.findIndex((it) => it.kind === 'map' && this.text(['scenarios', sec.items.indexOf(it), 'id']) === id);
+  }
+
+  /** The YAML of a list of steps: `- fail: {cable: l1}` (and `note:` when there is one). */
+  private stepsNode(steps: ScenarioStep[]): YSeq {
+    return seqNode(
+      steps.map((st) => {
+        const e: Array<[string, YNode]> = [[st.action, mapNode([[st.target.kind, strNode(st.target.id)]], true)]];
+        if (st.note) e.push(['note', strNode(st.note)]);
+        return mapNode(e);
+      }),
+    );
+  }
+
+  /**
+   * Save a scenario in the model's `scenarios` section (a new entry at the
+   * end, or the entry with this id replaced in place). One undo step, allowed
+   * during a simulation: scenarios never change the network objects.
+   */
+  saveScenario(sc: { id: string; label: string; description?: string; steps: ScenarioStep[] }): void {
+    const at = this.scenarioIndex(sc.id);
+    this.change(
+      at < 0 ? `Save scenario ${sc.label}` : `Edit scenario ${sc.label}`,
+      () => {
+        const e: Array<[string, YNode]> = [['id', strNode(sc.id)]];
+        if (sc.label && sc.label !== sc.id) e.push(['label', strNode(sc.label)]);
+        if (sc.description) e.push(['description', strNode(sc.description)]);
+        e.push(['steps', this.stepsNode(sc.steps)]);
+        const node = mapNode(e);
+        const seq = this.ensureSeq(['scenarios'], false, KEY_ORDER.top);
+        if (at < 0) seq.items.push(node);
+        else seq.items[at] = keepTrivia(seq.items[at], node);
+      },
+      { layout: false, scenario: true },
+    );
+  }
+
+  /** Replace the steps of a saved scenario (one undo step, allowed during a simulation). */
+  setScenarioSteps(id: string, steps: ScenarioStep[], label = 'Edit scenario steps'): boolean {
+    const at = this.scenarioIndex(id);
+    if (at < 0) return false;
+    this.change(label, () => this.setAt(['scenarios', at, 'steps'], this.stepsNode(steps), KEY_ORDER.scenario), { layout: false, scenario: true });
+    return true;
+  }
+
+  /** Delete a saved scenario (one undo step); the section goes with its last entry. */
+  deleteScenario(id: string): boolean {
+    const at = this.scenarioIndex(id);
+    if (at < 0) return false;
+    this.change(
+      'Delete scenario ' + id,
+      () => {
+        this.removeAt(['scenarios', at]);
+        const sec = this.get(['scenarios']);
+        if (sec && sec.kind === 'seq' && !sec.items.length) this.removeAt(['scenarios']);
+      },
+      { layout: false, scenario: true },
+    );
+    return true;
   }
 
   // ------------------------------------------------------------- checks

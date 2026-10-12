@@ -148,7 +148,7 @@ test('Find menu: next to Export, with Find in diagram… (/) and Filter object l
   assert.match(html, /<div id="find-bar" class="find-bar" role="search" aria-label="Find in diagram" hidden>/);
   assert.deepEqual([...view.matchAll(/class="mi-hint">([^<]*)</g)].map((m) => m[1]), ['/', 'Ctrl+K'], 'and the command palette, with its shortcut');
   const app = readFileSync(join(root, 'src', 'ui', 'app.ts'), 'utf8');
-  assert.match(app, /\['export-btn', 'export-menu'\],\s*\['find-btn', 'find-menu'\],\s*\['analyze-btn', 'analyze-menu'\],\s*\['help-btn', 'help-menu'\],/);
+  assert.match(app, /\['export-btn', 'export-menu'\],\s*\['find-btn', 'find-menu'\],\s*\['analyze-btn', 'analyze-menu'\],\s*\['simulate-btn', 'simulate-menu'\],\s*\['help-btn', 'help-menu'\],/);
   const cmds = readFileSync(join(root, 'src', 'ui', 'commands.ts'), 'utf8');
   assert.match(cmds, /id: 'find\.diagram',[\s\S]{0,80}keys: \{ combos: \[\{ key: '\/' \}\] \},[\s\S]{0,300}run: \(app\) => void app\.openFind\(\),/);
   // the old places are gone: no search box in the toolbar, no filter box always at the top of the outline
@@ -332,11 +332,12 @@ test('toolbar groups: View, Auto-arrange and Filters each have a label above the
   assert.match(app, /const avail = slot\.clientWidth - chrome;/);
 });
 
-test('Help menu: right after Analyze, with User Manual and License (always available, each opening a dialog)', () => {
-  const at = ['id="analyze-btn"', 'id="help-btn"', 'id="btn-undo"'].map((x) => header.indexOf(x));
-  assert.ok(at[0] >= 0 && at[0] < at[1] && at[1] < at[2], JSON.stringify(at));
-  // nothing else stands between the Analyze menu and the Help menu
-  assert.match(header, /<div id="analyze-menu"[\s\S]*?\n    <\/div>\n  <\/div>\n  <div class="menu-wrap">\n    <button id="help-btn"/);
+test('Help menu: right after Simulate, with User Manual and License (always available, each opening a dialog)', () => {
+  const at = ['id="analyze-btn"', 'id="simulate-btn"', 'id="help-btn"', 'id="btn-undo"'].map((x) => header.indexOf(x));
+  assert.ok(at[0] >= 0 && at[0] < at[1] && at[1] < at[2] && at[2] < at[3], JSON.stringify(at));
+  // nothing else stands between the Analyze and Simulate menus, and between Simulate and Help
+  assert.match(header, /<div id="analyze-menu"[\s\S]*?\n    <\/div>\n  <\/div>\n  <div class="menu-wrap">\n    <button id="simulate-btn"/);
+  assert.match(header, /<div id="simulate-menu"[\s\S]*?\n    <\/div>\n  <\/div>\n  <div class="menu-wrap">\n    <button id="help-btn"/);
   assert.match(header, /<button id="help-btn" type="button" class="menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="help-menu" title="Help: user manual and license">Help <span class="caret"/);
   const help = /<div id="help-menu" class="dropdown menu" role="menu" aria-label="Help" hidden>([\s\S]*?)\n    <\/div>/.exec(header)[1];
   const entries = [...help.matchAll(/<button id="([^"]+)" type="button" role="menuitem" data-command="[^"]+" aria-haspopup="dialog"[^>]*><span class="mi-label">([^<]+)</g)].map((m) => [m[1], m[2]]);
@@ -372,10 +373,10 @@ test('Help → License names the license of LICENSE and package.json, and embeds
   }
 });
 
-test('Analyze menu: between Find and Help, built like the others; Addressing overview… (I) opens a dialog and needs a model', () => {
+test('Analyze menu: between Find and Simulate, built like the others; Addressing overview… (I) opens a dialog and needs a model', () => {
   const header = /<header class="topbar">([\s\S]*?)<\/header>/.exec(html)[1];
   const order = [...header.matchAll(/<button id="([a-z-]+-btn)" type="button" class="menu-btn"/g)].map((m) => m[1]);
-  assert.deepEqual(order.slice(0, 5), ['menu-btn', 'export-btn', 'find-btn', 'analyze-btn', 'help-btn']);
+  assert.deepEqual(order.slice(0, 6), ['menu-btn', 'export-btn', 'find-btn', 'analyze-btn', 'simulate-btn', 'help-btn']);
   const menu = /<div id="analyze-menu" class="dropdown menu" role="menu" aria-label="Analyze" hidden>([\s\S]*?)<\/div>/.exec(header);
   assert.ok(menu, 'the Analyze menu');
   assert.match(menu[1], /<button id="btn-addressing" type="button" role="menuitem" data-command="analyze\.addressing" aria-haspopup="dialog" title="Open or create a model first" disabled><span class="mi-label">Addressing overview…<\/span><span class="mi-hint">I<\/span><\/button>/);
@@ -385,10 +386,14 @@ test('Analyze menu: between Find and Help, built like the others; Addressing ove
   // the path tracer too
   assert.match(header, /<button id="btn-trace" type="button" role="menuitem" data-command="trace\.open"[^>]*><span class="mi-label">Trace path…<\/span><span class="mi-hint">T<\/span>/);
   assert.match(header, /<button id="btn-trace-exit" type="button" role="menuitem" data-command="trace\.exit"[^>]*><span class="mi-label">Exit path trace<\/span>/);
-  // and the failure simulation
-  assert.match(header, /<button id="btn-sim" type="button" role="menuitem" data-command="sim\.add"[^>]*><span class="mi-label">Simulate failure of selection<\/span><span class="mi-hint">X<\/span>/);
-  assert.match(header, /<button id="btn-spof" type="button" role="menuitem" data-command="sim\.spof" aria-haspopup="dialog"[^>]*><span class="mi-label">Single points of failure…<\/span>/);
-  assert.match(header, /<button id="btn-sim-exit" type="button" role="menuitem" data-command="sim\.exit"[^>]*><span class="mi-label">Exit simulation<\/span>/);
+  // … but no simulation: Analyze is "what is", the model as written
+  assert.doesNotMatch(menu[1], /data-command="sim\./);
+  // Simulate ("what if", a state that never changes the model) is the menu right after it
+  const sim = /<div id="simulate-menu" class="dropdown menu" role="menu" aria-label="Simulate" hidden>([\s\S]*?)\n    <\/div>/.exec(header)[1];
+  assert.deepEqual([...sim.matchAll(/data-command="([^"]+)"/g)].map((m) => m[1]), ['sim.add', 'panel.simulation', 'sim.spof', 'sim.prev', 'sim.next', 'sim.save', 'sim.exit']);
+  assert.match(sim, /<button id="btn-sim" type="button" role="menuitem" data-command="sim\.add"[^>]*><span class="mi-label">Simulate failure of selection<\/span><span class="mi-hint">X<\/span>/);
+  assert.match(sim, /<button id="btn-spof" type="button" role="menuitem" data-command="sim\.spof" aria-haspopup="dialog"[^>]*><span class="mi-label">Single points of failure…<\/span>/);
+  assert.match(sim, /<button id="btn-sim-exit" type="button" role="menuitem" data-command="sim\.exit"[^>]*><span class="mi-label">Exit simulation<\/span>/);
   const app = readFileSync(join(root, 'src', 'ui', 'app.ts'), 'utf8');
   const cmds = readFileSync(join(root, 'src', 'ui', 'commands.ts'), 'utf8');
   assert.match(cmds, /id: 'analyze\.addressing',[\s\S]{0,120}keys: \{ combos: \[\{ key: 'i' \}\] \},[\s\S]{0,400}state: \(app\) => needDiagram\(app,/);

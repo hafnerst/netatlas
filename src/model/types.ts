@@ -283,6 +283,41 @@ export interface ProtocolDef {
   custom: boolean;
 }
 
+/** What a scenario step acts on: the kind of object, written as the key of the step's target. */
+export type TargetKind = 'device' | 'cable' | 'port' | 'relation' | 'lag';
+export const TARGET_KINDS: readonly TargetKind[] = ['device', 'cable', 'port', 'relation', 'lag'];
+
+/** The object a scenario step acts on: `{device: hq-core1}`, `{cable: l1}`, `{port: hq-core1:Ethernet1}`, `{lag: hq-core1:Port-Channel1}`. */
+export interface StepTarget {
+  kind: TargetKind;
+  /** the id; for a port or LAG "device:interface" */
+  id: string;
+}
+
+export type StepAction = 'fail' | 'restore';
+export const STEP_ACTIONS: readonly StepAction[] = ['fail', 'restore'];
+
+/** One step of a scenario: fail or restore an object. */
+export interface ScenarioStep {
+  action: StepAction;
+  target: StepTarget;
+  note?: string;
+  line: number;
+}
+
+/**
+ * A named, ordered list of hypothetical steps (the `scenarios:` section):
+ * presentation and analysis data only. Playing it never changes the network
+ * objects of the model.
+ */
+export interface Scenario {
+  id: string;
+  label: string;
+  description?: string;
+  steps: ScenarioStep[];
+  line: number;
+}
+
 /** Node centers per view, keyed by entity id (see layout-auto.ts). */
 export interface ModelLayout {
   physical: Map<string, { x: number; y: number }>;
@@ -308,6 +343,8 @@ export interface Model {
   layout: ModelLayout;
   /** the `checks:` section: a check switched off or given another severity, by check id */
   checks: Map<string, 'off' | 'error' | 'warning' | 'info'>;
+  /** saved simulation scenarios (never change the network objects) */
+  scenarios: Scenario[];
   index: ModelIndex;
 }
 
