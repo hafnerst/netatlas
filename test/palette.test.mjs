@@ -26,7 +26,7 @@ test('the registry: unique ids, every command with a label, a group, a state and
     }
   }
   // what the palette must offer
-  for (const id of ['file.new', 'file.open', 'file.save', 'file.saveAs', 'file.close', 'export.png', 'export.svg', 'find.diagram', 'find.outline', 'palette.open', 'analyze.addressing', 'focus.enter', 'focus.exit', 'focus.more', 'focus.fewer', 'trace.open', 'trace.copy', 'trace.exit', 'panel.analysis', 'help.manual', 'help.license', 'edit.undo', 'edit.redo', 'view.physical', 'view.logical', 'arrange.default', 'arrange.compact', 'arrange.spacious', 'zoom.fit', 'theme.toggle', 'filter.labels', 'filter.server', 'panel.problems', 'example.0']) {
+  for (const id of ['file.new', 'file.open', 'file.save', 'file.saveAs', 'file.close', 'export.png', 'export.svg', 'find.diagram', 'find.outline', 'palette.open', 'analyze.addressing', 'focus.enter', 'focus.exit', 'focus.more', 'focus.fewer', 'trace.open', 'trace.copy', 'trace.exit', 'sim.add', 'sim.spof', 'sim.exit', 'panel.analysis', 'help.manual', 'help.license', 'edit.undo', 'edit.redo', 'view.physical', 'view.logical', 'arrange.default', 'arrange.compact', 'arrange.spacious', 'zoom.fit', 'theme.toggle', 'filter.labels', 'filter.server', 'panel.problems', 'example.0']) {
     assert.ok(byId.has(id), id);
   }
   assert.equal(commands.filter((c) => c.group === 'Example').length, load('generated/examples.js').EXAMPLES.length);
@@ -61,6 +61,7 @@ test('shortcuts: labels (Ctrl or Cmd) and matching', () => {
   assert.equal(C.keyLabel(byId.get('palette.open').keys), 'Ctrl+K');
   assert.equal(C.keyLabel(byId.get('focus.enter').keys), 'Shift+F');
   assert.equal(C.keyLabel(byId.get('trace.open').keys), 'T');
+  assert.equal(C.keyLabel(byId.get('sim.add').keys), 'X');
   assert.equal(C.keyLabel(byId.get('find.diagram').keys), '/');
   assert.equal(C.keyLabel(byId.get('view.physical').keys), 'P');
   const ev = (key, o = {}) => ({ key, ctrlKey: false, metaKey: false, shiftKey: false, altKey: false, ...o });

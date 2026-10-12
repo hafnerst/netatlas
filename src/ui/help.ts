@@ -166,6 +166,18 @@ const MANUAL: Section[] = [
     figures: [['focus', 'Focus on the firewall in the physical view, one hop: the banner with the hops and Exit focus.']],
   },
   {
+    id: 'failure',
+    title: 'Simulate a failure',
+    steps: [
+      'Select a cable, a port, a device or a relation and press `X` (or **Analyze → Simulate failure of selection**). Select more and press `X` again to fail them too.',
+      'Both views mark what fails with it: **down** dotted and faded, **degraded** dash-dot (a LAG with members left, a VRRP group failing over). A banner says the simulation is on.',
+      'The **Analysis** tab counts and lists the affected relations, tunnels, networks and routes, and the device pairs that can no longer reach each other. **Trace path** below it shows the way traffic takes now.',
+      '**Restore** takes one failure back; **Exit simulation** or `Esc` ends it. **Analyze → Single points of failure…** lists the cables, devices and LAGs whose failure alone cuts the network; choose one to simulate it.',
+    ],
+    notes: ['A simulation never changes the model. Exports show it, with a *Simulation* note.'],
+    figures: [['simulation', 'A core switch and a peer-link cable failed: the LAG down, the VRRP groups failing over (dash-dot), and the results in the Analysis tab.']],
+  },
+  {
     id: 'trace',
     title: 'Trace a path',
     steps: [
@@ -225,6 +237,7 @@ const SHORTCUTS: Array<[string, string]> = [
   ['Ctrl+K', 'Command palette (Cmd+K on a Mac)'],
   ['Shift+F', 'Focus on the selection (Esc exits)'],
   ['T', 'Trace path (Esc removes it)'],
+  ['X', 'Simulate failure of the selection (Esc ends it)'],
   ['A', 'Auto-arrange: Default'],
   ['+ / − / 0', 'Zoom in / out / fit'],
   ['Esc', 'Clear the selection, cancel, close'],

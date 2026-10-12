@@ -1578,6 +1578,116 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       (app.mdoc as ModelDoc).markSaved();
     }
 
+    // ------------------------------------------------ failure simulation
+    {
+      app.loadExample(EXAMPLES.findIndex((e) => e.name === 'enterprise-wan.yaml'));
+      click('[data-view-btn="physical"]');
+      await tick();
+      const yamlBefore = app.exportText();
+      const marked = (cls: string): string[] =>
+        Array.from(doc.querySelectorAll('#viewport .' + cls))
+          .map((e) => e.getAttribute('data-ref') || '')
+          .filter((r, i, a) => a.indexOf(r) === i);
+      const simBtn = q('#btn-sim') as HTMLButtonElement;
+      check('Simulate failure is unavailable without a selection, and says why', simBtn.disabled && /Select a cable, port, device or relation first/.test(simBtn.title), simBtn.title);
+      // a network can't fail
+      app.select('network:net-users');
+      await tick();
+      check('… and for an object that can’t fail (a network)', simBtn.disabled && /Only a cable, a port/.test(simBtn.title));
+      // X on a cable starts the simulation
+      app.select('link:l-hq-isp1');
+      await tick();
+      (q('#canvas') as unknown as HTMLElement).focus();
+      doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'x', bubbles: true, cancelable: true }));
+      await tick();
+      const simText = (): string => (q('#sim-text') ? q('#sim-text')!.textContent || '' : '');
+      check(
+        'X fails the selected cable: a banner marks the simulation as active, names what failed and counts what is down, degraded, and the device pairs that lose reachability',
+        !(q('#mb-sim') as HTMLElement).hidden && /^Simulation active: failed cable l-hq-isp1 · \d+ down · \d+ degraded or taken over · \d+ device pairs? loses? reachability/.test(simText()) && /The model is unchanged/.test(simText()) && !!q('[data-tab="analysis"].active'),
+        simText(),
+      );
+      const panel = q('#side-body .sim-panel') as HTMLElement;
+      check(
+        'the results panel counts and lists the affected relations, tunnels, networks and routes, and the device pairs that lose reachability',
+        !!panel && /Relations\s*3 down/.test(panel.textContent || '') && /Tunnels\s*2 down/.test(panel.textContent || '') && /Networks/.test(panel.textContent || '') && /Static routes/.test(panel.textContent || '') && /Device pairs\s*\d+ lose reachability/.test(panel.textContent || '') &&
+          /Down\s*OSPF ospf-muc — it runs over gre-muc/.test(panel.textContent || '') && /Lost\s*hq-fw → muc-rtr/.test(panel.textContent || ''),
+        (panel ? panel.textContent || '' : '').slice(0, 400),
+      );
+      // both views: down and degraded, by line style, not colour alone
+      const down = marked('sim-down');
+      check('physical view: the cable and what runs over it are marked down; the routers at it degraded', down.indexOf('link:l-hq-isp1') >= 0 && marked('sim-degraded').indexOf('device:hq-rtr1') >= 0 && (q('#canvas') as unknown as Element).classList.contains('has-sim'), down.join(' '));
+      const cable = q('#viewport [data-ref="link:l-hq-isp1"] .cable-line') as Element;
+      check('… drawn dotted (a line style), not only in another colour', !!cable && doc.defaultView!.getComputedStyle(cable).strokeDasharray !== 'none', cable ? doc.defaultView!.getComputedStyle(cable).strokeDasharray : '');
+      click('[data-view-btn="logical"]');
+      await tick();
+      check('logical view: the IPsec, GRE and OSPF stack over the cable is marked down', ['relation:ipsec-muc', 'relation:gre-muc', 'relation:ospf-muc', 'relation:bgp-isp1'].every((r) => marked('sim-down').indexOf(r) >= 0), marked('sim-down').join(' '));
+      // path tracing under the simulation shows the loss
+      app.setTraceForm({ from: 'muc-rtr:lan0', to: 'hq-log', back: false });
+      app.runTrace();
+      await tick();
+      check('a path traced under the simulation shows the loss: Munich has no way to HQ', /Stops at muc-rtr/.test(q('#trace-text')!.textContent || ''), q('#trace-text')!.textContent || '');
+      app.exitTrace();
+      // more failures: a core switch and a cable of the peer LAG; the VRRP groups fail over, the trace reroutes
+      app.setSimulation(['device:hq-core1', 'link:l-peer2']);
+      await tick();
+      const ptext = (q('#side-body .sim-panel') as HTMLElement).textContent || '';
+      check(
+        'two failures: the LAG goes down with its last member, the VRRP groups fail over (degraded, not down), the networks lose a member',
+        /Down\s*LACP \/ LAG lag-peer/.test(ptext) && /Degraded\s*VRRP vrrp-servers — fails over: hq-core1 is down, hq-core2 left/.test(ptext) && /Degraded\s*network net-servers — lost hq-core1/.test(ptext) && doc.querySelectorAll('#side-body [data-sim-remove]').length === 2,
+        ptext.slice(0, 300),
+      );
+      app.setTraceForm({ from: 'hq-log', to: 'muc-rtr', back: false });
+      app.runTrace();
+      await tick();
+      check('the path traced under it takes the rerouted way: through hq-core2', /Reached muc-rtr/.test(q('#trace-text')!.textContent || '') && /hq-core2/.test(q('#side-body ol.trace-hops')!.textContent || ''), q('#trace-text')!.textContent || '');
+      // exports show the simulation and say so, in both themes
+      for (const theme of ['light', 'dark']) {
+        app.theme.set(theme as 'light' | 'dark');
+        await tick();
+        const parsed = new DOMParser().parseFromString(app.exportSvg(), 'image/svg+xml');
+        // the notes from the top of the picture down
+        const notes = Array.from(parsed.querySelectorAll('text.export-note'))
+          .sort((x, y) => Number(x.getAttribute('y')) - Number(y.getAttribute('y')))
+          .map((t) => t.textContent || '');
+        const cs = doc.defaultView!.getComputedStyle(q('#mb-sim') as Element);
+        check(
+          `${theme} theme: the export shows the failed objects and a visible “Simulation” note (and the trace note); the banner is readable`,
+          notes.length === 2 && /^Simulation: failed hq-core1, cable l-peer2/.test(notes[0]) && /^Path trace/.test(notes[1]) && parsed.querySelectorAll('.sim-down').length > 3 && parsed.querySelectorAll('.sim-degraded').length > 3 && cs.color !== cs.backgroundColor,
+          notes.join(' | '),
+        );
+      }
+      app.exitTrace();
+      // Restore takes one failure back
+      (q('#side-body [data-sim-remove="link:l-peer2"]') as HTMLElement).click();
+      await tick();
+      check('Restore takes a failure out of the simulation', doc.querySelectorAll('#side-body [data-sim-remove]').length === 1 && /failed hq-core1 ·/.test(simText()));
+      check('the simulation changes nothing in the model and adds no undo step', app.exportText() === yamlBefore && (q('#btn-undo') as HTMLButtonElement).disabled);
+      // Esc exits: the normal view
+      (q('#canvas') as unknown as HTMLElement).focus();
+      doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      await tick();
+      check('Esc exits the simulation: the banner is gone, nothing is marked', (q('#mode-banner') as HTMLElement).hidden && marked('sim-down').length === 0 && marked('sim-degraded').length === 0 && !(q('#canvas') as unknown as Element).classList.contains('has-sim'));
+      // the single points of failure: a click starts the simulation for it
+      click('#analyze-btn');
+      (q('#btn-spof') as HTMLElement).click();
+      await tick();
+      const rows = doc.querySelectorAll('#modal .spof-table tbody tr');
+      const fw = q('#modal [data-spof="device:hq-fw"]') as HTMLElement | null;
+      check(
+        'Single points of failure lists the cables, devices and LAGs that cut the network or bring relations down, with what they cut off',
+        rows.length > 5 && !!fw && /hq-acc1, hq-core1, hq-core2, hq-log/.test((fw.closest('tr') as Element).textContent || '') && !!q('#modal [data-spof="link:l-peer1 link:l-peer2"]') && /single points of failure/.test(q('#modal .spof-count')!.textContent || ''),
+        `${rows.length}`,
+      );
+      fw!.click();
+      await tick();
+      check('choosing an entry starts the simulation for it', !(q('#mb-sim') as HTMLElement).hidden && /failed hq-fw ·/.test(simText()) && !(q('#modal') as HTMLDialogElement).open);
+      app.runCommand('sim.exit');
+      await tick();
+      check('Simulate failure, Single points of failure and Exit simulation are commands of the Analyze menu', !!q('#btn-sim[data-command="sim.add"]') && !!q('#btn-spof[data-command="sim.spof"]') && (q('#btn-sim-exit') as HTMLButtonElement).disabled && (q('#mode-banner') as HTMLElement).hidden);
+      app.select(null);
+      (app.mdoc as ModelDoc).markSaved();
+    }
+
     // ------------------------------------------------ viewer interactions
     app.loadExample(EXAMPLES.findIndex((e) => /enterprise-wan/.test(e.name)));
     click('[data-view-btn="physical"]');

@@ -63,6 +63,10 @@
       <div class="menu-sep" role="separator"></div>
       <button id="btn-trace" type="button" role="menuitem" data-command="trace.open" title="Open or create a model first" disabled><span class="mi-label">Trace path…</span><span class="mi-hint">T</span></button>
       <button id="btn-trace-exit" type="button" role="menuitem" data-command="trace.exit" title="No path is traced" disabled><span class="mi-label">Exit path trace</span><span class="mi-hint">Esc</span></button>
+      <div class="menu-sep" role="separator"></div>
+      <button id="btn-sim" type="button" role="menuitem" data-command="sim.add" title="Open or create a model first" disabled><span class="mi-label">Simulate failure of selection</span><span class="mi-hint">X</span></button>
+      <button id="btn-spof" type="button" role="menuitem" data-command="sim.spof" aria-haspopup="dialog" title="Open or create a model first" disabled><span class="mi-label">Single points of failure…</span></button>
+      <button id="btn-sim-exit" type="button" role="menuitem" data-command="sim.exit" title="No simulation is on" disabled><span class="mi-label">Exit simulation</span><span class="mi-hint">Esc</span></button>
     </div>
   </div>
   <div class="menu-wrap">
@@ -159,6 +163,12 @@
         </span>
         <button id="focus-exit" type="button" class="mini" data-command="focus.exit">Exit focus</button>
       </div>
+      <div id="mb-sim" class="mb-row" hidden>
+        <span class="mb-icon" aria-hidden="true">⚠</span>
+        <span id="sim-text" class="mb-text" role="status"></span>
+        <button id="sim-results" type="button" class="mini" data-command="panel.analysis">Results</button>
+        <button id="sim-exit-banner" type="button" class="mini" data-command="sim.exit">Exit simulation</button>
+      </div>
       <div id="mb-trace" class="mb-row" hidden>
         <span class="mb-icon" aria-hidden="true">⇢</span>
         <span id="trace-text" class="mb-text" role="status"></span>
@@ -215,7 +225,7 @@
       <button type="button" data-tab="relations">Relations</button>
       <button type="button" data-tab="problems">Problems</button>
       <button type="button" data-tab="yaml">YAML</button>
-      <button type="button" data-tab="analysis" title="Trace path: the hop list">Analysis</button>
+      <button type="button" data-tab="analysis" title="Failure simulation and Trace path">Analysis</button>
     </nav>
     <div id="side-body"></div>
     <details id="keys" class="keys" open>

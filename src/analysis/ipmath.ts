@@ -65,10 +65,14 @@ export function formatAddr(a: IpAddr): string {
 
 /** The network a prefix names: host bits cleared ("10.1.2.3/24" -> 10.1.2.0/24). */
 export function networkOf(p: IpPrefix): IpPrefix {
-  const bits = familyBits(p.version);
-  const host = BigInt(bits - p.prefix);
-  const v = (addrBig(p) >> host) << host;
-  return { ...bigAddr(v, p.version), prefix: p.prefix };
+  // byte by byte (the routing tables call this often): whole bytes kept, the partial byte masked, the rest cleared
+  const bytes = p.bytes.slice();
+  for (let i = 0; i < bytes.length; i++) {
+    const keep = p.prefix - i * 8;
+    if (keep >= 8) continue;
+    bytes[i] = keep <= 0 ? 0 : bytes[i] & ((0xff << (8 - keep)) & 0xff);
+  }
+  return { version: p.version, bytes, prefix: p.prefix };
 }
 
 /** Canonical text of a prefix's network: "10.1.2.0/24", "2001:db8::/64". */
@@ -104,9 +108,13 @@ export function prefixesOverlap(a: IpPrefix, b: IpPrefix): boolean {
 /** Is `a` inside prefix `p`? */
 export function inPrefix(p: IpPrefix, a: IpAddr): boolean {
   if (p.version !== a.version) return false;
-  const r = prefixRange(p);
-  const v = addrBig(a);
-  return v >= r.first && v <= r.last;
+  // byte by byte: the whole bytes of the prefix equal, then the bits of the partial byte
+  const full = p.prefix >> 3;
+  for (let i = 0; i < full; i++) if (p.bytes[i] !== a.bytes[i]) return false;
+  const rest = p.prefix & 7;
+  if (!rest) return true;
+  const mask = (0xff << (8 - rest)) & 0xff;
+  return (p.bytes[full] & mask) === (a.bytes[full] & mask);
 }
 
 /**
@@ -176,9 +184,9 @@ export function rangeText(r: AddrRange, version: 4 | 6): string {
 /** Compare two addresses: family first (IPv4 before IPv6), then value. */
 export function compareAddr(a: IpAddr, b: IpAddr): number {
   if (a.version !== b.version) return a.version - b.version;
-  const x = addrBig(a);
-  const y = addrBig(b);
-  return x < y ? -1 : x > y ? 1 : 0;
+  // byte by byte, most significant first (the same order as the integers)
+  for (let i = 0; i < a.bytes.length; i++) if (a.bytes[i] !== b.bytes[i]) return a.bytes[i] - b.bytes[i] < 0 ? -1 : 1;
+  return 0;
 }
 
 /** Compare two prefixes: family, network address, then length (shorter first). */
