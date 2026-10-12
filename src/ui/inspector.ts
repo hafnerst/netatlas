@@ -1041,6 +1041,7 @@ export class Editor {
         this.textField(base.concat('medium'), 'Medium', o, 'text', MEDIA, 'Set on the link only, not on ports.'),
         this.textField(base.concat('speed'), 'Speed', o, 'text', ['100M', '1G', '10G', '25G', '40G', '100G', '400G'], 'Set on the link only, not on ports.'),
         this.textField(base.concat('cable'), 'Cable / circuit id', o),
+        this.directionField(base.concat('direction'), true),
       ], 'cable');
       notes();
     } else if (kind === 'network') {
@@ -2413,7 +2414,8 @@ export class Editor {
    * and is not written; unidirectional runs from the first endpoint to the
    * last, so the endpoint order matters (↑ reorders).
    */
-  private directionField(p: Path): HTMLElement {
+  /** A relation's direction, or a link's (`link`: from end A to end B). */
+  private directionField(p: Path, link = false): HTMLElement {
     const cur = this.doc.text(p);
     const on = cur === undefined ? 'bidirectional' : cur;
     const valid = (DIRECTIONS as readonly string[]).indexOf(on) >= 0;
@@ -2425,8 +2427,11 @@ export class Editor {
         this.e('button', { type: 'button', class: 'mini' + (d === on ? ' active' : ''), role: 'radio', 'aria-checked': d === on ? 'true' : 'false', 'data-act': 'direction', 'data-p': J(p), 'data-k': d }, [label[d]]),
       ),
     );
-    const help =
-      on === 'unidirectional'
+    const help = link
+      ? on === 'unidirectional'
+        ? 'End A → End B only (simplex fibre, a data diode, a TAP or SPAN feed), with an arrow; traffic is never traced the other way. Swap the ends to turn it.'
+        : 'The default. Unidirectional: End A → End B only (simplex fibre, a data diode, a TAP or SPAN feed).'
+      : on === 'unidirectional'
         ? 'First endpoint → last, with an arrow. Reorder with ↑ to turn it.'
         : 'The default. Unidirectional: first endpoint → last (e.g. syslog).';
     return this.field('Direction', sw, p, valid ? help : `"${on}" is not a direction: choose one.`);

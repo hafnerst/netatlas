@@ -34,6 +34,7 @@ devices: [...]
 links: [...]
 networks: [...]
 relations: [...]
+demands: [...]         # optional: traffic demands (traced; never change the network)
 scenarios: [...]       # optional: saved what-if simulations (never change the network)
 checks: {...}          # optional: switch consistency checks off or change their severity
 ```
@@ -689,6 +690,7 @@ devices:
 | `a`, `b` | yes | The two ends. `device:interface`, or just `device` when the port is unknown or irrelevant (e.g. "Internet"), or a mapping `{device, interface, speed, duplex, mode, untagged, tagged}`. |
 | `medium` | | `fiber`, `copper`, `dac`, `aoc`, `wireless`/`lte`/`5g`/`microwave`, `serial`, `virtual`, or any other text (it gets its own colour). **The only place the medium of the connection is configured**; without it the cable is drawn as "Unspecified". |
 | `speed` | | e.g. `1G`, `10G`, `100G`, `250M`. **The only place the speed of the connection is configured**; it sets the line width. |
+| `direction` | | `unidirectional`: traffic only from end `a` to end `b` (simplex fibre, a data diode, a TAP or SPAN feed), drawn with an arrow at end `b`; the path tracer and the simulated traffic never use it the other way. `bidirectional` is the default and is not written. Anything else is an error. |
 | `label`, `cable` (cable/circuit id), `description`, `attrs` | | |
 
 Rules: a port can have at most one cable. Only physical interfaces can be
@@ -1005,6 +1007,35 @@ Built-in protocol ids: `gre`, `ipsec`, `ipip`, `wireguard`, `openvpn`, `l2tp`,
 `netflow`. There are also aliases such as `ebgp`, `ibgp`, `mp-bgp`, `ospfv3`,
 `is-is`, `wg`, `ikev2`, `mpls-te`, `pw`, `lag`, `port-channel`, `vpc`,
 `tacacs+`, `ipfix` and `sflow`.
+
+## `demands` (traffic demands)
+
+Optional. Traffic that flows between two points of the network, for the
+simulated traffic (Simulate → Traffic animation). A demand is analysis data:
+it is traced like **Trace path**, never changes the network objects, and a
+file means the same network with or without it.
+
+```yaml
+demands:
+  - id: users-app                 # required, unique among the demands
+    label: Users to the app server
+    source: w-host                # a device, an interface (device:interface) or an IP address
+    destination: e-srv
+    bandwidth: 400M               # required: a number with k, M, G or T (bits per second)
+    class: business               # optional: a traffic class, free text
+    description: …                # optional
+```
+
+`source` and `destination` take what the path tracer takes. A demand is
+traced from its source to its destination in the state shown (the model as
+written, or a simulation step); equal-cost paths share it equally. The
+dots of the traffic animation follow its paths, more of them for more
+bandwidth.
+
+Validation: unknown keys, a missing `source`, `destination` or `bandwidth`,
+a bandwidth that isn't one and a duplicate id are **errors**; an end that
+names nothing of the model is a **warning** (the demand can't be traced and
+is shown as lost). At most 2000 demands.
 
 ## `scenarios` (what-if steps)
 
@@ -1507,7 +1538,8 @@ next to the object and field they concern.
   address lies in;
 * a tunnel source address that no interface of the device has;
 * the same DNS name on two devices;
-* a scenario step whose object doesn't exist (the step is skipped).
+* a scenario step whose object doesn't exist (the step is skipped);
+* a demand whose source or destination names nothing of the model.
 
 A file with **errors can still be opened and drawn**. Everything that
 validated is shown, so an incomplete draft stays usable. Only files that

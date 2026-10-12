@@ -237,6 +237,12 @@ export interface Link {
   speed?: string;
   label?: string;
   cable?: string;
+  /**
+   * Unidirectional: traffic only from end a to end b (simplex fibre, a data
+   * diode, a TAP or SPAN feed); the path tracer never sends traffic the
+   * other way. Bidirectional (the default) is not written.
+   */
+  direction: Direction;
   description?: string;
   attrs: Attrs;
   line: number;
@@ -318,6 +324,27 @@ export interface Scenario {
   line: number;
 }
 
+/**
+ * A traffic demand (the `demands:` section): traffic of a given bandwidth
+ * from a source to a destination, each a device, an interface
+ * ("device:interface") or an IP address, as the path tracer takes them.
+ * Analysis data: it is traced, never changes the network objects.
+ */
+export interface Demand {
+  id: string;
+  label: string;
+  source: string;
+  destination: string;
+  /** as written ("200M", "1G") */
+  bandwidth: string;
+  /** bits per second */
+  bps: number;
+  /** a traffic class, free text ("voice", "backup") */
+  class?: string;
+  description?: string;
+  line: number;
+}
+
 /** Node centers per view, keyed by entity id (see layout-auto.ts). */
 export interface ModelLayout {
   physical: Map<string, { x: number; y: number }>;
@@ -345,6 +372,8 @@ export interface Model {
   checks: Map<string, 'off' | 'error' | 'warning' | 'info'>;
   /** saved simulation scenarios (never change the network objects) */
   scenarios: Scenario[];
+  /** traffic demands (analysis data: traced, never change the network objects) */
+  demands: Demand[];
   index: ModelIndex;
 }
 

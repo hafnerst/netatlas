@@ -206,6 +206,19 @@ const MANUAL: Section[] = [
     figures: [['simulation', 'A scenario at its second step: the peer LAG and a core switch failed, the VRRP groups failing over (dash-dot), the banner with the step, and the Simulation tab.']],
   },
   {
+    id: 'traffic',
+    title: 'Watch simulated traffic',
+    steps: [
+      'Open **ospf-reroute.yaml** (File → Examples) and play its scenario: **Simulate → Scenarios**, **Play**. In simulation mode moving dots show the traffic the model implies: larger dots for the traffic **demands** (more for more bandwidth), smaller ones for the routing protocols, VRRP and the services, in the direction they flow.',
+      'Press `]` for the next step. When a link fails the dots take the way routing takes now: for a moment the old way shows faded and dashed and the new one emphasized. Traffic with no way left is marked **✕** where it stops.',
+      'The **Traffic** section of the Simulation tab lists what changed, every demand with its path, and the control traffic. **Pause** stops the dots; **Simulate → Traffic animation** switches them off.',
+    ],
+    notes: [
+      'With reduced motion set in your system, arrows show the direction instead of moving dots; exports always show arrows. A cable with `direction: unidirectional` carries traffic one way only. Demands are written in the model\'s `demands` section.',
+    ],
+    figures: [['traffic', 'The primary core link has failed: the traffic moves to the backup path over c2 (emphasized), the old way dashed, and the Traffic section of the Simulation tab with the reroute and the demands.']],
+  },
+  {
     id: 'trace',
     title: 'Trace a path',
     steps: [

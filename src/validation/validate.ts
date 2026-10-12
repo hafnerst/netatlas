@@ -45,6 +45,7 @@ import { COLOR_RE, DEFAULT_STYLE, builtinProtocols, lookupProtocol, normalizePro
 import { YMap, YNode, YSeq, YamlError, YamlLimits, parseYaml } from '../yaml/parse';
 import { FORMAT_VERSION, SCHEMA } from '../yaml/schema';
 import { readScenarios } from './scenarios';
+import { readDemands } from './demands';
 import { Ctx, DEFAULT_MODEL_LIMITS, ID_RE, IFACE_RE, Issue, ModelLimits, Reader, TooManyErrors, get, isNull, kindOf, scalarText, suggest } from './reader';
 
 export { DEFAULT_MODEL_LIMITS, ID_RE, IFACE_RE, scalarText, suggest };
@@ -741,6 +742,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
       speed: r.field(m, 'speed', lpath, 40),
       label: r.field(m, 'label', lpath, L.maxLabel),
       cable: r.field(m, 'cable', lpath, L.maxLabel),
+      direction: directionField(r, c, m, lpath, 'from end a to end b'),
       description: r.field(m, 'description', lpath, L.maxDescription),
       attrs: r.attrs(get(m, 'attrs'), lpath + '.attrs'),
       line: m.line,
@@ -871,7 +873,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
       label: r.field(m, 'label', rpath, L.maxLabel),
       endpoints,
       over,
-      direction: relationDirection(r, c, m, rpath),
+      direction: directionField(r, c, m, rpath, 'from the first endpoint to the last'),
       description: r.field(m, 'description', rpath, L.maxDescription),
       attrs: r.attrs(get(m, 'attrs'), rpath + '.attrs'),
       line: m.line,
@@ -1050,8 +1052,10 @@ function build(root: YNode | null, c: Ctx): Model | null {
     layout,
     checks: checkSettings,
     scenarios: [],
+    demands: [],
     index,
   };
+  model.demands = readDemands(r, c, top, model);
   model.scenarios = readScenarios(r, c, top, model);
   // Derived VLANs are never chosen for the user: conflicting networks are reported.
   derive(model).addresses.forEach((assocs, key) => {
@@ -1337,12 +1341,12 @@ function readDnsNames(r: Reader, c: Ctx, m: YMap, dpath: string, dev: Device, ow
   return out;
 }
 
-/** A relation's direction: bidirectional unless "direction: unidirectional" is written. Anything else is an error. */
-function relationDirection(r: Reader, c: Ctx, m: YMap, rpath: string): Direction {
-  const d = r.field(m, 'direction', rpath, 40);
+/** A relation's or a link's direction: bidirectional unless "direction: unidirectional" is written. Anything else is an error. */
+function directionField(r: Reader, c: Ctx, m: YMap, path: string, way: string): Direction {
+  const d = r.field(m, 'direction', path, 40);
   if (d === undefined) return 'bidirectional';
   if ((DIRECTIONS as readonly string[]).indexOf(d) >= 0) return d as Direction;
-  c.error(get(m, 'direction') as YNode, rpath + '.direction', `unknown direction "${d}": use "bidirectional" (the default) or "unidirectional" (from the first endpoint to the last)${suggest(d, DIRECTIONS)}`);
+  c.error(get(m, 'direction') as YNode, path + '.direction', `unknown direction "${d}": use "bidirectional" (the default) or "unidirectional" (${way})${suggest(d, DIRECTIONS)}`);
   return 'bidirectional';
 }
 

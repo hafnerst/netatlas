@@ -593,6 +593,8 @@ function l2Segment(model: Model, ctx: RoutingCtx, a: { device: string; iface: st
     if (!linkUp(l)) continue;
     const near = atA(l.a) ? l.a : l.b;
     const far = near === l.a ? l.b : l.a;
+    // a unidirectional cable carries traffic from its end a to its end b only
+    if (l.direction === 'unidirectional' && near !== l.a) continue;
     if (!carries(near, vlan) || !carries(far, vlan)) continue;
     if (atB(far)) return finish(model, ctx, { device: far.device, via: l, prev: null });
     if (seenDev.has(far.device)) continue;
@@ -609,6 +611,7 @@ function l2Segment(model: Model, ctx: RoutingCtx, a: { device: string; iface: st
       const near = l.a.device === s.device ? l.a : l.b.device === s.device ? l.b : null;
       if (!near) continue;
       const far = near === l.a ? l.b : l.a;
+      if (l.direction === 'unidirectional' && near !== l.a) continue;
       if (!carries(near, vlan) || !carries(far, vlan) || (inEnd && near.iface !== undefined && inEnd.iface === near.iface)) continue;
       const next: L2State = { device: far.device, via: l, prev: s };
       if (atB(far)) return finish(model, ctx, next);
@@ -654,6 +657,8 @@ function lagSiblings(model: Model, ctx: RoutingCtx, l: Link): string[] {
         const o = lid ? model.index.links.get(lid) : undefined;
         if (!o || (ctx.linkUp && !ctx.linkUp(o.id)) || !up(ctx, end.device, m)) continue;
         const ofar = o.a.device === end.device && o.a.iface === m ? o.b : o.a;
+        // a unidirectional member joins only a cable that runs one way in the same orientation
+        if (o.direction === 'unidirectional' && (l.direction !== 'unidirectional' || o.a.device !== l.a.device)) continue;
         if (ofar.device === far.device && out.indexOf(o.id) < 0) out.push(o.id);
       }
     }
@@ -698,7 +703,7 @@ export function encapStack(model: Model, r: Relation): EncapLayer[] {
 }
 
 /** The cables, networks and relations a relation is carried over, down to the cables. */
-function declaredUnderlay(model: Model, r: Relation): { links: string[]; networks: string[]; relations: string[] } {
+export function declaredUnderlay(model: Model, r: Relation): { links: string[]; networks: string[]; relations: string[] } {
   const links: string[] = [];
   const networks: string[] = [];
   const relations: string[] = [];

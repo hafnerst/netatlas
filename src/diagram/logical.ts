@@ -166,7 +166,8 @@ export function renderLogical(model: Model, layout: LogicalLayout, opts: Logical
         if (!dn) continue;
         const s = clipToBox(dn, { x: nn.cx, y: nn.cy }, 1);
         const e = clipToBox(nn, { x: dn.cx, y: dn.cy }, 1);
-        members.push(h('path', { class: 'member', 'data-ref': 'network:' + nw.id, d: lineD(s, e) }));
+        // from the device to the network (data-member: the device; the traffic animation follows it)
+        members.push(h('path', { class: 'member', 'data-ref': 'network:' + nw.id, 'data-member': m.device, d: lineD(s, e) }));
         // every address of the device inside the network, in full
         if (opts.showLabels) memberLabels.push({ ref: 'network:' + nw.id, s, e, addresses: memberAddresses(model, nw.id, m.device) });
       }
@@ -210,6 +211,9 @@ export function renderLogical(model: Model, layout: LogicalLayout, opts: Logical
             {
               class: `rel cat-${p.def.category} style-${p.def.style} proto-${cssToken(p.rel.protocol)} depth-${p.depth}`,
               'data-ref': 'relation:' + p.rel.id,
+              // the lane runs from this device's port to the other's (the traffic animation follows it)
+              'data-from': b.a,
+              'data-to': b.b,
             },
             children,
           ),
@@ -228,7 +232,10 @@ export function renderLogical(model: Model, layout: LogicalLayout, opts: Logical
       const pts = routes.spokes.get(r.id + ':' + d);
       if (!pts) continue;
       const dd = polylineD(pts);
-      kids.push(h('path', { class: 'hit', d: dd }), ...relationStroke(def, dd, spokeWidth(model, r)));
+      // each spoke runs from its device's port to the hub (data-spoke: the device; the traffic animation follows it)
+      const spoke = [h('path', { class: 'hit', d: dd }), ...relationStroke(def, dd, spokeWidth(model, r))];
+      for (const v of spoke) v.attrs['data-spoke'] = d;
+      kids.push(...spoke);
       keepLine(pts, spokeWidth(model, r) / 2);
     }
     kids.push(h('circle', { class: 'hub', cx: hub.cx, cy: hub.cy, r: HUB_R, stroke: def.color }));

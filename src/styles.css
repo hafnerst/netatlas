@@ -43,6 +43,9 @@
   --warn: #b35900;
   --sel: #d9730d;
   --trace: #a61e8a;
+  /* simulated traffic: demands and control traffic (3:1 against the canvas) */
+  --traffic: #0b7285;
+  --traffic-ctl: #5c636a;
   /* a simulated state: the frame around the diagram, its badge and banner (with a pattern and words, not colour alone) */
   --sim: #5f3dc4;
   --sim-soft: #f3f0ff;
@@ -85,6 +88,8 @@
   --warn: #e0b07a;
   --sel: #e3a857;
   --trace: #f38bd9;
+  --traffic: #66d9e8;
+  --traffic-ctl: #adb5bd;
   --sim: #b197fc;
   --sim-soft: #2a2540;
   --ok: #7cc68a;
@@ -1025,6 +1030,22 @@ fieldset.locked-form { margin: 0; padding: 0; border: 0; min-width: 0; }
 .sim-in-analysis { margin: 0 0 8px; padding: 4px 8px; border-left: 3px dashed var(--sim); background: var(--sim-soft); color: var(--text); }
 .sim-in-analysis > span { color: var(--sim); }
 .export-sim-frame { fill: none; stroke: var(--sim); stroke-width: 4; stroke-dasharray: 12 6; }
+
+/* ---- the traffic animation: dots above the lines, below the boxes and labels (never covering them) */
+.layer-traffic { pointer-events: none; }
+.traffic-dot.demand { fill: var(--traffic); stroke: var(--canvas); stroke-width: 1.2; }
+.traffic-dot.control { fill: var(--traffic-ctl); stroke: var(--canvas); stroke-width: 0.8; }
+.traffic-arrow.demand { fill: var(--traffic); stroke: var(--canvas); stroke-width: 1; }
+.traffic-arrow.control { fill: var(--traffic-ctl); stroke: var(--canvas); stroke-width: 0.8; }
+/* a reroute, for a moment: the old way faded and dashed, the new one emphasized */
+.traffic-old { fill: none; stroke: var(--muted); stroke-width: 7; stroke-dasharray: 8 6; opacity: .55; }
+.traffic-new { fill: none; stroke: var(--traffic); stroke-width: 9; opacity: .32; stroke-linecap: round; }
+/* lost traffic: a marker at the last device it reaches */
+.traffic-lost circle { fill: var(--panel); stroke: var(--error); stroke-width: 2.5; }
+.traffic-lost text { fill: var(--error); font-size: 11px; font-weight: 700; }
+.sim-traffic h5 { margin: 10px 0 4px; font-size: 12px; }
+ul.traffic-flows li, ul.traffic-changes li { overflow-wrap: anywhere; }
+#side .sim-traffic button[aria-pressed="true"]#sim-traffic { font-weight: 600; }
 
 /* ---- the Simulation tab */
 .sim-panel { margin-bottom: 14px; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
