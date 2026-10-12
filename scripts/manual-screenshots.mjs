@@ -62,7 +62,7 @@ async function main() {
     await page.settle();
 
     // the whole window, physical view
-    await save('physical', { x: 0, y: 0, w: 1440, h: 900 }, { scale: 0.75, quality: 80 });
+    await save('physical', { x: 0, y: 0, w: 1440, h: 900 }, { scale: 0.75, quality: 60 });
 
     // the logical view of the metro ring example
     await page.eval('netatlas.loadExample(3), netatlas.setView("logical"), true');
@@ -77,7 +77,7 @@ async function main() {
       const v = await page.rect('#viewport');
       const x = Math.max(c.x, v.x - 16);
       const y = Math.max(c.y, v.y - 16);
-      await save('logical', { x, y, w: Math.min(c.x + c.w, v.x + v.w + 16) - x, h: Math.min(c.y + c.h, v.y + v.h + 16) - y });
+      await save('logical', { x, y, w: Math.min(c.x + c.w, v.x + v.w + 16) - x, h: Math.min(c.y + c.h, v.y + v.h + 16) - y }, { quality: 68 });
     }
     await page.eval('netatlas.loadExample(0), netatlas.setView("logical"), true');
     await page.settle(200);
@@ -271,6 +271,31 @@ async function main() {
       await page.settle(200);
       await save('trace', { x: x0, y: c.y, w: side.x + side.w - x0, h: Math.min(c.h, 350) }, { quality: 40 });
       await page.eval(`document.getElementById('trace-exit-banner').click(), true`);
+      await page.settle(100);
+    }
+
+    // failure simulation: a core switch and a peer-link cable failed (enterprise WAN, physical view), the diagram zoomed in on the core and the results beside it
+    {
+      await page.eval('netatlas.loadExample(0), netatlas.setView("physical"), true');
+      await page.eval("document.getElementById('toast').hidden = true");
+      await page.eval(`netatlas.setSimulation(['device:hq-core1', 'link:l-peer2']), netatlas.showTab('analysis'), true`);
+      await page.mouse('mouseMoved', 700, 890);
+      await page.settle(300);
+      const c = await page.rect('#canvas-wrap');
+      const side = await page.rect('#side');
+      const x0 = c.x + Math.round(c.w * 0.45);
+      await page.eval(`(() => {
+        const r = document.querySelector('#viewport [data-ref="device:hq-core1"]').getBoundingClientRect();
+        const sv = document.getElementById('canvas').getBoundingClientRect();
+        netatlas.zoomBy(1.9, r.x + r.width / 2 - sv.x, r.y + r.height / 2 - sv.y);
+        const r2 = document.querySelector('#viewport [data-ref="device:hq-core1"]').getBoundingClientRect();
+        const wrap = document.getElementById('canvas-wrap').getBoundingClientRect();
+        netatlas.panBy(${x0} + 40 - r2.x, wrap.y + 190 - r2.y);
+        return true;
+      })()`);
+      await page.settle(200);
+      await save('simulation', { x: x0, y: c.y, w: side.x + side.w - x0, h: Math.min(c.h, 350) }, { quality: 40 });
+      await page.eval(`document.getElementById('sim-exit-banner').click(), true`);
       await page.settle(100);
     }
 

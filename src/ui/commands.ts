@@ -253,6 +253,37 @@ export function buildCommands(): Command[] {
       state: (app) => (app.currentTrace() ? on('Remove the traced path from the diagram (Esc)') : off('No path is traced')),
       run: (app) => app.exitTrace(),
     },
+    {
+      id: 'sim.add',
+      label: 'Simulate failure of selection',
+      group: 'Analyze',
+      mode: true,
+      keys: { combos: [{ key: 'x' }] },
+      keywords: 'fail failure impact outage down what if cable port device relation',
+      state: (app) => {
+        const why = app.simAddBlocked();
+        return why ? off(why) : on('Fail the selected object (too) and see what goes down or degrades with it (X)');
+      },
+      run: (app) => app.simulateSelection(),
+    },
+    {
+      id: 'sim.spof',
+      label: 'Single points of failure…',
+      group: 'Analyze',
+      mode: true,
+      keywords: 'spof redundancy partition resilience failure report',
+      state: (app) => needDiagram(app, 'The cables, devices and LAGs whose failure alone cuts the network or brings relations down'),
+      run: (app) => void app.openSpof(),
+    },
+    {
+      id: 'sim.exit',
+      label: 'Exit simulation',
+      group: 'Analyze',
+      mode: true,
+      keywords: 'failure leave end restore normal',
+      state: (app) => (app.currentSim() ? on('End the failure simulation: the normal view (Esc)') : off('No simulation is on')),
+      run: (app) => app.exitSimulation(),
+    },
     // ---------------------------------------------------------------- Help
     { id: 'help.manual', label: 'User Manual', group: 'Help', keywords: 'guide documentation', state: () => on('A short guide to NetAtlas’s basic tasks, with pictures'), run: (app) => void app.openHelp('manual') },
     { id: 'help.license', label: 'License', group: 'Help', keywords: 'apache', state: () => on('The license NetAtlas is distributed under (Apache License, Version 2.0)'), run: (app) => void app.openHelp('license') },
@@ -373,7 +404,7 @@ export function buildCommands(): Command[] {
         label: `${name} tab`,
         group: 'Panel',
         keys: key ? { combos: [{ key }] } : undefined,
-        keywords: tab === 'problems' ? 'errors warnings checks findings' : tab === 'yaml' ? 'source text' : tab === 'analysis' ? 'trace path hop list' : '',
+        keywords: tab === 'problems' ? 'errors warnings checks findings' : tab === 'yaml' ? 'source text' : tab === 'analysis' ? 'trace path hop list simulation results failure' : '',
         state: () => on(`Open the ${name} tab of the side panel`),
         run: (app) => app.showTab(tab),
       }),

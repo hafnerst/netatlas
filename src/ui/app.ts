@@ -34,6 +34,8 @@ import { addressingOverview } from '../analysis/addressing';
 import { focusSeeds } from '../analysis/focus';
 import { Trace, TraceRequest, pathRefs, returnRequest, tracePath, traceRefs, traceText } from '../analysis/trace';
 import { TraceForm, TraceRun, formRequest, newTraceForm, tracePanel, traceSummary } from './trace';
+import { failableRef, failedText, failureRefs, lostReachability, refLabel, simulate, singlePointsOfFailure, summarize } from '../analysis/failure';
+import { SimView, simPanel, simSummary, spofBody } from './failure';
 import { Command, buildCommands, isMac, keyLabel, matchesKey } from './commands';
 import { PaletteItem, commandItems, objectItems, paletteList, rankItems, resultsText } from './palette';
 import { AddrSort, AddrViewState, addressingBody, addressingCsv, addressingTables, newAddrViewState, shownText } from './addressing';
@@ -218,6 +220,8 @@ export class App {
     if (this.session) this.session.setView(prevView);
     this.traceRun = null;
     this.traceError = '';
+    this.simFailed = [];
+    this.simCache = null;
     this.tab = doc.errors.length || doc.warnings.length ? 'problems' : this.tab === 'yaml' ? 'yaml' : 'legend';
     this.computeErrorRefs();
     this.render();
@@ -764,6 +768,8 @@ export class App {
     this.tab = 'legend';
     this.traceRun = null;
     this.traceError = '';
+    this.simFailed = [];
+    this.simCache = null;
     this.zoom = { k: 1, tx: 0, ty: 0 };
     this.bounds = { x: 0, y: 0, w: 1, h: 1 };
     this.closeFind();
@@ -858,8 +864,11 @@ export class App {
     const tr = run && !run.trace.error ? traceRefs(run.trace) : null;
     const ret = run && run.back && !run.back.error && run.back.paths.length ? pathRefs(run.back.paths[0]) : null;
     const keep = tr ? null : s.highlight();
+    const sim = this.currentSim();
+    const failed = sim ? failureRefs(sim.res) : null;
     this.svg.classList.toggle('has-selection', !!keep);
     this.svg.classList.toggle('has-trace', !!tr);
+    this.svg.classList.toggle('has-sim', !!failed);
     const els = this.viewport.querySelectorAll('[data-ref]');
     for (let i = 0; i < els.length; i++) {
       const e = els[i];
@@ -877,6 +886,9 @@ export class App {
       e.classList.toggle('trace-ret', back);
       e.classList.toggle('trace-stop', !!tr && tr.stop === ref);
       e.classList.toggle('trace-off', !!tr && !main && !alt && !back);
+      const st = failed ? failed.get(ref) : undefined;
+      e.classList.toggle('sim-down', st === 'down');
+      e.classList.toggle('sim-degraded', st === 'degraded');
     }
   }
 
@@ -2094,9 +2106,15 @@ export class App {
     return note;
   }
 
-  /** The notes of the analysis modes that are on (focus, path trace), for the banner and for exported pictures. */
+  /** The text of the failure simulation in the banner and in exported pictures ('' = no simulation). */
+  private simNote(): string {
+    const v = this.currentSim();
+    return v ? `Simulation: failed ${failedText((this.session as Session).model, v.res)} · ${simSummary(v)}` : '';
+  }
+
+  /** The notes of the analysis modes that are on (simulation, focus, path trace), for the banner and for exported pictures. */
   modeNotes(): string[] {
-    return [this.focusNote(), this.traceNote()].filter((n) => n !== '');
+    return [this.simNote(), this.focusNote(), this.traceNote()].filter((n) => n !== '');
   }
 
   /** All of them in one line ('' = no analysis mode is on). */
@@ -2109,12 +2127,15 @@ export class App {
     const s = this.session;
     const f = s ? s.state.focus : null;
     const t = s ? this.currentTrace() : null;
+    const v = s ? this.currentSim() : null;
     const banner = this.$('mode-banner');
-    banner.hidden = !f && !t;
+    banner.hidden = !f && !t && !v;
     this.$('mb-focus').hidden = !f;
     this.$('mb-trace').hidden = !t;
-    this.doc.body.setAttribute('data-mode', [f ? 'focus' : '', t ? 'trace' : ''].filter((x) => x).join(' ') || 'none');
-    if (!s || (!f && !t)) return;
+    this.$('mb-sim').hidden = !v;
+    this.doc.body.setAttribute('data-mode', [v ? 'simulation' : '', f ? 'focus' : '', t ? 'trace' : ''].filter((x) => x).join(' ') || 'none');
+    if (!s || (!f && !t && !v)) return;
+    if (v) this.$('sim-text').textContent = `Simulation active: failed ${failedText(s.model, v.res)} · ${simSummary(v)}. The model is unchanged.`;
     if (f) {
       this.$('mode-text').textContent = this.focusNote() + '. Positions here are temporary and are not saved.';
       this.$('focus-hops').textContent = `${f.hops} hop${f.hops === 1 ? '' : 's'}`;
@@ -2128,6 +2149,101 @@ export class App {
     this.doc.documentElement.style.setProperty('--mode-banner-h', Math.ceil(banner.getBoundingClientRect().height) + 'px');
   }
 
+  // ------------------------------------------------------------ failure simulation
+
+  /** the failed objects (refs) of the simulation on screen; empty: no simulation */
+  private simFailed: string[] = [];
+  /** its result, for one model and one set of failed objects */
+  private simCache: { model: Model; key: string; view: SimView } | null = null;
+
+  /** The simulation on screen (computed again after an edit), or null. */
+  currentSim(): SimView | null {
+    const s = this.session;
+    if (!s || !this.simFailed.length) return null;
+    // an edit may have removed a failed object
+    const live = this.simFailed.filter((r) => failableRef(s.model, r));
+    if (live.length !== this.simFailed.length) this.simFailed = live;
+    if (!live.length) return null;
+    const key = live.join('\n');
+    const c = this.simCache;
+    if (c && c.model === s.model && c.key === key) return c.view;
+    const res = simulate(s.model, live);
+    const view: SimView = { res, summary: summarize(s.model, res), lost: lostReachability(s.model, res) };
+    this.simCache = { model: s.model, key, view };
+    return view;
+  }
+
+  /** Why the selection can't be failed ('' = it can). */
+  simAddBlocked(): string {
+    const s = this.session;
+    if (!s) return 'Open or create a model first';
+    const sel = s.state.selected;
+    if (!sel) return 'Select a cable, port, device or relation first';
+    if (!failableRef(s.model, sel)) return 'Only a cable, a port (an interface), a device or a relation can fail';
+    if (this.simFailed.indexOf(sel) >= 0) return `${refLabel(s.model, sel)} has failed already`;
+    return '';
+  }
+
+  /** Show a simulation of these failed objects (none: end it). Nothing in the model changes; no undo step. */
+  setSimulation(refs: string[]): void {
+    this.simFailed = Array.from(new Set(refs)).sort();
+    this.applyHighlight();
+    this.renderSide();
+    this.updateChrome();
+  }
+
+  /**
+   * Analyze → Simulate failure of selection (X): the selected cable, port,
+   * device or relation fails too; the Analysis tab shows what is down or
+   * degraded, and both views mark it.
+   */
+  simulateSelection(): boolean {
+    const s = this.session;
+    if (!s || this.simAddBlocked()) return false;
+    this.tab = 'analysis';
+    this.setSimulation(this.simFailed.concat([s.state.selected as string]));
+    return true;
+  }
+
+  /** End the failure simulation: the normal view. */
+  exitSimulation(): boolean {
+    if (!this.simFailed.length) return false;
+    this.setSimulation([]);
+    const back = this.doc.activeElement;
+    if (!back || back === this.doc.body) (this.doc.getElementById('canvas') as unknown as HTMLElement).focus();
+    return true;
+  }
+
+  private spofOpen = false;
+
+  /** Analyze → Single points of failure…: the report; choosing an entry simulates its failure. */
+  async openSpof(): Promise<void> {
+    const s = this.session;
+    if (!s || this.spofOpen) return;
+    this.openMenu(null);
+    this.spofOpen = true;
+    const list = singlePointsOfFailure(s.model);
+    const body = spofBody(this.doc, s.model, list);
+    body.addEventListener('click', (e) => {
+      const b = (e.target as Element).closest('[data-spof]');
+      if (b) closeDialogWith(b, 'spof:' + b.getAttribute('data-spof'));
+    });
+    const res = await this.dialog({
+      title: 'Single points of failure',
+      body: [body],
+      buttons: [{ label: 'Close', value: 'close', kind: 'primary' }],
+      className: 'spof-dialog',
+      closeButton: true,
+    });
+    const dlg = this.doc.getElementById('modal') as HTMLElement;
+    dlg.className = '';
+    this.spofOpen = false;
+    if (res.indexOf('spof:') === 0) {
+      this.tab = 'analysis';
+      this.setSimulation(res.slice(5).split(' '));
+    }
+  }
+
   // ------------------------------------------------------------ path trace
 
   /** the Trace path form (kept while the page is open; never saved) */
@@ -2135,7 +2251,7 @@ export class App {
   /** why the form could not be traced ('' = it could) */
   private traceError = '';
   /** the trace on screen and the model it was computed on (computed again after an edit) */
-  private traceRun: (TraceRun & { model: Model }) | null = null;
+  private traceRun: (TraceRun & { model: Model; sim: string }) | null = null;
   /** which of the equal-cost paths the hop list shows (0: the main path) */
   private tracePathShown = 0;
 
@@ -2144,18 +2260,22 @@ export class App {
     const s = this.session;
     const r = this.traceRun;
     if (!s || !r) return null;
-    if (r.model !== s.model) this.traceRun = { ...this.computeTrace(r.req, !!r.back), model: s.model };
+    const sk = this.simFailed.join('\n');
+    if (r.model !== s.model || r.sim !== sk) this.traceRun = { ...this.computeTrace(r.req, !!r.back), model: s.model, sim: sk };
     return this.traceRun;
   }
 
+  /** A trace of the model, under the failure simulation when one is on. */
   private computeTrace(req: TraceRequest, withBack: boolean): TraceRun {
     const model = (this.session as Session).model;
-    const trace = tracePath(model, req);
+    const sim = this.currentSim();
+    const ctx = sim ? sim.res.ctx : undefined;
+    const trace = tracePath(model, req, ctx);
     let back: Trace | null = null;
     if (withBack) {
       const rq = returnRequest(trace);
       back = rq
-        ? tracePath(model, rq)
+        ? tracePath(model, rq, ctx)
         : { request: { from: req.to, to: req.from }, paths: [], truncated: false, error: trace.error ? 'Not traced' : 'The destination is not a device of the model: there is no way back to trace' };
     }
     return { req, trace, back };
@@ -2210,7 +2330,7 @@ export class App {
       return false;
     }
     this.traceError = '';
-    this.traceRun = { ...run, model: s.model };
+    this.traceRun = { ...run, model: s.model, sim: this.simFailed.join('\n') };
     this.tracePathShown = 0;
     this.tab = 'analysis';
     this.applyHighlight();
@@ -2254,6 +2374,19 @@ export class App {
     const s = this.session as Session;
     const run = this.currentTrace();
     mount(body, []);
+    body.appendChild(
+      simPanel(this.doc, s.model, this.currentSim(), {
+        remove: (ref) => {
+          this.setSimulation(this.simFailed.filter((r) => r !== ref));
+          const next = this.doc.querySelector('[data-sim-remove]') || this.doc.getElementById('sim-add');
+          if (next) (next as HTMLElement).focus();
+        },
+        addBlocked: this.simAddBlocked(),
+        add: () => void this.simulateSelection(),
+        exit: () => void this.exitSimulation(),
+        spof: () => void this.openSpof(),
+      }),
+    );
     body.appendChild(
       tracePanel(this.doc, s.model, this.traceForm, run, this.tracePathShown, this.traceError, {
         input: (field, value) => {
@@ -2936,6 +3069,7 @@ export class App {
       if (e.key === 'Escape') {
         if (this.conn) this.cancelConnection(true);
         else if (this.traceRun) this.exitTrace();
+        else if (this.simFailed.length) this.exitSimulation();
         else if (this.session && this.session.state.focus) this.exitFocus();
         else this.select(null);
       }

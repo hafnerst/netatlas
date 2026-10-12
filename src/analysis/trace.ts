@@ -218,7 +218,7 @@ export function tracePath(model: Model, req: TraceRequest, ctx: RoutingCtx = {})
   } else {
     destDev = dst.device;
     destIface = dst.kind === 'iface' ? dst.iface : undefined;
-    const c = pickAddress(model, dst.device, destIface, srcFamilies);
+    const c = pickAddress(model, dst.device, destIface, srcFamilies, undefined, ctx);
     if (!c) return { ...out, error: `Destination: ${traceEndText(dst)} has no address to trace to` };
     destAddr = c.addr;
     destIface = c.iface;
@@ -226,7 +226,7 @@ export function tracePath(model: Model, req: TraceRequest, ctx: RoutingCtx = {})
   if (!destAddr) return { ...out, error: 'Destination: not an address' };
   const vrf = vrfGiven !== undefined ? vrfGiven : srcIface !== undefined ? ifaceVrf(model, srcDev, srcIface) : '';
   if (!srcAddr) {
-    const c = srcIface !== undefined ? connectedOf(model, srcDev).find((x) => x.iface === srcIface && x.addr.version === (destAddr as IpAddr).version) : pickAddress(model, srcDev, undefined, [(destAddr as IpAddr).version], vrf);
+    const c = srcIface !== undefined ? connectedOf(model, srcDev).find((x) => x.iface === srcIface && x.addr.version === (destAddr as IpAddr).version) : pickAddress(model, srcDev, undefined, [(destAddr as IpAddr).version], vrf, ctx);
     if (c) srcAddr = c.addr;
   }
   out.source = { device: srcDev, vrf };
@@ -322,7 +322,8 @@ function noRoute(w: Walk, at: At, hop: Hop, before: Hop[], decision: Decision): 
     return r;
   }
   // a routing adjacency of this device that can't form, in a protocol that would know the destination
-  const miss = routingAdjacencies(model, w.ctx).missing.filter((m) => m.from === at.device);
+  // (only one whose neighbour knows the way: it has a route to the destination)
+  const miss = routingAdjacencies(model, w.ctx).missing.filter((m) => m.from === at.device && lookup(model, m.to, routingVrf(model, m), w.dest, w.ctx).kind !== 'none');
   if (miss.length) {
     const m = miss[0];
     const r = end('no-adjacency', `no route to ${w.destText} in ${vrfName(at.vrf)}; the ${protoLabel(model, m.protocol)} adjacency ${m.relation} to ${m.to} can't form: ${m.detail}`);
@@ -330,6 +331,13 @@ function noRoute(w: Walk, at: At, hop: Hop, before: Hop[], decision: Decision): 
     return r;
   }
   return end('no-route', `no route to ${w.destText} in ${vrfName(at.vrf)} of ${at.device}`);
+}
+
+/** The VRF of the neighbour's end of a routing adjacency (its endpoint interface's, else the default table). */
+function routingVrf(model: Model, m: { relation: string; to: string }): string {
+  const r = model.index.relations.get(m.relation);
+  const e = r ? r.endpoints.find((x) => x.device === m.to && x.iface !== undefined) : undefined;
+  return e && e.iface !== undefined ? ifaceVrf(model, m.to, e.iface) : '';
 }
 
 /** Follow one next hop of a decision. */
@@ -498,14 +506,15 @@ function familiesOf(model: Model, device: string, iface: string | undefined): Ar
  * the other end has (IPv4 first), a loopback before other interfaces, then
  * by interface id and address.
  */
-function pickAddress(model: Model, device: string, iface: string | undefined, families: Array<4 | 6>, vrf?: string): Connected | null {
+function pickAddress(model: Model, device: string, iface: string | undefined, families: Array<4 | 6>, vrf?: string, ctx?: RoutingCtx): Connected | null {
   const d = model.index.devices.get(device);
   if (!d) return null;
   const kind = (c: Connected): number => {
     const i = model.index.interfaces.get(ifaceKey(device, c.iface));
     return i ? ['loopback', 'physical', 'virtual', 'tunnel'].indexOf(i.type) : 4;
   };
-  const cands = connectedOf(model, device).filter((c) => (iface === undefined || c.iface === iface) && (vrf === undefined || c.vrf === vrf));
+  // an interface that is down (a failure simulation) is not picked for a device as a whole
+  const cands = connectedOf(model, device).filter((c) => (iface === undefined || c.iface === iface) && (vrf === undefined || c.vrf === vrf) && (iface !== undefined || !ctx || up(ctx, device, c.iface)));
   const fam = (c: Connected): number => (families.length === 0 || families.indexOf(c.addr.version) >= 0 ? 0 : 1);
   cands.sort((a, b) => fam(a) - fam(b) || a.addr.version - b.addr.version || kind(a) - kind(b) || cmpStr(a.iface, b.iface) || compareAddr(a.addr, b.addr));
   return cands[0] || null;
@@ -688,7 +697,7 @@ interface TunnelStep {
 }
 
 /** The tunnel relation at an interface (category tunnel or overlay), the first by id. */
-function tunnelRelation(model: Model, device: string, iface: string): Relation | undefined {
+export function tunnelRelation(model: Model, device: string, iface: string): Relation | undefined {
   return model.relations
     .filter((r) => (r.category === 'tunnel' || r.category === 'overlay') && r.endpoints.some((e) => e.device === device && e.iface === iface))
     .sort((a, b) => cmpStr(a.id, b.id))[0];

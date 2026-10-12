@@ -954,6 +954,38 @@ body:not([data-state="loaded"]) .view-group .tool-group-title, body:not([data-st
 .list-row.sel-mark, .g-row.sel-mark { padding-top: 2px; padding-bottom: 2px; margin-top: -2px; margin-bottom: -2px; }
 .sel-tag { flex: none; display: inline-block; margin-left: 6px; padding: 0 6px; border: 1px solid var(--marked-bar); border-radius: 99px; color: var(--accent); background: var(--panel); font-size: 10.5px; font-weight: 600; line-height: 1.5; letter-spacing: 0; text-transform: none; white-space: nowrap; vertical-align: 1px; }
 
+/* ---- failure simulation: down and degraded objects, by line style (dotted, dash-dot) and fading, not colour alone */
+.has-sim .sim-down { opacity: .55; }
+.has-sim .sim-down .dev-box, .has-sim .sim-down .net-box { stroke: var(--error) !important; stroke-width: 3.5 !important; stroke-dasharray: 2 4 !important; stroke-linecap: round; }
+.has-sim .sim-degraded .dev-box, .has-sim .sim-degraded .net-box { stroke: var(--warn) !important; stroke-width: 3 !important; stroke-dasharray: 10 4 2 4 !important; }
+.has-sim .sim-down .cable-line, .has-sim .sim-down .rel-line, .has-sim .sim-down .tube-outer, .has-sim .sim-down.member { stroke-dasharray: 2 6 !important; stroke-linecap: round; }
+.has-sim .sim-degraded .cable-line, .has-sim .sim-degraded .rel-line, .has-sim .sim-degraded .tube-outer, .has-sim .sim-degraded.member { stroke-dasharray: 10 4 2 4 !important; }
+.has-sim rect.sim-down.port, .has-sim rect.sim-down.lport, .has-sim .sim-down.if-entry rect, .has-sim .sim-down.if-chip rect, .has-sim .sim-down.lag-mark { stroke: var(--error) !important; stroke-dasharray: 2 3; }
+.has-sim rect.sim-degraded.port, .has-sim rect.sim-degraded.lport, .has-sim .sim-degraded.if-entry rect, .has-sim .sim-degraded.if-chip rect, .has-sim .sim-degraded.lag-mark { stroke: var(--warn) !important; stroke-dasharray: 6 2 1.5 2; }
+.has-sim text.sim-down[data-ref^="route:"], .has-sim tspan.sim-down[data-ref^="route:"] { text-decoration: line-through; }
+.has-sim text.sim-degraded[data-ref^="route:"], .has-sim tspan.sim-degraded[data-ref^="route:"] { font-style: italic; text-decoration: underline dotted; }
+
+/* ---- the Analysis tab: Failure simulation */
+.sim-panel { margin-bottom: 14px; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
+.sim-status { font-weight: 600; margin: 6px 0; }
+ul.sim-failed { list-style: none; margin: 4px 0; padding: 0; }
+ul.sim-failed li { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 2px 0; }
+table.sim-counts { border-collapse: collapse; margin: 6px 0 4px; width: 100%; }
+table.sim-counts th, table.sim-counts td { text-align: left; padding: 2px 6px 2px 0; border-bottom: 1px solid var(--border); vertical-align: top; }
+table.sim-counts th { font-weight: 600; white-space: nowrap; }
+ul.sim-list { list-style: none; margin: 4px 0 8px; padding: 0; }
+ul.sim-list li { padding: 2px 0 2px 8px; border-left: 3px dotted var(--error); margin-bottom: 3px; overflow-wrap: anywhere; }
+ul.sim-list li.sim-degraded, ul.sim-list li.sim-takeover { border-left-style: dashed; border-left-color: var(--warn); }
+.sim-state { font-weight: 600; display: inline-block; min-width: 5.6em; }
+.sim-why { color: var(--muted); font-size: 12px; }
+.trace-key .tk-down { border: 2px dotted var(--error); }
+.trace-key .tk-deg { border: 2px dashed var(--warn); }
+dialog.spof-dialog { width: min(900px, calc(100vw - 32px)); }
+.spof-wrap { overflow-x: auto; max-height: 60vh; }
+table.spof-table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+table.spof-table th, table.spof-table td { text-align: left; padding: 4px 8px 4px 0; border-bottom: 1px solid var(--border); vertical-align: top; overflow-wrap: anywhere; }
+table.spof-table thead th { position: sticky; top: 0; background: var(--panel); }
+
 /* ---- the Analysis tab: Trace path */
 .trace-form { display: grid; gap: 6px; margin: 8px 0 10px; }
 .trace-form .tf-row { display: grid; grid-template-columns: 3.2em minmax(0, 1fr); align-items: center; gap: 6px; }

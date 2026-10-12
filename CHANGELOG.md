@@ -113,7 +113,24 @@ there is no conversion of files written for the earlier drafts.
   exports carry it with a *Path trace* note. A model-based approximation,
   computed in `src/analysis/trace.ts`; the routing tables now include the
   dynamic routes (`src/analysis/routing.ts`).
-- **The mode banner** has a row per analysis mode on (focus, path trace).
+- **The mode banner** has a row per analysis mode on (simulation, focus,
+  path trace).
+- **Failure simulation** (Analyze → Simulate failure of selection, `X`):
+  fail cables, ports, devices or relations; the failure is propagated
+  through the model (interfaces and cables of a failed device, the cable of
+  a failed port, everything that runs `over` a failed cable or relation,
+  recursively; LAGs degraded while `min_links` members are up; redundancy
+  groups failing over; static routes failing and floating routes taking
+  over; networks losing members). Both views mark what is down (dotted,
+  faded) or degraded (dash-dot); the Analysis tab counts and lists the
+  affected relations, tunnels, networks, routes, devices and cables and the
+  device pairs that lose reachability; a banner marks the simulation, `Esc`
+  ends it. Path tracing works under it. Exports carry a *Simulation* note.
+  Computed in `src/analysis/failure.ts`.
+- **Single points of failure** (Analyze → Single points of failure…): the
+  cables, devices and LAGs whose failure alone partitions the physical
+  network or brings down relations without a redundant underlay; an entry
+  starts its simulation.
 - **More consistency checks**, each with a positive and a negative test:
   `link-mtu-mismatch`, `tunnel-mtu` (with the encapsulation overhead it
   assumes in the message, added up over a tunnel stack),
@@ -258,6 +275,9 @@ there is no conversion of files written for the earlier drafts.
   addresses.
 
 ### Changed
+
+- **Address arithmetic** compares addresses and prefixes byte by byte (no
+  BigInt) where the routing tables and the simulation call it often.
 
 - **`enterprise-wan.yaml`** routes end to end: the firewall's two router
   ports share a transit VLAN (`vlan5`), the firewall and the core switches
