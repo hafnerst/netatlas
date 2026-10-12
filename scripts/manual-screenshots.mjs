@@ -226,6 +226,26 @@ async function main() {
       await page.settle(100);
     }
 
+    // focus mode on the firewall (enterprise WAN, physical view), then the command palette with "focus" typed
+    {
+      await page.eval('netatlas.loadExample(0), netatlas.setView("physical"), netatlas.select("device:hq-fw", true), true');
+      await page.eval("document.getElementById('toast').hidden = true");
+      await page.eval(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'F', shiftKey: true, bubbles: true })), true`);
+      await page.mouse('mouseMoved', 700, 890);
+      await page.settle(300);
+      const c = await page.rect('#canvas-wrap');
+      await save('focus', { x: c.x, y: c.y, w: c.w, h: Math.min(c.h, 470) }, { quality: 70 });
+      await page.eval(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true })), true`);
+      await page.settle(150);
+      await page.eval(`(() => { const i = document.getElementById('palette-input'); i.value = 'focus'; i.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
+      await page.settle(200);
+      await save('palette', around([await page.rect('#modal')], 6), { quality: 70 });
+      await page.key('Escape', 'Escape', 27);
+      await page.settle(100);
+      await page.eval(`document.getElementById('focus-exit').click(), true`);
+      await page.settle(100);
+    }
+
     // consistency checks: the Problems tab of the consistency-checks example, then its check settings
     const demo = await page.eval("Array.from(document.querySelectorAll('#menu-examples [data-example]')).findIndex((b) => /consistency-checks/.test(b.textContent))");
     await page.eval(`netatlas.loadExample(${demo}), netatlas.setView("physical"), netatlas.showTab("problems"), true`);

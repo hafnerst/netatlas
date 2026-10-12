@@ -186,6 +186,36 @@ body:not([data-view="logical"]) .logical-only { display: none; }
 /* subtle, accessible note while a filtered view is shown (outside the SVG: never exported) */
 .filter-hint { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); max-width: calc(100% - 40px); padding: 4px 10px; border: 1px solid var(--border); border-radius: 999px; background: var(--panel); color: var(--muted); font-size: 12px; box-shadow: 0 1px 4px var(--shadow); pointer-events: none; }
 .filter-hint[hidden] { display: none; }
+/* an analysis mode (focus): a banner across the top of the diagram, with its controls; the overlays below it move down */
+.mode-banner { position: absolute; top: 0; left: 0; right: 0; z-index: 25; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; padding: 6px 12px; border-bottom: 2px solid var(--accent); background: var(--accent-soft); color: var(--text); font-size: 12.5px; }
+.mode-banner[hidden] { display: none; }
+.mode-banner .mb-icon { font-size: 15px; color: var(--accent); }
+.mode-banner .mb-text { flex: 1 1 240px; min-width: 0; overflow-wrap: anywhere; }
+.mode-banner .mb-hops { display: inline-flex; align-items: center; gap: 4px; }
+.mode-banner .mb-count { min-width: 3.6em; text-align: center; font-weight: 600; }
+body[data-mode="focus"] .find-bar, body[data-mode="focus"] .filter-hint { top: calc(var(--mode-banner-h, 40px) + 8px); }
+/* the note an exported picture carries while an analysis mode is on */
+text.export-note { font: 600 13px system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; fill: var(--text); }
+/* the command palette: a search field over the results, near the top of the window */
+dialog#modal.palette-dialog { max-width: 640px; margin-top: min(12vh, 90px); }
+dialog#modal.palette-dialog .modal-inner { padding: 12px 14px 8px; }
+dialog#modal.palette-dialog .modal-inner h2 { font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+dialog#modal.palette-dialog .modal-body { max-height: min(60vh, 520px); max-height: min(60dvh, 520px); overflow: hidden; display: flex; flex-direction: column; }
+dialog#modal.palette-dialog .modal-btns { display: none; }
+.palette { display: flex; flex-direction: column; min-height: 0; }
+.palette input { width: 100%; font-size: 15px; padding: 8px 10px; }
+.palette-help { margin: 4px 0 6px; }
+.palette-list { list-style: none; margin: 0; padding: 0; overflow: auto; overscroll-behavior: contain; min-height: 0; }
+.pal-head { padding: 6px 8px 2px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+.pal-opt { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; padding: 6px 8px; border: 1px solid transparent; border-radius: 6px; cursor: pointer; }
+.pal-opt.active { border-color: var(--accent); background: var(--accent-soft); }
+.pal-opt.disabled { cursor: default; }
+.pal-opt.disabled .pal-label { color: var(--muted); }
+.pal-main { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.pal-sub { margin-left: 8px; font-size: 11.5px; color: var(--muted); }
+.pal-keys { flex: none; font: 600 11px/1.5 var(--font-mono); padding: 0 5px; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px; background: var(--canvas); }
+.pal-reason { flex: 1 0 100%; font-size: 11.5px; color: var(--muted); font-style: italic; }
+.pal-none { padding: 8px; color: var(--muted); font-size: 12px; }
 .search-wrap { position: relative; }
 #search { padding: 4px 8px; border: 1px solid var(--control-border); border-radius: 6px; background: var(--canvas); }
 .dropdown {

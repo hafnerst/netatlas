@@ -21,6 +21,15 @@
  * off or on keeps the other devices where they are (only the hidden ones
  * leave, and returning ones are placed next to their neighbours), and
  * switching it on again restores the device selection as it was.
+ *
+ * Focus mode. `state.focus` names an object and a number of hops (1–3):
+ * the diagrams then show only the devices within that many hops of it, in
+ * each view's sense (cables in the physical view, relations in the logical
+ * view; analysis/focus.ts), within whatever the other filters show. It is
+ * a filtered view like any other: arranged for its subset, with temporary
+ * positions; leaving focus brings back the views exactly as they were
+ * before (the complete diagrams with their stored positions, or the
+ * filtered views with their temporary ones). It never changes the model.
  */
 import { Pt } from '../layout/geometry';
 import { LayoutView, autoPositions, resolvePositions, samePositions } from '../layout/positions';
@@ -29,6 +38,7 @@ import { LayoutInput, layoutInput } from '../layout/input';
 import { LogicalLayout, logicalLayoutFrom, logicalSpecs } from '../layout/logical';
 import { PhysicalLayout, physicalBoxes } from '../layout/physical';
 import { filterModel, selectsAll } from '../model/filter';
+import { FOCUS_MAX_HOPS, FOCUS_MIN_HOPS, focusNeighbourhood, focusSeeds } from '../analysis/focus';
 import { refExists, relatedRefs } from '../model/queries';
 import { Model } from '../model/types';
 import { renderLogical } from './logical';
@@ -50,6 +60,8 @@ export interface ViewState {
   devices: Set<string> | null;
   /** device types (model identifiers, e.g. "server") whose devices the diagrams leave out */
   hiddenTypes: Set<string>;
+  /** focus mode: the object and the number of hops shown around it; null = off */
+  focus: { ref: string; hops: number } | null;
   /**
    * Temporary positions while a node is being dragged, keyed by ref
    * ("device:x", "network:y"). The editor commits them to the document's
@@ -70,6 +82,7 @@ export function createViewState(): ViewState {
     hiddenProtocols: new Set(),
     devices: null,
     hiddenTypes: new Set(),
+      focus: null,
     positions: { physical: new Map(), logical: new Map() },
   };
 }
@@ -123,11 +136,13 @@ export class Session {
       if (selectsAll(model, ids)) this.state.devices = null;
     }
     this.filtered = { physical: null, logical: null };
-    if (!this.isFiltered()) {
-      this.temp = { physical: null, logical: null };
-      this.parked = { physical: null, logical: null };
-    } else {
-      for (const v of ['physical', 'logical'] as LayoutView[]) {
+    // focus on an object the edit removed ends, and the views before it come back
+    if (this.state.focus && !focusSeeds(model, this.state.focus.ref).length) this.endFocus();
+    for (const v of ['physical', 'logical'] as LayoutView[]) {
+      if (!this.isFiltered(v)) {
+        this.temp[v] = null;
+        this.parked[v] = null;
+      } else {
         const old = this.temp[v];
         this.temp[v] = old ? resolvePositions(v, this.viewInput(v), old) : null;
       }
@@ -136,9 +151,9 @@ export class Session {
 
   // ------------------------------------------------------------- the filter
 
-  /** Do the diagrams show a proper subset of the devices (by selection or by type)? */
-  isFiltered(): boolean {
-    return this.shownSet() !== null;
+  /** Does a view (the one on screen by default) show a proper subset of the devices (by selection, by type or by focus)? */
+  isFiltered(view: View = this.state.view): boolean {
+    return this.shownSet(view) !== null;
   }
 
   /** The selected device ids (every device when there is no filter); device types switched off do not change it. */
@@ -146,9 +161,9 @@ export class Session {
     return this.state.devices ? new Set(this.state.devices) : new Set(this.model.devices.map((d) => d.id));
   }
 
-  /** The device ids the diagrams show: the selected ones that are not of a hidden type. */
-  shownDevices(): Set<string> {
-    return this.shownSet() || new Set(this.model.devices.map((d) => d.id));
+  /** The device ids a view shows: the selected ones that are not of a hidden type (and, in focus, near the focused object). */
+  shownDevices(view: View = this.state.view): Set<string> {
+    return this.shownSet(view) || new Set(this.model.devices.map((d) => d.id));
   }
 
   /** Is this device type switched off? */
@@ -156,14 +171,65 @@ export class Session {
     return this.state.hiddenTypes.has(type);
   }
 
-  /** The shown devices, or null when that is every device (no filter). */
-  private shownSet(): Set<string> | null {
+  /** The devices a view shows, or null when that is every device (no filter). */
+  private shownSet(view: View = this.state.view): Set<string> | null {
     const sel = this.state.devices;
     const hidden = this.state.hiddenTypes;
-    if (!sel && !hidden.size) return null;
+    const focus = this.state.focus;
+    if (!sel && !hidden.size && !focus) return null;
+    const near = focus ? focusNeighbourhood(this.model, focus.ref, focus.hops, view) : null;
     const out = new Set<string>();
-    for (const d of this.model.devices) if ((!sel || sel.has(d.id)) && !hidden.has(d.type)) out.add(d.id);
+    for (const d of this.model.devices) if ((!sel || sel.has(d.id)) && !hidden.has(d.type) && (!near || near.has(d.id))) out.add(d.id);
     return out.size === this.model.devices.length ? null : out;
+  }
+
+  // ------------------------------------------------------------- focus mode
+
+  /** the temporary positions of the views as they were before focus mode began (restored when it ends) */
+  private beforeFocus: { temp: { physical: Map<string, Pt> | null; logical: Map<string, Pt> | null }; parked: { physical: Map<string, Pt> | null; logical: Map<string, Pt> | null } } | null = null;
+
+  /**
+   * Show only the neighbourhood of an object: the devices within `hops`
+   * (1–3) of it. Starting focus arranges the shown part afresh; changing
+   * the hops keeps the devices that stay where they are and places the new
+   * ones next to their neighbours. Returns false when the object has no
+   * device to start from (nothing changes then).
+   */
+  setFocus(ref: string, hops: number): boolean {
+    if (!focusSeeds(this.model, ref).length) return false;
+    const n = Math.max(FOCUS_MIN_HOPS, Math.min(FOCUS_MAX_HOPS, Math.round(hops)));
+    const cur = this.state.focus;
+    if (cur && cur.ref === ref && cur.hops === n) return false;
+    const views: LayoutView[] = ['physical', 'logical'];
+    const same = !!cur && cur.ref === ref;
+    const seeds = same ? views.map((v) => new Map(this.positionsFor(v))) : null;
+    if (!cur) this.beforeFocus = { temp: { ...this.temp }, parked: { ...this.parked } };
+    this.state.focus = { ref, hops: n };
+    this.filtered = { physical: null, logical: null };
+    this.state.positions.physical.clear();
+    this.state.positions.logical.clear();
+    this.parked = { physical: null, logical: null };
+    views.forEach((v, i) => {
+      this.temp[v] = seeds && this.isFiltered(v) ? resolvePositions(v, this.viewInput(v), seeds[i]) : null;
+    });
+    return true;
+  }
+
+  /** Leave focus mode: the views come back as they were before it (the model was never changed). Returns whether it was on. */
+  endFocus(): boolean {
+    if (!this.state.focus) return false;
+    this.state.focus = null;
+    this.filtered = { physical: null, logical: null };
+    this.state.positions.physical.clear();
+    this.state.positions.logical.clear();
+    const back = this.beforeFocus;
+    this.beforeFocus = null;
+    for (const v of ['physical', 'logical'] as LayoutView[]) {
+      const t = back ? back.temp[v] : null;
+      this.temp[v] = t && this.isFiltered(v) ? resolvePositions(v, this.viewInput(v), t) : null;
+      this.parked[v] = back && this.isFiltered(v) ? back.parked[v] : null;
+    }
+    return true;
   }
 
   /**
@@ -185,6 +251,8 @@ export class Session {
     });
     if (visible) hidden.delete(type);
     else hidden.add(type);
+    // (what focus mode would restore is no longer what was shown before it)
+    this.beforeFocus = null;
     this.filtered = { physical: null, logical: null };
     this.state.positions.physical.clear();
     this.state.positions.logical.clear();
@@ -220,6 +288,7 @@ export class Session {
     const cur = this.state.devices;
     if (norm === null ? cur === null : cur !== null && cur.size === norm.size && Array.from(norm).every((id) => cur.has(id))) return false;
     this.state.devices = norm;
+    this.beforeFocus = null;
     this.filtered = { physical: null, logical: null };
     this.temp = { physical: null, logical: null };
     this.parked = { physical: null, logical: null };
@@ -241,7 +310,7 @@ export class Session {
   private cache(view: View): ViewCache {
     const c = this.filtered[view];
     if (c) return c;
-    const shown = this.shownSet();
+    const shown = this.shownSet(view);
     if (!shown) return { model: this.model, input: this.input };
     const model = filterModel(this.model, shown, view);
     return (this.filtered[view] = { model, input: layoutInput(model) });
@@ -251,7 +320,7 @@ export class Session {
 
   /** Displayed node centers of a view, keyed by entity id (without temporary drags). */
   positionsFor(view: LayoutView): Map<string, Pt> {
-    if (this.isFiltered()) {
+    if (this.isFiltered(view)) {
       let t = this.temp[view];
       // a filtered view is arranged once, when it is first shown; afterwards it only changes when the user moves or arranges it
       if (!t) t = this.temp[view] = autoPositions(view, this.viewInput(view));

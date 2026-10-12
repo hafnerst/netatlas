@@ -40,19 +40,21 @@ test('File menu: New model, Open model…, Save model, Save model as…, Close m
   for (const [id, label] of entries) assert.equal(label.endsWith('…'), id === 'open' || id === 'btn-save-as', label);
   assert.doesNotMatch(menu + header, /\.\.\.|YAML file…|Download model/);
   // both save entries are always there; until a model is open, they (and Close) are unavailable
-  for (const id of ['btn-save', 'btn-save-as', 'btn-close']) assert.match(menu, new RegExp(`<button id="${id}" type="button" role="menuitem" title="[^"]*" disabled>`), id);
+  for (const id of ['btn-save', 'btn-save-as', 'btn-close']) assert.match(menu, new RegExp(`<button id="${id}" type="button" role="menuitem" data-command="[^"]+" title="[^"]*" disabled>`), id);
   assert.match(menu, /id="btn-close"[^>]*title="Close the current model and return to the start screen"/);
   // tooltips say what each command does; the shortcuts are on the save entries
   assert.match(menu, /id="btn-new"[^>]*title="Start a new, empty model"/);
   assert.match(menu, /id="open"[^>]*title="Open a model from a YAML file on this computer \(nothing is uploaded\)"/);
   assert.deepEqual([...menu.matchAll(/class="mi-hint">([^<]*)</g)].map((m) => m[1]), ['Ctrl+S', 'Ctrl+Shift+S']);
   // the save entries' tooltips follow the state: linked or not, a browser that can save to a chosen file or only download
+  // (they come from the command registry, which the menus, the keyboard and the palette share)
   const app = readFileSync(join(root, 'src', 'ui', 'app.ts'), 'utf8');
-  assert.match(app, /save\.disabled = !this\.linked;/);
-  assert.match(app, /saveAs\.disabled = !d;/);
-  assert.match(app, /`Save the model to “\$\{this\.handle\.name\}” \(Ctrl\+S\)/);
-  assert.match(app, /'Not available: the model is not linked to a file this page may write\. Use Save model as… to choose one\.'/);
-  assert.match(app, /'Download a copy of the model as a YAML file: this browser can’t save to a file you choose \(Ctrl\+Shift\+S\)'/);
+  const cmds = readFileSync(join(root, 'src', 'ui', 'commands.ts'), 'utf8');
+  assert.match(cmds, /const name = app\.linkedFileName;/);
+  assert.match(app, /return this\.linked && this\.handle \? this\.handle\.name : null;/);
+  assert.match(cmds, /`Save the model to “\$\{name\}” \(Ctrl\+S\)/);
+  assert.match(cmds, /'Not available: the model is not linked to a file this page may write\. Use Save model as… to choose one\.'/);
+  assert.match(cmds, /'Download a copy of the model as a YAML file: this browser can’t save to a file you choose \(Ctrl\+Shift\+S\)'/);
   // the start screen and the error page use the same words
   assert.match(html, /<button id="open-empty"[^>]*>\s*<span class="start-title">Open model…<\/span>\s*<span class="start-sub">Choose a YAML file, or drop one here<\/span>/);
   assert.match(app, /\['Open another model…'\]/);
@@ -144,10 +146,11 @@ test('Find menu: next to Export, with Find in diagram… (/) and Filter object l
   // the labels say what each one works on: Find searches the diagram, the filter narrows the object list (not the diagram)
   assert.ok(!/Filter outline…|>Find…</.test(html), 'the old labels are gone');
   assert.match(html, /<div id="find-bar" class="find-bar" role="search" aria-label="Find in diagram" hidden>/);
-  assert.deepEqual([...view.matchAll(/class="mi-hint">([^<]*)</g)].map((m) => m[1]), ['/']);
+  assert.deepEqual([...view.matchAll(/class="mi-hint">([^<]*)</g)].map((m) => m[1]), ['/', 'Ctrl+K'], 'and the command palette, with its shortcut');
   const app = readFileSync(join(root, 'src', 'ui', 'app.ts'), 'utf8');
   assert.match(app, /\['export-btn', 'export-menu'\],\s*\['find-btn', 'find-menu'\],\s*\['analyze-btn', 'analyze-menu'\],\s*\['help-btn', 'help-menu'\],/);
-  assert.match(app, /if \(e\.key === '\/'\) \{\s*e\.preventDefault\(\);\s*this\.openFind\(\);/);
+  const cmds = readFileSync(join(root, 'src', 'ui', 'commands.ts'), 'utf8');
+  assert.match(cmds, /id: 'find\.diagram',[\s\S]{0,80}keys: \{ combos: \[\{ key: '\/' \}\] \},[\s\S]{0,300}run: \(app\) => void app\.openFind\(\),/);
   // the old places are gone: no search box in the toolbar, no filter box always at the top of the outline
   assert.ok(!header.includes('class="search-wrap"'));
   const inspector = readFileSync(join(root, 'src', 'ui', 'inspector.ts'), 'utf8');
@@ -188,8 +191,11 @@ test('Export menu: next to File, one entry "Export view as…" with a PNG / SVG 
   for (const attr of ['class="menu-btn"', 'aria-haspopup="menu"', 'aria-expanded="false"']) assert.ok(fileBtn.includes(attr), attr);
   const app = readFileSync(join(root, 'src', 'ui', 'app.ts'), 'utf8');
   assert.match(app, /\['menu-btn', 'main-menu'\],\s*\['export-btn', 'export-menu'\],/);
-  assert.match(app, /this\.\$\('btn-export-svg'\)\.addEventListener\('click', \(\) => void this\.exportView\('svg'\)\);/);
-  assert.match(app, /this\.\$\('btn-export-png'\)\.addEventListener\('click', \(\) => void this\.exportView\('png'\)\);/);
+  const cmds = readFileSync(join(root, 'src', 'ui', 'commands.ts'), 'utf8');
+  assert.match(cmds, /id: 'export\.svg'[^\n]*run: \(app\) => void app\.exportView\('svg'\)/);
+  assert.match(cmds, /id: 'export\.png'[^\n]*run: \(app\) => void app\.exportView\('png'\)/);
+  assert.match(html, /<button id="btn-export-png" type="button" role="menuitem" data-command="export\.png"/);
+  assert.match(html, /<button id="btn-export-svg" type="button" role="menuitem" data-command="export\.svg"/);
   // the submenu opens on a press or a key, never on hover
   assert.doesNotMatch(app, /mouseenter|mouseover|pointerenter/);
   assert.doesNotMatch(css, /:hover[^{]*\.submenu|\.submenu[^{]*\{[^}]*display:\s*none/);
@@ -204,7 +210,7 @@ test('Export menu: next to File, one entry "Export view as…" with a PNG / SVG 
   // the old button is gone everywhere
   assert.doesNotMatch(html + app, /save-svg|Save SVG/);
   const zoom = /<div class="zoombar"[^>]*>([\s\S]*?)<\/div>/.exec(html)[1];
-  assert.deepEqual([...zoom.matchAll(/<button id="([^"]+)"/g)].map((m) => m[1]), ['zoom-in', 'zoom-out', 'zoom-fit']);
+  assert.deepEqual([...zoom.matchAll(/<button id="([^"]+)"/g)].map((m) => m[1]), ['zoom-in', 'zoom-out', 'zoom-fit', 'zoom-focus'], 'zoom, fit, and Focus on the selection');
 });
 
 test('start screen: name, one sentence, three ways to begin; no link row, no long text', () => {
@@ -277,7 +283,9 @@ test('Auto-arrange: three direct options (Default, Compact, Spacious) in one lab
   assert.match(app, /const isCurrent = st === current;\s+const same = !isCurrent && matches\.indexOf\(st\) >= 0;\s+b\.disabled = isCurrent \|\| same;\s+b\.setAttribute\('aria-pressed', isCurrent \? 'true' : 'false'\);/);
   // the A key and any other caller go through the same check, so a disabled option cannot be bypassed
   assert.match(app, /if \(\(s\.isFiltered\(\) \? s\.filteredArrangedWith\(view\) : d\.arrangedWith\(view\)\)\.indexOf\(strategy\) >= 0\) return;/);
-  assert.match(app, /else if \(e\.key === 'a'\) void this\.arrangeCurrentView\('default'\);/);
+  const cmds = readFileSync(join(root, 'src', 'ui', 'commands.ts'), 'utf8');
+  assert.match(cmds, /keys: st === 'default' \? \{ combos: \[\{ key: 'a' \}\] \} : undefined,/);
+  assert.match(cmds, /run: \(app\) => void app\.arrangeCurrentView\(st\),/);
   // identical results are never presented as different
   assert.match(app, /gives exactly the same positions as \$\{STRATEGY_LABEL\[current as ArrangeStrategy\]\}/);
   // the selected option looks like the active view switch; the CSS has no orange or dashed treatment
@@ -324,19 +332,20 @@ test('toolbar groups: View, Auto-arrange and Filters each have a label above the
   assert.match(app, /const avail = slot\.clientWidth - chrome;/);
 });
 
-test('Help menu: right after Find, with User Manual and License (always available, each opening a dialog)', () => {
-  const at = ['id="find-btn"', 'id="help-btn"', 'id="btn-undo"'].map((x) => header.indexOf(x));
+test('Help menu: right after Analyze, with User Manual and License (always available, each opening a dialog)', () => {
+  const at = ['id="analyze-btn"', 'id="help-btn"', 'id="btn-undo"'].map((x) => header.indexOf(x));
   assert.ok(at[0] >= 0 && at[0] < at[1] && at[1] < at[2], JSON.stringify(at));
-  // nothing else stands between the Find menu and the Help menu
-  assert.match(header, /<div id="find-menu"[\s\S]*?\n    <\/div>\n  <\/div>\n  <div class="menu-wrap">\n    <button id="help-btn"/);
+  // nothing else stands between the Analyze menu and the Help menu
+  assert.match(header, /<div id="analyze-menu"[\s\S]*?\n    <\/div>\n  <\/div>\n  <div class="menu-wrap">\n    <button id="help-btn"/);
   assert.match(header, /<button id="help-btn" type="button" class="menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="help-menu" title="Help: user manual and license">Help <span class="caret"/);
   const help = /<div id="help-menu" class="dropdown menu" role="menu" aria-label="Help" hidden>([\s\S]*?)\n    <\/div>/.exec(header)[1];
-  const entries = [...help.matchAll(/<button id="([^"]+)" type="button" role="menuitem" aria-haspopup="dialog"[^>]*><span class="mi-label">([^<]+)</g)].map((m) => [m[1], m[2]]);
+  const entries = [...help.matchAll(/<button id="([^"]+)" type="button" role="menuitem" data-command="[^"]+" aria-haspopup="dialog"[^>]*><span class="mi-label">([^<]+)</g)].map((m) => [m[1], m[2]]);
   assert.deepEqual(entries, [['btn-manual', 'User Manual'], ['btn-license', 'License']]);
   assert.doesNotMatch(help, /disabled/, 'Help needs no model');
   const app = readFileSync(join(root, 'src', 'ui', 'app.ts'), 'utf8');
-  assert.match(app, /this\.\$\('btn-manual'\)\.addEventListener\('click', \(\) => void this\.openHelp\('manual'\)\);/);
-  assert.match(app, /this\.\$\('btn-license'\)\.addEventListener\('click', \(\) => void this\.openHelp\('license'\)\);/);
+  const cmds = readFileSync(join(root, 'src', 'ui', 'commands.ts'), 'utf8');
+  assert.match(cmds, /id: 'help\.manual'[^\n]*run: \(app\) => void app\.openHelp\('manual'\)/);
+  assert.match(cmds, /id: 'help\.license'[^\n]*run: \(app\) => void app\.openHelp\('license'\)/);
   // both dialogs: a × as well as Close, Esc, and the focus back on the Help button afterwards
   assert.match(app, /closeButton: true,/);
   assert.match(app, /await done;[\s\S]{0,200}this\.\$\('help-btn'\)\.focus\(\);/);
@@ -369,8 +378,11 @@ test('Analyze menu: between Find and Help, built like the others; Addressing ove
   assert.deepEqual(order.slice(0, 5), ['menu-btn', 'export-btn', 'find-btn', 'analyze-btn', 'help-btn']);
   const menu = /<div id="analyze-menu" class="dropdown menu" role="menu" aria-label="Analyze" hidden>([\s\S]*?)<\/div>/.exec(header);
   assert.ok(menu, 'the Analyze menu');
-  assert.match(menu[1], /<button id="btn-addressing" type="button" role="menuitem" aria-haspopup="dialog" title="Open or create a model first" disabled><span class="mi-label">Addressing overview…<\/span><span class="mi-hint">I<\/span><\/button>/);
+  assert.match(menu[1], /<button id="btn-addressing" type="button" role="menuitem" data-command="analyze\.addressing" aria-haspopup="dialog" title="Open or create a model first" disabled><span class="mi-label">Addressing overview…<\/span><span class="mi-hint">I<\/span><\/button>/);
+  // focus mode lives here too
+  assert.match(header, /<button id="btn-focus" type="button" role="menuitem" data-command="focus\.enter"[^>]*><span class="mi-label">Focus on selection<\/span><span class="mi-hint">Shift\+F<\/span>/);
+  assert.match(header, /<button id="btn-focus-exit" type="button" role="menuitem" data-command="focus\.exit"[^>]*><span class="mi-label">Exit focus<\/span>/);
   const app = readFileSync(join(root, 'src', 'ui', 'app.ts'), 'utf8');
-  assert.match(app, /else if \(e\.key === 'i'\) void this\.openAddressing\(\);/);
-  assert.match(app, /addr\.disabled = !s;/);
+  const cmds = readFileSync(join(root, 'src', 'ui', 'commands.ts'), 'utf8');
+  assert.match(cmds, /id: 'analyze\.addressing',[\s\S]{0,120}keys: \{ combos: \[\{ key: 'i' \}\] \},[\s\S]{0,400}state: \(app\) => needDiagram\(app,/);
 });
