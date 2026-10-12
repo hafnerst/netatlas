@@ -6,6 +6,9 @@ description: "Created in the netatlas editor: loopbacks, ports, a VLAN interface
 devices:
   - id: edge-a
     type: router
+    router_id: lo0
+    protocols:
+      bgp: {asn: 65000}
     interfaces:
       - {id: ge-0/0/0, ip: [192.0.2.1/31]}
     logical_interfaces:
@@ -16,6 +19,9 @@ devices:
   - id: edge-b
     label: Edge B
     type: router
+    router_id: lo0
+    protocols:
+      bgp: {asn: 65000}
     interfaces:
       - {id: ge-0/0/0, ip: [192.0.2.0/31]}
     logical_interfaces:
@@ -47,7 +53,6 @@ relations:
     endpoints: [edge-a:lo1, edge-b:lo1]
     over: cable-1
     attrs:
-      asn: 65000
       address-family: [ipv6-unicast, evpn]
   - id: gre-lab
     protocol: gre
@@ -61,11 +66,11 @@ relations:
 
 layout:
   physical:
-    edge-a: [75, 47]
-    edge-b: [483, 47]
+    edge-a: [75, 65]
+    edge-b: [483, 65]
   logical:
-    edge-a: [85, 339]
-    edge-b: [436, 304]
-    net-core: [111, 590]
-    net-loopbacks: [494, 540]
-    net-mgmt: [214, 21]
+    edge-a: [438, 305]
+    edge-b: [85, 347]
+    net-core: [107, 606]
+    net-loopbacks: [499, 557]
+    net-mgmt: [213, 21]

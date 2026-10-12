@@ -38,6 +38,29 @@ there is no conversion of files written for the earlier drafts.
   `attrs` (`router-id`, `asn`, `local-as`, a GRE relation's `mtu`).
 - **`checks:`** (top level) switches consistency checks off or changes their
   severity: `checks: {duplicate-mac: info, relation-vrf-mismatch: off}`.
+- **Routing services (`protocols:` on a device):** a Layer 3+ device lists
+  the protocols it runs, each with its parameters
+  (`protocols: {bgp: {asn: 65010}, ospf: {}, static: {}}`), defined by a
+  registry (BGP, OSPF, IS-IS, EIGRP, RIP, LDP, PIM, BFD, static routing,
+  VRRP, HSRP, GLBP, CARP). Mandatory parameters (BGP's `asn`, IS-IS's `net`,
+  a group's `group` and `virtual_ip`) are errors until written; OSPF needs a
+  router ID. `protocols:` on a device that isn't Layer 3+ is an error.
+- **The device's `asn` key is gone:** the AS number is BGP's parameter;
+  `asn` on a device is an unknown key that says where it belongs.
+- **`router_id`** is shared by the protocols that use one, and may name a
+  loopback of the device (`router_id: lo0`, its IPv4 address) or be an
+  IPv4 address; a protocol may have its own (`ospf: {router_id: …}`).
+  Without an enabled protocol that uses a router ID it is reported as not
+  applicable.
+- **VRRP / HSRP groups at their interfaces:** an interface's
+  `protocols: {vrrp: {group: 10, virtual_ip: 10.10.10.1, priority: 200}}`
+  (also `virtual_ipv6`) replaces the virtual addresses in relation `attrs`
+  (`virtual-ip`, `vip`, `master`, `priority`) and interface attributes
+  (`vrrp-virtual-ip`), which nothing reads any more.
+- **A protocol of the model can declare `params`** (key, label, type,
+  scope, required, range or values, suggestions, description) and
+  `router_id` (`required` / `optional` / `none`); it is then a routing
+  service like the built-in ones.
 - **No compatibility messages for earlier drafts:** keys that earlier
   development versions used (`loopbacks`, `children`, `directed`, `prefixes`,
   `vlans`, `vendor` …) are reported like any other unknown key, with the
@@ -46,6 +69,20 @@ there is no conversion of files written for the earlier drafts.
   `router_id: lo0` is an error ("not a router ID").
 
 ### Added
+
+- **Routing services in the Edit tab:** a device's **Protocols** card shows
+  the protocols it runs with their parameters (typed fields, choices,
+  suggestions), the shared **Router ID** while one of them uses it (its
+  loopbacks offered), an own router ID per protocol, one-click
+  suggestions for protocols the device's relations use but it doesn't
+  enable, **Enable a protocol…**, and **Disable** (listing what goes, one
+  undo step). Interfaces get their VRRP/HSRP group card; relations of OSPF,
+  BGP … a card with their per-end parameters. The palette has *Enable a
+  protocol on the selected device…*; Find and the palette find protocols,
+  AS numbers, router IDs and virtual addresses.
+- **Checks** `protocol-not-enabled`, `protocol-unused`, `static-not-enabled`
+  and `fhrp-group-mismatch`; `duplicate-router-id` per protocol domain;
+  `vip-outside-subnet` on the interfaces' groups.
 
 - **Static routes in the diagram and the editor.** The logical view shows
   each device's routes as a route table in its box (one per VRF), a line per
@@ -275,6 +312,14 @@ there is no conversion of files written for the earlier drafts.
   addresses.
 
 ### Changed
+
+- The path tracer and the failure analysis use only the protocols a device
+  enables (an adjacency forms between devices that both enable its
+  protocol); iBGP or eBGP follows from the two local AS numbers; a VRRP
+  gateway's active member is the group with the highest `priority`. The
+  diagram writes the router ID and the AS number only where they apply, and
+  a group's virtual address in its interface's entry (`VRRP 10 10.10.10.1`).
+- Every example enables the protocols its devices run.
 
 - **Address arithmetic** compares addresses and prefixes byte by byte (no
   BigInt) where the routing tables and the simulation call it often.

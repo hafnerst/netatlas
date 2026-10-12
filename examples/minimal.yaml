@@ -6,12 +6,18 @@ title: Minimal example
 devices:
   - id: r1
     type: router
+    router_id: 10.255.0.1
+    protocols:
+      ospf: {}
     interfaces:
       - {id: eth0, ip: 192.0.2.1/30}
     logical_interfaces:
       - {id: tun0, type: tunnel, source: eth0, destination: r2:eth0}
   - id: r2
     type: router
+    router_id: 10.255.0.2
+    protocols:
+      ospf: {}
     interfaces:
       - {id: eth0, ip: 192.0.2.2/30}
     logical_interfaces:

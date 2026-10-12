@@ -40,6 +40,7 @@ import { compareRoutes, routeLine } from '../model/addresses';
 import { routingRole } from '../model/device-types';
 import { IpAddr, IpPrefix, parseAddress, parsePrefix } from '../model/ip';
 import { normalizeProtocol, protocolBase } from '../model/protocols';
+import { bgpAsn, hasService, routerIdFor } from '../model/services';
 import { Model, Relation, Route, deviceInterfaces, relationDevices, routeKey } from '../model/types';
 import { addrBig, compareAddr, comparePrefix, formatAddr, inPrefix, networkOf, prefixText } from './ipmath';
 
@@ -371,6 +372,11 @@ function sameAddr(a: IpAddr | undefined, b: IpAddr | undefined): boolean {
 
 // --------------------------------------------------------- dynamic routes
 
+function lookupProtocolLabel(model: Model, id: string): string {
+  const s = model.services.get(id);
+  return s ? s.label : id;
+}
+
 /** The protocols whose relations are routing adjacencies (base protocol ids). */
 export const ROUTING_PROTOCOLS: readonly string[] = ['bgp', 'eigrp', 'isis', 'ospf', 'rip'];
 
@@ -468,7 +474,10 @@ function adjacencyHop(model: Model, r: Relation, protocol: string, from: string,
   const fa = model.index.devices.get(from);
   const fb = model.index.devices.get(to);
   const ownDistance = positiveInt(relParam(r, 'distance', from), 0, 255);
-  const ibgp = normalizeProtocol(r.protocol) === 'ibgp' || (normalizeProtocol(r.protocol) !== 'ebgp' && !!fa && !!fb && fa.asn !== undefined && fa.asn === fb.asn);
+  // iBGP or eBGP: from the two devices' local AS numbers (an ibgp / ebgp relation says so itself)
+  const asA = bgpAsn(fa);
+  const asB = bgpAsn(fb);
+  const ibgp = normalizeProtocol(r.protocol) === 'ibgp' || (normalizeProtocol(r.protocol) !== 'ebgp' && asA !== undefined && asA === asB);
   const distance = ownDistance || (protocol === 'bgp' ? (ibgp ? IBGP_DISTANCE : EBGP_DISTANCE) : IGP_DISTANCE[protocol]);
   // a network both are connected to (in the relation's `over` first, then the longest prefix)
   type Cand = { a: Connected; b: Connected; over: boolean };
@@ -504,12 +513,13 @@ function adjacencyHop(model: Model, r: Relation, protocol: string, from: string,
   return `${where(from, aIfs)} and ${where(to, bIfs)} have no network in common`;
 }
 
-/** The address a BGP session to `device` is made to: its endpoint interface's address, else its router ID or first loopback address. */
+/** The address a BGP session to `device` is made to: its endpoint interface's address, else its BGP router ID or first loopback address. */
 function bgpPeerAddress(model: Model, device: string, ifaces: string[] | null, ctx: RoutingCtx | undefined): Connected | null {
   const conn = connectedOf(model, device).filter((c) => isUp(ctx, device, c.iface));
   if (ifaces) return conn.find((c) => ifaces.indexOf(c.iface) >= 0) || null;
   const d = model.index.devices.get(device);
-  const rid = d && d.routerId ? parseAddress(d.routerId) : null;
+  const own = routerIdFor(d, 'bgp');
+  const rid = own && own.address ? parseAddress(own.address) : null;
   const byRid = rid ? conn.find((c) => compareAddr(c.addr, rid) === 0) : undefined;
   if (byRid) return byRid;
   const loop = conn.find((c) => {
@@ -537,6 +547,12 @@ function computeDynamic(model: Model, ctx: RoutingCtx | undefined): DynState {
     for (const from of devs) {
       for (const to of devs) {
         if (from === to) continue;
+        // only devices that enable the protocol (their protocols:) take part in its adjacencies
+        const off = [from, to].filter((d) => !hasService(model, d, protocol));
+        if (off.length) {
+          missing.push({ relation: r.id, protocol, from, to, detail: `${lookupProtocolLabel(model, protocol)} is not enabled on ${off.join(' and ')}` });
+          continue;
+        }
         const a = adjacencyHop(model, r, protocol, from, to, ctx);
         if (typeof a === 'string') missing.push({ relation: r.id, protocol, from, to, detail: a });
         else adjacencies.push(a);

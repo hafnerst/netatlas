@@ -174,10 +174,12 @@ export class Reader {
   }
 
   /** Unknown keys are errors, with the closest known key as a suggestion. */
-  keys(m: YMap, allowed: string[], path: string, hint = ''): void {
+  /** Unknown keys are errors; `where` names, for a key, where it belongs instead (replacing the suggestion). */
+  keys(m: YMap, allowed: string[], path: string, hint = '', where: { [key: string]: string } = {}): void {
     m.entries.forEach((e, k) => {
       if (allowed.indexOf(k) >= 0) return;
-      this.c.error(m, path ? path + '.' + k : k, `unknown key "${k}"${suggest(k, allowed, 20)}${hint}`, { key: k, line: e.keyLine });
+      const instead = Object.prototype.hasOwnProperty.call(where, k) ? ` (${where[k]})` : suggest(k, allowed, 20) + hint;
+      this.c.error(m, path ? path + '.' + k : k, `unknown key "${k}"${instead}`, { key: k, line: e.keyLine });
     });
   }
 

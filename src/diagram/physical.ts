@@ -553,10 +553,10 @@ export interface EntryItem {
 export function entryItems(model: Model, d: Device, view: 'physical' | 'logical'): EntryItem[] {
   const texts = entryTexts(model, d, view);
   const ifaces = deviceEntries(model, d, view);
-  const own = deviceAddressLines(d).length > 0 ? 1 : 0;
+  const own = deviceAddressLines(d, model.services).length > 0 ? 1 : 0;
   const tables = view === 'logical' ? routeTables(d) : [];
   return texts.map((t, i) => {
-    if (own && i === 0) return { ...t, ref: 'device:' + d.id, fields: deviceOwnLines(d).map((x) => x.field), cls: 'if-entry dev-addr', endpoint: false };
+    if (own && i === 0) return { ...t, ref: 'device:' + d.id, fields: deviceOwnLines(d, model.services).map((x) => x.field), cls: 'if-entry dev-addr', endpoint: false };
     if (i >= own + ifaces.length) {
       const tb = tables[i - own - ifaces.length];
       return { ...t, ref: 'device:' + d.id, fields: tb.refs.map(() => ({ field: '', value: '' })), cls: 'if-entry route-table', endpoint: false, lineRefs: tb.refs };

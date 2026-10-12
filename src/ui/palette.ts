@@ -10,6 +10,7 @@
 import { routeLine } from '../model/addresses';
 import { lookupProtocol } from '../model/protocols';
 import { Model, deviceInterfaces, relationDevices } from '../model/types';
+import { serviceWords } from '../model/queries';
 import { Command, CommandState, keyLabel } from './commands';
 import { el } from './dom';
 
@@ -80,10 +81,13 @@ export function objectItems(model: Model): PaletteItem[] {
   };
   const byId = <T extends { id: string }>(xs: T[]): T[] => xs.slice().sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   for (const d of byId(model.devices)) {
-    add('device:' + d.id, d.label && d.label !== d.id ? `${d.label} (${d.id})` : d.id, 'device', `${d.type} ${d.group || ''}`);
+    add('device:' + d.id, d.label && d.label !== d.id ? `${d.label} (${d.id})` : d.id, 'device', `${d.type} ${d.group || ''} ${serviceWords(model, d).join(' ')}`);
   }
   for (const d of byId(model.devices)) {
-    for (const i of byId(deviceInterfaces(d))) add(`iface:${d.id}:${i.id}`, `${d.id}:${i.id}`, 'interface', `${i.label || ''} ${i.addresses.join(' ')} ${i.vrf || ''} ${i.type}`);
+    for (const i of byId(deviceInterfaces(d))) {
+      const svc = i.services.map((s) => `${s.id} ${Array.from(s.values.values()).join(' ')}`).join(' ');
+      add(`iface:${d.id}:${i.id}`, `${d.id}:${i.id}`, 'interface', `${i.label || ''} ${i.addresses.join(' ')} ${i.vrf || ''} ${i.type} ${svc}`);
+    }
   }
   for (const l of byId(model.links)) add('link:' + l.id, `${l.id}: ${l.a.device}${l.a.iface ? ':' + l.a.iface : ''} – ${l.b.device}${l.b.iface ? ':' + l.b.iface : ''}`, 'link', `${l.label || ''} ${l.cable || ''} ${l.medium || ''} ${l.speed || ''} cable`);
   for (const n of byId(model.networks)) add('network:' + n.id, n.label && n.label !== n.id ? `${n.label} (${n.id})` : n.id, 'network', `${n.cidr || ''} ${n.vlan !== undefined ? 'vlan ' + n.vlan : ''}`);

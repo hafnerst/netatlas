@@ -23,7 +23,12 @@ devices:
     label: core-rtr-01
     type: router
     group: hq
-    router_id: 10.255.255.1
+    router_id: lo0
+    protocols:
+      bgp: {asn: 64500}
+      hsrp: {}
+      ospf: {}
+      vrrp: {}
     attrs: {nat-pool: 203.0.113.64/28}
     interfaces:
       - id: xe-0/0/0
@@ -49,13 +54,15 @@ devices:
         vlan: 10
         vrf: CORP
         ip: [10.10.10.2/24, "2001:db8:10:10::2/64"]
-        attrs: {vrrp-virtual-ip: 10.10.10.1, vrrp-virtual-ipv6: "2001:db8:10:10::1"}
+        protocols:
+          vrrp: {group: 10, virtual_ip: 10.10.10.1, virtual_ipv6: "2001:db8:10:10::1", priority: 200}
       - id: ge-0/0/2.20
         type: virtual
         vlan: 20
         vrf: CORP
         ip: [10.10.20.2/24, 10.10.21.2/24]
-        attrs: {hsrp-virtual-ip: 10.10.20.1}
+        protocols:
+          hsrp: {group: 20, virtual_ip: 10.10.20.1}
       - {id: ae0, type: virtual, members: [ge-0/0/6, ge-0/0/7], mac: 02:00:00:00:ae:00}
       - id: gr-0/0/0.0
         type: tunnel
@@ -72,12 +79,19 @@ devices:
     label: dist-sw-01
     type: switch
     group: hq
+    protocols:
+      vrrp: {}
     interfaces:
       - {id: xe-1, mac: 3c:fd:fe:00:10:01}
       - {id: xe-2, mac: 3c:fd:fe:00:10:02}
       - {id: xe-3, mac: 3c:fd:fe:00:10:03}
     logical_interfaces:
-      - {id: Vlan10, type: virtual, vlan: 10, ip: [10.10.10.3/24, "2001:db8:10:10::3/64"], attrs: {vrrp-virtual-ip: 10.10.10.1}}
+      - id: Vlan10
+        type: virtual
+        vlan: 10
+        ip: [10.10.10.3/24, "2001:db8:10:10::3/64"]
+        protocols:
+          vrrp: {group: 10, virtual_ip: 10.10.10.1, virtual_ipv6: "2001:db8:10:10::1", priority: 100}
       - {id: Po1, type: virtual, members: [xe-2, xe-3]}
 
   - id: srv
@@ -91,6 +105,9 @@ devices:
     label: branch-rtr
     type: router
     group: branch
+    router_id: lo0
+    protocols:
+      ospf: {}
     interfaces:
       - {id: wan0, ip: [198.51.100.2/30, "2001:0db8:85a3:0000:0000:8a2e:0370:7335/127"], mac: 00:50:56:01:00:01}
     logical_interfaces:
@@ -133,4 +150,3 @@ relations:
   - id: vrrp
     protocol: vrrp
     endpoints: ["core:ge-0/0/2.10", "dist:Vlan10"]
-    attrs: {vrid: 10, virtual-ip: 10.10.10.1, virtual-ipv6: "2001:db8:10:10::1"}

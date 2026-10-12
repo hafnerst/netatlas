@@ -41,8 +41,8 @@ const missing = (m, view, root) => {
 test('the address fields of the format: what the inventory finds in the addressing example, and where it is drawn', () => {
   const m = model(example('addressing.yaml'));
   const inv = A.addressInventory(m);
-  const fields = new Set(inv.map((a) => a.field.replace(/^attrs\..*/, 'attrs')));
-  assert.deepEqual([...fields].sort(), ['attrs', 'cable', 'cidr', 'destination', 'dns_names', 'id', 'ip', 'mac', 'members', 'router_id', 'source', 'vlan', 'vrf'].filter((f) => f !== 'dns_names').sort());
+  const fields = new Set(inv.map((a) => a.field.replace(/^attrs\..*/, 'attrs').replace(/^protocols\..*/, 'protocols')));
+  assert.deepEqual([...fields].sort(), ['attrs', 'cable', 'cidr', 'destination', 'dns_names', 'id', 'ip', 'mac', 'members', 'protocols', 'router_id', 'source', 'vlan', 'vrf'].filter((f) => f !== 'dns_names').sort());
   const where = (owner, field) => inv.find((a) => a.owner === owner && a.field === field).views.join('+');
   // physical identifiers in the physical view, layer 3 in the logical view, both where the interface is drawn in both
   assert.equal(where('iface:core:ge-0/0/9', 'mac'), 'physical');
@@ -52,8 +52,11 @@ test('the address fields of the format: what the inventory finds in the addressi
   assert.equal(where('iface:core:gr-0/0/0.0', 'destination'), 'logical');
   assert.equal(where('network:corp', 'cidr'), 'logical');
   assert.equal(where('link:wan', 'cable'), 'physical');
-  assert.equal(where('relation:vrrp', 'attrs.virtual-ip'), 'logical');
+  // a redundancy group's virtual address at its interface, the routing identity in the device's box
+  assert.equal(where('iface:core:ge-0/0/2.10', 'protocols.vrrp.virtual_ip'), 'logical');
+  assert.equal(where('iface:core:ge-0/0/2.20', 'protocols.hsrp.virtual_ip'), 'logical');
   assert.equal(where('device:core', 'router_id'), 'physical+logical');
+  assert.equal(where('device:core', 'protocols.bgp.asn'), 'physical+logical');
   assert.equal(where('group:branch', 'attrs.site-prefix'), 'physical+logical');
   // attrs without an address are not addresses (they stay in the details)
   assert.ok(!inv.some((a) => a.field === 'attrs.vrid' || a.field === 'attrs.peer-as'));
@@ -80,10 +83,10 @@ test('several addresses of an interface: a compact, ordered list (IPv4, then IPv
     // each line knows the field it is written from (the Edit tab highlights it when the line is clicked)
     fields: [{ field: 'ip', value: '10.255.255.1/32' }, { field: 'ip', value: '2001:db8:ffff:ffff::1/128' }],
   });
-  assert.deepEqual(entry('core', 'ge-0/0/2.10', 'logical').fields.map((f) => f.field), ['vlan', 'ip', 'ip', 'attr', 'attr']);
+  assert.deepEqual(entry('core', 'ge-0/0/2.10', 'logical').fields.map((f) => f.field), ['vlan', 'ip', 'ip', 'protocols.vrrp.virtual_ip', 'protocols.vrrp.virtual_ipv6']);
   assert.deepEqual(entry('core', 'gr-0/0/0.0', 'logical').fields.map((f) => f.field), ['ip', 'ip', 'source', 'destination']);
   assert.deepEqual(entry('core', 'ge-0/0/3', 'physical').lines, ['VRF MGMT', '10.20.0.1/24', '10.20.1.1/24', 'MAC 00:1c:73:aa:00:04'], 'secondary address after the primary');
-  assert.deepEqual(entry('core', 'ge-0/0/2.10', 'logical').lines, ['VLAN 10 · VRF CORP', '10.10.10.2/24', '2001:db8:10:10::2/64', 'vrrp-virtual-ip 10.10.10.1', 'vrrp-virtual-ipv6 2001:db8:10:10::1']);
+  assert.deepEqual(entry('core', 'ge-0/0/2.10', 'logical').lines, ['VLAN 10 · VRF CORP', '10.10.10.2/24', '2001:db8:10:10::2/64', 'VRRP 10 10.10.10.1', 'VRRP 10 2001:db8:10:10::1']);
   assert.deepEqual(entry('core', 'gr-0/0/0.0', 'logical').lines, ['172.31.255.1/30', 'fd00:dead:beef:0:0:0:0:1/126', 'src lo0', 'dst 2001:db8:ffff:ffff::2']);
   assert.deepEqual(entry('core', 'ae0', 'logical').lines, ['MAC 02:00:00:00:ae:00', 'members ge-0/0/6, ge-0/0/7']);
   assert.deepEqual(entry('core', 'ge-0/0/4', 'logical').lines, ['DHCP']);
@@ -181,5 +184,5 @@ test('entries are selectable interfaces: the same refs as before, in the logical
   // the device's own address lines are an entry too, but not a connection endpoint
   const own = byClass(log, 'dev-addr').find((n) => n.attrs['data-ref'] === 'device:core');
   assert.ok(own && own.attrs['data-endpoint'] === undefined);
-  assert.match(scene.textOf(own), /router-id 10\.255\.255\.1\nnat-pool 203\.0\.113\.64\/28/);
+  assert.match(scene.textOf(own), /router-id 10\.255\.255\.1\nAS 64500\nnat-pool 203\.0\.113\.64\/28/);
 });

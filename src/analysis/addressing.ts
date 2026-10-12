@@ -14,8 +14,8 @@
 import { linkNetworks, networkMembers } from '../model/derive';
 import { IpAddr, IpPrefix, parsePrefix } from '../model/ip';
 import { Interface, Model, deviceInterfaces, ifaceKey } from '../model/types';
-import { addrsOf, vipKey } from './checks-more';
-import { AddrRange, addrBig, bigAddr, comparePrefix, count64, formatAddr, freeRanges, hostCount, inPrefix, networkOf, prefixCovers, prefixRange, prefixText } from './ipmath';
+import { virtualGateways } from './identity';
+import { AddrRange, addrBig, bigAddr, compareAddr, comparePrefix, count64, formatAddr, freeRanges, hostCount, inPrefix, networkOf, prefixCovers, prefixRange, prefixText } from './ipmath';
 import { routeRef, vrfKey, vrfName } from './routing';
 
 /** An address of an interface in a network. */
@@ -183,20 +183,18 @@ export function addressingOverview(model: Model): AddressingOverview {
     refs: string[];
   }
   const gws: RawGw[] = [];
-  for (const r of model.relations) {
-    if (r.category !== 'redundancy') continue;
-    for (const [k, v] of r.attrs) {
-      if (!vipKey(k)) continue;
-      for (const a of addrsOf(v)) gws.push({ vrf: null, addr: a, kind: 'vip', source: `${r.protocol.toUpperCase()} ${r.id}`, refs: ['relation:' + r.id] });
+  // the virtual address of a redundancy group, once per VRF, from its members' interfaces
+  for (const g of virtualGateways(model)) {
+    const i = model.index.interfaces.get(g.device + ':' + g.iface);
+    const vrf = vrfKey(i ? i.vrf : undefined);
+    const same = gws.find((x) => x.kind === 'vip' && x.vrf === vrf && compareAddr(x.addr, g.address) === 0);
+    if (same) {
+      same.refs.push(`iface:${g.device}:${g.iface}`);
+      continue;
     }
+    gws.push({ vrf, addr: g.address, kind: 'vip', source: `${(model.services.get(g.service) || { label: g.service }).label}${g.group !== undefined ? ' group ' + g.group : ''}`, refs: [`iface:${g.device}:${g.iface}`] });
   }
   for (const d of model.devices) {
-    for (const i of deviceInterfaces(d)) {
-      for (const [k, v] of i.attrs) {
-        if (!vipKey(k)) continue;
-        for (const a of addrsOf(v)) gws.push({ vrf: vrfKey(i.vrf), addr: a, kind: 'vip', source: `${k} of ${d.id}:${i.id}`, refs: [`iface:${d.id}:${i.id}`] });
-      }
-    }
     // a default route's next hop is the gateway of the network it lies in
     for (const rt of d.routes) {
       if (rt.via === undefined || !/\/0$/.test(rt.prefix)) continue;

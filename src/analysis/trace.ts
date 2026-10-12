@@ -30,6 +30,7 @@ import { lookupProtocol } from '../model/protocols';
 import { Interface, Link, LinkEnd, Model, Relation, deviceInterfaces, ifaceKey } from '../model/types';
 import { vlanIds, interfaceVlans, portsCarryingVlans } from '../model/derive';
 import { compareAddr, comparePrefix, formatAddr, inPrefix, networkOf, prefixText } from './ipmath';
+import { virtualGateways } from './identity';
 import {
   Connected,
   Decision,
@@ -39,7 +40,6 @@ import {
   connectedOf,
   ifaceVrf,
   lookup,
-  relParam,
   routeRef,
   routeText,
   routingAdjacencies,
@@ -361,7 +361,7 @@ function step(w: Walk, at: At, hop: Hop, h: DecisionHop, before: Hop[], seen: Se
     const vip = vipHolder(model, target, w.ctx, at.device);
     if (vip) {
       next = vip.holder;
-      hop.relations.push(vip.relation);
+      if (vip.relation) hop.relations.push(vip.relation);
       hop.notes.push(vip.note);
     }
   }
@@ -441,57 +441,35 @@ function up(ctx: RoutingCtx, device: string, iface: string): boolean {
 }
 
 /**
- * A virtual address of a redundancy group (VRRP, HSRP …: an attribute
- * `virtual-ip`, `vip` …) and its active member: the device the relation
- * names as `master` / `active` / `primary`, else the one with the highest
- * `priority`, else the first by id; a member that is down hands over to the
- * next.
+ * A virtual address of a redundancy group (VRRP, HSRP …: the `virtual_ip`
+ * of an interface's group) and its active member: the highest `priority`
+ * (a member without one counts as 0), then the first by device id; a member
+ * that is down hands over to the next. The group's relation (the
+ * redundancy relation one of the member interfaces is an endpoint of) is
+ * marked with it.
  */
-export function vipHolder(model: Model, a: IpAddr, ctx: RoutingCtx, except: string | null): { holder: Holder; relation: string; note: string } | null {
-  const rels = model.relations.filter((r) => r.category === 'redundancy' && r.attrs.some(([k, v]) => /(^|[-.])(virtual-ip|virtual-ipv6|vip)$/.test(k) && addrsIn(v).some((x) => compareAddr(x, a) === 0)));
-  rels.sort((x, y) => cmpStr(x.id, y.id));
-  for (const r of rels) {
-    const members = memberOrder(r);
-    const live: Holder[] = [];
-    for (const dev of members) {
-      if (dev === except) continue;
-      const eps = r.endpoints.filter((e) => e.device === dev);
-      const conn = connectedOf(model, dev).filter((c) => inPrefix(c.net, a) && (eps.some((e) => e.iface === undefined) || eps.some((e) => e.iface === c.iface)));
-      const c = conn.find((x) => up(ctx, dev, x.iface));
-      if (c) live.push({ device: dev, iface: c.iface, vrf: c.vrf, address: formatAddr(a) });
-    }
-    if (!live.length) continue;
-    const first = members[0];
-    const note =
-      live[0].device === first
-        ? `${formatAddr(a)} is the virtual address of ${r.id}; the active member is ${first}`
-        : `${formatAddr(a)} is the virtual address of ${r.id}; ${first} is down, ${live[0].device} has taken over`;
-    return { holder: live[0], relation: r.id, note };
-  }
-  return null;
-}
-
-/** The members of a redundancy group, the active one first. */
-function memberOrder(r: Relation): string[] {
-  const devs = Array.from(new Set(r.endpoints.map((e) => e.device))).sort(cmpStr);
-  const named = ['master', 'active', 'primary']
-    .map((k) => r.attrs.find(([x]) => x === k))
-    .filter((x): x is [string, string] => !!x)
-    .map(([, v]) => devs.find((d) => new RegExp('(^|[^A-Za-z0-9_.-])' + d.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '($|[^A-Za-z0-9_.-])').test(v)))
-    .find((d) => d !== undefined);
-  const prio = (d: string): number => {
-    const v = relParam(r, 'priority', d);
-    return v !== undefined && /^\s*[0-9]+\s*$/.test(v) ? Number(v) : -1;
-  };
-  const rest = devs.filter((d) => d !== named).sort((x, y) => prio(y) - prio(x) || cmpStr(x, y));
-  return named ? [named].concat(rest) : rest;
-}
-
-function addrsIn(v: string): IpAddr[] {
-  return v
-    .split(/[\s,;]+/)
-    .map((t) => parseAddress(t.replace(/\/[0-9]+$/, '')))
-    .filter((x): x is IpAddr => !!x);
+export function vipHolder(model: Model, a: IpAddr, ctx: RoutingCtx, except: string | null): { holder: Holder; relation?: string; note: string } | null {
+  const members = virtualGateways(model)
+    .filter((g) => compareAddr(g.address, a) === 0)
+    .sort((x, y) => (y.priority || 0) - (x.priority || 0) || cmpStr(x.device, y.device) || cmpStr(x.iface, y.iface));
+  if (!members.length) return null;
+  const svc = (model.services.get(members[0].service) || { label: members[0].service }).label;
+  const what = `${svc}${members[0].group !== undefined ? ' group ' + members[0].group : ''}`;
+  const live = members.filter((g) => g.device !== except && up(ctx, g.device, g.iface));
+  if (!live.length) return null;
+  const h = live[0];
+  const c = connectedOf(model, h.device).find((x) => x.iface === h.iface);
+  const rel = model.relations
+    .filter((r) => r.category === 'redundancy' && r.endpoints.some((e) => members.some((g) => g.device === e.device && (e.iface === undefined || e.iface === g.iface))))
+    .sort((x, y) => cmpStr(x.id, y.id))[0];
+  const first = members[0];
+  const note =
+    h === first
+      ? `${formatAddr(a)} is the virtual address of ${what}; the active member is ${h.device}`
+      : `${formatAddr(a)} is the virtual address of ${what}; ${first.device} is down, ${h.device} has taken over`;
+  const out: { holder: Holder; relation?: string; note: string } = { holder: { device: h.device, iface: h.iface, vrf: c ? c.vrf : '', address: formatAddr(a) }, note };
+  if (rel) out.relation = rel.id;
+  return out;
 }
 
 /** The families (4, 6) a device (or one interface) has addresses of. */

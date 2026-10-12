@@ -169,10 +169,16 @@ test('the broken demo file reports every problem with line numbers', async () =>
     [19, /"tun0" is a tunnel interface: the members of an aggregate are physical interfaces of the same device/],
     [20, /loopback "lo0" needs at least one IPv4 or IPv6 address/],
     [21, /"subinterface" is not a logical interface type: use "loopback", "virtual" or "tunnel"/],
-    [26, /device "r1" has no interface "eth1" — did you mean "eth0"/],
-    [27, /"r1:tun0" is a tunnel interface, not a physical interface/],
-    [32, /unknown category "tunel" — did you mean "tunnel"/],
-    [34, /unknown link, relation or network "l3" — did you mean "l1"/],
+    // routing services
+    [26, /unknown key "asn" \(the AS number belongs to BGP/],
+    [27, /"lo5" is not a router ID: write an IPv4 address \(e\.g\. 10\.255\.0\.1\) or the id of a loopback of "r3"/],
+    [29, /BGP needs local AS number \(asn\)/],
+    [30, /unknown key "area" \(Area is set on OSPF relations, in their attrs/],
+    [33, /"srv" is a Server \(server\): only Layer 3\+ devices/],
+    [36, /device "r1" has no interface "eth1" — did you mean "eth0"/],
+    [37, /"r1:tun0" is a tunnel interface, not a physical interface/],
+    [42, /unknown category "tunel" — did you mean "tunnel"/],
+    [44, /unknown link, relation or network "l3" — did you mean "l1"/],
   ];
   for (const [line, re] of expected) assert.ok(errs.some((e) => e.line === line && re.test(e.message)), `${line} ${re}\n${summary.join('\n')}`);
   assert.equal(errs.length, expected.length, summary.join('\n'));

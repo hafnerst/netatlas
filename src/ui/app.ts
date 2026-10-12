@@ -27,7 +27,7 @@ import { Session, View } from '../diagram/session';
 import { SelectionContext, attachedRefs, search, selectionContext, splitRef } from '../model/queries';
 import { sortedByName } from '../model/order';
 import { normalizeProtocol } from '../model/protocols';
-import { deviceTypeLabel } from '../model/device-types';
+import { deviceTypeLabel, routingRole } from '../model/device-types';
 import { Issue } from '../validation/validate';
 import { SEVERITIES, Severity, checkById } from '../analysis/checks';
 import { addressingOverview } from '../analysis/addressing';
@@ -2147,6 +2147,32 @@ export class App {
     }
     // the overlays under the banner (Find bar, filter hint) start below it, however many lines it takes
     this.doc.documentElement.style.setProperty('--mode-banner-h', Math.ceil(banner.getBoundingClientRect().height) + 'px');
+  }
+
+  // ------------------------------------------------------------ routing services
+
+  /** Why no protocol can be enabled on the selection now ('' = it can). */
+  protocolTargetBlocked(): string {
+    const s = this.session;
+    if (!s || !this.mdoc) return 'Open or create a model first';
+    const sel = s.state.selected;
+    if (!sel || sel.indexOf('device:') !== 0) return 'Select a device first';
+    const d = s.model.index.devices.get(sel.slice(7));
+    if (!d) return 'Select a device first';
+    if (routingRole(d.type) !== 'router') return `${d.id} is not a Layer 3+ device: only routers, switches, firewalls, load balancers, proxies and gateways run routing protocols`;
+    return '';
+  }
+
+  /** The selected device's Protocols section in the Edit tab, with the keyboard at "Enable a protocol". */
+  openEnableProtocol(): void {
+    if (this.protocolTargetBlocked()) return;
+    this.tab = 'edit';
+    this.renderSide();
+    const sel = this.doc.querySelector('#side-body select[data-t="enable-service"]') as HTMLSelectElement | null;
+    if (sel) {
+      if (typeof sel.scrollIntoView === 'function') sel.scrollIntoView({ block: 'center' });
+      sel.focus();
+    }
   }
 
   // ------------------------------------------------------------ failure simulation

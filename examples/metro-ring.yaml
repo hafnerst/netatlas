@@ -21,6 +21,11 @@ devices:
   - id: pe1
     type: router
     group: pop-north
+    router_id: lo0
+    protocols:
+      bgp: {asn: 65000}
+      ldp: {}
+      ospf: {}
     interfaces:
       - {id: et1, ip: 10.1.12.1/31}
       - {id: et2, ip: 10.1.16.1/31}
@@ -31,6 +36,11 @@ devices:
   - id: pe2
     type: router
     group: pop-north
+    router_id: lo0
+    protocols:
+      bgp: {asn: 65000}
+      ldp: {}
+      ospf: {}
     interfaces:
       - {id: et1, ip: 10.1.12.0/31}
       - {id: et2, ip: 10.1.23.0/31}
@@ -40,6 +50,11 @@ devices:
   - id: pe3
     type: router
     group: pop-east
+    router_id: lo0
+    protocols:
+      bgp: {asn: 65000}
+      ldp: {}
+      ospf: {}
     interfaces:
       - {id: et1, ip: 10.1.23.1/31}
       - {id: et2, ip: 10.1.34.0/31}
@@ -50,6 +65,11 @@ devices:
   - id: pe4
     type: router
     group: pop-east
+    router_id: lo0
+    protocols:
+      bgp: {asn: 65000}
+      ldp: {}
+      ospf: {}
     interfaces:
       - {id: et1, ip: 10.1.34.1/31}
       - {id: et2, ip: 10.1.45.0/31}
@@ -59,6 +79,11 @@ devices:
   - id: pe5
     type: router
     group: pop-south
+    router_id: lo0
+    protocols:
+      bgp: {asn: 65000}
+      ldp: {}
+      ospf: {}
     interfaces:
       - {id: et1, ip: 10.1.45.1/31}
       - {id: et2, ip: 10.1.56.0/31}
@@ -70,6 +95,11 @@ devices:
   - id: pe6
     type: router
     group: pop-south
+    router_id: lo0
+    protocols:
+      bgp: {asn: 65000}
+      ldp: {}
+      ospf: {}
     interfaces:
       - {id: et1, ip: 10.1.56.1/31}
       - {id: et2, ip: 10.1.16.0/31}
@@ -80,12 +110,16 @@ devices:
     label: Customer A — HQ
     type: router
     group: cust-a
+    protocols:
+      bgp: {asn: 64601}
     interfaces:
       - {id: ge0, ip: 192.0.2.2/30}
   - id: ce-a2
     label: Customer A — Plant
     type: router
     group: cust-a
+    protocols:
+      bgp: {asn: 64601}
     interfaces:
       - {id: ge0, ip: 192.0.2.6/30}
   - id: oob-sw

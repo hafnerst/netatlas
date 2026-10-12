@@ -202,11 +202,11 @@ test('equal-cost multipath: every branch is followed; the first is the main path
 
 const ospf = `netatlas: 1
 devices:
-  - {id: a, type: router, interfaces: [{id: lan, ip: 10.0.1.1/24}, {id: x, ip: 10.0.12.1/30}, {id: y, ip: 10.0.13.1/30}]}
-  - {id: b, type: router, interfaces: [{id: x, ip: 10.0.12.2/30}, {id: z, ip: 10.0.24.1/30}]}
-  - {id: c, type: router, interfaces: [{id: y, ip: 10.0.13.2/30}, {id: z, ip: 10.0.34.1/30}]}
-  - {id: d, type: router, interfaces: [{id: b, ip: 10.0.24.2/30}, {id: c, ip: 10.0.34.2/30}, {id: lan, ip: 10.0.4.1/24}]}
-  - {id: e, type: router, interfaces: [{id: x, ip: 10.9.9.1/30}]}
+  - {id: a, type: router, router_id: 10.255.0.1, protocols: {ospf: {}}, interfaces: [{id: lan, ip: 10.0.1.1/24}, {id: x, ip: 10.0.12.1/30}, {id: y, ip: 10.0.13.1/30}]}
+  - {id: b, type: router, router_id: 10.255.0.2, protocols: {ospf: {}}, interfaces: [{id: x, ip: 10.0.12.2/30}, {id: z, ip: 10.0.24.1/30}]}
+  - {id: c, type: router, router_id: 10.255.0.3, protocols: {ospf: {}}, interfaces: [{id: y, ip: 10.0.13.2/30}, {id: z, ip: 10.0.34.1/30}]}
+  - {id: d, type: router, router_id: 10.255.0.4, protocols: {ospf: {}}, interfaces: [{id: b, ip: 10.0.24.2/30}, {id: c, ip: 10.0.34.2/30}, {id: lan, ip: 10.0.4.1/24}]}
+  - {id: e, type: router, router_id: 10.255.0.5, protocols: {ospf: {}}, interfaces: [{id: x, ip: 10.9.9.1/30}]}
 links:
   - {id: ab, a: "a:x", b: "b:x"}
   - {id: ac, a: "a:y", b: "c:y"}
@@ -256,11 +256,15 @@ devices:
     type: cloud
   - id: hq
     type: router
+    router_id: 10.255.0.1
+    protocols: {ospf: {}}
     interfaces: [{id: wan, ip: 198.51.100.2/30}, {id: lan, ip: 10.1.0.1/24}]
     logical_interfaces:
       - {id: tun0, type: tunnel, ip: 172.16.0.1/30, source: wan, destination: 192.0.2.10}
   - id: br
     type: router
+    router_id: 10.255.0.2
+    protocols: {ospf: {}}
     interfaces: [{id: wan, ip: 192.0.2.10/29}, {id: trunk}]
     logical_interfaces:
       - {id: tun0, type: tunnel, ip: 172.16.0.2/30, source: wan, destination: 198.51.100.2}
@@ -335,15 +339,15 @@ test('a VRRP virtual gateway: the active member forwards; when it is down, the b
   const m = model(`netatlas: 1
 devices:
   - {id: h, type: endpoint, interfaces: [{id: e0, ip: 10.0.0.50/24}], routes: [{prefix: 0.0.0.0/0, via: 10.0.0.1}]}
-  - {id: r1, type: router, interfaces: [{id: lan, ip: 10.0.0.2/24}, {id: lo, ip: 10.255.0.9/32}]}
-  - {id: r2, type: router, interfaces: [{id: lan, ip: 10.0.0.3/24}, {id: lo, ip: 10.255.0.9/32}]}
+  - {id: r1, type: router, protocols: {vrrp: {}}, interfaces: [{id: lan, ip: 10.0.0.2/24, protocols: {vrrp: {group: 1, virtual_ip: 10.0.0.1, priority: 100}}}, {id: lo, ip: 10.255.0.9/32}]}
+  - {id: r2, type: router, protocols: {vrrp: {}}, interfaces: [{id: lan, ip: 10.0.0.3/24, protocols: {vrrp: {group: 1, virtual_ip: 10.0.0.1, priority: 200}}}, {id: lo, ip: 10.255.0.9/32}]}
 relations:
-  - {id: vrrp, protocol: vrrp, endpoints: ["r1:lan", "r2:lan"], attrs: {virtual-ip: 10.0.0.1, priority: {r1: 100, r2: 200}}}
+  - {id: vrrp, protocol: vrrp, endpoints: ["r1:lan", "r2:lan"]}
 `);
   const t = trace(m, 'h', '10.255.0.9');
   assert.deepEqual(devs(t.paths[0]), ['h', 'r2']);
   assert.ok(t.paths[0].hops[0].relations.includes('vrrp'));
-  assert.match(t.paths[0].hops[0].notes.join(' '), /virtual address of vrrp; the active member is r2/);
+  assert.match(t.paths[0].hops[0].notes.join(' '), /virtual address of VRRP group 1; the active member is r2/);
   const failed = trace(m, 'h', '10.255.0.9', {}, { up: (d) => d !== 'r2' });
   assert.deepEqual(devs(failed.paths[0]), ['h', 'r1']);
   assert.match(failed.paths[0].hops[0].notes.join(' '), /r2 is down, r1 has taken over/);
@@ -426,7 +430,7 @@ test('the examples: the enterprise WAN over GRE over IPsec with ECMP and VRRP; t
   assert.equal(T.encapText(t.paths[0].hops[0].encap), 'GRE over IPsec');
   const back = T.tracePath(wan, T.returnRequest(t));
   assert.deepEqual(devs(back.paths[0]), ['hq-log', 'hq-core1', 'hq-fw', 'hq-rtr1', 'muc-rtr']);
-  assert.match(back.paths[0].hops[0].notes.join(' '), /vrrp-servers; the active member is hq-core1/);
+  assert.match(back.paths[0].hops[0].notes.join(' '), /virtual address of VRRP group 20; the active member is hq-core1/);
   const br = model(example('branch-routing.yaml'));
   const b = trace(br, 'pc1', 'hq-rtr');
   assert.deepEqual(b.paths.map(devs), [

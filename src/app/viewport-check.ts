@@ -151,6 +151,27 @@ export async function runViewportCheck(app: App, doc: Document): Promise<Check[]
     const r = lastInput.getBoundingClientRect();
     state('focusing the last field of the form', r.bottom > vh() || r.top < 0 ? ['the focused field is outside the window'] : []);
     state('the model outline is longer than its panel', scrollsInside('#outline', true));
+    {
+      // the routing services of a device (its Protocols section) and the suggestions to enable one: inside the panel, nothing cut off sideways
+      app.loadExample(EXAMPLES.findIndex((e) => /consistency-checks/.test(e.name)));
+      app.select('device:r3');
+      app.showTab('edit');
+      await tick();
+      const why: string[] = [];
+      const side = (q('#side-body') as HTMLElement).getBoundingClientRect();
+      const els = doc.querySelectorAll('#side-body .svc-card, #side-body button.chip, #side-body select[data-t="enable-service"], #side-body [data-group="protocols"] input');
+      if (els.length < 4) why.push(`the Protocols section shows ${els.length} parts`);
+      for (let i = 0; i < els.length; i++) {
+        const r = els[i].getBoundingClientRect();
+        if (r.width < 1) continue;
+        if (r.left < side.left - 0.5 || r.right > side.right + 0.5) why.push(`"${(els[i].textContent || els[i].getAttribute('aria-label') || '').trim().slice(0, 24)}" leaves the panel sideways (${Math.round(r.left)}–${Math.round(r.right)} of ${Math.round(side.left)}–${Math.round(side.right)})`);
+      }
+      const sb = q('#side-body') as HTMLElement;
+      if (sb.scrollWidth > sb.clientWidth + 1) why.push(`the Edit tab scrolls sideways (${sb.scrollWidth} > ${sb.clientWidth})`);
+      state('a device’s Protocols section and its suggestions fit the panel', why.concat(problems()));
+      app.loadExample(EXAMPLES.findIndex((e) => /enterprise-wan/.test(e.name)));
+      await tick();
+    }
     const zoom = (q('.zoombar') as HTMLElement).getBoundingClientRect();
     const canvas = (q('#canvas-wrap') as HTMLElement).getBoundingClientRect();
     state('diagram controls stay inside the diagram area', zoom.top < canvas.top || zoom.bottom > canvas.bottom || zoom.left < canvas.left || zoom.right > canvas.right || zoom.bottom > vh() ? ['the zoom bar leaves the diagram area'] : []);

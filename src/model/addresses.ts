@@ -30,6 +30,7 @@
  * address or prefix, or a MAC address. Free-form attrs are display-only, so
  * this is a display rule; nothing about the model changes.
  */
+import { ServiceRegistry, usesRouterId } from './services';
 import { interfaceAddresses, interfaceVlanText, interfaceVlans } from './derive';
 import { parseAddress, parsePrefix } from './ip';
 import { compareNames, sortedByName } from './order';
@@ -138,7 +139,25 @@ function l3Lines(model: Model, i: Interface): Array<[string, LineField]> {
   // the tags line stands for the first of them that is written on the interface (a derived VLAN is not)
   const tagField = i.vlan !== undefined && i.type === 'virtual' ? 'vlan' : i.vrf ? 'vrf' : i.dhcp ? 'dhcp' : '';
   const out: Array<[string, LineField]> = tags.length ? [[tags.join(' · '), { field: tagField, value: '' }]] : [];
-  return out.concat(orderedAddresses(i.addresses).map((a): [string, LineField] => [a, { field: 'ip', value: a }]));
+  return out.concat(
+    orderedAddresses(i.addresses).map((a): [string, LineField] => [a, { field: 'ip', value: a }]),
+    gatewayLines(model, i),
+  );
+}
+
+/** The virtual gateway addresses of an interface's redundancy groups ("VRRP 10 10.10.10.1"), with their fields. */
+export function gatewayLines(model: Model, i: Interface): Array<[string, LineField]> {
+  const out: Array<[string, LineField]> = [];
+  for (const s of i.services) {
+    const def = model.services.get(s.id);
+    if (!def) continue;
+    const g = s.values.get('group');
+    for (const key of ['virtual_ip', 'virtual_ipv6']) {
+      const v = s.values.get(key);
+      if (v !== undefined) out.push([`${def.label}${g !== undefined ? ' ' + g : ''} ${v}`, { field: `protocols.${s.id}.${key}`, value: '' }]);
+    }
+  }
+  return out;
 }
 
 export function interfaceEntry(model: Model, i: Interface): IfaceEntry {
@@ -267,20 +286,46 @@ export function routeTables(d: Device): RouteTable[] {
 }
 
 /**
- * The device's own lines in its box (both views), with the field each is
- * written from: its router ID and AS number, then its address-like attrs.
+ * The routing identity a device's box shows, only where it applies: the
+ * router ID its protocols share (when one of its enabled protocols uses a
+ * router ID), a protocol's own router ID, and the AS number or NET of the
+ * protocols that have one. Each with the field it is written in
+ * ("protocols.bgp.asn").
  */
-export function deviceOwnLines(d: Device): Array<{ line: string; field: LineField }> {
+export function identityLines(d: Device, services: ServiceRegistry): Array<{ line: string; field: LineField }> {
   const out: Array<{ line: string; field: LineField }> = [];
-  if (d.routerId !== undefined) out.push({ line: 'router-id ' + d.routerId, field: { field: 'router_id', value: '' } });
-  if (d.asn !== undefined) out.push({ line: 'AS ' + d.asn, field: { field: 'asn', value: '' } });
+  const uses = d.services.filter((s) => {
+    const def = services.get(s.id);
+    return !!def && usesRouterId(def);
+  });
+  const shared = uses.some((s) => !s.routerId);
+  if (d.routerId && shared) out.push({ line: 'router-id ' + (d.routerId.address || d.routerId.text), field: { field: 'router_id', value: '' } });
+  for (const s of d.services) {
+    const def = services.get(s.id);
+    if (!def) continue;
+    if (s.routerId && usesRouterId(def)) out.push({ line: `${def.label} router-id ${s.routerId.address || s.routerId.text}`, field: { field: `protocols.${s.id}.router_id`, value: '' } });
+    const asn = s.values.get('asn');
+    if (asn !== undefined) out.push({ line: s.id === 'bgp' ? 'AS ' + asn : `${def.label} AS ${asn}`, field: { field: `protocols.${s.id}.asn`, value: '' } });
+    const net = s.values.get('net');
+    if (net !== undefined) out.push({ line: `${def.label} ${net}`, field: { field: `protocols.${s.id}.net`, value: '' } });
+  }
+  return out;
+}
+
+/**
+ * The device's own lines in its box (both views), with the field each is
+ * written from: its routing identity (identityLines), then its address-like
+ * attrs.
+ */
+export function deviceOwnLines(d: Device, services: ServiceRegistry): Array<{ line: string; field: LineField }> {
+  const out = identityLines(d, services);
   for (const a of addressAttrEntries(d.attrs)) out.push({ line: a.line, field: { field: 'attr', value: a.key } });
   return out;
 }
 
 /** Lines of a device's own entry (drawn in its box, in both views). */
-export function deviceAddressLines(d: Device): string[] {
-  return deviceOwnLines(d).map((x) => x.line);
+export function deviceAddressLines(d: Device, services: ServiceRegistry): string[] {
+  return deviceOwnLines(d, services).map((x) => x.line);
 }
 
 /**
@@ -308,7 +353,7 @@ export function addressInventory(model: Model): AddressField[] {
   for (const g of model.groups) attrs('group:' + g.id, g.attrs, ['physical', 'logical']);
   for (const d of model.devices) {
     attrs('device:' + d.id, d.attrs, ['physical', 'logical']);
-    if (d.routerId !== undefined) add('device:' + d.id, 'router_id', d.routerId, ['physical', 'logical']);
+    for (const x of identityLines(d, model.services)) add('device:' + d.id, x.field.field, x.line, ['physical', 'logical']);
     const bound = boundInterfaces(model, d.id);
     for (const i of d.interfaces.concat(d.logical)) {
       const owner = `iface:${d.id}:${i.id}`;
@@ -318,6 +363,7 @@ export function addressInventory(model: Model): AddressField[] {
       add(owner, 'id', i.id, views);
       for (const a of i.addresses) add(owner, 'ip', a, views);
       if (i.mac) add(owner, 'mac', i.mac, views);
+      for (const [line, f] of gatewayLines(model, i)) add(owner, f.field, line, views);
       if (i.vrf) add(owner, 'vrf', i.vrf, views);
       if (i.vlan !== undefined) add(owner, 'vlan', 'VLAN ' + i.vlan, views);
       if (i.source) add(owner, 'source', i.source.text, views);

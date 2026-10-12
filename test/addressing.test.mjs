@@ -23,8 +23,9 @@ const base = `netatlas: 1
 devices:
   - id: r1
     type: router
+    protocols: {vrrp: {}}
     interfaces:
-      - {id: e0, ip: [10.1.1.1/24, "2001:db8:1:1::1/64"], attrs: {vrrp-virtual-ip: 10.1.1.254}}
+      - {id: e0, ip: [10.1.1.1/24, "2001:db8:1:1::1/64"], protocols: {vrrp: {group: 1, virtual_ip: 10.1.1.254}}}
       - {id: e1, ip: 10.1.2.1/24, vrf: red}
       - {id: e2, ip: 10.9.9.1/24}
       - {id: e3, ip: 10.1.0.5/16}
@@ -32,8 +33,9 @@ devices:
       - {id: lo0, type: loopback, ip: 10.255.0.1/32}
   - id: r2
     type: router
+    protocols: {vrrp: {}}
     interfaces:
-      - {id: e0, ip: [10.1.1.2/24, "2001:db8:1:1::2/64"]}
+      - {id: e0, ip: [10.1.1.2/24, "2001:db8:1:1::2/64"], protocols: {vrrp: {group: 1, virtual_ip: 10.1.1.254}}}
       - {id: e1, ip: 10.1.2.1/24, vrf: blue}
   - id: sw
     type: switch
@@ -62,7 +64,7 @@ networks:
   - {id: red-net, cidr: 10.1.2.0/24}
   - {id: empty, cidr: 192.0.2.0/30}
 relations:
-  - {id: vrrp-1, protocol: vrrp, endpoints: ["r1:e0", "r2:e0"], over: users, attrs: {vrid: 1, virtual-ip: 10.1.1.254}}
+  - {id: vrrp-1, protocol: vrrp, endpoints: ["r1:e0", "r2:e0"], over: users}
 `;
 
 const net = (ov, vrf, id) => ov.vrfs.find((g) => g.vrf === vrf).networks.find((n) => n.id === id);
@@ -94,12 +96,12 @@ test('members: address, DNS names, loopback; DHCP clients on a cable carrying th
   assert.equal(site.used, 5n, '10.1.0.5, the three in users and the VIP 10.1.1.254');
 });
 
-test('gateways: virtual addresses of redundancy relations and interfaces, and the next hop of default routes', () => {
+test('gateways: the virtual addresses of redundancy groups (once, with every member interface), and the next hop of default routes', () => {
   const ov = A.addressingOverview(model(base));
   const g = net(ov, '', 'users').gateways;
   assert.deepEqual(g.map((x) => [x.text, x.kind, x.source, x.refs]), [
     ['10.1.1.254', 'gateway', 'default route of pc', ['route:pc:0']],
-    ['10.1.1.254', 'vip', 'VRRP vrrp-1; vrrp-virtual-ip of r1:e0', ['relation:vrrp-1', 'iface:r1:e0']],
+    ['10.1.1.254', 'vip', 'VRRP group 1', ['iface:r1:e0', 'iface:r2:e0']],
   ]);
   // the supernet doesn't repeat them: they belong to the nested network (and still count as used there)
   assert.deepEqual(net(ov, '', 'site').gateways, []);
@@ -145,7 +147,7 @@ test('duplicates (per VRF), overlapping prefixes and addresses in no network', (
   assert.deepEqual(ov.overlaps, []);
   assert.deepEqual(ov.orphans.map((o) => [o.vrf, `${o.device}:${o.iface}`, o.address, o.loopback]), [['', 'r1:e2', '10.9.9.1/24', false], ['', 'r1:lo0', '10.255.0.1/32', true]]);
   const dup = A.addressingOverview(
-    model(base.replace('{id: e0, ip: [10.1.1.2/24, "2001:db8:1:1::2/64"]}', '{id: e0, ip: [10.1.1.1/24, "2001:db8:1:1::2/64"]}').replace('{id: e3, ip: 10.1.0.5/16}', '{id: e3, ip: 10.1.1.9/16}').replace('{id: empty, cidr: 192.0.2.0/30}', '{id: empty, cidr: 10.1.2.0/24}')),
+    model(base.replace('{id: e0, ip: [10.1.1.2/24, "2001:db8:1:1::2/64"],', '{id: e0, ip: [10.1.1.1/24, "2001:db8:1:1::2/64"],').replace('{id: e3, ip: 10.1.0.5/16}', '{id: e3, ip: 10.1.1.9/16}').replace('{id: empty, cidr: 192.0.2.0/30}', '{id: empty, cidr: 10.1.2.0/24}')),
   );
   assert.deepEqual(dup.duplicates.map((d) => [d.vrf, d.text, d.owners.map((o) => `${o.device}:${o.iface}`)]), [['', '10.1.1.1', ['r1:e0', 'r2:e0']]]);
   assert.deepEqual(dup.overlaps.map((o) => [o.vrf, o.kind, o.message]), [
@@ -198,7 +200,7 @@ test('CSV: one line per network and VRF, RFC 4180 quoting, CRLF, exact counts', 
   assert.equal(lines[0], 'vrf,prefix,vlan,name,network_id,nested_in,gateways,members,used,size,utilization,ipv6_64s,next_free,free_ranges');
   // site is listed in the default table and in the VRFs red and blue (it holds their addresses too)
   assert.equal(lines.length, 1 + 8 + 1);
-  assert.match(lines[2], /^,10\.1\.1\.0\/24,10,Users,users,10\.1\.0\.0\/16,10\.1\.1\.254 \(gateway: default route of pc\); 10\.1\.1\.254 \(VIP: VRRP vrrp-1; vrrp-virtual-ip of r1:e0\),r1:e0 10\.1\.1\.1\/24; r2:e0 10\.1\.1\.2\/24; pc:eth0 10\.1\.1\.50\/24; laptop:wlan0 dhcp,4,254,1\.6,,10\.1\.1\.3\/24,10\.1\.1\.3-10\.1\.1\.49; 10\.1\.1\.51-10\.1\.1\.253$/);
+  assert.match(lines[2], /^,10\.1\.1\.0\/24,10,Users,users,10\.1\.0\.0\/16,10\.1\.1\.254 \(gateway: default route of pc\); 10\.1\.1\.254 \(VIP: VRRP group 1\),r1:e0 10\.1\.1\.1\/24; r2:e0 10\.1\.1\.2\/24; pc:eth0 10\.1\.1\.50\/24; laptop:wlan0 dhcp,4,254,1\.6,,10\.1\.1\.3\/24,10\.1\.1\.3-10\.1\.1\.49; 10\.1\.1\.51-10\.1\.1\.253$/);
   assert.match(csv, /,2001:db8:1:1::\/64,10,users6,users6,,.*,2,18446744073709551616,,1,2001:db8:1:1::3\/64,/);
   const quoted = U.addressingCsv(A.addressingOverview(model(base.replace('label: Users}', 'label: "Users, floor 1 \\"A\\""}'))));
   assert.match(quoted, /,"Users, floor 1 ""A""",users,/);

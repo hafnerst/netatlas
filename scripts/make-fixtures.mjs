@@ -39,6 +39,12 @@ export function buildNewNetwork() {
   d.addLoopback(0, ['2001:db8:ffff::a/128'], 'BGP source (IPv6)', 'lo1');
   d.addLoopback(b, ['10.255.0.2/32', '2001:db8:ffff::2/128'], 'Router ID', 'lo0');
   d.addLoopback(b, ['2001:db8:ffff::b/128'], 'BGP source (IPv6)', 'lo1');
+  // both run BGP in one AS, with their loopback lo0 as the router ID
+  for (const dev of [0, b]) {
+    d.enableService(dev, 'bgp');
+    d.setInteger(['devices', dev, 'protocols', 'bgp', 'asn'], '65000');
+    d.setText(['devices', dev, 'router_id'], 'lo0');
+  }
   // physical ports and a cable
   // (speed and medium belong to the cable, not to the ports)
   d.addInterface(0, [['id', s('ge-0/0/0')], ['ip', flowList('192.0.2.1/31')]]);
@@ -66,7 +72,7 @@ export function buildNewNetwork() {
     ['protocol', s('ibgp')],
     ['endpoints', flowList('edge-a:lo1', 'edge-b:lo1')],
     ['over', s('cable-1')],
-    ['attrs', Y.mapNode([['asn', Y.numNode(65000)], ['address-family', flowList('ipv6-unicast', 'evpn')]])],
+    ['attrs', Y.mapNode([['address-family', flowList('ipv6-unicast', 'evpn')]])],
   ]);
   d.addEntity('relation', [
     ['id', s('gre-lab')],
@@ -88,6 +94,12 @@ export function buildMinimalEdited() {
   for (const [i, n] of [[0, 1], [1, 2]]) {
     d.addLoopback(i, [`10.255.0.${n}/32`, `2001:db8:ffff::${n}/128`], 'Router ID', 'lo0');
   }
+  // the loopbacks become the router IDs; both also run BGP (AS 65001)
+  for (const i of [0, 1]) {
+    d.setText(['devices', i, 'router_id'], 'lo0');
+    d.enableService(i, 'bgp');
+    d.setInteger(['devices', i, 'protocols', 'bgp', 'asn'], '65001');
+  }
   // rename r1 -> edge-1: every reference (link, relations) follows
   d.renameEntity('device', 0, 'edge-1');
   d.change('Add attrs', () => d.setAt(['links', 0, 'attrs'], Y.mapNode([['patch-panel', s('PP-3 port 14')], ['length', s('2m')]]), KEY_ORDER.link));
@@ -96,7 +108,7 @@ export function buildMinimalEdited() {
     ['protocol', s('ibgp')],
     ['endpoints', flowList('edge-1:lo0', 'r2:lo0')],
     ['over', s('ospf-1')],
-    ['attrs', Y.mapNode([['asn', Y.numNode(65001)], ['update-source', s('lo0')]])],
+    ['attrs', Y.mapNode([['update-source', s('lo0')]])],
   ]);
   d.arrange(['physical', 'logical']);
   return d;

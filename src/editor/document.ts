@@ -6,6 +6,7 @@
  * dirty and re-validates. Export serializes the tree with yaml-write.ts.
  * This module has no DOM dependency and is fully testable in Node.
  */
+import { ROUTER_ID_KEY, ServiceRegistry, builtinServices, paramsAt } from '../model/services';
 import { Pt } from '../layout/geometry';
 import { LAYOUT_VIEWS, LayoutView, resolvePositions, samePositions } from '../layout/positions';
 import { ArrangeStrategy, STRATEGIES, STRATEGY_LABEL, allStrategyPositions } from '../layout/strategies';
@@ -15,6 +16,7 @@ import { parseAddress } from '../model/ip';
 import { Model } from '../model/types';
 import { IFACE_RE, Issue, LoadResult, loadModel, scalarText, validate } from '../validation/validate';
 import { SCHEMA } from '../yaml/schema';
+import { flowText } from '../yaml/write';
 import { DEFAULT_YAML_LIMITS, YMap, YNode, YSeq, autoNode, boolNode, cloneNode, mapNode, nullNode, numNode, seqNode, strNode } from '../yaml/parse';
 import { stringifyYaml } from '../yaml/write';
 import { rawLayoutKeys, rawManualIds, writeLayout, writeManual } from './layout-section';
@@ -542,7 +544,7 @@ export class ModelDoc {
       parent.items[seg] = value;
       return;
     }
-    const parent = parentPath.length ? this.ensureMap(parentPath) : this.root;
+    const parent = parentPath.length ? this.ensureMap(parentPath, this.orderFor(parentPath.slice(0, -1))) : this.root;
     setKey(parent, seg, value, order || (parentPath.length === 0 ? KEY_ORDER.top : undefined));
   }
 
@@ -612,7 +614,124 @@ export class ModelDoc {
 
   private orderFor(parentPath: Path): string[] | undefined {
     const k = this.schemaKindOf(parentPath);
-    return k ? KEY_ORDER[k] : undefined;
+    if (k) return KEY_ORDER[k];
+    return this.serviceOrder(parentPath);
+  }
+
+  /**
+   * Key order inside `protocols:` blocks (from the service registry of the
+   * model): the services by id; a service's parameters as the registry
+   * lists them, its own router ID last.
+   */
+  private serviceOrder(p: Path): string[] | undefined {
+    const reg = this.result.model ? this.result.model.services : builtinServices();
+    const at = (n: number): boolean => p.length === n && p[0] === 'devices' && typeof p[1] === 'number';
+    const devBlock = at(3) && p[2] === 'protocols';
+    const ifBlock = p.length === 5 && p[0] === 'devices' && (p[2] === 'interfaces' || p[2] === 'logical_interfaces') && typeof p[3] === 'number' && p[4] === 'protocols';
+    if (devBlock || ifBlock) return Array.from(reg.keys()).sort();
+    const devSvc = at(4) && p[2] === 'protocols';
+    const ifSvc = p.length === 6 && p[0] === 'devices' && (p[2] === 'interfaces' || p[2] === 'logical_interfaces') && p[4] === 'protocols';
+    if (!devSvc && !ifSvc) return undefined;
+    const def = reg.get(String(p[p.length - 1]));
+    if (!def) return undefined;
+    return paramsAt(def, devSvc ? 'device' : 'interface')
+      .map((x) => x.key)
+      .concat(devSvc ? [ROUTER_ID_KEY] : []);
+  }
+
+  // ------------------------------------------------------ routing services
+
+  /** Enable a service on a device (an empty block: its parameters are the user's to fill in). One undo step. */
+  enableService(devIndex: number, id: string): void {
+    const label = (this.servicesRegistry().get(id) || { label: id }).label;
+    this.change(`Enable ${label}`, () => {
+      const dp: Path = ['devices', devIndex];
+      const block = this.ensureMap(dp.concat('protocols'), KEY_ORDER.device);
+      if (!block.entries.has(id)) setKey(block, id, mapNode([], true), this.serviceOrder(dp.concat('protocols')));
+    });
+  }
+
+  /** The registry of the model's services (the built-ins while the model can't be read). */
+  servicesRegistry(): ServiceRegistry {
+    return this.result.model ? this.result.model.services : builtinServices();
+  }
+
+  /**
+   * What disabling a service on a device removes, as lines for the
+   * confirmation: its parameters, its settings on the device's interfaces,
+   * and the device's router ID when no other enabled service uses one.
+   * Empty: nothing but the service itself.
+   */
+  serviceRemoval(devIndex: number, id: string): string[] {
+    const out: string[] = [];
+    const dp: Path = ['devices', devIndex];
+    const reg = this.servicesRegistry();
+    const block = this.get(dp.concat('protocols', id));
+    if (block && block.kind === 'map') block.entries.forEach((e, k) => out.push(`${k}: ${flowText(e.value) || scalarText(e.value) || ''}`.trim()));
+    for (const list of ['interfaces', 'logical_interfaces']) {
+      const s = this.get(dp.concat(list));
+      if (!s || s.kind !== 'seq') continue;
+      s.items.forEach((it, j) => {
+        const b = this.get(dp.concat(list, j, 'protocols', id));
+        if (!b) return;
+        const iid = it.kind === 'map' ? this.text(dp.concat(list, j, 'id')) || '?' : scalarText(it) || '?';
+        out.push(`${iid}: ${b.kind === 'map' ? flowText(b) || '{}' : scalarText(b) || ''}`);
+      });
+    }
+    if (this.get(dp.concat('router_id')) && !this.otherRouterIdUser(devIndex, id, reg)) out.push(`router_id: ${this.text(dp.concat('router_id')) || ''} (no other enabled protocol uses a router ID)`);
+    return out;
+  }
+
+  private otherRouterIdUser(devIndex: number, id: string, reg: ServiceRegistry): boolean {
+    const b = this.get(['devices', devIndex, 'protocols']);
+    if (!b || b.kind !== 'map') return false;
+    let found = false;
+    b.entries.forEach((_e, k) => {
+      const def = reg.get(k);
+      if (k !== id && def && def.routerId !== 'none') found = true;
+    });
+    return found;
+  }
+
+  /** Disable a service on a device: its block, its interface settings and an orphaned router ID go, in one undo step. */
+  disableService(devIndex: number, id: string): void {
+    const reg = this.servicesRegistry();
+    const label = (reg.get(id) || { label: id }).label;
+    const dp: Path = ['devices', devIndex];
+    const dropRid = !this.otherRouterIdUser(devIndex, id, reg);
+    this.change(`Disable ${label}`, () => {
+      this.removeAt(dp.concat('protocols', id));
+      const b = this.get(dp.concat('protocols'));
+      if (b && b.kind === 'map' && b.entries.size === 0) this.removeAt(dp.concat('protocols'));
+      for (const list of ['interfaces', 'logical_interfaces']) {
+        const s = this.get(dp.concat(list));
+        if (!s || s.kind !== 'seq') continue;
+        s.items.forEach((_it, j) => {
+          const ip = dp.concat(list, j, 'protocols');
+          if (!this.get(ip.concat(id))) return;
+          this.removeAt(ip.concat(id));
+          const ib = this.get(ip);
+          if (ib && ib.kind === 'map' && ib.entries.size === 0) this.removeAt(ip);
+        });
+      }
+      if (dropRid) this.removeAt(dp.concat('router_id'));
+    });
+  }
+
+  /** Add a service's settings to an interface (its device enables the service), or remove them. One undo step each. */
+  setIfaceService(ifPath: Path, id: string, on: boolean): void {
+    const label = (this.servicesRegistry().get(id) || { label: id }).label;
+    this.change(`${on ? 'Add' : 'Remove'} ${label} on interface`, () => {
+      const ip = ifPath.concat('protocols');
+      if (on) {
+        const b = this.ensureMap(ip, this.orderFor(ifPath));
+        if (!b.entries.has(id)) setKey(b, id, mapNode([], true), this.serviceOrder(ip));
+        return;
+      }
+      this.removeAt(ip.concat(id));
+      const ib = this.get(ip);
+      if (ib && ib.kind === 'map' && ib.entries.size === 0) this.removeAt(ip);
+    });
   }
 
   private label(path: Path): string {
@@ -1138,7 +1257,18 @@ export class ModelDoc {
       const m = this.ensureMap(ipath, KEY_ORDER[kind]);
       setKey(m, 'id', strNode(newIf), KEY_ORDER[kind]);
       for (const p of refs) this.rewriteRef(p, dev.id as string, dev.id as string, oldIf, newIf);
-      return refs.length;
+      // a router ID that names the loopback (the device's, or a protocol's own)
+      let rids = 0;
+      const dp = ipath.slice(0, 2);
+      const ridPaths: Path[] = [dp.concat('router_id')];
+      const block = this.get(dp.concat('protocols'));
+      if (block && block.kind === 'map') block.entries.forEach((_e, k) => ridPaths.push(dp.concat('protocols', k, ROUTER_ID_KEY)));
+      for (const rp of ridPaths) {
+        if (oldIf === undefined || this.text(rp) !== oldIf) continue;
+        this.setAt(rp, strNode(newIf));
+        rids++;
+      }
+      return refs.length + rids;
     });
   }
 

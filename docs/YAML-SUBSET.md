@@ -25,6 +25,7 @@ multi-line JSON is rejected.)
 | Comments | `# …` on their own line or after a value (preceded by a space) |
 | Document markers | an optional leading `---` and an optional trailing `...` |
 | Empty values | `key:` → null |
+| Empty flow collections | `bfd: {}` (an empty mapping: a protocol enabled without parameters), `[]` |
 | UTF-8 input, with or without a BOM, and LF / CRLF / CR line ends | |
 
 ### Scalar types (YAML 1.2 core schema)

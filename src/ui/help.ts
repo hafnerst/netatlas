@@ -166,6 +166,19 @@ const MANUAL: Section[] = [
     figures: [['focus', 'Focus on the firewall in the physical view, one hop: the banner with the hops and Exit focus.']],
   },
   {
+    id: 'protocols',
+    title: 'Run routing protocols on a device',
+    steps: [
+      'Select a router, switch, firewall, load balancer, proxy or gateway. Its **Protocols** card lists what it runs.',
+      'If its relations use a protocol it doesn’t run, a suggestion such as **+ Enable OSPF · used by ospf-13** enables it with one click. Otherwise choose one under **Enable a protocol…**.',
+      'Fill in what the protocol requires: BGP’s **Local AS number**, OSPF’s **Router ID** (a loopback such as `lo0`, or an IPv4 address), IS-IS’s NET. Until then they are errors, here and in Problems.',
+      'For VRRP or HSRP, open the interface and press **+ VRRP group**: its group number, virtual IP and priority.',
+      '**Disable** removes a protocol and its values, after listing them; Ctrl+Z brings them back.',
+    ],
+    notes: ['The router ID and the AS number are written in the device’s box only while a protocol uses them. Nothing is filled in for you.'],
+    figures: [['protocols', 'r3’s Protocols card: the suggestions to enable OSPF and static routing, BGP with its AS number, and Enable a protocol.']],
+  },
+  {
     id: 'failure',
     title: 'Simulate a failure',
     steps: [
@@ -238,6 +251,7 @@ const SHORTCUTS: Array<[string, string]> = [
   ['Shift+F', 'Focus on the selection (Esc exits)'],
   ['T', 'Trace path (Esc removes it)'],
   ['X', 'Simulate failure of the selection (Esc ends it)'],
+  ['Ctrl+K → enable', 'Enable a protocol on the selected device'],
   ['A', 'Auto-arrange: Default'],
   ['+ / − / 0', 'Zoom in / out / fit'],
   ['Esc', 'Clear the selection, cancel, close'],

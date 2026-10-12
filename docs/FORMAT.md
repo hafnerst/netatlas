@@ -146,8 +146,8 @@ than one endpoint on the same device is bound by the first of them.
 | `type` | | One of the [device types](#device-types) below, written exactly as listed (lower case). Any other value is an error. Without a type the device gets a generic icon. |
 | `group` | | Id of the group the device is located in |
 | `tier` | | 0–9: vertical row in the physical view (0 = top). By default this comes from the type (see the table below). Set it to place a device elsewhere, e.g. `tier: 3` for core or spine switches above the access switches. |
-| `router_id` | | The device's router ID, as OSPF and BGP use it: an IPv4 address without a prefix length (`10.255.0.1`), also on an IPv6-only device. It is an address of its own: it need not be (and is not looked up as) an address of an interface. Drawn as `router-id 10.255.0.1` in the device's box. |
-| `asn` | | The device's own BGP AS number, 1–4294967295 (a plain number, also for 4-byte AS numbers). Drawn as `AS 65001` in the device's box. |
+| `router_id` | | The router ID the device's protocols share: the id of one of its **loopbacks** (`lo0`: its IPv4 address is used) or an **IPv4 address** without a prefix length (`10.255.0.1`). Applies only while an enabled protocol uses a router ID (OSPF, BGP, EIGRP, LDP); otherwise it is reported as not applicable. See [Routing services](#routing-services-protocols). |
+| `protocols` | | The **routing services** the device runs, with their parameters: `protocols: {bgp: {asn: 65001}, ospf: {}}`. Layer 3+ devices only. See [Routing services](#routing-services-protocols). |
 | `description`, `attrs` | | |
 | `interfaces` | | List of the device's **physical interfaces** (its ports, below). The shorthand `interfaces: [eth0, eth1]` is allowed. |
 | `logical_interfaces` | | List of the device's **logical interfaces** (below): loopbacks, virtual interfaces and tunnel interfaces. |
@@ -155,10 +155,86 @@ than one endpoint on the same device is bound by the first of them.
 | `routes` | | List of the device's **static routes**. See [Static routes](#static-routes). Only devices whose type has a routing table may have them. |
 
 A device has no `vendor`, `model`, `role` or `mgmt` key; like every key the
-format doesn't define, each is an error ("unknown key"). `router_id` is not
-a reference to a loopback: `router_id: lo0` is an error ("not a router ID").
-Such facts can be kept as free-form `attrs`, which are shown in the details
-only.
+format doesn't define, each is an error ("unknown key"). Such facts can be
+kept as free-form `attrs`, which are shown in the details only. A device has
+no `asn` either: the AS number is BGP's parameter (`protocols: {bgp: {asn:
+65001}}`), and `asn` on the device is reported as an unknown key that names
+where it belongs.
+
+### Routing services (`protocols`)
+
+A Layer 3+ device (router, switch, firewall, load balancer, proxy, gateway:
+the [device types](#device-types) whose routing role is *router*, the same
+list as for the routers among [static routes](#static-routes)) lists the
+protocols it runs under `protocols:`, each with its parameters. A protocol
+without parameters is enabled with an empty mapping:
+
+```yaml
+- id: hq-rtr1
+  type: router
+  router_id: lo0                # shared by the protocols that use a router ID
+  protocols:
+    bfd: {}
+    bgp: {asn: 65010}           # the local AS number is mandatory
+    ospf: {}                    # OSPF requires a router ID: the device's, or its own
+    static: {}                  # its static routes (routes:)
+  logical_interfaces:
+    - {id: lo0, type: loopback, ip: 10.255.0.1/32}
+```
+
+What each protocol has is defined by a registry (the built-in protocols
+below; a protocol of the model's [`protocols:` section](#protocols-defining-new-protocols)
+can declare its own). A parameter is written in one of three places, its
+**scope**:
+
+* `device`: in the device's block: `protocols: {bgp: {asn: 65010}}`;
+* `interface`: in an interface's own `protocols:` block, for what applies
+  per interface; the device must enable the protocol:
+  `protocols: {vrrp: {group: 10, virtual_ip: 10.10.10.1, priority: 200}}`;
+* `endpoint`: in the `attrs` of the protocol's relations, per endpoint
+  device (`area: {r1: 0, r2: 0}`) or one value for both ends (`area: 0`).
+  See [protocol-specific attributes](#protocol-specific-attributes).
+
+| Protocol | Device parameters | Interface parameters | Endpoint parameters (relation `attrs`) | Router ID |
+|---|---|---|---|---|
+| `bgp` | **`asn`** (1–4294967295) | | `peer-as`, `distance` | optional |
+| `ospf` | `process` (1–65535) | | `area`, `network-type`, `hello`, `dead`, `cost`, `distance` | **required** |
+| `isis` | **`net`** (a NET: `49.0001.1921.6800.1001.00`), `level` (`level-1`, `level-2`, `level-1-2`) | | `cost`, `distance` | |
+| `eigrp` | **`asn`** (1–65535) | | `cost`, `distance` | optional |
+| `rip` | `version` (`1`, `2`, `ng`) | | `distance` | |
+| `ldp` | | | | optional |
+| `pim` | `mode` (`sparse`, `dense`, `ssm`) | | | |
+| `bfd` | | | `interval`, `multiplier` | |
+| `static` | | | | |
+| `vrrp`, `hsrp`, `glbp`, `carp` | | **`group`**, **`virtual_ip`**, `virtual_ipv6`, `priority` | | |
+
+Bold: mandatory once the protocol is enabled. Rules:
+
+* **Mandatory parameters** are errors until they are written: nothing is
+  chosen for the user. OSPF without a router ID (neither the device's nor
+  its own) is an error.
+* **Router ID.** The device's `router_id` is shared by its protocols that
+  use one; a protocol may write its own `router_id` in its block instead
+  (`ospf: {router_id: 10.255.9.9}`). A router ID is an IPv4 address or the id
+  of a loopback of the device that has an IPv4 address. Without an enabled
+  protocol that uses a router ID, `router_id` is **not applicable** (a
+  warning). A protocol that uses none has no `router_id` key.
+* **AS number** only with BGP (or EIGRP's own): the device has no `asn` key.
+* **Layer 3+ only**: `protocols:` on another device type is an error.
+* **Unknown** protocols and parameters, and parameters written in the wrong
+  scope, are errors that say where they belong.
+* Values are checked by their type: whole numbers in their range, IPv4 and
+  IP addresses, a list of allowed values, OSPF areas (a number or a dotted
+  id), NETs.
+
+The [consistency checks](#consistency-checks) read the AS numbers and router
+IDs from the enabled protocols (iBGP or eBGP follows from the two local AS
+numbers; duplicate router IDs are looked for per protocol domain) and
+report a protocol that a device's relations use but that it does not
+enable, and one enabled but used by no relation. The path tracer and the
+failure analysis use only the protocols a device enables: a routing
+adjacency forms only between devices that both enable its protocol. The
+diagram writes the router ID and the AS number only where they apply.
 
 ### Device types
 
@@ -818,17 +894,18 @@ so it can't disagree:
   endpoints: ["r1:xe0", "isp:xe1"]
   attrs:
     peer-as: {r1: 64500, isp: 65001}             # the AS each device expects the other to be in
-- {id: vrrp-10, protocol: vrrp, endpoints: ["r1:Vlan10", "r2:Vlan10"], over: users, attrs: {vrid: 10, virtual-ip: 10.10.10.1}}
 ```
 
 | Relations | Keys | Compared with |
 |---|---|---|
 | `ospf` (and its aliases) | `area`, `network-type`, `hello`, `dead`, per device | the same key of the other endpoint |
-| `bgp`, `ebgp`, `ibgp` | `peer-as` per device; `type: ibgp`/`ebgp` on a plain `bgp` relation | the other device's `asn` |
-| category `redundancy` (VRRP, HSRP, CARP …) | keys ending in `virtual-ip`, `virtual-ipv6`, or `vip` | the networks in `over`, or else the subnets of the bound interfaces |
+| `bgp`, `ebgp`, `ibgp` | `peer-as` per device; `type: ibgp`/`ebgp` on a plain `bgp` relation | the other device's BGP `asn` |
 
-An interface's own attribute ending in `virtual-ip` (`vrrp-virtual-ip`) is
-compared with the interface's subnets.
+These keys are the protocols' [endpoint parameters](#routing-services-protocols):
+the Edit tab shows them as fields of the relation, one per endpoint device.
+A redundancy group's virtual address is not a relation attribute: it is the
+`virtual_ip` of each member interface's group (`protocols: {vrrp: {group:
+10, virtual_ip: 10.10.10.1}}`), compared with the interface's subnets.
 
 **Parameters the path tracer reads.** The [path tracer](../README.md#path-tracer)
 learns routes over the relations of the routing protocols (`ospf`, `isis`,
@@ -839,15 +916,14 @@ single value or per device:
 |---|---|---|
 | routing protocols | `cost` (1–16777215) | what an adjacency adds to a route's metric, from that device (1: a hop count) |
 | routing protocols | `distance` (1–255) | the administrative distance of the routes learned over it (eBGP 20, EIGRP 90, OSPF 110, IS-IS 115, RIP 120, iBGP 200) |
-| category `redundancy` | `master`, `active` or `primary` (text naming a device) | the active member that owns the virtual address |
-| category `redundancy` | `priority` | without a named master: the highest priority is active (else the first by id) |
 
 ```yaml
 - {id: ospf-muc, protocol: ospf, endpoints: ["hq-rtr1:st0.10", "muc-rtr:Tunnel10"], over: gre-muc, attrs: {cost: 100}}
-- {id: vrrp-users, protocol: vrrp, endpoints: ["c1:Vlan10", "c2:Vlan10"], attrs: {virtual-ip: 10.10.10.1, priority: {c1: 200, c2: 100}}}
 ```
 
-These are ordinary attributes: nothing else changes in the format.
+The active member of a redundancy group is the interface whose group has
+the highest `priority` (a member without one counts as 0), then the first by
+device id.
 
 **A relation names only what it rides on.** There is no field for a network
 that a relation *carries* or *serves* (the VNI network of a VXLAN, the
@@ -889,6 +965,36 @@ protocols:
     style: tube         # optional: tube | solid | dashed | dotted | dashdot
     description: Segment routing over IPv6
 ```
+
+A protocol of the model becomes a [routing service](#routing-services-protocols)
+devices can enable when it declares `params` (a list, possibly empty) or
+`router_id` (`required`, `optional` or `none`: whether it uses the router
+ID). Each parameter is a mapping:
+
+| Key | Description |
+|---|---|
+| `key` | the parameter's YAML key (lower case, digits, `_` and `-`) |
+| `label` | its name in the Edit tab (default: the key) |
+| `type` | `int`, `text`, `ipv4`, `address`, `enum`, `area` or `net` (default `text`) |
+| `scope` | `device`, `interface` or `endpoint` (default `device`) |
+| `required` | `true`: mandatory once the protocol is enabled |
+| `min`, `max` | `int`: the range |
+| `values` | `enum`: the allowed values |
+| `suggest` | values the Edit tab offers |
+| `description` | its help text |
+
+```yaml
+protocols:
+  - id: macsec
+    label: MACsec
+    category: other
+    params:
+      - {key: cipher, type: enum, values: [gcm-aes-128, gcm-aes-xpn-256], required: true}
+```
+
+The built-in routing services (the table in
+[Routing services](#routing-services-protocols)) keep their parameters: a
+`params` or `router_id` on their ids is an error.
 
 Built-in protocol ids: `gre`, `ipsec`, `ipip`, `wireguard`, `openvpn`, `l2tp`,
 `dmvpn`, `gtp`, `rsvp-te`, `sr-te`, `pseudowire`, `ssl-vpn`, `vxlan`, `geneve`,
@@ -1333,8 +1439,11 @@ next to the object and field they concern.
   outside 1–4094, a bad range, a VLAN listed twice, VLANs without a mode;
 * static routes: see [Static routes](#static-routes);
 * `mtu` outside 68–65535, `min_links` outside 1–64 or on an interface
-  without members, a `router_id` that isn't an IPv4 address (without prefix
-  length), an `asn` outside 1–4294967295, a link end's `duplex` other than
+  without members, a `router_id` that is neither an IPv4 address (without
+  prefix length) nor a loopback of the device with an IPv4 address, routing
+  services on a device that is not Layer 3+, unknown or misplaced protocol
+  parameters, a mandatory parameter left out or a value of the wrong type,
+  a link end's `duplex` other than
   `full`, `half` or `auto`;
 * in `checks:`, an id that isn't a check, or a value other than `off`,
   `error`, `warning` or `info`;
@@ -1397,14 +1506,18 @@ missing, it says nothing; no default is assumed (an end without a mode is not
 | `lag-min-links` | warning | an aggregate with fewer cabled member ports than `min_links` | virtual interfaces: `members`, `min_links`; links |
 | `link-subnet-mismatch` | error | addresses at the two ends of a cable in different subnets (per IP version, where both ends have one with a prefix length) | interfaces: `ip`; links |
 | `address-reserved` | error | an IPv4 network or broadcast address used as an interface address (not for /31 and /32) | interfaces: `ip`; networks: `cidr` (for an address without a prefix length) |
-| `vip-outside-subnet` | error | a virtual (gateway) address outside its subnet | redundancy relations: `attrs` (see [parameters](#protocol-specific-attributes)), `over`, bound interfaces; interfaces: `attrs` ending in `virtual-ip` |
-| `duplicate-router-id` | error | the same router ID on two devices | devices: `router_id` |
+| `vip-outside-subnet` | error | a group's virtual address outside its interface's subnet | interfaces: `protocols` (`virtual_ip`, `virtual_ipv6` of VRRP, HSRP, GLBP, CARP), `ip` |
+| `fhrp-group-mismatch` | warning | members of one virtual address in different groups | interfaces: `protocols` (`group`, `virtual_ip`) |
+| `duplicate-router-id` | error | the same router ID on two devices of one protocol domain (devices that relations of the protocol join) | devices: `router_id`, `protocols` (a protocol's own `router_id`); relations of each protocol |
+| `protocol-not-enabled` | warning | a Layer 3+ device that is an endpoint of a protocol's relation but does not enable the protocol | relations; devices: `protocols` |
+| `protocol-unused` | info | a protocol enabled on a device but used by none of its relations (static routing: by no route; a redundancy protocol: by no interface group) | devices: `protocols`, `routes`; relations |
+| `static-not-enabled` | info | static routes on a Layer 3+ device that does not enable static routing | devices: `routes`, `protocols` |
 | `duplicate-mac` | warning | the same MAC address on two interfaces (compared without separators and case) | interfaces: `mac` |
 | `ospf-area-mismatch` | error | an OSPF adjacency whose ends are in different areas | OSPF relations: `area.<device>` |
 | `ospf-network-type-mismatch` | warning | different OSPF network types at the two ends | OSPF relations: `network-type.<device>` |
 | `ospf-timer-mismatch` | error | different hello or dead intervals at the two ends | OSPF relations: `hello.<device>`, `dead.<device>` |
-| `bgp-peer-as` | error | a peer AS that is not the other device's AS | BGP relations: `peer-as.<device>`; devices: `asn` |
-| `bgp-session-type` | error | iBGP between devices in different AS numbers, or eBGP within one | `ibgp`/`ebgp` relations (or `bgp` with `type`); devices: `asn` |
+| `bgp-peer-as` | error | a peer AS that is not the other device's AS | BGP relations: `peer-as.<device>`; devices: `protocols.bgp.asn` |
+| `bgp-session-type` | error | iBGP between devices in different AS numbers, or eBGP within one | `ibgp`/`ebgp` relations (or `bgp` with `type`); devices: `protocols.bgp.asn` |
 | `tunnel-endpoint-mismatch` | error | a tunnel whose destination is not what its peer is sourced from | tunnel relations between two tunnel interfaces; tunnel interfaces: `source`, `destination`; interfaces: `ip` |
 | `tunnel-underlay` | warning | a tunnel whose `over` does not connect its endpoints (links join their two devices, networks their members, relations their devices) | tunnel relations: endpoints, `over` |
 | `relation-vrf-mismatch` | warning | a relation between interfaces in different VRFs (only where both name a VRF: a VRF interface facing one without, as a provider edge facing a customer, is normal) | relation endpoints; interfaces: `vrf` |

@@ -11,8 +11,9 @@
  */
 import { IpAddr, parseAddress, parsePrefix } from '../model/ip';
 import { protocolBase } from '../model/protocols';
+import { bgpAsn } from '../model/services';
 import { Interface, LinkEnd, Model, Relation, deviceInterfaces, ifaceKey, relationDevices } from '../model/types';
-import { addrBig, compareAddr, formatAddr, inPrefix, prefixRange, prefixText } from './ipmath';
+import { addrBig, compareAddr, inPrefix, prefixRange, prefixText } from './ipmath';
 import { vrfKey, vrfName } from './routing';
 
 type Emit = (f: { message: string; refs: string[]; at: { ref: string; field?: string } }) => void;
@@ -349,63 +350,6 @@ export const MORE_CHECKS: MoreCheck[] = [
     },
   },
   {
-    id: 'vip-outside-subnet',
-    severity: 'error',
-    title: 'Virtual (gateway) address outside its subnet',
-    reads: 'relations of category redundancy: attrs ending in "virtual-ip" / "virtual-ipv6", or "vip", and their `over` networks or bound interfaces (ip); interfaces: attrs ending in "virtual-ip" / "virtual-ipv6"',
-    run(model, emit) {
-      for (const r of model.relations) {
-        if (r.category !== 'redundancy') continue;
-        const nets = r.over.map((o) => model.index.networks.get(o)).filter((n): n is NonNullable<typeof n> => !!n && !!n.cidr).map((n) => ({ n, p: parsePrefix(n.cidr as string) as NonNullable<ReturnType<typeof parsePrefix>> }));
-        const bound = r.endpoints.map((e) => (e.iface !== undefined ? model.index.interfaces.get(ifaceKey(e.device, e.iface)) : undefined)).filter((i): i is Interface => !!i && i.addresses.length > 0);
-        for (const [k, v] of r.attrs) {
-          if (!vipKey(k)) continue;
-          for (const a of addrsOf(v)) {
-            const fam = nets.filter((x) => x.p.version === a.version);
-            const famIfaces = bound.filter((i) => ifaceNets(i).some((x) => x.written && x.addr.version === a.version));
-            let why = '';
-            if (fam.length) {
-              if (!fam.some((x) => inPrefix(x.p, a))) why = `it is in none of the networks the ${r.protocol.toUpperCase()} group runs over (${fam.map((x) => x.n.cidr).join(', ')})`;
-            } else if (famIfaces.length) {
-              const out = famIfaces.filter((i) => !ifaceNets(i).some((x) => x.written && inPrefix({ ...x.addr, prefix: x.len }, a)));
-              if (out.length) why = `it is not in a subnet of ${out.map((i) => `${i.device}:${i.id}`).join(', ')}`;
-            }
-            if (!why) continue;
-            emit({ message: `relation ${r.id}: the virtual address ${formatAddr(a)} (${k}) is outside its subnet: ${why}`, refs: ['relation:' + r.id].concat(bound.map(iref)), at: { ref: 'relation:' + r.id, field: 'attrs' } });
-          }
-        }
-      }
-      for (const d of model.devices) {
-        for (const i of deviceInterfaces(d)) {
-          const own = ifaceNets(i).filter((x) => x.written);
-          for (const [k, v] of i.attrs) {
-            if (!vipKey(k)) continue;
-            for (const a of addrsOf(v)) {
-              const fam = own.filter((x) => x.addr.version === a.version);
-              if (!fam.length || fam.some((x) => inPrefix({ ...x.addr, prefix: x.len }, a))) continue;
-              emit({ message: `${d.id}:${i.id}: the virtual address ${formatAddr(a)} (${k}) is not in a subnet of the interface (${fam.map((x) => x.text).join(', ')})`, refs: [iref(i)], at: { ref: iref(i), field: 'attrs' } });
-            }
-          }
-        }
-      }
-    },
-  },
-  {
-    id: 'duplicate-router-id',
-    severity: 'error',
-    title: 'The same router ID on two devices',
-    reads: 'devices: router_id',
-    run(model, emit) {
-      const seen = new Map<string, string>();
-      for (const d of model.devices.slice().sort((a, b) => (a.id < b.id ? -1 : 1))) {
-        if (d.routerId === undefined) continue;
-        const first = seen.get(d.routerId);
-        if (first === undefined) seen.set(d.routerId, d.id);
-        else emit({ message: `router ID ${d.routerId} is used by ${first} and ${d.id}`, refs: ['device:' + d.id, 'device:' + first], at: { ref: 'device:' + d.id, field: 'router_id' } });
-      }
-    },
-  },
-  {
     id: 'duplicate-mac',
     severity: 'warning',
     title: 'The same MAC address on two interfaces',
@@ -456,7 +400,7 @@ export const MORE_CHECKS: MoreCheck[] = [
     id: 'bgp-peer-as',
     severity: 'error',
     title: 'BGP peer AS that is not the other device’s AS',
-    reads: 'relations with protocol bgp (ebgp, ibgp …): attrs peer-as.<device>; devices: asn',
+    reads: 'relations with protocol bgp (ebgp, ibgp …): attrs peer-as.<device>; devices: protocols.bgp.asn',
     run(model, emit) {
       for (const r of model.relations) {
         if (baseProtocol(model, r) !== 'bgp') continue;
@@ -464,9 +408,9 @@ export const MORE_CHECKS: MoreCheck[] = [
         if (devs.length !== 2) continue;
         for (const [d, other] of [[devs[0], devs[1]], [devs[1], devs[0]]]) {
           const peer = relParamOwn(r, 'peer-as', d);
-          const od = model.index.devices.get(other);
-          if (peer === undefined || !od || od.asn === undefined || Number(peer) === od.asn) continue;
-          emit({ message: `BGP ${r.id}: ${d} expects ${other} in AS ${peer}, but ${other} is in AS ${od.asn}`, refs: ['relation:' + r.id, 'device:' + d, 'device:' + other], at: { ref: 'relation:' + r.id, field: 'attrs' } });
+          const oasn = bgpAsn(model.index.devices.get(other));
+          if (peer === undefined || oasn === undefined || Number(peer) === oasn) continue;
+          emit({ message: `BGP ${r.id}: ${d} expects ${other} in AS ${peer}, but ${other} is in AS ${oasn}`, refs: ['relation:' + r.id, 'device:' + d, 'device:' + other], at: { ref: 'relation:' + r.id, field: 'attrs' } });
         }
       }
     },
@@ -475,13 +419,15 @@ export const MORE_CHECKS: MoreCheck[] = [
     id: 'bgp-session-type',
     severity: 'error',
     title: 'iBGP between different AS numbers, or eBGP within one',
-    reads: 'relations with protocol ibgp or ebgp (or attrs type: ibgp / ebgp); devices: asn',
+    reads: 'relations with protocol ibgp or ebgp (or attrs type: ibgp / ebgp); devices: protocols.bgp.asn',
     run(model, emit) {
       for (const r of model.relations) {
         if (baseProtocol(model, r) !== 'bgp') continue;
         const t = r.protocol === 'ibgp' || r.protocol === 'ebgp' ? r.protocol : (r.attrs.find(([k]) => k === 'type') || ['', ''])[1].toLowerCase();
         if (t !== 'ibgp' && t !== 'ebgp') continue;
-        const devs = relationDevices(r).map((id) => model.index.devices.get(id)).filter((x): x is NonNullable<typeof x> => !!x && x.asn !== undefined);
+        const devs = relationDevices(r)
+          .map((id) => ({ id, asn: bgpAsn(model.index.devices.get(id)) }))
+          .filter((x) => x.asn !== undefined);
         if (devs.length < 2) continue;
         const asns = Array.from(new Set(devs.map((x) => x.asn as number)));
         if (t === 'ibgp' && asns.length > 1) emit({ message: `${r.id} is iBGP, but its devices are in different AS numbers (${devs.map((x) => `${x.id} AS ${x.asn}`).join(', ')})`, refs: ['relation:' + r.id].concat(devs.map((x) => 'device:' + x.id)), at: { ref: 'relation:' + r.id, field: 'protocol' } });

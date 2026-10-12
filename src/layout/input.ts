@@ -250,7 +250,7 @@ export function portLinks(m: Model): LLink[] {
  * moves nothing.
  */
 export function entryTexts(m: Model, d: Device, view: 'physical' | 'logical'): EntryText[] {
-  const own = deviceAddressLines(d);
+  const own = deviceAddressLines(d, m.services);
   const out: EntryText[] = own.length ? [{ header: '', lines: own }] : [];
   const spans = view === 'logical' ? modelPortSpans(m) : null;
   for (const e of deviceEntries(m, d, view)) {

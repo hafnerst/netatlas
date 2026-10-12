@@ -1,4 +1,5 @@
 /** Validated, typed network model produced from the YAML input. */
+import type { ServiceRegistry } from './services';
 
 /**
  * How a logical relation is drawn. Protocols are open-ended; categories are the
@@ -90,6 +91,8 @@ export interface Interface {
   mac?: string;
   /** configured MTU in bytes (68–65535), when written */
   mtu?: number;
+  /** the interface's settings of services its device enables (a VRRP group …), by service id */
+  services: ServiceConfig[];
   /** virtual: ids of the physical interfaces of the same device that are its members (a bond / aggregate); in file order */
   members: string[];
   /** virtual with members: how many member links must be up for the aggregate to be up, when written */
@@ -111,10 +114,10 @@ export interface Device {
   type: string;
   group?: string;
   tier?: number;
-  /** the routing protocols' router ID (an IPv4 address), when written */
-  routerId?: string;
-  /** the device's BGP AS number, when written */
-  asn?: number;
+  /** the router ID the device's protocols share (a loopback or an IPv4 address), when written */
+  routerId?: RouterIdValue;
+  /** the routing services the device enables (its `protocols:`), sorted by id; empty unless the type is Layer 3+ */
+  services: ServiceConfig[];
   description?: string;
   attrs: Attrs;
   /** physical interfaces (ports), in file order */
@@ -125,6 +128,27 @@ export interface Device {
   dnsNames: DnsName[];
   /** static routes, in file order (empty unless the device type may route; see analysis/routing.ts) */
   routes: Route[];
+  line: number;
+}
+
+/** A router ID as written: an IPv4 address, or the id of a loopback of the device (whose IPv4 address it is). */
+export interface RouterIdValue {
+  text: string;
+  /** the IPv4 address it stands for (none while it can't be resolved) */
+  address?: string;
+  /** set when it names a loopback */
+  iface?: string;
+}
+
+/**
+ * A service enabled on a device (or its settings on one interface): the
+ * parameter values as written, by key, and an own router ID that overrides
+ * the device's. Which keys exist is the registry's (model/services.ts).
+ */
+export interface ServiceConfig {
+  id: string;
+  values: Map<string, string>;
+  routerId?: RouterIdValue;
   line: number;
 }
 
@@ -278,6 +302,8 @@ export interface Model {
   relations: Relation[];
   /** Protocol registry (built-ins merged with input definitions). */
   protocols: Map<string, ProtocolDef>;
+  /** The routing services devices can enable (built-ins and the protocols that declare params). */
+  services: ServiceRegistry;
   /** stored diagram positions (presentation only; never affects the network semantics) */
   layout: ModelLayout;
   /** the `checks:` section: a check switched off or given another severity, by check id */
