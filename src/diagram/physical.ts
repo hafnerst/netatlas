@@ -17,7 +17,7 @@ import { CBox, Pt, Rect, boxRect, rectsOverlap, segmentHitsRect, textWidth, unio
 import { entryTexts, linkLabelExtraFields, linkLabelText, linkTagNote, portLinks } from '../layout/input';
 import { GROUP_PAD, PORT_FONT, PORT_LABEL_GAP, PhysicalLayout, PortPos, assignPorts, physicalListH, spareChipFlow } from '../layout/physical';
 import { ChipFlow, DEVICE_ICON, DEVICE_TEXT_X, ENTRY_FONT, GROUP_KIND_SIZE, ENTRY_GAP, ENTRY_LH, ENTRY_MARGIN, ENTRY_PAD_X, ENTRY_PAD_Y, IFCHIP_FONT, IFCHIP_H, IFCHIP_PAD, chipStripH, deviceBody, entriesSize, entryBox, groupHeader, linkLabelBox } from '../layout/sizes';
-import { LineField, addressAttrEntries, addressAttrLines, deviceAddressLines, deviceEntries, routeTables } from '../model/addresses';
+import { LineField, addressAttrEntries, addressAttrLines, deviceAddressLines, deviceEntries, deviceOwnLines, routeTables } from '../model/addresses';
 import { sortedByName } from '../model/order';
 import { deviceSubtitle } from '../model/device-types';
 import { Device, Model, ifaceKey } from '../model/types';
@@ -181,6 +181,9 @@ interface PortLabelLine {
  * beyond its end, the tagging outermost. The layout reserved this room
  * (layout/physical.ts).
  */
+/** Height of the ⚠ mark above a cable label whose ends' tagging differs. */
+const WARN_MARK_H = 17;
+
 function portLabelBox(p: PortPos): { anchor: string; lines: PortLabelLine[]; rect: Rect } {
   const lines: PortLabelLine[] = [];
   const add = (text: string | undefined, kind: 'name' | 'tag', x: number, y: number, anchor: string): void => {
@@ -263,9 +266,12 @@ export function cableRoute(pa: PortPos, pb: PortPos, boxes: Map<string, Rect>, p
   }
   const sa = { x: pa.x + pa.nx * STUB, y: pa.y + pa.ny * STUB };
   const sb = { x: pb.x + pb.nx * STUB, y: pb.y + pb.ny * STUB };
-  // (a port area the stub ends in can't be avoided: it is left out)
+  // (a port area the stub ends in can't be avoided: it is left out; one a device's
+  // obstacle already covers is left out too, or the way around it could end inside that device's)
   const inside = (p: Pt, r: Rect): boolean => p.x > r.x && p.x < r.x + r.w && p.y > r.y && p.y < r.y + r.h;
-  const obstacles = Array.from(boxes.values()).concat(ports.filter((r) => !inside(sa, r) && !inside(sb, r)));
+  const covered = (r: Rect, o: Rect): boolean => r.x >= o.x && r.y >= o.y && r.x + r.w <= o.x + o.w && r.y + r.h <= o.y + o.h;
+  const around = Array.from(boxes.values());
+  const obstacles = around.concat(ports.filter((r) => !inside(sa, r) && !inside(sb, r) && !around.some((o) => covered(r, o))));
   return [a, sa, ...detour(sa, sb, obstacles, 0), sb, b];
 }
 
@@ -368,14 +374,15 @@ export function renderPhysical(model: Model, layout: PhysicalLayout, opts: ViewO
     let center = { x: (pts[seg].x + pts[seg + 1].x) / 2, y: (pts[seg].y + pts[seg + 1].y) / 2 };
     if (text || lines.length) {
       const box = linkLabelBox(text, lines);
-      const step = Math.max(14, box.h + 2);
-      center = placer.place(alongSegment(pts[seg], pts[seg + 1], 0.5, [0, -26, 26, -52, 52, -80, 80, -110, 110], [0, -step, step, -2 * step, 2 * step]), box.w, box.h);
-      const r = centerRect(center, box.w, box.h);
+      // ends whose layer-2 tagging differs are marked above the label: the mark is part of the room it takes
+      const mark = mismatch ? WARN_MARK_H : 0;
+      const step = Math.max(14, box.h + mark + 2);
+      center = placer.place(alongSegment(pts[seg], pts[seg + 1], 0.5, [0, -26, 26, -52, 52, -80, 80, -110, 110], [0, -step, step, -2 * step, 2 * step]), box.w, box.h + mark);
+      const r = centerRect(center, box.w, box.h + mark);
       extra.push(r);
       if (placer.leaderFrom) out.push(leaderLine(placer.leaderFrom, r, 'link:' + l.id));
-      out.push(textLines({ class: 'halo link-label' + (mismatch ? ' net-mismatch' : ''), 'data-ref': 'link:' + l.id, 'text-anchor': 'middle' }, box.block, center.x, r.y + 1, addressLineAttrs(box.block, lineFields)));
-      // ends whose layer-2 tagging differs are marked next to the label
-      if (mismatch) out.push(h('text', { class: 'halo net-warn', 'data-ref': 'link:' + l.id, x: center.x, y: r.y - 3, 'text-anchor': 'middle' }, '⚠'));
+      out.push(textLines({ class: 'halo link-label' + (mismatch ? ' net-mismatch' : ''), 'data-ref': 'link:' + l.id, 'text-anchor': 'middle' }, box.block, center.x, r.y + mark + 1, addressLineAttrs(box.block, lineFields)));
+      if (mismatch) out.push(h('text', { class: 'halo net-warn', 'data-ref': 'link:' + l.id, x: center.x, y: r.y + 14, 'text-anchor': 'middle' }, '⚠'));
     } else if (mismatch) {
       // … and on the cable itself when labels are off
       out.push(h('text', { class: 'halo net-warn', 'data-ref': 'link:' + l.id, x: center.x, y: center.y - 8, 'text-anchor': 'middle' }, '⚠'));
@@ -549,7 +556,7 @@ export function entryItems(model: Model, d: Device, view: 'physical' | 'logical'
   const own = deviceAddressLines(d).length > 0 ? 1 : 0;
   const tables = view === 'logical' ? routeTables(d) : [];
   return texts.map((t, i) => {
-    if (own && i === 0) return { ...t, ref: 'device:' + d.id, fields: addressAttrEntries(d.attrs).map((a) => ({ field: 'attr', value: a.key })), cls: 'if-entry dev-addr', endpoint: false };
+    if (own && i === 0) return { ...t, ref: 'device:' + d.id, fields: deviceOwnLines(d).map((x) => x.field), cls: 'if-entry dev-addr', endpoint: false };
     if (i >= own + ifaces.length) {
       const tb = tables[i - own - ifaces.length];
       return { ...t, ref: 'device:' + d.id, fields: tb.refs.map(() => ({ field: '', value: '' })), cls: 'if-entry route-table', endpoint: false, lineRefs: tb.refs };

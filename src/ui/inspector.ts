@@ -17,10 +17,11 @@ import { DialogOpts } from './dialogs';
 import { el, icon, materialize } from './dom';
 import { headOf, objectHead } from './panels';
 import { sortedByName } from '../model/order';
-import { CATEGORIES, DIRECTIONS, Direction, InterfaceKind, LINE_STYLES, LOGICAL_IFACE_TYPES, PORT_MODES, VLAN_MAX, VLAN_MIN, ifaceKey, interfaceKindLabel, routeKey } from '../model/types';
+import { CATEGORIES, DIRECTIONS, DUPLEXES, Direction, InterfaceKind, LINE_STYLES, LOGICAL_IFACE_TYPES, PORT_MODES, VLAN_MAX, VLAN_MIN, ifaceKey, interfaceKindLabel, routeKey } from '../model/types';
 import { derivedVlanText, endNetworks, interfaceAddresses, interfaceVlanPorts, interfaceVlans, networkMembers, tagMismatch, tagMismatchText } from '../model/derive';
 import { routingRole, ROUTE_DEVICE_TYPES } from '../model/device-types';
 import { deviceVrfs, nextHopCandidates, vrfKey } from '../analysis/routing';
+import { CHECKS } from '../analysis/checks';
 import { builtinProtocols, normalizeProtocol } from '../model/protocols';
 import { SelectionContext, contextState } from '../model/queries';
 import { DEVICE_TYPES, isDeviceType } from '../model/device-types';
@@ -694,8 +695,37 @@ export class Editor {
         this.e('p', { class: 'muted small file-note' }, [`File: ${this.doc.fileName} (${this.host.fileState()}).`]),
       ], 'file'),
     );
+    w.appendChild(this.group('Consistency checks', [this.checksField()], 'checks'));
     const other = this.otherProps([], 'document');
     if (other.firstChild) w.appendChild(this.group('More', [other], 'more'));
+  }
+
+  /**
+   * Every consistency check with its default severity, and what this model
+   * makes of it: the default, another severity, or off (written to the
+   * model's `checks:` section; the default writes nothing).
+   */
+  private checksField(): HTMLElement {
+    const box = this.e('div', { class: 'checks-ed' });
+    box.appendChild(this.e('p', { class: 'muted small' }, ['A check runs only on data the model has. Set one off or to another severity for this model.']));
+    const table = this.e('table', { class: 'ports checks-table' }, [this.e('tr', {}, [this.e('th', {}, ['check']), this.e('th', {}, ['in this model'])])]);
+    for (const c of CHECKS) {
+      const cur = this.doc.checkSetting(c.id);
+      const s = this.e('select', { 'data-t': 'check-setting', 'data-k': c.id, 'aria-label': `${c.title} (${c.id})` }) as HTMLSelectElement;
+      s.appendChild(this.e('option', { value: '' }, [`Default (${c.severity})`]));
+      for (const v of ['error', 'warning', 'info', 'off']) if (v !== c.severity) s.appendChild(this.e('option', { value: v }, [v === 'off' ? 'Off' : v.charAt(0).toUpperCase() + v.slice(1)]));
+      if (cur && ['error', 'warning', 'info', 'off'].indexOf(cur) < 0) s.appendChild(this.e('option', { value: cur }, [cur + ' (not a setting)']));
+      s.value = cur === c.severity ? '' : cur;
+      table.appendChild(
+        this.e('tr', { 'data-check': c.id, class: cur ? 'changed' : '' }, [
+          this.e('td', { title: 'Reads: ' + c.reads }, [this.e('span', {}, [c.title]), this.e('code', { class: 'check-id' }, [c.id])]),
+          this.e('td', {}, [s]),
+        ]),
+      );
+    }
+    box.appendChild(table);
+    for (const is of this.doc.issuesAt(['checks'])) box.appendChild(this.e('div', { class: is.severity === 'error' ? 'field-err' : 'field-warn' }, [is.message]));
+    return box;
   }
 
   /**
@@ -743,7 +773,15 @@ export class Editor {
   /** The issues of the object, listed under the header (which counts them). */
   private issueBox(list: Issue[]): HTMLElement {
     const ul = this.e('ul', { class: 'issue-list' });
-    for (const is of list.slice(0, 30)) ul.appendChild(this.e('li', { class: is.severity }, [this.e('b', {}, [is.severity === 'error' ? 'Error: ' : 'Warning: ']), is.message]));
+    for (const is of list.slice(0, 30)) {
+      ul.appendChild(
+        this.e('li', { class: is.severity, 'data-check': is.check || '' }, [
+          this.e('b', {}, [is.severity === 'error' ? 'Error: ' : is.severity === 'warning' ? 'Warning: ' : 'Info: ']),
+          is.message,
+          is.check ? this.e('code', { class: 'check-id', title: 'Consistency check' }, [' ' + is.check]) : null,
+        ]),
+      );
+    }
     if (list.length > 30) ul.appendChild(this.e('li', {}, [`… and ${list.length - 30} more`]));
     return ul;
   }
@@ -769,6 +807,7 @@ export class Editor {
     if (kind === 'device') {
       g('Identity', [this.idField(base, kind), this.textField(base.concat('label'), 'Label', o, 'textarea', undefined, 'Line breaks are kept.'), this.typeField(base.concat('type'), o)], 'identity');
       g('Placement', [this.refField(base.concat('group'), 'Group / location', o, this.ids('group')), this.intField(base.concat('tier'), 'Tier (0–9)', o, 'Row in the physical view (0 = top). Empty: automatic.')], 'placement');
+      g('Routing identity', [this.textField(base.concat('router_id'), 'Router ID', o, 'text', undefined, 'An IPv4 address, e.g. 10.255.0.1.', '10.255.0.1'), this.intField(base.concat('asn'), 'BGP AS number', o, 'The device’s own AS (1–4294967295).')], 'routing');
       notes();
       this.renderInterfaces(w, index);
       this.renderRoutes(w, index);
@@ -1197,6 +1236,7 @@ export class Editor {
       // that association is shown; while it is neither, both are offered.
       const vlans = this.cardVlans(devIndex, p);
       if (has('members') || (kind === 'virtual' && !has('vlan') && !vlans.length)) card.appendChild(this.membersPortsField(devIndex, p));
+      if (has('min_links') || has('members')) card.appendChild(this.intField(p.concat('min_links'), 'Minimum links', o, 'How many member links must be up for the aggregate to be up.'));
       if (has('vlan') || (kind === 'virtual' && (!has('members') || vlans.length > 0))) {
         card.appendChild(this.intField(p.concat('vlan'), `VLAN ID (${VLAN_MIN}–${VLAN_MAX})`, o, 'VLAN interfaces only. Empty: taken from the network of an address above.'));
       }
@@ -1210,6 +1250,7 @@ export class Editor {
       }
     }
     card.appendChild(this.textField(p.concat('vrf'), 'VRF', o, 'text', undefined, 'The VRF this interface is assigned to, if any.'));
+    if (!loop || doc.get(p.concat('mtu'))) card.appendChild(this.intField(p.concat('mtu'), 'MTU (bytes)', o, 'Empty: not modelled (no MTU is assumed).'));
     if (!loop || doc.get(p.concat('mac'))) card.appendChild(this.textField(p.concat('mac'), 'MAC', o));
     card.appendChild(this.textField(p.concat('description'), 'Description', o, 'textarea'));
     if (id) {
@@ -1580,6 +1621,15 @@ export class Editor {
       box.appendChild(this.e('span', { class: 'muted small' }, ['Choose the device of this end first.']));
       return this.field(`End ${side} tagging`, box, endPath.concat('mode'));
     }
+    const speed = this.input(endPath.concat('speed'), 'end-text', doc.text(endPath.concat('speed')) || '', { 'data-k': 'speed', placeholder: 'e.g. 1G (the cable’s speed: on the link)', 'aria-label': `Port speed at end ${side}` });
+    box.appendChild(this.field('Port speed', speed, endPath.concat('speed')));
+    const dpx = this.e('select', { 'data-p': J(endPath), 'data-t': 'end-duplex', 'aria-label': `Duplex at end ${side}` }) as HTMLSelectElement;
+    const curDpx = doc.text(endPath.concat('duplex')) || '';
+    dpx.appendChild(this.e('option', { value: '' }, ['Not modelled']));
+    if (curDpx && (DUPLEXES as readonly string[]).indexOf(curDpx) < 0) dpx.appendChild(this.e('option', { value: curDpx }, [curDpx + ' (not a duplex)']));
+    for (const x of DUPLEXES) dpx.appendChild(this.e('option', { value: x }, [x === 'auto' ? 'Auto' : x === 'full' ? 'Full' : 'Half']));
+    dpx.value = curDpx;
+    box.appendChild(this.field('Duplex', dpx, endPath.concat('duplex')));
     const mode = this.e('select', { 'data-p': J(endPath), 'data-t': 'end-mode', 'aria-label': `Port mode at end ${side}` }) as HTMLSelectElement;
     mode.appendChild(this.e('option', { value: '' }, ['No layer-2 tagging']));
     if (t.mode && (PORT_MODES as readonly string[]).indexOf(t.mode) < 0) mode.appendChild(this.e('option', { value: t.mode }, [t.mode + ' (not a mode)']));
@@ -1610,7 +1660,7 @@ export class Editor {
     }
     const node = doc.get(endPath);
     if (node && node.kind === 'map') box.appendChild(this.otherProps(endPath, 'linkEnd'));
-    return this.e('div', { class: 'field tag-field', 'data-tagging': side }, [this.e('label', {}, [`End ${side}: layer 2`]), box]);
+    return this.e('div', { class: 'field tag-field', 'data-tagging': side }, [this.e('label', {}, [`End ${side}: port`]), box]);
   }
 
   /** How the tagging of the two ends disagrees, shown but never repaired. */
@@ -2064,6 +2114,15 @@ export class Editor {
         break;
       case 'end-mode':
         doc.setEndMode(p, val);
+        break;
+      case 'end-duplex':
+        doc.setEndText(p, 'duplex', val);
+        break;
+      case 'end-text':
+        doc.setEndText(p.slice(0, -1), target.getAttribute('data-k') === 'duplex' ? 'duplex' : 'speed', trimmed);
+        break;
+      case 'check-setting':
+        doc.setCheck(target.getAttribute('data-k') as string, val);
         break;
       case 'end-untagged':
         doc.setEndUntagged(p.slice(0, -1), trimmed);

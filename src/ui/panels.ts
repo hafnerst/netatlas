@@ -231,6 +231,8 @@ export function detailsFor(model: Model, ref: string, status: IssueCount | null 
       kv([
         ['type', deviceTypeLabel(d.type) || undefined],
         ['group', d.group ? refLink('group:' + d.group, ix.groups.get(d.group)?.label || d.group) : undefined],
+        ['router ID', d.routerId],
+        ['AS', d.asn !== undefined ? String(d.asn) : undefined],
         ['description', d.description],
       ]),
     );
@@ -344,6 +346,8 @@ export function detailsFor(model: Model, ref: string, status: IssueCount | null 
         ['DNS names', dnsOf(model, i).join(', ') || undefined],
         ['vrf', i.vrf],
         ['mac', i.mac],
+        ['MTU', i.mtu !== undefined ? String(i.mtu) : undefined],
+        ['minimum links', i.minLinks !== undefined ? String(i.minLinks) : undefined],
         ['cable', i.type !== 'physical' ? undefined : lid ? refLink('link:' + lid, lid) : 'not cabled'],
         ['description', i.description],
       ]),
@@ -406,7 +410,8 @@ export function detailsFor(model: Model, ref: string, status: IssueCount | null 
     // an end: where it plugs in, its layer-2 tagging, and the networks of the VLANs it carries (derived)
     const ep = (e: LinkEnd): VNode => {
       const carried = endNetworks(model, e);
-      const tag = tagWords(e);
+      const port = [e.speed, e.duplex ? e.duplex + ' duplex' : ''].filter((x) => !!x).join(', ');
+      const tag = [port, tagWords(e)].filter((x) => !!x).join('; ');
       return h('span', {}, [
         refLink('device:' + e.device, ix.devices.get(e.device)?.label || e.device),
         e.iface ? h('span', {}, ' ') : null,

@@ -88,8 +88,12 @@ export interface Interface {
   /** name of the VRF this interface is assigned to (display only) */
   vrf?: string;
   mac?: string;
+  /** configured MTU in bytes (68–65535), when written */
+  mtu?: number;
   /** virtual: ids of the physical interfaces of the same device that are its members (a bond / aggregate); in file order */
   members: string[];
+  /** virtual with members: how many member links must be up for the aggregate to be up, when written */
+  minLinks?: number;
   /** virtual: the VLAN it is the interface of, when written on the interface (see derive.interfaceVlans) */
   vlan?: number;
   /** tunnel: the local interface or address the tunnel is sourced from */
@@ -107,6 +111,10 @@ export interface Device {
   type: string;
   group?: string;
   tier?: number;
+  /** the routing protocols' router ID (an IPv4 address), when written */
+  routerId?: string;
+  /** the device's BGP AS number, when written */
+  asn?: number;
   description?: string;
   attrs: Attrs;
   /** physical interfaces (ports), in file order */
@@ -182,7 +190,14 @@ export interface VlanRange {
  * there are derived from it (the networks whose `vlan` is carried; see
  * model/derive.ts). An end without a mode says nothing about layer 2.
  */
+export type Duplex = 'full' | 'half' | 'auto';
+export const DUPLEXES: readonly Duplex[] = ['full', 'half', 'auto'];
+
 export interface LinkEnd extends Endpoint {
+  /** the port's configured speed as written ("1G", "100M"); the connection's own speed is Link.speed */
+  speed?: string;
+  /** the port's configured duplex */
+  duplex?: Duplex;
   mode?: PortMode;
   untagged?: number;
   /** tagged VLANs as written (file order), each an ID or a range */
@@ -265,6 +280,8 @@ export interface Model {
   protocols: Map<string, ProtocolDef>;
   /** stored diagram positions (presentation only; never affects the network semantics) */
   layout: ModelLayout;
+  /** the `checks:` section: a check switched off or given another severity, by check id */
+  checks: Map<string, 'off' | 'error' | 'warning' | 'info'>;
   index: ModelIndex;
 }
 

@@ -1,10 +1,12 @@
 import { IpPrefix, addrKey, hasHostBits, parseAddress, parsePrefix, prefixContains, prefixProblem } from '../model/ip';
 import { derive, interfaceAddresses } from '../model/derive';
-import { Target, runChecks } from '../analysis/checks';
+import { CHECKS, CheckSetting, SEVERITIES, Target, runChecks } from '../analysis/checks';
 import {
   CATEGORIES,
   Category,
   DIRECTIONS,
+  DUPLEXES,
+  Duplex,
   Device,
   Direction,
   DnsName,
@@ -321,6 +323,15 @@ function build(root: YNode | null, c: Ctx): Model | null {
       routes: [],
       line: m.line,
     };
+    // the routing identity of the device: its router ID (an IPv4 address) and its BGP AS number
+    const rid = r.field(m, 'router_id', dpath, 40);
+    if (rid !== undefined) {
+      const a = parsePrefix(rid, false);
+      if (!a || a.version !== 4 || rid.indexOf('/') >= 0) c.error(get(m, 'router_id') as YNode, dpath + '.router_id', `"${rid}" is not a router ID: write it as an IPv4 address without a prefix length, e.g. 10.255.0.1`);
+      else dev.routerId = rid;
+    }
+    const asn = r.int(get(m, 'asn'), dpath + '.asn', 1, 4294967295, 'AS number');
+    if (asn !== undefined) dev.asn = asn;
     devNodes.set(id, { node: m, path: dpath });
     let count = 0;
     /** address -> id of the interface of this device that has it (first one) */
@@ -447,6 +458,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
         addresses: addrs,
         vrf: r.field(im, 'vrf', ipath, 100),
         mac: r.field(im, 'mac', ipath, 40),
+        mtu: r.int(get(im, 'mtu'), ipath + '.mtu', 68, 65535, 'MTU'),
         members: [],
         description: r.field(im, 'description', ipath, L.maxDescription),
         attrs: r.attrs(get(im, 'attrs'), ipath + '.attrs'),
@@ -482,6 +494,11 @@ function build(root: YNode | null, c: Ctx): Model | null {
               else memberOf.set(mid, iid);
             }
           });
+        }
+        if (only('min_links', 'virtual', 'how many member links an aggregate needs')) {
+          const ml = r.int(get(im, 'min_links'), ipath + '.min_links', 1, 64, 'minimum number of links');
+          if (ml !== undefined && !iface.members.length) c.error(get(im, 'min_links') as YNode, ipath + '.min_links', `"min_links" applies to an aggregate: "${iid}" has no member ports`);
+          else if (ml !== undefined) iface.minLinks = ml;
         }
         if (only('vlan', 'virtual', 'the VLAN a VLAN interface belongs to')) {
           iface.vlan = r.vlanId(get(im, 'vlan'), ipath + '.vlan');
@@ -662,6 +679,8 @@ function build(root: YNode | null, c: Ctx): Model | null {
         ifaceLink.set(key, id);
       }
       const end: LinkEnd = { device: ep.device, iface: ep.iface, tagged: ep.tag.tagged };
+      if (ep.tag.speed !== undefined) end.speed = ep.tag.speed;
+      if (ep.tag.duplex !== undefined) end.duplex = ep.tag.duplex;
       if (ep.tag.mode !== undefined) end.mode = ep.tag.mode;
       if (ep.tag.untagged !== undefined) end.untagged = ep.tag.untagged;
       endNodes.set(`${id}.${side}`, en as YNode);
@@ -942,6 +961,29 @@ function build(root: YNode | null, c: Ctx): Model | null {
     }
   }
 
+  // ------------------------------------------------------------- checks
+  // which consistency checks are switched off or have another severity in this model
+  const checkSettings = new Map<string, CheckSetting>();
+  const checksNode = get(top, 'checks');
+  if (!isNull(checksNode)) {
+    const cm = r.map(checksNode, 'checks');
+    if (cm) {
+      const ids = CHECKS.map((x) => x.id);
+      const values = ['off'].concat(SEVERITIES as readonly string[]);
+      cm.entries.forEach((e, id) => {
+        const p = 'checks.' + id;
+        if (ids.indexOf(id) < 0) {
+          c.error(cm, p, `unknown check "${id}"${suggest(id, ids, 0)}`, { key: id, line: e.keyLine });
+          return;
+        }
+        const v = r.str(e.value, p, 20);
+        if (v === undefined) return;
+        if (values.indexOf(v) < 0) c.error(e.value, p, `"${v}" is not a setting for a check: use "off", "error", "warning" or "info"${suggest(v, values)}`);
+        else checkSettings.set(id, v as CheckSetting);
+      });
+    }
+  }
+
   const routes = new Map<string, Route>();
   for (const d of devices) for (const rt of d.routes) routes.set(routeKey(d.id, rt.index), rt);
   const index: ModelIndex = {
@@ -965,6 +1007,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
     relations,
     protocols,
     layout,
+    checks: checkSettings,
     index,
   };
   // Derived VLANs are never chosen for the user: conflicting networks are reported.
@@ -1033,7 +1076,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
       // the field isn't written there (a missing value is part of the finding): the entry, about that key
       return base.node.kind === 'map' ? { node: base.node, path: `${base.path}.${field}`, key: field } : base;
     };
-    for (const f of runChecks(model)) {
+    for (const f of runChecks(model, checkSettings)) {
       const at = place(f.at);
       if (!at) continue;
       c.finding(f.severity, at.node, at.path, f.message, at.key !== undefined ? { key: at.key } : {}, f.check, f.refs);
@@ -1042,8 +1085,10 @@ function build(root: YNode | null, c: Ctx): Model | null {
   return model;
 }
 
-/** The layer-2 tagging written on a link end. */
+/** The port settings written on a link end: speed, duplex and layer-2 tagging. */
 interface L2Tag {
+  speed?: string;
+  duplex?: Duplex;
   mode?: PortMode;
   untagged?: number;
   tagged: VlanRange[];
@@ -1057,6 +1102,13 @@ interface L2Tag {
  */
 function readTagging(r: Reader, c: Ctx, n: YMap, path: string): L2Tag {
   const out: L2Tag = { tagged: [] };
+  // the port's configured speed and duplex (the connection's speed is the link's)
+  out.speed = r.field(n, 'speed', path, 40);
+  const duplex = r.field(n, 'duplex', path, 20);
+  if (duplex !== undefined) {
+    if ((DUPLEXES as readonly string[]).indexOf(duplex) >= 0) out.duplex = duplex as Duplex;
+    else c.error(get(n, 'duplex') as YNode, path + '.duplex', `unknown duplex "${duplex}": use "full", "half" or "auto"${suggest(duplex, DUPLEXES)}`);
+  }
   const mode = r.field(n, 'mode', path, 40);
   if (mode !== undefined) {
     if ((PORT_MODES as readonly string[]).indexOf(mode) >= 0) out.mode = mode as PortMode;

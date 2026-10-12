@@ -211,6 +211,27 @@ async function main() {
       await save('tagging', { x, y, w: Math.min(c.x + c.w, r.x + r.w + 60) - x, h: Math.min(c.y + c.h, r.y + r.h) - y });
     }
 
+    // consistency checks: the Problems tab of the consistency-checks example, then its check settings
+    const demo = await page.eval("Array.from(document.querySelectorAll('#menu-examples [data-example]')).findIndex((b) => /consistency-checks/.test(b.textContent))");
+    await page.eval(`netatlas.loadExample(${demo}), netatlas.setView("physical"), netatlas.showTab("problems"), true`);
+    await page.eval("document.getElementById('toast').hidden = true");
+    await page.mouse('mouseMoved', 700, 890);
+    await page.settle(200);
+    {
+      const side = await page.rect('#side');
+      const first = await page.rect('#side-body [data-problems="checks"] .issue:nth-of-type(2)');
+      await save('problems', { x: side.x, y: side.y, w: side.w, h: Math.min(side.y + side.h, first.y + first.h + 8) - side.y }, { quality: 70 });
+    }
+    await page.click('#side-body [data-problems-settings]');
+    await page.mouse('mouseMoved', 700, 890);
+    await page.settle(300);
+    {
+      const side = await page.rect('#side');
+      const g = await page.rect('#side-body [data-group="checks"]');
+      const y = Math.max(side.y, g.y - 4);
+      await save('checks', { x: side.x, y, w: side.w, h: Math.min(side.y + side.h, y + 270) - y }, { quality: 70 });
+    }
+
     // the theme switch with its tooltip, in the dark theme (the default)
     await page.hover('#theme-btn');
     await page.settle(150);

@@ -734,9 +734,15 @@ function portLabelWidth(iface: string | undefined, tag: string | undefined): num
   return iface || tag ? portLabelTextWidth(iface, tag) + 12 : 14;
 }
 
-/** Room a port on the left or right side needs along it: its label above the cable, and its tagging under it. */
-const SIDE_SLOT = 22;
-const SIDE_SLOT_TAGGED = 34;
+/**
+ * Room a port on the left or right side needs along it: above the cable its
+ * name, under it its tagging (if any). Two ports one above the other are
+ * kept apart by what the upper one needs below plus what the lower one
+ * needs above.
+ */
+const SIDE_ABOVE = 16;
+const SIDE_BELOW = 6;
+const SIDE_BELOW_TAGGED = 18;
 
 /**
  * Place a port for every link end on the side of its device facing the peer.
@@ -769,6 +775,9 @@ function layoutPorts(links: PortLink[], boxes: Map<string, CBox>): { ports: Port
     peer: Pt;
     /** room the port needs along its side */
     slot: number;
+    /** of that, the room before its position (above it, on a left/right side) and after it (below) */
+    pre: number;
+    post: number;
     /** position along the side (x for top/bottom, y for left/right), absolute */
     at: number;
     list: Pending[];
@@ -809,7 +818,11 @@ function layoutPorts(links: PortLink[], boxes: Map<string, CBox>): { ports: Port
       const k = me.device + '|' + side;
       if (!bySide.has(k)) bySide.set(k, []);
       const list = bySide.get(k) as Pending[];
-      const e: Pending = { p, peer: { x: ob.cx, y: ob.cy }, slot: vertical ? portLabelWidth(me.iface, me.tag) : me.tag ? SIDE_SLOT_TAGGED : SIDE_SLOT, at: 0, list, lag: me.lag || '' };
+      const w = portLabelWidth(me.iface, me.tag);
+      const below = me.tag ? SIDE_BELOW_TAGGED : SIDE_BELOW;
+      const e: Pending = vertical
+        ? { p, peer: { x: ob.cx, y: ob.cy }, slot: w, pre: w / 2, post: w / 2, at: 0, list, lag: me.lag || '' }
+        : { p, peer: { x: ob.cx, y: ob.cy }, slot: SIDE_ABOVE + below, pre: SIDE_ABOVE, post: below, at: 0, list, lag: me.lag || '' };
       list.push(e);
       byKey.set(p.key, e);
       out.push(p);
@@ -830,7 +843,7 @@ function layoutPorts(links: PortLink[], boxes: Map<string, CBox>): { ports: Port
     list.sort((u, v) => (horiz ? u.peer.x - v.peer.x : u.peer.y - v.peer.y) || cmp(u.lag, v.lag) || cmp(u.p.key, v.p.key));
     const total = list.reduce((s, e) => s + e.slot, 0);
     const n = list.length;
-    const sep = (i: number): number => (list[i].slot + list[i + 1].slot) / 2;
+    const sep = (i: number): number => list[i].post + list[i + 1].pre;
     /** nearest positions to `want` that keep the slots apart: the mean of pushing right and pushing left */
     const spread = (want: number[]): number[] => {
       const f = want.slice();
@@ -853,7 +866,7 @@ function layoutPorts(links: PortLink[], boxes: Map<string, CBox>): { ports: Port
       const scale = (hi - lo) / total;
       let cur = lo;
       for (const e of list) {
-        e.at = cur + (e.slot * scale) / 2;
+        e.at = cur + e.pre * scale;
         cur += e.slot * scale;
       }
       return;
@@ -872,8 +885,8 @@ function layoutPorts(links: PortLink[], boxes: Map<string, CBox>): { ports: Port
     const [lo, hi] = range(e);
     if (to < lo + endGap(e) - 0.01 || to > hi - endGap(e) + 0.01) return false;
     const i = e.list.indexOf(e);
-    if (i > 0 && to < e.list[i - 1].at + (e.list[i - 1].slot + e.slot) / 2 - 0.01) return false;
-    if (i < e.list.length - 1 && to > e.list[i + 1].at - (e.list[i + 1].slot + e.slot) / 2 + 0.01) return false;
+    if (i > 0 && to < e.list[i - 1].at + e.list[i - 1].post + e.pre - 0.01) return false;
+    if (i < e.list.length - 1 && to > e.list[i + 1].at - e.post - e.list[i + 1].pre + 0.01) return false;
     return true;
   };
   for (let round = 0; round < 2; round++) {

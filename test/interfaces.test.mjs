@@ -87,7 +87,7 @@ test('a physical interface has no type; a logical interface has one of loopback,
   for (const t of ['physical', 'loopback', 'virtual', 'tunnel', 'svi']) {
     const m = messages(`netatlas: 1\ndevices:\n  - id: a\n    interfaces:\n      - {id: e0, type: ${t}}\n`);
     assert.equal(m.length, 1, t);
-    assert.match(m[0], /^unknown key "type" \(known: id, label, dhcp, ip, vrf, mac, description, attrs\)/, t);
+    assert.match(m[0], /^unknown key "type" \(known: id, label, dhcp, ip, vrf, mac, mtu, description, attrs\)/, t);
   }
   const logical = (body) => messages(`netatlas: 1\ndevices:\n  - id: a\n    logical_interfaces:\n      - {id: x0${body}}\n`);
   assert.deepEqual(logical(', type: virtual'), []);
@@ -419,13 +419,14 @@ devices:
 });
 
 test('removed device fields stay removed', () => {
-  for (const k of ['vendor', 'model', 'role', 'mgmt', 'router_id']) {
+  for (const k of ['vendor', 'model', 'role', 'mgmt']) {
     const r = validate.loadModel(`netatlas: 1\ndevices:\n  - id: r1\n    ${k}: x\n`);
     assert.equal(r.errors.length, 1, k);
     assert.match(r.errors[0].message, new RegExp(`^unknown key "${k}"`), k);
   }
   for (const f of exampleNames) {
-    assert.doesNotMatch(example(f), /^\s*(- )?(vendor|model|role|mgmt|router_id|loopbacks|children):/m, f);
+    assert.doesNotMatch(example(f), /^\s*(- )?(vendor|model|role|mgmt|loopbacks|children):/m, f);
+    assert.doesNotMatch(example(f), /router_id: [a-zA-Z]/, f + ': a router ID is an address, not an interface');
     assert.doesNotMatch(example(f), /type: (logical|physical|svi|vti|lag|subinterface)\b/, f);
   }
   const inspector = load('ui/inspector.js').Editor.toString();
@@ -530,7 +531,7 @@ test('export -> reload: the format round-trips (both categories, members, VLAN, 
 
 test('every example (and generated fixture) uses the format and draws in both views', () => {
   const files = exampleNames.map((f) => [f, example(f)]).concat(fixtureNames.map((f) => [f, fixture(f)]));
-  assert.equal(files.length, 9 + 3);
+  assert.equal(files.length, 10 + 3);
   for (const [f, text] of files) {
     const r = validate.loadModel(text);
     assert.deepEqual(r.errors.concat(r.warnings).map((e) => `${e.line}: ${e.message}`), [], f);
