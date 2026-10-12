@@ -542,7 +542,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
           names.join() === 'minimal-logical.svg,minimal-logical.png,minimal-physical.svg,minimal-physical.png' && same.every((x) => x) && exMenu.hidden && downloads.length === downloads.filter((d) => d.name).length,
           names.join() + ' ' + same.join(),
         );
-        check('the zoom bar has only zoom controls left', textsOf('.zoombar button').join('|') === '+|−|Fit' && !q('.zoombar #save-svg'));
+        check('the zoom bar has only zoom controls left, and Focus on the selection', textsOf('.zoombar button').join('|') === '+|−|Fit|◎ Focus' && !q('.zoombar #save-svg'), textsOf('.zoombar button').join('|'));
         toStart();
       }
 
@@ -1336,6 +1336,144 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       await tick();
       check('… undo removes it', app.exportText() === yamlBefore);
       app.theme.set('dark');
+      (app.mdoc as ModelDoc).markSaved();
+    }
+
+    // ------------------------------------------------ the command palette
+    {
+      app.loadExample(EXAMPLES.findIndex((e) => e.name === 'enterprise-wan.yaml'));
+      click('[data-view-btn="physical"]');
+      await tick();
+      const yamlBefore = app.exportText();
+      const ctrlK = (): void => {
+        doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true, cancelable: true }));
+      };
+      const pin = (): HTMLInputElement => q('#palette-input') as HTMLInputElement;
+      const type = async (v: string): Promise<void> => {
+        pin().value = v;
+        pin().dispatchEvent(new Event('input', { bubbles: true }));
+        await tick();
+      };
+      const keyIn = async (k: string): Promise<void> => {
+        pin().dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true }));
+        await tick();
+      };
+      const activeOpt = (): HTMLElement | null => (pin() ? doc.getElementById(pin().getAttribute('aria-activedescendant') || '') : null);
+      (q('#btn-outline-filter') as HTMLElement).focus();
+      ctrlK();
+      await tick();
+      const list = q('#palette-list');
+      check(
+        'Ctrl+K opens the command palette: a combobox with the focus, a listbox of results (the commands, by group, with their shortcuts), and a live count',
+        app.paletteOpen && doc.activeElement === pin() && pin().getAttribute('role') === 'combobox' && pin().getAttribute('aria-controls') === 'palette-list' && !!list && list.getAttribute('role') === 'listbox' &&
+          doc.querySelectorAll('#palette-list [role="option"]').length >= 20 && /results?\./.test(q('#palette-status')!.textContent || '') && /Ctrl\+S/.test(list.textContent || '') && !!activeOpt() && activeOpt()!.getAttribute('aria-selected') === 'true',
+        `${doc.querySelectorAll('#palette-list [role="option"]').length} options; ${q('#palette-status') ? q('#palette-status')!.textContent : ''}`,
+      );
+      await type('adrs ovr');
+      check('fuzzy matching: “adrs ovr” finds the Addressing overview, highlighted first', /Addressing overview/.test(activeOpt() ? activeOpt()!.textContent || '' : ''), activeOpt() ? activeOpt()!.textContent || '' : 'none');
+      await type('exit focus');
+      const disabled = q('#palette-list [role="option"][aria-disabled="true"]');
+      check('an unavailable command is listed, disabled, with the reason', !!disabled && /Exit focus/.test(disabled.textContent || '') && /Unavailable: Focus mode is off/.test(disabled.textContent || ''));
+      // a disabled command can't run: Enter on it says why and the palette stays
+      const dIndex = Number(disabled!.getAttribute('data-index'));
+      while (activeOpt() && Number(activeOpt()!.getAttribute('data-index')) !== dIndex) await keyIn('ArrowDown');
+      await keyIn('Enter');
+      check('… Enter on it runs nothing, the palette stays open and the reason is announced', app.paletteOpen && /unavailable: Focus mode is off/.test(q('#palette-status')!.textContent || ''));
+      // an object: Enter selects it in the diagram and closes the palette
+      await type('hq-rtr1');
+      const first = activeOpt();
+      check('objects are found by id (and label, address …): hq-rtr1 first, as a device', !!first && /hq-rtr1/.test(first.textContent || '') && /device/.test(first.textContent || ''), first ? first.textContent || '' : 'none');
+      await keyIn('Enter');
+      check('Enter selects the object in the diagram and closes the palette; the model is unchanged', !app.paletteOpen && app.session!.state.selected === 'device:hq-rtr1' && app.exportText() === yamlBefore);
+      // a command: through the palette, the Logical view
+      ctrlK();
+      await tick();
+      const recentHead = q('#palette-list .pal-head');
+      check('reopened: the recent entries come first', !!recentHead && recentHead.textContent === 'Recent' && /hq-rtr1/.test((q('#palette-list [role="option"]') as HTMLElement).textContent || ''));
+      await type('logical view');
+      await keyIn('Enter');
+      check('Enter runs a command: the Logical view is shown', !app.paletteOpen && app.session!.state.view === 'logical');
+      // Esc closes it; the focus goes back
+      (q('#btn-undo') as HTMLElement).focus();
+      const opener = doc.activeElement;
+      ctrlK();
+      await tick();
+      (q('#modal') as HTMLDialogElement).dispatchEvent(new Event('cancel', { cancelable: true }));
+      await tick();
+      check('Esc closes the palette and returns the focus', !app.paletteOpen && doc.activeElement === opener);
+      // from the Find menu too
+      click('#find-btn');
+      (q('#btn-palette') as HTMLElement).click();
+      await tick();
+      check('Find → Command palette… opens it', app.paletteOpen);
+      (q('#modal') as HTMLDialogElement).dispatchEvent(new Event('cancel', { cancelable: true }));
+      await tick();
+      check('the palette changed nothing in the model and added no undo step', app.exportText() === yamlBefore && (q('#btn-undo') as HTMLButtonElement).disabled);
+    }
+
+    // ------------------------------------------------ focus mode
+    {
+      app.loadExample(EXAMPLES.findIndex((e) => e.name === 'enterprise-wan.yaml'));
+      click('[data-view-btn="physical"]');
+      await tick();
+      const yamlBefore = app.exportText();
+      const all = (): number => doc.querySelectorAll('#viewport g.device').length;
+      const total = all();
+      const posBefore = JSON.stringify(Array.from(app.session!.positionsFor('physical')));
+      const zf = q('#zoom-focus') as HTMLButtonElement;
+      check('Focus is unavailable without a selection, and says why', zf.disabled && /Select an object first/.test(zf.title), zf.title);
+      app.select('device:hq-fw');
+      await tick();
+      check('with a selection, the Focus button under the diagram is available', !zf.disabled && /hq-fw/.test(zf.title), zf.title);
+      doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'F', shiftKey: true, bubbles: true, cancelable: true }));
+      await tick();
+      const banner = q('#mode-banner') as HTMLElement;
+      const shown = all();
+      check(
+        'Shift+F focuses on the selection: only it and what is one cable away are drawn; a banner names it, the hops, how many devices are shown and that positions are temporary',
+        !banner.hidden && shown === 5 && shown < total && /Focus: hq-fw/.test(q('#mode-text')!.textContent || '') && /1 hop \(cables\)/.test(q('#mode-text')!.textContent || '') && /5 of 15 devices/.test(q('#mode-text')!.textContent || '') && /temporary and are not saved/.test(q('#mode-text')!.textContent || '') &&
+          (q('#filter-hint') as HTMLElement).hidden && /5 of 15/.test(q('#devices-count')!.textContent || ''),
+        `${shown}/${total} ${q('#mode-text')!.textContent}`,
+      );
+      check('the banner’s controls: one hop fewer is unavailable at 1, one more and Exit are available; Focus itself is unavailable (already focused)', (q('#focus-fewer') as HTMLButtonElement).disabled && !(q('#focus-more') as HTMLButtonElement).disabled && !(q('#focus-exit') as HTMLButtonElement).disabled && zf.disabled);
+      (q('#focus-more') as HTMLElement).click();
+      await tick();
+      check('+ shows 2 hops: more devices', /2 hops/.test(q('#focus-hops')!.textContent || '') && all() > shown, `${all()}`);
+      // the other view: hops along relations
+      click('[data-view-btn="logical"]');
+      await tick();
+      check('in the logical view the hops follow relations', !banner.hidden && /\(relations\)/.test(q('#mode-text')!.textContent || '') && all() < total);
+      // an export shows exactly what is drawn, and says it is a focus
+      const svg = app.exportSvg();
+      const drawn = all();
+      const exported = new (doc.defaultView as Window & typeof globalThis).DOMParser().parseFromString(svg, 'image/svg+xml').querySelectorAll('g.device').length;
+      check('an export shows exactly the focused part, with a “Focus” note in the picture', /class="export-note"[^>]*>Focus: hq-fw/.test(svg) && exported === drawn, `${exported} / ${drawn}`);
+      // both themes: the banner is drawn in the theme's colours
+      for (const theme of ['light', 'dark']) {
+        app.theme.set(theme as 'light' | 'dark');
+        await tick();
+        const cs = doc.defaultView!.getComputedStyle(banner);
+        check(`${theme} theme: the focus banner is drawn and readable`, cs.display !== 'none' && cs.color !== cs.backgroundColor && banner.getBoundingClientRect().height > 20);
+      }
+      check('focus mode changes nothing in the model and adds no undo step', app.exportText() === yamlBefore && (q('#btn-undo') as HTMLButtonElement).disabled);
+      // Esc ends it: the complete diagram, positions unchanged
+      click('[data-view-btn="physical"]');
+      await tick();
+      (q('#canvas') as unknown as HTMLElement).focus();
+      doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      await tick();
+      check(
+        'Esc exits focus: every device is back, at the positions it had; the banner is gone; the selection stays',
+        banner.hidden && all() === total && JSON.stringify(Array.from(app.session!.positionsFor('physical'))) === posBefore && app.session!.state.selected === 'device:hq-fw' && !app.session!.state.focus,
+      );
+      // through the palette as well
+      app.runCommand('focus.enter');
+      await tick();
+      const viaCommand = !banner.hidden;
+      app.runCommand('focus.exit');
+      await tick();
+      check('Focus and Exit focus are commands (menu, palette)', viaCommand && banner.hidden && !!q('#btn-focus[data-command="focus.enter"]'));
+      app.select(null);
       (app.mdoc as ModelDoc).markSaved();
     }
 
@@ -3367,8 +3505,8 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const viaArrow = !(q('#find-menu') as HTMLElement).hidden && viewBtn.getAttribute('aria-expanded') === 'true' && (q('#find-menu') as HTMLElement).contains(doc.activeElement);
       const entries = textsOf('#find-menu button');
       check(
-        'Find menu next to Export: Find in diagram… (/) and Filter object list…, reached with the arrow keys like File and Export; no search box in the toolbar, no filter box always in the outline',
-        viaArrow && entries.join(' | ') === 'Find in diagram…/ | Filter object list…' && !q('header.topbar #search') && !q('header.topbar [data-t="outline-filter"]') &&
+        'Find menu next to Export: Find in diagram… (/), Filter object list… and Command palette… (Ctrl+K), reached with the arrow keys like File and Export; no search box in the toolbar, no filter box always in the outline',
+        viaArrow && entries.join(' | ') === 'Find in diagram…/ | Filter object list… | Command palette…Ctrl+K' && !q('header.topbar #search') && !q('header.topbar [data-t="outline-filter"]') &&
           /in the diagram/.test((q('#btn-find') as HTMLElement).title) && /object list/.test((q('#btn-outline-filter') as HTMLElement).title) && /diagram is not changed/.test((q('#btn-outline-filter') as HTMLElement).title),
         `${viaArrow} ${entries.join(' | ')}`,
       );

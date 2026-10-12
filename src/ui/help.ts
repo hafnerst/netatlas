@@ -144,6 +144,28 @@ const MANUAL: Section[] = [
     ],
   },
   {
+    id: 'palette',
+    title: 'Use the command palette',
+    steps: [
+      'Press `Ctrl+K` (`Cmd+K` on a Mac), or choose **Find → Command palette…**. A search field opens over the window.',
+      'Type a few letters of what you want: a command (**save**, **logical view**, **addressing**, **focus** …) or an object of the model (a device, interface, cable, network, relation, route or location, by name, id or address). The letters need not be next to each other: `adrs ovr` finds *Addressing overview*.',
+      'Move with `↑` and `↓`, press `Enter` to run the command or select the object in the diagram, `Esc` to close. Each command shows its shortcut; one that can\'t run now is greyed out with the reason.',
+    ],
+    notes: ['With nothing typed, the entries you used last come first.'],
+    figures: [['palette', 'The command palette: “focus” typed, with Focus on selection, the hop commands and Exit focus; an unavailable one says why.']],
+  },
+  {
+    id: 'focus',
+    title: 'Focus on a part of the network',
+    steps: [
+      'Select a device, interface, cable, network, relation or location, then press `Shift+F`, the **◎ Focus** button under the diagram, or **Analyze → Focus on selection**.',
+      'The diagram shows only that object and what is one hop away: along cables in the **Physical** view, along relations in the **Logical** view. A banner across the top names it; **−** and **+** show 1, 2 or 3 hops.',
+      'Press **Exit focus** or `Esc` to see the complete diagram again, exactly as before.',
+    ],
+    notes: ['Focus works with the other filters (Devices, Endpoints, Servers …). Positions you change while focused are temporary and not saved; nothing in the model changes. An export shows what is on screen, with a *Focus* note.'],
+    figures: [['focus', 'Focus on the firewall in the physical view, one hop: the banner with the hops and Exit focus.']],
+  },
+  {
     id: 'addressing',
     title: 'See the addressing',
     steps: [
@@ -188,6 +210,8 @@ const SHORTCUTS: Array<[string, string]> = [
   ['E', 'Edit tab'],
   ['C', 'Connect the selected object'],
   ['I', 'Addressing overview'],
+  ['Ctrl+K', 'Command palette (Cmd+K on a Mac)'],
+  ['Shift+F', 'Focus on the selection (Esc exits)'],
   ['A', 'Auto-arrange: Default'],
   ['+ / − / 0', 'Zoom in / out / fit'],
   ['Esc', 'Clear the selection, cancel, close'],

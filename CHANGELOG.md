@@ -84,6 +84,20 @@ there is no conversion of files written for the earlier drafts.
   free address of a network when an address is added to an interface.
   Computed in `src/analysis/addressing.ts`.
 - **Analyze menu** between Find and Help, for the analysis views.
+- **Command palette** (`Ctrl+K`, `Cmd+K` on a Mac; Find → Command
+  palette…): fuzzy search over every command (with its shortcut; an
+  unavailable one disabled, with the reason) and every object of the model
+  (devices, interfaces, cables, networks, relations, routes, locations);
+  recent entries first; Enter runs or selects, Esc closes; the number of
+  results is announced. The menus, the keyboard shortcuts and the palette
+  now come from one command registry (`src/ui/commands.ts`).
+- **Focus mode** (`Shift+F`, the ◎ Focus button under the diagram, Analyze →
+  Focus on selection): only the selected object and what is within 1–3 hops
+  of it, along cables (physical view) or relations (logical view). A banner
+  names it, changes the hops and exits (also `Esc`); it combines with the
+  other filters, positions are temporary, and leaving it restores the
+  diagram and zoom exactly. Exports carry a *Focus* note. Computed in
+  `src/analysis/focus.ts`.
 - **More consistency checks**, each with a positive and a negative test:
   `link-mtu-mismatch`, `tunnel-mtu` (with the encapsulation overhead it
   assumes in the message, added up over a tunnel stack),

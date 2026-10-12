@@ -25,11 +25,11 @@
   <div class="menu-wrap">
     <button id="menu-btn" type="button" class="menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="main-menu" title="File: new, open, save and close models; examples">File <span class="caret" aria-hidden="true">▾</span></button>
     <div id="main-menu" class="dropdown menu" role="menu" aria-label="File" hidden>
-      <button id="btn-new" type="button" role="menuitem" title="Start a new, empty model"><span class="mi-label">New model</span></button>
-      <button id="open" type="button" role="menuitem" title="Open a model from a YAML file on this computer (nothing is uploaded)"><span class="mi-label">Open model…</span></button>
-      <button id="btn-save" type="button" role="menuitem" title="Open or create a model first" disabled><span class="mi-label">Save model</span><span class="mi-hint">Ctrl+S</span></button>
-      <button id="btn-save-as" type="button" role="menuitem" title="Open or create a model first" disabled><span class="mi-label">Save model as…</span><span class="mi-hint">Ctrl+Shift+S</span></button>
-      <button id="btn-close" type="button" role="menuitem" title="Close the current model and return to the start screen" disabled><span class="mi-label">Close model</span></button>
+      <button id="btn-new" type="button" role="menuitem" data-command="file.new" title="Start a new, empty model"><span class="mi-label">New model</span></button>
+      <button id="open" type="button" role="menuitem" data-command="file.open" title="Open a model from a YAML file on this computer (nothing is uploaded)"><span class="mi-label">Open model…</span></button>
+      <button id="btn-save" type="button" role="menuitem" data-command="file.save" title="Open or create a model first" disabled><span class="mi-label">Save model</span><span class="mi-hint">Ctrl+S</span></button>
+      <button id="btn-save-as" type="button" role="menuitem" data-command="file.saveAs" title="Open or create a model first" disabled><span class="mi-label">Save model as…</span><span class="mi-hint">Ctrl+Shift+S</span></button>
+      <button id="btn-close" type="button" role="menuitem" data-command="file.close" title="Close the current model and return to the start screen" disabled><span class="mi-label">Close model</span></button>
       <div class="menu-sep" role="separator"></div>
       <div class="menu-title" id="menu-examples-title">Examples</div>
       <div id="menu-examples" role="group" aria-labelledby="menu-examples-title"></div>
@@ -40,29 +40,33 @@
     <div id="export-menu" class="dropdown menu" role="menu" aria-label="Export" hidden>
       <button id="btn-export-as" type="button" role="menuitem" aria-haspopup="menu" aria-expanded="false" aria-controls="export-formats" title="Open or create a model first" disabled><span class="mi-label">Export view as…</span><span class="mi-hint sub-caret" aria-hidden="true">▸</span></button>
       <div id="export-formats" class="submenu" role="menu" aria-label="Export view as" hidden>
-        <button id="btn-export-png" type="button" role="menuitem" data-format="png" title="Open or create a model first" disabled><span class="mi-label">PNG</span><span class="mi-hint">image</span></button>
-        <button id="btn-export-svg" type="button" role="menuitem" data-format="svg" title="Open or create a model first" disabled><span class="mi-label">SVG</span><span class="mi-hint">vector drawing</span></button>
+        <button id="btn-export-png" type="button" role="menuitem" data-command="export.png" data-format="png" title="Open or create a model first" disabled><span class="mi-label">PNG</span><span class="mi-hint">image</span></button>
+        <button id="btn-export-svg" type="button" role="menuitem" data-command="export.svg" data-format="svg" title="Open or create a model first" disabled><span class="mi-label">SVG</span><span class="mi-hint">vector drawing</span></button>
       </div>
     </div>
   </div>
   <div class="menu-wrap">
     <button id="find-btn" type="button" class="menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="find-menu" title="Find: find in the diagram, filter the object list">Find <span class="caret" aria-hidden="true">▾</span></button>
     <div id="find-menu" class="dropdown menu" role="menu" aria-label="Find" hidden>
-      <button id="btn-find" type="button" role="menuitem" title="Open or create a model first" disabled><span class="mi-label">Find in diagram…</span><span class="mi-hint">/</span></button>
-      <button id="btn-outline-filter" type="button" role="menuitem" title="Open or create a model first" disabled><span class="mi-label">Filter object list…</span></button>
+      <button id="btn-find" type="button" role="menuitem" data-command="find.diagram" title="Open or create a model first" disabled><span class="mi-label">Find in diagram…</span><span class="mi-hint">/</span></button>
+      <button id="btn-outline-filter" type="button" role="menuitem" data-command="find.outline" title="Open or create a model first" disabled><span class="mi-label">Filter object list…</span></button>
+      <button id="btn-palette" type="button" role="menuitem" aria-haspopup="dialog" data-command="palette.open" title="Search every action and every object of the model, and run or select it (Ctrl+K)"><span class="mi-label">Command palette…</span><span class="mi-hint">Ctrl+K</span></button>
     </div>
   </div>
   <div class="menu-wrap">
     <button id="analyze-btn" type="button" class="menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="analyze-menu" title="Analyze: look at the network the model describes">Analyze <span class="caret" aria-hidden="true">▾</span></button>
     <div id="analyze-menu" class="dropdown menu" role="menu" aria-label="Analyze" hidden>
-      <button id="btn-addressing" type="button" role="menuitem" aria-haspopup="dialog" title="Open or create a model first" disabled><span class="mi-label">Addressing overview…</span><span class="mi-hint">I</span></button>
+      <button id="btn-addressing" type="button" role="menuitem" data-command="analyze.addressing" aria-haspopup="dialog" title="Open or create a model first" disabled><span class="mi-label">Addressing overview…</span><span class="mi-hint">I</span></button>
+      <div class="menu-sep" role="separator"></div>
+      <button id="btn-focus" type="button" role="menuitem" data-command="focus.enter" title="Open or create a model first" disabled><span class="mi-label">Focus on selection</span><span class="mi-hint">Shift+F</span></button>
+      <button id="btn-focus-exit" type="button" role="menuitem" data-command="focus.exit" title="Focus mode is off" disabled><span class="mi-label">Exit focus</span><span class="mi-hint">Esc</span></button>
     </div>
   </div>
   <div class="menu-wrap">
     <button id="help-btn" type="button" class="menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="help-menu" title="Help: user manual and license">Help <span class="caret" aria-hidden="true">▾</span></button>
     <div id="help-menu" class="dropdown menu" role="menu" aria-label="Help" hidden>
-      <button id="btn-manual" type="button" role="menuitem" aria-haspopup="dialog" title="A short guide to NetAtlas's basic tasks, with pictures"><span class="mi-label">User Manual</span></button>
-      <button id="btn-license" type="button" role="menuitem" aria-haspopup="dialog" title="The license NetAtlas is distributed under (Apache License, Version 2.0)"><span class="mi-label">License</span></button>
+      <button id="btn-manual" type="button" role="menuitem" data-command="help.manual" aria-haspopup="dialog" title="A short guide to NetAtlas's basic tasks, with pictures"><span class="mi-label">User Manual</span></button>
+      <button id="btn-license" type="button" role="menuitem" data-command="help.license" aria-haspopup="dialog" title="The license NetAtlas is distributed under (Apache License, Version 2.0)"><span class="mi-label">License</span></button>
     </div>
   </div>
   <input id="file" type="file" accept=".yaml,.yml,application/yaml,application/x-yaml,text/yaml,text/plain" hidden>
@@ -141,6 +145,16 @@
       <button id="connect-go" type="button" class="primary">Use endpoint</button>
       <button id="connect-cancel" type="button" title="Cancel the connection (Esc)">Cancel</button>
     </div>
+    <div id="mode-banner" class="mode-banner" role="region" aria-label="Focus mode" hidden>
+      <span class="mb-icon" aria-hidden="true">◎</span>
+      <span id="mode-text" class="mb-text" role="status"></span>
+      <span class="mb-hops" role="group" aria-label="Hops shown around the focused object">
+        <button id="focus-fewer" type="button" class="mini" data-command="focus.fewer" aria-label="One hop fewer">−</button>
+        <span id="focus-hops" class="mb-count">1 hop</span>
+        <button id="focus-more" type="button" class="mini" data-command="focus.more" aria-label="One hop more">+</button>
+      </span>
+      <button id="focus-exit" type="button" class="mini" data-command="focus.exit">Exit focus</button>
+    </div>
     <div id="filter-hint" class="filter-hint" role="status" hidden><span class="fh-icon" aria-hidden="true">⧉</span> <span id="filter-hint-text">Filtered-view positions are temporary and are not saved in YAML.</span></div>
     <div id="overlap-hint" class="overlap-hint" role="status" hidden><span aria-hidden="true">⚠</span> <span id="overlap-hint-text"></span></div>
     <div class="zoombar" role="toolbar" aria-label="Zoom">
@@ -148,6 +162,7 @@
       <span id="zoom-level">100%</span>
       <button id="zoom-out" type="button" title="Zoom out (−)">−</button>
       <button id="zoom-fit" type="button" title="Fit to screen (0)">Fit</button>
+      <button id="zoom-focus" type="button" data-command="focus.enter" title="Open or create a model first" disabled><span aria-hidden="true">◎ </span>Focus</button>
     </div>
     <div id="empty" class="overlay">
       <div class="start">

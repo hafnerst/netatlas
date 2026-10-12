@@ -31,6 +31,9 @@ import { deviceTypeLabel } from '../model/device-types';
 import { Issue } from '../validation/validate';
 import { SEVERITIES, Severity, checkById } from '../analysis/checks';
 import { addressingOverview } from '../analysis/addressing';
+import { focusSeeds } from '../analysis/focus';
+import { Command, buildCommands, isMac, keyLabel, matchesKey } from './commands';
+import { PaletteItem, commandItems, objectItems, paletteList, rankItems, resultsText } from './palette';
 import { AddrSort, AddrViewState, addressingBody, addressingCsv, addressingTables, newAddrViewState, shownText } from './addressing';
 
 /** How a severity is named in the Problems tab's filter. */
@@ -911,10 +914,13 @@ export class App {
 
   fit(): void {
     const W = this.svg.clientWidth || 1000;
-    const H = this.svg.clientHeight || 700;
+    // the banner of an analysis mode covers the top of the diagram: fit below it
+    const banner = this.doc.getElementById('mode-banner');
+    const top = banner && !banner.hidden ? banner.getBoundingClientRect().height : 0;
+    const H = Math.max(40, (this.svg.clientHeight || 700) - top);
     const b = this.bounds;
     const k = Math.max(0.05, Math.min(1.5, Math.min(W / Math.max(1, b.w), H / Math.max(1, b.h)) * 0.96));
-    this.zoom = { k, tx: W / 2 - (b.x + b.w / 2) * k, ty: H / 2 - (b.y + b.h / 2) * k };
+    this.zoom = { k, tx: W / 2 - (b.x + b.w / 2) * k, ty: top + H / 2 - (b.y + b.h / 2) * k };
     this.applyZoom();
   }
 
@@ -1309,22 +1315,7 @@ export class App {
    */
   private updateFileMenu(): void {
     const d = this.mdoc;
-    const save = this.$('btn-save') as HTMLButtonElement;
-    const saveAs = this.$('btn-save-as') as HTMLButtonElement;
-    save.disabled = !this.linked;
-    save.setAttribute('data-modified', d && this.linked && d.dirty ? 'true' : 'false');
-    save.title = !d
-      ? 'Open or create a model first'
-      : this.handle
-        ? `Save the model to “${this.handle.name}” (Ctrl+S)${d.dirty ? '; it has unsaved changes' : ''}`
-        : 'Not available: the model is not linked to a file this page may write. Use Save model as… to choose one.';
-    saveAs.disabled = !d;
-    saveAs.title = !d
-      ? 'Open or create a model first'
-      : this.fileAccess.saveFile
-        ? 'Choose a file name and location, and save the model there as a YAML file; Save model then updates that file (Ctrl+Shift+S)'
-        : 'Download a copy of the model as a YAML file: this browser can’t save to a file you choose (Ctrl+Shift+S)';
-    (this.$('btn-close') as HTMLButtonElement).disabled = !d;
+    (this.$('btn-save') as HTMLElement).setAttribute('data-modified', d && this.linked && d.dirty ? 'true' : 'false');
     const active = this.activeExample;
     const items = this.$('menu-examples').querySelectorAll('[data-example]');
     for (let i = 0; i < items.length; i++) {
@@ -1373,20 +1364,8 @@ export class App {
     ex.disabled = !s;
     ex.title = s ? `Save the ${s.state.view} view as a picture: the whole diagram with its legend and networks overview` : 'Open or create a model first';
     if (!s) this.setSubmenu(ex, false);
-    for (const fmt of ['png', 'svg']) {
-      const b = this.$('btn-export-' + fmt) as HTMLButtonElement;
-      b.disabled = !s;
-      b.title = s ? `Save the ${s.state.view} view as ${fmt === 'png' ? 'a PNG image' : 'an SVG file'}` : 'Open or create a model first';
-    }
-    const addr = this.$('btn-addressing') as HTMLButtonElement;
-    addr.disabled = !s;
-    addr.title = s ? 'The networks of each VRF with their members, gateways, use and free addresses; duplicates, overlaps and addresses in no network (I)' : 'Open or create a model first';
-    const find = this.$('btn-find') as HTMLButtonElement;
-    find.disabled = !s;
-    find.title = s ? 'Find a device, interface, network, relation … in the diagram by id, label, address or protocol, and select it (/)' : 'Open or create a model first';
-    const olf = this.$('btn-outline-filter') as HTMLButtonElement;
-    olf.disabled = !d;
-    olf.title = d ? 'Filter the object list (model outline) at the left: show only the entries whose name or id contains a text. The diagram is not changed.' : 'Open or create a model first';
+    this.syncCommands();
+    this.updateModeBanner();
     if (!s && this.findOpen) this.closeFind();
     this.$('btn-undo').title = d && d.canUndo() ? `Undo: ${d.canUndo()} (Ctrl+Z)` : 'Undo (Ctrl+Z)';
     this.$('btn-redo').title = d && d.canRedo() ? `Redo: ${d.canRedo()} (Ctrl+Y)` : 'Redo (Ctrl+Y)';
@@ -1742,7 +1721,8 @@ export class App {
     btn.title = filtered
       ? 'The diagram shows only the selected devices' + (byType ? ' that are not of a type switched off in the toolbar' : '') + '. Choose devices, or Select all for the complete diagram.'
       : 'Choose the devices the diagram shows';
-    hint.hidden = !filtered;
+    // (in focus mode the banner says it)
+    hint.hidden = !filtered || !!(s && s.state.focus);
     const none = filtered && !!s && s.shownDevices().size === 0;
     this.$('filter-hint-text').textContent =
       (none ? (s && s.selectedDevices().size ? 'No devices shown: the selected ones are of types switched off. ' : 'No devices selected: choose devices, or Select all. ') : '') + 'Filtered-view positions are temporary and are not saved in YAML.';
@@ -1909,6 +1889,344 @@ export class App {
 
   toast(msg: string): void {
     showToast(this.doc, msg);
+  }
+
+  // ------------------------------------------------------------ commands
+
+  /** every action of the menus, toolbar, keyboard and palette (commands.ts) */
+  readonly commands: Command[] = buildCommands();
+
+  /** A command of the registry by id. */
+  command(id: string): Command | undefined {
+    return this.commands.find((c) => c.id === id);
+  }
+
+  /** Run a command if it is available now; returns whether it ran. */
+  runCommand(id: string): boolean {
+    const c = this.command(id);
+    if (!c || !c.state(this).enabled) return false;
+    this.openMenu(null);
+    c.run(this);
+    return true;
+  }
+
+  /**
+   * Bring every element that names a command (data-command: the menus'
+   * entries, the focus controls) in step with the registry: available or
+   * not, its tooltip (or why it is not available), and in a menu its label
+   * and shortcut.
+   */
+  syncCommands(): void {
+    const mac = isMac(this.doc.defaultView);
+    const els = this.doc.querySelectorAll('[data-command]');
+    for (let i = 0; i < els.length; i++) {
+      const b = els[i] as HTMLButtonElement;
+      const c = this.command(b.getAttribute('data-command') as string);
+      if (!c) continue;
+      const st = c.state(this);
+      b.disabled = !st.enabled;
+      b.title = st.enabled ? st.title || c.label : st.reason || '';
+      const label = b.querySelector('.mi-label');
+      if (label) label.textContent = c.menuLabel || c.label;
+      const hint = b.querySelector('.mi-hint');
+      if (hint && c.keys) hint.textContent = keyLabel(c.keys, mac);
+    }
+  }
+
+  /** The name of the model file this page may write (Save model), or null. */
+  get linkedFileName(): string | null {
+    return this.linked && this.handle ? this.handle.name : null;
+  }
+
+  /** File → New model (asks first when there are unsaved changes). */
+  async requestNew(): Promise<void> {
+    if (await this.confirmDiscard('Creating a new model')) this.newModel();
+  }
+
+  /** File → Open model… (asks first when there are unsaved changes). */
+  async requestOpen(): Promise<void> {
+    if (await this.confirmDiscard('Opening another model')) await this.openModel();
+  }
+
+  /** Open a built-in example (asks first when there are unsaved changes). */
+  async requestExample(n: number): Promise<void> {
+    if (await this.confirmDiscard('Loading an example')) this.loadExample(n);
+  }
+
+  /** Why an Auto-arrange option can't run now ('' = it can). */
+  arrangeBlocked(strategy: ArrangeStrategy): string {
+    const s = this.session;
+    const d = this.mdoc;
+    if (!s || !d) return 'Open or create a model first';
+    const view = s.state.view;
+    const matches = s.isFiltered() ? s.filteredArrangedWith(view) : d.arrangedWith(view);
+    if (matches[0] === strategy) return `The ${view} view is arranged this way`;
+    if (matches.indexOf(strategy) >= 0) return `The ${view} view already looks like ${STRATEGY_LABEL[strategy]}`;
+    return '';
+  }
+
+  /** Is a toolbar filter switch on? */
+  optionChecked(id: string): boolean {
+    const i = this.doc.getElementById(id) as HTMLInputElement | null;
+    return !!i && i.checked;
+  }
+
+  /** Flip a toolbar filter switch, as a click on it would. */
+  toggleOption(id: string): void {
+    const i = this.doc.getElementById(id) as HTMLInputElement | null;
+    if (i && !i.disabled) i.click();
+  }
+
+  /** Open the Devices filter list, with the focus in it. */
+  openDevicesFilter(): void {
+    if (this.session) this.openDevices(true, true);
+  }
+
+  /** A short name for an object ("hq-rtr1", "GRE gre-muc", "Users (net-users)"). */
+  refName(ref: string): string {
+    const m = this.session ? this.session.model : null;
+    const h = m ? headOf(m, ref) : null;
+    return h ? h.title : ref;
+  }
+
+  // ------------------------------------------------------------ focus mode
+
+  /** the zoom before focus mode began, restored when it ends */
+  private zoomBeforeFocus: { k: number; tx: number; ty: number } | null = null;
+
+  /** Can this object be focused on (does it stand for at least one device)? */
+  canFocus(ref: string): boolean {
+    return !!this.session && focusSeeds(this.session.model, ref).length > 0;
+  }
+
+  /**
+   * Analyze → Focus on selection (Shift+F, or the Focus button under the
+   * diagram): show only the selected object and its neighbourhood, 1 hop to
+   * start with (or the hops of the focus mode already on). A banner over the
+   * diagram names it, changes the hops (1–3) and exits (also Esc). Nothing
+   * in the model changes; no undo step.
+   */
+  enterFocus(ref: string | null = this.session ? this.session.state.selected : null): boolean {
+    const s = this.session;
+    if (!s || !ref || !this.canFocus(ref)) return false;
+    const was = s.state.focus;
+    if (!was) this.zoomBeforeFocus = { k: this.zoom.k, tx: this.zoom.tx, ty: this.zoom.ty };
+    if (!s.setFocus(ref, was ? was.hops : 1)) return false;
+    this.render();
+    this.updateChrome();
+    this.fit();
+    return true;
+  }
+
+  /** One hop more or fewer around the focused object (1–3). */
+  changeFocusHops(delta: number): boolean {
+    const s = this.session;
+    const f = s ? s.state.focus : null;
+    if (!s || !f || !s.setFocus(f.ref, f.hops + delta)) return false;
+    this.render();
+    this.updateChrome();
+    this.fit();
+    return true;
+  }
+
+  /** Leave focus mode: the diagram as it was before, at the zoom it had. */
+  exitFocus(): boolean {
+    const s = this.session;
+    if (!s || !s.endFocus()) return false;
+    this.render();
+    const z = this.zoomBeforeFocus;
+    this.zoomBeforeFocus = null;
+    if (z) {
+      this.zoom.k = z.k;
+      this.zoom.tx = z.tx;
+      this.zoom.ty = z.ty;
+      this.applyZoom();
+    } else this.fit();
+    this.updateChrome();
+    const back = this.doc.activeElement;
+    if (!back || back === this.doc.body) (this.doc.getElementById('canvas') as unknown as HTMLElement).focus();
+    return true;
+  }
+
+  /** The text of the mode banner and of the note in exported pictures ('' = no analysis mode is on). */
+  modeNote(): string {
+    const s = this.session;
+    const f = s ? s.state.focus : null;
+    if (!s || !f) return '';
+    const sense = s.state.view === 'physical' ? 'cables' : 'relations';
+    return `Focus: ${this.refName(f.ref)} and what is within ${f.hops} hop${f.hops === 1 ? '' : 's'} (${sense}) · ${s.shownDevices().size} of ${s.model.devices.length} devices`;
+  }
+
+  /** The banner over the diagram while focus mode is on. */
+  private updateModeBanner(): void {
+    const s = this.session;
+    const f = s ? s.state.focus : null;
+    const banner = this.$('mode-banner');
+    banner.hidden = !f;
+    this.doc.body.setAttribute('data-mode', f ? 'focus' : 'none');
+    if (!f || !s) return;
+    this.$('mode-text').textContent = this.modeNote() + '. Positions here are temporary and are not saved.';
+    this.$('focus-hops').textContent = `${f.hops} hop${f.hops === 1 ? '' : 's'}`;
+    // the overlays under the banner (Find bar, filter hint) start below it, however many lines it takes
+    this.doc.documentElement.style.setProperty('--mode-banner-h', Math.ceil(banner.getBoundingClientRect().height) + 'px');
+  }
+
+  // ------------------------------------------------------------ the palette
+
+  /** keys ("cmd:<id>", "ref:<ref>") of the palette entries used last, newest first */
+  private recent: string[] = [];
+  private static readonly RECENT_KEY = 'netatlas.palette.recent';
+  private static readonly RECENT_MAX = 8;
+
+  private loadRecent(): void {
+    try {
+      const win = this.doc.defaultView;
+      const v = win && win.localStorage ? win.localStorage.getItem(App.RECENT_KEY) : null;
+      const list = v ? JSON.parse(v) : [];
+      this.recent = Array.isArray(list) ? list.filter((x: unknown) => typeof x === 'string').slice(0, App.RECENT_MAX) : [];
+    } catch {
+      this.recent = [];
+    }
+  }
+
+  private rememberRecent(key: string): void {
+    this.recent = [key].concat(this.recent.filter((k) => k !== key)).slice(0, App.RECENT_MAX);
+    try {
+      const win = this.doc.defaultView;
+      if (win && win.localStorage) win.localStorage.setItem(App.RECENT_KEY, JSON.stringify(this.recent));
+    } catch {
+      /* no storage: the list lasts for this page */
+    }
+  }
+
+  /** Is the command palette open? */
+  get paletteOpen(): boolean {
+    const dlg = this.doc.getElementById('modal') as HTMLDialogElement;
+    return dlg.open && dlg.classList.contains('palette-dialog');
+  }
+
+  /**
+   * The command palette (Ctrl+K, Cmd+K on macOS; Find → Command palette…):
+   * a search field over every command (with its shortcut; an unavailable
+   * one is shown disabled with the reason) and every object of the model.
+   * Up / Down move through the results, Enter runs the command or selects
+   * the object, Esc closes. The number of results is announced. The entries
+   * used last come first (remembered in this browser).
+   */
+  async openPalette(): Promise<void> {
+    if (this.paletteOpen) return;
+    this.openMenu(null);
+    if (!this.recent.length) this.loadRecent();
+    const opener = this.doc.activeElement as HTMLElement | null;
+    const mac = isMac(this.doc.defaultView);
+    const objects = this.session ? objectItems(this.session.model) : [];
+    const items = (): PaletteItem[] => commandItems(this.commands, (c) => c.state(this), mac).concat(objects);
+    const known = new Set(items().map((x) => x.key));
+    const recent = this.recent.filter((k) => known.has(k));
+    const input = el(this.doc, 'input', {
+      id: 'palette-input',
+      type: 'text',
+      role: 'combobox',
+      'aria-expanded': 'true',
+      'aria-controls': 'palette-list',
+      'aria-autocomplete': 'list',
+      'aria-describedby': 'palette-help',
+      'aria-label': 'Command or object',
+      placeholder: 'Type a command or the name of an object…',
+      autocomplete: 'off',
+      spellcheck: 'false',
+    }) as HTMLInputElement;
+    const status = el(this.doc, 'p', { id: 'palette-status', class: 'sr-only', role: 'status', 'aria-live': 'polite' });
+    const help = el(this.doc, 'p', { id: 'palette-help', class: 'muted small palette-help' }, ['↑ ↓ choose · Enter run or select · Esc close']);
+    const box = el(this.doc, 'div', { class: 'palette' }, [input, help, status]);
+    let ranked = rankItems(items(), '', recent);
+    let active = 0;
+    const firstEnabled = (from: number, step: number): number => {
+      const n = ranked.items.length;
+      for (let k = 0; k < n; k++) {
+        const i = (((from + k * step) % n) + n) % n;
+        if (ranked.items[i].state.enabled) return i;
+      }
+      return Math.max(0, Math.min(from, n - 1));
+    };
+    const draw = (): void => {
+      const old = box.querySelector('#palette-list');
+      const list = paletteList(this.doc, ranked, active, input.value);
+      if (old) box.replaceChild(list, old);
+      else box.appendChild(list);
+      if (ranked.items.length) input.setAttribute('aria-activedescendant', 'palette-opt-' + active);
+      else input.removeAttribute('aria-activedescendant');
+      const opt = list.querySelector('#palette-opt-' + active) as HTMLElement | null;
+      if (opt && typeof opt.scrollIntoView === 'function') opt.scrollIntoView({ block: 'nearest' });
+    };
+    const refresh = (): void => {
+      ranked = rankItems(items(), input.value, recent);
+      active = ranked.items.length ? firstEnabled(0, 1) : 0;
+      draw();
+      status.textContent = resultsText(ranked.items.length, ranked.more, input.value);
+    };
+    const choose = (i: number): void => {
+      const x = ranked.items[i];
+      if (!x) return;
+      if (!x.state.enabled) {
+        status.textContent = `${x.label} is unavailable: ${x.state.reason || ''}`;
+        return;
+      }
+      closeDialogWith(input, x.key);
+    };
+    input.addEventListener('input', refresh);
+    input.addEventListener('keydown', (e) => {
+      const n = ranked.items.length;
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        if (!n) return;
+        active = (active + (e.key === 'ArrowDown' ? 1 : -1) + n) % n;
+        draw();
+      } else if (e.key === 'PageDown' || e.key === 'PageUp') {
+        e.preventDefault();
+        if (!n) return;
+        active = Math.max(0, Math.min(n - 1, active + (e.key === 'PageDown' ? 8 : -8)));
+        draw();
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        choose(active);
+      }
+    });
+    box.addEventListener('click', (e) => {
+      const o = (e.target as Element).closest('[data-pal]');
+      if (!o) return;
+      active = Number(o.getAttribute('data-index'));
+      draw();
+      choose(active);
+      input.focus();
+    });
+    box.addEventListener('pointermove', (e) => {
+      const o = (e.target as Element).closest('[data-pal]');
+      if (!o) return;
+      const i = Number(o.getAttribute('data-index'));
+      if (i === active) return;
+      active = i;
+      for (const x of Array.from(box.querySelectorAll('.pal-opt'))) {
+        const on = x.getAttribute('data-index') === String(i);
+        x.classList.toggle('active', on);
+        x.setAttribute('aria-selected', on ? 'true' : 'false');
+      }
+      input.setAttribute('aria-activedescendant', 'palette-opt-' + i);
+    });
+    refresh();
+    const res = await this.dialog({ title: 'Command palette', body: [box], buttons: [], className: 'palette-dialog', focus: '#palette-input' });
+    const dlg = this.doc.getElementById('modal') as HTMLElement;
+    dlg.className = '';
+    if (res.indexOf('cmd:') === 0) {
+      this.rememberRecent(res);
+      // back where the palette was opened from, then the command (it may move the focus itself)
+      if (opener && this.doc.contains(opener) && !opener.closest('[role="menu"]')) opener.focus();
+      this.runCommand(res.slice(4));
+    } else if (res.indexOf('ref:') === 0) {
+      this.rememberRecent(res);
+      this.select(res.slice(4), true);
+      (this.doc.getElementById('canvas') as unknown as HTMLElement).focus();
+    } else if (opener && this.doc.contains(opener) && !opener.closest('[role="menu"]')) opener.focus();
   }
 
   // ------------------------------------------------------------ Analyze menu
@@ -2083,13 +2401,14 @@ export class App {
     const newModel = async (): Promise<void> => {
       if (await this.confirmDiscard('Creating a new model')) this.newModel();
     };
-    this.$('open').addEventListener('click', () => void open());
     this.$('open-empty').addEventListener('click', () => void open());
-    this.$('btn-new').addEventListener('click', () => void newModel());
     this.$('new-empty').addEventListener('click', () => void newModel());
-    this.$('btn-save').addEventListener('click', () => void (this.linked && this.saveModel()));
-    this.$('btn-save-as').addEventListener('click', () => void (this.mdoc && this.saveModelAs()));
-    this.$('btn-close').addEventListener('click', () => void this.closeModelDialog());
+    // every element naming a command (the menus' entries, the focus controls) runs it through the registry
+    doc.addEventListener('click', (e) => {
+      const b = (e.target as Element).closest ? (e.target as Element).closest('[data-command]') : null;
+      if (!b || (b as HTMLButtonElement).disabled) return;
+      this.runCommand(b.getAttribute('data-command') as string);
+    });
     this.$('btn-undo').addEventListener('click', () => this.undo());
     this.$('btn-redo').addEventListener('click', () => this.redo());
     this.$('errors').addEventListener('click', (e) => {
@@ -2174,8 +2493,6 @@ export class App {
     this.$('zoom-in').addEventListener('click', () => this.zoomBy(1.25));
     this.$('zoom-out').addEventListener('click', () => this.zoomBy(0.8));
     this.$('zoom-fit').addEventListener('click', () => this.fit());
-    this.$('btn-export-svg').addEventListener('click', () => void this.exportView('svg'));
-    this.$('btn-export-png').addEventListener('click', () => void this.exportView('png'));
     for (const st of STRATEGIES) this.$('btn-arrange-' + st).addEventListener('click', () => void this.arrangeCurrentView(st));
 
     const opt = (id: string, fn: (v: boolean) => void): void => {
@@ -2364,14 +2681,9 @@ export class App {
     });
     this.$('find-close').addEventListener('click', () => this.closeFind(true));
     // Find menu
-    this.$('btn-find').addEventListener('click', () => this.openFind());
-    this.$('btn-outline-filter').addEventListener('click', () => this.openOutlineFilter());
     // Analyze menu
-    this.$('btn-addressing').addEventListener('click', () => void this.openAddressing());
     // Help menu
-    this.$('btn-manual').addEventListener('click', () => void this.openHelp('manual'));
     this.$('theme-btn').addEventListener('click', () => this.theme.toggle());
-    this.$('btn-license').addEventListener('click', () => void this.openHelp('license'));
     outline.addEventListener('keydown', (e) => {
       const t = e.target as HTMLElement;
       if (e.key === 'Escape' && t.getAttribute('data-t') === 'outline-filter') {
@@ -2394,38 +2706,19 @@ export class App {
       // a modal dialog has the keyboard to itself: no shortcut acts on the page behind it
       if (t && t.closest && t.closest('dialog[open]')) return;
       const typing = t && (t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.tagName === 'TEXTAREA');
-      const mod = e.ctrlKey || e.metaKey;
-      if (mod && !e.altKey && (e.key === 's' || e.key === 'S')) {
+      // the shortcuts of the command registry (the same the menus and the palette show)
+      for (const c of this.commands) {
+        if (!c.keys || (typing && !c.keys.whileTyping) || !matchesKey(c.keys, e)) continue;
         e.preventDefault();
-        if (this.mdoc) void (e.shiftKey ? this.saveModelAs() : this.save());
+        const st = c.state(this);
+        if (st.enabled) this.runCommand(c.id);
+        else if (!(c.keyFallback && c.keyFallback(this)) && st.reason && this.mdoc) this.toast(`${c.label}: ${st.reason}`);
         return;
       }
-      if (typing) return;
-      if (mod && !e.altKey) {
-        if ((e.key === 'z' || e.key === 'Z') && !e.shiftKey) {
-          e.preventDefault();
-          this.undo();
-        } else if (e.key === 'y' || e.key === 'Y' || ((e.key === 'z' || e.key === 'Z') && e.shiftKey)) {
-          e.preventDefault();
-          this.redo();
-        }
-        return;
-      }
-      if (e.altKey) return;
-      if (e.key === '/') {
-        e.preventDefault();
-        this.openFind();
-      } else if (e.key === 'p' || e.key === '1') this.setView('physical');
-      else if (e.key === 'l' || e.key === '2') this.setView('logical');
-      else if (e.key === 'e') this.showTab('edit');
-      else if (e.key === 'a') void this.arrangeCurrentView('default');
-      else if (e.key === 'c') this.connectFromSelection();
-      else if (e.key === 'i') void this.openAddressing();
-      else if (e.key === '+' || e.key === '=') this.zoomBy(1.25);
-      else if (e.key === '-') this.zoomBy(0.8);
-      else if (e.key === '0' || e.key === 'f') this.fit();
-      else if (e.key === 'Escape') {
+      if (typing || e.ctrlKey || e.metaKey || e.altKey) return;
+      if (e.key === 'Escape') {
         if (this.conn) this.cancelConnection(true);
+        else if (this.session && this.session.state.focus) this.exitFocus();
         else this.select(null);
       }
       else if (e.key.indexOf('Arrow') === 0) {
@@ -2961,6 +3254,18 @@ export class App {
       clone.appendChild(materialize(boxes.legend.root, this.doc, true));
       clone.appendChild(materialize(boxes.networks.root, this.doc, true));
       b = boxes.viewBox;
+    }
+    // an analysis mode (focus …) says so in the picture, above the diagram
+    const note = this.modeNote();
+    if (note) {
+      const NOTE_H = 26;
+      const t = this.doc.createElementNS('http://www.w3.org/2000/svg', 'text');
+      t.setAttribute('class', 'export-note');
+      t.setAttribute('x', String(round(b.x + 14)));
+      t.setAttribute('y', String(round(b.y - 9)));
+      t.textContent = note;
+      clone.appendChild(t);
+      b = { x: b.x, y: b.y - NOTE_H, w: b.w, h: b.h + NOTE_H };
     }
     clone.setAttribute('viewBox', `${round(b.x)} ${round(b.y)} ${round(b.w)} ${round(b.h)}`);
     clone.setAttribute('width', String(Math.round(b.w)));
