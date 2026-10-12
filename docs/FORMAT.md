@@ -168,7 +168,9 @@ A Layer 3+ device (router, switch, firewall, load balancer, proxy, gateway:
 the [device types](#device-types) whose routing role is *router*, the same
 list as for the routers among [static routes](#static-routes)) lists the
 protocols it runs under `protocols:`, each with its parameters. A protocol
-without parameters is enabled with an empty mapping:
+without parameters is enabled with an empty mapping. Static routes are not
+a protocol: a device's [`routes`](#static-routes) are always in effect, and
+`static` under `protocols:` is reported like any other unknown protocol:
 
 ```yaml
 - id: hq-rtr1
@@ -178,7 +180,6 @@ without parameters is enabled with an empty mapping:
     bfd: {}
     bgp: {asn: 65010}           # the local AS number is mandatory
     ospf: {}                    # OSPF requires a router ID: the device's, or its own
-    static: {}                  # its static routes (routes:)
   logical_interfaces:
     - {id: lo0, type: loopback, ip: 10.255.0.1/32}
 ```
@@ -206,7 +207,6 @@ can declare its own). A parameter is written in one of three places, its
 | `ldp` | | | | optional |
 | `pim` | `mode` (`sparse`, `dense`, `ssm`) | | | |
 | `bfd` | | | `interval`, `multiplier` | |
-| `static` | | | | |
 | `vrrp`, `hsrp`, `glbp`, `carp` | | **`group`**, **`virtual_ip`**, `virtual_ipv6`, `priority` | | |
 
 Bold: mandatory once the protocol is enabled. Rules:
@@ -938,7 +938,7 @@ highlighted. This is an intentional limitation of the format.
 | Category | Default style | Typical protocols |
 |---|---|---|
 | `tunnel` | hollow **tube** (never a plain line, so it can't be mistaken for a cable) | GRE, IPsec, IP-in-IP, WireGuard, OpenVPN, L2TP, DMVPN, GTP, RSVP-TE/SR-TE LSPs, pseudowires |
-| `adjacency` | solid line | BGP (eBGP/iBGP/MP-BGP), OSPF, IS-IS, EIGRP, RIP, LDP, PIM, BFD, static |
+| `adjacency` | solid line | BGP (eBGP/iBGP/MP-BGP), OSPF, IS-IS, EIGRP, RIP, LDP, PIM, BFD |
 | `overlay` | dashed | VXLAN, Geneve, EVPN, L3VPN, VPLS, SD-WAN, OTV |
 | `redundancy` | dotted | LACP/LAG, MLAG/vPC, VRRP, HSRP, GLBP, CARP, HA sync |
 | `service` | dash-dot | DNS, NTP, syslog, SNMP, RADIUS/TACACS+, DHCP relay, HTTPS, NetFlow/IPFIX |
@@ -1000,7 +1000,7 @@ The built-in routing services (the table in
 Built-in protocol ids: `gre`, `ipsec`, `ipip`, `wireguard`, `openvpn`, `l2tp`,
 `dmvpn`, `gtp`, `rsvp-te`, `sr-te`, `pseudowire`, `ssl-vpn`, `vxlan`, `geneve`,
 `evpn`, `l3vpn`, `vpls`, `sd-wan`, `otv`, `bgp`, `ospf`, `isis`, `eigrp`, `rip`,
-`ldp`, `pim`, `bfd`, `static`, `lacp`, `mlag`, `vrrp`, `hsrp`, `glbp`, `carp`,
+`ldp`, `pim`, `bfd`, `lacp`, `mlag`, `vrrp`, `hsrp`, `glbp`, `carp`,
 `ha-sync`, `dns`, `ntp`, `syslog`, `snmp`, `radius`, `dhcp`, `https`,
 `netflow`. There are also aliases such as `ebgp`, `ibgp`, `mp-bgp`, `ospfv3`,
 `is-is`, `wg`, `ikev2`, `mpls-te`, `pw`, `lag`, `port-channel`, `vpc`,
@@ -1554,8 +1554,7 @@ missing, it says nothing; no default is assumed (an end without a mode is not
 | `fhrp-group-mismatch` | warning | members of one virtual address in different groups | interfaces: `protocols` (`group`, `virtual_ip`) |
 | `duplicate-router-id` | error | the same router ID on two devices of one protocol domain (devices that relations of the protocol join) | devices: `router_id`, `protocols` (a protocol's own `router_id`); relations of each protocol |
 | `protocol-not-enabled` | warning | a Layer 3+ device that is an endpoint of a protocol's relation but does not enable the protocol | relations; devices: `protocols` |
-| `protocol-unused` | info | a protocol enabled on a device but used by none of its relations (static routing: by no route; a redundancy protocol: by no interface group) | devices: `protocols`, `routes`; relations |
-| `static-not-enabled` | info | static routes on a Layer 3+ device that does not enable static routing | devices: `routes`, `protocols` |
+| `protocol-unused` | info | a protocol enabled on a device but used by none of its relations (a redundancy protocol: by no interface group) | devices: `protocols`; relations |
 | `duplicate-mac` | warning | the same MAC address on two interfaces (compared without separators and case) | interfaces: `mac` |
 | `ospf-area-mismatch` | error | an OSPF adjacency whose ends are in different areas | OSPF relations: `area.<device>` |
 | `ospf-network-type-mismatch` | warning | different OSPF network types at the two ends | OSPF relations: `network-type.<device>` |

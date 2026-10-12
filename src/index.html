@@ -63,6 +63,8 @@
       <div class="menu-sep" role="separator"></div>
       <button id="btn-trace" type="button" role="menuitem" data-command="trace.open" title="Open or create a model first" disabled><span class="mi-label">Trace path…</span><span class="mi-hint">T</span></button>
       <button id="btn-trace-exit" type="button" role="menuitem" data-command="trace.exit" title="No path is traced" disabled><span class="mi-label">Exit path trace</span><span class="mi-hint">Esc</span></button>
+      <div class="menu-sep" role="separator"></div>
+      <button id="btn-spof" type="button" role="menuitem" data-command="analyze.spof" title="Open or create a model first" disabled><span class="mi-label">Single points of failure</span></button>
     </div>
   </div>
   <div class="menu-wrap">
@@ -70,7 +72,6 @@
     <div id="simulate-menu" class="dropdown menu" role="menu" aria-label="Simulate" hidden>
       <button id="btn-sim" type="button" role="menuitem" data-command="sim.add" title="Open or create a model first" disabled><span class="mi-label">Simulate failure of selection</span><span class="mi-hint">X</span></button>
       <button id="btn-scenarios" type="button" role="menuitem" data-command="panel.simulation" title="Open or create a model first" disabled><span class="mi-label">Scenarios</span></button>
-      <button id="btn-spof" type="button" role="menuitem" data-command="sim.spof" aria-haspopup="dialog" title="Open or create a model first" disabled><span class="mi-label">Single points of failure…</span></button>
       <div class="menu-sep" role="separator"></div>
       <button id="btn-sim-prev" type="button" role="menuitem" data-command="sim.prev" title="No simulation is on" disabled><span class="mi-label">Previous step</span><span class="mi-hint">[</span></button>
       <button id="btn-sim-next" type="button" role="menuitem" data-command="sim.next" title="No simulation is on" disabled><span class="mi-label">Next step</span><span class="mi-hint">]</span></button>
@@ -234,6 +235,7 @@
     <div id="toast" role="status" aria-live="polite" hidden></div>
   </section>
   <aside id="side" aria-label="Inspector">
+    <div id="side-splitter" class="splitter" role="separator" aria-orientation="vertical" aria-label="Width of the side panel" aria-controls="side" tabindex="0" title="Drag to change the width of the side panel; double-click to reset it. With the keyboard: ← wider, → narrower (Shift: faster), Enter resets"></div>
     <nav class="tabs" role="tablist">
       <button type="button" data-tab="edit" title="Edit the selected object (E)">Edit</button>
       <button type="button" data-tab="details">Details</button>

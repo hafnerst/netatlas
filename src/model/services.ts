@@ -150,7 +150,6 @@ export const BUILTIN_SERVICES: readonly ServiceDef[] = [
     builtin: true,
     params: [{ key: 'interval', label: 'Interval', type: 'text', scope: 'endpoint', suggest: ['300ms'] }, int('multiplier', 'Multiplier', 'endpoint', 1, 255, { suggest: ['3'] })],
   },
-  { id: 'static', label: 'Static routing', routerId: 'none', sessions: false, builtin: true, params: [], description: 'The device’s static routes (routes:).' },
   fhrp('vrrp', 'VRRP', 255, 1, 254),
   fhrp('hsrp', 'HSRP', 4095, 0, 255),
   fhrp('glbp', 'GLBP', 1023, 0, 255),

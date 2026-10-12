@@ -98,12 +98,13 @@ const MANUAL: Section[] = [
     steps: [
       'Click an object in the diagram or in the object list (**Objects**, on the left). The **Edit** tab on the right opens it; **Details** gives a read-only summary.',
       'Type in a field. A change applies when you press `Enter` or leave the field. Undo and redo with `Ctrl+Z` / `Ctrl+Y` or the arrows in the toolbar.',
-      '**+ Add** next to a section of the object list adds a device, link, network, relation, group or protocol. Fill in the highlighted fields.',
+      '**+ Add** next to a section of the object list adds a device, link, network, relation, group or protocol. Whatever you add (also an interface, a route, an address …) is selected, scrolled into view, and the cursor is in its first field with the proposed text selected: just type. `Ctrl+Z` right away takes it back.',
       '**Duplicate** copies an object under a new ID; **Delete** asks first and can be undone. Both are at the top of the Edit tab, and on the row under the pointer in the object list (also on the focused row, and on the selected row of a touch screen).',
     ],
     notes: [
       'The Edit tab marks what is selected with **▸ Selected** and a bar on the left: the object\'s header, the selected interface\'s card, or, when you clicked a line of the diagram such as an address, VLAN or VRF, that very field. It scrolls there if needed.',
       'The **Problems** tab lists every error and warning; click one to go to the object.',
+      'Drag the grip on the side panel\'s left edge to make it wider or narrower (double-click resets it), or focus it with `Tab` and use `←` and `→`. The width is remembered in this browser.',
     ],
     figures: [
       ['edit', 'The Edit tab of a device: the header with Duplicate and Delete, then the fields in titled cards.'],
@@ -176,7 +177,7 @@ const MANUAL: Section[] = [
       '**Disable** removes a protocol and its values, after listing them; Ctrl+Z brings them back.',
     ],
     notes: ['The router ID and the AS number are written in the device’s box only while a protocol uses them. Nothing is filled in for you.'],
-    figures: [['protocols', 'r3’s Protocols card: the suggestions to enable OSPF and static routing, BGP with its AS number, and Enable a protocol.']],
+    figures: [['protocols', 'r3’s Protocols card: the suggestion to enable OSPF, BGP with its AS number, and Enable a protocol.']],
   },
   {
     id: 'helpers',
@@ -197,7 +198,7 @@ const MANUAL: Section[] = [
       'Select a cable, a port, a device or a relation and press `X` (or **Simulate → Simulate failure of selection**). A scenario starts at once; select more and press `X` again to add steps.',
       'The window is in **simulation mode**: a banner with the scenario and the step, a hatched frame around the diagram, a **Simulation** marker in the status bar and the label *Simulated state*. Both views mark what fails: **down** dotted and faded, **degraded** dash-dot.',
       'The **Simulation** tab lists the steps, what changed with the step shown, what is down or degraded and the device pairs that can no longer reach each other. `[` and `]` (or ◀ ▶) step back and forward; **Restore** adds a step that brings an object back.',
-      '**Save scenario…** keeps it in the model for design reviews; **Simulate → Scenarios** lists the saved ones with **Play**. **Exit simulation** or `Esc` ends it. **Simulate → Single points of failure…** lists what alone cuts the network.',
+      '**Save scenario…** keeps it in the model for design reviews; **Simulate → Scenarios** lists the saved ones with **Play**. **Exit simulation** or `Esc` ends it. **Analyze → Single points of failure** lists what alone cuts the network, as a report in the **Analysis** tab; **Simulate this failure** on an entry starts its scenario.',
     ],
     notes: [
       'A simulation never changes the model, and editing is paused while it is on: **Exit simulation** edits again. **Trace path** and **Focus** work on the simulated state; exports show it with a *Simulation* note.',

@@ -25,7 +25,6 @@ devices:
       bfd: {}
       bgp: {asn: 65001}
       ospf: {}
-      static: {}
       vrrp: {}
     interfaces:
       # link-mtu-mismatch (r2:e0 has 1500); vip-outside-subnet: 10.9.9.9 is not in 10.0.12.0/30
@@ -92,7 +91,7 @@ devices:
       - e4
       - {id: e9, vrf: Red}                                    # vrf-name-case: r1:e7 is in VRF red
     routes:
-      - {prefix: 0.0.0.0/0, via: 10.0.31.1}                   # static-not-enabled (info)
+      - {prefix: 0.0.0.0/0, via: 10.0.31.1}                   # needs no protocol: static routes are always in effect
   - id: sw1
     type: switch
     group: access

@@ -95,11 +95,15 @@ test('keyboard: the focused row shows its quick actions, Tab reaches them, Enter
       if (focus.row === 'device:hq-fw' && focus.act === 'dup-entity') break;
     }
     assert.equal(focus.label, 'Duplicate device hq-fw', 'Tab reaches the quick actions: ' + seen.join(' '));
-    // Enter duplicates; the focus moves to the copy, which is selected, and its row shows the actions
+    // Enter duplicates; the copy is selected and ready to fill in: the cursor is in its first field (its ID, the proposed id selected)
     await page.key('Enter', 'Enter', 13);
     let s = await page.eval(STATE);
     assert.equal(s.sel, 'device:hq-fw2');
-    assert.equal(s.focus, 'device:hq-fw2');
+    const field = await page.eval(`(() => { const a = document.activeElement; return { t: a.getAttribute('data-t'), value: a.value, selected: a.value.slice(a.selectionStart, a.selectionEnd), inEdit: !!a.closest('#side-body') }; })()`);
+    assert.deepEqual(field, { t: 'id', value: 'hq-fw2', selected: 'hq-fw2', inEdit: true });
+    // back in the list (Shift+Tab would take a while): the copy's row, which shows its actions while focused
+    await page.eval(`document.querySelector('#outline-body .ol-item[data-ref="device:hq-fw2"]').focus(), true`);
+    assert.equal((await page.eval(STATE)).focus, 'device:hq-fw2');
     assert.deepEqual(await page.eval(SHOWN), ['device:hq-fw2']);
     // Tab, Tab: Delete of the copy; Enter asks, Esc cancels; the focus returns to the Delete button
     await page.key('Tab', 'Tab', 9);

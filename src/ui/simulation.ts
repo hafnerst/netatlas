@@ -1,14 +1,13 @@
 /**
  * The Simulation tab: the saved scenarios (Play, Delete), the scenario being
  * played (its steps, Previous / Next, what changed since the previous step,
- * what is down or degraded, which device pairs lose reachability) and the
- * Single points of failure report (a dialog). Built from elements and text
+ * what is down or degraded, which device pairs lose reachability). Built from elements and text
  * nodes only; the data comes from analysis/scenario.ts and
  * analysis/failure.ts. Objects are links that select them in the diagram
  * (data-goto); every state is written as a word with a symbol, never shown
  * by colour alone.
  */
-import { Affected, LostPair, Spof, refLabel } from '../analysis/failure';
+import { Affected, LostPair, refLabel } from '../analysis/failure';
 import { StepDiff, StepView, diffEmpty, scenarioProblems, stepText, targetRef } from '../analysis/scenario';
 import { Model, Scenario, ScenarioStep } from '../model/types';
 import { el } from './dom';
@@ -38,7 +37,6 @@ export interface SimPanelActions {
   exit(): void;
   play(id: string): void;
   remove(id: string): void;
-  spof(): void;
 }
 
 /** How many device pairs are listed before "and N more". */
@@ -83,8 +81,6 @@ export function simulationPanel(doc: Document, model: Model, st: SimState | null
   const add = el(doc, 'button', { type: 'button', id: 'sim-add', title: act.addBlocked || 'Fail the selected object in a new step (X)' }, [st ? 'Fail the selection' : 'Fail the selection (X)']) as HTMLButtonElement;
   add.disabled = !!act.addBlocked;
   add.addEventListener('click', () => act.add());
-  const spof = el(doc, 'button', { type: 'button', id: 'sim-spof' }, ['Single points of failure…']);
-  spof.addEventListener('click', () => act.spof());
   if (!st) {
     box.appendChild(el(doc, 'h3', {}, ['Simulation']));
     box.appendChild(
@@ -94,7 +90,7 @@ export function simulationPanel(doc: Document, model: Model, st: SimState | null
     );
     box.appendChild(scenarioList(doc, model, act));
     box.appendChild(el(doc, 'p', { class: 'muted small' }, ['Or start a scenario now: select a cable, port, device or relation and press X.']));
-    box.appendChild(el(doc, 'div', { class: 'tf-actions' }, [add, spof]));
+    box.appendChild(el(doc, 'div', { class: 'tf-actions' }, [add]));
     if (act.addBlocked) box.appendChild(el(doc, 'p', { class: 'muted small', id: 'sim-add-why' }, [act.addBlocked]));
     box.appendChild(approximations(doc));
     return box;
@@ -293,42 +289,6 @@ function approximations(doc: Document): HTMLElement {
       el(doc, 'li', {}, ['Results are no more precise than the model: what it doesn’t describe is not simulated.']),
     ]),
   ]);
-}
-
-const KIND: { [k in Spof['kind']]: string } = { device: 'Device', cable: 'Cable', lag: 'LAG' };
-
-/** The Single points of failure dialog's body: one row per point, each a button that starts its simulation (data-spof). */
-export function spofBody(doc: Document, model: Model, list: Spof[]): HTMLElement {
-  const box = el(doc, 'div', { class: 'spof-body' });
-  box.appendChild(
-    el(doc, 'p', { class: 'muted small' }, [
-      'The cables, devices and LAGs whose failure alone cuts devices off from the rest of the physical network, or brings down relations whose endpoints are still up (no redundant underlay). Most impact first. Choose one to simulate its failure.',
-    ]),
-  );
-  if (!list.length) {
-    box.appendChild(el(doc, 'p', { role: 'status' }, ['No single point of failure: every cable, device and LAG can fail without cutting the network or bringing a relation down.']));
-    return box;
-  }
-  box.appendChild(el(doc, 'p', { role: 'status', class: 'spof-count' }, [`${list.length} single point${list.length === 1 ? '' : 's'} of failure.`]));
-  const wrap = el(doc, 'div', { class: 'spof-wrap' });
-  const t = el(doc, 'table', { class: 'spof-table' });
-  t.appendChild(el(doc, 'thead', {}, [el(doc, 'tr', {}, [el(doc, 'th', { scope: 'col' }, ['Kind']), el(doc, 'th', { scope: 'col' }, ['Fails']), el(doc, 'th', { scope: 'col' }, ['Cuts off']), el(doc, 'th', { scope: 'col' }, ['Relations down'])])]));
-  const tb = el(doc, 'tbody');
-  for (const s of list) {
-    const name = s.kind === 'lag' ? `${refLabel(model, s.ref)} (${s.fail.length} cables)` : refLabel(model, s.ref);
-    tb.appendChild(
-      el(doc, 'tr', {}, [
-        el(doc, 'td', {}, [KIND[s.kind]]),
-        el(doc, 'th', { scope: 'row' }, [el(doc, 'button', { type: 'button', class: 'ref', 'data-spof': s.ref, 'data-spof-kind': s.kind, title: 'Simulate this failure' }, [name])]),
-        el(doc, 'td', {}, [s.isolated.length ? s.isolated.map((g) => g.join(', ')).join('; ') : '—']),
-        el(doc, 'td', {}, [s.relations.length ? s.relations.join(', ') : '—']),
-      ]),
-    );
-  }
-  t.appendChild(tb);
-  wrap.appendChild(t);
-  box.appendChild(wrap);
-  return box;
 }
 
 /** The ref a step's target selects (re-exported for the app). */

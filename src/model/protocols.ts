@@ -39,7 +39,6 @@ const BUILTINS: Builtin[] = [
   ['ldp', 'LDP', 'adjacency', '#495057'],
   ['pim', 'PIM', 'adjacency', '#d9480f'],
   ['bfd', 'BFD', 'adjacency', '#868e96'],
-  ['static', 'Static route', 'adjacency', '#343a40'],
   // redundancy / bundling
   ['lacp', 'LACP / LAG', 'redundancy', '#f08c00', ['lag', 'port-channel', 'etherchannel']],
   ['mlag', 'MLAG / vPC', 'redundancy', '#f59f00', ['vpc', 'mc-lag']],

@@ -255,6 +255,15 @@ export function buildCommands(): Command[] {
       state: (app) => (app.currentTrace() ? on('Remove the traced path from the diagram (Esc)') : off('No path is traced')),
       run: (app) => app.exitTrace(),
     },
+    {
+      id: 'analyze.spof',
+      label: 'Single points of failure',
+      group: 'Analyze',
+      mode: true,
+      keywords: 'spof redundancy partition resilience failure report n-1',
+      state: (app) => needDiagram(app, 'The cables, devices and LAGs whose failure alone cuts the network or brings relations down: a report of the model as written, in the Analysis tab'),
+      run: (app) => app.openSpof(),
+    },
     // ------------------------------------------------------------ Simulate
     {
       id: 'sim.add',
@@ -268,15 +277,6 @@ export function buildCommands(): Command[] {
         return why ? off(why) : on(app.currentSim() ? 'Fail the selected object in a new step of the scenario (X)' : 'Start a scenario: fail the selected object and see what goes down or degrades with it (X)');
       },
       run: (app) => app.simulateSelection(),
-    },
-    {
-      id: 'sim.spof',
-      label: 'Single points of failure…',
-      group: 'Simulate',
-      mode: true,
-      keywords: 'spof redundancy partition resilience failure report',
-      state: (app) => needDiagram(app, 'The cables, devices and LAGs whose failure alone cuts the network or brings relations down'),
-      run: (app) => void app.openSpof(),
     },
     {
       id: 'sim.prev',

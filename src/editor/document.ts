@@ -98,9 +98,11 @@ export class ModelDoc {
   /** increments on every change; lets views know when to refresh */
   version = 0;
   result: LoadResult;
-  /** undo entries; `scenario`: the edit only changed the scenarios section */
-  private undoStack: Array<{ root: YMap; label: string; scenario?: boolean }> = [];
-  private redoStack: Array<{ root: YMap; label: string; scenario?: boolean }> = [];
+  /** undo entries; `scenario`: the edit only changed the scenarios section; `serial`: which edit it undoes (see undoTop) */
+  private undoStack: Array<{ root: YMap; label: string; scenario?: boolean; serial: number }> = [];
+  private redoStack: Array<{ root: YMap; label: string; scenario?: boolean; serial: number }> = [];
+  /** the serial number of the last edit, of any document (counts up, never reused: a serial names one edit) */
+  private static serial = 0;
   /**
    * While set, the network objects of the model can't be edited (a
    * simulation is on): the reason. Edits of the scenarios section (and
@@ -246,7 +248,7 @@ export class ModelDoc {
     const pre = this.result.model;
     this.renames = new Map();
     const out = fn();
-    this.undoStack.push({ root: snapshot, label, scenario: opts.scenario });
+    this.undoStack.push({ root: snapshot, label, scenario: opts.scenario, serial: ++ModelDoc.serial });
     if (this.undoStack.length > MAX_UNDO) this.undoStack.shift();
     this.redoStack = [];
     this.revalidate();
@@ -461,6 +463,10 @@ export class ModelDoc {
   canUndo(): string | null {
     return this.undoStack.length ? this.undoStack[this.undoStack.length - 1].label : null;
   }
+  /** The serial number of the edit the next undo takes back (0: nothing to undo); stays the same after a redo of it. */
+  undoTop(): number {
+    return this.undoStack.length ? this.undoStack[this.undoStack.length - 1].serial : 0;
+  }
   canRedo(): string | null {
     return this.redoStack.length ? this.redoStack[this.redoStack.length - 1].label : null;
   }
@@ -473,7 +479,7 @@ export class ModelDoc {
     if (this.undoLocked()) return false;
     const s = this.undoStack.pop();
     if (!s) return false;
-    this.redoStack.push({ root: this.root, label: s.label, scenario: s.scenario });
+    this.redoStack.push({ root: this.root, label: s.label, scenario: s.scenario, serial: s.serial });
     this.root = s.root;
     this.touch();
     return true;
@@ -482,7 +488,7 @@ export class ModelDoc {
     if (this.undoLocked(true)) return false;
     const s = this.redoStack.pop();
     if (!s) return false;
-    this.undoStack.push({ root: this.root, label: s.label, scenario: s.scenario });
+    this.undoStack.push({ root: this.root, label: s.label, scenario: s.scenario, serial: s.serial });
     this.root = s.root;
     this.touch();
     return true;

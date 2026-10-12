@@ -96,7 +96,6 @@ devices:
     protocols:
       bgp: {asn: 65010}
       ospf: {}
-      static: {}
     interfaces:
       - {id: ge-0/0/0, ip: 203.0.113.2/30, mtu: 1500, description: ISP-2 uplink}
       - {id: ge-0/0/1, ip: 10.0.0.3/28}
@@ -225,7 +224,6 @@ devices:
     router_id: 10.255.2.1
     protocols:
       ospf: {}
-      static: {}
     interfaces:
       - {id: wan0, ip: 192.0.2.34/29}
       - {id: wan1, dhcp: true, description: LTE backup modem}   # address assigned by the carrier

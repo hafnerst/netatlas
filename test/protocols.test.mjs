@@ -32,7 +32,7 @@ const LOOP = '    logical_interfaces:\n      - {id: lo0, type: loopback, ip: [10
 
 test('the registry: every built-in protocol declares its parameters with a type, a scope and a validation rule, and its use of the router ID', () => {
   const reg = S.builtinServices();
-  assert.deepEqual(Array.from(reg.keys()).sort(), ['bfd', 'bgp', 'carp', 'eigrp', 'glbp', 'hsrp', 'isis', 'ldp', 'ospf', 'pim', 'rip', 'static', 'vrrp']);
+  assert.deepEqual(Array.from(reg.keys()).sort(), ['bfd', 'bgp', 'carp', 'eigrp', 'glbp', 'hsrp', 'isis', 'ldp', 'ospf', 'pim', 'rip', 'vrrp']);
   for (const s of reg.values()) {
     assert.ok(s.label && ['required', 'optional', 'none'].includes(s.routerId), s.id);
     for (const p of s.params) {
@@ -44,7 +44,9 @@ test('the registry: every built-in protocol declares its parameters with a type,
     }
   }
   // the shared identity values each protocol uses
-  assert.deepEqual(['bgp', 'ospf', 'isis', 'eigrp', 'ldp', 'vrrp', 'static'].map((id) => reg.get(id).routerId), ['optional', 'required', 'none', 'optional', 'optional', 'none', 'none']);
+  assert.deepEqual(['bgp', 'ospf', 'isis', 'eigrp', 'ldp', 'vrrp'].map((id) => reg.get(id).routerId), ['optional', 'required', 'none', 'optional', 'optional', 'none']);
+  // static routes are a device's routes, never a protocol
+  assert.equal(reg.has('static'), false);
   const p = (svc, key) => reg.get(svc).params.find((x) => x.key === key);
   assert.deepEqual([p('bgp', 'asn').scope, p('bgp', 'asn').required], ['device', true]);
   assert.deepEqual([p('isis', 'net').scope, p('isis', 'level').values], ['device', ['level-1', 'level-2', 'level-1-2']]);
@@ -62,7 +64,7 @@ test('the registry: every built-in protocol declares its parameters with a type,
 test('applicability: a router ID only with a protocol that uses one; the AS number belongs to BGP; protocols only on Layer 3+ devices', () => {
   // a router ID and no protocol that uses it: not applicable (a warning)
   assert.deepEqual(msgs(dev('    router_id: 10.255.0.1\n')), ['router_id is not applicable: none of the protocols "r1" enables uses a router ID (BGP, OSPF, EIGRP, LDP do); enable one or remove it']);
-  assert.match(msgs(dev('    router_id: 10.255.0.1\n    protocols: {static: {}}\n'))[0], /router_id is not applicable/);
+  assert.match(msgs(dev('    router_id: 10.255.0.1\n    protocols: {bfd: {}}\n'))[0], /router_id is not applicable/);
   assert.deepEqual(msgs(dev('    router_id: lo0\n    protocols: {ospf: {}}\n' + LOOP)), []);
   // an AS number on the device: it is BGP's
   assert.deepEqual(msgs(dev('    asn: 65001\n')), ['unknown key "asn" (the AS number belongs to BGP: enable it with protocols: {bgp: {asn: …}})']);
@@ -70,7 +72,10 @@ test('applicability: a router ID only with a protocol that uses one; the AS numb
   assert.match(msgs(dev('    protocols: {ospf: {asn: 1}}\n    router_id: 10.0.0.1\n'))[0], /^unknown key "asn"/);
   assert.match(msgs(dev('    protocols: {vrrp: {group: 1}}\n'))[0], /Group is set per interface, in the interface's protocols:/);
   assert.match(msgs(dev('    router_id: 10.0.0.1\n    protocols: {ospf: {area: 0}}\n'))[0], /Area is set on OSPF relations, in their attrs \(per device: area: \{r1: …\}\)/);
-  assert.match(msgs(dev('    protocols: {static: {router_id: 10.0.0.1}}\n'))[0], /Static routing uses no router ID/);
+  assert.match(msgs(dev('    protocols: {bfd: {router_id: 10.0.0.1}}\n'))[0], /BFD uses no router ID/);
+  // static routing is no protocol: a device's routes are always in effect; "static" is reported like any unknown protocol
+  assert.match(msgs(dev('    protocols: {static: {}}\n'))[0], /"static" is not a routing service \(known: bgp, ospf, isis/);
+  assert.doesNotMatch(msgs(dev('    protocols: {static: {}}\n'))[0], /known: [^)]*static/);
   // not a Layer 3+ device: the same list as for static routes' routers
   for (const t of ['server', 'endpoint', 'ap', 'cloud']) assert.match(msgs(dev('    protocols: {bgp: {asn: 1}}\n', t))[0], /only Layer 3\+ devices \(router, switch, firewall, load_balancer, proxy, gateway\) run routing protocols/, t);
   for (const t of ['router', 'switch', 'firewall', 'load_balancer', 'proxy', 'gateway']) assert.deepEqual(msgs(dev('    protocols: {bgp: {asn: 1}}\n', t)), [], t);
@@ -154,12 +159,9 @@ relations:
     'protocol-not-enabled warning: r1 is an endpoint of OSPF ospf, but OSPF is not enabled on it: enable OSPF in its protocols',
     'protocol-not-enabled warning: r2 is an endpoint of OSPF ospf, but OSPF is not enabled on it: enable OSPF in its protocols',
     'protocol-unused info: RIP is enabled on r1, but no RIP relation has it as an endpoint',
-    'static-not-enabled info: r1 has 1 static route, but static routing is not enabled in its protocols',
   ]);
-  assert.deepEqual(I.suggestedServices(r.model, 'r1'), [
-    { service: 'ospf', relations: ['ospf'], routes: 0 },
-    { service: 'static', relations: [], routes: 1 },
-  ]);
+  // r1's static route needs no protocol: only OSPF is suggested
+  assert.deepEqual(I.suggestedServices(r.model, 'r1'), [{ service: 'ospf', relations: ['ospf'] }]);
   // a server is never asked to enable a routing protocol
   assert.deepEqual(I.suggestedServices(r.model, 'srv'), []);
 });
@@ -243,13 +245,16 @@ relations:
   assert.ok(refs('10.10.20.1').includes('iface:hq-core1:Vlan20'));
 });
 
-test('the examples: routers with BGP and OSPF, a switch without routing protocols, a firewall with only static routing; every router ID applies', () => {
+test('the examples: routers with BGP and OSPF, a switch without routing protocols, a firewall with static routes and no protocol; every router ID applies', () => {
   const wan = model(example('enterprise-wan.yaml'));
   const svc = (m, id) => m.index.devices.get(id).services.map((s) => s.id);
   assert.deepEqual(svc(wan, 'hq-rtr1'), ['bfd', 'bgp', 'ospf']);
   assert.deepEqual(svc(wan, 'hq-acc1'), [], 'the access switch runs no routing protocol');
   const dt = model(example('device-types.yaml'));
-  assert.deepEqual(svc(dt, 'fw'), ['static']);
+  assert.deepEqual(svc(dt, 'fw'), []);
+  assert.ok(dt.index.devices.get('fw').routes.length > 0, 'its routes are in effect without a protocol');
+  // no example enables "static" any more
+  for (const f of exampleNames) assert.doesNotMatch(example(f), /^\s+static: \{/m, f);
   for (const f of exampleNames) {
     const m = validate.loadModel(example(f)).model;
     if (!m) continue;

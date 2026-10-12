@@ -29,8 +29,6 @@ devices:
     label: Branch router
     type: router
     group: branch
-    protocols:
-      static: {}
     interfaces:
       - {id: wan1, ip: 198.51.100.2/30, description: ISP A}
       - {id: wan2, ip: 203.0.113.6/30, description: ISP B}
@@ -50,8 +48,6 @@ devices:
     label: Access switch
     type: switch
     group: branch
-    protocols:
-      static: {}
     interfaces: [Gi1/0/1, Gi1/0/2, Gi1/0/3]
     logical_interfaces:
       - {id: Vlan99, type: virtual, ip: 10.20.99.2/24, label: Management}
@@ -77,8 +73,6 @@ devices:
     label: ISP A edge
     type: router
     group: isp-a
-    protocols:
-      static: {}
     interfaces:
       - {id: ge-0/0/1, ip: 198.51.100.1/30}
       - {id: ge-0/0/2, ip: 198.51.100.9/30}
@@ -89,8 +83,6 @@ devices:
     label: ISP B edge
     type: router
     group: isp-b
-    protocols:
-      static: {}
     interfaces:
       - {id: ge-0/0/1, ip: 203.0.113.5/30}
       - {id: ge-0/0/2, ip: 203.0.113.9/30}
@@ -101,8 +93,6 @@ devices:
     label: HQ router
     type: router
     group: hq
-    protocols:
-      static: {}
     interfaces:
       - {id: wan1, ip: 198.51.100.10/30}
       - {id: wan2, ip: 203.0.113.10/30}
