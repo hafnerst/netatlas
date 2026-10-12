@@ -45,14 +45,6 @@ export function speedBps(s: string): number | null {
   return Number(m[1]) * (m[2] ? mult[m[2].toLowerCase()] : 1);
 }
 
-/** The value of a protocol parameter for one endpoint device: `key.<device>`, else the single `key` (undefined when neither). */
-export function relParam(r: Relation, key: string, device: string): string | undefined {
-  const own = r.attrs.find(([k]) => k === key + '.' + device);
-  if (own) return own[1];
-  const one = r.attrs.find(([k]) => k === key);
-  return one ? one[1] : undefined;
-}
-
 /** Was the parameter written per device for this one (not as one shared value)? */
 function relParamOwn(r: Relation, key: string, device: string): string | undefined {
   const own = r.attrs.find(([k]) => k === key + '.' + device);

@@ -382,6 +382,9 @@ test('Analyze menu: between Find and Help, built like the others; Addressing ove
   // focus mode lives here too
   assert.match(header, /<button id="btn-focus" type="button" role="menuitem" data-command="focus\.enter"[^>]*><span class="mi-label">Focus on selection<\/span><span class="mi-hint">Shift\+F<\/span>/);
   assert.match(header, /<button id="btn-focus-exit" type="button" role="menuitem" data-command="focus\.exit"[^>]*><span class="mi-label">Exit focus<\/span>/);
+  // the path tracer too
+  assert.match(header, /<button id="btn-trace" type="button" role="menuitem" data-command="trace\.open"[^>]*><span class="mi-label">Trace path…<\/span><span class="mi-hint">T<\/span>/);
+  assert.match(header, /<button id="btn-trace-exit" type="button" role="menuitem" data-command="trace\.exit"[^>]*><span class="mi-label">Exit path trace<\/span>/);
   const app = readFileSync(join(root, 'src', 'ui', 'app.ts'), 'utf8');
   const cmds = readFileSync(join(root, 'src', 'ui', 'commands.ts'), 'utf8');
   assert.match(cmds, /id: 'analyze\.addressing',[\s\S]{0,120}keys: \{ combos: \[\{ key: 'i' \}\] \},[\s\S]{0,400}state: \(app\) => needDiagram\(app,/);

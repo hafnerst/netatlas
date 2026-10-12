@@ -830,6 +830,25 @@ so it can't disagree:
 An interface's own attribute ending in `virtual-ip` (`vrrp-virtual-ip`) is
 compared with the interface's subnets.
 
+**Parameters the path tracer reads.** The [path tracer](../README.md#path-tracer)
+learns routes over the relations of the routing protocols (`ospf`, `isis`,
+`eigrp`, `rip`, `bgp` and their aliases) and reads a few more keys, each a
+single value or per device:
+
+| Relations | Key | Meaning (without it) |
+|---|---|---|
+| routing protocols | `cost` (1–16777215) | what an adjacency adds to a route's metric, from that device (1: a hop count) |
+| routing protocols | `distance` (1–255) | the administrative distance of the routes learned over it (eBGP 20, EIGRP 90, OSPF 110, IS-IS 115, RIP 120, iBGP 200) |
+| category `redundancy` | `master`, `active` or `primary` (text naming a device) | the active member that owns the virtual address |
+| category `redundancy` | `priority` | without a named master: the highest priority is active (else the first by id) |
+
+```yaml
+- {id: ospf-muc, protocol: ospf, endpoints: ["hq-rtr1:st0.10", "muc-rtr:Tunnel10"], over: gre-muc, attrs: {cost: 100}}
+- {id: vrrp-users, protocol: vrrp, endpoints: ["c1:Vlan10", "c2:Vlan10"], attrs: {virtual-ip: 10.10.10.1, priority: {c1: 200, c2: 100}}}
+```
+
+These are ordinary attributes: nothing else changes in the format.
+
 **A relation names only what it rides on.** There is no field for a network
 that a relation *carries* or *serves* (the VNI network of a VXLAN, the
 customer networks of an L3VPN): such a network is not its underlay, so it

@@ -12,6 +12,17 @@
  *              resolves (see resolveRoute): a route whose next hop can't be
  *              reached is not installed, so a floating route with a higher
  *              distance takes over.
+ *   dynamic    learned over the routing adjacencies of the model (relations
+ *              of OSPF, IS-IS, EIGRP, RIP and BGP): every router of a
+ *              protocol's adjacencies advertises its connected networks to
+ *              the others, and each learns them along the cheapest chain of
+ *              adjacencies, with the relation's `cost` (per device:
+ *              `cost.<device>`) per adjacency, else 1 (a hop count). The
+ *              distance is the protocol's usual default (eBGP 20, EIGRP 90,
+ *              OSPF 110, IS-IS 115, RIP 120, iBGP 200) unless the relation
+ *              writes `distance`. Nothing is redistributed between
+ *              protocols, static routes are not advertised, and no policy,
+ *              area or AS-path rule is applied (see dynamicEntries).
  *
  * Selection (lookup): the longest matching prefix among the usable entries
  * of the table; for that prefix the lowest distance, then the lowest
@@ -28,7 +39,8 @@
 import { compareRoutes, routeLine } from '../model/addresses';
 import { routingRole } from '../model/device-types';
 import { IpAddr, IpPrefix, parseAddress, parsePrefix } from '../model/ip';
-import { Model, Route, deviceInterfaces, routeKey } from '../model/types';
+import { normalizeProtocol, protocolBase } from '../model/protocols';
+import { Model, Relation, Route, deviceInterfaces, relationDevices, routeKey } from '../model/types';
 import { addrBig, compareAddr, comparePrefix, formatAddr, inPrefix, networkOf, prefixText } from './ipmath';
 
 /** Distance a static route without `distance` gets in route selection. */
@@ -46,9 +58,18 @@ export function vrfName(vrf: string): string {
   return vrf ? `VRF ${vrf}` : 'the default table';
 }
 
-/** Which interfaces are up (all of them without a failure; see analysis/failure.ts). */
+/**
+ * What is up (everything without a failure; see analysis/failure.ts), and
+ * which interfaces a lookup must not use (the tunnels a packet is already
+ * inside, while their underlay is traced). A context is also the key of the
+ * cached dynamic routes: reuse one object for one state.
+ */
 export interface RoutingCtx {
   up?: (device: string, iface: string) => boolean;
+  /** is a relation up (a routing adjacency that is down teaches nothing) */
+  relUp?: (id: string) => boolean;
+  /** is a cable up */
+  linkUp?: (id: string) => boolean;
 }
 
 function isUp(ctx: RoutingCtx | undefined, device: string, iface: string): boolean {
@@ -105,7 +126,7 @@ export function isOwnAddress(model: Model, device: string, a: IpAddr, vrf?: stri
 
 /** One entry of a routing table. */
 export interface RibEntry {
-  kind: 'connected' | 'static';
+  kind: 'connected' | 'static' | 'dynamic';
   device: string;
   vrf: string;
   /** the destination network (host bits cleared) */
@@ -119,6 +140,10 @@ export interface RibEntry {
   blackhole: boolean;
   /** static: the route */
   route?: Route;
+  /** dynamic: the base protocol ("ospf", "bgp" …), the adjacency (relation id) it was learned over, and the neighbour */
+  protocol?: string;
+  relation?: string;
+  peer?: string;
 }
 
 /** A static route as a table entry (null when its prefix or next hop can't be read). */
@@ -152,12 +177,13 @@ export function compareEntries(a: RibEntry, b: RibEntry): number {
     (a.via && b.via ? compareAddr(a.via, b.via) : a.via ? 1 : b.via ? -1 : 0) ||
     Number(a.blackhole) - Number(b.blackhole) ||
     cmpStr(a.route ? routeText(a.route) : '', b.route ? routeText(b.route) : '') ||
-    (a.route && b.route ? a.route.index - b.route.index : 0)
+    (a.route && b.route ? a.route.index - b.route.index : 0) ||
+    cmpStr(a.relation || '', b.relation || '')
   );
 }
 
-/** All entries of a device's table for one VRF (connected and static), sorted. */
-export function ribOf(model: Model, device: string, vrf: string): RibEntry[] {
+/** All entries of a device's table for one VRF (connected, static and dynamic), sorted. */
+export function ribOf(model: Model, device: string, vrf: string, ctx?: RoutingCtx): RibEntry[] {
   const out: RibEntry[] = [];
   for (const c of connectedOf(model, device)) {
     if (c.vrf === vrf) out.push({ kind: 'connected', device, vrf, net: c.net, distance: 0, metric: 0, iface: c.iface, blackhole: false });
@@ -170,6 +196,7 @@ export function ribOf(model: Model, device: string, vrf: string): RibEntry[] {
       if (e) out.push(e);
     }
   }
+  for (const e of dynamicEntries(model, device, vrf, ctx)) out.push(e);
   return dedupeConnected(out.sort(compareEntries));
 }
 
@@ -299,7 +326,7 @@ function lookupWith(model: Model, device: string, vrf: string, dest: IpAddr, ctx
     return { kind: 'local', entries: [], hops: [], unusable: [] };
   }
   // resolving a next hop (stack not empty): default routes don't count
-  const matching = ribOf(model, device, vrf).filter((e) => inPrefix(e.net, dest) && (!stack.length || e.net.prefix > 0));
+  const matching = ribOf(model, device, vrf, ctx).filter((e) => inPrefix(e.net, dest) && (!stack.length || e.net.prefix > 0));
   // longest prefix first; within one prefix by distance and metric (the table's order)
   const byLen = matching.slice().sort((a, b) => b.net.prefix - a.net.prefix || compareEntries(a, b));
   const unusable: Array<{ entry: RibEntry; detail: string }> = [];
@@ -340,6 +367,247 @@ function lookupWith(model: Model, device: string, vrf: string, dest: IpAddr, ctx
 
 function sameAddr(a: IpAddr | undefined, b: IpAddr | undefined): boolean {
   return a === b || (!!a && !!b && compareAddr(a, b) === 0);
+}
+
+// --------------------------------------------------------- dynamic routes
+
+/** The protocols whose relations are routing adjacencies (base protocol ids). */
+export const ROUTING_PROTOCOLS: readonly string[] = ['bgp', 'eigrp', 'isis', 'ospf', 'rip'];
+
+const IGP_DISTANCE: { [p: string]: number } = { eigrp: 90, ospf: 110, isis: 115, rip: 120 };
+const EBGP_DISTANCE = 20;
+const IBGP_DISTANCE = 200;
+
+/** The value of a protocol parameter for one endpoint device: `key.<device>`, else the single `key` (undefined when neither). */
+export function relParam(r: Relation, key: string, device: string): string | undefined {
+  const own = r.attrs.find(([k]) => k === key + '.' + device);
+  if (own) return own[1];
+  const one = r.attrs.find(([k]) => k === key);
+  return one ? one[1] : undefined;
+}
+
+/** The routing protocol of a relation ("ospf", "bgp" …), or null when it is not one. */
+export function routingProtocol(model: Model, r: Relation): string | null {
+  const base = protocolBase(model.protocols, r.protocol);
+  return ROUTING_PROTOCOLS.indexOf(base) >= 0 ? base : null;
+}
+
+/** One direction of a routing adjacency: what `from` learns from `to` and how it reaches it. */
+export interface Adjacency {
+  relation: string;
+  protocol: string;
+  from: string;
+  to: string;
+  /** the VRF of each side ('' the default table) */
+  fromVrf: string;
+  toVrf: string;
+  /** the interface of `from` towards the neighbour (none: a BGP session to an address that is not on a shared network, resolved through the table) */
+  iface?: string;
+  /** the neighbour's address the routes point to, and its interface */
+  via: IpAddr;
+  peerIface: string;
+  cost: number;
+  distance: number;
+}
+
+/** An adjacency of the model that can't form: the two have no network in common (or an interface is down). */
+export interface MissingAdjacency {
+  relation: string;
+  protocol: string;
+  from: string;
+  to: string;
+  detail: string;
+}
+
+interface DynState {
+  adjacencies: Adjacency[];
+  missing: MissingAdjacency[];
+  /** "device\0vrf" -> entries */
+  entries: Map<string, RibEntry[]>;
+}
+
+const NO_CTX: RoutingCtx = {};
+const dynCache = new WeakMap<Model, WeakMap<RoutingCtx, DynState>>();
+
+function dynState(model: Model, ctx: RoutingCtx | undefined): DynState {
+  let byCtx = dynCache.get(model);
+  if (!byCtx) dynCache.set(model, (byCtx = new WeakMap()));
+  const key = ctx || NO_CTX;
+  let st = byCtx.get(key);
+  if (!st) byCtx.set(key, (st = computeDynamic(model, ctx)));
+  return st;
+}
+
+/** The routing adjacencies of the model (one per direction) and those that can't form, sorted. */
+export function routingAdjacencies(model: Model, ctx?: RoutingCtx): { adjacencies: Adjacency[]; missing: MissingAdjacency[] } {
+  const st = dynState(model, ctx);
+  return { adjacencies: st.adjacencies, missing: st.missing };
+}
+
+/** The routes a device learns over its adjacencies in one VRF (see the module comment), sorted. */
+export function dynamicEntries(model: Model, device: string, vrf: string, ctx?: RoutingCtx): RibEntry[] {
+  return dynState(model, ctx).entries.get(device + '\0' + vrf) || [];
+}
+
+/** How `from` reaches its neighbour `to` over a relation; a string says why it can't. */
+function adjacencyHop(model: Model, r: Relation, protocol: string, from: string, to: string, ctx: RoutingCtx | undefined): Adjacency | string {
+  const ifacesOf = (dev: string): string[] | null => {
+    const eps = r.endpoints.filter((e) => e.device === dev);
+    if (eps.some((e) => e.iface === undefined)) return null;
+    return eps.map((e) => e.iface as string).sort(cmpStr);
+  };
+  const aIfs = ifacesOf(from);
+  const bIfs = ifacesOf(to);
+  const overNets: IpPrefix[] = [];
+  for (const o of r.over) {
+    const n = model.index.networks.get(o);
+    const p = n && n.cidr ? parsePrefix(n.cidr) : null;
+    if (p) overNets.push(networkOf(p));
+  }
+  const cost = positiveInt(relParam(r, 'cost', from), 1, 16777215);
+  const fa = model.index.devices.get(from);
+  const fb = model.index.devices.get(to);
+  const ownDistance = positiveInt(relParam(r, 'distance', from), 0, 255);
+  const ibgp = normalizeProtocol(r.protocol) === 'ibgp' || (normalizeProtocol(r.protocol) !== 'ebgp' && !!fa && !!fb && fa.asn !== undefined && fa.asn === fb.asn);
+  const distance = ownDistance || (protocol === 'bgp' ? (ibgp ? IBGP_DISTANCE : EBGP_DISTANCE) : IGP_DISTANCE[protocol]);
+  // a network both are connected to (in the relation's `over` first, then the longest prefix)
+  type Cand = { a: Connected; b: Connected; over: boolean };
+  const cands: Cand[] = [];
+  let down = false;
+  for (const a of connectedOf(model, from)) {
+    if (aIfs && aIfs.indexOf(a.iface) < 0) continue;
+    for (const b of connectedOf(model, to)) {
+      if (bIfs && bIfs.indexOf(b.iface) < 0) continue;
+      if (!inPrefix(a.net, b.addr) || !inPrefix(b.net, a.addr)) continue;
+      if (!isUp(ctx, from, a.iface) || !isUp(ctx, to, b.iface)) {
+        down = true;
+        continue;
+      }
+      cands.push({ a, b, over: overNets.some((p) => comparePrefix(p, a.net) === 0) });
+    }
+  }
+  cands.sort((x, y) => Number(y.over) - Number(x.over) || y.a.net.prefix - x.a.net.prefix || cmpStr(x.a.iface, y.a.iface) || cmpStr(x.b.iface, y.b.iface) || compareAddr(x.b.addr, y.b.addr));
+  if (cands.length) {
+    const c = cands[0];
+    return { relation: r.id, protocol, from, to, fromVrf: c.a.vrf, toVrf: c.b.vrf, iface: c.a.iface, via: c.b.addr, peerIface: c.b.iface, cost, distance };
+  }
+  // BGP may peer between addresses that are not on a shared network (loopbacks): the session's next hop resolves through the table
+  if (protocol === 'bgp') {
+    const peer = bgpPeerAddress(model, to, bIfs, ctx);
+    if (peer) {
+      const fromVrf = aIfs && aIfs.length ? ifaceVrf(model, from, aIfs[0]) : '';
+      return { relation: r.id, protocol, from, to, fromVrf, toVrf: peer.vrf, via: peer.addr, peerIface: peer.iface, cost, distance };
+    }
+  }
+  if (down) return `an interface between ${from} and ${to} is down`;
+  const where = (dev: string, ifs: string[] | null): string => (ifs ? ifs.map((i) => dev + ':' + i).join(', ') : dev);
+  return `${where(from, aIfs)} and ${where(to, bIfs)} have no network in common`;
+}
+
+/** The address a BGP session to `device` is made to: its endpoint interface's address, else its router ID or first loopback address. */
+function bgpPeerAddress(model: Model, device: string, ifaces: string[] | null, ctx: RoutingCtx | undefined): Connected | null {
+  const conn = connectedOf(model, device).filter((c) => isUp(ctx, device, c.iface));
+  if (ifaces) return conn.find((c) => ifaces.indexOf(c.iface) >= 0) || null;
+  const d = model.index.devices.get(device);
+  const rid = d && d.routerId ? parseAddress(d.routerId) : null;
+  const byRid = rid ? conn.find((c) => compareAddr(c.addr, rid) === 0) : undefined;
+  if (byRid) return byRid;
+  const loop = conn.find((c) => {
+    const i = model.index.interfaces.get(device + ':' + c.iface);
+    return !!i && i.type === 'loopback';
+  });
+  return loop || null;
+}
+
+function positiveInt(v: string | undefined, dflt: number, max: number): number {
+  if (v === undefined || !/^\s*[0-9]+\s*$/.test(v)) return dflt;
+  const n = Number(v);
+  return n >= 1 && n <= max ? n : dflt;
+}
+
+function computeDynamic(model: Model, ctx: RoutingCtx | undefined): DynState {
+  const adjacencies: Adjacency[] = [];
+  const missing: MissingAdjacency[] = [];
+  const rels = model.relations.slice().sort((a, b) => cmpStr(a.id, b.id));
+  for (const r of rels) {
+    const protocol = routingProtocol(model, r);
+    if (!protocol) continue;
+    if (ctx && ctx.relUp && !ctx.relUp(r.id)) continue;
+    const devs = relationDevices(r).slice().sort(cmpStr);
+    for (const from of devs) {
+      for (const to of devs) {
+        if (from === to) continue;
+        const a = adjacencyHop(model, r, protocol, from, to, ctx);
+        if (typeof a === 'string') missing.push({ relation: r.id, protocol, from, to, detail: a });
+        else adjacencies.push(a);
+      }
+    }
+  }
+  // per protocol: the cheapest chains of adjacencies between (device, VRF) nodes
+  const entries = new Map<string, RibEntry[]>();
+  const node = (dev: string, vrf: string): string => dev + '\0' + vrf;
+  for (const protocol of ROUTING_PROTOCOLS) {
+    const adj = adjacencies.filter((a) => a.protocol === protocol);
+    if (!adj.length) continue;
+    const out = new Map<string, Adjacency[]>();
+    for (const a of adj) {
+      const k = node(a.from, a.fromVrf);
+      if (!out.has(k)) out.set(k, []);
+      (out.get(k) as Adjacency[]).push(a);
+    }
+    const nodes = Array.from(new Set(adj.map((a) => node(a.from, a.fromVrf)).concat(adj.map((a) => node(a.to, a.toVrf))))).sort(cmpStr);
+    for (const src of nodes) {
+      // Dijkstra with the set of first adjacencies of every cheapest chain
+      const dist = new Map<string, number>([[src, 0]]);
+      const first = new Map<string, Adjacency[]>([[src, []]]);
+      const done = new Set<string>();
+      for (;;) {
+        let cur: string | null = null;
+        for (const n of nodes) if (!done.has(n) && dist.has(n) && (cur === null || (dist.get(n) as number) < (dist.get(cur) as number))) cur = n;
+        if (cur === null) break;
+        done.add(cur);
+        const dc = dist.get(cur) as number;
+        for (const a of out.get(cur) || []) {
+          const t = node(a.to, a.toVrf);
+          const nd = dc + a.cost;
+          const fh = cur === src ? [a] : (first.get(cur) as Adjacency[]);
+          const known = dist.get(t);
+          if (known === undefined || nd < known) {
+            dist.set(t, nd);
+            first.set(t, fh.slice());
+          } else if (nd === known && !done.has(t)) {
+            const list = first.get(t) as Adjacency[];
+            for (const x of fh) if (list.indexOf(x) < 0) list.push(x);
+          }
+        }
+      }
+      const [srcDev, srcVrf] = src.split('\0');
+      const ownNets = connectedOf(model, srcDev).filter((c) => c.vrf === srcVrf);
+      // every network a reached router is connected to: the lowest cost, and the first adjacencies of all chains at that cost
+      const best = new Map<string, { net: IpPrefix; metric: number; via: Adjacency[] }>();
+      for (const t of nodes) {
+        if (t === src || !dist.has(t)) continue;
+        const [dev, vrf] = t.split('\0');
+        const m = dist.get(t) as number;
+        for (const c of connectedOf(model, dev)) {
+          if (c.vrf !== vrf || !isUp(ctx, dev, c.iface)) continue;
+          if (ownNets.some((o) => comparePrefix(o.net, c.net) === 0)) continue;
+          const k = prefixText(c.net);
+          const b = best.get(k);
+          if (!b || m < b.metric) best.set(k, { net: c.net, metric: m, via: (first.get(t) as Adjacency[]).slice() });
+          else if (m === b.metric) for (const x of first.get(t) as Adjacency[]) if (b.via.indexOf(x) < 0) b.via.push(x);
+        }
+      }
+      const list = entries.get(src) || [];
+      for (const b of Array.from(best.values())) {
+        for (const a of b.via) {
+          list.push({ kind: 'dynamic', device: srcDev, vrf: srcVrf, net: b.net, distance: a.distance, metric: b.metric, iface: a.iface, via: a.via, blackhole: false, protocol, relation: a.relation, peer: a.to });
+        }
+      }
+      entries.set(src, list.sort(compareEntries));
+    }
+  }
+  return { adjacencies, missing, entries };
 }
 
 // ------------------------------------------------------------ route text

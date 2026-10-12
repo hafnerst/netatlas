@@ -166,6 +166,18 @@ const MANUAL: Section[] = [
     figures: [['focus', 'Focus on the firewall in the physical view, one hop: the banner with the hops and Exit focus.']],
   },
   {
+    id: 'trace',
+    title: 'Trace a path',
+    steps: [
+      'Press `T` or choose **Analyze → Trace path…**. The **Analysis** tab of the side panel opens; a selected device or interface is already in **From**.',
+      'Fill in **To**: a device, an interface (`device:interface`) or an IP address. Tick **Trace the return path too** to see the way back as well, then press **Trace**.',
+      'The path is marked in the diagram (thick outline; equal-cost alternatives dashed, the return path dotted) and listed hop by hop: the interfaces and addresses, the route or adjacency used, the encapsulation (GRE over IPsec …) and the cables. If it can\'t get through, the list says where and why.',
+      'Click a name in the list to select it. **Copy as text** copies the list; **Exit trace** or `Esc` removes the path.',
+    ],
+    notes: ['The trace is computed from the routes and adjacencies in the model: an approximation, not a simulation of the protocols. ACLs, firewall policies and NAT are not considered. Nothing in the model changes.'],
+    figures: [['trace', 'A path from the Munich branch to the syslog server: through the GRE-over-IPsec tunnel, the firewall and a core switch, with the equal-cost alternative dashed and the hop list beside it.']],
+  },
+  {
     id: 'addressing',
     title: 'See the addressing',
     steps: [
@@ -212,6 +224,7 @@ const SHORTCUTS: Array<[string, string]> = [
   ['I', 'Addressing overview'],
   ['Ctrl+K', 'Command palette (Cmd+K on a Mac)'],
   ['Shift+F', 'Focus on the selection (Esc exits)'],
+  ['T', 'Trace path (Esc removes it)'],
   ['A', 'Auto-arrange: Default'],
   ['+ / − / 0', 'Zoom in / out / fit'],
   ['Esc', 'Clear the selection, cancel, close'],

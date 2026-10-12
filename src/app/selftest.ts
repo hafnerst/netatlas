@@ -16,6 +16,7 @@ import { addressInventory } from '../model/addresses';
 import { strNode } from '../yaml/parse';
 import { CHECKS } from '../analysis/checks';
 import { addressingOverview } from '../analysis/addressing';
+import { traceText } from '../analysis/trace';
 import { addressingCsv } from '../ui/addressing';
 import { EXAMPLES, FIXTURES } from '../generated/examples';
 import { PNG_MAX_PIXELS, PNG_MAX_SIDE, WritableFile, pngScale, svgToPng } from '../ui/files';
@@ -1473,6 +1474,106 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       app.runCommand('focus.exit');
       await tick();
       check('Focus and Exit focus are commands (menu, palette)', viaCommand && banner.hidden && !!q('#btn-focus[data-command="focus.enter"]'));
+      app.select(null);
+      (app.mdoc as ModelDoc).markSaved();
+    }
+
+    // ------------------------------------------------ the path tracer
+    {
+      app.loadExample(EXAMPLES.findIndex((e) => e.name === 'enterprise-wan.yaml'));
+      click('[data-view-btn="physical"]');
+      await tick();
+      const yamlBefore = app.exportText();
+      const traced = (cls: string): string[] =>
+        Array.from(doc.querySelectorAll('#viewport .' + cls))
+          .map((e) => e.getAttribute('data-ref') || '')
+          .filter((r, i, a) => a.indexOf(r) === i);
+      // T opens the Analysis tab with the form; the selected device fills From
+      app.select('device:muc-rtr');
+      await tick();
+      (q('#canvas') as unknown as HTMLElement).focus();
+      doc.dispatchEvent(new KeyboardEvent('keydown', { key: 't', bubbles: true, cancelable: true }));
+      await tick();
+      const from = q('#trace-from') as HTMLInputElement;
+      check(
+        'T opens the Analysis tab with the Trace path form: the selection fills From, the keyboard is in To',
+        !!from && from.value === 'muc-rtr' && doc.activeElement === q('#trace-to') && !!q('[data-tab="analysis"].active') && !!q('label[for="trace-from"]') && !!q('label[for="trace-vrf"]'),
+      );
+      // an end that is not in the model: the form says why, nothing is traced
+      const to = q('#trace-to') as HTMLInputElement;
+      to.value = 'nowhere';
+      to.dispatchEvent(new Event('input', { bubbles: true }));
+      (q('#trace-go') as HTMLElement).click();
+      await tick();
+      check('an unknown destination is refused with the reason, at the field', /Destination: “nowhere” is no device/.test(q('#trace-error') ? q('#trace-error')!.textContent || '' : '') && (q('#trace-to') as HTMLElement).getAttribute('aria-invalid') === 'true' && (q('#mode-banner') as HTMLElement).hidden);
+      // a real trace, with the return path
+      app.setTraceForm({ from: 'muc-rtr:lan0', to: 'hq-log', back: true });
+      (q('#trace-go') as HTMLElement).click();
+      await tick();
+      const text = q('#trace-text') ? q('#trace-text')!.textContent || '' : '';
+      check(
+        'Trace: the banner names the path, that it is reached, the equal-cost alternatives and the return path',
+        !(q('#mode-banner') as HTMLElement).hidden && !(q('#mb-trace') as HTMLElement).hidden && /Path trace: muc-rtr:lan0 → hq-log · Reached hq-log:eno1 in 4 hops · 2 equal-cost paths/.test(text) && /return path: Reached muc-rtr:lan0/.test(text),
+        text,
+      );
+      const hops = doc.querySelectorAll('#side-body ol.trace-hops:not(.trace-back) > li.trace-hop');
+      check(
+        'the hop list: each device with its ingress and egress interface and addresses, the route used, the encapsulation, the cables',
+        hops.length === 5 && /muc-rtr/.test(hops[0].textContent || '') && /Tunnel10 172\.16\.10\.2 → next hop 172\.16\.10\.1/.test(hops[0].textContent || '') && /OSPF route 10\.10\.20\.0\/24 over ospf-muc/.test(hops[0].textContent || '') && /encap\s*GRE over IPsec/.test(hops[0].textContent || '') && /l-hq-isp1/.test(hops[0].textContent || '') && /in\s*Ethernet49 10\.0\.1\.2/.test(hops[3].textContent || ''),
+        `${hops.length} ${hops[0] ? hops[0].textContent : ''}`,
+      );
+      check('the end of the path and the return path are in the list', /Reached: reached hq-log:eno1/.test(q('#side-body .trace-end') ? q('#side-body .trace-end')!.textContent || '' : '') && /Return path/.test(q('#side-body')!.textContent || '') && doc.querySelectorAll('#side-body ol.trace-back > li').length === 5);
+      // the diagram: the path, its alternative, the rest dimmed
+      const main = traced('trace-main');
+      const alt = traced('trace-alt');
+      check(
+        'physical view: the path’s devices and cables (down to the internet underneath the tunnel) are marked; the equal-cost alternative is marked apart; the rest is dimmed',
+        (q('#canvas') as unknown as Element).classList.contains('has-trace') &&
+          ['device:muc-rtr', 'device:hq-rtr1', 'device:hq-fw', 'device:hq-core1', 'device:hq-log', 'link:l-hq-isp1', 'link:l-muc-inet', 'link:l-fw-core1', 'link:l-acc-log'].every((r) => main.indexOf(r) >= 0) &&
+          alt.indexOf('device:hq-core2') >= 0 && alt.indexOf('link:l-fw-core2') >= 0 && main.indexOf('device:hq-core2') < 0 &&
+          doc.querySelectorAll('#viewport .trace-off[data-ref="device:ham-rtr"]').length > 0,
+        `main ${main.join(' ')} | alt ${alt.join(' ')}`,
+      );
+      // not colour alone: the alternative's box is dashed, the path's is solid
+      const cssOf = (ref: string): CSSStyleDeclaration => doc.defaultView!.getComputedStyle(q(`#viewport [data-ref="${ref}"] .dev-box`) as Element);
+      check('the path is marked by line style and width, not by colour alone: solid and thick; the alternative dashed', cssOf('device:hq-core1').strokeDasharray === 'none' && parseFloat(cssOf('device:hq-core1').strokeWidth) >= 3.5 && cssOf('device:hq-core2').strokeDasharray !== 'none', `${cssOf('device:hq-core2').strokeDasharray}`);
+      // the other alternative in the list
+      (q('[data-trace-path="1"]') as HTMLElement).click();
+      await tick();
+      check('the alternative’s hops are listed on request', /hq-core2/.test(q('#side-body ol.trace-hops')!.textContent || '') && (q('[data-trace-path="1"]') as HTMLElement).getAttribute('aria-pressed') === 'true');
+      // the logical view: the relations used
+      click('[data-view-btn="logical"]');
+      await tick();
+      const lmain = traced('trace-main');
+      check('logical view: the routing adjacencies and the tunnel stack used are marked', ['relation:ospf-muc', 'relation:gre-muc', 'relation:ipsec-muc', 'relation:ospf-hq-area0', 'device:hq-log'].every((r) => lmain.indexOf(r) >= 0), lmain.join(' '));
+      // exports carry the path and say so
+      for (const theme of ['light', 'dark']) {
+        app.theme.set(theme as 'light' | 'dark');
+        await tick();
+        const svg = app.exportSvg();
+        const parsed = new DOMParser().parseFromString(svg, 'image/svg+xml');
+        const note = parsed.querySelector('text.export-note');
+        const marked = parsed.querySelectorAll('.trace-main').length;
+        const cs = doc.defaultView!.getComputedStyle(q('#mode-banner') as Element);
+        check(`${theme} theme: the export shows the traced path and a “Path trace” note; the banner is readable`, !!note && /^Path trace: muc-rtr:lan0 → hq-log/.test(note.textContent || '') && marked > 5 && cs.color !== cs.backgroundColor, `${marked}`);
+      }
+      // Copy as text gives the hop list (falls back to a file where the clipboard is refused)
+      check('the trace as text: the hops, the equal-cost alternative, the return path, the approximation note', /Main path \(1 of 2 equal-cost paths\)[\s\S]*Equal-cost alternative 1[\s\S]*Return path[\s\S]*not a simulation/.test(traceText(app.currentTrace()!.trace, app.currentTrace()!.back)));
+      check('tracing changes nothing in the model and adds no undo step', app.exportText() === yamlBefore && (q('#btn-undo') as HTMLButtonElement).disabled);
+      // an edit traces again: the server's default gateway removed → the return path stops at it
+      const md = app.mdoc as ModelDoc;
+      md.remove(['devices', md.findEntity('device', 'hq-log')!.index, 'routes'], 'Remove routes');
+      (app as unknown as { afterEdit(n?: string): void }).afterEdit();
+      await tick();
+      check('after an edit the trace is computed again: without its default route the server has no way back', /return path: Stops at hq-log \(no route\)/.test(q('#trace-text')!.textContent || ''), q('#trace-text')!.textContent || '');
+      app.undo();
+      await tick();
+      // Esc ends it; the form keeps what was typed
+      (q('#canvas') as unknown as HTMLElement).focus();
+      doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      await tick();
+      check('Esc ends the trace: nothing is marked, the banner is gone, the form keeps its values', (q('#mode-banner') as HTMLElement).hidden && traced('trace-main').length === 0 && !(q('#canvas') as unknown as Element).classList.contains('has-trace') && (q('#trace-from') as HTMLInputElement).value === 'muc-rtr:lan0');
+      check('Trace path… and Exit path trace are commands of the Analyze menu', !!q('#btn-trace[data-command="trace.open"]') && !!q('#btn-trace-exit[data-command="trace.exit"]') && (q('#btn-trace-exit') as HTMLButtonElement).disabled);
       app.select(null);
       (app.mdoc as ModelDoc).markSaved();
     }

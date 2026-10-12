@@ -95,22 +95,27 @@ devices:
       - {id: lo0, type: loopback, ip: 10.255.0.2/32}
       - {id: st0.11, type: tunnel, ip: 172.16.11.1/30, mtu: 1400, source: ge-0/0/0, destination: 192.0.2.34, description: GRE to Hamburg}
       - {id: wg0, type: tunnel, ip: 172.16.99.1/30, source: ge-0/0/0, destination: ham-rtr:wan1}
+    routes:
+      # the Hamburg tunnel endpoint stays on the ISP-2 uplink (else OSPF would learn it over the backup tunnel)
+      - {prefix: 192.0.2.34/32, interface: ge-0/0/0, name: Hamburg tunnel endpoint}
   - id: hq-fw
     label: hq-fw
     type: firewall
     group: hq-edge
     interfaces:
-      - {id: eth1, ip: 10.0.0.1/28}
+      - {id: eth1}
       - {id: eth2}
-      - {id: eth3}
-      - {id: eth4}
+      - {id: eth3, ip: 10.0.1.1/30}
+      - {id: eth4, ip: 10.0.1.5/30}
+    logical_interfaces:
+      - {id: vlan5, type: virtual, vlan: 5, ip: 10.0.0.1/28, description: transit to both edge routers (eth1 and eth2)}
   - id: hq-core1
     label: hq-core1
     type: switch
     group: hq-core
     tier: 3
     interfaces:
-      - {id: Ethernet49}
+      - {id: Ethernet49, ip: 10.0.1.2/30}
       - {id: Ethernet51}
       - {id: Ethernet52}
       - {id: Ethernet1}
@@ -124,7 +129,7 @@ devices:
     group: hq-core
     tier: 3
     interfaces:
-      - {id: Ethernet49}
+      - {id: Ethernet49, ip: 10.0.1.6/30}
       - {id: Ethernet51}
       - {id: Ethernet52}
       - {id: Ethernet1}
@@ -148,6 +153,8 @@ devices:
     group: hq-core
     interfaces:
       - {id: eno1, ip: 10.10.20.50/24}
+    routes:
+      - {prefix: 0.0.0.0/0, via: 10.10.20.1, name: default gateway (VRRP)}
     dns_names:
       - {name: syslog.acme.example, interfaces: [eno1]}
 
@@ -183,6 +190,9 @@ devices:
     logical_interfaces:
       - {id: Tunnel11, type: tunnel, ip: 172.16.11.2/30, source: wan0, destination: 203.0.113.2}
       - {id: wg0, type: tunnel, ip: 172.16.99.2/30, source: wan1, destination: 203.0.113.2}
+    routes:
+      # the tunnel endpoint at HQ stays on the internet uplink (else OSPF would learn it over the backup tunnel itself)
+      - {prefix: 203.0.113.2/32, interface: wan0, name: HQ tunnel endpoint}
   - id: ham-sw
     label: ham-sw
     type: switch
@@ -199,8 +209,8 @@ links:
   - {id: l-ham-inet, a: "ham-rtr:wan0", b: inet, medium: fiber, speed: 1G, label: FTTH}
   - {id: l-ham-lte, a: "ham-rtr:wan1", b: inet, medium: lte, speed: 150M, label: LTE backup}
   # HQ (the core/access cables are trunks: each end lists the VLANs it permits)
-  - {id: l-rtr1-fw, a: "hq-rtr1:ge-0/0/1", b: "hq-fw:eth1", medium: copper, speed: 1G}
-  - {id: l-rtr2-fw, a: "hq-rtr2:ge-0/0/1", b: "hq-fw:eth2", medium: copper, speed: 1G}
+  - {id: l-rtr1-fw, a: "hq-rtr1:ge-0/0/1", b: {device: hq-fw, interface: eth1, mode: access, untagged: 5}, medium: copper, speed: 1G}
+  - {id: l-rtr2-fw, a: "hq-rtr2:ge-0/0/1", b: {device: hq-fw, interface: eth2, mode: access, untagged: 5}, medium: copper, speed: 1G}
   - {id: l-fw-core1, a: "hq-fw:eth3", b: "hq-core1:Ethernet49", medium: fiber, speed: 10G}
   - {id: l-fw-core2, a: "hq-fw:eth4", b: "hq-core2:Ethernet49", medium: fiber, speed: 10G}
   - id: l-peer1
@@ -244,6 +254,7 @@ networks:
   - id: net-transit
     label: HQ transit
     cidr: 10.0.0.0/28
+    vlan: 5
   - id: net-users
     label: Users
     cidr: 10.10.10.0/24
@@ -354,6 +365,12 @@ relations:
     endpoints: ["hq-core1:Vlan10", "hq-core2:Vlan10"]
     over: net-users
     attrs: {vrid: 10, virtual-ip: 10.10.10.1, master: "hq-core1 (priority 200)", backup: "hq-core2 (priority 100)"}
+  - id: vrrp-servers
+    protocol: vrrp
+    label: VIP 10.10.20.1
+    endpoints: ["hq-core1:Vlan20", "hq-core2:Vlan20"]
+    over: net-servers
+    attrs: {vrid: 20, virtual-ip: 10.10.20.1, master: "hq-core1 (priority 200)", backup: "hq-core2 (priority 100)"}
   - id: syslog-fw
     protocol: syslog
     direction: unidirectional
