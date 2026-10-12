@@ -333,6 +333,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
       dnsNames: [],
       routes: [],
       services: [],
+      riskGroups: riskGroups(r, c, m, dpath),
       line: m.line,
     };
     // the routing services it enables (Layer 3+ devices only); the router IDs are resolved once its loopbacks are read
@@ -473,6 +474,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
         mtu: r.int(get(im, 'mtu'), ipath + '.mtu', 68, 65535, 'MTU'),
         members: [],
         services: [],
+        riskGroups: where === 'logical' ? [] : riskGroups(r, c, im, ipath),
         description: r.field(im, 'description', ipath, L.maxDescription),
         attrs: r.attrs(get(im, 'attrs'), ipath + '.attrs'),
         line: im.line,
@@ -743,6 +745,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
       label: r.field(m, 'label', lpath, L.maxLabel),
       cable: r.field(m, 'cable', lpath, L.maxLabel),
       direction: directionField(r, c, m, lpath, 'from end a to end b'),
+      riskGroups: riskGroups(r, c, m, lpath),
       description: r.field(m, 'description', lpath, L.maxDescription),
       attrs: r.attrs(get(m, 'attrs'), lpath + '.attrs'),
       line: m.line,
@@ -1339,6 +1342,24 @@ function readDnsNames(r: Reader, c: Ctx, m: YMap, dpath: string, dev: Device, ow
     if (ok && name !== undefined) out.push({ name, interfaces: ifaces, line: nm.line });
   });
   return out;
+}
+
+/**
+ * The shared risks an object belongs to (`risk_groups: [conduit-north,
+ * feed-a]`): ids, each once; a risk group is named by its use, there is no
+ * list of them. Sorted, so the order in the file never matters.
+ */
+function riskGroups(r: Reader, c: Ctx, m: YMap, path: string): string[] {
+  const out: string[] = [];
+  r.list(get(m, 'risk_groups'), path + '.risk_groups', true).forEach((n, k) => {
+    const p = `${path}.risk_groups[${k}]`;
+    const v = r.str(n, p, 100);
+    if (v === undefined) return;
+    if (!ID_RE.test(v)) c.error(n, p, `"${v}" is no risk group id: letters, digits, "-", "_" and ".", starting with a letter or digit`);
+    else if (out.indexOf(v) >= 0) c.error(n, p, `risk group "${v}" is listed twice`);
+    else out.push(v);
+  });
+  return out.sort();
 }
 
 /** A relation's or a link's direction: bidirectional unless "direction: unidirectional" is written. Anything else is an error. */

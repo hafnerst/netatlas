@@ -16,16 +16,16 @@ export const SCHEMA = {
   /** a parameter a protocol of the model declares: an entry of its `params` */
   param: ['key', 'label', 'type', 'scope', 'required', 'min', 'max', 'values', 'suggest', 'description'],
   group: ['id', 'label', 'kind', 'parent', 'description', 'attrs'],
-  device: ['id', 'label', 'type', 'group', 'tier', 'router_id', 'protocols', 'description', 'attrs', 'interfaces', 'logical_interfaces', 'dns_names', 'routes'],
+  device: ['id', 'label', 'type', 'group', 'tier', 'router_id', 'protocols', 'risk_groups', 'description', 'attrs', 'interfaces', 'logical_interfaces', 'dns_names', 'routes'],
   /** a physical interface (a port): an entry of a device's `interfaces` */
-  interface: ['id', 'label', 'dhcp', 'ip', 'vrf', 'mac', 'mtu', 'protocols', 'description', 'attrs'],
+  interface: ['id', 'label', 'dhcp', 'ip', 'vrf', 'mac', 'mtu', 'protocols', 'risk_groups', 'description', 'attrs'],
   /** a loopback, virtual or tunnel interface: an entry of a device's `logical_interfaces` */
   logical: ['id', 'type', 'label', 'dhcp', 'ip', 'vrf', 'mac', 'mtu', 'members', 'min_links', 'vlan', 'source', 'destination', 'protocols', 'description', 'attrs'],
   /** a DNS name of a device: an entry of a device's `dns_names` */
   dnsName: ['name', 'interfaces'],
   /** a static route of a device: an entry of a device's `routes` */
   route: ['prefix', 'via', 'interface', 'blackhole', 'distance', 'metric', 'vrf', 'name', 'description', 'attrs'],
-  link: ['id', 'a', 'b', 'medium', 'speed', 'label', 'cable', 'direction', 'description', 'attrs'],
+  link: ['id', 'a', 'b', 'medium', 'speed', 'label', 'cable', 'direction', 'risk_groups', 'description', 'attrs'],
   /** one end of a link written as a mapping */
   linkEnd: ['device', 'interface', 'speed', 'duplex', 'mode', 'untagged', 'tagged'],
   network: ['id', 'label', 'cidr', 'vlan', 'description', 'attrs'],
@@ -37,9 +37,9 @@ export const SCHEMA = {
   /** a saved simulation scenario: an entry of `scenarios` */
   scenario: ['id', 'label', 'description', 'steps'],
   /** one step of a scenario: one action key, with its target */
-  step: ['fail', 'restore', 'note'],
+  step: ['fail', 'maintain', 'restore', 'note'],
   /** what a step acts on: one of these keys */
-  target: ['device', 'cable', 'port', 'relation', 'lag'],
+  target: ['device', 'cable', 'port', 'relation', 'lag', 'group', 'risk'],
   /** the presentation-only layout section */
   layout: ['physical', 'logical', 'manual'],
 };

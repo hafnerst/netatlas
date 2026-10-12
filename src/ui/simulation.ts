@@ -26,6 +26,8 @@ export interface SimState {
   view: StepView;
   /** what changed since the step before (null at step 0) */
   diff: StepDiff | null;
+  /** the objects (refs) out of service for planned maintenance, not failed */
+  maintained: string[];
 }
 
 /** The traffic animation's state for the tab. */
@@ -156,7 +158,8 @@ export function simulationPanel(doc: Document, model: Model, st: SimState | null
     for (const r of v.failed) {
       const restore = el(doc, 'button', { type: 'button', class: 'mini', 'data-sim-restore': r, 'aria-label': `Restore ${refLabel(model, r)} in a new step`, title: 'Add a step that restores it' }, ['Restore']);
       restore.addEventListener('click', () => act.restore(r));
-      ul.appendChild(el(doc, 'li', {}, [ref(doc, model, r), ' ', restore]));
+      const planned = st.maintained.indexOf(r) >= 0;
+      ul.appendChild(el(doc, 'li', {}, [ref(doc, model, r), planned ? el(doc, 'span', { class: 'sim-why' }, [' — in planned maintenance']) : null, ' ', restore]));
     }
     box.appendChild(ul);
   } else box.appendChild(el(doc, 'p', { class: 'muted small' }, ['Nothing is failed at this step.']));
@@ -232,6 +235,7 @@ function flowItem(doc: Document, f: Flow): HTMLElement {
     ' ',
     el(doc, 'strong', {}, [f.label]),
     el(doc, 'span', { class: 'sim-why' }, [' — ' + f.pathText]),
+    f.back ? el(doc, 'span', { class: 'traffic-back' + (f.back.asymmetric ? ' asym' : '') }, [f.back.asymmetric ? ` · Asymmetric: the way back is ${f.back.devices.join(' → ')}` : ' · Returns the same way']) : null,
   ]);
 }
 

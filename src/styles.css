@@ -1047,6 +1047,16 @@ fieldset.locked-form { margin: 0; padding: 0; border: 0; min-width: 0; }
 ul.traffic-flows li, ul.traffic-changes li { overflow-wrap: anywhere; }
 #side .sim-traffic button[aria-pressed="true"]#sim-traffic { font-weight: 600; }
 
+/* ---- the Scenario templates dialog */
+dialog.tpl-dialog { width: min(720px, calc(100vw - 32px)); }
+ul.tpl-list { list-style: none; margin: 8px 0 0; padding: 0; }
+ul.tpl-list > li { padding: 6px 0; border-bottom: 1px solid var(--border); }
+ul.tpl-list .tpl-pick { font-weight: 600; text-align: left; }
+ul.tpl-list .tpl-why { margin: 3px 0 0; overflow-wrap: anywhere; }
+ul.tpl-list li.tpl-off .tpl-why { color: var(--muted); }
+.tpl-notes { padding-left: 1.3em; }
+.tpl-notes li, .tpl-steps li { overflow-wrap: anywhere; }
+
 /* ---- the Simulation tab */
 .sim-panel { margin-bottom: 14px; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
 .sim-panel h3 { overflow-wrap: anywhere; }

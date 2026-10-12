@@ -215,3 +215,33 @@ scenarios:
       - restore: {cable: l-w1-sw}
       - restore: {cable: l-c1-c3}
         note: traffic returns to the preferred path
+  # proposed by Simulate → Scenario templates for this model, reviewed and saved
+  - id: vrrp-failover-of-10-1-10-1
+    label: VRRP failover of 10.1.10.1
+    description: "The active member of the VRRP group of 10.1.10.1 (w1) fails; the gateway moves to w2. (from the template First-hop redundancy failover)"
+    steps:
+      - fail: {device: w1}
+        note: the active member of 10.1.10.1
+  - id: loss-of-c1
+    label: Loss of c1
+    description: The core / spine device c1 fails (3 cables). (from the template Core or spine failure)
+    steps:
+      - fail: {device: c1}
+  - id: flapping-cable-l-w1-sw
+    label: Flapping cable l-w1-sw
+    description: Cable l-w1-sw (on the path of demand cam-video) goes down and up twice. (from the template Link flapping)
+    steps:
+      - fail: {cable: l-w1-sw}
+        note: down
+      - restore: {cable: l-w1-sw}
+        note: up
+      - fail: {cable: l-w1-sw}
+        note: down again
+      - restore: {cable: l-w1-sw}
+        note: up again
+  - id: asymmetric-routing-after-l-w1-c1-fails
+    label: Asymmetric routing after l-w1-c1 fails
+    description: "Cable l-w1-c1 on the path of demand users-app fails; the demand is still delivered, but the way back differs from the way there: compare the two. (from the template Asymmetric routing check)"
+    steps:
+      - fail: {cable: l-w1-c1}
+        note: on the path of users-app

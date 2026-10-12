@@ -394,7 +394,7 @@ test('Analyze menu: between Find and Simulate, built like the others; Addressing
   assert.doesNotMatch(whole, /data-command="sim\./);
   // Simulate ("what if", a state that never changes the model) is the menu right after it
   const sim = /<div id="simulate-menu" class="dropdown menu" role="menu" aria-label="Simulate" hidden>([\s\S]*?)\n    <\/div>/.exec(header)[1];
-  assert.deepEqual([...sim.matchAll(/data-command="([^"]+)"/g)].map((m) => m[1]), ['sim.add', 'panel.simulation', 'sim.prev', 'sim.next', 'sim.save', 'sim.traffic', 'sim.trafficPause', 'sim.exit']);
+  assert.deepEqual([...sim.matchAll(/data-command="([^"]+)"/g)].map((m) => m[1]), ['sim.add', 'panel.simulation', 'sim.templates', 'sim.prev', 'sim.next', 'sim.save', 'sim.traffic', 'sim.trafficPause', 'sim.exit']);
   assert.match(sim, /<button id="btn-sim" type="button" role="menuitem" data-command="sim\.add"[^>]*><span class="mi-label">Simulate failure of selection<\/span><span class="mi-hint">X<\/span>/);
   assert.doesNotMatch(sim, /spof/);
   assert.match(sim, /<button id="btn-sim-exit" type="button" role="menuitem" data-command="sim\.exit"[^>]*><span class="mi-label">Exit simulation<\/span>/);

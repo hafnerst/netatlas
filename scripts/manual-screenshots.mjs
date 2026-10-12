@@ -321,6 +321,20 @@ async function main() {
       await page.settle(100);
     }
 
+    // scenario templates: the dialog for the enterprise WAN, the asymmetric check greyed out with its reason
+    {
+      await page.eval('netatlas.loadExample(0), netatlas.setView("physical"), true');
+      await page.eval("document.getElementById('toast').hidden = true");
+      await page.eval(`(document.getElementById('btn-templates').click(), true)`);
+      await page.settle(250);
+      // the end of the list: the templates that don't apply, with their reasons
+      await page.eval(`(document.querySelector('#modal [data-template="asymmetric"]').closest('li').scrollIntoView({ block: 'end' }), true)`);
+      await page.settle(100);
+      await save('templates', around([await page.rect('#modal')], 6), { quality: 45 });
+      await page.eval(`document.querySelector('#modal [data-value="close"]').click(), true`);
+      await page.settle(100);
+    }
+
     // input helpers: a tunnel interface's MTU suggestions and MAC Generate (enterprise WAN, hq-rtr1 st0.10)
     {
       await page.eval('netatlas.loadExample(0), netatlas.setView("physical"), netatlas.select("iface:hq-rtr1:st0.10"), netatlas.showTab("edit"), true');

@@ -58,6 +58,13 @@ there is no conversion of files written for the earlier drafts.
   (also `virtual_ipv6`) replaces the virtual addresses in relation `attrs`
   (`virtual-ip`, `vip`, `master`, `priority`) and interface attributes
   (`vrrp-virtual-ip`), which nothing reads any more.
+- **`risk_groups`** on cables, ports (physical interfaces) and devices: the
+  shared risks they belong to (a conduit, a power feed, a carrier, a line
+  card), ids named by their use.
+- **Scenario steps:** the action `maintain` (planned maintenance: out of
+  service, simulated like a failure) and the targets `group` (every device
+  of a location and its nested ones) and `risk` (everything in a risk
+  group).
 - **A link's `direction`:** `direction: unidirectional` makes a cable carry
   traffic from end `a` to end `b` only (simplex fibre, a data diode, a TAP
   or SPAN feed), consistent with relations; drawn with an arrow at end `b`;
@@ -85,6 +92,20 @@ there is no conversion of files written for the earlier drafts.
 
 ### Added
 
+- **Scenario templates** (Simulate → Scenario templates…, and the palette):
+  eleven templates (WAN / ISP uplink outage, first-hop redundancy failover,
+  core or spine failure, site / room / rack loss, shared-risk fibre cut,
+  rolling maintenance of a redundant pair, link flapping, VPN / tunnel
+  failover, MLAG / LAG member loss, service server failure, asymmetric
+  routing check) look at the model and propose concrete, deterministic
+  steps to review and save as a normal scenario; one that doesn't apply is
+  greyed out with why. Traffic surge is left out until there is a capacity
+  analysis. Computed in `src/analysis/templates.ts`. The examples
+  enterprise-wan, datacenter-evpn and ospf-reroute carry saved scenarios
+  from them.
+- **The way back of each demand** in the Traffic section: the same way, or
+  asymmetric (with the way back).
+- **Risk groups** in the Edit tab for devices, ports and links.
 - **Traffic animation** (Simulate → Traffic animation, on by default in
   simulation mode, with Pause): moving dots show the traffic the model
   implies, in both views: control traffic per protocol (adjacencies and BFD

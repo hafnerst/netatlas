@@ -28,7 +28,7 @@
 import { FailureResult } from './failure';
 import { virtualGateways } from './identity';
 import { RoutingCtx } from './routing';
-import { Hop, Path, Trace, declaredUnderlay, endText, tracePath, vipHolder } from './trace';
+import { Hop, Path, Trace, declaredUnderlay, endText, isAsymmetric, returnRequest, tracePath, vipHolder } from './trace';
 import { protocolBase, relationStyle } from '../model/protocols';
 import { Model, Relation, relationDevices } from '../model/types';
 
@@ -76,6 +76,12 @@ export interface Flow {
   devices: string[];
   /** "w-host → w1 → c1 → c3 → e1 → e-srv: reached e-srv" */
   pathText: string;
+  /**
+   * A demand's main path (its first): the way back from the destination to
+   * the source's address, and whether it differs from the way there
+   * (asymmetric routing). Not set when either way doesn't arrive.
+   */
+  back?: { devices: string[]; asymmetric: boolean };
 }
 
 export interface TrafficState {
@@ -367,6 +373,12 @@ function demandFlows(c: Ctx, id: string): Flow[] {
       pathText: `${devices.join(' → ')}: ${endText(p.end, dest)}`,
     };
     if (p.end.kind === 'stopped') flow.stop = { device: p.end.device, text: p.end.detail };
+    // the way back, for the main path: the same devices in reverse, or another way (asymmetric routing)
+    if (i === 0 && !lost) {
+      const rq = returnRequest(tr);
+      const back = rq ? tracePath(c.model, rq, c.ctx) : null;
+      if (back && !back.error && back.paths.length && back.paths[0].end.kind === 'reached') flow.back = { devices: back.paths[0].hops.map((h) => h.device), asymmetric: isAsymmetric(tr, back) };
+    }
     return flow;
   });
 }
