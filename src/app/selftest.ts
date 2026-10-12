@@ -262,7 +262,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
           labels.join('|') === 'New model|Open model…|Save model|Save model as…|Close model' && /Ctrl\+S$/.test(entries[2]) && /Ctrl\+Shift\+S$/.test(entries[3]) &&
           entries.length === 5 + EXAMPLES.length && ['#btn-save', '#btn-save-as', '#btn-close'].every((x) => (q(x) as HTMLButtonElement).disabled && /Open or create a model first|Close the current model/.test(q(x)!.title)) &&
           q('#btn-save')!.nextElementSibling === q('#btn-save-as') && q('#btn-save-as')!.nextElementSibling === q('#btn-close') &&
-          textsOf('#menu-examples .mi-label').join() === EXAMPLES.map((e) => e.name).join() && !q('#menu-examples .active-example') && /Examples/.test(q('#menu-examples-title')!.textContent || '') && EXAMPLES.length === 10 && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(menu!.textContent || '') && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(q('#empty')!.textContent || ''),
+          textsOf('#menu-examples .mi-label').join() === EXAMPLES.map((e) => e.name).join() && !q('#menu-examples .active-example') && /Examples/.test(q('#menu-examples-title')!.textContent || '') && EXAMPLES.length === 11 && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(menu!.textContent || '') && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(q('#empty')!.textContent || ''),
         entries.join(' | '),
       );
       menuBtn!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
@@ -1812,7 +1812,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       check(
         'Analyze keeps “what is” (Addressing, Focus, Trace path, Single points of failure); a Simulate menu right after it holds “what if” (fail, scenarios, steps, save, exit)',
         menuIds('analyze-menu').join(' ') === 'analyze.addressing focus.enter focus.exit trace.open trace.exit analyze.spof' &&
-          menuIds('simulate-menu').join(' ') === 'sim.add panel.simulation sim.prev sim.next sim.save sim.exit' &&
+          menuIds('simulate-menu').join(' ') === 'sim.add panel.simulation sim.prev sim.next sim.save sim.traffic sim.trafficPause sim.exit' &&
           (q('#analyze-btn') as HTMLElement).closest('.menu-wrap')!.nextElementSibling === (q('#simulate-btn') as HTMLElement).closest('.menu-wrap'),
         menuIds('analyze-menu').join(' ') + ' | ' + menuIds('simulate-menu').join(' '),
       );
@@ -2027,6 +2027,86 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       check('Exit simulation is unavailable without a simulation', (q('#btn-sim-exit') as HTMLButtonElement).disabled && (q('#mode-banner') as HTMLElement).hidden);
       app.select(null);
       (app.mdoc as ModelDoc).markSaved();
+    }
+
+    // ------------------------------------------------ simulated traffic: ospf-reroute.yaml played step by step, in both themes
+    {
+      const themeBefore = app.theme.theme;
+      for (const theme of ['dark', 'light'] as const) {
+        app.theme.set(theme);
+        app.loadExample(EXAMPLES.findIndex((e) => e.name === 'ospf-reroute.yaml'));
+        app.setView('physical');
+        await tick();
+        const md = app.mdoc as ModelDoc;
+        const before = app.exportText();
+        const undoBefore = md.canUndo();
+        const traffic = (): string => (q('#side-body .sim-traffic') ? q('#side-body .sim-traffic')!.textContent || '' : '');
+        const flow = (d: string): string => (q(`#side-body [data-flow="dem:${d}:0"]`) ? q(`#side-body [data-flow="dem:${d}:0"]`)!.textContent || '' : '');
+        const dotsOn = (ref: string): boolean => {
+          // a dot sits on the drawn line of `ref` (within 4 units of a point of it)
+          const p = q(`#viewport g.cable[data-ref="${ref}"] path.cable-line`) as unknown as SVGPathElement | null;
+          if (!p) return false;
+          const L = p.getTotalLength();
+          const pts: DOMPoint[] = [];
+          for (let s = 0; s <= L; s += 3) pts.push(p.getPointAtLength(s));
+          return Array.from(doc.querySelectorAll('#viewport .traffic-dot')).some((c) => pts.some((pt) => Math.hypot(pt.x - Number(c.getAttribute('cx')), pt.y - Number(c.getAttribute('cy'))) < 4));
+        };
+        app.playScenario('ospf-reroute');
+        app.simGo(0);
+        await tick(1600);
+        check(
+          `${theme}: playing “Primary link failure and OSPF reroute”: step 0 is the baseline; the traffic animation is on by default with Pause, in its own layer below the boxes and labels`,
+          !!app.currentSim() && app.currentSim()!.name === 'Primary link failure and OSPF reroute' && app.trafficOn && app.trafficDots() > 0 && !!q('#sim-traffic[aria-pressed="true"]') && !!q('#sim-traffic-pause') &&
+            !!q('#viewport .scene > .layer-traffic + .layer-nodes') && (q('#viewport .layer-traffic') as Element).getAttribute('aria-hidden') === 'true',
+          `${app.trafficDots()} dots`,
+        );
+        check(`${theme}: baseline: both demands on the preferred path (c1 – c3), with dots on its cables`, /Delivered.*w-host → w1 → c1 → c3 → e1 → e-srv/.test(flow('users-app')) && /w-cam → w1 → c1 → c3/.test(flow('cam-video')) && dotsOn('link:l-c1-c3'), flow('users-app'));
+        // 1: the primary link fails
+        app.simGo(1);
+        await tick(1300);
+        check(
+          `${theme}: 1 · the primary link fails: the traffic moves to the backup path over c2 (rerouted, said in the tab); the old way faded and the new one emphasized for a moment; no dots on the failed cable`,
+          /w1 → c1 → c2 → c3 → e1/.test(flow('users-app')) && /Rerouted\s*Demand users-app is rerouted/.test(traffic()) && doc.querySelectorAll('#viewport .traffic-old').length > 0 && doc.querySelectorAll('#viewport .traffic-new').length > 0 && !dotsOn('link:l-c1-c3') && dotsOn('link:l-c2-c3'),
+          traffic().slice(0, 200),
+        );
+        // 2: w1 loses its LAN: VRRP fails over, the camera is lost
+        app.simGo(2);
+        await tick(600);
+        check(
+          `${theme}: 2 · a second link fails: VRRP fails over to w2 (the users' traffic leaves by w2), the camera's traffic is lost where it stops (a marker at w-cam, “Lost” in the tab)`,
+          /w-host → w2 → c2 → c3/.test(flow('users-app')) && /Lost/.test(flow('cam-video')) && !!q('#viewport .traffic-lost[data-device="w-cam"]') && /Demand cam-video is lost at w-cam/.test(traffic()),
+          flow('cam-video'),
+        );
+        // the logical view: dots along the relations and membership lines
+        app.setView('logical');
+        await tick(1300);
+        check(`${theme}: … in the logical view too: dots on the relations and network lines`, app.trafficDots() > 0 && !!q('#viewport .traffic-lost[data-device="w-cam"]'));
+        app.setView('physical');
+        // 3, 4: restored
+        app.simGo(3);
+        app.simGo(4);
+        await tick(600);
+        check(`${theme}: 3, 4 · both links restored: the traffic returns to the original path`, /w-host → w1 → c1 → c3 → e1 → e-srv/.test(flow('users-app')) && /Restored|Rerouted/.test(traffic()) && !q('#viewport .traffic-lost'));
+        // Pause: the dots stand still
+        click('#sim-traffic-pause');
+        await tick(80);
+        const pos = Array.from(doc.querySelectorAll('#viewport .traffic-dot')).map((c) => c.getAttribute('cx')).join();
+        await tick(400);
+        check(`${theme}: Pause stops the dots where they are (and says Resume)`, app.trafficPaused() && pos === Array.from(doc.querySelectorAll('#viewport .traffic-dot')).map((c) => c.getAttribute('cx')).join() && /Resume/.test(q('#sim-traffic-pause')!.textContent || ''));
+        click('#sim-traffic-pause');
+        // the export: a still picture with arrows and the Simulation note, never moving dots
+        const svgText = app.exportSvg();
+        check(`${theme}: an export shows the traffic as direction arrows, without dots, with the Simulation note`, /class="traffic-arrow demand"/.test(svgText) && !/traffic-dot/.test(svgText) && /Simulation: scenario “Primary link failure and OSPF reroute”/.test(svgText));
+        // switched off: no dots, no layer
+        click('#sim-traffic');
+        await tick(100);
+        check(`${theme}: Traffic animation off: no dots and no layer; the menu entry says so (aria-checked)`, !app.trafficOn && !q('#viewport .layer-traffic') && q('#btn-traffic')!.getAttribute('aria-checked') === 'false');
+        click('#sim-traffic');
+        app.exitSimulation();
+        await tick();
+        check(`${theme}: playing it changed nothing in the model and added no undo step; after Exit no traffic is shown`, app.exportText() === before && md.canUndo() === undoBefore && !q('#viewport .layer-traffic'));
+      }
+      app.theme.set(themeBefore);
     }
 
     // ------------------------------------------------ viewer interactions

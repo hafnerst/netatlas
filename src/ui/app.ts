@@ -40,6 +40,8 @@ import { SimState, simSummary, simulationPanel, stepPosition } from './simulatio
 import { spofSection } from './spof';
 import { Splitter } from './splitter';
 import { TabOverflow } from './tab-overflow';
+import { TrafficAnimator } from './traffic';
+import { TrafficChange, TrafficState, trafficDiff, trafficFlows } from '../analysis/traffic';
 import { generateMac } from '../analysis/helpers';
 import { Command, buildCommands, isMac, keyLabel, matchesKey } from './commands';
 import { PaletteItem, commandItems, objectItems, paletteList, rankItems, resultsText, scenarioItems } from './palette';
@@ -896,6 +898,7 @@ export class App {
     this.svg.classList.toggle('has-selection', !!keep);
     this.svg.classList.toggle('has-trace', !!tr);
     this.svg.classList.toggle('has-sim', !!failed);
+    this.syncTraffic();
     const els = this.viewport.querySelectorAll('[data-ref]');
     for (let i = 0; i < els.length; i++) {
       const e = els[i];
@@ -1474,6 +1477,9 @@ export class App {
     ex.title = s ? `Save the ${s.state.view} view as a picture: the whole diagram with its legend and networks overview` : 'Open or create a model first';
     if (!s) this.setSubmenu(ex, false);
     this.syncCommands();
+    // the traffic entries of Simulate say their state
+    this.$('btn-traffic').setAttribute('aria-checked', this.trafficOn ? 'true' : 'false');
+    (this.$('btn-traffic-pause').querySelector('.mi-label') as HTMLElement).textContent = this.trafficPaused() ? 'Resume traffic' : 'Pause traffic';
     this.updateModeBanner();
     if (!s && this.findOpen) this.closeFind();
     this.$('btn-undo').title = d && d.canUndo() ? (d.undoLocked() ? 'Undo: paused during the simulation' : `Undo: ${d.canUndo()} (Ctrl+Z)`) : 'Undo (Ctrl+Z)';
@@ -2324,6 +2330,75 @@ export class App {
     return { name: sim.name, saved: sim.saved, steps: sim.steps, at, view, diff };
   }
 
+  // ------------------------------------------------------------ traffic animation
+
+  /** the traffic animation is on (in simulation mode); paused: the dots stand still */
+  trafficOn = true;
+  private traffic: TrafficAnimator | null = null;
+  /** the traffic of the step shown and the changes from the step before, for one model and step */
+  private trafficCache: { model: Model; key: string; state: TrafficState; changes: TrafficChange[] } | null = null;
+
+  /** The traffic of the simulation's step on screen (null: no simulation). */
+  currentTraffic(): { state: TrafficState; changes: TrafficChange[]; key: string } | null {
+    const s = this.session;
+    const st = this.currentSim();
+    if (!s || !st) return null;
+    const key = this.simKey() + '\n' + st.steps.length;
+    const c = this.trafficCache;
+    if (c && c.model === s.model && c.key === key) return c;
+    const state = trafficFlows(s.model, st.at ? st.view.res : null);
+    const prev = st.at ? (st.at > 1 ? trafficFlows(s.model, stepView(s.model, st.steps, st.at - 1).res) : trafficFlows(s.model, null)) : null;
+    const changes = prev ? trafficDiff(prev, state) : [];
+    this.trafficCache = { model: s.model, key, state, changes };
+    return this.trafficCache;
+  }
+
+  private reducedMotion(): boolean {
+    const w = this.doc.defaultView;
+    return !!w && typeof w.matchMedia === 'function' && w.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  }
+
+  /** The dots on screen follow the simulation, the view and the switch (after every render). */
+  private syncTraffic(): void {
+    if (!this.traffic) return;
+    const s = this.session;
+    const t = this.trafficOn ? this.currentTraffic() : null;
+    if (!s || !t) {
+      this.traffic.clear();
+      return;
+    }
+    this.traffic.sync(this.viewport.querySelector('.scene'), t.state, t.changes, { view: s.state.view, reduce: this.reducedMotion() }, t.key);
+  }
+
+  /** Simulate → Traffic animation: on or off. */
+  toggleTraffic(): boolean {
+    if (!this.sim) return false;
+    this.trafficOn = !this.trafficOn;
+    this.syncTraffic();
+    this.renderSide();
+    this.updateChrome();
+    this.toast(this.trafficOn ? 'Traffic animation on.' : 'Traffic animation off.');
+    return true;
+  }
+
+  /** Simulate → Pause traffic / Resume traffic. */
+  pauseTraffic(): boolean {
+    if (!this.sim || !this.trafficOn || !this.traffic) return false;
+    this.traffic.setPaused(!this.traffic.isPaused());
+    this.renderSide();
+    this.updateChrome();
+    return true;
+  }
+
+  trafficPaused(): boolean {
+    return !!this.traffic && this.traffic.isPaused();
+  }
+
+  /** How many dots move now (tests). */
+  trafficDots(): number {
+    return this.traffic ? this.traffic.dotCount() : 0;
+  }
+
   /** Why the model can't be edited now ('' = it can). */
   editLock(): string {
     return this.mdoc ? this.mdoc.lock : '';
@@ -2480,6 +2555,7 @@ export class App {
   /** End the simulation: the model's own state, and editing again. */
   exitSimulation(): boolean {
     if (!this.sim) return false;
+    if (this.traffic) this.traffic.setPaused(false);
     this.sim = null;
     this.simAt = 0;
     this.simChanged();
@@ -2607,6 +2683,17 @@ export class App {
     mount(body, []);
     body.appendChild(
       simulationPanel(this.doc, s.model, this.currentSim(), {
+        traffic: this.sim ? { on: this.trafficOn, paused: this.trafficPaused(), reduce: this.reducedMotion(), data: this.currentTraffic() } : null,
+        trafficToggle: () => {
+          this.toggleTraffic();
+          const b = this.doc.getElementById('sim-traffic');
+          if (b) b.focus();
+        },
+        trafficPause: () => {
+          this.pauseTraffic();
+          const b = this.doc.getElementById('sim-traffic-pause');
+          if (b) b.focus();
+        },
         addBlocked: this.simAddBlocked(),
         add: () => void this.simulateSelection(),
         go: (k) => {
@@ -3463,6 +3550,9 @@ export class App {
 
     this.wireCanvas();
     this.wireConnect();
+    this.traffic = new TrafficAnimator(doc);
+    const mq = doc.defaultView && typeof doc.defaultView.matchMedia === 'function' ? doc.defaultView.matchMedia('(prefers-reduced-motion: reduce)') : null;
+    if (mq && typeof mq.addEventListener === 'function') mq.addEventListener('change', () => this.syncTraffic());
     this.splitter = new Splitter(doc, doc.querySelector('main') as HTMLElement, this.$('side-splitter'), this.$('side'), this.$('outline'));
     this.tabOverflow = new TabOverflow(doc, doc.querySelector('#side .tabs') as HTMLElement, (tab) => {
       this.tab = tab as Tab;
@@ -4025,6 +4115,13 @@ export class App {
     // a connection being drawn is screen state, not part of the picture
     const line = clone.querySelector('#conn-line');
     if (line) line.remove();
+    // the traffic: a static picture, an arrow per line and direction (never a moment of moving dots)
+    const moving = clone.querySelector('.layer-traffic');
+    if (moving) {
+      const still = this.traffic ? this.traffic.exportLayer() : null;
+      if (still) moving.parentNode!.replaceChild(still, moving);
+      else moving.remove();
+    }
     const marked = clone.querySelectorAll('.conn-start, .conn-source, .conn-ok, .conn-no, .hover-hl');
     for (let i = 0; i < marked.length; i++) marked[i].classList.remove('conn-start', 'conn-source', 'conn-ok', 'conn-no', 'hover-hl');
     // … and so is what the pointer is on

@@ -10,6 +10,8 @@
 import { Affected, LostPair, refLabel } from '../analysis/failure';
 import { StepDiff, StepView, diffEmpty, scenarioProblems, stepText, targetRef } from '../analysis/scenario';
 import { Model, Scenario, ScenarioStep } from '../model/types';
+import { Flow, TrafficChange, TrafficState } from '../analysis/traffic';
+import { MAX_DOTS } from './traffic';
 import { el } from './dom';
 
 /** The simulation on screen: the scenario, the step shown, its result and what changed since the step before. */
@@ -26,7 +28,18 @@ export interface SimState {
   diff: StepDiff | null;
 }
 
+/** The traffic animation's state for the tab. */
+export interface TrafficPanel {
+  on: boolean;
+  paused: boolean;
+  reduce: boolean;
+  data: { state: TrafficState; changes: TrafficChange[] } | null;
+}
+
 export interface SimPanelActions {
+  traffic: TrafficPanel | null;
+  trafficToggle(): void;
+  trafficPause(): void;
   /** the selection can be failed (too) ('' = it can; else why not) */
   addBlocked: string;
   add(): void;
@@ -147,9 +160,79 @@ export function simulationPanel(doc: Document, model: Model, st: SimState | null
     }
     box.appendChild(ul);
   } else box.appendChild(el(doc, 'p', { class: 'muted small' }, ['Nothing is failed at this step.']));
+  if (act.traffic) box.appendChild(trafficSection(doc, act.traffic, act));
   box.appendChild(results(doc, model, v));
   box.appendChild(approximations(doc));
   return box;
+}
+
+const CHANGE: { [k in TrafficChange['kind']]: [string, string] } = {
+  rerouted: ['↷', 'Rerouted'],
+  lost: ['✕', 'Lost'],
+  restored: ['✓', 'Restored'],
+  stopped: ['■', 'Stopped'],
+  resumed: ['▶', 'Resumed'],
+};
+
+/**
+ * The traffic of the step shown, as text: the switch and Pause, what changed
+ * since the step before (rerouted, lost, restored …), the demands with their
+ * paths, and the control traffic per relation. Everything the dots show is
+ * here too.
+ */
+function trafficSection(doc: Document, t: TrafficPanel, act: SimPanelActions): HTMLElement {
+  const box = el(doc, 'div', { class: 'sim-traffic', role: 'group', 'aria-labelledby': 'sim-traffic-h' });
+  box.appendChild(el(doc, 'h4', { id: 'sim-traffic-h' }, ['Traffic']));
+  const on = el(doc, 'button', { type: 'button', id: 'sim-traffic', class: 'mini', 'aria-pressed': t.on ? 'true' : 'false', title: 'Show the traffic the model implies as moving dots in both views' }, [t.on ? 'Traffic animation: on' : 'Traffic animation: off']);
+  on.addEventListener('click', () => act.trafficToggle());
+  const pause = el(doc, 'button', { type: 'button', id: 'sim-traffic-pause', class: 'mini', 'aria-pressed': t.paused ? 'true' : 'false', title: 'Stop the dots where they are, or let them move again' }, [t.paused ? 'Resume' : 'Pause']) as HTMLButtonElement;
+  pause.disabled = !t.on || t.reduce;
+  pause.addEventListener('click', () => act.trafficPause());
+  box.appendChild(el(doc, 'div', { class: 'tf-actions' }, [on, pause]));
+  if (t.reduce && t.on) box.appendChild(el(doc, 'p', { class: 'muted small' }, ['Reduced motion is on: arrows show the direction instead of moving dots.']));
+  const data = t.data;
+  if (!data) return box;
+  const flows = data.state.flows;
+  const demands = flows.filter((f) => f.kind === 'demand');
+  const control = flows.filter((f) => f.kind === 'control');
+  if (data.changes.length) {
+    box.appendChild(el(doc, 'h5', {}, ['Changed by this step']));
+    const ul = el(doc, 'ul', { class: 'sim-list traffic-changes' });
+    for (const c of data.changes) {
+      const [sym, word] = CHANGE[c.kind];
+      ul.appendChild(el(doc, 'li', { class: 'tc-' + c.kind }, [el(doc, 'span', { class: 'sim-state' }, [el(doc, 'span', { 'aria-hidden': 'true' }, [sym + ' ']), word]), ' ' + c.text]));
+    }
+    box.appendChild(ul);
+  }
+  box.appendChild(el(doc, 'h5', {}, [`Demands (${new Set(demands.map((f) => f.of)).size})`]));
+  if (!demands.length) box.appendChild(el(doc, 'p', { class: 'muted small' }, ['The model has no traffic demands (its demands section). Add some to see traffic between sites; control traffic is shown either way.']));
+  else {
+    const ul = el(doc, 'ul', { class: 'sim-list traffic-flows' });
+    for (const f of demands) ul.appendChild(flowItem(doc, f));
+    box.appendChild(ul);
+  }
+  const det = el(doc, 'details', { class: 'traffic-control' });
+  det.appendChild(el(doc, 'summary', {}, [`Control traffic (${control.length} flows of ${new Set(control.map((f) => f.of)).size} relations)`]));
+  const ul = el(doc, 'ul', { class: 'sim-list' });
+  for (const f of control) ul.appendChild(el(doc, 'li', {}, [el(doc, 'span', { class: 'sim-state' }, [f.what]), ' ' + f.label + (f.physical.length ? '' : ' (no cables known: the logical view only)')]));
+  det.appendChild(ul);
+  box.appendChild(det);
+  box.appendChild(
+    el(doc, 'p', { class: 'muted small' }, [
+      `Dots: demands larger, control traffic smaller; more dots for more bandwidth. At most ${MAX_DOTS} move at once (demands first). Equal-cost paths share a demand equally (an approximation).`,
+    ]),
+  );
+  return box;
+}
+
+function flowItem(doc: Document, f: Flow): HTMLElement {
+  const lost = f.state === 'lost';
+  return el(doc, 'li', { class: lost ? 'sim-down' : 'sim-up', 'data-flow': f.id }, [
+    el(doc, 'span', { class: 'sim-state' }, [el(doc, 'span', { 'aria-hidden': 'true' }, [lost ? '✕ ' : '→ ']), lost ? 'Lost' : 'Delivered']),
+    ' ',
+    el(doc, 'strong', {}, [f.label]),
+    el(doc, 'span', { class: 'sim-why' }, [' — ' + f.pathText]),
+  ]);
 }
 
 /** The saved scenarios: name, steps, Play and Delete. */

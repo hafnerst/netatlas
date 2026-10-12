@@ -56,6 +56,21 @@ export function nodeOverlaps(rs: Rect[]): number {
 
 const STUB = 20;
 
+/** The arrow of a one-way cable: its tip a little before end b (the port square stays visible), pointing along the last segment. */
+function cableArrow(end: Pt, from: Pt, color: string): VNode {
+  const dx = end.x - from.x;
+  const dy = end.y - from.y;
+  const d = Math.hypot(dx, dy) || 1;
+  const ux = dx / d;
+  const uy = dy / d;
+  const tip = { x: end.x - ux * 7, y: end.y - uy * 7 };
+  const L = 11;
+  const W = 5.5;
+  const bx = tip.x - ux * L;
+  const by = tip.y - uy * L;
+  return h('path', { class: 'arrow cable-arrow', d: `M${n(tip.x)} ${n(tip.y)}L${n(bx - uy * W)} ${n(by + ux * W)}L${n(bx + uy * W)} ${n(by - ux * W)}Z`, fill: color });
+}
+
 /** Device boxes after applying user drags. */
 export function physicalBoxes(layout: PhysicalLayout, positions: Map<string, Pt>): Map<string, CBox> {
   const boxes = new Map<string, CBox>();
@@ -391,10 +406,13 @@ export function renderPhysical(model: Model, layout: PhysicalLayout, opts: ViewO
     for (const p of pts) extra.push({ x: p.x - 8, y: p.y - 8, w: 16, h: 16 });
     const ms = mediumStyle(l.medium);
     const d = pts.map((p, i) => (i ? 'L' : 'M') + n(p.x) + ' ' + n(p.y)).join('');
+    // the path runs from end a to end b (the traffic animation follows it); a one-way cable has an arrow at end b
+    const oneWay = l.direction === 'unidirectional';
     labelAt.set(l.id + '\u0000path', [
-      h('g', { class: `link cable medium-${cssToken(ms.key)}${mismatch ? ' net-mismatch' : ''}${pts.length === 2 ? ' straight' : ''}`, 'data-ref': 'link:' + l.id }, [
+      h('g', { class: `link cable medium-${cssToken(ms.key)}${mismatch ? ' net-mismatch' : ''}${pts.length === 2 ? ' straight' : ''}${oneWay ? ' one-way' : ''}`, 'data-ref': 'link:' + l.id }, [
         h('path', { class: 'hit', d }),
         h('path', { class: 'cable-line', d, stroke: ms.color, 'stroke-width': speedWidth(l.speed), 'stroke-dasharray': ms.dash }),
+        oneWay ? cableArrow(pts[pts.length - 1], pts[pts.length - 2], ms.color) : null,
       ]),
     ]);
   }

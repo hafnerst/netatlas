@@ -1,0 +1,217 @@
+# netatlas example: OSPF reroute and VRRP failover, with simulated traffic
+#
+# Two sites and a small OSPF core. West has a VRRP pair (w1 active, w2
+# standby) for the users and a camera VLAN that only w1 routes. The OSPF
+# costs make West -> c1 -> c3 -> East the preferred way; c2 is the backup.
+# East mirrors its traffic to an IDS over a one-way TAP cable.
+#
+# Play the saved scenario in the Simulation tab with Traffic on: the
+# demands' dots move to the backup path when the primary link fails, the
+# camera's traffic is lost when w1 loses its LAN, and everything returns
+# when the links are restored.
+netatlas: 1
+title: OSPF reroute and VRRP failover
+description: |
+  A ring of three core routers between two sites. Traffic demands from the
+  West site to the East server show OSPF rerouting and a VRRP failover.
+
+protocols:
+  - id: span
+    label: SPAN mirror
+    category: service
+    color: "#7048e8"
+    description: mirrored traffic for the IDS (a TAP / SPAN feed)
+
+groups:
+  - {id: west, label: Site West, kind: site}
+  - {id: core, label: Core, kind: site}
+  - {id: east, label: Site East, kind: site}
+
+devices:
+  - id: w-host
+    label: Office PC
+    type: endpoint
+    group: west
+    interfaces:
+      - {id: eth0, ip: 10.1.10.20/24}
+    routes:
+      - {prefix: 0.0.0.0/0, via: 10.1.10.1, name: default gateway (VRRP)}
+  - id: w-cam
+    label: Camera
+    type: endpoint
+    group: west
+    interfaces:
+      - {id: eth0, ip: 10.1.30.20/24}
+    routes:
+      - {prefix: 0.0.0.0/0, via: 10.1.30.1, name: default gateway (w1 only)}
+  - id: w-sw
+    label: w-sw
+    type: switch
+    group: west
+    interfaces: [p1, p2, p3, p4]
+  - id: w1
+    type: router
+    group: west
+    router_id: lo0
+    protocols:
+      ospf: {}
+      vrrp: {}
+    interfaces:
+      - {id: ge0, description: LAN trunk}
+      - {id: ge1, ip: 10.0.1.1/30}
+    logical_interfaces:
+      - {id: lo0, type: loopback, ip: 10.255.0.1/32}
+      - id: Vlan10
+        type: virtual
+        vlan: 10
+        ip: 10.1.10.2/24
+        protocols:
+          vrrp: {group: 10, virtual_ip: 10.1.10.1, priority: 200}
+      - {id: Vlan30, type: virtual, vlan: 30, ip: 10.1.30.1/24}
+  - id: w2
+    type: router
+    group: west
+    router_id: lo0
+    protocols:
+      ospf: {}
+      vrrp: {}
+    interfaces:
+      - {id: ge0, description: LAN trunk}
+      - {id: ge1, ip: 10.0.2.1/30}
+    logical_interfaces:
+      - {id: lo0, type: loopback, ip: 10.255.0.2/32}
+      - id: Vlan10
+        type: virtual
+        vlan: 10
+        ip: 10.1.10.3/24
+        protocols:
+          vrrp: {group: 10, virtual_ip: 10.1.10.1, priority: 100}
+
+  - id: c1
+    type: router
+    group: core
+    router_id: lo0
+    protocols:
+      ospf: {}
+    interfaces:
+      - {id: ge0, ip: 10.0.1.2/30}
+      - {id: ge1, ip: 10.0.13.1/30}
+      - {id: ge2, ip: 10.0.12.1/30}
+    logical_interfaces:
+      - {id: lo0, type: loopback, ip: 10.255.0.11/32}
+  - id: c2
+    type: router
+    group: core
+    router_id: lo0
+    protocols:
+      ospf: {}
+    interfaces:
+      - {id: ge0, ip: 10.0.2.2/30}
+      - {id: ge1, ip: 10.0.23.1/30}
+      - {id: ge2, ip: 10.0.12.2/30}
+    logical_interfaces:
+      - {id: lo0, type: loopback, ip: 10.255.0.12/32}
+  - id: c3
+    type: router
+    group: core
+    router_id: lo0
+    protocols:
+      ospf: {}
+    interfaces:
+      - {id: ge0, ip: 10.0.13.2/30}
+      - {id: ge1, ip: 10.0.23.2/30}
+      - {id: ge2, ip: 10.0.3.1/30}
+    logical_interfaces:
+      - {id: lo0, type: loopback, ip: 10.255.0.13/32}
+
+  - id: e1
+    type: router
+    group: east
+    router_id: lo0
+    protocols:
+      ospf: {}
+    interfaces:
+      - {id: ge0, ip: 10.0.3.2/30}
+      - {id: ge1, ip: 10.2.0.1/24}
+    logical_interfaces:
+      - {id: lo0, type: loopback, ip: 10.255.0.21/32}
+  - id: e-sw
+    label: e-sw
+    type: switch
+    group: east
+    interfaces: [p1, p2, p3]
+  - id: e-srv
+    label: Video and app server
+    type: server
+    group: east
+    interfaces:
+      - {id: eth0, ip: 10.2.0.10/24}
+    routes:
+      - {prefix: 0.0.0.0/0, via: 10.2.0.1, name: default gateway}
+  - id: e-ids
+    label: IDS sensor
+    type: ids_ips
+    group: east
+    interfaces:
+      - {id: mon0, description: monitor port (receive only)}
+
+links:
+  # West: w1 carries both VLANs, w2 only the users' VLAN
+  - id: l-w1-sw
+    a: {device: w1, interface: ge0, mode: trunk, tagged: [10, 30]}
+    b: {device: w-sw, interface: p1, mode: trunk, tagged: [10, 30]}
+    medium: copper
+    speed: 1G
+  - id: l-w2-sw
+    a: {device: w2, interface: ge0, mode: trunk, tagged: [10]}
+    b: {device: w-sw, interface: p2, mode: trunk, tagged: [10]}
+    medium: copper
+    speed: 1G
+  - {id: l-host, a: "w-host:eth0", b: {device: w-sw, interface: p3, mode: access, untagged: 10}, medium: copper, speed: 1G}
+  - {id: l-cam, a: "w-cam:eth0", b: {device: w-sw, interface: p4, mode: access, untagged: 30}, medium: copper, speed: 1G}
+  # core: c1-c3 is the preferred way, c2-c3 the backup
+  - {id: l-w1-c1, a: "w1:ge1", b: "c1:ge0", medium: fiber, speed: 10G}
+  - {id: l-w2-c2, a: "w2:ge1", b: "c2:ge0", medium: fiber, speed: 10G}
+  - {id: l-c1-c3, a: "c1:ge1", b: "c3:ge0", medium: fiber, speed: 10G, label: primary}
+  - {id: l-c2-c3, a: "c2:ge1", b: "c3:ge1", medium: fiber, speed: 10G, label: backup}
+  - {id: l-c1-c2, a: "c1:ge2", b: "c2:ge2", medium: fiber, speed: 10G}
+  - {id: l-c3-e1, a: "c3:ge2", b: "e1:ge0", medium: fiber, speed: 10G}
+  # East
+  - {id: l-e1-sw, a: "e1:ge1", b: "e-sw:p1", medium: copper, speed: 10G}
+  - {id: l-srv, a: "e-srv:eth0", b: "e-sw:p2", medium: copper, speed: 10G}
+  # a TAP feed: e-sw sends a copy of its traffic to the IDS, never the other way
+  - {id: l-tap, a: "e-sw:p3", b: "e-ids:mon0", medium: fiber, speed: 10G, direction: unidirectional, label: TAP}
+
+networks:
+  - {id: net-users, label: West users, cidr: 10.1.10.0/24, vlan: 10}
+  - {id: net-cams, label: West cameras, cidr: 10.1.30.0/24, vlan: 30}
+  - {id: net-east, label: East servers, cidr: 10.2.0.0/24}
+
+relations:
+  - {id: ospf-w1-c1, protocol: ospf, endpoints: ["w1:ge1", "c1:ge0"], over: l-w1-c1, attrs: {area: 0, cost: 10}}
+  - {id: ospf-w2-c2, protocol: ospf, endpoints: ["w2:ge1", "c2:ge0"], over: l-w2-c2, attrs: {area: 0, cost: 10}}
+  - {id: ospf-c1-c3, protocol: ospf, label: primary, endpoints: ["c1:ge1", "c3:ge0"], over: l-c1-c3, attrs: {area: 0, cost: 10}}
+  - {id: ospf-c2-c3, protocol: ospf, label: backup, endpoints: ["c2:ge1", "c3:ge1"], over: l-c2-c3, attrs: {area: 0, cost: 30}}
+  - {id: ospf-c1-c2, protocol: ospf, endpoints: ["c1:ge2", "c2:ge2"], over: l-c1-c2, attrs: {area: 0, cost: 10}}
+  - {id: ospf-c3-e1, protocol: ospf, endpoints: ["c3:ge2", "e1:ge0"], over: l-c3-e1, attrs: {area: 0, cost: 10}}
+  - {id: ospf-west, protocol: ospf, label: West LAN, endpoints: ["w1:Vlan10", "w2:Vlan10"], over: net-users, attrs: {area: 0, cost: 20}}
+  - {id: vrrp-users, protocol: vrrp, label: VIP 10.1.10.1, endpoints: ["w1:Vlan10", "w2:Vlan10"], over: net-users}
+  - {id: span-ids, protocol: span, direction: unidirectional, endpoints: ["e-sw:p3", "e-ids:mon0"], over: l-tap}
+
+# Traffic between the sites, traced like Trace path (equal-cost paths share it equally).
+demands:
+  - {id: users-app, label: Users to the app server, source: w-host, destination: e-srv, bandwidth: 400M, class: business}
+  - {id: cam-video, label: Camera video, source: w-cam, destination: e-srv, bandwidth: 50M, class: video}
+
+scenarios:
+  - id: ospf-reroute
+    label: Primary link failure and OSPF reroute
+    description: Step 0 is the baseline on the preferred path (c1 - c3). Then the primary link fails, w1 loses its LAN uplink, and both come back.
+    steps:
+      - fail: {cable: l-c1-c3}
+        note: traffic moves to the backup path over c2
+      - fail: {cable: l-w1-sw}
+        note: VRRP fails over to w2; the camera, routed only by w1, is lost
+      - restore: {cable: l-w1-sw}
+      - restore: {cable: l-c1-c3}
+        note: traffic returns to the preferred path

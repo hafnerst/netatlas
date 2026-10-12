@@ -8,7 +8,7 @@
 //
 // The browser is controlled through the DevTools protocol (scripts/cdp.mjs).
 // Set NETATLAS_BROWSER=/path/to/chrome to choose the browser.
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { openPage } from './cdp.mjs';
@@ -296,6 +296,27 @@ async function main() {
       })()`);
       await page.settle(200);
       await save('simulation', { x: x0, y: c.y, w: side.x + side.w - x0, h: Math.min(c.h, 320) }, { quality: 28 });
+      await page.eval(`document.getElementById('sim-exit-banner').click(), true`);
+      await page.settle(100);
+    }
+
+    // simulated traffic: ospf-reroute.yaml at step 1 (the primary link failed), physical view, a moment after the step:
+    // the dots on the backup path, the old way faded, and the Traffic section of the Simulation tab
+    {
+      await page.eval(`netatlas.loadText(${JSON.stringify(readFileSync(join(root, 'examples', 'ospf-reroute.yaml'), 'utf8'))}, 'ospf-reroute.yaml'), netatlas.setView('physical'), true`);
+      await page.eval("document.getElementById('toast').hidden = true");
+      await page.eval(`netatlas.playScenario('ospf-reroute'), netatlas.simGo(0), true`);
+      await page.settle(200);
+      await page.eval(`(() => { [...document.querySelectorAll('.zoombar button')].find((b) => b.textContent === 'Fit').click(); return true; })()`);
+      await page.settle(200);
+      await page.eval(`netatlas.simGo(1), true`);
+      // let the dots spread over the lines (the reroute overlay stays for four seconds)
+      await page.eval(`new Promise((r) => setTimeout(r, 1500))`);
+      await page.eval(`(() => { const t = document.querySelector('#side-body .sim-traffic'); document.getElementById('side-body').scrollTop = t.offsetTop - 8; return true; })()`);
+      await page.settle(100);
+      const c = await page.rect('#canvas-wrap');
+      const side = await page.rect('#side');
+      await save('traffic', { x: c.x, y: c.y, w: side.x + side.w - c.x, h: Math.min(c.h, 420) }, { quality: 30 });
       await page.eval(`document.getElementById('sim-exit-banner').click(), true`);
       await page.settle(100);
     }

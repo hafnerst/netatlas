@@ -58,6 +58,14 @@ there is no conversion of files written for the earlier drafts.
   (also `virtual_ipv6`) replaces the virtual addresses in relation `attrs`
   (`virtual-ip`, `vip`, `master`, `priority`) and interface attributes
   (`vrrp-virtual-ip`), which nothing reads any more.
+- **A link's `direction`:** `direction: unidirectional` makes a cable carry
+  traffic from end `a` to end `b` only (simplex fibre, a data diode, a TAP
+  or SPAN feed), consistent with relations; drawn with an arrow at end `b`;
+  the path tracer never uses it the other way.
+- **`demands:`** (top level, optional): traffic demands, each a `source`
+  and `destination` (as Trace path takes them) and a `bandwidth`, with an
+  optional `label`, `class` and `description`. Analysis data: traced, never
+  changing the network objects; an end that names nothing is a warning.
 - **`scenarios:`** (top level, optional): saved simulation scenarios, each
   an `id`, an optional `label` and `description`, and `steps`, each step
   `fail:` or `restore:` with one target (`device`, `cable`, `port`,
@@ -77,6 +85,21 @@ there is no conversion of files written for the earlier drafts.
 
 ### Added
 
+- **Traffic animation** (Simulate → Traffic animation, on by default in
+  simulation mode, with Pause): moving dots show the traffic the model
+  implies, in both views: control traffic per protocol (adjacencies and BFD
+  both ways, VRRP / HSRP from the active member, services from client to
+  server) and the demands along their traced paths (through tunnels, with
+  equal-cost paths sharing a demand); a one-way cable or relation one way
+  only. A step that fails something reroutes the traffic as routing does;
+  the old way shows faded and the new one emphasized for a moment; traffic
+  without a way is marked lost where it stops. The Simulation tab lists the
+  flows, their paths and every change as text. Reduced motion: static
+  arrows; exports: a still picture with arrows. requestAnimationFrame,
+  paused while the page is hidden, at most 300 dots. Computed in
+  `src/analysis/traffic.ts`, drawn by `src/ui/traffic.ts`.
+- **New example `ospf-reroute.yaml`** with the saved scenario *Primary link
+  failure and OSPF reroute*.
 - **New entries are ready to fill in:** after any create action (+ Add,
   Duplicate, Connect, an interface, loopback, port range, route, DNS name,
   address, protocol, VRRP group, attribute, endpoint, member port, underlay,
