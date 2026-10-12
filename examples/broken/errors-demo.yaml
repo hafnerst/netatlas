@@ -30,7 +30,7 @@ devices:
       ospf: {area: 0}           # the area is set per OSPF relation, in its attrs
   - id: srv
     type: server
-    protocols: {static: {}}     # only Layer 3+ devices run routing protocols
+    protocols: {ospf: {}}       # only Layer 3+ devices run routing protocols
 
 links:
   - {id: l1, a: "r1:eth1", b: "r2:eth0"}   # r1 has no eth1

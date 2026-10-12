@@ -101,7 +101,7 @@ test('a consistent model: no check finds anything; every check is registered wit
     assert.match(c.id, /^[a-z0-9]+(-[a-z0-9]+)+$/, c.id);
     assert.ok(['error', 'warning', 'info'].includes(c.severity) && c.title && c.reads, c.id);
   }
-  for (const id of ['link-mtu-mismatch', 'tunnel-mtu', 'link-speed-mismatch', 'link-duplex-mismatch', 'lag-member-speed', 'lag-peer-devices', 'lag-min-links', 'link-subnet-mismatch', 'address-reserved', 'vip-outside-subnet', 'duplicate-router-id', 'duplicate-mac', 'ospf-area-mismatch', 'ospf-network-type-mismatch', 'ospf-timer-mismatch', 'bgp-peer-as', 'bgp-session-type', 'tunnel-endpoint-mismatch', 'tunnel-underlay', 'relation-vrf-mismatch', 'protocol-not-enabled', 'protocol-unused', 'static-not-enabled', 'fhrp-group-mismatch']) {
+  for (const id of ['link-mtu-mismatch', 'tunnel-mtu', 'link-speed-mismatch', 'link-duplex-mismatch', 'lag-member-speed', 'lag-peer-devices', 'lag-min-links', 'link-subnet-mismatch', 'address-reserved', 'vip-outside-subnet', 'duplicate-router-id', 'duplicate-mac', 'ospf-area-mismatch', 'ospf-network-type-mismatch', 'ospf-timer-mismatch', 'bgp-peer-as', 'bgp-session-type', 'tunnel-endpoint-mismatch', 'tunnel-underlay', 'relation-vrf-mismatch', 'protocol-not-enabled', 'protocol-unused', 'fhrp-group-mismatch']) {
     assert.ok(ids.includes(id), id);
   }
 });

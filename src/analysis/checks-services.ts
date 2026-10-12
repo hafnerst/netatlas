@@ -1,8 +1,7 @@
 /**
  * The consistency checks of the routing services (model/services.ts): a
  * protocol used by a device's relations but not enabled on it, a protocol
- * enabled but used by no relation, static routes without static routing,
- * router IDs used twice within one protocol domain, virtual gateway
+ * enabled but used by no relation, router IDs used twice within one protocol domain, virtual gateway
  * addresses outside their interface's subnet, and members of one group
  * with different group numbers. Each reads only what is written.
  */
@@ -49,35 +48,18 @@ export const SERVICE_CHECKS: MoreCheck[] = [
   {
     id: 'protocol-unused',
     severity: 'info',
-    title: 'A protocol enabled on a device but used by none of its relations (or, for static routing, by no route)',
-    reads: 'devices: protocols, routes; relations (protocol, endpoints)',
+    title: 'A protocol enabled on a device but used by none of its relations',
+    reads: 'devices: protocols; relations (protocol, endpoints)',
     run(model, emit) {
       for (const d of model.devices.slice().sort((a, b) => cmp(a.id, b.id))) {
         for (const s of d.services) {
           const def = model.services.get(s.id);
-          if (!def) continue;
-          if (s.id === 'static') {
-            if (!d.routes.length) emit({ message: `static routing is enabled on ${d.id}, but it has no static route`, refs: ['device:' + d.id], at: { ref: 'device:' + d.id, field: 'protocols.static' } });
-            continue;
-          }
-          if (!def.sessions) continue;
+          if (!def || !def.sessions) continue;
           const used = serviceRelations(model, s.id).some((r) => relationDevices(r).indexOf(d.id) >= 0);
           // a redundancy group is used by its interface settings too
           const atIface = d.interfaces.concat(d.logical).some((i) => i.services.some((x) => x.id === s.id));
           if (!used && !atIface) emit({ message: `${def.label} is enabled on ${d.id}, but no ${def.label} relation has it as an endpoint`, refs: ['device:' + d.id], at: { ref: 'device:' + d.id, field: 'protocols.' + s.id } });
         }
-      }
-    },
-  },
-  {
-    id: 'static-not-enabled',
-    severity: 'info',
-    title: 'Static routes on a Layer 3+ device without static routing enabled',
-    reads: 'devices: routes, protocols',
-    run(model, emit) {
-      for (const d of model.devices.slice().sort((a, b) => cmp(a.id, b.id))) {
-        if (routingRole(d.type) !== 'router' || !d.routes.length || serviceOf(d, 'static')) continue;
-        emit({ message: `${d.id} has ${d.routes.length} static route${d.routes.length === 1 ? '' : 's'}, but static routing is not enabled in its protocols`, refs: ['device:' + d.id], at: { ref: 'device:' + d.id, field: 'protocols' } });
       }
     },
   },

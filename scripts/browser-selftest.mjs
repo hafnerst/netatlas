@@ -63,7 +63,8 @@ export function run(browser, url, extra) {
         ...extra,
         url,
       ],
-      { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: 120000, stdio: ['ignore', 'pipe', 'pipe'] },
+      // about 30 s alone, but several times that while npm test runs the other browser tests in parallel
+      { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: 300000, stdio: ['ignore', 'pipe', 'pipe'] },
     );
   } finally {
     try {

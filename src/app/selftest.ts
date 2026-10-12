@@ -1591,12 +1591,16 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const sec = (): HTMLElement | null => q('#side-body [data-group="protocols"]');
       const chips = Array.from(doc.querySelectorAll('#side-body [data-group="protocols"] .svc-suggest button.chip')) as HTMLButtonElement[];
       check(
-        'a device’s Protocols section: what its relations and routes use but it does not enable is offered with one click (OSPF for ospf-13, static routing for its route), with an accessible name',
-        !!sec() && chips.length === 2 && chips[0].getAttribute('aria-label') === 'Enable OSPF on r3 (used by ospf-13)' && chips[1].getAttribute('aria-label') === 'Enable Static routing on r3 (1 static route)' && chips.every((c) => c.tagName === 'BUTTON' && c.tabIndex >= 0),
+        'a device’s Protocols section: what its relations use but it does not enable is offered with one click (OSPF for ospf-13; its static route needs no protocol), with an accessible name',
+        !!sec() && chips.length === 1 && chips[0].getAttribute('aria-label') === 'Enable OSPF on r3 (used by ospf-13)' && chips.every((c) => c.tagName === 'BUTTON' && c.tabIndex >= 0),
         chips.map((c) => c.getAttribute('aria-label')).join(' | '),
       );
       // the same in the Problems tab
-      check('… and the Problems tab reports them (protocol-not-enabled, static-not-enabled)', md.findings.some((f) => f.check === 'protocol-not-enabled' && /r3 is an endpoint of OSPF ospf-13/.test(f.message)) && md.findings.some((f) => f.check === 'static-not-enabled' && /r3/.test(f.message)));
+      check('… and the Problems tab reports it (protocol-not-enabled); static routes need no protocol, so nothing asks to enable static routing', md.findings.some((f) => f.check === 'protocol-not-enabled' && /r3 is an endpoint of OSPF ospf-13/.test(f.message)) && !md.findings.some((f) => /static routing/i.test(f.message)));
+      check(
+        'Enable a protocol… offers no static routing (routes are configured in the Routes section)',
+        Array.from(doc.querySelectorAll('#side-body select[data-t="enable-service"] option')).every((o) => (o as HTMLOptionElement).value !== 'static' && !/static/i.test(o.textContent || '')),
+      );
       chips[0].focus();
       chips[0].click();
       await tick();
@@ -1806,9 +1810,9 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
           .filter((r, i, a) => a.indexOf(r) === i);
       const menuIds = (id: string): string[] => Array.from(doc.querySelectorAll(`#${id} [data-command]`)).map((e) => e.getAttribute('data-command') || '');
       check(
-        'Analyze keeps “what is” (Addressing, Focus, Trace path); a Simulate menu right after it holds “what if” (fail, scenarios, single points of failure, steps, save, exit)',
-        menuIds('analyze-menu').join(' ') === 'analyze.addressing focus.enter focus.exit trace.open trace.exit' &&
-          menuIds('simulate-menu').join(' ') === 'sim.add panel.simulation sim.spof sim.prev sim.next sim.save sim.exit' &&
+        'Analyze keeps “what is” (Addressing, Focus, Trace path, Single points of failure); a Simulate menu right after it holds “what if” (fail, scenarios, steps, save, exit)',
+        menuIds('analyze-menu').join(' ') === 'analyze.addressing focus.enter focus.exit trace.open trace.exit analyze.spof' &&
+          menuIds('simulate-menu').join(' ') === 'sim.add panel.simulation sim.prev sim.next sim.save sim.exit' &&
           (q('#analyze-btn') as HTMLElement).closest('.menu-wrap')!.nextElementSibling === (q('#simulate-btn') as HTMLElement).closest('.menu-wrap'),
         menuIds('analyze-menu').join(' ') + ' | ' + menuIds('simulate-menu').join(' '),
       );
@@ -1984,21 +1988,35 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       // the palette plays saved scenarios too
       const items = scenarioItems(app.session!.model);
       check('the command palette offers each saved scenario (Play scenario: …)', items.map((i) => i.label).join(' | ') === 'Play scenario: ISP 1 outage | Play scenario: Core peer link and core switch');
-      // the single points of failure: a click starts an ad-hoc scenario for it
-      click('#simulate-btn');
+      // the single points of failure: Analyze → a report in the Analysis tab, of the model as written; nothing changes mode by itself
+      click('#analyze-btn');
       (q('#btn-spof') as HTMLElement).click();
       await tick();
-      const rows = doc.querySelectorAll('#modal .spof-table tbody tr');
-      const fw = q('#modal [data-spof="device:hq-fw"]') as HTMLElement | null;
+      const rows = doc.querySelectorAll('#side-body .spof-list > li');
+      const fw = q('#side-body .spof-list > li[data-spof="device:hq-fw"]') as HTMLElement | null;
       check(
-        'Single points of failure lists the cables, devices and LAGs that cut the network or bring relations down, with what they cut off',
-        rows.length > 5 && !!fw && /hq-acc1, hq-core1, hq-core2, hq-log/.test((fw.closest('tr') as Element).textContent || '') && !!q('#modal [data-spof="iface:hq-core1:Port-Channel1"][data-spof-kind="lag"]') && /single points of failure/.test(q('#modal .spof-count')!.textContent || ''),
-        `${rows.length}`,
+        'Analyze → Single points of failure shows the report in the Analysis tab (not a dialog): the cables, devices and LAGs that cut the network or bring relations down, with what they cut off; the focus is on its heading',
+        app.currentTab() === 'analysis' && !(q('#modal') as HTMLDialogElement).open && rows.length > 5 && !!fw && /hq-acc1, hq-core1, hq-core2, hq-log/.test(fw.textContent || '') && !!q('#side-body li[data-spof="iface:hq-core1:Port-Channel1"][data-spof-kind="lag"]') && /single points of failure/.test(q('#side-body .spof-count')!.textContent || '') && doc.activeElement === q('#spof-title'),
+        `${app.currentTab()} ${rows.length}`,
       );
-      (q('#modal [data-spof="iface:hq-core1:Port-Channel1"]') as HTMLElement).click();
+      (q('#side-body li[data-spof="device:hq-fw"] [data-goto]') as HTMLElement).click();
       await tick();
-      check('choosing an entry starts an ad-hoc scenario that fails it (a LAG: its member cables, so the LAG relation is down)', /step 1 of 1: Fail LAG hq-core1:Port-Channel1/.test(simText()) && !(q('#modal') as HTMLDialogElement).open && marked('sim-down').indexOf('relation:lag-peer') >= 0, simText());
-      // focus mode inside the simulation: over what is up
+      check('choosing an entry’s name selects it in the diagram and changes no mode (no simulation starts)', app.session!.state.selected === 'device:hq-fw' && !app.currentSim() && !!q('#side-body .spof-report'), String(app.session!.state.selected));
+      app.select(null);
+      app.showTab('analysis');
+      await tick();
+      (q('#side-body li[data-spof="iface:hq-core1:Port-Channel1"] [data-spof-sim]') as HTMLElement).click();
+      await tick();
+      check('Simulate this failure (explicit) starts an ad-hoc scenario that fails it (a LAG: its member cables, so the LAG relation is down), in the Simulation tab', /step 1 of 1: Fail LAG hq-core1:Port-Channel1/.test(simText()) && app.currentTab() === 'simulation' && marked('sim-down').indexOf('relation:lag-peer') >= 0, simText());
+      app.showTab('analysis');
+      await tick();
+      const simBtn2 = q('#side-body [data-spof-sim]') as HTMLButtonElement;
+      check('… while a simulation is on, the report still reads the model as written and Simulate this failure says to exit first', simBtn2.disabled && /exit it first/.test(simBtn2.title) && /not the simulated state/.test(q('#side-body .spof-report')!.textContent || ''), simBtn2.title);
+      (q('#spof-close') as HTMLElement).click();
+      await tick();
+      check('Close report hides it; the focus goes to the Analysis tab', !q('#side-body .spof-report') && doc.activeElement === q('#side .tabs [data-tab="analysis"]'));
+      app.showTab('simulation');
+      // focus mode inside the simulation: over what is up      // focus mode inside the simulation: over what is up
       app.select('device:hq-core2');
       app.runCommand('focus.enter');
       await tick();
@@ -4867,9 +4885,9 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         await tick();
         const focusAfter = doc.activeElement as HTMLElement | null;
         check(
-          'a quick action used from the keyboard keeps the focus in the object list, on the entry it acted on (after Duplicate: the selected copy)',
-          !!focusAfter && focusAfter.classList.contains('ol-item') && focusAfter.getAttribute('data-ref') === 'device:hq-fw2' && app.session!.state.selected === 'device:hq-fw2',
-          focusAfter ? `${focusAfter.className} ${focusAfter.getAttribute('data-ref')}` : 'none',
+          'Duplicate used from the keyboard: the copy is selected, its outline row in view, and the cursor in its first field (the ID) with the proposed id selected',
+          !!focusAfter && focusAfter.getAttribute('data-t') === 'id' && (focusAfter as HTMLInputElement).value === 'hq-fw2' && (focusAfter as HTMLInputElement).selectionStart === 0 && (focusAfter as HTMLInputElement).selectionEnd === 6 && app.session!.state.selected === 'device:hq-fw2' && !!q('#outline-body .ol-item.active[data-ref="device:hq-fw2"]'),
+          focusAfter ? `${focusAfter.className} ${focusAfter.getAttribute('data-t')}` : 'none',
         );
         md().markSaved();
       }

@@ -40,9 +40,10 @@ there is no conversion of files written for the earlier drafts.
   severity: `checks: {duplicate-mac: info, relation-vrf-mismatch: off}`.
 - **Routing services (`protocols:` on a device):** a Layer 3+ device lists
   the protocols it runs, each with its parameters
-  (`protocols: {bgp: {asn: 65010}, ospf: {}, static: {}}`), defined by a
-  registry (BGP, OSPF, IS-IS, EIGRP, RIP, LDP, PIM, BFD, static routing,
-  VRRP, HSRP, GLBP, CARP). Mandatory parameters (BGP's `asn`, IS-IS's `net`,
+  (`protocols: {bgp: {asn: 65010}, ospf: {}}`), defined by a registry (BGP,
+  OSPF, IS-IS, EIGRP, RIP, LDP, PIM, BFD, VRRP, HSRP, GLBP, CARP). Static
+  routes are no protocol: a device's `routes` are always in effect, and
+  `static` under `protocols:` (or as a relation's protocol) is unknown. Mandatory parameters (BGP's `asn`, IS-IS's `net`,
   a group's `group` and `virtual_ip`) are errors until written; OSPF needs a
   router ID. `protocols:` on a device that isn't Layer 3+ is an error.
 - **The device's `asn` key is gone:** the AS number is BGP's parameter;
@@ -76,6 +77,20 @@ there is no conversion of files written for the earlier drafts.
 
 ### Added
 
+- **New entries are ready to fill in:** after any create action (+ Add,
+  Duplicate, Connect, an interface, loopback, port range, route, DNS name,
+  address, protocol, VRRP group, attribute, endpoint, member port, underlay,
+  a scenario step) the entry is selected and marked, its card opened and
+  scrolled into view (smoothly unless reduced motion is preferred), and the
+  cursor is in its first field with the proposed text selected; a new object
+  is selected in the diagram with its outline row in view. The creation is
+  announced to screen readers. Ctrl+Z in the untouched new field takes it
+  back; after an undo the focus returns to the creating button and the
+  selection to what it was.
+- **A resizable side panel:** 480 px by default (was 410), with a splitter
+  (drag, double-click to reset; a keyboard-operable separator with ← → Home
+  End Enter); the width is remembered in local storage, the diagram keeps at
+  least 360 px, and the tabs wrap instead of being cut off.
 - **Simulate ▾ menu and Simulation tab:** simulation is separated from
   analysis. *Analyze* (Addressing overview, Focus, Trace path) shows the
   model as written; *Simulate* (Simulate failure of selection `X`,
@@ -361,6 +376,15 @@ there is no conversion of files written for the earlier drafts.
 
 ### Changed
 
+- **Single points of failure** is an Analyze report again (**Analyze →
+  Single points of failure**), shown in the Analysis tab, not a dialog. It
+  reads the model as written; choosing an entry selects it, and an explicit
+  **Simulate this failure** starts the scenario (Simulate mode).
+- **Static routing is no longer a protocol:** removed from the registry,
+  Enable a protocol…, the suggestions and the checks (`static-not-enabled`
+  is gone; `protocol-unused` no longer looks at routes). Static routes work
+  on every Layer 3+ device whatever it enables; the examples no longer
+  write `static: {}`.
 - The simulation entries moved from **Analyze ▾** to the new **Simulate ▾**
   menu, and the failure results from the Analysis tab to the Simulation
   tab. A one-off failure is now an ad-hoc scenario: **Restore** adds a

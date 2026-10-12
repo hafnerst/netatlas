@@ -36,7 +36,24 @@ import { Suggestion, netSuggestions, peerAsSuggestions, asnSuggestions, distance
 import { relationDevices } from '../model/types';
 
 /** `iface`: the document path of the selected physical or logical interface of a device; `route`: of the selected static route. */
-export type EditorSel = { kind: EntityKind | 'document'; index: number; iface?: Path; route?: Path } | null;
+/**
+ * What the Edit tab shows and marks: an object, and within it optionally an
+ * interface or a route (their cards), or `entry`, a part just created (an
+ * address, a DNS name, an attribute, an endpoint …), which is marked as the
+ * selection until something else is selected.
+ */
+export type EditorSel = { kind: EntityKind | 'document'; index: number; iface?: Path; route?: Path; entry?: Path } | null;
+
+/** Where the focus goes when a create is undone: the control that created the entry (found again by its attributes), else its card. */
+interface FocusBack {
+  attrs: Array<[string, string]>;
+  card: string | null;
+  /** the selection before the create (undoing it selects that again: the index of the new entry is gone or another entry's) */
+  sel: EditorSel;
+}
+
+/** The attributes that find a control of the Edit tab or the outline again after a render. */
+const BACK_ATTRS = ['data-act', 'data-t', 'data-kind', 'data-index', 'data-p', 'data-svc'];
 
 /** A field of the selected object that the selection was made on in the diagram (see model/addresses.ts LineField). */
 export interface SelDetail {
@@ -68,6 +85,13 @@ export interface ConnectionDraft {
 }
 
 const J = (p: Path): string => JSON.stringify(p);
+
+/** Can the user type into or change this control now (enabled, writable, shown)? */
+function editable(f: HTMLInputElement): boolean {
+  if (f.disabled || f.readOnly || f.type === 'hidden' || f.closest('fieldset[disabled]')) return false;
+  if (f.getAttribute('data-t') === 'draft') return false;
+  return f.getClientRects().length > 0;
+}
 /** Model ref of an outline entity (protocol ids are normalized in the model). */
 const entityRef = (kind: EntityKind, id: string): string => kind + ':' + (kind === 'protocol' ? normalizeProtocol(id) : id);
 const P = (s: string | null): Path => (s ? (JSON.parse(s) as Path) : []);
@@ -209,6 +233,182 @@ export class Editor {
     const kind = this.draft.kind;
     this.draft = null;
     this.host.toast(`The new ${kind === 'link' ? 'physical link' : 'relation'} was discarded (nothing was added)${to ? ': another object was selected' : ''}.`);
+  }
+
+  /**
+   * The entry just created (a path in the document). After the next render
+   * of the Edit tab it is marked as the selection, its card is opened and
+   * scrolled into view, and its first editable field gets the keyboard focus
+   * with its text selected (focusCreated). `focus: false`: the user had left
+   * the control that created it (a typed value committed on Tab), so the
+   * focus stays where they put it.
+   */
+  private created: { path: Path; focus: boolean } | null = null;
+  /** per create (by the serial of its edit): where the focus goes when it is undone */
+  private undoBack = new Map<number, FocusBack>();
+  /** the field focusCreated put the cursor in, with its value then: while it is unchanged, Ctrl+Z undoes the create */
+  private fresh: { t: string | null; p: string | null; value: string } | null = null;
+
+  /** Is `t` the field of an entry just created, still as it was (nothing typed)? Then Ctrl+Z takes the create back, not the text. */
+  untouchedNew(t: Element | null): boolean {
+    const f = this.fresh;
+    // (a render replaces the element; the field is the same while its data-t and data-p are)
+    return !!f && !!t && t.getAttribute('data-t') === f.t && t.getAttribute('data-p') === f.p && (t as HTMLInputElement).value === f.value;
+  }
+
+  /**
+   * An entry was created (one undo step, already done): select and mark it,
+   * open the cards around it, give it the focus after the render, remember
+   * where an undo puts the focus, and announce it (the note is the toast, a
+   * polite live region).
+   */
+  private didCreate(path: Path, note: string, from: Element | null, opts: { sel?: EditorSel; focus?: boolean } = {}): void {
+    const doc = this.doc;
+    const before = this.sel ? { ...this.sel } : null;
+    if (opts.sel !== undefined) this.sel = opts.sel;
+    else if (this.sel && this.sel.kind !== 'document') this.sel = { kind: this.sel.kind, index: this.sel.index, iface: this.sel.iface, route: this.sel.route, entry: path };
+    this.detail = null;
+    for (let k = 2; k <= path.length; k++) this.open.add(J(path.slice(0, k)));
+    this.created = { path, focus: opts.focus !== false };
+    const card = from ? from.closest('[data-card]') : null;
+    this.undoBack.set(doc.undoTop(), { attrs: from ? BACK_ATTRS.filter((a) => from.hasAttribute(a)).map((a) => [a, from.getAttribute(a) as string] as [string, string]) : [], card: card ? card.getAttribute('data-card') : null, sel: before });
+    this.host.selected(this.sel);
+    this.host.changed(note);
+  }
+
+  /** Is an entry waiting for the focus (it was just created)? */
+  pendingCreate(): boolean {
+    return !!this.created;
+  }
+
+  /** Is the creating control still focused (Enter, a click, a choice), or did the user move on (Tab)? */
+  private stillFocused(t: Element): boolean {
+    return this.d.activeElement === t;
+  }
+
+  /** The device of an entry, by its index ("hq-rtr1"). */
+  private devName(i: number): string {
+    return this.doc.text(['devices', i, 'id']) || 'the device';
+  }
+
+  /** The path of the last item of a list (after something was appended to it). */
+  private lastItem(list: Path): Path {
+    const n = this.doc.get(list);
+    return n && n.kind === 'seq' ? list.concat(n.items.length - 1) : list;
+  }
+
+  /**
+   * After a render: the entry just created gets the focus (see didCreate):
+   * its first editable field in visual (document) order, with its text
+   * selected so that typing replaces it; without one, its card's summary.
+   * Folded sections around it open, and it is scrolled into view (smoothly
+   * unless reduced motion is preferred). Returns whether there was one.
+   */
+  focusCreated(box: HTMLElement): boolean {
+    const c = this.created;
+    this.created = null;
+    if (!c) return false;
+    const key = J(c.path);
+    const pre = key.slice(0, -1) + ',';
+    const inside = (v: string | null): boolean => !!v && (v === key || v.indexOf(pre) === 0);
+    let field: HTMLElement | null = null;
+    const all = box.querySelectorAll('input, select, textarea');
+    const unfold = (e: Element): void => {
+      for (let p = e.parentElement; p && p !== box; p = p.parentElement) {
+        if (p.tagName === 'DETAILS' && !p.hasAttribute('open')) {
+          p.setAttribute('open', '');
+          const k = p.getAttribute('data-card');
+          if (k) this.open.add(k);
+        }
+      }
+    };
+    for (let i = 0; i < all.length && !field; i++) {
+      const f = all[i] as HTMLInputElement;
+      if (!inside(f.getAttribute('data-p'))) continue;
+      // a folded section around it (the attributes) opens first, so the field can be seen
+      unfold(f);
+      if (editable(f)) field = f;
+    }
+    const card = this.byPath(box, '[data-card]', 'data-card', key);
+    // an entry with nothing to type in (an underlay chip with its Remove): its row, never its Remove button
+    const holder = card || (field ? (field.closest('details.card, .list-row, .g-row, .ep-row, .field') as HTMLElement | null) : this.entryElement(box, c.path));
+    const anchor = field || holder;
+    if (!anchor) return false;
+    unfold(anchor);
+    this.reveal(holder || anchor);
+    if (!c.focus) return true;
+    const target = field || ((holder && holder.tagName === 'DETAILS' ? holder.querySelector('summary') : holder) as HTMLElement | null);
+    if (!target) return true;
+    if (!field && target.tabIndex < 0 && target.tagName !== 'SUMMARY') target.setAttribute('tabindex', '-1');
+    target.focus({ preventScroll: true });
+    this.fresh = field ? { t: field.getAttribute('data-t'), p: field.getAttribute('data-p'), value: (field as HTMLInputElement).value } : null;
+    if (field && (field.tagName === 'TEXTAREA' || /^(text|search|url|email|tel|number)?$/.test((field as HTMLInputElement).type || ''))) {
+      try {
+        (field as HTMLInputElement).select();
+      } catch (e) {
+        /* not a text field */
+      }
+    }
+    return true;
+  }
+
+  /**
+   * Before an undo is shown (`serial`: the edit it takes back): when it is a
+   * create, the selection goes back to what was selected before it. Returns
+   * whether it was a create.
+   */
+  beforeUndo(serial: number): boolean {
+    const b = this.undoBack.get(serial);
+    if (!b) return false;
+    this.fresh = null;
+    this.created = null;
+    this.sel = b.sel ? { ...b.sel } : null;
+    this.detail = null;
+    this.host.selected(this.sel);
+    return true;
+  }
+
+  /**
+   * After an undo of a create (`serial`) and the render: the focus goes to
+   * the control that created the entry, else to the card it was in, else to
+   * the object's heading (the entry and its fields are gone). Returns
+   * whether it moved the focus.
+   */
+  focusAfterUndo(serial: number, side: HTMLElement, outline: HTMLElement): boolean {
+    const b = this.undoBack.get(serial);
+    if (!b) return false;
+    const match = (e: Element): boolean => b.attrs.every(([k, v]) => e.getAttribute(k) === v);
+    // candidates in order; the first that really takes the focus wins (a quick action is hidden until its row has the focus)
+    const cands: HTMLElement[] = [];
+    if (b.attrs.length)
+      for (const root of [side, outline]) {
+        const all = root.querySelectorAll('[' + b.attrs[0][0] + ']');
+        for (let i = 0; i < all.length; i++) {
+          if (!match(all[i]) || (all[i] as HTMLButtonElement).disabled) continue;
+          cands.push(all[i] as HTMLElement);
+          // … then its row's entry in the outline
+          const row = all[i].closest('.ol-row');
+          const item = row ? (row.querySelector('.ol-item') as HTMLElement | null) : null;
+          if (item) cands.push(item);
+        }
+      }
+    if (b.card) {
+      const card = this.byPath(side, '[data-card]', 'data-card', b.card);
+      const sum = card ? (card.querySelector('summary') as HTMLElement | null) : null;
+      if (sum) cands.push(sum);
+    }
+    const h = side.querySelector('.insp-head h3, h3') as HTMLElement | null;
+    if (h) {
+      if (!h.hasAttribute('tabindex')) h.setAttribute('tabindex', '-1');
+      cands.push(h);
+    }
+    for (const c of cands) {
+      c.focus({ preventScroll: true });
+      if (this.d.activeElement !== c) continue;
+      this.reveal(c);
+      return true;
+    }
+    return false;
   }
 
   /** Open the card of an interface. */
@@ -447,6 +647,7 @@ export class Editor {
     const base: Path = [SECTION[s.kind], s.index];
     const scope = s.iface || base;
     let target = this.detail ? this.detailElement(wrap, scope, this.detail) : null;
+    if (!target && s.entry) target = this.entryElement(wrap, s.entry);
     if (!target && s.iface) target = this.byPath(wrap, 'details.card', 'data-card', J(s.iface));
     if (!target && s.route) target = this.byPath(wrap, 'details.card', 'data-card', J(s.route));
     if (!target) target = wrap.querySelector('.insp-head');
@@ -469,8 +670,10 @@ export class Editor {
       if (label) label.appendChild(tag);
       else target.insertBefore(tag, target.firstChild);
     } else {
+      // before the row's own button (a created entry's row may hold its buttons deeper: then at its end)
       const btn = target.querySelector('button');
-      target.insertBefore(tag, btn);
+      if (btn && btn.parentElement === target) target.insertBefore(tag, btn);
+      else target.appendChild(tag);
     }
     // a mark inside a folded section (the attributes) opens it
     for (let p = target.parentElement; p && p !== wrap; p = p.parentElement) {
@@ -484,6 +687,20 @@ export class Editor {
     if (key === this.markedKey) return;
     this.markedKey = key;
     this.reveal(target);
+  }
+
+  /** The card or row of an entry (a path): its own card, else the row of its first field. */
+  private entryElement(wrap: HTMLElement, path: Path): HTMLElement | null {
+    const key = J(path);
+    const card = this.byPath(wrap, '[data-card]', 'data-card', key);
+    if (card) return card;
+    const pre = key.slice(0, -1) + ',';
+    const all = wrap.querySelectorAll('[data-p]');
+    for (let i = 0; i < all.length; i++) {
+      const v = all[i].getAttribute('data-p') as string;
+      if (v === key || v.indexOf(pre) === 0) return all[i].closest('.list-row, .g-row, .ep-row, .svc-card, .field') as HTMLElement | null;
+    }
+    return null;
   }
 
   /** Scroll a marked section into view when it is not (wholly) visible in its scrolling panel. */
@@ -682,9 +899,7 @@ export class Editor {
         : [['protocol', v.protocol], ['label', v.label], ['direction', v.direction === 'unidirectional' ? 'unidirectional' : '']];
     const index = this.doc.addConnection(dr.kind, id, dr.ends.map(endpointText), fields);
     this.draft = null;
-    this.sel = { kind: dr.kind, index };
-    this.host.selected(this.sel);
-    this.host.changed(`Added ${dr.kind === 'link' ? 'physical link' : 'relation'} “${id}”. Undo with Ctrl+Z.`);
+    this.didCreate([dr.kind === 'link' ? 'links' : 'relations', index], `Added ${dr.kind === 'link' ? 'physical link' : 'relation'} “${id}”. Undo with Ctrl+Z.`, null, { sel: { kind: dr.kind, index } });
     return true;
   }
 
@@ -1043,7 +1258,7 @@ export class Editor {
     if (sugg.length) {
       const chips = this.e('div', { class: 'svc-suggest', role: 'group', 'aria-label': `Protocols ${devId} uses but does not enable` });
       for (const s of sugg) {
-        const why = s.relations.length ? `used by ${s.relations.join(', ')}` : `${s.routes} static route${s.routes === 1 ? '' : 's'}`;
+        const why = `used by ${s.relations.join(', ')}`;
         chips.appendChild(
           this.e('button', { type: 'button', class: 'chip', 'data-act': 'enable-service', 'data-index': String(devIndex), 'data-svc': s.service, 'aria-label': `Enable ${label(s.service)} on ${devId} (${why})`, title: `Enable ${label(s.service)}: ${why}` }, [
             this.e('span', { 'aria-hidden': 'true' }, ['+ ']),
@@ -1052,7 +1267,7 @@ export class Editor {
           ]),
         );
       }
-      kids.push(this.field('Suggested', chips, [], 'Used by its relations or routes, not enabled.'));
+      kids.push(this.field('Suggested', chips, [], 'Used by its relations, not enabled.'));
     }
     // the router ID the enabled protocols share
     const users = enabled.filter((id) => {
@@ -1422,11 +1637,12 @@ export class Editor {
     });
     if (answer !== 'create') return;
     const name = nameIn.value.trim();
-    if (doc.addDnsName(devIndex, name, chosen()) < 0) {
+    const k = doc.addDnsName(devIndex, name, chosen());
+    if (k < 0) {
       this.host.toast(doc.dnsNameError(devIndex, name, chosen()) || 'The DNS name was not added.');
       return;
     }
-    this.host.changed(`DNS name “${name}” added.`);
+    this.didCreate(['devices', devIndex, 'dns_names', k], `DNS name “${name}” added to ${this.devName(devIndex)}.`, this.d.querySelector('[data-act="add-dns"]'));
   }
 
   /**
@@ -1533,17 +1749,23 @@ export class Editor {
     });
     if (answer !== 'create') return;
     // checked again at the moment of creating: all ports, or none
+    const before = doc.interfaceEntries(devIndex).filter((e) => e.path[2] === 'interfaces').length;
     const done = doc.addPortRange(devIndex, from.value, to.value);
     if (!done.ok) {
       this.host.toast(done.error);
       return;
     }
-    this.host.changed(`${done.ports.length} ports added (${done.ports[0].name} … ${done.ports[done.ports.length - 1].name}).`);
+    // the first new port is the one to fill in
+    const first: Path = ['devices', devIndex, 'interfaces', before];
+    this.didCreate(first, `${done.ports.length} ports added to ${this.devName(devIndex)} (${done.ports[0].name} … ${done.ports[done.ports.length - 1].name}).`, this.d.querySelector('[data-act="add-range"]'), { sel: { kind: 'device', index: devIndex, iface: first } });
   }
 
   /** Forget everything that belonged to the model that was open: selection, open cards, filter, folded sections, YAML draft. */
   reset(): void {
     this.sel = null;
+    this.undoBack.clear();
+    this.created = null;
+    this.fresh = null;
     this.draft = null;
     this.open.clear();
     this.filter = '';
@@ -2182,10 +2404,7 @@ export class Editor {
   private addRoute(devIndex: number): void {
     const k = this.doc.addRoute(devIndex, [['prefix', '']]);
     const path: Path = ['devices', devIndex, 'routes', k];
-    this.open.add(J(path));
-    this.sel = { kind: 'device', index: devIndex, route: path };
-    this.host.selected(this.sel);
-    this.host.changed('Route added — enter its destination prefix and next hop.');
+    this.didCreate(path, `Route added to ${this.devName(devIndex)} — enter its destination prefix and next hop.`, this.d.querySelector('[data-act="add-route"]'), { sel: { kind: 'device', index: devIndex, route: path } });
   }
 
   /**
@@ -2470,6 +2689,8 @@ export class Editor {
     const val = (target as HTMLInputElement).value;
     const trimmed = typeof val === 'string' ? val.trim() : '';
     let note: string | undefined;
+    /** an entry this change created (it is marked, revealed and, while the control still has the focus, focused) */
+    let made: Path | null = null;
     switch (t) {
       case 'text':
         doc.setText(p, target.tagName === 'TEXTAREA' ? val.replace(/\s+$/, '') : trimmed);
@@ -2506,10 +2727,14 @@ export class Editor {
       case 'member-append':
         if (!val) return true;
         doc.appendText(p, val, 'Add member port');
+        made = this.lastItem(p);
+        note = `Member port ${val} added.`;
         break;
       case 'dns-iface-append':
         if (!val) return true;
         doc.appendText(p, val, 'Associate interface with DNS name');
+        made = this.lastItem(p);
+        note = `Interface ${val} associated with the DNS name.`;
         break;
       case 'list-item':
       case 'list-scalar':
@@ -2518,6 +2743,8 @@ export class Editor {
       case 'list-append':
         if (trimmed === '') return true;
         doc.appendText(p, trimmed);
+        made = this.lastItem(p);
+        note = `${p[p.length - 1] === 'ip' ? 'Address' : 'Entry'} ${trimmed} added.`;
         break;
       case 'end-mode':
         doc.setEndMode(p, val);
@@ -2533,9 +2760,11 @@ export class Editor {
         break;
       case 'enable-service': {
         if (!val) return true;
-        doc.enableService(Number(target.getAttribute('data-index')), val);
+        const di = Number(target.getAttribute('data-index'));
+        doc.enableService(di, val);
         const def = doc.servicesRegistry().get(val);
-        note = `${def ? def.label : val} enabled${def && def.params.some((x) => x.required && x.scope === 'device') ? ' — fill in its required parameters' : ''}.`;
+        note = `${def ? def.label : val} enabled on ${this.devName(di)}${def && def.params.some((x) => x.required && x.scope === 'device') ? ' — fill in its required parameters' : ''}.`;
+        made = ['devices', di, 'protocols', val];
         break;
       }
       case 'end-untagged':
@@ -2547,10 +2776,14 @@ export class Editor {
       case 'over-append':
         if (!val) return true;
         doc.appendText(p, val, 'Add underlay');
+        made = this.lastItem(p);
+        note = `Underlay ${val} added.`;
         break;
       case 'ep-append':
         if (!val) return true;
         doc.appendText(p, val, 'Add endpoint');
+        made = this.lastItem(p);
+        note = `Endpoint ${val} added.`;
         break;
       case 'ep-dev':
       case 'ep-if': {
@@ -2579,12 +2812,15 @@ export class Editor {
           return true;
         }
         this.open.add(J(p));
+        made = p.concat(trimmed);
+        note = `Attribute “${trimmed}” added — enter its value.`;
         break;
       }
       default:
         return false;
     }
-    this.host.changed(note);
+    if (made) this.didCreate(made, note || 'Added.', target, { focus: this.stillFocused(target) });
+    else this.host.changed(note);
     return true;
   }
 
@@ -2627,14 +2863,18 @@ export class Editor {
       case 'add-entity': {
         this.collapsed.delete(kind);
         const i = doc.addEntity(kind);
-        this.selectEntity(kind, i);
-        this.host.changed(`Added ${kind} “${doc.entities(kind)[i].id}”. Fill in the highlighted fields.`);
+        this.leaveDraft(kind);
+        this.didCreate([SECTION[kind], i], `Added ${kind} “${doc.entities(kind)[i].id}”. Fill in the highlighted fields.`, btn, { sel: { kind, index: i } });
         return true;
       }
       case 'dup-entity': {
         const i = doc.duplicateEntity(kind, index);
-        if (i >= 0) this.selectEntity(kind, i);
-        this.host.changed('Duplicated.');
+        if (i < 0) {
+          this.host.changed();
+          return true;
+        }
+        this.leaveDraft(kind);
+        this.didCreate([SECTION[kind], i], `Duplicated as ${kind} “${doc.entities(kind)[i].id}”.`, btn, { sel: { kind, index: i } });
         return true;
       }
       case 'del-entity': {
@@ -2662,8 +2902,8 @@ export class Editor {
       }
       case 'add-iface': {
         const k = doc.addInterface(index);
-        this.open.add(J(['devices', index, 'interfaces', k]));
-        this.host.changed('Physical interface added.');
+        const path: Path = ['devices', index, 'interfaces', k];
+        this.didCreate(path, `Interface ${doc.text(path.concat('id')) || ''} added to ${this.devName(index)}.`, btn, { sel: { kind: 'device', index, iface: path } });
         return true;
       }
       case 'add-range':
@@ -2672,8 +2912,9 @@ export class Editor {
       case 'add-logical': {
         const type = (btn.getAttribute('data-kind') || 'virtual') as 'loopback' | 'virtual' | 'tunnel';
         const k = type === 'loopback' ? doc.addLoopback(index, []) : doc.addLogical(index, type);
-        this.open.add(J(['devices', index, 'logical_interfaces', k]));
-        this.host.changed(type === 'loopback' ? 'Loopback added — enter its addresses.' : type === 'tunnel' ? 'Tunnel interface added — set its source and destination.' : 'Virtual interface added.');
+        const path: Path = ['devices', index, 'logical_interfaces', k];
+        const name = `${doc.text(path.concat('id')) || ''} added to ${this.devName(index)}`;
+        this.didCreate(path, type === 'loopback' ? `Loopback ${name} — enter its addresses.` : type === 'tunnel' ? `Tunnel interface ${name} — set its source and destination.` : `Virtual interface ${name}.`, btn, { sel: { kind: 'device', index, iface: path } });
         return true;
       }
       case 'del-iface': {
@@ -2748,7 +2989,7 @@ export class Editor {
         const svc = btn.getAttribute('data-svc') as string;
         doc.enableService(index, svc);
         const def = doc.servicesRegistry().get(svc);
-        this.host.changed(`${def ? def.label : svc} enabled${def && def.params.some((x) => x.required && x.scope === 'device') ? ' — fill in its required parameters' : ''}.`);
+        this.didCreate(['devices', index, 'protocols', svc], `${def ? def.label : svc} enabled on ${this.devName(index)}${def && def.params.some((x) => x.required && x.scope === 'device') ? ' — fill in its required parameters' : ''}.`, btn);
         return true;
       }
       case 'disable-service': {
@@ -2779,7 +3020,8 @@ export class Editor {
         const svc = btn.getAttribute('data-svc') as string;
         doc.setIfaceService(p, svc, act === 'iface-svc-on');
         const def = doc.servicesRegistry().get(svc);
-        this.host.changed(act === 'iface-svc-on' ? `${def ? def.label : svc} added on the interface — fill in its group.` : undefined);
+        if (act === 'iface-svc-on') this.didCreate(p.concat('protocols', svc), `${def ? def.label : svc} added on the interface — fill in its group.`, btn);
+        else this.host.changed();
         return true;
       }
       case 'add-next-free': {
@@ -2790,7 +3032,7 @@ export class Editor {
         const pick = model && sel ? nextFreeChoices(model, btn.getAttribute('data-dev') as string, btn.getAttribute('data-iface') as string).find((c) => c.id === sel.value) : undefined;
         if (!pick) return true;
         doc.appendText(p, pick.nextFree);
-        this.host.changed(`Added ${pick.nextFree} from ${pick.text}.`);
+        this.didCreate(this.lastItem(p), `Address ${pick.nextFree} from ${pick.text} added.`, btn);
         return true;
       }
       case 'direction': {
@@ -2805,13 +3047,12 @@ export class Editor {
         return true;
       case 'dup-route': {
         const k = doc.duplicateRoute(index, Number(btn.getAttribute('data-k')));
-        if (k >= 0) {
-          const path: Path = ['devices', index, 'routes', k];
-          this.open.add(J(path));
-          this.sel = { kind: 'device', index, route: path };
-          this.host.selected(this.sel);
+        if (k < 0) {
+          this.host.changed();
+          return true;
         }
-        this.host.changed('Route duplicated: change its next hop or distance.');
+        const path: Path = ['devices', index, 'routes', k];
+        this.didCreate(path, 'Route duplicated: change its next hop or distance.', btn, { sel: { kind: 'device', index, route: path } });
         return true;
       }
       case 'del-route': {
@@ -2846,7 +3087,7 @@ export class Editor {
       case 'g-push': {
         const what = btn.getAttribute('data-kind');
         doc.pushItem(p, what === 'map' ? 'group' : what === 'seq' ? 'list' : 'value');
-        this.host.changed();
+        this.didCreate(this.lastItem(p), 'Item added.', btn);
         return true;
       }
     }

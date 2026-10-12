@@ -34,9 +34,12 @@ import { addressingOverview } from '../analysis/addressing';
 import { focusSeeds } from '../analysis/focus';
 import { Trace, TraceRequest, pathRefs, returnRequest, tracePath, traceRefs, traceText } from '../analysis/trace';
 import { TraceForm, TraceRun, formRequest, newTraceForm, tracePanel, traceSummary } from './trace';
-import { failureRefs, singlePointsOfFailure } from '../analysis/failure';
+import { Spof, failureRefs, singlePointsOfFailure } from '../analysis/failure';
 import { resolveTarget, scenarioId, stepDiff, stepView, targetLabel, targetOfRef } from '../analysis/scenario';
-import { SimState, simSummary, simulationPanel, spofBody, stepPosition } from './simulation';
+import { SimState, simSummary, simulationPanel, stepPosition } from './simulation';
+import { spofSection } from './spof';
+import { Splitter } from './splitter';
+import { TabOverflow } from './tab-overflow';
 import { generateMac } from '../analysis/helpers';
 import { Command, buildCommands, isMac, keyLabel, matchesKey } from './commands';
 import { PaletteItem, commandItems, objectItems, paletteList, rankItems, resultsText, scenarioItems } from './palette';
@@ -446,6 +449,8 @@ export class App {
   /** Called after every committed edit (and for pure UI refreshes). */
   private afterEdit(note?: string): void {
     const d = this.mdoc;
+    // an entry was just created (render() below already gives it the focus)
+    const made = this.editor.pendingCreate();
     if (d && note !== 'filter' && note !== 'select') {
       const model = d.result.model;
       if (model) {
@@ -458,10 +463,18 @@ export class App {
       this.render();
     }
     this.renderOutline();
+    // a new entry opens in the Edit tab, with its outline row in view
+    if (made) {
+      this.tab = 'edit';
+      const row = this.$('outline-body').querySelector('.ol-item.active') as HTMLElement | null;
+      if (row && typeof row.scrollIntoView === 'function') row.scrollIntoView({ block: 'nearest' });
+    }
     // selecting opens the object's form, except where the panel already follows the selection (its details, its place in the YAML)
     if (note === 'select' && this.tab !== 'edit' && this.tab !== 'details' && this.tab !== 'yaml' && this.tab !== 'analysis' && this.tab !== 'simulation') this.tab = 'edit';
     this.renderSide();
     this.updateChrome();
+    // the entry just created gets the focus, once the panel is drawn for the last time
+    if (made && this.tab === 'edit' && !(this.mdoc && this.mdoc.lock)) this.editor.focusCreated(this.$('side-body'));
     if (note && note !== 'filter' && note !== 'select') this.toast(note);
   }
 
@@ -472,7 +485,13 @@ export class App {
   }
 
   undo(): void {
-    if (this.mdoc && this.mdoc.undo()) this.afterEdit('Undone.');
+    const serial = this.mdoc ? this.mdoc.undoTop() : 0;
+    if (this.mdoc && this.mdoc.undo()) {
+      this.editor.beforeUndo(serial);
+      this.afterEdit('Undone.');
+      // a create taken back: the focus goes to what created it (its fields are gone)
+      this.editor.focusAfterUndo(serial, this.$('side-body'), this.$('outline-body'));
+    }
     this.syncLock();
   }
   redo(): void {
@@ -988,6 +1007,16 @@ export class App {
 
   // ---------------------------------------------------------------- panels
 
+  /** the splitter that sets the side panel's width */
+  splitter: Splitter | null = null;
+  /** the side panel's tabs that don't fit one row in a very short window (More ▾) */
+  private tabOverflow: TabOverflow | null = null;
+
+  /** The side panel's tab shown. */
+  currentTab(): Tab {
+    return this.tab;
+  }
+
   showTab(t: Tab): void {
     this.tab = t;
     this.renderSide();
@@ -1028,6 +1057,7 @@ export class App {
     const body = this.$('side-body');
     const tabs = this.doc.querySelectorAll('#side .tabs button');
     for (let i = 0; i < tabs.length; i++) tabs[i].classList.toggle('active', tabs[i].getAttribute('data-tab') === this.tab);
+    if (this.tabOverflow) this.tabOverflow.layout(this.tab);
     const focus = captureFocus(this.doc);
     if (this.tab === 'problems' || !this.mdoc) this.renderProblems(body);
     else if (this.tab === 'edit' && this.mdoc.lock) this.renderLockedEdit(body);
@@ -2351,6 +2381,30 @@ export class App {
     const steps = sim.steps.slice();
     steps.splice(this.simAt, 0, step);
     this.setSimSteps(steps, this.simAt + 1, step.action === 'fail' ? 'Add a failure to the scenario' : 'Add a restore to the scenario');
+    this.focusNewStep();
+  }
+
+  /**
+   * A step was added: it is the step shown (marked as current), scrolled
+   * into view in the Simulation tab and given the keyboard focus, and
+   * announced ("Step 2 added: Fail hq-rtr1").
+   */
+  private focusNewStep(): void {
+    const st = this.currentSim();
+    const s = this.session;
+    if (!st || !s || !st.at) return;
+    if (this.tab !== 'simulation') {
+      this.tab = 'simulation';
+      this.renderSide();
+    }
+    const cur = this.doc.querySelector('#side-body [aria-current="step"]') as HTMLElement | null;
+    if (cur) {
+      cur.focus({ preventScroll: true });
+      const win = this.doc.defaultView;
+      const reduce = !!win && typeof win.matchMedia === 'function' && win.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      if (typeof cur.scrollIntoView === 'function') cur.scrollIntoView({ block: 'nearest', behavior: reduce ? 'auto' : 'smooth' });
+    }
+    this.toast(`Step ${st.at} added: ${stepPosition(s.model, st).replace(/^step \d+ of \d+: /, '')}.`);
   }
 
   /**
@@ -2369,6 +2423,7 @@ export class App {
       this.sim = { saved: '', name: 'Ad-hoc scenario', steps: [step] };
       this.simAt = 1;
       this.simChanged();
+      this.focusNewStep();
     } else this.insertStep(step);
     return true;
   }
@@ -2494,41 +2549,57 @@ export class App {
     this.syncLock();
   }
 
-  private spofOpen = false;
+  /** the Single points of failure report is shown in the Analysis tab */
+  private spofShown = false;
+  /** its result, for one model */
+  private spofCache: { model: Model; list: Spof[] } | null = null;
 
-  /** Simulate → Single points of failure…: the report; choosing an entry starts an ad-hoc scenario that fails it. */
-  async openSpof(): Promise<void> {
-    const s = this.session;
-    if (!s || this.spofOpen) return;
+  /** The single points of failure of the model as written (computed once per model). */
+  private spofList(): Spof[] {
+    const s = this.session as Session;
+    if (!this.spofCache || this.spofCache.model !== s.model) this.spofCache = { model: s.model, list: singlePointsOfFailure(s.model) };
+    return this.spofCache.list;
+  }
+
+  /**
+   * Analyze → Single points of failure: the report in the Analysis tab, of
+   * the model as written. Nothing changes mode: an entry offers Simulate
+   * this failure for that.
+   */
+  openSpof(): void {
+    if (!this.session) return;
     this.openMenu(null);
-    this.spofOpen = true;
-    const list = singlePointsOfFailure(s.model);
-    const body = spofBody(this.doc, s.model, list);
-    body.addEventListener('click', (e) => {
-      const b = (e.target as Element).closest('[data-spof]');
-      if (b) closeDialogWith(b, `spof:${b.getAttribute('data-spof-kind')}:${b.getAttribute('data-spof')}`);
-    });
-    const res = await this.dialog({
-      title: 'Single points of failure',
-      body: [body],
-      buttons: [{ label: 'Close', value: 'close', kind: 'primary' }],
-      className: 'spof-dialog',
-      closeButton: true,
-    });
-    const dlg = this.doc.getElementById('modal') as HTMLElement;
-    dlg.className = '';
-    this.spofOpen = false;
-    if (res.indexOf('spof:') === 0 && this.session) {
-      const rest = res.slice(5);
-      const kind = rest.slice(0, rest.indexOf(':'));
-      const ref = rest.slice(kind.length + 1);
-      const t = kind === 'lag' ? { kind: 'lag' as const, id: ref.slice(6) } : targetOfRef(this.session.model, ref);
-      if (!t) return;
-      this.sim = { saved: '', name: 'Ad-hoc scenario', steps: [{ action: 'fail', target: t, line: 0 }] };
-      this.simAt = 1;
-      this.tab = 'simulation';
-      this.simChanged();
+    this.spofShown = true;
+    this.tab = 'analysis';
+    this.renderSide();
+    this.updateChrome();
+    const h = this.doc.getElementById('spof-title');
+    if (h) {
+      h.focus({ preventScroll: true });
+      if (typeof h.scrollIntoView === 'function') h.scrollIntoView({ block: 'start' });
     }
+  }
+
+  /** Hide the report; the focus goes to the tab. */
+  closeSpof(): void {
+    this.spofShown = false;
+    this.renderSide();
+    const tab = this.doc.querySelector('#side .tabs [data-tab="analysis"]') as HTMLElement | null;
+    if (tab) tab.focus();
+  }
+
+  /** Simulate this failure (an entry of the report): an ad-hoc scenario that fails it, in the Simulation tab. */
+  simulateSpof(sp: Spof): boolean {
+    const s = this.session;
+    if (!s || this.sim) return false;
+    const t = sp.kind === 'lag' ? { kind: 'lag' as const, id: sp.ref.slice(6) } : targetOfRef(s.model, sp.ref);
+    if (!t) return false;
+    this.sim = { saved: '', name: 'Ad-hoc scenario', steps: [{ action: 'fail', target: t, line: 0 }] };
+    this.simAt = 1;
+    this.tab = 'simulation';
+    this.simChanged();
+    this.focusNewStep();
+    return true;
   }
 
   private renderSimulation(body: HTMLElement): void {
@@ -2557,7 +2628,6 @@ export class App {
           if (cur) cur.focus();
         },
         remove: (id) => void this.deleteScenarioDialog(id),
-        spof: () => void this.openSpof(),
       }),
     );
   }
@@ -2716,7 +2786,15 @@ export class App {
     const s = this.session as Session;
     const run = this.currentTrace();
     mount(body, []);
-    if (this.sim) body.appendChild(el(this.doc, 'p', { class: 'sim-in-analysis small', role: 'note' }, [el(this.doc, 'span', { 'aria-hidden': 'true' }, ['◈ ']), 'A simulation is on: a path traced here takes the simulated state (Simulation tab).']));
+    if (this.spofShown)
+      body.appendChild(
+        spofSection(this.doc, s.model, this.spofList(), !!this.sim, {
+          simulateBlocked: this.sim ? 'A simulation is on: exit it first to simulate this failure on its own' : '',
+          simulate: (sp) => void this.simulateSpof(sp),
+          close: () => this.closeSpof(),
+        }),
+      );
+    if (this.sim) body.appendChild(el(this.doc, 'p', { class: 'sim-in-analysis small', role: 'note' }, [el(this.doc, 'span', { 'aria-hidden': 'true' }, ['◈ ']), 'A simulation is on: a path traced here takes the simulated state (Simulation tab).']))
     body.appendChild(
       tracePanel(this.doc, s.model, this.traceForm, run, this.tracePathShown, this.traceError, {
         input: (field, value) => {
@@ -3385,12 +3463,26 @@ export class App {
 
     this.wireCanvas();
     this.wireConnect();
+    this.splitter = new Splitter(doc, doc.querySelector('main') as HTMLElement, this.$('side-splitter'), this.$('side'), this.$('outline'));
+    this.tabOverflow = new TabOverflow(doc, doc.querySelector('#side .tabs') as HTMLElement, (tab) => {
+      this.tab = tab as Tab;
+      this.renderSide();
+      const b = doc.querySelector(`#side .tabs [data-tab="${tab}"]`) as HTMLElement | null;
+      if (b) b.focus();
+    });
+    if (doc.defaultView) doc.defaultView.addEventListener('resize', () => this.tabOverflow && this.tabOverflow.layout(this.tab));
 
     doc.addEventListener('keydown', (e) => {
       const t = e.target as HTMLElement;
       // a modal dialog has the keyboard to itself: no shortcut acts on the page behind it
       if (t && t.closest && t.closest('dialog[open]')) return;
       const typing = t && (t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.tagName === 'TEXTAREA');
+      // in the first field of an entry just created, before anything is typed there, Ctrl+Z undoes the create (the field has no text to undo)
+      if (typing && (e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'z' && this.editor.untouchedNew(t)) {
+        e.preventDefault();
+        this.undo();
+        return;
+      }
       // the shortcuts of the command registry (the same the menus and the palette show)
       for (const c of this.commands) {
         if (!c.keys || (typing && !c.keys.whileTyping) || !matchesKey(c.keys, e)) continue;

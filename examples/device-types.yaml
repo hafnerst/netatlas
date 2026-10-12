@@ -59,8 +59,6 @@ devices:
     label: fw1
     type: firewall
     group: campus
-    protocols:
-      static: {}
     interfaces:
       - {id: outside, ip: 10.0.0.2/30}
       - {id: vpn, ip: 10.0.0.6/30}

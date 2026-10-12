@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { findBrowser, runSelfTest } from '../scripts/browser-selftest.mjs';
 
-test('in-browser self-test (file picker path, view switching, rendering, offline)', { skip: findBrowser() ? false : 'no Chromium-based browser found (set NETATLAS_BROWSER)', timeout: 180000 }, () => {
+test('in-browser self-test (file picker path, view switching, rendering, offline)', { skip: findBrowser() ? false : 'no Chromium-based browser found (set NETATLAS_BROWSER)', timeout: 360000 }, () => {
   const res = runSelfTest();
   assert.ok(!res.error, res.error + '\n' + (res.raw || ''));
   const failed = res.checks.filter((c) => !c.ok).map((c) => `${c.name}: ${c.detail || ''}`);

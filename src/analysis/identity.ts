@@ -114,19 +114,18 @@ export function protocolDomains(model: Model, service: string): string[][] {
   return Array.from(groups.values()).sort((a, b) => cmp(a[0], b[0]));
 }
 
-/** A protocol a device should enable: the relations of it that have the device as an endpoint (static routing: its routes). */
+/** A protocol a device should enable: the relations of it that have the device as an endpoint. */
 export interface ServiceSuggestion {
   service: string;
   relations: string[];
-  routes: number;
 }
 
 /**
  * The protocols a Layer 3+ device does not enable although it uses them:
- * those of the relations it is an endpoint of, and static routing when it
- * has static routes. Sorted by service id. (The Inspector offers each with
- * one click; the checks protocol-not-enabled and static-not-enabled report
- * them.)
+ * those of the relations it is an endpoint of. Sorted by service id. (The
+ * Inspector offers each with one click; the check protocol-not-enabled
+ * reports them.) Static routes need no protocol: a Layer 3+ device's
+ * `routes` are always in effect.
  */
 export function suggestedServices(model: Model, device: string): ServiceSuggestion[] {
   const d = model.index.devices.get(device);
@@ -136,10 +135,9 @@ export function suggestedServices(model: Model, device: string): ServiceSuggesti
     const base = protocolBase(model.protocols, r.protocol);
     const def = model.services.get(base);
     if (!def || !def.sessions || serviceOf(d, base) || relationDevices(r).indexOf(device) < 0) continue;
-    if (!out.has(base)) out.set(base, { service: base, relations: [], routes: 0 });
+    if (!out.has(base)) out.set(base, { service: base, relations: [] });
     (out.get(base) as ServiceSuggestion).relations.push(r.id);
   }
-  if (d.routes.length && !serviceOf(d, 'static') && model.services.has('static')) out.set('static', { service: 'static', relations: [], routes: d.routes.length });
   return Array.from(out.values())
     .map((s) => ({ ...s, relations: s.relations.sort(cmp) }))
     .sort((a, b) => cmp(a.service, b.service));
