@@ -58,6 +58,9 @@ test('WCAG 2.2 AA in both themes: 4.5:1 for text, 3:1 for control boundaries, fo
     for (const fg of ['text', 'muted']) for (const s of surfaces) assert.ok(P.contrast(v(fg), v(s)) >= 4.5, `${name}: ${fg} on ${s} ${P.contrast(v(fg), v(s)).toFixed(2)}`);
     for (const fg of ['accent', 'link', 'error', 'warn', 'ok']) for (const s of ['panel', 'raised', 'canvas']) assert.ok(P.contrast(v(fg), v(s)) >= 4.5, `${name}: ${fg} on ${s} ${P.contrast(v(fg), v(s)).toFixed(2)}`);
     for (const fg of ['text', 'accent', 'muted']) assert.ok(P.contrast(v(fg), v('accent-soft')) >= 4.5, `${name}: ${fg} on accent-soft`);
+    // the simulation's marks: its colour as text on the surfaces and its soft background, and as a frame
+    for (const s of ['panel', 'raised', 'canvas', 'sim-soft']) assert.ok(P.contrast(v('sim'), v(s)) >= 4.5, `${name}: sim on ${s} ${P.contrast(v('sim'), v(s)).toFixed(2)}`);
+    for (const fg of ['text', 'muted', 'accent', 'link']) assert.ok(P.contrast(v(fg), v('sim-soft')) >= 4.5, `${name}: ${fg} on sim-soft ${P.contrast(v(fg), v('sim-soft')).toFixed(2)}`);
     for (const bg of ['accent', 'error', 'warn']) assert.ok(P.contrast(v('on-accent'), v(bg)) >= 4.5, `${name}: on-accent on ${bg}`);
     // the selection in the Edit tab: text of every kind stays readable on its tint, and its bar is a 3:1 boundary
     for (const fg of ['text', 'muted', 'accent', 'link', 'error', 'warn', 'ok']) assert.ok(P.contrast(v(fg), v('marked-bg')) >= 4.5, `${name}: ${fg} on marked-bg ${P.contrast(v(fg), v('marked-bg')).toFixed(2)}`);

@@ -45,11 +45,11 @@ export function mount(parent: Element, nodes: VNode | VNode[], inSvg = false): v
 export function el(
   doc: Document,
   tag: string,
-  attrs: { [k: string]: string } = {},
+  attrs: { [k: string]: string | null } = {},
   children: Array<Node | string | null> = [],
 ): HTMLElement {
   const e = doc.createElement(tag);
-  for (const k of Object.keys(attrs)) e.setAttribute(k, attrs[k]);
+  for (const k of Object.keys(attrs)) if (attrs[k] !== null) e.setAttribute(k, attrs[k] as string);
   for (const c of children) {
     if (c === null) continue;
     e.appendChild(typeof c === 'string' ? doc.createTextNode(c) : c);

@@ -95,9 +95,10 @@ test('every segment has a complete border in every state, both themes, normal an
             if (g.other && dist(rgb(g.own), rgb(g.other)) > 30) {
               const clip = { x: Math.floor(g.r.x) - 2, y: Math.floor(g.r.y) - 2, width: Math.ceil(g.r.w) + 6, height: Math.ceil(g.r.h) + 4, scale: 1 };
               const shot = await page.cmd('Page.captureScreenshot', { format: 'png', clip });
-              // the border column is 1 CSS pixel: z device pixels, at a fractional zoom spread over two (anti-aliased)
+              // the border column is 1 CSS pixel: z device pixels, at a fractional zoom spread over two (anti-aliased);
+              // the browser snaps it to device pixels, up to one pixel further in (still inside the segment, never the neighbour)
               const right = (g.r.x + g.r.w - clip.x) * z;
-              const px = await page.eval(`${PIXELS}(${JSON.stringify(shot.data)}, ${Math.floor(right - z)}, ${Math.ceil(right) - 1}, ${Math.floor((g.r.y + g.r.h / 2 - clip.y) * z)})`);
+              const px = await page.eval(`${PIXELS}(${JSON.stringify(shot.data)}, ${Math.floor(right - z) - 1}, ${Math.ceil(right) - 1},${Math.floor((g.r.y + g.r.h / 2 - clip.y) * z)})`);
               const best = px.reduce((m, p) => (dist(p, rgb(g.own)) < dist(m, rgb(g.own)) ? p : m));
               if (dist(best, rgb(g.own)) >= dist(best, rgb(g.other))) problems.push(`${where} hover ${sg.sel}: right border pixels ${JSON.stringify(px)} show the neighbour's ${g.other}, not ${g.own}`);
             }

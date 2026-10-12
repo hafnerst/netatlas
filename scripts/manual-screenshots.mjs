@@ -274,27 +274,28 @@ async function main() {
       await page.settle(100);
     }
 
-    // failure simulation: a core switch and a peer-link cable failed (enterprise WAN, physical view), the diagram zoomed in on the core and the results beside it
+    // simulation: the saved scenario "Core peer link and core switch" at its second step (enterprise WAN, physical view), the diagram zoomed in on the core and the Simulation tab beside it
     {
       await page.eval('netatlas.loadExample(0), netatlas.setView("physical"), true');
       await page.eval("document.getElementById('toast').hidden = true");
-      await page.eval(`netatlas.setSimulation(['device:hq-core1', 'link:l-peer2']), netatlas.showTab('analysis'), true`);
+      await page.eval(`netatlas.playScenario('core-peer-loss'), netatlas.simGo(2), true`);
       await page.mouse('mouseMoved', 700, 890);
       await page.settle(300);
       const c = await page.rect('#canvas-wrap');
       const side = await page.rect('#side');
-      const x0 = c.x + Math.round(c.w * 0.45);
+      // from the canvas's left edge: the whole banner (scenario, step, ◀ ▶, Exit) is in the picture
+      const x0 = c.x;
       await page.eval(`(() => {
         const r = document.querySelector('#viewport [data-ref="device:hq-core1"]').getBoundingClientRect();
         const sv = document.getElementById('canvas').getBoundingClientRect();
         netatlas.zoomBy(1.9, r.x + r.width / 2 - sv.x, r.y + r.height / 2 - sv.y);
         const r2 = document.querySelector('#viewport [data-ref="device:hq-core1"]').getBoundingClientRect();
         const wrap = document.getElementById('canvas-wrap').getBoundingClientRect();
-        netatlas.panBy(${x0} + 40 - r2.x, wrap.y + 190 - r2.y);
+        netatlas.panBy(${x0} + 260 - r2.x, wrap.y + 190 - r2.y);
         return true;
       })()`);
       await page.settle(200);
-      await save('simulation', { x: x0, y: c.y, w: side.x + side.w - x0, h: Math.min(c.h, 350) }, { quality: 40 });
+      await save('simulation', { x: x0, y: c.y, w: side.x + side.w - x0, h: Math.min(c.h, 320) }, { quality: 28 });
       await page.eval(`document.getElementById('sim-exit-banner').click(), true`);
       await page.settle(100);
     }

@@ -102,6 +102,20 @@ export function objectItems(model: Model): PaletteItem[] {
   return out;
 }
 
+/** The saved scenarios, each an entry that plays it (Simulate). */
+export function scenarioItems(model: Model): PaletteItem[] {
+  return model.scenarios.map((sc) => ({
+    key: 'play:' + sc.id,
+    kind: 'command' as const,
+    label: 'Play scenario: ' + sc.label,
+    sub: 'Simulate',
+    keys: '',
+    words: `${sc.id} ${sc.description || ''} simulation scenario what if replay`,
+    state: { enabled: true, title: `Play the saved scenario “${sc.label}” (${sc.steps.length} step${sc.steps.length === 1 ? '' : 's'}); the model does not change` },
+    mode: true,
+  }));
+}
+
 /** The commands as palette entries, with their state now. */
 export function commandItems(commands: Command[], stateOf: (c: Command) => CommandState, mac = false): PaletteItem[] {
   return commands.map((c) => ({ key: 'cmd:' + c.id, kind: 'command', label: c.label, sub: c.group, keys: keyLabel(c.keys, mac), words: c.keywords || '', state: stateOf(c), mode: !!c.mode }));

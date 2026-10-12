@@ -11,7 +11,7 @@
 export const FORMAT_VERSION = 1;
 
 export const SCHEMA = {
-  top: ['netatlas', 'title', 'description', 'protocols', 'groups', 'devices', 'links', 'networks', 'relations', 'checks', 'layout'],
+  top: ['netatlas', 'title', 'description', 'protocols', 'groups', 'devices', 'links', 'networks', 'relations', 'scenarios', 'checks', 'layout'],
   protocol: ['id', 'label', 'category', 'color', 'style', 'router_id', 'params', 'description'],
   /** a parameter a protocol of the model declares: an entry of its `params` */
   param: ['key', 'label', 'type', 'scope', 'required', 'min', 'max', 'values', 'suggest', 'description'],
@@ -32,6 +32,12 @@ export const SCHEMA = {
   relation: ['id', 'protocol', 'category', 'label', 'endpoints', 'over', 'direction', 'description', 'attrs'],
   /** a relation endpoint written as a mapping (the same as "device:interface") */
   endpoint: ['device', 'interface'],
+  /** a saved simulation scenario: an entry of `scenarios` */
+  scenario: ['id', 'label', 'description', 'steps'],
+  /** one step of a scenario: one action key, with its target */
+  step: ['fail', 'restore', 'note'],
+  /** what a step acts on: one of these keys */
+  target: ['device', 'cable', 'port', 'relation', 'lag'],
   /** the presentation-only layout section */
   layout: ['physical', 'logical', 'manual'],
 };

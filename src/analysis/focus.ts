@@ -14,6 +14,17 @@ import { Model, relationDevices } from '../model/types';
 
 export type FocusView = 'physical' | 'logical';
 
+/**
+ * What is up in a simulated state (analysis/failure.ts): focus mode then
+ * counts hops only over cables and relations that are up, between devices
+ * that are up.
+ */
+export interface FocusUp {
+  device(id: string): boolean;
+  link(id: string): boolean;
+  relation(id: string): boolean;
+}
+
 /** The smallest and largest number of hops focus mode offers. */
 export const FOCUS_MIN_HOPS = 1;
 export const FOCUS_MAX_HOPS = 3;
@@ -74,7 +85,7 @@ export function focusSeeds(model: Model, ref: string): string[] {
 }
 
 /** Device → the devices one hop away in a view (cables, or relations), as sorted lists. */
-export function hopGraph(model: Model, view: FocusView): Map<string, string[]> {
+export function hopGraph(model: Model, view: FocusView, up?: FocusUp): Map<string, string[]> {
   const adj = new Map<string, Set<string>>();
   const join = (xs: string[]): void => {
     for (const x of xs) {
@@ -82,8 +93,10 @@ export function hopGraph(model: Model, view: FocusView): Map<string, string[]> {
       for (const y of xs) if (y !== x) (adj.get(x) as Set<string>).add(y);
     }
   };
-  if (view === 'physical') for (const l of model.links) join([l.a.device, l.b.device]);
-  else for (const r of model.relations) join(relationDevices(r));
+  const devUp = (d: string): boolean => !up || up.device(d);
+  if (view === 'physical') {
+    for (const l of model.links) if (!up || up.link(l.id)) join([l.a.device, l.b.device].filter(devUp));
+  } else for (const r of model.relations) if (!up || up.relation(r.id)) join(relationDevices(r).filter(devUp));
   const out = new Map<string, string[]>();
   adj.forEach((s, k) => out.set(k, Array.from(s).sort()));
   return out;
@@ -94,12 +107,12 @@ export function hopGraph(model: Model, view: FocusView): Map<string, string[]> {
  * with how far each is (0 for the object's own devices). Empty when the
  * object has no device.
  */
-export function focusNeighbourhood(model: Model, ref: string, hops: number, view: FocusView): Map<string, number> {
+export function focusNeighbourhood(model: Model, ref: string, hops: number, view: FocusView, up?: FocusUp): Map<string, number> {
   const n = Math.max(FOCUS_MIN_HOPS, Math.min(FOCUS_MAX_HOPS, Math.round(hops)));
   const dist = new Map<string, number>();
   const seeds = focusSeeds(model, ref);
   for (const s of seeds) dist.set(s, 0);
-  const g = hopGraph(model, view);
+  const g = hopGraph(model, view, up);
   let frontier = seeds;
   for (let k = 1; k <= n && frontier.length; k++) {
     const next: string[] = [];

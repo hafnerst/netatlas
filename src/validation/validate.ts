@@ -44,6 +44,7 @@ import { DEVICE_TYPE_IDS, NO_DEVICE_TYPE, ROUTE_DEVICE_TYPES, deviceTypeLabel, i
 import { COLOR_RE, DEFAULT_STYLE, builtinProtocols, lookupProtocol, normalizeProtocol } from '../model/protocols';
 import { YMap, YNode, YSeq, YamlError, YamlLimits, parseYaml } from '../yaml/parse';
 import { FORMAT_VERSION, SCHEMA } from '../yaml/schema';
+import { readScenarios } from './scenarios';
 import { Ctx, DEFAULT_MODEL_LIMITS, ID_RE, IFACE_RE, Issue, ModelLimits, Reader, TooManyErrors, get, isNull, kindOf, scalarText, suggest } from './reader';
 
 export { DEFAULT_MODEL_LIMITS, ID_RE, IFACE_RE, scalarText, suggest };
@@ -1048,8 +1049,10 @@ function build(root: YNode | null, c: Ctx): Model | null {
     services,
     layout,
     checks: checkSettings,
+    scenarios: [],
     index,
   };
+  model.scenarios = readScenarios(r, c, top, model);
   // Derived VLANs are never chosen for the user: conflicting networks are reported.
   derive(model).addresses.forEach((assocs, key) => {
     assocs.forEach((a, j) => {

@@ -423,3 +423,20 @@ relations:
     label: SLA probe
     direction: unidirectional
     endpoints: [muc-rtr, hq-rtr1]
+
+# What-if scenarios for design reviews: played in the Simulation tab, they never change the network above.
+scenarios:
+  - id: isp1-outage
+    label: ISP 1 outage
+    description: The uplink to ISP 1 is cut, then hq-rtr1 fails as well; the router comes back before the cable.
+    steps:
+      - fail: {cable: l-hq-isp1}
+        note: the carrier reports a fibre cut
+      - fail: {device: hq-rtr1}
+      - restore: {device: hq-rtr1}
+  - id: core-peer-loss
+    label: Core peer link and core switch
+    steps:
+      - fail: {lag: hq-core1:Port-Channel1}
+      - fail: {device: hq-core1}
+      - restore: {lag: hq-core1:Port-Channel1}

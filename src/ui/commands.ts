@@ -12,7 +12,7 @@ import { EXAMPLES } from '../generated/examples';
 import { STRATEGIES, STRATEGY_LABEL } from '../layout/strategies';
 import { FOCUS_MAX_HOPS, FOCUS_MIN_HOPS } from '../analysis/focus';
 
-export type CommandGroup = 'File' | 'Example' | 'Export' | 'Find' | 'Analyze' | 'Help' | 'Edit' | 'View' | 'Auto-arrange' | 'Filters' | 'Zoom' | 'Panel' | 'Theme';
+export type CommandGroup = 'File' | 'Example' | 'Export' | 'Find' | 'Analyze' | 'Simulate' | 'Help' | 'Edit' | 'View' | 'Auto-arrange' | 'Filters' | 'Zoom' | 'Panel' | 'Theme';
 
 export interface CommandState {
   enabled: boolean;
@@ -46,6 +46,8 @@ export interface Command {
   keywords?: string;
   /** an analysis mode or view (listed as such in the palette) */
   mode?: boolean;
+  /** it edits the model: unavailable while editing is paused (a simulation is on), saying why */
+  edits?: boolean;
   /** the label in a menu, where the menu says the rest ("PNG" under "Export view as…"); default: label */
   menuLabel?: string;
   /** what its shortcut does while the command itself is unavailable (Ctrl+S: Save as); returns whether it acted */
@@ -253,39 +255,81 @@ export function buildCommands(): Command[] {
       state: (app) => (app.currentTrace() ? on('Remove the traced path from the diagram (Esc)') : off('No path is traced')),
       run: (app) => app.exitTrace(),
     },
+    // ------------------------------------------------------------ Simulate
     {
       id: 'sim.add',
       label: 'Simulate failure of selection',
-      group: 'Analyze',
+      group: 'Simulate',
       mode: true,
       keys: { combos: [{ key: 'x' }] },
-      keywords: 'fail failure impact outage down what if cable port device relation',
+      keywords: 'fail failure impact outage down what if cable port device relation scenario step',
       state: (app) => {
         const why = app.simAddBlocked();
-        return why ? off(why) : on('Fail the selected object (too) and see what goes down or degrades with it (X)');
+        return why ? off(why) : on(app.currentSim() ? 'Fail the selected object in a new step of the scenario (X)' : 'Start a scenario: fail the selected object and see what goes down or degrades with it (X)');
       },
       run: (app) => app.simulateSelection(),
     },
     {
       id: 'sim.spof',
       label: 'Single points of failure…',
-      group: 'Analyze',
+      group: 'Simulate',
       mode: true,
       keywords: 'spof redundancy partition resilience failure report',
       state: (app) => needDiagram(app, 'The cables, devices and LAGs whose failure alone cuts the network or brings relations down'),
       run: (app) => void app.openSpof(),
     },
     {
+      id: 'sim.prev',
+      label: 'Previous simulation step',
+      menuLabel: 'Previous step',
+      group: 'Simulate',
+      mode: true,
+      keys: { combos: [{ key: '[' }] },
+      keywords: 'scenario step back play',
+      state: (app) => {
+        const why = app.simStepBlocked(-1);
+        return why ? off(why) : on('Show the state after the step before ([)');
+      },
+      run: (app) => app.simGo((app.currentSim() as { at: number }).at - 1),
+    },
+    {
+      id: 'sim.next',
+      label: 'Next simulation step',
+      menuLabel: 'Next step',
+      group: 'Simulate',
+      mode: true,
+      keys: { combos: [{ key: ']' }] },
+      keywords: 'scenario step forward play',
+      state: (app) => {
+        const why = app.simStepBlocked(1);
+        return why ? off(why) : on('Show the state after the next step (])');
+      },
+      run: (app) => app.simGo((app.currentSim() as { at: number }).at + 1),
+    },
+    {
+      id: 'sim.save',
+      label: 'Save scenario…',
+      group: 'Simulate',
+      keywords: 'scenario store keep name rename replay review',
+      state: (app) => {
+        const st = app.currentSim();
+        if (!st) return off('No simulation is on');
+        return on(st.saved ? 'Change the name and description of the saved scenario (one undo step)' : 'Save the scenario in the model to replay it later (one undo step)');
+      },
+      run: (app) => void app.saveScenarioDialog(),
+    },
+    {
       id: 'sim.exit',
       label: 'Exit simulation',
-      group: 'Analyze',
+      group: 'Simulate',
       mode: true,
-      keywords: 'failure leave end restore normal',
-      state: (app) => (app.currentSim() ? on('End the failure simulation: the normal view (Esc)') : off('No simulation is on')),
+      keywords: 'failure scenario leave end restore normal edit',
+      state: (app) => (app.currentSim() ? on('End the simulation: the model’s own state, and editing again (Esc)') : off('No simulation is on')),
       run: (app) => app.exitSimulation(),
     },
     {
       id: 'protocol.enable',
+      edits: true,
       label: 'Enable a protocol on the selected device…',
       group: 'Edit',
       keywords: 'routing service bgp ospf isis vrrp hsrp bfd static router id as number',
@@ -297,6 +341,7 @@ export function buildCommands(): Command[] {
     },
     {
       id: 'helper.mac',
+      edits: true,
       label: 'Generate a MAC address for the selected interface',
       group: 'Edit',
       keywords: 'mac address random locally administered',
@@ -308,6 +353,7 @@ export function buildCommands(): Command[] {
     },
     {
       id: 'helper.mtu',
+      edits: true,
       label: 'Set the MTU of the selected interface to 1500',
       group: 'Edit',
       keywords: 'mtu ethernet standard 1500',
@@ -328,6 +374,7 @@ export function buildCommands(): Command[] {
       keys: { combos: [{ key: 'z', mod: true, shift: false }] },
       state: (app) => {
         const u = app.mdoc ? app.mdoc.canUndo() : '';
+        if (u && app.mdoc && app.mdoc.undoLocked()) return off(`Editing is paused during the simulation: “${u}” can be undone after it`);
         return u ? on(`Undo: ${u} (Ctrl+Z)`) : off(app.mdoc ? 'Nothing to undo' : NO_MODEL);
       },
       run: (app) => app.undo(),
@@ -339,12 +386,14 @@ export function buildCommands(): Command[] {
       keys: { combos: [{ key: 'y', mod: true }, { key: 'z', mod: true, shift: true }] },
       state: (app) => {
         const r = app.mdoc ? app.mdoc.canRedo() : '';
+        if (r && app.mdoc && app.mdoc.undoLocked(true)) return off(`Editing is paused during the simulation: “${r}” can be redone after it`);
         return r ? on(`Redo: ${r} (Ctrl+Y)`) : off(app.mdoc ? 'Nothing to redo' : NO_MODEL);
       },
       run: (app) => app.redo(),
     },
     {
       id: 'edit.connect',
+      edits: true,
       label: 'Connect the selected object',
       group: 'Edit',
       keys: { combos: [{ key: 'c' }] },
@@ -372,6 +421,7 @@ export function buildCommands(): Command[] {
     ...STRATEGIES.map(
       (st): Command => ({
         id: 'arrange.' + st,
+        edits: true,
         label: 'Auto-arrange: ' + STRATEGY_LABEL[st],
         group: 'Auto-arrange',
         keys: st === 'default' ? { combos: [{ key: 'a' }] } : undefined,
@@ -430,15 +480,17 @@ export function buildCommands(): Command[] {
         ['problems', 'Problems', ''],
         ['yaml', 'YAML', ''],
         ['analysis', 'Analysis', ''],
-      ] as Array<['edit' | 'details' | 'legend' | 'relations' | 'problems' | 'yaml' | 'analysis', string, string]>
+        ['simulation', 'Simulation', ''],
+      ] as Array<['edit' | 'details' | 'legend' | 'relations' | 'problems' | 'yaml' | 'analysis' | 'simulation', string, string]>
     ).map(
       ([tab, name, key]): Command => ({
         id: 'panel.' + tab,
         label: `${name} tab`,
+        menuLabel: tab === 'simulation' ? 'Scenarios' : undefined,
         group: 'Panel',
         keys: key ? { combos: [{ key }] } : undefined,
-        keywords: tab === 'problems' ? 'errors warnings checks findings' : tab === 'yaml' ? 'source text' : tab === 'analysis' ? 'trace path hop list simulation results failure' : '',
-        state: () => on(`Open the ${name} tab of the side panel`),
+        keywords: tab === 'problems' ? 'errors warnings checks findings' : tab === 'yaml' ? 'source text' : tab === 'analysis' ? 'trace path hop list results' : tab === 'simulation' ? 'scenarios steps play replay failure what if results' : '',
+        state: (app) => (tab === 'simulation' && !app.session ? off(NO_MODEL) : on(tab === 'simulation' ? 'Open the Simulation tab: the saved scenarios and the scenario played' : `Open the ${name} tab of the side panel`)),
         run: (app) => app.showTab(tab),
       }),
     ),
@@ -463,5 +515,11 @@ export function buildCommands(): Command[] {
       }),
     ),
   ];
+  // a command that edits the model is unavailable while editing is paused, and says why
+  for (const c of list) {
+    if (!c.edits) continue;
+    const inner = c.state;
+    c.state = (app) => (app.editLock() ? off('Editing is paused during the simulation: exit it first (Esc)') : inner(app));
+  }
   return list;
 }
