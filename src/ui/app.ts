@@ -10,7 +10,7 @@ import { FileAccess, PngPicture, WritableFile, detectFileAccess, downloadBlob, d
 import { Pt } from '../layout/geometry';
 import { ArrangeStrategy, STRATEGIES, STRATEGY_LABEL } from '../layout/strategies';
 import { compatibleEndpoints, connectionKind, endpointName, endpointOfRef, endpointProblem, endpointRef, pairProblem } from '../model/connect';
-import { Endpoint } from '../model/types';
+import { Endpoint, Model } from '../model/types';
 import { el, materialize, mount, setPaint } from './dom';
 import { ThemeController, themeButtonText } from './theme';
 import { inlineComputedStyles, resolvedPaint } from './export-style';
@@ -32,6 +32,8 @@ import { Issue } from '../validation/validate';
 import { SEVERITIES, Severity, checkById } from '../analysis/checks';
 import { addressingOverview } from '../analysis/addressing';
 import { focusSeeds } from '../analysis/focus';
+import { Trace, TraceRequest, pathRefs, returnRequest, tracePath, traceRefs, traceText } from '../analysis/trace';
+import { TraceForm, TraceRun, formRequest, newTraceForm, tracePanel, traceSummary } from './trace';
 import { Command, buildCommands, isMac, keyLabel, matchesKey } from './commands';
 import { PaletteItem, commandItems, objectItems, paletteList, rankItems, resultsText } from './palette';
 import { AddrSort, AddrViewState, addressingBody, addressingCsv, addressingTables, newAddrViewState, shownText } from './addressing';
@@ -39,7 +41,7 @@ import { AddrSort, AddrViewState, addressingBody, addressingCsv, addressingTable
 /** How a severity is named in the Problems tab's filter. */
 const SEV_NAME: { [s in Severity]: string } = { error: 'Errors', warning: 'Warnings', info: 'Info' };
 
-type Tab = 'edit' | 'details' | 'legend' | 'relations' | 'problems' | 'yaml';
+type Tab = 'edit' | 'details' | 'legend' | 'relations' | 'problems' | 'yaml' | 'analysis';
 
 export interface LoadOutcome {
   /** the document was opened (it may still have validation errors to fix) */
@@ -214,6 +216,8 @@ export class App {
     const model = doc.result.model;
     this.session = model ? new Session(model) : null;
     if (this.session) this.session.setView(prevView);
+    this.traceRun = null;
+    this.traceError = '';
     this.tab = doc.errors.length || doc.warnings.length ? 'problems' : this.tab === 'yaml' ? 'yaml' : 'legend';
     this.computeErrorRefs();
     this.render();
@@ -445,7 +449,7 @@ export class App {
     }
     this.renderOutline();
     // selecting opens the object's form, except where the panel already follows the selection (its details, its place in the YAML)
-    if (note === 'select' && this.tab !== 'edit' && this.tab !== 'details' && this.tab !== 'yaml') this.tab = 'edit';
+    if (note === 'select' && this.tab !== 'edit' && this.tab !== 'details' && this.tab !== 'yaml' && this.tab !== 'analysis') this.tab = 'edit';
     this.renderSide();
     this.updateChrome();
     if (note && note !== 'filter' && note !== 'select') this.toast(note);
@@ -758,6 +762,8 @@ export class App {
     this.errorRefs.clear();
     this.editor.reset();
     this.tab = 'legend';
+    this.traceRun = null;
+    this.traceError = '';
     this.zoom = { k: 1, tx: 0, ty: 0 };
     this.bounds = { x: 0, y: 0, w: 1, h: 1 };
     this.closeFind();
@@ -847,8 +853,13 @@ export class App {
     const s = this.session;
     if (!s) return;
     if (this.pointed) this.markAttached(this.pointed, true);
-    const keep = s.highlight();
+    // a path trace takes the place of the selection's highlight: the path, its alternatives, the return path, where it stops
+    const run = this.currentTrace();
+    const tr = run && !run.trace.error ? traceRefs(run.trace) : null;
+    const ret = run && run.back && !run.back.error && run.back.paths.length ? pathRefs(run.back.paths[0]) : null;
+    const keep = tr ? null : s.highlight();
     this.svg.classList.toggle('has-selection', !!keep);
+    this.svg.classList.toggle('has-trace', !!tr);
     const els = this.viewport.querySelectorAll('[data-ref]');
     for (let i = 0; i < els.length; i++) {
       const e = els[i];
@@ -858,6 +869,14 @@ export class App {
       e.classList.toggle('dim', !!keep && !on);
       e.classList.toggle('selected', !!s.state.selected && ref === s.state.selected);
       e.classList.toggle('has-error', this.errorRefs.has(ref));
+      const main = !!tr && tr.main.has(ref);
+      const alt = !!tr && !main && tr.alt.has(ref);
+      const back = !!ret && !main && !alt && ret.has(ref);
+      e.classList.toggle('trace-main', main);
+      e.classList.toggle('trace-alt', alt);
+      e.classList.toggle('trace-ret', back);
+      e.classList.toggle('trace-stop', !!tr && tr.stop === ref);
+      e.classList.toggle('trace-off', !!tr && !main && !alt && !back);
     }
   }
 
@@ -872,7 +891,7 @@ export class App {
     this.session.select(ref);
     this.editor.selectRef(this.session.state.selected);
     this.editor.setDetail(this.session.state.selected ? detail : null);
-    if (ref && this.session.state.selected && this.tab !== 'details' && this.tab !== 'yaml') this.tab = 'edit';
+    if (ref && this.session.state.selected && this.tab !== 'details' && this.tab !== 'yaml' && this.tab !== 'analysis') this.tab = 'edit';
     this.applyHighlight();
     this.renderOutline();
     this.renderSide();
@@ -921,6 +940,13 @@ export class App {
     const b = this.bounds;
     const k = Math.max(0.05, Math.min(1.5, Math.min(W / Math.max(1, b.w), H / Math.max(1, b.h)) * 0.96));
     this.zoom = { k, tx: W / 2 - (b.x + b.w / 2) * k, ty: top + H / 2 - (b.y + b.h / 2) * k };
+    this.applyZoom();
+  }
+
+  /** Move the diagram by screen pixels (as the arrow keys do). */
+  panBy(dx: number, dy: number): void {
+    this.zoom.tx += dx;
+    this.zoom.ty += dy;
     this.applyZoom();
   }
 
@@ -996,6 +1022,7 @@ export class App {
         ]);
       }
     } else if (this.tab === 'legend') mount(body, legendFor(s.viewModel(), s.state.view, s.state.hiddenProtocols));
+    else if (this.tab === 'analysis') this.renderAnalysis(body);
     else mount(body, relationList(s.model, this.selectionContext()));
     restoreFocus(this.doc, focus);
   }
@@ -2048,8 +2075,8 @@ export class App {
     return true;
   }
 
-  /** The text of the mode banner and of the note in exported pictures ('' = no analysis mode is on). */
-  modeNote(): string {
+  /** The text of focus mode in the banner and in exported pictures ('' = focus mode is off). */
+  private focusNote(): string {
     const s = this.session;
     const f = s ? s.state.focus : null;
     if (!s || !f) return '';
@@ -2057,18 +2084,207 @@ export class App {
     return `Focus: ${this.refName(f.ref)} and what is within ${f.hops} hop${f.hops === 1 ? '' : 's'} (${sense}) · ${s.shownDevices().size} of ${s.model.devices.length} devices`;
   }
 
-  /** The banner over the diagram while focus mode is on. */
+  /** The text of the path trace in the banner and in exported pictures ('' = no trace). */
+  private traceNote(): string {
+    const r = this.currentTrace();
+    if (!r) return '';
+    let note = `Path trace: ${r.req.from} → ${r.req.to}${r.req.vrf !== undefined ? ' (' + (r.req.vrf ? 'VRF ' + r.req.vrf : 'default table') + ')' : ''} · ${traceSummary(r.trace)}`;
+    if (r.trace.paths.length > 1) note += ' (alternatives dashed)';
+    if (r.back) note += ' · return path: ' + (r.back.error ? 'not traced' : traceSummary(r.back)) + ' (dotted)';
+    return note;
+  }
+
+  /** The notes of the analysis modes that are on (focus, path trace), for the banner and for exported pictures. */
+  modeNotes(): string[] {
+    return [this.focusNote(), this.traceNote()].filter((n) => n !== '');
+  }
+
+  /** All of them in one line ('' = no analysis mode is on). */
+  modeNote(): string {
+    return this.modeNotes().join('  |  ');
+  }
+
+  /** The banner over the diagram while an analysis mode is on: a row for focus mode, a row for the path trace. */
   private updateModeBanner(): void {
     const s = this.session;
     const f = s ? s.state.focus : null;
+    const t = s ? this.currentTrace() : null;
     const banner = this.$('mode-banner');
-    banner.hidden = !f;
-    this.doc.body.setAttribute('data-mode', f ? 'focus' : 'none');
-    if (!f || !s) return;
-    this.$('mode-text').textContent = this.modeNote() + '. Positions here are temporary and are not saved.';
-    this.$('focus-hops').textContent = `${f.hops} hop${f.hops === 1 ? '' : 's'}`;
+    banner.hidden = !f && !t;
+    this.$('mb-focus').hidden = !f;
+    this.$('mb-trace').hidden = !t;
+    this.doc.body.setAttribute('data-mode', [f ? 'focus' : '', t ? 'trace' : ''].filter((x) => x).join(' ') || 'none');
+    if (!s || (!f && !t)) return;
+    if (f) {
+      this.$('mode-text').textContent = this.focusNote() + '. Positions here are temporary and are not saved.';
+      this.$('focus-hops').textContent = `${f.hops} hop${f.hops === 1 ? '' : 's'}`;
+    }
+    if (t) {
+      const shown = s.shownDevices();
+      const hidden = t.trace.paths.length ? Array.from(pathRefs(t.trace.paths[0])).filter((r) => r.indexOf('device:') === 0 && !shown.has(r.slice(7))).length : 0;
+      this.$('trace-text').textContent = this.traceNote() + (hidden ? ` · ${hidden} device${hidden === 1 ? '' : 's'} of the path hidden by filters` : '') + '.';
+    }
     // the overlays under the banner (Find bar, filter hint) start below it, however many lines it takes
     this.doc.documentElement.style.setProperty('--mode-banner-h', Math.ceil(banner.getBoundingClientRect().height) + 'px');
+  }
+
+  // ------------------------------------------------------------ path trace
+
+  /** the Trace path form (kept while the page is open; never saved) */
+  private traceForm: TraceForm = newTraceForm();
+  /** why the form could not be traced ('' = it could) */
+  private traceError = '';
+  /** the trace on screen and the model it was computed on (computed again after an edit) */
+  private traceRun: (TraceRun & { model: Model }) | null = null;
+  /** which of the equal-cost paths the hop list shows (0: the main path) */
+  private tracePathShown = 0;
+
+  /** The trace on screen (computed again when the model has changed since), or null. */
+  currentTrace(): TraceRun | null {
+    const s = this.session;
+    const r = this.traceRun;
+    if (!s || !r) return null;
+    if (r.model !== s.model) this.traceRun = { ...this.computeTrace(r.req, !!r.back), model: s.model };
+    return this.traceRun;
+  }
+
+  private computeTrace(req: TraceRequest, withBack: boolean): TraceRun {
+    const model = (this.session as Session).model;
+    const trace = tracePath(model, req);
+    let back: Trace | null = null;
+    if (withBack) {
+      const rq = returnRequest(trace);
+      back = rq
+        ? tracePath(model, rq)
+        : { request: { from: req.to, to: req.from }, paths: [], truncated: false, error: trace.error ? 'Not traced' : 'The destination is not a device of the model: there is no way back to trace' };
+    }
+    return { req, trace, back };
+  }
+
+  /** The text a reference gives in the Trace form: a device or an interface; other objects give nothing. */
+  private traceEndOf(ref: string): string | null {
+    const [kind, id] = splitRef(ref);
+    return kind === 'device' || kind === 'iface' ? id : null;
+  }
+
+  /**
+   * Analyze → Trace path… (T): the Analysis tab with the Trace form; a
+   * selected device or interface fills an empty From (else an empty To), and
+   * the keyboard goes to the first empty field.
+   */
+  openTrace(): void {
+    if (!this.session) return;
+    const sel = this.session.state.selected;
+    const end = sel ? this.traceEndOf(sel) : null;
+    if (end && !this.traceForm.from) this.traceForm.from = end;
+    else if (end && !this.traceForm.to && this.traceForm.from !== end) this.traceForm.to = end;
+    this.tab = 'analysis';
+    this.renderSide();
+    const id = !this.traceForm.from ? 'trace-from' : !this.traceForm.to ? 'trace-to' : 'trace-go';
+    const f = this.doc.getElementById(id) as HTMLElement | null;
+    if (f) f.focus();
+  }
+
+  /** Fill the Trace form (from the page or a test) without tracing. */
+  setTraceForm(f: Partial<TraceForm>): void {
+    this.traceForm = { ...this.traceForm, ...f };
+    if (this.tab === 'analysis') this.renderSide();
+  }
+
+  /**
+   * Trace the form's request: the path is highlighted in both views, the
+   * hop list fills the Analysis tab, and a banner says what is traced. A
+   * request that can't be traced (an unknown end, no address) only says
+   * why. Nothing in the model changes; no undo step.
+   */
+  runTrace(): boolean {
+    const s = this.session;
+    if (!s) return false;
+    const run = this.computeTrace(formRequest(this.traceForm), this.traceForm.back);
+    if (run.trace.error) {
+      this.traceError = run.trace.error;
+      this.tab = 'analysis';
+      this.renderSide();
+      const bad = this.doc.getElementById(/^Destination/.test(run.trace.error) ? 'trace-to' : 'trace-from');
+      if (bad) bad.focus();
+      return false;
+    }
+    this.traceError = '';
+    this.traceRun = { ...run, model: s.model };
+    this.tracePathShown = 0;
+    this.tab = 'analysis';
+    this.applyHighlight();
+    this.renderSide();
+    this.updateChrome();
+    return true;
+  }
+
+  /** Remove the path trace from the diagram (the form keeps what was typed). */
+  exitTrace(): boolean {
+    if (!this.traceRun) return false;
+    this.traceRun = null;
+    this.tracePathShown = 0;
+    this.applyHighlight();
+    this.renderSide();
+    this.updateChrome();
+    const back = this.doc.activeElement;
+    if (!back || back === this.doc.body) (this.doc.getElementById('canvas') as unknown as HTMLElement).focus();
+    return true;
+  }
+
+  /** The hop list as text, on the clipboard (where the browser refuses: as a text file). */
+  copyTrace(): boolean {
+    const r = this.currentTrace();
+    if (!r) return false;
+    void this.copyText(traceText(r.trace, r.back), 'The path trace was copied as text.', () => this.saveTraceText());
+    return true;
+  }
+
+  /** The hop list as a text file. */
+  saveTraceText(): boolean {
+    const r = this.currentTrace();
+    if (!r || !this.mdoc) return false;
+    const name = `${pictureBaseName(this.mdoc.fileName)}-path-trace.txt`;
+    downloadText(this.doc, traceText(r.trace, r.back), name, 'text/plain');
+    this.toast(`Saved the path trace as “${name}”.`);
+    return true;
+  }
+
+  private renderAnalysis(body: HTMLElement): void {
+    const s = this.session as Session;
+    const run = this.currentTrace();
+    mount(body, []);
+    body.appendChild(
+      tracePanel(this.doc, s.model, this.traceForm, run, this.tracePathShown, this.traceError, {
+        input: (field, value) => {
+          if (field === 'back') this.traceForm.back = !!value;
+          else this.traceForm[field] = String(value);
+          if (this.traceError && (field === 'from' || field === 'to')) {
+            this.traceError = '';
+            const err = this.doc.getElementById('trace-error');
+            if (err) err.remove();
+            const inp = this.doc.getElementById('trace-' + field);
+            if (inp) inp.removeAttribute('aria-invalid');
+          }
+        },
+        submit: () => void this.runTrace(),
+        swap: () => {
+          this.traceForm = { ...this.traceForm, from: this.traceForm.to, to: this.traceForm.from };
+          this.renderSide();
+          const b = this.doc.getElementById('trace-swap');
+          if (b) b.focus();
+        },
+        exit: () => void this.exitTrace(),
+        copy: () => void this.copyTrace(),
+        save: () => void this.saveTraceText(),
+        showPath: (i) => {
+          this.tracePathShown = i;
+          this.renderSide();
+          const b = this.doc.querySelector(`[data-trace-path="${i}"]`) as HTMLElement | null;
+          if (b) b.focus();
+        },
+      }),
+    );
   }
 
   // ------------------------------------------------------------ the palette
@@ -2344,15 +2560,16 @@ export class App {
     return true;
   }
 
-  /** Put text on the clipboard; where the browser refuses, say so (nothing else happens). */
-  private async copyText(text: string, done: string): Promise<void> {
+  /** Put text on the clipboard; where the browser refuses, say so (or save it as a file, when `orSave` is given). */
+  private async copyText(text: string, done: string, orSave?: () => void): Promise<void> {
     const nav = this.doc.defaultView ? this.doc.defaultView.navigator : null;
     try {
       if (!nav || !nav.clipboard) throw new Error('no clipboard');
       await nav.clipboard.writeText(text);
       this.toast(done);
     } catch (e) {
-      this.toast('The browser did not allow copying to the clipboard here; use Save CSV instead.');
+      if (orSave) orSave();
+      else this.toast('The browser did not allow copying to the clipboard here; use Save CSV instead.');
     }
   }
 
@@ -2718,6 +2935,7 @@ export class App {
       if (typing || e.ctrlKey || e.metaKey || e.altKey) return;
       if (e.key === 'Escape') {
         if (this.conn) this.cancelConnection(true);
+        else if (this.traceRun) this.exitTrace();
         else if (this.session && this.session.state.focus) this.exitFocus();
         else this.select(null);
       }
@@ -3255,15 +3473,15 @@ export class App {
       clone.appendChild(materialize(boxes.networks.root, this.doc, true));
       b = boxes.viewBox;
     }
-    // an analysis mode (focus …) says so in the picture, above the diagram
-    const note = this.modeNote();
-    if (note) {
+    // an analysis mode (focus, path trace) says so in the picture, above the diagram: a line each
+    const notes = this.modeNotes();
+    for (let i = notes.length - 1; i >= 0; i--) {
       const NOTE_H = 26;
       const t = this.doc.createElementNS('http://www.w3.org/2000/svg', 'text');
       t.setAttribute('class', 'export-note');
       t.setAttribute('x', String(round(b.x + 14)));
       t.setAttribute('y', String(round(b.y - 9)));
-      t.textContent = note;
+      t.textContent = notes[i];
       clone.appendChild(t);
       b = { x: b.x, y: b.y - NOTE_H, w: b.w, h: b.h + NOTE_H };
     }

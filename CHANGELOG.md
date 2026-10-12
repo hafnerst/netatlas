@@ -98,6 +98,22 @@ there is no conversion of files written for the earlier drafts.
   other filters, positions are temporary, and leaving it restores the
   diagram and zoom exactly. Exports carry a *Focus* note. Computed in
   `src/analysis/focus.ts`.
+- **Path tracer** (Analyze → Trace path…, `T`): from a device, interface or
+  address to another, optionally in a VRF, by the model's connected
+  networks, static routes and routes learned over the routing adjacencies
+  (OSPF, IS-IS, EIGRP, RIP, BGP: `cost` per adjacency, else a hop count;
+  longest prefix, administrative distance, equal-cost multipath), VRRP
+  virtual gateways, the cables through switches in the network's VLAN, and
+  tunnels with their encapsulation stack (GRE over IPsec) and underlay. The
+  new **Analysis** tab lists the hops (device, interfaces and addresses, the
+  route or adjacency, the encapsulation, the cables), the equal-cost
+  alternatives, where and why a trace stops, and an optional return path
+  that reveals asymmetric routing; Copy / Save as text. Both views mark the
+  path (solid), the alternatives (dashed) and the return path (dotted);
+  exports carry it with a *Path trace* note. A model-based approximation,
+  computed in `src/analysis/trace.ts`; the routing tables now include the
+  dynamic routes (`src/analysis/routing.ts`).
+- **The mode banner** has a row per analysis mode on (focus, path trace).
 - **More consistency checks**, each with a positive and a negative test:
   `link-mtu-mismatch`, `tunnel-mtu` (with the encapsulation overhead it
   assumes in the message, added up over a tunnel stack),
@@ -242,6 +258,12 @@ there is no conversion of files written for the earlier drafts.
   addresses.
 
 ### Changed
+
+- **`enterprise-wan.yaml`** routes end to end: the firewall's two router
+  ports share a transit VLAN (`vlan5`), the firewall and the core switches
+  have transit addresses (so their OSPF adjacencies can form), the servers'
+  gateway is a VRRP address, and host routes keep the tunnel endpoints on
+  the internet uplinks.
 
 - The examples and fixtures use VLAN tagging on their link ends instead of
   per-end network lists. Cable labels no longer list networks (the port

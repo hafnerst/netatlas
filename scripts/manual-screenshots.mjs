@@ -246,6 +246,34 @@ async function main() {
       await page.settle(100);
     }
 
+    // path trace from the Munich LAN to the syslog server (enterprise WAN, physical view): the diagram with the hop list
+    {
+      await page.eval('netatlas.loadExample(0), netatlas.setView("physical"), true');
+      await page.eval("document.getElementById('toast').hidden = true");
+      await page.eval(`netatlas.setTraceForm({ from: 'muc-rtr:lan0', to: 'hq-log', back: false }), netatlas.runTrace(), true`);
+      await page.mouse('mouseMoved', 700, 890);
+      await page.settle(300);
+      const c = await page.rect('#canvas-wrap');
+      const side = await page.rect('#side');
+      // the diagram zoomed in on the firewall and the core switches (the path and its dashed alternative) in the right half of the canvas; the hop list beside it
+      const x0 = c.x + Math.round(c.w * 0.45);
+      await page.eval(`(() => {
+        const r = document.querySelector('#viewport [data-ref="device:hq-fw"]').getBoundingClientRect();
+        const sv = document.getElementById('canvas').getBoundingClientRect();
+        netatlas.zoomBy(1.9, r.x + r.width / 2 - sv.x, r.y + r.height / 2 - sv.y);
+        const r2 = document.querySelector('#viewport [data-ref="device:hq-fw"]').getBoundingClientRect();
+        const wrap = document.getElementById('canvas-wrap').getBoundingClientRect();
+        netatlas.panBy(${x0} + (wrap.right - ${x0}) / 2 - (r2.x + r2.width / 2), wrap.y + 150 - r2.y);
+        const b = document.getElementById('side-body');
+        b.scrollTop = document.querySelector('#side-body .trace-status').offsetTop - 8;
+        return true;
+      })()`);
+      await page.settle(200);
+      await save('trace', { x: x0, y: c.y, w: side.x + side.w - x0, h: Math.min(c.h, 350) }, { quality: 40 });
+      await page.eval(`document.getElementById('trace-exit-banner').click(), true`);
+      await page.settle(100);
+    }
+
     // consistency checks: the Problems tab of the consistency-checks example, then its check settings
     const demo = await page.eval("Array.from(document.querySelectorAll('#menu-examples [data-example]')).findIndex((b) => /consistency-checks/.test(b.textContent))");
     await page.eval(`netatlas.loadExample(${demo}), netatlas.setView("physical"), netatlas.showTab("problems"), true`);

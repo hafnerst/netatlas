@@ -225,6 +225,34 @@ export function buildCommands(): Command[] {
       state: (app) => (app.session && app.session.state.focus ? on('Show the complete diagram again (Esc)') : off('Focus mode is off')),
       run: (app) => app.exitFocus(),
     },
+    {
+      id: 'trace.open',
+      label: 'Trace path…',
+      group: 'Analyze',
+      mode: true,
+      keys: { combos: [{ key: 't' }] },
+      keywords: 'path route forwarding hops traceroute reachability ecmp return',
+      state: (app) => needDiagram(app, 'The way traffic takes from a source to a destination, hop by hop, by the routes and adjacencies of the model (T)'),
+      run: (app) => app.openTrace(),
+    },
+    {
+      id: 'trace.copy',
+      label: 'Copy path trace as text',
+      group: 'Analyze',
+      mode: true,
+      keywords: 'hop list clipboard',
+      state: (app) => (app.currentTrace() ? on('Copy the hop list of the path trace as plain text') : off('No path is traced')),
+      run: (app) => void app.copyTrace(),
+    },
+    {
+      id: 'trace.exit',
+      label: 'Exit path trace',
+      group: 'Analyze',
+      mode: true,
+      keywords: 'leave end clear remove path',
+      state: (app) => (app.currentTrace() ? on('Remove the traced path from the diagram (Esc)') : off('No path is traced')),
+      run: (app) => app.exitTrace(),
+    },
     // ---------------------------------------------------------------- Help
     { id: 'help.manual', label: 'User Manual', group: 'Help', keywords: 'guide documentation', state: () => on('A short guide to NetAtlas’s basic tasks, with pictures'), run: (app) => void app.openHelp('manual') },
     { id: 'help.license', label: 'License', group: 'Help', keywords: 'apache', state: () => on('The license NetAtlas is distributed under (Apache License, Version 2.0)'), run: (app) => void app.openHelp('license') },
@@ -337,14 +365,15 @@ export function buildCommands(): Command[] {
         ['relations', 'Relations', ''],
         ['problems', 'Problems', ''],
         ['yaml', 'YAML', ''],
-      ] as Array<['edit' | 'details' | 'legend' | 'relations' | 'problems' | 'yaml', string, string]>
+        ['analysis', 'Analysis', ''],
+      ] as Array<['edit' | 'details' | 'legend' | 'relations' | 'problems' | 'yaml' | 'analysis', string, string]>
     ).map(
       ([tab, name, key]): Command => ({
         id: 'panel.' + tab,
         label: `${name} tab`,
         group: 'Panel',
         keys: key ? { combos: [{ key }] } : undefined,
-        keywords: tab === 'problems' ? 'errors warnings checks findings' : tab === 'yaml' ? 'source text' : '',
+        keywords: tab === 'problems' ? 'errors warnings checks findings' : tab === 'yaml' ? 'source text' : tab === 'analysis' ? 'trace path hop list' : '',
         state: () => on(`Open the ${name} tab of the side panel`),
         run: (app) => app.showTab(tab),
       }),

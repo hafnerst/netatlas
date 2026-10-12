@@ -60,6 +60,9 @@
       <div class="menu-sep" role="separator"></div>
       <button id="btn-focus" type="button" role="menuitem" data-command="focus.enter" title="Open or create a model first" disabled><span class="mi-label">Focus on selection</span><span class="mi-hint">Shift+F</span></button>
       <button id="btn-focus-exit" type="button" role="menuitem" data-command="focus.exit" title="Focus mode is off" disabled><span class="mi-label">Exit focus</span><span class="mi-hint">Esc</span></button>
+      <div class="menu-sep" role="separator"></div>
+      <button id="btn-trace" type="button" role="menuitem" data-command="trace.open" title="Open or create a model first" disabled><span class="mi-label">Trace path…</span><span class="mi-hint">T</span></button>
+      <button id="btn-trace-exit" type="button" role="menuitem" data-command="trace.exit" title="No path is traced" disabled><span class="mi-label">Exit path trace</span><span class="mi-hint">Esc</span></button>
     </div>
   </div>
   <div class="menu-wrap">
@@ -145,15 +148,23 @@
       <button id="connect-go" type="button" class="primary">Use endpoint</button>
       <button id="connect-cancel" type="button" title="Cancel the connection (Esc)">Cancel</button>
     </div>
-    <div id="mode-banner" class="mode-banner" role="region" aria-label="Focus mode" hidden>
-      <span class="mb-icon" aria-hidden="true">◎</span>
-      <span id="mode-text" class="mb-text" role="status"></span>
-      <span class="mb-hops" role="group" aria-label="Hops shown around the focused object">
-        <button id="focus-fewer" type="button" class="mini" data-command="focus.fewer" aria-label="One hop fewer">−</button>
-        <span id="focus-hops" class="mb-count">1 hop</span>
-        <button id="focus-more" type="button" class="mini" data-command="focus.more" aria-label="One hop more">+</button>
-      </span>
-      <button id="focus-exit" type="button" class="mini" data-command="focus.exit">Exit focus</button>
+    <div id="mode-banner" class="mode-banner" role="region" aria-label="Analysis mode" hidden>
+      <div id="mb-focus" class="mb-row" hidden>
+        <span class="mb-icon" aria-hidden="true">◎</span>
+        <span id="mode-text" class="mb-text" role="status"></span>
+        <span class="mb-hops" role="group" aria-label="Hops shown around the focused object">
+          <button id="focus-fewer" type="button" class="mini" data-command="focus.fewer" aria-label="One hop fewer">−</button>
+          <span id="focus-hops" class="mb-count">1 hop</span>
+          <button id="focus-more" type="button" class="mini" data-command="focus.more" aria-label="One hop more">+</button>
+        </span>
+        <button id="focus-exit" type="button" class="mini" data-command="focus.exit">Exit focus</button>
+      </div>
+      <div id="mb-trace" class="mb-row" hidden>
+        <span class="mb-icon" aria-hidden="true">⇢</span>
+        <span id="trace-text" class="mb-text" role="status"></span>
+        <button id="trace-hops" type="button" class="mini" data-command="trace.open">Hop list</button>
+        <button id="trace-exit-banner" type="button" class="mini" data-command="trace.exit">Exit trace</button>
+      </div>
     </div>
     <div id="filter-hint" class="filter-hint" role="status" hidden><span class="fh-icon" aria-hidden="true">⧉</span> <span id="filter-hint-text">Filtered-view positions are temporary and are not saved in YAML.</span></div>
     <div id="overlap-hint" class="overlap-hint" role="status" hidden><span aria-hidden="true">⚠</span> <span id="overlap-hint-text"></span></div>
@@ -204,6 +215,7 @@
       <button type="button" data-tab="relations">Relations</button>
       <button type="button" data-tab="problems">Problems</button>
       <button type="button" data-tab="yaml">YAML</button>
+      <button type="button" data-tab="analysis" title="Trace path: the hop list">Analysis</button>
     </nav>
     <div id="side-body"></div>
     <details id="keys" class="keys" open>
