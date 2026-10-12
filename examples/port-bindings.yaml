@@ -100,24 +100,24 @@ links:
   - {id: wan-s1, a: "spoke1:Gi0/0", b: inet, medium: copper, speed: 250M}
   - {id: wan-s2, a: "spoke2:Gi0/0", b: inet, medium: lte, speed: 150M}
   - id: trunk
-    a: {device: hub-rtr, interface: Gi0/1, networks: [vlan100, vlan200]}
-    b: {device: core-a, interface: Et10, networks: [vlan100, vlan200]}
+    a: {device: hub-rtr, interface: Gi0/1, mode: trunk, tagged: [100, 200]}
+    b: {device: core-a, interface: Et10, mode: trunk, tagged: [100, 200]}
     medium: fiber
     speed: 10G
   # the two members of Po1 on either side: one aggregate
   - id: lag-1
-    a: {device: core-a, interface: Et1, networks: [vlan100, vlan200]}
-    b: {device: core-b, interface: Et1, networks: [vlan100, vlan200]}
+    a: {device: core-a, interface: Et1, mode: trunk, tagged: [100, 200]}
+    b: {device: core-b, interface: Et1, mode: trunk, tagged: [100, 200]}
     medium: dac
     speed: 100G
   - id: lag-2
-    a: {device: core-a, interface: Et2, networks: [vlan100, vlan200]}
-    b: {device: core-b, interface: Et2, networks: [vlan100, vlan200]}
+    a: {device: core-a, interface: Et2, mode: trunk, tagged: [100, 200]}
+    b: {device: core-b, interface: Et2, mode: trunk, tagged: [100, 200]}
     medium: dac
     speed: 100G
   - id: nms-link
-    a: {device: core-b, interface: Et20, networks: [vlan200]}
-    b: {device: nms, interface: eth0, networks: [vlan200]}
+    a: {device: core-b, interface: Et20, mode: access, untagged: 200}
+    b: "nms:eth0"
     medium: copper
     speed: 1G
 

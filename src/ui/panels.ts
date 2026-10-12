@@ -1,15 +1,18 @@
 /** Side-panel content (details, legend, relation list) as HTML VNodes. */
 import { deviceTypeLabel } from '../model/device-types';
 import { sortedByName } from '../model/order';
-import { Attrs, CATEGORIES, Interface, Model, ProtocolDef, RelEndpoint, TunnelEnd, endpointText, ifaceKey, interfaceKindLabel, relationDevices } from '../model/types';
+import { Attrs, CATEGORIES, Interface, LinkEnd, Model, ProtocolDef, RelEndpoint, Route, TunnelEnd, endpointText, ifaceKey, interfaceKindLabel, relationDevices } from '../model/types';
 import { LegendItem, SWATCH_H, SWATCH_W, legendOf, relationSwatchParts } from '../diagram/legend';
 import { VNode, h } from '../diagram/scene';
 import { iconNode } from './dom';
 import { View } from '../diagram/session';
-import { ContextState, SelectionContext, contextState, splitRef } from '../model/queries';
+import { ContextState, SelectionContext, contextState, routeRefOf, routesUsing, splitRef } from '../model/queries';
 import { mediumStyle } from '../diagram/style';
-import { AddressAssoc, associatedInterfaces, deviceNetworks, derivedVlanText, interfaceAddresses, interfaceCarriedNetworks, interfaceNetworkPorts, interfaceVlanText, interfaceVlans, linkEndNetworksText, networkMembers, networkMismatch, networkMismatchText, networkName } from '../model/derive';
+import { AddressAssoc, addressOwners, associatedInterfaces, deviceNetworks, derivedVlanText, endNetworks, interfaceAddresses, interfaceVlanPorts, interfaceVlanText, interfaceVlans, networkMembers, networkName, tagMismatch, tagMismatchText, vlanIds, vlanRangesText } from '../model/derive';
 import { relationStyle } from '../model/protocols';
+import { compareRoutes, routeLine } from '../model/addresses';
+import { formatAddr } from '../analysis/ipmath';
+import { DEFAULT_STATIC_DISTANCE, resolveRoute } from '../analysis/routing';
 
 
 function refLink(ref: string, text: string): VNode {
@@ -58,26 +61,26 @@ function derivedAddressList(model: Model, assocs: AddressAssoc[]): VNode {
   );
 }
 
-/** The distinct ports carrying the networks of a virtual interface, alphabetically. */
-function networkPortIds(model: Model, i: Interface): string[] {
+/** The distinct ports carrying the VLANs of a virtual interface, alphabetically. */
+function vlanPortIds(model: Model, i: Interface): string[] {
   const ids: string[] = [];
-  for (const p of interfaceNetworkPorts(model, i)) if (ids.indexOf(p.iface) < 0) ids.push(p.iface);
+  for (const p of interfaceVlanPorts(model, i)) if (ids.indexOf(p.iface) < 0) ids.push(p.iface);
   return sortedByName(ids, (x) => x);
 }
 
 /**
  * What a logical interface is associated with, in words: member ports of an
- * aggregate, the VLAN of a VLAN interface, the ports carrying its networks, the
+ * aggregate, the VLAN of a VLAN interface and the ports carrying it, the
  * source and destination of a tunnel. '' when there is nothing to say.
  */
 export function associationText(model: Model, i: Interface): string {
   const parts: string[] = [];
   if (i.members.length) parts.push('Member ports: ' + sortedByName(i.members, (x) => x).join(', '));
   const vlans = interfaceVlans(model, i);
-  if (vlans.length) parts.push(`VLAN ${vlans.join(', ')}`);
-  if (interfaceCarriedNetworks(model, i).length) {
-    const ports = networkPortIds(model, i);
-    parts.push(ports.length ? 'ports carrying its networks: ' + ports.join(', ') : 'no port carries its networks');
+  if (vlans.length) {
+    parts.push(`VLAN ${vlans.join(', ')}`);
+    const ports = vlanPortIds(model, i);
+    parts.push(ports.length ? 'ports carrying it: ' + ports.join(', ') : 'no port carries it');
   }
   if (i.source) parts.push('Tunnel source: ' + i.source.text + (i.source.address !== undefined && i.source.iface ? ` (${i.source.iface})` : ''));
   if (i.destination) parts.push('Destination: ' + i.destination.text + (i.destination.address !== undefined && i.destination.device ? ` (${i.destination.device}${i.destination.iface ? ':' + i.destination.iface : ''})` : ''));
@@ -161,7 +164,33 @@ export function headOf(model: Model, ref: string): { kind: string; title: string
     const p = model.protocols.get(id);
     return p ? { kind: 'protocol', title: p.label, id: p.id } : null;
   }
+  if (kind === 'route') {
+    const r = ix.routes.get(id);
+    return r ? { kind: 'static route', title: `${r.device}: ${r.prefix}` + (r.name ? ` (${r.name})` : '') } : null;
+  }
   return null;
+}
+
+/** A link end's tagging in words: "access, untagged VLAN 10", "trunk, native VLAN 1, tagged 20,30" ('' without a mode). */
+export function tagWords(e: LinkEnd): string {
+  if (!e.mode) return '';
+  const parts: string[] = [e.mode];
+  if (e.untagged !== undefined) parts.push(`${e.mode === 'trunk' ? 'native' : 'untagged'} VLAN ${e.untagged}`);
+  const tagged = vlanIds(e.tagged);
+  if (tagged.length) parts.push('tagged ' + vlanRangesText(tagged));
+  return parts.join(', ');
+}
+
+/** A route's next hop in words: the address (and which interface has it), the exit interface, or "blackhole". */
+function nextHopWords(model: Model, r: Route): string {
+  if (r.blackhole) return 'blackhole (dropped)';
+  const parts: string[] = [];
+  if (r.via !== undefined) {
+    const owners = addressOwners(model, r.via).map((o) => `${o.device}:${o.iface}`);
+    parts.push(r.via + (owners.length ? ` (${owners.join(', ')})` : ''));
+  }
+  if (r.iface !== undefined) parts.push('out of ' + r.iface);
+  return parts.join(' ');
 }
 
 /**
@@ -266,6 +295,26 @@ export function detailsFor(model: Model, ref: string, status: IssueCount | null 
         ]),
       );
     }
+    // static routes, in display order (VRF, destination, distance …), each selectable
+    const routes = d.routes.slice().sort(compareRoutes);
+    if (routes.length) {
+      kids.push(
+        h('section', { 'data-list': 'routes' }, [
+          h('h4', {}, `Static routes (${routes.length})`),
+          h('table', { class: 'ports' }, [
+            h('tr', {}, [h('th', {}, 'destination'), h('th', {}, 'next hop'), h('th', { title: 'Administrative distance (route selection takes a missing one as 1)' }, 'AD'), h('th', {}, 'VRF')]),
+            ...routes.map((r) =>
+              h('tr', { 'data-route': String(r.index) }, [
+                h('td', {}, [refLink(routeRefOf(r), r.prefix), r.name ? h('span', { class: 'muted' }, ' ' + r.name) : null]),
+                h('td', {}, nextHopWords(model, r)),
+                h('td', {}, r.distance !== undefined ? String(r.distance) : ''),
+                h('td', {}, r.vrf || ''),
+              ]),
+            ),
+          ]),
+        ]),
+      );
+    }
     kids.push(
       list(
         'Logical relations',
@@ -304,31 +353,30 @@ export function detailsFor(model: Model, ref: string, status: IssueCount | null 
     const ifLink = (x: string): VNode => refLink(`iface:${i.device}:${x}`, x);
     const linked = (ids: string[]): VNode => h('span', {}, ids.reduce((acc: VNode[], x, k) => acc.concat(k ? [h('span', {}, ', '), ifLink(x)] : [ifLink(x)]), []));
     const vlans = interfaceVlans(model, i);
-    const carried = interfaceCarriedNetworks(model, i);
-    const ports = networkPortIds(model, i);
+    const ports = vlanPortIds(model, i);
     // only the associations that apply to this interface are shown
     kids.push(
       h('section', { 'data-assoc': i.type }, [
         kv([
           ['member ports', i.members.length ? linked(sortedByName(i.members, (x) => x)) : undefined],
           ['VLAN', vlans.length ? vlans.join(', ') + (i.vlan === undefined ? ' (from the network of its address)' : '') : undefined],
-          ['ports carrying its networks', carried.length ? (ports.length ? linked(ports) : 'none: no link end of this device carries them') : undefined],
+          ['ports carrying its VLAN', vlans.length ? (ports.length ? linked(ports) : 'none: no link end of this device carries it') : undefined],
           ['tunnel source', i.source ? tunnelEndNode(model, i.source) : undefined],
           ['tunnel destination', i.destination ? tunnelEndNode(model, i.destination) : undefined],
         ]),
-        carried.length ? h('p', { class: 'muted small' }, 'Derived from the networks on this device’s link ends.') : null,
+        vlans.length ? h('p', { class: 'muted small' }, 'Derived from the tagging of this device’s link ends.') : null,
       ]),
     );
-    // the other direction: aggregates this port is a member of, virtual interfaces whose networks it carries, tunnels sourced from it
+    // the other direction: aggregates this port is a member of, VLAN interfaces whose VLAN it carries, tunnels sourced from it
     const d = ix.devices.get(i.device);
-    const users = d ? d.logical.filter((o) => o.id !== i.id && (o.members.indexOf(i.id) >= 0 || (!!o.source && o.source.iface === i.id) || interfaceNetworkPorts(model, o).some((p) => p.iface === i.id))) : [];
+    const users = d ? d.logical.filter((o) => o.id !== i.id && (o.members.indexOf(i.id) >= 0 || (!!o.source && o.source.iface === i.id) || interfaceVlanPorts(model, o).some((p) => p.iface === i.id))) : [];
     kids.push(
       list(
         'Used by logical interfaces',
         sortedByName(users, (o) => o.id).map((o) =>
           h('li', { 'data-iface': o.id }, [
             refLink(`iface:${i.device}:${o.id}`, o.id),
-            h('span', { class: 'muted' }, ' ' + (o.members.indexOf(i.id) >= 0 ? 'aggregate (member port)' : o.source && o.source.iface === i.id ? 'tunnel (source)' : 'its networks are carried on this port')),
+            h('span', { class: 'muted' }, ' ' + (o.members.indexOf(i.id) >= 0 ? 'aggregate (member port)' : o.source && o.source.iface === i.id ? 'tunnel (source)' : 'its VLAN is carried on this port')),
           ]),
         ),
       ),
@@ -341,26 +389,39 @@ export function detailsFor(model: Model, ref: string, status: IssueCount | null 
           .map((r) => h('li', {}, [refLink('relation:' + r.id, relationTitle(model, r.id))])),
       ),
     );
+    kids.push(
+      list(
+        'Static routes using it',
+        routesUsing(model, i.device, i.id)
+          .sort(compareRoutes)
+          .map((r) => h('li', {}, [refLink(routeRefOf(r), `${r.device}: ${routeLine(r)}`), h('span', { class: 'muted' }, r.device === i.device && r.iface === i.id ? ' (exit interface)' : ' (next hop)')])),
+      ),
+    );
     kids.push(attrsTable('Attributes', i.attrs));
   } else if (kind === 'link') {
     const l = ix.links.get(id);
     if (!l) return h('div', {}, 'Not found');
     kids.push(header());
     const nets = (ids: string[]): VNode[] => ids.reduce((acc: VNode[], n, k) => acc.concat(k ? [h('span', {}, ', '), refLink('network:' + n, networkName(model, n))] : [refLink('network:' + n, networkName(model, n))]), []);
-    const ep = (e: { device: string; iface?: string; networks: string[] }): VNode =>
-      h('span', {}, [
+    // an end: where it plugs in, its layer-2 tagging, and the networks of the VLANs it carries (derived)
+    const ep = (e: LinkEnd): VNode => {
+      const carried = endNetworks(model, e);
+      const tag = tagWords(e);
+      return h('span', {}, [
         refLink('device:' + e.device, ix.devices.get(e.device)?.label || e.device),
         e.iface ? h('span', {}, ' ') : null,
         e.iface ? refLink(`iface:${e.device}:${e.iface}`, e.iface) : null,
-        h('span', { class: e.networks.length ? 'net-end' : 'net-end muted' }, e.networks.length ? ' — carries ' : ' — no network'),
-        ...nets(e.networks),
+        h('span', { class: tag ? 'tag-end' : 'tag-end muted' }, tag ? ' — ' + tag : ' — no layer-2 tagging'),
+        carried.length ? h('span', { class: 'muted' }, ' · carries ') : null,
+        ...nets(carried),
       ]);
-    const mm = networkMismatch(l.a.networks, l.b.networks);
+    };
+    const mm = tagMismatch(l.a, l.b);
     kids.push(
       kv([
         ['A', ep(l.a)],
         ['B', ep(l.b)],
-        ['networks', mm ? h('span', { class: 'warn-text', 'data-net-mismatch': 'yes' }, '⚠ the ends differ — ' + networkMismatchText(mm, (n) => networkName(model, n))) : undefined],
+        ['VLANs', mm ? h('span', { class: 'warn-text', 'data-tag-mismatch': 'yes' }, '⚠ the ends differ — ' + tagMismatchText(mm)) : undefined],
         ['medium', mediumStyle(l.medium).label],
         ['speed', l.speed],
         ['cable', l.cable],
@@ -433,14 +494,14 @@ export function detailsFor(model: Model, ref: string, status: IssueCount | null 
           .map((r) => h('li', {}, [refLink('relation:' + r.id, relationTitle(model, r.id))])),
       ),
     );
-    // configured on the links: the cable ends that carry it (not membership)
+    // derived from the tagging of the link ends: the cable ends that carry its VLAN (not membership)
     kids.push(
       list(
         'Carried on cables',
         model.links
-          .filter((l) => l.a.networks.indexOf(n.id) >= 0 || l.b.networks.indexOf(n.id) >= 0)
+          .filter((l) => endNetworks(model, l.a).indexOf(n.id) >= 0 || endNetworks(model, l.b).indexOf(n.id) >= 0)
           .map((l) => {
-            const ends = [l.a.networks.indexOf(n.id) >= 0 ? 'A' : '', l.b.networks.indexOf(n.id) >= 0 ? 'B' : ''].filter((x) => x);
+            const ends = [endNetworks(model, l.a).indexOf(n.id) >= 0 ? 'A' : '', endNetworks(model, l.b).indexOf(n.id) >= 0 ? 'B' : ''].filter((x) => x);
             return h('li', { 'data-link': l.id }, [refLink('link:' + l.id, l.label || l.id), h('span', { class: 'muted' }, ` ${endpointText(l.a)} ⟷ ${endpointText(l.b)}` + (ends.length < 2 ? ` (end ${ends[0]} only)` : ''))]);
           }),
       ),
@@ -460,6 +521,37 @@ export function detailsFor(model: Model, ref: string, status: IssueCount | null 
     kids.push(header());
     kids.push(kv([['category', p.category], ['description', p.description]]));
     kids.push(list('Relations', model.relations.filter((r) => r.protocol === id).map((r) => h('li', {}, [refLink('relation:' + r.id, relationTitle(model, r.id))]))));
+  } else if (kind === 'route') {
+    const r = ix.routes.get(id);
+    if (!r) return h('div', {}, 'Not found');
+    kids.push(header());
+    const res = resolveRoute(model, r);
+    kids.push(
+      kv([
+        ['device', refLink('device:' + r.device, ix.devices.get(r.device)?.label || r.device)],
+        ['destination', r.prefix],
+        ['next hop', r.blackhole ? 'blackhole: traffic to the destination is dropped' : r.via],
+        ['exit interface', r.iface !== undefined ? refLink(`iface:${r.device}:${r.iface}`, r.iface) : undefined],
+        ['distance', r.distance !== undefined ? String(r.distance) : `not written (route selection takes ${DEFAULT_STATIC_DISTANCE})`],
+        ['metric', r.metric !== undefined ? String(r.metric) : undefined],
+        ['VRF', r.vrf || 'the default table'],
+        ['name', r.name],
+        ['description', r.description],
+      ]),
+    );
+    const owners = r.via !== undefined ? addressOwners(model, r.via) : [];
+    kids.push(list('Next-hop address belongs to', owners.map((o) => h('li', {}, [refLink(`iface:${o.device}:${o.iface}`, `${o.device} ${o.iface}`)]))));
+    kids.push(
+      h('section', { 'data-resolution': res.ok ? 'ok' : res.reason }, [
+        h('h4', {}, 'Resolution'),
+        h(
+          'p',
+          { class: res.ok ? '' : r.blackhole ? 'muted' : 'warn-text' },
+          res.ok ? 'Leaves through ' + res.hops.map((x) => x.iface + (x.gateway ? ' to ' + formatAddr(x.gateway) : '')).join(', ') + (res.recursive ? ' (resolved through another route)' : '') : r.blackhole ? 'A blackhole route: nothing is forwarded.' : 'Not usable: ' + res.detail + '.',
+        ),
+      ]),
+    );
+    kids.push(attrsTable('Attributes', r.attrs));
   } else {
     return h('div', {}, 'Nothing selected');
   }
@@ -503,7 +595,13 @@ export function tooltipFor(model: Model, ref: string): string[] {
       deviceTypeLabel(d.type),
       `${d.interfaces.length} physical interface${d.interfaces.length === 1 ? '' : 's'}, ${cabled} cabled`,
       d.logical.length ? `${d.logical.length} logical interface${d.logical.length === 1 ? '' : 's'}` : '',
+      d.routes.length ? `${d.routes.length} static route${d.routes.length === 1 ? '' : 's'}` : '',
     ].filter((s) => s);
+  }
+  if (kind === 'route') {
+    const r = ix.routes.get(id);
+    if (!r) return [];
+    return [`${r.device}: ${routeLine(r)}`, r.name || '', r.vrf ? 'VRF ' + r.vrf : '', nextHopWords(model, r)].filter((s) => s);
   }
   if (kind === 'iface') {
     const i = ix.interfaces.get(id);
@@ -518,8 +616,8 @@ export function tooltipFor(model: Model, ref: string): string[] {
     return [
       `${endpointText(l.a)}  ⟷  ${endpointText(l.b)}`,
       [mediumStyle(l.medium).label, l.speed, l.label, l.cable].filter((s) => s).join(' · '),
-      l.a.networks.length || l.b.networks.length ? `A: ${linkEndNetworksText(model, l.a.networks)}  |  B: ${linkEndNetworksText(model, l.b.networks)}` : '',
-      networkMismatch(l.a.networks, l.b.networks) ? '⚠ the two ends carry different networks' : '',
+      l.a.mode || l.b.mode ? `A: ${tagWords(l.a) || 'no tagging'}  |  B: ${tagWords(l.b) || 'no tagging'}` : '',
+      tagMismatch(l.a, l.b) ? '⚠ VLANs differ: ' + tagMismatchText(tagMismatch(l.a, l.b) as NonNullable<ReturnType<typeof tagMismatch>>) : '',
       carried ? `carries ${carried} logical relation${carried > 1 ? 's' : ''}` : '',
     ].filter((s) => s);
   }

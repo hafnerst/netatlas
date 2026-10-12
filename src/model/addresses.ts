@@ -15,7 +15,9 @@
  *               networks are named there already);
  *   relation    address-like attrs (its label; e.g. a VRRP virtual-ip, a BGP
  *               peer address, an SR-TE endpoint);
- *   group       address-like attrs (under its title).
+ *   group       address-like attrs (under its title);
+ *   route       its destination prefix and next hop (a line of its device's
+ *               route table, in the logical view; see routeEntries).
  *
  * Views: the physical view shows the physical interfaces that have anything
  * to show; the logical view shows every loopback, virtual and tunnel
@@ -31,7 +33,7 @@
 import { interfaceAddresses, interfaceVlanText, interfaceVlans } from './derive';
 import { parseAddress, parsePrefix } from './ip';
 import { compareNames, sortedByName } from './order';
-import { Attrs, Device, Interface, Model } from './types';
+import { Attrs, Device, Interface, Model, Route, routeKey } from './types';
 
 const MAC = /^(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}$|^(?:[0-9a-f]{4}\.){2}[0-9a-f]{4}$/i;
 
@@ -186,6 +188,84 @@ export function boundInterfaces(model: Model, device: string): Set<string> {
   return out;
 }
 
+// ----------------------------------------------------------------- routes
+
+/**
+ * A route as the diagram and the lists write it, in the order of the
+ * familiar "ip route" output: "0.0.0.0/0 via 203.0.113.1 dev wan2 AD 250
+ * metric 10", "192.0.2.0/24 blackhole". Only what is written is shown (no
+ * default distance is added).
+ */
+export function routeLine(r: Route): string {
+  const parts = [r.prefix];
+  if (r.blackhole) parts.push('blackhole');
+  if (r.via !== undefined) parts.push('via ' + r.via);
+  if (r.iface !== undefined) parts.push('dev ' + r.iface);
+  if (r.distance !== undefined) parts.push('AD ' + r.distance);
+  if (r.metric !== undefined) parts.push('metric ' + r.metric);
+  return parts.join(' ');
+}
+
+/** Sort key of an address or prefix text: family, then the bytes as hex, then the length (text that isn't one: last). */
+function addrSortKey(t: string | undefined): string {
+  if (t === undefined) return '';
+  const p = parsePrefix(t, false);
+  if (!p) return '9' + t;
+  const hex = (b: number): string => (b < 16 ? '0' : '') + b.toString(16);
+  // IPv4 before IPv6; the network part compared at full width
+  return (p.version === 4 ? '4' : '6') + p.bytes.map(hex).join('') + '/' + hex(p.prefix);
+}
+
+/**
+ * Display order of routes: VRF, destination (family, address, prefix
+ * length), distance (a missing one counts as 1), metric, next hop, exit
+ * interface; never the order of the file.
+ */
+export function compareRoutes(a: Route, b: Route): number {
+  const d = (r: Route): number => (r.distance !== undefined ? r.distance : 1);
+  const m = (r: Route): number => (r.metric !== undefined ? r.metric : 0);
+  return (
+    cmp(a.vrf || '', b.vrf || '') ||
+    cmp(addrSortKey(a.prefix), addrSortKey(b.prefix)) ||
+    d(a) - d(b) ||
+    m(a) - m(b) ||
+    Number(a.blackhole) - Number(b.blackhole) ||
+    cmp(addrSortKey(a.via), addrSortKey(b.via)) ||
+    cmp(a.iface || '', b.iface || '') ||
+    cmp(routeLine(a), routeLine(b)) ||
+    cmp(a.name || '', b.name || '') ||
+    a.index - b.index
+  );
+}
+
+/** The route table of one VRF of a device, as its box in the logical view shows it. */
+export interface RouteTable {
+  /** '' for the default table */
+  vrf: string;
+  /** "Routes" or "Routes · VRF x" */
+  header: string;
+  routes: Route[];
+  lines: string[];
+  /** "route:<device>:<index>" of each line */
+  refs: string[];
+}
+
+/** The route tables of a device: one per VRF that has routes (the default table first), each sorted (compareRoutes). */
+export function routeTables(d: Device): RouteTable[] {
+  const byVrf = new Map<string, Route[]>();
+  for (const r of d.routes.slice().sort(compareRoutes)) {
+    const v = r.vrf || '';
+    if (!byVrf.has(v)) byVrf.set(v, []);
+    (byVrf.get(v) as Route[]).push(r);
+  }
+  return Array.from(byVrf.keys())
+    .sort(cmp)
+    .map((vrf) => {
+      const routes = byVrf.get(vrf) as Route[];
+      return { vrf, header: vrf ? 'Routes · VRF ' + vrf : 'Routes', routes, lines: routes.map(routeLine), refs: routes.map((r) => 'route:' + routeKey(r.device, r.index)) };
+    });
+}
+
 /** Lines of a device's own address-like attrs (drawn in its box, in both views). */
 export function deviceAddressLines(d: Device): string[] {
   return addressAttrLines(d.attrs);
@@ -233,6 +313,11 @@ export function addressInventory(model: Model): AddressField[] {
       attrs(owner, i.attrs, views);
     }
     for (const n of d.dnsNames) add('device:' + d.id, 'dns_names', n.name, ['logical']);
+    for (const r of d.routes) {
+      const owner = 'route:' + routeKey(d.id, r.index);
+      add(owner, 'prefix', r.prefix, ['logical']);
+      if (r.via !== undefined) add(owner, 'via', r.via, ['logical']);
+    }
   }
   for (const n of model.networks) {
     if (n.cidr) add('network:' + n.id, 'cidr', n.cidr, ['logical']);

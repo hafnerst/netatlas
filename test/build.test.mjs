@@ -78,7 +78,7 @@ test('no third-party runtime code: every bundled module comes from src/', () => 
 
 test('reasonable size, and the examples, the manual and the license are embedded', () => {
   // one self-contained page with every example, the manual's screenshots and the license embedded; a sanity limit, not a budget
-  assert.ok(html.length < 1.75 * 1024 * 1024, `${html.length} bytes`);
+  assert.ok(html.length < 2.5 * 1024 * 1024, `${html.length} bytes`);
   // the screenshots are small, cropped WebP images: together well under 400 KiB as data: URLs
   const images = [...js.matchAll(/"src": "(data:image\/webp;base64,[A-Za-z0-9+/=]+)"/g)].map((m) => m[1]);
   assert.ok(images.length >= 8, String(images.length));

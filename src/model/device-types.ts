@@ -46,3 +46,42 @@ export function deviceTypeLabel(id: string): string {
 export function deviceSubtitle(type: string): string {
   return deviceTypeLabel(type);
 }
+
+/**
+ * What a device of a type does at layer 3, for static routes and the path
+ * tracer:
+ *   router  forwards traffic between its interfaces (Layer 3+): router,
+ *           switch (a multilayer switch), firewall, load balancer, proxy,
+ *           gateway;
+ *   host    an end system with its own IP stack: it may have routes (a
+ *           default gateway is a static default route), but it never
+ *           forwards traffic for others: server, VM, container, storage,
+ *           endpoint, system;
+ *   null    no routing table in the model: access point and IDS/IPS (drawn
+ *           as layer-2 / transparent devices), cloud (a network outside the
+ *           model) and a device without a type.
+ * Routes are allowed on `router` and `host` devices only.
+ */
+export type RoutingRole = 'router' | 'host';
+
+const ROUTING: { [type: string]: RoutingRole } = {
+  router: 'router',
+  switch: 'router',
+  firewall: 'router',
+  load_balancer: 'router',
+  proxy: 'router',
+  gateway: 'router',
+  server: 'host',
+  vm: 'host',
+  container: 'host',
+  storage: 'host',
+  endpoint: 'host',
+  system: 'host',
+};
+
+export function routingRole(type: string): RoutingRole | null {
+  return Object.prototype.hasOwnProperty.call(ROUTING, type) ? ROUTING[type] : null;
+}
+
+/** The device types that may carry static routes, in the order of DEVICE_TYPES. */
+export const ROUTE_DEVICE_TYPES: ReadonlyArray<string> = DEVICE_TYPE_IDS.filter((t) => routingRole(t) !== null);

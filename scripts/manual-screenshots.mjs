@@ -180,6 +180,37 @@ async function main() {
       await save('edit-mark', { x: side.x, y, w: side.w, h: Math.min(mark.y + mark.h + 24, side.y + side.h) - y });
     }
 
+    // static routes: the branch router of the branch-routing example in the logical view, at 100 %
+    const branch = await page.eval("Array.from(document.querySelectorAll('#menu-examples [data-example]')).findIndex((b) => /branch-routing/.test(b.textContent))");
+    await page.eval(`netatlas.loadExample(${branch}), netatlas.setView("logical"), true`);
+    await page.eval(`(() => { const m = /scale\\(([\\d.]+)\\)/.exec(document.getElementById('viewport').getAttribute('transform')); netatlas.zoomBy(1 / Number(m[1])); return true; })()`);
+    await page.eval('netatlas.select("device:br-rtr", true), netatlas.select(null), true');
+    await page.mouse('mouseMoved', 700, 890);
+    await page.eval("document.getElementById('toast').hidden = true");
+    await page.settle(200);
+    {
+      const c = await page.rect('#canvas-wrap');
+      const b = await page.rect('#viewport [data-ref="device:br-rtr"] .dev-box');
+      const x = Math.max(c.x, b.x - 120);
+      const y = Math.max(c.y, b.y - 30);
+      await save('routes', { x, y, w: Math.min(c.x + c.w, b.x + b.w + 120) - x, h: Math.min(c.y + c.h, b.y + b.h + 30) - y });
+    }
+    // VLAN tagging: the trunk between the branch router and the access switch, physical view, at 100 %
+    await page.eval('netatlas.setView("physical"), true');
+    await page.eval(`(() => { const m = /scale\\(([\\d.]+)\\)/.exec(document.getElementById('viewport').getAttribute('transform')); netatlas.zoomBy(1 / Number(m[1])); return true; })()`);
+    await page.eval('netatlas.select("link:br-trunk", true), netatlas.select(null), true');
+    await page.mouse('mouseMoved', 700, 890);
+    await page.settle(200);
+    {
+      const c = await page.rect('#canvas-wrap');
+      const a = await page.rect('#viewport [data-ref="device:br-rtr"] .dev-box');
+      const b = await page.rect('#viewport [data-ref="device:br-sw"] .dev-box');
+      const r = around([a, b], 24);
+      const x = Math.max(c.x, r.x - 60);
+      const y = Math.max(c.y, r.y);
+      await save('tagging', { x, y, w: Math.min(c.x + c.w, r.x + r.w + 60) - x, h: Math.min(c.y + c.h, r.y + r.h) - y });
+    }
+
     // the theme switch with its tooltip, in the dark theme (the default)
     await page.hover('#theme-btn');
     await page.settle(150);

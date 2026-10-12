@@ -11,14 +11,16 @@
  * an interface, the ports carrying a VLAN interface's networks) are computed from the current
  * model on every render, are read-only, and are never written to the file.
  */
-import { DocMap, DocNode, ENTITY_KINDS, EntityKind, IfaceEntry, KEY_ORDER, ModelDoc, Path, SECTION, kindOfSection } from '../editor/document';
+import { DocMap, DocNode, ENTITY_KINDS, EntityKind, IfaceEntry, KEY_ORDER, ModelDoc, Path, RouteEntry, SECTION, kindOfSection } from '../editor/document';
 import { BlockTarget } from '../editor/yaml-block';
 import { DialogOpts } from './dialogs';
 import { el, icon, materialize } from './dom';
 import { headOf, objectHead } from './panels';
 import { sortedByName } from '../model/order';
-import { CATEGORIES, DIRECTIONS, Direction, InterfaceKind, LINE_STYLES, LOGICAL_IFACE_TYPES, VLAN_MAX, VLAN_MIN, ifaceKey, interfaceKindLabel } from '../model/types';
-import { derivedVlanText, interfaceAddresses, interfaceCarriedNetworks, interfaceNetworkPorts, interfaceVlans, networkMembers, networkMismatch, networkMismatchText } from '../model/derive';
+import { CATEGORIES, DIRECTIONS, Direction, InterfaceKind, LINE_STYLES, LOGICAL_IFACE_TYPES, PORT_MODES, VLAN_MAX, VLAN_MIN, ifaceKey, interfaceKindLabel, routeKey } from '../model/types';
+import { derivedVlanText, endNetworks, interfaceAddresses, interfaceVlanPorts, interfaceVlans, networkMembers, tagMismatch, tagMismatchText } from '../model/derive';
+import { routingRole, ROUTE_DEVICE_TYPES } from '../model/device-types';
+import { deviceVrfs, nextHopCandidates, vrfKey } from '../analysis/routing';
 import { builtinProtocols, normalizeProtocol } from '../model/protocols';
 import { SelectionContext, contextState } from '../model/queries';
 import { DEVICE_TYPES, isDeviceType } from '../model/device-types';
@@ -26,8 +28,8 @@ import { ID_RE, Issue, PROTO_RE, scalarText } from '../validation/validate';
 import { duplicateRelation, endpointName, pairProblem } from '../model/connect';
 import { Endpoint, endpointText } from '../model/types';
 
-/** `iface`: the document path of the selected physical or logical interface of a device. */
-export type EditorSel = { kind: EntityKind | 'document'; index: number; iface?: Path } | null;
+/** `iface`: the document path of the selected physical or logical interface of a device; `route`: of the selected static route. */
+export type EditorSel = { kind: EntityKind | 'document'; index: number; iface?: Path; route?: Path } | null;
 
 /** A field of the selected object that the selection was made on in the diagram (see model/addresses.ts LineField). */
 export interface SelDetail {
@@ -136,6 +138,16 @@ export class Editor {
       if (entry) this.openIface(entry.path);
       return;
     }
+    if (kind === 'route') {
+      // "route:<device>:<index>": the index is the route's place in the device's list
+      const c = id.lastIndexOf(':');
+      const dev = this.doc.findEntity('device', id.slice(0, c));
+      if (!dev) return;
+      const entry = this.doc.routeEntries(dev.index)[Number(id.slice(c + 1))];
+      this.sel = { kind: 'device', index: dev.index, route: entry ? entry.path : undefined };
+      if (entry) this.openIface(entry.path);
+      return;
+    }
     const k = (kind === 'hub' ? 'relation' : kind) as EntityKind;
     if (!SECTION[k]) return;
     if (k === 'protocol') {
@@ -158,6 +170,10 @@ export class Editor {
       const want = J(s.iface);
       const entry = this.doc.interfaceEntries(s.index).find((e) => J(e.path) === want);
       if (entry && entry.id) return `iface:${ent.id}:${entry.id}`;
+    }
+    if (s.kind === 'device' && s.route !== undefined) {
+      const k = s.route[3];
+      if (typeof k === 'number' && this.doc.routeEntries(s.index)[k]) return 'route:' + routeKey(ent.id, k);
     }
     return entityRef(s.kind, ent.id);
   }
@@ -321,7 +337,8 @@ export class Editor {
   private issueCounts(): Map<string, { e: number; w: number }> {
     const m = new Map<string, { e: number; w: number }>();
     const doc = this.doc;
-    for (const is of doc.errors.concat(doc.warnings)) {
+    for (const is of doc.errors.concat(doc.warnings, doc.findings)) {
+      if (is.severity === 'info') continue;
       const ent = doc.issueEntity(is);
       const key = ent ? ent.kind + '#' + ent.index : 'document';
       const c = m.get(key) || { e: 0, w: 0 };
@@ -424,6 +441,7 @@ export class Editor {
     const scope = s.iface || base;
     let target = this.detail ? this.detailElement(wrap, scope, this.detail) : null;
     if (!target && s.iface) target = this.byPath(wrap, 'details.card', 'data-card', J(s.iface));
+    if (!target && s.route) target = this.byPath(wrap, 'details.card', 'data-card', J(s.route));
     if (!target) target = wrap.querySelector('.insp-head');
     if (!target) return;
     target.classList.add('sel-mark');
@@ -753,9 +771,10 @@ export class Editor {
       g('Placement', [this.refField(base.concat('group'), 'Group / location', o, this.ids('group')), this.intField(base.concat('tier'), 'Tier (0–9)', o, 'Row in the physical view (0 = top). Empty: automatic.')], 'placement');
       notes();
       this.renderInterfaces(w, index);
+      this.renderRoutes(w, index);
     } else if (kind === 'link') {
       g('Identity', [this.idField(base, kind), this.textField(base.concat('label'), 'Label', o)], 'identity');
-      g('Ends', [this.endpointField(base.concat('a'), 'End A', o, false), this.endNetworksField(base.concat('a'), 'A'), this.endpointField(base.concat('b'), 'End B', o, false), this.endNetworksField(base.concat('b'), 'B'), this.networkMismatchNote(index)], 'ends');
+      g('Ends', [this.endpointField(base.concat('a'), 'End A', o, false), this.endTaggingField(base.concat('a'), 'A'), this.endpointField(base.concat('b'), 'End B', o, false), this.endTaggingField(base.concat('b'), 'B'), this.tagMismatchNote(index)], 'ends');
       g('Cable', [
         this.textField(base.concat('medium'), 'Medium', o, 'text', MEDIA, 'Set on the link only, not on ports.'),
         this.textField(base.concat('speed'), 'Speed', o, 'text', ['100M', '1G', '10G', '25G', '40G', '100G', '400G'], 'Set on the link only, not on ports.'),
@@ -1181,7 +1200,7 @@ export class Editor {
       if (has('vlan') || (kind === 'virtual' && (!has('members') || vlans.length > 0))) {
         card.appendChild(this.intField(p.concat('vlan'), `VLAN ID (${VLAN_MIN}–${VLAN_MAX})`, o, 'VLAN interfaces only. Empty: taken from the network of an address above.'));
       }
-      if (kind === 'virtual' && this.cardNetworks(devIndex, p).length) card.appendChild(this.networkPortsField(devIndex, p));
+      if (kind === 'virtual' && vlans.length) card.appendChild(this.vlanPortsField(devIndex, p));
       if (kind === 'tunnel' || has('source')) {
         const others = sortedByName(doc.interfaceEntries(devIndex).filter((e) => !!e.id && e.id !== id), (e) => e.id as string).map((e) => e.id as string);
         card.appendChild(this.textField(p.concat('source'), 'Tunnel source', o, 'text', others, 'An interface of this device (e.g. a loopback) or an IP address.', 'Interface or address'));
@@ -1312,37 +1331,27 @@ export class Editor {
     return model && inf ? interfaceVlans(model, inf) : [];
   }
 
-  /** The networks of the virtual interface at `p` (from its addresses, or of its VLAN); none while it has errors. */
-  private cardNetworks(devIndex: number, p: Path): string[] {
-    const model = this.doc.result.model;
-    const dev = this.doc.text(['devices', devIndex, 'id']);
-    const id = this.doc.text(p.concat('id'));
-    const inf = model && dev && id ? model.index.interfaces.get(ifaceKey(dev, id)) : undefined;
-    return model && inf ? interfaceCarriedNetworks(model, inf) : [];
-  }
-
-  /** The ports carrying the networks of a virtual interface: derived from the link ends, never entered. */
-  private networkPortsField(devIndex: number, p: Path): HTMLElement {
+  /** The ports carrying the VLAN of a virtual interface: derived from the tagging of the link ends, never entered. */
+  private vlanPortsField(devIndex: number, p: Path): HTMLElement {
     const doc = this.doc;
     const model = doc.result.model;
     const dev = doc.text(['devices', devIndex, 'id']);
     const id = doc.text(p.concat('id'));
-    const help = 'Ports whose link end carries these networks (set on the links).';
-    const label = 'Ports carrying its networks';
+    const help = 'Ports whose link end has this VLAN untagged or tagged (set on the links).';
+    const label = 'Ports carrying its VLAN';
     const inf = model && dev && id ? model.index.interfaces.get(ifaceKey(dev, id)) : undefined;
-    if (!model || !inf) return this.derivedField(label, 'net-ports', [this.e('span', { class: 'muted' }, ['Not available while this interface has errors.'])], help);
-    const nets = interfaceCarriedNetworks(model, inf);
-    const name = (n: string): string => (model.index.networks.get(n) || { label: n }).label;
-    const ports = sortedByName(interfaceNetworkPorts(model, inf), (x) => x.iface);
+    if (!model || !inf) return this.derivedField(label, 'vlan-ports', [this.e('span', { class: 'muted' }, ['Not available while this interface has errors.'])], help);
+    const vlans = interfaceVlans(model, inf);
+    const ports = sortedByName(interfaceVlanPorts(model, inf), (x) => x.iface);
     const rows = ports.map((x) =>
       this.e('li', { 'data-port': x.iface }, [
         this.e('button', { type: 'button', class: 'ref', 'data-goto': `iface:${inf.device}:${x.iface}` }, [x.iface]),
-        this.e('span', { class: 'ro small' }, [` ${name(x.network)} on `]),
+        this.e('span', { class: 'ro small' }, [` VLAN ${x.vlan} ${x.tagged ? 'tagged' : 'untagged'} on `]),
         this.e('button', { type: 'button', class: 'ref', 'data-goto': 'link:' + x.link }, [x.link]),
       ]),
     );
-    const body = rows.length ? [this.e('ul', { class: 'derived-list' }, rows)] : [this.e('span', { class: 'muted' }, [`No link end of this device carries ${nets.map(name).join(', ')}.`])];
-    return this.derivedField(`${label} (${nets.map(name).join(', ')})`, 'net-ports', body, help);
+    const body = rows.length ? [this.e('ul', { class: 'derived-list' }, rows)] : [this.e('span', { class: 'muted' }, [`No link end of this device carries VLAN ${vlans.join(', ')}.`])];
+    return this.derivedField(`${label} (VLAN ${vlans.join(', ')})`, 'vlan-ports', body, help);
   }
 
   private listTexts(p: Path): string[] {
@@ -1553,73 +1562,177 @@ export class Editor {
     return this.derivedField(label, 'iface-vlan', [this.e('ul', { class: 'derived-list' }, rows)], help);
   }
 
-  // ------------------------------------------------------ link-end networks
+  // ------------------------------------------------------ link-end tagging
 
   /**
-   * The networks a cable carries at one end: any number of the model's
-   * networks, chosen per end and stored on that end by network id. The other
-   * end is never changed to match. Several networks are just several
-   * networks; nothing about tagging is implied.
+   * The layer-2 tagging of one end of a link: its port mode (none, access,
+   * trunk), its untagged VLAN (an access port's VLAN, a trunk's native VLAN)
+   * and a trunk's tagged VLANs ("10, 20, 100-199"). Stored on that end only;
+   * the other end is never changed to match. The networks of the VLANs it
+   * carries are shown, derived.
    */
-  private endNetworksField(endPath: Path, side: string): HTMLElement {
+  private endTaggingField(endPath: Path, side: string): HTMLElement {
     const doc = this.doc;
-    const cur = doc.endNetworks(endPath);
-    const model = doc.result.model;
-    const nets = new Map<string, { label: string; vlan?: number; cidr?: string }>();
-    for (const e of doc.entities('network')) {
-      if (!e.id) continue;
-      const n = model ? model.index.networks.get(e.id) : undefined;
-      nets.set(e.id, { label: n ? n.label : doc.text(['networks', e.index, 'label']) || e.id, vlan: n ? n.vlan : undefined, cidr: n ? n.cidr : undefined });
-    }
+    const t = doc.endTagging(endPath);
     const hasEnd = !!this.epParts(endPath).device;
-    const box = this.e('div', { class: 'net-ed', 'data-net-end': side, 'data-net-count': String(cur.length) });
-    box.appendChild(this.e('div', { class: 'net-state' + (cur.length ? '' : ' muted') }, [cur.length ? `${cur.length} network${cur.length > 1 ? 's' : ''}` : 'No network']));
-    if (cur.length) {
-      const chips = this.e('div', { class: 'vlan-chips' });
-      for (const id of cur) {
-        const n = nets.get(id);
-        chips.appendChild(
-          this.e('span', { class: 'ref-chip net-chip' + (n ? '' : ' invalid'), 'data-net': id, title: n ? [id, n.cidr, n.vlan !== undefined ? 'VLAN ' + n.vlan : ''].filter((x) => !!x).join(' · ') : 'unknown network' }, [
-            n ? n.label + (n.vlan !== undefined ? ` · VLAN ${n.vlan}` : '') : id + ' (missing!)',
-            this.e('button', { type: 'button', class: 'mini', 'data-act': 'del-net', 'data-p': J(endPath), 'data-k': id, title: `Remove ${n ? n.label : id} from end ${side}` }, ['×']),
-          ]),
-        );
-      }
-      box.appendChild(chips);
-    }
-    if (hasEnd) {
-      const pick = this.e('select', { 'data-p': J(endPath), 'data-t': 'net-pick', 'aria-label': `Assign a network to end ${side}` }) as HTMLSelectElement;
-      const free = sortedByName(Array.from(nets.keys()).filter((id) => cur.indexOf(id) < 0), (id) => (nets.get(id) as { label: string }).label);
-      pick.appendChild(this.e('option', { value: '' }, [nets.size ? (free.length ? '+ assign a network…' : '(every network is assigned)') : '(the model has no networks)']));
-      for (const id of free) {
-        const n = nets.get(id) as { label: string; vlan?: number; cidr?: string };
-        pick.appendChild(this.e('option', { value: id }, [[n.label, n.cidr, n.vlan !== undefined ? 'VLAN ' + n.vlan : ''].filter((x) => !!x).join(' · ')]));
-      }
-      box.appendChild(pick);
-    } else {
+    const box = this.e('div', { class: 'tag-ed', 'data-tag-end': side, 'data-mode': t.mode || 'none' });
+    if (!hasEnd) {
       box.appendChild(this.e('span', { class: 'muted small' }, ['Choose the device of this end first.']));
+      return this.field(`End ${side} tagging`, box, endPath.concat('mode'));
+    }
+    const mode = this.e('select', { 'data-p': J(endPath), 'data-t': 'end-mode', 'aria-label': `Port mode at end ${side}` }) as HTMLSelectElement;
+    mode.appendChild(this.e('option', { value: '' }, ['No layer-2 tagging']));
+    if (t.mode && (PORT_MODES as readonly string[]).indexOf(t.mode) < 0) mode.appendChild(this.e('option', { value: t.mode }, [t.mode + ' (not a mode)']));
+    for (const m of PORT_MODES) mode.appendChild(this.e('option', { value: m }, [m === 'access' ? 'Access (one untagged VLAN)' : 'Trunk (tagged VLANs + native)']));
+    mode.value = t.mode;
+    box.appendChild(this.field('Mode', mode, endPath.concat('mode')));
+    if (t.mode || t.untagged) {
+      const u = this.input(endPath.concat('untagged'), 'end-untagged', t.untagged, { inputmode: 'numeric', placeholder: t.mode === 'trunk' ? 'e.g. 1' : 'e.g. 10', 'aria-label': `${t.mode === 'trunk' ? 'Native' : 'Untagged'} VLAN at end ${side}` });
+      box.appendChild(this.field(t.mode === 'trunk' ? `Native VLAN (untagged, ${VLAN_MIN}–${VLAN_MAX})` : `Untagged VLAN (${VLAN_MIN}–${VLAN_MAX})`, u, endPath.concat('untagged')));
+    }
+    if (t.mode === 'trunk' || t.tagged.length) {
+      const tg = this.input(endPath.concat('tagged'), 'end-tagged', t.tagged.join(', '), { placeholder: '10, 20, 100-199', 'aria-label': `Tagged VLANs at end ${side}` });
+      box.appendChild(this.field('Tagged VLANs', tg, endPath.concat('tagged'), 'IDs and ranges, separated by commas.'));
+    }
+    const model = doc.result.model;
+    const l = model ? model.index.links.get(doc.text([endPath[0], endPath[1], 'id']) || '') : undefined;
+    const end = l ? (endPath[2] === 'a' ? l.a : l.b) : undefined;
+    if (model && end && end.mode) {
+      const nets = endNetworks(model, end);
+      box.appendChild(
+        this.derivedField(
+          'Networks of its VLANs',
+          'end-networks',
+          [nets.length ? this.e('span', { class: 'ro' }, [nets.map((n) => (model.index.networks.get(n) as { label: string }).label).join(', ')]) : this.e('span', { class: 'muted' }, ['No network of the model has one of these VLANs.'])],
+          'The networks whose VLAN this end carries.',
+        ),
+      );
     }
     const node = doc.get(endPath);
     if (node && node.kind === 'map') box.appendChild(this.otherProps(endPath, 'linkEnd'));
-    return this.field(
-      `End ${side} networks`,
-      box,
-      endPath.concat('networks'),
-      'The networks the cable carries at this end (physical / layer 2). Separate from membership, which comes from addresses; several networks do not by themselves mean the port is tagged. Stored on this end only.',
-    );
+    return this.e('div', { class: 'field tag-field', 'data-tagging': side }, [this.e('label', {}, [`End ${side}: layer 2`]), box]);
   }
 
-  /** The difference between the networks of the two ends, shown but never repaired. */
-  private networkMismatchNote(linkIndex: number): HTMLElement {
-    const ids = (side: string): string[] => this.doc.endNetworks(['links', linkIndex, side]);
-    const mm = networkMismatch(ids('a'), ids('b'));
-    if (!mm) return this.e('div', { class: 'net-match', 'data-net-mismatch': 'no' });
+  /** How the tagging of the two ends disagrees, shown but never repaired. */
+  private tagMismatchNote(linkIndex: number): HTMLElement {
     const model = this.doc.result.model;
-    const name = (id: string): string => (model && model.index.networks.get(id) ? (model.index.networks.get(id) as { label: string }).label : id);
-    return this.e('div', { class: 'net-mismatch-note field-warn', 'data-net-mismatch': 'yes', role: 'status' }, ['⚠ The two ends carry different networks (' + networkMismatchText(mm, name) + '). Nothing is changed automatically.']);
+    const l = model ? model.index.links.get(this.doc.text(['links', linkIndex, 'id']) || '') : undefined;
+    const mm = l ? tagMismatch(l.a, l.b) : null;
+    if (!mm) return this.e('div', { class: 'net-match', 'data-tag-mismatch': 'no' });
+    return this.e('div', { class: 'net-mismatch-note field-warn', 'data-tag-mismatch': 'yes', role: 'status' }, ['⚠ The two ends disagree (' + tagMismatchText(mm) + '). Nothing is changed automatically.']);
+  }
+
+  // ------------------------------------------------------------ static routes
+
+  /**
+   * The static routes of a device, after its interfaces and DNS names: a
+   * card per route, in display order (VRF, destination, distance; the file
+   * keeps its order). A device whose type has no routing table offers none.
+   */
+  private renderRoutes(w: HTMLElement, devIndex: number): void {
+    const doc = this.doc;
+    const type = doc.text(['devices', devIndex, 'type']) || '';
+    const entries = doc.routeEntries(devIndex);
+    const allowed = routingRole(type) !== null;
+    if (!allowed && !entries.length) {
+      w.appendChild(
+        this.e('section', { class: 'sub', 'data-list': 'routes' }, [
+          this.e('div', { class: 'sub-head' }, [this.e('h4', {}, ['Static routes'])]),
+          this.e('p', { class: 'muted small', title: `Static routes are for ${ROUTE_DEVICE_TYPES.join(', ')} devices.` }, ['This device type has no routing table.']),
+        ]),
+      );
+      return;
+    }
+    const model = doc.result.model;
+    const dev = doc.text(['devices', devIndex, 'id']) || '';
+    const md = model ? model.index.devices.get(dev) : undefined;
+    const order = (e: RouteEntry): string => {
+      const r = md ? md.routes.find((x) => x.index === e.index) : undefined;
+      return [e.vrf, r ? '0' : '1', e.prefix, e.distance.padStart(3, '0'), e.metric.padStart(10, '0'), e.via, e.iface, String(e.index).padStart(4, '0')].join('|');
+    };
+    const sorted = entries.slice().sort((a, b) => (order(a) < order(b) ? -1 : order(a) > order(b) ? 1 : 0));
+    const sec = this.e('section', { class: 'sub', 'data-list': 'routes' }, [
+      this.e('div', { class: 'sub-head' }, [
+        this.e('h4', {}, [`Static routes (${entries.length})`]),
+        this.e('span', { class: 'ctl row' }, [this.e('button', allowed ? { type: 'button', class: 'mini', 'data-act': 'add-route', 'data-index': String(devIndex), title: 'Add a static route to this device' } : { type: 'button', class: 'mini', disabled: '', title: 'This device type has no routing table' }, ['+ Route'])]),
+      ]),
+      entries.length ? null : this.e('p', { class: 'muted small' }, ['Prefix and next hop. A default gateway is a route to 0.0.0.0/0 or ::/0.']),
+    ]);
+    const n = doc.get(['devices', devIndex, 'routes']);
+    if (n && n.kind !== 'seq' && !(n.kind === 'scalar' && n.value === null)) sec.appendChild(this.e('p', { class: 'field-err' }, ['"routes" is not a list; fix it in the YAML tab.']));
+    for (const e of sorted) sec.appendChild(this.routeCard(devIndex, e));
+    w.appendChild(sec);
+  }
+
+  private routeCard(devIndex: number, e: RouteEntry): HTMLElement {
+    const doc = this.doc;
+    const p = e.path;
+    const iss = doc.issuesAt(p);
+    const errs = iss.filter((i) => i.severity === 'error').length;
+    const nextHop = e.blackhole ? 'blackhole' : [e.via ? 'via ' + e.via : '', e.iface ? 'dev ' + e.iface : ''].filter((x) => x).join(' ') || '(no next hop)';
+    const summary = [e.prefix || '(no prefix)', nextHop, e.distance ? 'AD ' + e.distance : '', e.vrf ? 'VRF ' + e.vrf : '', e.name].filter((x) => !!x).join(' · ');
+    const card = this.e('details', { class: 'card route-card' + (errs ? ' has-err' : ''), 'data-card': J(p), 'data-route': String(e.index) });
+    const selected = !!this.sel && !!this.sel.route && J(this.sel.route) === J(p);
+    if (this.open.has(J(p)) || selected) card.setAttribute('open', '');
+    card.appendChild(
+      this.e('summary', {}, [
+        this.e('span', { class: 'card-title' }, [summary]),
+        iss.length ? this.badge(errs, iss.length - errs) : null,
+        this.e('button', { type: 'button', class: 'mini', 'data-act': 'dup-route', 'data-index': String(devIndex), 'data-k': String(e.index), title: 'Duplicate this route (e.g. for a backup with another distance)', 'aria-label': `Duplicate route ${e.prefix}` }, ['⧉']),
+        this.e('button', { type: 'button', class: 'mini danger', 'data-act': 'del-route', 'data-index': String(devIndex), 'data-k': String(e.index), title: 'Delete this route', 'aria-label': `Delete route ${e.prefix}` }, ['×']),
+      ]),
+    );
+    const node = doc.get(p);
+    if (!node || node.kind !== 'map') {
+      card.appendChild(this.e('div', { class: 'field-err' }, ['This entry is not a mapping with "prefix:" and a next hop; fix it in the YAML tab or delete it.']));
+      return card;
+    }
+    const o = 'route';
+    card.appendChild(this.textField(p.concat('prefix'), 'Destination prefix', o, 'text', ['0.0.0.0/0', '::/0'], 'IPv4 or IPv6 prefix; 0.0.0.0/0 or ::/0 for a default route.', '10.0.0.0/8'));
+    // the blackhole switch: a route either has a next hop or drops the traffic
+    const sw = this.e(
+      'button',
+      { type: 'button', class: 'mini dhcp-switch' + (e.blackhole ? ' on' : ''), role: 'switch', 'aria-checked': e.blackhole ? 'true' : 'false', 'data-act': 'blackhole', 'data-p': J(p), title: e.blackhole ? 'Make the route forward again (then enter its next hop)' : 'Make this a blackhole (null) route: its next hop is removed' },
+      ['Blackhole ', this.e('span', { class: 'dhcp-state' }, [e.blackhole ? 'on' : 'off'])],
+    );
+    card.appendChild(this.field('Blackhole (null route)', sw, p.concat('blackhole'), e.blackhole ? 'Traffic to the prefix is dropped.' : undefined));
+    if (!e.blackhole) {
+      const model = doc.result.model;
+      const dev = doc.text(['devices', devIndex, 'id']) || '';
+      const cands = model ? nextHopCandidates(model, dev, vrfKey(e.vrf)) : [];
+      card.appendChild(this.textField(p.concat('via'), 'Next-hop address', o, 'text', cands.map((c) => c.address), cands.length ? 'Suggestions: neighbours in this device’s networks.' : 'An address in a network of this device, or one a route resolves.', 'Address'));
+      const ifs = sortedByName(doc.interfaceEntries(devIndex).filter((x) => !!x.id), (x) => x.id as string).map((x) => x.id as string);
+      card.appendChild(this.refField(p.concat('interface'), 'Exit interface', o, ifs, 'Optional with an address; alone for a point-to-point or tunnel interface.'));
+    }
+    card.appendChild(this.intField(p.concat('distance'), 'Administrative distance (1–255)', o, 'Empty: route selection takes 1. A higher distance makes a floating (backup) route.'));
+    card.appendChild(this.intField(p.concat('metric'), 'Metric', o, 'Optional: among routes with the same distance, the lower metric is used.'));
+    const model = doc.result.model;
+    const dev = doc.text(['devices', devIndex, 'id']) || '';
+    const vrfs = model ? deviceVrfs(model, dev).filter((v) => !!v) : [];
+    card.appendChild(this.textField(p.concat('vrf'), 'VRF', o, 'text', vrfs, 'Empty: the default table.'));
+    card.appendChild(this.textField(p.concat('name'), 'Name', o));
+    card.appendChild(this.textField(p.concat('description'), 'Description', o, 'textarea'));
+    card.appendChild(this.attrsField(p.concat('attrs'), 'Attributes (attrs)', o));
+    card.appendChild(this.otherProps(p, o));
+    return card;
   }
 
   /**
+   * "+ Route": a new, empty route (one undo step), selected with its card
+   * open. Nothing is filled in for the user: the card shows what is still
+   * missing (the destination prefix and the next hop).
+   */
+  private addRoute(devIndex: number): void {
+    const k = this.doc.addRoute(devIndex, [['prefix', '']]);
+    const path: Path = ['devices', devIndex, 'routes', k];
+    this.open.add(J(path));
+    this.sel = { kind: 'device', index: devIndex, route: path };
+    this.host.selected(this.sel);
+    this.host.changed('Route added — enter its destination prefix and next hop.');
+  }
+
+  /**
+   * A relation's direction as a two-way switch.  /**
    * A relation's direction as a two-way switch. Bidirectional is the default
    * and is not written; unidirectional runs from the first endpoint to the
    * last, so the endpoint order matters (↑ reorders).
@@ -1949,9 +2062,14 @@ export class Editor {
         if (trimmed === '') return true;
         doc.appendText(p, trimmed);
         break;
-      case 'net-pick':
-        if (!val) return true;
-        doc.addEndNetwork(p, val);
+      case 'end-mode':
+        doc.setEndMode(p, val);
+        break;
+      case 'end-untagged':
+        doc.setEndUntagged(p.slice(0, -1), trimmed);
+        break;
+      case 'end-tagged':
+        doc.setEndTagged(p.slice(0, -1), trimmed);
         break;
       case 'over-append':
         if (!val) return true;
@@ -2137,8 +2255,30 @@ export class Editor {
         this.host.changed();
         return true;
       }
-      case 'del-net':
-        doc.removeEndNetwork(p, btn.getAttribute('data-k') as string);
+      case 'add-route':
+        this.addRoute(index);
+        return true;
+      case 'dup-route': {
+        const k = doc.duplicateRoute(index, Number(btn.getAttribute('data-k')));
+        if (k >= 0) {
+          const path: Path = ['devices', index, 'routes', k];
+          this.open.add(J(path));
+          this.sel = { kind: 'device', index, route: path };
+          this.host.selected(this.sel);
+        }
+        this.host.changed('Route duplicated: change its next hop or distance.');
+        return true;
+      }
+      case 'del-route': {
+        const k = Number(btn.getAttribute('data-k'));
+        doc.deleteRoute(index, k);
+        if (this.sel && this.sel.route) this.sel = { kind: 'device', index };
+        this.host.selected(this.sel);
+        this.host.changed('Route deleted.');
+        return true;
+      }
+      case 'blackhole':
+        doc.setBlackhole(p, !(doc.routeEntries(p[1] as number)[p[3] as number] || { blackhole: false }).blackhole);
         this.host.changed();
         return true;
       case 'move-up': {

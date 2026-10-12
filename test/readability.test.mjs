@@ -3,7 +3,7 @@
 // cables, and an Auto-arrange that depends only on the model.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { load, model, example, exampleNames, state, scene } from './helpers.mjs';
+import { load, model, example, exampleNames, state, scene, derive } from './helpers.mjs';
 import { geometry, problems, overlap, inside } from './scene-geometry.mjs';
 
 const T = load('layout/text.js');
@@ -102,7 +102,7 @@ test('no diagram text is shortened: every example, both views, draws its labels 
         }
         // every cable that has something to say is labelled (it used to be dropped when the cable was short)
         const labelled = new Set(g.linkLabels.map((l) => l.ref));
-        for (const l of m.links) if (l.speed || l.label || l.a.networks.length) assert.ok(labelled.has('link:' + l.id), `${f}: cable ${l.id} has its label`);
+        for (const l of m.links) if (l.speed || l.label || derive.tagMismatch(l.a, l.b)) assert.ok(labelled.has('link:' + l.id), `${f}: cable ${l.id} has its label`);
       } else {
         const pills = new Set(g.pills.map((p) => p.ref));
         for (const r of m.relations) {
@@ -166,7 +166,7 @@ test('several point-to-point cables between the same devices: parallel, straight
   // a long cable label wraps instead of being cut
   const uplink = g.linkLabels.find((l) => l.ref === 'link:srv-a');
   assert.ok(uplink.lines.length >= 2);
-  assert.match(uplink.lines.join(' '), /25G · Server network \(production\), Server network \(production, IPv6\), Server network \(production, legacy IPv6 prefix\) · hypervisor uplink, all tenant VLANs/);
+  assert.match(uplink.lines.join(' '), /25G · hypervisor uplink carrying the production server networks of every tenant \(VLAN 10, IPv4 and both IPv6 prefixes\)/);
   // most cables of this example need no bend at all
   assert.ok(g.cables.filter((c) => c.straight).length >= 5, String(g.cables.filter((c) => c.straight).length));
   // port labels have room: none overlaps another one or a cable label

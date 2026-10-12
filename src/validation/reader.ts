@@ -7,7 +7,8 @@ import { Attrs, VLAN_MAX, VLAN_MIN } from '../model/types';
 import { YMap, YNode } from '../yaml/parse';
 
 export interface Issue {
-  severity: 'error' | 'warning';
+  /** error and warning: the format's rules (validate.ts); a consistency check (analysis/checks.ts) may also report info */
+  severity: 'error' | 'warning' | 'info';
   /** 1-based line in the loaded file; 0 for content created in the editor */
   line: number;
   /** human-readable location, e.g. "devices.r1.interfaces[0].ip[1]" */
@@ -17,6 +18,10 @@ export interface Issue {
   node?: YNode;
   /** the key concerned, when the issue is about a key of `node` (missing / unknown key) */
   key?: string;
+  /** set for a finding of a consistency check: its id (analysis/checks.ts) */
+  check?: string;
+  /** a check finding: every object it concerns, as refs ("link:x", "route:d:0" …) */
+  refs?: string[];
 }
 
 export interface ModelLimits {
@@ -68,8 +73,10 @@ export interface At {
 export class Ctx {
   errors: Issue[] = [];
   warnings: Issue[] = [];
+  /** findings of the consistency checks, attached to the place they are about */
+  findings: Issue[] = [];
   constructor(readonly limits: ModelLimits) {}
-  private mk(severity: 'error' | 'warning', node: YNode, path: string, message: string, at: At): Issue {
+  private mk(severity: Issue['severity'], node: YNode, path: string, message: string, at: At): Issue {
     const is: Issue = { severity, line: at.line !== undefined ? at.line : node.line, path, message, node };
     if (at.key !== undefined) is.key = at.key;
     return is;
@@ -80,6 +87,12 @@ export class Ctx {
   }
   warn(node: YNode, path: string, message: string, at: At = {}): void {
     if (this.warnings.length < this.limits.maxErrors) this.warnings.push(this.mk('warning', node, path, message, at));
+  }
+  finding(severity: Issue['severity'], node: YNode, path: string, message: string, at: At, check: string, refs: string[]): void {
+    const is = this.mk(severity, node, path, message, at);
+    is.check = check;
+    is.refs = refs;
+    this.findings.push(is);
   }
 }
 
@@ -160,16 +173,25 @@ export class Reader {
     return [];
   }
 
-  /** Unknown keys are errors; `retired` keys get their own message saying what replaces them. */
-  keys(m: YMap, allowed: string[], path: string, hint = '', retired: { [key: string]: string } = {}): void {
+  /** Unknown keys are errors, with the closest known key as a suggestion. */
+  keys(m: YMap, allowed: string[], path: string, hint = ''): void {
     m.entries.forEach((e, k) => {
       if (allowed.indexOf(k) >= 0) return;
-      if (Object.prototype.hasOwnProperty.call(retired, k)) {
-        this.c.error(m, path ? path + '.' + k : k, `"${k}" is not part of the format — ${retired[k]}`, { key: k, line: e.keyLine });
-      } else {
-        this.c.error(m, path ? path + '.' + k : k, `unknown key "${k}"${suggest(k, allowed, 20)}${hint}`, { key: k, line: e.keyLine });
-      }
+      this.c.error(m, path ? path + '.' + k : k, `unknown key "${k}"${suggest(k, allowed, 20)}${hint}`, { key: k, line: e.keyLine });
     });
+  }
+
+  /** A whole number from `min` to `max` (a missing value: undefined; anything else is an error). */
+  int(n: YNode | undefined, path: string, min: number, max: number, what: string): number | undefined {
+    if (isNull(n)) return undefined;
+    const node = n as YNode;
+    const t = node.kind === 'scalar' ? (scalarText(node) as string) : '';
+    const v = /^(0|[1-9][0-9]{0,9})$/.test(t) ? Number(t) : NaN;
+    if (!(v >= min && v <= max)) {
+      this.c.error(node, path, `${node.kind === 'scalar' ? `"${t}"` : kindOf(node)} is not a valid ${what}: use a whole number from ${min} to ${max}`);
+      return undefined;
+    }
+    return v;
   }
 
   str(n: YNode | undefined, path: string, max: number): string | undefined {

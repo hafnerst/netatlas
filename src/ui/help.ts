@@ -83,9 +83,9 @@ const MANUAL: Section[] = [
     id: 'find',
     title: 'Find and filter objects',
     steps: [
-      '**Find → Find in diagram…** (`/`) opens a search bar over the diagram. Type an ID, label, address, prefix or protocol; press `Enter` or click a match to select it. `Esc` closes the bar.',
+      '**Find → Find in diagram…** (`/`) opens a search bar over the diagram. Type an ID, label, address, prefix, protocol, a route\'s prefix or next hop, or a VLAN (`vlan 20` finds the cables carrying it); press `Enter` or click a match to select it. `Esc` closes the bar.',
       '**Find → Filter object list…** shows a filter box above the object list on the left. It narrows the list only; the diagram is not changed. `Esc` or **×** clears it.',
-      'The **Filters** group in the toolbar chooses what the diagram shows: **Devices ▾** for some devices only, and switches for labels, groups, networks, endpoints and servers. Nothing is deleted, and positions in a filtered view are temporary.',
+      'The **Filters** group in the toolbar chooses what the diagram shows: **Devices ▾** for some devices only, and switches for labels, groups, networks, routes, endpoints and servers. Nothing is deleted, and positions in a filtered view are temporary.',
     ],
     figures: [
       ['find', 'Find in diagram: matches are listed as you type.'],
@@ -109,6 +109,22 @@ const MANUAL: Section[] = [
       ['edit', 'The Edit tab of a device: the header with Duplicate and Delete, then the fields in titled cards.'],
       ['quick-actions', 'Duplicate and Delete on the row under the pointer in the object list.'],
       ['edit-mark', 'An address clicked in the diagram: the Edit tab marks that address of the interface.'],
+    ],
+  },
+  {
+    id: 'routes',
+    title: 'Static routes and VLAN tagging',
+    steps: [
+      'Select a router (or a host) and open the **Edit** tab. Under **Static routes**, **+ Route** adds a route: enter the **Destination prefix** and the **Next-hop address**, or pick an **Exit interface**, or switch **Blackhole** on. A higher **Administrative distance** makes a floating backup; **⧉** duplicates a route.',
+      'In the **Logical** view each device shows its routes as a route table in its box, one line per route. A dotted line with an arrow leads from a route to the interface its next hop belongs to. The **Routes** switch in **Filters** hides them; nothing moves.',
+      'Select a link: each end has a **Mode** (**Access** or **Trunk**), an **Untagged VLAN** (a trunk\'s native VLAN) and, for a trunk, **Tagged VLANs** such as `10, 20, 100-199`. The **Physical** view writes the tagging under each port\'s name: `U 99 · T 10,20`.',
+    ],
+    notes: [
+      'NetAtlas checks the routes and the tagging: a next hop that isn\'t connected or doesn\'t resolve, an exit interface that can\'t forward, VLANs that differ between the two ends of a cable … Each finding is in the **Problems** tab with its check, and at its field in the Edit tab.',
+    ],
+    figures: [
+      ['routes', 'The branch router in the logical view: its route tables (default table and the guest VRF) and the dotted lines to the next hops.'],
+      ['tagging', 'A trunk between a router and an access switch in the physical view: VLAN 99 untagged, VLANs 10, 20 and 30 tagged at both ends.'],
     ],
   },
   {

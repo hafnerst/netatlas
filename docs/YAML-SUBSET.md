@@ -114,11 +114,11 @@ writes the same subset back out.
   inserted in the documented order (e.g. `tier` after `group`, `type` right
   after the `id` of a logical interface).
 * A shorthand is only expanded when you edit it. `interfaces: [eth0]` becomes
-  `[{id: eth0, vrf: blue}]` once you set a VRF, an endpoint `"r1:eth0"`
-  becomes `{device: r1, interface: eth0, role: …}` once you give it a role,
-  and a link end `"r1:eth0"` becomes
-  `{device: r1, interface: eth0, vlans: [10, 20]}` once you add VLANs (and
-  goes back to `r1:eth0` when the last VLAN is removed).
+  `[{id: eth0, vrf: blue}]` once you set a VRF, and a link end `"r1:eth0"`
+  becomes `{device: r1, interface: eth0, mode: trunk, tagged: [10, 20]}` once
+  you give its port a mode and VLANs (and goes back to `r1:eth0` when its
+  tagging is removed). Tagged VLANs entered as `10, 20, 100-199` are written
+  as a flow list, numbers as numbers and ranges as text: `[10, 20, 100-199]`.
 * Strings are quoted only when they'd otherwise read back differently
   (`"123"`, `"yes"`, `"a: b"`, `" padded"`). Text typed into a free-form
   attribute is typed like YAML would type it: `42` becomes a number, `true`

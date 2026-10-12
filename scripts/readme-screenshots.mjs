@@ -34,6 +34,8 @@ const SHOTS = [
   ['addressing-logical-dark.png', 'dark', 'example=6&view=logical'],
   ['ports-logical.png', 'dark', 'example=7&view=logical&select=relation:ospf-s1'],
   ['ports-physical-lag.png', 'light', 'example=7&view=physical&select=iface:core-a:Po1'],
+  ['routes-logical.png', 'dark', 'example=8&view=logical&select=route:br-rtr:1'],
+  ['tagging-physical.png', 'light', 'example=8&view=physical'],
 ];
 
 async function main() {

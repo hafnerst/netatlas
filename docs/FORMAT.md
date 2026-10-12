@@ -11,9 +11,10 @@ things that are often mixed up in diagrams:
 
 | Concept | Section | Drawn in | Meaning |
 |---|---|---|---|
-| Physical connectivity | `links` | Physical view | A real cable / radio link between two ports |
+| Physical connectivity | `links` | Physical view | A real cable / radio link between two ports, with the layer-2 tagging of each end |
 | Logical relationships | `relations` | Logical view | Protocol sessions, tunnels, overlays, redundancy groups, service dependencies |
 | IP networks | `networks` | Logical view | One IP prefix each, optionally with the VLAN it lives in. Members are derived from addresses. |
+| Static routes | `routes` of a device | Logical view | Destination prefix and next hop, per device and VRF |
 | Locations | `groups` | Physical view | Sites, buildings, floors, rooms, racks, providers (nestable) |
 
 A tunnel is **never** a `link`. It is a `relation` whose `over:` field says what
@@ -50,14 +51,15 @@ the YAML file**.
 |---|---|---|
 | Which devices belong to a network | the network's `cidr` and the `ip` addresses of interfaces and loopbacks (an interface with `dhcp: true` has none, so it is in no network) | the network's member list (details, editor, membership lines in the logical view, selection context, layout) |
 | The VLAN of an IP network | `vlan` on the network | the VLAN shown for each interface address inside that network |
-| Which networks a cable carries | `networks` on each end of the link (`a`, `b`) | the cable label, the "ends differ" warning, the cables listed with a network |
+| The VLANs a port carries | `mode`, `untagged`, `tagged` on each end of the link (`a`, `b`) | the networks a cable carries (the networks of those VLANs), the "VLANs differ" mark, the cables listed with a network, the VLAN checks |
 | Speed and medium of a physical connection | `speed` and `medium` on the link | cable width, colour and label |
 | The VRF of an interface | `vrf` on the interface | — |
 | The member ports of a bond / aggregate | `members` on the virtual interface | highlighting of the ports and their cables |
 | The VLAN of a VLAN interface | `vlan` on the virtual interface, or (when that is left out) the `vlan` of the network containing its address | — |
-| Which ports a VLAN interface uses | `networks` on the ends of the links (nothing on the interface) | *Ports carrying its networks* of the virtual interface |
+| Which ports a VLAN interface uses | the tagging of the link ends (nothing on the interface) | *Ports carrying its VLAN* of the virtual interface |
 | What a relation depends on | `over` on the relation (links, relations or networks) | highlighting of the underlay path |
 | The interface a tunnel is sourced from, when its source is written as an address | the `ip` of the interface that has the address | the tunnel's source interface (highlighting, details) |
+| Where a static route leads | `routes` on the device (`via`, `interface`) and the `ip` of interfaces | the interface its next hop belongs to, how the next hop resolves, the next-hop line in the logical view |
 
 Three facts about networks are easy to confuse and are deliberately separate;
 none is derived from another:
@@ -65,19 +67,21 @@ none is derived from another:
 * **Membership** (IP containment, *derived*): a device is a member of a
   network when a configured address of one of its interfaces lies inside the
   network's prefix. It says nothing about cables.
-* **Link-end networks** (physical / layer-2 carriage, *configured* per end):
-  `networks` on a link end says which networks *that cable carries at that
-  end*. An assignment doesn't make anyone a member, isn't derived from the
-  port's addresses, and several networks on one end don't by themselves mean
-  the port is tagged (there is no "trunk" in the model). The two ends are
+* **Link-end tagging** (layer-2 carriage, *configured* per end): `mode`,
+  `untagged` and `tagged` on a link end say which VLANs *that port* carries,
+  untagged or tagged. The networks a cable carries follow from it: the
+  networks whose `vlan` is one of those VLANs. Tagging doesn't make anyone a
+  member and isn't derived from the port's addresses. The two ends are
   independent.
 * **Relation underlay** (dependency, *configured*): `over` on a relation
   says what the relation rides on — links, other relations or networks.
 
 And separately: **`vlan` on a network** says which VLAN an IP subnet lives
 in. It answers "which VLAN is 10.10.10.0/24?" and gives interfaces with an
-address in the subnet their (derived) VLAN. A link end shows the VLAN of each
-network it carries next to it, for information only.
+address in the subnet their (derived) VLAN. VLANs are referenced by their ID
+everywhere: on a network, on a VLAN interface and on a link end. There is no
+separate list of VLANs; a VLAN *exists in the model* when a network or a VLAN
+interface names it.
 
 ## Identifiers
 
@@ -107,9 +111,9 @@ A **relation endpoint** is a device or one of its interfaces, nothing else:
 as a mapping it accepts only `device` and `interface`. Anything that
 describes an endpoint's part in the relation (a role, an address, an AS
 number …) goes into the relation's `attrs`. A **link end** written as a
-mapping accepts `device`, `interface` and `networks` (see
-[links](#links-physical-cabling-only)). A link end can only name a physical
-interface; a relation endpoint can name any interface.
+mapping accepts `device`, `interface` and the tagging keys `mode`, `untagged`
+and `tagged` (see [VLAN tagging](#vlan-tagging-on-a-link-end)). A link end can
+only name a physical interface; a relation endpoint can name any interface.
 
 **An endpoint binds its relation or link to what it names.** The diagrams
 draw it from there and from nowhere else: a relation endpoint
@@ -128,7 +132,7 @@ than one endpoint on the same device is bound by the first of them.
 |---|---|---|
 | `id` | yes | |
 | `label` | | Display name (defaults to the id) |
-| `kind` | | Free text, e.g. `site`, `building`, `floor`, `room`, `rack`, `provider`, `cloud`, `zone`. There is no default: a group without a kind is drawn as a plain box. `site`/`campus`/`building`/`datacenter`/`region` are emphasised; `provider`/`cloud`/`external` are drawn dashed. The kind is shown in the group's title bar and in the legend. `kind: row` is an error; write `floor` (see [Rejected keys and values](#rejected-keys-and-values)). |
+| `kind` | | Free text, e.g. `site`, `building`, `floor`, `room`, `rack`, `provider`, `cloud`, `zone`. There is no default: a group without a kind is drawn as a plain box. `site`/`campus`/`building`/`datacenter`/`region` are emphasised; `provider`/`cloud`/`external` are drawn dashed. The kind is shown in the group's title bar and in the legend. |
 | `parent` | | Id of the enclosing group (at most 8 levels) |
 | `description`, `attrs` | | |
 
@@ -145,32 +149,41 @@ than one endpoint on the same device is bound by the first of them.
 | `interfaces` | | List of the device's **physical interfaces** (its ports, below). The shorthand `interfaces: [eth0, eth1]` is allowed. |
 | `logical_interfaces` | | List of the device's **logical interfaces** (below): loopbacks, virtual interfaces and tunnel interfaces. |
 | `dns_names` | | List of the device's **DNS names**, each associated with one or more of its interfaces. See [DNS names](#dns-names). |
+| `routes` | | List of the device's **static routes**. See [Static routes](#static-routes). Only devices whose type has a routing table may have them. |
 
-A device has no `vendor`, `model`, `role`, `mgmt` or `router_id` key; each
-of them is an error (see [Rejected keys and values](#rejected-keys-and-values)).
+A device has no `vendor`, `model`, `role`, `mgmt` or `router_id` key; like
+every key the format doesn't define, each is an error ("unknown key").
 Such facts can be kept as free-form `attrs`, which are shown in the details
 only.
 
 ### Device types
 
-| Display name | `type` | Default `tier` |
-|---|---|---|
-| Router | `router` | 1 |
-| Switch | `switch` | 4 |
-| Firewall | `firewall` | 2 |
-| Access point | `ap` | 5 |
-| Server | `server` | 6 |
-| Virtual machine | `vm` | 6 |
-| Container | `container` | 6 |
-| Storage | `storage` | 6 |
-| Load balancer | `load_balancer` | 1 |
-| Proxy | `proxy` | 1 |
-| IDS/IPS | `ids_ips` | 2 |
-| Gateway | `gateway` | 1 |
-| Endpoint | `endpoint` | 6 |
-| Cloud | `cloud` | 0 |
-| System | `system` | 6 |
-| *(no type)* | | 4 |
+| Display name | `type` | Default `tier` | Layer 3 (static routes) |
+|---|---|---|---|
+| Router | `router` | 1 | forwards |
+| Switch | `switch` | 4 | forwards (a multilayer switch) |
+| Firewall | `firewall` | 2 | forwards |
+| Access point | `ap` | 5 | — |
+| Server | `server` | 6 | host |
+| Virtual machine | `vm` | 6 | host |
+| Container | `container` | 6 | host |
+| Storage | `storage` | 6 | host |
+| Load balancer | `load_balancer` | 1 | forwards |
+| Proxy | `proxy` | 1 | forwards |
+| IDS/IPS | `ids_ips` | 2 | — |
+| Gateway | `gateway` | 1 | forwards |
+| Endpoint | `endpoint` | 6 | host |
+| Cloud | `cloud` | 0 | — |
+| System | `system` | 6 | host |
+| *(no type)* | | 4 | — |
+
+The last column says what a device of the type does at layer 3. **Layer 3+**
+devices (*forwards*) route traffic between their interfaces and may have any
+static route. **Hosts** have an IP stack but never forward traffic for others;
+they may have routes too, typically their default gateway. An access point and
+an IDS/IPS are drawn as layer-2 or transparent devices, a cloud stands for a
+network outside the model, and a device without a type is unknown: routes on
+any of these are an error.
 
 Each type has its own icon, and the display name appears in the diagram
 subtitle, the details, tooltips, the legend and the editor. The error for
@@ -298,15 +311,14 @@ interface) references that VLAN, not ports:
   interface lies in a network that defines a `vlan`: the VLAN is then taken
   from that network, so it is entered once. If both are present and differ,
   a *warning* says so.
-* **Ports carrying its networks** is derived and read-only. The networks of
-  a virtual interface are the networks containing its addresses and, when
-  `vlan` is written on it, the networks of that VLAN. Its ports are the
-  physical interfaces of the same device whose link end lists one of those
-  networks (see [Networks on a link end](#networks-on-a-link-end)). Nothing
-  is entered on the interface for it, and it changes as soon as a link end
-  changes. A network that no link end of the device carries gives no ports.
-* A virtual interface in no network (no address, no `vlan`; e.g. a plain
-  bond or a VTEP) has no such ports.
+* **Ports carrying its VLAN** is derived and read-only: the physical
+  interfaces of the same device whose link end carries the interface's VLAN,
+  untagged or tagged (see [VLAN tagging](#vlan-tagging-on-a-link-end)).
+  Nothing is entered on the interface for it, and it changes as soon as a
+  link end changes. A VLAN that no link end of the device carries gives no
+  ports.
+* A virtual interface without a VLAN (no `vlan` and no address in a network
+  with one; e.g. a plain bond or a VTEP) has no such ports.
 
 #### Tunnel interfaces: source and destination
 
@@ -481,12 +493,106 @@ devices:
   configured: no DNS record is looked up or derived. **Find in diagram…**
   finds a device by a DNS name.
 
+### Static routes
+
+`routes` lists the static routes of a device: where traffic to a
+destination prefix goes. A device of a *forwarding* type (router, switch,
+firewall, load balancer, proxy, gateway) may have any route; a *host*
+(server, VM, container, storage, endpoint, system) may have routes too.
+**A host's default gateway is a static route** to `0.0.0.0/0` (or `::/0`)
+via the gateway's address: there is no separate gateway field.
+
+```yaml
+devices:
+  - id: br-rtr
+    type: router
+    interfaces:
+      - {id: wan1, ip: 198.51.100.2/30}
+      - {id: wan2, ip: 203.0.113.6/30}
+      - {id: tun0}
+    routes:
+      - {prefix: 0.0.0.0/0, via: 198.51.100.1, name: default via ISP A}
+      - {prefix: 0.0.0.0/0, via: 203.0.113.5, distance: 250, name: floating default}
+      - {prefix: 10.10.0.0/16, via: 198.51.100.1, distance: 10}    # these two: equal-cost
+      - {prefix: 10.10.0.0/16, via: 203.0.113.5, distance: 10}
+      - {prefix: 10.30.0.0/16, interface: tun0}                    # out of an interface
+      - {prefix: 192.0.2.0/24, via: 198.51.100.1, interface: wan1} # both
+      - {prefix: 198.18.0.0/15, blackhole: true}                   # a null route
+      - {prefix: 0.0.0.0/0, vrf: GUEST, blackhole: true}           # in a VRF
+  - id: pc1
+    type: endpoint
+    interfaces:
+      - {id: eth0, ip: 10.20.10.50/24}
+    routes:
+      - {prefix: 0.0.0.0/0, via: 10.20.10.1}                       # the default gateway
+```
+
+| Key | Description |
+|---|---|
+| `prefix` | required: the destination, an IPv4 or IPv6 prefix with its length. `0.0.0.0/0` and `::/0` are default routes. |
+| `via` | the next-hop address, without a prefix length, of the same family as `prefix` |
+| `interface` | the exit interface: an interface id of the same device |
+| `blackhole` | `true`: traffic to the prefix is dropped (a null route). A blackhole route has no `via` and no `interface`. |
+| `distance` | administrative distance, 1–255. Among routes to the same prefix the lowest distance is used; a route with a higher distance is a *floating* backup that takes over when the better one can't be used. |
+| `metric` | optional, a whole number ≥ 0: among routes with the same prefix and distance the lowest metric is used |
+| `vrf` | the VRF the route belongs to (the same names as `vrf` on interfaces); without it the default table |
+| `name`, `description`, `attrs` | |
+
+* A route needs a next hop: `via`, `interface`, both, or `blackhole: true`.
+* Several routes may have the same prefix: with the same distance and metric
+  they are **equal-cost** (all used), with a higher distance they are
+  **floating** backups.
+* A route is identified by its place in its device's list; in the app it is
+  `route:<device>:<index>`. The order of the list means nothing else: the
+  diagram, the details and the route selection sort routes by VRF,
+  prefix, distance, metric and next hop.
+* Errors: a missing or invalid prefix; a `via` that isn't an address (or has
+  a prefix length, or the wrong family); an `interface` the device doesn't
+  have; no next hop; `blackhole: true` together with `via` or `interface`; a
+  distance outside 1–255; a metric that isn't a whole number ≥ 0; routes on a
+  device whose type has no routing table. A prefix with bits set beyond its
+  length is a *warning*: the route is for the whole prefix. A route with an
+  error is left out of the model (and kept in the file).
+* **Route selection** (used by the next-hop line, the details and the
+  analyses): the longest matching prefix among the usable routes and the
+  connected networks (every interface address with its prefix length, in the
+  interface's VRF, distance 0); for that prefix the lowest distance, then the
+  lowest metric; what is left is used together. **A missing `distance` is
+  taken as 1** and a missing metric as 0, the usual defaults for static
+  routes. A route is usable while its next hop resolves: directly connected
+  (in a network of an interface of the device in the route's VRF; with an
+  exit interface, in a network of that interface, unless the interface has no
+  address of its own, as an unnumbered or tunnel interface), or
+  **recursively** through another route of the same VRF, but **never through
+  a default route**. This is a model of static routing, not of any one
+  vendor's implementation.
+* The **consistency checks** for routes (see [Consistency
+  checks](#consistency-checks)) report a next hop that is the device's own
+  address, one that is neither connected nor resolvable (or connected only
+  in another VRF), one outside the exit interface's networks, an exit
+  interface that can't forward (a loopback, a member port of an aggregate, a
+  port without a cable, another VRF), the same route twice, and routes to one
+  prefix at one distance that contradict each other.
+* Display: in the **logical view** the device's box has a **route table**
+  per VRF (*Routes*, *Routes · VRF GUEST*), a line per route, written
+  `prefix via address dev interface AD distance metric metric` or `prefix
+  blackhole` (only what is written). A route whose next hop is an interface
+  of another device has a thin **dotted line with an arrow** from its line
+  to that interface's row; for a route with only an exit interface, to the
+  far end of its cable or to a tunnel's destination. The **Routes** switch
+  (in Filters) hides tables and lines; their room stays, so nothing moves.
+  The physical view doesn't show routes. Selecting a route highlights its
+  device, its exit interface and the interface (and device) its next hop
+  belongs to.
+* Editing keeps routes valid: renaming an interface updates the routes that
+  leave through it; deleting it leaves them as errors to fix.
+
 ## `links` (physical cabling only)
 
 | Key | Required | Description |
 |---|---|---|
 | `id` | yes | |
-| `a`, `b` | yes | The two ends. `device:interface`, or just `device` when the port is unknown or irrelevant (e.g. "Internet"), or a mapping `{device, interface, networks}`. |
+| `a`, `b` | yes | The two ends. `device:interface`, or just `device` when the port is unknown or irrelevant (e.g. "Internet"), or a mapping `{device, interface, mode, untagged, tagged}`. |
 | `medium` | | `fiber`, `copper`, `dac`, `aoc`, `wireless`/`lte`/`5g`/`microwave`, `serial`, `virtual`, or any other text (it gets its own colour). **The only place the medium of the connection is configured**; without it the cable is drawn as "Unspecified". |
 | `speed` | | e.g. `1G`, `10G`, `100G`, `250M`. **The only place the speed of the connection is configured**; it sets the line width. |
 | `label`, `cable` (cable/circuit id), `description`, `attrs` | | |
@@ -500,49 +606,54 @@ A link is the physical connection: one cable (or radio path) between two
 ports. `cable` is only its label or circuit id. There is no separate cable
 object, so `medium` and `speed` exist exactly once per connection.
 
-### Networks on a link end
+### VLAN tagging on a link end
 
-Each end lists the networks the cable carries there, by network id. The two
-lists are stored separately, because they can differ:
+Each end of a link says how its port carries VLANs: its **mode**, its
+**untagged** VLAN and its **tagged** VLANs, by VLAN ID. The two ends are
+stored separately, because they can differ:
 
 ```yaml
 links:
   - id: uplink-1
-    a: {device: core1, interface: Ethernet1, networks: [users, servers, voice]}
-    b: {device: acc1, interface: Gi1/0/49, networks: [users, servers]}       # differs from end a
+    a: {device: core1, interface: Ethernet1, mode: trunk, untagged: 99, tagged: [10, 20, 100-199]}
+    b: {device: acc1, interface: Gi1/0/49, mode: trunk, untagged: 99, tagged: [10, 20, 100-199]}
     medium: fiber
     speed: 10G
-  - {id: srv-1, a: {device: acc1, interface: Gi1/0/1, networks: servers}, b: "srv1:eno1"}   # one network at a, none at b
-  - {id: p2p, a: "r1:eth0", b: "r2:eth0"}                                                  # nothing at either end
+  - {id: srv-1, a: {device: acc1, interface: Gi1/0/1, mode: access, untagged: 20}, b: "srv1:eno1"}
+  - {id: p2p, a: "r1:eth0", b: "r2:eth0"}                    # nothing about layer 2 at either end
 ```
 
-* `networks` is one network id or a list of ids, in any order. Any network
-  can be assigned, whether or not it has a `vlan`. An unknown id, and an id
-  listed twice on one end, is an error.
-* This is **carriage, not membership**: it says the cable carries the network
-  at that end. It makes no device a member (membership comes from
-  addresses), and it is not derived from the port's own addresses — a routed
-  port with an address in a network doesn't put that network on its cable,
-  and an L2 port without any address can carry several networks.
-* **No tagging is implied.** Several networks on an end are just several
-  networks: two networks may share one VLAN (an IPv4 and an IPv6 prefix of
-  one segment), and the model doesn't say whether a port tags. There is no
-  "trunk" in the format or the display. The VLAN of each network is shown
-  next to it in the editor, for information.
-* The end is shown by what is configured there, and nothing is assumed: no
-  networks reads **No network**.
-* If the two ends differ in any way (including "some at one end, none at the
-  other"), the link gets a *warning* naming the networks that are only at
-  end A and only at end B. The editor shows it under the two ends, and the
-  physical view marks the cable with ⚠ and the label *networks differ*.
-  **Neither end is changed**: fix the end that is wrong.
-* In the physical view a cable whose ends agree is labelled with the names of
-  its networks, sorted (speed · networks · label). The per-end lists are in
-  the tooltip and the details. A network's details list the cables that carry
-  it, and selecting a network highlights them.
-* Renaming a network updates the link ends that name it; deleting it leaves
-  them as errors to fix.
-* A link end has no `vlans` key: VLAN IDs belong on the networks.
+| Key | Description |
+|---|---|
+| `mode` | `access` (one untagged VLAN) or `trunk` (tagged VLANs, plus an untagged *native* VLAN). Required when `untagged` or `tagged` is written. |
+| `untagged` | a VLAN ID (1–4094): an access port's VLAN, or a trunk's native VLAN |
+| `tagged` | the tagged VLANs: one ID, a range `100-199`, or a list of both (`[10, 20, 100-199]`) |
+
+* **Nothing is assumed.** An end without a mode says nothing about layer 2:
+  it is not "access in VLAN 1", and it is never compared with the other end.
+  A routed port or a server NIC usually has no mode.
+* **The networks a cable carries are derived**: the networks whose `vlan` is
+  one of the VLANs of the end, untagged or tagged. Carriage is not
+  membership: it makes no device a member of a network.
+* Errors: a mode other than `access` or `trunk`; a VLAN ID outside 1–4094; a
+  range whose end is lower than its start; a VLAN listed twice in `tagged`;
+  `untagged` or `tagged` without a mode.
+* The **VLAN checks** (see [Consistency checks](#consistency-checks)) report
+  untagged (native) VLANs that differ between the two ends, trunks that tag
+  different VLANs (a warning), an access port with tagged VLANs, a VLAN
+  untagged at one end and tagged at the other, and VLANs that no network and
+  no VLAN interface of the model defines (a warning). **Neither end is
+  changed**: fix the end that is wrong.
+* Display: in the **physical view** each port's label has the tagging as its
+  second line, `U 10` (untagged) and `T 20,30,100-199` (tagged, in ranges),
+  e.g. `U 99 · T 10,20`; an end with a mode but no VLANs shows its mode. A
+  cable whose two ends disagree is marked ⚠ with *VLANs differ* in its label.
+  Tooltip and details spell the tagging out (*trunk, native VLAN 99, tagged
+  10,20*) and name the networks it carries. A network's details list the
+  cables that carry its VLAN, and selecting a network highlights them.
+  **Find** finds the cables carrying a VLAN: `vlan 20` or `20`.
+* A VLAN interface's **Ports carrying its VLAN** are the ports of its device
+  whose end carries that VLAN.
 
 ## `networks`
 
@@ -889,11 +1000,12 @@ What a filtered view contains:
 | Devices | selected |
 | Physical links | both ends are on selected devices. A cable to a hidden device is not drawn at all. |
 | Relations (logical view) | every endpoint is on a selected device. A relation that also reaches a hidden device (including a multipoint relation) is left out, never drawn as if it were complete. Its `over` keeps only what is shown. |
-| Networks, physical view | a selected device has an address in it, or an end of a shown link carries it |
+| Networks, physical view | a selected device has an address in it, or an end of a shown link carries its VLAN |
 | Networks, logical view | a selected device has an address in it, or a shown relation names it in `over` |
 | Network members | only the selected devices with an address in the network |
 | Groups / locations | they contain a selected device (directly or in a child group); they frame only their selected devices |
 | Protocols | a shown relation uses them: the Legend, its protocol switches and the exported legend list only those |
+| Static routes | of the shown devices; a next-hop line only to a shown device |
 
 A tunnel interface whose destination is on a hidden device keeps its
 destination text, but nothing is highlighted on the hidden side.
@@ -957,9 +1069,20 @@ places; they are the same on screen and in exported SVG files.
   devices become parallel straight lines. Other cables leave each port at a
   right angle and run straight between the two stubs. If that line would pass
   through a device, the cable bends around it (at most a few bends).
-* **Cable labels** (speed · networks · label) are always drawn, on the cable's
-  longest segment. Each takes the first free place: the middle, then further
-  along the segment, then beside it.
+* **Cable labels** (speed · *VLANs differ* when the tagging of the two ends
+  disagrees · label) are always drawn, on the cable's longest segment. Each
+  takes the first free place: the middle, then further along the segment,
+  then beside it.
+* **Port labels (physical view).** The name of the port, and under it the
+  tagging of its link end (`U 10 · T 20,30`). A port on the left or right
+  side has its name above the cable and its tagging below it; a port on the
+  top or bottom side has both beyond its end. The layout reserves room for
+  both lines.
+* **Route tables (logical view).** A device's static routes are entries of
+  its box, after its interfaces (one per VRF), a line per route, never
+  wrapped. The next-hop lines run from the side of the box beside a route's
+  line to the side of the next hop's box beside that interface's row, around
+  the boxes in between; they are drawn under the boxes and have no label.
 * **Ports (logical view).** Every row of a device's box that relations are
   bound to has a port on the side of the box beside it: an interface's entry
   (a solid bar), or the device's name part for relations bound to the device
@@ -1055,8 +1178,8 @@ version) when they have the same:
   uncabled physical interfaces and of the virtual and tunnel interfaces;
 * groups (ids, parents, labels and kinds);
 * cables (ids and their endpoints `device:interface`; which end is `a` and
-  which is `b` doesn't matter) and the text drawn on them (speed, the
-  networks of the ends, label);
+  which is `b` doesn't matter), the text drawn on them (speed, whether the
+  tagging of the ends differs, label) and the tagging at each port;
 * networks (ids, labels, and the subtitle shown from `vlan`/`cidr`, plus the
   derived set of member devices);
 * relations (ids, the set of devices they connect and the interfaces they
@@ -1064,11 +1187,13 @@ version) when they have the same:
   the bundle (protocol display names and line styles, relation labels,
   nesting through `over`), with the end labels at its ports (interface ids,
   tunnel sources);
-* the members of aggregates (they are kept together along a side).
+* the members of aggregates (they are kept together along a side);
+* the lines of the devices' route tables (prefixes, next hops, distances,
+  metrics, VRFs).
 
 **Not relevant:**
 * order of keys, sections and list items (devices, physical and logical
-  interfaces, member ports, cables, endpoints, link-end networks, `over`, …);
+  interfaces, member ports, cables, endpoints, tagged VLANs, routes, `over`, …);
 * comments, quoting and formatting;
 * the `layout` section itself;
 * manual moves and load order;
@@ -1086,7 +1211,8 @@ next to the object and field they concern.
 
 **Errors** cover:
 * a missing `netatlas:` line, or any value other than `1`;
-* missing required keys, wrong value types and unknown keys;
+* missing required keys, wrong value types and unknown keys (with the closest
+  known key as a suggestion; custom data belongs under `attrs`);
 * invalid or duplicate ids, and unknown references (devices, interfaces,
   groups, networks, `over`);
 * two cables on one port, or a cable on a logical interface;
@@ -1107,19 +1233,18 @@ next to the object and field they concern.
 * a relation `direction` other than `bidirectional` or `unidirectional`;
 * a network without exactly one valid prefix (missing, an empty list,
   several prefixes, not a prefix);
-* an unknown network on a link end, or one listed twice on an end;
+* a link end's tagging: a mode other than `access` or `trunk`, VLAN IDs
+  outside 1–4094, a bad range, a VLAN listed twice, VLANs without a mode;
+* static routes: see [Static routes](#static-routes);
 * invalid loopback addresses, invalid VLAN IDs, and bad colours, categories
-  or styles;
-* the keys and values listed under
-  [Rejected keys and values](#rejected-keys-and-values), each with an
-  instruction saying where the fact belongs.
+  or styles.
 
 **Warnings** don't block rendering:
 * an unknown protocol without a category;
-* different networks at the two ends of a link;
 * an address whose derived VLAN is ambiguous (overlapping networks with
   different VLANs);
-* a prefix with bits beyond its length, or the same prefix on two networks;
+* a prefix with bits beyond its length (of a network or a route), or the same
+  prefix on two networks;
 * a relation carried over another relation whose endpoints don't match;
 * an interface address that isn't a valid IP address;
 * the same address assigned twice;
@@ -1134,6 +1259,34 @@ validated is shown, so an incomplete draft stays usable. Only files that
 aren't valid YAML in the supported subset (or aren't a mapping) are refused
 before editing.
 
+### Consistency checks
+
+Beyond the format's rules, NetAtlas checks whether the network the model
+describes is consistent. Each check has a **stable id**, a severity
+(**error**, **warning** or **info**), a message, every object it concerns and
+a place to jump to; the Problems tab lists the findings with their check id,
+and the Edit tab shows each one at its field. Findings never make a model
+invalid, and they are reported only while the format has no errors.
+
+**A check runs only on data that is present.** Where a value it compares is
+missing, it says nothing; no default is assumed (an end without a mode is not
+"access in VLAN 1").
+
+| Id | Severity | Finds | Reads |
+|---|---|---|---|
+| `route-nexthop-self` | error | a next hop that is an address of the device itself | routes: `via`; interfaces: `ip` |
+| `route-nexthop-interface` | error | a next hop outside the networks of the route's exit interface (not checked for an interface without an address) | routes: `via`, `interface`; interfaces: `ip` |
+| `route-nexthop-unresolved` | error | a next hop that is neither in a network directly connected to the device in the route's VRF nor resolvable through another route (it names the VRF when the next hop is connected in another one) | routes: `prefix`, `via`, `interface`, `vrf`, `blackhole`; interfaces: `ip`, `vrf` |
+| `route-nexthop-recursive` | info | a next hop that resolves through another route | the same |
+| `route-exit-interface` | error | an exit interface that can't forward the route: a loopback, a member port of an aggregate, a physical port without a cable, an interface in another VRF | routes: `interface`, `vrf`; interfaces: `type`, `members`, `vrf`; links |
+| `route-duplicate` | warning | the same route twice (prefix, next hop, distance, metric, VRF) | routes |
+| `route-conflict` | warning | a blackhole and a forwarding route to one prefix at the same distance; routes via the same next hop at the same distance with different metrics | routes |
+| `vlan-native-mismatch` | error | untagged (native) VLANs that differ between the two ends | links: `mode`, `untagged` |
+| `vlan-tagged-mismatch` | warning | two trunk ends that tag different VLANs | links: `mode`, `tagged` |
+| `vlan-access-tagged` | error | an access port with tagged VLANs | links: `mode`, `tagged` |
+| `vlan-untagged-tagged` | error | a VLAN untagged at one end and tagged at the other | links: `mode`, `untagged`, `tagged` |
+| `vlan-unknown` | warning | VLANs on a port that no network and no VLAN interface defines | links: `untagged`, `tagged`; networks and VLAN interfaces: `vlan` |
+
 | Limit | Value |
 |---|---|
 | File size | 2 MiB |
@@ -1146,37 +1299,3 @@ before editing.
 | Endpoints per relation | 64 |
 | Group nesting | 8 levels |
 | Attributes per entity | 100 |
-
-## Rejected keys and values
-
-Some keys are easily expected in a place where the format doesn't have them,
-because the fact they describe belongs somewhere else. Like every unknown key
-they are errors, but instead of a "did you mean" suggestion the error says
-where the fact belongs. netatlas never converts them, never reads them into
-the model and never treats them as aliases.
-
-| Written in | Key or value | Where the fact belongs |
-|---|---|---|
-| a device | `vendor`, `model`, `role`, `mgmt` | Not part of the format. Keep the value under `attrs:` if you need it (shown in the details only). |
-| a device | `router_id` | Not part of the format. Declare the loopback under `logical_interfaces:` with `type: loopback`, and name its purpose in its `label` if you like. |
-| a device | `loopbacks` | A loopback is a logical interface: an entry of `logical_interfaces:` with `type: loopback`. |
-| an entry of `interfaces` | `type` (any value) | An entry of `interfaces` is always a physical interface. A loopback, virtual or tunnel interface belongs in `logical_interfaces:`. |
-| an entry of `interfaces` or `logical_interfaces` | `children` | Interfaces are not nested. Each logical interface is an entry of `logical_interfaces:` with its `type`; a tunnel names its `source`, an aggregate its `members`, a VLAN interface its `vlan`. |
-| an entry of `interfaces` | `members`, `source`, `destination` | Keys of a virtual (`members`) or tunnel (`source`, `destination`) interface in `logical_interfaces:`. |
-| an entry of `interfaces` | `speed`, `media` | `speed` and `medium` of the [link](#links-physical-cabling-only) cabled to the port. |
-| an entry of `interfaces` | `vlan` | Derived from the network containing the address: `vlan` on that [network](#networks). The networks a cable carries are `networks` on the link end. |
-| an entry of `logical_interfaces` | `parent` | There is no generic parent: `members` (aggregate), `vlan` (VLAN interface) or `source` (tunnel). |
-| an entry of `logical_interfaces` | `speed`, `media` | A logical interface has no cable; speed and medium are properties of a link. |
-| a network | `kind` | A network is always an IP network. |
-| a network | `vrf` | `vrf` on the interfaces (or loopbacks) that are in the VRF. |
-| a network | `members` | Derived from the addresses inside the network's `cidr` (see [Membership](#membership-derived)). |
-| a network | `prefixes`, or `cidr` as a list | Exactly one prefix: `cidr: 10.0.0.0/24`. Make a network for each other prefix. |
-| a link end | `vlans` | `networks: [network ids]`; the VLAN ID belongs on the network (`vlan`). |
-| a relation | `network` | If the relation runs over the network, list it in `over`; if it carries or serves it, keep that in `attrs`. |
-| a relation | `directed` | `direction: unidirectional` for `directed: true`; for `directed: false` nothing (bidirectional is the default). |
-| a relation endpoint | `role`, `address`, `attrs` | The relation's `attrs`. An endpoint is only a device and, optionally, an interface. |
-| a group | `kind: row` | `kind: floor`. |
-
-Entries under a rejected key are **not read** (so references to them are
-reported as well) and **not dropped**: the file keeps them, and exports them
-unchanged, until you remove or move them.

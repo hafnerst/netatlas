@@ -15,10 +15,10 @@
  */
 import { deviceSubtitle } from '../model/device-types';
 import { relationStyle } from '../model/protocols';
-import { networkMembers, networkMismatch, networkName } from '../model/derive';
-import { compareNames, sortedByName } from '../model/order';
-import { Device, Link, Model, ifaceKey, loopbacks, relationDevices } from '../model/types';
-import { addressAttrEntries, addressAttrLines, deviceAddressLines, deviceEntries, orderedAddresses } from '../model/addresses';
+import { endTagText, networkMembers, tagMismatch } from '../model/derive';
+import { sortedByName } from '../model/order';
+import { Device, Link, LinkEnd, Model, ifaceKey, loopbacks, relationDevices } from '../model/types';
+import { addressAttrEntries, addressAttrLines, deviceAddressLines, deviceEntries, orderedAddresses, routeTables } from '../model/addresses';
 import { STRAND_GAP, bindingKey, bindingOn, buildBundle, laneLabel, portSpans, relationPairs } from './bundles';
 import { cmp } from './order';
 import { END_LABEL_GAP, EntryText, PORT_STUB, endLabelBox, entriesSize, memberLabelBox, networkSubtitle, portRowH } from './sizes';
@@ -28,6 +28,8 @@ export interface LEnd {
   iface?: string;
   /** the aggregate (LAG) the port is a member of: its ports are kept together along the side */
   lag?: string;
+  /** the port's layer-2 tagging as its label's second line ("U 10 · T 20,30"; see derive.endTagText) */
+  tag?: string;
 }
 export interface LLink {
   id: string;
@@ -44,7 +46,7 @@ export interface LDev {
   loopbacks: number;
   /** size [w, h] of the device's address entries in the physical view ([0, 0]: none) */
   physList: [number, number];
-  /** size [w, h] of the device's address entries in the logical view ([0, 0]: none) */
+  /** size [w, h] of the device's address entries in the logical view, with its route tables ([0, 0]: none) */
   logList: [number, number];
   /** the device's DNS names, each once, sorted (shown under it in the logical view) */
   dns: string[];
@@ -208,7 +210,7 @@ export function layoutInput(m: Model): LayoutInput {
       }
       return { a: bundle.a, b: bundle.b, labels: roots.map(laneLabel), extras: roots.map((p) => p.extra), width: bundle.width, ends };
     }),
-    linkLabels: byId(m.links.map((l) => ({ id: l.id, text: linkLabelText(m, l), extra: linkLabelExtra(l) })).filter((x) => x.text !== '' || x.extra.length > 0)),
+    linkLabels: byId(m.links.map((l) => ({ id: l.id, text: linkLabelText(l), extra: linkLabelExtra(l) })).filter((x) => x.text !== '' || x.extra.length > 0)),
   };
 }
 
@@ -225,11 +227,13 @@ export function aggregateOf(m: Model, device: string, iface: string | undefined)
   return ids.length ? ids.sort(cmp)[0] : undefined;
 }
 
-/** A link end as the port layout sees it: device, interface and the aggregate the interface belongs to. */
-export function portEnd(m: Model, e: { device: string; iface?: string }): LEnd {
+/** A link end as the port layout sees it: device, interface, the aggregate the interface belongs to, and the port's tagging. */
+export function portEnd(m: Model, e: LinkEnd): LEnd {
   const out: LEnd = e.iface ? { device: e.device, iface: e.iface } : { device: e.device };
   const lag = aggregateOf(m, e.device, e.iface);
   if (lag !== undefined) out.lag = lag;
+  const tag = endTagText(e);
+  if (tag) out.tag = tag;
   return out;
 }
 
@@ -240,7 +244,10 @@ export function portLinks(m: Model): LLink[] {
 
 /**
  * The entries a device's box holds in a view: its own address lines (an
- * entry without a name), then one entry per interface (model/addresses.ts).
+ * entry without a name), then one entry per interface (model/addresses.ts),
+ * then, in the logical view, its route tables (one per VRF). The room of
+ * the route tables is kept while the Routes switch hides them, so switching
+ * moves nothing.
  */
 export function entryTexts(m: Model, d: Device, view: 'physical' | 'logical'): EntryText[] {
   const own = deviceAddressLines(d);
@@ -253,6 +260,7 @@ export function entryTexts(m: Model, d: Device, view: 'physical' | 'logical'): E
     const minH = span ? portRowH(span) + endLabelH(m, d.id, e.id) : 0;
     out.push(minH ? { header: e.header, lines: e.lines, minH } : { header: e.header, lines: e.lines });
   }
+  if (view === 'logical') for (const t of routeTables(d)) out.push({ header: t.header, lines: t.lines });
   return out;
 }
 
@@ -352,19 +360,16 @@ export function linkLabelExtraFields(l: Link): Array<{ line: string; field: stri
 }
 
 /**
- * The networks a cable carries, for its label: the names of the networks
- * both ends carry, or a note when the ends differ (see the link's details).
- * Several networks are just listed: nothing about tagging is implied.
+ * The note on a cable whose two ends disagree about layer-2 tagging
+ * ('' when they agree, or when an end says nothing about layer 2).
  */
-export function linkNetworkLabel(m: Model, l: Link): string {
-  if (networkMismatch(l.a.networks, l.b.networks)) return 'networks differ';
-  // sorted, so the order of the list in the file affects neither text nor layout
-  return l.a.networks.map((id) => networkName(m, id)).sort(compareNames).join(', ');
+export function linkTagNote(l: Link): string {
+  return tagMismatch(l.a, l.b) ? 'VLANs differ' : '';
 }
 
-/** The text drawn on a cable: speed, networks, label. */
-export function linkLabelText(m: Model, l: Link): string {
-  return [l.speed, linkNetworkLabel(m, l), l.label].filter((s) => !!s).join(' · ');
+/** The text drawn on a cable: speed, a note when the tagging of its ends differs, label. */
+export function linkLabelText(l: Link): string {
+  return [l.speed, linkTagNote(l), l.label].filter((s) => !!s).join(' · ');
 }
 
 /** Stable text form of the input: equal signatures always give equal auto-arrange results. */

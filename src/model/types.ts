@@ -115,6 +115,38 @@ export interface Device {
   logical: Interface[];
   /** DNS names configured for the device, in file order */
   dnsNames: DnsName[];
+  /** static routes, in file order (empty unless the device type may route; see analysis/routing.ts) */
+  routes: Route[];
+  line: number;
+}
+
+/**
+ * A static route of a device: a destination prefix and where traffic to it
+ * goes. The next hop is an address (`via`), an exit interface, both, or a
+ * black hole. Several routes may share a prefix (equal-cost, or floating
+ * backups with a higher distance). Identified by its position in the
+ * device's list ("route:<device>:<index>").
+ */
+export interface Route {
+  device: string;
+  /** position in the device's `routes` list (file order) */
+  index: number;
+  /** the destination prefix as written (always a valid prefix in a model) */
+  prefix: string;
+  /** next-hop address as written (no prefix length) */
+  via?: string;
+  /** exit interface: an interface id of the same device */
+  iface?: string;
+  /** traffic to the prefix is dropped (a null route); never together with via or an interface */
+  blackhole: boolean;
+  /** administrative distance as written (1–255); route selection takes a missing one as 1 */
+  distance?: number;
+  metric?: number;
+  /** VRF of the route; none: the default (global) table */
+  vrf?: string;
+  name?: string;
+  description?: string;
+  attrs: Attrs;
   line: number;
 }
 
@@ -132,16 +164,29 @@ export interface DnsName {
   line: number;
 }
 
-/** One end of a physical link, with the VLAN IDs that end permits on the cable. */
+/** Layer-2 port mode of a link end: an access port (one untagged VLAN) or a trunk (tagged VLANs, plus a native one). */
+export type PortMode = 'access' | 'trunk';
+export const PORT_MODES: readonly PortMode[] = ['access', 'trunk'];
+
+/** A run of VLAN IDs, `from` to `to` inclusive (one ID: from === to). */
+export interface VlanRange {
+  from: number;
+  to: number;
+}
+
 /**
- * One end of a physical link, with the networks the cable carries at that
- * end (physical / layer-2 carriage). Configured per end: the two ends may
- * differ, and nothing is copied from one to the other. An assignment is not
- * membership (that follows from addresses) and says nothing about tagging.
+ * One end of a physical link, with the layer-2 tagging of the port there:
+ * its mode, the untagged VLAN (the access VLAN, or a trunk's native VLAN)
+ * and the tagged VLANs. Configured per end: the two ends may differ, and
+ * nothing is copied from one to the other. The networks the cable carries
+ * there are derived from it (the networks whose `vlan` is carried; see
+ * model/derive.ts). An end without a mode says nothing about layer 2.
  */
 export interface LinkEnd extends Endpoint {
-  /** ids of networks, in file order; empty = none assigned */
-  networks: string[];
+  mode?: PortMode;
+  untagged?: number;
+  /** tagged VLANs as written (file order), each an ID or a range */
+  tagged: VlanRange[];
 }
 
 export interface Link {
@@ -223,7 +268,7 @@ export interface Model {
   index: ModelIndex;
 }
 
-export type EntityKind = 'group' | 'device' | 'interface' | 'link' | 'network' | 'relation';
+export type EntityKind = 'group' | 'device' | 'interface' | 'route' | 'link' | 'network' | 'relation';
 
 export interface ModelIndex {
   groups: Map<string, Group>;
@@ -235,10 +280,17 @@ export interface ModelIndex {
   relations: Map<string, Relation>;
   /** "device:iface" -> link id */
   ifaceLink: Map<string, string>;
+  /** "device:index" -> static route */
+  routes: Map<string, Route>;
 }
 
 export function ifaceKey(device: string, iface: string): string {
   return device + ':' + iface;
+}
+
+/** Key of a route in ModelIndex.routes and in its ref ("route:" + key). */
+export function routeKey(device: string, index: number): string {
+  return device + ':' + index;
 }
 
 export function endpointText(e: Endpoint): string {

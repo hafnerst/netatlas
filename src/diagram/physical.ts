@@ -14,12 +14,11 @@
  *   is never in doubt and no floating label can cover it.
  */
 import { CBox, Pt, Rect, boxRect, rectsOverlap, segmentHitsRect, textWidth, unionRect } from '../layout/geometry';
-import { entryTexts, linkLabelExtraFields, linkLabelText, linkNetworkLabel, portLinks } from '../layout/input';
+import { entryTexts, linkLabelExtraFields, linkLabelText, linkTagNote, portLinks } from '../layout/input';
 import { GROUP_PAD, PORT_FONT, PORT_LABEL_GAP, PhysicalLayout, PortPos, assignPorts, physicalListH, spareChipFlow } from '../layout/physical';
 import { ChipFlow, DEVICE_ICON, DEVICE_TEXT_X, ENTRY_FONT, GROUP_KIND_SIZE, ENTRY_GAP, ENTRY_LH, ENTRY_MARGIN, ENTRY_PAD_X, ENTRY_PAD_Y, IFCHIP_FONT, IFCHIP_H, IFCHIP_PAD, chipStripH, deviceBody, entriesSize, entryBox, groupHeader, linkLabelBox } from '../layout/sizes';
-import { LineField, addressAttrEntries, addressAttrLines, deviceEntries } from '../model/addresses';
+import { LineField, addressAttrEntries, addressAttrLines, deviceAddressLines, deviceEntries, routeTables } from '../model/addresses';
 import { sortedByName } from '../model/order';
-import { networkMismatch } from '../model/derive';
 import { deviceSubtitle } from '../model/device-types';
 import { Device, Model, ifaceKey } from '../model/types';
 import { deviceIcon } from './icons';
@@ -27,7 +26,7 @@ import { LabelPlacer, addressLineAttrs, alongSegment, centerRect, fieldAttrs, le
 import { VNode, h } from './scene';
 import { groupKindStyle, mediumStyle, speedWidth } from './style';
 
-export { deviceSubtitle, linkNetworkLabel };
+export { deviceSubtitle };
 
 export interface ViewOptions {
   showLabels: boolean;
@@ -165,16 +164,44 @@ export function deviceNode(ref: string, label: string, sub: string, type: string
   ]);
 }
 
-/** Where the label of a port is drawn, and the rectangle it covers. */
-function portLabelBox(p: PortPos): { x: number; y: number; anchor: string; rect: Rect } {
-  const w = textWidth(p.iface as string, PORT_FONT);
+/** One line of a port's label: the interface's name, or the port's tagging. */
+interface PortLabelLine {
+  text: string;
+  kind: 'name' | 'tag';
+  x: number;
+  y: number;
+  rect: Rect;
+}
+
+/**
+ * Where the label of a port is drawn: its interface's name and, under it,
+ * the layer-2 tagging of the link end ("U 10 · T 20,30"); the rectangles
+ * they cover. A port on the left or right side has its name above the
+ * cable and its tagging below it; a port on the top or bottom side has both
+ * beyond its end, the tagging outermost. The layout reserved this room
+ * (layout/physical.ts).
+ */
+function portLabelBox(p: PortPos): { anchor: string; lines: PortLabelLine[]; rect: Rect } {
+  const lines: PortLabelLine[] = [];
+  const add = (text: string | undefined, kind: 'name' | 'tag', x: number, y: number, anchor: string): void => {
+    if (!text) return;
+    const w = textWidth(text, PORT_FONT);
+    const left = anchor === 'middle' ? x - w / 2 : anchor === 'end' ? x - w : x;
+    lines.push({ text, kind, x, y, rect: { x: left, y: y - 9, w, h: 12 } });
+  };
+  let anchor: string;
   if (p.side === 'top' || p.side === 'bottom') {
+    anchor = 'middle';
     const y = p.y + p.ny * 12 + (p.side === 'top' ? -1 : 8);
-    return { x: p.x, y, anchor: 'middle', rect: { x: p.x - w / 2, y: y - 9, w, h: 12 } };
+    add(p.iface, 'name', p.x, y, anchor);
+    add(p.tag, 'tag', p.x, p.iface ? y + p.ny * 12 : y, anchor);
+  } else {
+    anchor = p.side === 'left' ? 'end' : 'start';
+    const x = p.x + p.nx * PORT_LABEL_GAP;
+    add(p.iface, 'name', x, p.y - 5, anchor);
+    add(p.tag, 'tag', x, p.y + 13, anchor);
   }
-  const x = p.x + p.nx * PORT_LABEL_GAP;
-  const y = p.y - 5;
-  return { x, y, anchor: p.side === 'left' ? 'end' : 'start', rect: { x: p.side === 'left' ? x - w : x, y: y - 9, w, h: 12 } };
+  return { anchor, lines, rect: lines.length ? unionRect(lines.map((l) => l.rect)) : { x: p.x, y: p.y, w: 0, h: 0 } };
 }
 
 /**
@@ -271,11 +298,17 @@ export function renderPhysical(model: Model, layout: PhysicalLayout, opts: ViewO
   if (opts.showLabels) {
     for (const { pa, pb } of drawn) {
       for (const p of [pa, pb]) {
-        if (!p.iface) continue;
         const pl = portLabelBox(p);
-        labelNodes.push(h('text', { class: 'halo port-label', 'data-ref': `iface:${p.device}:${p.iface}`, x: pl.x, y: pl.y, 'text-anchor': pl.anchor, 'font-size': PORT_FONT }, p.iface));
-        placer.block(pl.rect);
-        extra.push(pl.rect);
+        for (const ln of pl.lines) {
+          // the name belongs to the interface; the tagging to the end of the link (its field in the Edit tab)
+          const attrs =
+            ln.kind === 'name'
+              ? { class: 'halo port-label', 'data-ref': `iface:${p.device}:${p.iface}` }
+              : { class: 'halo port-tag', 'data-ref': 'link:' + p.linkId, 'data-field': p.key.slice(p.key.lastIndexOf(':') + 1), 'data-value': '' };
+          labelNodes.push(h('text', { ...attrs, x: ln.x, y: ln.y, 'text-anchor': pl.anchor, 'font-size': PORT_FONT }, ln.text));
+          placer.block(ln.rect);
+          extra.push(ln.rect);
+        }
       }
     }
   }
@@ -284,7 +317,7 @@ export function renderPhysical(model: Model, layout: PhysicalLayout, opts: ViewO
   for (const { pa, pb } of drawn) {
     for (const p of [pa, pb]) {
       const rs: Rect[] = [{ x: p.x - 6.5, y: p.y - 6.5, w: 13, h: 13 }];
-      if (opts.showLabels && p.iface) rs.push(portLabelBox(p).rect);
+      if (opts.showLabels) for (const ln of portLabelBox(p).lines) rs.push(ln.rect);
       portArea.set(p.key, rs);
     }
   }
@@ -328,8 +361,8 @@ export function renderPhysical(model: Model, layout: PhysicalLayout, opts: ViewO
       }
     }
     const out: VNode[] = [];
-    const mismatch = !!networkMismatch(l.a.networks, l.b.networks);
-    const text = opts.showLabels ? linkLabelText(model, l) : '';
+    const mismatch = !!linkTagNote(l);
+    const text = opts.showLabels ? linkLabelText(l) : '';
     const lineFields = opts.showLabels ? linkLabelExtraFields(l) : [];
     const lines = lineFields.map((x) => x.line);
     let center = { x: (pts[seg].x + pts[seg + 1].x) / 2, y: (pts[seg].y + pts[seg + 1].y) / 2 };
@@ -341,7 +374,7 @@ export function renderPhysical(model: Model, layout: PhysicalLayout, opts: ViewO
       extra.push(r);
       if (placer.leaderFrom) out.push(leaderLine(placer.leaderFrom, r, 'link:' + l.id));
       out.push(textLines({ class: 'halo link-label' + (mismatch ? ' net-mismatch' : ''), 'data-ref': 'link:' + l.id, 'text-anchor': 'middle' }, box.block, center.x, r.y + 1, addressLineAttrs(box.block, lineFields)));
-      // ends that carry different networks are marked next to the label
+      // ends whose layer-2 tagging differs are marked next to the label
       if (mismatch) out.push(h('text', { class: 'halo net-warn', 'data-ref': 'link:' + l.id, x: center.x, y: r.y - 3, 'text-anchor': 'middle' }, '⚠'));
     } else if (mismatch) {
       // … and on the cable itself when labels are off
@@ -497,24 +530,31 @@ export interface EntryItem {
   ref: string;
   /** the field of the configuration each line shows (same order as `lines`) */
   fields: LineField[];
-  /** classes: if-entry plus the kind (loop-chip, logical-chip kind-…, phys-entry, dev-addr) */
+  /** classes: if-entry plus the kind (loop-chip, logical-chip kind-…, phys-entry, dev-addr, route-table) */
   cls: string;
   /** an interface can be an endpoint of a new connection; the device's own entry is not one */
   endpoint: boolean;
+  /** a route table: the ref of each line (its route), which is selected on its own */
+  lineRefs?: string[];
 }
 
 /**
  * The entries of a device's box in a view, in the order the layout sized
  * them (layout/input.ts entryTexts): the device's own address lines, then
- * its interfaces.
+ * its interfaces, then (logical view) its route tables.
  */
 export function entryItems(model: Model, d: Device, view: 'physical' | 'logical'): EntryItem[] {
   const texts = entryTexts(model, d, view);
   const ifaces = deviceEntries(model, d, view);
-  const own = texts.length > ifaces.length;
+  const own = deviceAddressLines(d).length > 0 ? 1 : 0;
+  const tables = view === 'logical' ? routeTables(d) : [];
   return texts.map((t, i) => {
     if (own && i === 0) return { ...t, ref: 'device:' + d.id, fields: addressAttrEntries(d.attrs).map((a) => ({ field: 'attr', value: a.key })), cls: 'if-entry dev-addr', endpoint: false };
-    const e = ifaces[own ? i - 1 : i];
+    if (i >= own + ifaces.length) {
+      const tb = tables[i - own - ifaces.length];
+      return { ...t, ref: 'device:' + d.id, fields: tb.refs.map(() => ({ field: '', value: '' })), cls: 'if-entry route-table', endpoint: false, lineRefs: tb.refs };
+    }
+    const e = ifaces[i - own];
     const kind = e.kind === 'loopback' ? 'loop-chip' : e.kind === 'physical' ? 'phys-entry' : 'logical-chip kind-' + e.kind;
     return { ...t, ref: e.ref, fields: e.fields, cls: 'if-entry ' + kind, endpoint: true };
   });
@@ -529,14 +569,19 @@ export function entryNodes(items: EntryItem[], x: number, y: number, w: number):
   let top = y;
   for (const it of items) {
     const b = entryBox(it);
-    const kids: VNode[] = [h('rect', { x, y: top, width: w, height: b.h, rx: 4 })];
+    // a route table belongs to its device, but it is not highlighted with it: its frame and title follow the
+    // device's dimming only, and each line is its own route
+    const table = it.lineRefs ? { 'data-ref': it.ref } : {};
+    const kids: VNode[] = [h('rect', { ...table, x, y: top, width: w, height: b.h, rx: 4 })];
     let ty = top + ENTRY_PAD_Y;
     if (it.header) {
-      kids.push(textLines({ class: 'if-name addr', 'font-size': ENTRY_FONT }, { lines: [it.header], size: ENTRY_FONT, w: 0, h: ENTRY_LH, mono: 0 }, x + ENTRY_PAD_X, ty));
+      kids.push(textLines({ ...table, class: 'if-name addr', 'font-size': ENTRY_FONT }, { lines: [it.header], size: ENTRY_FONT, w: 0, h: ENTRY_LH, mono: 0 }, x + ENTRY_PAD_X, ty));
       ty += ENTRY_LH;
     }
-    if (it.lines.length) kids.push(textLines({ class: 'if-lines', 'font-size': ENTRY_FONT }, { lines: it.lines, size: ENTRY_FONT, w: 0, h: it.lines.length * ENTRY_LH, mono: 0 }, x + ENTRY_PAD_X, ty, it.fields.map(fieldAttrs)));
-    out.push(h('g', { class: it.cls, 'data-ref': it.ref, 'data-endpoint': it.endpoint ? 'iface' : undefined }, kids));
+    // a route table's lines are each a route of their own (selectable, highlighted on their own)
+    const lineAttrs = it.lineRefs ? it.lineRefs.map((ref) => ({ 'data-ref': ref })) : it.fields.map(fieldAttrs);
+    if (it.lines.length) kids.push(textLines({ class: 'if-lines', 'font-size': ENTRY_FONT }, { lines: it.lines, size: ENTRY_FONT, w: 0, h: it.lines.length * ENTRY_LH, mono: 0 }, x + ENTRY_PAD_X, ty, lineAttrs));
+    out.push(h('g', { class: it.cls, 'data-ref': it.lineRefs ? undefined : it.ref, 'data-endpoint': it.endpoint ? 'iface' : undefined }, kids));
     top += b.h + ENTRY_GAP;
   }
   return out;

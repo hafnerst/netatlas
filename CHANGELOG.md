@@ -12,7 +12,69 @@ it is described in [docs/FORMAT.md](docs/FORMAT.md).
 
 ## [Unreleased]
 
+### Model format 1: changes before launch
+
+NetAtlas is not released for production use yet, so model format 1 still
+changes. These changes are made within version 1 (files keep `netatlas: 1`);
+there is no conversion of files written for the earlier drafts.
+
+- **Static routes:** a device may have `routes`, each with `prefix` and a
+  next hop (`via`, `interface`, both, or `blackhole: true`), and optionally
+  `distance` (1–255), `metric`, `vrf`, `name`, `description` and `attrs`.
+  Allowed on Layer 3+ device types (router, switch, firewall, load balancer,
+  proxy, gateway) and on hosts (server, VM, container, storage, endpoint,
+  system); an error on access points, IDS/IPS, clouds and devices without a
+  type. A host's default gateway is a static default route.
+- **VLAN tagging on link ends** replaces the per-end `networks` list: a link
+  end has `mode` (`access` or `trunk`), `untagged` (a VLAN ID: the access VLAN
+  or a trunk's native VLAN) and `tagged` (VLAN IDs and ranges such as
+  `100-199`). VLANs are referenced by ID, as on networks and VLAN interfaces;
+  the networks a cable carries are now derived from its tagging. `networks`
+  on a link end is an unknown key.
+- **No compatibility messages for earlier drafts:** keys that earlier
+  development versions used (`loopbacks`, `children`, `directed`, `prefixes`,
+  `vlans`, `router_id`, `vendor` …) are reported like any other unknown key,
+  with the closest known key as a suggestion; group kind `row` is free text
+  like every other kind.
+
 ### Added
+
+- **Static routes in the diagram and the editor.** The logical view shows
+  each device's routes as a route table in its box (one per VRF), a line per
+  route (`0.0.0.0/0 via 203.0.113.5 AD 250`), and a dotted line with an arrow
+  from a route to the interface its next hop belongs to. A **Routes** switch
+  in the toolbar's Filters hides them without moving anything. The Edit tab
+  has a **Static routes** section per device (add, edit, duplicate, delete,
+  each one undo step; an exit-interface picker and next-hop suggestions).
+  Details, tooltips, **Find** (prefix, next hop, name) and selection include
+  routes; a route is related to its device, its exit interface and the
+  interface its next hop belongs to.
+- **VLAN tagging in the diagram and the editor.** The physical view writes
+  each link end's tagging under its port name (`U 99 · T 10,20,100-199`) and
+  marks a cable whose ends disagree with ⚠ *VLANs differ*. The Edit tab has
+  **Mode**, **Untagged / Native VLAN** and **Tagged VLANs** per end, with the
+  networks they carry; **Find** finds the cables carrying a VLAN (`vlan 20`).
+- **Analysis module** (`src/analysis/`): address arithmetic for IPv4 and
+  IPv6, routing tables (connected networks, static routes per VRF,
+  longest-prefix match, distance, metric, equal-cost multipath, recursive
+  next hops never through a default route) and a registry of **consistency
+  checks**, each with a stable id, a severity and the fields it reads. Its
+  findings appear in the Problems tab (with the check id, and a click opens
+  the object) and at their field in the Edit tab; they never make a model
+  invalid. Checks in this release: `route-nexthop-self`,
+  `route-nexthop-unresolved`, `route-nexthop-recursive` (info),
+  `route-nexthop-interface`, `route-exit-interface`, `route-duplicate`,
+  `route-conflict`, `vlan-native-mismatch`, `vlan-tagged-mismatch`,
+  `vlan-access-tagged`, `vlan-untagged-tagged`, `vlan-unknown`.
+- Example **`branch-routing.yaml`**: a dual-homed branch with a floating
+  static default route, equal-cost routes to HQ, a blackhole, a guest VRF,
+  host default gateways and a router-on-a-stick trunk with a native VLAN.
+- User Manual section *Static routes and VLAN tagging* with two screenshots;
+  README screenshots of route tables and port tagging.
+- Tests: `test/analysis.test.mjs`, `test/routes.test.mjs`,
+  `test/vlan-tagging.test.mjs` (every route and VLAN check positive and
+  negative), and a self-test block for the routes UI, the Routes switch and
+  its effect on exports.
 
 - **Relations and links attached to their interfaces.** In the logical view
   every interface a relation is bound to has a **port** beside its row on the
@@ -130,6 +192,15 @@ it is described in [docs/FORMAT.md](docs/FORMAT.md).
   addresses.
 
 ### Changed
+
+- The examples and fixtures use VLAN tagging on their link ends instead of
+  per-end network lists. Cable labels no longer list networks (the port
+  labels carry the tagging).
+- Logical-view routing: a relation whose route has to go around a box turns
+  beyond the end labels of the rows it passes (the stubs are nested again with
+  the turn the route really makes).
+- The File menu scrolls inside a short window a little earlier, so its last
+  example is always reachable.
 
 - **A relation is nested in a tunnel's tube only when both are bound to the
   same interfaces.** GRE on a tunnel interface carried over IPsec between the

@@ -70,7 +70,9 @@ export function geometry(root) {
   // interface entries in device boxes: their frame and their text (name line, address lines)
   const entries = all(root, (n) => has(n, 'if-entry')).map((g) => {
     const ts = g.children.filter((c) => c.tag === 'text');
-    return { ref: g.attrs['data-ref'], cls: g.attrs.class, box: rectOf(g.children.find((c) => c.tag === 'rect')), texts: ts.map((t) => ({ lines: linesOf(t), rect: textRect(t, num(t, 'font-size')) })) };
+    const frame = g.children.find((c) => c.tag === 'rect');
+    // a route table's group has no ref of its own: its frame names the device
+    return { ref: g.attrs['data-ref'] || frame.attrs['data-ref'], cls: g.attrs.class, box: rectOf(frame), texts: ts.map((t) => ({ lines: linesOf(t), rect: textRect(t, num(t, 'font-size')) })) };
   });
   // the loopbacks' entries
   const chips = entries.filter((e) => /(^| )loop-chip( |$)/.test(e.cls)).map((e) => ({ ref: e.ref, box: e.box, text: e.texts.map((t) => t.lines.join(' ')).join(' '), rect: e.texts[0].rect }));

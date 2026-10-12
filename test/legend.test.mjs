@@ -69,8 +69,9 @@ test('physical legend in the SVG: device types, cable media, speed, ports, locat
     assert.ok(t.includes(want), want + '\n' + t.join(' | '));
   }
   assert.ok(!t.some((x) => /mismatch/.test(x)), 'no mismatch symbol when no cable has one');
-  const mm = model('netatlas: 1\ndevices:\n  - {id: a, interfaces: [e0]}\n  - {id: b, interfaces: [e0]}\nnetworks:\n  - {id: n, cidr: 10.0.0.0/24}\nlinks:\n  - {id: l, a: {device: a, interface: e0, networks: [n]}, b: "b:e0"}\n');
-  assert.ok(texts(exported(mm, 'physical').root).includes('The two ends carry different networks'));
+  const mm = model('netatlas: 1\ndevices:\n  - {id: a, interfaces: [e0]}\n  - {id: b, interfaces: [e0]}\nnetworks:\n  - {id: n, cidr: 10.0.0.0/24, vlan: 5}\nlinks:\n  - {id: l, a: {device: a, interface: e0, mode: access, untagged: 5}, b: {device: b, interface: e0, mode: access, untagged: 6}}\n');
+  const mt = texts(exported(mm, 'physical').root);
+  assert.ok(mt.includes('VLANs differ: the tagging of the two ends disagrees') && mt.includes('Port tagging: U untagged (access / native) VLAN · T tagged VLANs'), mt.join(' | '));
   // symbols are real SVG content of the file (icons, lines), not references to the page
   const root = exported(m, 'physical').root;
   assert.ok(scene.findAll(root, (n) => scene.hasClass(n, 'icon')).length >= 5);

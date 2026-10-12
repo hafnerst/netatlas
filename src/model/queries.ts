@@ -3,12 +3,46 @@
  * "what belongs to this object" (used for highlighting) and text search.
  * No layout, rendering or YAML knowledge.
  */
-import { associatedInterfaces, deviceNetworks, interfaceNetworks, networkMembers } from './derive';
-import { Model, deviceInterfaces, ifaceKey, relationDevices } from './types';
+import { addressOwners, associatedInterfaces, deviceNetworks, endNetworks, endVlans, interfaceNetworks, linkNetworks, networkMembers, vlanRangesText } from './derive';
+import { Model, Route, deviceInterfaces, ifaceKey, relationDevices, routeKey } from './types';
 
 export function splitRef(ref: string): [string, string] {
   const i = ref.indexOf(':');
   return i < 0 ? [ref, ''] : [ref.slice(0, i), ref.slice(i + 1)];
+}
+
+/** The ref of a route ("route:<device>:<index>"). */
+export function routeRefOf(r: Route): string {
+  return 'route:' + routeKey(r.device, r.index);
+}
+
+/**
+ * What a route points at, as refs: its exit interface and the interfaces
+ * that own its next-hop address (the address configured on them), with
+ * their devices. A next hop no interface has points at nothing.
+ */
+export function routeTargets(model: Model, r: Route): string[] {
+  const out: string[] = [];
+  if (r.iface !== undefined) out.push(`iface:${r.device}:${r.iface}`);
+  if (r.via !== undefined) {
+    for (const o of addressOwners(model, r.via)) {
+      if (out.indexOf(`iface:${o.device}:${o.iface}`) < 0) out.push(`iface:${o.device}:${o.iface}`);
+      if (o.device !== r.device && out.indexOf('device:' + o.device) < 0) out.push('device:' + o.device);
+    }
+  }
+  return out;
+}
+
+/** The routes of the model whose exit interface is `iface`, or whose next hop is an address of it. */
+export function routesUsing(model: Model, device: string, iface: string): Route[] {
+  const out: Route[] = [];
+  for (const d of model.devices) {
+    for (const r of d.routes) {
+      if (r.device === device && r.iface === iface) out.push(r);
+      else if (r.via !== undefined && addressOwners(model, r.via).some((o) => o.device === device && o.iface === iface)) out.push(r);
+    }
+  }
+  return out;
 }
 
 export function refExists(model: Model, ref: string): boolean {
@@ -28,6 +62,8 @@ export function refExists(model: Model, ref: string): boolean {
       return ix.groups.has(id);
     case 'iface':
       return ix.interfaces.has(id);
+    case 'route':
+      return ix.routes.has(id);
     case 'protocol':
       return model.protocols.has(id);
     default:
@@ -44,7 +80,9 @@ export function refExists(model: Model, ref: string): boolean {
  *              cables of its member ports, a member port its aggregate;
  *   relation   itself (lanes, hub, label) and the interfaces it is bound to
  *              at every end (the device, where it is bound to the device);
- *   link       itself and the ports at both ends, with their aggregates.
+ *   link       itself and the ports at both ends, with their aggregates;
+ *   route      itself, its exit interface and the interface its next hop
+ *              is an address of.
  *
  * Null for anything else (devices, networks, groups …): nothing to show.
  */
@@ -98,6 +136,13 @@ export function attachedRefs(model: Model, ref: string): Set<string> | null {
       if (!ix.links.has(id)) return null;
       addLink(id);
       return out;
+    case 'route': {
+      const r = ix.routes.get(id);
+      if (!r) return null;
+      out.add(ref);
+      for (const t of routeTargets(model, r)) if (t.indexOf('iface:') === 0) out.add(t);
+      return out;
+    }
     default:
       return null;
   }
@@ -173,9 +218,17 @@ export function relatedRefs(model: Model, ref: string): Set<string> {
         }
       }
       for (const i of deviceInterfaces(dv)) out.add(`iface:${id}:${i.id}`);
+      for (const r of dv.routes) out.add(routeRefOf(r));
       for (const l of model.links) if (l.a.device === id || l.b.device === id) addLink(l.id);
       for (const r of model.relations) if (r.endpoints.some((e) => e.device === id)) addRelation(r.id, false);
       for (const n of deviceNetworks(model, id)) out.add('network:' + n);
+      break;
+    }
+    case 'route': {
+      const r = ix.routes.get(id);
+      if (!r) break;
+      addDevice(r.device);
+      for (const t of routeTargets(model, r)) out.add(t);
       break;
     }
     case 'iface': {
@@ -202,14 +255,16 @@ export function relatedRefs(model: Model, ref: string): Set<string> {
       }
       for (const r of model.relations) if (r.endpoints.some((e) => e.device === inf.device && e.iface === inf.id)) addRelation(r.id, true);
       for (const n of interfaceNetworks(model, inf.device, inf.id)) out.add('network:' + n);
+      // the routes leaving through it or pointing at one of its addresses
+      for (const r of routesUsing(model, inf.device, inf.id)) out.add(routeRefOf(r));
       break;
     }
     case 'link': {
       addLink(id);
       for (const r of carriedOver(id)) addRelation(r, false);
-      // the networks the cable carries at its ends
+      // the networks of the VLANs the cable carries at its ends
       const l = ix.links.get(id);
-      if (l) for (const n of l.a.networks.concat(l.b.networks)) if (ix.networks.has(n)) out.add('network:' + n);
+      if (l) for (const n of linkNetworks(model, l)) out.add('network:' + n);
       break;
     }
     case 'hub':
@@ -227,8 +282,8 @@ export function relatedRefs(model: Model, ref: string): Set<string> {
         addDevice(m.device);
         for (const x of m.matches) out.add(`iface:${x.device}:${x.iface}`);
       }
-      // the cables that carry it at an end, with their ports
-      for (const l of model.links) if (l.a.networks.indexOf(id) >= 0 || l.b.networks.indexOf(id) >= 0) addLink(l.id);
+      // the cables that carry its VLAN at an end, with their ports
+      for (const l of model.links) if (endNetworks(model, l.a).indexOf(id) >= 0 || endNetworks(model, l.b).indexOf(id) >= 0) addLink(l.id);
       for (const r of carriedOver(id)) addRelation(r, false);
       break;
     }
@@ -268,7 +323,11 @@ export interface SearchHit {
   kind: string;
 }
 
-/** Case-insensitive search over ids, labels, protocols, addresses and DNS names. */
+/**
+ * Case-insensitive search over ids, labels, protocols, addresses, DNS names,
+ * route prefixes and next hops, and the VLANs of link ends ("vlan 20" or
+ * "20" finds the cables whose ends carry VLAN 20).
+ */
 export function search(model: Model, query: string, limit = 12): SearchHit[] {
   const q = query.trim().toLowerCase();
   if (!q) return [];
@@ -291,7 +350,22 @@ export function search(model: Model, query: string, limit = 12): SearchHit[] {
   }
   for (const n of model.networks) consider('network:' + n.id, 'network', n.label, [n.id, n.label, n.vlan !== undefined ? 'vlan ' + n.vlan : '', n.cidr || '']);
   for (const r of model.relations) consider('relation:' + r.id, r.protocol, r.label || r.id, [r.id, r.protocol, r.label || '']);
-  for (const l of model.links) consider('link:' + l.id, 'link', l.label || l.id, [l.id, l.label || '', l.cable || '']);
+  for (const d of model.devices) {
+    for (const r of d.routes) consider(routeRefOf(r), 'route', `${d.label}: ${r.prefix}${r.via !== undefined ? ' via ' + r.via : ''}${r.iface !== undefined ? ' dev ' + r.iface : ''}${r.blackhole ? ' blackhole' : ''}`, [r.prefix, r.via || '', r.iface || '', r.name || '', r.vrf ? 'vrf ' + r.vrf : '']);
+  }
+  const vlanQ = /^(?:vlan\s*)?([0-9]{1,4})$/.exec(q);
+  for (const l of model.links) {
+    const vlans = vlanQ ? endVlans(l.a).concat(endVlans(l.b)) : [];
+    const hay = [l.id, l.label || '', l.cable || ''];
+    // a VLAN number matches the cables carrying exactly that VLAN (also inside a range); other text their VLAN list
+    if (vlanQ) {
+      if (vlans.indexOf(Number(vlanQ[1])) >= 0) hay.push('vlan ' + vlanQ[1], vlanQ[1]);
+    } else {
+      const all = endVlans(l.a).concat(endVlans(l.b));
+      if (all.length) hay.push('vlan ' + vlanRangesText(all));
+    }
+    consider('link:' + l.id, 'link', l.label || l.id, hay);
+  }
   for (const g of model.groups) consider('group:' + g.id, g.kind || 'group', g.label, [g.id, g.label]);
   hits.sort((a, b) => b.score - a.score || a.label.localeCompare(b.label));
   return hits.slice(0, limit).map(({ ref, label, kind }) => ({ ref, label, kind }));
@@ -316,6 +390,8 @@ export function search(model: Model, query: string, limit = 12): SearchHit[] {
  *              aliases such as ebgp → bgp don't count);
  * * group    — its parent group, its child groups, devices placed directly in it;
  * * protocol — relations using exactly that protocol id.
+ * A route selects its device; its context is its device, the link of its
+ * exit interface and the device its next hop is an address of.
  * An interface (a port selected in the diagram) selects its device, and its
  * context is that of the port: the link cabled to it, networks containing one
  * of its addresses, and relations that name exactly that interface. A
@@ -369,12 +445,20 @@ export function selectionContext(model: Model, ref: string): SelectionContext | 
       for (const r of model.relations) if (r.endpoints.some((e) => e.device === inf.device && e.iface === inf.id)) add('relation', r.id);
       break;
     }
+    case 'route': {
+      const r = ix.routes.get(id);
+      if (!r) break;
+      selected = 'device:' + r.device;
+      if (r.iface !== undefined) add('link', ix.ifaceLink.get(ifaceKey(r.device, r.iface)));
+      for (const t of routeTargets(model, r)) if (t.indexOf('device:') === 0) rel.add(t);
+      break;
+    }
     case 'link': {
       const l = ix.links.get(id);
       if (!l) break;
       add('device', l.a.device);
       add('device', l.b.device);
-      for (const n of l.a.networks.concat(l.b.networks)) if (ix.networks.has(n)) add('network', n);
+      for (const n of linkNetworks(model, l)) add('network', n);
       for (const r of model.relations) if (r.over.indexOf(id) >= 0) add('relation', r.id);
       break;
     }
@@ -382,7 +466,7 @@ export function selectionContext(model: Model, ref: string): SelectionContext | 
       const n = ix.networks.get(id);
       if (!n) break;
       for (const m of networkMembers(model, id)) add('device', m.device);
-      for (const l of model.links) if (l.a.networks.indexOf(id) >= 0 || l.b.networks.indexOf(id) >= 0) add('link', l.id);
+      for (const l of model.links) if (endNetworks(model, l.a).indexOf(id) >= 0 || endNetworks(model, l.b).indexOf(id) >= 0) add('link', l.id);
       for (const r of model.relations) if (r.over.indexOf(id) >= 0) add('relation', r.id);
       break;
     }

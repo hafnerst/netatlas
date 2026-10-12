@@ -101,10 +101,10 @@ test('outline sections: folding is view state of the editor, with Links and Prot
   assert.ok(load('ui/inspector.js').Editor);
 });
 
-test('examples: the File menu offers the eight hand-written examples; the generated fixtures are test data only', async () => {
+test('examples: the File menu offers the nine hand-written examples; the generated fixtures are test data only', async () => {
   const { readdirSync } = await import('node:fs');
   const { EXAMPLES, FIXTURES } = load('generated/examples.js');
-  assert.deepEqual(EXAMPLES.map((e) => e.name), ['enterprise-wan.yaml', 'datacenter-evpn.yaml', 'minimal.yaml', 'metro-ring.yaml', 'device-types.yaml', 'long-labels.yaml', 'addressing.yaml', 'port-bindings.yaml']);
+  assert.deepEqual(EXAMPLES.map((e) => e.name), ['enterprise-wan.yaml', 'datacenter-evpn.yaml', 'minimal.yaml', 'metro-ring.yaml', 'device-types.yaml', 'long-labels.yaml', 'addressing.yaml', 'port-bindings.yaml', 'branch-routing.yaml']);
   assert.deepEqual(FIXTURES.map((e) => e.name).sort(), ['editor-new-network.yaml', 'metro-ring-arranged.yaml', 'minimal-edited.yaml']);
   assert.deepEqual(readdirSync(join(root, 'examples')).filter((f) => /\.yaml$/.test(f)).sort(), EXAMPLES.map((e) => e.name).sort());
   // nothing the user sees builds its list from FIXTURES: only the self-test imports them
@@ -158,11 +158,11 @@ test('diagram filters: one group at the right of the toolbar, with a Filters dro
   const group = /<div id="filters-slot" class="filters-slot">\s*<div id="filters-group" class="tool-group filters-group" role="group" aria-label="Diagram filters">\s*<span id="filters-title" class="tool-group-title">Filters<\/span>\s*<div id="view-filters" class="view-filters">([\s\S]*?)\n  <\/div>\n  <\/div>\n  <\/div>\n  <div class="theme-wrap">[\s\S]*?<\/div>\n<\/header>/.exec(html);
   assert.ok(group, 'the filters are one labelled group, the last thing in the toolbar before the theme switch');
   const opts = [...group[1].matchAll(/<label class="opt[^"]*" data-priority="(\d)"[^>]*><input id="([^"]+)"/g)].map((m) => [m[2], Number(m[1])]);
-  assert.deepEqual(opts, [['opt-labels', 5], ['opt-groups', 4], ['opt-networks', 3], ['opt-type-endpoint', 2], ['opt-type-server', 1]]);
+  assert.deepEqual(opts, [['opt-labels', 6], ['opt-groups', 5], ['opt-networks', 4], ['opt-routes', 3], ['opt-type-endpoint', 2], ['opt-type-server', 1]]);
   assert.match(group[1], /<button id="more-filters-btn" type="button" class="menu-btn" aria-haspopup="true" aria-expanded="false" aria-controls="more-filters" hidden disabled>Filters/);
   // on the start screen every filter is disabled; the app enables them once a model is drawn
   const inputs = [...group[1].matchAll(/<input id="(opt-[^"]+)"[^>]*>/g)];
-  assert.equal(inputs.length, 5);
+  assert.equal(inputs.length, 6);
   for (const m of inputs) assert.match(m[0], / disabled>$/, m[1]);
   assert.match(group[1], /<button id="devices-btn"[^>]* disabled>/);
   assert.match(css, /\.view-filters \{[^}]*flex-wrap: nowrap;/);

@@ -105,8 +105,8 @@ links:
   - {id: uplink, a: "isp:pe-1", b: "core:xe-0/0/0", medium: fiber, speed: 10G, cable: "CID-4711-ISP / MMR-2 #12"}
   - {id: wan, a: "core:xe-0/0/1", b: "remote:wan0", medium: fiber, speed: 1G, cable: "Carrier circuit 77-ABCD-0042"}
   - id: trunk
-    a: {device: core, interface: ge-0/0/2, networks: [corp, corp6, voice]}
-    b: {device: dist, interface: xe-1, networks: [corp, corp6, voice]}
+    a: {device: core, interface: ge-0/0/2, mode: trunk, tagged: [10, 20]}
+    b: {device: dist, interface: xe-1, mode: trunk, tagged: [10, 20]}
     medium: copper
     speed: 10G
   - {id: mgmt-link, a: "core:ge-0/0/3", b: "srv:eth0", medium: copper, speed: 1G}

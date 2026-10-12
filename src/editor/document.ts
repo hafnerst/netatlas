@@ -153,6 +153,10 @@ export class ModelDoc {
   get warnings(): Issue[] {
     return this.result.warnings;
   }
+  /** findings of the consistency checks (they never make the model invalid) */
+  get findings(): Issue[] {
+    return this.result.findings;
+  }
   get valid(): boolean {
     return this.result.errors.length === 0;
   }
@@ -170,9 +174,9 @@ export class ModelDoc {
     return is.key !== undefined ? p.concat(is.key) : p;
   }
 
-  /** Issues located at or below `path`. */
+  /** Issues located at or below `path`: the format's errors and warnings, and the findings of the checks. */
   issuesAt(path: Path, exact = false): Issue[] {
-    const all = this.result.errors.concat(this.result.warnings);
+    const all = this.result.errors.concat(this.result.warnings, this.result.findings);
     return all.filter((is) => {
       const p = this.issuePath(is);
       if (!p || p.length < path.length) return false;
@@ -600,6 +604,7 @@ export class ModelDoc {
     if (ik) return ik;
     if (path.length === 4 && typeof path[3] === 'number' && path[0] === 'relations' && path[2] === 'endpoints') return 'endpoint';
     if (path.length === 4 && typeof path[3] === 'number' && path[0] === 'devices' && path[2] === 'dns_names') return 'dnsName';
+    if (path.length === 4 && typeof path[3] === 'number' && path[0] === 'devices' && path[2] === 'routes') return 'route';
     if (this.isLinkEnd(path)) return 'linkEnd';
     if (path.length === 1 && path[0] === 'layout') return 'layout';
     return undefined;
@@ -676,52 +681,86 @@ export class ModelDoc {
     });
   }
 
-  /** Network ids assigned to one end of a link, as written, in file order (invalid entries included). */
-  endNetworks(endPath: Path): string[] {
-    const n = this.get(endPath.concat('networks'));
-    if (!n) return [];
-    if (n.kind === 'seq') return n.items.map((i) => scalarText(i)).filter((x): x is string => x !== undefined);
-    const t = scalarText(n);
-    return t === undefined ? [] : [t];
+  /** The layer-2 tagging written on one end of a link: its mode, untagged VLAN and tagged VLANs, as written. */
+  endTagging(endPath: Path): { mode: string; untagged: string; tagged: string[] } {
+    const t = this.get(endPath.concat('tagged'));
+    const tagged = !t ? [] : t.kind === 'seq' ? t.items.map((i) => scalarText(i)).filter((x): x is string => x !== undefined) : scalarText(t) !== undefined ? [scalarText(t) as string] : [];
+    return { mode: this.text(endPath.concat('mode')) || '', untagged: this.text(endPath.concat('untagged')) || '', tagged };
   }
 
   /**
-   * Assign a network to one end of a link (`endPath` is links[i].a or .b).
-   * Only that end is written: the other end is never adjusted to match. The
-   * short "dev:if" form becomes a mapping; a network already listed is
-   * skipped. Returns false if the end has no device yet.
+   * Set the port mode of one end of a link (`endPath` is links[i].a or .b):
+   * "access" or "trunk"; '' says nothing about layer 2 and removes the
+   * mode with the end's VLANs. Only that end is written, never the other
+   * one. The short "dev:if" form becomes a mapping; an end left with only
+   * its device and interface goes back to the short form.
    */
-  addEndNetwork(endPath: Path, id: string): boolean {
+  setEndMode(endPath: Path, mode: string): boolean {
     const cur = this.get(endPath);
     if (!cur || (cur.kind === 'scalar' && scalarText(cur) === undefined)) return false;
-    if (this.endNetworks(endPath).indexOf(id) >= 0) return true;
-    this.change('Assign network', () => {
-      this.ensureMap(endPath);
-      this.ensureSeq(endPath.concat('networks'), true, KEY_ORDER.linkEnd).items.push(strNode(id));
+    this.change(mode ? 'Set port mode' : 'Remove port tagging', () => {
+      if (mode) {
+        this.ensureMap(endPath);
+        this.setAt(endPath.concat('mode'), strNode(mode), KEY_ORDER.linkEnd);
+        // an access port has one untagged VLAN: tagged VLANs of a trunk it was are dropped with the change
+        if (mode === 'access') this.removeAt(endPath.concat('tagged'));
+      } else {
+        for (const k of ['mode', 'untagged', 'tagged']) this.removeAt(endPath.concat(k));
+        this.shortEnd(endPath);
+      }
     });
     return true;
   }
 
-  /** Remove one network (by its id) from one end of a link; the last one removes the `networks` key. */
-  removeEndNetwork(endPath: Path, id: string): void {
-    const np = endPath.concat('networks');
-    const n = this.get(np);
-    if (!n) return;
-    this.change('Remove network', () => {
-      if (n.kind === 'seq') {
-        const k = n.items.findIndex((i) => scalarText(i) === id);
-        if (k >= 0) n.items.splice(k, 1);
-        if (n.items.length) return;
-      } else if (scalarText(n) !== id) return;
-      this.removeAt(np);
-      // an end with nothing but device/interface goes back to the short form
-      const e = this.get(endPath);
-      if (e && e.kind === 'map' && Array.from(e.entries.keys()).every((key) => key === 'device' || key === 'interface')) {
-        const dev = this.text(endPath.concat('device'));
-        const inf = this.text(endPath.concat('interface'));
-        if (dev) this.setAt(endPath, strNode(inf ? dev + ':' + inf : dev), KEY_ORDER.link);
+  /** Set the untagged VLAN of a link end (the access VLAN, or a trunk's native VLAN); '' removes it. */
+  setEndUntagged(endPath: Path, text: string): boolean {
+    const cur = this.get(endPath);
+    if (!cur || (cur.kind === 'scalar' && scalarText(cur) === undefined)) return false;
+    this.change('Set untagged VLAN', () => {
+      if (text === '') {
+        this.removeAt(endPath.concat('untagged'));
+        this.shortEnd(endPath);
+        return;
       }
+      this.ensureMap(endPath);
+      this.setAt(endPath.concat('untagged'), /^[0-9]+$/.test(text) ? numNode(Number(text)) : strNode(text), KEY_ORDER.linkEnd);
     });
+    return true;
+  }
+
+  /**
+   * Set the tagged VLANs of a link end from text such as "10, 20, 100-199"
+   * (IDs and ranges, separated by commas or spaces). They are written as a
+   * flow list, numbers as numbers and ranges as text; anything else is kept
+   * as written for validation to report. '' removes them.
+   */
+  setEndTagged(endPath: Path, text: string): boolean {
+    const cur = this.get(endPath);
+    if (!cur || (cur.kind === 'scalar' && scalarText(cur) === undefined)) return false;
+    const parts = text
+      .split(/[,\s]+/)
+      .map((x) => x.trim())
+      .filter((x) => !!x);
+    this.change('Set tagged VLANs', () => {
+      if (!parts.length) {
+        this.removeAt(endPath.concat('tagged'));
+        this.shortEnd(endPath);
+        return;
+      }
+      this.ensureMap(endPath);
+      this.setAt(endPath.concat('tagged'), seqNode(parts.map((p) => (/^[0-9]+$/.test(p) ? numNode(Number(p)) : strNode(p))), true), KEY_ORDER.linkEnd);
+    });
+    return true;
+  }
+
+  /** An end written as a mapping with nothing but device and interface goes back to "dev:if". */
+  private shortEnd(endPath: Path): void {
+    const e = this.get(endPath);
+    if (e && e.kind === 'map' && Array.from(e.entries.keys()).every((key) => key === 'device' || key === 'interface')) {
+      const dev = this.text(endPath.concat('device'));
+      const inf = this.text(endPath.concat('interface'));
+      if (dev) this.setAt(endPath, strNode(inf ? dev + ':' + inf : dev), KEY_ORDER.link);
+    }
   }
 
   /** Add a key to a mapping (created if missing): an empty value, a group or a list. */
@@ -973,6 +1012,17 @@ export class ModelDoc {
       }
       epRefs('links', 'a/b');
       epRefs('relations', 'endpoints');
+      // static routes of the same device that leave through the interface
+      if (iface !== undefined) {
+        const dev = this.findEntity('device', id);
+        const rl = dev ? this.get(['devices', dev.index, 'routes']) : undefined;
+        if (dev && rl && rl.kind === 'seq') {
+          rl.items.forEach((it, k) => {
+            const f = it.kind === 'map' ? it.entries.get('interface') : undefined;
+            if (f && scalarText(f.value) === iface) out.push(['devices', dev.index, 'routes', k, 'interface']);
+          });
+        }
+      }
       // associations of logical interfaces: member ports and tunnel sources (same device), tunnel destinations (any device)
       this.entities('device').forEach((dev) => {
         const lp: Path = ['devices', dev.index, 'logical_interfaces'];
@@ -1001,22 +1051,6 @@ export class ModelDoc {
       scalarRefs('devices', 'group', (t) => t === id);
     } else if (kind === 'link' || kind === 'relation' || kind === 'network') {
       scalarRefs('relations', 'over', (t) => t === id);
-      if (kind === 'network') {
-        // the link ends that carry it
-        const ls = this.root.entries.get('links');
-        if (ls && ls.value.kind === 'seq') {
-          ls.value.items.forEach((ent, i) => {
-            if (ent.kind !== 'map') return;
-            for (const side of ['a', 'b']) {
-              const e = ent.entries.get(side);
-              const nl = e && e.value.kind === 'map' ? e.value.entries.get('networks') : undefined;
-              if (!nl) continue;
-              if (nl.value.kind === 'seq') nl.value.items.forEach((it, k) => scalarText(it) === id && out.push(['links', i, side, 'networks', k]));
-              else if (scalarText(nl.value) === id) out.push(['links', i, side, 'networks']);
-            }
-          });
-        }
-      }
     } else if (kind === 'protocol') {
       scalarRefs('relations', 'protocol', (t) => t.toLowerCase() === id.toLowerCase());
     }
@@ -1035,7 +1069,7 @@ export class ModelDoc {
       const t = scalarText(n) as string;
       let nt = t;
       const last = p[p.length - 1];
-      if (last === 'source' || last === 'members' || p[p.length - 2] === 'members' || p[2] === 'dns_names') {
+      if (last === 'source' || last === 'members' || p[p.length - 2] === 'members' || p[2] === 'dns_names' || (p[2] === 'routes' && last === 'interface')) {
         // an interface of the same device, written as its bare id
         nt = newIf !== undefined ? newIf : t;
       } else if (/^(a|b|destination)$/.test(String(last)) || p[p.length - 2] === 'endpoints') {
@@ -1089,6 +1123,79 @@ export class ModelDoc {
       setKey(m, 'id', strNode(newIf), KEY_ORDER[kind]);
       for (const p of refs) this.rewriteRef(p, dev.id as string, dev.id as string, oldIf, newIf);
       return refs.length;
+    });
+  }
+
+  // ------------------------------------------------------------------ routes
+
+  /** The static routes of a device as written, in file order: their path and their fields as text. */
+  routeEntries(devIndex: number): RouteEntry[] {
+    const base: Path = ['devices', devIndex, 'routes'];
+    const list = this.get(base);
+    if (!list || list.kind !== 'seq') return [];
+    return list.items.map((it, k) => {
+      const p = base.concat(k);
+      const t = (key: string): string => (it.kind === 'map' ? this.text(p.concat(key)) || '' : '');
+      const bh = it.kind === 'map' ? this.get(p.concat('blackhole')) : undefined;
+      return { path: p, index: k, prefix: t('prefix'), via: t('via'), iface: t('interface'), blackhole: !!bh && bh.kind === 'scalar' && bh.value === true, distance: t('distance'), metric: t('metric'), vrf: t('vrf'), name: t('name') };
+    });
+  }
+
+  /**
+   * Add a static route to a device (one undo step); returns its index in the
+   * device's `routes` list. Only the given fields are written, in the
+   * format's key order: nothing is chosen for the user.
+   */
+  addRoute(devIndex: number, fields: Array<[string, string]>): number {
+    const entries: Array<[string, YNode]> = [];
+    for (const key of KEY_ORDER.route) {
+      const f = fields.find(([k]) => k === key);
+      const v = f ? f[1].trim() : '';
+      if (!v) continue;
+      if (key === 'blackhole') {
+        if (v === 'true') entries.push([key, boolNode(true)]);
+      } else if (key === 'distance' || key === 'metric') entries.push([key, /^[0-9]+$/.test(v) ? numNode(Number(v)) : strNode(v)]);
+      else entries.push([key, strNode(v)]);
+    }
+    return this.change('Add route', () => {
+      const list = this.ensureSeq(['devices', devIndex, 'routes'], false, KEY_ORDER.device);
+      list.items.push(mapNode(entries, true));
+      return list.items.length - 1;
+    });
+  }
+
+  /** Duplicate a route of a device: the copy is inserted right after it (one undo step); returns its index. */
+  duplicateRoute(devIndex: number, k: number): number {
+    const list = this.get(['devices', devIndex, 'routes']);
+    if (!list || list.kind !== 'seq' || !list.items[k]) return -1;
+    return this.change('Duplicate route', () => {
+      const copy = cloneNode(list.items[k]);
+      delete copy.before;
+      delete copy.blank;
+      list.items.splice(k + 1, 0, copy);
+      return k + 1;
+    });
+  }
+
+  /** Delete a route of a device (one undo step); the last one removes the `routes` key. */
+  deleteRoute(devIndex: number, k: number): void {
+    const lp: Path = ['devices', devIndex, 'routes'];
+    const list = this.get(lp);
+    if (!list || list.kind !== 'seq' || !list.items[k]) return;
+    this.change('Delete route', () => {
+      list.items.splice(k, 1);
+      if (!list.items.length) this.removeAt(lp);
+    });
+  }
+
+  /** Switch the blackhole flag of a route: on removes its next hop (address and exit interface), off removes the flag. */
+  setBlackhole(routePath: Path, on: boolean): void {
+    this.change(on ? 'Make route a blackhole' : 'Route forwards again', () => {
+      if (on) {
+        this.removeAt(routePath.concat('via'));
+        this.removeAt(routePath.concat('interface'));
+        this.setAt(routePath.concat('blackhole'), boolNode(true), KEY_ORDER.route);
+      } else this.removeAt(routePath.concat('blackhole'));
     });
   }
 
@@ -1365,6 +1472,20 @@ export class ModelDoc {
 }
 
 /** What turning DHCP on would remove (see ModelDoc.dhcpImpact). */
+/** A static route of a device as written (fields as text, '' when not written). */
+export interface RouteEntry {
+  path: Path;
+  index: number;
+  prefix: string;
+  via: string;
+  iface: string;
+  blackhole: boolean;
+  distance: string;
+  metric: string;
+  vrf: string;
+  name: string;
+}
+
 export interface DhcpImpact {
   addresses: string[];
   dns: Array<{ name: string; removed: boolean }>;

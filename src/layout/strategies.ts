@@ -131,7 +131,7 @@ function viewSNodes(view: LayoutView, input: LayoutInput, base: Map<string, Pt>)
     for (const p of assignPorts(input.links, boxes)) {
       if (p.side !== 'left' && p.side !== 'right') continue;
       const r = room.get(p.device) || { left: 0, right: 0 };
-      r[p.side] = Math.max(r[p.side], sideLabelWidth(p.iface));
+      r[p.side] = Math.max(r[p.side], sideLabelWidth(p.iface, p.tag));
       room.set(p.device, r);
     }
     return input.devices.map((d) => {
