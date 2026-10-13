@@ -148,8 +148,8 @@ do); after manual changes none is selected and all three can be used.
 | **View: Physical** / **Logical** | the two views, in the group labelled *View*. The toolbar has three such groups, *View*, *Auto-arrange* and *Filters*: each has its label above its controls, inside the same dashed frame. The frame's colour has at least 3:1 contrast against the toolbar (light and dark theme), so it is clear which label and controls belong together, while staying a thin dashed line. In a very short window (400 px high or less, e.g. strongly zoomed) the labels are hidden to leave room for the diagram; the frames stay, and the labels remain the groups' accessible names. |
 | **Auto-arrange: Default · Compact · Spacious** | three ways to arrange the view on screen (see [Auto-arrange and positions](#auto-arrange-and-positions)). The label *Auto-arrange* sits above the three buttons, all in one dashed frame. The one the view is arranged with is selected and disabled; the others stay available |
 | **Find ▾** | **Command palette…** (`Ctrl+K`, `Cmd+K` on a Mac) searches every command and object; see [Command palette](#command-palette). **Find in diagram…** (`/`): a search bar over the top right of the diagram, by id, label, address, prefix, protocol or cable id; Enter or a click selects a match in the diagram, Esc closes it. **Filter object list…**: a filter box at the top of the object list (the model outline on the left), which stays while it holds text; × or Esc clears and closes it. It narrows the list only; the diagram is not changed. Both are greyed out until a model is open; the menu works like **File** and **Export**. |
-| **Analyze ▾** | **Addressing overview…** (`I`): the networks of each VRF with their members, gateways, use and free addresses, and the duplicate, overlapping and stray addresses; see [Addressing overview](#addressing-overview). **Focus on selection** (`Shift+F`) and **Exit focus** (`Esc`): see [Focus mode](#focus-mode). **Trace path…** (`T`) and **Exit path trace** (`Esc`): see [Path tracer](#path-tracer). **Single points of failure**: a report in the Analysis tab; see [Single points of failure](#single-points-of-failure). Analyze answers *what is*: everything here reads the model as written (or, during a simulation, the simulated state, and says so). Greyed out until a model is open (Focus: until something is selected; Exit: until one is on; the tooltip says why); the menu works like the others. |
-| **Simulate ▾** | answers *what if*, for a hypothetical state that never changes the model: **Simulate failure of selection** (`X`) starts a scenario (or adds a step to the one played), **Scenarios** opens the **Simulation** tab with the saved scenarios, **Scenario templates…** proposes scenarios for this model (see [Scenario templates](#scenario-templates)), **Previous step** (`[`), **Next step** (`]`), **Save scenario…**, **Traffic animation** (on or off) and **Pause traffic**, and **Exit simulation** (`Esc`). See [Simulation](#simulation). Greyed out until a model is open (the step and exit entries: until a simulation is on; the tooltip says why). |
+| **Analyze ▾** | Every entry opens its own [tool window](#tool-windows): a window over the diagram that you can move, resize and fold, while the diagram and the side panel stay usable. **Addressing overview…** (`I`): the networks of each VRF with their members, gateways, use and free addresses, and the duplicate, overlapping and stray addresses; see [Addressing overview](#addressing-overview). **Focus…** (`Shift+F`): the selected object and its neighbourhood, 1–3 hops; **Exit focus** (`Esc`); see [Focus mode](#focus-mode). **Trace path…** (`T`) and **Exit path trace** (`Esc`): see [Path tracer](#path-tracer). **Single points of failure…**: a sortable table; see [Single points of failure](#single-points-of-failure). Analyze answers *what is*: everything here reads the model as written. Greyed out until a model is open (Exit: until the mode is on; the tooltip says why); the menu works like the others. |
+| **Simulate ▾** | **Protocol simulation…** (shown, not available yet: it comes with the next version) and **Exit simulation** (`Esc`). See [Simulation](#simulation). |
 | **Help ▾** | **User Manual**: a large dialog with a short, task-by-task guide (opening and creating a model, saving and exporting, the two views, finding and filtering, selecting and editing, connecting, Auto-arrange, keyboard shortcuts) with screenshots of the application. **License**: a small dialog naming the license, the Apache License, Version 2.0, with its full text. Both are part of the file, so they work offline; both close with **×**, **Close** or Esc, and the focus returns to **Help**. Available with or without a model. |
 | **Filters: Devices ▾** (right) | the first control of the group labelled *Filters*, which holds every diagram filter below (Devices, Labels, Groups / Locations, Networks, Routes, Endpoints, Servers and the **Filters ▾** drop-down); which devices the diagram shows; all by default. Like every diagram filter on this row (and the **Filters ▾** drop-down), it is greyed out on the start screen and becomes available, with its default, once a model is open. Opens a list with a check box per device, a filter box, **Select all** and **Clear**. See [Showing part of the network](#showing-part-of-the-network). |
 | **Labels** | cable, relation and address labels (on by default) |
@@ -199,7 +199,8 @@ network access impossible even in principle.
 ### The side panel
 
 The panel on the right holds the tabs **Edit**, **Details**, **Legend**,
-**Relations**, **Problems**, **YAML**, **Analysis** and **Simulation**. It
+**Relations**, **Problems** and **YAML** (the analyses open in
+[tool windows](#tool-windows) instead). It
 is 480 px wide by default (400 px in windows of 1100 px or less) and can be
 resized with the **splitter** on its left edge, a visible grip:
 
@@ -221,7 +222,7 @@ under the diagram, beside the object list, and the splitter is hidden.
 | Task | How |
 |---|---|
 | Add an object | **+ Add** next to a section of the Model outline (devices, links, networks, relations, groups, protocols). A new object gets only a unique ID; **nothing else is chosen for you**. A device has no type, a group no kind, a network no prefix or VLAN, a protocol no category, a relation no protocol (fields show prompts such as *Select device type*). Until you fill them in, the missing required values (a relation's protocol and endpoints, a link's ends) are reported as errors. |
-| New entries are ready to fill in | Whatever you create (an object with **+ Add**, a **Duplicate**, a link or relation drawn with **Connect**, an interface, loopback, port range, route, DNS name, address, protocol, VRRP group, attribute, endpoint, member port, underlay, or a scenario step) is selected and marked with the *▸ Selected* highlight, its card is opened and scrolled into view (smoothly, unless the system asks for reduced motion), and the cursor is in its first field in reading order with the proposed text selected, so typing replaces it. A new object is also selected in the diagram and its row in the object list is scrolled into view. Screen readers hear what was added (*Interface eth3 added to hq-rtr1.*). A value typed into an *add* field and committed with **Tab** is marked and announced, but the focus stays where Tab took it. **Ctrl+Z** right away (before typing anything into the new field) takes the creation back; after an undo the focus returns to the button that created the entry (or its card), and the selection to what it was before. |
+| New entries are ready to fill in | Whatever you create (an object with **+ Add**, a **Duplicate**, a link or relation drawn with **Connect**, an interface, loopback, port range, route, DNS name, address, protocol, VRRP group, attribute, endpoint, member port or underlay) is selected and marked with the *▸ Selected* highlight, its card is opened and scrolled into view (smoothly, unless the system asks for reduced motion), and the cursor is in its first field in reading order with the proposed text selected, so typing replaces it. A new object is also selected in the diagram and its row in the object list is scrolled into view. Screen readers hear what was added (*Interface eth3 added to hq-rtr1.*). A value typed into an *add* field and committed with **Tab** is marked and announced, but the focus stays where Tab took it. **Ctrl+Z** right away (before typing anything into the new field) takes the creation back; after an undo the focus returns to the button that created the entry (or its card), and the selection to what it was before. |
 | The header | The top of the **Edit** tab names the object's type, says whether it has problems (*No problems*, or how many errors and warnings, listed below it) and holds **Duplicate** and **Delete** (red); the object's full name is on the line below. In a narrow panel the two buttons show their icon only; their names stay in the tooltip and for screen readers. |
 | Duplicate | **Duplicate** on an object copies all its values and attributes under a new ID. It is in the Edit tab's header and, as a quick action, on the object's row in the model outline (see [The model outline](#the-model-outline)). |
 | The form | Below the header, the **Edit** tab groups an object's fields into titled cards: *Identity* (ID, label, and the type or kind), then what fits the object (a device: *Placement*, *Notes*, its interface sections and DNS names; a link: *Ends* and *Cable*; a network: *Addressing* and *Members*; a relation: *Protocol*, *Endpoints* and *Underlay*; a protocol: *Drawing*), and *More* for attributes and keys the format doesn't know. Every field keeps its label, help and messages; nothing is hidden. |
@@ -236,7 +237,6 @@ under the diagram, beside the object list, and the splitter is hidden.
 | Link-end tagging | On a link, **End A: layer 2** and **End B: layer 2** each have a **Mode** (*No layer-2 tagging*, *Access*, *Trunk*), the **Untagged VLAN** (an access port's VLAN; a trunk's **Native VLAN**) and, for a trunk, the **Tagged VLANs** as IDs and ranges (`10, 20, 100-199`). The networks of those VLANs are shown, derived. Each end is stored separately; if they disagree, a note shows how (and the VLAN checks report it), and nothing is changed for you. Speed and medium are set here too, and only here. |
 | Input helpers | Next to many fields, small buttons (*chips*) offer values that fit, taken from the model as it is; each writes its value as one undo step and is validated like typing, and nothing is filled in by itself. **MTU:** *1500*, *9000 (jumbo)*, and for a tunnel *1476 (GRE)*, *1400* and its underlay's MTU less the encapsulation overhead (*1403 (underlay 1500 − 97)*, the overhead named in the tooltip). **MAC:** **Generate** writes a random, locally administered unicast address that no interface has, in the style the model's other MAC addresses are written (`00:1c:…`, `00-1C-…` or `001c.73aa.…`), from the browser's secure random source. **VRF:** a combobox of the VRFs in use, sorted, with how often each is used; ↑ / ↓, Enter and Esc work as usual, a new name can be typed, and a name that differs from one in use only in case is flagged (and reported by the check *vrf-name-case*). **VLAN ID** (virtual interfaces, networks, a link end's untagged VLAN): the next free ID and the VLANs the model defines. **Interface ID:** the name that follows the device's other names of that kind (*xe-4* after *xe-3*), as a rename. **Router ID:** the device's loopbacks (*lo0 (10.255.0.1)*). **BGP AS number:** the AS numbers the model uses; a BGP relation end's **peer AS**: the other device's AS. **IS-IS NET:** derived from the router ID or loopback (10.255.0.1 → `49.0001.0102.5500.0001.00`). **VRRP / HSRP group:** the groups on the interface's segment (*10 (join hq-core1:Vlan10)*) and the next free number; **Virtual IP:** the group's address on the other members. **Protocol parameters:** the registry's common values (OSPF area *0.0.0.0*, hello *10* …). **Routes:** *0.0.0.0/0 (default)*, *::/0*, distance *250 (floating backup)*. Speeds, media, protocols, port modes, duplex, groups, devices and interfaces were already offered as lists. The palette has *Generate a MAC address for the selected interface* and *Set the MTU of the selected interface to 1500*. A protocol defined in the model has a **Routing service** card (*Uses a router ID*; its declared parameters are listed and edited in the YAML tab). |
 | Protocols (routing services) | A Layer 3+ device (router, switch, firewall, load balancer, proxy, gateway) has a **Protocols** card: the routing services it runs, each a small card with its parameters, and **Enable a protocol…** (BGP, OSPF, IS-IS, EIGRP, RIP, LDP, PIM, BFD, VRRP, HSRP, GLBP, CARP, and the protocols the model defines with parameters). Static routes are not a protocol: they are configured in the device's **Static routes** section and are always in effect, whatever protocols the device enables. A protocol is enabled with its parameters empty; the mandatory ones (BGP's local AS number, OSPF's router ID, IS-IS's NET, a VRRP group's number and virtual IP) are errors at their field and in Problems until you fill them in. **Router ID** appears while an enabled protocol uses one: a loopback of the device (offered) or an IPv4 address, shared by the protocols, with **Own router ID for …** per protocol behind a disclosure. **Suggested**: one-click *Enable BGP* (or OSPF …) for a protocol the device's relations use but it doesn't enable. **Disable** on a protocol asks first when it has values and lists what goes with it (its parameters, its groups on interfaces, and the router ID when nothing else uses it); it is one undo step and nothing is kept hidden in the model. An interface of a device that runs VRRP (HSRP …) has **+ VRRP group**, then a card for the group's number, virtual IP and priority. A relation of OSPF, BGP … has a card with its per-end parameters (area, timers, cost …), a field per endpoint device. See [docs/FORMAT.md](docs/FORMAT.md#routing-services-protocols). |
-| Risk groups | A device, a port (in its card) and a link (in its *Cable* card) have **Risk groups**: the shared risks they belong to (a conduit, a power feed, a carrier, a line card), one id each, e.g. `duct-north`. A scenario can fail everything in one risk group at once. See [docs/FORMAT.md](docs/FORMAT.md#risk-groups-shared-risks). |
 | Static routes | After a device's interfaces and DNS names, **Static routes** lists its routes as cards, sorted by VRF, prefix and distance (the file keeps its order). **+ Route** adds an empty one; each card edits the **Destination prefix**, a **Blackhole** switch, the **Next-hop address** (with suggestions: the neighbours' addresses in this device's networks), the **Exit interface** (picked from the device's interfaces), **Administrative distance**, **Metric**, **VRF**, **Name**, **Description** and attributes, and has **Duplicate** (⧉, e.g. to make a floating backup) and **Delete** (×). Each is one undo step. A device whose type has no routing table offers no routes. |
 | Endpoints | Device and interface pickers, alphabetical. A relation endpoint can use any interface (logical ones are labelled *loopback*, *virtual* or *tunnel*); a link end offers physical interfaces only. An endpoint is only a device and an interface; anything about an endpoint's part goes into the relation's attributes. |
 | Direction | A switch on a relation: **Bidirectional** (the default; nothing is written to the file) or **Unidirectional** (`direction: unidirectional`): one way, from the first endpoint to the last, drawn with an arrow. Reorder the endpoints with ↑ to turn it around. A **link** has the same switch (in its *Cable* card): one way from End A to End B, for simplex fibre, a data diode or a TAP / SPAN feed, drawn with an arrow at End B; traffic is never traced the other way. |
@@ -650,8 +650,8 @@ check. The full list, with what each check reads, is in
 
 ### Addressing overview
 
-**Analyze → Addressing overview…** (or `I`) opens a large dialog that lists
-every network, grouped by VRF (the default table first) and nested under the
+**Analyze → Addressing overview…** (or `I`) opens a [tool window](#tool-windows)
+that lists every network, grouped by VRF (the default table first) and nested under the
 network whose prefix contains it. For each network it shows:
 
 * the **prefix**, **VLAN** and **name**;
@@ -675,10 +675,10 @@ holds its address) and **addresses in no network**. **Filter** narrows the
 rows by prefix, name, VLAN, device, interface, address or DNS name (the
 networks a match is nested in stay, as context); a column header sorts by
 prefix (nested), VLAN, name, use or utilization, and a second press reverses.
-A click on a network, device, interface or gateway closes the dialog and
-selects that object in the diagram. **Copy CSV** and **Save CSV** give the
+A click on a network, device, interface or gateway selects that object in
+the diagram; the window stays open beside it. **Copy CSV** and **Save CSV** give the
 table (one line per network and VRF, RFC 4180) to a spreadsheet; Save
-downloads `<model>-addressing.csv` like a picture export. The dialog never
+downloads `<model>-addressing.csv` like a picture export. The window never
 changes the model; its filter, sort and open member lists are kept while the
 page is open.
 
@@ -713,10 +713,9 @@ written back byte-for-byte. The details are in
 | Find | **Find → Find in diagram…** or `/`: ids, labels, IP addresses, CIDRs, protocols, cable ids, route prefixes and next hops, the VLANs of cable ends (`vlan 20`) |
 | Filter | **Devices** (top right): show only some devices. **Endpoints** / **Servers**: hide the devices of that type. **Legend** tab (logical view): turn protocols on and off. Top-right toggles for **Labels**, **Groups / Locations** and (logical view) **Networks** and **Routes**. |
 | Command palette | `Ctrl+K` (`Cmd+K` on a Mac) or **Find → Command palette…**: run any command or select any object by typing part of its name; see [Command palette](#command-palette) |
-| Focus | select something and press `Shift+F` (or **◎ Focus** under the diagram, or **Analyze → Focus on selection**): only it and its neighbourhood, 1–3 hops; `Esc` exits. See [Focus mode](#focus-mode) |
-| Simulate a failure | select a cable, port, device or relation and press `X` (or **Simulate → Simulate failure of selection**): an ad-hoc scenario starts at once; what goes down or degrades is marked in both views and listed in the **Simulation** tab; `X` on more objects adds steps; `[` and `]` step back and forward; `Esc` ends it. See [Simulation](#simulation) |
-| Replay a scenario | **Simulate → Scenarios** (or the palette: *Play scenario: …*): the scenarios saved in the model, each with **Play**. See [Scenarios](#scenarios) |
-| Trace a path | `T` (or **Analyze → Trace path…**): the **Analysis** tab asks for a source and a destination; the path is marked in both views and listed hop by hop; `Esc` removes it. See [Path tracer](#path-tracer) |
+| Focus | select something and press `Shift+F` (or **◎ Focus** under the diagram, or **Analyze → Focus…**): only it and its neighbourhood, 1–3 hops; `Esc` exits. See [Focus mode](#focus-mode) |
+| Trace a path | `T` (or **Analyze → Trace path…**): the **Trace path** window asks for a source and a destination; the path is marked in both views and listed hop by hop in a table; `Esc` in the diagram removes it. See [Path tracer](#path-tracer) |
+| Tool windows | every **Analyze** entry opens a window over the diagram: drag it by its title, resize it at ◢, fold it (▾) or dock it; `F6` moves the keyboard focus between it and the page; `Esc` (in the window) or **×** closes it. See [Tool windows](#tool-windows) |
 | Export picture | **Export → Export view as… → PNG** or **SVG** in the toolbar saves the selected view (Physical or Logical) as a picture; see [Exporting pictures](#exporting-pictures). The picture always contains the **legend** of that view (device types, cable media and speed, locations; or protocols and line styles) and, in a second box beside it, a **Networks** overview. Both are drawn to the right of the diagram so they cover nothing, and the picture is enlarged to include them. They list what is drawn: protocols you have hidden are left out. See [Networks in exported pictures](#networks-in-exported-pictures). |
 
 ### Command palette
@@ -727,11 +726,11 @@ field over the window. It finds:
 * every **command** of the menus, the toolbar and the keyboard (New, Save,
   Export as PNG, Physical view, Auto-arrange, the filters, Zoom, the side
   panel's tabs, the theme, the examples …) with its shortcut, and the
-  analysis modes (Addressing overview, Focus);
+  Analyze windows (Addressing overview, Focus, Trace path, Single points of
+  failure);
 * every **object** of the model: devices, interfaces, cables, networks,
   relations, static routes and locations, by name, id, address, prefix or
-  next hop;
-* every **saved scenario** (*Play scenario: ISP 1 outage*), which plays it.
+  next hop.
 
 The match is fuzzy: every word typed must occur, in order of its letters
 (`adrs ovr` finds *Addressing overview*), best when it starts a word. `↑` / `↓`
@@ -747,17 +746,54 @@ command registry** (`src/ui/commands.ts`): an entry's label, its shortcut,
 whether it is available, and its tooltip (or the reason it is not) are
 defined once, so the three can't drift apart.
 
+### Tool windows
+
+Every entry of **Analyze ▾** opens a **tool window**: a window of the page
+(not of the browser) over the diagram, which leaves the diagram, the side
+panel and the toolbar usable. A click in the diagram selects as usual while
+the window stays open, and the window follows the selection where that
+makes sense (Focus names the selected object).
+
+* **One at a time.** Opening another tool window replaces the one that is
+  open (the trace and the focus stay on in the diagram; their banners
+  remain).
+* **Move and resize.** Drag the title bar to move it and the grip at the
+  bottom right corner to resize it. From the keyboard, the move button in
+  the title bar and the grip take the arrow keys (16 px a press, 64 px
+  with Shift). It never leaves the browser window.
+* **Fold** (the ▾ button) leaves only the title bar; **Dock** puts it at
+  the bottom, full width, under the diagram.
+* **Remembered.** Each window's size, position, docking and folding are
+  remembered in this browser (local storage, never in the model).
+* **Close** with **×** or `Esc` (while the focus is in the window); the
+  focus returns to where it was before the window opened.
+* **`F6`** moves the keyboard focus from the window to where it was in the
+  main window, and back.
+* **Narrow windows.** Below 860 px (and so at 200 % zoom on most screens)
+  every tool window is **docked**: a full-width panel at the bottom, above
+  the status bar, at most half the height; the diagram shrinks to make room
+  and the page never scrolls. Wider again, it floats where it was.
+* It is a non-modal dialog for screen readers (`role="dialog"`, named by its
+  title, no `aria-modal`): the rest of the page stays reachable.
+
 ### Focus mode
 
 With an object selected, **Focus** (`Shift+F`, the **◎ Focus** button under
-the diagram, **Analyze → Focus on selection**, or the palette) shows only that
-object and its neighbourhood: the devices within 1 hop of it, along **cables**
-in the Physical view and along **relations** in the Logical view (a hop is a
+the diagram, **Analyze → Focus…**, or the palette) shows only that object and
+its neighbourhood: the devices within 1 hop of it, along **cables** in the
+Physical view and along **relations** in the Logical view (a hop is a
 device directly connected to one already shown; the object stands for its
 devices: a cable for its two ends, a relation for its endpoints, a network
-for its members, a location for its devices). A banner across the top of the
-diagram names the object, the hops and how many devices are shown, and has
-**−** / **+** for 1 to 3 hops and **Exit focus** (also `Esc`).
+for its members, a location for its devices).
+
+**Analyze → Focus…** (`Shift+F`) opens the **Focus** window: the selected
+object, the **hops** (1, 2 or 3, a radio group), **Focus** and **Exit
+focus**. With something selected it focuses at once; with nothing selected
+it says to select an object first. A banner across the top of the diagram
+names the object, the hops and how many devices are shown, and has **−** /
+**+** and **Exit focus** (also `Esc`); closing the window keeps the focus
+and its banner. The **◎ Focus** button focuses on the selection without the
+window.
 
 Focus is a [filtered view](#showing-part-of-the-network): it combines with
 the Devices, Endpoints and Servers filters, is arranged for what it shows,
@@ -770,7 +806,7 @@ the model and adds no undo step. An export shows what is on screen, with a
 ### Path tracer
 
 **Trace path…** (`T`, **Analyze → Trace path…**, or the palette) opens the
-**Analysis** tab of the side panel. Give a **From** and a **To**, each a
+**Trace path** window. Give a **From** and a **To**, each a
 device (`hq-log`), an interface (`muc-rtr:lan0`) or an IP address; a
 selected device or interface fills the first empty field. **VRF** chooses the
 source's table (by default the source interface's VRF, else the default
@@ -805,28 +841,33 @@ the model alone:
   where the routes lead there (listed under the hop); otherwise it is the
   relation's `over:` chain, down to the cables.
 
-The **hop list** shows, for every hop, the device, the interface the traffic
-comes in on and the one it leaves by, with their addresses, the next hop,
-the route or adjacency used (each a link to the object), the encapsulation,
-the switches passed and the cables to the next hop, and notes (a VRRP
-failover, a tunnel underlay that is declared rather than routed). It ends
-with **Reached**, **Delivered** (into a network where no device of the model
-has the address), **Leaves the model** (towards a next hop outside it) or
-**Stopped** and why: no route, a next hop that can't be resolved, a missing
-adjacency (a routing adjacency without a common network, or no cable way in
-the VLAN), a black hole, a routing loop, or a device that does not forward.
-With equal-cost next hops every branch is followed (up to 16 paths): **Main
-path** and **Alternative 1 …** show each one. **Copy as text** puts the whole
-trace on the clipboard (where the browser refuses, it is saved as a text
-file); **Save as text** saves it.
+The result is a **hop table**, one row per hop: **#**, the **device**, the
+interface the traffic comes **in** on and the one it leaves by (**out**),
+the **addresses** (in, out and the next hop), the **route or relation** used
+(each a link that selects the object) and the **encapsulation** (*GRE over
+IPsec*). Under a row, the switches passed and the cables to the next hop,
+and notes (a VRRP failover, a tunnel underlay that is declared rather than
+routed). Above the table the outcome: **Reached**, **Delivered** (into a
+network where no device of the model has the address), **Leaves the model**
+(towards a next hop outside it) or **Stopped** and why: no route, a next hop
+that can't be resolved, a missing adjacency (a routing adjacency without a
+common network, or no cable way in the VLAN), a black hole, a routing loop,
+or a device that does not forward. With equal-cost next hops every branch
+is followed (up to 16 paths): the **Main path** and each **Alternative**
+have their own labelled section and table, and so has the **Return path**
+when it is traced. **Copy as text** puts the whole trace on the clipboard
+(where the browser refuses, it is saved as a text file); **Save as text**
+saves it.
 
 In **both views** the path is marked: its devices, interfaces, cables,
 networks, routes and relations (the adjacencies used and the tunnel stack)
 with a **thick solid outline**, the equal-cost alternatives **dashed**, the
 return path where it differs **dotted**, and the device where it stops with a
 **dash-dot** border; everything else is dimmed. A banner says what is
-traced and how it ends, and offers **Hop list** and **Exit trace** (also
-`Esc`). Exports show the marked path, with a *Path trace: …* note at the top
+traced and how it ends, and offers **Hop table** (the window again) and
+**Exit trace** (also `Esc` in the diagram). The path stays marked while the
+window is open and after it is closed, until the trace is ended; **×** on
+the window ends it too. Exports show the marked path, with a *Path trace: …* note at the top
 of the picture. A trace never changes the model and adds no undo step; after
 an edit it is computed again.
 
@@ -835,30 +876,46 @@ see [Limitations](#limitations-honest-list).
 
 ### Single points of failure
 
-**Analyze → Single points of failure** shows a report at the top of the
-**Analysis** tab: the cables, devices and LAGs (all member cables at once)
-whose failure alone would **partition the physical network** (devices that
-were connected by cables no longer are, apart from a failed device itself)
-or **bring down relations without a redundant underlay** (relations that go
-down although their endpoints are still up). Each entry names the object
-(a link that selects it in the diagram), what it cuts off and which
-relations go down, most impact first. **Close report** hides it.
+**Analyze → Single points of failure…** opens a window with a table of the
+cables, devices and LAGs (all member cables at once) whose failure alone
+would **partition the physical network** (devices that were connected by
+cables no longer are, apart from a failed device itself) or **bring down
+relations without a redundant underlay** (relations that go down although
+their endpoints are still up). A short explanation heads the table.
+
+| Column | Shows |
+|---|---|
+| Element | the cable, device or LAG (*l-hq-isp1*, *hq-fw*, *hq-core1:Port-Channel1 (2 cables)*) |
+| Type | *Cable*, *Device* or *LAG* |
+| Cuts off | the devices that lose every cable way to the rest |
+| Relations down | the relations that go down with it |
+| Impact | devices cut off plus relations down |
+
+The table starts with the most impact first. A column header sorts by that
+column, a second press reverses (the header says the order for screen
+readers); **Filter** keeps the rows that contain every word typed. **Show
+in diagram** on a row selects the element and shows it in the diagram;
+the window stays open. **Copy CSV**, **Save CSV**, **Copy text** and **Save
+text** give the rows as shown (filtered and sorted) as CSV (RFC 4180) or as
+plain text (`<model>-single-points-of-failure.csv` / `.txt`).
 
 It is an **Analyze** report: it reads the model as written, like the
-addressing overview and the path tracer, and choosing an entry never starts
-a simulation by itself. Each entry has an explicit **Simulate this
-failure**, which starts an ad-hoc scenario that fails it in Simulate mode
-(see [Scenarios](#scenarios)); while another simulation is on, that button
-is unavailable and says to exit it first, and the report still describes
-the model as written.
+addressing overview and the path tracer, and changes nothing. The single
+points of failure are found by failing each cable, device and LAG alone
+and propagating the failure through the model:
 
-**The boundary between Analyze and Simulate.** Analyze computes facts about
-the model as written and never changes the state on screen: a report, a
-focus, a traced path. Simulate puts the diagram into a hypothetical state
-(a scenario's steps) that you step through. Internally the single points of
-failure are found by failing each object in turn, but the result is a fact
-about the model, so it belongs to Analyze; an analysis that you play and
-review step by step belongs to Simulate.
+* a failed device fails its interfaces and the cables at it; a failed port
+  fails its cable, and a cable that fails takes the ports at both ends down;
+* a failed cable or relation fails everything that runs `over` it,
+  recursively: an IPsec relation over the cable, the GRE tunnel over the
+  IPsec, the OSPF adjacency over the GRE; a tunnel interface goes down with
+  its source interface or its tunnel;
+* a **LAG** survives partial member failure: an aggregate stays up while at
+  least `min_links` members (else one) are up; a LACP or MLAG relation
+  likewise, over its cables;
+* a **redundancy group** (VRRP, HSRP …) that loses a member **fails over**
+  instead of going down, and a relation of more than two devices (an OSPF
+  area) stays up while two of them are left.
 
 ### Which entries count as related
 
@@ -890,223 +947,21 @@ Both come from the same model references, in `src/model/queries.ts`
 
 ## Simulation
 
-**Analyze** and **Simulate** answer two different questions. *Analyze*
-(Addressing overview, Focus, Trace path) shows **what is**: the model as
-written. *Simulate* shows **what if**: a hypothetical state, computed from
-the model and a list of steps, that never changes the model. Simulation has
-its own menu (**Simulate ▾**), its own side-panel tab (**Simulation**: the
-scenarios, their steps and results) and its own look; the **Analysis** tab
-keeps the path tracer.
+**Analyze** answers *what is*: the model as written. **Simulate** answers
+*what if*. This version removes the scenarios of earlier versions: their
+saved steps, the templates, playing them step by step, `X`, `[` and `]`,
+risk groups and planned maintenance, the traffic animation and the
+Simulation tab. A **live protocol simulation** (**Simulate → Protocol
+simulation…**) takes their place in the next version; until then the entry
+is shown, unavailable, with the reason.
 
-### Simulation mode
+A model that still has a `scenarios:` section or `risk_groups:` keys gets
+them reported as unknown keys in Problems; delete them. The traffic
+`demands:` and a link's `direction` stay in the format: the protocol
+simulation uses them.
 
-While a simulation is on, the whole window says so, not by colour alone:
-
-* a **banner** across the diagram (◈ *Simulation: scenario “ISP 1 outage”,
-  step 2 of 3: Fail hq-rtr1 · …*) with **◀** / **▶** for the steps,
-  **Results** and **Exit simulation**;
-* a **hatched frame** around the diagram;
-* a **◈ Simulation · step 2 of 3** marker in the status bar;
-* the diagram labelled **Simulated state** (bottom right, and in its
-  accessible name) instead of showing the model's own state.
-
-**Editing is blocked during a simulation.** The diagram shows a state the
-model doesn't have, so an edit there would be ambiguous. The Edit tab shows
-the selected object read-only under a notice (*Editing is paused during the
-simulation*) with a one-click **Exit simulation**; the YAML tab is
-read-only; the outline's Add, Duplicate and Delete, Connect, Auto-arrange,
-dragging nodes, the input helpers and every other command that edits are
-unavailable, and say why. Undo and redo are paused too, except for edits of
-the scenarios themselves (saving, renaming, a step added to a saved
-scenario), which stay possible and undoable. `Esc` or **Exit simulation**
-ends the simulation and editing is back at once. (The alternative, ending
-the simulation when an edit starts, was rejected: one stray keystroke would
-throw away the state being reviewed.)
-
-How the modes combine:
-
-* **Trace path** works inside a simulation, on the simulated state: it shows
-  the rerouted path, or where traffic is now lost. Its banner says *Path
-  trace in the simulated state*, and the Analysis tab says a simulation is
-  on.
-* **Focus** works inside a simulation: the hops are counted over the cables
-  and relations that are **up** in the simulated state, and its banner says
-  so.
-* **Exports** (PNG, SVG) show the simulated state as on screen, with the
-  dashed frame and a *Simulation: scenario “…”, step k of n: … · …* note at
-  the top of the picture (one note line per mode that is on).
-* Opening, closing or replacing the model ends the simulation.
-
-A simulation never changes the model, adds no undo step by being played and
-is never saved by itself (saving a **scenario** is a model edit; see
-below). After an edit of a saved scenario it is computed again.
-
-### Scenarios
-
-A **scenario** is a named, ordered list of **steps**, applied one after the
-other as an overlay on the model. A step **fails**, takes into planned
-**maintenance** (out of service, simulated like a failure, shown as
-*Maintenance* and *in planned maintenance*) or **restores** one target:
-
-| Target | Fails |
-|---|---|
-| `device` | the device, its interfaces and the cables at it |
-| `cable` | the cable (a `links` entry), and the ports at both ends |
-| `port` | an interface (`device:interface`) and its cable |
-| `relation` | the relation, and what runs `over` it |
-| `lag` | an aggregate (`device:Port-Channel1`): all its member cables at once |
-| `group` | a group / location: every device in it and in the groups nested in it (a site, a room, a rack) |
-| `risk` | a risk group: every cable, port and device that lists it in its `risk_groups` |
-
-Step *k* shows the state after the first *k* steps; step 0 is the model as
-written. **Previous step** (`[`) and **Next step** (`]`), the banner's ◀ / ▶,
-or a click on a step in the Simulation tab move through them. For every
-step the tab shows **what changed since the step before** (*Now down*, *Now
-degraded*, *Recovered*, device pairs whose reachability was *lost* or
-*regained*), what is **failed now** (each with **Restore**, which adds a
-restore step), and the full result of the step (below). A step can be
-removed.
-
-Selecting objects and pressing `X` starts an **ad-hoc scenario** at once,
-or, during a simulation, inserts a step after the one shown. **Save
-scenario…** names it (and gives an optional description) and stores it in
-the model's `scenarios:` section, one undoable edit; then it can be
-replayed in a design review: **Simulate → Scenarios** lists the saved ones
-with **Play** and **Delete** (asks first, can be undone), and the palette
-offers *Play scenario: …*. Editing a saved scenario (adding, restoring or
-removing a step, renaming it) is an undoable edit of that section; playing
-it is not an edit.
-
-Scenarios are presentation and analysis data: they **never change the
-network objects**. Validation reads them like the rest of the model (unknown
-keys, one action and one target per step); a step whose object no longer
-exists is a **warning** (*this step can't be played: there is no device
-"…"*), shown in Problems and in the Simulation tab, and is skipped when the
-scenario is played. Renaming a device, interface, cable or relation in
-NetAtlas updates the steps that name it. See
-[FORMAT.md](docs/FORMAT.md#scenarios-what-if-steps).
-
-Results are deterministic: they depend on the model and the steps only,
-never on the order objects were selected in or on earlier runs, and the
-same set of failed objects is never computed differently.
-
-### Scenario templates
-
-**Simulate → Scenario templates…** (or the palette: *Scenario template: …*)
-lists templates that look at the model and **propose concrete steps** for
-it. One that doesn't apply is greyed out and says why (*No dual-homed site
-in this model*). Choosing one shows its proposal for review: an editable
-name and description, the steps and what to look at while playing it.
-**Save** adds it to the model's `scenarios:` section as a normal scenario
-(one undo step; allowed during a simulation), **Save and play** also plays
-it. Proposals follow from the model alone (ties broken by ids), so the same
-model always gets the same steps.
-
-| Template | Proposes | Applies when the model has |
-|---|---|---|
-| WAN / ISP uplink outage | fail the primary uplink of a dual-homed site (the one its demands use, else the fastest) | a site, campus or building with two or more cables leaving it, or two uplinks to providers / clouds |
-| First-hop redundancy failover | fail the active member of a VRRP / HSRP group | a group with two or more members |
-| Core or spine failure | fail a core or spine device (named so, or in a group named so; else the most connected router or switch) | a router or switch with three or more cables |
-| Site, room or rack loss | fail a whole location (the most specific kind: rack, room, floor … site) | a location with devices that isn't the whole network |
-| Shared-risk fibre cut | fail everything in the largest risk group | a risk group with two or more members |
-| Rolling maintenance of a redundant pair | maintenance of the first member, restore, maintenance of the second, restore | a VRRP / HSRP group, MLAG or HA pair of two devices |
-| Link flapping | fail, restore, fail, restore one cable | a cable on a demand's path (else carrying relations) whose loss cuts nothing off |
-| VPN / tunnel failover | fail the primary tunnel (the one carrying the cheaper routing adjacency) | two tunnel paths between the same two devices |
-| MLAG peer-link or LAG member loss | fail the member cables one at a time until fewer than `min_links` are up | a LAG with two or more cabled members |
-| Service server failure | fail the server of the most service relations; the notes list the clients that lose it and any other server of the same service | a DNS, NTP, syslog, SNMP, RADIUS … relation |
-| Asymmetric routing check | fail a cable on a demand's path after which the demand is still delivered (best: the way back differs) | traffic demands |
-
-*Traffic surge* (multiplying the demands) is not offered: it needs the
-capacity analysis of links, which NetAtlas doesn't have yet. The examples
-`enterprise-wan.yaml`, `datacenter-evpn.yaml` and `ospf-reroute.yaml` carry
-saved scenarios made from the templates.
-
-### Traffic animation
-
-In simulation mode the diagram shows the traffic the model implies as
-**moving dots**, in both views, in the direction it flows
-(**Simulate → Traffic animation** switches it on and off; it is on by
-default; **Pause traffic**, or **Pause** in the Simulation tab, stops the
-dots where they are):
-
-* **Control traffic** of every relation that is up, by its protocol:
-  OSPF, IS-IS, BGP, BFD and the other routing adjacencies between their
-  endpoints, both ways; a VRRP / HSRP group's advertisements from its
-  **active member**; a service relation (DNS, syslog, NTP, AAA …) from its
-  clients to its server (the last endpoint), with the replies when it is
-  bidirectional; tunnels, LACP, MLAG and the rest both ways. A
-  unidirectional relation shows dots one way only. In the physical view the
-  dots run along the cables underneath (the path the tracer takes between
-  the endpoints, or the relation's `over` cables).
-* **Demands** (the optional [`demands:`](docs/FORMAT.md#demands-traffic-demands)
-  section): traffic of a given bandwidth from a source to a destination,
-  traced like **Trace path** (through tunnels and their encapsulation
-  stack), larger dots, more of them for more bandwidth. Equal-cost paths
-  share a demand equally.
-* A **one-way cable** (`direction: unidirectional`) carries dots from end a
-  to end b only, and is drawn with an arrow.
-
-When a step fails a cable, device or relation, its dots stop and it is
-drawn as down; the traffic takes the way routing takes now (OSPF costs,
-equal-cost paths, floating static routes, a VRRP failover, all computed by
-the failure propagation and the path tracer). **For four seconds the old
-way is shown faded and dashed and the new one emphasized**, so the reroute
-is easy to see. Traffic with no way left is **lost**: a ✕ marker sits on
-the last device it reaches. Restoring the object brings the original path
-back.
-
-The dots carry nothing that isn't text too: the Simulation tab's
-**Traffic** section lists what changed with the step (*Rerouted*, *Lost*,
-*Restored*, *Stopped*, *Resumed*, with the old and new paths), every demand
-with its path or where it stops and whether its way back is the same
-(*Returns the same way*) or another (*Asymmetric*, with the way back), and
-the control traffic per relation.
-
-The animation uses `requestAnimationFrame`, stops while the page is hidden,
-and moves **at most 300 dots** at once (demands first, then control
-traffic: a large model shows fewer dots, never a slower page). It runs in
-its own layer above the lines and below every box and label, so it never
-covers an address or a label and never moves a node. With **reduced
-motion** asked for by the system, static direction arrows replace the
-moving dots. **Exports** (PNG, SVG) show a still picture with direction
-arrows (never a frozen moment of dots) and the *Simulation* note.
-
-Try it with `ospf-reroute.yaml`: play *Primary link failure and OSPF
-reroute* and step through it.
-
-### Failure propagation
-
-What a step's failures take down is computed from the model:
-
-* a failed device fails its interfaces and the cables at it; a failed port
-  fails its cable, and a cable that fails takes the ports at both ends down;
-* a failed cable or relation fails everything that runs `over` it,
-  recursively: an IPsec relation over the cable, the GRE tunnel over the
-  IPsec, the OSPF adjacency over the GRE; a tunnel interface goes down with
-  its source interface or its tunnel;
-* a **LAG** survives partial member failure: an aggregate stays up while at
-  least `min_links` members (else one) are up, and is shown **degraded**;
-  a LACP or MLAG relation likewise, over its cables;
-* a **redundancy group** (VRRP, HSRP …) that loses a member **fails over**:
-  degraded, not down, and its virtual address moves to the next member; a
-  relation of more than two devices (an OSPF area) is degraded while two of
-  them are left;
-* **static routes** whose next hop can't be reached any more fail, and a
-  floating static route that is used now **takes over**; the routes learned
-  over the adjacencies are recomputed;
-* **networks** lose the members whose interfaces went down (degraded, or
-  down when none is left).
-
-Both views mark every affected object: **down** dotted and faded,
-**degraded** dash-dot (a route taking over in italics, a failed route struck
-through). The **Simulation** tab counts the affected relations, tunnels,
-networks, static routes, devices and cables, lists each with its state as a
-word (*Down*, *Degraded*, *Takes over*) and why, and lists the **device pairs
-that lose reachability**: found by tracing between every two devices with an
-address (the first 40 by id) before and during the failure; a pair whose
-equal-cost paths are only partly lost is marked *In part*. A **What the
-simulation approximates** section says what is and isn't modelled (see
-[Limitations](#limitations-honest-list)).
+The failure propagation that the scenarios used is kept: it finds the
+[single points of failure](#single-points-of-failure).
 
 ## Connecting in the diagram
 
@@ -1405,8 +1260,8 @@ YAML that is read and written is in
 
 | File | Shows |
 |---|---|
-| [`examples/enterprise-wan.yaml`](examples/enterprise-wan.yaml) | HQ with two ISPs and two branches (the two ISP uplinks share the duct `duct-alexanderplatz`, a risk group; saved scenarios, among them five from the templates). **IPsec → GRE → OSPF** stacks over the same internet uplinks that also carry eBGP and BFD. WireGuard backup over LTE, tunnel interfaces that name their source port and destination, a port-channel with two member ports, VLAN interfaces whose ports are derived from the tagging of the cables, loopbacks used by iBGP, a multipoint OSPF area routed through a firewall whose two router ports share a transit VLAN, VRRP for the users and the servers (whose default gateway is the VRRP address), host routes that keep the tunnel endpoints on the internet uplinks, **routing services per device** (the edge routers run BGP, OSPF and BFD with their loopback as router ID, the core switches OSPF and VRRP with the groups on their VLAN interfaces, the access switch no routing protocol at all), LACP, syslog, an undeclared protocol and a user-defined one (MACsec). IP networks with derived members, two of them with a VLAN, trunks tagging the users and servers VLANs and an access port, and OSPF and VRRP over their LAN segments. |
-| [`examples/datacenter-evpn.yaml`](examples/datacenter-evpn.yaml) | Spine/leaf fabric in racks (leaf1's two uplinks share the risk group `tray-a01`; saved scenarios from the templates: spine loss, the shared tray, a rack lost, rolling maintenance of the MLAG pair): eBGP underlay, EVPN sessions between loopbacks, a multipoint VXLAN VNI, MLAG, LACP, and a user-defined `srv6` tunnel. The tenant network's members are the leaves' VLAN interfaces, which carry the VRF; each leaf also has a VTEP, a virtual interface that is neither a bond nor a VLAN interface. |
+| [`examples/enterprise-wan.yaml`](examples/enterprise-wan.yaml) | HQ with two ISPs and two branches. **IPsec → GRE → OSPF** stacks over the same internet uplinks that also carry eBGP and BFD. WireGuard backup over LTE, tunnel interfaces that name their source port and destination, a port-channel with two member ports, VLAN interfaces whose ports are derived from the tagging of the cables, loopbacks used by iBGP, a multipoint OSPF area routed through a firewall whose two router ports share a transit VLAN, VRRP for the users and the servers (whose default gateway is the VRRP address), host routes that keep the tunnel endpoints on the internet uplinks, **routing services per device** (the edge routers run BGP, OSPF and BFD with their loopback as router ID, the core switches OSPF and VRRP with the groups on their VLAN interfaces, the access switch no routing protocol at all), LACP, syslog, an undeclared protocol and a user-defined one (MACsec). IP networks with derived members, two of them with a VLAN, trunks tagging the users and servers VLANs and an access port, and OSPF and VRRP over their LAN segments. |
+| [`examples/datacenter-evpn.yaml`](examples/datacenter-evpn.yaml) | Spine/leaf fabric in racks: eBGP underlay, EVPN sessions between loopbacks, a multipoint VXLAN VNI, MLAG, LACP, and a user-defined `srv6` tunnel. The tenant network's members are the leaves' VLAN interfaces, which carry the VRF; each leaf also has a VTEP, a virtual interface that is neither a bond nor a VLAN interface. |
 | [`examples/minimal.yaml`](examples/minimal.yaml) | Two routers, one cable, a tunnel interface on each router sourced from its port, OSPF inside GRE. |
 | [`examples/metro-ring.yaml`](examples/metro-ring.yaml) | **Representative architecture for Auto-arrange.** Six PE routers in three POPs on a fibre ring, IPv4/IPv6 loopbacks (iBGP and RSVP-TE endpoints), an OSPF area, LDP per link, a dense 15-session iBGP mesh, TE tunnels, an L3VPN overlay, customer eBGP, a disconnected out-of-band network and an unconnected spare router. No stored positions. |
 | [`examples/device-types.yaml`](examples/device-types.yaml) | **Every device type.** A campus with internet edge, VPN gateway, firewall, inline IPS, a DMZ with load balancer and proxy, core/access switching with Wi-Fi and endpoints (the access switch has six free ports, drawn as chips), and a server room with a hypervisor, a VM, a container, NAS and a monitoring appliance. The edge router runs BGP (router ID from its loopback); the firewall runs only static routing. |
@@ -1415,7 +1270,7 @@ YAML that is read and written is in
 | [`examples/port-bindings.yaml`](examples/port-bindings.yaml) | **Ports test case.** Several tunnel interfaces and subinterfaces per router, three relations on one tunnel interface (IPsec carrying OSPF, and BFD), tunnels sourced from an interface and from an address (`src:` end labels), relations bound to devices as a whole (device-level ports), a LAG (`Po1` over two cables, bracketed in the physical view) and a three-device VRRP group. |
 | [`examples/branch-routing.yaml`](examples/branch-routing.yaml) | **Static routes and VLAN tagging.** A dual-homed branch: a default route via ISP A and a floating default (distance 250) via ISP B, equal-cost routes to HQ over both ISPs (and back), a blackhole route, a guest VRF with a blackhole default, host default gateways, and a router-on-a-stick trunk with VLAN 99 untagged (native) and VLANs 10, 20, 30 tagged, plus access ports. |
 | [`examples/consistency-checks.yaml`](examples/consistency-checks.yaml) | **Consistency checks.** A small, valid network with one deliberate inconsistency for every check (static routes, VLAN tagging, MTU, speed and duplex, aggregates, addressing, router IDs and MAC addresses, OSPF, BGP, tunnels, virtual addresses, VRFs), each marked in the file with the check id (among them a protocol a device's relation uses but it doesn't enable, one enabled and unused, a router ID used twice in one OSPF domain, and a VRRP group's members in different groups); its `checks:` section downgrades one check. |
-| [`examples/ospf-reroute.yaml`](examples/ospf-reroute.yaml) | **Simulated traffic.** Two sites and a ring of three OSPF routers whose costs make one path preferred, a VRRP pair, a camera VLAN routed by one router only, a one-way TAP cable to an IDS, two traffic **demands**, and the saved scenario *Primary link failure and OSPF reroute*: the primary link fails (the traffic moves to the backup path), w1 loses its LAN (VRRP fails over, the camera's traffic is lost), and both come back (the original path returns). |
+| [`examples/ospf-reroute.yaml`](examples/ospf-reroute.yaml) | **OSPF costs and failover.** Two sites and a ring of three OSPF routers whose costs make one path preferred (Trace path from *w-host* to *e-srv* takes c1 and c3), a VRRP pair, a camera VLAN routed by one router only, a one-way TAP cable to an IDS and two traffic **demands**. Single points of failure: the one link from the core to East, the switches of both sites, and the single cables of the hosts and the TAP feed. |
 | [`examples/broken/errors-demo.yaml`](examples/broken/errors-demo.yaml) | Intentionally invalid, to show error reporting (among them an `asn` on a device, a BGP without its AS number, a misplaced OSPF parameter, a router ID that names no loopback, and routing protocols on a server). It opens as a draft you can fix. |
 
 The nine valid files are the examples of the **File** menu.
@@ -1533,11 +1388,11 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/scr
 | View switching | `test/state.test.mjs` (8 tests) | Physical ↔ logical switching keeps the selection and positions; highlight sets; search, details and legend |
 | **Toolbar and outline** | `test/menu.test.mjs` (15 tests), and the browser self-test | The toolbar markup: logo and version, one **File** menu holding New, Open, Save, Save as, Close and the examples (each entry says *model*, "…" only where input follows), the **Export** menu with *Export view as…* and its PNG / SVG submenu, the **Find** menu with *Find in diagram…* (/) and *Filter object list…* (their only place), the **Help** menu right after it with *User Manual* and *License* (never disabled), the License dialog's name matching `LICENSE` and `package.json` and its embedded text equal to `LICENSE`, every screenshot the manual names embedded as a `data:` image, the toolbar groups' frame colour at least 3:1 against the toolbar in both themes, undo/redo, views and the three Auto-arrange options as direct controls, and the diagram filters as one group with a **Filters** drop-down; no "document" wording in the interface. In the browser: the menu opens, names its entries, closes with Esc and on an outside click, works with arrow keys, and loads an example; there is no **Current model** button, the model panel stays visible and **Edit model settings** in the Edit tab opens the whole model's edit view, where the title is edited and undone; outline sections fold and unfold, Links and Protocols start folded, a folded section keeps its count, its problems, the selected entry and the number of related entries, the filter looks inside, **+ Add** opens it, and folding never changes the model. **Start screen:** name, logo and one sentence; New model, Open model… (file picker and drop target) and Load example (picker filled with the six examples by title, then *Load* or Enter); no link row, file names or long text; keyboard order; drops anywhere are taken over by the page, valid files open, invalid and non-YAML files give a "Could not open" page with a way back, non-file drops change nothing, and a drop onto unsaved work asks first. **Export menu:** next to File, same behaviour, arrow keys between the menus, disabled without a diagram, exports the selected view with its legend and Networks box; no Save SVG button. **Close model:** after *Save model as…*, disabled without a model; a clean new model, opened file and example close at once; with unsaved changes the prompt offers Cancel (model, view, selection, tab and form untouched; Esc too), Discard changes (nothing exported) and Save and close / Save as and close… (without a save picker: a downloaded copy under the new-copy name, then the start screen); the wording never claims to overwrite the original; the open example is marked in the File menu, modified or not, also after undo and redo; closing clears selection, view, filters, folding and search. **+ Port Range** through the dialog: live preview, disabled Create and errors for invalid ranges, Cancel, creation of 24 ports, duplicate rejection, undo, export → reload. |
 | **Picture export** | `test/menu.test.mjs` (scale and file names), and the browser self-test | **Both formats, both views**, through the menu, for enterprise-wan (zoomed in and panned first), long-labels, a fixture with a loopback-only network and a generated **large model** (96 devices, 8 groups, 9 networks): the file is named `<model>-<view>.png` / `.svg`; the picture covers the diagram's bounds, not the part on screen, and carries no pan or zoom; every device is in it and no text is shortened; the **legend** and the **Networks** box of that view lie inside the picture with a margin. The PNG has a valid signature and header, the size of the SVG times the scale, is not blank in the legend and Networks areas, and matches the downloaded SVG drawn at the same size pixel for pixel (one picture, two formats). The Networks box differs by view (the loopback-only network only in the logical pictures). PNG scale: 2×, reduced for very large diagrams (the large logical view is drawn below 2×). **Menu:** disabled without a model; the submenu opens on a press, not on hover, with arrow right / Enter / Space, closes with arrow left / Esc. **Failures:** a PNG that can't be encoded and an SVG that can't be serialised open a dialog naming the file and the reason; nothing is downloaded. |
-| **New entries ready to fill in (real input)** | `test/create-focus.test.mjs` (6 tests), through the DevTools protocol | Every create path, with the keyboard: **+ Add** for each kind of object (device, link, network, relation, group, protocol), **Duplicate** (Edit tab and outline), **+ Interface**, **+ Loopback**, virtual and tunnel interfaces, **+ Port Range**, **+ Route** and a route's duplicate, **+ DNS name**, an address typed into *add* (Enter, and Tab, which keeps the focus where Tab put it), the next free address, an attribute, a protocol from *Enable a protocol…* and from a suggestion chip, a VRRP group, an endpoint, an underlay, a member port, **Connect** (the draft, then the new link) and a scenario step (`X`). Each time: the entry is selected and marked, in view in the Edit tab, the cursor in its first field with the proposed text selected, the announcement's wording, a new object selected in the diagram with its outline row in view. Undo: the entry gone, the focus on the button that created it, the selection back to what it was; Ctrl+Z in the untouched new field undoes the create, after typing it undoes the text. Reduced motion: no smooth scrolling. |
+| **New entries ready to fill in (real input)** | `test/create-focus.test.mjs` (6 tests), through the DevTools protocol | Every create path, with the keyboard: **+ Add** for each kind of object (device, link, network, relation, group, protocol), **Duplicate** (Edit tab and outline), **+ Interface**, **+ Loopback**, virtual and tunnel interfaces, **+ Port Range**, **+ Route** and a route's duplicate, **+ DNS name**, an address typed into *add* (Enter, and Tab, which keeps the focus where Tab put it), the next free address, an attribute, a protocol from *Enable a protocol…* and from a suggestion chip, a VRRP group, an endpoint, an underlay, a member port and **Connect** (the draft, then the new link); `X` no longer does anything. Each time: the entry is selected and marked, in view in the Edit tab, the cursor in its first field with the proposed text selected, the announcement's wording, a new object selected in the diagram with its outline row in view. Undo: the entry gone, the focus on the button that created it, the selection back to what it was; Ctrl+Z in the untouched new field undoes the create, after typing it undoes the text. Reduced motion: no smooth scrolling. |
 | **Side panel (real input)** | `test/side-panel.test.mjs` (4 tests), through the DevTools protocol | The limits (320 px, the diagram's 360 px, stored values checked); the splitter as a separator with name and value, ← → with and without Shift, Home, End, Enter, a drag, a double-click, the width remembered over a reload in local storage and never in the model; at 1440 … 600 px wide and 100 / 150 / 200 % zoom, with the default and the widest width, on every tab: no tab cut off or squeezed, the active one shown, the splitter shown only beside the diagram, the diagram's room, no sideways page scrolling; a growing tab label wraps; a very short window keeps one row with the rest in **More ▾** (the active tab never in it; ↓, Enter, Esc). |
 | **Quick actions (real input)** | `test/quick-actions.test.mjs` (3 tests), through the DevTools protocol (`scripts/cdp.mjs`) | **Pointer:** with nothing hovered no row shows Duplicate and Delete, not even the selected one; moving from row to row shows them on exactly the row under the pointer, inside it, the label still readable; Duplicate on another row adds and selects the copy without selecting that row; Ctrl+Z / Ctrl+Y; Delete asks, Cancel keeps model and selection, Delete deletes. **Keyboard:** Tab through the list: the focused row (and only it) shows its buttons, Tab reaches them, Enter duplicates and the cursor moves to the copy's ID in the Edit tab (its row selected and in view), Delete asks and Esc returns the focus to the button, with a visible focus ring. **Touch** (hover: none): a tap selects a row and shows its buttons; Delete asks first. The browser self-test adds: every row has the pair, named with action and object; quick Duplicate and Delete on every kind of object (device, link, network, relation, group, protocol) export exactly what the Edit tab's buttons export. |
 | **Help** | `test/menu.test.mjs`, the browser self-test and the viewport check | The menu by arrow keys from Find; User Manual: title, ×, Close, Esc, focus on its text and back on **Help** afterwards, a section per basic task, the contents list moving to a section without changing the page address, every screenshot a decodable embedded image with alt text and caption, shortcuts of the page off while it is open; License: names the Apache License, Version 2.0 (SPDX Apache-2.0), the full text embedded and scrolling in place, no links; both without a model. |
-| **Viewport** | `test/viewport.test.mjs` (12 tests) → `dist/netatlas.html#viewportcheck` (35 states per window size, including the ports of `port-bindings.yaml` in both views, the start screen's actions, the open File, Export, Find and Help menus, Help → User Manual and Help → License with its full text (inside the window, × and Close reachable, the text scrolling inside the dialog), the open PNG / SVG submenu, the Find bar with its results, the diagram filters on one row with the Filters drop-down and its "off" count in both views, and a long file name in the status bar) | Stylesheet: the shell is sized by the viewport (`100dvh`, shrinkable middle row), the document is clipped, no fixed pixel heights, the panels are the scrolling regions and positioned. **In a real browser at ten window sizes** (maximized, not maximized, short and wide, both narrow layouts, and the viewports of pages zoomed to 150 %, 200 % and 300 %): with a long device form, its last field focused, both views, every tab, long lists and a dialog, the document has nothing to scroll and cannot be scrolled; toolbar controls, diagram controls, tabs and status bar are inside the window; the side panel ends at the status bar; long panels scroll to their end inside themselves. |
+| **Viewport** | `test/viewport.test.mjs` (12 tests) → `dist/netatlas.html#viewportcheck` (38 states per window size, including every tool window docked or floating, and the ports of `port-bindings.yaml` in both views, the start screen's actions, the open File, Export, Find and Help menus, Help → User Manual and Help → License with its full text (inside the window, × and Close reachable, the text scrolling inside the dialog), the open PNG / SVG submenu, the Find bar with its results, the diagram filters on one row with the Filters drop-down and its "off" count in both views, and a long file name in the status bar) | Stylesheet: the shell is sized by the viewport (`100dvh`, shrinkable middle row), the document is clipped, no fixed pixel heights, the panels are the scrolling regions and positioned. **In a real browser at ten window sizes** (maximized, not maximized, short and wide, both narrow layouts, and the viewports of pages zoomed to 150 %, 200 % and 300 %): with a long device form, its last field focused, both views, every tab, long lists and a dialog, the document has nothing to scroll and cannot be scrolled; toolbar controls, diagram controls, tabs and status bar are inside the window; the side panel ends at the status bar; long panels scroll to their end inside themselves. |
 | **Themes and theme-aware export** | `test/theme.test.mjs` (11 tests), through the DevTools protocol for the browser part | **Tokens:** one set of names for both themes, the dark ones the default (`:root`), no colour outside them, nothing picks the theme from the system; WCAG 2.2 AA pairs (text and muted text 4.5:1 on every surface and on the selection tint, control borders, focus ring, selection, selection bar and diagram lines 3:1). **Diagram colours:** every medium and protocol colour 3:1 on each surface in both themes. **Start-up:** a fresh profile opens in Dark; a stored Light stays Light, Dark stays Dark, a stored *system*, an invalid or an empty value becomes Dark (and is removed), with the OS set to light and to dark; the theme is already set when the page body is created (no flash). **The toggle:** right end of the toolbar at 1440, 1024, 720 and 390 px, never in a menu; name, tooltip (hover and keyboard focus) and icon; Dark ⇄ Light by mouse, Enter and Space, keeping view, selection, zoom and layout. **Storage:** the choice survives a reload; without storage the theme is Dark and switching still works. **Exports:** Light and Dark (with the OS light and dark) × both views × PNG and SVG: background and colours as on screen, no stylesheet, variable or media query in the SVG, opaque PNG; exporting changes nothing on screen. **An exported SVG opened on its own in a browser with the other colour scheme** keeps its theme. **Automated contrast check** of the rendered application in both themes. |
 | **Selection in the Edit tab** | `test/edit-highlight.test.mjs` (4 tests), through the DevTools protocol | In both themes, clicked in the physical view, the logical view and the object list: a device, a port (link end), an address of a port and of a loopback, a VRF, a VLAN, a MAC address, a DHCP switch, tunnel source and destination, member ports, a tunnel interface, a device's, a group's and a relation's address attribute, a VRRP virtual address, a network and its prefix, a link and its cable id, a relation: exactly the matching section is marked (aria-current, tag, visible). The bar has 3:1 against the panel and the tint, the tag is readable, the focus ring inside a mark shows. Scrolled only when off screen, smoothly or (reduced motion) at once; the focus stays where it was, typing is not interrupted. The mark follows an edited address, undo, redo, a view switch and a renamed interface; Duplicate marks the copy; Delete, Esc and loading a model clear it. |
 | **Segment borders** | `test/segments.test.mjs` (2 tests), through the DevTools protocol | Every segment of **View** and **Auto-arrange** and every button of **Filters**: in both themes, at 1440 and 800 px, at 100, 125, 150 and 200 % zoom, disabled, normal, selected, hovered, pressed and keyboard-focused: at each of its four edges it is on top, or the neighbour there draws its border and is in a state at least as prominent (DOM, `elementFromPoint`); the right border of a hovered segment shows its hover colour in the screenshot's pixels; nothing moves or changes size on hover. Without the fix the test reports the hovered segment's right edge covered by its neighbour. |
@@ -1552,10 +1407,9 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/scr
 | **VLAN tagging** | `test/vlan-tagging.test.mjs` (14 tests) | Tagging stored per end (mode, untagged, tagged IDs and ranges); the tag text and the networks a cable carries derived; validation (mode needed, IDs 1–4094, ranges, repeats); **each VLAN check positive and negative** (`vlan-native-mismatch`, `vlan-tagged-mismatch`, `vlan-access-tagged`, `vlan-untagged-tagged`, `vlan-unknown`) and nothing compared for an end without a mode; editing one end never writes the other, short form in and out; renaming a network never touches link ends; the tag line of the port labels, the *VLANs differ* mark, details, tooltip, Find (`vlan 20`), selection; a VLAN interface's ports. |
 | **Command registry and palette** | `test/palette.test.mjs` (6 tests) | The registry: unique ids, every command with label, group, state and action, no shortcut used twice, the commands the palette must offer and one per example. **The menus are the registry:** every menu entry names a command and shows its label and shortcut; no entry is wired by hand; the keyboard dispatches through the registry. Shortcut labels (Ctrl, or Cmd on a Mac) and matching (Ctrl/Cmd, Shift, never Alt). Fuzzy matching (word starts, subsequences, every word), ranking (recent first, unavailable entries with their reason, keywords), the results count; the objects (devices, interfaces, links, networks, relations, routes, groups), each once and selectable, found by address and next hop. |
 | **Focus mode** | `test/focus.test.mjs` (7 tests) | The devices an object stands for (device, interface, link, relation, hub, group, protocol; none for a network without members); hops along cables (physical) and relations (logical), 1 to 3; the same neighbourhood for a file in another order. The session: each view shows its neighbourhood with temporary positions, more hops keep the devices that stay in place, ending gives back the complete diagrams exactly; focus combined with a type filter, and the filtered view with a hand-moved node given back as it was; an edit deleting the focused object ends focus; focusing every device of three examples and ending restores the stored positions. |
-| **Scenario templates** | `test/templates.test.mjs` (8 tests) | The eleven templates in order (traffic surge left out); what each proposes for `enterprise-wan.yaml`, `ospf-reroute.yaml` and `datacenter-evpn.yaml`, or why it doesn't apply, with the details (active member, backup tunnel, the clients of a service, min_links); the asymmetric check finding a failure after which the way back differs; every proposal of every example playable; determinism (file order, repeated runs); `group` and `risk` targets, the `maintain` action, `risk_groups` on cables, ports and devices and their form. |
-| **Simulated traffic** | `test/traffic.test.mjs` (8 tests) | The flows per protocol (OSPF and BFD both ways, VRRP from its active member, syslog one way, a bidirectional service with replies, a hub group per member) with their lanes and cables; demands traced through networks and relations, the rate growing with the bandwidth; equal-cost paths sharing a demand; a one-way cable never used backwards by the tracer or the dots, and its format; the example's scenario step by step (rerouted, VRRP failing over, the camera lost where it stops, restored exactly) and the changes between steps; cables oriented by walking (LAG members the same way, unknown order both ways); determinism (file order, repeated runs, failure order); the `demands:` section's form and warnings. |
-| **Traffic animation (real browser)** | `test/traffic-ui.test.mjs` (3 tests), through the DevTools protocol | Reduced motion: static arrows, no dots, Pause unavailable with the reason; the dot limit with 120 demands (demands first) and no node moving; a hidden page stops the frames and showing it again moves the dots. |
-| **Scenarios** | `test/scenario.test.mjs` (9 tests) | The example's `scenarios:` read (ids, labels, steps, notes); each step the state after the steps before it, a restore taking a failure back, a LAG failing its member cables; determinism (another order of steps failing different objects, earlier runs and the cache never change a result); what changed since the previous step (down, degraded, recovered, pairs lost and regained); targets resolved, from a selection, labelled, and those that can't be resolved skipped with the reason; validation of the section's form, a step whose object is gone a warning and not an error; saving, editing and deleting scenarios as undoable edits that change nothing else; renames following into the steps; the lock (every edit of the network refused during a simulation and nothing changed; scenario edits and their undo still work). |
+| **Simulated traffic (for the protocol simulation)** | `test/traffic.test.mjs` (8 tests) | The flows per protocol (OSPF and BFD both ways, VRRP from its active member, syslog one way, a bidirectional service with replies, a hub group per member) with their lanes and cables; demands traced through networks and relations, the rate growing with the bandwidth; equal-cost paths sharing a demand; a one-way cable never used backwards by the tracer, and its format; `ospf-reroute.yaml` with the primary link failed, then w1's LAN too, then both back (rerouted, VRRP failing over, the camera lost where it stops, restored exactly) and the changes from one state to the next; cables oriented by walking (LAG members the same way, unknown order both ways); determinism (file order, repeated runs, failure order); the `demands:` section's form and warnings. |
+| **Analyze windows and what was removed** | `test/windows.test.mjs` (5 tests) | **Single points of failure:** a row per point with element, type, what it cuts off, the relations down and the impact, most impact first; sorting by every column both ways (ties in the report's order); filtering by words; CSV (header, quoting) and text. **Trace path:** the hop table's columns. The windows' commands (`F6` also while typing, the Analyze entries ending in “…”, their keys). **Removed:** a `scenarios:` section and `risk_groups:` are unknown keys; the scenario, template and traffic modules are gone; no `X`, `[`, `]`, no Analysis or Simulation tab; no example writes them. |
+| **Tool windows (real input)** | `test/toolwindow.test.mjs` (4 tests), through the DevTools protocol | `F6` with real keys from the diagram into the window and back, `Esc` closing it and the focus returning to the diagram; `Shift+F` opening the Focus window and focusing at once with the keyboard on the hops in effect, `Esc` closing the window and keeping the focus, a second `Esc` exiting it; dragging the title bar (exact offset) and the grip (exact size), a drag far away stopped at the browser window's edge; size and position remembered over a reload; at 800 and 600 px and at 200 % zoom every window (Single points of failure, Trace path, Addressing overview, Focus) docked full width above the status bar, at most half the height, the page not scrolling, Dock unavailable; wide again it floats. |
 | **Failure simulation** | `test/failure.test.mjs` (9 tests) | A failed device (its interfaces and cables down, neighbours degraded, relations at it down, a VRRP group failing over, networks degraded or down, the routing context); a failed port (its cable, the far port) and a LAG degraded or down by `min_links`, and its LACP relation; a cable or relation failing what runs over it, recursively (OSPF over GRE over IPsec), with tunnels listed apart; a relation of three devices; static routes failing and the floating route taking over, with the path tracer following it; a VRRP failover in the tracer; device pairs losing reachability in full or in part; the single points of failure (partitioning cables and devices, a LAG listed once, relations without a redundant underlay, none in a ring, the enterprise WAN); only cables, ports, devices and relations can fail; the same result for another order of the failed objects and of the file. |
 | **Path tracer** | `test/trace.test.mjs` (14 tests) | A static path hop by hop (longest prefix match, interfaces, addresses, routes, cables, the refs it marks; ends given as device, interface or address); a floating route taking over when the better next hop's interface is down; where a trace stops and why (black hole, no route, an unresolved next hop, a loop, a host that does not forward); a destination outside the model (leaves it, or delivered into a network); bad requests; equal-cost multipath (every branch, the main path and the alternatives); routes learned over OSPF (hop count, a per-device cost, a static route beating OSPF, a failed adjacency); an adjacency without a common network; a GRE-over-IPsec tunnel with OSPF over it (the stack, the declared underlay, a routed underlay traced nested) and a VLAN missing from a trunk; a VRRP gateway and its failover; VRFs; the return path and asymmetric routing; the same text for files in another order; the paths of the enterprise WAN and branch examples. |
 | **Addressing overview** | `test/addressing.test.mjs` (11 tests) | VRF groups (default table first) from the members' VRFs, the supernet tree; members with DNS names and loopbacks, DHCP clients on cables carrying the network, nested members counted, not repeated; gateways (VRRP / interface VIPs, default-route next hops), not repeated on a supernet; used, size and utilization (IPv4 percent, IPv6 /64 count, 2^64 as text); free ranges without reserved, used and nested addresses, the next free address (IPv6 after the subnet-router anycast address), a full network; duplicates per VRF (not across VRFs), same-prefix networks and interface subnets larger than their network, addresses in no network; the same result for a file with every list reversed; filter with context rows, flat sorts; CSV (header, quoting, CRLF, exact counts); the Inspector's next-free choices (VRF, networks on the cable first); every example builds and lists every network. |
@@ -1566,7 +1420,7 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/scr
 | Architecture | `test/architecture.test.mjs` (3 tests) | Every module lives in a layer folder; imports follow the allowed dependency direction (docs/ARCHITECTURE.md); the diagram, layout and UI layers never import the YAML layer |
 | **Port ranges** | `test/port-range.test.mjs` (7 tests) | The final number is the port number (also with leading zeros and multi-part names); ids follow the model's convention, with the typed name as label when it isn't a valid id. Rejected with a clear reason: missing number, different prefixes, first not lower than last, more than 256 ports, names that can't become ids. Duplicate names or ids on the device (ids and labels, physical and logical) reject the whole range; other devices don't count. Creation is all or nothing, one undo step, physical interfaces only (no addresses, VLANs, links); alphabetical display; **export → reload** of generated ports. |
 | Module APIs | `test/modules.test.mjs` (10 tests) | Document editing operations (typed values, lists, endpoints, attrs, key order, one undo step each); the format schema is the single source of allowed keys; model queries; export file names; `check:dist` accepts the current build and rejects a stale HTML file |
-| **End-to-end in a real browser** | `test/browser.test.mjs` → `dist/netatlas.html#selftest` (678 in-page checks) | Headless Chrome, Edge or Chromium opens the file from `file://` **with DNS resolution disabled** and drives the real UI. **Viewer:** every example loads through the File API path, both views are drawn, loopback chips appear only in the logical view, interaction works. **New model:** New is empty; a new device shows *Select device type* and saves no type until one is chosen; a new relation has no protocol and reports its missing protocol and endpoints (saving then needs "Download anyway" in the download fallback); a new network is only an ID; add a device, **add two loopbacks, type IPv4/IPv6 addresses, see the error for an address without a prefix and fix it**, add physical interfaces (type shown as read-only *Physical*), **a bond with two member ports, a VLAN interface whose *Ports carrying its VLAN* follow the tagging of the cable ends, and a tunnel sourced from a loopback, an address and a port (an unknown source is an error)**, all listed alphabetically while the file keeps its order, a cable (link ends offer physical interfaces only), a GRE tunnel between loopbacks with nested attrs, then **VLAN tagging on the link ends** (a trunk with tagged VLANs and a range on one end, the other untouched; a difference shown in the editor, in Problems and on the cable, and not synchronized; the same VLANs in another order agree), **save (download a copy) and reload** the file. **Static routes:** the route tables and next-hop lines of `branch-routing.yaml`, the **Routes** switch (nothing moves) and its effect on the SVG export, selecting a route (its card opens and is marked), Duplicate and undo, **+ Route** on a host with a next hop that a check reports at its field and in Problems, and the jump from Problems to the route. **Command palette:** `Ctrl+K` opens it with a combobox and a listbox (a live count), fuzzy matching, an unavailable command listed with its reason and not run, an object selected with Enter, recent entries first, a command run (Logical view), Esc returning the focus, the Find menu entry, no change to the model. **Input helpers:** the MTU chips under their field in a labelled group with accessible names, a chip writing its value in one undo step, **Generate** for a MAC (named for its interface, locally administered unicast, unique, one undo step), the VRF combobox (ARIA roles, typing opens the VRFs in use with their counts, ↓ to an option, Enter picks it, a case-only variant flagged in a live region, Esc closes and keeps the selection), naming a new port after the device's pattern as a rename, the chips readable in both themes, and the palette's MAC and MTU commands. **Routing services:** a device's Protocols section with one-click suggestions (accessible names), the findings in Problems, enabling OSPF (one undo step) with its required router ID as an error until filled in, *Enable a protocol* as a labelled choice, IS-IS's required NET and its level choice, undo back to the file, *Disable* asking first with the list of what goes, undo, the chips readable in both themes, the palette command. **Scenario templates:** the Simulate entry (a dialog), the eleven templates with one that doesn't apply greyed out and its reason (aria-describedby), the review (the editable name focused, the steps, the notes, nothing saved yet), Save and play (a saved scenario, one undo step, played: both uplinks of a shared duct fail), undo, the palette's template entries. **Simulated traffic:** `ospf-reroute.yaml` played step by step in both themes: the animation on by default in its own layer under the boxes; the baseline on the preferred path with dots on its cables; the primary link failing (rerouted, said in the tab, the old way faded and the new one emphasized, no dots on the failed cable); the second failure (VRRP failing over to w2, the camera lost with a marker at w-cam); the logical view; both links restored; Pause stopping the dots; the export with arrows, no dots and the Simulation note; switching it off; no change to the model and no undo step. **Simulation:** the Analyze menu without simulation entries and the Simulate menu with them; the Simulation tab of its own; unavailable without a selection or for a network (with the reason), `X` starting an ad-hoc scenario with the mode indicators (banner with scenario and step, hatched frame, status-bar marker, *Simulated state* label), the results (relations, tunnels, networks, routes, the device pairs that lose reachability), the cable drawn dotted and what runs over it marked down in both views; the edit lock (the Edit tab read-only with its Exit simulation button, the outline's Add buttons, the YAML text, the editing core refusing any edit); a trace in the simulated state saying so; `[` / `]` playing back and forward with the same results (deterministic), Restore and Remove steps; playing changing nothing and adding no undo step; Save scenario… (a labelled dialog, one undo step), a step added to a saved scenario as an undoable edit, undoing the save; replaying a saved scenario step by step; the palette's *Play scenario*; the Single points of failure report in Analyze and the Analysis tab (an entry's name only selects; **Simulate this failure** starts a scenario; unavailable during another simulation; Close report); Focus counting hops over what is up; exports with the frame and a *Simulation: scenario …* note in both themes; `Esc`. **Path tracer:** `T` opening the Analysis tab with the selection in From and the keyboard in To, an unknown end refused at its field, a trace with its return path (the banner with the hops, the equal-cost alternative and the return path), the hop list (interfaces, addresses, the OSPF route, GRE over IPsec, the cables), the path's devices and cables marked in the physical view down to the internet underneath the tunnel, the alternative marked apart (dashed, not by colour alone), the relations in the logical view, exports with the marked path and a *Path trace* note in both themes, the text copy, no change to the model and no undo step, the trace computed again after an edit, `Esc` ending it, the Analyze menu entries. **Focus mode:** unavailable without a selection (with the reason), `Shift+F` showing one hop with the banner (object, hops, count, temporary positions), the banner's controls, `+` for 2 hops, relations in the logical view, an export with exactly the focused part and a *Focus* note, both themes, no change to the model and no undo step, `Esc` restoring every device at its position, Focus / Exit focus as commands. **Addressing overview:** opened from Analyze and with `I`, every network listed per VRF with its columns, utilization as text, the filter (with the focus kept and a live count), sorting by a header (aria-sort, reversed on a second press), a network's members opened and closed (aria-expanded), the duplicate / overlap / no-network lists, no sideways page scrolling, the CSV, a click selecting the network in the diagram, Esc closing it without changing the model or adding an undo step, both themes, and the Edit tab's **Next free address** adding an address (and undo). **Consistency checks:** the Problems tab of `consistency-checks.yaml` in two parts with a finding of every check (id, title, severity as a word, the objects as links), the severity filter (aria-pressed, focus kept), the checks the model changes, an object link selecting it, a finding opening its field with the message, an MTU fix removing the finding, the model settings' check table writing `checks:` (off, another severity, undo), and a link end's speed and duplex. **Imported model:** rename a device (every reference follows), edit, add an IPv6 loopback, save as a downloaded `…-edited.yaml`, **reload, and check that edits, hidden attributes and comments survived**. **Guards:** unsaved-changes dialog on replace; `beforeunload`; Ctrl+Z/Y; deleting a referenced device reports broken references; **exporting an invalid model requires "Download anyway"**; YAML-tab apply/reject; unknown keys kept and movable into attrs; typed text is committed before a button acts; **selection context in the lists:** selecting from the diagram, the left list and the right-hand Relations list keeps lists and diagram consistent for every element type (direct entries related, indirect ones dimmed), unrelated entries stay focusable and selectable, view switches leave no stale highlighting, and `Esc` clears everything; the device type is chosen from the 15 types by display name. **Auto-arrange:** the three options are in the top toolbar, visible and labelled (disabled until a model is open); the status reads *Auto-arranged* / *Manually adjusted* / *Edited since arranged* after loading, dragging, undo, switching views (the shown view is highlighted), Auto-arrange, moving a node back to its calculated position, export → reload of arranged and of manually adjusted layouts, a model edit, and New; loading stores nothing; the dialog shows the scope; arranging an automatic layout stores it without moving anything; repeating it is a no-op; a manual move changes only that node and is undone by arrange (and restored by undo); **arrange → export → reload is pixel-identical in both views**; a file with every list and key reversed arranges identically; **the browser reproduces the build-time positions of `metro-ring-arranged.yaml`** (a cross-engine determinism check when run in Firefox or Safari). **Safety:** hostile labels create no elements; YAML syntax errors are refused with the current model kept; **no network requests, no CSP violations**. The test is skipped if no Chromium-based browser is installed; set `NETATLAS_BROWSER` to choose one. |
+| **End-to-end in a real browser** | `test/browser.test.mjs` → `dist/netatlas.html#selftest` (635 in-page checks) | Headless Chrome, Edge or Chromium opens the file from `file://` **with DNS resolution disabled** and drives the real UI. **Viewer:** every example loads through the File API path, both views are drawn, loopback chips appear only in the logical view, interaction works. **New model:** New is empty; a new device shows *Select device type* and saves no type until one is chosen; a new relation has no protocol and reports its missing protocol and endpoints (saving then needs "Download anyway" in the download fallback); a new network is only an ID; add a device, **add two loopbacks, type IPv4/IPv6 addresses, see the error for an address without a prefix and fix it**, add physical interfaces (type shown as read-only *Physical*), **a bond with two member ports, a VLAN interface whose *Ports carrying its VLAN* follow the tagging of the cable ends, and a tunnel sourced from a loopback, an address and a port (an unknown source is an error)**, all listed alphabetically while the file keeps its order, a cable (link ends offer physical interfaces only), a GRE tunnel between loopbacks with nested attrs, then **VLAN tagging on the link ends** (a trunk with tagged VLANs and a range on one end, the other untouched; a difference shown in the editor, in Problems and on the cable, and not synchronized; the same VLANs in another order agree), **save (download a copy) and reload** the file. **Static routes:** the route tables and next-hop lines of `branch-routing.yaml`, the **Routes** switch (nothing moves) and its effect on the SVG export, selecting a route (its card opens and is marked), Duplicate and undo, **+ Route** on a host with a next hop that a check reports at its field and in Problems, and the jump from Problems to the route. **Command palette:** `Ctrl+K` opens it with a combobox and a listbox (a live count), fuzzy matching, an unavailable command listed with its reason and not run, an object selected with Enter, recent entries first, a command run (Logical view), Esc returning the focus, the Find menu entry, no change to the model. **Input helpers:** the MTU chips under their field in a labelled group with accessible names, a chip writing its value in one undo step, **Generate** for a MAC (named for its interface, locally administered unicast, unique, one undo step), the VRF combobox (ARIA roles, typing opens the VRFs in use with their counts, ↓ to an option, Enter picks it, a case-only variant flagged in a live region, Esc closes and keeps the selection), naming a new port after the device's pattern as a rename, the chips readable in both themes, and the palette's MAC and MTU commands. **Routing services:** a device's Protocols section with one-click suggestions (accessible names), the findings in Problems, enabling OSPF (one undo step) with its required router ID as an error until filled in, *Enable a protocol* as a labelled choice, IS-IS's required NET and its level choice, undo back to the file, *Disable* asking first with the list of what goes, undo, the chips readable in both themes, the palette command. **Scenario templates:** the Simulate entry (a dialog), the eleven templates with one that doesn't apply greyed out and its reason (aria-describedby), the review (the editable name focused, the steps, the notes, nothing saved yet), Save and play (a saved scenario, one undo step, played: both uplinks of a shared duct fail), undo, the palette's template entries. **Simulated traffic:** `ospf-reroute.yaml` played step by step in both themes: the animation on by default in its own layer under the boxes; the baseline on the preferred path with dots on its cables; the primary link failing (rerouted, said in the tab, the old way faded and the new one emphasized, no dots on the failed cable); the second failure (VRRP failing over to w2, the camera lost with a marker at w-cam); the logical view; both links restored; Pause stopping the dots; the export with arrows, no dots and the Simulation note; switching it off; no change to the model and no undo step. **Simulation:** the Analyze menu without simulation entries and the Simulate menu with them; the Simulation tab of its own; unavailable without a selection or for a network (with the reason), `X` starting an ad-hoc scenario with the mode indicators (banner with scenario and step, hatched frame, status-bar marker, *Simulated state* label), the results (relations, tunnels, networks, routes, the device pairs that lose reachability), the cable drawn dotted and what runs over it marked down in both views; the edit lock (the Edit tab read-only with its Exit simulation button, the outline's Add buttons, the YAML text, the editing core refusing any edit); a trace in the simulated state saying so; `[` / `]` playing back and forward with the same results (deterministic), Restore and Remove steps; playing changing nothing and adding no undo step; Save scenario… (a labelled dialog, one undo step), a step added to a saved scenario as an undoable edit, undoing the save; replaying a saved scenario step by step; the palette's *Play scenario*; the Single points of failure report in Analyze and the Analysis tab (an entry's name only selects; **Simulate this failure** starts a scenario; unavailable during another simulation; Close report); Focus counting hops over what is up; exports with the frame and a *Simulation: scenario …* note in both themes; `Esc`. **Path tracer:** `T` opening the Analysis tab with the selection in From and the keyboard in To, an unknown end refused at its field, a trace with its return path (the banner with the hops, the equal-cost alternative and the return path), the hop list (interfaces, addresses, the OSPF route, GRE over IPsec, the cables), the path's devices and cables marked in the physical view down to the internet underneath the tunnel, the alternative marked apart (dashed, not by colour alone), the relations in the logical view, exports with the marked path and a *Path trace* note in both themes, the text copy, no change to the model and no undo step, the trace computed again after an edit, `Esc` ending it, the Analyze menu entries. **Focus mode:** unavailable without a selection (with the reason), `Shift+F` showing one hop with the banner (object, hops, count, temporary positions), the banner's controls, `+` for 2 hops, relations in the logical view, an export with exactly the focused part and a *Focus* note, both themes, no change to the model and no undo step, `Esc` restoring every device at its position, Focus / Exit focus as commands. **Addressing overview:** opened from Analyze and with `I`, every network listed per VRF with its columns, utilization as text, the filter (with the focus kept and a live count), sorting by a header (aria-sort, reversed on a second press), a network's members opened and closed (aria-expanded), the duplicate / overlap / no-network lists, no sideways page scrolling, the CSV, a click selecting the network in the diagram, Esc closing it without changing the model or adding an undo step, both themes, and the Edit tab's **Next free address** adding an address (and undo). **Consistency checks:** the Problems tab of `consistency-checks.yaml` in two parts with a finding of every check (id, title, severity as a word, the objects as links), the severity filter (aria-pressed, focus kept), the checks the model changes, an object link selecting it, a finding opening its field with the message, an MTU fix removing the finding, the model settings' check table writing `checks:` (off, another severity, undo), and a link end's speed and duplex. **Imported model:** rename a device (every reference follows), edit, add an IPv6 loopback, save as a downloaded `…-edited.yaml`, **reload, and check that edits, hidden attributes and comments survived**. **Guards:** unsaved-changes dialog on replace; `beforeunload`; Ctrl+Z/Y; deleting a referenced device reports broken references; **exporting an invalid model requires "Download anyway"**; YAML-tab apply/reject; unknown keys kept and movable into attrs; typed text is committed before a button acts; **selection context in the lists:** selecting from the diagram, the left list and the right-hand Relations list keeps lists and diagram consistent for every element type (direct entries related, indirect ones dimmed), unrelated entries stay focusable and selectable, view switches leave no stale highlighting, and `Esc` clears everything; the device type is chosen from the 15 types by display name. **Auto-arrange:** the three options are in the top toolbar, visible and labelled (disabled until a model is open); the status reads *Auto-arranged* / *Manually adjusted* / *Edited since arranged* after loading, dragging, undo, switching views (the shown view is highlighted), Auto-arrange, moving a node back to its calculated position, export → reload of arranged and of manually adjusted layouts, a model edit, and New; loading stores nothing; the dialog shows the scope; arranging an automatic layout stores it without moving anything; repeating it is a no-op; a manual move changes only that node and is undone by arrange (and restored by undo); **arrange → export → reload is pixel-identical in both views**; a file with every list and key reversed arranges identically; **the browser reproduces the build-time positions of `metro-ring-arranged.yaml`** (a cross-engine determinism check when run in Firefox or Safari). **Safety:** hostile labels create no elements; YAML syntax errors are refused with the current model kept; **no network requests, no CSP violations**. The test is skipped if no Chromium-based browser is installed; set `NETATLAS_BROWSER` to choose one. |
 
 ### Manual check (any browser, e.g. Firefox or Safari)
 
@@ -2052,36 +1906,13 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/scr
       tunnel addresses. **Copy CSV**, paste into a text editor: a header
       and a line per network. **Save CSV** downloads
       `addressing-addressing.csv`.
-    * Click *Corporate*: the dialog closes and the network is selected in
-      the diagram. Press `I` again: filter, sort and open members are as you
-      left them. Esc closes it; Ctrl+Z has nothing new to undo.
+    * Click *Corporate*: the network is selected in the diagram and the
+      window stays open. Esc closes it; press `I` again: filter, sort and
+      open members are as you left them. Ctrl+Z has nothing new to undo.
     * Select *srv*'s interface *eth0*, Edit tab: **Next free address**
       offers `10.20.0.1/24` for *Management*; **+ Add** adds it, Ctrl+Z
       removes it.
 
-32. **Scenario templates.** Open `enterprise-wan.yaml`, in both themes, at
-    200 % zoom and in a window about 600 px wide.
-    * **Simulate → Scenario templates…**: eleven templates; *Asymmetric
-      routing check* is greyed out with *No traffic demands in this model*.
-      Tab through the list: the focus ring is visible, the reason is read.
-    * **Shared-risk fibre cut**: the proposal *Shared-risk failure:
-      duct-alexanderplatz*, one step; **Save and play**: both ISP uplinks
-      fail at once. Ctrl+Z after **Exit simulation** removes the scenario.
-    * Select *hq-rtr1:ge-0/0/0*: its card has **Risk groups**; add one.
-    * Open `ospf-reroute.yaml`, play *Asymmetric routing after l-w1-c1
-      fails*: the Traffic section says *Asymmetric* for the users' demand.
-31. **Simulated traffic.** Open `ospf-reroute.yaml`, in both themes, at
-    200 % zoom and in a window about 600 px wide.
-    * **Simulate → Scenarios**, **Play** *Primary link failure and OSPF
-      reroute*, `[` to step 0: dots run from the office PC and the camera
-      over w1, c1 and c3 to the server; smaller dots on every OSPF link.
-    * `]`: the primary link is down; for a moment the old way is dashed and
-      the new one over c2 emphasized; the Traffic section says *Rerouted*.
-    * `]`: the users' dots leave through w2 (VRRP failover); the camera's
-      stop, with a ✕ at the camera and *Lost* in the tab.
-    * `]` `]`: the original path returns. **Pause**: the dots stand still.
-    * Turn on *reduce motion* in the system: arrows instead of dots.
-      Export SVG: arrows, no dots, the Simulation note.
 30. **New entries and the side panel.** Open `enterprise-wan.yaml`, in both
     themes, at 200 % zoom and in a window about 600 px wide.
     * Select *hq-rtr1*, press **+ Interface**: the new interface's card is
@@ -2122,54 +1953,48 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/scr
     * Open `enterprise-wan.yaml`: hq-rtr1's box shows `router-id 10.255.0.1`
       and `AS 65010`; hq-acc1 (a switch without routing protocols) shows
       neither; hq-core1's Vlan10 entry shows `VRRP 10 10.10.10.1`.
-27. **Simulation.** Open `enterprise-wan.yaml`, in both themes, at 200 %
-    zoom and in a window about 600 px wide.
-    * **Analyze ▾** has no simulation entries; **Simulate ▾** has them, its
-      step and exit entries greyed out with the reason.
-    * Select the cable *l-hq-isp1* and press `X`: the banner reads
-      *Simulation: scenario “Ad-hoc scenario”, step 1 of 1: Fail cable
-      l-hq-isp1 …*, a hatched frame surrounds the diagram, the status bar
-      shows *◈ Simulation · step 1 of 1* and the diagram *Simulated state*.
-      The Simulation tab lists IPsec, GRE and OSPF to Munich as *Down* and
-      the device pairs that lose reachability. Trace `muc-rtr:lan0` →
-      `hq-log` (Analysis tab): it stops at muc-rtr, and the banner says *in
-      the simulated state*.
-    * Open the Edit tab: the form is read-only under *Editing is paused
-      during the simulation* with **Exit simulation**; the outline's **+
-      Add** buttons are greyed out; the YAML text can't be changed; Ctrl+Z
-      does nothing.
-    * Select *hq-rtr1*, `X`: step 2 of 2; **Changed by this step** lists
-      what went down with it. `[` shows step 1 again, `]` step 2. **Save
-      scenario…**, name it, **Save**: the YAML tab shows it under
-      `scenarios:`; Ctrl+Z removes it, Ctrl+Y brings it back.
-    * `Esc`: the banner, frame, marker and label are gone; editing works.
-    * **Simulate → Scenarios**: **Play** *Core peer link and core switch*,
-      then `]`: the peer LAG is down, the two VRRP groups are *Degraded —
-      fails over*; tracing `hq-log` → `muc-rtr` goes through hq-core2.
-      Export SVG and PNG: the marks, the dashed frame and the *Simulation:
-      scenario …* note.
-    * **Analyze → Single points of failure**: the report opens in the
-      Analysis tab (hq-fw cuts off the core, the internet cables carry the
-      tunnels); clicking an entry's name selects it and starts nothing;
-      **Simulate this failure** starts an ad-hoc scenario that fails it.
+27. **Analyze windows.** Open `enterprise-wan.yaml`, in both themes, at
+    200 % zoom and in a window about 600 px wide, then about 1400 px wide.
+    * **Analyze ▾**: *Addressing overview…*, *Focus…*, *Exit focus*, *Trace
+      path…*, *Exit path trace*, *Single points of failure…*. **Simulate ▾**:
+      *Protocol simulation…* greyed out with its reason, *Exit simulation*.
+      The side panel has six tabs (no Analysis, no Simulation). `X`, `[` and
+      `]` do nothing.
+    * **Single points of failure…**: a window (in the narrow window docked
+      at the bottom, full width, the diagram above it; the page does not
+      scroll). *inet* first (impact 13). Press **Element** twice, **Impact**
+      again; type `cable` in Filter: only cables, *n of m shown*. **Show in
+      diagram** on *l-hq-isp1*: the cable is selected, the window stays.
+      **Copy CSV**, paste: the header and the rows shown.
+    * Wide window: drag the title bar and the ◢ grip; the window never
+      leaves the browser window. Reload the page and open it again: same
+      place, same size. ▾ folds it to its title bar; **Dock** docks it.
+    * `F6`: the focus moves to the diagram; `F6` again: back into the
+      window, where it was. `Esc` in the window closes it; the focus is
+      where it was before it opened. A screen reader announces a dialog
+      named *Single points of failure*, and the rest of the page stays
+      reachable.
+    * **Addressing overview…** while the SPOF window is open: it replaces
+      it. Click a network: it is selected, the window stays.
 26. **Path tracer.** Open `enterprise-wan.yaml`, in both themes, at 200 %
     zoom and in a window about 600 px wide.
-    * Select *muc-rtr* and press `T`: the Analysis tab opens with *muc-rtr*
-      in From and the keyboard in To. Type `nowhere`, Enter: the field says
+    * Select *muc-rtr* and press `T`: the Trace path window opens with
+      *muc-rtr* in From and the keyboard in To. Type `nowhere`, Enter: the field says
       why and nothing is traced.
     * From `muc-rtr:lan0` to `hq-log`, tick *Trace the return path too*,
       **Trace**: the banner reads *Reached hq-log:eno1 in 4 hops · 2
-      equal-cost paths*; the hop list shows muc-rtr leaving by *Tunnel10*
+      equal-cost paths*; the hop table shows muc-rtr leaving by *Tunnel10*
       into *GRE over IPsec* over the internet cables, hq-rtr1, hq-fw (in by
-      *vlan5*), hq-core1 and hq-log. **Alternative 1** lists the way over
-      hq-core2. The return path goes through the VRRP address of the
+      *vlan5*), hq-core1 and hq-log, a row each, with the columns Device,
+      In, Out, Addresses, Route or relation and Encapsulation. The
+      **Alternative 1** section lists the way over hq-core2. The return path goes through the VRRP address of the
       servers to hq-core1.
     * In the physical view the path is drawn with thick solid outlines, the
       hq-core2 alternative dashed, the rest dimmed; in the logical view the
       OSPF, GRE and IPsec relations are marked. Export SVG and PNG: the
       marked path with the *Path trace* note.
-    * **Copy as text**, paste it into an editor. Press `Esc`: nothing is
-      marked; Ctrl+Z has nothing to undo.
+    * **Copy as text**, paste it into an editor. Close the window with **×**:
+      nothing is marked; Ctrl+Z has nothing to undo.
 25. **Command palette and focus mode.** Open `enterprise-wan.yaml`, in both
     themes, at 200 % zoom and in a window about 600 px wide.
     * Press `Ctrl+K` (`Cmd+K` on a Mac): the palette opens with the focus in
@@ -2178,14 +2003,16 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/scr
       *Unavailable: Focus mode is off*; Enter does nothing but say so. Type
       `hq-rtr1`, Enter: the router is selected. `Ctrl+K` again: *Recent*
       lists it first. Esc closes and the focus is back where it was.
-    * With *hq-fw* selected in the physical view, press `Shift+F`: only the
+    * With *hq-fw* selected in the physical view, press `Shift+F`: the Focus
+      window opens (*Object: hq-fw*, *1 hop* checked) and only the
       firewall, the two routers and the two core switches are drawn; the
       banner reads *Focus: hq-fw and what is within 1 hop (cables) · 5 of 15
       devices* with **−**, **+** and **Exit focus**. Press **+**: more
       devices, the ones already there stay where they were. Switch to the
       logical view: the banner says *(relations)*. Export SVG and PNG: only
       what is drawn, with the *Focus* note on top.
-    * Press `Esc`: the whole diagram is back as before, at the same zoom;
+    * Close the window (the focus stays on, with its banner), then
+      **Exit focus**: the whole diagram is back as before, at the same zoom;
       the selection stays; Ctrl+Z has nothing to undo.
 ## Security model
 
@@ -2300,29 +2127,7 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/scr
   protocols. A VRRP / HSRP group's members are found by its virtual
   address; the group's relation (`vrrp-users`) is drawn as before but no
   longer holds the address.
-* **Scenario templates follow simple, documented rules** (see the table
-  in [Scenario templates](#scenario-templates)): they propose, they don't
-  judge a design; review a proposal before saving it. Planned maintenance
-  takes a device or cable out of service at once (no cost-out first).
-  *Traffic surge* is missing until there is a capacity analysis.
-* **The traffic animation shows what the model implies, not measured
-  traffic.** Control traffic is a fixed pattern per protocol (adjacencies
-  both ways, a redundancy group's advertisements from its active member, a
-  service from its clients to its last endpoint), without timers or rates
-  of the real protocol. Demands are traced like Trace path; equal-cost
-  paths share a demand equally (no hashing). A relation whose way between
-  its endpoints can't be traced and that has no `over` cables (for example
-  a session between loopbacks over a network) has dots in the logical view
-  only. Dots are relative: more for more bandwidth, not to scale. At most
-  300 dots move at once. Demands have no load or capacity analysis yet.
-* **Simulation is an approximation of the model, not of the network.**
-  Routing is model-based (the path tracer's routing, below): connected
-  networks, static routes and the relations of enabled protocols, not real
-  routing tables. There is no simulation of spanning tree, protocol timers
-  or convergence (a failure takes effect at once), and no ACLs, NAT or QoS.
-  Results never claim more precision than the model provides: what it
-  doesn't describe is not simulated, and the Simulation tab says so.
-* **The failure simulation follows what the model writes.** A relation goes
+* **The single points of failure follow what the model writes.** A relation goes
   down when anything it runs `over` goes down: `over` is read as a chain,
   so a relation that could take another way (a routed tunnel over a
   redundant internet) is only as redundant as its `over:` list says; a LACP
@@ -2333,8 +2138,7 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/scr
   checked by tracing between devices (each to the other's first address
   that is still up), for at most 40 devices; the single points of failure
   are found by failing each cable, device and LAG alone, never
-  combinations. A scenario step acts on one object; a step whose object is
-  gone is skipped.
+  combinations.
 * **The path tracer is a model-based approximation, not a simulation of
   real protocols.** Every router of a routing protocol's adjacencies
   advertises all its connected networks and passes on what it learns;

@@ -8,7 +8,6 @@ import assert from 'node:assert/strict';
 import { validate, load, example } from './helpers.mjs';
 
 const T = load('analysis/traffic.js');
-const S = load('analysis/scenario.js');
 const F = load('analysis/failure.js');
 const R = load('analysis/trace.js');
 
@@ -106,11 +105,11 @@ demands:
   assert.match(bad.errors[0].message, /unknown direction "oneway": use "bidirectional" \(the default\) or "unidirectional" \(from end a to end b\)/);
 });
 
-test('the example scenario: rerouted, VRRP failing over, the camera lost where it stops, and back to the preferred path; the changes step by step', () => {
+test('the primary link fails, then w1’s LAN: rerouted, VRRP failing over, the camera lost where it stops, and back to the preferred path; the changes from one state to the next', () => {
   const m = model(reroute);
-  const sc = m.scenarios.find((s) => s.id === 'ospf-reroute');
-  assert.equal(sc.label, 'Primary link failure and OSPF reroute');
-  const at = (k) => T.trafficFlows(m, k ? S.stepView(m, sc.steps, k).res : null);
+  // what is failed at each stage: nothing; the primary link; and w1's LAN; the primary link again; nothing
+  const failed = [[], ['link:l-c1-c3'], ['link:l-c1-c3', 'link:l-w1-sw'], ['link:l-c1-c3'], []];
+  const at = (k) => T.trafficFlows(m, failed[k].length ? F.simulate(m, failed[k]) : null);
   const path = (st, d) => st.flows.find((f) => f.of === 'demand:' + d);
   const steps = [0, 1, 2, 3, 4].map(at);
   assert.deepEqual(path(steps[0], 'users-app').devices, ['w-host', 'w1', 'c1', 'c3', 'e1', 'e-srv']);
@@ -135,7 +134,7 @@ test('the example scenario: rerouted, VRRP failing over, the camera lost where i
   // 3 and 4: restored; at the end the preferred path again
   assert.equal(T.trafficDiff(steps[2], steps[3]).find((x) => x.of === 'demand:cam-video').kind, 'restored');
   assert.deepEqual(path(steps[4], 'users-app').devices, path(steps[0], 'users-app').devices);
-  assert.deepEqual(steps[4].flows, steps[0].flows, 'restoring both links brings the original traffic back exactly');
+  assert.deepEqual(steps[4].flows, steps[0].flows, 'with both links back the original traffic is back exactly');
 });
 
 test('deterministic: another order of the file, earlier runs and the failure order never change the flows', () => {

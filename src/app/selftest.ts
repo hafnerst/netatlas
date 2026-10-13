@@ -18,7 +18,8 @@ import { CHECKS } from '../analysis/checks';
 import { addressingOverview } from '../analysis/addressing';
 import { traceText } from '../analysis/trace';
 import { addressingCsv } from '../ui/addressing';
-import { scenarioItems, templateItems } from '../ui/palette';
+import { spofCsv, spofRows } from '../ui/spof';
+import { singlePointsOfFailure } from '../analysis/failure';
 import { EXAMPLES, FIXTURES } from '../generated/examples';
 import { PNG_MAX_PIXELS, PNG_MAX_SIDE, WritableFile, pngScale, svgToPng } from '../ui/files';
 import { App } from '../ui/app';
@@ -1242,19 +1243,19 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       entry.click();
       await tick();
       const dlgOpen = (): boolean => app.addressingOpen;
-      const rows = (): HTMLElement[] => Array.from(doc.querySelectorAll('#modal .addr-row')) as HTMLElement[];
+      const rows = (): HTMLElement[] => Array.from(doc.querySelectorAll('#toolwin .addr-row')) as HTMLElement[];
       const m = app.session!.model;
       const ov = addressingOverview(m);
       const listings = ov.vrfs.reduce((s, g) => s + g.networks.length, 0);
       check(
         'the overview lists the networks of each VRF (default table first) with prefix, VLAN, name, gateway / VIP, use, utilization, next free and free ranges; the filter has the focus',
-        dlgOpen() && rows().length === listings && doc.querySelectorAll('#modal .addr-vrf').length === ov.vrfs.length && /Default table/.test(q('#modal .addr-vrf h3')!.textContent || '') &&
-          ['Prefix', 'VLAN', 'Name', 'Gateway / VIP', 'Used / size', 'Utilization', 'Next free', 'Free ranges'].every((h) => (q('#modal .addr-table thead')!.textContent || '').indexOf(h) >= 0) &&
-          doc.activeElement === q('#addr-filter') && /10\.10\.10\.1/.test(q('#modal .addr-row[data-addr-net="corp"] .addr-gw')!.textContent || '') && /0\.8 %/.test(q('#modal .addr-row[data-addr-net="corp"]')!.textContent || '') && /× \/64/.test(q('#modal .addr-row[data-addr-net="corp6"]')!.textContent || ''),
+        dlgOpen() && rows().length === listings && doc.querySelectorAll('#toolwin .addr-vrf').length === ov.vrfs.length && /Default table/.test(q('#toolwin .addr-vrf h3')!.textContent || '') &&
+          ['Prefix', 'VLAN', 'Name', 'Gateway / VIP', 'Used / size', 'Utilization', 'Next free', 'Free ranges'].every((h) => (q('#toolwin .addr-table thead')!.textContent || '').indexOf(h) >= 0) &&
+          doc.activeElement === q('#addr-filter') && /10\.10\.10\.1/.test(q('#toolwin .addr-row[data-addr-net="corp"] .addr-gw')!.textContent || '') && /0\.8 %/.test(q('#toolwin .addr-row[data-addr-net="corp"]')!.textContent || '') && /× \/64/.test(q('#toolwin .addr-row[data-addr-net="corp6"]')!.textContent || ''),
         `${rows().length} rows / ${listings}`,
       );
       // utilization is text, not only a bar
-      check('utilization is written as text (the bar is only decoration)', rows().every((r) => /%|\/64|\/\d+/.test((r.querySelector('.addr-util') as HTMLElement).textContent || '')) && Array.from(doc.querySelectorAll('#modal .addr-bar')).every((b) => b.getAttribute('aria-hidden') === 'true'));
+      check('utilization is written as text (the bar is only decoration)', rows().every((r) => /%|\/64|\/\d+/.test((r.querySelector('.addr-util') as HTMLElement).textContent || '')) && Array.from(doc.querySelectorAll('#toolwin .addr-bar')).every((b) => b.getAttribute('aria-hidden') === 'true'));
       // filter
       const filter = q('#addr-filter') as HTMLInputElement;
       filter.value = 'srv';
@@ -1266,21 +1267,21 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       filter.dispatchEvent(new Event('input', { bubbles: true }));
       await tick();
       // sort
-      (q('#modal [data-addr-sort="util"]') as HTMLElement).click();
+      (q('#toolwin [data-addr-sort="util"]') as HTMLElement).click();
       await tick();
-      const th = (q('#modal [data-addr-sort="util"]') as HTMLElement).closest('th') as HTMLElement;
+      const th = (q('#toolwin [data-addr-sort="util"]') as HTMLElement).closest('th') as HTMLElement;
       const firstAsc = rows()[0].getAttribute('data-addr-net');
-      (q('#modal [data-addr-sort="util"]') as HTMLElement).click();
+      (q('#toolwin [data-addr-sort="util"]') as HTMLElement).click();
       await tick();
-      const th2 = (q('#modal [data-addr-sort="util"]') as HTMLElement).closest('th') as HTMLElement;
+      const th2 = (q('#toolwin [data-addr-sort="util"]') as HTMLElement).closest('th') as HTMLElement;
       check(
         'a column header sorts (aria-sort ascending, then descending on a second press), and keeps the focus',
-        th.getAttribute('aria-sort') === 'ascending' && th2.getAttribute('aria-sort') === 'descending' && rows()[0].getAttribute('data-addr-net') !== firstAsc && doc.activeElement === q('#modal [data-addr-sort="util"]'),
+        th.getAttribute('aria-sort') === 'ascending' && th2.getAttribute('aria-sort') === 'descending' && rows()[0].getAttribute('data-addr-net') !== firstAsc && doc.activeElement === q('#toolwin [data-addr-sort="util"]'),
       );
-      (q('#modal [data-addr-sort="prefix"]') as HTMLElement).click();
+      (q('#toolwin [data-addr-sort="prefix"]') as HTMLElement).click();
       await tick();
       // members
-      const tog = q('#modal .addr-row[data-addr-net="corp"] [data-addr-toggle]') as HTMLElement;
+      const tog = q('#toolwin .addr-row[data-addr-net="corp"] [data-addr-toggle]') as HTMLElement;
       const mrow = doc.getElementById(tog.getAttribute('aria-controls') as string) as HTMLElement;
       const hiddenBefore = mrow.hidden;
       tog.click();
@@ -1291,24 +1292,25 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       );
       tog.click();
       await tick();
-      check('duplicates, overlaps and addresses in no network are listed', !!q('#modal [data-addr-list="duplicates"]') && !!q('#modal [data-addr-list="overlaps"]') && doc.querySelectorAll('#modal [data-addr-list="orphans"] li').length === ov.orphans.length && ov.orphans.length > 0);
+      check('duplicates, overlaps and addresses in no network are listed', !!q('#toolwin [data-addr-list="duplicates"]') && !!q('#toolwin [data-addr-list="overlaps"]') && doc.querySelectorAll('#toolwin [data-addr-list="orphans"] li').length === ov.orphans.length && ov.orphans.length > 0);
       // the page does not scroll sideways (the tables do, inside their region)
-      check('the dialog fits the window: no sideways scrolling of the page', doc.documentElement.scrollWidth <= doc.documentElement.clientWidth + 1 && !!q('#modal .addr-scroll[role="region"][aria-label]'));
+      check('the window fits the browser window: no sideways scrolling of the page', doc.documentElement.scrollWidth <= doc.documentElement.clientWidth + 1 && !!q('#toolwin .addr-scroll[role="region"][aria-label]'));
       // CSV
       const csv = addressingCsv(ov);
       check('the table as CSV: a header and a line per listing', csv.split('\r\n').length === listings + 2 && /^vrf,prefix,vlan,name,network_id/.test(csv));
-      // a click on a network: the dialog closes and the network is selected
-      (q('#modal .addr-row[data-addr-net="corp"] [data-addr-goto="network:corp"]') as HTMLElement).click();
+      // a click on a network selects it in the diagram beside the window, which stays open
+      (q('#toolwin .addr-row[data-addr-net="corp"] [data-addr-goto="network:corp"]') as HTMLElement).click();
       await tick();
-      check('clicking a network closes the overview and selects it in the diagram', !dlgOpen() && app.session!.state.selected === 'network:corp');
+      check('clicking a network selects it in the diagram; the overview stays open beside it (a tool window, not a modal dialog)', dlgOpen() && app.session!.state.selected === 'network:corp' && !(q('#modal') as HTMLDialogElement).open && q('#toolwin')!.getAttribute('role') === 'dialog' && !q('#toolwin')!.hasAttribute('aria-modal'));
+      app.closeToolWindow();
+      await tick();
       // the key I opens it again, with its state; Esc closes it and the focus returns
       app.select(null);
       (q('#canvas') as unknown as HTMLElement).focus();
       doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'i', bubbles: true }));
       await tick();
       check('the key I opens the overview', dlgOpen());
-      const modal = q('#modal') as HTMLDialogElement;
-      modal.dispatchEvent(new Event('cancel', { cancelable: true }));
+      (q('#addr-filter') as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
       await tick();
       check('Esc closes it; the model is unchanged and no undo step was added', !dlgOpen() && app.exportText() === yamlBefore && (q('#btn-undo') as HTMLButtonElement).disabled === undoBefore);
       // both themes: the overview is drawn with the theme's colours
@@ -1316,10 +1318,10 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         app.theme.set(theme as 'light' | 'dark');
         void app.openAddressing();
         await tick();
-        const cs = doc.defaultView!.getComputedStyle(q('#modal') as HTMLElement);
-        const link = doc.defaultView!.getComputedStyle(q('#modal .addr-row .ref') as HTMLElement).color;
+        const cs = doc.defaultView!.getComputedStyle(q('#toolwin') as HTMLElement);
+        const link = doc.defaultView!.getComputedStyle(q('#toolwin .addr-row .ref') as HTMLElement).color;
         check(`${theme} theme: the overview uses the theme’s background and link colours`, cs.backgroundColor !== '' && link !== cs.backgroundColor && dlgOpen());
-        (q('#modal') as HTMLDialogElement).dispatchEvent(new Event('cancel', { cancelable: true }));
+        app.closeToolWindow();
         await tick();
       }
       // the Inspector offers the next free address
@@ -1474,7 +1476,24 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const viaCommand = !banner.hidden;
       app.runCommand('focus.exit');
       await tick();
-      check('Focus and Exit focus are commands (menu, palette)', viaCommand && banner.hidden && !!q('#btn-focus[data-command="focus.enter"]'));
+      check('Focus… and Exit focus are commands (menu, palette)', viaCommand && banner.hidden && !!q('#btn-focus[data-command="focus.window"]') && !!q('#btn-focus-exit[data-command="focus.exit"]'));
+      // the Focus window: the selection, 1–3 hops, Focus and Exit focus
+      app.select('device:hq-fw');
+      click('#analyze-btn');
+      (q('#btn-focus') as HTMLElement).click();
+      await tick();
+      check(
+        'Analyze → Focus… opens the Focus window: the selected object, the hops as a radio group (the hops in effect checked), Focus and Exit focus; with a selection it focuses at once',
+        app.toolWindow() === 'focus' && /hq-fw/.test(q('#toolwin .focus-sel')!.textContent || '') && doc.querySelectorAll('#toolwin [role="radio"][data-focus-hops]').length === 3 && doc.querySelectorAll('#toolwin [role="radio"][aria-checked="true"]').length === 1 && new RegExp('^' + q('#toolwin [role="radio"][aria-checked="true"]')!.getAttribute('data-focus-hops') + ' hops?$').test(q('#focus-hops')!.textContent || '') && !banner.hidden && !(q('#focus-exit-w') as HTMLButtonElement).disabled,
+      );
+      (q('#toolwin [data-focus-hops="1"]') as HTMLElement).focus();
+      (q('#toolwin [data-focus-hops="1"]') as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true }));
+      await tick();
+      check('→ in the hops: 2 hops, at once in the diagram and the banner (the focus stays on the radio group)', /2 hops/.test(q('#focus-hops')!.textContent || '') && q('#toolwin [data-focus-hops="2"]')!.getAttribute('aria-checked') === 'true' && doc.activeElement === q('#toolwin [data-focus-hops="2"]'));
+      (q('#focus-exit-w') as HTMLElement).click();
+      await tick();
+      check('Exit focus in the window: the complete diagram; the window stays and says focus mode is off', banner.hidden && app.toolWindow() === 'focus' && /Focus mode is off/.test(q('#toolwin .focus-now')!.textContent || ''));
+      app.closeToolWindow();
       app.select(null);
       (app.mdoc as ModelDoc).markSaved();
     }
@@ -1497,8 +1516,8 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       await tick();
       const from = q('#trace-from') as HTMLInputElement;
       check(
-        'T opens the Analysis tab with the Trace path form: the selection fills From, the keyboard is in To',
-        !!from && from.value === 'muc-rtr' && doc.activeElement === q('#trace-to') && !!q('[data-tab="analysis"].active') && !!q('label[for="trace-from"]') && !!q('label[for="trace-vrf"]'),
+        'T opens the Trace path window with its form: the selection fills From, the keyboard is in To',
+        !!from && from.value === 'muc-rtr' && doc.activeElement === q('#trace-to') && app.toolWindow() === 'trace' && /^Trace path$/.test(q('#tw-title')!.textContent || '') && !!q('label[for="trace-from"]') && !!q('label[for="trace-vrf"]') && !!q('label[for="trace-back"]'),
       );
       // an end that is not in the model: the form says why, nothing is traced
       const to = q('#trace-to') as HTMLInputElement;
@@ -1517,13 +1536,18 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         !(q('#mode-banner') as HTMLElement).hidden && !(q('#mb-trace') as HTMLElement).hidden && /Path trace: muc-rtr:lan0 → hq-log · Reached hq-log:eno1 in 4 hops · 2 equal-cost paths/.test(text) && /return path: Reached muc-rtr:lan0/.test(text),
         text,
       );
-      const hops = doc.querySelectorAll('#side-body ol.trace-hops:not(.trace-back) > li.trace-hop');
+      const mainSec = q('#toolwin [data-trace-path="trace-main"]') as HTMLElement;
+      const hops = Array.from(mainSec.querySelectorAll('tr.hop-row:not(.hop-under)')) as HTMLElement[];
+      const cells = (r: HTMLElement): string[] => Array.from(r.children).map((c) => (c.textContent || '').trim());
+      const heads = Array.from(mainSec.querySelectorAll('thead th')).map((h) => h.textContent);
       check(
-        'the hop list: each device with its ingress and egress interface and addresses, the route used, the encapsulation, the cables',
-        hops.length === 5 && /muc-rtr/.test(hops[0].textContent || '') && /Tunnel10 172\.16\.10\.2 → next hop 172\.16\.10\.1/.test(hops[0].textContent || '') && /OSPF route 10\.10\.20\.0\/24 over ospf-muc/.test(hops[0].textContent || '') && /encap\s*GRE over IPsec/.test(hops[0].textContent || '') && /l-hq-isp1/.test(hops[0].textContent || '') && /in\s*Ethernet49 10\.0\.1\.2/.test(hops[3].textContent || ''),
-        `${hops.length} ${hops[0] ? hops[0].textContent : ''}`,
+        'the result is a table, one row per hop: device, ingress and egress interface, addresses and next hop, the route or relation used, the encapsulation; under it the switches passed and the cables (here the tunnel’s declared underlay)',
+        heads.join('|') === '#|Device|In|Out|Addresses|Route or relation|Encapsulation' && hops.length === 5 &&
+          cells(hops[0])[1] === 'muc-rtr' && cells(hops[0])[3] === 'Tunnel10' && /out 172\.16\.10\.2 · next hop 172\.16\.10\.1/.test(cells(hops[0])[4]) && /OSPF route 10\.10\.20\.0\/24 over ospf-muc/.test(cells(hops[0])[5]) && /GRE over IPsec/.test(cells(hops[0])[6]) &&
+          /cables l-hq-isp1, l-isp1-inet, l-muc-inet/.test((mainSec.querySelector('tr.hop-more') as HTMLElement).textContent || '') && cells(hops[3])[2] === 'Ethernet49' && /in 10\.0\.1\.2/.test(cells(hops[3])[4]) && !!mainSec.querySelector('caption.sr-only') && hops[0].firstElementChild!.getAttribute('scope') === 'row',
+        `${hops.length} ${hops[0] ? cells(hops[0]).join(' | ') : ''}`,
       );
-      check('the end of the path and the return path are in the list', /Reached: reached hq-log:eno1/.test(q('#side-body .trace-end') ? q('#side-body .trace-end')!.textContent || '' : '') && /Return path/.test(q('#side-body')!.textContent || '') && doc.querySelectorAll('#side-body ol.trace-back > li').length === 5);
+      check('the main path, the equal-cost alternative and the return path are sections of their own, each labelled, each with its end', /Reached: reached hq-log:eno1/.test(mainSec.querySelector('.trace-end')!.textContent || '') && /^Main path$/.test(q('#trace-main-h')!.textContent || '') && /^Equal-cost alternative 1$/.test(q('#trace-alt-1-h')!.textContent || '') && /^Return path$/.test(q('#trace-back-h')!.textContent || '') && (q('#trace-back-h') as HTMLElement).closest('section')!.querySelectorAll('tr.hop-row:not(.hop-under)').length === 5);
       // the diagram: the path, its alternative, the rest dimmed
       const main = traced('trace-main');
       const alt = traced('trace-alt');
@@ -1538,10 +1562,8 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       // not colour alone: the alternative's box is dashed, the path's is solid
       const cssOf = (ref: string): CSSStyleDeclaration => doc.defaultView!.getComputedStyle(q(`#viewport [data-ref="${ref}"] .dev-box`) as Element);
       check('the path is marked by line style and width, not by colour alone: solid and thick; the alternative dashed', cssOf('device:hq-core1').strokeDasharray === 'none' && parseFloat(cssOf('device:hq-core1').strokeWidth) >= 3.5 && cssOf('device:hq-core2').strokeDasharray !== 'none', `${cssOf('device:hq-core2').strokeDasharray}`);
-      // the other alternative in the list
-      (q('[data-trace-path="1"]') as HTMLElement).click();
-      await tick();
-      check('the alternative’s hops are listed on request', /hq-core2/.test(q('#side-body ol.trace-hops')!.textContent || '') && (q('[data-trace-path="1"]') as HTMLElement).getAttribute('aria-pressed') === 'true');
+      // the alternative in its own section
+      check('the alternative’s hops are in their section (through hq-core2)', /hq-core2/.test(q('#toolwin [data-trace-path="trace-alt-1"]')!.textContent || '') && !/hq-core2/.test(Array.from(mainSec.querySelectorAll('tr.hop-row')).map((r) => r.textContent).join(' ')));
       // the logical view: the relations used
       click('[data-view-btn="logical"]');
       await tick();
@@ -1573,7 +1595,14 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       (q('#canvas') as unknown as HTMLElement).focus();
       doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
       await tick();
-      check('Esc ends the trace: nothing is marked, the banner is gone, the form keeps its values', (q('#mode-banner') as HTMLElement).hidden && traced('trace-main').length === 0 && !(q('#canvas') as unknown as Element).classList.contains('has-trace') && (q('#trace-from') as HTMLInputElement).value === 'muc-rtr:lan0');
+      check('Esc in the diagram ends the trace: nothing is marked, the banner is gone; the window keeps the form and its values', (q('#mode-banner') as HTMLElement).hidden && traced('trace-main').length === 0 && !(q('#canvas') as unknown as Element).classList.contains('has-trace') && app.toolWindow() === 'trace' && (q('#trace-from') as HTMLInputElement).value === 'muc-rtr:lan0');
+      // the path stays marked only while the window is open
+      (q('#trace-go') as HTMLElement).click();
+      await tick();
+      const markedOpen = traced('trace-main').length > 0;
+      (q('#toolwin .tw-close') as HTMLElement).click();
+      await tick();
+      check('closing the window removes the path from the diagram', markedOpen && traced('trace-main').length === 0 && !app.currentTrace() && !app.toolWindowOpen());
       check('Trace path… and Exit path trace are commands of the Analyze menu', !!q('#btn-trace[data-command="trace.open"]') && !!q('#btn-trace-exit[data-command="trace.exit"]') && (q('#btn-trace-exit') as HTMLButtonElement).disabled);
       app.select(null);
       (app.mdoc as ModelDoc).markSaved();
@@ -1798,361 +1827,115 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       md.markSaved();
     }
 
-    // ------------------------------------------------ simulation: the Simulate menu, the Simulation tab, scenarios, the mode
+    // ------------------------------------------------ tool windows: Analyze and Simulate, no side tabs, no scenarios
     {
       app.loadExample(EXAMPLES.findIndex((e) => e.name === 'enterprise-wan.yaml'));
       click('[data-view-btn="physical"]');
       await tick();
       const yamlBefore = app.exportText();
-      const marked = (cls: string): string[] =>
-        Array.from(doc.querySelectorAll('#viewport .' + cls))
-          .map((e) => e.getAttribute('data-ref') || '')
-          .filter((r, i, a) => a.indexOf(r) === i);
       const menuIds = (id: string): string[] => Array.from(doc.querySelectorAll(`#${id} [data-command]`)).map((e) => e.getAttribute('data-command') || '');
       check(
-        'Analyze keeps “what is” (Addressing, Focus, Trace path, Single points of failure); a Simulate menu right after it holds “what if” (fail, scenarios, steps, save, exit)',
-        menuIds('analyze-menu').join(' ') === 'analyze.addressing focus.enter focus.exit trace.open trace.exit analyze.spof' &&
-          menuIds('simulate-menu').join(' ') === 'sim.add panel.simulation sim.templates sim.prev sim.next sim.save sim.traffic sim.trafficPause sim.exit' &&
-          (q('#analyze-btn') as HTMLElement).closest('.menu-wrap')!.nextElementSibling === (q('#simulate-btn') as HTMLElement).closest('.menu-wrap'),
+        'Analyze holds Addressing overview…, Focus…, Exit focus, Trace path…, Exit path trace, Single points of failure…; Simulate holds Protocol simulation… and Exit simulation',
+        menuIds('analyze-menu').join(' ') === 'analyze.addressing focus.window focus.exit trace.open trace.exit analyze.spof' && menuIds('simulate-menu').join(' ') === 'sim.protocol sim.exit',
         menuIds('analyze-menu').join(' ') + ' | ' + menuIds('simulate-menu').join(' '),
       );
-      check('the side panel has a Simulation tab of its own, besides Analysis', !!q('#side .tabs [data-tab="simulation"]') && !!q('#side .tabs [data-tab="analysis"]'));
-      const simBtn = q('#btn-sim') as HTMLButtonElement;
-      check('Simulate failure is unavailable without a selection, and says why', simBtn.disabled && /Select a cable, port, device or relation first/.test(simBtn.title), simBtn.title);
-      app.select('network:net-users');
-      await tick();
-      check('… and for an object that can’t fail (a network)', simBtn.disabled && /Only a cable, a port/.test(simBtn.title));
-      // the Simulation tab without a simulation: the saved scenarios
-      app.showTab('simulation');
-      await tick();
-      const saved = Array.from(doc.querySelectorAll('#side-body [data-sim-play]')).map((b) => b.getAttribute('data-sim-play'));
-      check('the Simulation tab lists the model’s saved scenarios, each with Play and Delete', saved.join(' ') === 'isp1-outage core-peer-loss uplink-outage-at-hq-berlin shared-risk-failure-duct-alexanderplatz vrrp-failover-of-10-10-10-1 tunnel-failover-ham-rtr-hq-rtr2 rolling-maintenance-of-hq-core1-and-hq-core2' && doc.querySelectorAll('#side-body [data-sim-delete]').length === 7, saved.join(' '));
-      // X on a cable starts an ad-hoc scenario
+      check('the side panel has no Analysis and no Simulation tab', !q('#side .tabs [data-tab="analysis"]') && !q('#side .tabs [data-tab="simulation"]') && doc.querySelectorAll('#side .tabs button[data-tab]').length === 6);
+      // scenarios, X and the step keys are gone
       app.select('link:l-hq-isp1');
-      await tick();
       (q('#canvas') as unknown as HTMLElement).focus();
-      doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'x', bubbles: true, cancelable: true }));
+      for (const key of ['x', '[', ']']) doc.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
       await tick();
-      const simText = (): string => (q('#sim-text') ? q('#sim-text')!.textContent || '' : '');
-      check(
-        'X fails the selected cable at once: an ad-hoc scenario, step 1 of 1, with what is down, degraded and the device pairs that lose reachability; the Simulation tab shows it',
-        !(q('#mb-sim') as HTMLElement).hidden && /^Simulation: scenario “Ad-hoc scenario”, step 1 of 1: Fail cable l-hq-isp1 · \d+ down · \d+ degraded or taken over · \d+ device pairs? loses? reachability/.test(simText()) && /The model is unchanged; editing is paused/.test(simText()) && !!q('[data-tab="simulation"].active'),
-        simText(),
-      );
-      // the mode, recognisable beyond colour: the frame, the badge, the status marker, the diagram's name
-      const wrapAfter = doc.defaultView!.getComputedStyle(q('#canvas-wrap') as Element, '::after');
-      check(
-        'simulation mode shows everywhere: a hatched frame round the diagram, a “Simulated state” badge, a Simulation marker in the status bar, the diagram named a simulated state',
-        doc.body.getAttribute('data-mode') === 'simulation' && wrapAfter.borderImageSource !== 'none' && !(q('#sim-badge') as HTMLElement).hidden && /Simulated state/.test(q('#sim-badge')!.textContent || '') &&
-          /Simulation · step 1 of 1/.test(q('#status .sim-marker') ? q('#status .sim-marker')!.textContent || '' : '') && /simulated state/.test((q('#canvas') as unknown as Element).getAttribute('aria-label') || ''),
-        `${wrapAfter.borderImageSource} | ${(q('#canvas') as unknown as Element).getAttribute('aria-label')}`,
-      );
-      const panel = (): string => (q('#side-body .sim-panel') as HTMLElement).textContent || '';
-      check(
-        'the Simulation tab: the steps, what changed, what is failed, the counts and lists, and the device pairs that lose reachability',
-        /Scenario: Ad-hoc scenario \(not saved\)/.test(panel()) && /Before the first step/.test(panel()) && /Changed by this step/.test(panel()) && /Now down \(\d+\)/.test(panel()) && /Relations\s*3 down/.test(panel()) && /Tunnels\s*2 down/.test(panel()) && /Down\s*OSPF ospf-muc — it runs over gre-muc/.test(panel()) && /Lost\s*hq-fw → muc-rtr/.test(panel()),
-        panel().slice(0, 400),
-      );
-      check('it says what the simulation approximates', /What the simulation approximates/.test(panel()) && /No ACLs, NAT or QoS/.test(panel()));
-      // both views: down and degraded, by line style, not colour alone
-      const down = marked('sim-down');
-      check('physical view: the cable and what runs over it are marked down; the routers at it degraded', down.indexOf('link:l-hq-isp1') >= 0 && marked('sim-degraded').indexOf('device:hq-rtr1') >= 0 && (q('#canvas') as unknown as Element).classList.contains('has-sim'), down.join(' '));
-      const cable = q('#viewport [data-ref="link:l-hq-isp1"] .cable-line') as Element;
-      check('… drawn dotted (a line style), not only in another colour', !!cable && doc.defaultView!.getComputedStyle(cable).strokeDasharray !== 'none', cable ? doc.defaultView!.getComputedStyle(cable).strokeDasharray : '');
-      click('[data-view-btn="logical"]');
-      await tick();
-      check('logical view: the IPsec, GRE and OSPF stack over the cable is marked down', ['relation:ipsec-muc', 'relation:gre-muc', 'relation:ospf-muc', 'relation:bgp-isp1'].every((r) => marked('sim-down').indexOf(r) >= 0), marked('sim-down').join(' '));
-      // editing is paused: the Edit tab read-only with a way out, the YAML read-only, the edit commands say why, the lock refuses edits
-      app.select('device:hq-fw');
-      app.showTab('edit');
-      await tick();
-      const lockNote = q('#side-body .lock-note') as HTMLElement | null;
-      const fs = q('#side-body fieldset.locked-form') as HTMLFieldSetElement | null;
-      check(
-        'during a simulation the Edit tab is read-only: a notice says why, with Exit simulation; every control of the form is disabled',
-        !!lockNote && /Editing is paused during the simulation/.test(lockNote.textContent || '') && !!lockNote.querySelector('[data-command="sim.exit"]') && !!fs && fs.disabled && !!fs.querySelector('input'),
-      );
-      check('… so are the outline’s Add buttons, Connect, Auto-arrange and the palette helpers, each saying why', (q('#outline-body [data-act="add-entity"]') as HTMLButtonElement).disabled && /Editing is paused/.test(app.commands.find((c) => c.id === 'edit.connect')!.state(app).reason || '') && /Editing is paused/.test(app.commands.find((c) => c.id === 'arrange.default')!.state(app).reason || ''));
-      app.showTab('yaml');
-      await tick();
-      check('… and the YAML text is read-only, with the same notice', (q('#yaml-src') as HTMLTextAreaElement).readOnly && !!q('#side-body .lock-note'));
-      let refused = '';
-      try {
-        (app.mdoc as ModelDoc).setText(['title'], 'changed');
-      } catch (e) {
-        refused = (e as Error).name;
-      }
-      check('the editing core refuses any edit of the network during the simulation and changes nothing', refused === 'EditLocked' && app.exportText() === yamlBefore, refused);
-      // Trace path works on the simulated state, and says so
-      app.setTraceForm({ from: 'muc-rtr:lan0', to: 'hq-log', back: false });
-      app.runTrace();
-      await tick();
-      check('a path traced during the simulation takes the simulated state and says so: Munich has no way to HQ', /^Path trace in the simulated state: /.test(q('#trace-text')!.textContent || '') && /Stops at muc-rtr/.test(q('#trace-text')!.textContent || '') && !!q('#side-body .sim-in-analysis'), q('#trace-text')!.textContent || '');
-      app.exitTrace();
-      // more steps: a core switch and a cable of the peer LAG; play back and forth
-      app.select('device:hq-core1');
-      app.runCommand('sim.add');
-      app.select('link:l-peer2');
-      app.runCommand('sim.add');
-      await tick();
-      check(
-        'more failures are new steps of the scenario (after the step shown): the LAG goes down with its last member, the VRRP groups fail over',
-        /step 3 of 3: Fail cable l-peer2/.test(simText()) && /Down\s*LACP \/ LAG lag-peer/.test(panel()) && /Degraded\s*VRRP vrrp-servers — fails over: hq-core1 is down, hq-core2 left/.test(panel()) && doc.querySelectorAll('#side-body [data-sim-restore]').length === 3,
-        simText(),
-      );
-      app.setTraceForm({ from: 'hq-log', to: 'muc-rtr', back: false });
-      app.runTrace();
-      await tick();
-      // exports show the simulated state and say so, in both themes
-      for (const theme of ['light', 'dark']) {
-        app.theme.set(theme as 'light' | 'dark');
-        await tick();
-        const parsed = new DOMParser().parseFromString(app.exportSvg(), 'image/svg+xml');
-        const notes = Array.from(parsed.querySelectorAll('text.export-note'))
-          .sort((x, y) => Number(x.getAttribute('y')) - Number(y.getAttribute('y')))
-          .map((t) => t.textContent || '');
-        const frame = parsed.querySelector('.export-sim-frame');
-        const cs = doc.defaultView!.getComputedStyle(q('#mb-sim') as Element);
-        check(
-          `${theme} theme: the export shows the simulated state, framed (dashed), with a “Simulation: scenario …” note (and the trace note); the banner is readable`,
-          notes.length === 2 && /^Simulation: scenario “Ad-hoc scenario”, step 3 of 3: Fail cable l-peer2/.test(notes[0]) && /^Path trace in the simulated state/.test(notes[1]) && !!frame && /\d/.test(frame.getAttribute('stroke-dasharray') || '') && parsed.querySelectorAll('.sim-down').length > 3 && cs.color !== cs.backgroundColor,
-          notes.join(' | '),
-        );
-      }
-      app.exitTrace();
-      app.showTab('simulation');
-      // back and forth: [ and ]; each step's results and what changed
-      doc.dispatchEvent(new KeyboardEvent('keydown', { key: '[', bubbles: true, cancelable: true }));
-      await tick();
-      check('[ shows the step before: its own state and what it changed', /step 2 of 3: Fail hq-core1/.test(simText()) && /Changed by this step/.test(panel()) && !!q('#side-body li.current [aria-current="step"]'), simText());
-      doc.dispatchEvent(new KeyboardEvent('keydown', { key: '[', bubbles: true, cancelable: true }));
-      doc.dispatchEvent(new KeyboardEvent('keydown', { key: '[', bubbles: true, cancelable: true }));
-      await tick();
-      check('… down to before the first step: the model’s state, nothing failed, nothing marked; still in simulation mode', /before the first of 3 steps/.test(simText()) && marked('sim-down').length === 0 && /Nothing is failed at this step/.test(panel()) && doc.body.getAttribute('data-mode') === 'simulation' && (q('#btn-sim-prev') as HTMLButtonElement).disabled, simText());
-      doc.dispatchEvent(new KeyboardEvent('keydown', { key: ']', bubbles: true, cancelable: true }));
-      await tick();
-      check('] plays forward again: the same result as the first time (deterministic)', /step 1 of 3: Fail cable l-hq-isp1/.test(simText()) && marked('sim-down').indexOf('relation:ospf-muc') >= 0, simText());
-      // Restore adds a step; Remove takes one out
-      (q('#side-body [data-sim-step="3"]') as HTMLElement).click();
-      await tick();
-      (q('#side-body [data-sim-restore="device:hq-core1"]') as HTMLElement).click();
-      await tick();
-      check('Restore adds a step that restores the object, after the step shown', /step 4 of 4: Restore hq-core1/.test(simText()) && !q('#side-body [data-sim-restore="device:hq-core1"]'), simText());
-      (q('#side-body [data-sim-remove-step="4"]') as HTMLElement).click();
-      await tick();
-      check('Remove takes a step out of the scenario', /step 3 of 3: Fail cable l-peer2/.test(simText()), simText());
-      check('playing and editing an unsaved scenario changes nothing in the model and adds no undo step', app.exportText() === yamlBefore && (q('#btn-undo') as HTMLButtonElement).disabled);
-      // save it: one undo step of the scenarios section, allowed during the simulation; it can be undone during it too
-      app.runCommand('sim.save');
-      await tick();
-      const nameIn = q('#modal #sc-name') as HTMLInputElement;
-      check('Save scenario… asks for a name (a labelled field, focused)', !!nameIn && doc.activeElement === nameIn && !!q('#modal label[for="sc-name"]'));
-      nameIn.value = 'Core loss with ISP cut';
-      (q('#modal button.primary') as HTMLElement).click();
-      await tick(30);
-      const md = app.mdoc as ModelDoc;
-      check(
-        'the scenario is saved in the model’s scenarios section (one undo step that can be undone during the simulation); the simulation goes on with it',
-        /- id: core-loss-with-isp-cut\n {4}label: Core loss with ISP cut\n {4}steps:\n {6}- fail: \{cable: l-hq-isp1\}\n {6}- fail: \{device: hq-core1\}\n {6}- fail: \{cable: l-peer2\}\n/.test(app.exportText()) && md.canUndo() === 'Save scenario Core loss with ISP cut' && !(q('#btn-undo') as HTMLButtonElement).disabled && /scenario “Core loss with ISP cut”, step 3 of 3/.test(simText()),
-        simText(),
-      );
-      // a step added to a saved scenario edits it (undoable)
-      app.select('device:hq-rtr2');
-      app.runCommand('sim.add');
-      await tick();
-      check('a step added to a saved scenario is an undoable edit of it', md.result.model!.scenarios.find((x) => x.id === 'core-loss-with-isp-cut')!.steps.length === 4 && /Add a failure/.test(md.canUndo() || ''));
-      app.undo();
-      app.undo();
-      await tick();
-      check('undoing the save during the simulation: the scenario goes on, unsaved, with its steps; the model is as before', app.exportText() === yamlBefore && /scenario “Core loss with ISP cut”, step 3 of 3/.test(simText()) && /\(not saved\)/.test(panel()), simText());
-      // Esc exits: the normal view, editing again
-      (q('#canvas') as unknown as HTMLElement).focus();
-      doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
-      await tick();
-      check('Esc exits the simulation: no banner, frame, badge or marker; nothing marked; the model can be edited again', (q('#mode-banner') as HTMLElement).hidden && marked('sim-down').length === 0 && !(q('#canvas') as unknown as Element).classList.contains('has-sim') && (q('#sim-badge') as HTMLElement).hidden && !q('#status .sim-marker') && doc.body.getAttribute('data-mode') === 'none' && md.lock === '');
-      // replay a saved scenario: Play, from its first step
-      app.showTab('simulation');
-      await tick();
-      (q('#side-body [data-sim-play="isp1-outage"]') as HTMLElement).click();
-      await tick();
-      check(
-        'Play replays a saved scenario from its first step; its notes are shown with the steps',
-        /scenario “ISP 1 outage”, step 1 of 3: Fail cable l-hq-isp1/.test(simText()) && /the carrier reports a fibre cut/.test(panel()) && doc.activeElement === q('#side-body [aria-current="step"]'),
-        simText(),
-      );
-      app.runCommand('sim.next');
-      app.runCommand('sim.next');
-      await tick();
-      check('… step by step: hq-rtr1 comes back while its ISP cable is still cut (recovered, but degraded)', /step 3 of 3: Restore hq-rtr1/.test(simText()) && /Recovered \(\d+\)/.test(panel()) && marked('sim-degraded').indexOf('device:hq-rtr1') >= 0, simText());
-      app.exitSimulation();
-      // the palette plays saved scenarios too
-      const items = scenarioItems(app.session!.model);
-      check('the command palette offers each saved scenario (Play scenario: …)', items.map((i) => i.label).slice(0, 2).join(' | ') === 'Play scenario: ISP 1 outage | Play scenario: Core peer link and core switch' && items.length === 7);
-      // the single points of failure: Analyze → a report in the Analysis tab, of the model as written; nothing changes mode by itself
+      check('X, [ and ] do nothing: there is no way to fail objects outside a simulation, and no scenarios', !app.simulationOn() && (q('#mode-banner') as HTMLElement).hidden && !app.commands.some((c) => /^sim\.(add|prev|next|save|templates|traffic)/.test(c.id)) && app.exportText() === yamlBefore);
+      // the Single points of failure window
       click('#analyze-btn');
       (q('#btn-spof') as HTMLElement).click();
       await tick();
-      const rows = doc.querySelectorAll('#side-body .spof-list > li');
-      const fw = q('#side-body .spof-list > li[data-spof="device:hq-fw"]') as HTMLElement | null;
+      const win = q('#toolwin') as HTMLElement;
+      const rows = (): HTMLElement[] => Array.from(doc.querySelectorAll('#toolwin .spof-table tbody tr')) as HTMLElement[];
       check(
-        'Analyze → Single points of failure shows the report in the Analysis tab (not a dialog): the cables, devices and LAGs that cut the network or bring relations down, with what they cut off; the focus is on its heading',
-        app.currentTab() === 'analysis' && !(q('#modal') as HTMLDialogElement).open && rows.length > 5 && !!fw && /hq-acc1, hq-core1, hq-core2, hq-log/.test(fw.textContent || '') && !!q('#side-body li[data-spof="iface:hq-core1:Port-Channel1"][data-spof-kind="lag"]') && /single points of failure/.test(q('#side-body .spof-count')!.textContent || '') && doc.activeElement === q('#spof-title'),
-        `${app.currentTab()} ${rows.length}`,
+        'Analyze → Single points of failure… opens a tool window: role dialog without aria-modal, labelled by its title, with a close button; the filter has the focus; the diagram stays usable',
+        app.toolWindow() === 'spof' && win.getAttribute('role') === 'dialog' && !win.hasAttribute('aria-modal') && win.getAttribute('aria-labelledby') === 'tw-title' && q('#tw-title')!.textContent === 'Single points of failure' && !!q('#toolwin .tw-close[aria-label]') && doc.activeElement === q('#spof-filter') && !(q('#modal') as HTMLDialogElement).open,
       );
-      (q('#side-body li[data-spof="device:hq-fw"] [data-goto]') as HTMLElement).click();
+      const heads = Array.from(doc.querySelectorAll('#toolwin .spof-table thead th')).map((h) => (h.textContent || '').replace(/[▲▼]/g, '').trim());
+      check(
+        'what counts as a single point of failure is explained; the table: element, type, cuts off, relations down, impact (most impact first), Show in diagram',
+        /cuts devices off from the rest of the physical network/.test(win.textContent || '') && heads.slice(0, 5).join('|') === 'Element|Type|Cuts off|Relations down|Impact' && rows().length > 5 && q('#toolwin [data-spof-sort="impact"]')!.closest('th')!.getAttribute('aria-sort') === 'descending' && rows().every((r) => !!r.querySelector('[data-spof-show]')),
+        heads.join('|'),
+      );
+      const impacts = rows().map((r) => parseInt((r.querySelector('td.num') as HTMLElement).textContent || '0', 10));
+      check('most impact first', impacts.every((v, i) => i === 0 || impacts[i - 1] >= v), impacts.join(','));
+      (q('#toolwin [data-spof-sort="element"]') as HTMLElement).click();
       await tick();
-      check('choosing an entry’s name selects it in the diagram and changes no mode (no simulation starts)', app.session!.state.selected === 'device:hq-fw' && !app.currentSim() && !!q('#side-body .spof-report'), String(app.session!.state.selected));
-      app.select(null);
-      app.showTab('analysis');
+      const names = rows().map((r) => (r.firstElementChild as HTMLElement).textContent || '');
+      check('a header sorts (aria-sort), and keeps the focus', q('#toolwin [data-spof-sort="element"]')!.closest('th')!.getAttribute('aria-sort') === 'ascending' && names.join('\n') === names.slice().sort((x, y) => (x.toLowerCase() < y.toLowerCase() ? -1 : x.toLowerCase() > y.toLowerCase() ? 1 : 0)).join('\n') && doc.activeElement === q('#toolwin [data-spof-sort="element"]'));
+      const filter = q('#spof-filter') as HTMLInputElement;
+      filter.focus();
+      filter.value = 'hq-fw';
+      filter.dispatchEvent(new Event('input', { bubbles: true }));
       await tick();
-      (q('#side-body li[data-spof="iface:hq-core1:Port-Channel1"] [data-spof-sim]') as HTMLElement).click();
+      check('the filter narrows the rows and says how many are shown; the focus stays in it', rows().length >= 1 && rows().length < impacts.length && rows().every((r) => /hq-fw/.test(r.textContent || '')) && / of \d+ single points of failure shown/.test(q('#spof-status')!.textContent || '') && doc.activeElement === filter);
+      (q('#toolwin tr[data-spof="device:hq-fw"] [data-spof-show]') as HTMLElement).click();
       await tick();
-      check('Simulate this failure (explicit) starts an ad-hoc scenario that fails it (a LAG: its member cables, so the LAG relation is down), in the Simulation tab', /step 1 of 1: Fail LAG hq-core1:Port-Channel1/.test(simText()) && app.currentTab() === 'simulation' && marked('sim-down').indexOf('relation:lag-peer') >= 0, simText());
-      app.showTab('analysis');
+      check('Show in diagram selects it in the diagram; the window stays', app.session!.state.selected === 'device:hq-fw' && app.toolWindow() === 'spof');
+      filter.value = '';
+      filter.dispatchEvent(new Event('input', { bubbles: true }));
       await tick();
-      const simBtn2 = q('#side-body [data-spof-sim]') as HTMLButtonElement;
-      check('… while a simulation is on, the report still reads the model as written and Simulate this failure says to exit first', simBtn2.disabled && /exit it first/.test(simBtn2.title) && /not the simulated state/.test(q('#side-body .spof-report')!.textContent || ''), simBtn2.title);
-      (q('#spof-close') as HTMLElement).click();
+      const csv = spofCsv(spofRows(app.session!.model, singlePointsOfFailure(app.session!.model)));
+      check('the table as CSV: a header and a line per row', /^element,type,cuts_off,relations_down,devices_cut_off,relations_down_count,impact\n/.test(csv) && csv.trim().split('\n').length === impacts.length + 1);
+      // F6: the focus between the window and the main window
+      (q('#canvas') as unknown as HTMLElement).focus();
+      doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'F6', bubbles: true, cancelable: true }));
       await tick();
-      check('Close report hides it; the focus goes to the Analysis tab', !q('#side-body .spof-report') && doc.activeElement === q('#side .tabs [data-tab="analysis"]'));
-      app.showTab('simulation');
-      // focus mode inside the simulation: over what is up      // focus mode inside the simulation: over what is up
-      app.select('device:hq-core2');
-      app.runCommand('focus.enter');
+      const inWin = win.contains(doc.activeElement);
+      doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'F6', bubbles: true, cancelable: true }));
       await tick();
-      check('Focus works inside the simulation, over what is up in the simulated state, and says so', /that are up in the simulated state/.test(q('#mode-text')!.textContent || ''), q('#mode-text')!.textContent || '');
-      app.runCommand('focus.exit');
-      app.runCommand('sim.exit');
+      check('F6 moves the keyboard focus into the window (where it was), and back to the diagram', inWin && doc.activeElement === q('#canvas'));
+      // collapse, dock, move: remembered
+      (q('#toolwin .tw-collapse') as HTMLElement).click();
       await tick();
-      check('Exit simulation is unavailable without a simulation', (q('#btn-sim-exit') as HTMLButtonElement).disabled && (q('#mode-banner') as HTMLElement).hidden);
+      check('Collapse folds it to its title bar (aria-expanded false); Expand opens it again', (q('#tw-body') as HTMLElement).hidden && q('#toolwin .tw-collapse')!.getAttribute('aria-expanded') === 'false');
+      (q('#toolwin .tw-collapse') as HTMLElement).click();
+      await tick();
+      const g0 = app.windows()!.geometry()!;
+      (q('#toolwin .tw-move') as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', shiftKey: true, bubbles: true, cancelable: true }));
+      (q('#toolwin .tw-grip') as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }));
+      await tick();
+      const g1 = app.windows()!.geometry()!;
+      check('the move handle and the resize grip work with the arrow keys (Shift: further)', g1.x === g0.x - 64 && g1.h === g0.h + 16, `${g0.x},${g0.h} → ${g1.x},${g1.h}`);
+      // one at a time: Trace path replaces it; reopening remembers its place
+      app.openTrace();
+      await tick();
+      check('opening another window replaces it (one at a time)', app.toolWindow() === 'trace' && doc.querySelectorAll('#toolwin').length === 1);
+      app.openSpof();
+      await tick();
+      const g2 = app.windows()!.geometry()!;
+      check('… and the window opens again where it was left, at its size (local storage)', g2.x === g1.x && g2.h === g1.h && g2.w === g1.w);
+      (q('#toolwin .tw-dock') as HTMLElement).click();
+      await tick();
+      const r = win.getBoundingClientRect();
+      const canvasR = (q('#canvas-wrap') as HTMLElement).getBoundingClientRect();
+      check('Dock: a full-width panel at the bottom, under the diagram (it takes room, it covers nothing); the page doesn’t scroll', doc.body.classList.contains('tw-docked') && Math.abs(r.width - doc.documentElement.clientWidth) < 2 && r.top >= canvasR.bottom - 1 && doc.documentElement.scrollHeight <= doc.documentElement.clientHeight + 1 && q('#toolwin .tw-dock')!.getAttribute('aria-pressed') === 'true');
+      (q('#toolwin .tw-dock') as HTMLElement).click();
+      await tick();
+      // Esc closes it; the focus goes back
+      (q('#spof-filter') as HTMLElement).focus();
+      (q('#spof-filter') as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      await tick();
+      check('Esc closes the window; the focus goes back to the main window (not lost on the page)', !app.toolWindowOpen() && win.hidden && doc.activeElement !== doc.body && !win.contains(doc.activeElement));
+      check('nothing of this changes the model or adds an undo step', app.exportText() === yamlBefore && (q('#btn-undo') as HTMLButtonElement).disabled);
+      // both themes
+      for (const theme of ['light', 'dark'] as const) {
+        app.theme.set(theme);
+        app.openSpof();
+        await tick();
+        const cs = doc.defaultView!.getComputedStyle(win);
+        const th = doc.defaultView!.getComputedStyle(q('#toolwin .spof-table th') as Element);
+        check(`${theme} theme: the window has the theme’s panel colours and a border`, cs.backgroundColor !== 'rgba(0, 0, 0, 0)' && th.color !== cs.backgroundColor && cs.borderTopStyle !== 'none');
+      }
+      app.closeToolWindow();
+      app.theme.set('dark');
       app.select(null);
       (app.mdoc as ModelDoc).markSaved();
-    }
-
-    // ------------------------------------------------ simulated traffic: ospf-reroute.yaml played step by step, in both themes
-    {
-      const themeBefore = app.theme.theme;
-      for (const theme of ['dark', 'light'] as const) {
-        app.theme.set(theme);
-        app.loadExample(EXAMPLES.findIndex((e) => e.name === 'ospf-reroute.yaml'));
-        app.setView('physical');
-        await tick();
-        const md = app.mdoc as ModelDoc;
-        const before = app.exportText();
-        const undoBefore = md.canUndo();
-        const traffic = (): string => (q('#side-body .sim-traffic') ? q('#side-body .sim-traffic')!.textContent || '' : '');
-        const flow = (d: string): string => (q(`#side-body [data-flow="dem:${d}:0"]`) ? q(`#side-body [data-flow="dem:${d}:0"]`)!.textContent || '' : '');
-        const dotsOn = (ref: string): boolean => {
-          // a dot sits on the drawn line of `ref` (within 4 units of a point of it)
-          const p = q(`#viewport g.cable[data-ref="${ref}"] path.cable-line`) as unknown as SVGPathElement | null;
-          if (!p) return false;
-          const L = p.getTotalLength();
-          const pts: DOMPoint[] = [];
-          for (let s = 0; s <= L; s += 3) pts.push(p.getPointAtLength(s));
-          return Array.from(doc.querySelectorAll('#viewport .traffic-dot')).some((c) => pts.some((pt) => Math.hypot(pt.x - Number(c.getAttribute('cx')), pt.y - Number(c.getAttribute('cy'))) < 4));
-        };
-        app.playScenario('ospf-reroute');
-        app.simGo(0);
-        await tick(1600);
-        check(
-          `${theme}: playing “Primary link failure and OSPF reroute”: step 0 is the baseline; the traffic animation is on by default with Pause, in its own layer below the boxes and labels`,
-          !!app.currentSim() && app.currentSim()!.name === 'Primary link failure and OSPF reroute' && app.trafficOn && app.trafficDots() > 0 && !!q('#sim-traffic[aria-pressed="true"]') && !!q('#sim-traffic-pause') &&
-            !!q('#viewport .scene > .layer-traffic + .layer-nodes') && (q('#viewport .layer-traffic') as Element).getAttribute('aria-hidden') === 'true',
-          `${app.trafficDots()} dots`,
-        );
-        check(`${theme}: baseline: both demands on the preferred path (c1 – c3), with dots on its cables`, /Delivered.*w-host → w1 → c1 → c3 → e1 → e-srv/.test(flow('users-app')) && /w-cam → w1 → c1 → c3/.test(flow('cam-video')) && dotsOn('link:l-c1-c3'), flow('users-app'));
-        // 1: the primary link fails
-        app.simGo(1);
-        await tick(1300);
-        check(
-          `${theme}: 1 · the primary link fails: the traffic moves to the backup path over c2 (rerouted, said in the tab); the old way faded and the new one emphasized for a moment; no dots on the failed cable`,
-          /w1 → c1 → c2 → c3 → e1/.test(flow('users-app')) && /Rerouted\s*Demand users-app is rerouted/.test(traffic()) && doc.querySelectorAll('#viewport .traffic-old').length > 0 && doc.querySelectorAll('#viewport .traffic-new').length > 0 && !dotsOn('link:l-c1-c3') && dotsOn('link:l-c2-c3'),
-          traffic().slice(0, 200),
-        );
-        // 2: w1 loses its LAN: VRRP fails over, the camera is lost
-        app.simGo(2);
-        await tick(600);
-        check(
-          `${theme}: 2 · a second link fails: VRRP fails over to w2 (the users' traffic leaves by w2), the camera's traffic is lost where it stops (a marker at w-cam, “Lost” in the tab)`,
-          /w-host → w2 → c2 → c3/.test(flow('users-app')) && /Lost/.test(flow('cam-video')) && !!q('#viewport .traffic-lost[data-device="w-cam"]') && /Demand cam-video is lost at w-cam/.test(traffic()),
-          flow('cam-video'),
-        );
-        // the logical view: dots along the relations and membership lines
-        app.setView('logical');
-        await tick(1300);
-        check(`${theme}: … in the logical view too: dots on the relations and network lines`, app.trafficDots() > 0 && !!q('#viewport .traffic-lost[data-device="w-cam"]'));
-        app.setView('physical');
-        // 3, 4: restored
-        app.simGo(3);
-        app.simGo(4);
-        await tick(600);
-        check(`${theme}: 3, 4 · both links restored: the traffic returns to the original path`, /w-host → w1 → c1 → c3 → e1 → e-srv/.test(flow('users-app')) && /Restored|Rerouted/.test(traffic()) && !q('#viewport .traffic-lost'));
-        // Pause: the dots stand still
-        click('#sim-traffic-pause');
-        await tick(80);
-        const pos = Array.from(doc.querySelectorAll('#viewport .traffic-dot')).map((c) => c.getAttribute('cx')).join();
-        await tick(400);
-        check(`${theme}: Pause stops the dots where they are (and says Resume)`, app.trafficPaused() && pos === Array.from(doc.querySelectorAll('#viewport .traffic-dot')).map((c) => c.getAttribute('cx')).join() && /Resume/.test(q('#sim-traffic-pause')!.textContent || ''));
-        click('#sim-traffic-pause');
-        // the export: a still picture with arrows and the Simulation note, never moving dots
-        const svgText = app.exportSvg();
-        check(`${theme}: an export shows the traffic as direction arrows, without dots, with the Simulation note`, /class="traffic-arrow demand"/.test(svgText) && !/traffic-dot/.test(svgText) && /Simulation: scenario “Primary link failure and OSPF reroute”/.test(svgText));
-        // switched off: no dots, no layer
-        click('#sim-traffic');
-        await tick(100);
-        check(`${theme}: Traffic animation off: no dots and no layer; the menu entry says so (aria-checked)`, !app.trafficOn && !q('#viewport .layer-traffic') && q('#btn-traffic')!.getAttribute('aria-checked') === 'false');
-        click('#sim-traffic');
-        app.exitSimulation();
-        await tick();
-        check(`${theme}: playing it changed nothing in the model and added no undo step; after Exit no traffic is shown`, app.exportText() === before && md.canUndo() === undoBefore && !q('#viewport .layer-traffic'));
-      }
-      app.theme.set(themeBefore);
-    }
-
-    // ------------------------------------------------ scenario templates (Simulate → Scenario templates…)
-    {
-      app.loadExample(EXAMPLES.findIndex((e) => e.name === 'enterprise-wan.yaml'));
-      await tick();
-      const md = app.mdoc as ModelDoc;
-      const scenariosBefore = app.session!.model.scenarios.length;
-      click('#simulate-btn');
-      check('Simulate has Scenario templates… (opens a dialog)', !(q('#btn-templates') as HTMLButtonElement).disabled && q('#btn-templates')!.getAttribute('aria-haspopup') === 'dialog');
-      (q('#btn-templates') as HTMLElement).click();
-      await tick();
-      const picks = Array.from(doc.querySelectorAll('#modal .tpl-pick')) as HTMLButtonElement[];
-      const why = (id: string): string => (q('#tpl-why-' + id) ? q('#tpl-why-' + id)!.textContent || '' : '');
-      check(
-        'the dialog lists the eleven templates; one that doesn’t apply is greyed out and says why, in text (and to screen readers: aria-describedby)',
-        picks.length === 11 && (q('#modal [data-template="asymmetric"]') as HTMLButtonElement).disabled && /^Not for this model: No traffic demands in this model/.test(why('asymmetric')) && q('#modal [data-template="asymmetric"]')!.getAttribute('aria-describedby') === 'tpl-why-asymmetric' && !(q('#modal [data-template="wan-uplink"]') as HTMLButtonElement).disabled && /Proposed here: Uplink outage at HQ Berlin\./.test(why('wan-uplink')) && doc.activeElement === picks[0],
-        picks.map((b) => b.getAttribute('data-template') + (b.disabled ? '(off)' : '')).join(' '),
-      );
-      (q('#modal [data-template="srlg"]') as HTMLElement).click();
-      await tick();
-      const name = q('#tpl-name') as HTMLInputElement;
-      const steps = Array.from(doc.querySelectorAll('#modal .tpl-steps li')).map((li) => li.textContent || '');
-      check(
-        'choosing one shows its proposal to review: the name (editable, focused), the steps, what to look at; nothing is saved yet',
-        !!name && name.value === 'Shared-risk failure: duct-alexanderplatz' && doc.activeElement === name && steps.length === 1 && /^Fail risk group duct-alexanderplatz/.test(steps[0]) && doc.querySelectorAll('#modal .tpl-notes li').length >= 1 && app.session!.model.scenarios.length === scenariosBefore,
-        steps.join(' | '),
-      );
-      name.value = 'Duct cut at HQ';
-      (q('#modal [data-value="play"]') as HTMLElement).click();
-      await tick();
-      const saved = app.session!.model.scenarios.find((x) => x.label === 'Duct cut at HQ');
-      check(
-        'Save and play: a normal saved scenario (one undo step), played at once: both ISP uplinks fail together (the redundancy shared a risk)',
-        !!saved && saved.steps.length === 1 && saved.steps[0].target.kind === 'risk' && md.canUndo() === 'Save scenario Duct cut at HQ' && !!app.currentSim() && app.currentSim()!.name === 'Duct cut at HQ' && app.currentSim()!.view.failed.join() === 'link:l-hq-isp1,link:l-hq-isp2',
-        md.canUndo() || '',
-      );
-      app.exitSimulation();
-      app.undo();
-      await tick();
-      check('… undo removes it again', app.session!.model.scenarios.length === scenariosBefore);
-      // the palette: each template, those that don't apply with why
-      const items = templateItems(app.session!.model);
-      const off = items.find((i) => i.key === 'tpl:asymmetric');
-      check('the command palette offers every template (Scenario template: …), one that doesn’t apply unavailable with its reason', items.length === 11 && items[0].label === 'Scenario template: WAN / ISP uplink outage' && !!off && !off.state.enabled && /No traffic demands/.test(off.state.reason || ''));
-      md.markSaved();
     }
 
     // ------------------------------------------------ viewer interactions

@@ -196,48 +196,58 @@ export async function runViewportCheck(app: App, doc: Document): Promise<Check[]
       if (vrf) vrf.blur();
       app.loadExample(EXAMPLES.findIndex((e) => /enterprise-wan/.test(e.name)));
       await tick();
-      // a simulation: the banner, the frame and the badge within the diagram area; the Simulation tab and the
-      // read-only Edit tab within the panel, nothing cut off sideways
-      app.playScenario('isp1-outage');
-      app.runCommand('sim.next');
-      await tick();
-      const sw: string[] = [];
-      const area = (q('#canvas-wrap') as HTMLElement).getBoundingClientRect();
-      // a very short window shows a one-line banner that says "Simulated state" in place of the badge
-      const tiny = (doc.defaultView as Window).matchMedia('(max-height: 420px)').matches;
-      if (tiny && !/^Simulated state · “ISP 1 outage” · step 2 of 3$/.test((q('#sim-short') as HTMLElement).textContent || '')) sw.push('the short banner does not say "Simulated state"');
-      for (const sel of ['#mode-banner', tiny ? '#sim-short' : '#sim-badge', '#sim-exit-banner', '#sim-next-banner']) {
-        const e = q(sel);
-        const r = e ? e.getBoundingClientRect() : null;
-        if (!r || r.width < 1) sw.push(`${sel} is not shown`);
-        else if (r.left < area.left - 0.5 || r.right > area.right + 0.5 || r.top < area.top - 0.5 || r.bottom > area.bottom + 0.5) sw.push(`${sel} leaves the diagram area (${[r.left, r.top, r.right, r.bottom].map(Math.round).join(',')} in ${[area.left, area.top, area.right, area.bottom].map(Math.round).join(',')})`);
-      }
-      const banner = (q('#mode-banner') as HTMLElement).getBoundingClientRect();
-      if (!tiny) {
-        const badge = (q('#sim-badge') as HTMLElement).getBoundingClientRect();
-        const zb = (q('.zoombar') as HTMLElement).getBoundingClientRect();
-        if (badge.top < banner.bottom - 0.5) sw.push('the badge is under the banner');
-        if (badge.left < zb.right && badge.top < zb.bottom && badge.bottom > zb.top) sw.push('the badge covers the zoom bar');
-      }
-      const fit = (what: string): void => {
-        const side = (q('#side-body') as HTMLElement).getBoundingClientRect();
-        const els = doc.querySelectorAll('#side-body button, #side-body h3, #side-body li, #side-body .lock-note');
-        for (let i = 0; i < els.length; i++) {
-          const r = els[i].getBoundingClientRect();
-          if (r.width < 1) continue;
-          if (r.left < side.left - 0.5 || r.right > side.right + 0.5) sw.push(`${what}: "${(els[i].textContent || els[i].getAttribute('aria-label') || '').trim().slice(0, 24)}" leaves the panel sideways`);
+      // the tool windows of Analyze: inside the browser window (docked at the bottom when it is narrow), their title
+      // bar's buttons shown, nothing in them cut off sideways (a table scrolls in its own box); the page never scrolls
+      const tws: string[] = [];
+      const view = { w: doc.documentElement.clientWidth, h: doc.documentElement.clientHeight };
+      const narrow = (doc.defaultView as Window).innerWidth <= 860;
+      const checkWindow = (name: string): void => {
+        const w = q('#toolwin') as HTMLElement;
+        const r = w.getBoundingClientRect();
+        if (w.hidden || r.width < 1) {
+          tws.push(`${name}: not shown`);
+          return;
         }
-        const sb = q('#side-body') as HTMLElement;
-        if (sb.scrollWidth > sb.clientWidth + 1) sw.push(`${what} scrolls sideways (${sb.scrollWidth} > ${sb.clientWidth})`);
+        if (r.left < -0.5 || r.top < -0.5 || r.right > view.w + 0.5 || r.bottom > view.h + 0.5) tws.push(`${name}: leaves the browser window (${[r.left, r.top, r.right, r.bottom].map(Math.round).join(',')})`);
+        if (narrow && (!doc.body.classList.contains('tw-docked') || Math.abs(r.width - view.w) > 2)) tws.push(`${name}: not docked full-width in a narrow window`);
+        for (const sel of ['.tw-close', '.tw-collapse', '#tw-title']) {
+          const e = w.querySelector(sel) as HTMLElement | null;
+          const er = e ? e.getBoundingClientRect() : null;
+          if (!er || er.width < 1 || er.right > r.right + 0.5 || er.left < r.left - 0.5) tws.push(`${name}: ${sel} is not shown whole`);
+        }
+        const body = q('#tw-body') as HTMLElement;
+        if (body.scrollWidth > body.clientWidth + 1) tws.push(`${name}: the window scrolls sideways (${body.scrollWidth} > ${body.clientWidth})`);
+        const els = w.querySelectorAll('button, input, select, label, h3, p');
+        const br = body.getBoundingClientRect();
+        for (let i = 0; i < els.length; i++) {
+          const e = els[i] as HTMLElement;
+          if (e.closest('.table-wrap, .addr-scroll, .tw-head')) continue;
+          const er = e.getBoundingClientRect();
+          if (er.width < 1) continue;
+          if (er.left < br.left - 0.5 || er.right > br.right + 0.5) tws.push(`${name}: "${(e.textContent || e.getAttribute('aria-label') || '').trim().slice(0, 24)}" leaves the window sideways`);
+        }
+        if (doc.documentElement.scrollHeight > view.h + 1 || doc.documentElement.scrollWidth > view.w + 1) tws.push(`${name}: the page scrolls`);
       };
-      fit('the Simulation tab');
-      app.select('device:hq-rtr1');
-      app.showTab('edit');
+      void app.openAddressing();
       await tick();
-      if (!q('#side-body .lock-note')) sw.push('the Edit tab does not say that editing is paused');
-      fit('the read-only Edit tab');
-      state('a simulation: the banner, frame and badge in the diagram area; the Simulation and the read-only Edit tab fit the panel', sw.concat(problems()));
-      app.exitSimulation();
+      checkWindow('Addressing overview');
+      app.select('device:hq-fw');
+      app.openFocusWindow(true);
+      await tick();
+      checkWindow('Focus');
+      app.exitFocus();
+      app.select(null);
+      app.setTraceForm({ from: 'muc-rtr:lan0', to: 'hq-log', back: true });
+      app.openTrace();
+      app.runTrace();
+      await tick();
+      checkWindow('Trace path');
+      app.openSpof();
+      await tick();
+      checkWindow('Single points of failure');
+      app.closeToolWindow();
+      await tick();
+      state('the tool windows (addressing, focus, trace path, single points of failure) fit the browser window, docked when it is narrow; nothing in them is cut off; the page does not scroll', tws.concat(problems()));
       app.select(null);
       await tick();
     }

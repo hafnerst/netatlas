@@ -103,8 +103,6 @@ export interface Interface {
   source?: TunnelEnd;
   /** tunnel: the remote address, device or interface */
   destination?: TunnelEnd;
-  /** physical: the shared risks it belongs to (a line card, a power feed …): ids, sorted */
-  riskGroups: string[];
   description?: string;
   attrs: Attrs;
   line: number;
@@ -130,8 +128,6 @@ export interface Device {
   dnsNames: DnsName[];
   /** static routes, in file order (empty unless the device type may route; see analysis/routing.ts) */
   routes: Route[];
-  /** the shared risks it belongs to (a power feed, a fire zone …): ids, sorted */
-  riskGroups: string[];
   line: number;
 }
 
@@ -247,8 +243,6 @@ export interface Link {
    * other way. Bidirectional (the default) is not written.
    */
   direction: Direction;
-  /** the shared risks it belongs to (a conduit, a duct, a carrier …): ids, sorted */
-  riskGroups: string[];
   description?: string;
   attrs: Attrs;
   line: number;
@@ -293,51 +287,6 @@ export interface ProtocolDef {
   description?: string;
   /** true if defined or overridden by the input file */
   custom: boolean;
-}
-
-/**
- * What a scenario step acts on: the kind of object, written as the key of the
- * step's target. `group`: every device of a group / location and its nested
- * ones (a site, a room, a rack); `risk`: everything that shares a risk group
- * (cables, ports and devices with it in their `risk_groups`).
- */
-export type TargetKind = 'device' | 'cable' | 'port' | 'relation' | 'lag' | 'group' | 'risk';
-export const TARGET_KINDS: readonly TargetKind[] = ['device', 'cable', 'port', 'relation', 'lag', 'group', 'risk'];
-
-/** The object a scenario step acts on: `{device: hq-core1}`, `{cable: l1}`, `{port: hq-core1:Ethernet1}`, `{lag: hq-core1:Port-Channel1}`. */
-export interface StepTarget {
-  kind: TargetKind;
-  /** the id; for a port or LAG "device:interface" */
-  id: string;
-}
-
-/**
- * `fail`: it fails; `maintain`: it is taken out of service for planned
- * maintenance (simulated like a failure, named apart); `restore`: back in
- * service, whichever took it out.
- */
-export type StepAction = 'fail' | 'maintain' | 'restore';
-export const STEP_ACTIONS: readonly StepAction[] = ['fail', 'maintain', 'restore'];
-
-/** One step of a scenario: fail or restore an object. */
-export interface ScenarioStep {
-  action: StepAction;
-  target: StepTarget;
-  note?: string;
-  line: number;
-}
-
-/**
- * A named, ordered list of hypothetical steps (the `scenarios:` section):
- * presentation and analysis data only. Playing it never changes the network
- * objects of the model.
- */
-export interface Scenario {
-  id: string;
-  label: string;
-  description?: string;
-  steps: ScenarioStep[];
-  line: number;
 }
 
 /**
@@ -386,8 +335,6 @@ export interface Model {
   layout: ModelLayout;
   /** the `checks:` section: a check switched off or given another severity, by check id */
   checks: Map<string, 'off' | 'error' | 'warning' | 'info'>;
-  /** saved simulation scenarios (never change the network objects) */
-  scenarios: Scenario[];
   /** traffic demands (analysis data: traced, never change the network objects) */
   demands: Demand[];
   index: ModelIndex;

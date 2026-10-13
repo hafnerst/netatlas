@@ -26,7 +26,7 @@ test('the registry: unique ids, every command with a label, a group, a state and
     }
   }
   // what the palette must offer
-  for (const id of ['file.new', 'file.open', 'file.save', 'file.saveAs', 'file.close', 'export.png', 'export.svg', 'find.diagram', 'find.outline', 'palette.open', 'analyze.addressing', 'focus.enter', 'focus.exit', 'focus.more', 'focus.fewer', 'trace.open', 'trace.copy', 'trace.exit', 'sim.add', 'analyze.spof', 'sim.prev', 'sim.next', 'sim.save', 'sim.exit', 'panel.analysis', 'panel.simulation', 'help.manual', 'help.license', 'edit.undo', 'edit.redo', 'view.physical', 'view.logical', 'arrange.default', 'arrange.compact', 'arrange.spacious', 'zoom.fit', 'theme.toggle', 'filter.labels', 'filter.server', 'panel.problems', 'example.0']) {
+  for (const id of ['file.new', 'file.open', 'file.save', 'file.saveAs', 'file.close', 'export.png', 'export.svg', 'find.diagram', 'find.outline', 'palette.open', 'analyze.addressing', 'focus.enter', 'focus.exit', 'focus.more', 'focus.fewer', 'trace.open', 'trace.copy', 'trace.exit', 'analyze.spof', 'sim.exit', 'help.manual', 'help.license', 'edit.undo', 'edit.redo', 'view.physical', 'view.logical', 'arrange.default', 'arrange.compact', 'arrange.spacious', 'zoom.fit', 'theme.toggle', 'filter.labels', 'filter.server', 'panel.problems', 'example.0', 'focus.window', 'window.focus', 'window.close', 'sim.protocol']) {
     assert.ok(byId.has(id), id);
   }
   assert.equal(commands.filter((c) => c.group === 'Example').length, load('generated/examples.js').EXAMPLES.length);
@@ -59,9 +59,12 @@ test('shortcuts: labels (Ctrl or Cmd) and matching', () => {
   assert.equal(C.keyLabel(byId.get('file.save').keys), 'Ctrl+S');
   assert.equal(C.keyLabel(byId.get('file.save').keys, true), 'Cmd+S');
   assert.equal(C.keyLabel(byId.get('palette.open').keys), 'Ctrl+K');
-  assert.equal(C.keyLabel(byId.get('focus.enter').keys), 'Shift+F');
+  assert.equal(C.keyLabel(byId.get('focus.window').keys), 'Shift+F');
+  assert.equal(C.keyLabel(byId.get('window.focus').keys), 'F6');
   assert.equal(C.keyLabel(byId.get('trace.open').keys), 'T');
-  assert.equal(C.keyLabel(byId.get('sim.add').keys), 'X');
+  // no X, [ or ]: there are no scenarios and nothing fails outside a simulation
+  assert.ok(!byId.has('sim.add') && !byId.has('sim.prev') && !byId.has('sim.next'));
+  assert.ok(!commands.some((c) => c.keys && c.keys.combos.some((k) => ['x', 'X', '[', ']'].indexOf(k.key) >= 0 && !k.mod)));
   assert.equal(C.keyLabel(byId.get('find.diagram').keys), '/');
   assert.equal(C.keyLabel(byId.get('view.physical').keys), 'P');
   const ev = (key, o = {}) => ({ key, ctrlKey: false, metaKey: false, shiftKey: false, altKey: false, ...o });
@@ -71,8 +74,8 @@ test('shortcuts: labels (Ctrl or Cmd) and matching', () => {
   assert.ok(C.matchesKey(byId.get('file.saveAs').keys, ev('S', { ctrlKey: true, shiftKey: true })));
   assert.ok(!C.matchesKey(byId.get('file.save').keys, ev('S', { ctrlKey: true, shiftKey: true })));
   assert.ok(C.matchesKey(byId.get('edit.redo').keys, ev('Z', { ctrlKey: true, shiftKey: true })));
-  assert.ok(C.matchesKey(byId.get('focus.enter').keys, ev('F', { shiftKey: true })));
-  assert.ok(!C.matchesKey(byId.get('focus.enter').keys, ev('f')));
+  assert.ok(C.matchesKey(byId.get('focus.window').keys, ev('F', { shiftKey: true })));
+  assert.ok(!C.matchesKey(byId.get('focus.window').keys, ev('f')));
   assert.ok(C.matchesKey(byId.get('zoom.fit').keys, ev('f')));
   assert.ok(!C.matchesKey(byId.get('view.physical').keys, ev('p', { altKey: true })), 'never with Alt');
 });

@@ -1028,7 +1028,7 @@ export class Editor {
     const notes = (): void => g('Notes', [this.textField(base.concat('description'), 'Description', o, 'textarea')], 'notes');
     if (kind === 'device') {
       g('Identity', [this.idField(base, kind), this.textField(base.concat('label'), 'Label', o, 'textarea', undefined, 'Line breaks are kept.'), this.typeField(base.concat('type'), o)], 'identity');
-      g('Placement', [this.refField(base.concat('group'), 'Group / location', o, this.ids('group')), this.intField(base.concat('tier'), 'Tier (0–9)', o, 'Row in the physical view (0 = top). Empty: automatic.'), this.listField(base.concat('risk_groups'), 'Risk groups', o, 'power-feed-a', 'Shared risks it is in (a conduit, a power feed, a line card): one id each.')], 'placement');
+      g('Placement', [this.refField(base.concat('group'), 'Group / location', o, this.ids('group')), this.intField(base.concat('tier'), 'Tier (0–9)', o, 'Row in the physical view (0 = top). Empty: automatic.')], 'placement');
       const protos = this.protocolsGroup(base, index);
       if (protos) w.appendChild(protos);
       notes();
@@ -1042,7 +1042,6 @@ export class Editor {
         this.textField(base.concat('speed'), 'Speed', o, 'text', ['100M', '1G', '10G', '25G', '40G', '100G', '400G'], 'Set on the link only, not on ports.'),
         this.textField(base.concat('cable'), 'Cable / circuit id', o),
         this.directionField(base.concat('direction'), true),
-        this.listField(base.concat('risk_groups'), 'Risk groups', o, 'conduit-north', 'Shared risks it is in (a conduit, a power feed, a line card): one id each.'),
       ], 'cable');
       notes();
     } else if (kind === 'network') {
@@ -1845,8 +1844,6 @@ export class Editor {
       card.appendChild(this.withHelpers(this.intField(p.concat('mtu'), 'MTU (bytes)', o, 'Empty: not modelled (no MTU is assumed).'), p.concat('mtu'), 'int', model && live ? mtuSuggestions(model, live) : [], 'MTU', owner));
     }
     if (!loop || doc.get(p.concat('mac'))) card.appendChild(this.macField(p, owner, o));
-    // a port's shared risks (a line card …): physical interfaces only
-    if (p[2] === 'interfaces') card.appendChild(this.listField(p.concat('risk_groups'), 'Risk groups', o, 'linecard-1', 'Shared risks it is in (a conduit, a power feed, a line card): one id each.'));
     for (const sc of this.ifaceServiceCards(devIndex, p, id || '')) card.appendChild(sc);
     card.appendChild(this.textField(p.concat('description'), 'Description', o, 'textarea'));
     if (id) {

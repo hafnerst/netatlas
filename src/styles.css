@@ -43,9 +43,6 @@
   --warn: #b35900;
   --sel: #d9730d;
   --trace: #a61e8a;
-  /* simulated traffic: demands and control traffic (3:1 against the canvas) */
-  --traffic: #0b7285;
-  --traffic-ctl: #5c636a;
   /* a simulated state: the frame around the diagram, its badge and banner (with a pattern and words, not colour alone) */
   --sim: #5f3dc4;
   --sim-soft: #f3f0ff;
@@ -88,8 +85,6 @@
   --warn: #e0b07a;
   --sel: #e3a857;
   --trace: #f38bd9;
-  --traffic: #66d9e8;
-  --traffic-ctl: #adb5bd;
   --sim: #b197fc;
   --sim-soft: #2a2540;
   --ok: #7cc68a;
@@ -290,6 +285,9 @@ main { display: grid; grid-template-columns: 250px minmax(0, 1fr) min(var(--side
   background-size: 22px 22px;
 }
 #canvas.dragging { cursor: grabbing; }
+/* the diagram takes the keyboard focus back from a tool window (F6) and after closing one: a ring inside the diagram area */
+#canvas:focus { outline: none; }
+#canvas:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
 .zoombar {
   position: absolute; left: 12px; bottom: 12px; display: flex; gap: 4px; align-items: center;
   background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 4px;
@@ -1031,73 +1029,6 @@ fieldset.locked-form { margin: 0; padding: 0; border: 0; min-width: 0; }
 .sim-in-analysis > span { color: var(--sim); }
 .export-sim-frame { fill: none; stroke: var(--sim); stroke-width: 4; stroke-dasharray: 12 6; }
 
-/* ---- the traffic animation: dots above the lines, below the boxes and labels (never covering them) */
-.layer-traffic { pointer-events: none; }
-.traffic-dot.demand { fill: var(--traffic); stroke: var(--canvas); stroke-width: 1.2; }
-.traffic-dot.control { fill: var(--traffic-ctl); stroke: var(--canvas); stroke-width: 0.8; }
-.traffic-arrow.demand { fill: var(--traffic); stroke: var(--canvas); stroke-width: 1; }
-.traffic-arrow.control { fill: var(--traffic-ctl); stroke: var(--canvas); stroke-width: 0.8; }
-/* a reroute, for a moment: the old way faded and dashed, the new one emphasized */
-.traffic-old { fill: none; stroke: var(--muted); stroke-width: 7; stroke-dasharray: 8 6; opacity: .55; }
-.traffic-new { fill: none; stroke: var(--traffic); stroke-width: 9; opacity: .32; stroke-linecap: round; }
-/* lost traffic: a marker at the last device it reaches */
-.traffic-lost circle { fill: var(--panel); stroke: var(--error); stroke-width: 2.5; }
-.traffic-lost text { fill: var(--error); font-size: 11px; font-weight: 700; }
-.sim-traffic h5 { margin: 10px 0 4px; font-size: 12px; }
-ul.traffic-flows li, ul.traffic-changes li { overflow-wrap: anywhere; }
-#side .sim-traffic button[aria-pressed="true"]#sim-traffic { font-weight: 600; }
-
-/* ---- the Scenario templates dialog */
-dialog.tpl-dialog { width: min(720px, calc(100vw - 32px)); }
-ul.tpl-list { list-style: none; margin: 8px 0 0; padding: 0; }
-ul.tpl-list > li { padding: 6px 0; border-bottom: 1px solid var(--border); }
-ul.tpl-list .tpl-pick { font-weight: 600; text-align: left; }
-ul.tpl-list .tpl-why { margin: 3px 0 0; overflow-wrap: anywhere; }
-ul.tpl-list li.tpl-off .tpl-why { color: var(--muted); }
-.tpl-notes { padding-left: 1.3em; }
-.tpl-notes li, .tpl-steps li { overflow-wrap: anywhere; }
-
-/* ---- the Simulation tab */
-.sim-panel { margin-bottom: 14px; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
-.sim-panel h3 { overflow-wrap: anywhere; }
-.sim-player { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 6px 0; }
-.sim-at { font-weight: 600; min-width: 6.5em; text-align: center; }
-ol.sim-steps { margin: 4px 0 8px; padding-left: 2.2em; }
-ol.sim-steps li { padding: 2px 0; overflow-wrap: anywhere; }
-ol.sim-steps li.current { background: var(--marked-bg); box-shadow: inset 3px 0 0 var(--marked-bar); }
-ol.sim-steps li.current .sim-go { font-weight: 700; }
-.sim-cur { color: var(--accent); }
-.sim-problem { color: var(--warn); }
-ul.sim-saved li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 6px; border-left: 3px solid var(--sim); }
-ul.sim-saved .sim-sc-name { font-weight: 600; }
-ul.sim-saved .sim-desc { flex-basis: 100%; }
-ul.sim-saved .sim-sc-act { margin-left: auto; }
-ul.sim-list li.sim-up { border-left: 3px solid var(--ok); }
-.sim-approx { margin-top: 10px; font-size: 12.5px; }
-.sim-approx ul { margin: 4px 0; padding-left: 1.4em; }
-.sim-status { font-weight: 600; margin: 6px 0; }
-ul.sim-failed { list-style: none; margin: 4px 0; padding: 0; }
-ul.sim-failed li { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 2px 0; }
-table.sim-counts { border-collapse: collapse; margin: 6px 0 4px; width: 100%; }
-table.sim-counts th, table.sim-counts td { text-align: left; padding: 2px 6px 2px 0; border-bottom: 1px solid var(--border); vertical-align: top; }
-table.sim-counts th { font-weight: 600; white-space: nowrap; }
-ul.sim-list { list-style: none; margin: 4px 0 8px; padding: 0; }
-ul.sim-list li { padding: 2px 0 2px 8px; border-left: 3px dotted var(--error); margin-bottom: 3px; overflow-wrap: anywhere; }
-ul.sim-list li.sim-degraded, ul.sim-list li.sim-takeover { border-left-style: dashed; border-left-color: var(--warn); }
-.sim-state { font-weight: 600; display: inline-block; min-width: 5.6em; }
-.sim-why { color: var(--muted); font-size: 12px; }
-.trace-key .tk-down { border: 2px dotted var(--error); }
-.trace-key .tk-deg { border: 2px dashed var(--warn); }
-/* the Single points of failure report (Analysis tab) */
-.spof-report { margin-bottom: 14px; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
-.spof-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 10px; }
-.spof-head h3 { margin: 0; }
-ul.spof-list { list-style: none; margin: 6px 0 0; padding: 0; }
-ul.spof-list > li { padding: 6px 0 6px 8px; border-bottom: 1px solid var(--border); border-left: 3px solid var(--border); overflow-wrap: anywhere; }
-ul.spof-list p { margin: 2px 0; }
-.spof-kind { font-weight: 600; }
-.spof-act { margin-top: 4px; }
-
 /* ---- the Analysis tab: Trace path */
 .trace-form { display: grid; gap: 6px; margin: 8px 0 10px; }
 .trace-form .tf-row { display: grid; grid-template-columns: 3.2em minmax(0, 1fr); align-items: center; gap: 6px; }
@@ -1108,19 +1039,12 @@ ul.spof-list p { margin: 2px 0; }
 .trace-error { color: var(--error); font-weight: 600; }
 .trace-status { margin: 8px 0 4px; font-weight: 600; }
 .trace-status.stopped, .trace-end.stopped { color: var(--error); }
-.trace-paths { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0; }
-.trace-paths button.active { font-weight: 700; border-color: var(--accent); box-shadow: inset 0 -2px 0 var(--accent); }
-ol.trace-hops { list-style: none; margin: 6px 0; padding: 0; }
-ol.trace-hops .trace-hop { margin: 0 0 8px; padding: 0 0 6px 10px; border-left: 3px solid var(--trace); }
-ol.trace-back .trace-hop { border-left-style: dotted; }
-ol.trace-under { margin: 4px 0 2px 6px; }
-ol.trace-under .trace-hop { border-left-style: dashed; border-left-width: 2px; }
-.trace-hop .th-head { font-weight: 600; display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 6px; }
-.trace-hop .th-n { font-variant-numeric: tabular-nums; color: var(--muted); }
-.trace-hop .th-tag { font-weight: 400; font-size: 11.5px; padding: 0 5px; border: 1px solid var(--border); border-radius: 8px; color: var(--muted); }
-.trace-hop .th-line { overflow-wrap: anywhere; }
-.trace-hop .th-k { display: inline-block; min-width: 4.6em; color: var(--muted); font-size: 11.5px; }
-.trace-hop .th-note { font-size: 11.5px; color: var(--muted); font-style: italic; overflow-wrap: anywhere; }
+.hop-dev { font-weight: 600; display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 6px; }
+.hop-table .th-n { font-variant-numeric: tabular-nums; color: var(--muted); }
+.hop-table .th-tag { font-weight: 400; font-size: 11.5px; padding: 0 5px; border: 1px solid var(--border); border-radius: 8px; color: var(--muted); }
+.hop-table td { overflow-wrap: anywhere; }
+.hop-table .th-k { display: inline-block; min-width: 4.6em; color: var(--muted); font-size: 11.5px; }
+.hop-table .th-note { font-size: 11.5px; color: var(--muted); font-style: italic; overflow-wrap: anywhere; }
 .trace-end { margin: 4px 0 10px; overflow-wrap: anywhere; }
 .trace-key .tk { padding: 0 3px; border: 2px solid var(--trace); border-radius: 3px; }
 .trace-key .tk-alt { border-style: dashed; }
@@ -1155,3 +1079,50 @@ ul.combo-list[hidden] { display: none; }
 .combo-count, .combo-empty { color: var(--muted); font-size: 11.5px; }
 .combo-empty { padding: 3px 8px; }
 .combo-note[hidden] { display: none; }
+
+/* ---- tool windows (ui/toolwindow.ts): non-modal windows of Analyze and Simulate. Floating over the diagram
+   (moved and resized, kept inside the browser window), or docked: a full-width row of the page under the diagram,
+   above the status bar (it takes room and covers nothing). Narrow windows always dock. */
+.toolwin { position: fixed; z-index: 45; display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--panel); color: var(--text); border: 1px solid var(--frame); border-radius: 10px; box-shadow: 0 8px 28px var(--shadow); }
+.toolwin[hidden] { display: none; }
+.tw-head { flex: none; display: flex; align-items: center; gap: 6px; padding: 5px 6px 5px 8px; border-bottom: 1px solid var(--border); cursor: move; user-select: none; touch-action: none; }
+.toolwin.docked .tw-head { cursor: default; }
+.toolwin.collapsed .tw-head { border-bottom: 0; }
+.tw-title { flex: 1 1 auto; min-width: 0; margin: 0; font-size: 14px; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tw-tools { flex: none; display: flex; gap: 4px; }
+.tw-btn { padding: 2px 8px; min-width: 28px; line-height: 1.3; }
+.tw-move { cursor: move; }
+.tw-body { flex: 1 1 auto; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 10px 14px 18px; }
+.tw-body[hidden] { display: none; }
+.tw-grip { position: absolute; right: 2px; bottom: 2px; width: 20px; height: 20px; padding: 0; border: 0; background: none; color: var(--muted); font-size: 11px; line-height: 20px; cursor: nwse-resize; touch-action: none; }
+.toolwin.collapsed .tw-grip { display: none; }
+body.tw-docked { grid-template-rows: auto minmax(0, 1fr) auto auto; }
+.toolwin.docked { position: relative; border-radius: 0; border-width: 2px 0 0; box-shadow: none; }
+.toolwin.docked .tw-grip { top: 2px; bottom: auto; cursor: ns-resize; }
+.toolwin.docked .tw-grip::before { content: ""; }
+.toolwin h3 { font-size: 13.5px; margin: 14px 0 6px; }
+.table-wrap { overflow-x: auto; max-width: 100%; }
+/* the Trace path window: the form in a grid that wraps, the hops as tables */
+.trace-form .tf-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 230px), 1fr)); gap: 6px 14px; }
+table.hop-table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+table.hop-table th, table.hop-table td { text-align: left; vertical-align: top; padding: 3px 8px 3px 0; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
+table.hop-table thead th { color: var(--muted); font-weight: 600; white-space: nowrap; }
+/* interface names stay whole (ge-0/0/1, Tunnel10); a long one may widen the table, which scrolls inside the window */
+table.hop-table td.hop-if { white-space: nowrap; overflow-wrap: normal; }
+table.hop-table tr.hop-more td { border-bottom-style: dashed; color: var(--muted); font-size: 11.5px; }
+table.hop-table tr.hop-under th, table.hop-table tr.hop-under td:nth-child(2) { padding-left: 14px; }
+table.hop-table tr.hop-under { font-style: italic; }
+.trace-section { margin-top: 6px; border-top: 1px solid var(--border); }
+/* the Single points of failure window */
+.spof-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin: 8px 0; }
+.spof-tools input[type="search"] { flex: 1 1 220px; min-width: 0; }
+.spof-out { display: flex; flex-wrap: wrap; gap: 4px; }
+table.spof-table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+table.spof-table th, table.spof-table td { text-align: left; vertical-align: top; padding: 4px 8px 4px 0; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
+table.spof-table thead th { white-space: nowrap; }
+table.spof-table td.num, table.spof-table td.nowrap { white-space: nowrap; overflow-wrap: normal; }
+.th-sort { border: 0; background: none; padding: 0; font-weight: 600; color: inherit; }
+.th-sort:hover { text-decoration: underline; }
+/* the Focus window */
+.focus-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 8px 0; }
+.focus-sel { overflow-wrap: anywhere; }

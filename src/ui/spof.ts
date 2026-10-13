@@ -1,59 +1,166 @@
 /**
- * The Single points of failure report in the Analysis tab (Analyze →
- * Single points of failure). It analyzes the model as written, like the
- * other Analyze reports: nothing here starts a simulation by itself. Each
- * entry names the object (a link that selects it in the diagram), what its
- * failure cuts off and which relations go down, and offers an explicit
- * Simulate this failure, which starts an ad-hoc scenario (Simulate mode).
- * Built from elements and text nodes only; the data comes from
- * analysis/failure.ts (singlePointsOfFailure).
+ * The Single points of failure window (Analyze → Single points of
+ * failure…): what counts as one, then a table of them with the element,
+ * its type, what it cuts off, the relations that go down and the impact,
+ * most impact first; sortable by any column (aria-sort) and filtered by
+ * text; each row with Show in diagram. The table as CSV or as text (copy or
+ * save). A report of the model as written: it never changes the model.
+ * spofRows, spofCsv and spofText are pure (no DOM); the body is built from
+ * elements and text nodes only.
  */
 import { Spof, refLabel } from '../analysis/failure';
 import { Model } from '../model/types';
 import { el } from './dom';
 
-export interface SpofActions {
-  /** why Simulate this failure is unavailable now ('' = it is available) */
-  simulateBlocked: string;
-  simulate(s: Spof): void;
-  close(): void;
+export type SpofSort = 'element' | 'type' | 'cuts' | 'relations' | 'impact';
+
+export interface SpofViewState {
+  sort: SpofSort;
+  desc: boolean;
+  filter: string;
 }
 
-const KIND: { [k in Spof['kind']]: string } = { device: 'Device', cable: 'Cable', lag: 'LAG' };
+export function newSpofViewState(): SpofViewState {
+  return { sort: 'impact', desc: true, filter: '' };
+}
 
-/** The report's section: heading, what it lists, one entry per single point of failure (most impact first), Close report. */
-export function spofSection(doc: Document, model: Model, list: Spof[], simOn: boolean, act: SpofActions): HTMLElement {
-  const box = el(doc, 'section', { class: 'spof-report', 'aria-labelledby': 'spof-title' });
-  const close = el(doc, 'button', { type: 'button', class: 'mini', id: 'spof-close', title: 'Hide the report (the model is not changed)' }, ['Close report']);
-  close.addEventListener('click', () => act.close());
-  box.appendChild(el(doc, 'div', { class: 'spof-head' }, [el(doc, 'h3', { id: 'spof-title', tabindex: '-1' }, ['Single points of failure']), close]));
+/** One row of the table. */
+export interface SpofRow {
+  /** the object it stands for (a device, cable or aggregate interface) */
+  ref: string;
+  element: string;
+  type: string;
+  /** the devices cut off, in groups ("a, b; c") ('' none) */
+  cuts: string;
+  relations: string;
+  devicesCut: number;
+  relationsDown: number;
+  /** devices cut off + relations down */
+  impact: number;
+  /** the order of the report (most impact first) */
+  rank: number;
+}
+
+const TYPE: { [k in Spof['kind']]: string } = { device: 'Device', cable: 'Cable', lag: 'LAG' };
+
+/** The rows of a report, in its order (most impact first). */
+export function spofRows(model: Model, list: Spof[]): SpofRow[] {
+  return list.map((s, i) => {
+    const devicesCut = s.isolated.reduce((n, g) => n + g.length, 0);
+    return {
+      ref: s.ref,
+      // the Type column says what it is: a cable by its id alone (not "cable l-1")
+      element: s.kind === 'lag' ? `${refLabel(model, s.ref)} (${s.fail.length} cables)` : s.kind === 'cable' ? s.ref.slice(s.ref.indexOf(':') + 1) : refLabel(model, s.ref),
+      type: TYPE[s.kind],
+      cuts: s.isolated.map((g) => g.join(', ')).join('; '),
+      relations: s.relations.join(', '),
+      devicesCut,
+      relationsDown: s.relations.length,
+      impact: devicesCut + s.relations.length,
+      rank: i,
+    };
+  });
+}
+
+const cmpStr = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+
+/** The rows shown: filtered (every word must occur in the row's text) and sorted; ties keep the report's order. */
+export function shownSpofRows(rows: SpofRow[], st: SpofViewState): SpofRow[] {
+  const words = st.filter.toLowerCase().split(/\s+/).filter((w) => w);
+  const hit = (r: SpofRow): boolean => {
+    const text = `${r.element} ${r.type} ${r.cuts} ${r.relations}`.toLowerCase();
+    return words.every((w) => text.indexOf(w) >= 0);
+  };
+  const key = (r: SpofRow): number | string => (st.sort === 'impact' ? r.impact : st.sort === 'element' ? r.element.toLowerCase() : st.sort === 'type' ? r.type : st.sort === 'cuts' ? r.devicesCut : r.relationsDown);
+  const out = rows.filter(hit);
+  out.sort((a, b) => {
+    const ka = key(a);
+    const kb = key(b);
+    const c = typeof ka === 'number' ? (ka as number) - (kb as number) : cmpStr(ka as string, kb as string);
+    return (st.desc ? -c : c) || a.rank - b.rank;
+  });
+  return out;
+}
+
+const csvCell = (v: string | number): string => {
+  const t = String(v);
+  return /[",\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t;
+};
+
+/** The rows as CSV (a header row, then one line per row). */
+export function spofCsv(rows: SpofRow[]): string {
+  const head = ['element', 'type', 'cuts_off', 'relations_down', 'devices_cut_off', 'relations_down_count', 'impact'];
+  return [head.join(',')].concat(rows.map((r) => [r.element, r.type, r.cuts, r.relations, r.devicesCut, r.relationsDown, r.impact].map(csvCell).join(','))).join('\n') + '\n';
+}
+
+/** The rows as plain text, one block per row. */
+export function spofText(model: Model, rows: SpofRow[]): string {
+  const lines = [`Single points of failure — ${model.title}`, `${rows.length} single point${rows.length === 1 ? '' : 's'} of failure, most impact first.`, ''];
+  for (const r of rows) {
+    lines.push(`${r.type} ${r.element} (impact ${r.impact})`);
+    lines.push(`  cuts off: ${r.cuts || 'nothing'}`);
+    lines.push(`  relations down: ${r.relations || 'none'}`);
+  }
+  return lines.join('\n') + '\n';
+}
+
+const COLS: Array<[SpofSort, string]> = [
+  ['element', 'Element'],
+  ['type', 'Type'],
+  ['cuts', 'Cuts off'],
+  ['relations', 'Relations down'],
+  ['impact', 'Impact'],
+];
+
+/** The window's content. Its buttons carry data-spof-sort, data-spof-show, data-spof-out (csv-copy, csv-save, text-copy, text-save). */
+export function spofBody(doc: Document, rows: SpofRow[], st: SpofViewState, simulated: boolean): HTMLElement {
+  const box = el(doc, 'div', { class: 'spof-body' });
   box.appendChild(
-    el(doc, 'p', { class: 'muted small' }, [
-      'The cables, devices and LAGs whose failure alone cuts devices off from the rest of the physical network, or brings down relations whose endpoints are still up (no redundant underlay). Most impact first. Computed from the model as written',
-      simOn ? ' (not the simulated state that is on).' : '.',
+    el(doc, 'p', { class: 'small' }, [
+      'A single point of failure is one cable, device or LAG (all its member cables at once) whose failure alone cuts devices off from the rest of the physical network, or brings down relations although their endpoints are still up (they have no redundant underlay). Impact: the devices cut off plus the relations that go down. ',
+      el(doc, 'span', { class: 'muted' }, [simulated ? 'Computed from the model as written (not the simulated state that is on).' : 'Computed from the model as written.']),
     ]),
   );
-  if (!list.length) {
-    box.appendChild(el(doc, 'p', { role: 'status', class: 'spof-count' }, ['No single point of failure: every cable, device and LAG can fail without cutting the network or bringing a relation down.']));
-    return box;
-  }
-  box.appendChild(el(doc, 'p', { role: 'status', class: 'spof-count' }, [`${list.length} single point${list.length === 1 ? '' : 's'} of failure.`]));
-  const ul = el(doc, 'ul', { class: 'spof-list', 'aria-label': 'Single points of failure' });
-  for (const s of list) {
-    const name = s.kind === 'lag' ? `${refLabel(model, s.ref)} (${s.fail.length} cables)` : refLabel(model, s.ref);
-    const sim = el(doc, 'button', { type: 'button', class: 'mini', 'data-spof-sim': s.ref, 'aria-label': `Simulate the failure of ${name}`, title: act.simulateBlocked || 'Start a scenario that fails it (Simulate mode; the model is not changed)' }, ['Simulate this failure']) as HTMLButtonElement;
-    sim.disabled = !!act.simulateBlocked;
-    sim.addEventListener('click', () => act.simulate(s));
-    ul.appendChild(
-      el(doc, 'li', { 'data-spof': s.ref, 'data-spof-kind': s.kind }, [
-        el(doc, 'div', { class: 'spof-name' }, [el(doc, 'span', { class: 'spof-kind' }, [KIND[s.kind] + ' ']), el(doc, 'button', { type: 'button', class: 'ref', 'data-goto': s.ref, title: 'Select it in the diagram' }, [name])]),
-        el(doc, 'p', { class: 'small' }, [el(doc, 'span', { class: 'muted' }, ['Cuts off: ']), s.isolated.length ? s.isolated.map((g) => g.join(', ')).join('; ') : 'nothing']),
-        el(doc, 'p', { class: 'small' }, [el(doc, 'span', { class: 'muted' }, ['Relations down: ']), s.relations.length ? s.relations.join(', ') : 'none']),
-        el(doc, 'div', { class: 'spof-act' }, [sim]),
+  const filter = el(doc, 'input', { type: 'search', id: 'spof-filter', 'data-spof-filter': '', placeholder: 'Filter: element, type, device, relation', 'aria-label': 'Filter the single points of failure', autocomplete: 'off', spellcheck: 'false' }) as HTMLInputElement;
+  filter.value = st.filter;
+  const out = (k: string, label: string): HTMLElement => el(doc, 'button', { type: 'button', class: 'mini', 'data-spof-out': k }, [label]);
+  box.appendChild(el(doc, 'div', { class: 'spof-tools' }, [filter, el(doc, 'span', { class: 'spof-out', role: 'group', 'aria-label': 'Export the table' }, [out('csv-copy', 'Copy CSV'), out('csv-save', 'Save CSV'), out('text-copy', 'Copy text'), out('text-save', 'Save text')])]));
+  box.appendChild(spofTable(doc, rows, st));
+  return box;
+}
+
+/** The status line and the table (redrawn on sorting and filtering). */
+export function spofTable(doc: Document, rows: SpofRow[], st: SpofViewState): HTMLElement {
+  const shown = shownSpofRows(rows, st);
+  const wrap = el(doc, 'div', { class: 'spof-tables' });
+  wrap.appendChild(el(doc, 'p', { id: 'spof-status', class: 'spof-count small', role: 'status' }, [rows.length ? (shown.length === rows.length ? `${rows.length} single point${rows.length === 1 ? '' : 's'} of failure.` : `${shown.length} of ${rows.length} single points of failure shown.`) : 'No single point of failure: every cable, device and LAG can fail without cutting the network or bringing a relation down.']));
+  if (!rows.length) return wrap;
+  const table = el(doc, 'table', { class: 'spof-table' });
+  table.appendChild(el(doc, 'caption', { class: 'sr-only' }, ['Single points of failure; the column headers sort the table']));
+  const head = el(doc, 'tr', {}, [
+    ...COLS.map(([k, label]) => {
+      const sorted = st.sort === k;
+      return el(doc, 'th', { scope: 'col', 'aria-sort': sorted ? (st.desc ? 'descending' : 'ascending') : 'none' }, [
+        el(doc, 'button', { type: 'button', class: 'th-sort', 'data-spof-sort': k, title: `Sort by ${label.toLowerCase()}` }, [label, el(doc, 'span', { class: 'sort-mark', 'aria-hidden': 'true' }, [sorted ? (st.desc ? ' ▼' : ' ▲') : ''])]),
+      ]);
+    }),
+    el(doc, 'th', { scope: 'col' }, [el(doc, 'span', { class: 'sr-only' }, ['Actions'])]),
+  ]);
+  table.appendChild(el(doc, 'thead', {}, [head]));
+  const tb = el(doc, 'tbody');
+  for (const r of shown) {
+    tb.appendChild(
+      el(doc, 'tr', { 'data-spof': r.ref }, [
+        el(doc, 'th', { scope: 'row' }, [r.element]),
+        el(doc, 'td', { class: 'nowrap' }, [r.type]),
+        el(doc, 'td', {}, [r.cuts || '—']),
+        el(doc, 'td', {}, [r.relations || '—']),
+        el(doc, 'td', { class: 'num' }, [`${r.impact}`, el(doc, 'span', { class: 'muted small' }, [` (${r.devicesCut} device${r.devicesCut === 1 ? '' : 's'}, ${r.relationsDown} relation${r.relationsDown === 1 ? '' : 's'})`])]),
+        el(doc, 'td', { class: 'nowrap' }, [el(doc, 'button', { type: 'button', class: 'mini', 'data-spof-show': r.ref, 'aria-label': `Show ${r.element} in the diagram` }, ['Show in diagram'])]),
       ]),
     );
   }
-  box.appendChild(ul);
-  if (act.simulateBlocked) box.appendChild(el(doc, 'p', { class: 'muted small', id: 'spof-sim-why' }, [act.simulateBlocked]));
-  return box;
+  table.appendChild(tb);
+  wrap.appendChild(el(doc, 'div', { class: 'table-wrap' }, [table]));
+  return wrap;
 }

@@ -216,13 +216,13 @@ async function main() {
       const ex = await page.eval("Array.from(document.querySelectorAll('#menu-examples [data-example]')).findIndex((b) => /addressing\.yaml/.test(b.textContent))");
       await page.eval(`netatlas.loadExample(${ex}), netatlas.setView("logical"), true`);
       await page.eval("document.getElementById('toast').hidden = true");
-      await page.eval(`document.getElementById('btn-addressing').click(), document.querySelector('[data-addr-toggle="|corp"]').click(), true`);
+      await page.eval(`localStorage.removeItem('netatlas.window.addressing'), document.getElementById('btn-addressing').click(), document.querySelector('[data-addr-toggle="|corp"]').click(), true`);
       await page.mouse('mouseMoved', 700, 890);
       await page.settle(300);
-      const d = await page.rect('#modal');
-      const sec = await page.rect('#modal .addr-vrf');
+      const d = await page.rect('#toolwin');
+      const sec = await page.rect('#toolwin .addr-vrf');
       await save('addressing', { x: d.x, y: d.y, w: d.w, h: Math.min(d.y + d.h, sec.y + 330) - d.y }, { quality: 70 });
-      await page.key('Escape', 'Escape', 27);
+      await page.eval(`netatlas.closeToolWindow(), true`);
       await page.settle(100);
     }
 
@@ -234,7 +234,8 @@ async function main() {
       await page.mouse('mouseMoved', 700, 890);
       await page.settle(300);
       const c = await page.rect('#canvas-wrap');
-      await save('focus', { x: c.x, y: c.y, w: c.w, h: Math.min(c.h, 470) }, { quality: 70 });
+      await save('focus', around([c, await page.rect('#toolwin')], 0), { scale: 0.75, quality: 60 });
+      await page.eval(`netatlas.closeToolWindow(), true`);
       await page.eval(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true })), true`);
       await page.settle(150);
       await page.eval(`(() => { const i = document.getElementById('palette-input'); i.value = 'focus'; i.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
@@ -246,92 +247,29 @@ async function main() {
       await page.settle(100);
     }
 
-    // path trace from the Munich LAN to the syslog server (enterprise WAN, physical view): the diagram with the hop list
+    // path trace from the Munich LAN to the syslog server (enterprise WAN, physical view): the diagram and the Trace path window with its hop table
     {
       await page.eval('netatlas.loadExample(0), netatlas.setView("physical"), true');
       await page.eval("document.getElementById('toast').hidden = true");
-      await page.eval(`netatlas.setTraceForm({ from: 'muc-rtr:lan0', to: 'hq-log', back: false }), netatlas.runTrace(), true`);
+      await page.eval(`localStorage.removeItem('netatlas.window.trace'), netatlas.setTraceForm({ from: 'muc-rtr:lan0', to: 'hq-log', back: false }), netatlas.openTrace(), netatlas.runTrace(), true`);
       await page.mouse('mouseMoved', 700, 890);
       await page.settle(300);
       const c = await page.rect('#canvas-wrap');
-      const side = await page.rect('#side');
-      // the diagram zoomed in on the firewall and the core switches (the path and its dashed alternative) in the right half of the canvas; the hop list beside it
-      const x0 = c.x + Math.round(c.w * 0.45);
-      await page.eval(`(() => {
-        const r = document.querySelector('#viewport [data-ref="device:hq-fw"]').getBoundingClientRect();
-        const sv = document.getElementById('canvas').getBoundingClientRect();
-        netatlas.zoomBy(1.9, r.x + r.width / 2 - sv.x, r.y + r.height / 2 - sv.y);
-        const r2 = document.querySelector('#viewport [data-ref="device:hq-fw"]').getBoundingClientRect();
-        const wrap = document.getElementById('canvas-wrap').getBoundingClientRect();
-        netatlas.panBy(${x0} + (wrap.right - ${x0}) / 2 - (r2.x + r2.width / 2), wrap.y + 150 - r2.y);
-        const b = document.getElementById('side-body');
-        b.scrollTop = document.querySelector('#side-body .trace-status').offsetTop - 8;
-        return true;
-      })()`);
-      await page.settle(200);
-      await save('trace', { x: x0, y: c.y, w: side.x + side.w - x0, h: Math.min(c.h, 350) }, { quality: 40 });
-      await page.eval(`document.getElementById('trace-exit-banner').click(), true`);
+      const w = await page.rect('#toolwin');
+      await save('trace', around([c, w], 0), { scale: 0.75, quality: 50 });
+      await page.eval(`netatlas.closeToolWindow(), true`);
       await page.settle(100);
     }
 
-    // simulation: the saved scenario "Core peer link and core switch" at its second step (enterprise WAN, physical view), the diagram zoomed in on the core and the Simulation tab beside it
+    // single points of failure: the window for the enterprise WAN, most impact first
     {
       await page.eval('netatlas.loadExample(0), netatlas.setView("physical"), true');
       await page.eval("document.getElementById('toast').hidden = true");
-      await page.eval(`netatlas.playScenario('core-peer-loss'), netatlas.simGo(2), true`);
+      await page.eval(`localStorage.removeItem('netatlas.window.spof'), netatlas.openSpof(), true`);
       await page.mouse('mouseMoved', 700, 890);
-      await page.settle(300);
-      const c = await page.rect('#canvas-wrap');
-      const side = await page.rect('#side');
-      // from the canvas's left edge: the whole banner (scenario, step, ◀ ▶, Exit) is in the picture
-      const x0 = c.x;
-      await page.eval(`(() => {
-        const r = document.querySelector('#viewport [data-ref="device:hq-core1"]').getBoundingClientRect();
-        const sv = document.getElementById('canvas').getBoundingClientRect();
-        netatlas.zoomBy(1.9, r.x + r.width / 2 - sv.x, r.y + r.height / 2 - sv.y);
-        const r2 = document.querySelector('#viewport [data-ref="device:hq-core1"]').getBoundingClientRect();
-        const wrap = document.getElementById('canvas-wrap').getBoundingClientRect();
-        netatlas.panBy(${x0} + 260 - r2.x, wrap.y + 190 - r2.y);
-        return true;
-      })()`);
-      await page.settle(200);
-      await save('simulation', { x: x0, y: c.y, w: side.x + side.w - x0, h: Math.min(c.h, 320) }, { quality: 28 });
-      await page.eval(`document.getElementById('sim-exit-banner').click(), true`);
-      await page.settle(100);
-    }
-
-    // simulated traffic: ospf-reroute.yaml at step 1 (the primary link failed), physical view, a moment after the step:
-    // the dots on the backup path, the old way faded, and the Traffic section of the Simulation tab
-    {
-      await page.eval(`netatlas.loadText(${JSON.stringify(readFileSync(join(root, 'examples', 'ospf-reroute.yaml'), 'utf8'))}, 'ospf-reroute.yaml'), netatlas.setView('physical'), true`);
-      await page.eval("document.getElementById('toast').hidden = true");
-      await page.eval(`netatlas.playScenario('ospf-reroute'), netatlas.simGo(0), true`);
-      await page.settle(200);
-      await page.eval(`(() => { [...document.querySelectorAll('.zoombar button')].find((b) => b.textContent === 'Fit').click(); return true; })()`);
-      await page.settle(200);
-      await page.eval(`netatlas.simGo(1), true`);
-      // let the dots spread over the lines (the reroute overlay stays for four seconds)
-      await page.eval(`new Promise((r) => setTimeout(r, 1500))`);
-      await page.eval(`(() => { const t = document.querySelector('#side-body .sim-traffic'); document.getElementById('side-body').scrollTop = t.offsetTop - 8; return true; })()`);
-      await page.settle(100);
-      const c = await page.rect('#canvas-wrap');
-      const side = await page.rect('#side');
-      await save('traffic', { x: c.x, y: c.y, w: side.x + side.w - c.x, h: Math.min(c.h, 420) }, { quality: 30 });
-      await page.eval(`document.getElementById('sim-exit-banner').click(), true`);
-      await page.settle(100);
-    }
-
-    // scenario templates: the dialog for the enterprise WAN, the asymmetric check greyed out with its reason
-    {
-      await page.eval('netatlas.loadExample(0), netatlas.setView("physical"), true');
-      await page.eval("document.getElementById('toast').hidden = true");
-      await page.eval(`(document.getElementById('btn-templates').click(), true)`);
       await page.settle(250);
-      // the end of the list: the templates that don't apply, with their reasons
-      await page.eval(`(document.querySelector('#modal [data-template="asymmetric"]').closest('li').scrollIntoView({ block: 'end' }), true)`);
-      await page.settle(100);
-      await save('templates', around([await page.rect('#modal')], 6), { quality: 45 });
-      await page.eval(`document.querySelector('#modal [data-value="close"]').click(), true`);
+      await save('spof', around([await page.rect('#toolwin')], 6), { quality: 60 });
+      await page.eval(`netatlas.closeToolWindow(), true`);
       await page.settle(100);
     }
 

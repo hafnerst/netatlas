@@ -381,26 +381,26 @@ test('Analyze menu: between Find and Simulate, built like the others; Addressing
   assert.ok(menu, 'the Analyze menu');
   assert.match(menu[1], /<button id="btn-addressing" type="button" role="menuitem" data-command="analyze\.addressing" aria-haspopup="dialog" title="Open or create a model first" disabled><span class="mi-label">Addressing overview…<\/span><span class="mi-hint">I<\/span><\/button>/);
   // focus mode lives here too
-  assert.match(header, /<button id="btn-focus" type="button" role="menuitem" data-command="focus\.enter"[^>]*><span class="mi-label">Focus on selection<\/span><span class="mi-hint">Shift\+F<\/span>/);
+  assert.match(header, /<button id="btn-focus" type="button" role="menuitem" data-command="focus\.window" aria-haspopup="dialog"[^>]*><span class="mi-label">Focus…<\/span><span class="mi-hint">Shift\+F<\/span>/);
   assert.match(header, /<button id="btn-focus-exit" type="button" role="menuitem" data-command="focus\.exit"[^>]*><span class="mi-label">Exit focus<\/span>/);
   // the path tracer too
-  assert.match(header, /<button id="btn-trace" type="button" role="menuitem" data-command="trace\.open"[^>]*><span class="mi-label">Trace path…<\/span><span class="mi-hint">T<\/span>/);
+  assert.match(header, /<button id="btn-trace" type="button" role="menuitem" data-command="trace\.open" aria-haspopup="dialog"[^>]*><span class="mi-label">Trace path…<\/span><span class="mi-hint">T<\/span>/);
   assert.match(header, /<button id="btn-trace-exit" type="button" role="menuitem" data-command="trace\.exit"[^>]*><span class="mi-label">Exit path trace<\/span>/);
-  // the Single points of failure report analyzes the model as written: Analyze, last; no dialog (its results are in the Analysis tab)
+  // every entry opens a tool window (aria-haspopup="dialog"); Single points of failure is last
   const whole = /<div id="analyze-menu" class="dropdown menu" role="menu" aria-label="Analyze" hidden>([\s\S]*?)\n    <\/div>/.exec(header)[1];
-  assert.deepEqual([...whole.matchAll(/data-command="([^"]+)"/g)].map((m) => m[1]), ['analyze.addressing', 'focus.enter', 'focus.exit', 'trace.open', 'trace.exit', 'analyze.spof']);
-  assert.match(whole, /<button id="btn-spof" type="button" role="menuitem" data-command="analyze\.spof" title="Open or create a model first" disabled><span class="mi-label">Single points of failure<\/span><\/button>/);
+  assert.deepEqual([...whole.matchAll(/data-command="([^"]+)"/g)].map((m) => m[1]), ['analyze.addressing', 'focus.window', 'focus.exit', 'trace.open', 'trace.exit', 'analyze.spof']);
+  assert.match(whole, /<button id="btn-spof" type="button" role="menuitem" data-command="analyze\.spof" aria-haspopup="dialog" title="Open or create a model first" disabled><span class="mi-label">Single points of failure…<\/span><\/button>/);
   // … but no simulation: Analyze is "what is", the model as written
   assert.doesNotMatch(whole, /data-command="sim\./);
   // Simulate ("what if", a state that never changes the model) is the menu right after it
   const sim = /<div id="simulate-menu" class="dropdown menu" role="menu" aria-label="Simulate" hidden>([\s\S]*?)\n    <\/div>/.exec(header)[1];
-  assert.deepEqual([...sim.matchAll(/data-command="([^"]+)"/g)].map((m) => m[1]), ['sim.add', 'panel.simulation', 'sim.templates', 'sim.prev', 'sim.next', 'sim.save', 'sim.traffic', 'sim.trafficPause', 'sim.exit']);
-  assert.match(sim, /<button id="btn-sim" type="button" role="menuitem" data-command="sim\.add"[^>]*><span class="mi-label">Simulate failure of selection<\/span><span class="mi-hint">X<\/span>/);
-  assert.doesNotMatch(sim, /spof/);
+  // the protocol simulation (a window), and Exit simulation; no scenarios, no X, no steps
+  assert.deepEqual([...sim.matchAll(/data-command="([^"]+)"/g)].map((m) => m[1]), ['sim.protocol', 'sim.exit']);
+  assert.match(sim, /<button id="btn-protocol-sim" type="button" role="menuitem" data-command="sim\.protocol" aria-haspopup="dialog"[^>]*><span class="mi-label">Protocol simulation…<\/span>/);
   assert.match(sim, /<button id="btn-sim-exit" type="button" role="menuitem" data-command="sim\.exit"[^>]*><span class="mi-label">Exit simulation<\/span>/);
   const app = readFileSync(join(root, 'src', 'ui', 'app.ts'), 'utf8');
   const cmds = readFileSync(join(root, 'src', 'ui', 'commands.ts'), 'utf8');
-  assert.match(cmds, /id: 'analyze\.spof',\s+label: 'Single points of failure',\s+group: 'Analyze',/);
+  assert.match(cmds, /id: 'analyze\.spof',\s+label: 'Single points of failure…',\s+group: 'Analyze',/);
   assert.doesNotMatch(cmds, /id: 'sim\.spof'/);
   assert.match(cmds, /id: 'analyze\.addressing',[\s\S]{0,120}keys: \{ combos: \[\{ key: 'i' \}\] \},[\s\S]{0,400}state: \(app\) => needDiagram\(app,/);
 });
