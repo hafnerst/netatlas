@@ -12,7 +12,7 @@ import { EXAMPLES } from '../generated/examples';
 import { STRATEGIES, STRATEGY_LABEL } from '../layout/strategies';
 import { FOCUS_MAX_HOPS, FOCUS_MIN_HOPS } from '../analysis/focus';
 
-export type CommandGroup = 'File' | 'Example' | 'Export' | 'Find' | 'Analyze' | 'Simulate' | 'Help' | 'Edit' | 'View' | 'Auto-arrange' | 'Filters' | 'Zoom' | 'Panel' | 'Theme';
+export type CommandGroup = 'File' | 'Example' | 'Export' | 'Find' | 'Analyze' | 'Simulate' | 'Window' | 'Help' | 'Edit' | 'View' | 'Auto-arrange' | 'Filters' | 'Zoom' | 'Panel' | 'Theme';
 
 export interface CommandState {
   enabled: boolean;
@@ -169,16 +169,30 @@ export function buildCommands(): Command[] {
       group: 'Analyze',
       mode: true,
       keys: { combos: [{ key: 'i' }] },
-      keywords: 'ip addresses networks prefixes subnets ipam free vrf',
-      state: (app) => needDiagram(app, 'The networks of each VRF with their members, gateways, use and free addresses; duplicates, overlaps and addresses in no network (I)'),
+      keywords: 'ip addresses networks prefixes subnets ipam free vrf window',
+      state: (app) => needDiagram(app, 'A window with the networks of each VRF: members, gateways, use and free addresses; duplicates, overlaps and addresses in no network (I)'),
       run: (app) => void app.openAddressing(),
+    },
+    {
+      id: 'focus.window',
+      label: 'Focus…',
+      group: 'Analyze',
+      mode: true,
+      keys: { combos: [{ key: 'F', shift: true }] },
+      keywords: 'focus on selection neighbourhood neighborhood hops isolate window',
+      state: (app) => {
+        const s = app.session;
+        if (!s) return off(NO_MODEL);
+        const sel = s.state.selected;
+        return on(sel && app.canFocus(sel) ? `A window to show only ${app.refName(sel)} and what is within 1–3 hops of it; with a selection it focuses at once (Shift+F)` : 'A window to show only an object and its neighbourhood: select one, then Focus (Shift+F)');
+      },
+      run: (app) => app.openFocusWindow(true),
     },
     {
       id: 'focus.enter',
       label: 'Focus on selection',
       group: 'Analyze',
       mode: true,
-      keys: { combos: [{ key: 'F', shift: true }] },
       keywords: 'neighbourhood neighborhood hops isolate',
       state: (app) => {
         const s = app.session;
@@ -188,7 +202,7 @@ export function buildCommands(): Command[] {
         if (!app.canFocus(sel)) return off('The selection has no device to start from');
         const f = s.state.focus;
         if (f && f.ref === sel) return off('Focus mode already shows the selection');
-        return on(`Show only ${app.refName(sel)} and what is within ${f ? f.hops : 1} hop${f && f.hops > 1 ? 's' : ''} of it (Shift+F)`);
+        return on(`Show only ${app.refName(sel)} and what is within ${f ? f.hops : 1} hop${f && f.hops > 1 ? 's' : ''} of it`);
       },
       run: (app) => app.enterFocus(),
     },
@@ -233,8 +247,8 @@ export function buildCommands(): Command[] {
       group: 'Analyze',
       mode: true,
       keys: { combos: [{ key: 't' }] },
-      keywords: 'path route forwarding hops traceroute reachability ecmp return',
-      state: (app) => needDiagram(app, 'The way traffic takes from a source to a destination, hop by hop, by the routes and adjacencies of the model (T)'),
+      keywords: 'path route forwarding hops traceroute reachability ecmp return window',
+      state: (app) => needDiagram(app, 'A window that traces the way traffic takes from a source to a destination, hop by hop, by the routes and adjacencies of the model (T)'),
       run: (app) => app.openTrace(),
     },
     {
@@ -252,107 +266,53 @@ export function buildCommands(): Command[] {
       group: 'Analyze',
       mode: true,
       keywords: 'leave end clear remove path',
-      state: (app) => (app.currentTrace() ? on('Remove the traced path from the diagram (Esc)') : off('No path is traced')),
+      state: (app) => (app.currentTrace() ? on('Remove the traced path from the diagram') : off('No path is traced')),
       run: (app) => app.exitTrace(),
     },
     {
       id: 'analyze.spof',
-      label: 'Single points of failure',
+      label: 'Single points of failure…',
       group: 'Analyze',
       mode: true,
-      keywords: 'spof redundancy partition resilience failure report n-1',
-      state: (app) => needDiagram(app, 'The cables, devices and LAGs whose failure alone cuts the network or brings relations down: a report of the model as written, in the Analysis tab'),
+      keywords: 'spof redundancy partition resilience failure report n-1 window csv',
+      state: (app) => needDiagram(app, 'A window with the cables, devices and LAGs whose failure alone cuts the network or brings relations down: a sortable table of the model as written'),
       run: (app) => app.openSpof(),
+    },
+    // ---------------------------------------------------------- tool windows
+    {
+      id: 'window.focus',
+      label: 'Move the focus between the tool window and the diagram',
+      group: 'Window',
+      keys: { combos: [{ key: 'F6' }], whileTyping: true },
+      keywords: 'tool window switch focus keyboard f6',
+      state: (app) => (app.toolWindowOpen() ? on('Move the keyboard focus to the tool window, or back to where it was in the main window (F6)') : off('No tool window is open')),
+      run: (app) => app.toggleWindowFocus(),
+    },
+    {
+      id: 'window.close',
+      label: 'Close the tool window',
+      group: 'Window',
+      keywords: 'tool window close dismiss',
+      state: (app) => (app.toolWindowOpen() ? on('Close the open tool window (Esc inside it)') : off('No tool window is open')),
+      run: (app) => app.closeToolWindow(),
     },
     // ------------------------------------------------------------ Simulate
     {
-      id: 'sim.add',
-      label: 'Simulate failure of selection',
+      id: 'sim.protocol',
+      label: 'Protocol simulation…',
       group: 'Simulate',
       mode: true,
-      keys: { combos: [{ key: 'x' }] },
-      keywords: 'fail failure impact outage down what if cable port device relation scenario step',
-      state: (app) => {
-        const why = app.simAddBlocked();
-        return why ? off(why) : on(app.currentSim() ? 'Fail the selected object in a new step of the scenario (X)' : 'Start a scenario: fail the selected object and see what goes down or degrades with it (X)');
-      },
-      run: (app) => app.simulateSelection(),
-    },
-    {
-      id: 'sim.prev',
-      label: 'Previous simulation step',
-      menuLabel: 'Previous step',
-      group: 'Simulate',
-      mode: true,
-      keys: { combos: [{ key: '[' }] },
-      keywords: 'scenario step back play',
-      state: (app) => {
-        const why = app.simStepBlocked(-1);
-        return why ? off(why) : on('Show the state after the step before ([)');
-      },
-      run: (app) => app.simGo((app.currentSim() as { at: number }).at - 1),
-    },
-    {
-      id: 'sim.next',
-      label: 'Next simulation step',
-      menuLabel: 'Next step',
-      group: 'Simulate',
-      mode: true,
-      keys: { combos: [{ key: ']' }] },
-      keywords: 'scenario step forward play',
-      state: (app) => {
-        const why = app.simStepBlocked(1);
-        return why ? off(why) : on('Show the state after the next step (])');
-      },
-      run: (app) => app.simGo((app.currentSim() as { at: number }).at + 1),
-    },
-    {
-      id: 'sim.save',
-      label: 'Save scenario…',
-      group: 'Simulate',
-      keywords: 'scenario store keep name rename replay review',
-      state: (app) => {
-        const st = app.currentSim();
-        if (!st) return off('No simulation is on');
-        return on(st.saved ? 'Change the name and description of the saved scenario (one undo step)' : 'Save the scenario in the model to replay it later (one undo step)');
-      },
-      run: (app) => void app.saveScenarioDialog(),
-    },
-    {
-      id: 'sim.templates',
-      label: 'Scenario templates…',
-      group: 'Simulate',
-      mode: true,
-      keywords: 'template propose scenario uplink outage vrrp hsrp failover core spine site rack loss shared risk srlg maintenance flapping vpn tunnel lag mlag service server asymmetric',
-      state: (app) => needDiagram(app, 'Proposals for this model: a WAN uplink outage, a VRRP failover, a core failure, a site loss … to review and save as scenarios'),
-      run: (app) => void app.openTemplates(),
-    },
-    {
-      id: 'sim.traffic',
-      label: 'Traffic animation',
-      group: 'Simulate',
-      mode: true,
-      keywords: 'traffic flows dots animate demands packets moving direction',
-      state: (app) => (app.currentSim() ? on(app.trafficOn ? 'Hide the moving traffic (it is on)' : 'Show the traffic the model implies as moving dots (it is off)') : off('No simulation is on')),
-      run: (app) => app.toggleTraffic(),
-    },
-    {
-      id: 'sim.trafficPause',
-      label: 'Pause or resume the traffic animation',
-      menuLabel: 'Pause traffic',
-      group: 'Simulate',
-      mode: true,
-      keywords: 'traffic stop freeze dots motion',
-      state: (app) => (!app.currentSim() ? off('No simulation is on') : !app.trafficOn ? off('The traffic animation is off') : on(app.trafficPaused() ? 'Let the dots move again' : 'Stop the dots where they are')),
-      run: (app) => app.pauseTraffic(),
+      keywords: 'protocol simulation ospf bgp hello packets messages simulate window',
+      state: () => off('Not available yet: the protocol simulation is being built'),
+      run: () => false,
     },
     {
       id: 'sim.exit',
       label: 'Exit simulation',
       group: 'Simulate',
       mode: true,
-      keywords: 'failure scenario leave end restore normal edit',
-      state: (app) => (app.currentSim() ? on('End the simulation: the model’s own state, and editing again (Esc)') : off('No simulation is on')),
+      keywords: 'simulation leave end normal edit',
+      state: (app) => (app.simulationOn() ? on('End the simulation: the model’s own state, and editing again (Esc)') : off('No simulation is on')),
       run: (app) => app.exitSimulation(),
     },
     {
@@ -507,18 +467,15 @@ export function buildCommands(): Command[] {
         ['relations', 'Relations', ''],
         ['problems', 'Problems', ''],
         ['yaml', 'YAML', ''],
-        ['analysis', 'Analysis', ''],
-        ['simulation', 'Simulation', ''],
-      ] as Array<['edit' | 'details' | 'legend' | 'relations' | 'problems' | 'yaml' | 'analysis' | 'simulation', string, string]>
+      ] as Array<['edit' | 'details' | 'legend' | 'relations' | 'problems' | 'yaml', string, string]>
     ).map(
       ([tab, name, key]): Command => ({
         id: 'panel.' + tab,
         label: `${name} tab`,
-        menuLabel: tab === 'simulation' ? 'Scenarios' : undefined,
         group: 'Panel',
         keys: key ? { combos: [{ key }] } : undefined,
-        keywords: tab === 'problems' ? 'errors warnings checks findings' : tab === 'yaml' ? 'source text' : tab === 'analysis' ? 'trace path hop list results' : tab === 'simulation' ? 'scenarios steps play replay failure what if results' : '',
-        state: (app) => (tab === 'simulation' && !app.session ? off(NO_MODEL) : on(tab === 'simulation' ? 'Open the Simulation tab: the saved scenarios and the scenario played' : `Open the ${name} tab of the side panel`)),
+        keywords: tab === 'problems' ? 'errors warnings checks findings' : tab === 'yaml' ? 'source text' : '',
+        state: () => on(`Open the ${name} tab of the side panel`),
         run: (app) => app.showTab(tab),
       }),
     ),

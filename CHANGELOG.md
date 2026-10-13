@@ -58,27 +58,15 @@ there is no conversion of files written for the earlier drafts.
   (also `virtual_ipv6`) replaces the virtual addresses in relation `attrs`
   (`virtual-ip`, `vip`, `master`, `priority`) and interface attributes
   (`vrrp-virtual-ip`), which nothing reads any more.
-- **`risk_groups`** on cables, ports (physical interfaces) and devices: the
-  shared risks they belong to (a conduit, a power feed, a carrier, a line
-  card), ids named by their use.
-- **Scenario steps:** the action `maintain` (planned maintenance: out of
-  service, simulated like a failure) and the targets `group` (every device
-  of a location and its nested ones) and `risk` (everything in a risk
-  group).
 - **A link's `direction`:** `direction: unidirectional` makes a cable carry
   traffic from end `a` to end `b` only (simplex fibre, a data diode, a TAP
   or SPAN feed), consistent with relations; drawn with an arrow at end `b`;
   the path tracer never uses it the other way.
 - **`demands:`** (top level, optional): traffic demands, each a `source`
   and `destination` (as Trace path takes them) and a `bandwidth`, with an
-  optional `label`, `class` and `description`. Analysis data: traced, never
-  changing the network objects; an end that names nothing is a warning.
-- **`scenarios:`** (top level, optional): saved simulation scenarios, each
-  an `id`, an optional `label` and `description`, and `steps`, each step
-  `fail:` or `restore:` with one target (`device`, `cable`, `port`,
-  `relation` or `lag`) and an optional `note`. Presentation and analysis
-  data only: they never change the network objects. A step whose object is
-  gone is a warning, and is skipped when played.
+  optional `label`, `class` and `description`, for the protocol simulation.
+  Analysis data: never changing the network objects; an end that names
+  nothing is a warning.
 - **A protocol of the model can declare `params`** (key, label, type,
   scope, required, range or values, suggestions, description) and
   `router_id` (`required` / `optional` / `none`); it is then a routing
@@ -92,39 +80,13 @@ there is no conversion of files written for the earlier drafts.
 
 ### Added
 
-- **Scenario templates** (Simulate → Scenario templates…, and the palette):
-  eleven templates (WAN / ISP uplink outage, first-hop redundancy failover,
-  core or spine failure, site / room / rack loss, shared-risk fibre cut,
-  rolling maintenance of a redundant pair, link flapping, VPN / tunnel
-  failover, MLAG / LAG member loss, service server failure, asymmetric
-  routing check) look at the model and propose concrete, deterministic
-  steps to review and save as a normal scenario; one that doesn't apply is
-  greyed out with why. Traffic surge is left out until there is a capacity
-  analysis. Computed in `src/analysis/templates.ts`. The examples
-  enterprise-wan, datacenter-evpn and ospf-reroute carry saved scenarios
-  from them.
-- **The way back of each demand** in the Traffic section: the same way, or
-  asymmetric (with the way back).
-- **Risk groups** in the Edit tab for devices, ports and links.
-- **Traffic animation** (Simulate → Traffic animation, on by default in
-  simulation mode, with Pause): moving dots show the traffic the model
-  implies, in both views: control traffic per protocol (adjacencies and BFD
-  both ways, VRRP / HSRP from the active member, services from client to
-  server) and the demands along their traced paths (through tunnels, with
-  equal-cost paths sharing a demand); a one-way cable or relation one way
-  only. A step that fails something reroutes the traffic as routing does;
-  the old way shows faded and the new one emphasized for a moment; traffic
-  without a way is marked lost where it stops. The Simulation tab lists the
-  flows, their paths and every change as text. Reduced motion: static
-  arrows; exports: a still picture with arrows. requestAnimationFrame,
-  paused while the page is hidden, at most 300 dots. Computed in
-  `src/analysis/traffic.ts`, drawn by `src/ui/traffic.ts`.
-- **New example `ospf-reroute.yaml`** with the saved scenario *Primary link
-  failure and OSPF reroute*.
+- **New example `ospf-reroute.yaml`:** OSPF costs that make one way
+  preferred, a VRRP pair, a camera VLAN routed by one router, a one-way TAP
+  cable and two demands.
 - **New entries are ready to fill in:** after any create action (+ Add,
   Duplicate, Connect, an interface, loopback, port range, route, DNS name,
-  address, protocol, VRRP group, attribute, endpoint, member port, underlay,
-  a scenario step) the entry is selected and marked, its card opened and
+  address, protocol, VRRP group, attribute, endpoint, member port, underlay)
+  the entry is selected and marked, its card opened and
   scrolled into view (smoothly unless reduced motion is preferred), and the
   cursor is in its first field with the proposed text selected; a new object
   is selected in the diagram with its outline row in view. The creation is
@@ -135,32 +97,28 @@ there is no conversion of files written for the earlier drafts.
   (drag, double-click to reset; a keyboard-operable separator with ← → Home
   End Enter); the width is remembered in local storage, the diagram keeps at
   least 360 px, and the tabs wrap instead of being cut off.
-- **Simulate ▾ menu and Simulation tab:** simulation is separated from
-  analysis. *Analyze* (Addressing overview, Focus, Trace path) shows the
-  model as written; *Simulate* (Simulate failure of selection `X`,
-  Scenarios, Single points of failure…, Previous / Next step `[` `]`, Save
-  scenario…, Exit simulation) shows a hypothetical state that never changes
-  the model. The new **Simulation** side tab holds the scenarios, their
-  steps and results; the **Analysis** tab keeps the path tracer.
-- **Simulation mode is visible beyond colour:** a banner with the scenario,
-  the step, ◀ / ▶ and Exit simulation; a hatched frame around the diagram;
-  a *◈ Simulation · step k of n* marker in the status bar; the diagram
-  labelled *Simulated state*. Exports show the simulated state with a dashed
-  frame and a *Simulation: scenario “…”, step k of n …* note.
-- **Scenarios:** named, ordered lists of fail / restore steps (device,
-  cable, port, relation, LAG) played as an overlay. Play forward and back;
-  each step shows what changed since the step before (down, degraded,
-  recovered, device pairs lost and regained) and its full result. `X`
-  starts an ad-hoc scenario at once; **Save scenario…** stores it in the
-  model (one undoable edit) to replay in design reviews; saved scenarios
-  are listed with Play and Delete and offered in the command palette.
-  Computed in `src/analysis/scenario.ts` on top of the failure propagation.
-- **Editing is blocked during a simulation**, with an explanation and a
-  one-click Exit simulation: the Edit tab is read-only, the YAML text too,
-  and every command that edits says why it is unavailable. Edits of the
-  scenarios themselves stay possible and undoable.
-- **Focus inside a simulation** counts hops over what is up in the
-  simulated state; **Trace path** traces in it; both say so.
+- **Analyze in tool windows:** every entry of **Analyze ▾** opens its own
+  non-modal window over the diagram (`role="dialog"`, no `aria-modal`):
+  movable by its title bar, resizable at its grip (both also with the arrow
+  keys), foldable, dockable; its size, position, docking and folding
+  remembered in local storage; never outside the browser window; one at a
+  time (opening another replaces it); closed with × or Esc, the focus
+  returning to where it was; `F6` moves the keyboard focus between the
+  window and the page. Below 860 px wide (200 % zoom on most screens) it is
+  docked: a full-width panel at the bottom, above the status bar, and the
+  page never scrolls. The **Addressing overview** is one (a click selects
+  without closing it); **Focus…** (`Shift+F`) shows the selected object,
+  1–3 hops as a radio group, Focus and Exit focus (the banner stays);
+  **Trace path…** (`T`) has From, To, VRF and the return path, and a hop
+  table (device, in, out, addresses, route or relation, encapsulation) per
+  path, the alternatives and the return path in labelled sections, Copy and
+  Save as text, the path marked while it is on; **Single points of
+  failure…** is a table (element, type, cuts off, relations down, impact),
+  most impact first, sortable by every column and filterable, with Show in
+  diagram per row, a short explanation, CSV and text (copy or save) of the
+  rows shown.
+- **Simulate ▾** holds **Protocol simulation…** (shown, unavailable until
+  the next version) and **Exit simulation**.
 - **Input helpers in the Edit tab** (each an explicit action, one undo
   step, validated like typing, nothing written by itself): MTU chips (1500,
   9000, and for tunnels 1476, 1400 and the underlay's MTU less the
@@ -259,22 +217,10 @@ there is no conversion of files written for the earlier drafts.
   dynamic routes (`src/analysis/routing.ts`).
 - **The mode banner** has a row per analysis mode on (simulation, focus,
   path trace).
-- **Failure simulation** (Analyze → Simulate failure of selection, `X`):
-  fail cables, ports, devices or relations; the failure is propagated
-  through the model (interfaces and cables of a failed device, the cable of
-  a failed port, everything that runs `over` a failed cable or relation,
-  recursively; LAGs degraded while `min_links` members are up; redundancy
-  groups failing over; static routes failing and floating routes taking
-  over; networks losing members). Both views mark what is down (dotted,
-  faded) or degraded (dash-dot); the Analysis tab counts and lists the
-  affected relations, tunnels, networks, routes, devices and cables and the
-  device pairs that lose reachability; a banner marks the simulation, `Esc`
-  ends it. Path tracing works under it. Exports carry a *Simulation* note.
-  Computed in `src/analysis/failure.ts`.
 - **Single points of failure** (Analyze → Single points of failure…): the
   cables, devices and LAGs whose failure alone partitions the physical
-  network or brings down relations without a redundant underlay; an entry
-  starts its simulation.
+  network or brings down relations without a redundant underlay, found by
+  propagating each failure through the model (`src/analysis/failure.ts`).
 - **More consistency checks**, each with a positive and a negative test:
   `link-mtu-mismatch`, `tunnel-mtu` (with the encapsulation overhead it
   assumes in the message, added up over a tunnel stack),
@@ -420,19 +366,13 @@ there is no conversion of files written for the earlier drafts.
 
 ### Changed
 
-- **Single points of failure** is an Analyze report again (**Analyze →
-  Single points of failure**), shown in the Analysis tab, not a dialog. It
-  reads the model as written; choosing an entry selects it, and an explicit
-  **Simulate this failure** starts the scenario (Simulate mode).
+- The side panel has six tabs: the **Analysis** and **Simulation** tabs are
+  gone; their content lives in the tool windows.
 - **Static routing is no longer a protocol:** removed from the registry,
   Enable a protocol…, the suggestions and the checks (`static-not-enabled`
   is gone; `protocol-unused` no longer looks at routes). Static routes work
   on every Layer 3+ device whatever it enables; the examples no longer
   write `static: {}`.
-- The simulation entries moved from **Analyze ▾** to the new **Simulate ▾**
-  menu, and the failure results from the Analysis tab to the Simulation
-  tab. A one-off failure is now an ad-hoc scenario: **Restore** adds a
-  restore step instead of dropping the failure.
 - The path tracer and the failure analysis use only the protocols a device
   enables (an adjacency forms between devices that both enable its
   protocol); iBGP or eBGP follows from the two local AS numbers; a VRRP
@@ -526,6 +466,22 @@ there is no conversion of files written for the earlier drafts.
   keeps the protocol's colour), and the light theme's muted text, selection
   and line colours are a little darker, for WCAG AA contrast.
 - The example *device-types.yaml* has six free ports on its access switch.
+
+### Removed
+
+Development features of this version that never were in a release; the
+live protocol simulation replaces them.
+
+- **Scenarios:** the `scenarios:` section (now an unknown key), saving,
+  playing and stepping through them, the Simulation tab, **Simulate failure
+  of selection** (`X`), **Previous / Next step** (`[` `]`).
+- **Scenario templates**, **risk groups** (`risk_groups`, now an unknown
+  key, and their Edit-tab fields), planned maintenance (`maintain`) and the
+  `group` / `risk` step targets.
+- The **traffic animation** of scenario steps (the flows themselves,
+  `src/analysis/traffic.ts`, stay for the protocol simulation).
+- The **Analysis** side tab (the path tracer and the single points of
+  failure are tool windows now).
 
 ### Fixed
 

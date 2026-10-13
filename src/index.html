@@ -54,32 +54,23 @@
     </div>
   </div>
   <div class="menu-wrap">
-    <button id="analyze-btn" type="button" class="menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="analyze-menu" title="Analyze: look at the network the model describes">Analyze <span class="caret" aria-hidden="true">▾</span></button>
+    <button id="analyze-btn" type="button" class="menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="analyze-menu" title="Analyze: windows that look at the network the model describes">Analyze <span class="caret" aria-hidden="true">▾</span></button>
     <div id="analyze-menu" class="dropdown menu" role="menu" aria-label="Analyze" hidden>
       <button id="btn-addressing" type="button" role="menuitem" data-command="analyze.addressing" aria-haspopup="dialog" title="Open or create a model first" disabled><span class="mi-label">Addressing overview…</span><span class="mi-hint">I</span></button>
       <div class="menu-sep" role="separator"></div>
-      <button id="btn-focus" type="button" role="menuitem" data-command="focus.enter" title="Open or create a model first" disabled><span class="mi-label">Focus on selection</span><span class="mi-hint">Shift+F</span></button>
+      <button id="btn-focus" type="button" role="menuitem" data-command="focus.window" aria-haspopup="dialog" title="Open or create a model first" disabled><span class="mi-label">Focus…</span><span class="mi-hint">Shift+F</span></button>
       <button id="btn-focus-exit" type="button" role="menuitem" data-command="focus.exit" title="Focus mode is off" disabled><span class="mi-label">Exit focus</span><span class="mi-hint">Esc</span></button>
       <div class="menu-sep" role="separator"></div>
-      <button id="btn-trace" type="button" role="menuitem" data-command="trace.open" title="Open or create a model first" disabled><span class="mi-label">Trace path…</span><span class="mi-hint">T</span></button>
+      <button id="btn-trace" type="button" role="menuitem" data-command="trace.open" aria-haspopup="dialog" title="Open or create a model first" disabled><span class="mi-label">Trace path…</span><span class="mi-hint">T</span></button>
       <button id="btn-trace-exit" type="button" role="menuitem" data-command="trace.exit" title="No path is traced" disabled><span class="mi-label">Exit path trace</span><span class="mi-hint">Esc</span></button>
       <div class="menu-sep" role="separator"></div>
-      <button id="btn-spof" type="button" role="menuitem" data-command="analyze.spof" title="Open or create a model first" disabled><span class="mi-label">Single points of failure</span></button>
+      <button id="btn-spof" type="button" role="menuitem" data-command="analyze.spof" aria-haspopup="dialog" title="Open or create a model first" disabled><span class="mi-label">Single points of failure…</span></button>
     </div>
   </div>
   <div class="menu-wrap">
-    <button id="simulate-btn" type="button" class="menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="simulate-menu" title="Simulate: what if objects fail? A simulated state never changes the model">Simulate <span class="caret" aria-hidden="true">▾</span></button>
+    <button id="simulate-btn" type="button" class="menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="simulate-menu" title="Simulate: a hypothetical state in a window of its own; it never changes the model">Simulate <span class="caret" aria-hidden="true">▾</span></button>
     <div id="simulate-menu" class="dropdown menu" role="menu" aria-label="Simulate" hidden>
-      <button id="btn-sim" type="button" role="menuitem" data-command="sim.add" title="Open or create a model first" disabled><span class="mi-label">Simulate failure of selection</span><span class="mi-hint">X</span></button>
-      <button id="btn-scenarios" type="button" role="menuitem" data-command="panel.simulation" title="Open or create a model first" disabled><span class="mi-label">Scenarios</span></button>
-      <button id="btn-templates" type="button" role="menuitem" data-command="sim.templates" aria-haspopup="dialog" title="Open or create a model first" disabled><span class="mi-label">Scenario templates…</span></button>
-      <div class="menu-sep" role="separator"></div>
-      <button id="btn-sim-prev" type="button" role="menuitem" data-command="sim.prev" title="No simulation is on" disabled><span class="mi-label">Previous step</span><span class="mi-hint">[</span></button>
-      <button id="btn-sim-next" type="button" role="menuitem" data-command="sim.next" title="No simulation is on" disabled><span class="mi-label">Next step</span><span class="mi-hint">]</span></button>
-      <button id="btn-sim-save" type="button" role="menuitem" data-command="sim.save" aria-haspopup="dialog" title="No simulation is on" disabled><span class="mi-label">Save scenario…</span></button>
-      <div class="menu-sep" role="separator"></div>
-      <button id="btn-traffic" type="button" role="menuitemcheckbox" aria-checked="true" data-command="sim.traffic" title="No simulation is on" disabled><span class="mi-label">Traffic animation</span></button>
-      <button id="btn-traffic-pause" type="button" role="menuitem" data-command="sim.trafficPause" title="No simulation is on" disabled><span class="mi-label">Pause traffic</span></button>
+      <button id="btn-protocol-sim" type="button" role="menuitem" data-command="sim.protocol" aria-haspopup="dialog" title="Not available yet" disabled><span class="mi-label">Protocol simulation…</span></button>
       <div class="menu-sep" role="separator"></div>
       <button id="btn-sim-exit" type="button" role="menuitem" data-command="sim.exit" title="No simulation is on" disabled><span class="mi-label">Exit simulation</span><span class="mi-hint">Esc</span></button>
     </div>
@@ -155,7 +146,7 @@
     <div id="outline-body"></div>
   </aside>
   <section id="canvas-wrap">
-    <svg id="canvas" role="img" aria-label="Network diagram"><g id="viewport"></g></svg>
+    <svg id="canvas" role="img" aria-label="Network diagram" tabindex="-1"><g id="viewport"></g></svg>
     <div id="find-bar" class="find-bar" role="search" aria-label="Find in diagram" hidden>
       <input id="search" type="search" placeholder="Find device, network, address…" aria-label="Find in diagram: device, network, relation" autocomplete="off" spellcheck="false">
       <button id="find-close" type="button" class="mini" aria-label="Close Find in diagram" title="Close (Esc)">×</button>
@@ -182,17 +173,12 @@
         <span class="mb-icon" aria-hidden="true">◈</span>
         <span id="sim-text" class="mb-text" role="status"></span>
         <span id="sim-short" class="mb-text mb-short" aria-hidden="true"></span>
-        <span class="mb-hops" role="group" aria-label="Scenario steps">
-          <button id="sim-prev-banner" type="button" class="mini" data-command="sim.prev" aria-label="Previous step">◀</button>
-          <button id="sim-next-banner" type="button" class="mini" data-command="sim.next" aria-label="Next step">▶</button>
-        </span>
-        <button id="sim-results" type="button" class="mini" data-command="panel.simulation">Results</button>
         <button id="sim-exit-banner" type="button" class="mini" data-command="sim.exit">Exit simulation</button>
       </div>
       <div id="mb-trace" class="mb-row" hidden>
         <span class="mb-icon" aria-hidden="true">⇢</span>
         <span id="trace-text" class="mb-text" role="status"></span>
-        <button id="trace-hops" type="button" class="mini" data-command="trace.open">Hop list</button>
+        <button id="trace-hops" type="button" class="mini" data-command="trace.open">Hop table</button>
         <button id="trace-exit-banner" type="button" class="mini" data-command="trace.exit">Exit trace</button>
       </div>
     </div>
@@ -247,8 +233,6 @@
       <button type="button" data-tab="relations">Relations</button>
       <button type="button" data-tab="problems">Problems</button>
       <button type="button" data-tab="yaml">YAML</button>
-      <button type="button" data-tab="analysis" title="Trace path: the model as it is">Analysis</button>
-      <button type="button" data-tab="simulation" title="Scenarios: what if objects fail">Simulation</button>
     </nav>
     <div id="side-body"></div>
     <details id="keys" class="keys" open>

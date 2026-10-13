@@ -1,19 +1,20 @@
-# netatlas example: OSPF reroute and VRRP failover, with simulated traffic
+# netatlas example: OSPF costs, VRRP and a one-way TAP cable
 #
 # Two sites and a small OSPF core. West has a VRRP pair (w1 active, w2
 # standby) for the users and a camera VLAN that only w1 routes. The OSPF
 # costs make West -> c1 -> c3 -> East the preferred way; c2 is the backup.
 # East mirrors its traffic to an IDS over a one-way TAP cable.
 #
-# Play the saved scenario in the Simulation tab with Traffic on: the
-# demands' dots move to the backup path when the primary link fails, the
-# camera's traffic is lost when w1 loses its LAN, and everything returns
-# when the links are restored.
+# Trace path from w-host to e-srv: the preferred way over c1 and c3.
+# Analyze -> Single points of failure: the one link from the core to East
+# (c3 - e1), the switches of both sites, and the single cables of the
+# camera, the user's PC, the server and the TAP feed. A cable of the core
+# ring cuts nothing off: it only takes its own OSPF adjacency down.
 netatlas: 1
 title: OSPF reroute and VRRP failover
 description: |
-  A ring of three core routers between two sites. Traffic demands from the
-  West site to the East server show OSPF rerouting and a VRRP failover.
+  A ring of three core routers between two sites, with OSPF costs that make
+  one way preferred, a VRRP pair and two traffic demands.
 
 protocols:
   - id: span
@@ -198,50 +199,7 @@ relations:
   - {id: vrrp-users, protocol: vrrp, label: VIP 10.1.10.1, endpoints: ["w1:Vlan10", "w2:Vlan10"], over: net-users}
   - {id: span-ids, protocol: span, direction: unidirectional, endpoints: ["e-sw:p3", "e-ids:mon0"], over: l-tap}
 
-# Traffic between the sites, traced like Trace path (equal-cost paths share it equally).
+# Traffic between the sites (source, destination, bandwidth), traced like Trace path.
 demands:
   - {id: users-app, label: Users to the app server, source: w-host, destination: e-srv, bandwidth: 400M, class: business}
   - {id: cam-video, label: Camera video, source: w-cam, destination: e-srv, bandwidth: 50M, class: video}
-
-scenarios:
-  - id: ospf-reroute
-    label: Primary link failure and OSPF reroute
-    description: Step 0 is the baseline on the preferred path (c1 - c3). Then the primary link fails, w1 loses its LAN uplink, and both come back.
-    steps:
-      - fail: {cable: l-c1-c3}
-        note: traffic moves to the backup path over c2
-      - fail: {cable: l-w1-sw}
-        note: VRRP fails over to w2; the camera, routed only by w1, is lost
-      - restore: {cable: l-w1-sw}
-      - restore: {cable: l-c1-c3}
-        note: traffic returns to the preferred path
-  # proposed by Simulate → Scenario templates for this model, reviewed and saved
-  - id: vrrp-failover-of-10-1-10-1
-    label: VRRP failover of 10.1.10.1
-    description: "The active member of the VRRP group of 10.1.10.1 (w1) fails; the gateway moves to w2. (from the template First-hop redundancy failover)"
-    steps:
-      - fail: {device: w1}
-        note: the active member of 10.1.10.1
-  - id: loss-of-c1
-    label: Loss of c1
-    description: The core / spine device c1 fails (3 cables). (from the template Core or spine failure)
-    steps:
-      - fail: {device: c1}
-  - id: flapping-cable-l-w1-sw
-    label: Flapping cable l-w1-sw
-    description: Cable l-w1-sw (on the path of demand cam-video) goes down and up twice. (from the template Link flapping)
-    steps:
-      - fail: {cable: l-w1-sw}
-        note: down
-      - restore: {cable: l-w1-sw}
-        note: up
-      - fail: {cable: l-w1-sw}
-        note: down again
-      - restore: {cable: l-w1-sw}
-        note: up again
-  - id: asymmetric-routing-after-l-w1-c1-fails
-    label: Asymmetric routing after l-w1-c1 fails
-    description: "Cable l-w1-c1 on the path of demand users-app fails; the demand is still delivered, but the way back differs from the way there: compare the two. (from the template Asymmetric routing check)"
-    steps:
-      - fail: {cable: l-w1-c1}
-        note: on the path of users-app

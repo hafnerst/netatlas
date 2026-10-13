@@ -162,12 +162,11 @@ devices:
       - {id: xe-0/1/0, ip: 100.64.0.1/30}
 
 links:
-  # leaf1's two uplinks run in the same cable tray: a shared risk (risk_groups)
-  - {id: s1-l1, a: "spine1:Et1", b: "leaf1:Et49", medium: fiber, speed: 100G, risk_groups: [tray-a01]}
+  - {id: s1-l1, a: "spine1:Et1", b: "leaf1:Et49", medium: fiber, speed: 100G}
   - {id: s1-l2, a: "spine1:Et2", b: "leaf2:Et49", medium: fiber, speed: 100G}
   - {id: s1-l3, a: "spine1:Et3", b: "leaf3:Et49", medium: fiber, speed: 100G}
   - {id: s1-l4, a: "spine1:Et4", b: "leaf4:Et49", medium: fiber, speed: 100G}
-  - {id: s2-l1, a: "spine2:Et1", b: "leaf1:Et50", medium: fiber, speed: 100G, risk_groups: [tray-a01]}
+  - {id: s2-l1, a: "spine2:Et1", b: "leaf1:Et50", medium: fiber, speed: 100G}
   - {id: s2-l2, a: "spine2:Et2", b: "leaf2:Et50", medium: fiber, speed: 100G}
   - {id: s2-l3, a: "spine2:Et3", b: "leaf3:Et50", medium: fiber, speed: 100G}
   - {id: s2-l4, a: "spine2:Et4", b: "leaf4:Et50", medium: fiber, speed: 100G}
@@ -250,33 +249,3 @@ relations:
     endpoints: ["leaf3:Et48", "wan-pe:xe-0/1/0"]
     over: wan-uplink
     attrs: {peer-as: {leaf3: 64512, wan-pe: 65100}}
-
-# What-if scenarios for design reviews (Simulation tab), proposed by Simulate → Scenario templates and saved.
-scenarios:
-  - id: loss-of-spine1
-    label: Loss of spine1
-    description: The core / spine device spine1 fails (4 cables). (from the template Core or spine failure)
-    steps:
-      - fail: {device: spine1}
-  - id: shared-risk-failure-tray-a01
-    label: "Shared-risk failure: tray-a01"
-    description: "Everything in risk group tray-a01 fails at once: s1-l1, s2-l1. (from the template Shared-risk fibre cut)"
-    steps:
-      - fail: {risk: tray-a01}
-        note: e.g. a cut conduit or a lost power feed
-  - id: loss-of-rack-a03-border-compute
-    label: "Loss of Rack A03 (border + compute)"
-    description: "Every device of the rack Rack A03 (border + compute) fails at once (4: esx02, k8s01, leaf3, leaf4), as in a power outage. (from the template Site, room or rack loss)"
-    steps:
-      - fail: {group: rack-a03}
-        note: e.g. a power outage
-  - id: rolling-maintenance-of-leaf1-and-leaf2
-    label: Rolling maintenance of leaf1 and leaf2
-    description: leaf1 and leaf2 (MLAG / vPC) are taken out of service one after the other for planned maintenance. (from the template Rolling maintenance of a redundant pair)
-    steps:
-      - maintain: {device: leaf1}
-        note: drain the first member
-      - restore: {device: leaf1}
-      - maintain: {device: leaf2}
-        note: then the second
-      - restore: {device: leaf2}

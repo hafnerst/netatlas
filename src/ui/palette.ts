@@ -9,7 +9,6 @@
  */
 import { routeLine } from '../model/addresses';
 import { lookupProtocol } from '../model/protocols';
-import { proposeAll } from '../analysis/templates';
 import { Model, deviceInterfaces, relationDevices } from '../model/types';
 import { serviceWords } from '../model/queries';
 import { Command, CommandState, keyLabel } from './commands';
@@ -101,34 +100,6 @@ export function objectItems(model: Model): PaletteItem[] {
   }
   for (const g of byId(model.groups)) add('group:' + g.id, g.label && g.label !== g.id ? `${g.label} (${g.id})` : g.id, 'group', `${g.kind || ''} location`);
   return out;
-}
-
-/** The saved scenarios, each an entry that plays it (Simulate). */
-export function scenarioItems(model: Model): PaletteItem[] {
-  return model.scenarios.map((sc) => ({
-    key: 'play:' + sc.id,
-    kind: 'command' as const,
-    label: 'Play scenario: ' + sc.label,
-    sub: 'Simulate',
-    keys: '',
-    words: `${sc.id} ${sc.description || ''} simulation scenario what if replay`,
-    state: { enabled: true, title: `Play the saved scenario “${sc.label}” (${sc.steps.length} step${sc.steps.length === 1 ? '' : 's'}); the model does not change` },
-    mode: true,
-  }));
-}
-
-/** The scenario templates, each an entry that opens its proposal for review (greyed out with why when it doesn't apply). */
-export function templateItems(model: Model): PaletteItem[] {
-  return proposeAll(model).map((p) => ({
-    key: 'tpl:' + p.template,
-    kind: 'command' as const,
-    label: 'Scenario template: ' + p.label,
-    sub: 'Simulate',
-    keys: '',
-    words: `${p.template} template scenario propose what if simulation`,
-    state: p.applicable ? { enabled: true, title: `Review the proposal “${p.name}” and save it as a scenario` } : { enabled: false, title: p.reason, reason: p.reason },
-    mode: true,
-  }));
 }
 
 /** The commands as palette entries, with their state now. */

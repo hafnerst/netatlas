@@ -132,7 +132,7 @@ test('tabs never cut off or squeezed, the active one always shown, and no sidewa
       await page.eval(chosen ? `netatlas.splitter.set(${chosen}), true` : `netatlas.splitter.set(null), true`);
       for (const [W, H] of [[1440, 900], [1100, 800], [1000, 700], [861, 700], [800, 760], [600, 700]]) {
         for (const z of [1, 1.5, 2]) {
-          for (const tab of ['edit', 'details', 'legend', 'relations', 'problems', 'yaml', 'analysis', 'simulation']) {
+          for (const tab of ['edit', 'details', 'legend', 'relations', 'problems', 'yaml']) {
             await page.eval(`netatlas.showTab('${tab}'), true`);
             const g = await at(page, W, H, z);
             const where = `${W}px ${z * 100}% ${chosen ? 'widest' : 'default'} ${tab}`;
@@ -148,7 +148,7 @@ test('tabs never cut off or squeezed, the active one always shown, and no sidewa
       }
     }
     // a tab label that grows (many problems): the tabs wrap onto a second row rather than squeezing
-    await page.eval(`netatlas.splitter.set(320), document.querySelector('#side .tabs [data-tab="problems"]').textContent = 'Problems (1234)', true`);
+    await page.eval(`netatlas.splitter.set(320), document.querySelector('#side .tabs [data-tab="problems"]').textContent = 'Problems (1234 errors and warnings)', true`);
     const g = await at(page, 1440, 900);
     assert.ok(g.tabs.every((t) => t.whole), JSON.stringify(g.tabs));
     assert.ok(g.rows >= 2, 'wraps: ' + g.rows);
@@ -159,12 +159,12 @@ test('tabs never cut off or squeezed, the active one always shown, and no sidewa
 });
 
 test('a very short window: the tabs stay on one row; those that don\'t fit are in More ▾ (the active one never), which works with the keyboard', { skip, timeout: 120000 }, async () => {
-  const page = await openPage(url, { width: 520, height: 300 });
+  const page = await openPage(url, { width: 400, height: 300 });
   try {
     await page.eval(`netatlas.loadExample(0), true`);
     await page.settle(150);
     const state = `(() => { const tabs = [...document.querySelectorAll('#side .tabs button[data-tab]')]; const nav = document.querySelector('#side .tabs'); return { shown: tabs.filter((b) => !b.hidden).map((b) => b.getAttribute('data-tab')), hidden: tabs.filter((b) => b.hidden).map((b) => b.getAttribute('data-tab')), more: !document.querySelector('.tabs-more').hidden, rows: new Set(tabs.filter((b) => !b.hidden).map((b) => Math.round(b.getBoundingClientRect().top))).size, fits: tabs.filter((b) => !b.hidden).every((b) => { const r = b.getBoundingClientRect(), n = nav.getBoundingClientRect(); return r.right <= n.right + 0.5 && b.scrollWidth <= b.clientWidth + 1; }), active: netatlas.currentTab(), label: document.getElementById('tabs-more-btn').getAttribute('aria-label') }; })()`;
-    for (const tab of ['edit', 'details', 'legend', 'relations', 'problems', 'yaml', 'analysis', 'simulation']) {
+    for (const tab of ['edit', 'details', 'legend', 'relations', 'problems', 'yaml']) {
       await page.eval(`netatlas.showTab('${tab}'), true`);
       const s = await page.eval(state);
       assert.equal(s.more, true, tab);
@@ -190,7 +190,7 @@ test('a very short window: the tabs stay on one row; those that don\'t fit are i
     await page.key('Escape', 'Escape', 27);
     assert.equal(await page.eval(`document.activeElement.id + ' ' + document.getElementById('tabs-more-menu').hidden`), 'tabs-more-btn true');
     // a taller window: the tabs wrap again and More is gone
-    await page.cmd('Emulation.setDeviceMetricsOverride', { width: 520, height: 700, deviceScaleFactor: 1, mobile: false });
+    await page.cmd('Emulation.setDeviceMetricsOverride', { width: 400, height: 700, deviceScaleFactor: 1, mobile: false });
     await page.settle(150);
     s = await page.eval(state);
     assert.deepEqual([s.more, s.hidden.length], [false, 0]);

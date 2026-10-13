@@ -244,21 +244,18 @@ links:
   # provider side
   - {id: l-isp1-inet, a: "isp1-pe:xe-1/0/0", b: inet, medium: fiber, speed: 10G, label: AS3320 transit}
   - {id: l-isp2-inet, a: "isp2-pe:xe-2/0/0", b: inet, medium: fiber, speed: 10G, label: AS1299 transit}
-  # both ISP uplinks leave the building through the same duct: a shared risk (risk_groups)
   - id: l-hq-isp1
     a: "hq-rtr1:ge-0/0/0"
     b: "isp1-pe:xe-1/0/1"
     medium: fiber
     speed: 1G
     cable: CID-4711
-    risk_groups: [duct-alexanderplatz]
   - id: l-hq-isp2
     a: "hq-rtr2:ge-0/0/0"
     b: "isp2-pe:xe-2/0/7"
     medium: fiber
     speed: 1G
     cable: CID-0815
-    risk_groups: [duct-alexanderplatz]
   - {id: l-muc-inet, a: "muc-rtr:wan0", b: inet, medium: copper, speed: 250M, label: VDSL 250M}
   - {id: l-ham-inet, a: "ham-rtr:wan0", b: inet, medium: fiber, speed: 1G, label: FTTH}
   - {id: l-ham-lte, a: "ham-rtr:wan1", b: inet, medium: lte, speed: 150M, label: LTE backup}
@@ -434,55 +431,3 @@ relations:
     label: SLA probe
     direction: unidirectional
     endpoints: [muc-rtr, hq-rtr1]
-
-# What-if scenarios for design reviews: played in the Simulation tab, they never change the network above.
-scenarios:
-  - id: isp1-outage
-    label: ISP 1 outage
-    description: The uplink to ISP 1 is cut, then hq-rtr1 fails as well; the router comes back before the cable.
-    steps:
-      - fail: {cable: l-hq-isp1}
-        note: the carrier reports a fibre cut
-      - fail: {device: hq-rtr1}
-      - restore: {device: hq-rtr1}
-  - id: core-peer-loss
-    label: Core peer link and core switch
-    steps:
-      - fail: {lag: hq-core1:Port-Channel1}
-      - fail: {device: hq-core1}
-      - restore: {lag: hq-core1:Port-Channel1}
-  # proposed by Simulate → Scenario templates for this model, reviewed and saved
-  - id: uplink-outage-at-hq-berlin
-    label: Uplink outage at HQ Berlin
-    description: "The primary uplink of HQ Berlin (l-hq-isp1) fails; l-hq-isp2 is left. (from the template WAN / ISP uplink outage)"
-    steps:
-      - fail: {cable: l-hq-isp1}
-        note: the uplink of HQ Berlin that its traffic takes
-  - id: shared-risk-failure-duct-alexanderplatz
-    label: "Shared-risk failure: duct-alexanderplatz"
-    description: "Everything in risk group duct-alexanderplatz fails at once: l-hq-isp1, l-hq-isp2. (from the template Shared-risk fibre cut)"
-    steps:
-      - fail: {risk: duct-alexanderplatz}
-        note: e.g. a cut conduit or a lost power feed
-  - id: vrrp-failover-of-10-10-10-1
-    label: VRRP failover of 10.10.10.1
-    description: "The active member of the VRRP group of 10.10.10.1 (hq-core1) fails; the gateway moves to hq-core2. (from the template First-hop redundancy failover)"
-    steps:
-      - fail: {device: hq-core1}
-        note: the active member of 10.10.10.1
-  - id: tunnel-failover-ham-rtr-hq-rtr2
-    label: Tunnel failover ham-rtr – hq-rtr2
-    description: "The primary tunnel between ham-rtr and hq-rtr2 (ipsec-ham, carrying the cheaper routing adjacency) fails; wg-ham-backup is left. (from the template VPN / tunnel failover)"
-    steps:
-      - fail: {relation: ipsec-ham}
-        note: the primary tunnel path
-  - id: rolling-maintenance-of-hq-core1-and-hq-core2
-    label: Rolling maintenance of hq-core1 and hq-core2
-    description: hq-core1 and hq-core2 (VRRP) are taken out of service one after the other for planned maintenance. (from the template Rolling maintenance of a redundant pair)
-    steps:
-      - maintain: {device: hq-core1}
-        note: drain the first member
-      - restore: {device: hq-core1}
-      - maintain: {device: hq-core2}
-        note: then the second
-      - restore: {device: hq-core2}

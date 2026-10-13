@@ -242,8 +242,8 @@ test('renaming ids updates every reference (device, interface, group, link, rela
   assert.equal(d.renameInterface(d.interfaceEntries(dev).find((e) => e.id === 'lo0').path, 'loopback0'), 2);
   assert.equal(d.text(['devices', dev, 'router_id']), 'loopback0');
   assert.equal(d.renameEntity('group', d.findEntity('group', 'hq').index, 'berlin'), 2);
-  // (the relations that run over it, and the steps of two saved scenarios)
-  assert.equal(d.renameEntity('link', d.findEntity('link', 'l-hq-isp1').index, 'uplink-1'), 5);
+  // (the relations that run over it)
+  assert.equal(d.renameEntity('link', d.findEntity('link', 'l-hq-isp1').index, 'uplink-1'), 3);
   assert.equal(d.renameEntity('relation', d.findEntity('relation', 'ipsec-muc').index, 'ipsec-munich'), 1);
   // the network is named by VRRP's "over" (link ends name VLAN IDs, not networks)
   assert.equal(d.renameEntity('network', d.findEntity('network', 'net-users').index, 'vlan10'), 1);

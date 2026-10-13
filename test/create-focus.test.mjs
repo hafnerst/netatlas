@@ -278,7 +278,7 @@ test('addresses, protocols, interface groups, attributes, endpoints, members and
   }
 });
 
-test('Connect in the diagram: the new link opens in the Edit tab with the focus on its first field; a scenario step added with X gets the focus in the Simulation tab', { skip, timeout: 120000 }, async () => {
+test('Connect in the diagram: the new link opens in the Edit tab with the focus on its first field; X no longer fails anything', { skip, timeout: 120000 }, async () => {
   const page = await start();
   try {
     await open(page, 0, null);
@@ -293,16 +293,12 @@ test('Connect in the diagram: the new link opens in the Edit tab with the focus 
     ready(s, 'connected link', { field: 'id' });
     assert.match(s.toast, /^Added physical link “/);
     assert.equal(s.diagram, 'link:' + s.value);
-    // a scenario step: X on a selected cable
+    // X on a selected cable: nothing (no scenarios; nothing fails outside a simulation)
     await page.eval(`netatlas.select('link:l-hq-isp1'), true`);
     await page.eval(`document.getElementById('canvas').focus(), true`);
     await page.key('x', 'KeyX', 88);
     await page.settle(150);
-    const st = await page.eval(`(() => { const a = document.activeElement; return { current: a.getAttribute('aria-current'), text: a.textContent, tab: netatlas.currentTab(), toast: document.getElementById('toast').textContent }; })()`);
-    assert.deepEqual([st.current, st.tab], ['step', 'simulation']);
-    assert.match(st.text, /Fail cable l-hq-isp1/);
-    assert.match(st.toast, /^Step 1 added: Fail cable l-hq-isp1\.$/);
-    await page.eval(`netatlas.exitSimulation(), true`);
+    assert.equal(await page.eval(`netatlas.simulationOn() || !document.getElementById('mb-sim').hidden`), false);
   } finally {
     await page.close();
   }

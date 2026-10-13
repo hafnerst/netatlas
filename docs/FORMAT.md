@@ -35,12 +35,14 @@ links: [...]
 networks: [...]
 relations: [...]
 demands: [...]         # optional: traffic demands (traced; never change the network)
-scenarios: [...]       # optional: saved what-if simulations (never change the network)
 checks: {...}          # optional: switch consistency checks off or change their severity
 ```
 
 Unknown keys are errors (with "did you mean …?" suggestions), so typos never
-silently disappear. Put any custom data under `attrs:`; it is shown in the
+silently disappear. That includes `scenarios:` and `risk_groups:`, which
+earlier development versions had: the protocol simulation replaces the
+scenarios, and a file that still has them gets them reported; delete
+them. Put any custom data under `attrs:`; it is shown in the
 details panel.
 
 ## Configure once, derive elsewhere
@@ -155,7 +157,6 @@ than one endpoint on the same device is bound by the first of them.
 | `logical_interfaces` | | List of the device's **logical interfaces** (below): loopbacks, virtual interfaces and tunnel interfaces. |
 | `dns_names` | | List of the device's **DNS names**, each associated with one or more of its interfaces. See [DNS names](#dns-names). |
 | `routes` | | List of the device's **static routes**. See [Static routes](#static-routes). Only devices whose type has a routing table may have them. |
-| `risk_groups` | | The shared risks the device belongs to, e.g. `[power-feed-a]`; see [risk groups](#risk-groups-shared-risks). |
 
 A device has no `vendor`, `model`, `role` or `mgmt` key; like every key the
 format doesn't define, each is an error ("unknown key"). Such facts can be
@@ -312,7 +313,6 @@ devices:
 | `dhcp` | `true` or `false`; **omitted means `false`**. `true`: the interface obtains its address by DHCP, so it has no manually configured addresses. Not on a loopback. See [DHCP](#dhcp). |
 | `ip` | the manually configured addresses: one address or a list, `ip: 10.0.0.1/30` or `ip: [192.0.2.1/24, 2001:db8::1/64]`. Addresses that aren't valid IPv4/IPv6 addresses give a *warning* and are shown as written (on a loopback they are an error); for `ip: dhcp` the warning says to write `dhcp: true` instead (on a loopback: to write its address). **The addresses decide which networks the device belongs to.** |
 | `vrf` | name of the VRF the interface is assigned to (free text, display only). Membership in a network is decided by the address alone. |
-| `risk_groups` | physical interfaces (ports) only: the shared risks the port belongs to, e.g. `risk_groups: [linecard-1]` (see [risk groups](#risk-groups-shared-risks)). |
 | `mtu` | the interface's MTU in bytes, a whole number from 68 to 65535. Omitted: not modelled (no MTU is assumed, so nothing is compared). Read by the [consistency checks](#consistency-checks) `link-mtu-mismatch` and `tunnel-mtu`. |
 | `mac`, `description`, `attrs` | |
 
@@ -692,7 +692,6 @@ devices:
 | `a`, `b` | yes | The two ends. `device:interface`, or just `device` when the port is unknown or irrelevant (e.g. "Internet"), or a mapping `{device, interface, speed, duplex, mode, untagged, tagged}`. |
 | `medium` | | `fiber`, `copper`, `dac`, `aoc`, `wireless`/`lte`/`5g`/`microwave`, `serial`, `virtual`, or any other text (it gets its own colour). **The only place the medium of the connection is configured**; without it the cable is drawn as "Unspecified". |
 | `speed` | | e.g. `1G`, `10G`, `100G`, `250M`. **The only place the speed of the connection is configured**; it sets the line width. |
-| `risk_groups` | | The shared risks the cable belongs to (a conduit, a duct, a carrier), e.g. `[duct-north]`; see [risk groups](#risk-groups-shared-risks). |
 | `direction` | | `unidirectional`: traffic only from end `a` to end `b` (simplex fibre, a data diode, a TAP or SPAN feed), drawn with an arrow at end `b`; the path tracer and the simulated traffic never use it the other way. `bidirectional` is the default and is not written. Anything else is an error. |
 | `label`, `cable` (cable/circuit id), `description`, `attrs` | | |
 
@@ -1011,32 +1010,11 @@ Built-in protocol ids: `gre`, `ipsec`, `ipip`, `wireguard`, `openvpn`, `l2tp`,
 `is-is`, `wg`, `ikev2`, `mpls-te`, `pw`, `lag`, `port-channel`, `vpc`,
 `tacacs+`, `ipfix` and `sflow`.
 
-## Risk groups (shared risks)
-
-A **risk group** (SRLG, shared-risk link group) names something that can
-take several objects down at once: a conduit or duct two cables share, a
-power feed, a carrier, a line card. Cables (`links`), ports (physical
-interfaces) and devices list the risk groups they belong to:
-
-```yaml
-links:
-  - {id: l-isp1, a: "rtr1:ge0", b: "isp1:xe1", risk_groups: [duct-north]}
-  - {id: l-isp2, a: "rtr2:ge0", b: "isp2:xe7", risk_groups: [duct-north]}
-devices:
-  - {id: core1, type: switch, risk_groups: [feed-a]}
-```
-
-A risk group is named by its use: there is no list of them, and its id
-follows the rules of [identifiers](#identifiers). Each object lists one
-once; the order doesn't matter. A scenario step `fail: {risk: duct-north}`
-fails everything in it at once, which shows redundancy that isn't real
-(two uplinks in one duct). A logical interface has no risk groups (its
-ports do).
-
 ## `demands` (traffic demands)
 
 Optional. Traffic that flows between two points of the network, for the
-simulated traffic (Simulate → Traffic animation). A demand is analysis data:
+protocol simulation (Simulate → Protocol simulation…, in the next
+version). A demand is analysis data:
 it is traced like **Trace path**, never changes the network objects, and a
 file means the same network with or without it.
 
@@ -1052,464 +1030,13 @@ demands:
 ```
 
 `source` and `destination` take what the path tracer takes. A demand is
-traced from its source to its destination in the state shown (the model as
-written, or a simulation step); equal-cost paths share it equally. The
-dots of the traffic animation follow its paths, more of them for more
-bandwidth.
+traced from its source to its destination like Trace path; equal-cost
+paths share it equally.
 
 Validation: unknown keys, a missing `source`, `destination` or `bandwidth`,
 a bandwidth that isn't one and a duplicate id are **errors**; an end that
 names nothing of the model is a **warning** (the demand can't be traced and
 is shown as lost). At most 2000 demands.
-
-## `scenarios` (what-if steps)
-
-Optional. Saved **simulation scenarios**: named, ordered lists of steps that
-NetAtlas plays as an overlay on the model (**Simulate** menu, **Simulation**
-tab). They are presentation and analysis data only: playing a scenario
-never changes the network objects above, and a file means the same network
-with or without them.
-
-```yaml
-scenarios:
-  - id: isp1-outage              # required, unique among the scenarios
-    label: ISP 1 outage          # optional display name (default: the id)
-    description: The uplink to ISP 1 is cut, then hq-rtr1 fails as well.
-    steps:                       # played in this order
-      - fail: {cable: l-hq-isp1}
-        note: the carrier reports a fibre cut   # optional, shown with the step
-      - fail: {device: hq-rtr1}
-      - restore: {device: hq-rtr1}
-      - fail: {lag: hq-core1:Port-Channel1}
-```
-
-Each step has exactly **one action** key, whose value names **one target**
-as a mapping with one key:
-
-| Action | Meaning |
-|---|---|
-| `fail` | the target fails |
-| `maintain` | the target is taken out of service for planned maintenance: simulated like a failure (at once; a cost-out first is not simulated), and named *Maintenance* in the step list |
-| `restore` | the target is back in service, whichever action took it out |
-
-| Target key | Value | Fails (or restores) |
-|---|---|---|
-| `device` | a device id | the device, its interfaces and the cables at it |
-| `cable` | a `links` id | the cable and the ports at both ends |
-| `port` | `device:interface` | the interface and its cable |
-| `relation` | a relation id | the relation and what runs `over` it |
-| `lag` | `device:interface` of an aggregate | all its member cables at once |
-| `group` | a group id | every device of the group / location and of the groups nested in it (a site, a room, a rack: e.g. a power outage) |
-| `risk` | a risk group id | everything that lists it in its `risk_groups`: cables, ports and devices (a shared conduit, a power feed, a carrier, a line card) |
-
-The state after step *k* is the model with the targets of the first *k*
-steps failed (a `restore` takes an earlier failure back); what that takes
-down is computed as described in the README (*Failure propagation*).
-
-Validation checks the form like everywhere else: unknown keys, a step with
-no action or two, an action with no target or two, a duplicate scenario id
-are **errors**. A step whose target doesn't exist (a device renamed outside
-NetAtlas, a deleted cable) is a **warning**: the scenario stays and the
-step is skipped when it is played. Renaming an object in NetAtlas updates
-the steps that name it. At most 500 scenarios of 500 steps each.
-
-
-Optional and **purely presentational**. It stores node centers per view,
-keyed by entity id:
-
-```yaml
-layout:
-  physical:            # device ids
-    pe1: [120, 40]
-    pe2: [360, 40]
-  logical:             # device ids, network ids, ids of relations drawn as hubs (3+ devices)
-    pe1: [0, 0]
-    cust-a-access: [240, 90]
-    ospf-core: [120, 60]
-  manual:              # optional: nodes placed by hand (written by the editor)
-    physical: [pe3]
-```
-
-* Values are `[x, y]` numbers; netatlas writes integers, sorted by id.
-* `manual` lists, per view, the nodes the user dragged. It is used only for
-  the layout status (see below): it tells *Manually adjusted* apart from
-  *Edited since arranged*. Auto-arrange clears it for the arranged view. A
-  node dropped exactly on the position one of the Auto-arrange strategies
-  gives it is removed from it.
-* Group boxes, ports, cables, relation lines and labels are never stored.
-  They're derived from the node positions.
-* Only the positions of the **complete** diagrams are stored. A view filtered
-  to some devices (see [Filtered views](#filtered-views)) has temporary
-  positions that are never written to the file.
-* **Layout data never changes what the network is.** A malformed entry, an
-  unknown view, or a position for an id that doesn't exist (or isn't a node of
-  that view) is only a *warning* and is ignored. The model is the same with or
-  without this section.
-* Entries for objects that no longer exist are dropped the next time
-  positions are written. When an entity is renamed in the editor, its
-  positions follow it.
-
-### How positions are decided
-
-| Situation | Positions shown |
-|---|---|
-| A view has **no** stored positions | The **Auto-arrange** result for the current model. Opening or viewing a file never writes anything. |
-| A view has stored positions | Stored positions are used. A node without one (e.g. added by hand in the YAML) is placed next to its neighbors in free space, without moving anything else. |
-| You **drag** a node | Its new position is stored. If the view had no stored positions, all currently shown positions of that view are stored with it (one undo step). |
-| You make an edit that affects geometry (adding, removing or renaming objects, changing any text that is drawn — labels, type, cable speed or the networks of its ends, relation labels —, groups, cables, relations, loopbacks, or an address or prefix that changes who is a member of a network …) | The positions shown **before** the edit are stored for both views, in the same undo step. New objects are placed next to their neighbors; nothing else moves. Adding, removing, renaming or cabling an interface affects geometry (every interface is drawn). Edits that don't affect geometry (attrs, descriptions, DNS names, cable medium, the associations of virtual and tunnel interfaces, addresses that leave membership as it is …) store nothing. |
-| You click an **Auto-arrange** option (Default, Compact or Spacious) | All positions of **the view on screen** are recomputed with that strategy for the whole model and stored (one undo step). The other view keeps its positions, stored or not. If the view has positions that were set by hand, netatlas first asks for confirmation (see [Auto-arrange](#auto-arrange)). If the positions already equal the stored ones, nothing happens at all. The file stores positions only, never which strategy produced them. |
-| You edit the **YAML** tab | The text is taken literally, including its `layout` section. Deleting the section there returns to automatic positions. |
-
-So **load → arrange → export → reload** shows exactly the same picture. A
-file that has never been edited in netatlas keeps showing the auto-arranged
-layout, which is itself deterministic.
-
-### Layout status
-
-For each view the editor knows whether the diagram matches an Auto-arrange
-strategy, and shows the status of the view on screen on the **Auto-arrange**
-options (the matching one is selected and disabled; a hover text and
-accessible description say which applies). The status is derived from the
-document, never from the last action:
-
-| Status | Rule |
-|---|---|
-| **Auto-arranged** (with a strategy) | No positions are stored for the view (it shows the Default result), or every displayed position equals the result of one strategy for the current model. When several strategies give the same positions, the first of Default, Compact, Spacious counts, and the others are shown as giving the same positions. |
-| **Manually adjusted** | The positions match no strategy, and a node of the view is listed in `layout.manual`. |
-| **Edited since arranged** | The positions match no strategy, but no node was placed by hand. The model changed after arranging, and positions were kept stable rather than re-arranged. |
-
-Because it's derived, undo/redo, export → reload and moving a node back to
-its calculated position always give the right status.
-
-### Auto-arrange
-
-**Auto-arrange** has three options, **Default**, **Compact** and
-**Spacious**. Each arranges one view: the one on screen. There is no choice
-of views; to arrange the other view, switch to it and choose an option there.
-What happens depends on the view's layout status:
-
-| Status of the view on screen | What an option does |
-|---|---|
-| **Auto-arranged with this option** | Nothing: the option is disabled. |
-| **Auto-arranged with another option**, or **Edited since arranged** | The view is arranged at once; no position in it was set by hand, so nothing is asked. |
-| **Manually adjusted** | A confirmation names the objects that were positioned by hand and says that they (and any other objects that no longer match) move to the calculated layout, that the other view is not changed, and that the step can be undone. **Cancel** changes nothing in either view. |
-
-The strategies:
-
-* **Default** is the layout described below.
-* **Compact** is the Default layout with the slack taken out, container by
-  container: the contents of each group are compacted first, and the group
-  then takes part in its parent's compaction as one rigid block the size of
-  its frame (with its title), so frames never overlap anything outside them.
-  Inside a container, the items are moved towards their middle by 55 % (by
-  centre along x, by top edge along y, so the tops of a row stay lined up)
-  and separated again: first along x, in x order, each pushed right of the
-  earlier ones it stands beside in the Default layout; then along y, in y
-  order, each pushed below the earlier ones it overlaps horizontally. The
-  gaps are 56 × 72 px (physical) and 64 × 64 px (logical) between items, plus
-  a little air around a frame. The order along each axis is kept, so rows
-  stay rows and stacks stay stacks. Cable and relation labels have less room
-  and may sit closer to their lines.
-* **Spacious** is the Default layout spread out from the centre of its node
-  centres by a factor of 1.4. Distances only grow, so nothing can come to
-  overlap; every line gets more room for its labels, and the picture grows.
-
-Compact and Spacious are pure functions of the Default result, so they are as
-deterministic as it is, and idempotent.
-
-The Default layout is computed as follows.
-
-* **Physical view:** tiered, nested group boxes. Inside a group, devices
-  sit in rows by tier: cloud/WAN on top, then routers, firewalls, core,
-  access, APs, and servers/hosts; a device's `tier` overrides this. Rows are
-  reordered with barycenter sweeps to reduce crossings.
-  **Groups are placed by their cabling**, at every level of nesting. The
-  blocks of one container (its own device rows, its child groups and, at the
-  top level, the connected components of ungrouped devices) are arranged like
-  this:
-  * blocks that are cabled to each other, directly or through other blocks,
-    form one stack of layers. The top layer is the container's own device
-    rows if it has any, else the block or blocks whose devices rank highest
-    (lowest tier, e.g. a cloud). Every other block lies one layer below the
-    nearest block it is cabled to. No group kind or name plays a part: a
-    provider group cabled to a cloud above and routers below ends up between
-    them, and one cabled only to an access switch ends up under that switch;
-  * within a layer, blocks are ordered by the mean position of the devices
-    they are cabled to, and each block is moved as close to that point as its
-    neighbors allow, so its cables are short and steep. A block cabled to two
-    others lies between them;
-  * a block is placed as high as it can be: below every block it is cabled
-    to (with room for the cables and their labels) and below whatever already
-    occupies its own width. Blocks never overlap;
-  * a top layer that gets too wide continues on a second line; lower layers
-    may get considerably wider first, because a second line would put blocks
-    under their own layer and the cables would have to cross it;
-  * stacks that are not cabled to each other, and blocks without any cable
-    (a disconnected group, a spare device), are packed side by side in a
-    fixed order: highest-ranking first, then larger, then by id;
-  * several rounds are computed and the one with the shortest and least
-    crossing cabling is used; then pairs of blocks in a layer are exchanged
-    where that improves it further (rings have no order every cable agrees
-    with). This search is bounded, and skipped above 400 devices.
-
-  The diagram grows as needed: a tall block in one layer moves only the
-  blocks below its own width.
-  Device boxes are as large as their full label needs and grow further for
-  their ports and port labels. The gap between two neighbors of a row is
-  widened for the port labels on the facing sides and for the label of a
-  cable between them. A group box is at least as wide as its title.
-* **Logical view:** each connected component (devices, networks, multipoint
-  hubs) is laid out on its own with stress majorization, which spaces graph
-  distances evenly. Its edges are the logical relationships only (relations
-  between two devices, the spokes of multipoint relations, and network
-  membership); cables are not edges here. Very large components (over 300
-  nodes) use a force-directed layout instead.
-  **Devices are clustered by group.** Each group's content (its devices and
-  its child groups) is laid out on its own, deepest groups first; the group
-  then takes part in the layout around it as one box, exactly the size of its
-  frame (content, padding and title). So a group's frame never covers a
-  device of another group, and sibling frames never overlap. Relationships
-  between devices of different groups count as edges between the groups
-  that hold them. Networks and multipoint hubs belong to no group and are
-  placed around the groups. Components are ordered by how many nodes they
-  hold, a group counting with everything inside it. A model without groups is
-  laid out without this step. The layout is seeded from the auto-arranged
-  *physical* positions, so the two views keep a similar mental map, but never
-  from manual positions. Then:
-  * every node is as large as its full text needs; the distance between two
-    connected nodes follows from their sizes and from the labels that must
-    fit between them, and boxes are pushed apart until that room exists
-    (a gap as wide as the widest label, or as high as all labels stacked);
-  * node positions are swapped where that strictly reduces edge crossings and
-    edges passing through nodes;
-  * nodes that an edge would pass through are moved aside;
-  * components are packed in rows, largest first.
-
-### Filtered views
-
-The **Devices** control (top right, in both views) chooses the devices the
-diagram shows. Every device is selected by default.
-
-* **All devices selected:** the complete diagram, with its stored positions,
-  exactly as without a filter. Dragging stores positions and Auto-arrange
-  works on the complete view, as described above.
-* **Some devices selected:** each view shows the part of the model relevant
-  to them, and that part is **auto-arranged for itself**. The result depends
-  only on the model and the set of selected devices (not on the order they
-  were chosen in, earlier filters or earlier drags). It is computed when the
-  filtered view is first shown and stays as it is until you move a node,
-  press Auto-arrange or change the selection; options such as Labels,
-  selecting objects or switching views don't re-arrange it. An edit to the
-  model keeps it stable and places new objects next to their neighbours.
-
-What a filtered view contains:
-
-| Element | Shown when |
-|---|---|
-| Devices | selected |
-| Physical links | both ends are on selected devices. A cable to a hidden device is not drawn at all. |
-| Relations (logical view) | every endpoint is on a selected device. A relation that also reaches a hidden device (including a multipoint relation) is left out, never drawn as if it were complete. Its `over` keeps only what is shown. |
-| Networks, physical view | a selected device has an address in it, or an end of a shown link carries its VLAN |
-| Networks, logical view | a selected device has an address in it, or a shown relation names it in `over` |
-| Network members | only the selected devices with an address in the network |
-| Groups / locations | they contain a selected device (directly or in a child group); they frame only their selected devices |
-| Protocols | a shown relation uses them: the Legend, its protocol switches and the exported legend list only those |
-| Static routes | of the shown devices; a next-hop line only to a shown device |
-
-A tunnel interface whose destination is on a hidden device keeps its
-destination text, but nothing is highlighted on the hidden side.
-
-**Positions in a filtered view are temporary.** A note on the diagram says
-so: *Filtered-view positions are temporary and are not saved in YAML.*
-Dragging a node there moves it for the session only: there is no undo step
-and nothing is written to the file. Each view keeps its own temporary
-positions, so switching views moves nothing in the other one. Selecting all
-devices again shows the complete diagram with its stored positions,
-unchanged; a filtered view chosen again later is arranged afresh.
-
-**Auto-arrange in a filtered view** (any option) arranges the shown devices
-only, at once and without confirmation (the positions it replaces are
-temporary). The stored layout of the complete view is not changed. The
-option whose result the filtered view shows is selected; after a node was
-moved there, none is (*Manually adjusted*); the hover text and the
-accessible description say that the view is filtered.
-
-**Export** (PNG and SVG) shows the filtered view: the selected devices and
-what is relevant to them, with the current Labels, Groups / Locations and
-Networks settings, the whole filtered diagram (not just the part on screen),
-a legend of what is drawn and a Networks overview of the networks relevant
-to it. The note about temporary positions is not part of the picture.
-
-**Groups / Locations** (both views, on by default) shows or hides the
-frames of groups. Hiding them never hides or moves a device. **Networks**
-(logical view) shows or hides network nodes and their membership lines; the
-addresses in the editor are not affected.
-
-### Sizes, labels and routes
-
-Nothing in the diagram is shortened with "…". These rules decide sizes and
-places; they are the same on screen and in exported SVG files.
-
-* **Text.** A label is drawn in full. Line breaks in a label (a YAML block
-  scalar, or `\n` in a quoted string) are kept as lines. A line that is too
-  long wraps at spaces; a single word that is too long is broken, preferably
-  after `- _ / . : , ; | @ = +`. Maximum line widths: device label and
-  subtitle 220, network 210, relation label 240, cable label 190. Labels are
-  limited to 200 characters by the format, so an element can't grow without
-  bound: the longest possible device label gives a box about 280 wide.
-* **Devices** grow in width up to the wrap width and in height with the
-  number of lines; the subtitle (the device type) wraps the same way. A
-  device also grows for the entries of its interfaces, which write out every
-  address and identifier in full (one line each, never wrapped inside an
-  address): in the physical view its ports with addresses, a VRF, DHCP or a
-  MAC address, in the logical view its loopbacks, virtual and tunnel
-  interfaces and its ports with layer-3 facts. In the physical view it grows
-  for the chips of its uncabled ports too (rows as wide as the box, each chip
-  with the full name).
-* **Networks** show their label and their prefix (with the VLAN), wrapped.
-  In the logical view a network or multipoint hub whose devices all lie in
-  one group (a site LAN, a rack's LAG) is placed inside that group's frame,
-  in the innermost group holding all of them.
-* **Groups** wrap their title at the width of their content (at least 260)
-  and get a taller title area for it.
-* **Cables.** Ports are placed opposite the device they lead to. Where the
-  two ports of a cable face each other they are moved onto one line, so the
-  cable is a single straight segment; several cables between the same two
-  devices become parallel straight lines. Other cables leave each port at a
-  right angle and run straight between the two stubs. If that line would pass
-  through a device, the cable bends around it (at most a few bends).
-* **Cable labels** (speed · *VLANs differ* when the tagging of the two ends
-  disagrees · label) are always drawn, on the cable's longest segment. Each
-  takes the first free place: the middle, then further along the segment,
-  then beside it.
-* **Port labels (physical view).** The name of the port, and under it the
-  tagging of its link end (`U 10 · T 20,30`). A port on the left or right
-  side has its name above the cable and its tagging below it; a port on the
-  top or bottom side has both beyond its end. The layout reserves room for
-  both lines.
-* **Route tables (logical view).** A device's static routes are entries of
-  its box, after its interfaces (one per VRF), a line per route, never
-  wrapped. The next-hop lines run from the side of the box beside a route's
-  line to the side of the next hop's box beside that interface's row, around
-  the boxes in between; they are drawn under the boxes and have no label.
-* **Ports (logical view).** Every row of a device's box that relations are
-  bound to has a port on the side of the box beside it: an interface's entry
-  (a solid bar), or the device's name part for relations bound to the device
-  itself (a hollow bar). Relations of a pair of devices that are bound to the
-  same interfaces at both ends form a *strand*; its relations are parallel
-  lanes that leave the port side by side. The row is high enough for every
-  lane bound to it and for its end label. A port is on the side of the box
-  that gives the shorter way to the other end without crossing either box;
-  several strands at one port are stacked in the order of the directions
-  they head in, which keeps them from crossing each other. A physical
-  interface a relation is bound to has an entry in the logical view even
-  without an address.
-* **Routes (logical view).** A strand leaves its port at a right angle, runs
-  a stub straight out and then goes to the other stub, around the boxes in
-  its way, never across a box (so never across another row of a device).
-  Stubs nest: of the routes leaving one side, the one that turns from nearer
-  the side is the one nearest to where it is going, and a route that passes
-  other rows of its device turns beyond their end labels. Routes keep a
-  stub and an end label's room from the boxes of other devices, and routes
-  around the same corner of a box run side by side, never on top of each
-  other.
-* **End labels.** Next to each interface port, on the side of the stubs the
-  lanes turn away from, the interface's id is written, and for a tunnel
-  interface the underlay it is sourced from (`src: Gi0/0 203.0.113.1`, the
-  source interface and its address, or the source address). A device-level
-  port has no end label. End labels keep clear of all text and of every line.
-* **Relation labels.** Every relation between two devices that isn't nested
-  in a tunnel has its own label next to its own lane, along the middle of
-  its strand. A relation is nested in a tunnel it is carried over (`over`)
-  only when both are bound to the same interfaces: it is then named in its
-  carrier's label together with its own label
-  (`IPsec · site-to-site › OSPF · area 1`), so it is neither lost nor drawn
-  twice. A relation carried over a tunnel bound to other interfaces (GRE on
-  `Tunnel10`, carried over IPsec between the underlay ports) runs from its own
-  ports and says so in its label: `GRE › OSPF (over IPsec)`. Labels are
-  written one after the other along the strand, or stacked across it when
-  the line is too short, and each then takes the nearest place that is free
-  of nodes and other labels.
-* **Aggregates (physical view).** The member ports of an aggregate are kept
-  next to each other along a side and drawn inside a bracket named by the
-  aggregate. A cable whose end names no port ends in a hollow square on the
-  device. Cables that bend go around other devices together with their
-  ports and port labels, and across no other port of their own devices.
-* **Order.** Labels are placed in id order, so the result depends only on
-  the model and the node positions, never on selection or on what was
-  dragged before.
-
-**Trade-offs and limits.**
-
-* Text widths are *estimated* (see Determinism), a little on the wide side,
-  so boxes have some spare room; with an unusually wide font a very long line
-  can still touch the edge of its box.
-* A label that finds no free place among its candidates is put where it
-  overlaps least. It is never dropped. This can happen in very dense
-  diagrams, or after nodes were dragged close together by hand.
-* Labels keep clear of nodes and of other labels, not of lines: a label can
-  lie on a cable or relation line that isn't its own.
-* Cables avoid devices, not group boxes, group titles or other cables.
-  Crossings are reduced by the placement of groups and the ordering of rows,
-  not eliminated: a full mesh or a ring between groups always crosses
-  somewhere.
-* Group placement is a heuristic. Layers come from the *nearest* connected
-  block, so a group cabled both to the top and far down lies near the top and
-  has one long cable. A chain of groups gives a tall diagram, a wide layer a
-  wide one; the shape follows the topology rather than the screen.
-* Relation lines in the logical view are routed: straight where nothing is
-  in the way, else around the boxes (at most a few bends). After dragging
-  boxes onto each other, a line can't avoid them; the overlap is reported.
-* Network membership lines still run from the border of the device box to
-  the network; they are not attached to the interface holding the address
-  (its addresses are written on the line, and in the interface's entry).
-* Spacing is preferred over density, so Default diagrams are fairly large;
-  Compact takes the slack out.
-* Stored positions are never changed by another NetAtlas application
-  version. If that version arranges differently, the view shows *edited
-  since arranged* until Auto-arrange is used again.
-
-**Determinism.** Auto-arrange is a pure function of a canonical *layout
-input* (`src/layout/input.ts`). It uses no randomness, no clock, no browser
-measurement (text widths are estimated from character classes) and no
-locale-dependent ordering. Every list is sorted by id with plain code-unit
-comparison, and every tie is broken by id. The arithmetic uses only `+ − × ÷`,
-`Math.sqrt` and constant tables. The ECMAScript spec requires these to give
-the same result in every browser; `Math.hypot`, `sin` and `cos` are allowed
-to vary, so they aren't used. Results are rounded to whole pixels.
-
-**Equivalent input.** Two files arrange identically (in the same netatlas
-version) when they have the same:
-
-* device ids, labels, types, tiers (explicit `tier`,
-  else derived from `type`), groups, the number of loopbacks and the width of
-  the widest loopback chip (loopback ids and addresses), the ids of the
-  uncabled physical interfaces and of the virtual and tunnel interfaces;
-* groups (ids, parents, labels and kinds);
-* cables (ids and their endpoints `device:interface`; which end is `a` and
-  which is `b` doesn't matter), the text drawn on them (speed, whether the
-  tagging of the ends differs, label) and the tagging at each port;
-* networks (ids, labels, and the subtitle shown from `vlan`/`cidr`, plus the
-  derived set of member devices);
-* relations (ids, the set of devices they connect and the interfaces they
-  are bound to), and per pair of devices the label texts and the width of
-  the bundle (protocol display names and line styles, relation labels,
-  nesting through `over`), with the end labels at its ports (interface ids,
-  tunnel sources);
-* the members of aggregates (they are kept together along a side);
-* the lines of the devices' route tables (prefixes, next hops, distances,
-  metrics, VRFs).
-
-**Not relevant:**
-* order of keys, sections and list items (devices, physical and logical
-  interfaces, member ports, cables, endpoints, tagged VLANs, routes, `over`, …);
-* comments, quoting and formatting;
-* the `layout` section itself;
-* manual moves and load order;
-* direction, attributes, descriptions, the medium of a cable, cable
-  ids (`cable:`), virtual and tunnel interfaces, and interface addresses as long as they don't change which
-  networks a device belongs to. In short: what isn't drawn as text and
-  doesn't change a size.
 
 ## Validation and limits
 
@@ -1571,7 +1098,6 @@ next to the object and field they concern.
   address lies in;
 * a tunnel source address that no interface of the device has;
 * the same DNS name on two devices;
-* a scenario step whose object doesn't exist (the step is skipped);
 * a demand whose source or destination names nothing of the model.
 
 A file with **errors can still be opened and drawn**. Everything that
