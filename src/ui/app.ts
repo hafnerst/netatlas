@@ -35,16 +35,18 @@ import { focusSeeds } from '../analysis/focus';
 import { Trace, TraceRequest, pathRefs, returnRequest, tracePath, traceRefs, traceText } from '../analysis/trace';
 import { TraceForm, TraceRun, formRequest, newTraceForm, tracePanel, traceSummary } from './trace';
 import { Spof, failureRefs, singlePointsOfFailure } from '../analysis/failure';
-import { resolveTarget, scenarioId, stepDiff, stepView, targetLabel, targetOfRef } from '../analysis/scenario';
+import { maintainedAfter, resolveTarget, scenarioId, stepDiff, stepView, targetLabel, targetOfRef } from '../analysis/scenario';
 import { SimState, simSummary, simulationPanel, stepPosition } from './simulation';
 import { spofSection } from './spof';
 import { Splitter } from './splitter';
 import { TabOverflow } from './tab-overflow';
+import { templateListBody, templateReviewBody } from './templates';
+import { proposeAll, propose } from '../analysis/templates';
 import { TrafficAnimator } from './traffic';
 import { TrafficChange, TrafficState, trafficDiff, trafficFlows } from '../analysis/traffic';
 import { generateMac } from '../analysis/helpers';
 import { Command, buildCommands, isMac, keyLabel, matchesKey } from './commands';
-import { PaletteItem, commandItems, objectItems, paletteList, rankItems, resultsText, scenarioItems } from './palette';
+import { PaletteItem, commandItems, objectItems, paletteList, rankItems, resultsText, scenarioItems, templateItems } from './palette';
 import { AddrSort, AddrViewState, addressingBody, addressingCsv, addressingTables, newAddrViewState, shownText } from './addressing';
 
 /** How a severity is named in the Problems tab's filter. */
@@ -2327,7 +2329,80 @@ export class App {
     this.simAt = at;
     const view = stepView(s.model, sim.steps, at);
     const diff = at > 0 ? stepDiff(stepView(s.model, sim.steps, at - 1), view) : null;
-    return { name: sim.name, saved: sim.saved, steps: sim.steps, at, view, diff };
+    return { name: sim.name, saved: sim.saved, steps: sim.steps, at, view, diff, maintained: maintainedAfter(s.model, sim.steps, at) };
+  }
+
+  // ------------------------------------------------------------ scenario templates
+
+  private templatesOpen = false;
+
+  /**
+   * Simulate → Scenario templates…: the templates for this model (those that
+   * don't apply greyed out, with why), then the review of the chosen one's
+   * proposal; Save adds it as a normal scenario (one undoable edit of the
+   * scenarios section, allowed during a simulation), Save and play plays it.
+   * `id`: go straight to that template's review (the palette).
+   */
+  async openTemplates(id?: string): Promise<void> {
+    const s = this.session;
+    const d = this.mdoc;
+    if (!s || !d || this.templatesOpen) return;
+    this.openMenu(null);
+    this.templatesOpen = true;
+    try {
+      let pick = id || '';
+      for (;;) {
+        if (!pick) {
+          const list = proposeAll(s.model);
+          const body = templateListBody(this.doc, list);
+          body.addEventListener('click', (e) => {
+            const b = (e.target as Element).closest('[data-template]') as HTMLButtonElement | null;
+            if (b && !b.disabled) closeDialogWith(b, 'tpl:' + b.getAttribute('data-template'));
+          });
+          const res = await this.dialog({ title: 'Scenario templates', body: [body], buttons: [{ label: 'Close', value: 'close' }], className: 'tpl-dialog', closeButton: true, focus: '.tpl-pick:not(:disabled)' });
+          (this.doc.getElementById('modal') as HTMLElement).className = '';
+          if (res.indexOf('tpl:') !== 0) return;
+          pick = res.slice(4);
+        }
+        const p = propose(s.model, pick);
+        if (!p || !p.applicable) {
+          if (p) this.toast(`${p.label}: ${p.reason}.`);
+          return;
+        }
+        const r = templateReviewBody(this.doc, s.model, p);
+        const res = await this.dialog({
+          title: p.label,
+          body: [r.body],
+          buttons: [
+            { label: id ? 'Cancel' : 'Back', value: id ? 'cancel' : 'back' },
+            { label: 'Save', value: 'save' },
+            { label: 'Save and play', value: 'play', kind: 'primary' },
+          ],
+          className: 'tpl-dialog',
+          closeButton: true,
+          focus: '#tpl-name',
+        });
+        (this.doc.getElementById('modal') as HTMLElement).className = '';
+        if (res === 'back') {
+          pick = '';
+          continue;
+        }
+        if ((res !== 'save' && res !== 'play') || this.mdoc !== d || !this.session) return;
+        const label = r.name.value.trim() || p.name;
+        const sid = scenarioId(label, this.session.model.scenarios.map((x) => x.id));
+        d.saveScenario({ id: sid, label, description: r.desc.value.trim() || undefined, steps: p.steps });
+        this.afterEdit(`Scenario “${label}” saved in the model from the template ${p.label}. Undo with Ctrl+Z.`);
+        this.syncLock();
+        if (res === 'play') {
+          this.playScenario(sid);
+          const cur = this.doc.querySelector('#side-body [aria-current="step"]') as HTMLElement | null;
+          if (cur) cur.focus();
+        }
+        return;
+      }
+    } finally {
+      this.templatesOpen = false;
+    }
   }
 
   // ------------------------------------------------------------ traffic animation
@@ -2963,7 +3038,7 @@ export class App {
     if (!this.recent.length) this.loadRecent();
     const opener = this.doc.activeElement as HTMLElement | null;
     const mac = isMac(this.doc.defaultView);
-    const objects = this.session ? scenarioItems(this.session.model).concat(objectItems(this.session.model)) : [];
+    const objects = this.session ? scenarioItems(this.session.model).concat(templateItems(this.session.model), objectItems(this.session.model)) : [];
     const items = (): PaletteItem[] => commandItems(this.commands, (c) => c.state(this), mac).concat(objects);
     const known = new Set(items().map((x) => x.key));
     const recent = this.recent.filter((k) => known.has(k));
@@ -3066,6 +3141,9 @@ export class App {
       // back where the palette was opened from, then the command (it may move the focus itself)
       if (opener && this.doc.contains(opener) && !opener.closest('[role="menu"]')) opener.focus();
       this.runCommand(res.slice(4));
+    } else if (res.indexOf('tpl:') === 0) {
+      this.rememberRecent(res);
+      void this.openTemplates(res.slice(4));
     } else if (res.indexOf('play:') === 0) {
       this.rememberRecent(res);
       this.playScenario(res.slice(5));

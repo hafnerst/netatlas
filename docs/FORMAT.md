@@ -155,6 +155,7 @@ than one endpoint on the same device is bound by the first of them.
 | `logical_interfaces` | | List of the device's **logical interfaces** (below): loopbacks, virtual interfaces and tunnel interfaces. |
 | `dns_names` | | List of the device's **DNS names**, each associated with one or more of its interfaces. See [DNS names](#dns-names). |
 | `routes` | | List of the device's **static routes**. See [Static routes](#static-routes). Only devices whose type has a routing table may have them. |
+| `risk_groups` | | The shared risks the device belongs to, e.g. `[power-feed-a]`; see [risk groups](#risk-groups-shared-risks). |
 
 A device has no `vendor`, `model`, `role` or `mgmt` key; like every key the
 format doesn't define, each is an error ("unknown key"). Such facts can be
@@ -311,6 +312,7 @@ devices:
 | `dhcp` | `true` or `false`; **omitted means `false`**. `true`: the interface obtains its address by DHCP, so it has no manually configured addresses. Not on a loopback. See [DHCP](#dhcp). |
 | `ip` | the manually configured addresses: one address or a list, `ip: 10.0.0.1/30` or `ip: [192.0.2.1/24, 2001:db8::1/64]`. Addresses that aren't valid IPv4/IPv6 addresses give a *warning* and are shown as written (on a loopback they are an error); for `ip: dhcp` the warning says to write `dhcp: true` instead (on a loopback: to write its address). **The addresses decide which networks the device belongs to.** |
 | `vrf` | name of the VRF the interface is assigned to (free text, display only). Membership in a network is decided by the address alone. |
+| `risk_groups` | physical interfaces (ports) only: the shared risks the port belongs to, e.g. `risk_groups: [linecard-1]` (see [risk groups](#risk-groups-shared-risks)). |
 | `mtu` | the interface's MTU in bytes, a whole number from 68 to 65535. Omitted: not modelled (no MTU is assumed, so nothing is compared). Read by the [consistency checks](#consistency-checks) `link-mtu-mismatch` and `tunnel-mtu`. |
 | `mac`, `description`, `attrs` | |
 
@@ -690,6 +692,7 @@ devices:
 | `a`, `b` | yes | The two ends. `device:interface`, or just `device` when the port is unknown or irrelevant (e.g. "Internet"), or a mapping `{device, interface, speed, duplex, mode, untagged, tagged}`. |
 | `medium` | | `fiber`, `copper`, `dac`, `aoc`, `wireless`/`lte`/`5g`/`microwave`, `serial`, `virtual`, or any other text (it gets its own colour). **The only place the medium of the connection is configured**; without it the cable is drawn as "Unspecified". |
 | `speed` | | e.g. `1G`, `10G`, `100G`, `250M`. **The only place the speed of the connection is configured**; it sets the line width. |
+| `risk_groups` | | The shared risks the cable belongs to (a conduit, a duct, a carrier), e.g. `[duct-north]`; see [risk groups](#risk-groups-shared-risks). |
 | `direction` | | `unidirectional`: traffic only from end `a` to end `b` (simplex fibre, a data diode, a TAP or SPAN feed), drawn with an arrow at end `b`; the path tracer and the simulated traffic never use it the other way. `bidirectional` is the default and is not written. Anything else is an error. |
 | `label`, `cable` (cable/circuit id), `description`, `attrs` | | |
 
@@ -1008,6 +1011,28 @@ Built-in protocol ids: `gre`, `ipsec`, `ipip`, `wireguard`, `openvpn`, `l2tp`,
 `is-is`, `wg`, `ikev2`, `mpls-te`, `pw`, `lag`, `port-channel`, `vpc`,
 `tacacs+`, `ipfix` and `sflow`.
 
+## Risk groups (shared risks)
+
+A **risk group** (SRLG, shared-risk link group) names something that can
+take several objects down at once: a conduit or duct two cables share, a
+power feed, a carrier, a line card. Cables (`links`), ports (physical
+interfaces) and devices list the risk groups they belong to:
+
+```yaml
+links:
+  - {id: l-isp1, a: "rtr1:ge0", b: "isp1:xe1", risk_groups: [duct-north]}
+  - {id: l-isp2, a: "rtr2:ge0", b: "isp2:xe7", risk_groups: [duct-north]}
+devices:
+  - {id: core1, type: switch, risk_groups: [feed-a]}
+```
+
+A risk group is named by its use: there is no list of them, and its id
+follows the rules of [identifiers](#identifiers). Each object lists one
+once; the order doesn't matter. A scenario step `fail: {risk: duct-north}`
+fails everything in it at once, which shows redundancy that isn't real
+(two uplinks in one duct). A logical interface has no risk groups (its
+ports do).
+
 ## `demands` (traffic demands)
 
 Optional. Traffic that flows between two points of the network, for the
@@ -1058,8 +1083,14 @@ scenarios:
       - fail: {lag: hq-core1:Port-Channel1}
 ```
 
-Each step has exactly **one action** key, `fail` or `restore`, whose value
-names **one target** as a mapping with one key:
+Each step has exactly **one action** key, whose value names **one target**
+as a mapping with one key:
+
+| Action | Meaning |
+|---|---|
+| `fail` | the target fails |
+| `maintain` | the target is taken out of service for planned maintenance: simulated like a failure (at once; a cost-out first is not simulated), and named *Maintenance* in the step list |
+| `restore` | the target is back in service, whichever action took it out |
 
 | Target key | Value | Fails (or restores) |
 |---|---|---|
@@ -1068,6 +1099,8 @@ names **one target** as a mapping with one key:
 | `port` | `device:interface` | the interface and its cable |
 | `relation` | a relation id | the relation and what runs `over` it |
 | `lag` | `device:interface` of an aggregate | all its member cables at once |
+| `group` | a group id | every device of the group / location and of the groups nested in it (a site, a room, a rack: e.g. a power outage) |
+| `risk` | a risk group id | everything that lists it in its `risk_groups`: cables, ports and devices (a shared conduit, a power feed, a carrier, a line card) |
 
 The state after step *k* is the model with the targets of the first *k*
 steps failed (a `restore` takes an earlier failure back); what that takes

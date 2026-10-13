@@ -27,6 +27,12 @@ test('the example’s scenarios are read: ids, labels, steps with their targets 
     [
       ['isp1-outage', 'ISP 1 outage', 3],
       ['core-peer-loss', 'Core peer link and core switch', 3],
+      // proposed by the scenario templates and saved
+      ['uplink-outage-at-hq-berlin', 'Uplink outage at HQ Berlin', 1],
+      ['shared-risk-failure-duct-alexanderplatz', 'Shared-risk failure: duct-alexanderplatz', 1],
+      ['vrrp-failover-of-10-10-10-1', 'VRRP failover of 10.10.10.1', 1],
+      ['tunnel-failover-ham-rtr-hq-rtr2', 'Tunnel failover ham-rtr – hq-rtr2', 1],
+      ['rolling-maintenance-of-hq-core1-and-hq-core2', 'Rolling maintenance of hq-core1 and hq-core2', 4],
     ],
   );
   const s = m.scenarios[0];

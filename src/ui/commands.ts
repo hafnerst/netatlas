@@ -319,6 +319,15 @@ export function buildCommands(): Command[] {
       run: (app) => void app.saveScenarioDialog(),
     },
     {
+      id: 'sim.templates',
+      label: 'Scenario templates…',
+      group: 'Simulate',
+      mode: true,
+      keywords: 'template propose scenario uplink outage vrrp hsrp failover core spine site rack loss shared risk srlg maintenance flapping vpn tunnel lag mlag service server asymmetric',
+      state: (app) => needDiagram(app, 'Proposals for this model: a WAN uplink outage, a VRRP failover, a core failure, a site loss … to review and save as scenarios'),
+      run: (app) => void app.openTemplates(),
+    },
+    {
       id: 'sim.traffic',
       label: 'Traffic animation',
       group: 'Simulate',

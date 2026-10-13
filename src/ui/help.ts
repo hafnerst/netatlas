@@ -206,6 +206,17 @@ const MANUAL: Section[] = [
     figures: [['simulation', 'A scenario at its second step: the peer LAG and a core switch failed, the VRRP groups failing over (dash-dot), the banner with the step, and the Simulation tab.']],
   },
   {
+    id: 'templates',
+    title: 'Start from a scenario template',
+    steps: [
+      'Choose **Simulate → Scenario templates…**. Each template looks at your model and proposes steps: an uplink outage at a dual-homed site, a VRRP failover, a core failure, a rack lost, a shared-risk cut, rolling maintenance, a flapping link, a tunnel failover, LAG members lost one by one, a server failing, an asymmetric-routing check.',
+      'A template that doesn’t fit your model is greyed out with the reason. Choose one to review its proposal: change its name if you like, read the steps and what to look at.',
+      '**Save** keeps it as a normal scenario (you can undo this); **Save and play** plays it at once.',
+    ],
+    notes: ['For a shared-risk cut, give cables, ports or devices **Risk groups** in the Edit tab (a conduit, a power feed …): the template fails everything in one at once.'],
+    figures: [['templates', 'The Scenario templates dialog for the enterprise WAN: every template, the asymmetric-routing check greyed out with its reason.']],
+  },
+  {
     id: 'traffic',
     title: 'Watch simulated traffic',
     steps: [

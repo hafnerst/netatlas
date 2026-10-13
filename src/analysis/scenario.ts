@@ -20,10 +20,46 @@ import { FailureResult, FailureSummary, LostPair, failureRefs, lostReachability,
 const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 
 /** How a target kind is named in text: "cable", "LAG" … */
-export const TARGET_NAME: { [k in TargetKind]: string } = { device: 'device', cable: 'cable', port: 'port', relation: 'relation', lag: 'LAG' };
+export const TARGET_NAME: { [k in TargetKind]: string } = { device: 'device', cable: 'cable', port: 'port', relation: 'relation', lag: 'LAG', group: 'location', risk: 'risk group' };
+
+/** The devices of a group / location and of the groups nested in it (sorted). */
+export function groupDevices(model: Model, id: string): string[] {
+  const inside = new Set<string>([id]);
+  // nested groups: keep adding children until none is new
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const g of model.groups) if (g.parent && inside.has(g.parent) && !inside.has(g.id)) {
+      inside.add(g.id);
+      grew = true;
+    }
+  }
+  return model.devices.filter((d) => d.group !== undefined && inside.has(d.group)).map((d) => d.id).sort(cmp);
+}
+
+/** Everything that shares a risk group: its cables, ports and devices (as refs, sorted). */
+export function riskMembers(model: Model, id: string): string[] {
+  const out: string[] = [];
+  for (const l of model.links) if (l.riskGroups.indexOf(id) >= 0) out.push('link:' + l.id);
+  for (const d of model.devices) {
+    if (d.riskGroups.indexOf(id) >= 0) out.push('device:' + d.id);
+    for (const i of d.interfaces) if (i.riskGroups.indexOf(id) >= 0) out.push('iface:' + ifaceKey(d.id, i.id));
+  }
+  return out.sort(cmp);
+}
+
+/** Every risk group the model names, sorted. */
+export function riskGroupIds(model: Model): string[] {
+  const s = new Set<string>();
+  for (const l of model.links) l.riskGroups.forEach((x) => s.add(x));
+  for (const d of model.devices) {
+    d.riskGroups.forEach((x) => s.add(x));
+    for (const i of d.interfaces) i.riskGroups.forEach((x) => s.add(x));
+  }
+  return Array.from(s).sort(cmp);
+}
 
 /** The member cables of an aggregate interface (sorted), or why it is not a LAG. */
-function lagCables(model: Model, id: string): string[] | string {
+export function lagCables(model: Model, id: string): string[] | string {
   const i = model.index.interfaces.get(id) as Interface | undefined;
   if (!i) return `there is no interface "${id}"`;
   if (!i.members.length) return `${id} is not a LAG: it has no member ports`;
@@ -53,6 +89,15 @@ export function resolveTarget(model: Model, t: StepTarget): { refs: string[] } |
       const c = lagCables(model, t.id);
       return typeof c === 'string' ? { problem: c } : { refs: c.map((l) => 'link:' + l) };
     }
+    case 'group': {
+      if (!ix.groups.has(t.id)) return { problem: `there is no group / location "${t.id}"` };
+      const ds = groupDevices(model, t.id);
+      return ds.length ? { refs: ds.map((d) => 'device:' + d) } : { problem: `group "${t.id}" has no device` };
+    }
+    case 'risk': {
+      const rs = riskMembers(model, t.id);
+      return rs.length ? { refs: rs } : { problem: `nothing is in risk group "${t.id}" (no cable, port or device lists it in its risk_groups)` };
+    }
   }
   return { problem: 'unknown target' };
 }
@@ -72,6 +117,11 @@ export function targetRef(t: StepTarget): string {
       return 'link:' + t.id;
     case 'relation':
       return 'relation:' + t.id;
+    case 'group':
+      return 'group:' + t.id;
+    case 'risk':
+      // a risk group has no object of its own to select
+      return '';
     default:
       return 'iface:' + t.id;
   }
@@ -93,12 +143,16 @@ export function targetOfRef(model: Model, ref: string): StepTarget | null {
 export function targetLabel(model: Model, t: StepTarget): string {
   if (t.kind === 'lag') return 'LAG ' + t.id;
   if (t.kind === 'port') return t.id;
+  if (t.kind === 'risk') return 'risk group ' + t.id;
+  if (t.kind === 'group') return 'location ' + t.id;
   return refLabel(model, targetRef(t));
 }
 
-/** A step as one line: "Fail hq-core1", "Restore cable l-peer1". */
+const ACTION_TEXT: { [a in ScenarioStep['action']]: string } = { fail: 'Fail', maintain: 'Maintenance:', restore: 'Restore' };
+
+/** A step as one line: "Fail hq-core1", "Maintenance: hq-core2", "Restore cable l-peer1". */
 export function stepText(model: Model, step: ScenarioStep): string {
-  return `${step.action === 'fail' ? 'Fail' : 'Restore'} ${targetLabel(model, step.target)}`;
+  return `${ACTION_TEXT[step.action]} ${targetLabel(model, step.target)}`;
 }
 
 /** The failed objects (refs, sorted) after the first `k` steps; steps that can't be resolved are skipped. */
@@ -108,11 +162,26 @@ export function failedAfter(model: Model, steps: ScenarioStep[], k: number): str
     const r = resolveTarget(model, s.target);
     if ('problem' in r) continue;
     for (const ref of r.refs) {
-      if (s.action === 'fail') failed.add(ref);
-      else failed.delete(ref);
+      // planned maintenance takes an object out of service: for the simulation, as a failure does
+      if (s.action === 'restore') failed.delete(ref);
+      else failed.add(ref);
     }
   }
   return Array.from(failed).sort(cmp);
+}
+
+/** The objects (refs, sorted) in planned maintenance after the first `k` steps (out of service by a maintain step, not restored since). */
+export function maintainedAfter(model: Model, steps: ScenarioStep[], k: number): string[] {
+  const m = new Set<string>();
+  for (const s of steps.slice(0, Math.max(0, k))) {
+    const r = resolveTarget(model, s.target);
+    if ('problem' in r) continue;
+    for (const ref of r.refs) {
+      if (s.action === 'maintain') m.add(ref);
+      else m.delete(ref);
+    }
+  }
+  return Array.from(m).sort(cmp);
 }
 
 /** The result of one step: what failed, what that takes down, and the reachability lost (against the model as written). */

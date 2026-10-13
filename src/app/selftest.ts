@@ -18,7 +18,7 @@ import { CHECKS } from '../analysis/checks';
 import { addressingOverview } from '../analysis/addressing';
 import { traceText } from '../analysis/trace';
 import { addressingCsv } from '../ui/addressing';
-import { scenarioItems } from '../ui/palette';
+import { scenarioItems, templateItems } from '../ui/palette';
 import { EXAMPLES, FIXTURES } from '../generated/examples';
 import { PNG_MAX_PIXELS, PNG_MAX_SIDE, WritableFile, pngScale, svgToPng } from '../ui/files';
 import { App } from '../ui/app';
@@ -1812,7 +1812,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       check(
         'Analyze keeps “what is” (Addressing, Focus, Trace path, Single points of failure); a Simulate menu right after it holds “what if” (fail, scenarios, steps, save, exit)',
         menuIds('analyze-menu').join(' ') === 'analyze.addressing focus.enter focus.exit trace.open trace.exit analyze.spof' &&
-          menuIds('simulate-menu').join(' ') === 'sim.add panel.simulation sim.prev sim.next sim.save sim.traffic sim.trafficPause sim.exit' &&
+          menuIds('simulate-menu').join(' ') === 'sim.add panel.simulation sim.templates sim.prev sim.next sim.save sim.traffic sim.trafficPause sim.exit' &&
           (q('#analyze-btn') as HTMLElement).closest('.menu-wrap')!.nextElementSibling === (q('#simulate-btn') as HTMLElement).closest('.menu-wrap'),
         menuIds('analyze-menu').join(' ') + ' | ' + menuIds('simulate-menu').join(' '),
       );
@@ -1826,7 +1826,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       app.showTab('simulation');
       await tick();
       const saved = Array.from(doc.querySelectorAll('#side-body [data-sim-play]')).map((b) => b.getAttribute('data-sim-play'));
-      check('the Simulation tab lists the model’s saved scenarios, each with Play and Delete', saved.join(' ') === 'isp1-outage core-peer-loss' && doc.querySelectorAll('#side-body [data-sim-delete]').length === 2, saved.join(' '));
+      check('the Simulation tab lists the model’s saved scenarios, each with Play and Delete', saved.join(' ') === 'isp1-outage core-peer-loss uplink-outage-at-hq-berlin shared-risk-failure-duct-alexanderplatz vrrp-failover-of-10-10-10-1 tunnel-failover-ham-rtr-hq-rtr2 rolling-maintenance-of-hq-core1-and-hq-core2' && doc.querySelectorAll('#side-body [data-sim-delete]').length === 7, saved.join(' '));
       // X on a cable starts an ad-hoc scenario
       app.select('link:l-hq-isp1');
       await tick();
@@ -1987,7 +1987,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       app.exitSimulation();
       // the palette plays saved scenarios too
       const items = scenarioItems(app.session!.model);
-      check('the command palette offers each saved scenario (Play scenario: …)', items.map((i) => i.label).join(' | ') === 'Play scenario: ISP 1 outage | Play scenario: Core peer link and core switch');
+      check('the command palette offers each saved scenario (Play scenario: …)', items.map((i) => i.label).slice(0, 2).join(' | ') === 'Play scenario: ISP 1 outage | Play scenario: Core peer link and core switch' && items.length === 7);
       // the single points of failure: Analyze → a report in the Analysis tab, of the model as written; nothing changes mode by itself
       click('#analyze-btn');
       (q('#btn-spof') as HTMLElement).click();
@@ -2107,6 +2107,52 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         check(`${theme}: playing it changed nothing in the model and added no undo step; after Exit no traffic is shown`, app.exportText() === before && md.canUndo() === undoBefore && !q('#viewport .layer-traffic'));
       }
       app.theme.set(themeBefore);
+    }
+
+    // ------------------------------------------------ scenario templates (Simulate → Scenario templates…)
+    {
+      app.loadExample(EXAMPLES.findIndex((e) => e.name === 'enterprise-wan.yaml'));
+      await tick();
+      const md = app.mdoc as ModelDoc;
+      const scenariosBefore = app.session!.model.scenarios.length;
+      click('#simulate-btn');
+      check('Simulate has Scenario templates… (opens a dialog)', !(q('#btn-templates') as HTMLButtonElement).disabled && q('#btn-templates')!.getAttribute('aria-haspopup') === 'dialog');
+      (q('#btn-templates') as HTMLElement).click();
+      await tick();
+      const picks = Array.from(doc.querySelectorAll('#modal .tpl-pick')) as HTMLButtonElement[];
+      const why = (id: string): string => (q('#tpl-why-' + id) ? q('#tpl-why-' + id)!.textContent || '' : '');
+      check(
+        'the dialog lists the eleven templates; one that doesn’t apply is greyed out and says why, in text (and to screen readers: aria-describedby)',
+        picks.length === 11 && (q('#modal [data-template="asymmetric"]') as HTMLButtonElement).disabled && /^Not for this model: No traffic demands in this model/.test(why('asymmetric')) && q('#modal [data-template="asymmetric"]')!.getAttribute('aria-describedby') === 'tpl-why-asymmetric' && !(q('#modal [data-template="wan-uplink"]') as HTMLButtonElement).disabled && /Proposed here: Uplink outage at HQ Berlin\./.test(why('wan-uplink')) && doc.activeElement === picks[0],
+        picks.map((b) => b.getAttribute('data-template') + (b.disabled ? '(off)' : '')).join(' '),
+      );
+      (q('#modal [data-template="srlg"]') as HTMLElement).click();
+      await tick();
+      const name = q('#tpl-name') as HTMLInputElement;
+      const steps = Array.from(doc.querySelectorAll('#modal .tpl-steps li')).map((li) => li.textContent || '');
+      check(
+        'choosing one shows its proposal to review: the name (editable, focused), the steps, what to look at; nothing is saved yet',
+        !!name && name.value === 'Shared-risk failure: duct-alexanderplatz' && doc.activeElement === name && steps.length === 1 && /^Fail risk group duct-alexanderplatz/.test(steps[0]) && doc.querySelectorAll('#modal .tpl-notes li').length >= 1 && app.session!.model.scenarios.length === scenariosBefore,
+        steps.join(' | '),
+      );
+      name.value = 'Duct cut at HQ';
+      (q('#modal [data-value="play"]') as HTMLElement).click();
+      await tick();
+      const saved = app.session!.model.scenarios.find((x) => x.label === 'Duct cut at HQ');
+      check(
+        'Save and play: a normal saved scenario (one undo step), played at once: both ISP uplinks fail together (the redundancy shared a risk)',
+        !!saved && saved.steps.length === 1 && saved.steps[0].target.kind === 'risk' && md.canUndo() === 'Save scenario Duct cut at HQ' && !!app.currentSim() && app.currentSim()!.name === 'Duct cut at HQ' && app.currentSim()!.view.failed.join() === 'link:l-hq-isp1,link:l-hq-isp2',
+        md.canUndo() || '',
+      );
+      app.exitSimulation();
+      app.undo();
+      await tick();
+      check('… undo removes it again', app.session!.model.scenarios.length === scenariosBefore);
+      // the palette: each template, those that don't apply with why
+      const items = templateItems(app.session!.model);
+      const off = items.find((i) => i.key === 'tpl:asymmetric');
+      check('the command palette offers every template (Scenario template: …), one that doesn’t apply unavailable with its reason', items.length === 11 && items[0].label === 'Scenario template: WAN / ISP uplink outage' && !!off && !off.state.enabled && /No traffic demands/.test(off.state.reason || ''));
+      md.markSaved();
     }
 
     // ------------------------------------------------ viewer interactions
