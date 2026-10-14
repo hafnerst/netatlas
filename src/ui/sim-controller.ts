@@ -8,10 +8,14 @@
  * fills the Simulation window (controls, the Layer 1–4 parameters, network
  * events, the protocols shown, the ARP and MAC tables, the status table,
  * the event log) and opens the in-diagram menus (on a cable: Fail link,
- * Start flapping; on a relation: Fail link; on a device: Power off, Shut an
- * interface…, its tables; on an interface: Shut interface, Start flapping;
- * each with its way back). It is the app's simulation mode
- * (simulation-mode.ts): the banner's text, what is down, and Exit.
+ * Start flapping, Highlight broadcast domain; on a relation: Fail link; on
+ * a device: Power off, Shut an interface…, Send test…, its tables, its
+ * connections, a firewall's sessions, Highlight broadcast domain; on an
+ * interface: Shut interface, Start flapping; each with its way back). A
+ * dot, or a message in the event log, opens the packet inspector. It is
+ * the app's simulation mode (simulation-mode.ts): the banner's text (with
+ * a broadcast storm's warning), what is down, a highlighted broadcast
+ * domain, and Exit.
  *
  * The checkboxes only choose what is shown (dots and event log): the
  * simulation always computes every protocol, so changing them never
@@ -22,13 +26,14 @@
  */
 import { FailureResult, refLabel, simulate } from '../analysis/failure';
 import { fmtSec } from '../analysis/sim/engine';
-import { ParamValue } from '../analysis/sim/params';
+import { ParamValue, Resolved, formatValue, sourceText } from '../analysis/sim/params';
 import { SimProtocolEntry, Simulation } from '../analysis/sim/simulation';
-import { Flight, NetEvent, SessionStatus, SimEvent } from '../analysis/sim/types';
+import { TestKind, rttText } from '../analysis/sim/transport';
+import { Flight, Headers, NetEvent, SessionStatus, SimEvent, TableTimer } from '../analysis/sim/types';
 import { lookupProtocol } from '../model/protocols';
 import { Model, deviceInterfaces } from '../model/types';
 import { el } from './dom';
-import { SimAnimator } from './sim-anim';
+import { SimAnimator, dot } from './sim-anim';
 import { ParamEditor, paramEditor } from './sim-params-ui';
 import { TablePanels } from './sim-tables';
 import { SimulationMode } from './simulation-mode';
@@ -58,6 +63,8 @@ export interface SimHost {
   tick(): void;
   /** the simulation-wide parameters changed (remembered for the next start in this browser session) */
   paramsChanged?(values: { [key: string]: ParamValue }): void;
+  /** open the Simulation window (Send test… from a device's menu) */
+  openWindow?(): void;
 }
 
 export interface SimStartOptions {
@@ -67,7 +74,19 @@ export interface SimStartOptions {
   params?: { [key: string]: ParamValue };
 }
 
-const FIXED_COLORS: { [k: string]: string } = { arp: '#f08c00', ndp: '#e67700', garp: '#c92a2a', demand: '#1c7ed6', link: '#868e96' };
+const FIXED_COLORS: { [k: string]: string } = { arp: '#f08c00', ndp: '#e67700', garp: '#c92a2a', demand: '#1c7ed6', link: '#868e96', icmp: '#d6336c', tcp: '#2b8a3e', udp: '#7048e8' };
+
+/** The protocols of Layer 2 (the event log's layer filter); the link events are Layer 1, tests and services Layer 4. */
+const LAYER2 = ['arp', 'ndp', 'garp', 'stp', 'lacp', 'lldp', 'cdp'];
+
+/** The layer of an event (the log's filter): its frame's top header when it has one, else its protocol's. */
+export function eventLayer(e: SimEvent, group?: string): number {
+  if (e.protocol === 'link') return 1;
+  if (e.hdr) return e.hdr.l4 && (e.hdr.l4.proto === 'tcp' || e.hdr.l4.proto === 'udp') ? 4 : e.hdr.l3.length ? 3 : 2;
+  if (LAYER2.indexOf(e.protocol) >= 0) return 2;
+  if (e.protocol === 'tcp' || e.protocol === 'udp' || e.protocol === 'demand' || group === 'Services') return 4;
+  return 3;
+}
 
 type MenuItem = { label: string; act: () => void };
 
@@ -96,6 +115,12 @@ export class SimController implements SimulationMode {
   private editor: ParamEditor | null = null;
   /** dots of shown protocols not drawn at the last frame */
   notDrawn = 0;
+  /** the broadcast domain highlighted (Highlight broadcast domain), and what it is of */
+  private domain: { refs: Set<string>; what: string; from: { dev: string; iface: string } | { link: string; vlan: number } } | null = null;
+  private logLayer = 0;
+  private logCast = '';
+  private testsKey = '';
+  private domainKey = '';
   private readonly entries: SimProtocolEntry[];
   private onVis = (): void => this.schedule();
 
@@ -122,7 +147,40 @@ export class SimController implements SimulationMode {
 
   note(): string {
     const n = this.sim.netEvents().length;
-    return `Protocol simulation, t = ${fmtSec(this.t)}${n ? ` · ${n} network event${n === 1 ? '' : 's'}` : ''}`;
+    const storms = this.sim.storms();
+    return `Protocol simulation, t = ${fmtSec(this.t)}${n ? ` · ${n} network event${n === 1 ? '' : 's'}` : ''}${storms.length ? ` · ⚠ broadcast storm in ${storms.map((s) => (s.vlan ? 'VLAN ' + s.vlan : 'the untagged frames')).join(', ')}` : ''}${this.domain ? ` · broadcast domain of ${this.domain.what} highlighted` : ''}`;
+  }
+
+  /** The broadcast domain highlighted in the diagram (null: none). */
+  highlighted(): Set<string> | null {
+    if (!this.domain) return null;
+    // what a broadcast reaches changes with what is up: computed again on every change
+    const k = this.sim.engine.stateVersion + '|' + this.sim.downRefs().join(',');
+    if (k !== this.domainKey) {
+      this.domainKey = k;
+      this.domain.refs = new Set(this.sim.broadcastDomain(this.domain.from).refs);
+    }
+    return this.domain.refs;
+  }
+
+  /** Highlight what a broadcast reaches from a device's interface, or in a cable's VLAN. */
+  highlightDomain(from: { dev: string; iface: string } | { link: string; vlan: number }): boolean {
+    const d = this.sim.broadcastDomain(from);
+    if (!d.refs.length) return false;
+    const what = 'link' in from ? `cable ${from.link}${from.vlan ? ' in VLAN ' + from.vlan : ''}` : `${from.dev}:${from.iface}`;
+    this.domain = { refs: new Set(d.refs), what, from };
+    this.domainKey = this.sim.engine.stateVersion + '|' + this.sim.downRefs().join(',');
+    this.host.changed();
+    this.host.toast(`Broadcast domain of ${what}${d.vlan ? ' (VLAN ' + d.vlan + ')' : ''}: ${d.devices.length} device${d.devices.length === 1 ? '' : 's'}, ${d.links.length} cable${d.links.length === 1 ? '' : 's'} highlighted.`);
+    this.refresh(true);
+    return true;
+  }
+
+  clearDomain(): void {
+    if (!this.domain) return;
+    this.domain = null;
+    this.host.changed();
+    this.refresh(true);
   }
 
   marker(): string {
@@ -367,13 +425,47 @@ export class SimController implements SimulationMode {
 
   // ------------------------------------------------------------ the tables
 
-  showTable(kind: 'arp' | 'mac', dev: string, near?: { x: number; y: number; w: number; h: number } | null): boolean {
+  showTable(kind: 'arp' | 'mac' | 'conn' | 'fw', dev: string, near?: { x: number; y: number; w: number; h: number } | null): boolean {
     const d = this.sim.tableDevices().find((x) => x.id === dev);
-    if (!d || (kind === 'arp' ? !d.arp : !d.mac)) return false;
+    if (!d) return false;
+    if (kind === 'arp' ? !d.arp : kind === 'mac' ? !d.mac : kind === 'conn' ? !d.arp : !this.isFirewall(dev)) return false;
     const rect = near !== undefined ? near : this.host.rectOf('device:' + dev);
     if (kind === 'arp') this.tables.show('arp', dev, rect, () => ({ v4: this.sim.arpTable(dev), v6: this.sim.ndTable(dev), timers: this.sim.arpTimers(dev), scale: this.sim.timerScale }));
-    else this.tables.show('mac', dev, rect, () => ({ rows: this.sim.macTable(dev), timers: this.sim.macTimers(dev), scale: this.sim.timerScale }));
+    else if (kind === 'mac') this.tables.show('mac', dev, rect, () => ({ rows: this.sim.macTable(dev), timers: this.sim.macTimers(dev), scale: this.sim.timerScale }));
+    else if (kind === 'conn') this.tables.show('conn', dev, rect, () => ({ rows: this.sim.connTable(dev), listening: this.sim.transport.listening(dev).text }));
+    else this.tables.show('fw', dev, rect, () => ({ rows: this.sim.sessionTable(dev), timers: this.sim.sessionTimers(dev).map(timerOf) }));
     return true;
+  }
+
+  private isFirewall(dev: string): boolean {
+    const d = this.host.model().index.devices.get(dev);
+    return !!d && d.type === 'firewall';
+  }
+
+  /** The packet inspector for a dot (a flight). */
+  inspectFlight(id: number, near?: { x: number; y: number; w: number; h: number } | null): boolean {
+    const f = this.sim.engine.flights.find((x) => x.id === id);
+    if (!f || !f.hdr) return false;
+    const m = this.host.model();
+    let where = `t = ${fmtSec(f.t0)}`;
+    if (f.track.ref.indexOf('link:') === 0) {
+      const l = m.index.links.get(f.track.ref.slice(5));
+      if (l) where += `, on cable ${l.id} (${f.track.from === 'a' ? l.a.device + ' → ' + l.b.device : l.b.device + ' → ' + l.a.device})`;
+    }
+    this.inspect(f.hdr, where, near);
+    return true;
+  }
+
+  /** The packet inspector for a message of the event log (its frame as sent). */
+  inspectEvent(seq: number): boolean {
+    const e = this.sim.events().find((x) => x.seq === seq);
+    if (!e || !e.hdr) return false;
+    this.inspect(e.hdr, `as ${e.device || 'it'} sent it at t = ${fmtSec(e.t)}`, null);
+    return true;
+  }
+
+  private inspect(h: Headers, where: string, near?: { x: number; y: number; w: number; h: number } | null): void {
+    this.tables.show('packet', 'inspector', near || null, () => ({ hdr: h, where }));
   }
 
   setTimerScale(n: number): void {
@@ -415,12 +507,17 @@ export class SimController implements SimulationMode {
       if (r.indexOf('link:') === 0) {
         if (this.eventOf(r, 'flap')) items.push({ label: 'Stop flapping', act: () => this.stopFlap(r) });
         else items.push({ label: 'Start flapping', act: () => this.startFlap(r) });
+        this.linkDomainItems(r.slice(5), items, x, y);
       }
     } else if (r.indexOf('device:') === 0) {
       const dev = r.slice(7);
       const d = this.sim.tableDevices().find((q) => q.id === dev);
       if (d && d.arp) items.push({ label: 'Show ARP table', act: () => this.showTable('arp', dev) });
       if (d && d.mac) items.push({ label: 'Show MAC table', act: () => this.showTable('mac', dev) });
+      if (d && d.arp) items.push({ label: 'Show connections', act: () => this.showTable('conn', dev) });
+      if (this.isFirewall(dev)) items.push({ label: 'Show sessions', act: () => this.showTable('fw', dev) });
+      if (d && d.arp) items.push({ label: 'Send test…', act: () => this.sendTestFrom(dev) });
+      this.domainItems(dev, items, x, y);
       if (this.sim.engine.off.has(dev)) items.push({ label: this.sim.engine.booting.has(dev) ? 'Power off (stop booting)' : 'Power on', act: () => (this.sim.engine.booting.has(dev) ? this.powerOff(dev) : this.powerOn(dev)) });
       else items.push({ label: 'Power off', act: () => this.powerOff(dev) });
       const ifs = this.interfaces().filter((k) => k.indexOf(dev + ':') === 0);
@@ -443,6 +540,59 @@ export class SimController implements SimulationMode {
       if (this.eventOf(ref, 'flap')) items.push({ label: 'Stop flapping', act: () => this.stopFlap(ref) });
       else items.push({ label: 'Start flapping', act: () => this.startFlap(ref) });
     }
+  }
+
+  /** Highlight broadcast domain (of its one interface, or a choice of them), or clear the highlight. */
+  private domainItems(dev: string, items: MenuItem[], x: number, y: number): void {
+    if (this.domain) items.push({ label: 'Clear broadcast domain highlight', act: () => this.clearDomain() });
+    const ifs = this.sim.engine.broadcastIfaces(dev);
+    if (ifs.length === 1) items.push({ label: 'Highlight broadcast domain', act: () => this.highlightDomain({ dev, iface: ifs[0] }) });
+    else if (ifs.length > 1) items.push({ label: 'Highlight broadcast domain…', act: () => this.openMenu(`${dev}: broadcast domain of`, ifs.map((i) => ({ label: i, act: () => void this.highlightDomain({ dev, iface: i }) })), x, y) });
+  }
+
+  private linkDomainItems(link: string, items: MenuItem[], x: number, y: number): void {
+    if (this.domain) items.push({ label: 'Clear broadcast domain highlight', act: () => this.clearDomain() });
+    const vlans = this.sim.engine.linkVlans(link);
+    if (vlans.length === 1) items.push({ label: 'Highlight broadcast domain', act: () => this.highlightDomain({ link, vlan: vlans[0] }) });
+    else if (vlans.length > 1) items.push({ label: 'Highlight broadcast domain…', act: () => this.openMenu(`Cable ${link}: broadcast domain of`, vlans.map((v) => ({ label: v ? `VLAN ${v}` : 'untagged', act: () => void this.highlightDomain({ link, vlan: v }) })), x, y) });
+  }
+
+  // ------------------------------------------------------------ Send test…
+
+  /** Send test… from a device's menu: the window's Send test section, with the device as the source. */
+  sendTestFrom(dev: string): void {
+    if (this.host.openWindow) this.host.openWindow();
+    const body = this.host.windowBody();
+    if (!body) return;
+    const sec = body.querySelector('#sim-test') as HTMLDetailsElement | null;
+    if (sec) sec.open = true;
+    const from = body.querySelector('#sim-t-from') as HTMLSelectElement | null;
+    if (from) {
+      from.value = dev;
+      this.fillTargets(body);
+    }
+    const to = body.querySelector('#sim-t-to') as HTMLInputElement | null;
+    if (to) to.focus();
+  }
+
+  /** Run a test now (the window's Send test; tests). */
+  sendTest(o: { from: string; to: string; kind: TestKind; port?: number; size?: number; df?: boolean; keep?: boolean }): string {
+    const t = this.sim.sendTest(o);
+    this.testsKey = '';
+    this.logKey = '';
+    this.refresh(true);
+    if (typeof t === 'string') return t;
+    return `Test sent at t = ${fmtSec(this.t)}: ${t.series}.`;
+  }
+
+  /** The Send test destinations offered: the devices, and the broadcast addresses of the source's subnets. */
+  private fillTargets(body: HTMLElement): void {
+    const list = body.querySelector('#sim-t-list');
+    const from = body.querySelector('#sim-t-from') as HTMLSelectElement | null;
+    if (!list || !from) return;
+    while (list.firstChild) list.removeChild(list.firstChild);
+    for (const b of this.sim.broadcastTargets(from.value)) list.appendChild(el(this.host.doc, 'option', { value: b }, [b === '255.255.255.255' ? 'limited broadcast' : 'subnet broadcast']));
+    for (const d of this.sim.tableDevices()) if (d.arp && d.id !== from.value) list.appendChild(el(this.host.doc, 'option', { value: d.id }));
   }
 
   /** The device menu's second level: its interfaces, each shut or no shut. */
@@ -531,6 +681,18 @@ export class SimController implements SimulationMode {
     play.addEventListener('click', () => this.setPlaying(!this.playing));
     step.addEventListener('click', () => this.step());
     speed.addEventListener('change', () => this.setSpeed(Number(speed.value)));
+    // what the dots' shapes mean
+    const shape = (cast: string): SVGSVGElement => {
+      const s = doc.createElementNS('http://www.w3.org/2000/svg', 'svg') as SVGSVGElement;
+      s.setAttribute('width', '14');
+      s.setAttribute('height', '14');
+      s.setAttribute('viewBox', '0 0 14 14');
+      s.setAttribute('aria-hidden', 'true');
+      s.appendChild(dot(doc, 7, 7, 'currentColor', cast));
+      return s;
+    };
+    body.appendChild(el(doc, 'p', { class: 'sim-shapes small', id: 'sim-shapes' }, [el(doc, 'span', {}, [shape('unicast'), ' unicast']), el(doc, 'span', {}, [shape('broadcast'), ' broadcast']), el(doc, 'span', {}, [shape('multicast'), ' multicast']), el(doc, 'span', { class: 'muted' }, ['A dot, or a message in the event log, opens the packet inspector.'])]));
+    body.appendChild(el(doc, 'p', { id: 'sim-storm', class: 'sim-storm', role: 'alert', hidden: '' }, ['']));
     body.appendChild(el(doc, 'p', { id: 'sim-drawn', class: 'muted small', 'aria-live': 'off' }, ['']));
     // parameters: the same sections as the start dialog, applied at once
     const params = el(doc, 'details', { class: 'sim-sec', id: 'sim-params' });
@@ -552,11 +714,31 @@ export class SimController implements SimulationMode {
       if (sel.value.indexOf('link:') === 0) this.startFlap(sel.value);
       else this.host.toast('Flapping is for cables: choose a cable.');
     });
+    const ldom = el(doc, 'button', { type: 'button', id: 'sim-ldomain' }, ['Broadcast domain…']);
+    (evs.lastChild as HTMLElement).appendChild(ldom);
+    ldom.addEventListener('click', () => {
+      if (sel.value.indexOf('link:') !== 0) {
+        this.host.toast('A broadcast domain is a cable’s VLAN: choose a cable.');
+        return;
+      }
+      const items: MenuItem[] = [];
+      this.linkDomainItems(sel.value.slice(5), items, 0, 0);
+      const r = ldom.getBoundingClientRect();
+      if (items.length) this.openMenu(`Cable ${sel.value.slice(5)}`, items, r.left, r.bottom);
+    });
     const dsel = el(doc, 'select', { id: 'sim-device', 'aria-label': 'Device' }) as HTMLSelectElement;
     for (const d of this.host.model().devices.slice().sort((a, b) => (a.id < b.id ? -1 : 1))) dsel.appendChild(el(doc, 'option', { value: d.id }, [d.id]));
     const offBtn = el(doc, 'button', { type: 'button', id: 'sim-power' }, ['Power off']);
-    evs.appendChild(el(doc, 'div', { class: 'sim-row' }, [dsel, offBtn]));
+    const ddom = el(doc, 'button', { type: 'button', id: 'sim-domain' }, ['Broadcast domain…']);
+    evs.appendChild(el(doc, 'div', { class: 'sim-row' }, [dsel, offBtn, ddom]));
     offBtn.addEventListener('click', () => this.powerOff(dsel.value));
+    ddom.addEventListener('click', () => {
+      const items: MenuItem[] = [];
+      this.domainItems(dsel.value, items, 0, 0);
+      const r = ddom.getBoundingClientRect();
+      if (items.length) this.openMenu(`${dsel.value}: broadcast domain`, items, r.left, r.bottom);
+      else this.host.toast(`${dsel.value} has no interface a broadcast starts from.`);
+    });
     const isel = el(doc, 'select', { id: 'sim-iface', 'aria-label': 'Interface' }) as HTMLSelectElement;
     for (const k of this.interfaces()) isel.appendChild(el(doc, 'option', { value: k }, [k]));
     const shutBtn = el(doc, 'button', { type: 'button', id: 'sim-shut' }, ['Shut interface']);
@@ -578,6 +760,66 @@ export class SimController implements SimulationMode {
     evs.appendChild(el(doc, 'p', { id: 'sim-failed', class: 'small', role: 'status' }, ['No network event. Several can be in effect at once; clicking a cable, relation, device or interface in the diagram offers the same.']));
     evs.appendChild(el(doc, 'ul', { id: 'sim-events', class: 'sim-events' }));
     body.appendChild(evs);
+    // Send test…: one ping, TCP connection or UDP request
+    const test = el(doc, 'details', { class: 'sim-sec', id: 'sim-test' });
+    test.appendChild(el(doc, 'summary', {}, ['Send test']));
+    const tFrom = el(doc, 'select', { id: 'sim-t-from' }) as HTMLSelectElement;
+    for (const d of this.sim.tableDevices()) if (d.arp) tFrom.appendChild(el(doc, 'option', { value: d.id }, [d.id]));
+    const tTo = el(doc, 'input', { type: 'text', id: 'sim-t-to', list: 'sim-t-list', autocomplete: 'off', spellcheck: 'false', placeholder: 'device, device:interface, address, broadcast or group' }) as HTMLInputElement;
+    const tKind = el(doc, 'select', { id: 'sim-t-kind' }) as HTMLSelectElement;
+    for (const [v, l] of [['icmp', 'ICMP echo (ping)'], ['tcp', 'TCP connection'], ['udp', 'UDP request']]) tKind.appendChild(el(doc, 'option', { value: v }, [l]));
+    const tPort = el(doc, 'input', { type: 'number', id: 'sim-t-port', min: '1', max: '65535', value: '80', inputmode: 'numeric' }) as HTMLInputElement;
+    const tSize = el(doc, 'input', { type: 'number', id: 'sim-t-size', min: '0', max: '65000', inputmode: 'numeric', placeholder: 'default' }) as HTMLInputElement;
+    const tDf = el(doc, 'input', { type: 'checkbox', id: 'sim-t-df' }) as HTMLInputElement;
+    const tKeep = el(doc, 'input', { type: 'checkbox', id: 'sim-t-keep' }) as HTMLInputElement;
+    const lab = (f: string, t: string): HTMLElement => el(doc, 'label', { for: f }, [t]);
+    test.appendChild(
+      el(doc, 'div', { class: 'sim-test-form' }, [
+        lab('sim-t-from', 'From'),
+        tFrom,
+        lab('sim-t-to', 'To'),
+        tTo,
+        lab('sim-t-kind', 'Test'),
+        tKind,
+        lab('sim-t-port', 'Port (TCP, UDP)'),
+        tPort,
+        lab('sim-t-size', 'Data (bytes)'),
+        tSize,
+        el(doc, 'span'),
+        el(doc, 'label', { class: 'check' }, [tDf, ' Don’t fragment (DF, IPv4)']),
+        el(doc, 'span'),
+        el(doc, 'label', { class: 'check' }, [tKeep, ' TCP: keep the connection open (keepalive)']),
+      ]),
+    );
+    test.appendChild(el(doc, 'datalist', { id: 'sim-t-list' }));
+    const tSend = el(doc, 'button', { type: 'button', id: 'sim-t-send', class: 'primary' }, ['Send test']);
+    test.appendChild(el(doc, 'div', { class: 'sim-row' }, [tSend, el(doc, 'span', { id: 'sim-t-msg', class: 'small', role: 'status' }, [''])]));
+    test.appendChild(el(doc, 'p', { class: 'muted small' }, ['Sizes: a ping carries 56 bytes, a TCP request 120, a UDP request 40 unless set. The result shows below, in the status table and in the event log.']));
+    test.appendChild(el(doc, 'ul', { id: 'sim-tests', class: 'sim-tests', 'aria-label': 'Latest tests' }));
+    const q = (id: string): HTMLElement => body.querySelector('#' + id) as HTMLElement;
+    tFrom.addEventListener('change', () => this.fillTargets(body));
+    tSend.addEventListener('click', () => {
+      const size = tSize.value.trim() === '' ? undefined : Number(tSize.value);
+      const port = Number(tPort.value);
+      const msg = q('sim-t-msg');
+      if (!tTo.value.trim()) {
+        msg.textContent = 'Write where the test goes: a device, an interface (device:interface), an address, a broadcast address or a group.';
+        tTo.focus();
+        return;
+      }
+      if (tKind.value !== 'icmp' && (!(port >= 1 && port <= 65535) || Math.floor(port) !== port)) {
+        msg.textContent = 'The port is a whole number from 1 to 65535.';
+        tPort.focus();
+        return;
+      }
+      if (size !== undefined && (!(size >= 0 && size <= 65000) || Math.floor(size) !== size)) {
+        msg.textContent = 'The data size is a whole number of bytes from 0 to 65000.';
+        tSize.focus();
+        return;
+      }
+      msg.textContent = this.sendTest({ from: tFrom.value, to: tTo.value, kind: tKind.value as TestKind, port, size, df: tDf.checked, keep: tKeep.checked });
+    });
+    body.appendChild(test);
     // protocols shown
     const protos = el(doc, 'details', { class: 'sim-sec', id: 'sim-protos', open: '' });
     protos.appendChild(el(doc, 'summary', { id: 'sim-protos-sum' }, ['Protocols shown']));
@@ -601,7 +843,7 @@ export class SimController implements SimulationMode {
     body.appendChild(protos);
     // the tables
     const tabs = el(doc, 'details', { class: 'sim-sec', id: 'sim-tabs' });
-    tabs.appendChild(el(doc, 'summary', {}, ['ARP, neighbour and MAC tables']));
+    tabs.appendChild(el(doc, 'summary', {}, ['Tables: ARP, neighbours, MAC, connections, sessions']));
     const scale = el(doc, 'select', { id: 'sim-scale', 'aria-label': 'Timer scale of the tables' }) as HTMLSelectElement;
     for (const n of TIMER_SCALES) scale.appendChild(el(doc, 'option', { value: String(n) }, [n === 1 ? 'Real time (1:1)' : `1:${n} (${n} times faster)`]));
     scale.value = String(this.sim.timerScale);
@@ -613,11 +855,13 @@ export class SimController implements SimulationMode {
       const btns: HTMLElement[] = [];
       if (d.arp) btns.push(el(doc, 'button', { type: 'button', class: 'mini', 'data-sim-table': 'arp', 'data-dev': d.id }, ['Show ARP table']));
       if (d.mac) btns.push(el(doc, 'button', { type: 'button', class: 'mini', 'data-sim-table': 'mac', 'data-dev': d.id }, ['Show MAC table']));
+      if (d.arp) btns.push(el(doc, 'button', { type: 'button', class: 'mini', 'data-sim-table': 'conn', 'data-dev': d.id }, ['Show connections']));
+      if (this.isFirewall(d.id)) btns.push(el(doc, 'button', { type: 'button', class: 'mini', 'data-sim-table': 'fw', 'data-dev': d.id }, ['Show sessions']));
       if (btns.length) list.appendChild(el(doc, 'li', {}, [el(doc, 'span', { class: 'sim-dev' }, [d.id]), ...btns]));
     }
     list.addEventListener('click', (ev) => {
       const b = (ev.target as Element).closest('[data-sim-table]');
-      if (b) this.showTable(b.getAttribute('data-sim-table') as 'arp' | 'mac', b.getAttribute('data-dev') as string);
+      if (b) this.showTable(b.getAttribute('data-sim-table') as 'arp' | 'mac' | 'conn' | 'fw', b.getAttribute('data-dev') as string);
     });
     tabs.appendChild(list);
     body.appendChild(tabs);
@@ -637,12 +881,36 @@ export class SimController implements SimulationMode {
       this.updateWindow();
     });
     log.appendChild(filter);
+    const layer = el(doc, 'select', { id: 'sim-log-layer' }) as HTMLSelectElement;
+    for (const [v, l] of [['0', 'All layers'], ['1', 'Layer 1'], ['2', 'Layer 2'], ['3', 'Layer 3'], ['4', 'Layer 4 and up']]) layer.appendChild(el(doc, 'option', { value: v }, [l]));
+    layer.value = String(this.logLayer);
+    const cast = el(doc, 'select', { id: 'sim-log-cast' }) as HTMLSelectElement;
+    for (const [v, l] of [['', 'Any cast'], ['unicast', 'Unicast'], ['broadcast', 'Broadcast'], ['multicast', 'Multicast']]) cast.appendChild(el(doc, 'option', { value: v }, [l]));
+    cast.value = this.logCast;
+    log.appendChild(el(doc, 'div', { class: 'sim-log-filters' }, [el(doc, 'label', {}, ['Layer ', layer]), el(doc, 'label', {}, ['Cast ', cast])]));
+    layer.addEventListener('change', () => {
+      this.logLayer = Number(layer.value);
+      this.logKey = '';
+      this.updateWindow();
+    });
+    cast.addEventListener('change', () => {
+      this.logCast = cast.value;
+      this.logKey = '';
+      this.updateWindow();
+    });
     log.appendChild(el(doc, 'p', { id: 'sim-log-note', class: 'muted small' }, ['']));
-    log.appendChild(el(doc, 'div', { id: 'sim-log-table', class: 'sim-scroll sim-log' }));
+    const table = el(doc, 'div', { id: 'sim-log-table', class: 'sim-scroll sim-log' });
+    table.addEventListener('click', (ev) => {
+      const b = (ev.target as Element).closest('[data-seq]');
+      if (b) this.inspectEvent(Number(b.getAttribute('data-seq')));
+    });
+    log.appendChild(table);
     body.appendChild(log);
     this.logKey = '';
     this.statusKey = '';
     this.eventsKey = '';
+    this.testsKey = '';
+    this.fillTargets(body);
     return body;
   }
 
@@ -683,6 +951,21 @@ export class SimController implements SimulationMode {
       }
     }
     if (this.editor) this.editor.set(this.sim.params.simValues());
+    // a broadcast storm: a warning at the top
+    const storm = q('sim-storm');
+    const storms = this.sim.storms();
+    const stormText = storms.length ? `Broadcast storm in ${storms.map((s) => `${s.vlan ? 'VLAN ' + s.vlan : 'the untagged frames'} (loop over ${s.links.join(', ')}, since t = ${fmtSec(s.since)})`).join('; ')}: a Layer 2 loop that no spanning tree blocks. Break it: fail one of its cables, or set the spanning tree back on.` : '';
+    if (storm.textContent !== stormText) storm.textContent = stormText;
+    if (storm.hidden !== !stormText) storm.hidden = !stormText;
+    // the latest tests
+    const tests = this.sim.tests().slice(0, 8);
+    const tk = tests.map((x) => x.id + x.result).join('|');
+    if (tk !== this.testsKey) {
+      this.testsKey = tk;
+      const ul = q('sim-tests');
+      while (ul.firstChild) ul.removeChild(ul.firstChild);
+      for (const x of tests) ul.appendChild(el(this.host.doc, 'li', { 'data-ok': x.done ? String(x.ok) : 'waiting' }, [`t = ${fmtSec(x.started)} · ${x.series}: ${x.done ? x.result + (x.ok && x.rtt !== undefined ? ', round trip ' + rttText(x.rtt) : '') : 'waiting…'}`]));
+    }
     // status table: rebuilt when it changed
     const st = this.sim.status().filter((s) => this.visible(s.protocol));
     const sk = st.map((s) => s.name + s.state + s.detail.length).join('|') + '|' + Math.floor(this.t / 1000);
@@ -694,7 +977,7 @@ export class SimController implements SimulationMode {
     }
     // the log: rebuilt when it grew or the filter changed
     const events = this.sim.events();
-    const lk = `${events.length}|${this.sim.engine.logDropped}|${Array.from(this.shown).join(',')}|${this.logFilter}`;
+    const lk = `${events.length}|${this.sim.engine.logDropped}|${Array.from(this.shown).join(',')}|${this.logFilter}|${this.logLayer}|${this.logCast}`;
     if (lk !== this.logKey) {
       this.logKey = lk;
       this.renderLog(q('sim-log-table'), q('sim-log-note'), events);
@@ -732,6 +1015,11 @@ export class SimController implements SimulationMode {
         hidden++;
         continue;
       }
+      if (this.logLayer) {
+        const ent = this.entries.find((x) => x.id === e.protocol);
+        if (eventLayer(e, ent ? ent.group : undefined) !== this.logLayer) continue;
+      }
+      if (this.logCast && (!e.hdr || e.hdr.cast !== this.logCast)) continue;
       if (words.length) {
         const hay = `${e.device} ${e.peer} ${this.protoLabel(e.protocol)} ${e.what} ${e.state} ${e.detail}`.toLowerCase();
         if (!words.every((w) => hay.indexOf(w) >= 0)) continue;
@@ -759,7 +1047,7 @@ export class SimController implements SimulationMode {
           el(doc, 'td', {}, [e.device]),
           el(doc, 'td', {}, [e.peer]),
           el(doc, 'td', {}, [this.protoLabel(e.protocol)]),
-          el(doc, 'td', {}, [e.what]),
+          el(doc, 'td', {}, [e.hdr ? el(doc, 'button', { type: 'button', class: 'sim-msg-btn', 'data-seq': String(e.seq), 'aria-label': `${e.what}: open in the packet inspector` }, [e.what]) : e.what]),
           el(doc, 'td', {}, [e.state]),
           el(doc, 'td', { class: 'small' }, [e.detail]),
         ]),
@@ -787,6 +1075,11 @@ export function protocolChecks(doc: Document, entries: SimProtocolEntry[], shown
     fs.appendChild(el(doc, 'label', { class: 'check' }, [cb, ' ', el(doc, 'span', { class: 'sim-swatch', 'aria-hidden': 'true', style: `background:${color(e.id)}` }), e.label]));
   }
   return box;
+}
+
+/** A parameter in effect as a table's timer row. */
+function timerOf(r: Resolved): TableTimer {
+  return { label: r.def.label, value: formatValue(r.def, r.value), source: r.source, origin: sourceText(r, true) };
 }
 
 /** The clock's time: to the millisecond ("12.345 s"). */

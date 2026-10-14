@@ -1956,8 +1956,8 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       // the start dialog: the layers' sections collapsed, their counts in their names; Start and Cancel
       const heads = Array.from(doc.querySelectorAll('#modal .psec-toggle')).map((b) => `${b.textContent}|${b.getAttribute('aria-expanded')}`);
       check(
-        `${theme}: Start simulation… opens its dialog: Layer 1 – Physical (8), Layer 2 – Data link (6), Layer 3 – Network (6), all collapsed; the protocols shown; Start and Cancel`,
-        heads.join(' ') === 'Layer 1 – Physical (8)|false Layer 2 – Data link (6)|false Layer 3 – Network (6)|false' && !!q('#sim-pd-protos input[data-sim-proto="ospf"]') && !!q('#modal [data-value="start"]') && !!q('#modal [data-value="cancel"]') && (q('#sim-pd-l1') as HTMLElement).hidden,
+        `${theme}: Start simulation… opens its dialog: Layer 1 – Physical (8), Layer 2 – Data link (7), Layer 3 – Network (7), Layer 4 – Transport (8), all collapsed; the protocols shown; Start and Cancel`,
+        heads.join(' ') === 'Layer 1 – Physical (8)|false Layer 2 – Data link (7)|false Layer 3 – Network (7)|false Layer 4 – Transport (8)|false' && !!q('#sim-pd-protos input[data-sim-proto="ospf"]') && !!q('#modal [data-value="start"]') && !!q('#modal [data-value="cancel"]') && (q('#sim-pd-l1') as HTMLElement).hidden,
         heads.join(' '),
       );
       check(`${theme}: the dialog has the theme’s colours and fits the window`, doc.defaultView!.getComputedStyle(q('#modal')!).backgroundColor !== 'rgba(0, 0, 0, 0)' && (q('#modal') as HTMLElement).getBoundingClientRect().right <= doc.documentElement.clientWidth + 1);
@@ -1988,7 +1988,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       ctl.diagramClick('device:core1', r.left + 5, r.top + 5);
       await tick();
       const menuItems = Array.from(doc.querySelectorAll('.sim-menu [role="menuitem"]')).map((b) => b.textContent || '');
-      check(`${theme}: clicking a switch in the simulation opens a menu there: Show ARP table, Show MAC table, Power off, Shut an interface…`, menuItems.join('|') === 'Show ARP table|Show MAC table|Power off|Shut an interface…', menuItems.join('|'));
+      check(`${theme}: clicking a switch in the simulation opens a menu there: Show ARP table, Show MAC table, Show connections, Send test…, Highlight broadcast domain…, Power off, Shut an interface…`, menuItems.join('|') === 'Show ARP table|Show MAC table|Show connections|Send test…|Highlight broadcast domain…|Power off|Shut an interface…', menuItems.join('|'));
       (doc.querySelector('.sim-menu [role="menuitem"]') as HTMLElement).click();
       await tick();
       (q('#sim-tabs') as HTMLDetailsElement).open = true;
@@ -2017,7 +2017,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const cab = (q('#canvas g.cable[data-ref="link:l-carrier-r3"]') as Element).getBoundingClientRect();
       ctl.diagramClick('link:l-carrier-r3', cab.left + cab.width / 2, cab.top + cab.height / 2);
       await tick();
-      check(`${theme}: clicking a cable in the simulation offers Fail link and Start flapping`, Array.from(doc.querySelectorAll('.sim-menu [role="menuitem"]')).map((b) => b.textContent).join('|') === 'Fail link|Start flapping');
+      check(`${theme}: clicking a cable in the simulation offers Fail link, Start flapping and Highlight broadcast domain`, Array.from(doc.querySelectorAll('.sim-menu [role="menuitem"]')).map((b) => b.textContent).join('|') === 'Fail link|Start flapping|Highlight broadcast domain');
       (doc.querySelector('.sim-menu [role="menuitem"]') as HTMLElement).click();
       await tick();
       const tf = sim.now;
@@ -2085,6 +2085,36 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         await tick();
         check(`${theme}: an override there is written to the model, applies at once (logged as device), and Undo takes it back during the simulation`, changed && !/mac_aging: 90/.test(app.exportText()) && sim.events().some((e) => e.detail === 'Parameter changed: MAC aging time on core1 90 s → 5 min (default)'));
       }
+      // Layers 3 and 4: the storm of the lab's loop warned of; the dots' shapes; the packet inspector; Send test…; a broadcast domain; connections and sessions
+      const storm = q('#sim-storm') as HTMLElement;
+      const sc = doc.defaultView!.getComputedStyle(storm);
+      check(`${theme}: the lab’s loop without spanning tree storms: the banner and the window warn (an alert, in the error colour)`, /⚠ broadcast storm in the untagged frames/.test(q('#sim-text')!.textContent || '') && !storm.hidden && storm.getAttribute('role') === 'alert' && sc.color !== sc.backgroundColor && /l-lab-/.test(storm.textContent || ''), storm.textContent || '');
+      check(`${theme}: the dots’ shapes are explained: a circle unicast, a square broadcast, a diamond multicast`, doc.querySelectorAll('#sim-shapes svg').length === 3 && /unicast.*broadcast.*multicast/.test(q('#sim-shapes')!.textContent || ''));
+      const fl = sim.engine.flights.filter((f) => !!f.hdr && f.view === 'physical').slice(-1)[0];
+      if (fl) ctl.inspectFlight(fl.id);
+      await tick();
+      const pi = q('.sim-table-panel[data-table="packet"]') as HTMLElement | null;
+      const piHeads = pi ? Array.from(pi.querySelectorAll('.pi-layer h4')).map((h) => h.textContent || '') : [];
+      check(`${theme}: the packet inspector shows a dot’s frame layer by layer (Ethernet … payload), inside the window`, !!fl && !!pi && piHeads[0] === 'Layer 2 – Ethernet' && piHeads[piHeads.length - 1] === 'Payload' && /Destination MAC/.test(pi.textContent || '') && pi.getBoundingClientRect().right <= doc.documentElement.clientWidth + 1, piHeads.join(', '));
+      if (pi) (pi.querySelector('.st-close') as HTMLElement).click();
+      ctl.sendTestFrom('pc1');
+      await tick();
+      const tSent = ctl.sendTest({ from: 'pc1', to: 'srv', kind: 'tcp', port: 22 });
+      ctl.runTo(sim.now + 3000);
+      await tick();
+      check(`${theme}: Send test… from pc1: a TCP connection to a closed port of srv is refused (RST)`, (q('#sim-test') as HTMLDetailsElement).open && (q('#sim-t-from') as HTMLSelectElement).value === 'pc1' && /^Test sent/.test(tSent) && /pc1 → srv tcp\/22: connection refused: RST from 10\.30\.0\.10 \(srv\)/.test((q('#sim-tests li') || { textContent: '' }).textContent || ''), (q('#sim-tests li') || { textContent: '' }).textContent || '');
+      ctl.highlightDomain({ dev: 'lab-h', iface: 'eth0' });
+      await tick();
+      const on = Array.from(doc.querySelectorAll('#canvas .node.bc-on')).map((n) => n.getAttribute('data-ref')).sort().join(',');
+      check(`${theme}: Highlight broadcast domain of the lab host: its two switches and itself, the rest dimmed`, !!q('svg.has-bcdomain') && on === 'device:lab-h,device:lab-sw1,device:lab-sw2' && !!q('#canvas .node.bc-off'), on);
+      ctl.clearDomain();
+      await tick();
+      ctl.showTable('conn', 'srv');
+      ctl.showTable('fw', 'fw1');
+      await tick();
+      check(`${theme}: srv’s connections (its open port) and fw1’s session table, with its policy at the top`, !!q('.sim-table-panel[data-table="conn"] tr[data-state="LISTEN"]') && /Reject/.test((q('.sim-table-panel[data-table="fw"] .st-timers') || { textContent: '' }).textContent || ''));
+      for (const p of Array.from(doc.querySelectorAll('.sim-table-panel[data-table="conn"] .st-close, .sim-table-panel[data-table="fw"] .st-close'))) (p as HTMLElement).click();
+      await tick();
       // an export: a still picture with labelled arrows and the note
       const svg = app.exportSvg();
       check(`${theme}: an export during the simulation: “Protocol simulation, t = …”, a still picture (arrows with labels, no moving dots)`, /Protocol simulation, t = /.test(svg) && !/class="sim-dot"/.test(svg));

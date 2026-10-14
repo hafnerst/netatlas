@@ -1,18 +1,41 @@
 /**
- * The ARP, neighbour and MAC tables of the protocol simulation, shown on
- * request (Show ARP table / Show MAC table): each a small non-modal panel
- * titled with the device ("ARP table · hq-rtr1"), several at once, each
- * movable by its title bar (or its move button and the arrow keys), with
- * a close button, closed by Esc. The timers in effect head the table
- * (configured or default, and the timer scale); the rows update with the
- * simulated time. Proper table markup; changes are announced politely,
- * at most every few seconds. Opening a table changes nothing in the
- * simulation; the panels close when it ends.
+ * The tables of the protocol simulation, shown on request: a device's ARP
+ * and neighbour table, a switch's MAC table, a device's connections (its
+ * open ports, TCP connections and tests waiting), a firewall's session
+ * table, and the packet inspector (one frame, layer by layer). Each is a
+ * small non-modal panel titled with what it shows ("ARP table ·
+ * hq-rtr1"), several at once, each movable by its title bar (or its move
+ * button and the arrow keys), with a close button, closed by Esc. The
+ * timers in effect head a table (configured or default, and the timer
+ * scale); the rows update with the simulated time. Proper table markup;
+ * changes are announced politely, at most every few seconds. Opening a
+ * table changes nothing in the simulation; the panels close when it ends.
  */
-import { ArpRow, MacRow, TableTimer } from '../analysis/sim/types';
+import { ArpRow, ConnRow, Headers, MacRow, SessionRow, TableTimer } from '../analysis/sim/types';
 import { el } from './dom';
 
-export type TableKind = 'arp' | 'mac';
+export type TableKind = 'arp' | 'mac' | 'conn' | 'fw' | 'packet';
+
+export interface ConnData {
+  rows: ConnRow[];
+  /** what it listens on, and why ("listening tcp/443 (device)") */
+  listening: string;
+}
+
+export interface FwData {
+  rows: SessionRow[];
+  timers: TableTimer[];
+}
+
+export interface PacketData {
+  hdr: Headers;
+  /** when it was on its way, and where ("t = 3.4 s, on cable l2 (r1 → fw1)") */
+  where: string;
+}
+
+type AnyData = ArpData | MacData | ConnData | FwData | PacketData;
+
+const TITLES: { [k in TableKind]: string } = { arp: 'ARP table', mac: 'MAC table', conn: 'Connections', fw: 'Sessions', packet: 'Packet' };
 
 export interface ArpData {
   v4: ArpRow[];
@@ -35,7 +58,7 @@ interface Panel {
   live: HTMLElement;
   lastCount: number;
   lastSaid: number;
-  data: () => ArpData | MacData;
+  data: () => AnyData;
   back: Element | null;
 }
 
@@ -67,14 +90,16 @@ export class TablePanels {
   }
 
   /** Open a device's table beside a point (a device's box on screen), or bring it forward when it is open. */
-  show(kind: TableKind, dev: string, near: { x: number; y: number; w: number; h: number } | null, data: () => ArpData | MacData): HTMLElement {
+  show(kind: TableKind, dev: string, near: { x: number; y: number; w: number; h: number } | null, data: () => AnyData): HTMLElement {
     const known = this.panels.find((p) => p.kind === kind && p.dev === dev);
     if (known) {
+      if (kind === 'packet') known.data = data;
+      this.render(known);
       (known.box.querySelector('.st-close') as HTMLElement).focus();
       return known.box;
     }
     const id = `st-${kind}-${this.panels.length}-${Math.floor(Math.random() * 1e6)}`;
-    const title = `${kind === 'arp' ? 'ARP table' : 'MAC table'} · ${dev}`;
+    const title = `${TITLES[kind]} · ${dev}`;
     const close = el(this.doc, 'button', { type: 'button', class: 'st-close', 'aria-label': `Close the ${title}`, title: 'Close (Esc)' }, ['×']);
     const move = el(this.doc, 'button', { type: 'button', class: 'st-move', 'aria-label': `Move the ${title} (arrow keys)`, title: 'Move: drag the title, or the arrow keys here (Shift: faster)' }, ['⠿']);
     const head = el(this.doc, 'div', { class: 'st-head' }, [move, el(this.doc, 'h3', { id: id + '-t', class: 'st-title' }, [title]), close]);
@@ -183,16 +208,25 @@ export class TablePanels {
   /** The rows again (with the simulated time); each panel stays inside the window as it grows. */
   update(): void {
     for (const p of this.panels) {
-      this.render(p);
+      if (p.kind !== 'packet') this.render(p);
       const r = p.box.getBoundingClientRect();
       this.moveTo(p, r.left, r.top);
     }
   }
 
   private render(p: Panel): void {
-    const d = p.data();
     const body = p.body;
     while (body.firstChild) body.removeChild(body.firstChild);
+    if (p.kind === 'packet') {
+      body.appendChild(this.packet(p.data() as PacketData));
+      return;
+    }
+    if (p.kind === 'conn' || p.kind === 'fw') {
+      const n = p.kind === 'conn' ? this.connPanel(p) : this.fwPanel(p);
+      this.announce(p, n);
+      return;
+    }
+    const d = p.data() as ArpData | MacData;
     const timers = el(this.doc, 'dl', { class: 'st-timers' });
     for (const t of d.timers) timers.appendChild(el(this.doc, 'div', {}, [el(this.doc, 'dt', {}, [t.label]), el(this.doc, 'dd', {}, [timerText(t)])]));
     timers.appendChild(el(this.doc, 'div', {}, [el(this.doc, 'dt', {}, ['Timer scale']), el(this.doc, 'dd', {}, [d.scale === 1 ? 'real time (1:1)' : `1:${d.scale} — the timers run ${d.scale} times faster in this simulation; the values above are unchanged`])]));
@@ -208,13 +242,129 @@ export class TablePanels {
       body.appendChild(this.macTable(`MAC table of ${p.dev}`, m.rows));
       count = m.rows.length;
     }
-    // announce changes politely, without flooding: the number of entries, at most every 5 s of real time
+    this.announce(p, count);
+  }
+
+  /** Announce changes politely, without flooding: the number of entries, at most every 5 s of real time. */
+  private announce(p: Panel, count: number): void {
     const now = Date.now();
     if (count !== p.lastCount && now - p.lastSaid > 5000) {
-      if (p.lastCount >= 0) p.live.textContent = `${p.kind === 'arp' ? 'ARP table' : 'MAC table'} of ${p.dev}: ${count} entr${count === 1 ? 'y' : 'ies'}`;
+      if (p.lastCount >= 0) p.live.textContent = `${TITLES[p.kind]} of ${p.dev}: ${count} entr${count === 1 ? 'y' : 'ies'}`;
       p.lastCount = count;
       p.lastSaid = now;
     }
+  }
+
+  private head(cols: string[]): HTMLElement {
+    return el(this.doc, 'thead', {}, [el(this.doc, 'tr', {}, cols.map((h) => el(this.doc, 'th', { scope: 'col' }, [h])))]);
+  }
+
+  /** A device's connections: open ports, TCP connections with their state, tests waiting for an answer. */
+  private connPanel(p: Panel): number {
+    const d = p.data() as ConnData;
+    p.body.appendChild(el(this.doc, 'p', { class: 'small' }, [d.listening]));
+    const cols = ['Protocol', 'Local', 'Remote', 'State', 'For', 'Age', 'Timer'];
+    const t = el(this.doc, 'table', { class: 'st-table' });
+    t.appendChild(el(this.doc, 'caption', {}, [`Connections of ${p.dev}`]));
+    t.appendChild(this.head(cols));
+    const tb = el(this.doc, 'tbody');
+    if (!d.rows.length) tb.appendChild(el(this.doc, 'tr', {}, [el(this.doc, 'td', { colspan: String(cols.length), class: 'muted' }, ['No open port and no connection.'])]));
+    for (const r of d.rows) {
+      tb.appendChild(
+        el(this.doc, 'tr', { 'data-state': r.state, 'data-proto': r.proto }, [
+          el(this.doc, 'td', {}, [r.proto.toUpperCase()]),
+          el(this.doc, 'td', { class: 'mono' }, [r.local || '—']),
+          el(this.doc, 'td', { class: 'mono' }, [r.remote]),
+          el(this.doc, 'td', {}, [r.state]),
+          el(this.doc, 'td', { class: 'small' }, [r.what]),
+          el(this.doc, 'td', {}, [r.state === 'LISTEN' || r.state === 'open' ? '—' : duration(r.age)]),
+          el(this.doc, 'td', {}, [duration(r.remaining)]),
+        ]),
+      );
+    }
+    t.appendChild(tb);
+    p.body.appendChild(el(this.doc, 'div', { class: 'st-scroll' }, [t]));
+    return d.rows.length;
+  }
+
+  /** A firewall's sessions, with its policy and timeouts in effect at the top. */
+  private fwPanel(p: Panel): number {
+    const d = p.data() as FwData;
+    const timers = el(this.doc, 'dl', { class: 'st-timers' });
+    for (const x of d.timers) timers.appendChild(el(this.doc, 'div', {}, [el(this.doc, 'dt', {}, [x.label]), el(this.doc, 'dd', {}, [timerText(x)])]));
+    p.body.appendChild(timers);
+    const cols = ['Protocol', 'Flow', 'State', 'Permitted by', 'Age', 'Expires in'];
+    const t = el(this.doc, 'table', { class: 'st-table' });
+    t.appendChild(el(this.doc, 'caption', {}, [`Session table of ${p.dev}`]));
+    t.appendChild(this.head(cols));
+    const tb = el(this.doc, 'tbody');
+    if (!d.rows.length) tb.appendChild(el(this.doc, 'tr', {}, [el(this.doc, 'td', { colspan: String(cols.length), class: 'muted' }, ['No session: the model’s relations pass without one; traffic its allow list permits opens one.'])]));
+    for (const r of d.rows) {
+      tb.appendChild(
+        el(this.doc, 'tr', { 'data-state': r.state }, [
+          el(this.doc, 'td', {}, [r.proto.toUpperCase()]),
+          el(this.doc, 'td', { class: 'mono' }, [r.flow]),
+          el(this.doc, 'td', {}, [r.state]),
+          el(this.doc, 'td', {}, [r.rule]),
+          el(this.doc, 'td', {}, [duration(r.age)]),
+          el(this.doc, 'td', {}, [duration(r.remaining)]),
+        ]),
+      );
+    }
+    t.appendChild(tb);
+    p.body.appendChild(el(this.doc, 'div', { class: 'st-scroll' }, [t]));
+    return d.rows.length;
+  }
+
+  /** The packet inspector: a frame's headers, layer by layer. */
+  private packet(d: PacketData): HTMLElement {
+    const h = d.hdr;
+    const box = el(this.doc, 'div', { class: 'pi' });
+    box.appendChild(el(this.doc, 'p', { class: 'small' }, [`${h.label} — ${h.cast}; ${d.where}`]));
+    const layer = (title: string, rows: Array<[string, string]>): void => {
+      const dl = el(this.doc, 'dl');
+      for (const [k, v] of rows) dl.appendChild(el(this.doc, 'div', { style: 'display:contents' }, [el(this.doc, 'dt', {}, [k]), el(this.doc, 'dd', { class: /MAC|address|Sender|Target|Source|Destination/.test(k) ? 'mono' : '' }, [v])]));
+      box.appendChild(el(this.doc, 'section', { class: 'pi-layer' }, [el(this.doc, 'h4', {}, [title]), dl]));
+    };
+    layer('Layer 2 – Ethernet', [
+      ['Source MAC', h.l2.src],
+      ['Destination MAC', `${h.l2.dst} (${h.l2.dstNote})`],
+      ['VLAN tag', h.l2.vlan === null ? 'none (untagged on this cable)' : `802.1Q, VLAN ${h.l2.vlan}`],
+      ['EtherType', h.l2.ethertype],
+      ['Frame size', `${h.l2.bytes} bytes`],
+    ]);
+    if (h.arp) layer('ARP', [['Operation', h.arp.op], ['Sender MAC', h.arp.senderMac], ['Sender IP address', h.arp.senderIp], ['Target MAC', h.arp.targetMac], ['Target IP address', h.arp.targetIp]]);
+    h.l3.forEach((ip, i) => {
+      const rows: Array<[string, string]> = [
+        ['Source address', ip.src],
+        ['Destination address', ip.dst],
+        [ip.version === 4 ? 'TTL' : 'Hop limit', String(ip.ttl)],
+        ['Protocol', ip.proto],
+        ['Length', `${ip.len} bytes`],
+      ];
+      if (ip.version === 4) rows.splice(3, 0, ['Don’t Fragment', ip.df ? 'set' : 'not set']);
+      if (ip.frag) rows.push(['Fragment', ip.frag]);
+      if (ip.encap) rows.push(['Carries', `${ip.encap}, with the packet below inside`]);
+      layer(`Layer 3 – IPv${ip.version}${h.l3.length > 1 ? (i === 0 ? ' (outer)' : i === h.l3.length - 1 ? ' (inner)' : ` (${i + 1})`) : ''}`, rows);
+    });
+    const l4 = h.l4;
+    if (l4) {
+      const rows: Array<[string, string]> = [];
+      if (l4.proto === 'icmp') {
+        rows.push(['Type and code', `${l4.icmpType} / ${l4.icmpCode}${l4.icmpName ? ' — ' + l4.icmpName : ''}`]);
+        if (l4.echoId !== undefined) rows.push(['Identifier, sequence', `${l4.echoId}, ${l4.echoSeq}`]);
+        if (l4.mtu) rows.push(['Next-hop MTU', String(l4.mtu)]);
+        if (l4.quote) rows.push(['Quoted header', `${l4.quote.src} → ${l4.quote.dst} ${l4.quote.proto.toUpperCase()}${l4.quote.sport !== undefined ? ' ' + l4.quote.sport + ' → ' + l4.quote.dport : ''}, TTL ${l4.quote.ttl}`]);
+      } else if (l4.proto === 'other') rows.push(['IP protocol', String(l4.num)]);
+      else {
+        rows.push(['Source port', String(l4.sport)], ['Destination port', String(l4.dport)]);
+        if (l4.flags) rows.push(['Flags', l4.flags.join(', ')]);
+        if (l4.seq !== undefined && l4.proto === 'tcp') rows.push(['Sequence, acknowledgement', `${l4.seq}${l4.ack !== undefined ? ', ' + l4.ack : ''}`]);
+      }
+      layer(`Layer 4 – ${l4.proto === 'icmp' ? (h.l3.length && h.l3[h.l3.length - 1].version === 6 ? 'ICMPv6' : 'ICMP') : l4.proto === 'other' ? 'protocol' : l4.proto.toUpperCase()}`, rows);
+    }
+    layer('Payload', [['Carries', h.payload]]);
+    return box;
   }
 
   private arpTable(caption: string, rows: ArpRow[], v6: boolean): HTMLElement {

@@ -20,10 +20,10 @@ import { SimProfile, customProfile, simProfile } from '../../model/sim-profiles'
 import { Model, Relation, relationDevices } from '../../model/types';
 import { compareAddr, formatAddr } from '../ipmath';
 import { relParam } from '../routing';
-import { Engine, Frame, Protocols, fmtSec } from './engine';
+import { Engine, Frame, IcmpKind, Protocols, fmtSec, hashIndex } from './engine';
 import { L3Iface, SimDevice, SimAddr } from './net';
 import { ParamChange, Resolved, formatValue, sourceText } from './params';
-import { Msg, Pkt, SessionStatus } from './types';
+import { L4, Msg, Pkt, SessionStatus } from './types';
 
 const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 
@@ -149,6 +149,11 @@ export class ProtocolSim implements Protocols {
   readonly bootHooks: Array<() => void> = [];
   /** a device was powered off (false) or has booted (true) */
   readonly deviceHooks: Array<(dev: string, up: boolean) => void> = [];
+  /** the transport layer (transport.ts): a firewall's policy, a sender's own errors, closed ports, the sweep */
+  filterHook: ((dev: string, pkt: Pkt, from: L3Iface, to: L3Iface) => boolean) | null = null;
+  localErrorHook: ((dev: string, pkt: Pkt, kind: IcmpKind, text: string, mtu?: number) => void) | null = null;
+  portHook: ((dev: string, pkt: Pkt, l3: L3Iface) => boolean) | null = null;
+  readonly sweepHooks: Array<() => void> = [];
   private periodics: Periodic[] = [];
 
   constructor(engine: Engine, behaviours: { [id: string]: Behaviour }) {
@@ -504,11 +509,37 @@ export class ProtocolSim implements Protocols {
     return { protocol: s.protocol, type, label, detail: `${s.profile.label} ${type}: ${detail}`, relation: s.rel.id, data: { from: s.dev, ...data } };
   }
 
+  /**
+   * The transport header of a session's message, from its profile's
+   * transport ("TCP 179", "UDP 3784", "IP 89"): the client side (the
+   * requests' sender, or the relation's earlier endpoint) sends from an
+   * ephemeral port to the protocol's port, the other side back; TCP flags
+   * follow the message (SYN, SYN-ACK, ACK, else PSH and ACK).
+   */
+  l4Of(s: Sess, type: string): L4 | undefined {
+    const p = s.profile.proto;
+    const tcp = /\bTCP\s+([0-9]{1,5})/.exec(p);
+    const udp = /\bUDP\s+([0-9]{1,5})/.exec(p);
+    const ip = /\bIP(?: protocol)?\s+([0-9]{1,3})/.exec(p);
+    const first = [tcp, udp, ip].filter((x): x is RegExpExecArray => !!x).sort((a, b) => a.index - b.index)[0];
+    if (!first) return undefined;
+    if (first === ip) return { proto: 'other', num: Number(ip[1]) };
+    const port = Number(first[1]);
+    const client = s.profile.behaviour === 'service' || s.profile.behaviour === 'custom' ? (s.profile.fromServer ? !s.initiator : s.initiator) : s.initiator;
+    const eph = (dev: string): number => 49152 + hashIndex(s.rel.id + '|' + dev, 16000);
+    const sport = client ? eph(s.dev) : port;
+    const dport = client ? port : eph(s.peer);
+    if (first === udp) return { proto: 'udp', num: 17, sport, dport };
+    const flags = /SYN-ACK/.test(type) ? ['SYN', 'ACK'] : /\bSYN\b/.test(type) ? ['SYN'] : /^TCP ACK$/.test(type) ? ['ACK'] : /\bRST\b/.test(type) ? ['RST'] : /\bFIN\b/.test(type) ? ['FIN', 'ACK'] : ['PSH', 'ACK'];
+    return { proto: 'tcp', num: 6, sport, dport, flags };
+  }
+
   /** Unicast to the peer (its address), along the routing tables. */
   unicast(s: Sess, type: string, detail: string, data: { [k: string]: unknown } = {}, state = ''): void {
     const m = this.msg(s, type, `${s.dev} (${formatAddr(s.local.addr)}) → ${s.peer} (${formatAddr(s.remote.addr)}), ${s.profile.proto}; ${detail}`, data);
-    this.e.note('message', s.protocol, s.dev, s.peer, type, state, m.detail);
+    this.e.note('message', s.protocol, s.dev, s.peer, type, state, m.detail, this.e.now, m);
     const pkt = this.e.newPacket(s.local.addr, s.remote.addr, s.local.l3.vrf, m, [s.rel.id]);
+    pkt.l4 = this.l4Of(s, type);
     this.lane(s.rel, s.dev, s.peer, m, this.e.estimate(s.dev, s.remote.addr));
     this.e.send(s.dev, pkt);
   }
@@ -516,8 +547,9 @@ export class ProtocolSim implements Protocols {
   /** Multicast to a group out of the session's interface (OSPF Hello …): the peers on the segment receive it. */
   multicast(s: Sess, group: IpAddr, type: string, detail: string, data: { [k: string]: unknown } = {}, state = ''): void {
     const m = this.msg(s, type, `${s.dev} (${formatAddr(s.local.addr)}) → ${formatAddr(group)} on ${s.local.l3.id}, ${s.profile.proto}; ${detail}`, data);
-    this.e.note('message', s.protocol, s.dev, s.peer, type, state, m.detail);
+    this.e.note('message', s.protocol, s.dev, s.peer, type, state, m.detail, this.e.now, m);
     const pkt = this.e.newPacket(s.local.addr, group, s.local.l3.vrf, m, [s.rel.id], 1);
+    pkt.l4 = this.l4Of(s, type);
     // the logical view: towards every peer of the relation on that segment
     const peers = (this.byRel.get(s.rel.id) || []).filter((x) => x.dev === s.dev).map((x) => x.peer);
     for (const p of peers) this.lane(s.rel, s.dev, p, m, s.local.l3.kind === 'tunnel' ? this.e.estimate(s.dev, (this.sess(s.protocol, s.rel.id, s.dev, p) as Sess).remote.addr) : 2 * this.e.hopTime());
@@ -530,7 +562,7 @@ export class ProtocolSim implements Protocols {
     const l3mac = this.e.net.macs.get(dev + ':' + port);
     const src = l3mac ? l3mac.mac : sd.bridgeId.split('.')[1] || '00:00:00:00:00:00';
     const m: Msg = { protocol, type, label, detail, relation: rel ? rel.id : undefined, data: { from: dev, port, ...data } };
-    this.e.note('message', protocol, dev, peer, type, '', detail);
+    this.e.note('message', protocol, dev, peer, type, '', detail, this.e.now, m);
     if (rel) this.lane(rel, dev, peer, m, this.e.hopTime());
     this.e.sendOnPort(dev, port, { src, dst: dstMac, msg: m, l2: true });
   }
@@ -575,10 +607,24 @@ export class ProtocolSim implements Protocols {
       if (f) f(dev, l3, msg, pkt);
       return;
     }
+    // a request to a port the device does not listen on (its own listening services leave it out) is refused
+    if (pkt && l3 && this.portHook && !this.portHook(dev, pkt, l3)) return;
     this.startSession(s);
     s.heard = this.e.now;
     const b = this.behaviours.get(s.profile.behaviour) as Behaviour;
     b.rx(this, s, msg, pkt, l3);
+  }
+
+  filter(dev: string, pkt: Pkt, from: L3Iface, to: L3Iface): boolean {
+    return !this.filterHook || this.filterHook(dev, pkt, from, to);
+  }
+
+  localError(dev: string, pkt: Pkt, kind: IcmpKind, text: string, mtu?: number): void {
+    if (this.localErrorHook) this.localErrorHook(dev, pkt, kind, text, mtu);
+  }
+
+  sweep(): void {
+    for (const h of this.sweepHooks) h();
   }
 
   ifaceChange(dev: string, l3: L3Iface, up: boolean): void {

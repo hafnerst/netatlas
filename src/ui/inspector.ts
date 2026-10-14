@@ -2225,7 +2225,7 @@ export class Editor {
       s.value = own !== undefined ? String(own) : '';
       ctl = s;
     } else {
-      ctl = this.e('input', { type: 'text', id: fid, 'data-t': 'sim-attr', 'data-index': String(devIndex), 'data-k': def.yaml, inputmode: 'decimal', autocomplete: 'off', spellcheck: 'false', placeholder: fieldText(def, inh.value), value: written !== undefined ? written : own !== undefined ? fieldText(def, own) : '', 'aria-describedby': describe });
+      ctl = this.e('input', { type: 'text', id: fid, 'data-t': 'sim-attr', 'data-index': String(devIndex), 'data-k': def.yaml, inputmode: def.kind === 'list' ? 'text' : 'decimal', autocomplete: 'off', spellcheck: 'false', placeholder: fieldText(def, inh.value) || formatValue(def, inh.value), value: written !== undefined ? written : own !== undefined ? fieldText(def, own) : '', 'aria-describedby': describe });
     }
     const state = own !== undefined ? `Set on this device: ${formatValue(def, own)}. It would inherit ${inhText}.` : written !== undefined ? `“${written}” is not valid (see Problems); inherited meanwhile: ${inhText}.` : `Inherited: ${inhText}.`;
     return this.e('div', { class: 'field sim-attr' + (own !== undefined ? ' overridden' : ''), 'data-sim-attr': def.yaml }, [

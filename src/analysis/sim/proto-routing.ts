@@ -397,13 +397,33 @@ function bgpConnect(P: ProtocolSim, s: Sess): void {
     return;
   }
   P.setState(s, 'Connect', false, `opening TCP to ${formatAddr(s.remote.addr)} port 179`);
-  P.unicast(s, 'TCP SYN', 'to port 179', {}, 'Connect');
+  bgpSyn(P, s, 0, (s.x.synTok = ((s.x.synTok as number) || 0) + 1));
   const retry = P.timer(s, s.profile, 'connect-retry');
   P.later(s, retry.ms, () => {
     if (s.state === 'Connect' || s.state === 'Active') {
       P.setState(s, 'Active', false, `ConnectRetry timer expired (${retry.text})`);
       bgpConnect(P, s);
     }
+  });
+}
+
+/**
+ * BGP's TCP connection: its SYN is sent again after the initial
+ * retransmission timeout, doubling each time, until the SYN retries are
+ * spent (Layer 4 parameters); then the attempt has timed out and the
+ * ConnectRetry timer tries again.
+ */
+function bgpSyn(P: ProtocolSim, s: Sess, n: number, tok: number): void {
+  P.unicast(s, 'TCP SYN', n ? `to port 179, retransmission ${n}` : 'to port 179', {}, 'Connect');
+  const rto = Math.min(120000, P.e.params.num('tcp-rto', s.dev) * Math.pow(2, n));
+  P.later(s, rto, () => {
+    if (s.state !== 'Connect' || s.x.synTok !== tok) return;
+    const max = P.param('tcp-syn-retries', s.dev);
+    if (n >= Number(max.value)) {
+      P.e.note('state', s.protocol, s.dev, s.peer, 'TCP connect timed out', 'Connect', `${s.rel.id}: ${s.dev}'s TCP connection to ${formatAddr(s.remote.addr)}:179 timed out after ${n} retransmissions (TCP SYN retries ${P.paramText(max)}); the ConnectRetry timer tries again`);
+      return;
+    }
+    bgpSyn(P, s, n + 1, tok);
   });
 }
 

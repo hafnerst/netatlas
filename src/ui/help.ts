@@ -227,9 +227,9 @@ const MANUAL: Section[] = [
     title: 'Start a protocol simulation',
     steps: [
       'Choose **Simulate → Start simulation…**. A dialog shows the simulation’s parameters, one section per layer (*Layer 1 – Physical (8)* …), collapsed: open one to change a value (its default and source are under it; a changed value is marked *modified*; **Reset** puts it back). Choose the protocols shown, then **Start**. The values are remembered for the next start in this browser session.',
-      'The network starts like a freshly booted one: every table empty, every adjacency down, the interfaces coming up. Its messages appear as dots with labels such as *ARP Who has 10.0.0.2? Tell 10.0.0.1*, *OSPF Hello* or *BGP KEEPALIVE*; while one is on its way the playback slows down so that you can follow it.',
+      'The network starts like a freshly booted one: every table empty, every adjacency down, the interfaces coming up. Its messages appear as dots with labels such as *ARP Request (broadcast): who has 10.0.0.2?*, *OSPF Hello*, *TCP SYN → 10.1.1.10:443* or *ICMP Net Unreachable from 10.0.0.1*; while one is on its way the playback slows down so that you can follow it. A dot’s shape says how it is addressed: a circle unicast, a square broadcast, a diamond multicast.',
       'The **Simulation** window has **Play / Pause**, **Step** and the speed (0.25× to 10×). **Parameters** has the dialog’s sections: a change applies at once and is written to the event log. **Protocols shown** chooses which messages appear, at any time; the simulation keeps running every protocol.',
-      'The **Status** table shows each session’s state (OSPF neighbours, BGP sessions, IPsec, the VRRP master …); the **Event log** lists every message and change with its full payload, and can be filtered.',
+      'The **Status** table shows each session’s state (OSPF neighbours, BGP sessions, IPsec, the VRRP master, tests, a load balancer’s pool …); the **Event log** lists every message and change with its full payload, and can be filtered by text, by layer and by cast (unicast, broadcast, multicast).',
       '**Exit simulation** or `Esc` ends it. Nothing in the model changes.',
     ],
     notes: [
@@ -255,12 +255,38 @@ const MANUAL: Section[] = [
     id: 'sim-tables',
     title: 'Look at ARP and MAC tables',
     steps: [
-      'During a simulation, click a device: a small menu offers **Show ARP table**, and for a switch **Show MAC table**. (Or use the list under **ARP, neighbour and MAC tables** in the Simulation window.)',
+      'During a simulation, click a device: a small menu offers **Show ARP table**, for a switch **Show MAC table**, **Show connections** and, for a firewall, **Show sessions**. (Or use the list under **Tables** in the Simulation window.)',
       'Each table opens beside the device, titled *ARP table · core1*. Open several to compare them; drag one aside by its title; **×** or `Esc` closes it.',
       'At the top: the timers in effect, each with where it comes from (*device*, *simulation* or *default* and its source). The rows show the address, the MAC (*(simulated)* when NetAtlas generated it), the interface, VLAN, type, state, age and when it expires.',
       'The ARP timeout is 4 hours by default: choose a faster **timer scale** in the window to see entries age in a demonstration. It changes nothing in the model.',
     ],
     figures: [['arp-table', 'core1’s ARP table during a simulation: the timers (its own ARP timeout of 5 minutes), and entries with generated MAC addresses.']],
+  },
+  {
+    id: 'sim-test',
+    title: 'Send a test and inspect a packet',
+    steps: [
+      'During a simulation, click a device and choose **Send test…** (or open **Send test** in the Simulation window). **From** is that device; in **To** write a device, an interface (`device:interface`), an address, a subnet broadcast (offered in the list), *255.255.255.255* or a multicast group.',
+      'Choose the test: **ICMP echo** (ping), a **TCP connection** or a **UDP request**, with its port; optionally the data size, **Don’t fragment** and, for TCP, keeping the connection open. Press **Send test**.',
+      'The result shows under it, in the Status table and in the event log: *answered* (with the round trip), *connection refused* (a TCP RST from a closed port), an ICMP error that came back (*Net Unreachable*, *Port Unreachable*, *Administratively Prohibited* from a firewall, *Fragmentation Needed* …) or *timed out*.',
+      'Click a dot, or the message of a row in the event log (Enter on it from the keyboard): the **packet inspector** shows its frame layer by layer: the MAC addresses and what they are (broadcast, a multicast group’s MAC), the VLAN tag, the IP header (TTL, Don’t Fragment, protocol), the ports and TCP flags or the ICMP type with the quoted header, and what it carries.',
+      '**Show connections** on a device lists its open ports and connections (LISTEN, ESTABLISHED, TIME_WAIT …); **Show sessions** on a firewall its session table with the rule that permitted each.',
+    ],
+    notes: [
+      'Endpoints can send test traffic by themselves: turn on **Endpoint test traffic** under Layer 4 (or in an endpoint’s Simulation section). They ping their gateway and test the servers of their service relations every few seconds.',
+      'Which ports a server listens on: its **Listening services**, else the ports of the relations it serves. A firewall passes the model’s relations and what its **Also permits** list allows; anything else it drops, or rejects.',
+    ],
+    figures: [['packet-inspector', 'The packet inspector for a TCP SYN on its way: the Ethernet header with its MAC addresses, the IPv4 header with TTL and Don’t Fragment, the TCP ports and flags.']],
+  },
+  {
+    id: 'sim-broadcast',
+    title: 'See a broadcast domain and a broadcast storm',
+    steps: [
+      'During a simulation, click a device or a cable and choose **Highlight broadcast domain** (for a device with several interfaces, or a cable with several VLANs, choose one). The devices, ports and cables a broadcast reaches from there are marked, the rest dimmed; routers end it. Choose **Clear broadcast domain highlight** to remove it.',
+      'A loop of switches whose **Spanning tree** is **Off** (Layer 2, or a switch’s Simulation section) storms: the first broadcast comes back, circulates and multiplies. The banner and the Simulation window warn; the event log shows the storm and MAC addresses moving between ports.',
+      'End it by failing one of the loop’s cables or setting the spanning tree back on. **Storm control** on a switch (its Simulation section) drops the looping frames at its ports.',
+    ],
+    figures: [['bc-domain', 'Highlight broadcast domain from the lab host: its switches, ports and cables marked, both cables between the switches among them (their spanning tree is off).']],
   },
   {
     id: 'sim-fail',

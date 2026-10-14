@@ -17,6 +17,8 @@ export interface SimulationMode {
   key(): string;
   /** what is failed in the simulated state (null: nothing) */
   failure(): FailureResult | null;
+  /** refs the diagram highlights on top (a broadcast domain; null: none) */
+  highlighted?(): Set<string> | null;
   /** called once when simulation mode ends (Exit simulation, Esc, another model) */
   stop(): void;
 }

@@ -67,9 +67,13 @@ import { declaredUnderlay, encapStack, tunnelRelation, tracePath } from '../trac
 import { BROADCAST, isGroupMac, isMulticastIp, multicastMac, rng, solicitedNode, modelSeed, shortMac } from './mac';
 import { BridgePort, CableEnd, L3Iface, SimDevice, SimNet, buildNet, carries, ingressVlan, otherEnd, portKey, spanningTree } from './net';
 import { ParamChange, ParamValue, Resolved, SimParams, changeText, durationText, formatValue, resolvedText, sourceText } from './params';
-import { ArpRow, ArpType, Flight, MacRow, Msg, NdState, NetEvent, Pkt, SimEvent, TableTimer, Track } from './types';
+import { ArpRow, ArpType, Cast, Flight, Headers, MacRow, Msg, NdState, NetEvent, Pkt, Quote, SimEvent, TableTimer, Track } from './types';
 import { parseSpeed } from '../../model/speed';
 
+/** A packet's fragments that have not all arrived within this are dropped (Linux ipfrag_time 30 s). */
+export const REASSEMBLY_MS = 30000;
+/** A frame going round a Layer 2 loop without spanning tree is followed for this many rounds (a real storm goes on until the loop is broken). */
+export const STORM_ROUNDS = 6;
 /** Flights are kept this long after they end (for the animation and the export). */
 const FLIGHT_KEEP = 4000;
 /** A message's payload in bytes when its protocol says nothing (for the serialization time). */
@@ -107,7 +111,12 @@ export interface Frame {
   l2?: boolean;
   /** a layer-2 PDU of a routing protocol (IS-IS): bridged like any multicast frame, handed to the protocols */
   pdu?: boolean;
+  /** a frame going round a Layer 2 loop without spanning tree: how many times it came back (a storm) */
+  loops?: number;
 }
+
+/** Why an ICMP error is sent (engine.icmpError). */
+export type IcmpKind = 'net' | 'host' | 'ttl' | 'frag' | 'port' | 'admin' | 'reassembly';
 
 /** What the engine asks of the protocols (analysis/sim/protocols.ts). */
 export interface Protocols {
@@ -135,6 +144,12 @@ export interface Protocols {
   deviceUp?(dev: string): void;
   /** parameters changed: periodic timers are rescheduled */
   paramsChanged?(changes: ParamChange[]): void;
+  /** a firewall's policy for a packet it would forward: pass, or dropped / rejected (it logs and answers itself) */
+  filter?(dev: string, pkt: Pkt, from: L3Iface, to: L3Iface): boolean;
+  /** a packet a device sent itself could not go (no route, no ARP answer, too big): the sender's own error, no ICMP on the wire */
+  localError?(dev: string, pkt: Pkt, kind: IcmpKind, text: string, mtu?: number): void;
+  /** the table sweep (once a second): the transport's timers and the firewalls' sessions */
+  sweep?(): void;
 }
 
 interface QItem {
@@ -157,8 +172,8 @@ interface ArpEntry {
   timer: number;
   tries: number;
   used: boolean;
-  /** packets waiting for the address */
-  queue: Array<{ pkt: Pkt; send: (mac: string) => void }>;
+  /** packets waiting for the address (fwd: one being routed, not its own) */
+  queue: Array<{ pkt: Pkt; send: (mac: string) => void; fwd: boolean }>;
   /** when the last request went out */
   sentAt: number;
 }
@@ -246,7 +261,7 @@ export class Engine {
   private fwdAt = new Map<string, number>();
   /** bumped whenever what the diagram marks changes (an event, a cable going down or up) */
   stateVersion = 0;
-  private stp = new Map<number, { root: string; blocked: Set<string>; ports: Set<string> }>();
+  private stp = new Map<number, Tree>();
   private arp = new Map<string, Map<string, ArpEntry>>();
   private macs = new Map<string, Map<string, MacEntry>>();
   private l3State = new Map<string, boolean>();
@@ -259,6 +274,19 @@ export class Engine {
   routingVersion = 0;
   private estimates = new Map<string, number>();
   private macFullNoted = new Set<string>();
+  /** when each device last sent an ICMP error (its rate limit) */
+  private icmpLast = new Map<string, number>();
+  /** the subnets' broadcast addresses in the model (IPv4, prefix ≤ 30) */
+  private bcasts = new Set<string>();
+  /** fragments waiting for the rest of their packet ("dev|src|dst|id") */
+  private frags = new Map<string, { got: Map<number, number>; first: number; pkt: Pkt; l3: L3Iface; dev: string }>();
+  /** VLANs with a broadcast storm going on (a Layer 2 loop without spanning tree): since when, over which cables */
+  readonly storms = new Map<number, { since: number; links: string[]; frames: number }>();
+  private stormNoted = new Map<string, number>();
+  /** a wireless client's last frame (its access point's idle timeout), by link */
+  private wifiActive = new Map<string, number>();
+  /** the log line of a message, by the message (its headers when it is sent) */
+  private msgEvents = new WeakMap<Msg, SimEvent>();
 
   constructor(model: Model, opts: EngineOptions = {}) {
     this.model = model;
@@ -275,6 +303,7 @@ export class Engine {
       for (const l3 of d.l3.values()) this.l3State.set(d.id + ':' + l3.id, true);
     }
     for (const d of this.net.devices.values()) if (d.bridge) this.staticMacs(d);
+    for (const d of this.net.devices.values()) for (const l3 of d.l3.values()) for (const a of l3.addrs) if (a.addr.version === 4 && a.net.prefix <= 30) this.bcasts.add(formatAddr(subnetBroadcast(a)));
   }
 
   // ------------------------------------------------------------ time and events
@@ -387,13 +416,21 @@ export class Engine {
 
   // ------------------------------------------------------------ the log
 
-  note(kind: SimEvent['kind'], protocol: string, device: string, peer: string, what: string, state: string, detail: string, t = this.now): void {
-    this.log.push({ t, seq: this.logSeq++, kind, protocol, device, peer, what, state, detail });
+  note(kind: SimEvent['kind'], protocol: string, device: string, peer: string, what: string, state: string, detail: string, t = this.now, msg?: Msg): void {
+    const ev: SimEvent = { t, seq: this.logSeq++, kind, protocol, device, peer, what, state, detail };
+    if (msg) this.msgEvents.set(msg, ev);
+    this.log.push(ev);
     if (this.log.length > LOG_MAX + 500) {
       const n = this.log.length - LOG_MAX;
       this.log.splice(0, n);
       this.logDropped += n;
     }
+  }
+
+  /** A log line at a moment still to come (a frame's way is decided when it is sent): written when that moment comes, so the log stays in time order. */
+  private noteAt(t: number, kind: SimEvent['kind'], protocol: string, device: string, peer: string, what: string, state: string, detail: string): void {
+    if (t <= this.now) this.note(kind, protocol, device, peer, what, state, detail);
+    else this.at(t, () => this.note(kind, protocol, device, peer, what, state, detail));
   }
 
   // ------------------------------------------------------------ what is up
@@ -585,14 +622,100 @@ export class Engine {
 
   // ------------------------------------------------------------ spanning tree and MAC tables
 
-  /** The spanning tree of a VLAN (cached until a cable goes down or up). */
-  tree(vlan: number): { root: string; blocked: Set<string>; ports: Set<string> } {
-    let t = this.stp.get(vlan);
+  /**
+   * The spanning tree of a VLAN (cached until a cable goes down or up). A
+   * switch whose spanning tree is off blocks none of its ports: a loop
+   * stays open when no switch on it runs one (its cables in `loops`).
+   */
+  tree(vlan: number): Tree {
+    let t: Tree | undefined = this.stp.get(vlan);
     if (!t) {
-      t = spanningTree(this.net, vlan, (id) => !this.linkUp(id) || !this.bridging(id));
+      const st = spanningTree(this.net, vlan, (id) => !this.linkUp(id) || !this.bridging(id));
+      const tr: Tree = { ...st, loops: [] };
+      const freed: string[] = [];
+      for (const k of Array.from(tr.blocked).sort(cmp)) {
+        if (!this.stpOff(k.slice(0, k.indexOf('|')))) continue;
+        tr.blocked.delete(k);
+        freed.push(k);
+      }
+      for (const k of freed) {
+        const dev = k.slice(0, k.indexOf('|'));
+        const sd = this.net.devices.get(dev) as SimDevice;
+        const bp = sd.bridgePorts.get(k.slice(k.indexOf('|') + 1));
+        if (!bp) continue;
+        for (const m of bp.members) {
+          const e = this.net.ends.get(portKey(dev, m));
+          if (!e) continue;
+          const o = otherEnd(this.net, e);
+          const od = this.net.devices.get(o.device);
+          const obp = od && od.bridge ? od.portOf.get(o.port) : undefined;
+          if (obp !== undefined && !tr.blocked.has(portKey(o.device, obp)) && tr.loops.indexOf(e.link) < 0) tr.loops.push(e.link);
+        }
+      }
+      tr.loops.sort(cmp);
+      t = tr;
       this.stp.set(vlan, t);
     }
     return t;
+  }
+
+  /** Does a switch run no spanning tree (its spanning tree mode is off)? */
+  stpOff(dev: string): boolean {
+    const sd = this.net.devices.get(dev);
+    return !!sd && sd.dev.type === 'switch' && this.params.str('stp-mode', dev) === 'off';
+  }
+
+  /**
+   * A frame came back to a bridge it passed: a Layer 2 loop no spanning
+   * tree blocks (else nothing: it is not followed twice). A broadcast
+   * storm in its VLAN: the frame goes round again (followed for
+   * STORM_ROUNDS rounds; a real one circulates until the loop is broken),
+   * unless the port's storm control drops it (a loop forwards at line rate,
+   * above any threshold).
+   */
+  private loopsBack(sd: SimDevice, port: string, vlan: number, frame: Frame, t: number): boolean {
+    const tr = this.tree(vlan);
+    if (!tr.loops.length) return false;
+    const where = vlan ? 'VLAN ' + vlan : 'the untagged frames';
+    let st = this.storms.get(vlan);
+    if (!st) {
+      st = { since: t, links: tr.loops.slice(), frames: 0 };
+      this.storms.set(vlan, st);
+      this.stateVersion++;
+      this.at(t, () => this.note('link', 'stp', sd.id, '', 'Broadcast storm', 'storm', `Broadcast storm in ${where}: ${frame.msg.label} came back to ${sd.id} over a loop that no spanning tree blocks (it closes over cable ${tr.loops.join(', ')}); flooded frames circulate and multiply, and MAC addresses move between ports`));
+    }
+    st.frames++;
+    const cast = castOf(frame.dst);
+    if (cast !== 'unicast') {
+      const r = this.params.get(cast === 'multicast' ? 'storm-mc' : 'storm-bc', sd.id);
+      if (Number(r.value) > 0) {
+        const k = `sc|${sd.id}|${port}`;
+        if (!this.stormNoted.has(k) || t - (this.stormNoted.get(k) as number) >= 1000) {
+          this.stormNoted.set(k, t);
+          this.at(t, () => this.note('drop', 'stp', sd.id, '', 'storm control', '', `Storm control on ${sd.id}:${port} drops the looping ${cast} frames (${frame.msg.label}): a loop forwards them at line rate, far above its threshold of ${formatValue(r.def, r.value)} frames/s (${sourceText(r)})`));
+        }
+        return false;
+      }
+    }
+    if ((frame.loops || 0) + 1 > STORM_ROUNDS) {
+      const k = `rounds|${vlan}`;
+      if (!this.stormNoted.has(k) || t - (this.stormNoted.get(k) as number) >= 1000) {
+        this.stormNoted.set(k, t);
+        this.at(t, () => this.note('note', 'stp', sd.id, '', 'storm', 'storm', `${frame.msg.label} has gone round the loop in ${where} ${STORM_ROUNDS} times: the simulation stops following it (in a real network it circulates until the loop is broken, filling the links)`));
+      }
+      return false;
+    }
+    return true;
+  }
+
+  /** The storms that are over: their loop is broken (a cable down, spanning tree on). */
+  private endStorms(): void {
+    for (const vlan of Array.from(this.storms.keys()).sort((a, b) => a - b)) {
+      if (this.tree(vlan).loops.length) continue;
+      this.storms.delete(vlan);
+      this.stateVersion++;
+      this.note('link', 'stp', '', '', 'Storm over', 'up', `The broadcast storm in ${vlan ? 'VLAN ' + vlan : 'the untagged frames'} is over: its loop is broken`);
+    }
   }
 
   /** Do both ends of a cable bridge now (a switch powered off takes no part in the tree)? */
@@ -617,6 +740,7 @@ export class Engine {
     const hello = this.params.num('stp-hello', dev);
     const fd = this.params.num('stp-forward-delay', dev);
     const age = this.params.num('stp-max-age', dev);
+    if (mode === 'off') return { ms: 0, why: 'no spanning tree' };
     if (mode === 'stp') return direct ? { ms: 2 * fd, why: `STP: listening and learning, 2 × forward delay ${durationText(fd)}` } : { ms: age + 2 * fd, why: `STP: max age ${durationText(age)} + 2 × forward delay ${durationText(fd)}` };
     return direct ? { ms: 0, why: 'RSTP: the alternate port takes over at once' } : { ms: 3 * hello, why: `RSTP: 3 × hello ${durationText(hello)} before the old information ages out` };
   }
@@ -659,6 +783,7 @@ export class Engine {
         for (const [k, e] of Array.from(tab)) if (e.type === 'dynamic' && e.vlan === vlan) tab.delete(k);
       }
     }
+    this.endStorms();
   }
 
   private staticMacs(d: SimDevice): void {
@@ -679,14 +804,14 @@ export class Engine {
       e.refreshed = Math.max(e.refreshed, t);
       return;
     }
-    if (e) this.note('table', 'stp', d.id, '', 'MAC moved', '', `${mac} (VLAN ${vlan || 'untagged'}) moved from port ${e.port} to ${port}`, t);
+    if (e) this.noteAt(t, 'table', 'stp', d.id, '', 'MAC moved', '', `${mac} (VLAN ${vlan || 'untagged'}) moved from port ${e.port} to ${port}`);
     else {
       // a full table learns nothing new: frames to the address are flooded
       const size = this.params.num('mac-table-size', d.id);
       if (tab.size >= size) {
         if (!this.macFullNoted.has(d.id)) {
           this.macFullNoted.add(d.id);
-          this.note('table', 'stp', d.id, '', 'MAC table full', '', `${d.id} MAC table is full (${size} entries, ${sourceText(this.params.get('mac-table-size', d.id))}): ${mac} is not learned; frames to it are flooded`, t);
+          this.noteAt(t, 'table', 'stp', d.id, '', 'MAC table full', '', `${d.id} MAC table is full (${size} entries, ${sourceText(this.params.get('mac-table-size', d.id))}): ${mac} is not learned; frames to it are flooded`);
         }
         return;
       }
@@ -734,7 +859,7 @@ export class Engine {
     // a device that is off sends nothing (its timers stop with it; this is the safety net)
     if (this.off.has(dev)) return;
     if (!this.isL3Up(dev, l3.id)) {
-      this.note('drop', frame.msg.protocol, dev, '', frame.msg.type, '', `not sent: ${dev}:${l3.id} is down (${frame.msg.label})`, t);
+      this.noteAt(t, 'drop', frame.msg.protocol, dev, '', frame.msg.type, '', `not sent: ${dev}:${l3.id} is down (${frame.msg.label})`);
       return;
     }
     if (l3.kind === 'svi') {
@@ -789,19 +914,8 @@ export class Engine {
   /** A frame's size on the wire (bytes): Ethernet header and FCS, the IP headers of every encapsulation, the payload (at least 64). */
   frameBytes(frame: Frame): number {
     if (frame.arp) return 64;
-    let n = 18;
-    let p = frame.ip;
-    while (p) {
-      n += p.dst.version === 4 ? 20 : 40;
-      if (p.encap) n += /ESP/i.test(p.encap) ? 36 : 4;
-      if (!p.inner) {
-        const sz = p.msg.data && typeof (p.msg.data as { size?: unknown }).size === 'number' ? ((p.msg.data as { size: number }).size as number) : p.msg.protocol === 'demand' ? 1400 : PAYLOAD;
-        n += sz;
-      }
-      p = p.inner;
-    }
-    if (!frame.ip) n += frame.nd ? 32 : PAYLOAD;
-    return Math.max(64, n);
+    if (!frame.ip) return Math.max(64, 18 + (frame.nd ? 32 : PAYLOAD));
+    return Math.max(64, 18 + ipLen(frame.ip));
   }
 
   /**
@@ -841,26 +955,107 @@ export class Engine {
   private transmit(dev: string, port: string, frame: Frame, tag: number | null, t: number, parent: number | undefined, seen: Set<string>): void {
     const e = this.net.ends.get(portKey(dev, port));
     if (!e) return;
-    const l = this.net.links.get(e.link) as { direction: string };
+    const l = this.net.links.get(e.link) as Link;
     if (l.direction === 'unidirectional' && e.end === 'b') return;
+    if (l.medium === 'wireless') {
+      const at = this.wireless(e.link, dev, frame, t);
+      if (at === null) return;
+      t = at;
+    }
     const w = this.wire(e.link, e.end, frame, t);
     const o = otherEnd(this.net, e);
     const f = this.flight(w.start, w.end, frame.msg, 'physical', { ref: 'link:' + e.link, from: e.end, to: o.end }, parent, frameEncap(frame));
-    f.encapProtocols = encapProtocols(frame);
+    this.inspectable(f, frame, tag);
+    if (frame.ip && frame.ip.frag) f.label += ` (fragment ${frame.ip.frag.i}/${frame.ip.frag.n})`;
     if (!this.cableUp(e.link)) {
       f.dropped = (w.start + w.end) / 2;
       f.t1 = f.dropped;
-      this.note('drop', frame.msg.protocol, dev, o.device, frame.msg.type, '', `dropped on ${e.link}: the cable is ${this.cable.get(e.link) === 'negotiating' ? 'still coming up' : 'down'}${this.linkUp(e.link) ? ' (its ports have not noticed yet: loss-of-signal detection)' : ''} (${frame.msg.label})`, w.start);
+      this.noteAt(w.start, 'drop', frame.msg.protocol, dev, o.device, frame.msg.type, '', `dropped on ${e.link}: the cable is ${this.cable.get(e.link) === 'negotiating' ? 'still coming up' : 'down'}${this.linkUp(e.link) ? ' (its ports have not noticed yet: loss-of-signal detection)' : ''} (${frame.msg.label})`);
       return;
     }
     if (w.lost) {
       f.dropped = (w.start + w.end) / 2;
       f.t1 = f.dropped;
       const r = this.loss(e.link);
-      this.note('drop', frame.msg.protocol, dev, o.device, frame.msg.type, '', `lost on ${e.link} (packet loss ${resolvedText(r)}): ${frame.msg.label}`, w.start);
+      this.noteAt(w.start, 'drop', frame.msg.protocol, dev, o.device, frame.msg.type, '', `lost on ${e.link} (packet loss ${resolvedText(r)}): ${frame.msg.label}`);
       return;
     }
     this.arrive(o.device, o.port, frame, tag, w.end, f.id, seen);
+  }
+
+  /** A flight's shape (unicast, broadcast, multicast) and the frame's headers for the inspector; the message's log line gets them too (as first sent). */
+  private inspectable(f: Flight, frame: Frame, tag: number | null): void {
+    f.encapProtocols = encapProtocols(frame);
+    f.cast = castOf(frame.dst);
+    f.hdr = this.headers(frame, tag);
+    const ev = this.msgEvents.get(frame.msg);
+    if (ev && !ev.hdr) ev.hdr = f.hdr;
+  }
+
+  /**
+   * A frame on a wireless link: a client silent for its access point's idle
+   * timeout was disassociated; its next frame waits for the next beacon and
+   * the association first, and the access point's frames to it are dropped
+   * meanwhile (null). Returns when the frame goes.
+   */
+  private wireless(link: string, dev: string, frame: Frame, t: number): number | null {
+    const l = this.net.links.get(link) as Link;
+    const ap = [l.a.device, l.b.device].find((d) => (this.model.index.devices.get(d) || { type: '' }).type === 'ap');
+    if (!ap) return t;
+    const client = l.a.device === ap ? l.b.device : l.a.device;
+    const idle = this.params.get('ap-idle', ap);
+    const last = this.wifiActive.has(link) ? (this.wifiActive.get(link) as number) : 0;
+    const gone = t - last > Number(idle.value);
+    if (dev === client) {
+      if (!gone) {
+        this.wifiActive.set(link, Math.max(last, t));
+        return t;
+      }
+      const assoc = this.params.get('ap-association', ap);
+      const wait = this.beaconWait(ap, t);
+      const at = t + wait + Number(assoc.value);
+      this.wifiActive.set(link, at);
+      this.noteAt(t, 'link', 'link', client, ap, 'Associates again', 'up', `${client} was disassociated by ${ap} at t = ${fmtSec(last + Number(idle.value))} (client idle timeout ${resolvedText(idle)}): to send ${frame.msg.label} it waits for the next beacon (${wait > 0 ? 'in ' + durationText(wait) : 'at once'}) and associates again (${resolvedText(assoc)}), up at t = ${fmtSec(at)}`);
+      return at;
+    }
+    if (!gone) return t;
+    const k = 'idle|' + link;
+    if (this.stormNoted.get(k) !== last) {
+      this.stormNoted.set(k, last);
+      this.noteAt(t, 'drop', frame.msg.protocol, ap, client, frame.msg.type, '', `${ap} drops ${frame.msg.label} for ${client}: it is not associated (silent since t = ${fmtSec(last)}, client idle timeout ${resolvedText(idle)}); later frames to it are dropped as well until it sends again`);
+    }
+    return null;
+  }
+
+  /** The time to an access point's next beacon (beacons at whole multiples of its beacon interval). */
+  private beaconWait(ap: string, t: number): number {
+    const bi = Math.max(1, this.params.num('ap-beacon', ap));
+    return Math.ceil(t / bi - 1e-9) * bi - t;
+  }
+
+  /** A frame's headers layer by layer (the packet inspector). */
+  headers(frame: Frame, tag: number | null): Headers {
+    const cast = castOf(frame.dst);
+    const ips: Headers['l3'] = [];
+    let p = frame.ip;
+    let inner: Pkt | undefined;
+    while (p) {
+      ips.push({ version: p.dst.version, src: formatAddr(p.src), dst: formatAddr(p.dst), ttl: p.ttl, df: p.dst.version === 6 || !!p.df, proto: protoText(p), len: ipLen(p), frag: p.frag ? `fragment ${p.frag.i} of ${p.frag.n}, offset ${p.frag.offset}` : undefined, encap: p.encap });
+      inner = p;
+      p = p.inner;
+    }
+    const ethertype = frame.arp ? 'ARP (0x0806)' : frame.ip ? (frame.ip.dst.version === 4 ? 'IPv4 (0x0800)' : 'IPv6 (0x86dd)') : frame.msg.protocol === 'lacp' ? 'Slow protocols (0x8809)' : frame.msg.protocol === 'lldp' ? 'LLDP (0x88cc)' : 'LLC (IEEE 802.3 length field)';
+    const h: Headers = {
+      cast,
+      protocol: frame.msg.protocol,
+      label: frame.msg.label,
+      l2: { src: frame.src, dst: frame.dst, dstNote: macNote(frame), vlan: tag, ethertype, bytes: this.frameBytes(frame) },
+      l3: ips,
+      payload: frame.msg.detail,
+    };
+    if (frame.arp) h.arp = { op: frame.arp.gratuitous ? 'request (gratuitous)' : frame.arp.op, senderMac: frame.arp.sha, senderIp: formatAddr(frame.arp.spa), targetMac: frame.arp.tha, targetIp: formatAddr(frame.arp.tpa) };
+    if (inner && inner.l4) h.l4 = inner.l4;
+    return h;
   }
 
   private arrive(dev: string, port: string, frame: Frame, tag: number | null, t: number, flight: number, seen: Set<string>): void {
@@ -873,11 +1068,16 @@ export class Engine {
     }
     const bpId = sd.bridge ? sd.portOf.get(port) : undefined;
     if (sd.bridge && bpId !== undefined) {
-      if (seen.has(dev)) return;
       const bp = sd.bridgePorts.get(bpId) as BridgePort;
       const vlan = ingressVlan(bp.vlans, tag);
+      if (seen.has(dev)) {
+        // back at a bridge it passed: a loop without spanning tree (a storm), else not followed twice
+        if (vlan === null || this.blocked(dev, bpId, vlan) || !this.loopsBack(sd, port, vlan, frame, t)) return;
+        frame = { ...frame, loops: (frame.loops || 0) + 1 };
+        seen = new Set();
+      }
       if (vlan === null) {
-        this.note('drop', frame.msg.protocol, dev, '', frame.msg.type, '', `dropped at ${dev}:${port}: ${tag ? 'VLAN ' + tag + ' is not allowed on the port' : 'the trunk has no native VLAN for untagged frames'} (${frame.msg.label})`, t);
+        this.noteAt(t, 'drop', frame.msg.protocol, dev, '', frame.msg.type, '', `dropped at ${dev}:${port}: ${tag ? 'VLAN ' + tag + ' is not allowed on the port' : 'the trunk has no native VLAN for untagged frames'} (${frame.msg.label})`);
         return;
       }
       if (this.blocked(dev, bpId, vlan)) return;
@@ -1015,12 +1215,17 @@ export class Engine {
     const sd = this.net.devices.get(dev) as SimDevice;
     // a neighbour's packet confirms its entry when it uses it (a refresh of what it sent from)
     const own = this.ownsAddress(dev, pkt.dst, l3.vrf);
-    if (isMulticastIp(pkt.dst) || own) {
+    const bcast = this.broadcastFor(l3, pkt.dst);
+    // its own broadcast or multicast, back over a loop: ignored
+    if ((bcast || isMulticastIp(pkt.dst)) && (frame.loops || 0) > 0 && this.ownsAddress(dev, pkt.src)) return;
+    if (isMulticastIp(pkt.dst) || own || bcast) {
       if (pkt.encap && pkt.inner) {
         this.decapsulate(dev, l3, pkt);
         return;
       }
-      if (this.protocols) this.protocols.ip(dev, own || l3, pkt);
+      this.deliverLocal(dev, own || l3, pkt);
+      // a broadcast stays in its subnet: no router forwards it
+      if (bcast && sd.routes && isLimitedBroadcast(pkt.dst)) this.note('drop', pkt.msg.protocol, dev, '', pkt.msg.type, '', `${dev} takes the limited broadcast ${formatAddr(pkt.dst)} itself and routes it nowhere: it never leaves its subnet (${pkt.msg.label})`);
       return;
     }
     if (!sd.routes) {
@@ -1030,11 +1235,61 @@ export class Engine {
     }
     // a router: forward, with the TTL decremented and the MACs rewritten
     if (pkt.ttl <= 1) {
-      this.note('drop', pkt.msg.protocol, dev, '', pkt.msg.type, '', `TTL expired at ${dev} (${formatAddr(pkt.src)} → ${formatAddr(pkt.dst)}): ${pkt.msg.label}`);
+      this.note('drop', pkt.msg.protocol, dev, '', pkt.msg.type, '', `TTL expired at ${dev} (${formatAddr(pkt.src)} → ${formatAddr(pkt.dst)}, TTL ${pkt.ttl}): ${pkt.msg.label}`);
+      this.icmpError(dev, pkt, 'ttl', { from: l3 });
       return;
     }
     const next: Pkt = { ...pkt, ttl: pkt.ttl - 1 };
     this.forward(dev, next, { l3, frame });
+  }
+
+  /** Is an address a broadcast for an interface: 255.255.255.255, or the broadcast address of one of its subnets? */
+  private broadcastFor(l3: L3Iface, a: IpAddr): boolean {
+    if (a.version !== 4) return false;
+    if (isLimitedBroadcast(a)) return true;
+    return l3.addrs.some((x) => x.addr.version === 4 && x.net.prefix <= 30 && compareAddr(subnetBroadcast(x), a) === 0);
+  }
+
+  /** Is an address the broadcast address of a subnet somewhere in the model (or 255.255.255.255)? */
+  isBroadcastAddr(a: IpAddr): boolean {
+    return a.version === 4 && (isLimitedBroadcast(a) || this.bcasts.has(formatAddr(a)));
+  }
+
+  /**
+   * A packet for this device: a fragment waits for the rest of its packet
+   * (reassembled when the last arrives; given up after REASSEMBLY_MS with
+   * an ICMP Time Exceeded), anything else goes to the protocols.
+   */
+  private deliverLocal(dev: string, l3: L3Iface, pkt: Pkt): void {
+    if (!pkt.frag) {
+      if (this.protocols) this.protocols.ip(dev, l3, pkt);
+      return;
+    }
+    const key = `${dev}|${formatAddr(pkt.src)}|${formatAddr(pkt.dst)}|${pkt.id}`;
+    let b = this.frags.get(key);
+    if (!b) {
+      b = { got: new Map(), first: this.now, pkt, l3, dev };
+      this.frags.set(key, b);
+      const buf = b;
+      this.after(REASSEMBLY_MS, () => {
+        if (this.frags.get(key) !== buf) return;
+        this.frags.delete(key);
+        this.note('drop', pkt.msg.protocol, dev, '', pkt.msg.type, '', `${dev} gives up reassembling ${pkt.msg.label}: ${buf.got.size} fragment${buf.got.size === 1 ? '' : 's'} arrived, not all, within ${durationText(REASSEMBLY_MS)}`);
+        if (buf.got.has(0)) this.icmpError(dev, buf.pkt, 'reassembly', { from: buf.l3 });
+      });
+    }
+    b.got.set(pkt.frag.offset, pkt.len || 0);
+    if (pkt.frag.offset === 0) b.pkt = pkt;
+    let bytes = 0;
+    for (const n of b.got.values()) bytes += n;
+    if (bytes < pkt.frag.whole) {
+      this.note('table', pkt.msg.protocol, dev, '', 'fragment', '', `${dev} holds fragment ${pkt.frag.i} of ${pkt.frag.n} of ${pkt.msg.label} (${bytes} of ${pkt.frag.whole} bytes arrived)`);
+      return;
+    }
+    this.frags.delete(key);
+    const whole: Pkt = { ...pkt, frag: undefined, len: pkt.frag.whole };
+    this.note('table', pkt.msg.protocol, dev, '', 'reassembled', '', `${dev} reassembled ${pkt.msg.label} from its ${b.got.size} fragments (${pkt.frag.whole} bytes)`);
+    if (this.protocols) this.protocols.ip(dev, b.l3, whole);
   }
 
   /** The tunnels a packet's outer header ends at: the inner packet continues as if it came in on the tunnel interface. */
@@ -1050,10 +1305,16 @@ export class Engine {
     const via = tun || at;
     if (this.ownsAddress(dev, inner.dst) || isMulticastIp(inner.dst)) {
       if (inner.encap && inner.inner) this.decapsulate(dev, via, inner);
-      else if (this.protocols) this.protocols.ip(dev, this.ownsAddress(dev, inner.dst) || via, inner);
+      else this.deliverLocal(dev, this.ownsAddress(dev, inner.dst) || via, inner);
       return;
     }
-    if (sd.routes) this.forward(dev, { ...inner, ttl: inner.ttl - 1 }, { l3: via, frame: null });
+    if (!sd.routes) return;
+    if (inner.ttl <= 1) {
+      this.note('drop', inner.msg.protocol, dev, '', inner.msg.type, '', `TTL expired at ${dev} (${formatAddr(inner.src)} → ${formatAddr(inner.dst)}, TTL ${inner.ttl}): ${inner.msg.label}`);
+      this.icmpError(dev, inner, 'ttl', { from: via });
+      return;
+    }
+    this.forward(dev, { ...inner, ttl: inner.ttl - 1 }, { l3: via, frame: null });
   }
 
   // ------------------------------------------------------------ layer 3: sending
@@ -1091,7 +1352,51 @@ export class Engine {
       this.emit(dev, out, { src: out.mac, dst: multicastMac(pkt.dst), msg: pkt.msg, ip: pkt });
       return;
     }
+    // a broadcast: the limited broadcast out of `out` (else its first interface that is up with an IPv4 address); a broadcast of one of its own subnets out of that interface
+    if (pkt.dst.version === 4) {
+      const sd = this.net.devices.get(dev) as SimDevice;
+      const ifs = Array.from(sd.l3.values()).filter((l) => l.kind !== 'loopback' && l.kind !== 'tunnel' && this.isL3Up(dev, l.id) && l.addrs.some((a) => a.addr.version === 4)).sort((a, b) => cmp(a.id, b.id));
+      const via = isLimitedBroadcast(pkt.dst) ? out || ifs[0] : ifs.find((l) => this.broadcastFor(l, pkt.dst) && !isLimitedBroadcast(pkt.dst));
+      if (via) {
+        this.emit(dev, via, { src: via.mac, dst: BROADCAST, msg: pkt.msg, ip: pkt });
+        return;
+      }
+      if (isLimitedBroadcast(pkt.dst)) {
+        this.note('drop', pkt.msg.protocol, dev, '', pkt.msg.type, '', `not sent: ${dev} has no interface up with an IPv4 address (${pkt.msg.label})`);
+        return;
+      }
+    }
     this.forward(dev, pkt, null);
+  }
+
+  /** The MTU of an interface: configured on it, else the simulation's default MTU. */
+  mtu(dev: string, l3: L3Iface): Resolved {
+    const i = this.model.index.interfaces.get(dev + ':' + l3.id);
+    let own = i && i.mtu !== undefined ? i.mtu : undefined;
+    if (own === undefined) {
+      // a subinterface or VLAN interface without its own: its port's
+      for (const p of l3.ports) {
+        const pi = this.model.index.interfaces.get(dev + ':' + p);
+        if (pi && pi.mtu !== undefined) own = own === undefined ? pi.mtu : Math.min(own, pi.mtu);
+      }
+    }
+    return this.params.get('mtu', undefined, own !== undefined ? { value: own, where: `${dev}:${l3.id}` } : null);
+  }
+
+  /**
+   * An IPv4 packet cut into fragments for an MTU (each carries a multiple
+   * of 8 bytes but the last); a fragment is cut again the same way.
+   */
+  private fragment(pkt: Pkt, mtu: number): Pkt[] {
+    const hdr = 20;
+    const per = Math.max(8, Math.floor((mtu - hdr) / 8) * 8);
+    const total = ipLen(pkt) - hdr;
+    const base = pkt.frag ? pkt.frag.offset : 0;
+    const whole = pkt.frag ? pkt.frag.whole : total;
+    const n = Math.ceil(total / per);
+    const out: Pkt[] = [];
+    for (let i = 0; i < n; i++) out.push({ ...pkt, frag: { i: i + 1, n, offset: base + i * per, whole }, len: Math.min(per, total - i * per) });
+    return out;
   }
 
   /** Forward a packet at a device (the sender itself, or a router on the way). */
@@ -1111,7 +1416,13 @@ export class Engine {
     });
     if ((d.kind !== 'forward' || !d.hops.length || intoOwn) && !came && this.viaUnderlay(dev, pkt)) return;
     if (d.kind !== 'forward' || !d.hops.length) {
-      this.note('drop', pkt.msg.protocol, dev, '', pkt.msg.type, '', `dropped at ${dev}: ${d.kind === 'blackhole' ? 'a blackhole route' : 'no route to ' + formatAddr(pkt.dst)}${pkt.vrf ? ' in VRF ' + pkt.vrf : ''} (${pkt.msg.label})`);
+      // a blackhole route drops silently (no ICMP error: that is what it is for)
+      const text = `dropped at ${dev}: ${d.kind === 'blackhole' ? 'a blackhole route (silently, no ICMP error)' : 'no route to ' + formatAddr(pkt.dst)}${pkt.vrf ? ' in VRF ' + pkt.vrf : ''} (${pkt.msg.label})`;
+      this.note('drop', pkt.msg.protocol, dev, '', pkt.msg.type, '', text);
+      if (d.kind !== 'blackhole') {
+        if (came) this.icmpError(dev, pkt, 'net', { from: came.l3 });
+        else if (this.protocols && this.protocols.localError) this.protocols.localError(dev, pkt, 'net', `no route to ${formatAddr(pkt.dst)} (network unreachable)`);
+      }
       return;
     }
     // equal-cost next hops: a flow keeps its path; at most the device's maximum ECMP paths are used
@@ -1125,18 +1436,55 @@ export class Engine {
       this.note('drop', pkt.msg.protocol, dev, '', pkt.msg.type, '', `leaves the model at ${dev}: the next hop ${formatAddr(hop.gateway)} is outside it (${pkt.msg.label})`);
       return;
     }
+    // a firewall applies its policy to what it forwards (it logs and rejects itself)
+    if (came && sd.dev.type === 'firewall' && this.protocols && this.protocols.filter && !this.protocols.filter(dev, pkt, came.l3, out)) return;
     if (out.kind === 'tunnel') {
       if (came) this.routeNote(dev, pkt, came, out, '', hop.gateway);
       this.intoTunnel(dev, out, pkt);
       return;
     }
+    // a directed broadcast (to a subnet of the egress interface): out as a broadcast only where the router forwards them
+    if (came && pkt.dst.version === 4 && this.broadcastFor(out, pkt.dst)) {
+      const db = this.params.get('directed-broadcast', dev);
+      if (db.value !== 'on') {
+        this.note('drop', pkt.msg.protocol, dev, '', pkt.msg.type, '', `${dev} drops the directed broadcast to ${formatAddr(pkt.dst)} (forward directed broadcasts ${resolvedText(db)}; RFC 2644): ${pkt.msg.label}`);
+        return;
+      }
+      this.note('route', pkt.msg.protocol, dev, '', 'directed broadcast', '', `${dev} sends the directed broadcast to ${formatAddr(pkt.dst)} out of ${out.id} as a broadcast to ${BROADCAST} (forward directed broadcasts ${resolvedText(db)}): ${pkt.msg.label}`);
+      this.emit(dev, out, { src: out.mac, dst: BROADCAST, msg: pkt.msg, ip: pkt });
+      return;
+    }
     const nh = hop.gateway || pkt.dst;
     // a next hop that is in the model but not on the egress interface's networks (a route out of an interface to an address behind a provider): a tunnel's outer packet takes its declared underlay
     if (!came && !out.addrs.some((a) => inNetAddr(a, nh)) && this.viaUnderlay(dev, pkt)) return;
-    this.resolve(dev, out, nh, pkt, (mac) => {
-      if (came) this.routeNote(dev, pkt, came, out, mac, nh);
-      this.emit(dev, out, { src: out.mac, dst: mac, msg: pkt.msg, ip: pkt });
-    });
+    // the egress interface's MTU: a larger packet is fragmented (IPv4 without DF), else dropped with an ICMP error (Fragmentation Needed, Packet Too Big)
+    const mtu = this.mtu(dev, out);
+    const size = ipLen(pkt);
+    let pkts = [pkt];
+    if (size > Number(mtu.value)) {
+      if (pkt.dst.version === 6 || pkt.df) {
+        const text = `${pkt.msg.label} (${size} bytes${pkt.dst.version === 4 ? ', DF set' : ''}) is larger than the MTU of ${dev}:${out.id}, ${resolvedText(mtu)}`;
+        this.note('drop', pkt.msg.protocol, dev, '', pkt.msg.type, '', `dropped at ${dev}: ${text}${pkt.dst.version === 6 ? ' (IPv6 routers never fragment)' : ''}`);
+        if (came) this.icmpError(dev, pkt, 'frag', { from: came.l3, mtu: Number(mtu.value) });
+        else if (this.protocols && this.protocols.localError) this.protocols.localError(dev, pkt, 'frag', text, Number(mtu.value));
+        return;
+      }
+      pkts = this.fragment(pkt, Number(mtu.value));
+      this.note('route', pkt.msg.protocol, dev, '', 'fragmented', '', `${dev} fragments ${pkt.msg.label} (${size} bytes) into ${pkts.length} for the MTU of ${out.id}, ${resolvedText(mtu)}: ${pkts.map((p) => (p.len as number) + 20).join(' + ')} bytes`);
+    }
+    for (const p of pkts) {
+      this.resolve(
+        dev,
+        out,
+        nh,
+        p,
+        (mac) => {
+          if (came && p === pkts[0]) this.routeNote(dev, pkt, came, out, mac, nh);
+          this.emit(dev, out, { src: out.mac, dst: mac, msg: p.msg, ip: p });
+        },
+        !!came,
+      );
+    }
   }
 
   /**
@@ -1207,11 +1555,11 @@ export class Engine {
       if (l.direction === 'unidirectional' && h.fromEnd === 'b') return true;
       const w = this.wire(h.link, h.fromEnd, frame, t);
       const f = this.flight(w.start, w.end, frame.msg, 'physical', { ref: 'link:' + h.link, from: h.fromEnd, to: h.fromEnd === 'a' ? 'b' : 'a' }, parent, frameEncap(frame));
-      f.encapProtocols = encapProtocols(frame);
+      this.inspectable(f, frame, null);
       if (!this.cableUp(h.link) || w.lost) {
         f.dropped = (w.start + w.end) / 2;
         f.t1 = f.dropped;
-        this.note('drop', frame.msg.protocol, dev, owner.id, frame.msg.type, '', w.lost ? `lost on ${h.link} (packet loss ${resolvedText(this.loss(h.link))}): ${frame.msg.label}` : `dropped on ${h.link}: the cable is down (${frame.msg.label})`, w.start);
+        this.noteAt(w.start, 'drop', frame.msg.protocol, dev, owner.id, frame.msg.type, '', w.lost ? `lost on ${h.link} (packet loss ${resolvedText(this.loss(h.link))}): ${frame.msg.label}` : `dropped on ${h.link}: the cable is down (${frame.msg.label})`);
         return true;
       }
       parent = f.id;
@@ -1304,7 +1652,8 @@ export class Engine {
       }
       const proto = layer.relation ? this.relProtocol(layer.relation) : 'gre';
       const msg: Msg = { ...pkt.msg, label: pkt.msg.label, detail: `${pkt.msg.detail} — in ${layers.map((l) => l.label).slice(0, layers.indexOf(layer) + 1).join(' in ')} (${formatAddr(e.src)} → ${formatAddr(e.dst)})`, data: { ...(pkt.msg.data || {}), encap: (((pkt.msg.data || {}) as { encap?: string[] }).encap || []).concat([layer.label]), outer: proto } };
-      cur = { ...this.newPacket(e.src, e.dst, '', msg, rides.slice()), inner: cur, encap: layer.label };
+      cur = { ...this.newPacket(e.src, e.dst, '', msg, rides.slice()), inner: cur, encap: layer.label, df: cur.df };
+      cur.l4 = /ESP/i.test(layer.label) ? { proto: 'other', num: 50 } : { proto: 'other', num: 47 };
     }
     this.forward(dev, cur, null);
   }
@@ -1316,6 +1665,54 @@ export class Engine {
 
   base(r: Relation): string {
     return protocolBaseOf(this.model, r.protocol);
+  }
+
+  // ------------------------------------------------------------ ICMP errors
+
+  /**
+   * An ICMP (ICMPv6) error about a packet, from this device back to the
+   * packet's source, routed like any packet: never about an ICMP error, a
+   * fragment but the first, a broadcast or multicast packet (an IPv6 Packet
+   * Too Big excepted, RFC 4443 §2.4), and not from a device that sends none;
+   * at most one per the device's rate limit. Its source is the address of
+   * the interface it is sent out of, towards the packet's source (RFC 1812
+   * §4.3.2.4), else of the one the packet came in on.
+   */
+  icmpError(dev: string, pkt: Pkt, kind: IcmpKind, o: { from?: L3Iface; mtu?: number } = {}): void {
+    const v = pkt.src.version;
+    const why = (text: string): void => this.note('note', 'icmp', dev, '', 'no ICMP error', '', `${dev} sends no ICMP error about ${pkt.msg.label}: ${text}`);
+    if (pkt.l4 && pkt.l4.proto === 'icmp' && pkt.l4.icmpType !== undefined && (v === 4 ? [3, 4, 5, 11, 12].indexOf(pkt.l4.icmpType) >= 0 : pkt.l4.icmpType < 128)) return;
+    if (pkt.frag && pkt.frag.offset > 0) return;
+    if (isMulticastIp(pkt.dst) && !(kind === 'frag' && v === 6)) return why('it went to a multicast group');
+    if (this.isBroadcastAddr(pkt.dst)) return why('it was a broadcast');
+    if (isMulticastIp(pkt.src) || pkt.src.bytes.every((b) => b === 0)) return;
+    const on = this.params.get('icmp-errors', dev);
+    if (on.value !== 'on') return why(`send ICMP errors ${resolvedText(on)}`);
+    const rl = this.params.get('icmp-rate', dev);
+    const last = this.icmpLast.get(dev);
+    if (Number(rl.value) > 0 && last !== undefined && this.now - last < Number(rl.value)) return why(`rate limit, one per ${resolvedText(rl)}`);
+    const sd = this.net.devices.get(dev) as SimDevice;
+    const pick = (l?: L3Iface): IpAddr | undefined => {
+      const a = l && this.isL3Up(dev, l.id) ? l.addrs.find((x) => x.addr.version === v) : undefined;
+      return a ? a.addr : undefined;
+    };
+    const back = lookup(this.model, dev, pkt.vrf, pkt.src, this.ctx(dev));
+    let src = back.kind === 'forward' && back.hops.length ? pick(sd.l3.get(back.hops[0].iface)) : undefined;
+    if (!src) src = pick(o.from);
+    for (const l of Array.from(sd.l3.values()).sort((a, b) => Number(a.kind === 'loopback') - Number(b.kind === 'loopback') || cmp(a.id, b.id))) if (!src) src = pick(l);
+    if (!src) return;
+    this.icmpLast.set(dev, this.now);
+    const t = icmpType(kind, v);
+    const quote: Quote = { src: formatAddr(pkt.src), dst: formatAddr(pkt.dst), ttl: pkt.ttl, proto: pkt.l4 ? pkt.l4.proto : 'ip', sport: pkt.l4 ? pkt.l4.sport : undefined, dport: pkt.l4 ? pkt.l4.dport : undefined, pkt: pkt.id, flow: pkt.flow };
+    const name = v === 4 ? 'ICMP' : 'ICMPv6';
+    const label = `${name} ${t.short}${kind === 'frag' ? ` (MTU ${o.mtu})` : ''} from ${formatAddr(src)}`;
+    const detail = `${dev} (${formatAddr(src)}) → ${formatAddr(pkt.src)}: ${name} ${t.name} (type ${t.type}, code ${t.code}${kind === 'frag' ? ', MTU ' + o.mtu : ''}) about ${quoteText(quote)}: ${pkt.msg.label}`;
+    const msg: Msg = { protocol: 'icmp', type: t.short, label, detail, data: { from: dev, error: kind } };
+    const err = this.newPacket(src, pkt.src, pkt.vrf, msg);
+    err.l4 = { proto: 'icmp', num: v === 4 ? 1 : 58, icmpType: t.type, icmpCode: t.code, icmpName: t.name, quote, mtu: o.mtu };
+    err.len = 8 + (v === 4 ? 28 : 48);
+    this.note('message', 'icmp', dev, this.ownerOf(pkt.src) || '', t.short, '', detail, this.now, msg);
+    this.send(dev, err);
   }
 
   // ------------------------------------------------------------ ARP and neighbour discovery
@@ -1349,7 +1746,7 @@ export class Engine {
    * Solicitation is answered (the packet waits; unanswered after the
    * retries, it is dropped).
    */
-  resolve(dev: string, l3: L3Iface, ip: IpAddr, pkt: Pkt, send: (mac: string) => void): void {
+  resolve(dev: string, l3: L3Iface, ip: IpAddr, pkt: Pkt, send: (mac: string) => void, fwd = false): void {
     // a virtual address this device holds itself, or its own address: never resolved
     const tab = this.arp.get(dev) as Map<string, ArpEntry>;
     const key = this.entryKey(l3.id, ip);
@@ -1366,10 +1763,10 @@ export class Engine {
       return;
     }
     if (e) {
-      e.queue.push({ pkt, send });
+      e.queue.push({ pkt, send, fwd });
       return;
     }
-    const n: ArpEntry = { ip, ipText: formatAddr(ip), mac: '', iface: l3.id, vlan: l3.vlan, type: 'incomplete', state: 'INCOMPLETE', learned: this.now, refreshed: this.now, timer: this.now + this.retrans(dev), tries: 1, used: true, queue: [{ pkt, send }], sentAt: this.now };
+    const n: ArpEntry = { ip, ipText: formatAddr(ip), mac: '', iface: l3.id, vlan: l3.vlan, type: 'incomplete', state: 'INCOMPLETE', learned: this.now, refreshed: this.now, timer: this.now + this.retrans(dev), tries: 1, used: true, queue: [{ pkt, send, fwd }], sentAt: this.now };
     tab.set(key, n);
     this.tableNote(dev, n, 'INCOMPLETE', `${pkt.msg.label} waits for ${ip.version === 4 ? 'ARP' : 'neighbour discovery'}`);
     this.solicit(dev, l3, ip, '');
@@ -1381,14 +1778,18 @@ export class Engine {
     if (!src) return;
     const sim = l3.macSimulated ? ' (simulated)' : '';
     if (ip.version === 4) {
-      const label = `ARP Who has ${formatAddr(ip)}? Tell ${formatAddr(src.addr)}`;
-      const msg: Msg = { protocol: 'arp', type: 'ARP Request', label, detail: `ARP Request (${mac ? 'unicast refresh' : 'broadcast'}): sender ${formatAddr(src.addr)} at ${l3.mac}${sim}, target ${formatAddr(ip)} at 00:00:00:00:00:00 — to ${mac || BROADCAST}${l3.vlan ? ', VLAN ' + l3.vlan : ''}` };
+      const label = `ARP Request (${mac ? 'unicast' : 'broadcast'}): who has ${formatAddr(ip)}?`;
+      const msg: Msg = { protocol: 'arp', type: 'ARP Request', label, detail: `ARP Request (${mac ? 'unicast refresh' : 'broadcast'}): who has ${formatAddr(ip)}? Tell ${formatAddr(src.addr)} — sender ${formatAddr(src.addr)} at ${l3.mac}${sim}, target ${formatAddr(ip)} at 00:00:00:00:00:00, to ${mac || BROADCAST}${l3.vlan ? ', VLAN ' + l3.vlan : ''}` };
+      this.note('message', msg.protocol, dev, '', msg.type, '', msg.detail, this.now, msg);
       this.emit(dev, l3, { src: l3.mac, dst: mac || BROADCAST, msg, arp: { op: 'request', sha: l3.mac, spa: src.addr, tha: '00:00:00:00:00:00', tpa: ip } });
       return;
     }
     const sn = solicitedNode(ip);
     const msg: Msg = { protocol: 'ndp', type: 'Neighbor Solicitation', label: `NDP NS Who has ${formatAddr(ip)}?`, detail: `Neighbor Solicitation (ICMPv6 135): ${formatAddr(src.addr)} at ${l3.mac}${sim} asks for ${formatAddr(ip)} — to ${mac ? 'unicast ' + mac : formatAddr(sn) + ' (' + multicastMac(sn) + ')'}` };
     const pkt = this.newPacket(src.addr, mac ? ip : sn, l3.vrf, msg, [], 255);
+    pkt.l4 = { proto: 'icmp', num: 58, icmpType: 135, icmpCode: 0, icmpName: 'Neighbor Solicitation' };
+    pkt.len = 32;
+    this.note('message', msg.protocol, dev, '', msg.type, '', msg.detail, this.now, msg);
     this.emit(dev, l3, { src: l3.mac, dst: mac || multicastMac(sn), msg, nd: { op: 'NS', src: src.addr, target: ip, lladdr: l3.mac, solicited: false }, ip: pkt });
   }
 
@@ -1412,6 +1813,7 @@ export class Engine {
       const label = `ARP Reply ${formatAddr(a.tpa)} is at ${shortMac(mac)}`;
       const sim = !vip && l3.macSimulated ? ' (simulated)' : vip ? ' (virtual MAC)' : '';
       const msg: Msg = { protocol: 'arp', type: 'ARP Reply', label, detail: `ARP Reply: sender ${formatAddr(a.tpa)} at ${mac}${sim}, target ${formatAddr(a.spa)} at ${a.sha} — unicast to ${a.sha}` };
+      this.note('message', msg.protocol, dev, '', msg.type, '', msg.detail, this.now, msg);
       this.emit(dev, l3, { src: mac, dst: a.sha, msg, arp: { op: 'reply', sha: mac, spa: a.tpa, tha: a.sha, tpa: a.spa } });
       return;
     }
@@ -1436,6 +1838,9 @@ export class Engine {
       const sim = !vip && l3.macSimulated ? ' (simulated)' : vip ? ' (virtual MAC)' : '';
       const msg: Msg = { protocol: 'ndp', type: 'Neighbor Advertisement', label: `NDP NA ${formatAddr(nd.target)} is at ${shortMac(mac)}`, detail: `Neighbor Advertisement (ICMPv6 136, solicited): ${formatAddr(nd.target)} is at ${mac}${sim} — unicast to ${formatAddr(nd.src)} at ${nd.lladdr}` };
       const pkt = this.newPacket(nd.target, nd.src, l3.vrf, msg, [], 255);
+      pkt.l4 = { proto: 'icmp', num: 58, icmpType: 136, icmpCode: 0, icmpName: 'Neighbor Advertisement' };
+      pkt.len = 32;
+      this.note('message', msg.protocol, dev, '', msg.type, '', msg.detail, this.now, msg);
       this.emit(dev, l3, { src: mac, dst: nd.lladdr, msg, nd: { op: 'NA', src: nd.target, target: nd.target, lladdr: mac, solicited: true }, ip: pkt });
       return;
     }
@@ -1498,6 +1903,7 @@ export class Engine {
   /** Once a second: entries whose timers ran out change state, are refreshed or removed; MAC entries age out. */
   sweep(): void {
     const t = this.now;
+    if (this.protocols && this.protocols.sweep) this.protocols.sweep();
     for (const [dev, tab] of this.arp) {
       for (const [k, e] of Array.from(tab)) {
         const l3 = (this.net.devices.get(dev) as SimDevice).l3.get(e.iface);
@@ -1509,7 +1915,11 @@ export class Engine {
           if (e.tries >= this.retries(dev)) {
             tab.delete(k);
             this.tableNote(dev, e, 'removed', `${e.ipText} removed: no answer to ${e.tries} ${e.ip.version === 4 ? 'ARP Requests' : 'solicitations'}${e.queue.length ? '; ' + e.queue.length + ' waiting packet' + (e.queue.length === 1 ? '' : 's') + ' dropped' : ''}`);
-            for (const w of e.queue) this.note('drop', w.pkt.msg.protocol, dev, '', w.pkt.msg.type, '', `dropped at ${dev}: ${e.ipText} could not be resolved (${w.pkt.msg.label})`);
+            for (const w of e.queue) {
+              this.note('drop', w.pkt.msg.protocol, dev, '', w.pkt.msg.type, '', `dropped at ${dev}: ${e.ipText} could not be resolved (${w.pkt.msg.label})`);
+              if (w.fwd) this.icmpError(dev, w.pkt, 'host', { from: l3 });
+              else if (this.protocols && this.protocols.localError) this.protocols.localError(dev, w.pkt, 'host', `${e.ipText} does not answer ${e.ip.version === 4 ? 'ARP' : 'neighbour solicitations'} (host unreachable)`);
+            }
             continue;
           }
           e.tries++;
@@ -1568,12 +1978,16 @@ export class Engine {
   gratuitous(dev: string, l3: L3Iface, addr: IpAddr, mac: string, why: string, protocol = 'garp'): void {
     if (addr.version === 4) {
       const msg: Msg = { protocol, type: 'Gratuitous ARP', label: `ARP Gratuitous ${formatAddr(addr)} is at ${shortMac(mac)}`, detail: `Gratuitous ARP (${why}): sender ${formatAddr(addr)} at ${mac}${this.simulatedMac(mac) ? ' (simulated)' : isVirtual(mac) ? ' (virtual MAC)' : ''}, target ${formatAddr(addr)} — to ${BROADCAST}` };
+      this.note('message', msg.protocol, dev, '', msg.type, '', msg.detail, this.now, msg);
       this.emit(dev, l3, { src: mac, dst: BROADCAST, msg, arp: { op: 'request', sha: mac, spa: addr, tha: '00:00:00:00:00:00', tpa: addr, gratuitous: true } });
       return;
     }
     const all = parseAddr('ff02::1') as IpAddr;
     const msg: Msg = { protocol, type: 'Unsolicited NA', label: `NDP NA ${formatAddr(addr)} is at ${shortMac(mac)}`, detail: `Unsolicited Neighbor Advertisement (${why}): ${formatAddr(addr)} is at ${mac} — to ff02::1 (33:33:00:00:00:01)` };
     const pkt = this.newPacket(addr, all, l3.vrf, msg, [], 255);
+    pkt.l4 = { proto: 'icmp', num: 58, icmpType: 136, icmpCode: 0, icmpName: 'Neighbor Advertisement' };
+    pkt.len = 32;
+    this.note('message', msg.protocol, dev, '', msg.type, '', msg.detail, this.now, msg);
     this.emit(dev, l3, { src: mac, dst: multicastMac(all), msg, nd: { op: 'NA', src: addr, target: addr, lladdr: mac, solicited: false, unsolicited: true }, ip: pkt });
   }
 
@@ -1665,10 +2079,14 @@ export class Engine {
     this.cable.set(id, 'negotiating');
     this.stateVersion++;
     const d = this.linkUpDelay(id);
+    // a wireless client waits for its access point's next beacon before it associates
+    const ap = l.medium === 'wireless' ? [l.a.device, l.b.device].find((x) => (this.model.index.devices.get(x) || { type: '' }).type === 'ap') : undefined;
+    const beacon = ap ? this.beaconWait(ap, this.now) : 0;
     const tok = ++this.tokens;
     this.carrierToken.set('link:' + id, tok);
-    this.note('link', 'link', l.a.device, l.b.device, 'Cable negotiating', 'negotiating', `Cable ${id} is physically up again: its ports come up after ${resolvedText(d)} (${d.def.label.toLowerCase()})`);
-    this.at(this.now + Number(d.value), () => {
+    this.note('link', 'link', l.a.device, l.b.device, 'Cable negotiating', 'negotiating', `Cable ${id} is physically up again: its ports come up after ${beacon ? `the next beacon (${durationText(beacon)}, beacon interval ${resolvedText(this.params.get('ap-beacon', ap as string))}) and ` : ''}${resolvedText(d)} (${d.def.label.toLowerCase()})`);
+    if (ap) this.wifiActive.set(id, this.now + beacon + Number(d.value));
+    this.at(this.now + beacon + Number(d.value), () => {
       if (this.carrierToken.get('link:' + id) !== tok) return;
       this.carrierToken.delete('link:' + id);
       if (!this.physUp(id)) return;
@@ -1996,6 +2414,11 @@ export class Engine {
   private applyChanges(cs: ParamChange[]): void {
     for (const c of cs) this.note('note', 'link', c.device || '', '', 'Parameter changed', '', changeText(c));
     this.estimates.clear();
+    // spanning tree switched on or off: the trees again (a loop opens or closes)
+    if (cs.some((c) => c.key === 'stp-mode')) {
+      for (const v of this.net.vlans) this.tree(v);
+      this.recomputeTrees();
+    }
     this.sweep();
     if (this.protocols && this.protocols.paramsChanged) this.protocols.paramsChanged(cs);
   }
@@ -2033,6 +2456,140 @@ export class Engine {
       }
     }
     for (const d of this.pending) if (dead.has(d.flight)) d.cancelled = true;
+  }
+
+  // ------------------------------------------------------------ broadcast domains
+
+  /** The VLANs a cable carries at its bridge ends (0: untagged; [0] when neither end is a bridge). */
+  linkVlans(link: string): number[] {
+    const l = this.net.links.get(link);
+    if (!l) return [];
+    const out = new Set<number>();
+    for (const e of [l.a, l.b]) {
+      const sd = this.net.devices.get(e.device);
+      const bpId = sd && sd.bridge ? sd.portOf.get(e.iface || '@' + link) : undefined;
+      if (!sd || bpId === undefined) continue;
+      const pv = (sd.bridgePorts.get(bpId) as BridgePort).vlans;
+      // a port without a mode says nothing about tagging: its frames are untagged
+      if (pv.mode === 'none' || pv.tagged === 'all') out.add(pv.untagged !== null ? pv.untagged : 0);
+      else {
+        for (const v of pv.tagged) out.add(v);
+        if (pv.untagged !== null) out.add(pv.untagged);
+      }
+    }
+    if (!out.size) out.add(0);
+    return Array.from(out).sort((a, b) => a - b);
+  }
+
+  /**
+   * What a broadcast reaches now, from a device's interface or within a
+   * cable's VLAN: the devices, ports and cables it crosses through the
+   * bridges of its VLAN (ports that are up, not blocked, carrying the
+   * VLAN). It ends at every layer-3 interface: no router passes it on.
+   */
+  broadcastDomain(from: { dev: string; iface: string } | { link: string; vlan: number }): { vlan: number; refs: string[]; devices: string[]; links: string[] } {
+    const refs = new Set<string>();
+    const devs = new Set<string>();
+    const links = new Set<string>();
+    const done = new Set<string>();
+    let vlan = 0;
+    const reach = (dev: string, iface: string): void => {
+      devs.add(dev);
+      refs.add('device:' + dev);
+      refs.add(`iface:${dev}:${iface}`);
+    };
+    const cross = (dev: string, port: string, tag: number | null): void => {
+      const e = this.net.ends.get(portKey(dev, port));
+      if (!e || !this.cableUp(e.link) || !this.portUp(dev, port)) return;
+      links.add(e.link);
+      refs.add('link:' + e.link);
+      const o = otherEnd(this.net, e);
+      const od = this.net.devices.get(o.device);
+      if (!od || !this.portUp(o.device, o.port)) return;
+      const bpId = od.bridge ? od.portOf.get(o.port) : undefined;
+      if (bpId !== undefined) {
+        const v = ingressVlan((od.bridgePorts.get(bpId) as BridgePort).vlans, tag);
+        if (v === null || this.blocked(od.id, bpId, v)) return;
+        bridge(od, bpId, v);
+        return;
+      }
+      const l3 = this.l3At(od, o.port, tag);
+      if (l3) reach(od.id, o.port);
+    };
+    const bridge = (sd: SimDevice, fromBp: string | null, v: number): void => {
+      if (fromBp !== null) refs.add(`iface:${sd.id}:${fromBp}`);
+      const key = sd.id + '|' + v;
+      if (done.has(key)) return;
+      done.add(key);
+      devs.add(sd.id);
+      refs.add('device:' + sd.id);
+      if (this.off.has(sd.id) && !this.bypass.has(sd.id)) return;
+      for (const l3 of sd.l3.values()) if (l3.kind === 'svi' && l3.vlan === v) refs.add(`iface:${sd.id}:${l3.id}`);
+      for (const bp of Array.from(sd.bridgePorts.values()).sort((a, b) => cmp(a.id, b.id))) {
+        if (bp.id === fromBp) continue;
+        const c = carries(bp.vlans, v);
+        if (!c || this.blocked(sd.id, bp.id, v)) continue;
+        const up = bp.members.filter((m) => this.portUp(sd.id, m) && this.net.ends.has(portKey(sd.id, m))).sort(cmp);
+        if (!up.length) continue;
+        refs.add(`iface:${sd.id}:${bp.id}`);
+        cross(sd.id, up[0], c === 'untagged' ? null : v);
+      }
+    };
+    if ('link' in from) {
+      vlan = from.vlan;
+      const l = this.net.links.get(from.link);
+      if (l) {
+        for (const e of [l.a, l.b]) {
+          const sd = this.net.devices.get(e.device);
+          const bpId = sd && sd.bridge ? sd.portOf.get(e.iface || '@' + from.link) : undefined;
+          if (sd && bpId !== undefined && carries((sd.bridgePorts.get(bpId) as BridgePort).vlans, from.vlan) && !this.blocked(sd.id, bpId, from.vlan)) bridge(sd, null, from.vlan);
+          else if (sd) {
+            const l3 = this.l3At(sd, e.iface || '@' + from.link, from.vlan || null) || this.l3At(sd, e.iface || '@' + from.link, null);
+            if (l3) reach(sd.id, e.iface || '@' + from.link);
+          }
+        }
+        if (this.cableUp(from.link)) {
+          links.add(from.link);
+          refs.add('link:' + from.link);
+        }
+      }
+    } else {
+      const sd = this.net.devices.get(from.dev);
+      const l3 = sd ? sd.l3.get(from.iface) : undefined;
+      if (sd && l3) {
+        reach(sd.id, l3.id);
+        if (l3.kind === 'svi') {
+          vlan = l3.vlan;
+          bridge(sd, null, l3.vlan);
+        } else {
+          vlan = l3.kind === 'subif' ? l3.vlan : 0;
+          for (const p of l3.ports) {
+            if (!this.portUp(sd.id, p)) continue;
+            refs.add(`iface:${sd.id}:${p}`);
+            let tag: number | null = null;
+            if (l3.kind === 'subif' && l3.vlan) {
+              const e = this.net.ends.get(portKey(sd.id, p));
+              const lk = e ? (this.net.links.get(e.link) as Link) : undefined;
+              const le = lk && e ? (e.end === 'a' ? lk.a : lk.b) : undefined;
+              tag = le && le.untagged === l3.vlan ? null : l3.vlan;
+            }
+            cross(sd.id, p, tag);
+            break;
+          }
+        }
+      }
+    }
+    return { vlan, refs: Array.from(refs).sort(cmp), devices: Array.from(devs).sort(cmp), links: Array.from(links).sort(cmp) };
+  }
+
+  /** A device's interfaces a broadcast can start from (with an IPv4 or IPv6 address, not a loopback or tunnel). */
+  broadcastIfaces(dev: string): string[] {
+    const sd = this.net.devices.get(dev);
+    if (!sd) return [];
+    return Array.from(sd.l3.values())
+      .filter((l) => l.kind !== 'loopback' && l.kind !== 'tunnel' && (l.addrs.length > 0 || l.kind === 'svi'))
+      .map((l) => l.id)
+      .sort(cmp);
   }
 
   // ------------------------------------------------------------ the tables, read
@@ -2122,6 +2679,102 @@ export class Engine {
     this.estimates.set(key, ms);
     return ms;
   }
+}
+
+/** The bytes of an IP packet: its header, the encapsulation's, and what it carries (its own length, else its message's size). */
+export function ipLen(p: Pkt): number {
+  const hdr = p.dst.version === 4 ? 20 : 40;
+  if (p.inner) return hdr + (p.encap && /ESP/i.test(p.encap) ? 36 : 4) + ipLen(p.inner);
+  if (p.len !== undefined) return hdr + p.len;
+  const d = p.msg.data as { size?: unknown } | undefined;
+  return hdr + (d && typeof d.size === 'number' ? d.size : p.msg.protocol === 'demand' ? 1400 : PAYLOAD);
+}
+
+/** The type, code and names of an ICMP (ICMPv6) error. */
+export function icmpType(kind: IcmpKind, v: 4 | 6): { type: number; code: number; name: string; short: string } {
+  const unreach = (code4: number, code6: number, what: string, short: string): { type: number; code: number; name: string; short: string } => ({ type: v === 4 ? 3 : 1, code: v === 4 ? code4 : code6, name: `Destination Unreachable: ${what}`, short });
+  switch (kind) {
+    case 'net':
+      return v === 4 ? unreach(0, 0, 'net unreachable', 'Net Unreachable') : unreach(0, 0, 'no route to destination', 'No Route');
+    case 'host':
+      return v === 4 ? unreach(1, 3, 'host unreachable', 'Host Unreachable') : unreach(1, 3, 'address unreachable', 'Address Unreachable');
+    case 'port':
+      return unreach(3, 4, 'port unreachable', 'Port Unreachable');
+    case 'admin':
+      return unreach(13, 1, v === 4 ? 'communication administratively prohibited' : 'communication with destination administratively prohibited', 'Admin Prohibited');
+    case 'frag':
+      return v === 4 ? { type: 3, code: 4, name: 'Destination Unreachable: fragmentation needed and DF set', short: 'Frag Needed' } : { type: 2, code: 0, name: 'Packet Too Big', short: 'Packet Too Big' };
+    case 'ttl':
+      return { type: v === 4 ? 11 : 3, code: 0, name: v === 4 ? 'Time Exceeded: TTL exceeded in transit' : 'Time Exceeded: hop limit exceeded in transit', short: v === 4 ? 'TTL exceeded' : 'Hop Limit exceeded' };
+    default:
+      return { type: v === 4 ? 11 : 3, code: 1, name: 'Time Exceeded: fragment reassembly time exceeded', short: 'Reassembly Time exceeded' };
+  }
+}
+
+/** A quoted header as the log writes it: "10.0.0.5 → 10.9.9.9 TCP 49152 → 443, TTL 1". */
+export function quoteText(q: Quote): string {
+  return `${q.src} → ${q.dst} ${q.proto === 'ip' ? 'IP' : q.proto.toUpperCase()}${q.sport !== undefined && q.dport !== undefined ? ` ${q.sport} → ${q.dport}` : ''}, TTL ${q.ttl}`;
+}
+
+/** The cast of a destination MAC. */
+export function castOf(mac: string): Cast {
+  return mac === BROADCAST ? 'broadcast' : isGroupMac(mac) ? 'multicast' : 'unicast';
+}
+
+/** An IPv4 subnet's broadcast address (host bits set). */
+export function subnetBroadcast(a: { net: IpAddr & { prefix: number } }): IpAddr {
+  const bytes = a.net.bytes.slice();
+  let bits = a.net.prefix;
+  for (let i = 0; i < bytes.length; i++, bits -= 8) {
+    const keep = bits >= 8 ? 0xff : bits <= 0 ? 0 : (0xff << (8 - bits)) & 0xff;
+    bytes[i] = (bytes[i] & keep) | (~keep & 0xff);
+  }
+  return { version: a.net.version, bytes };
+}
+
+/** The limited broadcast 255.255.255.255. */
+export function isLimitedBroadcast(a: IpAddr): boolean {
+  return a.version === 4 && a.bytes.every((b) => b === 255);
+}
+
+/** The IP protocol of a packet as the inspector names it ("TCP (6)", "GRE (47)"). */
+function protoText(p: Pkt): string {
+  if (p.inner) return /ESP/i.test(p.encap || '') ? 'ESP (50)' : 'GRE (47)';
+  const l = p.l4;
+  if (!l) return '—';
+  if (l.proto === 'icmp') return p.dst.version === 4 ? 'ICMP (1)' : 'ICMPv6 (58)';
+  if (l.proto === 'tcp') return 'TCP (6)';
+  if (l.proto === 'udp') return 'UDP (17)';
+  return `${l.num}`;
+}
+
+/** What a frame's destination MAC is. */
+function macNote(frame: Frame): string {
+  const d = frame.dst;
+  if (d === BROADCAST) return 'broadcast: every station in the VLAN takes it';
+  const g = frame.ip && isMulticastIp(frame.ip.dst) ? formatAddr(frame.ip.dst) : '';
+  if (/^01:00:5e:/.test(d)) return `IPv4 multicast${g ? ' ' + g : ''}: 01:00:5e + the group’s low 23 bits (32 groups share each MAC)`;
+  if (/^33:33:/.test(d)) return `IPv6 multicast${g ? ' ' + g : ''}: 33:33 + the group’s low 32 bits`;
+  const l2: { [m: string]: string } = {
+    '01:80:c2:00:00:00': 'bridge group address (STP BPDUs): never forwarded by a bridge',
+    '01:80:c2:00:00:02': 'slow protocols (LACP): never forwarded by a bridge',
+    '01:80:c2:00:00:0e': 'LLDP nearest bridge: never forwarded by a bridge',
+    '01:80:c2:00:00:14': 'all level 1 IS-IS routers',
+    '01:80:c2:00:00:15': 'all level 2 IS-IS routers',
+    '01:00:0c:cc:cc:cc': 'CDP: never forwarded by a bridge',
+  };
+  if (l2[d]) return l2[d];
+  if (isGroupMac(d)) return 'multicast';
+  if (isVirtual(d)) return 'unicast, a virtual MAC (first-hop redundancy group)';
+  return 'unicast';
+}
+
+/** A VLAN's spanning tree: its root, the blocked bridge ports ("dev|port"), every bridge port in it, and the cables of loops left open. */
+interface Tree {
+  root: string;
+  blocked: Set<string>;
+  ports: Set<string>;
+  loops: string[];
 }
 
 function before(a: QItem, b: QItem): boolean {
