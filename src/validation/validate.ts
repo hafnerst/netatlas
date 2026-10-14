@@ -45,6 +45,7 @@ import { COLOR_RE, DEFAULT_STYLE, builtinProtocols, lookupProtocol, normalizePro
 import { YMap, YNode, YSeq, YamlError, YamlLimits, parseYaml } from '../yaml/parse';
 import { FORMAT_VERSION, SCHEMA } from '../yaml/schema';
 import { readDemands } from './demands';
+import { readMulticast } from './multicast';
 import { readDeviceSimulation, readLinkSimulation } from './simulation';
 import { Ctx, DEFAULT_MODEL_LIMITS, ID_RE, IFACE_RE, Issue, ModelLimits, Reader, TooManyErrors, get, isNull, kindOf, scalarText, suggest } from './reader';
 
@@ -491,6 +492,9 @@ function build(root: YNode | null, c: Ctx): Model | null {
       // settings per interface of services the device enables (a VRRP group …)
       const ip = get(im, 'protocols');
       if (!isNull(ip)) iface.services = readServices(r, c, ip as YNode, ipath + '.protocols', services, 'interface', id, [], dev);
+      // the groups it joins and the streams it sends (the protocol simulation)
+      const mn = get(im, 'multicast');
+      if (!isNull(mn)) iface.multicast = readMulticast(r, c, mn as YNode, ipath + '.multicast', iid, addrs.length > 0, !!dev.simulation && dev.simulation.get('igmp-version') === 'v2');
       if (where === 'logical') {
         // Each association belongs to one type; on another type it is an error, not silently ignored.
         const only = (k: string, t: InterfaceKind, what: string): boolean => {

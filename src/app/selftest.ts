@@ -1956,8 +1956,8 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       // the start dialog: the layers' sections collapsed, their counts in their names; Start and Cancel
       const heads = Array.from(doc.querySelectorAll('#modal .psec-toggle')).map((b) => `${b.textContent}|${b.getAttribute('aria-expanded')}`);
       check(
-        `${theme}: Start simulation… opens its dialog: Layer 1 – Physical (8), Layer 2 – Data link (7), Layer 3 – Network (7), Layer 4 – Transport (8), all collapsed; the protocols shown; Start and Cancel`,
-        heads.join(' ') === 'Layer 1 – Physical (8)|false Layer 2 – Data link (7)|false Layer 3 – Network (7)|false Layer 4 – Transport (8)|false' && !!q('#sim-pd-protos input[data-sim-proto="ospf"]') && !!q('#modal [data-value="start"]') && !!q('#modal [data-value="cancel"]') && (q('#sim-pd-l1') as HTMLElement).hidden,
+        `${theme}: Start simulation… opens its dialog: Layer 1 – Physical (8), Layer 2 – Data link (8), Layer 3 – Network (8), Layer 4 – Transport (8), all collapsed; the protocols shown; Start and Cancel`,
+        heads.join(' ') === 'Layer 1 – Physical (8)|false Layer 2 – Data link (8)|false Layer 3 – Network (8)|false Layer 4 – Transport (8)|false' && !!q('#sim-pd-protos input[data-sim-proto="ospf"]') && !!q('#modal [data-value="start"]') && !!q('#modal [data-value="cancel"]') && (q('#sim-pd-l1') as HTMLElement).hidden,
         heads.join(' '),
       );
       check(`${theme}: the dialog has the theme’s colours and fits the window`, doc.defaultView!.getComputedStyle(q('#modal')!).backgroundColor !== 'rgba(0, 0, 0, 0)' && (q('#modal') as HTMLElement).getBoundingClientRect().right <= doc.documentElement.clientWidth + 1);
@@ -1988,7 +1988,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       ctl.diagramClick('device:core1', r.left + 5, r.top + 5);
       await tick();
       const menuItems = Array.from(doc.querySelectorAll('.sim-menu [role="menuitem"]')).map((b) => b.textContent || '');
-      check(`${theme}: clicking a switch in the simulation opens a menu there: Show ARP table, Show MAC table, Show connections, Send test…, Highlight broadcast domain…, Power off, Shut an interface…`, menuItems.join('|') === 'Show ARP table|Show MAC table|Show connections|Send test…|Highlight broadcast domain…|Power off|Shut an interface…', menuItems.join('|'));
+      check(`${theme}: clicking a Layer 3 switch in the simulation opens a menu there: its tables (ARP, MAC, connections, IGMP groups, multicast routes and table), Send test…, Highlight broadcast domain…, Power off, Shut an interface…`, menuItems.join('|') === 'Show ARP table|Show MAC table|Show connections|Send test…|Show IGMP groups|Show multicast routes|Show multicast table|Highlight broadcast domain…|Power off|Shut an interface…', menuItems.join('|'));
       (doc.querySelector('.sim-menu [role="menuitem"]') as HTMLElement).click();
       await tick();
       (q('#sim-tabs') as HTMLDetailsElement).open = true;
@@ -2114,6 +2114,21 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       await tick();
       check(`${theme}: srv’s connections (its open port) and fw1’s session table, with its policy at the top`, !!q('.sim-table-panel[data-table="conn"] tr[data-state="LISTEN"]') && /Reject/.test((q('.sim-table-panel[data-table="fw"] .st-timers') || { textContent: '' }).textContent || ''));
       for (const p of Array.from(doc.querySelectorAll('.sim-table-panel[data-table="conn"] .st-close, .sim-table-panel[data-table="fw"] .st-close'))) (p as HTMLElement).click();
+      await tick();
+      // multicast: the receivers get their streams; the tables; a join from the window
+      ctl.showTable('mroute', 'r1');
+      ctl.showTable('snoop', 'acc-sw');
+      await tick();
+      const mrt = (q('.sim-table-panel[data-table="mroute"]') || { textContent: '' }).textContent || '';
+      const snt = (q('.sim-table-panel[data-table="snoop"]') || { textContent: '' }).textContent || '';
+      check(`${theme}: multicast: r1’s multicast routes (the RP, (*, G) and (S, G)), acc-sw’s snooping table, the members receiving`, /RP 10\.255\.0\.1 \(r1\)/.test(mrt) && /\(\*, 239\.1\.1\.1\)/.test(mrt) && /239\.1\.1\.1/.test(snt) && sim.status().some((x) => x.name === 'pc1 member of 239.1.1.1' && x.state === 'Receiving'), sim.status().filter((x) => x.protocol === 'igmp').map((x) => x.name + ' ' + x.state).join('; '));
+      for (const p of Array.from(doc.querySelectorAll('.sim-table-panel[data-table="mroute"] .st-close, .sim-table-panel[data-table="snoop"] .st-close'))) (p as HTMLElement).click();
+      ctl.multicastFrom('pc2', 'join');
+      await tick();
+      const jmsg = ctl.joinGroup('pc2', 'eth0', '239.4.4.4', []);
+      await tick();
+      check(`${theme}: Join group… from a host: the window’s Multicast section, the join listed with Leave group`, (q('#sim-mc') as HTMLDetailsElement).open && jmsg === 'pc2:eth0 joins 239.4.4.4.' && !!q('#sim-events li[data-event="join"] button'));
+      (q('#sim-events li[data-event="join"] button') as HTMLElement).click();
       await tick();
       // an export: a still picture with labelled arrows and the note
       const svg = app.exportSvg();

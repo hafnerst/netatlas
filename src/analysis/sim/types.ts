@@ -31,7 +31,7 @@ export interface Msg {
 
 /** The transport header of a packet (ICMP counts here too): what the inspector, firewalls and the transport layer read. */
 export interface L4 {
-  proto: 'icmp' | 'tcp' | 'udp' | 'other';
+  proto: 'icmp' | 'tcp' | 'udp' | 'igmp' | 'other';
   /** the IP protocol number (IPv6: next header): 1 / 58 ICMP, 6 TCP, 17 UDP, 89 OSPF … */
   num: number;
   sport?: number;
@@ -51,6 +51,8 @@ export interface L4 {
   mtu?: number;
   /** an ICMP error quotes the header of the packet it is about */
   quote?: Quote;
+  /** IGMP (IP protocol 2) or MLD (ICMPv6 130–143): the message, its version, the group, the sources, the records of a v3 / v2 report */
+  igmp?: { type: string; version: string; group?: string; sources?: string[]; maxResp?: number; records?: string[] };
 }
 
 /** The header of the packet an ICMP error is about (quoted in it). */
@@ -239,6 +241,18 @@ export interface ConnRow {
   remaining: number | null;
 }
 
+/** A table of the multicast simulation (IGMP groups, a switch's multicast table, multicast routes): its columns and rows. */
+export interface GridTable {
+  caption: string;
+  cols: string[];
+  rows: string[][];
+  /** shown when there is no row */
+  empty: string;
+  timers: TableTimer[];
+  /** further lines under the timers ("Querier on Vlan10: 10.10.10.2 (this router)") */
+  notes: string[];
+}
+
 /** A row of a firewall's session table. */
 export interface SessionRow {
   proto: 'tcp' | 'udp' | 'icmp';
@@ -252,9 +266,12 @@ export interface SessionRow {
 }
 
 export interface NetEvent {
-  kind: 'fail' | 'flap' | 'shut' | 'power';
+  /** join / leave: a host joined a group, or left one its model joins; stream / stopped: a stream started, or one of the model stopped */
+  kind: 'fail' | 'flap' | 'shut' | 'power' | 'join' | 'leave' | 'stream' | 'stopped';
   /** "link:x", "relation:x", "iface:dev:port", "device:x" */
   ref: string;
+  /** a join, leave or stream: its group */
+  group?: string;
   since: number;
   /** "failed", "down, cycle 2 of 3", "booting (up at t = 70 s)" */
   state: string;

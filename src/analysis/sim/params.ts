@@ -73,6 +73,7 @@ const TEST_TYPES = [
   { value: 'icmp', label: 'ICMP echo (ping)' },
   { value: 'tcp', label: 'TCP connection' },
   { value: 'udp', label: 'UDP request' },
+  { value: 'multicast', label: 'Multicast (UDP to the groups joined in the model)' },
 ];
 
 /** Every parameter, in the order the dialog and the Inspector list them. */
@@ -108,6 +109,7 @@ export const PARAMS: readonly ParamDef[] = [
     help: 'Convergence: RSTP at once (6 s further away); STP 30 s. Off: a loop storms.',
     device: ['switch'],
   }),
+  P({ key: 'igmp-snooping', yaml: 'igmp_snooping', label: 'IGMP / MLD snooping', layer: 2, kind: 'enum', dflt: 'on', options: ON_OFF, source: 'on by default on current switches (Cisco IOS, Junos; RFC 4541)', help: 'Switches send a group only to its members and the routers; off: flooded.', device: ['switch'] }),
   P({ key: 'mtu', yaml: 'mtu', label: 'Default MTU', layer: 2, kind: 'count', dflt: 1500, min: 68, max: 65535, source: 'RFC 894 (IP over Ethernet)', help: 'Largest IP packet an interface sends (bytes); larger ones fragment or fail.', configured: 'an interface’s mtu' }),
   // ------------------------------------------------------------ Layer 3 – Network
   P({ key: 'ttl', yaml: 'ttl', label: 'Default TTL / hop limit', layer: 3, kind: 'count', dflt: 64, min: 1, max: 255, source: 'RFC 1700 (IANA); Linux, macOS and most routers', help: 'The TTL (IPv4) and hop limit (IPv6) of the packets a device sends.', device: ['ip'] }),
@@ -117,6 +119,7 @@ export const PARAMS: readonly ParamDef[] = [
   P({ key: 'bfd-interval', yaml: 'bfd_interval', label: 'BFD interval', layer: 3, kind: 'duration', base: 'ms', dflt: 300, min: 3, max: 10 * S, source: 'a common configuration (RFC 5880 sets none)', help: 'Detection time: interval × multiplier.', configured: 'a BFD relation’s interval and multiplier' }),
   P({ key: 'bfd-multiplier', yaml: 'bfd_multiplier', label: 'BFD multiplier', layer: 3, kind: 'count', dflt: 3, min: 1, max: 255, source: 'a common configuration (RFC 5880 sets none)', help: 'Missed packets before the session goes down.', pairOf: 'bfd-interval', configured: 'a BFD relation’s multiplier' }),
   P({ key: 'vrrp-advert', yaml: 'vrrp_advert', label: 'VRRP advertisement interval', layer: 3, kind: 'duration', base: 's', dflt: S, min: 10, max: 40950, source: 'RFC 5798 §5.2.7 (100 centiseconds)', help: 'The master-down interval is 3 × interval + skew. CARP uses it as well.' }),
+  P({ key: 'igmp-query', yaml: 'igmp_query_interval', label: 'IGMP / MLD query interval', layer: 3, kind: 'duration', base: 's', dflt: 125 * S, min: S, max: 3175 * S, source: 'RFC 3376 §8.2 and RFC 3810 §9.2 (125 s)', help: 'How often the querier asks which groups have members.', device: ['router', 'switch'] }),
   P({ key: 'spf-delay', yaml: 'spf_delay', label: 'Route recomputation delay', layer: 3, kind: 'duration', base: 'ms', dflt: 200, min: 0, max: 60 * S, source: 'Junos spf-options delay (200 ms)', help: 'SPF and FIB update after a change: the old routes are used meanwhile.', device: ['router'] }),
   // ------------------------------------------------------------ Layer 4 – Transport
   P({ key: 'tcp-syn-retries', yaml: 'tcp_syn_retries', label: 'TCP SYN retries', layer: 4, kind: 'count', dflt: 6, min: 0, max: 20, source: 'Linux net.ipv4.tcp_syn_retries (about 127 s in all)', help: 'Retransmitted SYNs before a connection attempt times out.', device: ['ip'] }),
@@ -232,6 +235,65 @@ export const PARAMS: readonly ParamDef[] = [
   P({ key: 'proxy-client', yaml: 'client_timeout', label: 'Client connection timeout', layer: 0, kind: 'duration', base: 's', dflt: 60 * S, min: 100, max: 86400 * S, source: 'nginx client_header_timeout (60 s)', help: 'A client connection idle this long is closed.', device: ['proxy'] }),
   P({ key: 'proxy-upstream', yaml: 'upstream_timeout', label: 'Upstream connect timeout', layer: 0, kind: 'duration', base: 's', dflt: 60 * S, min: 100, max: 3600 * S, source: 'nginx proxy_connect_timeout (60 s)', help: 'Without an upstream connection within it, the client gets an error.', device: ['proxy'] }),
   P({ key: 'test-targets', yaml: 'test_targets', label: 'Test targets', layer: 0, kind: 'list', list: 'targets', dflt: '', zero: 'its gateway and service relations', source: 'its gateway and the servers of its service relations', help: 'Devices or addresses, each optionally with tcp/443, udp/53 or icmp.', device: ['endpoint'] }),
+  // multicast
+  P({
+    key: 'igmp-version',
+    yaml: 'igmp_version',
+    label: 'IGMP / MLD version',
+    layer: 0,
+    kind: 'enum',
+    dflt: 'v3',
+    options: [
+      { value: 'v3', label: 'IGMPv3 / MLDv2 (source lists)' },
+      { value: 'v2', label: 'IGMPv2 / MLDv1' },
+    ],
+    source: 'Linux, Windows and current routers (RFC 3376, RFC 3810)',
+    help: 'v3 reports name sources (needed for SSM); v2 reports are suppressed by others.',
+    device: ['ip'],
+  }),
+  P({ key: 'igmp-unsolicited', yaml: 'unsolicited_report_interval', label: 'Unsolicited report interval', layer: 0, kind: 'duration', base: 's', dflt: 0, min: 0, max: 60 * S, zero: 'by version: v2 10 s, v3 1 s', source: 'RFC 2236 §8.10 (10 s) and RFC 3376 §8.11 (1 s)', help: 'Between the repeated reports of a join or leave; 0: by the IGMP version.', device: ['ip'] }),
+  P({ key: 'igmp-querier', yaml: 'igmp_querier', label: 'IGMP / MLD querier', layer: 0, kind: 'enum', dflt: 'on', options: ON_OFF, source: 'on where a router runs PIM or IGMP (Cisco IOS, Junos)', help: 'It takes part in the querier election of its subnets (the lowest address wins).', device: ['router'] }),
+  P({ key: 'igmp-max-resp', yaml: 'igmp_max_response', label: 'Query response interval', layer: 0, kind: 'duration', base: 's', dflt: 10 * S, min: 100, max: 25 * S, source: 'RFC 3376 §8.3 (10 s)', help: 'Members answer a query after a random delay up to this.', device: ['router', 'switch'] }),
+  P({ key: 'igmp-robustness', yaml: 'igmp_robustness', label: 'Robustness variable', layer: 0, kind: 'count', dflt: 2, min: 1, max: 7, source: 'RFC 3376 §8.1 (2)', help: 'Repeats of reports and group queries; membership lasts robustness × query + response.', device: ['router', 'switch'] }),
+  P({ key: 'igmp-lmqi', yaml: 'last_member_query_interval', label: 'Last member query interval', layer: 0, kind: 'duration', base: 's', dflt: S, min: 100, max: 25 * S, source: 'RFC 3376 §8.8 (1 s)', help: 'After a leave: group-specific queries this far apart, then the group goes.', device: ['router', 'switch'] }),
+  P({ key: 'pim-dr-priority', yaml: 'pim_dr_priority', label: 'PIM DR priority', layer: 0, kind: 'count', dflt: 1, min: 0, max: 4294967295, source: 'RFC 7761 §4.3.2 (1)', help: 'The designated router of a segment: the highest priority, then address.', device: ['router'] }),
+  P({
+    key: 'spt-switchover',
+    yaml: 'spt_switchover',
+    label: 'SPT switchover',
+    layer: 0,
+    kind: 'enum',
+    dflt: 'immediately',
+    options: [
+      { value: 'immediately', label: 'Immediately (at the first packet)' },
+      { value: 'never', label: 'Never (stay on the shared tree)' },
+    ],
+    source: 'Cisco IOS spt-threshold 0 (immediately)',
+    help: 'A last-hop router joins the source’s tree and prunes it off the RP’s.',
+    device: ['router'],
+  }),
+  P({ key: 'snoop-querier', yaml: 'snooping_querier', label: 'Snooping querier', layer: 0, kind: 'enum', dflt: 'off', options: ON_OFF, source: 'off unless configured (Cisco ip igmp snooping querier)', help: 'Queries a VLAN that has no multicast router, so that members are learned.', device: ['switch'] }),
+  P({ key: 'fast-leave', yaml: 'fast_leave', label: 'Fast leave', layer: 0, kind: 'enum', dflt: 'off', options: ON_OFF, source: 'off unless configured (Cisco immediate-leave)', help: 'A port that leaves a group stops getting it at once, without group queries.', device: ['switch'] }),
+  P({
+    key: 'unknown-mc',
+    yaml: 'unknown_multicast',
+    label: 'Unknown multicast',
+    layer: 0,
+    kind: 'enum',
+    dflt: 'flood',
+    options: [
+      { value: 'flood', label: 'Flood in the VLAN' },
+      { value: 'drop', label: 'Drop (router ports only)' },
+    ],
+    source: 'flooding until a member reports (RFC 4541 §2.1.2 allows it)',
+    help: 'A group without members on the switch: flooded, or only to router ports.',
+    device: ['switch'],
+  }),
+  P({ key: 'mrouter-aging', yaml: 'router_port_aging', label: 'Router port aging', layer: 0, kind: 'duration', base: 's', dflt: 300 * S, min: 10 * S, max: 3600 * S, source: 'Cisco IOS multicast router port (5 min)', help: 'A port that heard no query or PIM Hello for this long is no router port.', device: ['switch'] }),
+  P({ key: 'mc-passthrough', yaml: 'multicast_passthrough', label: 'Multicast passthrough', layer: 0, kind: 'enum', dflt: 'off', options: ON_OFF, source: 'firewalls drop multicast unless configured (PAN-OS, Cisco ASA)', help: 'On: it routes multicast like a router; off: multicast data is dropped.', device: ['firewall'] }),
+  P({ key: 'mc-tunnel', yaml: 'multicast_over_tunnel', label: 'Multicast over tunnels', layer: 0, kind: 'enum', dflt: 'on', options: ON_OFF, source: 'GRE carries multicast; plain IPsec does not (RFC 4301)', help: 'Its tunnels carry multicast, but only inside GRE; off: none.', device: ['vpn'] }),
+  P({ key: 'mc-to-unicast', yaml: 'multicast_to_unicast', label: 'Multicast to unicast', layer: 0, kind: 'enum', dflt: 'off', options: ON_OFF, source: 'off unless configured (Cisco VideoStream, Aruba)', help: 'Group frames go to each wireless client as unicast frames.', device: ['ap'] }),
+  P({ key: 'mc-support', yaml: 'multicast', label: 'Carries multicast', layer: 0, kind: 'enum', dflt: 'off', options: ON_OFF, source: 'the internet routes no multicast', help: 'Off: routed multicast does not cross it (link-local groups do).', device: ['cloud'] }),
   P({ key: 'icmp-probe', yaml: 'icmp_probe_interval', label: 'ICMP probe interval', layer: 0, kind: 'duration', base: 's', dflt: 60 * S, min: S, max: 86400 * S, source: 'Zabbix simple checks (1 min)', help: 'How often it pings each device it monitors (its SNMP relations).', device: ['monitor'] }),
 ];
 
@@ -408,7 +470,8 @@ export function formatValue(def: ParamDef, v: ParamValue): string {
     return o ? o.label.replace(/ \(.*\)$/, '') : String(v);
   }
   const n = Number(v);
-  if (def.kind === 'count') return n === 0 && def.zero ? def.zero : String(n);
+  if (n === 0 && def.zero) return def.zero;
+  if (def.kind === 'count') return String(n);
   if (def.kind === 'percent') return `${n} %`;
   if (def.kind === 'speed') return speedText(n);
   return durationText(n);

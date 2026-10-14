@@ -154,6 +154,12 @@ export class ProtocolSim implements Protocols {
   localErrorHook: ((dev: string, pkt: Pkt, kind: IcmpKind, text: string, mtu?: number) => void) | null = null;
   portHook: ((dev: string, pkt: Pkt, l3: L3Iface) => boolean) | null = null;
   readonly sweepHooks: Array<() => void> = [];
+  /** multicast (multicast.ts): a switch's snooping, a router's multicast routing, the RPF check after a route change */
+  snoopHook: ((sd: SimDevice, from: string | null, vlan: number, frame: Frame, t: number) => Set<string> | null) | null = null;
+  mrouteHook: ((dev: string, l3: L3Iface, pkt: Pkt) => boolean) | null = null;
+  readonly routesHooks: Array<(dev: string) => void> = [];
+  /** PIM messages of a session that multicast.ts handles (Join/Prune, Graft): true when it did */
+  pimHook: ((s: Sess, msg: Msg, l3: L3Iface | null) => boolean) | null = null;
   private periodics: Periodic[] = [];
 
   constructor(engine: Engine, behaviours: { [id: string]: Behaviour }) {
@@ -600,6 +606,12 @@ export class ProtocolSim implements Protocols {
       return;
     }
     const data = (msg.data || {}) as MsgData;
+    // a message of no relation (a PIM Register to the RP)
+    if (!msg.relation && data.from) {
+      const f = this.fallback.get(msg.protocol);
+      if (f) f(dev, l3, msg, pkt);
+      return;
+    }
     if (!msg.relation || !data.from) return;
     const s = this.sess(msg.protocol, msg.relation, dev, data.from);
     if (!s) {
@@ -625,6 +637,18 @@ export class ProtocolSim implements Protocols {
 
   sweep(): void {
     for (const h of this.sweepHooks) h();
+  }
+
+  snoop(sd: SimDevice, from: string | null, vlan: number, frame: Frame, t: number): Set<string> | null {
+    return this.snoopHook ? this.snoopHook(sd, from, vlan, frame, t) : null;
+  }
+
+  mroute(dev: string, l3: L3Iface, pkt: Pkt): boolean {
+    return !!this.mrouteHook && this.mrouteHook(dev, l3, pkt);
+  }
+
+  routesChanged(dev: string): void {
+    for (const h of this.routesHooks) h(dev);
   }
 
   ifaceChange(dev: string, l3: L3Iface, up: boolean): void {

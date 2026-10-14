@@ -294,7 +294,11 @@ async function main() {
       const lab = [];
       for (const d of ['lab-sw1', 'lab-sw2', 'lab-h']) lab.push(await page.rect(`#canvas .node[data-ref="device:${d}"]`));
       await save('bc-domain', around(lab, 70), { quality: 55 });
-      await page.eval(`netatlas.simController().clearDomain(), netatlas.openSimWindow(), true`);
+      // r1's multicast routes
+      await page.eval(`netatlas.simController().clearDomain(), netatlas.simController().runTo(45000), netatlas.simController().showTable('mroute', 'r1', { x: 380, y: 120, w: 10, h: 10 }), document.getElementById('toast').hidden = true, true`);
+      await page.settle(200);
+      await save('mroutes', around([await page.rect('.sim-table-panel[data-table="mroute"]')], 6), { quality: 55 });
+      await page.eval(`netatlas.simController().tables.closeAll(), netatlas.openSimWindow(), true`);
       await page.settle(100);
       // core1's Simulation section in the Edit tab, editable while the simulation runs
       await page.eval(`netatlas.simController().tables.closeAll(), netatlas.closeToolWindow(), netatlas.select('device:core1'), netatlas.showTab('edit'), true`);

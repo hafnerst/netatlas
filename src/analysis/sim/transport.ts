@@ -57,6 +57,7 @@ import { IcmpKind, fmtSec, hashIndex } from './engine';
 import { isMulticastIp } from './mac';
 import { L3Iface } from './net';
 import { PortRule, Resolved, Target, durationText, parsePorts, parseTargets, portsMatch, resolvedText } from './params';
+import { Multicast } from './multicast';
 import { ProtocolSim, relationProfile } from './protocols';
 import { ConnRow, L4, Msg, Pkt, SessionRow, SessionStatus } from './types';
 
@@ -202,6 +203,8 @@ export class Transport {
   private fw = new Map<string, Map<string, FwSession>>();
   private pools = new Map<string, { members: Member[]; rr: number; sticky: Map<string, { member: string; at: number }> }>();
   private listenCache = new Map<string, PortRule[]>();
+  /** group membership (multicast.ts): which hosts take a group's datagrams */
+  multicast: Multicast | null = null;
 
   constructor(P: ProtocolSim) {
     this.P = P;
@@ -241,6 +244,17 @@ export class Transport {
       this.startProbes();
     });
     P.extraStatus.push(() => this.status());
+    if (this.multicast) {
+      // a test's datagram to a group reached a member: its answer
+      this.multicast.onTestReceived = (id, dev, from) => {
+        void from;
+        const t = this.tests.find((x) => x.id === id);
+        if (t && !t.done && t.answers.indexOf(dev) < 0) {
+          t.answers.push(dev);
+          if (t.rtt === undefined) t.rtt = this.e.now - t.started;
+        }
+      };
+    }
   }
 
   // ------------------------------------------------------------ addresses and ports
@@ -461,7 +475,9 @@ export class Transport {
     // the application gives up after its response timeout (a broadcast ping collects the answers until then)
     this.e.after(Number(t.timeout.value), () => {
       if (t.done) return;
-      if (t.answers.length) this.finish(t, true, `${t.answers.length} answer${t.answers.length === 1 ? '' : 's'}: ${t.answers.join(', ')}`);
+      if (t.answers.length && isMulticastIp(t.dst)) this.finish(t, true, `received by ${t.answers.length} member${t.answers.length === 1 ? '' : 's'}: ${t.answers.slice().sort().join(', ')}`);
+      else if (isMulticastIp(t.dst) && t.kind === 'udp') this.finish(t, false, `no member received it within ${'def' in t.timeout ? resolvedText(t.timeout as Resolved) : durationText(Number(t.timeout.value))}`);
+      else if (t.answers.length) this.finish(t, true, `${t.answers.length} answer${t.answers.length === 1 ? '' : 's'}: ${t.answers.join(', ')}`);
       else this.finish(t, false, `no answer within ${'def' in t.timeout ? resolvedText(t.timeout as Resolved) : durationText(Number(t.timeout.value))} (timed out)`);
     });
     if (kind === 'icmp') this.ping(t, s.src, s.vrf);
@@ -593,6 +609,11 @@ export class Transport {
     const l4 = pkt.l4;
     if (!l4 || l4.proto !== 'udp') return;
     const d = (pkt.msg.data || {}) as { test?: number; reply?: boolean };
+    // a datagram to a group: only members take it (a test counts them); nobody answers
+    if (isMulticastIp(pkt.dst)) {
+      if (this.multicast) this.multicast.dataIn(dev, l3, pkt);
+      return;
+    }
     if (d.reply) {
       const t = this.tests.find((x) => x.id === d.test && x.from === dev);
       if (!t || t.done) return;
@@ -1066,7 +1087,13 @@ export class Transport {
 
   /** An endpoint's test targets: its own, else its gateway (ICMP echo) and the servers of its service relations (their protocol and port). */
   targets(dev: string): Array<{ dst: IpAddr; kind: TestKind; port: number; label: string } | string> {
-    const kind = this.e.params.str('test-type', dev) as TestKind;
+    const type = this.e.params.str('test-type', dev);
+    // multicast: a UDP datagram to every group joined in the model (but its own), to RTP's port
+    if (type === 'multicast' && this.multicast) {
+      const own = new Set(this.multicast.joined(dev).map((j) => j.group));
+      return this.multicast.groups().filter((g) => !own.has(g)).map((g) => ({ dst: parseAddress(g) as IpAddr, kind: 'udp' as TestKind, port: 5004, label: g }));
+    }
+    const kind = (type === 'multicast' ? 'udp' : type) as TestKind;
     const own = this.e.params.deviceValue(dev, 'test-targets');
     if (own !== undefined && String(own) !== '') {
       const r = parseTargets(String(own));
@@ -1190,8 +1217,8 @@ export class Transport {
   private filter(dev: string, pkt: Pkt, from: L3Iface, to: L3Iface): boolean {
     void to;
     const l4 = pkt.l4;
-    // the model's relations (and its demands) are the firewall's policy; protocols without a transport header pass
-    if (pkt.msg.relation || pkt.rides.length || pkt.msg.protocol === 'demand' || !l4 || l4.proto === 'other') return true;
+    // the model's relations (and its demands) are the firewall's policy; protocols without a transport header (and IGMP) pass
+    if (pkt.msg.relation || pkt.rides.length || pkt.msg.protocol === 'demand' || !l4 || l4.proto === 'other' || l4.proto === 'igmp') return true;
     const proto = l4.proto as 'tcp' | 'udp' | 'icmp';
     const tab = this.fwTable(dev);
     const stateful = this.e.params.get('fw-stateful', dev).value === 'on';

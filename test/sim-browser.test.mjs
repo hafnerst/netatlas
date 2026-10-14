@@ -165,8 +165,8 @@ test('the start dialog: collapsed sections with counts, defaults with sources, r
     const heads = await page.eval(`Array.from(document.querySelectorAll('#modal .psec-toggle')).map((b) => [b.textContent, b.getAttribute('aria-expanded'), document.getElementById(b.getAttribute('aria-controls')).hidden])`);
     assert.deepEqual(heads, [
       ['Layer 1 – Physical (8)', 'false', true],
-      ['Layer 2 – Data link (7)', 'false', true],
-      ['Layer 3 – Network (7)', 'false', true],
+      ['Layer 2 – Data link (8)', 'false', true],
+      ['Layer 3 – Network (8)', 'false', true],
       ['Layer 4 – Transport (8)', 'false', true],
     ]);
     assert.equal(await page.eval(`document.getElementById('sim-pd-reset-all').disabled`), true, 'nothing to reset');
@@ -216,11 +216,11 @@ test('the start dialog: collapsed sections with counts, defaults with sources, r
     await page.type('45');
     await page.key('Tab', 'Tab', 9);
     await page.settle(150);
-    assert.match(await page.eval(`netatlas.exportText()`), /simulation: \{arp_timeout: 45\}/);
+    assert.match(await page.eval(`netatlas.exportText()`), /simulation: \{arp_timeout: 45, pim_dr_priority: 200\}/);
     assert.ok(await page.eval(`netatlas.simController().sim.events().some((e) => e.detail === 'Parameter changed: ARP timeout on core1 5 min → 45 s (device)')`));
     await page.eval(`netatlas.undo(), true`);
     await page.settle(150);
-    assert.match(await page.eval(`netatlas.exportText()`), /simulation: \{arp_timeout: 300\}/);
+    assert.match(await page.eval(`netatlas.exportText()`), /simulation: \{arp_timeout: 300, pim_dr_priority: 200\}/);
     assert.ok(await page.eval(`netatlas.simController().sim.events().some((e) => e.detail === 'Parameter changed: ARP timeout on core1 45 s → 5 min (device)')`));
     // the window's parameters: the same sections, applied at once
     await page.eval(`netatlas.openSimWindow(), document.getElementById('sim-params').open = true, document.getElementById('sim-pw-l2-btn').click(), true`);
@@ -238,7 +238,7 @@ test('Layers 3 and 4 on screen: a dot opens the packet inspector, a log message 
   const page = await openPage(url, { width: 1440, height: 900 });
   try {
     await start(page);
-    await page.eval(`netatlas.startProtocolSimulation(), netatlas.simController().setPlaying(false), netatlas.simController().runTo(8000), true`);
+    await page.eval(`netatlas.startProtocolSimulation(), netatlas.simController().setPlaying(false), netatlas.simController().runTo(30000), true`);
     await page.settle(150);
     // the lab's loop storms: the banner and the window warn
     assert.match(await page.eval(`document.getElementById('sim-text').textContent`), /⚠ broadcast storm in the untagged frames/);
@@ -305,6 +305,50 @@ test('Layers 3 and 4 on screen: a dot opens the packet inspector, a log message 
     assert.deepEqual(tabs, ['Connections · srv', 'Sessions · fw1']);
     assert.ok(await page.eval(`Array.from(document.querySelectorAll('.sim-table-panel[data-table="conn"] tbody tr')).some((r) => r.getAttribute('data-state') === 'LISTEN')`));
     assert.match(await page.eval(`document.querySelector('.sim-table-panel[data-table="fw"] .st-timers').textContent`), /Default action.*Reject/);
+  } finally {
+    await page.close();
+  }
+});
+
+test('multicast on screen: Join group… from a device’s menu (the window’s form), the event with Leave group, the IGMP groups, the multicast table and routes, IGMP in the inspector', { skip, timeout: 180000 }, async () => {
+  const page = await openPage(url, { width: 1440, height: 900 });
+  try {
+    await start(page);
+    await page.eval(`netatlas.startProtocolSimulation(), netatlas.simController().setPlaying(false), netatlas.simController().runTo(40000), true`);
+    await page.settle(150);
+    // a host's menu: Join group…, Leave group for its own groups, Start stream…
+    const sw = await page.rect('#canvas .node[data-ref="device:pc1"]');
+    await page.mouse('mousePressed', sw.x + 10, sw.y + 10, 'left');
+    await page.mouse('mouseReleased', sw.x + 10, sw.y + 10, 'left');
+    await page.settle(120);
+    const items = await page.eval(`Array.from(document.querySelectorAll('.sim-menu [role=menuitem]')).map((i) => i.textContent)`);
+    for (const it of ['Join group…', 'Leave group 239.1.1.1', 'Start stream…']) assert.ok(items.indexOf(it) >= 0, items.join('|'));
+    await page.eval(`Array.from(document.querySelectorAll('.sim-menu [role=menuitem]')).find((b) => b.textContent === 'Join group…').click(), true`);
+    await page.settle(120);
+    assert.deepEqual(await page.eval(`[document.getElementById('sim-mc').open, document.getElementById('sim-mc-jif').value, document.activeElement.id]`), [true, 'pc1:eth0', 'sim-mc-jg']);
+    await page.type('239.4.4.4');
+    await page.click('#sim-mc-join');
+    await page.settle(100);
+    assert.equal(await page.eval(`document.getElementById('sim-mc-msg').textContent`), 'pc1:eth0 joins 239.4.4.4.');
+    const ev = await page.eval(`(() => { const li = document.querySelector('#sim-events li[data-event="join"]'); return li ? [li.textContent, li.querySelector('button').textContent] : null; })()`);
+    assert.match(ev[0], /joined 239\.4\.4\.4/);
+    assert.equal(ev[1], 'Leave group');
+    await page.eval(`document.querySelector('#sim-events li[data-event="join"] button').click(), true`);
+    await page.settle(100);
+    assert.equal(await page.eval(`!!document.querySelector('#sim-events li[data-event="join"]')`), false);
+    // the tables
+    await page.eval(`netatlas.simController().showTable('igmp', 'core1'), netatlas.simController().showTable('snoop', 'acc-sw'), netatlas.simController().showTable('mroute', 'r1'), true`);
+    await page.settle(120);
+    assert.deepEqual(await page.eval(`Array.from(document.querySelectorAll('.sim-table-panel .st-title')).map((t) => t.textContent)`), ['IGMP groups · core1', 'Multicast table · acc-sw', 'Multicast routes · r1']);
+    assert.ok(await page.eval(`Array.from(document.querySelectorAll('.sim-table-panel[data-table="snoop"] tbody tr')).some((r) => /239\.1\.1\.1/.test(r.textContent))`));
+    assert.match(await page.eval(`document.querySelector('.sim-table-panel[data-table="mroute"]').textContent`), /RP 10\.255\.0\.1 \(r1\)/);
+    // an IGMP report in the inspector, from the log
+    await page.eval(`netatlas.simController().tables.closeAll(), true`);
+    const seq = await page.eval(`netatlas.simController().sim.events().find((e) => e.protocol === 'igmp' && e.what === 'Report' && e.hdr).seq`);
+    await page.eval(`netatlas.simController().inspectEvent(${seq}), true`);
+    await page.settle(100);
+    const heads = await page.eval(`Array.from(document.querySelectorAll('.sim-table-panel[data-table="packet"] .pi-layer h4')).map((h) => h.textContent)`);
+    assert.ok(heads.indexOf('Layer 3 – IGMP (2)') >= 0, heads.join(', '));
   } finally {
     await page.close();
   }

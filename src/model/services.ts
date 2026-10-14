@@ -141,7 +141,19 @@ export const BUILTIN_SERVICES: readonly ServiceDef[] = [
     params: [{ key: 'version', label: 'Version', type: 'enum', scope: 'device', values: ['1', '2', 'ng'], suggest: ['2'] }, DISTANCE],
   },
   { id: 'ldp', label: 'LDP', routerId: 'optional', sessions: true, builtin: true, params: [] },
-  { id: 'pim', label: 'PIM', routerId: 'none', sessions: true, builtin: true, params: [{ key: 'mode', label: 'Mode', type: 'enum', scope: 'device', values: ['sparse', 'dense', 'ssm'], suggest: ['sparse'] }] },
+  {
+    id: 'pim',
+    label: 'PIM',
+    routerId: 'none',
+    sessions: true,
+    builtin: true,
+    params: [
+      { key: 'mode', label: 'Mode', type: 'enum', scope: 'device', values: ['sparse', 'dense', 'ssm'], suggest: ['sparse'] },
+      { key: 'rp', label: 'Rendezvous point', type: 'address', scope: 'device', help: 'The static RP of the sparse-mode groups (an address of a router of the model).' },
+      { key: 'candidate_rp', label: 'Candidate RP', type: 'enum', scope: 'device', values: ['yes', 'no'], help: 'It offers itself as RP (bootstrap router mechanism, RFC 5059).' },
+      { key: 'candidate_bsr', label: 'Candidate BSR', type: 'enum', scope: 'device', values: ['yes', 'no'], help: 'It may become the bootstrap router that announces the RP.' },
+    ],
+  },
   {
     id: 'bfd',
     label: 'BFD',

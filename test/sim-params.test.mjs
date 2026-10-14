@@ -51,7 +51,7 @@ demands:
 test('the parameters: four layers, at most 8 rows each; every one with a default in its range, a unit, a short help and a source', () => {
   assert.deepEqual(Pm.paramLayers(), [1, 2, 3, 4]);
   const rows = Pm.paramLayers().map((l) => Pm.layerRows(l).length);
-  assert.deepEqual(rows, [8, 7, 7, 8]);
+  assert.deepEqual(rows, [8, 8, 8, 8]);
   assert.ok(rows.every((n) => n <= 8));
   // BFD interval and multiplier share a row
   assert.deepEqual(Pm.layerRows(3).find((r) => r[0].key === 'bfd-interval').map((d) => d.key), ['bfd-interval', 'bfd-multiplier']);
@@ -143,7 +143,7 @@ test('every device type has its simulation attributes (boot time at least); whic
   assert.ok(['ike-lifetime', 'child-lifetime', 'rekey-margin', 'dpd-interval', 'dpd-retries'].every((k) => byType.gateway.indexOf(k) >= 0));
   assert.ok(['service-response', 'vm-restart'].every((k) => byType.server.indexOf(k) >= 0));
   assert.ok(byType.vm.indexOf('service-response') >= 0 && byType.vm.indexOf('vm-restart') < 0);
-  assert.deepEqual(byType.cloud, ['link-latency', 'loss', 'boot-time']);
+  assert.deepEqual(byType.cloud, ['link-latency', 'loss', 'boot-time', 'mc-support']);
   assert.ok(byType.ap.indexOf('ap-association') >= 0);
   assert.ok(byType.system.indexOf('snmp-interval') >= 0 && byType.system.indexOf('snmp-timeout') >= 0);
   // from the model: a Layer 2 switch's attributes, a router without aggregates has no LACP rate
@@ -395,7 +395,7 @@ test('changes apply at once: a shorter ARP timeout expires older entries now, th
 test('a device’s attributes changed in the model during a simulation apply at once (logged as device); the route recomputation delay holds the old routes', () => {
   const s = sim(pe);
   s.runTo(30000);
-  const m2 = model(pe.replace('simulation: {arp_timeout: 300}', 'simulation: {arp_timeout: 60}'));
+  const m2 = model(pe.replace('simulation: {arp_timeout: 300, pim_dr_priority: 200}', 'simulation: {arp_timeout: 60, pim_dr_priority: 200}'));
   const cs = s.deviceParamsFrom(m2);
   assert.deepEqual(cs.map((c) => Pm.changeText(c)), ['Parameter changed: ARP timeout on core1 5 min → 1 min (device)']);
   assert.ok(events(s, (e) => e.detail === 'Parameter changed: ARP timeout on core1 5 min → 1 min (device)').length);
