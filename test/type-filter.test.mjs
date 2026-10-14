@@ -1,7 +1,8 @@
-// Device-type visibility (the toolbar's Endpoints and Servers controls): it
-// narrows what the diagrams show, combines with the device selection without
+// Device-type visibility (the toolbar's Device types filter): it narrows
+// what the diagrams show, combines with the device selection without
 // changing it, keeps the other devices in place, and never touches the
-// document or its saved layout.
+// document or its saved layout. Switches are keyed by kind ("switch:l2",
+// "switch:l3").
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -28,15 +29,30 @@ const ofType = (m, t) => m.devices.filter((d) => d.type === t).map((d) => d.id).
 const others = (m, types) => m.devices.filter((d) => types.indexOf(d.type) < 0).map((d) => d.id).sort();
 const snap = (s, v) => JSON.stringify(Array.from(s.positionsFor(v)));
 
-test('the toolbar controls name the model\'s type identifiers, and are on by default in both views', () => {
+test('the Device types filter sits next to Devices; the Endpoints and Servers switches are gone; every type is shown by default', () => {
   const html = readFileSync(join(root, 'src', 'index.html'), 'utf8');
-  const controls = [...html.matchAll(/<label class="opt"[^>]*><input id="opt-type-([a-z_]+)" type="checkbox" data-device-type="([a-z_]+)" checked disabled> ([^<]+)<\/label>/g)].map((m) => [m[1], m[2], m[3]]);
-  assert.deepEqual(controls, [['endpoint', 'endpoint', 'Endpoints'], ['server', 'server', 'Servers']]);
-  for (const [, id] of controls) assert.ok(DEVICE_TYPES.some((t) => t.id === id), id);
-  // shown in both views (not "logical-only"), next to Labels and Groups / Locations
-  assert.ok(html.indexOf('id="opt-groups"') < html.indexOf('id="opt-type-endpoint"'));
+  assert.doesNotMatch(html, /opt-type-|data-device-type|> Endpoints<|> Servers</);
+  assert.match(html, /<button id="types-btn" type="button" class="menu-btn" aria-haspopup="dialog" aria-expanded="false" aria-controls="types-panel"[^>]*>Device types: <span id="types-count">All<\/span>/);
+  assert.ok(html.indexOf('id="devices-btn"') < html.indexOf('id="types-btn"') && html.indexOf('id="types-btn"') < html.indexOf('id="opt-labels"'), 'right after Devices, before the switches');
   const s = new Session(model(example('device-types.yaml')));
   assert.equal(s.state.hiddenTypes.size, 0);
+  assert.equal(s.isFiltered(), false);
+  assert.ok(DEVICE_TYPES.length === 15);
+});
+
+test('switches by kind: Layer 2 and Layer 3 switches can be hidden apart; both kinds off hides every switch', () => {
+  const m = model(example('protocol-simulation.yaml'));
+  const s = new Session(m);
+  const l2 = m.devices.filter((d) => d.type === 'switch' && !d.layer3).map((d) => d.id);
+  const l3 = m.devices.filter((d) => d.type === 'switch' && d.layer3).map((d) => d.id);
+  assert.ok(l2.length && l3.length);
+  assert.equal(s.setTypesVisible(['switch:l2'], false), true);
+  const shown = s.shownDevices();
+  assert.ok(l2.every((id) => !shown.has(id)) && l3.every((id) => shown.has(id)));
+  assert.equal(s.isDeviceTypeHidden(m.index.devices.get(l2[0])), true);
+  s.setTypesVisible(['switch:l2', 'switch:l3'], false);
+  assert.ok(m.devices.filter((d) => d.type === 'switch').every((d) => !s.shownDevices().has(d.id)));
+  s.setTypesVisible(['switch:l2', 'switch:l3'], true);
   assert.equal(s.isFiltered(), false);
 });
 

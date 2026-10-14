@@ -1,9 +1,15 @@
 // The protocol simulation with real input (headless Chrome/Edge/Chromium
-// through the DevTools protocol; skipped without one): the in-diagram menu
-// on a cable and on a switch with the mouse and the keyboard, the ARP and
-// MAC tables (several at once, Esc, dragged aside), the protocols shown
-// changed without a restart, and reduced motion (static labelled arrows,
-// the time in steps).
+// through the DevTools protocol; skipped without one): the Start dialog
+// with the keyboard (protocols first, the parameters collapsed below,
+// Enter and Esc, remembered for the session); the simulation layout
+// (Simulation setup, Actions, the simulation panel; back on Exit with the
+// previous tab and selection; the panel's splitter; F6 between the
+// regions); the in-diagram menu on a cable and on a switch with the mouse
+// and the keyboard; the device tables in the simulation panel; the
+// protocols shown changed without a restart; the pacing on screen (a dot
+// clicked pauses and opens the packet inspector, Follow message, Step,
+// the speed and the pacing modes); reduced motion (static labelled
+// arrows, Step a message at a time).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
@@ -22,8 +28,10 @@ async function start(page) {
   await page.settle(150);
 }
 
-test('the in-diagram menu with the mouse and the keyboard; the tables: several at once, Esc, dragged aside; the protocols shown without a restart', { skip, timeout: 180000 }, async () => {
-  const page = await openPage(url, { width: 1440, height: 900 });
+const REGION = `(() => { const a = document.activeElement; for (const id of ['outline', 'canvas-wrap', 'side', 'sim-paneltabs', 'sim-dock', 'toolwin']) { const r = document.getElementById(id); if (r && r.contains(a)) return id; } return a === document.body ? 'body' : a.id; })()`;
+
+test('the Start dialog with the keyboard: protocols first (groups, counts, Select all and Clear), the parameters collapsed below with their modified notes; Enter starts, Esc cancels; both remembered for the session and carried into the setup panel', { skip, timeout: 180000 }, async () => {
+  const page = await openPage(url, { width: 1366, height: 768 });
   try {
     await start(page);
     // Simulate ▾ with the keyboard: the menu, Start simulation…
@@ -33,36 +41,131 @@ test('the in-diagram menu with the mouse and the keyboard; the tables: several a
     assert.equal(await page.eval(`document.activeElement.id`), 'btn-sim-start');
     await page.key('Enter', 'Enter', 13);
     await page.settle(150);
-    // the start dialog: four layers' sections, collapsed, their counts in their names; the keyboard on the first one
-    const dlg = await page.eval(`(() => { const d = document.getElementById('modal'); return { open: d.open, heads: Array.from(d.querySelectorAll('.psec-toggle')).map((b) => b.textContent + '|' + b.getAttribute('aria-expanded')), active: document.activeElement.className }; })()`);
-    assert.equal(dlg.open, true);
-    assert.deepEqual(dlg.heads.map((h) => h.replace(/ \(\d+\)/, '')), ['Layer 1 – Physical|false', 'Layer 2 – Data link|false', 'Layer 3 – Network|false', 'Layer 4 – Transport|false']);
-    assert.equal(dlg.active, 'psec-toggle');
-    // open Layer 1 with the keyboard, type a latency, Start
-    await page.key('Enter', 'Enter', 13);
+    const d0 = await page.eval(`(() => { const d = document.getElementById('modal'); const body = d.querySelector('.modal-body'); return {
+      open: d.open, active: document.activeElement.id,
+      order: Array.from(body.children).map((c) => c.className.split(' ')[0]),
+      groups: Array.from(d.querySelectorAll('.pp-group')).map((g) => g.querySelector('.pp-gname').textContent),
+      boxes: Array.from(d.querySelectorAll('input[data-sim-proto]')).every((b) => b.checked),
+      uses: Array.from(d.querySelectorAll('.pp-item')).map((l) => l.textContent).find((t) => /^OSPF/.test(t)),
+      count: d.querySelector('.pp-count').textContent,
+      heads: Array.from(d.querySelectorAll('.psec-toggle')).map((b) => b.textContent + '|' + b.getAttribute('aria-expanded')),
+      scroll: [body.scrollHeight, body.clientHeight], list: d.querySelector('.pp-list').scrollHeight > d.querySelector('.pp-list').clientHeight,
+      start: d.querySelector('[data-value="start"]').className, last: d.querySelector('.modal-btns').lastElementChild.getAttribute('data-value') }; })()`);
+    assert.equal(d0.open, true);
+    assert.equal(d0.active, 'sim-pd-protos-p-arp', 'the keyboard starts on the first protocol');
+    assert.deepEqual(d0.order.slice(0, 3), ['muted', 'pp', 'psecs'], 'the protocols first, the parameters below');
+    assert.deepEqual(d0.groups, ['Layer 2 (4 of 4)', 'Routing (3 of 3)', 'Redundancy (1 of 1)', 'Tunnels and overlays (2 of 2)', 'Multicast (3 of 3)', 'Traffic (4 of 4)', 'Custom (1 of 1)']);
+    assert.equal(d0.boxes, true, 'all selected by default');
+    assert.match(d0.uses, /^OSPF\d+ relations$/);
+    assert.equal(d0.count, '(18 of 18)');
+    assert.deepEqual(d0.heads, ['▸Layer 1 – Physical (8)|false', '▸Layer 2 – Data link (8)|false', '▸Layer 3 – Network (8)|false', '▸Layer 4 – Transport (8)|false']);
+    assert.ok(d0.scroll[0] <= d0.scroll[1] + 1, `the dialog does not scroll at 1366×768 with the parameters collapsed: ${d0.scroll}`);
+    assert.equal(d0.start, 'primary');
+    assert.equal(d0.last, 'start', 'Start, the primary action, last');
+    // Space unticks ARP; the group's Clear clears Traffic; its count follows
+    await page.key(' ', 'Space', 32);
+    await page.eval(`document.querySelector('#modal [data-group-none="Traffic"]').click(), true`);
     await page.settle(60);
-    assert.equal(await page.eval(`document.activeElement.getAttribute('aria-expanded') + ' ' + !document.getElementById('sim-pd-l1').hidden`), 'true true');
-    await page.eval(`document.getElementById('sim-pd-link-latency').focus(), document.getElementById('sim-pd-link-latency').select(), true`);
-    await page.type('0.5');
-    await page.key('Tab', 'Tab', 9);
+    assert.deepEqual(await page.eval(`[document.querySelector('#modal .pp-group[data-group="Traffic"] .pp-gcount').textContent, document.querySelector('#modal .pp-group[data-group="Layer 2"] .pp-gcount').textContent, document.querySelector('#modal .pp-count').textContent, document.querySelector('#modal [data-group-none="Traffic"]').disabled]`), ['(0 of 4)', '(3 of 4)', '(13 of 18)', true]);
+    // a parameter: the collapsed layer says it is modified, also in its accessible name
+    await page.eval(`(() => { document.getElementById('sim-pd-l3-btn').click(); const i = document.getElementById('sim-pd-ttl'); i.value = '32'; i.dispatchEvent(new Event('input')); i.dispatchEvent(new Event('change')); document.getElementById('sim-pd-l3-btn').click(); return true; })()`);
     await page.settle(60);
-    assert.equal(await page.eval(`document.querySelector('[data-param-row~="link-latency"]').classList.contains('modified')`), true, 'marked modified');
-    await page.eval(`document.querySelector('#modal [data-value="start"]').focus(), true`);
+    assert.deepEqual(await page.eval(`[document.getElementById('sim-pd-l3-btn').textContent, document.getElementById('sim-pd-l3-btn').getAttribute('aria-expanded')]`), ['▸Layer 3 – Network (8) · 1 modified', 'false']);
+    await page.cmd('Accessibility.enable');
+    const { nodes } = await page.cmd('Accessibility.getFullAXTree');
+    assert.ok(nodes.some((n) => n.role && n.role.value === 'button' && n.name && n.name.value === 'Layer 3 – Network (8) · 1 modified'), 'the accessible name has the count and the modified note');
+    // Esc cancels: nothing starts
+    await page.key('Escape', 'Escape', 27);
+    await page.settle(80);
+    assert.equal(await page.eval(`netatlas.simulationOn() || document.getElementById('modal').open`), false);
+    // open again: the protocols open at the top again, every one checked (nothing was started, nothing remembered)
+    await page.eval(`netatlas.openStartDialog(), true`);
+    await page.settle(120);
+    assert.equal(await page.eval(`document.querySelector('#modal .pp-count').textContent + ' ' + document.activeElement.id`), '(18 of 18) sim-pd-protos-p-arp');
+    // untick Traffic again, then Enter on a checkbox starts
+    await page.eval(`document.querySelector('#modal [data-group-none="Traffic"]').click(), document.getElementById('sim-pd-protos-p-arp').focus(), true`);
     await page.key('Enter', 'Enter', 13);
     await page.settle(150);
-    assert.equal(await page.eval(`netatlas.simulationOn() && netatlas.toolWindow()`), 'sim');
-    assert.equal(await page.eval(`netatlas.simController().sim.params.simValue('link-latency')`), 0.5, 'started with the typed latency');
-    assert.equal(await page.eval(`JSON.parse(sessionStorage.getItem('netatlas.sim.params'))['link-latency']`), 0.5, 'remembered for the session');
-    await page.eval(`netatlas.simController().setPlaying(false), netatlas.simController().runTo(20000), true`);
-    // the window folded to its title bar, so that the diagram is free to click
-    await page.eval(`document.querySelector('#toolwin .tw-collapse').click(), true`);
+    assert.equal(await page.eval(`netatlas.simulationOn()`), true, 'Enter starts');
+    assert.deepEqual(await page.eval(`['icmp', 'tcp', 'udp', 'arp'].map((p) => netatlas.simController().shown.has(p))`), [false, false, false, true]);
+    // carried into the setup panel: the same choice, the protocols open, every layer collapsed
+    const s = await page.eval(`({ count: document.querySelector('#sim-setup .pp-count').textContent, traffic: document.querySelector('#sim-setup .pp-group[data-group="Traffic"] .pp-gcount').textContent, heads: Array.from(document.querySelectorAll('#sim-setup .psec-toggle')).map((b) => b.getAttribute('aria-expanded')) })`);
+    assert.deepEqual(s, { count: '(14 of 18)', traffic: '(0 of 4)', heads: ['false', 'false', 'false', 'false'] });
+    // remembered for the next start in this session
+    await page.eval(`netatlas.exitSimulation(), netatlas.openStartDialog(), true`);
+    await page.settle(120);
+    assert.equal(await page.eval(`document.querySelector('#modal .pp-group[data-group="Traffic"] .pp-gcount').textContent`), '(0 of 4)');
+    await page.click('#modal [data-value="cancel"]');
+  } finally {
+    await page.close();
+  }
+});
+
+test('the simulation layout: setup and actions in place of the Objects list and the Inspector, the panel under the diagram (resizable with the keyboard, not detachable); F6 between the regions; Exit brings back the tab, the selection and the zoom', { skip, timeout: 180000 }, async () => {
+  const page = await openPage(url, { width: 1440, height: 900 });
+  try {
+    await start(page);
+    await page.eval(`netatlas.select('device:core1'), document.querySelector('[data-tab="legend"]').click(), true`);
     await page.settle(100);
+    const zoom = await page.eval(`document.getElementById('viewport').getAttribute('transform')`);
+    await page.eval(`netatlas.startProtocolSimulation(), netatlas.simController().setPlaying(false), true`);
+    await page.settle(150);
+    const L = await page.eval(`(() => { const v = (id) => { const e = document.getElementById(id); const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; }; return {
+      setup: v('sim-setup'), objects: v('outline-body'), actions: v('sim-actions'), tabs: v('side-body') || !!document.querySelector('#side .tabs').getClientRects().length, dock: v('sim-dock'),
+      outlineName: document.getElementById(document.getElementById('outline').getAttribute('aria-labelledby')).textContent, sideName: document.getElementById(document.getElementById('side').getAttribute('aria-labelledby')).textContent,
+      toolwin: netatlas.toolWindow(), detach: !!document.querySelector('#sim-dock .tw-dock, #sim-dock .tw-close'),
+      scroll: document.documentElement.scrollHeight - document.documentElement.clientHeight, obj: document.getElementById('sim-obj').value,
+      acts: Array.from(document.querySelectorAll('#sim-act-items button')).map((b) => b.textContent) }; })()`);
+    assert.deepEqual([L.setup, L.objects, L.actions, L.tabs, L.dock], [true, false, true, false, true]);
+    assert.deepEqual([L.outlineName, L.sideName], ['Simulation setup', 'Actions']);
+    assert.equal(L.toolwin, '', 'no floating window');
+    assert.equal(L.detach, false, 'the panel has nothing to detach or close it');
+    assert.equal(L.scroll, 0);
+    assert.equal(L.obj, 'device:core1', 'the selected object is the actions’ object');
+    assert.ok(L.acts.indexOf('Show ARP table') >= 0 && L.acts.indexOf('Power off') >= 0, L.acts.join('|'));
+    // the splitter: ↑ taller, Enter back to the default; remembered
+    const h0 = await page.eval(`document.getElementById('sim-dock').getBoundingClientRect().height`);
+    await page.eval(`document.getElementById('dock-splitter').focus(), true`);
+    await page.key('ArrowUp', 'ArrowUp', 38);
+    await page.key('ArrowUp', 'ArrowUp', 38);
+    const h1 = await page.eval(`document.getElementById('sim-dock').getBoundingClientRect().height`);
+    assert.ok(Math.abs(h1 - h0 - 40) < 2, `${h0} → ${h1}`);
+    assert.equal(await page.eval(`Number(localStorage.getItem('netatlas.dockHeight'))`), Math.round(h1));
+    assert.equal(await page.eval(`document.getElementById('dock-splitter').getAttribute('aria-valuenow')`), String(Math.round(h1)));
+    for (let i = 0; i < 40; i++) await page.key('ArrowDown', 'ArrowDown', 40);
+    assert.equal(await page.eval(`Math.round(document.getElementById('sim-dock').getBoundingClientRect().height)`), 150, 'never lower than its minimum');
+    await page.key('Enter', 'Enter', 13);
+    assert.ok(Math.abs((await page.eval(`document.getElementById('sim-dock').getBoundingClientRect().height`)) - h0) < 2, 'Enter: the default height');
+    // F6: left panel, diagram, right panel, the simulation panel, round again; Shift+F6 back
+    await page.eval(`document.getElementById('canvas').focus(), true`);
+    const seq = [];
+    for (let i = 0; i < 4; i++) {
+      await page.key('F6', 'F6', 117);
+      seq.push(await page.eval(REGION));
+    }
+    assert.deepEqual(seq, ['side', 'sim-dock', 'outline', 'canvas-wrap']);
+    await page.key('F6', 'F6', 117, 8);
+    assert.equal(await page.eval(REGION), 'outline');
+    // Exit: the Objects list and the Inspector's Legend tab again, core1 still selected, the same zoom
+    await page.eval(`netatlas.exitSimulation(), true`);
+    await page.settle(120);
+    const E = await page.eval(`({ objects: document.getElementById('outline-body').getBoundingClientRect().width > 0, dock: document.getElementById('sim-dock').hidden, tab: document.querySelector('#side .tabs .active').getAttribute('data-tab'), sel: netatlas.session.state.selected, zoom: document.getElementById('viewport').getAttribute('transform'), name: document.getElementById('side').getAttribute('aria-label'), sim: document.body.getAttribute('data-sim') })`);
+    assert.deepEqual(E, { objects: true, dock: true, tab: 'legend', sel: 'device:core1', zoom, name: 'Inspector', sim: null });
+  } finally {
+    await page.close();
+  }
+});
+
+test('the in-diagram menu with the mouse and the keyboard; the device tables in the simulation panel; the protocols shown without a restart', { skip, timeout: 180000 }, async () => {
+  const page = await openPage(url, { width: 1440, height: 900 });
+  try {
+    await start(page);
+    await page.eval(`netatlas.startProtocolSimulation(), netatlas.simController().setPlaying(false), netatlas.simController().runTo(20000), netatlas.fit(), true`);
+    await page.settle(150);
     // a click on a cable: Fail this link, at that spot; Enter fails it
-    // a point of the cable that is not covered by anything (the legend, the side panel)
     const pt = await page.eval(`(() => { const p = document.querySelector('#canvas g.cable[data-ref="link:l-carrier-r3"] path.cable-line'); const m = p.getScreenCTM(); for (const f of [0.5, 0.4, 0.6, 0.3, 0.7, 0.2, 0.8]) { const a = p.getPointAtLength(p.getTotalLength() * f); const x = a.x * m.a + a.y * m.c + m.e; const y = a.x * m.b + a.y * m.d + m.f; const e = document.elementFromPoint(x, y); if (e && e.closest('[data-ref="link:l-carrier-r3"]')) return { x, y }; } return { x: 0, y: 0 }; })()`);
-    const x = pt.x;
-    const y = pt.y;
-    assert.match(await page.eval(`(document.elementFromPoint(${x}, ${y}).closest('[data-ref]') || { getAttribute() { return ''; } }).getAttribute('data-ref')`), /^link:l-carrier-r3$/, await page.eval(`(() => { const e = document.elementFromPoint(${x}, ${y}); return e ? e.tagName + '.' + e.getAttribute('class') + ' ' + (e.parentElement && e.parentElement.getAttribute('class')) : 'none'; })()`));
+    const { x, y } = pt;
+    assert.ok(x > 0, 'a point of the cable that nothing covers');
     await page.mouse('mouseMoved', x, y);
     await page.mouse('mousePressed', x, y, 'left');
     await page.mouse('mouseReleased', x, y, 'left');
@@ -71,9 +174,12 @@ test('the in-diagram menu with the mouse and the keyboard; the tables: several a
     assert.deepEqual(m.items, ['Fail link', 'Start flapping', 'Highlight broadcast domain']);
     assert.equal(m.active, 'Fail link', 'the keyboard is in the menu');
     assert.ok(Math.abs(m.x - x) < 40 && Math.abs(m.y - y) < 40, 'at that spot');
+    // the Actions panel offers the same for the cable (it is selected now)
+    assert.deepEqual(await page.eval(`Array.from(document.querySelectorAll('#sim-act-items button')).map((b) => b.textContent)`), m.items);
     await page.key('Enter', 'Enter', 13);
     await page.settle(150);
     assert.equal(await page.eval(`netatlas.simController().sim.downRefs().indexOf('link:l-carrier-r3') >= 0`), true);
+    assert.deepEqual(await page.eval(`[document.querySelector('#sim-events li[data-ref="link:l-carrier-r3"] button').textContent, Array.from(document.querySelectorAll('#sim-act-items button')).map((b) => b.textContent)[0]]`), ['Restore', 'Restore link']);
     // the same cable again: Restore link; Esc closes the menu
     await page.mouse('mousePressed', x, y, 'left');
     await page.mouse('mouseReleased', x, y, 'left');
@@ -82,7 +188,11 @@ test('the in-diagram menu with the mouse and the keyboard; the tables: several a
     await page.key('Escape', 'Escape', 27);
     await page.settle(80);
     assert.equal(await page.eval(`!!document.querySelector('.sim-menu') || !netatlas.simulationOn()`), false, 'Esc closes the menu, the simulation goes on');
-    // a switch: Show ARP table, Show MAC table (arrow keys move between them)
+    // Restore from the Actions panel
+    await page.click('#sim-act-items button');
+    await page.settle(100);
+    assert.equal(await page.eval(`netatlas.simController().sim.netEvents().some((e) => e.ref === 'link:l-carrier-r3')`), false, 'restored (it comes up after its link-up delay)');
+    // a switch: Show ARP table, Show MAC table (arrow keys move between them); the table shows in the simulation panel
     const sw = await page.rect('#canvas .node[data-ref="device:core1"]');
     await page.mouse('mousePressed', sw.x + 10, sw.y + 10, 'left');
     await page.mouse('mouseReleased', sw.x + 10, sw.y + 10, 'left');
@@ -92,39 +202,27 @@ test('the in-diagram menu with the mouse and the keyboard; the tables: several a
     await page.key('ArrowUp', 'ArrowUp', 38);
     await page.key('Enter', 'Enter', 13);
     await page.settle(120);
-    await page.eval(`netatlas.simController().showTable('arp', 'r1'), netatlas.simController().showTable('mac', 'acc-sw'), true`);
-    await page.settle(120);
-    const titles = await page.eval(`Array.from(document.querySelectorAll('.sim-table-panel .st-title')).map((t) => t.textContent)`);
-    assert.deepEqual(titles, ['ARP table · core1', 'ARP table · r1', 'MAC table · acc-sw']);
-    // the first table is beside core1, not on it
-    const pr = await page.rect('.sim-table-panel[data-device="core1"]');
-    const box = await page.rect('#canvas .node[data-ref="device:core1"]');
-    assert.ok(pr.x >= box.x + box.w || pr.x + pr.w <= box.x, 'beside the device');
-    // dragged aside by its title
-    const head = await page.rect('.sim-table-panel[data-device="r1"] .st-title');
-    await page.mouse('mouseMoved', head.x + 5, head.y + 5);
-    await page.mouse('mousePressed', head.x + 5, head.y + 5, 'left');
-    await page.mouse('mouseMoved', head.x - 95, head.y + 45, 'left');
-    await page.mouse('mouseReleased', head.x - 95, head.y + 45, 'left');
+    const st = await page.eval(`({ tabs: Array.from(document.querySelectorAll('#sd-sttabs [data-st]')).map((b) => b.textContent + (b.getAttribute('aria-pressed') === 'true' ? '*' : '')), heads: Array.from(document.querySelectorAll('#sim-status-table thead th')).slice(0, 8).map((h) => h.textContent), rows: document.querySelectorAll('#sim-status-table tbody tr[data-ip]').length, panels: document.querySelectorAll('.sim-table-panel').length })`);
+    assert.deepEqual(st.tabs, ['Protocols', 'ARP*', 'MAC', 'Connections', 'IGMP', 'Multicast routes', 'Multicast table']);
+    assert.deepEqual(st.heads, ['IP address', 'MAC address', 'Interface', 'VLAN', 'Type', 'State', 'Age', 'Expires in']);
+    assert.ok(st.rows > 0);
+    assert.equal(st.panels, 0, 'no floating table');
+    // the MAC tab; Protocols again
+    await page.click('#sd-sttabs [data-st="mac"]');
     await page.settle(80);
-    const moved = await page.rect('.sim-table-panel[data-device="r1"] .st-title');
-    assert.deepEqual([Math.round(moved.x - head.x), Math.round(moved.y - head.y)], [-100, 40]);
-    // Esc in a table closes it (only it)
-    await page.eval(`document.querySelector('.sim-table-panel[data-device="r1"] .st-close').focus(), true`);
-    await page.key('Escape', 'Escape', 27);
+    assert.deepEqual(await page.eval(`Array.from(document.querySelectorAll('#sim-status-table thead th')).map((h) => h.textContent)`), ['MAC address', 'VLAN', 'Port', 'Type', 'Age', 'Expires in']);
+    await page.click('#sd-sttabs [data-st="status"]');
     await page.settle(80);
-    assert.deepEqual(await page.eval(`Array.from(document.querySelectorAll('.sim-table-panel')).map((p) => p.getAttribute('data-device'))`), ['core1', 'acc-sw']);
-    // the protocols shown: unticking OSPF with the mouse changes nothing else (the window unfolded again)
-    await page.eval(`document.querySelector('#toolwin .tw-collapse').click(), document.querySelector('input[data-sim-proto="ospf"]').scrollIntoView({ block: 'center' }), true`);
-    await page.settle(100);
+    assert.deepEqual(await page.eval(`Array.from(document.querySelectorAll('#sim-status-table thead th')).map((h) => h.textContent)`), ['Protocol', 'Session', 'State', 'Details']);
+    // the protocols shown: unticking OSPF in the setup changes nothing else
     const t0 = await page.eval(`netatlas.simController().sim.now`);
-    await page.click('input[data-sim-proto="ospf"]');
+    await page.eval(`document.querySelector('#sim-setup input[data-sim-proto="ospf"]').scrollIntoView({ block: 'center' }), true`);
+    await page.click('#sim-setup input[data-sim-proto="ospf"]');
     await page.settle(80);
     assert.equal(await page.eval(`netatlas.simController().sim.now`), t0, 'no restart, the same time');
     assert.equal(await page.eval(`netatlas.simController().shown.has('ospf')`), false);
-    assert.equal(await page.eval(`document.querySelectorAll('.sim-table-panel').length`), 2, 'the tables stay');
     assert.equal(await page.eval(`Array.from(document.querySelectorAll('#canvas .sim-label text')).some((t) => /^OSPF/.test(t.textContent))`), false, 'no OSPF dots now');
-    // Exit simulation closes the tables
+    assert.equal(await page.eval(`JSON.parse(sessionStorage.getItem('netatlas.sim.hidden')).indexOf('ospf') >= 0`), true, 'remembered for the next start');
     await page.eval(`netatlas.exitSimulation(), true`);
     await page.settle(80);
     assert.equal(await page.eval(`document.querySelectorAll('.sim-table-panel, .sim-menu').length`), 0);
@@ -133,85 +231,115 @@ test('the in-diagram menu with the mouse and the keyboard; the tables: several a
   }
 });
 
-test('reduced motion: no moving dots but static labelled arrows; the time advances in steps; exports are still pictures', { skip, timeout: 120000 }, async () => {
+test('the pacing on screen: every dot travels its way at the readable pace; a dot clicked pauses and opens the packet inspector with Follow message; Step; the speed, the modes and skipping idle time', { skip, timeout: 180000 }, async () => {
   const page = await openPage(url, { width: 1440, height: 900 });
   try {
-    await page.cmd('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
     await start(page);
-    await page.eval(`netatlas.startProtocolSimulation(), netatlas.simController().setSpeed(2), true`);
-    await new Promise((r) => setTimeout(r, 3500));
-    const t = await page.eval(`netatlas.simController().sim.now`);
-    assert.ok(t >= 4000 && t % 2000 === 0, `steps of 1 s × speed 2: ${t}`);
-    assert.match(await page.eval(`document.getElementById('sim-time').textContent`), /\(steps: reduced motion\)/);
-    await page.eval(`netatlas.simController().setPlaying(false), netatlas.simController().runTo(12000), true`);
+    await page.eval(`netatlas.startProtocolSimulation(), true`);
+    await new Promise((r) => setTimeout(r, 1500));
+    const p = await page.eval(`(() => { const c = netatlas.simController(); return { text: document.getElementById('sim-pace-text').textContent, playing: c.playing, clock: c.pacer.clock, dots: document.querySelectorAll('#canvas .layer-sim [data-flight]').length, items: c.pacer.items.filter((i) => i.drawn && i.f.view === 'physical').map((i) => i.hop) }; })()`);
+    assert.equal(p.text, 'Readable · 1 s per hop · 1×');
+    assert.ok(p.playing && p.clock > 1000, JSON.stringify(p));
+    assert.ok(p.items.every((h) => h >= 600 && h <= 3000), 'every hop 0.6–3 s');
+    // a dot: at the moment one is drawn, click it; the simulation pauses and the inspector opens
+    let dot = null;
+    for (let i = 0; i < 40 && !dot; i++) {
+      dot = await page.eval(`(() => { for (const d of document.querySelectorAll('#canvas .layer-sim [data-flight]')) { const r = d.getBoundingClientRect(); const e = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); if (e && e.closest('[data-flight]') === d) { netatlas.simController().setPlaying(false); return { x: r.left + r.width / 2, y: r.top + r.height / 2, id: d.getAttribute('data-flight') }; } } return null; })()`);
+      if (!dot) await new Promise((r) => setTimeout(r, 150));
+    }
+    assert.ok(dot, 'a dot that can be clicked');
+    // (paused for the click to hit the dot; a click while it plays pauses it, below)
+    await page.mouse('mouseMoved', dot.x, dot.y);
+    await page.mouse('mousePressed', dot.x, dot.y, 'left');
+    await page.mouse('mouseReleased', dot.x, dot.y, 'left');
+    await page.settle(120);
+    const pi = await page.eval(`(() => { const p = document.querySelector('.sim-table-panel[data-table="packet"]'); return p ? { title: p.querySelector('.st-title').textContent, follow: p.querySelector('#pi-follow') && p.querySelector('#pi-follow').textContent, playing: netatlas.simController().playing, play: document.getElementById('sim-play').textContent } : null; })()`);
+    assert.ok(pi, 'the packet inspector');
+    assert.deepEqual(pi, { title: 'Packet · inspector', follow: 'Follow message', playing: false, play: 'Play' });
+    assert.equal(await page.eval(`(() => { const c = netatlas.simController(); c.setPlaying(true); c.inspectFlight(${dot.id}); return c.playing; })()`), false, 'a dot opened while it plays pauses the simulation');
+    // Follow message: its conversation alone sets the pace; the panel says so; Stop following
+    await page.click('#pi-follow');
     await page.settle(80);
-    const r = await page.eval(`({ dots: document.querySelectorAll('#canvas .sim-dot').length, arrows: document.querySelectorAll('#canvas .sim-arrow').length, labels: document.querySelectorAll('#canvas .sim-label').length })`);
-    assert.equal(r.dots, 0);
-    assert.ok(r.arrows > 0 && r.labels >= r.arrows, JSON.stringify(r));
-    const svg = await page.eval(`netatlas.exportSvg()`);
-    assert.match(svg, /Protocol simulation, t = 12 s/);
-    assert.match(svg, /class="sim-arrow"/);
+    const f = await page.eval(`({ key: netatlas.simController().pacer.follow && netatlas.simController().pacer.follow.key, note: document.getElementById('sim-follow').hidden ? '' : document.getElementById('sim-follow-text').textContent, btn: document.getElementById('pi-follow').textContent })`);
+    assert.ok(f.key && /^Following .+ and its replies$/.test(f.note) && f.btn === 'Stop following', JSON.stringify(f));
+    await page.key('Escape', 'Escape', 27);
+    // Step: to the next message event, paused
+    const c0 = await page.eval(`netatlas.simController().pacer.clock`);
+    await page.click('#sim-step');
+    await page.settle(60);
+    assert.ok(await page.eval(`netatlas.simController().pacer.clock > ${c0} && !netatlas.simController().playing`));
+    await page.click('#sim-follow-stop');
+    await page.settle(60);
+    assert.equal(await page.eval(`netatlas.simController().pacer.follow`), null);
+    // the speed, the proportional mode with its scale, skipping
+    await page.eval(`(() => { const s = document.getElementById('sim-speed'); s.value = '2'; s.dispatchEvent(new Event('change')); const m = document.getElementById('sim-pace'); m.value = 'proportional'; m.dispatchEvent(new Event('change')); return true; })()`);
+    await page.settle(60);
+    assert.deepEqual(await page.eval(`[document.getElementById('sim-pace-text').textContent, document.getElementById('sim-pace-scale-wrap').hidden, Array.from(document.getElementById('sim-speed').options).map((o) => o.value).join(' ')]`), ['Proportional · 1 ms = 1 s · 2×', false, '0.25 0.5 1 2 4']);
+    await page.eval(`(() => { const s = document.getElementById('sim-pace-scale'); s.value = '100'; s.dispatchEvent(new Event('change')); const k = document.getElementById('sim-skip'); k.click(); return true; })()`);
+    await page.settle(60);
+    assert.deepEqual(await page.eval(`[document.getElementById('sim-pace-text').textContent, netatlas.simController().pacer.skipIdle]`), ['Proportional · 1 ms = 0.1 s · 2×', false]);
+    // a skip is reported while it is recent (OSPF alone: its hellos are seconds apart)
+    await page.eval(`(() => { const c = netatlas.simController(); const k = document.getElementById('sim-skip'); k.click(); const m = document.getElementById('sim-pace'); m.value = 'readable'; m.dispatchEvent(new Event('change')); c.setShownSet(new Set(['ospf'])); c.runTo(5000); c.setPlaying(true); return true; })()`);
+    let skipped = '';
+    for (let i = 0; i < 40 && !skipped; i++) {
+      await new Promise((r) => setTimeout(r, 100));
+      skipped = await page.eval(`document.getElementById('sim-skipped').textContent`);
+    }
+    assert.match(skipped, /^⏩ [\d.]+ (ms|s|min) skipped$/);
+    await page.eval(`netatlas.exitSimulation(), true`);
   } finally {
     await page.close();
   }
 });
 
-test('the start dialog: collapsed sections with counts, defaults with sources, range errors, modified marks and resets, remembered for the session; a device’s Simulation settings edited during the simulation, and undone', { skip, timeout: 180000 }, async () => {
+test('reduced motion: no moving dots but static labelled arrows, each for its paced time; Step a message at a time; exports are still pictures', { skip, timeout: 120000 }, async () => {
+  const page = await openPage(url, { width: 1440, height: 900 });
+  try {
+    await page.cmd('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
+    await start(page);
+    await page.eval(`netatlas.startProtocolSimulation(), netatlas.simController().setPlaying(false), true`);
+    await page.settle(80);
+    // Step: the first message appears as an arrow at once, and stays while paused
+    await page.click('#sim-step');
+    await page.settle(80);
+    const a = await page.eval(`({ dots: document.querySelectorAll('#canvas .sim-dot').length, arrows: document.querySelectorAll('#canvas .sim-arrow').length, labels: document.querySelectorAll('#canvas .sim-label').length, text: document.getElementById('sim-pace-text').textContent })`);
+    assert.equal(a.dots, 0);
+    assert.ok(a.arrows > 0 && a.labels >= a.arrows, JSON.stringify(a));
+    assert.match(a.text, /arrows \(reduced motion\)$/);
+    // Step on: one message event at a time
+    const n0 = await page.eval(`netatlas.simController().pacer.clock`);
+    await page.click('#sim-step');
+    await page.settle(60);
+    assert.ok(await page.eval(`netatlas.simController().pacer.clock`) > n0);
+    // playing: the arrows stay put for their paced time (no motion), and go
+    await page.eval(`netatlas.simController().setPlaying(true), true`);
+    await new Promise((r) => setTimeout(r, 600));
+    const pos = await page.eval(`Array.from(document.querySelectorAll('#canvas .sim-arrow')).map((e) => e.getAttribute('d')).join('|')`);
+    await new Promise((r) => setTimeout(r, 120));
+    const pos2 = await page.eval(`Array.from(document.querySelectorAll('#canvas .sim-arrow')).map((e) => e.getAttribute('d')).join('|')`);
+    assert.ok(pos === pos2 || pos2.split('|').some((d) => pos.split('|').indexOf(d) >= 0), 'arrows do not move');
+    await page.eval(`netatlas.simController().setPlaying(false), netatlas.simController().runTo(12000), true`);
+    await page.settle(80);
+    const svg = await page.eval(`netatlas.exportSvg()`);
+    assert.match(svg, /Protocol simulation, t = 12 s/);
+    assert.doesNotMatch(svg, /class="sim-dot"|sim-tx|sim-rx/);
+  } finally {
+    await page.close();
+  }
+});
+
+test('a device’s Simulation settings in the Actions panel: collapsed, editable during the simulation (the rest of the model locked), applied at once, undone; the setup’s parameters applied at once', { skip, timeout: 180000 }, async () => {
   const page = await openPage(url, { width: 1280, height: 860 });
   try {
     await start(page);
-    await page.eval(`netatlas.openStartDialog(), true`);
-    await page.settle(120);
-    const heads = await page.eval(`Array.from(document.querySelectorAll('#modal .psec-toggle')).map((b) => [b.textContent, b.getAttribute('aria-expanded'), document.getElementById(b.getAttribute('aria-controls')).hidden])`);
-    assert.deepEqual(heads, [
-      ['Layer 1 – Physical (8)', 'false', true],
-      ['Layer 2 – Data link (8)', 'false', true],
-      ['Layer 3 – Network (8)', 'false', true],
-      ['Layer 4 – Transport (8)', 'false', true],
-    ]);
-    assert.equal(await page.eval(`document.getElementById('sim-pd-reset-all').disabled`), true, 'nothing to reset');
-    await page.click('#sim-pd-l2-btn');
-    await page.settle(60);
-    const f = await page.eval(`({ v: document.getElementById('sim-pd-arp-timeout').value, help: document.getElementById('sim-pd-arp-timeout-help').textContent, unit: document.getElementById('sim-pd-arp-timeout').parentElement.textContent })`);
-    assert.equal(f.v, '14400');
-    assert.match(f.help, /Default 4 h: Cisco IOS \(4 h\); RFC 826 sets none\./);
-    assert.match(f.unit, /s$/);
-    // out of range: an error, Start unavailable
-    await page.eval(`(() => { const i = document.getElementById('sim-pd-arp-timeout'); i.focus(); i.select(); return true; })()`);
-    await page.type('0');
-    await page.settle(40);
-    assert.deepEqual(await page.eval(`[document.getElementById('sim-pd-arp-timeout-err').textContent, document.getElementById('sim-pd-arp-timeout').getAttribute('aria-invalid'), document.querySelector('#modal [data-value="start"]').disabled]`), ['ARP timeout must be from 1 s to 2147483 s.', 'true', true]);
-    await page.eval(`document.getElementById('sim-pd-arp-timeout').select(), true`);
-    await page.type('60');
-    await page.key('Tab', 'Tab', 9);
-    await page.settle(40);
-    assert.deepEqual(await page.eval(`[document.querySelector('[data-param-row~="arp-timeout"]').classList.contains('modified'), document.querySelector('[data-layer="2"] .psec-mod').textContent, document.querySelector('#modal [data-value="start"]').disabled]`), [true, '1 modified', false]);
-    // Reset Layer 2: the default again
-    await page.eval(`document.querySelector('[data-layer="2"] .psec-reset').scrollIntoView({ block: 'center' }), true`);
-    await page.click('[data-layer="2"] .psec-reset');
-    await page.settle(40);
-    assert.deepEqual(await page.eval(`[document.getElementById('sim-pd-arp-timeout').value, document.querySelector('[data-param-row~="arp-timeout"]').classList.contains('modified')]`), ['14400', false]);
-    await page.eval(`(() => { const i = document.getElementById('sim-pd-arp-timeout'); i.value = '60'; i.dispatchEvent(new Event('input')); i.dispatchEvent(new Event('change')); return true; })()`);
-    await page.click('#modal [data-value="start"]');
+    await page.eval(`netatlas.startProtocolSimulation(), netatlas.simController().setPlaying(false), netatlas.simController().runTo(15000), netatlas.select('device:core1'), true`);
     await page.settle(150);
-    assert.equal(await page.eval(`netatlas.simController().sim.params.simValue('arp-timeout')`), 60000);
-    // the next start in this session remembers it
-    await page.eval(`netatlas.exitSimulation(), netatlas.openStartDialog(), true`);
-    await page.settle(120);
-    assert.deepEqual(await page.eval(`[document.getElementById('sim-pd-arp-timeout').value, document.querySelector('[data-param-row~="arp-timeout"]').classList.contains('modified')]`), ['60', true]);
-    await page.click('#modal [data-value="cancel"]');
-    await page.settle(80);
-    assert.equal(await page.eval(`netatlas.simulationOn()`), false, 'Cancel starts nothing');
-    // a running simulation: core1's Simulation section stays editable (the rest of the form is read-only); the change applies at once, Undo takes it back
-    await page.eval(`netatlas.startProtocolSimulation(), netatlas.simController().setPlaying(false), netatlas.simController().runTo(15000), netatlas.closeToolWindow(), netatlas.select('device:core1'), true`);
-    await page.click('[data-tab="edit"]');
-    await page.settle(120);
-    assert.equal(await page.eval(`!!document.querySelector('#side-body .sim-live #fg-simulation') && document.querySelector('#side-body fieldset.locked-form').disabled && !document.querySelector('#side-body fieldset.locked-form #fg-simulation')`), true);
+    assert.equal(await page.eval(`!!document.querySelector('#sim-act-attrs #fg-simulation') && document.querySelectorAll('#fg-simulation').length === 1`), true, 'once, in the Actions panel');
     assert.equal(await page.eval(`document.getElementById('fg-simulation').getAttribute('aria-expanded')`), 'false', 'collapsed by default');
     await page.eval(`document.getElementById('fg-simulation').scrollIntoView({ block: 'center' }), true`);
     await page.click('#fg-simulation');
     await page.settle(60);
-    assert.deepEqual(await page.eval(`[document.getElementById('sim-attr-arp_timeout').value, document.getElementById('sim-attr-arp_timeout-state').textContent, document.getElementById('sim-attr-mac_aging').value, document.getElementById('sim-attr-mac_aging').placeholder, document.getElementById('sim-attr-mac_aging-state').textContent]`), ['300', 'Set on this device: 5 min. It would inherit 1 min (simulation).', '', '300', 'Inherited: 5 min (default — IEEE 802.1D-2004 recommended ageing time).']);
+    assert.deepEqual(await page.eval(`[document.getElementById('sim-attr-arp_timeout').value, document.getElementById('sim-attr-arp_timeout-state').textContent, document.getElementById('sim-attr-mac_aging').value, document.getElementById('sim-attr-mac_aging').placeholder]`), ['300', 'Set on this device: 5 min. It would inherit 4 h (default — Cisco IOS (4 h); RFC 826 sets none).', '', '300']);
     await page.eval(`(() => { const i = document.getElementById('sim-attr-arp_timeout'); i.focus(); i.select(); return true; })()`);
     await page.type('45');
     await page.key('Tab', 'Tab', 9);
@@ -221,53 +349,36 @@ test('the start dialog: collapsed sections with counts, defaults with sources, r
     await page.eval(`netatlas.undo(), true`);
     await page.settle(150);
     assert.match(await page.eval(`netatlas.exportText()`), /simulation: \{arp_timeout: 300, pim_dr_priority: 200\}/);
-    assert.ok(await page.eval(`netatlas.simController().sim.events().some((e) => e.detail === 'Parameter changed: ARP timeout on core1 45 s → 5 min (device)')`));
-    // the window's parameters: the same sections, applied at once
-    await page.eval(`netatlas.openSimWindow(), document.getElementById('sim-params').open = true, document.getElementById('sim-pw-l2-btn').click(), true`);
-    await page.settle(80);
+    // the setup's parameters: applied at once, logged, remembered for the session
+    await page.eval(`document.getElementById('sim-pw-l2-btn').click(), true`);
+    await page.settle(60);
     await page.eval(`(() => { const i = document.getElementById('sim-pw-mac-aging'); i.value = '60'; i.dispatchEvent(new Event('input')); i.dispatchEvent(new Event('change')); return true; })()`);
     await page.settle(80);
     assert.ok(await page.eval(`netatlas.simController().sim.events().some((e) => e.detail === 'Parameter changed: MAC aging time 5 min → 1 min (simulation)')`));
     assert.equal(await page.eval(`JSON.parse(sessionStorage.getItem('netatlas.sim.params'))['mac-aging']`), 60000);
+    assert.equal(await page.eval(`document.getElementById('sim-pw-l2-btn').textContent`), '▸Layer 2 – Data link (8) · 1 modified');
   } finally {
     await page.close();
   }
 });
 
-test('Layers 3 and 4 on screen: a dot opens the packet inspector, a log message too (keyboard); Send test… from a device; the storm warning; a broadcast domain highlighted; the log by layer and cast; connections and sessions', { skip, timeout: 180000 }, async () => {
+test('Layers 3 and 4 on screen: a log message opens the packet inspector (keyboard); Send test from the Actions panel and from a device’s menu; the storm warning; a broadcast domain; the log by layer, cast and protocol; connections and sessions', { skip, timeout: 180000 }, async () => {
   const page = await openPage(url, { width: 1440, height: 900 });
   try {
     await start(page);
     await page.eval(`netatlas.startProtocolSimulation(), netatlas.simController().setPlaying(false), netatlas.simController().runTo(30000), true`);
     await page.settle(150);
-    // the lab's loop storms: the banner and the window warn
+    // the lab's loop storms: the banner and the panel warn
     assert.match(await page.eval(`document.getElementById('sim-text').textContent`), /⚠ broadcast storm in the untagged frames/);
-    assert.match(await page.eval(`(() => { const s = document.getElementById('sim-storm'); return s.hidden ? '' : s.textContent; })()`), /^Broadcast storm in the untagged frames \(loop over l-lab-\w, since t = [\d.]+ s\): a Layer 2 loop that no spanning tree blocks/);
-    // the shapes' legend; a dot of each cast is drawn with its shape
+    assert.match(await page.eval(`(() => { const s = document.getElementById('sim-storm'); return s.hidden ? '' : s.textContent; })()`), /^⚠ Broadcast storm in the untagged frames \(loop over l-lab-\w, since t = [\d.]+ s\): a Layer 2 loop that no spanning tree blocks/);
     assert.match(await page.eval(`document.getElementById('sim-shapes').textContent`), /unicast.*broadcast.*multicast/);
-    // a dot: the packet inspector, layer by layer
-    // to a moment with a dot on a cable that nothing covers
-    const dot = await page.eval(`(() => { const c = netatlas.simController(); for (let i = 0; i < 60; i++) { c.sim.advance(c.t + 5000, (f) => f.view === 'physical'); c.refresh(true); for (const d of document.querySelectorAll('#canvas [data-flight]')) { const r = d.getBoundingClientRect(); const e = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); if (e && e.closest('[data-flight]') === d) return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; } c.runTo(c.t + 1); } return null; })()`);
-    assert.ok(dot, 'a dot that can be clicked');
-    await page.mouse('mouseMoved', dot.x, dot.y);
-    await page.mouse('mousePressed', dot.x, dot.y, 'left');
-    await page.mouse('mouseReleased', dot.x, dot.y, 'left');
-    await page.settle(120);
-    const pi = await page.eval(`(() => { const p = document.querySelector('.sim-table-panel[data-table="packet"]'); return p ? { title: p.querySelector('.st-title').textContent, layers: Array.from(p.querySelectorAll('.pi-layer h4')).map((h) => h.textContent) } : null; })()`);
-    assert.equal(pi.title, 'Packet · inspector');
-    assert.equal(pi.layers[0], 'Layer 2 – Ethernet');
-    assert.equal(pi.layers[pi.layers.length - 1], 'Payload');
-    await page.key('Escape', 'Escape', 27);
-    await page.settle(60);
     // a message of the log, by keyboard: its frame as sent
-    await page.eval(`netatlas.openSimWindow(), true`);
-    await page.settle(100);
     await page.eval(`(() => { const b = document.querySelector('#sim-log-table .sim-msg-btn'); b.focus(); return true; })()`);
     await page.key('Enter', 'Enter', 13);
     await page.settle(100);
     assert.match(await page.eval(`document.querySelector('.sim-table-panel[data-table="packet"] .pi p').textContent`), /as \S+ sent it at t = /);
     await page.key('Escape', 'Escape', 27);
-    // the log by layer and cast
+    // the log by cast, layer and protocol
     await page.eval(`(() => { const s = document.getElementById('sim-log-cast'); s.value = 'broadcast'; s.dispatchEvent(new Event('change')); return true; })()`);
     await page.settle(80);
     const bc = await page.eval(`Array.from(document.querySelectorAll('#sim-log-table tbody tr')).map((r) => r.getAttribute('data-protocol'))`);
@@ -276,45 +387,47 @@ test('Layers 3 and 4 on screen: a dot opens the packet inspector, a log message 
     await page.settle(80);
     const l4 = await page.eval(`Array.from(document.querySelectorAll('#sim-log-table tbody tr')).map((r) => r.getAttribute('data-protocol'))`);
     assert.ok(l4.length > 0 && l4.indexOf('ospf') < 0 && l4.indexOf('arp') < 0, l4.join(','));
-    // Send test… from pc1's menu: the window's section with pc1 as the source; srv tcp/22 is refused
-    await page.eval(`netatlas.simController().sendTestFrom('pc1'), true`);
-    await page.settle(100);
-    assert.deepEqual(await page.eval(`[document.getElementById('sim-test').open, document.getElementById('sim-t-from').value, document.activeElement.id]`), [true, 'pc1', 'sim-t-to']);
+    await page.eval(`(() => { const l = document.getElementById('sim-log-layer'); l.value = '0'; l.dispatchEvent(new Event('change')); const p = document.getElementById('sim-log-proto'); p.value = 'ospf'; p.dispatchEvent(new Event('change')); return true; })()`);
+    await page.settle(80);
+    const os = await page.eval(`Array.from(document.querySelectorAll('#sim-log-table tbody tr')).map((r) => r.getAttribute('data-protocol'))`);
+    assert.ok(os.length > 0 && os.every((p) => p === 'ospf'), os.join(','));
+    // Send test from the Actions panel: srv tcp/22 is refused
+    await page.eval(`(() => { const f = document.getElementById('sim-t-from'); f.value = 'pc1'; f.dispatchEvent(new Event('change')); const k = document.getElementById('sim-t-kind'); k.value = 'tcp'; k.dispatchEvent(new Event('change')); const p = document.getElementById('sim-t-port'); p.value = '22'; document.getElementById('sim-t-to').focus(); return true; })()`);
     await page.type('srv');
-    await page.eval(`(() => { const k = document.getElementById('sim-t-kind'); k.value = 'tcp'; const p = document.getElementById('sim-t-port'); p.value = '22'; return true; })()`);
-    await page.click('#sim-t-send');
+    await page.key('Enter', 'Enter', 13);
     await page.settle(80);
     assert.match(await page.eval(`document.getElementById('sim-t-msg').textContent`), /^Test sent at t = [\d.]+ s: pc1 → srv tcp\/22\.$/);
     await page.eval(`netatlas.simController().runTo(netatlas.simController().t + 3000), true`);
     await page.settle(80);
     assert.match(await page.eval(`document.querySelector('#sim-tests li').textContent`), /pc1 → srv tcp\/22: connection refused: RST from 10\.30\.0\.10 \(srv\)/);
+    // Send test… from a device's menu: the Actions panel's form with it as the source, the keyboard in its To field
+    await page.eval(`netatlas.simController().sendTestFrom('pc2'), true`);
+    await page.settle(80);
+    assert.deepEqual(await page.eval(`[document.getElementById('sim-t-from').value, document.activeElement.id]`), ['pc2', 'sim-t-to']);
     // a broadcast domain: the lab host's
     await page.eval(`netatlas.simController().highlightDomain({ dev: 'lab-h', iface: 'eth0' }), true`);
     await page.settle(100);
-    const hl = await page.eval(`({ on: document.querySelector('#canvas svg, #canvas').closest('svg') ? 0 : 0, cls: document.querySelector('svg.has-bcdomain') ? true : false, devs: Array.from(document.querySelectorAll('#canvas .node.bc-on')).map((n) => n.getAttribute('data-ref')).sort(), banner: document.getElementById('sim-text').textContent })`);
-    assert.equal(hl.cls, true);
-    assert.deepEqual(hl.devs, ['device:lab-h', 'device:lab-sw1', 'device:lab-sw2']);
-    assert.match(hl.banner, /broadcast domain of lab-h:eth0 highlighted/);
+    assert.deepEqual(await page.eval(`Array.from(document.querySelectorAll('#canvas .node.bc-on')).map((n) => n.getAttribute('data-ref')).sort()`), ['device:lab-h', 'device:lab-sw1', 'device:lab-sw2']);
+    assert.match(await page.eval(`document.getElementById('sim-text').textContent`), /broadcast domain of lab-h:eth0 highlighted/);
     await page.eval(`netatlas.simController().clearDomain(), true`);
-    await page.settle(60);
-    assert.equal(await page.eval(`!!document.querySelector('svg.has-bcdomain')`), false);
-    // connections and a firewall's sessions
-    await page.eval(`netatlas.simController().showTable('conn', 'srv'), netatlas.simController().showTable('fw', 'fw1'), true`);
+    // connections and a firewall's sessions, in the simulation panel
+    await page.eval(`netatlas.simController().showTable('conn', 'srv'), true`);
     await page.settle(100);
-    const tabs = await page.eval(`Array.from(document.querySelectorAll('.sim-table-panel .st-title')).map((t) => t.textContent)`);
-    assert.deepEqual(tabs, ['Connections · srv', 'Sessions · fw1']);
-    assert.ok(await page.eval(`Array.from(document.querySelectorAll('.sim-table-panel[data-table="conn"] tbody tr')).some((r) => r.getAttribute('data-state') === 'LISTEN')`));
-    assert.match(await page.eval(`document.querySelector('.sim-table-panel[data-table="fw"] .st-timers').textContent`), /Default action.*Reject/);
+    assert.ok(await page.eval(`Array.from(document.querySelectorAll('#sim-status-table tbody tr')).some((r) => r.getAttribute('data-state') === 'LISTEN')`));
+    await page.eval(`netatlas.simController().showTable('fw', 'fw1'), true`);
+    await page.settle(100);
+    assert.match(await page.eval(`document.querySelector('#sim-status-table .st-timers').textContent`), /Default action.*Reject/);
+    assert.equal(await page.eval(`netatlas.session.state.selected`), 'device:fw1', 'the table’s device is selected');
   } finally {
     await page.close();
   }
 });
 
-test('multicast on screen: Join group… from a device’s menu (the window’s form), the event with Leave group, the IGMP groups, the multicast table and routes, IGMP in the inspector', { skip, timeout: 180000 }, async () => {
+test('multicast on screen: Join group… from a device’s menu (the Actions panel’s form), the event with Leave group, the IGMP groups, the multicast table and routes, IGMP in the inspector', { skip, timeout: 180000 }, async () => {
   const page = await openPage(url, { width: 1440, height: 900 });
   try {
     await start(page);
-    await page.eval(`netatlas.startProtocolSimulation(), netatlas.simController().setPlaying(false), netatlas.simController().runTo(40000), true`);
+    await page.eval(`netatlas.startProtocolSimulation(), netatlas.simController().setPlaying(false), netatlas.simController().runTo(40000), netatlas.fit(), true`);
     await page.settle(150);
     // a host's menu: Join group…, Leave group for its own groups, Start stream…
     const sw = await page.rect('#canvas .node[data-ref="device:pc1"]');
@@ -325,25 +438,29 @@ test('multicast on screen: Join group… from a device’s menu (the window’s 
     for (const it of ['Join group…', 'Leave group 239.1.1.1', 'Start stream…']) assert.ok(items.indexOf(it) >= 0, items.join('|'));
     await page.eval(`Array.from(document.querySelectorAll('.sim-menu [role=menuitem]')).find((b) => b.textContent === 'Join group…').click(), true`);
     await page.settle(120);
-    assert.deepEqual(await page.eval(`[document.getElementById('sim-mc').open, document.getElementById('sim-mc-jif').value, document.activeElement.id]`), [true, 'pc1:eth0', 'sim-mc-jg']);
+    assert.deepEqual(await page.eval(`[document.getElementById('sim-mc-join-toggle').getAttribute('aria-expanded'), document.getElementById('sim-mc-jif').value, document.activeElement.id]`), ['true', 'pc1:eth0', 'sim-mc-jg']);
     await page.type('239.4.4.4');
+    await page.eval(`document.getElementById('sim-mc-join').scrollIntoView({ block: 'center' }), true`);
     await page.click('#sim-mc-join');
     await page.settle(100);
-    assert.equal(await page.eval(`document.getElementById('sim-mc-msg').textContent`), 'pc1:eth0 joins 239.4.4.4.');
+    assert.deepEqual(await page.eval(`[document.getElementById('sim-mc-msg').textContent, document.getElementById('sim-mc-join-toggle').getAttribute('aria-expanded'), document.getElementById('sim-mc-jg').value]`), ['pc1:eth0 joins 239.4.4.4.', 'true', '239.4.4.4'], 'the form stays as it was');
     const ev = await page.eval(`(() => { const li = document.querySelector('#sim-events li[data-event="join"]'); return li ? [li.textContent, li.querySelector('button').textContent] : null; })()`);
     assert.match(ev[0], /joined 239\.4\.4\.4/);
     assert.equal(ev[1], 'Leave group');
     await page.eval(`document.querySelector('#sim-events li[data-event="join"] button').click(), true`);
     await page.settle(100);
     assert.equal(await page.eval(`!!document.querySelector('#sim-events li[data-event="join"]')`), false);
-    // the tables
-    await page.eval(`netatlas.simController().showTable('igmp', 'core1'), netatlas.simController().showTable('snoop', 'acc-sw'), netatlas.simController().showTable('mroute', 'r1'), true`);
-    await page.settle(120);
-    assert.deepEqual(await page.eval(`Array.from(document.querySelectorAll('.sim-table-panel .st-title')).map((t) => t.textContent)`), ['IGMP groups · core1', 'Multicast table · acc-sw', 'Multicast routes · r1']);
-    assert.ok(await page.eval(`Array.from(document.querySelectorAll('.sim-table-panel[data-table="snoop"] tbody tr')).some((r) => /239\.1\.1\.1/.test(r.textContent))`));
-    assert.match(await page.eval(`document.querySelector('.sim-table-panel[data-table="mroute"]').textContent`), /RP 10\.255\.0\.1 \(r1\)/);
+    // the tables, in the simulation panel
+    await page.eval(`netatlas.simController().showTable('snoop', 'acc-sw'), true`);
+    await page.settle(100);
+    assert.ok(await page.eval(`Array.from(document.querySelectorAll('#sim-status-table tbody tr')).some((r) => /239\.1\.1\.1/.test(r.textContent))`));
+    await page.eval(`netatlas.simController().showTable('mroute', 'r1'), true`);
+    await page.settle(100);
+    assert.match(await page.eval(`document.getElementById('sim-status-table').textContent`), /RP 10\.255\.0\.1 \(r1\)/);
+    await page.eval(`netatlas.simController().showTable('igmp', 'core1'), true`);
+    await page.settle(100);
+    assert.equal(await page.eval(`document.querySelector('#sd-sttabs [aria-pressed="true"]').textContent`), 'IGMP');
     // an IGMP report in the inspector, from the log
-    await page.eval(`netatlas.simController().tables.closeAll(), true`);
     const seq = await page.eval(`netatlas.simController().sim.events().find((e) => e.protocol === 'igmp' && e.what === 'Report' && e.hdr).seq`);
     await page.eval(`netatlas.simController().inspectEvent(${seq}), true`);
     await page.settle(100);

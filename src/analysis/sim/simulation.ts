@@ -5,7 +5,7 @@
  * only. Deterministic: the same model, the same actions at the same
  * simulated times, the same timeline. It never changes the model.
  */
-import { SIM_GROUPS, SimGroup, simProfile } from '../../model/sim-profiles';
+import { SimGroup, simProfile } from '../../model/sim-profiles';
 import { Model } from '../../model/types';
 import { failableRef } from '../failure';
 import { formatAddr } from '../ipmath';
@@ -19,11 +19,24 @@ import { Test, TestKind, Transport } from './transport';
 import { ArpRow, ConnRow, Flight, GridTable, MacRow, NetEvent, SessionRow, SessionStatus, SimEvent, TableTimer } from './types';
 
 
-/** A protocol of the simulation as the window lists it (a checkbox). */
+/** The groups of the protocol checkboxes, in their order (Start simulation…, the Simulation setup panel). */
+export type SimEntryGroup = SimGroup | 'Multicast' | 'Traffic';
+export const ENTRY_GROUPS: readonly SimEntryGroup[] = ['Layer 2', 'Routing', 'Redundancy', 'Tunnels and overlays', 'Multicast', 'Services', 'Traffic', 'Custom'];
+
+/** A protocol of the simulation as the setup lists it (a checkbox), with what in the model uses it. */
 export interface SimProtocolEntry {
   id: string;
   label: string;
-  group: SimGroup | 'Traffic';
+  group: SimEntryGroup;
+  /** how many devices, relations, demands or streams use it */
+  uses: number;
+  /** what `uses` counts: "device", "relation", "demand", "stream" */
+  unit: 'device' | 'relation' | 'demand' | 'stream';
+}
+
+/** "3 relations", "1 device". */
+export function usesText(e: SimProtocolEntry): string {
+  return `${e.uses} ${e.unit}${e.uses === 1 ? '' : 's'}`;
 }
 
 export class Simulation {
@@ -347,36 +360,55 @@ export class Simulation {
   }
 }
 
-/** The protocols this model's simulation runs, grouped (Layer 2 first), for the window's checkboxes. */
+/**
+ * The protocols this model's simulation runs, grouped (Layer 2, Routing,
+ * Redundancy, Tunnels and overlays, Multicast, Services, Traffic, Custom),
+ * each with what in the model uses it (devices, relations, demands or
+ * streams), for the setup's checkboxes.
+ */
 export function protocolEntriesOf(model: Model): SimProtocolEntry[] {
   const seen = new Map<string, SimProtocolEntry>();
-  const add = (id: string, label: string, group: SimProtocolEntry['group']): void => {
-    if (!seen.has(id)) seen.set(id, { id, label, group });
+  const users = new Map<string, Set<string>>();
+  const add = (id: string, label: string, group: SimEntryGroup, unit: SimProtocolEntry['unit'], user: string): void => {
+    if (!seen.has(id)) seen.set(id, { id, label, group, uses: 0, unit });
+    const u = users.get(id) || new Set<string>();
+    u.add(user);
+    users.set(id, u);
   };
-  add('arp', 'ARP', 'Layer 2');
-  if (model.devices.some((d) => d.interfaces.concat(d.logical).some((i) => i.addresses.some((a) => a.indexOf(':') >= 0)))) add('ndp', 'NDP', 'Layer 2');
-  add('garp', 'Gratuitous ARP', 'Layer 2');
+  // multicast routing has a group of its own
+  const groupOf = (id: string, g: SimEntryGroup): SimEntryGroup => (id === 'pim' || id === 'igmp' || id === 'mcast' ? 'Multicast' : g);
+  const ifs = (d: Model['devices'][number]): Model['devices'][number]['interfaces'] => d.interfaces.concat(d.logical);
+  for (const d of model.devices) {
+    const addrs = ifs(d).filter((i) => i.type !== 'loopback' && i.addresses.length);
+    if (!addrs.length) continue;
+    add('arp', 'ARP', 'Layer 2', 'device', d.id);
+    add('garp', 'Gratuitous ARP', 'Layer 2', 'device', d.id);
+    if (addrs.some((i) => i.addresses.some((a) => a.indexOf(':') >= 0))) add('ndp', 'NDP', 'Layer 2', 'device', d.id);
+  }
   for (const r of model.relations) {
     const p = relationProfile(model, r);
-    add(p.id, p.label, p.group);
+    add(p.id, p.label, groupOf(p.id, p.group), 'relation', r.id);
   }
   for (const d of model.devices) {
-    if (d.logical.some((i) => i.type === 'virtual' && i.members.length)) add('lacp', 'LACP', 'Layer 2');
-    for (const i of d.interfaces.concat(d.logical)) for (const s of i.services) {
+    if (d.logical.some((i) => i.type === 'virtual' && i.members.length)) add('lacp', 'LACP', 'Layer 2', 'device', d.id);
+    for (const i of ifs(d)) for (const s of i.services) {
       const p = simProfile(s.id);
-      if (p) add(p.id, p.label, p.group);
+      if (p && !(seen.has(p.id) && seen.get(p.id)!.unit === 'relation')) add(p.id, p.label, groupOf(p.id, p.group), 'device', d.id);
     }
   }
-  if (model.demands.length) add('demand', 'Demands (data)', 'Traffic');
-  // Layer 3 and 4: ICMP (echo, errors), TCP and UDP (tests, health checks, probes)
-  add('icmp', 'ICMP / ICMPv6', 'Traffic');
-  add('tcp', 'TCP (tests)', 'Traffic');
-  add('udp', 'UDP (tests)', 'Traffic');
+  for (const dm of model.demands) add('demand', 'Demands (data)', 'Traffic', 'demand', dm.id);
+  // Layer 3 and 4: ICMP (echo, errors), TCP and UDP (tests, health checks, probes): every addressed device can send them
+  for (const d of model.devices) {
+    if (!ifs(d).some((i) => i.addresses.length)) continue;
+    for (const [id, label] of [['icmp', 'ICMP / ICMPv6'], ['tcp', 'TCP (tests)'], ['udp', 'UDP (tests)']]) add(id, label, 'Traffic', 'device', d.id);
+  }
   // multicast: membership wherever a router runs PIM or a host joins; the streams
-  const joins = model.devices.some((d) => d.interfaces.concat(d.logical).some((i) => !!i.multicast && i.multicast.joins.length > 0));
-  const pim = model.devices.some((d) => d.services.some((s) => s.id === 'pim'));
-  if (joins || pim) add('igmp', 'IGMP / MLD', 'Routing');
-  if (model.devices.some((d) => d.interfaces.concat(d.logical).some((i) => !!i.multicast && i.multicast.streams.length > 0))) add('mcast', 'Multicast streams', 'Traffic');
-  const order = (g: SimProtocolEntry['group']): number => (g === 'Traffic' ? SIM_GROUPS.length : SIM_GROUPS.indexOf(g as SimGroup));
+  for (const d of model.devices) {
+    const joins = ifs(d).some((i) => !!i.multicast && i.multicast.joins.length > 0);
+    if (joins || d.services.some((s) => s.id === 'pim')) add('igmp', 'IGMP / MLD', 'Multicast', 'device', d.id);
+    for (const i of ifs(d)) for (const st of i.multicast ? i.multicast.streams : []) add('mcast', 'Multicast streams', 'Multicast', 'stream', `${d.id}:${i.id}:${st.group}`);
+  }
+  for (const e of seen.values()) e.uses = (users.get(e.id) as Set<string>).size;
+  const order = (g: SimEntryGroup): number => ENTRY_GROUPS.indexOf(g);
   return Array.from(seen.values()).sort((a, b) => order(a.group) - order(b.group) || (a.label < b.label ? -1 : a.label > b.label ? 1 : 0));
 }

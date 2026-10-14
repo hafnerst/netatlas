@@ -270,41 +270,87 @@ export async function runViewportCheck(app: App, doc: Document): Promise<Check[]
         await tick();
         state('the start dialog with all its sections open fits the browser window; its fields wrap, the page does not scroll', why.slice(0, 6).concat(problems()));
       }
-      // the protocol simulation: its window like the others, and two tables at once inside the browser window
-      tws.length = 0;
-      app.startProtocolSimulation();
-      const ctl = app.simController()!;
-      ctl.setPlaying(false);
-      ctl.runTo(15000);
-      ctl.showTable('arp', 'hq-rtr1');
-      ctl.showTable('mac', 'hq-acc1');
-      await tick();
-      // the packet inspector of a frame on its way
-      const fl = ctl.sim.engine.flights.filter((f) => !!f.hdr).slice(-1)[0];
-      if (fl) ctl.inspectFlight(fl.id);
-      // with its parameters open (one layer expanded), its network events and Send test
-      (q('#sim-params') as HTMLDetailsElement).open = true;
-      (q('#sim-pw-l1-btn') as HTMLElement).click();
-      (q('#sim-test') as HTMLDetailsElement).open = true;
-      (q('#sim-mc') as HTMLDetailsElement).open = true;
-      ctl.sim.powerOff('hq-rtr2');
-      ctl.refresh(true);
-      await tick();
-      checkWindow('Protocol simulation');
-      const panels = Array.from(doc.querySelectorAll('.sim-table-panel')) as HTMLElement[];
-      if (panels.length !== 3) tws.push(`${panels.length} panels open instead of 3 (two tables, the packet inspector)`);
-      for (const p of panels) {
-        const r = p.getBoundingClientRect();
-        const name = (p.querySelector('.st-title') as HTMLElement).textContent;
-        if (r.left < -0.5 || r.top < -0.5 || r.right > view.w + 0.5 || r.bottom > view.h + 0.5) tws.push(`${name}: leaves the browser window`);
-        const close = (p.querySelector('.st-close') as HTMLElement).getBoundingClientRect();
-        if (close.right > r.right + 0.5 || close.width < 1) tws.push(`${name}: its close button is not shown`);
+      // the protocol simulation: its layout at this size (Simulation setup, the diagram, Actions, the simulation panel under
+      // them; below 860 px Setup and Actions as tabs above the panel), each region whole and inside the window, none on
+      // another, nothing in them wider than they are; the packet inspector inside the window; the page never scrolls
+      {
+        const why: string[] = [];
+        app.startProtocolSimulation();
+        const ctl = app.simController()!;
+        ctl.setPlaying(false);
+        ctl.runTo(15000);
+        app.select('device:hq-rtr1');
+        ctl.showTable('arp', 'hq-rtr1');
+        await tick();
+        const fl = ctl.sim.engine.flights.filter((f) => !!f.hdr).slice(-1)[0];
+        if (fl) ctl.inspectFlight(fl.id);
+        // a layer of parameters open, Send test's options open, an event in effect
+        (q('#sim-pw-l1-btn') as HTMLElement).click();
+        (q('#sim-t-more-toggle') as HTMLElement).click();
+        ctl.sim.powerOff('hq-rtr2');
+        ctl.refresh(true);
+        await tick();
+        const narrowSim = (doc.defaultView as Window).innerWidth <= 860;
+        // narrow and short: Diagram, Setup and Actions take turns above the panel
+        const shortSim = narrowSim && (q('#spt-diagram') as HTMLElement).getClientRects().length > 0;
+        const tabRegion = (): string => ({ diagram: 'canvas-wrap', setup: 'outline', actions: 'side' } as { [k: string]: string })[doc.body.getAttribute('data-sim-tab') || 'actions'];
+        const rect = (id: string): DOMRect => (q('#' + id) as HTMLElement).getBoundingClientRect();
+        const inside = (name: string, r: DOMRect): void => {
+          if (r.width < 1 || r.height < 1) why.push(`${name}: not shown`);
+          else if (r.left < -0.5 || r.top < -0.5 || r.right > view.w + 0.5 || r.bottom > view.h + 0.5) why.push(`${name}: leaves the browser window (${[r.left, r.top, r.right, r.bottom].map(Math.round).join(',')})`);
+        };
+        const apart = (ids: string[]): void => {
+          for (let i = 0; i < ids.length; i++)
+            for (let j = i + 1; j < ids.length; j++) {
+              const a = rect(ids[i]);
+              const b = rect(ids[j]);
+              const w = Math.min(a.right, b.right) - Math.max(a.left, b.left);
+              const h = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+              if (w > 1 && h > 1) why.push(`#${ids[i]} and #${ids[j]} overlap`);
+            }
+        };
+        const sideways = (id: string): void => {
+          const e = q('#' + id) as HTMLElement;
+          if (e.scrollWidth > e.clientWidth + 1) why.push(`#${id} scrolls sideways (${e.scrollWidth} > ${e.clientWidth})`);
+        };
+        const regions = (): string[] => (shortSim ? [tabRegion(), 'sim-paneltabs', 'sim-dock'] : narrowSim ? ['canvas-wrap', 'sim-paneltabs', tabRegion() === 'outline' ? 'outline' : 'side', 'sim-dock'] : ['outline', 'canvas-wrap', 'side', 'sim-dock']);
+        // a window with almost no room under the toolbar (300 % zoom): the clock and Exit stay reachable, nothing more is asked
+        const tiny = (q('main') as HTMLElement).clientHeight < 120;
+        const layoutOk = (): void => {
+          if (tiny) {
+            for (const id of ['sim-play', 'sim-exit']) inside('#' + id, rect(id));
+            if (rect('sim-exit').top < (q('main') as HTMLElement).getBoundingClientRect().top - 0.5) why.push('#sim-exit is under the toolbar');
+            return;
+          }
+          for (const id of regions()) inside('#' + id, rect(id));
+          apart(regions());
+          for (const id of ['sim-play', 'sim-step', 'sim-speed', 'sim-time', 'sim-exit']) inside('#' + id, rect(id));
+          if (regions().indexOf('canvas-wrap') >= 0 && rect('canvas-wrap').height < 80) why.push(`the diagram keeps only ${Math.round(rect('canvas-wrap').height)} px`);
+          sideways('sim-dock-body');
+          sideways('sim-actions');
+          sideways('outline');
+        };
+        layoutOk();
+        if (narrowSim) {
+          if ((q('#sim-paneltabs') as HTMLElement).getBoundingClientRect().height < 1) why.push('narrow: no tabs above the panel');
+          for (const t of shortSim ? ['diagram', 'setup', 'actions'] : ['setup', 'actions']) {
+            (q('#spt-' + t) as HTMLElement).click();
+            await tick();
+            if (rect(tabRegion()).height < 1) why.push(`narrow: the ${t} tab shows nothing`);
+            if (t === 'setup' && rect('side').height > 0) why.push('narrow: the Setup tab does not show the setup in place of the actions');
+            layoutOk();
+          }
+        } else if (!(q('#sim-paneltabs') as HTMLElement).hidden && rect('sim-paneltabs').height > 0) why.push('wide: the Setup / Actions tabs are shown');
+        const pi = q('.sim-table-panel[data-table="packet"]') as HTMLElement | null;
+        if (fl && !pi) why.push('the packet inspector did not open');
+        if (pi) inside('the packet inspector', pi.getBoundingClientRect());
+        if (doc.documentElement.scrollHeight > view.h + 1 || doc.documentElement.scrollWidth > view.w + 1) why.push('in the simulation layout: the page scrolls');
+        app.exitSimulation();
+        await tick();
+        if (doc.querySelector('.sim-table-panel')) why.push('the packet inspector stays open after Exit simulation');
+        if (!(q('#sim-dock') as HTMLElement).hidden || (q('#outline-body') as HTMLElement).getBoundingClientRect().width < 1) why.push('Exit simulation does not bring back the Objects list and close the panel');
+        state(`the simulation layout${shortSim ? ' (narrow and short: Diagram, Setup and Actions as tabs above the simulation panel)' : narrowSim ? ' (narrow: Setup and Actions as tabs above the simulation panel)' : ''} fits the browser window: setup, diagram, actions and the panel each whole, none over another; a table, the packet inspector, a parameter layer and Send test’s options open; the page does not scroll`, why.slice(0, 8).concat(problems()));
       }
-      if (doc.documentElement.scrollHeight > view.h + 1 || doc.documentElement.scrollWidth > view.w + 1) tws.push('with the tables: the page scrolls');
-      app.exitSimulation();
-      await tick();
-      if (doc.querySelector('.sim-table-panel')) tws.push('the tables stay open after Exit simulation');
-      state('the protocol simulation’s window (Send test and Multicast open), two ARP / MAC tables and the packet inspector fit the browser window (the window docked when narrow); the page does not scroll', tws.concat(problems()));
       app.select(null);
       await tick();
     }

@@ -126,6 +126,44 @@ there is no conversion of files written for the earlier drafts.
 
 ### Added
 
+- **Device types ▾** filter, directly next to **Devices ▾** with the same
+  look: a checkbox per device type the model uses (display names, with each
+  type's number of devices; types the model doesn't use are left out),
+  **Select all** and **Clear**; *Switch* has **Layer 2** and **Layer 3**
+  under it when the model has both. The button and the status bar say what
+  is shown (*Device types: 3 of 8*). Unticking a type hides its devices and
+  what only they connect; nothing is deleted or moved; it combines with
+  Devices (a device hidden by its type stays ticked there, *hidden: type
+  Server off*); both views and exports; full keyboard support.
+- **The simulation layout:** while a simulation runs, **Simulation setup**
+  (the protocols, open, and the Layer 1–4 parameters, collapsed) replaces
+  the Objects list, **Actions** (the selected object's network events, the
+  active events, Send test, the device's Simulation settings) replaces the
+  Inspector's tabs, and the **simulation panel** is docked under the
+  diagram (Play, Step, speed, pacing, skip idle time, the time and Exit;
+  status and the selected device's tables beside the event log). Its height
+  is set with a keyboard-operable splitter and remembered. Narrower than
+  1100 px the side panels narrow; below 860 px Setup and Actions are tabs
+  above the panel (with Diagram in a window that is also not tall).
+- **Pacing of the simulation** (`analysis/sim/pacing.ts`): every message
+  travels its whole way (hop by hop and across switches in the physical
+  view, along the whole relation in the logical view), fades in at its
+  sender, pulses at its receiver, and a lost one shows ✕ where it was lost
+  for about a second. **Readable** pacing (the default: about 1 s per hop,
+  scaled by the link's latency, 0.6–3 s) or **Proportional to latency**
+  (*1 ms = 1 s*), a speed of 0.25×–4× on top, **Skip idle time** (on;
+  *⏩ 9.8 s skipped*), **Follow message** (a message and its replies hold
+  the pace, with a trail), **Step** to the next message event; the sending
+  and receiving devices are marked. Under reduced motion each message is a
+  still labelled arrow for the same paced time. Pacing never changes what
+  is simulated.
+- `F6` / `Shift+F6` move the keyboard focus between the left panel, the
+  diagram, the right panel, the simulation panel and a tool window.
+- The protocol list gets a **Multicast** group, and each protocol says how
+  many devices, relations, demands or streams use it.
+- The event log can be filtered by protocol.
+
+
 - **Multicast in the simulation.** IGMPv2 / v3 and MLDv1 / v2: querier
   election and takeover, general and group-specific queries, reports with
   random delays and v2 report suppression, leaves, expiry. IGMP / MLD
@@ -574,6 +612,27 @@ there is no conversion of files written for the earlier drafts.
 
 ### Changed
 
+- **Start simulation…** puts the protocols first: open at the top, grouped
+  by layer with counts, Select all and Clear per group and for all; the
+  Layer 1–4 parameters collapsed below, a collapsed layer saying how many
+  of its values are modified (*Layer 3 – Network (8) · 2 modified*, also in
+  its accessible name). Start is the primary action, `Enter` starts, `Esc`
+  cancels; the focus starts on the first protocol; with the parameters
+  collapsed it fits without scrolling at common window sizes, only the
+  protocol list scrolls. The choice of protocols is remembered for the
+  session, like the parameters.
+- The device tables (ARP, MAC, connections, sessions, IGMP, multicast)
+  show in the simulation panel instead of floating panels; only the packet
+  inspector floats.
+- The Objects panel has no subtitle any more (and its region no
+  description).
+- The Filters ▾ overflow order is Routes, Networks, Groups / Locations,
+  Labels; Devices and Device types always stay in the row.
+- The simulation's speeds are 0.25×, 0.5×, 1×, 2× and 4× (they now apply
+  to the paced display, not the simulated clock).
+- The size limit of the built file in the build test is 4 MiB.
+
+
 - **PIM and IGMP in the simulation** are no longer just the relations'
   messages: the multicast data follows the trees PIM builds (a router
   without an RP for a sparse-mode group joins nothing; the old fallback,
@@ -699,6 +758,12 @@ there is no conversion of files written for the earlier drafts.
 
 ### Removed
 
+- The **Endpoints** and **Servers** toolbar switches, their overflow
+  entries and commands (Device types ▾ replaces them).
+- The floating **Simulation window**, its command and the banner's
+  *Simulation window* button.
+
+
 Development features of this version that never were in a release; the
 live protocol simulation replaces them.
 
@@ -714,6 +779,11 @@ live protocol simulation replaces them.
   failure are tool windows now).
 
 ### Fixed
+
+- `Esc` on the Devices ▾ button (not only inside its list) closes the list.
+- A collapsed parameter section's fields were laid out (though hidden) and
+  could make the Start dialog scroll.
+
 
 - In a narrow toolbar, switching off a filter that sits in the **Filters**
   drop-down could move the filter group to another row, after which the

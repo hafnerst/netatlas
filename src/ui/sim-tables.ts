@@ -31,6 +31,8 @@ export interface PacketData {
   hdr: Headers;
   /** when it was on its way, and where ("t = 3.4 s, on cable l2 (r1 → fw1)") */
   where: string;
+  /** Follow message: whether its conversation is followed, and the button's action */
+  follow?: { on: boolean; act: () => void };
 }
 
 type AnyData = ArpData | MacData | ConnData | FwData | PacketData | GridTable;
@@ -60,6 +62,8 @@ interface Panel {
   lastSaid: number;
   data: () => AnyData;
   back: Element | null;
+  /** inside a box of the page (the simulation panel's Status side), not a panel of its own */
+  inline?: boolean;
 }
 
 const STEP = 16;
@@ -81,12 +85,36 @@ function timerText(t: TableTimer): string {
 
 export class TablePanels {
   private panels: Panel[] = [];
+  private inlineP: Panel | null = null;
 
   constructor(private doc: Document) {}
 
-  /** The open tables (for tests and the window). */
+  /** The open tables (for tests): the panels, and the table shown in the simulation panel. */
   open(): Array<{ kind: TableKind; dev: string }> {
-    return this.panels.map((p) => ({ kind: p.kind, dev: p.dev }));
+    const out = this.panels.map((p) => ({ kind: p.kind, dev: p.dev }));
+    if (this.inlineP) out.push({ kind: this.inlineP.kind, dev: this.inlineP.dev });
+    return out;
+  }
+
+  /** The table shown inside the simulation panel (null: none). */
+  shownInline(): { kind: TableKind; dev: string } | null {
+    return this.inlineP ? { kind: this.inlineP.kind, dev: this.inlineP.dev } : null;
+  }
+
+  /** A device's table inside a box of the page (the simulation panel's Status side), in place of what was there; it updates with the time. */
+  inline(host: HTMLElement, kind: TableKind, dev: string, data: () => AnyData): void {
+    while (host.firstChild) host.removeChild(host.firstChild);
+    const body = el(this.doc, 'div', { class: 'st-body st-inline' });
+    const live = el(this.doc, 'p', { class: 'sr-only', role: 'status', 'aria-live': 'polite' });
+    host.appendChild(body);
+    host.appendChild(live);
+    this.inlineP = { kind, dev, box: host, body, live, lastCount: -1, lastSaid: 0, data, back: null, inline: true };
+    this.render(this.inlineP);
+  }
+
+  /** The simulation panel shows something else. */
+  dropInline(): void {
+    this.inlineP = null;
   }
 
   /** Open a device's table beside a point (a device's box on screen), or bring it forward when it is open. */
@@ -203,10 +231,15 @@ export class TablePanels {
       this.panels.splice(this.panels.indexOf(p), 1);
       if (p.box.parentNode) p.box.parentNode.removeChild(p.box);
     }
+    this.inlineP = null;
   }
 
   /** The rows again (with the simulated time); each panel stays inside the window as it grows. */
   update(): void {
+    if (this.inlineP) {
+      if (this.inlineP.box.isConnected) this.render(this.inlineP);
+      else this.inlineP = null;
+    }
     for (const p of this.panels) {
       if (p.kind !== 'packet') this.render(p);
       const r = p.box.getBoundingClientRect();
@@ -343,6 +376,12 @@ export class TablePanels {
     const h = d.hdr;
     const box = el(this.doc, 'div', { class: 'pi' });
     box.appendChild(el(this.doc, 'p', { class: 'small' }, [`${h.label} — ${h.cast}; ${d.where}`]));
+    if (d.follow) {
+      const fb = el(this.doc, 'button', { type: 'button', class: d.follow.on ? 'pi-follow' : 'primary pi-follow', 'aria-pressed': d.follow.on ? 'true' : 'false', id: 'pi-follow' }, [d.follow.on ? 'Stop following' : 'Follow message']);
+      const act = d.follow.act;
+      fb.addEventListener('click', () => act());
+      box.appendChild(el(this.doc, 'p', { class: 'pi-tools' }, [fb, el(this.doc, 'span', { class: 'muted small' }, [' Its replies too; it alone sets the pace, with a trail.'])]));
+    }
     const layer = (title: string, rows: Array<[string, string]>): void => {
       const dl = el(this.doc, 'dl');
       for (const [k, v] of rows) dl.appendChild(el(this.doc, 'div', { style: 'display:contents' }, [el(this.doc, 'dt', {}, [k]), el(this.doc, 'dd', { class: /MAC|address|Sender|Target|Source|Destination/.test(k) ? 'mono' : '' }, [v])]));

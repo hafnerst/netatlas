@@ -1882,14 +1882,22 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       await tick();
       const csv = spofCsv(spofRows(app.session!.model, singlePointsOfFailure(app.session!.model)));
       check('the table as CSV: a header and a line per row', /^element,type,cuts_off,relations_down,devices_cut_off,relations_down_count,impact\n/.test(csv) && csv.trim().split('\n').length === impacts.length + 1);
-      // F6: the focus between the window and the main window
+      // F6 / Shift+F6: the focus region by region: the left panel, the diagram, the right panel, the tool window
       (q('#canvas') as unknown as HTMLElement).focus();
-      doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'F6', bubbles: true, cancelable: true }));
-      await tick();
+      const regionOf = (): string => (['outline', 'canvas-wrap', 'side', 'sim-dock', 'toolwin'].find((id) => (q('#' + id) as HTMLElement).contains(doc.activeElement)) || 'none');
+      const f6 = (shift = false): string => {
+        doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'F6', shiftKey: shift, bubbles: true, cancelable: true }));
+        return regionOf();
+      };
+      const seq = [f6(), f6(), f6(), f6()];
+      const back = f6(true);
+      f6();
+      f6();
+      f6();
       const inWin = win.contains(doc.activeElement);
-      doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'F6', bubbles: true, cancelable: true }));
-      await tick();
-      check('F6 moves the keyboard focus into the window (where it was), and back to the diagram', inWin && doc.activeElement === q('#canvas'));
+      f6();
+      check('F6 moves the keyboard focus region by region (the right panel, the tool window, the left panel, the diagram), Shift+F6 back; into the window where its focus was', seq.join() === 'side,toolwin,outline,canvas-wrap' && back === 'outline' && inWin && regionOf() === 'outline', seq.join() + ' / ' + back);
+      (q('#canvas') as unknown as HTMLElement).focus();
       // collapse, dock, move: remembered
       (q('#toolwin .tw-collapse') as HTMLElement).click();
       await tick();
@@ -1941,6 +1949,12 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     // ------------------------------------------------ the protocol simulation (protocol-simulation.yaml), in both themes
     for (const theme of ['dark', 'light']) {
       app.theme.set(theme as 'light' | 'dark');
+      try {
+        doc.defaultView!.sessionStorage.removeItem('netatlas.sim.hidden');
+        doc.defaultView!.sessionStorage.removeItem('netatlas.sim.params');
+      } catch (e) {
+        /* no storage */
+      }
       app.loadExample(EXAMPLES.findIndex((e) => e.name === 'protocol-simulation.yaml'));
       click('[data-view-btn="physical"]');
       await tick();
@@ -1950,17 +1964,34 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const exitBtn = q('#btn-sim-exit') as HTMLButtonElement;
       const cmd = (id: string): { enabled: boolean; reason?: string } => app.commands.find((c) => c.id === id)!.state(app);
       check(`${theme}: with a model and no simulation, Start simulation… is available and Exit simulation is not (menu and palette agree)`, !startBtn.disabled && exitBtn.disabled && cmd('sim.start').enabled && !cmd('sim.exit').enabled);
+      // the previous tab and selection, to come back to after Exit
+      app.select('device:core2');
+      click('[data-tab="details"]');
+      await tick();
       click('#simulate-btn');
       startBtn.click();
       await tick();
-      // the start dialog: the layers' sections collapsed, their counts in their names; Start and Cancel
-      const heads = Array.from(doc.querySelectorAll('#modal .psec-toggle')).map((b) => `${b.textContent}|${b.getAttribute('aria-expanded')}`);
+      // the start dialog: the protocols first and open, the layers' sections collapsed below; Start and Cancel
+      const groups = Array.from(doc.querySelectorAll('#modal .pp-group .pp-gname')).map((g) => g.textContent || '');
+      const heads = Array.from(doc.querySelectorAll('#modal .psec-toggle')).map((b) => `${(b.textContent || '').replace('▸', '')}|${b.getAttribute('aria-expanded')}`);
+      const bodyKids = Array.from((q('#modal .modal-body') as HTMLElement).children).map((c) => c.className.split(' ')[0]);
       check(
-        `${theme}: Start simulation… opens its dialog: Layer 1 – Physical (8), Layer 2 – Data link (8), Layer 3 – Network (8), Layer 4 – Transport (8), all collapsed; the protocols shown; Start and Cancel`,
-        heads.join(' ') === 'Layer 1 – Physical (8)|false Layer 2 – Data link (8)|false Layer 3 – Network (8)|false Layer 4 – Transport (8)|false' && !!q('#sim-pd-protos input[data-sim-proto="ospf"]') && !!q('#modal [data-value="start"]') && !!q('#modal [data-value="cancel"]') && (q('#sim-pd-l1') as HTMLElement).hidden,
-        heads.join(' '),
+        `${theme}: Start simulation… opens its dialog: the protocols first, open, grouped by layer with their counts, every one checked, the keyboard on the first; below, Layer 1 – Physical (8) … Layer 4 – Transport (8), collapsed; Cancel and Start`,
+        bodyKids.indexOf('pp') >= 0 && bodyKids.indexOf('pp') < bodyKids.indexOf('psecs') && groups[0] === 'Layer 2 (4 of 4)' && groups.indexOf('Multicast (3 of 3)') > 0 && Array.from(doc.querySelectorAll('#modal input[data-sim-proto]')).every((b) => (b as HTMLInputElement).checked) &&
+          doc.activeElement === q('#sim-pd-protos-p-arp') && /^ARP\d+ devices$/.test(((q('#sim-pd-protos-p-arp') as HTMLElement).closest('label') as HTMLElement).textContent || '') &&
+          heads.join(' ') === 'Layer 1 – Physical (8)|false Layer 2 – Data link (8)|false Layer 3 – Network (8)|false Layer 4 – Transport (8)|false' && (q('#sim-pd-l1') as HTMLElement).hidden && !!q('#modal [data-value="start"].primary') && !!q('#modal [data-value="cancel"]'),
+        `${groups.join(',')} | ${heads.join(' ')} | ${bodyKids.join(',')}`,
       );
-      check(`${theme}: the dialog has the theme’s colours and fits the window`, doc.defaultView!.getComputedStyle(q('#modal')!).backgroundColor !== 'rgba(0, 0, 0, 0)' && (q('#modal') as HTMLElement).getBoundingClientRect().right <= doc.documentElement.clientWidth + 1);
+      check(`${theme}: the dialog has the theme’s colours and fits the window; with the parameters collapsed nothing in it scrolls but the protocol list`, (() => {
+        const body = q('#modal .modal-body') as HTMLElement;
+        return doc.defaultView!.getComputedStyle(q('#modal')!).backgroundColor !== 'rgba(0, 0, 0, 0)' && (q('#modal') as HTMLElement).getBoundingClientRect().right <= doc.documentElement.clientWidth + 1 && body.scrollHeight <= body.clientHeight + 1;
+      })());
+      // Select all and Clear, for the list and for a group
+      click('#sim-pd-protos-none');
+      const none = Array.from(doc.querySelectorAll('#modal input[data-sim-proto]')).every((b) => !(b as HTMLInputElement).checked) && q('#modal .pp-count')!.textContent === '(0 of 18)';
+      click('#sim-pd-protos-all');
+      click('#modal [data-group-none="Traffic"]');
+      check(`${theme}: Clear unticks every protocol, Select all ticks them again; a group’s Clear only its own, its count follows`, none && q('#modal .pp-group[data-group="Traffic"] .pp-gcount')!.textContent === '(0 of 4)' && q('#modal .pp-count')!.textContent === '(14 of 18)');
       (doc.querySelector('#modal [data-value="start"]') as HTMLElement).click();
       await tick();
       const ctl = app.simController()!;
@@ -1969,50 +2000,72 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const fresh = ctl.sim.events().some((e) => e.t === 0 && /fresh start: empty ARP, neighbour and MAC tables, every adjacency down/.test(e.detail)) && !ctl.sim.events().some((e) => e.t === 0 && (e.kind === 'table' || (e.kind === 'state' && e.protocol === 'ospf')));
       await tick(50);
       check(
-        `${theme}: Start simulation… starts it (banner, window); now Start is unavailable (“A simulation is already running”) and Exit is available`,
-        app.simulationOn() && app.toolWindow() === 'sim' && startBtn.disabled && /A simulation is already running/.test(startBtn.title) && !exitBtn.disabled && !cmd('sim.start').enabled && cmd('sim.start').reason === 'A simulation is already running' && cmd('sim.exit').enabled,
+        `${theme}: Start starts it in the simulation layout; now Start is unavailable (“A simulation is already running”) and Exit is available`,
+        app.simulationOn() && doc.body.getAttribute('data-sim') === 'on' && startBtn.disabled && /A simulation is already running/.test(startBtn.title) && !exitBtn.disabled && !cmd('sim.start').enabled && cmd('sim.start').reason === 'A simulation is already running' && cmd('sim.exit').enabled,
         startBtn.title,
       );
+      const vis = (sel: string): boolean => {
+        const e = q(sel) as HTMLElement | null;
+        return !!e && e.getClientRects().length > 0 && e.getBoundingClientRect().width > 0;
+      };
+      check(
+        `${theme}: the layout: Simulation setup in place of the Objects list, Actions in place of the Inspector’s tabs, the simulation panel under the diagram (no floating window); each region named by its heading`,
+        vis('#sim-setup') && !vis('#outline-body') && vis('#sim-actions') && !vis('#side .tabs') && !vis('#side-body') && vis('#sim-dock') && !app.toolWindowOpen() &&
+          q('#outline')!.getAttribute('aria-labelledby') === 'sim-setup-title' && q('#side')!.getAttribute('aria-labelledby') === 'sim-actions-title' && q('#sim-dock')!.getAttribute('aria-labelledby') === 'sim-dock-title' &&
+          (q('#sim-dock') as HTMLElement).getBoundingClientRect().top >= (q('#canvas-wrap') as HTMLElement).getBoundingClientRect().bottom - 1 && doc.documentElement.scrollHeight <= doc.documentElement.clientHeight + 1,
+      );
+      check(
+        `${theme}: the setup carries the dialog’s choice: the protocols open at the top (Traffic cleared), the parameters below with every layer collapsed`,
+        q('#sim-setup .pp-count')!.textContent === '(14 of 18)' && !ctl.shown.has('icmp') && ctl.shown.has('arp') && Array.from(doc.querySelectorAll('#sim-setup .psec-toggle')).every((b) => b.getAttribute('aria-expanded') === 'false') &&
+          (q('#sim-setup .pp') as HTMLElement).compareDocumentPosition(q('#sim-setup .psecs') as HTMLElement) === Node.DOCUMENT_POSITION_FOLLOWING,
+      );
+      click('#sim-setup-protos-all');
       const sim = ctl.sim;
       check(`${theme}: a fresh start at t = 0: every ARP and MAC table empty, no adjacency up`, fresh);
-      check(`${theme}: the window: an honest note, Play / Pause, Step, speed 0.25×–10×, the time, the protocols (Layer 2 first) with Select all and Clear, failing a link, the tables, the status and the event log`,
-        /teaching and design-review simulation of protocol behaviour, not an exact protocol implementation/.test(q('#toolwin')!.textContent || '') && !!q('#sim-play') && !!q('#sim-step') && Array.from((q('#sim-speed') as HTMLSelectElement).options).map((o) => o.value).join(' ') === '0.25 0.5 1 2 5 10' && !!q('#sim-time') && q('#sim-protos fieldset legend')!.textContent === 'Layer 2' && !!q('#sim-all') && !!q('#sim-none') && !!q('#sim-link') && !!q('#sim-status-table') && !!q('#sim-log-table'));
+      check(
+        `${theme}: the simulation panel: Pause (primary), Step, the speed 0.25×–4×, the pacing (Readable, Proportional), skipping idle time (on), what the pacing is, the time and Exit simulation; the status and the event log side by side`,
+        q('#sim-play')!.classList.contains('primary') && !!q('#sim-step') && Array.from((q('#sim-speed') as HTMLSelectElement).options).map((o) => o.value).join(' ') === '0.25 0.5 1 2 4' && (q('#sim-pace') as HTMLSelectElement).value === 'readable' && (q('#sim-skip') as HTMLInputElement).checked &&
+          q('#sim-pace-text')!.textContent === 'Readable · 1 s per hop · 1×' && /^t = /.test(q('#sim-time')!.textContent || '') && !!q('#sim-exit') && vis('#sd-status') && vis('#sd-log') && !vis('.sd-tabs'),
+      );
       // watch ARP resolve and OSPF reach Full
       ctl.runTo(20000);
       await tick();
       check(`${theme}: ARP resolves before the first unicast packets (requests and replies in the log; entries in the tables)`, sim.events().some((e) => e.protocol === 'arp' && /ARP Reply/.test(e.detail)) && sim.arpTable('core1').length > 0 && sim.arpTable('r1').length > 0);
       check(`${theme}: OSPF reaches Full on the ring`, sim.status().some((s) => s.protocol === 'ospf' && s.name.indexOf('ospf-r1-r3: r1 → r3') === 0 && s.state === 'Full'));
-      check(`${theme}: labelled dots in the diagram, never more than the limit`, doc.querySelectorAll('#canvas .layer-sim-labels .sim-label').length >= 0 && doc.querySelectorAll('#canvas .layer-sim .sim-dot').length <= 48);
-      // the tables: from the device menu and from the window; several at once
+      // the pacing on screen: a little real time, every hop on its way, the clock never past one
+      ctl.advance(400);
+      ctl.refresh(true);
+      const onWay = ctl.pacer.items.filter((it) => it.drawn && !it.f.hidden && it.f.view === 'physical' && ctl.pacer.state(it).phase === 'moving');
+      check(`${theme}: labelled dots in the diagram, never more than the limit; no hop on screen has been passed by the simulated clock`, doc.querySelectorAll('#canvas .layer-sim .sim-dot').length <= 48 && onWay.every((it) => sim.now < (it.f.dropped !== undefined ? it.f.dropped : it.f.t0 + it.lat)), String(onWay.length));
+      // the device menu and the Actions panel offer the same
       const r = (q('#canvas .node[data-ref="device:core1"]') as Element).getBoundingClientRect();
+      app.select('device:core1');
       ctl.diagramClick('device:core1', r.left + 5, r.top + 5);
       await tick();
       const menuItems = Array.from(doc.querySelectorAll('.sim-menu [role="menuitem"]')).map((b) => b.textContent || '');
       check(`${theme}: clicking a Layer 3 switch in the simulation opens a menu there: its tables (ARP, MAC, connections, IGMP groups, multicast routes and table), Send test…, Highlight broadcast domain…, Power off, Shut an interface…`, menuItems.join('|') === 'Show ARP table|Show MAC table|Show connections|Send test…|Show IGMP groups|Show multicast routes|Show multicast table|Highlight broadcast domain…|Power off|Shut an interface…', menuItems.join('|'));
+      const acts = Array.from(doc.querySelectorAll('#sim-act-items button')).map((b) => b.textContent || '');
+      check(`${theme}: the Actions panel lists the same events for the selected device (its interfaces in a list of their own)`, acts.join('|') === menuItems.filter((m) => m !== 'Shut an interface…').join('|') && (q('#sim-obj') as HTMLSelectElement).value === 'device:core1' && !!q('#sim-iface') && !!q('#sim-iface-btns button'), acts.join('|'));
       (doc.querySelector('.sim-menu [role="menuitem"]') as HTMLElement).click();
-      await tick();
-      (q('#sim-tabs') as HTMLDetailsElement).open = true;
-      (q('[data-sim-table="arp"][data-dev="r1"]') as HTMLElement).click();
-      (q('[data-sim-table="mac"][data-dev="acc-sw"]') as HTMLElement).click();
       ctl.runTo(21000);
       await tick();
-      const panels = Array.from(doc.querySelectorAll('.sim-table-panel')) as HTMLElement[];
-      const titles = panels.map((p) => p.querySelector('.st-title')!.textContent || '');
-      check(`${theme}: two ARP tables and a MAC table open at once, each a non-modal dialog titled with its device, with a close button`, titles.join('|') === 'ARP table · core1|ARP table · r1|MAC table · acc-sw' && panels.every((p) => p.getAttribute('role') === 'dialog' && !p.hasAttribute('aria-modal') && !!p.querySelector('.st-close')), titles.join('|'));
-      const core1 = panels[0];
-      check(`${theme}: the ARP table: column headers, the timers in effect (configured or default) and the timer scale, rows with type and age`,
-        Array.from(core1.querySelectorAll('table:first-of-type thead th, .st-scroll:first-of-type thead th')).slice(0, 8).map((h) => h.textContent).join('|') === 'IP address|MAC address|Interface|VLAN|Type|State|Age|Expires in' && /ARP timeout5 min \(device\)/.test(core1.textContent || '') && /Timer scalereal time/.test(core1.textContent || '') && core1.querySelectorAll('tbody tr[data-ip]').length > 0 && /\(simulated\)/.test(core1.textContent || ''));
-      check(`${theme}: the MAC table: MAC, VLAN, port, type, age, expires in; the aging time with its default`, Array.from(panels[2].querySelectorAll('thead th')).map((h) => h.textContent).join('|') === 'MAC address|VLAN|Port|Type|Age|Expires in' && /MAC aging time2 min \(device\)/.test(panels[2].textContent || '') && panels[2].querySelectorAll('tbody tr[data-mac]').length > 0);
-      check(`${theme}: the tables have the theme’s colours`, doc.defaultView!.getComputedStyle(core1).backgroundColor !== 'rgba(0, 0, 0, 0)');
+      const stTab = (): string => (q('#sd-sttabs [aria-pressed="true"]') || { textContent: '' }).textContent || '';
+      const st = q('#sim-status-table') as HTMLElement;
+      check(`${theme}: Show ARP table: the simulation panel’s status side shows core1’s ARP table (its tab pressed), with column headers, the timers in effect and the timer scale; no floating table`,
+        stTab() === 'ARP' && Array.from(st.querySelectorAll('thead th')).slice(0, 8).map((h) => h.textContent).join('|') === 'IP address|MAC address|Interface|VLAN|Type|State|Age|Expires in' && /ARP timeout5 min \(device\)/.test(st.textContent || '') && /Timer scalereal time/.test(st.textContent || '') && st.querySelectorAll('tbody tr[data-ip]').length > 0 && /\(simulated\)/.test(st.textContent || '') && !doc.querySelector('.sim-table-panel'));
+      ctl.showTable('mac', 'acc-sw');
+      await tick();
+      check(`${theme}: Show MAC table of acc-sw: acc-sw is selected, its MAC table shown: MAC, VLAN, port, type, age, expires in; the aging time with its default`, app.session!.state.selected === 'device:acc-sw' && stTab() === 'MAC' && Array.from(st.querySelectorAll('thead th')).map((h) => h.textContent).join('|') === 'MAC address|VLAN|Port|Type|Age|Expires in' && /MAC aging time2 min \(device\)/.test(st.textContent || '') && st.querySelectorAll('tbody tr[data-mac]').length > 0);
       // the protocols shown change during the simulation without a restart
       const tBefore = sim.now;
-      const arpBox = q('input[data-sim-proto="arp"]') as HTMLInputElement;
+      const arpBox = q('#sim-setup input[data-sim-proto="arp"]') as HTMLInputElement;
       arpBox.click();
       await tick();
-      check(`${theme}: hiding ARP during the simulation: no restart, the same time, the tables stay open and keep their entries; the log says hidden events still happen`, sim.now === tBefore && doc.querySelectorAll('.sim-table-panel').length === 3 && sim.arpTable('core1').length > 0 && /of hidden protocols not listed \(they still run\)/.test(q('#sim-log-note')!.textContent || '') && !ctl.shown.has('arp'));
-      (q('#sim-all') as HTMLElement).click();
+      check(`${theme}: hiding ARP during the simulation: no restart, the same time, the table stays and keeps its entries; the log says hidden events still happen`, sim.now === tBefore && stTab() === 'MAC' && sim.arpTable('core1').length > 0 && /of hidden protocols not listed \(they still run\)/.test(q('#sim-log-note')!.textContent || '') && !ctl.shown.has('arp'));
+      click('#sim-setup-protos-all');
       await tick();
       check(`${theme}: Select all shows every protocol again`, ctl.protocolEntries().every((e) => ctl.shown.has(e.id)) && arpBox.checked);
+      ctl.showStatus();
       // fail the ring link from the diagram's menu: r3 notices at once, r1 when the dead interval expires; the traffic moves via r2
       const cab = (q('#canvas g.cable[data-ref="link:l-carrier-r3"]') as Element).getBoundingClientRect();
       ctl.diagramClick('link:l-carrier-r3', cab.left + cab.width / 2, cab.top + cab.height / 2);
@@ -2025,56 +2078,62 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       await tick();
       const dead = sim.events().find((e) => e.t > tf && e.device === 'r1' && /dead interval expired/.test(e.detail));
       const rerouted = sim.events().some((e) => e.t > tf && e.kind === 'route' && e.device === 'r2' && /10\.10\.10\.21 → 10\.30\.0\.10/.test(e.detail));
-      check(`${theme}: failed: the dead interval expires at r1, and the users’ traffic is rerouted via r2`, !!dead && rerouted && !!q('#sim-events li[data-ref="link:l-carrier-r3"]'), `dead ${!!dead} rerouted ${rerouted} down ${sim.downRefs().join(',')} t ${tf}→${sim.now}: ${q('#sim-failed')!.textContent}`);
+      check(`${theme}: failed: the dead interval expires at r1, and the users’ traffic is rerouted via r2; the Actions panel lists it with Restore`, !!dead && rerouted && (q('#sim-events li[data-ref="link:l-carrier-r3"] button') || { textContent: '' }).textContent === 'Restore', `dead ${!!dead} rerouted ${rerouted} down ${sim.downRefs().join(',')} t ${tf}→${sim.now}: ${q('#sim-failed')!.textContent}`);
       check(`${theme}: the diagram marks the failed cable (down); the banner says so`, !!q('#canvas [data-ref="link:l-carrier-r3"].sim-down') && /1 network event/.test(q('#sim-text')!.textContent || ''), q('#sim-text')!.textContent || '');
       // the table timers faster: entries age; the MAC entries are relearned on the new path after another failure
       (q('#sim-scale') as HTMLSelectElement).value = '60';
       (q('#sim-scale') as HTMLSelectElement).dispatchEvent(new Event('change', { bubbles: true }));
+      ctl.showTable('mac', 'acc-sw');
       ctl.runTo(sim.now + 30000);
       await tick();
-      check(`${theme}: at a timer scale of 1:60 entries age out or are refreshed (core1’s 300 s timeout is 5 s here), and every table says so`, sim.events().some((e) => e.device === 'core1' && e.kind === 'table' && /refreshing|expired/.test(e.detail)) && /1:60/.test(core1.textContent || ''));
+      check(`${theme}: at a timer scale of 1:60 entries age out or are refreshed (core1’s 300 s timeout is 5 s here), and the tables say so`, sim.events().some((e) => e.device === 'core1' && e.kind === 'table' && /refreshing|expired/.test(e.detail)) && /1:60/.test(st.textContent || ''));
       const coreMac = sim.engine.net.macs.get('core1:Vlan10')!.mac;
       const before = sim.macTable('acc-sw').find((x) => x.mac === coreMac);
       ctl.failLink('link:l-acc-core1');
       ctl.runTo(sim.now + 15000);
       await tick();
       const after = sim.macTable('acc-sw').find((x) => x.mac === coreMac);
-      check(`${theme}: several events at once (a second failed cable); acc-sw learns core1’s MAC on the new path`, sim.netEvents().filter((e) => e.kind === 'fail').length === 2 && !!after && after.port === 'up2' && /up2/.test(panels[2].textContent || ''), `${before && before.port} → ${after && after.port}`);
+      check(`${theme}: several events at once (a second failed cable); acc-sw learns core1’s MAC on the new path`, sim.netEvents().filter((e) => e.kind === 'fail').length === 2 && !!after && after.port === 'up2' && /up2/.test(st.textContent || ''), `${before && before.port} → ${after && after.port}`);
       ctl.restoreLink('link:l-acc-core1');
       ctl.restoreLink('link:l-carrier-r3');
       ctl.runTo(sim.now + 60000);
       const notFull = sim.status().filter((s) => s.protocol === 'ospf' && s.state !== 'Full' && !/ospf-cores/.test(s.name)).map((s) => s.name + ' ' + s.state);
       check(`${theme}: Restore link: the adjacencies form again with their full handshake`, !notFull.length, notFull.join('; '));
-      // network events: several at once (power off, flapping), each listed with its way back
+      // network events from the Actions panel: a cable chosen in its object list, flapping started there
+      const obj = q('#sim-obj') as HTMLSelectElement;
+      obj.value = 'link:l-rx';
+      obj.dispatchEvent(new Event('change', { bubbles: true }));
+      await tick();
+      const flapBtn = Array.from(doc.querySelectorAll('#sim-act-items button')).find((b) => b.textContent === 'Start flapping') as HTMLElement | undefined;
+      if (flapBtn) flapBtn.click();
       ctl.powerOff('br');
-      ctl.startFlap('link:l-rx');
       await tick();
       const evRows = Array.from(doc.querySelectorAll('#sim-events li')).map((li) => li.getAttribute('data-ref') + '|' + ((li.querySelector('button') || { textContent: '' }).textContent || ''));
-      check(`${theme}: Power off and Start flapping: listed with Power on and Stop flapping; the device is marked down`, evRows.indexOf('device:br|Power on') >= 0 && evRows.indexOf('link:l-rx|Stop flapping') >= 0 && !!q('#canvas [data-ref="device:br"].sim-down'), evRows.join(', '));
+      check(`${theme}: an object chosen in the Actions panel is selected in the diagram; Start flapping there and Power off: listed with Stop flapping and Power on; the device is marked down`, app.session!.state.selected === 'link:l-rx' && evRows.indexOf('device:br|Power on') >= 0 && evRows.indexOf('link:l-rx|Stop flapping') >= 0 && !!q('#canvas [data-ref="device:br"].sim-down') && /Active events \(\d\)/.test(q('#sim-act-events-h')!.textContent || ''), evRows.join(', '));
       (q('#sim-events li[data-ref="device:br"] button') as HTMLElement).click();
       ctl.stopFlap('link:l-rx');
       ctl.runTo(sim.now + 70000);
       await tick();
       check(`${theme}: Power on: br boots for its boot time and its sessions start afresh`, sim.events().some((e) => e.device === 'br' && /br has booted/.test(e.detail)) && !sim.netEvents().length);
-      // the window's parameters: the same sections; a change applies at once and is logged
-      (q('#sim-params') as HTMLDetailsElement).open = true;
+      // the setup's parameters: a change applies at once, is logged, and its collapsed layer says so
       (q('#sim-pw-l3-btn') as HTMLElement).click();
       const ttl = q('#sim-pw-ttl') as HTMLInputElement;
       ttl.value = '32';
       ttl.dispatchEvent(new Event('input', { bubbles: true }));
       ttl.dispatchEvent(new Event('change', { bubbles: true }));
+      (q('#sim-pw-l3-btn') as HTMLElement).click();
       await tick();
-      check(`${theme}: a parameter changed in the window applies at once and is written to the event log`, sim.params.simValue('ttl') === 32 && sim.events().some((e) => e.detail === 'Parameter changed: Default TTL / hop limit 64 → 32 (simulation)') && !!q('[data-param-row~="ttl"].modified'));
+      check(`${theme}: a parameter changed in the setup applies at once, is written to the event log, and its layer says “· 1 modified” while collapsed`, sim.params.simValue('ttl') === 32 && sim.events().some((e) => e.detail === 'Parameter changed: Default TTL / hop limit 64 → 32 (simulation)') && !!q('[data-param-row~="ttl"].modified') && q('#sim-pw-l3-btn')!.textContent === '▸Layer 3 – Network (8) · 1 modified' && q('#sim-pw-l3-btn')!.getAttribute('aria-expanded') === 'false');
       (q('#sim-pw-reset-all') as HTMLElement).click();
       await tick();
-      // a device's Simulation section stays editable during the simulation; the change applies there; Undo takes it back
+      // a device's Simulation section stays editable during the simulation (in the Actions panel); the change applies there; Undo takes it back
       app.select('device:core1');
-      click('[data-tab="edit"]');
       await tick();
-      const simSec = q('#side-body .sim-live #fg-simulation') as HTMLElement | null;
-      check(`${theme}: during the simulation the Edit tab is read-only but for the device’s Simulation section (collapsed, its count in its name)`, !!simSec && /^Simulation \(\d+\)$/.test(simSec.textContent || '') && simSec.getAttribute('aria-expanded') === 'false' && !!q('#side-body fieldset.locked-form[disabled]'), simSec ? `${simSec.textContent} ${simSec.getAttribute('aria-expanded')} ${!!q('#side-body fieldset.locked-form[disabled]')}` : 'none');
+      const simSec = q('#sim-act-attrs #fg-simulation') as HTMLElement | null;
+      check(`${theme}: the selected device’s Simulation section is in the Actions panel, once (collapsed, its count in its name)`, !!simSec && /^Simulation \(\d+\)$/.test(simSec.textContent || '') && simSec.getAttribute('aria-expanded') === 'false' && doc.querySelectorAll('#fg-simulation').length === 1, simSec ? `${simSec.textContent} ${simSec.getAttribute('aria-expanded')}` : 'none');
       if (simSec) {
         simSec.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0 }));
+        simSec.click();
         await tick();
         const f = q('#sim-attr-mac_aging') as HTMLInputElement;
         f.value = '90';
@@ -2085,24 +2144,33 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         await tick();
         check(`${theme}: an override there is written to the model, applies at once (logged as device), and Undo takes it back during the simulation`, changed && !/mac_aging: 90/.test(app.exportText()) && sim.events().some((e) => e.detail === 'Parameter changed: MAC aging time on core1 90 s → 5 min (default)'));
       }
-      // Layers 3 and 4: the storm of the lab's loop warned of; the dots' shapes; the packet inspector; Send test…; a broadcast domain; connections and sessions
+      // Layers 3 and 4: the storm of the lab's loop warned of; the dots' shapes; the packet inspector and Follow message; Send test; a broadcast domain; connections and sessions
       const storm = q('#sim-storm') as HTMLElement;
       const sc = doc.defaultView!.getComputedStyle(storm);
-      check(`${theme}: the lab’s loop without spanning tree storms: the banner and the window warn (an alert, in the error colour)`, /⚠ broadcast storm in the untagged frames/.test(q('#sim-text')!.textContent || '') && !storm.hidden && storm.getAttribute('role') === 'alert' && sc.color !== sc.backgroundColor && /l-lab-/.test(storm.textContent || ''), storm.textContent || '');
+      check(`${theme}: the lab’s loop without spanning tree storms: the banner and the simulation panel warn (an alert, in the error colour)`, /⚠ broadcast storm in the untagged frames/.test(q('#sim-text')!.textContent || '') && !storm.hidden && storm.getAttribute('role') === 'alert' && sc.color !== sc.backgroundColor && /l-lab-/.test(storm.textContent || ''), storm.textContent || '');
       check(`${theme}: the dots’ shapes are explained: a circle unicast, a square broadcast, a diamond multicast`, doc.querySelectorAll('#sim-shapes svg').length === 3 && /unicast.*broadcast.*multicast/.test(q('#sim-shapes')!.textContent || ''));
-      const fl = sim.engine.flights.filter((f) => !!f.hdr && f.view === 'physical').slice(-1)[0];
+      ctl.advance(300);
+      const fi = ctl.pacer.items.find((it) => !!it.f.hdr && it.f.view === 'physical' && it.drawn);
+      const fl = fi ? fi.f : sim.engine.flights.filter((f) => !!f.hdr && f.view === 'physical').slice(-1)[0];
+      ctl.setPlaying(true);
       if (fl) ctl.inspectFlight(fl.id);
       await tick();
       const pi = q('.sim-table-panel[data-table="packet"]') as HTMLElement | null;
       const piHeads = pi ? Array.from(pi.querySelectorAll('.pi-layer h4')).map((h) => h.textContent || '') : [];
-      check(`${theme}: the packet inspector shows a dot’s frame layer by layer (Ethernet … payload), inside the window`, !!fl && !!pi && piHeads[0] === 'Layer 2 – Ethernet' && piHeads[piHeads.length - 1] === 'Payload' && /Destination MAC/.test(pi.textContent || '') && pi.getBoundingClientRect().right <= doc.documentElement.clientWidth + 1, piHeads.join(', '));
-      if (pi) (pi.querySelector('.st-close') as HTMLElement).click();
+      check(`${theme}: a dot opens the packet inspector (its frame layer by layer, inside the window) and pauses the simulation`, !!fl && !!pi && piHeads[0] === 'Layer 2 – Ethernet' && piHeads[piHeads.length - 1] === 'Payload' && /Destination MAC/.test(pi.textContent || '') && pi.getBoundingClientRect().right <= doc.documentElement.clientWidth + 1 && !ctl.playing && q('#sim-play')!.textContent === 'Play', piHeads.join(', '));
+      if (pi && fi) {
+        (pi.querySelector('#pi-follow') as HTMLElement).click();
+        await tick();
+        check(`${theme}: Follow message: its conversation alone sets the pace; the simulation panel says so, with Stop following`, !!ctl.pacer.follow && ctl.pacer.follow.key === fi.key && !(q('#sim-follow') as HTMLElement).hidden && /^Following /.test(q('#sim-follow-text')!.textContent || '') && q('#pi-follow')!.textContent === 'Stop following');
+        click('#sim-follow-stop');
+      }
+      if (q('.sim-table-panel[data-table="packet"] .st-close')) (q('.sim-table-panel[data-table="packet"] .st-close') as HTMLElement).click();
       ctl.sendTestFrom('pc1');
       await tick();
       const tSent = ctl.sendTest({ from: 'pc1', to: 'srv', kind: 'tcp', port: 22 });
       ctl.runTo(sim.now + 3000);
       await tick();
-      check(`${theme}: Send test… from pc1: a TCP connection to a closed port of srv is refused (RST)`, (q('#sim-test') as HTMLDetailsElement).open && (q('#sim-t-from') as HTMLSelectElement).value === 'pc1' && /^Test sent/.test(tSent) && /pc1 → srv tcp\/22: connection refused: RST from 10\.30\.0\.10 \(srv\)/.test((q('#sim-tests li') || { textContent: '' }).textContent || ''), (q('#sim-tests li') || { textContent: '' }).textContent || '');
+      check(`${theme}: Send test… from pc1 (its menu): the Actions panel’s form with pc1; a TCP connection to a closed port of srv is refused (RST)`, (q('#sim-t-from') as HTMLSelectElement).value === 'pc1' && /^Test sent/.test(tSent) && /pc1 → srv tcp\/22: connection refused: RST from 10\.30\.0\.10 \(srv\)/.test((q('#sim-tests li') || { textContent: '' }).textContent || ''), (q('#sim-tests li') || { textContent: '' }).textContent || '');
       ctl.highlightDomain({ dev: 'lab-h', iface: 'eth0' });
       await tick();
       const on = Array.from(doc.querySelectorAll('#canvas .node.bc-on')).map((n) => n.getAttribute('data-ref')).sort().join(',');
@@ -2110,33 +2178,39 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       ctl.clearDomain();
       await tick();
       ctl.showTable('conn', 'srv');
+      await tick();
+      const conn = !!q('#sim-status-table tr[data-state="LISTEN"]');
       ctl.showTable('fw', 'fw1');
       await tick();
-      check(`${theme}: srv’s connections (its open port) and fw1’s session table, with its policy at the top`, !!q('.sim-table-panel[data-table="conn"] tr[data-state="LISTEN"]') && /Reject/.test((q('.sim-table-panel[data-table="fw"] .st-timers') || { textContent: '' }).textContent || ''));
-      for (const p of Array.from(doc.querySelectorAll('.sim-table-panel[data-table="conn"] .st-close, .sim-table-panel[data-table="fw"] .st-close'))) (p as HTMLElement).click();
-      await tick();
-      // multicast: the receivers get their streams; the tables; a join from the window
+      check(`${theme}: srv’s connections (its open port) and fw1’s session table, with its policy at the top`, conn && /Reject/.test((q('#sim-status-table .st-timers') || { textContent: '' }).textContent || ''));
+      // multicast: the receivers get their streams; the tables; a join from a host's menu
       ctl.showTable('mroute', 'r1');
+      await tick();
+      const mrt = st.textContent || '';
       ctl.showTable('snoop', 'acc-sw');
       await tick();
-      const mrt = (q('.sim-table-panel[data-table="mroute"]') || { textContent: '' }).textContent || '';
-      const snt = (q('.sim-table-panel[data-table="snoop"]') || { textContent: '' }).textContent || '';
+      const snt = st.textContent || '';
       check(`${theme}: multicast: r1’s multicast routes (the RP, (*, G) and (S, G)), acc-sw’s snooping table, the members receiving`, /RP 10\.255\.0\.1 \(r1\)/.test(mrt) && /\(\*, 239\.1\.1\.1\)/.test(mrt) && /239\.1\.1\.1/.test(snt) && sim.status().some((x) => x.name === 'pc1 member of 239.1.1.1' && x.state === 'Receiving'), sim.status().filter((x) => x.protocol === 'igmp').map((x) => x.name + ' ' + x.state).join('; '));
-      for (const p of Array.from(doc.querySelectorAll('.sim-table-panel[data-table="mroute"] .st-close, .sim-table-panel[data-table="snoop"] .st-close'))) (p as HTMLElement).click();
       ctl.multicastFrom('pc2', 'join');
       await tick();
       const jmsg = ctl.joinGroup('pc2', 'eth0', '239.4.4.4', []);
       await tick();
-      check(`${theme}: Join group… from a host: the window’s Multicast section, the join listed with Leave group`, (q('#sim-mc') as HTMLDetailsElement).open && jmsg === 'pc2:eth0 joins 239.4.4.4.' && !!q('#sim-events li[data-event="join"] button'));
+      check(`${theme}: Join group… from a host: the Actions panel’s form opens for it; the join listed with Leave group`, app.session!.state.selected === 'device:pc2' && q('#sim-mc-join-toggle')!.getAttribute('aria-expanded') === 'true' && jmsg === 'pc2:eth0 joins 239.4.4.4.' && !!q('#sim-events li[data-event="join"] button'));
       (q('#sim-events li[data-event="join"] button') as HTMLElement).click();
       await tick();
-      // an export: a still picture with labelled arrows and the note
+      // an export: a still picture with labelled arrows and the note; no sender or receiver marks
+      ctl.advance(200);
+      ctl.refresh(true);
       const svg = app.exportSvg();
-      check(`${theme}: an export during the simulation: “Protocol simulation, t = …”, a still picture (arrows with labels, no moving dots)`, /Protocol simulation, t = /.test(svg) && !/class="sim-dot"/.test(svg));
-      // Exit: the tables close, the model is unchanged, nothing to undo
+      check(`${theme}: an export during the simulation: “Protocol simulation, t = …”, a still picture (arrows with labels, no moving dots, no marks of the moment)`, /Protocol simulation, t = /.test(svg) && !/class="sim-dot"/.test(svg) && !/sim-tx|sim-rx|sim-pulse|sim-trail/.test(svg));
+      // Exit: the layout as before (the Details tab, core1 still selected: the last selection), the model unchanged, nothing to undo
       exitBtn.click();
       await tick();
-      check(`${theme}: Exit simulation: the window and the tables close, Start is available again; the model is as before (the Simulation edit was undone) and has no new undo step`, !app.simulationOn() && !doc.querySelector('.sim-table-panel') && app.toolWindow() !== 'sim' && !startBtn.disabled && app.exportText() === yamlBefore && (app.mdoc as ModelDoc).canUndo() === undoBefore);
+      check(
+        `${theme}: Exit simulation: the Objects list and the Inspector’s tabs again (the Details tab as before), the panel gone, Start available again; the model is as before (the Simulation edit was undone) and has no new undo step`,
+        !app.simulationOn() && !doc.body.hasAttribute('data-sim') && vis('#outline-body') && vis('#side .tabs') && !vis('#sim-dock') && !vis('#sim-setup') && q('#side .tabs .active')!.getAttribute('data-tab') === 'details' && q('#side')!.getAttribute('aria-label') === 'Inspector' &&
+          !doc.querySelector('.sim-table-panel') && !startBtn.disabled && app.exportText() === yamlBefore && (app.mdoc as ModelDoc).canUndo() === undoBefore,
+      );
     }
     app.theme.set('dark');
 
@@ -2390,13 +2464,13 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const md = (): ModelDoc => app.mdoc as ModelDoc;
       const hint = q('#filter-hint') as HTMLElement;
       const btn = q('#devices-btn') as HTMLButtonElement;
-      const right = (Array.prototype.map.call(doc.querySelectorAll('#view-filters > .devices-wrap, #view-filters > label.opt'), (e: Element) => (e.textContent || '').replace(/\s+/g, ' ').trim()) as string[]);
+      const right = (Array.prototype.map.call(doc.querySelectorAll('#view-filters > .devices-wrap, #view-filters > .types-wrap, #view-filters > label.opt'), (e: Element) => (e.textContent || '').replace(/\s+/g, ' ').trim()) as string[]);
       const vis = (sel: string): boolean => !!q(sel) && (q(sel) as HTMLElement).offsetParent !== null;
       check(
-        'top-right diagram controls: Devices (all selected), Labels, Groups / Locations, Endpoints and Servers on, in both views; Networks and Routes only in the logical view; no Underlay',
-        /^Devices: all \(15\)/.test(right[0] || '') && right[1] === 'Labels' && right[2] === 'Groups / Locations' && right[3] === 'Networks' && right[4] === 'Routes' && right[5] === 'Endpoints' && right[6] === 'Servers' && right.length === 7 && !q('#opt-underlay') &&
+        'top-right diagram controls: Devices (all selected), Device types (all), Labels, Groups / Locations, in both views; Networks and Routes only in the logical view; no Underlay, Endpoints or Servers switches',
+        /^Devices: all \(15\)/.test(right[0] || '') && /^Device types: All/.test(right[1] || '') && right[2] === 'Labels' && right[3] === 'Groups / Locations' && right[4] === 'Networks' && right[5] === 'Routes' && right.length === 6 && !q('#opt-underlay') &&
           (q('#opt-labels') as HTMLInputElement).checked && (q('#opt-groups') as HTMLInputElement).checked && vis('#opt-groups') && !vis('#opt-networks') && !vis('#opt-routes') && (q('#opt-routes') as HTMLInputElement).checked && !btn.disabled && hint.hidden && !s().isFiltered() &&
-          (q('#opt-type-endpoint') as HTMLInputElement).checked && (q('#opt-type-server') as HTMLInputElement).checked && vis('#opt-type-endpoint') && vis('#opt-type-server'),
+          !q('#opt-type-endpoint') && !q('#opt-type-server') && vis('#types-btn') && !(q('#types-btn') as HTMLButtonElement).disabled,
         right.join(' | '),
       );
       const fullPhys = JSON.stringify(Array.from(s().positionsFor('physical')));
@@ -2450,7 +2524,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const logShown = shownDevices();
       check(
         'switching views: the logical view of the same devices, auto-arranged on its own (no move leaks), relations only among them',
-        status('logical') === 'auto' && logShown.every((d) => keep.indexOf(d) >= 0) && logShown.indexOf('hq-rtr1') >= 0 && !q('#viewport [data-ref="relation:gre-muc"]') && !!q('#viewport [data-ref="relation:ibgp-hq"]') && vis('#opt-networks'),
+        status('logical') === 'auto' && logShown.every((d) => keep.indexOf(d) >= 0) && logShown.indexOf('hq-rtr1') >= 0 && !q('#viewport [data-ref="relation:gre-muc"]') && !!q('#viewport [data-ref="relation:ibgp-hq"]') && (vis('#opt-networks') || !!q('#more-filters #opt-networks')),
         logShown.join(),
       );
       click('[data-view-btn="physical"]');
@@ -2614,14 +2688,21 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       );
     }
 
-    // ------------------------------------ device-type visibility: Endpoints, Servers
+    // ------------------------------------ device-type visibility: the Device types filter
     {
       if (app.mdoc) app.mdoc.markSaved();
       app.loadExample(EXAMPLES.findIndex((e) => e.name === 'device-types.yaml'));
       const s = (): NonNullable<typeof app.session> => app.session!;
       const md = (): ModelDoc => app.mdoc as ModelDoc;
-      const ep = q('#opt-type-endpoint') as HTMLInputElement;
-      const sv = q('#opt-type-server') as HTMLInputElement;
+      const tbtn = q('#types-btn') as HTMLButtonElement;
+      const tpanel = q('#types-panel') as HTMLElement;
+      // the checkbox of a type in the (opened) Device types panel
+      const tbox = (k: string): HTMLInputElement => {
+        if (tpanel.hidden) tbtn.click();
+        return q(`#types-list input[data-type-keys="${k}"]`) as HTMLInputElement;
+      };
+      const ep = { click: (): void => tbox('endpoint').click(), get checked(): boolean { return tbox('endpoint').checked; } };
+      const sv = { click: (): void => tbox('server').click(), get checked(): boolean { return tbox('server').checked; } };
       const m = s().model;
       const typed = (t: string): string[] => m.devices.filter((d) => d.type === t).map((d) => d.id);
       const eps = typed('endpoint');
@@ -2632,10 +2713,23 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const yaml = app.exportText();
       const undo = md().canUndo();
       const full = { physical: posOf('physical'), logical: posOf('logical') };
+      tbtn.click();
+      await tick();
+      const rows = Array.prototype.map.call(doc.querySelectorAll('#types-list label'), (r: Element) => [r.getAttribute('data-type-row'), ((r.querySelector('span') as HTMLElement).textContent || '').trim(), (r.querySelector('.tp-count') as HTMLElement).textContent]) as string[][];
+      const used = DEVICE_TYPES.filter((t) => m.devices.some((d) => d.type === t.id));
       check(
-        'Endpoints and Servers are on for a newly opened model; they switch the model types "endpoint" and "server"',
-        ep.checked && sv.checked && !ep.disabled && !sv.disabled && eps.length === 2 && srv.length === 1 && ep.getAttribute('data-device-type') === 'endpoint' && sv.getAttribute('data-device-type') === 'server' && DEVICE_TYPES.some((t) => t.id === 'endpoint') && DEVICE_TYPES.some((t) => t.id === 'server'),
+        'Device types: next to Devices, "Device types: All" for a new model; one checked row per type the model uses, by its display name and in the format\'s order, with its number of devices; types the model does not use are left out',
+        /^Device types: All/.test(tbtn.textContent || '') && tbtn.getAttribute('aria-expanded') === 'true' && rows.length === used.length && rows.every((r, i) => r[0] === used[i].id && r[1] === used[i].label && Number(r[2]) === m.devices.filter((d) => d.type === used[i].id).length) &&
+          Array.prototype.every.call(doc.querySelectorAll('#types-list input'), (b: HTMLInputElement) => b.checked && !b.disabled) && (q('#devices-btn') as HTMLElement).parentElement!.nextElementSibling === tbtn.parentElement && rows.find((r) => r[0] === 'endpoint')![2] === '2',
+        JSON.stringify(rows),
       );
+      check('the panel is a labelled dialog; the first type has the focus after the keyboard opens it (Arrow Down), and Esc closes it and returns the focus', (() => {
+        tpanel.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+        const closed = tpanel.hidden && doc.activeElement === tbtn && tbtn.getAttribute('aria-expanded') === 'false';
+        tbtn.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }));
+        const first = q('#types-list input') as HTMLElement;
+        return closed && !tpanel.hidden && doc.activeElement === first && tpanel.getAttribute('role') === 'dialog' && /Device types/.test(tpanel.getAttribute('aria-label') || '');
+      })());
       for (const view of ['physical', 'logical'] as const) {
         click(`[data-view-btn="${view}"]`);
         await tick();
@@ -2649,29 +2743,45 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         const kept = Array.from(s().positionsFor(view)).every(([id, p]) => !m.index.devices.has(id) || (!!pos.get(id) && pos.get(id)!.x === p.x && pos.get(id)!.y === p.y));
         const epLinks = m.links.filter((l) => eps.indexOf(l.a.device) >= 0 || eps.indexOf(l.b.device) >= 0);
         check(
-          `${view} view: Endpoints off hides the endpoints and what depends on them, on screen and in the SVG and PNG exports; every other device stays where it was`,
+          `${view} view: Endpoint off hides the endpoints and what depends on them, on screen and in the SVG and PNG exports; every other device stays where it was; the button and the status bar say "${used.length - 1} of ${used.length}"`,
           eps.every((id) => noEp.indexOf(id) < 0 && !inSvg(svgNoEp, id)) && noEp.every((id) => before.indexOf(id) >= 0) && noEp.length > 0 && kept && png.width > 0 && png.height > 0 && s().isFiltered() &&
-            !(q('#filter-hint') as HTMLElement).hidden && epLinks.every((l) => !q(`#viewport [data-ref="link:${l.id}"]`) && svgNoEp.indexOf(`data-ref="link:${l.id}"`) < 0) && (view === 'logical' || epLinks.length > 0),
-          `${noEp.join()} kept=${kept}`,
+            !(q('#filter-hint') as HTMLElement).hidden && epLinks.every((l) => !q(`#viewport [data-ref="link:${l.id}"]`) && svgNoEp.indexOf(`data-ref="link:${l.id}"`) < 0) && (view === 'logical' || epLinks.length > 0) &&
+            new RegExp(`^Device types: ${used.length - 1} of ${used.length}`).test(tbtn.textContent || '') && tbtn.classList.contains('filtered') && /off: Endpoint/.test(tbtn.getAttribute('aria-label') || '') &&
+            new RegExp(`device types: ${used.length - 1} of ${used.length} \\(off: Endpoint\\)`).test(q('#status')!.textContent || ''),
+          `${noEp.join()} kept=${kept} ${tbtn.textContent}`,
         );
         sv.click();
         await tick();
         const none = onScreen();
         const svgNone = app.exportSvg();
-        check(`${view} view: Servers off as well hides both types; the export follows`, eps.concat(srv).every((id) => none.indexOf(id) < 0 && !inSvg(svgNone, id)) && none.length > 0 && !sv.checked && !ep.checked, none.join());
+        check(`${view} view: Server off as well hides both types; the export follows`, eps.concat(srv).every((id) => none.indexOf(id) < 0 && !inSvg(svgNone, id)) && none.length > 0 && !sv.checked && !ep.checked && /off: .*Endpoint/.test(tbtn.getAttribute('aria-label') || '') && /off: .*Server/.test(tbtn.getAttribute('aria-label') || ''), none.join());
         ep.click();
         await tick();
         const epBack = onScreen();
-        check(`${view} view: Endpoints on again while Servers stays off brings back the endpoints only`, srv.every((id) => epBack.indexOf(id) < 0) && eps.every((id) => (before.indexOf(id) >= 0) === (epBack.indexOf(id) >= 0)), epBack.join());
+        check(`${view} view: Endpoint on again while Server stays off brings back the endpoints only`, srv.every((id) => epBack.indexOf(id) < 0) && eps.every((id) => (before.indexOf(id) >= 0) === (epBack.indexOf(id) >= 0)), epBack.join());
         sv.click();
         await tick();
         check(
           `${view} view: both on again: the complete diagram with its saved positions; the YAML, the undo history and the saved layout are unchanged`,
-          onScreen().join() === before.join() && !s().isFiltered() && posOf(view) === full[view] && app.exportText() === yaml && md().canUndo() === undo && (q('#filter-hint') as HTMLElement).hidden && ep.checked && sv.checked,
+          onScreen().join() === before.join() && !s().isFiltered() && posOf(view) === full[view] && app.exportText() === yaml && md().canUndo() === undo && (q('#filter-hint') as HTMLElement).hidden && ep.checked && sv.checked && /^Device types: All/.test(tbtn.textContent || ''),
         );
       }
-      // combined with the Devices selection
+      // Clear and Select all
       click('[data-view-btn="physical"]');
+      tbox('endpoint');
+      click('#types-none');
+      await tick();
+      const cleared = onScreen();
+      const clearedText = tbtn.textContent || '';
+      click('#types-all');
+      await tick();
+      check(
+        'Clear hides every device ("Device types: 0 of N", every box unchecked); Select all brings back the complete diagram with its saved positions',
+        cleared.length === 0 && new RegExp(`^Device types: 0 of ${used.length}`).test(clearedText) && !s().isFiltered() && posOf('physical') === full.physical && Array.prototype.every.call(doc.querySelectorAll('#types-list input'), (b: HTMLInputElement) => b.checked),
+        clearedText,
+      );
+      tpanel.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      // combined with the Devices selection
       const btn = q('#devices-btn') as HTMLButtonElement;
       const pick = ['edge', eps[0], srv[0]];
       app.setDevices(pick);
@@ -2679,21 +2789,26 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const subsetPos = posOf('physical');
       sv.click();
       await tick();
+      tpanel.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
       btn.click();
       await tick();
       const row = q(`#devices-list [data-device-row="${srv[0]}"]`);
       const total = m.devices.length;
       check(
-        'with a device selection, Servers off narrows it: the selected server leaves the diagram, the selection itself is kept (its row stays checked and says why it is hidden), and the counts say what is shown',
-        onScreen().join() === ['edge', eps[0]].sort().join() && s().selectedDevices().size === 3 && new RegExp(`Devices: 2 of ${total}`).test(btn.textContent || '') && !!row && row.classList.contains('type-hidden') && /hidden: Server off/.test(row.textContent || '') &&
+        'with a device selection, Server off narrows it: the selected server leaves the diagram, the selection itself is kept (its row stays checked and says "hidden: type Server off"), and the counts say what is shown',
+        onScreen().join() === ['edge', eps[0]].sort().join() && s().selectedDevices().size === 3 && new RegExp(`Devices: 2 of ${total}`).test(btn.textContent || '') && !!row && row.classList.contains('type-hidden') && /hidden: type Server off/.test(row.textContent || '') &&
           (row.querySelector('input') as HTMLInputElement).checked && new RegExp(`showing 2 of ${total} devices`).test(q('#status')!.textContent || ''),
         `${onScreen().join()} ${btn.textContent}`,
       );
+      (q('#devices-panel') as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
       ep.click();
       await tick();
-      check('… Endpoints off as well leaves only the selected router', onScreen().join() === 'edge' && s().selectedDevices().size === 3);
+      check('… Endpoint off as well leaves only the selected router', onScreen().join() === 'edge' && s().selectedDevices().size === 3);
       ep.click();
       sv.click();
+      await tick();
+      tpanel.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      btn.click();
       await tick();
       check(
         '… both on again: exactly the previous selection, with its devices where they were; the saved layout is untouched',
@@ -2702,6 +2817,28 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       (q('#devices-panel') as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
       app.setDevices(m.devices.map((d) => d.id));
       check('Select all brings back the complete diagram', !s().isFiltered() && posOf('physical') === full.physical);
+      // a model with Layer 2 and Layer 3 switches: Switch with two sub-entries
+      app.loadExample(EXAMPLES.findIndex((e) => e.name === 'protocol-simulation.yaml'));
+      await tick();
+      const pm = s().model;
+      const l2 = pm.devices.filter((d) => d.type === 'switch' && !d.layer3).map((d) => d.id);
+      const l3 = pm.devices.filter((d) => d.type === 'switch' && d.layer3).map((d) => d.id);
+      const sw = tbox('switch:l2 switch:l3');
+      const sub2 = q('#types-list [data-type-row="switch:l2"]') as HTMLElement;
+      const sub3 = q('#types-list [data-type-row="switch:l3"]') as HTMLElement;
+      const subsOk = !!sw && !!sub2 && !!sub3 && sub2.classList.contains('tp-sub') && /Layer 2/.test(sub2.textContent || '') && (sub2.querySelector('.tp-count') as HTMLElement).textContent === String(l2.length) &&
+        (q('#types-list [data-type-row="switch"] .tp-count') as HTMLElement).textContent === String(l2.length + l3.length);
+      (sub2.querySelector('input') as HTMLInputElement).click();
+      await tick();
+      const shown = s().shownDevices();
+      check(
+        'Switch is one entry with Layer 2 and Layer 3 under it when the model has both: Layer 2 off hides only the Layer 2 switches, and Switch shows a mixed state',
+        subsOk && l2.length > 0 && l3.length > 0 && l2.every((id) => !shown.has(id)) && l3.every((id) => shown.has(id)) && tbox('switch:l2 switch:l3').indeterminate && /off: Layer 2 switch/.test(tbtn.getAttribute('aria-label') || ''),
+      );
+      tbox('switch:l2 switch:l3').click();
+      await tick();
+      check('… checking Switch shows both kinds again', !s().isFiltered() && !tbox('switch:l2 switch:l3').indeterminate && tbox('switch:l2').checked);
+      tpanel.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
     }
 
     // ------------------------ sizing and readability: long and multi-line labels
@@ -4101,11 +4238,11 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         const mid = parts.map((e) => rect(e).top + rect(e).height / 2);
         return mid.every((y) => Math.abs(y - mid[0]) < 2.5);
       };
-      const ORDER = ['Labels', 'Groups / Locations', 'Networks', 'Routes', 'Endpoints', 'Servers'];
+      const ORDER = ['Labels', 'Groups / Locations', 'Networks', 'Routes'];
       const wideInline = inline();
       check(
         'wide window: the filters on one row, by priority; whatever does not fit is in the Filters drop-down (none in a window wide enough)',
-        wideInline.length >= 3 && wideInline.join() === ORDER.slice(0, wideInline.length).join() && more.hidden === (wideInline.length === ORDER.length) && oneRow(),
+        wideInline.length >= 1 && wideInline.join() === ORDER.slice(0, wideInline.length).join() && more.hidden === (wideInline.length === ORDER.length) && oneRow(),
         wideInline.join(),
       );
       top.style.maxWidth = '540px';
@@ -4113,10 +4250,10 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       await tick();
       const narrowInline = inline();
       check(
-        'narrow toolbar: the filters stay on one row; Servers, then Endpoints, … move into the Filters drop-down by priority',
+        'narrow toolbar: the filters stay on one row; Devices and Device types stay; Routes, then Networks, … move into the Filters drop-down by priority',
         // the ones that stay inline are the highest-priority ones, in order (possibly none at this width)
-        oneRow() && !more.hidden && narrowInline.length < wideInline.length && narrowInline.join() === ORDER.slice(0, narrowInline.length).join() &&
-          !!q('#more-filters #opt-type-server') && rect(group).right <= rect(top).right + 0.5 && doc.documentElement.scrollWidth <= doc.documentElement.clientWidth,
+        oneRow() && !more.hidden && narrowInline.length <= wideInline.length && narrowInline.join() === ORDER.slice(0, narrowInline.length).join() &&
+          !!q('#more-filters #opt-routes') && !!q('#view-filters > .devices-wrap') && !!q('#view-filters > .types-wrap') && rect(group).right <= rect(top).right + 0.5 && doc.documentElement.scrollWidth <= doc.documentElement.clientWidth,
         narrowInline.join(),
       );
       more.focus();
@@ -4124,10 +4261,10 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       await tick();
       const firstInside = doc.activeElement as HTMLInputElement;
       const opened = !(q('#more-filters') as HTMLElement).hidden && more.getAttribute('aria-expanded') === 'true' && !!firstInside && (q('#more-filters') as HTMLElement).contains(firstInside);
-      const servers = q('#opt-type-server') as HTMLInputElement;
+      const servers = q('#opt-routes') as HTMLInputElement;
       servers.click();
       await tick();
-      const offShown = /1 off/.test(more.textContent || '') && more.classList.contains('filtered') && /Servers/.test(more.getAttribute('aria-label') || '') && app.session!.isTypeHidden('server');
+      const offShown = /1 off/.test(more.textContent || '') && more.classList.contains('filtered') && /Routes/.test(more.getAttribute('aria-label') || '') && !app.session!.state.showRoutes;
       (q('#more-filters') as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
       await tick();
       check(
@@ -4139,7 +4276,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       app.layoutFilters();
       await tick();
       check(
-        'back to a wide toolbar: the same filters are inline again, with their state kept (Servers still off, shown unchecked)',
+        'back to a wide toolbar: the same filters are inline again, with their state kept (Routes still off, shown unchecked)',
         inline().join() === wideInline.join() && !servers.checked && (wideInline.length === ORDER.length ? more.hidden && servers.parentElement!.parentElement === group : !more.hidden && /1 off/.test(more.textContent || '')) && oneRow(),
         inline().join(),
       );
@@ -4220,11 +4357,12 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       check('without a model both View entries are disabled, like Export', (q('#btn-find') as HTMLButtonElement).disabled && (q('#btn-outline-filter') as HTMLButtonElement).disabled && !app.openFind());
       {
         // the start screen: every diagram filter is greyed out and inert, inline or in the Filters drop-down, in either view
-        const ids = ['opt-labels', 'opt-groups', 'opt-networks', 'opt-type-endpoint', 'opt-type-server'];
+        const ids = ['opt-labels', 'opt-groups', 'opt-networks', 'opt-routes'];
         const boxes = ids.map((id) => q('#' + id) as HTMLInputElement);
         const devBtn = q('#devices-btn') as HTMLButtonElement;
         const moreBtn = q('#more-filters-btn') as HTMLButtonElement;
-        const allOff = (): boolean => boxes.every((b) => b.disabled && b.checked) && devBtn.disabled && moreBtn.disabled;
+        const typesBtn = q('#types-btn') as HTMLButtonElement;
+        const allOff = (): boolean => boxes.every((b) => b.disabled && b.checked) && devBtn.disabled && typesBtn.disabled && moreBtn.disabled;
         const wide = allOff() && doc.body.getAttribute('data-state') === 'empty';
         const faded = boxes.every((b) => Number(doc.defaultView!.getComputedStyle(b.closest('label.opt') as Element).opacity) < 1);
         // clicks, keyboard focus and Space do nothing
@@ -4250,11 +4388,12 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         await tick();
         const panelClosed = (q('#more-filters') as HTMLElement).hidden && moreBtn.getAttribute('aria-expanded') === 'false' && doc.activeElement !== moreBtn;
         devBtn.click();
-        const devClosed = (q('#devices-panel') as HTMLElement).hidden;
+        typesBtn.click();
+        const devClosed = (q('#devices-panel') as HTMLElement).hidden && (q('#types-panel') as HTMLElement).hidden;
         top.style.maxWidth = '';
         app.layoutFilters();
         check(
-          'start screen: Devices, Labels, Groups / Locations, Networks, Endpoints and Servers are disabled and greyed out, also when collapsed into a disabled Filters drop-down; clicks, focus and keys change nothing',
+          'start screen: Devices, Device types, Labels, Groups / Locations, Networks and Routes are disabled and greyed out, also when collapsed into a disabled Filters drop-down; clicks, focus and keys change nothing',
           labelsOff && wide && faded && !tried.length && collapsed && moreBtn.disabled && panelClosed && devClosed && allOff() && !app.session,
           `${labelsOff} ${wide} ${faded} ${tried.join()} collapsed=${collapsed} ${panelClosed} ${devClosed}`,
         );
@@ -4265,9 +4404,9 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       }
       app.loadExample(0);
       {
-        const ids = ['opt-labels', 'opt-groups', 'opt-type-endpoint', 'opt-type-server'];
+        const ids = ['opt-labels', 'opt-groups'];
         const ss = app.session!;
-        const physOk = ids.every((id) => !(q('#' + id) as HTMLInputElement).disabled && (q('#' + id) as HTMLInputElement).checked) && !(q('#devices-btn') as HTMLButtonElement).disabled && !(q('#more-filters-btn') as HTMLButtonElement).disabled;
+        const physOk = ids.every((id) => !(q('#' + id) as HTMLInputElement).disabled && (q('#' + id) as HTMLInputElement).checked) && !(q('#devices-btn') as HTMLButtonElement).disabled && !(q('#types-btn') as HTMLButtonElement).disabled && !(q('#more-filters-btn') as HTMLButtonElement).disabled;
         click('[data-view-btn="logical"]');
         const net = q('#opt-networks') as HTMLInputElement;
         const logOk = !net.disabled && net.checked;

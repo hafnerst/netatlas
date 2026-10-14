@@ -27,7 +27,7 @@ import { Session, View } from '../diagram/session';
 import { SelectionContext, attachedRefs, search, selectionContext, splitRef } from '../model/queries';
 import { sortedByName } from '../model/order';
 import { lookupProtocol, normalizeProtocol } from '../model/protocols';
-import { deviceRoutingRole, deviceTypeLabel, isLayer2Switch } from '../model/device-types';
+import { DEVICE_TYPES, deviceRoutingRole, isLayer2Switch, typeKey, typeKeyLabel } from '../model/device-types';
 import { Issue } from '../validation/validate';
 import { SEVERITIES, Severity, checkById } from '../analysis/checks';
 import { addressingOverview } from '../analysis/addressing';
@@ -39,7 +39,8 @@ import { SpofRow, SpofSort, newSpofViewState, shownSpofRows, spofBody, spofCsv, 
 import { focusWindowBody } from './focus-window';
 import { ToolWindowOpts, ToolWindows } from './toolwindow';
 import { SimulationMode } from './simulation-mode';
-import { SimController, SimStartOptions, protocolChecks } from './sim-controller';
+import { SimController, SimStartOptions } from './sim-controller';
+import { protocolPicker } from './sim-protocols-ui';
 import { paramEditor } from './sim-params-ui';
 import { ParamValue, readStoredParams } from '../analysis/sim/params';
 import { protocolEntriesOf } from '../analysis/sim/simulation';
@@ -58,6 +59,12 @@ type Tab = 'edit' | 'details' | 'legend' | 'relations' | 'problems' | 'yaml';
 /** Why the model can't be edited while a simulation is on (the lock's reason). */
 /** Where the simulation-wide parameters are remembered for the browser session. */
 const SIM_PARAMS_KEY = 'netatlas.sim.params';
+/** the simulation panel's height, chosen with its splitter (local storage) */
+const DOCK_KEY = 'netatlas.dockHeight';
+/** the simulation panel is never lower than this (px): its toolbar and a few rows */
+export const DOCK_MIN = 150;
+/** the protocols switched off in Start simulation… or the Simulation setup, for the next start in this browser session */
+const SIM_HIDDEN_KEY = 'netatlas.sim.hidden';
 const SIM_LOCK = 'Editing is paused during a simulation: the diagram shows a simulated state, not the model. Exit the simulation (Esc) to edit.';
 
 export interface LoadOutcome {
@@ -950,6 +957,7 @@ export class App {
     this.renderSide();
     this.updateChrome();
     if (reveal && ref) this.reveal(ref);
+    if (this.simCtl) this.simCtl.selectionChanged();
   }
 
   private reveal(ref: string): void {
@@ -1069,6 +1077,11 @@ export class App {
   private renderSide(): void {
     const s = this.session;
     const body = this.$('side-body');
+    // the simulation layout shows Actions instead (with the device's Simulation section): nothing here meanwhile
+    if (this.simCtl) {
+      while (body.firstChild) body.removeChild(body.firstChild);
+      return;
+    }
     const tabs = this.doc.querySelectorAll('#side .tabs button');
     for (let i = 0; i < tabs.length; i++) tabs[i].classList.toggle('active', tabs[i].getAttribute('data-tab') === this.tab);
     if (this.tabOverflow) this.tabOverflow.layout(this.tab);
@@ -1519,6 +1532,7 @@ export class App {
         d.warnings.length ? `${d.warnings.length} warning${d.warnings.length > 1 ? 's' : ''}` : '',
         d.findings.length ? `${d.findings.length} check finding${d.findings.length > 1 ? 's' : ''}` : '',
         s && s.isFiltered() ? el(this.doc, 'span', { class: 'filtered-note' }, [`showing ${s.shownDevices().size} of ${s.model.devices.length} devices`]) : '',
+        s && !this.typesSummary().all ? el(this.doc, 'span', { class: 'filtered-note types-note' }, [`device types: ${this.typesSummary().text} (off: ${this.typesSummary().off.join(', ')})`]) : '',
       ].filter((p) => p !== '');
       parts.forEach((p, i) => {
         if (i) rest.appendChild(this.doc.createTextNode(' · '));
@@ -1542,13 +1556,7 @@ export class App {
       cb.checked = v;
       cb.disabled = !s;
     }
-    const types = this.doc.querySelectorAll('input[data-device-type]');
-    for (let i = 0; i < types.length; i++) {
-      const cb = types[i] as HTMLInputElement;
-      cb.disabled = !s;
-      // a new model starts with every type shown
-      cb.checked = !s || !s.isTypeHidden(cb.getAttribute('data-device-type') || '');
-    }
+    this.updateTypesControl();
     this.updateDevicesControl();
     this.updateLayoutStatus();
     this.layoutFilters();
@@ -1728,7 +1736,9 @@ export class App {
     const shown = (o: HTMLElement): boolean => logical || !o.classList.contains('logical-only');
     const width = (o: HTMLElement): number => this.optWidth.get(o) || 110;
     const btnW = this.moreBtnWidth || 96;
-    const devW = devices.getBoundingClientRect().width;
+    // Devices and Device types always stay in the row
+    const types = box.querySelector('.types-wrap') as HTMLElement;
+    const devW = devices.getBoundingClientRect().width + gap + types.getBoundingClientRect().width;
     // The row sits in the framed Filters group, which sits at the right of a slot taking the rest of the
     // toolbar. The room for the row is the slot's width less the group's frame and padding.
     const slot = this.$('filters-slot');
@@ -1794,6 +1804,7 @@ export class App {
     if (!show) return;
     this.openMenu(null);
     this.openDevices(false);
+    this.openTypes(false);
     this.keepInWindow(panel);
     if (focus) {
       const first = panel.querySelector('input:not(:disabled)') as HTMLElement | null;
@@ -1867,7 +1878,7 @@ export class App {
     const boxes = this.$('devices-list').querySelectorAll('input[data-device]');
     const stale = (b: Element): boolean => {
       const d = s.model.index.devices.get(b.getAttribute('data-device') || '');
-      return !d || (b.parentElement as Element).classList.contains('type-hidden') !== s.isTypeHidden(d.type);
+      return !d || (b.parentElement as Element).classList.contains('type-hidden') !== s.isDeviceTypeHidden(d);
     };
     if (boxes.length !== s.model.devices.length || Array.prototype.some.call(boxes, stale)) {
       this.renderDevicesList();
@@ -1890,11 +1901,11 @@ export class App {
       const cb = el(this.doc, 'input', { type: 'checkbox', 'data-device': d.id }) as HTMLInputElement;
       cb.checked = sel.has(d.id);
       // a device of a type switched off stays selectable here; it is shown again with its type
-      const off = s.isTypeHidden(d.type);
+      const off = s.isDeviceTypeHidden(d);
       const row = el(this.doc, 'label', { 'data-device-row': d.id, class: off ? 'type-hidden' : '' }, [
         cb,
         el(this.doc, 'span', {}, [name]),
-        off ? el(this.doc, 'span', { class: 'dp-off' }, [`hidden: ${deviceTypeLabel(d.type)} off`]) : null,
+        off ? el(this.doc, 'span', { class: 'dp-off' }, [`hidden: type ${typeKeyLabel(typeKey(d))} off`]) : null,
       ]);
       if (q && name.toLowerCase().indexOf(q) < 0) row.hidden = true;
       list.appendChild(row);
@@ -1911,6 +1922,7 @@ export class App {
     if (open) {
       this.openMenu(null);
       this.openMoreFilters(false);
+      this.openTypes(false);
       this.renderDevicesList();
       this.keepInWindow(panel);
       if (focus) this.$('devices-find').focus();
@@ -1932,18 +1944,169 @@ export class App {
   }
 
   /**
-   * Show or hide the devices of one type (the toolbar's Endpoints / Servers
-   * controls). Like the device selection it only changes what the diagrams
-   * and their exports show; the model, the YAML and the saved layout stay as
-   * they are. The other devices keep their places, so the zoom is kept too.
+   * Show or hide the devices of types (the toolbar's Device types filter;
+   * keys as model/device-types.ts typeKey). Like the device selection it
+   * only changes what the diagrams and their exports show; the model, the
+   * YAML and the saved layout stay as they are. The other devices keep
+   * their places, so the zoom is kept too.
    */
-  setTypeVisible(type: string, visible: boolean): boolean {
+  setTypeVisible(type: string | string[], visible: boolean): boolean {
     const s = this.session;
-    if (!s || !s.setTypeVisible(type, visible)) return false;
+    if (!s || !s.setTypesVisible(Array.isArray(type) ? type : [type], visible)) return false;
     this.render();
     this.renderOutline();
     this.updateChrome();
     return true;
+  }
+
+  // ------------------------------------------------------------ device types filter
+
+  /**
+   * The Device types filter's entries: the types the model uses (in the
+   * order of the format's list), each with its keys and its number of
+   * devices; a switch with both kinds lists Layer 2 and Layer 3 under it.
+   */
+  typeEntries(): Array<{ type: string; label: string; keys: string[]; count: number; subs: Array<{ key: string; label: string; count: number }> }> {
+    const s = this.session;
+    if (!s) return [];
+    const per = new Map<string, number>();
+    for (const d of s.model.devices) per.set(typeKey(d), (per.get(typeKey(d)) || 0) + 1);
+    const out: Array<{ type: string; label: string; keys: string[]; count: number; subs: Array<{ key: string; label: string; count: number }> }> = [];
+    for (const t of DEVICE_TYPES) {
+      const keys = t.id === 'switch' ? ['switch:l2', 'switch:l3'].filter((k) => per.has(k)) : per.has(t.id) ? [t.id] : [];
+      if (!keys.length) continue;
+      const count = keys.reduce((n, k) => n + (per.get(k) || 0), 0);
+      const subs = keys.length > 1 ? keys.map((k) => ({ key: k, label: k === 'switch:l2' ? 'Layer 2' : 'Layer 3', count: per.get(k) || 0 })) : [];
+      out.push({ type: t.id, label: t.label, keys, count, subs });
+    }
+    // devices without a type (or of an unknown one)
+    for (const [k, n] of Array.from(per).sort((a, b) => (a[0] < b[0] ? -1 : 1))) if (!out.some((e) => e.keys.indexOf(k) >= 0)) out.push({ type: k, label: k ? typeKeyLabel(k) : 'No type', keys: [k], count: n, subs: [] });
+    return out;
+  }
+
+  /** "All", or how many of the model's types are wholly shown ("3 of 8"), and which are off. */
+  typesSummary(): { all: boolean; text: string; off: string[] } {
+    const s = this.session;
+    const es = this.typeEntries();
+    if (!s) return { all: true, text: 'All', off: [] };
+    const off: string[] = [];
+    let shown = 0;
+    for (const e of es) {
+      const hiddenKeys = e.keys.filter((k) => s.isTypeHidden(k));
+      if (!hiddenKeys.length) shown++;
+      else if (hiddenKeys.length === e.keys.length) off.push(e.label);
+      else for (const k of hiddenKeys) off.push(typeKeyLabel(k));
+    }
+    const all = shown === es.length;
+    return { all, text: all ? 'All' : `${shown} of ${es.length}`, off };
+  }
+
+  private updateTypesControl(): void {
+    const s = this.session;
+    const btn = this.$('types-btn') as HTMLButtonElement;
+    btn.disabled = !s;
+    const sum = this.typesSummary();
+    this.$('types-count').textContent = sum.text;
+    btn.classList.toggle('filtered', !sum.all);
+    btn.setAttribute('data-filtered', sum.all ? 'false' : 'true');
+    btn.setAttribute('aria-label', `Device types: ${sum.all ? 'all shown' : `${sum.text} shown; off: ${sum.off.join(', ')}`}`);
+    btn.title = sum.all ? 'Choose the device types the diagram shows' : `Switched off: ${sum.off.join(', ')}`;
+    if (!s) this.$('types-panel').hidden = true;
+    if (!this.$('types-panel').hidden) this.syncTypesList();
+  }
+
+  /** The checkbox list of the Device types panel. */
+  private renderTypesList(): void {
+    const list = this.$('types-list');
+    while (list.firstChild) list.removeChild(list.firstChild);
+    for (const e of this.typeEntries()) {
+      const cb = el(this.doc, 'input', { type: 'checkbox', 'data-type-keys': e.keys.join(' ') }) as HTMLInputElement;
+      list.appendChild(el(this.doc, 'label', { class: 'tp-row', 'data-type-row': e.type }, [cb, el(this.doc, 'span', {}, [e.label]), el(this.doc, 'span', { class: 'tp-count', 'aria-hidden': 'true' }, [String(e.count)]), el(this.doc, 'span', { class: 'sr-only' }, [`, ${e.count} device${e.count === 1 ? '' : 's'}`])]));
+      for (const sub of e.subs) {
+        const sc = el(this.doc, 'input', { type: 'checkbox', 'data-type-keys': sub.key }) as HTMLInputElement;
+        list.appendChild(el(this.doc, 'label', { class: 'tp-row tp-sub', 'data-type-row': sub.key }, [sc, el(this.doc, 'span', {}, [sub.label]), el(this.doc, 'span', { class: 'tp-count', 'aria-hidden': 'true' }, [String(sub.count)]), el(this.doc, 'span', { class: 'sr-only' }, [` switches, ${sub.count} device${sub.count === 1 ? '' : 's'}`])]));
+      }
+    }
+    this.syncTypesList();
+  }
+
+  /** The boxes in step with what is hidden (a switch with one kind off: mixed). */
+  private syncTypesList(): void {
+    const s = this.session;
+    if (!s) return;
+    const boxes = this.$('types-list').querySelectorAll('input[data-type-keys]');
+    for (let i = 0; i < boxes.length; i++) {
+      const b = boxes[i] as HTMLInputElement;
+      const keys = (b.getAttribute('data-type-keys') || '').split(' ');
+      const off = keys.filter((k) => s.isTypeHidden(k)).length;
+      b.checked = off === 0;
+      b.indeterminate = off > 0 && off < keys.length;
+    }
+  }
+
+  private openTypes(open: boolean, focus = false): void {
+    const panel = this.$('types-panel');
+    const btn = this.$('types-btn');
+    if (open && !this.session) return;
+    panel.hidden = !open;
+    btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    btn.classList.toggle('active', open);
+    if (open) {
+      this.openMenu(null);
+      this.openMoreFilters(false);
+      this.openDevices(false);
+      this.renderTypesList();
+      this.keepInWindow(panel);
+      if (focus) {
+        const first = panel.querySelector('input[data-type-keys]') as HTMLElement | null;
+        (first || (this.$('types-all') as HTMLElement)).focus();
+      }
+    }
+  }
+
+  /** Open the Device types filter, with the focus in it. */
+  openTypesFilter(): void {
+    if (this.session) this.openTypes(true, true);
+  }
+
+  private wireTypes(): void {
+    const btn = this.$('types-btn');
+    const panel = this.$('types-panel');
+    btn.addEventListener('click', () => this.openTypes(panel.hidden));
+    btn.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        this.openTypes(true, true);
+      }
+    });
+    panel.addEventListener('change', (e) => {
+      const cb = e.target as HTMLInputElement;
+      const keys = (cb.getAttribute('data-type-keys') || '').split(' ').filter((k) => k);
+      if (!keys.length) return;
+      this.setTypeVisible(keys, cb.checked);
+      this.syncTypesList();
+    });
+    const allKeys = (): string[] => this.typeEntries().reduce((a: string[], e) => a.concat(e.keys), []);
+    this.$('types-all').addEventListener('click', () => {
+      this.setTypeVisible(allKeys(), true);
+      this.syncTypesList();
+    });
+    this.$('types-none').addEventListener('click', () => {
+      this.setTypeVisible(allKeys(), false);
+      this.syncTypesList();
+    });
+    // Esc on the button or in the panel closes it
+    (btn.parentElement as HTMLElement).addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && !panel.hidden) {
+        e.preventDefault();
+        e.stopPropagation();
+        this.openTypes(false);
+        btn.focus();
+      }
+    });
+    this.doc.addEventListener('pointerdown', (e) => {
+      if (!panel.hidden && !(e.target as Element).closest('.types-wrap')) this.openTypes(false);
+    });
   }
 
   private wireDevices(): void {
@@ -1968,8 +2131,9 @@ export class App {
     this.$('devices-find').addEventListener('input', () => this.renderDevicesList());
     this.$('devices-all').addEventListener('click', () => this.session && this.setDevices(this.session.model.devices.map((d) => d.id)));
     this.$('devices-none').addEventListener('click', () => this.setDevices([]));
-    panel.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') {
+    // Esc on the button or in the panel closes it
+    (btn.parentElement as HTMLElement).addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && !panel.hidden) {
         e.preventDefault();
         e.stopPropagation();
         this.openDevices(false);
@@ -2414,6 +2578,33 @@ export class App {
     }
   }
 
+  /** The protocols switched off for this browser session (Start simulation…, the Simulation setup); every other one is shown. */
+  storedSimHidden(): Set<string> {
+    try {
+      const w = this.doc.defaultView;
+      const v = JSON.parse((w ? w.sessionStorage.getItem(SIM_HIDDEN_KEY) : null) || '[]');
+      return new Set(Array.isArray(v) ? v.filter((x) => typeof x === 'string') : []);
+    } catch (e) {
+      return new Set();
+    }
+  }
+
+  /** Remember the protocols shown: those of the model left out are the ones switched off (the others' choice is kept). */
+  private storeSimShown(entries: Array<{ id: string }>, shown: Set<string>): void {
+    try {
+      const w = this.doc.defaultView;
+      if (!w) return;
+      const hidden = this.storedSimHidden();
+      for (const e of entries) {
+        if (shown.has(e.id)) hidden.delete(e.id);
+        else hidden.add(e.id);
+      }
+      w.sessionStorage.setItem(SIM_HIDDEN_KEY, JSON.stringify(Array.from(hidden).sort()));
+    } catch (e) {
+      /* storage unavailable: the choice lasts for this simulation only */
+    }
+  }
+
   private storeSimParams(values: { [key: string]: ParamValue }): void {
     try {
       const w = this.doc.defaultView;
@@ -2424,15 +2615,20 @@ export class App {
   }
 
   /**
-   * Simulate → Start simulation…: the dialog that configures the simulation
-   * before it starts (the Layer 1–4 parameters, collapsed sections, and the
-   * protocols shown), with Start and Cancel. Resolves true when it started.
+   * Simulate → Start simulation…: the dialog that sets up the simulation
+   * before it starts. At the top, always open, the protocols the model uses
+   * (grouped, with their counts, Select all and Clear; the keyboard focus
+   * starts on the first one); below, the Layer 1–4 parameters, one
+   * collapsed section per layer that says how many of its values are
+   * modified. Start (Enter) and Cancel (Esc). Both choices are remembered
+   * for the next start in this browser session and carry over into the
+   * Simulation setup panel. Resolves true when it started.
    */
   async openStartDialog(): Promise<boolean> {
     if (!this.session || this.simulation) return false;
     const model = this.session.model;
     const entries = protocolEntriesOf(model);
-    const shown = new Set(entries.map((e) => e.id));
+    const hidden = this.storedSimHidden();
     let startBtn: HTMLButtonElement | null = null;
     const editor = paramEditor(this.doc, {
       id: 'sim-pd',
@@ -2442,12 +2638,12 @@ export class App {
       },
     });
     const color = (p: string): string => lookupProtocol(model.protocols, p.indexOf('custom:') === 0 ? p.slice(7) : p).color;
-    const protos = el(this.doc, 'details', { class: 'sim-sec', id: 'sim-pd-protos' }, [el(this.doc, 'summary', {}, [`Protocols shown (${entries.length})`]), el(this.doc, 'p', { class: 'muted small' }, ['Every protocol runs; these are the ones whose messages are drawn and logged. You can change them during the simulation.']), protocolChecks(this.doc, entries, shown, color, 'sim-pd-p-')]);
+    const picker = protocolPicker(this.doc, { id: 'sim-pd-protos', entries, shown: new Set(entries.filter((e) => !hidden.has(e.id)).map((e) => e.id)), color });
     const v = await this.dialog({
       title: 'Start simulation',
       className: 'sim-start-dialog',
       closeButton: true,
-      body: [el(this.doc, 'p', { class: 'muted' }, ['A freshly booted network: every table empty, every adjacency down. The parameters apply to the whole simulation; a value configured on a cable, a relation or a device takes precedence. They are remembered for the next start in this browser session, never written to the model.']), editor.el, protos],
+      body: [el(this.doc, 'p', { class: 'muted small sim-pd-intro' }, ['A freshly booted network: every table empty, every adjacency down. Every protocol runs; the ones checked are drawn and logged.']), picker.el, editor.el],
       buttons: [
         { label: 'Cancel', value: 'cancel' },
         { label: 'Start', value: 'start', kind: 'primary' },
@@ -2455,28 +2651,41 @@ export class App {
       ready: (dlg) => {
         startBtn = dlg.querySelector('.modal-btns [data-value="start"]') as HTMLButtonElement;
         startBtn.disabled = !editor.valid();
+        // Enter starts (from anywhere but a button, which Enter presses, or a list box): a field being typed in is taken first
+        dlg.addEventListener('keydown', (e) => {
+          const ke = e as KeyboardEvent;
+          const t = ke.target as HTMLElement;
+          if (ke.key !== 'Enter' || ke.isComposing || ke.shiftKey || ke.ctrlKey || ke.altKey || ke.metaKey || t.tagName === 'BUTTON' || t.tagName === 'SELECT' || t.tagName === 'TEXTAREA') return;
+          ke.preventDefault();
+          if (t.tagName === 'INPUT' && (t as HTMLInputElement).type === 'text') t.dispatchEvent(new Event('change', { bubbles: true }));
+          if (startBtn && !startBtn.disabled) startBtn.click();
+        });
       },
-      focus: '.psec-toggle',
+      focus: '#sim-pd-protos-list input[data-sim-proto]',
     });
     if (v !== 'start' || !editor.valid()) return false;
-    const picked = entries.filter((e) => {
-      const cb = this.doc.getElementById('sim-pd-p-' + e.id.replace(/[^a-z0-9-]/gi, '_')) as HTMLInputElement | null;
-      return !cb || cb.checked;
-    });
+    const picked = picker.selected();
     this.storeSimParams(editor.values());
-    return this.startProtocolSimulation({ protocols: picked.length === entries.length ? undefined : picked.map((e) => e.id), params: editor.values() });
+    this.storeSimShown(entries, picked);
+    return this.startProtocolSimulation({ protocols: entries.filter((e) => picked.has(e.id)).map((e) => e.id), params: editor.values() });
   }
 
   /**
    * Start the protocol simulation at once (the dialog's Start; tests): a
    * freshly booted network (every table empty, every adjacency down, the
-   * interfaces up at t = 0), in simulation mode, with the Simulation
-   * window. Without parameters it uses those remembered for this session.
+   * interfaces up at t = 0), in simulation mode, in the simulation layout
+   * (Simulation setup on the left, Actions on the right, the simulation
+   * panel under the diagram). Without parameters or protocols it uses
+   * those remembered for this session.
    */
   startProtocolSimulation(opts: SimStartOptions | string[] = {}): boolean {
     if (!this.session || this.simulation) return false;
     const o: SimStartOptions = Array.isArray(opts) ? { protocols: opts } : opts;
     if (!o.params) o.params = this.storedSimParams();
+    if (!o.protocols) {
+      const hidden = this.storedSimHidden();
+      if (hidden.size) o.protocols = protocolEntriesOf((this.session as Session).model).filter((e) => !hidden.has(e.id)).map((e) => e.id);
+    }
     const self = this;
     const ctl = new SimController(
       {
@@ -2486,7 +2695,6 @@ export class App {
         view: () => (self.session ? self.session.state.view : 'physical'),
         reduce: () => self.reducedMotion(),
         changed: () => self.simChanged(),
-        windowBody: () => (self.toolWindow() === 'sim' && self.tw ? self.tw.body() : null),
         rectOf: (ref) => {
           const n = self.viewport.querySelector(`.node[data-ref="${ref.replace(/["\\]/g, '\\$&')}"]`);
           if (!n) return null;
@@ -2496,7 +2704,14 @@ export class App {
         toast: (t) => self.toast(t),
         tick: () => self.simTick(),
         paramsChanged: (values) => self.storeSimParams(values),
-        openWindow: () => void self.openSimWindow(),
+        shownChanged: (shown) => self.storeSimShown(ctl.protocolEntries(), shown),
+        selected: () => (self.session ? self.session.state.selected : null),
+        select: (ref) => self.select(ref, !!ref),
+        setupBox: () => self.doc.getElementById('sim-setup-body'),
+        actionsBox: () => self.doc.getElementById('sim-actions-body'),
+        dockBox: () => self.doc.getElementById('sim-dock-body'),
+        simSection: (box) => self.editor.renderSimSection(box),
+        exit: () => void self.exitSimulation(),
       },
       o,
     );
@@ -2504,12 +2719,232 @@ export class App {
     ctl.stop = (): void => {
       stop();
       if (self.simCtl === ctl) self.simCtl = null;
-      if (self.toolWindow() === 'sim') self.closeToolWindow();
+      self.simLayout(false);
     };
     this.simCtl = ctl;
+    this.simLayout(true);
+    ctl.mount();
     this.startSimulation(ctl);
-    this.openSimWindow();
+    const first = this.doc.getElementById('sim-play') as HTMLElement | null;
+    if (first) first.focus();
     return true;
+  }
+
+  /**
+   * The simulation layout on (or off again): Simulation setup in place of
+   * the Objects list, Actions in place of the Inspector's tabs, and the
+   * simulation panel under the diagram. Off: the Objects list and the
+   * Inspector as they were (the same tab and selection), the panel gone;
+   * the diagram keeps its zoom and position.
+   */
+  private simLayout(on: boolean): void {
+    const d = this.doc;
+    const was = d.body.getAttribute('data-sim') === 'on';
+    if (on === was) return;
+    if (on) d.body.setAttribute('data-sim', 'on');
+    else d.body.removeAttribute('data-sim');
+    (d.getElementById('sim-setup') as HTMLElement).hidden = !on;
+    (d.getElementById('sim-actions') as HTMLElement).hidden = !on;
+    (d.getElementById('sim-dock') as HTMLElement).hidden = !on;
+    (d.getElementById('sim-paneltabs') as HTMLElement).hidden = !on;
+    const outline = this.$('outline');
+    outline.setAttribute('aria-labelledby', on ? 'sim-setup-title' : 'outline-title');
+    const side = this.$('side');
+    if (on) {
+      side.removeAttribute('aria-label');
+      side.setAttribute('aria-labelledby', 'sim-actions-title');
+    } else {
+      side.removeAttribute('aria-labelledby');
+      side.setAttribute('aria-label', 'Inspector');
+      for (const id of ['sim-setup-body', 'sim-actions-body', 'sim-dock-body']) {
+        const b = d.getElementById(id) as HTMLElement;
+        while (b.firstChild) b.removeChild(b.firstChild);
+      }
+    }
+    this.applyDockHeight();
+    // (a narrow and short window starts with the diagram, a narrow one with the actions under it)
+    this.simPanelTab(on && (d.getElementById('spt-diagram') as HTMLElement).getClientRects().length ? 'diagram' : 'actions', false);
+    // the Inspector comes back with its tab and the selection as they were
+    if (!on) {
+      this.renderOutline();
+      this.renderSide();
+    }
+    this.layoutFilters();
+  }
+
+  /**
+   * The narrow layout's tabs above the simulation panel: Setup or Actions
+   * under the diagram; in a narrow and short window Diagram, Setup or
+   * Actions above the panel (one at a time).
+   */
+  private simPanelTab(which: 'diagram' | 'setup' | 'actions', focus = true): void {
+    const d = this.doc;
+    d.body.setAttribute('data-sim-tab', which);
+    for (const k of ['diagram', 'setup', 'actions']) {
+      const b = d.getElementById('spt-' + k) as HTMLElement;
+      b.setAttribute('aria-selected', k === which ? 'true' : 'false');
+      b.tabIndex = k === which ? 0 : -1;
+      if (focus && k === which) b.focus();
+    }
+    // the diagram coming back into view: its dots on it again
+    if (which === 'diagram' && this.simCtl) this.simCtl.sceneChanged();
+  }
+
+  /** The tabs shown now (Diagram only in a narrow and short window). */
+  private simTabs(): Array<'diagram' | 'setup' | 'actions'> {
+    const dg = this.doc.getElementById('spt-diagram') as HTMLElement;
+    return dg.getClientRects().length ? ['diagram', 'setup', 'actions'] : ['setup', 'actions'];
+  }
+
+  // ------------------------------------------------------------ the simulation panel's height
+
+  /** the simulation panel's height (px), chosen with its splitter; null: the default */
+  private dockH: number | null = null;
+
+  /** The default and the bounds of the simulation panel's height in the space under the toolbar. */
+  dockBounds(): { dflt: number; min: number; max: number } {
+    const main = this.doc.querySelector('main') as HTMLElement;
+    const h = main.clientHeight || 600;
+    // in a short window less, but never less than its toolbar
+    const head = this.doc.querySelector('#sim-dock .sd-head') as HTMLElement | null;
+    const min = Math.round(Math.min(DOCK_MIN, Math.max((head ? head.offsetHeight : 44) + 4, h * 0.4)));
+    const max = Math.max(min, Math.round(h * 0.65));
+    const dflt = Math.max(min, Math.min(max, Math.round(h * 0.4)));
+    return { dflt, min, max };
+  }
+
+  /** Set (or reset, null) the simulation panel's height; kept in local storage. */
+  setDockHeight(px: number | null): void {
+    this.dockH = px === null ? null : Math.round(px);
+    try {
+      const w = this.doc.defaultView;
+      if (w) {
+        if (px === null) w.localStorage.removeItem(DOCK_KEY);
+        else w.localStorage.setItem(DOCK_KEY, String(this.dockH));
+      }
+    } catch (e) {
+      /* storage unavailable: the height lasts for this page */
+    }
+    this.applyDockHeight();
+  }
+
+  private applyDockHeight(): void {
+    const main = this.doc.querySelector('main') as HTMLElement;
+    const b = this.dockBounds();
+    const h = Math.max(b.min, Math.min(b.max, this.dockH === null ? b.dflt : this.dockH));
+    main.style.setProperty('--dock-h', h + 'px');
+    const sp = this.doc.getElementById('dock-splitter') as HTMLElement;
+    sp.setAttribute('aria-valuemin', String(b.min));
+    sp.setAttribute('aria-valuemax', String(b.max));
+    sp.setAttribute('aria-valuenow', String(h));
+    sp.setAttribute('aria-valuetext', `${h} pixels high`);
+  }
+
+  private wireDock(): void {
+    const sp = this.doc.getElementById('dock-splitter') as HTMLElement;
+    try {
+      const w = this.doc.defaultView;
+      const v = w ? Number(w.localStorage.getItem(DOCK_KEY)) : NaN;
+      if (v > 0 && isFinite(v)) this.dockH = v;
+    } catch (e) {
+      /* no stored height */
+    }
+    const now = (): number => (this.doc.getElementById('sim-dock') as HTMLElement).getBoundingClientRect().height;
+    sp.addEventListener('keydown', (e) => {
+      const step = e.shiftKey ? 80 : 20;
+      if (e.key === 'ArrowUp') this.setDockHeight(now() + step);
+      else if (e.key === 'ArrowDown') this.setDockHeight(now() - step);
+      else if (e.key === 'Home') this.setDockHeight(this.dockBounds().max);
+      else if (e.key === 'End') this.setDockHeight(this.dockBounds().min);
+      else if (e.key === 'Enter') this.setDockHeight(null);
+      else return;
+      // (the arrow keys would pan the diagram too)
+      e.preventDefault();
+      e.stopPropagation();
+    });
+    sp.addEventListener('dblclick', () => this.setDockHeight(null));
+    sp.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      const y0 = e.clientY;
+      const h0 = now();
+      sp.classList.add('dragging');
+      const mv = (ev: PointerEvent): void => this.setDockHeight(h0 + (y0 - ev.clientY));
+      const up = (): void => {
+        sp.classList.remove('dragging');
+        this.doc.removeEventListener('pointermove', mv);
+        this.doc.removeEventListener('pointerup', up);
+      };
+      this.doc.addEventListener('pointermove', mv);
+      this.doc.addEventListener('pointerup', up);
+    });
+    const w = this.doc.defaultView;
+    if (w) w.addEventListener('resize', () => this.applyDockHeight());
+    const tabs = this.doc.getElementById('sim-paneltabs') as HTMLElement;
+    tabs.addEventListener('click', (e) => {
+      const b = (e.target as Element).closest('[role="tab"]');
+      if (b) this.simPanelTab(b.id.slice(4) as 'diagram' | 'setup' | 'actions');
+    });
+    tabs.addEventListener('keydown', (e) => {
+      if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight' && e.key !== 'Home' && e.key !== 'End') return;
+      e.preventDefault();
+      e.stopPropagation();
+      const all = this.simTabs();
+      const cur = Math.max(0, all.indexOf(this.doc.body.getAttribute('data-sim-tab') as 'setup'));
+      const i = e.key === 'Home' ? 0 : e.key === 'End' ? all.length - 1 : (cur + (e.key === 'ArrowRight' ? 1 : all.length - 1)) % all.length;
+      this.simPanelTab(all[i]);
+    });
+  }
+
+  // ------------------------------------------------------------ moving the focus between the regions (F6)
+
+  /** the element last focused in each region, so that F6 returns there */
+  private regionFocus = new Map<string, HTMLElement>();
+
+  /** The regions F6 moves between, in order: the left panel, the diagram, the right panel, the simulation panel, a tool window. */
+  private regions(): HTMLElement[] {
+    const d = this.doc;
+    const out: HTMLElement[] = [];
+    const vis = (e: HTMLElement | null): e is HTMLElement => !!e && !e.hidden && e.getClientRects().length > 0;
+    for (const id of ['outline', 'canvas-wrap', 'side', 'sim-paneltabs', 'sim-dock', 'toolwin']) {
+      const e = d.getElementById(id) as HTMLElement | null;
+      // (the narrow simulation layout shows some of them, as its tabs say: the others are not there)
+      if (vis(e) && e.getBoundingClientRect().height > 0 && getComputedStyle(e).visibility !== 'hidden') out.push(e);
+    }
+    return out;
+  }
+
+  /** F6 / Shift+F6: the keyboard focus to the next (previous) region, where it last was in it. */
+  focusRegion(dir: 1 | -1 = 1): boolean {
+    const rs = this.regions();
+    if (!rs.length) return false;
+    const a = this.doc.activeElement as HTMLElement | null;
+    let i = rs.findIndex((r) => !!a && r.contains(a));
+    if (i < 0) i = rs.findIndex((r) => r.id === 'canvas-wrap');
+    const next = rs[(i + dir + rs.length) % rs.length];
+    if (next.id === 'toolwin') return this.toggleWindowFocus();
+    const last = this.regionFocus.get(next.id);
+    if (last && next.contains(last) && last.getClientRects().length && !(last as HTMLButtonElement).disabled) last.focus();
+    else if (next.id === 'canvas-wrap') (this.doc.getElementById('canvas') as unknown as HTMLElement).focus();
+    else {
+      // (its first control: not a splitter on its edge)
+      const f = Array.from(next.querySelectorAll('button:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex="0"]')).find((e) => !e.matches('.splitter, .dock-splitter') && e.getClientRects().length > 0) as HTMLElement | undefined;
+      if (f) f.focus();
+      else {
+        next.tabIndex = -1;
+        next.focus();
+      }
+    }
+    return true;
+  }
+
+  private wireRegions(): void {
+    this.doc.addEventListener('focusin', (e) => {
+      const t = e.target as HTMLElement;
+      for (const id of ['outline', 'side', 'sim-paneltabs', 'sim-dock', 'canvas-wrap']) {
+        const r = this.doc.getElementById(id);
+        if (r && r.contains(t)) this.regionFocus.set(id, t);
+      }
+    });
   }
 
   /** The simulated time moved on: the banner's and the status bar's texts (nothing else is drawn again). */
@@ -2524,14 +2959,6 @@ export class App {
     if (m) m.textContent = v.marker();
   }
 
-  /** The Simulation window (again). */
-  openSimWindow(): boolean {
-    const ctl = this.simCtl;
-    if (!ctl) return false;
-    this.openWindow({ id: 'sim', title: 'Protocol simulation', body: ctl.windowBody(), width: 640, height: 600, focus: '#sim-play' });
-    ctl.updateWindow();
-    return true;
-  }
 
   /** prefers-reduced-motion */
   reducedMotion(): boolean {
@@ -2639,9 +3066,7 @@ export class App {
       case 'addressing':
         this.renderAddressingWindow();
         break;
-      case 'sim':
-        if (this.simCtl) this.simCtl.updateWindow();
-        break;
+
     }
   }
 
@@ -3345,12 +3770,10 @@ export class App {
     opt('opt-groups', (v) => this.session && (this.session.state.showGroups = v));
     opt('opt-networks', (v) => this.session && (this.session.state.showNetworks = v));
     opt('opt-routes', (v) => this.session && (this.session.state.showRoutes = v));
-    const types = doc.querySelectorAll('input[data-device-type]');
-    for (let i = 0; i < types.length; i++) {
-      const cb = types[i] as HTMLInputElement;
-      cb.addEventListener('change', () => this.setTypeVisible(cb.getAttribute('data-device-type') || '', cb.checked));
-    }
     this.wireDevices();
+    this.wireTypes();
+    this.wireDock();
+    this.wireRegions();
     this.wireMoreFilters();
 
     // side panel: tabs, reference links, protocol filters, editor
@@ -4118,8 +4541,8 @@ export class App {
     // a connection being drawn is screen state, not part of the picture
     const line = clone.querySelector('#conn-line');
     if (line) line.remove();
-    const marked = clone.querySelectorAll('.conn-start, .conn-source, .conn-ok, .conn-no, .hover-hl');
-    for (let i = 0; i < marked.length; i++) marked[i].classList.remove('conn-start', 'conn-source', 'conn-ok', 'conn-no', 'hover-hl');
+    const marked = clone.querySelectorAll('.conn-start, .conn-source, .conn-ok, .conn-no, .hover-hl, .sim-tx, .sim-rx');
+    for (let i = 0; i < marked.length; i++) marked[i].classList.remove('conn-start', 'conn-source', 'conn-ok', 'conn-no', 'hover-hl', 'sim-tx', 'sim-rx');
     // … and so is what the pointer is on
     clone.classList.remove('has-pointed');
     if (this.session) {

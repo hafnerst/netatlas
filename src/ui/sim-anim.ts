@@ -1,19 +1,24 @@
 /**
- * The protocol simulation in the diagram: a dot per message in flight
+ * The protocol simulation in the diagram: a dot per message hop on screen
  * (analysis/sim: one per cable in the physical view, per relation or
- * network line in the logical view), moving the way the message goes, with
- * a label "protocol message" beside it. Both directions of a line have
- * their own lane; frames on a cable are spaced out over time (the
- * engine), and labels are placed where they touch no text, device
- * box or other label (sim-labels.ts); a dot whose label has no place, and
- * the dots beyond MAX_DOTS, are not drawn (the window says how many; the
- * event log has them all). The dots sit above the lines and below the
- * boxes; the labels above everything, with a halo. Nothing here changes
- * the model or the layout.
+ * network line in the logical view), where the pacing (analysis/sim/
+ * pacing.ts) says it is: fading in at its sender, travelling its whole way
+ * with its label "protocol message" beside it, crossing a switch between
+ * two cables, and a short pulse at its receiver; the devices sending and
+ * receiving are marked for that moment. Both directions of a line have
+ * their own lane; labels are placed where they touch no text, device box
+ * or other label (sim-labels.ts), so they never overlap: a dot whose label
+ * has no room for a moment goes on without it until it has. At most
+ * MAX_DOTS hops are on screen (the panel says how many more there are;
+ * the event log has them all). The dots sit above the lines and below the
+ * boxes; the labels above everything, with a halo. Following a message:
+ * its hops draw a trail, the others are faint. Nothing here changes the
+ * model or the layout.
  *
- * Reduced motion and exports: no moving dots, a static arrow with its
- * label for every message in flight at that moment. A message lost to a
- * failure is marked ✕ where it was lost, for a moment.
+ * Reduced motion and exports: no moving dots, a still arrow with its label
+ * for every message on screen, for as long as the pacing shows it (where
+ * its label finds room: its middle first). A message lost to a failure is
+ * marked ✕ where it was lost, for about a second.
  *
  * A dot's shape says how its frame is addressed: a circle unicast, a
  * square broadcast, a diamond multicast (an arrow's tail the same). A dot
@@ -22,6 +27,7 @@
  */
 import { textWidth } from '../layout/geometry';
 import { Flight, Track } from '../analysis/sim/types';
+import type { PaceState } from '../analysis/sim/pacing';
 import { Box, BoxIndex, candidates, placeLabel } from './sim-labels';
 
 /** At most this many dots (with their labels) are drawn at once. */
@@ -80,37 +86,56 @@ function at(g: Geo, f: number): { x: number; y: number; ux: number; uy: number }
 
 export interface DrawOptions {
   view: 'physical' | 'logical';
-  t: number;
-  /** is a flight's protocol shown (the window's checkboxes) */
-  shown: (f: Flight) => boolean;
-  /** static arrows instead of moving dots */
+  /** static arrows instead of moving dots (reduced motion) */
   reduce: boolean;
-  /** reduced motion: every message in flight since this time (the last step), as arrows */
-  since?: number;
   color: (protocol: string) => string;
+}
+
+/** A hop to draw: its flight, where the pacing says it is, and how it is marked. */
+export interface DrawItem {
+  f: Flight;
+  st: PaceState;
+  /** the cable it continues from (the crossing of a switch) */
+  prev?: Track;
+  /** someone else's conversation is followed: drawn faint */
+  faded?: boolean;
+  /** of the conversation followed: drawn with its trail */
+  followed?: boolean;
 }
 
 export interface DrawResult {
   /** dots drawn */
   drawn: number;
-  /** dots of shown protocols not drawn (the limit, or no place for their label) */
+  /** dots not drawn (no place for their label) */
   left: number;
+  /** the devices sending (a dot just left them) and receiving (a dot just arrived) */
+  senders: string[];
+  receivers: string[];
 }
+
+/** Where a track starts and ends: its two devices where it has them (a cable's ends, a relation's devices; not a network or a hub). */
+export type TrackEnds = (t: Track) => { from: string | null; to: string | null };
 
 export class SimAnimator {
   private scene: Element | null = null;
   private dots: SVGGElement | null = null;
   private labels: SVGGElement | null = null;
   private obstacles: BoxIndex = new BoxIndex();
-  private last: { flights: Flight[]; opts: DrawOptions } | null = null;
+  private last: { items: DrawItem[]; opts: DrawOptions } | null = null;
+  /** the device nodes marked as sending or receiving */
+  private marked: Element[] = [];
 
-  constructor(private doc: Document) {}
+  constructor(
+    private doc: Document,
+    private ends?: TrackEnds,
+  ) {}
 
   /** A new scene (after every render): the layers again, and what labels must avoid. */
   setScene(scene: Element | null): void {
     if (scene === this.scene && this.dots && this.dots.isConnected) return;
     this.scene = scene;
     this.dots = this.labels = null;
+    this.marked = [];
     this.obstacles = new BoxIndex();
     if (!scene) return;
     const texts = scene.querySelectorAll('text, .node > rect');
@@ -139,6 +164,7 @@ export class SimAnimator {
   }
 
   clear(): void {
+    this.mark([], []);
     if (this.dots && this.dots.parentNode) this.dots.parentNode.removeChild(this.dots);
     if (this.labels && this.labels.parentNode) this.labels.parentNode.removeChild(this.labels);
     this.dots = this.labels = null;
@@ -146,69 +172,155 @@ export class SimAnimator {
     this.last = null;
   }
 
-  /** Draw the flights at a moment. */
-  draw(flights: Flight[], opts: DrawOptions): DrawResult {
-    this.last = { flights, opts };
-    if (!this.scene || !this.dots || !this.labels) return { drawn: 0, left: 0 };
+  /** Draw the hops as the pacing places them now. */
+  draw(items: DrawItem[], opts: DrawOptions): DrawResult {
+    this.last = { items, opts };
+    if (!this.scene || !this.dots || !this.labels) return { drawn: 0, left: 0, senders: [], receivers: [] };
     while (this.dots.firstChild) this.dots.removeChild(this.dots.firstChild);
     while (this.labels.firstChild) this.labels.removeChild(this.labels.firstChild);
-    return this.paint(this.dots, this.labels, flights, opts, opts.reduce);
+    const r = this.paint(this.dots, this.labels, items, opts, opts.reduce, true);
+    this.mark(r.senders, r.receivers);
+    return r;
   }
 
-  /** A static picture of what is in flight now, for an export (arrows with labels; the lost marks). */
+  /** A static picture of what is on its way now, for an export: arrows where the dots are, with labels; the lost marks. */
   exportLayer(): SVGGElement | null {
     if (!this.last || !this.scene) return null;
     const g = this.doc.createElementNS(SVG, 'g') as SVGGElement;
     g.setAttribute('class', 'layer-sim');
     const labels = this.doc.createElementNS(SVG, 'g') as SVGGElement;
-    this.paint(g, labels, this.last.flights, this.last.opts, true);
+    this.paint(g, labels, this.last.items, this.last.opts, true, false);
     g.appendChild(labels);
     return g;
   }
 
-  private paint(dots: SVGGElement, labels: SVGGElement, flights: Flight[], opts: DrawOptions, arrows: boolean): DrawResult {
+  /** Mark the sending and receiving devices in the diagram (screen only: an export removes the marks). */
+  private mark(senders: string[], receivers: string[]): void {
+    for (const n of this.marked) n.classList.remove('sim-tx', 'sim-rx');
+    this.marked = [];
+    if (!this.scene) return;
+    const add = (dev: string, cls: string): void => {
+      const n = (this.scene as Element).querySelector(`.node[data-ref="device:${cssEsc(dev)}"]`);
+      if (!n) return;
+      n.classList.add(cls);
+      this.marked.push(n);
+    };
+    for (const d of senders) add(d, 'sim-tx');
+    for (const d of receivers) add(d, 'sim-rx');
+  }
+
+  private paint(dots: SVGGElement, labels: SVGGElement, items: DrawItem[], opts: DrawOptions, arrows: boolean, live: boolean): DrawResult {
     const scene = this.scene as Element;
     const placed = new BoxIndex();
     let drawn = 0;
     let left = 0;
-    // the earliest first: what started first keeps its place
-    const list = flights.filter((f) => f.view === opts.view && opts.shown(f)).sort((a, b) => a.t0 - b.t0 || a.id - b.id);
-    for (const f of list) {
-      const lost = f.dropped !== undefined && opts.t >= f.dropped;
-      const from = opts.since !== undefined ? opts.since : opts.t;
-      if (!lost && (opts.t < f.t0 || from > f.t1)) continue;
-      if (drawn >= MAX_DOTS) {
-        left++;
-        continue;
+    const senders = new Set<string>();
+    const receivers = new Set<string>();
+    // the trails of the conversation followed, under the dots
+    if (live) {
+      for (const it of items) {
+        if (!it.followed || it.f.view !== opts.view || it.st.phase === 'waiting' || it.st.phase === 'gone' || it.st.phase === 'transit') continue;
+        const geo = findTrack(scene, it.f.track);
+        if (geo) dots.appendChild(trail(this.doc, geo, it.st.frac, opts.color(it.f.protocol)));
       }
+    }
+    // the earliest first: what started first keeps its place
+    const list = items.filter((it) => it.f.view === opts.view).sort((a, b) => a.f.t0 - b.f.t0 || a.f.id - b.f.id);
+    for (const it of list) {
+      const f = it.f;
+      const st = it.st;
+      if (st.phase === 'waiting' || st.phase === 'gone') continue;
       const geo = findTrack(scene, f.track);
       if (!geo) continue;
-      const frac = lost ? ((f.dropped as number) - f.t0) / Math.max(1, f.t1 - f.t0 || 1) : arrows ? 0.5 : (opts.t - f.t0) / Math.max(1, f.t1 - f.t0);
-      const p = at(geo, lost ? Math.min(1, frac) : frac);
+      const color = opts.color(f.protocol);
+      const ends = this.ends ? this.ends(f.track) : { from: null, to: null };
+      if (st.phase === 'arrived') {
+        // the arrival pulse at the receiver (no label: the message has arrived)
+        if (ends.to) receivers.add(ends.to);
+        if (live && !arrows) {
+          const p = at(geo, 1);
+          dots.appendChild(pulse(this.doc, p.x, p.y, color, st.pulse));
+        }
+        continue;
+      }
+      const lost = st.phase === 'lost';
+      // a still arrow (reduced motion) stands where its label finds room: the middle first
+      const fracs = arrows && !lost && live ? [0.5, 0.35, 0.65, 0.2, 0.8] : [st.frac];
+      let p = at(geo, fracs[0]);
+      if (st.phase === 'transit' && it.prev && !arrows) {
+        // across the switch: from where the cable before it ended to where this one starts
+        const g0 = findTrack(scene, it.prev);
+        if (g0) {
+          const a = at(g0, 1);
+          const b = at(geo, 0);
+          p = { x: a.x + (b.x - a.x) * st.cross, y: a.y + (b.y - a.y) * st.cross, ux: b.ux, uy: b.uy };
+        }
+      }
+      if (st.phase === 'moving' && st.frac < 0.25 && ends.from) senders.add(ends.from);
+      if (st.phase === 'transit' && ends.from) senders.add(ends.from);
       const text = lost ? `✕ lost: ${f.label}` : f.label + (f.encap && f.encap.length ? ` ‹${f.encap.slice().reverse().join(' in ')}›` : '');
       const w = textWidth(text, FONT) + 4;
       const h = FONT + 4;
-      const side: 1 | -1 = 1;
-      const box = placeLabel(candidates(p.x, p.y, p.ux, p.uy, w, h, side), this.obstacles, placed);
-      if (!box) {
+      let box = placeLabel(candidates(p.x, p.y, p.ux, p.uy, w, h, 1), this.obstacles, placed);
+      for (let k = 1; !box && k < fracs.length; k++) {
+        const q = at(geo, fracs[k]);
+        box = placeLabel(candidates(q.x, q.y, q.ux, q.uy, w, h, 1), this.obstacles, placed);
+        if (box) p = q;
+      }
+      // a moving dot stays on its way even where its label has no room for a moment (the label comes back with room)
+      if (!box && (arrows || lost)) {
         left++;
         continue;
       }
-      placed.add(box);
+      if (box) placed.add(box);
       drawn++;
-      const color = opts.color(f.protocol);
       const cast = f.cast || 'unicast';
-      if (lost) dots.appendChild(lostMark(this.doc, p.x, p.y));
+      const fade = live && !arrows && st.alpha < 1 ? st.alpha : 1;
+      let shape: SVGElement;
+      if (lost) shape = lostMark(this.doc, p.x, p.y);
       else {
-        const shape = arrows ? arrow(this.doc, p, color, cast) : dot(this.doc, p.x, p.y, color, cast);
+        shape = arrows ? arrow(this.doc, p, color, cast) : dot(this.doc, p.x, p.y, color, cast);
         shape.setAttribute('data-flight', String(f.id));
         shape.setAttribute('data-cast', cast);
-        dots.appendChild(shape);
       }
-      labels.appendChild(label(this.doc, text, box, lost, color));
+      const lab = box ? label(this.doc, text, box, lost, color) : null;
+      for (const e of lab ? [shape, lab] : [shape]) {
+        if (it.faded) e.classList.add('faded');
+        if (it.followed) e.classList.add('followed');
+        if (fade < 1) e.setAttribute('opacity', fade.toFixed(2));
+      }
+      dots.appendChild(shape);
+      if (lab) labels.appendChild(lab);
     }
-    return { drawn, left };
+    return { drawn, left, senders: Array.from(senders), receivers: Array.from(receivers) };
   }
+}
+
+/** The way a followed message has come along a track so far. */
+function trail(doc: Document, g: Geo, frac: number, color: string): SVGPathElement {
+  const n = Math.max(2, Math.ceil(g.len / 12));
+  const pts: string[] = [];
+  for (let i = 0; i <= n; i++) {
+    const p = at(g, (i / n) * Math.max(0, Math.min(1, frac)));
+    pts.push(`${p.x.toFixed(1)} ${p.y.toFixed(1)}`);
+  }
+  const path = doc.createElementNS(SVG, 'path') as SVGPathElement;
+  path.setAttribute('class', 'sim-trail');
+  path.setAttribute('d', 'M' + pts.join('L'));
+  path.setAttribute('stroke', color);
+  return path;
+}
+
+/** The arrival pulse: a ring that grows and fades. */
+function pulse(doc: Document, x: number, y: number, color: string, k: number): SVGCircleElement {
+  const c = doc.createElementNS(SVG, 'circle') as SVGCircleElement;
+  c.setAttribute('class', 'sim-pulse');
+  c.setAttribute('cx', x.toFixed(1));
+  c.setAttribute('cy', y.toFixed(1));
+  c.setAttribute('r', (4 + 10 * k).toFixed(1));
+  c.setAttribute('stroke', color);
+  c.setAttribute('opacity', (1 - k).toFixed(2));
+  return c;
 }
 
 function label(doc: Document, text: string, b: Box, lost: boolean, color: string): SVGGElement {

@@ -1,6 +1,6 @@
-// The title of the left panel: "Objects", with a one-line note of what can be
-// done there, compact, and the same name for assistive technology (a
-// complementary region named by a level-2 heading). Checked in the markup and,
+// The title of the left panel: "Objects" alone (no subtitle), compact, and
+// the same name for assistive technology (a complementary region named by a
+// level-2 heading, without a description). Checked in the markup and,
 // through the DevTools protocol, in the browser's accessibility tree.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -13,8 +13,9 @@ import { openPage } from '../scripts/cdp.mjs';
 
 const html = readFileSync(join(root, 'src', 'index.html'), 'utf8');
 
-test('markup: the left panel is a region named by its heading "Objects", with a short note; the right panel is named "Inspector"', () => {
-  assert.match(html, /<aside id="outline" aria-labelledby="outline-title" aria-describedby="outline-sub">\s*<div class="ol-header"><h2 id="outline-title" class="ol-heading">Objects<\/h2><span id="outline-sub" class="ol-sub">Select, duplicate, or delete<\/span><\/div>\s*<div id="outline-body"><\/div>/);
+test('markup: the left panel is a region named by its heading "Objects", without a subtitle; the right panel is named "Inspector"', () => {
+  assert.match(html, /<aside id="outline" aria-labelledby="outline-title">\s*<div class="ol-header"><h2 id="outline-title" class="ol-heading">Objects<\/h2><\/div>\s*<div id="outline-body"><\/div>/);
+  assert.doesNotMatch(html, /Select, duplicate, or delete|outline-sub|aria-describedby="outline/);
   assert.match(html, /<aside id="side" aria-label="Inspector">/);
   assert.doesNotMatch(html, /Model outline/);
 });
@@ -36,7 +37,7 @@ test('in the browser: announced as the region "Objects" with a level-2 heading; 
     assert.ok(heading, 'a heading "Objects"');
     assert.equal(prop(heading, 'level'), 2);
     const region = nodes.find((n) => val(n, 'role') === 'complementary' && val(n, 'name') === 'Objects');
-    assert.equal(val(region, 'description'), 'Select, duplicate, or delete');
+    assert.equal(val(region, 'description'), '', 'no description');
     for (const [w, h] of [[1440, 900], [1024, 768], [800, 700]]) {
       await page.cmd('Emulation.setDeviceMetricsOverride', { width: w, height: h, deviceScaleFactor: 1, mobile: false });
       await page.settle(120);

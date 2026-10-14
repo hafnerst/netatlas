@@ -1,5 +1,5 @@
 // Tool windows with real input (headless Chrome/Edge/Chromium through the
-// DevTools protocol; skipped without one): F6 and Esc with real keys,
+// DevTools protocol; skipped without one): F6, Shift+F6 and Esc with real keys,
 // Shift+F opening the Focus window with the keyboard in it,
 // dragging the title bar and the resize grip, the size and position
 // remembered over a reload (local storage), docking at the bottom in a
@@ -28,7 +28,9 @@ async function waitReady(page) {
   }
 }
 
-test('F6 and Esc with real keys: into the window and back to where the focus was; Esc closes it and the focus returns', { skip, timeout: 120000 }, async () => {
+const REGION = `(() => { const a = document.activeElement; for (const id of ['outline', 'canvas-wrap', 'side', 'sim-paneltabs', 'sim-dock', 'toolwin']) { const r = document.getElementById(id); if (r && r.contains(a)) return id; } return a === document.body ? 'body' : a.id; })()`;
+
+test('F6 and Shift+F6 with real keys: region by region (left panel, diagram, right panel, the tool window), into the window where the focus was; Esc closes it and the focus returns', { skip, timeout: 120000 }, async () => {
   const page = await openPage(url, { width: 1440, height: 900 });
   try {
     await page.eval(`localStorage.clear(), netatlas.loadExample(0), true`);
@@ -38,13 +40,21 @@ test('F6 and Esc with real keys: into the window and back to where the focus was
     let g = await page.eval(GEO);
     assert.equal(g.id, 'trace');
     assert.equal(g.active, 'trace-from', 'the window has the focus, on its first empty field');
-    await page.key('F6', 'F6', 117);
-    assert.equal((await page.eval(GEO)).active, 'canvas', 'F6: back to the diagram');
-    await page.key('F6', 'F6', 117);
+    const seq = [];
+    for (let i = 0; i < 4; i++) {
+      await page.key('F6', 'F6', 117);
+      seq.push(await page.eval(REGION));
+    }
+    assert.deepEqual(seq, ['outline', 'canvas-wrap', 'side', 'toolwin'], 'F6: the next region each time, round to the window');
     assert.equal((await page.eval(GEO)).active, 'trace-from', 'F6: into the window, where the focus was');
+    await page.key('F6', 'F6', 117, 8);
+    assert.equal(await page.eval(REGION), 'side', 'Shift+F6: back');
+    await page.key('F6', 'F6', 117);
+    assert.equal((await page.eval(GEO)).active, 'trace-from');
     await page.key('Escape', 'Escape', 27);
     g = await page.eval(GEO);
-    assert.deepEqual([g.open, g.id, g.active], [false, '', 'canvas']);
+    assert.deepEqual([g.open, g.id], [false, '']);
+    assert.equal(await page.eval(REGION), 'side', 'Esc: the focus back where it was in the page before it went into the window');
   } finally {
     await page.close();
   }

@@ -1,11 +1,13 @@
 /**
  * The simulation's Layer 1–4 parameters as a form: one collapsible section
- * per layer ("Layer 2 – Data link (6)", collapsed until opened), every
+ * per layer ("Layer 2 – Data link (8)", collapsed until opened; while any
+ * of its values differs from the default its button says so, "Layer 3 –
+ * Network (8) · 2 modified", also to assistive technology), every
  * field prefilled with the value in effect, its unit, a help line with the
  * default and its source, range checks, a "modified" mark where it differs
  * from the default, and Reset per section and for all. The same form is
- * the start dialog's (values applied on Start) and the Simulation window's
- * (each change applied at once, at the current simulated time).
+ * the start dialog's (values applied on Start) and the Simulation setup
+ * panel's (each change applied at once, at the current simulated time).
  */
 import { ParamDef, ParamValue, LAYER_TITLES, fieldText, fieldUnit, formatValue, helpText, layerRows, paramDef, paramLayers, parseValue } from '../analysis/sim/params';
 import { el } from './dom';
@@ -19,6 +21,8 @@ export interface ParamEditorOpts {
   onChange?: (key: string, v: ParamValue | undefined) => void;
   /** the form's fields are valid again or not (the dialog's Start button follows it) */
   onValidity?: (ok: boolean) => void;
+  /** the heading level of the form's title ("h2" in a panel; "h3" by default, in the dialog) */
+  heading?: 'h2' | 'h3';
 }
 
 export interface ParamEditor {
@@ -34,8 +38,17 @@ export function paramEditor(doc: Document, opts: ParamEditorOpts): ParamEditor {
   const state = new Map<string, ParamValue>(Object.keys(opts.values).map((k) => [k, opts.values[k]]));
   const bad = new Set<string>();
   const root = el(doc, 'div', { class: 'psecs', id: opts.id });
-  const resetAll = el(doc, 'button', { type: 'button', class: 'mini', id: opts.id + '-reset-all' }, ['Reset all to defaults']) as HTMLButtonElement;
-  root.appendChild(el(doc, 'div', { class: 'psec-tools' }, [resetAll, el(doc, 'span', { class: 'muted small' }, ['Each field shows its default and where it comes from. A cable’s or relation’s own value in the model, and a device’s Simulation settings, take precedence.'])]));
+  const resetAll = el(doc, 'button', { type: 'button', class: 'mini', id: opts.id + '-reset-all' }, ['Reset all']) as HTMLButtonElement;
+  const titleId = opts.id + '-title';
+  root.appendChild(
+    el(doc, 'div', { class: 'psec-tools' }, [
+      el(doc, opts.heading || 'h3', { class: 'psecs-title', id: titleId }, ['Layer 1–4 parameters']),
+      resetAll,
+      el(doc, 'p', { class: 'muted small psecs-note' }, ['Values set on a cable, relation or device take precedence.']),
+    ]),
+  );
+  root.setAttribute('aria-labelledby', titleId);
+  root.setAttribute('role', 'group');
   const inputs = new Map<string, HTMLInputElement | HTMLSelectElement>();
   const sections: Array<{ layer: number; keys: string[]; reset: HTMLButtonElement; count: HTMLElement }> = [];
 
@@ -55,7 +68,7 @@ export function paramEditor(doc: Document, opts: ParamEditorOpts): ParamEditor {
     for (const s of sections) {
       const n = s.keys.filter((k) => state.has(k)).length;
       s.reset.disabled = n === 0;
-      s.count.textContent = n ? `${n} modified` : '';
+      s.count.textContent = n ? ` · ${n} modified` : '';
     }
     resetAll.disabled = state.size === 0;
     if (opts.onValidity) opts.onValidity(bad.size === 0);
@@ -128,8 +141,8 @@ export function paramEditor(doc: Document, opts: ParamEditorOpts): ParamEditor {
     const rows = layerRows(layer);
     const bodyId = `${opts.id}-l${layer}`;
     const title = `${LAYER_TITLES[layer]} (${rows.length})`;
-    const btn = el(doc, 'button', { type: 'button', class: 'psec-toggle', 'aria-expanded': 'false', 'aria-controls': bodyId, id: bodyId + '-btn' }, [title]);
-    const count = el(doc, 'span', { class: 'psec-mod small' }, ['']);
+    const count = el(doc, 'span', { class: 'psec-mod' }, ['']);
+    const btn = el(doc, 'button', { type: 'button', class: 'psec-toggle', 'aria-expanded': 'false', 'aria-controls': bodyId, id: bodyId + '-btn' }, [el(doc, 'span', { class: 'psec-caret', 'aria-hidden': 'true' }, ['▸']), el(doc, 'span', { class: 'psec-name' }, [title]), count]);
     const body = el(doc, 'div', { class: 'psec-body', id: bodyId, hidden: '' });
     const keys: string[] = [];
     for (const row of rows) {
@@ -155,7 +168,7 @@ export function paramEditor(doc: Document, opts: ParamEditorOpts): ParamEditor {
       btn.setAttribute('aria-expanded', open ? 'true' : 'false');
       body.hidden = !open;
     });
-    root.appendChild(el(doc, 'section', { class: 'psec', 'data-layer': String(layer) }, [el(doc, 'h3', { class: 'psec-head' }, [btn, count]), body]));
+    root.appendChild(el(doc, 'section', { class: 'psec', 'data-layer': String(layer) }, [el(doc, opts.heading === 'h2' ? 'h3' : 'h4', { class: 'psec-head' }, [btn]), body]));
     sections.push({ layer, keys, reset, count });
   }
   resetAll.addEventListener('click', () => {
