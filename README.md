@@ -994,17 +994,16 @@ the same timeline).
 ### Parameters
 
 The start dialog has one section per layer, **Layer 1 – Physical (8)**,
-**Layer 2 – Data link (7)**, **Layer 3 – Network (7)** and **Layer 4 –
-Transport (8)** (at most eight each; the multicast simulation will bring
-Layers 2 and 3 to eight), each collapsed until opened with its disclosure
-button (the count is part of its name):
+**Layer 2 – Data link (8)**, **Layer 3 – Network (8)** and **Layer 4 –
+Transport (8)**, each collapsed until opened with its disclosure button
+(the count is part of its name):
 
 | Layer | Parameters (default) |
 |---|---|
 | 1 Physical | link latency (0.1 ms, about 20 km of fibre); packet loss (0 %); loss-of-signal detection (0 ms, Junos hold-time down); link-up delay after a restore (2 s, autonegotiation); default speed for cables without one (1 Gbit/s); flapping down time (5 s), up time (10 s) and cycles (3; 0: until stopped) |
-| 2 Data link | ARP timeout (4 h, Cisco IOS); ARP retransmit interval (1 s) and retries (3), RFC 4861; NDP reachable time (30 s, RFC 4861); MAC aging (300 s, IEEE 802.1D); spanning tree (RSTP; STP converges in 30–50 s; off: a loop is not blocked); default MTU (1500 bytes, RFC 894) |
-| 3 Network | default TTL / hop limit (64); send ICMP errors (on, RFC 1812 / RFC 4443); OSPF hello (10 s, dead 4×, RFC 2328); BGP keepalive (60 s, hold 3×, Cisco IOS; RFC 4271 suggests 30 / 90 s); BFD interval × multiplier (300 ms × 3); VRRP advertisement (1 s, RFC 5798); route recomputation delay (200 ms, Junos SPF delay) |
-| 4 Transport | TCP SYN retries (6, Linux); TCP initial retransmission timeout (1 s, doubling, RFC 6298); TCP keepalive time (2 h, RFC 1122); reply to closed ports (on: TCP RST, ICMP port unreachable); endpoint test traffic (off), its interval (5 s) and type (ICMP echo, a TCP connection or a UDP request); application response timeout (5 s, dig) |
+| 2 Data link | ARP timeout (4 h, Cisco IOS); ARP retransmit interval (1 s) and retries (3), RFC 4861; NDP reachable time (30 s, RFC 4861); MAC aging (300 s, IEEE 802.1D); spanning tree (RSTP; STP converges in 30–50 s; off: a loop is not blocked); IGMP / MLD snooping (on, RFC 4541); default MTU (1500 bytes, RFC 894) |
+| 3 Network | default TTL / hop limit (64); send ICMP errors (on, RFC 1812 / RFC 4443); OSPF hello (10 s, dead 4×, RFC 2328); BGP keepalive (60 s, hold 3×, Cisco IOS; RFC 4271 suggests 30 / 90 s); BFD interval × multiplier (300 ms × 3); VRRP advertisement (1 s, RFC 5798); IGMP / MLD query interval (125 s, RFC 3376); route recomputation delay (200 ms, Junos SPF delay) |
+| 4 Transport | TCP SYN retries (6, Linux); TCP initial retransmission timeout (1 s, doubling, RFC 6298); TCP keepalive time (2 h, RFC 1122); reply to closed ports (on: TCP RST, ICMP port unreachable); endpoint test traffic (off), its interval (5 s) and type (ICMP echo, a TCP connection, a UDP request, or multicast: UDP to the groups joined in the model); application response timeout (5 s, dig) |
 
 Every field shows its value, its unit and a short help with the default
 and its source, and checks its range (an error names the range; Start
@@ -1053,7 +1052,15 @@ checks (interval, timeout, failure threshold), persistence timeout and
 algorithm; a proxy its client and upstream connect timeouts; an endpoint
 its test traffic, targets, interval, type and application timeout; a
 monitoring system its ICMP probe interval; an access point its beacon
-interval and client idle timeout. Each field shows the value
+interval and client idle timeout. For multicast: every device with an
+address its IGMP / MLD version (v3 / MLDv2, or v2 / MLDv1) and unsolicited
+report interval; a router its querier (on), query and response
+intervals, robustness, last member query interval, PIM DR priority and
+SPT switchover (immediately or never); a switch IGMP snooping, the
+snooping querier, fast leave, unknown multicast (flood or drop) and the
+router port aging; a firewall multicast passthrough (off); a gateway
+multicast over tunnels; an access point multicast to unicast; a cloud
+whether it carries multicast (off). Each field shows the value
 in effect: its own, or *Inherited: 4 h (default — Cisco IOS …)* or
 *Inherited: 60 s (simulation)*. Only overrides are written to the model
 (a `simulation:` block on the device); **Reset to inherited** removes one.
@@ -1071,9 +1078,12 @@ spot (with the keyboard in it; `Esc` closes it):
   carries; a choice when it carries several);
 * a **relation**: **Fail link** / **Restore link**;
 * a **device**: **Show ARP table**, **Show MAC table**, **Show
-  connections**, **Show sessions** (a firewall), **Send test…**,
-  **Highlight broadcast domain** (of an interface of it), **Power off** /
-  **Power on**, **Shut an interface…** (a second menu of its interfaces);
+  connections**, **Show sessions** (a firewall), **Send test…**, **Show
+  IGMP groups** and **Show multicast routes** (a multicast router), **Show
+  multicast table** (a switch), **Join group…**, **Leave group …**,
+  **Start stream…**, **Stop stream …** (a host), **Highlight broadcast
+  domain** (of an interface of it), **Power off** / **Power on**, **Shut
+  an interface…** (a second menu of its interfaces);
 * an **interface**: **Shut interface** / **No shut**, **Start flapping** /
   **Stop flapping**;
 * a **dot**: the [packet inspector](#the-packet-inspector) for its frame.
@@ -1220,6 +1230,45 @@ labelled arrows and a *Protocol simulation, t = …* note.
   connection within its upstream connect timeout the client gets *504
   Gateway Timeout*. A **monitoring system** pings the devices it polls by
   SNMP every ICMP probe interval and says which are unreachable.
+
+### Multicast
+
+Hosts join groups and send streams (an interface's `multicast:` block in
+the model, or **Join group…** / **Start stream…** during the simulation);
+routers that run PIM carry them.
+
+* **IGMP / MLD** (v2 / v3, MLDv1 / v2 by device): the routers of a subnet
+  elect a querier (the lowest address; another takes over when it falls
+  silent), which asks every query interval; hosts report at once when they
+  join, and answer a query after a random delay (v2 hosts that heard
+  another member's report keep quiet); after a leave the querier asks with
+  group-specific queries and drops the group when nobody answers;
+  memberships not reported in time expire. **Show IGMP groups** lists a
+  router's groups with their last reporter, version, sources and expiry.
+* **Snooping**: switches learn router ports (queries, PIM Hellos) and
+  member ports (reports) per VLAN, send a group's data to those ports only,
+  and reports to the router ports only; fast leave, the snooping querier
+  for a VLAN without a router, flooding of unknown groups (or not), and
+  everything flooded when snooping is off. **Show multicast table**.
+* **PIM**: the designated router joins the shared tree to the rendezvous
+  point (sparse mode) or the source's tree (SSM, 232.0.0.0/8) hop by hop;
+  the source's first router registers with the RP until a Register-Stop;
+  the last router switches to the source's tree at the first packet; data
+  on the wrong interface fails the RPF check; a failed link moves the tree
+  (RPF change, new joins, prunes) and the receivers miss the stream
+  meanwhile. Dense mode floods and prunes. **Show multicast routes** lists
+  (*, G) and (S, G) with their incoming and outgoing interfaces.
+* Streams are dots shaped as diamonds that split where a router or switch
+  replicates them (*UDP → 239.1.1.1:5004*); the status table shows each
+  stream and each member (*Receiving*, *Lost*), the packet inspector the
+  group's MAC (01:00:5e + the low 23 bits) and IGMP's message, group and
+  sources. TTL 1 and link-local groups are never routed; firewalls, clouds
+  and tunnels carry multicast only where their settings say so.
+
+The consistency checks find receivers in a subnet without a querier,
+sparse-mode groups without an RP and a router whose route towards a
+source leaves through an interface without PIM. See
+[docs/FORMAT.md](docs/FORMAT.md#multicast).
 
 ### Broadcast and storms
 
@@ -1398,7 +1447,10 @@ fw1 (ICMP Administratively Prohibited), a ping to 203.0.113.80 gets Net
 Unreachable; srv's first full-size answer over the carrier path (MTU 1400)
 gets Fragmentation Needed. The lab's two switches with their spanning tree
 off storm from the start: fail *l-lab-b*. Click a dot to inspect it, and
-use Send test… from a device's menu.
+use Send test… from a device's menu. mcsrc streams to 239.1.1.1 and
+232.1.1.1: pc1 and pc2 receive them through acc-sw's snooping (pc3 in VLAN
+30 has no querier and gets nothing); open core1's IGMP groups and r1's
+multicast routes, then fail *l-core1-r1* and watch the tree move via core2.
 
 ## Connecting in the diagram
 
@@ -1708,7 +1760,7 @@ YAML that is read and written is in
 | [`examples/branch-routing.yaml`](examples/branch-routing.yaml) | **Static routes and VLAN tagging.** A dual-homed branch: a default route via ISP A and a floating default (distance 250) via ISP B, equal-cost routes to HQ over both ISPs (and back), a blackhole route, a guest VRF with a blackhole default, host default gateways, and a router-on-a-stick trunk with VLAN 99 untagged (native) and VLANs 10, 20, 30 tagged, plus access ports. |
 | [`examples/consistency-checks.yaml`](examples/consistency-checks.yaml) | **Consistency checks.** A small, valid network with one deliberate inconsistency for every check (static routes, VLAN tagging, MTU, speed and duplex, aggregates, addressing, router IDs and MAC addresses, OSPF, BGP, tunnels, virtual addresses, VRFs), each marked in the file with the check id (among them a protocol a device's relation uses but it doesn't enable, one enabled and unused, a router ID used twice in one OSPF domain, and a VRRP group's members in different groups); its `checks:` section downgrades one check. |
 | [`examples/ospf-reroute.yaml`](examples/ospf-reroute.yaml) | **OSPF costs and failover.** Two sites and a ring of three OSPF routers whose costs make one path preferred (Trace path from *w-host* to *e-srv* takes c1 and c3), a VRRP pair, a camera VLAN routed by one router only, a one-way TAP cable to an IDS and two traffic **demands**. Single points of failure: the one link from the core to East, the switches of both sites, and the single cables of the hosts and the TAP feed. |
-| [`examples/protocol-simulation.yaml`](examples/protocol-simulation.yaml) | **The protocol simulation.** Hosts without MAC addresses, a Layer 2 access switch with a management address on trunks to two Layer 3 core switches (core1 routes between VLAN 10 and the dual-stack VLAN 20; a VRRP pair), device overrides in `simulation:` blocks (core1's ARP timeout, acc-sw's MAC aging, the internet's latency), an uplink that flaps from the start, a loop that RSTP breaks, an OSPF ring with costs whose preferred link runs through a carrier switch (so the far side notices only by the dead interval), iBGP between loopbacks, BFD, IPsec protecting GRE with OSPF over it, PIM with a multicast source and receiver, and a protocol of the model's own on a one-way relation. |
+| [`examples/protocol-simulation.yaml`](examples/protocol-simulation.yaml) | **The protocol simulation.** Hosts without MAC addresses, a Layer 2 access switch with a management address on trunks to two Layer 3 core switches (core1 routes between VLAN 10 and the dual-stack VLAN 20; a VRRP pair), device overrides in `simulation:` blocks (core1's ARP timeout, acc-sw's MAC aging, the internet's latency), an uplink that flaps from the start, a loop that RSTP breaks, an OSPF ring with costs whose preferred link runs through a carrier switch (so the far side notices only by the dead interval), iBGP between loopbacks, BFD, IPsec protecting GRE with OSPF over it, test traffic (open and closed ports, a firewall that rejects, no route, a smaller MTU), a lab loop without spanning tree, multicast (an ASM and an SSM stream to receivers in two VLANs behind a snooping switch, two queriers, a static RP, a tree that moves when a link fails, a VLAN without a querier), and a protocol of the model's own on a one-way relation. |
 | [`examples/broken/errors-demo.yaml`](examples/broken/errors-demo.yaml) | Intentionally invalid, to show error reporting (among them an `asn` on a device, a BGP without its AS number, a misplaced OSPF parameter, a router ID that names no loopback, and routing protocols on a server). It opens as a draft you can fix. |
 
 The nine valid files are the examples of the **File** menu.
@@ -2640,10 +2692,14 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/scr
   firewall's policy is the model's relations plus its `allow` list (no
   rule base, NAT or application identification); load balancers and
   proxies relay TCP only (UDP to them is answered by themselves); a
-  broadcast storm follows each frame for 6 rounds instead of forever;
-  there is no multicast routing beyond the PIM and IGMP relations' own
-  messages yet (no MSDP or inter-domain multicast, no PIM Assert edge
-  cases beyond what is modelled). The playback slows down while a message is on
+  broadcast storm follows each frame for 6 rounds instead of forever.
+  Multicast: no MSDP or inter-domain multicast, no PIM Assert (two routers
+  forwarding onto one LAN both do until one prunes), no Bidir-PIM, no
+  embedded or anycast RP; the bootstrap router announces the RP but RP
+  election is the highest candidate's router ID (not RFC 7761's hash); an
+  RPT prune acts at the next router up only; register suppression lasts
+  while the source sends (no null registers); IGMPv3 / MLDv2 source lists
+  are kept per group, not per filter-mode transition. The playback slows down while a message is on
   its way so that it can be followed; the simulated time is not affected.
   The spanning tree is converged at the start; its convergence after a
   change uses the mode's timer (RSTP at once at the change or after 3

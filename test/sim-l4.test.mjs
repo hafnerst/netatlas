@@ -579,7 +579,7 @@ test('Send test… to a multicast group: a multicast frame on the segment, no IC
   const s = sim(LAN());
   s.runTo(3000);
   const t = run(s, { from: 'h2', to: '239.1.1.1', kind: 'udp', port: 5004 });
-  assert.match(t.result, /^no answer within 5 s/);
+  assert.equal(t.result, 'no member received it within 5 s (default)');
   const f = s.engine.flights.find((x) => x.cast === 'multicast' && x.hdr && x.hdr.l3.length && x.hdr.l3[0].dst === '239.1.1.1');
   assert.equal(f.hdr.l2.dst, '01:00:5e:01:01:01');
   assert.match(f.hdr.l2.dstNote, /IPv4 multicast 239\.1\.1\.1: 01:00:5e \+ the group’s low 23 bits/);

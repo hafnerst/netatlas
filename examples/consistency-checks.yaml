@@ -100,6 +100,26 @@ devices:
     type: switch
     group: access
     interfaces: [p1, p2, p3, p4]
+  # multicast: no RP for the sparse-mode group (multicast-no-rp); mc-rx's subnet has no querier (multicast-no-querier);
+  # mc-r1 and mc-r2 run PIM but have no PIM relation, so mc-r2's route towards the source fails the RPF check (multicast-rpf-not-pim)
+  - id: mc-src
+    type: server
+    interfaces:
+      - {id: eth0, ip: 10.70.0.10/24, multicast: {streams: [{group: 239.9.9.9}]}}
+    routes: [{prefix: 0.0.0.0/0, via: 10.70.0.1}]
+  - id: mc-r1
+    type: router
+    protocols: {pim: {}}
+    interfaces: [{id: e0, ip: 10.70.0.1/24}, {id: e1, ip: 10.0.71.1/30}]
+  - id: mc-r2
+    type: router
+    protocols: {pim: {}}
+    interfaces: [{id: e0, ip: 10.0.71.2/30}, {id: e1, ip: 10.72.0.1/24}]
+    routes: [{prefix: 10.70.0.0/24, via: 10.0.71.1}]
+  - id: mc-rx
+    type: endpoint
+    interfaces:
+      - {id: eth0, ip: 10.73.0.10/24, multicast: {join: [239.9.9.9]}}
 
 links:
   - {id: l12, a: "r1:e0", b: "r2:e0", medium: fiber, speed: 10G}
@@ -125,6 +145,9 @@ links:
     a: {device: sw1, interface: p4, speed: 1G, duplex: full}
     b: {device: sw2, interface: p4, speed: 100M, duplex: half}
     speed: 1G
+
+  - {id: l-mc-src, a: "mc-src:eth0", b: "mc-r1:e0"}
+  - {id: l-mc-r1-r2, a: "mc-r1:e1", b: "mc-r2:e0"}
 
 networks:
   - {id: users, cidr: 10.10.10.0/24, vlan: 10}

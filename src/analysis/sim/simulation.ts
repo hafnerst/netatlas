@@ -10,12 +10,13 @@ import { Model } from '../../model/types';
 import { failableRef } from '../failure';
 import { formatAddr } from '../ipmath';
 import { Engine, EngineOptions, subnetBroadcast } from './engine';
-import { OTHER_BEHAVIOURS, installBootGarp, installCustomL2, installDemands, installFhrp, installL2Adverts, installLacp, installPimRegister } from './proto-other';
+import { OTHER_BEHAVIOURS, installBootGarp, installCustomL2, installDemands, installFhrp, installL2Adverts, installLacp } from './proto-other';
 import { ROUTING_BEHAVIOURS } from './proto-routing';
 import { ProtocolSim, relationProfile } from './protocols';
 import { ParamChange, ParamValue, Resolved, SimParams } from './params';
+import { Multicast } from './multicast';
 import { Test, TestKind, Transport } from './transport';
-import { ArpRow, ConnRow, Flight, MacRow, NetEvent, SessionRow, SessionStatus, SimEvent, TableTimer } from './types';
+import { ArpRow, ConnRow, Flight, GridTable, MacRow, NetEvent, SessionRow, SessionStatus, SimEvent, TableTimer } from './types';
 
 
 /** A protocol of the simulation as the window lists it (a checkbox). */
@@ -29,6 +30,7 @@ export class Simulation {
   readonly engine: Engine;
   readonly protocols: ProtocolSim;
   readonly transport: Transport;
+  readonly multicast: Multicast;
   readonly model: Model;
 
   constructor(model: Model, opts: EngineOptions = {}) {
@@ -40,9 +42,11 @@ export class Simulation {
     installLacp(this.protocols);
     installL2Adverts(this.protocols);
     installDemands(this.protocols);
-    installPimRegister(this.protocols);
     installCustomL2(this.protocols);
+    this.multicast = new Multicast(this.protocols);
+    this.multicast.install();
     this.transport = new Transport(this.protocols);
+    this.transport.multicast = this.multicast;
     this.transport.install();
     this.protocols.start();
   }
@@ -111,12 +115,60 @@ export class Simulation {
       const i = id.indexOf(':');
       return this.noShut(id.slice(0, i), id.slice(i + 1));
     }
+    if (ev.kind === 'join' || ev.kind === 'leave' || ev.kind === 'stream' || ev.kind === 'stopped') {
+      const i = id.indexOf(':');
+      const dev = id.slice(0, i);
+      const iface = id.slice(i + 1);
+      const g = ev.group || '';
+      if (ev.kind === 'join') return this.leaveGroup(dev, iface, g);
+      if (ev.kind === 'leave') return this.joinGroup(dev, iface, g, []) === null;
+      if (ev.kind === 'stream') return this.stopStream(dev, iface, g);
+      return this.multicast.restartStream(dev, iface, g);
+    }
     return this.powerOn(id);
   }
 
-  /** The network events in effect. */
+  /** The network events in effect (with the joins, leaves and streams). */
   netEvents(): NetEvent[] {
-    return this.engine.netEvents();
+    return this.engine.netEvents().concat(this.multicast.netEvents()).sort((a, b) => a.since - b.since || (a.ref < b.ref ? -1 : a.ref > b.ref ? 1 : 0));
+  }
+
+  // ------------------------------------------------------------ multicast: joins, streams, tables
+
+  /** Join group…: a host joins a group on an interface (sources: SSM); a text when it cannot. */
+  joinGroup(dev: string, iface: string, group: string, sources: string[]): string | null {
+    const r = this.multicast.join(dev, iface, group, sources, 'event');
+    if (r === null) this.engine.stateVersion++;
+    return r;
+  }
+
+  leaveGroup(dev: string, iface: string, group: string): boolean {
+    return this.multicast.leave(dev, iface, group);
+  }
+
+  /** Start stream…: a host sends UDP to a group every interval; a text when it cannot. */
+  startStream(dev: string, iface: string, group: string, port = 5004, interval = 1000, size = 1316): string | null {
+    const r = this.multicast.addStream(dev, iface, group, port, interval, size, 'event');
+    if (typeof r === 'string') return r;
+    this.engine.stateVersion++;
+    return null;
+  }
+
+  stopStream(dev: string, iface: string, group: string): boolean {
+    return this.multicast.stopStream(dev, iface, group);
+  }
+
+  /** A router's IGMP / MLD groups, a switch's multicast table, a router's multicast routes. */
+  igmpTable(dev: string): GridTable {
+    return this.multicast.igmpTable(dev);
+  }
+
+  snoopTable(dev: string): GridTable {
+    return this.multicast.snoopTable(dev);
+  }
+
+  mrouteTable(dev: string): GridTable {
+    return this.multicast.mrouteTable(dev);
   }
 
   /** What the diagram marks as down (cables, relations, interfaces, devices). */
@@ -320,6 +372,11 @@ export function protocolEntriesOf(model: Model): SimProtocolEntry[] {
   add('icmp', 'ICMP / ICMPv6', 'Traffic');
   add('tcp', 'TCP (tests)', 'Traffic');
   add('udp', 'UDP (tests)', 'Traffic');
+  // multicast: membership wherever a router runs PIM or a host joins; the streams
+  const joins = model.devices.some((d) => d.interfaces.concat(d.logical).some((i) => !!i.multicast && i.multicast.joins.length > 0));
+  const pim = model.devices.some((d) => d.services.some((s) => s.id === 'pim'));
+  if (joins || pim) add('igmp', 'IGMP / MLD', 'Routing');
+  if (model.devices.some((d) => d.interfaces.concat(d.logical).some((i) => !!i.multicast && i.multicast.streams.length > 0))) add('mcast', 'Multicast streams', 'Traffic');
   const order = (g: SimProtocolEntry['group']): number => (g === 'Traffic' ? SIM_GROUPS.length : SIM_GROUPS.indexOf(g as SimGroup));
   return Array.from(seen.values()).sort((a, b) => order(a.group) - order(b.group) || (a.label < b.label ? -1 : a.label > b.label ? 1 : 0));
 }

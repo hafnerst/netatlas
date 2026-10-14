@@ -93,6 +93,18 @@ there is no conversion of files written for the earlier drafts.
 - **`simulation:` on a link**: the cable's `latency`, `loss` and
   `flapping: true`, configured on the object and so first in the order of
   precedence.
+- **`multicast:` on an interface**: the groups it joins (`join`: a group,
+  or `{group, sources}` for a source-specific one) and the streams it sends
+  (`streams`: `group`, `port`, `interval`, `size`); groups are checked
+  (multicast, never link-local, SSM with sources and IGMPv3). PIM's device
+  parameters `rp`, `candidate_rp` and `candidate_bsr`. Multicast device
+  attributes: `igmp_version`, `unsolicited_report_interval`;
+  `igmp_querier`, `igmp_query_interval`, `igmp_max_response`,
+  `igmp_robustness`, `last_member_query_interval`, `pim_dr_priority`,
+  `spt_switchover` (routers); `igmp_snooping`, `snooping_querier`,
+  `fast_leave`, `unknown_multicast`, `router_port_aging` (switches);
+  `multicast_passthrough` (firewalls), `multicast_over_tunnel` (gateways),
+  `multicast_to_unicast` (access points), `multicast` (clouds).
 - **More simulation attributes on devices** (Layers 3 and 4, broadcast):
   `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_errors`,
   `icmp_rate_limit`, `tcp_syn_retries`, `tcp_keepalive`,
@@ -114,6 +126,27 @@ there is no conversion of files written for the earlier drafts.
 
 ### Added
 
+- **Multicast in the simulation.** IGMPv2 / v3 and MLDv1 / v2: querier
+  election and takeover, general and group-specific queries, reports with
+  random delays and v2 report suppression, leaves, expiry. IGMP / MLD
+  snooping on switches: router and member ports, reports only to routers,
+  fast leave, the snooping querier, unknown multicast flooded or dropped.
+  PIM sparse mode (the DR's joins to the RP, Register and Register-Stop, the
+  switch to the source's tree and the RPT prune), SSM and dense mode (flood,
+  prune, graft); the RPF check, and trees that move when the unicast routes
+  change. Streams from hosts, Join group… / Leave group / Start stream… /
+  Stop stream as network events (from a host's menu and the window's
+  Multicast section); Show IGMP groups, Show multicast table, Show
+  multicast routes; IGMP / MLD in the packet inspector; multicast tests
+  that list the members that received them. The start dialog's Layer 2 and
+  Layer 3 get their eighth parameters (IGMP / MLD snooping, the query
+  interval); the test traffic type multicast.
+- **Multicast consistency checks:** `multicast-no-querier`,
+  `multicast-no-rp`, `multicast-rpf-not-pim`.
+- The example `protocol-simulation.yaml` streams an any-source and a
+  source-specific group to receivers in two VLANs behind a snooping switch,
+  with two queriers, a static RP, a link whose failure moves the tree and a
+  VLAN without a querier.
 - **Layers 3 and 4 in the simulation.** ICMP and ICMPv6 errors from where a
   packet stops (net and host unreachable, TTL exceeded, fragmentation
   needed / packet too big, port unreachable, administratively prohibited,
@@ -541,6 +574,14 @@ there is no conversion of files written for the earlier drafts.
 
 ### Changed
 
+- **PIM and IGMP in the simulation** are no longer just the relations'
+  messages: the multicast data follows the trees PIM builds (a router
+  without an RP for a sparse-mode group joins nothing; the old fallback,
+  the PIM router with the highest router ID, is gone: the check
+  `multicast-no-rp` reports it). An IGMP relation's `group` is the host's
+  join; a demand to a group is a stream.
+- **The MAC table** shows only entries learned by the current time (a
+  frame's way is decided when it is sent).
 - **ARP Requests are labelled by their cast:** *ARP Request (broadcast):
   who has 10.0.0.2?* (a refresh: *(unicast)*); the full *Who has … Tell …*
   is in the event log.

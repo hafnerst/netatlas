@@ -279,6 +279,18 @@ const MANUAL: Section[] = [
     figures: [['packet-inspector', 'The packet inspector for a TCP SYN on its way: the Ethernet header with its MAC addresses, the IPv4 header with TTL and Don’t Fragment, the TCP ports and flags.']],
   },
   {
+    id: 'sim-multicast',
+    title: 'Join a group and follow a multicast stream',
+    steps: [
+      'Groups and streams belong to an interface: in the model (its `multicast:` block, with `join` and `streams`), or during a simulation from a host’s menu: **Join group…** and **Start stream…** open the window’s **Multicast** section with that host. Write the group (and, for a source-specific group in 232.0.0.0/8, its sources) and press **Join group** or **Start stream**.',
+      'The routers elect an IGMP querier per subnet, the hosts report their groups, switches with IGMP snooping learn the member ports, and the PIM routers build the tree from the source (through the rendezvous point for any-source groups). The stream’s dots are diamonds and split where it is replicated.',
+      'A router’s menu has **Show IGMP groups** and **Show multicast routes**, a switch’s **Show multicast table**. The Status table shows each stream and each member (*Receiving* or *Lost*).',
+      'A join or a stream is listed under **Network events** with **Leave group** or **Stop stream**; a host’s menu also leaves its groups and stops its streams, those of the model too. Fail a link on the tree: the routers’ RPF interfaces change, they join the new way and prune the old, and the members receive again.',
+    ],
+    notes: ['The consistency checks report receivers without a querier in their subnet, sparse-mode groups without a rendezvous point, and a router whose route towards a source has no PIM neighbour.'],
+    figures: [['mroutes', 'r1’s multicast routes in the example: the RP, the shared tree (*, 239.1.1.1) and the sources’ trees, each with its incoming and outgoing interfaces.']],
+  },
+  {
     id: 'sim-broadcast',
     title: 'See a broadcast domain and a broadcast storm',
     steps: [

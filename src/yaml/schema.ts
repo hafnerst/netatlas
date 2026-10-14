@@ -18,9 +18,13 @@ export const SCHEMA = {
   group: ['id', 'label', 'kind', 'parent', 'description', 'attrs'],
   device: ['id', 'label', 'type', 'layer3', 'group', 'tier', 'router_id', 'protocols', 'simulation', 'description', 'attrs', 'interfaces', 'logical_interfaces', 'dns_names', 'routes'],
   /** a physical interface (a port): an entry of a device's `interfaces` */
-  interface: ['id', 'label', 'dhcp', 'ip', 'vrf', 'mac', 'mtu', 'protocols', 'description', 'attrs'],
+  interface: ['id', 'label', 'dhcp', 'ip', 'vrf', 'mac', 'mtu', 'protocols', 'multicast', 'description', 'attrs'],
   /** a loopback, virtual or tunnel interface: an entry of a device's `logical_interfaces` */
-  logical: ['id', 'type', 'label', 'dhcp', 'ip', 'vrf', 'mac', 'mtu', 'members', 'min_links', 'vlan', 'source', 'destination', 'protocols', 'description', 'attrs'],
+  logical: ['id', 'type', 'label', 'dhcp', 'ip', 'vrf', 'mac', 'mtu', 'members', 'min_links', 'vlan', 'source', 'destination', 'protocols', 'multicast', 'description', 'attrs'],
+  /** an interface's `multicast:` block, a group it joins written as a mapping, a stream it sends */
+  multicast: ['join', 'streams'],
+  mcJoin: ['group', 'sources'],
+  mcStream: ['group', 'port', 'interval', 'size'],
   /** a DNS name of a device: an entry of a device's `dns_names` */
   dnsName: ['name', 'interfaces'],
   /** a static route of a device: an entry of a device's `routes` */

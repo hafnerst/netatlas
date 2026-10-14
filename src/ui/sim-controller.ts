@@ -74,7 +74,7 @@ export interface SimStartOptions {
   params?: { [key: string]: ParamValue };
 }
 
-const FIXED_COLORS: { [k: string]: string } = { arp: '#f08c00', ndp: '#e67700', garp: '#c92a2a', demand: '#1c7ed6', link: '#868e96', icmp: '#d6336c', tcp: '#2b8a3e', udp: '#7048e8' };
+const FIXED_COLORS: { [k: string]: string } = { arp: '#f08c00', ndp: '#e67700', garp: '#c92a2a', demand: '#1c7ed6', link: '#868e96', icmp: '#d6336c', tcp: '#2b8a3e', udp: '#7048e8', mcast: '#0b7a5c' };
 
 /** The protocols of Layer 2 (the event log's layer filter); the link events are Layer 1, tests and services Layer 4. */
 const LAYER2 = ['arp', 'ndp', 'garp', 'stp', 'lacp', 'lldp', 'cdp'];
@@ -392,7 +392,52 @@ export class SimController implements SimulationMode {
   }
 
   private endLabel(ev: NetEvent): string {
-    return ev.kind === 'fail' ? 'Restore' : ev.kind === 'flap' ? 'Stop flapping' : ev.kind === 'shut' ? 'No shut' : 'Power on';
+    const m: { [k: string]: string } = { fail: 'Restore', flap: 'Stop flapping', shut: 'No shut', power: 'Power on', join: 'Leave group', leave: 'Join again', stream: 'Stop stream', stopped: 'Start stream' };
+    return m[ev.kind];
+  }
+
+  // ------------------------------------------------------------ multicast: joins and streams
+
+  /** Join group… / Start stream… from a device's menu: the window's Multicast section with that device. */
+  multicastFrom(dev: string, what: 'join' | 'stream'): void {
+    if (this.host.openWindow) this.host.openWindow();
+    const body = this.host.windowBody();
+    if (!body) return;
+    const sec = body.querySelector('#sim-mc') as HTMLDetailsElement | null;
+    if (sec) sec.open = true;
+    const sel = body.querySelector(what === 'join' ? '#sim-mc-jif' : '#sim-mc-sif') as HTMLSelectElement | null;
+    if (sel) {
+      const opt = Array.from(sel.options).find((o) => o.value.indexOf(dev + ':') === 0);
+      if (opt) sel.value = opt.value;
+    }
+    const g = body.querySelector(what === 'join' ? '#sim-mc-jg' : '#sim-mc-sg') as HTMLInputElement | null;
+    if (g) g.focus();
+  }
+
+  joinGroup(dev: string, iface: string, group: string, sources: string[]): string {
+    const r = this.sim.joinGroup(dev, iface, group, sources);
+    this.logKey = '';
+    this.refresh(true);
+    if (r) return r;
+    this.host.toast(`${dev}:${iface} joins ${group} at t = ${fmtSec(this.t)}.`);
+    return `${dev}:${iface} joins ${group}.`;
+  }
+
+  leaveGroup(dev: string, iface: string, group: string): boolean {
+    return this.did(this.sim.leaveGroup(dev, iface, group), `${dev}:${iface} leaves ${group}`);
+  }
+
+  startStream(dev: string, iface: string, group: string, port: number, interval: number, size: number): string {
+    const r = this.sim.startStream(dev, iface, group, port, interval, size);
+    this.logKey = '';
+    this.refresh(true);
+    if (r) return r;
+    this.host.toast(`${dev}:${iface} streams to ${group}:${port} from t = ${fmtSec(this.t)}.`);
+    return `${dev}:${iface} streams to ${group}:${port}.`;
+  }
+
+  stopStream(dev: string, iface: string, group: string): boolean {
+    return this.did(this.sim.stopStream(dev, iface, group), `${dev}:${iface} stops its stream to ${group}`);
   }
 
   private cap(s: string): string {
@@ -425,11 +470,16 @@ export class SimController implements SimulationMode {
 
   // ------------------------------------------------------------ the tables
 
-  showTable(kind: 'arp' | 'mac' | 'conn' | 'fw', dev: string, near?: { x: number; y: number; w: number; h: number } | null): boolean {
+  showTable(kind: 'arp' | 'mac' | 'conn' | 'fw' | 'igmp' | 'snoop' | 'mroute', dev: string, near?: { x: number; y: number; w: number; h: number } | null): boolean {
     const d = this.sim.tableDevices().find((x) => x.id === dev);
     if (!d) return false;
-    if (kind === 'arp' ? !d.arp : kind === 'mac' ? !d.mac : kind === 'conn' ? !d.arp : !this.isFirewall(dev)) return false;
+    const ok: { [k: string]: boolean } = { arp: d.arp, mac: d.mac, conn: d.arp, fw: this.isFirewall(dev), igmp: this.sim.multicast.igmpDevice(dev), snoop: d.mac, mroute: this.sim.multicast.mcRouter(dev) };
+    if (!ok[kind]) return false;
     const rect = near !== undefined ? near : this.host.rectOf('device:' + dev);
+    if (kind === 'igmp' || kind === 'snoop' || kind === 'mroute') {
+      this.tables.show(kind, dev, rect, () => (kind === 'igmp' ? this.sim.igmpTable(dev) : kind === 'snoop' ? this.sim.snoopTable(dev) : this.sim.mrouteTable(dev)));
+      return true;
+    }
     if (kind === 'arp') this.tables.show('arp', dev, rect, () => ({ v4: this.sim.arpTable(dev), v6: this.sim.ndTable(dev), timers: this.sim.arpTimers(dev), scale: this.sim.timerScale }));
     else if (kind === 'mac') this.tables.show('mac', dev, rect, () => ({ rows: this.sim.macTable(dev), timers: this.sim.macTimers(dev), scale: this.sim.timerScale }));
     else if (kind === 'conn') this.tables.show('conn', dev, rect, () => ({ rows: this.sim.connTable(dev), listening: this.sim.transport.listening(dev).text }));
@@ -517,6 +567,20 @@ export class SimController implements SimulationMode {
       if (d && d.arp) items.push({ label: 'Show connections', act: () => this.showTable('conn', dev) });
       if (this.isFirewall(dev)) items.push({ label: 'Show sessions', act: () => this.showTable('fw', dev) });
       if (d && d.arp) items.push({ label: 'Send test…', act: () => this.sendTestFrom(dev) });
+      // multicast: its groups and streams, a router's IGMP groups and multicast routes, a switch's multicast table
+      if (this.sim.multicast.igmpDevice(dev)) items.push({ label: 'Show IGMP groups', act: () => this.showTable('igmp', dev) });
+      if (this.sim.multicast.mcRouter(dev)) items.push({ label: 'Show multicast routes', act: () => this.showTable('mroute', dev) });
+      if (d && d.mac) items.push({ label: 'Show multicast table', act: () => this.showTable('snoop', dev) });
+      const sdv = this.sim.engine.net.devices.get(dev);
+      if (d && d.arp && sdv && !sdv.routes) {
+        items.push({ label: 'Join group…', act: () => this.multicastFrom(dev, 'join') });
+        for (const j of this.sim.multicast.joined(dev)) items.push({ label: `Leave group ${j.group}`, act: () => void this.leaveGroup(dev, j.iface, j.group) });
+        items.push({ label: 'Start stream…', act: () => this.multicastFrom(dev, 'stream') });
+        for (const st of this.sim.multicast.streamsOf(dev)) {
+          if (st.running) items.push({ label: `Stop stream ${st.group}`, act: () => void this.stopStream(dev, st.iface, st.group) });
+          else items.push({ label: `Start stream ${st.group} again`, act: () => void this.did(this.sim.multicast.restartStream(dev, st.iface, st.group), `${dev} streams to ${st.group} again`) });
+        }
+      }
       this.domainItems(dev, items, x, y);
       if (this.sim.engine.off.has(dev)) items.push({ label: this.sim.engine.booting.has(dev) ? 'Power off (stop booting)' : 'Power on', act: () => (this.sim.engine.booting.has(dev) ? this.powerOff(dev) : this.powerOn(dev)) });
       else items.push({ label: 'Power off', act: () => this.powerOff(dev) });
@@ -820,6 +884,60 @@ export class SimController implements SimulationMode {
       msg.textContent = this.sendTest({ from: tFrom.value, to: tTo.value, kind: tKind.value as TestKind, port, size, df: tDf.checked, keep: tKeep.checked });
     });
     body.appendChild(test);
+    // multicast: Join group… and Start stream… (the keyboard way of the device menu)
+    const mc = el(doc, 'details', { class: 'sim-sec', id: 'sim-mc' });
+    mc.appendChild(el(doc, 'summary', {}, ['Multicast: join a group, start a stream']));
+    const ifSel = (id: string): HTMLSelectElement => {
+      const s = el(doc, 'select', { id }) as HTMLSelectElement;
+      for (const d of this.host.model().devices.slice().sort((a, b) => (a.id < b.id ? -1 : 1))) {
+        const sdv = this.sim.engine.net.devices.get(d.id);
+        if (!sdv || sdv.routes) continue;
+        for (const l of Array.from(sdv.l3.values()).sort((a, b) => (a.id < b.id ? -1 : 1))) if (l.addrs.length && l.kind !== 'loopback' && l.kind !== 'tunnel') s.appendChild(el(doc, 'option', { value: d.id + ':' + l.id }, [d.id + ':' + l.id]));
+      }
+      return s;
+    };
+    const jif = ifSel('sim-mc-jif');
+    const jg = el(doc, 'input', { type: 'text', id: 'sim-mc-jg', autocomplete: 'off', spellcheck: 'false', placeholder: 'e.g. 239.1.1.1' }) as HTMLInputElement;
+    const js = el(doc, 'input', { type: 'text', id: 'sim-mc-js', autocomplete: 'off', spellcheck: 'false', placeholder: 'SSM: its sources, e.g. 10.30.0.30' }) as HTMLInputElement;
+    const jb = el(doc, 'button', { type: 'button', id: 'sim-mc-join' }, ['Join group']);
+    const sif = ifSel('sim-mc-sif');
+    const sg = el(doc, 'input', { type: 'text', id: 'sim-mc-sg', autocomplete: 'off', spellcheck: 'false', placeholder: 'e.g. 239.1.1.1' }) as HTMLInputElement;
+    const sp = el(doc, 'input', { type: 'number', id: 'sim-mc-sp', min: '1', max: '65535', value: '5004', inputmode: 'numeric' }) as HTMLInputElement;
+    const si = el(doc, 'input', { type: 'number', id: 'sim-mc-si', min: '0.1', max: '3600', step: '0.1', value: '1', inputmode: 'decimal' }) as HTMLInputElement;
+    const ss = el(doc, 'input', { type: 'number', id: 'sim-mc-ss', min: '1', max: '65000', value: '1316', inputmode: 'numeric' }) as HTMLInputElement;
+    const sb = el(doc, 'button', { type: 'button', id: 'sim-mc-stream' }, ['Start stream']);
+    const lb = (f: string, t: string): HTMLElement => el(doc, 'label', { for: f }, [t]);
+    mc.appendChild(el(doc, 'div', { class: 'sim-test-form' }, [lb('sim-mc-jif', 'Interface'), jif, lb('sim-mc-jg', 'Group'), jg, lb('sim-mc-js', 'Sources'), js, el(doc, 'span'), jb]));
+    mc.appendChild(el(doc, 'div', { class: 'sim-test-form' }, [lb('sim-mc-sif', 'Interface'), sif, lb('sim-mc-sg', 'Group'), sg, lb('sim-mc-sp', 'UDP port'), sp, lb('sim-mc-si', 'Interval (s)'), si, lb('sim-mc-ss', 'Size (bytes)'), ss, el(doc, 'span'), sb]));
+    mc.appendChild(el(doc, 'p', { id: 'sim-mc-msg', class: 'small', role: 'status' }, ['']));
+    mc.appendChild(el(doc, 'p', { class: 'muted small' }, ['A join or a stream is listed under Network events with its way back (Leave group, Stop stream). A device’s menu offers the same, and Leave or Stop for the groups and streams of the model.']));
+    const split2 = (v: string): [string, string] => [v.slice(0, v.indexOf(':')), v.slice(v.indexOf(':') + 1)];
+    jb.addEventListener('click', () => {
+      const msg = mc.querySelector('#sim-mc-msg') as HTMLElement;
+      if (!jif.value || !jg.value.trim()) {
+        msg.textContent = 'Choose an interface and write a group.';
+        return;
+      }
+      const [d, i] = split2(jif.value);
+      msg.textContent = this.joinGroup(d, i, jg.value.trim(), js.value.split(/[,\s]+/).filter((x) => x));
+    });
+    sb.addEventListener('click', () => {
+      const msg = mc.querySelector('#sim-mc-msg') as HTMLElement;
+      const port = Number(sp.value);
+      const iv = Number(si.value);
+      const size = Number(ss.value);
+      if (!sif.value || !sg.value.trim()) {
+        msg.textContent = 'Choose an interface and write a group.';
+        return;
+      }
+      if (!(port >= 1 && port <= 65535 && Math.floor(port) === port) || !(iv >= 0.1 && iv <= 3600) || !(size >= 1 && size <= 65000 && Math.floor(size) === size)) {
+        msg.textContent = 'The port is 1–65535, the interval 0.1–3600 s, the size 1–65000 bytes.';
+        return;
+      }
+      const [d, i] = split2(sif.value);
+      msg.textContent = this.startStream(d, i, sg.value.trim(), port, Math.round(iv * 1000), size);
+    });
+    body.appendChild(mc);
     // protocols shown
     const protos = el(doc, 'details', { class: 'sim-sec', id: 'sim-protos', open: '' });
     protos.appendChild(el(doc, 'summary', { id: 'sim-protos-sum' }, ['Protocols shown']));
@@ -857,11 +975,14 @@ export class SimController implements SimulationMode {
       if (d.mac) btns.push(el(doc, 'button', { type: 'button', class: 'mini', 'data-sim-table': 'mac', 'data-dev': d.id }, ['Show MAC table']));
       if (d.arp) btns.push(el(doc, 'button', { type: 'button', class: 'mini', 'data-sim-table': 'conn', 'data-dev': d.id }, ['Show connections']));
       if (this.isFirewall(d.id)) btns.push(el(doc, 'button', { type: 'button', class: 'mini', 'data-sim-table': 'fw', 'data-dev': d.id }, ['Show sessions']));
+      if (this.sim.multicast.igmpDevice(d.id)) btns.push(el(doc, 'button', { type: 'button', class: 'mini', 'data-sim-table': 'igmp', 'data-dev': d.id }, ['Show IGMP groups']));
+      if (this.sim.multicast.mcRouter(d.id)) btns.push(el(doc, 'button', { type: 'button', class: 'mini', 'data-sim-table': 'mroute', 'data-dev': d.id }, ['Show multicast routes']));
+      if (d.mac) btns.push(el(doc, 'button', { type: 'button', class: 'mini', 'data-sim-table': 'snoop', 'data-dev': d.id }, ['Show multicast table']));
       if (btns.length) list.appendChild(el(doc, 'li', {}, [el(doc, 'span', { class: 'sim-dev' }, [d.id]), ...btns]));
     }
     list.addEventListener('click', (ev) => {
       const b = (ev.target as Element).closest('[data-sim-table]');
-      if (b) this.showTable(b.getAttribute('data-sim-table') as 'arp' | 'mac' | 'conn' | 'fw', b.getAttribute('data-dev') as string);
+      if (b) this.showTable(b.getAttribute('data-sim-table') as 'arp' | 'mac' | 'conn' | 'fw' | 'igmp' | 'snoop' | 'mroute', b.getAttribute('data-dev') as string);
     });
     tabs.appendChild(list);
     body.appendChild(tabs);

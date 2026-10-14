@@ -11,14 +11,12 @@ import { IpAddr, parseAddress } from '../../model/ip';
 import { simProfile } from '../../model/sim-profiles';
 import { Relation, deviceInterfaces, relationDevices } from '../../model/types';
 import { compareAddr, formatAddr } from '../ipmath';
-import { lookup } from '../routing';
 import { parseTraceEnd } from '../trace';
 import { encapStack } from '../trace';
 import { fmtSec } from './engine';
 import { isMulticastIp, multicastMac, virtualMac } from './mac';
 import { L3Iface, carries, otherEnd, portKey } from './net';
 import { Behaviour, ProtocolSim, Sess } from './protocols';
-import { routerId } from './proto-routing';
 import { Msg, Pkt, SessionStatus } from './types';
 
 const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
@@ -494,67 +492,10 @@ const custom: Behaviour = {
 
 // ------------------------------------------------------------------ PIM and IGMP
 
-/** The RP of the multicast groups: a PIM relation's `rp` (an address or a device), else the PIM router with the highest router ID. */
+/** The RP of the any-source groups (multicast.ts decides it), null: none. */
 function rpOf(P: ProtocolSim): { dev: string; addr: IpAddr } | null {
-  const key = 'pim-rp';
-  if (P.shared.has(key)) return P.shared.get(key) as { dev: string; addr: IpAddr } | null;
-  let out: { dev: string; addr: IpAddr } | null = null;
-  const pims = P.m.relations.filter((r) => P.e.base(r) === 'pim');
-  for (const r of pims) {
-    const a = r.attrs.find(([k]) => k === 'rp');
-    if (!a) continue;
-    const ad = parseAddress(a[1]);
-    if (ad) {
-      const owner = Array.from(P.e.net.devices.values()).find((d) => Array.from(d.l3.values()).some((l) => l.addrs.some((x) => compareAddr(x.addr, ad) === 0)));
-      if (owner) out = { dev: owner.id, addr: ad };
-    } else if (P.e.net.devices.has(a[1])) out = { dev: a[1], addr: addr(routerId(P, a[1], 'pim')) };
-  }
-  if (!out) {
-    const devs = Array.from(new Set(pims.flatMap((r) => relationDevices(r)))).filter((d) => P.sd(d) && P.sd(d).routes);
-    devs.sort((a, b) => compareAddr(addr(routerId(P, b, 'pim')) || addr('0.0.0.0'), addr(routerId(P, a, 'pim')) || addr('0.0.0.0')));
-    if (devs.length) out = { dev: devs[0], addr: addr(routerId(P, devs[0], 'pim')) };
-  }
-  P.shared.set(key, out);
-  return out;
-}
-
-/** The outgoing interfaces of a group at a router. */
-function oifs(P: ProtocolSim, dev: string, group: string): Set<string> {
-  const k = `pim-oif|${dev}|${group}`;
-  let s = P.shared.get(k) as Set<string> | undefined;
-  if (!s) P.shared.set(k, (s = new Set()));
-  return s;
-}
-
-/** Join towards a target (the RP, or a source): the PIM neighbour on the way there gets a Join/Prune, and joins on. */
-function pimJoin(P: ProtocolSim, dev: string, group: string, toward: IpAddr, what: string): void {
-  // one join state per router, group and target: sent now (or as soon as there is an upstream neighbour), then refreshed every Join/Prune period
-  const key = `pim-join|${dev}|${group}|${formatAddr(toward)}`;
-  if (P.shared.has(key)) return;
-  P.shared.set(key, true);
-  const p = simProfile('pim');
-  const period = ((p && (p.timers.find((t) => t.key === 'join') || { seconds: 60 }).seconds) || 60) * 1000;
-  let ok = false;
-  P.periodic(
-    () => true,
-    () => (ok ? period : 5000),
-    () => {
-      ok = pimJoinOnce(P, dev, group, toward, what);
-    },
-  );
-}
-
-function pimJoinOnce(P: ProtocolSim, dev: string, group: string, toward: IpAddr, what: string): boolean {
-  const rp = rpOf(P);
-  if (rp && rp.dev === dev && what === '(*,G)') return true;
-  if (P.e.ownerOf(toward) === dev) return true;
-  const d = lookup(P.m, dev, '', toward, P.e.ctx(dev));
-  if (d.kind !== 'forward' || !d.hops.length) return false;
-  const hop = d.hops[0];
-  const up = Array.from(P.sessions.values()).find((s) => s.protocol === 'pim' && s.dev === dev && s.local.l3.id === hop.iface && s.up && (!hop.gateway || compareAddr(s.remote.addr, hop.gateway) === 0));
-  if (!up) return false;
-  P.multicast(up, addr('224.0.0.13'), 'Join/Prune', `join ${what === '(*,G)' ? '(*, ' + group + ') towards the RP ' + formatAddr(toward) : '(' + formatAddr(toward) + ', ' + group + ') towards the source'}; upstream neighbour ${up.peer}`, { group, target: up.peer, toward: formatAddr(toward), what });
-  return true;
+  const m = P.shared.get('multicast') as { rp(): { dev: string; addr: IpAddr } | null } | undefined;
+  return m ? m.rp() : null;
 }
 
 const pim: Behaviour = {
@@ -567,7 +508,7 @@ const pim: Behaviour = {
       () => true,
       () => P.timer(s, s.profile, 'hello').ms,
       () => {
-        if (P.e.isL3Up(s.dev, s.local.l3.id)) P.multicast(s, group, 'Hello', `holdtime ${P.timer(s, s.profile, 'dead').text}`);
+        if (P.e.isL3Up(s.dev, s.local.l3.id)) P.multicast(s, group, 'Hello', `holdtime ${P.timer(s, s.profile, 'dead').text}, DR priority ${P.paramText(P.param('pim-dr-priority', s.dev))}`);
       },
     );
     // the RP announces itself (BSR) every bootstrap period
@@ -589,8 +530,10 @@ const pim: Behaviour = {
       );
     }
   },
-  rx(P, s, msg, pkt, l3) {
-    const d = (msg.data || {}) as { group?: string; target?: string; toward?: string; what?: string; bsr?: number; origin?: string; source?: string };
+  rx(P, s, msg, _pkt, l3) {
+    // joins, prunes and grafts: multicast routing (multicast.ts)
+    if (P.pimHook && P.pimHook(s, msg, l3)) return;
+    const d = (msg.data || {}) as { bsr?: number; origin?: string };
     switch (msg.type) {
       case 'Hello': {
         const dead = P.timer(s, s.profile, 'dead');
@@ -601,16 +544,6 @@ const pim: Behaviour = {
         if (!s.up) P.setState(s, 'Neighbour', true, `Hello from ${s.peer}`);
         return;
       }
-      case 'Join/Prune': {
-        if (d.target !== s.dev || !d.group || !l3) return;
-        const set = oifs(P, s.dev, d.group);
-        if (!set.has(l3.id)) {
-          set.add(l3.id);
-          P.e.note('state', 'pim', s.dev, s.peer, `${d.what || '(*,G)'} joined`, 'Joined', `${s.dev}: ${d.group} forwarded out of ${l3.id} (towards ${s.peer})`);
-          if (d.toward) pimJoin(P, s.dev, d.group, addr(d.toward), d.what || '(*,G)');
-        }
-        return;
-      }
       case 'Bootstrap': {
         const key = `pim-bsr-seen|${s.dev}|${d.origin}|${d.bsr}`;
         if (P.shared.has(key)) return;
@@ -618,74 +551,11 @@ const pim: Behaviour = {
         for (const o of Array.from(P.sessions.values()).filter((x) => x.protocol === 'pim' && x.dev === s.dev && x.up && x.peer !== s.peer && x.peer !== d.origin)) P.unicast(o, 'Bootstrap', 'forwarded on', { bsr: d.bsr, origin: d.origin });
         return;
       }
-      case 'Register': {
-        // the RP: the data goes down the shared tree; the source's DR is stopped, and the RP joins towards the source
-        if (d.group && pkt) forwardMulticast(P, s.dev, null, d.group, d.source || '');
-        P.unicast(s, 'Register-Stop', `for (${d.source}, ${d.group}): the RP receives it natively now`, { group: d.group });
-        if (d.source && d.group) pimJoin(P, s.dev, d.group, addr(d.source), '(S,G)');
-        return;
-      }
-      case 'Register-Stop':
-        if (d.group) P.shared.set(`pim-registered|${s.dev}|${d.group}`, true);
-        return;
       default:
         return;
     }
   },
 };
-
-/** A router sends multicast data of a group out of its outgoing interfaces (not back where it came from). */
-function forwardMulticast(P: ProtocolSim, dev: string, from: L3Iface | null, group: string, source: string): void {
-  const sd = P.sd(dev);
-  for (const id of Array.from(oifs(P, dev, group)).sort(cmp)) {
-    if (from && id === from.id) continue;
-    const out = sd.l3.get(id);
-    const src = out ? out.addrs.find((a) => a.addr.version === 4) : undefined;
-    if (!out || !src) continue;
-    const msg: Msg = { protocol: 'demand', type: 'Multicast data', label: `Multicast data ${group}`, detail: `multicast data for ${group} from ${source}, forwarded by ${dev} out of ${id}`, data: { from: dev, source } };
-    P.e.send(dev, P.e.newPacket(addr(source) || src.addr, addr(group), out.vrf, msg, [], 32), out);
-  }
-}
-
-const igmp: Behaviour = {
-  start(P, s) {
-    const isRouter = P.sd(s.dev).routes;
-    const group = groupOf(s.rel);
-    if (isRouter) {
-      const key = `igmp-q|${s.dev}|${s.local.l3.id}`;
-      if (P.shared.has(key)) return;
-      P.shared.set(key, true);
-      every(P, s, () => P.timer(s, s.profile, 'query').ms, () => P.multicast(s, addr('224.0.0.1'), 'Membership Query', 'general query: which groups have members here?'));
-      return;
-    }
-    P.later(s, 1500, () => {
-      P.setState(s, 'Member', true, `joins ${group}`);
-      P.multicast(s, addr(group), 'Membership Report', `joins ${group}`, { group });
-    });
-  },
-  rx(P, s, msg) {
-    const isRouter = P.sd(s.dev).routes;
-    const d = (msg.data || {}) as { group?: string };
-    if (!isRouter && msg.type === 'Membership Query') {
-      P.later(s, 200 + Math.floor(P.e.random() * 800), () => P.multicast(s, addr(groupOf(s.rel)), 'Membership Report', `still a member of ${groupOf(s.rel)}`, { group: groupOf(s.rel) }));
-      return;
-    }
-    if (isRouter && msg.type === 'Membership Report' && d.group) {
-      const set = oifs(P, s.dev, d.group);
-      if (!s.up) P.setState(s, 'Members', true, `${s.peer} joined ${d.group}`);
-      if (!set.has(s.local.l3.id)) {
-        set.add(s.local.l3.id);
-        const rp = rpOf(P);
-        if (rp) pimJoin(P, s.dev, d.group, rp.addr, '(*,G)');
-      }
-    }
-  },
-};
-
-function groupOf(r: Relation): string {
-  const a = r.attrs.find(([k]) => k === 'group');
-  return a && parseAddress(a[1]) ? a[1] : '239.1.1.1';
-}
 
 // ------------------------------------------------------------------ LACP
 
@@ -889,6 +759,8 @@ export function installDemands(P: ProtocolSim): void {
     if (!dstAddr) continue;
     const srcAddr: IpAddr | null = se.kind === 'address' ? parseAddress(se.address) : firstAddr(P, dev, se.kind === 'iface' ? se.iface : undefined, dstAddr.version);
     if (!srcAddr || !sd) continue;
+    // a multicast demand is a stream (multicast.ts)
+    if (isMulticastIp(dstAddr)) continue;
     const ms = Math.round(Math.max(1000, Math.min(4000, 4000 / (1 + Math.log10(1 + dm.bps / 1e7)))));
     list.push({ id: dm.id, label: dm.label || dm.id, dev, src: srcAddr, dst: dstAddr, every: ms, sent: 0, got: 0, last: -1, multicast: isMulticastIp(dstAddr) });
   }
@@ -914,34 +786,10 @@ export function installDemands(P: ProtocolSim): void {
   });
   P.handlers.set('demand', (dev, l3, msg, pkt) => {
     const d = (msg.data || {}) as { demand?: string; source?: string };
+    // multicast data: the members take it (multicast.ts)
     if (pkt && isMulticastIp(pkt.dst)) {
-      const sd = P.sd(dev);
-      if (sd.routes) {
-        const group = formatAddr(pkt.dst);
-        // the source's first router registers with the RP until it is stopped; the others forward down the tree
-        const rp = rpOf(P);
-        const local = l3 && l3.addrs.some((a) => a.addr.version === pkt.src.version && sameNet(a, pkt.src));
-        if (local && rp && rp.dev !== dev && !P.shared.get(`pim-registered|${dev}|${group}`)) {
-          const s = Array.from(P.sessions.values()).find((x) => x.protocol === 'pim' && x.dev === dev && x.up);
-          const sess = s ? s : null;
-          const src = Array.from(sd.l3.values()).find((l) => l.kind === 'loopback') || l3;
-          if (sess && src && src.addrs.length) {
-            const m: Msg = { protocol: 'pim', type: 'Register', label: 'PIM Register', detail: `PIM Register from ${dev} to the RP ${formatAddr(rp.addr)}: the first packets of (${formatAddr(pkt.src)}, ${group}), encapsulated`, data: { from: dev, group, source: formatAddr(pkt.src) } };
-            P.e.note('message', 'pim', dev, rp.dev, 'Register', '', m.detail);
-            // a Register goes to the RP as unicast; the RP's PIM handles it
-            const regSess = Array.from(P.sessions.values()).find((x) => x.protocol === 'pim' && x.dev === rp.dev);
-            if (regSess) {
-              const rpm: Msg = { ...m, relation: regSess.rel.id };
-              P.e.send(dev, P.e.newPacket(src.addrs[0].addr, rp.addr, '', rpm, []));
-            }
-          }
-        }
-        forwardMulticast(P, dev, l3, group, formatAddr(pkt.src));
-        return;
-      }
-      // a receiver host: only a member of the group takes it (an IGMP relation of it with that group); others filter it
-      const member = P.m.relations.some((r) => P.e.base(r) === 'igmp' && relationDevices(r).indexOf(dev) >= 0 && groupOf(r) === group(pkt));
-      if (member) P.e.note('message', 'demand', dev, '', 'received', '', `${dev} received multicast data for ${group(pkt)} from ${d.source}`);
+      const m = P.shared.get('multicast') as { dataIn(dev: string, l3: L3Iface, pkt: Pkt): boolean } | undefined;
+      if (m && l3) m.dataIn(dev, l3, pkt);
       return;
     }
     const x = list.find((q) => q.id === d.demand);
@@ -957,19 +805,6 @@ export function installDemands(P: ProtocolSim): void {
   );
 }
 
-function group(pkt: Pkt): string {
-  return formatAddr(pkt.dst);
-}
-
-function sameNet(a: { net: IpAddr & { prefix: number } }, ip: IpAddr): boolean {
-  if (a.net.version !== ip.version) return false;
-  let bits = a.net.prefix;
-  for (let i = 0; i < ip.bytes.length && bits > 0; i++, bits -= 8) {
-    const mask = bits >= 8 ? 0xff : (0xff << (8 - bits)) & 0xff;
-    if ((a.net.bytes[i] & mask) !== (ip.bytes[i] & mask)) return false;
-  }
-  return true;
-}
 
 function ownerOf(P: ProtocolSim, a: IpAddr): string | undefined {
   for (const d of P.e.net.devices.values()) for (const l of d.l3.values()) if (l.addrs.some((x) => compareAddr(x.addr, a) === 0)) return d.id;
@@ -1041,18 +876,4 @@ export function installCustomL2(P: ProtocolSim): void {
 }
 
 /** The PIM messages between a source's first router and the RP (they are no neighbours): Register and Register-Stop. */
-export function installPimRegister(P: ProtocolSim): void {
-  P.fallback.set('pim', (dev, _l3, msg, pkt) => {
-    const d = (msg.data || {}) as { group?: string; source?: string; from?: string };
-    if (msg.type === 'Register' && d.group && pkt) {
-      // the RP: the data goes down the shared tree, the first router is stopped, and the RP joins towards the source
-      forwardMulticast(P, dev, null, d.group, d.source || '');
-      const back: Msg = { protocol: 'pim', type: 'Register-Stop', label: 'PIM Register-Stop', detail: `PIM Register-Stop from the RP ${dev} to ${d.from}: (${d.source}, ${d.group}) arrives natively now`, relation: msg.relation, data: { from: dev, group: d.group } };
-      P.e.note('message', 'pim', dev, d.from || '', 'Register-Stop', '', back.detail);
-      P.e.send(dev, P.e.newPacket(pkt.dst, pkt.src, '', back, []));
-      if (d.source) pimJoin(P, dev, d.group, addr(d.source), '(S,G)');
-    } else if (msg.type === 'Register-Stop' && d.group) P.shared.set(`pim-registered|${dev}|${d.group}`, true);
-  });
-}
-
-export const OTHER_BEHAVIOURS: { [id: string]: Behaviour } = { ike, session, service, data, custom, pim, igmp };
+export const OTHER_BEHAVIOURS: { [id: string]: Behaviour } = { ike, session, service, data, custom, pim };

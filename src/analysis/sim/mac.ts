@@ -109,6 +109,18 @@ export function isMulticastIp(a: IpAddr): boolean {
   return a.version === 4 ? (a.bytes[0] & 0xf0) === 0xe0 : a.bytes[0] === 0xff;
 }
 
+/** A link-local group (224.0.0.0/24, ff02::/16 and the interface-local ff01::/16): never routed, always flooded, never joined. */
+export function isLinkLocalGroup(a: IpAddr): boolean {
+  if (a.version === 4) return a.bytes[0] === 224 && a.bytes[1] === 0 && a.bytes[2] === 0;
+  return a.bytes[0] === 0xff && (a.bytes[1] & 0x0f) <= 2;
+}
+
+/** A source-specific multicast group (232.0.0.0/8, ff3x::/32): only (S, G) joins with a source list (IGMPv3 / MLDv2). */
+export function isSsmGroup(a: IpAddr): boolean {
+  if (a.version === 4) return a.bytes[0] === 232;
+  return a.bytes[0] === 0xff && (a.bytes[1] & 0xf0) === 0x30 && a.bytes[2] === 0 && a.bytes[3] === 0;
+}
+
 /** The solicited-node multicast address of an IPv6 address: ff02::1:ff + its low 24 bits (RFC 4291). */
 export function solicitedNode(a: IpAddr): IpAddr {
   const bytes = [0xff, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0xff, a.bytes[13], a.bytes[14], a.bytes[15]];

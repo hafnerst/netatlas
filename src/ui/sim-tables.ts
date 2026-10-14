@@ -11,10 +11,10 @@
  * changes are announced politely, at most every few seconds. Opening a
  * table changes nothing in the simulation; the panels close when it ends.
  */
-import { ArpRow, ConnRow, Headers, MacRow, SessionRow, TableTimer } from '../analysis/sim/types';
+import { ArpRow, ConnRow, GridTable, Headers, MacRow, SessionRow, TableTimer } from '../analysis/sim/types';
 import { el } from './dom';
 
-export type TableKind = 'arp' | 'mac' | 'conn' | 'fw' | 'packet';
+export type TableKind = 'arp' | 'mac' | 'conn' | 'fw' | 'packet' | 'igmp' | 'snoop' | 'mroute';
 
 export interface ConnData {
   rows: ConnRow[];
@@ -33,9 +33,9 @@ export interface PacketData {
   where: string;
 }
 
-type AnyData = ArpData | MacData | ConnData | FwData | PacketData;
+type AnyData = ArpData | MacData | ConnData | FwData | PacketData | GridTable;
 
-const TITLES: { [k in TableKind]: string } = { arp: 'ARP table', mac: 'MAC table', conn: 'Connections', fw: 'Sessions', packet: 'Packet' };
+const TITLES: { [k in TableKind]: string } = { arp: 'ARP table', mac: 'MAC table', conn: 'Connections', fw: 'Sessions', packet: 'Packet', igmp: 'IGMP groups', snoop: 'Multicast table', mroute: 'Multicast routes' };
 
 export interface ArpData {
   v4: ArpRow[];
@@ -226,6 +226,10 @@ export class TablePanels {
       this.announce(p, n);
       return;
     }
+    if (p.kind === 'igmp' || p.kind === 'snoop' || p.kind === 'mroute') {
+      this.announce(p, this.gridPanel(p));
+      return;
+    }
     const d = p.data() as ArpData | MacData;
     const timers = el(this.doc, 'dl', { class: 'st-timers' });
     for (const t of d.timers) timers.appendChild(el(this.doc, 'div', {}, [el(this.doc, 'dt', {}, [t.label]), el(this.doc, 'dd', {}, [timerText(t)])]));
@@ -316,6 +320,24 @@ export class TablePanels {
     return d.rows.length;
   }
 
+  /** A multicast table: the timers in effect and its notes at the top, then the rows. */
+  private gridPanel(p: Panel): number {
+    const d = p.data() as GridTable;
+    const timers = el(this.doc, 'dl', { class: 'st-timers' });
+    for (const x of d.timers) timers.appendChild(el(this.doc, 'div', {}, [el(this.doc, 'dt', {}, [x.label]), el(this.doc, 'dd', {}, [timerText(x)])]));
+    p.body.appendChild(timers);
+    for (const n of d.notes) p.body.appendChild(el(this.doc, 'p', { class: 'small' }, [n]));
+    const t = el(this.doc, 'table', { class: 'st-table' });
+    t.appendChild(el(this.doc, 'caption', {}, [d.caption]));
+    t.appendChild(this.head(d.cols));
+    const tb = el(this.doc, 'tbody');
+    if (!d.rows.length) tb.appendChild(el(this.doc, 'tr', {}, [el(this.doc, 'td', { colspan: String(d.cols.length), class: 'muted' }, [d.empty])]));
+    for (const r of d.rows) tb.appendChild(el(this.doc, 'tr', { 'data-key': r[0] + '|' + r[1] }, r.map((c, i) => el(this.doc, 'td', { class: i < 2 ? 'mono' : '' }, [c]))));
+    t.appendChild(tb);
+    p.body.appendChild(el(this.doc, 'div', { class: 'st-scroll' }, [t]));
+    return d.rows.length;
+  }
+
   /** The packet inspector: a frame's headers, layer by layer. */
   private packet(d: PacketData): HTMLElement {
     const h = d.hdr;
@@ -348,7 +370,17 @@ export class TablePanels {
       layer(`Layer 3 – IPv${ip.version}${h.l3.length > 1 ? (i === 0 ? ' (outer)' : i === h.l3.length - 1 ? ' (inner)' : ` (${i + 1})`) : ''}`, rows);
     });
     const l4 = h.l4;
-    if (l4) {
+    if (l4 && l4.igmp) {
+      // IGMP (IP protocol 2) or MLD (ICMPv6)
+      const f = l4.igmp;
+      const rows: Array<[string, string]> = [['Message', f.type], ['Version', f.version]];
+      if (f.group) rows.push(['Group', f.group]);
+      if (f.maxResp !== undefined) rows.push(['Max response time', `${f.maxResp} s`]);
+      if (f.sources && f.sources.length) rows.push(['Sources', f.sources.join(', ')]);
+      if (f.records && f.records.length) rows.push(['Records', f.records.join('; ')]);
+      if (l4.icmpType !== undefined) rows.push(['ICMPv6 type', String(l4.icmpType)]);
+      layer(`Layer 3 – ${l4.proto === 'igmp' ? 'IGMP (2)' : 'MLD (ICMPv6)'}`, rows);
+    } else if (l4) {
       const rows: Array<[string, string]> = [];
       if (l4.proto === 'icmp') {
         rows.push(['Type and code', `${l4.icmpType} / ${l4.icmpCode}${l4.icmpName ? ' — ' + l4.icmpName : ''}`]);

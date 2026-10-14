@@ -93,6 +93,8 @@ export interface Interface {
   mtu?: number;
   /** the interface's settings of services its device enables (a VRRP group …), by service id */
   services: ServiceConfig[];
+  /** the multicast groups the device joins on this interface and the streams it sends from it (the protocol simulation) */
+  multicast?: MulticastConfig;
   /** virtual: ids of the physical interfaces of the same device that are its members (a bond / aggregate); in file order */
   members: string[];
   /** virtual with members: how many member links must be up for the aggregate to be up, when written */
@@ -106,6 +108,28 @@ export interface Interface {
   description?: string;
   attrs: Attrs;
   line: number;
+}
+
+/** A group an interface joins: any source (ASM), or only the sources listed (SSM; IGMPv3 / MLDv2). */
+export interface McJoin {
+  group: string;
+  /** the sources it accepts (none: any) */
+  sources: string[];
+  line: number;
+}
+
+/** A multicast stream an interface sends: UDP to a group and port, a datagram of `size` bytes every `interval` ms. */
+export interface McStream {
+  group: string;
+  port: number;
+  interval: number;
+  size: number;
+  line: number;
+}
+
+export interface MulticastConfig {
+  joins: McJoin[];
+  streams: McStream[];
 }
 
 export interface Device {

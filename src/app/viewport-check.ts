@@ -286,6 +286,7 @@ export async function runViewportCheck(app: App, doc: Document): Promise<Check[]
       (q('#sim-params') as HTMLDetailsElement).open = true;
       (q('#sim-pw-l1-btn') as HTMLElement).click();
       (q('#sim-test') as HTMLDetailsElement).open = true;
+      (q('#sim-mc') as HTMLDetailsElement).open = true;
       ctl.sim.powerOff('hq-rtr2');
       ctl.refresh(true);
       await tick();
@@ -303,7 +304,7 @@ export async function runViewportCheck(app: App, doc: Document): Promise<Check[]
       app.exitSimulation();
       await tick();
       if (doc.querySelector('.sim-table-panel')) tws.push('the tables stay open after Exit simulation');
-      state('the protocol simulation’s window (Send test open), two ARP / MAC tables and the packet inspector fit the browser window (the window docked when narrow); the page does not scroll', tws.concat(problems()));
+      state('the protocol simulation’s window (Send test and Multicast open), two ARP / MAC tables and the packet inspector fit the browser window (the window docked when narrow); the page does not scroll', tws.concat(problems()));
       app.select(null);
       await tick();
     }

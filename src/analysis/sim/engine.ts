@@ -64,7 +64,7 @@ import { Link, Model, Relation, relationDevices } from '../../model/types';
 import { compareAddr, formatAddr } from '../ipmath';
 import { RoutingCtx, lookup } from '../routing';
 import { declaredUnderlay, encapStack, tunnelRelation, tracePath } from '../trace';
-import { BROADCAST, isGroupMac, isMulticastIp, multicastMac, rng, solicitedNode, modelSeed, shortMac } from './mac';
+import { BROADCAST, isGroupMac, isLinkLocalGroup, isMulticastIp, multicastMac, rng, solicitedNode, modelSeed, shortMac } from './mac';
 import { BridgePort, CableEnd, L3Iface, SimDevice, SimNet, buildNet, carries, ingressVlan, otherEnd, portKey, spanningTree } from './net';
 import { ParamChange, ParamValue, Resolved, SimParams, changeText, durationText, formatValue, resolvedText, sourceText } from './params';
 import { ArpRow, ArpType, Cast, Flight, Headers, MacRow, Msg, NdState, NetEvent, Pkt, Quote, SimEvent, TableTimer, Track } from './types';
@@ -150,6 +150,12 @@ export interface Protocols {
   localError?(dev: string, pkt: Pkt, kind: IcmpKind, text: string, mtu?: number): void;
   /** the table sweep (once a second): the transport's timers and the firewalls' sessions */
   sweep?(): void;
+  /** a switch forwards a frame to a group MAC: the ports that get it (snooping), null: all */
+  snoop?(sd: SimDevice, from: string | null, vlan: number, frame: Frame, t: number): Set<string> | null;
+  /** a routed multicast packet at a router: true when multicast routing took it */
+  mroute?(dev: string, l3: L3Iface, pkt: Pkt): boolean;
+  /** a router recomputed its routes (multicast checks its RPF interfaces) */
+  routesChanged?(dev: string): void;
 }
 
 interface QItem {
@@ -595,6 +601,7 @@ export class Engine {
     }
     at.devs.push(dev);
     this.devCtx.set(dev, at.ctx);
+    if (this.protocols && this.protocols.routesChanged) this.protocols.routesChanged(dev);
   }
 
   /** Recompute the interfaces' states; report the changes (and flush what an interface going down loses). */
@@ -939,6 +946,19 @@ export class Engine {
     return this.params.num('link-latency') + (PAYLOAD * 8 * 1000) / this.params.num('default-speed');
   }
 
+  /** A frame a switch floods in a VLAN itself (a snooping querier's query), as from its own VLAN interface. */
+  floodFrom(dev: string, vlan: number, frame: Frame): void {
+    const sd = this.net.devices.get(dev);
+    if (!sd || !sd.bridge || this.off.has(dev)) return;
+    const was = this.emitting;
+    this.emitting = null;
+    try {
+      this.bridge(sd, null, vlan, frame, this.now, undefined, new Set([dev]));
+    } finally {
+      this.emitting = was;
+    }
+  }
+
   /** A link-local layer-2 PDU out of one port (LACP, LLDP, STP): it reaches the device at the other end only. */
   sendOnPort(dev: string, port: string, frame: Frame): void {
     if (this.off.has(dev) || !this.portUp(dev, port)) return;
@@ -961,6 +981,7 @@ export class Engine {
       const at = this.wireless(e.link, dev, frame, t);
       if (at === null) return;
       t = at;
+      frame = this.toUnicast(e.link, dev, frame, t);
     }
     const w = this.wire(e.link, e.end, frame, t);
     const o = otherEnd(this.net, e);
@@ -1025,6 +1046,25 @@ export class Engine {
       this.noteAt(t, 'drop', frame.msg.protocol, ap, client, frame.msg.type, '', `${ap} drops ${frame.msg.label} for ${client}: it is not associated (silent since t = ${fmtSec(last)}, client idle timeout ${resolvedText(idle)}); later frames to it are dropped as well until it sends again`);
     }
     return null;
+  }
+
+  /** An access point with multicast-to-unicast on sends a group frame to its wireless client as a unicast frame. */
+  private toUnicast(link: string, dev: string, frame: Frame, t: number): Frame {
+    if (!frame.ip || !isMulticastIp(frame.ip.dst) || isLinkLocalGroup(frame.ip.dst)) return frame;
+    const sd = this.net.devices.get(dev);
+    if (!sd || sd.dev.type !== 'ap' || this.params.str('mc-to-unicast', dev) !== 'on') return frame;
+    const l = this.net.links.get(link) as Link;
+    const c = l.a.device === dev ? l.b : l.a;
+    const cd = this.net.devices.get(c.device);
+    const port = c.iface || '@' + link;
+    const cl = cd ? Array.from(cd.l3.values()).find((x) => x.ports.indexOf(port) >= 0) : undefined;
+    if (!cl) return frame;
+    const k = `m2u|${dev}|${c.device}|${formatAddr(frame.ip.dst)}`;
+    if (!this.stormNoted.has(k)) {
+      this.stormNoted.set(k, t);
+      this.noteAt(t, 'note', frame.msg.protocol, dev, c.device, 'multicast to unicast', '', `${dev} sends ${formatAddr(frame.ip.dst)} to ${c.device} as unicast frames to ${cl.mac} (multicast to unicast ${resolvedText(this.params.get('mc-to-unicast', dev))})`);
+    }
+    return { ...frame, dst: cl.mac };
   }
 
   /** The time to an access point's next beacon (beacons at whole multiples of its beacon interval). */
@@ -1125,6 +1165,15 @@ export class Engine {
         if (this.accepts(sd, l3, frame)) this.deliverL3(sd.id, l3, frame, t, flight !== undefined ? flight : -1);
       }
     }
+    // a cloud (the internet) carries no routed multicast unless it is set to
+    if (sd.dev.type === 'cloud' && frame.ip && isMulticastIp(frame.ip.dst) && !isLinkLocalGroup(frame.ip.dst) && this.params.str('mc-support', sd.id) !== 'on') {
+      const k = `cloudmc|${sd.id}|${formatAddr(frame.ip.dst)}`;
+      if (!this.stormNoted.has(k) || t - (this.stormNoted.get(k) as number) >= 10000) {
+        this.stormNoted.set(k, t);
+        this.noteAt(t, 'drop', frame.msg.protocol, sd.id, '', frame.msg.type, '', `${sd.id} carries no multicast (${resolvedText(this.params.get('mc-support', sd.id))}): ${frame.msg.label} to ${formatAddr(frame.ip.dst)} is dropped`);
+      }
+      return;
+    }
     const tab = this.macs.get(sd.id) as Map<string, MacEntry>;
     const known = !isGroupMac(frame.dst) ? tab.get(vlan + '|' + frame.dst) : undefined;
     if (known && known.type === 'static') return;
@@ -1137,7 +1186,13 @@ export class Engine {
     } else {
       for (const bp of Array.from(sd.bridgePorts.values()).sort((a, b) => cmp(a.id, b.id))) if (bp.id !== from) out.push(bp);
     }
-    for (const bp of out) {
+    // IGMP / MLD snooping: a group's frames to its member ports and the router ports only
+    let to = out;
+    if (!wire && isGroupMac(frame.dst) && frame.dst !== BROADCAST && this.protocols && this.protocols.snoop) {
+      const keep = this.protocols.snoop(sd, from, vlan, frame, t);
+      if (keep) to = out.filter((bp) => keep.has(bp.id));
+    }
+    for (const bp of to) {
       const c = carries(bp.vlans, vlan);
       if (!c || this.blocked(sd.id, bp.id, vlan)) continue;
       const up = bp.members.filter((m) => this.portUp(sd.id, m) && this.net.ends.has(portKey(sd.id, m)));
@@ -1218,6 +1273,8 @@ export class Engine {
     const bcast = this.broadcastFor(l3, pkt.dst);
     // its own broadcast or multicast, back over a loop: ignored
     if ((bcast || isMulticastIp(pkt.dst)) && (frame.loops || 0) > 0 && this.ownsAddress(dev, pkt.src)) return;
+    // a routed group at a router: multicast routing (the RPF check, the outgoing interfaces); link-local groups and IGMP are its own
+    if (isMulticastIp(pkt.dst) && sd.routes && !pkt.encap && this.protocols && this.protocols.mroute && this.protocols.mroute(dev, l3, pkt)) return;
     if (isMulticastIp(pkt.dst) || own || bcast) {
       if (pkt.encap && pkt.inner) {
         this.decapsulate(dev, l3, pkt);
@@ -1303,6 +1360,8 @@ export class Engine {
       return;
     }
     const via = tun || at;
+    // a routed group out of a tunnel: multicast routing, as if it came in on the tunnel interface
+    if (isMulticastIp(inner.dst) && !inner.encap && sd.routes && this.protocols && this.protocols.mroute && this.protocols.mroute(dev, via, inner)) return;
     if (this.ownsAddress(dev, inner.dst) || isMulticastIp(inner.dst)) {
       if (inner.encap && inner.inner) this.decapsulate(dev, via, inner);
       else this.deliverLocal(dev, this.ownsAddress(dev, inner.dst) || via, inner);
@@ -2630,7 +2689,7 @@ export class Engine {
     const t = this.now;
     const aging = this.macAging(dev);
     return Array.from(tab.values())
-      .filter((e) => e.type === 'static' || t - e.refreshed < aging)
+      .filter((e) => e.type === 'static' || (t - e.refreshed < aging && e.learned <= t))
       .map((e) => ({ mac: e.mac, macSimulated: this.simulatedMac(e.mac), vlan: e.vlan, port: e.port, type: e.type, age: e.type === 'static' ? 0 : t - e.refreshed, remaining: e.type === 'static' ? null : Math.max(0, aging - (t - e.refreshed)) }))
       .sort((a, b) => a.vlan - b.vlan || cmp(a.mac, b.mac));
   }
@@ -2745,6 +2804,7 @@ function protoText(p: Pkt): string {
   if (l.proto === 'icmp') return p.dst.version === 4 ? 'ICMP (1)' : 'ICMPv6 (58)';
   if (l.proto === 'tcp') return 'TCP (6)';
   if (l.proto === 'udp') return 'UDP (17)';
+  if (l.proto === 'igmp') return 'IGMP (2)';
   return `${l.num}`;
 }
 

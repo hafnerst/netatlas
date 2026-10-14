@@ -503,14 +503,14 @@ relations:
   assert.deepEqual(ll.status().filter((x) => x.protocol === 'lldp' || x.protocol === 'cdp').map((x) => x.state), ['neighbour known', 'neighbour known', 'neighbour known', 'neighbour known']);
 });
 
-test('PIM and IGMP: the receiver joins, the source registers with the RP, the data reaches the receiver only', () => {
+test('PIM and IGMP: the receivers join, the source registers with the RP, the data reaches the members only', () => {
   const s = sim(pe);
   s.runTo(80000);
-  assert.ok(events(s, (e) => e.what === 'Membership Report').length);
+  assert.ok(events(s, (e) => e.protocol === 'igmp' && e.what === 'Report').length);
   assert.ok(events(s, (e) => e.what === 'Register').length);
   assert.ok(events(s, (e) => e.what === 'Register-Stop').length);
-  const got = events(s, (e) => /received multicast data for 239\.1\.1\.1/.test(e.detail));
-  assert.ok(got.length > 3 && got.every((e) => e.device === 'rx'));
+  const got = events(s, (e) => e.what === 'receives' && /^\S+ receives 239\.1\.1\.1 from /.test(e.detail));
+  assert.deepEqual(Array.from(new Set(got.map((e) => e.device))).sort(), ['pc1', 'rx']);
 });
 
 test('simulation: the protocols of a model for the window’s checkboxes, Layer 2 first', () => {
