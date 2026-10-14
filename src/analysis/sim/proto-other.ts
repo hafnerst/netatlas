@@ -14,7 +14,7 @@ import { compareAddr, formatAddr } from '../ipmath';
 import { lookup } from '../routing';
 import { parseTraceEnd } from '../trace';
 import { encapStack } from '../trace';
-import { HOP, fmtSec } from './engine';
+import { fmtSec } from './engine';
 import { isMulticastIp, multicastMac, virtualMac } from './mac';
 import { L3Iface, carries, otherEnd, portKey } from './net';
 import { Behaviour, ProtocolSim, Sess } from './protocols';
@@ -24,14 +24,10 @@ import { Msg, Pkt, SessionStatus } from './types';
 const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 const addr = (s: string): IpAddr => parseAddress(s) as IpAddr;
 
-function every(P: ProtocolSim, s: Sess, ms: number, fn: () => void): void {
+/** Every `ms()` (from now), while the session's generation lasts; a parameter change reschedules it. */
+function every(P: ProtocolSim, s: Sess, ms: () => number, fn: () => void): void {
   const g = s.gen;
-  const tick = (): void => {
-    if (s.gen !== g) return;
-    fn();
-    P.e.after(ms, tick);
-  };
-  tick();
+  P.periodic(() => s.gen === g, ms, fn);
 }
 
 function deadCheck(P: ProtocolSim, s: Sess, ms: number, dead: () => void): void {
@@ -82,9 +78,8 @@ export function installFhrp(P: ProtocolSim): void {
   const names = (m: FhrpMember, st: string): string => (m.protocol === 'hsrp' || m.protocol === 'glbp' ? (st === 'Master' ? 'Active' : st === 'Backup' ? 'Standby' : st) : st);
   const timers = (m: FhrpMember): { adv: number; down: number } => {
     const p = simProfile(m.protocol);
-    const adv = p ? p.timers.find((t) => t.key === 'hello') : undefined;
     const hold = p ? p.timers.find((t) => t.key === 'dead') : undefined;
-    const a = (adv ? adv.seconds : 1) * 1000;
+    const a = p ? P.timer(null, p, 'hello', m.dev).ms : 1000;
     // VRRP / CARP: 3 × advertisement + skew ((256 − priority) / 256 s); HSRP / GLBP: the hold time
     const down = m.protocol === 'vrrp' || m.protocol === 'carp' ? 3 * a + Math.round(((256 - m.prio) / 256) * a) : (hold ? hold.seconds : 10) * 1000;
     return { adv: a, down };
@@ -106,7 +101,7 @@ export function installFhrp(P: ProtocolSim): void {
     if (!src || !P.e.isL3Up(m.dev, m.l3.id)) return;
     const msg: Msg = { protocol: m.protocol, type, label: `${label(m)} ${type}`, detail: `${label(m)} ${type}: group ${m.group}, priority ${m.prio}, virtual ${formatAddr(m.vip)}, from ${m.dev}:${m.l3.id} (source MAC ${m.vmac}, the virtual MAC) to ${formatAddr(group)} (${multicastMac(group)})`, relation: m.rel ? m.rel.id : undefined, data: { from: m.dev, key: m.key, prio: m.prio, ip: formatAddr(src.addr) } };
     P.e.note('message', m.protocol, m.dev, '', type, names(m, m.state), msg.detail);
-    if (m.rel) for (const o of members) if (o.key === m.key && o !== m) P.lane(m.rel, m.dev, o.dev, msg, 2 * HOP);
+    if (m.rel) for (const o of members) if (o.key === m.key && o !== m) P.lane(m.rel, m.dev, o.dev, msg, 2 * P.e.hopTime());
     const pkt = P.e.newPacket(src.addr, group, m.l3.vrf, msg, m.rel ? [m.rel.id] : [], 255);
     P.e.emit(m.dev, m.l3, { src: m.vmac, dst: multicastMac(group), msg, ip: pkt });
   };
@@ -116,12 +111,11 @@ export function installFhrp(P: ProtocolSim): void {
     // the new master announces the virtual address with the virtual MAC: switches learn its port, hosts keep their entry
     P.e.gratuitous(m.dev, m.l3, m.vip, m.vmac, `${label(m)} group ${m.group}: ${m.dev} is the new ${names(m, 'Master')}`, 'garp');
     const g = m.gen;
-    const tick = (): void => {
-      if (m.gen !== g || m.state !== 'Master') return;
-      advertise(m);
-      P.e.after(timers(m).adv, tick);
-    };
-    tick();
+    P.periodic(
+      () => m.gen === g && m.state === 'Master',
+      () => timers(m).adv,
+      () => advertise(m),
+    );
   };
   const backup = (m: FhrpMember, why: string): void => {
     m.gen++;
@@ -171,6 +165,9 @@ export function installFhrp(P: ProtocolSim): void {
 // ------------------------------------------------------------------ IPsec (IKEv2)
 
 const ike: Behaviour = {
+  refresh(P, s) {
+    if (s.up && s.initiator) ikeDetail(P, s);
+  },
   start(P, s) {
     s.state = 'Idle';
     if (s.initiator) ikeInit(P, s);
@@ -217,17 +214,32 @@ function ikeInit(P: ProtocolSim, s: Sess): void {
   });
 }
 
+function ikeDetail(P: ProtocolSim, s: Sess): void {
+  const dpd = P.timer(s, s.profile, 'dpd');
+  const retries = P.timer(s, s.profile, 'dpd-retries');
+  const life = P.timer(s, s.profile, 'child-lifetime');
+  const ike = P.timer(s, s.profile, 'ike-lifetime');
+  s.x.detail = `DPD ${dpd.text} × ${retries.text}; Child SA lifetime ${life.text}; IKE SA lifetime ${ike.text}; rekey margin ${P.paramText(P.param('rekey-margin', s.dev))}`;
+}
+
+/** Rekey an SA before its lifetime ends (its lifetime less the rekey margin, at least half of it). */
+function rekeyAfter(P: ProtocolSim, s: Sess, key: string): number {
+  const life = P.timer(s, s.profile, key).ms;
+  const margin = Number(P.param('rekey-margin', s.dev).value);
+  return Math.max(life / 2, life - margin);
+}
+
 function ikeUp(P: ProtocolSim, s: Sess): void {
   P.restart(s);
   P.setState(s, 'Established', true, 'IKE SA and Child SA established');
   P.e.syncInterfaces();
   if (!s.initiator) return;
-  const dpd = P.timer(s, s.profile, 'dpd');
-  const life = P.timer(s, s.profile, 'child-lifetime');
-  s.x.detail = `DPD ${dpd.text}; Child SA lifetime ${life.text}`;
+  ikeDetail(P, s);
   s.x.dpdMiss = 0;
-  every(P, s, dpd.ms, () => {
-    if ((s.x.dpdMiss as number) >= 3) {
+  every(P, s, () => P.timer(s, s.profile, 'dpd').ms, () => {
+    const retries = Math.max(1, Math.round(P.timer(s, s.profile, 'dpd-retries').ms / 1000));
+    const dpd = P.timer(s, s.profile, 'dpd');
+    if ((s.x.dpdMiss as number) >= retries) {
       const peer = P.sess(s.protocol, s.rel.id, s.peer, s.dev);
       P.setState(s, 'Idle', false, `Dead Peer Detection: ${s.x.dpdMiss} requests unanswered; the SAs are deleted`);
       if (peer && peer.up) P.setState(peer, 'Idle', false, 'the SAs are deleted');
@@ -239,7 +251,31 @@ function ikeUp(P: ProtocolSim, s: Sess): void {
     s.x.dpdMiss = (s.x.dpdMiss as number) + 1;
     P.unicast(s, 'INFORMATIONAL', 'DPD request (empty)');
   });
-  P.later(s, life.ms, () => P.unicast(s, 'CREATE_CHILD_SA', 'rekeys the Child SA before its lifetime ends'));
+  const g = s.gen;
+  let first = true;
+  P.periodic(
+    () => s.gen === g,
+    () => rekeyAfter(P, s, 'child-lifetime'),
+    () => {
+      if (first) {
+        first = false;
+        return;
+      }
+      P.unicast(s, 'CREATE_CHILD_SA', `rekeys the Child SA ${fmtSec(Number(P.param('rekey-margin', s.dev).value))} before its lifetime (${P.timer(s, s.profile, 'child-lifetime').text}) ends`);
+    },
+  );
+  let firstIke = true;
+  P.periodic(
+    () => s.gen === g,
+    () => rekeyAfter(P, s, 'ike-lifetime'),
+    () => {
+      if (firstIke) {
+        firstIke = false;
+        return;
+      }
+      P.unicast(s, 'CREATE_CHILD_SA', `rekeys the IKE SA before its lifetime (${P.timer(s, s.profile, 'ike-lifetime').text}) ends`);
+    },
+  );
 }
 
 // ------------------------------------------------------------------ generic sessions (GRE, WireGuard, OpenVPN, L2TP, MLAG …)
@@ -273,12 +309,14 @@ function sessionSend(P: ProtocolSim, s: Sess, type: string, detail: string, data
 }
 
 const session: Behaviour = {
+  refresh(P, s) {
+    const p = s.profile;
+    s.x.detail = `${p.keepalive ? p.keepalive.msg.toLowerCase() + ' every ' + P.timer(s, p, 'hello').text + ', down after ' + P.timer(s, p, 'dead').text : ''}`;
+  },
   start(P, s) {
     const p = s.profile;
     s.state = p.states[0];
-    const hello = P.timer(s, p, 'hello');
-    const dead = P.timer(s, p, 'dead');
-    s.x.detail = `${p.keepalive ? p.keepalive.msg.toLowerCase() + ' every ' + hello.text + ', down after ' + dead.text : ''}`;
+    session.refresh!(P, s);
     if (s.initiator && p.handshake && p.handshake.length) {
       const first = p.handshake[0];
       sessionSend(P, s, first.msg, 'starts the session', { step: 0 });
@@ -288,16 +326,17 @@ const session: Behaviour = {
     }
     const ka = p.keepalive;
     if (!ka) return;
-    every(P, s, hello.ms, () => {
+    every(P, s, () => P.timer(s, p, 'hello').ms, () => {
       if (!ka.both && !s.initiator) return;
       if (!ka.both || s.up || !p.handshake || !p.handshake.length) sessionSend(P, s, ka.msg, `${ka.reply ? 'expects ' + ka.reply : 'liveness'}`, { ka: true });
       // a session that is down starts its handshake again
-      if (!s.up && s.initiator && p.handshake && p.handshake.length && P.e.now - s.since >= dead.ms) {
+      if (!s.up && s.initiator && p.handshake && p.handshake.length && P.e.now - s.since >= P.timer(s, p, 'dead').ms) {
         sessionSend(P, s, p.handshake[0].msg, 'starts the session again', { step: 0 });
         s.since = P.e.now;
       }
     });
     const check = (): void => {
+      const dead = P.timer(s, p, 'dead');
       deadCheck(P, s, dead.ms, () => {
         if (s.up) P.setState(s, p.states[0], false, `nothing heard for ${dead.text}`);
         if (s.protocol === 'gre') P.e.syncInterfaces();
@@ -339,15 +378,32 @@ const session: Behaviour = {
 // ------------------------------------------------------------------ services, data, custom protocols
 
 const service: Behaviour = {
+  refresh(P, s) {
+    const p = s.profile;
+    const sender = p.fromServer ? !s.initiator : s.initiator;
+    if (!sender) return;
+    s.x.detail = `${p.request} every ${P.timer(s, p, 'hello').text}${p.id === 'snmp' ? ', timeout ' + P.paramText(P.param('snmp-timeout', s.dev)) : ''}`;
+  },
   start(P, s) {
     const p = s.profile;
     // requests come from the clients (from the server for SNMP)
     const sender = p.fromServer ? !s.initiator : s.initiator;
     if (!sender) return;
-    const iv = P.timer(s, p, 'hello');
-    s.x.detail = `${p.request} every ${iv.text}`;
+    service.refresh!(P, s);
     const tcp = /^TCP/.test(p.proto) && p.id !== 'radius';
-    every(P, s, iv.ms, () => {
+    every(P, s, () => P.timer(s, p, 'hello').ms, () => {
+      // SNMP: an agent that did not answer the last poll within the manager's timeout is not responding
+      if (p.id === 'snmp') {
+        const timeout = P.param('snmp-timeout', s.dev);
+        const asked = P.e.now;
+        s.x.asked = asked;
+        P.later(s, Number(timeout.value), () => {
+          const answered = s.x.answered as number | undefined;
+          if (s.x.asked === asked && (answered === undefined || answered < asked)) {
+            if (s.up || s.state !== 'Not responding') P.setState(s, 'Not responding', false, `no GetResponse within the SNMP timeout ${P.paramText(timeout)}`);
+          }
+        });
+      }
       if (p.id === 'dhcp') {
         P.unicast(s, 'DHCPDISCOVER', 'the client looks for a server (relayed unicast to it)');
         return;
@@ -395,10 +451,16 @@ const service: Behaviour = {
         return;
       default:
         if (msg.type === p.request && p.response) {
-          P.unicast(s, p.response, 'the answer');
-          if (!s.up) P.setState(s, p.states[p.states.length - 1], true, 'answers requests');
-        }
-        else if (msg.type === p.response) {
+          // the server answers after its response time (its simulation attribute)
+          const rt = P.param('service-response', s.dev);
+          const answer = (): void => {
+            P.unicast(s, p.response as string, Number(rt.value) > 0 ? `the answer (after the response time ${P.paramText(rt)})` : 'the answer');
+            if (!s.up) P.setState(s, p.states[p.states.length - 1], true, 'answers requests');
+          };
+          if (Number(rt.value) > 0) P.later(s, Number(rt.value), answer);
+          else answer();
+        } else if (msg.type === p.response) {
+          s.x.answered = P.e.now;
           if (!s.up) P.setState(s, p.states[p.states.length - 1], true, 'answered');
         } else if (msg.type === p.request && !p.response && !s.up) P.setState(s, p.states[0], true, 'received');
     }
@@ -410,7 +472,7 @@ const data: Behaviour = {
     if (s.rel.direction === 'unidirectional' && !s.initiator) return;
     const iv = P.timer(s, s.profile, 'hello');
     s.x.detail = `${s.profile.dataMsg} every ${iv.text} (demonstration)`;
-    every(P, s, iv.ms, () => P.unicast(s, s.profile.dataMsg as string, `encapsulated (${s.profile.proto}) between ${formatAddr(s.local.addr)} and ${formatAddr(s.remote.addr)}`));
+    every(P, s, () => iv.ms, () => P.unicast(s, s.profile.dataMsg as string, `encapsulated (${s.profile.proto}) between ${formatAddr(s.local.addr)} and ${formatAddr(s.remote.addr)}`));
   },
   rx(P, s) {
     if (!s.up) P.setState(s, 'Up', true, 'data received');
@@ -423,7 +485,7 @@ const custom: Behaviour = {
     const iv = P.timer(s, s.profile, 'hello');
     s.x.detail = `${s.profile.label} packets every ${iv.text}${s.rel.direction === 'unidirectional' ? ', one way' : ', both ways'}`;
     P.setState(s, 'Sending', true, 'sends dummy packets');
-    every(P, s, iv.ms, () => P.unicast(s, 'packet', `a dummy ${s.profile.label} packet (${s.rel.direction === 'unidirectional' ? 'one way, first endpoint to last' : 'bidirectional'})`));
+    every(P, s, () => iv.ms, () => P.unicast(s, 'packet', `a dummy ${s.profile.label} packet (${s.rel.direction === 'unidirectional' ? 'one way, first endpoint to last' : 'bidirectional'})`));
   },
   rx(P, s) {
     if (!s.up) P.setState(s, 'Sending', true, 'packets arrive');
@@ -472,18 +534,21 @@ function pimJoin(P: ProtocolSim, dev: string, group: string, toward: IpAddr, wha
   P.shared.set(key, true);
   const p = simProfile('pim');
   const period = ((p && (p.timers.find((t) => t.key === 'join') || { seconds: 60 }).seconds) || 60) * 1000;
-  const tick = (): void => {
-    const ok = pimJoinOnce(P, dev, group, toward, what);
-    P.e.after(ok ? period : 5000, tick);
-  };
-  tick();
+  let ok = false;
+  P.periodic(
+    () => true,
+    () => (ok ? period : 5000),
+    () => {
+      ok = pimJoinOnce(P, dev, group, toward, what);
+    },
+  );
 }
 
 function pimJoinOnce(P: ProtocolSim, dev: string, group: string, toward: IpAddr, what: string): boolean {
   const rp = rpOf(P);
   if (rp && rp.dev === dev && what === '(*,G)') return true;
   if (P.e.ownerOf(toward) === dev) return true;
-  const d = lookup(P.m, dev, '', toward, P.e.ctx());
+  const d = lookup(P.m, dev, '', toward, P.e.ctx(dev));
   if (d.kind !== 'forward' || !d.hops.length) return false;
   const hop = d.hops[0];
   const up = Array.from(P.sessions.values()).find((s) => s.protocol === 'pim' && s.dev === dev && s.local.l3.id === hop.iface && s.up && (!hop.gateway || compareAddr(s.remote.addr, hop.gateway) === 0));
@@ -497,28 +562,31 @@ const pim: Behaviour = {
     const key = `pim-hello|${s.rel.id}|${s.dev}|${s.local.l3.id}`;
     if (P.shared.has(key)) return;
     P.shared.set(key, true);
-    const hello = P.timer(s, s.profile, 'hello');
     const group = addr(s.local.addr.version === 4 ? '224.0.0.13' : 'ff02::d');
-    const tick = (): void => {
-      if (P.e.isL3Up(s.dev, s.local.l3.id)) P.multicast(s, group, 'Hello', `holdtime ${P.timer(s, s.profile, 'dead').text}`);
-      P.e.after(hello.ms, tick);
-    };
-    tick();
+    P.periodic(
+      () => true,
+      () => P.timer(s, s.profile, 'hello').ms,
+      () => {
+        if (P.e.isL3Up(s.dev, s.local.l3.id)) P.multicast(s, group, 'Hello', `holdtime ${P.timer(s, s.profile, 'dead').text}`);
+      },
+    );
     // the RP announces itself (BSR) every bootstrap period
     const rp = rpOf(P);
     const bkey = 'pim-bsr|' + s.dev;
     if (rp && rp.dev === s.dev && !P.shared.has(bkey)) {
       P.shared.set(bkey, 0);
-      const bsr = P.timer(s, s.profile, 'bsr');
-      const btick = (): void => {
-        const seq = ((P.shared.get(bkey) as number) || 0) + 1;
-        P.shared.set(bkey, seq);
-        for (const o of Array.from(P.sessions.values()).filter((x) => x.protocol === 'pim' && x.dev === s.dev && x.up).sort((a, b) => (a.key < b.key ? -1 : 1))) {
-          P.unicast(o, 'Bootstrap', `the RP for 224.0.0.0/4 is ${formatAddr(rp.addr)} (${rp.dev})`, { bsr: seq, origin: s.dev });
-        }
-        P.e.after(bsr.ms, btick);
-      };
-      P.e.after(3000, btick);
+      P.periodic(
+        () => true,
+        () => P.timer(s, s.profile, 'bsr').ms,
+        () => {
+          const seq = ((P.shared.get(bkey) as number) || 0) + 1;
+          P.shared.set(bkey, seq);
+          for (const o of Array.from(P.sessions.values()).filter((x) => x.protocol === 'pim' && x.dev === s.dev && x.up).sort((a, b) => (a.key < b.key ? -1 : 1))) {
+            P.unicast(o, 'Bootstrap', `the RP for 224.0.0.0/4 is ${formatAddr(rp.addr)} (${rp.dev})`, { bsr: seq, origin: s.dev });
+          }
+        },
+        3000,
+      );
     }
   },
   rx(P, s, msg, pkt, l3) {
@@ -587,8 +655,7 @@ const igmp: Behaviour = {
       const key = `igmp-q|${s.dev}|${s.local.l3.id}`;
       if (P.shared.has(key)) return;
       P.shared.set(key, true);
-      const q = P.timer(s, s.profile, 'query');
-      every(P, s, q.ms, () => P.multicast(s, addr('224.0.0.1'), 'Membership Query', 'general query: which groups have members here?'));
+      every(P, s, () => P.timer(s, s.profile, 'query').ms, () => P.multicast(s, addr('224.0.0.1'), 'Membership Query', 'general query: which groups have members here?'));
       return;
     }
     P.later(s, 1500, () => {
@@ -640,9 +707,12 @@ export function installLacp(P: ProtocolSim): void {
     }
   }
   if (!mems.length) return;
-  const p = simProfile('lacp');
-  const slow = (p ? (p.timers.find((t) => t.key === 'hello') || { seconds: 30 }).seconds : 30) * 1000;
-  const timeout = (p ? (p.timers.find((t) => t.key === 'dead') || { seconds: 90 }).seconds : 90) * 1000;
+  // the LACP rate of the member's device: slow (30 s, timeout 90 s) or fast (1 s, timeout 3 s), IEEE 802.1AX
+  const rate = (dev: string): { every: number; timeout: number; text: string } => {
+    const r = P.param('lacp-rate', dev);
+    const fast = r.value === 'fast';
+    return { every: fast ? 1000 : 30000, timeout: fast ? 3000 : 90000, text: P.paramText(r) };
+  };
   const set = (m: Mem, st: string, why: string): void => {
     if (m.state === st) return;
     m.state = st;
@@ -656,12 +726,13 @@ export function installLacp(P: ProtocolSim): void {
     for (const m of mems) {
       P.e.at(400 + Math.floor(P.e.random() * 600), () => {
         const g = m.gen;
-        const tick = (): void => {
-          if (m.gen !== g) return;
-          if (P.e.portUp(m.dev, m.port)) send(m, 'periodic');
-          P.e.after(slow, tick);
-        };
-        tick();
+        P.periodic(
+          () => m.gen === g,
+          () => rate(m.dev).every,
+          () => {
+            if (P.e.portUp(m.dev, m.port)) send(m, 'periodic');
+          },
+        );
       });
     }
   });
@@ -672,8 +743,9 @@ export function installLacp(P: ProtocolSim): void {
     if (!m) return;
     m.heard = P.e.now;
     const g = m.gen;
+    const timeout = rate(m.dev).timeout;
     P.e.after(timeout, () => {
-      if (m.gen === g && P.e.now - m.heard >= timeout - 1 && m.state !== 'Detached') set(m, 'Detached', `no LACPDU for ${fmtSec(timeout)}`);
+      if (m.gen === g && P.e.now - m.heard >= timeout - 1 && m.state !== 'Detached') set(m, 'Detached', `no LACPDU for ${fmtSec(timeout)} (LACP rate ${rate(m.dev).text})`);
     });
     const theirs = ((msg.data || {}) as { state?: string }).state || 'Detached';
     if (m.state === 'Detached') {
@@ -694,16 +766,16 @@ export function installLacp(P: ProtocolSim): void {
       } else {
         m.gen++;
         const g = m.gen;
-        const tick = (): void => {
-          if (m.gen !== g) return;
-          send(m, 'link up again');
-          P.e.after(slow, tick);
-        };
-        P.e.after(200, tick);
+        P.periodic(
+          () => m.gen === g,
+          () => rate(m.dev).every,
+          () => send(m, 'link up again'),
+          200,
+        );
       }
     }
   });
-  P.extraStatus.push((): SessionStatus[] => mems.map((m) => ({ protocol: 'lacp', name: `${m.dev}:${m.agg} member ${m.port} → ${m.peer}:${m.peerPort}`, device: m.dev, peer: m.peer, state: m.state, detail: `LACPDU every ${fmtSec(slow)}, timeout ${fmtSec(timeout)}`, up: m.state === 'Collecting / Distributing', relation: m.rel ? m.rel.id : undefined })));
+  P.extraStatus.push((): SessionStatus[] => mems.map((m) => ({ protocol: 'lacp', name: `${m.dev}:${m.agg} member ${m.port} → ${m.peer}:${m.peerPort}`, device: m.dev, peer: m.peer, state: m.state, detail: `LACPDU every ${fmtSec(rate(m.dev).every)}, timeout ${fmtSec(rate(m.dev).timeout)} (LACP rate ${rate(m.dev).text})`, up: m.state === 'Collecting / Distributing', relation: m.rel ? m.rel.id : undefined })));
 }
 
 // ------------------------------------------------------------------ STP, LLDP, CDP (where the model has their relations)
@@ -725,13 +797,15 @@ export function installL2Adverts(P: ProtocolSim): void {
       ports.push({ dev: l.b.device, port: l.b.iface || '@' + l.id, peer: l.a.device, peerPort: l.a.iface || '@' + l.id, heard: -1, known: false });
     }
     if (!ports.length) continue;
-    const hello = (p.timers.find((t) => t.key === 'hello') || { seconds: 30 }).seconds * 1000;
+    // STP's hello time is each switch's own (its simulation attribute); LLDP's and CDP's their profile's
+    const helloOf = (dev: string): number => (base === 'stp' ? Number(P.param('stp-hello', dev).value) : (p.timers.find((t) => t.key === 'hello') || { seconds: 30 }).seconds * 1000);
+    const hello = helloOf('');
     const ttl = (p.timers.find((t) => t.key === 'dead') || { seconds: 120 }).seconds * 1000;
     const mac = p.mac || STP_MAC;
     P.bootHooks.push(() => {
       for (const x of ports) {
         const tick = (): void => {
-          if (P.e.portUp(x.dev, x.port)) {
+          if (P.e.portUp(x.dev, x.port) && P.e.deviceOn(x.dev)) {
             const sd = P.sd(x.dev);
             if (base === 'stp') {
               // BPDUs leave forwarding ports only (a blocked port listens)
@@ -740,13 +814,12 @@ export function installL2Adverts(P: ProtocolSim): void {
               const blocked = !!bport && P.e.net.vlans.some((v) => carries(bport.vlans, v) && P.e.blocked(x.dev, bport.id, v));
               if (!blocked) {
                 const root = stpRoot(P);
-                P.onPort('stp', x.dev, x.port, mac, 'BPDU', 'STP BPDU', `Configuration BPDU from ${x.dev}:${x.port}: root ${root || '?'}, bridge ${sd.bridgeId || x.dev}, hello ${fmtSec(hello)}`, {}, x.peer, r);
+                P.onPort('stp', x.dev, x.port, mac, 'BPDU', `${P.param('stp-mode', x.dev).value === 'stp' ? 'STP' : 'RSTP'} BPDU`, `${P.param('stp-mode', x.dev).value === 'stp' ? 'Configuration BPDU (802.1D)' : 'RST BPDU (802.1w)'} from ${x.dev}:${x.port}: root ${root || '?'}, bridge ${sd.bridgeId || x.dev}, hello ${fmtSec(helloOf(x.dev))}`, {}, x.peer, r);
               }
             } else P.onPort(base, x.dev, x.port, mac, p.messages[0].name, `${p.label} ${p.messages[0].name}`, `${p.messages[0].name} from ${x.dev}:${x.port}: system ${x.dev}, port ${x.port}, TTL ${fmtSec(ttl)}`, {}, x.peer, r);
           }
-          P.e.after(hello, tick);
         };
-        P.e.at(500 + Math.floor(P.e.random() * 1500), tick);
+        P.e.at(500 + Math.floor(P.e.random() * 1500), () => P.periodic(() => true, () => helloOf(x.dev), tick));
       }
     });
     P.handlers.set(base, (dev, _l3, msg) => {

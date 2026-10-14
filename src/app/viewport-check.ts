@@ -248,6 +248,28 @@ export async function runViewportCheck(app: App, doc: Document): Promise<Check[]
       app.closeToolWindow();
       await tick();
       state('the tool windows (addressing, focus, trace path, single points of failure) fit the browser window, docked when it is narrow; nothing in them is cut off; the page does not scroll', tws.concat(problems()));
+      // Start simulation…: its dialog with every layer's section open fits the window; nothing in it is wider than the dialog
+      {
+        const why: string[] = [];
+        void app.openStartDialog();
+        await tick();
+        for (const b of Array.from(doc.querySelectorAll('#modal .psec-toggle')) as HTMLElement[]) b.click();
+        await tick();
+        const dlg = q('#modal') as HTMLElement;
+        const dr = dlg.getBoundingClientRect();
+        if (dr.left < -0.5 || dr.top < -0.5 || dr.right > view.w + 0.5 || dr.bottom > view.h + 0.5) why.push('the start dialog leaves the browser window');
+        for (const e of Array.from(dlg.querySelectorAll('input, select, button, label, .phelp')) as HTMLElement[]) {
+          const r = e.getBoundingClientRect();
+          if (r.width && (r.right > dr.right + 0.5 || r.left < dr.left - 0.5)) why.push(`start dialog: ${e.tagName.toLowerCase()} ${e.id || e.textContent} is wider than the dialog`);
+        }
+        const start = q('#modal [data-value="start"]') as HTMLElement;
+        const sr = start.getBoundingClientRect();
+        if (sr.bottom > view.h + 0.5 || sr.width < 1) why.push('the Start button is not in view');
+        if (doc.documentElement.scrollHeight > view.h + 1 || doc.documentElement.scrollWidth > view.w + 1) why.push('with the start dialog: the page scrolls');
+        (q('#modal [data-value="cancel"]') as HTMLElement).click();
+        await tick();
+        state('the start dialog with all its sections open fits the browser window; its fields wrap, the page does not scroll', why.slice(0, 6).concat(problems()));
+      }
       // the protocol simulation: its window like the others, and two tables at once inside the browser window
       tws.length = 0;
       app.startProtocolSimulation();
@@ -256,6 +278,12 @@ export async function runViewportCheck(app: App, doc: Document): Promise<Check[]
       ctl.runTo(15000);
       ctl.showTable('arp', 'hq-rtr1');
       ctl.showTable('mac', 'hq-acc1');
+      await tick();
+      // with its parameters open (one layer expanded) and its network events
+      (q('#sim-params') as HTMLDetailsElement).open = true;
+      (q('#sim-pw-l1-btn') as HTMLElement).click();
+      ctl.sim.powerOff('hq-rtr2');
+      ctl.refresh(true);
       await tick();
       checkWindow('Protocol simulation');
       const panels = Array.from(doc.querySelectorAll('.sim-table-panel')) as HTMLElement[];

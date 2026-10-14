@@ -8,7 +8,9 @@
 #     NDP, gratuitous ARP when the VRRP master changes.
 #   * core1 is a Layer 3 switch that routes between VLAN 10 (users) and
 #     VLAN 20 (lab, dual-stack); core1 and core2 share the users' gateway
-#     10.10.10.1 by VRRP; core1 has a configured ARP timeout (300 s).
+#     10.10.10.1 by VRRP. Device overrides (simulation:): core1's ARP
+#     timeout (300 s), acc-sw's MAC aging (120 s), the internet's
+#     latency (15 ms); acc-sw's uplink to core2 flaps from the start.
 #   * an OSPF ring with costs: r1 → r3 is preferred; its cable runs through
 #     a carrier's switch, so when the far side fails r1 only notices when
 #     the dead interval expires, and the traffic moves to r1 → r2 → r3.
@@ -68,6 +70,7 @@ devices:
     interfaces: [p1, p2, up1, up2]
     logical_interfaces:
       - {id: Vlan99, type: virtual, vlan: 99, ip: 10.99.0.10/24, description: management}
+    simulation: {mac_aging: 120}
     routes:
       - {prefix: 0.0.0.0/0, via: 10.99.0.1, name: management gateway}
   - id: core1
@@ -75,7 +78,7 @@ devices:
     layer3: true
     group: campus
     router_id: lo0
-    arp_timeout: 300
+    simulation: {arp_timeout: 300}
     protocols:
       ospf: {}
       vrrp: {}
@@ -197,6 +200,7 @@ devices:
   - id: inet
     label: Internet
     type: cloud
+    simulation: {latency: 15}
     interfaces: [a, b]
   - id: br
     label: branch router
@@ -235,6 +239,8 @@ links:
     b: {device: core2, interface: down1, mode: trunk, tagged: [10]}
     medium: fiber
     speed: 10G
+    label: flapping uplink
+    simulation: {flapping: true}
   - id: l-core-peer
     a: {device: core1, interface: peer, mode: trunk, tagged: [10]}
     b: {device: core2, interface: peer, mode: trunk, tagged: [10]}

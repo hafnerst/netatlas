@@ -297,7 +297,7 @@ export function buildNet(model: Model): SimNet {
  * Only links between two bridges matter (a router never forwards frames).
  * `blocked` keys: "device|bridgePort".
  */
-export function spanningTree(net: SimNet, vlan: number, linkDown: (id: string) => boolean): { root: string; blocked: Set<string> } {
+export function spanningTree(net: SimNet, vlan: number, linkDown: (id: string) => boolean): { root: string; blocked: Set<string>; ports: Set<string> } {
   type Edge = { from: string; fromPort: string; to: string; toPort: string; link: string };
   const edges = new Map<string, Edge[]>();
   const bridges = Array.from(net.devices.values()).filter((d) => d.bridge);
@@ -347,6 +347,10 @@ export function spanningTree(net: SimNet, vlan: number, linkDown: (id: string) =
       frontier = next;
     }
   }
-  for (const [b, out] of edges) for (const e of out) if (!tree.has(portKey(b, e.fromPort))) blocked.add(portKey(b, e.fromPort));
-  return { root, blocked };
+  const ports = new Set<string>();
+  for (const [b, out] of edges) for (const e of out) {
+    ports.add(portKey(b, e.fromPort));
+    if (!tree.has(portKey(b, e.fromPort))) blocked.add(portKey(b, e.fromPort));
+  }
+  return { root, blocked, ports };
 }

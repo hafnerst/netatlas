@@ -19,6 +19,8 @@ const R = load('model/protocols.js');
 const sim = (text, opts) => new S.Simulation(model(text), opts);
 const events = (s, f) => s.events().filter(f);
 const pe = example('protocol-simulation.yaml');
+/** the example without its flapping uplink (for tests that time switching on acc-sw's uplinks) */
+const steady = pe.replace(/\n *simulation: \{flapping: true\}/, '');
 const reroute = example('ospf-reroute.yaml');
 
 test('a fresh start: empty ARP, neighbour and MAC tables, every session down, the interfaces up at t = 0', () => {
@@ -111,10 +113,10 @@ test('ARP tables: configured and default timers, the timer scale, ages and expir
   const s = sim(pe, { timerScale: 60 });
   s.runTo(30000);
   const t = Object.fromEntries(s.arpTimers('core1').map((x) => [x.label, x]));
-  assert.deepEqual([t['ARP entry timeout'].seconds, t['ARP entry timeout'].origin], [300, 'configured']);
+  assert.deepEqual([t['ARP timeout'].value, t['ARP timeout'].source], ['5 min', 'device']);
   const t1 = Object.fromEntries(s.arpTimers('r1').map((x) => [x.label, x]));
-  assert.deepEqual([t1['ARP entry timeout'].seconds, t1['NDP reachable time'].seconds], [14400, 30]);
-  assert.match(t1['ARP entry timeout'].origin, /^default/);
+  assert.deepEqual([t1['ARP timeout'].value, t1['NDP reachable time'].value, t1['ARP retransmit interval'].value, t1['ARP retries'].value], ['4 h', '30 s', '1 s', '3']);
+  assert.match(t1['ARP timeout'].origin, /^default — Cisco IOS/);
   // 300 s at 1:60 → 5 s; 4 h at 1:60 → 240 s
   const core1 = s.arpTable('core1').find((r) => r.ip === '10.0.1.2');
   assert.ok(core1.remaining <= 5000);
@@ -179,9 +181,9 @@ test('MAC tables: aging (with the timer scale), flushing on a failed port, relea
   s.runTo(8000);
   assert.ok(!s.macTable('sw').some((r) => r.type === 'dynamic'), 'aged out after 300 s / 60');
   assert.ok(events(s, (e) => e.kind === 'table' && e.device === 'sw' && e.state === 'aged out').length);
-  assert.deepEqual(s.macTimers().map((t) => [t.seconds, t.origin]), [[300, 'default (IEEE 802.1D)']]);
+  assert.deepEqual(s.macTimers('sw').map((t) => [t.label, t.value, t.source]), [['MAC aging time', '5 min', 'default'], ['MAC table size', '8192', 'default']]);
   // relearning: acc-sw learns core1's VLAN 10 MAC on up1; the cable fails: flushed, and learned again over up2 (STP unblocks it)
-  const p = sim(pe);
+  const p = sim(steady);
   p.runTo(30000);
   const core1 = p.engine.net.macs.get('core1:Vlan10').mac;
   assert.equal(p.macTable('acc-sw').find((r) => r.mac === core1 && r.vlan === 10).port, 'up1');
@@ -263,7 +265,7 @@ test('determinism: the same model and the same actions give the same timeline', 
     s.runTo(40000);
     s.fail('link:l-carrier-r3');
     s.runTo(70000);
-    s.restore();
+    s.restore('link:l-carrier-r3');
     s.runTo(90000);
     return s.events().map((e) => `${e.t}|${e.kind}|${e.device}|${e.what}|${e.detail}`);
   };
@@ -283,7 +285,7 @@ test('a failure: dropped packets marked where they were lost, the dead interval,
   // the users' traffic now goes via r2
   assert.ok(events(s, (e) => e.t > t0 + 2000 && e.kind === 'route' && e.device === 'r2' && /10\.10\.10\.21 → 10\.30\.0\.10/.test(e.detail)).length);
   assert.ok(s.engine.flights.length >= 0);
-  s.restore();
+  s.restore('link:l-carrier-r3');
   const t1 = s.now;
   s.runTo(t1 + 60000);
   const seq = events(s, (e) => e.t > t1 && e.protocol === 'ospf' && e.kind === 'state' && e.device === 'r1' && e.peer === 'r3').map((e) => e.state);
@@ -294,10 +296,10 @@ test('a failure: dropped packets marked where they were lost, the dead interval,
 test('lost on the failed cable: a dot dropped where it was, nothing delivered behind it', () => {
   const s = sim(reroute);
   s.runTo(30000);
-  // fail while a frame is on the cable
-  let t = 30000;
-  for (; t < 60000; t += 50) {
-    s.runTo(t);
+  // fail while a frame is on the cable (it is there for microseconds: step from event to event)
+  for (let i = 0; i < 100000; i++) {
+    s.step();
+    const t = s.now;
     if (s.engine.flights.some((f) => f.track.ref === 'link:l-c1-c3' && f.t0 <= t && f.t1 > t)) break;
   }
   s.fail('link:l-c1-c3');
@@ -455,14 +457,14 @@ test('profiles: failure and restore of a session (OSPF over a failed cable goes 
   s.fail('link:l');
   s.runTo(31000);
   assert.ok(s.status().filter((x) => x.protocol === 'ospf').every((x) => x.state === 'Down'));
-  s.restore();
+  s.restore('link:l');
   s.runTo(80000);
   assert.ok(s.status().filter((x) => x.protocol === 'ospf').every((x) => x.state === 'Full'));
   const b = sim(pair('bgp', { svc: 'bgp: {asn: 6500#}', ep: ['r1:lo0', 'r2:lo0'] }));
   b.runTo(20000);
   b.fail('link:l');
-  b.runTo(20000 + 95000);
-  assert.ok(events(b, (e) => e.protocol === 'bgp' && /hold timer expired \(90 s \(default/.test(e.detail)).length, 'the hold time');
+  b.runTo(20000 + 185000);
+  assert.ok(events(b, (e) => e.protocol === 'bgp' && /hold timer expired \(3 min \(3 × bgp keepalive, default/.test(e.detail)).length, 'the hold time');
   assert.ok(events(b, (e) => e.what === 'NOTIFICATION').length);
 });
 
@@ -481,7 +483,7 @@ test('LACP on the members of an aggregate; STP, LLDP and CDP where the model has
   const lacp = s.status().filter((x) => x.protocol === 'lacp');
   assert.ok(lacp.length >= 2 && lacp.every((x) => x.state === 'Collecting / Distributing'));
   const p = sim(pe);
-  assert.ok(flightsOf(p, 0, 10000).some((f) => f.protocol === 'stp' && /^STP BPDU$/.test(f.label)));
+  assert.ok(flightsOf(p, 0, 10000).some((f) => f.protocol === 'stp' && /^RSTP BPDU$/.test(f.label)));
   assert.deepEqual(p.status().filter((x) => x.protocol === 'stp').map((x) => x.state).sort(), ['Forwarding', 'Forwarding', 'Root bridge']);
   // no STP relation: no BPDUs (loops are still broken)
   const r = sim(reroute);

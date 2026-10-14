@@ -80,6 +80,8 @@ export interface DrawOptions {
   shown: (f: Flight) => boolean;
   /** static arrows instead of moving dots */
   reduce: boolean;
+  /** reduced motion: every message in flight since this time (the last step), as arrows */
+  since?: number;
   color: (protocol: string) => string;
 }
 
@@ -168,7 +170,8 @@ export class SimAnimator {
     const list = flights.filter((f) => f.view === opts.view && opts.shown(f)).sort((a, b) => a.t0 - b.t0 || a.id - b.id);
     for (const f of list) {
       const lost = f.dropped !== undefined && opts.t >= f.dropped;
-      if (!lost && (opts.t < f.t0 || opts.t > f.t1)) continue;
+      const from = opts.since !== undefined ? opts.since : opts.t;
+      if (!lost && (opts.t < f.t0 || from > f.t1)) continue;
       if (drawn >= MAX_DOTS) {
         left++;
         continue;

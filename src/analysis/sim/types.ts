@@ -134,11 +134,24 @@ export interface MacRow {
   remaining: number | null;
 }
 
-/** A timer of a table, as shown at its top. */
+/** A timer of a table, as shown at its top: the value in effect and where it comes from. */
 export interface TableTimer {
   label: string;
-  /** the configured or default value, in seconds */
-  seconds: number;
-  /** 'configured' (the device's or the interface's) or 'default' (with its source) */
+  /** the value as text ("4 h") */
+  value: string;
+  source: 'configured' | 'device' | 'simulation' | 'default';
+  /** the source in words ("default — Cisco IOS (4 h); RFC 826 sets none") */
   origin: string;
+}
+
+/** A network event in effect (the Simulation window lists them, each with what ends it). */
+export interface NetEvent {
+  kind: 'fail' | 'flap' | 'shut' | 'power';
+  /** "link:x", "relation:x", "iface:dev:port", "device:x" */
+  ref: string;
+  since: number;
+  /** "failed", "down, cycle 2 of 3", "booting (up at t = 70 s)" */
+  state: string;
+  /** a VM or container that went down with its host (it is not ended by itself) */
+  hosted?: boolean;
 }

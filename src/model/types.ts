@@ -91,10 +91,6 @@ export interface Interface {
   mac?: string;
   /** configured MTU in bytes (68–65535), when written */
   mtu?: number;
-  /** the ARP entry timeout on this interface in seconds, overriding the device's (the protocol simulation's ARP table) */
-  arpTimeout?: number;
-  /** the IPv6 neighbor reachable time on this interface in seconds, overriding the device's */
-  ndpReachableTime?: number;
   /** the interface's settings of services its device enables (a VRRP group …), by service id */
   services: ServiceConfig[];
   /** virtual: ids of the physical interfaces of the same device that are its members (a bond / aggregate); in file order */
@@ -126,10 +122,13 @@ export interface Device {
   layer3?: boolean;
   group?: string;
   tier?: number;
-  /** the ARP entry timeout in seconds, when written (the protocol simulation's ARP tables; default: sim timers) */
-  arpTimeout?: number;
-  /** the IPv6 neighbor reachable time in seconds, when written */
-  ndpReachableTime?: number;
+  /**
+   * The device's simulation attributes (its `simulation:` block), by the
+   * registry key of analysis/sim/params.ts (durations in ms): only what it
+   * overrides; everything else it inherits from the simulation's values or
+   * the defaults.
+   */
+  simulation?: Map<string, number | string>;
   /** the router ID the device's protocols share (a loopback or an IPv4 address), when written */
   routerId?: RouterIdValue;
   /** the routing services the device enables (its `protocols:`), sorted by id; empty unless the type is Layer 3+ */
@@ -259,9 +258,21 @@ export interface Link {
    * other way. Bidirectional (the default) is not written.
    */
   direction: Direction;
+  /** the cable's simulation settings (its `simulation:` block), when written */
+  simulation?: LinkSimulation;
   description?: string;
   attrs: Attrs;
   line: number;
+}
+
+/** A cable's settings for the protocol simulation: explicit, they win over the simulation's values. */
+export interface LinkSimulation {
+  /** propagation delay in ms */
+  latency?: number;
+  /** share of frames lost, in percent */
+  loss?: number;
+  /** it flaps from the start (with the simulation's flapping times) */
+  flapping?: boolean;
 }
 
 /**

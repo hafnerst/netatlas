@@ -1952,9 +1952,21 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       check(`${theme}: with a model and no simulation, Start simulation… is available and Exit simulation is not (menu and palette agree)`, !startBtn.disabled && exitBtn.disabled && cmd('sim.start').enabled && !cmd('sim.exit').enabled);
       click('#simulate-btn');
       startBtn.click();
+      await tick();
+      // the start dialog: the layers' sections collapsed, their counts in their names; Start and Cancel
+      const heads = Array.from(doc.querySelectorAll('#modal .psec-toggle')).map((b) => `${b.textContent}|${b.getAttribute('aria-expanded')}`);
+      check(
+        `${theme}: Start simulation… opens its dialog: Layer 1 – Physical (8), Layer 2 – Data link (6), Layer 3 – Network (6), all collapsed; the protocols shown; Start and Cancel`,
+        heads.join(' ') === 'Layer 1 – Physical (8)|false Layer 2 – Data link (6)|false Layer 3 – Network (6)|false' && !!q('#sim-pd-protos input[data-sim-proto="ospf"]') && !!q('#modal [data-value="start"]') && !!q('#modal [data-value="cancel"]') && (q('#sim-pd-l1') as HTMLElement).hidden,
+        heads.join(' '),
+      );
+      check(`${theme}: the dialog has the theme’s colours and fits the window`, doc.defaultView!.getComputedStyle(q('#modal')!).backgroundColor !== 'rgba(0, 0, 0, 0)' && (q('#modal') as HTMLElement).getBoundingClientRect().right <= doc.documentElement.clientWidth + 1);
+      (doc.querySelector('#modal [data-value="start"]') as HTMLElement).click();
+      await tick();
       const ctl = app.simController()!;
       ctl.setPlaying(false);
-      const fresh = ctl.sim.tableDevices().every((d) => !ctl.sim.arpTable(d.id).length && !ctl.sim.macTable(d.id).some((r) => r.type === 'dynamic')) && ctl.sim.status().filter((s) => s.protocol === 'ospf').every((s) => !s.up) && ctl.sim.now === 0;
+      // (the clock ran for a moment before the pause: the start is read from the log)
+      const fresh = ctl.sim.events().some((e) => e.t === 0 && /fresh start: empty ARP, neighbour and MAC tables, every adjacency down/.test(e.detail)) && !ctl.sim.events().some((e) => e.t === 0 && (e.kind === 'table' || (e.kind === 'state' && e.protocol === 'ospf')));
       await tick(50);
       check(
         `${theme}: Start simulation… starts it (banner, window); now Start is unavailable (“A simulation is already running”) and Exit is available`,
@@ -1976,7 +1988,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       ctl.diagramClick('device:core1', r.left + 5, r.top + 5);
       await tick();
       const menuItems = Array.from(doc.querySelectorAll('.sim-menu [role="menuitem"]')).map((b) => b.textContent || '');
-      check(`${theme}: clicking a switch in the simulation opens a menu there: Show ARP table, Show MAC table`, menuItems.join('|') === 'Show ARP table|Show MAC table', menuItems.join('|'));
+      check(`${theme}: clicking a switch in the simulation opens a menu there: Show ARP table, Show MAC table, Power off, Shut an interface…`, menuItems.join('|') === 'Show ARP table|Show MAC table|Power off|Shut an interface…', menuItems.join('|'));
       (doc.querySelector('.sim-menu [role="menuitem"]') as HTMLElement).click();
       await tick();
       (q('#sim-tabs') as HTMLDetailsElement).open = true;
@@ -1989,8 +2001,8 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       check(`${theme}: two ARP tables and a MAC table open at once, each a non-modal dialog titled with its device, with a close button`, titles.join('|') === 'ARP table · core1|ARP table · r1|MAC table · acc-sw' && panels.every((p) => p.getAttribute('role') === 'dialog' && !p.hasAttribute('aria-modal') && !!p.querySelector('.st-close')), titles.join('|'));
       const core1 = panels[0];
       check(`${theme}: the ARP table: column headers, the timers in effect (configured or default) and the timer scale, rows with type and age`,
-        Array.from(core1.querySelectorAll('table:first-of-type thead th, .st-scroll:first-of-type thead th')).slice(0, 8).map((h) => h.textContent).join('|') === 'IP address|MAC address|Interface|VLAN|Type|State|Age|Expires in' && /ARP entry timeout5 min \(configured\)/.test(core1.textContent || '') && /Timer scalereal time/.test(core1.textContent || '') && core1.querySelectorAll('tbody tr[data-ip]').length > 0 && /\(simulated\)/.test(core1.textContent || ''));
-      check(`${theme}: the MAC table: MAC, VLAN, port, type, age, expires in; the aging time with its default`, Array.from(panels[2].querySelectorAll('thead th')).map((h) => h.textContent).join('|') === 'MAC address|VLAN|Port|Type|Age|Expires in' && /Aging time5 min \(default \(IEEE 802\.1D\)\)/.test(panels[2].textContent || '') && panels[2].querySelectorAll('tbody tr[data-mac]').length > 0);
+        Array.from(core1.querySelectorAll('table:first-of-type thead th, .st-scroll:first-of-type thead th')).slice(0, 8).map((h) => h.textContent).join('|') === 'IP address|MAC address|Interface|VLAN|Type|State|Age|Expires in' && /ARP timeout5 min \(device\)/.test(core1.textContent || '') && /Timer scalereal time/.test(core1.textContent || '') && core1.querySelectorAll('tbody tr[data-ip]').length > 0 && /\(simulated\)/.test(core1.textContent || ''));
+      check(`${theme}: the MAC table: MAC, VLAN, port, type, age, expires in; the aging time with its default`, Array.from(panels[2].querySelectorAll('thead th')).map((h) => h.textContent).join('|') === 'MAC address|VLAN|Port|Type|Age|Expires in' && /MAC aging time2 min \(device\)/.test(panels[2].textContent || '') && panels[2].querySelectorAll('tbody tr[data-mac]').length > 0);
       check(`${theme}: the tables have the theme’s colours`, doc.defaultView!.getComputedStyle(core1).backgroundColor !== 'rgba(0, 0, 0, 0)');
       // the protocols shown change during the simulation without a restart
       const tBefore = sim.now;
@@ -2005,7 +2017,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const cab = (q('#canvas g.cable[data-ref="link:l-carrier-r3"]') as Element).getBoundingClientRect();
       ctl.diagramClick('link:l-carrier-r3', cab.left + cab.width / 2, cab.top + cab.height / 2);
       await tick();
-      check(`${theme}: clicking a cable in the simulation offers Fail this link`, (doc.querySelector('.sim-menu [role="menuitem"]') as HTMLElement).textContent === 'Fail this link');
+      check(`${theme}: clicking a cable in the simulation offers Fail link and Start flapping`, Array.from(doc.querySelectorAll('.sim-menu [role="menuitem"]')).map((b) => b.textContent).join('|') === 'Fail link|Start flapping');
       (doc.querySelector('.sim-menu [role="menuitem"]') as HTMLElement).click();
       await tick();
       const tf = sim.now;
@@ -2013,8 +2025,8 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       await tick();
       const dead = sim.events().find((e) => e.t > tf && e.device === 'r1' && /dead interval expired/.test(e.detail));
       const rerouted = sim.events().some((e) => e.t > tf && e.kind === 'route' && e.device === 'r2' && /10\.10\.10\.21 → 10\.30\.0\.10/.test(e.detail));
-      check(`${theme}: failed: the dead interval expires at r1, and the users’ traffic is rerouted via r2`, !!dead && rerouted && /l-carrier-r3 has failed/.test(q('#sim-failed')!.textContent || ''), `dead ${!!dead} rerouted ${rerouted} failed ${sim.failed()} t ${tf}→${sim.now}: ${q('#sim-failed')!.textContent}`);
-      check(`${theme}: the diagram marks the failed cable (down); the banner says so`, !!q('#canvas [data-ref="link:l-carrier-r3"].sim-down') && /l-carrier-r3 failed/.test(q('#sim-text')!.textContent || ''), q('#sim-text')!.textContent || '');
+      check(`${theme}: failed: the dead interval expires at r1, and the users’ traffic is rerouted via r2`, !!dead && rerouted && !!q('#sim-events li[data-ref="link:l-carrier-r3"]'), `dead ${!!dead} rerouted ${rerouted} down ${sim.downRefs().join(',')} t ${tf}→${sim.now}: ${q('#sim-failed')!.textContent}`);
+      check(`${theme}: the diagram marks the failed cable (down); the banner says so`, !!q('#canvas [data-ref="link:l-carrier-r3"].sim-down') && /1 network event/.test(q('#sim-text')!.textContent || ''), q('#sim-text')!.textContent || '');
       // the table timers faster: entries age; the MAC entries are relearned on the new path after another failure
       (q('#sim-scale') as HTMLSelectElement).value = '60';
       (q('#sim-scale') as HTMLSelectElement).dispatchEvent(new Event('change', { bubbles: true }));
@@ -2027,18 +2039,59 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       ctl.runTo(sim.now + 15000);
       await tick();
       const after = sim.macTable('acc-sw').find((x) => x.mac === coreMac);
-      check(`${theme}: one link at a time (failing another restores the first); acc-sw’s MAC entries on the failed port are removed and relearned on the new path`, sim.failed() === 'link:l-acc-core1' && !!before && before.port === 'up1' && !!after && after.port === 'up2' && /up2/.test(panels[2].textContent || ''), `${before && before.port} → ${after && after.port}`);
-      ctl.restoreLink();
+      check(`${theme}: several events at once (a second failed cable); acc-sw learns core1’s MAC on the new path`, sim.netEvents().filter((e) => e.kind === 'fail').length === 2 && !!after && after.port === 'up2' && /up2/.test(panels[2].textContent || ''), `${before && before.port} → ${after && after.port}`);
+      ctl.restoreLink('link:l-acc-core1');
+      ctl.restoreLink('link:l-carrier-r3');
       ctl.runTo(sim.now + 60000);
       const notFull = sim.status().filter((s) => s.protocol === 'ospf' && s.state !== 'Full' && !/ospf-cores/.test(s.name)).map((s) => s.name + ' ' + s.state);
       check(`${theme}: Restore link: the adjacencies form again with their full handshake`, !notFull.length, notFull.join('; '));
+      // network events: several at once (power off, flapping), each listed with its way back
+      ctl.powerOff('br');
+      ctl.startFlap('link:l-rx');
+      await tick();
+      const evRows = Array.from(doc.querySelectorAll('#sim-events li')).map((li) => li.getAttribute('data-ref') + '|' + ((li.querySelector('button') || { textContent: '' }).textContent || ''));
+      check(`${theme}: Power off and Start flapping: listed with Power on and Stop flapping; the device is marked down`, evRows.indexOf('device:br|Power on') >= 0 && evRows.indexOf('link:l-rx|Stop flapping') >= 0 && !!q('#canvas [data-ref="device:br"].sim-down'), evRows.join(', '));
+      (q('#sim-events li[data-ref="device:br"] button') as HTMLElement).click();
+      ctl.stopFlap('link:l-rx');
+      ctl.runTo(sim.now + 70000);
+      await tick();
+      check(`${theme}: Power on: br boots for its boot time and its sessions start afresh`, sim.events().some((e) => e.device === 'br' && /br has booted/.test(e.detail)) && !sim.netEvents().length);
+      // the window's parameters: the same sections; a change applies at once and is logged
+      (q('#sim-params') as HTMLDetailsElement).open = true;
+      (q('#sim-pw-l3-btn') as HTMLElement).click();
+      const ttl = q('#sim-pw-ttl') as HTMLInputElement;
+      ttl.value = '32';
+      ttl.dispatchEvent(new Event('input', { bubbles: true }));
+      ttl.dispatchEvent(new Event('change', { bubbles: true }));
+      await tick();
+      check(`${theme}: a parameter changed in the window applies at once and is written to the event log`, sim.params.simValue('ttl') === 32 && sim.events().some((e) => e.detail === 'Parameter changed: Default TTL / hop limit 64 → 32 (simulation)') && !!q('[data-param-row~="ttl"].modified'));
+      (q('#sim-pw-reset-all') as HTMLElement).click();
+      await tick();
+      // a device's Simulation section stays editable during the simulation; the change applies there; Undo takes it back
+      app.select('device:core1');
+      click('[data-tab="edit"]');
+      await tick();
+      const simSec = q('#side-body .sim-live #fg-simulation') as HTMLElement | null;
+      check(`${theme}: during the simulation the Edit tab is read-only but for the device’s Simulation section (collapsed, its count in its name)`, !!simSec && /^Simulation \(\d+\)$/.test(simSec.textContent || '') && simSec.getAttribute('aria-expanded') === 'false' && !!q('#side-body fieldset.locked-form[disabled]'), simSec ? `${simSec.textContent} ${simSec.getAttribute('aria-expanded')} ${!!q('#side-body fieldset.locked-form[disabled]')}` : 'none');
+      if (simSec) {
+        simSec.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0 }));
+        await tick();
+        const f = q('#sim-attr-mac_aging') as HTMLInputElement;
+        f.value = '90';
+        f.dispatchEvent(new Event('change', { bubbles: true }));
+        await tick();
+        const changed = /mac_aging: 90/.test(app.exportText()) && sim.events().some((e) => e.detail === 'Parameter changed: MAC aging time on core1 5 min → 90 s (device)');
+        app.undo();
+        await tick();
+        check(`${theme}: an override there is written to the model, applies at once (logged as device), and Undo takes it back during the simulation`, changed && !/mac_aging: 90/.test(app.exportText()) && sim.events().some((e) => e.detail === 'Parameter changed: MAC aging time on core1 90 s → 5 min (default)'));
+      }
       // an export: a still picture with labelled arrows and the note
       const svg = app.exportSvg();
       check(`${theme}: an export during the simulation: “Protocol simulation, t = …”, a still picture (arrows with labels, no moving dots)`, /Protocol simulation, t = /.test(svg) && !/class="sim-dot"/.test(svg));
       // Exit: the tables close, the model is unchanged, nothing to undo
       exitBtn.click();
       await tick();
-      check(`${theme}: Exit simulation: the window and the tables close, Start is available again; the model is unchanged and has no new undo step`, !app.simulationOn() && !doc.querySelector('.sim-table-panel') && app.toolWindow() !== 'sim' && !startBtn.disabled && app.exportText() === yamlBefore && (app.mdoc as ModelDoc).canUndo() === undoBefore);
+      check(`${theme}: Exit simulation: the window and the tables close, Start is available again; the model is as before (the Simulation edit was undone) and has no new undo step`, !app.simulationOn() && !doc.querySelector('.sim-table-panel') && app.toolWindow() !== 'sim' && !startBtn.disabled && app.exportText() === yamlBefore && (app.mdoc as ModelDoc).canUndo() === undoBefore);
     }
     app.theme.set('dark');
 
@@ -4926,8 +4979,8 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         return `${cs.borderTopStyle} ${cs.borderTopLeftRadius}`;
       };
       check(
-        'Edit and Details share the object header and present their content in the same titled cards (Edit: Identity, Placement, Protocols, Address resolution, Notes; Details: Overview and its sections); Duplicate and Delete keep their names',
-        editHead && detHead && /^Identity\|Placement\|Protocols \(routing services\)\|Address resolution \(simulation\)\|Notes/.test(editGroups) && /^Overview\|Physical interfaces/.test(detGroups) && buttons === 'Duplicate|Delete' && card('#side-body .fgroup') === 'solid 9px' && doc.documentElement.scrollHeight <= doc.documentElement.clientHeight + 1,
+        'Edit and Details share the object header and present their content in the same titled cards (Edit: Identity, Placement, Protocols, Simulation with its count, Notes; Details: Overview and its sections); Duplicate and Delete keep their names',
+        editHead && detHead && /^Identity\|Placement\|Protocols \(routing services\)\|Simulation \(\d+\)\|Notes/.test(editGroups) && /^Overview\|Physical interfaces/.test(detGroups) && buttons === 'Duplicate|Delete' && card('#side-body .fgroup') === 'solid 9px' && doc.documentElement.scrollHeight <= doc.documentElement.clientHeight + 1,
         editGroups + ' // ' + detGroups,
       );
       click('[data-tab="legend"]');

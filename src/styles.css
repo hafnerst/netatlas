@@ -1189,3 +1189,49 @@ td.mono { font-family: var(--font-mono); white-space: nowrap; }
 .st-timers dd { margin: 0; color: var(--muted); }
 .st-table caption { text-align: left; font-weight: 600; font-size: 12px; padding: 4px 0; }
 .st-scroll { overflow-x: auto; }
+
+/* ---------------- the simulation's Layer 1–4 parameters (start dialog, Simulation window) */
+dialog#modal.sim-start-dialog { max-width: 720px; }
+dialog#modal.sim-start-dialog .modal-body { max-height: none; overscroll-behavior: contain; }
+.psecs { display: flex; flex-direction: column; gap: 6px; margin: 0 0 8px; }
+.psec-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.psec { border: 1px solid var(--border); border-radius: 8px; }
+.psec-head { margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; font-size: 13.5px; }
+.psec-toggle { flex: 1 1 auto; text-align: left; border: none; background: none; font: inherit; font-weight: 600; color: var(--text); padding: 6px 10px; border-radius: 8px; min-width: 0; }
+.psec-toggle::before { content: '▸'; display: inline-block; width: 1.1em; color: var(--muted); }
+.psec-toggle[aria-expanded="true"]::before { content: '▾'; }
+.psec-toggle:hover { background: var(--accent-soft); }
+.psec-mod { color: var(--accent); padding-right: 10px; font-weight: 600; }
+.psec-body { padding: 4px 10px 8px; display: flex; flex-direction: column; gap: 8px; }
+.prow { display: flex; flex-wrap: wrap; gap: 4px 14px; align-items: flex-start; padding: 4px 0 4px 8px; border-left: 3px solid transparent; }
+.prow.modified { border-left-color: var(--accent); }
+.pmod { order: 9; flex-basis: 100%; font-size: 11px; font-weight: 700; color: var(--accent); }
+.pmod[hidden] { display: none; }
+.pfield { flex: 1 1 220px; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.pfield > label { font-size: 12px; font-weight: 600; }
+.pinput { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.pinput input, .pinput select { flex: 1 1 auto; min-width: 0; max-width: 16em; padding: 4px 7px; border: 1px solid var(--control-border); border-radius: 5px; background: var(--canvas); }
+.pinput input[aria-invalid="true"] { border-color: var(--error); border-width: 2px; }
+.punit { font-size: 12px; color: var(--muted); white-space: nowrap; }
+.phelp { margin: 0; overflow-wrap: anywhere; }
+.perr { margin: 0; }
+.perr[hidden] { display: none; }
+.psec-foot { display: flex; justify-content: flex-end; }
+#sim-pd-protos { margin-top: 4px; }
+/* the network events in effect, each with its way back */
+.sim-events { list-style: none; margin: 4px 0; padding: 0; display: grid; gap: 4px; }
+.sim-events li { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: 12.5px; }
+.sim-events li > span { flex: 1 1 200px; min-width: 0; overflow-wrap: anywhere; }
+/* a device's Simulation section in the Edit tab */
+.fgroup-disclosure { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; }
+.fgroup-toggle { border: none; background: none; padding: 0; font: inherit; font-weight: inherit; color: inherit; text-align: left; }
+.fgroup-toggle::before { content: '▸'; display: inline-block; width: 1.1em; color: var(--muted); }
+.fgroup-toggle[aria-expanded="true"]::before { content: '▾'; }
+.fgroup-toggle:hover { text-decoration: underline; }
+.sim-attrs { display: flex; flex-direction: column; gap: 10px; }
+.sim-attrs[hidden] { display: none; }
+.sim-attr.overridden { border-left: 3px solid var(--accent); padding-left: 6px; }
+.sim-attr-state { margin: 0; overflow-wrap: anywhere; }
+.sim-attr > button { align-self: flex-start; }
+.sim-live { margin-bottom: 10px; }
+.fgroup-disclosure > span { text-transform: none; letter-spacing: normal; font-weight: 400; }

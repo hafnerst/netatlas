@@ -53,8 +53,7 @@ export function duration(ms: number | null): string {
 }
 
 function timerText(t: TableTimer): string {
-  const s = t.label.indexOf('Requests') === 0 ? String(t.seconds) : duration(t.seconds * 1000);
-  return `${s} (${t.origin})`;
+  return `${t.value} (${t.origin})`;
 }
 
 export class TablePanels {

@@ -226,15 +226,30 @@ const MANUAL: Section[] = [
     id: 'simulate',
     title: 'Start a protocol simulation',
     steps: [
-      'Choose **Simulate → Start simulation…**. The network starts like a freshly booted one: every table empty, every adjacency down, the interfaces coming up. Its messages appear as dots with labels such as *ARP Who has 10.0.0.2? Tell 10.0.0.1*, *OSPF Hello* or *BGP KEEPALIVE*.',
-      'The **Simulation** window has **Play / Pause**, **Step** and the speed (0.25× to 10×). **Protocols shown** chooses which messages appear, at any time; the simulation keeps running every protocol.',
+      'Choose **Simulate → Start simulation…**. A dialog shows the simulation’s parameters, one section per layer (*Layer 1 – Physical (8)* …), collapsed: open one to change a value (its default and source are under it; a changed value is marked *modified*; **Reset** puts it back). Choose the protocols shown, then **Start**. The values are remembered for the next start in this browser session.',
+      'The network starts like a freshly booted one: every table empty, every adjacency down, the interfaces coming up. Its messages appear as dots with labels such as *ARP Who has 10.0.0.2? Tell 10.0.0.1*, *OSPF Hello* or *BGP KEEPALIVE*; while one is on its way the playback slows down so that you can follow it.',
+      'The **Simulation** window has **Play / Pause**, **Step** and the speed (0.25× to 10×). **Parameters** has the dialog’s sections: a change applies at once and is written to the event log. **Protocols shown** chooses which messages appear, at any time; the simulation keeps running every protocol.',
       'The **Status** table shows each session’s state (OSPF neighbours, BGP sessions, IPsec, the VRRP master …); the **Event log** lists every message and change with its full payload, and can be filtered.',
       '**Exit simulation** or `Esc` ends it. Nothing in the model changes.',
     ],
     notes: [
-      'This is a teaching and design-review simulation of protocol behaviour, not an exact protocol implementation: no real timing jitter, packet loss or vendor differences. With reduced motion set in your system, the time moves in steps and arrows with labels replace the moving dots.',
+      'A value configured on a cable or a relation in the model comes first, then the device’s Simulation setting, then the simulation’s value, then the default; every value says which it is.',
+      'This is a teaching and design-review simulation of protocol behaviour, not an exact protocol implementation: no vendor differences beyond the parameters. With reduced motion set in your system, the time moves in steps and arrows with labels replace the moving dots.',
     ],
-    figures: [['simulation', 'The protocol simulation of the example protocol-simulation.yaml: labelled dots on the cables, and the Simulation window with its controls and the protocols shown.']],
+    figures: [
+      ['sim-start', 'Start simulation…: the parameters by layer, Layer 1 open with a changed loss-of-signal detection marked modified, its default and source below each field.'],
+      ['simulation', 'The protocol simulation of the example protocol-simulation.yaml: labelled dots on the cables, and the Simulation window with its controls and the protocols shown.'],
+    ],
+  },
+  {
+    id: 'sim-device',
+    title: 'Set a device’s simulation values',
+    steps: [
+      'Select a device, open the **Edit** tab and open its **Simulation** section (it is collapsed; its name says how many values it has).',
+      'Each field shows the value in effect: the device’s own, or *Inherited* with where it comes from. Type a value to override it (with its unit, e.g. *300* seconds or *50ms*); empty it, or press **Reset to inherited**, to inherit again. Only overrides are saved, in the device’s `simulation:` block.',
+      'During a simulation the rest of the form is read-only, but this section stays editable: a change applies at once and appears in the event log; **Undo** takes it back.',
+    ],
+    figures: [['sim-device', 'core1’s Simulation section during a simulation: its own ARP timeout and MAC aging, the other values inherited with their sources.']],
   },
   {
     id: 'sim-tables',
@@ -242,18 +257,18 @@ const MANUAL: Section[] = [
     steps: [
       'During a simulation, click a device: a small menu offers **Show ARP table**, and for a switch **Show MAC table**. (Or use the list under **ARP, neighbour and MAC tables** in the Simulation window.)',
       'Each table opens beside the device, titled *ARP table · core1*. Open several to compare them; drag one aside by its title; **×** or `Esc` closes it.',
-      'At the top: the timers in effect, *configured* or *default*. The rows show the address, the MAC (*(simulated)* when NetAtlas generated it), the interface, VLAN, type, state, age and when it expires.',
+      'At the top: the timers in effect, each with where it comes from (*device*, *simulation* or *default* and its source). The rows show the address, the MAC (*(simulated)* when NetAtlas generated it), the interface, VLAN, type, state, age and when it expires.',
       'The ARP timeout is 4 hours by default: choose a faster **timer scale** in the window to see entries age in a demonstration. It changes nothing in the model.',
     ],
-    figures: [['arp-table', 'core1’s ARP table during a simulation: the timers (a configured ARP timeout of 5 minutes), and entries with generated MAC addresses.']],
+    figures: [['arp-table', 'core1’s ARP table during a simulation: the timers (its own ARP timeout of 5 minutes), and entries with generated MAC addresses.']],
   },
   {
     id: 'sim-fail',
-    title: 'Fail a link during a simulation',
+    title: 'Fail links, flap, shut and power off',
     steps: [
-      'Click a cable or a relation in the diagram and choose **Fail this link** (or use **Fail a link** in the window). One link fails at a time.',
-      'Watch the reaction: frames on it are lost (✕), the devices at its ends notice at once, others when their timers run out (OSPF’s dead interval, BGP’s hold time, BFD), adjacencies go down, routes are recomputed and traffic takes another way, or is lost.',
-      'Click it again and choose **Restore link**: the adjacencies form again with their full handshake.',
+      'During a simulation, click a cable for **Fail link** or **Start flapping**, a relation for **Fail link**, a device for **Power off** or **Shut an interface…**, an interface for **Shut interface**. (Or use **Network events** in the Simulation window.) Several events can be in effect at once.',
+      'Watch the reaction: frames on a cable that went down are lost (✕), its ports notice after the loss-of-signal detection time, others when their timers run out (OSPF’s dead interval, BGP’s hold time, BFD), adjacencies go down, routes are recomputed after the route recomputation delay and traffic takes another way, or is lost.',
+      'The window lists every event with its way back: **Restore**, **Stop flapping**, **No shut**, **Power on** (the device boots for its boot time, then starts afresh). Adjacencies form again with their full handshake.',
     ],
   },
   {

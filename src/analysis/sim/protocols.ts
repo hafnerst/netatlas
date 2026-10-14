@@ -20,8 +20,9 @@ import { SimProfile, customProfile, simProfile } from '../../model/sim-profiles'
 import { Model, Relation, relationDevices } from '../../model/types';
 import { compareAddr, formatAddr } from '../ipmath';
 import { relParam } from '../routing';
-import { Engine, Frame, HOP, Protocols, fmtSec } from './engine';
+import { Engine, Frame, Protocols, fmtSec } from './engine';
 import { L3Iface, SimDevice, SimAddr } from './net';
+import { ParamChange, Resolved, formatValue, sourceText } from './params';
 import { Msg, Pkt, SessionStatus } from './types';
 
 const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
@@ -69,12 +70,55 @@ export interface Behaviour {
   iface?(P: ProtocolSim, s: Sess, up: boolean): void;
   /** is the session's adjacency up for routing (default: s.up) */
   adjUp?(P: ProtocolSim, s: Sess): boolean;
+  /** parameters changed: its status details again */
+  refresh?(P: ProtocolSim, s: Sess): void;
 }
 
 export interface TimerValue {
   ms: number;
+  /** the built-in default (no configured, device or simulation value) */
   dflt: boolean;
+  /** "10 s (configured)", "40 s (4 × hello, simulation)", "300 ms (default, …)" */
   text: string;
+  source: 'configured' | 'device' | 'simulation' | 'default';
+}
+
+/**
+ * The simulation parameter (params.ts) a profile's timer follows: the
+ * parameter, and for a derived timer (OSPF dead = 4 × hello) the factor.
+ * A timer that has none keeps its profile's default.
+ */
+const TIMER_PARAMS: { [k: string]: { key: string; factor?: number } } = {
+  'ospf.hello': { key: 'ospf-hello' },
+  'ospf.dead': { key: 'ospf-hello', factor: 4 },
+  'bgp.keepalive': { key: 'bgp-keepalive' },
+  'bgp.hold': { key: 'bgp-keepalive', factor: 3 },
+  'evpn.keepalive': { key: 'bgp-keepalive' },
+  'evpn.hold': { key: 'bgp-keepalive', factor: 3 },
+  'l3vpn.keepalive': { key: 'bgp-keepalive' },
+  'l3vpn.hold': { key: 'bgp-keepalive', factor: 3 },
+  'bfd.interval': { key: 'bfd-interval' },
+  'bfd.multiplier': { key: 'bfd-multiplier' },
+  'vrrp.hello': { key: 'vrrp-advert' },
+  'carp.hello': { key: 'vrrp-advert' },
+  'ipsec.dpd': { key: 'dpd-interval' },
+  'ipsec.dpd-retries': { key: 'dpd-retries' },
+  'ipsec.child-lifetime': { key: 'child-lifetime' },
+  'ipsec.ike-lifetime': { key: 'ike-lifetime' },
+  'ha-sync.dead': { key: 'ha-failover' },
+  'snmp.hello': { key: 'snmp-interval' },
+};
+
+/** A periodic timer: rescheduled when its interval changes (a parameter changed). */
+interface Periodic {
+  alive: () => boolean;
+  interval: () => number;
+  fn: () => void;
+  /** when it last ran (or was set up) */
+  last: number;
+  /** the interval it is scheduled with */
+  iv: number;
+  token: number;
 }
 
 /** A message's data: who sent it and for which session. */
@@ -103,6 +147,9 @@ export class ProtocolSim implements Protocols {
   readonly ifaceHooks: Array<(dev: string, l3: L3Iface, up: boolean) => void> = [];
   readonly linkHooks: Array<(ref: string, up: boolean) => void> = [];
   readonly bootHooks: Array<() => void> = [];
+  /** a device was powered off (false) or has booted (true) */
+  readonly deviceHooks: Array<(dev: string, up: boolean) => void> = [];
+  private periodics: Periodic[] = [];
 
   constructor(engine: Engine, behaviours: { [id: string]: Behaviour }) {
     this.e = engine;
@@ -115,11 +162,7 @@ export class ProtocolSim implements Protocols {
 
   /** The profile a relation's protocol simulates (a custom one for a protocol without a built-in profile). */
   profileOf(r: Relation): SimProfile {
-    const base = protocolBase(this.m.protocols, r.protocol);
-    const p = simProfile(base);
-    if (p) return p;
-    const def = lookupProtocol(this.m.protocols, r.protocol, r.category);
-    return customProfile('custom:' + base, def.label);
+    return relationProfile(this.m, r);
   }
 
   sd(dev: string): SimDevice {
@@ -253,6 +296,7 @@ export class ProtocolSim implements Protocols {
       this.e.after(1000, sweep);
     };
     this.e.at(1000, sweep);
+    this.e.startConfigured();
   }
 
   /** Start a session once (a message that arrives before its own start starts it first). */
@@ -264,22 +308,128 @@ export class ProtocolSim implements Protocols {
 
   // ------------------------------------------------------------ timers
 
-  /** A timer of a session's profile: the model's value (the relation's parameter for this device) or the default. */
+  /**
+   * A timer of a session's profile, in the order of precedence of params.ts:
+   * the relation's own value for this device (configured), else the
+   * parameter it follows (the device's attribute, the simulation's value or
+   * its default; a derived timer is its factor × that), else the profile's
+   * default. A count (a multiplier, retries) is kept as n × 1000.
+   */
   timer(s: Sess | null, profile: SimProfile, key: string, device?: string): TimerValue {
     const def = profile.timers.find((t) => t.key === key);
-    const dflt = def ? def.seconds * 1000 : 1000;
-    // a count (a multiplier, retries) is kept in the same unit (n × 1000) and written as a number
     const count = /multiplier|retries/.test(key);
     const show = (ms: number): string => (count ? String(Math.round(ms / 1000)) : fmtSec(ms));
-    if (s && def && def.param) {
-      const v = relParam(s.rel, def.param, device || s.dev);
-      const ms = v !== undefined ? (count ? (/^[0-9]+$/.test(v.trim()) ? Number(v) * 1000 : null) : parseDuration(v, key === 'interval' ? 'ms' : 's')) : null;
-      if (ms !== null && ms > 0) return { ms, dflt: false, text: `${show(ms)} (configured)` };
+    const dev = device || (s ? s.dev : undefined);
+    const own = (k: string, param?: string): number | null => {
+      if (!s || !param) return null;
+      const v = relParam(s.rel, param, dev || s.dev);
+      if (v === undefined) return null;
+      const c = /multiplier|retries/.test(k);
+      const ms = c ? (/^[0-9]+$/.test(v.trim()) ? Number(v) * 1000 : null) : parseDuration(v, k === 'interval' ? 'ms' : 's');
+      return ms !== null && ms > 0 ? ms : null;
+    };
+    const ms = own(key, def && def.param);
+    if (ms !== null) return { ms, dflt: false, text: `${show(ms)} (configured)`, source: 'configured' };
+    const map = TIMER_PARAMS[profile.id + '.' + key];
+    if (map) {
+      // a derived timer follows its base's configured value too (OSPF: dead = 4 × the relation's hello)
+      if (map.factor) {
+        const baseKey = Object.keys(TIMER_PARAMS).find((k) => k.indexOf(profile.id + '.') === 0 && TIMER_PARAMS[k].key === map.key && !TIMER_PARAMS[k].factor);
+        const bdef = baseKey ? profile.timers.find((t) => t.key === baseKey.slice(profile.id.length + 1)) : undefined;
+        const base = bdef ? own(bdef.key, bdef.param) : null;
+        if (base !== null) return { ms: base * map.factor, dflt: false, text: `${show(base * map.factor)} (${map.factor} × the configured ${bdef ? bdef.label.toLowerCase() : 'base'})`, source: 'configured' };
+      }
+      const r = this.e.params.get(map.key, dev);
+      const v = Number(r.value) * (r.def.kind === 'count' ? 1000 : 1) * (map.factor || 1);
+      return { ms: v, dflt: r.source === 'default', text: `${show(v)} (${map.factor ? map.factor + ' × ' + r.def.label.replace(/ interval| time$/i, '').toLowerCase() + ', ' : ''}${r.source === 'default' ? 'default, ' + r.def.source : sourceText(r)})`, source: r.source };
     }
-    return { ms: dflt, dflt: true, text: `${show(dflt)} (default${def ? ', ' + def.source : ''})` };
+    const dflt = def ? def.seconds * 1000 : 1000;
+    return { ms: dflt, dflt: true, text: `${show(dflt)} (default${def ? ', ' + def.source : ''})`, source: 'default' };
   }
 
-  /** The event log's note of the timers a session uses (defaults marked). */
+  /** A simulation parameter in effect for a device (params.ts), for behaviours whose timers are not a profile's. */
+  param(key: string, dev?: string): Resolved {
+    return this.e.params.get(key, dev);
+  }
+
+  paramText(r: Resolved): string {
+    return `${formatValue(r.def, r.value)} (${sourceText(r)})`;
+  }
+
+  /**
+   * Run fn every interval() ms while alive() (first after `first` ms; 0: at
+   * once). The interval is read again after every run, and a parameter
+   * change reschedules the next run at once (from the last run with the new
+   * interval, or now when that is past).
+   */
+  periodic(alive: () => boolean, interval: () => number, fn: () => void, first = 0): void {
+    const p: Periodic = { alive, interval, fn, last: this.e.now, iv: interval(), token: 0 };
+    if (this.periodics.length > 64 && this.periodics.length % 64 === 0) this.periodics = this.periodics.filter((x) => x.alive());
+    this.periodics.push(p);
+    if (first <= 0) this.fire(p, 0);
+    else this.schedule(p, this.e.now + first);
+  }
+
+  private schedule(p: Periodic, t: number): void {
+    const tok = ++p.token;
+    this.e.at(t, () => this.fire(p, tok));
+  }
+
+  private fire(p: Periodic, tok: number): void {
+    if (p.token !== tok || !p.alive()) return;
+    p.fn();
+    p.last = this.e.now;
+    p.iv = Math.max(1, p.interval());
+    this.schedule(p, p.last + p.iv);
+  }
+
+  /** Parameters changed: periodic timers whose interval changed are rescheduled now; the sessions' details again. */
+  paramsChanged(changes: ParamChange[]): void {
+    void changes;
+    this.periodics = this.periodics.filter((p) => p.alive());
+    for (const p of this.periodics) {
+      const iv = Math.max(1, p.interval());
+      if (iv === p.iv) continue;
+      p.iv = iv;
+      this.schedule(p, Math.max(this.e.now, p.last + iv));
+    }
+    for (const s of Array.from(this.sessions.values()).sort((a, b) => cmp(a.key, b.key))) {
+      const b = this.behaviours.get(s.profile.behaviour);
+      if (b && b.refresh && s.x.started) b.refresh(this, s);
+    }
+  }
+
+  // ------------------------------------------------------------ devices powered off and on
+
+  /** A device was powered off: its sessions go down (their timers stop); the peers notice by their own timers or the dark cable. */
+  deviceDown(dev: string): void {
+    for (const s of Array.from(this.sessions.values()).sort((a, b) => cmp(a.key, b.key))) {
+      if (s.dev !== dev) continue;
+      this.restart(s);
+      this.setState(s, s.profile.states[0] || 'Down', false, `${dev} was powered off`);
+      s.x = {};
+    }
+    for (const k of Array.from(this.vips.keys())) if (k.indexOf(dev + ':') === 0) this.vips.delete(k);
+    for (const h of this.deviceHooks) h(dev, false);
+  }
+
+  /** A device has booted: its sessions start afresh. */
+  deviceUp(dev: string): void {
+    for (const h of this.deviceHooks) h(dev, true);
+    for (const s of Array.from(this.sessions.values()).sort((a, b) => cmp(a.key, b.key))) {
+      if (s.dev !== dev) continue;
+      this.restart(s);
+      s.x = {};
+      s.heard = -1;
+      const jitter = 100 + Math.floor(this.e.random() * 400);
+      const g = s.gen;
+      this.e.after(jitter, () => {
+        if (s.gen === g) this.startSession(s);
+      });
+    }
+  }
+
+  /** The event log's note of the timers a session uses (where each comes from). */
   private timersNote(s: Sess): void {
     if (!s.initiator && s.profile.behaviour !== 'ospf' && s.profile.behaviour !== 'bfd') return;
     const parts = s.profile.timers.filter((t) => t.key !== 'retries' && t.key !== 'dpd-retries').map((t) => `${t.label.toLowerCase()} ${this.timer(s, s.profile, t.key).text}`);
@@ -370,7 +520,7 @@ export class ProtocolSim implements Protocols {
     const pkt = this.e.newPacket(s.local.addr, group, s.local.l3.vrf, m, [s.rel.id], 1);
     // the logical view: towards every peer of the relation on that segment
     const peers = (this.byRel.get(s.rel.id) || []).filter((x) => x.dev === s.dev).map((x) => x.peer);
-    for (const p of peers) this.lane(s.rel, s.dev, p, m, s.local.l3.kind === 'tunnel' ? this.e.estimate(s.dev, (this.sess(s.protocol, s.rel.id, s.dev, p) as Sess).remote.addr) : 2 * HOP);
+    for (const p of peers) this.lane(s.rel, s.dev, p, m, s.local.l3.kind === 'tunnel' ? this.e.estimate(s.dev, (this.sess(s.protocol, s.rel.id, s.dev, p) as Sess).remote.addr) : 2 * this.e.hopTime());
     this.e.send(s.dev, pkt, s.local.l3);
   }
 
@@ -381,14 +531,14 @@ export class ProtocolSim implements Protocols {
     const src = l3mac ? l3mac.mac : sd.bridgeId.split('.')[1] || '00:00:00:00:00:00';
     const m: Msg = { protocol, type, label, detail, relation: rel ? rel.id : undefined, data: { from: dev, port, ...data } };
     this.e.note('message', protocol, dev, peer, type, '', detail);
-    if (rel) this.lane(rel, dev, peer, m, HOP);
+    if (rel) this.lane(rel, dev, peer, m, this.e.hopTime());
     this.e.sendOnPort(dev, port, { src, dst: dstMac, msg: m, l2: true });
   }
 
   /** The logical view's dot of a message along its relation: its lane (two devices) or its hub's spokes. */
   lane(rel: Relation, from: string, to: string, m: Msg, ms: number): void {
     const t0 = this.e.now;
-    const t1 = t0 + Math.max(HOP, ms);
+    const t1 = t0 + Math.max(this.e.hopTime(), ms);
     const devs = relationDevices(rel);
     if (devs.length < 3) {
       this.e.flight(t0, t1, m, 'logical', { ref: 'relation:' + rel.id, from, to });
@@ -495,6 +645,15 @@ export class ProtocolSim implements Protocols {
     for (const f of this.extraStatus) out.push(...f());
     return out;
   }
+}
+
+/** The profile a relation's protocol simulates (a custom one for a protocol without a built-in profile). */
+export function relationProfile(m: Model, r: Relation): SimProfile {
+  const base = protocolBase(m.protocols, r.protocol);
+  const p = simProfile(base);
+  if (p) return p;
+  const def = lookupProtocol(m.protocols, r.protocol, r.category);
+  return customProfile('custom:' + base, def.label);
 }
 
 function sameNet(a: SimAddr, b: SimAddr): boolean {

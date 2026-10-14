@@ -26,7 +26,7 @@ import { exportBoxes } from '../diagram/networks-box';
 import { Session, View } from '../diagram/session';
 import { SelectionContext, attachedRefs, search, selectionContext, splitRef } from '../model/queries';
 import { sortedByName } from '../model/order';
-import { normalizeProtocol } from '../model/protocols';
+import { lookupProtocol, normalizeProtocol } from '../model/protocols';
 import { deviceRoutingRole, deviceTypeLabel, isLayer2Switch } from '../model/device-types';
 import { Issue } from '../validation/validate';
 import { SEVERITIES, Severity, checkById } from '../analysis/checks';
@@ -39,7 +39,10 @@ import { SpofRow, SpofSort, newSpofViewState, shownSpofRows, spofBody, spofCsv, 
 import { focusWindowBody } from './focus-window';
 import { ToolWindowOpts, ToolWindows } from './toolwindow';
 import { SimulationMode } from './simulation-mode';
-import { SimController } from './sim-controller';
+import { SimController, SimStartOptions, protocolChecks } from './sim-controller';
+import { paramEditor } from './sim-params-ui';
+import { ParamValue, readStoredParams } from '../analysis/sim/params';
+import { protocolEntriesOf } from '../analysis/sim/simulation';
 import { Splitter } from './splitter';
 import { TabOverflow } from './tab-overflow';
 import { generateMac } from '../analysis/helpers';
@@ -53,6 +56,8 @@ const SEV_NAME: { [s in Severity]: string } = { error: 'Errors', warning: 'Warni
 type Tab = 'edit' | 'details' | 'legend' | 'relations' | 'problems' | 'yaml';
 
 /** Why the model can't be edited while a simulation is on (the lock's reason). */
+/** Where the simulation-wide parameters are remembered for the browser session. */
+const SIM_PARAMS_KEY = 'netatlas.sim.params';
 const SIM_LOCK = 'Editing is paused during a simulation: the diagram shows a simulated state, not the model. Exit the simulation (Esc) to edit.';
 
 export interface LoadOutcome {
@@ -117,6 +122,7 @@ export class App {
       dialog: (o) => this.dialog(o),
       toast: (m) => this.toast(m),
       fileState: () => this.fileState().text,
+      simParams: () => (this.simCtl ? this.simCtl.sim.params.simValues() : this.storedSimParams()),
     }, () => this.mdoc);
     this.wire();
     this.fillExamples();
@@ -223,6 +229,7 @@ export class App {
     this.loadErrors = [];
     this.editor.sel = null;
     this.editor.draft = null;
+    this.editor.foldSimSections();
     this.editor.sourceDraft = null;
     this.editor.sourceError = null;
     const model = doc.result.model;
@@ -459,6 +466,8 @@ export class App {
         else this.session = new Session(model);
       } else this.session = null;
       this.computeErrorRefs();
+      // a device's Simulation settings (the edit allowed during a simulation, or its undo) apply there at once
+      if (this.simCtl && model) this.simCtl.modelChanged(model);
       // keep the diagram selection in step with the editor
       if (this.session) this.session.select(this.editor.selectedRef());
       this.render();
@@ -1097,13 +1106,16 @@ export class App {
 
   private renderLockedEdit(body: HTMLElement): void {
     while (body.firstChild) body.removeChild(body.firstChild);
-    body.appendChild(this.lockNotice('The diagram shows a simulated state, not the model. Exit the simulation to edit; the form below is read-only.'));
+    body.appendChild(this.lockNotice('The diagram shows a simulated state, not the model. Exit the simulation to edit; the form below is read-only, except a device’s Simulation settings.'));
+    // the documented exception: a device's Simulation section stays editable (its changes apply in the simulation at once)
+    const sim = el(this.doc, 'div', { class: 'inspector sim-live' });
+    if (this.editor.renderSimSection(sim)) body.appendChild(sim);
     const fs = el(this.doc, 'fieldset', { class: 'locked-form', disabled: '' });
     fs.appendChild(el(this.doc, 'legend', { class: 'sr-only' }, ['The selected object (read-only during the simulation)']));
     const box = el(this.doc, 'div');
     fs.appendChild(box);
     body.appendChild(fs);
-    this.editor.renderInspector(box);
+    this.editor.renderInspector(box, { simOutside: true });
   }
 
   private renderYaml(body: HTMLElement): void {
@@ -2388,13 +2400,79 @@ export class App {
     return this.simCtl;
   }
 
+  /** The simulation-wide parameters remembered for this browser session (Start simulation…, the Simulation window). */
+  storedSimParams(): { [key: string]: ParamValue } {
+    try {
+      const w = this.doc.defaultView;
+      return readStoredParams(w ? w.sessionStorage.getItem(SIM_PARAMS_KEY) : null);
+    } catch (e) {
+      return {};
+    }
+  }
+
+  private storeSimParams(values: { [key: string]: ParamValue }): void {
+    try {
+      const w = this.doc.defaultView;
+      if (w) w.sessionStorage.setItem(SIM_PARAMS_KEY, JSON.stringify(values));
+    } catch (e) {
+      /* storage unavailable: the values last for this simulation only */
+    }
+  }
+
   /**
-   * Simulate → Start simulation…: a freshly booted network (every table
-   * empty, every adjacency down, the interfaces up at t = 0), in simulation
-   * mode, with the Simulation window. `protocols` preselects what is shown.
+   * Simulate → Start simulation…: the dialog that configures the simulation
+   * before it starts (the Layer 1–4 parameters, collapsed sections, and the
+   * protocols shown), with Start and Cancel. Resolves true when it started.
    */
-  startProtocolSimulation(protocols?: string[]): boolean {
+  async openStartDialog(): Promise<boolean> {
     if (!this.session || this.simulation) return false;
+    const model = this.session.model;
+    const entries = protocolEntriesOf(model);
+    const shown = new Set(entries.map((e) => e.id));
+    let startBtn: HTMLButtonElement | null = null;
+    const editor = paramEditor(this.doc, {
+      id: 'sim-pd',
+      values: this.storedSimParams(),
+      onValidity: (ok) => {
+        if (startBtn) startBtn.disabled = !ok;
+      },
+    });
+    const color = (p: string): string => lookupProtocol(model.protocols, p.indexOf('custom:') === 0 ? p.slice(7) : p).color;
+    const protos = el(this.doc, 'details', { class: 'sim-sec', id: 'sim-pd-protos' }, [el(this.doc, 'summary', {}, [`Protocols shown (${entries.length})`]), el(this.doc, 'p', { class: 'muted small' }, ['Every protocol runs; these are the ones whose messages are drawn and logged. You can change them during the simulation.']), protocolChecks(this.doc, entries, shown, color, 'sim-pd-p-')]);
+    const v = await this.dialog({
+      title: 'Start simulation',
+      className: 'sim-start-dialog',
+      closeButton: true,
+      body: [el(this.doc, 'p', { class: 'muted' }, ['A freshly booted network: every table empty, every adjacency down. The parameters apply to the whole simulation; a value configured on a cable, a relation or a device takes precedence. They are remembered for the next start in this browser session, never written to the model.']), editor.el, protos],
+      buttons: [
+        { label: 'Cancel', value: 'cancel' },
+        { label: 'Start', value: 'start', kind: 'primary' },
+      ],
+      ready: (dlg) => {
+        startBtn = dlg.querySelector('.modal-btns [data-value="start"]') as HTMLButtonElement;
+        startBtn.disabled = !editor.valid();
+      },
+      focus: '.psec-toggle',
+    });
+    if (v !== 'start' || !editor.valid()) return false;
+    const picked = entries.filter((e) => {
+      const cb = this.doc.getElementById('sim-pd-p-' + e.id.replace(/[^a-z0-9-]/gi, '_')) as HTMLInputElement | null;
+      return !cb || cb.checked;
+    });
+    this.storeSimParams(editor.values());
+    return this.startProtocolSimulation({ protocols: picked.length === entries.length ? undefined : picked.map((e) => e.id), params: editor.values() });
+  }
+
+  /**
+   * Start the protocol simulation at once (the dialog's Start; tests): a
+   * freshly booted network (every table empty, every adjacency down, the
+   * interfaces up at t = 0), in simulation mode, with the Simulation
+   * window. Without parameters it uses those remembered for this session.
+   */
+  startProtocolSimulation(opts: SimStartOptions | string[] = {}): boolean {
+    if (!this.session || this.simulation) return false;
+    const o: SimStartOptions = Array.isArray(opts) ? { protocols: opts } : opts;
+    if (!o.params) o.params = this.storedSimParams();
     const self = this;
     const ctl = new SimController(
       {
@@ -2413,8 +2491,9 @@ export class App {
         },
         toast: (t) => self.toast(t),
         tick: () => self.simTick(),
+        paramsChanged: (values) => self.storeSimParams(values),
       },
-      protocols,
+      o,
     );
     const stop = ctl.stop.bind(ctl);
     ctl.stop = (): void => {
