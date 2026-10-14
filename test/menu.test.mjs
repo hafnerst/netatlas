@@ -103,10 +103,10 @@ test('outline sections: folding is view state of the editor, with Links and Prot
   assert.ok(load('ui/inspector.js').Editor);
 });
 
-test('examples: the File menu offers the eleven hand-written examples; the generated fixtures are test data only', async () => {
+test('examples: the File menu offers the twelve hand-written examples; the generated fixtures are test data only', async () => {
   const { readdirSync } = await import('node:fs');
   const { EXAMPLES, FIXTURES } = load('generated/examples.js');
-  assert.deepEqual(EXAMPLES.map((e) => e.name), ['enterprise-wan.yaml', 'datacenter-evpn.yaml', 'minimal.yaml', 'metro-ring.yaml', 'device-types.yaml', 'long-labels.yaml', 'addressing.yaml', 'port-bindings.yaml', 'branch-routing.yaml', 'consistency-checks.yaml', 'ospf-reroute.yaml']);
+  assert.deepEqual(EXAMPLES.map((e) => e.name), ['enterprise-wan.yaml', 'datacenter-evpn.yaml', 'minimal.yaml', 'metro-ring.yaml', 'device-types.yaml', 'long-labels.yaml', 'addressing.yaml', 'port-bindings.yaml', 'branch-routing.yaml', 'consistency-checks.yaml', 'ospf-reroute.yaml', 'protocol-simulation.yaml']);
   assert.deepEqual(FIXTURES.map((e) => e.name).sort(), ['editor-new-network.yaml', 'metro-ring-arranged.yaml', 'minimal-edited.yaml']);
   assert.deepEqual(readdirSync(join(root, 'examples')).filter((f) => /\.yaml$/.test(f)).sort(), EXAMPLES.map((e) => e.name).sort());
   // nothing the user sees builds its list from FIXTURES: only the self-test imports them
@@ -395,8 +395,8 @@ test('Analyze menu: between Find and Simulate, built like the others; Addressing
   // Simulate ("what if", a state that never changes the model) is the menu right after it
   const sim = /<div id="simulate-menu" class="dropdown menu" role="menu" aria-label="Simulate" hidden>([\s\S]*?)\n    <\/div>/.exec(header)[1];
   // the protocol simulation (a window), and Exit simulation; no scenarios, no X, no steps
-  assert.deepEqual([...sim.matchAll(/data-command="([^"]+)"/g)].map((m) => m[1]), ['sim.protocol', 'sim.exit']);
-  assert.match(sim, /<button id="btn-protocol-sim" type="button" role="menuitem" data-command="sim\.protocol" aria-haspopup="dialog"[^>]*><span class="mi-label">Protocol simulation…<\/span>/);
+  assert.deepEqual([...sim.matchAll(/data-command="([^"]+)"/g)].map((m) => m[1]), ['sim.start', 'sim.exit']);
+  assert.match(sim, /<button id="btn-sim-start" type="button" role="menuitem" data-command="sim\.start" aria-haspopup="dialog"[^>]*><span class="mi-label">Start simulation…<\/span>/);
   assert.match(sim, /<button id="btn-sim-exit" type="button" role="menuitem" data-command="sim\.exit"[^>]*><span class="mi-label">Exit simulation<\/span>/);
   const app = readFileSync(join(root, 'src', 'ui', 'app.ts'), 'utf8');
   const cmds = readFileSync(join(root, 'src', 'ui', 'commands.ts'), 'utf8');

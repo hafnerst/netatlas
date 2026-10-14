@@ -5,7 +5,7 @@
  * addresses outside their interface's subnet, and members of one group
  * with different group numbers. Each reads only what is written.
  */
-import { routingRole } from '../model/device-types';
+import { deviceRoutingRole } from '../model/device-types';
 import { parsePrefix } from '../model/ip';
 import { protocolBase } from '../model/protocols';
 import { routerIdFor, serviceOf } from '../model/services';
@@ -25,7 +25,7 @@ export const SERVICE_CHECKS: MoreCheck[] = [
     reads: 'relations (protocol, endpoints); devices: protocols',
     run(model, emit) {
       for (const d of model.devices.slice().sort((a, b) => cmp(a.id, b.id))) {
-        if (routingRole(d.type) !== 'router') continue;
+        if (deviceRoutingRole(d) !== 'router') continue;
         const missing = new Map<string, string[]>();
         for (const r of model.relations) {
           const base = protocolBase(model.protocols, r.protocol);

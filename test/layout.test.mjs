@@ -279,7 +279,7 @@ function islands() {
   const links = [];
   const rels = [];
   const add = (prefix, n, group) => {
-    for (let i = 0; i < n; i++) t += `  - {id: ${prefix}${i}, type: ${i ? 'switch' : 'router'}${group ? ', group: ' + group : ''}, interfaces: [p0, p1, p2], logical_interfaces: [{id: lo0, type: loopback, ip: [10.${prefix.length}.${n}.${i}/32]}]}\n`;
+    for (let i = 0; i < n; i++) t += `  - {id: ${prefix}${i}, type: ${i ? 'switch, layer3: true' : 'router'}${group ? ', group: ' + group : ''}, interfaces: [p0, p1, p2], logical_interfaces: [{id: lo0, type: loopback, ip: [10.${prefix.length}.${n}.${i}/32]}]}\n`;
     for (let i = 1; i < n; i++) links.push(`  - {id: ${prefix}l${i}, a: "${prefix}${i}:p0", b: "${prefix}${Math.floor((i - 1) / 2)}:p${i % 2 ? 1 : 2}"}`);
     for (let i = 1; i < n; i++) rels.push(`  - {id: ${prefix}r${i}, protocol: ospf, endpoints: ["${prefix}${i}:lo0", "${prefix}0:lo0"]}`);
   };

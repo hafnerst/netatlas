@@ -9,7 +9,7 @@ import { DEVICE_TYPE_IDS, deviceTypeLabel } from '../model/device-types';
 import { tagMismatch } from '../model/derive';
 import { relationStyle } from '../model/protocols';
 import { CATEGORIES, Category, Model, ProtocolDef } from '../model/types';
-import { deviceIcon, iconName } from './icons';
+import { deviceIcon, iconName, layerBadge } from './icons';
 import { VNode, h } from './scene';
 import { View } from './session';
 import { NETWORK_COLOR, groupKindStyle, mediumStyle, speedWidth } from './style';
@@ -72,7 +72,12 @@ export function legendOf(model: Model, view: View): Legend {
     // in the format's order; devices without a type last
     const rank = (t: string): number => (DEVICE_TYPE_IDS.indexOf(t) + DEVICE_TYPE_IDS.length + 1) % (DEVICE_TYPE_IDS.length + 1);
     const types = Array.from(new Set(model.devices.map((d) => iconName(d.type)))).sort((p, q) => rank(p) - rank(q));
-    sections.push({ title: 'Devices', items: types.map((t) => ({ swatch: [deviceIcon(t, 11, 0, 22)], swatchH: 22, label: deviceTypeLabel(t) || 'No type' })) });
+    const items: LegendItem[] = [];
+    for (const t of types) {
+      if (t === 'switch') items.push(...switchItems(model));
+      else items.push({ swatch: [deviceIcon(t, 11, 0, 22)], swatchH: 22, label: deviceTypeLabel(t) || 'No type' });
+    }
+    sections.push({ title: 'Devices', items });
     const media = new Map<string, { label: string; color: string; dash?: string }>();
     for (const l of model.links) {
       const m = mediumStyle(l.medium);
@@ -116,6 +121,9 @@ export function legendOf(model: Model, view: View): Legend {
       items: protos.map(([p, u]) => ({ swatch: relationSwatchParts(u.def), label: u.def.label, protocol: p, count: u.count, custom: u.def.custom })),
     });
   }
+  // a switch's layer is marked in both views
+  const switches = switchItems(model);
+  if (switches.length) sections.push({ title: 'Switches', items: switches });
   sections.push({
     title: 'Other symbols',
     items: [
@@ -314,4 +322,14 @@ export function svgLegend(model: Model, view: View, opts: ExportOptions, bounds:
     box,
     viewBox,
   };
+}
+
+/** The legend's switch entries: the Layer 2 and the Layer 3 switch (those the model has), each with its glyph and badge. */
+function switchItems(model: Model): LegendItem[] {
+  const out: LegendItem[] = [];
+  for (const l3 of [false, true]) {
+    if (!model.devices.some((d) => d.type === 'switch' && !!d.layer3 === l3)) continue;
+    out.push({ swatch: [deviceIcon('switch', 4, 0, 22, l3), layerBadge(l3, 17, 12)], swatchH: 24, label: l3 ? 'Layer 3 switch (L3: routes between its VLANs)' : 'Layer 2 switch (L2: forwards frames only)' });
+  }
+  return out;
 }

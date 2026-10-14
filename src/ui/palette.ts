@@ -81,7 +81,8 @@ export function objectItems(model: Model): PaletteItem[] {
   };
   const byId = <T extends { id: string }>(xs: T[]): T[] => xs.slice().sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   for (const d of byId(model.devices)) {
-    add('device:' + d.id, d.label && d.label !== d.id ? `${d.label} (${d.id})` : d.id, 'device', `${d.type} ${d.group || ''} ${serviceWords(model, d).join(' ')}`);
+    const layer = d.type === 'switch' ? (d.layer3 ? 'Layer 3 switch' : 'Layer 2 switch') : '';
+    add('device:' + d.id, d.label && d.label !== d.id ? `${d.label} (${d.id})` : d.id, layer || 'device', `${d.type} ${layer} ${layer ? (d.layer3 ? 'l3' : 'l2') : ''} ${d.group || ''} ${serviceWords(model, d).join(' ')}`);
   }
   for (const d of byId(model.devices)) {
     for (const i of byId(deviceInterfaces(d))) {

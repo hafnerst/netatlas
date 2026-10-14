@@ -56,6 +56,11 @@ const BUILTINS: Builtin[] = [
   ['dhcp', 'DHCP relay', 'service', '#6c5ce7', ['dhcp-relay']],
   ['https', 'HTTPS', 'service', '#1c7ed6', ['http']],
   ['netflow', 'NetFlow / IPFIX', 'service', '#4c6ef5', ['ipfix', 'sflow']],
+  // layer 2 and multicast group management (simulated where the model has their relations)
+  ['stp', 'STP / RSTP', 'redundancy', '#5c7cfa', ['rstp', 'mstp']],
+  ['lldp', 'LLDP', 'other', '#748ffc'],
+  ['cdp', 'CDP', 'other', '#91a7ff'],
+  ['igmp', 'IGMP / MLD', 'adjacency', '#f76707', ['mld']],
 ];
 
 export const DEFAULT_STYLE: { [c in Category]: LineStyle } = {

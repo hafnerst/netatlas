@@ -67,7 +67,7 @@ test('Trace path: the hop table’s columns; the tool windows’ commands (F6, C
   const cmds = new Map(C.buildCommands().map((c) => [c.id, c]));
   assert.equal(C.keyLabel(cmds.get('window.focus').keys), 'F6');
   assert.equal(cmds.get('window.focus').keys.whileTyping, true, 'F6 works while typing in a field');
-  for (const id of ['analyze.addressing', 'focus.window', 'trace.open', 'analyze.spof', 'sim.protocol']) assert.match(cmds.get(id).label, /…$/, id);
+  for (const id of ['analyze.addressing', 'focus.window', 'trace.open', 'analyze.spof', 'sim.start']) assert.match(cmds.get(id).label, /…$/, id);
   assert.equal(C.keyLabel(cmds.get('analyze.addressing').keys), 'I');
   assert.equal(C.keyLabel(cmds.get('focus.window').keys), 'Shift+F');
   assert.equal(C.keyLabel(cmds.get('trace.open').keys), 'T');

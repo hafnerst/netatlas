@@ -21,7 +21,7 @@ import { LineField, addressAttrEntries, addressAttrLines, deviceAddressLines, de
 import { sortedByName } from '../model/order';
 import { deviceSubtitle } from '../model/device-types';
 import { Device, Model, ifaceKey } from '../model/types';
-import { deviceIcon } from './icons';
+import { BADGE_H, BADGE_W, deviceIcon, layerBadge } from './icons';
 import { LabelPlacer, addressLineAttrs, alongSegment, centerRect, fieldAttrs, leaderLine, textLines } from './labels';
 import { VNode, h } from './scene';
 import { groupKindStyle, mediumStyle, speedWidth } from './style';
@@ -164,16 +164,19 @@ export function groupFrames(model: Model, grects: Map<string, Rect>, placer: Lab
  * `bodyH`, the icon and text are centred in the top `bodyH` of the box (the
  * rest holds the chips of its uncabled ports).
  */
-export function deviceNode(ref: string, label: string, sub: string, type: string, b: CBox, extraClass = '', bodyH = b.h): VNode {
+export function deviceNode(ref: string, label: string, sub: string, type: string, b: CBox, extraClass = '', bodyH = b.h, layer3?: boolean): VNode {
   const x = b.cx - b.w / 2;
   const y = b.cy - b.h / 2;
   const body = deviceBody(label, sub, 0, 0);
   const textX = x + DEVICE_TEXT_X;
   const mid = y + bodyH / 2;
   const top = mid - body.textH / 2;
-  return h('g', { class: 'node device ' + extraClass, 'data-ref': ref, 'data-endpoint': 'device' }, [
+  // a switch says its layer: an own glyph for a Layer 3 switch, and a badge over the icon's lower right corner (inside the icon's column)
+  const badge = type === 'switch' ? layerBadge(!!layer3, x + 12 + DEVICE_ICON - BADGE_W, mid + DEVICE_ICON / 2 - BADGE_H + 5) : null;
+  return h('g', { class: 'node device ' + extraClass + (type === 'switch' ? (layer3 ? ' layer3' : ' layer2') : ''), 'data-ref': ref, 'data-endpoint': 'device' }, [
     h('rect', { class: 'dev-box', x, y, width: b.w, height: b.h, rx: 8 }),
-    deviceIcon(type, x + 12, mid - DEVICE_ICON / 2, DEVICE_ICON),
+    deviceIcon(type, x + 12, mid - DEVICE_ICON / 2, DEVICE_ICON, layer3),
+    badge,
     textLines({ class: 'dev-label' }, body.label, textX, top),
     body.sub.lines.length ? textLines({ class: 'dev-sub' }, body.sub, textX, top + body.textH - body.sub.h) : null,
   ]);
@@ -451,7 +454,7 @@ export function renderPhysical(model: Model, layout: PhysicalLayout, opts: ViewO
     const listH = physicalListH(entriesSize(items));
     if (flow.items.length) portNodes.push(...chipNodes(d.id, flow, b.cx - b.w / 2 + IFCHIP_PAD, b.cy + b.h / 2 - chipsH, 'port-chip', () => ''));
     if (items.length) portNodes.push(...entryNodes(items, b.cx - b.w / 2 + ENTRY_MARGIN, b.cy + b.h / 2 - chipsH - listH, b.w - 2 * ENTRY_MARGIN));
-    return deviceNode('device:' + d.id, d.label, deviceSubtitle(d.type), d.type, b, 'type-' + cssToken(d.type), b.h - chipsH - listH);
+    return deviceNode('device:' + d.id, d.label, deviceSubtitle(d.type, d.layer3), d.type, b, 'type-' + cssToken(d.type), b.h - chipsH - listH, d.layer3);
   });
 
   // everything drawn is inside the bounds: boxes, groups, labels and cable bends

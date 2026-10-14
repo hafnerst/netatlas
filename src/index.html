@@ -70,7 +70,7 @@
   <div class="menu-wrap">
     <button id="simulate-btn" type="button" class="menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="simulate-menu" title="Simulate: a hypothetical state in a window of its own; it never changes the model">Simulate <span class="caret" aria-hidden="true">▾</span></button>
     <div id="simulate-menu" class="dropdown menu" role="menu" aria-label="Simulate" hidden>
-      <button id="btn-protocol-sim" type="button" role="menuitem" data-command="sim.protocol" aria-haspopup="dialog" title="Not available yet" disabled><span class="mi-label">Protocol simulation…</span></button>
+      <button id="btn-sim-start" type="button" role="menuitem" data-command="sim.start" aria-haspopup="dialog" title="Open or create a model first" disabled><span class="mi-label">Start simulation…</span></button>
       <div class="menu-sep" role="separator"></div>
       <button id="btn-sim-exit" type="button" role="menuitem" data-command="sim.exit" title="No simulation is on" disabled><span class="mi-label">Exit simulation</span><span class="mi-hint">Esc</span></button>
     </div>
@@ -173,6 +173,7 @@
         <span class="mb-icon" aria-hidden="true">◈</span>
         <span id="sim-text" class="mb-text" role="status"></span>
         <span id="sim-short" class="mb-text mb-short" aria-hidden="true"></span>
+        <button id="sim-window-banner" type="button" class="mini" data-command="sim.window">Simulation window</button>
         <button id="sim-exit-banner" type="button" class="mini" data-command="sim.exit">Exit simulation</button>
       </div>
       <div id="mb-trace" class="mb-row" hidden>

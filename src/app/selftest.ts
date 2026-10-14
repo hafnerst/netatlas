@@ -263,7 +263,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
           labels.join('|') === 'New model|Open model…|Save model|Save model as…|Close model' && /Ctrl\+S$/.test(entries[2]) && /Ctrl\+Shift\+S$/.test(entries[3]) &&
           entries.length === 5 + EXAMPLES.length && ['#btn-save', '#btn-save-as', '#btn-close'].every((x) => (q(x) as HTMLButtonElement).disabled && /Open or create a model first|Close the current model/.test(q(x)!.title)) &&
           q('#btn-save')!.nextElementSibling === q('#btn-save-as') && q('#btn-save-as')!.nextElementSibling === q('#btn-close') &&
-          textsOf('#menu-examples .mi-label').join() === EXAMPLES.map((e) => e.name).join() && !q('#menu-examples .active-example') && /Examples/.test(q('#menu-examples-title')!.textContent || '') && EXAMPLES.length === 11 && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(menu!.textContent || '') && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(q('#empty')!.textContent || ''),
+          textsOf('#menu-examples .mi-label').join() === EXAMPLES.map((e) => e.name).join() && !q('#menu-examples .active-example') && /Examples/.test(q('#menu-examples-title')!.textContent || '') && EXAMPLES.length === 12 && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(menu!.textContent || '') && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(q('#empty')!.textContent || ''),
         entries.join(' | '),
       );
       menuBtn!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
@@ -1835,8 +1835,8 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const yamlBefore = app.exportText();
       const menuIds = (id: string): string[] => Array.from(doc.querySelectorAll(`#${id} [data-command]`)).map((e) => e.getAttribute('data-command') || '');
       check(
-        'Analyze holds Addressing overview…, Focus…, Exit focus, Trace path…, Exit path trace, Single points of failure…; Simulate holds Protocol simulation… and Exit simulation',
-        menuIds('analyze-menu').join(' ') === 'analyze.addressing focus.window focus.exit trace.open trace.exit analyze.spof' && menuIds('simulate-menu').join(' ') === 'sim.protocol sim.exit',
+        'Analyze holds Addressing overview…, Focus…, Exit focus, Trace path…, Exit path trace, Single points of failure…; Simulate holds Start simulation… and Exit simulation',
+        menuIds('analyze-menu').join(' ') === 'analyze.addressing focus.window focus.exit trace.open trace.exit analyze.spof' && menuIds('simulate-menu').join(' ') === 'sim.start sim.exit',
         menuIds('analyze-menu').join(' ') + ' | ' + menuIds('simulate-menu').join(' '),
       );
       check('the side panel has no Analysis and no Simulation tab', !q('#side .tabs [data-tab="analysis"]') && !q('#side .tabs [data-tab="simulation"]') && doc.querySelectorAll('#side .tabs button[data-tab]').length === 6);
@@ -1937,6 +1937,110 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       app.select(null);
       (app.mdoc as ModelDoc).markSaved();
     }
+
+    // ------------------------------------------------ the protocol simulation (protocol-simulation.yaml), in both themes
+    for (const theme of ['dark', 'light']) {
+      app.theme.set(theme as 'light' | 'dark');
+      app.loadExample(EXAMPLES.findIndex((e) => e.name === 'protocol-simulation.yaml'));
+      click('[data-view-btn="physical"]');
+      await tick();
+      const yamlBefore = app.exportText();
+      const undoBefore = (app.mdoc as ModelDoc).canUndo();
+      const startBtn = q('#btn-sim-start') as HTMLButtonElement;
+      const exitBtn = q('#btn-sim-exit') as HTMLButtonElement;
+      const cmd = (id: string): { enabled: boolean; reason?: string } => app.commands.find((c) => c.id === id)!.state(app);
+      check(`${theme}: with a model and no simulation, Start simulation… is available and Exit simulation is not (menu and palette agree)`, !startBtn.disabled && exitBtn.disabled && cmd('sim.start').enabled && !cmd('sim.exit').enabled);
+      click('#simulate-btn');
+      startBtn.click();
+      const ctl = app.simController()!;
+      ctl.setPlaying(false);
+      const fresh = ctl.sim.tableDevices().every((d) => !ctl.sim.arpTable(d.id).length && !ctl.sim.macTable(d.id).some((r) => r.type === 'dynamic')) && ctl.sim.status().filter((s) => s.protocol === 'ospf').every((s) => !s.up) && ctl.sim.now === 0;
+      await tick(50);
+      check(
+        `${theme}: Start simulation… starts it (banner, window); now Start is unavailable (“A simulation is already running”) and Exit is available`,
+        app.simulationOn() && app.toolWindow() === 'sim' && startBtn.disabled && /A simulation is already running/.test(startBtn.title) && !exitBtn.disabled && !cmd('sim.start').enabled && cmd('sim.start').reason === 'A simulation is already running' && cmd('sim.exit').enabled,
+        startBtn.title,
+      );
+      const sim = ctl.sim;
+      check(`${theme}: a fresh start at t = 0: every ARP and MAC table empty, no adjacency up`, fresh);
+      check(`${theme}: the window: an honest note, Play / Pause, Step, speed 0.25×–10×, the time, the protocols (Layer 2 first) with Select all and Clear, failing a link, the tables, the status and the event log`,
+        /teaching and design-review simulation of protocol behaviour, not an exact protocol implementation/.test(q('#toolwin')!.textContent || '') && !!q('#sim-play') && !!q('#sim-step') && Array.from((q('#sim-speed') as HTMLSelectElement).options).map((o) => o.value).join(' ') === '0.25 0.5 1 2 5 10' && !!q('#sim-time') && q('#sim-protos fieldset legend')!.textContent === 'Layer 2' && !!q('#sim-all') && !!q('#sim-none') && !!q('#sim-link') && !!q('#sim-status-table') && !!q('#sim-log-table'));
+      // watch ARP resolve and OSPF reach Full
+      ctl.runTo(20000);
+      await tick();
+      check(`${theme}: ARP resolves before the first unicast packets (requests and replies in the log; entries in the tables)`, sim.events().some((e) => e.protocol === 'arp' && /ARP Reply/.test(e.detail)) && sim.arpTable('core1').length > 0 && sim.arpTable('r1').length > 0);
+      check(`${theme}: OSPF reaches Full on the ring`, sim.status().some((s) => s.protocol === 'ospf' && s.name.indexOf('ospf-r1-r3: r1 → r3') === 0 && s.state === 'Full'));
+      check(`${theme}: labelled dots in the diagram, never more than the limit`, doc.querySelectorAll('#canvas .layer-sim-labels .sim-label').length >= 0 && doc.querySelectorAll('#canvas .layer-sim .sim-dot').length <= 48);
+      // the tables: from the device menu and from the window; several at once
+      const r = (q('#canvas .node[data-ref="device:core1"]') as Element).getBoundingClientRect();
+      ctl.diagramClick('device:core1', r.left + 5, r.top + 5);
+      await tick();
+      const menuItems = Array.from(doc.querySelectorAll('.sim-menu [role="menuitem"]')).map((b) => b.textContent || '');
+      check(`${theme}: clicking a switch in the simulation opens a menu there: Show ARP table, Show MAC table`, menuItems.join('|') === 'Show ARP table|Show MAC table', menuItems.join('|'));
+      (doc.querySelector('.sim-menu [role="menuitem"]') as HTMLElement).click();
+      await tick();
+      (q('#sim-tabs') as HTMLDetailsElement).open = true;
+      (q('[data-sim-table="arp"][data-dev="r1"]') as HTMLElement).click();
+      (q('[data-sim-table="mac"][data-dev="acc-sw"]') as HTMLElement).click();
+      ctl.runTo(21000);
+      await tick();
+      const panels = Array.from(doc.querySelectorAll('.sim-table-panel')) as HTMLElement[];
+      const titles = panels.map((p) => p.querySelector('.st-title')!.textContent || '');
+      check(`${theme}: two ARP tables and a MAC table open at once, each a non-modal dialog titled with its device, with a close button`, titles.join('|') === 'ARP table · core1|ARP table · r1|MAC table · acc-sw' && panels.every((p) => p.getAttribute('role') === 'dialog' && !p.hasAttribute('aria-modal') && !!p.querySelector('.st-close')), titles.join('|'));
+      const core1 = panels[0];
+      check(`${theme}: the ARP table: column headers, the timers in effect (configured or default) and the timer scale, rows with type and age`,
+        Array.from(core1.querySelectorAll('table:first-of-type thead th, .st-scroll:first-of-type thead th')).slice(0, 8).map((h) => h.textContent).join('|') === 'IP address|MAC address|Interface|VLAN|Type|State|Age|Expires in' && /ARP entry timeout5 min \(configured\)/.test(core1.textContent || '') && /Timer scalereal time/.test(core1.textContent || '') && core1.querySelectorAll('tbody tr[data-ip]').length > 0 && /\(simulated\)/.test(core1.textContent || ''));
+      check(`${theme}: the MAC table: MAC, VLAN, port, type, age, expires in; the aging time with its default`, Array.from(panels[2].querySelectorAll('thead th')).map((h) => h.textContent).join('|') === 'MAC address|VLAN|Port|Type|Age|Expires in' && /Aging time5 min \(default \(IEEE 802\.1D\)\)/.test(panels[2].textContent || '') && panels[2].querySelectorAll('tbody tr[data-mac]').length > 0);
+      check(`${theme}: the tables have the theme’s colours`, doc.defaultView!.getComputedStyle(core1).backgroundColor !== 'rgba(0, 0, 0, 0)');
+      // the protocols shown change during the simulation without a restart
+      const tBefore = sim.now;
+      const arpBox = q('input[data-sim-proto="arp"]') as HTMLInputElement;
+      arpBox.click();
+      await tick();
+      check(`${theme}: hiding ARP during the simulation: no restart, the same time, the tables stay open and keep their entries; the log says hidden events still happen`, sim.now === tBefore && doc.querySelectorAll('.sim-table-panel').length === 3 && sim.arpTable('core1').length > 0 && /of hidden protocols not listed \(they still run\)/.test(q('#sim-log-note')!.textContent || '') && !ctl.shown.has('arp'));
+      (q('#sim-all') as HTMLElement).click();
+      await tick();
+      check(`${theme}: Select all shows every protocol again`, ctl.protocolEntries().every((e) => ctl.shown.has(e.id)) && arpBox.checked);
+      // fail the ring link from the diagram's menu: r3 notices at once, r1 when the dead interval expires; the traffic moves via r2
+      const cab = (q('#canvas g.cable[data-ref="link:l-carrier-r3"]') as Element).getBoundingClientRect();
+      ctl.diagramClick('link:l-carrier-r3', cab.left + cab.width / 2, cab.top + cab.height / 2);
+      await tick();
+      check(`${theme}: clicking a cable in the simulation offers Fail this link`, (doc.querySelector('.sim-menu [role="menuitem"]') as HTMLElement).textContent === 'Fail this link');
+      (doc.querySelector('.sim-menu [role="menuitem"]') as HTMLElement).click();
+      await tick();
+      const tf = sim.now;
+      ctl.runTo(tf + 45000);
+      await tick();
+      const dead = sim.events().find((e) => e.t > tf && e.device === 'r1' && /dead interval expired/.test(e.detail));
+      const rerouted = sim.events().some((e) => e.t > tf && e.kind === 'route' && e.device === 'r2' && /10\.10\.10\.21 → 10\.30\.0\.10/.test(e.detail));
+      check(`${theme}: failed: the dead interval expires at r1, and the users’ traffic is rerouted via r2`, !!dead && rerouted && /l-carrier-r3 has failed/.test(q('#sim-failed')!.textContent || ''), `dead ${!!dead} rerouted ${rerouted} failed ${sim.failed()} t ${tf}→${sim.now}: ${q('#sim-failed')!.textContent}`);
+      check(`${theme}: the diagram marks the failed cable (down); the banner says so`, !!q('#canvas [data-ref="link:l-carrier-r3"].sim-down') && /l-carrier-r3 failed/.test(q('#sim-text')!.textContent || ''), q('#sim-text')!.textContent || '');
+      // the table timers faster: entries age; the MAC entries are relearned on the new path after another failure
+      (q('#sim-scale') as HTMLSelectElement).value = '60';
+      (q('#sim-scale') as HTMLSelectElement).dispatchEvent(new Event('change', { bubbles: true }));
+      ctl.runTo(sim.now + 30000);
+      await tick();
+      check(`${theme}: at a timer scale of 1:60 entries age out or are refreshed (core1’s 300 s timeout is 5 s here), and every table says so`, sim.events().some((e) => e.device === 'core1' && e.kind === 'table' && /refreshing|expired/.test(e.detail)) && /1:60/.test(core1.textContent || ''));
+      const coreMac = sim.engine.net.macs.get('core1:Vlan10')!.mac;
+      const before = sim.macTable('acc-sw').find((x) => x.mac === coreMac);
+      ctl.failLink('link:l-acc-core1');
+      ctl.runTo(sim.now + 15000);
+      await tick();
+      const after = sim.macTable('acc-sw').find((x) => x.mac === coreMac);
+      check(`${theme}: one link at a time (failing another restores the first); acc-sw’s MAC entries on the failed port are removed and relearned on the new path`, sim.failed() === 'link:l-acc-core1' && !!before && before.port === 'up1' && !!after && after.port === 'up2' && /up2/.test(panels[2].textContent || ''), `${before && before.port} → ${after && after.port}`);
+      ctl.restoreLink();
+      ctl.runTo(sim.now + 60000);
+      const notFull = sim.status().filter((s) => s.protocol === 'ospf' && s.state !== 'Full' && !/ospf-cores/.test(s.name)).map((s) => s.name + ' ' + s.state);
+      check(`${theme}: Restore link: the adjacencies form again with their full handshake`, !notFull.length, notFull.join('; '));
+      // an export: a still picture with labelled arrows and the note
+      const svg = app.exportSvg();
+      check(`${theme}: an export during the simulation: “Protocol simulation, t = …”, a still picture (arrows with labels, no moving dots)`, /Protocol simulation, t = /.test(svg) && !/class="sim-dot"/.test(svg));
+      // Exit: the tables close, the model is unchanged, nothing to undo
+      exitBtn.click();
+      await tick();
+      check(`${theme}: Exit simulation: the window and the tables close, Start is available again; the model is unchanged and has no new undo step`, !app.simulationOn() && !doc.querySelector('.sim-table-panel') && app.toolWindow() !== 'sim' && !startBtn.disabled && app.exportText() === yamlBefore && (app.mdoc as ModelDoc).canUndo() === undoBefore);
+    }
+    app.theme.set('dark');
 
     // ------------------------------------------------ viewer interactions
     app.loadExample(EXAMPLES.findIndex((e) => /enterprise-wan/.test(e.name)));
@@ -4822,8 +4926,8 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         return `${cs.borderTopStyle} ${cs.borderTopLeftRadius}`;
       };
       check(
-        'Edit and Details share the object header and present their content in the same titled cards (Edit: Identity, Placement, Protocols, Notes; Details: Overview and its sections); Duplicate and Delete keep their names',
-        editHead && detHead && /^Identity\|Placement\|Protocols \(routing services\)\|Notes/.test(editGroups) && /^Overview\|Physical interfaces/.test(detGroups) && buttons === 'Duplicate|Delete' && card('#side-body .fgroup') === 'solid 9px' && doc.documentElement.scrollHeight <= doc.documentElement.clientHeight + 1,
+        'Edit and Details share the object header and present their content in the same titled cards (Edit: Identity, Placement, Protocols, Address resolution, Notes; Details: Overview and its sections); Duplicate and Delete keep their names',
+        editHead && detHead && /^Identity\|Placement\|Protocols \(routing services\)\|Address resolution \(simulation\)\|Notes/.test(editGroups) && /^Overview\|Physical interfaces/.test(detGroups) && buttons === 'Duplicate|Delete' && card('#side-body .fgroup') === 'solid 9px' && doc.documentElement.scrollHeight <= doc.documentElement.clientHeight + 1,
         editGroups + ' // ' + detGroups,
       );
       click('[data-tab="legend"]');

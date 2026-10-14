@@ -170,7 +170,7 @@ const MANUAL: Section[] = [
     id: 'protocols',
     title: 'Run routing protocols on a device',
     steps: [
-      'Select a router, switch, firewall, load balancer, proxy or gateway. Its **Protocols** card lists what it runs.',
+      'Select a router, Layer 3 switch, firewall, load balancer, proxy or gateway. Its **Protocols** card lists what it runs.',
       'If its relations use a protocol it doesn’t run, a suggestion such as **+ Enable OSPF · used by ospf-13** enables it with one click. Otherwise choose one under **Enable a protocol…**.',
       'Fill in what the protocol requires: BGP’s **Local AS number**, OSPF’s **Router ID** (a loopback such as `lo0`, or an IPv4 address), IS-IS’s NET. Until then they are errors, here and in Problems.',
       'For VRRP or HSRP, open the interface and press **+ VRRP group**: its group number, virtual IP and priority.',
@@ -178,6 +178,16 @@ const MANUAL: Section[] = [
     ],
     notes: ['The router ID and the AS number are written in the device’s box only while a protocol uses them. Nothing is filled in for you.'],
     figures: [['protocols', 'r3’s Protocols card: the suggestion to enable OSPF, BGP with its AS number, and Enable a protocol.']],
+  },
+  {
+    id: 'switches',
+    title: 'Make a switch Layer 2 or Layer 3',
+    steps: [
+      'Select a switch. In its **Identity** card, **Layer 3** says whether it routes. A new switch is a **Layer 2 switch**: it forwards frames, may have one management interface with an address and static routes (for example a default gateway for management), and runs no routing protocols.',
+      'Tick **Layer 3** to make it a **Layer 3 switch**: protocols, a router ID, addresses on several VLAN interfaces (it routes between them), VRRP or HSRP groups, tunnels and VRFs.',
+      'Untick it on a configured Layer 3 switch: NetAtlas lists what is removed with it (and the relations that need routing, which stay and are reported) and asks first. It is one step you can undo.',
+    ],
+    notes: ['The diagram marks every switch with **L2** or **L3** on its icon (a Layer 3 switch also has its own icon), in both views and in exports; the legend explains it, and the object list shows it beside the name.'],
   },
   {
     id: 'helpers',
@@ -211,6 +221,40 @@ const MANUAL: Section[] = [
     ],
     notes: ['Each cable, device and LAG is failed alone, never two at once, and the failure follows the model: what runs `over` it, LAGs with their minimum links, VRRP groups failing over. Nothing in the model changes.'],
     figures: [['spof', 'The Single points of failure window for the enterprise WAN: the internet cloud and the uplinks first, with what each cuts off and the relations that go down.']],
+  },
+  {
+    id: 'simulate',
+    title: 'Start a protocol simulation',
+    steps: [
+      'Choose **Simulate → Start simulation…**. The network starts like a freshly booted one: every table empty, every adjacency down, the interfaces coming up. Its messages appear as dots with labels such as *ARP Who has 10.0.0.2? Tell 10.0.0.1*, *OSPF Hello* or *BGP KEEPALIVE*.',
+      'The **Simulation** window has **Play / Pause**, **Step** and the speed (0.25× to 10×). **Protocols shown** chooses which messages appear, at any time; the simulation keeps running every protocol.',
+      'The **Status** table shows each session’s state (OSPF neighbours, BGP sessions, IPsec, the VRRP master …); the **Event log** lists every message and change with its full payload, and can be filtered.',
+      '**Exit simulation** or `Esc` ends it. Nothing in the model changes.',
+    ],
+    notes: [
+      'This is a teaching and design-review simulation of protocol behaviour, not an exact protocol implementation: no real timing jitter, packet loss or vendor differences. With reduced motion set in your system, the time moves in steps and arrows with labels replace the moving dots.',
+    ],
+    figures: [['simulation', 'The protocol simulation of the example protocol-simulation.yaml: labelled dots on the cables, and the Simulation window with its controls and the protocols shown.']],
+  },
+  {
+    id: 'sim-tables',
+    title: 'Look at ARP and MAC tables',
+    steps: [
+      'During a simulation, click a device: a small menu offers **Show ARP table**, and for a switch **Show MAC table**. (Or use the list under **ARP, neighbour and MAC tables** in the Simulation window.)',
+      'Each table opens beside the device, titled *ARP table · core1*. Open several to compare them; drag one aside by its title; **×** or `Esc` closes it.',
+      'At the top: the timers in effect, *configured* or *default*. The rows show the address, the MAC (*(simulated)* when NetAtlas generated it), the interface, VLAN, type, state, age and when it expires.',
+      'The ARP timeout is 4 hours by default: choose a faster **timer scale** in the window to see entries age in a demonstration. It changes nothing in the model.',
+    ],
+    figures: [['arp-table', 'core1’s ARP table during a simulation: the timers (a configured ARP timeout of 5 minutes), and entries with generated MAC addresses.']],
+  },
+  {
+    id: 'sim-fail',
+    title: 'Fail a link during a simulation',
+    steps: [
+      'Click a cable or a relation in the diagram and choose **Fail this link** (or use **Fail a link** in the window). One link fails at a time.',
+      'Watch the reaction: frames on it are lost (✕), the devices at its ends notice at once, others when their timers run out (OSPF’s dead interval, BGP’s hold time, BFD), adjacencies go down, routes are recomputed and traffic takes another way, or is lost.',
+      'Click it again and choose **Restore link**: the adjacencies form again with their full handshake.',
+    ],
   },
   {
     id: 'trace',

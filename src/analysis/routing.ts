@@ -37,7 +37,7 @@
  * that is not up has no connected networks and can't be an exit.
  */
 import { compareRoutes, routeLine } from '../model/addresses';
-import { routingRole } from '../model/device-types';
+import { deviceRoutingRole } from '../model/device-types';
 import { IpAddr, IpPrefix, parseAddress, parsePrefix } from '../model/ip';
 import { normalizeProtocol, protocolBase } from '../model/protocols';
 import { bgpAsn, hasService, routerIdFor } from '../model/services';
@@ -69,6 +69,8 @@ export interface RoutingCtx {
   up?: (device: string, iface: string) => boolean;
   /** is a relation up (a routing adjacency that is down teaches nothing) */
   relUp?: (id: string) => boolean;
+  /** is one direction of a relation's adjacency up (the protocol simulation: OSPF neighbours on a segment form some pairs only) */
+  adjUp?: (relation: string, from: string, to: string) => boolean;
   /** is a cable up */
   linkUp?: (id: string) => boolean;
 }
@@ -547,6 +549,7 @@ function computeDynamic(model: Model, ctx: RoutingCtx | undefined): DynState {
     for (const from of devs) {
       for (const to of devs) {
         if (from === to) continue;
+        if (ctx && ctx.adjUp && !ctx.adjUp(r.id, from, to)) continue;
         // only devices that enable the protocol (their protocols:) take part in its adjacencies
         const off = [from, to].filter((d) => !hasService(model, d, protocol));
         if (off.length) {
@@ -639,12 +642,12 @@ export function routeRef(r: Route): string {
 /** May a device of this type carry routes, and does it forward traffic for others? */
 export function canRoute(model: Model, device: string): boolean {
   const d = model.index.devices.get(device);
-  return !!d && routingRole(d.type) !== null;
+  return !!d && deviceRoutingRole(d) !== null;
 }
 
 export function forwards(model: Model, device: string): boolean {
   const d = model.index.devices.get(device);
-  return !!d && routingRole(d.type) === 'router';
+  return !!d && deviceRoutingRole(d) === 'router';
 }
 
 /** Routes of a device in display order (model/addresses.ts compareRoutes): never file order. */

@@ -65,7 +65,7 @@ test('physical legend in the SVG: device types, cable media, speed, ports, locat
   const m = model(example('enterprise-wan.yaml'));
   const t = texts(exported(m, 'physical').root);
   assert.equal(t[0], 'Legend — physical view');
-  for (const want of ['DEVICES', 'Router', 'Switch', 'Firewall', 'CABLES (PHYSICAL LINKS)', 'Fiber', 'Copper', '1G (width grows with speed)', '100G', 'Port (label: interface name)', 'LOCATIONS / GROUPS', 'site', 'rack']) {
+  for (const want of ['DEVICES', 'Router', 'Layer 3 switch (L3: routes between its VLANs)', 'Layer 2 switch (L2: forwards frames only)', 'Firewall', 'CABLES (PHYSICAL LINKS)', 'Fiber', 'Copper', '1G (width grows with speed)', '100G', 'Port (label: interface name)', 'LOCATIONS / GROUPS', 'site', 'rack']) {
     assert.ok(t.includes(want), want + '\n' + t.join(' | '));
   }
   assert.ok(!t.some((x) => /mismatch/.test(x)), 'no mismatch symbol when no cable has one');

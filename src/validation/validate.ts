@@ -40,8 +40,8 @@ import {
 } from '../model/types';
 import { dnsNameKey, dnsNameProblem } from '../model/dns';
 import { BUILTIN_SERVICES, PARAM_SCOPES, PARAM_TYPES, ParamDef, ParamScope, ParamType, ROUTER_ID_KEY, RouterIdUse, ServiceDef, ServiceRegistry, builtinServices, paramProblem, paramsAt, routerIdAddress, usesRouterId } from '../model/services';
-import { DEVICE_TYPE_IDS, NO_DEVICE_TYPE, ROUTE_DEVICE_TYPES, deviceTypeLabel, isDeviceType, routingRole } from '../model/device-types';
-import { COLOR_RE, DEFAULT_STYLE, builtinProtocols, lookupProtocol, normalizeProtocol } from '../model/protocols';
+import { DEVICE_TYPE_IDS, NO_DEVICE_TYPE, ROUTE_DEVICE_TYPES, deviceRoutingRole, deviceTypeLabel, isDeviceType, isLayer2Switch, routingRole } from '../model/device-types';
+import { COLOR_RE, DEFAULT_STYLE, builtinProtocols, lookupProtocol, normalizeProtocol, protocolBase } from '../model/protocols';
 import { YMap, YNode, YSeq, YamlError, YamlLimits, parseYaml } from '../yaml/parse';
 import { FORMAT_VERSION, SCHEMA } from '../yaml/schema';
 import { readDemands } from './demands';
@@ -319,10 +319,20 @@ function build(root: YNode | null, c: Ctx): Model | null {
         c.error(t, dpath + '.tier', 'tier must be an integer from 0 (top) to 9 (bottom)');
       } else tier = t.value;
     }
+    const dtype = deviceType(r, m, dpath, c);
+    // layer3: only a switch has it (every other type's layer is its type)
+    const l3Node = get(m, 'layer3');
+    const layer3 = r.bool(l3Node, dpath + '.layer3');
+    if (layer3 !== undefined && dtype !== 'switch') {
+      c.error(l3Node as YNode, dpath + '.layer3', `layer3 is for switches (a switch routes with layer3: true); "${id}" is ${dtype === NO_DEVICE_TYPE ? 'a device without a type' : `a ${deviceTypeLabel(dtype) || dtype}`}, whose layer follows from its type`);
+    }
     const dev: Device = {
       id,
       label: r.field(m, 'label', dpath, L.maxLabel) || id,
-      type: deviceType(r, m, dpath, c),
+      type: dtype,
+      layer3: dtype === 'switch' && layer3 === true ? true : undefined,
+      arpTimeout: r.int(get(m, 'arp_timeout'), dpath + '.arp_timeout', 1, MAX_ARP_TIMEOUT, 'ARP timeout (s)'),
+      ndpReachableTime: r.int(get(m, 'ndp_reachable_time'), dpath + '.ndp_reachable_time', 1, MAX_NDP_REACHABLE, 'NDP reachable time (s)'),
       group: group !== undefined && groupMap.has(group) ? group : undefined,
       tier,
       description: r.field(m, 'description', dpath, L.maxDescription),
@@ -338,9 +348,11 @@ function build(root: YNode | null, c: Ctx): Model | null {
     const svcRids: Array<{ svc: ServiceConfig; text: string; node: YNode; path: string }> = [];
     const protoNode = get(m, 'protocols');
     if (!isNull(protoNode)) {
-      if (routingRole(dev.type) !== 'router') {
+      if (isLayer2Switch(dev)) {
+        c.error(protoNode as YNode, dpath + '.protocols', `"${id}" is a Layer 2 switch: it runs no routing protocols (set layer3: true to make it a Layer 3 switch)`);
+      } else if (deviceRoutingRole(dev) !== 'router') {
         const what = dev.type === NO_DEVICE_TYPE ? 'a device without a type' : `a ${deviceTypeLabel(dev.type) || dev.type} (${dev.type})`;
-        c.error(protoNode as YNode, dpath + '.protocols', `"${id}" is ${what}: only Layer 3+ devices (${ROUTER_TYPES.join(', ')}) run routing protocols`);
+        c.error(protoNode as YNode, dpath + '.protocols', `"${id}" is ${what}: only Layer 3+ devices (${ROUTER_TYPES.join(', ')}; a switch with layer3: true) run routing protocols`);
       } else dev.services = readServices(r, c, protoNode as YNode, dpath + '.protocols', services, 'device', id, svcRids);
     }
     devNodes.set(id, { node: m, path: dpath });
@@ -470,6 +482,8 @@ function build(root: YNode | null, c: Ctx): Model | null {
         vrf: r.field(im, 'vrf', ipath, 100),
         mac: r.field(im, 'mac', ipath, 40),
         mtu: r.int(get(im, 'mtu'), ipath + '.mtu', 68, 65535, 'MTU'),
+        arpTimeout: r.int(get(im, 'arp_timeout'), ipath + '.arp_timeout', 1, MAX_ARP_TIMEOUT, 'ARP timeout (s)'),
+        ndpReachableTime: r.int(get(im, 'ndp_reachable_time'), ipath + '.ndp_reachable_time', 1, MAX_NDP_REACHABLE, 'NDP reachable time (s)'),
         members: [],
         services: [],
         description: r.field(im, 'description', ipath, L.maxDescription),
@@ -567,6 +581,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
       const v = resolveRouterId(c, dev, s.text, s.node, s.path);
       if (v) s.svc.routerId = v;
     }
+    if (isLayer2Switch(dev)) layer2SwitchRules(c, m, dpath, dev);
     for (const s of dev.services) {
       const def = services.get(s.id);
       if (!def || def.routerId !== 'required' || s.routerId || dev.routerId || svcRids.some((x) => x.svc === s) || ridText !== undefined) continue;
@@ -940,6 +955,18 @@ function build(root: YNode | null, c: Ctx): Model | null {
   };
   for (const rel of relations) visit(rel.id, []);
   // (cycles are reported above; renderers and highlighting are cycle-safe, so drafts still draw)
+
+  // a Layer 2 switch is no endpoint of a routing, first-hop redundancy, BFD, LDP or PIM relation, nor of a tunnel or overlay
+  for (const rel of relations) {
+    const base = protocolBase(protocols, rel.protocol);
+    const l3 = rel.category === 'tunnel' || rel.category === 'overlay' || LAYER3_PROTOCOLS.indexOf(base) >= 0;
+    if (!l3) continue;
+    for (const d of relationDevices(rel)) {
+      const dev = deviceMap.get(d);
+      if (!dev || !isLayer2Switch(dev)) continue;
+      c.error(relNodes.get(rel.id) as YMap, `relations.${rel.id}.endpoints`, `"${d}" is a Layer 2 switch: it can't be an endpoint of ${lookupProtocol(protocols, rel.protocol).label} (that needs routing; set layer3: true on "${d}" to make it a Layer 3 switch)`);
+    }
+  }
 
   // ------------------------------------------------------------- layout
   // Presentation only: problems here are warnings and the entry is ignored,
@@ -1365,7 +1392,66 @@ function deviceType(r: Reader, m: YMap, dpath: string, c: Ctx): string {
 
 // ------------------------------------------------------------ routing services
 
-const ROUTER_TYPES = ROUTE_DEVICE_TYPES.filter((t) => routingRole(t) === 'router');
+const ROUTER_TYPES = ROUTE_DEVICE_TYPES.filter((t) => routingRole(t) === 'router' && t !== 'switch');
+/**
+ * What a Layer 2 switch (a switch without layer3: true) may have of
+ * layer 3: one management interface with addresses (a VLAN interface or a
+ * management port), its VRF (a management VRF) and static routes in it or
+ * in the default table (a default gateway towards management). Everything
+ * else is Layer 3 configuration and an error: a second interface with
+ * addresses (that would be inter-VLAN routing), a tunnel interface, a
+ * VRRP / HSRP … group, a router ID, a VRF on an interface without
+ * addresses, a route in another VRF. (Routing protocols are refused where
+ * `protocols:` is read; relations of routing, tunnel and overlay protocols
+ * at it are refused with the relations.)
+ */
+function layer2SwitchRules(c: Ctx, m: YMap, dpath: string, dev: Device): void {
+  const fix = 'set layer3: true to make it a Layer 3 switch';
+  const nodeOf = (i: Interface): { node: YNode; path: string } => {
+    const lists: Array<['interfaces' | 'logical_interfaces', Interface[]]> = [['interfaces', dev.interfaces], ['logical_interfaces', dev.logical]];
+    for (const [key, list] of lists) {
+      const k = list.indexOf(i);
+      if (k < 0) continue;
+      const items = get(m, key) as YNode;
+      // the interface's own entry (a mapping with its id, or the "- eth0" shorthand), else the list
+      const idOf = (x: YNode): string => {
+        const n = x.kind === 'map' ? get(x, 'id') : x;
+        return n && n.kind === 'scalar' ? String(n.value) : '';
+      };
+      const found = items.kind === 'seq' ? items.items.find((x) => idOf(x) === i.id) : undefined;
+      return { node: found || items, path: `${dpath}.${key}.${i.id}` };
+    }
+    return { node: m, path: dpath };
+  };
+  const ridNode = get(m, 'router_id');
+  if (ridNode && !isNull(ridNode)) c.error(ridNode as YNode, dpath + '.router_id', `"${dev.id}" is a Layer 2 switch: it has no router ID (${fix})`);
+  const all = deviceInterfaces(dev);
+  const addressed = all.filter((i) => i.addresses.length || i.dhcp);
+  const mgmt = addressed[0];
+  for (const i of addressed.slice(1)) {
+    const at = nodeOf(i);
+    c.error(at.node, at.path, `"${dev.id}" is a Layer 2 switch: it has one management interface with addresses (${mgmt.id}); ${i.id} with addresses too would route between subnets (${fix})`);
+  }
+  for (const i of all) {
+    const at = nodeOf(i);
+    if (i.type === 'tunnel') c.error(at.node, at.path, `"${dev.id}" is a Layer 2 switch: tunnel interface ${i.id} needs routing (${fix})`);
+    if (i.services.length) c.error(at.node, at.path + '.protocols', `"${dev.id}" is a Layer 2 switch: ${i.id} can't be a member of a ${i.services.map((s) => s.id.toUpperCase()).join(', ')} group (${fix})`);
+    if (i.vrf !== undefined && i !== mgmt) c.error(at.node, at.path + '.vrf', `"${dev.id}" is a Layer 2 switch: only its management interface may be in a VRF (VRF ${i.vrf} on ${i.id}; ${fix})`);
+  }
+  const mvrf = mgmt ? mgmt.vrf : undefined;
+  dev.routes.forEach((rt) => {
+    if (rt.vrf === undefined || rt.vrf === mvrf) return;
+    c.error(m, `${dpath}.routes[${rt.index}].vrf`, `"${dev.id}" is a Layer 2 switch: its routes are for management, in ${mvrf ? 'VRF ' + mvrf + ' or ' : ''}the default table (VRF ${rt.vrf}; ${fix})`);
+  });
+}
+
+/** The protocols (base ids) whose relations need a Layer 3 device at every end (besides tunnels and overlays). */
+const LAYER3_PROTOCOLS = ['bgp', 'ospf', 'isis', 'eigrp', 'rip', 'ldp', 'pim', 'bfd', 'vrrp', 'hsrp', 'glbp', 'carp'];
+
+/** The largest ARP timeout (s) the format takes (2147483 s, as Cisco IOS). */
+const MAX_ARP_TIMEOUT = 2147483;
+/** The largest NDP reachable time (s): RFC 4861 MAX_REACHABLE_TIME is one hour. */
+const MAX_NDP_REACHABLE = 3600;
 const BUILTIN_SERVICE_IDS = BUILTIN_SERVICES.map((s) => s.id);
 
 /**

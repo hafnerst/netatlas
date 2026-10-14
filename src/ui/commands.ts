@@ -298,13 +298,23 @@ export function buildCommands(): Command[] {
     },
     // ------------------------------------------------------------ Simulate
     {
-      id: 'sim.protocol',
-      label: 'Protocol simulation…',
+      id: 'sim.start',
+      label: 'Start simulation…',
       group: 'Simulate',
       mode: true,
-      keywords: 'protocol simulation ospf bgp hello packets messages simulate window',
-      state: () => off('Not available yet: the protocol simulation is being built'),
-      run: () => false,
+      keywords: 'start protocol simulation ospf bgp arp hello packets messages simulate window layer 2',
+      // the same three states in the menu and the palette: no model; a model, nothing running; a simulation running
+      state: (app) => (!app.hasModel() ? off('Open or create a model first') : app.simulationOn() ? off('A simulation is already running') : on('Start the protocol simulation in a window of its own: a freshly booted network, its messages as labelled dots')),
+      run: (app) => app.startProtocolSimulation(),
+    },
+    {
+      id: 'sim.window',
+      label: 'Simulation window',
+      group: 'Simulate',
+      mode: true,
+      keywords: 'protocol simulation window controls event log status',
+      state: (app) => (!app.simulationOn() ? off('No simulation is running') : app.toolWindow() === 'sim' ? off('The Simulation window is open') : on('Open the Simulation window again (its controls, tables and event log)')),
+      run: (app) => app.openSimWindow(),
     },
     {
       id: 'sim.exit',

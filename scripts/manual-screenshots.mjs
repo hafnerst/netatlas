@@ -273,6 +273,21 @@ async function main() {
       await page.settle(100);
     }
 
+    // the protocol simulation (protocol-simulation.yaml, physical view): labelled dots and the window; then core1's ARP table
+    {
+      await page.eval(`netatlas.loadText(${JSON.stringify(readFileSync(join(root, 'examples', 'protocol-simulation.yaml'), 'utf8'))}, 'protocol-simulation.yaml'), netatlas.setView('physical'), true`);
+      await page.eval("document.getElementById('toast').hidden = true");
+      await page.eval(`localStorage.removeItem('netatlas.window.sim'), netatlas.startProtocolSimulation(), netatlas.simController().setPlaying(false), netatlas.simController().runTo(11400), true`);
+      await page.mouse('mouseMoved', 700, 890);
+      await page.settle(300);
+      await save('simulation', { x: 0, y: 0, w: 1440, h: 900 }, { scale: 0.65, quality: 38 });
+      await page.eval(`netatlas.simController().runTo(25000), netatlas.simController().showTable('arp', 'core1', { x: 380, y: 120, w: 10, h: 10 }), true`);
+      await page.settle(200);
+      await save('arp-table', around([await page.rect('.sim-table-panel')], 6), { quality: 55 });
+      await page.eval(`netatlas.exitSimulation(), true`);
+      await page.settle(100);
+    }
+
     // input helpers: a tunnel interface's MTU suggestions and MAC Generate (enterprise WAN, hq-rtr1 st0.10)
     {
       await page.eval('netatlas.loadExample(0), netatlas.setView("physical"), netatlas.select("iface:hq-rtr1:st0.10"), netatlas.showTab("edit"), true');

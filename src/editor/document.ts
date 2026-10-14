@@ -6,6 +6,7 @@
  * dirty and re-validates. Export serializes the tree with yaml-write.ts.
  * This module has no DOM dependency and is fully testable in Node.
  */
+import { lookupProtocol, protocolBase } from '../model/protocols';
 import { ROUTER_ID_KEY, ServiceRegistry, builtinServices, paramsAt } from '../model/services';
 import { Pt } from '../layout/geometry';
 import { LAYOUT_VIEWS, LayoutView, resolvePositions, samePositions } from '../layout/positions';
@@ -743,6 +744,119 @@ export class ModelDoc {
         });
       }
       if (dropRid) this.removeAt(dp.concat('router_id'));
+    });
+  }
+
+  /**
+   * What making a switch a Layer 2 switch takes away (the Layer 3
+   * configuration validation would report on a Layer 2 switch): its
+   * protocols and router ID, the groups on its interfaces, the addresses of
+   * every interface but its management interface (the first with
+   * addresses), the VRFs of the others, its tunnel interfaces and the routes
+   * in other VRFs; as texts, in file order. `relations`: the relations at it
+   * that need routing (OSPF, GRE …); they are not deleted (they belong to
+   * other devices too) and are reported until they are changed.
+   */
+  layer2Removal(devIndex: number): { removed: string[]; relations: string[] } {
+    const plan = this.layer2Plan(devIndex);
+    return { removed: plan.map((x) => x.text), relations: this.layer3RelationsAt(devIndex) };
+  }
+
+  /** The relations at a device whose protocol needs a Layer 3 device (routing, FHRP, BFD, LDP, PIM, tunnels, overlays), by id. */
+  private layer3RelationsAt(devIndex: number): string[] {
+    const model = this.result.model;
+    const id = this.text(['devices', devIndex, 'id']);
+    if (!model || !id) return [];
+    const L3 = ['bgp', 'ospf', 'isis', 'eigrp', 'rip', 'ldp', 'pim', 'bfd', 'vrrp', 'hsrp', 'glbp', 'carp'];
+    return model.relations
+      .filter((r) => r.endpoints.some((e) => e.device === id) && (r.category === 'tunnel' || r.category === 'overlay' || L3.indexOf(protocolBase(model.protocols, r.protocol)) >= 0))
+      .map((r) => `${r.id} (${lookupProtocol(model.protocols, r.protocol).label})`);
+  }
+
+  /** The paths layer2Removal stands for, deepest and last first (so removing them in order keeps the others' indexes). */
+  private layer2Plan(devIndex: number): Array<{ path: Path; text: string; order: number }> {
+    const dp: Path = ['devices', devIndex];
+    const out: Array<{ path: Path; text: string; order: number }> = [];
+    let n = 0;
+    const add = (path: Path, text: string): void => {
+      out.push({ path, text, order: n++ });
+    };
+    const block = this.get(dp.concat('protocols'));
+    if (block && block.kind === 'map') block.entries.forEach((_e, k) => add(dp.concat('protocols', k), `protocol ${(this.servicesRegistry().get(k) || { label: k }).label}`));
+    if (this.get(dp.concat('router_id'))) add(dp.concat('router_id'), `router_id: ${this.text(dp.concat('router_id')) || ''}`);
+    const entries = this.interfaceEntries(devIndex);
+    const has = (p: Path, k: string): boolean => {
+      const v = this.get(p.concat(k));
+      return !!v && !(v.kind === 'seq' && !v.items.length);
+    };
+    const mgmt = entries.find((e) => e.type !== 'tunnel' && (has(e.path, 'ip') || this.text(e.path.concat('dhcp')) === 'true'));
+    let mvrf: string | undefined;
+    for (const e of entries) {
+      const name = e.id || '?';
+      if (e.type === 'tunnel') {
+        add(e.path, `tunnel interface ${name}`);
+        continue;
+      }
+      if (this.get(e.path.concat('protocols'))) add(e.path.concat('protocols'), `${name}: ${flowText(this.get(e.path.concat('protocols')) as YNode) || 'protocols'}`);
+      if (e === mgmt) {
+        mvrf = this.text(e.path.concat('vrf'));
+        continue;
+      }
+      if (has(e.path, 'ip')) add(e.path.concat('ip'), `${name}: addresses ${this.listTexts(e.path.concat('ip')).join(', ')}`);
+      if (this.text(e.path.concat('dhcp')) === 'true') add(e.path.concat('dhcp'), `${name}: dhcp`);
+      if (this.get(e.path.concat('vrf'))) add(e.path.concat('vrf'), `${name}: vrf ${this.text(e.path.concat('vrf'))}`);
+    }
+    const routes = this.get(dp.concat('routes'));
+    if (routes && routes.kind === 'seq') {
+      routes.items.forEach((_r, k) => {
+        const v = this.text(dp.concat('routes', k, 'vrf'));
+        if (v !== undefined && v !== mvrf) add(dp.concat('routes', k), `route ${this.text(dp.concat('routes', k, 'prefix')) || '?'} in VRF ${v}`);
+      });
+    }
+    return out;
+  }
+
+  /** The texts of a list's scalar items. */
+  private listTexts(p: Path): string[] {
+    const s = this.get(p);
+    if (!s) return [];
+    if (s.kind !== 'seq') return [scalarText(s) || ''];
+    return s.items.map((x) => scalarText(x) || flowText(x) || '');
+  }
+
+  /**
+   * A switch becomes a Layer 3 switch (`layer3: true`), or a Layer 2 switch
+   * again: then everything layer2Removal lists goes with it. One undo step.
+   */
+  setLayer3(devIndex: number, on: boolean): void {
+    const dp: Path = ['devices', devIndex];
+    const id = this.text(dp.concat('id')) || 'the switch';
+    if (on) {
+      this.change(`Make ${id} a Layer 3 switch`, () => this.setAt(dp.concat('layer3'), boolNode(true), this.orderFor(dp)));
+      return;
+    }
+    const plan = this.layer2Plan(devIndex);
+    // the deepest paths first, and the later items of a list before the earlier ones
+    const cmpPath = (a: Path, b: Path): number => {
+      for (let i = 0; i < Math.min(a.length, b.length); i++) {
+        if (a[i] === b[i]) continue;
+        if (typeof a[i] === 'number' && typeof b[i] === 'number') return (b[i] as number) - (a[i] as number);
+        return 0;
+      }
+      return b.length - a.length;
+    };
+    plan.sort((a, b) => cmpPath(a.path, b.path) || b.order - a.order);
+    this.change(`Make ${id} a Layer 2 switch`, () => {
+      for (const x of plan) this.removeAt(x.path);
+      for (const e of this.interfaceEntries(devIndex)) {
+        const ib = this.get(e.path.concat('ip'));
+        if (ib && ib.kind === 'seq' && !ib.items.length) this.removeAt(e.path.concat('ip'));
+      }
+      for (const k of ['protocols', 'routes', 'logical_interfaces']) {
+        const b = this.get(dp.concat(k));
+        if (b && ((b.kind === 'map' && b.entries.size === 0) || (b.kind === 'seq' && !b.items.length))) this.removeAt(dp.concat(k));
+      }
+      this.removeAt(dp.concat('layer3'));
     });
   }
 

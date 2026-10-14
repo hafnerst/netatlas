@@ -148,10 +148,13 @@ than one endpoint on the same device is bound by the first of them.
 | `id` | yes | |
 | `label` | | Display name. Drawn in full: long labels wrap, and line breaks in the label are kept (see [Sizes, labels and routes](#sizes-labels-and-routes)). |
 | `type` | | One of the [device types](#device-types) below, written exactly as listed (lower case). Any other value is an error. Without a type the device gets a generic icon. |
+| `layer3` | | Switches only: `layer3: true` makes a switch a **Layer 3 switch**, with the full Layer 3+ feature set (routing protocols, a router ID, addresses on several interfaces, VRRP / HSRP groups, tunnels, VRFs). Without it a switch is a **Layer 2 switch** (see [Layer 2 and Layer 3 switches](#layer-2-and-layer-3-switches)). On any other type it is an error. |
 | `group` | | Id of the group the device is located in |
 | `tier` | | 0–9: vertical row in the physical view (0 = top). By default this comes from the type (see the table below). Set it to place a device elsewhere, e.g. `tier: 3` for core or spine switches above the access switches. |
 | `router_id` | | The router ID the device's protocols share: the id of one of its **loopbacks** (`lo0`: its IPv4 address is used) or an **IPv4 address** without a prefix length (`10.255.0.1`). Applies only while an enabled protocol uses a router ID (OSPF, BGP, EIGRP, LDP); otherwise it is reported as not applicable. See [Routing services](#routing-services-protocols). |
-| `protocols` | | The **routing services** the device runs, with their parameters: `protocols: {bgp: {asn: 65001}, ospf: {}}`. Layer 3+ devices only. See [Routing services](#routing-services-protocols). |
+| `arp_timeout` | | How long an ARP entry stays valid, in seconds (1–2147483), for the [protocol simulation](#arp-and-neighbour-timers)'s ARP table of this device. Omitted: the default, 14400 s (4 h). |
+| `ndp_reachable_time` | | How long an IPv6 neighbour counts as reachable after it was confirmed, in seconds (1–3600). Omitted: the default, 30 s. |
+| `protocols` | | The **routing services** the device runs, with their parameters: `protocols: {bgp: {asn: 65001}, ospf: {}}`. Layer 3+ devices only (a switch with `layer3: true`). See [Routing services](#routing-services-protocols). |
 | `description`, `attrs` | | |
 | `interfaces` | | List of the device's **physical interfaces** (its ports, below). The shorthand `interfaces: [eth0, eth1]` is allowed. |
 | `logical_interfaces` | | List of the device's **logical interfaces** (below): loopbacks, virtual interfaces and tunnel interfaces. |
@@ -167,7 +170,7 @@ where it belongs.
 
 ### Routing services (`protocols`)
 
-A Layer 3+ device (router, switch, firewall, load balancer, proxy, gateway:
+A Layer 3+ device (router, Layer 3 switch, firewall, load balancer, proxy, gateway:
 the [device types](#device-types) whose routing role is *router*, the same
 list as for the routers among [static routes](#static-routes)) lists the
 protocols it runs under `protocols:`, each with its parameters. A protocol
@@ -245,7 +248,7 @@ diagram writes the router ID and the AS number only where they apply.
 | Display name | `type` | Default `tier` | Layer 3 (static routes) |
 |---|---|---|---|
 | Router | `router` | 1 | forwards |
-| Switch | `switch` | 4 | forwards (a multilayer switch) |
+| Switch | `switch` | 4 | with `layer3: true` forwards (a Layer 3 switch); else a Layer 2 switch: host (a management address and routes, never forwarding) |
 | Firewall | `firewall` | 2 | forwards |
 | Access point | `ap` | 5 | — |
 | Server | `server` | 6 | host |
@@ -275,6 +278,55 @@ any other value suggests the closest type (`Router` → `router`,
 `load-balancer` → `load_balancer`) or lists all of them. A role such as
 spine, leaf, core or border is not a type: write it into the label, the
 description or `attrs`.
+
+### Layer 2 and Layer 3 switches
+
+A switch is a **Layer 2 switch** unless it says `layer3: true`. A Layer 2
+switch forwards frames between its ports and routes nothing; it keeps a
+**management address** and **static routes** (for example a default
+gateway towards management). Exactly these rules apply, and validation
+reports anything else on a Layer 2 switch as an error:
+
+| A Layer 2 switch may have | It may not have (errors) |
+|---|---|
+| addresses on **one** interface: its management interface (a VLAN interface, or a port), or DHCP there | addresses on a second interface (that would route between subnets or VLANs) |
+| a VRF on that management interface | a VRF on any other interface |
+| static routes in the default table or in the management interface's VRF | routes in another VRF |
+| relations of services (SNMP, syslog, NTP …), LACP, MLAG, STP, LLDP, CDP and the model's own protocols | `protocols:` (routing services), `router_id`, VRRP / HSRP / GLBP / CARP groups on an interface, tunnel interfaces |
+| | being an endpoint of a routing, BFD, LDP, PIM or first-hop redundancy relation, or of a tunnel or overlay |
+
+A **Layer 3 switch** (`layer3: true`) has the full Layer 3+ feature set of
+a router and routes between its VLANs. The same rule is used by the
+Inspector, the Protocols card and its suggestions, the input helpers, the
+consistency checks, the path tracer (a Layer 2 switch stops a trace as a
+device that does not forward), Single points of failure and the protocol
+simulation. The diagram marks every switch with an **L2** or **L3** badge
+on its icon (and a Layer 3 switch with its own glyph), explained in the
+legend of both views.
+
+```yaml
+- id: acc-sw
+  type: switch                # a Layer 2 switch
+  interfaces: [p1, p2, up1]
+  logical_interfaces:
+    - {id: Vlan99, type: virtual, vlan: 99, ip: 10.99.0.10/24}   # its management address
+  routes:
+    - {prefix: 0.0.0.0/0, via: 10.99.0.1}
+- id: core1
+  type: switch
+  layer3: true                # a Layer 3 switch: routes between VLAN 10 and 20
+  logical_interfaces:
+    - {id: Vlan10, type: virtual, vlan: 10, ip: 10.10.10.1/24}
+    - {id: Vlan20, type: virtual, vlan: 20, ip: 10.10.20.1/24}
+```
+
+Making a switch a Layer 2 switch in the Edit tab (unticking **Layer 3**)
+asks first and lists what goes with it, in one undo step: its protocols
+and router ID, the groups on its interfaces, the addresses of every
+interface but its management interface, the VRFs of the others, its tunnel
+interfaces and routes in other VRFs. Relations at it that need routing are
+listed but kept (they belong to other devices too) and reported until they
+are changed.
 
 ### Interfaces
 
@@ -313,6 +365,7 @@ devices:
 | `dhcp` | `true` or `false`; **omitted means `false`**. `true`: the interface obtains its address by DHCP, so it has no manually configured addresses. Not on a loopback. See [DHCP](#dhcp). |
 | `ip` | the manually configured addresses: one address or a list, `ip: 10.0.0.1/30` or `ip: [192.0.2.1/24, 2001:db8::1/64]`. Addresses that aren't valid IPv4/IPv6 addresses give a *warning* and are shown as written (on a loopback they are an error); for `ip: dhcp` the warning says to write `dhcp: true` instead (on a loopback: to write its address). **The addresses decide which networks the device belongs to.** |
 | `vrf` | name of the VRF the interface is assigned to (free text, display only). Membership in a network is decided by the address alone. |
+| `arp_timeout`, `ndp_reachable_time` | the ARP timeout and the IPv6 neighbour reachable time on this interface, in seconds, overriding the device's (see [ARP and neighbour timers](#arp-and-neighbour-timers)). |
 | `mtu` | the interface's MTU in bytes, a whole number from 68 to 65535. Omitted: not modelled (no MTU is assumed, so nothing is compared). Read by the [consistency checks](#consistency-checks) `link-mtu-mismatch` and `tunnel-mtu`. |
 | `mac`, `description`, `attrs` | |
 
@@ -1006,15 +1059,31 @@ Built-in protocol ids: `gre`, `ipsec`, `ipip`, `wireguard`, `openvpn`, `l2tp`,
 `evpn`, `l3vpn`, `vpls`, `sd-wan`, `otv`, `bgp`, `ospf`, `isis`, `eigrp`, `rip`,
 `ldp`, `pim`, `bfd`, `lacp`, `mlag`, `vrrp`, `hsrp`, `glbp`, `carp`,
 `ha-sync`, `dns`, `ntp`, `syslog`, `snmp`, `radius`, `dhcp`, `https`,
-`netflow`. There are also aliases such as `ebgp`, `ibgp`, `mp-bgp`, `ospfv3`,
-`is-is`, `wg`, `ikev2`, `mpls-te`, `pw`, `lag`, `port-channel`, `vpc`,
-`tacacs+`, `ipfix` and `sflow`.
+`netflow`, `stp`, `lldp`, `cdp` and `igmp`. There are also aliases such as
+`ebgp`, `ibgp`, `mp-bgp`, `ospfv3`, `is-is`, `wg`, `ikev2`, `mpls-te`, `pw`,
+`lag`, `port-channel`, `vpc`, `tacacs+`, `ipfix`, `sflow`, `rstp`, `mstp` and
+`mld`.
+
+Every built-in protocol has a **simulation profile** (its messages,
+transport, timers with their defaults, states, and what it does on a
+failure and after a restore; `src/model/sim-profiles.ts`), used by
+Simulate → Start simulation. The simulation reads these relation
+attributes where they are written (else the protocol's default, marked
+*default* in its event log): OSPF `hello`, `dead` and `priority`; BFD
+`interval` (`300ms`, `1s`) and `multiplier`; PIM `rp` (the RP: an address
+or a device); IGMP `group` (default 239.1.1.1); VRRP / HSRP `preempt`
+(`false` turns it off). A switch's spanning-tree priority is the device
+attribute `stp-priority` (default 32768). A protocol the model defines
+itself is simulated with dummy packets labelled with its name, in the
+relation's direction.
 
 ## `demands` (traffic demands)
 
 Optional. Traffic that flows between two points of the network, for the
-protocol simulation (Simulate → Protocol simulation…, in the next
-version). A demand is analysis data:
+protocol simulation (Simulate → Start simulation…: its data packets follow
+the routing, are rerouted when a link fails, or are lost where they stop;
+a multicast destination is delivered by PIM to the group's receivers). A
+demand is analysis data:
 it is traced like **Trace path**, never changes the network objects, and a
 file means the same network with or without it.
 
@@ -1037,6 +1106,40 @@ Validation: unknown keys, a missing `source`, `destination` or `bandwidth`,
 a bandwidth that isn't one and a duplicate id are **errors**; an end that
 names nothing of the model is a **warning** (the demand can't be traced and
 is shown as lost). At most 2000 demands.
+
+## ARP and neighbour timers
+
+The protocol simulation keeps an **ARP table** (IPv4) and a **neighbour
+table** (IPv6) for every device with an IP stack, and a **MAC table** for
+every switch. They start empty and are filled only by what the simulation
+resolves and learns. Their timers come from the model where it writes
+them, else from these defaults (shown as *default* in each table):
+
+| Timer | Set by | Default | Source of the default |
+|---|---|---|---|
+| ARP entry timeout | `arp_timeout` on the interface, else on the device | 14400 s (4 h) | the Cisco IOS default (RFC 826 sets none; Linux uses neighbour unreachability detection instead) |
+| NDP reachable time | `ndp_reachable_time` on the interface, else on the device | 30 s | RFC 4861 §10, REACHABLE_TIME (30 000 ms) |
+| Retransmit interval (ARP and NDP) | — | 1 s | RFC 4861 §10, RETRANS_TIMER (used for ARP as well) |
+| Requests before an incomplete entry is dropped | — | 3 | RFC 4861 §10, MAX_MULTICAST_SOLICIT (used for ARP as well) |
+| Delay before the first NDP probe | — | 5 s | RFC 4861 §10, DELAY_FIRST_PROBE_TIME |
+| MAC table aging time | — | 300 s | IEEE 802.1D-2004, the recommended ageing time |
+
+An ARP entry that was used since it was learned is refreshed by a unicast
+ARP Request when its timeout ends (and removed when that goes unanswered
+three times); an unused one expires. IPv6 entries follow RFC 4861
+(INCOMPLETE, REACHABLE, STALE, DELAY, PROBE). The simulation window's
+**timer scale** (1:1, 1:60, 1:240, 1:3600) makes these timers run faster in
+the simulation only; the values shown as configured do not change. None of
+this is written to the model.
+
+### Generated MAC addresses
+
+An interface without `mac` gets a generated one in the simulation: a
+locally administered unicast address (`x2:…`), unique in the model, derived
+from a fixed seed (the model's title and interfaces) and the interface's
+`device:interface` id, so the same model always gives the same addresses.
+They are marked *(simulated)* wherever they are shown and never written to
+the model.
 
 ## Validation and limits
 
