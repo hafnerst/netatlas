@@ -42,16 +42,28 @@ export function deviceTypeLabel(id: string): string {
   return '';
 }
 
-/** Second line of a device box: the display name of its type. */
-export function deviceSubtitle(type: string): string {
+/** Second line of a device box: the display name of its type ("Layer 2 switch" / "Layer 3 switch" for a switch). */
+export function deviceSubtitle(type: string, layer3?: boolean): string {
+  if (type === 'switch') return layer3 ? 'Layer 3 switch' : 'Layer 2 switch';
   return deviceTypeLabel(type);
+}
+
+/** The type's name for a device, with the switch's layer ("Layer 3 switch"). */
+export function deviceKindLabel(d: { type: string; layer3?: boolean }): string {
+  return deviceSubtitle(d.type, d.layer3);
+}
+
+/** Is the device a Layer 2 switch (a switch without `layer3: true`)? */
+export function isLayer2Switch(d: { type: string; layer3?: boolean }): boolean {
+  return d.type === 'switch' && !d.layer3;
 }
 
 /**
  * What a device of a type does at layer 3, for static routes and the path
  * tracer:
  *   router  forwards traffic between its interfaces (Layer 3+): router,
- *           switch (a multilayer switch), firewall, load balancer, proxy,
+ *           switch (as a type; a device is one only with layer3: true, see
+ *           deviceRoutingRole), firewall, load balancer, proxy,
  *           gateway;
  *   host    an end system with its own IP stack: it may have routes (a
  *           default gateway is a static default route), but it never
@@ -81,6 +93,25 @@ const ROUTING: { [type: string]: RoutingRole } = {
 
 export function routingRole(type: string): RoutingRole | null {
   return Object.prototype.hasOwnProperty.call(ROUTING, type) ? ROUTING[type] : null;
+}
+
+/**
+ * What a device does at layer 3, with its switch layer: a Layer 3 switch
+ * (`layer3: true`) is a router; a Layer 2 switch is like a host (a
+ * management address and static routes, e.g. a default gateway towards
+ * management) and never forwards traffic between subnets or VLANs. Every
+ * other type: routingRole(type). The Inspector, the Protocols card, the
+ * checks, the path tracer, the single points of failure and the simulation
+ * all use this rule.
+ */
+export function deviceRoutingRole(d: { type: string; layer3?: boolean }): RoutingRole | null {
+  if (isLayer2Switch(d)) return 'host';
+  return routingRole(d.type);
+}
+
+/** Does the device route (a Layer 3+ device, a Layer 3 switch included)? */
+export function isLayer3Device(d: { type: string; layer3?: boolean }): boolean {
+  return deviceRoutingRole(d) === 'router';
 }
 
 /** The device types that may carry static routes, in the order of DEVICE_TYPES. */

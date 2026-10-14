@@ -24,6 +24,7 @@ const net = `netatlas: 1
 devices:
   - id: sw1
     type: switch
+    layer3: true
     interfaces:
       - {id: Eth1}
       - {id: Eth2}
@@ -40,6 +41,7 @@ devices:
       - {id: tun2, type: tunnel, source: 198.51.100.2, destination: 10.255.0.2}
   - id: sw2
     type: switch
+    layer3: true
     interfaces: [Eth1, Eth2]
     logical_interfaces:
       - {id: lo0, type: loopback, ip: 10.255.0.2/32}
@@ -70,7 +72,7 @@ test('interfaces are stored once under their device, as physical and logical; ze
   assert.equal(d.logical.map((i) => i.id + ':' + i.type).join(), 'lo0:loopback,Po1:virtual,Vlan10:virtual,Vlan20:virtual,nve1:virtual,tun0:tunnel,tun1:tunnel,tun2:tunnel');
   // no nesting and no generic parent anywhere in the model
   for (const i of T.deviceInterfaces(d)) assert.ok(!('parent' in i) && !('children' in i), i.id);
-  assert.deepEqual(Object.keys(d).sort(), ['attrs', 'description', 'dnsNames', 'group', 'id', 'interfaces', 'label', 'line', 'logical', 'routes', 'services', 'tier', 'type']);
+  assert.deepEqual(Object.keys(d).sort(), ['arpTimeout', 'attrs', 'description', 'dnsNames', 'group', 'id', 'interfaces', 'label', 'layer3', 'line', 'logical', 'ndpReachableTime', 'routes', 'services', 'tier', 'type']);
   // each interface exists once: one flat index, stable "device:interface" ids
   assert.equal(r.model.index.interfaces.size, 12 + 3);
   assert.equal(r.model.index.interfaces.get('sw1:Po1').type, 'virtual');
@@ -87,7 +89,7 @@ test('a physical interface has no type; a logical interface has one of loopback,
   for (const t of ['physical', 'loopback', 'virtual', 'tunnel', 'svi']) {
     const m = messages(`netatlas: 1\ndevices:\n  - id: a\n    interfaces:\n      - {id: e0, type: ${t}}\n`);
     assert.equal(m.length, 1, t);
-    assert.match(m[0], /^unknown key "type" \(known: id, label, dhcp, ip, vrf, mac, mtu, protocols, description, attrs\)/, t);
+    assert.match(m[0], /^unknown key "type" \(known: id, label, dhcp, ip, vrf, mac, mtu, arp_timeout, ndp_reachable_time, protocols, description, attrs\)/, t);
   }
   const logical = (body) => messages(`netatlas: 1\ndevices:\n  - id: a\n    logical_interfaces:\n      - {id: x0${body}}\n`);
   assert.deepEqual(logical(', type: virtual'), []);
@@ -166,7 +168,7 @@ test('aggregate: a virtual interface references several member ports, and the re
   const bad = (members) => validate.loadModel(net.replace('members: [Eth1, Eth2]', 'members: ' + members));
   const first = (members) => bad(members).errors[0];
   assert.match(first('[Eth1, Eth9]').message, /^device "sw1" has no physical interface "Eth9" — did you mean "Eth1"\?/);
-  assert.deepEqual([first('[Eth1, Eth9]').path, first('[Eth1, Eth9]').line], ['devices.sw1.logical_interfaces[1].members[1]', 12]);
+  assert.deepEqual([first('[Eth1, Eth9]').path, first('[Eth1, Eth9]').line], ['devices.sw1.logical_interfaces[1].members[1]', 13]);
   assert.match(first('[Eth1, lo0]').message, /^"lo0" is a loopback: the members of an aggregate are physical interfaces of the same device/);
   assert.match(first('[Eth1, Vlan10]').message, /^device "sw1" has no physical interface "Vlan10"/, 'a logical interface declared later is not a port either');
   assert.match(first('[Eth1, Eth1]').message, /^member port "Eth1" is listed twice/);
@@ -311,7 +313,7 @@ test('diagrams and selection follow the associations, in both directions', () =>
   assert.doesNotMatch(det('iface:sw1:nve1'), /member ports|ports carrying its VLAN|tunnel source|\nVLAN\n/);
   assert.match(det('iface:sw1:Eth1'), /Used by logical interfaces \(3\)\nPo1\n aggregate \(member port\)\nVlan10\n its VLAN is carried on this port\nVlan20\n/);
   assert.match(det('iface:sw1:lo0'), /Used by logical interfaces \(1\)\ntun1\n tunnel \(source\)/);
-  assert.deepEqual(panels.tooltipFor(m, 'device:sw1'), ['sw1', 'Switch', '4 physical interfaces, 2 cabled', '8 logical interfaces']);
+  assert.deepEqual(panels.tooltipFor(m, 'device:sw1'), ['sw1', 'Layer 3 switch', '4 physical interfaces, 2 cabled', '8 logical interfaces']);
   assert.deepEqual(panels.tooltipFor(m, 'iface:sw1:Po1').slice(0, 3), ['sw1 Po1', 'Virtual', 'Member ports: Eth1, Eth2']);
   assert.match(panels.tooltipFor(m, 'iface:sw1:Eth1')[2], /^used by Po1, Vlan10, Vlan20$/);
 });
@@ -532,7 +534,7 @@ test('export -> reload: the format round-trips (both categories, members, VLAN, 
 
 test('every example (and generated fixture) uses the format and draws in both views', () => {
   const files = exampleNames.map((f) => [f, example(f)]).concat(fixtureNames.map((f) => [f, fixture(f)]));
-  assert.equal(files.length, 11 + 3);
+  assert.equal(files.length, 12 + 3);
   for (const [f, text] of files) {
     const r = validate.loadModel(text);
     assert.deepEqual(r.errors.concat(r.warnings).map((e) => `${e.line}: ${e.message}`), [], f);

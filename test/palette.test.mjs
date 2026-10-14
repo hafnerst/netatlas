@@ -26,7 +26,7 @@ test('the registry: unique ids, every command with a label, a group, a state and
     }
   }
   // what the palette must offer
-  for (const id of ['file.new', 'file.open', 'file.save', 'file.saveAs', 'file.close', 'export.png', 'export.svg', 'find.diagram', 'find.outline', 'palette.open', 'analyze.addressing', 'focus.enter', 'focus.exit', 'focus.more', 'focus.fewer', 'trace.open', 'trace.copy', 'trace.exit', 'analyze.spof', 'sim.exit', 'help.manual', 'help.license', 'edit.undo', 'edit.redo', 'view.physical', 'view.logical', 'arrange.default', 'arrange.compact', 'arrange.spacious', 'zoom.fit', 'theme.toggle', 'filter.labels', 'filter.server', 'panel.problems', 'example.0', 'focus.window', 'window.focus', 'window.close', 'sim.protocol']) {
+  for (const id of ['file.new', 'file.open', 'file.save', 'file.saveAs', 'file.close', 'export.png', 'export.svg', 'find.diagram', 'find.outline', 'palette.open', 'analyze.addressing', 'focus.enter', 'focus.exit', 'focus.more', 'focus.fewer', 'trace.open', 'trace.copy', 'trace.exit', 'analyze.spof', 'sim.exit', 'help.manual', 'help.license', 'edit.undo', 'edit.redo', 'view.physical', 'view.logical', 'arrange.default', 'arrange.compact', 'arrange.spacious', 'zoom.fit', 'theme.toggle', 'filter.labels', 'filter.server', 'panel.problems', 'example.0', 'focus.window', 'window.focus', 'window.close', 'sim.start', 'sim.window']) {
     assert.ok(byId.has(id), id);
   }
   assert.equal(commands.filter((c) => c.group === 'Example').length, load('generated/examples.js').EXAMPLES.length);

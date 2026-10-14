@@ -477,6 +477,10 @@ button.ref:hover { text-decoration: underline; }
 .device:hover .dev-box { stroke: var(--accent); stroke-width: 2; }
 .dev-label { font-size: 13px; font-weight: 600; }
 .dev-sub { font-size: 10.5px; fill: var(--muted) !important; }
+/* a switch's layer: "L2" / "L3" in a framed badge over the icon's corner (text and frame, not colour) */
+.dev-badge rect { fill: var(--panel); stroke: var(--text); stroke-width: 1; }
+.dev-badge.l3 rect { stroke-width: 1.6; }
+.dev-badge text { font-size: 8.5px; font-weight: 700; fill: var(--text); letter-spacing: 0.2px; }
 .icon { fill: none; stroke: var(--icon); stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 .swatch .icon { stroke-width: 1.8; }
 .cable-line { fill: none; stroke-linejoin: round; }
@@ -635,6 +639,9 @@ button.mini { padding: 1px 7px; font-size: 11.5px; border-radius: 5px; }
 .reflist li.ctx-unrelated button.ref:hover, .reflist li.ctx-unrelated button.ref:focus-visible { color: var(--text); }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 .ol-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* a switch's layer beside its name in the object list */
+.ol-layer { flex: none; font-size: 10px; font-weight: 700; padding: 0 4px; border: 1px solid var(--text); border-radius: 3px; margin-left: 4px; line-height: 14px; }
+.ol-layer.l3 { border-width: 1.6px; }
 .ol-badge { font-size: 10.5px; font-weight: 700; border-radius: 99px; padding: 0 6px; color: var(--on-accent); }
 .ol-badge.err { background: var(--error); }
 .ol-badge.warn { background: var(--warn); }
@@ -1126,3 +1133,59 @@ table.spof-table td.num, table.spof-table td.nowrap { white-space: nowrap; overf
 /* the Focus window */
 .focus-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 8px 0; }
 .focus-sel { overflow-wrap: anywhere; }
+
+/* ------------------------------------------------------------ protocol simulation */
+/* the dots: above the lines, below the boxes; their labels above everything, framed, with a halo (text in the theme's colour, the frame in the protocol's) */
+.layer-sim .sim-dot { stroke: var(--panel); stroke-width: 1.5; }
+.layer-sim .sim-arrow { stroke: var(--panel); stroke-width: 1; }
+.layer-sim .sim-lost circle { fill: var(--panel); stroke: var(--error); stroke-width: 2; }
+.layer-sim .sim-lost path { stroke: var(--error); stroke-width: 2; fill: none; }
+.layer-sim, .layer-sim *, .layer-sim-labels, .layer-sim-labels * { pointer-events: none; }
+.sim-label rect { fill: var(--panel); stroke-width: 1.3; opacity: 0.94; }
+.sim-label text { font-size: 10px; fill: var(--text); }
+.sim-label.lost rect { stroke: var(--error); stroke-dasharray: 3 2; }
+.sim-label.lost text { fill: var(--error); }
+/* the Simulation window */
+.sim-win { display: flex; flex-direction: column; gap: 8px; }
+.sim-honest { margin: 0; font-size: 12px; color: var(--muted); border-left: 3px solid var(--sim); padding-left: 8px; }
+.sim-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.sim-time { font-family: var(--font-mono); font-size: 13px; font-variant-numeric: tabular-nums; }
+.sim-sec { border: 1px solid var(--border); border-radius: 8px; padding: 4px 8px; }
+.sim-sec > summary { cursor: pointer; font-weight: 600; padding: 2px 0; }
+.sim-proto-tools { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 4px 0; }
+.sim-group { border: none; margin: 4px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 2px 14px; }
+.sim-group legend { font-size: 11.5px; font-weight: 600; color: var(--muted); padding: 0; margin-bottom: 2px; width: 100%; }
+.sim-group label.check { display: inline-flex; align-items: center; gap: 4px; font-size: 12.5px; }
+.sim-swatch { display: inline-block; width: 10px; height: 10px; border-radius: 50%; border: 1px solid var(--text); }
+.sim-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 4px 0; }
+.sim-row select { max-width: 100%; min-width: 0; flex: 1 1 200px; }
+.sim-devlist { list-style: none; margin: 4px 0; padding: 0; display: grid; gap: 3px; }
+.sim-devlist li { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.sim-dev { min-width: 8em; font-family: var(--font-mono); font-size: 12px; }
+.sim-scroll { overflow: auto; max-height: 260px; }
+.sim-log { max-height: 320px; }
+table.sim-table, table.st-table { border-collapse: collapse; width: 100%; font-size: 12px; }
+table.st-table th, table.st-table td { white-space: nowrap; }
+table.sim-table th, table.sim-table td, table.st-table th, table.st-table td { text-align: left; vertical-align: top; padding: 2px 6px 2px 0; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
+table.sim-table thead th, table.st-table thead th { position: sticky; top: 0; background: var(--panel); white-space: nowrap; }
+table.sim-table td.st-up { color: var(--ok); white-space: nowrap; }
+table.sim-table td.st-down { color: var(--muted); white-space: nowrap; }
+td.mono { font-family: var(--font-mono); white-space: nowrap; }
+#sim-log-filter { width: 100%; margin: 4px 0; }
+/* the in-diagram menu */
+.sim-menu { position: fixed; z-index: 60; display: flex; flex-direction: column; min-width: 160px; background: var(--panel); color: var(--text); border: 1px solid var(--frame); border-radius: 8px; box-shadow: 0 6px 20px var(--shadow); padding: 4px; }
+.sim-menu-title { font-size: 11.5px; color: var(--muted); padding: 2px 8px 4px; max-width: 260px; overflow-wrap: anywhere; }
+.sim-menu-item { text-align: left; border: none; background: transparent; padding: 5px 10px; border-radius: 5px; color: var(--text); }
+.sim-menu-item:hover, .sim-menu-item:focus-visible { background: var(--accent-soft); outline: 2px solid var(--accent); outline-offset: -2px; }
+/* the ARP and MAC tables */
+.sim-table-panel { position: fixed; z-index: 55; display: flex; flex-direction: column; max-height: min(70vh, 520px, calc(100vh - 16px)); max-width: calc(100vw - 16px); background: var(--panel); color: var(--text); border: 1px solid var(--frame); border-radius: 10px; box-shadow: 0 8px 24px var(--shadow); }
+.st-head { display: flex; align-items: center; gap: 6px; padding: 4px 6px 4px 4px; border-bottom: 1px solid var(--border); cursor: move; touch-action: none; }
+.st-title { flex: 1; margin: 0; font-size: 13px; overflow-wrap: anywhere; }
+.st-move, .st-close { border: 1px solid var(--control-border); background: var(--raised); color: var(--text); border-radius: 5px; min-width: 26px; min-height: 24px; }
+.st-body { overflow: auto; padding: 6px 8px 10px; }
+.st-timers { margin: 0 0 6px; font-size: 11.5px; display: grid; gap: 1px; }
+.st-timers div { display: flex; flex-wrap: wrap; gap: 0 6px; }
+.st-timers dt { font-weight: 600; }
+.st-timers dd { margin: 0; color: var(--muted); }
+.st-table caption { text-align: left; font-weight: 600; font-size: 12px; padding: 4px 0; }
+.st-scroll { overflow-x: auto; }

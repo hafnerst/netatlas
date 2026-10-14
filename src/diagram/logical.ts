@@ -393,7 +393,7 @@ export function renderLogical(model: Model, layout: LogicalLayout, opts: Logical
       const d = model.index.devices.get(n.id);
       if (!d) return;
       const bodyH = n.bodyH || n.h;
-      nodeLayer.push(deviceNode(n.ref, d.label, deviceSubtitle(d.type), d.type, deviceRect(n), 'type-' + cssToken(d.type), bodyH));
+      nodeLayer.push(deviceNode(n.ref, d.label, deviceSubtitle(d.type, d.layer3), d.type, deviceRect(n), 'type-' + cssToken(d.type), bodyH, d.layer3));
       // the entries of its interfaces (loopbacks, virtual, tunnel, physical with addresses) and its route tables, each selectable
       const items = entryItems(model, d, 'logical');
       const listTop = n.cy - n.h / 2 + bodyH;

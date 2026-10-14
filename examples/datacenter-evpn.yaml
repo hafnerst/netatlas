@@ -41,6 +41,7 @@ groups:
 devices:
   - id: spine1
     type: switch
+    layer3: true
     tier: 1
     group: rack-a01
     router_id: Lo0
@@ -55,6 +56,7 @@ devices:
       - {id: Lo0, type: loopback, ip: 10.0.250.1/32}
   - id: spine2
     type: switch
+    layer3: true
     tier: 1
     group: rack-a01
     router_id: Lo0
@@ -70,6 +72,7 @@ devices:
 
   - id: leaf1
     type: switch
+    layer3: true
     tier: 2
     group: rack-a02
     router_id: Lo0
@@ -86,6 +89,7 @@ devices:
       - {id: Vlan100, type: virtual, ip: 192.168.100.2/24, vrf: tenant-a}
   - id: leaf2
     type: switch
+    layer3: true
     tier: 2
     group: rack-a02
     router_id: Lo0
@@ -102,6 +106,7 @@ devices:
       - {id: Vlan100, type: virtual, ip: 192.168.100.3/24, vrf: tenant-a}
   - id: leaf3
     type: switch
+    layer3: true
     tier: 2
     group: rack-a03
     router_id: Lo0
@@ -118,6 +123,7 @@ devices:
       - {id: Vlan100, type: virtual, ip: 192.168.100.4/24, vrf: tenant-a}
   - id: leaf4
     type: switch
+    layer3: true
     tier: 2
     group: rack-a03
     router_id: Lo0

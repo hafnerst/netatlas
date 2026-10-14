@@ -7,7 +7,7 @@
  * values.
  */
 import { IpAddr, parseAddress } from '../model/ip';
-import { routingRole } from '../model/device-types';
+import { deviceRoutingRole } from '../model/device-types';
 import { protocolBase } from '../model/protocols';
 import { serviceOf } from '../model/services';
 import { Interface, Model, Relation, ServiceConfig, deviceInterfaces, relationDevices } from '../model/types';
@@ -129,7 +129,7 @@ export interface ServiceSuggestion {
  */
 export function suggestedServices(model: Model, device: string): ServiceSuggestion[] {
   const d = model.index.devices.get(device);
-  if (!d || routingRole(d.type) !== 'router') return [];
+  if (!d || deviceRoutingRole(d) !== 'router') return [];
   const out = new Map<string, ServiceSuggestion>();
   for (const r of model.relations) {
     const base = protocolBase(model.protocols, r.protocol);

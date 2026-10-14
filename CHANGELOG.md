@@ -78,7 +78,73 @@ there is no conversion of files written for the earlier drafts.
   every other kind. `router_id` is an address now: the earlier
   `router_id: lo0` is an error ("not a router ID").
 
+- **`layer3`** on switches (`layer3: true`): a Layer 3 switch with the full
+  Layer 3+ feature set. Without it a switch is a Layer 2 switch: one
+  management interface with addresses, static routes in the default table
+  or its VRF, and nothing else of layer 3 (protocols, router ID, a second
+  addressed interface, groups, tunnels, other VRFs, routing relations are
+  errors). The examples write `layer3: true` on their routing switches.
+- **`arp_timeout`** and **`ndp_reachable_time`** on devices and
+  interfaces (seconds): the protocol simulation's ARP and neighbour timers.
+- Built-in protocols **`stp`** (aliases `rstp`, `mstp`), **`lldp`**, **`cdp`**
+  and **`igmp`** (alias `mld`).
+
 ### Added
+
+- **The protocol simulation** (Simulate → Start simulation…): a freshly
+  booted network (every ARP, neighbour and MAC table empty, every adjacency
+  down, the interfaces up at t = 0) whose protocols exchange their messages
+  as labelled dots, cable by cable in the physical view and along the
+  relations in the logical view, with lanes per direction, labels placed
+  where they cover nothing, at most 48 dots (the rest in the event log). Its
+  window: Play, Pause, Step, speed 0.25×–10×, the simulated time, the
+  protocols shown (grouped, Layer 2 first; changed at any time without a
+  restart), failing a link, the ARP and MAC tables, the status table and a
+  filterable event log. Every built-in protocol has a **simulation
+  profile** in the registry (messages, transport, timers with their
+  defaults and sources, states, failure and restore behaviour); the model's
+  values are used where written, defaults are marked in the log. Messages
+  over tunnels travel inside them (OSPF in GRE in ESP); protocols of the
+  model's own send dummy packets in the relation's direction; the demands
+  send data packets. Deterministic (a fixed seed), requestAnimationFrame,
+  paused while the page is hidden; reduced motion: steps with static
+  labelled arrows; exports: a still picture with a *Protocol simulation,
+  t = …* note. It never changes the model.
+- **Layer 2 in the simulation:** ARP (request broadcast, unicast reply, the
+  waiting packet released) and NDP (solicited-node multicast, advertisement)
+  before unicast traffic; multicast to the group's MAC; gratuitous ARP when
+  an interface comes up and when a VRRP / HSRP master changes (with the
+  virtual MAC); switches learning per port and VLAN, flooding within the
+  VLAN, known unicast to the learned port, the link ends' tagging; a
+  spanning tree per VLAN (BPDUs, LLDP and CDP where the model has their
+  relations); LACP on aggregates; routers and Layer 3 switches rewriting the
+  MACs and decrementing the TTL hop by hop, in the event log. Interfaces
+  without a MAC get a generated, locally administered one, from a fixed
+  seed, marked *(simulated)*.
+- **ARP, neighbour and MAC tables** per device, hidden until asked for:
+  clicking a device in the simulation offers **Show ARP table** (and **Show
+  MAC table** for switches), the window lists them too; small movable
+  non-modal panels, several at once, closed by Esc and when the simulation
+  ends; entries with type, state, age and the time to expiry, the timers in
+  effect (configured or default with its source) and a **timer scale**.
+- **Failing a link** in the diagram (Fail this link / Restore link at the
+  spot clicked, one link at a time; the window offers the same): dropped
+  frames marked where they were lost, timers expiring (OSPF dead interval,
+  BGP hold time, BFD, DPD, VRRP master down), states going down,
+  reconvergence (LSU flooding, withdrawals), VRRP failover, traffic
+  rerouted or lost; after the restore the full handshakes.
+- **Layer 2 / Layer 3 switches** in the Edit tab (a **Layer 3** checkbox;
+  making a configured Layer 3 switch Layer 2 asks first and lists what
+  goes, one undo step), the diagram (an **L2** / **L3** badge on the icon
+  and a Layer 3 glyph, in both views and exports, explained in the legend),
+  the details, the object list, Find and the palette; the same rule in the
+  Protocols card, the checks, the path tracer, Single points of failure
+  and the simulation.
+- **New example `protocol-simulation.yaml`**: hosts without MACs, a Layer 2
+  access switch, a Layer 3 core switch routing two VLANs, trunks, a VRRP
+  pair, a configured ARP timeout, an OSPF ring with costs, iBGP between
+  loopbacks, BFD, IPsec with GRE and OSPF, PIM with a source and a
+  receiver, a custom protocol on a one-way relation.
 
 - **New example `ospf-reroute.yaml`:** OSPF costs that make one way
   preferred, a VRRP pair, a camera VLAN routed by one router, a one-way TAP
@@ -117,8 +183,7 @@ there is no conversion of files written for the earlier drafts.
   most impact first, sortable by every column and filterable, with Show in
   diagram per row, a short explanation, CSV and text (copy or save) of the
   rows shown.
-- **Simulate ▾** holds **Protocol simulation…** (shown, unavailable until
-  the next version) and **Exit simulation**.
+- **Simulate ▾** holds **Start simulation…** and **Exit simulation**.
 - **Input helpers in the Edit tab** (each an explicit action, one undo
   step, validated like typing, nothing written by itself): MTU chips (1500,
   9000, and for tunnels 1476, 1400 and the underlay's MTU less the
@@ -365,6 +430,12 @@ there is no conversion of files written for the earlier drafts.
   addresses.
 
 ### Changed
+
+- **Simulate → Start simulation…** replaces the greyed-out placeholder
+  *Protocol simulation…*: available with a model when no simulation runs
+  (unavailable without one, and while one runs: *A simulation is already
+  running*); Exit simulation the other way round. The banner offers
+  **Simulation window**.
 
 - The side panel has six tabs: the **Analysis** and **Simulation** tabs are
   gone; their content lives in the tool windows.

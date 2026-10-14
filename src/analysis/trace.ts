@@ -24,7 +24,7 @@
  * ACLs, firewall policies, NAT, policy routing and protocol timers are not
  * modelled. Results are sorted by values, never by the order of the file.
  */
-import { routingRole } from '../model/device-types';
+import { deviceRoutingRole, isLayer2Switch } from '../model/device-types';
 import { IpAddr, IpPrefix, parseAddress, parsePrefix } from '../model/ip';
 import { lookupProtocol } from '../model/protocols';
 import { Interface, Link, LinkEnd, Model, Relation, deviceInterfaces, ifaceKey } from '../model/types';
@@ -276,8 +276,9 @@ function walk(w: Walk, at: At, before: Hop[], seen: Set<string>): Path[] {
     return [{ hops: before.concat(hop), end: own ? { kind: 'reached', device: at.device, iface: own.iface } : { kind: 'reached', device: at.device } }];
   }
   // only routers pass traffic on (the first hop sends its own)
-  if (before.length > 0 && routingRole(d.type) !== 'router') {
-    return stop('not-forwarding', `${at.device} is a ${d.type === 'generic' ? 'device without a type' : d.type} and does not forward traffic for others`);
+  if (before.length > 0 && deviceRoutingRole(d) !== 'router') {
+    const what = d.type === 'generic' ? 'device without a type' : isLayer2Switch(d) ? 'Layer 2 switch' : d.type;
+    return stop('not-forwarding', `${at.device} is a ${what} and does not forward traffic for others`);
   }
   if (decision.kind === 'blackhole') {
     const e = decision.entries[0];

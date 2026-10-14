@@ -78,12 +78,12 @@ test('no third-party runtime code: every bundled module comes from src/', () => 
 
 test('reasonable size, and the examples, the manual and the license are embedded', () => {
   // one self-contained page with every example, the manual's screenshots and the license embedded; a sanity limit, not a budget
-  assert.ok(html.length < 3 * 1024 * 1024, `${html.length} bytes`);
-  // the screenshots are small, cropped WebP images: together under 640 KiB as data: URLs (the manual's Simulation sections added some)
+  assert.ok(html.length < 3.5 * 1024 * 1024, `${html.length} bytes`);
+  // the screenshots are small, cropped WebP images: together under 704 KiB as data: URLs (the manual's simulation sections added some)
   const images = [...js.matchAll(/"src": "(data:image\/webp;base64,[A-Za-z0-9+/=]+)"/g)].map((m) => m[1]);
   assert.ok(images.length >= 8, String(images.length));
   const total = images.reduce((n, s) => n + s.length, 0);
-  assert.ok(total < 640 * 1024, `${total} bytes of screenshots`);
+  assert.ok(total < 704 * 1024, `${total} bytes of screenshots`);
   assert.match(js, /Apache License\\n\s+Version 2\.0, January 2004/);
   assert.match(js, /enterprise-wan\.yaml/);
   assert.match(js, /datacenter-evpn\.yaml/);

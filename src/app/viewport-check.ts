@@ -221,7 +221,7 @@ export async function runViewportCheck(app: App, doc: Document): Promise<Check[]
         const br = body.getBoundingClientRect();
         for (let i = 0; i < els.length; i++) {
           const e = els[i] as HTMLElement;
-          if (e.closest('.table-wrap, .addr-scroll, .tw-head')) continue;
+          if (e.closest('.table-wrap, .addr-scroll, .sim-scroll, .tw-head')) continue;
           const er = e.getBoundingClientRect();
           if (er.width < 1) continue;
           if (er.left < br.left - 0.5 || er.right > br.right + 0.5) tws.push(`${name}: "${(e.textContent || e.getAttribute('aria-label') || '').trim().slice(0, 24)}" leaves the window sideways`);
@@ -248,6 +248,30 @@ export async function runViewportCheck(app: App, doc: Document): Promise<Check[]
       app.closeToolWindow();
       await tick();
       state('the tool windows (addressing, focus, trace path, single points of failure) fit the browser window, docked when it is narrow; nothing in them is cut off; the page does not scroll', tws.concat(problems()));
+      // the protocol simulation: its window like the others, and two tables at once inside the browser window
+      tws.length = 0;
+      app.startProtocolSimulation();
+      const ctl = app.simController()!;
+      ctl.setPlaying(false);
+      ctl.runTo(15000);
+      ctl.showTable('arp', 'hq-rtr1');
+      ctl.showTable('mac', 'hq-acc1');
+      await tick();
+      checkWindow('Protocol simulation');
+      const panels = Array.from(doc.querySelectorAll('.sim-table-panel')) as HTMLElement[];
+      if (panels.length !== 2) tws.push(`${panels.length} tables open instead of 2`);
+      for (const p of panels) {
+        const r = p.getBoundingClientRect();
+        const name = (p.querySelector('.st-title') as HTMLElement).textContent;
+        if (r.left < -0.5 || r.top < -0.5 || r.right > view.w + 0.5 || r.bottom > view.h + 0.5) tws.push(`${name}: leaves the browser window`);
+        const close = (p.querySelector('.st-close') as HTMLElement).getBoundingClientRect();
+        if (close.right > r.right + 0.5 || close.width < 1) tws.push(`${name}: its close button is not shown`);
+      }
+      if (doc.documentElement.scrollHeight > view.h + 1 || doc.documentElement.scrollWidth > view.w + 1) tws.push('with the tables: the page scrolls');
+      app.exitSimulation();
+      await tick();
+      if (doc.querySelector('.sim-table-panel')) tws.push('the tables stay open after Exit simulation');
+      state('the protocol simulation’s window and two ARP / MAC tables fit the browser window (the window docked when narrow); the page does not scroll', tws.concat(problems()));
       app.select(null);
       await tick();
     }

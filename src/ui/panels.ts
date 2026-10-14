@@ -1,5 +1,5 @@
 /** Side-panel content (details, legend, relation list) as HTML VNodes. */
-import { deviceTypeLabel } from '../model/device-types';
+import { deviceKindLabel } from '../model/device-types';
 import { sortedByName } from '../model/order';
 import { Attrs, CATEGORIES, Interface, LinkEnd, Model, ProtocolDef, RelEndpoint, Route, TunnelEnd, endpointText, ifaceKey, interfaceKindLabel, relationDevices } from '../model/types';
 import { LegendItem, SWATCH_H, SWATCH_W, legendOf, relationSwatchParts } from '../diagram/legend';
@@ -229,7 +229,7 @@ export function detailsFor(model: Model, ref: string, status: IssueCount | null 
     kids.push(header());
     kids.push(
       kv([
-        ['type', deviceTypeLabel(d.type) || undefined],
+        ['type', deviceKindLabel(d) || undefined],
         ['group', d.group ? refLink('group:' + d.group, ix.groups.get(d.group)?.label || d.group) : undefined],
         ['protocols', d.services.length ? d.services.map((s) => (model.services.get(s.id) || { label: s.id }).label).join(', ') : undefined],
         ...identityLines(d, model.services).map((x): [string, string] => ['identity', x.line]),
@@ -597,7 +597,7 @@ export function tooltipFor(model: Model, ref: string): string[] {
     const cabled = d.interfaces.filter((i) => ix.ifaceLink.has(ifaceKey(d.id, i.id))).length;
     return [
       d.label,
-      deviceTypeLabel(d.type),
+      deviceKindLabel(d),
       `${d.interfaces.length} physical interface${d.interfaces.length === 1 ? '' : 's'}, ${cabled} cabled`,
       d.logical.length ? `${d.logical.length} logical interface${d.logical.length === 1 ? '' : 's'}` : '',
       d.routes.length ? `${d.routes.length} static route${d.routes.length === 1 ? '' : 's'}` : '',

@@ -27,7 +27,7 @@ import { Session, View } from '../diagram/session';
 import { SelectionContext, attachedRefs, search, selectionContext, splitRef } from '../model/queries';
 import { sortedByName } from '../model/order';
 import { normalizeProtocol } from '../model/protocols';
-import { deviceTypeLabel, routingRole } from '../model/device-types';
+import { deviceRoutingRole, deviceTypeLabel, isLayer2Switch } from '../model/device-types';
 import { Issue } from '../validation/validate';
 import { SEVERITIES, Severity, checkById } from '../analysis/checks';
 import { addressingOverview } from '../analysis/addressing';
@@ -39,6 +39,7 @@ import { SpofRow, SpofSort, newSpofViewState, shownSpofRows, spofBody, spofCsv, 
 import { focusWindowBody } from './focus-window';
 import { ToolWindowOpts, ToolWindows } from './toolwindow';
 import { SimulationMode } from './simulation-mode';
+import { SimController } from './sim-controller';
 import { Splitter } from './splitter';
 import { TabOverflow } from './tab-overflow';
 import { generateMac } from '../analysis/helpers';
@@ -831,6 +832,7 @@ export class App {
     const scene = s.render();
     this.bounds = scene.bounds;
     mount(this.viewport, scene.root, true);
+    if (this.simCtl) this.simCtl.sceneChanged();
     this.showConflicts(scene.conflicts);
     this.applyHighlight();
     this.applyConnection();
@@ -1490,7 +1492,7 @@ export class App {
         ]),
       );
       const sim = this.simulation;
-      if (sim) st.appendChild(el(this.doc, 'span', { class: 'sim-marker', title: 'A simulation is on: the diagram shows a simulated state; the model is unchanged' }, [el(this.doc, 'span', { 'aria-hidden': 'true' }, ['◈ ']), sim.marker()]));
+      if (sim) st.appendChild(el(this.doc, 'span', { class: 'sim-marker', title: 'A simulation is on: the diagram shows a simulated state; the model is unchanged' }, [el(this.doc, 'span', { 'aria-hidden': 'true' }, ['◈ ']), el(this.doc, 'span', { class: 'sim-marker-text' }, [sim.marker()])]));
       const rest = el(this.doc, 'span', { class: 'status-rest' });
       st.appendChild(rest);
       const parts: Array<HTMLElement | string> = [
@@ -2298,7 +2300,8 @@ export class App {
     if (!sel || sel.indexOf('device:') !== 0) return 'Select a device first';
     const d = s.model.index.devices.get(sel.slice(7));
     if (!d) return 'Select a device first';
-    if (routingRole(d.type) !== 'router') return `${d.id} is not a Layer 3+ device: only routers, switches, firewalls, load balancers, proxies and gateways run routing protocols`;
+    if (isLayer2Switch(d)) return `${d.id} is a Layer 2 switch: tick Layer 3 in its Edit tab to make it a Layer 3 switch first`;
+    if (deviceRoutingRole(d) !== 'router') return `${d.id} is not a Layer 3+ device: only routers, Layer 3 switches, firewalls, load balancers, proxies and gateways run routing protocols`;
     return '';
   }
 
@@ -2370,6 +2373,86 @@ export class App {
     if (sim) sim.stop();
     if (this.mdoc) this.mdoc.lock = '';
     if (this.tw) this.tw.close();
+  }
+
+  /** the protocol simulation, while it runs */
+  private simCtl: SimController | null = null;
+
+  /** Is a model open? */
+  hasModel(): boolean {
+    return !!this.session && !!this.mdoc;
+  }
+
+  /** The protocol simulation's controller (tests and the self-test read it). */
+  simController(): SimController | null {
+    return this.simCtl;
+  }
+
+  /**
+   * Simulate → Start simulation…: a freshly booted network (every table
+   * empty, every adjacency down, the interfaces up at t = 0), in simulation
+   * mode, with the Simulation window. `protocols` preselects what is shown.
+   */
+  startProtocolSimulation(protocols?: string[]): boolean {
+    if (!this.session || this.simulation) return false;
+    const self = this;
+    const ctl = new SimController(
+      {
+        doc: this.doc,
+        model: () => (self.session as Session).model,
+        scene: () => self.viewport.querySelector('.scene'),
+        view: () => (self.session ? self.session.state.view : 'physical'),
+        reduce: () => self.reducedMotion(),
+        changed: () => self.simChanged(),
+        windowBody: () => (self.toolWindow() === 'sim' && self.tw ? self.tw.body() : null),
+        rectOf: (ref) => {
+          const n = self.viewport.querySelector(`.node[data-ref="${ref.replace(/["\\]/g, '\\$&')}"]`);
+          if (!n) return null;
+          const r = n.getBoundingClientRect();
+          return { x: r.left, y: r.top, w: r.width, h: r.height };
+        },
+        toast: (t) => self.toast(t),
+        tick: () => self.simTick(),
+      },
+      protocols,
+    );
+    const stop = ctl.stop.bind(ctl);
+    ctl.stop = (): void => {
+      stop();
+      if (self.simCtl === ctl) self.simCtl = null;
+      if (self.toolWindow() === 'sim') self.closeToolWindow();
+    };
+    this.simCtl = ctl;
+    this.startSimulation(ctl);
+    this.openSimWindow();
+    return true;
+  }
+
+  /** The simulated time moved on: the banner's and the status bar's texts (nothing else is drawn again). */
+  private simTick(): void {
+    const v = this.simulation;
+    if (!v) return;
+    const text = this.doc.getElementById('sim-text');
+    if (text) text.textContent = `${this.simNote()}. The model is unchanged; editing is paused.`;
+    const short = this.doc.getElementById('sim-short');
+    if (short) short.textContent = `Simulated state · ${v.marker()}`;
+    const m = this.doc.querySelector('#status .sim-marker-text');
+    if (m) m.textContent = v.marker();
+  }
+
+  /** The Simulation window (again). */
+  openSimWindow(): boolean {
+    const ctl = this.simCtl;
+    if (!ctl) return false;
+    this.openWindow({ id: 'sim', title: 'Protocol simulation', body: ctl.windowBody(), width: 640, height: 600, focus: '#sim-play' });
+    ctl.updateWindow();
+    return true;
+  }
+
+  /** prefers-reduced-motion */
+  reducedMotion(): boolean {
+    const win = this.doc.defaultView;
+    return !!win && typeof win.matchMedia === 'function' && win.matchMedia('(prefers-reduced-motion: reduce)').matches;
   }
 
   /** Is simulation mode on? */
@@ -2471,6 +2554,9 @@ export class App {
         break;
       case 'addressing':
         this.renderAddressingWindow();
+        break;
+      case 'sim':
+        if (this.simCtl) this.simCtl.updateWindow();
         break;
     }
   }
@@ -3851,6 +3937,12 @@ export class App {
         const target = (e.target as Element).closest('[data-ref]');
         const ref = target ? target.getAttribute('data-ref') : d.ref;
         this.select(ref && ref.indexOf('hub:') === 0 ? 'relation:' + ref.slice(4) : ref, false, ref === d.ref ? d.detail : null);
+        // during the protocol simulation: Fail this link / Restore link, Show ARP table … at that spot
+        if (this.simCtl) {
+          const nodeEl = (e.target as Element).closest('.node, g.cable, g.rel, g.hub-rel');
+          const r = nodeEl ? nodeEl.getAttribute('data-ref') : ref;
+          this.simCtl.diagramClick(r, e.clientX, e.clientY);
+        }
       } else if (d.mode === 'node' && d.ref) this.commitDrag(d.ref);
     };
     svg.addEventListener('pointerup', end);
@@ -3945,6 +4037,14 @@ export class App {
       clone.appendChild(materialize(boxes.legend.root, this.doc, true));
       clone.appendChild(materialize(boxes.networks.root, this.doc, true));
       b = boxes.viewBox;
+    }
+    // the protocol simulation: a static picture of what is in flight (labelled arrows), never moving dots
+    const live = clone.querySelectorAll('.layer-sim, .layer-sim-labels');
+    for (let i = 0; i < live.length; i++) live[i].parentNode && live[i].parentNode!.removeChild(live[i]);
+    if (this.simCtl) {
+      const layer = this.simCtl.anim.exportLayer();
+      const scene = clone.querySelector('.scene');
+      if (layer && scene) scene.appendChild(layer);
     }
     // an analysis mode (focus, path trace) says so in the picture, above the diagram: a line each
     const notes = this.modeNotes();

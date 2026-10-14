@@ -19,7 +19,7 @@ import { headOf, objectHead } from './panels';
 import { sortedByName } from '../model/order';
 import { CATEGORIES, DIRECTIONS, DUPLEXES, Direction, InterfaceKind, LINE_STYLES, LOGICAL_IFACE_TYPES, PORT_MODES, VLAN_MAX, VLAN_MIN, ifaceKey, interfaceKindLabel, routeKey } from '../model/types';
 import { derivedVlanText, endNetworks, interfaceAddresses, interfaceVlanPorts, interfaceVlans, networkMembers, tagMismatch, tagMismatchText } from '../model/derive';
-import { routingRole, ROUTE_DEVICE_TYPES } from '../model/device-types';
+import { deviceRoutingRole, routingRole, ROUTE_DEVICE_TYPES } from '../model/device-types';
 import { nextHopCandidates, vrfKey } from '../analysis/routing';
 import { CHECKS } from '../analysis/checks';
 import { nextFreeChoices } from '../analysis/addressing';
@@ -525,6 +525,7 @@ export class Editor {
               // every entry keeps the slot of the mark, so its label never moves when a selection starts or ends
               this.e('span', { class: 'ctx-mark' + (st === 'selected' ? ' sel' : st === 'related' ? ' rel' : ''), 'aria-hidden': 'true' }, [st === 'selected' ? '▸' : st === 'related' ? '•' : '']),
               this.e('span', { class: 'ol-label' }, [label]),
+              kind === 'device' ? this.layerTag(ent.index) : null,
               st ? this.e('span', { class: 'sr-only' }, [st === 'selected' ? ' (selected)' : st === 'related' ? ' (directly related)' : ' (not related)']) : null,
               this.badge(c.e, c.w),
             ]),
@@ -1027,10 +1028,12 @@ export class Editor {
     };
     const notes = (): void => g('Notes', [this.textField(base.concat('description'), 'Description', o, 'textarea')], 'notes');
     if (kind === 'device') {
-      g('Identity', [this.idField(base, kind), this.textField(base.concat('label'), 'Label', o, 'textarea', undefined, 'Line breaks are kept.'), this.typeField(base.concat('type'), o)], 'identity');
+      g('Identity', [this.idField(base, kind), this.textField(base.concat('label'), 'Label', o, 'textarea', undefined, 'Line breaks are kept.'), this.typeField(base.concat('type'), o), this.layer3Field(base, index)], 'identity');
       g('Placement', [this.refField(base.concat('group'), 'Group / location', o, this.ids('group')), this.intField(base.concat('tier'), 'Tier (0–9)', o, 'Row in the physical view (0 = top). Empty: automatic.')], 'placement');
       const protos = this.protocolsGroup(base, index);
       if (protos) w.appendChild(protos);
+      const timers = this.neighborTimers(base, o, 'device');
+      if (timers) w.appendChild(timers);
       notes();
       this.renderInterfaces(w, index);
       this.renderRoutes(w, index);
@@ -1844,6 +1847,10 @@ export class Editor {
       card.appendChild(this.withHelpers(this.intField(p.concat('mtu'), 'MTU (bytes)', o, 'Empty: not modelled (no MTU is assumed).'), p.concat('mtu'), 'int', model && live ? mtuSuggestions(model, live) : [], 'MTU', owner));
     }
     if (!loop || doc.get(p.concat('mac'))) card.appendChild(this.macField(p, owner, o));
+    if (!loop && kind !== 'tunnel') {
+      const t = this.neighborTimers(p, o, 'interface');
+      if (t) card.appendChild(t);
+    }
     for (const sc of this.ifaceServiceCards(devIndex, p, id || '')) card.appendChild(sc);
     card.appendChild(this.textField(p.concat('description'), 'Description', o, 'textarea'));
     if (id) {
@@ -2113,6 +2120,66 @@ export class Editor {
     s.value = current;
     if (!current) s.classList.add('unset');
     return s;
+  }
+
+  /** A switch's layer in the object list: "L2" / "L3" beside its name (its accessible text says it in full). */
+  private layerTag(devIndex: number): HTMLElement | null {
+    const doc = this.doc;
+    if (doc.text(['devices', devIndex, 'type']) !== 'switch') return null;
+    const l3 = doc.text(['devices', devIndex, 'layer3']) === 'true';
+    return this.e('span', { class: 'ol-layer' + (l3 ? ' l3' : ''), title: l3 ? 'Layer 3 switch' : 'Layer 2 switch' }, [
+      this.e('span', { 'aria-hidden': 'true' }, [l3 ? 'L3' : 'L2']),
+      this.e('span', { class: 'sr-only' }, [l3 ? ' (Layer 3 switch)' : ' (Layer 2 switch)']),
+    ]);
+  }
+
+  /**
+   * A switch's layer: Layer 3 (`layer3: true`, routes between its VLANs and
+   * subnets) or Layer 2 (the default: switches frames only). Shown for
+   * switches, and wherever `layer3` is written (to remove it from another type).
+   */
+  private layer3Field(base: Path, devIndex: number): HTMLElement | null {
+    const doc = this.doc;
+    const type = doc.text(base.concat('type')) || '';
+    const on = doc.text(base.concat('layer3')) === 'true';
+    if (type !== 'switch' && !doc.get(base.concat('layer3'))) return null;
+    const id = doc.text(base.concat('id')) || '';
+    const box = this.e('input', { type: 'checkbox', id: `layer3-${devIndex}`, 'data-act': 'layer3', 'data-index': String(devIndex) }) as HTMLInputElement;
+    box.checked = on;
+    const help =
+      type !== 'switch'
+        ? 'Only switches have a layer; untick to remove it.'
+        : on
+          ? `${id || 'This switch'} is a Layer 3 switch: protocols, a router ID, addresses on several interfaces, VRRP / HSRP groups, tunnels and VRFs. Untick to make it a Layer 2 switch (it asks first, listing what is removed).`
+          : `${id || 'This switch'} is a Layer 2 switch: it forwards frames and routes nothing; it may have one management interface with addresses and static routes (e.g. a default gateway for management).`;
+    const f = this.e('div', { class: 'field layer3-field', 'data-p': J(base.concat('layer3')) }, [
+      this.e('label', { class: 'check', for: `layer3-${devIndex}` }, [box, ' Layer 3 ', this.e('span', { class: 'muted small' }, ['(routes between its VLANs and subnets)'])]),
+      this.e('div', { class: 'help' }, [help]),
+    ]);
+    for (const is of doc.issuesAt(base.concat('layer3'))) f.appendChild(this.e('div', { class: is.severity === 'error' ? 'field-err' : 'field-warn' }, [is.message]));
+    return f;
+  }
+
+  /**
+   * The ARP timeout and the IPv6 neighbor reachable time (Simulate's ARP and
+   * neighbor tables), for a device or one interface; empty: the default.
+   */
+  private neighborTimers(p: Path, o: string, where: 'device' | 'interface'): HTMLElement | null {
+    const doc = this.doc;
+    if (where === 'device') {
+      const live = doc.result.model ? doc.result.model.index.devices.get(doc.text(p.concat('id')) || '') : undefined;
+      if (live && deviceRoutingRole(live) === null && !doc.get(p.concat('arp_timeout')) && !doc.get(p.concat('ndp_reachable_time'))) return null;
+    }
+    const dflt = where === 'interface' ? 'the device’s, else 14400 s (4 h)' : '14400 s (4 h)';
+    const ndflt = where === 'interface' ? 'the device’s, else 30 s' : '30 s (RFC 4861)';
+    const kids = [
+      this.intField(p.concat('arp_timeout'), 'ARP timeout (s)', o, `Empty: ${dflt}.`),
+      this.intField(p.concat('ndp_reachable_time'), 'NDP reachable time (s)', o, `Empty: ${ndflt}.`),
+    ];
+    if (where === 'device') return this.group('Address resolution (simulation)', kids, 'neighbor-timers');
+    const d = this.e('details', { class: 'nb-timers' }, [this.e('summary', {}, ['ARP and NDP timers (simulation)']), ...kids]);
+    if (doc.get(p.concat('arp_timeout')) || doc.get(p.concat('ndp_reachable_time'))) d.setAttribute('open', '');
+    return d;
   }
 
   /** Device type: the format's types by display name; a disallowed current value stays visible. */
@@ -2995,6 +3062,41 @@ export class Editor {
         doc.enableService(index, svc);
         const def = doc.servicesRegistry().get(svc);
         this.didCreate(['devices', index, 'protocols', svc], `${def ? def.label : svc} enabled on ${this.devName(index)}${def && def.params.some((x) => x.required && x.scope === 'device') ? ' — fill in its required parameters' : ''}.`, btn);
+        return true;
+      }
+      case 'layer3': {
+        const box = btn as unknown as HTMLInputElement;
+        const dev = doc.text(['devices', index, 'id']) || '';
+        if (box.checked) {
+          doc.setLayer3(index, true);
+          this.host.changed(`${dev} is a Layer 3 switch now.`);
+          return true;
+        }
+        const plan = doc.layer2Removal(index);
+        if (plan.removed.length || plan.relations.length) {
+          const list = this.e('ul', { class: 'removal-list' });
+          for (const l of plan.removed) list.appendChild(this.e('li', {}, [l]));
+          const rels = this.e('ul', { class: 'removal-list' });
+          for (const l of plan.relations) rels.appendChild(this.e('li', {}, [l]));
+          const body: string[] = [];
+          if (plan.removed.length) body.push('A Layer 2 switch routes nothing. These values are removed with its Layer 3 role (nothing is kept hidden in the model):', list as unknown as string);
+          if (plan.relations.length) body.push(`These relations need routing at ${dev}; they stay and are reported until you change them:`, rels as unknown as string);
+          body.push('You can undo this with Ctrl+Z.');
+          const a = await this.host.dialog({
+            title: `Make ${dev} a Layer 2 switch?`,
+            body,
+            buttons: [
+              { label: 'Cancel', value: 'cancel' },
+              { label: 'Make it Layer 2', value: 'l2', kind: 'danger' },
+            ],
+          });
+          if (a !== 'l2') {
+            box.checked = true;
+            return true;
+          }
+        }
+        doc.setLayer3(index, false);
+        this.host.changed(`${dev} is a Layer 2 switch now${plan.removed.length ? '; its Layer 3 values were removed' : ''}.`);
         return true;
       }
       case 'disable-service': {

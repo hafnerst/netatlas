@@ -78,6 +78,7 @@ devices:
   - id: dist
     label: dist-sw-01
     type: switch
+    layer3: true
     group: hq
     protocols:
       vrrp: {}

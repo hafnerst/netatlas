@@ -346,7 +346,9 @@ export function search(model: Model, query: string, limit = 12): SearchHit[] {
   for (const d of model.devices) {
     const addrs: string[] = [];
     for (const i of deviceInterfaces(d)) addrs.push(...i.addresses);
-    consider('device:' + d.id, 'device', d.label, [d.id, d.label, d.type, ...addrs, ...d.dnsNames.map((x) => x.name), ...serviceWords(model, d)]);
+    // a switch is found (and listed) with its layer: "l3", "layer 3 switch"
+    const layer = d.type === 'switch' ? (d.layer3 ? ['layer 3 switch', 'l3 switch', 'l3'] : ['layer 2 switch', 'l2 switch', 'l2']) : [];
+    consider('device:' + d.id, d.type === 'switch' ? layer[0] : 'device', d.label, [d.id, d.label, d.type, ...layer, ...addrs, ...d.dnsNames.map((x) => x.name), ...serviceWords(model, d)]);
   }
   // the virtual gateway addresses of interfaces (VRRP …)
   for (const d of model.devices) {

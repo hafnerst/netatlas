@@ -24,7 +24,7 @@ groups:
 devices:
   - {id: a, type: router, interfaces: [p1]}
   - {id: b, type: switch, group: mid, interfaces: [p1, p2]}
-  - {id: c, type: switch, group: mid, interfaces: [p1, p2]}
+  - {id: c, type: switch, layer3: true, group: mid, interfaces: [p1, p2]}
   - {id: d, type: router, interfaces: [p1, p2]}
   - {id: e, type: server, interfaces: [p1]}
 links:

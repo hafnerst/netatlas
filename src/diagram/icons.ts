@@ -10,6 +10,12 @@ const GLYPHS: { [name: string]: Array<[string, { [k: string]: string | number }]
     ['rect', { x: 2, y: 6, width: 20, height: 12, rx: 2 }],
     ['path', { d: 'M6 10h10M14 8l2 2-2 2M18 14H8M10 12l-2 2 2 2' }],
   ],
+  // a Layer 3 switch: the switch's box with a router's circle in it (a Layer 2 switch keeps the plain switch glyph)
+  'switch-l3': [
+    ['rect', { x: 2, y: 6, width: 20, height: 12, rx: 2 }],
+    ['circle', { cx: 12, cy: 12, r: 3.4 }],
+    ['path', { d: 'M4.5 12h4.1M15.4 12h4.1M12 8.6V7M12 15.4V17' }],
+  ],
   firewall: [
     ['rect', { x: 2, y: 4, width: 20, height: 16, rx: 1 }],
     ['path', { d: 'M2 9.3h20M2 14.6h20M8 4v5.3M16 4v5.3M12 9.3v5.3M6 14.6V20M18 14.6V20' }],
@@ -63,20 +69,40 @@ const GLYPHS: { [name: string]: Array<[string, { [k: string]: string | number }]
   ],
 };
 
-/** Glyph name for a device type; devices without a valid type get the generic glyph. */
-export function iconName(type: string): string {
-  return type !== 'generic' && Object.prototype.hasOwnProperty.call(GLYPHS, type) ? type : 'generic';
+/** Glyph name for a device type; devices without a valid type get the generic glyph; a Layer 3 switch its own variant. */
+export function iconName(type: string, layer3?: boolean): string {
+  if (type === 'switch' && layer3) return 'switch-l3';
+  return type !== 'generic' && type !== 'switch-l3' && Object.prototype.hasOwnProperty.call(GLYPHS, type) ? type : 'generic';
 }
 
 export const ICON_NAMES = Object.keys(GLYPHS);
 
 /** Glyph for a device type, scaled to `size` px with its top-left at (x, y). */
-export function deviceIcon(type: string, x: number, y: number, size: number): VNode {
-  const name = iconName(type);
+export function deviceIcon(type: string, x: number, y: number, size: number, layer3?: boolean): VNode {
+  const name = iconName(type, layer3);
   const s = size / 24;
   return h(
     'g',
     { class: 'icon icon-' + name, transform: `translate(${x} ${y}) scale(${Math.round(s * 1000) / 1000})` },
     GLYPHS[name].map(([tag, attrs]) => h(tag, attrs)),
   );
+}
+
+/** Width and height of a switch's layer badge ("L2" / "L3"). */
+export const BADGE_W = 19;
+export const BADGE_H = 12;
+
+/**
+ * A switch's layer as a badge: "L2" or "L3" in a small framed box, with the
+ * long form as its tooltip. Drawn over the lower right corner of the icon,
+ * inside the icon's column, so it never touches the label or an address.
+ * Text and frame, not colour, carry the meaning.
+ */
+export function layerBadge(layer3: boolean, x: number, y: number): VNode {
+  const text = layer3 ? 'L3' : 'L2';
+  return h('g', { class: 'dev-badge ' + (layer3 ? 'l3' : 'l2') }, [
+    h('title', {}, layer3 ? 'Layer 3 switch: routes between its VLANs and subnets' : 'Layer 2 switch: forwards frames, routes nothing'),
+    h('rect', { x, y, width: BADGE_W, height: BADGE_H, rx: 3 }),
+    h('text', { x: x + BADGE_W / 2, y: y + BADGE_H - 3, 'text-anchor': 'middle' }, text),
+  ]);
 }

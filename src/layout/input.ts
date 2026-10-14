@@ -157,7 +157,7 @@ export function layoutInput(m: Model): LayoutInput {
       m.devices.map((d) => ({
         id: d.id,
         label: d.label,
-        sub: deviceSubtitle(d.type),
+        sub: deviceSubtitle(d.type, d.layer3),
         tier: d.tier !== undefined ? d.tier : defaultTier(d.type),
         group: d.group || null,
         loopbacks: loopbacks(d).length,

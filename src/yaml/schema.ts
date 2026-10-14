@@ -16,11 +16,11 @@ export const SCHEMA = {
   /** a parameter a protocol of the model declares: an entry of its `params` */
   param: ['key', 'label', 'type', 'scope', 'required', 'min', 'max', 'values', 'suggest', 'description'],
   group: ['id', 'label', 'kind', 'parent', 'description', 'attrs'],
-  device: ['id', 'label', 'type', 'group', 'tier', 'router_id', 'protocols', 'description', 'attrs', 'interfaces', 'logical_interfaces', 'dns_names', 'routes'],
+  device: ['id', 'label', 'type', 'layer3', 'group', 'tier', 'router_id', 'arp_timeout', 'ndp_reachable_time', 'protocols', 'description', 'attrs', 'interfaces', 'logical_interfaces', 'dns_names', 'routes'],
   /** a physical interface (a port): an entry of a device's `interfaces` */
-  interface: ['id', 'label', 'dhcp', 'ip', 'vrf', 'mac', 'mtu', 'protocols', 'description', 'attrs'],
+  interface: ['id', 'label', 'dhcp', 'ip', 'vrf', 'mac', 'mtu', 'arp_timeout', 'ndp_reachable_time', 'protocols', 'description', 'attrs'],
   /** a loopback, virtual or tunnel interface: an entry of a device's `logical_interfaces` */
-  logical: ['id', 'type', 'label', 'dhcp', 'ip', 'vrf', 'mac', 'mtu', 'members', 'min_links', 'vlan', 'source', 'destination', 'protocols', 'description', 'attrs'],
+  logical: ['id', 'type', 'label', 'dhcp', 'ip', 'vrf', 'mac', 'mtu', 'arp_timeout', 'ndp_reachable_time', 'members', 'min_links', 'vlan', 'source', 'destination', 'protocols', 'description', 'attrs'],
   /** a DNS name of a device: an entry of a device's `dns_names` */
   dnsName: ['name', 'interfaces'],
   /** a static route of a device: an entry of a device's `routes` */
