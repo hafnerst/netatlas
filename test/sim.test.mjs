@@ -57,7 +57,7 @@ test('ARP before the first unicast packet: a broadcast request, a unicast reply 
   // the request's and the reply's payloads, as the dots and the log show them
   const s2 = sim(reroute);
   const labels = flightsOf(s2, 0, 15000, 100).filter((f) => f.protocol === 'arp').map((f) => f.label);
-  assert.ok(labels.some((l) => /^ARP Who has 10\.0\.1\.2\? Tell 10\.0\.1\.1$/.test(l)), labels.join(' | '));
+  assert.ok(labels.some((l) => /^ARP Request \(broadcast\): who has 10\.0\.1\.2\?$/.test(l)), labels.join(' | '));
   assert.ok(labels.some((l) => /^ARP Reply 10\.0\.1\.2 is at [0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}:…$/.test(l)) || labels.some((l) => /^ARP Reply 10.0.1.1 is at /.test(l)));
 });
 

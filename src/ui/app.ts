@@ -903,9 +903,11 @@ export class App {
     const keep = tr ? null : s.highlight();
     const fr = this.simFailure();
     const failed = fr ? failureRefs(fr) : null;
+    const dom = this.simulation && this.simulation.highlighted ? this.simulation.highlighted() : null;
     this.svg.classList.toggle('has-selection', !!keep);
     this.svg.classList.toggle('has-trace', !!tr);
     this.svg.classList.toggle('has-sim', !!failed);
+    this.svg.classList.toggle('has-bcdomain', !!dom);
     const els = this.viewport.querySelectorAll('[data-ref]');
     for (let i = 0; i < els.length; i++) {
       const e = els[i];
@@ -926,6 +928,8 @@ export class App {
       const st = failed ? failed.get(ref) : undefined;
       e.classList.toggle('sim-down', st === 'down');
       e.classList.toggle('sim-degraded', st === 'degraded');
+      e.classList.toggle('bc-on', !!dom && dom.has(ref));
+      e.classList.toggle('bc-off', !!dom && !dom.has(ref) && (ref.indexOf('device:') === 0 || ref.indexOf('link:') === 0 || ref.indexOf('relation:') === 0 || ref.indexOf('network:') === 0));
     }
   }
 
@@ -2492,6 +2496,7 @@ export class App {
         toast: (t) => self.toast(t),
         tick: () => self.simTick(),
         paramsChanged: (values) => self.storeSimParams(values),
+        openWindow: () => void self.openSimWindow(),
       },
       o,
     );
@@ -3942,7 +3947,7 @@ export class App {
   private wireCanvas(): void {
     const svg = this.svg;
     const tip = this.$('tooltip');
-    let drag: null | { mode: 'pan' | 'node'; ref: string | null; sx: number; sy: number; ox: number; oy: number; moved: boolean; id: number; detail: SelDetail | null } = null;
+    let drag: null | { mode: 'pan' | 'node'; ref: string | null; sx: number; sy: number; ox: number; oy: number; moved: boolean; id: number; detail: SelDetail | null; flight?: Element | null } = null;
 
     svg.addEventListener(
       'wheel',
@@ -3976,6 +3981,8 @@ export class App {
       } else {
         drag = { mode: 'pan', ref, sx: e.clientX, sy: e.clientY, ox: this.zoom.tx, oy: this.zoom.ty, moved: false, id: e.pointerId, detail: detailRef === ref ? detail : null };
       }
+      // a dot of the protocol simulation (read here: once the pointer is captured, the release is reported on the canvas)
+      drag.flight = this.simCtl ? (e.target as Element).closest('[data-flight]') : null;
       try {
         svg.setPointerCapture(e.pointerId);
       } catch (err) {
@@ -4013,6 +4020,13 @@ export class App {
       drag = null;
       svg.classList.remove('dragging');
       if (!d.moved) {
+        // a dot of the protocol simulation: the packet inspector
+        const fl = d.flight;
+        if (fl && this.simCtl) {
+          const r = fl.getBoundingClientRect();
+          this.simCtl.inspectFlight(Number(fl.getAttribute('data-flight')), { x: r.left, y: r.top, w: r.width, h: r.height });
+          return;
+        }
         const target = (e.target as Element).closest('[data-ref]');
         const ref = target ? target.getAttribute('data-ref') : d.ref;
         this.select(ref && ref.indexOf('hub:') === 0 ? 'relation:' + ref.slice(4) : ref, false, ref === d.ref ? d.detail : null);

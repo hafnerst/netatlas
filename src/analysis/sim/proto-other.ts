@@ -899,7 +899,9 @@ export function installDemands(P: ProtocolSim): void {
         x.sent++;
         const msg: Msg = { protocol: 'demand', type: 'Data', label: `Data ${x.label}`, detail: `demand ${x.id} (${x.label}): data packet ${x.sent} from ${x.dev} (${formatAddr(x.src)}) to ${formatAddr(x.dst)}`, data: { from: x.dev, demand: x.id, n: x.sent, source: formatAddr(x.src) } };
         const pkt = P.e.newPacket(x.src, x.dst, '', msg, []);
-        P.e.note('message', 'demand', x.dev, '', 'Data', '', msg.detail);
+        // the transport of a load test (iperf's default port)
+        pkt.l4 = { proto: 'udp', num: 17, sport: 5001, dport: 5001 };
+        P.e.note('message', 'demand', x.dev, '', 'Data', '', msg.detail, P.e.now, msg);
         if (x.multicast) {
           const out = Array.from(P.sd(x.dev).l3.values()).find((l) => l.kind !== 'loopback' && l.kind !== 'tunnel' && l.addrs.some((a) => compareAddr(a.addr, x.src) === 0)) || Array.from(P.sd(x.dev).l3.values()).find((l) => l.kind !== 'loopback');
           if (out) P.e.send(x.dev, pkt, out);

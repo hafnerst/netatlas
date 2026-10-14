@@ -19,12 +19,12 @@
 import { DEVICE_TYPE_IDS } from '../../model/device-types';
 import { parseSpeed } from '../../model/speed';
 
-export type ParamKind = 'duration' | 'count' | 'percent' | 'speed' | 'enum';
+export type ParamKind = 'duration' | 'count' | 'percent' | 'speed' | 'enum' | 'list';
 export type ParamValue = number | string;
 export type Source = 'configured' | 'device' | 'simulation' | 'default';
 
 /** Which devices a simulation attribute applies to (see deviceParams). */
-export type Applies = 'all' | 'ip' | 'router' | 'switch' | 'aggregate' | 'firewall' | 'ids' | 'vpn' | 'host' | 'hypervisor' | 'monitor' | 'cloud' | 'ap';
+export type Applies = 'all' | 'ip' | 'router' | 'switch' | 'aggregate' | 'firewall' | 'ids' | 'vpn' | 'host' | 'hypervisor' | 'monitor' | 'cloud' | 'ap' | 'endpoint' | 'lb' | 'proxy';
 
 export interface ParamDef {
   /** the registry key ("arp-timeout") */
@@ -48,8 +48,10 @@ export interface ParamDef {
   source: string;
   /** a short help text (the default and its source are added where shown) */
   help: string;
-  /** what 0 means ("continuous") */
+  /** what 0 means ("continuous"); a list: what an empty one means */
   zero?: string;
+  /** a list's entries: ports ("tcp/443, udp/53, icmp, any") or test targets ("web1 tcp/443, 10.0.0.9") */
+  list?: 'ports' | 'targets';
   /** shown in one row with this parameter in the dialog (BFD interval × multiplier); not counted on its own */
   pairOf?: string;
   /** also a device attribute, for these devices */
@@ -61,6 +63,17 @@ export interface ParamDef {
 const S = 1000;
 
 const P = (d: ParamDef): ParamDef => d;
+
+const ON_OFF = [
+  { value: 'on', label: 'On' },
+  { value: 'off', label: 'Off' },
+];
+
+const TEST_TYPES = [
+  { value: 'icmp', label: 'ICMP echo (ping)' },
+  { value: 'tcp', label: 'TCP connection' },
+  { value: 'udp', label: 'UDP request' },
+];
 
 /** Every parameter, in the order the dialog and the Inspector list them. */
 export const PARAMS: readonly ParamDef[] = [
@@ -89,19 +102,31 @@ export const PARAMS: readonly ParamDef[] = [
     options: [
       { value: 'rstp', label: 'RSTP (802.1w)' },
       { value: 'stp', label: 'STP (802.1D)' },
+      { value: 'off', label: 'Off (loops are not blocked)' },
     ],
     source: 'IEEE 802.1D-2004 (RSTP, the default of current switches)',
-    help: 'Convergence: RSTP at once (6 s further away); STP 30 s (50 s further away).',
+    help: 'Convergence: RSTP at once (6 s further away); STP 30 s. Off: a loop storms.',
     device: ['switch'],
   }),
+  P({ key: 'mtu', yaml: 'mtu', label: 'Default MTU', layer: 2, kind: 'count', dflt: 1500, min: 68, max: 65535, source: 'RFC 894 (IP over Ethernet)', help: 'Largest IP packet an interface sends (bytes); larger ones fragment or fail.', configured: 'an interface’s mtu' }),
   // ------------------------------------------------------------ Layer 3 – Network
   P({ key: 'ttl', yaml: 'ttl', label: 'Default TTL / hop limit', layer: 3, kind: 'count', dflt: 64, min: 1, max: 255, source: 'RFC 1700 (IANA); Linux, macOS and most routers', help: 'The TTL (IPv4) and hop limit (IPv6) of the packets a device sends.', device: ['ip'] }),
+  P({ key: 'icmp-errors', yaml: 'icmp_errors', label: 'Send ICMP errors', layer: 3, kind: 'enum', dflt: 'on', options: ON_OFF, source: 'RFC 1812 §4.3 and RFC 4443 (routers and hosts send them)', help: 'Unreachable, Time Exceeded, Packet Too Big; never about broadcast or multicast.', device: ['ip'] }),
   P({ key: 'ospf-hello', yaml: 'ospf_hello', label: 'OSPF hello interval', layer: 3, kind: 'duration', base: 's', dflt: 10 * S, min: S, max: 65535 * S, source: 'RFC 2328 Appendix C.3', help: 'The dead interval is 4 × hello.', configured: 'an OSPF relation’s hello and dead' }),
   P({ key: 'bgp-keepalive', yaml: 'bgp_keepalive', label: 'BGP keepalive', layer: 3, kind: 'duration', base: 's', dflt: 60 * S, min: S, max: 21845 * S, source: 'Cisco IOS: keepalive 60 s, hold 180 s; RFC 4271 §10 suggests 30 s and 90 s', help: 'The hold time is 3 × keepalive.', configured: 'a BGP relation’s keepalive and hold' }),
   P({ key: 'bfd-interval', yaml: 'bfd_interval', label: 'BFD interval', layer: 3, kind: 'duration', base: 'ms', dflt: 300, min: 3, max: 10 * S, source: 'a common configuration (RFC 5880 sets none)', help: 'Detection time: interval × multiplier.', configured: 'a BFD relation’s interval and multiplier' }),
   P({ key: 'bfd-multiplier', yaml: 'bfd_multiplier', label: 'BFD multiplier', layer: 3, kind: 'count', dflt: 3, min: 1, max: 255, source: 'a common configuration (RFC 5880 sets none)', help: 'Missed packets before the session goes down.', pairOf: 'bfd-interval', configured: 'a BFD relation’s multiplier' }),
   P({ key: 'vrrp-advert', yaml: 'vrrp_advert', label: 'VRRP advertisement interval', layer: 3, kind: 'duration', base: 's', dflt: S, min: 10, max: 40950, source: 'RFC 5798 §5.2.7 (100 centiseconds)', help: 'The master-down interval is 3 × interval + skew. CARP uses it as well.' }),
   P({ key: 'spf-delay', yaml: 'spf_delay', label: 'Route recomputation delay', layer: 3, kind: 'duration', base: 'ms', dflt: 200, min: 0, max: 60 * S, source: 'Junos spf-options delay (200 ms)', help: 'SPF and FIB update after a change: the old routes are used meanwhile.', device: ['router'] }),
+  // ------------------------------------------------------------ Layer 4 – Transport
+  P({ key: 'tcp-syn-retries', yaml: 'tcp_syn_retries', label: 'TCP SYN retries', layer: 4, kind: 'count', dflt: 6, min: 0, max: 20, source: 'Linux net.ipv4.tcp_syn_retries (about 127 s in all)', help: 'Retransmitted SYNs before a connection attempt times out.', device: ['ip'] }),
+  P({ key: 'tcp-rto', yaml: 'tcp_rto', label: 'TCP initial retransmission timeout', layer: 4, kind: 'duration', base: 's', dflt: S, min: 10, max: 60 * S, source: 'RFC 6298 §2.1', help: 'Wait before the first retransmission; it doubles each time.' }),
+  P({ key: 'tcp-keepalive', yaml: 'tcp_keepalive', label: 'TCP keepalive time', layer: 4, kind: 'duration', base: 's', dflt: 7200 * S, min: S, max: 86400 * S, source: 'RFC 1122 §4.2.3.6 (at least 2 h); Linux tcp_keepalive_time', help: 'An idle open connection is probed after this (then 9 probes 75 s apart).', device: ['ip'] }),
+  P({ key: 'closed-port', yaml: 'closed_port_reply', label: 'Reply to closed ports', layer: 4, kind: 'enum', dflt: 'on', options: ON_OFF, source: 'RFC 9293 §3.10.7.1 (RST) and RFC 1122 §3.2.2.1 (port unreachable)', help: 'TCP RST, or ICMP port unreachable for UDP; off: silently dropped.', device: ['ip'] }),
+  P({ key: 'test-traffic', yaml: 'test_traffic', label: 'Endpoint test traffic', layer: 4, kind: 'enum', dflt: 'off', options: ON_OFF, source: 'off, so that the timeline shows the protocols alone until it is wanted', help: 'Endpoints reach their gateway and the servers of their service relations.', device: ['endpoint'] }),
+  P({ key: 'test-interval', yaml: 'test_interval', label: 'Test traffic interval', layer: 4, kind: 'duration', base: 's', dflt: 5 * S, min: 100, max: 3600 * S, source: 'a demonstration value', help: 'How often each endpoint sends its test traffic.', device: ['endpoint'] }),
+  P({ key: 'test-type', yaml: 'test_type', label: 'Test traffic type', layer: 4, kind: 'enum', dflt: 'icmp', options: TEST_TYPES, source: 'ping, the usual first test', help: 'ICMP echo, a TCP connection or a UDP request (a relation’s own port wins).', device: ['endpoint'] }),
+  P({ key: 'app-timeout', yaml: 'app_timeout', label: 'Application response timeout', layer: 4, kind: 'duration', base: 's', dflt: 5 * S, min: 100, max: 600 * S, source: 'dig’s default timeout (5 s); Windows ping waits 4 s', help: 'A test without an answer within it is reported as timed out.', device: ['endpoint'] }),
   // ------------------------------------------------------------ device attributes only
   P({ key: 'boot-time', yaml: 'boot_time', label: 'Boot time', layer: 0, kind: 'duration', base: 's', dflt: 30 * S, dfltByType: { container: 2 * S, vm: 20 * S, router: 60 * S, firewall: 60 * S, gateway: 60 * S, load_balancer: 60 * S }, min: 0, max: 3600 * S, source: 'a demonstration value (containers start in seconds, chassis routers in minutes)', help: 'Power on: the time until its interfaces come up.', device: ['all'] }),
   P({ key: 'ecmp-max', yaml: 'max_paths', label: 'Maximum ECMP paths', layer: 0, kind: 'count', dflt: 4, min: 1, max: 64, source: 'Cisco IOS maximum-paths (4)', help: 'Equal-cost next hops it spreads flows over.', device: ['router'] }),
@@ -151,6 +176,63 @@ export const PARAMS: readonly ParamDef[] = [
   P({ key: 'snmp-interval', yaml: 'snmp_interval', label: 'SNMP polling interval', layer: 0, kind: 'duration', base: 's', dflt: 60 * S, min: S, max: 86400 * S, source: 'a demonstration value (300 s is common in production)', help: 'How often it polls each SNMP agent.', device: ['monitor'] }),
   P({ key: 'snmp-timeout', yaml: 'snmp_timeout', label: 'SNMP timeout', layer: 0, kind: 'duration', base: 's', dflt: S, min: 100, max: 60 * S, source: 'net-snmp (1 s)', help: 'An agent that does not answer within it is reported as not responding.', device: ['monitor'] }),
   P({ key: 'ap-association', yaml: 'association_time', label: 'Client association time', layer: 0, kind: 'duration', base: 's', dflt: S, min: 0, max: 60 * S, source: 'a demonstration value (WPA2-PSK takes well under a second, 802.1X longer)', help: 'Its wireless links come up this long after the radio is back.', device: ['ap'] }),
+  P({ key: 'ap-beacon', yaml: 'beacon_interval', label: 'Beacon interval', layer: 0, kind: 'duration', base: 'ms', dflt: 102.4, min: 10, max: 10 * S, source: 'IEEE 802.11 (100 TU = 102.4 ms)', help: 'A client that comes back waits for the next beacon, then associates.', device: ['ap'] }),
+  P({ key: 'ap-idle', yaml: 'client_idle_timeout', label: 'Client idle timeout', layer: 0, kind: 'duration', base: 's', dflt: 300 * S, min: 10 * S, max: 86400 * S, source: 'Cisco WLC user idle timeout (300 s)', help: 'A client silent this long is disassociated; it associates again to send.', device: ['ap'] }),
+  // ICMP and broadcast
+  P({ key: 'ping', yaml: 'respond_to_ping', label: 'Respond to ping', layer: 0, kind: 'enum', dflt: 'on', options: ON_OFF, source: 'RFC 1122 §3.2.2.6 (every host answers echo requests)', help: 'Off: echo requests to it go unanswered.', device: ['ip'] }),
+  P({ key: 'bcast-ping', yaml: 'respond_to_broadcast_ping', label: 'Respond to broadcast ping', layer: 0, kind: 'enum', dflt: 'off', options: ON_OFF, source: 'Linux icmp_echo_ignore_broadcasts (RFC 1122 §3.2.2.6 allows ignoring them)', help: 'Echo requests to a broadcast address: answered only when on.', device: ['ip'] }),
+  P({ key: 'icmp-rate', yaml: 'icmp_rate_limit', label: 'ICMP error rate limit', layer: 0, kind: 'duration', base: 'ms', dflt: 500, min: 0, max: 60 * S, source: 'Cisco IOS ip icmp rate-limit unreachable (500 ms); RFC 1812 §4.3.2.8', help: 'At most one ICMP error per this interval; 0: no limit.', device: ['ip'] }),
+  P({ key: 'directed-broadcast', yaml: 'directed_broadcast', label: 'Forward directed broadcasts', layer: 0, kind: 'enum', dflt: 'off', options: ON_OFF, source: 'RFC 2644 (off by default since 1999)', help: 'A packet to a connected subnet’s broadcast address goes out as a broadcast.', device: ['router'] }),
+  P({ key: 'storm-bc', yaml: 'storm_control_broadcast', label: 'Storm control: broadcast', layer: 0, kind: 'count', dflt: 0, min: 0, max: 100000000, zero: 'off', source: 'off unless configured (Cisco storm-control)', help: 'Frames per second a port takes in; above it they are dropped. 0: off.', device: ['switch'] }),
+  P({ key: 'storm-mc', yaml: 'storm_control_multicast', label: 'Storm control: multicast', layer: 0, kind: 'count', dflt: 0, min: 0, max: 100000000, zero: 'off', source: 'off unless configured (Cisco storm-control)', help: 'Multicast frames per second a port takes in; 0: off.', device: ['switch'] }),
+  // firewalls
+  P({
+    key: 'fw-action',
+    yaml: 'default_action',
+    label: 'Default action',
+    layer: 0,
+    kind: 'enum',
+    dflt: 'drop',
+    options: [
+      { value: 'drop', label: 'Drop (silently)' },
+      { value: 'reject', label: 'Reject (TCP RST, else ICMP administratively prohibited)' },
+    ],
+    source: 'the implicit deny of PAN-OS and Cisco ASA (silent)',
+    help: 'What happens to traffic its policy does not permit.',
+    device: ['firewall'],
+  }),
+  P({ key: 'fw-allow', yaml: 'allow', label: 'Also permits', layer: 0, kind: 'list', list: 'ports', dflt: '', zero: 'nothing more', source: 'none: the model’s relations through it are its policy', help: 'Further traffic it permits: tcp/22, udp/53, icmp, any.', device: ['firewall'] }),
+  P({ key: 'fw-stateful', yaml: 'stateful', label: 'Stateful', layer: 0, kind: 'enum', dflt: 'on', options: ON_OFF, source: 'every current firewall', help: 'On: replies pass by its session table; off: each packet is checked alone.', device: ['firewall'] }),
+  P({ key: 'fw-tcp', yaml: 'tcp_session_timeout', label: 'TCP session timeout', layer: 0, kind: 'duration', base: 's', dflt: 3600 * S, min: S, max: 604800 * S, source: 'PAN-OS (3600 s)', help: 'An established TCP session idle this long is removed.', device: ['firewall'] }),
+  P({ key: 'fw-half-open', yaml: 'tcp_handshake_timeout', label: 'TCP handshake timeout', layer: 0, kind: 'duration', base: 's', dflt: 5 * S, min: S, max: 3600 * S, source: 'PAN-OS tcp-init (5 s)', help: 'A half-open session (SYN without the handshake done) is removed after it.', device: ['firewall'] }),
+  P({ key: 'fw-udp', yaml: 'udp_session_timeout', label: 'UDP session timeout', layer: 0, kind: 'duration', base: 's', dflt: 30 * S, min: S, max: 604800 * S, source: 'PAN-OS (30 s)', help: 'A UDP session idle this long is removed.', device: ['firewall'] }),
+  P({ key: 'fw-icmp', yaml: 'icmp_session_timeout', label: 'ICMP session timeout', layer: 0, kind: 'duration', base: 's', dflt: 6 * S, min: S, max: 3600 * S, source: 'PAN-OS (6 s)', help: 'An ICMP echo session idle this long is removed.', device: ['firewall'] }),
+  // servers, load balancers, proxies, endpoints, monitoring
+  P({ key: 'listening', yaml: 'listening', label: 'Listening services', layer: 0, kind: 'list', list: 'ports', dflt: '', zero: 'its service relations’ ports', source: 'the ports of the service relations it serves', help: 'Open ports (tcp/443, udp/53); others get a RST or port unreachable.', device: ['host', 'lb', 'proxy'] }),
+  P({ key: 'lb-hc-interval', yaml: 'health_check_interval', label: 'Health check interval', layer: 0, kind: 'duration', base: 's', dflt: 2 * S, min: 100, max: 3600 * S, source: 'HAProxy inter (2 s)', help: 'How often it checks each pool member (its service relations).', device: ['lb'] }),
+  P({ key: 'lb-hc-timeout', yaml: 'health_check_timeout', label: 'Health check timeout', layer: 0, kind: 'duration', base: 's', dflt: 2 * S, min: 100, max: 600 * S, source: 'HAProxy timeout check (defaults to inter)', help: 'A check not answered within it fails.', device: ['lb'] }),
+  P({ key: 'lb-hc-fall', yaml: 'health_check_threshold', label: 'Health check failure threshold', layer: 0, kind: 'count', dflt: 3, min: 1, max: 100, source: 'HAProxy fall (3)', help: 'Failed checks in a row before a member is taken out (one success brings it back).', device: ['lb'] }),
+  P({ key: 'lb-persistence', yaml: 'persistence_timeout', label: 'Persistence timeout', layer: 0, kind: 'duration', base: 's', dflt: 180 * S, min: 0, max: 86400 * S, source: 'F5 BIG-IP source address affinity (180 s)', help: 'A client keeps its member while it returns within it; 0: no persistence.', device: ['lb'] }),
+  P({
+    key: 'lb-algorithm',
+    yaml: 'algorithm',
+    label: 'Balancing algorithm',
+    layer: 0,
+    kind: 'enum',
+    dflt: 'round-robin',
+    options: [
+      { value: 'round-robin', label: 'Round robin' },
+      { value: 'least-connections', label: 'Least connections' },
+      { value: 'source-hash', label: 'Source address hash' },
+    ],
+    source: 'HAProxy and F5 BIG-IP (round robin)',
+    help: 'Which healthy member a new connection goes to.',
+    device: ['lb'],
+  }),
+  P({ key: 'proxy-client', yaml: 'client_timeout', label: 'Client connection timeout', layer: 0, kind: 'duration', base: 's', dflt: 60 * S, min: 100, max: 86400 * S, source: 'nginx client_header_timeout (60 s)', help: 'A client connection idle this long is closed.', device: ['proxy'] }),
+  P({ key: 'proxy-upstream', yaml: 'upstream_timeout', label: 'Upstream connect timeout', layer: 0, kind: 'duration', base: 's', dflt: 60 * S, min: 100, max: 3600 * S, source: 'nginx proxy_connect_timeout (60 s)', help: 'Without an upstream connection within it, the client gets an error.', device: ['proxy'] }),
+  P({ key: 'test-targets', yaml: 'test_targets', label: 'Test targets', layer: 0, kind: 'list', list: 'targets', dflt: '', zero: 'its gateway and service relations', source: 'its gateway and the servers of its service relations', help: 'Devices or addresses, each optionally with tcp/443, udp/53 or icmp.', device: ['endpoint'] }),
+  P({ key: 'icmp-probe', yaml: 'icmp_probe_interval', label: 'ICMP probe interval', layer: 0, kind: 'duration', base: 's', dflt: 60 * S, min: S, max: 86400 * S, source: 'Zabbix simple checks (1 min)', help: 'How often it pings each device it monitors (its SNMP relations).', device: ['monitor'] }),
 ];
 
 const BY_KEY = new Map<string, ParamDef>(PARAMS.map((p) => [p.key, p]));
@@ -249,6 +331,12 @@ function applies(a: Applies, f: DeviceFacts): boolean {
       return f.type === 'cloud';
     case 'ap':
       return f.type === 'ap';
+    case 'endpoint':
+      return f.type === 'endpoint';
+    case 'lb':
+      return f.type === 'load_balancer';
+    case 'proxy':
+      return f.type === 'proxy';
   }
   return false;
 }
@@ -271,8 +359,16 @@ export function attributesByType(): Array<{ type: string; keys: string[] }> {
 /** Parse a value as written in the model or typed in a field; an error text when it isn't one. */
 export function parseValue(def: ParamDef, raw: unknown): { value: ParamValue } | { error: string } {
   if (raw === null || raw === undefined || raw === '') return { error: 'is empty' };
+  if (def.kind === 'list') {
+    const t = Array.isArray(raw) ? raw.map((x) => String(x)).join(', ') : String(raw);
+    const r = def.list === 'targets' ? parseTargets(t) : parsePorts(t);
+    if ('error' in r) return r;
+    return { value: def.list === 'targets' ? targetsText(r.list as Target[]) : portsText(r.list as PortRule[]) };
+  }
   if (def.kind === 'enum') {
-    const v = String(raw).trim().toLowerCase();
+    // on / off may be written as true / false
+    const onOff = (def.options || []).some((o) => o.value === 'on');
+    const v = typeof raw === 'boolean' && onOff ? (raw ? 'on' : 'off') : String(raw).trim().toLowerCase();
     const ok = (def.options || []).some((o) => o.value === v);
     return ok ? { value: v } : { error: `must be one of ${(def.options || []).map((o) => o.value).join(', ')}` };
   }
@@ -306,6 +402,7 @@ export function parseValue(def: ParamDef, raw: unknown): { value: ParamValue } |
 
 /** A value as the UI writes it: "4 h", "300 ms", "1 Gbit/s", "0.5 %", "3" ("continuous" for a 0 that means it). */
 export function formatValue(def: ParamDef, v: ParamValue): string {
+  if (def.kind === 'list') return String(v) === '' ? def.zero || 'none' : String(v);
   if (def.kind === 'enum') {
     const o = (def.options || []).find((x) => x.value === v);
     return o ? o.label.replace(/ \(.*\)$/, '') : String(v);
@@ -340,7 +437,7 @@ const round = (n: number, d: number): number => Math.round(n * 10 ** d) / 10 ** 
 
 /** A value as a field (and the model, without a unit) holds it: a duration in its base unit, a speed like "1G". */
 export function fieldText(def: ParamDef, v: ParamValue): string {
-  if (def.kind === 'enum') return String(v);
+  if (def.kind === 'enum' || def.kind === 'list') return String(v);
   const n = Number(v);
   if (def.kind === 'duration') return String(round(def.base === 's' ? n / S : n, 6));
   if (def.kind === 'speed') {
@@ -371,6 +468,81 @@ export function defaultFor(def: ParamDef, type?: string): ParamValue {
 export function helpText(def: ParamDef, type?: string): string {
   const d = defaultFor(def, type);
   return `${def.help} Default ${formatValue(def, d)}: ${def.source}.${def.configured ? ` Overridden by ${def.configured}.` : ''}`;
+}
+
+// ------------------------------------------------------------ lists: ports and test targets
+
+/** A port rule of a list: a transport and a port range ("tcp/443", "udp/5000-5010"), ICMP, or anything. */
+export interface PortRule {
+  proto: 'tcp' | 'udp' | 'icmp' | 'any';
+  from: number;
+  to: number;
+}
+
+/** A test target: a device (optionally an interface of it) or an address, with the test to run against it (none: the test type in effect). */
+export interface Target {
+  /** a device id ("web1", "web1:eth0") or an address */
+  to: string;
+  test?: PortRule;
+}
+
+/** "tcp/443, udp/53, icmp, any" (or "none") → the rules; an error text for a bad entry. */
+export function parsePorts(text: string): { list: PortRule[] } | { error: string } {
+  const out: PortRule[] = [];
+  const t = text.trim();
+  if (t.toLowerCase() === 'none') return { list: out };
+  for (const raw of t.split(/[,\s]+/).filter((x) => x)) {
+    const r = portRule(raw);
+    if (!r) return { error: `has "${raw}": write tcp/443, udp/53, tcp/8000-8080, icmp or any` };
+    out.push(r);
+  }
+  if (!out.length) return { error: 'is empty (write none for no entry)' };
+  return { list: out };
+}
+
+function portRule(raw: string): PortRule | null {
+  const x = raw.trim().toLowerCase();
+  if (x === 'icmp' || x === 'any') return { proto: x, from: 0, to: 0 };
+  const m = /^(tcp|udp)\/([0-9]{1,5})(?:-([0-9]{1,5}))?$/.exec(x);
+  if (!m) return null;
+  const from = Number(m[2]);
+  const to = m[3] !== undefined ? Number(m[3]) : from;
+  if (from < 1 || to > 65535 || to < from) return null;
+  return { proto: m[1] as 'tcp' | 'udp', from, to };
+}
+
+export function portsText(list: PortRule[]): string {
+  if (!list.length) return '';
+  return list.map((r) => (r.proto === 'icmp' || r.proto === 'any' ? r.proto : `${r.proto}/${r.from}${r.to !== r.from ? '-' + r.to : ''}`)).join(', ');
+}
+
+/** "web1 tcp/443, 10.0.0.9, db1:eth0 udp/53" (or "none") → the targets. */
+export function parseTargets(text: string): { list: Target[] } | { error: string } {
+  const out: Target[] = [];
+  const t = text.trim();
+  if (t.toLowerCase() === 'none') return { list: out };
+  for (const raw of t.split(',').map((x) => x.trim()).filter((x) => x)) {
+    const parts = raw.split(/\s+/);
+    if (parts.length > 2 || !/^[A-Za-z0-9_.:\-]+$/.test(parts[0])) return { error: `has "${raw}": write a device or an address, optionally followed by tcp/443, udp/53 or icmp` };
+    const tgt: Target = { to: parts[0] };
+    if (parts.length === 2) {
+      const r = portRule(parts[1]);
+      if (!r || r.proto === 'any' || r.from !== r.to) return { error: `has "${raw}": the test is tcp/<port>, udp/<port> or icmp` };
+      tgt.test = r;
+    }
+    out.push(tgt);
+  }
+  if (!out.length) return { error: 'is empty (write none for no entry)' };
+  return { list: out };
+}
+
+export function targetsText(list: Target[]): string {
+  return list.map((x) => x.to + (x.test ? ' ' + portsText([x.test]) : '')).join(', ');
+}
+
+/** Does a port rule list match a packet (its transport and destination port; ICMP by its kind)? */
+export function portsMatch(list: PortRule[], proto: string, port: number): boolean {
+  return list.some((r) => r.proto === 'any' || (r.proto === proto && (proto === 'icmp' || (port >= r.from && port <= r.to))));
 }
 
 // ------------------------------------------------------------ resolution

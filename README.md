@@ -238,7 +238,7 @@ under the diagram, beside the object list, and the splitter is hidden.
 | Input helpers | Next to many fields, small buttons (*chips*) offer values that fit, taken from the model as it is; each writes its value as one undo step and is validated like typing, and nothing is filled in by itself. **MTU:** *1500*, *9000 (jumbo)*, and for a tunnel *1476 (GRE)*, *1400* and its underlay's MTU less the encapsulation overhead (*1403 (underlay 1500 − 97)*, the overhead named in the tooltip). **MAC:** **Generate** writes a random, locally administered unicast address that no interface has, in the style the model's other MAC addresses are written (`00:1c:…`, `00-1C-…` or `001c.73aa.…`), from the browser's secure random source. **VRF:** a combobox of the VRFs in use, sorted, with how often each is used; ↑ / ↓, Enter and Esc work as usual, a new name can be typed, and a name that differs from one in use only in case is flagged (and reported by the check *vrf-name-case*). **VLAN ID** (virtual interfaces, networks, a link end's untagged VLAN): the next free ID and the VLANs the model defines. **Interface ID:** the name that follows the device's other names of that kind (*xe-4* after *xe-3*), as a rename. **Router ID:** the device's loopbacks (*lo0 (10.255.0.1)*). **BGP AS number:** the AS numbers the model uses; a BGP relation end's **peer AS**: the other device's AS. **IS-IS NET:** derived from the router ID or loopback (10.255.0.1 → `49.0001.0102.5500.0001.00`). **VRRP / HSRP group:** the groups on the interface's segment (*10 (join hq-core1:Vlan10)*) and the next free number; **Virtual IP:** the group's address on the other members. **Protocol parameters:** the registry's common values (OSPF area *0.0.0.0*, hello *10* …). **Routes:** *0.0.0.0/0 (default)*, *::/0*, distance *250 (floating backup)*. Speeds, media, protocols, port modes, duplex, groups, devices and interfaces were already offered as lists. The palette has *Generate a MAC address for the selected interface* and *Set the MTU of the selected interface to 1500*. A protocol defined in the model has a **Routing service** card (*Uses a router ID*; its declared parameters are listed and edited in the YAML tab). |
 | Layer 3 (switches) | A switch has a **Layer 3** checkbox in its *Identity* card (`layer3: true`, off by default). Ticked: a **Layer 3 switch**, with protocols, a router ID, addresses on several interfaces, VRRP / HSRP groups, tunnels and VRFs; it routes between its VLANs. Unticked: a **Layer 2 switch**: it forwards frames, has one management interface with addresses and static routes (e.g. a default gateway for management), and offers no protocols, router ID or groups. Unticking a configured Layer 3 switch asks first and lists what is removed (protocols, router ID, groups, the addresses of all but the management interface, other VRFs, tunnel interfaces, routes in other VRFs) and the relations that need routing (kept, and reported until changed); one undo step. The diagram, the legend, the object list (**L2** / **L3** beside the name), the details, Find (`l3`, `layer 3 switch`) and the palette say which a switch is. See [docs/FORMAT.md](docs/FORMAT.md#layer-2-and-layer-3-switches). |
 | Protocols (routing services) | A Layer 3+ device (router, Layer 3 switch, firewall, load balancer, proxy, gateway) has a **Protocols** card: the routing services it runs, each a small card with its parameters, and **Enable a protocol…** (BGP, OSPF, IS-IS, EIGRP, RIP, LDP, PIM, BFD, VRRP, HSRP, GLBP, CARP, and the protocols the model defines with parameters). Static routes are not a protocol: they are configured in the device's **Static routes** section and are always in effect, whatever protocols the device enables. A protocol is enabled with its parameters empty; the mandatory ones (BGP's local AS number, OSPF's router ID, IS-IS's NET, a VRRP group's number and virtual IP) are errors at their field and in Problems until you fill them in. **Router ID** appears while an enabled protocol uses one: a loopback of the device (offered) or an IPv4 address, shared by the protocols, with **Own router ID for …** per protocol behind a disclosure. **Suggested**: one-click *Enable BGP* (or OSPF …) for a protocol the device's relations use but it doesn't enable. **Disable** on a protocol asks first when it has values and lists what goes with it (its parameters, its groups on interfaces, and the router ID when nothing else uses it); it is one undo step and nothing is kept hidden in the model. An interface of a device that runs VRRP (HSRP …) has **+ VRRP group**, then a card for the group's number, virtual IP and priority. A relation of OSPF, BGP … has a card with its per-end parameters (area, timers, cost …), a field per endpoint device. See [docs/FORMAT.md](docs/FORMAT.md#routing-services-protocols). |
-| Simulation (per device) | Every device has a **Simulation** section after its protocols, collapsed until opened with its disclosure button (*Simulation (14)*: the number of attributes that apply to it). Each field shows the value in effect: the device's own, or *Inherited: 4 h (default — Cisco IOS …)* / *Inherited: 60 s (simulation)*; empty means inherited. A value is checked for its range and unit before it is written; only overrides are written, in the device's `simulation:` block, as one undo step; **Reset to inherited** removes one (an emptied block goes). During a simulation this section stays editable (the rest of the form is read-only): a change applies there at once and is logged; Undo takes it back. The ARP and NDP timers live here (one place for them). See [Parameters](#parameters). |
+| Simulation (per device) | Every device has a **Simulation** section after its protocols, collapsed until opened with its disclosure button (*Simulation (16)* on a router: the number of attributes that apply to it). Each field shows the value in effect: the device's own, or *Inherited: 4 h (default — Cisco IOS …)* / *Inherited: 60 s (simulation)*; empty means inherited. A list (listening services, what a firewall also permits, test targets) is one text, e.g. `tcp/443, udp/53`. A value is checked for its range and unit before it is written; only overrides are written, in the device's `simulation:` block, as one undo step; **Reset to inherited** removes one (an emptied block goes). During a simulation this section stays editable (the rest of the form is read-only): a change applies there at once and is logged; Undo takes it back. The ARP and NDP timers live here (one place for them). See [Parameters](#parameters). |
 | Static routes | After a device's interfaces and DNS names, **Static routes** lists its routes as cards, sorted by VRF, prefix and distance (the file keeps its order). **+ Route** adds an empty one; each card edits the **Destination prefix**, a **Blackhole** switch, the **Next-hop address** (with suggestions: the neighbours' addresses in this device's networks), the **Exit interface** (picked from the device's interfaces), **Administrative distance**, **Metric**, **VRF**, **Name**, **Description** and attributes, and has **Duplicate** (⧉, e.g. to make a floating backup) and **Delete** (×). Each is one undo step. A device whose type has no routing table offers no routes. |
 | Endpoints | Device and interface pickers, alphabetical. A relation endpoint can use any interface (logical ones are labelled *loopback*, *virtual* or *tunnel*); a link end offers physical interfaces only. An endpoint is only a device and an interface; anything about an endpoint's part goes into the relation's attributes. |
 | Direction | A switch on a relation: **Bidirectional** (the default; nothing is written to the file) or **Unidirectional** (`direction: unidirectional`): one way, from the first endpoint to the last, drawn with an arrow. Reorder the endpoints with ↑ to turn it around. A **link** has the same switch (in its *Cable* card): one way from End A to End B, for simplex fibre, a data diode or a TAP / SPAN feed, drawn with an arrow at End B; traffic is never traced the other way. |
@@ -953,10 +953,13 @@ Both come from the same model references, in `src/model/queries.ts`
 **Analyze** answers *what is*: the model as written. **Simulate** answers
 *what if*: **Simulate → Start simulation…** runs a **protocol simulation**
 of the model, a freshly booted network whose devices talk to each other,
-shown as labelled moving dots in the diagram, with Layer 1–3 parameters
-you choose before it starts and can change while it runs, and network
-events you cause (failed cables and relations, flapping, shut interfaces,
-devices powered off and on). It is a teaching and design-review simulation
+shown as labelled moving dots in the diagram, with Layer 1–4 parameters
+you choose before it starts and can change while it runs, network events
+you cause (failed cables and relations, flapping, shut interfaces, devices
+powered off and on) and tests you send (ping, TCP, UDP). It simulates
+Layers 1 to 4: links, switching and ARP, routing with ICMP errors and
+fragmentation, TCP and UDP, firewalls, load balancers and proxies,
+broadcast and broadcast storms. It is a teaching and design-review simulation
 of protocol behaviour, not an exact protocol implementation (see
 [Limitations](#limitations-honest-list)). It never changes the model and
 adds no undo step, except the documented one: a device's **Simulation**
@@ -991,15 +994,17 @@ the same timeline).
 ### Parameters
 
 The start dialog has one section per layer, **Layer 1 – Physical (8)**,
-**Layer 2 – Data link (6)** and **Layer 3 – Network (6)** (Layer 4 comes
-with the TCP / UDP simulation), each collapsed until opened with its
-disclosure button (the count is part of its name):
+**Layer 2 – Data link (7)**, **Layer 3 – Network (7)** and **Layer 4 –
+Transport (8)** (at most eight each; the multicast simulation will bring
+Layers 2 and 3 to eight), each collapsed until opened with its disclosure
+button (the count is part of its name):
 
 | Layer | Parameters (default) |
 |---|---|
 | 1 Physical | link latency (0.1 ms, about 20 km of fibre); packet loss (0 %); loss-of-signal detection (0 ms, Junos hold-time down); link-up delay after a restore (2 s, autonegotiation); default speed for cables without one (1 Gbit/s); flapping down time (5 s), up time (10 s) and cycles (3; 0: until stopped) |
-| 2 Data link | ARP timeout (4 h, Cisco IOS); ARP retransmit interval (1 s) and retries (3), RFC 4861; NDP reachable time (30 s, RFC 4861); MAC aging (300 s, IEEE 802.1D); spanning tree (RSTP; STP converges in 30–50 s) |
-| 3 Network | default TTL / hop limit (64); OSPF hello (10 s, dead 4×, RFC 2328); BGP keepalive (60 s, hold 3×, Cisco IOS; RFC 4271 suggests 30 / 90 s); BFD interval × multiplier (300 ms × 3); VRRP advertisement (1 s, RFC 5798); route recomputation delay (200 ms, Junos SPF delay) |
+| 2 Data link | ARP timeout (4 h, Cisco IOS); ARP retransmit interval (1 s) and retries (3), RFC 4861; NDP reachable time (30 s, RFC 4861); MAC aging (300 s, IEEE 802.1D); spanning tree (RSTP; STP converges in 30–50 s; off: a loop is not blocked); default MTU (1500 bytes, RFC 894) |
+| 3 Network | default TTL / hop limit (64); send ICMP errors (on, RFC 1812 / RFC 4443); OSPF hello (10 s, dead 4×, RFC 2328); BGP keepalive (60 s, hold 3×, Cisco IOS; RFC 4271 suggests 30 / 90 s); BFD interval × multiplier (300 ms × 3); VRRP advertisement (1 s, RFC 5798); route recomputation delay (200 ms, Junos SPF delay) |
+| 4 Transport | TCP SYN retries (6, Linux); TCP initial retransmission timeout (1 s, doubling, RFC 6298); TCP keepalive time (2 h, RFC 1122); reply to closed ports (on: TCP RST, ICMP port unreachable); endpoint test traffic (off), its interval (5 s) and type (ICMP echo, a TCP connection or a UDP request); application response timeout (5 s, dig) |
 
 Every field shows its value, its unit and a short help with the default
 and its source, and checks its range (an error names the range; Start
@@ -1033,7 +1038,22 @@ IPS; the IKE and Child SA lifetimes, rekey margin and DPD of a gateway or
 IPsec endpoint; the service response time of a server, VM, container or
 storage; the VM restart time of a server hosting VMs; the SNMP polling
 interval and timeout of a monitoring system; the latency and loss of a
-cloud; the association time of an access point. Each field shows the value
+cloud; the association time of an access point. For Layers 3 and 4: every
+device with an address answers pings or not (and broadcast pings: off by
+default), sends ICMP errors or not, with a rate limit (one per 500 ms),
+and has its TCP SYN retries, keepalive time and reply to closed ports; a
+router forwards directed broadcasts or not (off); a switch has storm
+control for broadcast and multicast (frames per second); a firewall its
+default action (drop or reject), what it **also permits** (`tcp/22, udp/53,
+icmp, any`; the model's relations through it are its policy), stateful or
+not, and its session timeouts (half-open, TCP, UDP, ICMP); a server, VM,
+container, storage, load balancer or proxy its **listening services**
+(else the ports of the relations it serves); a load balancer its health
+checks (interval, timeout, failure threshold), persistence timeout and
+algorithm; a proxy its client and upstream connect timeouts; an endpoint
+its test traffic, targets, interval, type and application timeout; a
+monitoring system its ICMP probe interval; an access point its beacon
+interval and client idle timeout. Each field shows the value
 in effect: its own, or *Inherited: 4 h (default — Cisco IOS …)* or
 *Inherited: 60 s (simulation)*. Only overrides are written to the model
 (a `simulation:` block on the device); **Reset to inherited** removes one.
@@ -1047,12 +1067,16 @@ During a simulation, clicking in the diagram opens a short menu at that
 spot (with the keyboard in it; `Esc` closes it):
 
 * a **cable**: **Fail link** / **Restore link**, **Start flapping** /
-  **Stop flapping**;
+  **Stop flapping**, **Highlight broadcast domain** (of the VLAN it
+  carries; a choice when it carries several);
 * a **relation**: **Fail link** / **Restore link**;
-* a **device**: **Show ARP table**, **Show MAC table**, **Power off** /
+* a **device**: **Show ARP table**, **Show MAC table**, **Show
+  connections**, **Show sessions** (a firewall), **Send test…**,
+  **Highlight broadcast domain** (of an interface of it), **Power off** /
   **Power on**, **Shut an interface…** (a second menu of its interfaces);
 * an **interface**: **Shut interface** / **No shut**, **Start flapping** /
-  **Stop flapping**.
+  **Stop flapping**;
+* a **dot**: the [packet inspector](#the-packet-inspector) for its frame.
 
 Several events can be in effect at once; the window's **Network events**
 section lists them, each with its way back (Restore, Stop flapping, No
@@ -1082,6 +1106,8 @@ A [tool window](#tool-windows) with:
 
 * **Play / Pause**, **Step** (to the next moment something happens) and the
   **speed** of the simulated clock, 0.25× to 10×; the **simulated time**;
+  what the dots' shapes mean (a circle unicast, a square broadcast, a
+  diamond multicast); a warning while a **broadcast storm** goes on;
 * **Protocols shown**: a checkbox per protocol of the model, grouped
   (**Layer 2** first: ARP, NDP, gratuitous ARP, LACP, STP, LLDP, CDP; then
   routing, redundancy, tunnels and overlays, services, custom protocols and
@@ -1094,22 +1120,33 @@ A [tool window](#tool-windows) with:
 * **Parameters**: the start dialog's sections, applied at once;
 * **Network events**: the events in effect, each with its way back, and
   the actions of the in-diagram menus with lists of cables and relations,
-  devices and interfaces;
-* **ARP, neighbour and MAC tables**: every device with **Show ARP table**
-  (and **Show MAC table** for switches), and the **table timer scale**;
+  devices and interfaces (with **Broadcast domain…**);
+* **Send test**: from a device to a device, an interface
+  (`device:interface`), an address, a subnet broadcast, 255.255.255.255 or
+  a multicast group; ICMP echo, a TCP port or a UDP port; the data size,
+  Don't Fragment, and keeping a TCP connection open; the latest results;
+* **Tables**: every device with **Show ARP table** (and **Show MAC table**
+  for switches, **Show connections** for devices with an address, **Show
+  sessions** for firewalls), and the **table timer scale**;
 * **Status**: a row per session: OSPF neighbour states (with DR / BDR),
   BGP session states, IPsec SAs, the VRRP master, LACP members, BFD, the
   demands delivered or lost …;
 * the **event log** of every message and state change, with time, source,
-  destination, protocol, message, new state and the full payload, and a
-  filter. Together with the status table it carries everything the
+  destination, protocol, message, new state and the full payload, a text
+  filter and filters by **layer** (1 to 4) and **cast** (unicast,
+  broadcast, multicast); a message's name opens the packet inspector (by
+  keyboard too). Together with the status table it carries everything the
   animation shows.
 
 ### Messages in the diagram
 
 Every message is a dot with a label of its protocol and message, e.g.
-*OSPF Hello*, *BGP KEEPALIVE*, *IPsec IKE_AUTH*, *ARP Who has 10.0.0.2? Tell
-10.0.0.1*, *ARP Reply 10.0.0.2 is at 02:1a:3b:…*. In the **physical view**
+*OSPF Hello*, *BGP KEEPALIVE*, *IPsec IKE_AUTH*, *ARP Request (broadcast):
+who has 10.0.0.2?*, *ARP Reply 10.0.0.2 is at 02:1a:3b:…*, *TCP SYN →
+10.1.1.10:443*, *TCP RST*, *ICMP Net Unreachable from 10.0.0.1*, *ICMP TTL
+exceeded from 10.0.12.2*, *UDP → 10.0.0.53:53*. Its shape says how the
+frame is addressed: a circle unicast, a square broadcast, a diamond
+multicast (an arrow's tail the same under reduced motion). In the **physical view**
 the dots go cable by cable. A frame is on a cable for its latency plus its
 serialization time, often microseconds: the playback slows down while a
 message is on its way (about 0.3 s per cable at 1×) and runs at its speed
@@ -1130,6 +1167,92 @@ steps (one per second of real time) and every message in flight is a
 static arrow with its label; the event log stays complete. **Exports**
 (PNG, SVG) during the simulation are a still picture of that moment:
 labelled arrows and a *Protocol simulation, t = …* note.
+
+### Layers 3 and 4: ICMP, TCP, UDP, firewalls and tests
+
+* **ICMP errors** come back to a packet's sender from where it stopped:
+  *Net Unreachable* (a router without a route), *Host Unreachable* (a next
+  hop that does not answer ARP or neighbour discovery after its retries),
+  *TTL exceeded* (a routing loop), *Fragmentation Needed* / *Packet Too
+  Big* (DF set, or IPv6, and a smaller MTU on the way), *Port Unreachable*
+  (a closed UDP port), *Administratively Prohibited* (a firewall that
+  rejects). Never about a broadcast or multicast packet (an IPv6 Packet Too
+  Big excepted) or about another ICMP error; never from a device whose
+  *Send ICMP errors* is off; at most one per its rate limit (a suppressed
+  one is logged). A blackhole route drops silently.
+* **MTU**: an interface's `mtu`, else the default MTU. An IPv4 packet
+  without DF is fragmented (each fragment a dot of its own, *(fragment
+  1/2)*) and reassembled at its destination; with DF it is dropped with
+  Fragmentation Needed and the sender lowers its **path MTU** (PMTUD): TCP
+  sends smaller segments from then on.
+* **TCP**: SYN, SYN-ACK, ACK, the request and the answer (segments that fit
+  the path MTU), FIN; a SYN without an answer is sent again after the
+  initial retransmission timeout, doubling (1 s, 2 s, 4 s …), until the
+  SYN retries are spent: *connection timed out*; a closed port answers
+  with a **RST** (*connection refused*). A connection kept open (Send
+  test) is probed after the keepalive time and reset when the peer is
+  gone. BGP's connection does the same before its ConnectRetry timer.
+* **UDP**: a request is answered from an open port, else ICMP Port
+  Unreachable comes back (not for a broadcast or multicast destination).
+  Which ports are open: a device's **listening services**, else the ports
+  of the relations it serves (HTTPS 443, DNS 53 …).
+* **Firewalls** apply their policy to what they route: the model's
+  relations through them pass (they are the design's intended flows), so
+  does what their **also permits** list allows, opening a session whose
+  replies pass (stateful); anything else is dropped silently, or rejected
+  (TCP RST, else ICMP Administratively Prohibited), as the default action
+  says. **Show sessions** lists the session table with the rule that
+  permitted each session and its timeout.
+* **Test traffic** (Layer 4 parameters, or an endpoint's own setting): every
+  endpoint pings its gateway and tests the servers of its service relations
+  on their port, every interval, or its own targets. **Send test…** runs
+  one test from any device. Each ends *answered*, *refused*, *unreachable*
+  (with the ICMP error) or *timed out* (the application response timeout),
+  in the status table and the event log. **Show connections** lists a
+  device's open ports and connections (LISTEN, SYN_SENT, ESTABLISHED,
+  TIME_WAIT …) with their timers.
+* **Load balancers** check their pool (the servers of their own service
+  relations) every health-check interval and take a member out after the
+  failure threshold; a client's connection to them goes on to a healthy
+  member by their algorithm (round robin, least connections, source
+  hash), the same member again within the persistence timeout. A
+  **proxy** passes a request on to its upstream server; without a
+  connection within its upstream connect timeout the client gets *504
+  Gateway Timeout*. A **monitoring system** pings the devices it polls by
+  SNMP every ICMP probe interval and says which are unreachable.
+
+### Broadcast and storms
+
+* A **broadcast** frame is flooded to every port of its VLAN but the one
+  it came in on (trunks included) and never crosses a router: a router
+  takes 255.255.255.255 itself; a packet to a subnet's broadcast address
+  from elsewhere goes out there as a broadcast only where the router
+  forwards directed broadcasts (off by default). A host answers a
+  broadcast ping only when it responds to broadcast pings (off by
+  default). **Highlight broadcast domain** marks the devices, ports and
+  cables a broadcast reaches now (the rest dimmed; again to clear it).
+* A **broadcast storm**: switches whose spanning tree is **off** block no
+  port, so a loop between them stays open; the first broadcast comes back,
+  circulates and multiplies, and MAC addresses move between ports. The
+  banner and the window warn of it; each frame is followed for 6 rounds.
+  **Storm control** on a switch drops the looping frames at its ports;
+  breaking the loop (failing a cable of it) or turning a spanning tree
+  back on ends the storm.
+
+### The packet inspector
+
+Clicking a dot (or the message of a row in the event log) opens the
+**packet inspector**: a panel like the tables with the frame layer by
+layer. **Layer 2**: source and destination MAC, what the destination is
+(broadcast; an IPv4 group's multicast MAC 01:00:5e + its low 23 bits, an
+IPv6 one's 33:33 + its low 32 bits; a bridge group never forwarded), the
+VLAN tag on that cable, the EtherType and the frame's size. **ARP**: the
+operation, sender and target. **Layer 3**: source and destination, TTL /
+hop limit, Don't Fragment, protocol, length and fragment, for each header
+of an encapsulation (outer first). **Layer 4**: ports and TCP flags; ICMP
+type and code with the quoted header of the packet an error is about. And
+what it carries. A dot shows the frame on its cable (the MACs and TTL of
+that hop); a log row the frame as its sender sent it.
 
 ### Layer 2: ARP, NDP and switching
 
@@ -1152,8 +1275,9 @@ labelled arrows and a *Protocol simulation, t = …* note.
   The link ends' tagging decides what a port carries (access, trunk, native
   VLAN, tagged VLANs) and whether a frame leaves it tagged; a frame never
   leaves its VLAN on a Layer 2 switch. Loops are broken by a spanning tree
-  per VLAN; STP BPDUs, LLDP and CDP are shown only where the model has
-  their relations; LACP runs on every aggregate's members.
+  per VLAN, unless every switch on the loop has its spanning tree off (a
+  storm, see above); STP BPDUs, LLDP and CDP are shown only where the
+  model has their relations; LACP runs on every aggregate's members.
 * **Routing.** Routers and Layer 3 switches route between subnets and
   VLANs: they resolve the next hop, rewrite the source and destination MAC
   and decrement the TTL (hop limit), hop by hop in the event log (*core1
@@ -1268,7 +1392,13 @@ while acc-sw's second uplink flaps, open the ARP tables of core1 and r1 and
 the MAC table of acc-sw, then fail the cable *l-carrier-r3*: r3 notices at
 once, r1 when its dead interval expires, and the users' traffic moves via
 r2. Power r2 off and on, or change the OSPF hello in the window, and
-follow the event log.
+follow the event log. pc1 sends test traffic every 5 s: HTTPS to srv is
+answered, SSH to srv refused (RST), DNS to the DMZ server is rejected by
+fw1 (ICMP Administratively Prohibited), a ping to 203.0.113.80 gets Net
+Unreachable; srv's first full-size answer over the carrier path (MTU 1400)
+gets Fragmentation Needed. The lab's two switches with their spanning tree
+off storm from the start: fail *l-lab-b*. Click a dot to inspect it, and
+use Send test… from a device's menu.
 
 ## Connecting in the diagram
 
@@ -2500,10 +2630,20 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/scr
 * **The protocol simulation is a teaching and design-review simulation of
   protocol behaviour, not an exact protocol implementation.** There is no
   real timing jitter (only a small fixed-seed jitter at the start), no
-  vendor-specific behaviour beyond the parameters, no TCP retransmission or
-  congestion control (yet), no queuing beyond each cable's serialization
+  vendor-specific behaviour beyond the parameters, no queuing beyond each cable's serialization
   (one frame after the other) and no CPU limits; packet loss is a share of
-  frames from a fixed seed. The playback slows down while a message is on
+  frames from a fixed seed. TCP has no congestion control, windows or
+  delayed acknowledgements (a request and an answer, each acknowledged);
+  UDP and TCP tests stand for applications (fixed sizes: a 120-byte
+  request, a 1460-byte answer); DHCP is simulated only as the DHCP
+  relation's messages (interfaces with `dhcp: true` get no address); a
+  firewall's policy is the model's relations plus its `allow` list (no
+  rule base, NAT or application identification); load balancers and
+  proxies relay TCP only (UDP to them is answered by themselves); a
+  broadcast storm follows each frame for 6 rounds instead of forever;
+  there is no multicast routing beyond the PIM and IGMP relations' own
+  messages yet (no MSDP or inter-domain multicast, no PIM Assert edge
+  cases beyond what is modelled). The playback slows down while a message is on
   its way so that it can be followed; the simulated time is not affected.
   The spanning tree is converged at the start; its convergence after a
   change uses the mode's timer (RSTP at once at the change or after 3
@@ -2518,7 +2658,8 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/scr
   Service traffic (DNS, NTP, syslog …) is sent at a fixed demonstration
   interval. A frame's way through the switches is decided when it is sent.
   Loops are broken by a spanning tree per VLAN whether or not the model
-  runs STP (BPDUs are shown only where it does); a topology change flushes
+  has an STP relation (BPDUs are shown only where it does), unless the
+  switches' spanning tree is set off; a topology change flushes
   the VLAN's MAC tables. A gratuitous ARP updates entries but creates
   none. A tunnel's outer packet that the model's routing does not carry
   (an internet the model leaves out) follows the cables its relations are

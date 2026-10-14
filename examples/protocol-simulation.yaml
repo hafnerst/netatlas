@@ -19,10 +19,21 @@
 #   * PIM with the RP at r1, a multicast source at the branch and a
 #     receiver behind r3 (IGMP).
 #   * a protocol of the model's own (telemetry) on a one-way relation.
+#   * Layer 4: pc1 sends test traffic every 5 s (simulation: test_traffic
+#     on): HTTPS to srv (open), SSH to srv (closed: a TCP RST), HTTPS to
+#     the DMZ server web through fw1, DNS to web (fw1 rejects it: ICMP
+#     administratively prohibited) and a ping to 203.0.113.80 (no route
+#     there: ICMP net unreachable from the gateway). The carrier path r1 –
+#     r3 has an MTU of 1400: srv's full-size answers get Fragmentation
+#     Needed and it lowers its path MTU.
+#   * a lab of two switches joined twice with their spanning tree off: a
+#     Layer 2 loop, so the first broadcast storms.
 #
 # Try: Start simulation, watch ARP resolve and OSPF reach Full; open the
 # ARP tables of core1 and r1 and the MAC table of acc-sw; then fail the
-# cable l-carrier-r3.
+# cable l-carrier-r3. Click a dot to inspect its packet; Send test… from
+# a device's menu; fail l-lab-b (or set lab-sw1's spanning tree back on)
+# to end the storm.
 netatlas: 1
 title: Protocol simulation
 description: |
@@ -42,6 +53,8 @@ groups:
   - {id: ring, label: Core ring, kind: site}
   - {id: siteb, label: Site B, kind: site}
   - {id: branch, label: Branch, kind: site}
+  - {id: dmz, label: DMZ, kind: site}
+  - {id: lab, label: Lab, kind: site}
 
 devices:
   # ---------------------------------------------------------------- campus
@@ -49,6 +62,9 @@ devices:
     label: User PC
     type: endpoint
     group: campus
+    simulation:
+      test_traffic: "on"
+      test_targets: srv tcp/443, srv tcp/22, web tcp/443, web udp/53, 203.0.113.80 icmp
     interfaces:
       - {id: eth0, ip: 10.10.10.21/24}
     routes:
@@ -134,7 +150,7 @@ devices:
     interfaces:
       - {id: ge0, ip: 10.0.1.2/30, mac: "02:00:00:01:00:00"}
       - {id: ge1, ip: 10.0.12.1/30, mac: "02:00:00:01:00:01"}
-      - {id: ge2, ip: 10.0.13.1/30, mac: "02:00:00:01:00:02"}
+      - {id: ge2, ip: 10.0.13.1/30, mac: "02:00:00:01:00:02", mtu: 1400}
     logical_interfaces:
       - {id: lo0, type: loopback, ip: 10.255.0.1/32}
   - id: r2
@@ -162,9 +178,10 @@ devices:
       bgp: {asn: 65001}
       pim: {mode: sparse}
     interfaces:
-      - {id: ge0, ip: 10.0.13.2/30}
+      - {id: ge0, ip: 10.0.13.2/30, mtu: 1400}
       - {id: ge1, ip: 10.0.23.2/30}
       - {id: ge2, ip: 10.30.0.1/24}
+      - {id: ge3, ip: 10.0.35.1/30}
     logical_interfaces:
       - {id: lo0, type: loopback, ip: 10.255.0.3/32}
   - id: carrier
@@ -178,6 +195,7 @@ devices:
     label: App server
     type: server
     group: siteb
+    simulation: {listening: tcp/443}
     interfaces:
       - {id: eth0, ip: 10.30.0.10/24}
     routes:
@@ -195,6 +213,44 @@ devices:
     type: switch
     group: siteb
     interfaces: [p1, p2, p3]
+  - id: fw1
+    label: DMZ firewall
+    type: firewall
+    group: dmz
+    router_id: 10.0.35.2
+    simulation: {default_action: reject, allow: tcp/443}
+    protocols:
+      ospf: {}
+    interfaces:
+      - {id: outside, ip: 10.0.35.2/30}
+      - {id: dmz, ip: 10.50.0.1/24}
+  - id: web
+    label: DMZ web server
+    type: server
+    group: dmz
+    simulation: {listening: tcp/443}
+    interfaces:
+      - {id: eth0, ip: 10.50.0.10/24}
+    routes:
+      - {prefix: 0.0.0.0/0, via: 10.50.0.1, name: default gateway}
+
+  # ---------------------------------------------------------------- lab: a loop without spanning tree
+  - id: lab-sw1
+    type: switch
+    group: lab
+    simulation: {stp_mode: "off"}
+    interfaces: [p1, p2, p3]
+  - id: lab-sw2
+    type: switch
+    group: lab
+    simulation: {stp_mode: "off"}
+    interfaces: [p1, p2]
+  - id: lab-h
+    label: Lab host
+    type: server
+    group: lab
+    interfaces:
+      - {id: eth0, ip: 10.60.0.10/24}
 
   # ---------------------------------------------------------------- branch
   - id: inet
@@ -257,6 +313,12 @@ links:
   - {id: l-r3-bsw, a: "r3:ge2", b: "b-sw:p1", medium: copper, speed: 10G}
   - {id: l-srv, a: "srv:eth0", b: "b-sw:p2", medium: copper, speed: 10G}
   - {id: l-rx, a: "rx:eth0", b: "b-sw:p3", medium: copper, speed: 1G}
+  - {id: l-r3-fw1, a: "r3:ge3", b: "fw1:outside", medium: copper, speed: 1G}
+  - {id: l-web, a: "fw1:dmz", b: "web:eth0", medium: copper, speed: 1G}
+  # the lab: two cables between two switches without spanning tree
+  - {id: l-lab-a, a: "lab-sw1:p1", b: "lab-sw2:p1", medium: copper, speed: 1G}
+  - {id: l-lab-b, a: "lab-sw1:p2", b: "lab-sw2:p2", medium: copper, speed: 1G}
+  - {id: l-lab-h, a: "lab-h:eth0", b: "lab-sw1:p3", medium: copper, speed: 1G}
   # the branch behind the internet
   - {id: l-r2-inet, a: "r2:wan", b: "inet:a", medium: fiber, speed: 1G}
   - {id: l-inet-br, a: "inet:b", b: "br:wan", medium: fiber, speed: 1G}
@@ -270,6 +332,8 @@ networks:
   - {id: net-siteb, label: Site B, cidr: 10.30.0.0/24}
   - {id: net-branch, label: Branch LAN, cidr: 10.40.0.0/24}
   - {id: net-wan, label: Internet transfer, cidr: 192.0.2.0/29}
+  - {id: net-dmz, label: DMZ, cidr: 10.50.0.0/24}
+  - {id: net-labloop, label: Lab loop, cidr: 10.60.0.0/24}
 
 relations:
   - {id: stp-campus, protocol: stp, label: RSTP, endpoints: [acc-sw, core1, core2]}
@@ -301,6 +365,7 @@ relations:
   - {id: pim-r2-r3, protocol: pim, endpoints: ["r2:ge2", "r3:ge1"], over: l-r2-r3}
   - {id: pim-br, protocol: pim, endpoints: ["r2:Tunnel1", "br:Tunnel1"], over: gre-br}
   - {id: igmp-rx, protocol: igmp, endpoints: ["rx:eth0", "r3:ge2"], over: net-siteb, attrs: {group: 239.1.1.1}}
+  - {id: ospf-r3-fw1, protocol: ospf, endpoints: ["r3:ge3", "fw1:outside"], over: l-r3-fw1, attrs: {area: 0, cost: 10}}
   - {id: telemetry-cam, protocol: telemetry, direction: unidirectional, endpoints: ["cam:eth0", "srv:eth0"]}
 
 demands:

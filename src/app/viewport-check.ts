@@ -279,15 +279,19 @@ export async function runViewportCheck(app: App, doc: Document): Promise<Check[]
       ctl.showTable('arp', 'hq-rtr1');
       ctl.showTable('mac', 'hq-acc1');
       await tick();
-      // with its parameters open (one layer expanded) and its network events
+      // the packet inspector of a frame on its way
+      const fl = ctl.sim.engine.flights.filter((f) => !!f.hdr).slice(-1)[0];
+      if (fl) ctl.inspectFlight(fl.id);
+      // with its parameters open (one layer expanded), its network events and Send test
       (q('#sim-params') as HTMLDetailsElement).open = true;
       (q('#sim-pw-l1-btn') as HTMLElement).click();
+      (q('#sim-test') as HTMLDetailsElement).open = true;
       ctl.sim.powerOff('hq-rtr2');
       ctl.refresh(true);
       await tick();
       checkWindow('Protocol simulation');
       const panels = Array.from(doc.querySelectorAll('.sim-table-panel')) as HTMLElement[];
-      if (panels.length !== 2) tws.push(`${panels.length} tables open instead of 2`);
+      if (panels.length !== 3) tws.push(`${panels.length} panels open instead of 3 (two tables, the packet inspector)`);
       for (const p of panels) {
         const r = p.getBoundingClientRect();
         const name = (p.querySelector('.st-title') as HTMLElement).textContent;
@@ -299,7 +303,7 @@ export async function runViewportCheck(app: App, doc: Document): Promise<Check[]
       app.exitSimulation();
       await tick();
       if (doc.querySelector('.sim-table-panel')) tws.push('the tables stay open after Exit simulation');
-      state('the protocol simulation’s window and two ARP / MAC tables fit the browser window (the window docked when narrow); the page does not scroll', tws.concat(problems()));
+      state('the protocol simulation’s window (Send test open), two ARP / MAC tables and the packet inspector fit the browser window (the window docked when narrow); the page does not scroll', tws.concat(problems()));
       app.select(null);
       await tick();
     }

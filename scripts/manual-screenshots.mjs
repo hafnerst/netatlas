@@ -284,6 +284,18 @@ async function main() {
       await page.eval(`netatlas.simController().runTo(25000), netatlas.simController().showTable('arp', 'core1', { x: 380, y: 120, w: 10, h: 10 }), true`);
       await page.settle(200);
       await save('arp-table', around([await page.rect('.sim-table-panel')], 6), { quality: 55 });
+      // the packet inspector for a TCP SYN of pc1's test traffic
+      await page.eval(`(() => { const c = netatlas.simController(); c.tables.closeAll(); for (let i = 0; i < 400; i++) { const f = c.sim.engine.flights.find((x) => x.hdr && /^TCP SYN → /.test(x.label) && x.t0 <= c.t && c.t <= x.t1); if (f) { c.refresh(true); return c.inspectFlight(f.id, { x: 380, y: 120, w: 10, h: 10 }); } c.sim.advance(c.t + 5000, (x) => /^TCP SYN → /.test(x.label)); } return false; })()`);
+      await page.settle(200);
+      await save('packet-inspector', around([await page.rect('.sim-table-panel[data-table="packet"]')], 6), { quality: 55 });
+      // the lab host's broadcast domain, highlighted
+      await page.eval(`netatlas.simController().tables.closeAll(), netatlas.closeToolWindow(), netatlas.select('device:lab-sw2', true), netatlas.select(null), netatlas.zoomBy(1.25), netatlas.simController().highlightDomain({ dev: 'lab-h', iface: 'eth0' }), document.getElementById('toast').hidden = true, true`);
+      await page.settle(250);
+      const lab = [];
+      for (const d of ['lab-sw1', 'lab-sw2', 'lab-h']) lab.push(await page.rect(`#canvas .node[data-ref="device:${d}"]`));
+      await save('bc-domain', around(lab, 70), { quality: 55 });
+      await page.eval(`netatlas.simController().clearDomain(), netatlas.openSimWindow(), true`);
+      await page.settle(100);
       // core1's Simulation section in the Edit tab, editable while the simulation runs
       await page.eval(`netatlas.simController().tables.closeAll(), netatlas.closeToolWindow(), netatlas.select('device:core1'), netatlas.showTab('edit'), true`);
       await page.settle(200);

@@ -14,6 +14,11 @@
  * Reduced motion and exports: no moving dots, a static arrow with its
  * label for every message in flight at that moment. A message lost to a
  * failure is marked ✕ where it was lost, for a moment.
+ *
+ * A dot's shape says how its frame is addressed: a circle unicast, a
+ * square broadcast, a diamond multicast (an arrow's tail the same). A dot
+ * can be clicked: the packet inspector shows its frame layer by layer
+ * (the event log's messages offer the same from the keyboard).
  */
 import { textWidth } from '../layout/geometry';
 import { Flight, Track } from '../analysis/sim/types';
@@ -192,16 +197,13 @@ export class SimAnimator {
       placed.add(box);
       drawn++;
       const color = opts.color(f.protocol);
+      const cast = f.cast || 'unicast';
       if (lost) dots.appendChild(lostMark(this.doc, p.x, p.y));
-      else if (arrows) dots.appendChild(arrow(this.doc, p, color));
       else {
-        const c = this.doc.createElementNS(SVG, 'circle');
-        c.setAttribute('class', 'sim-dot');
-        c.setAttribute('cx', p.x.toFixed(1));
-        c.setAttribute('cy', p.y.toFixed(1));
-        c.setAttribute('r', '4');
-        c.setAttribute('fill', color);
-        dots.appendChild(c);
+        const shape = arrows ? arrow(this.doc, p, color, cast) : dot(this.doc, p.x, p.y, color, cast);
+        shape.setAttribute('data-flight', String(f.id));
+        shape.setAttribute('data-cast', cast);
+        dots.appendChild(shape);
       }
       labels.appendChild(label(this.doc, text, box, lost, color));
     }
@@ -228,7 +230,27 @@ function label(doc: Document, text: string, b: Box, lost: boolean, color: string
   return g;
 }
 
-function arrow(doc: Document, p: { x: number; y: number; ux: number; uy: number }, color: string): SVGPathElement {
+/** A dot: a circle (unicast), a square (broadcast) or a diamond (multicast). */
+export function dot(doc: Document, x: number, y: number, color: string, cast: string): SVGElement {
+  if (cast === 'unicast') {
+    const c = doc.createElementNS(SVG, 'circle');
+    c.setAttribute('class', 'sim-dot');
+    c.setAttribute('cx', x.toFixed(1));
+    c.setAttribute('cy', y.toFixed(1));
+    c.setAttribute('r', '4');
+    c.setAttribute('fill', color);
+    return c;
+  }
+  const s = cast === 'broadcast' ? 4 : 5.5;
+  const d = cast === 'broadcast' ? `M${(x - s).toFixed(1)} ${(y - s).toFixed(1)}h${2 * s}v${2 * s}h${-2 * s}Z` : `M${x.toFixed(1)} ${(y - s).toFixed(1)}l${s} ${s}l${-s} ${s}l${-s} ${-s}Z`;
+  const p = doc.createElementNS(SVG, 'path');
+  p.setAttribute('class', 'sim-dot');
+  p.setAttribute('d', d);
+  p.setAttribute('fill', color);
+  return p;
+}
+
+function arrow(doc: Document, p: { x: number; y: number; ux: number; uy: number }, color: string, cast: string): SVGElement {
   const L = 9;
   const W = 4.5;
   const tip = { x: p.x + (p.ux * L) / 2, y: p.y + (p.uy * L) / 2 };
@@ -238,7 +260,15 @@ function arrow(doc: Document, p: { x: number; y: number; ux: number; uy: number 
   a.setAttribute('class', 'sim-arrow');
   a.setAttribute('fill', color);
   a.setAttribute('d', `M${tip.x.toFixed(1)} ${tip.y.toFixed(1)}L${(bx - p.uy * W).toFixed(1)} ${(by + p.ux * W).toFixed(1)}L${(bx + p.uy * W).toFixed(1)} ${(by - p.ux * W).toFixed(1)}Z`);
-  return a;
+  if (cast === 'unicast') return a;
+  // a broadcast's or multicast's arrow carries its dot's shape at its tail
+  const g = doc.createElementNS(SVG, 'g');
+  g.setAttribute('class', 'sim-arrow-cast');
+  g.appendChild(a);
+  const tail = dot(doc, bx - p.ux * 3, by - p.uy * 3, color, cast);
+  tail.setAttribute('class', 'sim-arrow-tail');
+  g.appendChild(tail);
+  return g;
 }
 
 function lostMark(doc: Document, x: number, y: number): SVGGElement {

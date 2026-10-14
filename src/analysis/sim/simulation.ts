@@ -8,12 +8,15 @@
 import { SIM_GROUPS, SimGroup, simProfile } from '../../model/sim-profiles';
 import { Model } from '../../model/types';
 import { failableRef } from '../failure';
-import { Engine, EngineOptions } from './engine';
+import { formatAddr } from '../ipmath';
+import { Engine, EngineOptions, subnetBroadcast } from './engine';
 import { OTHER_BEHAVIOURS, installBootGarp, installCustomL2, installDemands, installFhrp, installL2Adverts, installLacp, installPimRegister } from './proto-other';
 import { ROUTING_BEHAVIOURS } from './proto-routing';
 import { ProtocolSim, relationProfile } from './protocols';
-import { ParamChange, ParamValue, SimParams } from './params';
-import { ArpRow, Flight, MacRow, NetEvent, SessionStatus, SimEvent, TableTimer } from './types';
+import { ParamChange, ParamValue, Resolved, SimParams } from './params';
+import { Test, TestKind, Transport } from './transport';
+import { ArpRow, ConnRow, Flight, MacRow, NetEvent, SessionRow, SessionStatus, SimEvent, TableTimer } from './types';
+
 
 /** A protocol of the simulation as the window lists it (a checkbox). */
 export interface SimProtocolEntry {
@@ -25,6 +28,7 @@ export interface SimProtocolEntry {
 export class Simulation {
   readonly engine: Engine;
   readonly protocols: ProtocolSim;
+  readonly transport: Transport;
   readonly model: Model;
 
   constructor(model: Model, opts: EngineOptions = {}) {
@@ -38,6 +42,8 @@ export class Simulation {
     installDemands(this.protocols);
     installPimRegister(this.protocols);
     installCustomL2(this.protocols);
+    this.transport = new Transport(this.protocols);
+    this.transport.install();
     this.protocols.start();
   }
 
@@ -230,6 +236,63 @@ export class Simulation {
     return protocolEntriesOf(this.model);
   }
 
+  // ------------------------------------------------------------ Layer 4: tests, connections, firewall sessions
+
+  /**
+   * Send test…: one ICMP echo, TCP connection or UDP request from a device
+   * to a device ("web1", "web1:eth0"), an address, a subnet broadcast,
+   * 255.255.255.255 or a multicast group; a text when it cannot be sent.
+   */
+  sendTest(o: { from: string; to: string; kind: TestKind; port?: number; size?: number; df?: boolean; keep?: boolean }): Test | string {
+    const r = this.transport.resolveTarget(o.from, { to: o.to.trim() }, o.kind);
+    if (typeof r === 'string') return r;
+    return this.transport.run({ from: o.from, target: o.to.trim(), dst: r.dst, kind: o.kind, port: o.kind === 'icmp' ? 0 : o.port, size: o.size, df: o.df, keep: o.keep, source: 'manual' });
+  }
+
+  /** The latest Send test… results, newest first. */
+  tests(): Test[] {
+    return this.transport.manualTests();
+  }
+
+  /** A device's connections and open ports (TCP, UDP, ICMP tests waiting). */
+  connTable(dev: string): ConnRow[] {
+    return this.transport.connRows(dev);
+  }
+
+  /** A firewall's session table, and the timers in effect. */
+  sessionTable(dev: string): SessionRow[] {
+    return this.transport.sessionRows(dev);
+  }
+
+  sessionTimers(dev: string): Resolved[] {
+    return this.transport.sessionTimers(dev);
+  }
+
+  /** The subnet broadcast addresses of a device's interfaces (Send test… offers them). */
+  broadcastTargets(dev: string): string[] {
+    const sd = this.engine.net.devices.get(dev);
+    if (!sd) return [];
+    const out: string[] = [];
+    for (const l of Array.from(sd.l3.values()).sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))) {
+      for (const a of l.addrs) {
+        if (a.addr.version !== 4 || a.net.prefix > 30) continue;
+        const b = formatAddr(subnetBroadcast(a));
+        if (out.indexOf(b) < 0) out.push(b);
+      }
+    }
+    if (out.length) out.push('255.255.255.255');
+    return out;
+  }
+
+  /** What a broadcast reaches from a device's interface, or in a cable's VLAN (Highlight broadcast domain). */
+  broadcastDomain(from: { dev: string; iface: string } | { link: string; vlan: number }): { vlan: number; refs: string[]; devices: string[]; links: string[] } {
+    return this.engine.broadcastDomain(from);
+  }
+
+  /** The VLANs with a broadcast storm going on. */
+  storms(): Array<{ vlan: number; since: number; links: string[] }> {
+    return Array.from(this.engine.storms).map(([vlan, s]) => ({ vlan, since: s.since, links: s.links })).sort((a, b) => a.vlan - b.vlan);
+  }
 }
 
 /** The protocols this model's simulation runs, grouped (Layer 2 first), for the window's checkboxes. */
@@ -253,6 +316,10 @@ export function protocolEntriesOf(model: Model): SimProtocolEntry[] {
     }
   }
   if (model.demands.length) add('demand', 'Demands (data)', 'Traffic');
+  // Layer 3 and 4: ICMP (echo, errors), TCP and UDP (tests, health checks, probes)
+  add('icmp', 'ICMP / ICMPv6', 'Traffic');
+  add('tcp', 'TCP (tests)', 'Traffic');
+  add('udp', 'UDP (tests)', 'Traffic');
   const order = (g: SimProtocolEntry['group']): number => (g === 'Traffic' ? SIM_GROUPS.length : SIM_GROUPS.indexOf(g as SimGroup));
   return Array.from(seen.values()).sort((a, b) => order(a.group) - order(b.group) || (a.label < b.label ? -1 : a.label > b.label ? 1 : 0));
 }

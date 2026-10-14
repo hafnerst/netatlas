@@ -93,11 +93,78 @@ there is no conversion of files written for the earlier drafts.
 - **`simulation:` on a link**: the cable's `latency`, `loss` and
   `flapping: true`, configured on the object and so first in the order of
   precedence.
+- **More simulation attributes on devices** (Layers 3 and 4, broadcast):
+  `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_errors`,
+  `icmp_rate_limit`, `tcp_syn_retries`, `tcp_keepalive`,
+  `closed_port_reply` (devices with an address); `directed_broadcast`
+  (routers); `storm_control_broadcast`, `storm_control_multicast` and
+  `stp_mode: off` (switches); `default_action`, `allow`, `stateful`,
+  `tcp_session_timeout`, `tcp_handshake_timeout`, `udp_session_timeout`,
+  `icmp_session_timeout` (firewalls); `listening` (servers, VMs,
+  containers, storage, load balancers, proxies); `health_check_interval`,
+  `health_check_timeout`, `health_check_threshold`, `persistence_timeout`,
+  `algorithm` (load balancers); `client_timeout`, `upstream_timeout`
+  (proxies); `test_traffic`, `test_targets`, `test_interval`, `test_type`,
+  `app_timeout` (endpoints); `icmp_probe_interval` (monitoring systems);
+  `beacon_interval`, `client_idle_timeout` (access points). A list
+  (`allow`, `listening`, `test_targets`) is one text or a YAML list; on /
+  off may be written `true` / `false`.
 - Built-in protocols **`stp`** (aliases `rstp`, `mstp`), **`lldp`**, **`cdp`**
   and **`igmp`** (alias `mld`).
 
 ### Added
 
+- **Layers 3 and 4 in the simulation.** ICMP and ICMPv6 errors from where a
+  packet stops (net and host unreachable, TTL exceeded, fragmentation
+  needed / packet too big, port unreachable, administratively prohibited,
+  reassembly time exceeded), quoting the packet's header, never about a
+  broadcast or multicast packet or another error, rate-limited per device,
+  none from a blackhole route; MTU per interface (`mtu`, else the default
+  MTU) with IPv4 fragmentation and reassembly, and path MTU discovery. TCP
+  (handshake, SYN retransmissions with exponential backoff and the
+  connection timeout, RST from closed ports, data in segments that fit the
+  path MTU, FIN and TIME_WAIT, keepalive) and UDP (answers, port
+  unreachable); BGP's TCP connection retransmits its SYN the same way.
+  Listening ports per device (its attribute, else the ports of the
+  relations it serves). Firewalls apply their policy (the model's
+  relations, an allow list, a stateful session table with timeouts; drop or
+  reject). Load balancers (health checks, round robin / least connections /
+  source hash, persistence) and proxies (upstream connect timeout, client
+  timeout) relay TCP; monitoring systems ping the devices they poll by SNMP.
+- **Layer 4 parameters** (Layer 4 – Transport (8)): TCP SYN retries, the
+  initial retransmission timeout, the keepalive time, reply to closed
+  ports, endpoint test traffic with its interval and type, the application
+  response timeout; Layer 2 gets the default MTU, Layer 3 *Send ICMP
+  errors*; the spanning tree mode can be off.
+- **Test traffic and Send test…:** endpoints ping their gateway and test the
+  servers of their service relations (or their own targets) every
+  interval when test traffic is on; Send test… (a device's menu, the
+  window) runs one ICMP echo, TCP connection or UDP request from any device
+  to a device, interface, address, subnet broadcast, 255.255.255.255 or a
+  group, with the data size, DF and keeping a TCP connection open. Results
+  in the window, the status table and the event log.
+- **The packet inspector:** a dot, or a message of the event log (also by
+  keyboard), shows its frame layer by layer: MACs and what they are, the
+  VLAN tag, the IP headers (TTL, DF, protocol, length, fragment), ports and
+  TCP flags, ICMP type and code with the quoted header, the payload.
+  Every message, a relation's too, carries its transport header.
+- **Broadcast:** limited broadcasts stay in their subnet; directed
+  broadcasts only where a router forwards them; broadcast pings answered
+  only where that is on. **Highlight broadcast domain** on a device or a
+  cable marks what a broadcast reaches. A loop of switches without
+  spanning tree storms (warned in the banner and the window, MAC addresses
+  moving); storm control drops the looping frames.
+- **Dots by cast:** a circle for unicast, a square for broadcast, a
+  diamond for multicast (explained in the window). The event log filters
+  by layer and by cast; ARP and NDP messages have log lines of their own.
+- **Show connections** (a device's open ports and connections with their
+  states and timers) and **Show sessions** (a firewall's session table).
+- **Wireless clients** are disassociated after their access point's
+  client idle timeout and wait for the next beacon to come back.
+- The example `protocol-simulation.yaml` shows them: pc1's test traffic
+  (an open and a closed port of srv, the DMZ server behind a firewall that
+  rejects, an address without a route), a path with a smaller MTU, and a
+  lab loop without spanning tree that storms.
 - **Simulation parameters for Layers 1–3.** Start simulation… opens a
   dialog with one collapsible section per layer (Layer 1 – Physical (8),
   Layer 2 – Data link (6), Layer 3 – Network (6)): latency, packet loss,
@@ -474,6 +541,9 @@ there is no conversion of files written for the earlier drafts.
 
 ### Changed
 
+- **ARP Requests are labelled by their cast:** *ARP Request (broadcast):
+  who has 10.0.0.2?* (a refresh: *(unicast)*); the full *Who has … Tell …*
+  is in the event log.
 - **The simulation's timing is real:** a message takes its latency and
   serialization time instead of a fixed 0.3 s per cable; the playback slows
   down while a message is on its way so that it can still be followed, and

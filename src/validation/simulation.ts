@@ -39,6 +39,12 @@ export function typeAllows(a: Applies, type: string, layer3?: boolean): boolean 
       return type === 'cloud';
     case 'ap':
       return type === 'ap';
+    case 'endpoint':
+      return type === 'endpoint';
+    case 'lb':
+      return type === 'load_balancer';
+    case 'proxy':
+      return type === 'proxy';
   }
   return false;
 }
@@ -71,11 +77,13 @@ export function readDeviceSimulation(r: Reader, c: Ctx, n: YNode | undefined, pa
       c.error(m, `${path}.${k}`, `"${k}" (${def.label.toLowerCase()}) does not apply to "${id}", ${what}`, { key: k, line: e.keyLine });
       return;
     }
-    if (node.kind !== 'scalar' || isNull(node)) {
+    // a list may be written as a YAML sequence of scalars as well
+    const seq = def.kind === 'list' && node.kind === 'seq' && node.items.every((x) => x.kind === 'scalar' && !isNull(x));
+    if (!seq && (node.kind !== 'scalar' || isNull(node))) {
       c.error(node, `${path}.${k}`, `expected a single value but found ${kindOf(node)}`);
       return;
     }
-    const p = parseValue(def, scalarValue(node));
+    const p = parseValue(def, seq && node.kind === 'seq' ? node.items.map((x) => scalarValue(x)) : scalarValue(node));
     if ('error' in p) {
       c.error(node, `${path}.${k}`, `${def.label} ${p.error}${def.kind === 'duration' ? ` (a bare number is in ${def.base === 'ms' ? 'milliseconds' : 'seconds'})` : ''}`);
       return;

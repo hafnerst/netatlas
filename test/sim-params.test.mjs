@@ -48,16 +48,21 @@ demands:
 
 // ------------------------------------------------------------------ the registry
 
-test('the parameters: four layers (Layer 4 comes with the transport simulation), at most 8 rows each; every one with a default in its range, a unit, a short help and a source', () => {
-  assert.deepEqual(Pm.paramLayers(), [1, 2, 3]);
+test('the parameters: four layers, at most 8 rows each; every one with a default in its range, a unit, a short help and a source', () => {
+  assert.deepEqual(Pm.paramLayers(), [1, 2, 3, 4]);
   const rows = Pm.paramLayers().map((l) => Pm.layerRows(l).length);
-  assert.deepEqual(rows, [8, 6, 6]);
+  assert.deepEqual(rows, [8, 7, 7, 8]);
   assert.ok(rows.every((n) => n <= 8));
   // BFD interval and multiplier share a row
   assert.deepEqual(Pm.layerRows(3).find((r) => r[0].key === 'bfd-interval').map((d) => d.key), ['bfd-interval', 'bfd-multiplier']);
   for (const p of Pm.PARAMS) {
     assert.ok(p.source && p.help && p.label, p.key);
     assert.ok(p.help.length <= 85, `${p.key}: help is short (${p.help.length})`);
+    if (p.kind === 'list') {
+      // a list's default is empty: what that means is its own (its relations' ports, nothing more …)
+      assert.ok(p.dflt === '' && p.zero && p.list, p.key);
+      continue;
+    }
     if (p.kind !== 'enum') assert.ok(Number(p.dflt) >= p.min && Number(p.dflt) <= p.max, `${p.key}: default in range`);
     else assert.ok(p.options.some((o) => o.value === p.dflt), p.key);
     assert.ok('value' in Pm.parseValue(p, Pm.fieldText(p, p.dflt)), `${p.key}: its default as a field reads back`);
@@ -68,6 +73,10 @@ test('the parameters: four layers (Layer 4 comes with the transport simulation),
   assert.deepEqual(['link-latency', 'loss', 'los-detect', 'link-up-delay', 'default-speed', 'flap-down', 'flap-up', 'flap-cycles'].map(d), ['100 µs', '0 %', '0 s', '2 s', '1 Gbit/s', '5 s', '10 s', '3']);
   assert.deepEqual(['arp-timeout', 'arp-retransmit', 'arp-retries', 'ndp-reachable', 'mac-aging', 'stp-mode'].map(d), ['4 h', '1 s', '3', '30 s', '5 min', 'RSTP']);
   assert.deepEqual(['ttl', 'ospf-hello', 'bgp-keepalive', 'bfd-interval', 'bfd-multiplier', 'vrrp-advert', 'spf-delay'].map(d), ['64', '10 s', '1 min', '300 ms', '3', '1 s', '200 ms']);
+  assert.deepEqual(['mtu', 'icmp-errors'].map(d), ['1500', 'On']);
+  assert.deepEqual(['tcp-syn-retries', 'tcp-rto', 'tcp-keepalive', 'closed-port', 'test-traffic', 'test-interval', 'test-type', 'app-timeout'].map(d), ['6', '1 s', '2 h', 'On', 'Off', '5 s', 'ICMP echo', '5 s']);
+  assert.match(Pm.paramDef('tcp-rto').source, /RFC 6298/);
+  assert.match(Pm.paramDef('mtu').source, /RFC 894/);
   assert.match(Pm.paramDef('arp-timeout').source, /Cisco IOS/);
   assert.match(Pm.paramDef('ospf-hello').source, /RFC 2328/);
   assert.match(Pm.paramDef('mac-aging').source, /802\.1D/);
@@ -461,7 +470,7 @@ demands:
 });
 
 test('the TTL a device sends with is its default TTL; ECMP spreads over at most the maximum paths', () => {
-  const s = sim(pe.replace('  - id: srv\n    label: App server\n    type: server', '  - id: srv\n    label: App server\n    type: server\n    simulation: {ttl: 128}'));
+  const s = sim(pe.replace('    simulation: {listening: tcp/443}\n    interfaces:\n      - {id: eth0, ip: 10.30.0.10/24}', '    simulation: {listening: tcp/443, ttl: 128}\n    interfaces:\n      - {id: eth0, ip: 10.30.0.10/24}'));
   s.runTo(10000);
   const pkt = s.engine.newPacket(s.engine.net.devices.get('srv').l3.get('eth0').addrs[0].addr, s.engine.net.devices.get('r3').l3.get('ge2').addrs[0].addr, '', { protocol: 'demand', type: 'x', label: 'x', detail: 'x' });
   s.engine.send('srv', pkt);
