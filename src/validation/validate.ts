@@ -45,6 +45,7 @@ import { COLOR_RE, DEFAULT_STYLE, builtinProtocols, lookupProtocol, normalizePro
 import { YMap, YNode, YSeq, YamlError, YamlLimits, parseYaml } from '../yaml/parse';
 import { FORMAT_VERSION, SCHEMA } from '../yaml/schema';
 import { readDemands } from './demands';
+import { readDeviceSimulation, readLinkSimulation } from './simulation';
 import { Ctx, DEFAULT_MODEL_LIMITS, ID_RE, IFACE_RE, Issue, ModelLimits, Reader, TooManyErrors, get, isNull, kindOf, scalarText, suggest } from './reader';
 
 export { DEFAULT_MODEL_LIMITS, ID_RE, IFACE_RE, scalarText, suggest };
@@ -331,8 +332,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
       label: r.field(m, 'label', dpath, L.maxLabel) || id,
       type: dtype,
       layer3: dtype === 'switch' && layer3 === true ? true : undefined,
-      arpTimeout: r.int(get(m, 'arp_timeout'), dpath + '.arp_timeout', 1, MAX_ARP_TIMEOUT, 'ARP timeout (s)'),
-      ndpReachableTime: r.int(get(m, 'ndp_reachable_time'), dpath + '.ndp_reachable_time', 1, MAX_NDP_REACHABLE, 'NDP reachable time (s)'),
+      simulation: readDeviceSimulation(r, c, get(m, 'simulation'), dpath + '.simulation', id, dtype, dtype === 'switch' && layer3 === true),
       group: group !== undefined && groupMap.has(group) ? group : undefined,
       tier,
       description: r.field(m, 'description', dpath, L.maxDescription),
@@ -482,8 +482,6 @@ function build(root: YNode | null, c: Ctx): Model | null {
         vrf: r.field(im, 'vrf', ipath, 100),
         mac: r.field(im, 'mac', ipath, 40),
         mtu: r.int(get(im, 'mtu'), ipath + '.mtu', 68, 65535, 'MTU'),
-        arpTimeout: r.int(get(im, 'arp_timeout'), ipath + '.arp_timeout', 1, MAX_ARP_TIMEOUT, 'ARP timeout (s)'),
-        ndpReachableTime: r.int(get(im, 'ndp_reachable_time'), ipath + '.ndp_reachable_time', 1, MAX_NDP_REACHABLE, 'NDP reachable time (s)'),
         members: [],
         services: [],
         description: r.field(im, 'description', ipath, L.maxDescription),
@@ -757,6 +755,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
       label: r.field(m, 'label', lpath, L.maxLabel),
       cable: r.field(m, 'cable', lpath, L.maxLabel),
       direction: directionField(r, c, m, lpath, 'from end a to end b'),
+      simulation: readLinkSimulation(r, c, get(m, 'simulation'), lpath + '.simulation'),
       description: r.field(m, 'description', lpath, L.maxDescription),
       attrs: r.attrs(get(m, 'attrs'), lpath + '.attrs'),
       line: m.line,
@@ -1448,10 +1447,6 @@ function layer2SwitchRules(c: Ctx, m: YMap, dpath: string, dev: Device): void {
 /** The protocols (base ids) whose relations need a Layer 3 device at every end (besides tunnels and overlays). */
 const LAYER3_PROTOCOLS = ['bgp', 'ospf', 'isis', 'eigrp', 'rip', 'ldp', 'pim', 'bfd', 'vrrp', 'hsrp', 'glbp', 'carp'];
 
-/** The largest ARP timeout (s) the format takes (2147483 s, as Cisco IOS). */
-const MAX_ARP_TIMEOUT = 2147483;
-/** The largest NDP reachable time (s): RFC 4861 MAX_REACHABLE_TIME is one hour. */
-const MAX_NDP_REACHABLE = 3600;
 const BUILTIN_SERVICE_IDS = BUILTIN_SERVICES.map((s) => s.id);
 
 /**

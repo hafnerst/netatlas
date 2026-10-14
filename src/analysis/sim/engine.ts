@@ -4,16 +4,28 @@
  * same model and the same actions give the same timeline; the only
  * randomness is a jitter from a fixed seed). It never changes the model.
  *
- * Layer 2. Frames cross a cable in HOP ms, spaced at least GAP ms apart per
- * direction (a frame waits at most MAX_WAIT for its turn).
- * Bridges learn the source MAC per port and VLAN, flood broadcast,
+ * Layer 1. A frame takes the cable's latency (propagation) plus its
+ * serialization time (its size at the cable's speed); frames on one cable
+ * and direction go one after the other. A share of frames is lost where
+ * the packet loss says (from a fixed seed). A cable is up while nothing
+ * takes it down: a failure, flapping, a shut port, a device powered off.
+ * When it goes dark its ports report it after the loss-of-signal
+ * detection time (frames are lost meanwhile); when it comes back, after
+ * the link-up delay (autonegotiation; a wireless link: its access point's
+ * association time). The parameters come from params.ts in its order of
+ * precedence; a change applies from the next frame, timer or check on.
+ *
+ * Layer 2. Bridges learn the source MAC per port and VLAN, flood broadcast,
  * multicast and unknown unicast within the VLAN to every other port that
  * carries it, and send known unicast to the learned port only; the link
  * ends' tagging decides what a port carries and whether a frame leaves it
  * tagged (net.ts). A frame never leaves its VLAN on a bridge. Layer-2
  * loops are broken by a spanning tree per VLAN (net.ts spanningTree),
  * whether or not the model runs STP; topology changes flush the MAC tables
- * of the VLANs whose tree changed. A frame's way through the bridges is
+ * of the VLANs whose tree changed, and a port that starts forwarding waits
+ * for its switch's spanning-tree convergence (RSTP: at once at the
+ * failure, 3 hellos further away; STP: 2 × forward delay, max age +
+ * 2 × forward delay further away). A frame's way through the bridges is
  * decided when it is sent (with the MAC tables of that moment).
  *
  * Layer 3. A device sends a unicast IP packet to its next hop (the routing
@@ -23,7 +35,9 @@
  * ARP Request or Neighbor Solicitation, then the packet waits; the reply
  * fills the table and releases it. A router decrements the TTL (hop limit)
  * and rewrites the source and destination MAC per hop, and says so in the
- * event log. Multicast (OSPF, VRRP …) goes to the group's multicast MAC
+ * event log. A router uses the routes of its last recomputation: after a
+ * change, its route recomputation delay (SPF and FIB) passes first.
+ * Multicast (OSPF, VRRP …) goes to the group's multicast MAC
  * without resolution. A route out of a tunnel interface encapsulates the
  * packet (GRE, then ESP when the tunnel is carried over IPsec) towards the
  * tunnel's destination.
@@ -34,29 +48,32 @@
  * reachable time, MAC ageing) come from the model or the defaults
  * (model/sim-profiles.ts) and run faster by the timer scale.
  *
- * Failures. One cable or relation at a time. The ports at a failed cable
- * go down (their ARP and neighbour entries, and the MAC entries learned on
- * them, are removed); frames on it, and frames that would still cross it,
- * are dropped where they are. Everything else reacts as its timers say.
+ * Network events, several at once: failed cables and relations, flapping
+ * cables, shut interfaces, devices powered off (and booting again). The
+ * ports at a cable that went down go down once they notice (their ARP and
+ * neighbour entries, and the MAC entries learned on them, are removed);
+ * frames on it, and frames that would still cross it, are dropped where
+ * they are. A device powered off loses its tables and sessions; powered on,
+ * it boots for its boot time and starts afresh. Everything else reacts as
+ * its timers say.
  */
 import { IpAddr, parseAddress } from '../../model/ip';
 import { protocolBase } from '../../model/protocols';
-import { ARP_TIMEOUT_DEFAULT, MAC_AGING_DEFAULT, ND_DELAY_DEFAULT, ND_RETRANS_DEFAULT, ND_RETRIES_DEFAULT, NDP_REACHABLE_DEFAULT } from '../../model/sim-profiles';
-import { Link, Model, Relation } from '../../model/types';
+import { ND_DELAY_DEFAULT } from '../../model/sim-profiles';
+import { Link, Model, Relation, relationDevices } from '../../model/types';
 import { compareAddr, formatAddr } from '../ipmath';
 import { RoutingCtx, lookup } from '../routing';
 import { declaredUnderlay, encapStack, tunnelRelation, tracePath } from '../trace';
 import { BROADCAST, isGroupMac, isMulticastIp, multicastMac, rng, solicitedNode, modelSeed, shortMac } from './mac';
 import { BridgePort, CableEnd, L3Iface, SimDevice, SimNet, buildNet, carries, ingressVlan, otherEnd, portKey, spanningTree } from './net';
-import { ArpRow, ArpType, Flight, MacRow, Msg, NdState, Pkt, SimEvent, TableTimer, Track } from './types';
+import { ParamChange, ParamValue, Resolved, SimParams, changeText, durationText, formatValue, resolvedText, sourceText } from './params';
+import { ArpRow, ArpType, Flight, MacRow, Msg, NdState, NetEvent, Pkt, SimEvent, TableTimer, Track } from './types';
+import { parseSpeed } from '../../model/speed';
 
-/** How long a frame takes over a cable (simulated ms): slow enough to follow on screen. */
-export const HOP = 300;
-/** The spacing of frames on one cable and direction, and the longest a frame waits for its turn (ms). */
-export const GAP = 75;
-const MAX_WAIT = 300;
-/** Times are kept this long after they end (for the animation and the export). */
+/** Flights are kept this long after they end (for the animation and the export). */
 const FLIGHT_KEEP = 4000;
+/** A message's payload in bytes when its protocol says nothing (for the serialization time). */
+const PAYLOAD = 80;
 /** The event log keeps the last this many events. */
 export const LOG_MAX = 20000;
 const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
@@ -112,6 +129,12 @@ export interface Protocols {
   tunnelUp(dev: string, iface: string): boolean;
   /** is a relation's own state up (a session over it) */
   sessionUp?(relation: string): boolean;
+  /** a device was powered off: its sessions, groups and timers stop */
+  deviceDown?(dev: string): void;
+  /** a device finished booting: its sessions start afresh */
+  deviceUp?(dev: string): void;
+  /** parameters changed: periodic timers are rescheduled */
+  paramsChanged?(changes: ParamChange[]): void;
 }
 
 interface QItem {
@@ -136,6 +159,8 @@ interface ArpEntry {
   used: boolean;
   /** packets waiting for the address */
   queue: Array<{ pkt: Pkt; send: (mac: string) => void }>;
+  /** when the last request went out */
+  sentAt: number;
 }
 
 interface MacEntry {
@@ -160,6 +185,19 @@ interface Delivery {
 export interface EngineOptions {
   /** the ARP / NDP / MAC table timers run this many times faster (1 = real time) */
   timerScale?: number;
+  /** the simulation-wide parameters (Start simulation…); the devices' own come from the model */
+  params?: { [key: string]: ParamValue };
+}
+
+/** A cable flapping: down for the flapping down time, up for the up time, so many cycles (0: until stopped). */
+interface Flap {
+  link: string;
+  /** what was flapped: the cable, or a port of it */
+  ref: string;
+  since: number;
+  down: boolean;
+  done: number;
+  token: number;
 }
 
 export class Engine {
@@ -181,24 +219,56 @@ export class Engine {
   private pktSeq = 0;
   private cableFree = new Map<string, number>();
   private pending: Delivery[] = [];
-  /** the failed cable or relation ("link:x" / "relation:x"), null: none */
-  failed: string | null = null;
-  /** when it failed */
-  failedAt = 0;
-  private stp = new Map<number, { root: string; blocked: Set<string> }>();
+  /** the parameters in effect (params.ts): simulation-wide, and each device's own */
+  readonly params: SimParams;
+  /** the loss of frames: its own seeded sequence (the start-up jitter stays the same whatever the loss) */
+  private lossRandom: () => number;
+  /** failed cables and relations, by id, with when they failed */
+  readonly failedLinks = new Map<string, number>();
+  readonly failedRels = new Map<string, number>();
+  readonly flaps = new Map<string, Flap>();
+  /** shut physical ports ("dev|port") and shut layer-3 interfaces ("dev:iface"), with when */
+  readonly shutPorts = new Map<string, number>();
+  readonly shutL3 = new Map<string, number>();
+  /** devices powered off (or still booting), with when; booting: when they are up */
+  readonly off = new Map<string, number>();
+  readonly booting = new Map<string, number>();
+  /** inline appliances that failed open: they pass frames, nothing else */
+  readonly bypass = new Set<string>();
+  /** the cables' state: up, down, or negotiating (coming back); missing: up */
+  private cable = new Map<string, 'up' | 'down' | 'negotiating'>();
+  /** the ports' carrier as their device sees it ("dev|port"); missing: up */
+  private carrier = new Map<string, boolean>();
+  /** a pending loss-of-signal detection or link-up per port / cable (its token) */
+  private carrierToken = new Map<string, number>();
+  private tokens = 0;
+  /** ports that start forwarding in a VLAN once their spanning tree converged ("dev|bp|vlan" → time) */
+  private fwdAt = new Map<string, number>();
+  /** bumped whenever what the diagram marks changes (an event, a cable going down or up) */
+  stateVersion = 0;
+  private stp = new Map<number, { root: string; blocked: Set<string>; ports: Set<string> }>();
   private arp = new Map<string, Map<string, ArpEntry>>();
   private macs = new Map<string, Map<string, MacEntry>>();
   private l3State = new Map<string, boolean>();
   private ctxObj: RoutingCtx | null = null;
-  /** changes whenever what routing depends on does (interfaces, adjacencies, the failure) */
+  /** each router's routes as of its last recomputation (shared by the routers that recomputed at the same moment) */
+  private devCtx = new Map<string, RoutingCtx>();
+  private spfPending = new Set<string>();
+  private spfAt = new Map<number, { ctx: RoutingCtx; devs: string[] }>();
+  /** changes whenever what routing depends on does (interfaces, adjacencies, the failures) */
   routingVersion = 0;
   private estimates = new Map<string, number>();
+  private macFullNoted = new Set<string>();
 
   constructor(model: Model, opts: EngineOptions = {}) {
     this.model = model;
     this.net = buildNet(model);
     this.timerScale = opts.timerScale || 1;
     this.random = rng(modelSeed(model));
+    this.lossRandom = rng(modelSeed(model) + '|loss');
+    const devs = new Map<string, { type: string; values: Map<string, ParamValue> }>();
+    for (const d of model.devices) devs.set(d.id, { type: d.type, values: d.simulation || new Map() });
+    this.params = new SimParams(opts.params, devs);
     for (const d of this.net.devices.values()) {
       this.arp.set(d.id, new Map());
       if (d.bridge) this.macs.set(d.id, new Map());
@@ -258,6 +328,41 @@ export class Engine {
     return this.q.length ? this.q[0].t : null;
   }
 
+  /**
+   * Process the events up to time t moment by moment, and stop after the
+   * first moment at which `stop` says so (the clock is at that moment);
+   * else set the clock to t.
+   */
+  runUntil(t: number, stop: () => boolean): void {
+    for (;;) {
+      const n = this.nextTime();
+      if (n === null || n > t) break;
+      while (this.nextTime() === n) {
+        const it = this.pop() as QItem;
+        this.now = it.t;
+        it.fn();
+      }
+      if (stop()) {
+        this.prune();
+        return;
+      }
+    }
+    this.now = Math.max(this.now, t);
+    this.prune();
+  }
+
+  /** The serial number the next flight gets. */
+  get flightSerial(): number {
+    return this.flightSeq;
+  }
+
+  /** The flights created since a serial number. */
+  flightsSince(serial: number): Flight[] {
+    const out: Flight[] = [];
+    for (let i = this.flights.length - 1; i >= 0 && this.flights[i].id >= serial; i--) out.push(this.flights[i]);
+    return out;
+  }
+
   /** Process every event up to time t, and set the clock to t. */
   run(t: number): void {
     for (;;) {
@@ -293,23 +398,39 @@ export class Engine {
 
   // ------------------------------------------------------------ what is up
 
+  /** Does a cable carry frames now (physically up and negotiated)? */
+  cableUp(id: string): boolean {
+    return (this.cable.get(id) || 'up') === 'up';
+  }
+
+  /** Is a cable up as its devices see it (both ports have carrier)? */
   linkUp(id: string): boolean {
-    return this.failed !== 'link:' + id;
+    const l = this.net.links.get(id);
+    if (!l) return true;
+    return this.carrier.get(portKey(l.a.device, l.a.iface || '@' + id)) !== false && this.carrier.get(portKey(l.b.device, l.b.iface || '@' + id)) !== false;
   }
 
   relationUp(id: string): boolean {
-    return this.failed !== 'relation:' + id;
+    return !this.failedRels.has(id);
   }
 
-  /** Is a port up: its cable (if any) has not failed. */
+  /** Is a device on (powered and booted)? An inline appliance that failed open is off, but passes frames. */
+  deviceOn(dev: string): boolean {
+    return !this.off.has(dev);
+  }
+
+  /** Is a port up as its device sees it: carrier on its cable (if any), not shut, its device on. */
   portUp(dev: string, port: string): boolean {
-    const e = this.net.ends.get(portKey(dev, port));
-    return !e || this.linkUp(e.link);
+    if (this.off.has(dev) && !this.bypass.has(dev)) return false;
+    if (this.shutPorts.has(portKey(dev, port))) return false;
+    return this.carrier.get(portKey(dev, port)) !== false;
   }
 
   /** Is a layer-3 interface up (see the module comment). */
   l3Up(dev: string, l3: L3Iface): boolean {
     const sd = this.net.devices.get(dev) as SimDevice;
+    if (this.off.has(dev)) return false;
+    if (this.shutL3.has(dev + ':' + l3.id)) return false;
     if (l3.kind === 'loopback') return true;
     if (l3.kind === 'tunnel') return !!this.protocols && this.protocols.tunnelUp(dev, l3.id);
     if (l3.kind === 'svi') {
@@ -325,8 +446,23 @@ export class Engine {
     return up > 0 || !l3.ports.length;
   }
 
-  /** The routing context of the simulation's state (a new object when that state changes, so routes are computed again). */
-  ctx(): RoutingCtx {
+  /**
+   * The routing context of the simulation's state now (a new object when
+   * that state changes, so routes are computed again); with a router, the
+   * state of that router's last route recomputation.
+   */
+  ctx(dev?: string): RoutingCtx {
+    if (dev !== undefined) {
+      const sd = this.net.devices.get(dev);
+      if (sd && sd.routes) {
+        let c = this.devCtx.get(dev);
+        if (!c) {
+          c = this.snapshot();
+          this.devCtx.set(dev, c);
+        }
+        return c;
+      }
+    }
     if (this.ctxObj) return this.ctxObj;
     const self = this;
     this.ctxObj = {
@@ -350,11 +486,78 @@ export class Engine {
     return this.ctxObj;
   }
 
-  /** What routing depends on changed: routes are computed again. */
+  /** The state routing reads, frozen now (a router's view until it recomputes again). */
+  private snapshot(): RoutingCtx {
+    const live = this.ctx();
+    const ifs = new Map(this.l3State);
+    const ports = new Map<string, boolean>();
+    for (const d of this.net.devices.values()) for (const [p] of d.portOf) ports.set(d.id + '|' + p, this.portUp(d.id, p));
+    const links = new Map<string, boolean>();
+    for (const id of this.net.links.keys()) links.set(id, this.linkUp(id));
+    const rels = new Map<string, boolean>();
+    const adj = new Map<string, boolean>();
+    for (const r of this.model.relations) {
+      rels.set(r.id, (live.relUp as (id: string) => boolean)(r.id));
+      const devs = relationDevices(r);
+      for (const a of devs) for (const b of devs) if (a !== b) adj.set(r.id + '|' + a + '|' + b, (live.adjUp as (r: string, f: string, t: string) => boolean)(r.id, a, b));
+    }
+    const self = this;
+    return {
+      up(device: string, iface: string): boolean {
+        const k = device + ':' + iface;
+        if (ifs.has(k)) return ifs.get(k) !== false;
+        const p = ports.get(device + '|' + iface);
+        return p !== undefined ? p : self.portUp(device, iface);
+      },
+      relUp(id: string): boolean {
+        const v = rels.get(id);
+        return v !== undefined ? v : true;
+      },
+      linkUp(id: string): boolean {
+        const v = links.get(id);
+        return v !== undefined ? v : true;
+      },
+      adjUp(relation: string, from: string, to: string): boolean {
+        const v = adj.get(relation + '|' + from + '|' + to);
+        return v !== undefined ? v : true;
+      },
+    };
+  }
+
+  /**
+   * What routing depends on changed: routes are computed again, at once for
+   * the hosts and the estimates, and by each router after its route
+   * recomputation delay (the routers whose recomputation falls on the same
+   * moment share it).
+   */
   routingChanged(): void {
     this.ctxObj = null;
     this.routingVersion++;
     this.estimates.clear();
+    for (const d of Array.from(this.net.devices.values()).sort((a, b) => cmp(a.id, b.id))) {
+      if (!d.routes || this.spfPending.has(d.id) || this.off.has(d.id)) continue;
+      this.spfPending.add(d.id);
+      const r = this.params.get('spf-delay', d.id);
+      const t = this.now + Number(r.value);
+      this.at(t, () => this.recompute(d.id, t, r));
+    }
+  }
+
+  private recompute(dev: string, t: number, r: Resolved): void {
+    this.spfPending.delete(dev);
+    let at = this.spfAt.get(t);
+    if (!at) {
+      at = { ctx: this.snapshot(), devs: [] };
+      this.spfAt.clear();
+      this.spfAt.set(t, at);
+      // one line for the routers that recompute at this moment
+      const shared = at;
+      this.after(0, () => {
+        if (shared.devs.length) this.note('route', 'link', shared.devs[0], '', 'routes recomputed', '', `Routes recomputed at ${shared.devs.join(', ')} (route recomputation delay ${formatValue(r.def, r.value)}, ${sourceText(r)})`);
+      });
+    }
+    at.devs.push(dev);
+    this.devCtx.set(dev, at.ctx);
   }
 
   /** Recompute the interfaces' states; report the changes (and flush what an interface going down loses). */
@@ -382,34 +585,78 @@ export class Engine {
 
   // ------------------------------------------------------------ spanning tree and MAC tables
 
-  /** The spanning tree of a VLAN (cached until a failure or restore). */
-  tree(vlan: number): { root: string; blocked: Set<string> } {
+  /** The spanning tree of a VLAN (cached until a cable goes down or up). */
+  tree(vlan: number): { root: string; blocked: Set<string>; ports: Set<string> } {
     let t = this.stp.get(vlan);
     if (!t) {
-      t = spanningTree(this.net, vlan, (id) => !this.linkUp(id));
+      t = spanningTree(this.net, vlan, (id) => !this.linkUp(id) || !this.bridging(id));
       this.stp.set(vlan, t);
     }
     return t;
   }
 
-  /** Is a bridge port blocked for a VLAN by the spanning tree? */
-  blocked(dev: string, bp: string, vlan: number): boolean {
-    return this.tree(vlan).blocked.has(portKey(dev, bp));
+  /** Do both ends of a cable bridge now (a switch powered off takes no part in the tree)? */
+  private bridging(link: string): boolean {
+    const l = this.net.links.get(link);
+    return !l || ((!this.off.has(l.a.device) || this.bypass.has(l.a.device)) && (!this.off.has(l.b.device) || this.bypass.has(l.b.device)));
   }
 
-  /** The spanning trees again (after a failure or restore); the MAC tables of the VLANs whose tree changed are flushed. */
-  private recomputeTrees(): void {
+  /** Is a bridge port blocked for a VLAN: by the spanning tree, or still converging towards forwarding? */
+  blocked(dev: string, bp: string, vlan: number): boolean {
+    if (this.tree(vlan).blocked.has(portKey(dev, bp))) return true;
+    const f = this.fwdAt.get(dev + '|' + bp + '|' + vlan);
+    return f !== undefined && this.now < f;
+  }
+
+  /**
+   * How long a port of a switch takes to forward after a change of the tree:
+   * `direct` when the switch is at the cable that changed.
+   */
+  private convergence(dev: string, direct: boolean): { ms: number; why: string } {
+    const mode = this.params.str('stp-mode', dev);
+    const hello = this.params.num('stp-hello', dev);
+    const fd = this.params.num('stp-forward-delay', dev);
+    const age = this.params.num('stp-max-age', dev);
+    if (mode === 'stp') return direct ? { ms: 2 * fd, why: `STP: listening and learning, 2 × forward delay ${durationText(fd)}` } : { ms: age + 2 * fd, why: `STP: max age ${durationText(age)} + 2 × forward delay ${durationText(fd)}` };
+    return direct ? { ms: 0, why: 'RSTP: the alternate port takes over at once' } : { ms: 3 * hello, why: `RSTP: 3 × hello ${durationText(hello)} before the old information ages out` };
+  }
+
+  /**
+   * The spanning trees again (a cable went down or up, a switch was powered
+   * off or on); the MAC tables of the VLANs whose tree changed are flushed
+   * and the ports that start forwarding wait for their convergence.
+   */
+  private recomputeTrees(changed: string[] = []): void {
     const old = this.stp;
     this.stp = new Map();
+    const at = new Set<string>();
+    for (const id of changed) {
+      const l = this.net.links.get(id);
+      if (l) at.add(l.a.device).add(l.b.device);
+    }
     for (const [vlan, t] of old) {
       const n = this.tree(vlan);
-      const same = n.root === t.root && n.blocked.size === t.blocked.size && Array.from(n.blocked).every((k) => t.blocked.has(k));
+      const same = n.root === t.root && n.blocked.size === t.blocked.size && n.ports.size === t.ports.size && Array.from(n.blocked).every((k) => t.blocked.has(k)) && Array.from(n.ports).every((k) => t.ports.has(k));
       if (same) continue;
-      const opened = Array.from(t.blocked).filter((k) => !n.blocked.has(k));
-      this.note('link', 'stp', n.root || '', '', 'Topology change', '', `The spanning tree of ${vlan ? 'VLAN ' + vlan : 'the untagged frames'} changed${opened.length ? ': ' + opened.map((k) => k.replace('|', ':')).join(', ') + ' forwarding' : ''}; the MAC tables of the VLAN are flushed`);
-      for (const [dev, tab] of this.macs) {
+      // ports forwarding now that did not before (blocked, or on a cable that was down)
+      const opened = Array.from(n.ports).filter((k) => !n.blocked.has(k) && (t.blocked.has(k) || !t.ports.has(k))).sort(cmp);
+      const waits: string[] = [];
+      for (const k of opened) {
+        const [dev, bp] = k.split('|');
+        const c = this.convergence(dev, at.has(dev));
+        if (c.ms <= 0) continue;
+        const key = dev + '|' + bp + '|' + vlan;
+        this.fwdAt.set(key, this.now + c.ms);
+        waits.push(`${dev}:${bp} forwards at t = ${fmtSec(this.now + c.ms)} (${c.why})`);
+        this.at(this.now + c.ms, () => {
+          if (this.fwdAt.get(key) === undefined || this.now < (this.fwdAt.get(key) as number)) return;
+          this.fwdAt.delete(key);
+          this.note('link', 'stp', dev, '', 'Port forwarding', 'forwarding', `${dev}:${bp} is forwarding in ${vlan ? 'VLAN ' + vlan : 'the untagged frames'} (the spanning tree converged)`);
+        });
+      }
+      this.note('link', 'stp', n.root || '', '', 'Topology change', '', `The spanning tree of ${vlan ? 'VLAN ' + vlan : 'the untagged frames'} changed${opened.length ? ': ' + opened.map((k) => k.replace('|', ':')).join(', ') + ' forwarding' : ''}; the MAC tables of the VLAN are flushed${waits.length ? '. ' + waits.join('; ') : ''}`);
+      for (const tab of this.macs.values()) {
         for (const [k, e] of Array.from(tab)) if (e.type === 'dynamic' && e.vlan === vlan) tab.delete(k);
-        void dev;
       }
     }
   }
@@ -433,12 +680,23 @@ export class Engine {
       return;
     }
     if (e) this.note('table', 'stp', d.id, '', 'MAC moved', '', `${mac} (VLAN ${vlan || 'untagged'}) moved from port ${e.port} to ${port}`, t);
+    else {
+      // a full table learns nothing new: frames to the address are flooded
+      const size = this.params.num('mac-table-size', d.id);
+      if (tab.size >= size) {
+        if (!this.macFullNoted.has(d.id)) {
+          this.macFullNoted.add(d.id);
+          this.note('table', 'stp', d.id, '', 'MAC table full', '', `${d.id} MAC table is full (${size} entries, ${sourceText(this.params.get('mac-table-size', d.id))}): ${mac} is not learned; frames to it are flooded`, t);
+        }
+        return;
+      }
+    }
     tab.set(k, { mac, vlan, port, type: 'dynamic', learned: t, refreshed: t });
   }
 
   /** The MAC aging time of a switch (ms of simulated time, scaled). */
-  macAging(): number {
-    return (MAC_AGING_DEFAULT * 1000) / this.timerScale;
+  macAging(dev: string): number {
+    return this.params.num('mac-aging', dev) / this.timerScale;
   }
 
   // ------------------------------------------------------------ layer 2: sending and forwarding frames
@@ -473,6 +731,8 @@ export class Engine {
 
   private emitFrame(dev: string, l3: L3Iface, frame: Frame, t: number): void {
     const sd = this.net.devices.get(dev) as SimDevice;
+    // a device that is off sends nothing (its timers stop with it; this is the safety net)
+    if (this.off.has(dev)) return;
     if (!this.isL3Up(dev, l3.id)) {
       this.note('drop', frame.msg.protocol, dev, '', frame.msg.type, '', `not sent: ${dev}:${l3.id} is down (${frame.msg.label})`, t);
       return;
@@ -493,21 +753,81 @@ export class Engine {
     this.transmit(dev, port, frame, tag, t, undefined, new Set([dev]));
   }
 
+  // ------------------------------------------------------------ layer 1: latency, speed, loss
+
+  /** A cable's value of a Layer 1 parameter: configured on the cable, else the larger of its two devices' own, else the simulation's. */
+  private cableParam(link: string, key: 'link-latency' | 'loss', configured?: number): Resolved {
+    const l = this.net.links.get(link) as Link;
+    if (configured !== undefined) return this.params.get(key, undefined, { value: configured, where: 'cable ' + link });
+    let best: Resolved | null = null;
+    for (const d of [l.a.device, l.b.device]) {
+      const r = this.params.get(key, d);
+      if (r.source === 'device' && (!best || Number(r.value) > Number(best.value))) best = r;
+    }
+    return best || this.params.get(key);
+  }
+
+  /** The propagation delay of a cable (ms) and where it comes from. */
+  latency(link: string): Resolved {
+    const l = this.net.links.get(link) as Link;
+    return this.cableParam(link, 'link-latency', l.simulation ? l.simulation.latency : undefined);
+  }
+
+  /** The packet loss of a cable (percent). */
+  loss(link: string): Resolved {
+    const l = this.net.links.get(link) as Link;
+    return this.cableParam(link, 'loss', l.simulation ? l.simulation.loss : undefined);
+  }
+
+  /** A cable's speed (bit/s): the link's own, else an end's, else the simulation's default speed. */
+  speed(link: string): Resolved {
+    const l = this.net.links.get(link) as Link;
+    const own = parseSpeed(l.speed) || parseSpeed(l.a.speed) || parseSpeed(l.b.speed);
+    return this.params.get('default-speed', undefined, own ? { value: own, where: 'cable ' + link } : null);
+  }
+
+  /** A frame's size on the wire (bytes): Ethernet header and FCS, the IP headers of every encapsulation, the payload (at least 64). */
+  frameBytes(frame: Frame): number {
+    if (frame.arp) return 64;
+    let n = 18;
+    let p = frame.ip;
+    while (p) {
+      n += p.dst.version === 4 ? 20 : 40;
+      if (p.encap) n += /ESP/i.test(p.encap) ? 36 : 4;
+      if (!p.inner) {
+        const sz = p.msg.data && typeof (p.msg.data as { size?: unknown }).size === 'number' ? ((p.msg.data as { size: number }).size as number) : p.msg.protocol === 'demand' ? 1400 : PAYLOAD;
+        n += sz;
+      }
+      p = p.inner;
+    }
+    if (!frame.ip) n += frame.nd ? 32 : PAYLOAD;
+    return Math.max(64, n);
+  }
+
   /**
-   * When a frame can start on a cable in one direction: GAP ms after the
-   * one before, so that frames on a cable are spaced out over time; it
-   * never waits more than MAX_WAIT (a busy cable does not delay traffic).
+   * A frame onto a cable in one direction at t: it starts when the frame
+   * before it has been sent (one at a time), is on the wire for its
+   * serialization time and arrives a propagation delay later.
    */
-  private slot(key: string, t: number): number {
+  private wire(link: string, end: 'a' | 'b', frame: Frame, t: number): { start: number; end: number; lost: boolean } {
+    const key = link + '>' + end;
     const free = this.cableFree.get(key) || 0;
-    const start = free - t > MAX_WAIT ? t : Math.max(t, free);
-    this.cableFree.set(key, Math.max(free, start + GAP));
-    return start;
+    const start = Math.max(t, free);
+    const ser = (this.frameBytes(frame) * 8 * 1000) / Number(this.speed(link).value);
+    this.cableFree.set(key, start + ser);
+    const loss = Number(this.loss(link).value);
+    const lost = loss > 0 && this.lossRandom() * 100 < loss;
+    return { start, end: start + ser + Number(this.latency(link).value), lost };
+  }
+
+  /** About how long a frame takes over one cable (ms): the simulation's latency and a small frame at its default speed. */
+  hopTime(): number {
+    return this.params.num('link-latency') + (PAYLOAD * 8 * 1000) / this.params.num('default-speed');
   }
 
   /** A link-local layer-2 PDU out of one port (LACP, LLDP, STP): it reaches the device at the other end only. */
   sendOnPort(dev: string, port: string, frame: Frame): void {
-    if (!this.portUp(dev, port)) return;
+    if (this.off.has(dev) || !this.portUp(dev, port)) return;
     const was = this.emitting;
     this.emitting = null;
     try {
@@ -517,29 +837,36 @@ export class Engine {
     }
   }
 
-  /** A frame onto a cable from a port; it arrives HOP ms after it can start (one frame per cable and direction at a time). */
+  /** A frame onto a cable from a port: it arrives after its serialization and the cable's latency (one frame per cable and direction at a time). */
   private transmit(dev: string, port: string, frame: Frame, tag: number | null, t: number, parent: number | undefined, seen: Set<string>): void {
     const e = this.net.ends.get(portKey(dev, port));
     if (!e) return;
     const l = this.net.links.get(e.link) as { direction: string };
     if (l.direction === 'unidirectional' && e.end === 'b') return;
-    const key = e.link + '>' + e.end;
-    const start = this.slot(key, t);
+    const w = this.wire(e.link, e.end, frame, t);
     const o = otherEnd(this.net, e);
-    const f = this.flight(start, start + HOP, frame.msg, 'physical', { ref: 'link:' + e.link, from: e.end, to: o.end }, parent, frameEncap(frame));
+    const f = this.flight(w.start, w.end, frame.msg, 'physical', { ref: 'link:' + e.link, from: e.end, to: o.end }, parent, frameEncap(frame));
     f.encapProtocols = encapProtocols(frame);
-    if (!this.linkUp(e.link)) {
-      f.dropped = start + HOP / 2;
+    if (!this.cableUp(e.link)) {
+      f.dropped = (w.start + w.end) / 2;
       f.t1 = f.dropped;
-      this.note('drop', frame.msg.protocol, dev, o.device, frame.msg.type, '', `dropped on the failed cable ${e.link}: ${frame.msg.label}`, start);
+      this.note('drop', frame.msg.protocol, dev, o.device, frame.msg.type, '', `dropped on ${e.link}: the cable is ${this.cable.get(e.link) === 'negotiating' ? 'still coming up' : 'down'}${this.linkUp(e.link) ? ' (its ports have not noticed yet: loss-of-signal detection)' : ''} (${frame.msg.label})`, w.start);
       return;
     }
-    this.arrive(o.device, o.port, frame, tag, start + HOP, f.id, seen);
+    if (w.lost) {
+      f.dropped = (w.start + w.end) / 2;
+      f.t1 = f.dropped;
+      const r = this.loss(e.link);
+      this.note('drop', frame.msg.protocol, dev, o.device, frame.msg.type, '', `lost on ${e.link} (packet loss ${resolvedText(r)}): ${frame.msg.label}`, w.start);
+      return;
+    }
+    this.arrive(o.device, o.port, frame, tag, w.end, f.id, seen);
   }
 
   private arrive(dev: string, port: string, frame: Frame, tag: number | null, t: number, flight: number, seen: Set<string>): void {
     const sd = this.net.devices.get(dev);
     if (!sd) return;
+    if (this.off.has(dev) && !this.bypass.has(dev)) return;
     if (frame.l2) {
       this.deliverL2(dev, port, frame, t, flight);
       return;
@@ -587,9 +914,12 @@ export class Engine {
 
   /** A bridge forwards a frame in a VLAN (from a port, or from its own VLAN interface when `from` is null). */
   private bridge(sd: SimDevice, from: string | null, vlan: number, frame: Frame, t: number, flight: number | undefined, seen: Set<string>): void {
-    if (from !== null) this.learn(sd, vlan, frame.src, from, t);
+    // an inline appliance that failed open is a wire: no learning, no inspection
+    const wire = this.bypass.has(sd.id);
+    if (from !== null && !wire) this.learn(sd, vlan, frame.src, from, t);
+    if (sd.dev.type === 'ids_ips' && !wire) t += this.params.num('ips-latency', sd.id);
     // to its own VLAN interface (the switch's management or routing interface)
-    if (from !== null) {
+    if (from !== null && !wire) {
       for (const l3 of sd.l3.values()) {
         if (l3.kind !== 'svi' || l3.vlan !== vlan) continue;
         if (this.accepts(sd, l3, frame)) this.deliverL3(sd.id, l3, frame, t, flight !== undefined ? flight : -1);
@@ -598,7 +928,7 @@ export class Engine {
     const tab = this.macs.get(sd.id) as Map<string, MacEntry>;
     const known = !isGroupMac(frame.dst) ? tab.get(vlan + '|' + frame.dst) : undefined;
     if (known && known.type === 'static') return;
-    const fresh = known && t - known.refreshed <= this.macAging();
+    const fresh = known && !wire && t - known.refreshed <= this.macAging(sd.id);
     const out: BridgePort[] = [];
     if (fresh) {
       const bp = sd.bridgePorts.get((known as MacEntry).port);
@@ -622,7 +952,7 @@ export class Engine {
     this.pending.push(d);
     this.at(t, () => {
       this.pending.splice(this.pending.indexOf(d), 1);
-      if (d.cancelled || !this.protocols) return;
+      if (d.cancelled || !this.protocols || this.off.has(dev)) return;
       this.protocols.l2(dev, port, frame);
     });
   }
@@ -631,7 +961,7 @@ export class Engine {
     // the logical view: a message without a relation goes from its sender to the network and on to this receiver
     const em = this.emitting;
     if (em && em.net && em.dev !== dev && t > em.t) {
-      const mid = em.t + Math.min(HOP, (t - em.t) / 2);
+      const mid = em.t + (t - em.t) / 2;
       if (em.first === null) em.first = this.flight(em.t, mid, frame.msg, 'logical', { ref: 'network:' + em.net, from: em.dev, to: 'net' }, undefined, frameEncap(frame)).id;
       this.flight(mid, t, frame.msg, 'logical', { ref: 'network:' + em.net, from: 'net', to: dev }, em.first, frameEncap(frame));
     }
@@ -640,7 +970,7 @@ export class Engine {
     this.at(t, () => {
       const i = this.pending.indexOf(d);
       if (i >= 0) this.pending.splice(i, 1);
-      if (d.cancelled) return;
+      if (d.cancelled || this.off.has(dev)) return;
       this.receive(dev, l3, frame);
     });
   }
@@ -655,9 +985,9 @@ export class Engine {
     return f;
   }
 
-  /** The flights in the air at time t (or ending within `grace` ms before it, for the lost marks). */
-  flightsAt(t: number, view: Flight['view'], grace = 0): Flight[] {
-    return this.flights.filter((f) => f.view === view && !f.hidden && f.t0 <= t && (f.dropped !== undefined ? f.dropped + 1200 >= t : f.t1 + grace >= t));
+  /** The flights in the air at time t, or since `since` (the lost marks stay a moment). */
+  flightsAt(t: number, view: Flight['view'], since = t): Flight[] {
+    return this.flights.filter((f) => f.view === view && !f.hidden && f.t0 <= t && (f.dropped !== undefined ? f.dropped + 1200 >= since : f.t1 >= since));
   }
 
   // ------------------------------------------------------------ layer 3: receiving
@@ -728,8 +1058,16 @@ export class Engine {
 
   // ------------------------------------------------------------ layer 3: sending
 
-  newPacket(src: IpAddr, dst: IpAddr, vrf: string, msg: Msg, rides: string[] = [], ttl = 64): Pkt {
+  /** A packet; without a TTL it gets its sender's default TTL when it is sent. */
+  newPacket(src: IpAddr, dst: IpAddr, vrf: string, msg: Msg, rides: string[] = [], ttl = 0): Pkt {
     return { id: this.pktSeq++, src, dst, ttl, vrf, msg, flow: formatAddr(src) + '>' + formatAddr(dst), rides };
+  }
+
+  /** A packet a device sends: its TTL (hop limit) is the device's default unless the protocol set one. */
+  private stamp(dev: string, pkt: Pkt): Pkt {
+    if (pkt.ttl > 0) return pkt;
+    pkt.ttl = this.params.num('ttl', dev);
+    return pkt;
   }
 
   /**
@@ -737,6 +1075,8 @@ export class Engine {
    * (next hop resolved first), a link-local multicast one out of `out`.
    */
   send(dev: string, pkt: Pkt, out?: L3Iface): void {
+    if (this.off.has(dev)) return;
+    this.stamp(dev, pkt);
     if (pkt.rides.some((r) => !this.relationUp(r))) {
       const r = pkt.rides.find((x) => !this.relationUp(x)) as string;
       this.note('drop', pkt.msg.protocol, dev, '', pkt.msg.type, '', `dropped: ${r} has failed (${pkt.msg.label})`);
@@ -758,11 +1098,12 @@ export class Engine {
   private forward(dev: string, pkt: Pkt, came: { l3: L3Iface; frame: Frame | null } | null): void {
     const sd = this.net.devices.get(dev) as SimDevice;
     const own = this.ownsAddress(dev, pkt.dst, pkt.vrf);
+    if (!came) this.stamp(dev, pkt);
     if (own) {
       if (this.protocols) this.protocols.ip(dev, own, pkt);
       return;
     }
-    const d = lookup(this.model, dev, pkt.vrf, pkt.dst, this.ctx());
+    const d = lookup(this.model, dev, pkt.vrf, pkt.dst, this.ctx(dev));
     // a tunnel's outer packet that is not routed in the model (or whose route leads back into the tunnel): its declared underlay
     const intoOwn = d.kind === 'forward' && d.hops.length > 0 && d.hops.every((h) => {
       const l = sd.l3.get(h.iface);
@@ -773,7 +1114,9 @@ export class Engine {
       this.note('drop', pkt.msg.protocol, dev, '', pkt.msg.type, '', `dropped at ${dev}: ${d.kind === 'blackhole' ? 'a blackhole route' : 'no route to ' + formatAddr(pkt.dst)}${pkt.vrf ? ' in VRF ' + pkt.vrf : ''} (${pkt.msg.label})`);
       return;
     }
-    const hop = d.hops.length === 1 ? d.hops[0] : d.hops[hashIndex(pkt.flow, d.hops.length)];
+    // equal-cost next hops: a flow keeps its path; at most the device's maximum ECMP paths are used
+    const hops = sd.routes ? d.hops.slice(0, Math.max(1, this.params.num('ecmp-max', dev))) : d.hops;
+    const hop = hops.length === 1 ? hops[0] : hops[hashIndex(pkt.flow, hops.length)];
     const out = sd.l3.get(hop.iface);
     if (!out) return;
     // a next hop outside the model (no device has it): a tunnel's outer packet takes its declared underlay; anything else leaves the model
@@ -862,18 +1205,17 @@ export class Engine {
       const h = hops[i];
       const l = this.net.links.get(h.link) as Link;
       if (l.direction === 'unidirectional' && h.fromEnd === 'b') return true;
-      const key = h.link + '>' + h.fromEnd;
-      const start = this.slot(key, t);
-      const f = this.flight(start, start + HOP, frame.msg, 'physical', { ref: 'link:' + h.link, from: h.fromEnd, to: h.fromEnd === 'a' ? 'b' : 'a' }, parent, frameEncap(frame));
+      const w = this.wire(h.link, h.fromEnd, frame, t);
+      const f = this.flight(w.start, w.end, frame.msg, 'physical', { ref: 'link:' + h.link, from: h.fromEnd, to: h.fromEnd === 'a' ? 'b' : 'a' }, parent, frameEncap(frame));
       f.encapProtocols = encapProtocols(frame);
-      if (!this.linkUp(h.link)) {
-        f.dropped = start + HOP / 2;
+      if (!this.cableUp(h.link) || w.lost) {
+        f.dropped = (w.start + w.end) / 2;
         f.t1 = f.dropped;
-        this.note('drop', frame.msg.protocol, dev, owner.id, frame.msg.type, '', `dropped on the failed cable ${h.link}: ${frame.msg.label}`, start);
+        this.note('drop', frame.msg.protocol, dev, owner.id, frame.msg.type, '', w.lost ? `lost on ${h.link} (packet loss ${resolvedText(this.loss(h.link))}): ${frame.msg.label}` : `dropped on ${h.link}: the cable is down (${frame.msg.label})`, w.start);
         return true;
       }
       parent = f.id;
-      t = start + HOP;
+      t = w.end;
     }
     if (l3) this.deliverL3(owner.id, l3, frame, t, parent as number);
     return true;
@@ -978,21 +1320,23 @@ export class Engine {
 
   // ------------------------------------------------------------ ARP and neighbour discovery
 
-  /** The ARP timeout (ms, unscaled) and where it comes from, for an interface of a device. */
-  arpTimeout(dev: string, iface: string): { ms: number; origin: string } {
-    const i = this.model.index.interfaces.get(dev + ':' + iface);
-    const d = this.model.index.devices.get(dev);
-    if (i && i.arpTimeout !== undefined) return { ms: i.arpTimeout * 1000, origin: `configured on ${iface}` };
-    if (d && d.arpTimeout !== undefined) return { ms: d.arpTimeout * 1000, origin: 'configured on the device' };
-    return { ms: ARP_TIMEOUT_DEFAULT * 1000, origin: 'default (Cisco IOS; RFC 826 sets none)' };
+  /** The ARP timeout of a device (ms, unscaled). */
+  arpTimeout(dev: string): number {
+    return this.params.num('arp-timeout', dev);
   }
 
-  ndReachable(dev: string, iface: string): { ms: number; origin: string } {
-    const i = this.model.index.interfaces.get(dev + ':' + iface);
-    const d = this.model.index.devices.get(dev);
-    if (i && i.ndpReachableTime !== undefined) return { ms: i.ndpReachableTime * 1000, origin: `configured on ${iface}` };
-    if (d && d.ndpReachableTime !== undefined) return { ms: d.ndpReachableTime * 1000, origin: 'configured on the device' };
-    return { ms: NDP_REACHABLE_DEFAULT * 1000, origin: 'default (RFC 4861 REACHABLE_TIME)' };
+  /** The IPv6 neighbour reachable time of a device (ms, unscaled). */
+  ndReachable(dev: string): number {
+    return this.params.num('ndp-reachable', dev);
+  }
+
+  /** The retransmit interval of ARP Requests and Neighbor Solicitations (ms), and how many go out before an entry is given up. */
+  private retrans(dev: string): number {
+    return this.params.num('arp-retransmit', dev);
+  }
+
+  private retries(dev: string): number {
+    return this.params.num('arp-retries', dev);
   }
 
   private entryKey(iface: string, ip: IpAddr): string {
@@ -1016,7 +1360,7 @@ export class Engine {
         // RFC 4861: using a stale entry starts the delay before the first probe
         e.state = 'DELAY';
         e.timer = this.now + ND_DELAY_DEFAULT * 1000;
-        this.tableNote(dev, e, 'DELAY', 'used while STALE: probe in 5 s unless confirmed');
+        this.tableNote(dev, e, 'DELAY', `used while STALE: probe in ${fmtSec(ND_DELAY_DEFAULT * 1000)} unless confirmed`);
       }
       send(e.mac);
       return;
@@ -1025,7 +1369,7 @@ export class Engine {
       e.queue.push({ pkt, send });
       return;
     }
-    const n: ArpEntry = { ip, ipText: formatAddr(ip), mac: '', iface: l3.id, vlan: l3.vlan, type: 'incomplete', state: 'INCOMPLETE', learned: this.now, refreshed: this.now, timer: this.now + ND_RETRANS_DEFAULT * 1000, tries: 1, used: true, queue: [{ pkt, send }] };
+    const n: ArpEntry = { ip, ipText: formatAddr(ip), mac: '', iface: l3.id, vlan: l3.vlan, type: 'incomplete', state: 'INCOMPLETE', learned: this.now, refreshed: this.now, timer: this.now + this.retrans(dev), tries: 1, used: true, queue: [{ pkt, send }], sentAt: this.now };
     tab.set(key, n);
     this.tableNote(dev, n, 'INCOMPLETE', `${pkt.msg.label} waits for ${ip.version === 4 ? 'ARP' : 'neighbour discovery'}`);
     this.solicit(dev, l3, ip, '');
@@ -1112,7 +1456,7 @@ export class Engine {
     let e = tab.get(key);
     const was = e ? e.type + '/' + e.state + '/' + e.mac : '';
     if (!e) {
-      e = { ip, ipText: formatAddr(ip), mac, iface: l3.id, vlan: l3.vlan, type, state: ip.version === 6 ? ndState : 'VALID', learned: this.now, refreshed: this.now, timer: 0, tries: 0, used: false, queue: [] };
+      e = { ip, ipText: formatAddr(ip), mac, iface: l3.id, vlan: l3.vlan, type, state: ip.version === 6 ? ndState : 'VALID', learned: this.now, refreshed: this.now, timer: 0, tries: 0, used: false, queue: [], sentAt: 0 };
       tab.set(key, e);
     }
     const moved = e.mac && e.mac !== mac;
@@ -1159,36 +1503,40 @@ export class Engine {
         const l3 = (this.net.devices.get(dev) as SimDevice).l3.get(e.iface);
         if (!l3) continue;
         if (e.type === 'incomplete' || e.state === 'PROBE' || e.state === 'REFRESHING') {
+          // the retransmit interval in effect now (a change applies to the next request)
+          e.timer = e.sentAt + this.retrans(dev);
           if (t < e.timer) continue;
-          if (e.tries >= ND_RETRIES_DEFAULT) {
+          if (e.tries >= this.retries(dev)) {
             tab.delete(k);
             this.tableNote(dev, e, 'removed', `${e.ipText} removed: no answer to ${e.tries} ${e.ip.version === 4 ? 'ARP Requests' : 'solicitations'}${e.queue.length ? '; ' + e.queue.length + ' waiting packet' + (e.queue.length === 1 ? '' : 's') + ' dropped' : ''}`);
             for (const w of e.queue) this.note('drop', w.pkt.msg.protocol, dev, '', w.pkt.msg.type, '', `dropped at ${dev}: ${e.ipText} could not be resolved (${w.pkt.msg.label})`);
             continue;
           }
           e.tries++;
-          e.timer = t + ND_RETRANS_DEFAULT * 1000;
+          e.sentAt = t;
+          e.timer = t + this.retrans(dev);
           this.solicit(dev, l3, e.ip, e.type === 'incomplete' ? '' : e.mac);
           continue;
         }
         if (e.ip.version === 4) {
-          const life = this.arpTimeout(dev, e.iface).ms / this.timerScale;
+          const life = this.arpTimeout(dev) / this.timerScale;
           if (t - e.refreshed < life) continue;
           if (e.used) {
             // used since its last refresh: refreshed by a unicast ARP Request before it goes
             e.state = 'REFRESHING';
             e.tries = 1;
-            e.timer = t + ND_RETRANS_DEFAULT * 1000;
+            e.sentAt = t;
+            e.timer = t + this.retrans(dev);
             this.tableNote(dev, e, 'refreshing', `${e.ipText}: timeout reached while in use — refreshing (unicast ARP Request)`);
             this.solicit(dev, l3, e.ip, e.mac);
           } else {
             tab.delete(k);
-            this.tableNote(dev, e, 'expired', `${e.ipText} expired (timeout ${fmtSec(this.arpTimeout(dev, e.iface).ms)}${this.timerScale !== 1 ? ', timer scale 1:' + this.timerScale : ''})`);
+            this.tableNote(dev, e, 'expired', `${e.ipText} expired (timeout ${resolvedText(this.params.get('arp-timeout', dev))}${this.timerScale !== 1 ? ', timer scale 1:' + this.timerScale : ''})`);
           }
           continue;
         }
         if (e.state === 'REACHABLE') {
-          const life = this.ndReachable(dev, e.iface).ms / this.timerScale;
+          const life = this.ndReachable(dev) / this.timerScale;
           if (t - e.refreshed >= life) {
             e.state = 'STALE';
             this.tableNote(dev, e, 'STALE', `${e.ipText}: reachable time over without confirmation`);
@@ -1196,18 +1544,20 @@ export class Engine {
         } else if (e.state === 'DELAY' && t >= e.timer) {
           e.state = 'PROBE';
           e.tries = 1;
-          e.timer = t + ND_RETRANS_DEFAULT * 1000;
+          e.sentAt = t;
+          e.timer = t + this.retrans(dev);
           this.tableNote(dev, e, 'PROBE', `${e.ipText}: probing with unicast Neighbor Solicitations`);
           this.solicit(dev, l3, e.ip, e.mac);
         }
       }
     }
-    const aging = this.macAging();
     for (const [dev, tab] of this.macs) {
+      const aging = this.macAging(dev);
       for (const [k, e] of Array.from(tab)) {
         if (e.type !== 'dynamic' || t - e.refreshed < aging) continue;
         tab.delete(k);
-        this.note('table', 'stp', dev, '', `MAC entry ${e.mac}`, 'aged out', `${dev} MAC table: ${e.mac} (VLAN ${e.vlan || 'untagged'}, port ${e.port}) aged out after ${fmtSec(MAC_AGING_DEFAULT * 1000)}${this.timerScale !== 1 ? ' (timer scale 1:' + this.timerScale + ')' : ''}`);
+        this.macFullNoted.delete(dev);
+        this.note('table', 'stp', dev, '', `MAC entry ${e.mac}`, 'aged out', `${dev} MAC table: ${e.mac} (VLAN ${e.vlan || 'untagged'}, port ${e.port}) aged out after ${resolvedText(this.params.get('mac-aging', dev))}${this.timerScale !== 1 ? ' (timer scale 1:' + this.timerScale + ')' : ''}`);
       }
     }
   }
@@ -1227,44 +1577,427 @@ export class Engine {
     this.emit(dev, l3, { src: mac, dst: multicastMac(all), msg, nd: { op: 'NA', src: addr, target: addr, lladdr: mac, solicited: false, unsolicited: true }, ip: pkt });
   }
 
-  // ------------------------------------------------------------ failures
+  // ------------------------------------------------------------ network events
 
-  /** Fail a cable or relation ("link:x" / "relation:x"); the one failed before is restored first. */
-  fail(ref: string): void {
-    if (this.failed === ref) return;
-    if (this.failed) this.restore();
-    this.failed = ref;
-    this.failedAt = this.now;
-    const id = ref.slice(ref.indexOf(':') + 1);
-    this.note('link', 'link', '', '', ref.indexOf('link:') === 0 ? 'Cable failed' : 'Relation failed', 'down', `${ref.indexOf('link:') === 0 ? 'Cable' : 'Relation'} ${id} fails at t = ${fmtSec(this.now)}`);
-    // what is on its way across it is lost where it is
-    this.cut();
-    if (ref.indexOf('link:') === 0) {
-      const l = this.net.links.get(id);
-      if (l) {
-        for (const e of [l.a, l.b]) {
-          const port = e.iface || '@' + id;
-          this.flushPort(e.device, port, `its cable ${id} failed`);
-        }
-      }
-      this.recomputeTrees();
-    }
-    this.syncInterfaces();
-    this.routingChanged();
-    if (this.protocols) this.protocols.linkChange(ref, false);
+  /** The cables at a device's ports, by id. */
+  private linksOf(dev: string): string[] {
+    const out: string[] = [];
+    for (const [id, l] of this.net.links) if (l.a.device === dev || l.b.device === dev) out.push(id);
+    return out.sort(cmp);
   }
 
-  /** Restore the failed cable or relation. */
-  restore(): void {
-    const ref = this.failed;
-    if (!ref) return;
-    this.failed = null;
-    const id = ref.slice(ref.indexOf(':') + 1);
-    this.note('link', 'link', '', '', ref.indexOf('link:') === 0 ? 'Cable restored' : 'Relation restored', 'up', `${ref.indexOf('link:') === 0 ? 'Cable' : 'Relation'} ${id} is restored at t = ${fmtSec(this.now)}`);
-    if (ref.indexOf('link:') === 0) this.recomputeTrees();
+  /** Did the port's own device take its cable down (shut, powered off)? Then it knows at once. */
+  private localCause(dev: string, key: string): boolean {
+    return this.shutPorts.has(key) || (this.off.has(dev) && !this.bypass.has(dev));
+  }
+
+  /** Is a cable physically up: nothing takes it down (a failure, flapping, a shut port, a device powered off)? */
+  private physUp(id: string): boolean {
+    if (this.failedLinks.has(id)) return false;
+    const fl = this.flaps.get(id);
+    if (fl && fl.down) return false;
+    const l = this.net.links.get(id) as Link;
+    for (const e of [l.a, l.b]) {
+      if (this.off.has(e.device) && !this.bypass.has(e.device)) return false;
+      if (this.shutPorts.has(portKey(e.device, e.iface || '@' + id))) return false;
+    }
+    return true;
+  }
+
+  /** The link-up delay of a cable: its access point's association time for a wireless link, else the simulation's. */
+  private linkUpDelay(id: string): Resolved {
+    const l = this.net.links.get(id) as Link;
+    if (l.medium === 'wireless') {
+      for (const e of [l.a, l.b]) {
+        const d = this.model.index.devices.get(e.device);
+        if (d && d.type === 'ap') return this.params.get('ap-association', d.id);
+      }
+    }
+    return this.params.get('link-up-delay');
+  }
+
+  /**
+   * A cable's state follows what takes it down. Going dark it drops what is
+   * on it at once, and its ports notice after the loss-of-signal detection
+   * time (a port whose own device took it down: at once). Coming back
+   * before they noticed, it simply carries on; else its ports come up after
+   * the link-up delay.
+   */
+  private updateCable(id: string): void {
+    const l = this.net.links.get(id) as Link;
+    const was = this.cable.get(id) || 'up';
+    const ends = [l.a, l.b].map((e) => ({ dev: e.device, port: e.iface || '@' + id, key: portKey(e.device, e.iface || '@' + id) }));
+    if (!this.physUp(id)) {
+      if (was !== 'down') {
+        this.cable.set(id, 'down');
+        this.stateVersion++;
+        this.cut('link:' + id);
+      }
+      const det = this.params.get('los-detect');
+      for (const x of ends) {
+        if (this.carrier.get(x.key) === false || this.carrierToken.has(x.key)) {
+          // already down, or noticing: a device that takes it down itself knows at once
+          if (this.carrier.get(x.key) !== false && this.localCause(x.dev, x.key)) this.setCarrier(x.dev, x.port, false, id, null);
+          continue;
+        }
+        if (this.localCause(x.dev, x.key) || Number(det.value) <= 0) this.setCarrier(x.dev, x.port, false, id, this.localCause(x.dev, x.key) ? null : det);
+        else {
+          const tok = ++this.tokens;
+          this.carrierToken.set(x.key, tok);
+          this.at(this.now + Number(det.value), () => {
+            if (this.carrierToken.get(x.key) !== tok) return;
+            this.carrierToken.delete(x.key);
+            if (!this.physUp(id)) this.setCarrier(x.dev, x.port, false, id, det);
+          });
+        }
+      }
+      return;
+    }
+    if (was === 'up' || was === 'negotiating') return;
+    for (const x of ends) this.carrierToken.delete(x.key);
+    if (!ends.some((x) => this.carrier.get(x.key) === false)) {
+      // back before its ports noticed the loss: they never went down
+      this.cable.set(id, 'up');
+      this.stateVersion++;
+      this.note('link', 'link', l.a.device, l.b.device, 'Cable up', 'up', `Cable ${id} is up again before its ports noticed the loss (loss-of-signal detection ${resolvedText(this.params.get('los-detect'))})`);
+      return;
+    }
+    this.cable.set(id, 'negotiating');
+    this.stateVersion++;
+    const d = this.linkUpDelay(id);
+    const tok = ++this.tokens;
+    this.carrierToken.set('link:' + id, tok);
+    this.note('link', 'link', l.a.device, l.b.device, 'Cable negotiating', 'negotiating', `Cable ${id} is physically up again: its ports come up after ${resolvedText(d)} (${d.def.label.toLowerCase()})`);
+    this.at(this.now + Number(d.value), () => {
+      if (this.carrierToken.get('link:' + id) !== tok) return;
+      this.carrierToken.delete('link:' + id);
+      if (!this.physUp(id)) return;
+      this.cable.set(id, 'up');
+      this.stateVersion++;
+      for (const x of ends) if (this.carrier.get(x.key) === false && !this.localCause(x.dev, x.key)) this.setCarrier(x.dev, x.port, true, id, d);
+    });
+  }
+
+  /** A port's carrier as its device sees it changes: tables, the spanning tree, interfaces and routing follow. */
+  private setCarrier(dev: string, port: string, up: boolean, link: string, why: Resolved | null): void {
+    const key = portKey(dev, port);
+    if (up) this.carrier.delete(key);
+    else this.carrier.set(key, false);
+    this.stateVersion++;
+    if (!this.off.has(dev) || this.bypass.has(dev)) {
+      const how = up ? `carrier again (${why ? why.def.label.toLowerCase() + ' ' + resolvedText(why) : 'up'})` : why ? `lost carrier: loss of signal detected after ${resolvedText(why)}` : 'is down';
+      this.note('link', 'link', dev, '', `${port} ${up ? 'up' : 'down'}`, up ? 'up' : 'down', `${dev}:${port} ${up ? 'has ' + how : how} (cable ${link})`);
+    }
+    if (!up) this.flushPort(dev, port, `its cable ${link} went down`);
+    this.recomputeTrees([link]);
     this.syncInterfaces();
     this.routingChanged();
-    if (this.protocols) this.protocols.linkChange(ref, true);
+    if (this.protocols) this.protocols.linkChange('link:' + link, this.linkUp(link));
+  }
+
+  /** Fail a cable or relation ("link:x" / "relation:x"); false when it is failed already or not there. */
+  fail(ref: string): boolean {
+    const id = ref.slice(ref.indexOf(':') + 1);
+    if (ref.indexOf('link:') === 0) {
+      if (!this.net.links.has(id) || this.failedLinks.has(id)) return false;
+      this.failedLinks.set(id, this.now);
+      this.note('link', 'link', '', '', 'Cable failed', 'down', `Cable ${id} fails at t = ${fmtSec(this.now)}`);
+      this.updateCable(id);
+    } else if (ref.indexOf('relation:') === 0) {
+      if (!this.model.index.relations.has(id) || this.failedRels.has(id)) return false;
+      this.failedRels.set(id, this.now);
+      this.note('link', 'link', '', '', 'Relation failed', 'down', `Relation ${id} fails at t = ${fmtSec(this.now)}`);
+      this.syncInterfaces();
+      this.routingChanged();
+      if (this.protocols) this.protocols.linkChange(ref, false);
+    } else return false;
+    this.stateVersion++;
+    return true;
+  }
+
+  /** Restore a failed cable or relation. */
+  restore(ref: string): boolean {
+    const id = ref.slice(ref.indexOf(':') + 1);
+    if (ref.indexOf('link:') === 0) {
+      if (!this.failedLinks.delete(id)) return false;
+      this.note('link', 'link', '', '', 'Cable restored', 'up', `Cable ${id} is restored at t = ${fmtSec(this.now)}`);
+      this.updateCable(id);
+    } else if (ref.indexOf('relation:') === 0) {
+      if (!this.failedRels.delete(id)) return false;
+      this.note('link', 'link', '', '', 'Relation restored', 'up', `Relation ${id} is restored at t = ${fmtSec(this.now)}`);
+      this.syncInterfaces();
+      this.routingChanged();
+      if (this.protocols) this.protocols.linkChange(ref, true);
+    } else return false;
+    this.stateVersion++;
+    return true;
+  }
+
+  /** The cable of a flapping target: a cable, or a cabled port ("iface:dev:port"). */
+  private flapLink(ref: string): string | null {
+    if (ref.indexOf('link:') === 0) return this.net.links.has(ref.slice(5)) ? ref.slice(5) : null;
+    if (ref.indexOf('iface:') === 0) {
+      const rest = ref.slice(6);
+      const i = rest.indexOf(':');
+      const e = this.net.ends.get(portKey(rest.slice(0, i), rest.slice(i + 1)));
+      return e ? e.link : null;
+    }
+    return null;
+  }
+
+  /** Start flapping a cable or a port's cable: down for the flapping down time, up for the up time, for the cycles (0: until stopped). */
+  startFlap(ref: string, why = ''): boolean {
+    const link = this.flapLink(ref);
+    if (!link || this.flaps.has(link)) return false;
+    const fl: Flap = { link, ref, since: this.now, down: false, done: 0, token: ++this.tokens };
+    this.flaps.set(link, fl);
+    const p = (k: string): string => resolvedText(this.params.get(k));
+    this.note('link', 'link', '', '', 'Flapping', 'flapping', `${ref.indexOf('link:') === 0 ? 'Cable ' + link : 'Port ' + ref.slice(6) + ' (cable ' + link + ')'} starts flapping${why}: down ${p('flap-down')}, up ${p('flap-up')}, ${p('flap-cycles')} cycles`);
+    this.stateVersion++;
+    this.flapStep(fl);
+    return true;
+  }
+
+  private flapStep(fl: Flap): void {
+    if (this.flaps.get(fl.link) !== fl) return;
+    fl.down = !fl.down;
+    if (!fl.down) fl.done++;
+    const cycles = this.params.num('flap-cycles');
+    this.note('link', 'link', '', '', fl.down ? 'Flap down' : 'Flap up', fl.down ? 'down' : 'up', `Flapping cable ${fl.link}: ${fl.down ? 'down' : 'up'} (cycle ${fl.done + (fl.down ? 1 : 0)}${cycles ? ' of ' + cycles : ''})`);
+    this.updateCable(fl.link);
+    this.stateVersion++;
+    if (!fl.down && cycles > 0 && fl.done >= cycles) {
+      this.flaps.delete(fl.link);
+      this.note('link', 'link', '', '', 'Flapping over', 'up', `Cable ${fl.link} stops flapping after ${fl.done} cycle${fl.done === 1 ? '' : 's'}`);
+      return;
+    }
+    this.at(this.now + this.params.num(fl.down ? 'flap-down' : 'flap-up'), () => this.flapStep(fl));
+  }
+
+  stopFlap(ref: string): boolean {
+    const link = this.flapLink(ref);
+    const fl = link ? this.flaps.get(link) : undefined;
+    if (!fl || !link) return false;
+    this.flaps.delete(link);
+    this.note('link', 'link', '', '', 'Flapping stopped', 'up', `Cable ${link} stops flapping (Stop flapping)`);
+    this.updateCable(link);
+    this.stateVersion++;
+    return true;
+  }
+
+  /** Shut an interface: a cabled port takes its cable down (the far end notices after the loss-of-signal detection); a logical interface goes down. */
+  shut(dev: string, iface: string): boolean {
+    const sd = this.net.devices.get(dev);
+    if (!sd) return false;
+    const key = portKey(dev, iface);
+    const e = this.net.ends.get(key);
+    if (this.shutPorts.has(key) || this.shutL3.has(dev + ':' + iface)) return false;
+    if (e || !sd.l3.has(iface)) {
+      if (!e && !this.model.index.interfaces.has(dev + ':' + iface)) return false;
+      this.shutPorts.set(key, this.now);
+      this.note('link', 'link', dev, '', `${iface} shut`, 'down', `${dev}:${iface} is shut (administratively down) at t = ${fmtSec(this.now)}`);
+      if (e) this.updateCable(e.link);
+      else {
+        this.syncInterfaces();
+        this.routingChanged();
+      }
+    } else {
+      this.shutL3.set(dev + ':' + iface, this.now);
+      this.note('link', 'link', dev, '', `${iface} shut`, 'down', `${dev}:${iface} is shut (administratively down) at t = ${fmtSec(this.now)}`);
+      this.syncInterfaces();
+      this.routingChanged();
+    }
+    this.stateVersion++;
+    return true;
+  }
+
+  noShut(dev: string, iface: string): boolean {
+    const key = portKey(dev, iface);
+    if (this.shutPorts.delete(key)) {
+      this.note('link', 'link', dev, '', `${iface} no shut`, 'up', `${dev}:${iface}: no shut at t = ${fmtSec(this.now)}`);
+      const e = this.net.ends.get(key);
+      if (e) this.updateCable(e.link);
+      else {
+        this.syncInterfaces();
+        this.routingChanged();
+      }
+    } else if (this.shutL3.delete(dev + ':' + iface)) {
+      this.note('link', 'link', dev, '', `${iface} no shut`, 'up', `${dev}:${iface}: no shut at t = ${fmtSec(this.now)}`);
+      this.syncInterfaces();
+      this.routingChanged();
+    } else return false;
+    this.stateVersion++;
+    return true;
+  }
+
+  /** The VMs and containers cabled to a server (it is their host). */
+  private hostedBy(dev: string): string[] {
+    const d = this.model.index.devices.get(dev);
+    if (!d || d.type !== 'server') return [];
+    const out = new Set<string>();
+    for (const l of this.net.links.values()) {
+      for (const [x, y] of [[l.a.device, l.b.device], [l.b.device, l.a.device]]) {
+        const vd = this.model.index.devices.get(y);
+        if (x === dev && vd && (vd.type === 'vm' || vd.type === 'container')) out.add(y);
+      }
+    }
+    return Array.from(out).sort(cmp);
+  }
+
+  /** VMs and containers that went down with their host: the host. */
+  private hostedOff = new Map<string, string>();
+
+  /** Power a device off: its ports go dark, its tables and sessions are gone (an inline appliance that fails open passes frames on). */
+  powerOff(dev: string, why = ''): boolean {
+    const sd = this.net.devices.get(dev);
+    if (!sd) return false;
+    if (this.off.has(dev)) {
+      if (!this.booting.has(dev)) return false;
+      // powered off again while booting
+      this.booting.delete(dev);
+      this.note('link', 'link', dev, '', 'Powered off', 'off', `${dev} is powered off again while booting`);
+      this.stateVersion++;
+      return true;
+    }
+    this.off.set(dev, this.now);
+    const open = sd.dev.type === 'ids_ips' && this.params.str('ips-fail', dev) === 'open';
+    if (open) this.bypass.add(dev);
+    const mode = sd.dev.type === 'ids_ips' ? ` It fails ${open ? 'open: frames pass through unchecked' : 'closed: nothing passes'} (${resolvedText(this.params.get('ips-fail', dev))}).` : '';
+    this.note('link', 'link', dev, '', 'Powered off', 'off', `${dev} is powered off at t = ${fmtSec(this.now)}${why}: its ports go dark, its tables and sessions are gone.${mode}`);
+    this.stateVersion++;
+    const tab = this.arp.get(dev);
+    if (tab) tab.clear();
+    const macs = this.macs.get(dev);
+    if (macs) for (const [k, e] of Array.from(macs)) if (e.type === 'dynamic') macs.delete(k);
+    for (const d of this.pending) if (d.dev === dev) d.cancelled = true;
+    if (this.protocols && this.protocols.deviceDown) this.protocols.deviceDown(dev);
+    for (const id of this.linksOf(dev)) this.updateCable(id);
+    this.recomputeTrees(this.linksOf(dev));
+    this.syncInterfaces();
+    this.routingChanged();
+    // a server's VMs and containers go down with it, and are restarted where another server is cabled to them
+    const restart = this.params.get('vm-restart', dev);
+    for (const vm of this.hostedBy(dev)) {
+      if (this.off.has(vm)) continue;
+      this.hostedOff.set(vm, dev);
+      this.powerOff(vm, ` with its host ${dev}`);
+      this.at(this.now + Number(restart.value), () => {
+        if (this.hostedOff.get(vm) !== dev || !this.off.has(vm) || this.booting.has(vm)) return;
+        const other = this.linksOf(vm)
+          .map((id) => this.net.links.get(id) as Link)
+          .map((l) => (l.a.device === vm ? l.b.device : l.a.device))
+          .find((h) => h !== dev && !this.off.has(h) && (this.model.index.devices.get(h) || { type: '' }).type === 'server');
+        if (!other) {
+          this.note('link', 'link', vm, '', 'Not restarted', 'off', `${vm} is not restarted after ${resolvedText(restart)}: no other server it is connected to is on (it starts again with ${dev})`);
+          return;
+        }
+        this.hostedOff.delete(vm);
+        this.note('link', 'link', vm, other, 'Restarted', 'booting', `${vm} is restarted on ${other} after the VM restart time ${resolvedText(restart)}`);
+        this.powerOn(vm);
+      });
+    }
+    return true;
+  }
+
+  /** Power a device on: it boots for its boot time, then its ports negotiate and its sessions start afresh. */
+  powerOn(dev: string): boolean {
+    if (!this.off.has(dev) || this.booting.has(dev)) return false;
+    const r = this.params.get('boot-time', dev);
+    const at = this.now + Number(r.value);
+    this.booting.set(dev, at);
+    this.note('link', 'link', dev, '', 'Powered on', 'booting', `${dev} is powered on at t = ${fmtSec(this.now)}: it boots for ${resolvedText(r)} (up at t = ${fmtSec(at)})`);
+    this.stateVersion++;
+    this.at(at, () => {
+      if (this.booting.get(dev) !== at) return;
+      this.booting.delete(dev);
+      this.off.delete(dev);
+      this.bypass.delete(dev);
+      this.stateVersion++;
+      this.note('link', 'link', dev, '', 'Booted', 'up', `${dev} has booted: its ports come up, its tables are empty, its sessions start afresh`);
+      for (const id of this.linksOf(dev)) this.updateCable(id);
+      this.recomputeTrees(this.linksOf(dev));
+      this.syncInterfaces();
+      if (this.protocols && this.protocols.deviceUp) this.protocols.deviceUp(dev);
+      this.routingChanged();
+      // its VMs and containers that waited for it start with it
+      for (const [vm, host] of Array.from(this.hostedOff)) {
+        if (host !== dev) continue;
+        this.hostedOff.delete(vm);
+        this.powerOn(vm);
+      }
+    });
+    return true;
+  }
+
+  /** The network events in effect, for the window (each with what ends it). */
+  netEvents(): NetEvent[] {
+    const out: NetEvent[] = [];
+    for (const [id, t] of this.failedLinks) out.push({ kind: 'fail', ref: 'link:' + id, since: t, state: 'failed' });
+    for (const [id, t] of this.failedRels) out.push({ kind: 'fail', ref: 'relation:' + id, since: t, state: 'failed' });
+    for (const fl of this.flaps.values()) {
+      const cycles = this.params.num('flap-cycles');
+      out.push({ kind: 'flap', ref: fl.ref, since: fl.since, state: `${fl.down ? 'down' : 'up'}, cycle ${fl.done + (fl.down ? 1 : 0)}${cycles ? ' of ' + cycles : ''}` });
+    }
+    for (const [k, t] of this.shutPorts) out.push({ kind: 'shut', ref: 'iface:' + k.replace('|', ':'), since: t, state: 'shut' });
+    for (const [k, t] of this.shutL3) out.push({ kind: 'shut', ref: 'iface:' + k, since: t, state: 'shut' });
+    for (const [d, t] of this.off) {
+      if (this.hostedOff.has(d) && !this.booting.has(d)) {
+        out.push({ kind: 'power', ref: 'device:' + d, since: t, state: `down with its host ${this.hostedOff.get(d)}`, hosted: true });
+        continue;
+      }
+      const b = this.booting.get(d);
+      out.push({ kind: 'power', ref: 'device:' + d, since: t, state: b !== undefined ? `booting (up at t = ${fmtSec(b)})` : this.bypass.has(d) ? 'off (failed open)' : 'off' });
+    }
+    return out.sort((a, b) => a.since - b.since || cmp(a.ref, b.ref));
+  }
+
+  /** What the diagram marks as down now: cables that are not up, failed relations, shut interfaces, devices off. */
+  downRefs(): string[] {
+    const out: string[] = [];
+    for (const [id, st] of this.cable) if (st !== 'up') out.push('link:' + id);
+    for (const id of this.failedRels.keys()) out.push('relation:' + id);
+    for (const k of this.shutPorts.keys()) out.push('iface:' + k.replace('|', ':'));
+    for (const k of this.shutL3.keys()) out.push('iface:' + k);
+    for (const [d] of this.off) if (!this.bypass.has(d)) out.push('device:' + d);
+    return out.sort(cmp);
+  }
+
+  /** Cables with `simulation: {flapping: true}` start flapping once the network had time to come up (after the flapping up time). */
+  startConfigured(): void {
+    for (const l of Array.from(this.net.links.values()).sort((a, b) => cmp(a.id, b.id))) {
+      if (!l.simulation || !l.simulation.flapping) continue;
+      this.at(this.params.num('flap-up'), () => this.startFlap('link:' + l.id, ' (configured on the cable)'));
+    }
+  }
+
+  // ------------------------------------------------------------ parameters during the simulation
+
+  /** Set a simulation-wide parameter now (undefined: back to its default). */
+  setParam(key: string, v: ParamValue | undefined): ParamChange | null {
+    const c = this.params.setSim(key, v);
+    if (c) this.applyChanges([c]);
+    return c;
+  }
+
+  /** A device's attributes changed in the model (the Simulation section of the Edit tab): they apply now. */
+  setDeviceParams(dev: string, type: string, values: Map<string, ParamValue>): ParamChange[] {
+    const cs = this.params.setDevice(dev, type, values);
+    if (cs.length) this.applyChanges(cs);
+    return cs;
+  }
+
+  /**
+   * Changes apply at once, at the current simulated time: each is logged;
+   * the tables are checked against their new timeouts (a shorter ARP
+   * timeout expires older entries now); periodic timers are rescheduled
+   * (protocols.ts); latency, loss and flapping act from the next frame or
+   * cycle on.
+   */
+  private applyChanges(cs: ParamChange[]): void {
+    for (const c of cs) this.note('note', 'link', c.device || '', '', 'Parameter changed', '', changeText(c));
+    this.estimates.clear();
+    this.sweep();
+    if (this.protocols && this.protocols.paramsChanged) this.protocols.paramsChanged(cs);
   }
 
   /** MAC entries learned on a port whose cable failed are removed. */
@@ -1279,9 +2012,8 @@ export class Engine {
     if (n.length) this.note('table', 'stp', dev, '', 'MAC entries removed', '', `${dev} MAC table: ${n.length} entr${n.length === 1 ? 'y' : 'ies'} on port ${bp} removed (${why}): ${n.map(([, e]) => e.mac).join(', ')}`);
   }
 
-  /** Cut what is on its way over the failed cable or relation: those dots are dropped, what they would deliver never arrives. */
-  private cut(): void {
-    const ref = this.failed as string;
+  /** Cut what is on its way over a cable that went down: those dots are dropped, what they would deliver never arrives. */
+  private cut(ref: string): void {
     const t = this.now;
     const dead = new Set<number>();
     for (const f of this.flights) {
@@ -1297,7 +2029,7 @@ export class Engine {
         f.dropped = Math.max(t, f.t0);
         f.t1 = f.dropped;
         dead.add(f.id);
-        this.note('drop', f.protocol, '', '', f.label, '', `lost on ${ref.slice(5)} when it failed: ${f.label}`);
+        this.note('drop', f.protocol, '', '', f.label, '', `lost on ${ref.slice(5)} when it went down: ${f.label}`);
       }
     }
     for (const d of this.pending) if (dead.has(d.flight)) d.cancelled = true;
@@ -1314,9 +2046,9 @@ export class Engine {
     for (const e of tab.values()) {
       if (e.ip.version !== version) continue;
       let remaining: number | null = null;
-      if (e.type === 'incomplete' || e.state === 'PROBE' || e.state === 'REFRESHING') remaining = Math.max(0, e.timer - t + (ND_RETRIES_DEFAULT - e.tries) * ND_RETRANS_DEFAULT * 1000);
-      else if (version === 4) remaining = Math.max(0, this.arpTimeout(dev, e.iface).ms / this.timerScale - (t - e.refreshed));
-      else if (e.state === 'REACHABLE') remaining = Math.max(0, this.ndReachable(dev, e.iface).ms / this.timerScale - (t - e.refreshed));
+      if (e.type === 'incomplete' || e.state === 'PROBE' || e.state === 'REFRESHING') remaining = Math.max(0, e.sentAt + this.retrans(dev) - t + Math.max(0, this.retries(dev) - e.tries) * this.retrans(dev));
+      else if (version === 4) remaining = Math.max(0, this.arpTimeout(dev) / this.timerScale - (t - e.refreshed));
+      else if (e.state === 'REACHABLE') remaining = Math.max(0, this.ndReachable(dev) / this.timerScale - (t - e.refreshed));
       else if (e.state === 'DELAY') remaining = Math.max(0, e.timer - t);
       rows.push({
         ip: e.ipText,
@@ -1339,37 +2071,27 @@ export class Engine {
     const tab = this.macs.get(dev);
     if (!tab) return [];
     const t = this.now;
-    const aging = this.macAging();
+    const aging = this.macAging(dev);
     return Array.from(tab.values())
       .filter((e) => e.type === 'static' || t - e.refreshed < aging)
       .map((e) => ({ mac: e.mac, macSimulated: this.simulatedMac(e.mac), vlan: e.vlan, port: e.port, type: e.type, age: e.type === 'static' ? 0 : t - e.refreshed, remaining: e.type === 'static' ? null : Math.max(0, aging - (t - e.refreshed)) }))
       .sort((a, b) => a.vlan - b.vlan || cmp(a.mac, b.mac));
   }
 
-  /** The timers at the top of a device's ARP / neighbour table: the device's own (or the default) and the interfaces that differ. */
-  arpTimers(dev: string): TableTimer[] {
-    const d = this.model.index.devices.get(dev);
-    const out: TableTimer[] = [];
-    const arp = d && d.arpTimeout !== undefined ? { s: d.arpTimeout, o: 'configured' } : { s: ARP_TIMEOUT_DEFAULT, o: 'default (Cisco IOS; RFC 826 sets none)' };
-    const nd = d && d.ndpReachableTime !== undefined ? { s: d.ndpReachableTime, o: 'configured' } : { s: NDP_REACHABLE_DEFAULT, o: 'default (RFC 4861 REACHABLE_TIME)' };
-    out.push({ label: 'ARP entry timeout', seconds: arp.s, origin: arp.o });
-    out.push({ label: 'NDP reachable time', seconds: nd.s, origin: nd.o });
-    const sd = this.net.devices.get(dev);
-    if (sd) {
-      for (const l3 of Array.from(sd.l3.values()).sort((a, b) => cmp(a.id, b.id))) {
-        const i = this.model.index.interfaces.get(dev + ':' + l3.id);
-        if (i && i.arpTimeout !== undefined) out.push({ label: `ARP entry timeout on ${l3.id}`, seconds: i.arpTimeout, origin: 'configured on the interface' });
-        if (i && i.ndpReachableTime !== undefined) out.push({ label: `NDP reachable time on ${l3.id}`, seconds: i.ndpReachableTime, origin: 'configured on the interface' });
-      }
-    }
-    out.push({ label: 'Retransmit interval', seconds: ND_RETRANS_DEFAULT, origin: 'default (RFC 4861 RETRANS_TIMER)' });
-    out.push({ label: 'Requests before an incomplete entry is dropped', seconds: ND_RETRIES_DEFAULT, origin: 'default (RFC 4861 MAX_MULTICAST_SOLICIT)' });
-    return out;
+  /** A timer of a table as its top shows it: the value in effect and where it comes from. */
+  private tableTimer(key: string, dev: string): TableTimer {
+    const r = this.params.get(key, dev);
+    return { label: r.def.label, value: formatValue(r.def, r.value), source: r.source, origin: sourceText(r, true) };
   }
 
-  /** The MAC table's timer. */
-  macTimers(): TableTimer[] {
-    return [{ label: 'Aging time', seconds: MAC_AGING_DEFAULT, origin: 'default (IEEE 802.1D)' }];
+  /** The timers at the top of a device's ARP / neighbour table, with where each comes from. */
+  arpTimers(dev: string): TableTimer[] {
+    return ['arp-timeout', 'ndp-reachable', 'arp-retransmit', 'arp-retries'].map((k) => this.tableTimer(k, dev));
+  }
+
+  /** A switch's MAC table timers. */
+  macTimers(dev: string): TableTimer[] {
+    return ['mac-aging', 'mac-table-size'].map((k) => this.tableTimer(k, dev));
   }
 
   /** Change the timer scale (from now on: the entries' remaining times follow the new scale). */
@@ -1381,7 +2103,7 @@ export class Engine {
 
   // ------------------------------------------------------------ estimates (for the logical view's dots)
 
-  /** About how long a packet from a device to an address takes: its traced path's cables × HOP (cached per routing state). */
+  /** About how long a packet from a device to an address takes: its traced path's cables × a hop's time (cached per routing state). */
   estimate(dev: string, to: IpAddr): number {
     const key = dev + '>' + formatAddr(to);
     const known = this.estimates.get(key);
@@ -1396,7 +2118,7 @@ export class Engine {
     } catch (e) {
       cables = 2;
     }
-    const ms = cables * HOP;
+    const ms = cables * this.hopTime();
     this.estimates.set(key, ms);
     return ms;
   }

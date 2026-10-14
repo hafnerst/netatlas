@@ -152,8 +152,7 @@ than one endpoint on the same device is bound by the first of them.
 | `group` | | Id of the group the device is located in |
 | `tier` | | 0–9: vertical row in the physical view (0 = top). By default this comes from the type (see the table below). Set it to place a device elsewhere, e.g. `tier: 3` for core or spine switches above the access switches. |
 | `router_id` | | The router ID the device's protocols share: the id of one of its **loopbacks** (`lo0`: its IPv4 address is used) or an **IPv4 address** without a prefix length (`10.255.0.1`). Applies only while an enabled protocol uses a router ID (OSPF, BGP, EIGRP, LDP); otherwise it is reported as not applicable. See [Routing services](#routing-services-protocols). |
-| `arp_timeout` | | How long an ARP entry stays valid, in seconds (1–2147483), for the [protocol simulation](#arp-and-neighbour-timers)'s ARP table of this device. Omitted: the default, 14400 s (4 h). |
-| `ndp_reachable_time` | | How long an IPv6 neighbour counts as reachable after it was confirmed, in seconds (1–3600). Omitted: the default, 30 s. |
+| `simulation` | | The device's **simulation attributes**, for the [protocol simulation](#simulation-parameters-and-device-attributes): only what it overrides, e.g. `simulation: {arp_timeout: 300, spf_delay: 50ms, boot_time: 2min}`. Everything else it inherits from the simulation's values or the defaults. |
 | `protocols` | | The **routing services** the device runs, with their parameters: `protocols: {bgp: {asn: 65001}, ospf: {}}`. Layer 3+ devices only (a switch with `layer3: true`). See [Routing services](#routing-services-protocols). |
 | `description`, `attrs` | | |
 | `interfaces` | | List of the device's **physical interfaces** (its ports, below). The shorthand `interfaces: [eth0, eth1]` is allowed. |
@@ -365,7 +364,6 @@ devices:
 | `dhcp` | `true` or `false`; **omitted means `false`**. `true`: the interface obtains its address by DHCP, so it has no manually configured addresses. Not on a loopback. See [DHCP](#dhcp). |
 | `ip` | the manually configured addresses: one address or a list, `ip: 10.0.0.1/30` or `ip: [192.0.2.1/24, 2001:db8::1/64]`. Addresses that aren't valid IPv4/IPv6 addresses give a *warning* and are shown as written (on a loopback they are an error); for `ip: dhcp` the warning says to write `dhcp: true` instead (on a loopback: to write its address). **The addresses decide which networks the device belongs to.** |
 | `vrf` | name of the VRF the interface is assigned to (free text, display only). Membership in a network is decided by the address alone. |
-| `arp_timeout`, `ndp_reachable_time` | the ARP timeout and the IPv6 neighbour reachable time on this interface, in seconds, overriding the device's (see [ARP and neighbour timers](#arp-and-neighbour-timers)). |
 | `mtu` | the interface's MTU in bytes, a whole number from 68 to 65535. Omitted: not modelled (no MTU is assumed, so nothing is compared). Read by the [consistency checks](#consistency-checks) `link-mtu-mismatch` and `tunnel-mtu`. |
 | `mac`, `description`, `attrs` | |
 
@@ -746,6 +744,7 @@ devices:
 | `medium` | | `fiber`, `copper`, `dac`, `aoc`, `wireless`/`lte`/`5g`/`microwave`, `serial`, `virtual`, or any other text (it gets its own colour). **The only place the medium of the connection is configured**; without it the cable is drawn as "Unspecified". |
 | `speed` | | e.g. `1G`, `10G`, `100G`, `250M`. **The only place the speed of the connection is configured**; it sets the line width. |
 | `direction` | | `unidirectional`: traffic only from end `a` to end `b` (simplex fibre, a data diode, a TAP or SPAN feed), drawn with an arrow at end `b`; the path tracer and the simulated traffic never use it the other way. `bidirectional` is the default and is not written. Anything else is an error. |
+| `simulation` | | The cable's settings for the [protocol simulation](#simulation-parameters-and-device-attributes): `latency` (its propagation delay; a bare number is in ms, or `250us`, `2ms`), `loss` (the share of frames lost, in percent) and `flapping: true` (it flaps from the start, with the simulation's flapping times). Configured here, they take precedence over everything else. |
 | `label`, `cable` (cable/circuit id), `description`, `attrs` | | |
 
 Rules: a port can have at most one cable. Only physical interfaces can be
@@ -1068,8 +1067,9 @@ Every built-in protocol has a **simulation profile** (its messages,
 transport, timers with their defaults, states, and what it does on a
 failure and after a restore; `src/model/sim-profiles.ts`), used by
 Simulate → Start simulation. The simulation reads these relation
-attributes where they are written (else the protocol's default, marked
-*default* in its event log): OSPF `hello`, `dead` and `priority`; BFD
+attributes where they are written (they are *configured*, the first in the
+[order of precedence](#order-of-precedence); else the simulation's value or
+the protocol's default, as the event log says): OSPF `hello`, `dead` and `priority`; BFD
 `interval` (`300ms`, `1s`) and `multiplier`; PIM `rp` (the RP: an address
 or a device); IGMP `group` (default 239.1.1.1); VRRP / HSRP `preempt`
 (`false` turns it off). A switch's spanning-tree priority is the device
@@ -1107,30 +1107,233 @@ a bandwidth that isn't one and a duplicate id are **errors**; an end that
 names nothing of the model is a **warning** (the demand can't be traced and
 is shown as lost). At most 2000 demands.
 
-## ARP and neighbour timers
+## Simulation parameters and device attributes
+
+Simulate → Start simulation… opens a dialog with the simulation's
+**Layer 1–3 parameters** (Layer 4 comes with the simulation of TCP and
+UDP): one collapsible section per layer, every field prefilled with its
+default, its unit, a short help with the default and its source, and a
+range check; changed values are marked *modified*, and each section and
+the whole form can be reset. The same sections are in the Simulation
+window, where a change applies at once, at the current simulated time
+(and is written to the event log). The values are remembered for the next
+start in the same browser session; they are **never written to the
+model**. What a device or a cable overrides is written in the model, in
+its optional `simulation:` block (only the overrides).
+
+### Order of precedence
+
+One order decides which value is in effect, everywhere (the engine, the
+window, the tables, the Edit tab):
+
+1. **configured**: explicit configuration on the object in the model, for
+   example a relation's OSPF `hello` / `dead` or BFD `interval` /
+   `multiplier`, a cable's `simulation: {latency, loss}` or `speed`;
+2. **device**: the device's simulation attribute (`simulation:` on it);
+3. **simulation**: the simulation-wide value (the dialog, the window);
+4. **default**: the built-in common default, with its source.
+
+Wherever a value is shown it says where it comes from: *configured on …*,
+*device*, *simulation* or *default* (with its source). A derived timer
+follows its base: OSPF's dead interval is 4 × the hello interval, BGP's
+hold time 3 × the keepalive. A cable's latency and loss come from the
+cable, else from one of its devices (a cloud's `latency` and `loss`: the
+larger of the two ends), else from the simulation.
+
+### The parameters
+
+The tables below are generated from the registry
+(`src/analysis/sim/params.ts`). A duration may be written with a unit
+(`250us`, `300ms`, `30s`, `5min`, `4h`); a bare number is in the unit the
+attribute names (seconds, or milliseconds for latencies, BFD and the route
+recomputation delay).
+
+#### Layer 1 – Physical (8)
+
+| Parameter | Default | Range | Source of the default | Also |
+|---|---|---|---|---|
+| Link latency | 100 µs | 0 s – 10 s | about 20 km of fibre (5 µs per km); a cable in one building is far shorter | device attribute `latency`; configured: a cable’s simulation: latency |
+| Packet loss | 0 % | 0 % – 100 % | a healthy link loses nothing | device attribute `loss`; configured: a cable’s simulation: loss |
+| Loss-of-signal detection | 0 s | 0 s – 1 min | Junos hold-time down 0 ms (Cisco carrier-delay is the same idea) |  |
+| Link-up delay | 2 s | 0 s – 5 min | 1000BASE-T autonegotiation and link training (IEEE 802.3 clauses 28 and 40) take about 2 s |  |
+| Default speed | 1 Gbit/s | 1 kbit/s – 1600 Gbit/s | 1000BASE-T, the usual access port | configured: a cable’s speed |
+| Flapping: down time | 5 s | 100 ms – 1 h | a demonstration value |  |
+| Flapping: up time | 10 s | 100 ms – 1 h | a demonstration value |  |
+| Flapping: cycles | 3 (0: continuous) | continuous – 1000 | a demonstration value |  |
+
+#### Layer 2 – Data link (6)
+
+| Parameter | Default | Range | Source of the default | Also |
+|---|---|---|---|---|
+| ARP timeout | 4 h | 1 s – 2147483 s | Cisco IOS (4 h); RFC 826 sets none | device attribute `arp_timeout` |
+| ARP retransmit interval | 1 s | 100 ms – 1 min | RFC 4861 RETRANS_TIMER (used for ARP as well) | device attribute `arp_retransmit` |
+| ARP retries | 3 | 1 – 10 | RFC 4861 MAX_MULTICAST_SOLICIT (used for ARP as well) | device attribute `arp_retries` |
+| NDP reachable time | 30 s | 1 s – 1 h | RFC 4861 REACHABLE_TIME | device attribute `ndp_reachable_time` |
+| MAC aging time | 5 min | 10 s – 1000000 s | IEEE 802.1D-2004 recommended ageing time | device attribute `mac_aging` |
+| Spanning tree | RSTP | `rstp`, `stp` | IEEE 802.1D-2004 (RSTP, the default of current switches) | device attribute `stp_mode` |
+
+#### Layer 3 – Network (6)
+
+| Parameter | Default | Range | Source of the default | Also |
+|---|---|---|---|---|
+| Default TTL / hop limit | 64 | 1 – 255 | RFC 1700 (IANA); Linux, macOS and most routers | device attribute `ttl` |
+| OSPF hello interval | 10 s | 1 s – 65535 s | RFC 2328 Appendix C.3 | configured: an OSPF relation’s hello and dead |
+| BGP keepalive | 1 min | 1 s – 21845 s | Cisco IOS: keepalive 60 s, hold 180 s; RFC 4271 §10 suggests 30 s and 90 s | configured: a BGP relation’s keepalive and hold |
+| BFD interval | 300 ms | 3 ms – 10 s | a common configuration (RFC 5880 sets none) | configured: a BFD relation’s interval and multiplier |
+| BFD multiplier | 3 | 1 – 255 | a common configuration (RFC 5880 sets none) | configured: a BFD relation’s multiplier |
+| VRRP advertisement interval | 1 s | 10 ms – 40.95 s | RFC 5798 §5.2.7 (100 centiseconds) |  |
+| Route recomputation delay | 200 ms | 0 s – 1 min | Junos spf-options delay (200 ms) | device attribute `spf_delay` |
+
+#### Device attributes
+
+| Key | Attribute | Default | Range | Source of the default | Applies to |
+|---|---|---|---|---|---|
+| `latency` | Link latency (ms) | 100 µs | 0 s – 10 s | about 20 km of fibre (5 µs per km); a cable in one building is far shorter | clouds |
+| `loss` | Packet loss | 0 % | 0 % – 100 % | a healthy link loses nothing | clouds |
+| `arp_timeout` | ARP timeout (s) | 4 h | 1 s – 2147483 s | Cisco IOS (4 h); RFC 826 sets none | devices with an address |
+| `arp_retransmit` | ARP retransmit interval (s) | 1 s | 100 ms – 1 min | RFC 4861 RETRANS_TIMER (used for ARP as well) | devices with an address |
+| `arp_retries` | ARP retries | 3 | 1 – 10 | RFC 4861 MAX_MULTICAST_SOLICIT (used for ARP as well) | devices with an address |
+| `ndp_reachable_time` | NDP reachable time (s) | 30 s | 1 s – 1 h | RFC 4861 REACHABLE_TIME | devices with an address |
+| `mac_aging` | MAC aging time (s) | 5 min | 10 s – 1000000 s | IEEE 802.1D-2004 recommended ageing time | switches |
+| `stp_mode` | Spanning tree | RSTP | `rstp`, `stp` | IEEE 802.1D-2004 (RSTP, the default of current switches) | switches |
+| `ttl` | Default TTL / hop limit | 64 | 1 – 255 | RFC 1700 (IANA); Linux, macOS and most routers | devices with an address |
+| `spf_delay` | Route recomputation delay (ms) | 200 ms | 0 s – 1 min | Junos spf-options delay (200 ms) | routers and Layer 3 devices (Layer 3 switches, firewalls, gateways …) |
+| `boot_time` | Boot time (s) | 30 s (container 2 s, vm 20 s, router 1 min, firewall 1 min, gateway 1 min, load_balancer 1 min) | 0 s – 1 h | a demonstration value (containers start in seconds, chassis routers in minutes) | every device |
+| `max_paths` | Maximum ECMP paths | 4 | 1 – 64 | Cisco IOS maximum-paths (4) | routers and Layer 3 devices (Layer 3 switches, firewalls, gateways …) |
+| `mac_table_size` | MAC table size | 8192 | 1 – 1000000 | a small access switch (data sheets: 8 K–16 K entries) | switches |
+| `stp_hello` | STP hello time (s) | 2 s | 1 s – 10 s | IEEE 802.1D-2004 Table 17-1 | switches |
+| `stp_forward_delay` | STP forward delay (s) | 15 s | 4 s – 30 s | IEEE 802.1D-2004 Table 17-1 | switches |
+| `stp_max_age` | STP max age (s) | 20 s | 6 s – 40 s | IEEE 802.1D-2004 Table 17-1 | switches |
+| `lacp_rate` | LACP rate | Slow | `slow`, `fast` | IEEE 802.1AX (slow periodic time) | devices with an aggregate (LACP) |
+| `ha_failover` | HA failover detection (s) | 3 s | 100 ms – 5 min | a common setting (3 missed heartbeats of 1 s) | firewalls |
+| `fail_mode` | When it fails | Fail open | `open`, `closed` | the hardware bypass of most inline appliances | IDS / IPS |
+| `inspection_latency` | Inspection latency (ms) | 0 s | 0 s – 10 s | none unless set (see the appliance’s data sheet) | IDS / IPS |
+| `ike_lifetime` | IKE SA lifetime (s) | 24 h | 1 min – 8760 h | Cisco IKEv2 (86 400 s) | gateways and IPsec endpoints |
+| `child_lifetime` | Child SA lifetime (s) | 1 h | 1 min – 8760 h | Cisco IOS and strongSwan (1 h) | gateways and IPsec endpoints |
+| `rekey_margin` | Rekey margin (s) | 9 min | 0 s – 24 h | strongSwan margintime (9 min) | gateways and IPsec endpoints |
+| `dpd_interval` | DPD interval (s) | 10 s | 1 s – 1 h | a common setting (RFC 7296 sets none) | gateways and IPsec endpoints |
+| `dpd_retries` | DPD retries | 3 | 1 – 20 | a common setting | gateways and IPsec endpoints |
+| `response_time` | Service response time (ms) | 0 s | 0 s – 1 min | none unless set | servers, VMs, containers, storage |
+| `vm_restart` | VM restart time (s) | 1 min | 0 s – 1 h | a demonstration value (HA failure detection plus the restart) | servers that host VMs or containers (cabled to them) |
+| `snmp_interval` | SNMP polling interval (s) | 1 min | 1 s – 24 h | a demonstration value (300 s is common in production) | systems and SNMP managers |
+| `snmp_timeout` | SNMP timeout (s) | 1 s | 100 ms – 1 min | net-snmp (1 s) | systems and SNMP managers |
+| `association_time` | Client association time (s) | 1 s | 0 s – 1 min | a demonstration value (WPA2-PSK takes well under a second, 802.1X longer) | access points |
+
+| Device type | Simulation attributes |
+|---|---|
+| Router (`router`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `spf_delay`, `boot_time`, `max_paths`, `lacp_rate`, `ike_lifetime`, `child_lifetime`, `rekey_margin`, `dpd_interval`, `dpd_retries` |
+| Switch (`switch`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `mac_aging`, `stp_mode`, `ttl`, `spf_delay`, `boot_time`, `max_paths`, `mac_table_size`, `stp_hello`, `stp_forward_delay`, `stp_max_age`, `lacp_rate`, `ike_lifetime`, `child_lifetime`, `rekey_margin`, `dpd_interval`, `dpd_retries` |
+| Firewall (`firewall`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `spf_delay`, `boot_time`, `max_paths`, `lacp_rate`, `ha_failover`, `ike_lifetime`, `child_lifetime`, `rekey_margin`, `dpd_interval`, `dpd_retries` |
+| Access point (`ap`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `boot_time`, `lacp_rate`, `association_time` |
+| Server (`server`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `boot_time`, `lacp_rate`, `response_time`, `vm_restart`, `snmp_interval`, `snmp_timeout` |
+| Virtual machine (`vm`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `boot_time`, `lacp_rate`, `response_time`, `snmp_interval`, `snmp_timeout` |
+| Container (`container`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `boot_time`, `lacp_rate`, `response_time`, `snmp_interval`, `snmp_timeout` |
+| Storage (`storage`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `boot_time`, `lacp_rate`, `response_time` |
+| Load balancer (`load_balancer`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `spf_delay`, `boot_time`, `max_paths`, `lacp_rate`, `ike_lifetime`, `child_lifetime`, `rekey_margin`, `dpd_interval`, `dpd_retries` |
+| Proxy (`proxy`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `spf_delay`, `boot_time`, `max_paths`, `lacp_rate`, `ike_lifetime`, `child_lifetime`, `rekey_margin`, `dpd_interval`, `dpd_retries` |
+| IDS/IPS (`ids_ips`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `boot_time`, `lacp_rate`, `fail_mode`, `inspection_latency` |
+| Gateway (`gateway`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `spf_delay`, `boot_time`, `max_paths`, `lacp_rate`, `ike_lifetime`, `child_lifetime`, `rekey_margin`, `dpd_interval`, `dpd_retries` |
+| Endpoint (`endpoint`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `boot_time`, `lacp_rate`, `snmp_interval`, `snmp_timeout` |
+| Cloud (`cloud`) | `latency`, `loss`, `boot_time` |
+| System (`system`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `boot_time`, `lacp_rate`, `snmp_interval`, `snmp_timeout` |
+
+Validation reports, as errors: an unknown key in a `simulation:` block
+(with a suggestion), an attribute that does not apply to the device's
+type (the table above; the Edit tab lists the ones that apply to the
+device itself, e.g. LACP only with an aggregate, the VPN attributes only on
+a gateway or an IPsec endpoint), a value out of its range, and a value
+that isn't one (a duration without a known unit, a speed that isn't one,
+a choice that isn't offered).
+
+```yaml
+devices:
+  - id: core1
+    type: switch
+    layer3: true
+    simulation: {arp_timeout: 300, mac_aging: 120, stp_mode: stp, spf_delay: 50ms}
+  - id: inet
+    type: cloud
+    simulation: {latency: 15, loss: 0.5}
+links:
+  - {id: uplink2, a: "acc-sw:up2", b: "core2:down1", simulation: {flapping: true}}
+```
+
+### What the parameters do
+
+* **Layer 1.** A frame takes its cable's latency plus its serialization
+  time (its size at the cable's speed, the default speed when the cable
+  has none); frames on one cable and direction go one after the other. A
+  share of frames is lost where the packet loss says, from a fixed seed. A
+  cable that goes down (failed, flapping, a shut port, a device powered
+  off) drops what is on it at once; its ports notice after the
+  loss-of-signal detection time (a port whose own device took it down: at
+  once). When it comes back, its ports come up after the link-up delay
+  (an access point's wireless links: its association time); a loss shorter
+  than the detection time is never noticed. Flapping: down for the
+  flapping down time, up for the up time, for its cycles.
+* **Layer 2.** The ARP and neighbour timers below; the MAC aging time and
+  the MAC table size (a full table learns nothing new: frames to an
+  unknown address are flooded); the spanning tree's convergence after a
+  change: RSTP takes over at once at the switch at the change, after 3 ×
+  the hello time (6 s) further away; STP after 2 × the forward delay
+  (30 s) at the change, max age + 2 × the forward delay (50 s) further
+  away. A topology change flushes the VLAN's MAC tables.
+* **Layer 3.** A device sends with its default TTL / hop limit (a
+  protocol that sets one, e.g. OSPF's 1, keeps it). The protocols' timers
+  follow the parameters through the order above. After anything that
+  changes the routes (an adjacency, an interface) a router keeps using its
+  old routes for its route recomputation delay (routers that recompute at
+  the same moment share it; the log says *Routes recomputed at …*). Equal
+  -cost next hops are used up to the device's maximum ECMP paths.
+* **Devices.** Power off: its ports go dark, its tables and sessions are
+  gone; power on: it boots for its boot time, then its ports come up and
+  its sessions start afresh. An inline IDS / IPS that fails open passes
+  frames on (nothing else); failing closed, nothing. A server's VMs and
+  containers (devices of those types cabled to it) go down with it and are
+  restarted after its VM restart time where another server is cabled to
+  them (else when it is back). The IPsec lifetimes are rekeyed their
+  margin before they end; DPD gives up after its retries. A server answers
+  its service requests after its response time; an SNMP manager reports
+  an agent that does not answer within its SNMP timeout as *Not
+  responding*. The LACP rate is slow (30 s, timeout 90 s) or fast (1 s,
+  timeout 3 s), IEEE 802.1AX.
+
+During a simulation a change applies at once: pending periodic timers are
+rescheduled (the next OSPF Hello goes at its last one plus the new
+interval, or now when that has passed), the tables are checked against
+their new timeouts (a shorter ARP timeout expires older entries now), and
+latency, loss and flapping act from the next frame or cycle on. Each
+change is written to the log, e.g. *Parameter changed: ARP timeout 4 h →
+60 s (simulation)*. A device's Simulation section in the Edit tab is the
+one part of the model that can be edited during a simulation: its changes
+are normal edits (Undo takes them back) and apply there at once. The
+timeline stays deterministic: the same model, start values and changes at
+the same simulated times give the same result.
+
+### ARP and neighbour timers
 
 The protocol simulation keeps an **ARP table** (IPv4) and a **neighbour
 table** (IPv6) for every device with an IP stack, and a **MAC table** for
 every switch. They start empty and are filled only by what the simulation
-resolves and learns. Their timers come from the model where it writes
-them, else from these defaults (shown as *default* in each table):
+resolves and learns. Their timers follow the order of precedence above;
+each table shows the values in effect with where they come from:
 
-| Timer | Set by | Default | Source of the default |
+| Timer | Device attribute | Default | Source of the default |
 |---|---|---|---|
-| ARP entry timeout | `arp_timeout` on the interface, else on the device | 14400 s (4 h) | the Cisco IOS default (RFC 826 sets none; Linux uses neighbour unreachability detection instead) |
-| NDP reachable time | `ndp_reachable_time` on the interface, else on the device | 30 s | RFC 4861 §10, REACHABLE_TIME (30 000 ms) |
-| Retransmit interval (ARP and NDP) | — | 1 s | RFC 4861 §10, RETRANS_TIMER (used for ARP as well) |
-| Requests before an incomplete entry is dropped | — | 3 | RFC 4861 §10, MAX_MULTICAST_SOLICIT (used for ARP as well) |
+| ARP timeout | `arp_timeout` | 4 h | the Cisco IOS default (RFC 826 sets none; Linux uses neighbour unreachability detection instead) |
+| NDP reachable time | `ndp_reachable_time` | 30 s | RFC 4861 §10, REACHABLE_TIME (30 000 ms) |
+| Retransmit interval (ARP and NDP) | `arp_retransmit` | 1 s | RFC 4861 §10, RETRANS_TIMER (used for ARP as well) |
+| Requests before an incomplete entry is dropped | `arp_retries` | 3 | RFC 4861 §10, MAX_MULTICAST_SOLICIT (used for ARP as well) |
 | Delay before the first NDP probe | — | 5 s | RFC 4861 §10, DELAY_FIRST_PROBE_TIME |
-| MAC table aging time | — | 300 s | IEEE 802.1D-2004, the recommended ageing time |
+| MAC aging time | `mac_aging` | 5 min | IEEE 802.1D-2004, the recommended ageing time |
+| MAC table size | `mac_table_size` | 8192 | a small access switch |
 
 An ARP entry that was used since it was learned is refreshed by a unicast
 ARP Request when its timeout ends (and removed when that goes unanswered
-three times); an unused one expires. IPv6 entries follow RFC 4861
+after the retries); an unused one expires. IPv6 entries follow RFC 4861
 (INCOMPLETE, REACHABLE, STALE, DELAY, PROBE). The simulation window's
 **timer scale** (1:1, 1:60, 1:240, 1:3600) makes these timers run faster in
-the simulation only; the values shown as configured do not change. None of
-this is written to the model.
+the simulation only; the values shown as in effect do not change.
 
 ### Generated MAC addresses
 

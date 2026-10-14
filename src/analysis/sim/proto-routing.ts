@@ -37,15 +37,10 @@ function deadCheck(P: ProtocolSim, s: Sess, ms: number, dead: () => void): void 
   P.armDead(s, ms, dead);
 }
 
-/** Every `ms` (from now), while the session's generation lasts. */
-function every(P: ProtocolSim, s: Sess, ms: number, fn: () => void): void {
+/** Every `ms()` (from now), while the session's generation lasts; a parameter change reschedules it. */
+function every(P: ProtocolSim, s: Sess, ms: () => number, fn: () => void): void {
   const g = s.gen;
-  const tick = (): void => {
-    if (s.gen !== g) return;
-    fn();
-    P.e.after(ms, tick);
-  };
-  tick();
+  P.periodic(() => s.gen === g, ms, fn);
 }
 
 /** The sessions of a device in other relations of a protocol (or the same), that are up, for flooding. */
@@ -81,21 +76,23 @@ function ospfHellos(P: ProtocolSim, s: Sess): void {
   const key = `ospf-hello|${s.rel.id}|${s.dev}|${s.local.l3.id}`;
   if (P.shared.has(key)) return;
   P.shared.set(key, true);
-  const hello = P.timer(s, s.profile, 'hello');
-  const dead = P.timer(s, s.profile, 'dead');
   const group = addr(s.local.addr.version === 4 ? (s.profile.group4 as string) : (s.profile.group6 as string));
   const rid = routerId(P, s.dev, 'ospf');
   const prio = Number(relPrio(s)) || 1;
-  const tick = (): void => {
-    const mine = (P.byRel.get(s.rel.id) || []).filter((o) => o.dev === s.dev && o.local.l3.id === s.local.l3.id);
-    const seen = mine.filter((o) => o.state !== 'Down').map((o) => (o.x as OspfX).peerRid).filter((x) => !!x) as string[];
-    const dr = drOf(P, s);
-    if (P.e.isL3Up(s.dev, s.local.l3.id)) {
-      P.multicast(s, group, 'Hello', `router ID ${rid}, priority ${prio}, hello ${hello.text}, dead ${dead.text}, neighbours seen: ${seen.length ? seen.join(', ') : 'none'}${dr ? ', DR ' + dr.dr + (dr.bdr ? ', BDR ' + dr.bdr : '') : ''}`, { rid, prio, seen, hello: hello.ms, dead: dead.ms });
-    }
-    P.e.after(hello.ms, tick);
-  };
-  tick();
+  P.periodic(
+    () => true,
+    () => P.timer(s, s.profile, 'hello').ms,
+    () => {
+      const hello = P.timer(s, s.profile, 'hello');
+      const dead = P.timer(s, s.profile, 'dead');
+      const mine = (P.byRel.get(s.rel.id) || []).filter((o) => o.dev === s.dev && o.local.l3.id === s.local.l3.id);
+      const seen = mine.filter((o) => o.state !== 'Down').map((o) => (o.x as OspfX).peerRid).filter((x) => !!x) as string[];
+      const dr = drOf(P, s);
+      if (P.e.isL3Up(s.dev, s.local.l3.id)) {
+        P.multicast(s, group, 'Hello', `router ID ${rid}, priority ${prio}, hello ${hello.text}, dead ${dead.text}, neighbours seen: ${seen.length ? seen.join(', ') : 'none'}${dr ? ', DR ' + dr.dr + (dr.bdr ? ', BDR ' + dr.bdr : '') : ''}`, { rid, prio, seen, hello: hello.ms, dead: dead.ms });
+      }
+    },
+  );
 }
 
 function relPrio(s: Sess): string {
@@ -251,19 +248,19 @@ const isis: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void }
     const key = `isis-hello|${s.rel.id}|${s.dev}|${s.local.l3.id}`;
     if (P.shared.has(key)) return;
     P.shared.set(key, true);
-    const hello = P.timer(s, s.profile, 'hello');
     const sys = routerId(P, s.dev, 'isis');
-    const tick = (): void => {
-      if (P.e.isL3Up(s.dev, s.local.l3.id) && s.local.l3.kind !== 'tunnel') {
+    P.periodic(
+      () => true,
+      () => P.timer(s, s.profile, 'hello').ms,
+      () => {
+        if (!P.e.isL3Up(s.dev, s.local.l3.id) || s.local.l3.kind === 'tunnel') return;
         const seen = (P.byRel.get(s.rel.id) || []).filter((o) => o.dev === s.dev && o.state !== 'Down').map((o) => o.peer);
         const m = P.msg(s, 'IIH', `${s.dev} on ${s.local.l3.id} to ${ISIS_MAC} (AllL2ISs), hold ${P.timer(s, s.profile, 'dead').text}; neighbours seen: ${seen.join(', ') || 'none'}`, { seen, sys });
         P.e.note('message', s.protocol, s.dev, s.peer, 'IIH', '', m.detail);
-        for (const o of (P.byRel.get(s.rel.id) || []).filter((q) => q.dev === s.dev)) P.lane(s.rel, s.dev, o.peer, m, 600);
+        for (const o of (P.byRel.get(s.rel.id) || []).filter((q) => q.dev === s.dev)) P.lane(s.rel, s.dev, o.peer, m, 2 * P.e.hopTime());
         P.e.emit(s.dev, s.local.l3, { src: s.local.l3.mac, dst: ISIS_MAC, msg: m, pdu: true });
-      }
-      P.e.after(hello.ms, tick);
-    };
-    tick();
+      },
+    );
   },
   rx(P, s, msg) {
     const d = (msg.data || {}) as { seen?: string[] };
@@ -299,13 +296,14 @@ const eigrp: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void 
     const key = `eigrp-hello|${s.rel.id}|${s.dev}|${s.local.l3.id}`;
     if (P.shared.has(key)) return;
     P.shared.set(key, true);
-    const hello = P.timer(s, s.profile, 'hello');
     const group = addr(s.local.addr.version === 4 ? (s.profile.group4 as string) : (s.profile.group6 as string));
-    const tick = (): void => {
-      if (P.e.isL3Up(s.dev, s.local.l3.id)) P.multicast(s, group, 'Hello', `hold ${P.timer(s, s.profile, 'dead').text}`);
-      P.e.after(hello.ms, tick);
-    };
-    tick();
+    P.periodic(
+      () => true,
+      () => P.timer(s, s.profile, 'hello').ms,
+      () => {
+        if (P.e.isL3Up(s.dev, s.local.l3.id)) P.multicast(s, group, 'Hello', `hold ${P.timer(s, s.profile, 'dead').text}`);
+      },
+    );
   },
   rx(P, s, msg) {
     const d = (msg.data || {}) as { init?: boolean };
@@ -355,14 +353,17 @@ const rip: Behaviour = {
     const key = `rip|${s.rel.id}|${s.dev}|${s.local.l3.id}`;
     if (P.shared.has(key)) return;
     P.shared.set(key, true);
-    const upd = P.timer(s, s.profile, 'hello');
     const group = addr(s.local.addr.version === 4 ? (s.profile.group4 as string) : (s.profile.group6 as string));
     P.multicast(s, group, 'Request', 'asks for the whole table');
-    const tick = (): void => {
-      if (P.e.isL3Up(s.dev, s.local.l3.id)) P.multicast(s, group, 'Response', 'periodic update: its routes');
-      P.e.after(upd.ms, tick);
-    };
-    P.e.after(upd.ms, tick);
+    const upd = (): number => P.timer(s, s.profile, 'hello').ms;
+    P.periodic(
+      () => true,
+      upd,
+      () => {
+        if (P.e.isL3Up(s.dev, s.local.l3.id)) P.multicast(s, group, 'Response', 'periodic update: its routes');
+      },
+      upd(),
+    );
   },
   rx(P, s, msg) {
     if (msg.type === 'Request') {
@@ -383,7 +384,7 @@ const rip: Behaviour = {
 // ------------------------------------------------------------------ BGP (and EVPN, L3VPN)
 
 function bgpRouteToPeer(P: ProtocolSim, s: Sess): boolean {
-  const d = lookup(P.m, s.dev, s.local.l3.vrf, s.remote.addr, P.e.ctx());
+  const d = lookup(P.m, s.dev, s.local.l3.vrf, s.remote.addr, P.e.ctx(s.dev));
   return d.kind === 'forward' || d.kind === 'local';
 }
 
@@ -413,15 +414,16 @@ function updateText(s: Sess): string {
 }
 
 const bgp: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string, notify?: boolean) => void } = {
+  refresh(P, s) {
+    s.x.detail = `keepalive ${P.timer(s, s.profile, 'keepalive').text}, hold ${P.timer(s, s.profile, 'hold').text}`;
+  },
   start(P, s) {
-    const hold = P.timer(s, s.profile, 'hold');
-    s.x.detail = `hold ${hold.text}`;
+    bgp.refresh!(P, s);
     if (s.initiator) bgpConnect(P, s);
     else if (s.state === 'Idle') P.setState(s, 'Active', false, 'waiting for the peer to connect');
   },
   rx(P, s, msg) {
     const hold = P.timer(s, s.profile, 'hold');
-    const ka = P.timer(s, s.profile, 'keepalive');
     const dd = P.m.index.devices.get(s.dev);
     const asn = dd ? (dd.services.find((x) => x.id === 'bgp') || { values: new Map() }).values.get('asn') : undefined;
     switch (msg.type) {
@@ -451,12 +453,13 @@ const bgp: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string, notify?: b
           P.setState(s, 'Established', true, 'KEEPALIVE received');
           P.unicast(s, 'UPDATE', updateText(s), {}, 'Established');
           const g = s.gen;
-          const tick = (): void => {
-            if (s.gen !== g || s.state !== 'Established') return;
-            P.unicast(s, 'KEEPALIVE', `every ${ka.text}`);
-            P.e.after(ka.ms, tick);
-          };
-          P.e.after(ka.ms, tick);
+          const kms = (): number => P.timer(s, s.profile, 'keepalive').ms;
+          P.periodic(
+            () => s.gen === g && s.state === 'Established',
+            kms,
+            () => P.unicast(s, 'KEEPALIVE', `every ${P.timer(s, s.profile, 'keepalive').text}`),
+            kms(),
+          );
         }
         if (s.state === 'Established') deadCheck(P, s, hold.ms, () => bgp.down(P, s, `hold timer expired (${hold.text})`, true));
         return;
@@ -487,11 +490,11 @@ const bgp: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string, notify?: b
 
 const ldp: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void } = {
   start(P, s) {
-    const hello = P.timer(s, s.profile, 'hello');
     const targeted = s.protocol !== 'ldp';
     const group = addr('224.0.0.2');
     const name = targeted ? 'Targeted Hello' : 'Hello';
-    every(P, s, hello.ms, () => {
+    every(P, s, () => P.timer(s, s.profile, 'hello').ms, () => {
+      const hello = P.timer(s, s.profile, 'hello');
       if (targeted || s.local.addr.version === 6) P.unicast(s, name, `transport address ${formatAddr(s.local.addr)}, hold ${P.timer(s, s.profile, 'dead').text}`);
       else if (s.initiator || true) {
         const key = `ldp-hello|${s.rel.id}|${s.dev}|${Math.floor(P.e.now / hello.ms)}`;
@@ -536,9 +539,8 @@ const ldp: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void } 
           P.setState(s, 'Operational', true, 'session up');
           if (s.protocol === 'ldp') P.unicast(s, 'Address', 'its interface addresses');
           P.unicast(s, s.protocol === 'pseudowire' ? 'Label Mapping (PW)' : s.protocol === 'vpls' ? 'Label Mapping (VPLS)' : 'Label Mapping', s.protocol === 'ldp' ? 'a label per prefix (FEC)' : 'the pseudowire label (FEC 128)');
-          const ka = P.timer(s, s.profile, 'keepalive');
-          every(P, s, ka.ms, () => {
-            if (s.state === 'Operational') P.unicast(s, 'Keepalive', `every ${ka.text}`);
+          every(P, s, () => P.timer(s, s.profile, 'keepalive').ms, () => {
+            if (s.state === 'Operational') P.unicast(s, 'Keepalive', `every ${P.timer(s, s.profile, 'keepalive').text}`);
           });
         }
         return;
@@ -560,12 +562,17 @@ const ldp: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string) => void } 
 // ------------------------------------------------------------------ BFD
 
 const bfd: Behaviour = {
-  start(P, s) {
+  refresh(P, s) {
     const iv = P.timer(s, s.profile, 'interval');
     const mult = P.timer(s, s.profile, 'multiplier');
     const n = Math.max(1, Math.round(mult.ms / 1000));
-    s.x.detail = `interval ${iv.text}, multiplier ${n}${mult.dflt ? ' (default)' : ''}: detection ${fmtSec(iv.ms * n)}`;
-    every(P, s, iv.ms, () => {
+    s.x.detail = `interval ${iv.text}, multiplier ${mult.text}: detection ${fmtSec(iv.ms * n)}`;
+  },
+  start(P, s) {
+    bfd.refresh!(P, s);
+    every(P, s, () => P.timer(s, s.profile, 'interval').ms, () => {
+      const iv = P.timer(s, s.profile, 'interval');
+      const n = Math.max(1, Math.round(P.timer(s, s.profile, 'multiplier').ms / 1000));
       if (P.e.isL3Up(s.dev, s.local.l3.id)) P.unicast(s, 'Control', `state ${s.state}, desired interval ${fmtSec(iv.ms)}, detect multiplier ${n}`, { state: s.state });
     });
   },

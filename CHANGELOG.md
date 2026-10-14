@@ -84,13 +84,56 @@ there is no conversion of files written for the earlier drafts.
   or its VRF, and nothing else of layer 3 (protocols, router ID, a second
   addressed interface, groups, tunnels, other VRFs, routing relations are
   errors). The examples write `layer3: true` on their routing switches.
-- **`arp_timeout`** and **`ndp_reachable_time`** on devices and
-  interfaces (seconds): the protocol simulation's ARP and neighbour timers.
+- **`simulation:` on a device**: its simulation attributes, overrides only
+  (`simulation: {arp_timeout: 300, spf_delay: 50ms, boot_time: 2min}`),
+  checked against the registry, the device's type, the range and the unit.
+  The ARP and NDP timers live here now: `arp_timeout` and
+  `ndp_reachable_time` directly on a device or an interface are unknown
+  keys.
+- **`simulation:` on a link**: the cable's `latency`, `loss` and
+  `flapping: true`, configured on the object and so first in the order of
+  precedence.
 - Built-in protocols **`stp`** (aliases `rstp`, `mstp`), **`lldp`**, **`cdp`**
   and **`igmp`** (alias `mld`).
 
 ### Added
 
+- **Simulation parameters for Layers 1–3.** Start simulation… opens a
+  dialog with one collapsible section per layer (Layer 1 – Physical (8),
+  Layer 2 – Data link (6), Layer 3 – Network (6)): latency, packet loss,
+  loss-of-signal detection, link-up delay, default speed, flapping times
+  and cycles; ARP timeout, retransmit and retries, NDP reachable time, MAC
+  aging, spanning-tree mode; default TTL, OSPF hello, BGP keepalive, BFD
+  interval × multiplier, VRRP advertisement, route recomputation delay.
+  Every field has its default with its source, its unit and a range check;
+  changed values are marked modified, with Reset per section and for all;
+  the values are remembered for the browser session. The same sections are
+  in the Simulation window, where a change applies at once (timers
+  rescheduled, tables checked against new timeouts) and is logged.
+- **One order of precedence** for every value: configured on the object,
+  the device's attribute, the simulation's value, the default; every place
+  that shows a value says which (`src/analysis/sim/params.ts`).
+- **A device's Simulation section** in the Edit tab (collapsed, its count
+  in its name): the attributes that apply to the device (ARP / NDP timers,
+  TTL, boot time; route recomputation delay, ECMP paths; MAC aging and
+  table size, spanning-tree mode and timers, LACP rate; HA failover; IPS
+  fail mode and latency; IKE / Child SA lifetimes, rekey margin, DPD;
+  service response time; VM restart time; SNMP polling; a cloud's latency
+  and loss; an access point's association time), inherited values shown
+  with their source, overrides written as one undo step, Reset to
+  inherited. It stays editable during a simulation, where its changes apply
+  at once (and Undo takes them back).
+- **Network events**, several at once: Fail link / Restore on cables and
+  relations, Start / Stop flapping on cables and ports, Shut interface /
+  No shut, Power off / Power on (boot time, a fresh start; an IPS failing
+  open or closed; VMs restarted on another server), from the in-diagram
+  menus and from the window's Network events list, each event with its way
+  back.
+- **Layer 1 in the engine:** a frame takes its cable's latency plus its
+  serialization time; packet loss from a fixed seed; ports notice a dark
+  cable after the loss-of-signal detection time and come back after the
+  link-up delay. Routers keep their old routes for their route
+  recomputation delay; the spanning tree converges as its mode says.
 - **The protocol simulation** (Simulate → Start simulation…): a freshly
   booted network (every ARP, neighbour and MAC table empty, every adjacency
   down, the interfaces up at t = 0) whose protocols exchange their messages
@@ -431,6 +474,11 @@ there is no conversion of files written for the earlier drafts.
 
 ### Changed
 
+- **The simulation's timing is real:** a message takes its latency and
+  serialization time instead of a fixed 0.3 s per cable; the playback slows
+  down while a message is on its way so that it can still be followed, and
+  the event log shows times to the microsecond. One link at a time is no
+  longer the limit, and the in-diagram menu says *Fail link*.
 - **Simulate → Start simulation…** replaces the greyed-out placeholder
   *Protocol simulation…*: available with a model when no simulation runs
   (unavailable without one, and while one runs: *A simulation is already

@@ -19,7 +19,7 @@ import { headOf, objectHead } from './panels';
 import { sortedByName } from '../model/order';
 import { CATEGORIES, DIRECTIONS, DUPLEXES, Direction, InterfaceKind, LINE_STYLES, LOGICAL_IFACE_TYPES, PORT_MODES, VLAN_MAX, VLAN_MIN, ifaceKey, interfaceKindLabel, routeKey } from '../model/types';
 import { derivedVlanText, endNetworks, interfaceAddresses, interfaceVlanPorts, interfaceVlans, networkMembers, tagMismatch, tagMismatchText } from '../model/derive';
-import { deviceRoutingRole, routingRole, ROUTE_DEVICE_TYPES } from '../model/device-types';
+import { routingRole, ROUTE_DEVICE_TYPES } from '../model/device-types';
 import { nextHopCandidates, vrfKey } from '../analysis/routing';
 import { CHECKS } from '../analysis/checks';
 import { nextFreeChoices } from '../analysis/addressing';
@@ -34,6 +34,8 @@ import { parsePrefix } from '../model/ip';
 import { suggestedServices } from '../analysis/identity';
 import { Suggestion, netSuggestions, peerAsSuggestions, asnSuggestions, distanceSuggestions, generateMac, groupSuggestions, mtuSuggestions, nextInterfaceName, routePrefixSuggestions, routerIdSuggestions, virtualIpSuggestions, vlanSuggestions, vrfCaseVariants, vrfChoices } from '../analysis/helpers';
 import { relationDevices } from '../model/types';
+import { deviceAttributes } from '../analysis/sim/attrs';
+import { ParamDef as SimParamDef, ParamValue, SimParams, deviceParamByYaml, fieldText, fieldUnit, formatValue, parseValue } from '../analysis/sim/params';
 
 /** `iface`: the document path of the selected physical or logical interface of a device; `route`: of the selected static route. */
 /**
@@ -70,6 +72,8 @@ export interface EditorHost {
   toast(msg: string): void;
   /** how the model's file is saved, in words (for the model settings) */
   fileState(): string;
+  /** the simulation-wide parameters in effect (the running simulation's, else those remembered for the next start) */
+  simParams?(): { [key: string]: ParamValue };
 }
 
 /**
@@ -588,7 +592,11 @@ export class Editor {
 
   // ------------------------------------------------------------ inspector
 
-  renderInspector(box: HTMLElement): void {
+  /** a simulation is running: the device's Simulation section is drawn by renderSimSection (editable), not in the read-only form */
+  private simOutside = false;
+
+  renderInspector(box: HTMLElement, opts: { simOutside?: boolean } = {}): void {
+    this.simOutside = !!opts.simOutside;
     while (box.firstChild) box.removeChild(box.firstChild);
     const doc = this.getDoc();
     const wrap = this.e('div', { class: 'inspector' });
@@ -1032,8 +1040,10 @@ export class Editor {
       g('Placement', [this.refField(base.concat('group'), 'Group / location', o, this.ids('group')), this.intField(base.concat('tier'), 'Tier (0–9)', o, 'Row in the physical view (0 = top). Empty: automatic.')], 'placement');
       const protos = this.protocolsGroup(base, index);
       if (protos) w.appendChild(protos);
-      const timers = this.neighborTimers(base, o, 'device');
-      if (timers) w.appendChild(timers);
+      if (!this.simOutside) {
+        const sim = this.simulationSection(index);
+        if (sim) w.appendChild(sim);
+      }
       notes();
       this.renderInterfaces(w, index);
       this.renderRoutes(w, index);
@@ -1764,6 +1774,11 @@ export class Editor {
     this.didCreate(first, `${done.ports.length} ports added to ${this.devName(devIndex)} (${done.ports[0].name} … ${done.ports[done.ports.length - 1].name}).`, this.d.querySelector('[data-act="add-range"]'), { sel: { kind: 'device', index: devIndex, iface: first } });
   }
 
+  /** A model was opened: every device's Simulation section starts collapsed again. */
+  foldSimSections(): void {
+    for (const k of Array.from(this.open)) if (k.indexOf('sim-section|') === 0) this.open.delete(k);
+  }
+
   /** Forget everything that belonged to the model that was open: selection, open cards, filter, folded sections, YAML draft. */
   reset(): void {
     this.sel = null;
@@ -1847,10 +1862,6 @@ export class Editor {
       card.appendChild(this.withHelpers(this.intField(p.concat('mtu'), 'MTU (bytes)', o, 'Empty: not modelled (no MTU is assumed).'), p.concat('mtu'), 'int', model && live ? mtuSuggestions(model, live) : [], 'MTU', owner));
     }
     if (!loop || doc.get(p.concat('mac'))) card.appendChild(this.macField(p, owner, o));
-    if (!loop && kind !== 'tunnel') {
-      const t = this.neighborTimers(p, o, 'interface');
-      if (t) card.appendChild(t);
-    }
     for (const sc of this.ifaceServiceCards(devIndex, p, id || '')) card.appendChild(sc);
     card.appendChild(this.textField(p.concat('description'), 'Description', o, 'textarea'));
     if (id) {
@@ -2161,25 +2172,108 @@ export class Editor {
   }
 
   /**
-   * The ARP timeout and the IPv6 neighbor reachable time (Simulate's ARP and
-   * neighbor tables), for a device or one interface; empty: the default.
+   * A device's Simulation section: its simulation attributes (the protocol
+   * simulation's per-device values, analysis/sim/params.ts), collapsed
+   * until opened with its disclosure button. Every field shows the value in
+   * effect: the device's own (written in its `simulation:` block), else the
+   * inherited one with where it comes from (the simulation's value, or the
+   * default and its source). Only overrides are written; Reset makes it
+   * inherit again. The documented exception to the simulation's edit lock:
+   * it stays editable, and undoable, while a simulation runs.
    */
-  private neighborTimers(p: Path, o: string, where: 'device' | 'interface'): HTMLElement | null {
-    const doc = this.doc;
-    if (where === 'device') {
-      const live = doc.result.model ? doc.result.model.index.devices.get(doc.text(p.concat('id')) || '') : undefined;
-      if (live && deviceRoutingRole(live) === null && !doc.get(p.concat('arp_timeout')) && !doc.get(p.concat('ndp_reachable_time'))) return null;
+  simulationSection(devIndex: number): HTMLElement | null {
+    const doc = this.getDoc();
+    const model = doc ? doc.result.model : null;
+    if (!doc || !model) return null;
+    const id = doc.text(['devices', devIndex, 'id']) || '';
+    const live = model.index.devices.get(id);
+    if (!live) return null;
+    const sp: Path = ['devices', devIndex, 'simulation'];
+    const block = doc.get(sp);
+    const written = block && block.kind === 'map' ? Array.from(block.entries.keys()) : [];
+    const defs = deviceAttributes(model, live, written);
+    if (!defs.length) return null;
+    const params = new SimParams(this.host.simParams ? this.host.simParams() : {}, new Map([[id, { type: live.type, values: live.simulation || new Map() }]]));
+    const key = 'sim-section|' + id;
+    const open = this.open.has(key);
+    const bodyId = 'fg-sim-body';
+    const set = defs.filter((d) => written.indexOf(d.yaml) >= 0).length;
+    const btn = this.e('button', { type: 'button', class: 'fgroup-toggle', id: 'fg-simulation', 'data-act': 'sim-toggle', 'data-key': key, 'aria-expanded': open ? 'true' : 'false', 'aria-controls': bodyId }, [`Simulation (${defs.length})`]);
+    const body = this.e('div', { class: 'sim-attrs', id: bodyId }, [
+      this.e('p', { class: 'muted small' }, ['For Simulate ▾. Empty fields inherit; only values set here are saved.']),
+    ]);
+    if (!open) body.hidden = true;
+    for (const def of defs) body.appendChild(this.simAttrRow(devIndex, id, def, params, doc.text(sp.concat(def.yaml))));
+    return this.e('section', { class: 'fgroup sim-section', 'data-group': 'simulation', 'aria-labelledby': 'fg-simulation' }, [
+      this.e('h4', { class: 'fgroup-title fgroup-disclosure' }, [btn, set ? this.e('span', { class: 'small muted' }, [` ${set} set on this device`]) : null]),
+      body,
+    ]);
+  }
+
+  private simAttrRow(devIndex: number, dev: string, def: SimParamDef, params: SimParams, written: string | undefined): HTMLElement {
+    const fid = 'sim-attr-' + def.yaml;
+    const own = params.deviceValue(dev, def.key);
+    const inh = params.inherited(def.key, dev);
+    const inhText = `${formatValue(def, inh.value)} (${inh.source === 'simulation' ? 'simulation' : 'default — ' + def.source})`;
+    const unit = fieldUnit(def);
+    const describe = `${fid}-state ${fid}-help ${fid}-err`;
+    let ctl: HTMLElement;
+    if (def.kind === 'enum') {
+      const s = this.e('select', { id: fid, 'data-t': 'sim-attr', 'data-index': String(devIndex), 'data-k': def.yaml, 'aria-describedby': describe }) as HTMLSelectElement;
+      s.appendChild(this.e('option', { value: '' }, [`Inherited: ${formatValue(def, inh.value)}`]));
+      for (const o of def.options || []) s.appendChild(this.e('option', { value: o.value }, [o.label]));
+      s.value = own !== undefined ? String(own) : '';
+      ctl = s;
+    } else {
+      ctl = this.e('input', { type: 'text', id: fid, 'data-t': 'sim-attr', 'data-index': String(devIndex), 'data-k': def.yaml, inputmode: 'decimal', autocomplete: 'off', spellcheck: 'false', placeholder: fieldText(def, inh.value), value: written !== undefined ? written : own !== undefined ? fieldText(def, own) : '', 'aria-describedby': describe });
     }
-    const dflt = where === 'interface' ? 'the device’s, else 14400 s (4 h)' : '14400 s (4 h)';
-    const ndflt = where === 'interface' ? 'the device’s, else 30 s' : '30 s (RFC 4861)';
-    const kids = [
-      this.intField(p.concat('arp_timeout'), 'ARP timeout (s)', o, `Empty: ${dflt}.`),
-      this.intField(p.concat('ndp_reachable_time'), 'NDP reachable time (s)', o, `Empty: ${ndflt}.`),
-    ];
-    if (where === 'device') return this.group('Address resolution (simulation)', kids, 'neighbor-timers');
-    const d = this.e('details', { class: 'nb-timers' }, [this.e('summary', {}, ['ARP and NDP timers (simulation)']), ...kids]);
-    if (doc.get(p.concat('arp_timeout')) || doc.get(p.concat('ndp_reachable_time'))) d.setAttribute('open', '');
-    return d;
+    const state = own !== undefined ? `Set on this device: ${formatValue(def, own)}. It would inherit ${inhText}.` : written !== undefined ? `“${written}” is not valid (see Problems); inherited meanwhile: ${inhText}.` : `Inherited: ${inhText}.`;
+    return this.e('div', { class: 'field sim-attr' + (own !== undefined ? ' overridden' : ''), 'data-sim-attr': def.yaml }, [
+      this.e('label', { for: fid }, [def.label]),
+      this.e('span', { class: 'pinput' }, [ctl, unit ? this.e('span', { class: 'punit', 'aria-hidden': 'true' }, [unit]) : null]),
+      this.e('p', { class: 'small sim-attr-state', id: fid + '-state' }, [state]),
+      this.e('p', { class: 'help', id: fid + '-help' }, [def.help]),
+      this.e('p', { class: 'field-err', id: fid + '-err', hidden: '' }, ['']),
+      own !== undefined || written !== undefined ? this.e('button', { type: 'button', class: 'mini', 'data-act': 'sim-reset', 'data-index': String(devIndex), 'data-k': def.yaml, 'aria-label': `Reset ${def.label} to inherited` }, ['Reset to inherited']) : null,
+    ]);
+  }
+
+  /** A Simulation field was changed: checked first (range and unit), then written as one undo step (or removed when emptied). */
+  private simAttrChange(target: HTMLElement, doc: ModelDoc, text: string): boolean {
+    const index = Number(target.getAttribute('data-index'));
+    const k = target.getAttribute('data-k') as string;
+    const def = deviceParamByYaml(k);
+    if (!def) return true;
+    const err = this.d.getElementById('sim-attr-' + k + '-err');
+    if (text === '') {
+      if (doc.get(['devices', index, 'simulation', k])) {
+        doc.setSimAttr(index, k, undefined);
+        this.host.changed(`${this.devName(index)}: ${def.label} is inherited again.`);
+      }
+      return true;
+    }
+    const p = parseValue(def, text);
+    if ('error' in p) {
+      if (err) {
+        err.textContent = `${def.label} ${p.error}.`;
+        err.hidden = false;
+      }
+      target.setAttribute('aria-invalid', 'true');
+      return true;
+    }
+    doc.setSimAttr(index, k, fieldText(def, p.value));
+    this.host.changed(`${this.devName(index)}: ${def.label} set to ${formatValue(def, p.value)}.`);
+    return true;
+  }
+
+  /** The selected device's Simulation section, editable (drawn above the read-only form while a simulation runs); false: no device selected. */
+  renderSimSection(box: HTMLElement): boolean {
+    const s = this.sel;
+    if (!s || s.kind !== 'device') return false;
+    const sec = this.simulationSection(s.index);
+    if (!sec) return false;
+    box.appendChild(sec);
+    return true;
   }
 
   /** Device type: the format's types by display name; a disallowed current value stays visible. */
@@ -2764,6 +2858,8 @@ export class Editor {
     /** an entry this change created (it is marked, revealed and, while the control still has the focus, focused) */
     let made: Path | null = null;
     switch (t) {
+      case 'sim-attr':
+        return this.simAttrChange(target, doc, trimmed);
       case 'text':
         doc.setText(p, target.tagName === 'TEXTAREA' ? val.replace(/\s+$/, '') : trimmed);
         break;
@@ -2907,6 +3003,23 @@ export class Editor {
     const index = Number(btn.getAttribute('data-index'));
     const p = P(btn.getAttribute('data-p'));
     switch (act) {
+      case 'sim-toggle': {
+        const key = btn.getAttribute('data-key') as string;
+        const open = btn.getAttribute('aria-expanded') !== 'true';
+        btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+        const body = this.d.getElementById(btn.getAttribute('aria-controls') as string);
+        if (body) body.hidden = !open;
+        if (open) this.open.add(key);
+        else this.open.delete(key);
+        return true;
+      }
+      case 'sim-reset': {
+        const k = btn.getAttribute('data-k') as string;
+        const def = deviceParamByYaml(k);
+        doc.setSimAttr(index, k, undefined);
+        this.host.changed(`${this.devName(index)}: ${def ? def.label : k} is inherited again.`);
+        return true;
+      }
       case 'draft-create':
         this.createDraft();
         return true;

@@ -15,6 +15,7 @@ import { layoutInput, layoutSignature } from '../layout/input';
 import { dnsNameKey, dnsNameProblem } from '../model/dns';
 import { parseAddress } from '../model/ip';
 import { Model } from '../model/types';
+import { PARAMS } from '../analysis/sim/params';
 import { IFACE_RE, Issue, LoadResult, loadModel, scalarText, validate } from '../validation/validate';
 import { SCHEMA } from '../yaml/schema';
 import { flowText } from '../yaml/write';
@@ -100,8 +101,8 @@ export class ModelDoc {
   version = 0;
   result: LoadResult;
   /** undo entries; `serial`: which edit it undoes (see undoTop) */
-  private undoStack: Array<{ root: YMap; label: string; serial: number }> = [];
-  private redoStack: Array<{ root: YMap; label: string; serial: number }> = [];
+  private undoStack: Array<{ root: YMap; label: string; serial: number; exempt?: boolean }> = [];
+  private redoStack: Array<{ root: YMap; label: string; serial: number; exempt?: boolean }> = [];
   /** the serial number of the last edit, of any document (counts up, never reused: a serial names one edit) */
   private static serial = 0;
   /**
@@ -241,13 +242,13 @@ export class ModelDoc {
    * the same undo step), new nodes are placed next to their neighbors and
    * positions of removed nodes are dropped. Nothing ever re-arranges itself.
    */
-  change<T>(label: string, fn: () => T, opts: { layout?: boolean } = {}): T {
-    if (this.lock) throw new EditLocked(this.lock);
+  change<T>(label: string, fn: () => T, opts: { layout?: boolean; exempt?: boolean } = {}): T {
+    if (this.lock && !opts.exempt) throw new EditLocked(this.lock);
     const snapshot = cloneNode(this.root);
     const pre = this.result.model;
     this.renames = new Map();
     const out = fn();
-    this.undoStack.push({ root: snapshot, label, serial: ++ModelDoc.serial });
+    this.undoStack.push({ root: snapshot, label, serial: ++ModelDoc.serial, exempt: opts.exempt });
     if (this.undoStack.length > MAX_UNDO) this.undoStack.shift();
     this.redoStack = [];
     this.revalidate();
@@ -472,13 +473,14 @@ export class ModelDoc {
   /** Is undoing (or redoing) refused by the lock (a simulation is on)? */
   undoLocked(redo = false): boolean {
     const st = redo ? this.redoStack : this.undoStack;
-    return !!this.lock && !!st.length;
+    // a device's Simulation settings stay editable during a simulation, and so does undoing them
+    return !!this.lock && !!st.length && !st[st.length - 1].exempt;
   }
   undo(): boolean {
     if (this.undoLocked()) return false;
     const s = this.undoStack.pop();
     if (!s) return false;
-    this.redoStack.push({ root: this.root, label: s.label, serial: s.serial });
+    this.redoStack.push({ root: this.root, label: s.label, serial: s.serial, exempt: s.exempt });
     this.root = s.root;
     this.touch();
     return true;
@@ -487,7 +489,7 @@ export class ModelDoc {
     if (this.undoLocked(true)) return false;
     const s = this.redoStack.pop();
     if (!s) return false;
-    this.undoStack.push({ root: this.root, label: s.label, serial: s.serial });
+    this.undoStack.push({ root: this.root, label: s.label, serial: s.serial, exempt: s.exempt });
     this.root = s.root;
     this.touch();
     return true;
@@ -879,6 +881,33 @@ export class ModelDoc {
   private label(path: Path): string {
     const last = path[path.length - 1];
     return typeof last === 'number' ? String(path[path.length - 2]) : String(last);
+  }
+
+  /**
+   * Set (or, with undefined, remove: the device inherits it again) one of a
+   * device's simulation attributes, in its `simulation:` block (removed when
+   * it is left empty). The documented exception to the simulation's edit
+   * lock: one undo step, allowed while a simulation runs (it applies there
+   * at once). `value` is written as typed: a number in the attribute's unit,
+   * or text ("300ms", "fast").
+   */
+  setSimAttr(devIndex: number, yaml: string, value: string | undefined): void {
+    const sp: Path = ['devices', devIndex, 'simulation'];
+    this.change(
+      value === undefined ? `Inherit ${yaml.replace(/_/g, ' ')}` : `Set ${yaml.replace(/_/g, ' ')}`,
+      () => {
+        if (value === undefined) {
+          this.removeAt(sp.concat(yaml));
+          const b = this.get(sp);
+          if (b && b.kind === 'map' && b.entries.size === 0) this.removeAt(sp);
+          return;
+        }
+        const order = PARAMS.filter((p) => !!p.device).map((p) => p.yaml);
+        this.ensureMap(sp, KEY_ORDER.device);
+        this.setAt(sp.concat(yaml), /^-?[0-9]+(\.[0-9]+)?$/.test(value) ? numNode(Number(value)) : strNode(value), order);
+      },
+      { exempt: true, layout: false },
+    );
   }
 
   /** Set a text field; empty text removes the key (or list item). */

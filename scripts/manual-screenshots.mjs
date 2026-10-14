@@ -284,7 +284,22 @@ async function main() {
       await page.eval(`netatlas.simController().runTo(25000), netatlas.simController().showTable('arp', 'core1', { x: 380, y: 120, w: 10, h: 10 }), true`);
       await page.settle(200);
       await save('arp-table', around([await page.rect('.sim-table-panel')], 6), { quality: 55 });
+      // core1's Simulation section in the Edit tab, editable while the simulation runs
+      await page.eval(`netatlas.simController().tables.closeAll(), netatlas.closeToolWindow(), netatlas.select('device:core1'), netatlas.showTab('edit'), true`);
+      await page.settle(200);
+      await page.eval(`(() => { const b = document.getElementById('fg-simulation'); b.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0 })); b.scrollIntoView({ block: 'start' }); return true; })()`);
+      await page.settle(200);
+      const sb = await page.rect('#side-body');
+      await save('sim-device', { x: sb.x + 4, y: sb.y, w: sb.w - 8, h: Math.min(sb.h, 460) }, { quality: 38 });
       await page.eval(`netatlas.exitSimulation(), true`);
+      await page.settle(100);
+      // the start dialog with Layer 1 open
+      await page.eval(`sessionStorage.clear(), netatlas.openStartDialog(), true`);
+      await page.settle(200);
+      await page.eval(`(() => { document.getElementById('sim-pd-l1-btn').click(); const i = document.getElementById('sim-pd-los-detect'); i.value = '500'; i.dispatchEvent(new Event('input')); i.dispatchEvent(new Event('change')); return true; })()`);
+      await page.settle(200);
+      await save('sim-start', around([await page.rect('#modal')], 4), { scale: 0.75, quality: 40 });
+      await page.eval(`document.querySelector('#modal [data-value="cancel"]').click(), true`);
       await page.settle(100);
     }
 

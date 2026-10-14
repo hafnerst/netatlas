@@ -11,8 +11,9 @@ import { failableRef } from '../failure';
 import { Engine, EngineOptions } from './engine';
 import { OTHER_BEHAVIOURS, installBootGarp, installCustomL2, installDemands, installFhrp, installL2Adverts, installLacp, installPimRegister } from './proto-other';
 import { ROUTING_BEHAVIOURS } from './proto-routing';
-import { ProtocolSim } from './protocols';
-import { ArpRow, Flight, MacRow, SessionStatus, SimEvent, TableTimer } from './types';
+import { ProtocolSim, relationProfile } from './protocols';
+import { ParamChange, ParamValue, SimParams } from './params';
+import { ArpRow, Flight, MacRow, NetEvent, SessionStatus, SimEvent, TableTimer } from './types';
 
 /** A protocol of the simulation as the window lists it (a checkbox). */
 export interface SimProtocolEntry {
@@ -58,29 +59,130 @@ export class Simulation {
     return this.engine.now;
   }
 
-  /** Fail a cable or relation (one at a time: another failed one is restored first). */
+  // ------------------------------------------------------------ network events (several at once)
+
+  /** Fail a cable or relation ("link:x", "relation:x"). */
   fail(ref: string): boolean {
     if (!failableRef(this.model, ref) || (ref.indexOf('link:') !== 0 && ref.indexOf('relation:') !== 0)) return false;
-    this.engine.fail(ref);
-    return true;
+    return this.engine.fail(ref);
   }
 
-  restore(): boolean {
-    if (!this.engine.failed) return false;
-    this.engine.restore();
-    return true;
+  restore(ref: string): boolean {
+    return this.engine.restore(ref);
   }
 
-  failed(): string | null {
-    return this.engine.failed;
+  /** Start flapping a cable ("link:x") or a cabled port's cable ("iface:dev:port"). */
+  startFlap(ref: string): boolean {
+    return this.engine.startFlap(ref);
+  }
+
+  stopFlap(ref: string): boolean {
+    return this.engine.stopFlap(ref);
+  }
+
+  shut(dev: string, iface: string): boolean {
+    return this.engine.shut(dev, iface);
+  }
+
+  noShut(dev: string, iface: string): boolean {
+    return this.engine.noShut(dev, iface);
+  }
+
+  powerOff(dev: string): boolean {
+    return this.engine.powerOff(dev);
+  }
+
+  powerOn(dev: string): boolean {
+    return this.engine.powerOn(dev);
+  }
+
+  /** End an event of the list (Restore, Stop flapping, No shut, Power on). */
+  end(ev: NetEvent): boolean {
+    const id = ev.ref.slice(ev.ref.indexOf(':') + 1);
+    if (ev.kind === 'fail') return this.restore(ev.ref);
+    if (ev.kind === 'flap') return this.stopFlap(ev.ref);
+    if (ev.kind === 'shut') {
+      const i = id.indexOf(':');
+      return this.noShut(id.slice(0, i), id.slice(i + 1));
+    }
+    return this.powerOn(id);
+  }
+
+  /** The network events in effect. */
+  netEvents(): NetEvent[] {
+    return this.engine.netEvents();
+  }
+
+  /** What the diagram marks as down (cables, relations, interfaces, devices). */
+  downRefs(): string[] {
+    return this.engine.downRefs();
+  }
+
+  // ------------------------------------------------------------ parameters
+
+  /** Set a simulation-wide parameter now (undefined: its default); logged, applied at once. */
+  setParam(key: string, v: ParamValue | undefined): ParamChange | null {
+    return this.engine.setParam(key, v);
+  }
+
+  /** The model changed (a device's Simulation section): every device's attributes are read again and the changes apply now. */
+  deviceParamsFrom(model: Model): ParamChange[] {
+    const out: ParamChange[] = [];
+    for (const d of model.devices.slice().sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))) {
+      if (!this.engine.net.devices.has(d.id)) continue;
+      out.push(...this.engine.setDeviceParams(d.id, d.type, d.simulation || new Map()));
+    }
+    return out;
+  }
+
+  get params(): SimParams {
+    return this.engine.params;
   }
 
   events(): SimEvent[] {
     return this.engine.log;
   }
 
-  flights(t: number, view: 'physical' | 'logical'): Flight[] {
-    return this.engine.flightsAt(t, view);
+  /** The flights in the air at t (or any time since `since`: the reduced-motion steps). */
+  flights(t: number, view: 'physical' | 'logical', since = t): Flight[] {
+    return this.engine.flightsAt(t, view, since);
+  }
+
+  /** Run towards t, stopping at the first moment a message that `visible` accepts is sent; returns the time reached. */
+  advance(t: number, visible: (f: Flight) => boolean): number {
+    const from = this.engine.flightSerial;
+    this.engine.runUntil(t, () => this.engine.flightsSince(from).some((f) => !f.hidden && f.t0 < t && visible(f)));
+    return this.engine.now;
+  }
+
+  /**
+   * Playback: move the clock on by `wallMs` of real time at `speed`. While
+   * a message that `visible` accepts is on its way the clock slows down so
+   * that it takes about `vis` ms of real time at 1× (a frame is on a cable
+   * for microseconds); between messages it runs at the speed. Deterministic:
+   * only how far the clock gets depends on it, never what happens.
+   */
+  play(wallMs: number, speed: number, visible: (f: Flight) => boolean, vis = 300): number {
+    let w = wallMs;
+    for (let i = 0; i < 64 && w > 1e-6; i++) {
+      const t = this.engine.now;
+      let dmin = Infinity;
+      let nextEnd = Infinity;
+      let upcoming = Infinity;
+      for (const f of this.engine.flights) {
+        if (f.hidden || !visible(f)) continue;
+        const end = f.dropped !== undefined ? f.dropped : f.t1;
+        if (f.t0 <= t && t < end) {
+          dmin = Math.min(dmin, f.t1 - f.t0);
+          nextEnd = Math.min(nextEnd, end);
+        } else if (f.t0 > t) upcoming = Math.min(upcoming, f.t0);
+      }
+      const rate = dmin < Infinity ? speed * Math.min(1, Math.max(dmin, 1e-6) / vis) : speed;
+      const target = Math.min(t + w * rate, nextEnd, upcoming);
+      const nt = this.advance(target, visible);
+      w -= (nt - t) / rate;
+    }
+    return this.engine.now;
   }
 
   status(): SessionStatus[] {
@@ -103,8 +205,8 @@ export class Simulation {
     return this.engine.arpTimers(dev);
   }
 
-  macTimers(): TableTimer[] {
-    return this.engine.macTimers();
+  macTimers(dev: string): TableTimer[] {
+    return this.engine.macTimers(dev);
   }
 
   setTimerScale(n: number): void {
@@ -125,26 +227,32 @@ export class Simulation {
 
   /** The protocols this model's simulation runs, grouped (Layer 2 first), for the window's checkboxes. */
   protocolEntries(): SimProtocolEntry[] {
-    const seen = new Map<string, SimProtocolEntry>();
-    const add = (id: string, label: string, group: SimProtocolEntry['group']): void => {
-      if (!seen.has(id)) seen.set(id, { id, label, group });
-    };
-    add('arp', 'ARP', 'Layer 2');
-    if (this.model.devices.some((d) => d.interfaces.concat(d.logical).some((i) => i.addresses.some((a) => a.indexOf(':') >= 0)))) add('ndp', 'NDP', 'Layer 2');
-    add('garp', 'Gratuitous ARP', 'Layer 2');
-    for (const r of this.model.relations) {
-      const p = this.protocols.profileOf(r);
-      add(p.id, p.label, p.group);
-    }
-    for (const d of this.model.devices) {
-      if (d.logical.some((i) => i.type === 'virtual' && i.members.length)) add('lacp', 'LACP', 'Layer 2');
-      for (const i of d.interfaces.concat(d.logical)) for (const s of i.services) {
-        const p = simProfile(s.id);
-        if (p) add(p.id, p.label, p.group);
-      }
-    }
-    if (this.model.demands.length) add('demand', 'Demands (data)', 'Traffic');
-    const order = (g: SimProtocolEntry['group']): number => (g === 'Traffic' ? SIM_GROUPS.length : SIM_GROUPS.indexOf(g as SimGroup));
-    return Array.from(seen.values()).sort((a, b) => order(a.group) - order(b.group) || (a.label < b.label ? -1 : a.label > b.label ? 1 : 0));
+    return protocolEntriesOf(this.model);
   }
+
+}
+
+/** The protocols this model's simulation runs, grouped (Layer 2 first), for the window's checkboxes. */
+export function protocolEntriesOf(model: Model): SimProtocolEntry[] {
+  const seen = new Map<string, SimProtocolEntry>();
+  const add = (id: string, label: string, group: SimProtocolEntry['group']): void => {
+    if (!seen.has(id)) seen.set(id, { id, label, group });
+  };
+  add('arp', 'ARP', 'Layer 2');
+  if (model.devices.some((d) => d.interfaces.concat(d.logical).some((i) => i.addresses.some((a) => a.indexOf(':') >= 0)))) add('ndp', 'NDP', 'Layer 2');
+  add('garp', 'Gratuitous ARP', 'Layer 2');
+  for (const r of model.relations) {
+    const p = relationProfile(model, r);
+    add(p.id, p.label, p.group);
+  }
+  for (const d of model.devices) {
+    if (d.logical.some((i) => i.type === 'virtual' && i.members.length)) add('lacp', 'LACP', 'Layer 2');
+    for (const i of d.interfaces.concat(d.logical)) for (const s of i.services) {
+      const p = simProfile(s.id);
+      if (p) add(p.id, p.label, p.group);
+    }
+  }
+  if (model.demands.length) add('demand', 'Demands (data)', 'Traffic');
+  const order = (g: SimProtocolEntry['group']): number => (g === 'Traffic' ? SIM_GROUPS.length : SIM_GROUPS.indexOf(g as SimGroup));
+  return Array.from(seen.values()).sort((a, b) => order(a.group) - order(b.group) || (a.label < b.label ? -1 : a.label > b.label ? 1 : 0));
 }
