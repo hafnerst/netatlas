@@ -2200,6 +2200,30 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       ctl.runTo(sim.now + 3000);
       await tick();
       check(`${theme}: Send test… from pc1 (its menu): the Actions panel’s form with pc1; a TCP connection to a closed port of srv is refused (RST)`, (q('#sim-t-from') as HTMLSelectElement).value === 'pc1' && /^Test sent/.test(tSent) && /pc1 → srv tcp\/22: connection refused: RST from 10\.30\.0\.10 \(srv\)/.test((q('#sim-tests li') || { textContent: '' }).textContent || ''), (q('#sim-tests li') || { textContent: '' }).textContent || '');
+      {
+        // a Send test's messages are marked Test (the SYN, the RST), in the log too; paused, Send sends now and waits for Play; Send and play plays
+        const t = sim.tests()[0];
+        const marked = sim.events().filter((e) => e.test === t.id && e.kind === 'message').map((e) => e.what);
+        ctl.refresh(true);
+        await tick();
+        const tags = doc.querySelectorAll('#sd-log .sim-test-tag').length;
+        const was = ctl.playing;
+        ctl.setPlaying(false);
+        const at = ctl.t;
+        const m1 = ctl.sendTest({ from: 'pc1', to: 'srv', kind: 'icmp' });
+        await tick();
+        const sp = q('#sim-t-sendplay') as HTMLElement;
+        const pausedOk = /^Sent at t = .* It starts when the simulation plays\.$/.test(m1) && ctl.t === at && sim.tests()[0].started === at && !sp.hidden && ctl.drawItems().some((d) => d.test);
+        const m2 = ctl.sendTest({ from: 'pc1', to: 'srv', kind: 'icmp' }, true);
+        await tick();
+        const playOk = ctl.playing && sp.hidden && /^Test sent at t = /.test(m2);
+        ctl.setPlaying(was);
+        check(
+          `${theme}: a Send test’s messages are marked Test (the SYN and the RST, in the log too); paused, Send sends at the current time and says it starts on Play; Send and play sends and plays`,
+          marked.indexOf('TCP SYN') >= 0 && marked.indexOf('TCP RST') >= 0 && tags > 0 && pausedOk && playOk,
+          `${marked.join(',')} · ${tags} tags · ${m1} · ${m2}`,
+        );
+      }
       ctl.highlightDomain({ dev: 'lab-h', iface: 'eth0' });
       await tick();
       const on = Array.from(doc.querySelectorAll('#canvas .node.bc-on')).map((n) => n.getAttribute('data-ref')).sort().join(',');
@@ -2338,6 +2362,12 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       );
       (q('#btn-sim-exit') as HTMLButtonElement).click();
       await tick();
+      check(
+        `${theme}: Exit simulation from srv’s Edit tab: no “Editing is paused” notice or disabled Exit simulation is left, the form takes input, the Objects list can add again; the Edit tab as before, with the last selection (pc1, from Show DNS cache)`,
+        !q('.lock-note') && !q('#side-body [data-command="sim.exit"]') && !q('#side-body fieldset[disabled]') && !!q('#side-body input:not([disabled])') &&
+          Array.from(doc.querySelectorAll('#outline [data-act="add-entity"]')).every((b) => !(b as HTMLButtonElement).disabled) &&
+          q('#side .tabs .active')!.getAttribute('data-tab') === 'edit' && app.session!.state.selected === 'device:pc1',
+      );
       check(`${theme}: after the simulation the reserved lines say again that the lease is assigned in a simulation`, Array.from(doc.querySelectorAll('#canvas [data-field="lease"]')).every((t) => t.textContent === 'lease: assigned in a simulation'));
     }
     app.theme.set('dark');

@@ -40,7 +40,7 @@
 import { leaseText } from '../model/addresses';
 import { FailureResult, refLabel, simulate } from '../analysis/failure';
 import { fmtSec } from '../analysis/sim/engine';
-import { PACE_SCALES, PACE_SPEEDS, PaceItem, PaceMode, Pacer, conversationKey, scaleText } from '../analysis/sim/pacing';
+import { FRAME_MAX, PACE_SCALES, PACE_SPEEDS, PaceMode, Pacer, conversationKey, scaleText } from '../analysis/sim/pacing';
 import { ParamValue, Resolved, formatValue, sourceText } from '../analysis/sim/params';
 import { SimProtocolEntry, Simulation } from '../analysis/sim/simulation';
 import { TestKind, rttText } from '../analysis/sim/transport';
@@ -166,7 +166,7 @@ export class SimController implements SimulationMode {
   private statusView: { kind: DevTable; dev: string } | null = null;
   private readonly entries: SimProtocolEntry[];
   /** a typical hop's simulated time per view (the readable pacing's reference) */
-  private typicalHop: { physical: number; logical: number[] } = { physical: 0, logical: [] };
+  private typicalHop = { physical: 0 };
   private onVis = (): void => this.schedule();
 
   constructor(
@@ -196,6 +196,7 @@ export class SimController implements SimulationMode {
         typical: (v) => this.typical(v),
         headers: (f) => f.hdr,
         length: (f) => this.trackLength(f),
+        testRunning: () => this.testRunning(),
       },
       MAX_DOTS,
     );
@@ -298,13 +299,14 @@ export class SimController implements SimulationMode {
     return ok.length ? ok[Math.floor(ok.length / 2)] : e.hopTime();
   }
 
-  /** The typical hop of a view: the cables' median, and for the logical view the median of its first hops (twice a cable before any). */
+  /**
+   * The typical hop of a view: the cables' median; a relation or network
+   * line of the logical view spans about two of them. Fixed from the start
+   * (it changes only with a latency parameter), so that a hop's screen time
+   * never depends on which messages came first.
+   */
   private typical(view: Flight['view']): number {
-    if (view === 'physical') return this.typicalHop.physical;
-    const l = this.typicalHop.logical;
-    if (!l.length) return 2 * this.typicalHop.physical;
-    const s = l.slice().sort((a, b) => a - b);
-    return s[Math.floor(s.length / 2)];
+    return view === 'physical' ? this.typicalHop.physical : 2 * this.typicalHop.physical;
   }
 
   /** Start or stop the clock as the state says (one frame per screen refresh; under reduced motion the same, with static arrows). */
@@ -317,11 +319,14 @@ export class SimController implements SimulationMode {
       this.refresh(true);
       return;
     }
-    this.last = w.performance.now();
+    // the clock starts with the first frame drawn: the time before it (the setup, a hidden tab, a pause) never counts
+    let first = true;
     const frame = (now: number): void => {
       this.raf = 0;
       if (!this.running()) return;
-      const dt = Math.min(250, now - this.last);
+      // a long frame counts at most FRAME_MAX: a stall slows the dots for a moment, never makes them jump
+      const dt = first ? 0 : Math.min(FRAME_MAX, Math.max(0, now - this.last));
+      first = false;
       this.last = now;
       this.advance(dt);
       this.refresh(now - this.uiAt > 250);
@@ -334,17 +339,6 @@ export class SimController implements SimulationMode {
   /** Real time passed: the pacing moves the display and the simulation on (the self-test drives it too). */
   advance(wallMs: number): void {
     this.pacer.frame(wallMs);
-    this.learnTypical();
-  }
-
-  /** The logical view's typical hop: from its first 64 hops. */
-  private learnTypical(): void {
-    const l = this.typicalHop.logical;
-    if (l.length >= 64) return;
-    for (const it of this.pacer.items) if (it.f.view === 'logical' && l.length < 64 && it.lat > 0 && !(it as PaceItem & { seen?: boolean }).seen) {
-      (it as PaceItem & { seen?: boolean }).seen = true;
-      l.push(it.lat);
-    }
   }
 
   /** Why it is paused (null: playing, or paused with no reason left). */
@@ -373,6 +367,9 @@ export class SimController implements SimulationMode {
     const s = this.playState();
     const vis = d.getElementById('sim-state');
     if (vis && vis.textContent !== s) vis.textContent = s;
+    // Send and play only while paused
+    const sp = d.getElementById('sim-t-sendplay');
+    if (sp) sp.hidden = this.playing;
     if (s === this.stateSaid) return;
     this.stateSaid = s;
     const live = d.getElementById('sim-state-live');
@@ -525,7 +522,8 @@ export class SimController implements SimulationMode {
     return this.shown.has(protocol);
   }
 
-  private flightShown = (f: Flight): boolean => (this.visible(f.protocol) || (!!f.encapProtocols && f.encapProtocols.some((p) => this.visible(p)))) && this.senderOk(f);
+  /** A Send test's messages are always shown (whatever the protocols ticked and the senders); others when their protocol is shown and their sender is chosen. */
+  private flightShown = (f: Flight): boolean => f.test !== undefined || ((this.visible(f.protocol) || (!!f.encapProtocols && f.encapProtocols.some((p) => this.visible(p)))) && this.senderOk(f));
 
   // ------------------------------------------------------------ senders
 
@@ -667,7 +665,9 @@ export class SimController implements SimulationMode {
     for (const it of this.pacer.items) {
       if (!it.drawn || it.f.view !== view || it.f.hidden || !this.flightShown(it.f)) continue;
       const st = this.pacer.state(it);
-      out.push({ f: it.f, st, prev: it.parent && it.transit ? it.parent.f.track : undefined, faded: !!follow && it.key !== follow.key, followed: !!follow && it.key === follow.key });
+      // a Send test's hops: never faded, with their trail (as a message followed)
+      const test = it.f.test !== undefined;
+      out.push({ f: it.f, st, prev: it.parent && it.transit ? it.parent.f.track : undefined, faded: !!follow && it.key !== follow.key && !test, followed: (!!follow && it.key === follow.key) || test, test });
     }
     return out;
   }
@@ -1157,14 +1157,28 @@ export class SimController implements SimulationMode {
     }
   }
 
-  /** Run a test now (the Send test form; tests). */
-  sendTest(o: { from: string; to: string; kind: TestKind; port?: number; size?: number; df?: boolean; keep?: boolean }): string {
+  /**
+   * Send a test now, at the current simulated time (the Send test form;
+   * tests): it starts at once, in parallel with the traffic, only after
+   * what it really needs (ARP or NDP, a DNS answer, a DHCP lease). Paused,
+   * it is sent at the current time and moves when the simulation plays
+   * (`play`: Send and play).
+   */
+  sendTest(o: { from: string; to: string; kind: TestKind; port?: number; size?: number; df?: boolean; keep?: boolean }, play = false): string {
     const t = this.sim.sendTest(o);
     this.testsKey = '';
     this.logKey = '';
+    // its first hops are on screen now (paused too: there they wait for Play)
+    this.pacer.take();
+    if (typeof t !== 'string' && play && !this.playing) this.setPlaying(true);
     this.refresh(true);
     if (typeof t === 'string') return t;
-    return `Test sent at t = ${fmtSec(this.t)}: ${t.series}.`;
+    return this.playing ? `Test sent at t = ${fmtSec(this.t)}: ${t.series}.` : `Sent at t = ${fmtSec(this.t)}: ${t.series}. It starts when the simulation plays.`;
+  }
+
+  /** Is a Send test on its way (sent, not answered or failed yet, not waiting for a DHCP lease)? While it is, it alone sets the pace. */
+  testRunning(): boolean {
+    return this.sim.tests().some((t) => !t.done && t.result.indexOf('waiting for a DHCP lease') !== 0);
   }
 
   /** The Send test destinations offered: the devices, and the broadcast addresses of the source's subnets. */
@@ -1289,13 +1303,16 @@ export class SimController implements SimulationMode {
     const tKeep = el(doc, 'input', { type: 'checkbox', id: 'sim-t-keep' }) as HTMLInputElement;
     const lab = (f: string, t: string): HTMLElement => el(doc, 'label', { for: f }, [t]);
     const tSend = el(doc, 'button', { type: 'button', id: 'sim-t-send', class: 'primary sp-primary' }, ['Send']);
+    // paused: the test is sent at the current time and waits for Play; Send and play sends it and plays
+    const tSendPlay = el(doc, 'button', { type: 'button', id: 'sim-t-sendplay', class: 'sp-primary' }, ['Send and play']) as HTMLButtonElement;
+    tSendPlay.hidden = this.playing;
     const more = el(doc, 'div', { class: 'sim-test-form' }, [lab('sim-t-size', 'Data'), el(doc, 'span', { class: 'pinput' }, [tSize, el(doc, 'span', { class: 'punit' }, ['bytes'])]), el(doc, 'span'), el(doc, 'label', { class: 'check' }, [tDf, ' Don’t fragment (IPv4)']), el(doc, 'span'), el(doc, 'label', { class: 'check' }, [tKeep, ' TCP: keep open (keepalive)'])]);
     box.appendChild(
       this.sec(doc, 'sim-test', 'Send test', [
         el(doc, 'div', { class: 'sim-test-form' }, [lab('sim-t-from', 'From'), tFrom, lab('sim-t-to', 'To'), tTo, lab('sim-t-kind', 'Type'), tKind, lab('sim-t-port', 'Port'), tPort]),
         this.disclosure(doc, 'sim-t-more', 'More options', more),
         el(doc, 'datalist', { id: 'sim-t-list' }),
-        el(doc, 'div', { class: 'sp-row' }, [tSend]),
+        el(doc, 'div', { class: 'sp-row' }, [tSend, tSendPlay]),
         el(doc, 'p', { id: 'sim-t-msg', class: 'small', role: 'status' }, ['']),
         el(doc, 'ul', { id: 'sim-tests', class: 'sim-tests', 'aria-label': 'Latest tests' }),
       ]),
@@ -1306,7 +1323,7 @@ export class SimController implements SimulationMode {
     tKind.addEventListener('change', sync);
     sync();
     tFrom.addEventListener('change', () => this.fillTargets(box));
-    tSend.addEventListener('click', () => {
+    const send = (play: boolean): void => {
       const size = tSize.value.trim() === '' ? undefined : Number(tSize.value);
       const port = Number(tPort.value);
       const msg = box.querySelector('#sim-t-msg') as HTMLElement;
@@ -1325,8 +1342,10 @@ export class SimController implements SimulationMode {
         tSize.focus();
         return;
       }
-      msg.textContent = this.sendTest({ from: tFrom.value, to: tTo.value, kind: tKind.value as TestKind, port, size, df: tDf.checked, keep: tKeep.checked });
-    });
+      msg.textContent = this.sendTest({ from: tFrom.value, to: tTo.value, kind: tKind.value as TestKind, port, size, df: tDf.checked, keep: tKeep.checked }, play);
+    };
+    tSend.addEventListener('click', () => send(false));
+    tSendPlay.addEventListener('click', () => send(true));
     tTo.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') {
         e.preventDefault();
@@ -1829,12 +1848,14 @@ export class SimController implements SimulationMode {
     const list: SimEvent[] = [];
     for (const e of events) {
       if (e.t > this.t) break;
-      if (!this.visible(e.protocol)) {
+      // a Send test's events are always listed (the log's own filters below still apply)
+      const test = e.test !== undefined;
+      if (!test && !this.visible(e.protocol)) {
         hidden++;
         continue;
       }
       // messages of non-senders (a sender's exchanges stay): counted, listed only with Show all senders
-      if (e.kind === 'message' && !this.senderOk(e)) {
+      if (!test && e.kind === 'message' && !this.senderOk(e)) {
         bySender++;
         if (!this.showAllSenders) continue;
       }
@@ -1890,7 +1911,11 @@ export class SimController implements SimulationMode {
           el(doc, 'td', {}, [e.device]),
           el(doc, 'td', {}, [e.peer]),
           el(doc, 'td', {}, [this.protoLabel(e.protocol)]),
-          el(doc, 'td', {}, [e.hdr ? el(doc, 'button', { type: 'button', class: 'sim-msg-btn', 'data-seq': String(e.seq), 'aria-label': `${e.what}: open in the packet inspector` }, [e.what]) : e.what]),
+          el(doc, 'td', {}, [
+            e.test !== undefined ? el(doc, 'span', { class: 'sim-test-tag', title: 'Part of a Send test' }, ['Test']) : null,
+            e.test !== undefined ? ' ' : null,
+            e.hdr ? el(doc, 'button', { type: 'button', class: 'sim-msg-btn', 'data-seq': String(e.seq), 'aria-label': `${e.test !== undefined ? 'Test: ' : ''}${e.what}: open in the packet inspector` }, [e.what]) : e.what,
+          ]),
           el(doc, 'td', {}, [e.state]),
           el(doc, 'td', { class: 'small', title: e.detail }, [e.detail]),
         ]),

@@ -400,7 +400,9 @@ test('Layers 3 and 4 on screen: a log message opens the packet inspector (keyboa
     await page.type('srv');
     await page.key('Enter', 'Enter', 13);
     await page.settle(80);
-    assert.match(await page.eval(`document.getElementById('sim-t-msg').textContent`), /^Test sent at t = [\d.]+ s: pc1 → srv tcp\/22\.$/);
+    // (paused: sent at the current time, it moves when the simulation plays; Send and play is offered)
+    assert.match(await page.eval(`document.getElementById('sim-t-msg').textContent`), /^Sent at t = [\d.]+ s: pc1 → srv tcp\/22\. It starts when the simulation plays\.$/);
+    assert.equal(await page.eval(`document.getElementById('sim-t-sendplay').hidden`), false);
     await page.eval(`netatlas.simController().runTo(netatlas.simController().t + 3000), true`);
     await page.settle(80);
     assert.match(await page.eval(`document.querySelector('#sim-tests li').textContent`), /pc1 → srv tcp\/22: connection refused: RST from 10\.30\.0\.10 \(srv\)/);

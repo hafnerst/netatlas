@@ -235,7 +235,7 @@ const MANUAL: Section[] = [
       'Below, the **Layer 1–4 parameters**, one collapsed section per layer (*Layer 2 – Data link (8)*): open one to change a value (its default and source are under it; a changed value is marked *modified*, and the collapsed section says so: *Layer 3 – Network (8) · 2 modified*; **Reset** puts it back). Usually the protocols and the senders are all you choose.',
       'Press **Start** (or `Enter`); `Esc` cancels. The protocols and the values are remembered for the next start in this browser session.',
       'The network starts like a freshly booted one: every table empty, every adjacency down, the interfaces coming up. Its messages appear as dots with labels such as *ARP Request (broadcast): who has 10.0.0.2?*, *OSPF Hello*, *TCP SYN → 10.1.1.10:443* or *ICMP Net Unreachable from 10.0.0.1*. A dot’s shape says how it is addressed: a circle unicast, a square broadcast, a diamond multicast.',
-      '**Exit simulation** (in the simulation panel or the banner) or `Esc` ends it. Nothing in the model changes.',
+      '**Exit simulation** (in the simulation panel, the banner, the Simulate menu or the command palette) or `Esc` ends it at once: the Objects list and the Inspector are back with your tab and selection, and the Edit tab can be used again right away. Nothing in the model changes.',
     ],
     notes: [
       'A value configured on a cable or a relation in the model comes first, then the object’s own Simulation value (an interface’s, a VLAN’s, a relation’s, a DHCP scope’s or a DNS zone’s), then the device’s, then the simulation’s value, then the default; every value says which it is.',
@@ -268,6 +268,7 @@ const MANUAL: Section[] = [
     ],
     notes: [
       'The pacing, the speed and skipping only change how the simulation is shown: what happens, and in which order, is the same with every setting.',
+      'Every hop gets the same time on screen from the very first one: the clock starts with the first frame drawn, a slow frame counts at most 0.1 s (the dots slow down for a moment instead of jumping), and a hidden tab stops it.',
       'At most 48 messages are drawn at once, each with room for its label; the panel says how many more are not drawn, and the event log lists every message.',
       'With reduced motion set in your system, each message is a still arrow with its label, shown for the same paced time; **Step** moves one message at a time.',
     ],
@@ -312,7 +313,8 @@ const MANUAL: Section[] = [
     title: 'Send a test and inspect a packet',
     steps: [
       'During a simulation, use **Send test** in the **Actions** panel, or click a device and choose **Send test…** (it becomes the source). **From** is the sending device; in **To** write a device, an interface (`device:interface`), a host name (resolved by DNS first), an address, a subnet broadcast (offered in the list), *255.255.255.255* or a multicast group.',
-      'Choose the **Type**: **ICMP** (ping), **TCP** or **UDP**, with its **Port**; **More options** has the data size, **Don’t fragment** and, for TCP, keeping the connection open. Press **Send** (or `Enter` in **To**).',
+      'Choose the **Type**: **ICMP** (ping), **TCP** or **UDP**, with its **Port**; **More options** has the data size, **Don’t fragment** and, for TCP, keeping the connection open. Press **Send** (or `Enter` in **To**). The test goes at once, at the current simulated time, in parallel with everything else on screen: only what it really needs (ARP, a DNS answer, a DHCP lease) comes first. Paused, **Send** sends it at the current time and it moves when you press Play; **Send and play** does both.',
+      'Its messages and their answers are always drawn, whatever the senders and protocols chosen and before other dots when many are on screen; their labels start with *Test ·*, the event log marks them **Test**, and they draw a trail. While the test is on its way it alone sets the pace (the other dots keep moving).',
       'The result shows under it, in the Status table and in the event log: *answered* (with the round trip), *connection refused* (a TCP RST from a closed port), an ICMP error that came back (*Net Unreachable*, *Port Unreachable*, *Administratively Prohibited* from a firewall, *Fragmentation Needed* …) or *timed out*.',
       'Click a dot, or the message of a row in the event log (Enter on it from the keyboard): the **packet inspector** shows its frame layer by layer: the MAC addresses and what they are (broadcast, a multicast group’s MAC), the VLAN tag, the IP header (TTL, Don’t Fragment, protocol), the ports and TCP flags or the ICMP type with the quoted header, and what it carries; **Follow message** follows it and its replies.',
       '**Show connections** on a device lists its open ports and connections (LISTEN, ESTABLISHED, TIME_WAIT …); **Show sessions** on a firewall its session table with the rule that permitted each.',

@@ -1080,7 +1080,7 @@ export class App {
     const kind = a ? a.getAttribute('data-kind') : null;
     const index = a ? a.getAttribute('data-index') : null;
     this.editor.renderOutline(box, this.selectionContext());
-    if (this.editLock()) {
+    if (this.editLock() && this.simulation) {
       const edits = box.querySelectorAll('[data-act="add-entity"], [data-act="dup-entity"], [data-act="del-entity"]');
       for (let i = 0; i < edits.length; i++) {
         (edits[i] as HTMLButtonElement).disabled = true;
@@ -1105,7 +1105,8 @@ export class App {
     if (this.tabOverflow) this.tabOverflow.layout(this.tab);
     const focus = captureFocus(this.doc);
     if (this.tab === 'problems' || !this.mdoc) this.renderProblems(body);
-    else if (this.tab === 'edit' && this.mdoc.lock) this.renderLockedEdit(body);
+    // the notice and the read-only form only while a simulation runs
+    else if (this.tab === 'edit' && this.mdoc.lock && this.simulation) this.renderLockedEdit(body);
     else if (this.tab === 'edit') this.editor.renderInspector(body);
     else if (this.tab === 'yaml') this.renderYaml(body);
     else if (!s) mount(body, { tag: 'p', attrs: { class: 'muted' }, children: [], text: 'Nothing to show: the model has too many errors to be drawn. See Problems.' });
@@ -1162,10 +1163,11 @@ export class App {
     const d = this.mdoc as ModelDoc;
     const ta = el(this.doc, 'textarea', { id: 'yaml-src', spellcheck: 'false', 'aria-label': 'YAML source of the whole model', 'aria-describedby': 'yaml-sel', wrap: 'off' }) as HTMLTextAreaElement;
     ta.value = this.editor.sourceDraft !== null ? this.editor.sourceDraft : d.exportText();
-    if (d.lock) ta.readOnly = true;
+    const locked = !!d.lock && !!this.simulation;
+    if (locked) ta.readOnly = true;
     body.appendChild(
       el(this.doc, 'div', { class: 'yaml-tab' }, [
-        d.lock ? this.lockNotice('The text is read-only until you exit the simulation.') : null,
+        locked ? this.lockNotice('The text is read-only until you exit the simulation.') : null,
         el(this.doc, 'p', { class: 'muted small' }, [
           'The whole model as exported. Edit it and press Apply; comments and key order are kept.',
         ]),
@@ -2568,8 +2570,8 @@ export class App {
   private endForNewModel(): void {
     const sim = this.simulation;
     this.simulation = null;
-    if (sim) sim.stop();
     if (this.mdoc) this.mdoc.lock = '';
+    if (sim) sim.stop();
     if (this.tw) this.tw.close();
   }
 
@@ -3142,6 +3144,9 @@ export class App {
     const sim = this.simulation;
     if (!sim) return false;
     this.simulation = null;
+    // editing again first: stopping brings the Objects list and the Inspector back, drawn as they are now
+    // (with the lock still set they came back read-only, with the notice and a disabled Exit simulation)
+    this.syncLock();
     sim.stop();
     this.simChanged();
     const back = this.doc.activeElement;

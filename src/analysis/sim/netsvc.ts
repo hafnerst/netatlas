@@ -579,13 +579,15 @@ export class NetServicesSim {
     pkt.len = 8 + 40;
     this.P.e.send(q.dev, pkt);
     const at = q.attempt;
+    // (a retry of a Send test's query is the test's too)
+    const test = this.P.e.testCtx;
     this.P.e.after(DNS_TIMEOUT, () => {
       if (q.done || q.attempt !== at) return;
       if (q.attempt >= DNS_ATTEMPTS) {
         q.si++;
         q.attempt = 0;
       }
-      this.ask(q);
+      this.P.e.withTest(test, () => this.ask(q));
     });
   }
 
