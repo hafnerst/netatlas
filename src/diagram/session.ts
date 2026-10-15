@@ -13,8 +13,9 @@
  * view: they are never written to the document, so the YAML file keeps only
  * the positions of the complete diagrams.
  *
- * Device-type visibility. `state.hiddenTypes` holds device types switched
- * off with the toolbar's type controls (Endpoints, Servers). It narrows the
+ * Device-type visibility. `state.hiddenTypes` holds the device types
+ * switched off in the toolbar's Device types filter (by typeKey: a type, and
+ * for switches "switch:l2" / "switch:l3"). It narrows the
  * device selection further without changing it: the diagrams show the
  * selected devices (all of them without a filter) that are not of a hidden
  * type. When that is every device, nothing is filtered. Switching a type
@@ -41,6 +42,7 @@ import { filterModel, selectsAll } from '../model/filter';
 import { FOCUS_MAX_HOPS, FOCUS_MIN_HOPS, FocusUp, focusNeighbourhood, focusSeeds } from '../analysis/focus';
 import type { FailureResult } from '../analysis/failure';
 import { refExists, relatedRefs } from '../model/queries';
+import { typeKey } from '../model/device-types';
 import { Model } from '../model/types';
 import { renderLogical } from './logical';
 import { SceneResult, renderPhysical } from './physical';
@@ -59,7 +61,7 @@ export interface ViewState {
   hiddenProtocols: Set<string>;
   /** devices the diagrams show; null = every device (no filter) */
   devices: Set<string> | null;
-  /** device types (model identifiers, e.g. "server") whose devices the diagrams leave out */
+  /** device type keys (model/device-types.ts typeKey: "server", "switch:l2") whose devices the diagrams leave out */
   hiddenTypes: Set<string>;
   /** focus mode: the object and the number of hops shown around it; null = off */
   focus: { ref: string; hops: number } | null;
@@ -198,9 +200,14 @@ export class Session {
     return this.shownSet(view) || new Set(this.model.devices.map((d) => d.id));
   }
 
-  /** Is this device type switched off? */
-  isTypeHidden(type: string): boolean {
-    return this.state.hiddenTypes.has(type);
+  /** Is this device type key switched off ("server", "switch:l2")? */
+  isTypeHidden(key: string): boolean {
+    return this.state.hiddenTypes.has(key);
+  }
+
+  /** Is a device hidden by its type? */
+  isDeviceTypeHidden(d: { type: string; layer3?: boolean }): boolean {
+    return this.state.hiddenTypes.has(typeKey(d));
   }
 
   /** The devices a view shows, or null when that is every device (no filter). */
@@ -211,7 +218,7 @@ export class Session {
     if (!sel && !hidden.size && !focus) return null;
     const near = focus ? focusNeighbourhood(this.model, focus.ref, focus.hops, view, this.simUp || undefined) : null;
     const out = new Set<string>();
-    for (const d of this.model.devices) if ((!sel || sel.has(d.id)) && !hidden.has(d.type) && (!near || near.has(d.id))) out.add(d.id);
+    for (const d of this.model.devices) if ((!sel || sel.has(d.id)) && !hidden.has(typeKey(d)) && (!near || near.has(d.id))) out.add(d.id);
     return out.size === this.model.devices.length ? null : out;
   }
 
@@ -272,8 +279,13 @@ export class Session {
    * Returns whether anything changed.
    */
   setTypeVisible(type: string, visible: boolean): boolean {
+    return this.setTypesVisible([type], visible);
+  }
+
+  /** Show or hide several type keys at once (Select all, Clear, a switch's two kinds), as one change. */
+  setTypesVisible(types: string[], visible: boolean): boolean {
     const hidden = this.state.hiddenTypes;
-    if (hidden.has(type) === !visible) return false;
+    if (types.every((t) => hidden.has(t) === !visible)) return false;
     const views: LayoutView[] = ['physical', 'logical'];
     // where everything is now, plus where hidden nodes were when they left: the start for the new subset
     const seeds = views.map((v) => {
@@ -281,8 +293,10 @@ export class Session {
       this.positionsFor(v).forEach((p, id) => seed.set(id, p));
       return seed;
     });
-    if (visible) hidden.delete(type);
-    else hidden.add(type);
+    for (const t of types) {
+      if (visible) hidden.delete(t);
+      else hidden.add(t);
+    }
     // (what focus mode would restore is no longer what was shown before it)
     this.beforeFocus = null;
     this.filtered = { physical: null, logical: null };

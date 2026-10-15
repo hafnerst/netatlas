@@ -273,49 +273,60 @@ async function main() {
       await page.settle(100);
     }
 
-    // the protocol simulation (protocol-simulation.yaml, physical view): labelled dots and the window; then core1's ARP table
+    // the protocol simulation (protocol-simulation.yaml, physical view): the layout with core1's ARP table; the tables, the packet inspector, a broadcast domain, multicast routes, a device's Simulation section, the start dialog
     {
       await page.eval(`netatlas.loadText(${JSON.stringify(readFileSync(join(root, 'examples', 'protocol-simulation.yaml'), 'utf8'))}, 'protocol-simulation.yaml'), netatlas.setView('physical'), true`);
       await page.eval("document.getElementById('toast').hidden = true");
-      await page.eval(`localStorage.removeItem('netatlas.window.sim'), netatlas.startProtocolSimulation(), netatlas.simController().setPlaying(false), netatlas.simController().runTo(11400), true`);
+      await page.eval(`localStorage.removeItem('netatlas.dockHeight'), sessionStorage.clear(), netatlas.startProtocolSimulation(), netatlas.simController().setPlaying(false), netatlas.simController().runTo(25000), netatlas.fit(), true`);
+      // a moment with messages on their way: the readable pacing for a little real time
+      await page.eval(`(() => { const c = netatlas.simController(); c.showTable('arp', 'core1'); for (let i = 0; i < 40; i++) c.advance(25); c.refresh(true); document.getElementById('toast').hidden = true; return true; })()`);
       await page.mouse('mouseMoved', 700, 890);
       await page.settle(300);
       await save('simulation', { x: 0, y: 0, w: 1440, h: 900 }, { scale: 0.65, quality: 38 });
-      await page.eval(`netatlas.simController().runTo(25000), netatlas.simController().showTable('arp', 'core1', { x: 380, y: 120, w: 10, h: 10 }), true`);
-      await page.settle(200);
-      await save('arp-table', around([await page.rect('.sim-table-panel')], 6), { quality: 55 });
-      // the packet inspector for a TCP SYN of pc1's test traffic
-      await page.eval(`(() => { const c = netatlas.simController(); c.tables.closeAll(); for (let i = 0; i < 400; i++) { const f = c.sim.engine.flights.find((x) => x.hdr && /^TCP SYN → /.test(x.label) && x.t0 <= c.t && c.t <= x.t1); if (f) { c.refresh(true); return c.inspectFlight(f.id, { x: 380, y: 120, w: 10, h: 10 }); } c.sim.advance(c.t + 5000, (x) => /^TCP SYN → /.test(x.label)); } return false; })()`);
+      const st = await page.rect('#sd-status');
+      await save('arp-table', { x: st.x, y: st.y, w: st.w, h: Math.min(st.h, 300) }, { quality: 55 });
+      // the packet inspector for a TCP SYN of pc1's test traffic, with Follow message
+      await page.eval(`(() => { const c = netatlas.simController(); c.showStatus(); for (let i = 0; i < 400; i++) { const f = c.sim.engine.flights.find((x) => x.hdr && /^TCP SYN → /.test(x.label) && x.t0 <= c.t && c.t <= x.t1); if (f) { c.refresh(true); return c.inspectFlight(f.id, { x: 380, y: 120, w: 10, h: 10 }); } c.sim.advance(c.t + 5000, (x) => /^TCP SYN → /.test(x.label)); } return false; })()`);
       await page.settle(200);
       await save('packet-inspector', around([await page.rect('.sim-table-panel[data-table="packet"]')], 6), { quality: 55 });
       // the lab host's broadcast domain, highlighted
-      await page.eval(`netatlas.simController().tables.closeAll(), netatlas.closeToolWindow(), netatlas.select('device:lab-sw2', true), netatlas.select(null), netatlas.zoomBy(1.25), netatlas.simController().highlightDomain({ dev: 'lab-h', iface: 'eth0' }), document.getElementById('toast').hidden = true, true`);
+      await page.eval(`netatlas.simController().tables.closeAll(), netatlas.select('device:lab-sw2', true), netatlas.select(null), netatlas.zoomBy(1.25), netatlas.simController().highlightDomain({ dev: 'lab-h', iface: 'eth0' }), document.getElementById('toast').hidden = true, true`);
       await page.settle(250);
       const lab = [];
       for (const d of ['lab-sw1', 'lab-sw2', 'lab-h']) lab.push(await page.rect(`#canvas .node[data-ref="device:${d}"]`));
       await save('bc-domain', around(lab, 70), { quality: 55 });
       // r1's multicast routes
-      await page.eval(`netatlas.simController().clearDomain(), netatlas.simController().runTo(45000), netatlas.simController().showTable('mroute', 'r1', { x: 380, y: 120, w: 10, h: 10 }), document.getElementById('toast').hidden = true, true`);
+      await page.eval(`netatlas.simController().clearDomain(), netatlas.simController().runTo(45000), netatlas.simController().showTable('mroute', 'r1'), document.getElementById('toast').hidden = true, true`);
       await page.settle(200);
-      await save('mroutes', around([await page.rect('.sim-table-panel[data-table="mroute"]')], 6), { quality: 55 });
-      await page.eval(`netatlas.simController().tables.closeAll(), netatlas.openSimWindow(), true`);
-      await page.settle(100);
-      // core1's Simulation section in the Edit tab, editable while the simulation runs
-      await page.eval(`netatlas.simController().tables.closeAll(), netatlas.closeToolWindow(), netatlas.select('device:core1'), netatlas.showTab('edit'), true`);
+      const st2 = await page.rect('#sd-status');
+      await save('mroutes', { x: st2.x, y: st2.y, w: st2.w, h: Math.min(st2.h, 300) }, { quality: 55 });
+      // core1's Simulation section in the Actions panel, editable while the simulation runs
+      await page.eval(`netatlas.select('device:core1'), true`);
       await page.settle(200);
-      await page.eval(`(() => { const b = document.getElementById('fg-simulation'); b.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0 })); b.scrollIntoView({ block: 'start' }); return true; })()`);
+      await page.eval(`(() => { const b = document.getElementById('fg-simulation'); b.click(); b.scrollIntoView({ block: 'start' }); return true; })()`);
       await page.settle(200);
-      const sb = await page.rect('#side-body');
-      await save('sim-device', { x: sb.x + 4, y: sb.y, w: sb.w - 8, h: Math.min(sb.h, 460) }, { quality: 38 });
+      const sa = await page.rect('#sim-actions');
+      await save('sim-device', { x: sa.x + 2, y: sa.y, w: sa.w - 4, h: Math.min(sa.h, 460) }, { quality: 38 });
       await page.eval(`netatlas.exitSimulation(), true`);
       await page.settle(100);
-      // the start dialog with Layer 1 open
+      // the start dialog: the protocols first; a modified value in Layer 3, collapsed again
       await page.eval(`sessionStorage.clear(), netatlas.openStartDialog(), true`);
       await page.settle(200);
-      await page.eval(`(() => { document.getElementById('sim-pd-l1-btn').click(); const i = document.getElementById('sim-pd-los-detect'); i.value = '500'; i.dispatchEvent(new Event('input')); i.dispatchEvent(new Event('change')); return true; })()`);
+      await page.eval(`(() => { document.getElementById('sim-pd-l3-btn').click(); const i = document.getElementById('sim-pd-ttl'); i.value = '32'; i.dispatchEvent(new Event('input')); i.dispatchEvent(new Event('change')); document.getElementById('sim-pd-l3-btn').click(); document.getElementById('sim-pd-protos-p-arp').focus(); return true; })()`);
       await page.settle(200);
       await save('sim-start', around([await page.rect('#modal')], 4), { scale: 0.75, quality: 40 });
-      await page.eval(`document.querySelector('#modal [data-value="cancel"]').click(), true`);
+      await page.eval(`document.querySelector('#modal [data-value="cancel"]').click(), sessionStorage.clear(), true`);
+      await page.settle(100);
+    }
+
+    // Device types ▾ for the same example: the Layer 2 switches unticked under Switch
+    {
+      await page.eval(`netatlas.setTypeVisible('switch:l2', false), true`);
+      await page.click('#types-btn');
+      await page.settle(200);
+      await save('device-types', around([await page.rect('#types-btn'), await page.rect('#types-panel')], 8), { quality: 55 });
+      await page.key('Escape', 'Escape', 27);
+      await page.eval(`netatlas.setTypeVisible('switch:l2', true), true`);
       await page.settle(100);
     }
 

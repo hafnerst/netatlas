@@ -513,12 +513,25 @@ test('PIM and IGMP: the receivers join, the source registers with the RP, the da
   assert.deepEqual(Array.from(new Set(got.map((e) => e.device))).sort(), ['pc1', 'rx']);
 });
 
-test('simulation: the protocols of a model for the window’s checkboxes, Layer 2 first', () => {
+test('simulation: the protocols of a model for the setup’s checkboxes, grouped by layer (Layer 2 first), each with what uses it', () => {
   const s = sim(pe);
   const e = s.protocolEntries();
   assert.deepEqual(e.slice(0, 3).map((x) => x.id), ['arp', 'garp', 'ndp']);
-  assert.ok(e.every((x, i) => i === 0 || ['Layer 2', 'Routing', 'Redundancy', 'Tunnels and overlays', 'Services', 'Custom', 'Traffic'].indexOf(e[i - 1].group) <= ['Layer 2', 'Routing', 'Redundancy', 'Tunnels and overlays', 'Services', 'Custom', 'Traffic'].indexOf(x.group)));
+  assert.deepEqual(S.ENTRY_GROUPS, ['Layer 2', 'Routing', 'Redundancy', 'Tunnels and overlays', 'Multicast', 'Services', 'Traffic', 'Custom']);
+  assert.ok(e.every((x, i) => i === 0 || S.ENTRY_GROUPS.indexOf(e[i - 1].group) <= S.ENTRY_GROUPS.indexOf(x.group)));
   for (const id of ['stp', 'ospf', 'bgp', 'bfd', 'pim', 'igmp', 'vrrp', 'ipsec', 'gre', 'custom:telemetry', 'demand']) assert.ok(e.some((x) => x.id === id), id);
+  // multicast has its own group; every entry says what uses it
+  for (const id of ['pim', 'igmp']) assert.equal(e.find((x) => x.id === id).group, 'Multicast');
+  const m0 = model(pe);
+  const ospf = e.find((x) => x.id === 'ospf');
+  assert.equal(ospf.unit, 'relation');
+  assert.equal(ospf.uses, m0.relations.filter((r) => r.protocol === 'ospf').length);
+  assert.equal(S.usesText(ospf), `${ospf.uses} relation${ospf.uses === 1 ? '' : 's'}`);
+  const arp = e.find((x) => x.id === 'arp');
+  assert.equal(arp.unit, 'device');
+  assert.ok(arp.uses > 1 && arp.uses <= m0.devices.length);
+  assert.equal(e.find((x) => x.id === 'demand').unit, 'demand');
+  assert.ok(e.every((x) => x.uses >= 1));
   // the simulation never changes the model
   const m = model(pe);
   const before = JSON.stringify(m.devices.map((d) => [d.id, d.interfaces.map((i) => i.mac)]));

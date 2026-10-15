@@ -281,12 +281,21 @@ export function buildCommands(): Command[] {
     // ---------------------------------------------------------- tool windows
     {
       id: 'window.focus',
-      label: 'Move the focus between the tool window and the diagram',
+      label: 'Move the focus to the next region',
       group: 'Window',
-      keys: { combos: [{ key: 'F6' }], whileTyping: true },
-      keywords: 'tool window switch focus keyboard f6',
-      state: (app) => (app.toolWindowOpen() ? on('Move the keyboard focus to the tool window, or back to where it was in the main window (F6)') : off('No tool window is open')),
-      run: (app) => app.toggleWindowFocus(),
+      keys: { combos: [{ key: 'F6', shift: false }], whileTyping: true },
+      keywords: 'region panel switch focus keyboard f6 left right bottom diagram tool window',
+      state: () => on('Move the keyboard focus to the next region: the left panel, the diagram, the right panel, the simulation panel, a tool window (F6; Shift+F6 back)'),
+      run: (app) => app.focusRegion(1),
+    },
+    {
+      id: 'window.focusBack',
+      label: 'Move the focus to the previous region',
+      group: 'Window',
+      keys: { combos: [{ key: 'F6', shift: true }], whileTyping: true },
+      keywords: 'region panel switch focus keyboard shift f6 back',
+      state: () => on('Move the keyboard focus to the previous region (Shift+F6)'),
+      run: (app) => app.focusRegion(-1),
     },
     {
       id: 'window.close',
@@ -304,17 +313,8 @@ export function buildCommands(): Command[] {
       mode: true,
       keywords: 'start protocol simulation ospf bgp arp hello packets messages simulate window layer 2',
       // the same three states in the menu and the palette: no model; a model, nothing running; a simulation running
-      state: (app) => (!app.hasModel() ? off('Open or create a model first') : app.simulationOn() ? off('A simulation is already running') : on('Start the protocol simulation in a window of its own: a freshly booted network, its messages as labelled dots')),
+      state: (app) => (!app.hasModel() ? off('Open or create a model first') : app.simulationOn() ? off('A simulation is already running') : on('Choose the protocols and start the protocol simulation: a freshly booted network, its messages as labelled dots')),
       run: (app) => void app.openStartDialog(),
-    },
-    {
-      id: 'sim.window',
-      label: 'Simulation window',
-      group: 'Simulate',
-      mode: true,
-      keywords: 'protocol simulation window controls event log status',
-      state: (app) => (!app.simulationOn() ? off('No simulation is running') : app.toolWindow() === 'sim' ? off('The Simulation window is open') : on('Open the Simulation window again (its controls, tables and event log)')),
-      run: (app) => app.openSimWindow(),
     },
     {
       id: 'sim.exit',
@@ -438,12 +438,11 @@ export function buildCommands(): Command[] {
         ['opt-groups', 'Groups / Locations', 'The frames of groups and locations', false],
         ['opt-networks', 'Networks', 'Network nodes and their membership lines', true],
         ['opt-routes', 'Routes', 'Route tables and next-hop lines', true],
-        ['opt-type-endpoint', 'Endpoints', 'Devices of type Endpoint', false],
-        ['opt-type-server', 'Servers', 'Devices of type Server', false],
+
       ] as Array<[string, string, string, boolean]>
     ).map(
       ([el, name, what, logical]): Command => ({
-        id: 'filter.' + el.replace(/^opt-(type-)?/, ''),
+        id: 'filter.' + el.replace(/^opt-/, ''),
         label: `Show ${name}`,
         group: 'Filters',
         keywords: 'filter hide toggle ' + what.toLowerCase(),
@@ -463,6 +462,14 @@ export function buildCommands(): Command[] {
       keywords: 'filter subset devices select',
       state: (app) => needDiagram(app, 'Choose the devices the diagram shows'),
       run: (app) => app.openDevicesFilter(),
+    },
+    {
+      id: 'filter.types',
+      label: 'Choose device types…',
+      group: 'Filters',
+      keywords: 'filter device types endpoints servers switches routers hide',
+      state: (app) => needDiagram(app, 'Choose the device types the diagram shows'),
+      run: (app) => app.openTypesFilter(),
     },
     // ---------------------------------------------------------------- Zoom
     { id: 'zoom.in', label: 'Zoom in', group: 'Zoom', keys: { combos: [{ key: '+' }, { key: '=' }] }, state: (app) => needDiagram(app, 'Zoom in (+)'), run: (app) => app.zoomBy(1.25) },

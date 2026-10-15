@@ -37,6 +37,22 @@ export function isDeviceType(id: string): boolean {
 }
 
 /** Display name of a device type; '' for a device without a valid type. */
+/**
+ * The key of a device in the Device types filter: its type, and for a
+ * switch whether it is a Layer 2 or a Layer 3 one ("switch:l2",
+ * "switch:l3"), so that the two can be shown or hidden apart.
+ */
+export function typeKey(d: { type: string; layer3?: boolean }): string {
+  return d.type === 'switch' ? (d.layer3 ? 'switch:l3' : 'switch:l2') : d.type;
+}
+
+/** The name of a Device types key ("Server", "Layer 2 switch"). */
+export function typeKeyLabel(key: string): string {
+  if (key === 'switch:l2') return 'Layer 2 switch';
+  if (key === 'switch:l3') return 'Layer 3 switch';
+  return deviceTypeLabel(key) || key;
+}
+
 export function deviceTypeLabel(id: string): string {
   for (const t of DEVICE_TYPES) if (t.id === id) return t.label;
   return '';

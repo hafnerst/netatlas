@@ -161,13 +161,17 @@ test('diagram filters: one group at the right of the toolbar, with a Filters dro
   const group = /<div id="filters-slot" class="filters-slot">\s*<div id="filters-group" class="tool-group filters-group" role="group" aria-label="Diagram filters">\s*<span id="filters-title" class="tool-group-title">Filters<\/span>\s*<div id="view-filters" class="view-filters">([\s\S]*?)\n  <\/div>\n  <\/div>\n  <\/div>\n  <div class="theme-wrap">[\s\S]*?<\/div>\n<\/header>/.exec(html);
   assert.ok(group, 'the filters are one labelled group, the last thing in the toolbar before the theme switch');
   const opts = [...group[1].matchAll(/<label class="opt[^"]*" data-priority="(\d)"[^>]*><input id="([^"]+)"/g)].map((m) => [m[2], Number(m[1])]);
-  assert.deepEqual(opts, [['opt-labels', 6], ['opt-groups', 5], ['opt-networks', 4], ['opt-routes', 3], ['opt-type-endpoint', 2], ['opt-type-server', 1]]);
+  assert.deepEqual(opts, [['opt-labels', 4], ['opt-groups', 3], ['opt-networks', 2], ['opt-routes', 1]]);
+  // the Device types filter stays next to Devices; the old Endpoints and Servers switches are gone
+  assert.ok(group[1].indexOf('class="devices-wrap"') < group[1].indexOf('class="types-wrap"') && group[1].indexOf('class="types-wrap"') < group[1].indexOf('id="opt-labels"'));
+  assert.doesNotMatch(group[1], /opt-type-|data-device-type/);
   assert.match(group[1], /<button id="more-filters-btn" type="button" class="menu-btn" aria-haspopup="true" aria-expanded="false" aria-controls="more-filters" hidden disabled>Filters/);
   // on the start screen every filter is disabled; the app enables them once a model is drawn
   const inputs = [...group[1].matchAll(/<input id="(opt-[^"]+)"[^>]*>/g)];
-  assert.equal(inputs.length, 6);
+  assert.equal(inputs.length, 4);
   for (const m of inputs) assert.match(m[0], / disabled>$/, m[1]);
   assert.match(group[1], /<button id="devices-btn"[^>]* disabled>/);
+  assert.match(group[1], /<button id="types-btn"[^>]* disabled>/);
   assert.match(css, /\.view-filters \{[^}]*flex-wrap: nowrap;/);
 });
 
@@ -307,7 +311,7 @@ test('toolbar groups: View, Auto-arrange and Filters each have a label above the
   assert.equal((header.match(/class="tool-group /g) || []).length, 3);
   assert.equal((header.match(/class="tool-group-title/g) || []).length, 3);
   // order unchanged: the views, then Auto-arrange, then the filters
-  const at = ['id="view-group"', 'data-view-btn="physical"', 'data-view-btn="logical"', 'id="arrange-group"', 'id="filters-group"', 'id="devices-btn"', 'id="opt-labels"', 'id="opt-type-server"', 'id="more-filters-btn"'].map((x) => header.indexOf(x));
+  const at = ['id="view-group"', 'data-view-btn="physical"', 'data-view-btn="logical"', 'id="arrange-group"', 'id="filters-group"', 'id="devices-btn"', 'id="types-btn"', 'id="opt-labels"', 'id="opt-routes"', 'id="more-filters-btn"'].map((x) => header.indexOf(x));
   assert.deepEqual(at, at.slice().sort((p, q) => p - q));
   // frame, label and padding are defined once, so the groups can't drift apart
   assert.doesNotMatch(css, /\.(view-group|arrange-group|filters-group) \{[^}]*(border|padding)/);
