@@ -123,8 +123,68 @@ there is no conversion of files written for the earlier drafts.
   off may be written `true` / `false`.
 - Built-in protocols **`stp`** (aliases `rstp`, `mstp`), **`lldp`**, **`cdp`**
   and **`igmp`** (alias `mld`).
+- **Simulation attributes at their level:** `simulation:` is also allowed
+  on interfaces (physical and logical), on networks with a `vlan` (for the
+  VLAN) and on relations, and on a DHCP scope and a DNS zone. Each
+  attribute has one level: ARP / NDP timers, `respond_to_ping`,
+  `icmp_errors`, `link_up_delay`, `los_detection`, storm control, the IGMP
+  attributes, `pim_dr_priority`, `directed_broadcast`, `lacp_rate`,
+  `beacon_interval`, `multicast_to_unicast`, `multicast_passthrough` are an
+  interface's; `igmp_snooping`, `snooping_querier`, `fast_leave`,
+  `unknown_multicast` a VLAN's; `vrrp_advert`, the IPsec lifetimes and DPD,
+  `multicast_over_tunnel`, a load balancer pool's health checks,
+  persistence and algorithm, and `response_time` a relation's. Some may be
+  written on the device as the default for its objects. An attribute at
+  the wrong level is an error naming its level (files using the old device
+  attributes for these must move them; there is no conversion).
+- **Spanning tree per port:** `stp`, `stp_cost`, `stp_port_priority`,
+  `stp_edge`, `stp_bpdu_guard`, `stp_root_guard`, `stp_link_type` on a
+  switch port or aggregate; `bridge_priority` and, for the new modes
+  `mstp` and `pvst`, `bridge_priority_vlans` on the switch. The device
+  attribute `stp-priority` is gone (`bridge_priority` replaces it).
+- **Network services:** `services: {dhcp: {scopes: […]}, dns: {listen,
+  zones: […], forwarders, reverse_zones}}` on a server, VM or container;
+  `dhcp_relay` (helper addresses) on a routed interface with an address;
+  `dns_servers` on a device. Simulation attributes `offer_delay` and
+  `ping_check` (a scope's, or the server's), `record_ttl` (a zone's), and
+  `dhcp_retries`, `dhcp_backoff`, `link_local_fallback` (a DHCP client
+  interface's).
 
 ### Added
+
+- **DHCP and DNS servers.** A server's **Services** card with **DHCP
+  server** and **DNS server** checkboxes (off by default): scopes with
+  network, range, gateway, DNS servers, lease, exclusions, reservations and
+  domain, suggested by the input helpers; zones with the records derived
+  from the model's DNS names (read-only, with their source) and their own
+  A, AAAA and CNAME records; listening address, forwarders, reverse zones.
+  What a service still needs is reported as errors; validation of ranges,
+  gateways, reservations, overlaps, records and relays; the checks
+  `dhcp-no-server` and `dhcp-relay-no-server`. A host's DNS servers, a
+  routed interface's DHCP relay. The diagram marks servers with **DHCP** /
+  **DNS** badges (in the legend) and DHCP client interfaces with *DHCP
+  client* and a reserved lease line.
+- **DHCP and DNS in the protocol simulation:** DORA for every client in
+  parallel, through relays, the lease applied (address, default route, DNS
+  servers) and everything else waiting for it; renew at T1, rebind at T2,
+  expiry; an exhausted pool (no answer, or a NAK); retries with backoff and
+  a link-local fallback; DNS resolution by host name for Send test and test
+  traffic (CNAMEs, NXDOMAIN, SERVFAIL, forwarders, timeouts, the cache) as a
+  dependency of the connection. Labels such as *DHCPOFFER 10.10.10.100 ·
+  lease 1 d*, *DNS A? web.campus.example*. Tables **Show DHCP leases**,
+  **Show DNS zone** and **Show DNS cache**. The diagram writes a lease into
+  its client's line: *10.10.10.100/24 (DHCP lease)*.
+- **Per-object Simulation subsections** in the Edit tab (collapsed) for
+  interfaces, networks with a VLAN, relations, DHCP scopes and DNS zones,
+  with the same inherit / override / reset fields as a device's.
+- **Spanning tree per port in the simulation:** 802.1D path costs by speed,
+  root and designated ports, port priorities, root guard, edge ports
+  (forwarding at once; without one a host port waits 2 × forward delay in
+  STP mode), BPDU guard (err-disabling the port), shared links; MSTP and
+  PVST with a root per VLAN.
+- New example **`campus-services.yaml`**: a DHCP and DNS server for two
+  VLANs (one behind a relay on a Layer 3 switch), a Layer 2 access switch
+  with per-port spanning-tree settings, test traffic by host name.
 
 - **Senders** in the protocol simulation: choose which devices you watch,
   in Start simulation… (after the protocols, open) and in the Simulation
@@ -631,6 +691,25 @@ there is no conversion of files written for the earlier drafts.
 
 ### Changed
 
+- **The simulation indicator** is a thin solid 2 px border inside the
+  diagram (3:1 or more in both themes, `pointer-events: none`) and the
+  label *◈ Simulation running*, instead of the hatched frame.
+- **One layer scale** for the whole page, as tokens in `:root`: diagram <
+  overlays < panels < toolbar < menus / popovers < tooltips < dialogs <
+  announcements. Every `z-index` uses it.
+- **Supports Layer 3:** a switch's Layer 3 checkbox is now *Supports Layer
+  3* (tooltip *Routing, routing protocols, and gateways*). On a Layer 2
+  switch the routing protocols are listed disabled in a group *Requires
+  Layer 3* with the reason, nothing of Layer 3 is suggested, and relation
+  endpoint pickers, the input helpers and the palette follow the same rule.
+- **Precedence** has an object level: configured → object → device →
+  simulation → default; values show the object they come from.
+- The simulated built-in `dhcp` relation is only drawn now (its messages
+  come from the DHCP servers of the model).
+- A DHCP interface's entry says *DHCP client* (was *DHCP*).
+- A device's DNS names: the hint no longer says that no record is created
+  (a DNS server's zone answers them).
+
 - **Independent protocol exchanges run in parallel.** The cause of the
   one-after-another display: each session started at its own random moment
   between 0.2 and 1.7 s (and the boot announcements between 0 and 0.9 s),
@@ -844,6 +923,25 @@ live protocol simulation replaces them.
   failure are tool windows now).
 
 ### Fixed
+
+- **Menus behind the simulation frame.** The top bar's menus (and the
+  palette, the in-diagram menu and the packet inspector) could appear
+  behind the simulation frame and the simulation panel's splitter: the top
+  bar, the canvas and the panel are container-query containers, and
+  `container-type` makes each a stacking context, so a menu's z-index only
+  counted inside the top bar, which came before the canvas in the page.
+  The regions now have explicit layers on the new scale.
+- The Find bar's results were covered by the side panel at narrow widths.
+- A click on a checkbox in the Edit tab was lost when a field was still
+  being typed in (the commit re-rendered the form), or right after a button
+  whose own click had landed elsewhere.
+- A scripted or stale choice could enable a routing protocol on a Layer 2
+  switch.
+- A broadcast domain counted a cable whose far end the spanning tree
+  blocks.
+- Skipping idle time could run hours ahead on a slow machine: an idle jump
+  cut short by its work budget started a new jump the next frame instead of
+  going on to the same end, so it never rested. It now goes on, and rests.
 
 - A jump over idle time could do minutes of work in one frame when most
   messages were hidden; it now does at most 25 ms per frame.

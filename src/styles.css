@@ -7,6 +7,43 @@
    boundaries (--control-border), focus rings (--accent), selection (--sel) and
    diagram lines (--dev-stroke, --group-stroke, --member) at least 3:1 against
    the canvas and the panels. test/theme.test.mjs checks the pairs. */
+/* The stacking order: one scale for every z-index of the application, lowest first. Nothing uses a
+   number of its own; a step may be raised by a little (+ 1, + 2) within its own layer only.
+
+     --z-overlay   diagram overlays: the simulation border and label, the mode banner, the find and
+                   connect bars, hints over the diagram (the diagram itself and its dots are below: 0)
+     --z-panel     the side panels, the simulation panel, their splitters, tool windows
+     --z-toolbar   the toolbar, with the menus and panels that open from it (the main menus and
+                   submenus, the diagram filters)
+     --z-menu      menus and popovers at the page level: the in-diagram menus, the device tables and
+                   the packet inspector, the search results, combo-box lists, the tabs' menu
+     --z-tooltip   tooltips and tips
+     --z-dialog    dialogs (a modal <dialog> is in the browser's top layer anyway)
+     --z-announce  announcements (the toast), the self-test report
+
+   A higher layer is always in front: a menu opened over the diagram in a simulation is above the
+   simulation border, which never catches a click (pointer-events: none).
+
+   Why the regions have explicit layers: the toolbar, the diagram and the simulation panel use container
+   queries, and `container-type` makes an element a stacking context (layout containment). A z-index
+   inside one then counts only within it: the menus inside the toolbar (z-index 20 then) were painted
+   under the diagram's frame (24, inside the diagram, which comes later in the page), whatever their
+   number. So these regions take their layer themselves: the diagram 0 (its overlays inside it),
+   the simulation panel --z-panel, the toolbar --z-toolbar (its menus, inside it, above every panel and
+   overlay). Fixed popovers at the page level (the in-diagram menus, the device tables, the packet
+   inspector) are on --z-menu. The side panels are no stacking contexts, so that what opens from them
+   (a combo list, the tabs' menu) reaches its own layer. Within one component, small local orders
+   (0–3: the segments of a button group, the YAML editor's highlight) stay below every layer.
+   test/zorder.test.mjs checks the order in a running simulation. */
+:root {
+  --z-overlay: 10;
+  --z-panel: 20;
+  --z-toolbar: 30;
+  --z-menu: 40;
+  --z-tooltip: 50;
+  --z-dialog: 60;
+  --z-announce: 70;
+}
 :root[data-theme="light"] {
   /* surfaces: the page, panels, the diagram, and raised layers (menus, dialogs, tooltips) */
   --bg: #f6f7f9;
@@ -127,6 +164,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .small { font-size: 11.5px; }
 
 .topbar {
+  position: relative; z-index: var(--z-toolbar);
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
   /* the toolbar compacts itself by its own width (below), so the diagram filters keep the first row */
   container-type: inline-size;
@@ -169,10 +207,12 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .more-filters .opt { color: var(--text); min-height: 24px; }
 .more-filters .opt input { width: 16px; height: 16px; }
 /* Find (Find → Find in diagram…, "/"): a bar over the top right of the diagram */
-.find-bar { position: absolute; top: 10px; right: 12px; z-index: 30; display: flex; align-items: center; gap: 4px; width: min(340px, calc(100% - 24px)); padding: 4px; border: 1px solid var(--border); border-radius: 8px; background: var(--raised); box-shadow: 0 4px 14px var(--shadow); }
+.find-bar { position: absolute; top: 10px; right: 12px; z-index: calc(var(--z-overlay) + 2); display: flex; align-items: center; gap: 4px; width: min(340px, calc(100% - 24px)); padding: 4px; border: 1px solid var(--border); border-radius: 8px; background: var(--raised); box-shadow: 0 4px 14px var(--shadow); }
 .find-bar[hidden] { display: none; }
 .find-bar #search { flex: 1; min-width: 0; width: auto; }
-.find-bar #search-results { position: fixed; z-index: 45; margin-top: 0; min-width: 0; max-width: none; }
+.find-bar #search-results { position: fixed; z-index: var(--z-menu); margin-top: 0; min-width: 0; max-width: none; }
+/* the canvas region is its own layer (0): while the find results are open it rises to the menu layer, so the results (fixed, possibly reaching over the side panel at narrow widths) stay above the panels */
+#canvas-wrap:has(#search-results:not([hidden])) { z-index: var(--z-menu); }
 /* the outline filter (Find → Filter object list…) */
 .ol-filter { display: flex; gap: 4px; align-items: center; margin-bottom: 6px; }
 .ol-filter .outline-filter { flex: 1; min-width: 0; margin: 0; }
@@ -203,7 +243,7 @@ body:not([data-view="logical"]) .logical-only { display: none; }
 .filter-hint { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); max-width: calc(100% - 40px); padding: 4px 10px; border: 1px solid var(--border); border-radius: 999px; background: var(--panel); color: var(--muted); font-size: 12px; box-shadow: 0 1px 4px var(--shadow); pointer-events: none; }
 .filter-hint[hidden] { display: none; }
 /* an analysis mode (focus): a banner across the top of the diagram, with its controls; the overlays below it move down */
-.mode-banner { position: absolute; top: 0; left: 0; right: 0; z-index: 25; display: flex; flex-direction: column; gap: 4px; padding: 6px 12px; border-bottom: 2px solid var(--accent); background: var(--accent-soft); color: var(--text); font-size: 12.5px; }
+.mode-banner { position: absolute; top: 0; left: 0; right: 0; z-index: calc(var(--z-overlay) + 1); display: flex; flex-direction: column; gap: 4px; padding: 6px 12px; border-bottom: 2px solid var(--accent); background: var(--accent-soft); color: var(--text); font-size: 12.5px; }
 .mode-banner[hidden], .mode-banner .mb-row[hidden] { display: none; }
 .mode-banner .mb-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; }
 .mode-banner .mb-row + .mb-row { border-top: 1px solid var(--border); padding-top: 4px; }
@@ -251,7 +291,7 @@ dialog#modal.palette-dialog .modal-btns { display: none; }
 .search-wrap { position: relative; }
 #search { padding: 4px 8px; border: 1px solid var(--control-border); border-radius: 6px; background: var(--canvas); }
 .dropdown {
-  position: absolute; top: 100%; left: 0; z-index: 20; min-width: min(300px, calc(100vw - 16px)); max-width: calc(100vw - 16px);
+  position: absolute; top: 100%; left: 0; z-index: var(--z-menu); min-width: min(300px, calc(100vw - 16px)); max-width: calc(100vw - 16px);
   max-height: min(360px, calc(100vh - 90px)); max-height: min(360px, calc(100dvh - 90px)); overflow: auto;
   background: var(--raised); border: 1px solid var(--border); border-radius: 8px; margin-top: 4px; padding: 4px;
   box-shadow: 0 8px 24px var(--shadow);
@@ -283,7 +323,7 @@ dialog#modal.palette-dialog .modal-btns { display: none; }
 /* the side panel: 480 px by default, or the width chosen with its splitter (--side-w, kept in local storage),
    never so wide that the diagram has less than 360 px beside the object list (250 px) */
 main { display: grid; grid-template-columns: 250px minmax(0, 1fr) min(var(--side-w, 480px), max(320px, calc(100vw - 610px))); grid-template-rows: minmax(0, 1fr); min-height: 0; min-width: 0; overflow: hidden; }
-#canvas-wrap { position: relative; min-width: 0; min-height: 0; overflow: hidden; background: var(--canvas); }
+#canvas-wrap { position: relative; z-index: 0; min-width: 0; min-height: 0; overflow: hidden; background: var(--canvas); }
 #canvas {
   width: 100%; height: 100%; display: block; cursor: grab; touch-action: none; user-select: none;
   background-image: radial-gradient(var(--grid) 1px, transparent 1px);
@@ -346,7 +386,7 @@ body.dropping #drop-hint { display: flex; }
 body[data-state="empty"].dropping #drop-hint { display: none; }
 
 #tooltip {
-  position: absolute; z-index: 30; pointer-events: none; max-width: 340px;
+  position: absolute; z-index: var(--z-tooltip); pointer-events: none; max-width: 340px;
   background: var(--raised); border: 1px solid var(--border); border-radius: 8px; padding: 6px 9px;
   box-shadow: 0 6px 18px var(--shadow); font-size: 12px;
 }
@@ -355,7 +395,7 @@ body[data-state="empty"].dropping #drop-hint { display: none; }
 
 #side { position: relative; display: flex; flex-direction: column; min-height: 0; min-width: 0; overflow: hidden; background: var(--panel); border-left: 1px solid var(--border); }
 /* the splitter: a handle on the panel's left edge, with a visible grip; wider to grab than it looks */
-.splitter { position: absolute; left: 0; top: 0; bottom: 0; width: 8px; z-index: 5; cursor: col-resize; touch-action: none; }
+.splitter { position: absolute; left: 0; top: 0; bottom: 0; width: 8px; z-index: calc(var(--z-panel) + 1); cursor: col-resize; touch-action: none; }
 .splitter::before { content: ""; position: absolute; left: 2px; top: 50%; width: 4px; height: 40px; margin-top: -20px; border-radius: 2px; border-left: 1px solid var(--frame); border-right: 1px solid var(--frame); }
 .splitter:hover::before, .splitter.dragging::before { border-color: var(--accent); background: var(--accent); }
 .splitter:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
@@ -367,7 +407,7 @@ body[data-state="empty"].dropping #drop-hint { display: none; }
 .tabs.one-row button[data-tab] { flex: none; }
 .tabs button[data-tab][hidden], .tabs-more[hidden] { display: none; }
 .tabs-more { flex: none; display: flex; margin-left: auto; }
-.tabs-more-menu { position: fixed; z-index: 60; min-width: 0; }
+.tabs-more-menu { position: fixed; z-index: var(--z-menu); min-width: 0; }
 .tabs button { flex: 1 1 auto; white-space: nowrap; border: 0; border-radius: 0; border-bottom: 2px solid transparent; padding: 8px 4px; background: none; color: var(--muted); }
 .tabs button.active { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
 /* the one scrolling region of the side panel: tabs above and hints below stay in place */
@@ -435,7 +475,7 @@ button.ref:hover { text-decoration: underline; }
 /* the open file: a compact badge at the start; a long name is shortened in the middle of the bar, never pushing it wider */
 #status .fname { flex: 0 1 auto; min-width: 4em; max-width: 45%; overflow: hidden; text-overflow: ellipsis; padding: 0 8px; border: 1px solid var(--border); border-radius: 99px; background: var(--canvas); color: var(--text); font-weight: 600; font-family: var(--font-mono); font-size: 11.5px; line-height: 18px; }
 #status .status-rest { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-#selftest { position: fixed; inset: 40px; z-index: 100; overflow: auto; background: var(--panel); border: 2px solid var(--accent); padding: 12px; font-size: 11px; }
+#selftest { position: fixed; inset: 40px; z-index: calc(var(--z-announce) + 1); overflow: auto; background: var(--panel); border: 2px solid var(--accent); padding: 12px; font-size: 11px; }
 /* The model panel (#outline) is always shown. Narrower windows give it and the
    side panel less room; below 860px both move under the diagram, side by side,
    so neither ever lies on top of the diagram or its controls. */
@@ -486,6 +526,8 @@ button.ref:hover { text-decoration: underline; }
 .dev-badge rect { fill: var(--panel); stroke: var(--text); stroke-width: 1; }
 .dev-badge.l3 rect { stroke-width: 1.6; }
 .dev-badge text { font-size: 8.5px; font-weight: 700; fill: var(--text); letter-spacing: 0.2px; }
+/* a DHCP client's lease in a simulation (its reserved line): the simulation's colour, bold; the text says what it is */
+.lease-on { font-weight: 700; fill: var(--sim); }
 .icon { fill: none; stroke: var(--icon); stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 .swatch .icon { stroke-width: 1.8; }
 .cable-line { fill: none; stroke-linejoin: round; }
@@ -884,7 +926,7 @@ th[aria-sort="ascending"] .addr-sort, th[aria-sort="descending"] .addr-sort { co
 .dl-label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--muted); }
 .dl-label input { padding: 5px 8px; border: 1px solid var(--control-border); border-radius: 6px; background: var(--canvas); color: var(--text); font-size: 13px; }
 .dl-warn { margin-top: 10px; border-left: 4px solid var(--error); padding: 6px 10px; background: var(--canvas); border-radius: 4px; }
-#toast { position: absolute; left: 50%; top: 12px; transform: translateX(-50%); z-index: 40; background: var(--text); color: var(--panel); padding: 6px 14px; border-radius: 8px; font-size: 12.5px; box-shadow: 0 6px 18px var(--shadow); max-width: 80%; }
+#toast { position: absolute; left: 50%; top: 12px; transform: translateX(-50%); z-index: var(--z-announce); background: var(--text); color: var(--panel); padding: 6px 14px; border-radius: 8px; font-size: 12.5px; box-shadow: 0 6px 18px var(--shadow); max-width: 80%; }
 /* errors marked on the diagram */
 .device.has-error .dev-box, .network.has-error .net-box { stroke: var(--error) !important; stroke-width: 2.4 !important; stroke-dasharray: 5 3; }
 .rel.has-error .rel-line, .rel.has-error .tube-outer { stroke-dasharray: 3 3; }
@@ -906,7 +948,7 @@ th[aria-sort="ascending"] .addr-sort, th[aria-sort="descending"] .addr-sort { co
 #canvas.connecting .conn-no { opacity: .35; cursor: not-allowed; }
 .conn-line { stroke: var(--sel); stroke-width: 2; stroke-dasharray: 6 4; pointer-events: none; }
 /* the connect bar: the keyboard way to pick the second endpoint */
-.connect-bar { position: absolute; left: 12px; bottom: 12px; z-index: 30; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; max-width: calc(100% - 24px); padding: 6px 8px; border: 1px solid var(--sel); border-radius: 8px; background: var(--raised); box-shadow: 0 4px 14px var(--shadow); font-size: 12.5px; }
+.connect-bar { position: absolute; left: 12px; bottom: 12px; z-index: calc(var(--z-overlay) + 2); display: flex; flex-wrap: wrap; align-items: center; gap: 6px; max-width: calc(100% - 24px); padding: 6px 8px; border: 1px solid var(--sel); border-radius: 8px; background: var(--raised); box-shadow: 0 4px 14px var(--shadow); font-size: 12.5px; }
 .connect-bar[hidden] { display: none; }
 .connect-bar .cb-text { flex: 1 1 220px; min-width: 0; overflow-wrap: anywhere; }
 .connect-bar select { max-width: 100%; min-width: 0; }
@@ -959,7 +1001,7 @@ body:not([data-state="loaded"]) .view-group .tool-group-title, body:not([data-st
 .theme-btn .ti { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; display: none; }
 .theme-btn[data-theme-now="light"] .ti-light, .theme-btn[data-theme-now="dark"] .ti-dark { display: block; }
 .theme-wrap .tip {
-  position: absolute; top: calc(100% + 6px); right: 0; z-index: 50; width: max-content; max-width: min(260px, calc(100vw - 24px));
+  position: absolute; top: calc(100% + 6px); right: 0; z-index: var(--z-tooltip); width: max-content; max-width: min(260px, calc(100vw - 24px));
   padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--raised); color: var(--text);
   box-shadow: 0 4px 14px var(--shadow); font-size: 12px; white-space: normal; pointer-events: none; visibility: hidden; opacity: 0; transition: opacity .12s;
 }
@@ -967,7 +1009,7 @@ body:not([data-state="loaded"]) .view-group .tool-group-title, body:not([data-st
 /* a label placed away from what it belongs to (no free place next to it) is tied to it by a thin dashed line */
 .leader { fill: none; stroke: var(--member); stroke-width: 1; stroke-dasharray: 2 2; pointer-events: none; }
 /* overlaps after moving nodes by hand: said in words, outside the picture (never exported) */
-.overlap-hint { position: absolute; right: 12px; bottom: 12px; z-index: 25; max-width: min(420px, calc(100% - 200px)); padding: 5px 10px; border: 1px solid var(--warn); border-radius: 8px; background: var(--raised); color: var(--text); font-size: 12px; box-shadow: 0 2px 8px var(--shadow); }
+.overlap-hint { position: absolute; right: 12px; bottom: 12px; z-index: calc(var(--z-overlay) + 1); max-width: min(420px, calc(100% - 200px)); padding: 5px 10px; border: 1px solid var(--warn); border-radius: 8px; background: var(--raised); color: var(--text); font-size: 12px; box-shadow: 0 2px 8px var(--shadow); }
 .overlap-hint > span:first-child { color: var(--warn); font-weight: 700; }
 .overlap-hint[hidden] { display: none; }
 
@@ -1006,10 +1048,12 @@ body:not([data-state="loaded"]) .view-group .tool-group-title, body:not([data-st
 .has-sim text.sim-down[data-ref^="route:"], .has-sim tspan.sim-down[data-ref^="route:"] { text-decoration: line-through; }
 .has-sim text.sim-degraded[data-ref^="route:"], .has-sim tspan.sim-degraded[data-ref^="route:"] { font-style: italic; text-decoration: underline dotted; }
 
-/* ---- simulation mode: recognisable beyond colour. A hatched frame round the diagram, the "Simulated state"
-   badge, the banner with its ◈ mark, a marker in the status bar; editing is paused (the Edit tab is read-only). */
-body[data-mode~="simulation"] #canvas-wrap::after { content: ""; position: absolute; inset: 0; z-index: 24; pointer-events: none; border: 6px solid transparent; border-image: repeating-linear-gradient(45deg, var(--sim) 0 6px, transparent 6px 12px) 6; }
-.sim-badge { position: absolute; right: 12px; bottom: 12px; z-index: 25; padding: 3px 10px; border: 2px dashed var(--sim); border-radius: 6px; background: var(--raised); color: var(--text); font-size: 12.5px; font-weight: 700; letter-spacing: .02em; pointer-events: none; }
+/* ---- simulation mode: recognisable beyond colour. A thin solid border inside the diagram's edge (--sim, at
+   least 3:1 against the canvas in both themes), the "Simulation running" label in its corner, the banner with
+   its ◈ mark, a marker in the status bar; editing is paused (the Edit tab is read-only). The border is an
+   overlay: it never catches a click, and every menu, popover and dialog is in front of it. */
+body[data-mode~="simulation"] #canvas-wrap::after { content: ""; position: absolute; inset: 0; z-index: var(--z-overlay); pointer-events: none; box-shadow: inset 0 0 0 2px var(--sim); }
+.sim-badge { position: absolute; right: 12px; bottom: 12px; z-index: calc(var(--z-overlay) + 1); padding: 2px 9px; border: 2px solid var(--sim); border-radius: 6px; background: var(--raised); color: var(--text); font-size: 12.5px; font-weight: 700; letter-spacing: .02em; pointer-events: none; }
 .sim-badge[hidden] { display: none; }
 /* a narrow diagram (a wide side panel, a narrow window): the badge stands above the zoom bar, not beside it */
 #canvas-wrap { container-type: inline-size; }
@@ -1023,7 +1067,7 @@ body[data-mode~="simulation"] .mode-banner { border-bottom-color: var(--sim); }
 .mode-banner #mb-sim + .mb-row { border-top: 0; }
 .mode-banner .mb-short { display: none; }
 body[data-mode~="simulation"] .overlap-hint { bottom: 50px; }
-/* a very short window: the simulation's banner is one short line that says "Simulated state" itself (the full
+/* a very short window: the simulation's banner is one short line that says "Simulation running" itself (the full
    text stays there for screen readers), in place of the badge, so the diagram keeps some room */
 @media (max-height: 420px) {
   .mode-banner #mb-sim .mb-text:not(.mb-short) { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
@@ -1084,7 +1128,7 @@ details.svc-own-rid > summary { cursor: pointer; font-size: 12px; color: var(--l
 .helpers button.chip.helper:focus-visible, .combo-opt[aria-selected="true"] { outline: 2px solid var(--focus, var(--accent)); outline-offset: 1px; }
 .ctl.combo { position: relative; display: block; }
 .ctl.combo > input { width: 100%; }
-ul.combo-list { position: absolute; z-index: 30; left: 0; right: 0; top: 100%; margin: 2px 0 0; padding: 2px 0; list-style: none; max-height: 220px; overflow: auto; background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 6px; box-shadow: 0 4px 14px var(--shadow); }
+ul.combo-list { position: absolute; z-index: var(--z-menu); left: 0; right: 0; top: 100%; margin: 2px 0 0; padding: 2px 0; list-style: none; max-height: 220px; overflow: auto; background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 6px; box-shadow: 0 4px 14px var(--shadow); }
 ul.combo-list[hidden] { display: none; }
 .combo-opt { display: flex; justify-content: space-between; gap: 8px; padding: 3px 8px; cursor: pointer; overflow-wrap: anywhere; }
 .combo-opt:hover, .combo-opt[aria-selected="true"] { background: var(--accent-soft); }
@@ -1095,7 +1139,7 @@ ul.combo-list[hidden] { display: none; }
 /* ---- tool windows (ui/toolwindow.ts): non-modal windows of Analyze and Simulate. Floating over the diagram
    (moved and resized, kept inside the browser window), or docked: a full-width row of the page under the diagram,
    above the status bar (it takes room and covers nothing). Narrow windows always dock. */
-.toolwin { position: fixed; z-index: 45; display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--panel); color: var(--text); border: 1px solid var(--frame); border-radius: 10px; box-shadow: 0 8px 28px var(--shadow); }
+.toolwin { position: fixed; z-index: calc(var(--z-panel) + 2); display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--panel); color: var(--text); border: 1px solid var(--frame); border-radius: 10px; box-shadow: 0 8px 28px var(--shadow); }
 .toolwin[hidden] { display: none; }
 .tw-head { flex: none; display: flex; align-items: center; gap: 6px; padding: 5px 6px 5px 8px; border-bottom: 1px solid var(--border); cursor: move; user-select: none; touch-action: none; }
 .toolwin.docked .tw-head { cursor: default; }
@@ -1262,8 +1306,8 @@ body[data-sim="on"] #side > .tabs, body[data-sim="on"] #side-body, body[data-sim
 .sim-events { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
 #sim-act-attrs:empty { display: none; }
 /* the simulation panel */
-.sim-dock { position: relative; display: flex; flex-direction: column; min-height: 0; min-width: 0; background: var(--panel); border-top: 2px solid var(--sim); }
-.dock-splitter { position: absolute; left: 0; right: 0; top: -6px; height: 10px; z-index: 6; cursor: row-resize; touch-action: none; }
+.sim-dock { position: relative; z-index: var(--z-panel); display: flex; flex-direction: column; min-height: 0; min-width: 0; background: var(--panel); border-top: 2px solid var(--sim); }
+.dock-splitter { position: absolute; left: 0; right: 0; top: -6px; height: 10px; z-index: calc(var(--z-panel) + 1); cursor: row-resize; touch-action: none; }
 .dock-splitter::before { content: ""; position: absolute; left: 50%; top: 3px; width: 48px; height: 4px; margin-left: -24px; border-radius: 2px; border-top: 1px solid var(--frame); border-bottom: 1px solid var(--frame); background: var(--panel); }
 .dock-splitter:hover::before, .dock-splitter.dragging::before, .dock-splitter:focus-visible::before { background: var(--accent); border-color: var(--accent); }
 .dock-splitter:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
@@ -1343,7 +1387,7 @@ body[data-sim="on"] #side > .tabs, body[data-sim="on"] #side-body, body[data-sim
 .snd-find { width: 100%; min-height: 28px; box-sizing: border-box; padding: 3px 7px; border: 1px solid var(--control-border); border-radius: 5px; background: var(--canvas); color: var(--text); }
 .snd-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
 .snd-by[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); font-weight: 650; }
-.snd-menu { position: absolute; z-index: 70; min-width: 180px; max-height: 240px; overflow: auto; }
+.snd-menu { position: absolute; z-index: var(--z-menu); min-width: 180px; max-height: 240px; overflow: auto; }
 .snd-menu[hidden] { display: none; }
 .snd-menuitem { display: block; width: 100%; text-align: left; }
 .snd-list { min-height: 0; overflow: auto; overscroll-behavior: contain; border: 1px solid var(--border); border-radius: 8px; padding: 2px 8px 6px; background: var(--canvas); }
@@ -1419,12 +1463,12 @@ dialog#modal.sim-start-dialog .snd-list { flex: 1 1 auto; min-height: 60px; }
   .sd-play { min-width: 64px; }
 }
 /* the in-diagram menu */
-.sim-menu { position: fixed; z-index: 60; display: flex; flex-direction: column; min-width: 160px; background: var(--panel); color: var(--text); border: 1px solid var(--frame); border-radius: 8px; box-shadow: 0 6px 20px var(--shadow); padding: 4px; }
+.sim-menu { position: fixed; z-index: var(--z-menu); display: flex; flex-direction: column; min-width: 160px; background: var(--panel); color: var(--text); border: 1px solid var(--frame); border-radius: 8px; box-shadow: 0 6px 20px var(--shadow); padding: 4px; }
 .sim-menu-title { font-size: 11.5px; color: var(--muted); padding: 2px 8px 4px; max-width: 260px; overflow-wrap: anywhere; }
 .sim-menu-item { text-align: left; border: none; background: transparent; padding: 5px 10px; border-radius: 5px; color: var(--text); }
 .sim-menu-item:hover, .sim-menu-item:focus-visible { background: var(--accent-soft); outline: 2px solid var(--accent); outline-offset: -2px; }
 /* the ARP and MAC tables */
-.sim-table-panel { position: fixed; z-index: 55; display: flex; flex-direction: column; max-height: min(70vh, 520px, calc(100vh - 16px)); max-width: calc(100vw - 16px); background: var(--panel); color: var(--text); border: 1px solid var(--frame); border-radius: 10px; box-shadow: 0 8px 24px var(--shadow); }
+.sim-table-panel { position: fixed; z-index: var(--z-menu); display: flex; flex-direction: column; max-height: min(70vh, 520px, calc(100vh - 16px)); max-width: calc(100vw - 16px); background: var(--panel); color: var(--text); border: 1px solid var(--frame); border-radius: 10px; box-shadow: 0 8px 24px var(--shadow); }
 .st-head { display: flex; align-items: center; gap: 6px; padding: 4px 6px 4px 4px; border-bottom: 1px solid var(--border); cursor: move; touch-action: none; }
 .st-title { flex: 1; margin: 0; font-size: 13px; overflow-wrap: anywhere; }
 .st-move, .st-close { border: 1px solid var(--control-border); background: var(--raised); color: var(--text); border-radius: 5px; min-width: 26px; min-height: 24px; }

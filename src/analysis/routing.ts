@@ -73,6 +73,17 @@ export interface RoutingCtx {
   adjUp?: (relation: string, from: string, to: string) => boolean;
   /** is a cable up */
   linkUp?: (id: string) => boolean;
+  /** networks a device is connected to besides its configured addresses (the protocol simulation: a DHCP lease) */
+  leases?: (device: string) => Connected[];
+  /** routes besides the model's (the protocol simulation: a DHCP lease's default route) */
+  extraRoutes?: (device: string, vrf: string) => RibEntry[];
+}
+
+/** A device's connected networks in a state: its configured ones, and what the state adds (a DHCP lease). */
+export function connectedIn(model: Model, device: string, ctx?: RoutingCtx): Connected[] {
+  const own = connectedOf(model, device);
+  const more = ctx && ctx.leases ? ctx.leases(device) : [];
+  return more.length ? own.concat(more) : own;
 }
 
 function isUp(ctx: RoutingCtx | undefined, device: string, iface: string): boolean {
@@ -188,7 +199,7 @@ export function compareEntries(a: RibEntry, b: RibEntry): number {
 /** All entries of a device's table for one VRF (connected, static and dynamic), sorted. */
 export function ribOf(model: Model, device: string, vrf: string, ctx?: RoutingCtx): RibEntry[] {
   const out: RibEntry[] = [];
-  for (const c of connectedOf(model, device)) {
+  for (const c of connectedIn(model, device, ctx)) {
     if (c.vrf === vrf) out.push({ kind: 'connected', device, vrf, net: c.net, distance: 0, metric: 0, iface: c.iface, blackhole: false });
   }
   const d = model.index.devices.get(device);
@@ -200,6 +211,7 @@ export function ribOf(model: Model, device: string, vrf: string, ctx?: RoutingCt
     }
   }
   for (const e of dynamicEntries(model, device, vrf, ctx)) out.push(e);
+  if (ctx && ctx.extraRoutes) for (const e of ctx.extraRoutes(device, vrf)) out.push(e);
   return dedupeConnected(out.sort(compareEntries));
 }
 
@@ -258,7 +270,7 @@ export function resolveEntry(model: Model, e: RibEntry, ctx?: RoutingCtx, stack:
   if (e.blackhole) return { ok: false, reason: 'blackhole', detail: 'a blackhole route drops the traffic' };
   if (stack.length >= MAX_RECURSION) return { ok: false, reason: 'too-deep', detail: `the next hop does not resolve within ${MAX_RECURSION} steps` };
   if (stack.indexOf(e) >= 0) return { ok: false, reason: 'loop', detail: 'the next hop resolves through itself' };
-  const conn = connectedOf(model, e.device).filter((c) => c.vrf === e.vrf);
+  const conn = connectedIn(model, e.device, ctx).filter((c) => c.vrf === e.vrf);
   if (e.via && conn.some((c) => compareAddr(c.addr, e.via as IpAddr) === 0)) {
     return { ok: false, reason: 'self', detail: `${formatAddr(e.via)} is an address of ${e.device} itself` };
   }
@@ -266,7 +278,7 @@ export function resolveEntry(model: Model, e: RibEntry, ctx?: RoutingCtx, stack:
     const iface = e.iface;
     if (!isUp(ctx, e.device, iface)) return { ok: false, reason: 'down', detail: `exit interface ${iface} is down` };
     if (!e.via) return { ok: true, hops: [{ iface }], recursive: false };
-    const own = connectedOf(model, e.device).filter((c) => c.iface === iface);
+    const own = connectedIn(model, e.device, ctx).filter((c) => c.iface === iface);
     if (own.length && !own.some((c) => inPrefix(c.net, e.via as IpAddr))) {
       return { ok: false, reason: 'unresolved', detail: `${formatAddr(e.via)} is not in a network of ${iface} (${own.map((c) => prefixText(c.net)).join(', ')})` };
     }
@@ -325,7 +337,7 @@ export function lookup(model: Model, device: string, vrf: string, dest: IpAddr, 
 
 function lookupWith(model: Model, device: string, vrf: string, dest: IpAddr, ctx: RoutingCtx | undefined, stack: RibEntry[]): Decision {
   const none: Decision = { kind: 'none', entries: [], hops: [], unusable: [] };
-  if (connectedOf(model, device).some((c) => c.vrf === vrf && compareAddr(c.addr, dest) === 0 && isUp(ctx, device, c.iface))) {
+  if (connectedIn(model, device, ctx).some((c) => c.vrf === vrf && compareAddr(c.addr, dest) === 0 && isUp(ctx, device, c.iface))) {
     return { kind: 'local', entries: [], hops: [], unusable: [] };
   }
   // resolving a next hop (stack not empty): default routes don't count

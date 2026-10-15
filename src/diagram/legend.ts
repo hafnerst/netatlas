@@ -9,7 +9,7 @@ import { DEVICE_TYPE_IDS, deviceTypeLabel } from '../model/device-types';
 import { tagMismatch } from '../model/derive';
 import { relationStyle } from '../model/protocols';
 import { CATEGORIES, Category, Model, ProtocolDef } from '../model/types';
-import { deviceIcon, iconName, layerBadge } from './icons';
+import { deviceIcon, iconName, layerBadge, serviceBadge } from './icons';
 import { VNode, h } from './scene';
 import { View } from './session';
 import { NETWORK_COLOR, groupKindStyle, mediumStyle, speedWidth } from './style';
@@ -77,6 +77,7 @@ export function legendOf(model: Model, view: View): Legend {
       if (t === 'switch') items.push(...switchItems(model));
       else items.push({ swatch: [deviceIcon(t, 11, 0, 22)], swatchH: 22, label: deviceTypeLabel(t) || 'No type' });
     }
+    items.push(...netServiceItems(model));
     sections.push({ title: 'Devices', items });
     const media = new Map<string, { label: string; color: string; dash?: string }>();
     for (const l of model.links) {
@@ -124,6 +125,9 @@ export function legendOf(model: Model, view: View): Legend {
   // a switch's layer is marked in both views
   const switches = switchItems(model);
   if (switches.length) sections.push({ title: 'Switches', items: switches });
+  // a server's DHCP and DNS badges too
+  const svcs = netServiceItems(model);
+  if (svcs.length) sections.push({ title: 'Servers', items: svcs });
   sections.push({
     title: 'Other symbols',
     items: [
@@ -322,6 +326,14 @@ export function svgLegend(model: Model, view: View, opts: ExportOptions, bounds:
     box,
     viewBox,
   };
+}
+
+/** The legend's server-service entries: a DHCP server and a DNS server (those the model has), with their badges; a DHCP client's interface. */
+function netServiceItems(model: Model): LegendItem[] {
+  const out: LegendItem[] = [];
+  if (model.devices.some((d) => !!d.netServices && !!d.netServices.dhcp)) out.push({ swatch: [serviceBadge('dhcp', 0, 6)], swatchH: 24, label: 'DHCP server (leases addresses to its scopes’ clients)' });
+  if (model.devices.some((d) => !!d.netServices && !!d.netServices.dns)) out.push({ swatch: [serviceBadge('dns', 0, 6)], swatchH: 24, label: 'DNS server (answers for its zones)' });
+  return out;
 }
 
 /** The legend's switch entries: the Layer 2 and the Layer 3 switch (those the model has), each with its glyph and badge. */

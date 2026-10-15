@@ -433,7 +433,7 @@ const CASES = [
   ['syslog', {}, ['Syslog message'], 'Sending'],
   ['snmp', {}, ['GetRequest', 'GetResponse'], 'Answered'],
   ['radius', {}, ['Access-Request', 'Access-Accept'], 'Answered'],
-  ['dhcp', {}, ['DHCPDISCOVER', 'DHCPOFFER', 'DHCPREQUEST', 'DHCPACK'], 'Bound'],
+  // (dhcp: simulated from the servers' scopes and the clients, not from a relation: test/sim-dhcp-dns.test.mjs)
   ['https', {}, ['TCP SYN', 'TCP SYN-ACK', 'TLS ClientHello', 'TLS ServerHello', 'TLS Application Data (request)', 'TLS Application Data (response)'], 'Answered'],
   ['netflow', {}, ['Flow export'], 'Sending'],
   ['vrrp', { svc: 'vrrp: {}', ifsvc: (n) => `, protocols: {vrrp: {group: 7, virtual_ip: 10.0.0.6, priority: ${n === 1 ? 200 : 100}}}` }, ['Advertisement'], 'Master'],

@@ -22,7 +22,7 @@ import { compareAddr, formatAddr } from '../ipmath';
 import { relParam } from '../routing';
 import { Engine, Frame, IcmpKind, Protocols, fmtSec, hashIndex } from './engine';
 import { L3Iface, SimDevice, SimAddr, portKey } from './net';
-import { ParamChange, Resolved, formatValue, sourceText } from './params';
+import { ParamChange, Resolved, formatValue, ifaceRef, relRef, sourceText } from './params';
 import { L4, Msg, Pkt, SessionStatus } from './types';
 
 const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
@@ -80,7 +80,7 @@ export interface TimerValue {
   dflt: boolean;
   /** "10 s (configured)", "40 s (4 × hello, simulation)", "300 ms (default, …)" */
   text: string;
-  source: 'configured' | 'device' | 'simulation' | 'default';
+  source: 'configured' | 'object' | 'device' | 'simulation' | 'default';
 }
 
 /**
@@ -143,7 +143,8 @@ export class ProtocolSim implements Protocols {
   /** status rows that are not sessions (FHRP groups, LACP members, demands) */
   readonly extraStatus: Array<() => SessionStatus[]> = [];
   /** handlers of messages that are not a relation's session (FHRP, LACP, demands, STP, PIM data) */
-  readonly handlers = new Map<string, (dev: string, l3: L3Iface | null, msg: Msg, pkt: Pkt | null, frame: Frame | null) => void>();
+  /** a protocol's own handling of what arrives (a handler that returns false passes a message on to its relation's session) */
+  readonly handlers = new Map<string, (dev: string, l3: L3Iface | null, msg: Msg, pkt: Pkt | null, frame: Frame | null) => void | boolean>();
   /** handlers of a protocol's messages that belong to no session (a PIM Register to the RP) */
   readonly fallback = new Map<string, (dev: string, l3: L3Iface | null, msg: Msg, pkt: Pkt | null) => void>();
   readonly ifaceHooks: Array<(dev: string, l3: L3Iface, up: boolean) => void> = [];
@@ -243,34 +244,59 @@ export class ProtocolSim implements Protocols {
       } else {
         for (let i = 0; i < devs.length; i++) for (let j = i + 1; j < devs.length; j++) pairs.push([devs[i], devs[j]]);
       }
-      for (const [a, b] of pairs) {
-        const sides = this.pairSides(r, a, b);
-        if (!sides) {
-          // a protocol of the model's own between devices without addresses: its packets go as frames over their cable (proto-other.ts installCustomL2)
-          if (profile.behaviour === 'custom' && this.m.links.some((l) => (l.a.device === a && l.b.device === b) || (l.a.device === b && l.b.device === a))) continue;
-          this.e.note('note', profile.id, a, b, 'not simulated', '', `${r.id}: ${a} and ${b} have no addresses to exchange ${profile.label} messages with`, 0);
-          continue;
-        }
-        // link-local protocols (hellos to a multicast group, single-hop BFD) only pair devices on a common network
-        if (!sides.shared && LINK_LOCAL.indexOf(profile.behaviour) >= 0 && !(profile.behaviour === 'ldp' && profile.id !== 'ldp')) {
-          this.e.note('note', profile.id, a, b, 'no adjacency', '', `${r.id}: ${a} and ${b} have no network in common, so no ${profile.label} adjacency forms between them`, 0);
-          continue;
-        }
-        // IKE protects a tunnel from the outside: between the tunnel's source and destination, never inside it
-        if (profile.behaviour === 'ike') {
-          const outer = (x: Side, y: Side): Side => {
-            if (x.l3.kind !== 'tunnel') return x;
-            const ends = this.e.tunnelEnds(x.dev, x.l3.id);
-            const own = ends.length ? Array.from(this.sd(x.dev).l3.values()).find((l) => l.kind !== 'tunnel' && l.addrs.some((a) => compareAddr(a.addr, ends[0].src) === 0)) : undefined;
-            void y;
-            return ends.length && own ? { dev: x.dev, l3: own, addr: ends[0].src } : x;
-          };
-          sides.a = outer(sides.a, sides.b);
-          sides.b = outer(sides.b, sides.a);
-        }
-        this.add(r, profile, sides.a, sides.b, true);
-        this.add(r, profile, sides.b, sides.a, false);
+      for (const [a, b] of pairs) this.buildPair(r, profile, a, b);
+    }
+  }
+
+  /** the pairs of a relation that wait for a DHCP client's lease (their sessions are built when it has one) */
+  private deferred: Array<{ r: Relation; profile: SimProfile; a: string; b: string }> = [];
+
+  /** The sessions of one pair of a relation's endpoints (none: why is noted). */
+  private buildPair(r: Relation, profile: SimProfile, a: string, b: string): Sess[] {
+    const sides = this.pairSides(r, a, b);
+    if (!sides) {
+      // a DHCP client without its lease yet: its sessions wait for it
+      const lease = [a, b].find((x) => !!this.e.waitsForLease(x));
+      if (lease) {
+        this.deferred.push({ r, profile, a, b });
+        this.e.note('wait', profile.id, a, b, 'waiting', '', `${r.id}: ${profile.label} between ${a} and ${b} waits for ${lease}'s DHCP lease (${lease}:${this.e.waitsForLease(lease)})`, 0);
+        return [];
       }
+      // a protocol of the model's own between devices without addresses: its packets go as frames over their cable (proto-other.ts installCustomL2)
+      if (profile.behaviour === 'custom' && this.m.links.some((l) => (l.a.device === a && l.b.device === b) || (l.a.device === b && l.b.device === a))) return [];
+      this.e.note('note', profile.id, a, b, 'not simulated', '', `${r.id}: ${a} and ${b} have no addresses to exchange ${profile.label} messages with`, 0);
+      return [];
+    }
+    // link-local protocols (hellos to a multicast group, single-hop BFD) only pair devices on a common network
+    if (!sides.shared && LINK_LOCAL.indexOf(profile.behaviour) >= 0 && !(profile.behaviour === 'ldp' && profile.id !== 'ldp')) {
+      this.e.note('note', profile.id, a, b, 'no adjacency', '', `${r.id}: ${a} and ${b} have no network in common, so no ${profile.label} adjacency forms between them`, 0);
+      return [];
+    }
+    // IKE protects a tunnel from the outside: between the tunnel's source and destination, never inside it
+    if (profile.behaviour === 'ike') {
+      const outer = (x: Side, y: Side): Side => {
+        if (x.l3.kind !== 'tunnel') return x;
+        const ends = this.e.tunnelEnds(x.dev, x.l3.id);
+        const own = ends.length ? Array.from(this.sd(x.dev).l3.values()).find((l) => l.kind !== 'tunnel' && l.addrs.some((a) => compareAddr(a.addr, ends[0].src) === 0)) : undefined;
+        void y;
+        return ends.length && own ? { dev: x.dev, l3: own, addr: ends[0].src } : x;
+      };
+      sides.a = outer(sides.a, sides.b);
+      sides.b = outer(sides.b, sides.a);
+    }
+    const s1 = this.add(r, profile, sides.a, sides.b, true);
+    const s2 = this.add(r, profile, sides.b, sides.a, false);
+    return [s1, s2];
+  }
+
+  /** A DHCP client got its lease: the sessions of its relations that waited for it are built and start. */
+  private buildDeferred(dev: string): void {
+    const ready = this.deferred.filter((x) => (x.a === dev || x.b === dev) && !this.e.waitsForLease(x.a) && !this.e.waitsForLease(x.b));
+    if (!ready.length) return;
+    this.deferred = this.deferred.filter((x) => ready.indexOf(x) < 0);
+    for (const x of ready) for (const s of this.buildPair(x.r, x.profile, x.a, x.b)) {
+      this.timersNote(s);
+      this.startWhenUp(s);
     }
   }
 
@@ -319,7 +345,7 @@ export class ProtocolSim implements Protocols {
       const [dev, iface] = [ss[0].dev, ss[0].local.l3.id];
       const names = Array.from(new Set(ss.map((x) => x.profile.label))).sort(cmp);
       const kind = ss[0].local.l3.kind;
-      const what = kind === 'tunnel' ? 'the tunnel to come up (what carries it first)' : `the link${kind === 'aggregate' ? ' and LACP' : ''} to come up (Layer 1: link-up delay ${this.paramText(this.param('link-up-delay'))}${kind === 'aggregate' ? '; then LACP bundles its members' : ''})`;
+      const what = kind === 'tunnel' ? 'the tunnel to come up (what carries it first)' : `the link${kind === 'aggregate' ? ' and LACP' : ''} to come up (Layer 1: link-up delay ${this.paramText(this.param('link-up-delay', dev, ifaceRef(dev, ss[0].local.l3.ports[0] || iface)))}${kind === 'aggregate' ? '; then LACP bundles its members' : ''})`;
       this.e.note('wait', ss[0].protocol, dev, '', 'waiting', '', `${dev}:${iface}: ${names.join(', ')} wait${ss.length === 1 ? 's' : ''} for ${what}`, 0);
     }
     // the tables' timers: a sweep every second
@@ -341,7 +367,7 @@ export class ProtocolSim implements Protocols {
    * it is, else as soon as it comes up (Layer 1: nothing is sent before).
    */
   whenIfaceUp(dev: string, iface: string, fn: () => void): void {
-    if (this.e.isL3Up(dev, iface)) {
+    if (this.e.isL3Up(dev, iface) && this.e.addressReady(dev, iface)) {
       this.e.at(this.e.now + this.e.jitter(), fn);
       return;
     }
@@ -393,7 +419,8 @@ export class ProtocolSim implements Protocols {
       else this.whenIfaceUp(s.dev, iface, () => this.startSession(s));
       return;
     }
-    if (this.e.isL3Up(s.dev, s.local.l3.id)) {
+    // (a DHCP client's interface: once it has its lease)
+    if (this.e.isL3Up(s.dev, s.local.l3.id) && this.e.addressReady(s.dev, s.local.l3.id)) {
       this.e.at(this.e.now + this.e.jitter(), () => this.startSession(s));
       return;
     }
@@ -457,7 +484,7 @@ export class ProtocolSim implements Protocols {
         const base = bdef ? own(bdef.key, bdef.param) : null;
         if (base !== null) return { ms: base * map.factor, dflt: false, text: `${show(base * map.factor)} (${map.factor} × the configured ${bdef ? bdef.label.toLowerCase() : 'base'})`, source: 'configured' };
       }
-      const r = this.e.params.get(map.key, dev);
+      const r = this.e.params.get(map.key, dev, null, s ? relRef(s.rel.id) : null);
       const v = Number(r.value) * (r.def.kind === 'count' ? 1000 : 1) * (map.factor || 1);
       return { ms: v, dflt: r.source === 'default', text: `${show(v)} (${map.factor ? map.factor + ' × ' + r.def.label.replace(/ interval| time$/i, '').toLowerCase() + ', ' : ''}${r.source === 'default' ? 'default, ' + r.def.source : sourceText(r)})`, source: r.source };
     }
@@ -466,8 +493,9 @@ export class ProtocolSim implements Protocols {
   }
 
   /** A simulation parameter in effect for a device (params.ts), for behaviours whose timers are not a profile's. */
-  param(key: string, dev?: string): Resolved {
-    return this.e.params.get(key, dev);
+  /** A parameter in effect for a device, or at one of its objects (`at`: ifaceRef, vlanRef, relRef). */
+  param(key: string, dev?: string, at?: string | null): Resolved {
+    return this.e.params.get(key, dev, null, at);
   }
 
   paramText(r: Resolved): string {
@@ -554,7 +582,7 @@ export class ProtocolSim implements Protocols {
     if (!s.initiator && s.profile.behaviour !== 'ospf' && s.profile.behaviour !== 'bfd') return;
     const parts = s.profile.timers.filter((t) => t.key !== 'retries' && t.key !== 'dpd-retries').map((t) => `${t.label.toLowerCase()} ${this.timer(s, s.profile, t.key).text}`);
     if (!parts.length) return;
-    this.e.note('note', s.protocol, s.dev, s.peer, 'timers', '', `${s.profile.label} ${s.rel.id} at ${s.dev}: ${parts.join('; ')}`, 0);
+    this.e.note('note', s.protocol, s.dev, s.peer, 'timers', '', `${s.profile.label} ${s.rel.id} at ${s.dev}: ${parts.join('; ')}`, this.e.now);
   }
 
   // ------------------------------------------------------------ states
@@ -744,10 +772,7 @@ export class ProtocolSim implements Protocols {
 
   private dispatch(dev: string, l3: L3Iface | null, msg: Msg, pkt: Pkt | null, frame: Frame | null): void {
     const h = this.handlers.get(msg.protocol);
-    if (h) {
-      h(dev, l3, msg, pkt, frame);
-      return;
-    }
+    if (h && h(dev, l3, msg, pkt, frame) !== false) return;
     const data = (msg.data || {}) as MsgData;
     // a message of no relation (a PIM Register to the RP)
     if (!msg.relation && data.from) {
@@ -795,13 +820,17 @@ export class ProtocolSim implements Protocols {
   }
 
   ifaceChange(dev: string, l3: L3Iface, up: boolean): void {
-    // the sessions that waited for this interface start now, together
-    const waiting = up ? this.pendingStart.get(dev + ':' + l3.id) : undefined;
+    // the sessions that waited for this interface start now, together (a DHCP client's: once it has its lease)
+    const ready = up && this.e.addressReady(dev, l3.id);
+    const waiting = ready ? this.pendingStart.get(dev + ':' + l3.id) : undefined;
     if (waiting) {
       this.pendingStart.delete(dev + ':' + l3.id);
       for (const s of waiting) this.e.at(this.e.now + this.e.jitter(), () => this.startSession(s));
     }
-    if (up) this.releaseUp(dev + ':' + l3.id);
+    if (ready) {
+      this.releaseUp(dev + ':' + l3.id);
+      this.buildDeferred(dev);
+    }
     for (const s of Array.from(this.sessions.values()).sort((a, b) => cmp(a.key, b.key))) {
       if (s.dev !== dev || s.local.l3.id !== l3.id) continue;
       const b = this.behaviours.get(s.profile.behaviour) as Behaviour;

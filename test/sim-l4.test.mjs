@@ -57,13 +57,20 @@ test('Layer 4 has its eight parameters; Layer 2 the default MTU, Layer 3 Send IC
   const byType = new Map(Pm.attributesByType().map((x) => [x.type, x.keys]));
   for (const k of ['ping', 'bcast-ping', 'icmp-errors', 'icmp-rate', 'tcp-syn-retries', 'tcp-keepalive', 'closed-port']) assert.ok(byType.get('server').includes(k), k);
   for (const k of ['fw-action', 'fw-allow', 'fw-stateful', 'fw-tcp', 'fw-half-open', 'fw-udp', 'fw-icmp']) assert.ok(byType.get('firewall').includes(k), k);
-  for (const k of ['lb-hc-interval', 'lb-hc-timeout', 'lb-hc-fall', 'lb-persistence', 'lb-algorithm', 'listening']) assert.ok(byType.get('load_balancer').includes(k), k);
+  assert.ok(byType.get('load_balancer').includes('listening'));
+  // a load balancer's health checks, persistence and algorithm are its pool's: set on its service relations to the members
+  for (const k of ['lb-hc-interval', 'lb-hc-timeout', 'lb-hc-fall', 'lb-persistence', 'lb-algorithm']) {
+    assert.ok(!byType.get('load_balancer').includes(k), k);
+    assert.ok(Pm.relationParams({ base: 'https', lbService: true, serverService: true }).some((p) => p.key === k), k);
+  }
   for (const k of ['proxy-client', 'proxy-upstream', 'listening']) assert.ok(byType.get('proxy').includes(k), k);
   for (const k of ['test-traffic', 'test-targets', 'test-interval', 'test-type', 'app-timeout']) assert.ok(byType.get('endpoint').includes(k), k);
-  for (const k of ['storm-bc', 'storm-mc']) assert.ok(byType.get('switch').includes(k), k);
-  assert.ok(byType.get('router').includes('directed-broadcast'));
+  // storm control is a port's, directed broadcasts an interface's
+  for (const k of ['storm-bc', 'storm-mc']) assert.ok(!byType.get('switch').includes(k) && Pm.paramDef(k).level === 'interface', k);
+  assert.ok(!byType.get('router').includes('directed-broadcast') && Pm.paramDef('directed-broadcast').level === 'interface');
   assert.ok(byType.get('system').includes('icmp-probe'));
-  for (const k of ['ap-beacon', 'ap-idle']) assert.ok(byType.get('ap').includes(k), k);
+  // the client idle timeout is the access point's; the beacon interval a radio's
+  assert.ok(byType.get('ap').includes('ap-idle') && !byType.get('ap').includes('ap-beacon') && Pm.paramDef('ap-beacon').level === 'interface');
   assert.ok(!byType.get('server').includes('fw-action'));
 });
 
@@ -299,7 +306,7 @@ test('Send test…: to a device, an interface, an address, a subnet broadcast an
   s.runTo(2500);
   assert.equal(run(s, { from: 'pc', to: 'srv:eth0', kind: 'icmp' }).ok, true);
   assert.equal(run(s, { from: 'pc', to: '10.0.2.10', kind: 'icmp' }).ok, true);
-  assert.equal(s.sendTest({ from: 'pc', to: 'nosuch', kind: 'icmp' }), 'nosuch is neither a device of the model nor an address');
+  assert.equal(s.sendTest({ from: 'pc', to: 'nosuch', kind: 'icmp' }), 'nosuch is neither a device of the model, an address nor a host name');
   assert.deepEqual(s.broadcastTargets('srv'), ['10.0.2.255', '255.255.255.255']);
   // srv answers broadcast pings, fw does not (default off)
   const b = run(s, { from: 'fw', to: '10.0.2.255', kind: 'icmp' });
@@ -310,12 +317,12 @@ test('Send test…: to a device, an interface, an address, a subnet broadcast an
   assert.equal(s.tests()[0], tcp);
 });
 
-const LB = (lb = '') => `netatlas: 1
+const LB = (pool = '') => `netatlas: 1
 title: lb
 devices:
   - {id: pc, type: endpoint, interfaces: [{id: eth0, ip: 10.0.0.5/24}]}
   - {id: pc2, type: endpoint, interfaces: [{id: eth0, ip: 10.0.0.6/24}]}
-  - {id: lb, type: load_balancer, interfaces: [{id: eth0, ip: 10.0.0.100/24}]${lb}}
+  - {id: lb, type: load_balancer, interfaces: [{id: eth0, ip: 10.0.0.100/24}]}
   - {id: w1, type: server, interfaces: [{id: eth0, ip: 10.0.0.11/24}]}
   - {id: w2, type: server, interfaces: [{id: eth0, ip: 10.0.0.12/24}]}
   - {id: px, type: proxy, interfaces: [{id: eth0, ip: 10.0.0.200/24}], simulation: {upstream_timeout: 3}}
@@ -329,8 +336,8 @@ links:
   - {id: f, a: "pc2:eth0", b: "sw:p6"}
 relations:
   - {id: front, protocol: https, endpoints: [pc, lb]}
-  - {id: m1, protocol: https, endpoints: [lb, w1]}
-  - {id: m2, protocol: https, endpoints: [lb, w2]}
+  - {id: m1, protocol: https, endpoints: [lb, w1]${pool}}
+  - {id: m2, protocol: https, endpoints: [lb, w2]${pool}}
   - {id: up, protocol: https, endpoints: [px, w1]}
 `;
 
@@ -403,7 +410,7 @@ devices:
   - {id: sw2, type: switch, interfaces: [p1, p2, p3]${sw}}
   - {id: h1, type: server, interfaces: [{id: eth0, ip: 10.0.0.1/24}], routes: [{prefix: 0.0.0.0/0, via: 10.0.0.254}], simulation: {respond_to_broadcast_ping: "on"}}
   - {id: h2, type: server, interfaces: [{id: eth0, ip: 10.0.0.2/24}], routes: [{prefix: 0.0.0.0/0, via: 10.0.0.254}]}
-  - {id: r1, type: router, interfaces: [{id: g0, ip: 10.0.0.254/24}, {id: g1, ip: 10.9.0.1/24}]${r}}
+  - {id: r1, type: router, interfaces: [{id: g0, ip: 10.0.0.254/24${r}}, {id: g1, ip: 10.9.0.1/24}]}
   - {id: h9, type: endpoint, interfaces: [{id: eth0, ip: 10.9.0.9/24}], routes: [{prefix: 0.0.0.0/0, via: 10.9.0.1}]}
 links:
   - {id: a, a: "sw1:p1", b: "sw2:p1"}
@@ -466,11 +473,11 @@ test('a storm: a loop without spanning tree circulates and multiplies broadcasts
   assert.deepEqual(s.storms(), []);
   assert.ok(ev(s, (x) => x.what === 'Storm over').length === 1);
   // storm control on sw1 drops the looping broadcasts at its ports
-  const sc = sim(LAN(', simulation: {stp_mode: "off", storm_control_broadcast: 500}'));
+  const sc = sim(LAN(', simulation: {stp_mode: "off"}').replace('{id: sw1, type: switch, interfaces: [p1, p2, p3, p4]', '{id: sw1, type: switch, interfaces: [{id: p1, simulation: {storm_control_broadcast: 500}}, {id: p2, simulation: {storm_control_broadcast: 500}}, p3, p4]'));
   sc.runTo(2500);
   sc.sendTest({ from: 'h2', to: '10.0.0.255', kind: 'icmp' });
   sc.runTo(3000);
-  assert.ok(ev(sc, (x) => x.what === 'storm control' && /far above its threshold of 500 frames\/s \(device\)/.test(x.detail)).length >= 1);
+  assert.ok(ev(sc, (x) => x.what === 'storm control' && /far above its threshold of 500 frames\/s \(set on sw1:p[12]\)/.test(x.detail)).length >= 1);
   // spanning tree back on (a live change): the loop is blocked, the storm over
   s.restore('link:b');
   s.runTo(s.now + 3000);
@@ -524,7 +531,7 @@ test('a wireless client silent for its access point’s idle timeout is disassoc
   const s = sim(`netatlas: 1
 title: wifi
 devices:
-  - {id: ap, type: ap, interfaces: [w, up], simulation: {client_idle_timeout: 20, beacon_interval: 100ms}}
+  - {id: ap, type: ap, interfaces: [{id: w, simulation: {beacon_interval: 100ms}}, up], simulation: {client_idle_timeout: 20}}
   - {id: phone, type: endpoint, interfaces: [{id: wlan0, ip: 10.0.0.5/24}]}
   - {id: srv, type: server, interfaces: [{id: eth0, ip: 10.0.0.10/24}]}
 links:
@@ -607,5 +614,6 @@ test('the Edit tab writes a list attribute as one text (and reads a YAML list); 
   const m = d.result.model;
   const keys = (id) => At.deviceAttributes(m, m.index.devices.get(id)).map((p) => p.yaml);
   for (const k of ['default_action', 'allow', 'stateful', 'tcp_session_timeout', 'respond_to_ping', 'icmp_errors']) assert.ok(keys('fw').includes(k), k);
-  for (const k of ['health_check_interval', 'algorithm', 'listening', 'persistence_timeout']) assert.ok(keys('lb').includes(k), k);
+  assert.ok(keys('lb').includes('listening'));
+  for (const k of ['health_check_interval', 'algorithm', 'persistence_timeout']) assert.ok(!keys('lb').includes(k), k + ': per pool relation');
 });

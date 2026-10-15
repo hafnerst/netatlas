@@ -9,8 +9,8 @@ title: Consistency checks demo
 description: |
   One deliberate inconsistency per check: static routes, VLAN tagging, MTU,
   speed and duplex, aggregates, addressing, router IDs, MAC addresses,
-  OSPF, BGP, tunnels, virtual addresses, VRFs and the protocols each
-  device enables.
+  OSPF, BGP, tunnels, virtual addresses, VRFs, the protocols each
+  device enables, multicast, and DHCP.
 
 groups:
   - {id: core, label: Core routers, kind: site}
@@ -120,6 +120,24 @@ devices:
     type: endpoint
     interfaces:
       - {id: eth0, ip: 10.73.0.10/24, multicast: {join: [239.9.9.9]}}
+  # DHCP: dhcp1 serves the dhcp-lan network; dhcp-pc is on another segment without a server or a relay there
+  - id: dhcp1
+    type: server
+    services:
+      dhcp:
+        scopes:
+          - {network: dhcp-lan, range: 10.80.0.100-10.80.0.199, gateway: 10.80.0.1, dns: [10.80.0.10]}
+    interfaces: [{id: eth0, ip: 10.80.0.10/24}]
+  - id: dhcp-r
+    type: router
+    interfaces:
+      - {id: e0, ip: 10.80.0.1/24}
+      - {id: e1, ip: 10.81.0.1/24, dhcp_relay: [10.80.0.99]}               # dhcp-relay-no-server: 10.80.0.99 is no DHCP server
+  # dhcp-no-server: dhcp-pc's segment (10.81.0.0/24) has no DHCP server, and the relay there points to none
+  - id: dhcp-pc
+    type: endpoint
+    interfaces:
+      - {id: eth0, dhcp: true}
 
 links:
   - {id: l12, a: "r1:e0", b: "r2:e0", medium: fiber, speed: 10G}
@@ -148,11 +166,14 @@ links:
 
   - {id: l-mc-src, a: "mc-src:eth0", b: "mc-r1:e0"}
   - {id: l-mc-r1-r2, a: "mc-r1:e1", b: "mc-r2:e0"}
+  - {id: l-dhcp1, a: "dhcp1:eth0", b: "dhcp-r:e0"}
+  - {id: l-dhcp-pc, a: "dhcp-pc:eth0", b: "dhcp-r:e1"}
 
 networks:
   - {id: users, cidr: 10.10.10.0/24, vlan: 10}
   - {id: voice, cidr: 10.10.20.0/24, vlan: 20}
   - {id: core-12, cidr: 10.0.12.0/30}
+  - {id: dhcp-lan, cidr: 10.80.0.0/24}
 
 relations:
   # ospf-area-mismatch, ospf-network-type-mismatch, ospf-timer-mismatch

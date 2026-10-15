@@ -40,13 +40,14 @@ import {
 } from '../model/types';
 import { dnsNameKey, dnsNameProblem } from '../model/dns';
 import { BUILTIN_SERVICES, PARAM_SCOPES, PARAM_TYPES, ParamDef, ParamScope, ParamType, ROUTER_ID_KEY, RouterIdUse, ServiceDef, ServiceRegistry, builtinServices, paramProblem, paramsAt, routerIdAddress, usesRouterId } from '../model/services';
-import { DEVICE_TYPE_IDS, NO_DEVICE_TYPE, ROUTE_DEVICE_TYPES, deviceRoutingRole, deviceTypeLabel, isDeviceType, isLayer2Switch, routingRole } from '../model/device-types';
+import { DEVICE_TYPE_IDS, deviceRoutingRole, deviceTypeLabel, isDeviceType, isLayer2Switch, NO_DEVICE_TYPE, relationNeedsLayer3, ROUTE_DEVICE_TYPES, routingRole } from '../model/device-types';
 import { COLOR_RE, DEFAULT_STYLE, builtinProtocols, lookupProtocol, normalizeProtocol, protocolBase } from '../model/protocols';
 import { YMap, YNode, YSeq, YamlError, YamlLimits, parseYaml } from '../yaml/parse';
 import { FORMAT_VERSION, SCHEMA } from '../yaml/schema';
 import { readDemands } from './demands';
 import { readMulticast } from './multicast';
-import { readDeviceSimulation, readLinkSimulation } from './simulation';
+import { SimBlock, checkObjectBlocks, readDeviceSimulation, readLinkSimulation, readSimBlock } from './simulation';
+import { NetServiceNodes, checkNetServices, readAddressList, readNetServices } from './netservices';
 import { Ctx, DEFAULT_MODEL_LIMITS, ID_RE, IFACE_RE, Issue, ModelLimits, Reader, TooManyErrors, get, isNull, kindOf, scalarText, suggest } from './reader';
 
 export { DEFAULT_MODEL_LIMITS, ID_RE, IFACE_RE, scalarText, suggest };
@@ -281,6 +282,11 @@ function build(root: YNode | null, c: Ctx): Model | null {
     }
   }
 
+  // the objects' simulation: blocks, checked against the whole model at the end
+  const simBlocks: Array<{ kind: 'iface' | 'network' | 'relation'; ref: string; block: SimBlock }> = [];
+  // the servers' DHCP and DNS services, checked against the whole model at the end
+  const svcNodes: NetServiceNodes[] = [];
+
   // ------------------------------------------------------------ devices
   const devices: Device[] = [];
   const interfaces = new Map<string, Interface>();
@@ -356,6 +362,14 @@ function build(root: YNode | null, c: Ctx): Model | null {
         c.error(protoNode as YNode, dpath + '.protocols', `"${id}" is ${what}: only Layer 3+ devices (${ROUTER_TYPES.join(', ')}; a switch with layer3: true) run routing protocols`);
       } else dev.services = readServices(r, c, protoNode as YNode, dpath + '.protocols', services, 'device', id, svcRids);
     }
+    // a server's DHCP and DNS servers; a host's static DNS servers
+    const ns = readNetServices(r, c, get(m, 'services'), dpath + '.services', dev);
+    if (ns) {
+      dev.netServices = ns.services;
+      svcNodes.push(ns.nodes);
+    }
+    const dsN = get(m, 'dns_servers');
+    if (!isNull(dsN)) dev.dnsServers = readAddressList(r, c, dsN, dpath + '.dns_servers');
     devNodes.set(id, { node: m, path: dpath });
     let count = 0;
     /** address -> id of the interface of this device that has it (first one) */
@@ -493,8 +507,23 @@ function build(root: YNode | null, c: Ctx): Model | null {
       const ip = get(im, 'protocols');
       if (!isNull(ip)) iface.services = readServices(r, c, ip as YNode, ipath + '.protocols', services, 'interface', id, [], dev);
       // the groups it joins and the streams it sends (the protocol simulation)
+      // a DHCP relay (helper addresses): a routed interface with an address forwards its subnet's DHCP to them
+      const relN = get(im, 'dhcp_relay');
+      if (!isNull(relN)) {
+        const list = readAddressList(r, c, relN, ipath + '.dhcp_relay', true);
+        if (deviceRoutingRole(dev) !== 'router' || !addrs.length) c.error(relN as YNode, ipath + '.dhcp_relay', `a DHCP relay is a routed interface's (a router's, a Layer 3 switch's …) with an address; "${iid}" of "${id}" ${deviceRoutingRole(dev) !== 'router' ? 'is on a device that does not route' : 'has no address'}`);
+        else if (list.length) iface.dhcpRelay = list;
+      }
+      // its simulation attributes (a port's spanning tree settings, an interface's ARP timeout …)
+      const sb = readSimBlock(r, c, get(im, 'simulation'), ipath + '.simulation', 'interface');
+      if (sb) {
+        iface.simulation = sb.values;
+        simBlocks.push({ kind: 'iface', ref: ifaceKey(id, iid), block: sb });
+      }
+      // (its IGMP version: the interface's, else the device's)
+      const igmpVer = (sb && sb.values.get('igmp-version')) || (dev.simulation && dev.simulation.get('igmp-version'));
       const mn = get(im, 'multicast');
-      if (!isNull(mn)) iface.multicast = readMulticast(r, c, mn as YNode, ipath + '.multicast', iid, addrs.length > 0, !!dev.simulation && dev.simulation.get('igmp-version') === 'v2');
+      if (!isNull(mn)) iface.multicast = readMulticast(r, c, mn as YNode, ipath + '.multicast', iid, addrs.length > 0, igmpVer === 'v2');
       if (where === 'logical') {
         // Each association belongs to one type; on another type it is an error, not silently ignored.
         const only = (k: string, t: InterfaceKind, what: string): boolean => {
@@ -809,11 +838,14 @@ function build(root: YNode | null, c: Ctx): Model | null {
         else seenPrefixes.push({ id, p });
       }
     }
+    const nsb = readSimBlock(r, c, get(m, 'simulation'), npath + '.simulation', 'vlan');
+    if (nsb) simBlocks.push({ kind: 'network', ref: id, block: nsb });
     networks.push({
       id,
       label: r.field(m, 'label', npath, L.maxLabel) || id,
       cidr,
       vlan: r.vlanId(get(m, 'vlan'), npath + '.vlan'),
+      simulation: nsb ? nsb.values : undefined,
       description: r.field(m, 'description', npath, L.maxDescription),
       attrs: r.attrs(get(m, 'attrs'), npath + '.attrs'),
       line: m.line,
@@ -891,10 +923,16 @@ function build(root: YNode | null, c: Ctx): Model | null {
       endpoints,
       over,
       direction: directionField(r, c, m, rpath, 'from the first endpoint to the last'),
+      simulation: undefined,
       description: r.field(m, 'description', rpath, L.maxDescription),
       attrs: r.attrs(get(m, 'attrs'), rpath + '.attrs'),
       line: m.line,
     };
+    const rsb = readSimBlock(r, c, get(m, 'simulation'), rpath + '.simulation', 'relation');
+    if (rsb) {
+      rel.simulation = rsb.values;
+      simBlocks.push({ kind: 'relation', ref: id, block: rsb });
+    }
     if (endpoints.length === epNodes.length && relationDevices(rel).length < 2) {
       c.warn(epNode as YNode, rpath + '.endpoints', 'all endpoints are on the same device');
     }
@@ -962,7 +1000,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
   // a Layer 2 switch is no endpoint of a routing, first-hop redundancy, BFD, LDP or PIM relation, nor of a tunnel or overlay
   for (const rel of relations) {
     const base = protocolBase(protocols, rel.protocol);
-    const l3 = rel.category === 'tunnel' || rel.category === 'overlay' || LAYER3_PROTOCOLS.indexOf(base) >= 0;
+    const l3 = relationNeedsLayer3(base, rel.category);
     if (!l3) continue;
     for (const d of relationDevices(rel)) {
       const dev = deviceMap.get(d);
@@ -1084,6 +1122,10 @@ function build(root: YNode | null, c: Ctx): Model | null {
     index,
   };
   model.demands = readDemands(r, c, top, model);
+  // the objects' simulation attributes: does each apply to its object (with the whole model known)?
+  checkObjectBlocks(c, model, simBlocks);
+  // the servers' scopes and zones with the whole model (ranges, gateways, overlaps, records)
+  checkNetServices(c, model, svcNodes);
   // Derived VLANs are never chosen for the user: conflicting networks are reported.
   derive(model).addresses.forEach((assocs, key) => {
     assocs.forEach((a, j) => {
@@ -1448,8 +1490,6 @@ function layer2SwitchRules(c: Ctx, m: YMap, dpath: string, dev: Device): void {
   });
 }
 
-/** The protocols (base ids) whose relations need a Layer 3 device at every end (besides tunnels and overlays). */
-const LAYER3_PROTOCOLS = ['bgp', 'ospf', 'isis', 'eigrp', 'rip', 'ldp', 'pim', 'bfd', 'vrrp', 'hsrp', 'glbp', 'carp'];
 
 const BUILTIN_SERVICE_IDS = BUILTIN_SERVICES.map((s) => s.id);
 

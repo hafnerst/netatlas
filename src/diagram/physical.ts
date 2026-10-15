@@ -21,7 +21,7 @@ import { LineField, addressAttrEntries, addressAttrLines, deviceAddressLines, de
 import { sortedByName } from '../model/order';
 import { deviceSubtitle } from '../model/device-types';
 import { Device, Model, ifaceKey } from '../model/types';
-import { BADGE_H, BADGE_W, deviceIcon, layerBadge } from './icons';
+import { BADGE_H, BADGE_W, deviceIcon, layerBadge, serviceBadge } from './icons';
 import { LabelPlacer, addressLineAttrs, alongSegment, centerRect, fieldAttrs, leaderLine, textLines } from './labels';
 import { VNode, h } from './scene';
 import { groupKindStyle, mediumStyle, speedWidth } from './style';
@@ -164,7 +164,7 @@ export function groupFrames(model: Model, grects: Map<string, Rect>, placer: Lab
  * `bodyH`, the icon and text are centred in the top `bodyH` of the box (the
  * rest holds the chips of its uncabled ports).
  */
-export function deviceNode(ref: string, label: string, sub: string, type: string, b: CBox, extraClass = '', bodyH = b.h, layer3?: boolean): VNode {
+export function deviceNode(ref: string, label: string, sub: string, type: string, b: CBox, extraClass = '', bodyH = b.h, layer3?: boolean, services: Array<'dhcp' | 'dns'> = []): VNode {
   const x = b.cx - b.w / 2;
   const y = b.cy - b.h / 2;
   const body = deviceBody(label, sub, 0, 0);
@@ -177,6 +177,8 @@ export function deviceNode(ref: string, label: string, sub: string, type: string
     h('rect', { class: 'dev-box', x, y, width: b.w, height: b.h, rx: 8 }),
     deviceIcon(type, x + 12, mid - DEVICE_ICON / 2, DEVICE_ICON, layer3),
     badge,
+    // a server's DHCP and DNS servers: a badge each over the icon (DHCP above, DNS below), in its column
+    ...services.map((svc) => serviceBadge(svc, x + 12, svc === 'dhcp' ? mid - DEVICE_ICON / 2 - BADGE_H + 4 : mid + DEVICE_ICON / 2 - 4)),
     textLines({ class: 'dev-label' }, body.label, textX, top),
     body.sub.lines.length ? textLines({ class: 'dev-sub' }, body.sub, textX, top + body.textH - body.sub.h) : null,
   ]);
@@ -454,7 +456,7 @@ export function renderPhysical(model: Model, layout: PhysicalLayout, opts: ViewO
     const listH = physicalListH(entriesSize(items));
     if (flow.items.length) portNodes.push(...chipNodes(d.id, flow, b.cx - b.w / 2 + IFCHIP_PAD, b.cy + b.h / 2 - chipsH, 'port-chip', () => ''));
     if (items.length) portNodes.push(...entryNodes(items, b.cx - b.w / 2 + ENTRY_MARGIN, b.cy + b.h / 2 - chipsH - listH, b.w - 2 * ENTRY_MARGIN));
-    return deviceNode('device:' + d.id, d.label, deviceSubtitle(d.type, d.layer3), d.type, b, 'type-' + cssToken(d.type), b.h - chipsH - listH, d.layer3);
+    return deviceNode('device:' + d.id, d.label, deviceSubtitle(d.type, d.layer3), d.type, b, 'type-' + cssToken(d.type), b.h - chipsH - listH, d.layer3, netServiceIds(d));
   });
 
   // everything drawn is inside the bounds: boxes, groups, labels and cable bends
@@ -642,4 +644,12 @@ function n(v: number): string {
 /** Safe token for use inside a class name (input-derived strings only ever reach classes through this). */
 export function cssToken(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9_-]+/g, '-').slice(0, 40);
+}
+
+/** A server's network services, for its badges ("dhcp", "dns"). */
+export function netServiceIds(d: { netServices?: { dhcp?: unknown; dns?: unknown } }): Array<'dhcp' | 'dns'> {
+  const out: Array<'dhcp' | 'dns'> = [];
+  if (d.netServices && d.netServices.dhcp) out.push('dhcp');
+  if (d.netServices && d.netServices.dns) out.push('dns');
+  return out;
 }

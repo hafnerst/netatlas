@@ -6,9 +6,10 @@
  * (an attribute that does not apply to it is an error) and for its range
  * and unit.
  */
-import { Applies, ParamDef, ParamValue, PARAMS, deviceParamByYaml, formatValue, paramDef, parseValue } from '../analysis/sim/params';
+import { Applies, ParamDef, ParamLevel, ParamValue, PARAMS, deviceParamByYaml, deviceWide, formatValue, interfaceParams, levelParams, levelText, paramDef, parseValue, relationParams } from '../analysis/sim/params';
+import { ifaceFacts, deviceFacts, relFacts } from '../analysis/sim/attrs';
 import { deviceRoutingRole, deviceTypeLabel, NO_DEVICE_TYPE } from '../model/device-types';
-import { LinkSimulation } from '../model/types';
+import { LinkSimulation, Model } from '../model/types';
 import { YMap, YNode } from '../yaml/parse';
 import { Ctx, Reader, get, isNull, kindOf, suggest } from './reader';
 
@@ -20,6 +21,8 @@ export function typeAllows(a: Applies, type: string, layer3?: boolean): boolean 
     case 'ip':
     case 'aggregate':
       return type !== 'cloud';
+    case 'dhcp':
+      return ['server', 'vm', 'container'].indexOf(type) >= 0;
     case 'router':
     case 'vpn':
       return deviceRoutingRole({ type, layer3 }) === 'router' || (a === 'vpn' && type === 'gateway');
@@ -49,9 +52,9 @@ export function typeAllows(a: Applies, type: string, layer3?: boolean): boolean 
   return false;
 }
 
-/** The device attributes a type may have, in order. */
+/** The device attributes a type may have (device-wide ones, and the device-wide defaults of object attributes), in order. */
 export function typeParams(type: string, layer3?: boolean): ParamDef[] {
-  return PARAMS.filter((p) => !!p.device && p.device.some((a) => typeAllows(a, type, layer3)));
+  return PARAMS.filter((p) => !!p.device && deviceWide(p) && p.device.some((a) => typeAllows(a, type, layer3)));
 }
 
 function scalarValue(n: YNode): unknown {
@@ -73,6 +76,11 @@ export function readDeviceSimulation(r: Reader, c: Ctx, n: YNode | undefined, pa
       c.error(m, `${path}.${k}`, `unknown simulation attribute "${k}"${suggest(k, allowed.map((p) => p.yaml), 30)}`, { key: k, line: e.keyLine });
       return;
     }
+    if (!deviceWide(def)) {
+      // an attribute of a port, a VLAN or a relation: written there, never moved by itself
+      c.error(m, `${path}.${k}`, `"${k}" (${def.label.toLowerCase()}) is set ${levelText(def)}, not for the whole device`, { key: k, line: e.keyLine });
+      return;
+    }
     if (allowed.indexOf(def) < 0) {
       c.error(m, `${path}.${k}`, `"${k}" (${def.label.toLowerCase()}) does not apply to "${id}", ${what}`, { key: k, line: e.keyLine });
       return;
@@ -91,6 +99,97 @@ export function readDeviceSimulation(r: Reader, c: Ctx, n: YNode | undefined, pa
     out.set(def.key, p.value);
   });
   return out;
+}
+
+/** An object's `simulation:` block as read: its values, and where each was written (the applicability is checked with the whole model). */
+export interface SimBlock {
+  values: Map<string, ParamValue>;
+  map: YMap;
+  path: string;
+  lines: Map<string, number>;
+}
+
+const LEVEL_NAME: { [l in ParamLevel]: string } = { device: 'a device', interface: 'an interface', vlan: 'a VLAN (a network)', relation: 'a relation', service: 'a DHCP scope or DNS zone' };
+
+/**
+ * An interface's, a network's (its VLAN's) or a relation's `simulation:`
+ * block: every key must be an attribute of that level. One of another level
+ * is an error that says where it belongs (it is not moved by itself).
+ */
+export function readSimBlock(r: Reader, c: Ctx, n: YNode | undefined, path: string, level: ParamLevel): SimBlock | undefined {
+  if (isNull(n)) return undefined;
+  const m = r.map(n, path);
+  if (!m) return undefined;
+  const out: SimBlock = { values: new Map(), map: m, path, lines: new Map() };
+  const here = levelParams(level);
+  m.entries.forEach((e, k) => {
+    const def = deviceParamByYaml(k);
+    const node = e.value;
+    if (!def) {
+      c.error(m, `${path}.${k}`, `unknown simulation attribute "${k}"${suggest(k, here.map((p) => p.yaml), 30)}`, { key: k, line: e.keyLine });
+      return;
+    }
+    if ((def.level || 'device') !== level) {
+      c.error(m, `${path}.${k}`, `"${k}" (${def.label.toLowerCase()}) is set ${levelText(def)}, not on ${LEVEL_NAME[level]}`, { key: k, line: e.keyLine });
+      return;
+    }
+    const seq = def.kind === 'list' && node.kind === 'seq' && node.items.every((x) => x.kind === 'scalar' && !isNull(x));
+    if (!seq && (node.kind !== 'scalar' || isNull(node))) {
+      c.error(node, `${path}.${k}`, `expected a single value but found ${kindOf(node)}`);
+      return;
+    }
+    const p = parseValue(def, seq && node.kind === 'seq' ? node.items.map((x) => scalarValue(x)) : scalarValue(node));
+    if ('error' in p) {
+      c.error(node, `${path}.${k}`, `${def.label} ${p.error}${def.kind === 'duration' ? ` (a bare number is in ${def.base === 'ms' ? 'milliseconds' : 'seconds'})` : ''}`);
+      return;
+    }
+    out.values.set(def.key, p.value);
+    out.lines.set(def.key, e.keyLine);
+  });
+  return out;
+}
+
+/**
+ * With the whole model: does each attribute written on an object apply to
+ * it (an edge port on a switch port, a LACP rate on an aggregate, an IKE
+ * lifetime on an IPsec relation, a snooping setting on a VLAN)? One that
+ * doesn't is an error and is left out.
+ */
+export function checkObjectBlocks(c: Ctx, model: Model, blocks: Array<{ kind: 'iface' | 'network' | 'relation'; ref: string; block: SimBlock }>): void {
+  for (const b of blocks) {
+    let allowed: ParamDef[] = [];
+    let what = '';
+    if (b.kind === 'iface') {
+      const [dev, iid] = [b.ref.slice(0, b.ref.indexOf(':')), b.ref.slice(b.ref.indexOf(':') + 1)];
+      const d = model.index.devices.get(dev);
+      const i = model.index.interfaces.get(b.ref);
+      if (!d || !i) continue;
+      const f = ifaceFacts(model, d, i);
+      allowed = interfaceParams(deviceFacts(model, d), f);
+      what = `${dev}:${iid}, ${f.lag ? 'an aggregate' : f.radio ? 'a radio' : f.bridgePort ? 'a switch port' : f.port ? 'a port' : 'an interface'}${f.ip ? ' with an address' : ''}`;
+    } else if (b.kind === 'network') {
+      const n = model.networks.find((x) => x.id === b.ref);
+      if (!n) continue;
+      if (n.vlan === undefined) {
+        c.error(b.block.map, b.block.path, `network "${n.id}" has simulation attributes of a VLAN but no VLAN: give it its "vlan:"`);
+        if (n.simulation) n.simulation.clear();
+        continue;
+      }
+      continue;
+    } else {
+      const rel = model.relations.find((x) => x.id === b.ref);
+      if (!rel) continue;
+      const f = relFacts(model, rel);
+      allowed = relationParams(f);
+      what = `relation "${rel.id}" (${f.base}${f.lbService ? ', a load balancer’s pool' : f.serverService ? ', a server’s service' : ''})`;
+    }
+    for (const key of Array.from(b.block.values.keys())) {
+      const def = paramDef(key);
+      if (allowed.indexOf(def) >= 0) continue;
+      c.error(b.block.map, `${b.block.path}.${def.yaml}`, `"${def.yaml}" (${def.label.toLowerCase()}) does not apply to ${what}`, { key: def.yaml, line: b.block.lines.get(key) });
+      b.block.values.delete(key);
+    }
+  }
 }
 
 /** A cable's `simulation:` block: latency, packet loss, and flapping from the start. */

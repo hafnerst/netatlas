@@ -80,7 +80,7 @@ relations:
   - {id: p12, protocol: pim, endpoints: ["r1:g1", "r2:g0"]}
   - {id: p13, protocol: pim, endpoints: ["r1:g2", "r3:g0"]}
   - {id: p23, protocol: pim, endpoints: ["r3:g1", "r2:g2"]}${x.rels || ''}
-`;
+${x.nets ? 'networks:\n' + x.nets + '\n' : ''}`;
 
 /** One LAN: two routers (queriers), a switch, hosts; no PIM routing needed. */
 const LAN = (x = {}) => `netatlas: 1
@@ -112,11 +112,16 @@ test('multicast parameters: IGMP snooping (Layer 2) and the query interval (Laye
   assert.equal(Pm.formatValue(Pm.paramDef('igmp-unsolicited'), 0), 'by version: v2 10 s, v3 1 s');
   const byType = new Map(Pm.attributesByType().map((x) => [x.type, x.keys]));
   for (const k of ['igmp-version', 'igmp-unsolicited']) assert.ok(byType.get('endpoint').includes(k), k);
-  for (const k of ['igmp-querier', 'igmp-query', 'igmp-max-resp', 'igmp-robustness', 'igmp-lmqi', 'pim-dr-priority', 'spt-switchover']) assert.ok(byType.get('router').includes(k), k);
-  for (const k of ['igmp-snooping', 'snoop-querier', 'fast-leave', 'unknown-mc', 'mrouter-aging', 'igmp-query']) assert.ok(byType.get('switch').includes(k), k);
-  assert.ok(byType.get('firewall').includes('mc-passthrough'));
-  assert.ok(byType.get('gateway').includes('mc-tunnel'));
-  assert.ok(byType.get('ap').includes('mc-to-unicast'));
+  // the querier's settings are an interface's, with a device-wide default; the DR priority an interface's only
+  for (const k of ['igmp-querier', 'igmp-query', 'igmp-max-resp', 'igmp-robustness', 'igmp-lmqi', 'spt-switchover']) assert.ok(byType.get('router').includes(k), k);
+  assert.ok(!byType.get('router').includes('pim-dr-priority') && Pm.paramDef('pim-dr-priority').level === 'interface');
+  // snooping: per VLAN (a global default for snooping itself)
+  for (const k of ['igmp-snooping', 'mrouter-aging', 'igmp-query']) assert.ok(byType.get('switch').includes(k), k);
+  for (const k of ['snoop-querier', 'fast-leave', 'unknown-mc']) assert.ok(!byType.get('switch').includes(k) && Pm.paramDef(k).level === 'vlan', k);
+  assert.deepEqual(Pm.vlanParams().map((p) => p.key), ['igmp-snooping', 'snoop-querier', 'fast-leave', 'unknown-mc']);
+  assert.ok(!byType.get('firewall').includes('mc-passthrough') && Pm.paramDef('mc-passthrough').level === 'interface');
+  assert.ok(byType.get('gateway').includes('mc-tunnel'), 'a VPN gateway’s default for its tunnels');
+  assert.ok(!byType.get('ap').includes('mc-to-unicast') && Pm.paramDef('mc-to-unicast').level === 'interface');
   assert.ok(byType.get('cloud').includes('mc-support'));
 });
 
@@ -131,7 +136,7 @@ test('multicast: blocks are checked: a group, never link-local; SSM with its sou
   assert.match(err('{join: [10.0.0.1]}')[0], /10\.0\.0\.1 is not a multicast group \(224\.0\.0\.0\/4, ff00::\/8\)/);
   assert.match(err('{join: [224.0.0.5]}')[0], /224\.0\.0\.5 is a link-local group \(224\.0\.0\.0\/24\): it is never joined or routed/);
   assert.match(err('{join: [232.1.1.1]}')[0], /232\.1\.1\.1 is a source-specific group \(232\.0\.0\.0\/8\): write its sources/);
-  assert.match(err('{join: [{group: 239.1.1.1, sources: [10.0.0.9]}]}', '\n    simulation: {igmp_version: v2}')[0], /needs IGMPv3 \(MLDv2\): the device's simulation sets igmp_version: v2/);
+  assert.match(err('{join: [{group: 239.1.1.1, sources: [10.0.0.9]}]}', '\n    simulation: {igmp_version: v2}')[0], /needs IGMPv3 \(MLDv2\): the interface's \(or its device's\) simulation sets igmp_version: v2/);
   assert.match(err('{join: [239.1.1.1, 239.1.1.1]}')[0], /239\.1\.1\.1 is joined twice/);
   assert.match(err('{streams: [{group: 239.1.1.1, port: 0}]}')[0], /UDP port/);
   assert.match(err('{stream: []}')[0], /unknown key "stream"/);
@@ -227,18 +232,20 @@ test('snooping: router ports from queries and PIM Hellos, member ports from repo
 });
 
 test('snooping: off floods every group; unknown multicast dropped goes to router ports only; fast leave removes a port at once', () => {
-  const off = sim(NET({ sw: ', simulation: {igmp_snooping: "off"}' }));
+  // (the switch's untagged frames are VLAN 1: its settings are the network's of VLAN 1)
+  const lan = (b) => `  - {id: lan, cidr: 10.2.0.0/24, vlan: 1, simulation: ${b}}`;
+  const off = sim(NET({ nets: lan('{igmp_snooping: "off"}') }));
   off.runTo(24000);
   assert.ok(off.engine.flights.some((f) => f.track.ref === 'link:f' && f.protocol === 'mcast'), 'idle gets the streams');
   // a group nobody joined: flooded by default, dropped when unknown multicast is drop
   const Y = (sw) => NET({ sw, idle: ', simulation: {igmp_version: v3}' }).replace('{group: 232.1.1.1, port: 5006, interval: 1s}]', '{group: 232.1.1.1, port: 5006, interval: 1s}]}\n    simulation: {test_traffic: "off"').replace('multicast: {streams: [{group: 239.1.1.1, interval: 1s}, {group: 232.1.1.1, port: 5006, interval: 1s}]}\n    simulation: {test_traffic: "off"', 'multicast: {streams: [{group: 239.1.1.1, interval: 1s}, {group: 232.1.1.1, port: 5006, interval: 1s}]}');
   void Y;
-  const s = sim(NET({ sw: ', simulation: {fast_leave: "on"}' }));
+  const s = sim(NET({ nets: lan('{fast_leave: "on"}') }));
   s.runTo(10000);
   s.leaveGroup('rxa', 'eth0', '239.1.1.1');
   s.runTo(s.now + 100);
   assert.ok(ev(s, (e) => e.device === 'sw' && /port p2 leaves 239\.1\.1\.1 at once \(fast leave\)/.test(e.detail)).length === 1);
-  const unknown = sim(NET({ sw: ', simulation: {unknown_multicast: drop}' }));
+  const unknown = sim(NET({ nets: lan('{unknown_multicast: drop}') }));
   unknown.runTo(5000);
   unknown.leaveGroup('rxa', 'eth0', '239.1.1.1');
   unknown.runTo(unknown.now + 300000);
@@ -262,7 +269,7 @@ links:
   const off = sim(Y(''));
   off.runTo(10000);
   assert.ok(!ev(off, (e) => e.device === 'sw' && e.what === 'Query').length);
-  const on = sim(Y(', simulation: {snooping_querier: "on", igmp_query_interval: 5}'));
+  const on = sim(Y(', simulation: {igmp_query_interval: 5}') + 'networks:\n  - {id: v1, cidr: 10.9.0.0/24, vlan: 1, simulation: {snooping_querier: "on"}}\n');
   // (its first query goes when its first port is up, possibly before h1's: h1 answers the next one, within its 10 s)
   on.runTo(18000);
   const q = ev(on, (e) => e.device === 'sw' && e.what === 'Query');
@@ -334,7 +341,7 @@ test('never routed: link-local groups and TTL 1; a router without PIM routes no 
   const fw = sim(NET().replace('  - id: r2\n    type: router', '  - id: r2\n    type: firewall'));
   fw.runTo(20000);
   assert.ok(ev(fw, (e) => e.device === 'r2' && /r2 drops multicast for 239\.1\.1\.1 from 10\.1\.0\.10: multicast passthrough Off \(default\)/.test(e.detail)).length >= 1);
-  const pass = sim(NET({ r2: '\n    simulation: {multicast_passthrough: "on"}' }).replace('  - id: r2\n    type: router', '  - id: r2\n    type: firewall'));
+  const pass = sim(NET().replace('{id: g0, ip: 10.0.12.2/30}', '{id: g0, ip: 10.0.12.2/30, simulation: {multicast_passthrough: "on"}}').replace('  - id: r2\n    type: router', '  - id: r2\n    type: firewall'));
   pass.runTo(30000);
   assert.equal(status(pass, 'rxa member of 239.1.1.1').state, 'Receiving');
   // a cloud between r1 and r2
@@ -391,7 +398,7 @@ title: ap
 devices:
   - {id: q, type: router, protocols: {pim: {}}, interfaces: [{id: g0, ip: 10.6.0.1/24}]}
   - {id: src, type: server, interfaces: [{id: eth0, ip: 10.6.0.10/24, multicast: {streams: [{group: 239.6.6.6}]}}]}
-  - {id: ap, type: ap, interfaces: [up, w1, w2]${m2u ? ', simulation: {multicast_to_unicast: "on"}' : ''}}
+  - {id: ap, type: ap, interfaces: [up, ${m2u ? '{id: w1, simulation: {multicast_to_unicast: "on"}}' : 'w1'}, w2]}
   - {id: sw, type: switch, interfaces: [p1, p2, p3]}
   - {id: phone, type: endpoint, interfaces: [{id: wlan0, ip: 10.6.0.21/24, multicast: {join: [239.6.6.6]}}]}
 links:

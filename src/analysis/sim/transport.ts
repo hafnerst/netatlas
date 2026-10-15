@@ -56,8 +56,10 @@ import { lookup } from '../routing';
 import { IcmpKind, fmtSec, hashIndex } from './engine';
 import { isMulticastIp } from './mac';
 import { L3Iface } from './net';
-import { PortRule, Resolved, Target, durationText, parsePorts, parseTargets, portsMatch, resolvedText } from './params';
+import { PortRule, Resolved, Target, durationText, ifaceRef, parsePorts, parseTargets, portsMatch, relRef, resolvedText } from './params';
 import { Multicast } from './multicast';
+import { NetServicesSim } from './netsvc';
+import { dnsNameKey, dnsNameProblem } from '../../model/dns';
 import { ProtocolSim, relationProfile } from './protocols';
 import { ConnRow, L4, Msg, Pkt, SessionRow, SessionStatus } from './types';
 
@@ -90,6 +92,8 @@ export type TestKind = 'icmp' | 'tcp' | 'udp';
 /** A test: one ping, connection or UDP request, and how it ended. */
 export interface Test {
   id: number;
+  /** a host name's resolution: "web.hq.example = 10.1.2.10 (DNS: 1.2 ms)" */
+  resolved?: string;
   /** the status row it belongs to ("pc1 → web1 tcp/443") */
   series: string;
   from: string;
@@ -205,6 +209,8 @@ export class Transport {
   private listenCache = new Map<string, PortRule[]>();
   /** group membership (multicast.ts): which hosts take a group's datagrams */
   multicast: Multicast | null = null;
+  /** DHCP and DNS (the resolver for host names) */
+  netsvc: NetServicesSim | null = null;
 
   constructor(P: ProtocolSim) {
     this.P = P;
@@ -410,15 +416,23 @@ export class Transport {
   // ------------------------------------------------------------ tests
 
   /** A device's tests run against a target: its address and the test (a target's own, else the test type in effect). */
-  resolveTarget(dev: string, t: Target, kind: TestKind): { dst: IpAddr; kind: TestKind; port: number; label: string } | string {
+  resolveTarget(dev: string, t: Target, kind: TestKind): { dst: IpAddr; kind: TestKind; port: number; label: string; name?: string } | string {
     let dst: IpAddr | null = parseAddress(t.to);
     let label = t.to;
+    let name: string | undefined;
     if (!dst) {
       const i = t.to.indexOf(':');
       const d = i >= 0 ? t.to.slice(0, i) : t.to;
       const iface = i >= 0 ? t.to.slice(i + 1) : undefined;
       const sd = this.P.sd(d);
-      if (!sd) return `${t.to} is neither a device of the model nor an address`;
+      // a host name: resolved by DNS when the test runs
+      if (!sd && t.to.indexOf('.') > 0 && !dnsNameProblem(t.to)) {
+        const k = t.test ? (t.test.proto as TestKind) : kind;
+        const port = t.test && t.test.proto !== 'icmp' ? t.test.from : k === 'tcp' ? DEFAULT_TCP_PORT : k === 'udp' ? DEFAULT_UDP_PORT : 0;
+        name = dnsNameKey(t.to);
+        return { dst: parseAddress('0.0.0.0') as IpAddr, kind: k, port, label, name };
+      }
+      if (!sd) return `${t.to} is neither a device of the model, an address nor a host name`;
       const src = this.sourceFor(dev, parseAddress('0.0.0.0') as IpAddr);
       const want = src ? src.src.version : 4;
       const ls = Array.from(sd.l3.values()).filter((l) => (iface ? l.id === iface : l.kind !== 'tunnel')).sort((a, b) => Number(a.kind === 'loopback') - Number(b.kind === 'loopback') || cmp(a.id, b.id));
@@ -429,16 +443,17 @@ export class Transport {
     }
     const k = t.test ? (t.test.proto as TestKind) : kind;
     const port = t.test && t.test.proto !== 'icmp' ? t.test.from : k === 'tcp' ? DEFAULT_TCP_PORT : k === 'udp' ? DEFAULT_UDP_PORT : 0;
-    return { dst, kind: k, port, label };
+    return { dst, kind: k, port, label, name };
   }
 
   /** Run one test now (Send test…, test traffic, a health check, a probe); its result comes later. */
-  run(o: { from: string; target: string; dst: IpAddr; kind: TestKind; port?: number; size?: number; df?: boolean; keep?: boolean; source: Test['source']; series?: string; onDone?: (t: Test) => void; front?: Conn; timeout?: Resolved | { value: number } }): Test | string {
+  run(o: { from: string; target: string; dst: IpAddr; name?: string; kind: TestKind; port?: number; size?: number; df?: boolean; keep?: boolean; source: Test['source']; series?: string; onDone?: (t: Test) => void; front?: Conn; timeout?: Resolved | { value: number } }): Test | string {
     const dev = o.from;
     if (!this.P.sd(dev)) return `${dev} is not a device of the simulation`;
     if (!this.e.deviceOn(dev)) return `${dev} is powered off`;
-    const s = this.sourceFor(dev, o.dst);
-    if (!s) return `${dev} has no IPv${o.dst.version} address to send from`;
+    // (a DHCP client without its lease yet: the test waits for it; a host name: for its answer)
+    const s = o.name || this.e.waitsForLease(dev) ? null : this.sourceFor(dev, o.dst);
+    if (!s && !o.name && !this.e.waitsForLease(dev)) return `${dev} has no IPv${o.dst.version} address to send from`;
     const kind = o.kind;
     const port = kind === 'icmp' ? 0 : o.port || (kind === 'tcp' ? DEFAULT_TCP_PORT : DEFAULT_UDP_PORT);
     const series = o.series || `${dev} → ${o.target} ${kind === 'icmp' ? 'ICMP echo' : kind + '/' + port}`;
@@ -467,10 +482,51 @@ export class Transport {
     this.tests.push(t);
     if (this.tests.length > 400) this.tests.splice(0, this.tests.length - 400);
     if (o.source !== 'health' && o.source !== 'probe' && o.source !== 'upstream') this.series.set(series, t);
+    this.begin(t, o.name);
+    return t;
+  }
+
+  /**
+   * A test goes once what it depends on is there: its sender's address (a
+   * DHCP lease), then the target's address (a host name, resolved by DNS);
+   * each wait is logged with its reason.
+   */
+  private begin(t: Test, name?: string): void {
+    const dev = t.from;
+    const lease = this.e.waitsForLease(dev);
+    const what: Msg = { protocol: t.kind, type: 'test', label: `Test ${t.series}`, detail: `Test ${t.series}` };
+    if (lease) {
+      t.result = `waiting for a DHCP lease on ${dev}:${lease}`;
+      this.e.waitFor('lease:' + dev, `a DHCP lease on ${dev}:${lease}`, dev, what, () => this.begin(t, name), 'test|' + t.id);
+      return;
+    }
+    if (name && this.netsvc) {
+      t.result = `resolving ${name}`;
+      if (!this.netsvc.cached(dev, name, 'A')) this.e.note('wait', t.kind, dev, '', 'waiting', '', `${what.label} waiting for DNS ${name}`);
+      const since = this.e.now;
+      this.netsvc.resolve(dev, name, 'A', (r) => {
+        if (t.done) return;
+        if (!r.addr) {
+          this.finish(t, false, r.error || `${name} could not be resolved`);
+          return;
+        }
+        t.dst = r.addr;
+        t.resolved = `${name} = ${formatAddr(r.addr)} (DNS: ${durationText(this.e.now - since)})`;
+        this.begin(t);
+      });
+      return;
+    }
+    const s = this.sourceFor(dev, t.dst);
+    if (!s) {
+      this.finish(t, false, `not sent: ${dev} has no IPv${t.dst.version} address to send from`);
+      return;
+    }
+    const o = { dst: t.dst };
+    const kind = t.kind;
     const bcast = this.e.isBroadcastAddr(o.dst) || isMulticastIp(o.dst);
     if (kind === 'tcp' && bcast) {
       this.finish(t, false, 'not sent: TCP connects to one host, never to a broadcast or multicast address');
-      return t;
+      return;
     }
     // the application gives up after its response timeout (a broadcast ping collects the answers until then)
     this.e.after(Number(t.timeout.value), () => {
@@ -483,7 +539,6 @@ export class Transport {
     if (kind === 'icmp') this.ping(t, s.src, s.vrf);
     else if (kind === 'udp') this.udpRequest(t, s.src, s.vrf);
     else this.connect(t, s.src, s.vrf);
-    return t;
   }
 
   private finish(t: Test, ok: boolean, result: string): void {
@@ -515,7 +570,8 @@ export class Transport {
     if (l4.icmpType === (v === 4 ? 8 : 128)) {
       // an echo request: answered unless pings are off (to a broadcast: only when broadcast pings are answered)
       const bc = this.e.isBroadcastAddr(pkt.dst) || isMulticastIp(pkt.dst);
-      const r = this.e.params.get(bc ? 'bcast-ping' : 'ping', dev);
+      // (respond to ping is per interface: the one the request came in on)
+      const r = bc ? this.e.params.get('bcast-ping', dev) : this.e.params.get('ping', dev, null, ifaceRef(dev, l3.id));
       if (r.value !== 'on') {
         this.e.note('drop', 'icmp', dev, '', 'Echo Request', '', `${dev} does not answer ${pkt.msg.label} from ${formatAddr(pkt.src)} (${r.def.label.toLowerCase()} ${resolvedText(r)})`);
         return;
@@ -627,7 +683,7 @@ export class Transport {
     }
     const own = this.e.isBroadcastAddr(pkt.dst) || isMulticastIp(pkt.dst) ? l3.addrs.find((a) => a.addr.version === pkt.dst.version) : undefined;
     const src = own ? own.addr : pkt.dst;
-    const rt = this.e.params.get('service-response', dev);
+    const rt = this.e.params.get('service-response', dev, null, this.serviceRel(dev, 'udp', l4.dport as number));
     const answer = (): void => {
       const m = this.msg('udp', 'UDP answer', `UDP ← ${formatAddr(src)}:${l4.dport}`, `UDP ${formatAddr(src)}:${l4.dport} → ${formatAddr(pkt.src)}:${l4.sport}, ${UDP_RESPONSE} bytes: the answer${Number(rt.value) > 0 ? ' after the service response time ' + resolvedText(rt) : ''}`, { test: d.test, reply: true });
       this.sendPkt(dev, src, pkt.src, pkt.vrf, m, { proto: 'udp', num: 17, sport: l4.dport, dport: l4.sport }, 8 + UDP_RESPONSE, false, this.e.ownerOf(pkt.src) || '');
@@ -915,7 +971,7 @@ export class Transport {
       this.proxy(c, pkt);
       return;
     }
-    const rt = this.e.params.get('service-response', c.dev);
+    const rt = this.e.params.get('service-response', c.dev, null, this.serviceRel(c.dev, 'tcp', c.lport));
     const answer = (): void => {
       if (c.state !== 'ESTABLISHED') return;
       this.sendData(c, RESPONSE_BYTES, `the answer${Number(rt.value) > 0 ? ' after the service response time ' + resolvedText(rt) : ''}`);
@@ -992,6 +1048,27 @@ export class Transport {
     return null;
   }
 
+  /**
+   * The relation a pool attribute is read from: a load balancer's pool is its
+   * service relations to the members; the first (by id) that sets the
+   * attribute, else the first (it inherits).
+   */
+  private poolRel(dev: string, key: string): string | null {
+    const rels = this.pool(dev).members.map((m) => m.rel).sort(cmp);
+    const own = rels.find((r) => this.e.params.objectValue(relRef(r), key) !== undefined);
+    return own ? relRef(own) : rels.length ? relRef(rels[0]) : null;
+  }
+
+  /** The service relation of a server a request on this port belongs to (its response time), if any. */
+  private serviceRel(dev: string, proto: string, port: number): string | null {
+    for (const r of this.P.m.relations.slice().sort((a, b) => cmp(a.id, b.id))) {
+      if (r.category !== 'service' || relationDevices(r).indexOf(dev) < 0) continue;
+      const t = profileTransport(relationProfile(this.P.m, r).proto);
+      if (t.proto === proto && (t.ports.indexOf(port) >= 0 || !t.ports.length)) return relRef(r.id);
+    }
+    return null;
+  }
+
   private pool(dev: string): { members: Member[]; rr: number; sticky: Map<string, { member: string; at: number }> } {
     let p = this.pools.get(dev);
     if (!p) {
@@ -1011,14 +1088,14 @@ export class Transport {
     if (type === 'load_balancer') {
       const healthy = p.members.filter((x) => x.up);
       const client = formatAddr(front.remote);
-      const per = this.e.params.get('lb-persistence', dev);
+      const per = this.e.params.get('lb-persistence', dev, null, this.poolRel(dev, 'lb-persistence'));
       const st = p.sticky.get(client);
       if (st && Number(per.value) > 0 && this.e.now - st.at <= Number(per.value)) {
         m = healthy.find((x) => x.dev === st.member);
         if (m) why = `persistence: ${client} stays with ${m.dev} (persistence timeout ${resolvedText(per)})`;
       }
       if (!m && healthy.length) {
-        const alg = this.e.params.get('lb-algorithm', dev);
+        const alg = this.e.params.get('lb-algorithm', dev, null, this.poolRel(dev, 'lb-algorithm'));
         if (alg.value === 'least-connections') {
           const count = (x: Member): number => Array.from((this.conns.get(dev) || new Map<string, Conn>()).values()).filter((c) => c.role === 'client' && compareAddr(c.remote, x.addr) === 0).length;
           m = healthy.slice().sort((a, b) => count(a) - count(b) || cmp(a.dev, b.dev))[0];
@@ -1079,7 +1156,7 @@ export class Transport {
           if (this.e.params.str('test-traffic', dev) !== 'on' || !this.e.deviceOn(dev) || !this.e.isSender(dev)) return;
           for (const x of this.targets(dev)) {
             if (typeof x === 'string') continue;
-            this.run({ from: dev, target: x.label, dst: x.dst, kind: x.kind, port: x.port, source: 'traffic' });
+            this.run({ from: dev, target: x.label, dst: x.dst, name: x.name, kind: x.kind, port: x.port, source: 'traffic' });
           }
         },
         first,
@@ -1088,7 +1165,7 @@ export class Transport {
   }
 
   /** An endpoint's test targets: its own, else its gateway (ICMP echo) and the servers of its service relations (their protocol and port). */
-  targets(dev: string): Array<{ dst: IpAddr; kind: TestKind; port: number; label: string } | string> {
+  targets(dev: string): Array<{ dst: IpAddr; kind: TestKind; port: number; label: string; name?: string } | string> {
     const type = this.e.params.str('test-type', dev);
     // multicast: a UDP datagram to every group joined in the model (but its own), to RTP's port
     if (type === 'multicast' && this.multicast) {
@@ -1125,13 +1202,14 @@ export class Transport {
       const dev = d.id;
       const p = this.pool(dev);
       if (!p.members.length) continue;
-      this.P.periodic(
-        () => true,
-        () => this.e.params.num('lb-hc-interval', dev),
-        () => {
-          if (!this.e.deviceOn(dev)) return;
-          for (const m of p.members) {
-            const timeout = this.e.params.get('lb-hc-timeout', dev);
+      // each member by its own relation's health check (its interval and timeout; else the simulation's or the default)
+      for (const m of p.members) {
+        this.P.periodic(
+          () => true,
+          () => this.e.params.num('lb-hc-interval', dev, null, relRef(m.rel)),
+          () => {
+            if (!this.e.deviceOn(dev)) return;
+            const timeout = this.e.params.get('lb-hc-timeout', dev, null, relRef(m.rel));
             this.run({
               from: dev,
               target: m.dev,
@@ -1143,15 +1221,15 @@ export class Transport {
               timeout,
               onDone: (t) => this.checked(dev, m, t),
             });
-          }
-        },
-        2000 + this.e.jitter(),
-      );
+          },
+          2000 + this.e.jitter(),
+        );
+      }
     }
   }
 
   private checked(dev: string, m: Member, t: Test): void {
-    const fall = this.e.params.get('lb-hc-fall', dev);
+    const fall = this.e.params.get('lb-hc-fall', dev, null, relRef(m.rel));
     m.last = t.ok ? `last check answered at t = ${fmtSec(this.e.now)}` : `last check failed at t = ${fmtSec(this.e.now)}: ${t.result}`;
     if (t.ok) {
       m.fails = 0;

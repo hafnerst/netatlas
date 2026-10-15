@@ -16,6 +16,7 @@ import { encapStack } from '../trace';
 import { fmtSec } from './engine';
 import { isMulticastIp, multicastMac, virtualMac } from './mac';
 import { L3Iface, carries, otherEnd, portKey } from './net';
+import { ifaceRef, relRef } from './params';
 import { Behaviour, ProtocolSim, Sess } from './protocols';
 import { Msg, Pkt, SessionStatus } from './types';
 
@@ -218,13 +219,13 @@ function ikeDetail(P: ProtocolSim, s: Sess): void {
   const retries = P.timer(s, s.profile, 'dpd-retries');
   const life = P.timer(s, s.profile, 'child-lifetime');
   const ike = P.timer(s, s.profile, 'ike-lifetime');
-  s.x.detail = `DPD ${dpd.text} × ${retries.text}; Child SA lifetime ${life.text}; IKE SA lifetime ${ike.text}; rekey margin ${P.paramText(P.param('rekey-margin', s.dev))}`;
+  s.x.detail = `DPD ${dpd.text} × ${retries.text}; Child SA lifetime ${life.text}; IKE SA lifetime ${ike.text}; rekey margin ${P.paramText(P.param('rekey-margin', s.dev, relRef(s.rel.id)))}`;
 }
 
 /** Rekey an SA before its lifetime ends (its lifetime less the rekey margin, at least half of it). */
 function rekeyAfter(P: ProtocolSim, s: Sess, key: string): number {
   const life = P.timer(s, s.profile, key).ms;
-  const margin = Number(P.param('rekey-margin', s.dev).value);
+  const margin = Number(P.param('rekey-margin', s.dev, relRef(s.rel.id)).value);
   return Math.max(life / 2, life - margin);
 }
 
@@ -260,7 +261,7 @@ function ikeUp(P: ProtocolSim, s: Sess): void {
         first = false;
         return;
       }
-      P.unicast(s, 'CREATE_CHILD_SA', `rekeys the Child SA ${fmtSec(Number(P.param('rekey-margin', s.dev).value))} before its lifetime (${P.timer(s, s.profile, 'child-lifetime').text}) ends`);
+      P.unicast(s, 'CREATE_CHILD_SA', `rekeys the Child SA ${fmtSec(Number(P.param('rekey-margin', s.dev, relRef(s.rel.id)).value))} before its lifetime (${P.timer(s, s.profile, 'child-lifetime').text}) ends`);
     },
   );
   let firstIke = true;
@@ -405,10 +406,6 @@ const service: Behaviour = {
           }
         });
       }
-      if (p.id === 'dhcp') {
-        P.unicast(s, 'DHCPDISCOVER', 'the client looks for a server (relayed unicast to it)');
-        return;
-      }
       if (tcp && !s.x.open) {
         P.unicast(s, 'TCP SYN', `to the server${p.id === 'https' ? ' port 443' : ''}`);
         return;
@@ -438,22 +435,10 @@ const service: Behaviour = {
         P.setState(s, 'Answered', true, 'TLS session established');
         P.unicast(s, p.request as string, p.messages[0].does);
         return;
-      case 'DHCPDISCOVER':
-        P.unicast(s, 'DHCPOFFER', 'an address and lease');
-        return;
-      case 'DHCPOFFER':
-        P.unicast(s, 'DHCPREQUEST', 'takes the offered address');
-        return;
-      case 'DHCPREQUEST':
-        P.unicast(s, 'DHCPACK', 'the lease is confirmed');
-        return;
-      case 'DHCPACK':
-        P.setState(s, 'Bound', true, 'lease confirmed');
-        return;
       default:
         if (msg.type === p.request && p.response) {
           // the server answers after its response time (its simulation attribute)
-          const rt = P.param('service-response', s.dev);
+          const rt = P.param('service-response', s.dev, relRef(s.rel.id));
           const answer = (): void => {
             P.unicast(s, p.response as string, Number(rt.value) > 0 ? `the answer (after the response time ${P.paramText(rt)})` : 'the answer');
             if (!s.up) P.setState(s, p.states[p.states.length - 1], true, 'answers requests');
@@ -511,7 +496,7 @@ const pim: Behaviour = {
       () => true,
       () => P.timer(s, s.profile, 'hello').ms,
       () => {
-        if (P.e.isL3Up(s.dev, s.local.l3.id)) P.multicast(s, group, 'Hello', `holdtime ${P.timer(s, s.profile, 'dead').text}, DR priority ${P.paramText(P.param('pim-dr-priority', s.dev))}`);
+        if (P.e.isL3Up(s.dev, s.local.l3.id)) P.multicast(s, group, 'Hello', `holdtime ${P.timer(s, s.profile, 'dead').text}, DR priority ${P.paramText(P.param('pim-dr-priority', s.dev, ifaceRef(s.dev, s.local.l3.id)))}`);
       },
     );
     // the RP announces itself (BSR) every bootstrap period
@@ -580,9 +565,9 @@ export function installLacp(P: ProtocolSim): void {
     }
   }
   if (!mems.length) return;
-  // the LACP rate of the member's device: slow (30 s, timeout 90 s) or fast (1 s, timeout 3 s), IEEE 802.1AX
-  const rate = (dev: string): { every: number; timeout: number; text: string } => {
-    const r = P.param('lacp-rate', dev);
+  // the LACP rate of the member's aggregate: slow (30 s, timeout 90 s) or fast (1 s, timeout 3 s), IEEE 802.1AX
+  const rate = (m: Mem): { every: number; timeout: number; text: string } => {
+    const r = P.param('lacp-rate', m.dev, ifaceRef(m.dev, m.agg));
     const fast = r.value === 'fast';
     return { every: fast ? 1000 : 30000, timeout: fast ? 3000 : 90000, text: P.paramText(r) };
   };
@@ -608,7 +593,7 @@ export function installLacp(P: ProtocolSim): void {
         const g = m.gen;
         P.periodic(
           () => m.gen === g,
-          () => rate(m.dev).every,
+          () => rate(m).every,
           () => {
             if (P.e.portUp(m.dev, m.port)) send(m, 'periodic');
           },
@@ -623,9 +608,9 @@ export function installLacp(P: ProtocolSim): void {
     if (!m) return;
     m.heard = P.e.now;
     const g = m.gen;
-    const timeout = rate(m.dev).timeout;
+    const timeout = rate(m).timeout;
     P.e.after(timeout, () => {
-      if (m.gen === g && P.e.now - m.heard >= timeout - 1 && m.state !== 'Detached') set(m, 'Detached', `no LACPDU for ${fmtSec(timeout)} (LACP rate ${rate(m.dev).text})`);
+      if (m.gen === g && P.e.now - m.heard >= timeout - 1 && m.state !== 'Detached') set(m, 'Detached', `no LACPDU for ${fmtSec(timeout)} (LACP rate ${rate(m).text})`);
     });
     const theirs = ((msg.data || {}) as { state?: string }).state || 'Detached';
     if (m.state === 'Detached') {
@@ -648,14 +633,14 @@ export function installLacp(P: ProtocolSim): void {
         const g = m.gen;
         P.periodic(
           () => m.gen === g,
-          () => rate(m.dev).every,
+          () => rate(m).every,
           () => send(m, 'link up again'),
           200,
         );
       }
     }
   });
-  P.extraStatus.push((): SessionStatus[] => mems.map((m) => ({ protocol: 'lacp', name: `${m.dev}:${m.agg} member ${m.port} → ${m.peer}:${m.peerPort}`, device: m.dev, peer: m.peer, state: m.state, detail: `LACPDU every ${fmtSec(rate(m.dev).every)}, timeout ${fmtSec(rate(m.dev).timeout)} (LACP rate ${rate(m.dev).text})`, up: m.state === 'Collecting / Distributing', relation: m.rel ? m.rel.id : undefined })));
+  P.extraStatus.push((): SessionStatus[] => mems.map((m) => ({ protocol: 'lacp', name: `${m.dev}:${m.agg} member ${m.port} → ${m.peer}:${m.peerPort}`, device: m.dev, peer: m.peer, state: m.state, detail: `LACPDU every ${fmtSec(rate(m).every)}, timeout ${fmtSec(rate(m).timeout)} (LACP rate ${rate(m).text})`, up: m.state === 'Collecting / Distributing', relation: m.rel ? m.rel.id : undefined })));
 }
 
 // ------------------------------------------------------------------ STP, LLDP, CDP (where the model has their relations)

@@ -180,6 +180,8 @@ export class Pacer {
   private idleBudget = 0;
   /** no idle jump before this (display clock): the last one found nothing to show */
   private restUntil = -Infinity;
+  /** where an idle jump that its budget cut short started (it goes on towards the same end next frame); null: none */
+  private jumpStart: number | null = null;
 
   constructor(
     private host: PacerHost,
@@ -374,10 +376,14 @@ export class Pacer {
       const from = e.now;
       if (this.skipIdle) {
         if (this.clock < this.restUntil) return;
-        this.advance(from + IDLE_HORIZON);
-        if (e.now - from >= SKIP_REPORT) this.skipped = { ms: e.now - from, at: this.clock };
-        // a whole horizon with nothing to show: rest a moment (a jump cut short by its budget goes on next frame)
-        if (e.now >= from + IDLE_HORIZON - EPS && !this.items.some((it) => this.drawnShown(it) && this.onItsWay(it))) this.restUntil = this.clock + IDLE_REST;
+        // a jump cut short by its budget goes on towards the same end next frame (a new jump would never rest)
+        const start = this.jumpStart !== null && this.jumpStart <= from && from < this.jumpStart + IDLE_HORIZON ? this.jumpStart : from;
+        this.advance(start + IDLE_HORIZON);
+        const shown = this.items.some((it) => this.drawnShown(it) && this.onItsWay(it));
+        this.jumpStart = !shown && e.now < start + IDLE_HORIZON - EPS ? start : null;
+        if (e.now - start >= SKIP_REPORT) this.skipped = { ms: e.now - start, at: this.clock };
+        // a whole horizon with nothing to show: rest a moment
+        if (e.now >= start + IDLE_HORIZON - EPS && !shown) this.restUntil = this.clock + IDLE_REST;
         // (following: what shows now is not of the conversation; it is seen at its own pace)
         return;
       }
@@ -449,6 +455,7 @@ export class Pacer {
 
   /** The simulation was moved on by other means (runTo): what arrived meanwhile is history, on screen or not. */
   resync(): void {
+    this.jumpStart = null;
     this.register();
     const now = this.host.engine.now;
     this.items = this.items.filter((it) => {

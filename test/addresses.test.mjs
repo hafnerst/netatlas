@@ -89,7 +89,7 @@ test('several addresses of an interface: a compact, ordered list (IPv4, then IPv
   assert.deepEqual(entry('core', 'ge-0/0/2.10', 'logical').lines, ['VLAN 10 · VRF CORP', '10.10.10.2/24', '2001:db8:10:10::2/64', 'VRRP 10 10.10.10.1', 'VRRP 10 2001:db8:10:10::1']);
   assert.deepEqual(entry('core', 'gr-0/0/0.0', 'logical').lines, ['172.31.255.1/30', 'fd00:dead:beef:0:0:0:0:1/126', 'src lo0', 'dst 2001:db8:ffff:ffff::2']);
   assert.deepEqual(entry('core', 'ae0', 'logical').lines, ['MAC 02:00:00:00:ae:00', 'members ge-0/0/6, ge-0/0/7']);
-  assert.deepEqual(entry('core', 'ge-0/0/4', 'logical').lines, ['DHCP']);
+  assert.deepEqual(entry('core', 'ge-0/0/4', 'logical').lines, ['DHCP client', 'lease: assigned in a simulation'], 'its lease’s line reserved');
   // a long IPv6 address with its prefix is one line, exactly as written
   const v6 = '2001:0db8:85a3:0000:0000:8a2e:0370:7334/127';
   assert.ok(entry('core', 'xe-0/0/1', 'physical').lines.includes(v6));

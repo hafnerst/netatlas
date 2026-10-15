@@ -88,6 +88,23 @@ export function deviceIcon(type: string, x: number, y: number, size: number, lay
   );
 }
 
+/** Width of a server's service badge ("DHCP", "DNS"): the icon's column. */
+export const SVC_BADGE_W = 26;
+
+/**
+ * A server's network service as a badge ("DHCP" over the icon's upper part,
+ * "DNS" over its lower part), in the icon's column (never near the label or
+ * an address); its long form is the tooltip. Text and frame carry it.
+ */
+export function serviceBadge(svc: 'dhcp' | 'dns', x: number, y: number): VNode {
+  const text = svc === 'dhcp' ? 'DHCP' : 'DNS';
+  return h('g', { class: 'dev-badge svc-' + svc }, [
+    h('title', {}, svc === 'dhcp' ? 'DHCP server: leases addresses to the clients of its scopes' : 'DNS server: answers queries for its zones'),
+    h('rect', { x, y, width: SVC_BADGE_W, height: BADGE_H, rx: 3 }),
+    h('text', { x: x + SVC_BADGE_W / 2, y: y + BADGE_H - 3, 'text-anchor': 'middle' }, text),
+  ]);
+}
+
 /** Width and height of a switch's layer badge ("L2" / "L3"). */
 export const BADGE_W = 19;
 export const BADGE_H = 12;

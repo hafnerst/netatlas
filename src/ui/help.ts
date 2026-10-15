@@ -186,8 +186,9 @@ const MANUAL: Section[] = [
     id: 'switches',
     title: 'Make a switch Layer 2 or Layer 3',
     steps: [
-      'Select a switch. In its **Identity** card, **Layer 3** says whether it routes. A new switch is a **Layer 2 switch**: it forwards frames, may have one management interface with an address and static routes (for example a default gateway for management), and runs no routing protocols.',
-      'Tick **Layer 3** to make it a **Layer 3 switch**: protocols, a router ID, addresses on several VLAN interfaces (it routes between them), VRRP or HSRP groups, tunnels and VRFs.',
+      'Select a switch. In its **Identity** card, **Supports Layer 3** (*Routing, routing protocols, and gateways*) says whether it routes. A new switch is a **Layer 2 switch**: it forwards frames, may have one management interface with an address and static routes (for example a default gateway for management), and runs no routing protocols.',
+      'On a Layer 2 switch, **Enable a protocol…** lists the routing protocols disabled, under *Requires Layer 3*, with the reason; nothing of Layer 3 is suggested, and a relation that needs Layer 3 does not offer the switch as an endpoint (it says why).',
+      'Tick **Supports Layer 3** to make it a **Layer 3 switch**: protocols, a router ID, addresses on several VLAN interfaces (it routes between them), VRRP or HSRP groups, DHCP relays, tunnels and VRFs.',
       'Untick it on a configured Layer 3 switch: NetAtlas lists what is removed with it (and the relations that need routing, which stay and are reported) and asks first. It is one step you can undo.',
     ],
     notes: ['The diagram marks every switch with **L2** or **L3** on its icon (a Layer 3 switch also has its own icon), in both views and in exports; the legend explains it, and the object list shows it beside the name.'],
@@ -237,7 +238,7 @@ const MANUAL: Section[] = [
       '**Exit simulation** (in the simulation panel or the banner) or `Esc` ends it. Nothing in the model changes.',
     ],
     notes: [
-      'A value configured on a cable or a relation in the model comes first, then the device’s Simulation setting, then the simulation’s value, then the default; every value says which it is.',
+      'A value configured on a cable or a relation in the model comes first, then the object’s own Simulation value (an interface’s, a VLAN’s, a relation’s, a DHCP scope’s or a DNS zone’s), then the device’s, then the simulation’s value, then the default; every value says which it is.',
       'This is a teaching and design-review simulation of protocol behaviour, not an exact protocol implementation: no vendor differences beyond the parameters.',
     ],
     figures: [['sim-start', 'Start simulation…: the protocols first, grouped with their counts; the Layer 1–4 parameters collapsed below, Layer 3 saying it has a modified value.']],
@@ -286,10 +287,11 @@ const MANUAL: Section[] = [
   },
   {
     id: 'sim-device',
-    title: 'Set a device’s simulation values',
+    title: 'Set simulation values where they belong',
     steps: [
-      'Select a device, open the **Edit** tab and open its **Simulation** section (it is collapsed; its name says how many values it has).',
-      'Each field shows the value in effect: the device’s own, or *Inherited* with where it comes from. Type a value to override it (with its unit, e.g. *300* seconds or *50ms*); empty it, or press **Reset to inherited**, to inherit again. Only overrides are saved, in the device’s `simulation:` block.',
+      'Select a device, open the **Edit** tab and open its **Simulation** section (it is collapsed; its name says how many values it has). It holds what belongs to the whole device: its boot time, the spanning-tree mode and bridge priority, a firewall’s policy …',
+      'What belongs to one object is in that object’s own collapsed **Simulation** subsection: an interface card (ARP timers, a port’s spanning-tree cost, **Edge port** and **BPDU guard**, IGMP, a DHCP client’s retries …), a network with a VLAN (IGMP snooping), a relation (a VRRP group’s advertisement interval, an IPsec tunnel’s lifetimes, a load balancer pool’s health checks), a DHCP scope, a DNS zone. Some of them can also be set on the device, as the default for all its objects (*Inherited: device*).',
+      'Each field shows the value in effect: its own, or *Inherited* with where it comes from. Type a value to override it (with its unit, e.g. *300* seconds or *50ms*); empty it, or press **Reset to inherited**, to inherit again. Only overrides are saved, in the `simulation:` block of the device or object.',
       'During a simulation the model is locked, but this section stays editable: it is at the bottom of the **Actions** panel for the selected device. A change applies at once and appears in the event log; **Undo** takes it back.',
     ],
     figures: [['sim-device', 'core1’s Simulation section in the Actions panel during a simulation: its own ARP timeout and MAC aging, the other values inherited with their sources.']],
@@ -298,7 +300,7 @@ const MANUAL: Section[] = [
     id: 'sim-tables',
     title: 'Look at ARP and MAC tables',
     steps: [
-      'During a simulation, click a device: its menu (and the **Actions** panel) offers **Show ARP table**, for a switch **Show MAC table**, **Show connections** and, for a firewall, **Show sessions**.',
+      'During a simulation, click a device: its menu (and the **Actions** panel) offers **Show ARP table**, for a switch **Show MAC table**, **Show connections**, for a firewall **Show sessions**, for a DHCP server **Show DHCP leases**, for a DNS server **Show DNS zone**, and for a host that resolved names **Show DNS cache**.',
       'The table shows on the **Status** side of the simulation panel; the buttons above it switch between the protocols’ status and the selected device’s tables.',
       'At the top: the timers in effect, each with where it comes from (*device*, *simulation* or *default* and its source). The rows show the address, the MAC (*(simulated)* when NetAtlas generated it), the interface, VLAN, type, state, age and when it expires.',
       'The ARP timeout is 4 hours by default: choose a faster **Table timers** scale in the setup to see entries age in a demonstration. It changes nothing in the model.',
@@ -309,7 +311,7 @@ const MANUAL: Section[] = [
     id: 'sim-test',
     title: 'Send a test and inspect a packet',
     steps: [
-      'During a simulation, use **Send test** in the **Actions** panel, or click a device and choose **Send test…** (it becomes the source). **From** is the sending device; in **To** write a device, an interface (`device:interface`), an address, a subnet broadcast (offered in the list), *255.255.255.255* or a multicast group.',
+      'During a simulation, use **Send test** in the **Actions** panel, or click a device and choose **Send test…** (it becomes the source). **From** is the sending device; in **To** write a device, an interface (`device:interface`), a host name (resolved by DNS first), an address, a subnet broadcast (offered in the list), *255.255.255.255* or a multicast group.',
       'Choose the **Type**: **ICMP** (ping), **TCP** or **UDP**, with its **Port**; **More options** has the data size, **Don’t fragment** and, for TCP, keeping the connection open. Press **Send** (or `Enter` in **To**).',
       'The result shows under it, in the Status table and in the event log: *answered* (with the round trip), *connection refused* (a TCP RST from a closed port), an ICMP error that came back (*Net Unreachable*, *Port Unreachable*, *Administratively Prohibited* from a firewall, *Fragmentation Needed* …) or *timed out*.',
       'Click a dot, or the message of a row in the event log (Enter on it from the keyboard): the **packet inspector** shows its frame layer by layer: the MAC addresses and what they are (broadcast, a multicast group’s MAC), the VLAN tag, the IP header (TTL, Don’t Fragment, protocol), the ports and TCP flags or the ICMP type with the quoted header, and what it carries; **Follow message** follows it and its replies.',
@@ -320,6 +322,33 @@ const MANUAL: Section[] = [
       'Which ports a server listens on: its **Listening services**, else the ports of the relations it serves. A firewall passes the model’s relations and what its **Also permits** list allows; anything else it drops, or rejects.',
     ],
     figures: [['packet-inspector', 'The packet inspector for a TCP SYN on its way, with Follow message: the Ethernet header with its MAC addresses, the IPv4 header with TTL and Don’t Fragment, the TCP ports and flags.']],
+  },
+  {
+    id: 'services',
+    title: 'Run DHCP and DNS servers',
+    steps: [
+      'Select a server, VM or container and open the **Edit** tab. Its **Services (DHCP, DNS)** card has two checkboxes, **DHCP server** and **DNS server**, both off.',
+      'Tick **DHCP server**: it needs a scope, reported as an error until there is one. Press **+ Add scope** and fill in the **Network**, the **Address range**, the **Default gateway** and the **DNS servers**; the buttons under them suggest a free range, the network’s gateway and the model’s DNS servers. **Lease time** (1 day if empty), **Excluded addresses**, **Reservations** (a MAC address and its address) and **Domain name** are optional.',
+      'Tick **DNS server** and press **+ Add zone**: name it (*campus.example*). The model’s DNS names in that zone are its A and AAAA records, listed read-only with the interface each comes from; add your own A, AAAA and CNAME records under them. **Listening address**, **Forwarders** and **Reverse zones** are optional.',
+      'A client is an interface with **DHCP** on. In another subnet, give its gateway interface a **DHCP relay** (the server’s address). A host’s **Name resolution** card lists its static DNS servers, used when no lease gives any.',
+    ],
+    notes: [
+      'The diagram marks the server with **DHCP** and **DNS** badges and each client interface with *DHCP client*; the legend explains them. The checks report a client that reaches no DHCP server and a relay to an address that is none.',
+      'Unticking a service removes it with its scopes or zones in one step you can undo.',
+    ],
+    figures: [['services', 'srv’s Services card in campus-services.yaml: DHCP with its two scopes, DNS with the zone campus.example.']],
+  },
+  {
+    id: 'sim-dhcp-dns',
+    title: 'Follow DHCP and DNS in a simulation',
+    steps: [
+      'Open **campus-services.yaml** and start a simulation. As the links come up, every DHCP client sends a **DHCPDISCOVER** at the same time; the server answers *DHCPOFFER 10.10.10.100 · lease 1 d*, the client requests it and gets a **DHCPACK**. *pc2*’s DISCOVER reaches the server through the relay on *core*.',
+      'The lease is written into the client’s line in the diagram: *10.10.10.100/24 (DHCP lease)*. Everything else the client sends waits for it (the log says so). It renews at half the lease, rebinds at seven eighths, and loses the address when the lease ends; a full pool doesn’t answer, and the client tries again with longer and longer pauses.',
+      'Test traffic and **Send test** to a host name ask DNS first (*DNS A? web.campus.example*, answered *DNS A web.campus.example = 10.10.30.10*), then connect; a name missing from the server’s zone ends in NXDOMAIN, an unreachable server in a timeout.',
+      'Click the server for **Show DHCP leases** and **Show DNS zone**, a client for **Show DNS cache**.',
+    ],
+    notes: ['DHCP is IPv4 only, one lease per interface; DNS has no negative caching and asks only the model’s servers. The model is never changed: after the simulation the client’s line says the lease is assigned in a simulation.'],
+    figures: [['dhcp-sim', 'The simulation of campus-services.yaml: the clients’ leases in the diagram, and srv’s DHCP leases in the simulation panel.']],
   },
   {
     id: 'sim-multicast',

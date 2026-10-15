@@ -5,6 +5,7 @@
  * user action (file picker or drag-and-drop), edited in memory, and saved by
  * letting the browser download a new copy. Nothing is transmitted.
  */
+import { LEASE_PLACEHOLDER } from '../model/addresses';
 import { EditLocked, ModelDoc, Origin, ifaceSchemaKind } from '../editor/document';
 import { FileAccess, PngPicture, WritableFile, detectFileAccess, downloadBlob, downloadText, exportFileName, isCancel, isWritable, pictureBaseName, readTextFile, safeYamlFileName, svgToPng, writeFile } from './files';
 import { Pt } from '../layout/geometry';
@@ -943,6 +944,17 @@ export class App {
       e.classList.toggle('sim-degraded', st === 'degraded');
       e.classList.toggle('bc-on', !!dom && dom.has(ref));
       e.classList.toggle('bc-off', !!dom && !dom.has(ref) && (ref.indexOf('device:') === 0 || ref.indexOf('link:') === 0 || ref.indexOf('relation:') === 0 || ref.indexOf('network:') === 0));
+    }
+    // a DHCP client's lease in a simulation, in its reserved line (the model is unchanged: without a simulation the line says so)
+    const leases = this.simulation && this.simulation.leaseMarks ? this.simulation.leaseMarks() : null;
+    const lines = this.viewport.querySelectorAll('[data-field="lease"]');
+    for (let i = 0; i < lines.length; i++) {
+      const t = lines[i];
+      const g = t.closest('[data-ref]');
+      const mark = leases && g ? leases.get(g.getAttribute('data-ref') as string) : undefined;
+      const text = mark || LEASE_PLACEHOLDER;
+      if (t.textContent !== text) t.textContent = text;
+      t.classList.toggle('lease-on', !!mark);
     }
   }
 
@@ -2461,7 +2473,7 @@ export class App {
     if (!s || (!f && !t && !v)) return;
     if (v) {
       this.$('sim-text').textContent = `${this.simNote()}. The model is unchanged; editing is paused.`;
-      this.$('sim-short').textContent = `Simulated state · ${v.marker()}`;
+      this.$('sim-short').textContent = `Simulation running · ${v.marker()}`;
     }
     if (f) {
       this.$('mode-text').textContent = this.focusNote() + '. Positions here are temporary and are not saved.';
@@ -2486,7 +2498,7 @@ export class App {
     if (!sel || sel.indexOf('device:') !== 0) return 'Select a device first';
     const d = s.model.index.devices.get(sel.slice(7));
     if (!d) return 'Select a device first';
-    if (isLayer2Switch(d)) return `${d.id} is a Layer 2 switch: tick Layer 3 in its Edit tab to make it a Layer 3 switch first`;
+    if (isLayer2Switch(d)) return `Requires Layer 3: ${d.id} is a Layer 2 switch (tick Supports Layer 3 in its Edit tab first)`;
     if (deviceRoutingRole(d) !== 'router') return `${d.id} is not a Layer 3+ device: only routers, Layer 3 switches, firewalls, load balancers, proxies and gateways run routing protocols`;
     return '';
   }
@@ -2546,7 +2558,7 @@ export class App {
   /**
    * Simulation mode: a hypothetical state on screen (Simulate → Protocol
    * simulation). While it is on the whole window says so (the banner, the
-   * hatched frame, the status-bar marker, the "Simulated state" label) and
+   * thin border round the diagram with its "Simulation running" label, the status-bar marker) and
    * the model is locked for editing; Exit simulation (or Esc) ends it. null:
    * off.
    */
@@ -3076,7 +3088,7 @@ export class App {
     const text = this.doc.getElementById('sim-text');
     if (text) text.textContent = `${this.simNote()}. The model is unchanged; editing is paused.`;
     const short = this.doc.getElementById('sim-short');
-    if (short) short.textContent = `Simulated state · ${v.marker()}`;
+    if (short) short.textContent = `Simulation running · ${v.marker()}`;
     const m = this.doc.querySelector('#status .sim-marker-text');
     if (m) m.textContent = v.marker();
   }
@@ -4010,8 +4022,25 @@ export class App {
     for (const box of [side, outline]) {
       box.addEventListener('pointerdown', (e) => {
         if (e.button !== 0) return;
+        // a press handled earlier whose click never came (the button moved away as the form re-rendered) must not swallow this one
+        this.clickHandled = false;
         const btn = (e.target as Element).closest('[data-act]') as HTMLElement | null;
         if (!btn) return;
+        // a checkbox acts on its click, when its new state is set (on pointerdown it would still read the old one);
+        // but the field being typed in is committed first, and if that re-rendered the form, the click would hit
+        // a removed box: then the new box with the same id is toggled here, and the click that follows is ignored
+        if (btn instanceof HTMLInputElement && btn.type === 'checkbox') {
+          const id = btn.id;
+          e.preventDefault();
+          this.commitActiveField();
+          if (btn.isConnected || !id) return;
+          const again = this.doc.getElementById(id) as HTMLInputElement | null;
+          if (!again) return;
+          again.checked = !again.checked;
+          this.clickHandled = true;
+          this.guarded(() => this.editor.onClick(again));
+          return;
+        }
         e.preventDefault();
         this.commitActiveField();
         this.clickHandled = true;

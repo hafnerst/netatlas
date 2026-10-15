@@ -115,6 +115,18 @@ function listLines(head: string, items: string[]): string[] {
   return out;
 }
 
+/**
+ * The line a DHCP client's address takes in the diagram: reserved as wide
+ * as the longest lease ("255.255.255.255/32 (DHCP lease)"), so that the
+ * lease a simulation writes there never moves or overlaps anything.
+ */
+export const LEASE_PLACEHOLDER = 'lease: assigned in a simulation';
+
+/** A lease as the diagram writes it ("10.1.1.50/24 (DHCP lease)"; a link-local fallback says so). */
+export function leaseText(addr: string, kind: 'dhcp' | 'link-local'): string {
+  return kind === 'link-local' ? `${addr} (link-local)` : `${addr} (DHCP lease)`;
+}
+
 /** One interface's entry: its name line, and the facts under it. */
 export interface IfaceEntry {
   /** "iface:<device>:<id>" */
@@ -135,13 +147,18 @@ function l3Lines(model: Model, i: Interface): Array<[string, LineField]> {
   const vlan = i.type === 'virtual' ? interfaceVlans(model, i).map((v) => 'VLAN ' + v).join(', ') : interfaceVlanText(interfaceAddresses(model, i.device, i.id));
   if (vlan) tags.push(vlan);
   if (i.vrf) tags.push('VRF ' + i.vrf);
-  if (i.dhcp) tags.push('DHCP');
+  if (i.dhcp) tags.push('DHCP client');
   // the tags line stands for the first of them that is written on the interface (a derived VLAN is not)
   const tagField = i.vlan !== undefined && i.type === 'virtual' ? 'vlan' : i.vrf ? 'vrf' : i.dhcp ? 'dhcp' : '';
   const out: Array<[string, LineField]> = tags.length ? [[tags.join(' · '), { field: tagField, value: '' }]] : [];
+  // a DHCP client's address is leased at runtime: its line is reserved here (a simulation writes the lease into it)
+  const lease: Array<[string, LineField]> = i.dhcp && !i.addresses.length ? [[LEASE_PLACEHOLDER, { field: 'lease', value: '' }]] : [];
+  const relay: Array<[string, LineField]> = i.dhcpRelay && i.dhcpRelay.length ? [[`DHCP relay → ${i.dhcpRelay.join(', ')}`, { field: 'dhcp_relay', value: '' }]] : [];
   return out.concat(
+    lease,
     orderedAddresses(i.addresses).map((a): [string, LineField] => [a, { field: 'ip', value: a }]),
     gatewayLines(model, i),
+    relay,
   );
 }
 

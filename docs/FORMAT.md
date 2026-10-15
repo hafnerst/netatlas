@@ -152,12 +152,14 @@ than one endpoint on the same device is bound by the first of them.
 | `group` | | Id of the group the device is located in |
 | `tier` | | 0–9: vertical row in the physical view (0 = top). By default this comes from the type (see the table below). Set it to place a device elsewhere, e.g. `tier: 3` for core or spine switches above the access switches. |
 | `router_id` | | The router ID the device's protocols share: the id of one of its **loopbacks** (`lo0`: its IPv4 address is used) or an **IPv4 address** without a prefix length (`10.255.0.1`). Applies only while an enabled protocol uses a router ID (OSPF, BGP, EIGRP, LDP); otherwise it is reported as not applicable. See [Routing services](#routing-services-protocols). |
-| `simulation` | | The device's **simulation attributes**, for the [protocol simulation](#simulation-parameters-and-device-attributes): only what it overrides, e.g. `simulation: {arp_timeout: 300, spf_delay: 50ms, boot_time: 2min}`. Everything else it inherits from the simulation's values or the defaults. |
+| `simulation` | | The device's **simulation attributes** (the device-level ones, and defaults for its objects where an attribute allows it), for the [protocol simulation](#simulation-parameters-and-device-attributes): only what it overrides, e.g. `simulation: {arp_timeout: 300, spf_delay: 50ms, boot_time: 2min}`. Everything else it inherits from the simulation's values or the defaults. |
 | `protocols` | | The **routing services** the device runs, with their parameters: `protocols: {bgp: {asn: 65001}, ospf: {}}`. Layer 3+ devices only (a switch with `layer3: true`). See [Routing services](#routing-services-protocols). |
 | `description`, `attrs` | | |
 | `interfaces` | | List of the device's **physical interfaces** (its ports, below). The shorthand `interfaces: [eth0, eth1]` is allowed. |
 | `logical_interfaces` | | List of the device's **logical interfaces** (below): loopbacks, virtual interfaces and tunnel interfaces. |
 | `dns_names` | | List of the device's **DNS names**, each associated with one or more of its interfaces. See [DNS names](#dns-names). |
+| `dns_servers` | | The DNS servers the device asks (a list of addresses), when they are not given by a DHCP lease. See [DNS servers of a host](#dns-servers-of-a-host-dns_servers). |
+| `services` | | Servers, VMs and containers only: the **DHCP server** and the **DNS server** it runs, `services: {dhcp: {scopes: […]}, dns: {zones: […]}}`. See [Network services](#network-services-services-dhcp-and-dns-servers). |
 | `routes` | | List of the device's **static routes**. See [Static routes](#static-routes). Only devices whose type has a routing table may have them. |
 
 A device has no `vendor`, `model`, `role` or `mgmt` key; like every key the
@@ -288,7 +290,7 @@ reports anything else on a Layer 2 switch as an error:
 
 | A Layer 2 switch may have | It may not have (errors) |
 |---|---|
-| addresses on **one** interface: its management interface (a VLAN interface, or a port), or DHCP there | addresses on a second interface (that would route between subnets or VLANs) |
+| addresses on **one** interface: its management interface (a VLAN interface, or a port), or DHCP there | addresses on a second interface (that would route between subnets or VLANs), a `dhcp_relay` |
 | a VRF on that management interface | a VRF on any other interface |
 | static routes in the default table or in the management interface's VRF | routes in another VRF |
 | relations of services (SNMP, syslog, NTP …), LACP, MLAG, STP, LLDP, CDP and the model's own protocols | `protocols:` (routing services), `router_id`, VRRP / HSRP / GLBP / CARP groups on an interface, tunnel interfaces |
@@ -319,7 +321,15 @@ legend of both views.
     - {id: Vlan20, type: virtual, vlan: 20, ip: 10.10.20.1/24}
 ```
 
-Making a switch a Layer 2 switch in the Edit tab (unticking **Layer 3**)
+In the Edit tab this is one checkbox on a switch, **Supports Layer 3**
+(its tooltip: *Routing, routing protocols, and gateways*), off by default.
+While it is off, the switch's *Enable a protocol…* lists the routing
+protocols disabled, in a group *Requires Layer 3*, with the reason; nothing
+of Layer 3 is suggested; the relation endpoint pickers leave the switch out
+of relations that need Layer 3 (and say why), and the command palette's
+*Enable a protocol* says the same.
+
+Making a switch a Layer 2 switch (unticking **Supports Layer 3**)
 asks first and lists what goes with it, in one undo step: its protocols
 and router ID, the groups on its interfaces, the addresses of every
 interface but its management interface, the VRFs of the others, its tunnel
@@ -366,6 +376,8 @@ devices:
 | `vrf` | name of the VRF the interface is assigned to (free text, display only). Membership in a network is decided by the address alone. |
 | `mtu` | the interface's MTU in bytes, a whole number from 68 to 65535. Omitted: not modelled (no MTU is assumed, so nothing is compared). Read by the [consistency checks](#consistency-checks) `link-mtu-mismatch` and `tunnel-mtu`. |
 | `multicast` | the groups the device joins on the interface and the streams it sends from it, for the protocol simulation. See [Multicast](#multicast). |
+| `dhcp_relay` | the **DHCP relay** (helper addresses) of a routed interface with an address: `dhcp_relay: [10.10.10.10]`. It forwards the DHCP broadcasts of its subnet to these servers. See [DHCP](#dhcp). |
+| `simulation` | the interface's **simulation attributes** (ARP timers, spanning tree per port, IGMP, DHCP client retries …): only what it overrides. See [Levels](#levels-where-an-attribute-is-written). |
 | `mac`, `description`, `attrs` | |
 
 A **physical interface** has no other keys. In particular it has **no `type`
@@ -584,7 +596,11 @@ Every physical interface and every virtual or tunnel interface has an explicit D
   dropped or chosen: fix the file by deleting one of them.
 * DHCP is not an address. The address the interface will obtain is unknown,
   so it contributes to no network's membership and has no derived VLAN until
-  an address is written. It can't carry a DNS name (below).
+  an address is written. It can't carry a DNS name (below). The diagram
+  marks it *DHCP client* and keeps a line for its lease, which the
+  protocol simulation fills in ("10.10.10.100/24 (DHCP lease)"); the model
+  is unchanged. Its DHCP server is modelled as well: see
+  [Network services](#network-services-services-dhcp-and-dns-servers).
 * **A loopback can't use DHCP.** It is an address of the device itself and is
   always configured, so `dhcp: true` on a loopback is an **error** (kept in
   the file, not dropped), and the loopback still needs its address.
@@ -596,6 +612,24 @@ Every physical interface and every virtual or tunnel interface has an explicit D
   has addresses or DNS names first lists what will be deleted, and deletes
   it in the same undo step only after confirmation. Turning it off does not
   bring deleted addresses back.
+
+#### DHCP relay
+
+A routed interface with an address can relay DHCP to servers in other
+subnets: `dhcp_relay` lists their addresses (the *helper addresses*).
+
+```yaml
+    logical_interfaces:
+      - {id: Vlan20, type: virtual, vlan: 20, ip: 10.10.20.1/24, dhcp_relay: [10.10.10.10]}
+```
+
+It forwards the clients' DHCP broadcasts as unicast to each server, with
+its own address as the relay address (`giaddr`), so the server picks the
+scope of that subnet, and passes the answers back to the clients. Only on
+an interface of a device that routes (a router, a Layer 3 switch, a
+firewall …) and that has an address; elsewhere it is an error, and so is a
+value that isn't an IPv4 address. The consistency check `dhcp-relay-no-server`
+reports a helper address that is no DHCP server of the model.
 
 ### DNS names
 
@@ -641,6 +675,75 @@ devices:
   physical view doesn't show them. Showing a name says only that it is
   configured: no DNS record is looked up or derived. **Find in diagram…**
   finds a device by a DNS name.
+
+### DNS servers of a host (`dns_servers`)
+
+`dns_servers` lists the addresses of the DNS servers a device asks:
+`dns_servers: [10.10.10.10]`. A DHCP client gets them from its lease (the
+scope's `dns`); while it has a lease, those are used instead. A value that
+isn't an address is an error. In the protocol simulation a
+host resolves names (test traffic to a host name, `Send test` to a name)
+through them.
+
+### Network services (`services`): DHCP and DNS servers
+
+A server, a VM or a container can run a **DHCP server** and a **DNS
+server**. Both are off unless written; the Edit tab has a *Services* card
+with a checkbox for each.
+
+```yaml
+  - id: srv
+    type: server
+    services:
+      dhcp:
+        scopes:
+          - network: users                     # a network of the model (IPv4)
+            range: 10.10.10.100-10.10.10.199   # the addresses it leases
+            gateway: 10.10.10.1                # the default gateway it gives
+            dns: [10.10.10.10]                 # the DNS servers it gives
+            lease: 8h                          # optional (default 1 day)
+            exclude: [10.10.10.150]            # optional: never leased
+            reservations:                      # optional: always this address
+              - {mac: "02:00:00:00:10:21", ip: 10.10.10.21}
+            domain: campus.example             # optional (option 15)
+            simulation: {offer_delay: 500ms}   # optional: the scope's simulation attributes
+      dns:
+        listen: 10.10.10.10                    # optional: the address it answers on (default: all)
+        zones:
+          - name: campus.example
+            records:                           # its own records (A, AAAA, CNAME)
+              - {name: www, type: CNAME, value: web.campus.example}
+            simulation: {record_ttl: 300}
+        forwarders: [192.0.2.53]               # optional: where other names are asked
+        reverse_zones: [10.10.0.0/16]          # optional: PTR answers for these networks
+    interfaces: [{id: eth0, ip: 10.10.10.10/24}]
+```
+
+**DHCP scopes.** Each scope needs its `network`, `range`, `gateway` and
+`dns`; a missing one is an error, as is a DHCP server without a scope.
+The range lies inside the network and is written `start-end`; it may not
+contain the gateway or an address configured statically in the model. The
+gateway must be in the network; the lease time is a duration (`8h`,
+`1d`, a bare number is in seconds). An exclusion must lie in the range; a
+reservation needs a MAC address and an address inside the network that
+isn't configured statically, and two reservations may not share either. Two scopes of
+the model may not overlap.
+
+**DNS zones.** A zone's `name` is a domain. Its A and AAAA records come
+from the model: every DNS name (`dns_names`) inside the zone gives one
+record per address of its interfaces (shown read-only in the editor, with
+the device and interface they come from). A zone's own `records` add A,
+AAAA and CNAME records (`name` relative to the zone or ending in it); a
+name outside the zone, a record written twice or already derived from a
+DNS name, a CNAME next to another record of the same name, and an A record
+whose value isn't an IPv4 address (AAAA: IPv6) are errors. A DNS server without a zone is an error; `listen` must be one
+of its own addresses; `forwarders` and `reverse_zones` are optional.
+
+**Clients.** A DHCP client is an interface with `dhcp: true`. Its segment
+needs a DHCP server: one in its broadcast domain, or a relay on its gateway
+interface (`dhcp_relay`); else the consistency check `dhcp-no-server`
+reports it. A host's DNS servers come from its lease, else from
+`dns_servers`.
 
 ### Static routes
 
@@ -843,6 +946,7 @@ links:
 | `label` | |
 | `cidr` | required: **exactly one** IPv4 or IPv6 prefix **with a prefix length**, written as one value: `10.10.10.0/24` or `2001:db8::/64`. The prefix decides who is a member. A list is an error, even a one-element list; use one network per prefix (e.g. an IPv4 and an IPv6 network for one segment, both with the same `vlan`). |
 | `vlan` | the VLAN ID (1–4094) this IP network lives in, if any |
+| `simulation` | the VLAN's **simulation attributes** (IGMP snooping and its querier, fast leave, unknown multicast), for every switch carrying the VLAN; only on a network with a `vlan`. See [Levels](#levels-where-an-attribute-is-written). |
 | `description`, `attrs` | |
 
 A network is always an IP network: there is no `kind`. It has no `vrf` (a VRF
@@ -915,6 +1019,7 @@ The exact rules:
 | `direction` | | `bidirectional` (the default when the key is left out) or `unidirectional`: the relation flows one way, **from the first endpoint to the last**, and is drawn with an arrow at the last endpoint's device (e.g. syslog, replication). The order of the endpoints then carries meaning. A multipoint relation (3+ devices, drawn as a hub) gets no arrow. Any other value is an error. |
 | `label`, `description` | | |
 | `attrs` | | **Protocol-specific attributes**, free-form (see below) |
+| `simulation` | | The relation's **simulation attributes** (a VRRP group's advertisement interval, an IPsec tunnel's lifetimes and DPD, a load balancer pool's health checks, a server's response time): only what it overrides. See [Levels](#levels-where-an-attribute-is-written). |
 
 ### Protocol-specific attributes
 
@@ -1073,8 +1178,10 @@ attributes where they are written (they are *configured*, the first in the
 the protocol's default, as the event log says): OSPF `hello`, `dead` and `priority`; BFD
 `interval` (`300ms`, `1s`) and `multiplier`; PIM `rp` (the RP: an address
 or a device); IGMP `group` (default 239.1.1.1); VRRP / HSRP `preempt`
-(`false` turns it off). A switch's spanning-tree priority is the device
-attribute `stp-priority` (default 32768). A protocol the model defines
+(`false` turns it off). A switch's spanning-tree bridge priority is its
+simulation attribute `bridge_priority` (default 32768; per VLAN with
+`bridge_priority_vlans` for MSTP and PVST), a port's cost and priority are
+the port's `stp_cost` and `stp_port_priority`. A protocol the model defines
 itself is simulated with dummy packets labelled with its name, in the
 relation's direction.
 
@@ -1131,16 +1238,44 @@ window, the tables, the Edit tab):
    example a relation's OSPF `hello` / `dead` or BFD `interval` /
    `multiplier`, a cable's `simulation: {latency, loss}` or `speed`, an
    interface's `mtu`;
-2. **device**: the device's simulation attribute (`simulation:` on it);
-3. **simulation**: the simulation-wide value (the dialog, the window);
-4. **default**: the built-in common default, with its source.
+2. **object**: the simulation attribute written on the object itself, at
+   its [level](#levels-where-an-attribute-is-written): an interface's, a
+   VLAN's (its network's), a relation's, a DHCP scope's or a DNS zone's
+   `simulation:`;
+3. **device**: the device's simulation attribute (`simulation:` on it): a
+   device-level attribute, or the device-wide default of an object-level
+   attribute that allows one (the tables say which);
+4. **simulation**: the simulation-wide value (the dialog, the window);
+5. **default**: the built-in common default, with its source.
 
 Wherever a value is shown it says where it comes from: *configured on …*,
-*device*, *simulation* or *default* (with its source). A derived timer
+*interface …* / *VLAN …* / *relation …* / *scope …* / *zone …*, *device*,
+*simulation* or *default* (with its source). A derived timer
 follows its base: OSPF's dead interval is 4 × the hello interval, BGP's
 hold time 3 × the keepalive. A cable's latency and loss come from the
 cable, else from one of its devices (a cloud's `latency` and `loss`: the
 larger of the two ends), else from the simulation.
+
+### Levels: where an attribute is written
+
+Every simulation attribute belongs to the level real devices configure it
+at, and is written in that object's `simulation:` block:
+
+| Level | Written in | Examples |
+|---|---|---|
+| device | the device's `simulation:` | boot time, ECMP paths, the spanning-tree mode and bridge priority, a firewall's policy |
+| interface | a port's, an aggregate's or a logical interface's `simulation:` | ARP timers, link-up delay, a port's spanning-tree cost, edge port and BPDU guard, IGMP, a DHCP client's retries |
+| VLAN | the `simulation:` of a network with a `vlan` | IGMP snooping, the snooping querier, fast leave |
+| relation | a relation's `simulation:` | a VRRP group's advertisement interval, an IPsec tunnel's lifetimes, a load balancer pool's health checks |
+| service | a DHCP scope's or a DNS zone's `simulation:` | the offer delay and ping check of a scope, a zone's record TTL |
+
+Some object-level attributes may also be written on the device, as the
+default for its objects (the column *Also device-wide*): `stp_edge: on` on
+a switch makes every port an edge port unless a port says otherwise. An
+attribute written at a level it doesn't belong to is an **error** that
+names its level; it is never moved automatically. In the Edit tab each
+object has a collapsed *Simulation* subsection with its attributes, each
+showing whether it is inherited (and from where), overridden, or reset.
 
 ### The parameters
 
@@ -1151,168 +1286,208 @@ attribute names (seconds, or milliseconds for latencies, BFD, the route
 recomputation delay, the ICMP rate limit and the beacon interval). A
 choice of on and off may also be written `true` / `false`. A list
 (`allow`, `listening`, `test_targets`) is one text with commas or a YAML
-list; `none` is an empty one.
+list; `none` is an empty one. A per-VLAN value (`bridge_priority_vlans`) is
+a list of `VLAN: value` pairs, ranges allowed.
 
 #### Layer 1 – Physical (8)
 
 | Parameter | Default | Range | Source of the default | Also |
 |---|---|---|---|---|
-| Link latency | 100 µs | 0 s – 10 s | about 20 km of fibre (5 µs per km); a cable in one building is far shorter | device attribute `latency`; configured: a cable’s simulation: latency |
-| Packet loss | 0 % | 0 % – 100 % | a healthy link loses nothing | device attribute `loss`; configured: a cable’s simulation: loss |
-| Loss-of-signal detection | 0 s | 0 s – 1 min | Junos hold-time down 0 ms (Cisco carrier-delay is the same idea) |  |
-| Link-up delay | 2 s | 0 s – 5 min | 1000BASE-T autonegotiation and link training (IEEE 802.3 clauses 28 and 40) take about 2 s |  |
+| Link latency | 100 µs | 0 s – 10 s | about 20 km of fibre (5 µs per km); a cable in one building is far shorter | attribute `latency` (device); configured: a cable’s simulation: latency |
+| Packet loss | 0 % | 0 % – 100 % | a healthy link loses nothing | attribute `loss` (device); configured: a cable’s simulation: loss |
+| Loss-of-signal detection | 0 s | 0 s – 1 min | Junos hold-time down 0 ms (Cisco carrier-delay is the same idea) | attribute `los_detection` (interface) |
+| Link-up delay | 2 s | 0 s – 5 min | 1000BASE-T autonegotiation and link training (IEEE 802.3 clauses 28 and 40) take about 2 s | attribute `link_up_delay` (interface) |
 | Default speed | 1 Gbit/s | 1 kbit/s – 1600 Gbit/s | 1000BASE-T, the usual access port | configured: a cable’s speed |
 | Flapping: down time | 5 s | 100 ms – 1 h | a demonstration value |  |
 | Flapping: up time | 10 s | 100 ms – 1 h | a demonstration value |  |
-| Flapping: cycles | 3 (0: continuous) | continuous – 1000 | a demonstration value |  |
+| Flapping: cycles | 3 (0: continuous) | 0 (continuous) – 1000 | a demonstration value |  |
 
 #### Layer 2 – Data link (8)
 
 | Parameter | Default | Range | Source of the default | Also |
 |---|---|---|---|---|
-| ARP timeout | 4 h | 1 s – 2147483 s | Cisco IOS (4 h); RFC 826 sets none | device attribute `arp_timeout` |
-| ARP retransmit interval | 1 s | 100 ms – 1 min | RFC 4861 RETRANS_TIMER (used for ARP as well) | device attribute `arp_retransmit` |
-| ARP retries | 3 | 1 – 10 | RFC 4861 MAX_MULTICAST_SOLICIT (used for ARP as well) | device attribute `arp_retries` |
-| NDP reachable time | 30 s | 1 s – 1 h | RFC 4861 REACHABLE_TIME | device attribute `ndp_reachable_time` |
-| MAC aging time | 5 min | 10 s – 1000000 s | IEEE 802.1D-2004 recommended ageing time | device attribute `mac_aging` |
-| Spanning tree | RSTP | `rstp`, `stp`, `off` | IEEE 802.1D-2004 (RSTP, the default of current switches) | device attribute `stp_mode` |
-| IGMP / MLD snooping | On | `on`, `off` | on by default on current switches (Cisco IOS, Junos; RFC 4541) | device attribute `igmp_snooping` |
+| ARP timeout | 4 h | 1 s – 2147483 s | Cisco IOS (4 h); RFC 826 sets none | attribute `arp_timeout` (interface) |
+| ARP retransmit interval | 1 s | 100 ms – 1 min | RFC 4861 RETRANS_TIMER (used for ARP as well) | attribute `arp_retransmit` (interface) |
+| ARP retries | 3 | 1 – 10 | RFC 4861 MAX_MULTICAST_SOLICIT (used for ARP as well) | attribute `arp_retries` (interface) |
+| NDP reachable time | 30 s | 1 s – 1 h | RFC 4861 REACHABLE_TIME | attribute `ndp_reachable_time` (interface) |
+| MAC aging time | 5 min | 10 s – 1000000 s | IEEE 802.1D-2004 recommended ageing time | attribute `mac_aging` (device) |
+| Spanning tree | RSTP | `rstp`, `mstp`, `pvst`, `stp`, `off` | IEEE 802.1D-2004 (RSTP, the default of current switches) | attribute `stp_mode` (device) |
+| IGMP / MLD snooping | On | `on`, `off` | on by default on current switches (Cisco IOS, Junos; RFC 4541) | attribute `igmp_snooping` (VLAN) |
 | Default MTU | 1500 | 68 – 65535 | RFC 894 (IP over Ethernet) | configured: an interface’s mtu |
 
 #### Layer 3 – Network (8)
 
 | Parameter | Default | Range | Source of the default | Also |
 |---|---|---|---|---|
-| Default TTL / hop limit | 64 | 1 – 255 | RFC 1700 (IANA); Linux, macOS and most routers | device attribute `ttl` |
-| Send ICMP errors | On | `on`, `off` | RFC 1812 §4.3 and RFC 4443 (routers and hosts send them) | device attribute `icmp_errors` |
+| Default TTL / hop limit | 64 | 1 – 255 | RFC 1700 (IANA); Linux, macOS and most routers | attribute `ttl` (device) |
+| Send ICMP errors | On | `on`, `off` | RFC 1812 §4.3 and RFC 4443 (routers and hosts send them) | attribute `icmp_errors` (interface) |
 | OSPF hello interval | 10 s | 1 s – 65535 s | RFC 2328 Appendix C.3 | configured: an OSPF relation’s hello and dead |
 | BGP keepalive | 1 min | 1 s – 21845 s | Cisco IOS: keepalive 60 s, hold 180 s; RFC 4271 §10 suggests 30 s and 90 s | configured: a BGP relation’s keepalive and hold |
 | BFD interval | 300 ms | 3 ms – 10 s | a common configuration (RFC 5880 sets none) | configured: a BFD relation’s interval and multiplier |
 | BFD multiplier | 3 | 1 – 255 | a common configuration (RFC 5880 sets none) | configured: a BFD relation’s multiplier |
-| VRRP advertisement interval | 1 s | 10 ms – 40.95 s | RFC 5798 §5.2.7 (100 centiseconds) |  |
-| IGMP / MLD query interval | 125 s | 1 s – 3175 s | RFC 3376 §8.2 and RFC 3810 §9.2 (125 s) | device attribute `igmp_query_interval` |
-| Route recomputation delay | 200 ms | 0 s – 1 min | Junos spf-options delay (200 ms) | device attribute `spf_delay` |
+| VRRP advertisement interval | 1 s | 10 ms – 40.95 s | RFC 5798 §5.2.7 (100 centiseconds) | attribute `vrrp_advert` (relation) |
+| IGMP / MLD query interval | 125 s | 1 s – 3175 s | RFC 3376 §8.2 and RFC 3810 §9.2 (125 s) | attribute `igmp_query_interval` (interface) |
+| Route recomputation delay | 200 ms | 0 s – 1 min | Junos spf-options delay (200 ms) | attribute `spf_delay` (device) |
 
 #### Layer 4 – Transport (8)
 
 | Parameter | Default | Range | Source of the default | Also |
 |---|---|---|---|---|
-| TCP SYN retries | 6 | 0 – 20 | Linux net.ipv4.tcp_syn_retries (about 127 s in all) | device attribute `tcp_syn_retries` |
+| TCP SYN retries | 6 | 0 – 20 | Linux net.ipv4.tcp_syn_retries (about 127 s in all) | attribute `tcp_syn_retries` (device) |
 | TCP initial retransmission timeout | 1 s | 10 ms – 1 min | RFC 6298 §2.1 |  |
-| TCP keepalive time | 2 h | 1 s – 24 h | RFC 1122 §4.2.3.6 (at least 2 h); Linux tcp_keepalive_time | device attribute `tcp_keepalive` |
-| Reply to closed ports | On | `on`, `off` | RFC 9293 §3.10.7.1 (RST) and RFC 1122 §3.2.2.1 (port unreachable) | device attribute `closed_port_reply` |
-| Endpoint test traffic | Off | `on`, `off` | off, so that the timeline shows the protocols alone until it is wanted | device attribute `test_traffic` |
-| Test traffic interval | 5 s | 100 ms – 1 h | a demonstration value | device attribute `test_interval` |
-| Test traffic type | ICMP echo | `icmp`, `tcp`, `udp`, `multicast` | ping, the usual first test | device attribute `test_type` |
-| Application response timeout | 5 s | 100 ms – 10 min | dig’s default timeout (5 s); Windows ping waits 4 s | device attribute `app_timeout` |
+| TCP keepalive time | 2 h | 1 s – 24 h | RFC 1122 §4.2.3.6 (at least 2 h); Linux tcp_keepalive_time | attribute `tcp_keepalive` (device) |
+| Reply to closed ports | On | `on`, `off` | RFC 9293 §3.10.7.1 (RST) and RFC 1122 §3.2.2.1 (port unreachable) | attribute `closed_port_reply` (device) |
+| Endpoint test traffic | Off | `on`, `off` | off, so that the timeline shows the protocols alone until it is wanted | attribute `test_traffic` (device) |
+| Test traffic interval | 5 s | 100 ms – 1 h | a demonstration value | attribute `test_interval` (device) |
+| Test traffic type | ICMP echo | `icmp`, `tcp`, `udp`, `multicast` | ping, the usual first test | attribute `test_type` (device) |
+| Application response timeout | 5 s | 100 ms – 10 min | dig’s default timeout (5 s); Windows ping waits 4 s | attribute `app_timeout` (device) |
 
-#### Device attributes
+#### Device attributes (46)
 
-| Key | Attribute | Default | Range | Source of the default | Applies to |
-|---|---|---|---|---|---|
-| `latency` | Link latency (ms) | 100 µs | 0 s – 10 s | about 20 km of fibre (5 µs per km); a cable in one building is far shorter | clouds |
-| `loss` | Packet loss | 0 % | 0 % – 100 % | a healthy link loses nothing | clouds |
-| `arp_timeout` | ARP timeout (s) | 4 h | 1 s – 2147483 s | Cisco IOS (4 h); RFC 826 sets none | devices with an address |
-| `arp_retransmit` | ARP retransmit interval (s) | 1 s | 100 ms – 1 min | RFC 4861 RETRANS_TIMER (used for ARP as well) | devices with an address |
-| `arp_retries` | ARP retries | 3 | 1 – 10 | RFC 4861 MAX_MULTICAST_SOLICIT (used for ARP as well) | devices with an address |
-| `ndp_reachable_time` | NDP reachable time (s) | 30 s | 1 s – 1 h | RFC 4861 REACHABLE_TIME | devices with an address |
-| `mac_aging` | MAC aging time (s) | 5 min | 10 s – 1000000 s | IEEE 802.1D-2004 recommended ageing time | switches |
-| `stp_mode` | Spanning tree | RSTP | `rstp`, `stp`, `off` | IEEE 802.1D-2004 (RSTP, the default of current switches) | switches |
-| `igmp_snooping` | IGMP / MLD snooping | On | `on`, `off` | on by default on current switches (Cisco IOS, Junos; RFC 4541) | switches |
-| `ttl` | Default TTL / hop limit | 64 | 1 – 255 | RFC 1700 (IANA); Linux, macOS and most routers | devices with an address |
-| `icmp_errors` | Send ICMP errors | On | `on`, `off` | RFC 1812 §4.3 and RFC 4443 (routers and hosts send them) | devices with an address |
-| `igmp_query_interval` | IGMP / MLD query interval (s) | 125 s | 1 s – 3175 s | RFC 3376 §8.2 and RFC 3810 §9.2 (125 s) | routers and Layer 3 devices (Layer 3 switches, firewalls, gateways …); switches |
-| `spf_delay` | Route recomputation delay (ms) | 200 ms | 0 s – 1 min | Junos spf-options delay (200 ms) | routers and Layer 3 devices (Layer 3 switches, firewalls, gateways …) |
-| `tcp_syn_retries` | TCP SYN retries | 6 | 0 – 20 | Linux net.ipv4.tcp_syn_retries (about 127 s in all) | devices with an address |
-| `tcp_keepalive` | TCP keepalive time (s) | 2 h | 1 s – 24 h | RFC 1122 §4.2.3.6 (at least 2 h); Linux tcp_keepalive_time | devices with an address |
-| `closed_port_reply` | Reply to closed ports | On | `on`, `off` | RFC 9293 §3.10.7.1 (RST) and RFC 1122 §3.2.2.1 (port unreachable) | devices with an address |
-| `test_traffic` | Endpoint test traffic | Off | `on`, `off` | off, so that the timeline shows the protocols alone until it is wanted | endpoints |
-| `test_interval` | Test traffic interval (s) | 5 s | 100 ms – 1 h | a demonstration value | endpoints |
-| `test_type` | Test traffic type | ICMP echo | `icmp`, `tcp`, `udp`, `multicast` | ping, the usual first test | endpoints |
-| `app_timeout` | Application response timeout (s) | 5 s | 100 ms – 10 min | dig’s default timeout (5 s); Windows ping waits 4 s | endpoints |
-| `boot_time` | Boot time (s) | 30 s (container 2 s, vm 20 s, router 1 min, firewall 1 min, gateway 1 min, load_balancer 1 min) | 0 s – 1 h | a demonstration value (containers start in seconds, chassis routers in minutes) | every device |
-| `max_paths` | Maximum ECMP paths | 4 | 1 – 64 | Cisco IOS maximum-paths (4) | routers and Layer 3 devices (Layer 3 switches, firewalls, gateways …) |
-| `mac_table_size` | MAC table size | 8192 | 1 – 1000000 | a small access switch (data sheets: 8 K–16 K entries) | switches |
-| `stp_hello` | STP hello time (s) | 2 s | 1 s – 10 s | IEEE 802.1D-2004 Table 17-1 | switches |
-| `stp_forward_delay` | STP forward delay (s) | 15 s | 4 s – 30 s | IEEE 802.1D-2004 Table 17-1 | switches |
-| `stp_max_age` | STP max age (s) | 20 s | 6 s – 40 s | IEEE 802.1D-2004 Table 17-1 | switches |
-| `lacp_rate` | LACP rate | Slow | `slow`, `fast` | IEEE 802.1AX (slow periodic time) | devices with an aggregate (LACP) |
-| `ha_failover` | HA failover detection (s) | 3 s | 100 ms – 5 min | a common setting (3 missed heartbeats of 1 s) | firewalls |
-| `fail_mode` | When it fails | Fail open | `open`, `closed` | the hardware bypass of most inline appliances | IDS / IPS |
-| `inspection_latency` | Inspection latency (ms) | 0 s | 0 s – 10 s | none unless set (see the appliance’s data sheet) | IDS / IPS |
-| `ike_lifetime` | IKE SA lifetime (s) | 24 h | 1 min – 8760 h | Cisco IKEv2 (86 400 s) | gateways and IPsec endpoints |
-| `child_lifetime` | Child SA lifetime (s) | 1 h | 1 min – 8760 h | Cisco IOS and strongSwan (1 h) | gateways and IPsec endpoints |
-| `rekey_margin` | Rekey margin (s) | 9 min | 0 s – 24 h | strongSwan margintime (9 min) | gateways and IPsec endpoints |
-| `dpd_interval` | DPD interval (s) | 10 s | 1 s – 1 h | a common setting (RFC 7296 sets none) | gateways and IPsec endpoints |
-| `dpd_retries` | DPD retries | 3 | 1 – 20 | a common setting | gateways and IPsec endpoints |
-| `response_time` | Service response time (ms) | 0 s | 0 s – 1 min | none unless set | servers, VMs, containers, storage |
-| `vm_restart` | VM restart time (s) | 1 min | 0 s – 1 h | a demonstration value (HA failure detection plus the restart) | servers that host VMs or containers (cabled to them) |
-| `snmp_interval` | SNMP polling interval (s) | 1 min | 1 s – 24 h | a demonstration value (300 s is common in production) | systems and SNMP managers |
-| `snmp_timeout` | SNMP timeout (s) | 1 s | 100 ms – 1 min | net-snmp (1 s) | systems and SNMP managers |
-| `association_time` | Client association time (s) | 1 s | 0 s – 1 min | a demonstration value (WPA2-PSK takes well under a second, 802.1X longer) | access points |
-| `beacon_interval` | Beacon interval (ms) | 102.4 ms | 10 ms – 10 s | IEEE 802.11 (100 TU = 102.4 ms) | access points |
-| `client_idle_timeout` | Client idle timeout (s) | 5 min | 10 s – 24 h | Cisco WLC user idle timeout (300 s) | access points |
-| `respond_to_ping` | Respond to ping | On | `on`, `off` | RFC 1122 §3.2.2.6 (every host answers echo requests) | devices with an address |
-| `respond_to_broadcast_ping` | Respond to broadcast ping | Off | `on`, `off` | Linux icmp_echo_ignore_broadcasts (RFC 1122 §3.2.2.6 allows ignoring them) | devices with an address |
-| `icmp_rate_limit` | ICMP error rate limit (ms) | 500 ms | 0 s – 1 min | Cisco IOS ip icmp rate-limit unreachable (500 ms); RFC 1812 §4.3.2.8 | devices with an address |
-| `directed_broadcast` | Forward directed broadcasts | Off | `on`, `off` | RFC 2644 (off by default since 1999) | routers and Layer 3 devices (Layer 3 switches, firewalls, gateways …) |
-| `storm_control_broadcast` | Storm control: broadcast | off (0: off) | off – 100000000 | off unless configured (Cisco storm-control) | switches |
-| `storm_control_multicast` | Storm control: multicast | off (0: off) | off – 100000000 | off unless configured (Cisco storm-control) | switches |
-| `default_action` | Default action | Drop | `drop`, `reject` | the implicit deny of PAN-OS and Cisco ASA (silent) | firewalls |
-| `allow` | Also permits | empty: nothing more | a list: `tcp/443`, `udp/53`, `tcp/8000-8080`, `icmp`, `any`; `none` | none: the model’s relations through it are its policy | firewalls |
-| `stateful` | Stateful | On | `on`, `off` | every current firewall | firewalls |
-| `tcp_session_timeout` | TCP session timeout (s) | 1 h | 1 s – 168 h | PAN-OS (3600 s) | firewalls |
-| `tcp_handshake_timeout` | TCP handshake timeout (s) | 5 s | 1 s – 1 h | PAN-OS tcp-init (5 s) | firewalls |
-| `udp_session_timeout` | UDP session timeout (s) | 30 s | 1 s – 168 h | PAN-OS (30 s) | firewalls |
-| `icmp_session_timeout` | ICMP session timeout (s) | 6 s | 1 s – 1 h | PAN-OS (6 s) | firewalls |
-| `listening` | Listening services | empty: its service relations’ ports | a list: `tcp/443`, `udp/53`, `tcp/8000-8080`, `icmp`, `any`; `none` | the ports of the service relations it serves | servers, VMs, containers, storage; load balancers; proxies |
-| `health_check_interval` | Health check interval (s) | 2 s | 100 ms – 1 h | HAProxy inter (2 s) | load balancers |
-| `health_check_timeout` | Health check timeout (s) | 2 s | 100 ms – 10 min | HAProxy timeout check (defaults to inter) | load balancers |
-| `health_check_threshold` | Health check failure threshold | 3 | 1 – 100 | HAProxy fall (3) | load balancers |
-| `persistence_timeout` | Persistence timeout (s) | 3 min | 0 s – 24 h | F5 BIG-IP source address affinity (180 s) | load balancers |
-| `algorithm` | Balancing algorithm | Round robin | `round-robin`, `least-connections`, `source-hash` | HAProxy and F5 BIG-IP (round robin) | load balancers |
-| `client_timeout` | Client connection timeout (s) | 1 min | 100 ms – 24 h | nginx client_header_timeout (60 s) | proxies |
-| `upstream_timeout` | Upstream connect timeout (s) | 1 min | 100 ms – 1 h | nginx proxy_connect_timeout (60 s) | proxies |
-| `test_targets` | Test targets | empty: its gateway and service relations | a list: a device, `device:interface` or an address, each optionally with `tcp/<port>`, `udp/<port>` or `icmp`; `none` | its gateway and the servers of its service relations | endpoints |
-| `igmp_version` | IGMP / MLD version | IGMPv3 / MLDv2 | `v3`, `v2` | Linux, Windows and current routers (RFC 3376, RFC 3810) | devices with an address |
-| `unsolicited_report_interval` | Unsolicited report interval (s) | by version: v2 10 s, v3 1 s | by version: v2 10 s, v3 1 s – 1 min | RFC 2236 §8.10 (10 s) and RFC 3376 §8.11 (1 s) | devices with an address |
-| `igmp_querier` | IGMP / MLD querier | On | `on`, `off` | on where a router runs PIM or IGMP (Cisco IOS, Junos) | routers and Layer 3 devices (Layer 3 switches, firewalls, gateways …) |
-| `igmp_max_response` | Query response interval (s) | 10 s | 100 ms – 25 s | RFC 3376 §8.3 (10 s) | routers and Layer 3 devices (Layer 3 switches, firewalls, gateways …); switches |
-| `igmp_robustness` | Robustness variable | 2 | 1 – 7 | RFC 3376 §8.1 (2) | routers and Layer 3 devices (Layer 3 switches, firewalls, gateways …); switches |
-| `last_member_query_interval` | Last member query interval (s) | 1 s | 100 ms – 25 s | RFC 3376 §8.8 (1 s) | routers and Layer 3 devices (Layer 3 switches, firewalls, gateways …); switches |
-| `pim_dr_priority` | PIM DR priority | 1 | 0 – 4294967295 | RFC 7761 §4.3.2 (1) | routers and Layer 3 devices (Layer 3 switches, firewalls, gateways …) |
-| `spt_switchover` | SPT switchover | Immediately | `immediately`, `never` | Cisco IOS spt-threshold 0 (immediately) | routers and Layer 3 devices (Layer 3 switches, firewalls, gateways …) |
-| `snooping_querier` | Snooping querier | Off | `on`, `off` | off unless configured (Cisco ip igmp snooping querier) | switches |
-| `fast_leave` | Fast leave | Off | `on`, `off` | off unless configured (Cisco immediate-leave) | switches |
-| `unknown_multicast` | Unknown multicast | Flood in the VLAN | `flood`, `drop` | flooding until a member reports (RFC 4541 §2.1.2 allows it) | switches |
-| `router_port_aging` | Router port aging (s) | 5 min | 10 s – 1 h | Cisco IOS multicast router port (5 min) | switches |
-| `multicast_passthrough` | Multicast passthrough | Off | `on`, `off` | firewalls drop multicast unless configured (PAN-OS, Cisco ASA) | firewalls |
-| `multicast_over_tunnel` | Multicast over tunnels | On | `on`, `off` | GRE carries multicast; plain IPsec does not (RFC 4301) | gateways and IPsec endpoints |
-| `multicast_to_unicast` | Multicast to unicast | Off | `on`, `off` | off unless configured (Cisco VideoStream, Aruba) | access points |
-| `multicast` | Carries multicast | Off | `on`, `off` | the internet routes no multicast | clouds |
-| `icmp_probe_interval` | ICMP probe interval (s) | 1 min | 1 s – 24 h | Zabbix simple checks (1 min) | systems and SNMP managers |
+| Key | Attribute | Default | Range | Source of the default | Applies to | Also device-wide |
+|---|---|---|---|---|---|---|
+| `latency` | Link latency (ms) | 100 µs | 0 s – 10 s | about 20 km of fibre (5 µs per km); a cable in one building is far shorter | clouds |  |
+| `loss` | Packet loss | 0 % | 0 % – 100 % | a healthy link loses nothing | clouds |  |
+| `mac_aging` | MAC aging time (s) | 5 min | 10 s – 1000000 s | IEEE 802.1D-2004 recommended ageing time | switches |  |
+| `stp_mode` | Spanning tree | RSTP | `rstp`, `mstp`, `pvst`, `stp`, `off` | IEEE 802.1D-2004 (RSTP, the default of current switches) | switches |  |
+| `ttl` | Default TTL / hop limit | 64 | 1 – 255 | RFC 1700 (IANA); Linux, macOS and most routers | devices with an address |  |
+| `spf_delay` | Route recomputation delay (ms) | 200 ms | 0 s – 1 min | Junos spf-options delay (200 ms) | routers and Layer 3 devices (Layer 3 switches, firewalls, gateways …) |  |
+| `tcp_syn_retries` | TCP SYN retries | 6 | 0 – 20 | Linux net.ipv4.tcp_syn_retries (about 127 s in all) | devices with an address |  |
+| `tcp_keepalive` | TCP keepalive time (s) | 2 h | 1 s – 24 h | RFC 1122 §4.2.3.6 (at least 2 h); Linux tcp_keepalive_time | devices with an address |  |
+| `closed_port_reply` | Reply to closed ports | On | `on`, `off` | RFC 9293 §3.10.7.1 (RST) and RFC 1122 §3.2.2.1 (port unreachable) | devices with an address |  |
+| `test_traffic` | Endpoint test traffic | Off | `on`, `off` | off, so that the timeline shows the protocols alone until it is wanted | endpoints |  |
+| `test_interval` | Test traffic interval (s) | 5 s | 100 ms – 1 h | a demonstration value | endpoints |  |
+| `test_type` | Test traffic type | ICMP echo | `icmp`, `tcp`, `udp`, `multicast` | ping, the usual first test | endpoints |  |
+| `app_timeout` | Application response timeout (s) | 5 s | 100 ms – 10 min | dig’s default timeout (5 s); Windows ping waits 4 s | endpoints |  |
+| `boot_time` | Boot time (s) | 30 s (container 2 s, vm 20 s, router 1 min, firewall 1 min, gateway 1 min, load_balancer 1 min) | 0 s – 1 h | a demonstration value (containers start in seconds, chassis routers in minutes) | every device |  |
+| `max_paths` | Maximum ECMP paths | 4 | 1 – 64 | Cisco IOS maximum-paths (4) | routers and Layer 3 devices (Layer 3 switches, firewalls, gateways …) |  |
+| `mac_table_size` | MAC table size | 8192 | 1 – 1000000 | a small access switch (data sheets: 8 K–16 K entries) | switches |  |
+| `stp_hello` | STP hello time (s) | 2 s | 1 s – 10 s | IEEE 802.1D-2004 Table 17-1 | switches |  |
+| `stp_forward_delay` | STP forward delay (s) | 15 s | 4 s – 30 s | IEEE 802.1D-2004 Table 17-1 | switches |  |
+| `stp_max_age` | STP max age (s) | 20 s | 6 s – 40 s | IEEE 802.1D-2004 Table 17-1 | switches |  |
+| `bridge_priority` | Bridge priority | 32768 | 0 – 61440 | IEEE 802.1D-2004 §17.13.7 (32768) | switches |  |
+| `bridge_priority_vlans` | Bridge priority per VLAN | empty: the bridge priority in every VLAN | a value, or per VLAN: `4096, 20: 8192, 30-39: 12288` | MSTP instances and Rapid PVST+ (one tree per VLAN) | switches |  |
+| `ha_failover` | HA failover detection (s) | 3 s | 100 ms – 5 min | a common setting (3 missed heartbeats of 1 s) | firewalls |  |
+| `fail_mode` | When it fails | Fail open | `open`, `closed` | the hardware bypass of most inline appliances | IDS / IPS |  |
+| `inspection_latency` | Inspection latency (ms) | 0 s | 0 s – 10 s | none unless set (see the appliance’s data sheet) | IDS / IPS |  |
+| `vm_restart` | VM restart time (s) | 1 min | 0 s – 1 h | a demonstration value (HA failure detection plus the restart) | servers that host VMs or containers (cabled to them) |  |
+| `snmp_interval` | SNMP polling interval (s) | 1 min | 1 s – 24 h | a demonstration value (300 s is common in production) | systems and SNMP managers |  |
+| `snmp_timeout` | SNMP timeout (s) | 1 s | 100 ms – 1 min | net-snmp (1 s) | systems and SNMP managers |  |
+| `association_time` | Client association time (s) | 1 s | 0 s – 1 min | a demonstration value (WPA2-PSK takes well under a second, 802.1X longer) | access points |  |
+| `client_idle_timeout` | Client idle timeout (s) | 5 min | 10 s – 24 h | Cisco WLC user idle timeout (300 s) | access points |  |
+| `respond_to_broadcast_ping` | Respond to broadcast ping | Off | `on`, `off` | Linux icmp_echo_ignore_broadcasts (RFC 1122 §3.2.2.6 allows ignoring them) | devices with an address |  |
+| `icmp_rate_limit` | ICMP error rate limit (ms) | 500 ms | 0 s – 1 min | Cisco IOS ip icmp rate-limit unreachable (500 ms); RFC 1812 §4.3.2.8 | devices with an address |  |
+| `default_action` | Default action | Drop | `drop`, `reject` | the implicit deny of PAN-OS and Cisco ASA (silent) | firewalls |  |
+| `allow` | Also permits | empty: nothing more | a list: `tcp/443`, `udp/53`, `tcp/8000-8080`, `icmp`, `any`; `none` | none: the model’s relations through it are its policy | firewalls |  |
+| `stateful` | Stateful | On | `on`, `off` | every current firewall | firewalls |  |
+| `tcp_session_timeout` | TCP session timeout (s) | 1 h | 1 s – 168 h | PAN-OS (3600 s) | firewalls |  |
+| `tcp_handshake_timeout` | TCP handshake timeout (s) | 5 s | 1 s – 1 h | PAN-OS tcp-init (5 s) | firewalls |  |
+| `udp_session_timeout` | UDP session timeout (s) | 30 s | 1 s – 168 h | PAN-OS (30 s) | firewalls |  |
+| `icmp_session_timeout` | ICMP session timeout (s) | 6 s | 1 s – 1 h | PAN-OS (6 s) | firewalls |  |
+| `listening` | Listening services | empty: its service relations’ ports | a list: `tcp/443`, `udp/53`, `tcp/8000-8080`, `icmp`, `any`; `none` | the ports of the service relations it serves | servers, VMs, containers, storage; load balancers; proxies |  |
+| `client_timeout` | Client connection timeout (s) | 1 min | 100 ms – 24 h | nginx client_header_timeout (60 s) | proxies |  |
+| `upstream_timeout` | Upstream connect timeout (s) | 1 min | 100 ms – 1 h | nginx proxy_connect_timeout (60 s) | proxies |  |
+| `test_targets` | Test targets | empty: its gateway and service relations | a list: a device, `device:interface` or an address (or a host name), each optionally with `tcp/<port>`, `udp/<port>` or `icmp`; `none` | its gateway and the servers of its service relations | endpoints |  |
+| `spt_switchover` | SPT switchover | Immediately | `immediately`, `never` | Cisco IOS spt-threshold 0 (immediately) | routers and Layer 3 devices (Layer 3 switches, firewalls, gateways …) |  |
+| `router_port_aging` | Router port aging (s) | 5 min | 10 s – 1 h | Cisco IOS multicast router port (5 min) | switches |  |
+| `multicast` | Carries multicast | Off | `on`, `off` | the internet routes no multicast | clouds |  |
+| `icmp_probe_interval` | ICMP probe interval (s) | 1 min | 1 s – 24 h | Zabbix simple checks (1 min) | systems and SNMP managers |  |
 
-| Device type | Simulation attributes |
+#### Interface attributes (33)
+
+| Key | Attribute | Default | Range | Source of the default | Applies to | Also device-wide |
+|---|---|---|---|---|---|---|
+| `los_detection` | Loss-of-signal detection (ms) | 0 s | 0 s – 1 min | Junos hold-time down 0 ms (Cisco carrier-delay is the same idea) | ports |  |
+| `link_up_delay` | Link-up delay (s) | 2 s | 0 s – 5 min | 1000BASE-T autonegotiation and link training (IEEE 802.3 clauses 28 and 40) take about 2 s | ports |  |
+| `arp_timeout` | ARP timeout (s) | 4 h | 1 s – 2147483 s | Cisco IOS (4 h); RFC 826 sets none | interfaces with an address | yes |
+| `arp_retransmit` | ARP retransmit interval (s) | 1 s | 100 ms – 1 min | RFC 4861 RETRANS_TIMER (used for ARP as well) | interfaces with an address | yes |
+| `arp_retries` | ARP retries | 3 | 1 – 10 | RFC 4861 MAX_MULTICAST_SOLICIT (used for ARP as well) | interfaces with an address | yes |
+| `ndp_reachable_time` | NDP reachable time (s) | 30 s | 1 s – 1 h | RFC 4861 REACHABLE_TIME | interfaces with an address | yes |
+| `icmp_errors` | Send ICMP errors | On | `on`, `off` | RFC 1812 §4.3 and RFC 4443 (routers and hosts send them) | interfaces with an address | yes |
+| `igmp_query_interval` | IGMP / MLD query interval (s) | 125 s | 1 s – 3175 s | RFC 3376 §8.2 and RFC 3810 §9.2 (125 s) | routed interfaces (of a router or another Layer 3 device) of routers and Layer 3 devices (Layer 3 switches, firewalls, gateways …); switches | yes |
+| `stp` | Spanning tree on this port | On | `on`, `off` | every port takes part (Cisco, Junos) | switch ports and their aggregates of switches |  |
+| `stp_cost` | Port path cost | by speed (802.1D-2004: 20 000 at 1 Gbit/s) | 0 (by speed) – 200000000 | IEEE 802.1D-2004 Table 17-3 (20 Tbit/s ÷ speed) | switch ports and their aggregates of switches |  |
+| `stp_port_priority` | Port priority | 128 | 0 – 240 | IEEE 802.1D-2004 §17.13.10 (128) | switch ports and their aggregates of switches |  |
+| `stp_edge` | Edge port (PortFast) | Off | `on`, `off` | off unless configured (Cisco spanning-tree portfast) | switch ports and their aggregates of switches | yes |
+| `stp_bpdu_guard` | BPDU guard | Off | `on`, `off` | off unless configured (Cisco spanning-tree bpduguard) | switch ports and their aggregates of switches | yes |
+| `stp_root_guard` | Root guard | Off | `on`, `off` | off unless configured (Cisco spanning-tree guard root) | switch ports and their aggregates of switches |  |
+| `stp_link_type` | Link type | Auto | `auto`, `point-to-point`, `shared` | IEEE 802.1w (auto: by duplex) | switch ports and their aggregates of switches |  |
+| `lacp_rate` | LACP rate | Slow | `slow`, `fast` | IEEE 802.1AX (slow periodic time) | aggregates (LAGs) of devices with an aggregate (LACP) |  |
+| `beacon_interval` | Beacon interval (ms) | 102.4 ms | 10 ms – 10 s | IEEE 802.11 (100 TU = 102.4 ms) | access-point radios of access points |  |
+| `respond_to_ping` | Respond to ping | On | `on`, `off` | RFC 1122 §3.2.2.6 (every host answers echo requests) | interfaces with an address | yes |
+| `directed_broadcast` | Forward directed broadcasts | Off | `on`, `off` | RFC 2644 (off by default since 1999) | routed interfaces (of a router or another Layer 3 device) of routers and Layer 3 devices (Layer 3 switches, firewalls, gateways …) |  |
+| `storm_control_broadcast` | Storm control: broadcast | off | 0 (off) – 100000000 | off unless configured (Cisco storm-control) | switch ports and their aggregates of switches |  |
+| `storm_control_multicast` | Storm control: multicast | off | 0 (off) – 100000000 | off unless configured (Cisco storm-control) | switch ports and their aggregates of switches |  |
+| `dhcp_retries` | DHCP retries | 4 | 1 – 20 | RFC 2131 §4.1 (4, 8, 16, 32 s: about a minute) | DHCP clients (`dhcp: true`) |  |
+| `dhcp_backoff` | DHCP retransmission delay (s) | 4 s | 100 ms – 64 s | RFC 2131 §4.1 (4 s, doubled each time up to 64 s) | DHCP clients (`dhcp: true`) |  |
+| `link_local_fallback` | Link-local fallback | Off | `on`, `off` | off unless set (RFC 3927: Windows and macOS use it) | DHCP clients (`dhcp: true`) |  |
+| `igmp_version` | IGMP / MLD version | IGMPv3 / MLDv2 | `v3`, `v2` | Linux, Windows and current routers (RFC 3376, RFC 3810) | interfaces with an address | yes |
+| `unsolicited_report_interval` | Unsolicited report interval (s) | by version: v2 10 s, v3 1 s | 0 (by version: v2 10 s, v3 1 s) – 1 min | RFC 2236 §8.10 (10 s) and RFC 3376 §8.11 (1 s) | interfaces with an address | yes |
+| `igmp_querier` | IGMP / MLD querier | On | `on`, `off` | on where a router runs PIM or IGMP (Cisco IOS, Junos) | routed interfaces (of a router or another Layer 3 device) of routers and Layer 3 devices (Layer 3 switches, firewalls, gateways …) | yes |
+| `igmp_max_response` | Query response interval (s) | 10 s | 100 ms – 25 s | RFC 3376 §8.3 (10 s) | routed interfaces (of a router or another Layer 3 device) of routers and Layer 3 devices (Layer 3 switches, firewalls, gateways …); switches | yes |
+| `igmp_robustness` | Robustness variable | 2 | 1 – 7 | RFC 3376 §8.1 (2) | routed interfaces (of a router or another Layer 3 device) of routers and Layer 3 devices (Layer 3 switches, firewalls, gateways …); switches | yes |
+| `last_member_query_interval` | Last member query interval (s) | 1 s | 100 ms – 25 s | RFC 3376 §8.8 (1 s) | routed interfaces (of a router or another Layer 3 device) of routers and Layer 3 devices (Layer 3 switches, firewalls, gateways …); switches | yes |
+| `pim_dr_priority` | PIM DR priority | 1 | 0 – 4294967295 | RFC 7761 §4.3.2 (1) | routed interfaces (of a router or another Layer 3 device) of routers and Layer 3 devices (Layer 3 switches, firewalls, gateways …) |  |
+| `multicast_passthrough` | Multicast passthrough | Off | `on`, `off` | firewalls drop multicast unless configured (PAN-OS, Cisco ASA) | interfaces with an address of firewalls |  |
+| `multicast_to_unicast` | Multicast to unicast | Off | `on`, `off` | off unless configured (Cisco VideoStream, Aruba) | access-point radios of access points |  |
+
+#### VLAN attributes (4)
+
+| Key | Attribute | Default | Range | Source of the default | Applies to | Also device-wide |
+|---|---|---|---|---|---|---|
+| `igmp_snooping` | IGMP / MLD snooping | On | `on`, `off` | on by default on current switches (Cisco IOS, Junos; RFC 4541) | every switch carrying the VLAN | yes |
+| `snooping_querier` | Snooping querier | Off | `on`, `off` | off unless configured (Cisco ip igmp snooping querier) | every switch carrying the VLAN |  |
+| `fast_leave` | Fast leave | Off | `on`, `off` | off unless configured (Cisco immediate-leave) | every switch carrying the VLAN |  |
+| `unknown_multicast` | Unknown multicast | Flood in the VLAN | `flood`, `drop` | flooding until a member reports (RFC 4541 §2.1.2 allows it) | every switch carrying the VLAN |  |
+
+#### Relation attributes (13)
+
+| Key | Attribute | Default | Range | Source of the default | Applies to | Also device-wide |
+|---|---|---|---|---|---|---|
+| `vrrp_advert` | VRRP advertisement interval (s) | 1 s | 10 ms – 40.95 s | RFC 5798 §5.2.7 (100 centiseconds) | `vrrp`, `hsrp`, `carp`, `glbp` relations |  |
+| `ike_lifetime` | IKE SA lifetime (s) | 24 h | 1 min – 8760 h | Cisco IKEv2 (86 400 s) | `ipsec` relations | yes |
+| `child_lifetime` | Child SA lifetime (s) | 1 h | 1 min – 8760 h | Cisco IOS and strongSwan (1 h) | `ipsec` relations | yes |
+| `rekey_margin` | Rekey margin (s) | 9 min | 0 s – 24 h | strongSwan margintime (9 min) | `ipsec` relations | yes |
+| `dpd_interval` | DPD interval (s) | 10 s | 1 s – 1 h | a common setting (RFC 7296 sets none) | `ipsec` relations | yes |
+| `dpd_retries` | DPD retries | 3 | 1 – 20 | a common setting | `ipsec` relations | yes |
+| `response_time` | Service response time (ms) | 0 s | 0 s – 1 min | none unless set | a server’s service relations | yes |
+| `health_check_interval` | Health check interval (s) | 2 s | 100 ms – 1 h | HAProxy inter (2 s) | a load balancer’s pool (its member relations) |  |
+| `health_check_timeout` | Health check timeout (s) | 2 s | 100 ms – 10 min | HAProxy timeout check (defaults to inter) | a load balancer’s pool (its member relations) |  |
+| `health_check_threshold` | Health check failure threshold | 3 | 1 – 100 | HAProxy fall (3) | a load balancer’s pool (its member relations) |  |
+| `persistence_timeout` | Persistence timeout (s) | 3 min | 0 s – 24 h | F5 BIG-IP source address affinity (180 s) | a load balancer’s pool (its member relations) |  |
+| `algorithm` | Balancing algorithm | Round robin | `round-robin`, `least-connections`, `source-hash` | HAProxy and F5 BIG-IP (round robin) | a load balancer’s pool (its member relations) |  |
+| `multicast_over_tunnel` | Multicast over tunnels | On | `on`, `off` | GRE carries multicast; plain IPsec does not (RFC 4301) | `ipsec`, `gre`, `vxlan`, `wireguard`, `openvpn`, `l2tp` relations | yes |
+
+#### Service attributes (3)
+
+| Key | Attribute | Default | Range | Source of the default | Applies to | Also device-wide |
+|---|---|---|---|---|---|---|
+| `offer_delay` | Offer delay (ms) | 0 s | 0 s – 1 min | none unless set (Windows Server: a delay for the secondary of a split scope) | a DHCP server’s scopes | yes |
+| `ping_check` | Ping check before offering | Off | `on`, `off` | Windows Server conflict detection (0 attempts: off) | a DHCP server’s scopes | yes |
+| `record_ttl` | Record TTL (s) | 1 h | 0 s – 168 h | a common zone default (1 h) | a DNS server’s zones |  |
+
+| Device type | Device-wide simulation attributes |
 |---|---|
-| Router (`router`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `igmp_query_interval`, `spf_delay`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `max_paths`, `lacp_rate`, `ike_lifetime`, `child_lifetime`, `rekey_margin`, `dpd_interval`, `dpd_retries`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `directed_broadcast`, `igmp_version`, `unsolicited_report_interval`, `igmp_querier`, `igmp_max_response`, `igmp_robustness`, `last_member_query_interval`, `pim_dr_priority`, `spt_switchover`, `multicast_over_tunnel` |
-| Switch (`switch`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `mac_aging`, `stp_mode`, `igmp_snooping`, `ttl`, `icmp_errors`, `igmp_query_interval`, `spf_delay`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `max_paths`, `mac_table_size`, `stp_hello`, `stp_forward_delay`, `stp_max_age`, `lacp_rate`, `ike_lifetime`, `child_lifetime`, `rekey_margin`, `dpd_interval`, `dpd_retries`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `directed_broadcast`, `storm_control_broadcast`, `storm_control_multicast`, `igmp_version`, `unsolicited_report_interval`, `igmp_querier`, `igmp_max_response`, `igmp_robustness`, `last_member_query_interval`, `pim_dr_priority`, `spt_switchover`, `snooping_querier`, `fast_leave`, `unknown_multicast`, `router_port_aging`, `multicast_over_tunnel` |
-| Firewall (`firewall`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `igmp_query_interval`, `spf_delay`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `max_paths`, `lacp_rate`, `ha_failover`, `ike_lifetime`, `child_lifetime`, `rekey_margin`, `dpd_interval`, `dpd_retries`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `directed_broadcast`, `default_action`, `allow`, `stateful`, `tcp_session_timeout`, `tcp_handshake_timeout`, `udp_session_timeout`, `icmp_session_timeout`, `igmp_version`, `unsolicited_report_interval`, `igmp_querier`, `igmp_max_response`, `igmp_robustness`, `last_member_query_interval`, `pim_dr_priority`, `spt_switchover`, `multicast_passthrough`, `multicast_over_tunnel` |
-| Access point (`ap`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `lacp_rate`, `association_time`, `beacon_interval`, `client_idle_timeout`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `igmp_version`, `unsolicited_report_interval`, `multicast_to_unicast` |
-| Server (`server`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `lacp_rate`, `response_time`, `vm_restart`, `snmp_interval`, `snmp_timeout`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `listening`, `igmp_version`, `unsolicited_report_interval`, `icmp_probe_interval` |
-| Virtual machine (`vm`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `lacp_rate`, `response_time`, `snmp_interval`, `snmp_timeout`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `listening`, `igmp_version`, `unsolicited_report_interval`, `icmp_probe_interval` |
-| Container (`container`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `lacp_rate`, `response_time`, `snmp_interval`, `snmp_timeout`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `listening`, `igmp_version`, `unsolicited_report_interval`, `icmp_probe_interval` |
-| Storage (`storage`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `lacp_rate`, `response_time`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `listening`, `igmp_version`, `unsolicited_report_interval` |
-| Load balancer (`load_balancer`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `igmp_query_interval`, `spf_delay`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `max_paths`, `lacp_rate`, `ike_lifetime`, `child_lifetime`, `rekey_margin`, `dpd_interval`, `dpd_retries`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `directed_broadcast`, `listening`, `health_check_interval`, `health_check_timeout`, `health_check_threshold`, `persistence_timeout`, `algorithm`, `igmp_version`, `unsolicited_report_interval`, `igmp_querier`, `igmp_max_response`, `igmp_robustness`, `last_member_query_interval`, `pim_dr_priority`, `spt_switchover`, `multicast_over_tunnel` |
-| Proxy (`proxy`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `igmp_query_interval`, `spf_delay`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `max_paths`, `lacp_rate`, `ike_lifetime`, `child_lifetime`, `rekey_margin`, `dpd_interval`, `dpd_retries`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `directed_broadcast`, `listening`, `client_timeout`, `upstream_timeout`, `igmp_version`, `unsolicited_report_interval`, `igmp_querier`, `igmp_max_response`, `igmp_robustness`, `last_member_query_interval`, `pim_dr_priority`, `spt_switchover`, `multicast_over_tunnel` |
-| IDS/IPS (`ids_ips`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `lacp_rate`, `fail_mode`, `inspection_latency`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `igmp_version`, `unsolicited_report_interval` |
-| Gateway (`gateway`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `igmp_query_interval`, `spf_delay`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `max_paths`, `lacp_rate`, `ike_lifetime`, `child_lifetime`, `rekey_margin`, `dpd_interval`, `dpd_retries`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `directed_broadcast`, `igmp_version`, `unsolicited_report_interval`, `igmp_querier`, `igmp_max_response`, `igmp_robustness`, `last_member_query_interval`, `pim_dr_priority`, `spt_switchover`, `multicast_over_tunnel` |
-| Endpoint (`endpoint`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `test_traffic`, `test_interval`, `test_type`, `app_timeout`, `boot_time`, `lacp_rate`, `snmp_interval`, `snmp_timeout`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `test_targets`, `igmp_version`, `unsolicited_report_interval`, `icmp_probe_interval` |
+| Router (`router`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `igmp_query_interval`, `spf_delay`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `max_paths`, `ike_lifetime`, `child_lifetime`, `rekey_margin`, `dpd_interval`, `dpd_retries`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `igmp_version`, `unsolicited_report_interval`, `igmp_querier`, `igmp_max_response`, `igmp_robustness`, `last_member_query_interval`, `spt_switchover`, `multicast_over_tunnel` |
+| Switch (`switch`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `mac_aging`, `stp_mode`, `igmp_snooping`, `ttl`, `icmp_errors`, `igmp_query_interval`, `spf_delay`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `max_paths`, `mac_table_size`, `stp_hello`, `stp_forward_delay`, `stp_max_age`, `bridge_priority`, `bridge_priority_vlans`, `stp_edge`, `stp_bpdu_guard`, `ike_lifetime`, `child_lifetime`, `rekey_margin`, `dpd_interval`, `dpd_retries`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `igmp_version`, `unsolicited_report_interval`, `igmp_querier`, `igmp_max_response`, `igmp_robustness`, `last_member_query_interval`, `spt_switchover`, `router_port_aging`, `multicast_over_tunnel` |
+| Firewall (`firewall`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `igmp_query_interval`, `spf_delay`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `max_paths`, `ha_failover`, `ike_lifetime`, `child_lifetime`, `rekey_margin`, `dpd_interval`, `dpd_retries`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `default_action`, `allow`, `stateful`, `tcp_session_timeout`, `tcp_handshake_timeout`, `udp_session_timeout`, `icmp_session_timeout`, `igmp_version`, `unsolicited_report_interval`, `igmp_querier`, `igmp_max_response`, `igmp_robustness`, `last_member_query_interval`, `spt_switchover`, `multicast_over_tunnel` |
+| Access point (`ap`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `association_time`, `client_idle_timeout`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `igmp_version`, `unsolicited_report_interval` |
+| Server (`server`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `response_time`, `vm_restart`, `snmp_interval`, `snmp_timeout`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `listening`, `offer_delay`, `ping_check`, `igmp_version`, `unsolicited_report_interval`, `icmp_probe_interval` |
+| Virtual machine (`vm`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `response_time`, `snmp_interval`, `snmp_timeout`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `listening`, `offer_delay`, `ping_check`, `igmp_version`, `unsolicited_report_interval`, `icmp_probe_interval` |
+| Container (`container`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `response_time`, `snmp_interval`, `snmp_timeout`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `listening`, `offer_delay`, `ping_check`, `igmp_version`, `unsolicited_report_interval`, `icmp_probe_interval` |
+| Storage (`storage`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `response_time`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `listening`, `igmp_version`, `unsolicited_report_interval` |
+| Load balancer (`load_balancer`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `igmp_query_interval`, `spf_delay`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `max_paths`, `ike_lifetime`, `child_lifetime`, `rekey_margin`, `dpd_interval`, `dpd_retries`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `listening`, `igmp_version`, `unsolicited_report_interval`, `igmp_querier`, `igmp_max_response`, `igmp_robustness`, `last_member_query_interval`, `spt_switchover`, `multicast_over_tunnel` |
+| Proxy (`proxy`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `igmp_query_interval`, `spf_delay`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `max_paths`, `ike_lifetime`, `child_lifetime`, `rekey_margin`, `dpd_interval`, `dpd_retries`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `listening`, `client_timeout`, `upstream_timeout`, `igmp_version`, `unsolicited_report_interval`, `igmp_querier`, `igmp_max_response`, `igmp_robustness`, `last_member_query_interval`, `spt_switchover`, `multicast_over_tunnel` |
+| IDS/IPS (`ids_ips`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `fail_mode`, `inspection_latency`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `igmp_version`, `unsolicited_report_interval` |
+| Gateway (`gateway`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `igmp_query_interval`, `spf_delay`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `max_paths`, `ike_lifetime`, `child_lifetime`, `rekey_margin`, `dpd_interval`, `dpd_retries`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `igmp_version`, `unsolicited_report_interval`, `igmp_querier`, `igmp_max_response`, `igmp_robustness`, `last_member_query_interval`, `spt_switchover`, `multicast_over_tunnel` |
+| Endpoint (`endpoint`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `test_traffic`, `test_interval`, `test_type`, `app_timeout`, `boot_time`, `snmp_interval`, `snmp_timeout`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `test_targets`, `igmp_version`, `unsolicited_report_interval`, `icmp_probe_interval` |
 | Cloud (`cloud`) | `latency`, `loss`, `boot_time`, `multicast` |
-| System (`system`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `lacp_rate`, `snmp_interval`, `snmp_timeout`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `igmp_version`, `unsolicited_report_interval`, `icmp_probe_interval` |
+| System (`system`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `snmp_interval`, `snmp_timeout`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `igmp_version`, `unsolicited_report_interval`, `icmp_probe_interval` |
 
 Validation reports, as errors: an unknown key in a `simulation:` block
-(with a suggestion), an attribute that does not apply to the device's
-type (the table above; the Edit tab lists the ones that apply to the
+(with a suggestion), an attribute written at the wrong level (it names the
+right one), an attribute that does not apply to the device's
+type or the object (the table above; the Edit tab lists the ones that apply to the
 device itself, e.g. LACP only with an aggregate, the VPN attributes only on
 a gateway or an IPsec endpoint), a value out of its range, and a value
 that isn't one (a duration without a known unit, a speed that isn't one,
@@ -1338,7 +1513,14 @@ devices:
     simulation: {test_traffic: "on", test_targets: "web tcp/443, 10.0.0.53 udp/53"}
   - id: lab-sw1
     type: switch
-    simulation: {stp_mode: "off", storm_control_broadcast: 1000}
+    simulation: {stp_mode: "off"}
+    interfaces:
+      - {id: p1, simulation: {storm_control_broadcast: 1000, stp_edge: "on", stp_bpdu_guard: "on"}}
+      - {id: up2, simulation: {stp_cost: 200000}}
+networks:
+  - {id: users, cidr: 10.10.10.0/24, vlan: 10, simulation: {snooping_querier: "on"}}
+relations:
+  - {id: gw, protocol: vrrp, endpoints: [core1, core2], simulation: {vrrp_advert: 300ms}}
 links:
   - {id: uplink2, a: "acc-sw:up2", b: "core2:down1", simulation: {flapping: true}}
 ```
@@ -1557,6 +1739,53 @@ protocol, length, fragment), the transport header (ports, TCP flags,
 ICMP type and code with the quoted header) and what it carries. A relation's
 message has its profile's transport (OSPF IP 89, BGP TCP 179 …).
 
+### DHCP and DNS
+
+With DHCP and DNS servers in the model
+([Network services](#network-services-services-dhcp-and-dns-servers)),
+the simulation runs their exchanges (protocols *DHCP* and *DNS*, group
+Services):
+
+* **DHCP (RFC 2131).** A client's interface starts without an address. As
+  soon as its link is up it broadcasts a DHCPDISCOVER; a server in its
+  broadcast domain gets it, or a relay there (`dhcp_relay`) forwards it as
+  unicast with its own address as `giaddr`. The server offers the
+  client's reservation, the address it had, else the first free one of the
+  scope's range (not excluded, leased or reserved; with the ping check, none
+  that answers), after its offer delay: "DHCPOFFER 10.10.10.100 · lease
+  1 d". The client requests it, the server acknowledges, and the lease
+  applies: the address (with a gratuitous ARP), the gateway as its default
+  route, the DNS servers as its resolver's. Clients run in parallel;
+  everything else a client sends waits for its lease (logged as a wait).
+  It renews at T1 (half the lease) by unicast, rebinds at T2 (7/8) by
+  broadcast, and loses the address when the lease ends. A pool without a
+  free address does not answer a DISCOVER; a request for an address it
+  can't give gets a DHCPNAK. Without an offer the client tries again after
+  its retransmission delay (`dhcp_backoff`, doubled each time up to 64 s)
+  for `dhcp_retries` times, then pauses five minutes; with
+  `link_local_fallback` it takes a link-local address (169.254.0.0/16,
+  RFC 3927) meanwhile.
+* **DNS (RFC 1034 / 1035).** A host resolves a name through its DNS
+  servers (from its lease, else `dns_servers`) over UDP 53: "DNS A?
+  web.campus.example", answered "DNS A web.campus.example = 10.10.30.10".
+  A server answers from its zones (following a CNAME within them),
+  NXDOMAIN for a missing name in a zone it has, through its forwarders for
+  other names (a DNS server of the model), else SERVFAIL. The resolver
+  caches each answer for the record's TTL (`record_ttl` of the zone), tries
+  each server twice with a 5 s timeout, and else reports a timeout. *Send
+  test* and test traffic accept a host name: the resolution is a dependency
+  of the connection, which waits for it.
+* **Tables.** *Show DHCP leases* on a DHCP server (each lease with its
+  client, address and expiry, under its scopes' settings), *Show DNS zone*
+  on a DNS server (every record with its TTL and source) and *Show DNS
+  cache* on a host (each cached name with its server and what is left of
+  its TTL).
+
+Simplifications: IPv4 only for DHCP (no DHCPv6); one lease per interface;
+no DHCPDECLINE, DHCPRELEASE or DHCPINFORM; no relay agent information
+(option 82); offers are broadcast; no negative caching, DNSSEC or TCP
+fallback, and no recursion beyond the model's DNS servers.
+
 ### What the parameters do
 
 * **Layer 1.** A frame takes its cable's latency plus its serialization
@@ -1684,6 +1913,19 @@ next to the object and field they concern.
   parameters, a mandatory parameter left out or a value of the wrong type,
   a link end's `duplex` other than
   `full`, `half` or `auto`;
+* simulation attributes: an unknown key, one written at the wrong level
+  (the message names its level: device, interface, VLAN, relation or
+  service), one that doesn't apply to the device or object, a value out of
+  range or not one; see [Levels](#levels-where-an-attribute-is-written);
+* network services: `services` on a device that is not a server, VM or
+  container; a DHCP server without a scope or a scope missing its network,
+  range, gateway or DNS servers; a range outside its network, containing
+  the gateway or a static address, or overlapping another scope; a bad
+  lease time, exclusion, reservation or domain; a DNS server without a
+  zone, a zone without a name or written twice, a bad record, a `listen`
+  address that isn't the server's; a `dhcp_relay` on an interface that
+  doesn't route or has no address; an address in `dns_servers`,
+  `dhcp_relay`, `dns` or `forwarders` that isn't one;
 * in `checks:`, an id that isn't a check, or a value other than `off`,
   `error`, `warning` or `info`;
 * invalid loopback addresses, invalid VLAN IDs, and bad colours, categories

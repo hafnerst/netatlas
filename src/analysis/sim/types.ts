@@ -238,7 +238,7 @@ export interface TableTimer {
   label: string;
   /** the value as text ("4 h") */
   value: string;
-  source: 'configured' | 'device' | 'simulation' | 'default';
+  source: 'configured' | 'object' | 'device' | 'simulation' | 'default';
   /** the source in words ("default — Cisco IOS (4 h); RFC 826 sets none") */
   origin: string;
 }

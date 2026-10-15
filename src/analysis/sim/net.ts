@@ -64,6 +64,24 @@ export interface SimAddr {
   text: string;
 }
 
+/** An address a DHCP client leased (or its link-local fallback): the simulation's, never the model's. */
+export interface Lease {
+  dev: string;
+  iface: string;
+  addr: SimAddr;
+  vrf: string;
+  /** the default gateway and DNS servers it got */
+  gateway?: IpAddr;
+  dns: IpAddr[];
+  domain?: string;
+  /** the server that leased it (its address) */
+  server?: IpAddr;
+  kind: 'dhcp' | 'link-local';
+  /** when it was bound, and when it ends (ms; a link-local address: never) */
+  bound: number;
+  expires: number;
+}
+
 export interface L3Iface {
   device: string;
   id: string;
@@ -92,7 +110,7 @@ export interface SimDevice {
   /** physical port → the bridge port it belongs to */
   portOf: Map<string, string>;
   l3: Map<string, L3Iface>;
-  /** the bridge's id for the spanning tree: priority, then its lowest MAC */
+  /** the bridge's id for the spanning tree with the default priority (32768), then its lowest MAC (StpConfig gives the priority in effect) */
   bridgeId: string;
 }
 
@@ -273,8 +291,8 @@ export function buildNet(model: Model): SimNet {
       // cable ends at the device that name no interface
       for (const [k, e] of ends) if (e.device === d.id && e.port.charAt(0) === '@' && k === portKey(d.id, e.port)) add(e.port, [e.port]);
       const macsHere = all.map((i) => macs.get(d.id + ':' + i.id)).filter((m): m is IfaceMac => !!m).map((m) => m.mac).sort();
-      const prio = d.attrs.find(([k]) => k === 'stp-priority' || k === 'stp.priority');
-      sd.bridgeId = `${String(prio && /^[0-9]+$/.test(prio[1]) ? Number(prio[1]) : 32768).padStart(5, '0')}.${macsHere[0] || '00:00:00:00:00:00'}`;
+      // (its priority is a simulation attribute, bridge_priority: the spanning tree reads it with StpConfig)
+      sd.bridgeId = `32768.${macsHere[0] || '00:00:00:00:00:00'}`;
     }
     devices.set(d.id, sd);
   }
@@ -288,23 +306,49 @@ export function buildNet(model: Model): SimNet {
   return { model, devices, ends, links, macs, vlans: Array.from(vlanSet).sort((a, b) => a - b) };
 }
 
+/** What the spanning tree reads of each bridge and port (the simulation's attributes; defaults without them). */
+export interface StpConfig {
+  /** the bridge priority of a switch in a VLAN (0–61440) */
+  priority(dev: string, vlan: number): number;
+  /** a bridge port's path cost */
+  cost(dev: string, bp: string): number;
+  /** a bridge port's priority (0–240) */
+  portPriority(dev: string, bp: string): number;
+  /** does the port take part in the spanning tree (send BPDUs, may be blocked)? */
+  enabled(dev: string, bp: string): boolean;
+  /** may the port never become the root port (root guard)? */
+  rootGuard(dev: string, bp: string): boolean;
+}
+
+/** Without attributes: priority 32768, cost 20 000 (1 Gbit/s), port priority 128, every port in the tree, no root guard. */
+export const STP_DEFAULTS: StpConfig = { priority: () => 32768, cost: () => 20000, portPriority: () => 128, enabled: () => true, rootGuard: () => false };
+
 /**
- * The spanning tree of one VLAN: the bridge ports that are blocked (an
- * alternate port; frames of the VLAN neither leave nor enter there), for a
- * set of cables that are down. The root is the bridge with the lowest id
- * (priority, then MAC); every other bridge reaches it by the fewest
- * bridge-to-bridge hops (ties: the lower bridge id, then the lower port).
- * Only links between two bridges matter (a router never forwards frames).
- * `blocked` keys: "device|bridgePort".
+ * The spanning tree of one VLAN, as IEEE 802.1D-2004 elects it: the root is
+ * the bridge with the lowest bridge id (priority, then its MAC); every
+ * other bridge's root port is the one with the lowest root path cost (the
+ * sum of the receiving ports' path costs), then the lowest designated
+ * bridge id, then the lowest designated port id (port priority, then
+ * port); on each cable between two bridges the end with the better
+ * priority vector is the designated port. Every other bridge port is an
+ * alternate (blocked: frames of the VLAN neither leave nor enter there). A
+ * port with root guard never becomes the root port: when the root lies
+ * behind it, it is blocked (root-inconsistent). A port without spanning
+ * tree takes no part (never blocked; a loop over it is not broken). Only
+ * cables between two bridges matter (a router never forwards frames); each
+ * connected part of the VLAN has its own root. Keys: "device|bridgePort".
  */
-export function spanningTree(net: SimNet, vlan: number, linkDown: (id: string) => boolean): { root: string; blocked: Set<string>; ports: Set<string> } {
+export function spanningTree(net: SimNet, vlan: number, linkDown: (id: string) => boolean, cfg: StpConfig = STP_DEFAULTS): { root: string; blocked: Set<string>; ports: Set<string>; inconsistent: Set<string>; rootPorts: Set<string> } {
   type Edge = { from: string; fromPort: string; to: string; toPort: string; link: string };
   const edges = new Map<string, Edge[]>();
   const bridges = Array.from(net.devices.values()).filter((d) => d.bridge);
+  const mac = (d: SimDevice): string => d.bridgeId.split('.')[1] || '00:00:00:00:00:00';
+  const bid = (id: string): string => `${String(cfg.priority(id, vlan)).padStart(5, '0')}.${mac(net.devices.get(id) as SimDevice)}`;
+  const pid = (dev: string, bp: string): string => `${String(cfg.portPriority(dev, bp)).padStart(3, '0')}.${bp}`;
   for (const b of bridges) {
     const out: Edge[] = [];
     for (const bp of Array.from(b.bridgePorts.values()).sort((x, y) => cmp(x.id, y.id))) {
-      if (!carries(bp.vlans, vlan)) continue;
+      if (!carries(bp.vlans, vlan) || !cfg.enabled(b.id, bp.id)) continue;
       for (const m of bp.members) {
         const e = net.ends.get(portKey(b.id, m));
         if (!e || linkDown(e.link)) continue;
@@ -312,45 +356,137 @@ export function spanningTree(net: SimNet, vlan: number, linkDown: (id: string) =
         const ob = net.devices.get(o.device);
         if (!ob || !ob.bridge) continue;
         const obp = ob.portOf.get(o.port);
-        if (!obp || !carries((ob.bridgePorts.get(obp) as BridgePort).vlans, vlan)) continue;
+        if (!obp || !carries((ob.bridgePorts.get(obp) as BridgePort).vlans, vlan) || !cfg.enabled(ob.id, obp)) continue;
         if (!out.some((x) => x.fromPort === bp.id && x.toPort === obp && x.to === ob.id)) out.push({ from: b.id, fromPort: bp.id, to: ob.id, toPort: obp, link: e.link });
       }
     }
     edges.set(b.id, out);
   }
-  const blocked = new Set<string>();
-  const order = bridges.slice().sort((x, y) => cmp(x.bridgeId, y.bridgeId) || cmp(x.id, y.id));
-  const tree = new Set<string>();
-  const seen = new Set<string>();
-  let root = '';
-  // every connected part of the VLAN gets its own root (the lowest id in it)
-  for (const r of order) {
-    if (seen.has(r.id) || !(edges.get(r.id) as Edge[]).length) {
-      seen.add(r.id);
-      continue;
+  // each bridge's best vector to its part's root: [root id, cost, designated bridge, designated port, own port]
+  type Vec = { root: string; cost: number; dBridge: string; dPort: string; port: string };
+  const better = (x: Vec, y: Vec): boolean => {
+    for (const [a, b] of [[x.root, y.root], [x.cost, y.cost], [x.dBridge, y.dBridge], [x.dPort, y.dPort], [x.port, y.port]] as Array<[string | number, string | number]>) {
+      if (a === b) continue;
+      return typeof a === 'number' ? a < (b as number) : cmp(a, b as string) < 0;
     }
-    if (!root) root = r.id;
-    seen.add(r.id);
-    let frontier = [r.id];
-    while (frontier.length) {
-      const next: string[] = [];
-      for (const f of frontier) {
-        const out = (edges.get(f) as Edge[]).slice().sort((x, y) => cmp((net.devices.get(x.to) as SimDevice).bridgeId, (net.devices.get(y.to) as SimDevice).bridgeId) || cmp(x.fromPort, y.fromPort));
-        for (const e of out) {
-          if (seen.has(e.to)) continue;
-          seen.add(e.to);
-          tree.add(portKey(e.from, e.fromPort));
-          tree.add(portKey(e.to, e.toPort));
-          next.push(e.to);
+    return false;
+  };
+  const best = new Map<string, Vec>();
+  for (const b of bridges) if ((edges.get(b.id) as Edge[]).length) best.set(b.id, { root: bid(b.id), cost: 0, dBridge: bid(b.id), dPort: '', port: '' });
+  const inconsistent = new Set<string>();
+  // relax until stable (Bellman-Ford over the bridges: a few rounds for any real network)
+  for (let round = 0; round < bridges.length + 1; round++) {
+    let changed = false;
+    for (const b of bridges) {
+      const own: Vec = { root: bid(b.id), cost: 0, dBridge: bid(b.id), dPort: '', port: '' };
+      let pick = own;
+      for (const e of edges.get(b.id) as Edge[]) {
+        const nb = best.get(e.to);
+        if (!nb) continue;
+        const v: Vec = { root: nb.root, cost: nb.cost + cfg.cost(b.id, e.fromPort), dBridge: bid(e.to), dPort: pid(e.to, e.toPort), port: pid(b.id, e.fromPort) };
+        if (!better(v, pick)) continue;
+        // root guard: a superior root behind the port is not taken (the port is root-inconsistent)
+        if (cfg.rootGuard(b.id, e.fromPort) && cmp(v.root, own.root) < 0) {
+          inconsistent.add(portKey(b.id, e.fromPort));
+          continue;
         }
+        pick = v;
       }
-      frontier = next;
+      const was = best.get(b.id);
+      if (was && (edges.get(b.id) as Edge[]).length && (was.root !== pick.root || was.cost !== pick.cost || was.dBridge !== pick.dBridge || was.dPort !== pick.dPort || was.port !== pick.port)) {
+        best.set(b.id, pick);
+        changed = true;
+      }
     }
+    if (!changed) break;
   }
   const ports = new Set<string>();
-  for (const [b, out] of edges) for (const e of out) {
-    ports.add(portKey(b, e.fromPort));
-    if (!tree.has(portKey(b, e.fromPort))) blocked.add(portKey(b, e.fromPort));
+  const rootPorts = new Set<string>();
+  const designated = new Set<string>();
+  for (const b of bridges) {
+    const v = best.get(b.id);
+    if (!v) continue;
+    for (const e of edges.get(b.id) as Edge[]) {
+      ports.add(portKey(b.id, e.fromPort));
+      if (v.port && v.port === pid(b.id, e.fromPort) && v.dBridge === bid(e.to) && v.dPort === pid(e.to, e.toPort)) rootPorts.add(portKey(b.id, e.fromPort));
+      // the designated end of the cable: the better vector offered on it (its root, cost, bridge, port)
+      const nb = best.get(e.to) as Vec;
+      const mine = { root: v.root, cost: v.cost, dBridge: bid(b.id), dPort: pid(b.id, e.fromPort), port: '' };
+      const theirs = { root: nb.root, cost: nb.cost, dBridge: bid(e.to), dPort: pid(e.to, e.toPort), port: '' };
+      if (better(mine, theirs)) designated.add(portKey(b.id, e.fromPort));
+    }
   }
-  return { root, blocked, ports };
+  const blocked = new Set<string>();
+  for (const k of ports) if (!rootPorts.has(k) && !designated.has(k)) blocked.add(k);
+  for (const k of inconsistent) if (ports.has(k)) {
+    blocked.add(k);
+    rootPorts.delete(k);
+  }
+  // the root of the first part (the lowest id)
+  let root = '';
+  for (const b of bridges.slice().sort((x, y) => cmp(bid(x.id), bid(y.id)) || cmp(x.id, y.id))) {
+    const v = best.get(b.id);
+    if (v && v.root === bid(b.id)) {
+      root = b.id;
+      break;
+    }
+  }
+  return { root, blocked, ports, inconsistent, rootPorts };
+}
+
+/**
+ * The layer-3 interfaces in the broadcast domain of one (static: every
+ * cable up, no spanning tree): out of its ports, through the bridges in the
+ * VLAN the frames have there, to the routed interfaces, subinterfaces and
+ * VLAN interfaces they reach. What a DHCP broadcast from it reaches (the
+ * consistency checks). Its own interface is left out.
+ */
+export function broadcastPeers(net: SimNet, dev: string, iface: string): Array<{ dev: string; l3: L3Iface }> {
+  const out: Array<{ dev: string; l3: L3Iface }> = [];
+  const sd = net.devices.get(dev);
+  const me = sd ? sd.l3.get(iface) : undefined;
+  if (!sd || !me) return out;
+  const seen = new Set<string>();
+  const done = new Set<string>();
+  const add = (d: string, l: L3Iface): void => {
+    const k = d + ':' + l.id;
+    if (seen.has(k) || (d === dev && l.id === iface)) return;
+    seen.add(k);
+    out.push({ dev: d, l3: l });
+  };
+  const l3At = (od: SimDevice, port: string, tag: number | null): L3Iface | undefined => {
+    const cands = Array.from(od.l3.values()).filter((l) => l.ports.indexOf(port) >= 0).sort((a, b) => cmp(a.id, b.id));
+    if (tag) return cands.find((l) => l.kind === 'subif' && l.vlan === tag);
+    return cands.find((l) => l.kind === 'routed' || l.kind === 'aggregate' || l.kind === 'subif');
+  };
+  const bridge = (b: SimDevice, from: string | null, vlan: number): void => {
+    const key = b.id + '|' + vlan;
+    if (done.has(key)) return;
+    done.add(key);
+    for (const l of b.l3.values()) if (l.kind === 'svi' && l.vlan === vlan) add(b.id, l);
+    for (const bp of Array.from(b.bridgePorts.values()).sort((x, y) => cmp(x.id, y.id))) {
+      if (bp.id === from) continue;
+      const c = carries(bp.vlans, vlan);
+      if (!c) continue;
+      for (const m of bp.members) cross(b.id, m, c === 'untagged' ? null : vlan);
+    }
+  };
+  const cross = (d: string, port: string, tag: number | null): void => {
+    const e = net.ends.get(portKey(d, port));
+    if (!e) return;
+    const o = otherEnd(net, e);
+    const od = net.devices.get(o.device);
+    if (!od) return;
+    const bp = od.bridge ? od.portOf.get(o.port) : undefined;
+    if (bp !== undefined) {
+      const v = ingressVlan((od.bridgePorts.get(bp) as BridgePort).vlans, tag);
+      if (v !== null) bridge(od, bp, v);
+      return;
+    }
+    const l = l3At(od, o.port, tag);
+    if (l) add(od.id, l);
+  };
+  if (me.kind === 'svi' && sd.bridge) bridge(sd, null, me.vlan);
+  else for (const p of me.ports) cross(dev, p, me.kind === 'subif' && me.vlan ? me.vlan : null);
+  return out;
 }

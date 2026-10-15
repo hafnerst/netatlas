@@ -334,6 +334,30 @@ async function main() {
       await page.settle(100);
     }
 
+    // DHCP and DNS (campus-services.yaml): srv's Services card; the simulation with the leases in the diagram and srv's DHCP leases
+    {
+      const cs = await page.eval("Array.from(document.querySelectorAll('#menu-examples [data-example]')).findIndex((b) => /campus-services/.test(b.textContent))");
+      await page.eval(`netatlas.loadExample(${cs}), netatlas.setView("physical"), netatlas.select("device:srv"), netatlas.showTab("edit"), true`);
+      await page.eval("document.getElementById('toast').hidden = true");
+      await page.settle(200);
+      await page.eval(`(() => { const g = document.querySelector('#side-body [data-group="netservices"]'); g.scrollIntoView({ block: 'start' }); return true; })()`);
+      await page.mouse('mouseMoved', 700, 890);
+      await page.settle(150);
+      const g = await page.rect('#side-body [data-group="netservices"]');
+      const sb = await page.rect('#side-body');
+      await save('services', { x: g.x - 4, y: Math.max(sb.y, g.y - 4), w: g.w + 8, h: Math.min(sb.y + sb.h - g.y, 520) }, { quality: 45 });
+      await page.eval(`localStorage.removeItem('netatlas.dockHeight'), sessionStorage.clear(), netatlas.select(null), netatlas.startProtocolSimulation(), netatlas.simController().setPlaying(false), netatlas.simController().runTo(9000), netatlas.fit(), true`);
+      // srv's leases (the panel high enough for its rows), then the whole diagram with the leases in the clients' lines
+      await page.eval(`(() => { const c = netatlas.simController(); c.showTable('dhcp', 'srv'); netatlas.setDockHeight(300); c.refresh(true); return true; })()`);
+      await page.settle(200);
+      await page.eval(`netatlas.fit(), document.getElementById('toast').hidden = true, true`);
+      await page.mouse('mouseMoved', 700, 890);
+      await page.settle(300);
+      await save('dhcp-sim', { x: 0, y: 0, w: 1440, h: 900 }, { scale: 0.65, quality: 40 });
+      await page.eval(`netatlas.exitSimulation(), sessionStorage.clear(), true`);
+      await page.settle(100);
+    }
+
     // input helpers: a tunnel interface's MTU suggestions and MAC Generate (enterprise WAN, hq-rtr1 st0.10)
     {
       await page.eval('netatlas.loadExample(0), netatlas.setView("physical"), netatlas.select("iface:hq-rtr1:st0.10"), netatlas.showTab("edit"), true');

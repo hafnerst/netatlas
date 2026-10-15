@@ -9,12 +9,13 @@ import { SimGroup, simProfile } from '../../model/sim-profiles';
 import { Model } from '../../model/types';
 import { failableRef } from '../failure';
 import { formatAddr } from '../ipmath';
-import { Engine, EngineOptions, subnetBroadcast } from './engine';
+import { Engine, EngineOptions, fmtSec, subnetBroadcast } from './engine';
 import { OTHER_BEHAVIOURS, installBootGarp, installCustomL2, installDemands, installFhrp, installL2Adverts, installLacp } from './proto-other';
 import { ROUTING_BEHAVIOURS } from './proto-routing';
 import { ProtocolSim, relationProfile } from './protocols';
 import { ParamChange, ParamValue, Resolved, SimParams } from './params';
 import { Multicast } from './multicast';
+import { DnsCacheRow, LeaseRow, NetServicesSim, ZoneRow } from './netsvc';
 import { Test, TestKind, Transport } from './transport';
 import { ArpRow, ConnRow, Flight, GridTable, MacRow, NetEvent, SessionRow, SessionStatus, SimEvent, TableTimer } from './types';
 
@@ -44,6 +45,8 @@ export class Simulation {
   readonly protocols: ProtocolSim;
   readonly transport: Transport;
   readonly multicast: Multicast;
+  /** DHCP and DNS: the servers' scopes and zones, the clients, the resolvers */
+  readonly netsvc: NetServicesSim;
   readonly model: Model;
 
   constructor(model: Model, opts: EngineOptions = {}) {
@@ -58,8 +61,10 @@ export class Simulation {
     installCustomL2(this.protocols);
     this.multicast = new Multicast(this.protocols);
     this.multicast.install();
+    this.netsvc = new NetServicesSim(this.protocols);
     this.transport = new Transport(this.protocols);
     this.transport.multicast = this.multicast;
+    this.transport.netsvc = this.netsvc;
     this.transport.install();
     this.protocols.start();
   }
@@ -196,13 +201,15 @@ export class Simulation {
     return this.engine.setParam(key, v);
   }
 
-  /** The model changed (a device's Simulation section): every device's attributes are read again and the changes apply now. */
+  /** The model changed (a Simulation section of a device, an interface, a network or a relation): every attribute is read again and the changes apply now. */
   deviceParamsFrom(model: Model): ParamChange[] {
     const out: ParamChange[] = [];
     for (const d of model.devices.slice().sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))) {
       if (!this.engine.net.devices.has(d.id)) continue;
       out.push(...this.engine.setDeviceParams(d.id, d.type, d.simulation || new Map()));
     }
+    // and the objects' (interfaces, VLANs, relations)
+    out.push(...this.engine.setObjectParams(model));
     return out;
   }
 
@@ -311,12 +318,51 @@ export class Simulation {
   sendTest(o: { from: string; to: string; kind: TestKind; port?: number; size?: number; df?: boolean; keep?: boolean }): Test | string {
     const r = this.transport.resolveTarget(o.from, { to: o.to.trim() }, o.kind);
     if (typeof r === 'string') return r;
-    return this.transport.run({ from: o.from, target: o.to.trim(), dst: r.dst, kind: o.kind, port: o.kind === 'icmp' ? 0 : o.port, size: o.size, df: o.df, keep: o.keep, source: 'manual' });
+    return this.transport.run({ from: o.from, target: o.to.trim(), dst: r.dst, name: r.name, kind: o.kind, port: o.kind === 'icmp' ? 0 : o.port, size: o.size, df: o.df, keep: o.keep, source: 'manual' });
   }
 
   /** The latest Send test… results, newest first. */
   tests(): Test[] {
     return this.transport.manualTests();
+  }
+
+  /** A DHCP server's leases as a table (Show DHCP leases). */
+  leaseGrid(dev: string): GridTable {
+    const rows = this.netsvc.leaseRows(dev).map((r) => [r.ip, r.mac, r.client, r.state === 'bound' ? 'Bound' : 'Offered', `scope ${r.scope + 1}`, fmtSec(Math.max(0, r.expires - this.now))]);
+    return { caption: `DHCP leases of ${dev}`, cols: ['Address', 'MAC address', 'Client', 'State', 'Scope', 'Expires in'], rows, empty: 'No lease yet.', timers: [], notes: this.netsvc.scopeNotes(dev) };
+  }
+
+  /** A host's resolver cache as a table (Show DNS cache). */
+  dnsCacheGrid(dev: string): GridTable {
+    const rows = this.netsvc.cacheRows(dev).map((r) => [r.name, r.type, r.value, r.server, fmtSec(Math.max(0, r.expires - this.now))]);
+    const servers = this.netsvc.dnsServers(dev).map((a) => formatAddr(a));
+    return { caption: `DNS cache of ${dev}`, cols: ['Name', 'Type', 'Address', 'From server', 'Expires in'], rows, empty: 'Empty: nothing resolved yet.', timers: [], notes: [`DNS servers: ${servers.length ? servers.join(', ') : 'none'} (${Array.from(this.engine.leases.values()).some((l) => l.dev === dev && l.dns.length) ? 'from its DHCP lease' : 'configured'}); resolver: timeout 5 s, 2 attempts per server`] };
+  }
+
+  /** A DNS server's zones as a table (Show DNS zone). */
+  dnsZoneGrid(dev: string): GridTable {
+    const rows = this.netsvc.zoneRows(dev).map((r) => [r.zone, r.name, r.type, r.value, r.ttl, r.source]);
+    return { caption: `DNS zones of ${dev}`, cols: ['Zone', 'Name', 'Type', 'Value', 'TTL', 'Source'], rows, empty: 'No record: no DNS name of the model is in its zones yet.', timers: [], notes: this.netsvc.zoneNotes(dev) };
+  }
+
+  /** A DHCP server's leases (Show DHCP leases). */
+  leaseTable(dev: string): LeaseRow[] {
+    return this.netsvc.leaseRows(dev);
+  }
+
+  /** A host's DNS cache (Show DNS cache). */
+  dnsCache(dev: string): DnsCacheRow[] {
+    return this.netsvc.cacheRows(dev);
+  }
+
+  /** A DNS server's zones (Show DNS zone). */
+  dnsZone(dev: string): ZoneRow[] {
+    return this.netsvc.zoneRows(dev);
+  }
+
+  /** The DHCP leases in effect on the clients (the diagram marks them; the model is unchanged). */
+  leases(): Array<{ dev: string; iface: string; text: string; kind: 'dhcp' | 'link-local' }> {
+    return Array.from(this.engine.leases.values()).map((l) => ({ dev: l.dev, iface: l.iface, text: l.addr.text, kind: l.kind })).sort((a, b) => (a.dev + ':' + a.iface < b.dev + ':' + b.iface ? -1 : 1));
   }
 
   /** A device's connections and open ports (TCP, UDP, ICMP tests waiting). */
@@ -379,7 +425,8 @@ export function protocolEntriesOf(model: Model): SimProtocolEntry[] {
   const groupOf = (id: string, g: SimEntryGroup): SimEntryGroup => (id === 'pim' || id === 'igmp' || id === 'mcast' ? 'Multicast' : g);
   const ifs = (d: Model['devices'][number]): Model['devices'][number]['interfaces'] => d.interfaces.concat(d.logical);
   for (const d of model.devices) {
-    const addrs = ifs(d).filter((i) => i.type !== 'loopback' && i.addresses.length);
+    // (a DHCP client too: it has its address once leased)
+    const addrs = ifs(d).filter((i) => i.type !== 'loopback' && (i.addresses.length || i.dhcp));
     if (!addrs.length) continue;
     add('arp', 'ARP', 'Layer 2', 'device', d.id);
     add('garp', 'Gratuitous ARP', 'Layer 2', 'device', d.id);
@@ -399,8 +446,13 @@ export function protocolEntriesOf(model: Model): SimProtocolEntry[] {
   for (const dm of model.demands) add('demand', 'Demands (data)', 'Traffic', 'demand', dm.id);
   // Layer 3 and 4: ICMP (echo, errors), TCP and UDP (tests, health checks, probes): every addressed device can send them
   for (const d of model.devices) {
-    if (!ifs(d).some((i) => i.addresses.length)) continue;
+    if (!ifs(d).some((i) => i.addresses.length || i.dhcp)) continue;
     for (const [id, label] of [['icmp', 'ICMP / ICMPv6'], ['tcp', 'TCP (tests)'], ['udp', 'UDP (tests)']]) add(id, label, 'Traffic', 'device', d.id);
+  }
+  // DHCP: its servers and clients; DNS: its servers (and the hosts that ask them)
+  for (const d of model.devices) {
+    if ((d.netServices && d.netServices.dhcp) || ifs(d).some((i) => i.dhcp)) add('dhcp', 'DHCP', 'Services', 'device', d.id);
+    if ((d.netServices && d.netServices.dns) || (d.dnsServers && d.dnsServers.length)) add('dns', 'DNS', 'Services', 'device', d.id);
   }
   // multicast: membership wherever a router runs PIM or a host joins; the streams
   for (const d of model.devices) {

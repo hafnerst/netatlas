@@ -95,6 +95,14 @@ export interface Interface {
   services: ServiceConfig[];
   /** the multicast groups the device joins on this interface and the streams it sends from it (the protocol simulation) */
   multicast?: MulticastConfig;
+  /** the interface's simulation attributes (its `simulation:` block), by registry key: only what it overrides */
+  simulation?: Map<string, number | string>;
+  /**
+   * A DHCP relay (helper address) on a routed interface: the DHCP servers
+   * (their addresses) it forwards its subnet's DHCP broadcasts to, as unicast
+   * with its own address as the gateway address (giaddr). `dhcp_relay:`.
+   */
+  dhcpRelay?: string[];
   /** virtual: ids of the physical interfaces of the same device that are its members (a bond / aggregate); in file order */
   members: string[];
   /** virtual with members: how many member links must be up for the aggregate to be up, when written */
@@ -165,6 +173,10 @@ export interface Device {
   logical: Interface[];
   /** DNS names configured for the device, in file order */
   dnsNames: DnsName[];
+  /** the DNS servers a host is configured with (`dns_servers:`, static); a DHCP client also gets them from its lease */
+  dnsServers?: string[];
+  /** a server's network services (`services:`): a DHCP server and / or a DNS server */
+  netServices?: NetServices;
   /** static routes, in file order (empty unless the device type may route; see analysis/routing.ts) */
   routes: Route[];
   line: number;
@@ -233,6 +245,61 @@ export interface DnsName {
   /** ids of interfaces of the same device, in file order */
   interfaces: string[];
   line: number;
+}
+
+/**
+ * A DHCP scope of a server: the network it leases addresses in, the range it
+ * leases from, the default gateway and DNS servers it gives, the lease time;
+ * optionally excluded addresses, reservations and a domain name. Missing
+ * mandatory values are validation errors (nothing is chosen for the user).
+ */
+export interface DhcpScope {
+  /** a network id of the model (IPv4) */
+  network?: string;
+  /** the range as written ("10.1.1.100-10.1.1.199"), and its two ends */
+  range?: string;
+  start?: string;
+  end?: string;
+  gateway?: string;
+  dns: string[];
+  /** the lease time (ms) when written; else 1 day */
+  lease?: number;
+  exclude: string[];
+  reservations: Array<{ mac: string; ip: string; line: number }>;
+  domain?: string;
+  /** the scope's simulation attributes (offer delay, ping check) */
+  simulation?: Map<string, number | string>;
+  line: number;
+}
+
+/** A DNS record written in a zone: A, AAAA or CNAME (a relative name or a name in the zone). */
+export interface DnsRecord {
+  name: string;
+  type: 'A' | 'AAAA' | 'CNAME';
+  value: string;
+  line: number;
+}
+
+/** A DNS zone of a server: its name, its own records (the model's DNS names in it add A / AAAA records), its record TTL. */
+export interface DnsZone {
+  name: string;
+  records: DnsRecord[];
+  simulation?: Map<string, number | string>;
+  line: number;
+}
+
+/** A server's network services: a DHCP server (scopes) and / or a DNS server (zones). */
+export interface NetServices {
+  dhcp?: { scopes: DhcpScope[]; line: number };
+  dns?: {
+    zones: DnsZone[];
+    /** reverse zones (PTR records): IPv4 or IPv6 prefixes */
+    reverse: string[];
+    forwarders: string[];
+    /** the address it listens on (one of its own; none: all) */
+    listen?: string;
+    line: number;
+  };
 }
 
 /** Layer-2 port mode of a link end: an access port (one untagged VLAN) or a trunk (tagged VLANs, plus a native one). */
@@ -310,6 +377,8 @@ export interface Network {
   cidr?: string;
   /** the VLAN this IP network lives in, if any */
   vlan?: number;
+  /** the VLAN's simulation attributes (its `simulation:` block; only with a VLAN), by registry key */
+  simulation?: Map<string, number | string>;
   description?: string;
   attrs: Attrs;
   line: number;
@@ -324,6 +393,8 @@ export interface Relation {
   /** ids of links, relations or networks this relation is carried over (its underlay). */
   over: string[];
   direction: Direction;
+  /** the relation's simulation attributes (its `simulation:` block: a session's, a tunnel's, a service's), by registry key */
+  simulation?: Map<string, number | string>;
   description?: string;
   attrs: Attrs;
   line: number;
