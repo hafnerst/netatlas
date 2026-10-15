@@ -39,9 +39,18 @@
  * segments; the same protocol between the same two ends) alone holds the
  * clock back; the others still show but no longer hold it.
  *
+ * A Send test: its hops are always drawn (beyond the limit too), and while
+ * one of them is on its way, or the test waits for something of its own,
+ * only its hops hold the clock (as when following), so that it runs at
+ * once, in parallel with what is on screen.
+ *
  * At most `limit` hops are on screen at once (with their labels); one
  * beyond the limit is not drawn and does not hold the clock (the event log
  * lists it; `notDrawn` counts them for a note).
+ *
+ * The browser's loop (sim-controller.ts) starts the display clock with the
+ * first frame drawn and counts a frame at most FRAME_MAX, so that the
+ * first hops get the same screen time as later ones.
  */
 import { Flight, Headers } from './types';
 
@@ -71,6 +80,13 @@ export const SKIP_REPORT = 500;
 /** The longest jump at once (simulated ms: 10 min); when it finds nothing to show, the next one waits IDLE_REST of display time. */
 export const IDLE_HORIZON = 600000;
 export const IDLE_REST = 1000;
+/**
+ * The longest step of the display clock in one animation frame (real ms;
+ * the browser's loop caps it): a longer frame (a stall, a busy main thread)
+ * counts this much, so that a dot never jumps ahead; the pacing stays the
+ * same whatever the frame rate above 10 frames a second.
+ */
+export const FRAME_MAX = 100;
 /** Real ms of simulation work a jump may take per frame. */
 export const JUMP_BUDGET = 25;
 
@@ -122,6 +138,8 @@ export interface PaceItem {
   drawn: boolean;
   /** its conversation (Follow message) */
   key: string;
+  /** of a Send test: always drawn, and while the test runs it alone sets the pace */
+  test: boolean;
   /** the hop it continues, while that is on screen */
   parent?: PaceItem;
 }
@@ -157,6 +175,8 @@ export interface PacerHost {
   length?(f: Flight): number | null;
   /** a flight's headers (the conversation key) */
   headers?(f: Flight): Headers | undefined;
+  /** is a Send test running (sent, not yet answered or failed, not waiting for a DHCP lease)? */
+  testRunning?(): boolean;
 }
 
 export class Pacer {
@@ -254,9 +274,23 @@ export class Pacer {
     return s;
   }
 
-  /** Does this hop hold the simulated clock back (drawn, shown, of the conversation followed if any)? */
-  private holds(it: PaceItem): boolean {
-    return this.drawnShown(it) && (!this.follow || it.key === this.follow.key);
+  /** Does this hop hold the simulated clock back (drawn, shown, of the conversation followed if any; while a Send test runs, of a test)? */
+  private holds(it: PaceItem, tests = this.testHolds()): boolean {
+    if (!this.drawnShown(it)) return false;
+    if (this.follow) return it.key === this.follow.key;
+    return !tests || it.test;
+  }
+
+  /**
+   * Does a Send test set the pace now? While one of its hops is on its way,
+   * or it waits for something of its own (an ARP retry, a DNS timeout, a
+   * retransmission), the others still show but no longer hold the clock,
+   * so that the test runs at once, in parallel with the traffic on screen,
+   * never behind it (as when following a message).
+   */
+  private testHolds(): boolean {
+    for (const it of this.items) if (it.test && this.drawnShown(it) && this.onItsWay(it)) return true;
+    return !!this.host.testRunning && this.host.testRunning();
   }
 
   private drawnShown(it: PaceItem): boolean {
@@ -272,8 +306,9 @@ export class Pacer {
   gate(): { t: number; item: PaceItem | null } {
     let t = Infinity;
     let item: PaceItem | null = null;
+    const tests = this.testHolds();
     for (const it of this.items) {
-      if (!this.holds(it) || !this.onItsWay(it)) continue;
+      if (!this.holds(it, tests) || !this.onItsWay(it)) continue;
       const g = it.f.dropped !== undefined ? (it.f.dropped as number) : it.f.t0 + it.lat;
       if (g < t) {
         t = g;
@@ -308,20 +343,26 @@ export class Pacer {
       const d0 = Math.max(this.clock, after);
       // between two cables: across the switch that forwarded it
       const transit = parent && f.view === 'physical' && parent.f.view === 'physical' && parent.f.track.ref !== f.track.ref ? TRANSIT_MS : 0;
-      // a hop that is not shown (another view, a hidden protocol, a non-sender) takes no place
+      // a hop that is not shown (another view, a hidden protocol, a non-sender) takes no place; a Send test's is always drawn
       const shown = this.host.shown(f);
-      const drawn = !shown || live[f.view] < this.limit;
+      const test = f.test !== undefined;
+      const drawn = !shown || test || live[f.view] < this.limit;
       if (shown) {
         if (drawn) live[f.view]++;
         else this.notDrawn++;
       }
       const h = this.host.headers ? this.host.headers(f) : undefined;
-      const it: PaceItem = { f, lat, d0, transit, hop: this.hopTime(lat, f.view, this.host.length ? this.host.length(f) : null), drawn, key: conversationKey(f.protocol, h, f.label), parent };
+      const it: PaceItem = { f, lat, d0, transit, hop: this.hopTime(lat, f.view, this.host.length ? this.host.length(f) : null), drawn, key: conversationKey(f.protocol, h, f.label), test, parent };
       this.items.push(it);
       this.byId.set(f.id, it);
       added.push(it);
     }
     return added;
+  }
+
+  /** Take in what was sent just now (a Send test, also while paused): on screen from now, without moving the simulation on. */
+  take(): void {
+    this.register();
   }
 
   /** Forget what has left the screen. */
@@ -417,7 +458,8 @@ export class Pacer {
   step(): void {
     this.register();
     let next = Infinity;
-    for (const it of this.items) if (this.holds(it) && this.onItsWay(it)) next = Math.min(next, this.arrival(it));
+    const tests = this.testHolds();
+    for (const it of this.items) if (this.holds(it, tests) && this.onItsWay(it)) next = Math.min(next, this.arrival(it));
     if (next < Infinity) {
       this.clock = Math.max(this.clock, next);
       this.idleBudget = 0;

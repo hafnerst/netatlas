@@ -101,6 +101,8 @@ export interface DrawItem {
   faded?: boolean;
   /** of the conversation followed: drawn with its trail */
   followed?: boolean;
+  /** of a Send test: its label says "Test", its label is placed first */
+  test?: boolean;
 }
 
 export interface DrawResult {
@@ -224,8 +226,8 @@ export class SimAnimator {
         if (geo) dots.appendChild(trail(this.doc, geo, it.st.frac, opts.color(it.f.protocol)));
       }
     }
-    // the earliest first: what started first keeps its place
-    const list = items.filter((it) => it.f.view === opts.view).sort((a, b) => a.f.t0 - b.f.t0 || a.f.id - b.f.id);
+    // a Send test's hops first (their labels always find room), then the earliest: what started first keeps its place
+    const list = items.filter((it) => it.f.view === opts.view).sort((a, b) => Number(!!b.test) - Number(!!a.test) || a.f.t0 - b.f.t0 || a.f.id - b.f.id);
     for (const it of list) {
       const f = it.f;
       const st = it.st;
@@ -258,7 +260,8 @@ export class SimAnimator {
       }
       if (st.phase === 'moving' && st.frac < 0.25 && ends.from) senders.add(ends.from);
       if (st.phase === 'transit' && ends.from) senders.add(ends.from);
-      const text = lost ? `✕ lost: ${f.label}` : f.label + (f.encap && f.encap.length ? ` ‹${f.encap.slice().reverse().join(' in ')}›` : '');
+      const name = (it.test ? 'Test · ' : '') + f.label;
+      const text = lost ? `✕ lost: ${name}` : name + (f.encap && f.encap.length ? ` ‹${f.encap.slice().reverse().join(' in ')}›` : '');
       const w = textWidth(text, FONT) + 4;
       const h = FONT + 4;
       let box = placeLabel(candidates(p.x, p.y, p.ux, p.uy, w, h, 1), this.obstacles, placed);
@@ -287,6 +290,7 @@ export class SimAnimator {
       for (const e of lab ? [shape, lab] : [shape]) {
         if (it.faded) e.classList.add('faded');
         if (it.followed) e.classList.add('followed');
+        if (it.test) e.classList.add('sim-test');
         if (fade < 1) e.setAttribute('opacity', fade.toFixed(2));
       }
       dots.appendChild(shape);

@@ -1226,6 +1226,9 @@ table.spof-table td.num, table.spof-table td.nowrap { white-space: nowrap; overf
 .node.sim-rx .dev-box { stroke: var(--ok) !important; stroke-width: 3 !important; }
 .layer-sim .sim-pulse { fill: none; stroke-width: 2.5; }
 .layer-sim .sim-trail { fill: none; stroke-width: 6; stroke-linecap: round; stroke-linejoin: round; opacity: 0.4; }
+/* a Send test's messages: their labels bold (the word "Test" says it, not the weight alone); "Test" in the event log */
+.layer-sim-labels .sim-test text { font-weight: 700; }
+.sim-test-tag { display: inline-block; padding: 0 4px; border: 1px solid var(--sim); border-radius: 3px; font-size: 0.85em; font-weight: 700; line-height: 1.3; color: var(--text); }
 .layer-sim .faded, .layer-sim-labels .faded { opacity: 0.35; }
 .sim-time { font-family: var(--font-mono); font-size: 13px; font-variant-numeric: tabular-nums; }
 .sim-swatch { display: inline-block; flex: none; width: 10px; height: 10px; border-radius: 50%; border: 1px solid var(--text); }
@@ -2739,7 +2742,7 @@ class App {
         const kind = a ? a.getAttribute('data-kind') : null;
         const index = a ? a.getAttribute('data-index') : null;
         this.editor.renderOutline(box, this.selectionContext());
-        if (this.editLock()) {
+        if (this.editLock() && this.simulation) {
             const edits = box.querySelectorAll('[data-act="add-entity"], [data-act="dup-entity"], [data-act="del-entity"]');
             for (let i = 0; i < edits.length; i++) {
                 edits[i].disabled = true;
@@ -2769,7 +2772,8 @@ class App {
         const focus = captureFocus(this.doc);
         if (this.tab === 'problems' || !this.mdoc)
             this.renderProblems(body);
-        else if (this.tab === 'edit' && this.mdoc.lock)
+        // the notice and the read-only form only while a simulation runs
+        else if (this.tab === 'edit' && this.mdoc.lock && this.simulation)
             this.renderLockedEdit(body);
         else if (this.tab === 'edit')
             this.editor.renderInspector(body);
@@ -2834,10 +2838,11 @@ class App {
         const d = this.mdoc;
         const ta = (0, dom_1.el)(this.doc, 'textarea', { id: 'yaml-src', spellcheck: 'false', 'aria-label': 'YAML source of the whole model', 'aria-describedby': 'yaml-sel', wrap: 'off' });
         ta.value = this.editor.sourceDraft !== null ? this.editor.sourceDraft : d.exportText();
-        if (d.lock)
+        const locked = !!d.lock && !!this.simulation;
+        if (locked)
             ta.readOnly = true;
         body.appendChild((0, dom_1.el)(this.doc, 'div', { class: 'yaml-tab' }, [
-            d.lock ? this.lockNotice('The text is read-only until you exit the simulation.') : null,
+            locked ? this.lockNotice('The text is read-only until you exit the simulation.') : null,
             (0, dom_1.el)(this.doc, 'p', { class: 'muted small' }, [
                 'The whole model as exported. Edit it and press Apply; comments and key order are kept.',
             ]),
@@ -4249,10 +4254,10 @@ class App {
     endForNewModel() {
         const sim = this.simulation;
         this.simulation = null;
-        if (sim)
-            sim.stop();
         if (this.mdoc)
             this.mdoc.lock = '';
+        if (sim)
+            sim.stop();
         if (this.tw)
             this.tw.close();
     }
@@ -4850,6 +4855,9 @@ class App {
         if (!sim)
             return false;
         this.simulation = null;
+        // editing again first: stopping brings the Objects list and the Inspector back, drawn as they are now
+        // (with the lock still set they came back read-only, with the notice and a disabled Exit simulation)
+        this.syncLock();
         sim.stop();
         this.simChanged();
         const back = this.doc.activeElement;
@@ -24091,7 +24099,7 @@ const MANUAL = [
             'Below, the **Layer 1–4 parameters**, one collapsed section per layer (*Layer 2 – Data link (8)*): open one to change a value (its default and source are under it; a changed value is marked *modified*, and the collapsed section says so: *Layer 3 – Network (8) · 2 modified*; **Reset** puts it back). Usually the protocols and the senders are all you choose.',
             'Press **Start** (or `Enter`); `Esc` cancels. The protocols and the values are remembered for the next start in this browser session.',
             'The network starts like a freshly booted one: every table empty, every adjacency down, the interfaces coming up. Its messages appear as dots with labels such as *ARP Request (broadcast): who has 10.0.0.2?*, *OSPF Hello*, *TCP SYN → 10.1.1.10:443* or *ICMP Net Unreachable from 10.0.0.1*. A dot’s shape says how it is addressed: a circle unicast, a square broadcast, a diamond multicast.',
-            '**Exit simulation** (in the simulation panel or the banner) or `Esc` ends it. Nothing in the model changes.',
+            '**Exit simulation** (in the simulation panel, the banner, the Simulate menu or the command palette) or `Esc` ends it at once: the Objects list and the Inspector are back with your tab and selection, and the Edit tab can be used again right away. Nothing in the model changes.',
         ],
         notes: [
             'A value configured on a cable or a relation in the model comes first, then the object’s own Simulation value (an interface’s, a VLAN’s, a relation’s, a DHCP scope’s or a DNS zone’s), then the device’s, then the simulation’s value, then the default; every value says which it is.',
@@ -24124,6 +24132,7 @@ const MANUAL = [
         ],
         notes: [
             'The pacing, the speed and skipping only change how the simulation is shown: what happens, and in which order, is the same with every setting.',
+            'Every hop gets the same time on screen from the very first one: the clock starts with the first frame drawn, a slow frame counts at most 0.1 s (the dots slow down for a moment instead of jumping), and a hidden tab stops it.',
             'At most 48 messages are drawn at once, each with room for its label; the panel says how many more are not drawn, and the event log lists every message.',
             'With reduced motion set in your system, each message is a still arrow with its label, shown for the same paced time; **Step** moves one message at a time.',
         ],
@@ -24168,7 +24177,8 @@ const MANUAL = [
         title: 'Send a test and inspect a packet',
         steps: [
             'During a simulation, use **Send test** in the **Actions** panel, or click a device and choose **Send test…** (it becomes the source). **From** is the sending device; in **To** write a device, an interface (`device:interface`), a host name (resolved by DNS first), an address, a subnet broadcast (offered in the list), *255.255.255.255* or a multicast group.',
-            'Choose the **Type**: **ICMP** (ping), **TCP** or **UDP**, with its **Port**; **More options** has the data size, **Don’t fragment** and, for TCP, keeping the connection open. Press **Send** (or `Enter` in **To**).',
+            'Choose the **Type**: **ICMP** (ping), **TCP** or **UDP**, with its **Port**; **More options** has the data size, **Don’t fragment** and, for TCP, keeping the connection open. Press **Send** (or `Enter` in **To**). The test goes at once, at the current simulated time, in parallel with everything else on screen: only what it really needs (ARP, a DNS answer, a DHCP lease) comes first. Paused, **Send** sends it at the current time and it moves when you press Play; **Send and play** does both.',
+            'Its messages and their answers are always drawn, whatever the senders and protocols chosen and before other dots when many are on screen; their labels start with *Test ·*, the event log marks them **Test**, and they draw a trail. While the test is on its way it alone sets the pace (the other dots keep moving).',
             'The result shows under it, in the Status table and in the event log: *answered* (with the round trip), *connection refused* (a TCP RST from a closed port), an ICMP error that came back (*Net Unreachable*, *Port Unreachable*, *Administratively Prohibited* from a firewall, *Fragmentation Needed* …) or *timed out*.',
             'Click a dot, or the message of a row in the event log (Enter on it from the keyboard): the **packet inspector** shows its frame layer by layer: the MAC addresses and what they are (broadcast, a multicast group’s MAC), the VLAN tag, the IP header (TTL, Don’t Fragment, protocol), the ports and TCP flags or the ICMP type with the quoted header, and what it carries; **Follow message** follows it and its replies.',
             '**Show connections** on a device lists its open ports and connections (LISTEN, ESTABLISHED, TIME_WAIT …); **Show sessions** on a firewall its session table with the rule that permitted each.',
@@ -35483,7 +35493,7 @@ class SimController {
         /** the status side shows the protocols' status, or a table of the selected device */
         this.statusView = null;
         /** a typical hop's simulated time per view (the readable pacing's reference) */
-        this.typicalHop = { physical: 0, logical: [] };
+        this.typicalHop = { physical: 0 };
         this.onVis = () => this.schedule();
         /** Why it is paused (null: playing, or paused with no reason left). */
         this.pausedBy = null;
@@ -35506,7 +35516,8 @@ class SimController {
                 return;
             this.resumeFromInspector();
         };
-        this.flightShown = (f) => (this.visible(f.protocol) || (!!f.encapProtocols && f.encapProtocols.some((p) => this.visible(p)))) && this.senderOk(f);
+        /** A Send test's messages are always shown (whatever the protocols ticked and the senders); others when their protocol is shown and their sender is chosen. */
+        this.flightShown = (f) => f.test !== undefined || ((this.visible(f.protocol) || (!!f.encapProtocols && f.encapProtocols.some((p) => this.visible(p)))) && this.senderOk(f));
         // ------------------------------------------------------------ senders
         /** the devices chosen as senders */
         this.senders = new Set();
@@ -35550,6 +35561,7 @@ class SimController {
             typical: (v) => this.typical(v),
             headers: (f) => f.hdr,
             length: (f) => this.trackLength(f),
+            testRunning: () => this.testRunning(),
         }, sim_anim_1.MAX_DOTS);
         host.doc.addEventListener('visibilitychange', this.onVis);
         this.schedule();
@@ -35643,15 +35655,14 @@ class SimController {
         const ok = ls.filter((x) => x > 0 && isFinite(x)).sort((a, b) => a - b);
         return ok.length ? ok[Math.floor(ok.length / 2)] : e.hopTime();
     }
-    /** The typical hop of a view: the cables' median, and for the logical view the median of its first hops (twice a cable before any). */
+    /**
+     * The typical hop of a view: the cables' median; a relation or network
+     * line of the logical view spans about two of them. Fixed from the start
+     * (it changes only with a latency parameter), so that a hop's screen time
+     * never depends on which messages came first.
+     */
     typical(view) {
-        if (view === 'physical')
-            return this.typicalHop.physical;
-        const l = this.typicalHop.logical;
-        if (!l.length)
-            return 2 * this.typicalHop.physical;
-        const s = l.slice().sort((a, b) => a - b);
-        return s[Math.floor(s.length / 2)];
+        return view === 'physical' ? this.typicalHop.physical : 2 * this.typicalHop.physical;
     }
     /** Start or stop the clock as the state says (one frame per screen refresh; under reduced motion the same, with static arrows). */
     schedule() {
@@ -35665,12 +35676,15 @@ class SimController {
             this.refresh(true);
             return;
         }
-        this.last = w.performance.now();
+        // the clock starts with the first frame drawn: the time before it (the setup, a hidden tab, a pause) never counts
+        let first = true;
         const frame = (now) => {
             this.raf = 0;
             if (!this.running())
                 return;
-            const dt = Math.min(250, now - this.last);
+            // a long frame counts at most FRAME_MAX: a stall slows the dots for a moment, never makes them jump
+            const dt = first ? 0 : Math.min(pacing_1.FRAME_MAX, Math.max(0, now - this.last));
+            first = false;
             this.last = now;
             this.advance(dt);
             this.refresh(now - this.uiAt > 250);
@@ -35683,18 +35697,6 @@ class SimController {
     /** Real time passed: the pacing moves the display and the simulation on (the self-test drives it too). */
     advance(wallMs) {
         this.pacer.frame(wallMs);
-        this.learnTypical();
-    }
-    /** The logical view's typical hop: from its first 64 hops. */
-    learnTypical() {
-        const l = this.typicalHop.logical;
-        if (l.length >= 64)
-            return;
-        for (const it of this.pacer.items)
-            if (it.f.view === 'logical' && l.length < 64 && it.lat > 0 && !it.seen) {
-                it.seen = true;
-                l.push(it.lat);
-            }
     }
     /** Play or pause (the user's Play / Pause, and the tests). A pause by the user is never resumed by anything else. */
     setPlaying(on, reason = 'user') {
@@ -35718,6 +35720,10 @@ class SimController {
         const vis = d.getElementById('sim-state');
         if (vis && vis.textContent !== s)
             vis.textContent = s;
+        // Send and play only while paused
+        const sp = d.getElementById('sim-t-sendplay');
+        if (sp)
+            sp.hidden = this.playing;
         if (s === this.stateSaid)
             return;
         this.stateSaid = s;
@@ -35999,7 +36005,9 @@ class SimController {
             if (!it.drawn || it.f.view !== view || it.f.hidden || !this.flightShown(it.f))
                 continue;
             const st = this.pacer.state(it);
-            out.push({ f: it.f, st, prev: it.parent && it.transit ? it.parent.f.track : undefined, faded: !!follow && it.key !== follow.key, followed: !!follow && it.key === follow.key });
+            // a Send test's hops: never faded, with their trail (as a message followed)
+            const test = it.f.test !== undefined;
+            out.push({ f: it.f, st, prev: it.parent && it.transit ? it.parent.f.track : undefined, faded: !!follow && it.key !== follow.key && !test, followed: (!!follow && it.key === follow.key) || test, test });
         }
         return out;
     }
@@ -36518,15 +36526,29 @@ class SimController {
             to.focus();
         }
     }
-    /** Run a test now (the Send test form; tests). */
-    sendTest(o) {
+    /**
+     * Send a test now, at the current simulated time (the Send test form;
+     * tests): it starts at once, in parallel with the traffic, only after
+     * what it really needs (ARP or NDP, a DNS answer, a DHCP lease). Paused,
+     * it is sent at the current time and moves when the simulation plays
+     * (`play`: Send and play).
+     */
+    sendTest(o, play = false) {
         const t = this.sim.sendTest(o);
         this.testsKey = '';
         this.logKey = '';
+        // its first hops are on screen now (paused too: there they wait for Play)
+        this.pacer.take();
+        if (typeof t !== 'string' && play && !this.playing)
+            this.setPlaying(true);
         this.refresh(true);
         if (typeof t === 'string')
             return t;
-        return `Test sent at t = ${(0, engine_1.fmtSec)(this.t)}: ${t.series}.`;
+        return this.playing ? `Test sent at t = ${(0, engine_1.fmtSec)(this.t)}: ${t.series}.` : `Sent at t = ${(0, engine_1.fmtSec)(this.t)}: ${t.series}. It starts when the simulation plays.`;
+    }
+    /** Is a Send test on its way (sent, not answered or failed yet, not waiting for a DHCP lease)? While it is, it alone sets the pace. */
+    testRunning() {
+        return this.sim.tests().some((t) => !t.done && t.result.indexOf('waiting for a DHCP lease') !== 0);
     }
     /** The Send test destinations offered: the devices, and the broadcast addresses of the source's subnets. */
     fillTargets(box) {
@@ -36655,12 +36677,15 @@ class SimController {
         const tKeep = (0, dom_1.el)(doc, 'input', { type: 'checkbox', id: 'sim-t-keep' });
         const lab = (f, t) => (0, dom_1.el)(doc, 'label', { for: f }, [t]);
         const tSend = (0, dom_1.el)(doc, 'button', { type: 'button', id: 'sim-t-send', class: 'primary sp-primary' }, ['Send']);
+        // paused: the test is sent at the current time and waits for Play; Send and play sends it and plays
+        const tSendPlay = (0, dom_1.el)(doc, 'button', { type: 'button', id: 'sim-t-sendplay', class: 'sp-primary' }, ['Send and play']);
+        tSendPlay.hidden = this.playing;
         const more = (0, dom_1.el)(doc, 'div', { class: 'sim-test-form' }, [lab('sim-t-size', 'Data'), (0, dom_1.el)(doc, 'span', { class: 'pinput' }, [tSize, (0, dom_1.el)(doc, 'span', { class: 'punit' }, ['bytes'])]), (0, dom_1.el)(doc, 'span'), (0, dom_1.el)(doc, 'label', { class: 'check' }, [tDf, ' Don’t fragment (IPv4)']), (0, dom_1.el)(doc, 'span'), (0, dom_1.el)(doc, 'label', { class: 'check' }, [tKeep, ' TCP: keep open (keepalive)'])]);
         box.appendChild(this.sec(doc, 'sim-test', 'Send test', [
             (0, dom_1.el)(doc, 'div', { class: 'sim-test-form' }, [lab('sim-t-from', 'From'), tFrom, lab('sim-t-to', 'To'), tTo, lab('sim-t-kind', 'Type'), tKind, lab('sim-t-port', 'Port'), tPort]),
             this.disclosure(doc, 'sim-t-more', 'More options', more),
             (0, dom_1.el)(doc, 'datalist', { id: 'sim-t-list' }),
-            (0, dom_1.el)(doc, 'div', { class: 'sp-row' }, [tSend]),
+            (0, dom_1.el)(doc, 'div', { class: 'sp-row' }, [tSend, tSendPlay]),
             (0, dom_1.el)(doc, 'p', { id: 'sim-t-msg', class: 'small', role: 'status' }, ['']),
             (0, dom_1.el)(doc, 'ul', { id: 'sim-tests', class: 'sim-tests', 'aria-label': 'Latest tests' }),
         ]));
@@ -36670,7 +36695,7 @@ class SimController {
         tKind.addEventListener('change', sync);
         sync();
         tFrom.addEventListener('change', () => this.fillTargets(box));
-        tSend.addEventListener('click', () => {
+        const send = (play) => {
             const size = tSize.value.trim() === '' ? undefined : Number(tSize.value);
             const port = Number(tPort.value);
             const msg = box.querySelector('#sim-t-msg');
@@ -36689,8 +36714,10 @@ class SimController {
                 tSize.focus();
                 return;
             }
-            msg.textContent = this.sendTest({ from: tFrom.value, to: tTo.value, kind: tKind.value, port, size, df: tDf.checked, keep: tKeep.checked });
-        });
+            msg.textContent = this.sendTest({ from: tFrom.value, to: tTo.value, kind: tKind.value, port, size, df: tDf.checked, keep: tKeep.checked }, play);
+        };
+        tSend.addEventListener('click', () => send(false));
+        tSendPlay.addEventListener('click', () => send(true));
         tTo.addEventListener('keydown', (e) => {
             if (e.key === 'Enter') {
                 e.preventDefault();
@@ -37245,12 +37272,14 @@ class SimController {
         for (const e of events) {
             if (e.t > this.t)
                 break;
-            if (!this.visible(e.protocol)) {
+            // a Send test's events are always listed (the log's own filters below still apply)
+            const test = e.test !== undefined;
+            if (!test && !this.visible(e.protocol)) {
                 hidden++;
                 continue;
             }
             // messages of non-senders (a sender's exchanges stay): counted, listed only with Show all senders
-            if (e.kind === 'message' && !this.senderOk(e)) {
+            if (!test && e.kind === 'message' && !this.senderOk(e)) {
                 bySender++;
                 if (!this.showAllSenders)
                     continue;
@@ -37303,7 +37332,11 @@ class SimController {
                 (0, dom_1.el)(doc, 'td', {}, [e.device]),
                 (0, dom_1.el)(doc, 'td', {}, [e.peer]),
                 (0, dom_1.el)(doc, 'td', {}, [this.protoLabel(e.protocol)]),
-                (0, dom_1.el)(doc, 'td', {}, [e.hdr ? (0, dom_1.el)(doc, 'button', { type: 'button', class: 'sim-msg-btn', 'data-seq': String(e.seq), 'aria-label': `${e.what}: open in the packet inspector` }, [e.what]) : e.what]),
+                (0, dom_1.el)(doc, 'td', {}, [
+                    e.test !== undefined ? (0, dom_1.el)(doc, 'span', { class: 'sim-test-tag', title: 'Part of a Send test' }, ['Test']) : null,
+                    e.test !== undefined ? ' ' : null,
+                    e.hdr ? (0, dom_1.el)(doc, 'button', { type: 'button', class: 'sim-msg-btn', 'data-seq': String(e.seq), 'aria-label': `${e.test !== undefined ? 'Test: ' : ''}${e.what}: open in the packet inspector` }, [e.what]) : e.what,
+                ]),
                 (0, dom_1.el)(doc, 'td', {}, [e.state]),
                 (0, dom_1.el)(doc, 'td', { class: 'small', title: e.detail }, [e.detail]),
             ]));
@@ -37505,6 +37538,15 @@ class Engine {
          * screen's business (sim-controller.ts).
          */
         this.senders = null;
+        /**
+         * The Send test whose exchange the engine is handling now (its id; null:
+         * none): set while a test sends (transport.ts), and while a frame of a
+         * test is received, so that what it needs and what answers it (an ARP
+         * request, a reply, an ICMP error, a RST, a forwarded copy) belongs to
+         * the test too. Timers do not carry it (a periodic timer started then is
+         * not the test's); the transport's own timers pass it on themselves.
+         */
+        this.testCtx = null;
         /** the interfaces ("dev:iface") and ports ("port:…") that were up once: coming up again is said so */
         this.cameUp = new Set();
         /** the message whose receipt is being handled (what is sent now answers it or carries it on) */
@@ -37657,6 +37699,19 @@ class Engine {
                 this.flightById.delete(f.id);
         }
     }
+    /** Run `fn` as part of a Send test's exchange (id null or undefined: as it is). */
+    withTest(id, fn) {
+        if (id === null || id === undefined)
+            return fn();
+        const was = this.testCtx;
+        this.testCtx = id;
+        try {
+            return fn();
+        }
+        finally {
+            this.testCtx = was;
+        }
+    }
     /** Is a device a sender? */
     isSender(dev) {
         return !this.senders || this.senders.has(dev);
@@ -37672,6 +37727,8 @@ class Engine {
             msg.sender = dev;
         if (msg.origin === undefined)
             msg.origin = this.cause !== null ? this.cause : dev;
+        if (msg.test === undefined && this.testCtx !== null)
+            msg.test = this.testCtx;
         if (msg.causedBy === undefined && this.causeMsg && this.causeMsg !== msg)
             msg.causedBy = `${this.causeMsg.label}${this.causeMsg.sender ? ` (sent by ${this.causeMsg.sender})` : ''}, received at t = ${(this.now / 1000).toFixed(6)} s`;
     }
@@ -37679,14 +37736,17 @@ class Engine {
     caused(msg, fn) {
         const was = this.cause;
         const wasMsg = this.causeMsg;
+        const wasTest = this.testCtx;
         this.cause = msg.origin !== undefined ? msg.origin : null;
         this.causeMsg = msg;
+        this.testCtx = msg.test !== undefined ? msg.test : null;
         try {
             fn();
         }
         finally {
             this.cause = was;
             this.causeMsg = wasMsg;
+            this.testCtx = wasTest;
         }
     }
     /**
@@ -37762,11 +37822,15 @@ class Engine {
             this.mark(msg, device);
             ev.sender = msg.sender;
             ev.origin = msg.origin;
+            if (msg.test !== undefined)
+                ev.test = msg.test;
         }
         else if (kind === 'message') {
             ev.sender = device;
             ev.origin = this.cause !== null ? this.cause : device;
         }
+        if (ev.test === undefined && this.testCtx !== null)
+            ev.test = this.testCtx;
         this.log.push(ev);
         if (this.log.length > exports.LOG_MAX + 500) {
             const n = this.log.length - exports.LOG_MAX;
@@ -38905,6 +38969,8 @@ class Engine {
             f.sender = msg.sender;
         if (msg.origin !== undefined)
             f.origin = msg.origin;
+        if (msg.test !== undefined)
+            f.test = msg.test;
         this.flights.push(f);
         this.flightById.set(f.id, f);
         return f;
@@ -39707,18 +39773,22 @@ class Engine {
                         tab.delete(k);
                         this.tableNote(dev, e, 'removed', `${e.ipText} removed: no answer to ${e.tries} ${e.ip.version === 4 ? 'ARP Requests' : 'solicitations'}${e.queue.length ? '; ' + e.queue.length + ' waiting packet' + (e.queue.length === 1 ? '' : 's') + ' dropped' : ''}`);
                         for (const w of e.queue) {
-                            this.note('drop', w.pkt.msg.protocol, dev, '', w.pkt.msg.type, '', `dropped at ${dev}: ${e.ipText} could not be resolved (${w.pkt.msg.label})`);
-                            if (w.fwd)
-                                this.icmpError(dev, w.pkt, 'host', { from: l3 });
-                            else if (this.protocols && this.protocols.localError)
-                                this.protocols.localError(dev, w.pkt, 'host', `${e.ipText} does not answer ${e.ip.version === 4 ? 'ARP' : 'neighbour solicitations'} (host unreachable)`);
+                            this.withTest(w.pkt.msg.test, () => {
+                                this.note('drop', w.pkt.msg.protocol, dev, '', w.pkt.msg.type, '', `dropped at ${dev}: ${e.ipText} could not be resolved (${w.pkt.msg.label})`);
+                                if (w.fwd)
+                                    this.icmpError(dev, w.pkt, 'host', { from: l3 });
+                                else if (this.protocols && this.protocols.localError)
+                                    this.protocols.localError(dev, w.pkt, 'host', `${e.ipText} does not answer ${e.ip.version === 4 ? 'ARP' : 'neighbour solicitations'} (host unreachable)`);
+                            });
                         }
                         continue;
                     }
                     e.tries++;
                     e.sentAt = t;
                     e.timer = t + this.retrans(dev, e.iface);
-                    this.solicit(dev, l3, e.ip, e.type === 'incomplete' ? '' : e.mac);
+                    // a retry for a Send test's packet is the test's too
+                    const tq = e.queue.find((w) => w.pkt.msg.test !== undefined);
+                    this.withTest(tq ? tq.pkt.msg.test : null, () => this.solicit(dev, l3, e.ip, e.type === 'incomplete' ? '' : e.mac));
                     continue;
                 }
                 if (e.ip.version === 4) {
@@ -41701,7 +41771,7 @@ exports.MAC_AGING_DEFAULT = 300;
 __defs["analysis/sim/pacing"] = function (module, exports) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.Pacer = exports.JUMP_BUDGET = exports.IDLE_REST = exports.IDLE_HORIZON = exports.SKIP_REPORT = exports.TRANSIT_MS = exports.FADE_MS = exports.PULSE_MS = exports.LOST_MS = exports.PROP_MAX = exports.PROP_MIN = exports.MAX_SPEED = exports.HOP_MAX = exports.HOP_MIN = exports.HOP_MS = exports.PACE_SCALES = exports.PACE_SPEEDS = void 0;
+exports.Pacer = exports.JUMP_BUDGET = exports.FRAME_MAX = exports.IDLE_REST = exports.IDLE_HORIZON = exports.SKIP_REPORT = exports.TRANSIT_MS = exports.FADE_MS = exports.PULSE_MS = exports.LOST_MS = exports.PROP_MAX = exports.PROP_MIN = exports.MAX_SPEED = exports.HOP_MAX = exports.HOP_MIN = exports.HOP_MS = exports.PACE_SCALES = exports.PACE_SPEEDS = void 0;
 exports.readableHop = readableHop;
 exports.proportionalHop = proportionalHop;
 exports.scaleText = scaleText;
@@ -41730,6 +41800,13 @@ exports.SKIP_REPORT = 500;
 /** The longest jump at once (simulated ms: 10 min); when it finds nothing to show, the next one waits IDLE_REST of display time. */
 exports.IDLE_HORIZON = 600000;
 exports.IDLE_REST = 1000;
+/**
+ * The longest step of the display clock in one animation frame (real ms;
+ * the browser's loop caps it): a longer frame (a stall, a busy main thread)
+ * counts this much, so that a dot never jumps ahead; the pacing stays the
+ * same whatever the frame rate above 10 frames a second.
+ */
+exports.FRAME_MAX = 100;
 /** Real ms of simulation work a jump may take per frame. */
 exports.JUMP_BUDGET = 25;
 const EPS = 1e-6;
@@ -41848,9 +41925,26 @@ class Pacer {
         s.pulse = Math.min(1, p);
         return s;
     }
-    /** Does this hop hold the simulated clock back (drawn, shown, of the conversation followed if any)? */
-    holds(it) {
-        return this.drawnShown(it) && (!this.follow || it.key === this.follow.key);
+    /** Does this hop hold the simulated clock back (drawn, shown, of the conversation followed if any; while a Send test runs, of a test)? */
+    holds(it, tests = this.testHolds()) {
+        if (!this.drawnShown(it))
+            return false;
+        if (this.follow)
+            return it.key === this.follow.key;
+        return !tests || it.test;
+    }
+    /**
+     * Does a Send test set the pace now? While one of its hops is on its way,
+     * or it waits for something of its own (an ARP retry, a DNS timeout, a
+     * retransmission), the others still show but no longer hold the clock,
+     * so that the test runs at once, in parallel with the traffic on screen,
+     * never behind it (as when following a message).
+     */
+    testHolds() {
+        for (const it of this.items)
+            if (it.test && this.drawnShown(it) && this.onItsWay(it))
+                return true;
+        return !!this.host.testRunning && this.host.testRunning();
     }
     drawnShown(it) {
         return it.drawn && !it.f.hidden && this.host.shown(it.f);
@@ -41863,8 +41957,9 @@ class Pacer {
     gate() {
         let t = Infinity;
         let item = null;
+        const tests = this.testHolds();
         for (const it of this.items) {
-            if (!this.holds(it) || !this.onItsWay(it))
+            if (!this.holds(it, tests) || !this.onItsWay(it))
                 continue;
             const g = it.f.dropped !== undefined ? it.f.dropped : it.f.t0 + it.lat;
             if (g < t) {
@@ -41903,9 +41998,10 @@ class Pacer {
             const d0 = Math.max(this.clock, after);
             // between two cables: across the switch that forwarded it
             const transit = parent && f.view === 'physical' && parent.f.view === 'physical' && parent.f.track.ref !== f.track.ref ? exports.TRANSIT_MS : 0;
-            // a hop that is not shown (another view, a hidden protocol, a non-sender) takes no place
+            // a hop that is not shown (another view, a hidden protocol, a non-sender) takes no place; a Send test's is always drawn
             const shown = this.host.shown(f);
-            const drawn = !shown || live[f.view] < this.limit;
+            const test = f.test !== undefined;
+            const drawn = !shown || test || live[f.view] < this.limit;
             if (shown) {
                 if (drawn)
                     live[f.view]++;
@@ -41913,12 +42009,16 @@ class Pacer {
                     this.notDrawn++;
             }
             const h = this.host.headers ? this.host.headers(f) : undefined;
-            const it = { f, lat, d0, transit, hop: this.hopTime(lat, f.view, this.host.length ? this.host.length(f) : null), drawn, key: conversationKey(f.protocol, h, f.label), parent };
+            const it = { f, lat, d0, transit, hop: this.hopTime(lat, f.view, this.host.length ? this.host.length(f) : null), drawn, key: conversationKey(f.protocol, h, f.label), test, parent };
             this.items.push(it);
             this.byId.set(f.id, it);
             added.push(it);
         }
         return added;
+    }
+    /** Take in what was sent just now (a Send test, also while paused): on screen from now, without moving the simulation on. */
+    take() {
+        this.register();
     }
     /** Forget what has left the screen. */
     prune() {
@@ -42020,8 +42120,9 @@ class Pacer {
     step() {
         this.register();
         let next = Infinity;
+        const tests = this.testHolds();
         for (const it of this.items)
-            if (this.holds(it) && this.onItsWay(it))
+            if (this.holds(it, tests) && this.onItsWay(it))
                 next = Math.min(next, this.arrival(it));
         if (next < Infinity) {
             this.clock = Math.max(this.clock, next);
@@ -46996,6 +47097,8 @@ class NetServicesSim {
         pkt.len = 8 + 40;
         this.P.e.send(q.dev, pkt);
         const at = q.attempt;
+        // (a retry of a Send test's query is the test's too)
+        const test = this.P.e.testCtx;
         this.P.e.after(DNS_TIMEOUT, () => {
             if (q.done || q.attempt !== at)
                 return;
@@ -47003,7 +47106,7 @@ class NetServicesSim {
                 q.si++;
                 q.attempt = 0;
             }
-            this.ask(q);
+            this.P.e.withTest(test, () => this.ask(q));
         });
     }
     srcTo(dev, dst) {
@@ -47627,6 +47730,10 @@ class Transport {
      * each wait is logged with its reason.
      */
     begin(t, name) {
+        // a Send test's exchange is the test's: what it sends and needs, and every answer (always shown, marked Test)
+        this.e.withTest(t.source === 'manual' ? t.id : null, () => this.beginNow(t, name));
+    }
+    beginNow(t, name) {
         const dev = t.from;
         const lease = this.e.waitsForLease(dev);
         const what = { protocol: t.kind, type: 'test', label: `Test ${t.series}`, detail: `Test ${t.series}` };
@@ -47666,7 +47773,7 @@ class Transport {
             return;
         }
         // the application gives up after its response timeout (a broadcast ping collects the answers until then)
-        this.e.after(Number(t.timeout.value), () => {
+        this.later(Number(t.timeout.value), () => {
             if (t.done)
                 return;
             if (t.answers.length && (0, mac_1.isMulticastIp)(t.dst))
@@ -47685,6 +47792,11 @@ class Transport {
         else
             this.connect(t, s.src, s.vrf);
     }
+    /** A timer of a test or a connection: it goes on in the Send test it belongs to (the engine's timers carry none). */
+    later(dt, fn) {
+        const id = this.e.testCtx;
+        this.e.after(dt, () => this.e.withTest(id, fn));
+    }
     finish(t, ok, result) {
         if (t.done)
             return;
@@ -47694,7 +47806,7 @@ class Transport {
         if (ok && t.rtt === undefined)
             t.rtt = this.e.now - t.started;
         if (t.source !== 'health' && t.source !== 'probe' && t.source !== 'upstream')
-            this.e.note('state', t.kind, t.from, '', ok ? 'Test answered' : 'Test failed', ok ? 'answered' : 'failed', `Test ${t.series}: ${result}${ok && t.rtt !== undefined ? ` (round trip ${rttText(t.rtt)})` : ''}`);
+            this.e.withTest(t.source === 'manual' ? t.id : null, () => this.e.note('state', t.kind, t.from, '', ok ? 'Test answered' : 'Test failed', ok ? 'answered' : 'failed', `Test ${t.series}: ${result}${ok && t.rtt !== undefined ? ` (round trip ${rttText(t.rtt)})` : ''}`));
         if (t.onDone)
             t.onDone(t);
     }
@@ -47845,7 +47957,7 @@ class Transport {
             this.sendPkt(dev, src, pkt.src, pkt.vrf, m, { proto: 'udp', num: 17, sport: l4.dport, dport: l4.sport }, 8 + UDP_RESPONSE, false, this.e.ownerOf(pkt.src) || '');
         };
         if (Number(rt.value) > 0)
-            this.e.after(Number(rt.value), answer);
+            this.later(Number(rt.value), answer);
         else
             answer();
     }
@@ -47895,7 +48007,7 @@ class Transport {
         const g = ++c.gen;
         const wait = this.rto(c);
         c.timer = this.e.now + wait;
-        this.e.after(wait, () => {
+        this.later(wait, () => {
             if (c.gen !== g || c.state !== 'SYN_SENT')
                 return;
             const max = this.e.params.get('tcp-syn-retries', c.dev);
@@ -47943,7 +48055,7 @@ class Transport {
         const g = ++c.gen;
         const wait = this.rto(c);
         c.timer = this.e.now + wait;
-        this.e.after(wait, () => {
+        this.later(wait, () => {
             if (c.gen !== g || !c.unacked.length)
                 return;
             if (c.tries >= DATA_RETRIES) {
@@ -48046,7 +48158,7 @@ class Transport {
                     this.setState(c, 'LAST_ACK');
                     this.segment(dev, c, ['FIN', 'ACK'], 0, 'closes its side as well', undefined, c);
                     const g = ++c.gen;
-                    this.e.after(this.rto({ ...c, tries: 0 }) * 4, () => {
+                    this.later(this.rto({ ...c, tries: 0 }) * 4, () => {
                         if (c.gen === g && c.state === 'LAST_ACK')
                             this.closeConn(c, 'closed (the last ACK did not come)');
                     });
@@ -48070,7 +48182,7 @@ class Transport {
                     this.setState(c, 'TIME_WAIT');
                     const g = ++c.gen;
                     c.timer = this.e.now + TIME_WAIT;
-                    this.e.after(TIME_WAIT, () => {
+                    this.later(TIME_WAIT, () => {
                         if (c.gen === g)
                             this.closeConn(c, `TIME_WAIT over (${(0, params_1.durationText)(TIME_WAIT)})`);
                     });
@@ -48119,7 +48231,7 @@ class Transport {
             this.setState(c, 'FIN_WAIT_1');
             this.segment(c.dev, c, ['FIN', 'ACK'], 0, 'closes the connection', undefined, c);
             const g = ++c.gen;
-            this.e.after(this.rto({ ...c, tries: 0 }) * 4, () => {
+            this.later(this.rto({ ...c, tries: 0 }) * 4, () => {
                 if (c.gen === g && c.state === 'FIN_WAIT_1')
                     this.closeConn(c, 'closed (no answer to the FIN)');
             });
@@ -48146,7 +48258,7 @@ class Transport {
             this.sendData(c, RESPONSE_BYTES, `the answer${Number(rt.value) > 0 ? ' after the service response time ' + (0, params_1.resolvedText)(rt) : ''}`);
         };
         if (Number(rt.value) > 0)
-            this.e.after(Number(rt.value), answer);
+            this.later(Number(rt.value), answer);
         else
             answer();
     }
@@ -48157,7 +48269,7 @@ class Transport {
         if (c.role === 'server' && type === 'proxy') {
             const ct = this.e.params.get('proxy-client', c.dev);
             c.timer = this.e.now + Number(ct.value);
-            this.e.after(Number(ct.value), () => {
+            this.later(Number(ct.value), () => {
                 if (c.gen !== g || (c.state !== 'ESTABLISHED' && c.state !== 'SYN_RCVD'))
                     return;
                 this.e.note('state', 'tcp', c.dev, this.e.ownerOf(c.remote) || '', 'client timeout', '', `${c.dev} closes the idle client connection from ${(0, ipmath_1.formatAddr)(c.remote)}:${c.rport} after its client connection timeout ${(0, params_1.resolvedText)(ct)}`);
@@ -48173,7 +48285,7 @@ class Transport {
         const ka = this.e.params.get('tcp-keepalive', c.dev);
         const at = c.probes ? KA_INTERVAL : Number(ka.value);
         c.timer = this.e.now + at;
-        this.e.after(at, () => {
+        this.later(at, () => {
             if (c.gen !== g || c.state !== 'ESTABLISHED')
                 return;
             if (c.probes >= KA_PROBES) {
@@ -48855,8 +48967,8 @@ class SimAnimator {
                     dots.appendChild(trail(this.doc, geo, it.st.frac, opts.color(it.f.protocol)));
             }
         }
-        // the earliest first: what started first keeps its place
-        const list = items.filter((it) => it.f.view === opts.view).sort((a, b) => a.f.t0 - b.f.t0 || a.f.id - b.f.id);
+        // a Send test's hops first (their labels always find room), then the earliest: what started first keeps its place
+        const list = items.filter((it) => it.f.view === opts.view).sort((a, b) => Number(!!b.test) - Number(!!a.test) || a.f.t0 - b.f.t0 || a.f.id - b.f.id);
         for (const it of list) {
             const f = it.f;
             const st = it.st;
@@ -48894,7 +49006,8 @@ class SimAnimator {
                 senders.add(ends.from);
             if (st.phase === 'transit' && ends.from)
                 senders.add(ends.from);
-            const text = lost ? `✕ lost: ${f.label}` : f.label + (f.encap && f.encap.length ? ` ‹${f.encap.slice().reverse().join(' in ')}›` : '');
+            const name = (it.test ? 'Test · ' : '') + f.label;
+            const text = lost ? `✕ lost: ${name}` : name + (f.encap && f.encap.length ? ` ‹${f.encap.slice().reverse().join(' in ')}›` : '');
             const w = (0, geometry_1.textWidth)(text, FONT) + 4;
             const h = FONT + 4;
             let box = (0, sim_labels_1.placeLabel)((0, sim_labels_1.candidates)(p.x, p.y, p.ux, p.uy, w, h, 1), this.obstacles, placed);
@@ -48928,6 +49041,8 @@ class SimAnimator {
                     e.classList.add('faded');
                 if (it.followed)
                     e.classList.add('followed');
+                if (it.test)
+                    e.classList.add('sim-test');
                 if (fade < 1)
                     e.setAttribute('opacity', fade.toFixed(2));
             }
@@ -53435,6 +53550,26 @@ async function runSelfTest(app, doc) {
             ctl.runTo(sim.now + 3000);
             await tick();
             check(`${theme}: Send test… from pc1 (its menu): the Actions panel’s form with pc1; a TCP connection to a closed port of srv is refused (RST)`, q('#sim-t-from').value === 'pc1' && /^Test sent/.test(tSent) && /pc1 → srv tcp\/22: connection refused: RST from 10\.30\.0\.10 \(srv\)/.test((q('#sim-tests li') || { textContent: '' }).textContent || ''), (q('#sim-tests li') || { textContent: '' }).textContent || '');
+            {
+                // a Send test's messages are marked Test (the SYN, the RST), in the log too; paused, Send sends now and waits for Play; Send and play plays
+                const t = sim.tests()[0];
+                const marked = sim.events().filter((e) => e.test === t.id && e.kind === 'message').map((e) => e.what);
+                ctl.refresh(true);
+                await tick();
+                const tags = doc.querySelectorAll('#sd-log .sim-test-tag').length;
+                const was = ctl.playing;
+                ctl.setPlaying(false);
+                const at = ctl.t;
+                const m1 = ctl.sendTest({ from: 'pc1', to: 'srv', kind: 'icmp' });
+                await tick();
+                const sp = q('#sim-t-sendplay');
+                const pausedOk = /^Sent at t = .* It starts when the simulation plays\.$/.test(m1) && ctl.t === at && sim.tests()[0].started === at && !sp.hidden && ctl.drawItems().some((d) => d.test);
+                const m2 = ctl.sendTest({ from: 'pc1', to: 'srv', kind: 'icmp' }, true);
+                await tick();
+                const playOk = ctl.playing && sp.hidden && /^Test sent at t = /.test(m2);
+                ctl.setPlaying(was);
+                check(`${theme}: a Send test’s messages are marked Test (the SYN and the RST, in the log too); paused, Send sends at the current time and says it starts on Play; Send and play sends and plays`, marked.indexOf('TCP SYN') >= 0 && marked.indexOf('TCP RST') >= 0 && tags > 0 && pausedOk && playOk, `${marked.join(',')} · ${tags} tags · ${m1} · ${m2}`);
+            }
             ctl.highlightDomain({ dev: 'lab-h', iface: 'eth0' });
             await tick();
             const on = Array.from(doc.querySelectorAll('#canvas .node.bc-on')).map((n) => n.getAttribute('data-ref')).sort().join(',');
@@ -53550,6 +53685,9 @@ async function runSelfTest(app, doc) {
             check(`${theme}: the indicator: a solid 2 px inset border that catches no click, and the “Simulation running” label`, /inset/.test(after.boxShadow) && /2px/.test(after.boxShadow) && after.pointerEvents === 'none' && !!badge && /Simulation running/.test(badge.textContent || '') && doc.defaultView.getComputedStyle(badge).borderTopStyle === 'solid', after.boxShadow);
             q('#btn-sim-exit').click();
             await tick();
+            check(`${theme}: Exit simulation from srv’s Edit tab: no “Editing is paused” notice or disabled Exit simulation is left, the form takes input, the Objects list can add again; the Edit tab as before, with the last selection (pc1, from Show DNS cache)`, !q('.lock-note') && !q('#side-body [data-command="sim.exit"]') && !q('#side-body fieldset[disabled]') && !!q('#side-body input:not([disabled])') &&
+                Array.from(doc.querySelectorAll('#outline [data-act="add-entity"]')).every((b) => !b.disabled) &&
+                q('#side .tabs .active').getAttribute('data-tab') === 'edit' && app.session.state.selected === 'device:pc1');
             check(`${theme}: after the simulation the reserved lines say again that the lease is assigned in a simulation`, Array.from(doc.querySelectorAll('#canvas [data-field="lease"]')).every((t) => t.textContent === 'lease: assigned in a simulation'));
         }
         app.theme.set('dark');

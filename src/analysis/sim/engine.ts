@@ -445,6 +445,28 @@ export class Engine {
    */
   senders: Set<string> | null = null;
 
+  /**
+   * The Send test whose exchange the engine is handling now (its id; null:
+   * none): set while a test sends (transport.ts), and while a frame of a
+   * test is received, so that what it needs and what answers it (an ARP
+   * request, a reply, an ICMP error, a RST, a forwarded copy) belongs to
+   * the test too. Timers do not carry it (a periodic timer started then is
+   * not the test's); the transport's own timers pass it on themselves.
+   */
+  testCtx: number | null = null;
+
+  /** Run `fn` as part of a Send test's exchange (id null or undefined: as it is). */
+  withTest<T>(id: number | null | undefined, fn: () => T): T {
+    if (id === null || id === undefined) return fn();
+    const was = this.testCtx;
+    this.testCtx = id;
+    try {
+      return fn();
+    } finally {
+      this.testCtx = was;
+    }
+  }
+
   /** Is a device a sender? */
   isSender(dev: string): boolean {
     return !this.senders || this.senders.has(dev);
@@ -460,6 +482,7 @@ export class Engine {
   private mark(msg: Msg, dev: string): void {
     if (msg.sender === undefined) msg.sender = dev;
     if (msg.origin === undefined) msg.origin = this.cause !== null ? this.cause : dev;
+    if (msg.test === undefined && this.testCtx !== null) msg.test = this.testCtx;
     if (msg.causedBy === undefined && this.causeMsg && this.causeMsg !== msg) msg.causedBy = `${this.causeMsg.label}${this.causeMsg.sender ? ` (sent by ${this.causeMsg.sender})` : ''}, received at t = ${(this.now / 1000).toFixed(6)} s`;
   }
 
@@ -467,13 +490,16 @@ export class Engine {
   private caused(msg: Msg, fn: () => void): void {
     const was = this.cause;
     const wasMsg = this.causeMsg;
+    const wasTest = this.testCtx;
     this.cause = msg.origin !== undefined ? msg.origin : null;
     this.causeMsg = msg;
+    this.testCtx = msg.test !== undefined ? msg.test : null;
     try {
       fn();
     } finally {
       this.cause = was;
       this.causeMsg = wasMsg;
+      this.testCtx = wasTest;
     }
   }
 
@@ -560,10 +586,12 @@ export class Engine {
       this.mark(msg, device);
       ev.sender = msg.sender;
       ev.origin = msg.origin;
+      if (msg.test !== undefined) ev.test = msg.test;
     } else if (kind === 'message') {
       ev.sender = device;
       ev.origin = this.cause !== null ? this.cause : device;
     }
+    if (ev.test === undefined && this.testCtx !== null) ev.test = this.testCtx;
     this.log.push(ev);
     if (this.log.length > LOG_MAX + 500) {
       const n = this.log.length - LOG_MAX;
@@ -1639,6 +1667,7 @@ export class Engine {
     if (msg.sender === undefined && this.net.devices.has(track.from)) this.mark(msg, track.from);
     if (msg.sender !== undefined) f.sender = msg.sender;
     if (msg.origin !== undefined) f.origin = msg.origin;
+    if (msg.test !== undefined) f.test = msg.test;
     this.flights.push(f);
     this.flightById.set(f.id, f);
     return f;
@@ -2391,16 +2420,20 @@ export class Engine {
             tab.delete(k);
             this.tableNote(dev, e, 'removed', `${e.ipText} removed: no answer to ${e.tries} ${e.ip.version === 4 ? 'ARP Requests' : 'solicitations'}${e.queue.length ? '; ' + e.queue.length + ' waiting packet' + (e.queue.length === 1 ? '' : 's') + ' dropped' : ''}`);
             for (const w of e.queue) {
-              this.note('drop', w.pkt.msg.protocol, dev, '', w.pkt.msg.type, '', `dropped at ${dev}: ${e.ipText} could not be resolved (${w.pkt.msg.label})`);
-              if (w.fwd) this.icmpError(dev, w.pkt, 'host', { from: l3 });
-              else if (this.protocols && this.protocols.localError) this.protocols.localError(dev, w.pkt, 'host', `${e.ipText} does not answer ${e.ip.version === 4 ? 'ARP' : 'neighbour solicitations'} (host unreachable)`);
+              this.withTest(w.pkt.msg.test, () => {
+                this.note('drop', w.pkt.msg.protocol, dev, '', w.pkt.msg.type, '', `dropped at ${dev}: ${e.ipText} could not be resolved (${w.pkt.msg.label})`);
+                if (w.fwd) this.icmpError(dev, w.pkt, 'host', { from: l3 });
+                else if (this.protocols && this.protocols.localError) this.protocols.localError(dev, w.pkt, 'host', `${e.ipText} does not answer ${e.ip.version === 4 ? 'ARP' : 'neighbour solicitations'} (host unreachable)`);
+              });
             }
             continue;
           }
           e.tries++;
           e.sentAt = t;
           e.timer = t + this.retrans(dev, e.iface);
-          this.solicit(dev, l3, e.ip, e.type === 'incomplete' ? '' : e.mac);
+          // a retry for a Send test's packet is the test's too
+          const tq = e.queue.find((w) => w.pkt.msg.test !== undefined);
+          this.withTest(tq ? tq.pkt.msg.test : null, () => this.solicit(dev, l3, e.ip, e.type === 'incomplete' ? '' : e.mac));
           continue;
         }
         if (e.ip.version === 4) {

@@ -1215,6 +1215,9 @@ table.spof-table td.num, table.spof-table td.nowrap { white-space: nowrap; overf
 .node.sim-rx .dev-box { stroke: var(--ok) !important; stroke-width: 3 !important; }
 .layer-sim .sim-pulse { fill: none; stroke-width: 2.5; }
 .layer-sim .sim-trail { fill: none; stroke-width: 6; stroke-linecap: round; stroke-linejoin: round; opacity: 0.4; }
+/* a Send test's messages: their labels bold (the word "Test" says it, not the weight alone); "Test" in the event log */
+.layer-sim-labels .sim-test text { font-weight: 700; }
+.sim-test-tag { display: inline-block; padding: 0 4px; border: 1px solid var(--sim); border-radius: 3px; font-size: 0.85em; font-weight: 700; line-height: 1.3; color: var(--text); }
 .layer-sim .faded, .layer-sim-labels .faded { opacity: 0.35; }
 .sim-time { font-family: var(--font-mono); font-size: 13px; font-variant-numeric: tabular-nums; }
 .sim-swatch { display: inline-block; flex: none; width: 10px; height: 10px; border-radius: 50%; border: 1px solid var(--text); }

@@ -492,6 +492,11 @@ export class Transport {
    * each wait is logged with its reason.
    */
   private begin(t: Test, name?: string): void {
+    // a Send test's exchange is the test's: what it sends and needs, and every answer (always shown, marked Test)
+    this.e.withTest(t.source === 'manual' ? t.id : null, () => this.beginNow(t, name));
+  }
+
+  private beginNow(t: Test, name?: string): void {
     const dev = t.from;
     const lease = this.e.waitsForLease(dev);
     const what: Msg = { protocol: t.kind, type: 'test', label: `Test ${t.series}`, detail: `Test ${t.series}` };
@@ -529,7 +534,7 @@ export class Transport {
       return;
     }
     // the application gives up after its response timeout (a broadcast ping collects the answers until then)
-    this.e.after(Number(t.timeout.value), () => {
+    this.later(Number(t.timeout.value), () => {
       if (t.done) return;
       if (t.answers.length && isMulticastIp(t.dst)) this.finish(t, true, `received by ${t.answers.length} member${t.answers.length === 1 ? '' : 's'}: ${t.answers.slice().sort().join(', ')}`);
       else if (isMulticastIp(t.dst) && t.kind === 'udp') this.finish(t, false, `no member received it within ${'def' in t.timeout ? resolvedText(t.timeout as Resolved) : durationText(Number(t.timeout.value))}`);
@@ -541,13 +546,19 @@ export class Transport {
     else this.connect(t, s.src, s.vrf);
   }
 
+  /** A timer of a test or a connection: it goes on in the Send test it belongs to (the engine's timers carry none). */
+  private later(dt: number, fn: () => void): void {
+    const id = this.e.testCtx;
+    this.e.after(dt, () => this.e.withTest(id, fn));
+  }
+
   private finish(t: Test, ok: boolean, result: string): void {
     if (t.done) return;
     t.done = true;
     t.ok = ok;
     t.result = result;
     if (ok && t.rtt === undefined) t.rtt = this.e.now - t.started;
-    if (t.source !== 'health' && t.source !== 'probe' && t.source !== 'upstream') this.e.note('state', t.kind, t.from, '', ok ? 'Test answered' : 'Test failed', ok ? 'answered' : 'failed', `Test ${t.series}: ${result}${ok && t.rtt !== undefined ? ` (round trip ${rttText(t.rtt)})` : ''}`);
+    if (t.source !== 'health' && t.source !== 'probe' && t.source !== 'upstream') this.e.withTest(t.source === 'manual' ? t.id : null, () => this.e.note('state', t.kind, t.from, '', ok ? 'Test answered' : 'Test failed', ok ? 'answered' : 'failed', `Test ${t.series}: ${result}${ok && t.rtt !== undefined ? ` (round trip ${rttText(t.rtt)})` : ''}`));
     if (t.onDone) t.onDone(t);
   }
 
@@ -688,7 +699,7 @@ export class Transport {
       const m = this.msg('udp', 'UDP answer', `UDP ← ${formatAddr(src)}:${l4.dport}`, `UDP ${formatAddr(src)}:${l4.dport} → ${formatAddr(pkt.src)}:${l4.sport}, ${UDP_RESPONSE} bytes: the answer${Number(rt.value) > 0 ? ' after the service response time ' + resolvedText(rt) : ''}`, { test: d.test, reply: true });
       this.sendPkt(dev, src, pkt.src, pkt.vrf, m, { proto: 'udp', num: 17, sport: l4.dport, dport: l4.sport }, 8 + UDP_RESPONSE, false, this.e.ownerOf(pkt.src) || '');
     };
-    if (Number(rt.value) > 0) this.e.after(Number(rt.value), answer);
+    if (Number(rt.value) > 0) this.later(Number(rt.value), answer);
     else answer();
   }
 
@@ -744,7 +755,7 @@ export class Transport {
     const g = ++c.gen;
     const wait = this.rto(c);
     c.timer = this.e.now + wait;
-    this.e.after(wait, () => {
+    this.later(wait, () => {
       if (c.gen !== g || c.state !== 'SYN_SENT') return;
       const max = this.e.params.get('tcp-syn-retries', c.dev);
       if (c.tries >= Number(max.value)) {
@@ -790,7 +801,7 @@ export class Transport {
     const g = ++c.gen;
     const wait = this.rto(c);
     c.timer = this.e.now + wait;
-    this.e.after(wait, () => {
+    this.later(wait, () => {
       if (c.gen !== g || !c.unacked.length) return;
       if (c.tries >= DATA_RETRIES) {
         this.closeConn(c, `reset: no acknowledgement after ${c.tries} retransmissions`);
@@ -885,7 +896,7 @@ export class Transport {
           this.setState(c, 'LAST_ACK');
           this.segment(dev, c, ['FIN', 'ACK'], 0, 'closes its side as well', undefined, c);
           const g = ++c.gen;
-          this.e.after(this.rto({ ...c, tries: 0 }) * 4, () => {
+          this.later(this.rto({ ...c, tries: 0 }) * 4, () => {
             if (c.gen === g && c.state === 'LAST_ACK') this.closeConn(c, 'closed (the last ACK did not come)');
           });
           return;
@@ -906,7 +917,7 @@ export class Transport {
           this.setState(c, 'TIME_WAIT');
           const g = ++c.gen;
           c.timer = this.e.now + TIME_WAIT;
-          this.e.after(TIME_WAIT, () => {
+          this.later(TIME_WAIT, () => {
             if (c.gen === g) this.closeConn(c, `TIME_WAIT over (${durationText(TIME_WAIT)})`);
           });
         }
@@ -952,7 +963,7 @@ export class Transport {
       this.setState(c, 'FIN_WAIT_1');
       this.segment(c.dev, c, ['FIN', 'ACK'], 0, 'closes the connection', undefined, c);
       const g = ++c.gen;
-      this.e.after(this.rto({ ...c, tries: 0 }) * 4, () => {
+      this.later(this.rto({ ...c, tries: 0 }) * 4, () => {
         if (c.gen === g && c.state === 'FIN_WAIT_1') this.closeConn(c, 'closed (no answer to the FIN)');
       });
       return;
@@ -976,7 +987,7 @@ export class Transport {
       if (c.state !== 'ESTABLISHED') return;
       this.sendData(c, RESPONSE_BYTES, `the answer${Number(rt.value) > 0 ? ' after the service response time ' + resolvedText(rt) : ''}`);
     };
-    if (Number(rt.value) > 0) this.e.after(Number(rt.value), answer);
+    if (Number(rt.value) > 0) this.later(Number(rt.value), answer);
     else answer();
   }
 
@@ -987,7 +998,7 @@ export class Transport {
     if (c.role === 'server' && type === 'proxy') {
       const ct = this.e.params.get('proxy-client', c.dev);
       c.timer = this.e.now + Number(ct.value);
-      this.e.after(Number(ct.value), () => {
+      this.later(Number(ct.value), () => {
         if (c.gen !== g || (c.state !== 'ESTABLISHED' && c.state !== 'SYN_RCVD')) return;
         this.e.note('state', 'tcp', c.dev, this.e.ownerOf(c.remote) || '', 'client timeout', '', `${c.dev} closes the idle client connection from ${formatAddr(c.remote)}:${c.rport} after its client connection timeout ${resolvedText(ct)}`);
         this.setState(c, 'FIN_WAIT_1');
@@ -1002,7 +1013,7 @@ export class Transport {
     const ka = this.e.params.get('tcp-keepalive', c.dev);
     const at = c.probes ? KA_INTERVAL : Number(ka.value);
     c.timer = this.e.now + at;
-    this.e.after(at, () => {
+    this.later(at, () => {
       if (c.gen !== g || c.state !== 'ESTABLISHED') return;
       if (c.probes >= KA_PROBES) {
         this.segment(c.dev, c, ['RST'], 0, 'keepalive: the peer is gone', undefined, c);

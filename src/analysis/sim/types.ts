@@ -35,6 +35,8 @@ export interface Msg {
   causedBy?: string;
   /** what it waited for before it could be sent, and how long ("ARP 10.0.12.2: 0.2 ms") */
   waited?: string[];
+  /** the Send test it belongs to (its id): the test's own packets, what they need (ARP, NDP, DNS) and every answer to them */
+  test?: number;
 }
 
 /** The transport header of a packet (ICMP counts here too): what the inspector, firewalls and the transport layer read. */
@@ -128,6 +130,8 @@ export interface Flight {
   /** its message's sender and origin (Senders: what is shown) */
   sender?: string;
   origin?: string;
+  /** the Send test its message belongs to (always shown, drawn first, marked Test) */
+  test?: number;
 }
 
 export type Cast = 'unicast' | 'broadcast' | 'multicast';
@@ -185,6 +189,8 @@ export interface SimEvent {
   /** a message: its sender and origin (Senders: what the log lists) */
   sender?: string;
   origin?: string;
+  /** of a Send test (its id): listed whatever the filters, marked Test */
+  test?: number;
 }
 
 /** A protocol session's status (the status table). */

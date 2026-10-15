@@ -152,6 +152,10 @@ there is no conversion of files written for the earlier drafts.
 
 ### Added
 
+- **Send and play** in the Send test form while paused. A test's messages
+  are marked **Test** (in their labels, *Test ·*, and in the event log)
+  and draw a trail.
+
 - **DHCP and DNS servers.** A server's **Services** card with **DHCP
   server** and **DNS server** checkboxes (off by default): scopes with
   network, range, gateway, DNS servers, lease, exclusions, reservations and
@@ -691,6 +695,18 @@ there is no conversion of files written for the earlier drafts.
 
 ### Changed
 
+- **Send test runs at once**: a test is sent at the current simulated
+  time, in parallel with the traffic on screen, after only its real
+  dependencies (ARP / NDP, DNS, a DHCP lease, the TCP handshake). Its
+  messages and answers (replies, ICMP errors, RSTs) are always shown,
+  whatever the senders and the protocols ticked, take display priority at
+  the dot limit, and while the test is on its way it alone sets the pace
+  (as Follow message does). Paused, Send sends at the current time and
+  the panel says it starts when the simulation plays.
+- The logical view's typical hop (what readable pacing scales by) is two
+  cables, fixed for the whole simulation, instead of being learned from
+  its first 64 hops.
+
 - **The simulation indicator** is a thin solid 2 px border inside the
   diagram (3:1 or more in both themes, `pointer-events: none`) and the
   label *◈ Simulation running*, instead of the hatched frame.
@@ -923,6 +939,28 @@ live protocol simulation replaces them.
   failure are tool windows now).
 
 ### Fixed
+
+- **Test messages were delayed.** A test sent while many dots were on
+  screen was not drawn at all (beyond the 48-dot limit, or from a sender or
+  protocol not chosen); hops that are not drawn do not hold the simulated
+  clock, so the simulation ran through the test unseen (idle skipping
+  jumped past it too) and only its result appeared. A drawn test's next hop
+  could only be processed once every message on screen that arrived
+  earlier in simulated time had reached its end on screen, seconds later.
+- **The first packets moved faster than later ones.** The display clock
+  took its reference when the animation was scheduled, before the
+  simulation layout was set up, so the first frame counted the setup time
+  (up to 250 ms, and a negative step before it); the hops on screen jumped
+  ahead. In the logical view the typical hop was still being learned
+  during the startup burst, so the first hops were paced on another
+  scale. The clock now starts with the first frame drawn, a frame counts
+  at most 100 ms, and the typical hop is fixed.
+- **The "Editing is paused" notice stayed after Exit simulation**, with a
+  greyed-out Exit simulation button, a read-only form and the outline's
+  Add buttons disabled: stopping the simulation brought the Inspector back
+  while the editing lock was still set (it was cleared just after, and
+  nothing drew the Inspector again). The lock is now cleared first, and the
+  notice is shown only while a simulation runs.
 
 - **Menus behind the simulation frame.** The top bar's menus (and the
   palette, the in-diagram menu and the packet inspector) could appear
