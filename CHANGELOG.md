@@ -631,6 +631,35 @@ there is no conversion of files written for the earlier drafts.
 
 ### Changed
 
+- **Independent protocol exchanges run in parallel.** The cause of the
+  one-after-another display: each session started at its own random moment
+  between 0.2 and 1.7 s (and the boot announcements between 0 and 0.9 s),
+  and the periodic timers kept those phases; a hop takes about 0.1 ms of
+  simulated time, and the readable pacing holds the simulated clock at the
+  first arrival on screen, so a message that started more than a hop later
+  could only be drawn after that dot arrived, three seconds later. Now
+  everything is scheduled by its actual preconditions only: every cable
+  comes up after the link-up delay, every session and multicast or
+  broadcast protocol starts the moment its interface is up, all together,
+  with a seeded jitter of less than a hop (timers too, without drifting);
+  unicast waits for its own next hop's ARP; BGP connects the moment there
+  is a route to its peer (no more polling every second); what runs over a
+  tunnel waits for the tunnel instead of being dropped, a PIM Register for
+  a route to the RP, a Join for its RPF route (a wait, no longer *cannot
+  join*); BFD for its client session; an aggregate's traffic for LACP to
+  bundle a member; a tunnel's own keepalives run over the interface of its
+  source. The event log has *waiting* rows with the reason and groups the
+  events of one moment; the packet inspector shows a message's *Timing*
+  (caused by, waited for). The dot limit and the pacing never change a
+  simulated time.
+- **The simulation panel is its header and exactly three rows** of the
+  status and of the log by default, measured from the rows and headers as
+  the theme and zoom make them, and that is its minimum; the panel is never
+  taller than the diagram. Remembered under a new key
+  (`netatlas.simPanelHeight3`); a double-click resets it. The status has a
+  one-line summary like the log's, so both tables start level; the log
+  stays at its newest rows when the panel's height changes.
+
 - **Slower default pacing:** about 3 s per hop (2–6 s by relative latency,
   before 1 s, 0.6–3 s), a dot never faster than 70 px a second at 100 %
   zoom, 0.6 s across a switch, the arrival pulse and a lost message's ✕

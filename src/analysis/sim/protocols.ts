@@ -21,7 +21,7 @@ import { Model, Relation, relationDevices } from '../../model/types';
 import { compareAddr, formatAddr } from '../ipmath';
 import { relParam } from '../routing';
 import { Engine, Frame, IcmpKind, Protocols, fmtSec, hashIndex } from './engine';
-import { L3Iface, SimDevice, SimAddr } from './net';
+import { L3Iface, SimDevice, SimAddr, portKey } from './net';
 import { ParamChange, Resolved, formatValue, sourceText } from './params';
 import { L4, Msg, Pkt, SessionStatus } from './types';
 
@@ -119,6 +119,8 @@ interface Periodic {
   /** the interval it is scheduled with */
   iv: number;
   token: number;
+  /** when it is due, without its jitter (the next one counts from here, so the jitter never adds up) */
+  next: number;
 }
 
 /** A message's data: who sent it and for which session. */
@@ -286,20 +288,39 @@ export class ProtocolSim implements Protocols {
     return this.sessions.get(`${protocol}|${rel}|${dev}|${peer}`);
   }
 
-  /** Start: every interface comes up at t = 0 (with a gratuitous ARP), then every session after a small jitter. */
+  /**
+   * Start, as a freshly booted network: every cable negotiates and its
+   * interfaces come up after the link-up delay (announcing themselves with a
+   * gratuitous ARP); every session starts as soon as its interface is up,
+   * with a small jitter, all of them together: what doesn't depend on
+   * anything else runs in parallel from the start.
+   */
   start(): void {
     this.build();
-    // interfaces up, as on a freshly booted network
+    this.e.boot();
+    // a freshly booted network: what has no cable to wait for is up at once, the rest when its cable is
     for (const d of this.e.net.devices.values()) {
-      const ifs = Array.from(d.l3.values()).filter((l) => l.kind !== 'tunnel').map((l) => l.id).sort(cmp);
-      if (ifs.length) this.e.note('link', 'link', d.id, '', 'interfaces up', 'up', `${d.id}: ${ifs.join(', ')} up (fresh start: empty ARP, neighbour and MAC tables, every adjacency down)`, 0);
+      const ifs = Array.from(d.l3.values()).filter((l) => l.kind !== 'tunnel').sort((a, b) => cmp(a.id, b.id));
+      if (!ifs.length) continue;
+      const up = ifs.filter((l) => this.e.isL3Up(d.id, l.id)).map((l) => l.id);
+      const later = ifs.filter((l) => !this.e.isL3Up(d.id, l.id)).map((l) => l.id);
+      const parts = (up.length ? [`${up.join(', ')} up`] : []).concat(later.length ? [`${later.join(', ')} coming up (the link-up delay)`] : []);
+      this.e.note('link', 'link', d.id, '', up.length && !later.length ? 'interfaces up' : 'interfaces coming up', up.length && !later.length ? 'up' : '', `${d.id}: ${parts.join('; ')} (fresh start: empty ARP, neighbour and MAC tables, every adjacency down)`, 0);
     }
     for (const h of this.bootHooks) h();
     const list = Array.from(this.sessions.values()).sort((a, b) => cmp(a.key, b.key));
     for (const s of list) {
       this.timersNote(s);
-      const jitter = 200 + Math.floor(this.e.random() * 1500);
-      this.e.at(jitter, () => this.startSession(s));
+      this.startWhenUp(s);
+    }
+    // what waits for its link, said once per interface
+    for (const k of Array.from(this.pendingStart.keys()).sort(cmp)) {
+      const ss = this.pendingStart.get(k) as Sess[];
+      const [dev, iface] = [ss[0].dev, ss[0].local.l3.id];
+      const names = Array.from(new Set(ss.map((x) => x.profile.label))).sort(cmp);
+      const kind = ss[0].local.l3.kind;
+      const what = kind === 'tunnel' ? 'the tunnel to come up (what carries it first)' : `the link${kind === 'aggregate' ? ' and LACP' : ''} to come up (Layer 1: link-up delay ${this.paramText(this.param('link-up-delay'))}${kind === 'aggregate' ? '; then LACP bundles its members' : ''})`;
+      this.e.note('wait', ss[0].protocol, dev, '', 'waiting', '', `${dev}:${iface}: ${names.join(', ')} wait${ss.length === 1 ? 's' : ''} for ${what}`, 0);
     }
     // the tables' timers: a sweep every second
     const sweep = (): void => {
@@ -308,6 +329,92 @@ export class ProtocolSim implements Protocols {
     };
     this.e.at(1000, sweep);
     this.e.startConfigured();
+  }
+
+  /** the sessions that wait for their interface to come up, by "device:interface" */
+  private pendingStart = new Map<string, Sess[]>();
+  /** what else waits for an interface ("device:interface") or a cable ("link:id") to come up */
+  private pendingUp = new Map<string, Array<() => void>>();
+
+  /**
+   * Run `fn` once a device's interface is up: now (with a small jitter) when
+   * it is, else as soon as it comes up (Layer 1: nothing is sent before).
+   */
+  whenIfaceUp(dev: string, iface: string, fn: () => void): void {
+    if (this.e.isL3Up(dev, iface)) {
+      this.e.at(this.e.now + this.e.jitter(), fn);
+      return;
+    }
+    const k = dev + ':' + iface;
+    this.pendingUp.set(k, (this.pendingUp.get(k) || []).concat([fn]));
+  }
+
+  /** Run `fn` once the cable at a device's port is up (LACP, the spanning tree, LLDP …). */
+  whenPortUp(dev: string, port: string, fn: () => void): void {
+    const e = this.e.net.ends.get(portKey(dev, port));
+    if (!e || this.e.linkUp(e.link)) {
+      this.e.at(this.e.now + this.e.jitter(), fn);
+      return;
+    }
+    const k = 'link:' + e.link;
+    this.pendingUp.set(k, (this.pendingUp.get(k) || []).concat([fn]));
+  }
+
+  /** Run `fn` once the first of a device's cabled ports is up (a switch's own messages: its snooping querier). */
+  whenAnyPortUp(dev: string, fn: () => void): void {
+    const ports = Array.from(this.e.net.ends.values()).filter((x) => x.device === dev).map((x) => x.port).sort(cmp);
+    if (!ports.length) {
+      this.e.at(this.e.now + this.e.jitter(), fn);
+      return;
+    }
+    let done = false;
+    for (const p of ports)
+      this.whenPortUp(dev, p, () => {
+        if (done) return;
+        done = true;
+        fn();
+      });
+  }
+
+  /** What waited for this interface or cable runs now, together (each with its small jitter). */
+  private releaseUp(k: string): void {
+    const list = this.pendingUp.get(k);
+    if (!list) return;
+    this.pendingUp.delete(k);
+    for (const fn of list) this.e.at(this.e.now + this.e.jitter(), fn);
+  }
+
+  /** Start a session as soon as its interface is up (with a small jitter); until then it sends nothing. */
+  private startWhenUp(s: Sess): void {
+    // a tunnel's own session (GRE's keepalives …) runs over the interface of the tunnel's source; what runs inside the tunnel waits for the tunnel
+    const iface = this.ownTunnel(s) ? this.underlay(s.dev, s.local.l3.id) : s.local.l3.id;
+    if (iface !== s.local.l3.id) {
+      if (!iface || this.e.isL3Up(s.dev, iface)) this.e.at(this.e.now + this.e.jitter(), () => this.startSession(s));
+      else this.whenIfaceUp(s.dev, iface, () => this.startSession(s));
+      return;
+    }
+    if (this.e.isL3Up(s.dev, s.local.l3.id)) {
+      this.e.at(this.e.now + this.e.jitter(), () => this.startSession(s));
+      return;
+    }
+    const k = s.dev + ':' + s.local.l3.id;
+    const list = this.pendingStart.get(k) || [];
+    list.push(s);
+    this.pendingStart.set(k, list);
+  }
+
+  /** Is a session its tunnel interface's own (the tunnel relation, whose keepalives say whether the tunnel is up)? */
+  private ownTunnel(s: Sess): boolean {
+    return s.local.l3.kind === 'tunnel' && (s.rel.category === 'tunnel' || s.rel.category === 'overlay');
+  }
+
+  /** The interface a tunnel's source address is on (its underlay); null when there is none to wait for. */
+  private underlay(dev: string, tun: string): string | null {
+    const ends = this.e.tunnelEnds(dev, tun);
+    if (!ends.length) return null;
+    const sd = this.sd(dev);
+    const l = Array.from(sd.l3.values()).find((x) => x.kind !== 'tunnel' && x.addrs.some((a) => compareAddr(a.addr, ends[0].src) === 0));
+    return l ? l.id : null;
   }
 
   /** Start a session once (a message that arrives before its own start starts it first). */
@@ -374,7 +481,7 @@ export class ProtocolSim implements Protocols {
    * interval, or now when that is past).
    */
   periodic(alive: () => boolean, interval: () => number, fn: () => void, first = 0): void {
-    const p: Periodic = { alive, interval, fn, last: this.e.now, iv: interval(), token: 0 };
+    const p: Periodic = { alive, interval, fn, last: this.e.now, iv: interval(), token: 0, next: this.e.now };
     if (this.periodics.length > 64 && this.periodics.length % 64 === 0) this.periodics = this.periodics.filter((x) => x.alive());
     this.periodics.push(p);
     if (first <= 0) this.fire(p, 0);
@@ -383,13 +490,15 @@ export class ProtocolSim implements Protocols {
 
   private schedule(p: Periodic, t: number): void {
     const tok = ++p.token;
-    this.e.at(t, () => this.fire(p, tok));
+    p.next = t;
+    // a small jitter, as real protocols jitter their timers (never adding up: the next one counts from `next`)
+    this.e.at(t + this.e.jitter(), () => this.fire(p, tok));
   }
 
   private fire(p: Periodic, tok: number): void {
     if (p.token !== tok || !p.alive()) return;
     p.fn();
-    p.last = this.e.now;
+    p.last = tok === 0 ? this.e.now : p.next;
     p.iv = Math.max(1, p.interval());
     this.schedule(p, p.last + p.iv);
   }
@@ -459,6 +568,15 @@ export class ProtocolSim implements Protocols {
     s.since = this.e.now;
     this.e.note('state', s.protocol, s.dev, s.peer, state, state, `${s.profile.label} ${s.rel.id}: ${s.dev} → ${s.peer} ${state}${why ? ' (' + why + ')' : ''}`);
     if (was !== this.adjUpOf(s)) this.e.routingChanged();
+    // a session up: what waited for it (BFD for its client, traffic over a tunnel) goes
+    if (up) {
+      const go = this.upWaiters.filter((w) => w.when(s));
+      if (go.length) {
+        this.upWaiters = this.upWaiters.filter((w) => go.indexOf(w) < 0);
+        for (const w of go) this.e.at(this.e.now + this.e.jitter(), w.fn);
+      }
+      this.e.recheckWaits();
+    }
   }
 
   private adjUpOf(s: Sess): boolean {
@@ -512,7 +630,32 @@ export class ProtocolSim implements Protocols {
   /** A message of a session. */
   msg(s: Sess, type: string, detail: string, data: { [k: string]: unknown } = {}): Msg {
     const label = `${s.profile.label.replace(/ \(.*\)$/, '').replace(/ \/ .*$/, '')} ${type}`;
-    return { protocol: s.protocol, type, label, detail: `${s.profile.label} ${type}: ${detail}`, relation: s.rel.id, data: { from: s.dev, ...data } };
+    const m: Msg = { protocol: s.protocol, type, label, detail: `${s.profile.label} ${type}: ${detail}`, relation: s.rel.id, data: { from: s.dev, ...data } };
+    // what this message of the session waited for (BGP's OPEN: its TCP connection)
+    if (s.x.waitedNext) {
+      m.waited = s.x.waitedNext as string[];
+      delete s.x.waitedNext;
+    }
+    return m;
+  }
+
+  /** A device's sessions. */
+  sessionsOf(dev: string): Sess[] {
+    return Array.from(this.sessions.values()).filter((s) => s.dev === dev).sort((a, b) => cmp(a.key, b.key));
+  }
+
+  /** what waits for a session to come up */
+  private upWaiters: Array<{ when: (s: Sess) => boolean; fn: () => void }> = [];
+
+  /** Run `fn` once a session that `when` accepts comes up. */
+  whenSessionUp(when: (s: Sess) => boolean, fn: () => void): void {
+    this.upWaiters.push({ when, fn });
+  }
+
+  /** Start a session now, again (a session that waited: BFD for its client). */
+  startNow(s: Sess): void {
+    s.x.started = false;
+    this.startSession(s);
   }
 
   /**
@@ -652,6 +795,13 @@ export class ProtocolSim implements Protocols {
   }
 
   ifaceChange(dev: string, l3: L3Iface, up: boolean): void {
+    // the sessions that waited for this interface start now, together
+    const waiting = up ? this.pendingStart.get(dev + ':' + l3.id) : undefined;
+    if (waiting) {
+      this.pendingStart.delete(dev + ':' + l3.id);
+      for (const s of waiting) this.e.at(this.e.now + this.e.jitter(), () => this.startSession(s));
+    }
+    if (up) this.releaseUp(dev + ':' + l3.id);
     for (const s of Array.from(this.sessions.values()).sort((a, b) => cmp(a.key, b.key))) {
       if (s.dev !== dev || s.local.l3.id !== l3.id) continue;
       const b = this.behaviours.get(s.profile.behaviour) as Behaviour;
@@ -663,6 +813,7 @@ export class ProtocolSim implements Protocols {
   }
 
   linkChange(ref: string, up: boolean): void {
+    if (up) this.releaseUp(ref);
     for (const h of this.linkHooks) h(ref, up);
   }
 

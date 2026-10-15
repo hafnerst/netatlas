@@ -93,7 +93,7 @@ test('lists: ports and targets are parsed, normalized and checked; on / off may 
 
 test('ICMP: an echo answered; net unreachable from the router without a route; a blackhole drops silently', () => {
   const s = sim(CHAIN({ r1routes: ', {prefix: 198.51.100.0/24, blackhole: true}' }));
-  s.runTo(2000);
+  s.runTo(2500);
   const ok = run(s, { from: 'pc', to: 'srv', kind: 'icmp' });
   assert.equal(ok.ok, true);
   assert.equal(ok.result, 'Echo Reply from 10.0.2.10');
@@ -111,7 +111,7 @@ test('ICMP: an echo answered; net unreachable from the router without a route; a
 test('ICMP: TTL exceeded in a routing loop; host unreachable when ARP fails (from the router; the sender’s own failure without ICMP)', () => {
   // r1 and r2 send 10.9.0.0/16 to each other
   const s = sim(CHAIN({ r1routes: ', {prefix: 10.9.0.0/16, via: 10.0.12.2}', r2routes: ', {prefix: 10.9.0.0/16, via: 10.0.12.1}' }));
-  s.runTo(2000);
+  s.runTo(2500);
   const ttl = run(s, { from: 'pc', to: '10.9.1.1', kind: 'icmp' });
   assert.match(ttl.result, /^TTL exceeded from 10\.0\.12\.[12] \(r[12]\)$/);
   assert.ok(ev(s, (x) => /TTL expired at r[12] .*TTL 1\)/.test(x.detail)).length >= 1);
@@ -125,7 +125,7 @@ test('ICMP: TTL exceeded in a routing loop; host unreachable when ARP fails (fro
 
 test('ICMP: fragmentation needed with DF (PMTUD lowers the path MTU), fragments without DF reassembled at the destination', () => {
   const s = sim(CHAIN({ mtu: 1400 }));
-  s.runTo(2000);
+  s.runTo(2500);
   const df = run(s, { from: 'pc', to: 'srv', kind: 'icmp', size: 1472, df: true });
   assert.equal(df.result, 'Frag Needed from 10.0.1.1 (r1): the packet is too big for the path and DF is set (path MTU 1400)');
   assert.ok(ev(s, (x) => x.what === 'path MTU' && x.device === 'pc' && /10\.0\.2\.10 is 1400 bytes/.test(x.detail)).length === 1);
@@ -142,7 +142,7 @@ test('ICMP: fragmentation needed with DF (PMTUD lowers the path MTU), fragments 
 
 test('ICMP: port unreachable from a closed UDP port; none about a broadcast; the rate limit; Send ICMP errors off', () => {
   const s = sim(CHAIN({ srv: ', simulation: {listening: tcp/443}' }));
-  s.runTo(2000);
+  s.runTo(2500);
   const udp = run(s, { from: 'pc', to: 'srv', kind: 'udp', port: 53 });
   assert.equal(udp.result, 'Port Unreachable from 10.0.2.10 (srv)');
   // two errors within the rate limit (500 ms): the second is not sent
@@ -166,7 +166,7 @@ test('ICMP: port unreachable from a closed UDP port; none about a broadcast; the
 
 test('TCP: handshake, request and answer, FIN close with TIME_WAIT; a closed port answers RST; with reply to closed ports off nothing', () => {
   const s = sim(CHAIN({ srv: ', simulation: {listening: "tcp/443, udp/53"}' }));
-  s.runTo(2000);
+  s.runTo(2500);
   const ok = run(s, { from: 'pc', to: 'srv', kind: 'tcp', port: 443 }, 2000);
   assert.equal(ok.result, 'connected and answered (1460 bytes)');
   const types = ev(s, (x) => x.kind === 'message' && x.protocol === 'tcp' && x.t >= ok.started).map((x) => `${x.device} ${x.what}`);
@@ -181,7 +181,7 @@ test('TCP: handshake, request and answer, FIN close with TIME_WAIT; a closed por
   assert.equal(u.result, 'UDP answer from 10.0.2.10:53');
   // reply to closed ports off on srv: the SYN is dropped, the client retransmits and times out
   const s2 = sim(CHAIN({ srv: ', simulation: {listening: tcp/443, closed_port_reply: "off"}' }));
-  s2.runTo(2000);
+  s2.runTo(2500);
   const silent = run(s2, { from: 'pc', to: 'srv', kind: 'tcp', port: 22 });
   assert.match(silent.result, /^no answer within 5 s/);
   assert.ok(ev(s2, (x) => /dropped without an answer \(reply to closed ports Off \(device\)\)/.test(x.detail)).length >= 1);
@@ -189,7 +189,7 @@ test('TCP: handshake, request and answer, FIN close with TIME_WAIT; a closed por
 
 test('TCP: an unanswered SYN is sent again after the initial RTO, doubling, until the SYN retries are spent: the connection times out', () => {
   const s = sim(CHAIN({ r1routes: ', {prefix: 198.51.100.0/24, blackhole: true}' }), { params: { 'tcp-syn-retries': 3, 'app-timeout': 60000 } });
-  s.runTo(2000);
+  s.runTo(2500);
   const t = s.sendTest({ from: 'pc', to: '198.51.100.7', kind: 'tcp', port: 443 });
   s.runTo(s.now + 20000);
   const syns = ev(s, (x) => x.device === 'pc' && x.what === 'TCP SYN' && x.t >= t.started).map((x) => Math.round(x.t - t.started));
@@ -201,7 +201,7 @@ test('TCP: an unanswered SYN is sent again after the initial RTO, doubling, unti
 
 test('TCP keepalive: a connection kept open is probed after the keepalive time; a peer that is gone is reset after the probes', () => {
   const s = sim(CHAIN({ pc: ', simulation: {tcp_keepalive: 20}', srv: ', simulation: {listening: tcp/443}' }));
-  s.runTo(2000);
+  s.runTo(2500);
   const t = run(s, { from: 'pc', to: 'srv', kind: 'tcp', port: 443, keep: true }, 2000);
   assert.match(t.result, /^connected; kept open \(keepalive after 20 s \(device\)\)$/);
   s.runTo(s.now + 21000);
@@ -233,7 +233,7 @@ relations:
 
 test('firewall: the model’s relations pass; the allow list opens sessions and their replies pass; anything else is dropped (silently) or rejected', () => {
   const s = sim(FW('{allow: "tcp/443"}'));
-  s.runTo(2000);
+  s.runTo(2500);
   // the DNS relation's own queries pass (they are the model's policy)
   s.runTo(40000);
   assert.ok(ev(s, (x) => x.protocol === 'dns' && x.device === 'srv' && x.kind === 'message').length >= 1);
@@ -246,7 +246,7 @@ test('firewall: the model’s relations pass; the allow list opens sessions and 
   assert.match(ping.result, /^no answer/);
   // reject: TCP gets a RST (from the destination's address), anything else ICMP administratively prohibited
   const r = sim(FW('{allow: "tcp/443", default_action: reject}'));
-  r.runTo(2000);
+  r.runTo(2500);
   assert.equal(run(r, { from: 'pc', to: 'srv', kind: 'tcp', port: 22 }).result, 'connection refused: RST from 10.0.2.10 (srv)');
   assert.equal(run(r, { from: 'pc', to: 'srv', kind: 'udp', port: 123 }).result, 'Admin Prohibited from 10.0.1.1 (fw)');
   // a test on the DNS relation's port is the relation's traffic: it passes, with a session of its own
@@ -256,7 +256,7 @@ test('firewall: the model’s relations pass; the allow list opens sessions and 
 
 test('firewall: sessions time out by its timeouts; stateless it checks each packet (the reply by its source port)', () => {
   const s = sim(FW('{allow: "udp/123, icmp", udp_session_timeout: 10}'));
-  s.runTo(2000);
+  s.runTo(2500);
   assert.equal(run(s, { from: 'pc', to: 'srv', kind: 'udp', port: 123 }, 2000).result, 'UDP answer from 10.0.2.10:123');
   assert.equal(s.sessionTable('fw').length, 1);
   assert.equal(s.sessionTable('fw')[0].rule, 'allow udp/123');
@@ -265,12 +265,12 @@ test('firewall: sessions time out by its timeouts; stateless it checks each pack
   assert.ok(ev(s, (x) => x.what === 'session timed out' && /idle for 10 s \(10 s \(device\)\)/.test(x.detail)).length === 1);
   // stateless: no session table; the answer passes because its source port is allowed
   const n = sim(FW('{allow: "udp/123", stateful: "off"}'));
-  n.runTo(2000);
+  n.runTo(2500);
   assert.equal(run(n, { from: 'pc', to: 'srv', kind: 'udp', port: 123 }, 2000).result, 'UDP answer from 10.0.2.10:123');
   assert.equal(n.sessionTable('fw').length, 0);
   // stateful: a reply without its session (srv answers from 53 without being asked) is dropped
   const st = sim(FW('{allow: "udp/123"}'));
-  st.runTo(2000);
+  st.runTo(2500);
   run(st, { from: 'srv', to: 'pc', kind: 'udp', port: 5353 });
   assert.ok(ev(st, (x) => x.device === 'fw' && /UDP 10\.0\.2\.10:\d+ → 10\.0\.1\.10:5353/.test(x.detail) && x.what === 'dropped').length === 1);
 });
@@ -296,7 +296,7 @@ test('endpoint test traffic: off by default; on, every interval to its gateway (
 
 test('Send test…: to a device, an interface, an address, a subnet broadcast and 255.255.255.255; what cannot be sent says why', () => {
   const s = sim(FW('{allow: "icmp"}', ', respond_to_broadcast_ping: "on"'));
-  s.runTo(2000);
+  s.runTo(2500);
   assert.equal(run(s, { from: 'pc', to: 'srv:eth0', kind: 'icmp' }).ok, true);
   assert.equal(run(s, { from: 'pc', to: '10.0.2.10', kind: 'icmp' }).ok, true);
   assert.equal(s.sendTest({ from: 'pc', to: 'nosuch', kind: 'icmp' }), 'nosuch is neither a device of the model nor an address');
@@ -436,7 +436,7 @@ test('broadcast: a ping to the subnet broadcast is answered only where broadcast
 
 test('the broadcast domain: from an interface or a cable’s VLAN through the bridges, ending at every router', () => {
   const s = sim(LAN());
-  s.runTo(1000);
+  s.runTo(2500);
   const d = s.broadcastDomain({ dev: 'h1', iface: 'eth0' });
   assert.deepEqual(d.devices, ['h1', 'h2', 'r1', 'sw1', 'sw2']);
   assert.ok(d.refs.includes('iface:r1:g0') && !d.refs.includes('iface:r1:g1') && !d.refs.includes('device:h9'));
@@ -450,6 +450,9 @@ test('the broadcast domain: from an interface or a cable’s VLAN through the br
 
 test('a storm: a loop without spanning tree circulates and multiplies broadcasts; storm control drops them; spanning tree on, or the loop broken, ends it', () => {
   const s = sim(LAN(', simulation: {stp_mode: "off"}'));
+  // the loop is there once every cable is up (after the link-up delay): the first broadcast then storms
+  s.runTo(2500);
+  s.sendTest({ from: 'h2', to: '10.0.0.255', kind: 'icmp' });
   s.runTo(3000);
   assert.deepEqual(s.storms().map((x) => [x.vlan, x.links]), [[0, ['b']]]);
   assert.ok(ev(s, (x) => x.what === 'Broadcast storm' && /came back to sw\d over a loop that no spanning tree blocks/.test(x.detail)).length === 1);
@@ -464,6 +467,8 @@ test('a storm: a loop without spanning tree circulates and multiplies broadcasts
   assert.ok(ev(s, (x) => x.what === 'Storm over').length === 1);
   // storm control on sw1 drops the looping broadcasts at its ports
   const sc = sim(LAN(', simulation: {stp_mode: "off", storm_control_broadcast: 500}'));
+  sc.runTo(2500);
+  sc.sendTest({ from: 'h2', to: '10.0.0.255', kind: 'icmp' });
   sc.runTo(3000);
   assert.ok(ev(sc, (x) => x.what === 'storm control' && /far above its threshold of 500 frames\/s \(device\)/.test(x.detail)).length >= 1);
   // spanning tree back on (a live change): the loop is blocked, the storm over
@@ -479,6 +484,8 @@ test('a storm: a loop without spanning tree circulates and multiplies broadcasts
   assert.deepEqual(s.storms(), []);
   // with spanning tree from the start there is none
   const ok = sim(LAN());
+  ok.runTo(2500);
+  ok.sendTest({ from: 'h2', to: '10.0.0.255', kind: 'icmp' });
   ok.runTo(3000);
   assert.deepEqual(ok.storms(), []);
 });
@@ -487,7 +494,7 @@ test('a storm: a loop without spanning tree circulates and multiplies broadcasts
 
 test('the packet inspector: each dot’s frame layer by layer (MACs, VLAN tag, IP, TTL, DF, ports, flags, ICMP and its quote); the log’s messages carry theirs', () => {
   const s = sim(CHAIN({ srv: ', simulation: {listening: tcp/443}' }));
-  s.runTo(2000);
+  s.runTo(2500);
   run(s, { from: 'pc', to: 'srv', kind: 'tcp', port: 443 }, 2000);
   run(s, { from: 'pc', to: '203.0.113.1', kind: 'icmp' }, 2000);
   const syn = s.engine.flights.find((f) => f.label === 'TCP SYN → 10.0.2.10:443' && f.track.ref === 'link:l2');
@@ -567,7 +574,7 @@ test('determinism: the same model and the same tests at the same times give the 
 
 test('TCP over a lossy cable: what is lost is sent again after the retransmission timeout, and the test is still answered', () => {
   const s = sim(CHAIN({ srv: ', simulation: {listening: tcp/443}' }).replace('  - {id: l3, a: "r2:g1", b: "srv:eth0"}', '  - {id: l3, a: "r2:g1", b: "srv:eth0", simulation: {loss: 25}}'), { params: { 'app-timeout': 60000 } });
-  s.runTo(2000);
+  s.runTo(2500);
   const tests = [];
   for (let i = 0; i < 4; i++) tests.push(run(s, { from: 'pc', to: 'srv', kind: 'tcp', port: 443 }, 30000));
   assert.ok(ev(s, (x) => x.kind === 'message' && x.protocol === 'tcp' && /retransmission \d/.test(x.detail)).length > 0, 'something was retransmitted');

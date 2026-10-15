@@ -76,6 +76,8 @@ export const REASSEMBLY_MS = 30000;
 export const STORM_ROUNDS = 6;
 /** Flights are kept this long after they end (for the animation and the export). */
 const FLIGHT_KEEP = 4000;
+/** The jitter of starts and timers: up to this share of a typical hop's time. */
+export const JITTER_SHARE = 0.6;
 /** A message's payload in bytes when its protocol says nothing (for the serialization time). */
 const PAYLOAD = 80;
 /** The event log keeps the last this many events. */
@@ -228,6 +230,8 @@ export class Engine {
   now = 0;
   timerScale: number;
   readonly random: () => number;
+  /** the start-up and timer jitter: its own seeded sequence (so that it changes nothing else's) */
+  private jitterRandom: () => number;
   private q: QItem[] = [];
   private seq = 0;
   private logSeq = 0;
@@ -299,6 +303,7 @@ export class Engine {
     this.net = buildNet(model);
     this.timerScale = opts.timerScale || 1;
     this.random = rng(modelSeed(model));
+    this.jitterRandom = rng(modelSeed(model) + '|jitter');
     this.lossRandom = rng(modelSeed(model) + '|loss');
     const devs = new Map<string, { type: string; values: Map<string, ParamValue> }>();
     for (const d of model.devices) devs.set(d.id, { type: d.type, values: d.simulation || new Map() });
@@ -454,17 +459,94 @@ export class Engine {
   private mark(msg: Msg, dev: string): void {
     if (msg.sender === undefined) msg.sender = dev;
     if (msg.origin === undefined) msg.origin = this.cause !== null ? this.cause : dev;
+    if (msg.causedBy === undefined && this.causeMsg && this.causeMsg !== msg) msg.causedBy = `${this.causeMsg.label}${this.causeMsg.sender ? ` (sent by ${this.causeMsg.sender})` : ''}, received at t = ${(this.now / 1000).toFixed(6)} s`;
   }
 
-  /** Handle a received frame in the context of its message's origin. */
+  /** Handle a received frame in the context of its message's origin (and the message itself: what it causes says so). */
   private caused(msg: Msg, fn: () => void): void {
     const was = this.cause;
+    const wasMsg = this.causeMsg;
     this.cause = msg.origin !== undefined ? msg.origin : null;
+    this.causeMsg = msg;
     try {
       fn();
     } finally {
       this.cause = was;
+      this.causeMsg = wasMsg;
     }
+  }
+
+  /** the interfaces ("dev:iface") and ports ("port:…") that were up once: coming up again is said so */
+  private cameUp = new Set<string>();
+
+  /** the message whose receipt is being handled (what is sent now answers it or carries it on) */
+  private causeMsg: Msg | null = null;
+
+  // ------------------------------------------------------------ waiting for a precondition
+
+  /** what waits for a condition to hold, by condition ("rel:<id>", "route:<dev>|<vrf>|<addr>") */
+  private waits = new Map<string, Array<{ key: string; msg: Msg; since: number; why: string; fn: () => void }>>();
+  private waitCheck = false;
+
+  /**
+   * Hold something (a packet, a session's step) until a condition holds:
+   * a relation (tunnel) up ("rel:<id>"), or a route ("route:<dev>|<vrf>|<addr>").
+   * Logged once as waiting, with why; released when the condition holds,
+   * together with whatever else waited for it. `dedupe` keeps only the
+   * newest of a kind (a periodic Hello: the old one would be stale).
+   */
+  waitFor(cond: string, why: string, dev: string, msg: Msg, fn: () => void, dedupe?: string): void {
+    const list = this.waits.get(cond) || [];
+    const key = dedupe || 'seq:' + this.seq;
+    const i = list.findIndex((x) => x.key === key);
+    if (i >= 0) {
+      list[i] = { key, msg, since: list[i].since, why, fn };
+    } else {
+      list.push({ key, msg, since: this.now, why, fn });
+      this.note('wait', msg.protocol, dev, '', 'waiting', '', `${msg.label} waiting for ${why}`);
+    }
+    this.waits.set(cond, list);
+  }
+
+  /** Does a condition hold now? */
+  private holds(cond: string): boolean {
+    if (cond.indexOf('rel:') === 0) {
+      const id = cond.slice(4);
+      return this.relationUp(id) && (!this.protocols || !this.protocols.sessionUp || this.protocols.sessionUp(id));
+    }
+    if (cond.indexOf('route:') === 0) {
+      const [dev, vrf, a] = cond.slice(6).split('|');
+      const ip = parseAddress(a);
+      if (!ip) return true;
+      const d = lookup(this.model, dev, vrf, ip, this.ctx(dev));
+      return d.kind === 'forward' || d.kind === 'local';
+    }
+    return true;
+  }
+
+  /** What waited for a condition that holds now goes, in the order it came (at this moment, after what is being handled). */
+  recheckWaits(): void {
+    if (this.waitCheck || !this.waits.size) return;
+    this.waitCheck = true;
+    this.at(this.now, () => {
+      this.waitCheck = false;
+      for (const cond of Array.from(this.waits.keys()).sort(cmp)) {
+        if (!this.holds(cond)) continue;
+        const list = this.waits.get(cond) as Array<{ key: string; msg: Msg; since: number; why: string; fn: () => void }>;
+        this.waits.delete(cond);
+        for (const w of list) {
+          w.msg.waited = (w.msg.waited || []).concat([`${w.why}: ${durationText(this.now - w.since)}`]);
+          w.fn();
+        }
+      }
+    });
+  }
+
+  /** How many things wait for a condition (tests, the status). */
+  waiting(): Array<{ cond: string; label: string; why: string; since: number }> {
+    const out: Array<{ cond: string; label: string; why: string; since: number }> = [];
+    for (const [cond, list] of this.waits) for (const w of list) out.push({ cond, label: w.msg.label, why: w.why, since: w.since });
+    return out;
   }
 
   // ------------------------------------------------------------ the log
@@ -517,6 +599,28 @@ export class Engine {
     return !this.off.has(dev);
   }
 
+  /** the members of an aggregate that LACP does not let distribute yet (or any more), by port key */
+  private lagHeld = new Set<string>();
+
+  /** Does an aggregate's member carry traffic: LACP is Collecting / Distributing on it (any other port: yes)? */
+  memberReady(dev: string, port: string): boolean {
+    return !this.lagHeld.has(portKey(dev, port));
+  }
+
+  /**
+   * LACP holds a member (it may not distribute: the aggregate waits for it)
+   * or lets it go; the aggregate's interface follows (up once enough of its
+   * members distribute), and with it what waits for the interface.
+   */
+  holdMember(dev: string, port: string, held: boolean, quiet = false): void {
+    const k = portKey(dev, port);
+    if (this.lagHeld.has(k) === held) return;
+    if (held) this.lagHeld.add(k);
+    else this.lagHeld.delete(k);
+    this.stateVersion++;
+    if (!quiet) this.syncInterfaces();
+  }
+
   /** Is a port up as its device sees it: carrier on its cable (if any), not shut, its device on. */
   portUp(dev: string, port: string): boolean {
     if (this.off.has(dev) && !this.bypass.has(dev)) return false;
@@ -536,7 +640,7 @@ export class Engine {
       for (const bp of sd.bridgePorts.values()) if (carries(bp.vlans, l3.vlan) && bp.members.some((m) => this.portUp(dev, m) && this.net.ends.has(portKey(dev, m)))) return true;
       return false;
     }
-    const up = l3.ports.filter((p) => this.portUp(dev, p)).length;
+    const up = l3.ports.filter((p) => this.portUp(dev, p) && this.memberReady(dev, p)).length;
     if (l3.kind === 'aggregate') {
       const i = this.model.index.interfaces.get(dev + ':' + l3.id);
       return up >= Math.max(1, (i && i.minLinks) || 1);
@@ -632,6 +736,8 @@ export class Engine {
     this.ctxObj = null;
     this.routingVersion++;
     this.estimates.clear();
+    // a route or a tunnel may be there now: what waited for it goes
+    this.recheckWaits();
     for (const d of Array.from(this.net.devices.values()).sort((a, b) => cmp(a.id, b.id))) {
       if (!d.routes || this.spfPending.has(d.id) || this.off.has(d.id)) continue;
       this.spfPending.add(d.id);
@@ -657,6 +763,8 @@ export class Engine {
     at.devs.push(dev);
     this.devCtx.set(dev, at.ctx);
     if (this.protocols && this.protocols.routesChanged) this.protocols.routesChanged(dev);
+    // the device's new routes: what waited for a route goes
+    this.recheckWaits();
   }
 
   /** Recompute the interfaces' states; report the changes (and flush what an interface going down loses). */
@@ -670,7 +778,8 @@ export class Engine {
         if (was === is) continue;
         this.l3State.set(key, is);
         changed = true;
-        this.note('link', 'link', d.id, '', `${l3.id} ${is ? 'up' : 'down'}`, is ? 'up' : 'down', is ? `Interface ${d.id}:${l3.id} is up again` : `Interface ${d.id}:${l3.id} went down`);
+        this.note('link', 'link', d.id, '', `${l3.id} ${is ? 'up' : 'down'}`, is ? 'up' : 'down', is ? `Interface ${d.id}:${l3.id} ${this.cameUp.has(key) ? 'is up again' : 'is up: it can send now'}` : `Interface ${d.id}:${l3.id} went down`);
+        if (is) this.cameUp.add(key);
         if (!is) this.flushIface(d.id, l3.id, 'its interface went down');
         if (this.protocols) this.protocols.ifaceChange(d.id, l3, is);
       }
@@ -929,7 +1038,7 @@ export class Engine {
       this.bridge(sd, null, l3.vlan, frame, t, undefined, new Set([dev]));
       return;
     }
-    const ports = l3.ports.filter((p) => this.portUp(dev, p) && this.net.ends.has(portKey(dev, p)));
+    const ports = l3.ports.filter((p) => this.portUp(dev, p) && this.memberReady(dev, p) && this.net.ends.has(portKey(dev, p)));
     if (!ports.length) return;
     const port = ports.length === 1 ? ports[0] : ports[hashIndex(frame.src + frame.dst + (frame.ip ? frame.ip.flow : ''), ports.length)];
     let tag: number | null = null;
@@ -995,6 +1104,51 @@ export class Engine {
     const loss = Number(this.loss(link).value);
     const lost = loss > 0 && this.lossRandom() * 100 < loss;
     return { start, end: start + ser + Number(this.latency(link).value), lost };
+  }
+
+  /**
+   * A small seeded jitter (ms) for a start or a periodic message: less than
+   * a typical hop's time, as real protocols jitter their timers, so that
+   * what starts together runs together (on screen too) without being drawn
+   * on top of each other.
+   */
+  jitter(): number {
+    return this.jitterRandom() * JITTER_SHARE * this.hopTime();
+  }
+
+  /**
+   * A fresh start (Layer 1): every cable negotiates; its ports come up
+   * after its link-up delay (and a small jitter), so that an interface sends
+   * nothing before its link is up. The interfaces that wait for a cable are
+   * down until then (silently: nothing went down, they are coming up).
+   */
+  boot(): void {
+    for (const l of Array.from(this.net.links.values()).sort((a, b) => cmp(a.id, b.id))) {
+      if (!this.physUp(l.id)) continue;
+      const id = l.id;
+      const ends = [l.a, l.b].map((e) => ({ dev: e.device, port: e.iface || '@' + id, key: portKey(e.device, e.iface || '@' + id) }));
+      this.cable.set(id, 'negotiating');
+      for (const x of ends) this.carrier.set(x.key, false);
+      const d = this.linkUpDelay(id);
+      const tok = ++this.tokens;
+      this.carrierToken.set('link:' + id, tok);
+      this.at(Number(d.value) + this.jitter(), () => {
+        if (this.carrierToken.get('link:' + id) !== tok) return;
+        this.carrierToken.delete('link:' + id);
+        if (!this.physUp(id)) return;
+        this.cable.set(id, 'up');
+        this.stateVersion++;
+        for (const x of ends) if (this.carrier.get(x.key) === false && !this.off.has(x.dev)) this.setCarrier(x.dev, x.port, true, id, d);
+      });
+    }
+    this.stp.clear();
+    for (const dv of this.net.devices.values())
+      for (const l3 of dv.l3.values()) {
+        const up = this.l3Up(dv.id, l3);
+        this.l3State.set(dv.id + ':' + l3.id, up);
+        if (up) this.cameUp.add(dv.id + ':' + l3.id);
+      }
+    this.stateVersion++;
   }
 
   /** About how long a frame takes over one cable (ms): the simulation's latency and a small frame at its default speed. */
@@ -1067,6 +1221,14 @@ export class Engine {
     f.encapProtocols = encapProtocols(frame);
     f.cast = castOf(frame.dst);
     f.hdr = this.headers(frame, tag);
+    // why now: what caused it and what it waited for (the innermost message's, for an encapsulated one)
+    let m = frame.msg;
+    for (let p = frame.ip; p && p.inner; p = p.inner) m = p.inner.msg;
+    const by = frame.msg.causedBy || m.causedBy;
+    // (an encapsulating message copies its inner one's: each once)
+    const waited = Array.from(new Set((m !== frame.msg ? m.waited || [] : []).concat(frame.msg.waited || [])));
+    if (by) f.hdr.causedBy = by;
+    if (waited.length) f.hdr.waited = waited;
     const ev = this.msgEvents.get(frame.msg);
     if (ev && !ev.hdr) ev.hdr = f.hdr;
   }
@@ -1253,7 +1415,7 @@ export class Engine {
     for (const bp of to) {
       const c = carries(bp.vlans, vlan);
       if (!c || this.blocked(sd.id, bp.id, vlan)) continue;
-      const up = bp.members.filter((m) => this.portUp(sd.id, m) && this.net.ends.has(portKey(sd.id, m)));
+      const up = bp.members.filter((m) => this.portUp(sd.id, m) && this.memberReady(sd.id, m) && this.net.ends.has(portKey(sd.id, m)));
       if (!up.length) continue;
       const m = up.length === 1 ? up[0] : up[hashIndex(frame.src + frame.dst, up.length)];
       this.transmit(sd.id, m, frame, c === 'untagged' ? null : vlan, t, flight, seen);
@@ -1769,7 +1931,9 @@ export class Engine {
           return;
         }
         if (this.protocols && this.protocols.sessionUp && !this.protocols.sessionUp(layer.relation)) {
-          this.note('drop', pkt.msg.protocol, dev, '', pkt.msg.type, '', `dropped at ${dev}: ${layer.label} (${layer.relation}) is not up (${pkt.msg.label})`);
+          // over a tunnel that is coming up: it waits for it (the newest of a periodic message only)
+          const rid = layer.relation;
+          this.waitFor('rel:' + rid, `${layer.label} ${rid}`, dev, pkt.msg, () => this.intoTunnel(dev, tun, pkt), `${dev}|${pkt.msg.protocol}|${pkt.msg.type}|${formatAddr(pkt.dst)}`);
           return;
         }
       }
@@ -1885,11 +2049,19 @@ export class Engine {
       send(e.mac);
       return;
     }
+    // a unicast packet waits for its next hop's address (each next hop on its own; those for the same one are sent together)
+    const what = `${ip.version === 4 ? 'ARP' : 'NDP'} ${formatAddr(ip)}`;
+    const since = this.now;
+    const go = (mac: string): void => {
+      pkt.msg.waited = (pkt.msg.waited || []).concat([`${what}: ${durationText(this.now - since)}`]);
+      send(mac);
+    };
+    this.note('wait', pkt.msg.protocol, dev, '', 'waiting', '', `${pkt.msg.label} waiting for ${what}`);
     if (e) {
-      e.queue.push({ pkt, send, fwd });
+      e.queue.push({ pkt, send: go, fwd });
       return;
     }
-    const n: ArpEntry = { ip, ipText: formatAddr(ip), mac: '', iface: l3.id, vlan: l3.vlan, type: 'incomplete', state: 'INCOMPLETE', learned: this.now, refreshed: this.now, timer: this.now + this.retrans(dev), tries: 1, used: true, queue: [{ pkt, send, fwd }], sentAt: this.now };
+    const n: ArpEntry = { ip, ipText: formatAddr(ip), mac: '', iface: l3.id, vlan: l3.vlan, type: 'incomplete', state: 'INCOMPLETE', learned: this.now, refreshed: this.now, timer: this.now + this.retrans(dev), tries: 1, used: true, queue: [{ pkt, send: go, fwd }], sentAt: this.now };
     tab.set(key, n);
     this.tableNote(dev, n, 'INCOMPLETE', `${pkt.msg.label} waits for ${ip.version === 4 ? 'ARP' : 'neighbour discovery'}`);
     this.solicit(dev, l3, ip, '');
@@ -2226,7 +2398,9 @@ export class Engine {
     else this.carrier.set(key, false);
     this.stateVersion++;
     if (!this.off.has(dev) || this.bypass.has(dev)) {
-      const how = up ? `carrier again (${why ? why.def.label.toLowerCase() + ' ' + resolvedText(why) : 'up'})` : why ? `lost carrier: loss of signal detected after ${resolvedText(why)}` : 'is down';
+      const first = up && !this.cameUp.has('port:' + key);
+      if (up) this.cameUp.add('port:' + key);
+      const how = up ? `carrier${first ? '' : ' again'} (${why ? why.def.label.toLowerCase() + ' ' + resolvedText(why) : 'up'})` : why ? `lost carrier: loss of signal detected after ${resolvedText(why)}` : 'is down';
       this.note('link', 'link', dev, '', `${port} ${up ? 'up' : 'down'}`, up ? 'up' : 'down', `${dev}:${port} ${up ? 'has ' + how : how} (cable ${link})`);
     }
     if (!up) this.flushPort(dev, port, `its cable ${link} went down`);
@@ -2652,7 +2826,7 @@ export class Engine {
         if (bp.id === fromBp) continue;
         const c = carries(bp.vlans, v);
         if (!c || this.blocked(sd.id, bp.id, v)) continue;
-        const up = bp.members.filter((m) => this.portUp(sd.id, m) && this.net.ends.has(portKey(sd.id, m))).sort(cmp);
+        const up = bp.members.filter((m) => this.portUp(sd.id, m) && this.memberReady(sd.id, m) && this.net.ends.has(portKey(sd.id, m))).sort(cmp);
         if (!up.length) continue;
         refs.add(`iface:${sd.id}:${bp.id}`);
         cross(sd.id, up[0], c === 'untagged' ? null : v);

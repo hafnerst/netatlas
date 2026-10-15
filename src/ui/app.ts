@@ -61,16 +61,14 @@ type Tab = 'edit' | 'details' | 'legend' | 'relations' | 'problems' | 'yaml';
 /** Where the simulation-wide parameters are remembered for the browser session. */
 const SIM_PARAMS_KEY = 'netatlas.sim.params';
 /** the simulation panel's height, chosen with its splitter (local storage) */
-// (a new key: heights remembered by earlier development versions don't override the new, lower default)
-const DOCK_KEY = 'netatlas.simPanelHeight';
+// (a new key: heights remembered with the earlier, taller default don't override the three-row default)
+export const DOCK_KEY = 'netatlas.simPanelHeight3';
 /** the senders chosen in Start simulation… or the Simulation setup, for the next start in this browser session (null: every device) */
 const SIM_SENDERS_KEY = 'netatlas.sim.senders';
-/** the simulation panel is never lower than this (px): its toolbar and a few rows */
-export const DOCK_MIN = 190;
-/** a row of the simulation panel's tables (px) */
-const DOCK_ROW = 21;
-/** the simulation panel's default height: this share of the window's height */
-export const DOCK_SHARE = 0.24;
+/** the rows of each of the simulation panel's tables (status, event log) its default height shows: also its minimum */
+export const DOCK_ROWS = 3;
+/** a margin that keeps the diagram taller than the panel (px) */
+const DOCK_MARGIN = 6;
 /** the protocols switched off in Start simulation… or the Simulation setup, for the next start in this browser session */
 const SIM_HIDDEN_KEY = 'netatlas.sim.hidden';
 const SIM_LOCK = 'Editing is paused during a simulation: the diagram shows a simulated state, not the model. Exit the simulation (Esc) to edit.';
@@ -2760,7 +2758,8 @@ export class App {
         sendersChanged: (s) => self.storeSimSenders(s),
         diagramDevices: () => self.diagramDevices(),
         panelChanged: () => {
-          // (after this change is laid out)
+          // now (measuring lays the change out), and once more after the frame it is drawn in
+          self.applyDockHeight();
           const w = self.doc.defaultView;
           if (w) w.requestAnimationFrame(() => self.applyDockHeight());
         },
@@ -2862,28 +2861,78 @@ export class App {
   /** the simulation panel's height (px), chosen with its splitter; null: the default */
   private dockH: number | null = null;
 
-  /** The default and the bounds of the simulation panel's height in the space under the toolbar. */
+  /**
+   * The default and the bounds of the simulation panel's height in the space
+   * under the toolbar. The default is also the minimum: its header (the
+   * clock, the tables' headings and filters, as they wrap) and exactly three
+   * rows of the status and three of the log, each with its column headings,
+   * all measured (theme, font and zoom change them). Only a window too
+   * short for that gives the diagram more: the panel is never taller than
+   * the diagram (and never lower than its toolbar).
+   */
   dockBounds(): { dflt: number; min: number; max: number } {
     const main = this.doc.querySelector('main') as HTMLElement;
     const h = main.clientHeight || 600;
-    // its toolbar and three to four rows of status and log: what the panel needs besides its tables' rows, measured
-    // (its toolbar and the log's filters wrap in a narrow window), plus 3½ rows; in a short window less, never less than its toolbar
     const head = this.doc.querySelector('#sim-dock .sd-head') as HTMLElement | null;
+    const need = this.dockNeed();
+    // (the room the diagram and the panel share: the diagram's area and the panel, as they are now)
     const dock = this.doc.getElementById('sim-dock') as HTMLElement;
-    let need = DOCK_MIN;
-    if (!dock.hidden && dock.getBoundingClientRect().height > 0) {
-      const areas = ['sim-status-table', 'sim-log-table'].map((id) => this.doc.getElementById(id) as HTMLElement | null).filter((e): e is HTMLElement => !!e && e.getClientRects().length > 0);
-      const thead = this.doc.querySelector('#sim-dock thead') as HTMLElement | null;
-      if (areas.length) need = Math.max(DOCK_MIN, Math.round(dock.getBoundingClientRect().height - Math.min(...areas.map((a) => a.clientHeight)) + (thead ? thead.offsetHeight : 18) + 3.5 * DOCK_ROW));
-    }
-    // (a very short window keeps the diagram's room first: at most 40 % of the space then, never less than the toolbar)
-    const min = Math.round(Math.min(need, Math.max((head ? head.offsetHeight : 44) + 4, h * 0.4)));
+    const wrap = this.doc.getElementById('canvas-wrap') as HTMLElement | null;
+    const shared = !dock.hidden && wrap && wrap.getClientRects().length ? wrap.getBoundingClientRect().height + dock.getBoundingClientRect().height : h;
+    const min = Math.round(Math.min(need, Math.max((head ? head.offsetHeight : 44) + 4, Math.floor((shared - DOCK_MARGIN) / 2))));
     const max = Math.max(min, Math.round(h * 0.65));
-    // by default about a fifth of the window: the diagram stays the largest part
-    const w = this.doc.defaultView;
-    const winH = w ? w.innerHeight : h + 100;
-    const dflt = Math.max(min, Math.min(max, Math.round(winH * DOCK_SHARE)));
-    return { dflt, min, max };
+    return { dflt: min, min, max };
+  }
+
+  /** What the panel needs for three rows of each table (px): measured, or an estimate while it is hidden. */
+  private dockNeed(): number {
+    const dock = this.doc.getElementById('sim-dock') as HTMLElement;
+    const rowH = this.dockRowHeight();
+    if (dock.hidden || dock.getBoundingClientRect().height <= 0) return 44 + 2 * (rowH + 30) + 2 * DOCK_ROWS * rowH;
+    const body = this.doc.querySelector('#sim-dock .sd-body') as HTMLElement | null;
+    const panes = ['sd-status', 'sd-log'].map((id) => this.doc.getElementById(id) as HTMLElement | null).filter((e): e is HTMLElement => !!e);
+    if (!body || !panes.length) return Math.round(dock.getBoundingClientRect().height);
+    const shown = panes.find((p) => p.getClientRects().length > 0);
+    const width = shown ? shown.getBoundingClientRect().width : body.getBoundingClientRect().width;
+    // each pane's own part (its heading, filters and note, as they wrap): the pane less its table's area; a pane behind its
+    // tab (a narrow panel) is laid out unseen at the same width to measure it, so that either tab shows the three rows
+    let chrome = 0;
+    let theadH = rowH;
+    for (const p of panes) {
+      const area = p.querySelector('.sim-scroll') as HTMLElement | null;
+      if (!area) continue;
+      if (p.getClientRects().length) {
+        chrome = Math.max(chrome, p.getBoundingClientRect().height - area.clientHeight);
+        const th = area.querySelector('thead') as HTMLElement | null;
+        if (th) theadH = th.getBoundingClientRect().height;
+        continue;
+      }
+      const was = [p.style.cssText, area.style.cssText];
+      p.style.cssText = `display: flex; position: absolute; visibility: hidden; left: 0; top: 0; width: ${width}px; height: auto`;
+      area.style.cssText = 'flex: none; height: 0';
+      chrome = Math.max(chrome, p.getBoundingClientRect().height);
+      p.style.cssText = was[0];
+      area.style.cssText = was[1];
+    }
+    // the rest of the panel (its toolbar, a note, the tabs) and three rows under the column headings
+    const outside = dock.getBoundingClientRect().height - body.getBoundingClientRect().height;
+    return Math.ceil(outside + chrome + theadH + DOCK_ROWS * rowH + 1);
+  }
+
+  /** The height of a row of the panel's tables (px), measured: the tallest of the rows shown (a log row with a message button), or a header row's. */
+  dockRowHeight(): number {
+    let hgt = 0;
+    for (const id of ['sim-status-table', 'sim-log-table']) {
+      const box = this.doc.getElementById(id);
+      if (!box || !box.getClientRects().length) continue;
+      const rows = Array.from(box.querySelectorAll('tbody tr')).slice(0, 40) as HTMLElement[];
+      for (const r of rows) hgt = Math.max(hgt, r.getBoundingClientRect().height);
+      if (!hgt) {
+        const th = box.querySelector('thead tr') as HTMLElement | null;
+        if (th) hgt = th.getBoundingClientRect().height;
+      }
+    }
+    return hgt || 21;
   }
 
   /** Set (or reset, null) the simulation panel's height; kept in local storage. */

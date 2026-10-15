@@ -1539,6 +1539,8 @@ export class SimController implements SimulationMode {
     const stTabs = el(doc, 'div', { class: 'sd-sttabs', id: 'sd-sttabs', role: 'group', 'aria-label': 'Show' });
     const status = el(doc, 'section', { class: 'sd-pane sd-status', id: 'sd-status', role: 'tabpanel', 'aria-labelledby': 'sd-status-h' }, [
       el(doc, 'div', { class: 'sd-panehead' }, [el(doc, 'h3', { id: 'sd-status-h', class: 'sd-h' }, ['Status']), stTabs]),
+      // (one line, as the log's: both tables start at the same height and show as many rows)
+      el(doc, 'p', { class: 'muted small sd-lognote', id: 'sim-status-note' }, ['']),
       el(doc, 'div', { id: 'sim-status-table', class: 'sim-scroll' }),
     ]);
     stTabs.addEventListener('click', (e) => {
@@ -1587,6 +1589,18 @@ export class SimController implements SimulationMode {
       this.updatePanels();
     });
     const table = el(doc, 'div', { id: 'sim-log-table', class: 'sim-scroll sim-log' });
+    // at its end it stays there when the panel's height changes (the newest rows whole, not cut)
+    table.addEventListener('scroll', () => {
+      if (!this.logResizing) this.logAtEnd = table.scrollHeight - table.scrollTop - table.clientHeight < 24;
+    });
+    const RO = (doc.defaultView as (Window & { ResizeObserver?: typeof ResizeObserver }) | null)?.ResizeObserver;
+    if (RO)
+      new RO(() => {
+        if (!this.logAtEnd) return;
+        this.logResizing = true;
+        table.scrollTop = table.scrollHeight;
+        this.logResizing = false;
+      }).observe(table);
     table.addEventListener('click', (ev) => {
       const b = (ev.target as Element).closest('[data-seq]');
       if (b) this.inspectEvent(Number(b.getAttribute('data-seq')));
@@ -1723,6 +1737,9 @@ export class SimController implements SimulationMode {
       }
       if (this.statusView) {
         const v = this.statusView;
+        const sn = q('sim-status-note');
+        const snText = `${DEV_TABLE_LABEL[v.kind]} of ${v.dev}.`;
+        if (sn && sn.textContent !== snText) sn.textContent = snText;
         const sk = `table|${v.kind}|${v.dev}`;
         if (sk !== this.statusKey) {
           this.statusKey = sk;
@@ -1730,6 +1747,9 @@ export class SimController implements SimulationMode {
         }
       } else {
         const st = this.sim.status().filter((s) => this.visible(s.protocol));
+        const sn = q('sim-status-note');
+        const snText = `${st.length} session${st.length === 1 ? '' : 's'} of the protocols shown, ${st.filter((x) => x.up).length} up.`;
+        if (sn && sn.textContent !== snText) sn.textContent = snText;
         const sk = st.map((s) => s.name + s.state + s.detail.length).join('|') + '|' + Math.floor(this.t / 1000);
         if (sk !== this.statusKey) {
           this.statusKey = sk;
@@ -1751,6 +1771,14 @@ export class SimController implements SimulationMode {
       this.logKey = lk;
       this.logFilterKey = fk;
       this.renderLog(lt, q('sim-log-note') as HTMLElement, events);
+    }
+    // the panel's three-row height follows what it is measured from: its toolbar, notes, tabs, the panes' headings and the
+    // rows (the first rows, a wrap, a font or zoom change)
+    const hOf = (sel: string): number => Array.from(d.querySelectorAll(sel)).reduce((n, e) => n * 31 + Math.round((e as HTMLElement).getBoundingClientRect().height * 10), 7);
+    const rowH = hOf('#sim-dock .sd-head, #sim-dock .sd-notes, #sim-storm, #sim-dock .sd-tabs, #sim-dock .sd-panehead, #sim-dock .sd-lognote, #sim-dock thead tr, #sim-status-table tbody tr:first-child, #sim-log-table tbody tr:first-child');
+    if (rowH !== this.rowH) {
+      this.rowH = rowH;
+      if (this.host.panelChanged) this.host.panelChanged();
     }
     const wt = held && lk !== this.logKey ? 'New events wait while you point at the log or use it.' : '';
     if (waiting && waiting.textContent !== wt) waiting.textContent = wt;
@@ -1808,13 +1836,20 @@ export class SimController implements SimulationMode {
     return { list, hidden, bySender };
   }
 
+  /** the log is scrolled to its end (it follows the newest events) */
+  private logAtEnd = true;
+  private logResizing = false;
+
+  /** what the panel's height is measured from (a key of heights), to measure it again when it changes */
+  private rowH = -1;
+
   private renderLog(box: HTMLElement, note: HTMLElement, events: SimEvent[]): void {
     const doc = this.host.doc;
     const { list, hidden, bySender } = this.logEvents(events);
     const shown = list.slice(-LOG_SHOWN);
     note.textContent = `${list.length} event${list.length === 1 ? '' : 's'}${list.length > shown.length ? `, the newest ${shown.length} listed` : ''}${bySender ? (this.showAllSenders ? `; ${bySender} message${bySender === 1 ? '' : 's'} from non-senders included` : `; ${bySender} message${bySender === 1 ? '' : 's'} from non-senders hidden`) : ''}${hidden ? `; ${hidden} of hidden protocols not listed (they still run)` : ''}${this.sim.engine.logDropped ? `; the ${this.sim.engine.logDropped} oldest were dropped from the log` : ''}.`;
     // keep the reader's place unless they are at the end
-    const atEnd = box.scrollHeight - box.scrollTop - box.clientHeight < 24;
+    const atEnd = this.logAtEnd;
     const top = box.scrollTop;
     while (box.firstChild) box.removeChild(box.firstChild);
     const head = ['Time (s)', 'From', 'To', 'Protocol', 'Message', 'State', 'Details'];
@@ -1822,10 +1857,19 @@ export class SimController implements SimulationMode {
     t.appendChild(el(doc, 'caption', { class: 'sr-only' }, ['Event log']));
     t.appendChild(el(doc, 'thead', {}, [el(doc, 'tr', {}, head.map((h) => el(doc, 'th', { scope: 'col' }, [h])))]));
     const tb = el(doc, 'tbody');
-    for (const e of shown) {
+    // what happens at the same moment is one group: its time on the first row, a ditto mark (and the time for a screen reader) on the others
+    let prev = '';
+    for (let i = 0; i < shown.length; i++) {
+      const e = shown[i];
+      const tt = logTime(e.t);
+      const same = tt === prev;
+      const more = i + 1 < shown.length && logTime(shown[i + 1].t) === tt;
+      const grouped = same || more;
+      prev = tt;
+      const time = same ? [el(doc, 'span', { 'aria-hidden': 'true', class: 'sim-ditto', title: `${tt} s (the same moment)` }, ['〃']), el(doc, 'span', { class: 'sr-only' }, [`${tt} (the same moment)`])] : [tt];
       tb.appendChild(
-        el(doc, 'tr', { 'data-kind': e.kind, 'data-protocol': e.protocol }, [
-          el(doc, 'td', { class: 'mono' }, [logTime(e.t)]),
+        el(doc, 'tr', { 'data-kind': e.kind, 'data-protocol': e.protocol, class: grouped ? (same ? 'sim-t-same' : 'sim-t-first') + (more ? '' : ' sim-t-end') : '' }, [
+          el(doc, 'td', { class: 'mono' }, time),
           el(doc, 'td', {}, [e.device]),
           el(doc, 'td', {}, [e.peer]),
           el(doc, 'td', {}, [this.protoLabel(e.protocol)]),

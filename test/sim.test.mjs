@@ -23,7 +23,7 @@ const pe = example('protocol-simulation.yaml');
 const steady = pe.replace(/\n *simulation: \{flapping: true\}/, '');
 const reroute = example('ospf-reroute.yaml');
 
-test('a fresh start: empty ARP, neighbour and MAC tables, every session down, the interfaces up at t = 0', () => {
+test('a fresh start: empty ARP, neighbour and MAC tables, every session down, the cabled interfaces up after the link-up delay', () => {
   const s = sim(pe);
   s.runTo(0);
   for (const d of s.tableDevices()) {
@@ -32,9 +32,15 @@ test('a fresh start: empty ARP, neighbour and MAC tables, every session down, th
     assert.ok(s.macTable(d.id).every((r) => r.type === 'static'), d.id);
   }
   assert.ok(s.status().filter((x) => x.protocol !== 'demand' && x.protocol !== 'stp').every((x) => !x.up));
-  const up = events(s, (e) => e.kind === 'link' && e.what === 'interfaces up');
+  const up = events(s, (e) => e.kind === 'link' && /^interfaces (up|coming up)$/.test(e.what));
   assert.ok(up.length > 5 && up.every((e) => e.t === 0));
   assert.match(up[0].detail, /fresh start: empty ARP, neighbour and MAC tables, every adjacency down/);
+  // Layer 1: a cabled interface sends nothing before its link is up (the link-up delay, 2 s), then comes up
+  assert.ok(up.some((e) => /coming up \(the link-up delay\)/.test(e.detail)));
+  s.runTo(1999);
+  assert.ok(!events(s, (e) => e.kind === 'message').length, 'nothing is sent before the links are up');
+  s.runTo(2100);
+  assert.ok(events(s, (e) => e.kind === 'link' && /is up: it can send now/.test(e.detail)).length > 5);
 });
 
 test('ARP before the first unicast packet: a broadcast request, a unicast reply with the MAC, the entry, then the waiting packet', () => {
@@ -176,9 +182,9 @@ test('switching: MAC learning per port and VLAN, flooding within the VLAN only, 
 test('MAC tables: aging (with the timer scale), flushing on a failed port, relearning on the new path; static entries for the switch’s own interfaces', () => {
   const quiet = L2.replace(/demands:[\s\S]*$/, '');
   const s = sim(quiet, { timerScale: 60 });
-  s.runTo(1500);
+  s.runTo(2500);
   assert.ok(s.macTable('sw').some((r) => r.type === 'dynamic'), 'learned from the gratuitous ARPs at boot');
-  s.runTo(8000);
+  s.runTo(9000);
   assert.ok(!s.macTable('sw').some((r) => r.type === 'dynamic'), 'aged out after 300 s / 60');
   assert.ok(events(s, (e) => e.kind === 'table' && e.device === 'sw' && e.state === 'aged out').length);
   assert.deepEqual(s.macTimers('sw').map((t) => [t.label, t.value, t.source]), [['MAC aging time', '5 min', 'default'], ['MAC table size', '8192', 'default']]);
@@ -224,7 +230,7 @@ demands:
 test('a Layer 3 switch routes between its VLANs (MACs rewritten, TTL decremented); a Layer 2 switch routes nothing', () => {
   const s = sim(L3SW(true));
   s.runTo(15000);
-  const hop = events(s, (e) => e.kind === 'route' && e.device === 'sw')[0];
+  const hop = events(s, (e) => e.kind === 'route' && e.device === 'sw' && /^sw routes /.test(e.detail))[0];
   const macs = s.engine.net.macs;
   assert.match(hop.detail, new RegExp(`^sw routes 10\\.1\\.0\\.10 → 10\\.2\\.0\\.20: in Vlan10 \\(src ${macs.get('h10:eth0').mac} dst ${macs.get('sw:Vlan10').mac}\\), out Vlan20 \\(src ${macs.get('sw:Vlan20').mac} \\(simulated\\) dst ${macs.get('h20:eth0').mac}\\), next hop 10\\.2\\.0\\.20, TTL 64 → 63`));
   assert.equal(s.status().find((x) => x.protocol === 'demand').state, 'Delivered');

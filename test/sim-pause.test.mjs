@@ -22,17 +22,17 @@ async function load(page, pre = '') {
 const H = `document.getElementById('sim-dock').getBoundingClientRect().height`;
 const ST = `({ playing: netatlas.simController().playing, by: netatlas.simController().pausedBy, state: document.getElementById('sim-state').textContent, live: document.getElementById('sim-state-live').textContent, pi: !!document.querySelector('.sim-table-panel[data-table="packet"]') })`;
 
-test('the simulation panel: about a quarter of the window by default (an older remembered height ignored), at least its toolbar and three rows; dragged and with the keyboard; remembered under its new key; a double-click resets it', { skip, timeout: 180000 }, async () => {
+test('the simulation panel: by default its header and three rows of each table (an older remembered height ignored); dragged and with the keyboard; remembered under its new key; a double-click resets it', { skip, timeout: 180000 }, async () => {
   const page = await openPage(url, { width: 1440, height: 900 });
   try {
     // a height remembered by an earlier development version
-    await load(page, `localStorage.clear(), localStorage.setItem('netatlas.dockHeight', '600'),`);
+    await load(page, `localStorage.clear(), localStorage.setItem('netatlas.dockHeight', '600'), localStorage.setItem('netatlas.simPanelHeight', '420'),`);
     await page.eval(`netatlas.startProtocolSimulation(), netatlas.simController().setPlaying(false), netatlas.simController().runTo(20000), true`);
     await page.settle(200);
     const g = await page.eval(`(() => { const b = document.getElementById('sim-log-table').getBoundingClientRect(); const rows = Array.from(document.querySelectorAll('#sim-log-table tbody tr')).filter((r) => { const q = r.getBoundingClientRect(); return q.top >= b.top - 1 && q.bottom <= b.bottom + 1; }).length; const s = document.getElementById('sim-status-table').getBoundingClientRect(); const srows = Array.from(document.querySelectorAll('#sim-status-table tbody tr')).filter((r) => r.getBoundingClientRect().bottom <= s.bottom + 1).length; return { h: ${H}, canvas: document.getElementById('canvas-wrap').getBoundingClientRect().height, rows, srows, play: document.getElementById('sim-play').getBoundingClientRect().height, exit: document.getElementById('sim-exit').getBoundingClientRect().bottom <= innerHeight }; })()`);
-    assert.ok(g.h >= 0.2 * 900 && g.h <= 0.26 * 900, `about a quarter of 900: ${g.h}`);
+    assert.ok(Math.abs(g.h - (await page.eval(`netatlas.dockBounds().min`))) < 2, `its minimum, three rows of each table: ${g.h}`);
     assert.ok(g.canvas > 2 * g.h, 'the diagram is clearly the largest part');
-    assert.ok(g.rows >= 3 && g.srows >= 3, `three rows or more: ${g.rows} log, ${g.srows} status`);
+    assert.ok(g.rows >= 3 && g.srows >= 3, `three rows: ${g.rows} log, ${g.srows} status`);
     assert.ok(g.play > 0 && g.exit);
     // dragged 80 px up
     const sp = await page.rect('#dock-splitter');
@@ -42,7 +42,7 @@ test('the simulation panel: about a quarter of the window by default (an older r
     await page.mouse('mouseReleased', sp.x + sp.w / 2, sp.y + sp.h / 2 - 80, 'left');
     const h1 = await page.eval(H);
     assert.ok(Math.abs(h1 - g.h - 80) < 3, `${g.h} → ${h1}`);
-    assert.equal(await page.eval(`Number(localStorage.getItem('netatlas.simPanelHeight'))`), Math.round(h1));
+    assert.equal(await page.eval(`Number(localStorage.getItem('netatlas.simPanelHeight3'))`), Math.round(h1));
     // the keyboard: ↓ lower
     await page.eval(`document.getElementById('dock-splitter').focus(), true`);
     await page.key('ArrowDown', 'ArrowDown', 40);
@@ -60,7 +60,7 @@ test('the simulation panel: about a quarter of the window by default (an older r
     await page.cmd('Input.dispatchMouseEvent', { type: 'mouseReleased', x: sp2.x + sp2.w / 2, y: sp2.y + sp2.h / 2, button: 'left', clickCount: 2 });
     await page.settle(100);
     assert.ok(Math.abs((await page.eval(H)) - (await page.eval(`netatlas.dockBounds().dflt`))) < 2, 'the default');
-    assert.equal(await page.eval(`localStorage.getItem('netatlas.simPanelHeight')`), null);
+    assert.equal(await page.eval(`localStorage.getItem('netatlas.simPanelHeight3')`), null);
     // a narrow window and 200 % zoom (a viewport of 800 × 450): the toolbar shown, nothing scrolls the page
     for (const [w, h] of [[800, 640], [800, 450]]) {
       await page.cmd('Emulation.setDeviceMetricsOverride', { width: w, height: h, deviceScaleFactor: 1, mobile: false });

@@ -171,7 +171,8 @@ test('IGMP: members answer a general query after a random delay up to the respon
 
 test('IGMP: a leave makes the querier ask with group-specific queries (robustness times, one last member query interval apart); unanswered, the group goes', () => {
   const s = sim(LAN({ h2j: ' ', h1: ', simulation: {igmp_version: v2}' }));
-  s.runTo(5000);
+  // (its first unsolicited report may go before the switch knows its router ports: the repeat, 10 s later, gets there)
+  s.runTo(13000);
   assert.ok(s.igmpTable('q1').rows.some((r) => r[1] === '239.2.2.2'));
   s.leaveGroup('h1', 'eth0', '239.2.2.2');
   s.runTo(s.now + 4000);
@@ -262,7 +263,8 @@ links:
   off.runTo(10000);
   assert.ok(!ev(off, (e) => e.device === 'sw' && e.what === 'Query').length);
   const on = sim(Y(', simulation: {snooping_querier: "on", igmp_query_interval: 5}'));
-  on.runTo(12000);
+  // (its first query goes when its first port is up, possibly before h1's: h1 answers the next one, within its 10 s)
+  on.runTo(18000);
   const q = ev(on, (e) => e.device === 'sw' && e.what === 'Query');
   assert.ok(q.length >= 2);
   assert.match(q[0].detail, /General Query from sw \(snooping querier, 10\.9\.0\.2\) in VLAN 1: no multicast router there/);

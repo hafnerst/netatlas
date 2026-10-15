@@ -383,9 +383,9 @@ test('changes apply at once: a shorter ARP timeout expires older entries now, th
   const last = hellos().pop();
   s.setParam('ospf-hello', 2000);
   s.runTo(s.now + 5000);
-  // its last Hello was more than 2 s ago: the next one goes now, then every 2 s
+  // its last Hello was more than 2 s ago: the next one goes now, then every 2 s (each with its sub-millisecond jitter)
   const next = hellos().filter((t) => t > last);
-  assert.ok(last < s.now - 5000 - 2000 && next.length >= 2 && next[0] === s.now - 5000 && next[1] - next[0] === 2000, `${last} → ${next.join(',')}`);
+  assert.ok(last < s.now - 5000 - 2000 && next.length >= 2 && Math.abs(next[0] - (s.now - 5000)) < 1 && Math.abs(next[1] - next[0] - 2000) < 1, `${last} → ${next.join(',')}`);
   assert.ok(events(s, (e) => /hello interval 2 s \(simulation\)|hello 2 s \(simulation\)/.test(e.detail)).length);
   // back to the default
   s.setParam('ospf-hello', undefined);

@@ -1184,6 +1184,12 @@ table.sim-table td.st-up { color: var(--ok); white-space: nowrap; }
 table.sim-table td.st-down { color: var(--muted); white-space: nowrap; }
 td.mono { font-family: var(--font-mono); white-space: nowrap; }
 .sim-log td:nth-child(2), .sim-log td:nth-child(3) { white-space: nowrap; }
+/* the log: events of the same moment are one group (a line above it, a ditto mark on its other rows); what waits for a precondition is muted and italic */
+table.sim-table tr.sim-t-first td { border-top: 2px solid var(--border); }
+table.sim-table tr.sim-t-first td, table.sim-table tr.sim-t-same td { border-bottom-style: dotted; }
+table.sim-table tr.sim-t-end td { border-bottom: 2px solid var(--border); }
+.sim-ditto { color: var(--muted); padding-left: 2ch; }
+table.sim-table tr[data-kind="wait"] td:nth-child(5), table.sim-table tr[data-kind="wait"] td:nth-child(7) { font-style: italic; color: var(--muted); }
 
 /* ---------------- the protocol checkboxes (Start simulation…, Simulation setup) */
 .pp { display: flex; flex-direction: column; min-height: 0; gap: 4px; }
@@ -1275,13 +1281,14 @@ body[data-sim="on"] #side > .tabs, body[data-sim="on"] #side-body, body[data-sim
 .sd-time { font-size: 14px; font-weight: 650; white-space: nowrap; }
 .sd-notes { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 2px 14px; padding: 3px 10px; }
 .sd-notes > :empty { display: none; }
+.sd-notes:not(:has(> :not(:empty):not([hidden]))) { display: none; }
 .sd-follow { display: inline-flex; align-items: center; gap: 6px; color: var(--accent); font-weight: 600; }
 .sd-follow[hidden] { display: none; }
 /* a storm: one line in the panel (all of it in its tooltip and to assistive technology; the banner says it too) */
 .sd .sim-storm { flex: none; margin: 2px 10px; padding: 2px 8px; font-size: 12px; border-width: 1.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sp-body > .sim-shapes { margin: -6px 0 0; }
-.sd-tabs { display: none; flex: none; gap: 4px; padding: 4px 10px 0; }
-.sd-tabs [role="tab"] { min-height: 30px; padding: 3px 12px; border-radius: 6px 6px 0 0; }
+.sd-tabs { display: none; flex: none; gap: 4px; padding: 2px 10px 0; }
+.sd-tabs [role="tab"] { min-height: 26px; padding: 1px 12px; border-radius: 6px 6px 0 0; }
 .sd-tabs [aria-selected="true"] { background: var(--accent-soft); border-color: var(--accent); font-weight: 650; }
 .sd-body { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr); }
 .sd-pane { display: flex; flex-direction: column; gap: 4px; min-height: 0; min-width: 0; padding: 4px 10px 6px; }
@@ -1319,6 +1326,7 @@ body[data-sim="on"] #side > .tabs, body[data-sim="on"] #side-body, body[data-sim
 .sd-log table.sim-table th:nth-child(5) { width: 17%; }
 .sd-log table.sim-table th:nth-child(6) { width: 9%; }
 .sd-lognote { margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sd-lognote:empty::before { content: "\00a0"; }
 .sd-pane .sd-panehead { min-height: 0; }
 .sd-pane { padding-top: 2px; padding-bottom: 2px; gap: 2px; }
 .sd .sim-log-filters select, .sd #sim-log-filter { min-height: 26px; padding-top: 1px; padding-bottom: 1px; }
@@ -1397,6 +1405,12 @@ dialog#modal.sim-start-dialog .snd-list { flex: 1 1 auto; min-height: 60px; }
   .sd-log .sd-h, .sd-status .sd-h { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   .sd .sim-log-filters select { max-width: 7.5em; }
   .sd #sim-log-filter { flex-basis: 100px; }
+}
+/* (narrower still: the filters a little smaller, so that they keep to one row beside the status and the panel to three rows) */
+@container dock (max-width: 1000px) {
+  .sd .sim-log-filters { gap: 4px; }
+  .sd .sim-log-filters select { max-width: 6.2em; padding-left: 4px; padding-right: 2px; }
+  .sd #sim-log-filter { flex-basis: 70px; }
 }
 @container dock (max-width: 860px) {
   .sd-head { gap: 4px 8px; padding: 4px 8px; }
