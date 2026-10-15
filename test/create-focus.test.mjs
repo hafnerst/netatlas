@@ -230,13 +230,13 @@ test('addresses, protocols, interface groups, attributes, endpoints, members and
     assert.match(s.p, /"attrs","rack-unit"\]$/);
     assert.match(s.toast, /^Attribute “rack-unit” added — enter its value\.$/);
     // a protocol from Enable a protocol… (a choice): its card is focused
-    await open(page, 0, 'device:hq-acc1');
+    await open(page, 0, 'device:isp2-pe');
     await page.eval(`(() => { const sel = document.querySelector('#side-body select[data-t="enable-service"]'); sel.scrollIntoView({ block: 'nearest' }); sel.focus(); sel.value = 'ospf'; sel.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
     await page.settle(150);
     s = await page.eval(STATE);
     assert.equal(s.inSide, true);
     assert.equal(s.inView, true, 'the protocol is in view');
-    assert.match(s.toast, /^OSPF enabled on hq-acc1/);
+    assert.match(s.toast, /^OSPF enabled on isp2-pe/);
     assert.equal(s.marked, true, 'the protocol is marked');
     // a protocol suggestion chip (consistency-checks: r3 uses OSPF without enabling it)
     const cc = EXAMPLES.findIndex((e) => e.name === 'consistency-checks.yaml');
@@ -256,12 +256,12 @@ test('addresses, protocols, interface groups, attributes, endpoints, members and
     }
     // a relation's endpoint and underlay (choices), a LAG's member port (a choice)
     await open(page, 0, 'relation:ospf-hq-area0');
-    await page.eval(`(() => { const sel = document.querySelector('#side-body select[data-t="ep-append"]'); sel.scrollIntoView({ block: 'nearest' }); sel.focus(); sel.value = 'hq-acc1'; sel.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
+    await page.eval(`(() => { const sel = document.querySelector('#side-body select[data-t="ep-append"]'); sel.scrollIntoView({ block: 'nearest' }); sel.focus(); sel.value = 'isp2-pe'; sel.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
     await page.settle(150);
     s = await page.eval(STATE);
     ready(s, 'endpoint', { text: false });
     assert.match(s.p, /^\["relations",\d+,"endpoints",5/);
-    assert.match(s.toast, /^Endpoint hq-acc1 added\.$/);
+    assert.match(s.toast, /^Endpoint isp2-pe added\.$/);
     await page.eval(`(() => { const sel = document.querySelector('#side-body select[data-t="over-append"]'); sel.scrollIntoView({ block: 'nearest' }); sel.focus(); sel.value = sel.options[1].value; sel.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
     await page.settle(150);
     s = await page.eval(STATE);

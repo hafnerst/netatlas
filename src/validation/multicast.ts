@@ -66,7 +66,7 @@ export function readMulticast(r: Reader, c: Ctx, n: YNode | undefined, path: str
       return;
     }
     if (sources.length && igmpV2) {
-      c.error(gNode, jp, `joining ${groupText} with a source list needs IGMPv3 (MLDv2): the device's simulation sets igmp_version: v2`);
+      c.error(gNode, jp, `joining ${groupText} with a source list needs IGMPv3 (MLDv2): the interface's (or its device's) simulation sets igmp_version: v2`);
       return;
     }
     if (seen.has(groupText.trim())) {

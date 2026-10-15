@@ -400,3 +400,61 @@ export function peerAsSuggestions(model: Model, other: string, current?: string)
   const a = bgpAsn(model.index.devices.get(other));
   return a === undefined || String(a) === current ? [] : [{ value: String(a), label: `${a} (${other}'s AS)`, title: `The local AS number of ${other}` }];
 }
+
+// ------------------------------------------------------------------ DHCP scopes and DNS
+
+/** The network's addresses as numbers (IPv4): its first and last host. */
+function hostRange(cidr: string | undefined): { first: number; last: number; net: ReturnType<typeof networkOf> } | null {
+  const p = cidr ? parsePrefix(cidr) : null;
+  if (!p || p.version !== 4 || p.prefix > 29) return null;
+  const n = networkOf(p);
+  const base = ((n.bytes[0] << 24) | (n.bytes[1] << 16) | (n.bytes[2] << 8) | n.bytes[3]) >>> 0;
+  const size = Math.pow(2, 32 - n.prefix);
+  return { first: base + 1, last: base + size - 2, net: n };
+}
+
+const v4 = (x: number): string => [x >>> 24, (x >>> 16) & 255, (x >>> 8) & 255, x & 255].join('.');
+
+/**
+ * What a DHCP scope of a network may be: a range (the upper half of the
+ * hosts, without the addresses the model gives its interfaces there), the
+ * default gateway (a router's address in it, or a redundancy group's virtual
+ * address), the DNS servers (the model's DNS servers' addresses).
+ */
+export function scopeSuggestions(model: Model, networkId: string): { range: Suggestion[]; gateway: Suggestion[]; dns: Suggestion[] } {
+  const out = { range: [] as Suggestion[], gateway: [] as Suggestion[], dns: [] as Suggestion[] };
+  const n = model.networks.find((x) => x.id === networkId);
+  const h = hostRange(n ? n.cidr : undefined);
+  for (const d of model.devices) {
+    if (!d.netServices || !d.netServices.dns) continue;
+    for (const i of deviceInterfaces(d)) for (const a of i.addresses) {
+      const ip = a.split('/')[0];
+      if (ip.indexOf(':') < 0 && !out.dns.some((s) => s.value === ip)) out.dns.push({ value: ip, label: `${ip} (${d.id})`, title: `The DNS server ${d.id}` });
+    }
+  }
+  if (!h || !n) return out;
+  const used = new Set<number>();
+  for (const d of model.devices) {
+    for (const i of deviceInterfaces(d)) {
+      for (const a of i.addresses) {
+        const p = parsePrefix(a, false);
+        if (!p || p.version !== 4 || !inPrefix(h.net, p)) continue;
+        const x = ((p.bytes[0] << 24) | (p.bytes[1] << 16) | (p.bytes[2] << 8) | p.bytes[3]) >>> 0;
+        used.add(x);
+        if (d.services.length || d.type === 'router' || d.type === 'firewall' || (d.type === 'switch' && d.layer3)) out.gateway.push({ value: v4(x), label: `${v4(x)} (${d.id}:${i.id})`, title: `The address of ${d.id}:${i.id} in ${n.id}` });
+      }
+      for (const s of i.services) {
+        const vip = s.values.get('virtual_ip');
+        const p = vip ? parsePrefix(vip, false) : null;
+        if (p && p.version === 4 && inPrefix(h.net, p) && !out.gateway.some((g) => g.value === vip)) out.gateway.unshift({ value: String(vip), label: `${vip} (${s.id.toUpperCase()} group ${s.values.get('group') || ''})`, title: `The virtual address of the ${s.id.toUpperCase()} group in ${n.id}` });
+      }
+    }
+  }
+  // the upper half, without the addresses in use
+  let a = h.first + Math.floor((h.last - h.first + 1) / 2);
+  while (a <= h.last && used.has(a)) a++;
+  let b = a;
+  while (b + 1 <= h.last && !used.has(b + 1)) b++;
+  if (a <= h.last && b - a >= 1) out.range.push({ value: `${v4(a)}-${v4(b)}`, label: `${v4(a)}–${v4(b)}`, title: `${b - a + 1} addresses of ${n.id} no interface of the model has` });
+  return out;
+}

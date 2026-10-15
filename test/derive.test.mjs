@@ -214,7 +214,7 @@ test('derived values follow every edit at once and are never written to the YAML
   const out = d.exportText();
   assert.ok(!/members/.test(out));
   assert.equal((out.match(/vlan/g) || []).length, 1, 'only the network\'s own vlan key');
-  assert.deepEqual(Object.keys(m().networks[0]).sort(), ['attrs', 'cidr', 'description', 'id', 'label', 'line', 'vlan']);
+  assert.deepEqual(Object.keys(m().networks[0]).sort(), ['attrs', 'cidr', 'description', 'id', 'label', 'line', 'simulation', 'vlan']);
 });
 
 test('membership drives highlighting, the selection context, search and the layout input', () => {
@@ -284,9 +284,9 @@ networks:
 });
 
 test('the schema: each fact has one key, in one place', () => {
-  assert.deepEqual(SCHEMA.network, ['id', 'label', 'cidr', 'vlan', 'description', 'attrs']);
-  assert.deepEqual(SCHEMA.interface, ['id', 'label', 'dhcp', 'ip', 'vrf', 'mac', 'mtu', 'protocols', 'multicast', 'description', 'attrs']);
-  assert.deepEqual(SCHEMA.logical, ['id', 'type', 'label', 'dhcp', 'ip', 'vrf', 'mac', 'mtu', 'members', 'min_links', 'vlan', 'source', 'destination', 'protocols', 'multicast', 'description', 'attrs']);
+  assert.deepEqual(SCHEMA.network, ['id', 'label', 'cidr', 'vlan', 'simulation', 'description', 'attrs']);
+  assert.deepEqual(SCHEMA.interface, ['id', 'label', 'dhcp', 'ip', 'vrf', 'mac', 'mtu', 'dhcp_relay', 'protocols', 'multicast', 'simulation', 'description', 'attrs']);
+  assert.deepEqual(SCHEMA.logical, ['id', 'type', 'label', 'dhcp', 'ip', 'vrf', 'mac', 'mtu', 'dhcp_relay', 'members', 'min_links', 'vlan', 'source', 'destination', 'protocols', 'multicast', 'simulation', 'description', 'attrs']);
   assert.deepEqual(SCHEMA.route, ['prefix', 'via', 'interface', 'blackhole', 'distance', 'metric', 'vrf', 'name', 'description', 'attrs']);
   assert.ok(!('child' in SCHEMA) && !('loopback' in SCHEMA));
   assert.deepEqual(SCHEMA.linkEnd, ['device', 'interface', 'speed', 'duplex', 'mode', 'untagged', 'tagged']);
@@ -296,7 +296,7 @@ test('the schema: each fact has one key, in one place', () => {
   for (const f of exampleNames) {
     const r = load2(example(f));
     for (const n of r.model.networks) {
-      assert.deepEqual(Object.keys(n).sort(), ['attrs', 'cidr', 'description', 'id', 'label', 'line', 'vlan'], f);
+      assert.deepEqual(Object.keys(n).sort(), ['attrs', 'cidr', 'description', 'id', 'label', 'line', 'simulation', 'vlan'], f);
       assert.equal(typeof n.cidr, 'string', `${f}: ${n.id} has one prefix`);
     }
     assert.ok(!/^\s*(members|kind: (subnet|vlan|vni|vrf))\b/m.test(example(f)), f);

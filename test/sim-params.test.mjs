@@ -99,7 +99,10 @@ test('values: durations with a unit or in the parameter’s own unit, percentage
   assert.match(p('loss', '120').error, /must be from 0 % to 100 %/);
   assert.match(p('arp-timeout', '4 lightyears').error, /is not a duration/);
   assert.match(p('arp-retries', '2.5').error, /whole number/);
-  assert.match(p('stp-mode', 'pvst').error, /one of rstp, stp/);
+  assert.match(p('stp-mode', 'mst').error, /one of rstp, mstp, pvst, stp, off/);
+  assert.match(p('bridge-priority', '1000').error, /must be a multiple of 4096/);
+  assert.deepEqual(p('bridge-priority-vlans', '20=8192, 10:4096'), { value: '10=4096, 20=8192' });
+  assert.match(p('bridge-priority-vlans', '10=4000').error, /multiple of 4096/);
   assert.match(p('default-speed', 'fast').error, /not a speed/);
   assert.equal(Pm.formatValue(Pm.paramDef('flap-cycles'), 0), 'continuous');
 });
@@ -136,7 +139,10 @@ test('every device type has its simulation attributes (boot time at least); whic
   const byType = Object.fromEntries(Pm.attributesByType().map((x) => [x.type, x.keys]));
   assert.deepEqual(Object.keys(byType).sort(), DT.DEVICE_TYPE_IDS.slice().sort());
   for (const t of DT.DEVICE_TYPE_IDS) assert.ok(byType[t].indexOf('boot-time') >= 0, t);
-  assert.ok(['mac-aging', 'mac-table-size', 'stp-mode', 'stp-hello', 'stp-forward-delay', 'stp-max-age', 'lacp-rate', 'arp-timeout', 'spf-delay'].every((k) => byType.switch.indexOf(k) >= 0), 'a (Layer 3) switch');
+  assert.ok(['mac-aging', 'mac-table-size', 'stp-mode', 'stp-hello', 'stp-forward-delay', 'stp-max-age', 'bridge-priority', 'bridge-priority-vlans', 'arp-timeout', 'spf-delay'].every((k) => byType.switch.indexOf(k) >= 0), 'a (Layer 3) switch');
+  // what is set per port, per VLAN or per relation is no device attribute (a device-wide default only where devices have one)
+  assert.ok(['lacp-rate', 'stp-cost', 'stp-root-guard', 'storm-bc', 'fast-leave', 'link-up-delay'].every((k) => byType.switch.indexOf(k) < 0), 'per port or per VLAN');
+  assert.ok(['stp-edge', 'stp-bpdu-guard', 'igmp-snooping'].every((k) => byType.switch.indexOf(k) >= 0), 'their device-wide defaults');
   assert.ok(['spf-delay', 'ecmp-max', 'ttl', 'arp-timeout'].every((k) => byType.router.indexOf(k) >= 0));
   assert.ok(byType.firewall.indexOf('ha-failover') >= 0);
   assert.deepEqual(byType.ids_ips.filter((k) => /^ips-/.test(k)), ['ips-fail', 'ips-latency']);
@@ -165,8 +171,11 @@ test('a device’s simulation: block: overrides only, checked for the attribute,
   assert.match(msg(dev('{mac_aging: 60}')), /"mac_aging" \(mac aging time\) does not apply to "r", a Router/);
   assert.match(msg(dev('{arp_timeout: 0}')), /ARP timeout must be from 1 s to /);
   assert.match(msg(dev('{arp_timeout: 4 lightyears}')), /ARP timeout is not a duration .*a bare number is in seconds/);
-  assert.match(msg(dev('{stp_mode: pvst}', 'switch')), /Spanning tree must be one of rstp, stp/);
-  assert.deepEqual(errorsOf(dev('{stp_mode: stp, mac_aging: 120, lacp_rate: fast}', 'switch')), []);
+  assert.match(msg(dev('{stp_mode: mst}', 'switch')), /Spanning tree must be one of rstp, mstp, pvst, stp, off/);
+  assert.deepEqual(errorsOf(dev('{stp_mode: pvst, mac_aging: 120, bridge_priority: 4096, stp_edge: on}', 'switch')), []);
+  // an attribute of a port is no device attribute: an error that says where it belongs (it is not moved)
+  assert.match(msg(dev('{stp_mode: stp, lacp_rate: fast}', 'switch')), /"lacp_rate" \(lacp rate\) is set per aggregate \(LAG\): in the aggregate \(LAG\)’s simulation:, not for the whole device/);
+  assert.match(msg(dev('{fast_leave: on}', 'switch')), /"fast_leave" \(fast leave\) is set per VLAN: in the simulation: of the network with that VLAN, not for the whole device/);
   // the old fields are gone: one place for the timers
   assert.match(msg(`netatlas: 1\ntitle: t\ndevices:\n  - {id: r, type: router, arp_timeout: 60}\n`), /unknown key "arp_timeout"/);
   // a cable
@@ -395,11 +404,15 @@ test('changes apply at once: a shorter ARP timeout expires older entries now, th
 test('a device’s attributes changed in the model during a simulation apply at once (logged as device); the route recomputation delay holds the old routes', () => {
   const s = sim(pe);
   s.runTo(30000);
-  const m2 = model(pe.replace('simulation: {arp_timeout: 300, pim_dr_priority: 200}', 'simulation: {arp_timeout: 60, pim_dr_priority: 200}'));
+  const m2 = model(pe.replace('simulation: {arp_timeout: 300}', 'simulation: {arp_timeout: 60}'));
   const cs = s.deviceParamsFrom(m2);
   assert.deepEqual(cs.map((c) => Pm.changeText(c)), ['Parameter changed: ARP timeout on core1 5 min → 1 min (device)']);
   assert.ok(events(s, (e) => e.detail === 'Parameter changed: ARP timeout on core1 5 min → 1 min (device)').length);
   assert.deepEqual(s.deviceParamsFrom(m2), [], 'nothing new');
+  // an interface's attribute: the same, logged as set there
+  // (the first DR priority of the example is core1's Vlan10)
+  const m3 = model(pe.replace('simulation: {arp_timeout: 300}', 'simulation: {arp_timeout: 60}').replace('simulation: {pim_dr_priority: 200}', 'simulation: {pim_dr_priority: 300}'));
+  assert.deepEqual(s.deviceParamsFrom(m3).map((c) => Pm.changeText(c)), ['Parameter changed: PIM DR priority on core1:Vlan10 200 → 300 (set there)']);
   // SPF: routers recompute after their delay
   assert.ok(events(s, (e) => /^Routes recomputed at .*\(route recomputation delay 200 ms, default\)$/.test(e.detail)).length);
   const slow = sim(pe.replace('  - id: r1\n    type: router', '  - id: r1\n    type: router\n    simulation: {spf_delay: 5000}'));

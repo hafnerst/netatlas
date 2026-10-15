@@ -81,7 +81,7 @@ test('interfaces are stored once under their device, as physical and logical; ze
   const none = validate.loadModel('netatlas: 1\ndevices:\n  - {id: a}\n  - {id: b, interfaces: [e0]}\n  - {id: c, logical_interfaces: [{id: lo0, type: loopback, ip: 10.0.0.1/32}]}\n');
   assert.deepEqual(none.errors, []);
   assert.deepEqual(none.model.devices.map((x) => [x.interfaces.length, x.logical.length]), [[0, 0], [1, 0], [0, 1]]);
-  assert.deepEqual(SCHEMA.device.slice(-4), ['interfaces', 'logical_interfaces', 'dns_names', 'routes']);
+  assert.deepEqual(SCHEMA.device.slice(-5), ['interfaces', 'logical_interfaces', 'dns_names', 'dns_servers', 'routes']);
 });
 
 test('a physical interface has no type; a logical interface has one of loopback, virtual, tunnel', () => {
@@ -89,7 +89,7 @@ test('a physical interface has no type; a logical interface has one of loopback,
   for (const t of ['physical', 'loopback', 'virtual', 'tunnel', 'svi']) {
     const m = messages(`netatlas: 1\ndevices:\n  - id: a\n    interfaces:\n      - {id: e0, type: ${t}}\n`);
     assert.equal(m.length, 1, t);
-    assert.match(m[0], /^unknown key "type" \(known: id, label, dhcp, ip, vrf, mac, mtu, protocols, multicast, description, attrs\)/, t);
+    assert.match(m[0], /^unknown key "type" \(known: id, label, dhcp, ip, vrf, mac, mtu, dhcp_relay, protocols, multicast, simulation, description, attrs\)/, t);
   }
   const logical = (body) => messages(`netatlas: 1\ndevices:\n  - id: a\n    logical_interfaces:\n      - {id: x0${body}}\n`);
   assert.deepEqual(logical(', type: virtual'), []);
@@ -534,7 +534,7 @@ test('export -> reload: the format round-trips (both categories, members, VLAN, 
 
 test('every example (and generated fixture) uses the format and draws in both views', () => {
   const files = exampleNames.map((f) => [f, example(f)]).concat(fixtureNames.map((f) => [f, fixture(f)]));
-  assert.equal(files.length, 12 + 3);
+  assert.equal(files.length, 13 + 3);
   for (const [f, text] of files) {
     const r = validate.loadModel(text);
     assert.deepEqual(r.errors.concat(r.warnings).map((e) => `${e.line}: ${e.message}`), [], f);

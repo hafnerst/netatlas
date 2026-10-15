@@ -39,6 +39,13 @@ const SHOTS = [
   ['addressing-overview.png', 'light', 'example=6&view=logical', `document.getElementById('btn-addressing').click(); document.querySelector('[data-addr-toggle="|corp"]').click()`],
 ];
 
+// the simulation layout: file name, window width and height
+const SIM_SHOTS = [
+  ['sim-layout-wide.png', 1440, 900],
+  ['sim-layout-narrow.png', 800, 900],
+  ['sim-layout-short.png', 800, 600],
+];
+
 async function main() {
   if (!existsSync(html)) {
     console.error('dist/netatlas.html not found: run "npm run build" first');
@@ -70,6 +77,23 @@ async function main() {
   } finally {
     await page.eval(`localStorage.removeItem('netatlas.theme'), true`).catch(() => {});
     await page.close();
+  }
+  // the simulation layout (protocol-simulation.yaml, dark) at three window sizes: wide, narrow, narrow and short
+  for (const [name, width, height] of SIM_SHOTS) {
+    const p = await openPage(base, { width, height });
+    try {
+      await p.settle(200);
+      const ex = await p.eval(`Array.from(document.querySelectorAll('#menu-examples [data-example]')).findIndex((b) => /protocol-simulation/.test(b.textContent))`);
+      await p.eval(`localStorage.clear(), sessionStorage.clear(), netatlas.loadExample(${ex}), netatlas.setView('physical'), netatlas.select('device:core1'), netatlas.startProtocolSimulation({ params: {}, senders: netatlas.session.model.devices.map((d) => d.id) }), netatlas.simController().setPlaying(false), netatlas.simController().runTo(25200), netatlas.fit(), true`);
+      await p.eval(`(() => { const c = netatlas.simController(); for (let i = 0; i < 20; i++) c.advance(25); c.refresh(true); document.getElementById('toast').hidden = true; return true; })()`);
+      await p.mouse('mouseMoved', width - 10, height - 10);
+      await p.settle(400);
+      const shot = await p.cmd('Page.captureScreenshot', { format: 'png' });
+      writeFileSync(join(outDir, name), Buffer.from(shot.data, 'base64'));
+      console.log(`wrote docs/img/${name} (dark, ${width} × ${height})`);
+    } finally {
+      await p.close();
+    }
   }
 }
 

@@ -348,11 +348,11 @@ test('a device’s Simulation settings in the Actions panel: collapsed, editable
     await page.type('45');
     await page.key('Tab', 'Tab', 9);
     await page.settle(150);
-    assert.match(await page.eval(`netatlas.exportText()`), /simulation: \{arp_timeout: 45, pim_dr_priority: 200\}/);
+    assert.match(await page.eval(`netatlas.exportText()`), /simulation: \{arp_timeout: 45\}/);
     assert.ok(await page.eval(`netatlas.simController().sim.events().some((e) => e.detail === 'Parameter changed: ARP timeout on core1 5 min → 45 s (device)')`));
     await page.eval(`netatlas.undo(), true`);
     await page.settle(150);
-    assert.match(await page.eval(`netatlas.exportText()`), /simulation: \{arp_timeout: 300, pim_dr_priority: 200\}/);
+    assert.match(await page.eval(`netatlas.exportText()`), /simulation: \{arp_timeout: 300\}/);
     // the setup's parameters: applied at once, logged, remembered for the session
     await page.eval(`document.getElementById('sim-pw-l2-btn').click(), true`);
     await page.settle(60);

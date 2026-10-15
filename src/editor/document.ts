@@ -638,6 +638,12 @@ export class ModelDoc {
     if (path.length === 4 && typeof path[3] === 'number' && path[0] === 'relations' && path[2] === 'endpoints') return 'endpoint';
     if (path.length === 4 && typeof path[3] === 'number' && path[0] === 'devices' && path[2] === 'dns_names') return 'dnsName';
     if (path.length === 4 && typeof path[3] === 'number' && path[0] === 'devices' && path[2] === 'routes') return 'route';
+    // a server's services: services, its dhcp and dns, a scope and its reservations, a zone and its records
+    if (path[0] === 'devices' && path[2] === 'services') {
+      const rest = path.slice(3).map((x) => (typeof x === 'number' ? '#' : x)).join('/');
+      const kinds: { [k: string]: string } = { '': 'netServices', dhcp: 'dhcpService', 'dhcp/scopes/#': 'dhcpScope', 'dhcp/scopes/#/reservations/#': 'dhcpReservation', dns: 'dnsService', 'dns/zones/#': 'dnsZone', 'dns/zones/#/records/#': 'dnsRecord' };
+      if (kinds[rest]) return kinds[rest];
+    }
     if (this.isLinkEnd(path)) return 'linkEnd';
     if (path.length === 1 && path[0] === 'layout') return 'layout';
     return undefined;
@@ -892,7 +898,18 @@ export class ModelDoc {
    * or text ("300ms", "fast").
    */
   setSimAttr(devIndex: number, yaml: string, value: string | undefined): void {
-    const sp: Path = ['devices', devIndex, 'simulation'];
+    this.setSimAttrAt(['devices', devIndex], yaml, value);
+  }
+
+  /**
+   * Set (or, with undefined, remove: it inherits again) a simulation
+   * attribute of a device, an interface, a network or a relation: its
+   * `simulation:` block, created and removed with its first and last key
+   * (an interface written as "- eth0" becomes a mapping). One undo step;
+   * allowed while a simulation runs (the documented exception to its lock).
+   */
+  setSimAttrAt(owner: Path, yaml: string, value: string | undefined): void {
+    const sp: Path = owner.concat('simulation');
     this.change(
       value === undefined ? `Inherit ${yaml.replace(/_/g, ' ')}` : `Set ${yaml.replace(/_/g, ' ')}`,
       () => {
@@ -902,8 +919,9 @@ export class ModelDoc {
           if (b && b.kind === 'map' && b.entries.size === 0) this.removeAt(sp);
           return;
         }
-        const order = PARAMS.filter((p) => !!p.device).map((p) => p.yaml);
-        this.ensureMap(sp, KEY_ORDER.device);
+        const order = PARAMS.filter((p) => !!p.device || !!p.level).map((p) => p.yaml);
+        this.ensureMap(owner, this.orderFor(owner.slice(0, -1)));
+        this.ensureMap(sp, this.orderFor(owner));
         this.setAt(sp.concat(yaml), /^-?[0-9]+(\.[0-9]+)?$/.test(value) ? numNode(Number(value)) : strNode(value), order);
       },
       { exempt: true, layout: false },
@@ -1089,6 +1107,33 @@ export class ModelDoc {
     if (m && m.kind === 'map' && m.entries.has(newKey) && newKey !== oldKey) return 'exists';
     this.change('Rename key', () => this.renameKey(mapPath, oldKey, newKey));
     return 'ok';
+  }
+
+  /**
+   * A server's DHCP or DNS server on (an empty one: what it still needs is
+   * reported until filled in) or off (its scopes or zones go with it); one
+   * undo step.
+   */
+  setNetService(devIndex: number, id: 'dhcp' | 'dns', on: boolean): void {
+    const sp: Path = ['devices', devIndex, 'services'];
+    this.change(on ? `Enable the ${id.toUpperCase()} server` : `Disable the ${id.toUpperCase()} server`, () => {
+      if (on) {
+        this.ensureMap(sp, KEY_ORDER.device);
+        this.ensureMap(sp.concat(id), KEY_ORDER.netServices);
+        return;
+      }
+      this.removeAt(sp.concat(id));
+      const b = this.get(sp);
+      if (b && b.kind === 'map' && b.entries.size === 0) this.removeAt(sp);
+    });
+  }
+
+  /** Add an empty entry (a scope, a zone, a reservation, a record) to a list of a server's services; one undo step. */
+  addServiceItem(listPath: Path, what: string): void {
+    this.change('Add ' + what, () => {
+      this.ensureMap(listPath.slice(0, -1), this.orderFor(listPath.slice(0, -2)));
+      this.ensureSeq(listPath, false, this.orderFor(listPath.slice(0, -1))).items.push(mapNode());
+    });
   }
 
   /** Append an empty value, group or list to a list. */

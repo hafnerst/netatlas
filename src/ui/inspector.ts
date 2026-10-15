@@ -19,11 +19,11 @@ import { headOf, objectHead } from './panels';
 import { sortedByName } from '../model/order';
 import { CATEGORIES, DIRECTIONS, DUPLEXES, Direction, InterfaceKind, LINE_STYLES, LOGICAL_IFACE_TYPES, PORT_MODES, VLAN_MAX, VLAN_MIN, ifaceKey, interfaceKindLabel, routeKey } from '../model/types';
 import { derivedVlanText, endNetworks, interfaceAddresses, interfaceVlanPorts, interfaceVlans, networkMembers, tagMismatch, tagMismatchText } from '../model/derive';
-import { routingRole, ROUTE_DEVICE_TYPES } from '../model/device-types';
+import { isLayer2Switch, relationNeedsLayer3, routingRole, ROUTE_DEVICE_TYPES } from '../model/device-types';
 import { nextHopCandidates, vrfKey } from '../analysis/routing';
 import { CHECKS } from '../analysis/checks';
 import { nextFreeChoices } from '../analysis/addressing';
-import { builtinProtocols, normalizeProtocol, protocolBase } from '../model/protocols';
+import { builtinProtocols, lookupProtocol, normalizeProtocol, protocolBase } from '../model/protocols';
 import { SelectionContext, contextState } from '../model/queries';
 import { DEVICE_TYPES, isDeviceType } from '../model/device-types';
 import { ID_RE, Issue, PROTO_RE, scalarText } from '../validation/validate';
@@ -33,9 +33,11 @@ import { BUILTIN_SERVICES, ParamDef, ROUTER_ID_KEY, ServiceDef, paramsAt } from 
 import { parsePrefix } from '../model/ip';
 import { suggestedServices } from '../analysis/identity';
 import { Suggestion, netSuggestions, peerAsSuggestions, asnSuggestions, distanceSuggestions, generateMac, groupSuggestions, mtuSuggestions, nextInterfaceName, routePrefixSuggestions, routerIdSuggestions, virtualIpSuggestions, vlanSuggestions, vrfCaseVariants, vrfChoices } from '../analysis/helpers';
-import { relationDevices } from '../model/types';
-import { deviceAttributes } from '../analysis/sim/attrs';
-import { ParamDef as SimParamDef, ParamValue, SimParams, deviceParamByYaml, fieldText, fieldUnit, formatValue, parseValue } from '../analysis/sim/params';
+import { Model, relationDevices } from '../model/types';
+import { deviceAttributes, interfaceAttributes, relationAttributes, vlanAttributes } from '../analysis/sim/attrs';
+import { ParamDef as SimParamDef, ParamValue, SimParams, deviceParamByYaml, fieldText, fieldUnit, formatValue, ifaceRef, parseValue, relRef, scopeRef, serviceParams, vlanRef, zoneRef } from '../analysis/sim/params';
+import { SERVER_TYPES, derivedRecords } from '../model/netservices';
+import { scopeSuggestions } from '../analysis/helpers';
 
 /** `iface`: the document path of the selected physical or logical interface of a device; `route`: of the selected static route. */
 /**
@@ -591,6 +593,7 @@ export class Editor {
   }
 
   // ------------------------------------------------------------ inspector
+  // (SimOwner: below)
 
   /** a simulation is running: the device's Simulation section is drawn by renderSimSection (editable), not in the read-only form */
   private simOutside = false;
@@ -801,7 +804,10 @@ export class Editor {
       const p = v.protocol.trim();
       if (!p) out.protocol = 'Required: choose or type the protocol.';
       else if (!PROTO_RE.test(normalizeProtocol(p))) out.protocol = `“${p}” is not a protocol name: use letters, digits and _ . + -`;
-      else if (model) {
+      else if (model && dr.ends.some((e) => this.isL2Switch(e.device)) && relationNeedsLayer3(protocolBase(model.protocols, normalizeProtocol(p)), lookupProtocol(model.protocols, p).category)) {
+        const l2 = dr.ends.filter((e) => this.isL2Switch(e.device)).map((e) => e.device);
+        out.protocol = `${p} requires Layer 3: ${l2.join(' and ')} ${l2.length === 1 ? 'is a Layer 2 switch' : 'are Layer 2 switches'} (tick Supports Layer 3 in ${l2.length === 1 ? 'its' : 'their'} Edit tab first).`;
+      } else if (model) {
         const dup = duplicateRelation(model, dr.ends, { protocol: p, label: v.label, direction: v.direction === 'unidirectional' ? 'unidirectional' : 'bidirectional' });
         if (dup) out.ends = `The same relation already exists (“${dup.id}”: same endpoints, protocol, label and direction). Give this one another label or direction, or cancel.`;
       }
@@ -847,7 +853,10 @@ export class Editor {
     if (link) {
       w.appendChild(this.group('Cable', [input('medium', 'Medium', false, MEDIA), input('speed', 'Speed', false, ['100M', '1G', '10G', '25G', '40G', '100G', '400G'])], 'cable'));
     } else {
-      const protos = Array.from(builtinProtocols().keys()).concat(this.ids('protocol'));
+      const l2ends = dr.ends.filter((e) => this.isL2Switch(e.device)).map((e) => e.device);
+      const protos = Array.from(builtinProtocols().keys())
+        .concat(this.ids('protocol'))
+        .filter((x) => !l2ends.length || !relationNeedsLayer3(model ? protocolBase(model.protocols, x) : x, (builtinProtocols().get(x) || { category: '' }).category));
       const dir = this.e('select', { id: 'draft-direction', 'data-t': 'draft', 'data-k': 'direction' }, [
         this.e('option', { value: 'bidirectional' }, ['Bidirectional']),
         this.e('option', { value: 'unidirectional' }, ['Unidirectional (endpoint 1 → endpoint 2)']),
@@ -1040,6 +1049,10 @@ export class Editor {
       g('Placement', [this.refField(base.concat('group'), 'Group / location', o, this.ids('group')), this.intField(base.concat('tier'), 'Tier (0–9)', o, 'Row in the physical view (0 = top). Empty: automatic.')], 'placement');
       const protos = this.protocolsGroup(base, index);
       if (protos) w.appendChild(protos);
+      const svcs = this.netServicesGroup(base, index);
+      if (svcs) w.appendChild(svcs);
+      const dnsc = this.dnsClientGroup(base);
+      if (dnsc) w.appendChild(dnsc);
       if (!this.simOutside) {
         const sim = this.simulationSection(index);
         if (sim) w.appendChild(sim);
@@ -1063,9 +1076,19 @@ export class Editor {
       const nv = Number(doc.text(base.concat('vlan')));
       g('Addressing', [this.cidrField(base.concat('cidr'), o), this.withHelpers(this.intField(base.concat('vlan'), `VLAN ID (${VLAN_MIN}–${VLAN_MAX})`, o, 'Interfaces addressed in this network show it as their VLAN.'), base.concat('vlan'), 'int', nm ? vlanSuggestions(nm, nv).filter((s) => / \(next free\)$/.test(s.label)) : [], 'VLAN ID', 'network ' + (doc.text(base.concat('id')) || ''))], 'addressing');
       g('Members', [this.membersField(index)], 'members');
+      if (!this.simOutside) {
+        const sim = this.vlanSimSection(index);
+        if (sim) w.appendChild(sim);
+      }
       notes();
     } else if (kind === 'relation') {
-      const protos = Array.from(builtinProtocols().keys()).concat(this.ids('protocol'));
+      // a Layer 3 protocol is not proposed while an endpoint is a Layer 2 switch
+      const epDevs = this.listTexts(base.concat('endpoints')).map((t) => t.split(':')[0]);
+      const rm = doc.result.model;
+      const l2 = epDevs.some((d) => this.isL2Switch(d));
+      const protos = Array.from(builtinProtocols().keys())
+        .concat(this.ids('protocol'))
+        .filter((x) => !l2 || !relationNeedsLayer3(rm ? protocolBase(rm.protocols, x) : x, (builtinProtocols().get(x) || { category: '' }).category));
       g('Identity', [this.idField(base, kind), this.textField(base.concat('label'), 'Label', o)], 'identity');
       g('Protocol', [
         this.textField(base.concat('protocol'), 'Protocol', o, 'text', protos, 'Required. Built-in names get a default style; define others under Protocols.', 'Select or type a protocol'),
@@ -1076,6 +1099,10 @@ export class Editor {
       g('Underlay', [this.overField(base.concat('over'), 'Carried over (underlay)', o, index)], 'underlay');
       const params = this.endpointParamsGroup(base);
       if (params) w.appendChild(params);
+      if (!this.simOutside) {
+        const sim = this.relationSimSection(index);
+        if (sim) w.appendChild(sim);
+      }
       notes();
     } else if (kind === 'group') {
       const self = doc.text(base.concat('id'));
@@ -1259,6 +1286,21 @@ export class Editor {
     const enabled = block && block.kind === 'map' ? Array.from(block.entries.keys()).sort() : [];
     const kids: Array<HTMLElement | null> = [];
     const label = (id: string): string => (reg.get(id) || { label: id }).label;
+    if (type === 'switch' && doc.text(base.concat('layer3')) !== 'true') {
+      // a Layer 2 switch: the routing protocols are listed, but can't be chosen (they require Layer 3)
+      for (const id of enabled) kids.push(this.e('div', { class: 'svc-row' }, [this.e('span', {}, [label(id)]), this.disableButton(devIndex, devId, id, label(id))]));
+      if (doc.get(base.concat('router_id'))) kids.push(this.textField(base.concat('router_id'), 'Router ID', 'device'));
+      const sel = this.e('select', { 'data-t': 'enable-service', 'data-index': String(devIndex), 'aria-label': `Enable a protocol on ${devId}`, 'aria-describedby': `l3-why-${devIndex}` }) as HTMLSelectElement;
+      sel.appendChild(this.e('option', { value: '' }, ['Enable a protocol…']));
+      const og = this.e('optgroup', { label: 'Requires Layer 3' });
+      for (const s of Array.from(reg.values()).sort((a, b) => (a.label.toLowerCase() < b.label.toLowerCase() ? -1 : 1))) og.appendChild(this.e('option', { value: s.id, disabled: '' }, [`${s.label} — requires Layer 3`]));
+      sel.appendChild(og);
+      sel.classList.add('unset');
+      const f = this.field('Enable a protocol', sel, []);
+      f.appendChild(this.e('p', { class: 'help', id: `l3-why-${devIndex}` }, [`Routing protocols, multicast routing and VRRP / HSRP require Layer 3: tick Supports Layer 3 above. Its Layer 2 protocols (STP, LACP, LLDP, IGMP / MLD snooping) and management routes need nothing more.`]));
+      kids.push(f);
+      return this.group('Protocols (routing services)', kids, 'protocols');
+    }
     if (routingRole(type) !== 'router') {
       if (!enabled.length && !doc.get(base.concat('router_id'))) return null;
       kids.push(this.e('p', { class: 'field-err' }, [`Only Layer 3+ devices (router, switch, firewall, load balancer, proxy, gateway) run routing protocols. Remove ${enabled.length ? 'them' : 'the router ID'}, or change the device type.`]));
@@ -1540,7 +1582,7 @@ export class Editor {
         this.e('h4', {}, [`DNS names (${entries.length})`]),
         this.e('span', { class: 'ctl row' }, [this.e('button', { type: 'button', class: 'mini', 'data-act': 'add-dns', 'data-index': String(devIndex), title: 'Add a DNS name and associate it with interfaces of this device' }, ['+ DNS name'])]),
       ]),
-      entries.length ? null : this.e('p', { class: 'muted small' }, ['Names of this device, each tied to one or more of its interfaces. No DNS record is created.']),
+      entries.length ? null : this.e('p', { class: 'muted small' }, ['Names of this device, tied to its interfaces; a DNS server’s zone that holds one answers it.']),
       n && n.kind !== 'seq' && !(n.kind === 'scalar' && n.value === null) ? this.e('p', { class: 'field-err' }, ['"dns_names" is not a list; fix it in the YAML tab.']) : null,
     ]);
     const eligible = sortedByName(doc.dnsEligible(devIndex), (e) => e.id as string).map((e) => e.id as string);
@@ -1591,7 +1633,7 @@ export class Editor {
     }
     if (entries.length) {
       sec.appendChild(
-        this.e('p', { class: 'muted small' }, ['Tied to whole interfaces, not addresses. No DNS record is created.']),
+        this.e('p', { class: 'muted small' }, ['Tied to whole interfaces; a DNS server’s zone that holds it answers it.']),
       );
     }
     return sec;
@@ -1630,7 +1672,7 @@ export class Editor {
         list,
         dhcp.length ? this.e('p', { class: 'muted small', 'data-dns-excluded': dhcp.join(',') }, [`Not offered because DHCP is on: ${dhcp.join(', ')}.`]) : null,
         preview,
-        this.e('p', { class: 'muted small' }, ['No DNS record is created. Undo with Ctrl+Z.']),
+        this.e('p', { class: 'muted small' }, ['A DNS server’s zone that holds it answers it. Undo with Ctrl+Z.']),
       ].filter((x): x is HTMLElement => !!x),
       buttons: [
         { label: 'Cancel', value: 'cancel' },
@@ -1863,6 +1905,18 @@ export class Editor {
     }
     if (!loop || doc.get(p.concat('mac'))) card.appendChild(this.macField(p, owner, o));
     for (const sc of this.ifaceServiceCards(devIndex, p, id || '')) card.appendChild(sc);
+    // a routed interface with an address: its DHCP relay (helper addresses)
+    const routes = routingRole(doc.text(['devices', devIndex, 'type']) || '') === 'router' && (doc.text(['devices', devIndex, 'type']) !== 'switch' || doc.text(['devices', devIndex, 'layer3']) === 'true');
+    if ((routes && addrs.length) || doc.get(p.concat('dhcp_relay'))) {
+      const rf = this.listField(p.concat('dhcp_relay'), 'DHCP relay (helper addresses)', o, '10.0.0.10', 'Forwards its subnet’s DHCP broadcasts to these servers (unicast, its address as giaddr).');
+      const srvs = this.serviceAddrs('dhcp');
+      card.appendChild(this.withHelpers(rf, p.concat('dhcp_relay'), 'text', srvs.map((x) => ({ value: x.a, label: `${x.a} (${x.d})`, title: `The DHCP server ${x.d}` })), 'DHCP relay', `${doc.text(['devices', devIndex, 'id']) || ''} ${id || ''}`.trim()));
+    }
+    // its simulation attributes (drawn in the Actions panel while a simulation runs)
+    if (id && !this.simOutside) {
+      const sim = this.ifaceSimSection(devIndex, p, id);
+      if (sim) card.appendChild(sim);
+    }
     card.appendChild(this.textField(p.concat('description'), 'Description', o, 'textarea'));
     if (id) {
       const dev = doc.text(['devices', devIndex, 'id']);
@@ -2155,31 +2209,199 @@ export class Editor {
     const on = doc.text(base.concat('layer3')) === 'true';
     if (type !== 'switch' && !doc.get(base.concat('layer3'))) return null;
     const id = doc.text(base.concat('id')) || '';
-    const box = this.e('input', { type: 'checkbox', id: `layer3-${devIndex}`, 'data-act': 'layer3', 'data-index': String(devIndex) }) as HTMLInputElement;
+    void id;
+    // one short question; what it means is the tooltip (the badge in the diagram says which kind it is)
+    const box = this.e('input', { type: 'checkbox', id: `layer3-${devIndex}`, 'data-act': 'layer3', 'data-index': String(devIndex), title: 'Routing, routing protocols, and gateways' }) as HTMLInputElement;
     box.checked = on;
-    const help =
-      type !== 'switch'
-        ? 'Only switches have a layer; untick to remove it.'
-        : on
-          ? `${id || 'This switch'} is a Layer 3 switch: protocols, a router ID, addresses on several interfaces, VRRP / HSRP groups, tunnels and VRFs. Untick to make it a Layer 2 switch (it asks first, listing what is removed).`
-          : `${id || 'This switch'} is a Layer 2 switch: it forwards frames and routes nothing; it may have one management interface with addresses and static routes (e.g. a default gateway for management).`;
     const f = this.e('div', { class: 'field layer3-field', 'data-p': J(base.concat('layer3')) }, [
-      this.e('label', { class: 'check', for: `layer3-${devIndex}` }, [box, ' Layer 3 ', this.e('span', { class: 'muted small' }, ['(routes between its VLANs and subnets)'])]),
-      this.e('div', { class: 'help' }, [help]),
+      this.e('label', { class: 'check', for: `layer3-${devIndex}`, title: 'Routing, routing protocols, and gateways' }, [box, ' Supports Layer 3']),
+      type !== 'switch' ? this.e('div', { class: 'help' }, ['Only switches have it; untick to remove it.']) : null,
     ]);
     for (const is of doc.issuesAt(base.concat('layer3'))) f.appendChild(this.e('div', { class: is.severity === 'error' ? 'field-err' : 'field-warn' }, [is.message]));
     return f;
   }
 
   /**
-   * A device's Simulation section: its simulation attributes (the protocol
-   * simulation's per-device values, analysis/sim/params.ts), collapsed
-   * until opened with its disclosure button. Every field shows the value in
-   * effect: the device's own (written in its `simulation:` block), else the
-   * inherited one with where it comes from (the simulation's value, or the
-   * default and its source). Only overrides are written; Reset makes it
-   * inherit again. The documented exception to the simulation's edit lock:
-   * it stays editable, and undoable, while a simulation runs.
+   * A server's network services (`services:`): two checkboxes, DHCP server
+   * and DNS server, both off by default. An enabled one shows what it still
+   * needs as errors (nothing is chosen for the user): a DHCP server its
+   * scopes (network, range, gateway, DNS servers; lease time, exclusions,
+   * reservations, domain), a DNS server its zones (the records the model's
+   * DNS names give, read-only with their source, and its own A, AAAA and
+   * CNAME records), its listening address, forwarders and reverse zones.
+   * Each scope and zone has its collapsed Simulation subsection.
+   */
+  private netServicesGroup(base: Path, devIndex: number): HTMLElement | null {
+    const doc = this.doc;
+    const type = doc.text(base.concat('type')) || '';
+    const sp = base.concat('services');
+    const node = doc.get(sp);
+    if (SERVER_TYPES.indexOf(type) < 0 && !node) return null;
+    const dev = doc.text(base.concat('id')) || '';
+    const model = doc.result.model;
+    const kids: Array<HTMLElement | null> = [];
+    const note = (path: Path): void => {
+      for (const is of doc.issuesAt(path, true)) kids.push(this.e('div', { class: is.severity === 'error' ? 'field-err' : 'field-warn' }, [is.message]));
+    };
+    note(sp);
+    const box = (id: 'dhcp' | 'dns', label: string, title: string): HTMLElement => {
+      const on = !!doc.get(sp.concat(id));
+      const cb = this.e('input', { type: 'checkbox', id: `svc-${id}-${devIndex}`, 'data-act': 'netsvc', 'data-svc': id, 'data-index': String(devIndex), title }) as HTMLInputElement;
+      cb.checked = on;
+      return this.e('div', { class: 'field' }, [this.e('label', { class: 'check', for: `svc-${id}-${devIndex}`, title }, [cb, ' ' + label])]);
+    };
+    kids.push(box('dhcp', 'DHCP server', 'Leases addresses to the DHCP clients of its scopes’ networks'));
+    const dhcp = doc.get(sp.concat('dhcp'));
+    if (dhcp) {
+      const lp = sp.concat('dhcp', 'scopes');
+      note(sp.concat('dhcp'));
+      note(lp);
+      const n = doc.get(lp);
+      const items = n && n.kind === 'seq' ? n.items : [];
+      items.forEach((_it, k) => kids.push(this.scopeCard(lp.concat(k), dev, k, model)));
+      kids.push(this.e('div', { class: 'field' }, [this.e('button', { type: 'button', class: 'mini', 'data-act': 'add-svc-item', 'data-p': J(lp), 'data-what': 'scope' }, ['+ Add scope'])]));
+    }
+    kids.push(box('dns', 'DNS server', 'Answers DNS queries for its zones (the model’s DNS names in them, and its own records)'));
+    const dns = doc.get(sp.concat('dns'));
+    if (dns) {
+      const dp = sp.concat('dns');
+      note(dp);
+      note(dp.concat('zones'));
+      const own = this.serviceAddrs(null, dev).map((x) => x.a);
+      kids.push(this.withHelpers(this.textField(dp.concat('listen'), 'Listening address', 'dnsService', 'text', undefined, 'One of its addresses; empty: all of them.', 'all its addresses'), dp.concat('listen'), 'text', own.map((a) => ({ value: a, label: a, title: `Listen on ${a} only` })), 'listening address', dev));
+      const zp = dp.concat('zones');
+      const zn = doc.get(zp);
+      const zitems = zn && zn.kind === 'seq' ? zn.items : [];
+      zitems.forEach((_it, k) => kids.push(this.zoneCard(zp.concat(k), dev, model)));
+      kids.push(this.e('div', { class: 'field' }, [this.e('button', { type: 'button', class: 'mini', 'data-act': 'add-svc-item', 'data-p': J(zp), 'data-what': 'zone' }, ['+ Add zone'])]));
+      kids.push(this.listField(dp.concat('forwarders'), 'Forwarders', 'dnsService', '9.9.9.9', 'Asked for names outside its zones (a DNS server of the model; else SERVFAIL).'));
+      kids.push(this.listField(dp.concat('reverse_zones'), 'Reverse zones (PTR)', 'dnsService', '10.10.0.0/16', 'Networks it answers PTR queries for.'));
+    }
+    return this.group('Services (DHCP, DNS)', kids, 'netservices');
+  }
+
+  /** A DHCP scope: its network, range, gateway, DNS servers, lease time, exclusions, reservations, domain; its Simulation subsection. */
+  private scopeCard(p: Path, dev: string, k: number, model: Model | null): HTMLElement {
+    const doc = this.doc;
+    const o = 'dhcpScope';
+    const net = doc.text(p.concat('network')) || '';
+    const range = doc.text(p.concat('range')) || '';
+    const iss = doc.issuesAt(p);
+    const errs = iss.filter((i) => i.severity === 'error').length;
+    const card = this.e('details', { class: 'card' + (errs ? ' has-err' : ''), 'data-card': J(p) });
+    if (this.open.has(J(p)) || errs) card.setAttribute('open', '');
+    card.appendChild(this.e('summary', {}, [this.e('span', { class: 'card-title' }, [[`Scope ${k + 1}`, net || '(no network)', range].filter((x) => x).join(' · ')]), iss.length ? this.badge(errs, iss.length - errs) : null, this.e('button', { type: 'button', class: 'mini danger', 'data-act': 'del-item', 'data-p': J(p), title: 'Delete this scope' }, ['×'])]));
+    const v4nets = model ? model.networks.filter((x) => !!x.cidr && x.cidr.indexOf(':') < 0).map((x) => x.id) : [];
+    card.appendChild(this.refField(p.concat('network'), 'Network *', o, v4nets, 'The network it leases addresses in (an IPv4 network of the model).'));
+    const sug = model && net ? scopeSuggestions(model, net) : { range: [], gateway: [], dns: [] };
+    const owner = `${dev} scope ${k + 1}`;
+    card.appendChild(this.withHelpers(this.textField(p.concat('range'), 'Address range *', o, 'text', undefined, 'start-end, inside the network; not the gateway or a static address.', '10.1.1.100-10.1.1.199'), p.concat('range'), 'text', sug.range, 'range', owner));
+    card.appendChild(this.withHelpers(this.textField(p.concat('gateway'), 'Default gateway *', o, 'text', undefined, 'The router’s address (or virtual address) in the network.', '10.1.1.1'), p.concat('gateway'), 'text', sug.gateway, 'default gateway', owner));
+    card.appendChild(this.withHelpers(this.listField(p.concat('dns'), 'DNS servers *', o, '10.1.1.10', 'The DNS servers it gives its clients.'), p.concat('dns'), 'text', sug.dns, 'DNS servers', owner));
+    card.appendChild(this.textField(p.concat('lease'), 'Lease time', o, 'text', undefined, 'How long a lease lasts (renewed at half of it); empty: 1 day.', '1 day (default)'));
+    card.appendChild(this.listField(p.concat('exclude'), 'Excluded addresses', o, '10.1.1.150', 'Addresses of the range it never leases.'));
+    // reservations: a MAC address and its address
+    const rp = p.concat('reservations');
+    const rn = doc.get(rp);
+    const rbox = this.e('div', { class: 'list-ed' });
+    (rn && rn.kind === 'seq' ? rn.items : []).forEach((_it, j) => {
+      const ip = rp.concat(j);
+      rbox.appendChild(
+        this.e('div', { class: 'list-row res-row' + (doc.issuesAt(ip).some((i) => i.severity === 'error') ? ' invalid' : '') }, [
+          this.input(ip.concat('mac'), 'text', doc.text(ip.concat('mac')) || '', { placeholder: 'MAC 02:00:00:00:00:01', 'aria-label': `Reservation ${j + 1}: MAC address`, 'data-o': 'dhcpReservation' }),
+          this.e('span', { 'aria-hidden': 'true' }, [' → ']),
+          this.input(ip.concat('ip'), 'text', doc.text(ip.concat('ip')) || '', { placeholder: '10.1.1.21', 'aria-label': `Reservation ${j + 1}: address`, 'data-o': 'dhcpReservation' }),
+          this.e('button', { type: 'button', class: 'mini', 'data-act': 'del-item', 'data-p': J(ip), title: 'Remove this reservation' }, ['×']),
+        ]),
+      );
+    });
+    rbox.appendChild(this.e('button', { type: 'button', class: 'mini', 'data-act': 'add-svc-item', 'data-p': J(rp), 'data-what': 'reservation' }, ['+ Add reservation']));
+    card.appendChild(this.field('Reservations', rbox, rp, 'A client (its MAC address) always gets this address.'));
+    card.appendChild(this.textField(p.concat('domain'), 'Domain name', o, 'text', undefined, 'The domain its clients get (option 15).', 'hq.example'));
+    const sim = this.simSection({ path: p, device: dev, at: scopeRef(dev, k), idBase: `scope-${dev}-${k}`, what: `scope ${k + 1}`, name: owner }, serviceParams('dhcp'));
+    if (sim) card.appendChild(sim);
+    for (const is of iss.filter((x) => !x.key)) card.appendChild(this.e('div', { class: is.severity === 'error' ? 'field-err' : 'field-warn' }, [is.message]));
+    return card;
+  }
+
+  /** A DNS zone: its name, the records the model's DNS names give (read-only, with their source), its own records; its Simulation subsection. */
+  private zoneCard(p: Path, dev: string, model: Model | null): HTMLElement {
+    const doc = this.doc;
+    const o = 'dnsZone';
+    const name = (doc.text(p.concat('name')) || '').toLowerCase().replace(/\.$/, '');
+    const iss = doc.issuesAt(p);
+    const errs = iss.filter((i) => i.severity === 'error').length;
+    const card = this.e('details', { class: 'card' + (errs ? ' has-err' : ''), 'data-card': J(p) });
+    if (this.open.has(J(p)) || errs) card.setAttribute('open', '');
+    card.appendChild(this.e('summary', {}, [this.e('span', { class: 'card-title' }, [`Zone ${name || '(no name)'}`]), iss.length ? this.badge(errs, iss.length - errs) : null, this.e('button', { type: 'button', class: 'mini danger', 'data-act': 'del-item', 'data-p': J(p), title: 'Delete this zone' }, ['×'])]));
+    card.appendChild(this.textField(p.concat('name'), 'Zone name *', o, 'text', undefined, 'A domain, e.g. hq.example: the model’s DNS names in it are its A / AAAA records.', 'hq.example'));
+    // the derived records: read-only, with their source
+    const derived = model && name ? derivedRecords(model, name) : [];
+    const t = this.e('table', { class: 'mini-table' });
+    t.appendChild(this.e('caption', { class: 'sr-only' }, [`Records of ${name} from the model’s DNS names`]));
+    t.appendChild(this.e('thead', {}, [this.e('tr', {}, ['Name', 'Type', 'Value', 'Source'].map((h) => this.e('th', { scope: 'col' }, [h])))]));
+    const tb = this.e('tbody');
+    for (const r of derived) tb.appendChild(this.e('tr', {}, [r.fqdn, r.type, r.value, r.source].map((x) => this.e('td', {}, [x]))));
+    if (!derived.length) tb.appendChild(this.e('tr', {}, [this.e('td', { colspan: '4', class: 'muted' }, [name ? 'No DNS name of the model is in this zone yet.' : 'Name the zone first.'])]));
+    t.appendChild(tb);
+    card.appendChild(this.derivedField('From the model’s DNS names', 'records', [t], 'Read-only: change a device’s DNS names to change them.'));
+    // its own records
+    const rp = p.concat('records');
+    const rn = doc.get(rp);
+    const rbox = this.e('div', { class: 'list-ed' });
+    (rn && rn.kind === 'seq' ? rn.items : []).forEach((_it, j) => {
+      const ip = rp.concat(j);
+      const ty = this.e('select', { 'data-p': J(ip.concat('type')), 'data-t': 'text', 'data-o': 'dnsRecord', 'aria-label': `Record ${j + 1}: type` }) as HTMLSelectElement;
+      for (const x of ['', 'A', 'AAAA', 'CNAME']) ty.appendChild(this.e('option', { value: x }, [x || 'Type']));
+      ty.value = (doc.text(ip.concat('type')) || '').toUpperCase();
+      rbox.appendChild(
+        this.e('div', { class: 'list-row rec-row' + (doc.issuesAt(ip).some((i) => i.severity === 'error') ? ' invalid' : '') }, [
+          this.input(ip.concat('name'), 'text', doc.text(ip.concat('name')) || '', { placeholder: 'name (www)', 'aria-label': `Record ${j + 1}: name`, 'data-o': 'dnsRecord' }),
+          ty,
+          this.input(ip.concat('value'), 'text', doc.text(ip.concat('value')) || '', { placeholder: 'address or name', 'aria-label': `Record ${j + 1}: value`, 'data-o': 'dnsRecord' }),
+          this.e('button', { type: 'button', class: 'mini', 'data-act': 'del-item', 'data-p': J(ip), title: 'Remove this record' }, ['×']),
+        ]),
+      );
+      for (const is of doc.issuesAt(ip)) rbox.appendChild(this.e('div', { class: is.severity === 'error' ? 'field-err' : 'field-warn' }, [is.message]));
+    });
+    rbox.appendChild(this.e('button', { type: 'button', class: 'mini', 'data-act': 'add-svc-item', 'data-p': J(rp), 'data-what': 'record' }, ['+ Add record']));
+    card.appendChild(this.field('Its own records (A, AAAA, CNAME)', rbox, rp));
+    const sim = name ? this.simSection({ path: p, device: dev, at: zoneRef(dev, name), idBase: `zone-${dev}-${name}`, what: `zone ${name}`, name: `${dev} zone ${name}` }, serviceParams('dns')) : null;
+    if (sim) card.appendChild(sim);
+    return card;
+  }
+
+  /** The IPv4 addresses of the model's DHCP or DNS servers (or of one device: kind null). */
+  private serviceAddrs(kind: 'dhcp' | 'dns' | null, dev?: string): Array<{ a: string; d: string }> {
+    const m = this.doc.result.model;
+    const out: Array<{ a: string; d: string }> = [];
+    if (!m) return out;
+    for (const x of m.devices) {
+      if (dev !== undefined ? x.id !== dev : !x.netServices || !x.netServices[kind as 'dhcp' | 'dns']) continue;
+      for (const i of x.interfaces.concat(x.logical)) for (const a of i.addresses) if (a.indexOf(':') < 0) out.push({ a: a.split('/')[0], d: x.id });
+    }
+    return out;
+  }
+
+  /** A host's DNS servers (`dns_servers:`, static): what it asks unless a DHCP lease gives others. */
+  private dnsClientGroup(base: Path): HTMLElement | null {
+    const doc = this.doc;
+    const type = doc.text(base.concat('type')) || '';
+    const role = routingRole(type);
+    if ((role === 'router' && !(type === 'switch' && doc.text(base.concat('layer3')) !== 'true')) && !doc.get(base.concat('dns_servers'))) return null;
+    if (type === 'cloud' || type === 'switch') {
+      if (!doc.get(base.concat('dns_servers'))) return null;
+    }
+    const srvs = this.serviceAddrs('dns');
+    const f = this.withHelpers(this.listField(base.concat('dns_servers'), 'DNS servers', 'device', '10.0.0.53', 'The DNS servers it asks (a DHCP client gets them from its lease as well).'), base.concat('dns_servers'), 'text', srvs.map((x) => ({ value: x.a, label: `${x.a} (${x.d})`, title: `The DNS server ${x.d}` })), 'DNS servers', doc.text(base.concat('id')) || '');
+    return this.group('Name resolution (DNS client)', [f], 'dnsclient');
+  }
+
+  /**
+   * A device's Simulation section: its device-wide simulation attributes
+   * (the protocol simulation's values, analysis/sim/params.ts), and the
+   * device-wide defaults of what its interfaces or relations set
+   * themselves; collapsed until opened with its disclosure button.
    */
   simulationSection(devIndex: number): HTMLElement | null {
     const doc = this.getDoc();
@@ -2188,67 +2410,140 @@ export class Editor {
     const id = doc.text(['devices', devIndex, 'id']) || '';
     const live = model.index.devices.get(id);
     if (!live) return null;
-    const sp: Path = ['devices', devIndex, 'simulation'];
-    const block = doc.get(sp);
-    const written = block && block.kind === 'map' ? Array.from(block.entries.keys()) : [];
-    const defs = deviceAttributes(model, live, written);
-    if (!defs.length) return null;
-    const params = new SimParams(this.host.simParams ? this.host.simParams() : {}, new Map([[id, { type: live.type, values: live.simulation || new Map() }]]));
-    const key = 'sim-section|' + id;
+    const path: Path = ['devices', devIndex];
+    const defs = deviceAttributes(model, live, this.writtenSim(path));
+    return this.simSection({ path, device: id, at: null, idBase: 'dev', what: 'this device', name: id, top: true }, defs);
+  }
+
+  /** An interface's Simulation subsection (a port's spanning tree settings, an interface's ARP timeout …), collapsed. */
+  ifaceSimSection(devIndex: number, p: Path, ifId: string): HTMLElement | null {
+    const doc = this.getDoc();
+    const model = doc ? doc.result.model : null;
+    const dev = doc ? doc.text(['devices', devIndex, 'id']) || '' : '';
+    const d = model ? model.index.devices.get(dev) : undefined;
+    const i = model && d ? model.index.interfaces.get(dev + ':' + ifId) : undefined;
+    if (!model || !d || !i) return null;
+    const defs = interfaceAttributes(model, d, i, this.writtenSim(p));
+    return this.simSection({ path: p, device: dev, at: ifaceRef(dev, ifId), idBase: 'if-' + dev + '-' + ifId, what: 'this interface', name: `${dev}:${ifId}` }, defs);
+  }
+
+  /** A network's Simulation subsection: its VLAN's (snooping, the snooping querier, fast leave …), for every switch carrying it. */
+  vlanSimSection(netIndex: number): HTMLElement | null {
+    const doc = this.getDoc();
+    if (!doc) return null;
+    const p: Path = ['networks', netIndex];
+    const vlan = Number(doc.text(p.concat('vlan')));
+    if (!vlan) return null;
+    const defs = vlanAttributes(this.writtenSim(p));
+    return this.simSection({ path: p, device: undefined, at: vlanRef(vlan), idBase: 'net-' + netIndex, what: `VLAN ${vlan}`, name: `VLAN ${vlan}`, note: `For every switch carrying VLAN ${vlan}; a switch's own setting is the default where none is set here.` }, defs);
+  }
+
+  /** A relation's Simulation subsection: a session's, a tunnel's, a redundancy group's or a service's (its pool) attributes. */
+  relationSimSection(relIndex: number): HTMLElement | null {
+    const doc = this.getDoc();
+    const model = doc ? doc.result.model : null;
+    if (!doc || !model) return null;
+    const id = doc.text(['relations', relIndex, 'id']) || '';
+    const r = model.index.relations.get(id);
+    if (!r) return null;
+    const p: Path = ['relations', relIndex];
+    const defs = relationAttributes(model, r, this.writtenSim(p));
+    const first = relationDevices(r)[0];
+    return this.simSection({ path: p, device: first, at: relRef(id), idBase: 'rel-' + id, what: 'this relation', name: id, note: defs.some((x) => x.devDefault) ? 'Each end inherits its own device’s default where it has one (shown: the first end’s).' : undefined }, defs);
+  }
+
+  /** The keys an object's `simulation:` block has written. */
+  private writtenSim(path: Path): string[] {
+    const block = this.doc.get(path.concat('simulation'));
+    return block && block.kind === 'map' ? Array.from(block.entries.keys()) : [];
+  }
+
+  /**
+   * A Simulation section of an object: every field shows the value in
+   * effect: the object's own (written in its `simulation:` block), else the
+   * inherited one and where it comes from (Inherited: device, simulation,
+   * or the default and its source). Only overrides are written; Reset makes
+   * it inherit again. The documented exception to the simulation's edit
+   * lock: it stays editable, and undoable, while a simulation runs.
+   */
+  private simSection(o: SimOwner, defs: SimParamDef[]): HTMLElement | null {
+    const doc = this.getDoc();
+    const model = doc ? doc.result.model : null;
+    if (!doc || !model || !defs.length) return null;
+    const written = this.writtenSim(o.path);
+    const devs = new Map<string, { type: string; values: Map<string, ParamValue> }>();
+    const dl = o.device ? model.index.devices.get(o.device) : undefined;
+    if (o.device && dl) devs.set(o.device, { type: dl.type, values: dl.simulation || new Map() });
+    const params = new SimParams(this.host.simParams ? this.host.simParams() : {}, devs);
+    if (o.at) {
+      const own = new Map<string, ParamValue>();
+      for (const y of written) {
+        const def = deviceParamByYaml(y);
+        const t = doc.text(o.path.concat('simulation', y));
+        if (!def || t === undefined) continue;
+        const v = parseValue(def, t);
+        if (!('error' in v)) own.set(def.key, v.value);
+      }
+      params.setObject(o.at, o.device, own);
+    }
+    const key = 'sim-section|' + J(o.path);
     const open = this.open.has(key);
-    const bodyId = 'fg-sim-body';
+    const bodyId = `fg-sim-body-${o.idBase}`;
+    const btnId = o.top ? 'fg-simulation' : `fg-sim-${o.idBase}`;
     const set = defs.filter((d) => written.indexOf(d.yaml) >= 0).length;
-    const btn = this.e('button', { type: 'button', class: 'fgroup-toggle', id: 'fg-simulation', 'data-act': 'sim-toggle', 'data-key': key, 'aria-expanded': open ? 'true' : 'false', 'aria-controls': bodyId }, [`Simulation (${defs.length})`]);
+    const btn = this.e('button', { type: 'button', class: 'fgroup-toggle', id: btnId, 'data-act': 'sim-toggle', 'data-key': key, 'aria-expanded': open ? 'true' : 'false', 'aria-controls': bodyId }, [`Simulation (${defs.length})`]);
     const body = this.e('div', { class: 'sim-attrs', id: bodyId }, [
-      this.e('p', { class: 'muted small' }, ['For Simulate ▾. Empty fields inherit; only values set here are saved.']),
+      this.e('p', { class: 'muted small' }, [`For Simulate ▾. Empty fields inherit; only values set here are saved.${o.note ? ' ' + o.note : ''}`]),
     ]);
     if (!open) body.hidden = true;
-    for (const def of defs) body.appendChild(this.simAttrRow(devIndex, id, def, params, doc.text(sp.concat(def.yaml))));
-    return this.e('section', { class: 'fgroup sim-section', 'data-group': 'simulation', 'aria-labelledby': 'fg-simulation' }, [
-      this.e('h4', { class: 'fgroup-title fgroup-disclosure' }, [btn, set ? this.e('span', { class: 'small muted' }, [` ${set} set on this device`]) : null]),
+    for (const def of defs) body.appendChild(this.simAttrRow(o, def, params, doc.text(o.path.concat('simulation', def.yaml))));
+    return this.e('section', { class: 'fgroup sim-section' + (o.top ? '' : ' sim-sub'), 'data-group': o.top ? 'simulation' : 'simulation-' + o.idBase, 'aria-labelledby': btnId }, [
+      this.e(o.top ? 'h4' : 'h5', { class: 'fgroup-title fgroup-disclosure' }, [btn, set ? this.e('span', { class: 'small muted' }, [` ${set} set on ${o.what}`]) : null]),
       body,
     ]);
   }
 
-  private simAttrRow(devIndex: number, dev: string, def: SimParamDef, params: SimParams, written: string | undefined): HTMLElement {
-    const fid = 'sim-attr-' + def.yaml;
-    const own = params.deviceValue(dev, def.key);
-    const inh = params.inherited(def.key, dev);
-    const inhText = `${formatValue(def, inh.value)} (${inh.source === 'simulation' ? 'simulation' : 'default — ' + def.source})`;
+  private simAttrRow(o: SimOwner, def: SimParamDef, params: SimParams, written: string | undefined): HTMLElement {
+    const fid = `sim-attr-${o.top ? '' : o.idBase + '-'}${def.yaml}`.replace(/[^A-Za-z0-9_-]/g, '_');
+    const own = o.at ? params.objectValue(o.at, def.key) : o.device ? params.deviceValue(o.device, def.key) : undefined;
+    const inh = o.at ? params.inheritedAt(def.key, o.device) : params.inherited(def.key, o.device as string);
+    const inhText = `${formatValue(def, inh.value)} (${inh.source === 'device' ? 'device' : inh.source === 'simulation' ? 'simulation' : 'default — ' + def.source})`;
     const unit = fieldUnit(def);
     const describe = `${fid}-state ${fid}-help ${fid}-err`;
+    const data = { 'data-t': 'sim-attr', 'data-p': J(o.path), 'data-k': def.yaml, 'data-name': o.name };
     let ctl: HTMLElement;
     if (def.kind === 'enum') {
-      const s = this.e('select', { id: fid, 'data-t': 'sim-attr', 'data-index': String(devIndex), 'data-k': def.yaml, 'aria-describedby': describe }) as HTMLSelectElement;
-      s.appendChild(this.e('option', { value: '' }, [`Inherited: ${formatValue(def, inh.value)}`]));
-      for (const o of def.options || []) s.appendChild(this.e('option', { value: o.value }, [o.label]));
-      s.value = own !== undefined ? String(own) : '';
-      ctl = s;
+      const sel = this.e('select', { id: fid, ...data, 'aria-describedby': describe }) as HTMLSelectElement;
+      sel.appendChild(this.e('option', { value: '' }, [`Inherited${inh.source === 'device' ? ' (device)' : ''}: ${formatValue(def, inh.value)}`]));
+      for (const x of def.options || []) sel.appendChild(this.e('option', { value: x.value }, [x.label]));
+      sel.value = own !== undefined ? String(own) : '';
+      ctl = sel;
     } else {
-      ctl = this.e('input', { type: 'text', id: fid, 'data-t': 'sim-attr', 'data-index': String(devIndex), 'data-k': def.yaml, inputmode: def.kind === 'list' ? 'text' : 'decimal', autocomplete: 'off', spellcheck: 'false', placeholder: fieldText(def, inh.value) || formatValue(def, inh.value), value: written !== undefined ? written : own !== undefined ? fieldText(def, own) : '', 'aria-describedby': describe });
+      ctl = this.e('input', { type: 'text', id: fid, ...data, inputmode: def.kind === 'list' ? 'text' : 'decimal', autocomplete: 'off', spellcheck: 'false', placeholder: fieldText(def, inh.value) || formatValue(def, inh.value), value: written !== undefined ? written : own !== undefined ? fieldText(def, own) : '', 'aria-describedby': describe });
     }
-    const state = own !== undefined ? `Set on this device: ${formatValue(def, own)}. It would inherit ${inhText}.` : written !== undefined ? `“${written}” is not valid (see Problems); inherited meanwhile: ${inhText}.` : `Inherited: ${inhText}.`;
+    const state = own !== undefined ? `Set on ${o.what}: ${formatValue(def, own)}. It would inherit ${inhText}.` : written !== undefined ? `“${written}” is not valid (see Problems); inherited meanwhile: ${inhText}.` : `Inherited: ${inhText}.`;
     return this.e('div', { class: 'field sim-attr' + (own !== undefined ? ' overridden' : ''), 'data-sim-attr': def.yaml }, [
       this.e('label', { for: fid }, [def.label]),
       this.e('span', { class: 'pinput' }, [ctl, unit ? this.e('span', { class: 'punit', 'aria-hidden': 'true' }, [unit]) : null]),
       this.e('p', { class: 'small sim-attr-state', id: fid + '-state' }, [state]),
       this.e('p', { class: 'help', id: fid + '-help' }, [def.help]),
       this.e('p', { class: 'field-err', id: fid + '-err', hidden: '' }, ['']),
-      own !== undefined || written !== undefined ? this.e('button', { type: 'button', class: 'mini', 'data-act': 'sim-reset', 'data-index': String(devIndex), 'data-k': def.yaml, 'aria-label': `Reset ${def.label} to inherited` }, ['Reset to inherited']) : null,
+      own !== undefined || written !== undefined ? this.e('button', { type: 'button', class: 'mini', 'data-act': 'sim-reset', 'data-p': J(o.path), 'data-k': def.yaml, 'data-name': o.name, 'aria-label': `Reset ${def.label} of ${o.name} to inherited` }, ['Reset to inherited']) : null,
     ]);
   }
 
   /** A Simulation field was changed: checked first (range and unit), then written as one undo step (or removed when emptied). */
   private simAttrChange(target: HTMLElement, doc: ModelDoc, text: string): boolean {
-    const index = Number(target.getAttribute('data-index'));
+    const path = P(target.getAttribute('data-p'));
     const k = target.getAttribute('data-k') as string;
+    const name = target.getAttribute('data-name') || '';
     const def = deviceParamByYaml(k);
     if (!def) return true;
-    const err = this.d.getElementById('sim-attr-' + k + '-err');
+    const err = this.d.getElementById(target.id + '-err');
     if (text === '') {
-      if (doc.get(['devices', index, 'simulation', k])) {
-        doc.setSimAttr(index, k, undefined);
-        this.host.changed(`${this.devName(index)}: ${def.label} is inherited again.`);
+      if (doc.get(path.concat('simulation', k))) {
+        doc.setSimAttrAt(path, k, undefined);
+        this.host.changed(`${name}: ${def.label} is inherited again.`);
       }
       return true;
     }
@@ -2261,19 +2556,32 @@ export class Editor {
       target.setAttribute('aria-invalid', 'true');
       return true;
     }
-    doc.setSimAttr(index, k, fieldText(def, p.value));
-    this.host.changed(`${this.devName(index)}: ${def.label} set to ${formatValue(def, p.value)}.`);
+    doc.setSimAttrAt(path, k, fieldText(def, p.value));
+    this.host.changed(`${name}: ${def.label} set to ${formatValue(def, p.value)}.`);
     return true;
   }
 
   /** The selected device's Simulation section, editable (drawn above the read-only form while a simulation runs); false: no device selected. */
   renderSimSection(box: HTMLElement): boolean {
     const s = this.sel;
-    if (!s || s.kind !== 'device') return false;
-    const sec = this.simulationSection(s.index);
-    if (!sec) return false;
-    box.appendChild(sec);
-    return true;
+    if (!s) return false;
+    const secs: Array<HTMLElement | null> = [];
+    if (s.kind === 'device') {
+      secs.push(this.simulationSection(s.index));
+      // and its interfaces' (each collapsed, under its name)
+      for (const entry of this.doc.interfaceEntries(s.index)) {
+        if (!entry.id) continue;
+        const sec = this.ifaceSimSection(s.index, entry.path, entry.id);
+        if (!sec) continue;
+        const title = sec.querySelector('.fgroup-toggle');
+        if (title) title.textContent = `${entry.id}: Simulation (${title.textContent ? title.textContent.replace(/^Simulation \((\d+)\)$/, '$1') : ''})`;
+        secs.push(sec);
+      }
+    } else if (s.kind === 'network') secs.push(this.vlanSimSection(s.index));
+    else if (s.kind === 'relation') secs.push(this.relationSimSection(s.index));
+    const shown = secs.filter((x): x is HTMLElement => !!x);
+    for (const x of shown) box.appendChild(x);
+    return shown.length > 0;
   }
 
   /** Device type: the format's types by display name; a disallowed current value stays visible. */
@@ -2642,7 +2950,7 @@ export class Editor {
 
   private epControls(p: Path, order: string): HTMLElement {
     const { device, iface } = this.epParts(p);
-    const devSel = this.selectEl(p, 'ep-dev', order, this.deviceIds(), device, '(device)');
+    const devSel = this.selectEl(p, 'ep-dev', order, this.endpointDevices(p, device), device, '(device)');
     const ifSel = this.e('select', { 'data-p': J(p), 'data-t': 'ep-if', 'data-o': order }) as HTMLSelectElement;
     ifSel.appendChild(this.e('option', { value: '' }, ['(whole device)']));
     const opts = this.ifaceOptions(device, order === 'link');
@@ -2699,8 +3007,40 @@ export class Editor {
       box.appendChild(rowEl);
     });
     if (n && n.kind !== 'seq' && !(n.kind === 'scalar' && n.value === null)) box.appendChild(this.e('div', { class: 'field-err' }, ['Not a list; fix it in the YAML tab.']));
-    box.appendChild(this.selectEl(p, 'ep-append', order, this.deviceIds(), '', '+ add endpoint (device)…'));
+    box.appendChild(this.selectEl(p, 'ep-append', order, this.endpointDevices(p.concat(0), ''), '', '+ add endpoint (device)…'));
+    const why = this.layer3Note(p.concat(0));
+    if (why) box.appendChild(this.e('p', { class: 'muted small' }, [why]));
     return this.field(label, box, p.length ? [] : p);
+  }
+
+  /** The relation an endpoint path belongs to needs Layer 3 at every end (OSPF, BGP, VRRP, a tunnel …)? */
+  private endpointNeedsLayer3(p: Path): boolean {
+    if (p[0] !== 'relations' || typeof p[1] !== 'number') return false;
+    const proto = this.doc.text(['relations', p[1], 'protocol']) || '';
+    const model = this.doc.result.model;
+    const base = model ? protocolBase(model.protocols, normalizeProtocol(proto)) : normalizeProtocol(proto);
+    const cat = this.doc.text(['relations', p[1], 'category']) || (model && proto ? lookupProtocol(model.protocols, proto).category : '');
+    return relationNeedsLayer3(base, cat);
+  }
+
+  /** The devices an endpoint may name: every device, but no Layer 2 switch for a relation that needs Layer 3 (the current one stays). */
+  private endpointDevices(p: Path, current: string): string[] {
+    if (!this.endpointNeedsLayer3(p)) return this.deviceIds();
+    return this.deviceIds().filter((id) => id === current || !this.isL2Switch(id));
+  }
+
+  private isL2Switch(id: string): boolean {
+    const model = this.doc.result.model;
+    const d = model ? model.index.devices.get(id) : undefined;
+    return !!d && isLayer2Switch(d);
+  }
+
+  /** Why Layer 2 switches are not offered as endpoints ('' when they are, or there are none). */
+  private layer3Note(p: Path): string {
+    if (!this.endpointNeedsLayer3(p)) return '';
+    const l2 = this.deviceIds().filter((id) => this.isL2Switch(id));
+    if (!l2.length) return '';
+    return `Not offered: ${l2.join(', ')} (Layer 2 switch${l2.length === 1 ? '' : 'es'}; this protocol requires Layer 3 — tick Supports Layer 3 on the switch first).`;
   }
 
   private overField(p: Path, label: string, order: string, selfIndex: number): HTMLElement {
@@ -2929,6 +3269,11 @@ export class Editor {
       case 'enable-service': {
         if (!val) return true;
         const di = Number(target.getAttribute('data-index'));
+        // a Layer 2 switch offers its protocols disabled only: a value that still arrives (a script, a stale form) changes nothing
+        if (this.isL2Switch(doc.text(['devices', di, 'id']) || '')) {
+          this.host.changed(`Requires Layer 3: ${this.devName(di)} is a Layer 2 switch (tick Supports Layer 3 first).`);
+          return true;
+        }
         doc.enableService(di, val);
         const def = doc.servicesRegistry().get(val);
         note = `${def ? def.label : val} enabled on ${this.devName(di)}${def && def.params.some((x) => x.required && x.scope === 'device') ? ' — fill in its required parameters' : ''}.`;
@@ -3003,6 +3348,20 @@ export class Editor {
     const index = Number(btn.getAttribute('data-index'));
     const p = P(btn.getAttribute('data-p'));
     switch (act) {
+      case 'netsvc': {
+        const box = btn as unknown as HTMLInputElement;
+        const id = btn.getAttribute('data-svc') as 'dhcp' | 'dns';
+        doc.setNetService(index, id, box.checked);
+        this.host.changed(`${this.devName(index)}: ${id === 'dhcp' ? 'DHCP' : 'DNS'} server ${box.checked ? 'on: fill in what it still needs' : 'off'}.`);
+        return true;
+      }
+      case 'add-svc-item': {
+        const what = btn.getAttribute('data-what') || 'item';
+        doc.addServiceItem(p, what);
+        this.open.add(J(p.concat(Math.max(0, ((doc.get(p) as { items?: unknown[] }) || {}).items ? ((doc.get(p) as { items: unknown[] }).items.length - 1) : 0))));
+        this.host.changed(`A ${what} was added: fill in what it needs.`);
+        return true;
+      }
       case 'sim-toggle': {
         const key = btn.getAttribute('data-key') as string;
         const open = btn.getAttribute('aria-expanded') !== 'true';
@@ -3016,8 +3375,8 @@ export class Editor {
       case 'sim-reset': {
         const k = btn.getAttribute('data-k') as string;
         const def = deviceParamByYaml(k);
-        doc.setSimAttr(index, k, undefined);
-        this.host.changed(`${this.devName(index)}: ${def ? def.label : k} is inherited again.`);
+        doc.setSimAttrAt(p, k, undefined);
+        this.host.changed(`${btn.getAttribute('data-name') || ''}: ${def ? def.label : k} is inherited again.`);
         return true;
       }
       case 'draft-create':
@@ -3320,4 +3679,23 @@ export class Editor {
     if ((target as HTMLDetailsElement).open) this.open.add(key);
     else this.open.delete(key);
   }
+}
+
+/** Whose Simulation section: a device, an interface, a network (its VLAN) or a relation. */
+interface SimOwner {
+  /** the entry in the model file */
+  path: Path;
+  /** the device it inherits from (a VLAN: none) */
+  device: string | undefined;
+  /** its object reference (a device: none) */
+  at: string | null;
+  /** for ids */
+  idBase: string;
+  /** "this device", "this interface", "VLAN 10", "this relation" */
+  what: string;
+  /** for messages */
+  name: string;
+  /** a device's own section (its heading level, its id) */
+  top?: boolean;
+  note?: string;
 }

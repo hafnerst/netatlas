@@ -158,6 +158,29 @@ test('the speed applies on top of the pacing: twice the speed, twice the display
   assert.equal(b.p.hopTime(0.1, 'physical'), a.p.hopTime(0.1, 'physical'));
 });
 
+test('a jump cut short by its work budget (a slow machine) goes on towards the same end and still rests: the clock never runs away', () => {
+  const Q = example('branch-routing.yaml');
+  const fast = paced(Q);
+  const slow = paced(Q);
+  for (const r of [fast, slow]) {
+    r.sim.runTo(5000);
+    r.p.resync();
+  }
+  play(fast.sim, fast.p, 20000, 50, false);
+  // every hundredth look at the wall clock finds 30 ms gone: jumps are cut short, often near their end
+  const real = Date.now;
+  let t = real();
+  let n = 0;
+  Date.now = () => (++n % 100 === 0 ? (t += 30) : t);
+  try {
+    play(slow.sim, slow.p, 20000, 50, false);
+  } finally {
+    Date.now = real;
+  }
+  assert.ok(slow.sim.now <= 5000 + (20000 / P.IDLE_REST + 1) * P.IDLE_HORIZON, String(slow.sim.now));
+  assert.ok(fast.sim.now <= 5000 + (20000 / P.IDLE_REST + 1) * P.IDLE_HORIZON, String(fast.sim.now));
+});
+
 test('skipping idle time: with nothing on screen the clock jumps to the next message shown and reports it; without skipping it runs at the speed', () => {
   // a quiet network past its boot
   const Q = example('branch-routing.yaml');

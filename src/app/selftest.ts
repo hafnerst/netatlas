@@ -24,6 +24,8 @@ import { EXAMPLES, FIXTURES } from '../generated/examples';
 import { PNG_MAX_PIXELS, PNG_MAX_SIDE, WritableFile, pngScale, svgToPng } from '../ui/files';
 import { App } from '../ui/app';
 import { contrast } from '../diagram/palette';
+import { legendOf } from '../diagram/legend';
+import { protocolEntriesOf } from '../analysis/sim/simulation';
 
 interface Check {
   name: string;
@@ -263,7 +265,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
           labels.join('|') === 'New model|Open model…|Save model|Save model as…|Close model' && /Ctrl\+S$/.test(entries[2]) && /Ctrl\+Shift\+S$/.test(entries[3]) &&
           entries.length === 5 + EXAMPLES.length && ['#btn-save', '#btn-save-as', '#btn-close'].every((x) => (q(x) as HTMLButtonElement).disabled && /Open or create a model first|Close the current model/.test(q(x)!.title)) &&
           q('#btn-save')!.nextElementSibling === q('#btn-save-as') && q('#btn-save-as')!.nextElementSibling === q('#btn-close') &&
-          textsOf('#menu-examples .mi-label').join() === EXAMPLES.map((e) => e.name).join() && !q('#menu-examples .active-example') && /Examples/.test(q('#menu-examples-title')!.textContent || '') && EXAMPLES.length === 12 && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(menu!.textContent || '') && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(q('#empty')!.textContent || ''),
+          textsOf('#menu-examples .mi-label').join() === EXAMPLES.map((e) => e.name).join() && !q('#menu-examples .active-example') && /Examples/.test(q('#menu-examples-title')!.textContent || '') && EXAMPLES.length === 13 && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(menu!.textContent || '') && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(q('#empty')!.textContent || ''),
         entries.join(' | '),
       );
       menuBtn!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
@@ -2265,6 +2267,78 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         !app.simulationOn() && !doc.body.hasAttribute('data-sim') && vis('#outline-body') && vis('#side .tabs') && !vis('#sim-dock') && !vis('#sim-setup') && q('#side .tabs .active')!.getAttribute('data-tab') === 'details' && q('#side')!.getAttribute('aria-label') === 'Inspector' &&
           !doc.querySelector('.sim-table-panel') && !startBtn.disabled && app.exportText() === yamlBefore && (app.mdoc as ModelDoc).canUndo() === undoBefore,
       );
+    }
+    // ------------------------------------------------ DHCP and DNS (campus-services.yaml), in both themes
+    for (const theme of ['light', 'dark'] as const) {
+      app.theme.set(theme);
+      app.loadExample(EXAMPLES.findIndex((e) => e.name === 'campus-services.yaml'));
+      app.setView('physical');
+      await tick();
+      const errs = app.mdoc ? (app.mdoc as ModelDoc).result.errors.length + (app.mdoc as ModelDoc).result.warnings.length : -1;
+      const badges = Array.from(doc.querySelectorAll('#canvas [data-ref="device:srv"] .dev-badge')).map((b) => b.textContent || '');
+      const holes = Array.from(doc.querySelectorAll('#canvas [data-field="lease"]')).map((t) => t.textContent);
+      check(
+        `${theme}: campus-services: no problem; srv has its DHCP and DNS badges (with tooltips), the DHCP clients a reserved lease line; the legend lists both servers`,
+        errs === 0 && badges.some((b) => /^DHCP server/.test(b) && /DHCP$/.test(b)) && badges.some((b) => /^DNS server/.test(b) && /DNS$/.test(b)) && holes.length === 3 && holes.every((t) => t === 'lease: assigned in a simulation') &&
+          legendOf(app.session!.model, 'physical').sections.some((x) => x.items.some((i) => /^DHCP server/.test(i.label)) && x.items.some((i) => /^DNS server/.test(i.label))),
+        `${errs} ${badges.join('|')} ${holes.join('|')}`,
+      );
+      // the Services card on srv: both boxes ticked, a scope with its fields, the zone with its derived records
+      app.select('device:srv');
+      await tick();
+      click('[data-tab="edit"]');
+      await tick();
+      const dhcpBox = q('#side-body input[data-act="netsvc"][data-svc="dhcp"]') as HTMLInputElement | null;
+      const dnsBox = q('#side-body input[data-act="netsvc"][data-svc="dns"]') as HTMLInputElement | null;
+      const card = (dhcpBox && dhcpBox.closest('[data-group="netservices"]')) as HTMLElement | null;
+      check(
+        `${theme}: srv’s Edit tab has the Services card: DHCP server and DNS server ticked; two scopes and the zone campus.example, whose records from the model’s DNS names are listed read-only`,
+        !!dhcpBox && dhcpBox.checked && !!dnsBox && dnsBox.checked && !!card && card.querySelectorAll('[data-card*="scopes"]').length === 2 && /Zone campus\.example/.test(card.textContent || '') && /web\.campus\.example/.test(card.textContent || ''),
+      );
+      // the simulation (every protocol and sender, the default parameters: earlier choices are not carried over here): leases in the reserved lines, marked; the tables; the indicator
+      app.startProtocolSimulation({ protocols: protocolEntriesOf(app.session!.model).map((e) => e.id), params: {}, senders: app.session!.model.devices.map((d) => d.id) });
+      await tick();
+      const ctl = app.simController()!;
+      ctl.setPlaying(false);
+      ctl.runTo(8000);
+      ctl.refresh(true);
+      await tick(80);
+      const leases = Array.from(doc.querySelectorAll('#canvas [data-field="lease"]')).map((t) => t.textContent || '').sort();
+      check(
+        `${theme}: in the simulation the clients’ leases are written into their reserved lines with “(DHCP lease)” (lap1 its reserved address; pc2 through the relay)`,
+        leases.join() === '10.10.10.100/24 (DHCP lease),10.10.10.21/24 (DHCP lease),10.10.20.100/24 (DHCP lease)' && doc.querySelectorAll('#canvas .lease-on').length === 3,
+        leases.join(' | '),
+      );
+      const ev = ctl.sim.events();
+      check(
+        `${theme}: DORA in parallel (the DISCOVERs within a few ms), pc2’s through the relay; DNS by name before the connection`,
+        (() => {
+          const disc = ev.filter((e) => e.kind === 'message' && e.what === 'DHCPDISCOVER' && /^DHCPDISCOVER from/.test(e.detail)).map((e) => e.t);
+          return disc.length >= 3 && Math.max(...disc) - Math.min(...disc) < 5 && ev.some((e) => /^core relays DHCPDISCOVER from pc2/.test(e.detail)) && ev.some((e) => /^DHCPOFFER from srv .* 10\.10\.20\.100\/24, lease 4 h/.test(e.detail)) &&
+            ev.some((e) => e.kind === 'message' && e.protocol === 'dns' && /web\.campus\.example/.test(e.detail));
+        })(),
+        ev.filter((e) => e.kind === 'message' && /^DHCP|^DNS/.test(e.what)).slice(0, 8).map((e) => e.detail.slice(0, 60)).join(' | '),
+      );
+      const shown = async (kind: string, dev: string, re: RegExp): Promise<boolean> => {
+        const ok = ctl.showTable(kind as never, dev);
+        await tick(60);
+        const panel = q('#sd-status');
+        return ok && !!panel && re.test(panel.textContent || '');
+      };
+      const tables = [await shown('dhcp', 'srv', /DHCP leases of srv[\s\S]*10\.10\.10\.21/), await shown('dnszone', 'srv', /DNS zone of srv[\s\S]*www/), await shown('dnscache', 'pc1', /DNS cache of pc1[\s\S]*web\.campus\.example/)];
+      ctl.showStatus();
+      check(`${theme}: Show DHCP leases (srv), Show DNS zone (srv) and Show DNS cache (pc1) show their tables in the panel’s status side`, tables.every((x) => x), tables.join());
+      const wrap = q('#canvas-wrap') as HTMLElement;
+      const after = doc.defaultView!.getComputedStyle(wrap, '::after');
+      const badge = q('.sim-badge') as HTMLElement;
+      check(
+        `${theme}: the indicator: a solid 2 px inset border that catches no click, and the “Simulation running” label`,
+        /inset/.test(after.boxShadow) && /2px/.test(after.boxShadow) && after.pointerEvents === 'none' && !!badge && /Simulation running/.test(badge.textContent || '') && doc.defaultView!.getComputedStyle(badge).borderTopStyle === 'solid',
+        after.boxShadow,
+      );
+      (q('#btn-sim-exit') as HTMLButtonElement).click();
+      await tick();
+      check(`${theme}: after the simulation the reserved lines say again that the lease is assigned in a simulation`, Array.from(doc.querySelectorAll('#canvas [data-field="lease"]')).every((t) => t.textContent === 'lease: assigned in a simulation'));
     }
     app.theme.set('dark');
 

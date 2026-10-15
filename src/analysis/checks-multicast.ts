@@ -91,7 +91,7 @@ export const MULTICAST_CHECKS: McCheck[] = [
     id: 'multicast-no-querier',
     severity: 'warning',
     title: 'Receivers of a group in a subnet without an IGMP / MLD querier',
-    reads: 'interfaces: multicast join; routers with PIM (protocols: pim) and their simulation igmp_querier; switches with simulation snooping_querier',
+    reads: 'interfaces: multicast join, simulation igmp_querier; routers with PIM (protocols: pim) and their simulation igmp_querier; networks (VLANs) with simulation snooping_querier',
     run(model, emit) {
       const routers = model.devices.filter((d) => pim(d) || model.relations.some((r) => protocolBase(model.protocols, r.protocol) === 'igmp' && relationDevices(r).indexOf(d.id) >= 0 && d.type !== 'endpoint' && d.type !== 'server'));
       const seen = new Set<string>();
@@ -100,11 +100,14 @@ export const MULTICAST_CHECKS: McCheck[] = [
         if (seen.has(key)) continue;
         seen.add(key);
         const own = addrs(j.i);
-        const served = routers.some((r) => {
-          if (r.simulation && r.simulation.get('igmp-querier') === 'off') return false;
-          return deviceInterfaces(r).some((ri) => addrs(ri).some((ra) => own.some((o) => o.addr.version === ra.addr.version && o.prefix === ra.prefix && sameNet(o.addr, ra.addr, o.prefix))));
-        });
-        if (served || snoopingQuerier(model, j.d)) continue;
+        const served = routers.some((r) =>
+          deviceInterfaces(r).some((ri) => {
+            // the querier setting of that interface, else the router's
+            const q = (ri.simulation && ri.simulation.get('igmp-querier')) || (r.simulation && r.simulation.get('igmp-querier'));
+            return q !== 'off' && addrs(ri).some((ra) => own.some((o) => o.addr.version === ra.addr.version && o.prefix === ra.prefix && sameNet(o.addr, ra.addr, o.prefix)));
+          }),
+        );
+        if (served || snoopingQuerier(model, j.d, own)) continue;
         emit({ message: `${key} joins ${j.group}, but no multicast router (PIM, querier on) is in its subnet and no switch on its way is a snooping querier: its membership is never asked for, and with snooping the switches never learn it`, refs: ['device:' + j.d.id, iref(j.i)], at: { ref: iref(j.i), field: 'multicast' } });
       }
     },
@@ -173,7 +176,14 @@ export const MULTICAST_CHECKS: McCheck[] = [
 ];
 
 /** Does a switch with the snooping querier on lie on the receiver's Layer 2 way (through switches and access points)? */
-function snoopingQuerier(model: Model, d: Device): boolean {
+function snoopingQuerier(model: Model, d: Device, own: Array<{ addr: IpAddr; prefix: number }> = []): boolean {
+  // the snooping querier is a VLAN's setting (a network's simulation:): the VLAN of the host's subnet
+  const querierVlan = model.networks.some((n) => {
+    if (n.vlan === undefined || !n.simulation || n.simulation.get('snoop-querier') !== 'on' || !n.cidr) return false;
+    const [na, nl] = n.cidr.split('/');
+    const net = parseAddress(na);
+    return !!net && own.some((o) => o.addr.version === net.version && o.prefix === Number(nl) && sameNet(o.addr, net, o.prefix));
+  });
   const seen = new Set<string>([d.id]);
   let frontier = [d.id];
   while (frontier.length) {
@@ -184,7 +194,7 @@ function snoopingQuerier(model: Model, d: Device): boolean {
         if (!o || seen.has(o)) continue;
         const od = model.index.devices.get(o);
         if (!od || (od.type !== 'switch' && od.type !== 'ap')) continue;
-        if (od.type === 'switch' && od.simulation && od.simulation.get('snoop-querier') === 'on') return true;
+        if (od.type === 'switch' && querierVlan) return true;
         seen.add(o);
         next.push(o);
       }

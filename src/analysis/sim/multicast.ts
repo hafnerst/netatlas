@@ -59,10 +59,11 @@ import { IpAddr, parseAddress } from '../../model/ip';
 import { relationDevices } from '../../model/types';
 import { compareAddr, formatAddr } from '../ipmath';
 import { lookup } from '../routing';
+import { tunnelRelation } from '../trace';
 import { Frame, fmtSec } from './engine';
 import { isLinkLocalGroup, isMulticastIp, isSsmGroup, multicastMac } from './mac';
 import { L3Iface, SimDevice } from './net';
-import { durationText, formatValue, resolvedText, sourceText } from './params';
+import { durationText, formatValue, ifaceRef, relRef, resolvedText, sourceText, vlanRef } from './params';
 import { routerId } from './proto-routing';
 import { ProtocolSim, Sess } from './protocols';
 import { GridTable, L4, Msg, NetEvent, Pkt, SessionStatus, TableTimer } from './types';
@@ -259,7 +260,7 @@ export class Multicast {
           const a = l3.addrs.find((x) => x.addr.version === v);
           if (!a) continue;
           const key = `${sd.id}|${l3.id}|${v}`;
-          this.rifs.set(key, { dev: sd.id, l3, addr: a.addr, querier: this.e.params.str('igmp-querier', sd.id) === 'on', otherAt: -1, otherAddr: '', groups: new Map(), queries: 0 });
+          this.rifs.set(key, { dev: sd.id, l3, addr: a.addr, querier: this.e.params.str('igmp-querier', sd.id, ifaceRef(sd.id, l3.id)) === 'on', otherAt: -1, otherAddr: '', groups: new Map(), queries: 0 });
           this.startQuerier(key);
         }
       }
@@ -339,8 +340,9 @@ export class Multicast {
 
   // ------------------------------------------------------------ IGMP / MLD messages
 
-  private ver(dev: string): 'v2' | 'v3' {
-    return this.e.params.str('igmp-version', dev) === 'v2' ? 'v2' : 'v3';
+  /** The IGMP / MLD version of an interface (its own, else its device's, …); without one, the device's. */
+  private ver(dev: string, iface?: string): 'v2' | 'v3' {
+    return this.e.params.str('igmp-version', dev, iface ? ifaceRef(dev, iface) : null) === 'v2' ? 'v2' : 'v3';
   }
 
   private name(v: 4 | 6): string {
@@ -377,7 +379,7 @@ export class Multicast {
     const g = A(hg.group);
     const h = this.hostAddr(dev, iface, g.version);
     if (!h || !this.e.deviceOn(dev)) return;
-    const ver = this.ver(dev);
+    const ver = this.ver(dev, iface);
     const n = this.name(g.version);
     const vn = this.verName(g.version, ver);
     if (leave) {
@@ -408,7 +410,7 @@ export class Multicast {
     if (!g || !isMulticastIp(g)) return `${group} is not a multicast group`;
     if (isLinkLocalGroup(g)) return `${group} is a link-local group: it is never joined`;
     if (isSsmGroup(g) && !sources.length) return `${group} is a source-specific group: name its sources`;
-    if (sources.length && this.ver(dev) === 'v2') return `${dev} runs ${this.verName(g.version, 'v2')}: it cannot join with a source list`;
+    if (sources.length && this.ver(dev, iface) === 'v2') return `${dev} runs ${this.verName(g.version, 'v2')}: it cannot join with a source list`;
     if (!this.hostAddr(dev, iface, g.version)) return `${dev}:${iface} has no IPv${g.version} address`;
     const key = dev + '|' + iface;
     let m = this.hosts.get(key);
@@ -424,15 +426,15 @@ export class Multicast {
     // an unsolicited report now, repeated after the unsolicited report interval (robustness − 1 more times)
     this.report(dev, iface, hg, 'joins (unsolicited)');
     const gen = ++hg.gen;
-    this.e.after(this.unsolicited(dev), () => {
+    this.e.after(this.unsolicited(dev, iface), () => {
       if (hg.gen === gen && (this.hosts.get(key) || new Map()).get(hg.group) === hg) this.report(dev, iface, hg, 'joins (unsolicited, repeated)');
     });
     return null;
   }
 
-  private unsolicited(dev: string): number {
-    const r = this.e.params.num('igmp-unsolicited', dev);
-    return r > 0 ? r : this.ver(dev) === 'v2' ? 10000 : 1000;
+  private unsolicited(dev: string, iface: string): number {
+    const r = this.e.params.num('igmp-unsolicited', dev, null, ifaceRef(dev, iface));
+    return r > 0 ? r : this.ver(dev, iface) === 'v2' ? 10000 : 1000;
   }
 
   /** A host leaves a group (a Leave group… event, or the end of a join event). */
@@ -477,12 +479,12 @@ export class Multicast {
     const dev = ri.dev;
     this.P.periodic(
       () => this.rifs.get(key) === ri,
-      () => this.e.params.num('igmp-query', dev),
+      () => this.e.params.num('igmp-query', dev, null, this.at(ri)),
       () => {
         if (!this.e.deviceOn(dev) || !this.e.isL3Up(dev, ri.l3.id)) return;
         // another querier went silent: this one takes over
-        const other = this.otherPresent(dev);
-        if (!ri.querier && this.e.params.str('igmp-querier', dev) === 'on' && ri.otherAt >= 0 && this.e.now - ri.otherAt >= other) {
+        const other = this.otherPresent(dev, ri.l3.id);
+        if (!ri.querier && this.e.params.str('igmp-querier', dev, this.at(ri)) === 'on' && ri.otherAt >= 0 && this.e.now - ri.otherAt >= other) {
           ri.querier = true;
           this.e.note('state', 'igmp', dev, '', 'querier', 'querier', `${dev}:${ri.l3.id} takes over as ${this.name(ri.addr.version)} querier: no query from ${ri.otherAddr} for ${durationText(other)} (other querier present interval)`);
         }
@@ -500,12 +502,12 @@ export class Multicast {
     // the other-querier check between two queries as well
     this.P.periodic(
       () => this.rifs.get(key) === ri,
-      () => Math.max(1000, this.otherPresent(dev) / 4),
+      () => Math.max(1000, this.otherPresent(dev, ri.l3.id) / 4),
       () => {
-        if (ri.querier || ri.otherAt < 0 || this.e.params.str('igmp-querier', dev) !== 'on' || !this.e.deviceOn(dev)) return;
-        if (this.e.now - ri.otherAt >= this.otherPresent(dev)) {
+        if (ri.querier || ri.otherAt < 0 || this.e.params.str('igmp-querier', dev, this.at(ri)) !== 'on' || !this.e.deviceOn(dev)) return;
+        if (this.e.now - ri.otherAt >= this.otherPresent(dev, ri.l3.id)) {
           ri.querier = true;
-          this.e.note('state', 'igmp', dev, '', 'querier', 'querier', `${dev}:${ri.l3.id} takes over as ${this.name(ri.addr.version)} querier: no query from ${ri.otherAddr} for ${durationText(this.otherPresent(dev))} (other querier present interval)`);
+          this.e.note('state', 'igmp', dev, '', 'querier', 'querier', `${dev}:${ri.l3.id} takes over as ${this.name(ri.addr.version)} querier: no query from ${ri.otherAddr} for ${durationText(this.otherPresent(dev, ri.l3.id))} (other querier present interval)`);
           this.generalQuery(ri);
         }
       },
@@ -514,29 +516,36 @@ export class Multicast {
     );
   }
 
-  /** robustness × query interval + response interval ÷ 2 (RFC 3376 §8.5). */
-  private otherPresent(dev: string): number {
-    return this.e.params.num('igmp-robustness', dev) * this.e.params.num('igmp-query', dev) + this.e.params.num('igmp-max-resp', dev) / 2;
+  /** A router interface's object reference (its querier's settings). */
+  private at(ri: RIface): string {
+    return ifaceRef(ri.dev, ri.l3.id);
   }
 
-  /** robustness × query interval + response interval (RFC 3376 §8.4). */
-  private gmi(dev: string): number {
-    return this.e.params.num('igmp-robustness', dev) * this.e.params.num('igmp-query', dev) + this.e.params.num('igmp-max-resp', dev);
+  /** robustness × query interval + response interval ÷ 2 (RFC 3376 §8.5), of an interface (none: the device's). */
+  private otherPresent(dev: string, iface?: string): number {
+    const at = iface ? ifaceRef(dev, iface) : null;
+    return this.e.params.num('igmp-robustness', dev, null, at) * this.e.params.num('igmp-query', dev, null, at) + this.e.params.num('igmp-max-resp', dev, null, at) / 2;
+  }
+
+  /** robustness × query interval + response interval (RFC 3376 §8.4), of an interface (none: the device's). */
+  private gmi(dev: string, iface?: string): number {
+    const at = iface ? ifaceRef(dev, iface) : null;
+    return this.e.params.num('igmp-robustness', dev, null, at) * this.e.params.num('igmp-query', dev, null, at) + this.e.params.num('igmp-max-resp', dev, null, at);
   }
 
   private generalQuery(ri: RIface): void {
     ri.queries++;
     const v = ri.addr.version;
     const all = A(v === 4 ? '224.0.0.1' : 'ff02::1');
-    const mrt = this.e.params.num('igmp-max-resp', ri.dev);
-    const vn = this.verName(v, this.ver(ri.dev));
+    const mrt = this.e.params.num('igmp-max-resp', ri.dev, null, this.at(ri));
+    const vn = this.verName(v, this.ver(ri.dev, ri.l3.id));
     this.igmpSend(ri.dev, ri.l3, ri.addr, all, 'Query', `${this.name(v)} Query (general)`, `${vn} General Query from ${ri.dev} (${formatAddr(ri.addr)}, the querier) to ${formatAddr(all)}: which groups have members? Answer within ${durationText(mrt)}`, { type: 'Membership Query (general)', version: vn, maxResp: mrt / 1000 }, { maxResp: mrt, querier: formatAddr(ri.addr) });
   }
 
   private groupQuery(ri: RIface, group: string): void {
     const v = ri.addr.version;
-    const lmqi = this.e.params.num('igmp-lmqi', ri.dev);
-    const vn = this.verName(v, this.ver(ri.dev));
+    const lmqi = this.e.params.num('igmp-lmqi', ri.dev, null, this.at(ri));
+    const vn = this.verName(v, this.ver(ri.dev, ri.l3.id));
     this.igmpSend(ri.dev, ri.l3, ri.addr, A(group), 'Query', `${this.name(v)} Query ${group}`, `${vn} Group-Specific Query from ${ri.dev} (${formatAddr(ri.addr)}) to ${group}: any members left? Answer within ${durationText(lmqi)}`, { type: 'Membership Query (group-specific)', version: vn, group, maxResp: lmqi / 1000 }, { maxResp: lmqi, group, querier: formatAddr(ri.addr) });
   }
 
@@ -562,7 +571,7 @@ export class Multicast {
         // a group-specific query after a leave: the membership runs out after the last member queries
         if (d.group && ri.groups.has(d.group)) {
           const g = ri.groups.get(d.group) as RGroup;
-          g.expires = Math.min(g.expires, this.e.now + this.e.params.num('igmp-robustness', dev) * this.e.params.num('igmp-lmqi', dev));
+          g.expires = Math.min(g.expires, this.e.now + this.e.params.num('igmp-robustness', dev, null, this.at(ri)) * this.e.params.num('igmp-lmqi', dev, null, this.at(ri)));
           g.leaving = true;
         }
         return;
@@ -590,7 +599,7 @@ export class Multicast {
       return;
     }
     // another member's report for a group: an IGMPv2 / MLDv1 host sends none of its own (report suppression)
-    if (msg.type === 'Report' && d.group && !d.leave && this.ver(dev) === 'v2') {
+    if (msg.type === 'Report' && d.group && !d.leave && this.ver(dev, l3.id) === 'v2') {
       const hg = m.get(d.group);
       if (hg && hg.answer > 0) {
         hg.answer++;
@@ -605,7 +614,7 @@ export class Multicast {
     g.leaving = false;
     g.reporter = reporter;
     g.version = (msg.data && (msg.data as { version?: string }).version) || this.verName(A(group).version, sources.length ? 'v3' : this.ver(this.e.ownerOf(A(reporter)) || ri.dev));
-    g.expires = this.e.now + this.gmi(ri.dev);
+    g.expires = this.e.now + this.gmi(ri.dev, ri.l3.id);
     g.gsq = 0;
     for (const s of sources) if (g.sources.indexOf(s) < 0) g.sources.push(s);
     ri.groups.set(group, g);
@@ -619,8 +628,8 @@ export class Multicast {
     const g = ri.groups.get(group);
     if (!g) return;
     void sources;
-    const lmqi = this.e.params.num('igmp-lmqi', ri.dev);
-    const rob = this.e.params.num('igmp-robustness', ri.dev);
+    const lmqi = this.e.params.num('igmp-lmqi', ri.dev, null, this.at(ri));
+    const rob = this.e.params.num('igmp-robustness', ri.dev, null, this.at(ri));
     g.expires = Math.min(g.expires, this.e.now + rob * lmqi);
     g.leaving = true;
     if (!ri.querier) return;
@@ -638,8 +647,9 @@ export class Multicast {
 
   // ------------------------------------------------------------ snooping
 
-  private snoopOn(dev: string): boolean {
-    return this.e.params.str('igmp-snooping', dev) === 'on';
+  /** Does a switch snoop a VLAN: the VLAN's setting, else the switch's (global), the simulation's, the default? */
+  private snoopOn(dev: string, vlan?: number): boolean {
+    return this.e.params.str('igmp-snooping', dev, vlan !== undefined ? vlanRef(vlan) : null) === 'on';
   }
 
   private snoopState(dev: string, vlan: number): Snoop {
@@ -654,7 +664,7 @@ export class Multicast {
    * ports, member ports) and says which ports get it (null: flood).
    */
   snoop(sd: SimDevice, from: string | null, vlan: number, frame: Frame, t: number): Set<string> | null {
-    if (sd.dev.type !== 'switch' || !frame.ip || !isMulticastIp(frame.ip.dst) || !this.snoopOn(sd.id)) return null;
+    if (sd.dev.type !== 'switch' || !frame.ip || !isMulticastIp(frame.ip.dst) || !this.snoopOn(sd.id, vlan)) return null;
     const p = frame.ip;
     const st = this.snoopState(sd.id, vlan);
     const msg = p.msg;
@@ -674,7 +684,7 @@ export class Multicast {
         let ports = st.groups.get(d.group);
         if (!ports) st.groups.set(d.group, (ports = new Map()));
         if (d.leave) {
-          if (this.e.params.str('fast-leave', sd.id) === 'on') {
+          if (this.e.params.str('fast-leave', sd.id, vlanRef(vlan)) === 'on') {
             if (ports.delete(from)) this.noteAt(t, 'table', sd.id, `${sd.id}: port ${from} leaves ${d.group} at once (fast leave)`);
           } else if (ports.has(from)) {
             ports.set(from, Math.min(ports.get(from) as number, t + this.e.params.num('igmp-robustness', sd.id) * this.e.params.num('igmp-lmqi', sd.id)));
@@ -702,7 +712,7 @@ export class Multicast {
       keep.add(port);
       any = true;
     }
-    if (!any && this.e.params.str('unknown-mc', sd.id) === 'flood') return null;
+    if (!any && this.e.params.str('unknown-mc', sd.id, vlanRef(vlan)) === 'flood') return null;
     return keep;
   }
 
@@ -717,7 +727,7 @@ export class Multicast {
       () => true,
       () => this.e.params.num('igmp-query', sd.id),
       () => {
-        if (this.e.params.str('snoop-querier', sd.id) !== 'on' || !this.snoopOn(sd.id) || !this.e.deviceOn(sd.id)) return;
+        if (!this.e.deviceOn(sd.id)) return;
         const vlans = new Set<number>();
         for (const bp of sd.bridgePorts.values()) {
           if (bp.vlans.tagged !== 'all') for (const v of bp.vlans.tagged) vlans.add(v);
@@ -725,6 +735,8 @@ export class Multicast {
           if (bp.vlans.tagged === 'all' && bp.vlans.untagged === null) vlans.add(0);
         }
         for (const vlan of Array.from(vlans).sort((a, b) => a - b)) {
+          // the querier and snooping are the VLAN's settings
+          if (this.e.params.str('snoop-querier', sd.id, vlanRef(vlan)) !== 'on' || !this.snoopOn(sd.id, vlan)) continue;
           const st = this.snoopState(sd.id, vlan);
           if (Array.from(st.routerPorts.values()).some((until) => until > this.e.now)) continue;
           const svi = Array.from(sd.l3.values()).find((l) => l.kind === 'svi' && l.vlan === vlan && l.addrs.some((a) => a.addr.version === 4));
@@ -757,10 +769,10 @@ export class Multicast {
   private isDr(dev: string, l3: L3Iface, v: 4 | 6): { dr: boolean; who: string } {
     const own = l3.addrs.find((a) => a.addr.version === v);
     if (!own) return { dr: false, who: '' };
-    let best = { dev, prio: this.e.params.num('pim-dr-priority', dev), addr: own.addr };
+    let best = { dev, prio: this.e.params.num('pim-dr-priority', dev, null, ifaceRef(dev, l3.id)), addr: own.addr };
     for (const s of this.neighbours(dev, l3.id)) {
       if (s.remote.addr.version !== v) continue;
-      const c = { dev: s.peer, prio: this.e.params.num('pim-dr-priority', s.peer), addr: s.remote.addr };
+      const c = { dev: s.peer, prio: this.e.params.num('pim-dr-priority', s.peer, null, ifaceRef(s.peer, s.remote.l3.id)), addr: s.remote.addr };
       if (c.prio > best.prio || (c.prio === best.prio && compareAddr(c.addr, best.addr) > 0)) best = c;
     }
     return { dr: best.dev === dev, who: best.dev };
@@ -978,12 +990,12 @@ export class Multicast {
     const g = formatAddr(pkt.dst);
     const s = formatAddr(pkt.src);
     if (!this.mcRouter(dev)) {
-      if (sd.dev.type === 'firewall' && this.e.params.str('mc-passthrough', dev) !== 'on') this.note(`fwmc|${dev}|${g}`, 'drop', dev, `${dev} drops multicast for ${g} from ${s}: multicast passthrough ${resolvedText(this.e.params.get('mc-passthrough', dev))}`);
+      if (sd.dev.type === 'firewall' && this.e.params.str('mc-passthrough', dev, ifaceRef(dev, l3.id)) !== 'on') this.note(`fwmc|${dev}|${g}`, 'drop', dev, `${dev} drops multicast for ${g} from ${s}: multicast passthrough ${resolvedText(this.e.params.get('mc-passthrough', dev, null, ifaceRef(dev, l3.id)))}`);
       else this.note(`nopim|${dev}|${g}`, 'drop', dev, `${dev} routes no multicast (it runs no PIM): ${pkt.msg.label} stays on ${l3.id}`);
       return true;
     }
-    if (sd.dev.type === 'firewall' && this.e.params.str('mc-passthrough', dev) !== 'on') {
-      this.note(`fwmc|${dev}|${g}`, 'drop', dev, `${dev} drops multicast for ${g} from ${s}: multicast passthrough ${resolvedText(this.e.params.get('mc-passthrough', dev))}`);
+    if (sd.dev.type === 'firewall' && this.e.params.str('mc-passthrough', dev, ifaceRef(dev, l3.id)) !== 'on') {
+      this.note(`fwmc|${dev}|${g}`, 'drop', dev, `${dev} drops multicast for ${g} from ${s}: multicast passthrough ${resolvedText(this.e.params.get('mc-passthrough', dev, null, ifaceRef(dev, l3.id)))}`);
       return true;
     }
     if (pkt.ttl <= 1) {
@@ -1131,7 +1143,8 @@ export class Multicast {
 
   /** May a tunnel carry multicast: GRE in its encapsulation, and its router's setting on? */
   private tunnelCarries(dev: string, tun: L3Iface, g: string): boolean {
-    const r = this.e.params.get('mc-tunnel', dev);
+    const rel = tunnelRelation(this.P.m, dev, tun.id);
+    const r = this.e.params.get('mc-tunnel', dev, null, rel ? relRef(rel.id) : null);
     if (r.value !== 'on') {
       this.note(`mctun|${dev}|${tun.id}`, 'drop', dev, `${dev} sends no multicast (${g}) into ${tun.id}: multicast over tunnels ${resolvedText(r)}`);
       return false;
@@ -1398,7 +1411,7 @@ export class Multicast {
     this.mroutes.delete(dev);
     for (const [k, ri] of this.rifs) if (ri.dev === dev) {
       ri.groups.clear();
-      ri.querier = this.e.params.str('igmp-querier', dev) === 'on';
+      ri.querier = this.e.params.str('igmp-querier', dev, this.at(ri)) === 'on';
       ri.otherAt = -1;
       void k;
     }

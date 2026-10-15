@@ -125,6 +125,21 @@ export function deviceRoutingRole(d: { type: string; layer3?: boolean }): Routin
   return routingRole(d.type);
 }
 
+/**
+ * The protocols (base ids) whose relations need a Layer 3 device at every
+ * end (besides tunnels and overlays): routing, multicast routing, label
+ * distribution, BFD and the first-hop redundancy groups. A Layer 2 switch
+ * (without "Supports Layer 3") can't be an endpoint of one; its Layer 2
+ * protocols (STP, LACP, LLDP, IGMP / MLD snooping) and its management
+ * routes stay available.
+ */
+export const LAYER3_PROTOCOLS: readonly string[] = ['bgp', 'ospf', 'isis', 'eigrp', 'rip', 'ldp', 'pim', 'bfd', 'vrrp', 'hsrp', 'glbp', 'carp'];
+
+/** Does a relation of this protocol (base id) and category need Layer 3 at every end? */
+export function relationNeedsLayer3(base: string, category: string): boolean {
+  return category === 'tunnel' || category === 'overlay' || LAYER3_PROTOCOLS.indexOf(base) >= 0;
+}
+
 /** Does the device route (a Layer 3+ device, a Layer 3 switch included)? */
 export function isLayer3Device(d: { type: string; layer3?: boolean }): boolean {
   return deviceRoutingRole(d) === 'router';

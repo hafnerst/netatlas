@@ -27,6 +27,8 @@ export type SimBehaviour =
   | 'arp'
   | 'ndp'
   | 'garp'
+  /** DHCP: simulated from the servers' scopes and the clients (analysis/sim/netsvc.ts), no relation sessions */
+  | 'dhcp-server'
   | 'stp'
   | 'advert'
   | 'lacp'
@@ -904,24 +906,24 @@ export const SIM_PROFILES: readonly SimProfile[] = [
   { ...service('snmp', 'SNMP', 'UDP 161', 'GetRequest', 'GetResponse', 60, 'the manager (the last endpoint) polls each agent'), fromServer: true, transport: 'UDP 161, unicast from the manager (the last endpoint) to each agent' },
   service('radius', 'RADIUS / TACACS+', 'UDP 1812 (TACACS+ TCP 49)', 'Access-Request', 'Access-Accept', 60, 'authentication requests to the server'),
   {
+    // DHCP is simulated from the servers' scopes (services: dhcp) and the clients' dhcp: true (analysis/sim/netsvc.ts):
+    // a relation of it is drawn, not run as a session of its own (its behaviour has no engine)
     id: 'dhcp',
     label: 'DHCP',
     group: 'Services',
-    behaviour: 'service',
+    behaviour: 'dhcp-server',
     messages: [
-      { name: 'DHCPDISCOVER', does: 'broadcast by the client (a relay forwards it to the server, unicast)' },
-      { name: 'DHCPOFFER', does: 'the server’s offer' },
-      { name: 'DHCPREQUEST', does: 'the client takes it' },
-      { name: 'DHCPACK', does: 'the server confirms the lease' },
+      { name: 'DHCPDISCOVER', does: 'broadcast by the client from 0.0.0.0 (a relay forwards it to the server as unicast, with its giaddr)' },
+      { name: 'DHCPOFFER', does: 'the server’s offer: an address of the scope, its lease time, gateway and DNS servers' },
+      { name: 'DHCPREQUEST', does: 'the client takes it (broadcast); later its renewal (unicast) and rebinding (broadcast)' },
+      { name: 'DHCPACK', does: 'the server confirms the lease (DHCPNAK: an address it can’t give)' },
     ],
-    transport: 'UDP 67 / 68; relayed unicast to the server',
+    transport: 'UDP 67 / 68: broadcast on the client’s segment, unicast through a relay',
     proto: 'UDP 67',
-    request: 'DHCPDISCOVER',
-    response: 'DHCPOFFER',
     timers: [T('hello', 'Renewal (T1 = lease / 2)', 43200, 'RFC 2131 (one-day lease)')],
     states: ['Init', 'Bound'],
-    failure: 'Requests are lost; the lease stays until it expires.',
-    restore: 'The next renewal reaches the server.',
+    failure: 'Without a server the client retries with backoff, then pauses; the lease ends at its expiry.',
+    restore: 'The next DHCPDISCOVER or renewal reaches the server.',
   },
   service('https', 'HTTPS', 'TCP 443', 'TLS Application Data (request)', 'TLS Application Data (response)', 30, 'web requests after the TCP and TLS handshakes'),
   service('netflow', 'NetFlow / IPFIX', 'UDP 2055 / 4739', 'Flow export', undefined, 60, 'flow records to the collector (one way)', 'common active timeout (60 s)'),

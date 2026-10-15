@@ -62,11 +62,11 @@ import { protocolBase } from '../../model/protocols';
 import { ND_DELAY_DEFAULT } from '../../model/sim-profiles';
 import { Link, Model, Relation, relationDevices } from '../../model/types';
 import { compareAddr, formatAddr } from '../ipmath';
-import { RoutingCtx, lookup } from '../routing';
+import { Connected, RibEntry, RoutingCtx, lookup } from '../routing';
 import { declaredUnderlay, encapStack, tunnelRelation, tracePath } from '../trace';
 import { BROADCAST, isGroupMac, isLinkLocalGroup, isMulticastIp, multicastMac, rng, solicitedNode, modelSeed, shortMac } from './mac';
-import { BridgePort, CableEnd, L3Iface, SimDevice, SimNet, buildNet, carries, ingressVlan, otherEnd, portKey, spanningTree } from './net';
-import { ParamChange, ParamValue, Resolved, SimParams, changeText, durationText, formatValue, resolvedText, sourceText } from './params';
+import { BridgePort, CableEnd, L3Iface, Lease, SimDevice, SimNet, StpConfig, buildNet, carries, ingressVlan, otherEnd, portKey, spanningTree } from './net';
+import { ParamChange, ParamValue, Resolved, SimParams, changeText, durationText, formatValue, ifaceRef, relRef, resolvedText, scopeRef, sourceText, vlanRef, vlanValue, zoneRef } from './params';
 import { ArpRow, ArpType, Cast, Flight, Headers, MacRow, Msg, NdState, NetEvent, Pkt, Quote, SimEvent, TableTimer, Track } from './types';
 import { parseSpeed } from '../../model/speed';
 
@@ -308,6 +308,7 @@ export class Engine {
     const devs = new Map<string, { type: string; values: Map<string, ParamValue> }>();
     for (const d of model.devices) devs.set(d.id, { type: d.type, values: d.simulation || new Map() });
     this.params = new SimParams(opts.params, devs);
+    this.objectParamsFrom(model);
     for (const d of this.net.devices.values()) {
       this.arp.set(d.id, new Map());
       if (d.bridge) this.macs.set(d.id, new Map());
@@ -514,6 +515,7 @@ export class Engine {
       const id = cond.slice(4);
       return this.relationUp(id) && (!this.protocols || !this.protocols.sessionUp || this.protocols.sessionUp(id));
     }
+    if (cond.indexOf('lease:') === 0) return !this.waitsForLease(cond.slice(6));
     if (cond.indexOf('route:') === 0) {
       const [dev, vrf, a] = cond.slice(6).split('|');
       const ip = parseAddress(a);
@@ -684,6 +686,8 @@ export class Engine {
       adjUp(relation: string, from: string, to: string): boolean {
         return !self.protocols || self.protocols.adjUp(relation, from, to);
       },
+      leases: (device: string) => self.leaseConnected(device),
+      extraRoutes: (device: string, vrf: string) => self.leaseRoutes(device, vrf),
     };
     return this.ctxObj;
   }
@@ -723,7 +727,84 @@ export class Engine {
         const v = adj.get(relation + '|' + from + '|' + to);
         return v !== undefined ? v : true;
       },
+      leases: (device: string) => this.leaseConnected(device),
+      extraRoutes: (device: string, vrf: string) => this.leaseRoutes(device, vrf),
     };
+  }
+
+  // ------------------------------------------------------------ DHCP leases (the client's side)
+
+  /** the addresses DHCP leased (or a link-local fallback), by "device:interface": the simulation's, never the model's */
+  readonly leases = new Map<string, Lease>();
+
+  /**
+   * A lease applies: the interface takes the address (its subnet becomes a
+   * connected network, the gateway its default route, the DNS servers its
+   * resolver's), routing follows, and what waited for an address goes.
+   */
+  bindLease(l: Lease): void {
+    const sd = this.net.devices.get(l.dev);
+    const l3 = sd ? sd.l3.get(l.iface) : undefined;
+    if (!sd || !l3) return;
+    const had = this.leases.get(l.dev + ':' + l.iface);
+    this.leases.set(l.dev + ':' + l.iface, l);
+    l3.addrs = [l.addr];
+    this.stateVersion++;
+    this.routingChanged();
+    if (!had || compareAddr(had.addr.addr, l.addr.addr) !== 0) {
+      if (this.protocols) this.protocols.ifaceChange(l.dev, l3, this.isL3Up(l.dev, l.iface));
+    }
+    this.recheckWaits();
+  }
+
+  /** A lease ends (expired, released, the interface or device down): the interface has no address again. */
+  dropLease(dev: string, iface: string, why: string): void {
+    const k = dev + ':' + iface;
+    const l = this.leases.get(k);
+    if (!l) return;
+    this.leases.delete(k);
+    const sd = this.net.devices.get(dev);
+    const l3 = sd ? sd.l3.get(iface) : undefined;
+    if (l3) l3.addrs = [];
+    this.flushIface(dev, iface, why);
+    this.stateVersion++;
+    this.routingChanged();
+  }
+
+  /** Does an interface have its address: a configured one, or (a DHCP client) a lease? */
+  addressReady(dev: string, iface: string): boolean {
+    const i = this.model.index.interfaces.get(dev + ':' + iface);
+    if (!i || !i.dhcp || i.addresses.length) return true;
+    return this.leases.has(dev + ':' + iface);
+  }
+
+  /** Is a device waiting for a DHCP lease (a client interface without one, and no address elsewhere)? */
+  waitsForLease(dev: string): string | null {
+    const sd = this.net.devices.get(dev);
+    if (!sd) return null;
+    const ls = Array.from(sd.l3.values()).filter((l) => l.kind !== 'loopback');
+    if (ls.some((l) => l.addrs.length)) return null;
+    const c = ls.find((l) => !this.addressReady(dev, l.id));
+    return c ? c.id : null;
+  }
+
+  private leaseConnected(device: string): Connected[] {
+    const out: Connected[] = [];
+    for (const l of this.leases.values()) {
+      if (l.dev !== device) continue;
+      out.push({ device, iface: l.iface, vrf: l.vrf, net: { version: l.addr.net.version, bytes: l.addr.net.bytes, prefix: l.addr.net.prefix }, addr: l.addr.addr, address: l.addr.text });
+    }
+    return out;
+  }
+
+  private leaseRoutes(device: string, vrf: string): RibEntry[] {
+    const out: RibEntry[] = [];
+    for (const l of this.leases.values()) {
+      if (l.dev !== device || l.vrf !== vrf || !l.gateway) continue;
+      const zero = { version: 4 as const, bytes: [0, 0, 0, 0], prefix: 0 };
+      out.push({ kind: 'static', device, vrf, net: zero, distance: 254, metric: 0, iface: l.iface, via: l.gateway, blackhole: false });
+    }
+    return out;
   }
 
   /**
@@ -801,7 +882,7 @@ export class Engine {
   tree(vlan: number): Tree {
     let t: Tree | undefined = this.stp.get(vlan);
     if (!t) {
-      const st = spanningTree(this.net, vlan, (id) => !this.linkUp(id) || !this.bridging(id));
+      const st = spanningTree(this.net, vlan, (id) => !this.linkUp(id) || !this.bridging(id), this.stpConfig());
       const tr: Tree = { ...st, loops: [] };
       const freed: string[] = [];
       for (const k of Array.from(tr.blocked).sort(cmp)) {
@@ -828,6 +909,95 @@ export class Engine {
       this.stp.set(vlan, t);
     }
     return t;
+  }
+
+  /**
+   * What the spanning tree reads of the switches and their ports: the
+   * bridge priority (per VLAN with MSTP or PVST), each port's path cost (by
+   * its speed unless set: 20 Tbit/s ÷ speed, IEEE 802.1D-2004 Table 17-3),
+   * port priority, whether it takes part, root guard.
+   */
+  private stpConfig(): StpConfig {
+    return {
+      priority: (dev, vlan) => {
+        const base = this.params.num('bridge-priority', dev);
+        const mode = this.params.str('stp-mode', dev);
+        if (mode !== 'mstp' && mode !== 'pvst') return base;
+        const v = vlanValue(this.params.str('bridge-priority-vlans', dev), vlan || 1);
+        return v !== undefined ? v : base;
+      },
+      cost: (dev, bp) => {
+        const own = this.params.num('stp-cost', dev, null, ifaceRef(dev, bp));
+        if (own > 0) return own;
+        return Math.max(1, Math.round(20e12 / this.portSpeed(dev, bp)));
+      },
+      portPriority: (dev, bp) => this.params.num('stp-port-priority', dev, null, ifaceRef(dev, bp)),
+      enabled: (dev, bp) => this.params.str('stp-port', dev, ifaceRef(dev, bp)) === 'on',
+      rootGuard: (dev, bp) => this.params.str('stp-root-guard', dev, ifaceRef(dev, bp)) === 'on',
+    };
+  }
+
+  /** A bridge port's speed (bit/s): its cable's, an aggregate's the sum of its members' that are up. */
+  private portSpeed(dev: string, bp: string): number {
+    const sd = this.net.devices.get(dev) as SimDevice;
+    const b = sd.bridgePorts.get(bp);
+    let sum = 0;
+    for (const m of b ? b.members : [bp]) {
+      const e = this.net.ends.get(portKey(dev, m));
+      if (e && this.linkUp(e.link)) sum += Number(this.speed(e.link).value);
+    }
+    return sum || Number(this.params.get('default-speed').value);
+  }
+
+  /**
+   * A switch's port came up: what its spanning tree settings do. With BPDU
+   * guard, a BPDU from a bridge on the far end shuts it down (err-disabled,
+   * until it is restored with No shut); an edge port that hears a bridge is
+   * no edge port. A port to a host with STP (802.1D) listens and learns for
+   * 2 × forward delay, unless it is an edge port (PortFast); the rapid
+   * modes let it forward at once (as auto-edge does).
+   */
+  private stpPortUp(dev: string, port: string, link: string): void {
+    const sd = this.net.devices.get(dev);
+    if (!sd || !sd.bridge || sd.dev.type !== 'switch') return;
+    const bp = sd.portOf.get(port);
+    if (bp === undefined || this.stpOff(dev)) return;
+    const at = ifaceRef(dev, bp);
+    if (this.params.str('stp-port', dev, at) !== 'on') return;
+    const o = otherEnd(this.net, this.net.ends.get(portKey(dev, port)) as CableEnd);
+    const od = this.net.devices.get(o.device);
+    const obp = od && od.bridge ? od.portOf.get(o.port) : undefined;
+    const bridge = !!od && od.dev.type === 'switch' && obp !== undefined && !this.stpOff(od.id) && this.params.str('stp-port', od.id, ifaceRef(od.id, obp)) === 'on';
+    const edge = this.params.get('stp-edge', dev, null, at);
+    if (bridge) {
+      // its first BPDU arrives with the far end's first hello
+      const guard = this.params.get('stp-bpdu-guard', dev, null, at);
+      if (guard.value === 'on') {
+        this.at(this.now + this.jitter(), () => {
+          if (!this.linkUp(link) || this.shutPorts.has(portKey(dev, port))) return;
+          this.note('link', 'stp', dev, o.device, 'BPDU guard', 'err-disabled', `BPDU guard on ${dev}:${bp} (${resolvedText(guard)}): a BPDU from ${o.device}:${o.port}, a bridge where a host was expected; the port is err-disabled (shut down) until No shut`);
+          this.shut(dev, port);
+        });
+      } else if (edge.value === 'on') this.note('link', 'stp', dev, o.device, 'Edge port', '', `${dev}:${bp} is configured as an edge port (${resolvedText(edge)}) but hears BPDUs from ${o.device}: it takes part in the spanning tree as a normal port`);
+      return;
+    }
+    if (this.params.str('stp-mode', dev) !== 'stp' || edge.value === 'on') return;
+    // a host port with STP (802.1D): listening, then learning, then forwarding
+    const fd = this.params.num('stp-forward-delay', dev);
+    const b = sd.bridgePorts.get(bp) as BridgePort;
+    const until = this.now + 2 * fd;
+    // (the untagged frames too: 0)
+    for (const v of Array.from(new Set([0].concat(this.net.vlans)))) {
+      if (!carries(b.vlans, v)) continue;
+      const key = dev + '|' + bp + '|' + v;
+      this.fwdAt.set(key, until);
+      this.at(until, () => {
+        if (this.fwdAt.get(key) !== until) return;
+        this.fwdAt.delete(key);
+      });
+    }
+    this.note('link', 'stp', dev, o.device, 'Listening', 'listening', `${dev}:${bp} (to ${o.device}) listens and learns for 2 × forward delay ${durationText(fd)} (STP; edge port ${resolvedText(edge)}): it forwards at t = ${fmtSec(until)}`);
+    this.at(until, () => this.note('link', 'stp', dev, '', 'Port forwarding', 'forwarding', `${dev}:${bp} is forwarding (listening and learning are over)`));
   }
 
   /** Does a switch run no spanning tree (its spanning tree mode is off)? */
@@ -858,7 +1028,8 @@ export class Engine {
     st.frames++;
     const cast = castOf(frame.dst);
     if (cast !== 'unicast') {
-      const r = this.params.get(cast === 'multicast' ? 'storm-mc' : 'storm-bc', sd.id);
+      // the threshold of the bridge port it came in on (an aggregate's, or the port's own)
+      const r = this.params.get(cast === 'multicast' ? 'storm-mc' : 'storm-bc', sd.id, null, ifaceRef(sd.id, sd.portOf.get(port) || port));
       if (Number(r.value) > 0) {
         const k = `sc|${sd.id}|${port}`;
         if (!this.stormNoted.has(k) || t - (this.stormNoted.get(k) as number) >= 1000) {
@@ -906,14 +1077,17 @@ export class Engine {
    * How long a port of a switch takes to forward after a change of the tree:
    * `direct` when the switch is at the cable that changed.
    */
-  private convergence(dev: string, direct: boolean): { ms: number; why: string } {
+  private convergence(dev: string, bp: string, direct: boolean): { ms: number; why: string } {
     const mode = this.params.str('stp-mode', dev);
     const hello = this.params.num('stp-hello', dev);
     const fd = this.params.num('stp-forward-delay', dev);
     const age = this.params.num('stp-max-age', dev);
+    const rapid = mode === 'rstp' ? 'RSTP' : mode === 'mstp' ? 'MSTP' : 'Rapid PVST+';
     if (mode === 'off') return { ms: 0, why: 'no spanning tree' };
     if (mode === 'stp') return direct ? { ms: 2 * fd, why: `STP: listening and learning, 2 × forward delay ${durationText(fd)}` } : { ms: age + 2 * fd, why: `STP: max age ${durationText(age)} + 2 × forward delay ${durationText(fd)}` };
-    return direct ? { ms: 0, why: 'RSTP: the alternate port takes over at once' } : { ms: 3 * hello, why: `RSTP: 3 × hello ${durationText(hello)} before the old information ages out` };
+    // a shared link (a hub) has no proposal and agreement: it waits like STP
+    if (this.params.str('stp-link-type', dev, ifaceRef(dev, bp)) === 'shared') return { ms: 2 * fd, why: `${rapid} on a shared link: listening and learning, 2 × forward delay ${durationText(fd)}` };
+    return direct ? { ms: 0, why: `${rapid}: the alternate port takes over at once` } : { ms: 3 * hello, why: `${rapid}: 3 × hello ${durationText(hello)} before the old information ages out` };
   }
 
   /**
@@ -938,7 +1112,7 @@ export class Engine {
       const waits: string[] = [];
       for (const k of opened) {
         const [dev, bp] = k.split('|');
-        const c = this.convergence(dev, at.has(dev));
+        const c = this.convergence(dev, bp, at.has(dev));
         if (c.ms <= 0) continue;
         const key = dev + '|' + bp + '|' + vlan;
         this.fwdAt.set(key, this.now + c.ms);
@@ -950,6 +1124,8 @@ export class Engine {
         });
       }
       this.note('link', 'stp', n.root || '', '', 'Topology change', '', `The spanning tree of ${vlan ? 'VLAN ' + vlan : 'the untagged frames'} changed${opened.length ? ': ' + opened.map((k) => k.replace('|', ':')).join(', ') + ' forwarding' : ''}; the MAC tables of the VLAN are flushed${waits.length ? '. ' + waits.join('; ') : ''}`);
+      // root guard: a better root behind a guarded port blocks it
+      for (const k of Array.from(n.inconsistent).sort(cmp)) if (!t.inconsistent || !t.inconsistent.has(k)) this.note('link', 'stp', k.split('|')[0], '', 'Root guard', 'blocked', `${k.replace('|', ':')} is root-inconsistent in ${vlan ? 'VLAN ' + vlan : 'the untagged frames'}: a better root bridge lies behind it, and root guard blocks the port`);
       for (const tab of this.macs.values()) {
         for (const [k, e] of Array.from(tab)) if (e.type === 'dynamic' && e.vlan === vlan) tab.delete(k);
       }
@@ -1253,7 +1429,7 @@ export class Engine {
         return t;
       }
       const assoc = this.params.get('ap-association', ap);
-      const wait = this.beaconWait(ap, t);
+      const wait = this.beaconWait(ap, t, (l.a.device === ap ? l.a : l.b).iface || '@' + link);
       const at = t + wait + Number(assoc.value);
       this.wifiActive.set(link, at);
       this.noteAt(t, 'link', 'link', client, ap, 'Associates again', 'up', `${client} was disassociated by ${ap} at t = ${fmtSec(last + Number(idle.value))} (client idle timeout ${resolvedText(idle)}): to send ${frame.msg.label} it waits for the next beacon (${wait > 0 ? 'in ' + durationText(wait) : 'at once'}) and associates again (${resolvedText(assoc)}), up at t = ${fmtSec(at)}`);
@@ -1272,8 +1448,11 @@ export class Engine {
   private toUnicast(link: string, dev: string, frame: Frame, t: number): Frame {
     if (!frame.ip || !isMulticastIp(frame.ip.dst) || isLinkLocalGroup(frame.ip.dst)) return frame;
     const sd = this.net.devices.get(dev);
-    if (!sd || sd.dev.type !== 'ap' || this.params.str('mc-to-unicast', dev) !== 'on') return frame;
+    if (!sd || sd.dev.type !== 'ap') return frame;
     const l = this.net.links.get(link) as Link;
+    const me = l.a.device === dev ? l.a : l.b;
+    const radio = ifaceRef(dev, me.iface || '@' + link);
+    if (this.params.str('mc-to-unicast', dev, radio) !== 'on') return frame;
     const c = l.a.device === dev ? l.b : l.a;
     const cd = this.net.devices.get(c.device);
     const port = c.iface || '@' + link;
@@ -1282,14 +1461,14 @@ export class Engine {
     const k = `m2u|${dev}|${c.device}|${formatAddr(frame.ip.dst)}`;
     if (!this.stormNoted.has(k)) {
       this.stormNoted.set(k, t);
-      this.noteAt(t, 'note', frame.msg.protocol, dev, c.device, 'multicast to unicast', '', `${dev} sends ${formatAddr(frame.ip.dst)} to ${c.device} as unicast frames to ${cl.mac} (multicast to unicast ${resolvedText(this.params.get('mc-to-unicast', dev))})`);
+      this.noteAt(t, 'note', frame.msg.protocol, dev, c.device, 'multicast to unicast', '', `${dev} sends ${formatAddr(frame.ip.dst)} to ${c.device} as unicast frames to ${cl.mac} (multicast to unicast ${resolvedText(this.params.get('mc-to-unicast', dev, null, radio))})`);
     }
     return { ...frame, dst: cl.mac };
   }
 
-  /** The time to an access point's next beacon (beacons at whole multiples of its beacon interval). */
-  private beaconWait(ap: string, t: number): number {
-    const bi = Math.max(1, this.params.num('ap-beacon', ap));
+  /** The time to an access point's next beacon on a radio (beacons at whole multiples of its beacon interval). */
+  private beaconWait(ap: string, t: number, radio?: string): number {
+    const bi = Math.max(1, this.params.num('ap-beacon', ap, null, radio ? ifaceRef(ap, radio) : null));
     return Math.ceil(t / bi - 1e-9) * bi - t;
   }
 
@@ -1507,7 +1686,7 @@ export class Engine {
       }
       this.deliverLocal(dev, own || l3, pkt);
       // a broadcast stays in its subnet: no router forwards it
-      if (bcast && sd.routes && isLimitedBroadcast(pkt.dst)) this.note('drop', pkt.msg.protocol, dev, '', pkt.msg.type, '', `${dev} takes the limited broadcast ${formatAddr(pkt.dst)} itself and routes it nowhere: it never leaves its subnet (${pkt.msg.label})`);
+      if (bcast && sd.routes && isLimitedBroadcast(pkt.dst) && pkt.msg.protocol !== 'dhcp') this.note('drop', pkt.msg.protocol, dev, '', pkt.msg.type, '', `${dev} takes the limited broadcast ${formatAddr(pkt.dst)} itself and routes it nowhere: it never leaves its subnet (${pkt.msg.label})`);
       return;
     }
     if (!sd.routes) {
@@ -1730,7 +1909,7 @@ export class Engine {
     }
     // a directed broadcast (to a subnet of the egress interface): out as a broadcast only where the router forwards them
     if (came && pkt.dst.version === 4 && this.broadcastFor(out, pkt.dst)) {
-      const db = this.params.get('directed-broadcast', dev);
+      const db = this.params.get('directed-broadcast', dev, null, ifaceRef(dev, out.id));
       if (db.value !== 'on') {
         this.note('drop', pkt.msg.protocol, dev, '', pkt.msg.type, '', `${dev} drops the directed broadcast to ${formatAddr(pkt.dst)} (forward directed broadcasts ${resolvedText(db)}; RFC 2644): ${pkt.msg.label}`);
         return;
@@ -1973,7 +2152,8 @@ export class Engine {
     if (isMulticastIp(pkt.dst) && !(kind === 'frag' && v === 6)) return why('it went to a multicast group');
     if (this.isBroadcastAddr(pkt.dst)) return why('it was a broadcast');
     if (isMulticastIp(pkt.src) || pkt.src.bytes.every((b) => b === 0)) return;
-    const on = this.params.get('icmp-errors', dev);
+    // (the interface the packet came in on decides: Cisco "no ip unreachables" is per interface)
+    const on = this.params.get('icmp-errors', dev, null, o.from ? ifaceRef(dev, o.from.id) : null);
     if (on.value !== 'on') return why(`send ICMP errors ${resolvedText(on)}`);
     const rl = this.params.get('icmp-rate', dev);
     const last = this.icmpLast.get(dev);
@@ -2004,23 +2184,23 @@ export class Engine {
 
   // ------------------------------------------------------------ ARP and neighbour discovery
 
-  /** The ARP timeout of a device (ms, unscaled). */
-  arpTimeout(dev: string): number {
-    return this.params.num('arp-timeout', dev);
+  /** The ARP timeout of an interface (ms, unscaled): its own, else its device's, the simulation's, the default. */
+  arpTimeout(dev: string, iface: string): number {
+    return this.params.num('arp-timeout', dev, null, ifaceRef(dev, iface));
   }
 
-  /** The IPv6 neighbour reachable time of a device (ms, unscaled). */
-  ndReachable(dev: string): number {
-    return this.params.num('ndp-reachable', dev);
+  /** The IPv6 neighbour reachable time of an interface (ms, unscaled). */
+  ndReachable(dev: string, iface: string): number {
+    return this.params.num('ndp-reachable', dev, null, ifaceRef(dev, iface));
   }
 
-  /** The retransmit interval of ARP Requests and Neighbor Solicitations (ms), and how many go out before an entry is given up. */
-  private retrans(dev: string): number {
-    return this.params.num('arp-retransmit', dev);
+  /** The retransmit interval of an interface's ARP Requests and Neighbor Solicitations (ms), and how many go out before an entry is given up. */
+  private retrans(dev: string, iface: string): number {
+    return this.params.num('arp-retransmit', dev, null, ifaceRef(dev, iface));
   }
 
-  private retries(dev: string): number {
-    return this.params.num('arp-retries', dev);
+  private retries(dev: string, iface: string): number {
+    return this.params.num('arp-retries', dev, null, ifaceRef(dev, iface));
   }
 
   private entryKey(iface: string, ip: IpAddr): string {
@@ -2061,7 +2241,7 @@ export class Engine {
       e.queue.push({ pkt, send: go, fwd });
       return;
     }
-    const n: ArpEntry = { ip, ipText: formatAddr(ip), mac: '', iface: l3.id, vlan: l3.vlan, type: 'incomplete', state: 'INCOMPLETE', learned: this.now, refreshed: this.now, timer: this.now + this.retrans(dev), tries: 1, used: true, queue: [{ pkt, send: go, fwd }], sentAt: this.now };
+    const n: ArpEntry = { ip, ipText: formatAddr(ip), mac: '', iface: l3.id, vlan: l3.vlan, type: 'incomplete', state: 'INCOMPLETE', learned: this.now, refreshed: this.now, timer: this.now + this.retrans(dev, l3.id), tries: 1, used: true, queue: [{ pkt, send: go, fwd }], sentAt: this.now };
     tab.set(key, n);
     this.tableNote(dev, n, 'INCOMPLETE', `${pkt.msg.label} waits for ${ip.version === 4 ? 'ARP' : 'neighbour discovery'}`);
     this.solicit(dev, l3, ip, '');
@@ -2205,9 +2385,9 @@ export class Engine {
         if (!l3) continue;
         if (e.type === 'incomplete' || e.state === 'PROBE' || e.state === 'REFRESHING') {
           // the retransmit interval in effect now (a change applies to the next request)
-          e.timer = e.sentAt + this.retrans(dev);
+          e.timer = e.sentAt + this.retrans(dev, e.iface);
           if (t < e.timer) continue;
-          if (e.tries >= this.retries(dev)) {
+          if (e.tries >= this.retries(dev, e.iface)) {
             tab.delete(k);
             this.tableNote(dev, e, 'removed', `${e.ipText} removed: no answer to ${e.tries} ${e.ip.version === 4 ? 'ARP Requests' : 'solicitations'}${e.queue.length ? '; ' + e.queue.length + ' waiting packet' + (e.queue.length === 1 ? '' : 's') + ' dropped' : ''}`);
             for (const w of e.queue) {
@@ -2219,29 +2399,29 @@ export class Engine {
           }
           e.tries++;
           e.sentAt = t;
-          e.timer = t + this.retrans(dev);
+          e.timer = t + this.retrans(dev, e.iface);
           this.solicit(dev, l3, e.ip, e.type === 'incomplete' ? '' : e.mac);
           continue;
         }
         if (e.ip.version === 4) {
-          const life = this.arpTimeout(dev) / this.timerScale;
+          const life = this.arpTimeout(dev, e.iface) / this.timerScale;
           if (t - e.refreshed < life) continue;
           if (e.used) {
             // used since its last refresh: refreshed by a unicast ARP Request before it goes
             e.state = 'REFRESHING';
             e.tries = 1;
             e.sentAt = t;
-            e.timer = t + this.retrans(dev);
+            e.timer = t + this.retrans(dev, e.iface);
             this.tableNote(dev, e, 'refreshing', `${e.ipText}: timeout reached while in use — refreshing (unicast ARP Request)`);
             this.solicit(dev, l3, e.ip, e.mac);
           } else {
             tab.delete(k);
-            this.tableNote(dev, e, 'expired', `${e.ipText} expired (timeout ${resolvedText(this.params.get('arp-timeout', dev))}${this.timerScale !== 1 ? ', timer scale 1:' + this.timerScale : ''})`);
+            this.tableNote(dev, e, 'expired', `${e.ipText} expired (timeout ${resolvedText(this.params.get('arp-timeout', dev, null, ifaceRef(dev, e.iface)))}${this.timerScale !== 1 ? ', timer scale 1:' + this.timerScale : ''})`);
           }
           continue;
         }
         if (e.state === 'REACHABLE') {
-          const life = this.ndReachable(dev) / this.timerScale;
+          const life = this.ndReachable(dev, e.iface) / this.timerScale;
           if (t - e.refreshed >= life) {
             e.state = 'STALE';
             this.tableNote(dev, e, 'STALE', `${e.ipText}: reachable time over without confirmation`);
@@ -2250,7 +2430,7 @@ export class Engine {
           e.state = 'PROBE';
           e.tries = 1;
           e.sentAt = t;
-          e.timer = t + this.retrans(dev);
+          e.timer = t + this.retrans(dev, e.iface);
           this.tableNote(dev, e, 'PROBE', `${e.ipText}: probing with unicast Neighbor Solicitations`);
           this.solicit(dev, l3, e.ip, e.mac);
         }
@@ -2322,7 +2502,9 @@ export class Engine {
         if (d && d.type === 'ap') return this.params.get('ap-association', d.id);
       }
     }
-    return this.params.get('link-up-delay');
+    // each end negotiates: the cable is up when the slower port is
+    const ends = [l.a, l.b].map((e) => this.params.get('link-up-delay', e.device, null, ifaceRef(e.device, e.iface || '@' + id)));
+    return Number(ends[1].value) > Number(ends[0].value) ? ends[1] : ends[0];
   }
 
   /**
@@ -2342,8 +2524,8 @@ export class Engine {
         this.stateVersion++;
         this.cut('link:' + id);
       }
-      const det = this.params.get('los-detect');
       for (const x of ends) {
+        const det = this.params.get('los-detect', x.dev, null, ifaceRef(x.dev, x.port));
         if (this.carrier.get(x.key) === false || this.carrierToken.has(x.key)) {
           // already down, or noticing: a device that takes it down itself knows at once
           if (this.carrier.get(x.key) !== false && this.localCause(x.dev, x.key)) this.setCarrier(x.dev, x.port, false, id, null);
@@ -2376,7 +2558,7 @@ export class Engine {
     const d = this.linkUpDelay(id);
     // a wireless client waits for its access point's next beacon before it associates
     const ap = l.medium === 'wireless' ? [l.a.device, l.b.device].find((x) => (this.model.index.devices.get(x) || { type: '' }).type === 'ap') : undefined;
-    const beacon = ap ? this.beaconWait(ap, this.now) : 0;
+    const beacon = ap ? this.beaconWait(ap, this.now, (l.a.device === ap ? l.a : l.b).iface || '@' + id) : 0;
     const tok = ++this.tokens;
     this.carrierToken.set('link:' + id, tok);
     this.note('link', 'link', l.a.device, l.b.device, 'Cable negotiating', 'negotiating', `Cable ${id} is physically up again: its ports come up after ${beacon ? `the next beacon (${durationText(beacon)}, beacon interval ${resolvedText(this.params.get('ap-beacon', ap as string))}) and ` : ''}${resolvedText(d)} (${d.def.label.toLowerCase()})`);
@@ -2405,6 +2587,7 @@ export class Engine {
     }
     if (!up) this.flushPort(dev, port, `its cable ${link} went down`);
     this.recomputeTrees([link]);
+    if (up) this.stpPortUp(dev, port, link);
     this.syncInterfaces();
     this.routingChanged();
     if (this.protocols) this.protocols.linkChange('link:' + link, this.linkUp(link));
@@ -2694,6 +2877,47 @@ export class Engine {
     return c;
   }
 
+  /**
+   * The objects' attributes of a model (interfaces, VLANs, relations): set
+   * (they apply now, as a device's do); returns the changes in effect.
+   */
+  objectParamsFrom(model: Model): ParamChange[] {
+    const want = new Map<string, { dev?: string; values: Map<string, ParamValue> }>();
+    for (const d of model.devices) for (const i of d.interfaces.concat(d.logical)) if (i.simulation && i.simulation.size) want.set(ifaceRef(d.id, i.id), { dev: d.id, values: i.simulation });
+    for (const n of model.networks) {
+      if (n.vlan === undefined || !n.simulation || !n.simulation.size) continue;
+      // (two networks of one VLAN, IPv4 and IPv6: their values together)
+      const w = want.get(vlanRef(n.vlan)) || { values: new Map<string, ParamValue>() };
+      for (const [k, v] of n.simulation) if (!w.values.has(k)) w.values.set(k, v);
+      want.set(vlanRef(n.vlan), w);
+    }
+    for (const r of model.relations) if (r.simulation && r.simulation.size) want.set(relRef(r.id), { values: r.simulation });
+    // a server's DHCP scopes and DNS zones
+    for (const d of model.devices) {
+      const ns = d.netServices;
+      if (!ns) continue;
+      if (ns.dhcp) ns.dhcp.scopes.forEach((sc, k) => {
+        if (sc.simulation && sc.simulation.size) want.set(scopeRef(d.id, k), { dev: d.id, values: sc.simulation });
+      });
+      if (ns.dns) for (const z of ns.dns.zones) if (z.simulation && z.simulation.size) want.set(zoneRef(d.id, z.name), { dev: d.id, values: z.simulation });
+    }
+    const out: ParamChange[] = [];
+    const refs = new Set<string>(Array.from(want.keys()).concat(this.params.objects('iface:'), this.params.objects('vlan:'), this.params.objects('rel:'), this.params.objects('scope:'), this.params.objects('zone:')));
+    for (const ref of Array.from(refs).sort()) {
+      const w = want.get(ref);
+      const dev = w ? w.dev : ref.indexOf('iface:') === 0 || ref.indexOf('scope:') === 0 || ref.indexOf('zone:') === 0 ? ref.split(':')[1] : undefined;
+      out.push(...this.params.setObject(ref, dev, w ? w.values : new Map()));
+    }
+    return out;
+  }
+
+  /** The objects' attributes changed in the model: they apply now. */
+  setObjectParams(model: Model): ParamChange[] {
+    const cs = this.objectParamsFrom(model);
+    if (cs.length) this.applyChanges(cs);
+    return cs;
+  }
+
   /** A device's attributes changed in the model (the Simulation section of the Edit tab): they apply now. */
   setDeviceParams(dev: string, type: string, values: Map<string, ParamValue>): ParamChange[] {
     const cs = this.params.setDevice(dev, type, values);
@@ -2711,8 +2935,8 @@ export class Engine {
   private applyChanges(cs: ParamChange[]): void {
     for (const c of cs) this.note('note', 'link', c.device || '', '', 'Parameter changed', '', changeText(c));
     this.estimates.clear();
-    // spanning tree switched on or off: the trees again (a loop opens or closes)
-    if (cs.some((c) => c.key === 'stp-mode')) {
+    // spanning tree switched on or off, a priority, a cost, a port's settings: the trees again (a loop opens or closes)
+    if (cs.some((c) => c.key.indexOf('stp-') === 0 || c.key.indexOf('bridge-') === 0)) {
       for (const v of this.net.vlans) this.tree(v);
       this.recomputeTrees();
     }
@@ -2798,16 +3022,17 @@ export class Engine {
     const cross = (dev: string, port: string, tag: number | null): void => {
       const e = this.net.ends.get(portKey(dev, port));
       if (!e || !this.cableUp(e.link) || !this.portUp(dev, port)) return;
-      links.add(e.link);
-      refs.add('link:' + e.link);
       const o = otherEnd(this.net, e);
       const od = this.net.devices.get(o.device);
+      const bpId = od && od.bridge ? od.portOf.get(o.port) : undefined;
+      // a cable whose far end discards (an alternate port of the spanning tree) is not in the domain
+      const v = od && bpId !== undefined ? ingressVlan((od.bridgePorts.get(bpId) as BridgePort).vlans, tag) : null;
+      if (od && bpId !== undefined && (v === null || this.blocked(od.id, bpId, v))) return;
+      links.add(e.link);
+      refs.add('link:' + e.link);
       if (!od || !this.portUp(o.device, o.port)) return;
-      const bpId = od.bridge ? od.portOf.get(o.port) : undefined;
       if (bpId !== undefined) {
-        const v = ingressVlan((od.bridgePorts.get(bpId) as BridgePort).vlans, tag);
-        if (v === null || this.blocked(od.id, bpId, v)) return;
-        bridge(od, bpId, v);
+        bridge(od, bpId, v as number);
         return;
       }
       const l3 = this.l3At(od, o.port, tag);
@@ -2900,9 +3125,9 @@ export class Engine {
     for (const e of tab.values()) {
       if (e.ip.version !== version) continue;
       let remaining: number | null = null;
-      if (e.type === 'incomplete' || e.state === 'PROBE' || e.state === 'REFRESHING') remaining = Math.max(0, e.sentAt + this.retrans(dev) - t + Math.max(0, this.retries(dev) - e.tries) * this.retrans(dev));
-      else if (version === 4) remaining = Math.max(0, this.arpTimeout(dev) / this.timerScale - (t - e.refreshed));
-      else if (e.state === 'REACHABLE') remaining = Math.max(0, this.ndReachable(dev) / this.timerScale - (t - e.refreshed));
+      if (e.type === 'incomplete' || e.state === 'PROBE' || e.state === 'REFRESHING') remaining = Math.max(0, e.sentAt + this.retrans(dev, e.iface) - t + Math.max(0, this.retries(dev, e.iface) - e.tries) * this.retrans(dev, e.iface));
+      else if (version === 4) remaining = Math.max(0, this.arpTimeout(dev, e.iface) / this.timerScale - (t - e.refreshed));
+      else if (e.state === 'REACHABLE') remaining = Math.max(0, this.ndReachable(dev, e.iface) / this.timerScale - (t - e.refreshed));
       else if (e.state === 'DELAY') remaining = Math.max(0, e.timer - t);
       rows.push({
         ip: e.ipText,
@@ -2940,7 +3165,16 @@ export class Engine {
 
   /** The timers at the top of a device's ARP / neighbour table, with where each comes from. */
   arpTimers(dev: string): TableTimer[] {
-    return ['arp-timeout', 'ndp-reachable', 'arp-retransmit', 'arp-retries'].map((k) => this.tableTimer(k, dev));
+    const out = ['arp-timeout', 'ndp-reachable', 'arp-retransmit', 'arp-retries'].map((k) => this.tableTimer(k, dev));
+    // an interface that sets its own (the device's values above are its interfaces' default)
+    const sd = this.net.devices.get(dev);
+    for (const l3 of sd ? Array.from(sd.l3.values()).sort((a, b) => cmp(a.id, b.id)) : []) {
+      for (const k of ['arp-timeout', 'ndp-reachable', 'arp-retransmit', 'arp-retries']) {
+        const r = this.params.get(k, dev, null, ifaceRef(dev, l3.id));
+        if (r.source === 'object') out.push({ label: `${r.def.label} (${l3.id})`, value: formatValue(r.def, r.value), source: r.source, origin: sourceText(r, true) });
+      }
+    }
+    return out;
   }
 
   /** A switch's MAC table timers. */
@@ -3067,11 +3301,13 @@ function macNote(frame: Frame): string {
   return 'unicast';
 }
 
-/** A VLAN's spanning tree: its root, the blocked bridge ports ("dev|port"), every bridge port in it, and the cables of loops left open. */
+/** A VLAN's spanning tree: its root, the blocked bridge ports ("dev|port"), every bridge port in it, the root ports, the ports root guard blocks, and the cables of loops left open. */
 interface Tree {
   root: string;
   blocked: Set<string>;
   ports: Set<string>;
+  rootPorts: Set<string>;
+  inconsistent: Set<string>;
   loops: string[];
 }
 
