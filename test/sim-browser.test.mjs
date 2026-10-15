@@ -53,7 +53,7 @@ test('the Start dialog with the keyboard: protocols first (groups, counts, Selec
       start: d.querySelector('[data-value="start"]').className, last: d.querySelector('.modal-btns').lastElementChild.getAttribute('data-value') }; })()`);
     assert.equal(d0.open, true);
     assert.equal(d0.active, 'sim-pd-protos-p-arp', 'the keyboard starts on the first protocol');
-    assert.deepEqual(d0.order.slice(0, 3), ['muted', 'pp', 'psecs'], 'the protocols first, the parameters below');
+    assert.deepEqual(d0.order.slice(0, 4), ['muted', 'pp', 'snd', 'psecs'], 'the protocols first, then the senders, the parameters below');
     assert.deepEqual(d0.groups, ['Layer 2 (4 of 4)', 'Routing (3 of 3)', 'Redundancy (1 of 1)', 'Tunnels and overlays (2 of 2)', 'Multicast (3 of 3)', 'Traffic (4 of 4)', 'Custom (1 of 1)']);
     assert.equal(d0.boxes, true, 'all selected by default');
     assert.match(d0.uses, /^OSPF\d+ relations$/);
@@ -123,17 +123,20 @@ test('the simulation layout: setup and actions in place of the Objects list and 
     assert.equal(L.scroll, 0);
     assert.equal(L.obj, 'device:core1', 'the selected object is the actions’ object');
     assert.ok(L.acts.indexOf('Show ARP table') >= 0 && L.acts.indexOf('Power off') >= 0, L.acts.join('|'));
-    // the splitter: ↑ taller, Enter back to the default; remembered
+    // the panel: by default about a quarter of the window at most (the diagram is the largest part), at least its toolbar and three rows
     const h0 = await page.eval(`document.getElementById('sim-dock').getBoundingClientRect().height`);
+    const cw = await page.eval(`document.getElementById('canvas-wrap').getBoundingClientRect().height`);
+    assert.ok(h0 <= 0.26 * 900 && h0 >= 190 && cw > 2 * h0, `the panel ${h0}, the diagram ${cw}`);
+    // the splitter: ↑ taller, Enter back to the default; remembered under its new key
     await page.eval(`document.getElementById('dock-splitter').focus(), true`);
     await page.key('ArrowUp', 'ArrowUp', 38);
     await page.key('ArrowUp', 'ArrowUp', 38);
     const h1 = await page.eval(`document.getElementById('sim-dock').getBoundingClientRect().height`);
     assert.ok(Math.abs(h1 - h0 - 40) < 2, `${h0} → ${h1}`);
-    assert.equal(await page.eval(`Number(localStorage.getItem('netatlas.dockHeight'))`), Math.round(h1));
+    assert.equal(await page.eval(`Number(localStorage.getItem('netatlas.simPanelHeight'))`), Math.round(h1));
     assert.equal(await page.eval(`document.getElementById('dock-splitter').getAttribute('aria-valuenow')`), String(Math.round(h1)));
     for (let i = 0; i < 40; i++) await page.key('ArrowDown', 'ArrowDown', 40);
-    assert.equal(await page.eval(`Math.round(document.getElementById('sim-dock').getBoundingClientRect().height)`), 150, 'never lower than its minimum');
+    assert.equal(await page.eval(`Math.round(document.getElementById('sim-dock').getBoundingClientRect().height)`), await page.eval(`netatlas.dockBounds().min`), 'never lower than its minimum');
     await page.key('Enter', 'Enter', 13);
     assert.ok(Math.abs((await page.eval(`document.getElementById('sim-dock').getBoundingClientRect().height`)) - h0) < 2, 'Enter: the default height');
     // F6: left panel, diagram, right panel, the simulation panel, round again; Shift+F6 back
@@ -238,9 +241,9 @@ test('the pacing on screen: every dot travels its way at the readable pace; a do
     await page.eval(`netatlas.startProtocolSimulation(), true`);
     await new Promise((r) => setTimeout(r, 1500));
     const p = await page.eval(`(() => { const c = netatlas.simController(); return { text: document.getElementById('sim-pace-text').textContent, playing: c.playing, clock: c.pacer.clock, dots: document.querySelectorAll('#canvas .layer-sim [data-flight]').length, items: c.pacer.items.filter((i) => i.drawn && i.f.view === 'physical').map((i) => i.hop) }; })()`);
-    assert.equal(p.text, 'Readable · 1 s per hop · 1×');
+    assert.equal(p.text, 'Readable · 3 s per hop · 1×');
     assert.ok(p.playing && p.clock > 1000, JSON.stringify(p));
-    assert.ok(p.items.every((h) => h >= 600 && h <= 3000), 'every hop 0.6–3 s');
+    assert.ok(p.items.every((h) => h >= 2000), 'every hop at least 2 s');
     // a dot: at the moment one is drawn, click it; the simulation pauses and the inspector opens
     let dot = null;
     for (let i = 0; i < 40 && !dot; i++) {
@@ -274,7 +277,7 @@ test('the pacing on screen: every dot travels its way at the readable pace; a do
     // the speed, the proportional mode with its scale, skipping
     await page.eval(`(() => { const s = document.getElementById('sim-speed'); s.value = '2'; s.dispatchEvent(new Event('change')); const m = document.getElementById('sim-pace'); m.value = 'proportional'; m.dispatchEvent(new Event('change')); return true; })()`);
     await page.settle(60);
-    assert.deepEqual(await page.eval(`[document.getElementById('sim-pace-text').textContent, document.getElementById('sim-pace-scale-wrap').hidden, Array.from(document.getElementById('sim-speed').options).map((o) => o.value).join(' ')]`), ['Proportional · 1 ms = 1 s · 2×', false, '0.25 0.5 1 2 4']);
+    assert.deepEqual(await page.eval(`[document.getElementById('sim-pace-text').textContent, document.getElementById('sim-pace-scale-wrap').hidden, Array.from(document.getElementById('sim-speed').options).map((o) => o.value).join(' ')]`), ['Proportional · 1 ms = 1 s · 2×', false, '0.1 0.25 0.5 1 2 4']);
     await page.eval(`(() => { const s = document.getElementById('sim-pace-scale'); s.value = '100'; s.dispatchEvent(new Event('change')); const k = document.getElementById('sim-skip'); k.click(); return true; })()`);
     await page.settle(60);
     assert.deepEqual(await page.eval(`[document.getElementById('sim-pace-text').textContent, netatlas.simController().pacer.skipIdle]`), ['Proportional · 1 ms = 0.1 s · 2×', false]);

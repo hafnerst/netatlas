@@ -46,13 +46,14 @@ function play(sim, p, ms, dt = 16, check = true, view = 'physical') {
   return seen;
 }
 
-test('readable pacing: about 1 s per typical hop, longer for slower links, clamped to 0.6–3 s', () => {
-  assert.equal(P.readableHop(0.1, 0.1), 1000);
-  assert.ok(P.readableHop(1, 0.1) > 1500 && P.readableHop(1, 0.1) < 1700, String(P.readableHop(1, 0.1)));
-  assert.ok(P.readableHop(20, 0.1) > 2000, 'a WAN link of 20 ms beside 0.1 ms cables: more than twice as long');
-  assert.equal(P.readableHop(1000, 0.1), 3000, 'the upper clamp');
-  assert.equal(P.readableHop(0.0001, 0.1), 600, 'a very short cable: the lower clamp');
-  assert.ok(P.readableHop(0.05, 0.1) < 1000 && P.readableHop(0.05, 0.1) >= 600);
+test('readable pacing: about 3 s per typical hop, longer for slower links, clamped to 2–6 s; the speeds 0.1× … 4×; the pulse and the ✕ 1.5 s', () => {
+  assert.equal(P.readableHop(0.1, 0.1), 3000);
+  assert.ok(P.readableHop(1, 0.1) > 4500 && P.readableHop(1, 0.1) < 5000, String(P.readableHop(1, 0.1)));
+  assert.equal(P.readableHop(20, 0.1), 6000, 'a WAN link of 20 ms beside 0.1 ms cables: the upper clamp');
+  assert.equal(P.readableHop(0.0001, 0.1), 2000, 'a very short cable: the lower clamp');
+  assert.ok(P.readableHop(0.05, 0.1) < 3000 && P.readableHop(0.05, 0.1) >= 2000);
+  assert.equal(P.HOP_MIN, 2000);
+  assert.equal(P.HOP_MAX, 6000);
   // monotonic in the latency
   let last = 0;
   for (const l of [0.001, 0.01, 0.05, 0.1, 0.3, 1, 3, 10, 100]) {
@@ -60,16 +61,73 @@ test('readable pacing: about 1 s per typical hop, longer for slower links, clamp
     assert.ok(h >= last);
     last = h;
   }
+  assert.deepEqual(P.PACE_SPEEDS, [0.1, 0.25, 0.5, 1, 2, 4]);
+  assert.equal(P.PULSE_MS, 1500);
+  assert.equal(P.LOST_MS, 1500);
   assert.equal(P.proportionalHop(1, 1000), 1000);
   assert.equal(P.proportionalHop(0.01, 1000), P.PROP_MIN);
   assert.equal(P.proportionalHop(100, 1000), P.PROP_MAX);
   assert.equal(P.scaleText(1000), '1 ms = 1 s');
   assert.equal(P.scaleText(100), '1 ms = 0.1 s');
   const { p } = paced();
-  assert.equal(p.describe(), 'Readable · 1 s per hop · 1×');
+  assert.equal(p.speed, 1, '1× is the default');
+  assert.equal(p.describe(), 'Readable · 3 s per hop · 1×');
   p.mode = 'proportional';
   p.speed = 2;
   assert.equal(p.describe(), 'Proportional · 1 ms = 1 s · 2×');
+});
+
+test('the speed cap: a dot never moves faster than 70 px per second at 100 % zoom; a long line takes longer, in both modes', () => {
+  assert.equal(P.MAX_SPEED, 70);
+  const { p, sim: s0 } = paced();
+  const typ = s0.engine.hopTime();
+  assert.equal(p.hopTime(typ, 'physical', 100), 3000, 'a short cable: the readable time');
+  assert.equal(p.hopTime(typ, 'physical', 700), 10000, '700 px: 10 s');
+  assert.equal(p.hopTime(typ, 'physical', null), 3000, 'not drawn: the readable time');
+  p.mode = 'proportional';
+  assert.equal(p.hopTime(typ, 'physical', 350), 5000);
+  // a pacer whose host knows the lines: every hop at most MAX_SPEED
+  const sim = new S.Simulation(model(PS));
+  const q = new P.Pacer({ engine: sim.engine, shown: (f) => f.view === 'physical', typical: () => sim.engine.hopTime(), headers: (f) => f.hdr, length: (f) => (f.track.ref.length % 3) * 300 + 50 }, 48);
+  for (let i = 0; i < 200; i++) q.frame(50);
+  assert.ok(q.items.length > 0);
+  for (const it of q.items) assert.ok(it.hop >= (((it.f.track.ref.length % 3) * 300 + 50) / 70) * 1000 - 1e-6, `${it.f.track.ref}: ${it.hop}`);
+});
+
+test('the cause of the fast dots is not the clock: a hop shown keeps exactly its paced time on screen, whatever the simulation does meanwhile (skipping, other hops, jumps)', () => {
+  const { sim, p } = paced();
+  const started = new Map();
+  const arrived = new Map();
+  for (let t = 0; t < 40000; t += 16) {
+    p.frame(16);
+    for (const it of p.items) {
+      if (!it.drawn || it.f.view !== 'physical' || it.f.dropped !== undefined) continue;
+      const st = p.state(it);
+      if (st.phase === 'moving' && !started.has(it)) started.set(it, p.clock);
+      if ((st.phase === 'arrived' || st.phase === 'gone') && started.has(it) && !arrived.has(it)) arrived.set(it, p.clock);
+    }
+  }
+  assert.ok(arrived.size > 5, String(arrived.size));
+  for (const [it, end] of arrived) {
+    const took = end - started.get(it);
+    // (to the frame: a hop starts and ends between two frames)
+    assert.ok(took >= it.hop - 32 && took <= it.hop + 32, `${it.f.label}: ${took} for ${it.hop}`);
+    assert.ok(it.hop >= P.HOP_MIN);
+  }
+});
+
+test('a quiet screen with busy hidden traffic: a jump does a bounded amount of work per frame (the page stays responsive)', () => {
+  const sim = new S.Simulation(model(PS));
+  // nothing is shown: every jump runs through hidden events only
+  const q = new P.Pacer({ engine: sim.engine, shown: () => false, typical: () => sim.engine.hopTime(), headers: (f) => f.hdr }, 48);
+  let worst = 0;
+  for (let i = 0; i < 40; i++) {
+    const t = Date.now();
+    q.frame(16);
+    worst = Math.max(worst, Date.now() - t);
+  }
+  assert.ok(worst < P.JUMP_BUDGET + 250, `worst frame ${worst} ms`);
+  assert.ok(sim.now > 1000, 'and it does move on');
 });
 
 test('every hop travels its whole way for its paced time; the clock never passes a hop on screen; a continuing hop starts when the one before it arrived', () => {
@@ -228,7 +286,7 @@ test('the dot limit: a hop beyond it is not drawn and does not hold the clock; t
 
 test('the logical view: hops along relations and network lines, paced against the view\'s typical hop', () => {
   const { sim, p } = paced(PS, 'logical');
-  const seen = play(sim, p, 12000, 16, true, 'logical');
+  const seen = play(sim, p, 40000, 16, true, 'logical');
   const drawn = Array.from(seen).filter((it) => it.drawn && it.f.view === 'logical');
   assert.ok(drawn.some((it) => it.f.track.ref.indexOf('relation:') === 0), 'along relations');
   assert.ok(drawn.some((it) => it.f.track.ref.indexOf('network:') === 0 && it.parent), 'a network line: to the network, then on to the receiver');

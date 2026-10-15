@@ -992,6 +992,9 @@ you choose:
   **Select all** and **Clear**; so has the list (*Protocols (14 of 18)*).
   All are ticked by default. Only this list scrolls, when a model has many
   protocols.
+* **Senders**, open: which devices you want to watch (see
+  [Senders](#senders)); the diagram's selection is preselected, else every
+  device.
 * **Layer 1–4 parameters**, below, one disclosure button per layer,
   collapsed (see [Parameters](#parameters)): *Layer 2 – Data link (8)*; a
   layer with changed values says so while collapsed, *Layer 3 – Network
@@ -1100,6 +1103,52 @@ This section is the one part of the model that stays editable during a
 simulation: its changes are normal edits (Undo takes them back) and apply
 there at once, logged as *(device)*.
 
+### Senders
+
+Every device of a network talks, which makes a simulation hard to read.
+**Senders** chooses the devices you want to watch:
+
+* **What it means.** Only the senders' messages, and the exchanges they
+  start, are drawn as dots and listed in the event log by default. A
+  message belongs to the exchange of its **origin**: the device whose own
+  action started it. A reply, an error or a forwarded copy carries the
+  origin of what it answers or carries: ARP and NDP replies, a TCP
+  handshake's SYN-ACK, its ACKs and RSTs, ICMP errors, a protocol's
+  replies, the copies routers and switches pass on. A message is shown
+  when its sender or its origin is a sender. The optional traffic, an
+  endpoint's test traffic, is sent by senders only.
+* **Correct and deterministic.** Every protocol still runs on every device:
+  adjacencies, tables and the timeline are those of the model (OSPF
+  reaches Full even when a neighbour is not a sender; the tests compare
+  the protocols' states). The event log says how many messages of
+  non-senders it leaves out (*214 messages from non-senders hidden*);
+  **Show all senders** in the log's filters lists them.
+* **Defaults.** Devices selected in the diagram when the simulation starts
+  (a device, a cable's two ends, a group's devices …) are the senders;
+  otherwise those remembered for this browser session; otherwise every
+  device. The choice carries over from the Start dialog into the setup
+  panel and is remembered for the next start in the session (session
+  storage; never in the model).
+* **Where.** In **Start simulation…** after the protocols, open; in the
+  **Simulation setup** after the protocols, collapsed. Its heading sums
+  the choice up, and is its accessible name: *Senders (3 of 23): hq-rtr1,
+  muc-rtr, client-1…* (*Senders (all 23)* for every device). Under it: a
+  filter box; **All**, **None**, **Selected in diagram**, **By type ▾**
+  and **By group / site ▾** (a menu of the types or groups: only the devices
+  of the one chosen); and a checklist grouped by **Type** or by **Group /
+  site** (a switch between the two), each device with its type's icon,
+  its name and, for a switch, its *L2* / *L3* badge. Each group folds (a
+  button with `aria-expanded`) and says how many of its devices are chosen
+  (*Routers (2 of 5)*). The list uses two or three columns where the panel
+  is wide enough.
+* **During the simulation** a change applies at once, without a restart,
+  and is written to the event log (*Senders changed: pc1, r1*). A device's
+  menu and its **Actions** offer **Use as sender** and **Stop as sender**.
+* **In the diagram**, while not every device is a sender, each sender has a
+  small badge on its box's top left corner: a framed ▶ (a shape, not a
+  colour) named *pc1: a sender*, over no text. The badges are in exports
+  too.
+
 ### Network events
 
 During a simulation, clicking in the diagram opens a short menu at that
@@ -1157,7 +1206,8 @@ ends. There is no floating simulation window.
   while ARP is hidden, and the tables keep filling), so changing them never
   restarts it, changes its time or clears a table; the log says how many
   events of hidden protocols it leaves out. Under them what the dots'
-  shapes mean, then the **Layer 1–4 parameters**, each layer collapsed with
+  shapes mean, then the **Senders** (collapsed, its heading summing them
+  up; see [Senders](#senders)), then the **Layer 1–4 parameters**, each layer collapsed with
   its count (and *· n modified*), applied at once, with Reset; and the
   **Table timers** scale.
 * **Right: Actions** (in place of the Inspector's tabs). **Network
@@ -1179,14 +1229,20 @@ ends. There is no floating simulation window.
   panels, always there while the simulation runs; it cannot be closed,
   hidden or detached. Its height changes with the splitter on its top edge
   (drag it; or focus it and press `↑` / `↓`, `Shift` for bigger steps,
-  `Home` / `End`, `Enter` for the default; double-click resets it). The
-  height is remembered in this browser; it never goes below 150 px (less
-  in a very short window, never less than its toolbar) or above two thirds
-  of the space. Its toolbar, in the order of use: **Play / Pause** (the
-  primary action), **Step**, **Speed**, **Pacing** (and its scale), **Skip
-  idle time**, what the pacing is (*Readable · 1 s per hop · 1×*), the
-  **simulated time** and **Exit simulation**. Then a note while a message is
-  followed or more messages are on their way than are drawn, and a
+  `Home` / `End`, `Enter` for the default; double-click resets it). By
+  default it is about a quarter of the window high (24 %), so the diagram is
+  clearly the largest part; never lower than its toolbar and 3½ rows of the
+  status and the log (measured: its toolbar and the log's filters wrap in a
+  narrow window; in a very short window at most 40 % of the space, never
+  less than its toolbar), never higher than two thirds of the space. The
+  height you choose is remembered in this browser (`netatlas.simPanelHeight`
+  in local storage: a new key, so heights remembered by earlier development
+  versions don't override the new default). Its toolbar, in the order of
+  use: **Play / Pause** (the primary action), **Step**, the **state**
+  (*Playing*, *Paused*, *Paused: inspecting packet*; changes are announced
+  politely), **Speed**, **Pacing** (and its scale), **Skip idle time**, what
+  the pacing is (*Readable · 3 s per hop · 1×*), the **simulated time** and
+  **Exit simulation**. Then a note while a message is followed, and a
   one-line warning while a **broadcast storm** goes on. Below, side by
   side: **Status** (a row per session: OSPF neighbour states with DR /
   BDR, BGP session states, IPsec SAs, the VRRP master, LACP members, BFD,
@@ -1194,10 +1250,16 @@ ends. There is no floating simulation window.
   of the selected device: ARP, MAC, connections, sessions, IGMP,
   multicast routes, multicast table) and the **Event log** of every message
   and state change (time, source, destination, protocol, message, new
-  state, the full payload), with a text filter and filters by **layer** (1
-  to 4), **cast** (unicast, broadcast, multicast) and **protocol**; a
-  message's name opens the packet inspector (by keyboard too). Together
-  they carry everything the animation shows.
+  state, the full payload), with a text filter, filters by **layer** (1
+  to 4), **cast** (unicast, broadcast, multicast) and **protocol**, and
+  **Show all senders**; a message's name opens the packet inspector (by
+  keyboard too). Its note says how many events it lists, how many messages
+  of non-senders it leaves out and how many messages on their way are not
+  drawn. While the pointer is on the log or the keyboard in it, new events
+  wait (the note says so), so that a row never moves away under a click.
+  The tables' rows are one line each (the whole text in a tooltip, the
+  packet inspector and to assistive technology), so that a low panel shows
+  several rows. Together they carry everything the animation shows.
 
 ![The simulation layout at 1440 × 900: Simulation setup, the diagram, Actions, and the simulation panel under them](docs/img/sim-layout-wide.png)
 
@@ -1205,9 +1267,9 @@ At 800 px wide, Setup and Actions are tabs under the diagram; at 800 × 600, Dia
 
 ![The simulation layout at 800 × 900](docs/img/sim-layout-narrow.png) ![The simulation layout at 800 × 600](docs/img/sim-layout-short.png)
 
-**Default sizes.** Setup 280 px, Actions 330 px, the panel 40 % of the space
-under the toolbar; the diagram keeps the rest (at 1440 × 900 about 830 ×
-440 px). Below 1100 px the side panels narrow to 236 and 286 px. Below
+**Default sizes.** Setup 280 px, Actions 330 px, the panel 24 % of the
+window's height (at least its toolbar and 3½ rows); the diagram keeps the
+rest (at 1440 × 900 about 830 × 590 px). Below 1100 px the side panels narrow to 236 and 286 px. Below
 860 px **Setup** and **Actions** become tabs above the simulation panel,
 under the diagram; in a window that is narrow and not tall (700 px or
 less: a small window, or zoomed in strongly) **Diagram**, **Setup** and
@@ -1246,21 +1308,37 @@ receiver along the membership lines. A dot fades in at its sender, its
 label stays with it all the way, and it ends with a short pulse at the
 receiver; the devices sending and receiving are marked for that moment. A
 message lost to a failure or to packet loss stops where it was lost and
-shows ✕ there for about a second.
+shows ✕ there for 1.5 s; the arrival pulse lasts 1.5 s too.
 
 **Pacing.** Real latencies are milliseconds or microseconds, too fast to
 see, so the screen gets a clock of its own:
 
-* **Readable** (the default): each hop is on screen for about 1 second,
+* **Readable** (the default): each hop is on screen for about 3 seconds,
   scaled by its latency against the model's typical hop (the median of its
-  cables in the physical view): 1 s × (1 + 0.6 · log10(latency ÷
-  typical)), clamped to 0.6–3 s. A 20 ms WAN link beside 0.1 ms cables
-  takes 2.4 s, a LAN cable 1 s; every message stays readable.
+  cables in the physical view): 3 s × (1 + 0.6 · log10(latency ÷
+  typical)), clamped to 2–6 s. A LAN cable takes 3 s, a 20 ms WAN link
+  beside 0.1 ms cables 6 s; every label can be read and every dot
+  followed.
 * **Proportional to latency**: each hop for its simulated time times a
   scale (*1 ms = 0.1 s*, *1 ms = 1 s*, *1 ms = 10 s*), at least 0.2 s and
   at most 30 s.
-* **Speed** 0.25×, 0.5×, 1×, 2× or 4× applies on top of either; the panel
-  shows what is in effect, e.g. *Readable · 1 s per hop · 1×*.
+* In either mode a dot **never moves faster than 70 px a second** at
+  100 % zoom (70 diagram units a second): a long line takes longer, so a
+  dot keeps its pace on screen however long the cable is drawn. A switch
+  is crossed in 0.6 s between two cables.
+* **Speed** 0.1×, 0.25×, 0.5×, 1× (the default), 2× or 4× applies on top
+  of either; the panel shows what is in effect, e.g. *Readable · 3 s per
+  hop · 1×*.
+
+Why the dots were too fast before: measured in the browser, every hop took
+the time the pacing gave it (the clock and the animation share one time
+base, and idle skipping never shortens a dot on its way; the tests check
+both). But that time did not depend on the length of the line on screen:
+at 100 % zoom a 1 s hop over a long cable moved several hundred pixels a
+second, the 0.6 s floor let LAN hops flash by, and the pulse (0.45 s) and
+the crossing of a switch (0.25 s) were too short to notice. Hence the
+slower readable time, the speed limit on screen, the 0.1× speed and the
+longer pulse.
 
 The simulated clock follows the screen: it moves through a message's
 time in step with its dot and never passes a message on screen before its
@@ -1268,17 +1346,32 @@ dot has arrived, so nothing a message causes happens before it gets
 there. **Skip idle time** (on by default): with nothing on its way, the
 clock jumps to the next message that will be shown, and the panel says so
 briefly (*⏩ 9.8 s skipped*); a jump that finds nothing to show goes at most
-10 minutes at once. Off, idle time passes at the speed (1 s per second at
-1×). The time shown is always the true simulated time (the log to the
-microsecond).
+10 minutes at once, and does at most 25 ms of work per frame (with few
+senders most messages are hidden, and the next one shown may be thousands
+of events away: the page stays responsive and the jump goes on in the next
+frame). Off, idle time passes at the speed (1 s per second at 1×). The
+time shown is always the true simulated time (the log to the microsecond).
 
-**Following messages.** Clicking a dot pauses the simulation and opens the
-[packet inspector](#the-packet-inspector). **Follow message** there keeps
+**The packet inspector pauses while it is in use.** Clicking a dot, or a
+message of the event log, opens the [packet inspector](#the-packet-inspector)
+and pauses a running simulation (*Paused: inspecting packet*). It plays
+again by itself as soon as the inspector is no longer in use: closed (**×**,
+`Esc`); left (a click elsewhere, in the diagram, a panel or a control, or
+the keyboard focus moved elsewhere); or no longer visible (out of the
+window, hidden or covered, e.g. by a layout change). Only a pause the
+inspector caused ends so: a pause by the user (Pause, Step), before or
+while the inspector is open, stays. Play and Step act as pressed. While the
+browser tab is hidden the clock stops, as before, and goes on when it is
+visible again only if it was running. The state shows beside Step and is
+announced politely to screen readers.
+
+**Following messages.** **Follow message** in the packet inspector keeps
 the pace for that message and its replies (its conversation: the same
 protocol between the same two ends, e.g. an ARP request and its reply, a
 ping and its echo, a TCP handshake): they alone hold the clock, their way
-is drawn as a trail, and the other messages are drawn faint. The panel
-says what is followed, with **Stop following**. **Step** moves to the next
+is drawn as a trail, and the other messages are drawn faint; the
+simulation plays on beside the open inspector. The panel says what is
+followed, with **Stop following**. **Step** moves to the next
 message event: a message on its way arrives (and what it causes starts at
 its sender), or, with none on its way, the next one appears at its sender.
 
@@ -2051,7 +2144,9 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/scr
 | **Protocol simulation (engine)** | `test/sim.test.mjs` (63 tests) | **Fresh start:** empty ARP, neighbour and MAC tables, every session down, the interfaces up at t = 0. **ARP before the first unicast packet:** the broadcast request (*ARP Who has 10.0.1.2? Tell 10.0.1.1*), the reply with the MAC, the entry, then the waiting packet. **NDP:** a Neighbor Solicitation to the solicited-node address (33:33:ff:00:00:01), the advertisement, REACHABLE. **Multicast MACs** (01:00:5e…, 33:33…) and virtual MACs; OSPF Hellos without ARP. **VRRP failover** after the master-down interval with a gratuitous ARP for the VIP with the virtual MAC; the host's entry *virtual*; the switch learns its new port. **Tables:** configured and default timers, the timer scale, refresh while in use, removal when unanswered, the entries of an interface that goes down. **Switching:** learning per port and VLAN, flooding within the VLAN only, known unicast to the learned port, VLAN separation; aging, flushing on a failed port, relearning on the new path; static entries. **Routing** between VLANs on a Layer 3 switch (the MACs rewritten, TTL 64 → 63, in the log) and none on a Layer 2 switch. **Generated MACs:** locally administered, unique, the same in any order, marked simulated. **Determinism**; a failure (dropped frames where they were, the dead interval, LSU flooding, the reroute, the full handshake after the restore); tunnels (OSPF in GRE in ESP); custom protocols one way and both ways, and as frames between devices without addresses. **Every built-in protocol has a profile** (messages, transport, timers with sources, states, failure, restore), and for 41 protocols a two-router model shows its message sequence and the state it reaches, with its timers logged (defaults marked); configured timers; LACP, STP, LLDP, CDP, PIM and IGMP; the protocols of a model for the window. |
 | **Layer 2 and Layer 3 switches** | `test/l3switch.test.mjs` (5 tests) | `layer3` on switches only; the role rule; a Layer 2 switch's management interface, VRF and routes allowed, every kind of Layer 3 configuration reported (protocols, router ID, a second addressed interface, tunnels, groups, VRFs, routes in other VRFs, routing relations); the path tracer stops at a Layer 2 switch and passes a Layer 3 one; making a Layer 3 switch Layer 2: the list of what goes and the relations that stay, one undo step, and back; the L2 / L3 badge and glyph in both views, the legend, Find and the palette. |
 | **Simulation parameters and network events** | `test/sim-params.test.mjs` (15 tests) | **The registry:** the layers' sections (8, 6 and 6 rows, at most 8), every parameter with a default in its range, a unit, a short help and a source, the defaults and their sources. **Values:** durations with a unit or in the parameter's own, percentages, speeds, choices; range and unit errors. **Precedence:** configured, device, simulation, default, and the source labels (*5 s (configured on cable x)*, *1 min (device)*, *10 min (simulation)*, *4 h (default)*); the values remembered for the session (only known, valid ones). **Device attributes:** every device type has its own (boot time at least), narrowed by what the model gives the device; the `simulation:` blocks of devices and cables validated (unknown key with a suggestion, not for this type, range, unit); the old `arp_timeout` key is an error; the Edit tab writes only overrides as one undo step that the simulation's lock allows. **Layer 1:** latency = propagation + serialization (64 bytes at 1 Mbit/s plus 2 ms), a cloud's latency on its cables, packet loss (100 %, and deterministic below), loss-of-signal detection, the link-up delay, a loss too short to notice. **Network events:** a failed relation, flapping for its cycles and continuous until stopped, shut and no shut (a port, a VLAN interface), power off (tables and sessions gone, the neighbour notices) and on (boot time, sessions afresh), several at once and ending them; an IPS failing open or closed; a VM restarted on another server. **Live changes:** a shorter ARP timeout expiring entries at once, the next OSPF Hello rescheduled, every change logged; a device's attributes changed in the model applying at once (*device*); the route recomputation delay; RSTP vs STP convergence; a full MAC table; the default TTL; **determinism** with parameter changes and events at the same simulated times. |
-| **Pacing** | `test/sim-pacing.test.mjs` (11 tests) | **Readable:** 1 s for a typical hop, monotonic in the latency, clamped to 0.6 and 3 s; **Proportional:** the scale, at least 0.2 s and at most 30 s; the descriptions (*Readable · 1 s per hop · 1×*, *Proportional · 1 ms = 1 s · 2×*). **Full path:** in the physical view every hop of a frame shown for its paced time, a continuing hop starting when the one before it arrived, crossing the switch first; in the logical view along relations and network lines (to the network, then on to the receiver); in both, the simulated clock never past a hop on screen. **Speed:** twice the display time in the same real time, further in the simulation, the hops paced the same. **Skipping:** on a quiet network the clock jumps (reported), at most 10 min at a time; off, it runs at the speed. **Step:** a message appears at its sender, the next Step moves to the first arrival, never past a hop on screen. **Lost:** a dot midway on a cable that fails stops there and shows ✕ for about a second. **Follow:** request and reply (ARP; a TCP handshake) share a key; only the followed conversation holds the clock. **Limit:** beyond it a hop is not drawn and counted. **A jump** (runTo) drops what it passed. **Determinism:** the event logs of Readable at 1×, 4× and 0.25×, Proportional, the logical view, skipping off and Step all equal a run straight to the same time. |
+| **Pacing** | `test/sim-pacing.test.mjs` (14 tests) | **Readable:** 3 s for a typical hop, monotonic in the latency, clamped to 2 and 6 s; the speeds 0.1× … 4× with 1× the default; the pulse and the ✕ 1.5 s; **Proportional:** the scale, at least 0.2 s and at most 30 s; the descriptions (*Readable · 3 s per hop · 1×*). **Speed limit:** at most 70 px a second at 100 % zoom (700 px: 10 s), in both modes, for every hop of a run. **The cause:** a hop shown keeps exactly its paced time on screen (to the frame) whatever the simulation does meanwhile; a jump through hidden traffic does a bounded amount of work per frame. **Full path:** every hop of a frame shown for its paced time, a continuing hop starting when the one before it arrived, crossing the switch first; in the logical view along relations and network lines; the simulated clock never past a hop on screen. **Speed, skipping, Step, a lost message, Follow, the dot limit, a jump, determinism** as before. |
+| **Senders** | `test/sim-senders.test.mjs` (3 tests), `test/sim-senders-browser.test.mjs` (2 tests, through the DevTools protocol) | **Engine:** every message and dot has its sender and origin; an ARP reply, srv's SYN-ACK and RST to pc1, a router's ICMP error about pc1's packet carry pc1's exchange; a forwarded frame keeps its sender; with pc1 the only sender no other endpoint sends test traffic, pc1 still does, and every protocol's sessions reach the same states (OSPF Full); the change logged; deterministic. **On screen:** nothing selected: every device (*Senders (all 22)*, its accessible name); the dialog's order (protocols, senders open, parameters collapsed); the groups by type with counts (*Routers (4 of 4)*), None, By type ▾ → Routers (*Senders (4 of 22): branch router, r1, r2…*), the icons and L2 / L3 badges, a group folded, by group / site, the filter, All; pc1 selected in the diagram: preselected, Selected in diagram available; the setup panel's order with Senders collapsed and its summary; remembered for the next start. Running with pc1: only its exchanges in the log (replies by others among them) and as dots, the others counted (*… messages from non-senders hidden*), Show all senders listing them; OSPF Full; the badge on pc1 only (named, in the export); r1's menu: Use as sender (logged, the summary, both badges, Stop as sender in Actions); All in the panel: no badges, nothing hidden; the model unchanged. |
+| **Panel, inspector, tab, pace** | `test/sim-pause.test.mjs` (4 tests, through the DevTools protocol) | **The panel:** a height remembered under the old key ignored; about a quarter of 900 px, the diagram more than twice as high, at least 3 rows of log and status, the toolbar in view; dragged 80 px up (exact, stored under `netatlas.simPanelHeight`), ↓ with the keyboard, remembered over Exit and Start, a double-click resets it and removes the key; at 800 × 640 and 800 × 450 (200 % zoom) the toolbar in view and no page scroll. **The inspector:** a log message opens it and pauses (*Paused: inspecting packet*, announced); × resumes (*Playing*), Esc too, a click in the diagram too (the inspector stays open), the focus to another control too, out of sight too; paused by the user first: stays paused after closing; Play while inspecting plays, Pause then stays paused after closing; Follow message plays beside the open inspector. **A hidden tab:** the clock stops, still meant to play, goes on when visible; paused before: stays paused. **The pace measured:** with real frames over 16 s every hop took at least 2 s of real time, and no line is crossed faster than 70 px a second. |
 | **Simulation UI** | `test/sim-ui.test.mjs` (2 tests), `test/sim-browser.test.mjs` (7 tests, through the DevTools protocol) | Start simulation… and Exit simulation in their three states with the reasons (one registry for the menu and the palette); label placement (never on a text, a box or another label). **The Start dialog with real keys:** Simulate ▾ → Start; the protocols first (groups *Layer 2 (4 of 4)* … *Custom (1 of 1)*, every protocol ticked, *OSPF 8 relations*, *(18 of 18)*), the keyboard on the first protocol, Space unticking it, a group's Clear and its count; the layers collapsed with *(8)*, a changed TTL making Layer 3 say *· 1 modified* while collapsed (in its accessible name too); no scrolling at 1366 × 768; Start primary and last; Esc cancelling, the protocols open and all ticked again on reopening; Enter on a checkbox starting; the choice in the setup panel (*(14 of 18)*, Traffic *(0 of 4)*, every layer collapsed) and on the next start. **The layout:** setup and actions in place of the Objects list and the Inspector (named *Simulation setup* and *Actions*), the panel under them, no tool window, nothing to detach it, the page not scrolling; the selected device as the actions' object; the splitter (↑ twice: 40 px taller, stored, `aria-valuenow`; never below 150 px; Enter: the default); `F6` / `Shift+F6` through setup, diagram, actions and panel; Exit bringing back the Objects list, the Legend tab, the selection and the zoom. **Menus and actions:** a click on a cable opens Fail link, Start flapping and Highlight broadcast domain at that spot with the keyboard in it, the Actions panel listing the same; Enter fails it, Restore from the Active events and from the Actions panel; a switch's menu by arrow keys; its ARP and MAC tables in the panel's status side (no floating table), Protocols again; unticking OSPF in the setup keeps the time and is remembered. **Pacing:** *Readable · 1 s per hop · 1×*, every hop 0.6–3 s; a dot clicked: the packet inspector with Follow message, the simulation paused (also when it was playing); Follow and Stop following; Step; the speed 0.25×–4×, Proportional with its scale, skipping off and on; *⏩ … skipped* reported. **Reduced motion:** still arrows with labels for the first message at once with Step, arrows that do not move while playing, Step one event at a time, the export a still picture without the moment's marks. **A device's Simulation section** in the Actions panel (once; collapsed; own and inherited values with their sources), an override written as `simulation: {arp_timeout: 45}` and logged as *(device)*, Undo taking it back; the setup's parameters applied at once, remembered, *· 1 modified*. **Layers 3 and 4, multicast:** the storm warning, a log message in the inspector by keyboard, the log by cast, layer and protocol; Send test from the Actions panel (Enter in To) and from a device's menu; a broadcast domain; connections and sessions; Join group… from a host's menu (the form kept after the join), Leave group; the IGMP, multicast-table and multicast-route tables; IGMP in the inspector. |
 | **Failure simulation** | `test/failure.test.mjs` (9 tests) | A failed device (its interfaces and cables down, neighbours degraded, relations at it down, a VRRP group failing over, networks degraded or down, the routing context); a failed port (its cable, the far port) and a LAG degraded or down by `min_links`, and its LACP relation; a cable or relation failing what runs over it, recursively (OSPF over GRE over IPsec), with tunnels listed apart; a relation of three devices; static routes failing and the floating route taking over, with the path tracer following it; a VRRP failover in the tracer; device pairs losing reachability in full or in part; the single points of failure (partitioning cables and devices, a LAG listed once, relations without a redundant underlay, none in a ring, the enterprise WAN); only cables, ports, devices and relations can fail; the same result for another order of the failed objects and of the file. |
 | **Path tracer** | `test/trace.test.mjs` (14 tests) | A static path hop by hop (longest prefix match, interfaces, addresses, routes, cables, the refs it marks; ends given as device, interface or address); a floating route taking over when the better next hop's interface is down; where a trace stops and why (black hole, no route, an unresolved next hop, a loop, a host that does not forward); a destination outside the model (leaves it, or delivered into a network); bad requests; equal-cost multipath (every branch, the main path and the alternatives); routes learned over OSPF (hop count, a per-device cost, a static route beating OSPF, a failed adjacency); an adjacency without a common network; a GRE-over-IPsec tunnel with OSPF over it (the stack, the declared underlay, a routed underlay traced nested) and a VLAN missing from a trunk; a VRRP gateway and its failover; VRFs; the return path and asymmetric routing; the same text for files in another order; the paths of the enterprise WAN and branch examples. |
@@ -2063,7 +2158,7 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/scr
 | Architecture | `test/architecture.test.mjs` (3 tests) | Every module lives in a layer folder; imports follow the allowed dependency direction (docs/ARCHITECTURE.md); the diagram, layout and UI layers never import the YAML layer |
 | **Port ranges** | `test/port-range.test.mjs` (7 tests) | The final number is the port number (also with leading zeros and multi-part names); ids follow the model's convention, with the typed name as label when it isn't a valid id. Rejected with a clear reason: missing number, different prefixes, first not lower than last, more than 256 ports, names that can't become ids. Duplicate names or ids on the device (ids and labels, physical and logical) reject the whole range; other devices don't count. Creation is all or nothing, one undo step, physical interfaces only (no addresses, VLANs, links); alphabetical display; **export → reload** of generated ports. |
 | Module APIs | `test/modules.test.mjs` (10 tests) | Document editing operations (typed values, lists, endpoints, attrs, key order, one undo step each); the format schema is the single source of allowed keys; model queries; export file names; `check:dist` accepts the current build and rejects a stale HTML file |
-| **End-to-end in a real browser** | `test/browser.test.mjs` → `dist/netatlas.html#selftest` (732 in-page checks) | Headless Chrome, Edge or Chromium opens the file from `file://` **with DNS resolution disabled** and drives the real UI. **Viewer:** every example loads through the File API path, both views are drawn, loopback chips appear only in the logical view, interaction works. **New model:** New is empty; a new device shows *Select device type* and saves no type until one is chosen; a new relation has no protocol and reports its missing protocol and endpoints (saving then needs "Download anyway" in the download fallback); a new network is only an ID; add a device, **add two loopbacks, type IPv4/IPv6 addresses, see the error for an address without a prefix and fix it**, add physical interfaces (type shown as read-only *Physical*), **a bond with two member ports, a VLAN interface whose *Ports carrying its VLAN* follow the tagging of the cable ends, and a tunnel sourced from a loopback, an address and a port (an unknown source is an error)**, all listed alphabetically while the file keeps its order, a cable (link ends offer physical interfaces only), a GRE tunnel between loopbacks with nested attrs, then **VLAN tagging on the link ends** (a trunk with tagged VLANs and a range on one end, the other untouched; a difference shown in the editor, in Problems and on the cable, and not synchronized; the same VLANs in another order agree), **save (download a copy) and reload** the file. **Static routes:** the route tables and next-hop lines of `branch-routing.yaml`, the **Routes** switch (nothing moves) and its effect on the SVG export, selecting a route (its card opens and is marked), Duplicate and undo, **+ Route** on a host with a next hop that a check reports at its field and in Problems, and the jump from Problems to the route. **Command palette:** `Ctrl+K` opens it with a combobox and a listbox (a live count), fuzzy matching, an unavailable command listed with its reason and not run, an object selected with Enter, recent entries first, a command run (Logical view), Esc returning the focus, the Find menu entry, no change to the model. **Input helpers:** the MTU chips under their field in a labelled group with accessible names, a chip writing its value in one undo step, **Generate** for a MAC (named for its interface, locally administered unicast, unique, one undo step), the VRF combobox (ARIA roles, typing opens the VRFs in use with their counts, ↓ to an option, Enter picks it, a case-only variant flagged in a live region, Esc closes and keeps the selection), naming a new port after the device's pattern as a rename, the chips readable in both themes, and the palette's MAC and MTU commands. **Routing services:** a device's Protocols section with one-click suggestions (accessible names), the findings in Problems, enabling OSPF (one undo step) with its required router ID as an error until filled in, *Enable a protocol* as a labelled choice, IS-IS's required NET and its level choice, undo back to the file, *Disable* asking first with the list of what goes, undo, the chips readable in both themes, the palette command. **Scenario templates:** the Simulate entry (a dialog), the eleven templates with one that doesn't apply greyed out and its reason (aria-describedby), the review (the editable name focused, the steps, the notes, nothing saved yet), Save and play (a saved scenario, one undo step, played: both uplinks of a shared duct fail), undo, the palette's template entries. **Simulated traffic:** `ospf-reroute.yaml` played step by step in both themes: the animation on by default in its own layer under the boxes; the baseline on the preferred path with dots on its cables; the primary link failing (rerouted, said in the tab, the old way faded and the new one emphasized, no dots on the failed cable); the second failure (VRRP failing over to w2, the camera lost with a marker at w-cam); the logical view; both links restored; Pause stopping the dots; the export with arrows, no dots and the Simulation note; switching it off; no change to the model and no undo step. **Simulation:** the Analyze menu without simulation entries and the Simulate menu with them; the Simulation tab of its own; unavailable without a selection or for a network (with the reason), `X` starting an ad-hoc scenario with the mode indicators (banner with scenario and step, hatched frame, status-bar marker, *Simulated state* label), the results (relations, tunnels, networks, routes, the device pairs that lose reachability), the cable drawn dotted and what runs over it marked down in both views; the edit lock (the Edit tab read-only with its Exit simulation button, the outline's Add buttons, the YAML text, the editing core refusing any edit); a trace in the simulated state saying so; `[` / `]` playing back and forward with the same results (deterministic), Restore and Remove steps; playing changing nothing and adding no undo step; Save scenario… (a labelled dialog, one undo step), a step added to a saved scenario as an undoable edit, undoing the save; replaying a saved scenario step by step; the palette's *Play scenario*; the Single points of failure report in Analyze and the Analysis tab (an entry's name only selects; **Simulate this failure** starts a scenario; unavailable during another simulation; Close report); Focus counting hops over what is up; exports with the frame and a *Simulation: scenario …* note in both themes; `Esc`. **Path tracer:** `T` opening the Analysis tab with the selection in From and the keyboard in To, an unknown end refused at its field, a trace with its return path (the banner with the hops, the equal-cost alternative and the return path), the hop list (interfaces, addresses, the OSPF route, GRE over IPsec, the cables), the path's devices and cables marked in the physical view down to the internet underneath the tunnel, the alternative marked apart (dashed, not by colour alone), the relations in the logical view, exports with the marked path and a *Path trace* note in both themes, the text copy, no change to the model and no undo step, the trace computed again after an edit, `Esc` ending it, the Analyze menu entries. **Focus mode:** unavailable without a selection (with the reason), `Shift+F` showing one hop with the banner (object, hops, count, temporary positions), the banner's controls, `+` for 2 hops, relations in the logical view, an export with exactly the focused part and a *Focus* note, both themes, no change to the model and no undo step, `Esc` restoring every device at its position, Focus / Exit focus as commands. **Addressing overview:** opened from Analyze and with `I`, every network listed per VRF with its columns, utilization as text, the filter (with the focus kept and a live count), sorting by a header (aria-sort, reversed on a second press), a network's members opened and closed (aria-expanded), the duplicate / overlap / no-network lists, no sideways page scrolling, the CSV, a click selecting the network in the diagram, Esc closing it without changing the model or adding an undo step, both themes, and the Edit tab's **Next free address** adding an address (and undo). **Consistency checks:** the Problems tab of `consistency-checks.yaml` in two parts with a finding of every check (id, title, severity as a word, the objects as links), the severity filter (aria-pressed, focus kept), the checks the model changes, an object link selecting it, a finding opening its field with the message, an MTU fix removing the finding, the model settings' check table writing `checks:` (off, another severity, undo), and a link end's speed and duplex. **Imported model:** rename a device (every reference follows), edit, add an IPv6 loopback, save as a downloaded `…-edited.yaml`, **reload, and check that edits, hidden attributes and comments survived**. **Guards:** unsaved-changes dialog on replace; `beforeunload`; Ctrl+Z/Y; deleting a referenced device reports broken references; **exporting an invalid model requires "Download anyway"**; YAML-tab apply/reject; unknown keys kept and movable into attrs; typed text is committed before a button acts; **selection context in the lists:** selecting from the diagram, the left list and the right-hand Relations list keeps lists and diagram consistent for every element type (direct entries related, indirect ones dimmed), unrelated entries stay focusable and selectable, view switches leave no stale highlighting, and `Esc` clears everything; the device type is chosen from the 15 types by display name. **Auto-arrange:** the three options are in the top toolbar, visible and labelled (disabled until a model is open); the status reads *Auto-arranged* / *Manually adjusted* / *Edited since arranged* after loading, dragging, undo, switching views (the shown view is highlighted), Auto-arrange, moving a node back to its calculated position, export → reload of arranged and of manually adjusted layouts, a model edit, and New; loading stores nothing; the dialog shows the scope; arranging an automatic layout stores it without moving anything; repeating it is a no-op; a manual move changes only that node and is undone by arrange (and restored by undo); **arrange → export → reload is pixel-identical in both views**; a file with every list and key reversed arranges identically; **the browser reproduces the build-time positions of `metro-ring-arranged.yaml`** (a cross-engine determinism check when run in Firefox or Safari). **Safety:** hostile labels create no elements; YAML syntax errors are refused with the current model kept; **no network requests, no CSP violations**. The test is skipped if no Chromium-based browser is installed; set `NETATLAS_BROWSER` to choose one. |
+| **End-to-end in a real browser** | `test/browser.test.mjs` → `dist/netatlas.html#selftest` (740 in-page checks) | Headless Chrome, Edge or Chromium opens the file from `file://` **with DNS resolution disabled** and drives the real UI. **Viewer:** every example loads through the File API path, both views are drawn, loopback chips appear only in the logical view, interaction works. **New model:** New is empty; a new device shows *Select device type* and saves no type until one is chosen; a new relation has no protocol and reports its missing protocol and endpoints (saving then needs "Download anyway" in the download fallback); a new network is only an ID; add a device, **add two loopbacks, type IPv4/IPv6 addresses, see the error for an address without a prefix and fix it**, add physical interfaces (type shown as read-only *Physical*), **a bond with two member ports, a VLAN interface whose *Ports carrying its VLAN* follow the tagging of the cable ends, and a tunnel sourced from a loopback, an address and a port (an unknown source is an error)**, all listed alphabetically while the file keeps its order, a cable (link ends offer physical interfaces only), a GRE tunnel between loopbacks with nested attrs, then **VLAN tagging on the link ends** (a trunk with tagged VLANs and a range on one end, the other untouched; a difference shown in the editor, in Problems and on the cable, and not synchronized; the same VLANs in another order agree), **save (download a copy) and reload** the file. **Static routes:** the route tables and next-hop lines of `branch-routing.yaml`, the **Routes** switch (nothing moves) and its effect on the SVG export, selecting a route (its card opens and is marked), Duplicate and undo, **+ Route** on a host with a next hop that a check reports at its field and in Problems, and the jump from Problems to the route. **Command palette:** `Ctrl+K` opens it with a combobox and a listbox (a live count), fuzzy matching, an unavailable command listed with its reason and not run, an object selected with Enter, recent entries first, a command run (Logical view), Esc returning the focus, the Find menu entry, no change to the model. **Input helpers:** the MTU chips under their field in a labelled group with accessible names, a chip writing its value in one undo step, **Generate** for a MAC (named for its interface, locally administered unicast, unique, one undo step), the VRF combobox (ARIA roles, typing opens the VRFs in use with their counts, ↓ to an option, Enter picks it, a case-only variant flagged in a live region, Esc closes and keeps the selection), naming a new port after the device's pattern as a rename, the chips readable in both themes, and the palette's MAC and MTU commands. **Routing services:** a device's Protocols section with one-click suggestions (accessible names), the findings in Problems, enabling OSPF (one undo step) with its required router ID as an error until filled in, *Enable a protocol* as a labelled choice, IS-IS's required NET and its level choice, undo back to the file, *Disable* asking first with the list of what goes, undo, the chips readable in both themes, the palette command. **Scenario templates:** the Simulate entry (a dialog), the eleven templates with one that doesn't apply greyed out and its reason (aria-describedby), the review (the editable name focused, the steps, the notes, nothing saved yet), Save and play (a saved scenario, one undo step, played: both uplinks of a shared duct fail), undo, the palette's template entries. **Simulated traffic:** `ospf-reroute.yaml` played step by step in both themes: the animation on by default in its own layer under the boxes; the baseline on the preferred path with dots on its cables; the primary link failing (rerouted, said in the tab, the old way faded and the new one emphasized, no dots on the failed cable); the second failure (VRRP failing over to w2, the camera lost with a marker at w-cam); the logical view; both links restored; Pause stopping the dots; the export with arrows, no dots and the Simulation note; switching it off; no change to the model and no undo step. **Simulation:** the Analyze menu without simulation entries and the Simulate menu with them; the Simulation tab of its own; unavailable without a selection or for a network (with the reason), `X` starting an ad-hoc scenario with the mode indicators (banner with scenario and step, hatched frame, status-bar marker, *Simulated state* label), the results (relations, tunnels, networks, routes, the device pairs that lose reachability), the cable drawn dotted and what runs over it marked down in both views; the edit lock (the Edit tab read-only with its Exit simulation button, the outline's Add buttons, the YAML text, the editing core refusing any edit); a trace in the simulated state saying so; `[` / `]` playing back and forward with the same results (deterministic), Restore and Remove steps; playing changing nothing and adding no undo step; Save scenario… (a labelled dialog, one undo step), a step added to a saved scenario as an undoable edit, undoing the save; replaying a saved scenario step by step; the palette's *Play scenario*; the Single points of failure report in Analyze and the Analysis tab (an entry's name only selects; **Simulate this failure** starts a scenario; unavailable during another simulation; Close report); Focus counting hops over what is up; exports with the frame and a *Simulation: scenario …* note in both themes; `Esc`. **Path tracer:** `T` opening the Analysis tab with the selection in From and the keyboard in To, an unknown end refused at its field, a trace with its return path (the banner with the hops, the equal-cost alternative and the return path), the hop list (interfaces, addresses, the OSPF route, GRE over IPsec, the cables), the path's devices and cables marked in the physical view down to the internet underneath the tunnel, the alternative marked apart (dashed, not by colour alone), the relations in the logical view, exports with the marked path and a *Path trace* note in both themes, the text copy, no change to the model and no undo step, the trace computed again after an edit, `Esc` ending it, the Analyze menu entries. **Focus mode:** unavailable without a selection (with the reason), `Shift+F` showing one hop with the banner (object, hops, count, temporary positions), the banner's controls, `+` for 2 hops, relations in the logical view, an export with exactly the focused part and a *Focus* note, both themes, no change to the model and no undo step, `Esc` restoring every device at its position, Focus / Exit focus as commands. **Addressing overview:** opened from Analyze and with `I`, every network listed per VRF with its columns, utilization as text, the filter (with the focus kept and a live count), sorting by a header (aria-sort, reversed on a second press), a network's members opened and closed (aria-expanded), the duplicate / overlap / no-network lists, no sideways page scrolling, the CSV, a click selecting the network in the diagram, Esc closing it without changing the model or adding an undo step, both themes, and the Edit tab's **Next free address** adding an address (and undo). **Consistency checks:** the Problems tab of `consistency-checks.yaml` in two parts with a finding of every check (id, title, severity as a word, the objects as links), the severity filter (aria-pressed, focus kept), the checks the model changes, an object link selecting it, a finding opening its field with the message, an MTU fix removing the finding, the model settings' check table writing `checks:` (off, another severity, undo), and a link end's speed and duplex. **Imported model:** rename a device (every reference follows), edit, add an IPv6 loopback, save as a downloaded `…-edited.yaml`, **reload, and check that edits, hidden attributes and comments survived**. **Guards:** unsaved-changes dialog on replace; `beforeunload`; Ctrl+Z/Y; deleting a referenced device reports broken references; **exporting an invalid model requires "Download anyway"**; YAML-tab apply/reject; unknown keys kept and movable into attrs; typed text is committed before a button acts; **selection context in the lists:** selecting from the diagram, the left list and the right-hand Relations list keeps lists and diagram consistent for every element type (direct entries related, indirect ones dimmed), unrelated entries stay focusable and selectable, view switches leave no stale highlighting, and `Esc` clears everything; the device type is chosen from the 15 types by display name. **Auto-arrange:** the three options are in the top toolbar, visible and labelled (disabled until a model is open); the status reads *Auto-arranged* / *Manually adjusted* / *Edited since arranged* after loading, dragging, undo, switching views (the shown view is highlighted), Auto-arrange, moving a node back to its calculated position, export → reload of arranged and of manually adjusted layouts, a model edit, and New; loading stores nothing; the dialog shows the scope; arranging an automatic layout stores it without moving anything; repeating it is a no-op; a manual move changes only that node and is undone by arrange (and restored by undo); **arrange → export → reload is pixel-identical in both views**; a file with every list and key reversed arranges identically; **the browser reproduces the build-time positions of `metro-ring-arranged.yaml`** (a cross-engine determinism check when run in Firefox or Safari). **Safety:** hostile labels create no elements; YAML syntax errors are refused with the current model kept; **no network requests, no CSP violations**. The test is skipped if no Chromium-based browser is installed; set `NETATLAS_BROWSER` to choose one. |
 
 ### Manual check (any browser, e.g. Firefox or Safari)
 
@@ -2600,16 +2695,33 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/scr
       running*) and *Exit simulation* available; the palette says the
       same. Drag the line above the panel, then focus it and press ↑, ↓,
       Enter. `F6` goes setup → diagram → actions → panel; `Shift+F6` back.
+    * The panel under the diagram is about a quarter of the window high and
+      shows at least three rows of the status and the log. Double-click
+      the line above it: back to that height.
     * Labelled dots travel their whole way, cable by cable and across the
-      switches, about a second per cable (longer on the WAN links), fading
-      in at the sender with a pulse at the receiver: *ARP Who has …? Tell
-      …*, *ARP Reply … is at …*, *OSPF Hello*, later *BGP KEEPALIVE*,
-      *IPsec IKE_AUTH*, *OSPF Hello ‹GRE in IPsec (IKEv2)›*. No label covers
-      an address or another label. *⏩ … skipped* appears between bursts.
-      Speed 4×, then 0.25×; Pacing *Proportional*, *1 ms = 0.1 s*; back to
-      Readable. Click a dot: the simulation pauses, the packet inspector
-      opens; **Follow message**: its replies follow with a trail, the rest
-      faint; **Step** a few times; **Stop following**.
+      switches, about three seconds per cable (longer on the WAN links and
+      on long lines: never faster than about 70 px a second at 100 %
+      zoom), fading in at the sender with a pulse at the receiver: *ARP Who
+      has …? Tell …*, *ARP Reply … is at …*, *OSPF Hello*, later *BGP
+      KEEPALIVE*, *IPsec IKE_AUTH*, *OSPF Hello ‹GRE in IPsec (IKEv2)›*. Each
+      label can be read in time. No label covers an address or another
+      label. *⏩ … skipped* appears between bursts. Speed 4×, then 0.1×;
+      Pacing *Proportional*, *1 ms = 0.1 s*; back to Readable and 1×.
+    * Click a dot: *Paused: inspecting packet*, the packet inspector opens.
+      Close it: *Playing*. Click a log message, then click in the diagram:
+      *Playing*, the inspector stays open. Press **Pause**, open the
+      inspector and close it: still *Paused*. Open it and press **Follow
+      message**: its replies follow with a trail beside the open
+      inspector, the rest faint; **Step** a few times; **Stop following**.
+      Switch to another browser tab and back: the clock stood still, then
+      goes on.
+    * **Senders** in the setup (collapsed: *Senders (all 22)*): open it,
+      **None**, then tick *User PC*: the summary says *Senders (1 of 22):
+      User PC*, pc1 gets a ▶ badge, only pc1's exchanges (with the replies
+      of others) move and are logged; the log says how many messages of
+      non-senders it hides; **Show all senders** lists them. Click r1:
+      **Use as sender**; the log says *Senders changed: pc1, r1*. OSPF
+      stays Full. **All** again: no badges.
     * Click core1: *Show ARP table*, *Show MAC table*, *Power off*, *Shut an
       interface…*; the same buttons in Actions. Show core1's ARP table:
       the panel's Status side shows it (*core1: ARP* pressed), with
@@ -2884,6 +2996,13 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/scr
   and skipping idle time only helps where there is idle time. Messages
   beyond the 48 on screen are not drawn and do not hold the clock, so a
   hop of a message that was not drawn may be followed by one that is.
+  Senders choose what is shown, not what runs: every device's protocols
+  are computed, so a model with few senders still costs the whole
+  simulation's work, and between two shown messages the clock may jump
+  through many hidden ones (at most 25 ms of work a frame). A message's
+  origin follows what a device handles at once: a reply sent after a
+  delay of its own (a service response time, an ARP retransmission)
+  counts as the replier's.
   Following a message holds the clock for its conversation only (the same
   protocol between the same two ends); the other messages go on at their
   own pace, faint, and may arrive before their dots do. The time shown

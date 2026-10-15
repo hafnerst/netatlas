@@ -230,7 +230,8 @@ const MANUAL: Section[] = [
     title: 'Start a protocol simulation',
     steps: [
       'Choose **Simulate → Start simulation…**. The dialog opens with the **Protocols** the model uses, all ticked, grouped by layer (*Layer 2*, *Routing*, *Tunnels and overlays*, *Multicast*, *Services*, *Traffic* …), each with how many devices or relations use it; a group says how many of its protocols are ticked (*Routing (3 of 4)*). **Select all** and **Clear** work for the whole list and for each group. The keyboard starts on the first protocol.',
-      'Below, the **Layer 1–4 parameters**, one collapsed section per layer (*Layer 2 – Data link (8)*): open one to change a value (its default and source are under it; a changed value is marked *modified*, and the collapsed section says so: *Layer 3 – Network (8) · 2 modified*; **Reset** puts it back). Usually the protocols are all you choose.',
+      'Then **Senders**, open: which devices you want to watch (see *Choose the senders*). With devices selected in the diagram, they are chosen; otherwise every device.',
+      'Below, the **Layer 1–4 parameters**, one collapsed section per layer (*Layer 2 – Data link (8)*): open one to change a value (its default and source are under it; a changed value is marked *modified*, and the collapsed section says so: *Layer 3 – Network (8) · 2 modified*; **Reset** puts it back). Usually the protocols and the senders are all you choose.',
       'Press **Start** (or `Enter`); `Esc` cancels. The protocols and the values are remembered for the next start in this browser session.',
       'The network starts like a freshly booted one: every table empty, every adjacency down, the interfaces coming up. Its messages appear as dots with labels such as *ARP Request (broadcast): who has 10.0.0.2?*, *OSPF Hello*, *TCP SYN → 10.1.1.10:443* or *ICMP Net Unreachable from 10.0.0.1*. A dot’s shape says how it is addressed: a circle unicast, a square broadcast, a diamond multicast.',
       '**Exit simulation** (in the simulation panel or the banner) or `Esc` ends it. Nothing in the model changes.',
@@ -245,9 +246,9 @@ const MANUAL: Section[] = [
     id: 'sim-layout',
     title: 'Work in the simulation layout',
     steps: [
-      'While a simulation runs, the window has three parts around the diagram. On the left, **Simulation setup**: the **Protocols** shown (as in the dialog; a change never restarts anything, the simulation keeps running every protocol) and the **Layer 1–4 parameters** (a change applies at once and is written to the event log), and the **Table timers** scale.',
+      'While a simulation runs, the window has three parts around the diagram. On the left, **Simulation setup**: the **Protocols** shown (as in the dialog; a change never restarts anything, the simulation keeps running every protocol), the **Senders** (collapsed; its heading sums them up), the **Layer 1–4 parameters** (a change applies at once and is written to the event log), and the **Table timers** scale.',
       'On the right, **Actions**: the **Network events** of the selected object (click it in the diagram, or choose it under **Object**): **Fail link**, **Start flapping**, **Power off**, a device’s tables, **Join group…** … and its interfaces with **Shut interface**; the **Active events** with their way back; **Send test**; and the selected device’s **Simulation** settings. The menus in the diagram offer the same.',
-      'Under them, the **simulation panel**: **Play / Pause**, **Step**, the **Speed**, the **Pacing**, **Skip idle time**, the simulated time and **Exit simulation**; on the left the **Status** of the protocols’ sessions, or a table of the selected device; on the right the **Event log**, filtered by text, layer, cast and protocol. Drag the line above the panel to change its height (or focus it and use `↑` `↓`, `Enter` for the default); it is remembered.',
+      'Under them, the **simulation panel**, about a quarter of the window high: **Play / Pause**, **Step**, the state (*Playing*, *Paused*, *Paused: inspecting packet*), the **Speed**, the **Pacing**, **Skip idle time**, the simulated time and **Exit simulation**; on the left the **Status** of the protocols’ sessions, or a table of the selected device; on the right the **Event log**, filtered by text, layer, cast and protocol, and **Show all senders**. While you point at the log or use it, new events wait, so that a row doesn’t move under your click. Drag the line above the panel to change its height (or focus it and use `↑` `↓`, `Enter` for the default; double-click it for the default); it is remembered.',
       '`F6` moves the keyboard between the setup, the diagram, the actions and the simulation panel (`Shift+F6` back).',
       'After **Exit simulation** the Objects list and the Inspector are back, with the tab and the selection you had; the diagram keeps its zoom and position.',
     ],
@@ -258,10 +259,10 @@ const MANUAL: Section[] = [
     id: 'sim-pacing',
     title: 'Follow the messages: pacing and speed',
     steps: [
-      'Every message travels its whole way: in the **Physical** view hop by hop along every cable and through the switches, in the **Logical** view along the whole relation (inside its tunnel). It fades in at its sender, its label stays with it, and it ends with a short pulse at the receiver; the devices sending and receiving are marked for that moment. A lost message stops where it was lost and shows ✕ for about a second.',
-      '**Pacing: Readable** (the default) gives each hop about 1 second on screen, longer over a slow link and shorter over a fast one compared with the model’s other links, between 0.6 and 3 seconds. **Proportional to latency** shows each hop for its real time times a scale (*1 ms = 1 s*). The **Speed** (0.25× to 4×) applies on top; the panel shows the pacing in use, e.g. *Readable · 1 s per hop · 1×*.',
+      'Every message travels its whole way: in the **Physical** view hop by hop along every cable and through the switches, in the **Logical** view along the whole relation (inside its tunnel). It fades in at its sender, its label stays with it, and it ends with a pulse at the receiver; the devices sending and receiving are marked for that moment. A lost message stops where it was lost and shows ✕ for about 1.5 seconds.',
+      '**Pacing: Readable** (the default) gives each hop about 3 seconds on screen, longer over a slow link and shorter over a fast one compared with the model’s other links, between 2 and 6 seconds; a dot never moves faster than 70 pixels a second at 100 % zoom, so a long cable takes longer. **Proportional to latency** shows each hop for its real time times a scale (*1 ms = 1 s*), with the same speed limit. The **Speed** (0.1× to 4×; 1× is the default) applies on top; the panel shows the pacing in use, e.g. *Readable · 3 s per hop · 1×*.',
       'With **Skip idle time** on (the default), when nothing is on its way the clock jumps to the next message (*⏩ 9.8 s skipped*); while messages are on their way it moves at their pace. The time shown is always the real simulated time.',
-      'Click a dot: the simulation pauses and the **packet inspector** opens. **Follow message** keeps the pace for that message and its replies (an ARP request and its reply, a ping and its echo, a TCP handshake) and draws its trail; the others are drawn faint. **Stop following** in the panel ends it.',
+      'Click a dot (or a message in the event log): the **packet inspector** opens and the simulation pauses (*Paused: inspecting packet*). It plays again by itself as soon as you no longer use the inspector: you close it (**×**, `Esc`), click or tab elsewhere, or it is out of sight. If you paused it yourself, it stays paused. **Follow message** keeps the pace for that message and its replies (an ARP request and its reply, a ping and its echo, a TCP handshake), plays on beside the open inspector and draws its trail; the others are drawn faint. **Stop following** in the panel ends it.',
       '**Step** moves to the next message event: a message arrives, or the next one starts at its sender.',
     ],
     notes: [
@@ -269,6 +270,19 @@ const MANUAL: Section[] = [
       'At most 48 messages are drawn at once, each with room for its label; the panel says how many more are not drawn, and the event log lists every message.',
       'With reduced motion set in your system, each message is a still arrow with its label, shown for the same paced time; **Step** moves one message at a time.',
     ],
+  },
+  {
+    id: 'sim-senders',
+    title: 'Choose the senders',
+    steps: [
+      'Every device of a network talks; to follow some of them, choose them as **Senders**: in **Start simulation…** (open), or in the **Simulation setup** (collapsed; its heading says who, e.g. *Senders (3 of 23): hq-rtr1, muc-rtr, client-1…*).',
+      'Type in the filter box to find devices, or use **All**, **None**, **Selected in diagram**, **By type ▾** (only the devices of a type) and **By group / site ▾**. The list is grouped by **Type** or by **Group / site**; each group folds and says how many of its devices are chosen (*Routers (2 of 5)*).',
+      'Only the senders’ messages, and the exchanges they start (ARP and NDP replies, a TCP handshake’s answers, ACKs and RSTs, ICMP errors, a protocol’s replies, the copies routers forward), are drawn and listed in the event log. The log says how many messages of other devices it leaves out; **Show all senders** lists them. Endpoint test traffic comes from senders only.',
+      'Every protocol still runs on every device, so adjacencies and tables are exactly as without the choice: OSPF reaches Full even when one neighbour is not a sender.',
+      'During the simulation, a device’s menu and its **Actions** offer **Use as sender** or **Stop as sender**; a change applies at once and is written to the event log. While not every device is a sender, the senders have a small ▶ badge at their box’s corner.',
+    ],
+    notes: ['The choice is remembered for the next start in this browser session; it is never written to the model.'],
+    figures: [['senders', 'Senders in the Start dialog: grouped by type, the routers chosen with By type ▾, with icons and the switches’ L2 / L3 badges.']],
   },
   {
     id: 'sim-device',

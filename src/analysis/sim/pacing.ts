@@ -3,22 +3,25 @@
  * message can be followed on its whole way. DOM-free (the browser draws
  * what it says; tests drive it in Node).
  *
- * The display clock. It runs with real time × the speed (0.25× … 4×).
+ * The display clock. It runs with real time × the speed (0.1× … 4×).
  * Every message hop (a flight: one cable in the physical view, a relation
  * or a network line in the logical view) gets its own stretch of it:
  *
- *   - Readable (the default): about 1 s per hop, longer for a slower link
+ *   - Readable (the default): about 3 s per hop, longer for a slower link
  *     and shorter for a faster one, relative to the model's typical hop
- *     (1 s × (1 + 0.6 · log10(latency ÷ typical)), clamped to 0.6–3 s), so
+ *     (3 s × (1 + 0.6 · log10(latency ÷ typical)), clamped to 2–6 s), so
  *     a WAN link visibly takes longer than a LAN cable and every message
  *     stays readable;
  *   - Proportional: the hop's simulated time × a scale ("1 ms = 1 s"), at
- *     least 0.2 s and at most 30 s.
+ *     least 0.2 s and at most 30 s;
+ *   - either way a dot never moves faster than MAX_SPEED on screen (70 px
+ *     per second at 100 % zoom): a long line takes longer.
  *
  * A hop starts when its frame is sent, or, when it continues a hop that is
  * still on screen (the next cable after a switch, the second half of a
  * network line), when that one has arrived; between two cables of a
- * switch it first crosses the switch (0.25 s).
+ * switch it first crosses the switch (0.6 s). The arrival pulse and a lost
+ * message's ✕ stay 1.5 s.
  *
  * The simulated clock follows the display, never the other way round: it
  * may run up to (but not past) the moment the first message on screen
@@ -44,28 +47,32 @@ import { Flight, Headers } from './types';
 
 export type PaceMode = 'readable' | 'proportional';
 
-export const PACE_SPEEDS: readonly number[] = [0.25, 0.5, 1, 2, 4];
+export const PACE_SPEEDS: readonly number[] = [0.1, 0.25, 0.5, 1, 2, 4];
 /** Proportional: display ms per simulated ms ("1 ms = 0.1 s", "1 ms = 1 s", "1 ms = 10 s"). */
 export const PACE_SCALES: readonly number[] = [100, 1000, 10000];
 /** Readable: the time of a typical hop, and the clamps (display ms at 1×). */
-export const HOP_MS = 1000;
-export const HOP_MIN = 600;
-export const HOP_MAX = 3000;
+export const HOP_MS = 3000;
+export const HOP_MIN = 2000;
+export const HOP_MAX = 6000;
+/** The fastest a dot moves on screen (px per second at 100 % zoom, i.e. diagram units per second): a long line takes longer. */
+export const MAX_SPEED = 70;
 /** Proportional: the shortest and the longest hop shown. */
 export const PROP_MIN = 200;
 export const PROP_MAX = 30000;
 /** A lost message's ✕ stays this long. */
-export const LOST_MS = 1000;
+export const LOST_MS = 1500;
 /** The arrival pulse at the receiver, and the fade-in at the sender. */
-export const PULSE_MS = 450;
-export const FADE_MS = 200;
+export const PULSE_MS = 1500;
+export const FADE_MS = 300;
 /** Through a switch between two cables. */
-export const TRANSIT_MS = 250;
+export const TRANSIT_MS = 600;
 /** A skipped idle stretch is reported when it is at least this long (simulated ms). */
 export const SKIP_REPORT = 500;
 /** The longest jump at once (simulated ms: 10 min); when it finds nothing to show, the next one waits IDLE_REST of display time. */
 export const IDLE_HORIZON = 600000;
 export const IDLE_REST = 1000;
+/** Real ms of simulation work a jump may take per frame. */
+export const JUMP_BUDGET = 25;
 
 const EPS = 1e-6;
 
@@ -146,6 +153,8 @@ export interface PacerHost {
   shown(f: Flight): boolean;
   /** a typical hop's simulated time in a view (ms) */
   typical(view: Flight['view']): number;
+  /** the length of a flight's line in the diagram (its units: px at 100 % zoom); null when it is not drawn in the view on screen */
+  length?(f: Flight): number | null;
   /** a flight's headers (the conversation key) */
   headers?(f: Flight): Headers | undefined;
 }
@@ -186,8 +195,10 @@ export class Pacer {
   }
 
   /** The display time of a hop of `lat` simulated ms in a view. */
-  hopTime(lat: number, view: Flight['view']): number {
-    return this.mode === 'readable' ? readableHop(lat, this.host.typical(view)) : proportionalHop(lat, this.scale);
+  hopTime(lat: number, view: Flight['view'], length?: number | null): number {
+    const t = this.mode === 'readable' ? readableHop(lat, this.host.typical(view)) : proportionalHop(lat, this.scale);
+    // never faster than MAX_SPEED on screen
+    return length ? Math.max(t, (length / MAX_SPEED) * 1000) : t;
   }
 
   find(id: number): PaceItem | undefined {
@@ -275,11 +286,15 @@ export class Pacer {
     return this.gate().item !== null;
   }
 
-  /** Take in the flights sent since the last look. */
-  private register(): void {
+  /** Take in the flights sent since the last look; returns the new hops. */
+  private register(): PaceItem[] {
     const e = this.host.engine;
     const fresh = e.flightsSince(this.serial).reverse();
     this.serial = e.flightSerial;
+    const added: PaceItem[] = [];
+    // the hops on screen now, per view (only shown ones count against the limit)
+    const live = { physical: 0, logical: 0 };
+    if (fresh.length) for (const x of this.items) if (x.drawn && this.clock < this.end(x) && this.host.shown(x.f)) live[x.f.view]++;
     for (const f of fresh) {
       if (this.byId.has(f.id)) continue;
       // a creation-time loss puts the flight's end where it was lost: midway
@@ -291,14 +306,20 @@ export class Pacer {
       const d0 = Math.max(this.clock, after);
       // between two cables: across the switch that forwarded it
       const transit = parent && f.view === 'physical' && parent.f.view === 'physical' && parent.f.track.ref !== f.track.ref ? TRANSIT_MS : 0;
-      const live = this.items.filter((x) => x.drawn && x.f.view === f.view && this.clock < this.end(x)).length;
-      const drawn = live < this.limit;
-      if (!drawn && this.host.shown(f)) this.notDrawn++;
+      // a hop that is not shown (another view, a hidden protocol, a non-sender) takes no place
+      const shown = this.host.shown(f);
+      const drawn = !shown || live[f.view] < this.limit;
+      if (shown) {
+        if (drawn) live[f.view]++;
+        else this.notDrawn++;
+      }
       const h = this.host.headers ? this.host.headers(f) : undefined;
-      const it: PaceItem = { f, lat, d0, transit, hop: this.hopTime(lat, f.view), drawn, key: conversationKey(f.protocol, h, f.label), parent };
+      const it: PaceItem = { f, lat, d0, transit, hop: this.hopTime(lat, f.view, this.host.length ? this.host.length(f) : null), drawn, key: conversationKey(f.protocol, h, f.label), parent };
       this.items.push(it);
       this.byId.set(f.id, it);
+      added.push(it);
     }
+    return added;
   }
 
   /** Forget what has left the screen. */
@@ -355,7 +376,8 @@ export class Pacer {
         if (this.clock < this.restUntil) return;
         this.advance(from + IDLE_HORIZON);
         if (e.now - from >= SKIP_REPORT) this.skipped = { ms: e.now - from, at: this.clock };
-        if (!this.items.some((it) => this.drawnShown(it) && this.onItsWay(it))) this.restUntil = this.clock + IDLE_REST;
+        // a whole horizon with nothing to show: rest a moment (a jump cut short by its budget goes on next frame)
+        if (e.now >= from + IDLE_HORIZON - EPS && !this.items.some((it) => this.drawnShown(it) && this.onItsWay(it))) this.restUntil = this.clock + IDLE_REST;
         // (following: what shows now is not of the conversation; it is seen at its own pace)
         return;
       }
@@ -369,10 +391,13 @@ export class Pacer {
   /** Run towards t, stopping at the first moment a hop is sent that is drawn (followed or not: the next thing to see). */
   private advance(t: number): void {
     const e = this.host.engine;
-    const shownNow = (): boolean => this.items.some((it) => this.drawnShown(it) && this.onItsWay(it));
+    // what was on its way before is not news; only the hops sent now can stop the jump
+    let found = false;
+    // a jump is work: at most JUMP_BUDGET ms of it per frame (a model whose messages are mostly hidden has many events between two shown ones); the next frame goes on
+    const until = Date.now() + JUMP_BUDGET;
     e.runUntil(t, () => {
-      this.register();
-      return shownNow();
+      for (const it of this.register()) if (this.drawnShown(it) && this.onItsWay(it)) found = true;
+      return found || Date.now() > until;
     });
     this.register();
   }

@@ -47,7 +47,8 @@ import { Flight, Headers, NetEvent, SessionStatus, SimEvent, TableTimer, Track }
 import { lookupProtocol } from '../model/protocols';
 import { Model, deviceInterfaces } from '../model/types';
 import { el } from './dom';
-import { DrawItem, MAX_DOTS, SimAnimator, dot } from './sim-anim';
+import { DrawItem, MAX_DOTS, SimAnimator, dot, findTrack } from './sim-anim';
+import { SendersPicker, sendersPicker } from './sim-senders-ui';
 import { ParamEditor, paramEditor } from './sim-params-ui';
 import { ProtocolPicker, protocolPicker } from './sim-protocols-ui';
 import { TableKind, TablePanels } from './sim-tables';
@@ -88,11 +89,22 @@ export interface SimHost {
   simSection?(box: HTMLElement): boolean;
   /** Exit simulation */
   exit?(): void;
+  /** the senders changed (remembered for the next start in this browser session) */
+  sendersChanged?(senders: Set<string>): void;
+  /** the devices the diagram's selection stands for (Selected in diagram) */
+  diagramDevices?(): Set<string>;
+  /** what the simulation panel holds besides its tables changed (a warning, its tabs): its minimum height again */
+  panelChanged?(): void;
 }
+
+/** Why the simulation is paused: by the user (Pause, Step), or while the packet inspector is in use. */
+export type PauseReason = 'user' | 'inspector' | null;
 
 export interface SimStartOptions {
   /** the protocols shown at the start (all when left out) */
   protocols?: string[];
+  /** the senders at the start (every device when left out) */
+  senders?: string[];
   /** the simulation-wide parameters that differ from their defaults */
   params?: { [key: string]: ParamValue };
 }
@@ -131,6 +143,7 @@ export class SimController implements SimulationMode {
   private failRes: { key: string; res: FailureResult } | null = null;
   private logFilter = '';
   private logKey = '';
+  private logFilterKey = '';
   private statusKey = '';
   private eventsKey = '';
   private actionsKey = '';
@@ -163,8 +176,16 @@ export class SimController implements SimulationMode {
     this.sim = new Simulation(host.model(), { params: o.params });
     this.anim = new SimAnimator(host.doc, (t) => this.trackEnds(t));
     this.tables = new TablePanels(host.doc);
+    // closing the packet inspector ends the pause it caused
+    this.tables.onClose = (k) => {
+      if (k === 'packet') this.resumeFromInspector();
+    };
     this.entries = this.sim.protocolEntries();
     for (const e of this.entries) if (!o.protocols || o.protocols.indexOf(e.id) >= 0) this.shown.add(e.id);
+    // the senders: those chosen, else every device (the engine is told when they are not every device)
+    const devs = host.model().devices;
+    for (const d of devs) if (!o.senders || o.senders.indexOf(d.id) >= 0) this.senders.add(d.id);
+    if (this.senders.size !== devs.length) this.sim.engine.setSenders(this.senders, devs.filter((d) => this.senders.has(d.id)).map((d) => d.id).sort().join(', ') || 'none');
     this.stateSeen = this.sim.engine.stateVersion;
     this.typicalHop.physical = this.physicalTypical();
     this.pacer = new Pacer(
@@ -173,6 +194,7 @@ export class SimController implements SimulationMode {
         shown: (f) => f.view === this.host.view() && this.flightShown(f),
         typical: (v) => this.typical(v),
         headers: (f) => f.hdr,
+        length: (f) => this.trackLength(f),
       },
       MAX_DOTS,
     );
@@ -246,8 +268,11 @@ export class SimController implements SimulationMode {
     this.stopped = true;
     this.playing = false;
     this.schedule();
+    this.watchInspector(false);
     this.tables.closeAll();
     this.anim.clear();
+    if (this.badges && this.badges.parentNode) this.badges.parentNode.removeChild(this.badges);
+    this.badges = null;
     this.closeMenu();
     this.host.doc.removeEventListener('visibilitychange', this.onVis);
   }
@@ -321,14 +346,108 @@ export class SimController implements SimulationMode {
     }
   }
 
-  setPlaying(on: boolean): void {
+  /** Why it is paused (null: playing, or paused with no reason left). */
+  pausedBy: PauseReason = null;
+  private stateSaid = '';
+  private inspectorTimer: number | null = null;
+
+  /** Play or pause (the user's Play / Pause, and the tests). A pause by the user is never resumed by anything else. */
+  setPlaying(on: boolean, reason: PauseReason = 'user'): void {
     this.playing = on;
+    this.pausedBy = on ? null : reason;
+    if (reason !== 'inspector') this.watchInspector(false);
     this.schedule();
+    this.sayState();
+  }
+
+  /** "Playing", "Paused", "Paused: inspecting packet". */
+  playState(): string {
+    if (this.playing) return 'Playing';
+    return this.pausedBy === 'inspector' ? 'Paused: inspecting packet' : 'Paused';
+  }
+
+  /** The playback state in the panel and, politely, to screen readers when it changed. */
+  private sayState(): void {
+    const d = this.host.doc;
+    const s = this.playState();
+    const vis = d.getElementById('sim-state');
+    if (vis && vis.textContent !== s) vis.textContent = s;
+    if (s === this.stateSaid) return;
+    this.stateSaid = s;
+    const live = d.getElementById('sim-state-live');
+    if (live) live.textContent = s;
+  }
+
+  /** The packet inspector was opened from a dot or the log: a running simulation pauses until it is no longer in use. */
+  private inspectorPause(): void {
+    if (!this.playing) return;
+    this.setPlaying(false, 'inspector');
+    this.watchInspector(true);
+  }
+
+  /** The inspector is no longer in use (closed, left, hidden): resume, if it was what paused the simulation. */
+  resumeFromInspector(): boolean {
+    if (this.stopped || this.playing || this.pausedBy !== 'inspector') return false;
+    this.setPlaying(true);
+    return true;
+  }
+
+  /** Is the packet inspector shown (in the page, with a size, inside the window and not covered)? */
+  inspectorVisible(): boolean {
+    const box = this.tables.panelOf('packet');
+    if (!box || !box.isConnected || box.hidden) return false;
+    const r = box.getBoundingClientRect();
+    const w = this.host.doc.defaultView;
+    if (r.width < 1 || r.height < 1 || !w) return false;
+    if (r.right <= 0 || r.bottom <= 0 || r.left >= w.innerWidth || r.top >= w.innerHeight) return false;
+    const cs = w.getComputedStyle(box);
+    if (cs.visibility === 'hidden' || cs.display === 'none') return false;
+    // covered: what is at its title bar is not the inspector
+    const x = Math.max(1, Math.min(w.innerWidth - 2, r.left + r.width / 2));
+    const y = Math.max(1, Math.min(w.innerHeight - 2, r.top + 8));
+    const at = this.host.doc.elementFromPoint(x, y);
+    return !!at && box.contains(at);
+  }
+
+  private onInspectorFocusOut = (e: FocusEvent): void => {
+    const box = this.tables.panelOf('packet');
+    const to = e.relatedTarget as Node | null;
+    // the focus went somewhere else on the page (not just out of the window); Play / Pause and Step decide for themselves
+    if (box && to && !box.contains(to) && !(to instanceof Element && to.closest('#sim-play, #sim-step'))) this.resumeFromInspector();
+  };
+
+  private onPointerElsewhere = (e: Event): void => {
+    const box = this.tables.panelOf('packet');
+    const t = e.target as Element;
+    if (!box || box.contains(t)) return;
+    // Play / Pause and Step decide for themselves
+    if (t.closest && t.closest('#sim-play, #sim-step')) return;
+    this.resumeFromInspector();
+  };
+
+  /** Watch the inspector while it holds the simulation: its focus, a click elsewhere, its visibility. */
+  private watchInspector(on: boolean): void {
+    const doc = this.host.doc;
+    const w = doc.defaultView;
+    doc.removeEventListener('focusout', this.onInspectorFocusOut, true);
+    doc.removeEventListener('pointerdown', this.onPointerElsewhere, true);
+    if (this.inspectorTimer !== null && w) w.clearInterval(this.inspectorTimer);
+    this.inspectorTimer = null;
+    if (!on || !w) return;
+    doc.addEventListener('focusout', this.onInspectorFocusOut, true);
+    doc.addEventListener('pointerdown', this.onPointerElsewhere, true);
+    this.inspectorTimer = w.setInterval(() => {
+      if (this.pausedBy !== 'inspector') return this.watchInspector(false);
+      if (!this.inspectorVisible()) this.resumeFromInspector();
+    }, 300);
   }
 
   /** Step: to the next message event (a message arrives, or the next one starts at its sender), paused. */
   step(): number {
     this.playing = false;
+    this.pausedBy = 'user';
+    this.watchInspector(false);
+    this.sayState();
     this.schedule();
     this.pacer.step();
     this.refresh(true);
@@ -405,7 +524,121 @@ export class SimController implements SimulationMode {
     return this.shown.has(protocol);
   }
 
-  private flightShown = (f: Flight): boolean => this.visible(f.protocol) || (!!f.encapProtocols && f.encapProtocols.some((p) => this.visible(p)));
+  private flightShown = (f: Flight): boolean => (this.visible(f.protocol) || (!!f.encapProtocols && f.encapProtocols.some((p) => this.visible(p)))) && this.senderOk(f);
+
+  // ------------------------------------------------------------ senders
+
+  /** the devices chosen as senders */
+  readonly senders = new Set<string>();
+  /** the event log lists the messages of every device (Show all senders) */
+  showAllSenders = false;
+
+  /** Every device a sender? */
+  allSenders(): boolean {
+    return this.senders.size === this.host.model().devices.length;
+  }
+
+  /** Is a message one to show: sent by a sender, or part of an exchange a sender started (a reply, a forwarded copy)? */
+  senderOk(x: { sender?: string; origin?: string }): boolean {
+    if (this.allSenders() || x.sender === undefined) return true;
+    return this.senders.has(x.sender) || (x.origin !== undefined && this.senders.has(x.origin));
+  }
+
+  /** Choose the senders: they apply at once (logged); what is shown follows; nothing restarts. */
+  setSenders(ids: Iterable<string>): void {
+    const m = this.host.model();
+    const next = new Set<string>();
+    for (const id of ids) if (m.index.devices.has(id)) next.add(id);
+    const same = next.size === this.senders.size && Array.from(next).every((id) => this.senders.has(id));
+    if (same) return;
+    this.senders.clear();
+    next.forEach((id) => this.senders.add(id));
+    const all = this.allSenders();
+    const names = m.devices.filter((d) => next.has(d.id)).map((d) => d.id).sort();
+    this.sim.engine.setSenders(all ? null : next, all ? 'every device' : names.length ? names.join(', ') : 'none');
+    if (this.sendersUi) this.sendersUi.set(this.senders);
+    if (this.host.sendersChanged) this.host.sendersChanged(new Set(this.senders));
+    this.logKey = '';
+    this.actionsKey = '';
+    this.badgesKey = '';
+    this.refresh(true);
+  }
+
+  /** Use a device as a sender, or stop (the device menu, the Actions panel). */
+  setSender(dev: string, on: boolean): boolean {
+    if (this.senders.has(dev) === on) return false;
+    const s = new Set(this.senders);
+    if (on) s.add(dev);
+    else s.delete(dev);
+    this.setSenders(s);
+    this.host.toast(`${dev} ${on ? 'is a sender now' : 'is no longer a sender'} (t = ${fmtSec(this.t)}).`);
+    return true;
+  }
+
+  private sendersUi: SendersPicker | null = null;
+  private badgesKey = '';
+  private badges: SVGGElement | null = null;
+
+  /** The senders' badges in the diagram (only while not every device is one): a small framed ▶ at a box's top left corner. */
+  private drawBadges(): void {
+    const scene = this.host.scene();
+    const all = this.allSenders();
+    const key = `${all ? 'all' : Array.from(this.senders).sort().join(',')}|${this.host.view()}`;
+    if (this.badges && this.badges.isConnected && this.badges.parentNode === scene && key === this.badgesKey) return;
+    if (this.badges && this.badges.parentNode) this.badges.parentNode.removeChild(this.badges);
+    this.badges = null;
+    this.badgesKey = key;
+    if (!scene || all) return;
+    const doc = this.host.doc;
+    const NS = 'http://www.w3.org/2000/svg';
+    const g = doc.createElementNS(NS, 'g') as SVGGElement;
+    g.setAttribute('class', 'layer-sim-senders');
+    for (const dev of Array.from(this.senders).sort()) {
+      const box = scene.querySelector(`.node[data-ref="device:${dev.replace(/["\\]/g, '\\$&')}"] .dev-box`) as SVGGraphicsElement | null;
+      if (!box || typeof box.getBBox !== 'function') continue;
+      let b: DOMRect;
+      try {
+        b = box.getBBox();
+      } catch (e) {
+        continue;
+      }
+      const x = b.x;
+      const y = b.y;
+      const s = doc.createElementNS(NS, 'g');
+      s.setAttribute('class', 'sim-sender');
+      s.setAttribute('data-sender', dev);
+      const t = doc.createElementNS(NS, 'title');
+      t.textContent = `${dev}: a sender`;
+      const c = doc.createElementNS(NS, 'circle');
+      c.setAttribute('cx', x.toFixed(1));
+      c.setAttribute('cy', y.toFixed(1));
+      c.setAttribute('r', '7');
+      const p = doc.createElementNS(NS, 'path');
+      p.setAttribute('d', `M${(x - 2.2).toFixed(1)} ${(y - 3.6).toFixed(1)}l5.6 3.6l-5.6 3.6z`);
+      s.appendChild(t);
+      s.appendChild(c);
+      s.appendChild(p);
+      g.appendChild(s);
+    }
+    // above the boxes, below the dots' labels
+    const labels = scene.querySelector(':scope > .layer-sim-labels');
+    if (labels) scene.insertBefore(g, labels);
+    else scene.appendChild(g);
+    this.badges = g;
+  }
+
+  /** The on-screen length of a flight's line (diagram units), in the view on screen; null elsewhere. */
+  private lengths = new Map<string, number | null>();
+  private trackLength(f: Flight): number | null {
+    if (f.view !== this.host.view()) return null;
+    const k = `${f.view}|${f.track.ref}|${f.track.from}|${f.track.to}`;
+    if (this.lengths.has(k)) return this.lengths.get(k) as number | null;
+    const scene = this.host.scene();
+    const g = scene ? findTrack(scene, f.track) : null;
+    const len = g ? g.len : null;
+    this.lengths.set(k, len);
+    return len;
+  }
 
   color(protocol: string): string {
     if (FIXED_COLORS[protocol]) return FIXED_COLORS[protocol];
@@ -453,6 +686,7 @@ export class SimController implements SimulationMode {
       this.host.changed();
     }
     this.anim.setScene(this.host.scene());
+    this.drawBadges();
     const r = this.anim.draw(this.drawItems(), { view: this.host.view(), reduce: this.host.reduce(), color: (p) => this.color(p) });
     this.notDrawn = r.left + this.queued();
     this.updateClock();
@@ -464,6 +698,8 @@ export class SimController implements SimulationMode {
 
   /** The diagram was drawn again: the dots on the new scene. */
   sceneChanged(): void {
+    this.lengths.clear();
+    this.badgesKey = '';
     this.refresh(false);
   }
 
@@ -655,7 +891,7 @@ export class SimController implements SimulationMode {
     const it = this.pacer.find(id);
     const f = it ? it.f : this.sim.engine.flights.find((x) => x.id === id);
     if (!f || !f.hdr) return false;
-    if (this.playing) this.setPlaying(false);
+    this.inspectorPause();
     const m = this.host.model();
     let where = `t = ${fmtSec(f.t0)}`;
     if (f.track.ref.indexOf('link:') === 0) {
@@ -671,6 +907,7 @@ export class SimController implements SimulationMode {
   inspectEvent(seq: number): boolean {
     const e = this.sim.events().find((x) => x.seq === seq);
     if (!e || !e.hdr) return false;
+    this.inspectorPause();
     this.inspect(e.hdr, `as ${e.device || 'it'} sent it at t = ${fmtSec(e.t)}`, null, conversationKey(e.protocol, e.hdr, e.hdr.label), e.hdr.label);
     return true;
   }
@@ -683,7 +920,11 @@ export class SimController implements SimulationMode {
         on: !!this.pacer.follow && this.pacer.follow.key === key,
         act: () => {
           if (this.pacer.follow && this.pacer.follow.key === key) this.follow(null);
-          else this.follow({ key, label });
+          else {
+            this.follow({ key, label });
+            // following: the inspector stays open beside the running simulation
+            this.resumeFromInspector();
+          }
           this.inspect(h, where, null, key, label);
         },
       },
@@ -757,6 +998,8 @@ export class SimController implements SimulationMode {
       if (d && d.arp) items.push({ label: 'Send test…', act: () => this.sendTestFrom(dev) });
       // multicast: its groups and streams, a router's IGMP groups and multicast routes, a switch's multicast table
       for (const k of ['igmp', 'mroute', 'snoop'] as DevTable[]) if (tabs.indexOf(k) >= 0) items.push({ label: show[k], act: () => void this.showTable(k, dev) });
+      if (this.senders.has(dev)) items.push({ label: 'Stop as sender', act: () => void this.setSender(dev, false) });
+      else items.push({ label: 'Use as sender', act: () => void this.setSender(dev, true) });
       const sdv = this.sim.engine.net.devices.get(dev);
       if (d && d.arp && sdv && !sdv.routes) {
         items.push({ label: 'Join group…', act: () => this.multicastFrom(dev, 'join') });
@@ -964,6 +1207,8 @@ export class SimController implements SimulationMode {
     this.picker = protocolPicker(doc, { id: 'sim-setup-protos', entries: this.entries, shown: this.shown, color: (p) => this.color(p), onChange: (ids) => this.setShownSet(ids) });
     box.appendChild(this.picker.el);
     box.appendChild(el(doc, 'p', { class: 'muted small sp-note' }, ['Every protocol runs; unchecked ones are not drawn or logged.']));
+    this.sendersUi = sendersPicker(doc, { id: 'sim-setup-senders', model: this.host.model(), selected: this.senders, open: false, diagram: () => (this.host.diagramDevices ? this.host.diagramDevices() : new Set()), onChange: (s) => this.setSenders(s) });
+    box.appendChild(this.sendersUi.el);
     this.editor = paramEditor(doc, { id: 'sim-pw', values: this.sim.params.simValues(), onChange: (k, v) => this.setParam(k, v) });
     box.appendChild(this.editor.el);
     const scale = el(doc, 'select', { id: 'sim-scale' }) as HTMLSelectElement;
@@ -1225,7 +1470,7 @@ export class SimController implements SimulationMode {
     skip.checked = this.pacer.skipIdle;
     const exit = el(doc, 'button', { type: 'button', id: 'sim-exit', class: 'sd-exit', 'data-command': 'sim.exit', 'aria-label': 'Exit simulation' }, ['Exit', el(doc, 'span', { class: 'sd-long' }, [' simulation'])]);
     const head = el(doc, 'div', { class: 'sd-head', role: 'toolbar', 'aria-label': 'Simulation clock' }, [
-      el(doc, 'span', { class: 'sd-group' }, [play, step]),
+      el(doc, 'span', { class: 'sd-group' }, [play, step, el(doc, 'span', { id: 'sim-state', class: 'sd-state small' }, [this.playState()]), el(doc, 'span', { id: 'sim-state-live', class: 'sr-only', role: 'status', 'aria-live': 'polite' }, [''])]),
       el(doc, 'span', { class: 'sd-group' }, [el(doc, 'label', { for: 'sim-speed' }, ['Speed']), speed]),
       el(doc, 'span', { class: 'sd-group' }, [el(doc, 'label', { for: 'sim-pace' }, ['Pacing']), mode, el(doc, 'span', { id: 'sim-pace-scale-wrap', class: 'sd-scale' }, [el(doc, 'label', { for: 'sim-pace-scale', class: 'sr-only' }, ['Scale']), scale])]),
       el(doc, 'label', { class: 'check sd-group', for: 'sim-skip' }, [skip, ' Skip idle', el(doc, 'span', { class: 'sd-long' }, [' time'])]),
@@ -1260,7 +1505,6 @@ export class SimController implements SimulationMode {
     box.appendChild(
       el(doc, 'div', { class: 'sd-notes' }, [
         el(doc, 'span', { id: 'sim-follow', class: 'sd-follow small', hidden: '' }, [el(doc, 'span', { id: 'sim-follow-text' }, ['']), ' ', stopFollow]),
-        el(doc, 'span', { id: 'sim-drawn', class: 'muted small', 'aria-live': 'off' }, ['']),
       ]),
     );
     // the dots' shapes: explained in the setup, beside the protocols' colours
@@ -1335,14 +1579,21 @@ export class SimController implements SimulationMode {
     onSel(layer, (v) => (this.logLayer = Number(v)));
     onSel(cast, (v) => (this.logCast = v));
     onSel(proto, (v) => (this.logProto = v));
+    const allSnd = el(doc, 'input', { type: 'checkbox', id: 'sim-log-allsenders' }) as HTMLInputElement;
+    allSnd.checked = this.showAllSenders;
+    allSnd.addEventListener('change', () => {
+      this.showAllSenders = allSnd.checked;
+      this.logKey = '';
+      this.updatePanels();
+    });
     const table = el(doc, 'div', { id: 'sim-log-table', class: 'sim-scroll sim-log' });
     table.addEventListener('click', (ev) => {
       const b = (ev.target as Element).closest('[data-seq]');
       if (b) this.inspectEvent(Number(b.getAttribute('data-seq')));
     });
     const log = el(doc, 'section', { class: 'sd-pane sd-log', id: 'sd-log', role: 'tabpanel', 'aria-labelledby': 'sd-log-h' }, [
-      el(doc, 'div', { class: 'sd-panehead' }, [el(doc, 'h3', { id: 'sd-log-h', class: 'sd-h' }, ['Event log']), el(doc, 'span', { class: 'sim-log-filters' }, [filter, layer, cast, proto])]),
-      el(doc, 'p', { id: 'sim-log-note', class: 'muted small' }, ['']),
+      el(doc, 'div', { class: 'sd-panehead' }, [el(doc, 'h3', { id: 'sd-log-h', class: 'sd-h' }, ['Event log']), el(doc, 'span', { class: 'sim-log-filters' }, [filter, layer, cast, proto, el(doc, 'label', { class: 'check sd-allsnd', for: 'sim-log-allsenders' }, [allSnd, ' Show all senders'])])]),
+      el(doc, 'p', { class: 'muted small sd-lognote' }, [el(doc, 'span', { id: 'sim-log-note' }, ['']), ' ', el(doc, 'span', { id: 'sim-drawn', 'aria-live': 'off' }, ['']), ' ', el(doc, 'span', { id: 'sim-log-held' }, [''])]),
       table,
     ]);
     box.appendChild(el(doc, 'div', { class: 'sd-body' }, [status, log]));
@@ -1356,6 +1607,7 @@ export class SimController implements SimulationMode {
     const tt = `t = ${timeText(this.t)}`;
     if (time.textContent !== tt) time.textContent = tt;
     const play = d.getElementById('sim-play') as HTMLElement;
+    this.sayState();
     const pt = this.playing ? 'Pause' : 'Play';
     if (play.textContent !== pt) {
       play.textContent = pt;
@@ -1383,7 +1635,7 @@ export class SimController implements SimulationMode {
     const q = (id: string): HTMLElement | null => d.getElementById(id);
     this.updateClock();
     const drawn = q('sim-drawn');
-    if (drawn) drawn.textContent = this.notDrawn ? `${this.notDrawn} message${this.notDrawn === 1 ? '' : 's'} not drawn (at most ${MAX_DOTS} dots at once, each with room for its label); the event log lists every message.` : '';
+    if (drawn) drawn.textContent = this.notDrawn ? `${this.notDrawn} message${this.notDrawn === 1 ? '' : 's'} on their way not drawn (at most ${MAX_DOTS} dots at once).` : '';
     // a broadcast storm: a warning
     const storm = q('sim-storm');
     if (storm) {
@@ -1393,7 +1645,10 @@ export class SimController implements SimulationMode {
         storm.textContent = stormText;
         storm.title = stormText;
       }
-      if (storm.hidden !== !stormText) storm.hidden = !stormText;
+      if (storm.hidden !== !stormText) {
+        storm.hidden = !stormText;
+        if (this.host.panelChanged) this.host.panelChanged();
+      }
     }
     if (this.editor) this.editor.set(this.sim.params.simValues());
     // the Actions panel: the object's events (rebuilt when what is down or the selection changed)
@@ -1449,6 +1704,7 @@ export class SimController implements SimulationMode {
       const tabKey = `${dev}|${kinds.join(',')}|${this.statusView ? this.statusView.kind : ''}`;
       if (stTabs.getAttribute('data-key') !== tabKey) {
         stTabs.setAttribute('data-key', tabKey);
+        if (this.host.panelChanged) this.host.panelChanged();
         const keep = stTabs.contains(d.activeElement) ? (d.activeElement as HTMLElement).getAttribute('data-st') : null;
         while (stTabs.firstChild) stTabs.removeChild(stTabs.firstChild);
         const tab = (k: string, label: string): void => {
@@ -1483,14 +1739,21 @@ export class SimController implements SimulationMode {
         }
       }
     }
-    // the log: rebuilt when it grew or the filter changed
+    // the log: rebuilt when it grew or a filter changed; while the pointer is on it or the keyboard in it, it waits for
+    // new events (a row must not move away under a click), but not for a filter
     const lt = q('sim-log-table');
     const events = this.sim.events();
-    const lk = `${events.length}|${this.sim.engine.logDropped}|${Array.from(this.shown).join(',')}|${this.logFilter}|${this.logLayer}|${this.logCast}|${this.logProto}`;
-    if (lt && lk !== this.logKey) {
+    const fk = `${Array.from(this.shown).join(',')}|${this.logFilter}|${this.logLayer}|${this.logCast}|${this.logProto}|${this.showAllSenders}|${Array.from(this.senders).length}`;
+    const lk = `${events.length}|${this.sim.engine.logDropped}|${fk}`;
+    const held = !!lt && (lt.matches(':hover') || lt.contains(d.activeElement));
+    const waiting = q('sim-log-held');
+    if (lt && lk !== this.logKey && (!held || fk !== this.logFilterKey || !this.logKey)) {
       this.logKey = lk;
+      this.logFilterKey = fk;
       this.renderLog(lt, q('sim-log-note') as HTMLElement, events);
     }
+    const wt = held && lk !== this.logKey ? 'New events wait while you point at the log or use it.' : '';
+    if (waiting && waiting.textContent !== wt) waiting.textContent = wt;
   }
 
   private statusTable(rows: SessionStatus[]): HTMLElement {
@@ -1501,7 +1764,7 @@ export class SimController implements SimulationMode {
     t.appendChild(el(doc, 'thead', {}, [el(doc, 'tr', {}, head.map((h) => el(doc, 'th', { scope: 'col' }, [h])))]));
     const tb = el(doc, 'tbody');
     for (const s of rows) {
-      tb.appendChild(el(doc, 'tr', { 'data-up': s.up ? 'true' : 'false', 'data-protocol': s.protocol }, [el(doc, 'td', {}, [this.protoLabel(s.protocol)]), el(doc, 'td', {}, [s.name]), el(doc, 'td', { class: s.up ? 'st-up' : 'st-down' }, [(s.up ? '● ' : '○ ') + s.state]), el(doc, 'td', { class: 'small' }, [s.detail])]));
+      tb.appendChild(el(doc, 'tr', { 'data-up': s.up ? 'true' : 'false', 'data-protocol': s.protocol }, [el(doc, 'td', {}, [this.protoLabel(s.protocol)]), el(doc, 'td', { title: s.name }, [s.name]), el(doc, 'td', { class: s.up ? 'st-up' : 'st-down' }, [(s.up ? '● ' : '○ ') + s.state]), el(doc, 'td', { class: 'small', title: s.detail }, [s.detail])]));
     }
     if (!rows.length) tb.appendChild(el(doc, 'tr', {}, [el(doc, 'td', { colspan: '4', class: 'muted' }, ['No session of the protocols shown.'])]));
     t.appendChild(tb);
@@ -1514,15 +1777,21 @@ export class SimController implements SimulationMode {
   }
 
   /** The events the log lists: of shown protocols (and the links), matching the filters, up to now. */
-  logEvents(events: SimEvent[] = this.sim.events()): { list: SimEvent[]; hidden: number } {
+  logEvents(events: SimEvent[] = this.sim.events()): { list: SimEvent[]; hidden: number; bySender: number } {
     const words = this.logFilter.toLowerCase().split(/\s+/).filter((w) => w);
     let hidden = 0;
+    let bySender = 0;
     const list: SimEvent[] = [];
     for (const e of events) {
       if (e.t > this.t) break;
       if (!this.visible(e.protocol)) {
         hidden++;
         continue;
+      }
+      // messages of non-senders (a sender's exchanges stay): counted, listed only with Show all senders
+      if (e.kind === 'message' && !this.senderOk(e)) {
+        bySender++;
+        if (!this.showAllSenders) continue;
       }
       if (this.logProto && e.protocol !== this.logProto) continue;
       if (this.logLayer) {
@@ -1536,14 +1805,14 @@ export class SimController implements SimulationMode {
       }
       list.push(e);
     }
-    return { list, hidden };
+    return { list, hidden, bySender };
   }
 
   private renderLog(box: HTMLElement, note: HTMLElement, events: SimEvent[]): void {
     const doc = this.host.doc;
-    const { list, hidden } = this.logEvents(events);
+    const { list, hidden, bySender } = this.logEvents(events);
     const shown = list.slice(-LOG_SHOWN);
-    note.textContent = `${list.length} event${list.length === 1 ? '' : 's'}${list.length > shown.length ? `, the newest ${shown.length} listed` : ''}${hidden ? `; ${hidden} of hidden protocols not listed (they still run)` : ''}${this.sim.engine.logDropped ? `; the ${this.sim.engine.logDropped} oldest were dropped from the log` : ''}.`;
+    note.textContent = `${list.length} event${list.length === 1 ? '' : 's'}${list.length > shown.length ? `, the newest ${shown.length} listed` : ''}${bySender ? (this.showAllSenders ? `; ${bySender} message${bySender === 1 ? '' : 's'} from non-senders included` : `; ${bySender} message${bySender === 1 ? '' : 's'} from non-senders hidden`) : ''}${hidden ? `; ${hidden} of hidden protocols not listed (they still run)` : ''}${this.sim.engine.logDropped ? `; the ${this.sim.engine.logDropped} oldest were dropped from the log` : ''}.`;
     // keep the reader's place unless they are at the end
     const atEnd = box.scrollHeight - box.scrollTop - box.clientHeight < 24;
     const top = box.scrollTop;
@@ -1562,7 +1831,7 @@ export class SimController implements SimulationMode {
           el(doc, 'td', {}, [this.protoLabel(e.protocol)]),
           el(doc, 'td', {}, [e.hdr ? el(doc, 'button', { type: 'button', class: 'sim-msg-btn', 'data-seq': String(e.seq), 'aria-label': `${e.what}: open in the packet inspector` }, [e.what]) : e.what]),
           el(doc, 'td', {}, [e.state]),
-          el(doc, 'td', { class: 'small' }, [e.detail]),
+          el(doc, 'td', { class: 'small', title: e.detail }, [e.detail]),
         ]),
       );
     }

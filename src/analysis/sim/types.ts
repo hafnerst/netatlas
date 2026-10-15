@@ -27,6 +27,10 @@ export interface Msg {
   relation?: string;
   /** protocol data (read by the receiving state machine) */
   data?: { [k: string]: unknown };
+  /** the device that sent it (set when it is first sent or logged; a forwarded copy keeps it) */
+  sender?: string;
+  /** the device whose own action started the exchange it belongs to: its sender, or for a reply (an ARP reply, a TCP SYN-ACK, an ICMP error …) the origin of what it answers */
+  origin?: string;
 }
 
 /** The transport header of a packet (ICMP counts here too): what the inspector, firewalls and the transport layer read. */
@@ -117,6 +121,9 @@ export interface Flight {
   cast?: Cast;
   /** the frame's headers on this cable (the packet inspector) */
   hdr?: Headers;
+  /** its message's sender and origin (Senders: what is shown) */
+  sender?: string;
+  origin?: string;
 }
 
 export type Cast = 'unicast' | 'broadcast' | 'multicast';
@@ -168,6 +175,9 @@ export interface SimEvent {
   detail: string;
   /** a message: its headers as sent (the packet inspector) */
   hdr?: Headers;
+  /** a message: its sender and origin (Senders: what the log lists) */
+  sender?: string;
+  origin?: string;
 }
 
 /** A protocol session's status (the status table). */

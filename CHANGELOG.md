@@ -126,6 +126,25 @@ there is no conversion of files written for the earlier drafts.
 
 ### Added
 
+- **Senders** in the protocol simulation: choose which devices you watch,
+  in Start simulation… (after the protocols, open) and in the Simulation
+  setup (collapsed, its heading summing the choice up: *Senders (3 of 23):
+  hq-rtr1, muc-rtr, client-1…*). A filter box, **All**, **None**,
+  **Selected in diagram**, **By type ▾**, **By group / site ▾**, and a
+  checklist grouped by type or by group / site with icons, L2 / L3 badges
+  and foldable groups with counts. Only the senders' messages and the
+  exchanges they start (replies, errors, forwarded copies) are drawn and
+  logged; the log counts the others, and **Show all senders** lists them.
+  Endpoint test traffic comes from senders only; every protocol still runs
+  on every device. The diagram's selection is preselected; the choice is
+  remembered for the session. **Use as sender** / **Stop as sender** in a
+  device's menu and in Actions; a ▶ badge marks the senders. Every message
+  carries its sender and origin in the engine.
+- The playback state beside Play and Step (*Playing*, *Paused*, *Paused:
+  inspecting packet*), announced politely.
+- Speeds 0.1× (the slowest) to 4×.
+
+
 - **Device types ▾** filter, directly next to **Devices ▾** with the same
   look: a checkbox per device type the model uses (display names, with each
   type's number of devices; types the model doesn't use are left out),
@@ -612,6 +631,23 @@ there is no conversion of files written for the earlier drafts.
 
 ### Changed
 
+- **Slower default pacing:** about 3 s per hop (2–6 s by relative latency,
+  before 1 s, 0.6–3 s), a dot never faster than 70 px a second at 100 %
+  zoom, 0.6 s across a switch, the arrival pulse and a lost message's ✕
+  1.5 s. Measured in the browser, the configured pacing was applied; the
+  dots were fast because the time per hop did not depend on the length of
+  the line on screen and was short.
+- **The packet inspector pauses only while it is in use:** opening it from a
+  dot or a log message pauses; closing it, leaving it (a click or the focus
+  elsewhere) or losing sight of it plays again, unless the user paused.
+  Follow message plays on beside it.
+- **A smaller simulation panel:** about a quarter of the window by default
+  (24 %, at least its toolbar and 3½ rows), its height remembered under a
+  new key (`netatlas.simPanelHeight`); its table rows are one line each.
+- The event log waits for new events while the pointer is on it or the
+  keyboard in it, so that a row doesn't move away under a click.
+
+
 - **Start simulation…** puts the protocols first: open at the top, grouped
   by layer with counts, Select all and Clear per group and for all; the
   Layer 1–4 parameters collapsed below, a collapsed layer saying how many
@@ -779,6 +815,12 @@ live protocol simulation replaces them.
   failure are tool windows now).
 
 ### Fixed
+
+- A jump over idle time could do minutes of work in one frame when most
+  messages were hidden; it now does at most 25 ms per frame.
+- Messages that were not shown (another view, a hidden protocol) took
+  places of the 48-dot limit.
+
 
 - `Esc` on the Devices ▾ button (not only inside its list) closes the list.
 - A collapsed parameter section's fields were laid out (though hidden) and

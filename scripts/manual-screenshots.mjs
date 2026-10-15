@@ -277,7 +277,7 @@ async function main() {
     {
       await page.eval(`netatlas.loadText(${JSON.stringify(readFileSync(join(root, 'examples', 'protocol-simulation.yaml'), 'utf8'))}, 'protocol-simulation.yaml'), netatlas.setView('physical'), true`);
       await page.eval("document.getElementById('toast').hidden = true");
-      await page.eval(`localStorage.removeItem('netatlas.dockHeight'), sessionStorage.clear(), netatlas.startProtocolSimulation(), netatlas.simController().setPlaying(false), netatlas.simController().runTo(25000), netatlas.fit(), true`);
+      await page.eval(`localStorage.removeItem('netatlas.dockHeight'), sessionStorage.clear(), netatlas.startProtocolSimulation({ senders: ['pc1', 'srv'] }), netatlas.simController().setPlaying(false), netatlas.simController().runTo(25000), netatlas.fit(), true`);
       // a moment with messages on their way: the readable pacing for a little real time
       await page.eval(`(() => { const c = netatlas.simController(); c.showTable('arp', 'core1'); for (let i = 0; i < 40; i++) c.advance(25); c.refresh(true); document.getElementById('toast').hidden = true; return true; })()`);
       await page.mouse('mouseMoved', 700, 890);
@@ -315,6 +315,10 @@ async function main() {
       await page.eval(`(() => { document.getElementById('sim-pd-l3-btn').click(); const i = document.getElementById('sim-pd-ttl'); i.value = '32'; i.dispatchEvent(new Event('input')); i.dispatchEvent(new Event('change')); document.getElementById('sim-pd-l3-btn').click(); document.getElementById('sim-pd-protos-p-arp').focus(); return true; })()`);
       await page.settle(200);
       await save('sim-start', around([await page.rect('#modal')], 4), { scale: 0.75, quality: 40 });
+      // Senders in the dialog: the routers chosen with By type ▾
+      await page.eval(`(() => { document.getElementById('sim-pd-senders-bytype').click(); Array.from(document.querySelectorAll('#sim-pd-senders .snd-menuitem')).find((b) => /^Routers/.test(b.textContent)).click(); document.getElementById('sim-pd-senders').scrollIntoView({ block: 'start' }); return true; })()`);
+      await page.settle(200);
+      await save('senders', around([await page.rect('#sim-pd-senders')], 6), { quality: 50 });
       await page.eval(`document.querySelector('#modal [data-value="cancel"]').click(), sessionStorage.clear(), true`);
       await page.settle(100);
     }
