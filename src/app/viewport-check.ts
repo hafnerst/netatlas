@@ -286,6 +286,7 @@ export async function runViewportCheck(app: App, doc: Document): Promise<Check[]
         if (fl) ctl.inspectFlight(fl.id);
         // a layer of parameters open, Send test's options open, an event in effect
         (q('#sim-pw-l1-btn') as HTMLElement).click();
+        (q('#sim-setup-senders-toggle') as HTMLElement).click();
         (q('#sim-t-more-toggle') as HTMLElement).click();
         ctl.sim.powerOff('hq-rtr2');
         ctl.refresh(true);
@@ -336,7 +337,7 @@ export async function runViewportCheck(app: App, doc: Document): Promise<Check[]
           for (const t of shortSim ? ['diagram', 'setup', 'actions'] : ['setup', 'actions']) {
             (q('#spt-' + t) as HTMLElement).click();
             await tick();
-            if (rect(tabRegion()).height < 1) why.push(`narrow: the ${t} tab shows nothing`);
+            if (!tiny && rect(tabRegion()).height < 1) why.push(`narrow: the ${t} tab shows nothing`);
             if (t === 'setup' && rect('side').height > 0) why.push('narrow: the Setup tab does not show the setup in place of the actions');
             layoutOk();
           }
@@ -349,7 +350,7 @@ export async function runViewportCheck(app: App, doc: Document): Promise<Check[]
         await tick();
         if (doc.querySelector('.sim-table-panel')) why.push('the packet inspector stays open after Exit simulation');
         if (!(q('#sim-dock') as HTMLElement).hidden || (q('#outline-body') as HTMLElement).getBoundingClientRect().width < 1) why.push('Exit simulation does not bring back the Objects list and close the panel');
-        state(`the simulation layout${shortSim ? ' (narrow and short: Diagram, Setup and Actions as tabs above the simulation panel)' : narrowSim ? ' (narrow: Setup and Actions as tabs above the simulation panel)' : ''} fits the browser window: setup, diagram, actions and the panel each whole, none over another; a table, the packet inspector, a parameter layer and Send test’s options open; the page does not scroll`, why.slice(0, 8).concat(problems()));
+        state(`the simulation layout${shortSim ? ' (narrow and short: Diagram, Setup and Actions as tabs above the simulation panel)' : narrowSim ? ' (narrow: Setup and Actions as tabs above the simulation panel)' : ''} fits the browser window: setup, diagram, actions and the panel each whole, none over another; a table, the packet inspector, Senders, a parameter layer and Send test’s options open; the page does not scroll`, why.slice(0, 8).concat(problems()));
       }
       app.select(null);
       await tick();

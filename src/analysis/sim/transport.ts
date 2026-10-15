@@ -1074,7 +1074,8 @@ export class Transport {
         () => true,
         () => this.e.params.num('test-interval', dev),
         () => {
-          if (this.e.params.str('test-traffic', dev) !== 'on' || !this.e.deviceOn(dev)) return;
+          // optional traffic: from the chosen senders only
+          if (this.e.params.str('test-traffic', dev) !== 'on' || !this.e.deviceOn(dev) || !this.e.isSender(dev)) return;
           for (const x of this.targets(dev)) {
             if (typeof x === 'string') continue;
             this.run({ from: dev, target: x.label, dst: x.dst, kind: x.kind, port: x.port, source: 'traffic' });

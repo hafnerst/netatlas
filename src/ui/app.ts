@@ -41,6 +41,7 @@ import { ToolWindowOpts, ToolWindows } from './toolwindow';
 import { SimulationMode } from './simulation-mode';
 import { SimController, SimStartOptions } from './sim-controller';
 import { protocolPicker } from './sim-protocols-ui';
+import { sendersPicker } from './sim-senders-ui';
 import { paramEditor } from './sim-params-ui';
 import { ParamValue, readStoredParams } from '../analysis/sim/params';
 import { protocolEntriesOf } from '../analysis/sim/simulation';
@@ -60,9 +61,16 @@ type Tab = 'edit' | 'details' | 'legend' | 'relations' | 'problems' | 'yaml';
 /** Where the simulation-wide parameters are remembered for the browser session. */
 const SIM_PARAMS_KEY = 'netatlas.sim.params';
 /** the simulation panel's height, chosen with its splitter (local storage) */
-const DOCK_KEY = 'netatlas.dockHeight';
+// (a new key: heights remembered by earlier development versions don't override the new, lower default)
+const DOCK_KEY = 'netatlas.simPanelHeight';
+/** the senders chosen in Start simulation… or the Simulation setup, for the next start in this browser session (null: every device) */
+const SIM_SENDERS_KEY = 'netatlas.sim.senders';
 /** the simulation panel is never lower than this (px): its toolbar and a few rows */
-export const DOCK_MIN = 150;
+export const DOCK_MIN = 190;
+/** a row of the simulation panel's tables (px) */
+const DOCK_ROW = 21;
+/** the simulation panel's default height: this share of the window's height */
+export const DOCK_SHARE = 0.24;
 /** the protocols switched off in Start simulation… or the Simulation setup, for the next start in this browser session */
 const SIM_HIDDEN_KEY = 'netatlas.sim.hidden';
 const SIM_LOCK = 'Editing is paused during a simulation: the diagram shows a simulated state, not the model. Exit the simulation (Esc) to edit.';
@@ -2579,6 +2587,46 @@ export class App {
   }
 
   /** The protocols switched off for this browser session (Start simulation…, the Simulation setup); every other one is shown. */
+  /** The senders remembered for this browser session that this model has (null: none remembered, or none of them here). */
+  storedSimSenders(): string[] | null {
+    try {
+      const w = this.doc.defaultView;
+      const v = JSON.parse((w ? w.sessionStorage.getItem(SIM_SENDERS_KEY) : null) || 'null');
+      if (!Array.isArray(v) || !this.session) return null;
+      const ids = v.filter((x) => typeof x === 'string' && this.session!.model.index.devices.has(x));
+      return ids.length ? ids : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  private storeSimSenders(s: Set<string> | null): void {
+    try {
+      const w = this.doc.defaultView;
+      if (!w) return;
+      const all = !s || (!!this.session && s.size === this.session.model.devices.length);
+      if (all) w.sessionStorage.removeItem(SIM_SENDERS_KEY);
+      else w.sessionStorage.setItem(SIM_SENDERS_KEY, JSON.stringify(Array.from(s as Set<string>).sort()));
+    } catch (e) {
+      /* storage unavailable: the choice lasts for this simulation only */
+    }
+  }
+
+  /** The devices the diagram's selection stands for (a device; a cable's two ends; a group's devices …). */
+  diagramDevices(): Set<string> {
+    const s = this.session;
+    if (!s || !s.state.selected) return new Set();
+    return new Set(focusSeeds(s.model, s.state.selected));
+  }
+
+  /** The senders a start begins with: the diagram's selection, else those remembered for the session, else every device. */
+  startSenders(): string[] {
+    const s = this.session as Session;
+    const sel = this.diagramDevices();
+    if (sel.size) return s.model.devices.filter((d) => sel.has(d.id)).map((d) => d.id);
+    return this.storedSimSenders() || s.model.devices.map((d) => d.id);
+  }
+
   storedSimHidden(): Set<string> {
     try {
       const w = this.doc.defaultView;
@@ -2639,11 +2687,12 @@ export class App {
     });
     const color = (p: string): string => lookupProtocol(model.protocols, p.indexOf('custom:') === 0 ? p.slice(7) : p).color;
     const picker = protocolPicker(this.doc, { id: 'sim-pd-protos', entries, shown: new Set(entries.filter((e) => !hidden.has(e.id)).map((e) => e.id)), color });
+    const senders = sendersPicker(this.doc, { id: 'sim-pd-senders', model, selected: new Set(this.startSenders()), open: true, diagram: () => this.diagramDevices() });
     const v = await this.dialog({
       title: 'Start simulation',
       className: 'sim-start-dialog',
       closeButton: true,
-      body: [el(this.doc, 'p', { class: 'muted small sim-pd-intro' }, ['A freshly booted network: every table empty, every adjacency down. Every protocol runs; the ones checked are drawn and logged.']), picker.el, editor.el],
+      body: [el(this.doc, 'p', { class: 'muted small sim-pd-intro' }, ['A freshly booted network: every table empty, every adjacency down. Every protocol runs; the ones checked are drawn and logged, for the senders chosen.']), picker.el, senders.el, editor.el],
       buttons: [
         { label: 'Cancel', value: 'cancel' },
         { label: 'Start', value: 'start', kind: 'primary' },
@@ -2665,9 +2714,11 @@ export class App {
     });
     if (v !== 'start' || !editor.valid()) return false;
     const picked = picker.selected();
+    const chosen = senders.selected();
+    this.storeSimSenders(chosen);
     this.storeSimParams(editor.values());
     this.storeSimShown(entries, picked);
-    return this.startProtocolSimulation({ protocols: entries.filter((e) => picked.has(e.id)).map((e) => e.id), params: editor.values() });
+    return this.startProtocolSimulation({ protocols: entries.filter((e) => picked.has(e.id)).map((e) => e.id), params: editor.values(), senders: model.devices.filter((d) => chosen.has(d.id)).map((d) => d.id) });
   }
 
   /**
@@ -2682,6 +2733,7 @@ export class App {
     if (!this.session || this.simulation) return false;
     const o: SimStartOptions = Array.isArray(opts) ? { protocols: opts } : opts;
     if (!o.params) o.params = this.storedSimParams();
+    if (!o.senders) o.senders = this.startSenders();
     if (!o.protocols) {
       const hidden = this.storedSimHidden();
       if (hidden.size) o.protocols = protocolEntriesOf((this.session as Session).model).filter((e) => !hidden.has(e.id)).map((e) => e.id);
@@ -2705,6 +2757,13 @@ export class App {
         tick: () => self.simTick(),
         paramsChanged: (values) => self.storeSimParams(values),
         shownChanged: (shown) => self.storeSimShown(ctl.protocolEntries(), shown),
+        sendersChanged: (s) => self.storeSimSenders(s),
+        diagramDevices: () => self.diagramDevices(),
+        panelChanged: () => {
+          // (after this change is laid out)
+          const w = self.doc.defaultView;
+          if (w) w.requestAnimationFrame(() => self.applyDockHeight());
+        },
         selected: () => (self.session ? self.session.state.selected : null),
         select: (ref) => self.select(ref, !!ref),
         setupBox: () => self.doc.getElementById('sim-setup-body'),
@@ -2724,6 +2783,8 @@ export class App {
     this.simCtl = ctl;
     this.simLayout(true);
     ctl.mount();
+    // now that the panel has its contents: its minimum and default are measured
+    this.applyDockHeight();
     this.startSimulation(ctl);
     const first = this.doc.getElementById('sim-play') as HTMLElement | null;
     if (first) first.focus();
@@ -2805,11 +2866,23 @@ export class App {
   dockBounds(): { dflt: number; min: number; max: number } {
     const main = this.doc.querySelector('main') as HTMLElement;
     const h = main.clientHeight || 600;
-    // in a short window less, but never less than its toolbar
+    // its toolbar and three to four rows of status and log: what the panel needs besides its tables' rows, measured
+    // (its toolbar and the log's filters wrap in a narrow window), plus 3½ rows; in a short window less, never less than its toolbar
     const head = this.doc.querySelector('#sim-dock .sd-head') as HTMLElement | null;
-    const min = Math.round(Math.min(DOCK_MIN, Math.max((head ? head.offsetHeight : 44) + 4, h * 0.4)));
+    const dock = this.doc.getElementById('sim-dock') as HTMLElement;
+    let need = DOCK_MIN;
+    if (!dock.hidden && dock.getBoundingClientRect().height > 0) {
+      const areas = ['sim-status-table', 'sim-log-table'].map((id) => this.doc.getElementById(id) as HTMLElement | null).filter((e): e is HTMLElement => !!e && e.getClientRects().length > 0);
+      const thead = this.doc.querySelector('#sim-dock thead') as HTMLElement | null;
+      if (areas.length) need = Math.max(DOCK_MIN, Math.round(dock.getBoundingClientRect().height - Math.min(...areas.map((a) => a.clientHeight)) + (thead ? thead.offsetHeight : 18) + 3.5 * DOCK_ROW));
+    }
+    // (a very short window keeps the diagram's room first: at most 40 % of the space then, never less than the toolbar)
+    const min = Math.round(Math.min(need, Math.max((head ? head.offsetHeight : 44) + 4, h * 0.4)));
     const max = Math.max(min, Math.round(h * 0.65));
-    const dflt = Math.max(min, Math.min(max, Math.round(h * 0.4)));
+    // by default about a fifth of the window: the diagram stays the largest part
+    const w = this.doc.defaultView;
+    const winH = w ? w.innerHeight : h + 100;
+    const dflt = Math.max(min, Math.min(max, Math.round(winH * DOCK_SHARE)));
     return { dflt, min, max };
   }
 

@@ -420,11 +420,66 @@ export class Engine {
     }
   }
 
+  // ------------------------------------------------------------ senders and causes
+
+  /**
+   * The origin of what the engine is handling now: while a received frame
+   * is processed, the origin of its message, so that what is sent in
+   * reply (an ARP reply, a TCP SYN-ACK or RST, an ICMP error, a protocol's
+   * answer) and what is forwarded belongs to the same exchange. null: a
+   * device acting on its own (a timer, a start).
+   */
+  cause: string | null = null;
+
+  /**
+   * The devices chosen as senders (null: every device). Only the optional
+   * traffic depends on it (an endpoint's test traffic is sent by senders
+   * only); every protocol still runs everywhere. What is shown is the
+   * screen's business (sim-controller.ts).
+   */
+  senders: Set<string> | null = null;
+
+  /** Is a device a sender? */
+  isSender(dev: string): boolean {
+    return !this.senders || this.senders.has(dev);
+  }
+
+  /** Choose the senders (null: every device), at the current time; logged. */
+  setSenders(s: Set<string> | null, text: string): void {
+    this.senders = s ? new Set(s) : null;
+    this.note('note', '', '', '', 'Senders', '', `Senders changed: ${text}`);
+  }
+
+  /** A message's sender and origin, when it is first sent or logged. */
+  private mark(msg: Msg, dev: string): void {
+    if (msg.sender === undefined) msg.sender = dev;
+    if (msg.origin === undefined) msg.origin = this.cause !== null ? this.cause : dev;
+  }
+
+  /** Handle a received frame in the context of its message's origin. */
+  private caused(msg: Msg, fn: () => void): void {
+    const was = this.cause;
+    this.cause = msg.origin !== undefined ? msg.origin : null;
+    try {
+      fn();
+    } finally {
+      this.cause = was;
+    }
+  }
+
   // ------------------------------------------------------------ the log
 
   note(kind: SimEvent['kind'], protocol: string, device: string, peer: string, what: string, state: string, detail: string, t = this.now, msg?: Msg): void {
     const ev: SimEvent = { t, seq: this.logSeq++, kind, protocol, device, peer, what, state, detail };
-    if (msg) this.msgEvents.set(msg, ev);
+    if (msg) {
+      this.msgEvents.set(msg, ev);
+      this.mark(msg, device);
+      ev.sender = msg.sender;
+      ev.origin = msg.origin;
+    } else if (kind === 'message') {
+      ev.sender = device;
+      ev.origin = this.cause !== null ? this.cause : device;
+    }
     this.log.push(ev);
     if (this.log.length > LOG_MAX + 500) {
       const n = this.log.length - LOG_MAX;
@@ -838,6 +893,7 @@ export class Engine {
 
   /** Send a frame from a layer-3 interface (at now). */
   emit(dev: string, l3: L3Iface, frame: Frame, t = this.now): void {
+    this.mark(frame.msg, dev);
     const was = this.emitting;
     this.emitting = { dev, l3, t, net: frame.msg.relation ? null : this.networkOf(l3, frame), first: null };
     try {
@@ -950,6 +1006,7 @@ export class Engine {
   floodFrom(dev: string, vlan: number, frame: Frame): void {
     const sd = this.net.devices.get(dev);
     if (!sd || !sd.bridge || this.off.has(dev)) return;
+    this.mark(frame.msg, dev);
     const was = this.emitting;
     this.emitting = null;
     try {
@@ -962,6 +1019,7 @@ export class Engine {
   /** A link-local layer-2 PDU out of one port (LACP, LLDP, STP): it reaches the device at the other end only. */
   sendOnPort(dev: string, port: string, frame: Frame): void {
     if (this.off.has(dev) || !this.portUp(dev, port)) return;
+    this.mark(frame.msg, dev);
     const was = this.emitting;
     this.emitting = null;
     try {
@@ -1208,7 +1266,8 @@ export class Engine {
     this.at(t, () => {
       this.pending.splice(this.pending.indexOf(d), 1);
       if (d.cancelled || !this.protocols || this.off.has(dev)) return;
-      this.protocols.l2(dev, port, frame);
+      const p = this.protocols;
+      this.caused(frame.msg, () => p.l2(dev, port, frame));
     });
   }
 
@@ -1226,7 +1285,7 @@ export class Engine {
       const i = this.pending.indexOf(d);
       if (i >= 0) this.pending.splice(i, 1);
       if (d.cancelled || this.off.has(dev)) return;
-      this.receive(dev, l3, frame);
+      this.caused(frame.msg, () => this.receive(dev, l3, frame));
     });
   }
 
@@ -1235,6 +1294,10 @@ export class Engine {
   flight(t0: number, t1: number, msg: Msg, view: Flight['view'], track: Track, parent?: number, encap?: string[]): Flight {
     const f: Flight = { id: this.flightSeq++, t0, t1, protocol: msg.protocol, label: msg.label, view, track, parent };
     if (encap && encap.length) f.encap = encap;
+    // (a relation's dot drawn before its message is sent: its sending device)
+    if (msg.sender === undefined && this.net.devices.has(track.from)) this.mark(msg, track.from);
+    if (msg.sender !== undefined) f.sender = msg.sender;
+    if (msg.origin !== undefined) f.origin = msg.origin;
     this.flights.push(f);
     this.flightById.set(f.id, f);
     return f;
@@ -1396,6 +1459,7 @@ export class Engine {
    */
   send(dev: string, pkt: Pkt, out?: L3Iface): void {
     if (this.off.has(dev)) return;
+    this.mark(pkt.msg, dev);
     this.stamp(dev, pkt);
     if (pkt.rides.some((r) => !this.relationUp(r))) {
       const r = pkt.rides.find((x) => !this.relationUp(x)) as string;

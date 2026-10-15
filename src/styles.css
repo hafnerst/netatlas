@@ -1304,6 +1304,60 @@ body[data-sim="on"] #side > .tabs, body[data-sim="on"] #side-body, body[data-sim
   .sd[data-pane="status"] .sd-log, .sd[data-pane="log"] .sd-status { display: none; }
 }
 .pi-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin: 4px 0 6px; }
+/* the playback state beside Play / Pause and Step */
+.sd-state { color: var(--muted); white-space: nowrap; min-width: 4.5em; }
+.sd-allsnd { font-size: 12px; white-space: nowrap; }
+/* the panel's tables: one line a row (the whole text in its tooltip, the packet inspector and to assistive technology), so that a low panel shows several rows */
+.sd table.sim-table { table-layout: fixed; }
+.sd table.sim-table td { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-top: 1px; padding-bottom: 1px; }
+.sd-status table.sim-table th:nth-child(1) { width: 18%; }
+.sd-status table.sim-table th:nth-child(2) { width: 30%; }
+.sd-status table.sim-table th:nth-child(3) { width: 18%; }
+.sd-log table.sim-table th:nth-child(1) { width: 9.5ch; }
+.sd-log table.sim-table th:nth-child(2), .sd-log table.sim-table th:nth-child(3) { width: 12%; }
+.sd-log table.sim-table th:nth-child(4) { width: 13%; }
+.sd-log table.sim-table th:nth-child(5) { width: 17%; }
+.sd-log table.sim-table th:nth-child(6) { width: 9%; }
+.sd-lognote { margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sd-pane .sd-panehead { min-height: 0; }
+.sd-pane { padding-top: 2px; padding-bottom: 2px; gap: 2px; }
+.sd .sim-log-filters select, .sd #sim-log-filter { min-height: 26px; padding-top: 1px; padding-bottom: 1px; }
+.sd .sim-storm { margin-top: 1px; margin-bottom: 1px; padding-top: 1px; padding-bottom: 1px; }
+.sd table.sim-table thead th { padding-top: 1px; padding-bottom: 1px; }
+
+/* ---------------- Senders (Start simulation…, Simulation setup) */
+.snd { display: flex; flex-direction: column; min-height: 0; gap: 4px; }
+.snd-head { margin: 0; font-size: 13.5px; }
+.snd-toggle { width: 100%; text-align: left; font-size: 13.5px; }
+.snd-sum { overflow-wrap: anywhere; }
+.snd-body { position: relative; display: flex; flex-direction: column; gap: 5px; min-height: 0; }
+.snd-body[hidden] { display: none; }
+.snd-find { width: 100%; min-height: 28px; box-sizing: border-box; padding: 3px 7px; border: 1px solid var(--control-border); border-radius: 5px; background: var(--canvas); color: var(--text); }
+.snd-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.snd-by[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); font-weight: 650; }
+.snd-menu { position: absolute; z-index: 70; min-width: 180px; max-height: 240px; overflow: auto; }
+.snd-menu[hidden] { display: none; }
+.snd-menuitem { display: block; width: 100%; text-align: left; }
+.snd-list { min-height: 0; overflow: auto; overscroll-behavior: contain; border: 1px solid var(--border); border-radius: 8px; padding: 2px 8px 6px; background: var(--canvas); }
+#sim-setup .snd-list { max-height: min(40vh, 320px); }
+.snd-group { padding: 2px 0; }
+.snd-fold { display: flex; align-items: center; gap: 2px; width: 100%; min-height: 26px; padding: 2px 0; border: 0; background: none; color: var(--text); font: inherit; font-size: 12px; font-weight: 700; text-align: left; border-radius: 4px; }
+.snd-fold:hover { background: var(--accent-soft); }
+.snd-items { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 160px), 1fr)); column-gap: 12px; }
+.snd-items[hidden] { display: none; }
+.snd-item { display: flex; align-items: center; gap: 6px; min-height: 26px; font-size: 12.5px; cursor: pointer; min-width: 0; }
+.snd-item input { flex: none; width: 16px; height: 16px; margin: 0; }
+.snd-icon { flex: none; }
+.snd-icon .icon { stroke: currentColor; stroke-width: 1.8; }
+.snd-name { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.snd-badge { flex: none; font-size: 10px; font-weight: 700; padding: 0 3px; border: 1px solid var(--frame); border-radius: 3px; color: var(--text); }
+dialog#modal.sim-start-dialog .modal-body > .snd { flex: 0 1 auto; min-height: 150px; }
+dialog#modal.sim-start-dialog .snd-body { flex: 1 1 auto; }
+dialog#modal.sim-start-dialog .snd-list { flex: 1 1 auto; min-height: 60px; }
+/* a sender's badge in the diagram: a framed ▶ on its box's top left corner (shape, not colour, says it), never over a text */
+.layer-sim-senders, .layer-sim-senders * { pointer-events: none; }
+.sim-sender circle { fill: var(--panel); stroke: var(--accent); stroke-width: 1.6; }
+.sim-sender path { fill: var(--text); }
 /* narrower windows: the side panels narrow; below 860 px Setup and Actions become tabs above the simulation panel */
 @media (max-width: 1100px) {
   body[data-sim="on"] main { grid-template-columns: 236px minmax(0, 1fr) 286px; }
@@ -1337,6 +1391,12 @@ body[data-sim="on"] #side > .tabs, body[data-sim="on"] #side-body, body[data-sim
   .sd-group > label:not(.check) { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   .sd-long { display: none; }
   .sd-head { gap: 4px 10px; }
+}
+/* a medium panel: the log's filters stay on one row (the panes' headings remain for assistive technology) */
+@container dock (max-width: 1300px) {
+  .sd-log .sd-h, .sd-status .sd-h { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .sd .sim-log-filters select { max-width: 7.5em; }
+  .sd #sim-log-filter { flex-basis: 100px; }
 }
 @container dock (max-width: 860px) {
   .sd-head { gap: 4px 8px; padding: 4px 8px; }

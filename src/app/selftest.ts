@@ -1992,6 +1992,18 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       click('#sim-pd-protos-all');
       click('#modal [data-group-none="Traffic"]');
       check(`${theme}: Clear unticks every protocol, Select all ticks them again; a group’s Clear only its own, its count follows`, none && q('#modal .pp-group[data-group="Traffic"] .pp-gcount')!.textContent === '(0 of 4)' && q('#modal .pp-count')!.textContent === '(14 of 18)');
+      // Senders: after the protocols, open, with core2 (selected in the diagram) preselected; the parameters below
+      {
+        const kids = Array.from((q('#modal .modal-body') as HTMLElement).children).map((c) => c.className.split(' ')[0]);
+        const tg = q('#sim-pd-senders-toggle') as HTMLElement;
+        check(
+          `${theme}: Senders between the protocols and the parameters, open, its summary as its name; core2, selected in the diagram, preselected; grouped by type with counts, icons and L2 / L3 badges`,
+          kids.indexOf('pp') < kids.indexOf('snd') && kids.indexOf('snd') < kids.indexOf('psecs') && tg.getAttribute('aria-expanded') === 'true' && (tg.textContent || '').replace('▸', '') === 'Senders (1 of 22): core2' &&
+            Array.from(doc.querySelectorAll('#sim-pd-senders .snd-fold')).some((b) => /^▸Switches \(1 of \d+\)$/.test(b.textContent || '')) && !!q('#sim-pd-senders .snd-item svg.snd-icon') && !!q('#sim-pd-senders .snd-badge'),
+          (tg.textContent || '') + ' ' + kids.join(','),
+        );
+        click('#sim-pd-senders-all');
+      }
       (doc.querySelector('#modal [data-value="start"]') as HTMLElement).click();
       await tick();
       const ctl = app.simController()!;
@@ -2022,10 +2034,11 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       click('#sim-setup-protos-all');
       const sim = ctl.sim;
       check(`${theme}: a fresh start at t = 0: every ARP and MAC table empty, no adjacency up`, fresh);
+      check(`${theme}: the setup has Senders after the protocols, collapsed, with its summary; every device a sender: no badges`, q('#sim-setup-senders-toggle')!.getAttribute('aria-expanded') === 'false' && /^▸Senders \(all 22\)$/.test(q('#sim-setup-senders-toggle')!.textContent || '') && !q('#canvas .sim-sender'));
       check(
-        `${theme}: the simulation panel: Pause (primary), Step, the speed 0.25×–4×, the pacing (Readable, Proportional), skipping idle time (on), what the pacing is, the time and Exit simulation; the status and the event log side by side`,
-        q('#sim-play')!.classList.contains('primary') && !!q('#sim-step') && Array.from((q('#sim-speed') as HTMLSelectElement).options).map((o) => o.value).join(' ') === '0.25 0.5 1 2 4' && (q('#sim-pace') as HTMLSelectElement).value === 'readable' && (q('#sim-skip') as HTMLInputElement).checked &&
-          q('#sim-pace-text')!.textContent === 'Readable · 1 s per hop · 1×' && /^t = /.test(q('#sim-time')!.textContent || '') && !!q('#sim-exit') && vis('#sd-status') && vis('#sd-log') && !vis('.sd-tabs'),
+        `${theme}: the simulation panel: Pause (primary), Step, the state, the speed 0.1×–4×, the pacing (Readable, Proportional), skipping idle time (on), what the pacing is, the time and Exit simulation; the status and the event log side by side`,
+        q('#sim-play')!.classList.contains('primary') && !!q('#sim-step') && Array.from((q('#sim-speed') as HTMLSelectElement).options).map((o) => o.value).join(' ') === '0.1 0.25 0.5 1 2 4' && (q('#sim-pace') as HTMLSelectElement).value === 'readable' && (q('#sim-skip') as HTMLInputElement).checked &&
+          q('#sim-pace-text')!.textContent === 'Readable · 3 s per hop · 1×' && /^t = /.test(q('#sim-time')!.textContent || '') && !!q('#sim-exit') && vis('#sd-status') && vis('#sd-log') && !vis('.sd-tabs'),
       );
       // watch ARP resolve and OSPF reach Full
       ctl.runTo(20000);
@@ -2043,7 +2056,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       ctl.diagramClick('device:core1', r.left + 5, r.top + 5);
       await tick();
       const menuItems = Array.from(doc.querySelectorAll('.sim-menu [role="menuitem"]')).map((b) => b.textContent || '');
-      check(`${theme}: clicking a Layer 3 switch in the simulation opens a menu there: its tables (ARP, MAC, connections, IGMP groups, multicast routes and table), Send test…, Highlight broadcast domain…, Power off, Shut an interface…`, menuItems.join('|') === 'Show ARP table|Show MAC table|Show connections|Send test…|Show IGMP groups|Show multicast routes|Show multicast table|Highlight broadcast domain…|Power off|Shut an interface…', menuItems.join('|'));
+      check(`${theme}: clicking a Layer 3 switch in the simulation opens a menu there: its tables (ARP, MAC, connections, IGMP groups, multicast routes and table), Send test…, Stop as sender, Highlight broadcast domain…, Power off, Shut an interface…`, menuItems.join('|') === 'Show ARP table|Show MAC table|Show connections|Send test…|Show IGMP groups|Show multicast routes|Show multicast table|Stop as sender|Highlight broadcast domain…|Power off|Shut an interface…', menuItems.join('|'));
       const acts = Array.from(doc.querySelectorAll('#sim-act-items button')).map((b) => b.textContent || '');
       check(`${theme}: the Actions panel lists the same events for the selected device (its interfaces in a list of their own)`, acts.join('|') === menuItems.filter((m) => m !== 'Shut an interface…').join('|') && (q('#sim-obj') as HTMLSelectElement).value === 'device:core1' && !!q('#sim-iface') && !!q('#sim-iface-btns button'), acts.join('|'));
       (doc.querySelector('.sim-menu [role="menuitem"]') as HTMLElement).click();
@@ -2198,6 +2211,33 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       check(`${theme}: Join group… from a host: the Actions panel’s form opens for it; the join listed with Leave group`, app.session!.state.selected === 'device:pc2' && q('#sim-mc-join-toggle')!.getAttribute('aria-expanded') === 'true' && jmsg === 'pc2:eth0 joins 239.4.4.4.' && !!q('#sim-events li[data-event="join"] button'));
       (q('#sim-events li[data-event="join"] button') as HTMLElement).click();
       await tick();
+      // the packet inspector pauses while in use: from a log message, then closed: playing again
+      {
+        ctl.setPlaying(true);
+        const msg = q('#sim-log-table .sim-msg-btn') as HTMLElement | null;
+        if (msg) msg.click();
+        await tick();
+        const paused = !ctl.playing && ctl.pausedBy === 'inspector' && q('#sim-state')!.textContent === 'Paused: inspecting packet';
+        const pi = q('.sim-table-panel[data-table="packet"] .st-close') as HTMLElement | null;
+        if (pi) pi.click();
+        await tick();
+        check(`${theme}: a log message opens the packet inspector and pauses (“Paused: inspecting packet”); closing it plays again`, !!msg && paused && ctl.playing && q('#sim-state')!.textContent === 'Playing');
+        ctl.setPlaying(false);
+      }
+      // Senders during the simulation: pc1 alone; its badge; the others' messages counted, not listed
+      {
+        ctl.setSenders(['pc1']);
+        ctl.runTo(sim.now + 6000);
+        await tick();
+        const { list, bySender } = ctl.logEvents();
+        check(
+          `${theme}: pc1 as the only sender: its badge, only its exchanges in the log (the others counted), the change logged; every device again: no badge`,
+          Array.from(doc.querySelectorAll('#canvas .sim-sender')).map((x) => x.getAttribute('data-sender')).join() === 'pc1' && list.filter((e) => e.kind === 'message' && e.t > sim.now - 6000).every((e) => e.sender === 'pc1' || e.origin === 'pc1') && bySender > 0 &&
+            /messages from non-senders hidden/.test(q('#sim-log-note')!.textContent || '') && sim.events().some((e) => e.detail === 'Senders changed: pc1') && (q('#sim-setup-senders-toggle')!.textContent || '').indexOf('Senders (1 of 22): User PC') >= 0,
+        );
+        ctl.setSenders(app.session!.model.devices.map((x) => x.id));
+        await tick();
+      }
       // an export: a still picture with labelled arrows and the note; no sender or receiver marks
       ctl.advance(200);
       ctl.refresh(true);

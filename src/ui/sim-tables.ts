@@ -86,6 +86,8 @@ function timerText(t: TableTimer): string {
 export class TablePanels {
   private panels: Panel[] = [];
   private inlineP: Panel | null = null;
+  /** a panel was closed (× or Esc) */
+  onClose: ((kind: TableKind) => void) | null = null;
 
   constructor(private doc: Document) {}
 
@@ -217,6 +219,13 @@ export class TablePanels {
     if (p.box.parentNode) p.box.parentNode.removeChild(p.box);
     const back = p.back as HTMLElement | null;
     if (back && back.isConnected && typeof back.focus === 'function') back.focus();
+    if (this.onClose) this.onClose(p.kind);
+  }
+
+  /** The open panel of a kind (the packet inspector), or null. */
+  panelOf(kind: TableKind): HTMLElement | null {
+    const p = this.panels.find((x) => x.kind === kind);
+    return p ? p.box : null;
   }
 
   closeKind(kind: TableKind, dev: string): boolean {
