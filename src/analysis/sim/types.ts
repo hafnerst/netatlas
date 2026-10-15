@@ -31,6 +31,10 @@ export interface Msg {
   sender?: string;
   /** the device whose own action started the exchange it belongs to: its sender, or for a reply (an ARP reply, a TCP SYN-ACK, an ICMP error …) the origin of what it answers */
   origin?: string;
+  /** what made it be sent: the message it answers or carries on ("ARP Request from r1 at t = 2.000 s"); none: its own timer or start */
+  causedBy?: string;
+  /** what it waited for before it could be sent, and how long ("ARP 10.0.12.2: 0.2 ms") */
+  waited?: string[];
 }
 
 /** The transport header of a packet (ICMP counts here too): what the inspector, firewalls and the transport layer read. */
@@ -152,9 +156,12 @@ export interface Headers {
   l4?: L4;
   /** what it carries ("OSPF Hello", "Echo request, 56 bytes", the quoted header of an ICMP error) */
   payload: string;
+  /** why it was sent then: what caused it, and what it waited for */
+  causedBy?: string;
+  waited?: string[];
 }
 
-export type EventKind = 'message' | 'state' | 'drop' | 'route' | 'link' | 'table' | 'note';
+export type EventKind = 'message' | 'state' | 'drop' | 'route' | 'link' | 'table' | 'note' | 'wait';
 
 /** One line of the event log. */
 export interface SimEvent {

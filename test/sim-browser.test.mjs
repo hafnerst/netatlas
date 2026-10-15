@@ -123,17 +123,18 @@ test('the simulation layout: setup and actions in place of the Objects list and 
     assert.equal(L.scroll, 0);
     assert.equal(L.obj, 'device:core1', 'the selected object is the actions’ object');
     assert.ok(L.acts.indexOf('Show ARP table') >= 0 && L.acts.indexOf('Power off') >= 0, L.acts.join('|'));
-    // the panel: by default about a quarter of the window at most (the diagram is the largest part), at least its toolbar and three rows
+    // the panel: by default its header and three rows of each table, which is also its minimum; the diagram is the largest part
     const h0 = await page.eval(`document.getElementById('sim-dock').getBoundingClientRect().height`);
     const cw = await page.eval(`document.getElementById('canvas-wrap').getBoundingClientRect().height`);
-    assert.ok(h0 <= 0.26 * 900 && h0 >= 190 && cw > 2 * h0, `the panel ${h0}, the diagram ${cw}`);
+    const b0 = await page.eval(`netatlas.dockBounds()`);
+    assert.ok(Math.abs(h0 - b0.min) < 2 && b0.dflt === b0.min && cw > 2 * h0, `the panel ${h0} (${JSON.stringify(b0)}), the diagram ${cw}`);
     // the splitter: ↑ taller, Enter back to the default; remembered under its new key
     await page.eval(`document.getElementById('dock-splitter').focus(), true`);
     await page.key('ArrowUp', 'ArrowUp', 38);
     await page.key('ArrowUp', 'ArrowUp', 38);
     const h1 = await page.eval(`document.getElementById('sim-dock').getBoundingClientRect().height`);
     assert.ok(Math.abs(h1 - h0 - 40) < 2, `${h0} → ${h1}`);
-    assert.equal(await page.eval(`Number(localStorage.getItem('netatlas.simPanelHeight'))`), Math.round(h1));
+    assert.equal(await page.eval(`Number(localStorage.getItem('netatlas.simPanelHeight3'))`), Math.round(h1));
     assert.equal(await page.eval(`document.getElementById('dock-splitter').getAttribute('aria-valuenow')`), String(Math.round(h1)));
     for (let i = 0; i < 40; i++) await page.key('ArrowDown', 'ArrowDown', 40);
     assert.equal(await page.eval(`Math.round(document.getElementById('sim-dock').getBoundingClientRect().height)`), await page.eval(`netatlas.dockBounds().min`), 'never lower than its minimum');

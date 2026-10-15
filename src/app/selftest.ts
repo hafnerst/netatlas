@@ -2042,6 +2042,20 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       );
       // watch ARP resolve and OSPF reach Full
       ctl.runTo(20000);
+      // (the panel takes its measured height on the next frames, as the rows are drawn)
+      ctl.refresh(true);
+      await tick(80);
+      {
+        // the panel: its header and three rows of each table by default, which is also its minimum
+        const b = app.dockBounds();
+        const dockH = (q('#sim-dock') as HTMLElement).getBoundingClientRect().height;
+        check(`${theme}: the simulation panel is by default its header and three rows of the status and the log (its minimum), lower than the diagram`, b.dflt === b.min && Math.abs(dockH - b.min) < 1.5 && dockH < (q('#canvas-wrap') as HTMLElement).getBoundingClientRect().height, `${dockH} ${JSON.stringify(b)}`);
+        // parallel: once the links are up, ARP, OSPF and PIM start together (within a few ms), and what waits says why
+        const ev = ctl.sim.events();
+        const firstOf = (f: (e: (typeof ev)[number]) => boolean): number => (ev.find(f) || { t: Infinity }).t;
+        const starts = [firstOf((e) => e.kind === 'message' && e.what === 'ARP Request'), firstOf((e) => e.kind === 'message' && e.protocol === 'ospf' && e.what === 'Hello'), firstOf((e) => e.kind === 'message' && e.protocol === 'pim' && e.what === 'Hello')];
+        check(`${theme}: independent exchanges run in parallel: ARP, OSPF and PIM Hellos start together once the links are up; waits are logged with their reason`, Math.max(...starts) - Math.min(...starts) < 5 && Math.min(...starts) >= 2000 && ev.some((e) => e.kind === 'wait' && / waiting for ARP /.test(e.detail)), starts.join(' '));
+      }
       await tick();
       check(`${theme}: ARP resolves before the first unicast packets (requests and replies in the log; entries in the tables)`, sim.events().some((e) => e.protocol === 'arp' && /ARP Reply/.test(e.detail)) && sim.arpTable('core1').length > 0 && sim.arpTable('r1').length > 0);
       check(`${theme}: OSPF reaches Full on the ring`, sim.status().some((s) => s.protocol === 'ospf' && s.name.indexOf('ospf-r1-r3: r1 → r3') === 0 && s.state === 'Full'));
@@ -2170,7 +2184,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       await tick();
       const pi = q('.sim-table-panel[data-table="packet"]') as HTMLElement | null;
       const piHeads = pi ? Array.from(pi.querySelectorAll('.pi-layer h4')).map((h) => h.textContent || '') : [];
-      check(`${theme}: a dot opens the packet inspector (its frame layer by layer, inside the window) and pauses the simulation`, !!fl && !!pi && piHeads[0] === 'Layer 2 – Ethernet' && piHeads[piHeads.length - 1] === 'Payload' && /Destination MAC/.test(pi.textContent || '') && pi.getBoundingClientRect().right <= doc.documentElement.clientWidth + 1 && !ctl.playing && q('#sim-play')!.textContent === 'Play', piHeads.join(', '));
+      check(`${theme}: a dot opens the packet inspector (its frame layer by layer, then its timing, inside the window) and pauses the simulation`, !!fl && !!pi && piHeads[0] === 'Layer 2 – Ethernet' && piHeads.slice(-2).join() === 'Payload,Timing' && /Waited for/.test(pi.textContent || '') && /Destination MAC/.test(pi.textContent || '') && pi.getBoundingClientRect().right <= doc.documentElement.clientWidth + 1 && !ctl.playing && q('#sim-play')!.textContent === 'Play', piHeads.join(', '));
       if (pi && fi) {
         (pi.querySelector('#pi-follow') as HTMLElement).click();
         await tick();

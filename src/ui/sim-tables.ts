@@ -444,6 +444,10 @@ export class TablePanels {
       layer(`Layer 4 – ${l4.proto === 'icmp' ? (h.l3.length && h.l3[h.l3.length - 1].version === 6 ? 'ICMPv6' : 'ICMP') : l4.proto === 'other' ? 'protocol' : l4.proto.toUpperCase()}`, rows);
     }
     layer('Payload', [['Carries', h.payload]]);
+    // why it was sent then: what caused it, what it waited for
+    const why: Array<[string, string]> = [['Caused by', h.causedBy || 'its own timer or start (nothing it answers)']];
+    why.push(['Waited for', h.waited && h.waited.length ? h.waited.join('; ') : 'nothing: sent at once']);
+    layer('Timing', why);
     return box;
   }
 

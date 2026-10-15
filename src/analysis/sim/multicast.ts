@@ -267,11 +267,12 @@ export class Multicast {
     // switches with a snooping querier
     for (const sd of Array.from(this.e.net.devices.values()).sort((a, b) => cmp(a.id, b.id))) if (sd.bridge && sd.dev.type === 'switch') this.startSnoopQuerier(sd);
     // the hosts' joins and streams of the model, a moment after the start
-    for (const j of this.modelJoins()) this.e.at(1500 + Math.floor(this.e.random() * 1000), () => this.join(j.dev, j.iface, j.group, j.sources, 'model'));
+    // a host joins its groups as soon as its interface is up (an unsolicited report), all of them together
+    for (const j of this.modelJoins()) this.P.whenIfaceUp(j.dev, j.iface, () => this.join(j.dev, j.iface, j.group, j.sources, 'model'));
     for (const d of this.P.m.devices.slice().sort((a, b) => cmp(a.id, b.id))) {
       for (const i of d.interfaces.concat(d.logical)) {
         if (!i.multicast) continue;
-        for (const s of i.multicast.streams) this.addStream(d.id, i.id, s.group, s.port, s.interval, s.size, 'model', 4000 + Math.floor(this.e.random() * 1000));
+        for (const s of i.multicast.streams) this.addStream(d.id, i.id, s.group, s.port, s.interval, s.size, 'model', 4000 + this.e.jitter());
       }
     }
     // the model's multicast demands are streams too
@@ -283,7 +284,7 @@ export class Multicast {
       const l3 = Array.from(sd.l3.values()).find((l) => l.kind !== 'loopback' && l.kind !== 'tunnel' && l.addrs.some((a) => a.addr.version === g.version));
       if (!l3) continue;
       const ms = Math.round(Math.max(1000, Math.min(4000, 4000 / (1 + Math.log10(1 + dm.bps / 1e7)))));
-      this.addStream(sd.id, l3.id, dm.destination, 5001, ms, 1316, 'demand', 4000 + Math.floor(this.e.random() * 1000), dm.label || dm.id);
+      this.addStream(sd.id, l3.id, dm.destination, 5001, ms, 1316, 'demand', 4000 + this.e.jitter(), dm.label || dm.id);
     }
   }
 
@@ -471,10 +472,9 @@ export class Multicast {
 
   // ------------------------------------------------------------ routers: queriers and membership
 
-  private startQuerier(key: string): void {
-    const ri = this.rifs.get(key) as RIface;
+  /** A querier's General Queries, from now on (its first at once). */
+  private queries(key: string, ri: RIface): void {
     const dev = ri.dev;
-    const first = 800 + Math.floor(this.e.random() * 800);
     this.P.periodic(
       () => this.rifs.get(key) === ri,
       () => this.e.params.num('igmp-query', dev),
@@ -488,8 +488,15 @@ export class Multicast {
         }
         if (ri.querier) this.generalQuery(ri);
       },
-      first,
+      0,
     );
+  }
+
+  private startQuerier(key: string): void {
+    const ri = this.rifs.get(key) as RIface;
+    const dev = ri.dev;
+    // a querier starts with a General Query as soon as its interface is up (RFC 3376 §6.6), in parallel with everything else
+    this.P.whenIfaceUp(dev, ri.l3.id, () => this.queries(key, ri));
     // the other-querier check between two queries as well
     this.P.periodic(
       () => this.rifs.get(key) === ri,
@@ -502,7 +509,8 @@ export class Multicast {
           this.generalQuery(ri);
         }
       },
-      first + 500,
+      // (the interfaces come up after their link-up delay)
+      this.e.params.num('link-up-delay') + 1000,
     );
   }
 
@@ -700,6 +708,11 @@ export class Multicast {
 
   /** A switch with the snooping querier on queries every VLAN it carries that has no router port. */
   private startSnoopQuerier(sd: SimDevice): void {
+    // it queries as soon as its first port is up
+    this.P.whenAnyPortUp(sd.id, () => this.snoopQueries(sd));
+  }
+
+  private snoopQueries(sd: SimDevice): void {
     this.P.periodic(
       () => true,
       () => this.e.params.num('igmp-query', sd.id),
@@ -727,7 +740,7 @@ export class Multicast {
           this.e.floodFrom(sd.id, vlan, { src: sd.bridgeId.split('.')[1] || '00:00:00:00:00:00', dst: multicastMac(all), msg, ip: pkt });
         }
       },
-      1200,
+      0,
     );
   }
 
@@ -782,7 +795,7 @@ export class Multicast {
   private joinUp(dev: string, e: MRoute, why: string): void {
     const target = e.s === '*' ? (this.rp() || { addr: null }).addr : A(e.s);
     if (!target) {
-      this.note(`norp|${dev}|${e.g}`, 'drop', dev, `${dev} cannot join (*, ${e.g}): no RP is known (no static RP, no rp on a PIM relation, no candidate RP)`);
+      this.note(`norp|${dev}|${e.g}`, 'wait', dev, `PIM Join (*, ${e.g}) at ${dev} waiting for an RP (no static RP, no rp on a PIM relation, no candidate RP)`);
       return;
     }
     const r = this.rpf(dev, target);
@@ -790,11 +803,12 @@ export class Multicast {
     e.iif = r.iif;
     e.nbr = r.nbr ? r.nbr.peer : null;
     if (r.iif === null && r.why !== 'itself') {
-      this.note(`norpf|${dev}|${e.s}|${e.g}`, 'drop', dev, `${dev} cannot join ${this.entryName(e)}: ${r.why}`);
+      // the RPF route is missing: the join waits for it (the unicast routing may still be converging; tried again when routes change)
+      this.note(`norpf|${dev}|${e.s}|${e.g}`, 'wait', dev, `PIM Join ${this.entryName(e)} at ${dev} waiting for an RPF route to ${formatAddr(target)}: ${r.why}`);
       return;
     }
     if (!r.nbr) {
-      if (r.gateway) this.note(`nonbr|${dev}|${e.s}|${e.g}`, 'drop', dev, `${dev} cannot join ${this.entryName(e)} towards ${formatAddr(target)}: ${r.why} (the RPF check fails there)`);
+      if (r.gateway) this.note(`nonbr|${dev}|${e.s}|${e.g}`, 'wait', dev, `PIM Join ${this.entryName(e)} at ${dev} waiting for a PIM neighbour on its RPF interface towards ${formatAddr(target)}: ${r.why}`);
       return;
     }
     if (was !== r.nbr.peer) this.e.note('route', 'pim', dev, r.nbr.peer, 'join', '', `${dev} joins ${this.entryName(e)} towards ${e.s === '*' ? 'the RP ' + formatAddr(target) : 'the source'}: RPF interface ${r.iif}, neighbour ${r.nbr.peer} (${why})`);
@@ -1135,6 +1149,12 @@ export class Multicast {
     out.l4 = { proto: 'other', num: 103 };
     out.len = 8 + (pkt.len || 100) + 20;
     this.e.note('message', 'pim', dev, rp.dev, 'Register', '', msg.detail, this.e.now, msg);
+    // the Register waits for a route to the RP (the unicast routing may still be converging)
+    const d = lookup(this.P.m, dev, '', rp.addr, this.e.ctx(dev));
+    if (d.kind !== 'forward' && d.kind !== 'local') {
+      this.e.waitFor(`route:${dev}||${formatAddr(rp.addr)}`, `a route to the RP ${formatAddr(rp.addr)}`, dev, msg, () => this.e.send(dev, out), `${dev}|pim|Register|${formatAddr(pkt.src)}|${formatAddr(pkt.dst)}`);
+      return;
+    }
     this.e.send(dev, out);
   }
 
@@ -1398,11 +1418,11 @@ export class Multicast {
   // ------------------------------------------------------------ the log
 
   /** A log line written once per key and 10 s (repeating conditions: RPF failures, no RP, TTL 1 …). */
-  private note(key: string, kind: 'drop' | 'note', dev: string, text: string): void {
+  private note(key: string, kind: 'drop' | 'note' | 'wait', dev: string, text: string): void {
     const last = this.noted.get(key);
     if (last !== undefined && this.e.now - last < 10000) return;
     this.noted.set(key, this.e.now);
-    this.e.note(kind, key.indexOf('fwmc') === 0 || key.indexOf('nopim') === 0 || key.indexOf('ttl1') === 0 ? 'mcast' : 'pim', dev, '', kind === 'drop' ? 'dropped' : 'note', '', text);
+    this.e.note(kind, key.indexOf('fwmc') === 0 || key.indexOf('nopim') === 0 || key.indexOf('ttl1') === 0 ? 'mcast' : 'pim', dev, '', kind === 'drop' ? 'dropped' : kind === 'wait' ? 'waiting' : 'note', '', text);
   }
 
   /** A snooping line at the moment the frame passes (its way is decided when it is sent). */

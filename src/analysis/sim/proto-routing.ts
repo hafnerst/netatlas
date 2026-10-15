@@ -10,6 +10,7 @@ import { routerIdFor } from '../../model/services';
 import { compareAddr, formatAddr } from '../ipmath';
 import { lookup } from '../routing';
 import { fmtSec } from './engine';
+import { durationText } from './params';
 import { Behaviour, ProtocolSim, Sess } from './protocols';
 
 const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
@@ -392,11 +393,18 @@ function bgpConnect(P: ProtocolSim, s: Sess): void {
   if (!s.initiator) return;
   if (s.state === 'Established') return;
   if (!bgpRouteToPeer(P, s)) {
-    if (s.state !== 'Active') P.setState(s, 'Active', false, `no route to ${formatAddr(s.remote.addr)} yet (waiting for the IGP)`);
-    P.later(s, 1000, () => bgpConnect(P, s));
+    // a session between loopbacks waits for a route to the peer (the IGP): it goes on the moment there is one
+    if (s.state !== 'Active') P.setState(s, 'Active', false, `no route to ${formatAddr(s.remote.addr)} yet (waiting for ${s.local.l3.kind === 'loopback' ? 'the IGP' : 'the routes of its interface'})`);
+    const g = s.gen;
+    const m = P.msg(s, 'TCP SYN', `to port 179 of ${formatAddr(s.remote.addr)}`);
+    P.e.waitFor(`route:${s.dev}|${s.local.l3.vrf}|${formatAddr(s.remote.addr)}`, `a route to ${formatAddr(s.remote.addr)}`, s.dev, m, () => {
+      if (s.gen === g) bgpConnect(P, s);
+    }, `${s.key}|bgp-route`);
     return;
   }
   P.setState(s, 'Connect', false, `opening TCP to ${formatAddr(s.remote.addr)} port 179`);
+  P.e.note('wait', s.protocol, s.dev, s.peer, 'waiting', '', `${s.profile.label} OPEN to ${formatAddr(s.remote.addr)} waiting for TCP (the connection to port 179)`);
+  s.x.tcpSince = P.e.now;
   bgpSyn(P, s, 0, (s.x.synTok = ((s.x.synTok as number) || 0) + 1));
   const retry = P.timer(s, s.profile, 'connect-retry');
   P.later(s, retry.ms, () => {
@@ -456,6 +464,7 @@ const bgp: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string, notify?: b
         if (s.state !== 'Connect') return;
         P.unicast(s, 'TCP ACK', 'the connection is open');
         P.setState(s, 'OpenSent', false, 'TCP connection established');
+        s.x.waitedNext = [`TCP connection to ${formatAddr(s.remote.addr)}:179: ${durationText(P.e.now - ((s.x.tcpSince as number) || P.e.now))}`];
         P.unicast(s, 'OPEN', `AS ${asn || '?'}, hold time ${fmtSec(hold.ms)}, BGP identifier ${routerId(P, s.dev, 'bgp')}${s.protocol === 'evpn' ? ', L2VPN EVPN' : s.protocol === 'l3vpn' ? ', VPNv4' : ''}`, {}, 'OpenSent');
         return;
       case 'TCP ACK':
@@ -471,6 +480,7 @@ const bgp: Behaviour & { down: (P: ProtocolSim, s: Sess, why: string, notify?: b
       case 'KEEPALIVE':
         if (s.state === 'OpenConfirm') {
           P.setState(s, 'Established', true, 'KEEPALIVE received');
+          s.x.waitedNext = ['the session to be Established'];
           P.unicast(s, 'UPDATE', updateText(s), {}, 'Established');
           const g = s.gen;
           const kms = (): number => P.timer(s, s.profile, 'keepalive').ms;
@@ -590,6 +600,17 @@ const bfd: Behaviour = {
   },
   start(P, s) {
     bfd.refresh!(P, s);
+    // BFD runs for a client: it starts when a routing session to the same peer asks for it (is up); with no client, at once
+    const clients = P.sessionsOf(s.dev).filter((o) => o.peer === s.peer && o.profile.behaviour !== 'bfd' && ['ospf', 'bgp', 'isis', 'eigrp', 'ldp', 'rip'].indexOf(o.profile.behaviour) >= 0);
+    if (clients.length && !clients.some((o) => o.up)) {
+      if (!s.x.waitNoted) {
+        s.x.waitNoted = true;
+        P.e.note('wait', s.protocol, s.dev, s.peer, 'waiting', '', `BFD to ${s.peer} waiting for its client (${Array.from(new Set(clients.map((o) => o.profile.label))).join(', ')}) to ask for the session`);
+      }
+      s.x.started = false;
+      P.whenSessionUp((o) => clients.indexOf(o) >= 0, () => P.startNow(s));
+      return;
+    }
     every(P, s, () => P.timer(s, s.profile, 'interval').ms, () => {
       const iv = P.timer(s, s.profile, 'interval');
       const n = Math.max(1, Math.round(P.timer(s, s.profile, 'multiplier').ms / 1000));

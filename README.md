@@ -1017,11 +1017,44 @@ editing is paused. Opening, closing or replacing the model ends it.
 ### A fresh start
 
 Every simulation starts like a freshly booted network: every ARP,
-neighbour and MAC table is empty, every adjacency and session is down, and
-every interface comes up at t = 0 (and announces itself with a gratuitous
-ARP or an unsolicited Neighbor Advertisement). Then the protocols begin, a
-little apart (a jitter from a fixed seed, so the same model always gives
-the same timeline).
+neighbour and MAC table is empty, every adjacency and session is down.
+Every cable negotiates first: its interfaces come up after the **link-up
+delay** (2 s by default; one with no cable, a loopback, at once) and
+announce themselves with a gratuitous ARP or an unsolicited Neighbor
+Advertisement. An interface sends nothing before its link is up.
+
+### What waits for what (parallel exchanges)
+
+Everything else is scheduled on the simulated clock by what it actually
+depends on, and by nothing else: what doesn't depend on anything runs in
+parallel. There is no order between protocols or devices; a small jitter
+from a fixed seed (less than one hop's time) keeps starts and periodic
+messages from falling on exactly the same moment, and events of the same
+moment keep the order in which they were made, so the same model always
+gives the same timeline.
+
+| What | Waits for |
+|---|---|
+| Anything an interface sends | its link: up after the link-up delay; an aggregate (LAG) also for LACP to bundle a member (*Collecting / Distributing*) |
+| Multicast and broadcast: OSPF and PIM Hellos, VRRP / HSRP, IGMP / MLD queries and reports, LACP, STP, LLDP | only the interface (or port): they start the moment it is up, together, in parallel with ARP |
+| Unicast | ARP / neighbour discovery of **its own next hop**: packets for the same next hop wait together and go together when the reply comes; another next hop that doesn't answer delays nothing else |
+| OSPF on a broadcast network | Hellos at once; DBD, LSR and LSU then wait for the neighbour's ARP like any unicast |
+| BGP | a route to the peer (a session between loopbacks: the IGP's route to the peer's loopback); TCP for ARP; OPEN for the TCP connection; UPDATE for *Established* |
+| IPsec and GRE | IKE_SA_INIT, then IKE_AUTH (the first Child SA, CREATE_CHILD_SA for more); ESP and a GRE tunnel inside it wait for the IPsec session; a tunnel's own keepalives run over the interface of its source; what runs inside a tunnel (OSPF, PIM, traffic) waits for the tunnel to be up |
+| PIM | Hellos at once; a Join waits for a PIM neighbour on its RPF interface and the RPF route; a Register waits for a route to the RP |
+| BFD | its client: it starts when a routing session to the same peer (OSPF, BGP, IS-IS …) is up |
+| Traffic over a LAG or through a switch port | LACP bundling the member, the spanning tree letting the port forward (a blocked port, or one still converging in STP mode, discards) |
+| The model's demands, streams and test traffic | the network's start (4 s, 3 s for test traffic), then each packet like any unicast |
+
+What waits is said once in the event log, with its reason, as a muted
+*waiting* row: *BGP OPEN to 10.0.0.2 waiting for TCP*, *OSPF DBD waiting
+for ARP 10.0.12.2*, *GRE Keepalive waiting for IPsec ipsec-br*, *PIM
+Register (10.30.0.30, 239.1.1.1) waiting for a route to the RP 10.255.0.1*,
+*core1:ge1: OSPF, PIM wait for the link to come up*. When the condition
+holds, everything that waited for it goes at that moment. A periodic
+message that waits (a Hello, a keepalive) waits only with its newest copy.
+The packet inspector shows for each message what it **waited for**, and
+how long, and what **caused** it.
 
 ### Parameters
 
@@ -1230,14 +1263,19 @@ ends. There is no floating simulation window.
   hidden or detached. Its height changes with the splitter on its top edge
   (drag it; or focus it and press `↑` / `↓`, `Shift` for bigger steps,
   `Home` / `End`, `Enter` for the default; double-click resets it). By
-  default it is about a quarter of the window high (24 %), so the diagram is
-  clearly the largest part; never lower than its toolbar and 3½ rows of the
-  status and the log (measured: its toolbar and the log's filters wrap in a
-  narrow window; in a very short window at most 40 % of the space, never
-  less than its toolbar), never higher than two thirds of the space. The
-  height you choose is remembered in this browser (`netatlas.simPanelHeight`
-  in local storage: a new key, so heights remembered by earlier development
-  versions don't override the new default). Its toolbar, in the order of
+  default it is its header and **exactly three rows** of the status and
+  three of the log, each under its column headings, and that is also its
+  minimum: measured from the rows and headers as they are (the theme, the
+  font and the zoom change them; its toolbar and the log's filters wrap in
+  a narrow window, and in a narrow panel either tab shows three rows), so
+  the diagram stays the largest part. Only a window too short for that
+  (such as 720 × 450 CSS pixels, 200 % zoom of 1440 × 900) gives the
+  diagram the larger share: the panel is never taller than the diagram and
+  never lower than its toolbar; a broadcast storm's line takes a row too.
+  It is never higher than two thirds of the space. The height you choose
+  is remembered in this browser (`netatlas.simPanelHeight3` in local
+  storage: a new key, so heights remembered with the earlier, taller
+  default don't override the three rows). Its toolbar, in the order of
   use: **Play / Pause** (the primary action), **Step**, the **state**
   (*Playing*, *Paused*, *Paused: inspecting packet*; changes are announced
   politely), **Speed**, **Pacing** (and its scale), **Skip idle time**, what
@@ -1521,7 +1559,11 @@ operation, sender and target. **Layer 3**: source and destination, TTL /
 hop limit, Don't Fragment, protocol, length and fragment, for each header
 of an encapsulation (outer first). **Layer 4**: ports and TCP flags; ICMP
 type and code with the quoted header of the packet an error is about. And
-what it carries. A dot shows the frame on its cable (the MACs and TTL of
+what it carries. **Timing**: what caused it (the message it answers or
+carries on, with its sender and when it was received; none for a timer or
+a start) and what it waited for, and how long (*ARP 10.0.12.2: 0.2 ms*,
+*TCP connection to 10.255.0.3:179: 400 µs*, *a route to the RP
+10.255.0.1: 8.2 s*). A dot shows the frame on its cable (the MACs and TTL of
 that hop); a log row the frame as its sender sent it.
 
 ### Layer 2: ARP, NDP and switching
@@ -2146,7 +2188,9 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/scr
 | **Simulation parameters and network events** | `test/sim-params.test.mjs` (15 tests) | **The registry:** the layers' sections (8, 6 and 6 rows, at most 8), every parameter with a default in its range, a unit, a short help and a source, the defaults and their sources. **Values:** durations with a unit or in the parameter's own, percentages, speeds, choices; range and unit errors. **Precedence:** configured, device, simulation, default, and the source labels (*5 s (configured on cable x)*, *1 min (device)*, *10 min (simulation)*, *4 h (default)*); the values remembered for the session (only known, valid ones). **Device attributes:** every device type has its own (boot time at least), narrowed by what the model gives the device; the `simulation:` blocks of devices and cables validated (unknown key with a suggestion, not for this type, range, unit); the old `arp_timeout` key is an error; the Edit tab writes only overrides as one undo step that the simulation's lock allows. **Layer 1:** latency = propagation + serialization (64 bytes at 1 Mbit/s plus 2 ms), a cloud's latency on its cables, packet loss (100 %, and deterministic below), loss-of-signal detection, the link-up delay, a loss too short to notice. **Network events:** a failed relation, flapping for its cycles and continuous until stopped, shut and no shut (a port, a VLAN interface), power off (tables and sessions gone, the neighbour notices) and on (boot time, sessions afresh), several at once and ending them; an IPS failing open or closed; a VM restarted on another server. **Live changes:** a shorter ARP timeout expiring entries at once, the next OSPF Hello rescheduled, every change logged; a device's attributes changed in the model applying at once (*device*); the route recomputation delay; RSTP vs STP convergence; a full MAC table; the default TTL; **determinism** with parameter changes and events at the same simulated times. |
 | **Pacing** | `test/sim-pacing.test.mjs` (14 tests) | **Readable:** 3 s for a typical hop, monotonic in the latency, clamped to 2 and 6 s; the speeds 0.1× … 4× with 1× the default; the pulse and the ✕ 1.5 s; **Proportional:** the scale, at least 0.2 s and at most 30 s; the descriptions (*Readable · 3 s per hop · 1×*). **Speed limit:** at most 70 px a second at 100 % zoom (700 px: 10 s), in both modes, for every hop of a run. **The cause:** a hop shown keeps exactly its paced time on screen (to the frame) whatever the simulation does meanwhile; a jump through hidden traffic does a bounded amount of work per frame. **Full path:** every hop of a frame shown for its paced time, a continuing hop starting when the one before it arrived, crossing the switch first; in the logical view along relations and network lines; the simulated clock never past a hop on screen. **Speed, skipping, Step, a lost message, Follow, the dot limit, a jump, determinism** as before. |
 | **Senders** | `test/sim-senders.test.mjs` (3 tests), `test/sim-senders-browser.test.mjs` (2 tests, through the DevTools protocol) | **Engine:** every message and dot has its sender and origin; an ARP reply, srv's SYN-ACK and RST to pc1, a router's ICMP error about pc1's packet carry pc1's exchange; a forwarded frame keeps its sender; with pc1 the only sender no other endpoint sends test traffic, pc1 still does, and every protocol's sessions reach the same states (OSPF Full); the change logged; deterministic. **On screen:** nothing selected: every device (*Senders (all 22)*, its accessible name); the dialog's order (protocols, senders open, parameters collapsed); the groups by type with counts (*Routers (4 of 4)*), None, By type ▾ → Routers (*Senders (4 of 22): branch router, r1, r2…*), the icons and L2 / L3 badges, a group folded, by group / site, the filter, All; pc1 selected in the diagram: preselected, Selected in diagram available; the setup panel's order with Senders collapsed and its summary; remembered for the next start. Running with pc1: only its exchanges in the log (replies by others among them) and as dots, the others counted (*… messages from non-senders hidden*), Show all senders listing them; OSPF Full; the badge on pc1 only (named, in the export); r1's menu: Use as sender (logged, the summary, both badges, Stop as sender in Actions); All in the panel: no badges, nothing hidden; the model unchanged. |
-| **Panel, inspector, tab, pace** | `test/sim-pause.test.mjs` (4 tests, through the DevTools protocol) | **The panel:** a height remembered under the old key ignored; about a quarter of 900 px, the diagram more than twice as high, at least 3 rows of log and status, the toolbar in view; dragged 80 px up (exact, stored under `netatlas.simPanelHeight`), ↓ with the keyboard, remembered over Exit and Start, a double-click resets it and removes the key; at 800 × 640 and 800 × 450 (200 % zoom) the toolbar in view and no page scroll. **The inspector:** a log message opens it and pauses (*Paused: inspecting packet*, announced); × resumes (*Playing*), Esc too, a click in the diagram too (the inspector stays open), the focus to another control too, out of sight too; paused by the user first: stays paused after closing; Play while inspecting plays, Pause then stays paused after closing; Follow message plays beside the open inspector. **A hidden tab:** the clock stops, still meant to play, goes on when visible; paused before: stays paused. **The pace measured:** with real frames over 16 s every hop took at least 2 s of real time, and no line is crossed faster than 70 px a second. |
+| **Panel, inspector, tab, pace** | `test/sim-pause.test.mjs` (4 tests, through the DevTools protocol) | **The panel:** heights remembered under the old keys ignored; its three-row minimum, the diagram more than twice as high, 3 rows of log and status, the toolbar in view; dragged 80 px up (exact, stored under `netatlas.simPanelHeight3`), ↓ with the keyboard, remembered over Exit and Start, a double-click resets it and removes the key; at 800 × 640 and 800 × 450 (200 % zoom) the toolbar in view and no page scroll. **The inspector:** a log message opens it and pauses (*Paused: inspecting packet*, announced); × resumes (*Playing*), Esc too, a click in the diagram too (the inspector stays open), the focus to another control too, out of sight too; paused by the user first: stays paused after closing; Play while inspecting plays, Pause then stays paused after closing; Follow message plays beside the open inspector. **A hidden tab:** the clock stops, still meant to play, goes on when visible; paused before: stays paused. **The pace measured:** with real frames over 16 s every hop took at least 2 s of real time, and no line is crossed faster than 70 px a second. |
+| **Parallel exchanges** | `test/sim-parallel.test.mjs` (11 tests) | **Startup:** nothing is sent before the links are up (the link-up delay); ARP, OSPF and PIM Hellos, VRRP and IGMP then start together, their simulated intervals overlapping. **Unicast:** waits only for its own next hop (the packet via the gateway answered at once while another next hop is unresolved; each says *waiting for ARP x*; packets for one next hop leave together). **BGP:** ARP → SYN → SYN-ACK → OPEN → Established → UPDATE, *OPEN waiting for TCP*, the OPEN's *waited* and *caused by*. **Tunnels:** the link, IKE_SA_INIT, IKE_AUTH, Established, GRE up, the tunnel up, OSPF inside, in that order; the GRE keepalive waits for IPsec, nothing dropped as *not up*. **PIM:** Hellos at once; the Join waits for its RPF route, the Register for a route to the RP and goes with it (its wait recorded); no *cannot join*. **Independence:** two islands go through the same steps at the same moments, their first hops overlapping; restored together they reconverge together. **Determinism:** the same events at the same times twice; the jitter under its share of a hop; ties in sequence order; another model jitters differently. **Pacing:** a dot limit of 1 or 48 and both modes give the same simulated times (the hops not drawn still sent); several protocols on screen at once at the start. **The log:** waiting rows with their reason; the events of one moment adjacent. |
+| **Parallel on screen, three-row panel** | `test/sim-parallel-browser.test.mjs` (5 tests, through the DevTools protocol) | **Dots:** at the start dots of at least 4 protocols in flight at once. **The log:** same-moment groups (a ditto mark hidden from assistive technology, the time for a screen reader), *waiting* rows with their reasons found by the filter; the packet inspector's *Timing* (a BGP OPEN waited for its TCP connection, caused by the SYN-ACK). **The panel**, light and dark: at 1920 × 1080 at 100 %, 150 % and 200 % and at 800 × 640 (tabs) exactly 3 status and 3 log rows in view, the default equal to the minimum, the diagram larger, no page scroll. **Height:** the old key's value ignored and left alone, stored under `netatlas.simPanelHeight3`, never lower than three rows, a double-click and Enter reset it and remove the key. |
 | **Simulation UI** | `test/sim-ui.test.mjs` (2 tests), `test/sim-browser.test.mjs` (7 tests, through the DevTools protocol) | Start simulation… and Exit simulation in their three states with the reasons (one registry for the menu and the palette); label placement (never on a text, a box or another label). **The Start dialog with real keys:** Simulate ▾ → Start; the protocols first (groups *Layer 2 (4 of 4)* … *Custom (1 of 1)*, every protocol ticked, *OSPF 8 relations*, *(18 of 18)*), the keyboard on the first protocol, Space unticking it, a group's Clear and its count; the layers collapsed with *(8)*, a changed TTL making Layer 3 say *· 1 modified* while collapsed (in its accessible name too); no scrolling at 1366 × 768; Start primary and last; Esc cancelling, the protocols open and all ticked again on reopening; Enter on a checkbox starting; the choice in the setup panel (*(14 of 18)*, Traffic *(0 of 4)*, every layer collapsed) and on the next start. **The layout:** setup and actions in place of the Objects list and the Inspector (named *Simulation setup* and *Actions*), the panel under them, no tool window, nothing to detach it, the page not scrolling; the selected device as the actions' object; the splitter (↑ twice: 40 px taller, stored, `aria-valuenow`; never below 150 px; Enter: the default); `F6` / `Shift+F6` through setup, diagram, actions and panel; Exit bringing back the Objects list, the Legend tab, the selection and the zoom. **Menus and actions:** a click on a cable opens Fail link, Start flapping and Highlight broadcast domain at that spot with the keyboard in it, the Actions panel listing the same; Enter fails it, Restore from the Active events and from the Actions panel; a switch's menu by arrow keys; its ARP and MAC tables in the panel's status side (no floating table), Protocols again; unticking OSPF in the setup keeps the time and is remembered. **Pacing:** *Readable · 1 s per hop · 1×*, every hop 0.6–3 s; a dot clicked: the packet inspector with Follow message, the simulation paused (also when it was playing); Follow and Stop following; Step; the speed 0.25×–4×, Proportional with its scale, skipping off and on; *⏩ … skipped* reported. **Reduced motion:** still arrows with labels for the first message at once with Step, arrows that do not move while playing, Step one event at a time, the export a still picture without the moment's marks. **A device's Simulation section** in the Actions panel (once; collapsed; own and inherited values with their sources), an override written as `simulation: {arp_timeout: 45}` and logged as *(device)*, Undo taking it back; the setup's parameters applied at once, remembered, *· 1 modified*. **Layers 3 and 4, multicast:** the storm warning, a log message in the inspector by keyboard, the log by cast, layer and protocol; Send test from the Actions panel (Enter in To) and from a device's menu; a broadcast domain; connections and sessions; Join group… from a host's menu (the form kept after the join), Leave group; the IGMP, multicast-table and multicast-route tables; IGMP in the inspector. |
 | **Failure simulation** | `test/failure.test.mjs` (9 tests) | A failed device (its interfaces and cables down, neighbours degraded, relations at it down, a VRRP group failing over, networks degraded or down, the routing context); a failed port (its cable, the far port) and a LAG degraded or down by `min_links`, and its LACP relation; a cable or relation failing what runs over it, recursively (OSPF over GRE over IPsec), with tunnels listed apart; a relation of three devices; static routes failing and the floating route taking over, with the path tracer following it; a VRRP failover in the tracer; device pairs losing reachability in full or in part; the single points of failure (partitioning cables and devices, a LAG listed once, relations without a redundant underlay, none in a ring, the enterprise WAN); only cables, ports, devices and relations can fail; the same result for another order of the failed objects and of the file. |
 | **Path tracer** | `test/trace.test.mjs` (14 tests) | A static path hop by hop (longest prefix match, interfaces, addresses, routes, cables, the refs it marks; ends given as device, interface or address); a floating route taking over when the better next hop's interface is down; where a trace stops and why (black hole, no route, an unresolved next hop, a loop, a host that does not forward); a destination outside the model (leaves it, or delivered into a network); bad requests; equal-cost multipath (every branch, the main path and the alternatives); routes learned over OSPF (hop count, a per-device cost, a static route beating OSPF, a failed adjacency); an adjacency without a common network; a GRE-over-IPsec tunnel with OSPF over it (the stack, the declared underlay, a routed underlay traced nested) and a VLAN missing from a trunk; a VRRP gateway and its failover; VRFs; the return path and asymmetric routing; the same text for files in another order; the paths of the enterprise WAN and branch examples. |
@@ -2695,9 +2739,17 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/scr
       running*) and *Exit simulation* available; the palette says the
       same. Drag the line above the panel, then focus it and press ↑, ↓,
       Enter. `F6` goes setup → diagram → actions → panel; `Shift+F6` back.
-    * The panel under the diagram is about a quarter of the window high and
-      shows at least three rows of the status and the log. Double-click
-      the line above it: back to that height.
+    * The panel under the diagram shows its header and exactly three rows
+      of the status and three of the log, in both themes and at 100 %,
+      150 % and 200 % zoom; it can't be made lower. Drag it taller, then
+      double-click the line above it: back to three rows.
+    * At the start, several dots of different protocols (ARP, OSPF and PIM
+      Hellos, IGMP, STP, IPsec) travel at the same time, once the links
+      are up after 2 s; none waits for another to arrive. In the event
+      log, events of the same moment are one group (a ditto mark instead
+      of the repeated time), and muted *waiting* rows say what waits for
+      what. Open a BGP OPEN in the packet inspector: *Waited for* names
+      its TCP connection, *Caused by* the SYN-ACK.
     * Labelled dots travel their whole way, cable by cable and across the
       switches, about three seconds per cable (longer on the WAN links and
       on long lines: never faster than about 70 px a second at 100 %
@@ -2971,7 +3023,7 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/scr
   longer holds the address.
 * **The protocol simulation is a teaching and design-review simulation of
   protocol behaviour, not an exact protocol implementation.** There is no
-  real timing jitter (only a small fixed-seed jitter at the start), no
+  real timing jitter (only a small fixed-seed jitter of starts and timers, under a hop's time), no
   vendor-specific behaviour beyond the parameters, no queuing beyond each cable's serialization
   (one frame after the other) and no CPU limits; packet loss is a share of
   frames from a fixed seed. TCP has no congestion control, windows or

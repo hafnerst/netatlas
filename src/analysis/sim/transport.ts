@@ -1069,7 +1069,8 @@ export class Transport {
     for (const d of Array.from(this.P.e.net.devices.values()).sort((a, b) => cmp(a.id, b.id))) {
       if (d.dev.type !== 'endpoint' || !d.l3.size) continue;
       const dev = d.id;
-      const first = 3000 + Math.floor(this.e.random() * 1000);
+      // all endpoints together, once the network had time to come up
+      const first = 3000 + this.e.jitter();
       this.P.periodic(
         () => true,
         () => this.e.params.num('test-interval', dev),
@@ -1144,7 +1145,7 @@ export class Transport {
             });
           }
         },
-        2000 + Math.floor(this.e.random() * 500),
+        2000 + this.e.jitter(),
       );
     }
   }
@@ -1190,7 +1191,7 @@ export class Transport {
           if (!this.e.deviceOn(dev)) return;
           for (const a of agents) this.run({ from: dev, target: a.dev, dst: a.addr, kind: 'icmp', source: 'probe', series: `${dev} probe ${a.dev}`, timeout: { value: PROBE_TIMEOUT }, onDone: (t) => this.probed(dev, a.dev, t) });
         },
-        2500 + Math.floor(this.e.random() * 500),
+        2500 + this.e.jitter(),
       );
     }
   }

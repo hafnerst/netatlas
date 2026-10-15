@@ -127,7 +127,8 @@ export function installFhrp(P: ProtocolSim): void {
     P.e.after(timers(m).down, wait);
   };
   P.bootHooks.push(() => {
-    for (const m of members) P.e.at(300 + Math.floor(P.e.random() * 400), () => backup(m, 'initial state'));
+    // each starts (Backup) as soon as its interface is up: all of them together
+    for (const m of members) P.whenIfaceUp(m.dev, m.l3.id, () => backup(m, 'initial state'));
   });
   for (const proto of FHRP) {
     P.handlers.set(proto, (dev, l3, msg) => {
@@ -292,7 +293,9 @@ function greSend(P: ProtocolSim, s: Sess, type: string, detail: string): void {
   let pkt: Pkt = P.e.newPacket(e.src, e.dst, '', m, [s.rel.id]);
   for (const layer of encapStack(P.m, s.rel).slice(1)) {
     if (layer.relation && !P.sessionUp(layer.relation)) {
-      P.e.note('drop', s.protocol, s.dev, s.peer, type, '', `dropped at ${s.dev}: ${layer.label} (${layer.relation}) is not up (${m.label})`);
+      // the tunnel's keepalives wait for what carries it (the newest only: they are periodic)
+      const rid = layer.relation;
+      P.e.waitFor('rel:' + rid, `${layer.label} ${rid}`, s.dev, m, () => P.e.send(s.dev, pkt), `${s.dev}|${s.protocol}|${type}`);
       return;
     }
     const outer: Msg = { ...m, data: { ...(m.data || {}), outer: layer.relation ? P.e.relProtocol(layer.relation) : '' } };
@@ -587,14 +590,21 @@ export function installLacp(P: ProtocolSim): void {
     if (m.state === st) return;
     m.state = st;
     P.e.note('state', 'lacp', m.dev, m.peer, st, st, `LACP ${m.dev}:${m.agg} member ${m.port} (to ${m.peer}:${m.peerPort}): ${st}${why ? ' (' + why + ')' : ''}`);
+    // only a member that is collecting and distributing carries the aggregate's traffic
+    P.e.holdMember(m.dev, m.port, st !== 'Collecting / Distributing');
   };
   const send = (m: Mem, why: string): void => {
     const detail = `LACPDU from ${m.dev}:${m.port} (${m.agg}) to ${LACP_MAC}: actor state ${m.state === 'Collecting / Distributing' ? 'in sync, collecting, distributing' : m.state === 'Attached' ? 'in sync' : 'not in sync'}${why ? '; ' + why : ''}`;
     P.onPort('lacp', m.dev, m.port, LACP_MAC, 'LACPDU', 'LACP LACPDU', detail, { agg: m.agg, state: m.state }, m.peer, m.rel);
   };
+  // until LACP bundles a member, the aggregate's traffic waits for it
+  for (const m of mems) P.e.holdMember(m.dev, m.port, true, true);
+  // the members whose LACPDUs started (at their first link-up): a later link-up restarts them
+  const started = new Set<Mem>();
   P.bootHooks.push(() => {
     for (const m of mems) {
-      P.e.at(400 + Math.floor(P.e.random() * 600), () => {
+      P.whenPortUp(m.dev, m.port, () => {
+        started.add(m);
         const g = m.gen;
         P.periodic(
           () => m.gen === g,
@@ -633,7 +643,7 @@ export function installLacp(P: ProtocolSim): void {
       if (!up) {
         m.gen++;
         set(m, 'Detached', 'its link went down');
-      } else {
+      } else if (started.has(m)) {
         m.gen++;
         const g = m.gen;
         P.periodic(
@@ -689,7 +699,7 @@ export function installL2Adverts(P: ProtocolSim): void {
             } else P.onPort(base, x.dev, x.port, mac, p.messages[0].name, `${p.label} ${p.messages[0].name}`, `${p.messages[0].name} from ${x.dev}:${x.port}: system ${x.dev}, port ${x.port}, TTL ${fmtSec(ttl)}`, {}, x.peer, r);
           }
         };
-        P.e.at(500 + Math.floor(P.e.random() * 1500), () => P.periodic(() => true, () => helloOf(x.dev), tick));
+        P.whenPortUp(x.dev, x.port, () => P.periodic(() => true, () => helloOf(x.dev), tick));
       }
     });
     P.handlers.set(base, (dev, _l3, msg) => {
@@ -732,13 +742,20 @@ function stpBlockedPorts(P: ProtocolSim, dev: string): string[] {
 
 // ------------------------------------------------------------------ gratuitous ARP at boot, and the demands
 
-/** Every interface comes up at t = 0 and announces its addresses (gratuitous ARP, unsolicited Neighbor Advertisement). */
+/** When the model's data (demands, streams) starts: once the network had time to come up (the link-up delay) and to converge a little. */
+export const DATA_START = 4000;
+
+/**
+ * An interface that is up from the start (no cable to wait for) announces
+ * its addresses at once (gratuitous ARP, unsolicited Neighbor
+ * Advertisement); one that waits for its cable does so when it comes up.
+ */
 export function installBootGarp(P: ProtocolSim): void {
   P.bootHooks.push(() => {
     for (const d of P.e.net.devices.values()) {
       for (const l3 of Array.from(d.l3.values()).sort((a, b) => cmp(a.id, b.id))) {
-        if (l3.kind === 'loopback' || l3.kind === 'tunnel' || !l3.addrs.length) continue;
-        for (const a of l3.addrs) P.e.at(Math.floor(P.e.random() * 900), () => P.e.gratuitous(d.id, l3, a.addr, l3.mac, `${l3.id} came up`));
+        if (l3.kind === 'loopback' || l3.kind === 'tunnel' || !l3.addrs.length || !P.e.isL3Up(d.id, l3.id)) continue;
+        for (const a of l3.addrs) P.e.at(P.e.jitter(), () => P.e.gratuitous(d.id, l3, a.addr, l3.mac, `${l3.id} came up`));
       }
     }
   });
@@ -780,8 +797,8 @@ export function installDemands(P: ProtocolSim): void {
         } else P.e.send(x.dev, pkt);
         P.e.after(x.every, tick);
       };
-      // data starts once the network had time to converge (it still waits for ARP like any packet)
-      P.e.at(4000 + Math.floor(P.e.random() * 1000), tick);
+      // data starts once the network had time to converge (it still waits for ARP like any packet); all demands together
+      P.e.at(DATA_START + P.e.jitter(), tick);
     }
   });
   P.handlers.set('demand', (dev, l3, msg, pkt) => {
@@ -862,7 +879,7 @@ export function installCustomL2(P: ProtocolSim): void {
         P.onPort(f.protocol, f.from, f.port, 'ff:ff:ff:ff:ff:ff', 'packet', `${f.label} packet`, `${f.label} packet ${f.sent} from ${f.from}:${f.port} to ${f.to} over their cable (the devices have no addresses; ${f.rel.direction === 'unidirectional' ? 'one way' : 'both ways'})`, {}, f.to, f.rel);
         P.e.after(iv, tick);
       };
-      P.e.at(800 + Math.floor(P.e.random() * 1000), tick);
+      P.whenPortUp(f.from, f.port, tick);
     }
   });
   for (const id of Array.from(new Set(feeds.map((f) => f.protocol)))) {
