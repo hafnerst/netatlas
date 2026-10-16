@@ -1,0 +1,186 @@
+# netatlas example: restricted separation by packet filtering, both ways it
+# can be built.
+#
+# fbr is a Separation gateway that is a filtering bridge: Office and Lab
+# share one network (10.30.0.0/24), and fbr passes frames between them
+# unchanged, but only what its policy permits. Office may start HTTPS to the
+# lab server (rule office-web); its replies come back. The lab workstation
+# may start nothing towards Office: Lab → Office is not a permitted
+# direction, so its ping ends at fbr (a permitted transfer's replies are no
+# permission to start one the other way).
+#
+# frt is a filtering router between HIGH (10.40.1.0/24) and LOW
+# (10.40.2.0/24): it routes only the permitted packets. LOW may send syslog
+# to the HIGH collector (rule low-syslog); its SSH attempt to the collector
+# is denied (no rule permits it), and nothing in HIGH may start a transfer
+# to LOW.
+#
+# Each gateway's management interface (mgmt0) is in neither domain: it is
+# never forwarded. Analyze ▾ → Trace path… with a service (tcp/443, udp/514,
+# icmp) follows the policy; Simulate ▾ → Start simulation… shows each
+# permitted transfer and each denial with its reason.
+netatlas: 1
+title: Separation by packet filtering (bridge and router)
+description: |
+  Two Separation gateways with explicit policies: a filtering bridge between
+  two domains on one network, a filtering router between two networks;
+  permitted and denied transfers, no reverse initiation.
+
+groups:
+  - id: office
+    label: Office
+    kind: zone
+  - id: lab
+    label: Lab
+    kind: zone
+  - id: high
+    label: HIGH
+    kind: zone
+  - id: low
+    label: LOW
+    kind: zone
+  - id: mgmt
+    label: Management
+    kind: zone
+
+devices:
+  # the filtering bridge
+  - id: office-ws
+    label: office-ws
+    type: endpoint
+    kind: pc
+    group: office
+    simulation: {test_traffic: "on", test_targets: "10.30.0.20 tcp/443, 10.30.0.20 tcp/22", test_interval: 10}
+    interfaces:
+      - {id: eth0, ip: 10.30.0.10/24}
+  - id: fbr
+    label: fbr (filtering bridge)
+    type: separation_gateway
+    services:
+      separation:
+        implementation: filtering_bridge
+        domains:
+          - {name: Office, interfaces: [p1]}
+          - {name: Lab, interfaces: [p2]}
+        directions:
+          - {from: Office, to: Lab}
+        rules:
+          - id: office-web
+            description: the office may use the lab server's web interface
+            from: Office
+            to: Lab
+            source: 10.30.0.0/24
+            destination: 10.30.0.20
+            protocol: tcp
+            ports: "443"
+    management: [mgmt0]
+    interfaces:
+      - {id: p1}
+      - {id: p2}
+      - {id: mgmt0, ip: 10.99.1.1/24}
+  - id: lab-srv
+    label: lab-srv
+    type: server
+    group: lab
+    interfaces:
+      - {id: eth0, ip: 10.30.0.20/24}
+  - id: lab-ws
+    label: lab-ws
+    type: endpoint
+    kind: pc
+    group: lab
+    simulation: {test_traffic: "on", test_targets: "10.30.0.10 icmp", test_interval: 10}
+    interfaces:
+      - {id: eth0, ip: 10.30.0.30/24}
+  - id: lab-sw
+    type: switch
+    role: access
+    group: lab
+    interfaces:
+      - {id: p1, vlans: 1}
+      - {id: p2, vlans: 1}
+      - {id: p3, vlans: 1}
+  # the filtering router
+  - id: high-col
+    label: high-col (syslog)
+    type: server
+    group: high
+    interfaces:
+      - {id: eth0, ip: 10.40.1.10/24}
+    routes:
+      - {prefix: 0.0.0.0/0, via: 10.40.1.1, name: default gateway}
+  - id: frt
+    label: frt (filtering router)
+    type: separation_gateway
+    services:
+      separation:
+        implementation: filtering_router
+        domains:
+          - {name: HIGH, interfaces: [high0]}
+          - {name: LOW, interfaces: [low0]}
+        directions:
+          - {from: LOW, to: HIGH}
+        rules:
+          - id: low-syslog
+            description: LOW devices send their logs to the HIGH collector
+            from: LOW
+            to: HIGH
+            source: 10.40.2.0/24
+            destination: 10.40.1.10
+            protocol: udp
+            ports: "514"
+    management: [mgmt0]
+    interfaces:
+      - {id: high0, ip: 10.40.1.1/24}
+      - {id: low0, ip: 10.40.2.1/24}
+      - {id: mgmt0, ip: 10.99.1.2/24}
+  - id: low-sensor
+    label: low-sensor
+    type: endpoint
+    kind: iot
+    group: low
+    simulation: {test_traffic: "on", test_targets: "10.40.1.10 udp/514, 10.40.1.10 tcp/22", test_interval: 10}
+    interfaces:
+      - {id: eth0, ip: 10.40.2.20/24}
+    routes:
+      - {prefix: 0.0.0.0/0, via: 10.40.2.1, name: default gateway}
+  # management: reaches the gateways only
+  - id: mgmt-sw
+    type: switch
+    role: management
+    group: mgmt
+    interfaces:
+      - {id: p1, vlans: 1}
+      - {id: p2, vlans: 1}
+      - {id: p3, vlans: 1}
+  - id: mgmt-st
+    label: mgmt-st
+    type: endpoint
+    kind: pc
+    role: management
+    group: mgmt
+    interfaces:
+      - {id: eth0, ip: 10.99.1.10/24}
+
+links:
+  - {id: l-office, a: "office-ws:eth0", b: "fbr:p1", speed: 1G}
+  - {id: l-fbr-lab, a: "fbr:p2", b: "lab-sw:p1", speed: 1G}
+  - {id: l-lab-srv, a: "lab-sw:p2", b: "lab-srv:eth0", speed: 1G}
+  - {id: l-lab-ws, a: "lab-sw:p3", b: "lab-ws:eth0", speed: 1G}
+  - {id: l-high, a: "high-col:eth0", b: "frt:high0", speed: 1G}
+  - {id: l-low, a: "frt:low0", b: "low-sensor:eth0", speed: 1G}
+  - {id: l-mgmt-st, a: "mgmt-st:eth0", b: "mgmt-sw:p1", speed: 1G}
+  - {id: l-mgmt-fbr, a: "mgmt-sw:p2", b: "fbr:mgmt0", speed: 1G}
+  - {id: l-mgmt-frt, a: "mgmt-sw:p3", b: "frt:mgmt0", speed: 1G}
+
+relations:
+  - id: office-web
+    protocol: https
+    label: HTTPS Office → Lab (permitted)
+    endpoints: [office-ws, lab-srv]
+    direction: unidirectional
+  - id: low-syslog
+    protocol: syslog
+    label: syslog LOW → HIGH (permitted)
+    endpoints: [low-sensor, high-col]
+    direction: unidirectional

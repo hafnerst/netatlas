@@ -372,6 +372,57 @@ async function main() {
       await page.settle(100);
     }
 
+    // the device model: a System's Identity card (ot-network.yaml); the Separation gateway (cross-domain.yaml): the diagram, its
+    // Domain separation card, and Trace path with a service through its protocol break
+    {
+      const ex = (name) => page.eval(`Array.from(document.querySelectorAll('#menu-examples [data-example]')).findIndex((b) => b.textContent.indexOf(${JSON.stringify(name)}) >= 0)`);
+      await page.eval(`netatlas.loadExample(${await ex('ot-network')}), netatlas.setView("physical"), netatlas.select("device:pgw"), netatlas.showTab("edit"), true`);
+      await page.eval("document.getElementById('toast').hidden = true");
+      await page.mouse('mouseMoved', 700, 890);
+      await page.settle(250);
+      // from its type down to its icon: what the System is
+      await page.eval(`(() => { document.querySelector('#side-body select[data-key="type"]').closest('.field').scrollIntoView({ block: 'start' }); return true; })()`);
+      await page.settle(150);
+      {
+        const g = await page.rect('#side-body [data-group="identity"]');
+        const t = await page.rect('#side-body select[data-key="type"]');
+        const sb = await page.rect('#side-body');
+        const top = Math.max(sb.y, t.y - 30);
+        await save('device-model', { x: g.x - 4, y: top, w: g.w + 8, h: Math.min(sb.y + sb.h, g.y + g.h + 4) - top }, { quality: 50 });
+      }
+      await page.eval(`netatlas.loadExample(${await ex('cross-domain')}), netatlas.setView("physical"), netatlas.select(null), netatlas.fit(), true`);
+      await page.eval("document.getElementById('toast').hidden = true");
+      await page.mouse('mouseMoved', 700, 890);
+      await page.settle(250);
+      await save('separation', await page.rect('#canvas-wrap'), { scale: 0.75, quality: 50 });
+      await page.eval(`netatlas.select("device:cdg"), netatlas.showTab("edit"), true`);
+      await page.eval("document.getElementById('toast').hidden = true");
+      await page.eval(`(() => { const g = document.querySelector('#side-body [data-group="separation"]'); g.scrollIntoView({ block: 'start' }); return true; })()`);
+      await page.mouse('mouseMoved', 700, 890);
+      await page.settle(250);
+      {
+        const g = await page.rect('#side-body [data-group="separation"]');
+        const sb = await page.rect('#side-body');
+        const prof = await page.rect('#side-body .profile-card');
+        const top = Math.max(sb.y, g.y - 4);
+        await save('separation-edit', { x: g.x - 4, y: top, w: g.w + 8, h: Math.min(sb.y + sb.h, prof.y + prof.h + 8) - top }, { quality: 45 });
+      }
+      await page.eval(`netatlas.select(null), netatlas.setTraceForm({ from: 'red-ws', to: '10.10.0.1', service: 'tcp/443', back: false }), netatlas.openTrace(), true`);
+      await page.settle(150);
+      await page.eval(`document.getElementById('trace-go').click(), true`);
+      await page.eval("document.getElementById('toast').hidden = true");
+      // the window scrolled to the protocol break's note and leg 2
+      await page.eval(`(() => { const l = document.querySelector('section.trace-leg'); if (l) l.scrollIntoView({ block: 'end' }); return true; })()`);
+      await page.mouse('mouseMoved', 700, 890);
+      await page.settle(300);
+      {
+        const w = await page.rect('#toolwin');
+        await save('separation-trace', { x: w.x - 4, y: w.y - 4, w: w.w + 8, h: w.h + 8 }, { scale: 0.8, quality: 40 });
+      }
+      await page.eval(`netatlas.exitTrace(), true`);
+      await page.settle(100);
+    }
+
     // virtualization (virtualization.yaml): esx-01's interior in the physical view, its Services card with the Hypervisor open,
     // and the simulation after esx-02 was powered off (its VMs restarted on esx-01)
     {

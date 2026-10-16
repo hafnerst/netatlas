@@ -1,0 +1,156 @@
+# netatlas example: hybrid cloud — a data centre joined to two public clouds.
+#
+# The groups of a public cloud have their own kinds: a cloud region
+# (cloud_region), and the virtual networks in it, a VPC or a VNet, each with
+# its provider. In them are the Cloud gateway routers (type router, kind
+# Cloud gateway: the provider's gateway into the virtual network) and the
+# cloud instances: VMs and containers that run on the provider's hosts,
+# which are not modelled, so they have no host of their own. Their
+# interfaces are their attachments to the subnets of the VPC or VNet.
+#
+# The private interconnect between the data centre and both clouds is a
+# Cloud (kind ISP / carrier): an external network that carries traffic
+# between its attachments as one Layer 3 hop. Each router names its routes;
+# Analyze ▾ → Trace path… from dc-pc to web-1 or app-1 shows the way.
+netatlas: 1
+title: Hybrid cloud — data centre, AWS and Azure
+description: |
+  An on-premises site joined over a private interconnect to a VPC (AWS)
+  and a VNet (Azure), each with a Cloud gateway router and cloud instances.
+
+groups:
+  - id: onprem
+    label: Data centre
+    kind: site
+  - id: aws-eu
+    label: AWS eu-central-1
+    kind: cloud_region
+    provider: aws
+  - id: vpc-prod
+    label: VPC prod (10.50.0.0/16)
+    kind: vpc
+    provider: aws
+    parent: aws-eu
+  - id: az-weu
+    label: Azure West Europe
+    kind: cloud_region
+    provider: azure
+  - id: vnet-app
+    label: VNet app (10.60.0.0/16)
+    kind: vnet
+    provider: azure
+    parent: az-weu
+
+devices:
+  # --- the data centre --------------------------------------------------
+  - id: dc-pc
+    type: endpoint
+    kind: pc
+    group: onprem
+    simulation: {test_traffic: "on", test_targets: "10.50.1.10 tcp/443, 10.60.1.10 tcp/443", test_interval: 10}
+    interfaces:
+      - {id: eth0, ip: 10.0.10.10/24}
+    routes:
+      - {prefix: 0.0.0.0/0, via: 10.0.10.1, name: default gateway}
+  - id: dc-edge
+    type: router
+    role: wan_edge
+    group: onprem
+    interfaces:
+      - {id: lan, ip: 10.0.10.1/24}
+      - {id: ic0, ip: 172.31.0.1/29}
+    routes:
+      - {prefix: 10.50.0.0/16, via: 172.31.0.2, name: the AWS VPC}
+      - {prefix: 10.60.0.0/16, via: 172.31.0.3, name: the Azure VNet}
+  # --- the interconnect -------------------------------------------------
+  - id: ic
+    label: Private interconnect
+    type: cloud
+    kind: carrier
+    interfaces: [dc, aws, azure]
+  # --- AWS --------------------------------------------------------------
+  - id: aws-gw
+    label: aws-gw (transit gateway)
+    type: router
+    kind: cloud_gateway
+    group: vpc-prod
+    interfaces:
+      - {id: ic0, ip: 172.31.0.2/29}
+      - {id: sub-a, ip: 10.50.1.1/24}
+      - {id: sub-b, ip: 10.50.2.1/24}
+    routes:
+      - {prefix: 10.0.0.0/16, via: 172.31.0.1, name: the data centre}
+      - {prefix: 10.60.0.0/16, via: 172.31.0.3, name: the Azure VNet}
+  - id: web-1
+    type: vm
+    group: vpc-prod
+    guest_os: Amazon Linux 2023
+    interfaces:
+      - {id: eth0, ip: 10.50.1.10/24}
+    routes:
+      - {prefix: 0.0.0.0/0, via: 10.50.1.1, name: default gateway}
+  - id: web-2
+    type: vm
+    group: vpc-prod
+    guest_os: Amazon Linux 2023
+    interfaces:
+      - {id: eth0, ip: 10.50.2.10/24}
+    routes:
+      - {prefix: 0.0.0.0/0, via: 10.50.2.1, name: default gateway}
+  # --- Azure ------------------------------------------------------------
+  - id: az-gw
+    label: az-gw (virtual network gateway)
+    type: router
+    kind: cloud_gateway
+    group: vnet-app
+    interfaces:
+      - {id: ic0, ip: 172.31.0.3/29}
+      - {id: app, ip: 10.60.1.1/24}
+      - {id: jobs, ip: 10.60.2.1/24}
+    routes:
+      - {prefix: 10.0.0.0/16, via: 172.31.0.1, name: the data centre}
+      - {prefix: 10.50.0.0/16, via: 172.31.0.2, name: the AWS VPC}
+  - id: app-1
+    type: vm
+    group: vnet-app
+    guest_os: Ubuntu 24.04
+    interfaces:
+      - {id: eth0, ip: 10.60.1.10/24}
+    routes:
+      - {prefix: 0.0.0.0/0, via: 10.60.1.1, name: default gateway}
+  - id: jobs
+    label: jobs (container instance)
+    type: container
+    group: vnet-app
+    image: registry.example/jobs:1.4
+    interfaces:
+      - {id: eth0, ip: 10.60.2.10/24}
+    routes:
+      - {prefix: 0.0.0.0/0, via: 10.60.2.1, name: default gateway}
+
+links:
+  - {id: l-dc-pc, a: "dc-pc:eth0", b: "dc-edge:lan", speed: 1G}
+  - {id: l-dc-ic, a: "dc-edge:ic0", b: "ic:dc", medium: fiber, speed: 10G}
+  - {id: l-ic-aws, a: "ic:aws", b: "aws-gw:ic0", medium: fiber, speed: 10G}
+  - {id: l-ic-az, a: "ic:azure", b: "az-gw:ic0", medium: fiber, speed: 10G}
+  - {id: l-web-1, a: "aws-gw:sub-a", b: "web-1:eth0"}
+  - {id: l-web-2, a: "aws-gw:sub-b", b: "web-2:eth0"}
+  - {id: l-app-1, a: "az-gw:app", b: "app-1:eth0"}
+  - {id: l-jobs, a: "az-gw:jobs", b: "jobs:eth0"}
+
+relations:
+  - id: web
+    protocol: https
+    label: web front end
+    endpoints: [dc-pc, web-1]
+    direction: unidirectional
+  - id: web-app
+    protocol: https
+    label: web → app (across clouds)
+    endpoints: [web-1, app-1]
+    direction: unidirectional
+  - id: jobs-app
+    protocol: https
+    label: jobs → app
+    endpoints: [jobs, app-1]
+    direction: unidirectional

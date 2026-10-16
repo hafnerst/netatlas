@@ -14,16 +14,17 @@
  * localeCompare, which depends on the browser locale).
  */
 import { interiorSize } from './virtual';
-import { networkSubText, runsOnText, withVirtualNetworks } from '../model/virtual';
-import { deviceSubtitle } from '../model/device-types';
+import { networkSubText, runsOnText, withVirtualNetworks, isGuest } from '../model/virtual';
+import { deviceTypeLine } from '../model/device-types';
 import { relationStyle } from '../model/protocols';
 import { endTagText, networkMembers, tagMismatch } from '../model/derive';
 import { sortedByName } from '../model/order';
-import { Device, Link, LinkEnd, Model, ifaceKey, loopbacks, relationDevices } from '../model/types';
+import { Device, Link, LinkEnd, Model, ifaceKey, loopbacks, relationDevices, groupKindText } from '../model/types';
 import { addressAttrEntries, addressAttrLines, deviceAddressLines, deviceEntries, orderedAddresses, routeTables } from '../model/addresses';
 import { STRAND_GAP, bindingKey, bindingOn, buildBundle, laneLabel, portSpans, relationPairs } from './bundles';
 import { cmp } from './order';
 import { END_LABEL_GAP, EntryText, PORT_STUB, endLabelBox, entriesSize, memberLabelBox, networkSubtitle, portRowH } from './sizes';
+import { deviceTier } from '../model/capabilities';
 
 export interface LEnd {
   device: string;
@@ -123,28 +124,16 @@ export interface LayoutInput {
   linkLabels: LLinkLabel[];
 }
 
-/** Vertical tier of a device type in the physical view (0 = top). */
-const TIERS: { [type: string]: number } = {
-  cloud: 0,
-  router: 1,
-  gateway: 1,
-  load_balancer: 1,
-  proxy: 1,
-  firewall: 2,
-  ids_ips: 2,
-  switch: 4,
-  ap: 5,
-  server: 6,
-  vm: 6,
-  container: 6,
-  storage: 6,
-  endpoint: 6,
-  system: 6,
-};
-
-/** Default physical-view tier; devices without a known type sit with the switches. */
-export function defaultTier(type: string): number {
-  return Object.prototype.hasOwnProperty.call(TIERS, type) ? TIERS[type] : 4;
+/**
+ * A device's default tier in the physical view (0 = top): its role's tier
+ * when it has a known role, else what it does (model/capabilities.ts):
+ * external networks on top, then routers, policy and inline devices,
+ * switches, wireless access, and hosts and guests at the bottom. A device
+ * without a type sits with the switches; an unknown custom role falls back
+ * to what it does, so the order stays deterministic.
+ */
+export function defaultTier(type: string, d?: { layer3?: boolean; mode?: string; purpose?: string; role?: string }): number {
+  return deviceTier({ type, ...(d || {}) });
 }
 
 export { cmp };
@@ -163,7 +152,7 @@ function uniqSorted(xs: string[]): string[] {
  * (In the physical view a guest is drawn inside its host: its type alone.)
  */
 export function deviceSub(m: Model, d: Device): string {
-  const t = deviceSubtitle(d.type, d.layer3);
+  const t = deviceTypeLine(d);
   const r = runsOnText(m, d);
   return r ? `${t}\n${r}` : t;
 }
@@ -185,7 +174,7 @@ export function layoutInput(m: Model): LayoutInput {
         id: d.id,
         label: d.label,
         sub: deviceSub(m, d),
-        tier: d.tier !== undefined ? d.tier : defaultTier(d.type),
+        tier: d.tier !== undefined ? d.tier : defaultTier(d.type, d),
         group: d.group || null,
         loopbacks: loopbacks(d).length,
         physList: entriesSize(entryTexts(m, d, 'physical')),
@@ -196,11 +185,11 @@ export function layoutInput(m: Model): LayoutInput {
         spare: sortedByName(d.interfaces.filter((i) => !m.index.ifaceLink.has(ifaceKey(d.id, i.id))).map((i) => i.id), (x) => x),
         logical: sortedByName(d.logical.filter((i) => i.type !== 'loopback').map((i) => i.id), (x) => x),
         // a guest is drawn in its host's box in the physical view; a host's box holds its interior
-        inside: (d.type === 'vm' || d.type === 'container') && d.host !== undefined && m.index.devices.has(d.host) ? d.host : undefined,
+        inside: isGuest(d) && d.host !== undefined && m.index.devices.has(d.host) ? d.host : undefined,
         interior: interiorSize(m, d.id),
       })),
     ),
-    groups: byId(m.groups.map((g) => ({ id: g.id, parent: g.parent || null, label: g.label, kind: g.kind, extra: addressAttrLines(g.attrs) }))),
+    groups: byId(m.groups.map((g) => ({ id: g.id, parent: g.parent || null, label: g.label, kind: groupKindText(g), extra: addressAttrLines(g.attrs) }))),
     links: byId(
       m.links.map((l) => {
         // endpoints in canonical order so "a/b" swapped is the same cable

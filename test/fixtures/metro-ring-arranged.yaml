@@ -138,12 +138,20 @@ devices:
   - id: oob-con1
     label: Console server 1
     type: system
+    kind: other
+    kind_label: Console server
+    role: management
+    purpose: host
     group: oob
     interfaces:
       - {id: eth0, ip: 172.31.0.11/24}
   - id: oob-con2
     label: Console server 2
     type: system
+    kind: other
+    kind_label: Console server
+    role: management
+    purpose: host
     group: oob
     interfaces:
       - {id: eth0, ip: 172.31.0.12/24}
@@ -251,35 +259,35 @@ relations:
 
 layout:
   physical:
-    ce-a1: [126, 114]
-    ce-a2: [384, 114]
-    oob-con1: [439, 1011]
-    oob-con2: [686, 1011]
-    oob-nms: [926, 1011]
-    oob-sw: [679, 815]
-    pe1: [667, 552]
-    pe2: [982, 552]
-    pe3: [101, 528]
-    pe4: [417, 528]
-    pe5: [654, 162]
-    pe6: [970, 162]
-    spare-pe: [1245, 27]
+    ce-a1: [114, 114]
+    ce-a2: [372, 114]
+    oob-con1: [679, 1011]
+    oob-con2: [989, 1011]
+    oob-nms: [1260, 1011]
+    oob-sw: [950, 815]
+    pe1: [654, 552]
+    pe2: [970, 552]
+    pe3: [1208, 138]
+    pe4: [1523, 138]
+    pe5: [642, 162]
+    pe6: [958, 162]
+    spare-pe: [1786, 27]
   logical:
-    ce-a1: [855, 113]
-    ce-a2: [862, 316]
-    cust-a-access-1: [506, 309]
-    cust-a-access-2: [1226, 282]
-    l3vpn-a: [1041, 1118]
-    oob-con1: [2392, 791]
-    oob-con2: [2148, 314]
-    oob-mgmt: [2359, 476]
-    oob-nms: [2529, 313]
-    oob-sw: [2448, 102]
-    ospf-core: [759, 1128]
-    pe1: [108, 811]
-    pe2: [623, 811]
-    pe3: [682, 1489]
-    pe4: [1167, 1489]
-    pe5: [1159, 789]
-    pe6: [1655, 789]
-    spare-pe: [114, 1785]
+    ce-a1: [114, 374]
+    ce-a2: [121, 577]
+    cust-a-access-1: [201, 826]
+    cust-a-access-2: [240, 106]
+    l3vpn-a: [1350, 681]
+    oob-con1: [412, 1864]
+    oob-con2: [143, 1401]
+    oob-mgmt: [365, 1551]
+    oob-nms: [530, 1384]
+    oob-sw: [429, 1172]
+    ospf-core: [1350, 396]
+    pe1: [558, 798]
+    pe2: [1073, 798]
+    pe3: [1631, 524]
+    pe4: [2116, 524]
+    pe5: [582, 224]
+    pe6: [1078, 224]
+    spare-pe: [881, 1116]

@@ -6,10 +6,31 @@
  * finally runs on, the members of an HA cluster. Pure; cached per model.
  */
 import { ContainerNetwork, Device, Interface, Model, Network, PortGroup, VSwitch, VlanRange, ifaceKey } from './types';
+import { DeviceLike, capabilities } from './capabilities';
 
 /** Is a device a guest (a VM or a container)? */
-export function isGuest(d: { type: string } | undefined): boolean {
-  return !!d && (d.type === 'vm' || d.type === 'container');
+export function isGuest(d: DeviceLike | undefined): boolean {
+  return !!d && capabilities(d).canBeGuest !== null;
+}
+
+/** Is a device a VM (a guest of a hypervisor)? */
+export function isVm(d: DeviceLike | undefined): boolean {
+  return !!d && capabilities(d).canBeGuest === 'vm';
+}
+
+/** Is a device a container (a guest of a container engine)? */
+export function isContainer(d: DeviceLike | undefined): boolean {
+  return !!d && capabilities(d).canBeGuest === 'container';
+}
+
+/** May a device run VMs (with the Hypervisor service)? */
+export function mayHostVms(d: DeviceLike | undefined): boolean {
+  return !!d && capabilities(d).canHostGuests.vms;
+}
+
+/** May a device run containers (with the Container engine service)? */
+export function mayHostContainers(d: DeviceLike | undefined): boolean {
+  return !!d && capabilities(d).canHostGuests.containers;
 }
 
 interface VirtCache {
@@ -113,7 +134,7 @@ export function vnicHost(model: Model, i: Interface): Device | undefined {
   if (i.type !== 'vnic') return undefined;
   const d = model.index.devices.get(i.device);
   if (!d) return undefined;
-  return d.type === 'vm' ? hostOf(model, d) : d.hypervisor ? d : undefined;
+  return isVm(d) ? hostOf(model, d) : d.hypervisor ? d : undefined;
 }
 
 /** A vnic's virtual switch and port group, if it is on one. */
@@ -201,7 +222,7 @@ export function bridgeIfaceOf(model: Model, owner: Device, net: ContainerNetwork
 export function networkAttachments(model: Model, owner: Device, net: ContainerNetwork): Interface[] {
   const out: Interface[] = [];
   for (const d of model.devices) {
-    if (d.type !== 'container') continue;
+    if (!isContainer(d)) continue;
     for (const i of d.logical) {
       if (i.type !== 'veth') continue;
       const x = vethNetwork(model, i);
@@ -214,7 +235,7 @@ export function networkAttachments(model: Model, owner: Device, net: ContainerNe
 /** The vnics on a port group of a host (its guests' and its own host interfaces), in model order. */
 export function portGroupAttachments(model: Model, host: Device, pgName: string): Interface[] {
   const out: Interface[] = [];
-  for (const d of [host].concat(guestsOf(model, host.id).filter((g) => g.type === 'vm'))) {
+  for (const d of [host].concat(guestsOf(model, host.id).filter((g) => isVm(g)))) {
     for (const i of d.logical) if (i.type === 'vnic' && i.portGroup === pgName && vnicHost(model, i) === host) out.push(i);
   }
   return out;
@@ -223,7 +244,7 @@ export function portGroupAttachments(model: Model, host: Device, pgName: string)
 /** The vnics bound by passthrough to a host port (with their VF), in model order. */
 export function passthroughOf(model: Model, host: Device, port: string): Interface[] {
   return guestsOf(model, host.id)
-    .filter((g) => g.type === 'vm')
+    .filter((g) => isVm(g))
     .reduce((a: Interface[], g) => a.concat(g.logical.filter((i) => i.type === 'vnic' && i.passthrough === port)), []);
 }
 

@@ -9,6 +9,7 @@ import { formatAddr, inPrefix, networkOf } from './ipmath';
 import { IpAddr, parsePrefix } from '../model/ip';
 import { Device, Model, deviceInterfaces } from '../model/types';
 import { broadcastPeers, buildNet } from './sim/net';
+import { capabilities } from '../model/capabilities';
 
 type Emit = (f: { message: string; refs: string[]; at: { ref: string; field?: string } }) => void;
 
@@ -64,7 +65,7 @@ export const NETSERVICE_CHECKS: SvcCheck[] = [
           const toCloud = model.links.some((l) => {
             const me = (l.a.device === d.id && l.a.iface === i.id) || (l.b.device === d.id && l.b.iface === i.id);
             const o = l.a.device === d.id ? l.b.device : l.a.device;
-            return me && (model.index.devices.get(o) || { type: '' }).type === 'cloud';
+            return me && capabilities(model.index.devices.get(o) || { type: '' }).externalTransit;
           });
           if (toCloud) continue;
           const peers = broadcastPeers(net, d.id, i.id);

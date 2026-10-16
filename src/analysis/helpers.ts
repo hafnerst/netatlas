@@ -12,6 +12,7 @@ import { Interface, InterfaceKind, Model, deviceInterfaces } from '../model/type
 import { tunnelBudget } from './checks-more';
 import { gatewayServices } from './identity';
 import { addrBig, bigAddr, formatAddr, inPrefix, networkOf, prefixRange, reservedOf } from './ipmath';
+import { capabilities } from '../model/capabilities';
 
 /** One suggested value: what is written, how the chip reads, what it means. */
 export interface Suggestion {
@@ -494,7 +495,7 @@ export function scopeSuggestions(model: Model, networkId: string): { range: Sugg
         if (!p || p.version !== 4 || !inPrefix(h.net, p)) continue;
         const x = ((p.bytes[0] << 24) | (p.bytes[1] << 16) | (p.bytes[2] << 8) | p.bytes[3]) >>> 0;
         used.add(x);
-        if (d.services.length || d.type === 'router' || d.type === 'firewall' || (d.type === 'switch' && d.layer3)) out.gateway.push({ value: v4(x), label: `${v4(x)} (${d.id}:${i.id})`, title: `The address of ${d.id}:${i.id} in ${n.id}` });
+        if (d.services.length || capabilities(d).l3Forward) out.gateway.push({ value: v4(x), label: `${v4(x)} (${d.id}:${i.id})`, title: `The address of ${d.id}:${i.id} in ${n.id}` });
       }
       for (const s of i.services) {
         const vip = s.values.get('virtual_ip');

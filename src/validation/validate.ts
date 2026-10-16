@@ -1,41 +1,12 @@
 import { IpPrefix, addrKey, hasHostBits, parseAddress, parsePrefix, prefixContains, prefixProblem } from '../model/ip';
 import { bridgePorts, derive, interfaceAddresses, interfaceVlans, isBridgePort, isVlanInterface, portL2, subinterfaceParent } from '../model/derive';
 import { CHECKS, CheckSetting, SEVERITIES, Target, runChecks } from '../analysis/checks';
-import {
-  CATEGORIES,
-  Category,
-  DIRECTIONS,
-  DUPLEXES,
-  Duplex,
-  Device,
-  Direction,
-  DnsName,
-  Group,
-  Interface,
-  InterfaceKind,
-  LINE_STYLES,
-  LOGICAL_IFACE_TYPES,
-  LineStyle,
-  Link,
-  LinkEnd,
-  Model,
-  ModelIndex,
-  ModelLayout,
-  Network,
-  RelEndpoint,
-  RouterIdValue,
-  ServiceConfig,
-  Relation,
-  Route,
-  TunnelEnd,
-  deviceInterfaces,
-  ifaceKey,
-  relationDevices,
-  routeKey,
-} from '../model/types';
+import { CATEGORIES, Category, DIRECTIONS, DUPLEXES, Duplex, Device, Direction, DnsName, Group, Interface, InterfaceKind, LINE_STYLES, LOGICAL_IFACE_TYPES, LineStyle, Link, LinkEnd, Model, ModelIndex, ModelLayout, Network, RelEndpoint, RouterIdValue, ServiceConfig, Relation, Route, TunnelEnd, deviceInterfaces, ifaceKey, relationDevices, routeKey, CLOUD_GROUP_KINDS } from '../model/types';
 import { dnsNameKey, dnsNameProblem } from '../model/dns';
 import { BUILTIN_SERVICES, PARAM_SCOPES, PARAM_TYPES, ParamDef, ParamScope, ParamType, ROUTER_ID_KEY, RouterIdUse, ServiceDef, ServiceRegistry, builtinServices, paramProblem, paramsAt, routerIdAddress, usesRouterId } from '../model/services';
-import { DEVICE_TYPE_IDS, deviceRoutingRole, deviceTypeLabel, isDeviceType, isLayer2Switch, NO_DEVICE_TYPE, relationNeedsLayer3, ROUTE_DEVICE_TYPES, routingRole } from '../model/device-types';
+import { DEVICE_TYPE_IDS, deviceTypeLabel, isDeviceType, NO_DEVICE_TYPE, deviceTypeLine } from '../model/device-types';
+import { ROUTE_DEVICE_TYPES, ROUTING_PROTOCOL_TYPES, capabilities, deviceRoutingRole, isLayer2Switch, layer3Option, relationNeedsLayer3 } from '../model/capabilities';
+import { DeviceModelNodes, checkDeviceModel, readApplianceFunctions, readDeviceModel } from './device-model';
 import { COLOR_RE, DEFAULT_STYLE, builtinProtocols, lookupProtocol, normalizeProtocol, protocolBase } from '../model/protocols';
 import { YMap, YNode, YSeq, YamlError, YamlLimits, parseYaml } from '../yaml/parse';
 import { FORMAT_VERSION, SCHEMA } from '../yaml/schema';
@@ -46,6 +17,7 @@ import { NetServiceNodes, checkNetServices, readAddressList, readNetServices } f
 import { readVlanRanges, vlanTextOf } from './vlans';
 import { VirtNodes, checkVirtual, isGuestType, readGuestFields, readVirtIface, readVirtServices } from './virtual';
 import { Ctx, DEFAULT_MODEL_LIMITS, ID_RE, IFACE_RE, Issue, ModelLimits, Reader, TooManyErrors, get, isNull, kindOf, scalarText, suggest } from './reader';
+import { isVm } from '../model/virtual';
 
 export { DEFAULT_MODEL_LIMITS, ID_RE, IFACE_RE, scalarText, suggest };
 export type { Issue, ModelLimits };
@@ -239,10 +211,14 @@ function build(root: YNode | null, c: Ctx): Model | null {
     const gpath = `groups.${id}`;
     groupNodes.set(id, m);
     const kind = (r.field(m, 'kind', gpath, 40) || '').toLowerCase();
+    // a public cloud's group names its provider; no other group has one
+    const provider = r.field(m, 'provider', gpath, 40);
+    if (provider !== undefined && !CLOUD_GROUP_KINDS.some((k) => k.id === kind)) c.error(get(m, 'provider') as YNode, gpath + '.provider', `"provider" is a cloud group's (kind ${CLOUD_GROUP_KINDS.map((k) => k.id).join(', ')}); group "${id}" is ${kind ? `a ${kind}` : 'of no kind'} — delete it or set the kind`);
     groups.push({
       id,
       label: r.field(m, 'label', gpath, L.maxLabel) || id,
       kind,
+      ...(provider !== undefined && CLOUD_GROUP_KINDS.some((k) => k.id === kind) ? { provider } : {}),
       parent: r.field(m, 'parent', gpath, 200),
       description: r.field(m, 'description', gpath, L.maxDescription),
       attrs: r.attrs(get(m, 'attrs'), gpath + '.attrs'),
@@ -285,6 +261,8 @@ function build(root: YNode | null, c: Ctx): Model | null {
   const svcNodes: NetServiceNodes[] = [];
   // where each device's virtualization is written (its host, its Hypervisor and Container engine services)
   const virtNodes = new Map<string, VirtNodes>();
+  // where each device's kind, purpose, port pairs and appliance functions are written
+  const modelNodes: Array<{ dev: Device; nodes: DeviceModelNodes }> = [];
 
   // ------------------------------------------------------------ devices
   const devices: Device[] = [];
@@ -327,10 +305,10 @@ function build(root: YNode | null, c: Ctx): Model | null {
       } else tier = t.value;
     }
     const dtype = deviceType(r, m, dpath, c);
-    // layer3: a switch (or a VM, a virtual router or firewall) routes with it; every other type's layer is its type
+    // layer3 ("Supports Layer 3"): where it changes what the device does (a switch, a VM: a virtual router or firewall)
     const l3Node = get(m, 'layer3');
     const layer3 = r.bool(l3Node, dpath + '.layer3');
-    const l3Type = dtype === 'switch' || dtype === 'vm';
+    const l3Type = layer3Option(dtype);
     if (layer3 !== undefined && !l3Type) {
       c.error(l3Node as YNode, dpath + '.layer3', `layer3 is for switches and VMs (a switch or a VM routes with layer3: true); "${id}" is ${dtype === NO_DEVICE_TYPE ? 'a device without a type' : `a ${deviceTypeLabel(dtype) || dtype}`}, whose layer follows from its type`);
     }
@@ -339,7 +317,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
       label: r.field(m, 'label', dpath, L.maxLabel) || id,
       type: dtype,
       layer3: l3Type && layer3 === true ? true : undefined,
-      simulation: readDeviceSimulation(r, c, get(m, 'simulation'), dpath + '.simulation', id, dtype, l3Type && layer3 === true),
+      simulation: undefined,
       group: group !== undefined && groupMap.has(group) ? group : undefined,
       tier,
       description: r.field(m, 'description', dpath, L.maxDescription),
@@ -349,21 +327,30 @@ function build(root: YNode | null, c: Ctx): Model | null {
       dnsNames: [],
       routes: [],
       services: [],
+      portPairs: [],
+      management: [],
       line: m.line,
     };
+    // its kind, role, mode, a System's purpose and icon, its port pairs and management interfaces; the appliance functions
+    const mnodes: DeviceModelNodes = { device: id, map: m, path: dpath };
+    modelNodes.push({ dev, nodes: mnodes });
+    readDeviceModel(r, c, m, dpath, dev, mnodes);
+    readApplianceFunctions(r, c, get(m, 'services'), dpath + '.services', dev, mnodes);
+    // its simulation attributes: those of what it is (its type, layer, mode, purpose)
+    dev.simulation = readDeviceSimulation(r, c, get(m, 'simulation'), dpath + '.simulation', id, dev);
     // a guest's host (and its location, the host's); a VM's and a container's own fields
     const vnodes: VirtNodes = { device: id };
     virtNodes.set(id, vnodes);
-    readGuestFields(r, c, m, dpath, dev, vnodes);
+    readGuestFields(r, c, m, dpath, dev, vnodes, (gid) => inCloudGroup(groupMap, gid));
     // the routing services it enables (Layer 3+ devices only); the router IDs are resolved once its loopbacks are read
     const svcRids: Array<{ svc: ServiceConfig; text: string; node: YNode; path: string }> = [];
     const protoNode = get(m, 'protocols');
     if (!isNull(protoNode)) {
       if (isLayer2Switch(dev)) {
         c.error(protoNode as YNode, dpath + '.protocols', `"${id}" is a Layer 2 switch: it runs no routing protocols (set layer3: true to make it a Layer 3 switch)`);
-      } else if (deviceRoutingRole(dev) !== 'router') {
-        const what = dev.type === NO_DEVICE_TYPE ? 'a device without a type' : `a ${deviceTypeLabel(dev.type) || dev.type} (${dev.type})`;
-        c.error(protoNode as YNode, dpath + '.protocols', `"${id}" is ${what}: only Layer 3+ devices (${ROUTER_TYPES.join(', ')}; a switch with layer3: true) run routing protocols`);
+      } else if (!capabilities(dev).routingProtocols) {
+        const what = dev.type === NO_DEVICE_TYPE ? 'a device without a type' : `a ${deviceTypeLabel(dev.type) || dev.type} (${dev.type}${dev.mode ? ', ' + dev.mode : ''}${dev.purpose ? ', ' + dev.purpose : ''})`;
+        c.error(protoNode as YNode, dpath + '.protocols', `"${id}" is ${what}: only Layer 3+ devices (${ROUTING_PROTOCOL_TYPES.join(', ')}; a switch or VM with layer3: true; a System that is a Layer 3 forwarder) run routing protocols`);
       } else dev.services = readServices(r, c, protoNode as YNode, dpath + '.protocols', services, 'device', id, svcRids);
     }
     // a server's DHCP and DNS servers; a host's static DNS servers
@@ -419,12 +406,12 @@ function build(root: YNode | null, c: Ctx): Model | null {
         return null;
       }
       let type: InterfaceKind = 'physical';
-      if (where === 'interface' && isGuestType(dev.type)) {
+      if (where === 'interface' && isGuestType(dev.type) && !dev.cloudInstance) {
         // a guest has no ports: it reaches the network through its host
         c.error(
           im,
           ipath,
-          dev.type === 'vm'
+          isVm(dev)
             ? `VM "${id}" has no physical interfaces: its network interfaces are virtual NICs (logical_interfaces with type: vnic, each on a port group of its host, or a host port by passthrough)`
             : `container "${id}" has no physical interfaces: its network interfaces are attachments to its host's container networks (logical_interfaces with type: veth)`,
         );
@@ -792,8 +779,8 @@ function build(root: YNode | null, c: Ctx): Model | null {
       const ep = endpoint(en as YNode, `${lpath}.${side}`, false);
       if (!ep) return null;
       const gd = deviceMap.get(ep.device);
-      if (gd && isGuestType(gd.type)) {
-        c.error(en as YNode, `${lpath}.${side}`, `"${ep.device}" is a ${gd.type === 'vm' ? 'VM' : 'container'}: a guest has no cables — it reaches the network through its host${gd.host ? ` ("${gd.host}")` : ''} (cable the host's ports)`);
+      if (gd && isGuestType(gd.type) && !gd.cloudInstance) {
+        c.error(en as YNode, `${lpath}.${side}`, `"${ep.device}" is a ${isVm(gd) ? 'VM' : 'container'}: a guest has no cables — it reaches the network through its host${gd.host ? ` ("${gd.host}")` : ''} (cable the host's ports)`);
         return null;
       }
       if (ep.iface !== undefined) {
@@ -902,6 +889,8 @@ function build(root: YNode | null, c: Ctx): Model | null {
     });
   });
   const networkMap = new Map(networks.map((x) => [x.id, x] as [string, Network]));
+  // what the devices' kinds, port pairs and appliance functions reference
+  for (const x of modelNodes) checkDeviceModel(c, x.dev, x.nodes, networks, (iid) => interfaces.get(ifaceKey(x.dev.id, iid)));
 
   // ---------------------------------------------------------- relations
   const relations: Relation[] = [];
@@ -1352,7 +1341,7 @@ function readPortVlans(r: Reader, c: Ctx, im: YMap, ipath: string, iface: Interf
   const rn = get(im, 'routed');
   const routed = r.bool(rn, ipath + '.routed');
   if (routed === true) {
-    if (dev.type !== 'switch') {
+    if (!capabilities(dev).switchFeatures) {
       const why = deviceRoutingRole(dev) === 'router' ? `a ${deviceTypeLabel(dev.type) || dev.type}'s port without VLANs is routed anyway — delete "routed"` : `a ${dev.type === NO_DEVICE_TYPE ? 'device without a type' : (deviceTypeLabel(dev.type) || dev.type).toLowerCase()} routes nothing`;
       c.error(rn as YNode, ipath + '.routed', `"routed" is a Layer 3 switch's setting for a port: ${why}`);
     } else if (!dev.layer3) {
@@ -1391,19 +1380,19 @@ function portRules(c: Ctx, dev: Device, nodes: Map<string, { node: YMap; path: s
       }
     }
     const cfg = lag || i;
-    if (dev.type === 'switch' && !lag && !configured(i)) {
+    if (capabilities(dev).switchFeatures && !lag && !configured(i)) {
       c.error(a.node, a.path + '.vlans', `"${i.id}" of switch "${dev.id}" needs its VLANs: one VLAN (an access port) or several (a trunk)${dev.layer3 ? ', or "routed: true" for a routed port' : ''}`, { key: 'vlans' });
     }
     if (cfg.vlans.length && (i.addresses.length || i.dhcp)) {
       const ipN = get(a.node, i.dhcp ? 'dhcp' : 'ip') as YNode;
-      c.error(ipN, `${a.path}.${i.dhcp ? 'dhcp' : 'ip'}`, `"${i.id}" is a switch port (${lag ? `a member of ${lag.id}, ` : ''}VLANs ${vlanTextOf(cfg.vlans)}): it has no address of its own — put ${i.dhcp ? 'DHCP' : 'the address'} on the VLAN interface of its VLAN${dev.type === 'switch' && dev.layer3 && !lag ? ', or make it a routed port' : ''}`);
+      c.error(ipN, `${a.path}.${i.dhcp ? 'dhcp' : 'ip'}`, `"${i.id}" is a switch port (${lag ? `a member of ${lag.id}, ` : ''}VLANs ${vlanTextOf(cfg.vlans)}): it has no address of its own — put ${i.dhcp ? 'DHCP' : 'the address'} on the VLAN interface of its VLAN${capabilities(dev).switchFeatures && dev.layer3 && !lag ? ', or make it a routed port' : ''}`);
     }
   }
   for (const g of dev.logical) {
     if (g.type !== 'virtual' || !g.members.length) continue;
     const a = at(g);
     if (!a) continue;
-    if (dev.type === 'switch' && !configured(g)) c.error(a.node, a.path + '.vlans', `aggregate "${g.id}" of switch "${dev.id}" needs its VLANs (its members ${g.members.join(', ')} take them): one VLAN (access) or several (a trunk)${dev.layer3 ? ', or "routed: true"' : ''}`, { key: 'vlans' });
+    if (capabilities(dev).switchFeatures && !configured(g)) c.error(a.node, a.path + '.vlans', `aggregate "${g.id}" of switch "${dev.id}" needs its VLANs (its members ${g.members.join(', ')} take them): one VLAN (access) or several (a trunk)${dev.layer3 ? ', or "routed: true"' : ''}`, { key: 'vlans' });
     if (g.vlans.length && (g.addresses.length || g.dhcp)) c.error(get(a.node, g.dhcp ? 'dhcp' : 'ip') as YNode, `${a.path}.${g.dhcp ? 'dhcp' : 'ip'}`, `aggregate "${g.id}" is a switch port (VLANs ${vlanTextOf(g.vlans)}): it has no address of its own — put it on the VLAN interface of its VLAN`);
   }
 }
@@ -1420,9 +1409,9 @@ function readRoutes(r: Reader, c: Ctx, m: YMap, dpath: string, dev: Device, node
   const listNode = get(m, 'routes');
   const items = r.list(listNode, dpath + '.routes');
   if (!items.length) return out;
-  const role = routingRole(dev.type);
+  const role = deviceRoutingRole(dev);
   if (role === null) {
-    const what = dev.type === NO_DEVICE_TYPE ? 'has no type' : `is of type ${deviceTypeLabel(dev.type)}`;
+    const what = dev.type === NO_DEVICE_TYPE ? 'has no type' : `is ${typeArticle(deviceTypeLine(dev))}`;
     c.error(listNode as YNode, dpath + '.routes', `device "${dev.id}" ${what}, which has no routing table: static routes are allowed on ${ROUTE_DEVICE_TYPES.join(', ')} devices — set the type or delete the routes`);
     return out;
   }
@@ -1577,15 +1566,19 @@ function deviceType(r: Reader, m: YMap, dpath: string, c: Ctx): string {
   const t = r.field(m, 'type', dpath, 40);
   if (t === undefined) return NO_DEVICE_TYPE;
   if (isDeviceType(t)) return t;
-  // a hypervisor is no type of its own: it is a server with the Hypervisor service
-  const why = t.toLowerCase() === 'hypervisor' ? ' (a hypervisor is a server with the Hypervisor service: type: server, and services: hypervisor)' : suggest(t, DEVICE_TYPE_IDS, 20);
+  // a hypervisor, a gateway or a proxy is no type of its own: say what models it
+  const hints: { [t: string]: string } = {
+    hypervisor: ' (a hypervisor is a server with the Hypervisor service: type: server, and services: hypervisor)',
+    gateway: ' (a VPN endpoint is a vpn_gateway, a NAT or cloud gateway a router (kind: cloud_gateway), a protocol gateway a system with purpose: l3_forwarder, a boundary between security domains a separation_gateway)',
+    proxy: ' (an application proxy is a server, vm or container; a boundary between security domains is a separation_gateway)',
+  };
+  const why = hints[t.toLowerCase()] || suggest(t, DEVICE_TYPE_IDS, 20);
   c.error(get(m, 'type') as YNode, dpath + '.type', `unknown device type "${t}"${why}`);
   return NO_DEVICE_TYPE;
 }
 
 // ------------------------------------------------------------ routing services
 
-const ROUTER_TYPES = ROUTE_DEVICE_TYPES.filter((t) => routingRole(t) === 'router' && t !== 'switch');
 /**
  * What a Layer 2 switch (a switch without layer3: true) may have of
  * layer 3: one management interface with addresses (a VLAN interface or a
@@ -1800,4 +1793,19 @@ function resolveRouterId(c: Ctx, dev: Device, text: string, node: YNode, path: s
       : `"${text}" is not a router ID: write an IPv4 address (e.g. 10.255.0.1) or the id of a loopback of "${dev.id}"${loops.length ? suggest(text, loops) : ''}`,
   );
   return null;
+}
+
+/** "a Cloud", "an IDS/IPS · Passive": a device's type line with its article. */
+function typeArticle(line: string): string {
+  return (/^[AEIOU]/i.test(line) ? 'an ' : 'a ') + line;
+}
+
+/** Is a group a public cloud's (a cloud_region, vpc or vnet), or inside one? */
+function inCloudGroup(groups: Map<string, Group>, id: string): boolean {
+  const seen = new Set<string>();
+  for (let g = groups.get(id); g && !seen.has(g.id); g = g.parent !== undefined ? groups.get(g.parent) : undefined) {
+    seen.add(g.id);
+    if (CLOUD_GROUP_KINDS.some((k) => k.id === g!.kind)) return true;
+  }
+  return false;
 }

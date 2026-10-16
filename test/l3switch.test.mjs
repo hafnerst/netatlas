@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 import { load, validate, model, example, sessionFromYaml, byClass } from './helpers.mjs';
 
 const DT = load('model/device-types.js');
+const Cap = load('model/capabilities.js');
 const D = load('editor/document.js');
 const T = load('analysis/trace.js');
 const L = load('diagram/legend.js');
@@ -30,10 +31,10 @@ test('layer3 is for switches only; the role of a device follows from it', () => 
   const e = errs('netatlas: 1\ndevices:\n  - {id: r, type: router, layer3: true}\n');
   assert.equal(e.length, 1);
   assert.match(e[0], /^devices\.r\.layer3: layer3 is for switches/);
-  assert.equal(DT.deviceRoutingRole({ type: 'switch' }), 'host');
-  assert.equal(DT.deviceRoutingRole({ type: 'switch', layer3: true }), 'router');
-  assert.equal(DT.deviceRoutingRole({ type: 'router' }), 'router');
-  assert.equal(DT.isLayer2Switch({ type: 'switch' }), true);
+  assert.equal(Cap.deviceRoutingRole({ type: 'switch' }), 'host');
+  assert.equal(Cap.deviceRoutingRole({ type: 'switch', layer3: true }), 'router');
+  assert.equal(Cap.deviceRoutingRole({ type: 'router' }), 'router');
+  assert.equal(Cap.isLayer2Switch({ type: 'switch' }), true);
   assert.equal(DT.deviceSubtitle('switch', true), 'Layer 3 switch');
   assert.equal(DT.deviceSubtitle('switch'), 'Layer 2 switch');
   assert.equal(validate.loadModel(SW('', '    layer3: true\n')).model.devices[0].layer3, true);

@@ -11,6 +11,7 @@ import { protocolBase } from '../model/protocols';
 import { Device, Interface, Model, deviceInterfaces, relationDevices } from '../model/types';
 import { compareAddr, formatAddr } from './ipmath';
 import { lookup } from './routing';
+import { capabilities } from '../model/capabilities';
 
 type Emit = (f: { message: string; refs: string[]; at: { ref: string; field?: string } }) => void;
 
@@ -93,7 +94,7 @@ export const MULTICAST_CHECKS: McCheck[] = [
     title: 'Receivers of a group in a subnet without an IGMP / MLD querier',
     reads: 'interfaces: multicast join, simulation igmp_querier; routers with PIM (protocols: pim) and their simulation igmp_querier; networks (VLANs) with simulation snooping_querier',
     run(model, emit) {
-      const routers = model.devices.filter((d) => pim(d) || model.relations.some((r) => protocolBase(model.protocols, r.protocol) === 'igmp' && relationDevices(r).indexOf(d.id) >= 0 && d.type !== 'endpoint' && d.type !== 'server'));
+      const routers = model.devices.filter((d) => pim(d) || model.relations.some((r) => protocolBase(model.protocols, r.protocol) === 'igmp' && relationDevices(r).indexOf(d.id) >= 0 && capabilities(d).l3Forward));
       const seen = new Set<string>();
       for (const j of joins(model)) {
         const key = j.d.id + ':' + j.i.id;
@@ -193,8 +194,8 @@ function snoopingQuerier(model: Model, d: Device, own: Array<{ addr: IpAddr; pre
         const o = l.a.device === id ? l.b.device : l.b.device === id ? l.a.device : '';
         if (!o || seen.has(o)) continue;
         const od = model.index.devices.get(o);
-        if (!od || (od.type !== 'switch' && od.type !== 'ap')) continue;
-        if (od.type === 'switch' && querierVlan) return true;
+        if (!od || (!capabilities(od).switchFeatures && !capabilities(od).wirelessAccess)) continue;
+        if (capabilities(od).switchFeatures && querierVlan) return true;
         seen.add(o);
         next.push(o);
       }

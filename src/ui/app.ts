@@ -29,7 +29,8 @@ import { SelectionContext, attachedRefs, search, selectionContext, splitRef } fr
 import { sortedByName } from '../model/order';
 import { lookupProtocol, normalizeProtocol } from '../model/protocols';
 import { hostOf, isGuest, machineOf } from '../model/virtual';
-import { DEVICE_TYPES, deviceRoutingRole, isLayer2Switch, typeKey, typeKeyLabel, typeKeySubLabel, typeKeysOf } from '../model/device-types';
+import { DEVICE_TYPES, typeKey, typeKeyLabel, typeKeySubLabel, typeKeysOf, typeDef } from '../model/device-types';
+import { isLayer2Switch, capabilities, ROUTING_PROTOCOL_TYPES } from '../model/capabilities';
 import { Issue } from '../validation/validate';
 import { SEVERITIES, Severity, checkById } from '../analysis/checks';
 import { addressingOverview } from '../analysis/addressing';
@@ -2061,7 +2062,7 @@ export class App {
       list.appendChild(el(this.doc, 'label', { class: 'tp-row', 'data-type-row': e.type }, [cb, el(this.doc, 'span', {}, [e.label]), el(this.doc, 'span', { class: 'tp-count', 'aria-hidden': 'true' }, [String(e.count)]), el(this.doc, 'span', { class: 'sr-only' }, [`, ${e.count} device${e.count === 1 ? '' : 's'}`])]));
       for (const sub of e.subs) {
         const sc = el(this.doc, 'input', { type: 'checkbox', 'data-type-keys': sub.key }) as HTMLInputElement;
-        const what = e.type === 'switch' ? ' switches' : e.type === 'server' ? ' servers' : '';
+        const what = ' ' + ((typeDef(e.type) || { plural: '' }).plural || '').toLowerCase();
         list.appendChild(el(this.doc, 'label', { class: 'tp-row tp-sub', 'data-type-row': sub.key }, [sc, el(this.doc, 'span', {}, [sub.label]), el(this.doc, 'span', { class: 'tp-count', 'aria-hidden': 'true' }, [String(sub.count)]), el(this.doc, 'span', { class: 'sr-only' }, [`${what}, ${sub.count} device${sub.count === 1 ? '' : 's'}`])]));
       }
     }
@@ -2519,7 +2520,7 @@ export class App {
     const d = s.model.index.devices.get(sel.slice(7));
     if (!d) return 'Select a device first';
     if (isLayer2Switch(d)) return `Requires Layer 3: ${d.id} is a Layer 2 switch (tick Supports Layer 3 in its Edit tab first)`;
-    if (deviceRoutingRole(d) !== 'router') return `${d.id} is not a Layer 3+ device: only routers, Layer 3 switches, firewalls, load balancers, proxies and gateways run routing protocols`;
+    if (!capabilities(d).routingProtocols) return `${d.id} is not a Layer 3+ device: only ${ROUTING_PROTOCOL_TYPES.map((t) => (typeDef(t) || { plural: t }).plural.toLowerCase()).join(', ')}, Layer 3 switches and VMs, and Layer 3 forwarder Systems run routing protocols`;
     return '';
   }
 

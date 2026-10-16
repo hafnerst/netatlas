@@ -135,12 +135,20 @@ devices:
   - id: oob-con1
     label: Console server 1
     type: system
+    kind: other
+    kind_label: Console server
+    role: management
+    purpose: host
     group: oob
     interfaces:
       - {id: eth0, ip: 172.31.0.11/24}
   - id: oob-con2
     label: Console server 2
     type: system
+    kind: other
+    kind_label: Console server
+    role: management
+    purpose: host
     group: oob
     interfaces:
       - {id: eth0, ip: 172.31.0.12/24}

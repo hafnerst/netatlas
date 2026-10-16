@@ -15,10 +15,28 @@ export const SCHEMA = {
   protocol: ['id', 'label', 'category', 'color', 'style', 'router_id', 'params', 'description'],
   /** a parameter a protocol of the model declares: an entry of its `params` */
   param: ['key', 'label', 'type', 'scope', 'required', 'min', 'max', 'values', 'suggest', 'description'],
-  group: ['id', 'label', 'kind', 'parent', 'description', 'attrs'],
-  device: ['id', 'label', 'type', 'host', 'layer3', 'group', 'tier', 'guest_os', 'vcpu', 'ram', 'image', 'router_id', 'protocols', 'services', 'simulation', 'description', 'attrs', 'interfaces', 'logical_interfaces', 'dns_names', 'dns_servers', 'routes'],
-  /** a server's services (its `services:`): a DHCP server, a DNS server, the Hypervisor and the Container engine */
-  netServices: ['dhcp', 'dns', 'hypervisor', 'container_engine'],
+  group: ['id', 'label', 'kind', 'provider', 'parent', 'description', 'attrs'],
+  device: ['id', 'label', 'type', 'kind', 'kind_label', 'role', 'mode', 'purpose', 'icon', 'host', 'layer3', 'group', 'tier', 'guest_os', 'vcpu', 'ram', 'image', 'router_id', 'protocols', 'services', 'port_pairs', 'management', 'simulation', 'description', 'attrs', 'interfaces', 'logical_interfaces', 'dns_names', 'dns_servers', 'routes'],
+  /** a device's services (its `services:`): a DHCP server, a DNS server, the Hypervisor and the Container engine; a VPN Gateway's VPN gateway, a Separation gateway's Domain separation */
+  netServices: ['vpn', 'separation', 'dhcp', 'dns', 'hypervisor', 'container_engine'],
+  /** two ports a device passes traffic between: an entry of `port_pairs` */
+  portPair: ['a', 'b', 'direction', 'copy'],
+  /** a VPN Gateway's VPN gateway function (`services.vpn`) */
+  vpn: ['operation', 'technology', 'tunnels', 'listener', 'pool', 'protected'],
+  /** a Separation gateway's Domain separation (`services.separation`) */
+  separation: ['implementation', 'domains', 'directions', 'rules', 'profiles', 'simulation'],
+  /** a security domain: an entry of `services.separation.domains` */
+  sepDomain: ['name', 'interfaces'],
+  /** a permitted direction of transfer: an entry of `services.separation.directions` */
+  sepDirection: ['from', 'to'],
+  /** a permitted transfer: an entry of `services.separation.rules` */
+  sepRule: ['id', 'description', 'from', 'to', 'source', 'destination', 'protocol', 'ports', 'profile'],
+  /** a protocol break's transfer profile: an entry of `services.separation.profiles` */
+  transferProfile: ['id', 'type', 'listen', 'forward'],
+  /** where a transfer profile listens */
+  profileListen: ['interface', 'port'],
+  /** where a transfer profile sends the new transfer */
+  profileForward: ['address', 'port'],
   /** a server's Hypervisor service */
   hypervisor: ['platform', 'cluster', 'cpu', 'ram', 'vswitches', 'simulation'],
   /** a virtual switch: an entry of `services.hypervisor.vswitches` */

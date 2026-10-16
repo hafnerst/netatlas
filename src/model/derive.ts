@@ -35,7 +35,7 @@
  */
 import { IpPrefix, addrKey, parsePrefix, prefixContains } from './ip';
 import { Interface, Link, LinkEnd, Model, Network, PortKind, VLAN_MAX, VlanRange, deviceInterfaces, ifaceKey, isLoopback } from './types';
-import { deviceRoutingRole } from './device-types';
+import { deviceRoutingRole, capabilities } from './capabilities';
 import { compareNames } from './order';
 
 /** One assigned address that lies inside a network. */
@@ -341,7 +341,7 @@ export function portL2(model: Model, device: string, iface: string): PortL2 | un
     const native = cfg.native !== undefined && ids.indexOf(cfg.native) >= 0 ? cfg.native : undefined;
     out = { kind: 'trunk', vlans: ids, native, untagged: native, tagged: ids.filter((v) => v !== native) };
   } else {
-    const kind: PortKind = cfg.routed ? 'routed' : d.type === 'switch' ? 'unset' : deviceRoutingRole(d) === 'router' ? 'routed' : 'host';
+    const kind: PortKind = cfg.routed ? 'routed' : capabilities(d).switchFeatures ? 'unset' : deviceRoutingRole(d) === 'router' ? 'routed' : 'host';
     // a routed port carries its subinterfaces' VLANs, tagged
     const sv: number[] = [];
     if (kind === 'routed') {
@@ -403,9 +403,31 @@ export function endVlans(model: Model, e: LinkEnd): number[] {
   return l ? l.vlans : [];
 }
 
-/** The tagging at a link end as the physical view writes it (see portTagText). */
+/** The tagging at a link end as the physical view writes it (see portTagText), after what the port is for (its domain, management, its pair). */
 export function endTagText(model: Model, e: LinkEnd): string {
-  return portTagText(endL2(model, e));
+  return [endRoleText(model, e), portTagText(endL2(model, e))].filter((x) => !!x).join(' · ');
+}
+
+/**
+ * What a port is for, in words, where its device gives it a part: a
+ * Separation gateway's domain ("domain Red"), a management interface, an
+ * inline or pass-through device's pair ("pair 1") or a TAP's copy port
+ * ("copy of pair 1"). Text, not colour, carries it.
+ */
+export function endRoleText(model: Model, e: LinkEnd): string {
+  const d = model.index.devices.get(e.device);
+  if (!d || e.iface === undefined) return '';
+  const port = e.iface;
+  if (d.management.indexOf(port) >= 0) return 'management';
+  if (d.separation) {
+    const dom = d.separation.domains.find((x) => x.interfaces.indexOf(port) >= 0);
+    if (dom) return 'domain ' + dom.name;
+  }
+  const k = d.portPairs.findIndex((p) => p.a === port || p.b === port);
+  if (k >= 0) return d.portPairs.length > 1 ? `pair ${k + 1}` : 'pair';
+  const c = d.portPairs.findIndex((p) => p.copy.indexOf(port) >= 0);
+  if (c >= 0) return d.portPairs.length > 1 ? `copy of pair ${c + 1}` : 'copy';
+  return '';
 }
 
 /** The networks of the VLANs a link end carries (derived: the networks whose `vlan` is one of them), in model order. */

@@ -152,6 +152,7 @@ devices:
   - id: e-ids
     label: IDS sensor
     type: ids_ips
+    mode: passive
     group: east
     interfaces:
       - {id: mon0, description: monitor port (receive only)}

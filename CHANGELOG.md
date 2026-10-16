@@ -21,10 +21,11 @@ there is no conversion of files written for the earlier drafts.
 - **Static routes:** a device may have `routes`, each with `prefix` and a
   next hop (`via`, `interface`, both, or `blackhole: true`), and optionally
   `distance` (1–255), `metric`, `vrf`, `name`, `description` and `attrs`.
-  Allowed on Layer 3+ device types (router, switch, firewall, load balancer,
-  proxy, gateway) and on hosts (server, VM, container, storage, endpoint,
-  system); an error on access points, IDS/IPS, clouds and devices without a
-  type. A host's default gateway is a static default route.
+  Allowed on devices that forward (a router, a switch, a routed firewall, a
+  load balancer, a VPN Gateway, a filtering router, a Layer 3 forwarder
+  System) and on hosts; an error on access points, IDS/IPS, clouds,
+  pass-through Systems and devices without a type. A host's default gateway
+  is a static default route.
 - **VLANs on ports** replace the per-end `networks` list (and the link-end
   tagging of earlier drafts): a physical port, or an aggregate for its
   members, has `vlans` (VLAN IDs and ranges such as `30-39`): one VLAN makes
@@ -184,9 +185,86 @@ there is no conversion of files written for the earlier drafts.
   `failover_detection` (a virtual switch), `container_start` (a Container
   engine) and `restart_policy` (a container). The logical layout may hold a
   container network's place as `<host>/<network>`.
+- **The device model: 15 types, kinds, roles, modes and System purposes.**
+  The types are `router`, `switch`, `firewall`, `ap`, `load_balancer`,
+  `ids_ips`, `vpn_gateway`, `separation_gateway`, `server`, `vm`,
+  `container`, `storage`, `endpoint`, `cloud` and `system`; the generic
+  `gateway` and the `proxy` types are gone (unknown types whose errors say
+  what they became). New device keys: `kind` (optional, the type's kinds,
+  `other` with `kind_label`), `role` (suggested or custom), `mode`
+  (firewall `routed`/`transparent`, IDS/IPS `inline`/`passive`, access point
+  `standalone`/`controller`), `purpose` (required on a System: `host`,
+  `l2_forwarder`, `l3_forwarder`, `inline`, `passive_monitor`,
+  `pass_through`, `external_network`) and `icon` (a System's, among its
+  purpose's), `port_pairs` (`{a, b, direction, copy}`, required on inline
+  and pass-through devices) and `management`. A device's `role` is no
+  longer an unknown key. Groups gain the kinds `cloud_region`, `vpc` and
+  `vnet` with a `provider`; a VM or container in a cloud group may have no
+  `host` (a cloud instance, with interfaces and cables of its own).
+- **VPN Gateway and Separation gateway functions.** A VPN Gateway's
+  `services: {vpn: {operation, technology, tunnels | listener + pool,
+  protected}}` and a Separation gateway's `services: {separation:
+  {implementation, domains, directions, rules, profiles, simulation}}` are
+  required on them and errors anywhere else. The separation's simulation
+  attributes are `transfer_delay` and `transfer_loss`. The proxy's
+  `client_timeout` and `upstream_timeout` went with the `proxy` type.
+- **Examples converted by behaviour:** `device-types.yaml` (a remote-access
+  VPN Gateway, the proxy as a server in the DMZ, a NAS behind a filtering
+  bridge, a System of purpose host), `metro-ring.yaml` (console servers as
+  Systems of purpose host), `ospf-reroute.yaml` (a passive IDS);
+  roles replace `tier` workarounds and role words in labels in
+  `datacenter-evpn.yaml`, `enterprise-wan.yaml`, `long-labels.yaml` and
+  `campus-services.yaml`.
 
 ### Added
 
+- **Capability-based behaviour** (one change across the app): every
+  module decides by what a device can do — one resolver
+  (`src/model/capabilities.ts`) derives it from the type, mode, Supports
+  Layer 3, a System's purpose and a Separation gateway's implementation —
+  instead of by type names; an architecture test keeps type comparisons out
+  of everything but the registry and the resolver. The capability matrix
+  in docs/FORMAT.md is generated from the resolver and checked by a test.
+  * **Editing:** the device's *Identity* card in order — Type, Kind (with
+    *Other* and its name), Role, Mode or a System's Purpose and Icon;
+    changing the type, mode, purpose or implementation asks first, lists
+    what no longer fits and what stays but is reported, and removes it in
+    one undo step. The **VPN gateway** and **Domain separation** cards
+    (built in, not removable; nothing preselected), **Port pairs** and
+    **Management interfaces**.
+  * **VPN Gateway:** forwards only to and from its VPN, in the path tracer
+    and in the simulation.
+  * **Separation gateway:** exactly two domains, permitted directions,
+    ordered allow rules with every match written, a default deny both ways,
+    replies of a permitted transfer and nothing else the other way; a
+    filtering bridge, a filtering router, or a protocol break with transfer
+    profiles (HTTPS, DNS, syslog) whose two legs are traced, simulated and
+    correlated; management interfaces never forwarded; its own icon, the
+    domain under each port, and its policy in the Details tab.
+  * **Path tracer:** an optional **Service** (`tcp/443`, `udp/53`, `icmp`)
+    a Separation gateway decides by; a protocol break's **Leg 2**; port
+    pairs, TAP copies and a VPN Gateway's tunnels; a stop reason *denied*.
+  * **Simulation:** a transparent firewall filters what it bridges; inline
+    devices and pass-through Systems keep to their pairs (one way where
+    set) and copy to monitor ports; passive monitors report what they
+    observe; a Cloud is one Layer 3 hop (TTL one lower; TTL-1 hellos end
+    at it).
+  * **Single points of failure** follow what each device joins: a
+    Separation gateway's domains only with a permitted transfer, port
+    pairs, never a management interface.
+  * **Diagram, legend, Find, palette:** icons for the VPN Gateway, the
+    Separation gateway, the kinds with an icon (Cloud gateway, PLC, HMI,
+    camera …) and the System purposes (console, protocol gateway, TAP,
+    diode …); the subtitle with mode, purpose and kind; the legend lists
+    the types and kinds used; ports say "domain Red", "management",
+    "pair 1", "copy"; Find and the palette find devices by kind and role;
+    Auto-arrange puts a known role in its row.
+- **Five examples:** `wan-vpn.yaml` (an MPLS Cloud and a dedicated VPN
+  Gateway), `hybrid-cloud.yaml` (region, VPC, VNet, Cloud gateway routers,
+  cloud instances), `ot-network.yaml` (PLC, HMI, a protocol gateway System,
+  a TAP and a passive IDS), `cross-domain.yaml` (a protocol break with a
+  permitted and a denied transfer) and `separation-filtering.yaml` (a
+  filtering bridge and a filtering router).
 - **Hypervisors, VMs and containers** (one change across the app):
   * **Editing:** the **Services** card's **Hypervisor** and **Container
     engine** checkboxes with their collapsible configuration (virtual
@@ -1039,6 +1117,11 @@ there is no conversion of files written for the earlier drafts.
 
 ### Removed
 
+- The **`gateway`** and **`proxy`** device types (converted by behaviour:
+  a VPN Gateway, a router, a System, a Separation gateway, a server …), and
+  with the proxy its request relaying and its two simulation attributes;
+  the Proxy service brings them back as a service of a server, VM or
+  container.
 - The **hypervisor** as an implied role of a server cabled to VMs (VMs and
   containers are no longer cabled), and the device-level `vm_restart`.
 - The **Endpoints** and **Servers** toolbar switches, their overflow

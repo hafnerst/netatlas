@@ -19,14 +19,15 @@ import { GROUP_PAD, PORT_FONT, PORT_LABEL_GAP, PhysicalLayout, PortPos, assignPo
 import { ChipFlow, DEVICE_ICON, DEVICE_TEXT_X, ENTRY_FONT, GROUP_KIND_SIZE, ENTRY_GAP, ENTRY_LH, ENTRY_MARGIN, ENTRY_PAD_X, ENTRY_PAD_Y, IFCHIP_FONT, IFCHIP_H, IFCHIP_PAD, chipStripH, deviceBody, entriesSize, entryBox, groupHeader, linkLabelBox } from '../layout/sizes';
 import { LineField, addressAttrEntries, addressAttrLines, deviceAddressLines, deviceEntries, deviceOwnLines, routeTables } from '../model/addresses';
 import { sortedByName } from '../model/order';
-import { deviceSubtitle } from '../model/device-types';
-import { Device, Model, ifaceKey } from '../model/types';
-import { BADGE_H, BADGE_W, deviceIcon, layerBadge, serviceBadge } from './icons';
+import { deviceSubtitle, deviceTypeLine } from '../model/device-types';
+import { Device, Model, ifaceKey, groupKindText } from '../model/types';
+import { BADGE_H, BADGE_W, deviceIcon, layerBadge, serviceBadge, glyphFor } from './icons';
 import { LabelPlacer, addressLineAttrs, alongSegment, centerRect, fieldAttrs, leaderLine, textLines } from './labels';
 import { VNode, h } from './scene';
 import { hostInterior } from '../layout/virtual';
 import { externalWires, interiorNodes } from './virtual';
 import { groupKindStyle, mediumStyle, speedWidth } from './style';
+import { capabilities } from '../model/capabilities';
 
 export { deviceSubtitle };
 
@@ -109,7 +110,7 @@ export function groupRects(model: Model, boxes: Map<string, CBox>, extra: Map<st
     for (const c of model.groups) if (c.parent === g.id && rects.has(c.id)) parts.push(rects.get(c.id) as Rect);
     if (!parts.length) continue;
     const u = unionRect(parts);
-    const head = groupHeader(g.label, g.kind, u.w, addressAttrLines(g.attrs));
+    const head = groupHeader(g.label, groupKindText(g), u.w, addressAttrLines(g.attrs));
     const w = Math.max(u.w + 2 * GROUP_PAD, head.minW);
     rects.set(g.id, { x: u.x + u.w / 2 - w / 2, y: u.y - GROUP_PAD - head.h, w, h: u.h + 2 * GROUP_PAD + head.h });
   }
@@ -139,7 +140,7 @@ export function groupFrames(model: Model, grects: Map<string, Rect>, placer: Lab
   for (const g of depthSorted) {
     const r = grects.get(g.id) as Rect;
     const ks = groupKindStyle(g.kind);
-    const head = groupHeader(g.label, g.kind, r.w - 2 * GROUP_PAD, addressAttrLines(g.attrs));
+    const head = groupHeader(g.label, groupKindText(g), r.w - 2 * GROUP_PAD, addressAttrLines(g.attrs));
     out.push(
       h('g', { class: `group kind-${cssToken(g.kind)} ${ks.strong ? 'group-strong' : ''}`, 'data-ref': 'group:' + g.id }, [
         h('rect', { class: 'group-box', x: r.x, y: r.y, width: r.w, height: r.h, rx: 12, 'stroke-dasharray': ks.dash }),
@@ -166,7 +167,7 @@ export function groupFrames(model: Model, grects: Map<string, Rect>, placer: Lab
  * `bodyH`, the icon and text are centred in the top `bodyH` of the box (the
  * rest holds the chips of its uncabled ports).
  */
-export function deviceNode(ref: string, label: string, sub: string, type: string, b: CBox, extraClass = '', bodyH = b.h, layer3?: boolean, services: Array<'dhcp' | 'dns'> = []): VNode {
+export function deviceNode(ref: string, label: string, sub: string, type: string, b: CBox, extraClass = '', bodyH = b.h, layer3?: boolean, services: Array<'dhcp' | 'dns'> = [], glyph?: string): VNode {
   const x = b.cx - b.w / 2;
   const y = b.cy - b.h / 2;
   const body = deviceBody(label, sub, 0, 0);
@@ -174,10 +175,11 @@ export function deviceNode(ref: string, label: string, sub: string, type: string
   const mid = y + bodyH / 2;
   const top = mid - body.textH / 2;
   // a switch says its layer: an own glyph for a Layer 3 switch, and a badge over the icon's lower right corner (inside the icon's column)
-  const badge = type === 'switch' ? layerBadge(!!layer3, x + 12 + DEVICE_ICON - BADGE_W, mid + DEVICE_ICON / 2 - BADGE_H + 5) : null;
-  return h('g', { class: 'node device ' + extraClass + (type === 'switch' ? (layer3 ? ' layer3' : ' layer2') : ''), 'data-ref': ref, 'data-endpoint': 'device' }, [
+  const sw = capabilities({ type, layer3 }).switchFeatures;
+  const badge = sw ? layerBadge(!!layer3, x + 12 + DEVICE_ICON - BADGE_W, mid + DEVICE_ICON / 2 - BADGE_H + 5) : null;
+  return h('g', { class: 'node device ' + extraClass + (sw ? (layer3 ? ' layer3' : ' layer2') : ''), 'data-ref': ref, 'data-endpoint': 'device' }, [
     h('rect', { class: 'dev-box', x, y, width: b.w, height: b.h, rx: 8 }),
-    deviceIcon(type, x + 12, mid - DEVICE_ICON / 2, DEVICE_ICON, layer3),
+    deviceIcon(glyph || type, x + 12, mid - DEVICE_ICON / 2, DEVICE_ICON, layer3),
     badge,
     // a server's DHCP and DNS servers: a badge each over the icon (DHCP above, DNS below), in its column
     ...services.map((svc) => serviceBadge(svc, x + 12, svc === 'dhcp' ? mid - DEVICE_ICON / 2 - BADGE_H + 4 : mid + DEVICE_ICON / 2 - 4)),
@@ -480,7 +482,7 @@ export function renderPhysical(model: Model, layout: PhysicalLayout, opts: ViewO
     if (flow.items.length) portNodes.push(...chipNodes(d.id, flow, b.cx - b.w / 2 + IFCHIP_PAD, b.cy + b.h / 2 - chipsH, 'port-chip', () => ''));
     if (items.length) portNodes.push(...entryNodes(items, b.cx - b.w / 2 + ENTRY_MARGIN, b.cy + b.h / 2 - chipsH - listH, b.w - 2 * ENTRY_MARGIN));
     const bodyH = b.h - chipsH - listH - innerH;
-    deviceNodes.push(deviceNode('device:' + d.id, d.label, deviceSubtitle(d.type, d.layer3), d.type, b, 'type-' + cssToken(d.type) + (inner ? ' host' : ''), bodyH, d.layer3, netServiceIds(d)));
+    deviceNodes.push(deviceNode('device:' + d.id, d.label, deviceTypeLine(d), d.type, b, 'type-' + cssToken(d.type) + (inner ? ' host' : ''), bodyH, d.layer3, netServiceIds(d), glyphFor(d)));
     if (inner) {
       const ox = b.cx - inner.w / 2;
       const oy = b.cy - b.h / 2 + bodyH;

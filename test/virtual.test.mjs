@@ -119,8 +119,8 @@ test('the model: a guest has its host; the services hold their virtual switches,
 });
 
 test('a guest needs its host, and the host its service', () => {
-  assert.equal(one(rep('    host: hv\n', '')), 'devices.vm1.host: VM "vm1" needs its host: a server with the Hypervisor service');
-  assert.equal(one(rep('    host: ch\n', '')), 'devices.c1.host: container "c1" needs its host: a server or a VM with the Container engine service');
+  assert.equal(one(rep('    host: hv\n', '')), 'devices.vm1.host: VM "vm1" needs its host: a server with the Hypervisor service (or, as a cloud instance, a cloud group: a cloud_region, vpc or vnet)');
+  assert.equal(one(rep('    host: ch\n', '')), 'devices.c1.host: container "c1" needs its host: a server or a VM with the Container engine service (or, as a cloud instance, a cloud group: a cloud_region, vpc or vnet)');
   assert.equal(one(rep('    host: hv\n', '    host: hvx\n')), 'devices.vm1.host: unknown host "hvx" — did you mean "hv"?');
   assert.equal(one(rep('    host: hv\n', '    host: ch\n')), 'devices.vm1.host: the host of VM "vm1" is a server with the Hypervisor service; "ch" has no Hypervisor service (enable it in its Services)');
   assert.match(one(rep('    host: ch\n', '    host: vm1\n')), /^devices\.c1\.host: the host of container "c1" is a server or a VM with the Container engine service; "vm1" has no Container engine service/);

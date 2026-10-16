@@ -7,7 +7,7 @@
  * values.
  */
 import { IpAddr, parseAddress } from '../model/ip';
-import { deviceRoutingRole } from '../model/device-types';
+import { deviceRoutingRole } from '../model/capabilities';
 import { protocolBase } from '../model/protocols';
 import { serviceOf } from '../model/services';
 import { Interface, Model, Relation, ServiceConfig, deviceInterfaces, relationDevices } from '../model/types';

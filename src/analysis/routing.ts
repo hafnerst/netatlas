@@ -37,13 +37,13 @@
  * that is not up has no connected networks and can't be an exit.
  */
 import { compareRoutes, routeLine } from '../model/addresses';
-import { deviceRoutingRole } from '../model/device-types';
+import { deviceRoutingRole } from '../model/capabilities';
 import { IpAddr, IpPrefix, parseAddress, parsePrefix } from '../model/ip';
 import { normalizeProtocol, protocolBase } from '../model/protocols';
 import { bgpAsn, hasService, routerIdFor } from '../model/services';
 import { Device, Interface, Model, Relation, Route, deviceInterfaces, relationDevices, routeKey } from '../model/types';
 import { addrBig, compareAddr, comparePrefix, formatAddr, inPrefix, networkOf, prefixText } from './ipmath';
-import { vethNetwork } from '../model/virtual';
+import { vethNetwork, isContainer } from '../model/virtual';
 
 /** Distance a static route without `distance` gets in route selection. */
 export const DEFAULT_STATIC_DISTANCE = 1;
@@ -236,7 +236,7 @@ export function ribOf(model: Model, device: string, vrf: string, ctx?: RoutingCt
  * unless a default route of that family is written.
  */
 function containerDefaults(model: Model, d: Device, written: RibEntry[]): RibEntry[] {
-  if (d.type !== 'container') return [];
+  if (!isContainer(d)) return [];
   const out: RibEntry[] = [];
   for (const i of d.logical) {
     if (i.type !== 'veth') continue;

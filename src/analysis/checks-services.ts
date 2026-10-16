@@ -5,7 +5,7 @@
  * addresses outside their interface's subnet, and members of one group
  * with different group numbers. Each reads only what is written.
  */
-import { deviceRoutingRole } from '../model/device-types';
+import { deviceRoutingRole } from '../model/capabilities';
 import { parsePrefix } from '../model/ip';
 import { protocolBase } from '../model/protocols';
 import { routerIdFor, serviceOf } from '../model/services';

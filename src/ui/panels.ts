@@ -1,7 +1,7 @@
 /** Side-panel content (details, legend, relation list) as HTML VNodes. */
-import { deviceKindLabel } from '../model/device-types';
+import { deviceKindLabel, deviceTypeLine, roleLabel } from '../model/device-types';
 import { sortedByName } from '../model/order';
-import { Attrs, CATEGORIES, Interface, LinkEnd, Model, ProtocolDef, RelEndpoint, Route, TunnelEnd, endpointText, ifaceKey, interfaceKindLabel, relationDevices } from '../model/types';
+import { Attrs, CATEGORIES, Interface, LinkEnd, Model, ProtocolDef, RelEndpoint, Route, TunnelEnd, endpointText, ifaceKey, interfaceKindLabel, relationDevices, VpnService, VPN_OPERATIONS, VPN_TECHNOLOGIES } from '../model/types';
 import { LegendItem, SWATCH_H, SWATCH_W, legendOf, relationSwatchParts } from '../diagram/legend';
 import { VNode, h } from '../diagram/scene';
 import { iconNode } from './dom';
@@ -13,6 +13,7 @@ import { relationStyle } from '../model/protocols';
 import { compareRoutes, identityLines, routeLine } from '../model/addresses';
 import { formatAddr } from '../analysis/ipmath';
 import { DEFAULT_STATIC_DISTANCE, resolveRoute } from '../analysis/routing';
+import { separationSummary } from '../analysis/separation';
 
 
 function refLink(ref: string, text: string): VNode {
@@ -255,13 +256,19 @@ export function detailsFor(model: Model, ref: string, status: IssueCount | null 
     kids.push(header());
     kids.push(
       kv([
-        ['type', deviceKindLabel(d) || undefined],
+        ['type', deviceTypeLine(d) || deviceKindLabel(d) || undefined],
+        ['role', d.role ? roleLabel(d.role) : undefined],
         ['group', d.group ? refLink('group:' + d.group, ix.groups.get(d.group)?.label || d.group) : undefined],
+        ['port pairs', d.portPairs.length ? d.portPairs.map((p) => `${p.a} ${p.direction === 'a_to_b' ? '→' : '↔'} ${p.b}${p.copy.length ? ' (copy to ' + p.copy.join(', ') + ')' : ''}`).join('; ') : undefined],
+        ['management', d.management.length ? d.management.join(', ') + ' (never forwarded)' : undefined],
+        ['VPN', d.vpn ? vpnSummary(d.vpn) : undefined],
         ['protocols', d.services.length ? d.services.map((s) => (model.services.get(s.id) || { label: s.id }).label).join(', ') : undefined],
         ...identityLines(d, model.services).map((x): [string, string] => ['identity', x.line]),
         ['description', d.description],
       ]),
     );
+    // a Separation gateway's policy, in words: implementation, domains, directions, the rules in order, the default deny
+    if (d.separation) kids.push(h('section', { 'data-list': 'separation' }, [h('h4', {}, 'Domain separation'), h('ul', { class: 'sep-summary' }, separationSummary(d).map((x) => h('li', {}, x)))]));
     // display order is alphabetical; the file order is not changed by viewing
     const phys = sortedByName(d.interfaces, (x) => x.id);
     if (phys.length) {
@@ -750,4 +757,12 @@ export function relationList(model: Model, ctx: SelectionContext | null = null):
       ]),
     ),
   );
+}
+
+/** A VPN gateway configuration in words: "site to site, IPsec (IKEv2): tunnels st0; protects 10.1.0.0/16". */
+function vpnSummary(v: VpnService): string {
+  const op = VPN_OPERATIONS.find((x) => x.id === v.operation);
+  const tech = VPN_TECHNOLOGIES.find((x) => x.id === v.technology);
+  const how = v.operation === 'site_to_site' ? `tunnels ${v.tunnels.join(', ') || '(none)'}` : v.operation === 'remote_access' ? `clients at ${v.listener || '?'}, pool ${v.pool || '?'}` : '';
+  return [[op ? op.label.toLowerCase() : 'operation not set', tech ? tech.label : 'technology not set'].join(', '), how, v.protected.length ? 'protects ' + v.protected.join(', ') : ''].filter((x) => !!x).join('; ');
 }

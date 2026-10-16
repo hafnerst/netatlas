@@ -4,7 +4,7 @@
  * aggregates, an IPsec relation, an SNMP relation it polls from, its
  * Hypervisor and Container engine services). Pure.
  */
-import { deviceRoutingRole } from '../../model/device-types';
+import { capabilities, deviceRoutingRole } from '../../model/capabilities';
 import { protocolBase } from '../../model/protocols';
 import { Device, Interface, Model, Relation, deviceInterfaces, relationDevices } from '../../model/types';
 import { DeviceFacts, IfaceFacts, ParamDef, RelFacts, deviceParams, deviceParamByYaml, interfaceParams, relationParams, vlanParams } from './params';
@@ -17,6 +17,7 @@ export function deviceFacts(model: Model, d: Device): DeviceFacts {
     id: d.id,
     type: d.type,
     layer3: d.layer3,
+    caps: capabilities(d),
     ip: ifs.some((i) => i.addresses.length > 0 || i.dhcp),
     routes: deviceRoutingRole(d) === 'router',
     aggregate: d.logical.some((i) => i.type === 'virtual' && i.members.length > 0),
@@ -39,19 +40,19 @@ export function ifaceFacts(model: Model, d: Device, i: Interface): IfaceFacts {
     ip: i.addresses.length > 0 || i.dhcp,
     dhcp: i.dhcp,
     lag,
-    bridgePort: d.type === 'switch' && ((port && !member && !(i.addresses.length > 0 || i.dhcp)) || lag),
-    radio: d.type === 'ap' && wireless,
+    bridgePort: capabilities(d).switchFeatures && ((port && !member && !(i.addresses.length > 0 || i.dhcp)) || lag),
+    radio: capabilities(d).wirelessAccess && wireless,
   };
 }
 
 /** What the applicability of a relation attribute needs: its protocol, and whether it is a load balancer's pool or a server's service. */
 export function relFacts(model: Model, r: Relation): RelFacts {
-  const types = relationDevices(r).map((id) => (model.index.devices.get(id) || { type: '' }).type);
+  const caps = relationDevices(r).map((id) => capabilities(model.index.devices.get(id) || { type: '' }));
   const service = r.category === 'service';
   return {
     base: protocolBase(model.protocols, r.protocol),
-    lbService: service && types.indexOf('load_balancer') >= 0,
-    serverService: service && types.some((t) => ['server', 'vm', 'container', 'storage'].indexOf(t) >= 0),
+    lbService: service && caps.some((c) => c.loadBalancing),
+    serverService: service && caps.some((c) => c.serviceHost),
   };
 }
 

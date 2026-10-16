@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 // the order of the File menu
-const order = ['enterprise-wan.yaml', 'datacenter-evpn.yaml', 'minimal.yaml', 'metro-ring.yaml', 'device-types.yaml', 'long-labels.yaml', 'addressing.yaml', 'port-bindings.yaml', 'branch-routing.yaml', 'consistency-checks.yaml', 'campus-services.yaml', 'ospf-reroute.yaml', 'protocol-simulation.yaml', 'vlan-ports.yaml', 'virtualization.yaml'];
+const order = ['enterprise-wan.yaml', 'datacenter-evpn.yaml', 'minimal.yaml', 'metro-ring.yaml', 'device-types.yaml', 'long-labels.yaml', 'addressing.yaml', 'port-bindings.yaml', 'branch-routing.yaml', 'consistency-checks.yaml', 'campus-services.yaml', 'ospf-reroute.yaml', 'protocol-simulation.yaml', 'vlan-ports.yaml', 'virtualization.yaml', 'wan-vpn.yaml', 'hybrid-cloud.yaml', 'ot-network.yaml', 'cross-domain.yaml', 'separation-filtering.yaml'];
 const embed = (dir) =>
   readdirSync(join(root, dir))
     .filter((f) => /\.ya?ml$/.test(f))

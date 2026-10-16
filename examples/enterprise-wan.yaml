@@ -123,9 +123,9 @@ devices:
   - id: hq-core1
     label: hq-core1
     type: switch
+    role: core
     layer3: true
     group: hq-core
-    tier: 3
     router_id: 10.255.0.11
     protocols:
       ospf: {}
@@ -150,9 +150,9 @@ devices:
   - id: hq-core2
     label: hq-core2
     type: switch
+    role: core
     layer3: true
     group: hq-core
-    tier: 3
     router_id: 10.255.0.12
     protocols:
       ospf: {}

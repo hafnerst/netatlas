@@ -23,9 +23,9 @@ devices:
       Core switch A
       (rack 12, U30-U34)
     type: switch
+    role: core
     layer3: true
     group: dc
-    tier: 3
     router_id: lo0
     protocols:
       bgp: {asn: 65010}
@@ -43,9 +43,9 @@ devices:
       core-b
       Core switch B
     type: switch
+    role: core
     layer3: true
     group: dc
-    tier: 3
     router_id: lo0
     protocols:
       bgp: {asn: 65010}

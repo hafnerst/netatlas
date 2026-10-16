@@ -266,7 +266,7 @@ export class Multicast {
       }
     }
     // switches with a snooping querier
-    for (const sd of Array.from(this.e.net.devices.values()).sort((a, b) => cmp(a.id, b.id))) if (sd.bridge && sd.dev.type === 'switch') this.startSnoopQuerier(sd);
+    for (const sd of Array.from(this.e.net.devices.values()).sort((a, b) => cmp(a.id, b.id))) if (sd.bridge && sd.caps.switchFeatures) this.startSnoopQuerier(sd);
     // the hosts' joins and streams of the model, a moment after the start
     // a host joins its groups as soon as its interface is up (an unsolicited report), all of them together
     for (const j of this.modelJoins()) this.P.whenIfaceUp(j.dev, j.iface, () => this.join(j.dev, j.iface, j.group, j.sources, 'model'));
@@ -664,7 +664,7 @@ export class Multicast {
    * ports, member ports) and says which ports get it (null: flood).
    */
   snoop(sd: SimDevice, from: string | null, vlan: number, frame: Frame, t: number): Set<string> | null {
-    if (sd.dev.type !== 'switch' || !frame.ip || !isMulticastIp(frame.ip.dst) || !this.snoopOn(sd.id, vlan)) return null;
+    if (!sd.caps.switchFeatures || !frame.ip || !isMulticastIp(frame.ip.dst) || !this.snoopOn(sd.id, vlan)) return null;
     const p = frame.ip;
     const st = this.snoopState(sd.id, vlan);
     const msg = p.msg;
@@ -990,11 +990,11 @@ export class Multicast {
     const g = formatAddr(pkt.dst);
     const s = formatAddr(pkt.src);
     if (!this.mcRouter(dev)) {
-      if (sd.dev.type === 'firewall' && this.e.params.str('mc-passthrough', dev, ifaceRef(dev, l3.id)) !== 'on') this.note(`fwmc|${dev}|${g}`, 'drop', dev, `${dev} drops multicast for ${g} from ${s}: multicast passthrough ${resolvedText(this.e.params.get('mc-passthrough', dev, null, ifaceRef(dev, l3.id)))}`);
+      if (sd.caps.firewallPolicy && this.e.params.str('mc-passthrough', dev, ifaceRef(dev, l3.id)) !== 'on') this.note(`fwmc|${dev}|${g}`, 'drop', dev, `${dev} drops multicast for ${g} from ${s}: multicast passthrough ${resolvedText(this.e.params.get('mc-passthrough', dev, null, ifaceRef(dev, l3.id)))}`);
       else this.note(`nopim|${dev}|${g}`, 'drop', dev, `${dev} routes no multicast (it runs no PIM): ${pkt.msg.label} stays on ${l3.id}`);
       return true;
     }
-    if (sd.dev.type === 'firewall' && this.e.params.str('mc-passthrough', dev, ifaceRef(dev, l3.id)) !== 'on') {
+    if (sd.caps.firewallPolicy && this.e.params.str('mc-passthrough', dev, ifaceRef(dev, l3.id)) !== 'on') {
       this.note(`fwmc|${dev}|${g}`, 'drop', dev, `${dev} drops multicast for ${g} from ${s}: multicast passthrough ${resolvedText(this.e.params.get('mc-passthrough', dev, null, ifaceRef(dev, l3.id)))}`);
       return true;
     }

@@ -35,10 +35,35 @@ export interface Group {
   id: string;
   label: string;
   kind: string;
+  /** a public cloud group's (cloud_region, vpc, vnet): its provider, as written ("aws", "azure", "gcp" …) */
+  provider?: string;
   parent?: string;
   description?: string;
   attrs: Attrs;
   line: number;
+}
+
+/** The group kinds of a public cloud: a region and the virtual networks in it (they may nest, and hold VMs, containers and Cloud gateway routers). */
+export const CLOUD_GROUP_KINDS: ReadonlyArray<{ id: string; label: string }> = [
+  { id: 'cloud_region', label: 'Cloud region' },
+  { id: 'vpc', label: 'VPC' },
+  { id: 'vnet', label: 'VNet' },
+];
+
+/** Suggested cloud providers (any other may be written). */
+export const CLOUD_PROVIDERS: ReadonlyArray<{ id: string; label: string }> = [
+  { id: 'aws', label: 'AWS' },
+  { id: 'azure', label: 'Azure' },
+  { id: 'gcp', label: 'Google Cloud' },
+  { id: 'oci', label: 'Oracle Cloud' },
+];
+
+/** A group's kind as drawn in its header: a cloud kind by its name, with its provider ("VPC · AWS"); any other as written. */
+export function groupKindText(g: { kind: string; provider?: string }): string {
+  const ck = CLOUD_GROUP_KINDS.find((k) => k.id === g.kind);
+  if (!ck) return g.kind;
+  const p = g.provider ? CLOUD_PROVIDERS.find((x) => x.id === g.provider) : undefined;
+  return g.provider ? `${ck.label} · ${p ? p.label : g.provider}` : ck.label;
 }
 
 /** Valid VLAN IDs (IEEE 802.1Q). */
@@ -193,6 +218,29 @@ export interface Device {
   label: string;
   type: string;
   /**
+   * Its kind within the type (`kind:`, model/device-types.ts): a kind id of
+   * the type, or `other` with its own name in `kindLabel`; none when not
+   * written. A kind never changes what the device does.
+   */
+  kind?: string;
+  kindLabel?: string;
+  /** its architectural position (`role:`): a known role id (model/device-types.ts ROLES) or a custom one, as written */
+  role?: string;
+  /** the type's mode (`mode:`): a Firewall routed / transparent, an IDS/IPS inline / passive, an Access point standalone / controller */
+  mode?: string;
+  /** a System's purpose (`purpose:`, required for a System): what it does (model/capabilities.ts) */
+  purpose?: string;
+  /** a System's icon (`icon:`), one of its purpose's icons; none: the purpose's own */
+  icon?: string;
+  /** the port pairs it passes traffic between (`port_pairs:`): an inline IDS/IPS, an inline or pass-through System */
+  portPairs: PortPair[];
+  /** its management interfaces (`management:`): addressed, never part of the data path (a transparent firewall, a separation gateway, an IDS/IPS) */
+  management: string[];
+  /** a VPN Gateway's built-in VPN gateway function (`services.vpn`) */
+  vpn?: VpnService;
+  /** a Separation gateway's built-in Domain separation (`services.separation`) */
+  separation?: SeparationService;
+  /**
    * A switch that routes (`layer3: true`): a Layer 3 switch with the full
    * Layer 3+ feature set. Without it a switch is a Layer 2 switch: it
    * forwards frames, has one management interface and static routes, and
@@ -236,6 +284,14 @@ export interface Device {
    * ports and no cables, and its location is its host's (model/virtual.ts).
    */
   host?: string;
+  /**
+   * a VM or a container in a public cloud (a cloud_region, vpc or vnet
+   * group) without a host: a cloud instance. The provider's hosts are not
+   * modelled; its interfaces are its attachments to the cloud's network
+   * (physical interfaces, cabled to what it attaches to, a Cloud gateway
+   * router or a switch of the VPC).
+   */
+  cloudInstance?: boolean;
   /** a VM: its guest operating system, virtual CPUs and memory (as written, "16G"), all informational */
   guestOs?: string;
   vcpu?: number;
@@ -244,6 +300,114 @@ export interface Device {
   image?: string;
   /** static routes, in file order (empty unless the device type may route; see analysis/routing.ts) */
   routes: Route[];
+  line: number;
+}
+
+/** Two ports a device passes traffic between (an inline IDS/IPS, an inline or pass-through System), and the ports that get a copy (a TAP). */
+export interface PortPair {
+  a: string;
+  b: string;
+  /** both ways (the default), or only from a to b (a one-way inline device) */
+  direction: 'both' | 'a_to_b';
+  /** the ports that receive a copy of what passes (a TAP's monitor outputs); they never send anything back */
+  copy: string[];
+  line: number;
+}
+
+/** A VPN gateway's operation and technology. */
+export const VPN_OPERATIONS: ReadonlyArray<{ id: 'site_to_site' | 'remote_access'; label: string }> = [
+  { id: 'site_to_site', label: 'Site-to-site' },
+  { id: 'remote_access', label: 'Remote access' },
+];
+export const VPN_TECHNOLOGIES: ReadonlyArray<{ id: string; label: string; protocol: string }> = [
+  { id: 'ipsec', label: 'IPsec (IKEv2)', protocol: 'ipsec' },
+  { id: 'wireguard', label: 'WireGuard', protocol: 'wireguard' },
+  { id: 'openvpn', label: 'OpenVPN', protocol: 'openvpn' },
+];
+
+/**
+ * The VPN gateway function (`services.vpn`): built into a VPN Gateway. Site
+ * to site: its tunnel interfaces (each with its source, the local endpoint,
+ * and its destination, the peer) and the networks behind it; remote access:
+ * the interface it listens on, the clients' address pool and the networks
+ * they reach. Nothing is chosen by default.
+ */
+export interface VpnService {
+  operation?: 'site_to_site' | 'remote_access';
+  technology?: string;
+  /** site to site: its tunnel interfaces (logical interfaces of type tunnel) */
+  tunnels: string[];
+  /** remote access: the interface the clients connect to */
+  listener?: string;
+  /** remote access: the clients' addresses (a prefix) */
+  pool?: string;
+  /** the networks behind it that the tunnels reach (network ids or prefixes) */
+  protected: string[];
+  line: number;
+}
+
+/** How a Separation gateway transfers between its two domains. */
+export const SEPARATION_IMPLEMENTATIONS: ReadonlyArray<{ id: 'filtering_bridge' | 'filtering_router' | 'protocol_break'; label: string; help: string }> = [
+  { id: 'filtering_bridge', label: 'Filtering bridge', help: 'Passes permitted frames unchanged: both domains share a network; no address in it.' },
+  { id: 'filtering_router', label: 'Filtering router', help: 'Routes permitted packets: each domain has its own network, the gateway an address in each.' },
+  { id: 'protocol_break', label: 'Protocol break', help: 'Nothing passes through: a transfer ends here and the gateway starts a new one.' },
+];
+
+/** The transfers a protocol break can model: each with what ends on the source side and what is started on the other. */
+export const TRANSFER_PROFILES: ReadonlyArray<{ id: string; label: string; transport: 'tcp' | 'udp'; port: number; reply: boolean; help: string }> = [
+  { id: 'https', label: 'HTTPS request', transport: 'tcp', port: 443, reply: true, help: 'A request ends here; the gateway asks the destination and answers with its reply.' },
+  { id: 'dns', label: 'DNS query', transport: 'udp', port: 53, reply: true, help: 'A query ends here; the gateway asks again and passes the answer back.' },
+  { id: 'syslog', label: 'Syslog message', transport: 'udp', port: 514, reply: false, help: 'A message ends here; the gateway sends a new one on. Nothing comes back.' },
+];
+
+/** A security domain of a Separation gateway: its name and its data interfaces. */
+export interface SeparationDomain {
+  name: string;
+  interfaces: string[];
+  line: number;
+}
+
+/** A permitted transfer of a Separation gateway: who may start what, from which domain to which. */
+export interface SeparationRule {
+  id: string;
+  description?: string;
+  from: string;
+  to: string;
+  /** `any`, or an address or prefix (as written) */
+  source: string;
+  destination: string;
+  /** tcp, udp, icmp or any */
+  protocol: string;
+  /** the destination ports (tcp / udp): `any`, or ports and ranges as written ("443", "8000-8080") */
+  ports?: string;
+  /** a protocol break: the transfer profile it uses (a profile id) */
+  profile?: string;
+  line: number;
+}
+
+/** A protocol break's transfer: what it listens for on the source side and where it sends the new transfer. */
+export interface TransferProfile {
+  id: string;
+  type?: string;
+  /** where the gateway listens (an interface of the source domain) and on which port */
+  listenInterface?: string;
+  listenPort?: number;
+  /** where it sends the new transfer on the other side */
+  forwardAddress?: string;
+  forwardPort?: number;
+  line: number;
+}
+
+/** The Domain separation function (`services.separation`): built into a Separation gateway, never anywhere else. */
+export interface SeparationService {
+  implementation?: 'filtering_bridge' | 'filtering_router' | 'protocol_break';
+  domains: SeparationDomain[];
+  /** the permitted directions of transfer: from one domain to the other (one or both) */
+  directions: Array<{ from: string; to: string }>;
+  rules: SeparationRule[];
+  profiles: TransferProfile[];
+  /** its simulation attributes (transfer delay, transfer loss) */
+  simulation?: Map<string, number | string>;
   line: number;
 }
 

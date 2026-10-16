@@ -131,7 +131,7 @@ export function spofBody(doc: Document, rows: SpofRow[], st: SpofViewState, simu
   const box = el(doc, 'div', { class: 'spof-body' });
   box.appendChild(
     el(doc, 'p', { class: 'small' }, [
-      'A single point of failure is one cable, device or LAG (all its member cables at once) whose failure alone cuts devices off from the rest of the physical network, or brings down relations although their endpoints are still up (they have no redundant underlay); for virtual machines and containers also a host (unless its HA cluster has a member left to restart them on), a virtual switch with one uplink or with its uplinks to one switch, and a passthrough port. Impact: the devices cut off (guests that go down included) plus the relations that go down. ',
+      'A single point of failure is one cable, device or LAG (all its member cables at once) whose failure alone cuts devices off from the rest of the physical network, or brings down relations although their endpoints are still up (they have no redundant underlay); for virtual machines and containers also a host (unless its HA cluster has a member left to restart them on), a virtual switch with one uplink or with its uplinks to one switch, and a passthrough port. A device joins only what it passes traffic between: an inline or pass-through device its paired ports, a Separation gateway its two domains only when its policy permits a transfer, a passive monitor and a management interface nothing. Impact: the devices cut off (guests that go down included) plus the relations that go down. ',
       el(doc, 'span', { class: 'muted' }, [simulated ? 'Computed from the model as written (not the simulated state that is on).' : 'Computed from the model as written.']),
     ]),
   );

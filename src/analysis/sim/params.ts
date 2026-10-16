@@ -17,6 +17,7 @@
  * written in the model without a unit is in the parameter's `base` unit.
  */
 import { DEVICE_TYPE_IDS } from '../../model/device-types';
+import { Capabilities, capabilities, layer3Option } from '../../model/capabilities';
 import { parseSpeed } from '../../model/speed';
 
 export type ParamKind = 'duration' | 'count' | 'percent' | 'speed' | 'enum' | 'list';
@@ -36,7 +37,7 @@ export type Source = 'configured' | 'object' | 'device' | 'simulation' | 'defaul
 export type ParamLevel = 'device' | 'interface' | 'vlan' | 'relation' | 'service';
 
 /** The objects of a server's services that have simulation attributes of their own. */
-export type SvcLevel = 'dhcp' | 'dns' | 'hypervisor' | 'vswitch' | 'container_engine';
+export type SvcLevel = 'dhcp' | 'dns' | 'hypervisor' | 'vswitch' | 'container_engine' | 'separation';
 export const PARAM_LEVELS: readonly ParamLevel[] = ['device', 'interface', 'vlan', 'relation', 'service'];
 
 /** Which interfaces an interface attribute applies to (of the devices it applies to). */
@@ -46,7 +47,7 @@ export type IfaceApplies = 'ip' | 'routed' | 'port' | 'bridge-port' | 'lag' | 'r
 export type RelApplies = string;
 
 /** Which devices a simulation attribute applies to (see deviceParams). */
-export type Applies = 'all' | 'ip' | 'dhcp' | 'router' | 'switch' | 'aggregate' | 'firewall' | 'ids' | 'vpn' | 'host' | 'hypervisor' | 'engine' | 'container' | 'monitor' | 'cloud' | 'ap' | 'endpoint' | 'lb' | 'proxy';
+export type Applies = 'all' | 'ip' | 'dhcp' | 'router' | 'switch' | 'aggregate' | 'firewall' | 'ids' | 'vpn' | 'host' | 'hypervisor' | 'engine' | 'container' | 'monitor' | 'cloud' | 'ap' | 'endpoint' | 'lb' | 'separation';
 
 export interface ParamDef {
   /** the registry key ("arp-timeout") */
@@ -167,7 +168,7 @@ export const PARAMS: readonly ParamDef[] = [
   P({ key: 'test-type', yaml: 'test_type', label: 'Test traffic type', layer: 4, kind: 'enum', dflt: 'icmp', options: TEST_TYPES, source: 'ping, the usual first test', help: 'ICMP echo, a TCP connection or a UDP request (a relation’s own port wins).', device: ['endpoint'] }),
   P({ key: 'app-timeout', yaml: 'app_timeout', label: 'Application response timeout', layer: 4, kind: 'duration', base: 's', dflt: 5 * S, min: 100, max: 600 * S, source: 'dig’s default timeout (5 s); Windows ping waits 4 s', help: 'A test without an answer within it is reported as timed out.', device: ['endpoint'] }),
   // ------------------------------------------------------------ device attributes only
-  P({ key: 'boot-time', yaml: 'boot_time', label: 'Boot time', layer: 0, kind: 'duration', base: 's', dflt: 30 * S, dfltByType: { container: 2 * S, vm: 20 * S, router: 60 * S, firewall: 60 * S, gateway: 60 * S, load_balancer: 60 * S }, min: 0, max: 3600 * S, source: 'a demonstration value (containers start in seconds, chassis routers in minutes)', help: 'Power on: the time until its interfaces come up.', device: ['all'] }),
+  P({ key: 'boot-time', yaml: 'boot_time', label: 'Boot time', layer: 0, kind: 'duration', base: 's', dflt: 30 * S, dfltByType: { container: 2 * S, vm: 20 * S, router: 60 * S, firewall: 60 * S, vpn_gateway: 60 * S, separation_gateway: 60 * S, load_balancer: 60 * S }, min: 0, max: 3600 * S, source: 'a demonstration value (containers start in seconds, chassis routers in minutes)', help: 'Power on: the time until its interfaces come up.', device: ['all'] }),
   P({ key: 'ecmp-max', yaml: 'max_paths', label: 'Maximum ECMP paths', layer: 0, kind: 'count', dflt: 4, min: 1, max: 64, source: 'Cisco IOS maximum-paths (4)', help: 'Equal-cost next hops it spreads flows over.', device: ['router'] }),
   P({ key: 'mac-table-size', yaml: 'mac_table_size', label: 'MAC table size', layer: 0, kind: 'count', dflt: 8192, min: 1, max: 1000000, source: 'a small access switch (data sheets: 8 K–16 K entries)', help: 'When it is full, new addresses are not learned and their frames are flooded.', device: ['switch'] }),
   P({ key: 'stp-hello', yaml: 'stp_hello', label: 'STP hello time', layer: 0, kind: 'duration', base: 's', dflt: 2 * S, min: S, max: 10 * S, source: 'IEEE 802.1D-2004 Table 17-1', help: 'RSTP: a switch further from a failure takes over after 3 hellos.', device: ['switch'] }),
@@ -240,6 +241,8 @@ export const PARAMS: readonly ParamDef[] = [
   P({ key: 'vm-restart', level: 'service', svc: 'hypervisor', yaml: 'vm_restart', label: 'VM restart time', layer: 0, kind: 'duration', base: 's', dflt: 60 * S, min: 0, max: 3600 * S, source: 'a demonstration value (HA failure detection plus the restart)', help: 'The host powered off: its VMs restart on another HA cluster member after this.', device: ['hypervisor'] }),
   P({ key: 'failover-detect', level: 'service', svc: 'vswitch', yaml: 'failover_detection', label: 'Teaming failover detection', layer: 0, kind: 'duration', base: 'ms', dflt: S, min: 0, max: 60 * S, source: 'a demonstration value (link-status failover detection takes about a second)', help: 'An active uplink fails: after this, its guests move to the next uplink (with RARP).', device: ['hypervisor'] }),
   P({ key: 'container-start', level: 'service', svc: 'container_engine', yaml: 'container_start', label: 'Container start time', layer: 0, kind: 'duration', base: 's', dflt: 2 * S, min: 0, max: 600 * S, source: 'a demonstration value (a container starts in seconds)', help: 'The engine or its host starts: its containers (by restart policy) are up after this.', device: ['engine'] }),
+  P({ key: 'transfer-delay', level: 'service', svc: 'separation', yaml: 'transfer_delay', label: 'Transfer delay', layer: 0, kind: 'duration', base: 'ms', dflt: 1, min: 0, max: 60 * S, source: 'a demonstration value (a separation gateway inspects what it transfers)', help: 'Time a permitted transfer takes inside the gateway (per packet, or per new leg).', device: ['separation'] }),
+  P({ key: 'transfer-loss', level: 'service', svc: 'separation', yaml: 'transfer_loss', label: 'Transfer loss', layer: 0, kind: 'percent', dflt: 0, min: 0, max: 100, source: 'none unless set', help: 'Share of permitted transfers it loses (an overloaded or faulty gateway).', device: ['separation'] }),
   P({ key: 'restart-policy', yaml: 'restart_policy', label: 'Restart policy', layer: 0, kind: 'enum', dflt: 'no', options: [{ value: 'no', label: 'No' }, { value: 'always', label: 'Always' }, { value: 'on-failure', label: 'On failure' }, { value: 'unless-stopped', label: 'Unless stopped' }], source: 'Docker (no)', help: 'Whether the engine starts it again after its host or the engine restarts.', device: ['container'] }),
   P({ key: 'snmp-interval', yaml: 'snmp_interval', label: 'SNMP polling interval', layer: 0, kind: 'duration', base: 's', dflt: 60 * S, min: S, max: 86400 * S, source: 'a demonstration value (300 s is common in production)', help: 'How often it polls each SNMP agent.', device: ['monitor'] }),
   P({ key: 'snmp-timeout', yaml: 'snmp_timeout', label: 'SNMP timeout', layer: 0, kind: 'duration', base: 's', dflt: S, min: 100, max: 60 * S, source: 'net-snmp (1 s)', help: 'An agent that does not answer within it is reported as not responding.', device: ['monitor'] }),
@@ -275,8 +278,8 @@ export const PARAMS: readonly ParamDef[] = [
   P({ key: 'fw-half-open', yaml: 'tcp_handshake_timeout', label: 'TCP handshake timeout', layer: 0, kind: 'duration', base: 's', dflt: 5 * S, min: S, max: 3600 * S, source: 'PAN-OS tcp-init (5 s)', help: 'A half-open session (SYN without the handshake done) is removed after it.', device: ['firewall'] }),
   P({ key: 'fw-udp', yaml: 'udp_session_timeout', label: 'UDP session timeout', layer: 0, kind: 'duration', base: 's', dflt: 30 * S, min: S, max: 604800 * S, source: 'PAN-OS (30 s)', help: 'A UDP session idle this long is removed.', device: ['firewall'] }),
   P({ key: 'fw-icmp', yaml: 'icmp_session_timeout', label: 'ICMP session timeout', layer: 0, kind: 'duration', base: 's', dflt: 6 * S, min: S, max: 3600 * S, source: 'PAN-OS (6 s)', help: 'An ICMP echo session idle this long is removed.', device: ['firewall'] }),
-  // servers, load balancers, proxies, endpoints, monitoring
-  P({ key: 'listening', yaml: 'listening', label: 'Listening services', layer: 0, kind: 'list', list: 'ports', dflt: '', zero: 'its service relations’ ports', source: 'the ports of the service relations it serves', help: 'Open ports (tcp/443, udp/53); others get a RST or port unreachable.', device: ['host', 'lb', 'proxy'] }),
+  // servers, load balancers, endpoints, monitoring
+  P({ key: 'listening', yaml: 'listening', label: 'Listening services', layer: 0, kind: 'list', list: 'ports', dflt: '', zero: 'its service relations’ ports', source: 'the ports of the service relations it serves', help: 'Open ports (tcp/443, udp/53); others get a RST or port unreachable.', device: ['host', 'lb'] }),
   P({ key: 'lb-hc-interval', level: 'relation', rels: ['lb-service'], yaml: 'health_check_interval', label: 'Health check interval', layer: 0, kind: 'duration', base: 's', dflt: 2 * S, min: 100, max: 3600 * S, source: 'HAProxy inter (2 s)', help: 'How often it checks each pool member (its service relations).', device: ['lb'] }),
   P({ key: 'lb-hc-timeout', level: 'relation', rels: ['lb-service'], yaml: 'health_check_timeout', label: 'Health check timeout', layer: 0, kind: 'duration', base: 's', dflt: 2 * S, min: 100, max: 600 * S, source: 'HAProxy timeout check (defaults to inter)', help: 'A check not answered within it fails.', device: ['lb'] }),
   P({ key: 'lb-hc-fall', level: 'relation', rels: ['lb-service'], yaml: 'health_check_threshold', label: 'Health check failure threshold', layer: 0, kind: 'count', dflt: 3, min: 1, max: 100, source: 'HAProxy fall (3)', help: 'Failed checks in a row before a member is taken out (one success brings it back).', device: ['lb'] }),
@@ -297,8 +300,6 @@ export const PARAMS: readonly ParamDef[] = [
     help: 'Which healthy member a new connection goes to.',
     device: ['lb'],
   }),
-  P({ key: 'proxy-client', yaml: 'client_timeout', label: 'Client connection timeout', layer: 0, kind: 'duration', base: 's', dflt: 60 * S, min: 100, max: 86400 * S, source: 'nginx client_header_timeout (60 s)', help: 'A client connection idle this long is closed.', device: ['proxy'] }),
-  P({ key: 'proxy-upstream', yaml: 'upstream_timeout', label: 'Upstream connect timeout', layer: 0, kind: 'duration', base: 's', dflt: 60 * S, min: 100, max: 3600 * S, source: 'nginx proxy_connect_timeout (60 s)', help: 'Without an upstream connection within it, the client gets an error.', device: ['proxy'] }),
   P({ key: 'test-targets', yaml: 'test_targets', label: 'Test targets', layer: 0, kind: 'list', list: 'targets', dflt: '', zero: 'its gateway and service relations', source: 'its gateway and the servers of its service relations', help: 'Devices or addresses, each optionally with tcp/443, udp/53 or icmp.', device: ['endpoint'] }),
   // DHCP and DNS: the servers' scopes and zones, the clients' interfaces
   P({ key: 'dhcp-offer-delay', yaml: 'offer_delay', label: 'Offer delay', layer: 0, level: 'service', svc: 'dhcp', devDefault: true, kind: 'duration', base: 'ms', dflt: 0, min: 0, max: 60 * S, source: 'none unless set (Windows Server: a delay for the secondary of a split scope)', help: 'How long the server waits before it answers a DHCPDISCOVER.', device: ['dhcp'] }),
@@ -421,6 +422,8 @@ export interface DeviceFacts {
   id: string;
   type: string;
   layer3?: boolean;
+  /** what it can do (model/capabilities.ts) */
+  caps: Capabilities;
   /** has an address (an IP stack) */
   ip: boolean;
   /** forwards IP for others */
@@ -439,9 +442,8 @@ export interface DeviceFacts {
   dhcpServer?: boolean;
 }
 
-const HOST_TYPES = ['server', 'vm', 'container', 'storage'];
-
 function applies(a: Applies, f: DeviceFacts): boolean {
+  const c = f.caps;
   switch (a) {
     case 'all':
       return true;
@@ -452,35 +454,35 @@ function applies(a: Applies, f: DeviceFacts): boolean {
     case 'router':
       return f.routes;
     case 'switch':
-      return f.type === 'switch';
+      return c.switchFeatures;
     case 'aggregate':
       return f.aggregate;
     case 'firewall':
-      return f.type === 'firewall';
+      return c.firewallPolicy;
     case 'ids':
-      return f.type === 'ids_ips';
+      return c.inspection;
     case 'vpn':
-      return f.type === 'gateway' || f.ipsec;
+      return c.vpnTermination || f.ipsec;
     case 'host':
-      return HOST_TYPES.indexOf(f.type) >= 0;
+      return c.serviceHost;
     case 'hypervisor':
-      return f.type === 'server' && f.hypervisor;
+      return c.canHostGuests.vms && f.hypervisor;
     case 'engine':
       return !!f.engine;
     case 'container':
-      return f.type === 'container';
+      return c.canBeGuest === 'container';
     case 'monitor':
-      return f.type === 'system' || f.snmpManager;
+      return c.monitoring || f.snmpManager;
     case 'cloud':
-      return f.type === 'cloud';
+      return c.externalTransit;
     case 'ap':
-      return f.type === 'ap';
+      return c.wirelessAccess;
     case 'endpoint':
-      return f.type === 'endpoint';
+      return c.testTraffic;
     case 'lb':
-      return f.type === 'load_balancer';
-    case 'proxy':
-      return f.type === 'proxy';
+      return c.loadBalancing;
+    case 'separation':
+      return c.separationGateway;
   }
   return false;
 }
@@ -581,12 +583,16 @@ const SVC_WHERE: { [k in SvcLevel]: string } = {
   hypervisor: 'per Hypervisor service: in services.hypervisor.simulation:',
   vswitch: 'per virtual switch: in the virtual switch’s simulation:',
   container_engine: 'per Container engine: in services.container_engine.simulation:',
+  separation: 'per Domain separation: in services.separation.simulation:',
 };
 
 /** Every device type has some attribute (boot time at least): for the docs and the tests. */
 export function attributesByType(): Array<{ type: string; keys: string[] }> {
   return DEVICE_TYPE_IDS.map((type) => {
-    const f: DeviceFacts = { id: '', type, layer3: type === 'switch', ip: type !== 'cloud' && type !== 'ids_ips', routes: ['router', 'firewall', 'gateway', 'load_balancer', 'proxy'].indexOf(type) >= 0 || type === 'switch', aggregate: type === 'switch' || type === 'server' || type === 'router', ipsec: false, snmpManager: false, hypervisor: type === 'server', engine: type === 'server' || type === 'vm' };
+    // (as it is most often used: a switch and a VM with Layer 3, a server running guests, a System as a host)
+    const d = { type, layer3: layer3Option(type) ? true : undefined, purpose: 'host' };
+    const caps = capabilities(d);
+    const f: DeviceFacts = { id: '', type, layer3: d.layer3, caps, ip: caps.ipStack, routes: caps.l3Forward, aggregate: caps.switchFeatures || caps.serviceHost || caps.l3Forward, ipsec: false, snmpManager: false, hypervisor: caps.canHostGuests.vms, engine: caps.canHostGuests.containers };
     return { type, keys: deviceParams(f).map((p) => p.key) };
   });
 }

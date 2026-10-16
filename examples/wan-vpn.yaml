@@ -1,0 +1,172 @@
+# netatlas example: a WAN over an MPLS service, and a dedicated VPN Gateway.
+#
+# Branch 1 reaches HQ over the provider's MPLS service, a Cloud of the kind
+# MPLS / VPN service: an external network whose internals are not modelled.
+# It carries traffic between its attachments as one Layer 3 hop (TTL one
+# lower); a routing protocol's hellos do not cross it, so the CEs (role CE)
+# route to each other with static routes.
+#
+# Branch 2 has no MPLS access: a site-to-site IPsec VPN joins it to HQ over
+# the Internet, between two VPN Gateways (type vpn_gateway). Each has its
+# built-in VPN gateway function (services: vpn): the operation, the
+# technology, its tunnel interface st0 (source wan0, destination the peer)
+# and the networks behind it. A VPN Gateway forwards only to and from its
+# VPN: HQ's default route points at hq-vpn, but the PC's ping to the Internet
+# (192.0.2.10) is refused there; branch 2's traffic through st0 passes.
+#
+# Analyze ▾ → Trace path… from br2-pc to hq-pc shows the tunnel and its
+# underlay; from br1-pc it shows the MPLS hop. Simulate ▾ → Start
+# simulation…: IKE first, then the PCs' tests.
+netatlas: 1
+title: WAN — MPLS service and a VPN Gateway
+description: |
+  HQ with two branches: one over a provider's MPLS service (a Cloud), one
+  over a site-to-site IPsec VPN between two dedicated VPN Gateways.
+
+groups:
+  - id: hq
+    label: HQ
+    kind: site
+  - id: br1
+    label: Branch 1
+    kind: site
+  - id: br2
+    label: Branch 2
+    kind: site
+  - id: providers
+    label: Providers
+    kind: provider
+
+devices:
+  # --- HQ ---------------------------------------------------------------
+  - id: hq-pc
+    type: endpoint
+    kind: pc
+    group: hq
+    simulation: {test_traffic: "on", test_targets: "10.2.10.10 icmp, 192.0.2.10 icmp", test_interval: 10}
+    interfaces:
+      - {id: eth0, ip: 10.1.10.10/24}
+    routes:
+      - {prefix: 0.0.0.0/0, via: 10.1.10.1, name: default gateway}
+  - id: hq-core
+    type: router
+    role: core
+    group: hq
+    interfaces:
+      - {id: lan, ip: 10.1.10.1/24}
+      - {id: to-ce, ip: 10.1.0.1/30}
+      - {id: to-vpn, ip: 10.1.0.5/30}
+    routes:
+      - {prefix: 10.2.0.0/16, via: 10.1.0.2, name: branch 1 over MPLS}
+      - {prefix: 10.3.0.0/16, via: 10.1.0.6, name: branch 2 over the VPN}
+      - {prefix: 0.0.0.0/0, via: 10.1.0.6, name: default (the VPN Gateway refuses it)}
+  - id: hq-ce
+    type: router
+    role: ce
+    group: hq
+    interfaces:
+      - {id: lan0, ip: 10.1.0.2/30}
+      - {id: mpls0, ip: 172.16.0.1/24}
+    routes:
+      - {prefix: 10.2.0.0/16, via: 172.16.0.2, name: branch 1}
+      - {prefix: 10.1.0.0/16, via: 10.1.0.1, name: HQ}
+  - id: hq-vpn
+    type: vpn_gateway
+    role: border
+    group: hq
+    services:
+      vpn:
+        operation: site_to_site
+        technology: ipsec
+        tunnels: [st0]
+        protected: [10.1.0.0/16]
+    interfaces:
+      - {id: lan0, ip: 10.1.0.6/30}
+      - {id: wan0, ip: 203.0.113.2/30}
+    logical_interfaces:
+      - {id: st0, type: tunnel, ip: 169.254.30.1/30, source: wan0, destination: 198.51.100.2}
+    routes:
+      - {prefix: 10.3.0.0/16, via: 169.254.30.2, name: branch 2 through the tunnel}
+      - {prefix: 10.1.0.0/16, via: 10.1.0.5, name: HQ}
+      - {prefix: 0.0.0.0/0, via: 203.0.113.1, name: the ISP}
+  # --- providers --------------------------------------------------------
+  - id: mpls
+    label: MPLS service
+    type: cloud
+    kind: mpls
+    group: providers
+    interfaces: [hq, br1]
+  - id: inet
+    label: Internet
+    type: cloud
+    kind: internet
+    group: providers
+    interfaces: [hq, br2]
+  # --- branch 1 ---------------------------------------------------------
+  - id: br1-ce
+    type: router
+    role: ce
+    group: br1
+    interfaces:
+      - {id: mpls0, ip: 172.16.0.2/24}
+      - {id: lan0, ip: 10.2.10.1/24}
+    routes:
+      - {prefix: 10.1.0.0/16, via: 172.16.0.1, name: HQ over MPLS}
+      - {prefix: 10.3.0.0/16, via: 172.16.0.1, name: branch 2 via HQ}
+  - id: br1-pc
+    type: endpoint
+    kind: pc
+    group: br1
+    simulation: {test_traffic: "on", test_targets: "10.1.10.10 icmp", test_interval: 10}
+    interfaces:
+      - {id: eth0, ip: 10.2.10.10/24}
+    routes:
+      - {prefix: 0.0.0.0/0, via: 10.2.10.1, name: default gateway}
+  # --- branch 2 ---------------------------------------------------------
+  - id: br2-vpn
+    type: vpn_gateway
+    role: border
+    group: br2
+    services:
+      vpn:
+        operation: site_to_site
+        technology: ipsec
+        tunnels: [st0]
+        protected: [10.3.0.0/16]
+    interfaces:
+      - {id: wan0, ip: 198.51.100.2/30}
+      - {id: lan0, ip: 10.3.10.1/24}
+    logical_interfaces:
+      - {id: st0, type: tunnel, ip: 169.254.30.2/30, source: wan0, destination: 203.0.113.2}
+    routes:
+      - {prefix: 10.1.0.0/16, via: 169.254.30.1, name: HQ through the tunnel}
+      - {prefix: 10.2.0.0/16, via: 169.254.30.1, name: branch 1 via HQ}
+      - {prefix: 0.0.0.0/0, via: 198.51.100.1, name: the ISP}
+  - id: br2-pc
+    type: endpoint
+    kind: pc
+    group: br2
+    simulation: {test_traffic: "on", test_targets: "10.1.10.10 icmp", test_interval: 10}
+    interfaces:
+      - {id: eth0, ip: 10.3.10.10/24}
+    routes:
+      - {prefix: 0.0.0.0/0, via: 10.3.10.1, name: default gateway}
+
+links:
+  - {id: l-hq-pc, a: "hq-pc:eth0", b: "hq-core:lan", speed: 1G}
+  - {id: l-core-ce, a: "hq-core:to-ce", b: "hq-ce:lan0", speed: 1G}
+  - {id: l-core-vpn, a: "hq-core:to-vpn", b: "hq-vpn:lan0", speed: 1G}
+  - {id: l-hq-mpls, a: "hq-ce:mpls0", b: "mpls:hq", medium: fiber, speed: 100M}
+  - {id: l-mpls-br1, a: "mpls:br1", b: "br1-ce:mpls0", medium: fiber, speed: 100M}
+  - {id: l-br1-pc, a: "br1-ce:lan0", b: "br1-pc:eth0", speed: 1G}
+  - {id: l-hq-inet, a: "hq-vpn:wan0", b: "inet:hq", medium: fiber, speed: 1G}
+  - {id: l-inet-br2, a: "inet:br2", b: "br2-vpn:wan0", medium: fiber, speed: 100M}
+  - {id: l-br2-pc, a: "br2-vpn:lan0", b: "br2-pc:eth0", speed: 1G}
+
+relations:
+  - id: ipsec-br2
+    protocol: ipsec
+    label: IKEv2 site-to-site
+    endpoints: ["hq-vpn:st0", "br2-vpn:st0"]
+    over: [l-hq-inet, l-inet-br2]
+    attrs: {ike: v2, encryption: aes-256-gcm}
