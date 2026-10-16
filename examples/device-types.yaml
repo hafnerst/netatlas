@@ -1,14 +1,16 @@
 # netatlas example: every device type
 #
 # A small campus that uses each of the 15 device types once or more:
-# cloud, router, gateway, firewall, ids_ips, load_balancer, proxy, switch,
-# ap, endpoint, server, vm, container, storage and system.
+# cloud, router, vpn_gateway, firewall, ids_ips, load_balancer,
+# separation_gateway, switch, ap, endpoint, server, vm, container, storage
+# and system.
 netatlas: 1
 title: Campus — all device types
 description: |
-  Internet edge with a VPN gateway, firewall and inline IPS; a DMZ with a
-  load balancer and a proxy; core and access switching with Wi-Fi; a server
-  room with a virtualisation host, NAS and a monitoring appliance.
+  Internet edge with a remote-access VPN Gateway, firewall and inline IPS; a
+  DMZ with a load balancer and a web proxy server; core and access switching
+  with Wi-Fi; a server room with a virtualisation host, a monitoring
+  appliance and a NAS behind a Separation gateway (a filtering bridge).
 
 groups:
   - id: providers
@@ -39,6 +41,7 @@ devices:
   - id: edge
     label: edge-rtr
     type: router
+    role: border
     group: campus
     router_id: lo0
     protocols:
@@ -50,14 +53,25 @@ devices:
       - {id: lo0, type: loopback, ip: 10.255.0.1/32}
   - id: vpn-gw
     label: vpn-gw
-    type: gateway
+    type: vpn_gateway
+    role: border
     group: campus
+    services:
+      vpn:
+        operation: remote_access
+        technology: ipsec
+        listener: wan0
+        pool: 10.250.0.0/24
+        protected: [10.0.0.0/16]
     interfaces:
       - {id: wan0, ip: 198.51.100.6/30}
       - {id: lan0, ip: 10.0.0.5/30}
+    routes:
+      - {prefix: 10.0.0.0/16, via: 10.0.0.6, name: the campus via the firewall}
   - id: fw
     label: fw1
     type: firewall
+    kind: ngfw
     group: campus
     interfaces:
       - {id: outside, ip: 10.0.0.2/30}
@@ -70,7 +84,10 @@ devices:
   - id: ips
     label: ips1
     type: ids_ips
+    mode: inline
     group: campus
+    port_pairs:
+      - {a: in, b: out}
     interfaces:
       - {id: in}
       - {id: out}
@@ -83,7 +100,8 @@ devices:
       - {id: eth0}
   - id: proxy
     label: proxy1
-    type: proxy
+    type: server
+    role: dmz
     group: dmz
     tier: 3
     interfaces:
@@ -91,8 +109,8 @@ devices:
   - id: core
     label: core-sw
     type: switch
+    role: core
     group: campus
-    tier: 3
     interfaces:
       - {id: Et1, vlans: 1}
       - {id: Et2, vlans: 1}
@@ -102,6 +120,7 @@ devices:
   - id: access
     label: acc-sw1
     type: switch
+    role: access
     group: office
     interfaces:
       - {id: Et49, vlans: 1}
@@ -162,16 +181,47 @@ devices:
     host: app-vm
     logical_interfaces:
       - {id: eth0, type: veth, network: bridge}
+  # the NAS sits behind a filtering bridge: only NFS from the server room reaches it
+  - id: sep
+    label: sep-nas
+    type: separation_gateway
+    group: server-room
+    services:
+      separation:
+        implementation: filtering_bridge
+        domains:
+          - {name: Campus, interfaces: [p1]}
+          - {name: Storage, interfaces: [p2]}
+        directions:
+          - {from: Campus, to: Storage}
+        rules:
+          - id: nfs
+            description: NFS to the NAS
+            from: Campus
+            to: Storage
+            source: 10.0.20.0/24
+            destination: 10.0.20.10
+            protocol: tcp
+            ports: "2049"
+    management: [mgmt0]
+    interfaces:
+      - {id: p1}
+      - {id: p2}
+      - {id: mgmt0}
   - id: nas
     label: nas-01
     type: storage
     group: server-room
     tier: 4
     interfaces:
-      - {id: eth0}
+      - {id: eth0, ip: 10.0.20.10/24}
   - id: nms
     label: nms
     type: system
+    kind: other
+    kind_label: Monitoring appliance
+    role: management
+    purpose: host
     group: server-room
     interfaces:
       - {id: eth0}
@@ -190,7 +240,8 @@ links:
   - {id: l-access-pc, a: "access:Et2", b: "desktop:eth0", speed: 1G}
   - {id: l-wifi, a: "ap:wlan0", b: "laptop:wlan0", medium: wireless}
   - {id: l-core-host, a: "core:Et3", b: "host:vmnic0", medium: dac, speed: 10G}
-  - {id: l-core-nas, a: "core:Et4", b: "nas:eth0", medium: dac, speed: 10G}
+  - {id: l-core-sep, a: "core:Et4", b: "sep:p1", medium: dac, speed: 10G}
+  - {id: l-sep-nas, a: "sep:p2", b: "nas:eth0", medium: dac, speed: 10G}
   - {id: l-core-nms, a: "core:Et5", b: "nms:eth0", speed: 1G}
 
 relations:

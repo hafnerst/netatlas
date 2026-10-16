@@ -63,7 +63,6 @@ test('Layer 4 has its eight parameters; Layer 2 the default MTU, Layer 3 Send IC
     assert.ok(!byType.get('load_balancer').includes(k), k);
     assert.ok(Pm.relationParams({ base: 'https', lbService: true, serverService: true }).some((p) => p.key === k), k);
   }
-  for (const k of ['proxy-client', 'proxy-upstream', 'listening']) assert.ok(byType.get('proxy').includes(k), k);
   for (const k of ['test-traffic', 'test-targets', 'test-interval', 'test-type', 'app-timeout']) assert.ok(byType.get('endpoint').includes(k), k);
   // storm control is a port's, directed broadcasts an interface's
   for (const k of ['storm-bc', 'storm-mc']) assert.ok(!byType.get('switch').includes(k) && Pm.paramDef(k).level === 'interface', k);
@@ -325,20 +324,17 @@ devices:
   - {id: lb, type: load_balancer, interfaces: [{id: eth0, ip: 10.0.0.100/24}]}
   - {id: w1, type: server, interfaces: [{id: eth0, ip: 10.0.0.11/24}]}
   - {id: w2, type: server, interfaces: [{id: eth0, ip: 10.0.0.12/24}]}
-  - {id: px, type: proxy, interfaces: [{id: eth0, ip: 10.0.0.200/24}], simulation: {upstream_timeout: 3}}
   - {id: sw, type: switch, interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}, {id: p3, vlans: 1}, {id: p4, vlans: 1}, {id: p5, vlans: 1}, {id: p6, vlans: 1}, {id: p7, vlans: 1}]}
 links:
   - {id: a, a: "pc:eth0", b: "sw:p1"}
   - {id: b, a: "lb:eth0", b: "sw:p2"}
   - {id: c, a: "w1:eth0", b: "sw:p3"}
   - {id: d, a: "w2:eth0", b: "sw:p4"}
-  - {id: e, a: "px:eth0", b: "sw:p5"}
   - {id: f, a: "pc2:eth0", b: "sw:p6"}
 relations:
   - {id: front, protocol: https, endpoints: [pc, lb]}
   - {id: m1, protocol: https, endpoints: [lb, w1]${pool}}
   - {id: m2, protocol: https, endpoints: [lb, w2]${pool}}
-  - {id: up, protocol: https, endpoints: [px, w1]}
 `;
 
 test('load balancer: health checks keep its pool; round robin, then persistence by client; a member that fails its checks is taken out', () => {
@@ -368,25 +364,11 @@ test('load balancer: health checks keep its pool; round robin, then persistence 
   assert.ok(ev(p, (x) => /persistence: 10\.0\.0\.5 stays with w\d \(persistence timeout 3 min \(default\)\)/.test(x.detail)).length === 1);
 });
 
-test('proxy: the request goes on to its upstream; without one within the upstream connect timeout the client gets 504', () => {
-  const s = sim(LB());
-  s.runTo(3000);
-  const ok = run(s, { from: 'pc', to: 'px', kind: 'tcp', port: 443 }, 3000);
-  assert.equal(ok.ok, true);
-  assert.ok(ev(s, (x) => x.device === 'px' && x.what === 'proxied' && x.peer === 'w1').length === 1);
-  s.powerOff('w1');
-  s.runTo(s.now + 100);
-  const t = run(s, { from: 'pc', to: 'px', kind: 'tcp', port: 443 }, 6000);
-  assert.ok(ev(s, (x) => x.device === 'px' && /the upstream connection failed \(no answer within 3 s \(device\)/.test(x.detail)).length === 1);
-  assert.ok(ev(s, (x) => x.device === 'px' && /504 Gateway Timeout/.test(x.detail)).length >= 1);
-  assert.equal(t.ok, true, 'the client got an answer: the error');
-});
-
 test('monitoring: a manager pings the agents it polls by SNMP every ICMP probe interval; one powered off is unreachable', () => {
   const s = sim(`netatlas: 1
 title: mon
 devices:
-  - {id: nms, type: system, interfaces: [{id: eth0, ip: 10.0.0.1/24}], simulation: {icmp_probe_interval: 5}}
+  - {id: nms, type: system, purpose: host, interfaces: [{id: eth0, ip: 10.0.0.1/24}], simulation: {icmp_probe_interval: 5}}
   - {id: a1, type: switch, interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}], logical_interfaces: [{id: Vlan1, type: virtual, vlan: 1, ip: 10.0.0.2/24}]}
 links:
   - {id: l, a: "nms:eth0", b: "a1:p1"}

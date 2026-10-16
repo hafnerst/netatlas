@@ -35,12 +35,13 @@
  * model, never on the order of either.
  */
 import { lookupProtocol, protocolBase } from '../model/protocols';
-import { Interface, Model, Relation, Route, deviceInterfaces, ifaceKey, relationDevices } from '../model/types';
+import { Interface, Model, Relation, Route, deviceInterfaces, ifaceKey, relationDevices, Device } from '../model/types';
 import { networkMembers, subinterfaceParent } from '../model/derive';
-import { clusterMembers, hostOf, isGuest, portGroupAttachments, portGroupOf, uplinkPorts, vethNetwork, vnicHost, vnicPortGroup, vswitchRef } from '../model/virtual';
+import { clusterMembers, hostOf, isGuest, portGroupAttachments, portGroupOf, uplinkPorts, vethNetwork, vnicHost, vnicPortGroup, vswitchRef, isVm } from '../model/virtual';
 import { prefixText } from './ipmath';
 import { RibEntry, RoutingCtx, connectedOf, resolveEntry, ribOf, routeRef, routeText, staticEntry } from './routing';
 import { pathRefs, portsOf, tracePath, tunnelRelation } from './trace';
+import { capabilities } from '../model/capabilities';
 
 export type FailState = 'down' | 'degraded' | 'up';
 
@@ -298,7 +299,7 @@ function guestFates(model: Model, failed: Set<string>): { down: Map<string, stri
     }
     if (!hostGone) continue;
     const what = failed.has(h.id) ? `its host ${h.id} failed` : `its host ${h.id} is down`;
-    const cluster = g.type === 'vm' && h.hypervisor ? h.hypervisor.cluster : undefined;
+    const cluster = isVm(g) && h.hypervisor ? h.hypervisor.cluster : undefined;
     const spare = clusterMembers(model, cluster).filter((m) => m.id !== h.id && !failed.has(m.id)).map((m) => m.id).sort(cmp);
     const pinned = g.logical.some((i) => i.type === 'vnic' && i.passthrough !== undefined);
     if (cluster !== undefined && spare.length && !pinned) {
@@ -537,14 +538,63 @@ export interface Spof {
   note?: string;
 }
 
-/** The groups of devices joined by cables that are up (each sorted; groups by first id). */
+/**
+ * Which of a device's ports it joins (null: all of them, as a switch or a
+ * router does). What it can do decides: an inline or pass-through device
+ * joins only its paired ports (a pair with its monitor ports); a passive
+ * monitor joins none (it only receives); a Separation gateway joins its two
+ * domains only when its policy permits some transfer between them, and its
+ * management interfaces join nothing.
+ */
+export function portGroups(d: Device): string[][] | null {
+  const c = capabilities(d);
+  const ports = d.interfaces.map((i) => i.id);
+  if (c.inline || c.passThrough) {
+    const out: string[][] = d.portPairs.map((p) => [p.a, p.b, ...p.copy]);
+    for (const x of ports) if (!out.some((g) => g.indexOf(x) >= 0)) out.push([x]);
+    return out;
+  }
+  if (c.passiveCopy) return ports.map((x) => [x]);
+  if (c.separationGateway) {
+    const sep = d.separation;
+    const doms = sep ? sep.domains.map((x) => x.interfaces.slice()) : [];
+    const permits = !!sep && !!sep.implementation && sep.directions.length > 0 && (sep.rules.length > 0 || sep.profiles.length > 0);
+    const out: string[][] = permits && doms.length === 2 ? [doms[0].concat(doms[1])] : doms;
+    for (const x of ports) if (!out.some((g) => g.indexOf(x) >= 0)) out.push([x]);
+    return out;
+  }
+  if (d.management.length) {
+    // (a transparent firewall's or an IDS/IPS's management interfaces are no way through it)
+    const data = ports.filter((x) => d.management.indexOf(x) < 0);
+    return [data, ...d.management.map((x) => [x])];
+  }
+  return null;
+}
+
+/** The groups of devices joined by cables that are up (each sorted; groups by first id), through each device as far as it joins its ports. */
 function components(model: Model, devUp: (d: string) => boolean, linkUp: (l: string) => boolean): string[][] {
   const adj = new Map<string, string[]>();
-  for (const d of model.devices) if (devUp(d.id)) adj.set(d.id, []);
+  // a device that joins only some of its ports: a node per group of ports ("id#n"), the device itself with its first group
+  const node = new Map<string, string>();
+  const nodeOf = (dev: string, port: string | undefined): string => node.get(dev + '\0' + (port || '')) || dev;
+  const join = (x: string, y: string): void => {
+    (adj.get(x) as string[]).push(y);
+    (adj.get(y) as string[]).push(x);
+  };
+  for (const d of model.devices) {
+    if (!devUp(d.id)) continue;
+    adj.set(d.id, []);
+    const groups = portGroups(d);
+    if (!groups) continue;
+    groups.forEach((g, n) => {
+      const id = n === 0 ? d.id : `${d.id}#${n}`;
+      if (n > 0) adj.set(id, []);
+      for (const port of g) node.set(d.id + '\0' + port, id);
+    });
+  }
   for (const l of model.links) {
     if (!linkUp(l.id) || !adj.has(l.a.device) || !adj.has(l.b.device) || l.a.device === l.b.device) continue;
-    (adj.get(l.a.device) as string[]).push(l.b.device);
-    (adj.get(l.b.device) as string[]).push(l.a.device);
+    join(nodeOf(l.a.device, l.a.iface), nodeOf(l.b.device, l.b.iface));
   }
   const seen = new Set<string>();
   const out: string[][] = [];
@@ -558,7 +608,8 @@ function components(model: Model, devUp: (d: string) => boolean, linkUp: (l: str
       comp.push(x);
       for (const y of adj.get(x) as string[]) if (!seen.has(y)) (seen.add(y), q.push(y));
     }
-    out.push(comp.sort(cmp));
+    const devs = comp.filter((x) => x.indexOf('#') < 0);
+    if (devs.length) out.push(devs.sort(cmp));
   }
   return out;
 }
@@ -667,7 +718,7 @@ function virtualCandidates(model: Model): Array<{ kind: Spof['kind']; ref: strin
       }
     }
     for (const g of model.devices) {
-      if (g.type !== 'vm' || g.host !== h.id) continue;
+      if (!isVm(g) || g.host !== h.id) continue;
       for (const i of g.logical) if (i.type === 'vnic' && i.passthrough !== undefined) out.push({ kind: 'passthrough', ref: `iface:${h.id}:${i.passthrough}`, fail: [`iface:${h.id}:${i.passthrough}`] });
     }
   }

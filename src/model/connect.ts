@@ -28,6 +28,7 @@
  */
 import { normalizeProtocol } from './protocols';
 import { Endpoint, Model, Relation, endpointText, ifaceKey } from './types';
+import { isGuest, isVm } from './virtual';
 
 export type ConnectView = 'physical' | 'logical';
 
@@ -67,7 +68,7 @@ export function endpointProblem(model: Model, view: ConnectView, e: Endpoint): s
   const d = model.index.devices.get(e.device);
   if (!d) return `device “${e.device}” is not in the model`;
   // a guest (a VM, a container) has no cables: it reaches the network through its host
-  if (view === 'physical' && (d.type === 'vm' || d.type === 'container')) return `“${e.device}” is a ${d.type === 'vm' ? 'VM' : 'container'}: a guest has no cables — cable its host${d.host ? ` (“${d.host}”)` : ''} instead`;
+  if (view === 'physical' && isGuest(d) && !d.cloudInstance) return `“${e.device}” is a ${isVm(d) ? 'VM' : 'container'}: a guest has no cables — cable its host${d.host ? ` (“${d.host}”)` : ''} instead`;
   if (!e.iface) return '';
   const i = model.index.interfaces.get(ifaceKey(e.device, e.iface));
   if (!i) return `“${endpointText(e)}” is not an interface of the model`;

@@ -37,17 +37,15 @@
  *           that is one VLAN), else 0.
  */
 import { interfaceVlans, isBridgePort, portL2, subinterfaceParent } from '../../model/derive';
-import { deviceRoutingRole, isLayer2Switch } from '../../model/device-types';
+import { deviceRoutingRole, isLayer2Switch, Capabilities, capabilities } from '../../model/capabilities';
 import { parsePrefix, IpAddr } from '../../model/ip';
 import { Device, Interface, Link, LinkEnd, Model, PortGroup, deviceInterfaces, ifaceKey } from '../../model/types';
-import { cnetRef, clusterMembers, networkAttachments, portGroupAttachments, portGroupL2, portGroupOf, virtBridgeId, virtLinkId, vswitchRef } from '../../model/virtual';
+import { cnetRef, clusterMembers, networkAttachments, portGroupAttachments, portGroupL2, portGroupOf, virtBridgeId, virtLinkId, vswitchRef, isVm } from '../../model/virtual';
 import { networkOf } from '../ipmath';
 import { IfaceMac, interfaceMacs } from './mac';
 
 const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 
-/** Device types that bridge frames between their ports. */
-export const BRIDGE_TYPES: readonly string[] = ['switch', 'ap', 'ids_ips', 'cloud'];
 
 /** One end of a cable at a port. `port` is the interface id, or "@<link>" for a cable end that names no interface. */
 export interface CableEnd {
@@ -116,6 +114,8 @@ export interface L3Iface {
 export interface SimDevice {
   id: string;
   dev: Device;
+  /** what it can do (model/capabilities.ts) */
+  caps: Capabilities;
   bridge: boolean;
   /** forwards IP between its interfaces (a router, firewall, Layer 3 switch …) */
   routes: boolean;
@@ -279,13 +279,17 @@ export function buildNet(model: Model): SimNet {
     // a device with a bridge port (a router's switch ports, an IRB / BVI, a firewall's switch group) bridges like a Layer 3 switch
     const bridgeKind = (id: string): boolean => isBridgePort(portL2(model, d.id, id));
     const hasBridgePort = d.interfaces.some((i) => bridgeKind(i.id)) || d.logical.some((i) => i.type === 'virtual' && i.members.length > 0 && bridgeKind(i.id));
-    const bridge = BRIDGE_TYPES.indexOf(d.type) >= 0 || hasBridgePort;
+    // a device carries frames by what it can do: a switch, a transparent firewall, an access point, a filtering bridge, a Layer 2 System;
+    // an inline device and a pass-through between their paired ports only (the engine keeps to the pairs); a cloud (external transit)
+    // carries them between its attachments as one opaque Layer 3 hop (the engine counts the hop)
+    const caps = capabilities(d);
+    const bridge = caps.l2Forward || caps.inline || caps.passThrough || caps.externalTransit || hasBridgePort;
     const routedPort = (id: string): boolean => {
       const p = portL2(model, d.id, id);
       return !!p && p.kind === 'routed';
     };
     const role = deviceRoutingRole(d);
-    const sd: SimDevice = { id: d.id, dev: d, bridge, routes: role === 'router', ip: role !== null || bridge, l2switch: isLayer2Switch(d), bridgePorts: new Map(), portOf: new Map(), l3: new Map(), bridgeId: '' };
+    const sd: SimDevice = { id: d.id, dev: d, caps, bridge, routes: role === 'router', ip: (role !== null || bridge) && !caps.passThrough, l2switch: isLayer2Switch(d), bridgePorts: new Map(), portOf: new Map(), l3: new Map(), bridgeId: '' };
     const all = deviceInterfaces(d);
     const macOf = (id: string): { mac: string; simulated: boolean } => macs.get(d.id + ':' + id) || { mac: '00:00:00:00:00:00', simulated: true };
     // the aggregates and their members
@@ -347,7 +351,8 @@ export function buildNet(model: Model): SimNet {
           for (const m of i.members) seen.add(m);
         }
       }
-      for (const i of d.interfaces) if (!seen.has(i.id) && !sd.l3.has(i.id) && ends.has(portKey(d.id, i.id))) add(i.id, [i.id]);
+      // (a management interface is never a bridge port: nothing is forwarded to or from it)
+      for (const i of d.interfaces) if (!seen.has(i.id) && !sd.l3.has(i.id) && ends.has(portKey(d.id, i.id)) && d.management.indexOf(i.id) < 0) add(i.id, [i.id]);
       // cable ends at the device that name no interface
       for (const [k, e] of ends) if (e.device === d.id && e.port.charAt(0) === '@' && k === portKey(d.id, e.port)) add(e.port, [e.port]);
       const macsHere = all.map((i) => macs.get(d.id + ':' + i.id)).filter((m): m is IfaceMac => !!m).map((m) => m.mac).sort();
@@ -389,7 +394,7 @@ function expandVirtual(
   if (!model.devices.some((d) => !!d.hypervisor || !!d.containerEngine)) return { vlinks, standby, moved };
   const synth = (owner: Device, id: string, label: string, virt: VirtBridge): SimDevice => {
     const dev: Device = { ...owner, id, label, type: virt.kind === 'vswitch' ? 'virtual_switch' : 'container_network', interfaces: [], logical: [], routes: [], dnsNames: [], hypervisor: undefined, containerEngine: undefined, host: undefined };
-    const sd: SimDevice = { id, dev, bridge: true, routes: false, ip: false, l2switch: false, bridgePorts: new Map(), portOf: new Map(), l3: new Map(), bridgeId: '32768.00:00:00:00:00:00', virt };
+    const sd: SimDevice = { id, dev, caps: capabilities({ type: '' }), bridge: true, routes: false, ip: false, l2switch: false, bridgePorts: new Map(), portOf: new Map(), l3: new Map(), bridgeId: '32768.00:00:00:00:00:00', virt };
     devices.set(id, sd);
     return sd;
   };
@@ -463,7 +468,7 @@ function expandVirtual(
     }
     // passthrough: the vNIC takes the host port's cable
     for (const g of model.devices) {
-      if (g.type !== 'vm' || g.host !== h.id) continue;
+      if (!isVm(g) || g.host !== h.id) continue;
       for (const i of g.logical) {
         if (i.type !== 'vnic' || i.passthrough === undefined) continue;
         if (repoint(h.id, i.passthrough, g.id, i.id) && hs) hs.l3.delete(i.passthrough);
@@ -472,7 +477,7 @@ function expandVirtual(
   }
   // an HA cluster's VMs: parked links to the same port groups on the other members
   for (const g of model.devices) {
-    if (g.type !== 'vm' || g.host === undefined) continue;
+    if (!isVm(g) || g.host === undefined) continue;
     const h = model.index.devices.get(g.host);
     const cluster = h && h.hypervisor ? h.hypervisor.cluster : undefined;
     if (!h || cluster === undefined || g.logical.some((i) => i.type === 'vnic' && i.passthrough !== undefined)) continue;

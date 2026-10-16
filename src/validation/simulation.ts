@@ -8,57 +8,60 @@
  */
 import { Applies, ParamDef, ParamLevel, ParamValue, PARAMS, deviceParamByYaml, deviceWide, formatValue, interfaceParams, levelParams, levelText, paramDef, parseValue, relationParams } from '../analysis/sim/params';
 import { ifaceFacts, deviceFacts, relFacts } from '../analysis/sim/attrs';
-import { deviceRoutingRole, deviceTypeLabel, NO_DEVICE_TYPE } from '../model/device-types';
+import { deviceTypeLabel, NO_DEVICE_TYPE } from '../model/device-types';
+import { DeviceLike, capabilities } from '../model/capabilities';
 import { LinkSimulation, Model } from '../model/types';
 import { YMap, YNode } from '../yaml/parse';
 import { Ctx, Reader, get, isNull, kindOf, suggest } from './reader';
 
-/** Could an attribute apply to a device of this type (the Inspector narrows it by what the device has)? */
-export function typeAllows(a: Applies, type: string, layer3?: boolean): boolean {
+/** Could an attribute apply to a device like this (its type, layer, mode, purpose; the Inspector narrows it by what the device has)? */
+export function typeAllows(a: Applies, d: DeviceLike): boolean {
+  const c = capabilities(d);
   switch (a) {
     case 'all':
       return true;
     case 'ip':
     case 'aggregate':
-      return type !== 'cloud';
+      return !c.externalTransit && !c.passThrough;
     case 'dhcp':
-      return ['server', 'vm', 'container'].indexOf(type) >= 0;
+      return c.networkServices;
     case 'router':
+      return c.l3Forward;
     case 'vpn':
-      return deviceRoutingRole({ type, layer3 }) === 'router' || (a === 'vpn' && type === 'gateway');
+      return c.l3Forward || c.vpnTermination;
     case 'switch':
-      return type === 'switch';
+      return c.switchFeatures;
     case 'firewall':
-      return type === 'firewall';
+      return c.firewallPolicy;
     case 'ids':
-      return type === 'ids_ips';
+      return c.inspection;
     case 'host':
-      return ['server', 'vm', 'container', 'storage'].indexOf(type) >= 0;
+      return c.serviceHost;
     case 'hypervisor':
-      return type === 'server';
+      return c.canHostGuests.vms;
     case 'engine':
-      return type === 'server' || type === 'vm';
+      return c.canHostGuests.containers;
     case 'container':
-      return type === 'container';
+      return c.canBeGuest === 'container';
     case 'monitor':
-      return ['system', 'server', 'vm', 'container', 'endpoint'].indexOf(type) >= 0;
+      return c.monitoring || c.host;
     case 'cloud':
-      return type === 'cloud';
+      return c.externalTransit;
     case 'ap':
-      return type === 'ap';
+      return c.wirelessAccess;
     case 'endpoint':
-      return type === 'endpoint';
+      return c.testTraffic;
     case 'lb':
-      return type === 'load_balancer';
-    case 'proxy':
-      return type === 'proxy';
+      return c.loadBalancing;
+    case 'separation':
+      return c.separationGateway;
   }
   return false;
 }
 
-/** The device attributes a type may have (device-wide ones, and the device-wide defaults of object attributes), in order. */
-export function typeParams(type: string, layer3?: boolean): ParamDef[] {
-  return PARAMS.filter((p) => !!p.device && deviceWide(p) && p.device.some((a) => typeAllows(a, type, layer3)));
+/** The device attributes a device like this may have (device-wide ones, and the device-wide defaults of object attributes), in order. */
+export function typeParams(d: DeviceLike): ParamDef[] {
+  return PARAMS.filter((p) => !!p.device && deviceWide(p) && p.device.some((a) => typeAllows(a, d)));
 }
 
 function scalarValue(n: YNode): unknown {
@@ -66,12 +69,13 @@ function scalarValue(n: YNode): unknown {
 }
 
 /** A device's `simulation:` block: its attributes by registry key. */
-export function readDeviceSimulation(r: Reader, c: Ctx, n: YNode | undefined, path: string, id: string, type: string, layer3?: boolean): Map<string, ParamValue> | undefined {
+export function readDeviceSimulation(r: Reader, c: Ctx, n: YNode | undefined, path: string, id: string, d: DeviceLike): Map<string, ParamValue> | undefined {
+  const type = d.type;
   if (isNull(n)) return undefined;
   const m = r.map(n, path);
   const out = new Map<string, ParamValue>();
   if (!m) return out;
-  const allowed = typeParams(type, layer3);
+  const allowed = typeParams(d);
   const what = type === NO_DEVICE_TYPE ? 'a device without a type' : `a ${deviceTypeLabel(type) || type}`;
   m.entries.forEach((e, k) => {
     const def = deviceParamByYaml(k);

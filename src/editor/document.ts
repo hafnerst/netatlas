@@ -24,6 +24,9 @@ import { DEFAULT_YAML_LIMITS, YMap, YNode, YSeq, autoNode, boolNode, cloneNode, 
 import { stringifyYaml } from '../yaml/write';
 import { rawLayoutKeys, rawManualIds, writeLayout, writeManual } from './layout-section';
 import { keepTrivia, sameSet, setKey } from './tree';
+import { isGuest } from '../model/virtual';
+import { DeviceLike, capabilities, layer3Option, deviceRoutingRole } from '../model/capabilities';
+import { kindsOf, modesOf, purposeDef, deviceTypeLabel, hasPurpose } from '../model/device-types';
 
 export { setKey };
 
@@ -639,6 +642,7 @@ export class ModelDoc {
     if (path.length === 4 && typeof path[3] === 'number' && path[0] === 'relations' && path[2] === 'endpoints') return 'endpoint';
     if (path.length === 4 && typeof path[3] === 'number' && path[0] === 'devices' && path[2] === 'dns_names') return 'dnsName';
     if (path.length === 4 && typeof path[3] === 'number' && path[0] === 'devices' && path[2] === 'routes') return 'route';
+    if (path.length === 4 && typeof path[3] === 'number' && path[0] === 'devices' && path[2] === 'port_pairs') return 'portPair';
     // a server's services: services, its dhcp and dns, a scope and its reservations, a zone and its records
     if (path[0] === 'devices' && path[2] === 'services') {
       const rest = path.slice(3).map((x) => (typeof x === 'number' ? '#' : x)).join('/');
@@ -655,6 +659,14 @@ export class ModelDoc {
         'hypervisor/vswitches/#/port_groups/#': 'portGroup',
         container_engine: 'containerEngine',
         'container_engine/networks/#': 'containerNetwork',
+        vpn: 'vpn',
+        separation: 'separation',
+        'separation/domains/#': 'sepDomain',
+        'separation/directions/#': 'sepDirection',
+        'separation/rules/#': 'sepRule',
+        'separation/profiles/#': 'transferProfile',
+        'separation/profiles/#/listen': 'profileListen',
+        'separation/profiles/#/forward': 'profileForward',
       };
       if (kinds[rest]) return kinds[rest];
     }
@@ -1225,7 +1237,7 @@ export class ModelDoc {
     const out: Array<{ index: number; id: string; type: string }> = [];
     this.entities('device').forEach((d) => {
       const t = this.text(['devices', d.index, 'type']) || '';
-      if ((t === 'vm' || t === 'container') && this.text(['devices', d.index, 'host']) === hostId) out.push({ index: d.index, id: d.id || '', type: t });
+      if (isGuest({ type: t }) && this.text(['devices', d.index, 'host']) === hostId) out.push({ index: d.index, id: d.id || '', type: t });
     });
     return out;
   }
@@ -1236,14 +1248,15 @@ export class ModelDoc {
    * network interfaces are the user's to add). One undo step; returns its
    * index.
    */
-  addGuest(hostIndex: number, type: 'vm' | 'container'): number {
+  addGuest(hostIndex: number, guest: 'vm' | 'container'): number {
     const host = this.text(['devices', hostIndex, 'id']);
     if (!host) return -1;
-    return this.change(type === 'vm' ? 'Add VM' : 'Add container', () => {
-      const id = this.uniqueId(type === 'vm' ? 'vm1' : 'container1');
+    const vm = guest === 'vm';
+    return this.change(vm ? 'Add VM' : 'Add container', () => {
+      const id = this.uniqueId(vm ? 'vm1' : 'container1');
       const node = mapNode([
         ['id', strNode(id)],
-        ['type', strNode(type)],
+        ['type', strNode(guest)],
         ['host', strNode(host)],
       ]);
       const seq = this.ensureSeq(['devices']);
@@ -1252,6 +1265,157 @@ export class ModelDoc {
       for (const g of this.guestsOfHost(host)) if (g.index >= at) at = g.index + 1;
       seq.items.splice(at, 0, node);
       return at;
+    });
+  }
+
+  /**
+   * What a device is as written, with one change (its type, mode, purpose or
+   * separation implementation): what the capability resolver reads.
+   */
+  deviceLike(devIndex: number, change?: { key: DeviceModelKey; value: string }): DeviceLike {
+    const dp: Path = ['devices', devIndex];
+    const v = (k: DeviceModelKey, path: Path): string | undefined => (change && change.key === k ? change.value || undefined : this.text(path) || undefined);
+    return {
+      type: v('type', dp.concat('type')) || '',
+      layer3: this.text(dp.concat('layer3')) === 'true' ? true : undefined,
+      mode: v('mode', dp.concat('mode')),
+      purpose: v('purpose', dp.concat('purpose')),
+      separation: { implementation: v('implementation', dp.concat('services', 'separation', 'implementation')) },
+    };
+  }
+
+  /**
+   * What changing a device's type, mode, purpose or separation
+   * implementation takes away, before it is done: the values the device
+   * could no longer have (removed with the change, listed for the
+   * confirmation) and what stays but is then reported (its guests, the
+   * relations that need routing). Nothing more permissive is put in their
+   * place, and nothing new is chosen: a VPN Gateway's VPN, a Separation
+   * gateway's policy or a System's purpose are left to be filled in.
+   */
+  deviceModelPlan(devIndex: number, key: DeviceModelKey, value: string): { removed: Array<{ path: Path; text: string }>; kept: string[] } {
+    const dp: Path = ['devices', devIndex];
+    const next = this.deviceLike(devIndex, { key, value });
+    const now = capabilities(this.deviceLike(devIndex));
+    const c = capabilities(next);
+    const removed: Array<{ path: Path; text: string }> = [];
+    const has = (path: Path): boolean => !!this.get(path);
+    const gone = (path: Path, text: string): void => {
+      if (has(path)) removed.push({ path, text });
+    };
+    const shown = (path: Path): string => {
+      const n = this.get(path);
+      return n ? scalarText(n) || flowText(n) || '…' : '';
+    };
+    if (key === 'type') {
+      const kind = this.text(dp.concat('kind'));
+      if (kind && !kindsOf(next.type).some((k) => k.id === kind)) {
+        gone(dp.concat('kind'), `kind: ${kind} (not a kind of ${deviceTypeLabel(next.type) || 'the new type'})`);
+        gone(dp.concat('kind_label'), `kind_label: ${shown(dp.concat('kind_label'))}`);
+      }
+      const mode = this.text(dp.concat('mode'));
+      if (mode && !modesOf(next.type).some((m) => m.id === mode)) gone(dp.concat('mode'), `mode: ${mode}`);
+      if (!hasPurpose(next.type)) {
+        gone(dp.concat('purpose'), `purpose: ${shown(dp.concat('purpose'))} (a System's)`);
+        gone(dp.concat('icon'), `icon: ${shown(dp.concat('icon'))} (a System's)`);
+      }
+      if (!layer3Option(next.type)) gone(dp.concat('layer3'), 'Supports Layer 3');
+    }
+    if (key === 'purpose' && this.text(dp.concat('icon')) && !purposeDef(value)?.icons.some((x) => x.id === this.text(dp.concat('icon')))) gone(dp.concat('icon'), `icon: ${shown(dp.concat('icon'))} (not an icon of this purpose)`);
+    // the built-in functions: a VPN Gateway's VPN, a Separation gateway's policy
+    if (!c.vpnOnlyTransit) gone(dp.concat('services', 'vpn'), 'its VPN gateway configuration (services: vpn)');
+    if (!c.separationGateway) gone(dp.concat('services', 'separation'), 'its Domain separation policy (services: separation)');
+    else if (key === 'implementation') {
+      // a protocol break's transfer profiles mean nothing to a filtering bridge or router (the rules stay: they permit no more than before)
+      if (value !== 'protocol_break') {
+        gone(dp.concat('services', 'separation', 'profiles'), 'the transfer profiles (a protocol break’s)');
+        const rules = this.get(dp.concat('services', 'separation', 'rules'));
+        if (rules && rules.kind === 'seq') rules.items.forEach((_r, j) => gone(dp.concat('services', 'separation', 'rules', j, 'profile'), `rule ${this.text(dp.concat('services', 'separation', 'rules', j, 'id')) || j + 1}: profile ${shown(dp.concat('services', 'separation', 'rules', j, 'profile'))}`));
+      }
+    }
+    // the services it could no longer run
+    if (!c.canHostGuests.vms) gone(dp.concat('services', 'hypervisor'), 'the Hypervisor service');
+    if (!c.canHostGuests.containers) gone(dp.concat('services', 'container_engine'), 'the Container engine service');
+    if (!c.networkServices) {
+      gone(dp.concat('services', 'dhcp'), 'the DHCP server');
+      gone(dp.concat('services', 'dns'), 'the DNS server');
+    }
+    // routing, pairs and management, by what it can do
+    if (!c.routingProtocols) {
+      const block = this.get(dp.concat('protocols'));
+      if (block && block.kind === 'map') block.entries.forEach((_e, k) => gone(dp.concat('protocols', k), `protocol ${(this.servicesRegistry().get(k) || { label: k }).label}`));
+      gone(dp.concat('router_id'), `router_id: ${shown(dp.concat('router_id'))}`);
+    }
+    if (deviceRoutingRole(next) === null) gone(dp.concat('routes'), 'its static routes');
+    if (!c.needsPortPairs) gone(dp.concat('port_pairs'), 'its port pairs');
+    if (!c.managementInterfaces) gone(dp.concat('management'), 'its management interfaces');
+    // a guest's own fields
+    if (c.canBeGuest === null) gone(dp.concat('host'), `host: ${shown(dp.concat('host'))}`);
+    if (c.canBeGuest !== 'vm') for (const k of ['guest_os', 'vcpu', 'ram']) gone(dp.concat(k), `${k}: ${shown(dp.concat(k))}`);
+    if (c.canBeGuest !== 'container') gone(dp.concat('image'), `image: ${shown(dp.concat('image'))}`);
+    // what stays, and is reported until it is changed
+    const kept: string[] = [];
+    const id = this.text(dp.concat('id')) || '';
+    if (now.canHostGuests.vms || now.canHostGuests.containers) for (const g of this.guestsOfHost(id)) if (!(capabilities({ type: g.type }).canBeGuest === 'vm' ? c.canHostGuests.vms : c.canHostGuests.containers)) kept.push(`guest ${g.id} (it runs on ${id})`);
+    if (now.l3Forward && !c.l3Forward) for (const r of this.layer3RelationsAt(devIndex)) kept.push(`relation ${r}`);
+    // (nested removals are covered by their parent)
+    const out = removed.filter((x) => !removed.some((y) => y !== x && y.path.length < x.path.length && y.path.every((k, i) => x.path[i] === k)));
+    return { removed: out, kept };
+  }
+
+  /** Change a device's type, mode, purpose or separation implementation, with what deviceModelPlan removes; one undo step. */
+  applyDeviceModel(devIndex: number, key: DeviceModelKey, value: string): void {
+    const dp: Path = ['devices', devIndex];
+    const plan = this.deviceModelPlan(devIndex, key, value);
+    const where: Path = key === 'implementation' ? dp.concat('services', 'separation', 'implementation') : dp.concat(key);
+    const id = this.text(dp.concat('id')) || 'the device';
+    const what = key === 'implementation' ? 'implementation' : key;
+    this.change(`Change the ${what} of ${id}`, () => {
+      // the deepest and the later list items first, so the others keep their places
+      const paths = plan.removed.map((x) => x.path).sort((a, b) => {
+        for (let i = 0; i < Math.min(a.length, b.length); i++) {
+          if (a[i] === b[i]) continue;
+          if (typeof a[i] === 'number' && typeof b[i] === 'number') return (b[i] as number) - (a[i] as number);
+          return 0;
+        }
+        return b.length - a.length;
+      });
+      for (const x of paths) this.removeAt(x);
+      for (const k of ['protocols', 'services']) {
+        const b = this.get(dp.concat(k));
+        if (b && b.kind === 'map' && b.entries.size === 0) this.removeAt(dp.concat(k));
+      }
+      if (value === '') this.removeAt(where);
+      else {
+        if (key === 'implementation') this.ensureMap(dp.concat('services', 'separation'), this.orderFor(dp.concat('services')));
+        this.setAt(where, strNode(value), this.orderFor(where.slice(0, -1)));
+      }
+    });
+  }
+
+  /** Add an empty block (a built-in function's configuration: a VPN Gateway's VPN, a Separation gateway's policy); its required fields are reported until filled in. One undo step. */
+  addBlock(path: Path, what: string): void {
+    this.change('Add ' + what, () => {
+      if (path.length > 1) this.ensureMap(path.slice(0, -1), this.orderFor(path.slice(0, -2)));
+      this.ensureMap(path, this.orderFor(path.slice(0, -1)));
+    });
+  }
+
+  /** A Separation gateway's permitted direction from one domain to the other, on or off (`directions:`); one undo step. */
+  setSepDirection(sepPath: Path, from: string, to: string, on: boolean): void {
+    const lp = sepPath.concat('directions');
+    const cur = this.get(lp);
+    const at = cur && cur.kind === 'seq' ? cur.items.findIndex((_x, j) => this.text(lp.concat(j, 'from')) === from && this.text(lp.concat(j, 'to')) === to) : -1;
+    if (on === at >= 0) return;
+    this.change(on ? `Permit ${from} → ${to}` : `No longer permit ${from} → ${to}`, () => {
+      if (!on) {
+        this.removeAt(lp.concat(at));
+        const left = this.get(lp);
+        if (left && left.kind === 'seq' && !left.items.length) this.removeAt(lp);
+        return;
+      }
+      this.ensureMap(sepPath, this.orderFor(sepPath.slice(0, -1)));
+      this.ensureSeq(lp, false, this.orderFor(sepPath)).items.push(mapNode([['from', strNode(from)], ['to', strNode(to)]], true));
     });
   }
 
@@ -2130,3 +2294,6 @@ export function ifaceSchemaKind(path: Path): 'interface' | 'logical' | undefined
   if (path.length !== 4 || path[0] !== 'devices' || typeof path[1] !== 'number' || typeof path[3] !== 'number') return undefined;
   return path[2] === 'interfaces' ? 'interface' : path[2] === 'logical_interfaces' ? 'logical' : undefined;
 }
+
+/** What deviceModelPlan changes. */
+export type DeviceModelKey = 'type' | 'mode' | 'purpose' | 'implementation';

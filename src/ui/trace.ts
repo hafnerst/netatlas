@@ -22,11 +22,13 @@ export interface TraceForm {
   from: string;
   to: string;
   vrf: string;
+  /** what is sent ("tcp/443", "udp/53", "icmp"; empty: not given) */
+  service: string;
   back: boolean;
 }
 
 export function newTraceForm(): TraceForm {
-  return { from: '', to: '', vrf: 'auto', back: false };
+  return { from: '', to: '', vrf: 'auto', service: '', back: false };
 }
 
 /** A trace on screen: the request, its result and (when asked for) the return trace. */
@@ -40,11 +42,12 @@ export interface TraceRun {
 export function formRequest(f: TraceForm): TraceRequest {
   const req: TraceRequest = { from: f.from.trim(), to: f.to.trim() };
   if (f.vrf !== 'auto') req.vrf = f.vrf;
+  if (f.service.trim()) req.service = f.service.trim();
   return req;
 }
 
 export interface TracePanelActions {
-  input(field: 'from' | 'to' | 'vrf' | 'back', value: string | boolean): void;
+  input(field: 'from' | 'to' | 'vrf' | 'service' | 'back', value: string | boolean): void;
   submit(): void;
   swap(): void;
   exit(): void;
@@ -139,6 +142,16 @@ export function traceWindowBody(doc: Document, model: Model, form: TraceForm, ru
   vrf.value = form.vrf;
   vrf.addEventListener('change', () => act.input('vrf', vrf.value));
   grid.appendChild(el(doc, 'div', { class: 'tf-row' }, [el(doc, 'label', { for: 'trace-vrf' }, ['VRF']), vrf]));
+  // what is sent: a Separation gateway's policy decides by it (optional)
+  const svc = el(doc, 'input', { id: 'trace-service', type: 'text', autocomplete: 'off', spellcheck: 'false', placeholder: 'optional: tcp/443, udp/53 or icmp', 'aria-describedby': 'trace-service-help', 'data-t': 'trace', 'data-p': 'service', 'data-k': '' }) as HTMLInputElement;
+  svc.value = form.service;
+  if (formError && formError.indexOf('Service') === 0) {
+    svc.setAttribute('aria-invalid', 'true');
+    svc.setAttribute('aria-describedby', 'trace-error trace-service-help');
+  }
+  svc.addEventListener('input', () => act.input('service', svc.value));
+  grid.appendChild(el(doc, 'div', { class: 'tf-row' }, [el(doc, 'label', { for: 'trace-service' }, ['Service']), svc]));
+  grid.appendChild(el(doc, 'p', { class: 'help tf-help', id: 'trace-service-help' }, ['A Separation gateway decides by it; without one, a trace shows what its rules would permit.']));
   f.appendChild(grid);
   const back = el(doc, 'input', { type: 'checkbox', id: 'trace-back', 'data-t': 'trace', 'data-p': 'back', 'data-k': '' }) as HTMLInputElement;
   back.checked = form.back;
@@ -175,6 +188,19 @@ export function traceWindowBody(doc: Document, model: Model, form: TraceForm, ru
   }
   t.paths.forEach((p, i) => res.appendChild(pathSection(doc, i === 0 ? 'Main path' : `Equal-cost alternative ${i}`, i === 0 ? 'trace-main' : 'trace-alt-' + i, p, t)));
   if (t.truncated) res.appendChild(el(doc, 'p', { class: 'muted small' }, ['More equal-cost paths exist; the first ones are listed.']));
+  // a protocol break: the transfer ends at the gateway, which starts the second leg itself
+  for (const l of t.legs || []) {
+    const sec = el(doc, 'section', { class: 'trace-section trace-leg', 'aria-labelledby': 'trace-leg2-h', 'data-trace-path': 'trace-leg2' });
+    sec.appendChild(el(doc, 'h3', { id: 'trace-leg2-h' }, ['Leg 2 (started by the gateway)']));
+    sec.appendChild(el(doc, 'p', { class: 'small' }, [l.note]));
+    if (l.trace.error || !l.trace.paths[0]) sec.appendChild(el(doc, 'p', { class: 'trace-status stopped' }, [l.trace.error || 'no path']));
+    else {
+      sec.appendChild(el(doc, 'p', { class: 'muted small' }, [traceSummary(l.trace)]));
+      sec.appendChild(hopTable(doc, l.trace.paths[0], 'Leg 2, hop by hop'));
+      sec.appendChild(endLine(doc, l.trace.paths[0], l.trace));
+    }
+    res.appendChild(sec);
+  }
   // the return path
   if (run.back) {
     const b = run.back;
@@ -208,7 +234,7 @@ export function traceWindowBody(doc: Document, model: Model, form: TraceForm, ru
       ' where it stops.',
     ]),
   );
-  res.appendChild(el(doc, 'p', { class: 'muted small' }, ['A model-based approximation, not a simulation of the protocols: ACLs and firewall policies are not considered, NAT only for container bridges. See Limitations in the README.']));
+  res.appendChild(el(doc, 'p', { class: 'muted small' }, ['A model-based approximation, not a simulation of the protocols: a Separation gateway’s policy, a VPN Gateway’s tunnels and paired ports are considered, firewall ACLs are not, NAT only for container bridges. See Limitations in the README.']));
   box.appendChild(res);
   return box;
 }

@@ -1122,6 +1122,11 @@ fieldset.locked-form { margin: 0; padding: 0; border: 0; min-width: 0; }
 .svc-card { border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px 2px; margin: 6px 0 8px; }
 .svc-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
 .svc-name { font-weight: 600; }
+.svc-btns { display: inline-flex; gap: 4px; }
+.sep-dirs { display: flex; flex-wrap: wrap; gap: 4px 18px; }
+.chips-ed { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.chips-ed select { flex: 1 1 12em; min-width: 0; }
+ul.sep-summary { margin: 4px 0 8px 18px; padding: 0; overflow-wrap: anywhere; }
 .svc-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 2px 0; }
 .svc-suggest { display: flex; flex-wrap: wrap; gap: 6px; }
 button.chip { border: 1px dashed var(--accent); border-radius: 12px; padding: 2px 10px; background: var(--accent-soft); color: var(--text); font-size: 12px; text-align: left; overflow-wrap: anywhere; }

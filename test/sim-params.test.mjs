@@ -146,7 +146,7 @@ test('every device type has its simulation attributes (boot time at least); whic
   assert.ok(['spf-delay', 'ecmp-max', 'ttl', 'arp-timeout'].every((k) => byType.router.indexOf(k) >= 0));
   assert.ok(byType.firewall.indexOf('ha-failover') >= 0);
   assert.deepEqual(byType.ids_ips.filter((k) => /^ips-/.test(k)), ['ips-fail', 'ips-latency']);
-  assert.ok(['ike-lifetime', 'child-lifetime', 'rekey-margin', 'dpd-interval', 'dpd-retries'].every((k) => byType.gateway.indexOf(k) >= 0));
+  assert.ok(['ike-lifetime', 'child-lifetime', 'rekey-margin', 'dpd-interval', 'dpd-retries'].every((k) => byType.vpn_gateway.indexOf(k) >= 0));
   // (a hypervisor's VM restart time is its service's, not the server's; a container's restart policy is its own)
   assert.ok(byType.server.indexOf('service-response') >= 0 && byType.server.indexOf('vm-restart') < 0);
   assert.ok(byType.vm.indexOf('service-response') >= 0 && byType.vm.indexOf('vm-restart') < 0);
@@ -338,7 +338,7 @@ test('power: an inline IPS that fails open passes frames on, fail closed nothing
 title: ips
 devices:
   - {id: a, type: router, interfaces: [{id: p, ip: 10.0.0.1/24}]}
-  - {id: x, type: ids_ips, interfaces: [i, o]${mode ? ', simulation: {fail_mode: ' + mode + '}' : ''}}
+  - {id: x, type: ids_ips, mode: inline, interfaces: [i, o], port_pairs: [{a: i, b: o}]${mode ? ', simulation: {fail_mode: ' + mode + '}' : ''}}
   - {id: b, type: router, interfaces: [{id: p, ip: 10.0.0.2/24}]}
 links:
   - {id: l1, a: "a:p", b: "x:i"}

@@ -35,15 +35,17 @@
  * not modelled. Results are sorted by values, never by the order of the
  * file.
  */
-import { deviceRoutingRole, isLayer2Switch } from '../model/device-types';
+import { deviceRoutingRole, isLayer2Switch, capabilities } from '../model/capabilities';
 import { IpAddr, IpPrefix, parseAddress, parsePrefix } from '../model/ip';
 import { lookupProtocol } from '../model/protocols';
-import { Interface, Link, LinkEnd, Model, Relation, deviceInterfaces, ifaceKey } from '../model/types';
+import { Interface, Link, LinkEnd, Model, Relation, deviceInterfaces, ifaceKey, Device } from '../model/types';
 import { endL2, interfaceVlanPorts, interfaceVlans, isBridgePort } from '../model/derive';
 import { compareAddr, comparePrefix, formatAddr, inPrefix, networkOf, prefixText } from './ipmath';
 import { virtualGateways } from './identity';
 import { sharedDomain, virtEnd, virtRefText } from './trace-virtual';
 import { cnetNetworkId, cnetRef, vethNetwork } from '../model/virtual';
+import { decide, decideBreak, profileAt, rulesBetween, ruleServiceText, ruleText, domainOf } from './separation';
+import { deviceTypeLine, NO_DEVICE_TYPE } from '../model/device-types';
 import {
   Connected,
   Decision,
@@ -68,7 +70,6 @@ export const MAX_PATHS = 16;
 const MAX_DEPTH = 4;
 
 /** Device types a frame may cross at layer 2 between two hops (without a type: generic). */
-const L2_TYPES = ['switch', 'ap', 'ids_ips', 'cloud', 'generic'];
 
 // ------------------------------------------------------------ endpoints
 
@@ -95,7 +96,7 @@ export function traceEndText(e: TraceEnd): string {
 
 // ------------------------------------------------------------ results
 
-export type StopReason = 'no-route' | 'unresolved' | 'no-adjacency' | 'blackhole' | 'loop' | 'not-forwarding' | 'down' | 'too-long';
+export type StopReason = 'no-route' | 'unresolved' | 'no-adjacency' | 'blackhole' | 'loop' | 'not-forwarding' | 'down' | 'too-long' | 'denied';
 
 /** How a path ends. */
 export type PathEnd =
@@ -161,6 +162,8 @@ export interface Path {
 export interface TraceRequest {
   from: string;
   to: string;
+  /** what is sent ("tcp/443", "udp/53", "icmp"): a Separation gateway's policy decides by it; none: what its rules would permit */
+  service?: string;
   /** the VRF of the source's table ('' the default table); none: the source interface's VRF, else the default table */
   vrf?: string;
 }
@@ -175,6 +178,22 @@ export interface Trace {
   paths: Path[];
   /** more equal-cost paths existed than were followed */
   truncated: boolean;
+  /** a protocol break: the transfer ended at the gateway, which starts a new one of its own (the second leg, traced on its own) */
+  legs?: Array<{ note: string; trace: Trace }>;
+}
+
+/** A trace's service ("tcp/443", "udp/53", "icmp"; "" none), or the reason it can't be read. */
+export interface TraceService {
+  proto: 'tcp' | 'udp' | 'icmp';
+  port?: number;
+}
+export function parseService(text: string | undefined): TraceService | null | string {
+  const t = (text || '').trim().toLowerCase();
+  if (!t) return null;
+  if (t === 'icmp' || t === 'ping') return { proto: 'icmp' };
+  const m = /^(tcp|udp)[\s/:]+(\d{1,5})$/.exec(t);
+  if (!m || Number(m[2]) < 1 || Number(m[2]) > 65535) return `"${text}" is not a service: write tcp/443, udp/53 or icmp`;
+  return { proto: m[1] as 'tcp' | 'udp', port: Number(m[2]) };
 }
 
 // ------------------------------------------------------------ the tracer
@@ -196,6 +215,9 @@ interface Walk {
   srcText?: string;
   /** the destination is a container behind its host's NAT: the walk goes to the host's address, then on to the container */
   dnat?: Dnat;
+  /** the source address, and what is sent (a Separation gateway's policy decides by them) */
+  src?: IpAddr;
+  svc?: TraceService | null;
 }
 
 interface Dnat {
@@ -223,6 +245,8 @@ export function tracePath(model: Model, req: TraceRequest, ctx: RoutingCtx = {})
   const dst = parseTraceEnd(model, req.to);
   if (typeof dst === 'string') return { ...out, error: 'Destination: ' + dst };
   const vrfGiven = req.vrf !== undefined ? req.vrf.trim() : undefined;
+  const svc = parseService(req.service);
+  if (typeof svc === 'string') return { ...out, error: 'Service: ' + svc };
   // where it starts
   let srcDev: string;
   let srcIface: string | undefined;
@@ -281,10 +305,38 @@ export function tracePath(model: Model, req: TraceRequest, ctx: RoutingCtx = {})
   const walkDest = dnat ? (parseAddress(dnat.hostAddr) as IpAddr) : destAddr;
   const w: Walk = { model, ctx, dest: walkDest, destText: formatAddr(walkDest), destInModel: destDev !== undefined, encap: [], depth: 0, inside: [], truncated: false };
   if (srcAddr) w.srcText = formatAddr(srcAddr);
+  if (srcAddr) w.src = srcAddr;
+  w.svc = svc;
   if (dnat) w.dnat = dnat;
   out.paths = walk(w, { device: srcDev, vrf }, [], new Set());
   out.truncated = w.truncated;
+  // a protocol break: a transfer to one of its listening ports ends there, and the gateway starts the second leg itself
+  const main = out.paths[0];
+  if (main && main.end.kind === 'reached' && main.end.iface !== undefined && svc && svc.proto !== 'icmp' && srcAddr) {
+    const g = model.index.devices.get(main.end.device);
+    const at = g ? profileAt(g, main.end.iface, svc.proto, svc.port as number) : undefined;
+    if (g && at) {
+      const d = decideBreak(g, main.end.iface, srcAddr, at.profile);
+      const last = main.hops[main.hops.length - 1];
+      if (!d.ok || !d.forward) {
+        last.notes.push(`${d.text}: the first leg ends at ${g.id} and no second leg is started`);
+        main.end = { kind: 'stopped', device: g.id, reason: 'denied', detail: d.text };
+      } else {
+        const note = `Protocol break at ${g.id}: the ${at.kind.label.toLowerCase()} from ${formatAddr(srcAddr)} ends at ${g.id}:${main.end.iface} port ${at.profile.listenPort} (leg 1); ${g.id} starts a new ${at.kind.transport.toUpperCase()} transfer of its own to ${formatAddr(d.forward.address)}:${d.forward.port} (leg 2, profile ${at.profile.id}, ${ruleText(d.rule)}). No packet of leg 1 crosses.${at.kind.reply ? ' The answer comes back on leg 2 and the gateway answers on leg 1.' : ' Nothing comes back.'}`;
+        last.notes.push(note);
+        if (depthOf(req) < 2) {
+          const leg2 = tracePath(model, { from: g.id, to: formatAddr(d.forward.address), service: `${at.kind.transport}/${d.forward.port}`, _depth: depthOf(req) + 1 } as TraceRequest, ctx);
+          out.legs = [{ note, trace: leg2 }];
+        }
+      }
+    }
+  }
   return out;
+}
+
+/** (a protocol break's second leg is traced once, never a third) */
+function depthOf(req: TraceRequest): number {
+  return (req as TraceRequest & { _depth?: number })._depth || 0;
 }
 
 /** The return trace of a trace: from its destination back to its source address. */
@@ -324,7 +376,13 @@ function walk(w: Walk, at: At, before: Hop[], seen: Set<string>): Path[] {
   // only routers pass traffic on (the first hop sends its own)
   // (a container host forwards the traffic of its bridge networks: it came in on the bridge's interface)
   if (before.length > 0 && deviceRoutingRole(d) !== 'router' && !fromBridge(model, at)) {
-    const what = d.type === 'generic' ? 'device without a type' : isLayer2Switch(d) ? 'Layer 2 switch' : d.type;
+    const caps = capabilities(d);
+    if (caps.sessionBreak && caps.separationGateway) {
+      const listens = (d.separation ? d.separation.profiles : []).filter((p) => p.listenInterface !== undefined).map((p) => `${p.id} at ${p.listenInterface} port ${p.listenPort}`);
+      return stop('denied', `${at.device} is a protocol break: nothing passes through it. A transfer is addressed to one of its listening ports (${listens.join('; ') || 'it has no transfer profiles'}), and it starts a new one of its own on the other side`);
+    }
+    if (caps.separationGateway) return stop('denied', `${at.device} transfers nothing: its Domain separation has no implementation chosen`);
+    const what = d.type === 'generic' ? 'device without a type' : isLayer2Switch(d) ? 'Layer 2 switch' : deviceTypeLine(d);
     return stop('not-forwarding', `${at.device} is a ${what} and does not forward traffic for others`);
   }
   if (decision.kind === 'blackhole') {
@@ -394,6 +452,15 @@ function step(w: Walk, at: At, hop: Hop, h: DecisionHop, before: Hop[], seen: Se
   hop.via = viaOf(model, h.entry);
   if (h.entry.relation) hop.relations.push(h.entry.relation);
   hop.egress = h.iface;
+  // what may pass this hop: a filtering router's policy, a VPN gateway's tunnels (traffic it forwards, not its own)
+  if (before.length > 0 && at.ingress !== undefined) {
+    const dev = model.index.devices.get(at.device) as Device;
+    const denied = forwardDenied(w, dev, at.ingress, h.iface, hop.notes);
+    if (denied) {
+      hop.via = { kind: 'none', text: denied };
+      return [{ hops: before.concat(hop), end: { kind: 'stopped', device: at.device, reason: 'denied', detail: denied } }];
+    }
+  }
   const target = h.gateway || w.dest;
   if (h.gateway) hop.gateway = formatAddr(h.gateway);
   const conn = connectedOf(model, at.device).filter((c) => c.iface === h.iface);
@@ -442,8 +509,8 @@ function step(w: Walk, at: At, hop: Hop, h: DecisionHop, before: Hop[], seen: Se
     if (t.stop) return [{ hops: before.concat(hop), end: { kind: 'stopped', device: at.device, reason: t.stop.reason, detail: t.stop.detail } }];
   } else {
     const vlan = outNet ? vlanOfNet(model, outNet.net) : undefined;
-    const seg = l2Segment(model, w.ctx, { device: at.device, iface: h.iface }, { device: next.device, iface: next.iface }, vlan);
-    if (seg.kind === 'none') return [{ hops: before.concat(hop), end: { kind: 'stopped', device: at.device, reason: 'no-adjacency', detail: seg.detail } }];
+    const seg = l2Segment(model, w.ctx, { device: at.device, iface: h.iface }, { device: next.device, iface: next.iface }, vlan, (dev, inPort, outPort, notes) => crossDenied(w, dev, inPort, outPort, notes));
+    if (seg.kind === 'none') return [{ hops: before.concat(hop), end: { kind: 'stopped', device: seg.at || at.device, reason: seg.denied ? 'denied' : 'no-adjacency', detail: seg.detail } }];
     if (seg.kind === 'uncabled') hop.notes.push(seg.detail);
     else {
       hop.links = seg.links;
@@ -649,7 +716,16 @@ interface L2State {
   prev: L2State | null;
 }
 
-type Segment = ({ kind: 'ok'; links: string[]; devices: string[] } | { kind: 'uncabled'; detail: string } | { kind: 'none'; detail: string }) & { virtual?: string[]; notes?: string[] };
+type Segment = ({ kind: 'ok'; links: string[]; devices: string[] } | { kind: 'uncabled'; detail: string } | { kind: 'none'; detail: string; denied?: boolean; at?: string }) & { virtual?: string[]; notes?: string[] };
+
+/**
+ * May a frame cross a Layer 2 device from one of its ports to another? Its
+ * reason when not (null: it crosses; notes say on what condition). By
+ * capability: a bridge between any ports, an inline or pass-through device
+ * only between paired ports (the way the pair permits), a filtering bridge
+ * only into its other domain and as far as its policy permits.
+ */
+type Cross = (dev: Device, inPort: string | undefined, outPort: string | undefined, notes: string[]) => string | null;
 
 /** The physical ports an interface sends out of: itself, an aggregate's members, a VLAN interface's bridge ports, a subinterface's port (aggregates as their members). */
 export function portsOf(model: Model, device: string, iface: string): string[] {
@@ -685,13 +761,13 @@ function endUp(ctx: RoutingCtx, e: LinkEnd): boolean {
  * the two interfaces has no cable in the model, nothing is known (uncabled);
  * when both have cables but no way joins them, the hop can't be made.
  */
-function l2Segment(model: Model, ctx: RoutingCtx, a: { device: string; iface: string }, b: { device: string; iface: string }, vlan: number | undefined): Segment {
+function l2Segment(model: Model, ctx: RoutingCtx, a: { device: string; iface: string }, b: { device: string; iface: string }, vlan: number | undefined, cross?: Cross): Segment {
   const upf = (d: string, i: string): boolean => up(ctx, d, i);
   const va = virtEnd(model, a.device, a.iface, upf, 0, ctx.hostOf);
   const vb = virtEnd(model, b.device, b.iface, upf, 0, ctx.hostOf);
   const pa = va ? va.ports : portsOf(model, a.device, a.iface);
   const pb = vb ? vb.ports : portsOf(model, b.device, b.iface);
-  if (!va && !vb) return cabled(model, ctx, a, b, vlan, a.device, pa, b.device, pb, true);
+  if (!va && !vb) return cabled(model, ctx, a, b, vlan, a.device, pa, b.device, pb, true, cross);
   const refs: string[] = [];
   const notes: string[] = [];
   for (const v of [va, vb]) {
@@ -719,7 +795,7 @@ function l2Segment(model: Model, ctx: RoutingCtx, a: { device: string; iface: st
   for (const v of [va, vb]) if (v && v.closed) return { kind: 'none', detail: v.closed };
   // out of the host(s) by the ports found, then over the cables
   for (const v of [va, vb]) if (v) for (const p of v.ports) if (refs.indexOf(`iface:${v.device}:${p}`) < 0) refs.push(`iface:${v.device}:${p}`);
-  const seg = cabled(model, ctx, a, b, vlan, va ? va.device : a.device, pa, vb ? vb.device : b.device, pb, false);
+  const seg = cabled(model, ctx, a, b, vlan, va ? va.device : a.device, pa, vb ? vb.device : b.device, pb, false, cross);
   return { ...seg, virtual: refs, notes };
 }
 
@@ -735,6 +811,7 @@ function cabled(
   devB: string,
   pb: string[],
   plain: boolean,
+  cross?: Cross,
 ): Segment {
   const links = model.links.slice().sort((x, y) => cmpStr(x.id, y.id));
   const atA = (e: LinkEnd): boolean => e.device === devA && (e.iface === undefined || pa.indexOf(e.iface) >= 0);
@@ -773,10 +850,13 @@ function cabled(
     queue.push({ device: far.device, via: l, prev: null });
   }
   for (const s of queue) seenDev.add(s.device);
+  let denial: string | null = null;
+  let denialAt = '';
+  const crossNotes = new Map<L2State, string[]>();
   while (queue.length) {
     const s = queue.shift() as L2State;
     const dev = model.index.devices.get(s.device);
-    if (!dev || L2_TYPES.indexOf(dev.type) < 0) continue;
+    if (!dev || !l2Transit(dev)) continue;
     const inEnd = s.via ? (s.via.a.device === s.device ? s.via.a : s.via.b) : null;
     for (const l of links) {
       if (l === s.via || !linkUp(l)) continue;
@@ -785,14 +865,95 @@ function cabled(
       const far = near === l.a ? l.b : l.a;
       if (l.direction === 'unidirectional' && near !== l.a) continue;
       if (!carries(model, near, vlan) || !carries(model, far, vlan) || (inEnd && near.iface !== undefined && inEnd.iface === near.iface)) continue;
+      const notes: string[] = (crossNotes.get(s) || []).slice();
+      const why = crossing(dev, inEnd ? inEnd.iface : undefined, near.iface, notes, cross);
+      if (why === false) continue;
+      if (why) {
+        if (!denial) {
+          denial = why;
+          denialAt = dev.id;
+        }
+        continue;
+      }
       const next: L2State = { device: far.device, via: l, prev: s };
-      if (atB(far)) return finish(model, ctx, next);
+      crossNotes.set(next, notes);
+      if (atB(far)) {
+        const seg = finish(model, ctx, next);
+        return notes.length ? { ...seg, notes } : seg;
+      }
       if (seenDev.has(far.device)) continue;
       seenDev.add(far.device);
       queue.push(next);
     }
   }
+  if (denial) return { kind: 'none', detail: denial, denied: true, at: denialAt };
   return { kind: 'none', detail: `no cable path from ${a.device}:${a.iface} to ${b.device}:${b.iface}${vtext} in the model (missing layer-2 adjacency)` };
+}
+
+/** Does a device carry frames between its ports at all (a bridge, an inline or pass-through device, an external network; a device without a type is taken as one)? */
+function l2Transit(dev: Device): boolean {
+  const c = capabilities(dev);
+  return dev.type === NO_DEVICE_TYPE || c.l2Transit || c.externalTransit;
+}
+
+/**
+ * May a frame cross a device from one port to another: the pairing of an
+ * inline or pass-through device, then the caller's policy (null: it may; a
+ * reason: it is denied; false: that port is no way at all, a management
+ * interface or a Separation gateway's port in neither domain).
+ */
+function crossing(dev: Device, inPort: string | undefined, outPort: string | undefined, notes: string[], cross?: Cross): string | null | false {
+  const c = capabilities(dev);
+  if (dev.management.length && ((inPort !== undefined && dev.management.indexOf(inPort) >= 0) || (outPort !== undefined && dev.management.indexOf(outPort) >= 0))) return false;
+  if (c.separationGateway && dev.separation && outPort !== undefined && !domainOf(dev.separation, outPort)) return false;
+  if ((c.inline || c.passThrough) && inPort !== undefined && outPort !== undefined) {
+    const pair = dev.portPairs.find((p) => (p.a === inPort && p.b === outPort) || (p.b === inPort && p.a === outPort));
+    if (!pair) return `${dev.id} passes traffic between its paired ports only: ${inPort} is not paired with ${outPort}`;
+    if (pair.direction === 'a_to_b' && pair.a !== inPort) return `${dev.id} passes traffic one way only, from ${pair.a} to ${pair.b}`;
+    if (pair.copy.length) notes.push(`${dev.id} gives a copy of what passes ${pair.a} ${pair.direction === 'a_to_b' ? '→' : '↔'} ${pair.b} to ${pair.copy.join(', ')} (${pair.copy.length === 1 ? 'a monitor port' : 'monitor ports'}); the original passes on`);
+  }
+  return cross ? cross(dev, inPort, outPort, notes) : null;
+}
+
+/** A Layer 2 crossing the walk's traffic is not permitted: a filtering bridge's policy. */
+function crossDenied(w: Walk, dev: Device, inPort: string | undefined, outPort: string | undefined, notes: string[]): string | null {
+  const c = capabilities(dev);
+  if (!c.separationGateway || inPort === undefined || outPort === undefined) return null;
+  return policyDenied(w, dev, inPort, outPort, notes);
+}
+
+/** A routed hop the walk's traffic may not take: a filtering router's policy, a VPN gateway's tunnels. */
+function forwardDenied(w: Walk, dev: Device, inIface: string, outIface: string, notes: string[]): string | null {
+  const c = capabilities(dev);
+  if (c.separationGateway) return policyDenied(w, dev, inIface, outIface, notes);
+  if (c.vpnOnlyTransit && dev.vpn) {
+    const v = dev.vpn;
+    const tunnel = v.tunnels.indexOf(inIface) >= 0 || v.tunnels.indexOf(outIface) >= 0;
+    const pool = v.pool !== undefined ? parsePrefix(v.pool) : null;
+    const client = !!pool && ((w.src !== undefined && inPrefix(pool, w.src)) || inPrefix(pool, w.dest));
+    if (!tunnel && !client) return `${dev.id} is a VPN Gateway: it forwards only to and from its VPN (${v.tunnels.length ? 'tunnels ' + v.tunnels.join(', ') : 'remote-access clients in ' + (v.pool || 'its pool')}), not from ${inIface} to ${outIface}`;
+    notes.push(tunnel ? `${dev.id} forwards it through its VPN (${v.tunnels.filter((t) => t === inIface || t === outIface).join(', ')})` : `${dev.id} forwards it for a remote-access client (${v.pool})`);
+  }
+  return null;
+}
+
+/** A Separation gateway's decision on the walk's traffic, between two of its interfaces (see analysis/separation.ts). */
+function policyDenied(w: Walk, dev: Device, inIface: string, outIface: string, notes: string[]): string | null {
+  if (!w.src) return `${dev.id} decides by the source address: the trace has none`;
+  if (w.svc) {
+    const d = decide(dev, { inIface, outIface, src: w.src, dst: w.dest, proto: w.svc.proto, dport: w.svc.port });
+    if (!d.ok) return d.text;
+    notes.push(d.text);
+    return null;
+  }
+  // no service given: it passes if a rule permits something between the two, and says what
+  const rules = rulesBetween(dev, inIface, outIface, w.src, w.dest);
+  if (!rules.length) {
+    const d = decide(dev, { inIface, outIface, src: w.src, dst: w.dest, proto: 'other' });
+    return d.text;
+  }
+  notes.push(`${dev.id} permits only ${rules.map((r) => `${ruleServiceText(r)} (rule ${r.id})`).join(', ')} between these addresses; give a service to trace it exactly`);
+  return null;
 }
 
 /** The links and layer-2 devices of a found way, with the other up members of each LAG it crosses. */
@@ -1035,6 +1196,8 @@ export function pathRefs(p: Path): Set<string> {
 /** The refs of a trace: the main path, the equal-cost alternatives (what only they use), and the device where it stops. */
 export function traceRefs(t: Trace): { main: Set<string>; alt: Set<string>; stop: string | null } {
   const main = t.paths.length ? pathRefs(t.paths[0]) : new Set<string>();
+  // a protocol break's second leg is part of the transfer
+  for (const l of t.legs || []) if (l.trace.paths.length) pathRefs(l.trace.paths[0]).forEach((r) => main.add(r));
   const alt = new Set<string>();
   for (const p of t.paths.slice(1)) for (const r of Array.from(pathRefs(p))) if (!main.has(r)) alt.add(r);
   const e = t.paths.length ? t.paths[0].end : null;
@@ -1084,7 +1247,7 @@ export function encapText(layers: EncapLayer[]): string {
 /** The whole trace as plain text (Copy as text). */
 export function traceText(t: Trace, back?: Trace | null): string {
   const lines: string[] = [];
-  lines.push(`Path trace: ${t.request.from} → ${t.request.to}${t.request.vrf !== undefined ? ' (' + vrfName(t.request.vrf) + ')' : ''}`);
+  lines.push(`Path trace: ${t.request.from} → ${t.request.to}${t.request.vrf !== undefined ? ' (' + vrfName(t.request.vrf) + ')' : ''}${t.request.service ? ', ' + t.request.service : ''}`);
   if (t.error) {
     lines.push(t.error);
     return lines.join('\n');
@@ -1110,6 +1273,12 @@ export function traceText(t: Trace, back?: Trace | null): string {
     if (tr.truncated) lines.push(`(only the first ${MAX_PATHS} equal-cost paths are listed)`);
   };
   desc(t);
+  for (const l of t.legs || []) {
+    lines.push('');
+    lines.push(`Leg 2 (protocol break): ${l.trace.request.from} → ${l.trace.request.to}, ${l.trace.request.service || ''}`);
+    if (l.trace.error) lines.push(l.trace.error);
+    else desc(l.trace);
+  }
   if (back) {
     lines.push('');
     lines.push(`Return path: ${back.request.from} → ${back.request.to}${isAsymmetric(t, back) ? ' (asymmetric: it takes another way back)' : ' (the same routers in reverse)'}`);
@@ -1117,7 +1286,7 @@ export function traceText(t: Trace, back?: Trace | null): string {
     else desc(back);
   }
   lines.push('');
-  lines.push('Model-based approximation: computed from the routes and adjacencies in the model, not a simulation of the protocols. ACLs and firewall policies are not considered; NAT only for container bridges (SNAT out of the host, DNAT to published ports).');
+  lines.push('Model-based approximation: computed from the routes and adjacencies in the model, not a simulation of the protocols. A Separation gateway’s policy, a VPN Gateway’s tunnels and paired ports are considered; firewall ACLs are not; NAT only for container bridges (SNAT out of the host, DNAT to published ports).');
   return lines.join('\n');
 }
 

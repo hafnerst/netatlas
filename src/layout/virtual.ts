@@ -29,9 +29,9 @@
 import { DeviceBody, ENTRY_GAP, ENTRY_MARGIN, EntryText, deviceBody, entriesSize, entryBox } from './sizes';
 import { textWidth } from './text';
 import { interfaceEntry, IfaceEntry } from '../model/addresses';
-import { deviceSubtitle } from '../model/device-types';
+import { deviceTypeLine } from '../model/device-types';
 import { Device, Interface, Model, ifaceKey } from '../model/types';
-import { cnetRef, guestsOf, portGroupL2, portGroupRef, vnicPortGroup, vethNetwork, vswitchRef } from '../model/virtual';
+import { cnetRef, guestsOf, portGroupL2, portGroupRef, vnicPortGroup, vethNetwork, vswitchRef, isVm } from '../model/virtual';
 import { TEAMINGS, VSWITCH_TYPES } from '../model/types';
 
 export const BAR_FONT = 10;
@@ -245,11 +245,11 @@ function build(model: Model, host: Device, depth: number): VInterior | null {
   const plain: VGuest[] = [];
   // ---- the guests, each in the lane of its first attachment
   const guestBox = (d: Device): VGuest => {
-    const sub = deviceSubtitle(d.type, d.layer3);
+    const sub = deviceTypeLine(d);
     const body = deviceBody(d.label, sub, 0, 0);
     const items = guestEntries(model, d);
     const [ew, eh] = entriesSize(items);
-    const inner = d.type === 'vm' && d.containerEngine ? build(model, d, depth + 1) : null;
+    const inner = isVm(d) && d.containerEngine ? build(model, d, depth + 1) : null;
     const w = Math.max(body.w, ew ? ew + 2 * ENTRY_MARGIN : 0, inner ? inner.w + 2 * ENTRY_MARGIN : 0);
     const innerY = body.h + (eh ? eh + ENTRY_MARGIN : 0);
     const h = innerY + (inner ? inner.h + ENTRY_MARGIN : 0) + (eh || inner ? ENTRY_MARGIN : 0);
@@ -270,7 +270,7 @@ function build(model: Model, host: Device, depth: number): VInterior | null {
       }
       return e;
     });
-    return { id: d.id, ref: 'device:' + d.id, kind: d.type === 'vm' ? 'vm' : 'container', body, sub, type: d.type, label: d.label, layer3: d.layer3, entries, inner: inner || undefined, innerX: ENTRY_MARGIN, innerY, x: 0, y: 0, w, h, channelW: 0 };
+    return { id: d.id, ref: 'device:' + d.id, kind: isVm(d) ? 'vm' : 'container', body, sub, type: d.type, label: d.label, layer3: d.layer3, entries, inner: inner || undefined, innerX: ENTRY_MARGIN, innerY, x: 0, y: 0, w, h, channelW: 0 };
   };
   // the host's own vNICs (host interfaces): an entry each, in the lane of its port group
   const hostIfs = host.hypervisor ? host.logical.filter((i) => i.type === 'vnic').sort((a, b) => (a.id < b.id ? -1 : 1)) : [];

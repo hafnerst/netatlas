@@ -120,7 +120,7 @@ test('multicast parameters: IGMP snooping (Layer 2) and the query interval (Laye
   for (const k of ['snoop-querier', 'fast-leave', 'unknown-mc']) assert.ok(!byType.get('switch').includes(k) && Pm.paramDef(k).level === 'vlan', k);
   assert.deepEqual(Pm.vlanParams().map((p) => p.key), ['igmp-snooping', 'snoop-querier', 'fast-leave', 'unknown-mc']);
   assert.ok(!byType.get('firewall').includes('mc-passthrough') && Pm.paramDef('mc-passthrough').level === 'interface');
-  assert.ok(byType.get('gateway').includes('mc-tunnel'), 'a VPN gateway’s default for its tunnels');
+  assert.ok(byType.get('vpn_gateway').includes('mc-tunnel'), 'a VPN gateway’s default for its tunnels');
   assert.ok(!byType.get('ap').includes('mc-to-unicast') && Pm.paramDef('mc-to-unicast').level === 'interface');
   assert.ok(byType.get('cloud').includes('mc-support'));
 });
@@ -333,7 +333,7 @@ test('dense mode: the first packets flood to every PIM neighbour; a router witho
   assert.equal(status(s, 'rxa member of 239.1.1.1').state, 'Receiving');
 });
 
-test('never routed: link-local groups and TTL 1; a router without PIM routes no multicast; a firewall only with passthrough; a cloud only when it carries multicast', () => {
+test('never routed: link-local groups and TTL 1; a router without PIM routes no multicast; a firewall only with passthrough; a cloud (a Layer 3 hop) passes no link-local Hellos', () => {
   const ttl = sim(NET({ src: '\n    simulation: {ttl: 1}' }));
   ttl.runTo(20000);
   assert.ok(ev(ttl, (e) => e.device === 'r1' && /does not route UDP → 239\.1\.1\.1:5004 from 10\.1\.0\.10: its TTL is 1/.test(e.detail)).length >= 1);
@@ -346,13 +346,15 @@ test('never routed: link-local groups and TTL 1; a router without PIM routes no 
   assert.equal(status(pass, 'rxa member of 239.1.1.1').state, 'Receiving');
   // a cloud between r1 and r2
   const cloud = (on) => NET().replace('  - {id: b, a: "r1:g1", b: "r2:g0"}', '  - {id: b, a: "r1:g1", b: "inet:a"}\n  - {id: b2, a: "inet:b", b: "r2:g0"}').replace('  - {id: sw, type: switch', `  - {id: inet, type: cloud, interfaces: [{id: a, vlans: 1}, {id: b, vlans: 1}]${on ? ', simulation: {multicast: "on"}' : ''}}\n  - {id: sw, type: switch`);
-  const c0 = sim(cloud(false));
-  c0.runTo(30000);
-  assert.ok(ev(c0, (e) => e.device === 'inet' && /inet carries no multicast \(Off \(default\)\): .* to 239\.1\.1\.1 is dropped/.test(e.detail)).length >= 1);
-  assert.ok(ev(c0, (e) => e.protocol === 'pim' && e.what === 'Neighbour' && e.device === 'r2').length >= 1, 'link-local PIM Hellos still cross it');
-  const c1 = sim(cloud(true));
-  c1.runTo(30000);
-  assert.equal(status(c1, 'rxa member of 239.1.1.1').state, 'Receiving');
+  // a cloud is one Layer 3 hop: link-local PIM Hellos end at it (with or without multicast), so r1 and r2 are no PIM neighbours
+  // across it and the stream takes the routed way round through r3
+  for (const on of [false, true]) {
+    const c = sim(cloud(on));
+    c.runTo(30000);
+    assert.ok(ev(c, (e) => e.device === 'inet' && e.protocol === 'pim' && /inet is a Layer 3 hop \(an external network\): .*224\.0\.0\.13.* does not cross it/.test(e.detail)).length >= 1, 'PIM Hellos end at the cloud');
+    assert.ok(!ev(c, (e) => e.protocol === 'pim' && e.what === 'Neighbour' && e.device === 'r2' && /10\.0\.12\./.test(e.detail)).length, 'no PIM neighbour across the cloud');
+    assert.equal(status(c, 'rxa member of 239.1.1.1').state, 'Receiving');
+  }
 });
 
 // ------------------------------------------------------------------ events, tests, access points, checks

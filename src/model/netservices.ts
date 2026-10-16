@@ -8,9 +8,11 @@
 import { dnsNameKey } from './dns';
 import { IpAddr, parsePrefix } from './ip';
 import { Model } from './types';
+import { capabilities } from './capabilities';
+import { DEVICE_TYPE_IDS } from './device-types';
 
 /** The device types that run network services (servers: a server, a VM, a container). */
-export const SERVER_TYPES: readonly string[] = ['server', 'vm', 'container'];
+export const SERVER_TYPES: readonly string[] = DEVICE_TYPE_IDS.filter((t) => capabilities({ type: t }).networkServices || capabilities({ type: t, layer3: true }).networkServices);
 
 /** The lease time without one written: one day (ms). */
 export const DEFAULT_LEASE = 86400000;

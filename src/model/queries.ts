@@ -6,6 +6,8 @@
 import { cnetRef, guestsOf, hostOf, portGroupRef, virtRefTarget, virtualRelated, vnicPortGroup, vswitchRef } from './virtual';
 import { addressOwners, associatedInterfaces, deviceNetworks, endNetworks, endVlans, interfaceNetworks, isBridgePort, linkNetworks, networkMembers, portBadgeText, portL2, vlanRangesText } from './derive';
 import { Device, Model, Route, deviceInterfaces, ifaceKey, relationDevices, routeKey } from './types';
+import { capabilities } from './capabilities';
+import { deviceTypeLabel, kindLabel, roleLabel, modesOf, purposeDef } from './device-types';
 
 export function splitRef(ref: string): [string, string] {
   const i = ref.indexOf(':');
@@ -369,9 +371,10 @@ export function search(model: Model, query: string, limit = 12): SearchHit[] {
   for (const d of model.devices) {
     const addrs: string[] = [];
     for (const i of deviceInterfaces(d)) addrs.push(...i.addresses);
-    // a switch is found (and listed) with its layer: "l3", "layer 3 switch"
-    const layer = d.type === 'switch' ? (d.layer3 ? ['layer 3 switch', 'l3 switch', 'l3'] : ['layer 2 switch', 'l2 switch', 'l2']) : [];
-    consider('device:' + d.id, d.type === 'switch' ? layer[0] : 'device', d.label, [d.id, d.label, d.type, ...layer, ...addrs, ...d.dnsNames.map((x) => x.name), ...serviceWords(model, d), ...virtualWords(model, d)]);
+    // a switch is found (and listed) with its layer: "l3", "layer 3 switch"; every device by its type, kind, role, mode and purpose
+    const sw = capabilities(d).switchFeatures;
+    const layer = sw ? (d.layer3 ? ['layer 3 switch', 'l3 switch', 'l3'] : ['layer 2 switch', 'l2 switch', 'l2']) : [];
+    consider('device:' + d.id, sw ? layer[0] : 'device', d.label, [d.id, d.label, d.type, deviceTypeLabel(d.type), ...layer, ...modelWords(d), ...addrs, ...d.dnsNames.map((x) => x.name), ...serviceWords(model, d), ...virtualWords(model, d)]);
   }
   // the virtual networking: a host's virtual switches, port groups and container networks
   for (const h of model.devices) {
@@ -619,4 +622,15 @@ export function serviceWords(model: Model, d: Device): string[] {
   }
   if (d.routerId) out.push(d.routerId.text, d.routerId.address || '', 'router-id ' + (d.routerId.address || d.routerId.text));
   return out.filter((x) => x !== '');
+}
+
+/** What Find finds a device by besides its names: its kind, its role (with "role"), its mode and a System's purpose. */
+export function modelWords(d: Device): string[] {
+  const out: string[] = [];
+  const k = kindLabel(d);
+  if (k) out.push(k, d.kind || '');
+  if (d.role) out.push(roleLabel(d.role), d.role, `role ${roleLabel(d.role)}`, `role ${d.role}`);
+  if (d.mode) out.push(d.mode, (modesOf(d.type).find((m) => m.id === d.mode) || { label: '' }).label);
+  if (d.purpose) out.push(d.purpose, (purposeDef(d.purpose) || { label: '' }).label);
+  return out.filter((x) => !!x);
 }

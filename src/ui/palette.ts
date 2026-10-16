@@ -10,9 +10,11 @@
 import { routeLine } from '../model/addresses';
 import { lookupProtocol } from '../model/protocols';
 import { Model, deviceInterfaces, relationDevices } from '../model/types';
-import { serviceWords } from '../model/queries';
+import { serviceWords, modelWords } from '../model/queries';
 import { Command, CommandState, keyLabel } from './commands';
 import { el } from './dom';
+import { capabilities } from '../model/capabilities';
+import { deviceTypeLine, deviceTypeLabel } from '../model/device-types';
 
 export interface PaletteItem {
   /** "cmd:<id>" or "ref:<object ref>" */
@@ -81,8 +83,9 @@ export function objectItems(model: Model): PaletteItem[] {
   };
   const byId = <T extends { id: string }>(xs: T[]): T[] => xs.slice().sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   for (const d of byId(model.devices)) {
-    const layer = d.type === 'switch' ? (d.layer3 ? 'Layer 3 switch' : 'Layer 2 switch') : '';
-    add('device:' + d.id, d.label && d.label !== d.id ? `${d.label} (${d.id})` : d.id, layer || 'device', `${d.type} ${layer} ${layer ? (d.layer3 ? 'l3' : 'l2') : ''} ${d.group || ''} ${serviceWords(model, d).join(' ')}`);
+    const layer = capabilities(d).switchFeatures ? (d.layer3 ? 'Layer 3 switch' : 'Layer 2 switch') : '';
+    // found by its type, kind, role, mode and purpose too ("core", "plc", "transparent", "pass-through")
+    add('device:' + d.id, d.label && d.label !== d.id ? `${d.label} (${d.id})` : d.id, layer || 'device', `${d.type} ${deviceTypeLine(d)} ${deviceTypeLabel(d.type)} ${layer} ${layer ? (d.layer3 ? 'l3' : 'l2') : ''} ${modelWords(d).join(' ')} ${d.group || ''} ${serviceWords(model, d).join(' ')}`);
   }
   for (const d of byId(model.devices)) {
     for (const i of byId(deviceInterfaces(d))) {

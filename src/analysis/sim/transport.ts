@@ -50,7 +50,7 @@
  * session timeouts. Pure and deterministic.
  */
 import { IpAddr, parseAddress } from '../../model/ip';
-import { Relation, relationDevices } from '../../model/types';
+import { Relation, relationDevices, TRANSFER_PROFILES } from '../../model/types';
 import { compareAddr, formatAddr } from '../ipmath';
 import { lookup } from '../routing';
 import { IcmpKind, fmtSec, hashIndex } from './engine';
@@ -62,6 +62,8 @@ import { NetServicesSim } from './netsvc';
 import { dnsNameKey, dnsNameProblem } from '../../model/dns';
 import { ProtocolSim, relationProfile } from './protocols';
 import { ConnRow, L4, Msg, Pkt, SessionRow, SessionStatus } from './types';
+import { isContainer } from '../../model/virtual';
+import { profileAt } from '../separation';
 
 const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 /** RFC 6298 §2.5 allows a maximum of at least 60 s; Linux TCP_RTO_MAX is 120 s. */
@@ -201,6 +203,8 @@ export class Transport {
   private seq = 0;
   private conns = new Map<string, Map<string, Conn>>();
   private nextPort = new Map<string, number>();
+  /** a protocol break's UDP leg 2 waiting for its answer: by gateway and its source port, the client on leg 1 */
+  private udpRelays = new Map<string, { client: IpAddr; cport: number; local: IpAddr; lport: number; vrf: string; test?: number; profile: string }>();
   private pmtu = new Map<string, Map<string, number>>();
   readonly tests: Test[] = [];
   private series = new Map<string, Test>();
@@ -305,6 +309,12 @@ export class Transport {
       const r = parsePorts(String(own) || 'none');
       return { rules: 'list' in r ? r.list : [], written: true, text: `listening ${String(own) || 'on nothing'} (device)` };
     }
+    const gw = this.P.sd(dev);
+    if (gw && gw.caps.sessionBreak && gw.caps.separationGateway) {
+      const prof = (gw.dev.separation ? gw.dev.separation.profiles : []).filter((x) => x.listenPort !== undefined && TRANSFER_PROFILES.some((k) => k.id === x.type));
+      const pr: PortRule[] = prof.map((x) => ({ proto: (TRANSFER_PROFILES.find((k) => k.id === x.type) as (typeof TRANSFER_PROFILES)[number]).transport, from: x.listenPort as number, to: x.listenPort as number }));
+      return { rules: pr, written: false, text: pr.length ? `listening on its transfer profiles' ports: ${prof.map((x) => `${x.id} at ${x.listenInterface} port ${x.listenPort}`).join(', ')}` : 'a protocol break without transfer profiles: no port open' };
+    }
     let rules = this.listenCache.get(dev);
     if (!rules) {
       rules = [];
@@ -314,19 +324,19 @@ export class Transport {
         const prof = relationProfile(this.P.m, r);
         const t = profileTransport(prof.proto);
         if (t.proto === 'other') continue;
-        const type = this.P.sd(dev) ? this.P.sd(dev).dev.type : '';
-        const relay = type === 'load_balancer' || type === 'proxy';
+        // a load balancer listens on the ports of the services it passes on
+        const relay = !!this.P.sd(dev) && this.P.sd(dev).caps.loadBalancing;
         const server = prof.behaviour === 'service' || prof.behaviour === 'custom' ? relay || (prof.fromServer ? devs.slice(0, -1).indexOf(dev) >= 0 : devs[devs.length - 1] === dev) : true;
         if (!server) continue;
         for (const p of t.ports) if (!rules.some((x) => x.proto === t.proto && x.from === p)) rules.push({ proto: t.proto, from: p, to: p });
       }
       // a container serves the ports it publishes
       const md = this.P.m.index.devices.get(dev);
-      if (md && md.type === 'container') for (const i of md.logical) for (const p of i.publish || []) if (!rules.some((x) => x.proto === p.protocol && x.from === p.port)) rules.push({ proto: p.protocol, from: p.port, to: p.port });
+      if (md && isContainer(md)) for (const i of md.logical) for (const p of i.publish || []) if (!rules.some((x) => x.proto === p.protocol && x.from === p.port)) rules.push({ proto: p.protocol, from: p.port, to: p.port });
       rules.sort((a, b) => cmp(a.proto, b.proto) || a.from - b.from);
       this.listenCache.set(dev, rules);
     }
-    return { rules, written: false, text: rules.length ? `listening on the ports of the relations it serves${(this.P.m.index.devices.get(dev) || { type: '' }).type === 'container' ? ' and the ports it publishes' : ''}: ${rules.map((r) => r.proto + '/' + r.from).join(', ')}` : 'serving no relation: no port open' };
+    return { rules, written: false, text: rules.length ? `listening on the ports of the relations it serves${isContainer(this.P.m.index.devices.get(dev)) ? ' and the ports it publishes' : ''}: ${rules.map((r) => r.proto + '/' + r.from).join(', ')}` : 'serving no relation: no port open' };
   }
 
   private open(dev: string, proto: 'tcp' | 'udp', port: number): boolean {
@@ -686,6 +696,9 @@ export class Transport {
       if (this.multicast) this.multicast.dataIn(dev, l3, pkt);
       return;
     }
+    const gw = this.P.sd(dev);
+    const breaks = !!gw && gw.caps.sessionBreak && gw.caps.separationGateway;
+    if (d.reply && breaks && this.breakAnswer(dev, pkt)) return;
     if (d.reply) {
       const t = this.tests.find((x) => x.id === d.test && x.from === dev);
       if (!t || t.done) return;
@@ -697,6 +710,9 @@ export class Transport {
       this.refuse(dev, l3, pkt, this.listening(dev).text);
       return;
     }
+    if (breaks && this.breakUdp(dev, l3, pkt)) return;
+    // a protocol break's syslog leg 2 arrives at a collector: it answers nothing
+    if ((pkt.msg.data as { breakLeg?: boolean } | undefined || {}).breakLeg && pkt.msg.type === 'Syslog message') return;
     const own = this.e.isBroadcastAddr(pkt.dst) || isMulticastIp(pkt.dst) ? l3.addrs.find((a) => a.addr.version === pkt.dst.version) : undefined;
     const src = own ? own.addr : pkt.dst;
     const rt = this.e.params.get('service-response', dev, null, this.serviceRel(dev, 'udp', l4.dport as number));
@@ -982,9 +998,13 @@ export class Transport {
     this.idle(c);
     if (c.answered) return;
     c.answered = true;
-    const type = this.P.sd(c.dev).dev.type;
-    if ((type === 'load_balancer' || type === 'proxy') && !c.upstream) {
+    const caps = this.P.sd(c.dev).caps;
+    if (caps.loadBalancing && !c.upstream) {
       this.proxy(c, pkt);
+      return;
+    }
+    if (caps.sessionBreak && caps.separationGateway && !c.upstream) {
+      this.breakTcp(c, pkt);
       return;
     }
     const rt = this.e.params.get('service-response', c.dev, null, this.serviceRel(c.dev, 'tcp', c.lport));
@@ -996,21 +1016,9 @@ export class Transport {
     else answer();
   }
 
-  /** Keepalive (a connection kept open) and the proxy's client timeout: the idle timers of an open connection. */
+  /** Keepalive (a connection kept open): the idle timer of an open connection. */
   private idle(c: Conn): void {
     const g = ++c.gen;
-    const type = this.P.sd(c.dev).dev.type;
-    if (c.role === 'server' && type === 'proxy') {
-      const ct = this.e.params.get('proxy-client', c.dev);
-      c.timer = this.e.now + Number(ct.value);
-      this.later(Number(ct.value), () => {
-        if (c.gen !== g || (c.state !== 'ESTABLISHED' && c.state !== 'SYN_RCVD')) return;
-        this.e.note('state', 'tcp', c.dev, this.e.ownerOf(c.remote) || '', 'client timeout', '', `${c.dev} closes the idle client connection from ${formatAddr(c.remote)}:${c.rport} after its client connection timeout ${resolvedText(ct)}`);
-        this.setState(c, 'FIN_WAIT_1');
-        this.segment(c.dev, c, ['FIN', 'ACK'], 0, 'client connection timeout', undefined, c);
-      });
-      return;
-    }
     if (!c.keep) {
       c.timer = null;
       return;
@@ -1097,11 +1105,11 @@ export class Transport {
   /** A client's request at a load balancer or proxy: on to a member (or the proxy's upstream) over a connection of its own. */
   private proxy(front: Conn, pkt: Pkt): void {
     const dev = front.dev;
-    const type = this.P.sd(dev).dev.type;
+    const caps = this.P.sd(dev).caps;
     const p = this.pool(dev);
     let m: Member | undefined;
     let why = '';
-    if (type === 'load_balancer') {
+    if (caps.loadBalancing) {
       const healthy = p.members.filter((x) => x.up);
       const client = formatAddr(front.remote);
       const per = this.e.params.get('lb-persistence', dev, null, this.poolRel(dev, 'lb-persistence'));
@@ -1125,12 +1133,12 @@ export class Transport {
       why = m ? `its upstream ${m.dev} (relation ${m.rel})` : '';
     }
     if (!m) {
-      this.e.note('drop', 'tcp', dev, '', 'no upstream', '', `${dev} has no ${type === 'load_balancer' ? 'healthy pool member' : 'upstream server (a service relation of its own)'} for the request of ${formatAddr(front.remote)}: it answers with an error`);
-      this.sendData(front, 200, type === 'load_balancer' ? 'an error: 503 Service Unavailable (no healthy member)' : 'an error: 502 Bad Gateway (no upstream)');
+      this.e.note('drop', 'tcp', dev, '', 'no upstream', '', `${dev} has no ${caps.loadBalancing ? 'healthy pool member' : 'upstream server (a service relation of its own)'} for the request of ${formatAddr(front.remote)}: it answers with an error`);
+      this.sendData(front, 200, caps.loadBalancing ? 'an error: 503 Service Unavailable (no healthy member)' : 'an error: 502 Bad Gateway (no upstream)');
       return;
     }
     this.e.note('message', 'tcp', dev, m.dev, 'proxied', '', `${dev} passes the request of ${formatAddr(front.remote)}:${front.rport} on to ${m.dev} ${formatAddr(m.addr)}:${m.port}: ${why}`);
-    const limit = type === 'proxy' ? this.e.params.get('proxy-upstream', dev) : undefined;
+    const limit = undefined as Resolved | undefined;
     const t = this.run({ from: dev, target: m.dev, dst: m.addr, kind: 'tcp', port: m.port, source: 'upstream', series: `${dev} → ${m.dev} (upstream)`, front, timeout: limit || { value: 3600000 } });
     if (typeof t === 'string') {
       this.sendData(front, 200, `an error: 502 Bad Gateway (${t})`);
@@ -1146,13 +1154,103 @@ export class Transport {
     void pkt;
   }
 
+  /**
+   * A protocol break, TCP: the request ended at the gateway (leg 1). When its
+   * policy permits the transfer profile for this source, the gateway opens a
+   * connection of its own to the profile's forward address (leg 2), after its
+   * transfer delay; the answer comes back on leg 2 and goes to the client on
+   * leg 1. Not permitted: leg 1 is reset, nothing is started.
+   */
+  private breakTcp(front: Conn, pkt: Pkt): void {
+    const dev = front.dev;
+    const sd = this.P.sd(dev);
+    const l3 = Array.from(sd.l3.values()).find((l) => l.addrs.some((a) => compareAddr(a.addr, front.local) === 0));
+    const at = l3 ? profileAt(sd.dev, l3.id, 'tcp', front.lport) : undefined;
+    const d = at && l3 ? this.e.sep.breakDecision(sd.dev, l3.id, pkt, at.profile.id) : null;
+    if (!at || !d || !d.ok || !d.forward) {
+      if (!at) this.e.note('drop', 'tcp', dev, '', 'denied', '', `${dev}: no transfer profile listens at ${l3 ? l3.id : formatAddr(front.local)} port ${front.lport}: leg 1 ends here, no leg 2 is started`);
+      this.segment(dev, front, ['RST', 'ACK'], 0, 'not a permitted transfer', undefined, front);
+      this.closeConn(front, 'not a permitted transfer');
+      return;
+    }
+    const delay = this.e.sep.delay(sd.dev, pkt, `transfer profile ${at.profile.id}`);
+    if (delay === null) return;
+    const fwd = d.forward;
+    const target = this.e.ownerOf(fwd.address) || '';
+    const start = (): void => {
+      if (front.state !== 'ESTABLISHED') return;
+      this.e.note('message', 'tcp', dev, target, 'leg 2', '', `protocol break at ${dev}: the ${at.kind.label.toLowerCase()} of ${formatAddr(front.remote)}:${front.rport} ended at ${l3 ? l3.id : dev} port ${front.lport} (leg 1); ${dev} starts its own connection to ${formatAddr(fwd.address)}:${fwd.port} (leg 2, profile ${at.profile.id}, ${d.text.replace(/^[^:]*: /, '')}); nothing of leg 1 crosses`);
+      const t = this.run({ from: dev, target, dst: fwd.address, kind: 'tcp', port: fwd.port, source: 'upstream', series: `${dev} leg 2 (${at.profile.id})`, front, timeout: { value: 3600000 } });
+      if (typeof t === 'string') {
+        this.e.note('drop', 'tcp', dev, '', 'leg 2 failed', '', `${dev} can't start leg 2: ${t}`);
+        this.segment(dev, front, ['RST', 'ACK'], 0, 'leg 2 failed', undefined, front);
+        this.closeConn(front, 'leg 2 failed');
+        return;
+      }
+      if (t.conn) {
+        t.conn.front = front;
+        front.upstream = t.conn;
+      }
+      t.onDone = (x) => {
+        if (!x.ok) this.upstreamFailed(x.conn || front, x.result, front);
+      };
+    };
+    if (delay > 0) this.later(delay, start);
+    else start();
+  }
+
+  /**
+   * A protocol break, UDP: a datagram to a transfer profile's port ends at
+   * the gateway; a permitted one is sent on as a new datagram of its own to
+   * the profile's forward address. A DNS answer comes back to the gateway
+   * and goes to the asker as the gateway's answer; a syslog message has none.
+   */
+  private breakUdp(dev: string, l3: L3Iface, pkt: Pkt): boolean {
+    const sd = this.P.sd(dev);
+    const l4 = pkt.l4 as L4;
+    const at = profileAt(sd.dev, l3.id, 'udp', l4.dport as number);
+    if (!at) return false;
+    const d = this.e.sep.breakDecision(sd.dev, l3.id, pkt, at.profile.id);
+    if (!d || !d.ok || !d.forward) return true;
+    const delay = this.e.sep.delay(sd.dev, pkt, `transfer profile ${at.profile.id}`);
+    if (delay === null) return true;
+    const fwd = d.forward;
+    const src = this.sourceFor(dev, fwd.address);
+    if (!src) {
+      this.e.note('drop', 'udp', dev, '', 'leg 2 failed', '', `${dev} has no address to send leg 2 to ${formatAddr(fwd.address)} from`);
+      return true;
+    }
+    const data = (pkt.msg.data || {}) as { test?: number };
+    const send = (): void => {
+      const sport = this.ephemeral(dev);
+      if (at.kind.reply) this.udpRelays.set(`${dev}|${sport}`, { client: pkt.src, cport: l4.sport as number, local: pkt.dst, lport: l4.dport as number, vrf: pkt.vrf, test: data.test, profile: at.profile.id });
+      const m = this.msg('udp', at.kind.label, `UDP → ${formatAddr(fwd.address)}:${fwd.port}`, `protocol break at ${dev}: leg 2 of the ${at.kind.label.toLowerCase()} from ${formatAddr(pkt.src)}, a new datagram ${formatAddr(src.src)}:${sport} → ${formatAddr(fwd.address)}:${fwd.port} (profile ${at.profile.id})`, { breakLeg: true });
+      this.sendPkt(dev, src.src, fwd.address, src.vrf, m, { proto: 'udp', num: 17, sport, dport: fwd.port }, 8 + 64, false, this.e.ownerOf(fwd.address) || '');
+      this.e.note('message', 'udp', dev, this.e.ownerOf(fwd.address) || '', 'leg 2', '', `protocol break at ${dev}: the ${at.kind.label.toLowerCase()} from ${formatAddr(pkt.src)}:${l4.sport} ended at ${l3.id} port ${l4.dport} (leg 1); ${dev} sends its own to ${formatAddr(fwd.address)}:${fwd.port} (leg 2)${at.kind.reply ? '; the answer will come back to it' : '; nothing comes back'}`);
+    };
+    if (delay > 0) this.later(delay, send);
+    else send();
+    return true;
+  }
+
+  /** A protocol break's answer on leg 2: it goes to the client as the gateway's own answer on leg 1. */
+  private breakAnswer(dev: string, pkt: Pkt): boolean {
+    const l4 = pkt.l4 as L4;
+    const k = `${dev}|${l4.dport}`;
+    const r = this.udpRelays.get(k);
+    if (!r) return false;
+    this.udpRelays.delete(k);
+    const m = this.msg('udp', 'UDP answer', `UDP ← ${formatAddr(r.local)}:${r.lport}`, `protocol break at ${dev}: the answer of leg 2 from ${formatAddr(pkt.src)} goes to ${formatAddr(r.client)}:${r.cport} as ${dev}'s own answer on leg 1 (profile ${r.profile})`, { test: r.test, reply: true });
+    this.sendPkt(dev, r.local, r.client, r.vrf, m, { proto: 'udp', num: 17, sport: r.lport, dport: r.cport }, 8 + UDP_RESPONSE, false, this.e.ownerOf(r.client) || '');
+    return true;
+  }
+
   private upstreamFailed(c: Conn, why: string, front?: Conn): void {
     const f = front || c.front;
     if (!f || f.state !== 'ESTABLISHED') return;
-    const type = this.P.sd(f.dev).dev.type;
     if (c.state === 'SYN_SENT') this.closeConn(c, `given up: ${why}`);
     this.e.note('drop', 'tcp', f.dev, '', 'upstream failed', '', `${f.dev}: the upstream connection failed (${why}); ${formatAddr(f.remote)} gets an error`);
-    this.sendData(f, 200, type === 'proxy' && /timed out|no answer/.test(why) ? 'an error: 504 Gateway Timeout' : 'an error: 502 Bad Gateway');
+    this.sendData(f, 200, 'an error: 502 Bad Gateway');
   }
 
   // ------------------------------------------------------------ periodic tests
@@ -1160,7 +1258,7 @@ export class Transport {
   /** Endpoint test traffic: every test interval, when it is on, to each target. */
   private startTraffic(): void {
     for (const d of Array.from(this.P.e.net.devices.values()).sort((a, b) => cmp(a.id, b.id))) {
-      if (d.dev.type !== 'endpoint' || !d.l3.size) continue;
+      if (!d.caps.testTraffic || !d.l3.size) continue;
       const dev = d.id;
       // all endpoints together, once the network had time to come up
       const first = 3000 + this.e.jitter();
@@ -1214,7 +1312,7 @@ export class Transport {
   /** A load balancer's health checks of its pool: every interval, each member; down after the failure threshold, up again at the first success. */
   private startHealthChecks(): void {
     for (const d of Array.from(this.P.e.net.devices.values()).sort((a, b) => cmp(a.id, b.id))) {
-      if (d.dev.type !== 'load_balancer') continue;
+      if (!d.caps.loadBalancing) continue;
       const dev = d.id;
       const p = this.pool(dev);
       if (!p.members.length) continue;
@@ -1446,7 +1544,7 @@ export class Transport {
       out.push({ protocol: t.kind, name: k, device: t.from, peer: this.e.ownerOf(t.dst) || '', state: t.done ? (t.ok ? 'Answered' : 'Failed') : 'Waiting', detail: `${t.result}${t.done && t.ok && t.rtt !== undefined ? ', round trip ' + rttText(t.rtt) : ''} · ${t.source === 'manual' ? 'Send test' : 'test traffic'} at t = ${fmtSec(t.started)}`, up: t.done ? t.ok : true });
     }
     for (const [dev, p] of Array.from(this.pools).sort((a, b) => cmp(a[0], b[0]))) {
-      if (this.P.sd(dev).dev.type !== 'load_balancer') continue;
+      if (!this.P.sd(dev).caps.loadBalancing) continue;
       for (const m of p.members) out.push({ protocol: m.kind, name: `${dev} pool: ${m.dev} ${m.kind}/${m.port}`, device: dev, peer: m.dev, state: m.up ? 'Up' : 'Down', detail: `${m.last}; every ${resolvedText(this.e.params.get('lb-hc-interval', dev))}, timeout ${resolvedText(this.e.params.get('lb-hc-timeout', dev))}`, up: m.up });
     }
     for (const [k, t] of Array.from(this.probeState).sort((a, b) => cmp(a[0], b[0]))) out.push({ protocol: 'icmp', name: k, device: t.from, peer: this.e.ownerOf(t.dst) || '', state: t.ok ? 'Reachable' : 'Unreachable', detail: `${t.result} · every ${resolvedText(this.e.params.get('icmp-probe', t.from))}`, up: t.ok });

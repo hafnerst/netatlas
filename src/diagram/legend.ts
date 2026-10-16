@@ -5,15 +5,16 @@
  * two can't disagree. DOM-free, like the renderers.
  */
 import { Rect, textWidth } from '../layout/geometry';
-import { DEVICE_TYPE_IDS, deviceTypeLabel } from '../model/device-types';
+import { DEVICE_TYPE_IDS, deviceTypeLabel, kindLabel, purposeDef } from '../model/device-types';
 import { endTagText, tagMismatch } from '../model/derive';
 import { relationStyle } from '../model/protocols';
 import { CATEGORIES, Category, Model, ProtocolDef } from '../model/types';
 import { isGuest } from '../model/virtual';
-import { deviceIcon, iconName, layerBadge, serviceBadge } from './icons';
+import { deviceIcon, iconName, layerBadge, serviceBadge, glyphFor } from './icons';
 import { VNode, h } from './scene';
 import { View } from './session';
 import { NETWORK_COLOR, groupKindStyle, mediumStyle, speedWidth } from './style';
+import { capabilities } from '../model/capabilities';
 
 /** Swatches are drawn in a box of this width; `swatchH` is 18 unless an item says otherwise. */
 export const SWATCH_W = 44;
@@ -70,13 +71,31 @@ export function relationSwatchParts(def: ProtocolDef): VNode[] {
 export function legendOf(model: Model, view: View): Legend {
   const sections: LegendSection[] = [];
   if (view === 'physical') {
-    // in the format's order; devices without a type last
+    // in the format's order; devices without a type last; each glyph the model draws once: a kind's or a System's
+    // own glyph with its name ("Endpoint · PLC"), the kinds that keep the type's glyph in brackets ("Firewall (NGFW)")
     const rank = (t: string): number => (DEVICE_TYPE_IDS.indexOf(t) + DEVICE_TYPE_IDS.length + 1) % (DEVICE_TYPE_IDS.length + 1);
     const types = Array.from(new Set(model.devices.map((d) => iconName(d.type)))).sort((p, q) => rank(p) - rank(q));
     const items: LegendItem[] = [];
     for (const t of types) {
-      if (t === 'switch') items.push(...switchItems(model));
-      else items.push({ swatch: [deviceIcon(t, 11, 0, 22)], swatchH: 22, label: deviceTypeLabel(t) || 'No type' });
+      const ds = model.devices.filter((d) => iconName(d.type) === t);
+      if (capabilities({ type: t }).switchFeatures) {
+        items.push(...switchItems(model));
+        continue;
+      }
+      const plain = ds.filter((d) => glyphFor(d) === iconName(d.type, d.layer3));
+      if (plain.length) {
+        const kinds = Array.from(new Set(plain.map((d) => kindLabel(d)).filter((k): k is string => !!k))).sort();
+        items.push({ swatch: [deviceIcon(t, 11, 0, 22)], swatchH: 22, label: (deviceTypeLabel(t) || 'No type') + (kinds.length ? ` (${kinds.join(', ')})` : '') });
+      }
+      const variants = new Map<string, string>();
+      for (const d of ds) {
+        const g = glyphFor(d);
+        if (g === iconName(d.type, d.layer3) || variants.has(g)) continue;
+        const purpose = d.purpose ? purposeDef(d.purpose) : undefined;
+        const what = [purpose ? purpose.label : '', kindLabel(d) || ''].filter((x) => !!x).join(', ');
+        variants.set(g, `${deviceTypeLabel(t)} · ${what || g}`);
+      }
+      for (const [g, label] of Array.from(variants).sort((a, b) => (a[1] < b[1] ? -1 : 1))) items.push({ swatch: [deviceIcon(g, 11, 0, 22)], swatchH: 22, label });
     }
     items.push(...netServiceItems(model));
     sections.push({ title: 'Devices', items });
@@ -392,7 +411,7 @@ function netServiceItems(model: Model): LegendItem[] {
 function switchItems(model: Model): LegendItem[] {
   const out: LegendItem[] = [];
   for (const l3 of [false, true]) {
-    if (!model.devices.some((d) => d.type === 'switch' && !!d.layer3 === l3)) continue;
+    if (!model.devices.some((d) => capabilities(d).switchFeatures && !!d.layer3 === l3)) continue;
     out.push({ swatch: [deviceIcon('switch', 4, 0, 22, l3), layerBadge(l3, 17, 12)], swatchH: 24, label: l3 ? 'Layer 3 switch (L3: routes between its VLANs)' : 'Layer 2 switch (L2: forwards frames only)' });
   }
   return out;

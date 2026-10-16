@@ -77,12 +77,12 @@
  * it boots for its boot time and starts afresh. Everything else reacts as
  * its timers say.
  */
-import { IpAddr, parseAddress } from '../../model/ip';
+import { IpAddr, parseAddress, parsePrefix } from '../../model/ip';
 import { protocolBase } from '../../model/protocols';
 import { ND_DELAY_DEFAULT } from '../../model/sim-profiles';
 import { Link, Model, Relation, ifaceKey, relationDevices } from '../../model/types';
-import { isGuest, vethNetwork } from '../../model/virtual';
-import { compareAddr, formatAddr } from '../ipmath';
+import { isGuest, vethNetwork, isContainer, isVm } from '../../model/virtual';
+import { compareAddr, formatAddr, inPrefix } from '../ipmath';
 import { Connected, RibEntry, RoutingCtx, lookup } from '../routing';
 import { declaredUnderlay, encapStack, tunnelRelation, tracePath } from '../trace';
 import { BROADCAST, isGroupMac, isLinkLocalGroup, isMulticastIp, multicastMac, rng, solicitedNode, modelSeed, shortMac } from './mac';
@@ -90,6 +90,9 @@ import { BridgePort, CableEnd, L3Iface, Lease, SimDevice, SimNet, StpConfig, bui
 import { ParamChange, ParamValue, Resolved, SimParams, ceRef, changeText, durationText, formatValue, hvRef, ifaceRef, relRef, resolvedText, scopeRef, sourceText, vlanRef, vlanValue, vswRef, zoneRef } from './params';
 import { ArpRow, ArpType, Cast, Flight, Headers, MacRow, Msg, NdState, NetEvent, Pkt, Quote, SimEvent, TableTimer, Track } from './types';
 import { parseSpeed } from '../../model/speed';
+import { capabilities } from '../../model/capabilities';
+import { SeparationSim } from './separation';
+import { domainOf, otherDomain } from '../separation';
 
 /** A packet's fragments that have not all arrived within this are dropped (Linux ipfrag_time 30 s). */
 export const REASSEMBLY_MS = 30000;
@@ -271,6 +274,8 @@ export class Engine {
   readonly params: SimParams;
   /** the loss of frames: its own seeded sequence (the start-up jitter stays the same whatever the loss) */
   private lossRandom: () => number;
+  /** the Separation gateways' permitted transfers (sim/separation.ts) */
+  sep: SeparationSim;
   /** failed cables and relations, by id, with when they failed */
   readonly failedLinks = new Map<string, number>();
   readonly failedRels = new Map<string, number>();
@@ -328,6 +333,15 @@ export class Engine {
     this.random = rng(modelSeed(model));
     this.jitterRandom = rng(modelSeed(model) + '|jitter');
     this.lossRandom = rng(modelSeed(model) + '|loss');
+    const eng = this;
+    this.sep = new SeparationSim({
+      get now(): number {
+        return eng.now;
+      },
+      note: (kind, protocol, device, peer, what, state, detail) => eng.note(kind, protocol, device, peer, what, state, detail),
+      param: (key, dev) => eng.params.get(key, dev),
+      loss: () => eng.lossRandom(),
+    });
     const devs = new Map<string, { type: string; values: Map<string, ParamValue> }>();
     for (const d of model.devices) devs.set(d.id, { type: d.type, values: d.simulation || new Map() });
     this.params = new SimParams(opts.params, devs);
@@ -1012,7 +1026,7 @@ export class Engine {
    */
   private stpPortUp(dev: string, port: string, link: string): void {
     const sd = this.net.devices.get(dev);
-    if (!sd || !sd.bridge || sd.dev.type !== 'switch') return;
+    if (!sd || !sd.bridge || !sd.caps.switchFeatures) return;
     const bp = sd.portOf.get(port);
     if (bp === undefined || this.stpOff(dev)) return;
     const at = ifaceRef(dev, bp);
@@ -1020,7 +1034,7 @@ export class Engine {
     const o = otherEnd(this.net, this.net.ends.get(portKey(dev, port)) as CableEnd);
     const od = this.net.devices.get(o.device);
     const obp = od && od.bridge ? od.portOf.get(o.port) : undefined;
-    const bridge = !!od && od.dev.type === 'switch' && obp !== undefined && !this.stpOff(od.id) && this.params.str('stp-port', od.id, ifaceRef(od.id, obp)) === 'on';
+    const bridge = !!od && od.caps.switchFeatures && obp !== undefined && !this.stpOff(od.id) && this.params.str('stp-port', od.id, ifaceRef(od.id, obp)) === 'on';
     const edge = this.params.get('stp-edge', dev, null, at);
     if (bridge) {
       // its first BPDU arrives with the far end's first hello
@@ -1056,7 +1070,7 @@ export class Engine {
   /** Does a switch run no spanning tree (its spanning tree mode is off)? */
   stpOff(dev: string): boolean {
     const sd = this.net.devices.get(dev);
-    return !!sd && sd.dev.type === 'switch' && this.params.str('stp-mode', dev) === 'off';
+    return !!sd && sd.caps.switchFeatures && this.params.str('stp-mode', dev) === 'off';
   }
 
   /**
@@ -1473,7 +1487,7 @@ export class Engine {
    */
   private wireless(link: string, dev: string, frame: Frame, t: number): number | null {
     const l = this.net.links.get(link) as Link;
-    const ap = [l.a.device, l.b.device].find((d) => (this.model.index.devices.get(d) || { type: '' }).type === 'ap');
+    const ap = [l.a.device, l.b.device].find((d) => capabilities(this.model.index.devices.get(d) || { type: '' }).wirelessAccess);
     if (!ap) return t;
     const client = l.a.device === ap ? l.b.device : l.a.device;
     const idle = this.params.get('ap-idle', ap);
@@ -1504,7 +1518,7 @@ export class Engine {
   private toUnicast(link: string, dev: string, frame: Frame, t: number): Frame {
     if (!frame.ip || !isMulticastIp(frame.ip.dst) || isLinkLocalGroup(frame.ip.dst)) return frame;
     const sd = this.net.devices.get(dev);
-    if (!sd || sd.dev.type !== 'ap') return frame;
+    if (!sd || !sd.caps.wirelessAccess) return frame;
     const l = this.net.links.get(link) as Link;
     const me = l.a.device === dev ? l.a : l.b;
     const radio = ifaceRef(dev, me.iface || '@' + link);
@@ -1581,6 +1595,16 @@ export class Engine {
       this.bridge(sd, bpId, vlan, frame, t, flight, new Set(seen).add(dev));
       return;
     }
+    // a passive monitor (a passive IDS/IPS, a sensor) takes what it is given as a copy: it observes and never forwards
+    const mon = sd.caps.passiveCopy ? this.l3At(sd, port, tag) : undefined;
+    if (sd.caps.passiveCopy && (!mon || !mon.addrs.length || !this.accepts(sd, mon, frame))) {
+      const k = `copy|${dev}|${port}|${frame.msg.protocol}`;
+      if (!this.stormNoted.has(k) || t - (this.stormNoted.get(k) as number) >= 10000) {
+        this.stormNoted.set(k, t);
+        this.noteAt(t, 'message', frame.msg.protocol, dev, '', 'observed', '', `${dev} receives a copy at ${port} and forwards nothing: ${frame.msg.label}${frame.ip ? ` (${formatAddr(frame.ip.src)} → ${formatAddr(frame.ip.dst)})` : ''}`);
+      }
+      return;
+    }
     // a routed port, a subinterface or an aggregate of a non-bridge (or a routed port of a switch)
     const l3 = this.l3At(sd, port, tag);
     if (!l3) return;
@@ -1611,7 +1635,7 @@ export class Engine {
     const fromUplink = !!sd.virt && sd.virt.kind === 'vswitch' && from !== null && sd.virt.uplinks.indexOf(from) >= 0;
     if (fromUplink && isGroupMac(frame.dst) && this.standbyUplink(sd, from as string)) return;
     if (from !== null && !wire && !fromUplink) this.learn(sd, vlan, frame.src, from, t);
-    if (sd.dev.type === 'ids_ips' && !wire) t += this.params.num('ips-latency', sd.id);
+    if (sd.caps.inspection && !wire) t += this.params.num('ips-latency', sd.id);
     // to its own VLAN interface (the switch's management or routing interface)
     if (from !== null && !wire) {
       for (const l3 of sd.l3.values()) {
@@ -1619,8 +1643,21 @@ export class Engine {
         if (this.accepts(sd, l3, frame)) this.deliverL3(sd.id, l3, frame, t, flight !== undefined ? flight : -1);
       }
     }
+    // a cloud (external transit) is one opaque Layer 3 hop: what has no hop left (TTL 1: a routing protocol's hello, link-local traffic) ends at it,
+    // everything else crosses it with its TTL one lower; its internals are not modelled
+    if (sd.caps.externalTransit && frame.ip && from !== null) {
+      if (frame.ip.ttl <= 1 || isLinkLocalGroup(frame.ip.dst)) {
+        const k = `cloudttl|${sd.id}|${frame.msg.protocol}`;
+        if (!this.stormNoted.has(k) || t - (this.stormNoted.get(k) as number) >= 10000) {
+          this.stormNoted.set(k, t);
+          this.noteAt(t, 'drop', frame.msg.protocol, sd.id, '', frame.msg.type, '', `${sd.id} is a Layer 3 hop (an external network): ${frame.msg.label} (${formatAddr(frame.ip.src)} → ${formatAddr(frame.ip.dst)}, TTL ${frame.ip.ttl}) does not cross it — run it through a tunnel`);
+        }
+        return;
+      }
+      frame = { ...frame, ip: { ...frame.ip, ttl: frame.ip.ttl - 1 } };
+    }
     // a cloud (the internet) carries no routed multicast unless it is set to
-    if (sd.dev.type === 'cloud' && frame.ip && isMulticastIp(frame.ip.dst) && !isLinkLocalGroup(frame.ip.dst) && this.params.str('mc-support', sd.id) !== 'on') {
+    if (sd.caps.externalTransit && frame.ip && isMulticastIp(frame.ip.dst) && !isLinkLocalGroup(frame.ip.dst) && this.params.str('mc-support', sd.id) !== 'on') {
       const k = `cloudmc|${sd.id}|${formatAddr(frame.ip.dst)}`;
       if (!this.stormNoted.has(k) || t - (this.stormNoted.get(k) as number) >= 10000) {
         this.stormNoted.set(k, t);
@@ -1628,6 +1665,10 @@ export class Engine {
       }
       return;
     }
+    // what may cross at all: an inline or pass-through device between its paired ports, a filtering bridge into its other domain, a transparent firewall by its policy
+    const cross = from !== null && !wire ? this.crossing(sd, from, frame, t) : null;
+    if (cross && cross.drop) return;
+    if (cross) t = cross.t;
     const tab = this.macs.get(sd.id) as Map<string, MacEntry>;
     const known = !isGroupMac(frame.dst) ? tab.get(vlan + '|' + frame.dst) : undefined;
     if (known && known.type === 'static') return;
@@ -1646,6 +1687,14 @@ export class Engine {
       const keep = this.protocols.snoop(sd, from, vlan, frame, t);
       if (keep) to = out.filter((bp) => keep.has(bp.id));
     }
+    if (cross && cross.only) to = to.filter((bp) => (cross.only as string[]).indexOf(bp.id) >= 0);
+    // a TAP's copy: the same frame out of its monitor ports as well (the original goes on)
+    if (cross && cross.copy) {
+      for (const id of cross.copy) {
+        const cp = sd.bridgePorts.get(id);
+        if (cp && to.indexOf(cp) < 0) to = to.concat([cp]);
+      }
+    }
     for (const bp of to) {
       const c = carries(bp.vlans, vlan);
       if (!c || this.blocked(sd.id, bp.id, vlan)) continue;
@@ -1654,6 +1703,66 @@ export class Engine {
       const m = up.length === 1 ? up[0] : up[hashIndex(frame.src + frame.dst, up.length)];
       this.transmit(sd.id, m, c === 'untagged' ? { ...frame, inVlan: vlan } : frame.inVlan !== undefined ? { ...frame, inVlan: undefined } : frame, c === 'untagged' ? null : vlan, t, flight, seen);
     }
+  }
+
+  /**
+   * What may cross a bridging device from a port (null: anything, as on a
+   * switch): an inline or pass-through device's paired port (one way where
+   * the pair says so; a copy to its monitor port), a filtering bridge's
+   * other domain as far as its policy permits (ARP passes so permitted
+   * transfers resolve; no other non-IP frame), a transparent firewall's
+   * policy on what it bridges.
+   */
+  private crossing(sd: SimDevice, from: string, frame: Frame, t: number): { drop?: boolean; only?: string[]; copy?: string[]; t: number } | null {
+    const c = sd.caps;
+    const d = sd.dev;
+    if (c.inline || c.passThrough) {
+      const pair = d.portPairs.find((p) => p.a === from || p.b === from);
+      const k = `pair|${sd.id}|${from}`;
+      if (!pair || (pair.direction === 'a_to_b' && pair.a !== from)) {
+        if (!this.stormNoted.has(k) || t - (this.stormNoted.get(k) as number) >= 10000) {
+          this.stormNoted.set(k, t);
+          this.noteAt(t, 'drop', frame.msg.protocol, sd.id, '', frame.msg.type, '', pair ? `${sd.id} passes traffic one way only, from ${pair.a} to ${pair.b}: ${frame.msg.label} from ${pair.b} ends here` : `${sd.id} passes traffic between its paired ports only: ${from} is paired with none (${frame.msg.label})`);
+        }
+        return { drop: true, t };
+      }
+      const other = pair.a === from ? pair.b : pair.a;
+      return { only: [other], copy: pair.copy, t };
+    }
+    if (c.separationGateway && d.separation && c.separation === 'filtering_bridge') {
+      const fromD = domainOf(d.separation, from);
+      const toD = fromD ? otherDomain(d.separation, fromD.name) : undefined;
+      if (!fromD || !toD) return { drop: true, t };
+      if (frame.ip) {
+        // (each of the other domain's ports gets the same decision: the policy is by domain)
+        const delay = this.sep.pass(d, frame.ip, from, toD.interfaces[0]);
+        if (delay === null) return { drop: true, t };
+        return { only: toD.interfaces.slice(), t: t + delay };
+      }
+      if (frame.arp || frame.nd) return { only: toD.interfaces.slice(), t };
+      return { drop: true, t };
+    }
+    if (c.firewallPolicy && frame.ip && this.protocols && this.protocols.filter) {
+      // a transparent firewall: its policy on what it bridges (its ports have no addresses: the bridge ports stand for them)
+      const port = (id: string): L3Iface => ({ device: sd.id, id, kind: 'routed', addrs: [], vrf: '', vlan: 0, ports: [id], mac: '', macSimulated: true });
+      if (!this.protocols.filter(sd.id, frame.ip, port(from), port(from))) return { drop: true, t };
+    }
+    return null;
+  }
+
+  /** Does a VPN Gateway forward a packet: in or out of one of its tunnels, or to or from its remote-access clients? (It says so when not.) */
+  private vpnTransit(sd: SimDevice, from: L3Iface, out: L3Iface, pkt: Pkt): boolean {
+    const v = sd.dev.vpn;
+    if (!v) return false;
+    if (v.tunnels.indexOf(from.id) >= 0 || v.tunnels.indexOf(out.id) >= 0) return true;
+    const pool = v.pool !== undefined ? parsePrefix(v.pool) : null;
+    if (pool && pool.version === pkt.src.version && (inPrefix(pool, pkt.src) || inPrefix(pool, pkt.dst))) return true;
+    const k = `vpnonly|${sd.id}|${from.id}|${out.id}`;
+    if (!this.stormNoted.has(k) || this.now - (this.stormNoted.get(k) as number) >= 10000) {
+      this.stormNoted.set(k, this.now);
+      this.note('drop', pkt.msg.protocol, sd.id, '', pkt.msg.type, '', `${sd.id} is a VPN Gateway: it forwards only to and from its VPN (${v.tunnels.length ? 'tunnels ' + v.tunnels.join(', ') : 'remote-access clients in ' + (v.pool || 'its pool')}), not ${formatAddr(pkt.src)} → ${formatAddr(pkt.dst)} from ${from.id} to ${out.id} (${pkt.msg.label})`);
+    }
+    return false;
   }
 
   // ------------------------------------------------------------ virtual switches and container networks
@@ -1813,7 +1922,7 @@ export class Engine {
     // a published port: on to the container (TCP and UDP)
     if (!pkt.l4 || (pkt.l4.proto !== 'tcp' && pkt.l4.proto !== 'udp') || dport === undefined) return null;
     for (const c of this.model.devices) {
-      if (c.type !== 'container' || this.hostNow(c.id) !== dev) continue;
+      if (!isContainer(c) || this.hostNow(c.id) !== dev) continue;
       for (const i of c.logical) {
         const p = (i.publish || []).find((x) => x.hostPort === dport && x.protocol === pkt.l4!.proto && (x.hostIp === undefined || x.hostIp === formatAddr(pkt.dst)));
         if (!p) continue;
@@ -1940,7 +2049,8 @@ export class Engine {
     }
     if (!sd.routes) {
       // a Layer 2 switch (its management address) or a host: it never routes for others
-      if (frame.dst === l3.mac) this.note('drop', pkt.msg.protocol, dev, '', pkt.msg.type, '', `not routed at ${dev}: ${sd.l2switch ? 'a Layer 2 switch routes nothing' : 'it does not forward traffic for others'} (${formatAddr(pkt.src)} → ${formatAddr(pkt.dst)}, ${pkt.msg.label})`);
+      const why = sd.l2switch ? 'a Layer 2 switch routes nothing' : sd.caps.sessionBreak && sd.caps.separationGateway ? 'it is a protocol break: nothing passes through it (a transfer is addressed to one of its transfer profiles’ listening ports, and it starts a new one itself)' : sd.caps.separationGateway ? 'its Domain separation has no implementation: it transfers nothing' : 'it does not forward traffic for others';
+      if (frame.dst === l3.mac) this.note('drop', pkt.msg.protocol, dev, '', pkt.msg.type, '', `not routed at ${dev}: ${why} (${formatAddr(pkt.src)} → ${formatAddr(pkt.dst)}, ${pkt.msg.label})`);
       return;
     }
     // a router: forward, with the TTL decremented and the MACs rewritten
@@ -2143,6 +2253,17 @@ export class Engine {
     const hop = hops.length === 1 ? hops[0] : hops[hashIndex(pkt.flow, hops.length)];
     const out = sd.l3.get(hop.iface);
     if (!out) return;
+    // a Separation gateway (a filtering router) transfers only what its policy permits, after its transfer delay
+    if (came && sd.caps.separationGateway && pkt.held !== dev) {
+      const delay = this.sep.pass(sd.dev, pkt, came.l3.id, out.id);
+      if (delay === null) return;
+      if (delay > 0) {
+        this.after(delay, () => this.forward(dev, { ...pkt, held: dev }, came));
+        return;
+      }
+    }
+    // a VPN Gateway forwards only to and from its VPN
+    if (came && sd.caps.vpnOnlyTransit && !this.vpnTransit(sd, came.l3, out, pkt)) return;
     // out of a container bridge with NAT: the host's address becomes the source
     if (came) pkt = this.snat(dev, came.l3, out, pkt);
     // a next hop outside the model (no device has it): a tunnel's outer packet takes its declared underlay; anything else leaves the model
@@ -2152,7 +2273,7 @@ export class Engine {
       return;
     }
     // a firewall applies its policy to what it forwards (it logs and rejects itself)
-    if (came && sd.dev.type === 'firewall' && this.protocols && this.protocols.filter && !this.protocols.filter(dev, pkt, came.l3, out)) return;
+    if (came && sd.caps.firewallPolicy && this.protocols && this.protocols.filter && !this.protocols.filter(dev, pkt, came.l3, out)) return;
     if (out.kind === 'tunnel') {
       if (came) this.routeNote(dev, pkt, came, out, '', hop.gateway);
       this.intoTunnel(dev, out, pkt);
@@ -2754,7 +2875,7 @@ export class Engine {
     if (l.medium === 'wireless') {
       for (const e of [l.a, l.b]) {
         const d = this.model.index.devices.get(e.device);
-        if (d && d.type === 'ap') return this.params.get('ap-association', d.id);
+        if (d && capabilities(d).wirelessAccess) return this.params.get('ap-association', d.id);
       }
     }
     // each end negotiates: the cable is up when the slower port is
@@ -2812,7 +2933,7 @@ export class Engine {
     this.stateVersion++;
     const d = this.linkUpDelay(id);
     // a wireless client waits for its access point's next beacon before it associates
-    const ap = l.medium === 'wireless' ? [l.a.device, l.b.device].find((x) => (this.model.index.devices.get(x) || { type: '' }).type === 'ap') : undefined;
+    const ap = l.medium === 'wireless' ? [l.a.device, l.b.device].find((x) => capabilities(this.model.index.devices.get(x) || { type: '' }).wirelessAccess) : undefined;
     const beacon = ap ? this.beaconWait(ap, this.now, (l.a.device === ap ? l.a : l.b).iface || '@' + id) : 0;
     const tok = ++this.tokens;
     this.carrierToken.set('link:' + id, tok);
@@ -3038,9 +3159,9 @@ export class Engine {
       return true;
     }
     this.off.set(dev, this.now);
-    const open = sd.dev.type === 'ids_ips' && this.params.str('ips-fail', dev) === 'open';
+    const open = sd.caps.inspection && this.params.str('ips-fail', dev) === 'open';
     if (open) this.bypass.add(dev);
-    const mode = sd.dev.type === 'ids_ips' ? ` It fails ${open ? 'open: frames pass through unchecked' : 'closed: nothing passes'} (${resolvedText(this.params.get('ips-fail', dev))}).` : '';
+    const mode = sd.caps.inspection ? ` It fails ${open ? 'open: frames pass through unchecked' : 'closed: nothing passes'} (${resolvedText(this.params.get('ips-fail', dev))}).` : '';
     this.note('link', 'link', dev, '', 'Powered off', 'off', `${dev} is powered off at t = ${fmtSec(this.now)}${why}: its ports go dark, its tables and sessions are gone.${mode}`);
     this.stateVersion++;
     const tab = this.arp.get(dev);
@@ -3064,7 +3185,7 @@ export class Engine {
       if (this.off.has(g)) continue;
       this.hostedOff.set(g, dev);
       this.powerOff(g, ` with its host ${dev}`);
-      if ((this.model.index.devices.get(g) || { type: '' }).type === 'vm') this.haRestart(g, dev);
+      if (isVm(this.model.index.devices.get(g))) this.haRestart(g, dev);
     }
     return true;
   }
@@ -3157,7 +3278,7 @@ export class Engine {
   /** A container's start time: its engine's (the host it runs on). */
   private containerStart(c: string): Resolved | null {
     const d = this.model.index.devices.get(c);
-    if (!d || d.type !== 'container' || d.host === undefined) return null;
+    if (!d || !isContainer(d) || d.host === undefined) return null;
     return this.params.get('container-start', d.host, null, ceRef(d.host));
   }
 
@@ -3177,7 +3298,7 @@ export class Engine {
     this.note('link', 'link', dev, '', 'Container engine stopped', 'off', `${dev}: the container engine is stopped at t = ${fmtSec(this.now)}: its containers and its container networks stop`);
     this.virtPower(dev, false, true);
     for (const c of this.guestsOn(dev)) {
-      if (this.off.has(c) || (this.model.index.devices.get(c) || { type: '' }).type !== 'container') continue;
+      if (this.off.has(c) || !isContainer(this.model.index.devices.get(c))) continue;
       this.hostedOff.set(c, dev);
       this.powerOff(c, ` with the container engine of ${dev}`);
     }
@@ -3205,7 +3326,7 @@ export class Engine {
     for (const [g, host] of Array.from(this.hostedOff)) {
       if (host !== dev) continue;
       const gd = this.model.index.devices.get(g);
-      if (gd && gd.type === 'container') {
+      if (gd && isContainer(gd)) {
         if (this.enginesOff.has(dev)) continue;
         const r = this.restarts(g);
         this.hostedOff.delete(g);

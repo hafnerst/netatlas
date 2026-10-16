@@ -14,6 +14,7 @@ import { DEVICE_TYPES, deviceTypeLabel } from '../model/device-types';
 import { Model } from '../model/types';
 import { deviceIcon } from '../diagram/icons';
 import { el, materialize } from './dom';
+import { capabilities } from '../model/capabilities';
 
 export interface SendersPickerOpts {
   /** a prefix for the element ids */
@@ -140,7 +141,7 @@ export function sendersPicker(doc: Document, o: SendersPickerOpts): SendersPicke
             cb,
             icon,
             el(doc, 'span', { class: 'snd-name' }, [d.label]),
-            d.type === 'switch' ? el(doc, 'span', { class: 'snd-badge ' + (d.layer3 ? 'l3' : 'l2') }, [d.layer3 ? 'L3' : 'L2']) : null,
+            capabilities(d).switchFeatures ? el(doc, 'span', { class: 'snd-badge ' + (d.layer3 ? 'l3' : 'l2') }, [d.layer3 ? 'L3' : 'L2']) : null,
           ]),
         );
       }

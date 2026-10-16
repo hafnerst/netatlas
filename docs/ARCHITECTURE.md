@@ -227,12 +227,28 @@ anything else.
 
 ## Extending
 
+* **Capabilities, not type names.** What a device does — bridge, route,
+  filter, pass between paired ports, receive copies, end a VPN, separate
+  two domains, run guests — comes from one resolver,
+  `model/capabilities.ts`, which reads the type, the mode, Supports Layer
+  3, a System's purpose and a Separation gateway's implementation.
+  Validation, the editor, Connect, the tracer, single points of failure,
+  the simulation, Auto-arrange and the helpers ask it; only the registry
+  (`model/device-types.ts`), the resolver and the icon lookup name types.
+  `test/architecture.test.mjs` fails on a comparison with a type name
+  anywhere else. Policy that more than one module applies is written once:
+  a Separation gateway's decisions in `analysis/separation.ts` (the tracer,
+  the simulation's `analysis/sim/separation.ts`).
+
 * **New protocol:** nothing to change in the code. Add it under
   `protocols:` in a YAML file, or extend the built-in table in
   `model/protocols.ts`.
-* **New device type:** add it to `model/device-types.ts` (identifier and
-  display name), give it a glyph in `diagram/icons.ts` and a default row in
-  `layout/input.ts`, and list it in `docs/FORMAT.md`.
+* **New device type:** add it to `model/device-types.ts` (identifier,
+  display name, kinds, modes and the behaviour it shares), give the
+  behaviour its capabilities in `model/capabilities.ts`, give it a glyph in
+  `diagram/icons.ts`, list it in `docs/FORMAT.md` and regenerate the
+  capability matrix (`node scripts/capability-matrix.mjs --write`). Nothing
+  else names it: every module decides by capabilities.
 * **New field on an entity:** add the key to `yaml/schema.ts`, read and
   check it in `validation/validate.ts` (and the model type), then show and
   edit it in `ui/inspector.ts` using an existing `ModelDoc` operation.

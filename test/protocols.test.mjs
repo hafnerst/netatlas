@@ -77,8 +77,8 @@ test('applicability: a router ID only with a protocol that uses one; the AS numb
   assert.match(msgs(dev('    protocols: {static: {}}\n'))[0], /"static" is not a routing service \(known: bgp, ospf, isis/);
   assert.doesNotMatch(msgs(dev('    protocols: {static: {}}\n'))[0], /known: [^)]*static/);
   // not a Layer 3+ device: the same list as for static routes' routers
-  for (const t of ['server', 'endpoint', 'ap', 'cloud']) assert.match(msgs(dev('    protocols: {bgp: {asn: 1}}\n', t))[0], /only Layer 3\+ devices \(router, firewall, load_balancer, proxy, gateway; a switch with layer3: true\) run routing protocols/, t);
-  for (const t of ['router', 'firewall', 'load_balancer', 'proxy', 'gateway']) assert.deepEqual(msgs(dev('    protocols: {bgp: {asn: 1}}\n', t)), [], t);
+  for (const t of ['server', 'endpoint', 'ap', 'cloud']) assert.match(msgs(dev('    protocols: {bgp: {asn: 1}}\n', t))[0], /only Layer 3\+ devices \(router, firewall, load_balancer, vpn_gateway; a switch or VM with layer3: true; a System that is a Layer 3 forwarder\) run routing protocols/, t);
+  for (const t of ['router', 'firewall', 'load_balancer']) assert.deepEqual(msgs(dev('    protocols: {bgp: {asn: 1}}\n', t)), [], t);
   // a switch only with layer3: true (a Layer 3 switch); a Layer 2 switch is told so
   assert.deepEqual(msgs(dev('    layer3: true\n    protocols: {bgp: {asn: 1}}\n', 'switch')), [], 'Layer 3 switch');
   assert.match(msgs(dev('    protocols: {bgp: {asn: 1}}\n', 'switch'))[0], /"r1" is a Layer 2 switch: it runs no routing protocols \(set layer3: true to make it a Layer 3 switch\)/);

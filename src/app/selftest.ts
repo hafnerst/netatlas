@@ -271,7 +271,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
           labels.join('|') === 'New model|Open model…|Save model|Save model as…|Close model' && /Ctrl\+S$/.test(entries[2]) && /Ctrl\+Shift\+S$/.test(entries[3]) &&
           entries.length === 5 + EXAMPLES.length && ['#btn-save', '#btn-save-as', '#btn-close'].every((x) => (q(x) as HTMLButtonElement).disabled && /Open or create a model first|Close the current model/.test(q(x)!.title)) &&
           q('#btn-save')!.nextElementSibling === q('#btn-save-as') && q('#btn-save-as')!.nextElementSibling === q('#btn-close') &&
-          textsOf('#menu-examples .mi-label').join() === EXAMPLES.map((e) => e.name).join() && !q('#menu-examples .active-example') && /Examples/.test(q('#menu-examples-title')!.textContent || '') && EXAMPLES.length === 15 && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(menu!.textContent || '') && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(q('#empty')!.textContent || ''),
+          textsOf('#menu-examples .mi-label').join() === EXAMPLES.map((e) => e.name).join() && !q('#menu-examples .active-example') && /Examples/.test(q('#menu-examples-title')!.textContent || '') && EXAMPLES.length === 20 && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(menu!.textContent || '') && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(q('#empty')!.textContent || ''),
         entries.join(' | '),
       );
       menuBtn!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
@@ -3287,7 +3287,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const full = { physical: posOf('physical'), logical: posOf('logical') };
       tbtn.click();
       await tick();
-      const rows = Array.prototype.map.call(doc.querySelectorAll('#types-list label'), (r: Element) => [r.getAttribute('data-type-row'), ((r.querySelector('span') as HTMLElement).textContent || '').trim(), (r.querySelector('.tp-count') as HTMLElement).textContent]) as string[][];
+      const rows = Array.prototype.map.call(doc.querySelectorAll('#types-list label:not(.tp-sub)'), (r: Element) => [r.getAttribute('data-type-row'), ((r.querySelector('span') as HTMLElement).textContent || '').trim(), (r.querySelector('.tp-count') as HTMLElement).textContent]) as string[][];
       const used = DEVICE_TYPES.filter((t) => m.devices.some((d) => d.type === t.id));
       check(
         'Device types: next to Devices, "Device types: All" for a new model; one checked row per type the model uses, by its display name and in the format\'s order, with its number of devices; types the model does not use are left out',
@@ -3355,7 +3355,9 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       tpanel.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
       // combined with the Devices selection
       const btn = q('#devices-btn') as HTMLButtonElement;
-      const pick = ['edge', eps[0], srv[0]];
+      // (the hypervisor among the example's servers)
+      const hv = m.devices.filter((d) => d.type === 'server' && !!d.hypervisor).map((d) => d.id)[0];
+      const pick = ['edge', eps[0], hv];
       app.setDevices(pick);
       await tick();
       const subsetPos = posOf('physical');
@@ -3364,7 +3366,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       tpanel.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
       btn.click();
       await tick();
-      const row = q(`#devices-list [data-device-row="${srv[0]}"]`);
+      const row = q(`#devices-list [data-device-row="${hv}"]`);
       const total = m.devices.length;
       check(
         'with a device selection, Server off narrows it: the selected server leaves the diagram, the selection itself is kept (its row stays checked and says "hidden: type Hypervisor server off": it is a hypervisor), and the counts say what is shown',
@@ -3721,8 +3723,8 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       app.exportText(),
     );
     check(
-      'devices have no vendor, model, role or management-address field; a router has a Protocols section; its router ID and AS number appear only with a protocol that uses them',
-      ['vendor', 'model', 'role', 'mgmt'].every((k) => !q(`#side-body [data-p='["devices",0,"${k}"]']`)) && !/Router ID \(loopback\)|Vendor|Management address/.test(q('#side-body')!.textContent || '') &&
+      'devices have no vendor, model or management-address field (their role is a field of its own); a router has a Protocols section; its router ID and AS number appear only with a protocol that uses them',
+      !!q(`#side-body [data-p='["devices",0,"role"]']`) && ['vendor', 'model', 'mgmt'].every((k) => !q(`#side-body [data-p='["devices",0,"${k}"]']`)) && !/Router ID \(loopback\)|Vendor|Management address/.test(q('#side-body')!.textContent || '') &&
         !!q('#side-body [data-group="protocols"] select[data-t="enable-service"]') && !q(`#side-body [data-p='["devices",0,"router_id"]']`) && !q(`#side-body [data-p='["devices",0,"asn"]']`),
     );
 
@@ -5213,7 +5215,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const chipTexts = (Array.prototype.map.call(doc.querySelectorAll('#viewport g.port-chip text'), (e: Element) => e.textContent) as string[]).join();
       check(
         'physical view: a device’s ports without a cable are drawn as selectable chips in its box, each with its full name (also in a long run of similar names); ports with a cable stay ports',
-        chips === 'iface:access:Et3,iface:access:Et4,iface:access:Et5,iface:access:Et6,iface:access:Et7,iface:access:Et8' && chipTexts === 'Et3,Et4,Et5,Et6,Et7,Et8' && !q('#viewport .if-chip-prefix') && !!q('#viewport rect.port[data-ref="iface:access:Et1"]') && drawnProblems().length === 0,
+        chips === 'iface:access:Et3,iface:access:Et4,iface:access:Et5,iface:access:Et6,iface:access:Et7,iface:access:Et8,iface:sep:mgmt0' && chipTexts === 'Et3,Et4,Et5,Et6,Et7,Et8,mgmt0' && !q('#viewport .if-chip-prefix') && !!q('#viewport rect.port[data-ref="iface:access:Et1"]') && drawnProblems().length === 0,
         chips + ' ' + chipTexts + ' ' + drawnProblems().slice(0, 3).join('; '),
       );
       // left click selects the interface and opens it in the Edit tab; it never starts a connection
@@ -5858,6 +5860,86 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       );
       app.select(null);
       click('[data-tab="legend"]');
+    }
+
+    // ------------------------------------------------ the device model: VPN Gateway, Separation gateway, Systems, both themes
+    {
+      const exAt = (name: string): number => EXAMPLES.findIndex((e) => e.name === name);
+      const html = doc.documentElement;
+      const before = html.getAttribute('data-theme');
+      for (const theme of ['light', 'dark']) {
+        html.setAttribute('data-theme', theme);
+        app.loadExample(exAt('cross-domain.yaml'));
+        app.setView('physical');
+        await tick(20);
+        app.select('device:cdg');
+        click('[data-tab="edit"]');
+        await tick(20);
+        const side = q('#side-body') as HTMLElement;
+        const impl = side.querySelector('select[data-key="implementation"]') as HTMLSelectElement | null;
+        check(
+          `${theme}: a Separation gateway's Edit tab: Domain separation built in (no remove), its implementation chosen, two domains, the permitted direction, its transfer profile and its rule; management interfaces apart`,
+          /Domain separation \(built in\)/.test(side.textContent || '') && !!impl && impl.value === 'protocol_break' && side.querySelectorAll('.domain-card').length === 2 && side.querySelectorAll('.profile-card').length === 1 && side.querySelectorAll('.rule-card').length === 1 &&
+            side.querySelectorAll('.sep-dirs input:checked').length === 1 && /Management interfaces/.test(side.textContent || '') && !side.querySelector('[data-act="disable-service"][data-svc="separation"]'),
+          (side.textContent || '').slice(0, 200),
+        );
+        const drawn = Array.prototype.map.call(doc.querySelectorAll('#viewport text'), (e: Element) => e.textContent || '').join('|');
+        check(`${theme}: the gateway's ports say their domain and the management port says so, in text`, /domain Red/.test(drawn) && /domain Black/.test(drawn) && /management/.test(drawn), drawn.slice(0, 200));
+        const probs = drawnProblems();
+        check(`${theme}: cross-domain example, measured in the browser: nothing overlaps`, !probs.length, probs.slice(0, 3).join('; '));
+      }
+      if (before === null) html.removeAttribute('data-theme');
+      else html.setAttribute('data-theme', before);
+      await tick(20);
+      // the trace with a service: leg 1 ends at the gateway, leg 2 is the gateway's own
+      app.select(null);
+      app.setTraceForm({ from: 'red-ws', to: '10.10.0.1', service: 'tcp/443', back: false });
+      app.openTrace();
+      await tick(20);
+      if (q('#trace-go')) (q('#trace-go') as HTMLElement).click();
+      await tick(20);
+      const leg = q('section.trace-leg');
+      check(
+        'Trace path with a service through a protocol break: leg 1 reaches the gateway, leg 2 is listed as the gateway\'s own transfer and both are marked',
+        !!q('#trace-service') && !!leg && /Leg 2 \(started by the gateway\)/.test(leg.textContent || '') && /protocol break at cdg|Protocol break at cdg/.test(leg.textContent || '') && !!q('#viewport .trace-main[data-ref="device:black-web"]'),
+        leg ? leg.textContent || '' : 'no leg',
+      );
+      app.exitTrace();
+      await tick(10);
+      // changing a type asks first, lists what goes, cancels or does it in one undo step
+      app.loadExample(exAt('device-types.yaml'));
+      await tick(20);
+      app.select('device:fw');
+      click('[data-tab="edit"]');
+      await tick(20);
+      const yaml0 = app.exportText();
+      const typeSel = q('#side-body select[data-key="type"]') as HTMLSelectElement;
+      typeSel.value = 'switch';
+      typeSel.dispatchEvent(new Event('change', { bubbles: true }));
+      await tick(30);
+      const dlgText = q('#modal[open]') ? q('#modal')!.textContent || '' : '';
+      check('changing a device\'s type asks first and lists what no longer fits (its kind)', /Change the type of fw\?/.test(dlgText) && /kind: ngfw/.test(dlgText), dlgText.slice(0, 200));
+      const cancel = Array.prototype.find.call(doc.querySelectorAll('#modal[open] .modal-btns button'), (b: Element) => /Cancel/.test(b.textContent || '')) as HTMLElement | undefined;
+      if (cancel) cancel.click();
+      await tick(30);
+      check('Cancel keeps the device as it was', app.exportText() === yaml0);
+      const typeSel2 = q('#side-body select[data-key="type"]') as HTMLSelectElement;
+      typeSel2.value = 'switch';
+      typeSel2.dispatchEvent(new Event('change', { bubbles: true }));
+      await tick(30);
+      const go = Array.prototype.find.call(doc.querySelectorAll('#modal[open] .modal-btns button'), (b: Element) => /Change the type/.test(b.textContent || '')) as HTMLElement | undefined;
+      if (go) go.click();
+      await tick(30);
+      const changed = /- id: fw\n {4}label: fw1\n {4}type: switch\n/.test(app.exportText());
+      click('#btn-undo');
+      await tick(30);
+      check('confirming changes the type and removes the kind in one step; one undo brings both back', changed && app.exportText() === yaml0);
+      // a System's purpose is required and offered without a default; Find finds by role
+      app.select('device:nms');
+      await tick(20);
+      const purpose = q('#side-body select[data-key="purpose"]') as HTMLSelectElement | null;
+      check('a System shows its purpose (required, no default offered) and its icon among its purpose\'s', !!purpose && purpose.value === 'host' && Array.prototype.some.call(purpose.options, (o: HTMLOptionElement) => o.value === '' && /Select what it does/.test(o.textContent || '')));
+      app.mdoc!.markSaved();
     }
 
     const perf = (doc.defaultView as Window).performance;

@@ -68,7 +68,7 @@ test('interfaces are stored once under their device, as physical and logical; ze
   assert.equal(d.logical.map((i) => i.id + ':' + i.type).join(), 'lo0:loopback,Po1:virtual,Vlan10:virtual,Vlan20:virtual,nve1:virtual,tun0:tunnel,tun1:tunnel,tun2:tunnel');
   // no nesting and no generic parent anywhere in the model
   for (const i of T.deviceInterfaces(d)) assert.ok(!('parent' in i) && !('children' in i), i.id);
-  assert.deepEqual(Object.keys(d).sort(), ['attrs', 'description', 'dnsNames', 'group', 'id', 'interfaces', 'label', 'layer3', 'line', 'logical', 'routes', 'services', 'simulation', 'tier', 'type']);
+  assert.deepEqual(Object.keys(d).sort(), ['attrs', 'description', 'dnsNames', 'group', 'id', 'interfaces', 'label', 'layer3', 'line', 'logical', 'management', 'portPairs', 'routes', 'services', 'simulation', 'tier', 'type']);
   // each interface exists once: one flat index, stable "device:interface" ids
   assert.equal(r.model.index.interfaces.size, 12 + 3);
   assert.equal(r.model.index.interfaces.get('sw1:Po1').type, 'virtual');
@@ -427,13 +427,14 @@ devices:
 });
 
 test('removed device fields stay removed', () => {
-  for (const k of ['vendor', 'model', 'role', 'mgmt']) {
+  // (a device's role is a field again: its role in the network, see device-types.test.mjs)
+  for (const k of ['vendor', 'model', 'mgmt']) {
     const r = validate.loadModel(`netatlas: 1\ndevices:\n  - id: r1\n    ${k}: x\n`);
     assert.equal(r.errors.length, 1, k);
     assert.match(r.errors[0].message, new RegExp(`^unknown key "${k}"`), k);
   }
   for (const f of exampleNames) {
-    assert.doesNotMatch(example(f), /^\s*(- )?(vendor|model|role|mgmt|loopbacks|children):/m, f);
+    assert.doesNotMatch(example(f), /^\s*(- )?(vendor|model|mgmt|loopbacks|children):/m, f);
     // a router ID is an IPv4 address or a loopback: never a port
     for (const m of example(f).matchAll(/router_id: ([A-Za-z][^\s]*)/g)) assert.match(m[1], /^(lo|Lo|loopback)[0-9]*$/, f + ': ' + m[1]);
     assert.doesNotMatch(example(f), /type: (logical|physical|svi|vti|lag|subinterface)\b/, f);
@@ -542,7 +543,7 @@ test('export -> reload: the format round-trips (both categories, members, VLAN, 
 
 test('every example (and generated fixture) uses the format and draws in both views', () => {
   const files = exampleNames.map((f) => [f, example(f)]).concat(fixtureNames.map((f) => [f, fixture(f)]));
-  assert.equal(files.length, 15 + 3);
+  assert.equal(files.length, 20 + 3);
   for (const [f, text] of files) {
     const r = validate.loadModel(text);
     assert.deepEqual(r.errors.concat(r.warnings).map((e) => `${e.line}: ${e.message}`), [], f);

@@ -42,6 +42,7 @@ import { nextHopTargets } from '../analysis/routing';
 import { VNode, h } from './scene';
 import { NETWORK_COLOR } from './style';
 import { relationStyle } from '../model/protocols';
+import { glyphFor } from './icons';
 
 export interface LogicalOptions {
   showLabels: boolean;
@@ -395,7 +396,7 @@ export function renderLogical(model: Model, layout: LogicalLayout, opts: Logical
       if (!d) return;
       const bodyH = n.bodyH || n.h;
       // (a guest's second line names its host: "runs on esx-01")
-      nodeLayer.push(deviceNode(n.ref, d.label, deviceSub(model, d), d.type, deviceRect(n), 'type-' + cssToken(d.type) + (d.host ? ' guest' : ''), bodyH, d.layer3, netServiceIds(d)));
+      nodeLayer.push(deviceNode(n.ref, d.label, deviceSub(model, d), d.type, deviceRect(n), 'type-' + cssToken(d.type) + (d.host ? ' guest' : ''), bodyH, d.layer3, netServiceIds(d), glyphFor(d)));
       // the entries of its interfaces (loopbacks, virtual, tunnel, physical with addresses) and its route tables, each selectable
       const items = entryItems(model, d, 'logical');
       const listTop = n.cy - n.h / 2 + bodyH;

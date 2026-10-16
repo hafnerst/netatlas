@@ -310,7 +310,7 @@ export class Simulation {
   tableDevices(): Array<{ id: string; arp: boolean; mac: boolean }> {
     return Array.from(this.engine.net.devices.values())
       .filter((d) => d.l3.size > 0 || d.bridge)
-      .map((d) => ({ id: d.id, arp: Array.from(d.l3.values()).some((l) => l.addrs.length > 0 && l.kind !== 'loopback'), mac: d.bridge && (d.dev.type === 'switch' || !!d.virt) }))
+      .map((d) => ({ id: d.id, arp: Array.from(d.l3.values()).some((l) => l.addrs.length > 0 && l.kind !== 'loopback'), mac: d.bridge && (d.caps.switchFeatures || !!d.virt) }))
       .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   }
 

@@ -20,7 +20,7 @@ import { endL2, isBridgePort } from '../model/derive';
 import { inPrefix } from './ipmath';
 import { parsePrefix } from '../model/ip';
 import { Device, Interface, LinkEnd, Model, ifaceKey } from '../model/types';
-import { clusterMembers, guestsOf, portGroupL2, portGroupOf, sizeBytes, uplinkPorts, vnicPortGroup } from '../model/virtual';
+import { clusterMembers, guestsOf, portGroupL2, portGroupOf, sizeBytes, uplinkPorts, vnicPortGroup, isVm } from '../model/virtual';
 import type { CheckDef } from './checks';
 
 const iref = (d: string, i: string): string => `iface:${d}:${i}`;
@@ -174,7 +174,7 @@ export const VIRTUAL_CHECKS: CheckDef[] = [
         const others = clusterMembers(model, h.hypervisor.cluster).filter((m) => m !== h);
         if (!others.length) continue;
         for (const vm of guestsOf(model, h.id)) {
-          if (vm.type !== 'vm') continue;
+          if (!isVm(vm)) continue;
           const pt = vm.logical.find((i) => i.type === 'vnic' && i.passthrough !== undefined);
           if (pt) {
             emit({ message: `${vm.id} is bound to ${h.id}:${pt.passthrough} by passthrough: it can't restart on another member of cluster ${h.hypervisor.cluster}`, refs: ['device:' + vm.id, iref(vm.id, pt.id), 'device:' + h.id], at: { ref: iref(vm.id, pt.id), field: 'passthrough' } });
@@ -197,7 +197,7 @@ export const VIRTUAL_CHECKS: CheckDef[] = [
     run(model, emit) {
       for (const h of model.devices) {
         if (!h.hypervisor) continue;
-        const vms = guestsOf(model, h.id).filter((g) => g.type === 'vm');
+        const vms = guestsOf(model, h.id).filter((g) => isVm(g));
         const cpu = vms.filter((v) => v.vcpu !== undefined);
         const ram = vms.filter((v) => sizeBytes(v.ram) !== undefined);
         const total = (xs: Device[], f: (d: Device) => number): number => xs.reduce((s, d) => s + f(d), 0);

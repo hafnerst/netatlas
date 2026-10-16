@@ -27,6 +27,7 @@ description: |
 devices:
   - id: core
     type: switch
+    role: core
     layer3: true
     simulation: {stp_mode: rstp, bridge_priority: 4096}
     interfaces: [{id: g1, vlans: [10, 20]}, {id: g2, vlans: [10, 20]}, {id: g3, vlans: 10}, {id: g4, vlans: 30}]
@@ -37,7 +38,7 @@ devices:
     dns_names: [{name: core.campus.example, interfaces: [Vlan30]}]
   - id: acc
     type: switch
-    label: acc (access)
+    role: access
     simulation: {stp_mode: rstp}
     interfaces:
       - {id: u1, vlans: [10, 20]}

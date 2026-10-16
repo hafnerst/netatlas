@@ -138,7 +138,8 @@ than one endpoint on the same device is bound by the first of them.
 |---|---|---|
 | `id` | yes | |
 | `label` | | Display name (defaults to the id) |
-| `kind` | | Free text, e.g. `site`, `building`, `floor`, `room`, `rack`, `provider`, `cloud`, `zone`. There is no default: a group without a kind is drawn as a plain box. `site`/`campus`/`building`/`datacenter`/`region` are emphasised; `provider`/`cloud`/`external` are drawn dashed. The kind is shown in the group's title bar and in the legend. |
+| `kind` | | Free text, e.g. `site`, `building`, `floor`, `room`, `rack`, `provider`, `cloud`, `zone`. There is no default: a group without a kind is drawn as a plain box. `site`/`campus`/`building`/`datacenter`/`region` are emphasised; `provider`/`cloud`/`external` are drawn dashed. The kind is shown in the group's title bar and in the legend. A public cloud has three kinds of its own: `cloud_region`, `vpc` and `vnet` (see [Public cloud](#public-cloud-regions-vpcs-and-vnets)). |
+| `provider` | | A cloud group's (`cloud_region`, `vpc`, `vnet`) provider: `aws`, `azure`, `gcp`, `oci` or any other name. Drawn with the kind ("VPC · AWS"). An error on any other group. |
 | `parent` | | Id of the enclosing group (at most 8 levels) |
 | `description`, `attrs` | | |
 
@@ -149,10 +150,15 @@ than one endpoint on the same device is bound by the first of them.
 | `id` | yes | |
 | `label` | | Display name. Drawn in full: long labels wrap, and line breaks in the label are kept (see [Sizes, labels and routes](#sizes-labels-and-routes)). |
 | `type` | | One of the [device types](#device-types) below, written exactly as listed (lower case). Any other value is an error. Without a type the device gets a generic icon. |
-| `host` | VMs and containers: yes | A **guest's host**: the device it runs on — for a VM a server with the Hypervisor service, for a container a server or a VM with the Container engine service. Required on a VM or a container, an error on any other type. See [Virtualization](#virtualization-hypervisors-vms-and-containers). |
-| `layer3` | | Switches only: `layer3: true` makes a switch a **Layer 3 switch**, with the full Layer 3+ feature set (routing protocols, a router ID, addresses on several interfaces, VRRP / HSRP groups, tunnels, VRFs). Without it a switch is a **Layer 2 switch** (see [Layer 2 and Layer 3 switches](#layer-2-and-layer-3-switches)). On any other type it is an error. |
-| `group` | | Id of the group the device is located in. A guest (VM or container) has none of its own: it is where its host is, and `group` on it is an error. |
-| `tier` | | 0–9: vertical row in the physical view (0 = top). By default this comes from the type (see the table below). Set it to place a device elsewhere, e.g. `tier: 3` for core or spine switches above the access switches. |
+| `kind`, `kind_label` | | Optional: what kind of its type it is ([kinds](#kinds)), e.g. `kind: ngfw` on a firewall, `kind: plc` on an endpoint. Every type offers `other`, which needs its name in `kind_label` ("Fiber modem"). Some kinds have an icon of their own. |
+| `role` | | Optional: its role in the network, one of the [suggested roles](#roles) (`core`, `access`, `spine`, `leaf`, `border` …) or a name of your own. Auto-arrange puts a known role in its row; Find and the command palette find devices by role. |
+| `mode` | | Firewalls (`routed`, `transparent`), IDS/IPS (`inline`, `passive`) and access points (`standalone`, `controller`) only: how it works ([modes](#modes)). Not written: the first. |
+| `purpose` | Systems: yes | What a System does: `host`, `l2_forwarder`, `l3_forwarder`, `inline`, `passive_monitor`, `pass_through` or `external_network` ([System purposes](#system-purposes)). Required on a System, an error on any other type. |
+| `icon` | | Systems only: one of its purpose's icons (`console`, `protocol_gateway`, `tap` …). Not written: the purpose's first. |
+| `host` | VMs and containers: yes | A **guest's host**: the device it runs on — for a VM a server with the Hypervisor service, for a container a server or a VM with the Container engine service. Required on a VM or a container (except a [cloud instance](#public-cloud-regions-vpcs-and-vnets)), an error on any other type. See [Virtualization](#virtualization-hypervisors-vms-and-containers). |
+| `layer3` | | Switches and VMs only: `layer3: true` makes a switch a **Layer 3 switch** (a VM a virtual router or firewall), with the full Layer 3+ feature set (routing protocols, a router ID, addresses on several interfaces, VRRP / HSRP groups, tunnels, VRFs). Without it a switch is a **Layer 2 switch** (see [Layer 2 and Layer 3 switches](#layer-2-and-layer-3-switches)). On any other type it is an error. |
+| `group` | | Id of the group the device is located in. A guest (VM or container) has none of its own: it is where its host is, and `group` on it is an error — except a cloud instance, which is in its cloud group. |
+| `tier` | | 0–9: vertical row in the physical view (0 = top). By default this comes from the device's role, else from what it does (see [Roles](#roles)). Set it to place a device elsewhere. |
 | `guest_os`, `vcpu`, `ram` | | VMs only, optional: the guest operating system (text), its virtual CPUs (a whole number) and its memory (`8G`, `512M`). The host's inventory (`cpu`, `ram`) counts them. |
 | `image` | | Containers only, optional: the image it runs (`nginx:1.27`). |
 | `router_id` | | The router ID the device's protocols share: the id of one of its **loopbacks** (`lo0`: its IPv4 address is used) or an **IPv4 address** without a prefix length (`10.255.0.1`). Applies only while an enabled protocol uses a router ID (OSPF, BGP, EIGRP, LDP); otherwise it is reported as not applicable. See [Routing services](#routing-services-protocols). |
@@ -163,10 +169,12 @@ than one endpoint on the same device is bound by the first of them.
 | `logical_interfaces` | | List of the device's **logical interfaces** (below): loopbacks, virtual interfaces and tunnel interfaces; a VM's virtual NICs (`vnic`) and a container's network attachments (`veth`). |
 | `dns_names` | | List of the device's **DNS names**, each associated with one or more of its interfaces. See [DNS names](#dns-names). |
 | `dns_servers` | | The DNS servers the device asks (a list of addresses), when they are not given by a DHCP lease. See [DNS servers of a host](#dns-servers-of-a-host-dns_servers). |
-| `services` | | Servers, VMs and containers only: the **DHCP server** and the **DNS server** it runs, `services: {dhcp: {scopes: […]}, dns: {zones: […]}}`; a server's **Hypervisor** (`hypervisor`) and a server's or VM's **Container engine** (`container_engine`). See [Network services](#network-services-services-dhcp-and-dns-servers) and [Virtualization](#virtualization-hypervisors-vms-and-containers). |
+| `services` | | Servers, VMs and containers: the **DHCP server** and the **DNS server** it runs, `services: {dhcp: {scopes: […]}, dns: {zones: […]}}`; a server's **Hypervisor** (`hypervisor`) and a server's or VM's **Container engine** (`container_engine`). See [Network services](#network-services-services-dhcp-and-dns-servers) and [Virtualization](#virtualization-hypervisors-vms-and-containers). The built-in functions of the appliances are written here too, and are required there: a VPN Gateway's **VPN gateway** (`vpn`, see [VPN Gateway](#vpn-gateway)) and a Separation gateway's **Domain separation** (`separation`, see [Separation gateway](#separation-gateway)). |
+| `port_pairs` | inline and pass-through devices: yes | The pairs of ports traffic passes between: `port_pairs: [{a: in, b: out}]`, with `direction: a_to_b` for one way and `copy: [mon]` for monitor ports that get a copy. See [Port pairs](#port-pairs). |
+| `management` | | The device's management interfaces (`management: [mgmt0]`): never forwarded, in no domain. Firewalls, IDS/IPS, Separation gateways and passive monitors. See [Management interfaces](#management-interfaces). |
 | `routes` | | List of the device's **static routes**. See [Static routes](#static-routes). Only devices whose type has a routing table may have them. |
 
-A device has no `vendor`, `model`, `role` or `mgmt` key; like every key the
+A device has no `vendor`, `model` or `mgmt` key; like every key the
 format doesn't define, each is an error ("unknown key"). Such facts can be
 kept as free-form `attrs`, which are shown in the details only. A device has
 no `asn` either: the AS number is BGP's parameter (`protocols: {bgp: {asn:
@@ -175,9 +183,9 @@ where it belongs.
 
 ### Routing services (`protocols`)
 
-A Layer 3+ device (router, Layer 3 switch, firewall, load balancer, proxy, gateway:
-the [device types](#device-types) whose routing role is *router*, the same
-list as for the routers among [static routes](#static-routes)) lists the
+A Layer 3+ device (router, Layer 3 switch or VM, routed firewall, load
+balancer, VPN Gateway, a System that is a Layer 3 forwarder: what
+[can run routing protocols](#capabilities)) lists the
 protocols it runs under `protocols:`, each with its parameters. A protocol
 without parameters is enabled with an empty mapping. Static routes are not
 a protocol: a device's [`routes`](#static-routes) are always in effect, and
@@ -250,45 +258,357 @@ diagram writes the router ID and the AS number only where they apply.
 
 ### Device types
 
-| Display name | `type` | Default `tier` | Layer 3 (static routes) |
+| Display name | `type` | Kinds (`kind`) | Modes (`mode`) | What it does |
+|---|---|---|---|---|
+| Router | `router` | `router`, `cpe`, `sd_wan`, `cloud_gateway`★, `other` | | routes between its interfaces |
+| Switch | `switch` | `campus`, `data_center`, `industrial`, `other` | | bridges by VLAN; with `layer3: true` also routes |
+| Firewall | `firewall` | `ngfw`, `utm`, `cloud_firewall`, `other` | `routed`, `transparent` | routes with its policy; transparent: bridges its data ports with its policy |
+| Access point | `ap` | `indoor`, `outdoor`, `mesh`, `bridge`, `other` | `standalone`, `controller` | bridges its wireless side to its wired side (Wireless access) |
+| Load balancer | `load_balancer` | `hardware`, `virtual`, `other` | | routes; ends client connections and passes them to its pool |
+| IDS/IPS | `ids_ips` | `appliance`, `virtual`, `other` | `inline`, `passive` | inline: passes traffic between its paired ports, may drop it; passive: receives copies, forwards nothing |
+| VPN Gateway | `vpn_gateway` | `hardware`, `virtual`, `remote_access`, `other` | | ends its VPNs; forwards only to and from them |
+| Separation gateway | `separation_gateway` | `cross_domain`, `red_black`, `it_ot`, `other` | | transfers between exactly two domains only what its policy permits, the way its implementation does it |
+| Server | `server` | `physical`, `appliance`, `other` | | a host; may run DHCP, DNS, a hypervisor, a container engine |
+| Virtual machine | `vm` | `general`, `virtual_appliance`, `other` | | a guest of a hypervisor (or a cloud instance); with `layer3: true` routes |
+| Container | `container` | `application`, `infrastructure`, `other` | | a guest of a container engine (or a cloud instance) |
+| Storage | `storage` | `nas`, `san`, `backup`, `other` | | a host |
+| Endpoint | `endpoint` | `pc`, `mobile`★, `printer`★, `camera`★, `voip`★, `iot`★, `media`★, `plc`★, `hmi`★, `other` | | a host; sends test traffic |
+| Cloud | `cloud` | `internet`, `carrier`, `mpls`, `mobile`★, `other` | | an external network crossed as one opaque Layer 3 hop |
+| System | `system` | `other` | | what its [purpose](#system-purposes) says (required) |
+| *(no type)* | | | | unknown: drawn generic, routes nothing |
+
+★ the kind has an icon of its own. Every type has its own icon; the display
+name (with the switch's layer, the mode, a System's purpose and the kind:
+"Firewall · Transparent · NGFW") appears in the diagram subtitle, the
+details, tooltips, the legend and the editor. The error for any other value
+suggests the closest type (`Router` → `router`, `load-balancer` →
+`load_balancer`) or lists all of them.
+
+There is no generic gateway and no proxy type any more. What was written as
+one is converted by what it does: a VPN gateway becomes a **VPN Gateway**
+(`vpn_gateway`, with its VPN gateway function); a NAT gateway a **router**; a
+public cloud's gateway a **router** of kind `cloud_gateway` in its cloud
+group; a protocol or OT gateway a **System** with its purpose (usually
+`l3_forwarder`), unless it is a cross-domain boundary, which is a
+**Separation gateway**; a forward or reverse proxy a **server**, **VM** or
+**container** (the Proxy service comes with the service registry). The
+values `gateway`, `proxy` and `hypervisor` are unknown types whose errors
+say so. There is no hypervisor type either: a hypervisor is a **server with
+the Hypervisor service** (see [Virtualization](#virtualization-hypervisors-vms-and-containers)).
+
+#### Kinds
+
+A kind is optional and says what kind of its type a device is: a firewall's
+`ngfw`, a switch's `industrial`, an endpoint's `plc`. It changes nothing a
+device does (that is its type's, its mode's and its purpose's); some kinds
+have an icon of their own. Every type offers `other` with a name of your own
+in `kind_label` (required with it, an error without it):
+
+```yaml
+- id: modem
+  type: router
+  kind: other
+  kind_label: Fiber modem
+```
+
+The legend lists the types and kinds the model uses.
+
+#### Roles
+
+A device's `role` is its role in the network. The suggested roles, with the
+row Auto-arrange gives them (0 = top):
+
+| `role` | Name | Row |
+|---|---|---|
+| `border` | Border / Edge | 1 |
+| `wan_edge` | WAN edge | 1 |
+| `pe`, `ce`, `p` | PE, CE, P | 1 |
+| `dmz` | DMZ | 2 |
+| `core`, `spine` | Core, Spine | 3 |
+| `distribution`, `leaf` | Distribution, Leaf | 4 |
+| `access` | Access | 5 |
+| `management` | Management / OOB | 6 |
+
+Any other role of your own is allowed (letters, digits, spaces, `- _ . /`).
+Without a known role a device's row follows from what it does: external
+networks on top (0), then routers (1), policy, inline and separation devices
+(2), switches and pass-through devices (4), wireless access (5), hosts,
+guests and passive monitors (6); a device without a type sits with the
+switches. An unknown custom role takes that row too, so the layout stays
+deterministic. `tier` overrides both. Find and the command palette find a
+device by its role ("core", "role spine").
+
+#### Modes
+
+A firewall is `routed` (the default: it routes and applies its policy to
+what it forwards) or `transparent` (it bridges its data ports and applies
+its policy to what passes; its data ports have no addresses, a
+[management interface](#management-interfaces) may). An IDS/IPS is `inline`
+(the default: traffic passes through it between its
+[paired ports](#port-pairs), and it may drop what it inspects) or `passive`
+(it receives copies, from a TAP or a SPAN port, and never forwards
+anything). An access point is `standalone` or `controller`-managed.
+
+#### System purposes
+
+A System says what it does in `purpose` (required: a System without one is
+an error, and does nothing):
+
+| `purpose` | Name | What it does | Icons (`icon`) |
 |---|---|---|---|
-| Router | `router` | 1 | forwards |
-| Switch | `switch` | 4 | with `layer3: true` forwards (a Layer 3 switch); else a Layer 2 switch: host (a management address and routes, never forwarding) |
-| Firewall | `firewall` | 2 | forwards |
-| Access point | `ap` | 5 | — |
-| Server | `server` | 6 | host |
-| Virtual machine | `vm` | 6 | host; with `layer3: true` forwards (a virtual router or firewall) |
-| Container | `container` | 6 | host |
-| Storage | `storage` | 6 | host |
-| Load balancer | `load_balancer` | 1 | forwards |
-| Proxy | `proxy` | 1 | forwards |
-| IDS/IPS | `ids_ips` | 2 | — |
-| Gateway | `gateway` | 1 | forwards |
-| Endpoint | `endpoint` | 6 | host |
-| Cloud | `cloud` | 0 | — |
-| System | `system` | 6 | host |
-| *(no type)* | | 4 | — |
+| `host` | Host | sends and receives, forwards nothing (a console server, a controller appliance, a building management system) | `system`, `console`, `controller` |
+| `l2_forwarder` | Layer 2 forwarder | bridges its ports, by VLAN where its ports have VLANs (a media converter, an industrial bridge, a point-to-point radio) | `bridge`, `radio`, `converter` |
+| `l3_forwarder` | Layer 3 forwarder | routes; may run routing protocols (a protocol gateway, a routed WAN optimizer) | `protocol_gateway`, `router` |
+| `inline` | Inline | passes traffic between its paired ports, may delay or drop it, one way if a pair says so (a WAN optimizer, an inline encryptor, a simplified data diode) | `inline`, `diode` |
+| `passive_monitor` | Passive monitor | receives copies, forwards nothing (a sensor, a monitoring probe) | `sensor` |
+| `pass_through` | Pass-through | joins its paired ports physically, without an IP stack (a patch panel, a splice, a passive optical part, a TAP) | `patch`, `tap` |
+| `external_network` | External network | an opaque transit, crossed as one hop (a private carrier, a partner network) | `cloud` |
 
-The last column says what a device of the type does at layer 3. **Layer 3+**
-devices (*forwards*) route traffic between their interfaces and may have any
-static route. **Hosts** have an IP stack but never forward traffic for others;
-they may have routes too, typically their default gateway. An access point and
-an IDS/IPS are drawn as layer-2 or transparent devices, a cloud stands for a
-network outside the model, and a device without a type is unknown: routes on
-any of these are an error.
+Its `kind_label` names what it is ("Industrial protocol gateway"), its
+`icon` is one of its purpose's (the first when not written). A security
+boundary between domains is a [Separation gateway](#separation-gateway),
+not a System.
 
-There is no hypervisor type: a hypervisor is a **server with the Hypervisor
-service**, a container host a server (or a VM) with the **Container engine
-service**; VMs and containers are **guests** that name their `host` (see
-[Virtualization](#virtualization-hypervisors-vms-and-containers)). The value
-`hypervisor` is an unknown type whose error says so.
+A **TAP** or packet broker is modelled with both of its paths: the original
+traffic passes between a port pair, and the copy leaves by the pair's
+`copy` ports, to a passive monitor. A receive-only passive monitor is not a
+TAP: without a through path and a copy, nothing passes it.
 
-Each type has its own icon, and the display name appears in the diagram
-subtitle, the details, tooltips, the legend and the editor. The error for
-any other value suggests the closest type (`Router` → `router`,
-`load-balancer` → `load_balancer`) or lists all of them. A role such as
-spine, leaf, core or border is not a type: write it into the label, the
-description or `attrs`.
+#### Capabilities
+
+Every module (validation, the editor, Connect, the Layer 3+ rules, the path
+tracer, single points of failure, the simulation, Auto-arrange and the
+helpers) decides by what a device **can do**, never by its type's name.
+One resolver (`src/model/capabilities.ts`) derives it from the type, the
+mode, Supports Layer 3, a System's purpose and a Separation gateway's
+implementation; an architecture test fails on any comparison with a type
+name outside the registry and the resolver. A capability is what a device
+can do, not connectivity: what actually passes still depends on its
+interfaces, cables, VLANs, routes and policy.
+
+<!-- capability-matrix:begin (generated by scripts/capability-matrix.mjs) -->
+| Device | host | L2 forward | L3 forward | policy | inline (pairs) | passive copy | pass-through | external transit | hosts guests | is a guest | VPN | separation | session break | routing protocols | management ifaces |
+|---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
+| Router |  |  | ✓ |  |  |  |  |  |  |  |  |  |  | ✓ |  |
+| Switch |  | ✓ |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| Switch · Supports Layer 3 |  | ✓ | ✓ |  |  |  |  |  |  |  |  |  |  | ✓ |  |
+| Firewall · Routed |  |  | ✓ | ✓ |  |  |  |  |  |  |  |  |  | ✓ | ✓ |
+| Firewall · Transparent |  | ✓ |  | ✓ |  |  |  |  |  |  |  |  |  |  | ✓ |
+| Access point · Standalone |  | ✓ |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| Access point · Controller-managed |  | ✓ |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| Load balancer |  |  | ✓ |  |  |  |  |  |  |  |  |  | ✓ | ✓ |  |
+| IDS/IPS · Inline |  |  |  |  | ✓ |  |  |  |  |  |  |  |  |  | ✓ |
+| IDS/IPS · Passive |  |  |  |  |  | ✓ |  |  |  |  |  |  |  |  | ✓ |
+| VPN Gateway |  |  | ✓ |  |  |  |  |  |  |  | terminates; only via its VPN |  |  | ✓ |  |
+| Separation gateway (no implementation yet) |  |  |  | ✓ |  |  |  |  |  |  |  | none yet |  |  | ✓ |
+| Separation gateway · filtering bridge |  | ✓ |  | ✓ |  |  |  |  |  |  |  | filtering bridge |  |  | ✓ |
+| Separation gateway · filtering router |  |  | ✓ | ✓ |  |  |  |  |  |  |  | filtering router |  |  | ✓ |
+| Separation gateway · protocol break |  |  |  | ✓ |  |  |  |  |  |  |  | protocol break | ✓ |  | ✓ |
+| Server | ✓ |  |  |  |  |  |  |  | VMs, containers |  |  |  |  |  |  |
+| Virtual machine | ✓ |  |  |  |  |  |  |  | containers | vm |  |  |  |  |  |
+| Virtual machine · Supports Layer 3 |  |  | ✓ |  |  |  |  |  | containers | vm |  |  |  | ✓ |  |
+| Container | ✓ |  |  |  |  |  |  |  |  | container |  |  |  |  |  |
+| Storage | ✓ |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| Endpoint | ✓ |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| Cloud |  |  |  |  |  |  |  | ✓ |  |  |  |  |  |  |  |
+| System · Host | ✓ |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| System · Layer 2 forwarder |  | ✓ |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| System · Layer 3 forwarder |  |  | ✓ |  |  |  |  |  |  |  |  |  |  | ✓ |  |
+| System · Inline |  |  |  |  | ✓ |  |  |  |  |  |  |  |  |  |  |
+| System · Passive monitor |  |  |  |  |  | ✓ |  |  |  |  |  |  |  |  | ✓ |
+| System · Pass-through |  |  |  |  |  |  | ✓ |  |  |  |  |  |  |  |  |
+| System · External network |  |  |  |  |  |  |  | ✓ |  |  |  |  |  |  |  |
+<!-- capability-matrix:end -->
+
+*host*: an end system with an IP stack that forwards nothing; *L2/L3
+forward*: bridges / routes between its interfaces; *policy*: applies a
+policy to what it forwards; *inline*: passes traffic only between paired
+ports; *passive copy*: receives copies only; *pass-through*: joins paired
+ports without an IP stack; *external transit*: an opaque network crossed as
+one hop; *session break*: ends connections and starts its own (a load
+balancer, a protocol break); *routing protocols*: may run OSPF, BGP and the
+others.
+
+#### Port pairs
+
+An inline device (an inline IDS/IPS, an inline System) and a pass-through
+System pass traffic only between paired ports; `port_pairs` is required on
+them and an error elsewhere:
+
+```yaml
+port_pairs:
+  - {a: net-a, b: net-b, copy: [mon]}     # both ways; a copy of what passes to mon
+  - {a: in2, b: out2, direction: a_to_b}  # one way: from in2 to out2 only
+```
+
+`a` and `b` are two different physical interfaces of the device, each in
+one pair; `copy` lists monitor ports that get a copy of what passes and send
+nothing back. The tracer and the simulation keep to the pairs (a frame from
+an unpaired port, or from `b` of a one-way pair, ends there, and says so);
+a TAP's copy is noted on the trace and arrives at the monitor in the
+simulation. The physical view writes "pair 1", "copy of pair 1" under the
+ports.
+
+#### Management interfaces
+
+`management` lists a device's management interfaces: they are its own (an
+address, SSH, SNMP), never forwarded, in no domain and in no port pair.
+Firewalls, IDS/IPS, Separation gateways and passive monitors may have
+them; a transparent firewall's and a filtering bridge's management
+interface is the only one with an address. The physical view writes
+"management" under the port.
+
+#### VPN Gateway
+
+A VPN Gateway (`vpn_gateway`) ends VPNs. Its **VPN gateway** function is
+built in and required (`services: {vpn: …}`); nothing of it is chosen for
+you:
+
+| Key | Required | Description |
+|---|---|---|
+| `operation` | yes | `site_to_site` (tunnels to fixed peers) or `remote_access` (clients connect to it) |
+| `technology` | yes | `ipsec` (IKEv2), `wireguard` or `openvpn`; any other is reported as not supported |
+| `tunnels` | site to site | its tunnel interfaces (logical interfaces of type `tunnel`), each with its `source` (the local end) and `destination` (the peer) |
+| `listener` | remote access | the interface its clients connect to (with an address) |
+| `pool` | remote access | the clients' addresses, a prefix (`10.250.0.0/24`); no fixed peer |
+| `protected` | yes | the networks behind it its VPN reaches: network ids or prefixes |
+
+The keys of the other operation are errors. A VPN Gateway **forwards only
+to and from its VPN**: traffic in or out of one of its tunnels, or to and
+from its remote-access pool; anything else between its interfaces is
+refused, in the path tracer and in the simulation ("hq-vpn is a VPN
+Gateway: it forwards only to and from its VPN"). Its tunnels behave as any
+tunnel does (IKE, ESP, the encapsulation, the underlay and the
+decapsulation in the trace and the simulation). A VPN is not a separation:
+it protects traffic on its way, it does not decide what may cross between
+domains.
+
+#### Separation gateway
+
+A Separation gateway (`separation_gateway`) is a security boundary between
+**exactly two domains**: it transfers only what its policy explicitly
+permits, the way its implementation does it. Its **Domain separation** is
+built in and required (`services: {separation: …}`), and exists on no other
+device. NetAtlas models how such a boundary behaves; it does not reproduce
+a particular product or give any assurance of a real device's separation.
+
+```yaml
+services:
+  separation:
+    implementation: protocol_break
+    domains:
+      - {name: Red, interfaces: [red0]}
+      - {name: Black, interfaces: [black0]}
+    directions:
+      - {from: Red, to: Black}
+    profiles:
+      - id: web
+        type: https
+        listen: {interface: red0, port: 443}
+        forward: {address: 10.20.0.80, port: 443}
+    rules:
+      - id: red-web
+        description: Red workstations may fetch from the Black web server
+        from: Red
+        to: Black
+        source: 10.10.0.0/24
+        destination: 10.20.0.80
+        protocol: tcp
+        ports: "443"
+        profile: web
+management: [mgmt0]
+```
+
+| Key | Required | Description |
+|---|---|---|
+| `implementation` | yes, no default | `filtering_bridge`: passes the permitted frames between its domains unchanged (both domains share their networks; no address in them). `filtering_router`: routes the permitted packets (each domain its own network, the gateway an address in each). `protocol_break`: nothing passes through; a permitted transfer ends at the gateway and the gateway starts a new one of its own on the other side. |
+| `domains` | yes | exactly two, each with its `name` and its data `interfaces`. Any names: `Red`/`Black` are suggestions only (as are `HIGH`/`LOW`, `IT`/`OT`); NetAtlas reads no classification, trust, encryption or direction from a name or colour. An interface is in one domain at most; a management interface in none. |
+| `directions` | yes | the permitted directions of transfer: `{from: A, to: B}`, one or both |
+| `rules` | | the allow rules, in order (an empty list permits nothing) |
+| `profiles` | protocol breaks | the transfer profiles a protocol break can model |
+| `simulation` | | `transfer_delay`, `transfer_loss` (the gateway's own delay and loss per permitted transfer) |
+
+A rule has a stable `id`, an optional `description`, its domains (`from`,
+`to`), its `source` and `destination` (an address, a prefix, or `any`),
+its `protocol` (`tcp`, `udp`, `icmp` or `any`), its destination `ports`
+(tcp and udp: `"443"`, `"80, 443"`, `"8000-8080"` or `any`) and, in a
+protocol break, its `profile`. **Every match is written**: an empty field is
+an error, never "any"; a broad match is written `any`.
+
+How the policy decides (the same in the tracer, single points of failure
+and the simulation):
+
+1. A transfer comes in on an interface of one domain and leaves by an
+   interface of the other; an interface in no domain (a management
+   interface, an unassigned port) transfers nothing.
+2. Its direction must be one of `directions`.
+3. The rules are checked in their written order; the first whose domains,
+   source, destination, protocol and ports match permits it.
+4. Nothing matching: denied (the **default deny**, both ways).
+
+A permitted transfer's **replies** come back (the TCP handshake and
+answers, a DNS answer, an echo reply, an ICMP error about it): a reply is
+not a transfer of its own. Starting a transfer the other way needs that
+direction and a rule of its own; `directions` with both ways opens nothing
+by itself. A protocol break is no physical data diode either: its replies
+come back on the legs.
+
+A **protocol break** forwards nothing. A transfer is addressed to one of
+its transfer profiles' listening ports; when a rule naming the profile
+permits it (its `source` matches the client, its `destination` and `ports`
+the profile's `forward` address and port), the gateway ends the transfer
+there (leg 1) and starts a new one of its own to the forward address (leg
+2); the answer comes back on leg 2 and the gateway answers on leg 1. The
+profiles NetAtlas can model:
+
+| `type` | Transfer | Transport | Reply |
+|---|---|---|---|
+| `https` | HTTPS request | TCP 443 | the answer on leg 1 |
+| `dns` | DNS query | UDP 53 | the answer on leg 1 |
+| `syslog` | Syslog message | UDP 514 | none |
+
+Any other type is an error ("not a transfer NetAtlas can model"), and a
+profile that is incomplete transfers nothing: a limitation is reported,
+never a success. Path trace (with a service, e.g. `tcp/443`) shows both
+legs and their correlation; the simulation shows them in the timeline and
+the packet details. A transfer that is not permitted ends at the gateway
+with its reason.
+
+In the diagram the Separation gateway has its own icon; each domain-facing
+port says its domain ("domain Red"), the management port "management" —
+text, not colour, carries it. The Details tab lists the implementation, the
+domains, the directions and the rules in order. Single points of failure
+count a gateway as joining its domains only when its policy permits a
+transfer, and never through its management interfaces.
+
+Changing a device's type, mode, purpose or a Separation gateway's
+implementation asks first when something would no longer fit, lists it
+(its kind, its built-in function, its port pairs, a protocol break's
+profiles …) and what stays but is then reported (its guests, the relations
+that need routing), and removes it in one undo step; nothing more
+permissive takes its place and nothing new is chosen.
+
+#### Cloud: an external network
+
+A Cloud (`cloud`, or a System of purpose `external_network`) is a network
+outside the model whose internals are not modelled: the internet, a
+carrier, an MPLS / VPN service, a mobile network. It carries traffic
+between its attachments as **one opaque Layer 3 hop**: an IP packet crosses
+it with its TTL one lower; what has no hop left (a routing protocol's TTL-1
+hellos, link-local multicast) ends at it, so routing protocols across a
+Cloud run through a tunnel. Its cables' latency and loss apply; routed
+multicast crosses it only with `simulation: {multicast: on}`.
+
+#### Public cloud: regions, VPCs and VNets
+
+A public cloud is drawn with groups of the kinds `cloud_region`, `vpc` and
+`vnet`, each with its `provider`; they nest (a VPC in its region). In them
+are the provider's gateways (a router of kind `cloud_gateway`), and **cloud
+instances**: VMs and containers in a cloud group that have no `host` — the
+provider's hosts are not modelled. A cloud instance's interfaces are its
+attachments to the virtual network (physical interfaces, cabled to its
+gateway or a switch of the VPC); its group is its cloud group. See
+`examples/hybrid-cloud.yaml`.
 
 ### Layer 2 and Layer 3 switches
 
@@ -1090,9 +1410,11 @@ container engine.
 ### Static routes
 
 `routes` lists the static routes of a device: where traffic to a
-destination prefix goes. A device of a *forwarding* type (router, switch,
-firewall, load balancer, proxy, gateway) may have any route; a *host*
-(server, VM, container, storage, endpoint, system) may have routes too.
+destination prefix goes. A device that *forwards* (a router, a Layer 3
+switch, a routed firewall, a load balancer, a VPN Gateway, a filtering
+router, a Layer 3 forwarder System) may have any route; a *host* (server,
+VM, container, storage, endpoint, a Layer 2 switch, a transparent firewall,
+a filtering bridge or protocol break, a host System) may have routes too.
 **A host's default gateway is a static route** to `0.0.0.0/0` (or `::/0`)
 via the gateway's address: there is no separate gateway field.
 
@@ -1643,7 +1965,7 @@ a list of `VLAN: value` pairs, ranges allowed.
 | Test traffic type | ICMP echo | `icmp`, `tcp`, `udp`, `multicast` | ping, the usual first test | attribute `test_type` (device) |
 | Application response timeout | 5 s | 100 ms – 10 min | dig’s default timeout (5 s); Windows ping waits 4 s | attribute `app_timeout` (device) |
 
-#### Device attributes (46)
+#### Device attributes (44)
 
 | Key | Attribute | Default | Range | Source of the default | Applies to | Also device-wide |
 |---|---|---|---|---|---|---|
@@ -1660,7 +1982,7 @@ a list of `VLAN: value` pairs, ranges allowed.
 | `test_interval` | Test traffic interval (s) | 5 s | 100 ms – 1 h | a demonstration value | endpoints |  |
 | `test_type` | Test traffic type | ICMP echo | `icmp`, `tcp`, `udp`, `multicast` | ping, the usual first test | endpoints |  |
 | `app_timeout` | Application response timeout (s) | 5 s | 100 ms – 10 min | dig’s default timeout (5 s); Windows ping waits 4 s | endpoints |  |
-| `boot_time` | Boot time (s) | 30 s (container 2 s, vm 20 s, router 1 min, firewall 1 min, gateway 1 min, load_balancer 1 min) | 0 s – 1 h | a demonstration value (containers start in seconds, chassis routers in minutes) | every device |  |
+| `boot_time` | Boot time (s) | 30 s (container 2 s, vm 20 s, router 1 min, firewall 1 min, vpn_gateway 1 min, separation_gateway 1 min, load_balancer 1 min) | 0 s – 1 h | a demonstration value (containers start in seconds, chassis routers in minutes) | every device |  |
 | `max_paths` | Maximum ECMP paths | 4 | 1 – 64 | Cisco IOS maximum-paths (4) | routers and Layer 3 devices (Layer 3 switches, firewalls, gateways …) |  |
 | `mac_table_size` | MAC table size | 8192 | 1 – 1000000 | a small access switch (data sheets: 8 K–16 K entries) | switches |  |
 | `stp_hello` | STP hello time (s) | 2 s | 1 s – 10 s | IEEE 802.1D-2004 Table 17-1 | switches |  |
@@ -1686,8 +2008,6 @@ a list of `VLAN: value` pairs, ranges allowed.
 | `udp_session_timeout` | UDP session timeout (s) | 30 s | 1 s – 168 h | PAN-OS (30 s) | firewalls |  |
 | `icmp_session_timeout` | ICMP session timeout (s) | 6 s | 1 s – 1 h | PAN-OS (6 s) | firewalls |  |
 | `listening` | Listening services | empty: its service relations’ ports | a list: `tcp/443`, `udp/53`, `tcp/8000-8080`, `icmp`, `any`; `none` | the ports of the service relations it serves | servers, VMs, containers, storage; load balancers; proxies |  |
-| `client_timeout` | Client connection timeout (s) | 1 min | 100 ms – 24 h | nginx client_header_timeout (60 s) | proxies |  |
-| `upstream_timeout` | Upstream connect timeout (s) | 1 min | 100 ms – 1 h | nginx proxy_connect_timeout (60 s) | proxies |  |
 | `test_targets` | Test targets | empty: its gateway and service relations | a list: a device, `device:interface` or an address (or a host name), each optionally with `tcp/<port>`, `udp/<port>` or `icmp`; `none` | its gateway and the servers of its service relations | endpoints |  |
 | `spt_switchover` | SPT switchover | Immediately | `immediately`, `never` | Cisco IOS spt-threshold 0 (immediately) | routers and Layer 3 devices (Layer 3 switches, firewalls, gateways …) |  |
 | `router_port_aging` | Router port aging (s) | 5 min | 10 s – 1 h | Cisco IOS multicast router port (5 min) | switches |  |
@@ -1759,7 +2079,7 @@ a list of `VLAN: value` pairs, ranges allowed.
 | `algorithm` | Balancing algorithm | Round robin | `round-robin`, `least-connections`, `source-hash` | HAProxy and F5 BIG-IP (round robin) | a load balancer’s pool (its member relations) |  |
 | `multicast_over_tunnel` | Multicast over tunnels | On | `on`, `off` | GRE carries multicast; plain IPsec does not (RFC 4301) | `ipsec`, `gre`, `vxlan`, `wireguard`, `openvpn`, `l2tp` relations | yes |
 
-#### Service attributes (6)
+#### Service attributes (8)
 
 | Key | Attribute | Default | Range | Source of the default | Applies to | Also device-wide |
 |---|---|---|---|---|---|---|
@@ -1769,22 +2089,24 @@ a list of `VLAN: value` pairs, ranges allowed.
 | `vm_restart` | VM restart time (s) | 1 min | 0 s – 1 h | a demonstration value (HA failure detection plus the restart) | a Hypervisor service (`services.hypervisor.simulation`) |  |
 | `failover_detection` | Teaming failover detection (ms) | 1 s | 0 s – 1 min | a demonstration value (link-status failover detection takes about a second) | a virtual switch |  |
 | `container_start` | Container start time (s) | 2 s | 0 s – 10 min | a demonstration value (a container starts in seconds) | a Container engine service (`services.container_engine.simulation`) |  |
+| `transfer_delay` | Transfer delay (ms) | 1 ms | 0 s – 1 min | a demonstration value (a separation gateway inspects what it transfers) | a Separation gateway's Domain separation (`services.separation.simulation`) |  |
+| `transfer_loss` | Transfer loss (%) | 0 % | 0 % – 100 % | none unless set | a Separation gateway's Domain separation (`services.separation.simulation`) |  |
 
 | Device type | Device-wide simulation attributes |
 |---|---|
-| Router (`router`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `igmp_query_interval`, `spf_delay`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `max_paths`, `ike_lifetime`, `child_lifetime`, `rekey_margin`, `dpd_interval`, `dpd_retries`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `igmp_version`, `unsolicited_report_interval`, `igmp_querier`, `igmp_max_response`, `igmp_robustness`, `last_member_query_interval`, `spt_switchover`, `multicast_over_tunnel` |
-| Switch (`switch`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `mac_aging`, `stp_mode`, `igmp_snooping`, `ttl`, `icmp_errors`, `igmp_query_interval`, `spf_delay`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `max_paths`, `mac_table_size`, `stp_hello`, `stp_forward_delay`, `stp_max_age`, `bridge_priority`, `bridge_priority_vlans`, `stp_edge`, `stp_bpdu_guard`, `ike_lifetime`, `child_lifetime`, `rekey_margin`, `dpd_interval`, `dpd_retries`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `igmp_version`, `unsolicited_report_interval`, `igmp_querier`, `igmp_max_response`, `igmp_robustness`, `last_member_query_interval`, `spt_switchover`, `router_port_aging`, `multicast_over_tunnel` |
-| Firewall (`firewall`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `igmp_query_interval`, `spf_delay`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `max_paths`, `ha_failover`, `ike_lifetime`, `child_lifetime`, `rekey_margin`, `dpd_interval`, `dpd_retries`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `default_action`, `allow`, `stateful`, `tcp_session_timeout`, `tcp_handshake_timeout`, `udp_session_timeout`, `icmp_session_timeout`, `igmp_version`, `unsolicited_report_interval`, `igmp_querier`, `igmp_max_response`, `igmp_robustness`, `last_member_query_interval`, `spt_switchover`, `multicast_over_tunnel` |
+| Router (`router`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `igmp_query_interval`, `spf_delay`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `max_paths`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `igmp_version`, `unsolicited_report_interval`, `igmp_querier`, `igmp_max_response`, `igmp_robustness`, `last_member_query_interval`, `spt_switchover` |
+| Switch (`switch`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `mac_aging`, `stp_mode`, `igmp_snooping`, `ttl`, `icmp_errors`, `igmp_query_interval`, `spf_delay`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `max_paths`, `mac_table_size`, `stp_hello`, `stp_forward_delay`, `stp_max_age`, `bridge_priority`, `bridge_priority_vlans`, `stp_edge`, `stp_bpdu_guard`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `igmp_version`, `unsolicited_report_interval`, `igmp_querier`, `igmp_max_response`, `igmp_robustness`, `last_member_query_interval`, `spt_switchover`, `router_port_aging` |
+| Firewall (`firewall`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `igmp_query_interval`, `spf_delay`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `max_paths`, `ha_failover`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `default_action`, `allow`, `stateful`, `tcp_session_timeout`, `tcp_handshake_timeout`, `udp_session_timeout`, `icmp_session_timeout`, `igmp_version`, `unsolicited_report_interval`, `igmp_querier`, `igmp_max_response`, `igmp_robustness`, `last_member_query_interval`, `spt_switchover` |
 | Access point (`ap`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `association_time`, `client_idle_timeout`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `igmp_version`, `unsolicited_report_interval` |
-| Server (`server`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `response_time`, `snmp_interval`, `snmp_timeout`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `listening`, `offer_delay`, `ping_check`, `igmp_version`, `unsolicited_report_interval`, `icmp_probe_interval` |
-| Virtual machine (`vm`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `response_time`, `snmp_interval`, `snmp_timeout`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `listening`, `offer_delay`, `ping_check`, `igmp_version`, `unsolicited_report_interval`, `icmp_probe_interval` |
-| Container (`container`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `response_time`, `snmp_interval`, `snmp_timeout`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `listening`, `restart_policy`, `offer_delay`, `ping_check`, `igmp_version`, `unsolicited_report_interval`, `icmp_probe_interval` |
+| Load balancer (`load_balancer`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `igmp_query_interval`, `spf_delay`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `max_paths`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `listening`, `igmp_version`, `unsolicited_report_interval`, `igmp_querier`, `igmp_max_response`, `igmp_robustness`, `last_member_query_interval`, `spt_switchover` |
+| IDS/IPS (`ids_ips`) | `boot_time`, `fail_mode`, `inspection_latency` |
+| VPN Gateway (`vpn_gateway`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `igmp_query_interval`, `spf_delay`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `max_paths`, `ike_lifetime`, `child_lifetime`, `rekey_margin`, `dpd_interval`, `dpd_retries`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `igmp_version`, `unsolicited_report_interval`, `igmp_querier`, `igmp_max_response`, `igmp_robustness`, `last_member_query_interval`, `spt_switchover`, `multicast_over_tunnel` |
+| Separation gateway (`separation_gateway`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `igmp_version`, `unsolicited_report_interval` |
+| Server (`server`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `response_time`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `listening`, `igmp_version`, `unsolicited_report_interval` |
+| Virtual machine (`vm`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `igmp_query_interval`, `spf_delay`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `max_paths`, `response_time`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `listening`, `igmp_version`, `unsolicited_report_interval`, `igmp_querier`, `igmp_max_response`, `igmp_robustness`, `last_member_query_interval`, `spt_switchover` |
+| Container (`container`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `response_time`, `restart_policy`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `listening`, `igmp_version`, `unsolicited_report_interval` |
 | Storage (`storage`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `response_time`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `listening`, `igmp_version`, `unsolicited_report_interval` |
-| Load balancer (`load_balancer`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `igmp_query_interval`, `spf_delay`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `max_paths`, `ike_lifetime`, `child_lifetime`, `rekey_margin`, `dpd_interval`, `dpd_retries`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `listening`, `igmp_version`, `unsolicited_report_interval`, `igmp_querier`, `igmp_max_response`, `igmp_robustness`, `last_member_query_interval`, `spt_switchover`, `multicast_over_tunnel` |
-| Proxy (`proxy`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `igmp_query_interval`, `spf_delay`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `max_paths`, `ike_lifetime`, `child_lifetime`, `rekey_margin`, `dpd_interval`, `dpd_retries`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `listening`, `client_timeout`, `upstream_timeout`, `igmp_version`, `unsolicited_report_interval`, `igmp_querier`, `igmp_max_response`, `igmp_robustness`, `last_member_query_interval`, `spt_switchover`, `multicast_over_tunnel` |
-| IDS/IPS (`ids_ips`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `fail_mode`, `inspection_latency`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `igmp_version`, `unsolicited_report_interval` |
-| Gateway (`gateway`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `igmp_query_interval`, `spf_delay`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `max_paths`, `ike_lifetime`, `child_lifetime`, `rekey_margin`, `dpd_interval`, `dpd_retries`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `igmp_version`, `unsolicited_report_interval`, `igmp_querier`, `igmp_max_response`, `igmp_robustness`, `last_member_query_interval`, `spt_switchover`, `multicast_over_tunnel` |
-| Endpoint (`endpoint`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `test_traffic`, `test_interval`, `test_type`, `app_timeout`, `boot_time`, `snmp_interval`, `snmp_timeout`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `test_targets`, `igmp_version`, `unsolicited_report_interval`, `icmp_probe_interval` |
+| Endpoint (`endpoint`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `test_traffic`, `test_interval`, `test_type`, `app_timeout`, `boot_time`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `test_targets`, `igmp_version`, `unsolicited_report_interval` |
 | Cloud (`cloud`) | `latency`, `loss`, `boot_time`, `multicast` |
 | System (`system`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `snmp_interval`, `snmp_timeout`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `igmp_version`, `unsolicited_report_interval`, `icmp_probe_interval` |
 
@@ -1975,8 +2297,9 @@ README's limitations):
   nothing answers.
 - **Listening services**: a device listens on its `listening` ports, else
   on the ports of the relations it serves (their profile's transport, e.g.
-  HTTPS TCP 443, DNS UDP 53; both ends of BGP or LDP; a load balancer or
-  proxy also on the ports it passes requests on to). A request of a
+  HTTPS TCP 443, DNS UDP 53; both ends of BGP or LDP; a load balancer
+  also on the ports it passes requests on to; a protocol break on its
+  transfer profiles' ports). A request of a
   relation to a port its `listening` leaves out is refused like any other.
 - **Firewalls** (routing ones): the traffic of the model's relations (and
   of its demands, and tests between a service relation's endpoints on its
@@ -2003,10 +2326,10 @@ README's limitations):
   algorithm, a client keeping its member within the persistence timeout;
   health checks every interval (a TCP handshake, else the member's
   protocol), a member down after the failure threshold, up again at the
-  first success. A proxy passes it to the server of its own service
-  relation: without a connection within its upstream connect timeout the
-  client gets *504 Gateway Timeout*; an idle client connection is closed
-  after its client connection timeout.
+  first success. A Separation gateway that breaks the protocol ends the
+  request (leg 1) and opens a connection of its own to its transfer
+  profile's forward address (leg 2), when its policy permits; the answer
+  goes back on leg 1, and a transfer it does not permit is reset.
 - **Monitoring**: a device that polls agents by SNMP pings each every ICMP
   probe interval (unanswered after 500 ms, fping's default).
 - **Broadcast**: a broadcast frame (ff:ff:ff:ff:ff:ff) is flooded to every

@@ -55,6 +55,7 @@ import { ParamEditor, paramEditor } from './sim-params-ui';
 import { ProtocolPicker, protocolPicker } from './sim-protocols-ui';
 import { TableKind, TablePanels } from './sim-tables';
 import { SimulationMode } from './simulation-mode';
+import { capabilities } from '../model/capabilities';
 
 export const SPEEDS = PACE_SPEEDS;
 export const TIMER_SCALES: readonly number[] = [1, 60, 240, 3600];
@@ -906,7 +907,7 @@ export class SimController implements SimulationMode {
 
   private isFirewall(dev: string): boolean {
     const d = this.host.model().index.devices.get(dev);
-    return !!d && d.type === 'firewall';
+    return !!d && capabilities(d).firewallPolicy;
   }
 
   /** The packet inspector for a dot (a flight): the simulation pauses first. */

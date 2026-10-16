@@ -17,13 +17,14 @@
 import { formatAddr, inPrefix, networkOf, prefixText } from '../analysis/ipmath';
 import { ParamDef, parseValue } from '../analysis/sim/params';
 import { dnsNameKey, dnsNameProblem } from '../model/dns';
-import { DEFAULT_LEASE, SERVER_TYPES, cmpAddr, derivedRecords, inRange, inZone, recordFqdn } from '../model/netservices';
+import { DEFAULT_LEASE, cmpAddr, derivedRecords, inRange, inZone, recordFqdn } from '../model/netservices';
 import { IpAddr, IpPrefix, parseAddress, parsePrefix } from '../model/ip';
 import { Device, DhcpScope, DnsRecord, DnsZone, Model, NetServices, deviceInterfaces } from '../model/types';
 import { YMap, YNode } from '../yaml/parse';
 import { SCHEMA } from '../yaml/schema';
 import { Ctx, Reader, get, isNull } from './reader';
 import { SimBlock, readSimBlock } from './simulation';
+import { capabilities } from '../model/capabilities';
 
 
 
@@ -74,7 +75,7 @@ export function readNetServices(r: Reader, c: Ctx, n: YNode | undefined, path: s
   r.keys(m, SCHEMA.netServices, path);
   // (the Hypervisor and the Container engine are read in virtual.ts)
   if (get(m, 'dhcp') === undefined && get(m, 'dns') === undefined) return undefined;
-  if (SERVER_TYPES.indexOf(dev.type) < 0) {
+  if (!capabilities(dev).networkServices) {
     c.error(m, path, `"${dev.id}" is not a server: DHCP and DNS servers run on a server, a VM or a container`);
     return undefined;
   }

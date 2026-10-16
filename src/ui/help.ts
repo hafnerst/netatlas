@@ -365,6 +365,50 @@ const MANUAL: Section[] = [
     ],
   },
   {
+    id: 'device-model',
+    title: 'Say what a device is',
+    steps: [
+      'Select a device and open the **Edit** tab. Its *Identity* card says what it is, in order: **Type**, then **Kind** (optional: the type’s kinds, such as *NGFW* for a firewall or *PLC* for an endpoint, or **Other** with a **Kind name** of your own), then **Role** (optional: *core*, *access*, *spine*, *leaf*, *border* … or your own).',
+      'A firewall, an IDS/IPS and an access point have a **Mode**: a firewall *Routed* or *Transparent* (it bridges its data ports and filters what passes), an IDS/IPS *Inline* (between its paired ports) or *Passive* (it receives copies). A System has a **Purpose**, required and not preselected (host, Layer 2 or Layer 3 forwarder, inline, passive monitor, pass-through, external network), and an **Icon** among its purpose’s.',
+      'An inline device and a pass-through System have a **Port pairs** card: press **+ Add port pair**, choose its two ports, its direction, and the monitor ports that get a **copy** (a TAP). A firewall, an IDS/IPS or a Separation gateway lists its **Management interfaces**: never forwarded.',
+      'Changing the type, the mode or the purpose asks first when something would no longer fit, lists it and what stays but is then reported, and does it in one step you can undo. Nothing new is chosen for you.',
+    ],
+    notes: [
+      'What a device does follows from these choices, everywhere: in the checks, the path tracer, the simulation, single points of failure and Auto-arrange, which puts a known role in its row. Find and the palette find a device by its role or kind (*core*, *plc*).',
+      'A Cloud is an external network crossed as one Layer 3 hop. A public cloud is a group of the kind Cloud region, VPC or VNet with its provider; a VM or container in it may be a cloud instance, without a host.',
+    ],
+    figures: [['device-model', 'pgw in ot-network.yaml: a System whose purpose is Layer 3 forwarder, with its kind name and its icon.']],
+  },
+  {
+    id: 'vpn-gateway',
+    title: 'Configure a VPN Gateway',
+    steps: [
+      'Give a device the type **VPN Gateway**. Its **VPN gateway** card is built in and can’t be removed; press **+ Configure the VPN gateway**. Nothing is chosen for you: its **Operation** and **Technology** are errors until you set them.',
+      '**Site to site:** add its **Tunnels**, tunnel interfaces of the device, each with its source (the local end) and destination (the peer). **Remote access:** its **Listener** (the interface its clients connect to) and its **Client pool**. Both: the **Protected networks** behind it.',
+      'Route the protected networks through the tunnel (a static route via the peer’s tunnel address, or a routing protocol over it), and trace a path across: the trace shows the encapsulation and its underlay.',
+    ],
+    notes: ['A VPN Gateway forwards only to and from its VPN: traffic between its other interfaces is refused, in the trace and in the simulation. See **wan-vpn.yaml**.'],
+  },
+  {
+    id: 'separation',
+    title: 'Separate two security domains',
+    steps: [
+      'Give a device the type **Separation gateway**. Its **Domain separation** card is built in. Choose its **Implementation**, which has no default: a **filtering bridge** (permitted frames pass unchanged; one network on both sides), a **filtering router** (permitted packets are routed) or a **protocol break** (nothing passes through: a transfer ends at the gateway, which starts a new one of its own).',
+      'Add its two **domains**: a name each (*Red* and *Black* are only suggestions) and their data interfaces. Tick the **Permitted directions**. List the gateway’s **Management interfaces** apart: they are never forwarded.',
+      'Add **rules**: each permits a transfer from one domain to the other, for a source, a destination, a protocol and ports — every field written (*any* when you mean any). The first matching rule permits; everything else is denied, both ways. A protocol break needs a **transfer profile** for each permitted transfer (HTTPS, DNS or syslog: where it listens and where it sends the new transfer).',
+      'Check it with **Trace path…** and a **Service** (*tcp/443*): a permitted transfer passes (a protocol break shows **Leg 2**, its own transfer), anything else stops at the gateway with the reason. Start a simulation to see both legs and the denials in the timeline.',
+    ],
+    notes: [
+      'A permitted transfer’s replies come back; starting a transfer the other way needs its own direction and rule. The ports say their domain in the diagram, and the Details tab lists the policy in order.',
+      'This is a model of how such a boundary behaves, not of a particular product, and no assurance of a real device’s separation. See **cross-domain.yaml** and **separation-filtering.yaml**.',
+    ],
+    figures: [
+      ['separation', 'cdg in cross-domain.yaml: the protocol break between Red and Black, each port with its domain, the management network apart.'],
+      ['separation-edit', 'cdg’s Domain separation card: its implementation, the two domains, the permitted direction and the transfer profile web.'],
+      ['separation-trace', 'Trace path from red-ws to the gateway with the service tcp/443: leg 1 ends at cdg, leg 2 is the gateway’s own transfer to black-web.'],
+    ],
+  },
+  {
     id: 'sim-dhcp-dns',
     title: 'Follow DHCP and DNS in a simulation',
     steps: [
@@ -429,7 +473,7 @@ const MANUAL: Section[] = [
       'Click a name in the table to select it. **Copy as text** copies the trace; **Exit trace**, `Esc` in the diagram or closing the window removes the path.',
     ],
     notes: [
-      'The trace is computed from the routes and adjacencies in the model: an approximation, not a simulation of the protocols. ACLs and firewall policies are not considered. Nothing in the model changes.',
+      'The trace is computed from the routes and adjacencies in the model: an approximation, not a simulation of the protocols. A Separation gateway’s policy (by the service you give: tcp/443, udp/53, icmp), a VPN Gateway’s tunnels and the paired ports of inline and pass-through devices are considered; firewall ACLs are not. Nothing in the model changes.',
       'Virtual machines and containers: a vNIC leaves its host through its port group’s virtual switch and the uplink its teaming uses (active / standby: the first that is up; LACP: the bond), or through its passthrough port; guests on one virtual switch or one container network reach each other inside the host, listed as **inside** under the hop. NAT only for container bridges: traffic out of the host gets the host’s address (**SNAT**); a container behind NAT is reached from outside only at its host’s address, on a published port (**DNAT**).',
     ],
     figures: [['trace', 'A path from the Munich branch to the syslog server: through the GRE-over-IPsec tunnel, the firewall and a core switch, with the equal-cost alternative dashed, and the Trace path window with its hop table.']],

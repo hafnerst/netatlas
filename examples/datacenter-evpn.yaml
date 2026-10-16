@@ -41,8 +41,8 @@ groups:
 devices:
   - id: spine1
     type: switch
+    role: spine
     layer3: true
-    tier: 1
     group: rack-a01
     router_id: Lo0
     protocols:
@@ -56,8 +56,8 @@ devices:
       - {id: Lo0, type: loopback, ip: 10.0.250.1/32}
   - id: spine2
     type: switch
+    role: spine
     layer3: true
-    tier: 1
     group: rack-a01
     router_id: Lo0
     protocols:
@@ -72,8 +72,8 @@ devices:
 
   - id: leaf1
     type: switch
+    role: leaf
     layer3: true
-    tier: 2
     group: rack-a02
     router_id: Lo0
     protocols:
@@ -89,8 +89,8 @@ devices:
       - {id: Vlan100, type: virtual, ip: 192.168.100.2/24, vrf: tenant-a}
   - id: leaf2
     type: switch
+    role: leaf
     layer3: true
-    tier: 2
     group: rack-a02
     router_id: Lo0
     protocols:
@@ -106,8 +106,8 @@ devices:
       - {id: Vlan100, type: virtual, ip: 192.168.100.3/24, vrf: tenant-a}
   - id: leaf3
     type: switch
+    role: leaf
     layer3: true
-    tier: 2
     group: rack-a03
     router_id: Lo0
     protocols:
@@ -123,8 +123,8 @@ devices:
       - {id: Vlan100, type: virtual, ip: 192.168.100.4/24, vrf: tenant-a}
   - id: leaf4
     type: switch
+    role: leaf
     layer3: true
-    tier: 2
     group: rack-a03
     router_id: Lo0
     protocols:
@@ -161,7 +161,10 @@ devices:
   - id: wan-pe
     label: Carrier PE
     type: router
+    role: pe
     group: wan
+    # (beside the spines: its cable goes down to the border leaf without crossing their row)
+    tier: 3
     protocols:
       bgp: {asn: 64512}
     interfaces:

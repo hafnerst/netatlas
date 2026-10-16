@@ -50,7 +50,7 @@ import {
   VSwitch,
   ifaceKey,
 } from '../model/types';
-import { sizeBytes } from '../model/virtual';
+import { sizeBytes, isGuest, isVm, isContainer, mayHostVms, mayHostContainers } from '../model/virtual';
 import { YMap, YNode } from '../yaml/parse';
 import { SCHEMA } from '../yaml/schema';
 import { Ctx, IFACE_RE, Reader, get, isNull, suggest } from './reader';
@@ -65,7 +65,7 @@ function typeWords(type: string): string {
 
 /** Is a device a guest (a VM or a container)? */
 export function isGuestType(type: string): boolean {
-  return type === 'vm' || type === 'container';
+  return isGuest({ type });
 }
 
 /** Where the parts of a device's virtualization were written (for the checks with the whole model). */
@@ -108,7 +108,7 @@ function readSize(r: Reader, c: Ctx, m: YMap, key: string, path: string): string
 }
 
 /** A service object's `simulation:` block: only the attributes of that object (svc), checked against the registry. */
-function readSvcSim(r: Reader, c: Ctx, n: YNode | undefined, path: string, svc: SvcLevel, what: string): Map<string, number | string> | undefined {
+export function readSvcSim(r: Reader, c: Ctx, n: YNode | undefined, path: string, svc: SvcLevel, what: string): Map<string, number | string> | undefined {
   const sb = readSimBlock(r, c, n, path, 'service');
   if (!sb) return undefined;
   for (const k of Array.from(sb.values.keys())) {
@@ -126,12 +126,17 @@ function readSvcSim(r: Reader, c: Ctx, n: YNode | undefined, path: string, svc: 
  * `guest_os`, `vcpu` and `ram`, a container's `image`. On any other type
  * they are errors.
  */
-export function readGuestFields(r: Reader, c: Ctx, m: YMap, dpath: string, dev: Device, nodes: VirtNodes): void {
+export function readGuestFields(r: Reader, c: Ctx, m: YMap, dpath: string, dev: Device, nodes: VirtNodes, cloudGroup: (id: string) => boolean = () => false): void {
   const guest = isGuestType(dev.type);
   const hn = get(m, 'host');
-  if (guest) {
-    const want = dev.type === 'vm' ? 'a server with the Hypervisor service' : 'a server or a VM with the Container engine service';
-    if (isNull(hn)) c.error(m, dpath + '.host', `${dev.type === 'vm' ? 'VM' : 'container'} "${dev.id}" needs its host: ${want}`, { key: 'host' });
+  const gn0 = get(m, 'group');
+  const group0 = !isNull(gn0) ? r.str(gn0, dpath + '.group', 200) : undefined;
+  if (guest && isNull(hn) && group0 !== undefined && cloudGroup(group0)) {
+    // a cloud instance: in a cloud region, VPC or VNet, on the provider's hosts (not modelled)
+    dev.cloudInstance = true;
+  } else if (guest) {
+    const want = isVm(dev) ? 'a server with the Hypervisor service' : 'a server or a VM with the Container engine service';
+    if (isNull(hn)) c.error(m, dpath + '.host', `${isVm(dev) ? 'VM' : 'container'} "${dev.id}" needs its host: ${want} (or, as a cloud instance, a cloud group: a cloud_region, vpc or vnet)`, { key: 'host' });
     else {
       dev.host = r.str(hn, dpath + '.host', 200);
       nodes.hostNode = hn;
@@ -150,11 +155,11 @@ export function readGuestFields(r: Reader, c: Ctx, m: YMap, dpath: string, dev: 
   if (only('vcpu', 'vm', 'a VM')) dev.vcpu = r.int(get(m, 'vcpu'), dpath + '.vcpu', 1, 4096, 'number of virtual CPUs');
   if (only('ram', 'vm', 'a VM')) dev.ram = readSize(r, c, m, 'ram', dpath);
   if (only('image', 'container', 'a container')) dev.image = r.field(m, 'image', dpath, 300);
-  // a guest's location is its host's
+  // a guest's location is its host's (a cloud instance's is its cloud group)
   const gn = get(m, 'group');
-  if (guest && !isNull(gn)) {
+  if (guest && !dev.cloudInstance && !isNull(gn)) {
     nodes.groupNode = gn;
-    c.error(gn as YNode, dpath + '.group', `${dev.type === 'vm' ? 'VM' : 'container'} "${dev.id}" is where its host is: its location is the host's — delete "group" (set the host's location instead)`);
+    c.error(gn as YNode, dpath + '.group', `${isVm(dev) ? 'VM' : 'container'} "${dev.id}" is where its host is: its location is the host's — delete "group" (set the host's location instead)`);
     dev.group = undefined;
   }
 }
@@ -166,14 +171,14 @@ export function readVirtServices(r: Reader, c: Ctx, n: YNode | undefined, path: 
   const hn = get(m, 'hypervisor');
   if (hn !== undefined) {
     const hpath = path + '.hypervisor';
-    if (dev.type !== 'server') {
-      c.error(hn, hpath, `the Hypervisor service runs on a server; "${dev.id}" is ${typeWords(dev.type)}${dev.type === 'vm' ? ' (nested virtualization is not modelled)' : ''}`);
+    if (!mayHostVms(dev)) {
+      c.error(hn, hpath, `the Hypervisor service runs on a server; "${dev.id}" is ${typeWords(dev.type)}${isVm(dev) ? ' (nested virtualization is not modelled)' : ''}`);
     } else readHypervisor(r, c, hn, hpath, dev, nodes);
   }
   const en = get(m, 'container_engine');
   if (en !== undefined) {
     const epath = path + '.container_engine';
-    if (dev.type !== 'server' && dev.type !== 'vm') {
+    if (!mayHostContainers(dev)) {
       c.error(en, epath, `the Container engine service runs on a server or a VM; "${dev.id}" is ${typeWords(dev.type)}`);
     } else readEngine(r, c, en, epath, dev, nodes);
   }
@@ -406,7 +411,7 @@ function readEngine(r: Reader, c: Ctx, n: YNode, path: string, dev: Device, node
  */
 export function readVirtIface(r: Reader, c: Ctx, im: YMap, ipath: string, iface: Interface, dev: Device): void {
   if (iface.type === 'vnic') {
-    if (dev.type !== 'vm' && dev.type !== 'server') {
+    if (!mayHostContainers(dev)) {
       c.error(get(im, 'type') as YNode, ipath + '.type', `a vnic is a VM's virtual NIC (or a hypervisor's host interface); "${dev.id}" is ${typeWords(dev.type)}`);
     }
     iface.portGroup = r.field(im, 'port_group', ipath, 64);
@@ -419,7 +424,7 @@ export function readVirtIface(r: Reader, c: Ctx, im: YMap, ipath: string, iface:
     const roleN = get(im, 'role');
     if (!isNull(roleN)) {
       const t = r.str(roleN, ipath + '.role', 30);
-      if (dev.type !== 'server') c.error(roleN as YNode, ipath + '.role', `"role" is a hypervisor's host interface's (management, migration, storage); "${iface.id}" is a VM's vnic — delete it`);
+      if (!mayHostVms(dev)) c.error(roleN as YNode, ipath + '.role', `"role" is a hypervisor's host interface's (management, migration, storage); "${iface.id}" is a VM's vnic — delete it`);
       else if (t !== undefined && HOST_IFACE_ROLES.indexOf(t as HostIfaceRole) < 0) c.error(roleN as YNode, ipath + '.role', `"${t}" is not a host interface role: use ${HOST_IFACE_ROLES.join(', ')}`);
       else if (t !== undefined) iface.role = t as HostIfaceRole;
     }
@@ -428,14 +433,14 @@ export function readVirtIface(r: Reader, c: Ctx, im: YMap, ipath: string, iface:
       iface.passthrough = undefined;
       iface.vf = undefined;
     } else if (iface.portGroup === undefined && iface.passthrough === undefined) {
-      c.error(im, ipath + '.port_group', `vnic "${iface.id}" of "${dev.id}" needs its port group (a port group of its host's virtual switches)${dev.type === 'vm' ? ' or a passthrough port' : ''}`, { key: 'port_group' });
-    } else if (iface.passthrough !== undefined && dev.type !== 'vm') {
+      c.error(im, ipath + '.port_group', `vnic "${iface.id}" of "${dev.id}" needs its port group (a port group of its host's virtual switches)${isVm(dev) ? ' or a passthrough port' : ''}`, { key: 'port_group' });
+    } else if (iface.passthrough !== undefined && !isVm(dev)) {
       c.error(get(im, 'passthrough') as YNode, ipath + '.passthrough', `passthrough binds a VM's vnic to a host port; a host interface is on a port group — delete it`);
       iface.passthrough = undefined;
     }
   }
   if (iface.type === 'veth') {
-    if (dev.type !== 'container') c.error(get(im, 'type') as YNode, ipath + '.type', `a veth is a container's attachment to a container network; "${dev.id}" is ${typeWords(dev.type)}`);
+    if (!isContainer(dev)) c.error(get(im, 'type') as YNode, ipath + '.type', `a veth is a container's attachment to a container network; "${dev.id}" is ${typeWords(dev.type)}`);
     if (isNull(get(im, 'network'))) c.error(im, ipath + '.network', `veth "${iface.id}" of "${dev.id}" needs its container network (a network of its host's container engine)`, { key: 'network' });
     else iface.network = r.field(im, 'network', ipath, 64);
     const al: string[] = [];
@@ -511,18 +516,18 @@ export function checkVirtual(c: Ctx, x: VirtCheckCtx): Interface[] {
     const node = (vn && vn.hostNode) || at(d.id).node;
     const path = at(d.id).path + '.host';
     const h = devIndex.get(d.host);
-    const kind = d.type === 'vm' ? 'VM' : 'container';
+    const kind = isVm(d) ? 'VM' : 'container';
     if (!h) {
       c.error(node, path, `unknown host "${d.host}"${suggest(d.host, Array.from(devIndex.keys()))}`);
       d.host = undefined;
     } else if (h.id === d.id) {
       c.error(node, path, `${kind} "${d.id}" can't be its own host`);
       d.host = undefined;
-    } else if (d.type === 'vm' && !(h.type === 'server' && h.hypervisor)) {
-      c.error(node, path, `the host of VM "${d.id}" is a server with the Hypervisor service; "${h.id}" ${h.type === 'server' ? 'has no Hypervisor service (enable it in its Services)' : `is ${typeWords(h.type)}`}`);
+    } else if (isVm(d) && !(mayHostVms(h) && h.hypervisor)) {
+      c.error(node, path, `the host of VM "${d.id}" is a server with the Hypervisor service; "${h.id}" ${mayHostVms(h) ? 'has no Hypervisor service (enable it in its Services)' : `is ${typeWords(h.type)}`}`);
       d.host = undefined;
-    } else if (d.type === 'container' && !((h.type === 'server' || h.type === 'vm') && h.containerEngine)) {
-      c.error(node, path, `the host of container "${d.id}" is a server or a VM with the Container engine service; "${h.id}" ${h.type === 'server' || h.type === 'vm' ? 'has no Container engine service (enable it in its Services)' : `is ${typeWords(h.type)}`}`);
+    } else if (isContainer(d) && !(mayHostContainers(h) && h.containerEngine)) {
+      c.error(node, path, `the host of container "${d.id}" is a server or a VM with the Container engine service; "${h.id}" ${mayHostContainers(h) ? 'has no Container engine service (enable it in its Services)' : `is ${typeWords(h.type)}`}`);
       d.host = undefined;
     }
   }
@@ -579,8 +584,8 @@ export function checkVirtual(c: Ctx, x: VirtCheckCtx): Interface[] {
       const key = ifaceKey(d.id, i.id);
       const im = x.ifaceNodes.get(key) as YMap;
       const ipath = x.ifacePaths.get(key) as string;
-      const h = d.type === 'vm' ? (d.host !== undefined ? devIndex.get(d.host) : undefined) : d;
-      if (d.type === 'server' && !d.hypervisor) {
+      const h = isVm(d) ? (d.host !== undefined ? devIndex.get(d.host) : undefined) : d;
+      if (mayHostVms(d) && !d.hypervisor) {
         c.error(get(im, 'type') as YNode, ipath + '.type', `a server's vnic is a host interface on its own virtual switch: "${d.id}" has no Hypervisor service`);
         continue;
       }
@@ -611,7 +616,7 @@ export function checkVirtual(c: Ctx, x: VirtCheckCtx): Interface[] {
       }
     }
     // a VM's VLAN subinterfaces ("eth0.20" on a vnic): only with guest tagging or a trunk port group
-    if (d.type === 'vm' && d.host !== undefined) {
+    if (isVm(d) && d.host !== undefined) {
       const h = devIndex.get(d.host);
       for (const sub of d.logical) {
         const dot = sub.id.lastIndexOf('.');
@@ -636,7 +641,7 @@ export function checkVirtual(c: Ctx, x: VirtCheckCtx): Interface[] {
       if ((net.driver === 'macvlan' || net.driver === 'ipvlan') && net.parent !== undefined) {
         const p = interfaces.get(ifaceKey(d.id, net.parent));
         const ok = !!p && (p.type === 'physical' || p.type === 'vnic' || (p.type === 'virtual' && (p.members.length > 0 || /\./.test(p.id))));
-        if (!ok) c.error(get(node, 'parent') as YNode, path + '.parent', p ? `"${net.parent}" is a ${p.type} interface: a ${net.driver} network sits on a port, an aggregate, a VLAN subinterface${d.type === 'vm' ? ' or a vnic' : ''} of its host` : `"${d.id}" has no interface "${net.parent}"${suggest(net.parent, d.interfaces.concat(d.logical).map((y) => y.id))}`);
+        if (!ok) c.error(get(node, 'parent') as YNode, path + '.parent', p ? `"${net.parent}" is a ${p.type} interface: a ${net.driver} network sits on a port, an aggregate, a VLAN subinterface${isVm(d) ? ' or a vnic' : ''} of its host` : `"${d.id}" has no interface "${net.parent}"${suggest(net.parent, d.interfaces.concat(d.logical).map((y) => y.id))}`);
       }
       net.hosts.forEach((hid, j) => {
         const h = devIndex.get(hid);
@@ -671,7 +676,7 @@ export function checkVirtual(c: Ctx, x: VirtCheckCtx): Interface[] {
   /** "host|ip|port|proto" -> the veth that published it */
   const published = new Map<string, string>();
   for (const d of x.devices) {
-    if (d.type !== 'container') continue;
+    if (!isContainer(d)) continue;
     const nets = d.host !== undefined ? containerNetworksFor(devIndex, d.host) : [];
     for (const i of d.logical) {
       if (i.type !== 'veth') continue;
