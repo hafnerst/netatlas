@@ -11,7 +11,7 @@ things that are often mixed up in diagrams:
 
 | Concept | Section | Drawn in | Meaning |
 |---|---|---|---|
-| Physical connectivity | `links` | Physical view | A real cable / radio link between two ports, with the layer-2 tagging of each end |
+| Physical connectivity | `links` | Physical view | A real cable / radio link between two ports (what each port carries is configured on the port) |
 | Logical relationships | `relations` | Logical view | Protocol sessions, tunnels, overlays, redundancy groups, service dependencies |
 | IP networks | `networks` | Logical view | One IP prefix each, optionally with the VLAN it lives in. Members are derived from addresses. |
 | Static routes | `routes` of a device | Logical view | Destination prefix and next hop, per device and VRF |
@@ -56,12 +56,12 @@ the YAML file**.
 |---|---|---|
 | Which devices belong to a network | the network's `cidr` and the `ip` addresses of interfaces and loopbacks (an interface with `dhcp: true` has none, so it is in no network) | the network's member list (details, editor, membership lines in the logical view, selection context, layout) |
 | The VLAN of an IP network | `vlan` on the network | the VLAN shown for each interface address inside that network |
-| The VLANs a port carries | `mode`, `untagged`, `tagged` on each end of the link (`a`, `b`) | the networks a cable carries (the networks of those VLANs), the "VLANs differ" mark, the cables listed with a network, the VLAN checks |
+| The VLANs a port carries | `vlans` and `native` on the port, or on its aggregate (one VLAN: access; several: trunk); `routed: true` on a Layer 3 switch's routed port | its mode (access / trunk / routed) and badge, the port's diagram tag, the networks a cable carries (the networks of its ports' VLANs), the "VLANs differ" mark, the cables listed with a network, the VLAN checks |
 | Speed and medium of a physical connection | `speed` and `medium` on the link | cable width, colour and label |
 | The VRF of an interface | `vrf` on the interface | — |
 | The member ports of a bond / aggregate | `members` on the virtual interface | highlighting of the ports and their cables |
 | The VLAN of a VLAN interface | `vlan` on the virtual interface, or (when that is left out) the `vlan` of the network containing its address | — |
-| Which ports a VLAN interface uses | the tagging of the link ends (nothing on the interface) | *Ports carrying its VLAN* of the virtual interface |
+| Which ports a VLAN interface uses | the `vlans` of the device's ports and aggregates (nothing on the interface) | *Bridge ports* of the VLAN interface (every port of its VLAN, by mode), its highlighting |
 | What a relation depends on | `over` on the relation (links, relations or networks) | highlighting of the underlay path |
 | The interface a tunnel is sourced from, when its source is written as an address | the `ip` of the interface that has the address | the tunnel's source interface (highlighting, details) |
 | Where a static route leads | `routes` on the device (`via`, `interface`) and the `ip` of interfaces | the interface its next hop belongs to, how the next hop resolves, the next-hop line in the logical view |
@@ -72,19 +72,19 @@ none is derived from another:
 * **Membership** (IP containment, *derived*): a device is a member of a
   network when a configured address of one of its interfaces lies inside the
   network's prefix. It says nothing about cables.
-* **Link-end tagging** (layer-2 carriage, *configured* per end): `mode`,
-  `untagged` and `tagged` on a link end say which VLANs *that port* carries,
-  untagged or tagged. The networks a cable carries follow from it: the
-  networks whose `vlan` is one of those VLANs. Tagging doesn't make anyone a
-  member and isn't derived from the port's addresses. The two ends are
-  independent.
+* **Port VLANs** (layer-2 carriage, *configured* per port): `vlans` and
+  `native` on a port (or its aggregate) say which VLANs *that port* carries,
+  untagged or tagged. The networks a cable carries follow from its two
+  ports: the networks whose `vlan` is one of their VLANs. A port's VLANs
+  don't make anyone a member and aren't derived from addresses. The two
+  ends of a cable are independent.
 * **Relation underlay** (dependency, *configured*): `over` on a relation
   says what the relation rides on — links, other relations or networks.
 
 And separately: **`vlan` on a network** says which VLAN an IP subnet lives
 in. It answers "which VLAN is 10.10.10.0/24?" and gives interfaces with an
 address in the subnet their (derived) VLAN. VLANs are referenced by their ID
-everywhere: on a network, on a VLAN interface and on a link end. There is no
+everywhere: on a network, on a VLAN interface and on a port. There is no
 separate list of VLANs; a VLAN *exists in the model* when a network or a VLAN
 interface names it.
 
@@ -116,8 +116,9 @@ A **relation endpoint** is a device or one of its interfaces, nothing else:
 as a mapping it accepts only `device` and `interface`. Anything that
 describes an endpoint's part in the relation (a role, an address, an AS
 number …) goes into the relation's `attrs`. A **link end** written as a
-mapping accepts `device`, `interface` and the tagging keys `mode`, `untagged`
-and `tagged` (see [VLAN tagging](#vlan-tagging-on-a-link-end)). A link end can
+mapping accepts `device`, `interface` and the port settings `speed` and
+`duplex` (see [Port settings](#port-settings-on-a-link-end)); what a port
+carries is configured on the port (see [Port VLANs](#port-vlans-access-trunk-routed)). A link end can
 only name a physical interface; a relation endpoint can name any interface.
 
 **An endpoint binds its relation or link to what it names.** The diagrams
@@ -290,7 +291,8 @@ reports anything else on a Layer 2 switch as an error:
 
 | A Layer 2 switch may have | It may not have (errors) |
 |---|---|
-| addresses on **one** interface: its management interface (a VLAN interface, or a port), or DHCP there | addresses on a second interface (that would route between subnets or VLANs), a `dhcp_relay` |
+| ports that are switch ports: each with its VLANs (or its aggregate's), see [Port VLANs](#port-vlans-access-trunk-routed) | a port without VLANs, a routed port (`routed: true`), an address on a port |
+| addresses on **one** interface: its management interface (its one VLAN interface), or DHCP there | addresses on a second interface (that would route between subnets or VLANs), a `dhcp_relay` |
 | a VRF on that management interface | a VRF on any other interface |
 | static routes in the default table or in the management interface's VRF | routes in another VRF |
 | relations of services (SNMP, syslog, NTP …), LACP, MLAG, STP, LLDP, CDP and the model's own protocols | `protocols:` (routing services), `router_id`, VRRP / HSRP / GLBP / CARP groups on an interface, tunnel interfaces |
@@ -308,7 +310,10 @@ legend of both views.
 ```yaml
 - id: acc-sw
   type: switch                # a Layer 2 switch
-  interfaces: [p1, p2, up1]
+  interfaces:
+    - {id: p1, vlans: 10}                 # access ports
+    - {id: p2, vlans: 20}
+    - {id: up1, vlans: [10, 20, 99], native: 99}   # the trunk uplink
   logical_interfaces:
     - {id: Vlan99, type: virtual, vlan: 99, ip: 10.99.0.10/24}   # its management address
   routes:
@@ -316,6 +321,9 @@ legend of both views.
 - id: core1
   type: switch
   layer3: true                # a Layer 3 switch: routes between VLAN 10 and 20
+  interfaces:
+    - {id: down1, vlans: [10, 20, 99], native: 99}
+    - {id: wan, routed: true, ip: 192.0.2.2/30}    # a routed port
   logical_interfaces:
     - {id: Vlan10, type: virtual, vlan: 10, ip: 10.10.10.1/24}
     - {id: Vlan20, type: virtual, vlan: 20, ip: 10.10.20.1/24}
@@ -333,7 +341,9 @@ Making a switch a Layer 2 switch (unticking **Supports Layer 3**)
 asks first and lists what goes with it, in one undo step: its protocols
 and router ID, the groups on its interfaces, the addresses of every
 interface but its management interface, the VRFs of the others, its tunnel
-interfaces and routes in other VRFs. Relations at it that need routing are
+interfaces, routes in other VRFs, and `routed: true` on its routed ports
+(which then need their VLANs: nothing is chosen for them, so they are
+reported until they get them). Relations at it that need routing are
 listed but kept (they belong to other devices too) and reported until they
 are changed.
 
@@ -353,13 +363,15 @@ A device may have any number of either, including none.
 devices:
   - id: core1
     type: switch
+    layer3: true
     interfaces:                                     # physical
-      - {id: Ethernet1, ip: 198.51.100.2/30}
-      - {id: Ethernet51}
-      - Ethernet52                                  # the short form
+      - {id: Ethernet1, routed: true, ip: 198.51.100.2/30}   # a routed port
+      - {id: Ethernet2, vlans: 10}                  # an access port
+      - Ethernet51                                  # the short form (a member: it takes Port-Channel1's VLANs)
+      - Ethernet52
     logical_interfaces:
       - {id: lo0, type: loopback, label: Router ID, ip: [10.255.0.1/32, 2001:db8:ffff::1/128]}
-      - {id: Port-Channel1, type: virtual, members: [Ethernet51, Ethernet52]}   # a bond
+      - {id: Port-Channel1, type: virtual, members: [Ethernet51, Ethernet52], vlans: [10, 20]}   # a bond, a trunk
       - {id: Vlan10, type: virtual, vlan: 10, ip: 10.10.10.2/24}                # a VLAN interface
       - {id: Vxlan1, type: virtual}                                             # neither of the two
       - {id: tun0, type: tunnel, source: lo0, destination: 203.0.113.9}         # sourced from the loopback
@@ -374,14 +386,15 @@ devices:
 | `dhcp` | `true` or `false`; **omitted means `false`**. `true`: the interface obtains its address by DHCP, so it has no manually configured addresses. Not on a loopback. See [DHCP](#dhcp). |
 | `ip` | the manually configured addresses: one address or a list, `ip: 10.0.0.1/30` or `ip: [192.0.2.1/24, 2001:db8::1/64]`. Addresses that aren't valid IPv4/IPv6 addresses give a *warning* and are shown as written (on a loopback they are an error); for `ip: dhcp` the warning says to write `dhcp: true` instead (on a loopback: to write its address). **The addresses decide which networks the device belongs to.** |
 | `vrf` | name of the VRF the interface is assigned to (free text, display only). Membership in a network is decided by the address alone. |
+| `vlans`, `native`, `routed` | a port's (or an aggregate's) VLANs: see [Port VLANs](#port-vlans-access-trunk-routed). |
 | `mtu` | the interface's MTU in bytes, a whole number from 68 to 65535. Omitted: not modelled (no MTU is assumed, so nothing is compared). Read by the [consistency checks](#consistency-checks) `link-mtu-mismatch` and `tunnel-mtu`. |
 | `multicast` | the groups the device joins on the interface and the streams it sends from it, for the protocol simulation. See [Multicast](#multicast). |
 | `dhcp_relay` | the **DHCP relay** (helper addresses) of a routed interface with an address: `dhcp_relay: [10.10.10.10]`. It forwards the DHCP broadcasts of its subnet to these servers. See [DHCP](#dhcp). |
 | `simulation` | the interface's **simulation attributes** (ARP timers, spanning tree per port, IGMP, DHCP client retries …): only what it overrides. See [Levels](#levels-where-an-attribute-is-written). |
 | `mac`, `description`, `attrs` | |
 
-A **physical interface** has no other keys. In particular it has **no `type`
-key**: every entry of `interfaces` is a physical interface, and writing
+A **physical interface** has no other keys but its VLANs (`vlans`, `native`,
+`routed`). In particular it has **no `type` key**: every entry of `interfaces` is a physical interface, and writing
 `type:` there is an error, whatever its value.
 
 A **logical interface** additionally has:
@@ -389,15 +402,18 @@ A **logical interface** additionally has:
 | Key | Description |
 |---|---|
 | `type` | required: `loopback`, `virtual` or `tunnel`. No other value is accepted. |
-| `members` | `virtual` only. See [Aggregates](#aggregates-member-ports). |
+| `members` | `virtual` only. See [Aggregates](#aggregates-member-ports). An aggregate carries VLANs like a port (`vlans`, `native`). |
 | `min_links` | `virtual` with `members` only: how many member links must be up for the aggregate to be up (1–64). See [Aggregates](#aggregates-member-ports). |
-| `vlan` | `virtual` only. See [VLAN interfaces](#vlan-interfaces-ports-carrying-the-vlan). |
+| `vlan` | `virtual` only. See [VLAN interfaces](#vlan-interfaces-bound-to-their-bridge-ports). |
 | `source`, `destination` | `tunnel` only. See [Tunnel interfaces](#tunnel-interfaces-source-and-destination). |
 
 * `loopback`: an address of the device itself. See [Loopbacks](#loopbacks).
 * `virtual`: every other interface that isn't a port and isn't a tunnel: a
-  VLAN interface (SVI, IRB), a bond or LAG, a subinterface, a VTEP, a bridge.
-  Nothing is assumed about which of these it is.
+  VLAN interface (SVI, IRB, BVI), a bond or LAG, a subinterface, a VTEP, a
+  bridge. What it is follows from what is written: `members` make an
+  aggregate; a name `<port>.<n>` makes a subinterface of that port (or
+  aggregate); a VLAN (`vlan`, or the network of its address) otherwise makes
+  a VLAN interface; anything else is just virtual.
 * `tunnel`: a tunnel endpoint (GRE, IPsec VTI, WireGuard …).
 
 **A logical interface has no generic parent.** There is no "parent physical
@@ -407,7 +423,7 @@ fits its meaning; the three cases follow. A key on the wrong type (`members`
 on a tunnel, `source` on a loopback …) is an error, never ignored.
 
 An interface has **no** `speed` or `media` key, and a physical interface has
-no `vlan` key:
+no `vlan` key (it has `vlans`, the VLANs it carries):
 
 * speed and medium belong to the cable and are set on the [link](#links-physical-cabling-only);
   what a port is *set to* (its speed and duplex) is a setting of the link end
@@ -425,6 +441,82 @@ no `vlan` key:
 An interface with several addresses gets one result per address, so it can
 be associated with several networks and VLANs. That is not an ambiguity.
 This applies to physical and logical interfaces alike.
+
+#### Port VLANs: access, trunk, routed
+
+What a port carries is configured **on the port** (a physical interface,
+or an aggregate for its members), by VLAN ID:
+
+```yaml
+interfaces:
+  - {id: Gi1/0/1, vlans: 10}                        # an access port in VLAN 10 (untagged)
+  - {id: Gi1/0/48, vlans: [10, 20, 30-39], native: 99}   # a trunk: 99 untagged, the others tagged
+  - {id: Gi1/0/47, vlans: [10, 20]}                 # a trunk without a native VLAN: every VLAN tagged
+  - {id: Te1/3, routed: true, ip: 10.0.0.2/30}      # a routed port (a Layer 3 switch's)
+```
+
+| Key | Description |
+|---|---|
+| `vlans` | the VLANs the port carries: one ID (1–4094), a range `100-199`, or a list of both (`[10, 20, 30-39]`). **One VLAN** makes an **access port** (its frames untagged); **several** make a **trunk** (802.1Q-tagged). |
+| `native` | a trunk's **native VLAN**: one of its `vlans`, sent and taken untagged; every other VLAN is tagged. Without it every VLAN of the trunk is tagged. |
+| `routed` | `true`: a **routed port** of a Layer 3 switch (a Layer 3 interface: no VLANs, it may have addresses). |
+
+* A port with VLANs is a **bridge port** (a switch port). It has **no
+  address of its own**: an `ip` or `dhcp: true` on it is an error (the
+  address goes on the VLAN interface of its VLAN, or the port is made
+  routed).
+* **Per device type:**
+
+  | Device | A port without `vlans` |
+  |---|---|
+  | switch (Layer 2) | an **error** (*needs its VLANs*) until they are filled in: every port says what it carries |
+  | Layer 3 switch | the same, unless it is a routed port (`routed: true`) |
+  | router, firewall and other Layer 3 devices | a **routed port**: VLANs are optional; with VLANs it is a bridge port (for a BVI / IRB) |
+  | hosts (servers, endpoints …) | unaffected: their ports are just ports |
+
+* **Aggregates:** the VLANs are written on the aggregate, and its member
+  ports take them. A member with VLANs (or `native`, `routed`) of its own is
+  an error. A switch's aggregate needs its VLANs like a port.
+* **Subinterfaces** (router-on-a-stick) stay: a virtual interface named
+  `<port>.<n>` (`ge-0/0/1.10`) is a subinterface of that port or aggregate,
+  in its VLAN (`vlan`, or the network of its address), always 802.1Q-tagged.
+  Its port stays a routed port; it shows the VLANs it tags (*Routed · tagged
+  10, 20*). A port can't be both a bridge port of a VLAN and the parent of a
+  subinterface for the same VLAN: that is an error.
+* Errors: a VLAN ID outside 1–4094 or a bad range (one whose end is lower
+  than its start), a VLAN listed twice, a `native` VLAN that isn't one of
+  the port's VLANs, `native` on an access port (one VLAN is untagged
+  anyway), `routed` on a Layer 2 switch or on a device that isn't a switch,
+  `routed` together with `vlans`, and `vlans` / `native` / `routed` on a
+  loopback, a tunnel or a VLAN interface.
+* **The networks a cable carries are derived** from its two ports: the
+  networks whose `vlan` is one of their VLANs. Carriage is not membership:
+  it makes no device a member of a network.
+* The **VLAN checks** (see [Consistency checks](#consistency-checks)) compare
+  the two ends of every cable: access ports in different VLANs, trunks with
+  different lists, a native VLAN mismatch, an access port facing a trunk
+  whose native VLAN is another one, VLANs nothing defines, and aggregate
+  members whose far ends differ. **Neither end is changed**: fix the one
+  that is wrong.
+* **Display:** the port's card, the device's port list and the details show
+  its mode as a badge in words — *Access · VLAN 10*, *Trunk · 10, 20, 30–39
+  (native 10)*, *Routed* — never in colour alone. In the **physical view**
+  the port's label has its VLANs as a second line: `A 10` (access), `T
+  10,20,30–39 · N 10` (trunk, its native VLAN), `R · T 10,20` (a routed port
+  with tagged subinterfaces); a trunk is drawn larger, with a thick frame.
+  A cable shows what both its ports carry, and one whose ends disagree is
+  marked ⚠ with *VLANs differ*. The Objects list shows the same on each
+  cable. **Find** finds ports and cables by VLAN (`vlan 20` or `20`) and by
+  mode (`trunk`, `access port`, `routed port`).
+* **Editing:** the VLANs are a multi-select combobox (chips, the model's
+  VLANs with their names as you type, new IDs and ranges accepted; Enter or
+  a comma adds, Backspace removes the last one); a trunk gets a **Native
+  VLAN** picker; a Layer 3 switch's port a **Routed port** checkbox.
+  Suggestions copy the VLANs of a neighbouring port (*Same as Gi1/0/1*) or
+  of the port at the other end of the cable (*VLANs of the connected
+  port*). **Assign VLANs to ports…** on a device gives a range of ports
+  (written as for *+ Port Range*) the same VLANs and native VLAN, in one
+  undo step. Each change is one undo step.
 
 #### Aggregates: member ports
 
@@ -450,6 +542,8 @@ physical interfaces that belong to it:
   with different speeds are reported by `lag-member-speed`.
 * The members are the only place this is written. The ports themselves say
   nothing about the aggregate.
+* An aggregate carries VLANs like a port (`vlans`, `native`): its members
+  take them and have none of their own (see [Port VLANs](#port-vlans-access-trunk-routed)).
 * What the aggregate *does* (LACP towards another device, MLAG) is a
   relation with the aggregate as its endpoint.
 * The physical view draws an aggregate as a bracket around its cabled member
@@ -458,10 +552,11 @@ physical interfaces that belong to it:
   aggregate as an entry of its own, and relations bound to it (LACP) start
   from its port.
 
-#### VLAN interfaces: ports carrying the VLAN
+#### VLAN interfaces: bound to their bridge ports
 
-A virtual interface that is the interface of a VLAN (an SVI, an IRB
-interface) references that VLAN, not ports:
+A virtual interface that is the interface of a VLAN (an SVI, an IRB or BVI
+interface) is written **once per device and VLAN**, and references that
+VLAN, not ports:
 
 ```yaml
 - {id: Vlan10, type: virtual, vlan: 10, ip: 10.10.10.2/24}
@@ -472,14 +567,25 @@ interface) references that VLAN, not ports:
   interface lies in a network that defines a `vlan`: the VLAN is then taken
   from that network, so it is entered once. If both are present and differ,
   a *warning* says so.
-* **Ports carrying its VLAN** is derived and read-only: the physical
-  interfaces of the same device whose link end carries the interface's VLAN,
-  untagged or tagged (see [VLAN tagging](#vlan-tagging-on-a-link-end)).
-  Nothing is entered on the interface for it, and it changes as soon as a
-  link end changes. A VLAN that no link end of the device carries gives no
-  ports.
+* It is **bound to every bridge port of its VLAN** on its device by itself:
+  the access ports in that VLAN, the trunks that carry it and the
+  aggregates that do (their members with them). There is **no member list**
+  to keep: `members` makes an aggregate, and `vlans` on a VLAN interface is
+  an error. The binding changes as soon as a port's VLANs change.
+* **Bridge ports** is derived and read-only in the Edit panel and the
+  details: the ports grouped by mode (*Access: Gi1/0/1–10 · Trunk: Gi1/0/48,
+  Po1*), each a link to its port. Selecting the VLAN interface highlights
+  its bridge ports and their cables; selecting a port highlights the VLAN
+  interfaces of its VLANs.
+* Validation: two VLAN interfaces for the same VLAN on one device are an
+  error; a VLAN interface whose VLAN no port of the device carries is a
+  warning (it reaches no one); a Layer 2 switch has one VLAN interface, its
+  management interface (another one is an error).
+* Membership in a network follows the VLAN interface's address, as for any
+  interface; the logical view draws each VLAN interface once, as a row of
+  its device.
 * A virtual interface without a VLAN (no `vlan` and no address in a network
-  with one; e.g. a plain bond or a VTEP) has no such ports.
+  with one; e.g. a VTEP) has no bridge ports.
 
 #### Tunnel interfaces: source and destination
 
@@ -844,7 +950,7 @@ devices:
 | Key | Required | Description |
 |---|---|---|
 | `id` | yes | |
-| `a`, `b` | yes | The two ends. `device:interface`, or just `device` when the port is unknown or irrelevant (e.g. "Internet"), or a mapping `{device, interface, speed, duplex, mode, untagged, tagged}`. |
+| `a`, `b` | yes | The two ends. `device:interface`, or just `device` when the port is unknown or irrelevant (e.g. "Internet"), or a mapping `{device, interface, speed, duplex}`. What each port carries is configured on the port ([Port VLANs](#port-vlans-access-trunk-routed)). |
 | `medium` | | `fiber`, `copper`, `dac`, `aoc`, `wireless`/`lte`/`5g`/`microwave`, `serial`, `virtual`, or any other text (it gets its own colour). **The only place the medium of the connection is configured**; without it the cable is drawn as "Unspecified". |
 | `speed` | | e.g. `1G`, `10G`, `100G`, `250M`. **The only place the speed of the connection is configured**; it sets the line width. |
 | `direction` | | `unidirectional`: traffic only from end `a` to end `b` (simplex fibre, a data diode, a TAP or SPAN feed), drawn with an arrow at end `b`; the path tracer and the simulated traffic never use it the other way. `bidirectional` is the default and is not written. Anything else is an error. |
@@ -889,54 +995,13 @@ links:
 * The details of a link list each end's settings; the diagram doesn't draw
   them.
 
-### VLAN tagging on a link end
+### VLANs: configured on the ports
 
-Each end of a link says how its port carries VLANs: its **mode**, its
-**untagged** VLAN and its **tagged** VLANs, by VLAN ID. The two ends are
-stored separately, because they can differ:
-
-```yaml
-links:
-  - id: uplink-1
-    a: {device: core1, interface: Ethernet1, mode: trunk, untagged: 99, tagged: [10, 20, 100-199]}
-    b: {device: acc1, interface: Gi1/0/49, mode: trunk, untagged: 99, tagged: [10, 20, 100-199]}
-    medium: fiber
-    speed: 10G
-  - {id: srv-1, a: {device: acc1, interface: Gi1/0/1, mode: access, untagged: 20}, b: "srv1:eno1"}
-  - {id: p2p, a: "r1:eth0", b: "r2:eth0"}                    # nothing about layer 2 at either end
-```
-
-| Key | Description |
-|---|---|
-| `mode` | `access` (one untagged VLAN) or `trunk` (tagged VLANs, plus an untagged *native* VLAN). Required when `untagged` or `tagged` is written. |
-| `untagged` | a VLAN ID (1–4094): an access port's VLAN, or a trunk's native VLAN |
-| `tagged` | the tagged VLANs: one ID, a range `100-199`, or a list of both (`[10, 20, 100-199]`) |
-
-* **Nothing is assumed.** An end without a mode says nothing about layer 2:
-  it is not "access in VLAN 1", and it is never compared with the other end.
-  A routed port or a server NIC usually has no mode.
-* **The networks a cable carries are derived**: the networks whose `vlan` is
-  one of the VLANs of the end, untagged or tagged. Carriage is not
-  membership: it makes no device a member of a network.
-* Errors: a mode other than `access` or `trunk`; a VLAN ID outside 1–4094; a
-  range whose end is lower than its start; a VLAN listed twice in `tagged`;
-  `untagged` or `tagged` without a mode.
-* The **VLAN checks** (see [Consistency checks](#consistency-checks)) report
-  untagged (native) VLANs that differ between the two ends, trunks that tag
-  different VLANs (a warning), an access port with tagged VLANs, a VLAN
-  untagged at one end and tagged at the other, and VLANs that no network and
-  no VLAN interface of the model defines (a warning). **Neither end is
-  changed**: fix the end that is wrong.
-* Display: in the **physical view** each port's label has the tagging as its
-  second line, `U 10` (untagged) and `T 20,30,100-199` (tagged, in ranges),
-  e.g. `U 99 · T 10,20`; an end with a mode but no VLANs shows its mode. A
-  cable whose two ends disagree is marked ⚠ with *VLANs differ* in its label.
-  Tooltip and details spell the tagging out (*trunk, native VLAN 99, tagged
-  10,20*) and name the networks it carries. A network's details list the
-  cables that carry its VLAN, and selecting a network highlights them.
-  **Find** finds the cables carrying a VLAN: `vlan 20` or `20`.
-* A VLAN interface's **Ports carrying its VLAN** are the ports of its device
-  whose end carries that VLAN.
+A link holds no VLANs: what a cable carries follows from its two ports'
+`vlans` and `native` (see [Port VLANs](#port-vlans-access-trunk-routed)).
+The cable shows what both ends carry, the networks of those VLANs, and ⚠
+*VLANs differ* when they disagree. `mode`, `untagged` and `tagged` on a
+link end are unknown keys; the error says where the VLANs go.
 
 ## `networks`
 
@@ -1515,8 +1580,8 @@ devices:
     type: switch
     simulation: {stp_mode: "off"}
     interfaces:
-      - {id: p1, simulation: {storm_control_broadcast: 1000, stp_edge: "on", stp_bpdu_guard: "on"}}
-      - {id: up2, simulation: {stp_cost: 200000}}
+      - {id: p1, vlans: 10, simulation: {storm_control_broadcast: 1000, stp_edge: "on", stp_bpdu_guard: "on"}}
+      - {id: up2, vlans: [10, 20], simulation: {stp_cost: 200000}}
 networks:
   - {id: users, cidr: 10.10.10.0/24, vlan: 10, simulation: {snooping_querier: "on"}}
 relations:
@@ -1806,6 +1871,17 @@ fallback, and no recursion beyond the model's DNS servers.
   the hello time (6 s) further away; STP after 2 × the forward delay
   (30 s) at the change, max age + 2 × the forward delay (50 s) further
   away. A topology change flushes the VLAN's MAC tables.
+  Ports carry what they are configured with ([Port VLANs](#port-vlans-access-trunk-routed)):
+  an access port sends and takes its VLAN's frames untagged; a trunk tags
+  every VLAN but its native one (the packet inspector shows the 802.1Q
+  tag). A VLAN interface is reached through any bridge port of its VLAN,
+  answers ARP there and routes between VLANs on a Layer 3 device; the MAC
+  tables learn per VLAN. A frame of a VLAN that a port doesn't allow is
+  dropped, and an untagged frame between two ports whose native (or
+  access) VLANs differ arrives in the other VLAN: the log explains both
+  (*VLAN 30 is not allowed on the port (trunk of VLANs 10,20 (native
+  10))*, *VLAN mismatch … it leaks from VLAN 10 into VLAN 20*). The
+  spanning tree runs per bridge port; routed ports act at Layer 3.
 * **Layer 3.** A device sends with its default TTL / hop limit (a
   protocol that sets one, e.g. OSPF's 1, keeps it). The protocols' timers
   follow the parameters through the order above. After anything that
@@ -1903,8 +1979,14 @@ next to the object and field they concern.
 * a relation `direction` other than `bidirectional` or `unidirectional`;
 * a network without exactly one valid prefix (missing, an empty list,
   several prefixes, not a prefix);
-* a link end's tagging: a mode other than `access` or `trunk`, VLAN IDs
-  outside 1–4094, a bad range, a VLAN listed twice, VLANs without a mode;
+* port VLANs: a switch port (or a switch's aggregate) without VLANs; VLAN
+  IDs outside 1–4094, a bad range, a VLAN listed twice; a `native` VLAN that
+  isn't one of the port's VLANs, or on an access port; `routed` where it
+  doesn't apply or together with `vlans`; VLANs on an aggregate's member;
+  an address on a bridge port; a subinterface for a VLAN its port carries
+  as a bridge port; see [Port VLANs](#port-vlans-access-trunk-routed);
+* VLAN interfaces: two for one VLAN on a device, `members` or `vlans` on
+  one, a second one on a Layer 2 switch;
 * static routes: see [Static routes](#static-routes);
 * `mtu` outside 68–65535, `min_links` outside 1–64 or on an interface
   without members, a `router_id` that is neither an IPv4 address (without
@@ -1942,7 +2024,7 @@ next to the object and field they concern.
 * the same address assigned twice;
 * a port that is a member of two aggregates;
 * a VLAN interface whose `vlan` differs from the VLAN of the network its
-  address lies in;
+  address lies in, or whose VLAN no port of its device carries;
 * a tunnel source address that no interface of the device has;
 * the same DNS name on two devices;
 * a demand whose source or destination names nothing of the model.
@@ -1962,8 +2044,8 @@ and the Edit tab shows each one at its field. Findings never make a model
 invalid, and they are reported only while the format has no errors.
 
 **A check runs only on data that is present.** Where a value it compares is
-missing, it says nothing; no default is assumed (an end without a mode is not
-"access in VLAN 1").
+missing, it says nothing; no default is assumed (a router's port without
+VLANs is routed, not "access in VLAN 1").
 
 | Id | Severity | Finds | Reads |
 |---|---|---|---|
@@ -1974,11 +2056,12 @@ missing, it says nothing; no default is assumed (an end without a mode is not
 | `route-exit-interface` | error | an exit interface that can't forward the route: a loopback, a member port of an aggregate, a physical port without a cable, an interface in another VRF | routes: `interface`, `vrf`; interfaces: `type`, `members`, `vrf`; links |
 | `route-duplicate` | warning | the same route twice (prefix, next hop, distance, metric, VRF) | routes |
 | `route-conflict` | warning | a blackhole and a forwarding route to one prefix at the same distance; routes via the same next hop at the same distance with different metrics | routes |
-| `vlan-native-mismatch` | error | untagged (native) VLANs that differ between the two ends | links: `mode`, `untagged` |
-| `vlan-tagged-mismatch` | warning | two trunk ends that tag different VLANs | links: `mode`, `tagged` |
-| `vlan-access-tagged` | error | an access port with tagged VLANs | links: `mode`, `tagged` |
-| `vlan-untagged-tagged` | error | a VLAN untagged at one end and tagged at the other | links: `mode`, `untagged`, `tagged` |
-| `vlan-unknown` | warning | VLANs on a port that no network and no VLAN interface defines | links: `untagged`, `tagged`; networks and VLAN interfaces: `vlan` |
+| `vlan-access-mismatch` | warning | access ports in different VLANs at the two ends of a cable (the cable joins the two VLANs) | interfaces: `vlans` (of the ports at both ends of a link) |
+| `vlan-trunk-mismatch` | warning | trunks with different VLAN lists at the two ends (a VLAN only one end allows is dropped by the other); a routed port with subinterfaces counts as a trunk of their VLANs | interfaces: `vlans` |
+| `vlan-native-mismatch` | error | trunks whose native VLANs differ, or one with a native VLAN and one without (untagged frames leak into another VLAN or are dropped) | interfaces: `vlans`, `native` |
+| `vlan-access-trunk` | warning | an access port cabled to a trunk whose native VLAN isn't the access port's VLAN | interfaces: `vlans`, `native` |
+| `vlan-unknown` | warning | VLANs on a port that no network and no VLAN interface defines (VLAN 1, the default VLAN, aside) | interfaces: `vlans`; networks and VLAN interfaces: `vlan` |
+| `lag-member-vlans` | warning | members of an aggregate whose far ends carry different VLANs (a bundle carries the same VLANs on every member) | logical interfaces: `members`, `vlans`, `native`; interfaces: `vlans`, `native` at the far ends; links |
 | `link-mtu-mismatch` | warning | different MTUs at the two ends of a cable | interfaces: `mtu`; links |
 | `tunnel-mtu` | warning | a tunnel interface whose MTU plus the encapsulation overhead (table below) is larger than the MTU of its underlay; the message names the overhead assumed and the largest MTU that fits | tunnel interfaces: `mtu`, `source`; the MTU of the source interface, else of the device's ports on the links in `over`; the tunnel relations bound to it and the tunnels they ride on |
 | `link-speed-mismatch` | warning | port speeds that differ between the ends, or from the link's speed | links: `speed`, `a`/`b` `speed` |

@@ -154,7 +154,7 @@ export function vrfCaseVariants(model: Model, name: string): string[] {
 
 // ------------------------------------------------------------------ VLANs
 
-/** The VLAN IDs the model defines or carries (networks, VLAN interfaces, link ends), with what names them; sorted by ID. */
+/** The VLAN IDs the model defines or carries (networks, VLAN interfaces, ports), with what names them; sorted by ID. */
 export function vlanChoices(model: Model): Array<{ id: number; names: string[] }> {
   const m = new Map<number, Set<string>>();
   const add = (v: number, what: string): void => {
@@ -163,7 +163,7 @@ export function vlanChoices(model: Model): Array<{ id: number; names: string[] }
   };
   for (const n of model.networks) if (n.vlan !== undefined) add(n.vlan, n.label || n.id);
   for (const d of model.devices) for (const i of d.logical) if (i.vlan !== undefined) add(i.vlan, `${d.id}:${i.id}`);
-  for (const l of model.links) for (const e of [l.a, l.b]) for (const v of (e.untagged !== undefined ? [e.untagged] : []).concat(vlanIds(e.tagged))) add(v, `link ${l.id}`);
+  for (const d of model.devices) for (const i of d.interfaces.concat(d.logical)) for (const v of vlanIds(i.vlans)) add(v, `${d.id}:${i.id}`);
   return Array.from(m.entries())
     .map(([id, names]) => ({ id, names: Array.from(names).sort(cmp) }))
     .sort((a, b) => a.id - b.id);

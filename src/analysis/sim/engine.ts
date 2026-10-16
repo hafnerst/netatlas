@@ -65,7 +65,7 @@ import { compareAddr, formatAddr } from '../ipmath';
 import { Connected, RibEntry, RoutingCtx, lookup } from '../routing';
 import { declaredUnderlay, encapStack, tunnelRelation, tracePath } from '../trace';
 import { BROADCAST, isGroupMac, isLinkLocalGroup, isMulticastIp, multicastMac, rng, solicitedNode, modelSeed, shortMac } from './mac';
-import { BridgePort, CableEnd, L3Iface, Lease, SimDevice, SimNet, StpConfig, buildNet, carries, ingressVlan, otherEnd, portKey, spanningTree } from './net';
+import { BridgePort, CableEnd, L3Iface, Lease, SimDevice, SimNet, StpConfig, buildNet, carries, ingressVlan, otherEnd, portKey, portVlansText, spanningTree } from './net';
 import { ParamChange, ParamValue, Resolved, SimParams, changeText, durationText, formatValue, ifaceRef, relRef, resolvedText, scopeRef, sourceText, vlanRef, vlanValue, zoneRef } from './params';
 import { ArpRow, ArpType, Cast, Flight, Headers, MacRow, Msg, NdState, NetEvent, Pkt, Quote, SimEvent, TableTimer, Track } from './types';
 import { parseSpeed } from '../../model/speed';
@@ -115,6 +115,8 @@ export interface Frame {
   pdu?: boolean;
   /** a frame going round a Layer 2 loop without spanning tree: how many times it came back (a storm) */
   loops?: number;
+  /** the VLAN it was in where it left a bridge port untagged (to explain a native or access VLAN mismatch where it arrives) */
+  inVlan?: number;
 }
 
 /** Why an ICMP error is sent (engine.icmpError). */
@@ -1245,12 +1247,8 @@ export class Engine {
     const ports = l3.ports.filter((p) => this.portUp(dev, p) && this.memberReady(dev, p) && this.net.ends.has(portKey(dev, p)));
     if (!ports.length) return;
     const port = ports.length === 1 ? ports[0] : ports[hashIndex(frame.src + frame.dst + (frame.ip ? frame.ip.flow : ''), ports.length)];
-    let tag: number | null = null;
-    if (l3.kind === 'subif' && l3.vlan) {
-      const e = this.net.ends.get(portKey(dev, port)) as CableEnd;
-      const le = e.end === 'a' ? (this.net.links.get(e.link) as { a: { mode?: string; untagged?: number } }).a : (this.net.links.get(e.link) as { b: { mode?: string; untagged?: number } }).b;
-      tag = le.untagged === l3.vlan ? null : l3.vlan;
-    }
+    // a subinterface's frames carry its VLAN's 802.1Q tag on its port (a routed port: its own frames are untagged)
+    const tag: number | null = l3.kind === 'subif' && l3.vlan ? l3.vlan : null;
     this.transmit(dev, port, frame, tag, t, undefined, new Set([dev]));
   }
 
@@ -1544,9 +1542,11 @@ export class Engine {
         seen = new Set();
       }
       if (vlan === null) {
-        this.noteAt(t, 'drop', frame.msg.protocol, dev, '', frame.msg.type, '', `dropped at ${dev}:${port}: ${tag ? 'VLAN ' + tag + ' is not allowed on the port' : 'the trunk has no native VLAN for untagged frames'} (${frame.msg.label})`);
+        this.noteAt(t, 'drop', frame.msg.protocol, dev, '', frame.msg.type, '', `dropped at ${dev}:${port}: ${tag ? `VLAN ${tag} is not allowed on the port (${portVlansText(bp.vlans)})` : `the trunk has no native VLAN for untagged frames (${portVlansText(bp.vlans)})`} (${frame.msg.label})`);
         return;
       }
+      // an untagged frame of one VLAN arriving in another (a native or access VLAN mismatch): it leaks, as on a real cable
+      if (tag === null && frame.inVlan !== undefined && frame.inVlan !== 0 && vlan !== 0 && vlan !== frame.inVlan) this.noteLeak(dev, port, frame, vlan, t);
       if (this.blocked(dev, bpId, vlan)) return;
       this.bridge(sd, bpId, vlan, frame, t, flight, new Set(seen).add(dev));
       return;
@@ -1561,15 +1561,9 @@ export class Engine {
   /** The layer-3 interface a frame arriving at a port with a tag belongs to. */
   private l3At(sd: SimDevice, port: string, tag: number | null): L3Iface | undefined {
     const cands = Array.from(sd.l3.values()).filter((l) => l.ports.indexOf(port) >= 0).sort((a, b) => cmp(a.id, b.id));
+    // tagged: the subinterface of that VLAN; untagged: the port itself (a routed port, a routed aggregate)
     if (tag) return cands.find((l) => l.kind === 'subif' && l.vlan === tag);
-    const e = this.net.ends.get(portKey(sd.id, port));
-    let untagged: number | undefined;
-    if (e) {
-      const l = this.net.links.get(e.link) as { a: { untagged?: number; mode?: string }; b: { untagged?: number; mode?: string } };
-      const le = e.end === 'a' ? l.a : l.b;
-      untagged = le.untagged;
-    }
-    return cands.find((l) => l.kind === 'routed' || l.kind === 'aggregate') || cands.find((l) => l.kind === 'subif' && untagged !== undefined && l.vlan === untagged);
+    return cands.find((l) => l.kind === 'routed' || l.kind === 'aggregate');
   }
 
   /** Does a layer-3 interface take a frame: its own MAC, a virtual MAC it holds, a group address. */
@@ -1625,8 +1619,21 @@ export class Engine {
       const up = bp.members.filter((m) => this.portUp(sd.id, m) && this.memberReady(sd.id, m) && this.net.ends.has(portKey(sd.id, m)));
       if (!up.length) continue;
       const m = up.length === 1 ? up[0] : up[hashIndex(frame.src + frame.dst, up.length)];
-      this.transmit(sd.id, m, frame, c === 'untagged' ? null : vlan, t, flight, seen);
+      this.transmit(sd.id, m, c === 'untagged' ? { ...frame, inVlan: vlan } : frame.inVlan !== undefined ? { ...frame, inVlan: undefined } : frame, c === 'untagged' ? null : vlan, t, flight, seen);
     }
+  }
+
+  /** "VLAN mismatch" notes already written: "<device>:<port>|<from>|<to>" → the time (at most one every 10 s per pair). */
+  private leakNoted = new Map<string, number>();
+
+  /** Log a frame that leaves a port untagged in one VLAN and arrives untagged in another one (the ports' VLANs disagree). */
+  private noteLeak(dev: string, port: string, frame: Frame, vlan: number, t: number): void {
+    const k = `${dev}:${port}|${frame.inVlan}|${vlan}`;
+    if (this.leakNoted.has(k) && t - (this.leakNoted.get(k) as number) < 10000) return;
+    this.leakNoted.set(k, t);
+    const e = this.net.ends.get(portKey(dev, port));
+    const o = e ? otherEnd(this.net, e) : null;
+    this.noteAt(t, 'note', frame.msg.protocol, dev, o ? o.device : '', 'VLAN mismatch', '', `VLAN mismatch on the cable to ${dev}:${port}: ${frame.msg.label} left ${o ? `${o.device}:${o.port}` : 'the other end'} untagged in VLAN ${frame.inVlan} and arrives untagged in VLAN ${vlan} — it leaks from VLAN ${frame.inVlan} into VLAN ${vlan} (the native or access VLANs of the two ports differ)`);
   }
 
   private deliverL2(dev: string, port: string, frame: Frame, t: number, flight: number): void {
@@ -3121,14 +3128,7 @@ export class Engine {
           for (const p of l3.ports) {
             if (!this.portUp(sd.id, p)) continue;
             refs.add(`iface:${sd.id}:${p}`);
-            let tag: number | null = null;
-            if (l3.kind === 'subif' && l3.vlan) {
-              const e = this.net.ends.get(portKey(sd.id, p));
-              const lk = e ? (this.net.links.get(e.link) as Link) : undefined;
-              const le = lk && e ? (e.end === 'a' ? lk.a : lk.b) : undefined;
-              tag = le && le.untagged === l3.vlan ? null : l3.vlan;
-            }
-            cross(sd.id, p, tag);
+            cross(sd.id, p, l3.kind === 'subif' && l3.vlan ? l3.vlan : null);
             break;
           }
         }

@@ -84,6 +84,8 @@ const MAX_PORT_W = 1200;
 const MAX_PORT_H = 800;
 /** distance from a side port to the start of its label */
 export const PORT_LABEL_GAP = 7;
+/** The line a port's VLANs take beyond its name (a port on a device's top or bottom side): the room the rows keep for it. */
+export const TAG_LINE = 12;
 
 interface GNode {
   id: string | null;
@@ -236,6 +238,8 @@ export function autoPhysical(input: LayoutInput): Map<string, Pt> {
   // facing sides (known once ports are assigned) and the label of a cable
   // that joins the two directly
   const sidePad = new Map<string, { left: number; right: number }>();
+  // and above and below a row: a port on a device's top or bottom side writes its VLANs one line further out than its name
+  const vPad = new Map<string, { top: number; bottom: number }>();
   const labelW = new Map(input.linkLabels.map((l) => [l.id, linkLabelBox(l.text, l.extra).w] as [string, number]));
   const between = new Map<string, number>();
   for (const l of input.links) {
@@ -257,8 +261,10 @@ export function autoPhysical(input: LayoutInput): Map<string, Pt> {
     for (const t of tiers) for (let i = 0; i < t.length; i += MAX_PER_ROW) rows.push(t.slice(i, i + MAX_PER_ROW));
     const rw = rows.map(rowWidth);
     const rh = rows.map((r) => r.reduce((m, id) => Math.max(m, (size.get(id) as { h: number }).h), 0));
+    const rt = rows.map((r) => r.reduce((m, id) => Math.max(m, vPad.has(id) ? (vPad.get(id) as { top: number }).top : 0), 0));
+    const rb = rows.map((r) => r.reduce((m, id) => Math.max(m, vPad.has(id) ? (vPad.get(id) as { bottom: number }).bottom : 0), 0));
     const w = rows.length ? rw.reduce((m, x) => Math.max(m, x), 0) : 0;
-    const h = rh.reduce((s, x) => s + x, 0) + VGAP * Math.max(0, rows.length - 1);
+    const h = rh.reduce((s, x, i) => s + x + rt[i] + rb[i], 0) + VGAP * Math.max(0, rows.length - 1);
     return {
       w,
       h,
@@ -266,13 +272,14 @@ export function autoPhysical(input: LayoutInput): Map<string, Pt> {
         let cy = y;
         rows.forEach((r, i) => {
           let cx = x + (w - rw[i]) / 2;
+          cy += rt[i];
           r.forEach((id, k) => {
             const s = size.get(id) as { w: number; h: number };
             if (k) cx += gap(r[k - 1], id);
             pos.set(id, { x: cx + s.w / 2, y: cy + rh[i] / 2 });
             cx += s.w;
           });
-          cy += rh[i] + VGAP;
+          cy += rh[i] + rb[i] + VGAP;
         });
       },
     };
@@ -688,7 +695,13 @@ export function autoPhysical(input: LayoutInput): Map<string, Pt> {
     }
   }
   for (const p of ports) {
-    if (p.side !== 'left' && p.side !== 'right') continue;
+    if (p.side === 'top' || p.side === 'bottom') {
+      if (!p.tag) continue;
+      let vp = vPad.get(p.device);
+      if (!vp) vPad.set(p.device, (vp = { top: 0, bottom: 0 }));
+      vp[p.side] = TAG_LINE;
+      continue;
+    }
     let pad = sidePad.get(p.device);
     if (!pad) sidePad.set(p.device, (pad = { left: 0, right: 0 }));
     pad[p.side] = Math.max(pad[p.side], sideLabelWidth(p.iface, p.tag));

@@ -146,11 +146,11 @@ devices:
   - {id: h1, type: endpoint, interfaces: [{id: eth0, ip: 10.1.0.1/24}]}
   - {id: h2, type: endpoint, interfaces: [{id: eth0, ip: 10.1.0.2/24}]}
   - {id: h3, type: endpoint, interfaces: [{id: eth0, ip: 10.1.0.3/24}]}
-  - {id: sw, type: switch, interfaces: [p1, p2, p3]}
+  - {id: sw, type: switch, interfaces: [{id: p1, vlans: 10}, {id: p2, vlans: 10}, {id: p3, vlans: 20}]}
 links:
-  - {id: l1, a: "h1:eth0", b: {device: sw, interface: p1, mode: access, untagged: 10}}
-  - {id: l2, a: "h2:eth0", b: {device: sw, interface: p2, mode: access, untagged: 10}}
-  - {id: l3, a: "h3:eth0", b: {device: sw, interface: p3, mode: access, untagged: 20}}
+  - {id: l1, a: "h1:eth0", b: "sw:p1"}
+  - {id: l2, a: "h2:eth0", b: "sw:p2"}
+  - {id: l3, a: "h3:eth0", b: "sw:p3"}
 demands:
   - {id: d12, source: h1, destination: h2, bandwidth: 10M}
   - {id: d13, source: h1, destination: h3, bandwidth: 10M}
@@ -216,13 +216,13 @@ devices:
   - id: sw
     type: switch
     ${layer3 ? 'layer3: true' : ''}
-    interfaces: [p1, p2]
+    interfaces: [{id: p1, vlans: 10}, {id: p2, vlans: 20}]
     logical_interfaces:
       - {id: Vlan10, type: virtual, vlan: 10, ip: 10.1.0.1/24}
       ${layer3 ? '- {id: Vlan20, type: virtual, vlan: 20, ip: 10.2.0.1/24}' : ''}
 links:
-  - {id: l1, a: "h10:eth0", b: {device: sw, interface: p1, mode: access, untagged: 10}}
-  - {id: l2, a: "h20:eth0", b: {device: sw, interface: p2, mode: access, untagged: 20}}
+  - {id: l1, a: "h10:eth0", b: "sw:p1"}
+  - {id: l2, a: "h20:eth0", b: "sw:p2"}
 demands:
   - {id: d, source: h10, destination: h20, bandwidth: 10M}
 `;
@@ -497,8 +497,8 @@ test('LACP on the members of an aggregate; STP, LLDP and CDP where the model has
   const ll = sim(`netatlas: 1
 title: lldp
 devices:
-  - {id: a, type: switch, interfaces: [p1]}
-  - {id: b, type: switch, interfaces: [p1]}
+  - {id: a, type: switch, interfaces: [{id: p1, vlans: 1}]}
+  - {id: b, type: switch, interfaces: [{id: p1, vlans: 1}]}
 links:
   - {id: l, a: "a:p1", b: "b:p1"}
 relations:

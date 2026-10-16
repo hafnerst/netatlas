@@ -117,18 +117,24 @@ const MANUAL: Section[] = [
   },
   {
     id: 'routes',
-    title: 'Static routes and VLAN tagging',
+    title: 'Static routes and port VLANs',
     steps: [
       'Select a router (or a host) and open the **Edit** tab. Under **Static routes**, **+ Route** adds a route: enter the **Destination prefix** and the **Next-hop address**, or pick an **Exit interface**, or switch **Blackhole** on. A higher **Administrative distance** makes a floating backup; **⧉** duplicates a route.',
       'In the **Logical** view each device shows its routes as a route table in its box, one line per route. A dotted line with an arrow leads from a route to the interface its next hop belongs to. The **Routes** switch in **Filters** hides them; nothing moves.',
-      'Select a link: each end has a **Mode** (**Access** or **Trunk**), an **Untagged VLAN** (a trunk\'s native VLAN) and, for a trunk, **Tagged VLANs** such as `10, 20, 100-199`. The **Physical** view writes the tagging under each port\'s name: `U 99 · T 10,20`.',
+      'Select a port: its **VLANs** say what it carries. One VLAN makes an **access port**, several a **trunk**. Type a VLAN or a range (`30-39`) and press `Enter` or a comma; while you type, the model\'s VLANs are offered with their names (`↑` `↓`, `Enter`). `Backspace` in the empty field removes the last one, **×** any one.',
+      'A trunk has a **Native VLAN** (untagged; *None*: every VLAN tagged). A Layer 3 switch\'s port can be a **Routed port** instead. The mode is written beside the field: *Access · VLAN 10*, *Trunk · 10, 20 (native 10)*, *Routed*.',
+      'A switch port needs its VLANs: without them it is an error at the field and in **Problems**. **Same as …** copies a neighbouring port\'s VLANs, **VLANs of the connected port** the far end\'s. **Assign VLANs to ports…** on a device gives a range of ports the same VLANs in one step.',
+      'A **VLAN interface** (`Vlan10`) is bound to every port of its VLAN by itself: its **Bridge ports** are listed, read-only. On a router, a port without VLANs is routed; its subinterfaces (`ge-0/0/2.10`) tag their VLANs on it.',
+      'The **Physical** view writes each port\'s VLANs under its name: `A 10` (access), `T 10,20 · N 99` (trunk, native 99); trunks have a thick frame.',
     ],
     notes: [
-      'NetAtlas checks the routes and the tagging: a next hop that isn\'t connected or doesn\'t resolve, an exit interface that can\'t forward, VLANs that differ between the two ends of a cable … Each finding is in the **Problems** tab with its check, and at its field in the Edit tab.',
+      'NetAtlas checks the routes and the VLANs: a next hop that isn\'t connected or doesn\'t resolve, an exit interface that can\'t forward, access ports in different VLANs, trunks with different lists, a native VLAN mismatch … Each finding is in the **Problems** tab with its check, and at its field in the Edit tab.',
+      'In the simulation, a VLAN a port doesn\'t allow is dropped, and untagged frames between ports whose native VLANs differ leak into the other VLAN; the log says which.',
     ],
     figures: [
       ['routes', 'The branch router in the logical view: its route tables (default table and the guest VRF) and the dotted lines to the next hops.'],
-      ['tagging', 'A trunk between a router and an access switch in the physical view: VLAN 99 untagged, VLANs 10, 20 and 30 tagged at both ends.'],
+      ['port-vlans', 'A trunk port in the Edit tab: its VLANs as chips, the field to add more, its native VLAN and the badge Trunk · 10, 20, 99 (native 99).'],
+      ['tagging', 'A router-on-a-stick in the physical view: the router\'s routed port tags its subinterfaces\' VLANs (R · T 10,20,30), the switch\'s trunk has VLAN 99 native (T 10,20,30,99 · N 99).'],
     ],
   },
   {

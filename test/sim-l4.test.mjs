@@ -326,7 +326,7 @@ devices:
   - {id: w1, type: server, interfaces: [{id: eth0, ip: 10.0.0.11/24}]}
   - {id: w2, type: server, interfaces: [{id: eth0, ip: 10.0.0.12/24}]}
   - {id: px, type: proxy, interfaces: [{id: eth0, ip: 10.0.0.200/24}], simulation: {upstream_timeout: 3}}
-  - {id: sw, type: switch, interfaces: [p1, p2, p3, p4, p5, p6, p7]}
+  - {id: sw, type: switch, interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}, {id: p3, vlans: 1}, {id: p4, vlans: 1}, {id: p5, vlans: 1}, {id: p6, vlans: 1}, {id: p7, vlans: 1}]}
 links:
   - {id: a, a: "pc:eth0", b: "sw:p1"}
   - {id: b, a: "lb:eth0", b: "sw:p2"}
@@ -387,9 +387,9 @@ test('monitoring: a manager pings the agents it polls by SNMP every ICMP probe i
 title: mon
 devices:
   - {id: nms, type: system, interfaces: [{id: eth0, ip: 10.0.0.1/24}], simulation: {icmp_probe_interval: 5}}
-  - {id: a1, type: switch, interfaces: [p1, p2], logical_interfaces: [{id: Vlan1, type: virtual, vlan: 1, ip: 10.0.0.2/24}]}
+  - {id: a1, type: switch, interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}], logical_interfaces: [{id: Vlan1, type: virtual, vlan: 1, ip: 10.0.0.2/24}]}
 links:
-  - {id: l, a: "nms:eth0", b: {device: a1, interface: p1, mode: access, untagged: 1}}
+  - {id: l, a: "nms:eth0", b: "a1:p1"}
 relations:
   - {id: snmp-1, protocol: snmp, endpoints: [a1, nms]}
 `);
@@ -406,8 +406,8 @@ relations:
 const LAN = (sw = '', r = '') => `netatlas: 1
 title: lan
 devices:
-  - {id: sw1, type: switch, interfaces: [p1, p2, p3, p4]${sw}}
-  - {id: sw2, type: switch, interfaces: [p1, p2, p3]${sw}}
+  - {id: sw1, type: switch, interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}, {id: p3, vlans: 1}, {id: p4, vlans: 1}]${sw}}
+  - {id: sw2, type: switch, interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}, {id: p3, vlans: 1}]${sw}}
   - {id: h1, type: server, interfaces: [{id: eth0, ip: 10.0.0.1/24}], routes: [{prefix: 0.0.0.0/0, via: 10.0.0.254}], simulation: {respond_to_broadcast_ping: "on"}}
   - {id: h2, type: server, interfaces: [{id: eth0, ip: 10.0.0.2/24}], routes: [{prefix: 0.0.0.0/0, via: 10.0.0.254}]}
   - {id: r1, type: router, interfaces: [{id: g0, ip: 10.0.0.254/24${r}}, {id: g1, ip: 10.9.0.1/24}]}
@@ -461,10 +461,10 @@ test('a storm: a loop without spanning tree circulates and multiplies broadcasts
   s.runTo(2500);
   s.sendTest({ from: 'h2', to: '10.0.0.255', kind: 'icmp' });
   s.runTo(3000);
-  assert.deepEqual(s.storms().map((x) => [x.vlan, x.links]), [[0, ['b']]]);
+  assert.deepEqual(s.storms().map((x) => [x.vlan, x.links]), [[1, ['b']]]);
   assert.ok(ev(s, (x) => x.what === 'Broadcast storm' && /came back to sw\d over a loop that no spanning tree blocks/.test(x.detail)).length === 1);
   assert.ok(ev(s, (x) => x.what === 'MAC moved').length > 0, 'MAC addresses move between ports');
-  assert.ok(ev(s, (x) => x.what === 'storm' && /has gone round the loop in the untagged frames 6 times/.test(x.detail)).length >= 1);
+  assert.ok(ev(s, (x) => x.what === 'storm' && /has gone round the loop in VLAN 1 6 times/.test(x.detail)).length >= 1);
   // the log stays in time order
   const ts = s.events().map((x) => x.t);
   assert.ok(ts.every((t, i) => i === 0 || t >= ts[i - 1]));
@@ -473,7 +473,7 @@ test('a storm: a loop without spanning tree circulates and multiplies broadcasts
   assert.deepEqual(s.storms(), []);
   assert.ok(ev(s, (x) => x.what === 'Storm over').length === 1);
   // storm control on sw1 drops the looping broadcasts at its ports
-  const sc = sim(LAN(', simulation: {stp_mode: "off"}').replace('{id: sw1, type: switch, interfaces: [p1, p2, p3, p4]', '{id: sw1, type: switch, interfaces: [{id: p1, simulation: {storm_control_broadcast: 500}}, {id: p2, simulation: {storm_control_broadcast: 500}}, p3, p4]'));
+  const sc = sim(LAN(', simulation: {stp_mode: "off"}').replace('{id: sw1, type: switch, interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}, {id: p3, vlans: 1}, {id: p4, vlans: 1}]', '{id: sw1, type: switch, interfaces: [{id: p1, vlans: 1, simulation: {storm_control_broadcast: 500}}, {id: p2, vlans: 1, simulation: {storm_control_broadcast: 500}}, {id: p3, vlans: 1}, {id: p4, vlans: 1}]'));
   sc.runTo(2500);
   sc.sendTest({ from: 'h2', to: '10.0.0.255', kind: 'icmp' });
   sc.runTo(3000);
@@ -552,7 +552,7 @@ title: bgp
 devices:
   - {id: a, type: router, interfaces: [{id: g0, ip: 10.0.0.1/30}], protocols: {bgp: {asn: 65001}}}
   - {id: b, type: router, interfaces: [{id: g0, ip: 10.0.0.2/30}], protocols: {bgp: {asn: 65002}}}
-  - {id: sw, type: switch, interfaces: [p1, p2]}
+  - {id: sw, type: switch, interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}]}
 links:
   - {id: l, a: "a:g0", b: "sw:p1"}
   - {id: m, a: "sw:p2", b: "b:g0"}

@@ -11,14 +11,14 @@
  * an interface, the ports carrying a VLAN interface's networks) are computed from the current
  * model on every render, are read-only, and are never written to the file.
  */
-import { DocMap, DocNode, ENTITY_KINDS, EntityKind, IfaceEntry, KEY_ORDER, ModelDoc, Path, RouteEntry, SECTION, kindOfSection } from '../editor/document';
+import { DocMap, DocNode, ENTITY_KINDS, EntityKind, IfaceEntry, KEY_ORDER, ModelDoc, Path, RouteEntry, SECTION, kindOfSection, portIdFor, portRange } from '../editor/document';
 import { BlockTarget } from '../editor/yaml-block';
 import { DialogOpts } from './dialogs';
 import { el, icon, materialize } from './dom';
 import { headOf, objectHead } from './panels';
-import { sortedByName } from '../model/order';
-import { CATEGORIES, DIRECTIONS, DUPLEXES, Direction, InterfaceKind, LINE_STYLES, LOGICAL_IFACE_TYPES, PORT_MODES, VLAN_MAX, VLAN_MIN, ifaceKey, interfaceKindLabel, routeKey } from '../model/types';
-import { derivedVlanText, endNetworks, interfaceAddresses, interfaceVlanPorts, interfaceVlans, networkMembers, tagMismatch, tagMismatchText } from '../model/derive';
+import { compareNames, sortedByName } from '../model/order';
+import { CATEGORIES, DIRECTIONS, DUPLEXES, Direction, InterfaceKind, LINE_STYLES, LOGICAL_IFACE_TYPES, VLAN_MAX, VLAN_MIN, ifaceKey, interfaceKindLabel, routeKey } from '../model/types';
+import { PortL2, derivedVlanText, endL2, endNetworks, endTagText, interfaceAddresses, interfaceVlans, isBridgePort, lagOf, networkMembers, portBadgeText, portL2, portRuns, subinterfaceParent, tagMismatch, tagMismatchText, vlanPortsByMode, vlanRangesText } from '../model/derive';
 import { isLayer2Switch, relationNeedsLayer3, routingRole, ROUTE_DEVICE_TYPES } from '../model/device-types';
 import { nextHopCandidates, vrfKey } from '../analysis/routing';
 import { CHECKS } from '../analysis/checks';
@@ -32,7 +32,7 @@ import { Endpoint, endpointText } from '../model/types';
 import { BUILTIN_SERVICES, ParamDef, ROUTER_ID_KEY, ServiceDef, paramsAt } from '../model/services';
 import { parsePrefix } from '../model/ip';
 import { suggestedServices } from '../analysis/identity';
-import { Suggestion, netSuggestions, peerAsSuggestions, asnSuggestions, distanceSuggestions, generateMac, groupSuggestions, mtuSuggestions, nextInterfaceName, routePrefixSuggestions, routerIdSuggestions, virtualIpSuggestions, vlanSuggestions, vrfCaseVariants, vrfChoices } from '../analysis/helpers';
+import { Suggestion, netSuggestions, peerAsSuggestions, asnSuggestions, distanceSuggestions, generateMac, groupSuggestions, mtuSuggestions, nextInterfaceName, routePrefixSuggestions, routerIdSuggestions, virtualIpSuggestions, vlanChoices, vlanSuggestions, vrfCaseVariants, vrfChoices } from '../analysis/helpers';
 import { Model, relationDevices } from '../model/types';
 import { deviceAttributes, interfaceAttributes, relationAttributes, vlanAttributes } from '../analysis/sim/attrs';
 import { ParamDef as SimParamDef, ParamValue, SimParams, deviceParamByYaml, fieldText, fieldUnit, formatValue, ifaceRef, parseValue, relRef, scopeRef, serviceParams, vlanRef, zoneRef } from '../analysis/sim/params';
@@ -531,7 +531,7 @@ export class Editor {
               // every entry keeps the slot of the mark, so its label never moves when a selection starts or ends
               this.e('span', { class: 'ctx-mark' + (st === 'selected' ? ' sel' : st === 'related' ? ' rel' : ''), 'aria-hidden': 'true' }, [st === 'selected' ? '▸' : st === 'related' ? '•' : '']),
               this.e('span', { class: 'ol-label' }, [label]),
-              kind === 'device' ? this.layerTag(ent.index) : null,
+              kind === 'device' ? this.layerTag(ent.index) : kind === 'link' ? this.linkVlanTag(ent.id) : null,
               st ? this.e('span', { class: 'sr-only' }, [st === 'selected' ? ' (selected)' : st === 'related' ? ' (directly related)' : ' (not related)']) : null,
               this.badge(c.e, c.w),
             ]),
@@ -1062,7 +1062,7 @@ export class Editor {
       this.renderRoutes(w, index);
     } else if (kind === 'link') {
       g('Identity', [this.idField(base, kind), this.textField(base.concat('label'), 'Label', o)], 'identity');
-      g('Ends', [this.endpointField(base.concat('a'), 'End A', o, false), this.endTaggingField(base.concat('a'), 'A'), this.endpointField(base.concat('b'), 'End B', o, false), this.endTaggingField(base.concat('b'), 'B'), this.tagMismatchNote(index)], 'ends');
+      g('Ends', [this.endpointField(base.concat('a'), 'End A', o, false), this.endPortField(base.concat('a'), 'A'), this.endpointField(base.concat('b'), 'End B', o, false), this.endPortField(base.concat('b'), 'B'), this.tagMismatchNote(index)], 'ends');
       g('Cable', [
         this.textField(base.concat('medium'), 'Medium', o, 'text', MEDIA, 'Set on the link only, not on ports.'),
         this.textField(base.concat('speed'), 'Speed', o, 'text', ['100M', '1G', '10G', '25G', '40G', '100G', '400G'], 'Set on the link only, not on ports.'),
@@ -1522,6 +1522,7 @@ export class Editor {
         this.e('span', { class: 'ctl row' }, [
           this.e('button', { type: 'button', class: 'mini', 'data-act': 'add-iface', 'data-index': String(devIndex), title: 'Add one physical interface' }, ['+ Interface']),
           this.e('button', { type: 'button', class: 'mini', 'data-act': 'add-range', 'data-index': String(devIndex), title: 'Add a numbered range of physical interfaces, e.g. ge 1/1 to ge 1/24' }, ['+ Port Range']),
+          phys.length ? this.e('button', { type: 'button', class: 'mini', 'data-act': 'assign-vlans', 'data-index': String(devIndex), title: 'Give a range of ports the same VLANs, in one step' }, ['Assign VLANs to ports…']) : null,
         ]),
       ]),
       phys.length ? null : this.e('p', { class: 'muted small' }, ['Ports: the only interfaces that can be cabled.']),
@@ -1860,12 +1861,16 @@ export class Editor {
     card.appendChild(
       this.e('summary', {}, [
         this.e('span', { class: 'card-title' }, [summary]),
+        o === 'interface' || doc.get(p.concat('members')) ? this.modeBadge(this.cardL2(devIndex, p)) : null,
         iss.length ? this.badge(errs, iss.length - errs) : null,
         this.e('button', { type: 'button', class: 'mini danger', 'data-act': 'del-iface', 'data-p': J(p), title: 'Delete this interface' }, ['×']),
       ]),
     );
     card.appendChild(this.ifIdField(p, loop ? 'lo0' : kind === 'tunnel' ? 'tun0' : kind === 'virtual' ? 'Vlan10, bond0' : 'ge-0/0/1'));
     card.appendChild(this.ifTypeField(p, entry));
+    // a port's (or an aggregate's) VLANs, right after what it is
+    const isLagCard = o === 'logical' && !!doc.get(p.concat('members'));
+    if (o === 'interface' || isLagCard || doc.get(p.concat('vlans')) || doc.get(p.concat('native')) || doc.get(p.concat('routed'))) card.appendChild(this.portVlanField(devIndex, p, entry));
     card.appendChild(this.textField(p.concat('label'), loop ? 'Name' : 'Label', o, 'text', undefined, loop ? 'Descriptive name, e.g. “Router ID” or “BGP source”.' : undefined));
     card.appendChild(this.addressField(p, loop, o));
     if (!loop && !dhcp && id) {
@@ -1886,7 +1891,7 @@ export class Editor {
         const cur = Number(doc.text(p.concat('vlan')));
         card.appendChild(this.withHelpers(this.intField(p.concat('vlan'), `VLAN ID (${VLAN_MIN}–${VLAN_MAX})`, o, 'VLAN interfaces only. Empty: taken from the network of an address above.'), p.concat('vlan'), 'int', model ? vlanSuggestions(model, cur) : [], 'VLAN ID', `${doc.text(['devices', devIndex, 'id']) || ''} ${id || ''}`.trim()));
       }
-      if (kind === 'virtual' && vlans.length) card.appendChild(this.vlanPortsField(devIndex, p));
+      if (kind === 'virtual' && vlans.length && !has('members')) card.appendChild(this.bridgePortsField(devIndex, p));
       if (kind === 'tunnel' || has('source')) {
         const others = sortedByName(doc.interfaceEntries(devIndex).filter((e) => !!e.id && e.id !== id), (e) => e.id as string).map((e) => e.id as string);
         card.appendChild(this.textField(p.concat('source'), 'Tunnel source', o, 'text', others, 'An interface of this device (e.g. a loopback) or an IP address.', 'Interface or address'));
@@ -2060,29 +2065,6 @@ export class Editor {
     return model && inf ? interfaceVlans(model, inf) : [];
   }
 
-  /** The ports carrying the VLAN of a virtual interface: derived from the tagging of the link ends, never entered. */
-  private vlanPortsField(devIndex: number, p: Path): HTMLElement {
-    const doc = this.doc;
-    const model = doc.result.model;
-    const dev = doc.text(['devices', devIndex, 'id']);
-    const id = doc.text(p.concat('id'));
-    const help = 'Ports whose link end has this VLAN untagged or tagged (set on the links).';
-    const label = 'Ports carrying its VLAN';
-    const inf = model && dev && id ? model.index.interfaces.get(ifaceKey(dev, id)) : undefined;
-    if (!model || !inf) return this.derivedField(label, 'vlan-ports', [this.e('span', { class: 'muted' }, ['Not available while this interface has errors.'])], help);
-    const vlans = interfaceVlans(model, inf);
-    const ports = sortedByName(interfaceVlanPorts(model, inf), (x) => x.iface);
-    const rows = ports.map((x) =>
-      this.e('li', { 'data-port': x.iface }, [
-        this.e('button', { type: 'button', class: 'ref', 'data-goto': `iface:${inf.device}:${x.iface}` }, [x.iface]),
-        this.e('span', { class: 'ro small' }, [` VLAN ${x.vlan} ${x.tagged ? 'tagged' : 'untagged'} on `]),
-        this.e('button', { type: 'button', class: 'ref', 'data-goto': 'link:' + x.link }, [x.link]),
-      ]),
-    );
-    const body = rows.length ? [this.e('ul', { class: 'derived-list' }, rows)] : [this.e('span', { class: 'muted' }, [`No link end of this device carries VLAN ${vlans.join(', ')}.`])];
-    return this.derivedField(`${label} (VLAN ${vlans.join(', ')})`, 'vlan-ports', body, help);
-  }
-
   private listTexts(p: Path): string[] {
     const n = this.doc.get(p);
     if (!n) return [];
@@ -2188,6 +2170,28 @@ export class Editor {
   }
 
   /** A switch's layer in the object list: "L2" / "L3" beside its name (its accessible text says it in full). */
+  /**
+   * What a cable's two ports carry, in the Objects list: their diagram tags
+   * ("A 10", "T 10,20 · N 10"), once when both ends agree; ⚠ when they
+   * disagree. The words are in the text (and spelled out for screen readers),
+   * not in a colour.
+   */
+  private linkVlanTag(id: string | null | undefined): HTMLElement | null {
+    const model = this.doc.result.model;
+    const l = model && id ? model.index.links.get(id) : undefined;
+    if (!model || !l) return null;
+    const a = endTagText(model, l.a);
+    const b = endTagText(model, l.b);
+    if (!a && !b) return null;
+    const mm = tagMismatch(model, l);
+    const words = (e: typeof l.a): string => portBadgeText(endL2(model, e)) || 'no VLANs';
+    const said = a === b ? `${words(l.a)} at both ends` : `${words(l.a)} at ${l.a.device}, ${words(l.b)} at ${l.b.device}`;
+    return this.e('span', { class: 'ol-vlan' + (mm ? ' mismatch' : ''), 'data-vlans': a === b ? a : `${a}|${b}`, title: (mm ? '⚠ ' + tagMismatchText(mm) + ' — ' : '') + said }, [
+      this.e('span', { 'aria-hidden': 'true' }, [(mm ? '⚠ ' : '') + (a === b ? a : `${a || '–'} ⟷ ${b || '–'}`)]),
+      this.e('span', { class: 'sr-only' }, [` (VLANs: ${said}${mm ? '; they disagree' : ''})`]),
+    ]);
+  }
+
   private layerTag(devIndex: number): HTMLElement | null {
     const doc = this.doc;
     if (doc.text(['devices', devIndex, 'type']) !== 'switch') return null;
@@ -2698,23 +2702,359 @@ export class Editor {
     return this.derivedField(label, 'iface-vlan', [this.e('ul', { class: 'derived-list' }, rows)], help);
   }
 
-  // ------------------------------------------------------ link-end tagging
+  // ------------------------------------------------------ a port's VLANs
+
+  /** The port (or aggregate) an interface card edits, at layer 2, in the current model (none while it has errors). */
+  private cardL2(devIndex: number, p: Path): PortL2 | undefined {
+    const model = this.doc.result.model;
+    const dev = this.doc.text(['devices', devIndex, 'id']);
+    const id = this.doc.text(p.concat('id'));
+    return model && dev && id ? portL2(model, dev, id) : undefined;
+  }
+
+  /** A port's mode as a badge: its words carry it (Access · VLAN 10, Trunk · 10, 20 (native 10), Routed, No VLANs), the frame style only adds to them. */
+  private modeBadge(l: PortL2 | undefined): HTMLElement | null {
+    const t = portBadgeText(l);
+    if (!l || !t) return null;
+    return this.e('span', { class: 'mode-badge mode-' + l.kind, 'data-mode': l.kind, title: l.kind === 'unset' ? 'A switch port says what it carries: give it its VLANs' : t }, [t]);
+  }
 
   /**
-   * The layer-2 tagging of one end of a link: its port mode (none, access,
-   * trunk), its untagged VLAN (an access port's VLAN, a trunk's native VLAN)
-   * and a trunk's tagged VLANs ("10, 20, 100-199"). Stored on that end only;
-   * the other end is never changed to match. The networks of the VLANs it
-   * carries are shown, derived.
+   * A port's VLANs (`vlans`), as a multi-select combobox: the VLANs it has
+   * are chips (each removable), the field offers the model's VLANs with
+   * their names as you type and takes new IDs and ranges ("100-199"),
+   * Enter or a comma adds them; Backspace in the empty field removes the
+   * last one. One VLAN makes it an access port, several a trunk: then a
+   * Native VLAN picker appears. On a Layer 3 switch a port may instead be
+   * set to routed. A member of an aggregate shows its aggregate's VLANs,
+   * read-only. Suggestions copy a neighbouring port's or the connected
+   * port's VLANs (one undo step each).
    */
-  private endTaggingField(endPath: Path, side: string): HTMLElement {
+  private portVlanField(devIndex: number, p: Path, entry: IfaceEntry): HTMLElement {
     const doc = this.doc;
-    const t = doc.endTagging(endPath);
+    const model = doc.result.model;
+    const devId = doc.text(['devices', devIndex, 'id']) || '';
+    const type = doc.text(['devices', devIndex, 'type']) || '';
+    const l3switch = type === 'switch' && doc.text(['devices', devIndex, 'layer3']) === 'true';
+    const id = entry.id || '';
+    const vp = p.concat('vlans');
+    const own = doc.portVlans(p);
+    const routed = doc.text(p.concat('routed')) === 'true';
+    const l2 = this.cardL2(devIndex, p);
+    const lag = model && entry.kind === 'interface' && id ? lagOf(model, devId, id) : undefined;
+    const box = this.e('div', { class: 'port-l2', 'data-port-l2': l2 ? l2.kind : 'unknown' });
+    // a member port takes its aggregate's VLANs
+    if (lag !== undefined && !own.length && !doc.get(p.concat('native')) && !routed) {
+      box.appendChild(
+        this.derivedField(
+          'VLANs',
+          'port-vlans',
+          [this.modeBadge(l2), this.e('span', { class: 'muted' }, [' from its aggregate ']), this.e('button', { type: 'button', class: 'ref', 'data-goto': `iface:${devId}:${lag}` }, [lag])],
+          `A member of ${lag}: it carries the aggregate's VLANs (set them there).`,
+        ),
+      );
+      return box;
+    }
+    const uid = 'vl-' + Math.random().toString(36).slice(2, 9);
+    const chips = this.e('span', { class: 'vlan-chips', role: 'list', 'aria-label': `VLANs of ${id}` });
+    for (const v of own) {
+      chips.appendChild(
+        this.e('span', { class: 'ref-chip vlan-chip', role: 'listitem', 'data-vlan': v }, [
+          v.replace('-', '–'),
+          this.e('button', { type: 'button', class: 'mini', 'data-act': 'vlan-remove', 'data-p': J(p), 'data-v': v, 'aria-label': `Remove VLAN ${v} from ${id}`, title: `Remove VLAN ${v}` }, ['×']),
+        ]),
+      );
+    }
+    const input = this.e('input', {
+      type: 'text',
+      id: uid,
+      'data-p': J(vp),
+      'data-t': 'vlan-combo',
+      'data-o': entry.kind,
+      role: 'combobox',
+      'aria-autocomplete': 'list',
+      'aria-expanded': 'false',
+      'aria-controls': uid + '-list',
+      'aria-label': `Add VLANs to ${id}`,
+      'aria-describedby': uid + '-help',
+      autocomplete: 'off',
+      spellcheck: 'false',
+      inputmode: 'text',
+      placeholder: own.length ? 'add a VLAN or range' : routed ? '(routed)' : '10, or 10, 20, 30-39',
+    }) as HTMLInputElement;
+    if (routed) input.disabled = true;
+    const list = this.e('ul', { id: uid + '-list', role: 'listbox', class: 'combo-list', 'aria-label': 'VLANs of the model' }) as HTMLUListElement;
+    list.hidden = true;
+    const ownIds = l2 ? l2.vlans : [];
+    const choices = model
+      ? vlanChoices(model)
+          .filter((c) => ownIds.indexOf(c.id) < 0)
+          .map((c) => {
+            const nets = model.networks.filter((n) => n.vlan === c.id).map((n) => n.label || n.id);
+            return { id: c.id, name: nets.length ? nets.join(', ') : c.names.length ? `on ${c.names.length} port${c.names.length === 1 ? '' : 's'} or interface${c.names.length === 1 ? '' : 's'}` : '' };
+          })
+      : [];
+    let active = -1;
+    const options = (): HTMLElement[] => Array.from(list.querySelectorAll('[role="option"]')) as HTMLElement[];
+    const render = (): void => {
+      while (list.firstChild) list.removeChild(list.firstChild);
+      const q = input.value.trim().toLowerCase();
+      const shown = choices.filter((c) => !q || String(c.id).indexOf(q) === 0 || c.name.toLowerCase().indexOf(q) >= 0).slice(0, 50);
+      shown.forEach((c, k) => {
+        const li = this.e('li', { role: 'option', id: `${uid}-o${k}`, 'data-value': String(c.id), 'aria-selected': 'false', class: 'combo-opt' }, [this.e('span', {}, [`VLAN ${c.id}`]), c.name ? this.e('span', { class: 'combo-count' }, [` ${c.name}`]) : null]);
+        li.addEventListener('mousedown', (ev) => {
+          ev.preventDefault();
+          pick(String(c.id));
+        });
+        list.appendChild(li);
+      });
+      if (!shown.length) list.appendChild(this.e('li', { class: 'combo-empty', role: 'presentation' }, [input.value.trim() ? 'A VLAN ID or range: press Enter to add it' : 'Type a VLAN ID (1–4094) or a range such as 100-199']));
+      active = -1;
+      input.removeAttribute('aria-activedescendant');
+    };
+    const open = (on: boolean): void => {
+      list.hidden = !on;
+      input.setAttribute('aria-expanded', on ? 'true' : 'false');
+      if (on) render();
+    };
+    const move = (d: number): void => {
+      const os = options();
+      if (!os.length) return;
+      active = (active + d + os.length) % os.length;
+      os.forEach((o, k) => o.setAttribute('aria-selected', k === active ? 'true' : 'false'));
+      input.setAttribute('aria-activedescendant', os[active].id);
+      if (typeof os[active].scrollIntoView === 'function') os[active].scrollIntoView({ block: 'nearest' });
+    };
+    // a pick (or what is typed) is added through the change handler: one undo step, the field keeps the focus
+    const pick = (value: string): void => {
+      input.value = value;
+      open(false);
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    };
+    input.addEventListener('input', () => {
+      if (/[,;]\s*$/.test(input.value)) {
+        pick(input.value.replace(/[,;]\s*$/, ''));
+        return;
+      }
+      open(true);
+    });
+    input.addEventListener('blur', () => open(false));
+    input.addEventListener('keydown', (ev) => {
+      if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
+        ev.preventDefault();
+        if (list.hidden) open(true);
+        move(ev.key === 'ArrowDown' ? 1 : -1);
+      } else if (ev.key === 'Enter') {
+        ev.preventDefault();
+        if (!list.hidden && active >= 0) pick(options()[active].getAttribute('data-value') as string);
+        else if (input.value.trim()) pick(input.value);
+      } else if (ev.key === 'Escape' && !list.hidden) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        open(false);
+      } else if (ev.key === 'Backspace' && !input.value && own.length) {
+        // the last VLAN goes (one undo step)
+        ev.preventDefault();
+        const last = chips.querySelector('.vlan-chip:last-child [data-act="vlan-remove"]') as HTMLElement | null;
+        if (last) last.click();
+      }
+    });
+    const switchPort = type === 'switch' && !routed;
+    const label = `VLANs${switchPort ? ' *' : ''}`;
+    const help = routed ? 'A routed port has no VLANs.' : 'One VLAN: access (untagged). Several: a trunk, tagged except its native VLAN.';
+    const ctl = this.e('span', { class: 'ctl combo vlan-combo' }, [chips, input, list]);
+    const f = this.field(label, ctl, vp, help);
+    const helpEl = f.querySelector('.help');
+    if (helpEl) helpEl.id = uid + '-help';
+    // the mode badge beside the label (its words say it)
+    const badge = this.modeBadge(l2);
+    if (badge) f.insertBefore(badge, f.children[1] || null);
+    box.appendChild(f);
+    // a trunk's native VLAN
+    if (ownIds.length > 1 || doc.get(p.concat('native'))) {
+      const cur = doc.text(p.concat('native')) || '';
+      const sel = this.e('select', { 'data-p': J(p.concat('native')), 'data-t': 'vlan-native', 'data-o': entry.kind, 'aria-label': `Native VLAN of ${id}` }) as HTMLSelectElement;
+      sel.appendChild(this.e('option', { value: '' }, ['None: every VLAN tagged']));
+      if (cur && ownIds.indexOf(Number(cur)) < 0) sel.appendChild(this.e('option', { value: cur }, [`${cur} (not one of its VLANs)`]));
+      if (ownIds.length <= 400) for (const v of ownIds) sel.appendChild(this.e('option', { value: String(v) }, [`VLAN ${v}`]));
+      sel.value = cur;
+      box.appendChild(this.field('Native VLAN', sel, p.concat('native'), 'Untagged on the trunk; every other VLAN is tagged.'));
+    }
+    // a Layer 3 switch's routed port
+    if (l3switch || routed) {
+      const cb = this.e('input', { type: 'checkbox', id: uid + '-routed', 'data-act': 'port-routed', 'data-p': J(p) }) as HTMLInputElement;
+      cb.checked = routed;
+      const why = own.length && !routed ? 'Setting it to routed removes its VLANs (one undo step).' : 'A Layer 3 interface: no VLANs, it may have addresses.';
+      box.appendChild(this.e('div', { class: 'field' }, [this.e('label', { class: 'check', for: uid + '-routed', title: why }, [cb, ' Routed port']), this.e('div', { class: 'help' }, [why])]));
+    }
+    // suggestions: the same as a neighbouring port, or as the connected port
+    const sugg = this.vlanSuggestions(devIndex, p, id);
+    if (sugg.length && !routed) {
+      const row = this.e('div', { class: 'helpers', role: 'group', 'aria-label': `Suggestions for the VLANs of ${id}` });
+      for (const s of sugg) row.appendChild(this.e('button', { type: 'button', class: 'chip', 'data-act': 'vlan-copy', 'data-index': String(devIndex), 'data-id': id, 'data-v': s.vlans, 'data-n': s.native, title: s.title }, [s.label]));
+      box.appendChild(row);
+    }
+    return box;
+  }
+
+  /** "Same as <the port before it>" and "Like the connected port", when they would change something. */
+  private vlanSuggestions(devIndex: number, p: Path, id: string): Array<{ label: string; title: string; vlans: string; native: string }> {
+    const model = this.doc.result.model;
+    const devId = this.doc.text(['devices', devIndex, 'id']) || '';
+    const d = model ? model.index.devices.get(devId) : undefined;
+    if (!model || !d || !id) return [];
+    const mine = portL2(model, devId, id);
+    const same = (l: PortL2): boolean => !!mine && mine.vlans.join(',') === l.vlans.join(',') && mine.native === l.native;
+    const out: Array<{ label: string; title: string; vlans: string; native: string }> = [];
+    // the nearest port before it (by name) that has VLANs of its own
+    const ports = sortedByName(d.interfaces.filter((x) => x.id !== id && x.vlans.length > 0 && lagOf(model, devId, x.id) === undefined), (x) => x.id);
+    const before = ports.filter((x) => compareNames(x.id, id) < 0);
+    const near = before.length ? before[before.length - 1] : ports[0];
+    if (near) {
+      const l = portL2(model, devId, near.id) as PortL2;
+      if (!same(l)) out.push({ label: `Same as ${near.id}`, title: `${portBadgeText(l)}, like ${near.id}`, vlans: vlanRangesText(l.vlans), native: l.native !== undefined ? String(l.native) : '' });
+    }
+    // the port at the other end of its cable
+    const lid = model.index.ifaceLink.get(ifaceKey(devId, id));
+    const lk = lid !== undefined ? model.index.links.get(lid) : undefined;
+    if (lk) {
+      const far = lk.a.device === devId && lk.a.iface === id ? lk.b : lk.a;
+      const fl = endL2(model, far);
+      if (fl && isBridgePort(fl) && !same(fl)) out.push({ label: `VLANs of the connected port`, title: `${far.device}:${far.iface}: ${portBadgeText(fl)}`, vlans: vlanRangesText(fl.vlans), native: fl.native !== undefined ? String(fl.native) : '' });
+    }
+    return out;
+  }
+
+  /** A VLAN interface's bridge ports, read-only, by mode; each a link to its port. Replaces "Ports carrying its VLAN". */
+  private bridgePortsField(devIndex: number, p: Path): HTMLElement {
+    const doc = this.doc;
+    const model = doc.result.model;
+    const dev = doc.text(['devices', devIndex, 'id']);
+    const id = doc.text(p.concat('id'));
+    const help = 'Every port of this device whose VLANs include its VLAN (set on the ports).';
+    const inf = model && dev && id ? model.index.interfaces.get(ifaceKey(dev, id)) : undefined;
+    if (!model || !inf) return this.derivedField('Bridge ports', 'bridge-ports', [this.e('span', { class: 'muted' }, ['Not available while this interface has errors.'])], help);
+    const vlans = interfaceVlans(model, inf);
+    const parent = subinterfaceParent(model, inf);
+    if (parent !== undefined) {
+      return this.derivedField(`Subinterface of`, 'bridge-ports', [this.e('button', { type: 'button', class: 'ref', 'data-goto': `iface:${inf.device}:${parent}` }, [parent]), this.e('span', { class: 'ro small' }, [` VLAN ${vlans.join(', ')} tagged`])], 'Its name says its port (port.number): its VLAN is 802.1Q-tagged there.');
+    }
+    const g = vlanPortsByMode(model, inf);
+    const groups: HTMLElement[] = [];
+    for (const [label, ids] of [['Access', g.access], ['Trunk', g.trunk]] as Array<[string, string[]]>) {
+      if (!ids.length) continue;
+      const row = this.e('li', { 'data-mode': label.toLowerCase() }, [this.e('span', { class: 'ro' }, [label + ': '])]);
+      portRuns(ids).forEach((r, k) => {
+        if (k) row.appendChild(this.e('span', {}, [', ']));
+        row.appendChild(this.e('button', { type: 'button', class: 'ref', 'data-goto': `iface:${inf.device}:${r.first}`, 'data-port': r.first }, [r.last !== undefined ? r.first : r.text]));
+        if (r.last !== undefined) {
+          row.appendChild(this.e('span', {}, ['–']));
+          row.appendChild(this.e('button', { type: 'button', class: 'ref', 'data-goto': `iface:${inf.device}:${r.last}`, 'data-port': r.last, 'aria-label': r.last }, [r.text.slice(r.text.indexOf('–') + 1)]));
+        }
+      });
+      groups.push(row);
+    }
+    const body = groups.length ? [this.e('ul', { class: 'derived-list bridge-ports' }, groups)] : [this.e('span', { class: 'muted' }, [`No port of this device has VLAN ${vlans.join(', ')}.`])];
+    return this.derivedField(`Bridge ports (VLAN ${vlans.join(', ')})`, 'bridge-ports', body, help);
+  }
+
+  /**
+   * Assign VLANs to ports…: a range of ports (written as for "+ Port
+   * Range": first and last name; one name for one port), the VLANs and the
+   * native VLAN; a preview says which ports change. Applied as one undo
+   * step; Cancel, or a range with a port the device doesn't have, changes
+   * nothing.
+   */
+  private async assignVlans(devIndex: number): Promise<void> {
+    const doc = this.doc;
+    const ports = doc.interfaceEntries(devIndex).filter((e) => e.kind === 'interface' && !!e.id).map((e) => e.id as string);
+    const from = this.e('input', { type: 'text', id: 'assign-from', spellcheck: 'false', autocomplete: 'off', placeholder: ports[0] || 'Gi1/0/1' }) as HTMLInputElement;
+    const to = this.e('input', { type: 'text', id: 'assign-to', spellcheck: 'false', autocomplete: 'off', placeholder: '(one port: leave empty)' }) as HTMLInputElement;
+    const vl = this.e('input', { type: 'text', id: 'assign-vlans', spellcheck: 'false', autocomplete: 'off', placeholder: '10, or 10, 20, 30-39' }) as HTMLInputElement;
+    const nat = this.e('input', { type: 'text', id: 'assign-native', spellcheck: 'false', autocomplete: 'off', inputmode: 'numeric', placeholder: '(none: every VLAN tagged)' }) as HTMLInputElement;
+    const preview = this.e('div', { id: 'assign-preview', class: 'range-preview', role: 'status', 'aria-live': 'polite' });
+    let apply: HTMLButtonElement | null = null;
+    const plan = (): { ok: true; ids: string[] } | { ok: false; error: string } => {
+      const a = from.value.trim();
+      const b = to.value.trim();
+      if (!a) return { ok: false, error: 'Enter the first port (and the last one for a range).' };
+      let ids: string[];
+      if (!b || b === a) ids = [portIdFor(a)];
+      else {
+        const r = portRange(a, b);
+        if (!r.ok) return r;
+        ids = r.ports.map((x) => x.id);
+      }
+      const missing = ids.filter((x) => ports.indexOf(x) < 0);
+      if (missing.length) return { ok: false, error: `Not a port of this device: ${missing.slice(0, 4).join(', ')}${missing.length > 4 ? ` and ${missing.length - 4} more` : ''}. Nothing is changed.` };
+      if (!vl.value.trim()) return { ok: false, error: 'Enter the VLANs: one (access ports) or several (trunks).' };
+      return { ok: true, ids };
+    };
+    const refresh = (): void => {
+      while (preview.firstChild) preview.removeChild(preview.firstChild);
+      const pl = plan();
+      preview.setAttribute('data-state', pl.ok ? 'ok' : 'error');
+      if (pl.ok) {
+        const n = vl.value.split(/[,\s]+/).filter((x) => !!x);
+        const kind = n.length === 1 && !/-/.test(n[0]) ? `access ports in VLAN ${n[0]}` : `trunks of ${vl.value.trim()}${nat.value.trim() ? ` (native ${nat.value.trim()})` : ''}`;
+        preview.appendChild(this.e('div', { class: 'range-count' }, [`${pl.ids.length} port${pl.ids.length === 1 ? '' : 's'} become ${kind}:`]));
+        preview.appendChild(this.e('div', { class: 'range-list ro' }, [portRuns(pl.ids).map((r) => r.text).join(', ')]));
+      } else preview.appendChild(this.e('div', { class: 'field-err' }, [pl.error]));
+      if (apply) apply.disabled = !pl.ok;
+    };
+    const answer = await this.host.dialog({
+      title: `Assign VLANs to ports of ${this.devName(devIndex)}`,
+      body: [
+        this.e('div', { class: 'range-form' }, [this.e('label', { class: 'dl-label' }, ['From ', from]), this.e('label', { class: 'dl-label' }, ['To ', to])]),
+        this.e('div', { class: 'range-form' }, [this.e('label', { class: 'dl-label' }, ['VLANs ', vl]), this.e('label', { class: 'dl-label' }, ['Native VLAN ', nat])]),
+        preview,
+        this.e('p', { class: 'muted small' }, ['Their VLANs are replaced; one VLAN makes access ports, several make trunks. You can undo this with Ctrl+Z.']),
+      ],
+      buttons: [
+        { label: 'Cancel', value: 'cancel' },
+        { label: 'Assign', value: 'assign', kind: 'primary' },
+      ],
+      ready: (dialog) => {
+        apply = dialog.querySelector('[data-value="assign"]') as HTMLButtonElement | null;
+        for (const input of [from, to, vl, nat]) {
+          input.addEventListener('input', refresh);
+          input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && apply && !apply.disabled) {
+              e.preventDefault();
+              apply.click();
+            }
+          });
+        }
+        refresh();
+        from.focus();
+      },
+    });
+    if (answer !== 'assign') return;
+    const pl = plan();
+    if (!pl.ok) {
+      this.host.toast(pl.error);
+      return;
+    }
+    const r = doc.assignPortVlans(devIndex, pl.ids, vl.value, nat.value.trim());
+    if (!r.done) {
+      this.host.toast(`Not a port of this device: ${r.missing.join(', ')}. Nothing is changed.`);
+      return;
+    }
+    this.host.changed(`VLANs ${vl.value.trim()} assigned to ${r.done} port${r.done === 1 ? '' : 's'} of ${this.devName(devIndex)}.`);
+  }
+
+  /**
+   * One end of a link: the port it plugs into and what that port is set to
+   * (speed, duplex). Its VLANs are the port's (set on the port's card):
+   * shown here read-only, with the networks of those VLANs.
+   */
+  private endPortField(endPath: Path, side: string): HTMLElement {
+    const doc = this.doc;
     const hasEnd = !!this.epParts(endPath).device;
-    const box = this.e('div', { class: 'tag-ed', 'data-tag-end': side, 'data-mode': t.mode || 'none' });
+    const box = this.e('div', { class: 'tag-ed', 'data-tag-end': side });
     if (!hasEnd) {
       box.appendChild(this.e('span', { class: 'muted small' }, ['Choose the device of this end first.']));
-      return this.field(`End ${side} tagging`, box, endPath.concat('mode'));
+      return this.field(`End ${side}: port`, box, endPath.concat('speed'));
     }
     const speed = this.input(endPath.concat('speed'), 'end-text', doc.text(endPath.concat('speed')) || '', { 'data-k': 'speed', placeholder: 'e.g. 1G (the cable’s speed: on the link)', 'aria-label': `Port speed at end ${side}` });
     box.appendChild(this.field('Port speed', speed, endPath.concat('speed')));
@@ -2725,33 +3065,24 @@ export class Editor {
     for (const x of DUPLEXES) dpx.appendChild(this.e('option', { value: x }, [x === 'auto' ? 'Auto' : x === 'full' ? 'Full' : 'Half']));
     dpx.value = curDpx;
     box.appendChild(this.field('Duplex', dpx, endPath.concat('duplex')));
-    const mode = this.e('select', { 'data-p': J(endPath), 'data-t': 'end-mode', 'aria-label': `Port mode at end ${side}` }) as HTMLSelectElement;
-    mode.appendChild(this.e('option', { value: '' }, ['No layer-2 tagging']));
-    if (t.mode && (PORT_MODES as readonly string[]).indexOf(t.mode) < 0) mode.appendChild(this.e('option', { value: t.mode }, [t.mode + ' (not a mode)']));
-    for (const m of PORT_MODES) mode.appendChild(this.e('option', { value: m }, [m === 'access' ? 'Access (one untagged VLAN)' : 'Trunk (tagged VLANs + native)']));
-    mode.value = t.mode;
-    box.appendChild(this.field('Mode', mode, endPath.concat('mode')));
-    if (t.mode || t.untagged) {
-      const u = this.input(endPath.concat('untagged'), 'end-untagged', t.untagged, { inputmode: 'numeric', placeholder: t.mode === 'trunk' ? 'e.g. 1' : 'e.g. 10', 'aria-label': `${t.mode === 'trunk' ? 'Native' : 'Untagged'} VLAN at end ${side}` });
-      const lm = this.doc.result.model;
-      const defined = lm ? vlanSuggestions(lm, t.untagged ? Number(t.untagged) : undefined).filter((s) => !/ \(next free\)$/.test(s.label)) : [];
-      box.appendChild(this.withHelpers(this.field(t.mode === 'trunk' ? `Native VLAN (untagged, ${VLAN_MIN}–${VLAN_MAX})` : `Untagged VLAN (${VLAN_MIN}–${VLAN_MAX})`, u, endPath.concat('untagged')), endPath.concat('untagged'), 'end-untagged', defined, t.mode === 'trunk' ? 'native VLAN' : 'untagged VLAN', `end ${side}`));
-    }
-    if (t.mode === 'trunk' || t.tagged.length) {
-      const tg = this.input(endPath.concat('tagged'), 'end-tagged', t.tagged.join(', '), { placeholder: '10, 20, 100-199', 'aria-label': `Tagged VLANs at end ${side}` });
-      box.appendChild(this.field('Tagged VLANs', tg, endPath.concat('tagged'), 'IDs and ranges, separated by commas.'));
-    }
     const model = doc.result.model;
     const l = model ? model.index.links.get(doc.text([endPath[0], endPath[1], 'id']) || '') : undefined;
     const end = l ? (endPath[2] === 'a' ? l.a : l.b) : undefined;
-    if (model && end && end.mode) {
+    if (model && end && end.iface !== undefined) {
+      const l2 = endL2(model, end);
       const nets = endNetworks(model, end);
+      const src = l2 && l2.lag !== undefined ? l2.lag : end.iface;
       box.appendChild(
         this.derivedField(
-          'Networks of its VLANs',
-          'end-networks',
-          [nets.length ? this.e('span', { class: 'ro' }, [nets.map((n) => (model.index.networks.get(n) as { label: string }).label).join(', ')]) : this.e('span', { class: 'muted' }, ['No network of the model has one of these VLANs.'])],
-          'The networks whose VLAN this end carries.',
+          'VLANs (of the port)',
+          'end-vlans',
+          [
+            this.modeBadge(l2) || this.e('span', { class: 'muted' }, ['No VLANs (untagged)']),
+            this.e('span', {}, [' ']),
+            this.e('button', { type: 'button', class: 'ref', 'data-goto': `iface:${end.device}:${src}` }, [`set on ${end.device}:${src}`]),
+            nets.length ? this.e('div', { class: 'ro small' }, ['Networks: ' + nets.map((n) => (model.index.networks.get(n) as { label: string }).label).join(', ')]) : null,
+          ],
+          'What the cable carries here follows from the port’s VLANs.',
         ),
       );
     }
@@ -2760,13 +3091,13 @@ export class Editor {
     return this.e('div', { class: 'field tag-field', 'data-tagging': side }, [this.e('label', {}, [`End ${side}: port`]), box]);
   }
 
-  /** How the tagging of the two ends disagrees, shown but never repaired. */
+  /** How the two ports of a cable disagree, shown but never repaired. */
   private tagMismatchNote(linkIndex: number): HTMLElement {
     const model = this.doc.result.model;
     const l = model ? model.index.links.get(this.doc.text(['links', linkIndex, 'id']) || '') : undefined;
-    const mm = l ? tagMismatch(l.a, l.b) : null;
+    const mm = l && model ? tagMismatch(model, l) : null;
     if (!mm) return this.e('div', { class: 'net-match', 'data-tag-mismatch': 'no' });
-    return this.e('div', { class: 'net-mismatch-note field-warn', 'data-tag-mismatch': 'yes', role: 'status' }, ['⚠ The two ends disagree (' + tagMismatchText(mm) + '). Nothing is changed automatically.']);
+    return this.e('div', { class: 'net-mismatch-note field-warn', 'data-tag-mismatch': 'yes', role: 'status' }, ['⚠ The two ports disagree (' + tagMismatchText(mm) + '). Nothing is changed automatically.']);
   }
 
   // ------------------------------------------------------------ static routes
@@ -3254,8 +3585,17 @@ export class Editor {
         made = this.lastItem(p);
         note = `${p[p.length - 1] === 'ip' ? 'Address' : 'Entry'} ${trimmed} added.`;
         break;
-      case 'end-mode':
-        doc.setEndMode(p, val);
+      case 'vlan-combo': {
+        // a VLAN, a range or a list typed or picked: added to the port's VLANs
+        if (!trimmed) return true;
+        const port = p.slice(0, -1);
+        doc.setPortVlans(port, doc.portVlans(port).concat([trimmed]).join(','));
+        note = `VLAN ${trimmed} added to ${doc.text(port.concat('id')) || 'the port'}.`;
+        break;
+      }
+      case 'vlan-native':
+        doc.setPortNative(p.slice(0, -1), val);
+        note = val ? `Native VLAN ${val}.` : 'No native VLAN: every VLAN is tagged.';
         break;
       case 'end-duplex':
         doc.setEndText(p, 'duplex', val);
@@ -3280,12 +3620,6 @@ export class Editor {
         made = ['devices', di, 'protocols', val];
         break;
       }
-      case 'end-untagged':
-        doc.setEndUntagged(p.slice(0, -1), trimmed);
-        break;
-      case 'end-tagged':
-        doc.setEndTagged(p.slice(0, -1), trimmed);
-        break;
       case 'over-append':
         if (!val) return true;
         doc.appendText(p, val, 'Add underlay');
@@ -3450,6 +3784,27 @@ export class Editor {
         this.didCreate(path, `Interface ${doc.text(path.concat('id')) || ''} added to ${this.devName(index)}.`, btn, { sel: { kind: 'device', index, iface: path } });
         return true;
       }
+      case 'vlan-remove': {
+        const v = btn.getAttribute('data-v') || '';
+        doc.setPortVlans(p, doc.portVlans(p).filter((x) => x !== v).join(','));
+        this.host.changed(`VLAN ${v} removed from ${doc.text(p.concat('id')) || 'the port'}.`);
+        return true;
+      }
+      case 'vlan-copy': {
+        const id = btn.getAttribute('data-id') || '';
+        const r = doc.assignPortVlans(index, [id], btn.getAttribute('data-v') || '', btn.getAttribute('data-n') || '');
+        this.host.changed(r.done ? `${id}: ${btn.getAttribute('title') || 'VLANs copied'}.` : `Not a port of this device: ${id}.`);
+        return true;
+      }
+      case 'port-routed': {
+        const box = btn as unknown as HTMLInputElement;
+        doc.setPortRouted(p, box.checked);
+        this.host.changed(`${doc.text(p.concat('id')) || 'The port'} is ${box.checked ? 'a routed port (no VLANs)' : 'a switch port again: give it its VLANs'}.`);
+        return true;
+      }
+      case 'assign-vlans':
+        void this.assignVlans(index);
+        return true;
       case 'add-range':
         await this.addPortRange(index);
         return true;
@@ -3511,7 +3866,6 @@ export class Editor {
         const v = btn.getAttribute('data-v') as string;
         const k = btn.getAttribute('data-kind');
         if (k === 'int') doc.setInteger(p, v);
-        else if (k === 'end-untagged') doc.setEndUntagged(p.slice(0, -1), v);
         else if (k === 'ifid') {
           const n = doc.renameInterface(p.slice(0, -1), v);
           this.host.changed(n ? `Renamed; ${n} reference${n > 1 ? 's' : ''} updated.` : undefined);

@@ -6,7 +6,7 @@
  */
 import { Rect, textWidth } from '../layout/geometry';
 import { DEVICE_TYPE_IDS, deviceTypeLabel } from '../model/device-types';
-import { tagMismatch } from '../model/derive';
+import { endTagText, tagMismatch } from '../model/derive';
 import { relationStyle } from '../model/protocols';
 import { CATEGORIES, Category, Model, ProtocolDef } from '../model/types';
 import { deviceIcon, iconName, layerBadge, serviceBadge } from './icons';
@@ -95,8 +95,9 @@ export function legendOf(model: Model, view: View): Legend {
           PORT_ITEM,
           ...(model.links.some((l) => !l.a.iface || !l.b.iface) ? [DEVICE_END_ITEM] : []),
           ...(model.devices.some((d) => d.logical.some((i) => i.members.length > 0)) ? [LAG_ITEM] : []),
-          ...(model.links.some((l) => !!l.a.mode || !!l.b.mode) ? [TAG_ITEM] : []),
-          ...(model.links.some((l) => !!tagMismatch(l.a, l.b)) ? [MISMATCH_ITEM] : []),
+          ...(model.links.some((l) => !!endTagText(model, l.a) || !!endTagText(model, l.b)) ? [TAG_ITEM] : []),
+          ...(model.links.some((l) => /^T /.test(endTagText(model, l.a)) || /^T /.test(endTagText(model, l.b))) ? [TRUNK_ITEM] : []),
+          ...(model.links.some((l) => !!tagMismatch(model, l)) ? [MISMATCH_ITEM] : []),
         ],
       });
     }
@@ -201,11 +202,16 @@ const DEVICE_PORT_ITEM: LegendItem = {
   ],
   label: 'Device-level port: relations bound to the device as a whole',
 };
-const MISMATCH_ITEM: LegendItem = { swatch: [h('text', { class: 'net-warn', x: 22, y: 14, 'text-anchor': 'middle' }, '⚠')], label: 'VLANs differ: the tagging of the two ends disagrees' };
-/** the tagging of a port, as its label's second line */
+const MISMATCH_ITEM: LegendItem = { swatch: [h('text', { class: 'net-warn', x: 22, y: 14, 'text-anchor': 'middle' }, '⚠')], label: 'VLANs differ: the ports at the two ends disagree' };
+/** a port's VLANs, as its label's second line */
 const TAG_ITEM: LegendItem = {
-  swatch: [h('text', { class: 'port-tag', x: 22, y: 13, 'text-anchor': 'middle', 'font-size': 9 }, 'U·T')],
-  label: 'Port tagging: U untagged (access / native) VLAN · T tagged VLANs',
+  swatch: [h('text', { class: 'port-tag', x: 22, y: 13, 'text-anchor': 'middle', 'font-size': 9 }, 'A · T · N')],
+  label: 'Port VLANs: A 10 access port · T 10,20 trunk · N its native (untagged) VLAN · R · T a routed port’s tagged subinterfaces',
+};
+/** a trunk port: larger, with a thick frame */
+const TRUNK_ITEM: LegendItem = {
+  swatch: [h('rect', { class: 'port', x: 9, y: 4.5, width: 9, height: 9, rx: 1.5, fill: '#868e96' }), h('rect', { class: 'port trunk', x: 25, y: 3.5, width: 11, height: 11, rx: 1.5, fill: '#868e96' })],
+  label: 'Access port (one VLAN) · trunk port (several VLANs, thick frame)',
 };
 
 /** a device's route table and the line from a route to its next hop (logical view; hidden with Routes) */

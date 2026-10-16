@@ -49,7 +49,7 @@ devices:
     label: w-sw
     type: switch
     group: west
-    interfaces: [p1, p2, p3, p4]
+    interfaces: [{id: p1, vlans: [10, 30]}, {id: p2, vlans: 10}, {id: p3, vlans: 10}, {id: p4, vlans: 30}]
   - id: w1
     type: router
     group: west
@@ -58,7 +58,7 @@ devices:
       ospf: {}
       vrrp: {}
     interfaces:
-      - {id: ge0, description: LAN trunk}
+      - {id: ge0, vlans: [10, 30], description: LAN trunk}
       - {id: ge1, ip: 10.0.1.1/30}
     logical_interfaces:
       - {id: lo0, type: loopback, ip: 10.255.0.1/32}
@@ -77,7 +77,7 @@ devices:
       ospf: {}
       vrrp: {}
     interfaces:
-      - {id: ge0, description: LAN trunk}
+      - {id: ge0, vlans: 10, description: LAN trunk}
       - {id: ge1, ip: 10.0.2.1/30}
     logical_interfaces:
       - {id: lo0, type: loopback, ip: 10.255.0.2/32}
@@ -140,7 +140,7 @@ devices:
     label: e-sw
     type: switch
     group: east
-    interfaces: [p1, p2, p3]
+    interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}, {id: p3, vlans: 1}]
   - id: e-srv
     label: Video and app server
     type: server
@@ -159,17 +159,17 @@ devices:
 links:
   # West: w1 carries both VLANs, w2 only the users' VLAN
   - id: l-w1-sw
-    a: {device: w1, interface: ge0, mode: trunk, tagged: [10, 30]}
-    b: {device: w-sw, interface: p1, mode: trunk, tagged: [10, 30]}
+    a: w1:ge0
+    b: w-sw:p1
     medium: copper
     speed: 1G
   - id: l-w2-sw
-    a: {device: w2, interface: ge0, mode: trunk, tagged: [10]}
-    b: {device: w-sw, interface: p2, mode: trunk, tagged: [10]}
+    a: w2:ge0
+    b: w-sw:p2
     medium: copper
     speed: 1G
-  - {id: l-host, a: "w-host:eth0", b: {device: w-sw, interface: p3, mode: access, untagged: 10}, medium: copper, speed: 1G}
-  - {id: l-cam, a: "w-cam:eth0", b: {device: w-sw, interface: p4, mode: access, untagged: 30}, medium: copper, speed: 1G}
+  - {id: l-host, a: "w-host:eth0", b: w-sw:p3, medium: copper, speed: 1G}
+  - {id: l-cam, a: "w-cam:eth0", b: w-sw:p4, medium: copper, speed: 1G}
   # core: c1-c3 is the preferred way, c2-c3 the backup
   - {id: l-w1-c1, a: "w1:ge1", b: "c1:ge0", medium: fiber, speed: 10G}
   - {id: l-w2-c2, a: "w2:ge1", b: "c2:ge0", medium: fiber, speed: 10G}

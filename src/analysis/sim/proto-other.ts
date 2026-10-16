@@ -678,7 +678,7 @@ export function installL2Adverts(P: ProtocolSim): void {
               const bport = bp ? sd.bridgePorts.get(bp) : undefined;
               const blocked = !!bport && P.e.net.vlans.some((v) => carries(bport.vlans, v) && P.e.blocked(x.dev, bport.id, v));
               if (!blocked) {
-                const root = stpRoot(P);
+                const root = stpRoot(P, devs);
                 P.onPort('stp', x.dev, x.port, mac, 'BPDU', `${P.param('stp-mode', x.dev).value === 'stp' ? 'STP' : 'RSTP'} BPDU`, `${P.param('stp-mode', x.dev).value === 'stp' ? 'Configuration BPDU (802.1D)' : 'RST BPDU (802.1w)'} from ${x.dev}:${x.port}: root ${root || '?'}, bridge ${sd.bridgeId || x.dev}, hello ${fmtSec(helloOf(x.dev))}`, {}, x.peer, r);
               }
             } else P.onPort(base, x.dev, x.port, mac, p.messages[0].name, `${p.label} ${p.messages[0].name}`, `${p.messages[0].name} from ${x.dev}:${x.port}: system ${x.dev}, port ${x.port}, TTL ${fmtSec(ttl)}`, {}, x.peer, r);
@@ -705,14 +705,16 @@ export function installL2Adverts(P: ProtocolSim): void {
     });
     P.extraStatus.push((): SessionStatus[] =>
       base === 'stp'
-        ? devs.filter((d) => P.sd(d) && P.sd(d).bridge).map((d) => ({ protocol: 'stp', name: `${r.id}: ${d}`, device: d, peer: '', state: stpRoot(P) === (P.sd(d).bridgeId || d) ? 'Root bridge' : 'Forwarding', detail: `bridge ${P.sd(d).bridgeId}; blocked: ${stpBlockedPorts(P, d).join(', ') || 'none'}`, up: true, relation: r.id }))
+        ? devs.filter((d) => P.sd(d) && P.sd(d).bridge).map((d) => ({ protocol: 'stp', name: `${r.id}: ${d}`, device: d, peer: '', state: stpRoot(P, devs) === (P.sd(d).bridgeId || d) ? 'Root bridge' : 'Forwarding', detail: `bridge ${P.sd(d).bridgeId}; blocked: ${stpBlockedPorts(P, d).join(', ') || 'none'}`, up: true, relation: r.id }))
         : ports.map((x) => ({ protocol: base, name: `${x.dev}:${x.port} → ${x.peer}:${x.peerPort}`, device: x.dev, peer: x.peer, state: x.known ? 'neighbour known' : 'no neighbour', detail: `every ${fmtSec(hello)}, TTL ${fmtSec(ttl)}`, up: x.known, relation: r.id })),
     );
   }
 }
 
-function stpRoot(P: ProtocolSim): string {
-  const v = P.e.net.vlans.length ? P.e.net.vlans[0] : 0;
+/** The root of the spanning tree of the first VLAN the bridges `devs` carry (the network's first VLAN, or untagged, when they carry none). */
+function stpRoot(P: ProtocolSim, devs: string[]): string {
+  const theirs = P.e.net.vlans.find((v) => devs.some((d) => P.sd(d) && Array.from(P.sd(d).bridgePorts.values()).some((bp) => carries(bp.vlans, v))));
+  const v = theirs !== undefined ? theirs : P.e.net.vlans.length ? P.e.net.vlans[0] : 0;
   const t = P.e.tree(v);
   const sd = t.root ? P.e.net.devices.get(t.root) : undefined;
   return sd ? sd.bridgeId : '';

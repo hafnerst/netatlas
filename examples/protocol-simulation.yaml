@@ -94,7 +94,7 @@ devices:
     label: acc-sw
     type: switch
     group: campus
-    interfaces: [p1, p2, p3, up1, up2]
+    interfaces: [{id: p1, vlans: 10}, {id: p2, vlans: 20}, {id: p3, vlans: 30}, {id: up1, vlans: [10, 20, 99]}, {id: up2, vlans: 10}]
     logical_interfaces:
       - {id: Vlan99, type: virtual, vlan: 99, ip: 10.99.0.10/24, description: management}
     simulation: {mac_aging: 120}
@@ -111,9 +111,9 @@ devices:
       vrrp: {}
       pim: {mode: sparse}
     interfaces:
-      - {id: down1}
-      - {id: peer}
-      - {id: ge1, ip: 10.0.1.1/30, mac: "02:00:00:c1:00:01"}
+      - {id: down1, vlans: [10, 20, 99]}
+      - {id: peer, vlans: 10}
+      - {id: ge1, routed: true, ip: 10.0.1.1/30, mac: "02:00:00:c1:00:01"}
     logical_interfaces:
       - {id: lo0, type: loopback, ip: 10.255.1.1/32}
       - id: Vlan10
@@ -139,9 +139,9 @@ devices:
       vrrp: {}
       pim: {mode: sparse}
     interfaces:
-      - {id: down1}
-      - {id: peer}
-      - {id: ge1, ip: 10.0.2.1/30}
+      - {id: down1, vlans: 10}
+      - {id: peer, vlans: 10}
+      - {id: ge1, routed: true, ip: 10.0.2.1/30}
     logical_interfaces:
       - {id: lo0, type: loopback, ip: 10.255.1.2/32}
       - id: Vlan10
@@ -202,7 +202,7 @@ devices:
     label: carrier switch
     type: switch
     group: ring
-    interfaces: [c1, c2]
+    interfaces: [{id: c1, vlans: 1}, {id: c2, vlans: 1}]
 
   # ---------------------------------------------------------------- site B
   - id: srv
@@ -245,7 +245,7 @@ devices:
     label: b-sw
     type: switch
     group: siteb
-    interfaces: [p1, p2, p3, p4]
+    interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}, {id: p3, vlans: 1}, {id: p4, vlans: 1}]
   - id: fw1
     label: DMZ firewall
     type: firewall
@@ -272,12 +272,12 @@ devices:
     type: switch
     group: lab
     simulation: {stp_mode: "off"}
-    interfaces: [p1, p2, p3]
+    interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}, {id: p3, vlans: 1}]
   - id: lab-sw2
     type: switch
     group: lab
     simulation: {stp_mode: "off"}
-    interfaces: [p1, p2]
+    interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}]
   - id: lab-h
     label: Lab host
     type: server
@@ -316,23 +316,23 @@ devices:
 
 links:
   # campus: the access switch on trunks to both core switches, the cores joined too (a loop STP breaks)
-  - {id: l-pc1, a: "pc1:eth0", b: {device: acc-sw, interface: p1, mode: access, untagged: 10}, medium: copper, speed: 1G}
-  - {id: l-pc2, a: "pc2:eth0", b: {device: acc-sw, interface: p2, mode: access, untagged: 20}, medium: copper, speed: 1G}
+  - {id: l-pc1, a: "pc1:eth0", b: acc-sw:p1, medium: copper, speed: 1G}
+  - {id: l-pc2, a: "pc2:eth0", b: acc-sw:p2, medium: copper, speed: 1G}
   - id: l-acc-core1
-    a: {device: acc-sw, interface: up1, mode: trunk, tagged: [10, 20, 99]}
-    b: {device: core1, interface: down1, mode: trunk, tagged: [10, 20, 99]}
+    a: acc-sw:up1
+    b: core1:down1
     medium: fiber
     speed: 10G
   - id: l-acc-core2
-    a: {device: acc-sw, interface: up2, mode: trunk, tagged: [10]}
-    b: {device: core2, interface: down1, mode: trunk, tagged: [10]}
+    a: acc-sw:up2
+    b: core2:down1
     medium: fiber
     speed: 10G
     label: flapping uplink
     simulation: {flapping: true}
   - id: l-core-peer
-    a: {device: core1, interface: peer, mode: trunk, tagged: [10]}
-    b: {device: core2, interface: peer, mode: trunk, tagged: [10]}
+    a: core1:peer
+    b: core2:peer
     medium: fiber
     speed: 10G
   - {id: l-core1-r1, a: "core1:ge1", b: "r1:ge0", medium: fiber, speed: 10G}
@@ -347,7 +347,7 @@ links:
   - {id: l-srv, a: "srv:eth0", b: "b-sw:p2", medium: copper, speed: 10G}
   - {id: l-rx, a: "rx:eth0", b: "b-sw:p3", medium: copper, speed: 1G}
   - {id: l-mcsrc, a: "mcsrc:eth0", b: "b-sw:p4", medium: copper, speed: 1G}
-  - {id: l-pc3, a: "pc3:eth0", b: {device: acc-sw, interface: p3, mode: access, untagged: 30}, medium: copper, speed: 1G}
+  - {id: l-pc3, a: "pc3:eth0", b: acc-sw:p3, medium: copper, speed: 1G}
   - {id: l-r3-fw1, a: "r3:ge3", b: "fw1:outside", medium: copper, speed: 1G}
   - {id: l-web, a: "fw1:dmz", b: "web:eth0", medium: copper, speed: 1G}
   # the lab: two cables between two switches without spanning tree

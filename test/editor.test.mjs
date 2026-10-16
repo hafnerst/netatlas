@@ -289,12 +289,12 @@ test('shorthand forms are expanded only when edited, keeping their data', () => 
     d.ensureMap(['devices', 0, 'interfaces', 1]);
     d.setAt(['devices', 0, 'interfaces', 1, 'vrf'], yaml.strNode('blue'), KEY_ORDER.interface);
   });
-  // a link end becomes a mapping only when it gets a port mode; the other end is left as written
-  assert.ok(d.setEndMode(['links', 0, 'a'], 'access'));
+  // a link end becomes a mapping only when it gets a port setting; the other end is left as written
+  assert.ok(d.setEndText(['links', 0, 'a'], 'speed', '1G'));
   const out = d.exportText();
   assert.match(out, /interfaces: \[eth0, \{id: eth1, vrf: blue\}\]/);
   assert.match(out, /endpoints: \["r1:eth0", r2\]/, 'endpoints stay short');
-  assert.match(out, /a: \{device: r1, interface: eth1, mode: access\}, b: r2:eth0\}/);
+  assert.match(out, /a: \{device: r1, interface: eth1, speed: 1G\}, b: r2:eth0\}/);
   assert.ok(d.valid);
 });
 

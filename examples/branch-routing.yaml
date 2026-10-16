@@ -1,4 +1,4 @@
-# netatlas example: static routing and VLAN tagging at a dual-homed branch.
+# netatlas example: static routing and VLANs at a dual-homed branch.
 #
 # * The branch router has two uplinks. Its default route goes to ISP A; a
 #   floating default (distance 250) to ISP B takes over when ISP A's next hop
@@ -8,9 +8,11 @@
 # * A blackhole route drops the benchmark prefix; the guest VRF has a
 #   blackhole default (guests get no further than the branch).
 # * Hosts have a default gateway: a static route to 0.0.0.0/0.
-# * The router-on-a-stick trunk carries VLANs 10, 20 and 30 tagged and the
-#   management VLAN 99 untagged (native) at both ends; the access ports carry
-#   one untagged VLAN each.
+# * Router on a stick: the router's port ge-0/0/2 is a routed port (its own
+#   address is in the management VLAN 99) with a subinterface per VLAN
+#   (ge-0/0/2.10, .20, .30: tagged). The switch's port Gi1/0/1 is a trunk of
+#   VLANs 10, 20, 30 and 99, native 99 (untagged); the access ports are in
+#   one VLAN each.
 netatlas: 1
 title: Branch routing and VLANs
 description: |
@@ -48,7 +50,7 @@ devices:
     label: Access switch
     type: switch
     group: branch
-    interfaces: [Gi1/0/1, Gi1/0/2, Gi1/0/3]
+    interfaces: [{id: Gi1/0/1, vlans: [10, 20, 30, 99], native: 99}, {id: Gi1/0/2, vlans: 10}, {id: Gi1/0/3, vlans: 20}]
     logical_interfaces:
       - {id: Vlan99, type: virtual, ip: 10.20.99.2/24, label: Management}
     routes:
@@ -106,14 +108,14 @@ links:
   - {id: br-isp-b, a: "br-rtr:wan2", b: "isp-b-pe:ge-0/0/1", medium: lte, speed: 150M}
   - {id: hq-isp-a, a: "hq-rtr:wan1", b: "isp-a-pe:ge-0/0/2", medium: fiber, speed: 10G}
   - {id: hq-isp-b, a: "hq-rtr:wan2", b: "isp-b-pe:ge-0/0/2", medium: fiber, speed: 10G}
-  # router on a stick: VLANs 10, 20 and 30 tagged, management (99) untagged at both ends
+  # router on a stick: the routed port's subinterfaces tag 10, 20 and 30; the switch's trunk has 99 as its native VLAN
   - id: br-trunk
-    a: {device: br-rtr, interface: ge-0/0/2, mode: trunk, untagged: 99, tagged: [10, 20, 30]}
-    b: {device: br-sw, interface: Gi1/0/1, mode: trunk, untagged: 99, tagged: [10, 20, 30]}
+    a: br-rtr:ge-0/0/2
+    b: br-sw:Gi1/0/1
     medium: copper
     speed: 1G
-  - {id: br-pc1, a: {device: br-sw, interface: Gi1/0/2, mode: access, untagged: 10}, b: "pc1:eth0", medium: copper, speed: 1G}
-  - {id: br-phone1, a: {device: br-sw, interface: Gi1/0/3, mode: access, untagged: 20}, b: "phone1:eth0", medium: copper, speed: 1G}
+  - {id: br-pc1, a: br-sw:Gi1/0/2, b: "pc1:eth0", medium: copper, speed: 1G}
+  - {id: br-phone1, a: br-sw:Gi1/0/3, b: "phone1:eth0", medium: copper, speed: 1G}
 
 networks:
   - {id: br-users, label: Branch users, cidr: 10.20.10.0/24, vlan: 10}

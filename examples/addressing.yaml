@@ -83,7 +83,7 @@ devices:
     protocols:
       vrrp: {}
     interfaces:
-      - {id: xe-1, mac: 3c:fd:fe:00:10:01}
+      - {id: xe-1, vlans: [10, 20], mac: 3c:fd:fe:00:10:01}
       - {id: xe-2, mac: 3c:fd:fe:00:10:02}
       - {id: xe-3, mac: 3c:fd:fe:00:10:03}
     logical_interfaces:
@@ -93,7 +93,7 @@ devices:
         ip: [10.10.10.3/24, "2001:db8:10:10::3/64"]
         protocols:
           vrrp: {group: 10, virtual_ip: 10.10.10.1, virtual_ipv6: "2001:db8:10:10::1", priority: 100}
-      - {id: Po1, type: virtual, members: [xe-2, xe-3]}
+      - {id: Po1, type: virtual, members: [xe-2, xe-3], vlans: [10, 20]}
 
   - id: srv
     label: srv-mgmt-01
@@ -124,8 +124,8 @@ links:
   - {id: uplink, a: "isp:pe-1", b: "core:xe-0/0/0", medium: fiber, speed: 10G, cable: "CID-4711-ISP / MMR-2 #12"}
   - {id: wan, a: "core:xe-0/0/1", b: "remote:wan0", medium: fiber, speed: 1G, cable: "Carrier circuit 77-ABCD-0042"}
   - id: trunk
-    a: {device: core, interface: ge-0/0/2, mode: trunk, tagged: [10, 20]}
-    b: {device: dist, interface: xe-1, mode: trunk, tagged: [10, 20]}
+    a: core:ge-0/0/2
+    b: dist:xe-1
     medium: copper
     speed: 10G
   - {id: mgmt-link, a: "core:ge-0/0/3", b: "srv:eth0", medium: copper, speed: 1G}

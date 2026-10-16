@@ -581,6 +581,8 @@ button.ref:hover { text-decoration: underline; }
 .lag-mark { fill: none; stroke: var(--text); stroke-width: 1.4; cursor: pointer; }
 .lag-label { font-family: var(--font-mono); font-size: 9.5px; font-weight: 700; fill: var(--text) !important; cursor: pointer; }
 .port.dev-end { fill: var(--canvas) !important; stroke: var(--text); stroke-width: 1.4; }
+/* a trunk port (several VLANs): larger, with a thick frame in the text colour (its shape says it, not its colour) */
+.port.trunk { stroke: var(--text); stroke-width: 2.2; }
 /* selection / highlight */
 .has-selection .dim { opacity: .16; transition: opacity .15s; }
 .has-selection .group.dim, .has-selection .group-label.dim { opacity: .45; }
@@ -689,6 +691,14 @@ button.mini { padding: 1px 7px; font-size: 11.5px; border-radius: 5px; }
 /* a switch's layer beside its name in the object list */
 .ol-layer { flex: none; font-size: 10px; font-weight: 700; padding: 0 4px; border: 1px solid var(--text); border-radius: 3px; margin-left: 4px; line-height: 14px; }
 .ol-layer.l3 { border-width: 1.6px; }
+/* what a cable's ports carry (Objects list), and a port's mode badge: the mode is in the words; a trunk has a heavier frame, a routed port a dashed one */
+.ol-vlan { flex: 0 100 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: 10.5px; color: var(--muted); margin-left: 4px; white-space: nowrap; }
+.ol-vlan.mismatch { color: var(--error); font-weight: 600; }
+.mode-badge { display: inline-block; align-self: flex-start; max-width: 100%; font-size: 11px; line-height: 16px; padding: 0 6px; border: 1px solid var(--text); border-radius: 4px; color: var(--text); background: var(--panel); overflow-wrap: anywhere; }
+.mode-badge.mode-trunk { border-width: 2px; padding: 0 5px; }
+.mode-badge.mode-routed { border-style: dashed; }
+.mode-badge.mode-unset { border-color: var(--error); color: var(--error); font-weight: 600; }
+.mode-badge.mode-unset::before { content: '! '; }
 .ol-badge { font-size: 10.5px; font-weight: 700; border-radius: 99px; padding: 0 6px; color: var(--on-accent); }
 .ol-badge.err { background: var(--error); }
 .ol-badge.warn { background: var(--warn); }
@@ -802,7 +812,8 @@ details.card > .field.derived { margin: 4px 10px; }
 .net-ed { display: flex; flex-direction: column; gap: 3px; }
 .net-state { font-size: 12px; font-weight: 600; }
 .net-state.muted { font-weight: 400; font-style: italic; }
-.vlan-chips { display: flex; flex-wrap: wrap; gap: 3px; }
+.vlan-chips { display: flex; flex-wrap: wrap; gap: 3px; min-width: 0; }
+.vlan-combo input[data-t="vlan-combo"] { min-width: 0; max-width: 100%; box-sizing: border-box; }
 /* DHCP switch beside the addresses of an interface; while it is on, manual addresses are greyed out */
 .field[data-dhcp] { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; column-gap: 6px; row-gap: 2px; }
 .field[data-dhcp] > :not(label):not(.dhcp-switch) { grid-column: 1 / -1; }

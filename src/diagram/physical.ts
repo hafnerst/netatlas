@@ -297,8 +297,16 @@ export function cableRoute(pa: PortPos, pb: PortPos, boxes: Map<string, Rect>, p
 
 export function renderPhysical(model: Model, layout: PhysicalLayout, opts: ViewOptions): SceneResult {
   const boxes = physicalBoxes(layout, opts.positions);
-  const grects = groupRects(model, boxes);
   const ports = assignPorts(portLinks(model), boxes);
+  // a group's frame also holds the labels of its devices' top and bottom ports (a port's VLANs reach one line beyond its name)
+  const labelParts = new Map<string, Rect[]>();
+  for (const p of ports) {
+    if (!p.tag || (p.side !== 'top' && p.side !== 'bottom')) continue;
+    const d = model.index.devices.get(p.device);
+    if (!d || !d.group) continue;
+    labelParts.set(d.group, (labelParts.get(d.group) || []).concat([portLabelBox(p).rect]));
+  }
+  const grects = groupRects(model, boxes, labelParts);
   const portByKey = new Map<string, PortPos>(ports.map((p) => [p.key, p] as [string, PortPos]));
   const placer = new LabelPlacer();
   const obstacles = new Map<string, Rect>();
@@ -387,8 +395,8 @@ export function renderPhysical(model: Model, layout: PhysicalLayout, opts: ViewO
       }
     }
     const out: VNode[] = [];
-    const mismatch = !!linkTagNote(l);
-    const text = opts.showLabels ? linkLabelText(l) : '';
+    const mismatch = !!linkTagNote(model, l);
+    const text = opts.showLabels ? linkLabelText(model, l) : '';
     const lineFields = opts.showLabels ? linkLabelExtraFields(l) : [];
     const lines = lineFields.map((x) => x.line);
     let center = { x: (pts[seg].x + pts[seg + 1].x) / 2, y: (pts[seg].y + pts[seg + 1].y) / 2 };
@@ -429,16 +437,19 @@ export function renderPhysical(model: Model, layout: PhysicalLayout, opts: ViewO
     const ms = mediumStyle(l.medium);
     linkNodes.push(...(labelAt.get(l.id + '\u0000path') as VNode[]));
     for (const p of [pa, pb]) {
+      // a trunk (several VLANs) is a larger square with a thick frame: its shape says it, not its colour
+      const trunk = !!p.tag && /^T /.test(p.tag);
+      const r = trunk ? 5.5 : 4.5;
       portNodes.push(
         h('rect', {
           // a cable plugged into the device as a whole (no interface named) ends in a hollow square
-          class: p.iface ? 'port' : 'port dev-end',
+          class: p.iface ? (trunk ? 'port trunk' : 'port') : 'port dev-end',
           'data-ref': p.iface ? `iface:${p.device}:${p.iface}` : 'device:' + p.device,
           'data-endpoint': p.iface ? 'iface' : 'device',
-          x: p.x - 4.5,
-          y: p.y - 4.5,
-          width: 9,
-          height: 9,
+          x: p.x - r,
+          y: p.y - r,
+          width: 2 * r,
+          height: 2 * r,
           rx: 1.5,
           fill: ms.color,
         }),

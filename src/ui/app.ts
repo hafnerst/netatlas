@@ -1434,6 +1434,15 @@ export class App {
     this.renderSide();
     const ref = this.editor.selectedRef();
     if (ref) this.reveal(ref);
+    // the field the issue is about takes the focus (its message is shown at it), when it is an editable field
+    const at = d.issuePath(is);
+    if (at && at.length) {
+      const field = this.$('side-body').querySelector(`[data-p='${JSON.stringify(at)}']`) as HTMLElement | null;
+      if (field && /^(INPUT|SELECT|TEXTAREA)$/.test(field.tagName) && !(field as HTMLInputElement).disabled) {
+        field.focus();
+        if (typeof field.scrollIntoView === 'function') field.scrollIntoView({ block: 'nearest' });
+      }
+    }
   }
 
   private showLoadErrors(): void {

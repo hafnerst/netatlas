@@ -373,8 +373,8 @@ test('Layers 3 and 4 on screen: a log message opens the packet inspector (keyboa
     await page.eval(`netatlas.startProtocolSimulation(), netatlas.simController().setPlaying(false), netatlas.simController().runTo(30000), true`);
     await page.settle(150);
     // the lab's loop storms: the banner and the panel warn
-    assert.match(await page.eval(`document.getElementById('sim-text').textContent`), /⚠ broadcast storm in the untagged frames/);
-    assert.match(await page.eval(`(() => { const s = document.getElementById('sim-storm'); return s.hidden ? '' : s.textContent; })()`), /^⚠ Broadcast storm in the untagged frames \(loop over l-lab-\w, since t = [\d.]+ s\): a Layer 2 loop that no spanning tree blocks/);
+    assert.match(await page.eval(`document.getElementById('sim-text').textContent`), /⚠ broadcast storm in VLAN 1/);
+    assert.match(await page.eval(`(() => { const s = document.getElementById('sim-storm'); return s.hidden ? '' : s.textContent; })()`), /^⚠ Broadcast storm in VLAN 1 \(loop over l-lab-\w, since t = [\d.]+ s\): a Layer 2 loop that no spanning tree blocks/);
     assert.match(await page.eval(`document.getElementById('sim-shapes').textContent`), /unicast.*broadcast.*multicast/);
     // a message of the log, by keyboard: its frame as sent
     await page.eval(`(() => { const b = document.querySelector('#sim-log-table .sim-msg-btn'); b.focus(); return true; })()`);

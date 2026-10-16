@@ -210,7 +210,7 @@ export function layoutInput(m: Model): LayoutInput {
       }
       return { a: bundle.a, b: bundle.b, labels: roots.map(laneLabel), extras: roots.map((p) => p.extra), width: bundle.width, ends };
     }),
-    linkLabels: byId(m.links.map((l) => ({ id: l.id, text: linkLabelText(l), extra: linkLabelExtra(l) })).filter((x) => x.text !== '' || x.extra.length > 0)),
+    linkLabels: byId(m.links.map((l) => ({ id: l.id, text: linkLabelText(m, l), extra: linkLabelExtra(l) })).filter((x) => x.text !== '' || x.extra.length > 0)),
   };
 }
 
@@ -232,7 +232,7 @@ export function portEnd(m: Model, e: LinkEnd): LEnd {
   const out: LEnd = e.iface ? { device: e.device, iface: e.iface } : { device: e.device };
   const lag = aggregateOf(m, e.device, e.iface);
   if (lag !== undefined) out.lag = lag;
-  const tag = endTagText(e);
+  const tag = endTagText(m, e);
   if (tag) out.tag = tag;
   return out;
 }
@@ -360,16 +360,16 @@ export function linkLabelExtraFields(l: Link): Array<{ line: string; field: stri
 }
 
 /**
- * The note on a cable whose two ends disagree about layer-2 tagging
- * ('' when they agree, or when an end says nothing about layer 2).
+ * The note on a cable whose two ports disagree about their VLANs
+ * ('' when they agree, or when a port says nothing about VLANs).
  */
-export function linkTagNote(l: Link): string {
-  return tagMismatch(l.a, l.b) ? 'VLANs differ' : '';
+export function linkTagNote(m: Model, l: Link): string {
+  return tagMismatch(m, l) ? 'VLANs differ' : '';
 }
 
 /** The text drawn on a cable: speed, a note when the tagging of its ends differs, label. */
-export function linkLabelText(l: Link): string {
-  return [l.speed, linkTagNote(l), l.label].filter((s) => !!s).join(' · ');
+export function linkLabelText(m: Model, l: Link): string {
+  return [l.speed, linkTagNote(m, l), l.label].filter((s) => !!s).join(' · ');
 }
 
 /** Stable text form of the input: equal signatures always give equal auto-arrange results. */

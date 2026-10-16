@@ -23,8 +23,8 @@ groups:
   - {id: mid, label: Middle}
 devices:
   - {id: a, type: router, interfaces: [p1]}
-  - {id: b, type: switch, group: mid, interfaces: [p1, p2]}
-  - {id: c, type: switch, layer3: true, group: mid, interfaces: [p1, p2]}
+  - {id: b, type: switch, group: mid, interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}]}
+  - {id: c, type: switch, layer3: true, group: mid, interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}]}
   - {id: d, type: router, interfaces: [p1, p2]}
   - {id: e, type: server, interfaces: [p1]}
 links:

@@ -96,9 +96,9 @@ devices:
     interfaces:
       - {id: Et1}
       - {id: Et2}
-      - {id: Et10}
+      - {id: Et10, vlans: [100, 200]}
     logical_interfaces:
-      - {id: Po1, type: virtual, members: [Et1, Et2]}
+      - {id: Po1, type: virtual, members: [Et1, Et2], vlans: [100, 200]}
       - id: Vlan100
         type: virtual
         vlan: 100
@@ -116,9 +116,9 @@ devices:
     interfaces:
       - {id: Et1}
       - {id: Et2}
-      - {id: Et20}
+      - {id: Et20, vlans: 200}
     logical_interfaces:
-      - {id: Po1, type: virtual, members: [Et1, Et2]}
+      - {id: Po1, type: virtual, members: [Et1, Et2], vlans: [100, 200]}
       - id: Vlan100
         type: virtual
         vlan: 100
@@ -138,23 +138,23 @@ links:
   - {id: wan-s1, a: "spoke1:Gi0/0", b: inet, medium: copper, speed: 250M}
   - {id: wan-s2, a: "spoke2:Gi0/0", b: inet, medium: lte, speed: 150M}
   - id: trunk
-    a: {device: hub-rtr, interface: Gi0/1, mode: trunk, tagged: [100, 200]}
-    b: {device: core-a, interface: Et10, mode: trunk, tagged: [100, 200]}
+    a: hub-rtr:Gi0/1
+    b: core-a:Et10
     medium: fiber
     speed: 10G
   # the two members of Po1 on either side: one aggregate
   - id: lag-1
-    a: {device: core-a, interface: Et1, mode: trunk, tagged: [100, 200]}
-    b: {device: core-b, interface: Et1, mode: trunk, tagged: [100, 200]}
+    a: core-a:Et1
+    b: core-b:Et1
     medium: dac
     speed: 100G
   - id: lag-2
-    a: {device: core-a, interface: Et2, mode: trunk, tagged: [100, 200]}
-    b: {device: core-b, interface: Et2, mode: trunk, tagged: [100, 200]}
+    a: core-a:Et2
+    b: core-b:Et2
     medium: dac
     speed: 100G
   - id: nms-link
-    a: {device: core-b, interface: Et20, mode: access, untagged: 200}
+    a: core-b:Et20
     b: "nms:eth0"
     medium: copper
     speed: 1G

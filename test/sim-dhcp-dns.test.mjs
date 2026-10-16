@@ -32,7 +32,7 @@ devices:
   - {id: srv, type: ${more.type || 'server'}, interfaces: [{id: eth0, ip: 10.0.0.10/24}]${svc !== undefined ? ', services: ' + svc : ''}}
   - {id: pc, type: endpoint, interfaces: [{id: eth0, dhcp: true${more.pc || ''}}]${more.pcDev || ''}}
   - {id: r1, type: router, interfaces: [{id: g0, ip: 10.0.0.1/24}]}
-  - {id: sw, type: switch, interfaces: [p1, p2, p3]}
+  - {id: sw, type: switch, interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}, {id: p3, vlans: 1}]}
 links:
   - {id: a, a: "srv:eth0", b: "sw:p1"}
   - {id: b, a: "pc:eth0", b: "sw:p2"}
@@ -162,7 +162,7 @@ test('the lease lifecycle: renew at T1 (unicast), rebind at T2 (broadcast), the 
 });
 
 test('an exhausted pool does not answer; the client retries with backoff (4, 8, 16, 32 s), pauses, and takes a link-local address when its fallback is on', () => {
-  const two = LAN('{dhcp: {scopes: [{network: lan, range: 10.0.0.100-10.0.0.100, gateway: 10.0.0.1, dns: [10.0.0.10]}]}}').replace('  - {id: r1,', '  - {id: pc2, type: endpoint, interfaces: [{id: eth0, dhcp: true, simulation: {link_local_fallback: on}}]}\n  - {id: r1,').replace('interfaces: [p1, p2, p3]', 'interfaces: [p1, p2, p3, p4]').replace('links:\n', 'links:\n  - {id: d, a: "pc2:eth0", b: "sw:p4"}\n');
+  const two = LAN('{dhcp: {scopes: [{network: lan, range: 10.0.0.100-10.0.0.100, gateway: 10.0.0.1, dns: [10.0.0.10]}]}}').replace('  - {id: r1,', '  - {id: pc2, type: endpoint, interfaces: [{id: eth0, dhcp: true, simulation: {link_local_fallback: on}}]}\n  - {id: r1,').replace('{id: p3, vlans: 1}]', '{id: p3, vlans: 1}, {id: p4, vlans: 1}]').replace('links:\n', 'links:\n  - {id: d, a: "pc2:eth0", b: "sw:p4"}\n');
   const s = sim(two);
   s.runTo(70000);
   assert.equal(s.leases().filter((l) => l.kind === 'dhcp').length, 1, 'one address for two clients');

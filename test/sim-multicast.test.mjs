@@ -54,7 +54,7 @@ devices:
     protocols: {ospf: {}, pim: {${x.r2pim || ''}}}
     interfaces: [{id: g0, ip: 10.0.13.2/30}, {id: g1, ip: 10.0.23.1/30}]
     logical_interfaces: [{id: lo0, type: loopback, ip: 10.255.0.3/32}]
-  - {id: sw, type: switch, interfaces: [p1, p2, p3, p4, p5]${x.sw || ''}}
+  - {id: sw, type: switch, interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}, {id: p3, vlans: 1}, {id: p4, vlans: 1}, {id: p5, vlans: 1}]${x.sw || ''}}
   - id: rxa
     type: endpoint
     interfaces: [{id: eth0, ip: 10.2.0.21/24, multicast: {join: [239.1.1.1]}}]
@@ -88,7 +88,7 @@ title: lan
 devices:
   - {id: q1, type: router, protocols: {pim: {}}, interfaces: [{id: g0, ip: [10.5.0.1/24, "2001:db8:5::1/64"]}]${x.q1 || ''}}
   - {id: q2, type: router, protocols: {pim: {}}, interfaces: [{id: g0, ip: [10.5.0.2/24, "2001:db8:5::2/64"]}]${x.q2 || ''}}
-  - {id: sw, type: switch, interfaces: [p1, p2, p3, p4, p5]${x.sw || ''}}
+  - {id: sw, type: switch, interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}, {id: p3, vlans: 1}, {id: p4, vlans: 1}, {id: p5, vlans: 1}]${x.sw || ''}}
   - {id: h1, type: endpoint, interfaces: [{id: eth0, ip: [10.5.0.11/24, "2001:db8:5::11/64"]${x.h1j || ', multicast: {join: [239.2.2.2]}'}}]${x.h1 || ''}}
   - {id: h2, type: endpoint, interfaces: [{id: eth0, ip: [10.5.0.12/24, "2001:db8:5::12/64"]${x.h2j || ', multicast: {join: [239.2.2.2]}'}}]${x.h2 || ''}}
   - {id: h3, type: endpoint, interfaces: [{id: eth0, ip: 10.5.0.13/24}]}
@@ -259,12 +259,12 @@ test('snooping querier: a VLAN without a multicast router is queried by the swit
   const Y = (sim) => `netatlas: 1
 title: q
 devices:
-  - {id: sw, type: switch, interfaces: [p1, p2], logical_interfaces: [{id: Vlan1, type: virtual, vlan: 1, ip: 10.9.0.2/24}]${sim}}
+  - {id: sw, type: switch, interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}], logical_interfaces: [{id: Vlan1, type: virtual, vlan: 1, ip: 10.9.0.2/24}]${sim}}
   - {id: h1, type: endpoint, interfaces: [{id: eth0, ip: 10.9.0.11/24, multicast: {join: [239.3.3.3]}}]}
   - {id: h2, type: endpoint, interfaces: [{id: eth0, ip: 10.9.0.12/24}]}
 links:
-  - {id: a, a: "h1:eth0", b: {device: sw, interface: p1, mode: access, untagged: 1}}
-  - {id: b, a: "h2:eth0", b: {device: sw, interface: p2, mode: access, untagged: 1}}
+  - {id: a, a: "h1:eth0", b: "sw:p1"}
+  - {id: b, a: "h2:eth0", b: "sw:p2"}
 `;
   const off = sim(Y(''));
   off.runTo(10000);
@@ -345,7 +345,7 @@ test('never routed: link-local groups and TTL 1; a router without PIM routes no 
   pass.runTo(30000);
   assert.equal(status(pass, 'rxa member of 239.1.1.1').state, 'Receiving');
   // a cloud between r1 and r2
-  const cloud = (on) => NET().replace('  - {id: b, a: "r1:g1", b: "r2:g0"}', '  - {id: b, a: "r1:g1", b: "inet:a"}\n  - {id: b2, a: "inet:b", b: "r2:g0"}').replace('  - {id: sw, type: switch', `  - {id: inet, type: cloud, interfaces: [a, b]${on ? ', simulation: {multicast: "on"}' : ''}}\n  - {id: sw, type: switch`);
+  const cloud = (on) => NET().replace('  - {id: b, a: "r1:g1", b: "r2:g0"}', '  - {id: b, a: "r1:g1", b: "inet:a"}\n  - {id: b2, a: "inet:b", b: "r2:g0"}').replace('  - {id: sw, type: switch', `  - {id: inet, type: cloud, interfaces: [{id: a, vlans: 1}, {id: b, vlans: 1}]${on ? ', simulation: {multicast: "on"}' : ''}}\n  - {id: sw, type: switch`);
   const c0 = sim(cloud(false));
   c0.runTo(30000);
   assert.ok(ev(c0, (e) => e.device === 'inet' && /inet carries no multicast \(Off \(default\)\): .* to 239\.1\.1\.1 is dropped/.test(e.detail)).length >= 1);
@@ -399,7 +399,7 @@ devices:
   - {id: q, type: router, protocols: {pim: {}}, interfaces: [{id: g0, ip: 10.6.0.1/24}]}
   - {id: src, type: server, interfaces: [{id: eth0, ip: 10.6.0.10/24, multicast: {streams: [{group: 239.6.6.6}]}}]}
   - {id: ap, type: ap, interfaces: [up, ${m2u ? '{id: w1, simulation: {multicast_to_unicast: "on"}}' : 'w1'}, w2]}
-  - {id: sw, type: switch, interfaces: [p1, p2, p3]}
+  - {id: sw, type: switch, interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}, {id: p3, vlans: 1}]}
   - {id: phone, type: endpoint, interfaces: [{id: wlan0, ip: 10.6.0.21/24, multicast: {join: [239.6.6.6]}}]}
 links:
   - {id: a, a: "q:g0", b: "sw:p1"}

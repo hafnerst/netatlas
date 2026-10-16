@@ -48,10 +48,10 @@ devices:
     protocols:
       bgp: {asn: 65000}
     interfaces:
-      - {id: Et1, ip: 10.1.0.0/31}
-      - {id: Et2, ip: 10.1.0.2/31}
-      - {id: Et3, ip: 10.1.0.4/31}
-      - {id: Et4, ip: 10.1.0.6/31}
+      - {id: Et1, routed: true, ip: 10.1.0.0/31}
+      - {id: Et2, routed: true, ip: 10.1.0.2/31}
+      - {id: Et3, routed: true, ip: 10.1.0.4/31}
+      - {id: Et4, routed: true, ip: 10.1.0.6/31}
     logical_interfaces:
       - {id: Lo0, type: loopback, ip: 10.0.250.1/32}
   - id: spine2
@@ -63,10 +63,10 @@ devices:
     protocols:
       bgp: {asn: 65000}
     interfaces:
-      - {id: Et1, ip: 10.1.1.0/31}
-      - {id: Et2, ip: 10.1.1.2/31}
-      - {id: Et3, ip: 10.1.1.4/31}
-      - {id: Et4, ip: 10.1.1.6/31}
+      - {id: Et1, routed: true, ip: 10.1.1.0/31}
+      - {id: Et2, routed: true, ip: 10.1.1.2/31}
+      - {id: Et3, routed: true, ip: 10.1.1.4/31}
+      - {id: Et4, routed: true, ip: 10.1.1.6/31}
     logical_interfaces:
       - {id: Lo0, type: loopback, ip: 10.0.250.2/32}
 
@@ -79,10 +79,10 @@ devices:
     protocols:
       bgp: {asn: 65101}
     interfaces:
-      - {id: Et49, ip: 10.1.0.1/31}
-      - {id: Et50, ip: 10.1.1.1/31}
-      - {id: Et51}
-      - {id: Et1}
+      - {id: Et49, routed: true, ip: 10.1.0.1/31}
+      - {id: Et50, routed: true, ip: 10.1.1.1/31}
+      - {id: Et51, vlans: 100}
+      - {id: Et1, vlans: 100}
     logical_interfaces:
       - {id: Lo0, type: loopback, ip: 10.0.250.11/32}
       - {id: Vxlan1, type: virtual, description: VTEP 10.0.251.12, attrs: {function: vtep}}
@@ -96,10 +96,10 @@ devices:
     protocols:
       bgp: {asn: 65102}
     interfaces:
-      - {id: Et49, ip: 10.1.0.3/31}
-      - {id: Et50, ip: 10.1.1.3/31}
-      - {id: Et51}
-      - {id: Et1}
+      - {id: Et49, routed: true, ip: 10.1.0.3/31}
+      - {id: Et50, routed: true, ip: 10.1.1.3/31}
+      - {id: Et51, vlans: 100}
+      - {id: Et1, vlans: 100}
     logical_interfaces:
       - {id: Lo0, type: loopback, ip: 10.0.250.12/32}
       - {id: Vxlan1, type: virtual, description: VTEP 10.0.251.12, attrs: {function: vtep}}
@@ -113,10 +113,10 @@ devices:
     protocols:
       bgp: {asn: 65100}
     interfaces:
-      - {id: Et49, ip: 10.1.0.5/31}
-      - {id: Et50, ip: 10.1.1.5/31}
-      - {id: Et1}
-      - {id: Et48, ip: 100.64.0.2/30}
+      - {id: Et49, routed: true, ip: 10.1.0.5/31}
+      - {id: Et50, routed: true, ip: 10.1.1.5/31}
+      - {id: Et1, vlans: 100}
+      - {id: Et48, routed: true, ip: 100.64.0.2/30}
     logical_interfaces:
       - {id: Lo0, type: loopback, ip: 10.0.250.13/32}
       - {id: Vxlan1, type: virtual, description: VTEP 10.0.251.13, attrs: {function: vtep}}
@@ -130,9 +130,9 @@ devices:
     protocols:
       bgp: {asn: 65104}
     interfaces:
-      - {id: Et49, ip: 10.1.0.7/31}
-      - {id: Et50, ip: 10.1.1.7/31}
-      - {id: Et1}
+      - {id: Et49, routed: true, ip: 10.1.0.7/31}
+      - {id: Et50, routed: true, ip: 10.1.1.7/31}
+      - {id: Et1, vlans: 100}
     logical_interfaces:
       - {id: Lo0, type: loopback, ip: 10.0.250.14/32}
       - {id: Vxlan1, type: virtual, description: VTEP 10.0.251.14, attrs: {function: vtep}}
@@ -143,20 +143,20 @@ devices:
     type: server
     group: rack-a02
     interfaces:
-      - {id: vmnic0}
-      - {id: vmnic1}
+      - {id: vmnic0, vlans: 100}
+      - {id: vmnic1, vlans: 100}
   - id: esx02
     label: esx02
     type: server
     group: rack-a03
     interfaces:
-      - {id: vmnic0}
+      - {id: vmnic0, vlans: 100}
   - id: k8s01
     label: k8s01
     type: server
     group: rack-a03
     interfaces:
-      - {id: ens1f0}
+      - {id: ens1f0, vlans: 100}
 
   - id: wan-pe
     label: Carrier PE
@@ -178,23 +178,23 @@ links:
   - {id: s2-l4, a: "spine2:Et4", b: "leaf4:Et50", medium: fiber, speed: 100G}
   - {id: mlag-peer, a: "leaf1:Et51", b: "leaf2:Et51", medium: dac, speed: 100G, cable: DAC 0.5m}
   - id: esx01-a
-    a: {device: esx01, interface: vmnic0, mode: trunk, tagged: [100]}
-    b: {device: leaf1, interface: Et1, mode: trunk, tagged: [100]}
+    a: esx01:vmnic0
+    b: leaf1:Et1
     medium: dac
     speed: 25G
   - id: esx01-b
-    a: {device: esx01, interface: vmnic1, mode: trunk, tagged: [100]}
-    b: {device: leaf2, interface: Et1, mode: trunk, tagged: [100]}
+    a: esx01:vmnic1
+    b: leaf2:Et1
     medium: dac
     speed: 25G
   - id: esx02-a
-    a: {device: esx02, interface: vmnic0, mode: trunk, tagged: [100]}
-    b: {device: leaf3, interface: Et1, mode: trunk, tagged: [100]}
+    a: esx02:vmnic0
+    b: leaf3:Et1
     medium: dac
     speed: 25G
   - id: k8s01-a
-    a: {device: k8s01, interface: ens1f0, mode: trunk, tagged: [100]}
-    b: {device: leaf4, interface: Et1, mode: trunk, tagged: [100]}
+    a: k8s01:ens1f0
+    b: leaf4:Et1
     medium: dac
     speed: 25G
   - {id: wan-uplink, a: "leaf3:Et48", b: "wan-pe:xe-0/1/0", medium: fiber, speed: 10G, cable: "Cross-connect MMR-2 #118"}

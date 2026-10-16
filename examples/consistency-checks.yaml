@@ -7,7 +7,7 @@
 netatlas: 1
 title: Consistency checks demo
 description: |
-  One deliberate inconsistency per check: static routes, VLAN tagging, MTU,
+  One deliberate inconsistency per check: static routes, port VLANs, MTU,
   speed and duplex, aggregates, addressing, router IDs, MAC addresses,
   OSPF, BGP, tunnels, virtual addresses, VRFs, the protocols each
   device enables, multicast, and DHCP.
@@ -92,14 +92,29 @@ devices:
       - {id: e9, vrf: Red}                                    # vrf-name-case: r1:e7 is in VRF red
     routes:
       - {prefix: 0.0.0.0/0, via: 10.0.31.1}                   # needs no protocol: static routes are always in effect
+  # the ports' VLANs: one deliberate mismatch per cable between sw1 and sw2 (see the links t1 … t6)
   - id: sw1
     type: switch
     group: access
-    interfaces: [p1, p2, p3, p4]
+    interfaces:
+      - {id: p1, vlans: [1, 10, 20], native: 1}
+      - {id: p2, vlans: 10}
+      - {id: p3, vlans: 10}
+      - {id: p4, vlans: 1}
+      - p5
+      - p6
+    logical_interfaces:
+      - {id: Po1, type: virtual, members: [p5, p6], vlans: [10, 20]}   # its members take its VLANs
   - id: sw2
     type: switch
     group: access
-    interfaces: [p1, p2, p3, p4]
+    interfaces:
+      - {id: p1, vlans: [10, 30, 99], native: 99}
+      - {id: p2, vlans: 20}
+      - {id: p3, vlans: [10, 20]}
+      - {id: p4, vlans: 1}
+      - {id: p5, vlans: [10, 20]}
+      - {id: p6, vlans: [10, 30]}
   # multicast: no RP for the sparse-mode group (multicast-no-rp); mc-rx's subnet has no querier (multicast-no-querier);
   # mc-r1 and mc-r2 run PIM but have no PIM relation, so mc-r2's route towards the source fails the RPF check (multicast-rpf-not-pim)
   - id: mc-src
@@ -146,23 +161,26 @@ links:
   - {id: lag-b, a: "r1:e4", b: "r3:e4", medium: copper, speed: 1G}
   - {id: l-tun, a: "r1:e6", b: "r2:e6", medium: fiber, speed: 1G}
   - {id: l-vrf, a: "r1:e7", b: "r2:e7", medium: fiber, speed: 1G}
-  # vlan-native-mismatch (1 / 99), vlan-tagged-mismatch (20 / 30), vlan-unknown (1, 30, 99)
+  # vlan-native-mismatch (native 1 / 99), vlan-trunk-mismatch (1, 20 / 30, 99), vlan-unknown (30, 99; VLAN 1 is every switch's default)
   - id: t1
-    a: {device: sw1, interface: p1, mode: trunk, untagged: 1, tagged: [10, 20]}
-    b: {device: sw2, interface: p1, mode: trunk, untagged: 99, tagged: [10, 30]}
-  # vlan-access-tagged
+    a: sw1:p1
+    b: sw2:p1
+  # vlan-access-mismatch: access ports in VLAN 10 and VLAN 20
   - id: t2
-    a: {device: sw1, interface: p2, mode: access, untagged: 10, tagged: [20]}
-    b: {device: sw2, interface: p2, mode: access, untagged: 10}
-  # vlan-untagged-tagged: VLAN 10 untagged at sw1, tagged at sw2
+    a: sw1:p2
+    b: sw2:p2
+  # vlan-access-trunk: an access port in VLAN 10 to a trunk without a native VLAN
   - id: t3
-    a: {device: sw1, interface: p3, mode: trunk, untagged: 10, tagged: [20]}
-    b: {device: sw2, interface: p3, mode: trunk, tagged: [10, 20]}
+    a: sw1:p3
+    b: sw2:p3
   # link-speed-mismatch (1G / 100M), link-duplex-mismatch (full / half)
   - id: t4
     a: {device: sw1, interface: p4, speed: 1G, duplex: full}
     b: {device: sw2, interface: p4, speed: 100M, duplex: half}
     speed: 1G
+  # lag-member-vlans: Po1's members p5 and p6 end on ports with different VLANs (and t6 is a trunk mismatch too)
+  - {id: t5, a: "sw1:p5", b: "sw2:p5"}
+  - {id: t6, a: "sw1:p6", b: "sw2:p6"}
 
   - {id: l-mc-src, a: "mc-src:eth0", b: "mc-r1:e0"}
   - {id: l-mc-r1-r2, a: "mc-r1:e1", b: "mc-r2:e0"}

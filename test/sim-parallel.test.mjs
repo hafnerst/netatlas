@@ -74,7 +74,7 @@ title: next hops
 devices:
   - {id: pc, type: endpoint, interfaces: [{id: eth0, ip: 10.0.1.10/24}], routes: [{prefix: 0.0.0.0/0, via: 10.0.1.1}]}
   - {id: h2, type: endpoint, interfaces: [{id: eth0, ip: 10.0.1.20/24}]}
-  - {id: sw, type: switch, interfaces: [p1, p2, p3]}
+  - {id: sw, type: switch, interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}, {id: p3, vlans: 1}]}
   - id: r1
     type: router
     interfaces: [{id: g0, ip: 10.0.1.1/24}, {id: g1, ip: 10.0.2.1/24}]

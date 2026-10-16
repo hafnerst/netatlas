@@ -95,8 +95,9 @@ devices:
 test('VLANs, redundancy groups, AS numbers, router IDs: what the model already uses, and the next free value', () => {
   const wan = model(example('enterprise-wan.yaml'));
   assert.equal(H.nextFreeVlan(wan), 2);
-  assert.deepEqual(vals(H.vlanSuggestions(wan)).slice(0, 4), ['2', '5', '10', '20']);
-  assert.match(H.vlanSuggestions(wan)[2].label, /^10 Users$/);
+  // (VLAN 1: the branch switches' ports are in the default VLAN)
+  assert.deepEqual(vals(H.vlanSuggestions(wan)).slice(0, 5), ['2', '1', '5', '10', '20']);
+  assert.match(H.vlanSuggestions(wan)[3].label, /^10 Users$/);
   // a VRRP group on hq-core2:Vlan10's segment: join hq-core1's group 10, or the next free number
   const core2 = wan.index.interfaces.get('hq-core2:Vlan10');
   const vrrp = wan.services.get('vrrp');
@@ -160,6 +161,6 @@ test('a helper applied in the editor is one undo step and is validated like typi
   // (the box grows by a line, so the positions shown are written to the layout section: nothing moves)
   const body = (t) => t.replace(/\nlayout:\n[\s\S]*$/, '\n').split('\n');
   const after = body(d.exportText());
-  assert.deepEqual(after.filter((l, i) => l !== body(before)[i] && l !== ''), ['      - {id: eth1, mac: 02:01:02:03:04:05}']);
+  assert.deepEqual(after.filter((l, i) => l !== body(before)[i] && l !== ''), ['      - {id: eth1, vlans: 5, mac: 02:01:02:03:04:05}']);
   assert.deepEqual(d.errors, []);
 });

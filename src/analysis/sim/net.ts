@@ -1,26 +1,30 @@
 /**
  * The network the protocol simulation runs on, built once from the model:
  * which devices bridge frames and which route; the bridge ports of every
- * bridge with the VLANs they carry (from the link ends' tagging); the
+ * bridge with the VLANs they carry (from the ports' VLANs); the
  * layer-3 interfaces (routed ports, VLAN interfaces, subinterfaces,
  * aggregates) with their addresses, VLAN and MAC address; the cables
  * between ports; and, for a set of failed cables, the spanning tree of
  * every VLAN that keeps layer 2 loop-free. Pure and deterministic.
  *
  * Bridges: switches (Layer 2 and Layer 3), access points, IDS / IPS and
- * clouds, the devices the path tracer passes at layer 2. A port with an
- * address is a routed port, never bridged. A Layer 3 switch's VLAN
+ * clouds, the devices the path tracer passes at layer 2, and every device
+ * with a bridge port (a router with switch ports or an IRB / BVI). A routed
+ * port (a router's port without VLANs, a Layer 3 switch's port set to
+ * routed) is a layer-3 interface, never bridged. A Layer 3 switch's VLAN
  * interfaces route between its VLANs; a Layer 2 switch has at most one
  * (its management interface), which is a host on its bridge.
  *
- * VLANs (0 stands for "untagged, no VLAN known"):
- *   access  carries its untagged VLAN;
- *   trunk   its tagged VLANs, and its native (untagged) VLAN;
- *   none    a link end without a mode carries every VLAN tagged, and
- *           untagged frames in the VLAN of the network the far end's
- *           addresses are in (when that is one VLAN), else 0.
+ * VLANs of a bridge port (0 stands for "untagged, no VLAN known"), from
+ * the port's `vlans` and `native` (an aggregate's for its members):
+ *   access  carries its VLAN, untagged;
+ *   trunk   its VLANs 802.1Q-tagged, the native one (if any) untagged;
+ *   none    a port of an access point, IDS / IPS or cloud without VLANs is
+ *           transparent: it carries every VLAN tagged, and untagged frames
+ *           in the VLAN of the network the far end's addresses are in (when
+ *           that is one VLAN), else 0.
  */
-import { interfaceVlans, portsCarryingVlans, vlanIds } from '../../model/derive';
+import { interfaceVlans, isBridgePort, portL2, subinterfaceParent } from '../../model/derive';
 import { deviceRoutingRole, isLayer2Switch } from '../../model/device-types';
 import { parsePrefix, IpAddr } from '../../model/ip';
 import { Device, Interface, Link, LinkEnd, Model, deviceInterfaces, ifaceKey } from '../../model/types';
@@ -166,11 +170,20 @@ function inNet(n: IpAddr & { prefix: number }, a: IpAddr): boolean {
 
 /** The VLANs a link end carries at its port (see the module comment). */
 export function endPortVlans(model: Model, l: Link, e: LinkEnd): PortVlans {
-  if (e.mode === 'access') return { mode: 'access', untagged: e.untagged !== undefined ? e.untagged : 0, tagged: [] };
-  if (e.mode === 'trunk') return { mode: 'trunk', untagged: e.untagged !== undefined ? e.untagged : null, tagged: vlanIds(e.tagged) };
+  const p = e.iface !== undefined ? portL2(model, e.device, e.iface) : undefined;
+  if (p && p.kind === 'access') return { mode: 'access', untagged: p.untagged as number, tagged: [] };
+  if (p && p.kind === 'trunk') return { mode: 'trunk', untagged: p.native !== undefined ? p.native : null, tagged: p.tagged };
   const far = e === l.a ? l.b : l.a;
   const v = addrVlan(model, far.device, far.iface);
   return { mode: 'none', untagged: v !== null ? v : 0, tagged: 'all' };
+}
+
+/** A bridge port's VLANs in words: "access port, VLAN 10", "trunk of VLANs 10,20 (native 10)". */
+export function portVlansText(pv: PortVlans): string {
+  if (pv.mode === 'access') return `access port, VLAN ${pv.untagged}`;
+  const t = pv.tagged === 'all' ? 'every VLAN' : (pv.untagged !== null ? pv.tagged.concat([pv.untagged]) : pv.tagged).sort((x, y) => x - y).join(',');
+  if (pv.mode === 'trunk') return `trunk of VLANs ${t}${pv.untagged !== null ? ` (native ${pv.untagged})` : ', no native VLAN'}`;
+  return 'carries every VLAN';
 }
 
 /** Does a port carry a VLAN, and is it untagged there? null: not carried. */
@@ -216,13 +229,14 @@ export function buildNet(model: Model): SimNet {
   const devices = new Map<string, SimDevice>();
   const vlanSet = new Set<number>();
   for (const d of model.devices.slice().sort((a, b) => cmp(a.id, b.id))) {
-    // a device with a VLAN interface over two or more cabled ports switches between them (a firewall's switch group): it bridges like a Layer 3 switch
-    const switchGroup = d.logical.some((i) => {
-      if (i.type !== 'virtual' || i.members.length || !(i.addresses.length || i.dhcp)) return false;
-      const vs = interfaceVlans(model, i);
-      return vs.length > 0 && new Set(portsCarryingVlans(model, d.id, vs).map((p) => p.iface)).size >= 2;
-    });
-    const bridge = BRIDGE_TYPES.indexOf(d.type) >= 0 || switchGroup;
+    // a device with a bridge port (a router's switch ports, an IRB / BVI, a firewall's switch group) bridges like a Layer 3 switch
+    const bridgeKind = (id: string): boolean => isBridgePort(portL2(model, d.id, id));
+    const hasBridgePort = d.interfaces.some((i) => bridgeKind(i.id)) || d.logical.some((i) => i.type === 'virtual' && i.members.length > 0 && bridgeKind(i.id));
+    const bridge = BRIDGE_TYPES.indexOf(d.type) >= 0 || hasBridgePort;
+    const routedPort = (id: string): boolean => {
+      const p = portL2(model, d.id, id);
+      return !!p && p.kind === 'routed';
+    };
     const role = deviceRoutingRole(d);
     const sd: SimDevice = { id: d.id, dev: d, bridge, routes: role === 'router', ip: role !== null || bridge, l2switch: isLayer2Switch(d), bridgePorts: new Map(), portOf: new Map(), l3: new Map(), bridgeId: '' };
     const all = deviceInterfaces(d);
@@ -245,28 +259,27 @@ export function buildNet(model: Model): SimNet {
         continue;
       }
       if (i.type === 'virtual' && i.members.length) {
-        if (addrs.length || i.dhcp) sd.l3.set(i.id, { ...base, kind: 'aggregate', vlan: 0, ports: i.members.slice().sort(cmp) });
+        // a routed aggregate (no VLANs): one layer-3 interface over its members
+        if (!bridgeKind(i.id) && (addrs.length || i.dhcp || routedPort(i.id) || !bridge)) sd.l3.set(i.id, { ...base, kind: 'aggregate', vlan: 0, ports: i.members.slice().sort(cmp) });
         continue;
       }
       if (i.type === 'virtual') {
         const vs = interfaceVlans(model, i);
         const vlan = vs.length ? vs[0] : 0;
         if (!addrs.length && !i.dhcp) continue;
-        if (bridge) sd.l3.set(i.id, { ...base, kind: 'svi', vlan, ports: [] });
-        else {
-          // a subinterface: on the ports whose link end carries its VLAN, else its parent port ("ge-0/0/2.10")
-          const dot = i.id.lastIndexOf('.');
-          const parent = dot > 0 ? d.interfaces.find((p) => p.id === i.id.slice(0, dot)) : undefined;
-          const carrying = vlan ? portsCarryingVlans(model, d.id, [vlan]).map((p) => p.iface) : [];
-          const ports = carrying.length ? Array.from(new Set(carrying)).sort(cmp) : parent ? [parent.id] : [];
-          sd.l3.set(i.id, { ...base, kind: 'subif', vlan, ports });
-        }
+        const parent = subinterfaceParent(model, i);
+        if (parent !== undefined) {
+          // a subinterface ("ge-0/0/2.10"): its VLAN 802.1Q-tagged on its port (an aggregate: on its members)
+          const pi = model.index.interfaces.get(ifaceKey(d.id, parent));
+          sd.l3.set(i.id, { ...base, kind: 'subif', vlan, ports: pi && pi.members.length ? pi.members.slice().sort(cmp) : [parent] });
+        } else if (bridge) sd.l3.set(i.id, { ...base, kind: 'svi', vlan, ports: [] });
+        else sd.l3.set(i.id, { ...base, kind: 'subif', vlan, ports: [] });
         if (vlan) vlanSet.add(vlan);
         continue;
       }
-      // a physical port: routed when it has an address (or DHCP), or on a device that does not bridge
+      // a physical port: routed (a router's port without VLANs, a Layer 3 switch's routed port), or on a device that does not bridge
       if (memberOf.has(i.id)) continue;
-      if (addrs.length || i.dhcp || !bridge) sd.l3.set(i.id, { ...base, kind: 'routed', vlan: 0, ports: [i.id] });
+      if (routedPort(i.id) || ((addrs.length || i.dhcp) && !bridgeKind(i.id)) || !bridge) sd.l3.set(i.id, { ...base, kind: 'routed', vlan: 0, ports: [i.id] });
     }
     if (bridge) {
       // bridge ports: cabled ports without addresses; an aggregate without addresses is one port

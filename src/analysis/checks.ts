@@ -14,10 +14,10 @@
  * Findings are sorted by check, then by message and place, so they don't
  * depend on the order of the YAML file.
  */
-import { endVlans, tagMismatch, vlanIds, vlanRangesText } from '../model/derive';
+import { endL2, isBridgePort, lagOf, portBadgeText, portL2, tagMismatch, vlanIds, vlanRangesText } from '../model/derive';
 import { compareAddr, formatAddr, inPrefix, prefixText } from './ipmath';
 import { parseAddress } from '../model/ip';
-import { Link, LinkEnd, Model, Route, ifaceKey } from '../model/types';
+import { Interface, Link, LinkEnd, Model, Route, ifaceKey } from '../model/types';
 import { MORE_CHECKS } from './checks-more';
 import { SERVICE_CHECKS } from './checks-services';
 import { MULTICAST_CHECKS } from './checks-multicast';
@@ -30,7 +30,7 @@ export const SEVERITIES: readonly Severity[] = ['error', 'warning', 'info'];
 /** Where a finding is shown and where "jump to" goes: an object, and the field of it the finding is about. */
 export interface Target {
   ref: string;
-  /** a key of that object's YAML entry ("via", "a.untagged" for an end of a link …) */
+  /** a key of that object's YAML entry ("via", "vlans" of a port, "a.speed" for an end of a link …) */
   field?: string;
 }
 
@@ -271,85 +271,132 @@ function linkRefs(l: Link): string[] {
   return ['link:' + l.id, endRef(l.a), endRef(l.b)];
 }
 
+/** The ref of the interface that holds a link end's VLANs (the aggregate of a member port), and its field. */
+function vlanSource(model: Model, e: LinkEnd, field: 'vlans' | 'native' = 'vlans'): Target {
+  const l = endL2(model, e);
+  if (l && l.lag !== undefined) return { ref: `iface:${e.device}:${l.lag}`, field };
+  return e.iface !== undefined ? { ref: `iface:${e.device}:${e.iface}`, field } : { ref: 'device:' + e.device };
+}
+
+/** The ports that hold VLANs: physical ports that are no aggregate member, and aggregates; in model order. */
+function vlanPorts(model: Model): Array<{ device: string; iface: Interface }> {
+  const out: Array<{ device: string; iface: Interface }> = [];
+  for (const d of model.devices) {
+    for (const i of d.interfaces) if (lagOf(model, d.id, i.id) === undefined) out.push({ device: d.id, iface: i });
+    for (const i of d.logical) if (i.type === 'virtual' && i.members.length) out.push({ device: d.id, iface: i });
+  }
+  return out;
+}
+
 const vlanChecks: CheckDef[] = [
+  {
+    id: 'vlan-access-mismatch',
+    severity: 'warning',
+    title: 'Access ports in different VLANs at the two ends of a cable',
+    reads: 'interfaces: vlans (of the ports at both ends of a link)',
+    run(model, emit) {
+      for (const l of model.links) {
+        const m = tagMismatch(model, l);
+        if (!m || !m.access) continue;
+        emit({ message: `link ${l.id}: ${endName(l.a)} is an access port in VLAN ${m.access[0]}, ${endName(l.b)} in VLAN ${m.access[1]}: the cable joins the two VLANs (frames of one arrive in the other)`, refs: linkRefs(l), at: vlanSource(model, l.b) });
+      }
+    },
+  },
+  {
+    id: 'vlan-trunk-mismatch',
+    severity: 'warning',
+    title: 'Trunks with different VLANs at the two ends of a cable',
+    reads: 'interfaces: vlans (of the trunks at both ends of a link)',
+    run(model, emit) {
+      for (const l of model.links) {
+        const m = tagMismatch(model, l);
+        if (!m || (!m.onlyA.length && !m.onlyB.length)) continue;
+        const parts = [m.onlyA.length ? `only ${endName(l.a)}: ${vlanRangesText(m.onlyA)}` : '', m.onlyB.length ? `only ${endName(l.b)}: ${vlanRangesText(m.onlyB)}` : ''].filter((x) => x);
+        emit({ message: `link ${l.id}: the two trunks carry different VLANs (${parts.join('; ')}); a VLAN only one end allows is dropped by the other`, refs: linkRefs(l), at: vlanSource(model, m.onlyB.length ? l.b : l.a) });
+      }
+    },
+  },
   {
     id: 'vlan-native-mismatch',
     severity: 'error',
-    title: 'Untagged (native) VLAN differs between the ends',
-    reads: 'links: a/b mode, untagged',
+    title: 'Native VLAN differs between the two trunks of a cable',
+    reads: 'interfaces: vlans, native (of the trunks at both ends of a link)',
     run(model, emit) {
       for (const l of model.links) {
-        const m = tagMismatch(l.a, l.b);
+        const m = tagMismatch(model, l);
         if (!m || !m.native) continue;
-        emit({ message: `link ${l.id}: the untagged VLAN is ${m.native[0]} at ${endName(l.a)} and ${m.native[1]} at ${endName(l.b)}`, refs: linkRefs(l), at: { ref: 'link:' + l.id, field: 'b.untagged' } });
+        const t = (v: number | undefined): string => (v !== undefined ? `VLAN ${v}` : 'none (every VLAN tagged)');
+        emit({ message: `link ${l.id}: the native VLAN is ${t(m.native[0])} at ${endName(l.a)} and ${t(m.native[1])} at ${endName(l.b)}: untagged frames of one end arrive in another VLAN at the other (or are dropped)`, refs: linkRefs(l), at: vlanSource(model, m.native[1] !== undefined ? l.b : l.a, 'native') });
       }
     },
   },
   {
-    id: 'vlan-tagged-mismatch',
+    id: 'vlan-access-trunk',
     severity: 'warning',
-    title: 'Tagged VLANs differ between the two trunk ends',
-    reads: 'links: a/b mode, tagged',
+    title: 'Access port cabled to a trunk whose native VLAN is another one',
+    reads: 'interfaces: vlans, native (of the ports at both ends of a link)',
     run(model, emit) {
       for (const l of model.links) {
-        const m = tagMismatch(l.a, l.b);
-        if (!m || (!m.onlyA.length && !m.onlyB.length)) continue;
-        const parts = [m.onlyA.length ? `only at ${endName(l.a)}: ${vlanRangesText(m.onlyA)}` : '', m.onlyB.length ? `only at ${endName(l.b)}: ${vlanRangesText(m.onlyB)}` : ''].filter((x) => x);
-        emit({ message: `link ${l.id}: the two ends tag different VLANs (${parts.join('; ')})`, refs: linkRefs(l), at: { ref: 'link:' + l.id, field: (m.onlyB.length ? 'b' : 'a') + '.tagged' } });
-      }
-    },
-  },
-  {
-    id: 'vlan-access-tagged',
-    severity: 'error',
-    title: 'Access port with tagged VLANs',
-    reads: 'links: a/b mode, tagged',
-    run(model, emit) {
-      for (const l of model.links) {
-        for (const side of ['a', 'b'] as const) {
-          const e = l[side];
-          if (e.mode !== 'access' || !e.tagged.length) continue;
-          emit({ message: `link ${l.id}: ${endName(e)} is an access port but tags VLANs ${vlanRangesText(vlanIds(e.tagged))}; an access port carries one untagged VLAN`, refs: ['link:' + l.id, endRef(e)], at: { ref: 'link:' + l.id, field: side + '.tagged' } });
-        }
-      }
-    },
-  },
-  {
-    id: 'vlan-untagged-tagged',
-    severity: 'error',
-    title: 'VLAN untagged at one end and tagged at the other',
-    reads: 'links: a/b mode, untagged, tagged',
-    run(model, emit) {
-      for (const l of model.links) {
-        const m = tagMismatch(l.a, l.b);
-        if (!m || !m.crossed.length) continue;
-        for (const v of m.crossed) {
-          const untaggedAtA = l.a.untagged === v;
-          emit({
-            message: `link ${l.id}: VLAN ${v} is untagged at ${endName(untaggedAtA ? l.a : l.b)} and tagged at ${endName(untaggedAtA ? l.b : l.a)}`,
-            refs: linkRefs(l),
-            at: { ref: 'link:' + l.id, field: (untaggedAtA ? 'b' : 'a') + '.tagged' },
-          });
-        }
+        const m = tagMismatch(model, l);
+        if (!m || !m.accessTrunk) continue;
+        const acc = m.accessTrunk.side === 'a' ? l.a : l.b;
+        const tr = m.accessTrunk.side === 'a' ? l.b : l.a;
+        const nat = m.accessTrunk.native;
+        emit({
+          message: `link ${l.id}: ${endName(acc)} is an access port in VLAN ${m.accessTrunk.vlan}, but ${endName(tr)} is a trunk ${nat !== undefined ? `whose native VLAN is ${nat}: its untagged frames are in VLAN ${nat} there` : 'without a native VLAN: it drops the untagged frames'}`,
+          refs: linkRefs(l),
+          at: vlanSource(model, tr, nat !== undefined ? 'native' : 'vlans'),
+        });
       }
     },
   },
   {
     id: 'vlan-unknown',
     severity: 'warning',
-    title: 'VLAN on a port that no network or VLAN interface defines',
-    reads: 'links: a/b untagged, tagged; networks: vlan; logical_interfaces: vlan',
+    title: 'VLAN on a port that no network or VLAN interface defines (VLAN 1, the default, aside)',
+    reads: 'interfaces: vlans; networks: vlan; logical_interfaces: vlan',
     run(model, emit) {
-      const known = definedVlans(model);
-      for (const l of model.links) {
-        for (const side of ['a', 'b'] as const) {
-          const e = l[side];
-          const missing = endVlans(e).filter((v) => !known.has(v));
-          if (!missing.length) continue;
+      // (VLAN 1 is every switch's default VLAN: it needs no network to exist)
+      const known = definedVlans(model).add(1);
+      for (const { device, iface } of vlanPorts(model)) {
+        const missing = vlanIds(iface.vlans).filter((v) => !known.has(v));
+        if (!missing.length) continue;
+        emit({
+          message: `${device}:${iface.id} carries VLAN${missing.length > 1 ? 's' : ''} ${vlanRangesText(missing)}, which no network and no VLAN interface of the model defines`,
+          refs: [`iface:${device}:${iface.id}`],
+          at: { ref: `iface:${device}:${iface.id}`, field: 'vlans' },
+        });
+      }
+    },
+  },
+  {
+    id: 'lag-member-vlans',
+    severity: 'warning',
+    title: 'Member ports of an aggregate whose far ends carry different VLANs',
+    reads: 'logical_interfaces: members, vlans, native; interfaces: vlans, native (at the members’ far ends); links',
+    run(model, emit) {
+      for (const d of model.devices) {
+        for (const g of d.logical) {
+          if (g.type !== 'virtual' || !g.members.length) continue;
+          const own = portL2(model, d.id, g.id);
+          const far: Array<{ end: LinkEnd; text: string }> = [];
+          for (const mid of g.members) {
+            const lid = model.index.ifaceLink.get(ifaceKey(d.id, mid));
+            const l = lid !== undefined ? model.index.links.get(lid) : undefined;
+            if (!l) continue;
+            const other = l.a.device === d.id && l.a.iface === mid ? l.b : l.a;
+            const ol = endL2(model, other);
+            if (!ol || !isBridgePort(ol)) continue;
+            far.push({ end: other, text: portBadgeText(ol) });
+          }
+          if (!far.length || !own || !isBridgePort(own)) continue;
+          const mine = portBadgeText(own);
+          const odd = far.filter((x) => x.text !== mine);
+          if (!odd.length) continue;
           emit({
-            message: `link ${l.id}: ${endName(e)} carries VLAN${missing.length > 1 ? 's' : ''} ${vlanRangesText(missing)}, which no network and no VLAN interface of the model defines`,
-            refs: ['link:' + l.id, endRef(e)],
-            at: { ref: 'link:' + l.id, field: side + (e.untagged !== undefined && missing.indexOf(e.untagged) >= 0 ? '.untagged' : '.tagged') },
+            message: `aggregate ${d.id}:${g.id} (${mine}): its member${far.length > 1 ? 's’' : '’s'} far end${odd.length > 1 ? 's differ' : ' differs'}: ${odd.map((x) => `${endName(x.end)} (${x.text})`).join(', ')}; a bundle carries the same VLANs on every member`,
+            refs: [`iface:${d.id}:${g.id}`].concat(odd.map((x) => endRef(x.end))),
+            at: vlanSource(model, odd[0].end),
           });
         }
       }

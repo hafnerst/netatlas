@@ -35,7 +35,7 @@ const SHOTS = [
   ['ports-logical.png', 'dark', 'example=7&view=logical&select=relation:ospf-s1'],
   ['ports-physical-lag.png', 'light', 'example=7&view=physical&select=iface:core-a:Po1'],
   ['routes-logical.png', 'dark', 'example=8&view=logical&select=route:br-rtr:1'],
-  ['tagging-physical.png', 'light', 'example=8&view=physical'],
+  ['tagging-physical.png', 'light', 'example=13&view=physical', 'netatlas.fit()'],
   ['addressing-overview.png', 'light', 'example=6&view=logical', `document.getElementById('btn-addressing').click(); document.querySelector('[data-addr-toggle="|corp"]').click()`],
 ];
 
