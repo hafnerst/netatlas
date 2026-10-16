@@ -327,6 +327,15 @@ async function main() {
       await page.settle(200);
       const st2 = await page.rect('#sd-status');
       await save('mroutes', { x: st2.x, y: st2.y, w: st2.w, h: Math.min(st2.h, 300) }, { quality: 55 });
+      // the Send test form: unicast from core1 (an interface chosen) to srv, UDP 53, ten messages a second apart
+      await page.eval(`(() => { const set = (id, v, ev) => { const e = document.getElementById(id); e.value = v; e.dispatchEvent(new Event(ev || 'change')); };
+        set('sim-t-type', 'unicast'); set('sim-t-from', 'core1');
+        const via = Array.from(document.getElementById('sim-t-via').options).find((o) => o.value && o.value !== '*' && !o.disabled); if (via) set('sim-t-via', via.value);
+        set('sim-t-to', 'srv'); set('sim-t-kind', 'udp'); set('sim-t-port', '53', 'input'); set('sim-t-count', '10', 'input'); set('sim-t-interval', '1', 'input');
+        document.getElementById('sim-test').scrollIntoView({ block: 'start' }); document.getElementById('toast').hidden = true; return true; })()`);
+      await page.settle(200);
+      const tf = await page.rect('#sim-test');
+      await save('send-test', { x: tf.x + 2, y: tf.y, w: tf.w - 4, h: Math.min(tf.h, 430) }, { quality: 40 });
       // core1's Simulation section in the Actions panel, editable while the simulation runs
       await page.eval(`netatlas.select('device:core1'), true`);
       await page.settle(200);

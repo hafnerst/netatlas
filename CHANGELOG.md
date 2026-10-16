@@ -240,6 +240,25 @@ there is no conversion of files written for the earlier drafts.
 
 ### Added
 
+- **Send test asks for the delivery type first:** Unicast, Multicast,
+  Local broadcast (limited, or the source interface's subnet) or Directed
+  broadcast (an explicit subnet of the model). From and To stay greyed
+  until it is chosen; then only the fields it uses are shown. One shared
+  definition (`test-plan.ts`) sets the protocols each type offers (no TCP
+  for a group or a broadcast), when a port applies, and what blocks Send,
+  for the form and the simulation alike.
+- **Messages and interval in Send test:** a series of up to 1000 messages,
+  message *n* at the start plus (*n* − 1) intervals of simulated time,
+  independent of the replies, on the simulation's own timeline (paused,
+  nothing is sent). The list shows a series' sent, answered and failed
+  counts with **Stop**.
+- **The destination's interface** for a unicast test: each address of the
+  destination device an option (a DHCP client's lease as it is when each
+  message leaves); one of several must be chosen.
+- **A larger hit area for packets:** a dot opens from up to 12 screen
+  pixels away at any zoom; the one that will open is outlined with a ring
+  (and the pointer is a hand); the nearest wins, ties to the earlier
+  message.
 - **Send test's sources for every device.** **From** lists every device;
   one that can't send (no IP stack by the capability resolver, or no
   interface with an address or DHCP) is listed greyed with the reason. Under
@@ -982,6 +1001,15 @@ there is no conversion of files written for the earlier drafts.
 
 ### Changed
 
+- **Send test's interfaces are options "name - address"** (several
+  addresses of one interface listed with commas as a source, as separate
+  destinations), a device with one interface shows it as text, and the
+  long status line under From is gone. A device that can't send says so in
+  a few words (*Cannot send IP packets*, *No IP address*, *Powered off*).
+  Join group… and Start stream… label their interfaces the same way.
+- **Send test's protocol starts unselected and the port empty:** the port
+  is asked for only for TCP and UDP and is cleared when it stops applying
+  (before, it started at 80).
 - **Auto-arrange orders rows by exchanges too**, as it already did blocks:
   two devices of a row are exchanged when that makes the cabling shorter
   and less crossed, and a cable whose straight line runs through a third
@@ -1256,6 +1284,12 @@ live protocol simulation replaces them.
 
 ### Fixed
 
+- **An answer took the sender's VRF.** A packet delivered to a device kept
+  the VRF of the interface it was sent from, so the answer was routed there:
+  core's ping from VLAN 30 (VRF *guest*) to the guest phone was answered,
+  but the phone looked for 192.168.30.1 in VRF *guest*, which it doesn't
+  have, and the ping timed out. A packet is now delivered in the VRF of the
+  interface it arrives on, as routers already forwarded it.
 - **Send test left out DHCP clients.** Its source list kept only devices
   with a configured address, so a client like *guest-phone* in
   `private-house.yaml` could not be chosen, and the list was built once.

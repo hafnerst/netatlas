@@ -395,9 +395,9 @@ test('Layers 3 and 4 on screen: a log message opens the packet inspector (keyboa
     await page.settle(80);
     const os = await page.eval(`Array.from(document.querySelectorAll('#sim-log-table tbody tr')).map((r) => r.getAttribute('data-protocol'))`);
     assert.ok(os.length > 0 && os.every((p) => p === 'ospf'), os.join(','));
-    // Send test from the Actions panel: srv tcp/22 is refused
-    await page.eval(`(() => { const f = document.getElementById('sim-t-from'); f.value = 'pc1'; f.dispatchEvent(new Event('change')); const k = document.getElementById('sim-t-kind'); k.value = 'tcp'; k.dispatchEvent(new Event('change')); const p = document.getElementById('sim-t-port'); p.value = '22'; document.getElementById('sim-t-to').focus(); return true; })()`);
-    await page.type('srv');
+    // Send test from the Actions panel: unicast, srv tcp/22 is refused (Enter in Port sends)
+    await page.eval(`(() => { const set = (id, v) => { const e = document.getElementById(id); e.value = v; e.dispatchEvent(new Event('change')); }; set('sim-t-type', 'unicast'); set('sim-t-from', 'pc1'); set('sim-t-to', 'srv'); set('sim-t-kind', 'tcp'); document.getElementById('sim-t-port').focus(); return true; })()`);
+    await page.type('22');
     await page.key('Enter', 'Enter', 13);
     await page.settle(80);
     // (paused: sent at the current time, it moves when the simulation plays; Send and play is offered)
