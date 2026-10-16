@@ -39,7 +39,7 @@ import { deviceRoutingRole, isLayer2Switch, capabilities } from '../model/capabi
 import { IpAddr, IpPrefix, parseAddress, parsePrefix } from '../model/ip';
 import { lookupProtocol } from '../model/protocols';
 import { Interface, Link, LinkEnd, Model, Relation, deviceInterfaces, ifaceKey, Device } from '../model/types';
-import { endL2, interfaceVlanPorts, interfaceVlans, isBridgePort } from '../model/derive';
+import { endL2, interfaceVlanPorts, interfaceVlans, isBridgePort, associationOf } from '../model/derive';
 import { compareAddr, comparePrefix, formatAddr, inPrefix, networkOf, prefixText } from './ipmath';
 import { virtualGateways } from './identity';
 import { sharedDomain, virtEnd, virtRefText } from './trace-virtual';
@@ -162,7 +162,7 @@ export interface Path {
 export interface TraceRequest {
   from: string;
   to: string;
-  /** what is sent ("tcp/443", "udp/53", "icmp"): a Separation gateway's policy decides by it; none: what its rules would permit */
+  /** what is sent ("tcp/443", "udp/53", "icmp"): a Security gateway's policy decides by it; none: what its rules would permit */
   service?: string;
   /** the VRF of the source's table ('' the default table); none: the source interface's VRF, else the default table */
   vrf?: string;
@@ -215,7 +215,7 @@ interface Walk {
   srcText?: string;
   /** the destination is a container behind its host's NAT: the walk goes to the host's address, then on to the container */
   dnat?: Dnat;
-  /** the source address, and what is sent (a Separation gateway's policy decides by them) */
+  /** the source address, and what is sent (a Security gateway's policy decides by them) */
   src?: IpAddr;
   svc?: TraceService | null;
 }
@@ -377,11 +377,11 @@ function walk(w: Walk, at: At, before: Hop[], seen: Set<string>): Path[] {
   // (a container host forwards the traffic of its bridge networks: it came in on the bridge's interface)
   if (before.length > 0 && deviceRoutingRole(d) !== 'router' && !fromBridge(model, at)) {
     const caps = capabilities(d);
-    if (caps.sessionBreak && caps.separationGateway) {
+    if (caps.sessionBreak && caps.securityGateway) {
       const listens = (d.separation ? d.separation.profiles : []).filter((p) => p.listenInterface !== undefined).map((p) => `${p.id} at ${p.listenInterface} port ${p.listenPort}`);
       return stop('denied', `${at.device} is a protocol break: nothing passes through it. A transfer is addressed to one of its listening ports (${listens.join('; ') || 'it has no transfer profiles'}), and it starts a new one of its own on the other side`);
     }
-    if (caps.separationGateway) return stop('denied', `${at.device} transfers nothing: its Domain separation has no implementation chosen`);
+    if (caps.securityGateway) return stop('denied', `${at.device} transfers nothing: its Domain separation has no implementation chosen`);
     const what = d.type === 'generic' ? 'device without a type' : isLayer2Switch(d) ? 'Layer 2 switch' : deviceTypeLine(d);
     return stop('not-forwarding', `${at.device} is a ${what} and does not forward traffic for others`);
   }
@@ -466,6 +466,8 @@ function step(w: Walk, at: At, hop: Hop, h: DecisionHop, before: Hop[], seen: Se
   const conn = connectedOf(model, at.device).filter((c) => c.iface === h.iface);
   const outNet = conn.filter((c) => inPrefix(c.net, target)).sort((a, b) => b.net.prefix - a.net.prefix)[0] || conn[0];
   if (outNet) hop.outAddr = outNet.address.replace(/\/[0-9]+$/, '');
+  // a NAT service on the way out: the translation in the hop
+  if (before.length > 0 && at.ingress !== undefined) natNote(w, model.index.devices.get(at.device) as Device, at.ingress, h.iface, hop);
   if (outNet) for (const n of networksOf(model, outNet.net)) hop.networks.push(n);
   const iface = model.index.interfaces.get(ifaceKey(at.device, h.iface));
   // from a container bridge with NAT out of another interface: the host's address becomes the source
@@ -866,7 +868,11 @@ function cabled(
       if (l.direction === 'unidirectional' && near !== l.a) continue;
       if (!carries(model, near, vlan) || !carries(model, far, vlan) || (inEnd && near.iface !== undefined && inEnd.iface === near.iface)) continue;
       const notes: string[] = (crossNotes.get(s) || []).slice();
-      const why = crossing(dev, inEnd ? inEnd.iface : undefined, near.iface, notes, cross);
+      // a Wi-Fi network tunneled to a controller is not traced: a limitation, said so
+      const tunneled = [inEnd, near].map((e) => (e ? associationOf(model, e) : undefined)).find((x) => !!x && x.network.forwarding === 'tunneled');
+      const why = tunneled ? `${dev.id} tunnels the Wi-Fi network ${tunneled.network.id} to its controller: the tunnel is not traced (a limitation)` : crossing(dev, inEnd ? inEnd.iface : undefined, near.iface, notes, cross);
+      const assoc = [inEnd, near].map((e) => (e ? associationOf(model, e) : undefined)).find((x) => !!x);
+      if (!why && assoc) notes.push(`${dev.id} bridges the Wi-Fi network ${assoc.network.id} (SSID “${assoc.network.ssid || ''}”) ${assoc.network.vlan !== undefined ? 'to VLAN ' + assoc.network.vlan : 'to its untagged VLAN'}`);
       if (why === false) continue;
       if (why) {
         if (!denial) {
@@ -900,12 +906,12 @@ function l2Transit(dev: Device): boolean {
  * May a frame cross a device from one port to another: the pairing of an
  * inline or pass-through device, then the caller's policy (null: it may; a
  * reason: it is denied; false: that port is no way at all, a management
- * interface or a Separation gateway's port in neither domain).
+ * interface or a Security gateway's port in neither domain).
  */
 function crossing(dev: Device, inPort: string | undefined, outPort: string | undefined, notes: string[], cross?: Cross): string | null | false {
   const c = capabilities(dev);
   if (dev.management.length && ((inPort !== undefined && dev.management.indexOf(inPort) >= 0) || (outPort !== undefined && dev.management.indexOf(outPort) >= 0))) return false;
-  if (c.separationGateway && dev.separation && outPort !== undefined && !domainOf(dev.separation, outPort)) return false;
+  if (c.securityGateway && dev.separation && outPort !== undefined && !domainOf(dev.separation, outPort)) return false;
   if ((c.inline || c.passThrough) && inPort !== undefined && outPort !== undefined) {
     const pair = dev.portPairs.find((p) => (p.a === inPort && p.b === outPort) || (p.b === inPort && p.a === outPort));
     if (!pair) return `${dev.id} passes traffic between its paired ports only: ${inPort} is not paired with ${outPort}`;
@@ -918,14 +924,14 @@ function crossing(dev: Device, inPort: string | undefined, outPort: string | und
 /** A Layer 2 crossing the walk's traffic is not permitted: a filtering bridge's policy. */
 function crossDenied(w: Walk, dev: Device, inPort: string | undefined, outPort: string | undefined, notes: string[]): string | null {
   const c = capabilities(dev);
-  if (!c.separationGateway || inPort === undefined || outPort === undefined) return null;
+  if (!c.securityGateway || inPort === undefined || outPort === undefined) return null;
   return policyDenied(w, dev, inPort, outPort, notes);
 }
 
 /** A routed hop the walk's traffic may not take: a filtering router's policy, a VPN gateway's tunnels. */
 function forwardDenied(w: Walk, dev: Device, inIface: string, outIface: string, notes: string[]): string | null {
   const c = capabilities(dev);
-  if (c.separationGateway) return policyDenied(w, dev, inIface, outIface, notes);
+  if (c.securityGateway) return policyDenied(w, dev, inIface, outIface, notes);
   if (c.vpnOnlyTransit && dev.vpn) {
     const v = dev.vpn;
     const tunnel = v.tunnels.indexOf(inIface) >= 0 || v.tunnels.indexOf(outIface) >= 0;
@@ -937,7 +943,7 @@ function forwardDenied(w: Walk, dev: Device, inIface: string, outIface: string, 
   return null;
 }
 
-/** A Separation gateway's decision on the walk's traffic, between two of its interfaces (see analysis/separation.ts). */
+/** A Security gateway's decision on the walk's traffic, between two of its interfaces (see analysis/separation.ts). */
 function policyDenied(w: Walk, dev: Device, inIface: string, outIface: string, notes: string[]): string | null {
   if (!w.src) return `${dev.id} decides by the source address: the trace has none`;
   if (w.svc) {
@@ -1286,7 +1292,7 @@ export function traceText(t: Trace, back?: Trace | null): string {
     else desc(back);
   }
   lines.push('');
-  lines.push('Model-based approximation: computed from the routes and adjacencies in the model, not a simulation of the protocols. A Separation gateway’s policy, a VPN Gateway’s tunnels and paired ports are considered; firewall ACLs are not; NAT only for container bridges (SNAT out of the host, DNAT to published ports).');
+  lines.push('Model-based approximation: computed from the routes and adjacencies in the model, not a simulation of the protocols. A Security gateway’s policy, a VPN Gateway’s tunnels and paired ports are considered; firewall ACLs are not; NAT only for container bridges (SNAT out of the host, DNAT to published ports).');
   return lines.join('\n');
 }
 
@@ -1304,4 +1310,18 @@ export function sourceVrfs(model: Model, end: TraceEnd): string[] {
 
 function cmpStr(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
+}
+
+/** A NAT service translating the walk's source on its way from an inside to an outside interface: said in the hop. */
+function natNote(w: Walk, dev: Device, inIface: string, outIface: string, hop: Hop): void {
+  const n = dev.appServices ? dev.appServices.get('nat') : undefined;
+  if (!n || !w.src) return;
+  const list = (v: unknown): string[] => (Array.isArray(v) ? (v as string[]) : []);
+  if (list(n.values.inside).indexOf(inIface) < 0 || list(n.values.outside).indexOf(outIface) < 0) return;
+  const src = w.src;
+  const rule = (n.lists.rules || []).find((r) => (r.type === 'pat' || r.type === 'snat') && (r.source === 'any' || (typeof r.source === 'string' && ((p) => !!p && p.version === src.version && inPrefix(p, src))(parsePrefix(r.source, false)))));
+  if (!rule) return;
+  const to = typeof rule.to === 'string' ? rule.to : hop.outAddr || 'its outside address';
+  hop.nat = 'snat';
+  hop.notes.push(`${rule.type === 'pat' ? 'PAT' : 'SNAT'}: source ${formatAddr(src)} → ${to} (${dev.id}'s NAT, ${inIface} → ${outIface})`);
 }

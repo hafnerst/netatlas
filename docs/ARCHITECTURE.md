@@ -231,13 +231,13 @@ anything else.
   filter, pass between paired ports, receive copies, end a VPN, separate
   two domains, run guests — comes from one resolver,
   `model/capabilities.ts`, which reads the type, the mode, Supports Layer
-  3, a System's purpose and a Separation gateway's implementation.
+  3, a System's purpose and a Security gateway's implementation.
   Validation, the editor, Connect, the tracer, single points of failure,
   the simulation, Auto-arrange and the helpers ask it; only the registry
   (`model/device-types.ts`), the resolver and the icon lookup name types.
   `test/architecture.test.mjs` fails on a comparison with a type name
   anywhere else. Policy that more than one module applies is written once:
-  a Separation gateway's decisions in `analysis/separation.ts` (the tracer,
+  a Security gateway's decisions in `analysis/separation.ts` (the tracer,
   the simulation's `analysis/sim/separation.ts`).
 
 * **New protocol:** nothing to change in the code. Add it under

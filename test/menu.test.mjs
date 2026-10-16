@@ -103,10 +103,10 @@ test('outline sections: folding is view state of the editor, with Links and Prot
   assert.ok(load('ui/inspector.js').Editor);
 });
 
-test('examples: the File menu offers the twenty hand-written examples; the generated fixtures are test data only', async () => {
+test('examples: the File menu offers the twenty-four hand-written examples; the generated fixtures are test data only', async () => {
   const { readdirSync } = await import('node:fs');
   const { EXAMPLES, FIXTURES } = load('generated/examples.js');
-  assert.deepEqual(EXAMPLES.map((e) => e.name), ['enterprise-wan.yaml', 'datacenter-evpn.yaml', 'minimal.yaml', 'metro-ring.yaml', 'device-types.yaml', 'long-labels.yaml', 'addressing.yaml', 'port-bindings.yaml', 'branch-routing.yaml', 'consistency-checks.yaml', 'campus-services.yaml', 'ospf-reroute.yaml', 'protocol-simulation.yaml', 'vlan-ports.yaml', 'virtualization.yaml', 'wan-vpn.yaml', 'hybrid-cloud.yaml', 'ot-network.yaml', 'cross-domain.yaml', 'separation-filtering.yaml']);
+  assert.deepEqual(EXAMPLES.map((e) => e.name), ['enterprise-wan.yaml', 'datacenter-evpn.yaml', 'minimal.yaml', 'metro-ring.yaml', 'device-types.yaml', 'long-labels.yaml', 'addressing.yaml', 'port-bindings.yaml', 'branch-routing.yaml', 'consistency-checks.yaml', 'campus-services.yaml', 'ospf-reroute.yaml', 'protocol-simulation.yaml', 'vlan-ports.yaml', 'virtualization.yaml', 'wan-vpn.yaml', 'hybrid-cloud.yaml', 'ot-network.yaml', 'cross-domain.yaml', 'separation-filtering.yaml', 'multi-ssid-ap.yaml', 'home-network.yaml', 'campus-wireless.yaml', 'dmz-services.yaml']);
   assert.deepEqual(FIXTURES.map((e) => e.name).sort(), ['editor-new-network.yaml', 'metro-ring-arranged.yaml', 'minimal-edited.yaml']);
   assert.deepEqual(readdirSync(join(root, 'examples')).filter((f) => /\.yaml$/.test(f)).sort(), EXAMPLES.map((e) => e.name).sort());
   // nothing the user sees builds its list from FIXTURES: only the self-test imports them

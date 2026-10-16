@@ -34,7 +34,7 @@
  * carries follow from its ports' VLANs and the networks' VLANs.
  */
 import { IpPrefix, addrKey, parsePrefix, prefixContains } from './ip';
-import { Interface, Link, LinkEnd, Model, Network, PortKind, VLAN_MAX, VlanRange, deviceInterfaces, ifaceKey, isLoopback } from './types';
+import { Interface, Link, LinkEnd, Model, Network, PortKind, VLAN_MAX, VlanRange, deviceInterfaces, ifaceKey, isLoopback, WirelessNetwork } from './types';
 import { deviceRoutingRole, capabilities } from './capabilities';
 import { compareNames } from './order';
 
@@ -394,7 +394,51 @@ export function portTagText(l: PortL2 | undefined): string {
 
 /** The port at a link end, at layer 2 (undefined: the end names no interface, or one that is no port). */
 export function endL2(model: Model, e: LinkEnd): PortL2 | undefined {
+  const assoc = associationOf(model, e);
+  if (assoc) return assoc.l2;
   return e.iface !== undefined ? portL2(model, e.device, e.iface) : undefined;
+}
+
+/** The link each link end belongs to (by the end object), per model. */
+const endLinks = new WeakMap<Model, Map<LinkEnd, Link>>();
+
+/**
+ * A wireless connection's end at a radio of a Wireless access: its Wi-Fi
+ * network, and the port it is as the bridge sees it (an access port in the
+ * network's VLAN; an untagged network in the uplink's untagged VLAN, when
+ * the device has one). Undefined at any other end.
+ */
+export function associationOf(model: Model, e: LinkEnd): { network: WirelessNetwork; link: Link; l2: PortL2 | undefined } | undefined {
+  if (e.iface === undefined) return undefined;
+  const d = model.index.devices.get(e.device);
+  if (!d || !d.wireless) return undefined;
+  let byEnd = endLinks.get(model);
+  if (!byEnd) {
+    byEnd = new Map();
+    for (const l of model.links) {
+      byEnd.set(l.a, l);
+      byEnd.set(l.b, l);
+    }
+    endLinks.set(model, byEnd);
+  }
+  const l = byEnd.get(e);
+  if (!l || l.medium !== 'wireless' || l.wirelessNetwork === undefined) return undefined;
+  const net = d.wireless.networks.find((x) => x.id === l.wirelessNetwork && x.radio === e.iface);
+  if (!net) return undefined;
+  let vlan = net.vlan;
+  if (vlan === undefined && net.untagged) {
+    // the untagged VLAN of its wired bridge ports (an access port's VLAN, a trunk's native one)
+    const radios = d.wireless.networks.map((x) => x.radio);
+    for (const i of d.interfaces) {
+      if (radios.indexOf(i.id) >= 0) continue;
+      const p = portL2(model, d.id, i.id);
+      if (p && p.untagged !== undefined) {
+        vlan = p.untagged;
+        break;
+      }
+    }
+  }
+  return { network: net, link: l, l2: vlan !== undefined ? { kind: 'access', vlans: [vlan], untagged: vlan, tagged: [] } : undefined };
 }
 
 /** The VLANs a cable carries at one end: those of the port there, ascending. */
@@ -410,7 +454,7 @@ export function endTagText(model: Model, e: LinkEnd): string {
 
 /**
  * What a port is for, in words, where its device gives it a part: a
- * Separation gateway's domain ("domain Red"), a management interface, an
+ * Security gateway's domain ("domain Red"), a management interface, an
  * inline or pass-through device's pair ("pair 1") or a TAP's copy port
  * ("copy of pair 1"). Text, not colour, carries it.
  */
@@ -419,6 +463,8 @@ export function endRoleText(model: Model, e: LinkEnd): string {
   if (!d || e.iface === undefined) return '';
   const port = e.iface;
   if (d.management.indexOf(port) >= 0) return 'management';
+  const assoc = associationOf(model, e);
+  if (assoc) return `SSID “${assoc.network.ssid || assoc.network.id}”`;
   if (d.separation) {
     const dom = d.separation.domains.find((x) => x.interfaces.indexOf(port) >= 0);
     if (dom) return 'domain ' + dom.name;

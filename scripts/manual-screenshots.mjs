@@ -49,7 +49,7 @@ async function main() {
     await page.key('f', 'KeyF', 70);
     // the File menu
     await page.click('#menu-btn');
-    await save('file-menu', around([await page.rect('#menu-btn'), await page.rect('#main-menu')], 10));
+    await save('file-menu', around([await page.rect('#menu-btn'), await page.rect('#main-menu')], 10), { quality: 60 });
     await page.key('Escape', 'Escape', 27);
     // the Export menu with its submenu
     await page.click('#export-btn');
@@ -62,7 +62,7 @@ async function main() {
     await page.settle();
 
     // the whole window, physical view
-    await save('physical', { x: 0, y: 0, w: 1440, h: 900 }, { scale: 0.75, quality: 60 });
+    await save('physical', { x: 0, y: 0, w: 1440, h: 900 }, { scale: 0.75, quality: 45 });
 
     // the logical view of the metro ring example
     await page.eval('netatlas.loadExample(3), netatlas.setView("logical"), true');
@@ -77,7 +77,7 @@ async function main() {
       const v = await page.rect('#viewport');
       const x = Math.max(c.x, v.x - 16);
       const y = Math.max(c.y, v.y - 16);
-      await save('logical', { x, y, w: Math.min(c.x + c.w, v.x + v.w + 16) - x, h: Math.min(c.y + c.h, v.y + v.h + 16) - y }, { quality: 60 });
+      await save('logical', { x, y, w: Math.min(c.x + c.w, v.x + v.w + 16) - x, h: Math.min(c.y + c.h, v.y + v.h + 16) - y }, { quality: 48 });
     }
     await page.eval('netatlas.loadExample(0), netatlas.setView("logical"), true');
     await page.settle(200);
@@ -248,7 +248,7 @@ async function main() {
       await page.mouse('mouseMoved', 700, 890);
       await page.settle(300);
       const c = await page.rect('#canvas-wrap');
-      await save('focus', around([c, await page.rect('#toolwin')], 0), { scale: 0.75, quality: 60 });
+      await save('focus', around([c, await page.rect('#toolwin')], 0), { scale: 0.75, quality: 48 });
       await page.eval(`netatlas.closeToolWindow(), true`);
       await page.eval(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true })), true`);
       await page.settle(150);
@@ -270,7 +270,7 @@ async function main() {
       await page.settle(300);
       const c = await page.rect('#canvas-wrap');
       const w = await page.rect('#toolwin');
-      await save('trace', around([c, w], 0), { scale: 0.75, quality: 50 });
+      await save('trace', around([c, w], 0), { scale: 0.75, quality: 40 });
       await page.eval(`netatlas.closeToolWindow(), true`);
       await page.settle(100);
     }
@@ -282,7 +282,7 @@ async function main() {
       await page.eval(`localStorage.removeItem('netatlas.window.spof'), netatlas.openSpof(), true`);
       await page.mouse('mouseMoved', 700, 890);
       await page.settle(250);
-      await save('spof', around([await page.rect('#toolwin')], 6), { quality: 60 });
+      await save('spof', around([await page.rect('#toolwin')], 6), { quality: 45 });
       await page.eval(`netatlas.closeToolWindow(), true`);
       await page.settle(100);
     }
@@ -296,7 +296,7 @@ async function main() {
       await page.eval(`(() => { const c = netatlas.simController(); c.showTable('arp', 'core1'); for (let i = 0; i < 40; i++) c.advance(25); c.refresh(true); document.getElementById('toast').hidden = true; return true; })()`);
       await page.mouse('mouseMoved', 700, 890);
       await page.settle(300);
-      await save('simulation', { x: 0, y: 0, w: 1440, h: 900 }, { scale: 0.65, quality: 38 });
+      await save('simulation', { x: 0, y: 0, w: 1440, h: 900 }, { scale: 0.65, quality: 32 });
       const st = await page.rect('#sd-status');
       await save('arp-table', { x: st.x, y: st.y, w: st.w, h: Math.min(st.h, 300) }, { quality: 55 });
       // the packet inspector for a TCP SYN of pc1's test traffic, with Follow message
@@ -367,12 +367,31 @@ async function main() {
       await page.eval(`netatlas.fit(), document.getElementById('toast').hidden = true, true`);
       await page.mouse('mouseMoved', 700, 890);
       await page.settle(300);
-      await save('dhcp-sim', { x: 0, y: 0, w: 1440, h: 900 }, { scale: 0.65, quality: 40 });
+      await save('dhcp-sim', { x: 0, y: 0, w: 1440, h: 900 }, { scale: 0.65, quality: 32 });
       await page.eval(`netatlas.exitSimulation(), sessionStorage.clear(), true`);
       await page.settle(100);
     }
 
-    // the device model: a System's Identity card (ot-network.yaml); the Separation gateway (cross-domain.yaml): the diagram, its
+    // services and Wi-Fi: ap1's Wireless access (multi-ssid-ap.yaml), srv's Services card (campus-wireless.yaml)
+    {
+      const ex = (name) => page.eval(`Array.from(document.querySelectorAll('#menu-examples [data-example]')).findIndex((b) => b.textContent.indexOf(${JSON.stringify(name)}) >= 0)`);
+      const card = async (example, dev, group, name, h, from = `[data-group="${group}"]`) => {
+        await page.eval(`netatlas.loadExample(${await ex(example)}), netatlas.setView("physical"), netatlas.select("device:${dev}"), netatlas.showTab("edit"), true`);
+        await page.eval("document.getElementById('toast').hidden = true");
+        await page.eval(`(() => { const g = document.querySelector('#side-body ${from}'); g.scrollIntoView({ block: 'start' }); return true; })()`);
+        await page.mouse('mouseMoved', 700, 890);
+        await page.settle(250);
+        const g = await page.rect(`#side-body [data-group="${group}"]`);
+        const f = await page.rect(`#side-body ${from}`);
+        const sb = await page.rect('#side-body');
+        const top = Math.max(sb.y, f.y - 4);
+        await save(name, { x: g.x - 4, y: top, w: g.w + 8, h: Math.min(sb.y + sb.h - top, g.y + g.h + 4 - top, h) }, { quality: 38 });
+      };
+      await card('multi-ssid-ap', 'ap1', 'svc-wireless', 'wifi-edit', 560);
+      await card('campus-wireless', 'srv', 'netservices', 'services-add', 560, '[data-svc-card="ntp"]');
+    }
+
+    // the device model: a System's Identity card (ot-network.yaml); the Security gateway (cross-domain.yaml): the diagram, its
     // Domain separation card, and Trace path with a service through its protocol break
     {
       const ex = (name) => page.eval(`Array.from(document.querySelectorAll('#menu-examples [data-example]')).findIndex((b) => b.textContent.indexOf(${JSON.stringify(name)}) >= 0)`);
@@ -504,7 +523,8 @@ async function main() {
 
     // consistency checks: the Problems tab of the consistency-checks example, then its check settings
     const demo = await page.eval("Array.from(document.querySelectorAll('#menu-examples [data-example]')).findIndex((b) => /consistency-checks/.test(b.textContent))");
-    await page.eval(`netatlas.loadExample(${demo}), netatlas.setView("physical"), netatlas.showTab("problems"), true`);
+    // (the side panel scrolled back to its top: the cards before scrolled it)
+    await page.eval(`netatlas.loadExample(${demo}), netatlas.setView("physical"), netatlas.showTab("problems"), document.getElementById('side-body').scrollTop = 0, true`);
     await page.eval("document.getElementById('toast').hidden = true");
     await page.mouse('mouseMoved', 700, 890);
     await page.settle(200);

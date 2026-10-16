@@ -1,0 +1,117 @@
+# netatlas example: one access point, three Wi-Fi networks, one uplink.
+#
+# ap1 has one radio and one Ethernet uplink. Its Wireless access has three
+# Wi-Fi networks — Staff, Guest and IoT — and bridges each to its own VLAN
+# (10, 20, 30). The uplink is a trunk that carries the three VLANs tagged to
+# the access switch, and on to the core. There is no cable per SSID: the
+# three networks share the one uplink, and each wireless connection names
+# the network it is associated with.
+#
+# The VLANs stay apart: a Staff laptop and a Guest phone on the same radio
+# are in different VLANs and never share a frame. Staff (10) and IoT (30)
+# are routed by the Layer 3 core, which is their DHCP server; Guest (20)
+# has a gateway of its own (guest-gw, which hands out its addresses), and
+# nothing routes between Guest and the others.
+#
+# Simulate ▾ → Start simulation…: the clients associate and get their
+# leases in their own VLANs. Click the uplink l-acc-ap and Fail link: every
+# network of ap1 loses its way at once (it is one cable, and Analyze ▾ →
+# Single points of failure… lists it).
+netatlas: 1
+title: One access point, three Wi-Fi networks
+description: |
+  An access point with Staff, Guest and IoT networks bridged to VLANs 10, 20
+  and 30 over one trunk uplink; Staff and IoT routed by the core, Guest by a
+  gateway of its own.
+
+groups:
+  - id: floor
+    label: Floor 2
+    kind: floor
+  - id: closet
+    label: Wiring closet
+    kind: room
+
+networks:
+  - {id: staff, label: Staff, cidr: 10.10.10.0/24, vlan: 10}
+  - {id: guest, label: Guest, cidr: 10.10.20.0/24, vlan: 20}
+  - {id: iot, label: IoT, cidr: 10.10.30.0/24, vlan: 30}
+
+devices:
+  - id: core
+    type: switch
+    layer3: true
+    role: core
+    group: closet
+    services:
+      dhcp:
+        scopes:
+          - {network: staff, range: 10.10.10.100-10.10.10.199, gateway: 10.10.10.1, dns: [10.10.10.1]}
+          - {network: iot, range: 10.10.30.100-10.10.30.199, gateway: 10.10.30.1, dns: [10.10.30.1]}
+    interfaces:
+      - {id: p1, vlans: [10, 20, 30]}
+      - {id: p2, vlans: 20}
+    logical_interfaces:
+      - {id: Vlan10, type: virtual, vlan: 10, ip: 10.10.10.1/24}
+      - {id: Vlan30, type: virtual, vlan: 30, ip: 10.10.30.1/24}
+  - id: guest-gw
+    label: guest-gw
+    type: router
+    role: border
+    group: closet
+    services:
+      dhcp:
+        scopes:
+          - {network: guest, range: 10.10.20.100-10.10.20.199, gateway: 10.10.20.1, dns: [10.10.20.1]}
+    interfaces:
+      - {id: lan, ip: 10.10.20.1/24}
+  - id: acc
+    type: switch
+    role: access
+    group: closet
+    interfaces:
+      - {id: up, vlans: [10, 20, 30]}
+      - {id: ap, vlans: [10, 20, 30]}
+  - id: ap1
+    type: ap
+    group: floor
+    services:
+      wireless:
+        networks:
+          - {id: staff, ssid: Staff, vlan: 10, radio: radio0, security: wpa3_enterprise}
+          - {id: guest, ssid: Guest, vlan: 20, radio: radio0, security: wpa2_psk, passphrase: "<guest-psk>"}
+          - {id: iot, ssid: IoT, vlan: 30, radio: radio0, security: wpa2_psk, passphrase: "<iot-psk>"}
+    interfaces:
+      - {id: eth0, vlans: [10, 20, 30]}
+      - {id: radio0}
+  - id: laptop
+    label: staff laptop
+    type: endpoint
+    kind: pc
+    group: floor
+    simulation: {test_traffic: "on", test_targets: "10.10.30.1 icmp", test_interval: 10}
+    interfaces:
+      - {id: wlan0, dhcp: true}
+  - id: phone
+    label: guest phone
+    type: endpoint
+    kind: mobile
+    group: floor
+    simulation: {test_traffic: "on", test_targets: "10.10.20.1 icmp, 10.10.10.1 icmp", test_interval: 10}
+    interfaces:
+      - {id: wlan0, dhcp: true}
+  - id: sensor
+    label: IoT sensor
+    type: endpoint
+    kind: iot
+    group: floor
+    interfaces:
+      - {id: wlan0, dhcp: true}
+
+links:
+  - {id: l-core-acc, a: "core:p1", b: "acc:up", speed: 10G}
+  - {id: l-core-gw, a: "core:p2", b: "guest-gw:lan", speed: 1G}
+  - {id: l-acc-ap, a: "acc:ap", b: "ap1:eth0", speed: 1G, label: the one uplink}
+  - {id: w-laptop, a: "ap1:radio0", b: "laptop:wlan0", medium: wireless, wireless_network: staff}
+  - {id: w-phone, a: "ap1:radio0", b: "phone:wlan0", medium: wireless, wireless_network: guest}
+  - {id: w-sensor, a: "ap1:radio0", b: "sensor:wlan0", medium: wireless, wireless_network: iot}

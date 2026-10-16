@@ -289,8 +289,8 @@ test('the schema: each fact has one key, in one place', () => {
   assert.deepEqual(SCHEMA.logical, ['id', 'type', 'label', 'port_group', 'passthrough', 'vf', 'role', 'network', 'aliases', 'dhcp', 'ip', 'vrf', 'mac', 'mtu', 'dhcp_relay', 'members', 'min_links', 'vlans', 'native', 'routed', 'vlan', 'source', 'destination', 'publish', 'protocols', 'multicast', 'simulation', 'description', 'attrs']);
   // what a device is comes first: its type, kind, role, mode, a System's purpose and icon; then a guest names its host
   assert.deepEqual(SCHEMA.device.slice(SCHEMA.device.indexOf('type'), SCHEMA.device.indexOf('host') + 1), ['type', 'kind', 'kind_label', 'role', 'mode', 'purpose', 'icon', 'host']);
-  // the built-in functions of the appliances (a VPN Gateway's VPN, a Separation gateway's domain separation), then the services
-  assert.deepEqual(SCHEMA.netServices, ['vpn', 'separation', 'dhcp', 'dns', 'hypervisor', 'container_engine']);
+  // the built-in functions of the appliances (a VPN Gateway's VPN, a Security gateway's domain separation), then the services
+  assert.deepEqual(SCHEMA.netServices, ['vpn', 'separation', 'wireless', 'load_balancing', 'inspection', 'dhcp', 'dns', 'ntp', 'aaa', 'syslog', 'monitoring', 'proxy', 'nat', 'wireless_controller', 'hypervisor', 'container_engine', 'storage', 'application']);
   assert.deepEqual(SCHEMA.route, ['prefix', 'via', 'interface', 'blackhole', 'distance', 'metric', 'vrf', 'name', 'description', 'attrs']);
   assert.ok(!('child' in SCHEMA) && !('loopback' in SCHEMA));
   // a link end only names its port and what the port is set to: its VLANs are the port's

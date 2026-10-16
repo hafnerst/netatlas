@@ -28,6 +28,7 @@ import { hostInterior } from '../layout/virtual';
 import { externalWires, interiorNodes } from './virtual';
 import { groupKindStyle, mediumStyle, speedWidth } from './style';
 import { capabilities } from '../model/capabilities';
+import { serviceBadgesText, serviceListText } from '../model/service-registry';
 
 export { deviceSubtitle };
 
@@ -167,7 +168,7 @@ export function groupFrames(model: Model, grects: Map<string, Rect>, placer: Lab
  * `bodyH`, the icon and text are centred in the top `bodyH` of the box (the
  * rest holds the chips of its uncabled ports).
  */
-export function deviceNode(ref: string, label: string, sub: string, type: string, b: CBox, extraClass = '', bodyH = b.h, layer3?: boolean, services: Array<'dhcp' | 'dns'> = [], glyph?: string): VNode {
+export function deviceNode(ref: string, label: string, sub: string, type: string, b: CBox, extraClass = '', bodyH = b.h, layer3?: boolean, services: Array<'dhcp' | 'dns'> = [], glyph?: string, servicesTip = ''): VNode {
   const x = b.cx - b.w / 2;
   const y = b.cy - b.h / 2;
   const body = deviceBody(label, sub, 0, 0);
@@ -178,6 +179,7 @@ export function deviceNode(ref: string, label: string, sub: string, type: string
   const sw = capabilities({ type, layer3 }).switchFeatures;
   const badge = sw ? layerBadge(!!layer3, x + 12 + DEVICE_ICON - BADGE_W, mid + DEVICE_ICON / 2 - BADGE_H + 5) : null;
   return h('g', { class: 'node device ' + extraClass + (sw ? (layer3 ? ' layer3' : ' layer2') : ''), 'data-ref': ref, 'data-endpoint': 'device' }, [
+    servicesTip ? h('title', {}, `Services: ${servicesTip}`) : null,
     h('rect', { class: 'dev-box', x, y, width: b.w, height: b.h, rx: 8 }),
     deviceIcon(glyph || type, x + 12, mid - DEVICE_ICON / 2, DEVICE_ICON, layer3),
     badge,
@@ -482,7 +484,7 @@ export function renderPhysical(model: Model, layout: PhysicalLayout, opts: ViewO
     if (flow.items.length) portNodes.push(...chipNodes(d.id, flow, b.cx - b.w / 2 + IFCHIP_PAD, b.cy + b.h / 2 - chipsH, 'port-chip', () => ''));
     if (items.length) portNodes.push(...entryNodes(items, b.cx - b.w / 2 + ENTRY_MARGIN, b.cy + b.h / 2 - chipsH - listH, b.w - 2 * ENTRY_MARGIN));
     const bodyH = b.h - chipsH - listH - innerH;
-    deviceNodes.push(deviceNode('device:' + d.id, d.label, deviceTypeLine(d), d.type, b, 'type-' + cssToken(d.type) + (inner ? ' host' : ''), bodyH, d.layer3, netServiceIds(d), glyphFor(d)));
+    deviceNodes.push(deviceNode('device:' + d.id, d.label, [deviceTypeLine(d), serviceBadgesText(d)].filter((x) => !!x).join('\n'), d.type, b, 'type-' + cssToken(d.type) + (inner ? ' host' : ''), bodyH, d.layer3, [], glyphFor(d), serviceListText(d)));
     if (inner) {
       const ox = b.cx - inner.w / 2;
       const oy = b.cy - b.h / 2 + bodyH;

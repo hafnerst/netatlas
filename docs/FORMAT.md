@@ -169,9 +169,9 @@ than one endpoint on the same device is bound by the first of them.
 | `logical_interfaces` | | List of the device's **logical interfaces** (below): loopbacks, virtual interfaces and tunnel interfaces; a VM's virtual NICs (`vnic`) and a container's network attachments (`veth`). |
 | `dns_names` | | List of the device's **DNS names**, each associated with one or more of its interfaces. See [DNS names](#dns-names). |
 | `dns_servers` | | The DNS servers the device asks (a list of addresses), when they are not given by a DHCP lease. See [DNS servers of a host](#dns-servers-of-a-host-dns_servers). |
-| `services` | | Servers, VMs and containers: the **DHCP server** and the **DNS server** it runs, `services: {dhcp: {scopes: […]}, dns: {zones: […]}}`; a server's **Hypervisor** (`hypervisor`) and a server's or VM's **Container engine** (`container_engine`). See [Network services](#network-services-services-dhcp-and-dns-servers) and [Virtualization](#virtualization-hypervisors-vms-and-containers). The built-in functions of the appliances are written here too, and are required there: a VPN Gateway's **VPN gateway** (`vpn`, see [VPN Gateway](#vpn-gateway)) and a Separation gateway's **Domain separation** (`separation`, see [Separation gateway](#separation-gateway)). |
+| `services` | | The **services** the device runs, by the [service registry](#services-the-registry-and-its-catalog): `services: {dhcp: {…}, ntp: {…}, wireless: {…}}`. Who may run which is the registry's (with the reason when a device may not); the built-in functions of the appliances are written here too: a VPN Gateway's `vpn`, a Security gateway's `separation`, an access point's `wireless` (required), a load balancer's `load_balancing` and an IDS/IPS's `inspection` (optional). See also [Network services](#network-services-services-dhcp-and-dns-servers), [Virtualization](#virtualization-hypervisors-vms-and-containers), [VPN Gateway](#vpn-gateway), [Security gateway](#security-gateway) and [Wireless access](#wireless-access-wi-fi-networks-on-vlans). |
 | `port_pairs` | inline and pass-through devices: yes | The pairs of ports traffic passes between: `port_pairs: [{a: in, b: out}]`, with `direction: a_to_b` for one way and `copy: [mon]` for monitor ports that get a copy. See [Port pairs](#port-pairs). |
-| `management` | | The device's management interfaces (`management: [mgmt0]`): never forwarded, in no domain. Firewalls, IDS/IPS, Separation gateways and passive monitors. See [Management interfaces](#management-interfaces). |
+| `management` | | The device's management interfaces (`management: [mgmt0]`): never forwarded, in no domain. Firewalls, IDS/IPS, Security gateways and passive monitors. See [Management interfaces](#management-interfaces). |
 | `routes` | | List of the device's **static routes**. See [Static routes](#static-routes). Only devices whose type has a routing table may have them. |
 
 A device has no `vendor`, `model` or `mgmt` key; like every key the
@@ -267,7 +267,7 @@ diagram writes the router ID and the AS number only where they apply.
 | Load balancer | `load_balancer` | `hardware`, `virtual`, `other` | | routes; ends client connections and passes them to its pool |
 | IDS/IPS | `ids_ips` | `appliance`, `virtual`, `other` | `inline`, `passive` | inline: passes traffic between its paired ports, may drop it; passive: receives copies, forwards nothing |
 | VPN Gateway | `vpn_gateway` | `hardware`, `virtual`, `remote_access`, `other` | | ends its VPNs; forwards only to and from them |
-| Separation gateway | `separation_gateway` | `cross_domain`, `red_black`, `it_ot`, `other` | | transfers between exactly two domains only what its policy permits, the way its implementation does it |
+| Security gateway | `security_gateway` | `cross_domain`, `red_black`, `it_ot`, `other` | | transfers between exactly two domains only what its policy permits, the way its implementation does it |
 | Server | `server` | `physical`, `appliance`, `other` | | a host; may run DHCP, DNS, a hypervisor, a container engine |
 | Virtual machine | `vm` | `general`, `virtual_appliance`, `other` | | a guest of a hypervisor (or a cloud instance); with `layer3: true` routes |
 | Container | `container` | `application`, `infrastructure`, `other` | | a guest of a container engine (or a cloud instance) |
@@ -290,7 +290,7 @@ one is converted by what it does: a VPN gateway becomes a **VPN Gateway**
 public cloud's gateway a **router** of kind `cloud_gateway` in its cloud
 group; a protocol or OT gateway a **System** with its purpose (usually
 `l3_forwarder`), unless it is a cross-domain boundary, which is a
-**Separation gateway**; a forward or reverse proxy a **server**, **VM** or
+**Security gateway**; a forward or reverse proxy a **server**, **VM** or
 **container** (the Proxy service comes with the service registry). The
 values `gateway`, `proxy` and `hypervisor` are unknown types whose errors
 say so. There is no hypervisor type either: a hypervisor is a **server with
@@ -366,7 +366,7 @@ an error, and does nothing):
 
 Its `kind_label` names what it is ("Industrial protocol gateway"), its
 `icon` is one of its purpose's (the first when not written). A security
-boundary between domains is a [Separation gateway](#separation-gateway),
+boundary between domains is a [Security gateway](#security-gateway),
 not a System.
 
 A **TAP** or packet broker is modelled with both of its paths: the original
@@ -380,7 +380,7 @@ Every module (validation, the editor, Connect, the Layer 3+ rules, the path
 tracer, single points of failure, the simulation, Auto-arrange and the
 helpers) decides by what a device **can do**, never by its type's name.
 One resolver (`src/model/capabilities.ts`) derives it from the type, the
-mode, Supports Layer 3, a System's purpose and a Separation gateway's
+mode, Supports Layer 3, a System's purpose and a Security gateway's
 implementation; an architecture test fails on any comparison with a type
 name outside the registry and the resolver. A capability is what a device
 can do, not connectivity: what actually passes still depends on its
@@ -400,10 +400,10 @@ interfaces, cables, VLANs, routes and policy.
 | IDS/IPS · Inline |  |  |  |  | ✓ |  |  |  |  |  |  |  |  |  | ✓ |
 | IDS/IPS · Passive |  |  |  |  |  | ✓ |  |  |  |  |  |  |  |  | ✓ |
 | VPN Gateway |  |  | ✓ |  |  |  |  |  |  |  | terminates; only via its VPN |  |  | ✓ |  |
-| Separation gateway (no implementation yet) |  |  |  | ✓ |  |  |  |  |  |  |  | none yet |  |  | ✓ |
-| Separation gateway · filtering bridge |  | ✓ |  | ✓ |  |  |  |  |  |  |  | filtering bridge |  |  | ✓ |
-| Separation gateway · filtering router |  |  | ✓ | ✓ |  |  |  |  |  |  |  | filtering router |  |  | ✓ |
-| Separation gateway · protocol break |  |  |  | ✓ |  |  |  |  |  |  |  | protocol break | ✓ |  | ✓ |
+| Security gateway (no implementation yet) |  |  |  | ✓ |  |  |  |  |  |  |  | none yet |  |  | ✓ |
+| Security gateway · filtering bridge |  | ✓ |  | ✓ |  |  |  |  |  |  |  | filtering bridge |  |  | ✓ |
+| Security gateway · filtering router |  |  | ✓ | ✓ |  |  |  |  |  |  |  | filtering router |  |  | ✓ |
+| Security gateway · protocol break |  |  |  | ✓ |  |  |  |  |  |  |  | protocol break | ✓ |  | ✓ |
 | Server | ✓ |  |  |  |  |  |  |  | VMs, containers |  |  |  |  |  |  |
 | Virtual machine | ✓ |  |  |  |  |  |  |  | containers | vm |  |  |  |  |  |
 | Virtual machine · Supports Layer 3 |  |  | ✓ |  |  |  |  |  | containers | vm |  |  |  | ✓ |  |
@@ -453,7 +453,7 @@ ports.
 
 `management` lists a device's management interfaces: they are its own (an
 address, SSH, SNMP), never forwarded, in no domain and in no port pair.
-Firewalls, IDS/IPS, Separation gateways and passive monitors may have
+Firewalls, IDS/IPS, Security gateways and passive monitors may have
 them; a transparent firewall's and a filtering bridge's management
 interface is the only one with an address. The physical view writes
 "management" under the port.
@@ -483,9 +483,9 @@ decapsulation in the trace and the simulation). A VPN is not a separation:
 it protects traffic on its way, it does not decide what may cross between
 domains.
 
-#### Separation gateway
+#### Security gateway
 
-A Separation gateway (`separation_gateway`) is a security boundary between
+A Security gateway (`security_gateway`) is a security boundary between
 **exactly two domains**: it transfers only what its policy explicitly
 permits, the way its implementation does it. Its **Domain separation** is
 built in and required (`services: {separation: …}`), and exists on no other
@@ -574,14 +574,14 @@ legs and their correlation; the simulation shows them in the timeline and
 the packet details. A transfer that is not permitted ends at the gateway
 with its reason.
 
-In the diagram the Separation gateway has its own icon; each domain-facing
+In the diagram the Security gateway has its own icon; each domain-facing
 port says its domain ("domain Red"), the management port "management" —
 text, not colour, carries it. The Details tab lists the implementation, the
 domains, the directions and the rules in order. Single points of failure
 count a gateway as joining its domains only when its policy permits a
 transfer, and never through its management interfaces.
 
-Changing a device's type, mode, purpose or a Separation gateway's
+Changing a device's type, mode, purpose or a Security gateway's
 implementation asks first when something would no longer fit, lists it
 (its kind, its built-in function, its port pairs, a protocol break's
 profiles …) and what stays but is then reported (its guests, the relations
@@ -1120,11 +1120,149 @@ isn't an address is an error. In the protocol simulation a
 host resolves names (test traffic to a host name, `Send test` to a name)
 through them.
 
+### Services: the registry and its catalog
+
+Every service a device may run is in the **service registry**
+(`src/model/service-registry.ts`): its key under `services:`, its
+parameters (each with its type, whether it is required — always, or by the
+others' values — and where it applies), who may run it, its badge, and its
+simulation. Nothing is enabled implicitly: a service is there when it is
+written, and its required fields are errors until they are. A device that
+may not run a service is told why ("a Layer 2 switch routes nothing: tick
+Supports Layer 3 first"); the Edit tab's **Add service…** lists those
+entries disabled with the same reason. A **built-in** function is its
+appliance's: always there and not removable (an access point's Wireless
+access, a load balancer's Load balancing, an IDS/IPS's Inspection, a VPN
+Gateway's VPN gateway, a Security gateway's Domain separation); where its
+configuration is required, a missing one is an error. **A Security gateway
+runs nothing but its Domain separation**: no service may bypass its
+boundary.
+
+<!-- service-matrix:begin (generated by scripts/capability-matrix.mjs) -->
+| Service | Key | Badge | Built into | Optional on | Conditions |
+|---|---|---|---|---|---|
+| DHCP server | `dhcp` | DHCP |  | Router, Switch, Firewall, Server, Virtual machine, Container | a Layer 2 switch routes nothing: tick Supports Layer 3 first; a transparent firewall forwards no IP of its own: make it routed |
+| DNS server | `dns` | DNS |  | Router, Firewall, Server, Virtual machine, Container | a transparent firewall forwards no IP of its own: make it routed |
+| NTP | `ntp` | NTP |  | Router, Switch, Firewall, Server, Virtual machine, System | only a System whose purpose is Host runs services |
+| AAA | `aaa` | AAA |  | Server, Virtual machine, Container |  |
+| Syslog collector | `syslog` | LOG |  | Server, Virtual machine, Container, System | only a System whose purpose is Host runs services |
+| Monitoring | `monitoring` | MON |  | Server, Virtual machine, Container, System | only a System whose purpose is Host runs services |
+| Proxy | `proxy` | PRX |  | Server, Virtual machine, Container, Firewall | a transparent firewall forwards no IP of its own: make it routed |
+| Load balancing | `load_balancing` | LB | Load balancer | Server, Virtual machine, Container |  |
+| VPN gateway | `vpn` | VPN | VPN Gateway (its configuration required) | Router, Firewall, Server, Virtual machine | a transparent firewall forwards no IP of its own: make it routed |
+| NAT | `nat` | NAT |  | Router, Switch, Firewall, Load balancer, VPN Gateway, Virtual machine, System | NAT is a Layer 3 forwarder’s: it routes nothing |
+| Wireless access | `wireless` | WIFI | Access point (its configuration required) | Router |  |
+| Wireless controller | `wireless_controller` | WLC |  | Server, Virtual machine, System | only a System whose purpose is Host runs services |
+| Hypervisor | `hypervisor` | HV |  | Server |  |
+| Container engine | `container_engine` | CTR |  | Server, Virtual machine |  |
+| Storage service | `storage` | STOR |  | Storage, Server, Virtual machine |  |
+| Application | `application` | APP |  | Server, Virtual machine, Container, Storage, System | only a System whose purpose is Host runs services |
+| Inspection | `inspection` | IPS | IDS/IPS |  |  |
+| Domain separation | `separation` | SEP | Security gateway (its configuration required) |  |  |
+<!-- service-matrix:end -->
+
+The parameters of the services without a section of their own:
+
+| Service | Parameters (required in **bold**) | What the simulation does |
+|---|---|---|
+| `ntp` | **`stratum`** (1–15) or **`upstreams`** (addresses): one of them | asks its upstreams (NTP client request / server response, every 64 s); listens on UDP 123 |
+| `aaa` | **`protocol`** (`radius`, `tacacs`), **`secret`** (a placeholder), **`clients`** (devices) | each client's authentication request and the answer; listens on UDP 1812 (TACACS+: TCP 49) |
+| `syslog` | `port` (514), `transport` (`udp`, `tcp`), `senders` (devices) | its senders' messages (one way), besides its syslog relations |
+| `monitoring` | **`targets`** (devices), `icmp_interval`, `snmp_interval` | polls each target by SNMP (and the ICMP probes of the monitoring attributes) |
+| `proxy` | **`mode`** (`forward`, `reverse`), **`listener`** (port), `upstream` (address; **required for a reverse proxy**), `upstream_port` | ends the client's connection at its listener and opens its own to the upstream; the answer goes back on the first connection |
+| `load_balancing` | `virtual_address`, `port`, `backends` (devices), `algorithm`, `snat` | its backends (else its service relations' servers) are its pool: health checks, the algorithm, persistence |
+| `nat` | **`inside`**, **`outside`** (interfaces), **`rules`**: each **`type`** `pat` / `snat` (**`source`**, `to`) or `dnat` (**`protocol`**, **`port`**, **`to`**, `to_port`) | translates on the way from inside to outside (PAT, source NAT) and forwards outside ports in (destination NAT), the replies translated back; the path tracer notes the translation |
+| `wireless_controller` | **`aps`** (devices: controller-managed access points) | the CAPWAP control channel with each access point (echo every 30 s); listens on UDP 5246 |
+| `storage` | **`protocols`** (`nfs`, `smb`, `iscsi`) | listens on TCP 2049, 445, 3260 |
+| `application` | **`name`**, **`ports`** (`tcp/443`, `udp/5060` …) | listens on its ports and answers |
+| `inspection` | `block` (`tcp/23`, `udp/69`, `icmp`) | an inline IDS/IPS drops what it blocks; a passive one raises an alert and lets it pass |
+
+A secret (an AAA shared secret, a Wi-Fi passphrase) is written as a
+placeholder, `<name>` or `${NAME}`; anything else is a warning: a model file
+is shared. The exchanges a service implies (NTP to its upstreams, RADIUS
+from its clients, syslog from its senders, SNMP polls of its targets,
+CAPWAP to the controller) are simulated as relations the model doesn't
+have to draw; an exchange a relation of the model already describes is not
+added twice.
+
+The diagram writes a device's services as **badges** in a line under its
+type — at most three, then how many more (`DHCP · DNS · NTP +3`); its
+tooltip names every one, and the legend lists the badges the model uses.
+
+### Wireless access: Wi-Fi networks on VLANs
+
+An access point's **Wireless access** (built in) and a router's (a
+service) have the same model: their **Wi-Fi networks**, each bridged to one
+VLAN of the device's wired side.
+
+```yaml
+- id: ap1
+  type: ap
+  services:
+    wireless:
+      networks:
+        - {id: staff, ssid: Staff, vlan: 10, radio: radio0, security: wpa3_enterprise}
+        - {id: guest, ssid: Guest, vlan: 20, radio: radio0, security: wpa2_psk, passphrase: "<guest-psk>"}
+        - {id: iot, ssid: IoT, vlan: 30, radio: radio0, security: wpa2_psk, passphrase: "<iot-psk>"}
+  interfaces:
+    - {id: eth0, vlans: [10, 20, 30]}   # the one uplink: a trunk that carries the three VLANs
+    - {id: radio0}                      # the radio: a physical interface
+links:
+  - {id: w-laptop, a: "ap1:radio0", b: "laptop:wlan0", medium: wireless, wireless_network: staff}
+```
+
+| Key | Required | Description |
+|---|---|---|
+| `id` | yes | the network's id: what a connection names (an SSID need not be unique) |
+| `ssid` | yes | the name clients see (at most 32 characters; one per radio) |
+| `vlan` | yes, or `untagged` | the VLAN it is bridged to. Never inferred and never VLAN 1 by default |
+| `untagged` | | `true`: bridged to the untagged domain of the uplink (its access VLAN, or a trunk's native one) instead |
+| `radio` | yes | the physical interface it is on |
+| `security` | yes | `open`, `wpa2_psk`, `wpa3_sae`, `wpa2_enterprise`, `wpa3_enterprise` |
+| `passphrase` | PSK / SAE | a placeholder (`"<guest-psk>"`) |
+| `forwarding` | | a controller-managed access point's: `local` (bridged at the access point, the default) or `tunneled` (to the controller: not simulated, and said so) |
+
+A controller-managed access point (`mode: controller`) names its
+`controller` in `services.wireless` (a device with the Wireless controller
+service, which lists it among its `aps`).
+
+**Physical interfaces, VLANs and attachment points stay apart.** The radio
+is a physical interface; the uplink is a wired port with its VLANs, as any
+port has them (access, trunk, native); a Wi-Fi network is an attachment
+point, not a port: its connections are bridged into its VLAN. A wireless
+connection at a radio names its network (`wireless_network`) — required
+there, an error anywhere else — and several connections share the radio.
+The physical view writes the network under the radio's end of each
+connection (*SSID “Guest” · A 20*); the Details tab lists the networks
+with their VLANs and clients.
+
+What is checked (errors, nothing is added for you): a VLAN-backed
+network's VLAN is carried by one of the device's wired ports (a router: or
+it has a VLAN interface for it); an untagged network needs a wired port
+with an untagged VLAN; the uplink's tagging must agree with the far end's,
+by the rules of [port VLANs](#port-vlans-access-trunk-routed); the radio is
+a physical interface that no cable but wireless connections uses; each
+connection names a network of its radio.
+
+What follows: a client is in its network's VLAN only. Two networks on one
+radio share the radio and the uplink, never a frame: Staff and Guest are as
+far apart as two VLANs (inter-VLAN traffic needs a routed path, and the
+policy on it). DHCP, ARP and broadcasts stay in the network's VLAN unless a
+relay sends them on. Frames leave the uplink tagged (or untagged in its
+native VLAN) as the port says; the uplink is one cable: its failure cuts
+every network of the access point at once, and single points of failure
+say so. A cable's latency and loss count once, on the cable they are
+written on; the association itself (its beacon wait and association time)
+is the access point's. There is no radio-frequency or roaming model.
+
 ### Network services (`services`): DHCP and DNS servers
 
-A server, a VM or a container can run a **DHCP server** and a **DNS
-server**. Both are off unless written; the Edit tab has a *Services* card
-with a checkbox for each.
+A router, a Layer 3 switch, a routed firewall, a server, a VM or a
+container can run a **DHCP server**; a router, a routed firewall, a
+server, a VM or a container a **DNS server** (a router's and a
+firewall's usually a forwarder: `forwarders` without zones). Both are off
+unless written; the Edit tab has a *Services* card with a checkbox for
+each.
 
 ```yaml
   - id: srv
@@ -1513,9 +1651,12 @@ devices:
 | `speed` | | e.g. `1G`, `10G`, `100G`, `250M`. **The only place the speed of the connection is configured**; it sets the line width. |
 | `direction` | | `unidirectional`: traffic only from end `a` to end `b` (simplex fibre, a data diode, a TAP or SPAN feed), drawn with an arrow at end `b`; the path tracer and the simulated traffic never use it the other way. `bidirectional` is the default and is not written. Anything else is an error. |
 | `simulation` | | The cable's settings for the [protocol simulation](#simulation-parameters-and-device-attributes): `latency` (its propagation delay; a bare number is in ms, or `250us`, `2ms`), `loss` (the share of frames lost, in percent) and `flapping: true` (it flaps from the start, with the simulation's flapping times). Configured here, they take precedence over everything else. |
+| `wireless_network` | wireless connections at a radio: yes | The Wi-Fi network (its `id`) of the end with Wireless access the connection is associated with: it takes that network's VLAN. An error on any other link. |
 | `label`, `cable` (cable/circuit id), `description`, `attrs` | | |
 
-Rules: a port can have at most one cable. Only physical interfaces can be
+Rules: a port can have at most one cable — except a radio of a Wireless
+access, which takes every wireless connection associated with one of its
+Wi-Fi networks (each names it in `wireless_network`). Only physical interfaces can be
 cabled: a link end that names a logical interface is an error (cable the
 member ports of an aggregate, or the port a tunnel is sourced from, instead).
 A link can't connect a port to itself.
@@ -1982,7 +2123,7 @@ a list of `VLAN: value` pairs, ranges allowed.
 | `test_interval` | Test traffic interval (s) | 5 s | 100 ms – 1 h | a demonstration value | endpoints |  |
 | `test_type` | Test traffic type | ICMP echo | `icmp`, `tcp`, `udp`, `multicast` | ping, the usual first test | endpoints |  |
 | `app_timeout` | Application response timeout (s) | 5 s | 100 ms – 10 min | dig’s default timeout (5 s); Windows ping waits 4 s | endpoints |  |
-| `boot_time` | Boot time (s) | 30 s (container 2 s, vm 20 s, router 1 min, firewall 1 min, vpn_gateway 1 min, separation_gateway 1 min, load_balancer 1 min) | 0 s – 1 h | a demonstration value (containers start in seconds, chassis routers in minutes) | every device |  |
+| `boot_time` | Boot time (s) | 30 s (container 2 s, vm 20 s, router 1 min, firewall 1 min, vpn_gateway 1 min, security_gateway 1 min, load_balancer 1 min) | 0 s – 1 h | a demonstration value (containers start in seconds, chassis routers in minutes) | every device |  |
 | `max_paths` | Maximum ECMP paths | 4 | 1 – 64 | Cisco IOS maximum-paths (4) | routers and Layer 3 devices (Layer 3 switches, firewalls, gateways …) |  |
 | `mac_table_size` | MAC table size | 8192 | 1 – 1000000 | a small access switch (data sheets: 8 K–16 K entries) | switches |  |
 | `stp_hello` | STP hello time (s) | 2 s | 1 s – 10 s | IEEE 802.1D-2004 Table 17-1 | switches |  |
@@ -2089,8 +2230,8 @@ a list of `VLAN: value` pairs, ranges allowed.
 | `vm_restart` | VM restart time (s) | 1 min | 0 s – 1 h | a demonstration value (HA failure detection plus the restart) | a Hypervisor service (`services.hypervisor.simulation`) |  |
 | `failover_detection` | Teaming failover detection (ms) | 1 s | 0 s – 1 min | a demonstration value (link-status failover detection takes about a second) | a virtual switch |  |
 | `container_start` | Container start time (s) | 2 s | 0 s – 10 min | a demonstration value (a container starts in seconds) | a Container engine service (`services.container_engine.simulation`) |  |
-| `transfer_delay` | Transfer delay (ms) | 1 ms | 0 s – 1 min | a demonstration value (a separation gateway inspects what it transfers) | a Separation gateway's Domain separation (`services.separation.simulation`) |  |
-| `transfer_loss` | Transfer loss (%) | 0 % | 0 % – 100 % | none unless set | a Separation gateway's Domain separation (`services.separation.simulation`) |  |
+| `transfer_delay` | Transfer delay (ms) | 1 ms | 0 s – 1 min | a demonstration value (a security gateway inspects what it transfers) | a Security gateway's Domain separation (`services.separation.simulation`) |  |
+| `transfer_loss` | Transfer loss (%) | 0 % | 0 % – 100 % | none unless set | a Security gateway's Domain separation (`services.separation.simulation`) |  |
 
 | Device type | Device-wide simulation attributes |
 |---|---|
@@ -2101,7 +2242,7 @@ a list of `VLAN: value` pairs, ranges allowed.
 | Load balancer (`load_balancer`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `igmp_query_interval`, `spf_delay`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `max_paths`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `listening`, `igmp_version`, `unsolicited_report_interval`, `igmp_querier`, `igmp_max_response`, `igmp_robustness`, `last_member_query_interval`, `spt_switchover` |
 | IDS/IPS (`ids_ips`) | `boot_time`, `fail_mode`, `inspection_latency` |
 | VPN Gateway (`vpn_gateway`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `igmp_query_interval`, `spf_delay`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `max_paths`, `ike_lifetime`, `child_lifetime`, `rekey_margin`, `dpd_interval`, `dpd_retries`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `igmp_version`, `unsolicited_report_interval`, `igmp_querier`, `igmp_max_response`, `igmp_robustness`, `last_member_query_interval`, `spt_switchover`, `multicast_over_tunnel` |
-| Separation gateway (`separation_gateway`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `igmp_version`, `unsolicited_report_interval` |
+| Security gateway (`security_gateway`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `igmp_version`, `unsolicited_report_interval` |
 | Server (`server`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `response_time`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `listening`, `igmp_version`, `unsolicited_report_interval` |
 | Virtual machine (`vm`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `igmp_query_interval`, `spf_delay`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `max_paths`, `response_time`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `listening`, `igmp_version`, `unsolicited_report_interval`, `igmp_querier`, `igmp_max_response`, `igmp_robustness`, `last_member_query_interval`, `spt_switchover` |
 | Container (`container`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `response_time`, `restart_policy`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `listening`, `igmp_version`, `unsolicited_report_interval` |
@@ -2326,7 +2467,7 @@ README's limitations):
   algorithm, a client keeping its member within the persistence timeout;
   health checks every interval (a TCP handshake, else the member's
   protocol), a member down after the failure threshold, up again at the
-  first success. A Separation gateway that breaks the protocol ends the
+  first success. A Security gateway that breaks the protocol ends the
   request (leg 1) and opens a connection of its own to its transfer
   profile's forward address (leg 2), when its policy permits; the answer
   goes back on leg 1, and a transfer it does not permit is reset.

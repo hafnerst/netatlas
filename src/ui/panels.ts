@@ -267,7 +267,7 @@ export function detailsFor(model: Model, ref: string, status: IssueCount | null 
         ['description', d.description],
       ]),
     );
-    // a Separation gateway's policy, in words: implementation, domains, directions, the rules in order, the default deny
+    // a Security gateway's policy, in words: implementation, domains, directions, the rules in order, the default deny
     if (d.separation) kids.push(h('section', { 'data-list': 'separation' }, [h('h4', {}, 'Domain separation'), h('ul', { class: 'sep-summary' }, separationSummary(d).map((x) => h('li', {}, x)))]));
     // display order is alphabetical; the file order is not changed by viewing
     const phys = sortedByName(d.interfaces, (x) => x.id);

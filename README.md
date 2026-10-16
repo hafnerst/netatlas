@@ -242,10 +242,10 @@ under the diagram, beside the object list, and the splitter is hidden.
 | Links | A link's ends have the port settings **Speed** and **Duplex**, and show the VLANs of their ports read-only; if the two ports disagree, a note shows how (and the VLAN checks report it), and nothing is changed for you. Speed and medium of the cable are set on the link, and only there. |
 | Input helpers | Next to many fields, small buttons (*chips*) offer values that fit, taken from the model as it is; each writes its value as one undo step and is validated like typing, and nothing is filled in by itself. **MTU:** *1500*, *9000 (jumbo)*, and for a tunnel *1476 (GRE)*, *1400* and its underlay's MTU less the encapsulation overhead (*1403 (underlay 1500 − 97)*, the overhead named in the tooltip). **MAC:** **Generate** writes a random, locally administered unicast address that no interface has, in the style the model's other MAC addresses are written (`00:1c:…`, `00-1C-…` or `001c.73aa.…`), from the browser's secure random source. **VRF:** a combobox of the VRFs in use, sorted, with how often each is used; ↑ / ↓, Enter and Esc work as usual, a new name can be typed, and a name that differs from one in use only in case is flagged (and reported by the check *vrf-name-case*). **VLAN ID** (virtual interfaces, networks, a link end's untagged VLAN): the next free ID and the VLANs the model defines. **Interface ID:** the name that follows the device's other names of that kind (*xe-4* after *xe-3*), as a rename. **Router ID:** the device's loopbacks (*lo0 (10.255.0.1)*). **BGP AS number:** the AS numbers the model uses; a BGP relation end's **peer AS**: the other device's AS. **IS-IS NET:** derived from the router ID or loopback (10.255.0.1 → `49.0001.0102.5500.0001.00`). **VRRP / HSRP group:** the groups on the interface's segment (*10 (join hq-core1:Vlan10)*) and the next free number; **Virtual IP:** the group's address on the other members. **Protocol parameters:** the registry's common values (OSPF area *0.0.0.0*, hello *10* …). **Routes:** *0.0.0.0/0 (default)*, *::/0*, distance *250 (floating backup)*. Speeds, media, protocols, port modes, duplex, groups, devices and interfaces were already offered as lists. The palette has *Generate a MAC address for the selected interface* and *Set the MTU of the selected interface to 1500*. A protocol defined in the model has a **Routing service** card (*Uses a router ID*; its declared parameters are listed and edited in the YAML tab). |
 | Layer 3 (switches) | A switch has one checkbox in its *Identity* card, **Supports Layer 3** (tooltip *Routing, routing protocols, and gateways*; `layer3: true`, off by default). While it is off, *Enable a protocol…* lists the routing protocols disabled in a group *Requires Layer 3* with the reason, nothing of Layer 3 is suggested, relation endpoint pickers leave the switch out of relations that need Layer 3 (and say why), and the palette's *Enable a protocol* says the same. Ticked: a **Layer 3 switch**, with protocols, a router ID, addresses on several interfaces, VRRP / HSRP groups, tunnels and VRFs; it routes between its VLANs. Unticked: a **Layer 2 switch**: it forwards frames, has one management interface with addresses and static routes (e.g. a default gateway for management), and offers no protocols, router ID or groups. Unticking a configured Layer 3 switch asks first and lists what is removed (protocols, router ID, groups, the addresses of all but the management interface, other VRFs, tunnel interfaces, routes in other VRFs) and the relations that need routing (kept, and reported until changed); one undo step. The diagram, the legend, the object list (**L2** / **L3** beside the name), the details, Find (`l3`, `layer 3 switch`) and the palette say which a switch is. See [docs/FORMAT.md](docs/FORMAT.md#layer-2-and-layer-3-switches). |
-| What a device is | Its *Identity* card says it in order: **Type**, **Kind** (optional, the type's kinds and *Other* with its **Kind name**; some kinds have an icon of their own), **Role** (optional: *core*, *access*, *spine*, *leaf*, *border* … or a role of your own; Auto-arrange puts a known role in its row, Find and the palette find it), **Mode** for a firewall (*Routed* / *Transparent*), an IDS/IPS (*Inline* / *Passive*) and an access point, and for a System its **Purpose** (required, nothing preselected: host, Layer 2 or Layer 3 forwarder, inline, passive monitor, pass-through, external network) and its **Icon**. Changing the type, the mode, the purpose or a Separation gateway's implementation asks first when something no longer fits, lists it (and what stays but is then reported, such as guests or relations that need routing), and removes it in one undo step; nothing more permissive takes its place and nothing new is chosen. See [docs/FORMAT.md](docs/FORMAT.md#device-types). |
+| What a device is | Its *Identity* card says it in order: **Type**, **Kind** (optional, the type's kinds and *Other* with its **Kind name**; some kinds have an icon of their own), **Role** (optional: *core*, *access*, *spine*, *leaf*, *border* … or a role of your own; Auto-arrange puts a known role in its row, Find and the palette find it), **Mode** for a firewall (*Routed* / *Transparent*), an IDS/IPS (*Inline* / *Passive*) and an access point, and for a System its **Purpose** (required, nothing preselected: host, Layer 2 or Layer 3 forwarder, inline, passive monitor, pass-through, external network) and its **Icon**. Changing the type, the mode, the purpose or a Security gateway's implementation asks first when something no longer fits, lists it (and what stays but is then reported, such as guests or relations that need routing), and removes it in one undo step; nothing more permissive takes its place and nothing new is chosen. See [docs/FORMAT.md](docs/FORMAT.md#device-types). |
 | VPN Gateway | A VPN Gateway has its built-in **VPN gateway** card (it can't be removed): **Operation** (site to site or remote access) and **Technology** (IPsec, WireGuard, OpenVPN), both unset until you choose; then its **Tunnels** (its tunnel interfaces) or its **Listener** and **Client pool**, and its **Protected networks**. What it still needs is an error at the field. It forwards only to and from its VPN. See [VPN Gateway](docs/FORMAT.md#vpn-gateway). |
-| Separation gateway | A Separation gateway's built-in **Domain separation** card: its **Implementation** (no default: filtering bridge, filtering router or protocol break, each explained), its two **domains** (a name of your own — *Red* / *Black* are only suggestions — and their interfaces), the **Permitted directions**, its **transfer profiles** (a protocol break's) and its **rules** in order (each with its id, domains, source, destination, protocol, ports and profile; ↑ checks a rule earlier). Every match is written: an empty field is never "any"; everything not permitted is denied, both ways. Its **Management interfaces** card lists the interfaces that are never forwarded. See [Separation gateway](docs/FORMAT.md#separation-gateway). |
-| Port pairs and management | An inline device (an inline IDS/IPS, an inline System) and a pass-through System have a **Port pairs** card: each pair's two ports, its direction (both ways or one way) and its **Copy to** monitor ports (a TAP). Firewalls, IDS/IPS, Separation gateways and passive monitors have **Management interfaces**. |
+| Security gateway | A Security gateway's built-in **Domain separation** card: its **Implementation** (no default: filtering bridge, filtering router or protocol break, each explained), its two **domains** (a name of your own — *Red* / *Black* are only suggestions — and their interfaces), the **Permitted directions**, its **transfer profiles** (a protocol break's) and its **rules** in order (each with its id, domains, source, destination, protocol, ports and profile; ↑ checks a rule earlier). Every match is written: an empty field is never "any"; everything not permitted is denied, both ways. Its **Management interfaces** card lists the interfaces that are never forwarded. See [Security gateway](docs/FORMAT.md#security-gateway). |
+| Port pairs and management | An inline device (an inline IDS/IPS, an inline System) and a pass-through System have a **Port pairs** card: each pair's two ports, its direction (both ways or one way) and its **Copy to** monitor ports (a TAP). Firewalls, IDS/IPS, Security gateways and passive monitors have **Management interfaces**. |
 | Protocols (routing services) | A Layer 3+ device (router, Layer 3 switch or VM, routed firewall, load balancer, VPN Gateway, a Layer 3 forwarder System) has a **Protocols** card: the routing services it runs, each a small card with its parameters, and **Enable a protocol…** (BGP, OSPF, IS-IS, EIGRP, RIP, LDP, PIM, BFD, VRRP, HSRP, GLBP, CARP, and the protocols the model defines with parameters). Static routes are not a protocol: they are configured in the device's **Static routes** section and are always in effect, whatever protocols the device enables. A protocol is enabled with its parameters empty; the mandatory ones (BGP's local AS number, OSPF's router ID, IS-IS's NET, a VRRP group's number and virtual IP) are errors at their field and in Problems until you fill them in. **Router ID** appears while an enabled protocol uses one: a loopback of the device (offered) or an IPv4 address, shared by the protocols, with **Own router ID for …** per protocol behind a disclosure. **Suggested**: one-click *Enable BGP* (or OSPF …) for a protocol the device's relations use but it doesn't enable. **Disable** on a protocol asks first when it has values and lists what goes with it (its parameters, its groups on interfaces, and the router ID when nothing else uses it); it is one undo step and nothing is kept hidden in the model. An interface of a device that runs VRRP (HSRP …) has **+ VRRP group**, then a card for the group's number, virtual IP and priority. A relation of OSPF, BGP … has a card with its per-end parameters (area, timers, cost …), a field per endpoint device. See [docs/FORMAT.md](docs/FORMAT.md#routing-services-protocols). |
 | Simulation (per device) | Every device has a **Simulation** section after its protocols, collapsed until opened with its disclosure button (*Simulation (16)* on a router: the number of attributes that apply to it). Each field shows the value in effect: the device's own, or *Inherited: 4 h (default — Cisco IOS …)* / *Inherited: 60 s (simulation)*; empty means inherited. A list (listening services, what a firewall also permits, test targets) is one text, e.g. `tcp/443, udp/53`. A value is checked for its range and unit before it is written; only overrides are written, in the device's `simulation:` block, as one undo step; **Reset to inherited** removes one (an emptied block goes). During a simulation this section stays editable (the rest of the form is read-only): a change applies there at once and is logged; Undo takes it back. The ARP and NDP timers live here (one place for them). See [Parameters](#parameters). |
 | Static routes | After a device's interfaces and DNS names, **Static routes** lists its routes as cards, sorted by VRF, prefix and distance (the file keeps its order). **+ Route** adds an empty one; each card edits the **Destination prefix**, a **Blackhole** switch, the **Next-hop address** (with suggestions: the neighbours' addresses in this device's networks), the **Exit interface** (picked from the device's interfaces), **Administrative distance**, **Metric**, **VRF**, **Name**, **Description** and attributes, and has **Duplicate** (⧉, e.g. to make a floating backup) and **Delete** (×). Each is one undo step. A device whose type has no routing table offers no routes. |
@@ -564,12 +564,75 @@ their names.
   the logical PNG and SVG exports; the legend calls them *DNS name (as
   configured, not looked up)*. The physical view doesn't show them.
 
+### Services and Wi-Fi networks
+
+**The service registry.** Every service a device may run — DHCP, DNS,
+NTP, AAA, a syslog collector, monitoring, a proxy, load balancing, a VPN
+gateway, NAT, Wireless access, a Wireless controller, the hypervisor and
+the container engine, a storage service, an application, inspection and
+domain separation — is described once, in the registry: its parameters,
+who may run it and why not, its badge and what the simulation does with
+it. A device's **Services** card lists the services it runs, each with its
+fields; **Add service…** offers what the device may run and lists the rest
+disabled, each with its reason (*a Layer 2 switch routes nothing: tick
+Supports Layer 3 first*). Adding one writes an empty block and shows what
+it still needs, as errors: nothing is chosen for you; **Remove** says what
+goes (its values, and what stays and is reported — a removed Wireless
+access's connections) and is one undo step. A built-in function (an
+access point's Wireless access, a load balancer's Load balancing, an
+IDS/IPS's Inspection, a VPN Gateway's VPN, a Security gateway's Domain
+separation) has its card without a Remove. A Security gateway runs nothing
+else. Secrets (an AAA shared secret, a Wi-Fi passphrase) are written as
+placeholders such as `"<radius-secret>"`; anything else is a warning.
+
+**Badges.** The diagram writes a device's services in a line under its
+type: at most three and how many more (*DHCP · DNS · NTP +3*); its tooltip
+names them all, and the legend lists the badges in use.
+
+**Wi-Fi networks on VLANs.** An access point (built in) and a router (a
+service) have **Wireless access**: a card per Wi-Fi network with its
+**Network id**, **SSID**, **VLAN** (or **Untagged**: the uplink's
+untagged VLAN), **Radio**, **Security** (Open, WPA2-Personal,
+WPA3-Personal, WPA2-Enterprise, WPA3-Enterprise), **Passphrase** and, on
+a controller-managed access point, **Forwarding** (local or tunneled to
+the controller) and its **Controller**; each card lists its clients. A
+wireless connection at a radio names its network in the Cable group's
+**Wi-Fi network** field (the radio takes several connections). The VLAN is
+never chosen for you, and the uplink must carry it: an error says which
+VLAN no wired port carries. In the physical view the radio's end of each
+connection says *SSID “Guest” · A 20*.
+
+**Analyses.** The path tracer and the simulation put a client in its
+network's VLAN only: its DHCP request reaches the server of that VLAN,
+Guest reaches nothing of Staff unless a routed path allows it, and the
+uplink carries the frames tagged as the port says. The uplink is one
+cable: *Single points of failure* lists it with every client behind it,
+and failing it in the simulation cuts every network at once. A tunneled
+network is reported as not simulated. The other services take part too:
+NTP clients ask their upstreams, an AAA server's clients send RADIUS
+requests, syslog senders log to their collector, monitoring polls its
+targets by SNMP, controller-managed access points keep a CAPWAP channel to
+their controller, a reverse proxy ends a connection and opens its own to
+its upstream, a load balancer's backends are its pool, NAT translates
+(PAT, source NAT, port forwards, noted by the tracer) and an inline IPS
+blocks what its Inspection lists.
+
+**Find** and the command palette find a Wi-Fi network by its SSID or VLAN
+(*Guest*, *vlan 20*), and a device by a service (*radius*, *NTP*).
+
+See [docs/FORMAT.md](docs/FORMAT.md#services-the-registry-and-its-catalog),
+[Wireless access](docs/FORMAT.md#wireless-access-wi-fi-networks-on-vlans)
+and the examples `multi-ssid-ap.yaml`, `home-network.yaml`,
+`campus-wireless.yaml` and `dmz-services.yaml`.
+
 ### DHCP and DNS servers
 
-**Services card.** A server, VM or container has a **Services** card
-(a container's: **Services (DHCP, DNS)**) with the checkboxes **DHCP
-server** and **DNS server**, both off by default (a server's and a VM's
-also offer the Hypervisor and the Container engine: see [Hypervisors, VMs
+**Services card.** A router, a Layer 3 switch, a routed firewall, a
+server, a VM or a container may run a **DHCP server**; a router, a routed
+firewall, a server, a VM or a container a **DNS server** (on a router
+usually a forwarder). The **Services** card has a checkbox for each,
+both off by default (a server's and a VM's also offer the Hypervisor and
+the Container engine: see [Hypervisors, VMs
 and containers](#hypervisors-vms-and-containers)). Ticking one writes the service and shows at once what it
 still needs, as errors (nothing is chosen for you); unticking removes it in
 one undo step.
@@ -599,8 +662,8 @@ one undo step.
   `dhcp-no-server` (*A DHCP client that reaches no DHCP server*) and
   `dhcp-relay-no-server` (*A DHCP relay to an address that is no DHCP
   server of the model*) report the rest.
-* **Diagram:** a server carries a **DHCP** and/or **DNS** badge on its
-  icon (explained in the legend); a DHCP client's interface says *DHCP
+* **Diagram:** the device's badge line says **DHCP** and/or **DNS**
+  (explained in the legend); a DHCP client's interface says *DHCP
   client* and keeps a line for its lease, filled in during a simulation:
   *10.10.10.100/24 (DHCP lease)*.
 
@@ -697,7 +760,7 @@ and the example [`virtualization.yaml`](examples/virtualization.yaml).
 **Static routes.** A device that forwards (a router, a switch, a routed
 firewall, a load balancer, a VPN Gateway, a filtering router, a Layer 3
 forwarder System) or a host (server, VM, container, storage, endpoint, a
-host System, a transparent firewall's or a Separation gateway's own
+host System, a transparent firewall's or a Security gateway's own
 address) can have static routes; an access point, an IDS/IPS, a cloud, a
 pass-through System and a device without a type can't. A route has a destination prefix
 (IPv4 or IPv6, `0.0.0.0/0` / `::/0` for a default route) and a next hop: an
@@ -978,7 +1041,7 @@ device (`hq-log`), an interface (`muc-rtr:lan0`) or an IP address; a
 selected device or interface fills the first empty field. **VRF** chooses the
 source's table (by default the source interface's VRF, else the default
 table); **Service** (optional: `tcp/443`, `udp/53`, `icmp`) is what is
-sent, which a Separation gateway's policy decides by — without it, the
+sent, which a Security gateway's policy decides by — without it, the
 trace passes a gateway where some rule permits traffic between the two
 addresses and says which; **Trace the return path too** traces the way
 back as well. **Trace** (or Enter) computes the path; **⇅ Swap** exchanges
@@ -1318,7 +1381,7 @@ switches; the MAC aging time, the MAC table size, the spanning-tree mode,
 timers and bridge priority (per VLAN for MSTP and PVST) for switches; the HA failover detection time
 of a firewall; fail open / closed and the inspection latency of an IDS /
 IPS; the IKE and Child SA lifetimes, rekey margin and DPD of a VPN Gateway or
-IPsec endpoint; the transfer delay and loss of a Separation gateway; the service response time of a server, VM, container or
+IPsec endpoint; the transfer delay and loss of a Security gateway; the service response time of a server, VM, container or
 storage; the VM restart time of a Hypervisor service, the teaming
 failover detection of a virtual switch, the container start time of a
 Container engine and a container's restart policy; the SNMP polling
@@ -1758,7 +1821,7 @@ receiver, pulse, trail).
   failure threshold; a client's connection to them goes on to a healthy
   member by their algorithm (round robin, least connections, source
   hash), the same member again within the persistence timeout. A
-  **Separation gateway** transfers only what its policy permits: a
+  **Security gateway** transfers only what its policy permits: a
   filtering bridge or router passes a permitted transfer and its replies
   and says why it denies the rest (*fbr: Lab → Office is not a permitted
   direction*); a protocol break ends the request at its listening port
@@ -2336,7 +2399,7 @@ YAML that is read and written is in
 | [`examples/datacenter-evpn.yaml`](examples/datacenter-evpn.yaml) | Spine/leaf fabric in racks: eBGP underlay, EVPN sessions between loopbacks, a multipoint VXLAN VNI, MLAG, LACP, and a user-defined `srv6` tunnel. The tenant network's members are the leaves' VLAN interfaces, which carry the VRF; each leaf also has a VTEP, a virtual interface that is neither a bond nor a VLAN interface. |
 | [`examples/minimal.yaml`](examples/minimal.yaml) | Two routers, one cable, a tunnel interface on each router sourced from its port, OSPF inside GRE. |
 | [`examples/metro-ring.yaml`](examples/metro-ring.yaml) | **Representative architecture for Auto-arrange.** Six PE routers in three POPs on a fibre ring, IPv4/IPv6 loopbacks (iBGP and RSVP-TE endpoints), an OSPF area, LDP per link, a dense 15-session iBGP mesh, TE tunnels, an L3VPN overlay, customer eBGP, a disconnected out-of-band network and an unconnected spare router. No stored positions. |
-| [`examples/device-types.yaml`](examples/device-types.yaml) | **Every device type.** A campus with internet edge, a remote-access VPN Gateway, an NGFW firewall, an inline IPS (port pair), a DMZ with load balancer and a web proxy server, a NAS behind a Separation gateway (a filtering bridge), a System of purpose host, core/access switching by role with Wi-Fi and endpoints (the access switch has six free ports, drawn as chips), and a server room with a hypervisor, a VM, a container, NAS and a monitoring appliance. The edge router runs BGP (router ID from its loopback); the firewall runs only static routing. |
+| [`examples/device-types.yaml`](examples/device-types.yaml) | **Every device type.** A campus with internet edge, a remote-access VPN Gateway, an NGFW firewall, an inline IPS (port pair), a DMZ with load balancer and a web proxy server, a NAS behind a Security gateway (a filtering bridge), a System of purpose host, core/access switching by role with Wi-Fi and endpoints (the access switch has six free ports, drawn as chips), and a server room with a hypervisor, a VM, a container, NAS and a monitoring appliance. The edge router runs BGP (router ID from its loopback); the firewall runs only static routing. |
 | [`examples/long-labels.yaml`](examples/long-labels.yaml) | **Sizing test case.** Device labels with line breaks, a very long label, a long host name without spaces, a long group title, three parallel cables, a long cable label, one segment as three networks (IPv4 and two IPv6 prefixes, one VLAN), and six labelled relations between the same two devices: GRE and OSPF bound to the tunnel interfaces (`Tunnel10`, `tunnel.10`, OSPF inside GRE), IPsec, eBGP, BFD and syslog bound to the devices. Nothing is shortened. |
 | [`examples/addressing.yaml`](examples/addressing.yaml) | One router with many interfaces: every kind of address and identifier written in the diagram. Networks in several VRFs, a supernet with nested networks, VIPs and addresses in no network for the **Addressing overview**. |
 | [`examples/port-bindings.yaml`](examples/port-bindings.yaml) | **Ports test case.** Several tunnel interfaces and subinterfaces per router, three relations on one tunnel interface (IPsec carrying OSPF, and BFD), tunnels sourced from an interface and from an address (`src:` end labels), relations bound to devices as a whole (device-level ports), a LAG (`Po1` over two cables, bracketed in the physical view) and a three-device VRRP group. |
@@ -2350,11 +2413,15 @@ YAML that is read and written is in
 | [`examples/wan-vpn.yaml`](examples/wan-vpn.yaml) | **WAN with a VPN Gateway.** HQ and two branches: one over a provider's MPLS service (a Cloud, one opaque Layer 3 hop; the CEs route statically), one over site-to-site IPsec between two VPN Gateways with their built-in VPN gateway function (tunnel, protected networks). HQ's default route points at the VPN Gateway, which refuses the PC's ping to the internet: it forwards only to and from its VPN. |
 | [`examples/hybrid-cloud.yaml`](examples/hybrid-cloud.yaml) | **Hybrid cloud.** A data centre joined over a private interconnect (a Cloud) to an AWS region with a VPC and an Azure region with a VNet (cloud groups with their provider), each with a Cloud gateway router and cloud instances: VMs and a container without a host of their own. |
 | [`examples/ot-network.yaml`](examples/ot-network.yaml) | **OT cell.** A PLC and an HMI (endpoint kinds) behind a protocol gateway (a System, Layer 3 forwarder); a network TAP (a System, pass-through, with a port pair and a copy port) feeding a passive IDS that receives copies and forwards nothing. |
-| [`examples/cross-domain.yaml`](examples/cross-domain.yaml) | **Cross-domain boundary.** Red and Black domains joined by a Separation gateway that breaks the protocol: one permitted web transfer in two correlated legs (trace with the service `tcp/443`), one denied transfer (SSH), and a management network that reaches the gateway only. |
+| [`examples/cross-domain.yaml`](examples/cross-domain.yaml) | **Cross-domain boundary.** Red and Black domains joined by a Security gateway that breaks the protocol: one permitted web transfer in two correlated legs (trace with the service `tcp/443`), one denied transfer (SSH), and a management network that reaches the gateway only. |
 | [`examples/separation-filtering.yaml`](examples/separation-filtering.yaml) | **Restricted separation by packet filtering.** A filtering bridge (Office / Lab on one network: HTTPS permitted, SSH denied, no reverse initiation) and a filtering router (LOW → HIGH syslog permitted, SSH denied, HIGH may start nothing to LOW), each with an isolated management interface. |
+| [`examples/multi-ssid-ap.yaml`](examples/multi-ssid-ap.yaml) | **Several Wi-Fi networks over one uplink.** An access point with Staff, Guest and IoT on VLANs 10, 20 and 30, one trunk uplink to an access switch, a Layer 3 core with DHCP for Staff and IoT, a guest router with its own DHCP. Each client gets its lease in its own VLAN; Guest reaches nothing of Staff; the uplink is a single point of failure for all three. |
+| [`examples/home-network.yaml`](examples/home-network.yaml) | **A home network.** A router with Wireless access (Home, Guest, IoT on VLANs), DHCP, a forwarding DNS and PAT to the provider; a mesh access point on a wireless backhaul trunk; clients on both. |
+| [`examples/campus-wireless.yaml`](examples/campus-wireless.yaml) | **A three-tier campus with controller-managed Wi-Fi.** Core, distribution and access switches by role; two controller-managed access points (Staff on VLAN 10 with WPA3-Enterprise, Guest on VLAN 20) and their controller, a System of purpose Host with the Wireless controller service (CAPWAP); a services server with DHCP (through the core's relays), DNS, NTP, AAA (RADIUS, a placeholder secret), syslog and monitoring. |
+| [`examples/dmz-services.yaml`](examples/dmz-services.yaml) | **DMZ services and a VPN on a firewall.** A firewall with a site-to-site IPsec VPN service (to a branch router with the same service) and NAT (PAT, a port forward to a reverse proxy); an inline IPS that blocks Telnet; a reverse proxy in front of a load balancer with two application servers (its own backends and algorithm); a NAS serving NFS to the branch over the VPN. |
 | [`examples/broken/errors-demo.yaml`](examples/broken/errors-demo.yaml) | Intentionally invalid, to show error reporting (among them an `asn` on a device, a BGP without its AS number, a misplaced OSPF parameter, a router ID that names no loopback, and routing protocols on a server). It opens as a draft you can fix. |
 
-The thirteen valid files are the examples of the **File** menu.
+The twenty-four valid files are the examples of the **File** menu.
 
 Three more files, in `test/fixtures/`, are generated test data. They are not
 examples and the application doesn't offer them: `editor-new-network.yaml`
@@ -2481,7 +2548,8 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/scr
 | **Objects title** | `test/objects-title.test.mjs` (2 tests), through the DevTools protocol for the browser part | The left panel is a complementary region named *Objects* by its level-2 heading, with no subtitle and **no description** (read from the browser's accessibility tree); the right panel is the region *Inspector*. The title is one compact row above the list at 1440, 1024 and 800 px. |
 | Offline / artifact | `test/build.test.mjs` (8 tests) | One inline script; no external references or remote URLs (the only exception: the two `apache.org` addresses quoted in the embedded license text, shown as plain text, never as a link); the manual's screenshots embedded as `data:` images, under 704 KiB together; the page under 3.5 MiB; no `fetch`, XHR, WebSocket, `eval`, `innerHTML` …; strict CSP before the script; compiled JavaScript only; every module comes from `src/`; one version in `package.json`, `package-lock.json`, the HTML (meta and UI) and `CHANGELOG.md` |
 | Device types | `test/device-types.test.mjs` (6 tests) | Exactly the 15 specified types with their display names; each is accepted, has its own icon and a default tier; no type is allowed (generic icon); any other value (old names such as `l3switch`, `hypervisor`, `host`, `leaf`, `spine`, wrong case, hostile text) is an error at the type line with a suggestion or the list of types; display names in subtitles, details and the legend; the examples use only these types |
-| **Device model** | `test/device-model.test.mjs` (21 tests), `test/device-model-doc.test.mjs` (2 tests), and the browser self-test | **Capabilities** of every type, mode, Supports Layer 3, System purpose and separation implementation; roles' rows and the deterministic fallback; **validation** of kinds (Other with its name), roles, modes, purposes and icons, port pairs, the removed types; the VPN Gateway's conditional configuration (site to site, remote access, an unsupported technology) and the Separation gateway's (no default implementation, exactly two domains, directions, every match written, profiles only in a protocol break, an unsupported transfer); **policy semantics** (rule order, default deny, an empty policy, management interfaces, no reverse initiation); the **tracer and the simulation** through a filtering bridge, a filtering router and a protocol break (both legs, over TCP and UDP), a VPN Gateway's tunnels only, port pairs (one way, a TAP's copy, a passive monitor), a Cloud as one Layer 3 hop; **single points of failure** by what a device joins; cloud groups and cloud instances; port role labels and the legend; the editor's **change plan** (what goes, one undo step, nothing chosen); the examples converted by behaviour; the capability matrix in docs/FORMAT.md equals the resolver's. **In the browser, both themes:** the Separation gateway's Edit cards, its ports' domain labels, no overlaps; Trace path with a service and its Leg 2; a type change's confirmation (Cancel, confirm, one undo); a System's purpose. |
+| **Device model** | `test/device-model.test.mjs` (21 tests), `test/device-model-doc.test.mjs` (2 tests), and the browser self-test | **Capabilities** of every type, mode, Supports Layer 3, System purpose and separation implementation; roles' rows and the deterministic fallback; **validation** of kinds (Other with its name), roles, modes, purposes and icons, port pairs, the removed types; the VPN Gateway's conditional configuration (site to site, remote access, an unsupported technology) and the Security gateway's (no default implementation, exactly two domains, directions, every match written, profiles only in a protocol break, an unsupported transfer); **policy semantics** (rule order, default deny, an empty policy, management interfaces, no reverse initiation); the **tracer and the simulation** through a filtering bridge, a filtering router and a protocol break (both legs, over TCP and UDP), a VPN Gateway's tunnels only, port pairs (one way, a TAP's copy, a passive monitor), a Cloud as one Layer 3 hop; **single points of failure** by what a device joins; cloud groups and cloud instances; port role labels and the legend; the editor's **change plan** (what goes, one undo step, nothing chosen); the examples converted by behaviour; the capability matrix in docs/FORMAT.md equals the resolver's. **In the browser, both themes:** the Security gateway's Edit cards, its ports' domain labels, no overlaps; Trace path with a service and its Leg 2; a type change's confirmation (Cancel, confirm, one undo); a System's purpose. |
+| **Services and Wi-Fi** | `test/services.test.mjs` (13 tests), and the browser self-test | **The registry:** every service with its badge and help, who may run it and the reason when not (a Layer 2 switch, a transparent firewall, a System that is not a host; nothing on a Security gateway but its separation), the built-in functions, the schema's keys equal the registry's, the service matrix in docs/FORMAT.md equals the registry's. **Validation:** required parameters (always or by the others), parameters that don't apply, placeholder secrets, references; Wi-Fi networks (VLAN or untagged, radio, security, passphrase, one SSID per radio, the uplink carries the VLAN, a router's VLAN interfaces), wireless connections (their network, several per radio), the controller and its access points. **Analyses:** several networks over one uplink (each client's lease in its own VLAN, Guest isolated, the shared uplink a single point of failure and its failure in the simulation), a tunneled network reported, NTP, RADIUS, syslog, SNMP and CAPWAP exchanges and the services' listening ports, DNAT, a reverse proxy, a load balancer's own backends and algorithm, an IPS block, a VPN on a firewall and a router, PAT in the simulation and as the tracer's note. **Diagram and editor:** badges (three and a count, the tooltip, the legend), Find by SSID, VLAN and service, removing a service (its change plan, one undo step), adding one (nothing chosen). **In the browser, both themes:** the Services card, Add service… with its disabled entries and their reasons, the Wireless access card, the badge line and its tooltip. |
 | New elements | `test/creation-defaults.test.mjs` (7 tests) | **New** is empty and valid; each new object gets only an ID (no type, kind, prefix, VLAN, protocol or category); missing required values are errors located at the object, optional ones stay unset; choosing a value saves exactly it and clearing removes the key; an empty group kind is not drawn as a site; **Duplicate** keeps all values; every example imports and exports byte-for-byte, with model values taken only from the file |
 | **Derived values and unknown keys** | `test/derive.test.mjs` (19 tests) | **Membership** from addresses: one entry per device with every match; a DHCP interface makes no member; the network prefix is the authority (the interface's own prefix length is ignored); IPv4 and IPv6 boundaries and prefix lengths (`/0`, `/30`, `/31`, `/32`, `/52`, `/128`); no matching across families; overlapping networks (every containing network, same prefix twice warns); invalid and incomplete addresses match nothing. **One prefix per network:** missing, empty, a list (even of one) and invalid prefixes are errors that keep the value in the file. **Interface VLAN:** derived per address; none when no network matches or no VLAN is defined; several addresses give several VLANs; conflicting networks give an explicit ambiguity and a warning. Derived values follow every edit and undo, and are **never written to YAML**. Membership drives highlighting, selection context, search and the layout input. **Keys outside the format** are unknown keys, located at the key; nothing is converted; the file is written back unchanged. Each fact has one key in the schema; `vrf` on interfaces; loopbacks have no physical-link properties. |
 | **Analysis: address math and routing** | `test/analysis.test.mjs` (9 tests) | **Address math** for IPv4 and IPv6: integers, canonical text (RFC 5952), networks of prefixes, sizes (up to `::/0`), ranges, containment and overlap, host counts (network and broadcast address, `/31`, `/32`, IPv6), free ranges and the next free address, `/64` counts, ordering. **Routing:** connected networks per VRF, static routes (a missing distance counts as 1), longest-prefix match, distance, metric, **equal-cost multipath**, blackholes, VRF tables, local addresses; next hops directly connected, **recursive**, through an exit interface, the device's own address, a loop, never through a default route; **interfaces that are down** remove their networks and routes and let a **floating** route take over; results independent of the order of the file; the targets of next-hop lines and the editor's next-hop suggestions. |
@@ -3326,8 +3394,8 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/scr
   have the Hypervisor service), no vMotion (a VM moves only by an HA restart
   in the simulation), no distributed switch spanning hosts (each host's
   switch is its own), no overlay tunnel between container hosts (an overlay
-  is one network). **NAT is modelled for container bridges only:** SNAT to
-  the host's address and DNAT for published ports; the path tracer names the
+  is one network). **NAT is modelled for container bridges and the NAT
+  service only:** SNAT to the host's address and DNAT for published ports; the path tracer names the
   published ports but doesn't check port numbers, and the simulation keeps
   one translation per flow (no port exhaustion, no hairpin NAT). HA restarts
   a VM on the first member (by id) that is on, without admission control
@@ -3498,7 +3566,7 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/scr
   other protocols, by hop count unless a `cost` is written). An adjacency
   forms only where the two have a network in common (a BGP session may also
   run between loopbacks). ACLs, firewall policies, NAT (but for container
-  bridges, see above), policy-based routing, multicast and MPLS label
+  bridges and the NAT service), policy-based routing, multicast and MPLS label
   switching are out of scope: the model
   doesn't describe them. Between two hops the cable way is the shortest one
   through layer-2 devices (as a spanning tree might leave it), not a
@@ -3613,20 +3681,33 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/scr
   therefore listed.
 * **Device types are a fixed list** of 15 (see [docs/FORMAT.md](docs/FORMAT.md));
   a kind (with *Other* and a name of your own) and a role say more.
-* **A Separation gateway is a model of a boundary**, not of a product: it
+* **A Security gateway is a model of a boundary**, not of a product: it
   shows how a filtering bridge, a filtering router or a protocol break
   behaves with an explicit policy, and gives no assurance of a real
   device's separation. A protocol break models HTTPS requests, DNS queries
   and syslog messages only; anything else is reported as a limitation.
-  Firewall ACLs are not part of the path tracer (a Separation gateway's
+  Firewall ACLs are not part of the path tracer (a Security gateway's
   policy, a VPN Gateway's tunnels and port pairs are).
 * **A Cloud is opaque:** one Layer 3 hop with its latency and loss; its
   internals, and a public cloud's hosts behind its cloud instances, are not
   modelled.
-* **Application proxies, wireless networks and the other services of the
-  service registry** are not part of this version's device model: a proxy
-  is drawn as the server, VM or container it runs on, and an access
-  point bridges its wireless side as one network.
+* **Services are modelled by their exchanges, not their software.** NTP,
+  RADIUS / TACACS+, syslog, SNMP and CAPWAP are simulated as their
+  request / answer messages (no clock discipline, no EAP, no MIB, no
+  CAPWAP join or image download); a storage service and an application
+  listen on their ports and answer. A forward proxy without a parent is
+  reported as a limitation (its destinations are outside the model); a
+  reverse proxy and a load balancer relay one connection each way. NAT is
+  one translation per flow (PAT and source NAT inside → outside, port
+  forwards outside → in; no port exhaustion, no hairpin NAT). An IDS/IPS's
+  Inspection matches protocols and ports only. Router ACLs are not
+  modelled.
+* **Wi-Fi without radio.** There is no radio-frequency model: no channels,
+  coverage, interference, rates or roaming; a client is associated with
+  the network its connection names. A network tunneled to its controller
+  is not simulated (the simulation and the tracer say so); a controller's
+  own forwarding of client traffic is not modelled. WPA security is a
+  label: no 4-way handshake or 802.1X exchange is simulated.
 * **Associations of logical interfaces are limited to a few kinds:**
   member ports, a VLAN (with its derived bridge ports), a subinterface's
   port (by its name, `<port>.<n>`) and a tunnel's source and destination.

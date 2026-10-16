@@ -24,6 +24,7 @@ import { Engine, Frame, IcmpKind, Protocols, fmtSec, hashIndex } from './engine'
 import { L3Iface, SimDevice, SimAddr, portKey } from './net';
 import { ParamChange, Resolved, formatValue, ifaceRef, relRef, sourceText } from './params';
 import { L4, Msg, Pkt, SessionStatus } from './types';
+import { serviceRelations } from './service-relations';
 
 const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 
@@ -231,7 +232,8 @@ export class ProtocolSim implements Protocols {
 
   /** Build the sessions of every relation (each pair, each side). */
   build(): void {
-    for (const r of this.m.relations.slice().sort((x, y) => cmp(x.id, y.id))) {
+    // the model's relations, then the exchanges its services imply (service-relations.ts: not drawn, not in the model)
+    for (const r of this.m.relations.slice().sort((x, y) => cmp(x.id, y.id)).concat(serviceRelations(this.m))) {
       const profile = this.profileOf(r);
       if (!this.behaviours.has(profile.behaviour)) continue;
       const devs = relationDevices(r);

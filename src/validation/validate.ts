@@ -18,6 +18,7 @@ import { readVlanRanges, vlanTextOf } from './vlans';
 import { VirtNodes, checkVirtual, isGuestType, readGuestFields, readVirtIface, readVirtServices } from './virtual';
 import { Ctx, DEFAULT_MODEL_LIMITS, ID_RE, IFACE_RE, Issue, ModelLimits, Reader, TooManyErrors, get, isNull, kindOf, scalarText, suggest } from './reader';
 import { isVm } from '../model/virtual';
+import { readServiceBlock, checkServices, ServiceNodes } from './services';
 
 export { DEFAULT_MODEL_LIMITS, ID_RE, IFACE_RE, scalarText, suggest };
 export type { Issue, ModelLimits };
@@ -259,6 +260,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
   const simBlocks: Array<{ kind: 'iface' | 'network' | 'relation'; ref: string; block: SimBlock }> = [];
   // the servers' DHCP and DNS services, checked against the whole model at the end
   const svcNodes: NetServiceNodes[] = [];
+  const svcBlocks: ServiceNodes[] = [];
   // where each device's virtualization is written (its host, its Hypervisor and Container engine services)
   const virtNodes = new Map<string, VirtNodes>();
   // where each device's kind, purpose, port pairs and appliance functions are written
@@ -335,6 +337,8 @@ function build(root: YNode | null, c: Ctx): Model | null {
     const mnodes: DeviceModelNodes = { device: id, map: m, path: dpath };
     modelNodes.push({ dev, nodes: mnodes });
     readDeviceModel(r, c, m, dpath, dev, mnodes);
+    // its services by the registry (which it may run, its built-in functions, the ones without a reader of their own), then the appliance functions
+    svcBlocks.push(readServiceBlock(r, c, get(m, 'services'), dpath + '.services', dev, m));
     readApplianceFunctions(r, c, get(m, 'services'), dpath + '.services', dev, mnodes);
     // its simulation attributes: those of what it is (its type, layer, mode, purpose)
     dev.simulation = readDeviceSimulation(r, c, get(m, 'simulation'), dpath + '.simulation', id, dev);
@@ -761,6 +765,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
   /** "<link id>.a" / ".b" -> the node of that end */
   const endNodes = new Map<string, YNode>();
   const ifaceLink = new Map<string, string>();
+  const radioLinks = new Map<string, string[]>();
   capped(r.list(get(top, 'links'), 'links'), L.maxLinks, 'links', 'links').forEach((n, i) => {
     const path = `links[${i}]`;
     const m = r.map(n, path);
@@ -797,11 +802,15 @@ function build(root: YNode | null, c: Ctx): Model | null {
           return null;
         }
         const used = ifaceLink.get(key);
-        if (used !== undefined) {
-          c.error(en as YNode, `${lpath}.${side}`, `interface "${key}" is already cabled by link "${used}" (one cable per port)`);
+        // a radio of a Wireless access takes every wireless connection associated on it (each names its Wi-Fi network)
+        const owner = deviceMap.get(ep.device);
+        const radio = !!owner && !!owner.wireless && owner.wireless.networks.some((x) => x.radio === ep.iface) && (r.field(m, 'medium', lpath, 40) || '').toLowerCase() === 'wireless';
+        if (used !== undefined && !(radio && (radioLinks.get(key) || []).length)) {
+          c.error(en as YNode, `${lpath}.${side}`, `interface "${key}" is already cabled by link "${used}" (one cable per port${radio ? '' : '; a radio of a Wireless access takes several wireless connections'})`);
           return null;
         }
-        ifaceLink.set(key, id);
+        if (used === undefined) ifaceLink.set(key, id);
+        if (radio) radioLinks.set(key, (radioLinks.get(key) || []).concat([id]));
       }
       const end: LinkEnd = { device: ep.device, iface: ep.iface };
       if (ep.tag.speed !== undefined) end.speed = ep.tag.speed;
@@ -826,6 +835,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
       cable: r.field(m, 'cable', lpath, L.maxLabel),
       direction: directionField(r, c, m, lpath, 'from end a to end b'),
       simulation: readLinkSimulation(r, c, get(m, 'simulation'), lpath + '.simulation'),
+      wirelessNetwork: r.field(m, 'wireless_network', lpath, 200),
       description: r.field(m, 'description', lpath, L.maxDescription),
       attrs: r.attrs(get(m, 'attrs'), lpath + '.attrs'),
       line: m.line,
@@ -1149,6 +1159,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
     networks: networkMap,
     relations: relationMap,
     ifaceLink,
+    radioLinks,
     routes,
   };
   const model: Model = {
@@ -1172,6 +1183,8 @@ function build(root: YNode | null, c: Ctx): Model | null {
   checkObjectBlocks(c, model, simBlocks);
   // the servers' scopes and zones with the whole model (ranges, gateways, overlaps, records)
   checkNetServices(c, model, svcNodes);
+  // the services' references, the Wi-Fi networks against the uplinks, the wireless connections, the controllers
+  checkServices(c, model, svcBlocks, linkNodes);
   // Derived VLANs are never chosen for the user: conflicting networks are reported.
   derive(model).addresses.forEach((assocs, key) => {
     assocs.forEach((a, j) => {
@@ -1569,8 +1582,8 @@ function deviceType(r: Reader, m: YMap, dpath: string, c: Ctx): string {
   // a hypervisor, a gateway or a proxy is no type of its own: say what models it
   const hints: { [t: string]: string } = {
     hypervisor: ' (a hypervisor is a server with the Hypervisor service: type: server, and services: hypervisor)',
-    gateway: ' (a VPN endpoint is a vpn_gateway, a NAT or cloud gateway a router (kind: cloud_gateway), a protocol gateway a system with purpose: l3_forwarder, a boundary between security domains a separation_gateway)',
-    proxy: ' (an application proxy is a server, vm or container; a boundary between security domains is a separation_gateway)',
+    gateway: ' (a VPN endpoint is a vpn_gateway, a NAT or cloud gateway a router (kind: cloud_gateway), a protocol gateway a system with purpose: l3_forwarder, a boundary between security domains a security_gateway)',
+    proxy: ' (an application proxy is a server, vm or container; a boundary between security domains is a security_gateway)',
   };
   const why = hints[t.toLowerCase()] || suggest(t, DEVICE_TYPE_IDS, 20);
   c.error(get(m, 'type') as YNode, dpath + '.type', `unknown device type "${t}"${why}`);

@@ -15,7 +15,7 @@ import { parseTraceEnd } from '../trace';
 import { encapStack } from '../trace';
 import { fmtSec } from './engine';
 import { isMulticastIp, multicastMac, virtualMac } from './mac';
-import { L3Iface, carries, otherEnd, portKey } from './net';
+import { L3Iface, carries, otherEnd, portKey, linkPort } from './net';
 import { ifaceRef, relRef } from './params';
 import { Behaviour, ProtocolSim, Sess } from './protocols';
 import { Msg, Pkt, SessionStatus } from './types';
@@ -658,8 +658,8 @@ export function installL2Adverts(P: ProtocolSim): void {
     const ports: Port[] = [];
     for (const l of P.m.links) {
       if (devs.indexOf(l.a.device) < 0 || devs.indexOf(l.b.device) < 0 || l.a.device === l.b.device) continue;
-      ports.push({ dev: l.a.device, port: l.a.iface || '@' + l.id, peer: l.b.device, peerPort: l.b.iface || '@' + l.id, heard: -1, known: false });
-      ports.push({ dev: l.b.device, port: l.b.iface || '@' + l.id, peer: l.a.device, peerPort: l.a.iface || '@' + l.id, heard: -1, known: false });
+      ports.push({ dev: l.a.device, port: linkPort(P.m, l, l.a), peer: l.b.device, peerPort: linkPort(P.m, l, l.b), heard: -1, known: false });
+      ports.push({ dev: l.b.device, port: linkPort(P.m, l, l.b), peer: l.a.device, peerPort: linkPort(P.m, l, l.a), heard: -1, known: false });
     }
     if (!ports.length) continue;
     // STP's hello time is each switch's own (its simulation attribute); LLDP's and CDP's their profile's
@@ -852,7 +852,7 @@ export function installCustomL2(P: ProtocolSim): void {
         if (back && l.direction === 'unidirectional') continue;
         const from = fwd ? l.a : l.b;
         const to = fwd ? l.b : l.a;
-        feeds.push({ rel: r, protocol: prof.id, label: prof.label, from: a, port: from.iface || '@' + l.id, to: b, toPort: to.iface || '@' + l.id, sent: 0, got: 0 });
+        feeds.push({ rel: r, protocol: prof.id, label: prof.label, from: a, port: linkPort(P.m, l, from), to: b, toPort: linkPort(P.m, l, to), sent: 0, got: 0 });
         break;
       }
     }

@@ -661,6 +661,20 @@ export class ModelDoc {
         'container_engine/networks/#': 'containerNetwork',
         vpn: 'vpn',
         separation: 'separation',
+        wireless: 'wireless',
+        'wireless/networks/#': 'wirelessNetwork',
+        ntp: 'ntp',
+        aaa: 'aaa',
+        syslog: 'syslog',
+        monitoring: 'monitoring',
+        proxy: 'proxy',
+        load_balancing: 'load_balancing',
+        nat: 'nat',
+        'nat/rules/#': 'natRule',
+        wireless_controller: 'wireless_controller',
+        storage: 'storage',
+        application: 'application',
+        inspection: 'inspection',
         'separation/domains/#': 'sepDomain',
         'separation/directions/#': 'sepDirection',
         'separation/rules/#': 'sepRule',
@@ -1322,9 +1336,9 @@ export class ModelDoc {
       if (!layer3Option(next.type)) gone(dp.concat('layer3'), 'Supports Layer 3');
     }
     if (key === 'purpose' && this.text(dp.concat('icon')) && !purposeDef(value)?.icons.some((x) => x.id === this.text(dp.concat('icon')))) gone(dp.concat('icon'), `icon: ${shown(dp.concat('icon'))} (not an icon of this purpose)`);
-    // the built-in functions: a VPN Gateway's VPN, a Separation gateway's policy
+    // the built-in functions: a VPN Gateway's VPN, a Security gateway's policy
     if (!c.vpnOnlyTransit) gone(dp.concat('services', 'vpn'), 'its VPN gateway configuration (services: vpn)');
-    if (!c.separationGateway) gone(dp.concat('services', 'separation'), 'its Domain separation policy (services: separation)');
+    if (!c.securityGateway) gone(dp.concat('services', 'separation'), 'its Domain separation policy (services: separation)');
     else if (key === 'implementation') {
       // a protocol break's transfer profiles mean nothing to a filtering bridge or router (the rules stay: they permit no more than before)
       if (value !== 'protocol_break') {
@@ -1393,7 +1407,7 @@ export class ModelDoc {
     });
   }
 
-  /** Add an empty block (a built-in function's configuration: a VPN Gateway's VPN, a Separation gateway's policy); its required fields are reported until filled in. One undo step. */
+  /** Add an empty block (a built-in function's configuration: a VPN Gateway's VPN, a Security gateway's policy); its required fields are reported until filled in. One undo step. */
   addBlock(path: Path, what: string): void {
     this.change('Add ' + what, () => {
       if (path.length > 1) this.ensureMap(path.slice(0, -1), this.orderFor(path.slice(0, -2)));
@@ -1401,7 +1415,45 @@ export class ModelDoc {
     });
   }
 
-  /** A Separation gateway's permitted direction from one domain to the other, on or off (`directions:`); one undo step. */
+  /**
+   * What removing a service of a device takes with it, as lines for the
+   * confirmation: its values (and, for Wireless access, the connections
+   * that name its networks: they stay and are then reported).
+   */
+  appServiceRemoval(devIndex: number, id: string): { values: string[]; kept: string[] } {
+    const sp: Path = ['devices', devIndex, 'services', id];
+    const n = this.get(sp);
+    const values: string[] = [];
+    if (n && n.kind === 'map') n.entries.forEach((e, k) => values.push(`${k}: ${flowText(e.value) || scalarText(e.value) || '…'}`));
+    const kept: string[] = [];
+    const model = this.result.model;
+    const dev = this.text(['devices', devIndex, 'id']);
+    if (id === 'wireless' && model && dev) {
+      const d = model.index.devices.get(dev);
+      const nets = d && d.wireless ? d.wireless.networks.map((x) => x.id) : [];
+      for (const l of model.links) if (l.wirelessNetwork !== undefined && nets.indexOf(l.wirelessNetwork) >= 0 && (l.a.device === dev || l.b.device === dev)) kept.push(`wireless connection ${l.id} (network ${l.wirelessNetwork})`);
+    }
+    return { values, kept };
+  }
+
+  /** Remove a service of a device (and an empty services block); one undo step. */
+  removeService(devIndex: number, id: string, label: string): void {
+    const dp: Path = ['devices', devIndex];
+    this.change(`Remove ${label}`, () => {
+      this.removeAt(dp.concat('services', id));
+      const b = this.get(dp.concat('services'));
+      if (b && b.kind === 'map' && b.entries.size === 0) this.removeAt(dp.concat('services'));
+    });
+  }
+
+  /** The wireless connections that name a Wi-Fi network of a device ("link id"), in file order. */
+  networkClients(device: string, network: string): string[] {
+    const model = this.result.model;
+    if (!model) return [];
+    return model.links.filter((l) => l.wirelessNetwork === network && (l.a.device === device || l.b.device === device)).map((l) => l.id);
+  }
+
+  /** A Security gateway's permitted direction from one domain to the other, on or off (`directions:`); one undo step. */
   setSepDirection(sepPath: Path, from: string, to: string, on: boolean): void {
     const lp = sepPath.concat('directions');
     const cur = this.get(lp);

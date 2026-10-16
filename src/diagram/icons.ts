@@ -60,8 +60,8 @@ const GLYPHS: { [name: string]: Array<[string, { [k: string]: string | number }]
     ['rect', { x: 6, y: 11, width: 12, height: 9, rx: 1.5 }],
     ['path', { d: 'M8.5 11V8a3.5 3.5 0 0 1 7 0v3M12 14.5v2M1.5 15.5h4.5M18 15.5h4.5' }],
   ],
-  // a Separation gateway: two domains on either side of a boundary (a double wall); transfers pass the boundary one way
-  separation_gateway: [
+  // a Security gateway: two domains on either side of a boundary (a double wall); transfers pass the boundary one way
+  security_gateway: [
     ['rect', { x: 1.5, y: 6, width: 6, height: 12, rx: 1 }],
     ['rect', { x: 16.5, y: 6, width: 6, height: 12, rx: 1 }],
     ['path', { d: 'M10.5 2.5v19M13.5 2.5v19M7.5 12h9M14.5 10l2 2-2 2' }],

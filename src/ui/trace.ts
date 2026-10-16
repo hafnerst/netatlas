@@ -142,7 +142,7 @@ export function traceWindowBody(doc: Document, model: Model, form: TraceForm, ru
   vrf.value = form.vrf;
   vrf.addEventListener('change', () => act.input('vrf', vrf.value));
   grid.appendChild(el(doc, 'div', { class: 'tf-row' }, [el(doc, 'label', { for: 'trace-vrf' }, ['VRF']), vrf]));
-  // what is sent: a Separation gateway's policy decides by it (optional)
+  // what is sent: a Security gateway's policy decides by it (optional)
   const svc = el(doc, 'input', { id: 'trace-service', type: 'text', autocomplete: 'off', spellcheck: 'false', placeholder: 'optional: tcp/443, udp/53 or icmp', 'aria-describedby': 'trace-service-help', 'data-t': 'trace', 'data-p': 'service', 'data-k': '' }) as HTMLInputElement;
   svc.value = form.service;
   if (formError && formError.indexOf('Service') === 0) {
@@ -151,7 +151,7 @@ export function traceWindowBody(doc: Document, model: Model, form: TraceForm, ru
   }
   svc.addEventListener('input', () => act.input('service', svc.value));
   grid.appendChild(el(doc, 'div', { class: 'tf-row' }, [el(doc, 'label', { for: 'trace-service' }, ['Service']), svc]));
-  grid.appendChild(el(doc, 'p', { class: 'help tf-help', id: 'trace-service-help' }, ['A Separation gateway decides by it; without one, a trace shows what its rules would permit.']));
+  grid.appendChild(el(doc, 'p', { class: 'help tf-help', id: 'trace-service-help' }, ['A Security gateway decides by it; without one, a trace shows what its rules would permit.']));
   f.appendChild(grid);
   const back = el(doc, 'input', { type: 'checkbox', id: 'trace-back', 'data-t': 'trace', 'data-p': 'back', 'data-k': '' }) as HTMLInputElement;
   back.checked = form.back;
@@ -234,7 +234,7 @@ export function traceWindowBody(doc: Document, model: Model, form: TraceForm, ru
       ' where it stops.',
     ]),
   );
-  res.appendChild(el(doc, 'p', { class: 'muted small' }, ['A model-based approximation, not a simulation of the protocols: a Separation gateway’s policy, a VPN Gateway’s tunnels and paired ports are considered, firewall ACLs are not, NAT only for container bridges. See Limitations in the README.']));
+  res.appendChild(el(doc, 'p', { class: 'muted small' }, ['A model-based approximation, not a simulation of the protocols: a Security gateway’s policy, a VPN Gateway’s tunnels and paired ports are considered, firewall ACLs are not, NAT only for container bridges. See Limitations in the README.']));
   box.appendChild(res);
   return box;
 }

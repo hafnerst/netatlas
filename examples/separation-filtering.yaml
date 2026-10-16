@@ -1,7 +1,7 @@
 # netatlas example: restricted separation by packet filtering, both ways it
 # can be built.
 #
-# fbr is a Separation gateway that is a filtering bridge: Office and Lab
+# fbr is a Security gateway that is a filtering bridge: Office and Lab
 # share one network (10.30.0.0/24), and fbr passes frames between them
 # unchanged, but only what its policy permits. Office may start HTTPS to the
 # lab server (rule office-web); its replies come back. The lab workstation
@@ -22,7 +22,7 @@
 netatlas: 1
 title: Separation by packet filtering (bridge and router)
 description: |
-  Two Separation gateways with explicit policies: a filtering bridge between
+  Two Security gateways with explicit policies: a filtering bridge between
   two domains on one network, a filtering router between two networks;
   permitted and denied transfers, no reverse initiation.
 
@@ -55,7 +55,7 @@ devices:
       - {id: eth0, ip: 10.30.0.10/24}
   - id: fbr
     label: fbr (filtering bridge)
-    type: separation_gateway
+    type: security_gateway
     services:
       separation:
         implementation: filtering_bridge
@@ -111,7 +111,7 @@ devices:
       - {prefix: 0.0.0.0/0, via: 10.40.1.1, name: default gateway}
   - id: frt
     label: frt (filtering router)
-    type: separation_gateway
+    type: security_gateway
     services:
       separation:
         implementation: filtering_router

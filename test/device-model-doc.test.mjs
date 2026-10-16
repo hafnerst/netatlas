@@ -16,9 +16,9 @@ test('the capability matrix in docs/FORMAT.md is the one the resolver gives (nod
 
 test('FORMAT.md documents each type, each System purpose and the two built-in functions', () => {
   const doc = readFileSync(join(root, 'docs', 'FORMAT.md'), 'utf8');
-  for (const t of ['router', 'switch', 'firewall', 'ap', 'load_balancer', 'ids_ips', 'vpn_gateway', 'separation_gateway', 'server', 'vm', 'container', 'storage', 'endpoint', 'cloud', 'system']) assert.match(doc, new RegExp('\\| `' + t + '` \\|'), t);
+  for (const t of ['router', 'switch', 'firewall', 'ap', 'load_balancer', 'ids_ips', 'vpn_gateway', 'security_gateway', 'server', 'vm', 'container', 'storage', 'endpoint', 'cloud', 'system']) assert.match(doc, new RegExp('\\| `' + t + '` \\|'), t);
   for (const p of ['host', 'l2_forwarder', 'l3_forwarder', 'inline', 'passive_monitor', 'pass_through', 'external_network']) assert.match(doc, new RegExp('\\| `' + p + '` \\|'), p);
   assert.match(doc, /#### VPN Gateway/);
-  assert.match(doc, /#### Separation gateway/);
+  assert.match(doc, /#### Security gateway/);
   assert.match(doc, /default deny/);
 });

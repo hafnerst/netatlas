@@ -3,7 +3,7 @@
  * (and `kind_label` for `other`), its role, its mode, a System's purpose and
  * icon, its port pairs and management interfaces, and the built-in
  * functions of the appliance types — a VPN Gateway's VPN gateway
- * (`services.vpn`) and a Separation gateway's Domain separation
+ * (`services.vpn`) and a Security gateway's Domain separation
  * (`services.separation`). Read with each device; what they reference
  * (interfaces, networks, domains, profiles) is checked once every device is
  * read (checkDeviceModel). Nothing is chosen for the user: every value the
@@ -17,6 +17,7 @@ import { YMap, YNode } from '../yaml/parse';
 import { SCHEMA } from '../yaml/schema';
 import { Ctx, Reader, get, isNull, suggest } from './reader';
 import { readSvcSim } from './virtual';
+import { SvcDef, serviceDef, serviceEligibility, isBuiltIn } from '../model/service-registry';
 
 /** where a device's model parts are written, for the checks with the whole model */
 export interface DeviceModelNodes {
@@ -29,7 +30,7 @@ export interface DeviceModelNodes {
   separationNode?: YMap;
 }
 
-/** "a router", "a Separation gateway", "a device without a type" (in a sentence). */
+/** "a router", "a Security gateway", "a device without a type" (in a sentence). */
 function aType(type: string): string {
   const t = typeDef(type);
   if (!t) return 'a device without a type';
@@ -149,21 +150,24 @@ export function readDeviceModel(r: Reader, c: Ctx, m: YMap, dpath: string, dev: 
   }
 }
 
-/** The appliance functions in a device's `services:`: a VPN Gateway's `vpn`, a Separation gateway's `separation` (each required there, nowhere else). */
+/** The appliance functions in a device's `services:`: a VPN Gateway's `vpn`, a Security gateway's `separation` (each required there, nowhere else). */
 export function readApplianceFunctions(r: Reader, c: Ctx, n: YNode | undefined, path: string, dev: Device, nodes: DeviceModelNodes): void {
   const m = !isNull(n) && (n as YNode).kind === 'map' ? (n as YMap) : null;
   const vn = m ? get(m, 'vpn') : undefined;
   const sn = m ? get(m, 'separation') : undefined;
-  // the VPN gateway: built into a VPN Gateway
-  if (typeDef(dev.type) && typeDef(dev.type)!.behaviour === 'vpn_gateway') {
+  // the VPN gateway: built into a VPN Gateway, a service of a router, a routed firewall, a server or a VM (the registry says who)
+  const vpnDef = serviceDef('vpn') as SvcDef;
+  if (!isNull(vn) && !isBuiltIn(vpnDef, dev)) {
+    if (serviceEligibility(vpnDef, dev) === null) readVpn(r, c, vn as YNode, path + '.vpn', dev, nodes);
+  } else if (typeDef(dev.type) && typeDef(dev.type)!.behaviour === 'vpn_gateway') {
     if (isNull(vn)) c.error(m || nodes.map, path + '.vpn', `VPN Gateway "${dev.id}" needs its VPN gateway configuration: its operation (site-to-site or remote access), technology and tunnels or listener`, { key: m ? 'vpn' : 'services' });
     else readVpn(r, c, vn as YNode, path + '.vpn', dev, nodes);
-  } else if (!isNull(vn)) c.error(vn as YNode, path + '.vpn', `the VPN gateway function is built into a VPN Gateway; "${dev.id}" is ${aType(dev.type)} (its tunnels are logical interfaces with their tunnel relations) — delete "vpn"`);
-  // Domain separation: built into a Separation gateway, and only there
-  if (typeDef(dev.type) && typeDef(dev.type)!.behaviour === 'separation_gateway') {
-    if (isNull(sn)) c.error(m || nodes.map, path + '.separation', `Separation gateway "${dev.id}" needs its Domain separation: its implementation, its two domains with their interfaces, and what may cross`, { key: m ? 'separation' : 'services' });
+  }
+  // Domain separation: built into a Security gateway, and only there
+  if (typeDef(dev.type) && typeDef(dev.type)!.behaviour === 'security_gateway') {
+    if (isNull(sn)) c.error(m || nodes.map, path + '.separation', `Security gateway "${dev.id}" needs its Domain separation: its implementation, its two domains with their interfaces, and what may cross`, { key: m ? 'separation' : 'services' });
     else readSeparation(r, c, sn as YNode, path + '.separation', dev, nodes);
-  } else if (!isNull(sn)) c.error(sn as YNode, path + '.separation', `Domain separation is built into a Separation gateway and can't be added to ${aType(dev.type)} — use a Separation gateway for a boundary between security domains`);
+  }
 }
 
 function readVpn(r: Reader, c: Ctx, n: YNode, path: string, dev: Device, nodes: DeviceModelNodes): void {
@@ -217,7 +221,7 @@ function readSeparation(r: Reader, c: Ctx, n: YNode, path: string, dev: Device, 
   const dn = get(m, 'domains');
   const dl = r.list(dn, path + '.domains');
   if (isNull(dn)) c.error(m, path + '.domains', `Domain separation needs its two domains, each with its name and its interfaces (e.g. Red and Black)`, { key: 'domains' });
-  else if (dl.length !== 2) c.error(dn as YNode, path + '.domains', `a Separation gateway separates exactly two domains; ${dl.length} are written (use another Separation gateway for a further boundary)`);
+  else if (dl.length !== 2) c.error(dn as YNode, path + '.domains', `a Security gateway separates exactly two domains; ${dl.length} are written (use another Security gateway for a further boundary)`);
   dl.forEach((x, j) => {
     const dp = `${path}.domains[${j}]`;
     const dm = r.map(x, dp);
@@ -396,7 +400,7 @@ export function checkDeviceModel(c: Ctx, dev: Device, nodes: DeviceModelNodes, n
   if (caps.needsPortPairs && !dev.portPairs.length) c.error(nodes.map, p + '.port_pairs', `"${dev.id}" passes traffic only between paired ports: write its port_pairs (e.g. [{a: eth0, b: eth1}])`, { key: 'port_pairs' });
   // management interfaces
   if (nodes.managementNode) {
-    if (!caps.managementInterfaces) c.error(nodes.managementNode, p + '.management', `management interfaces are kept apart from the data path on a transparent firewall, an IDS/IPS or a Separation gateway; "${dev.id}" doesn't separate them — delete "management"`);
+    if (!caps.managementInterfaces) c.error(nodes.managementNode, p + '.management', `management interfaces are kept apart from the data path on a transparent firewall, an IDS/IPS or a Security gateway; "${dev.id}" doesn't separate them — delete "management"`);
     dev.management.forEach((id, k) => {
       if (!ifaceOf(id)) c.error(nodes.managementNode as YNode, `${p}.management[${k}]`, `"${dev.id}" has no interface "${id}"`);
     });

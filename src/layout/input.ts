@@ -25,6 +25,7 @@ import { STRAND_GAP, bindingKey, bindingOn, buildBundle, laneLabel, portSpans, r
 import { cmp } from './order';
 import { END_LABEL_GAP, EntryText, PORT_STUB, endLabelBox, entriesSize, memberLabelBox, networkSubtitle, portRowH } from './sizes';
 import { deviceTier } from '../model/capabilities';
+import { serviceBadgesText } from '../model/service-registry';
 
 export interface LEnd {
   device: string;
@@ -154,7 +155,8 @@ function uniqSorted(xs: string[]): string[] {
 export function deviceSub(m: Model, d: Device): string {
   const t = deviceTypeLine(d);
   const r = runsOnText(m, d);
-  return r ? `${t}\n${r}` : t;
+  const b = serviceBadgesText(d);
+  return [t, r, b].filter((x) => !!x).join('\n');
 }
 
 /** The layout input of the physical view: without the guests (they are drawn inside their hosts' boxes). */

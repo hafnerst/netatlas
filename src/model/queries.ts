@@ -8,6 +8,7 @@ import { addressOwners, associatedInterfaces, deviceNetworks, endNetworks, endVl
 import { Device, Model, Route, deviceInterfaces, ifaceKey, relationDevices, routeKey } from './types';
 import { capabilities } from './capabilities';
 import { deviceTypeLabel, kindLabel, roleLabel, modesOf, purposeDef } from './device-types';
+import { deviceServices } from './service-registry';
 
 export function splitRef(ref: string): [string, string] {
   const i = ref.indexOf(':');
@@ -376,6 +377,13 @@ export function search(model: Model, query: string, limit = 12): SearchHit[] {
     const layer = sw ? (d.layer3 ? ['layer 3 switch', 'l3 switch', 'l3'] : ['layer 2 switch', 'l2 switch', 'l2']) : [];
     consider('device:' + d.id, sw ? layer[0] : 'device', d.label, [d.id, d.label, d.type, deviceTypeLabel(d.type), ...layer, ...modelWords(d), ...addrs, ...d.dnsNames.map((x) => x.name), ...serviceWords(model, d), ...virtualWords(model, d)]);
   }
+  // the Wi-Fi networks, by SSID and VLAN ("Guest", "ssid guest", "vlan 20"): their device is what is selected
+  for (const d of model.devices) {
+    for (const n of d.wireless ? d.wireless.networks : []) {
+      const vlan = n.vlan !== undefined ? `VLAN ${n.vlan}` : 'untagged';
+      consider('device:' + d.id, 'Wi-Fi network', `${n.ssid || n.id} on ${d.label} (${vlan})`, [n.ssid || '', n.id, `ssid ${n.ssid || ''}`, `wifi ${n.ssid || ''}`, n.vlan !== undefined ? `vlan ${n.vlan}` : 'untagged', `${n.ssid || n.id} ${d.id}`]);
+    }
+  }
   // the virtual networking: a host's virtual switches, port groups and container networks
   for (const h of model.devices) {
     if (h.hypervisor) {
@@ -621,6 +629,8 @@ export function serviceWords(model: Model, d: Device): string[] {
     if (s.routerId) out.push(s.routerId.text, s.routerId.address || '', 'router-id ' + (s.routerId.address || s.routerId.text));
   }
   if (d.routerId) out.push(d.routerId.text, d.routerId.address || '', 'router-id ' + (d.routerId.address || d.routerId.text));
+  // the services of the registry it runs, by name and badge ("ntp", "Wireless access", "wifi")
+  for (const x of deviceServices(d)) out.push(x.id, x.label, x.badge.toLowerCase());
   return out.filter((x) => x !== '');
 }
 

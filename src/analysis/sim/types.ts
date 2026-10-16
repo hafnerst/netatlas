@@ -102,7 +102,7 @@ export interface Pkt {
   flow: string;
   /** the relations it rides (its session, and the tunnels it is inside), for failures of a relation */
   rides: string[];
-  /** held for its transfer delay at this Separation gateway: decided already, it goes on */
+  /** held for its transfer delay at this Security gateway: decided already, it goes on */
   held?: string;
 }
 

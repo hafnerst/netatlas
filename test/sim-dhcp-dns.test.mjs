@@ -43,14 +43,14 @@ ${more.tail || ''}`;
 
 const SCOPE = (x = '') => `{dhcp: {scopes: [{network: lan, range: 10.0.0.100-10.0.0.110, gateway: 10.0.0.1, dns: [10.0.0.10]${x}}]}}`;
 
-test('the services: off by default; enabled, what they still need is an error; only servers (a server, a VM, a container) run them', () => {
+test('the services: off by default; enabled, what they still need is an error; the service registry says who runs them (not storage)', () => {
   assert.equal(V.loadModel(LAN()).model.index.devices.get('srv').netServices, undefined);
   assert.deepEqual(errs(LAN(SCOPE())), []);
   assert.match(errs(LAN('{dhcp: {}}')).join('|'), /the DHCP server of "srv" needs a scope: add one \(its network, range, default gateway and DNS servers\)/);
   const e = errs(LAN('{dhcp: {scopes: [{lease: 1h}]}}')).join('|');
   for (const what of ['network', 'address range', 'default gateway', 'DNS servers']) assert.match(e, new RegExp(`scope 1 of "srv" needs its ${what}`), what);
-  assert.match(errs(LAN('{dns: {}}')).join('|'), /the DNS server of "srv" needs a zone: add one \(its domain name, e\.g\. hq\.example\)/);
-  assert.match(errs(LAN(SCOPE(), { type: 'storage' })).join('|'), /"srv" is not a server: DHCP and DNS servers run on a server, a VM or a container/);
+  assert.match(errs(LAN('{dns: {}}')).join('|'), /the DNS server of "srv" needs a zone \(its domain name, e\.g\. hq\.example\) or forwarders \(the servers it asks\)/);
+  assert.match(errs(LAN(SCOPE(), { type: 'storage' })).join('|'), /"srv" can't run DHCP server: DHCP server runs on Router, Switch, Firewall, Server, Virtual machine or Container/);
   // a VM and a container run them too (on their host, through its virtual networking)
   const guest = (t) => `netatlas: 1
 devices:

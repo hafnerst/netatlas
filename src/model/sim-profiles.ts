@@ -925,6 +925,7 @@ export const SIM_PROFILES: readonly SimProfile[] = [
     failure: 'Without a server the client retries with backoff, then pauses; the lease ends at its expiry.',
     restore: 'The next DHCPDISCOVER or renewal reaches the server.',
   },
+  service('capwap', 'CAPWAP', 'UDP 5246', 'Echo Request', 'Echo Response', 30, 'the control channel between an access point and its wireless controller (RFC 5415 EchoInterval 30 s)', 'RFC 5415 EchoInterval (30 s)'),
   service('https', 'HTTPS', 'TCP 443', 'TLS Application Data (request)', 'TLS Application Data (response)', 30, 'web requests after the TCP and TLS handshakes'),
   service('netflow', 'NetFlow / IPFIX', 'UDP 2055 / 4739', 'Flow export', undefined, 60, 'flow records to the collector (one way)', 'common active timeout (60 s)'),
 ];

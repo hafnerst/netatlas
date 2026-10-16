@@ -1,0 +1,144 @@
+# netatlas example: a home network behind a CPE router with Wi-Fi.
+#
+# cpe is a router of the kind CPE / modem router. Its services: a DHCP
+# server with a scope per network, a DNS forwarder, NAT (PAT from the three
+# home networks out of its WAN port) and Wireless access with three Wi-Fi
+# networks — Home, Guest and IoT — each bridged to its own VLAN (10, 20,
+# 30) and routed by its VLAN interface. Wireless access is a service of a
+# router, as it is built into an access point: the same networks, the same
+# VLAN mappings.
+#
+# The mesh access point extends the three networks: its backhaul to the CPE
+# is a point-to-point radio link that carries the three VLANs tagged, and it
+# bridges the same three networks to them. A wired desktop is in the Home
+# VLAN; the IoT thermostat associates with the mesh point.
+#
+# NetAtlas has no access lists on a router: the three networks are apart at
+# Layer 2 (their own VLANs), and the CPE routes between them — a real CPE
+# adds a policy that keeps Guest and IoT away from Home, which is not
+# modelled here (a Security gateway or a firewall's policy would).
+#
+# Simulate ▾ → Start simulation…: the clients take their leases in their
+# own VLAN; the laptop's test to the internet leaves the model at cpe after
+# its PAT (Analyze ▾ → Trace path… shows the translation).
+netatlas: 1
+title: Home network — CPE router with Wi-Fi
+description: |
+  A CPE router with DHCP, DNS, NAT and Wireless access (Home, Guest, IoT on
+  VLANs 10, 20, 30), a mesh access point over a radio backhaul, and the
+  family's devices.
+
+groups:
+  - id: home
+    label: Home
+    kind: site
+  - id: upstairs
+    label: Upstairs
+    kind: floor
+    parent: home
+  - id: provider
+    label: Provider
+    kind: provider
+
+networks:
+  - {id: home-lan, label: Home, cidr: 192.168.10.0/24, vlan: 10}
+  - {id: guest-lan, label: Guest, cidr: 192.168.20.0/24, vlan: 20}
+  - {id: iot-lan, label: IoT, cidr: 192.168.30.0/24, vlan: 30}
+
+devices:
+  - id: isp
+    label: Internet
+    type: cloud
+    kind: internet
+    group: provider
+    interfaces: [cpe]
+  - id: cpe
+    label: cpe (home router)
+    type: router
+    kind: cpe
+    role: border
+    group: home
+    services:
+      wireless:
+        networks:
+          - {id: home, ssid: Home, vlan: 10, radio: radio0, security: wpa3_sae, passphrase: "<home-psk>"}
+          - {id: guest, ssid: Guest, vlan: 20, radio: radio0, security: wpa2_psk, passphrase: "<guest-psk>"}
+          - {id: iot, ssid: IoT, vlan: 30, radio: radio0, security: wpa2_psk, passphrase: "<iot-psk>"}
+      dhcp:
+        scopes:
+          - {network: home-lan, range: 192.168.10.100-192.168.10.199, gateway: 192.168.10.1, dns: [192.168.10.1]}
+          - {network: guest-lan, range: 192.168.20.100-192.168.20.199, gateway: 192.168.20.1, dns: [192.168.20.1]}
+          - {network: iot-lan, range: 192.168.30.100-192.168.30.199, gateway: 192.168.30.1, dns: [192.168.30.1]}
+      dns:
+        forwarders: [9.9.9.9]
+      nat:
+        inside: [Vlan10, Vlan20, Vlan30]
+        outside: [wan]
+        rules:
+          - {type: pat, source: 192.168.0.0/16}
+    interfaces:
+      - {id: wan, ip: 198.51.100.10/30}
+      - {id: lan1, vlans: 10}
+      - {id: mesh0, vlans: [10, 20, 30]}
+      - {id: radio0}
+    logical_interfaces:
+      - {id: Vlan10, type: virtual, vlan: 10, ip: 192.168.10.1/24}
+      - {id: Vlan20, type: virtual, vlan: 20, ip: 192.168.20.1/24}
+      - {id: Vlan30, type: virtual, vlan: 30, ip: 192.168.30.1/24}
+    routes:
+      - {prefix: 0.0.0.0/0, via: 198.51.100.9, name: the provider}
+  - id: mesh
+    label: mesh point
+    type: ap
+    kind: mesh
+    group: upstairs
+    services:
+      wireless:
+        networks:
+          - {id: home, ssid: Home, vlan: 10, radio: radio0, security: wpa3_sae, passphrase: "<home-psk>"}
+          - {id: guest, ssid: Guest, vlan: 20, radio: radio0, security: wpa2_psk, passphrase: "<guest-psk>"}
+          - {id: iot, ssid: IoT, vlan: 30, radio: radio0, security: wpa2_psk, passphrase: "<iot-psk>"}
+    interfaces:
+      - {id: backhaul, vlans: [10, 20, 30]}
+      - {id: radio0}
+  - id: desktop
+    type: endpoint
+    kind: pc
+    group: home
+    interfaces:
+      - {id: eth0, dhcp: true}
+  - id: laptop
+    type: endpoint
+    kind: pc
+    group: home
+    simulation: {test_traffic: "on", test_targets: "9.9.9.9 icmp", test_interval: 10}
+    interfaces:
+      - {id: wlan0, dhcp: true}
+  - id: phone
+    label: guest phone
+    type: endpoint
+    kind: mobile
+    group: home
+    interfaces:
+      - {id: wlan0, dhcp: true}
+  - id: tv
+    type: endpoint
+    kind: media
+    group: upstairs
+    interfaces:
+      - {id: wlan0, dhcp: true}
+  - id: thermostat
+    type: endpoint
+    kind: iot
+    group: upstairs
+    interfaces:
+      - {id: wlan0, dhcp: true}
+
+links:
+  - {id: l-wan, a: "isp:cpe", b: "cpe:wan", medium: fiber, speed: 1G}
+  - {id: l-desktop, a: "cpe:lan1", b: "desktop:eth0", speed: 1G}
+  - {id: l-backhaul, a: "cpe:mesh0", b: "mesh:backhaul", medium: wireless, label: mesh backhaul (radio link)}
+  - {id: w-laptop, a: "cpe:radio0", b: "laptop:wlan0", medium: wireless, wireless_network: home}
+  - {id: w-phone, a: "cpe:radio0", b: "phone:wlan0", medium: wireless, wireless_network: guest}
+  - {id: w-tv, a: "mesh:radio0", b: "tv:wlan0", medium: wireless, wireless_network: home}
+  - {id: w-thermostat, a: "mesh:radio0", b: "thermostat:wlan0", medium: wireless, wireless_network: iot}

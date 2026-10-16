@@ -53,6 +53,7 @@ const BUILTINS: Builtin[] = [
   ['syslog', 'Syslog', 'service', '#7950f2'],
   ['snmp', 'SNMP', 'service', '#845ef7'],
   ['radius', 'RADIUS', 'service', '#9775fa', ['tacacs', 'tacacs+']],
+  ['capwap', 'CAPWAP', 'service', '#d6336c', ['lwapp']],
   ['dhcp', 'DHCP relay', 'service', '#6c5ce7', ['dhcp-relay']],
   ['https', 'HTTPS', 'service', '#1c7ed6', ['http']],
   ['netflow', 'NetFlow / IPFIX', 'service', '#4c6ef5', ['ipfix', 'sflow']],

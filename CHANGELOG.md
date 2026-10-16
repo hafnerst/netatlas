@@ -187,7 +187,7 @@ there is no conversion of files written for the earlier drafts.
   container network's place as `<host>/<network>`.
 - **The device model: 15 types, kinds, roles, modes and System purposes.**
   The types are `router`, `switch`, `firewall`, `ap`, `load_balancer`,
-  `ids_ips`, `vpn_gateway`, `separation_gateway`, `server`, `vm`,
+  `ids_ips`, `vpn_gateway`, `security_gateway`, `server`, `vm`,
   `container`, `storage`, `endpoint`, `cloud` and `system`; the generic
   `gateway` and the `proxy` types are gone (unknown types whose errors say
   what they became). New device keys: `kind` (optional, the type's kinds,
@@ -201,13 +201,35 @@ there is no conversion of files written for the earlier drafts.
   longer an unknown key. Groups gain the kinds `cloud_region`, `vpc` and
   `vnet` with a `provider`; a VM or container in a cloud group may have no
   `host` (a cloud instance, with interfaces and cables of its own).
-- **VPN Gateway and Separation gateway functions.** A VPN Gateway's
+- **VPN Gateway and Security gateway functions.** A VPN Gateway's
   `services: {vpn: {operation, technology, tunnels | listener + pool,
-  protected}}` and a Separation gateway's `services: {separation:
+  protected}}` and a Security gateway's `services: {separation:
   {implementation, domains, directions, rules, profiles, simulation}}` are
   required on them and errors anywhere else. The separation's simulation
   attributes are `transfer_delay` and `transfer_loss`. The proxy's
   `client_timeout` and `upstream_timeout` went with the `proxy` type.
+- **Services by the service registry:** `services:` on any device may hold
+  the services of the registry (`dhcp`, `dns`, `ntp`, `aaa`, `syslog`,
+  `monitoring`, `proxy`, `load_balancing`, `vpn`, `nat`, `wireless`,
+  `wireless_controller`, `hypervisor`, `container_engine`, `storage`,
+  `application`, `inspection`, `separation`), each where the registry
+  allows it; elsewhere an error with the reason. DHCP and DNS are no longer
+  limited to hosts: a router, a Layer 3 switch and a routed firewall may
+  run them. An access point's `wireless` is required (built in); a
+  load balancer's `load_balancing` and an IDS/IPS's `inspection` are
+  optional built-in configuration. A DNS server needs a zone or forwarders.
+- **Wireless access and Wi-Fi networks:** `services.wireless` (an access
+  point's, a router's) has `networks`, each with `id`, `ssid`, `vlan` or
+  `untagged: true`, `radio`, `security` and `passphrase` (a placeholder),
+  and on a controller-managed access point `forwarding` (`local`,
+  `tunneled`) and a `controller`. A wireless connection at a radio names
+  its network in the link's new key `wireless_network`; a radio takes
+  several such connections. Access points may have static routes (their
+  management address's default gateway).
+- **The Separation gateway is now called the Security gateway:** the type
+  `separation_gateway` is renamed `security_gateway` (no conversion of
+  files written for the earlier draft); its function stays *Domain
+  separation* (`services.separation`).
 - **Examples converted by behaviour:** `device-types.yaml` (a remote-access
   VPN Gateway, the proxy as a server in the DMZ, a NAS behind a filtering
   bridge, a System of purpose host), `metro-ring.yaml` (console servers as
@@ -218,10 +240,39 @@ there is no conversion of files written for the earlier drafts.
 
 ### Added
 
+- **The service registry and the Services card** (one change across the
+  app): every service is described once — its parameters with their types
+  and conditions, who may run it and why not, its badge and its
+  simulation. The Edit tab's **Services** card holds a card per service;
+  **Add service…** lists the services the device may run and the others
+  disabled with their reason; **Remove** shows its change plan (one undo
+  step). Badges in a line under the device's type (at most three and a
+  count, a tooltip with all, the legend). Find and the palette by SSID,
+  VLAN and service. The service matrix in docs/FORMAT.md is generated from
+  the registry (`node scripts/capability-matrix.mjs --write`).
+- **Wi-Fi networks mapped to VLANs** over one uplink, by the device's
+  Wireless access: validation (the VLAN is carried, nothing is added),
+  each client in its network's VLAN in the path tracer and the simulation
+  (DHCP, ARP and broadcasts stay there), the shared uplink as a single
+  point of failure, a tunneled network reported as not simulated, the
+  networks and their clients in the Wireless access card, *SSID “…” · A n*
+  at the radio's end of each connection.
+- **The catalog in the simulation:** NTP requests to upstreams, RADIUS /
+  TACACS+ from an AAA server's clients, syslog from its senders, SNMP polls
+  of monitored devices, CAPWAP between controller-managed access points
+  and their controller, a reverse proxy, a load balancer's own backends and
+  algorithm, NAT (PAT, source NAT, port forwards; noted by the path
+  tracer), an inline IPS's blocks and a passive one's alerts; the services'
+  ports are listening.
+- **Four examples:** `multi-ssid-ap.yaml`, `home-network.yaml`,
+  `campus-wireless.yaml` (three tiers, controller-managed Wi-Fi, a
+  services server) and `dmz-services.yaml` (a VPN and NAT on a firewall,
+  an IPS, a reverse proxy, a load balancer, a NAS).
+
 - **Capability-based behaviour** (one change across the app): every
   module decides by what a device can do — one resolver
   (`src/model/capabilities.ts`) derives it from the type, mode, Supports
-  Layer 3, a System's purpose and a Separation gateway's implementation —
+  Layer 3, a System's purpose and a Security gateway's implementation —
   instead of by type names; an architecture test keeps type comparisons out
   of everything but the registry and the resolver. The capability matrix
   in docs/FORMAT.md is generated from the resolver and checked by a test.
@@ -234,7 +285,7 @@ there is no conversion of files written for the earlier drafts.
     **Management interfaces**.
   * **VPN Gateway:** forwards only to and from its VPN, in the path tracer
     and in the simulation.
-  * **Separation gateway:** exactly two domains, permitted directions,
+  * **Security gateway:** exactly two domains, permitted directions,
     ordered allow rules with every match written, a default deny both ways,
     replies of a permitted transfer and nothing else the other way; a
     filtering bridge, a filtering router, or a protocol break with transfer
@@ -242,7 +293,7 @@ there is no conversion of files written for the earlier drafts.
     correlated; management interfaces never forwarded; its own icon, the
     domain under each port, and its policy in the Details tab.
   * **Path tracer:** an optional **Service** (`tcp/443`, `udp/53`, `icmp`)
-    a Separation gateway decides by; a protocol break's **Leg 2**; port
+    a Security gateway decides by; a protocol break's **Leg 2**; port
     pairs, TAP copies and a VPN Gateway's tunnels; a stop reason *denied*.
   * **Simulation:** a transparent firewall filters what it bridges; inline
     devices and pass-through Systems keep to their pairs (one way where
@@ -250,10 +301,10 @@ there is no conversion of files written for the earlier drafts.
     observe; a Cloud is one Layer 3 hop (TTL one lower; TTL-1 hellos end
     at it).
   * **Single points of failure** follow what each device joins: a
-    Separation gateway's domains only with a permitted transfer, port
+    Security gateway's domains only with a permitted transfer, port
     pairs, never a management interface.
   * **Diagram, legend, Find, palette:** icons for the VPN Gateway, the
-    Separation gateway, the kinds with an icon (Cloud gateway, PLC, HMI,
+    Security gateway, the kinds with an icon (Cloud gateway, PLC, HMI,
     camera …) and the System purposes (console, protocol gateway, TAP,
     diode …); the subtitle with mode, purpose and kind; the legend lists
     the types and kinds used; ports say "domain Red", "management",
@@ -1118,7 +1169,7 @@ there is no conversion of files written for the earlier drafts.
 ### Removed
 
 - The **`gateway`** and **`proxy`** device types (converted by behaviour:
-  a VPN Gateway, a router, a System, a Separation gateway, a server …), and
+  a VPN Gateway, a router, a System, a Security gateway, a server …), and
   with the proxy its request relaying and its two simulation attributes;
   the Proxy service brings them back as a service of a server, VM or
   container.
