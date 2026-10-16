@@ -9,12 +9,15 @@
  *     shown, grouped, with Select all and Clear (changing them never
  *     restarts anything), and the Layer 1–4 parameters, one collapsed
  *     section per layer, applied at once; the table timers' scale;
- *   - Actions (right, in place of the Inspector's tabs): the network events
- *     of the selected object (Fail or Restore a cable or relation, flapping,
- *     Shut or No shut, Power off or on, Join or Leave a group, Start or Stop
- *     a stream, its tables, its broadcast domain), the events in effect
- *     with their way back, Send test, and the selected device's Simulation
- *     settings (collapsed; the documented exception to the edit lock);
+ *   - Actions (right, in place of the Inspector's tabs): Network events,
+ *     four actions with their own forms (Send network packets, Join
+ *     multicast group, Start multicast stream, Interface actions; each
+ *     chooses its device and interface itself), then Active events: the
+ *     events they started (analysis/sim/actions.ts: state, progress,
+ *     outcome, Stop / No shut / Leave group, details) and the other state
+ *     changes in effect with their way back; then the selected device's
+ *     Simulation settings (collapsed; the documented exception to the edit
+ *     lock);
  *   - the simulation panel (docked under the diagram, always there while
  *     the simulation runs): Play or Pause, Step, the speed and the pacing,
  *     skipping idle time, the simulated time and Exit simulation; the
@@ -23,7 +26,10 @@
  *     inspector).
  *
  * The in-diagram menus (a click on a cable, relation, device or interface)
- * offer the same events as the Actions panel. A dot, or a message of the
+ * offer the events of that object (also Fail link, Power off, its tables
+ * and its broadcast domain, which have no form in the Actions panel); a
+ * device's Send network packets…, Join multicast group… and Start
+ * multicast stream… open that form with the device filled in. A dot, or a message of the
  * log, opens the packet inspector (a dot pauses first), with Follow
  * message. It is the app's simulation mode (simulation-mode.ts): the
  * banner's text (with a broadcast storm's warning), what is down, a
@@ -43,10 +49,12 @@ import { FailureResult, refLabel, simulate } from '../analysis/failure';
 import { fmtSec } from '../analysis/sim/engine';
 import { FRAME_MAX, PACE_SCALES, PACE_SPEEDS, PaceMode, Pacer, conversationKey, scaleText } from '../analysis/sim/pacing';
 import { ParamValue, Resolved, formatValue, sourceText } from '../analysis/sim/params';
-import { SimProtocolEntry, Simulation, TestRun, runActive, runPending } from '../analysis/sim/simulation';
+import { SimProtocolEntry, Simulation } from '../analysis/sim/simulation';
 import { TestPlan } from '../analysis/sim/test-plan';
 import { TestForm } from './sim-test-form';
-import { TestKind, rttText } from '../analysis/sim/transport';
+import { IfaceForm, JoinForm, StreamForm } from './sim-event-forms';
+import { listKey, renderEvents } from './sim-event-list';
+import { TestKind } from '../analysis/sim/transport';
 import { Flight, Headers, NetEvent, SessionStatus, SimEvent, TableTimer, Track } from '../analysis/sim/types';
 import { lookupProtocol } from '../model/protocols';
 import { Model, deviceInterfaces } from '../model/types';
@@ -169,8 +177,10 @@ export class SimController implements SimulationMode {
   private logLayer = 0;
   private logCast = '';
   private logProto = '';
-  private testsKey = '';
   private testForm: TestForm | null = null;
+  private joinForm: JoinForm | null = null;
+  private streamForm: StreamForm | null = null;
+  private ifaceForm: IfaceForm | null = null;
   private domainKey = '';
   /** the status side shows the protocols' status, or a table of the selected device */
   private statusView: { kind: DevTable; dev: string } | null = null;
@@ -742,16 +752,20 @@ export class SimController implements SimulationMode {
     return this.did(this.sim.restore(ref), `${this.cap(this.label(ref))} restored`);
   }
 
+  /** Start flapping (a cable's or a port's menu, Interface actions): an event of the list. */
   startFlap(ref: string): boolean {
-    return this.did(this.sim.startFlap(ref), `${this.cap(this.label(ref))} starts flapping`);
+    const a = this.sim.actFlap(ref);
+    return this.did(!a.error, `${this.cap(this.label(ref))} starts flapping`);
   }
 
   stopFlap(ref: string): boolean {
     return this.did(this.sim.stopFlap(ref), `${this.cap(this.label(ref))} stops flapping`);
   }
 
+  /** Shut interface (an interface's menu, Interface actions): an event of the list. */
   shut(dev: string, iface: string): boolean {
-    return this.did(this.sim.shut(dev, iface), `${dev}:${iface} shut`);
+    const a = this.sim.actShut(dev, iface);
+    return this.did(!a.error, `${dev}:${iface} shut`);
   }
 
   noShut(dev: string, iface: string): boolean {
@@ -778,46 +792,53 @@ export class SimController implements SimulationMode {
 
   // ------------------------------------------------------------ multicast: joins and streams
 
-  /** Join group… / Start stream… from a device's menu: the Actions panel's form, with that device selected. */
+  /** Join multicast group… / Start multicast stream… from a device's menu: that form of Network events, open, with the device. */
   multicastFrom(dev: string, what: 'join' | 'stream'): void {
-    if (this.host.select && (!this.host.selected || this.host.selected() !== 'device:' + dev)) this.host.select('device:' + dev);
-    this.actionsKey = '';
-    this.updatePanels();
-    const box = this.host.actionsBox ? this.host.actionsBox() : null;
-    if (!box) return;
-    const toggle = box.querySelector(what === 'join' ? '#sim-mc-join-toggle' : '#sim-mc-stream-toggle') as HTMLButtonElement | null;
-    if (toggle && toggle.getAttribute('aria-expanded') !== 'true') toggle.click();
-    const sel = box.querySelector(what === 'join' ? '#sim-mc-jif' : '#sim-mc-sif') as HTMLSelectElement | null;
-    if (sel) {
-      const opt = Array.from(sel.options).find((o) => o.value.indexOf(dev + ':') === 0);
-      if (opt) sel.value = opt.value;
-    }
-    const g = box.querySelector(what === 'join' ? '#sim-mc-jg' : '#sim-mc-sg') as HTMLInputElement | null;
-    if (g) g.focus();
+    const f = what === 'join' ? this.joinForm : this.streamForm;
+    if (!f) return;
+    this.openSection(what === 'join' ? 'sim-ne-join' : 'sim-ne-stream');
+    f.setDevice(dev);
+    f.focus();
   }
 
+  /** Interface actions from an interface's menu: the form, open, with the interface. */
+  interfaceFrom(dev: string, iface?: string): void {
+    if (!this.ifaceForm) return;
+    this.openSection('sim-ne-iface');
+    this.ifaceForm.setTarget(dev, iface);
+    this.ifaceForm.focus();
+  }
+
+  /** Open a section of Network events (its heading's button), and show it. */
+  private openSection(id: string): void {
+    const box = this.host.actionsBox ? this.host.actionsBox() : null;
+    const t = box ? (box.querySelector('#' + id + '-toggle') as HTMLButtonElement | null) : null;
+    if (t && t.getAttribute('aria-expanded') !== 'true') t.click();
+    if (t) t.scrollIntoView({ block: 'nearest' });
+  }
+
+  /** Join multicast group: an event of the list (done when a multicast router records it, or its reports are sent). */
   joinGroup(dev: string, iface: string, group: string, sources: string[]): string {
-    const r = this.sim.joinGroup(dev, iface, group, sources);
+    const a = this.sim.actJoin(dev, iface, group, sources);
     this.logKey = '';
     this.actionsKey = '';
     this.refresh(true);
-    if (r) return r;
-    this.host.toast(`${dev}:${iface} joins ${group} at t = ${fmtSec(this.t)}.`);
-    return `${dev}:${iface} joins ${group}.`;
+    if (a.error) return a.error;
+    return `${a.target}: joining at t = ${fmtSec(this.t)}; see Active events.`;
   }
 
   leaveGroup(dev: string, iface: string, group: string): boolean {
     return this.did(this.sim.leaveGroup(dev, iface, group), `${dev}:${iface} leaves ${group}`);
   }
 
+  /** Start multicast stream: an event of the list, running until Stop stream. */
   startStream(dev: string, iface: string, group: string, port: number, interval: number, size: number): string {
-    const r = this.sim.startStream(dev, iface, group, port, interval, size);
+    const a = this.sim.actStream(dev, iface, group, port, interval, size);
     this.logKey = '';
     this.actionsKey = '';
     this.refresh(true);
-    if (r) return r;
-    this.host.toast(`${dev}:${iface} streams to ${group}:${port} from t = ${fmtSec(this.t)}.`);
-    return `${dev}:${iface} streams to ${group}:${port}.`;
+    if (a.error) return a.error;
+    return `${a.target}: streaming from t = ${fmtSec(this.t)}; see Active events.`;
   }
 
   stopStream(dev: string, iface: string, group: string): boolean {
@@ -1042,7 +1063,7 @@ export class SimController implements SimulationMode {
       const tabs = this.deviceTables(dev);
       const show: { [k in DevTable]: string } = { arp: 'Show ARP table', mac: 'Show MAC table', conn: 'Show connections', fw: 'Show sessions', igmp: 'Show IGMP groups', mroute: 'Show multicast routes', snoop: 'Show multicast table', dhcp: 'Show DHCP leases', dnscache: 'Show DNS cache', dnszone: 'Show DNS zone' };
       for (const k of ['arp', 'mac', 'conn', 'fw'] as DevTable[]) if (tabs.indexOf(k) >= 0) items.push({ label: show[k], act: () => void this.showTable(k, dev) });
-      items.push({ label: 'Send test…', act: () => this.sendTestFrom(dev) });
+      items.push({ label: 'Send network packets…', act: () => this.sendTestFrom(dev) });
       // multicast: its groups and streams, a router's IGMP groups and multicast routes, a switch's multicast table
       for (const k of ['igmp', 'mroute', 'snoop'] as DevTable[]) if (tabs.indexOf(k) >= 0) items.push({ label: show[k], act: () => void this.showTable(k, dev) });
       // DHCP and DNS
@@ -1051,9 +1072,9 @@ export class SimController implements SimulationMode {
       else items.push({ label: 'Use as sender', act: () => void this.setSender(dev, true) });
       const sdv = this.sim.engine.net.devices.get(dev);
       if (d && d.arp && sdv && !sdv.routes) {
-        items.push({ label: 'Join group…', act: () => this.multicastFrom(dev, 'join') });
+        items.push({ label: 'Join multicast group…', act: () => this.multicastFrom(dev, 'join') });
         for (const j of this.sim.multicast.joined(dev)) items.push({ label: `Leave group ${j.group}`, act: () => void this.leaveGroup(dev, j.iface, j.group) });
-        items.push({ label: 'Start stream…', act: () => this.multicastFrom(dev, 'stream') });
+        items.push({ label: 'Start multicast stream…', act: () => this.multicastFrom(dev, 'stream') });
         for (const st of this.sim.multicast.streamsOf(dev)) {
           if (st.running) items.push({ label: `Stop stream ${st.group}`, act: () => void this.stopStream(dev, st.iface, st.group) });
           else items.push({ label: `Start stream ${st.group} again`, act: () => void this.did(this.sim.multicast.restartStream(dev, st.iface, st.group), `${dev} streams to ${st.group} again`) });
@@ -1184,9 +1205,11 @@ export class SimController implements SimulationMode {
 
   // ------------------------------------------------------------ Send test
 
-  /** Send test… from a device's menu: the Actions panel's Send test form, with the device as the source. */
+  /** Send network packets… from a device's menu: that form of Network events, open, with the device as the source. */
   sendTestFrom(dev: string): void {
-    if (this.testForm) this.testForm.setSource(dev);
+    if (!this.testForm) return;
+    this.openSection('sim-ne-send');
+    this.testForm.setSource(dev);
   }
 
   /**
@@ -1198,7 +1221,6 @@ export class SimController implements SimulationMode {
    */
   sendTest(o: { from: string; via?: string; to: string; kind: TestKind; port?: number; size?: number; df?: boolean; keep?: boolean }, play = false): string {
     const t = this.sim.sendTest(o);
-    this.testsKey = '';
     this.logKey = '';
     // its first hops are on screen now (paused too: there they wait for Play)
     this.pacer.take();
@@ -1214,23 +1236,30 @@ export class SimController implements SimulationMode {
    * (paused, they wait for Play; Stop in the list ends the series).
    */
   sendPlan(p: TestPlan, play = false): string {
-    const r = this.sim.sendPlan(p);
-    this.testsKey = '';
+    const a = this.sim.actSend(p);
+    const r = a.run || (a.error as string);
     this.logKey = '';
     this.pacer.take();
     if (typeof r !== 'string' && play && !this.playing) this.setPlaying(true);
     this.refresh(true);
     if (typeof r === 'string') return r;
-    const more = r.count > 1 ? `Message 1 of ${r.count} sent at t = ${fmtSec(r.t0)}, then one every ${secText(r.interval)}: ${r.series}.` : `Sent at t = ${fmtSec(r.t0)}: ${r.series}.`;
+    const more = r.count > 1 ? `Message 1 of ${r.count} sent at t = ${fmtSec(r.t0)}, then one every ${secText(r.interval)}: ${r.series}; see Active events.` : `Sent at t = ${fmtSec(r.t0)}: ${r.series}; see Active events.`;
     return this.playing ? (r.count > 1 ? more : `Test sent at t = ${fmtSec(r.t0)}: ${r.series}.`) : `${more} It starts when the simulation plays.`;
   }
 
-  /** Stop a series of test messages (no more are sent). */
-  stopRun(id: number): boolean {
-    if (!this.sim.stopRun(id)) return false;
-    this.testsKey = '';
+  /** An event's control in Active events: Stop, No shut, Leave group. */
+  actionControl(id: number, op: 'stop' | 'noshut' | 'leave'): boolean {
+    if (!this.sim.actionControl(id, op)) return false;
+    this.eventsKey = '';
+    this.logKey = '';
     this.refresh(true);
     return true;
+  }
+
+  /** Open a message of a send in the packet inspector: its first message of the event log. */
+  inspectTest(testId: number): boolean {
+    const e = this.sim.events().find((x) => x.test === testId && x.kind === 'message' && !!x.hdr);
+    return e ? this.inspectEvent(e.seq) : false;
   }
 
   /** Is a Send test on its way (sent, not answered or failed yet, not waiting for a DHCP lease)? While it is, it alone sets the pace. */
@@ -1249,7 +1278,7 @@ export class SimController implements SimulationMode {
     if (s) this.buildSetup(s);
     if (a) this.buildActions(a);
     if (d) this.buildDock(d);
-    this.logKey = this.statusKey = this.eventsKey = this.testsKey = this.actionsKey = '';
+    this.logKey = this.statusKey = this.eventsKey = this.actionsKey = '';
     this.updatePanels();
   }
 
@@ -1304,179 +1333,86 @@ export class SimController implements SimulationMode {
     scale.setAttribute('aria-describedby', 'sim-scale-help');
   }
 
-  /** Actions: the selected object's events, the events in effect, Send test, the device's Simulation settings. */
+  /** Actions: Network events (four actions, each with its form), Active events, the selected device's Simulation settings. */
   private buildActions(box: HTMLElement): void {
     const doc = this.host.doc;
     while (box.firstChild) box.removeChild(box.firstChild);
-    // the object: the diagram's selection, or chosen here
-    const obj = el(doc, 'select', { id: 'sim-obj' }) as HTMLSelectElement;
-    obj.appendChild(el(doc, 'option', { value: '' }, ['Select in the diagram, or here…']));
-    const grp = (label: string, opts: Array<[string, string]>): void => {
-      if (!opts.length) return;
-      const g = el(doc, 'optgroup', { label });
-      for (const [v, t] of opts) g.appendChild(el(doc, 'option', { value: v }, [t]));
-      obj.appendChild(g);
+    // Network events: four actions, each with its own form (its device and interface chosen in it), then the events
+    const fh = {
+      sim: () => this.sim,
+      join: (d: string, i: string, g: string, src: string[]) => this.joinGroup(d, i, g, src),
+      stream: (d: string, i: string, g: string, port: number, iv: number, size: number) => this.startStream(d, i, g, port, iv, size),
+      shut: (d: string, i: string) => (this.shut(d, i) ? `${d}:${i} shut at t = ${fmtSec(this.t)}; see Active events.` : `${d}:${i} could not be shut.`),
+      flap: (d: string, i: string) => (this.startFlap(`iface:${d}:${i}`) ? `${d}:${i} flapping from t = ${fmtSec(this.t)}; see Active events.` : `${d}:${i} could not start flapping.`),
+      interfacesOf: (d: string) => this.interfaceChoices(d),
+      flapTimes: () => this.flapTimes(),
     };
-    const m = this.host.model();
-    grp('Devices', m.devices.slice().sort((a, b) => (a.id < b.id ? -1 : 1)).map((d) => ['device:' + d.id, d.id]));
-    grp('Cables', m.links.slice().sort((a, b) => (a.id < b.id ? -1 : 1)).map((l) => ['link:' + l.id, `${l.id} (${l.a.device} – ${l.b.device})`]));
-    grp('Relations', m.relations.slice().sort((a, b) => (a.id < b.id ? -1 : 1)).map((r) => ['relation:' + r.id, `${lookupProtocol(m.protocols, r.protocol, r.category).label} ${r.id}`]));
-    obj.addEventListener('change', () => {
-      if (this.host.select) this.host.select(obj.value || null);
-    });
-    box.appendChild(
-      this.sec(doc, 'sim-act-obj', 'Network events', [
-        el(doc, 'div', { class: 'sp-field' }, [el(doc, 'label', { for: 'sim-obj' }, ['Object']), obj]),
-        el(doc, 'div', { id: 'sim-act-items', class: 'sp-actions', role: 'group', 'aria-label': 'Events of the selected object' }),
-        el(doc, 'div', { id: 'sim-act-ifaces' }),
-        el(doc, 'div', { id: 'sim-act-mc' }),
-      ]),
-    );
-    // the events in effect
-    box.appendChild(
-      this.sec(doc, 'sim-act-events', 'Active events', [
-        el(doc, 'p', { id: 'sim-failed', class: 'small muted', role: 'status' }, ['None.']),
-        el(doc, 'ul', { id: 'sim-events', class: 'sim-events' }),
-      ]),
-    );
-    // Send test: the delivery type first, then what it asks for
     this.testForm = new TestForm(doc, { sim: () => this.sim, send: (p, play) => this.sendPlan(p, play), playing: () => this.playing }, (d, id, title, body) => this.disclosure(d, id, title, body));
-    box.appendChild(this.sec(doc, 'sim-test', 'Send test', [this.testForm.el, el(doc, 'ul', { id: 'sim-tests', class: 'sim-tests', 'aria-label': 'Latest tests' })]));
+    this.joinForm = new JoinForm(doc, fh);
+    this.streamForm = new StreamForm(doc, fh);
+    this.ifaceForm = new IfaceForm(doc, fh);
+    box.appendChild(
+      this.sec(doc, 'sim-act-net', 'Network events', [
+        this.action(doc, 'sim-ne-send', 'Send network packets', this.testForm.el, true),
+        this.action(doc, 'sim-ne-join', 'Join multicast group', this.joinForm.el),
+        this.action(doc, 'sim-ne-stream', 'Start multicast stream', this.streamForm.el),
+        this.action(doc, 'sim-ne-iface', 'Interface actions', this.ifaceForm.el),
+      ]),
+    );
+    // Active events: everything the actions started (kept when done, up to a limit), and the other state changes in effect
+    const clear = el(doc, 'button', { type: 'button', id: 'sim-ev-clear', class: 'mini' }, ['Clear finished']) as HTMLButtonElement;
+    clear.addEventListener('click', () => {
+      const n = this.sim.clearFinished();
+      this.eventsKey = '';
+      this.updatePanels();
+      (doc.getElementById('sim-act-events-h') as HTMLElement).focus();
+      this.host.toast(`${n} finished event${n === 1 ? '' : 's'} cleared.`);
+    });
+    const evSec = this.sec(doc, 'sim-act-events', 'Active events', [el(doc, 'div', { class: 'sim-ev-bar-top' }, [el(doc, 'p', { id: 'sim-failed', class: 'small muted' }, ['None.']), clear]), el(doc, 'ul', { id: 'sim-events', class: 'sim-events' })]);
+    (evSec.querySelector('#sim-act-events-h') as HTMLElement).setAttribute('tabindex', '-1');
+    box.appendChild(evSec);
     // the selected device's Simulation settings (collapsed until opened)
     box.appendChild(el(doc, 'div', { id: 'sim-act-attrs', class: 'inspector sim-live' }));
-    this.testsKey = '';
+    this.eventsKey = '';
   }
 
-  /** The Actions panel's object part: its events as buttons, a device's interfaces and multicast forms. */
-  private renderObjectActions(box: HTMLElement): void {
-    const doc = this.host.doc;
-    const sel = this.host.selected ? this.host.selected() : null;
-    const obj = box.querySelector('#sim-obj') as HTMLSelectElement;
-    const ref = sel && sel.indexOf('hub:') === 0 ? 'relation:' + sel.slice(4) : sel;
-    const known = !!ref && Array.from(obj.options).some((o) => o.value === ref);
-    if (doc.activeElement !== obj) obj.value = known ? (ref as string) : '';
-    const list = box.querySelector('#sim-act-items') as HTMLElement;
-    const ifBox = box.querySelector('#sim-act-ifaces') as HTMLElement;
-    const mcBox = box.querySelector('#sim-act-mc') as HTMLElement;
-    const keepFocus = list.contains(doc.activeElement) ? (doc.activeElement as HTMLElement).textContent : null;
-    // the interface list and the multicast forms keep what is typed in them while the object stays the same
-    const same = box.getAttribute('data-obj') === String(ref);
-    box.setAttribute('data-obj', String(ref));
-    while (list.firstChild) list.removeChild(list.firstChild);
-    if (!same) for (const b of [ifBox, mcBox]) while (b.firstChild) b.removeChild(b.firstChild);
-    if (!ref) {
-      list.appendChild(el(doc, 'p', { class: 'muted small' }, ['Click a cable, relation, device or interface in the diagram, or choose an object above.']));
-    } else {
-      const r = list.getBoundingClientRect();
-      // a device's interfaces get their own list below, instead of the second menu
-      const items = this.itemsFor(ref, r.left, r.bottom).filter((it) => it.label !== 'Shut an interface…' && it.label !== 'Join group…' && it.label !== 'Start stream…');
-      for (const it of items) {
-        const b = el(doc, 'button', { type: 'button', class: 'sp-act' }, [it.label]);
-        b.addEventListener('click', () => it.act());
-        list.appendChild(b);
-      }
-      if (!items.length) list.appendChild(el(doc, 'p', { class: 'muted small' }, ['Nothing to simulate for this object.']));
-      if (keepFocus) {
-        const again = Array.from(list.querySelectorAll('button')).find((b) => b.textContent === keepFocus) as HTMLElement | undefined;
-        (again || (list.querySelector('button') as HTMLElement | null) || obj).focus();
-      }
-    }
-    // a device: its interfaces (Shut or No shut, flapping) and, for a host, Join group and Start stream
-    if (same) {
-      const isel = ifBox.querySelector('#sim-iface') as HTMLSelectElement | null;
-      if (isel) isel.dispatchEvent(new Event('change'));
-    } else if (ref && ref.indexOf('device:') === 0) {
-      const dev = ref.slice(7);
-      const ifs = this.interfaces().filter((k) => k.indexOf(dev + ':') === 0);
-      if (ifs.length) {
-        const isel = el(doc, 'select', { id: 'sim-iface' }) as HTMLSelectElement;
-        for (const k of ifs) isel.appendChild(el(doc, 'option', { value: k }, [k.slice(dev.length + 1) + (this.eventOf('iface:' + k, 'shut') ? ' (shut)' : '')]));
-        const btns = el(doc, 'div', { class: 'sp-actions sp-inline', id: 'sim-iface-btns' });
-        const fill = (): void => {
-          const had = btns.contains(doc.activeElement) ? (doc.activeElement as HTMLElement).textContent : null;
-          for (let i = 0; i < isel.options.length; i++) {
-            const k = isel.options[i].value;
-            isel.options[i].textContent = k.slice(dev.length + 1) + (this.eventOf('iface:' + k, 'shut') ? ' (shut)' : '');
-          }
-          while (btns.firstChild) btns.removeChild(btns.firstChild);
-          const k = isel.value;
-          const items: MenuItem[] = [];
-          this.ifaceItems(dev, k.slice(dev.length + 1), items);
-          for (const it of items) {
-            const b = el(doc, 'button', { type: 'button', class: 'sp-act' }, [it.label]);
-            b.addEventListener('click', () => it.act());
-            btns.appendChild(b);
-          }
-          if (had) {
-            const again = Array.from(btns.querySelectorAll('button')).find((x) => x.textContent === had) || (btns.querySelector('button') as HTMLElement | null);
-            if (again) (again as HTMLElement).focus();
-          }
-        };
-        isel.addEventListener('change', fill);
-        fill();
-        ifBox.appendChild(el(doc, 'div', { class: 'sp-field' }, [el(doc, 'label', { for: 'sim-iface' }, ['Interface']), isel]));
-        ifBox.appendChild(btns);
-      }
-      const sdv = this.sim.engine.net.devices.get(dev);
-      const d = this.sim.tableDevices().find((q) => q.id === dev);
-      if (d && d.arp && sdv && !sdv.routes) this.buildMulticastForms(mcBox, dev);
-    }
+  /** An action of Network events: a heading whose button opens its form (all four always listed). */
+  private action(doc: Document, id: string, title: string, body: HTMLElement, open = false): HTMLElement {
+    const btn = el(doc, 'button', { type: 'button', class: 'sp-toggle', id: id + '-toggle', 'aria-expanded': open ? 'true' : 'false', 'aria-controls': id }, [el(doc, 'span', { class: 'psec-caret', 'aria-hidden': 'true' }, ['▸']), el(doc, 'span', {}, [title])]);
+    body.id = id;
+    body.hidden = !open;
+    btn.addEventListener('click', () => {
+      const o = btn.getAttribute('aria-expanded') !== 'true';
+      btn.setAttribute('aria-expanded', o ? 'true' : 'false');
+      body.hidden = !o;
+      if (this.host.panelChanged) this.host.panelChanged();
+    });
+    return el(doc, 'div', { class: 'sp-disc sim-ne', 'data-action': id.slice(7) }, [el(doc, 'h4', { class: 'sim-ne-h' }, [btn]), body]);
   }
 
-  /** Join group and Start stream for a host: two collapsed forms. */
-  private buildMulticastForms(box: HTMLElement, dev: string): void {
-    const doc = this.host.doc;
-    // (its interfaces as Send test lists them: "eth0 - 10.0.0.1")
-    const ifSel = (id: string): HTMLSelectElement => {
-      const s = el(doc, 'select', { id }) as HTMLSelectElement;
-      const sdv = this.sim.engine.net.devices.get(dev);
-      if (sdv) for (const l of Array.from(sdv.l3.values()).sort((a, b) => (a.id < b.id ? -1 : 1))) if (l.addrs.length && l.kind !== 'loopback' && l.kind !== 'tunnel') s.appendChild(el(doc, 'option', { value: dev + ':' + l.id }, [`${l.id} - ${l.addrs.map((x) => x.text.replace(/\/\d+$/, '')).join(', ')}`]));
-      return s;
+  /** A device's interfaces for Interface actions: "eth0 - 10.0.0.1" (one with an address), "p1" (a port), cabled or not. */
+  private interfaceChoices(dev: string): Array<{ id: string; label: string; cabled: boolean }> {
+    const sd = this.sim.engine.net.devices.get(dev);
+    return this.interfaces()
+      .filter((k) => k.indexOf(dev + ':') === 0)
+      .map((k) => {
+        const id = k.slice(dev.length + 1);
+        const l3 = sd ? sd.l3.get(id) : undefined;
+        const addrs = l3 ? l3.addrs.map((a) => a.text.replace(/\/\d+$/, '')) : [];
+        return { id, label: addrs.length ? `${id} - ${addrs.join(', ')}` : id, cabled: this.cabled(dev, id) };
+      });
+  }
+
+  /** The flapping cycle in effect: "down 5 s, up 10 s, 3 cycles" (Layer 1 parameters). */
+  private flapTimes(): string {
+    const p = (k: string): string => {
+      const r = this.sim.engine.params.get(k);
+      return formatValue(r.def, r.value);
     };
-    const lb = (f: string, t: string): HTMLElement => el(doc, 'label', { for: f }, [t]);
-    const jif = ifSel('sim-mc-jif');
-    const jg = el(doc, 'input', { type: 'text', id: 'sim-mc-jg', autocomplete: 'off', spellcheck: 'false', placeholder: 'e.g. 239.1.1.1' }) as HTMLInputElement;
-    const js = el(doc, 'input', { type: 'text', id: 'sim-mc-js', autocomplete: 'off', spellcheck: 'false', placeholder: 'SSM only, e.g. 10.30.0.30' }) as HTMLInputElement;
-    const jb = el(doc, 'button', { type: 'button', id: 'sim-mc-join', class: 'sp-act' }, ['Join group']);
-    const sif = ifSel('sim-mc-sif');
-    const sg = el(doc, 'input', { type: 'text', id: 'sim-mc-sg', autocomplete: 'off', spellcheck: 'false', placeholder: 'e.g. 239.1.1.1' }) as HTMLInputElement;
-    const sp = el(doc, 'input', { type: 'number', id: 'sim-mc-sp', min: '1', max: '65535', value: '5004', inputmode: 'numeric' }) as HTMLInputElement;
-    const si = el(doc, 'input', { type: 'number', id: 'sim-mc-si', min: '0.1', max: '3600', step: '0.1', value: '1', inputmode: 'decimal' }) as HTMLInputElement;
-    const ss = el(doc, 'input', { type: 'number', id: 'sim-mc-ss', min: '1', max: '65000', value: '1316', inputmode: 'numeric' }) as HTMLInputElement;
-    const sb = el(doc, 'button', { type: 'button', id: 'sim-mc-stream', class: 'sp-act' }, ['Start stream']);
-    const unit = (i: HTMLElement, u: string): HTMLElement => el(doc, 'span', { class: 'pinput' }, [i, el(doc, 'span', { class: 'punit' }, [u])]);
-    const msg = el(doc, 'p', { id: 'sim-mc-msg', class: 'small', role: 'status' }, ['']);
-    box.appendChild(this.disclosure(doc, 'sim-mc-join-form', 'Join group…', el(doc, 'div', { class: 'sim-test-form' }, [lb('sim-mc-jif', 'Interface'), jif, lb('sim-mc-jg', 'Group'), jg, lb('sim-mc-js', 'Sources'), js, el(doc, 'span'), jb])));
-    box.appendChild(this.disclosure(doc, 'sim-mc-stream-form', 'Start stream…', el(doc, 'div', { class: 'sim-test-form' }, [lb('sim-mc-sif', 'Interface'), sif, lb('sim-mc-sg', 'Group'), sg, lb('sim-mc-sp', 'UDP port'), sp, lb('sim-mc-si', 'Interval'), unit(si, 's'), lb('sim-mc-ss', 'Size'), unit(ss, 'bytes'), el(doc, 'span'), sb])));
-    // the disclosures' buttons are named as the menu entries they stand for
-    (box.querySelector('#sim-mc-join-form-toggle') as HTMLElement).id = 'sim-mc-join-toggle';
-    (box.querySelector('#sim-mc-stream-form-toggle') as HTMLElement).id = 'sim-mc-stream-toggle';
-    box.appendChild(msg);
-    const split = (v: string): [string, string] => [v.slice(0, v.indexOf(':')), v.slice(v.indexOf(':') + 1)];
-    jb.addEventListener('click', () => {
-      if (!jif.value || !jg.value.trim()) {
-        msg.textContent = 'Choose an interface and write a group.';
-        return;
-      }
-      const [d, i] = split(jif.value);
-      msg.textContent = this.joinGroup(d, i, jg.value.trim(), js.value.split(/[,\s]+/).filter((x) => x));
-    });
-    sb.addEventListener('click', () => {
-      const port = Number(sp.value);
-      const iv = Number(si.value);
-      const size = Number(ss.value);
-      if (!sif.value || !sg.value.trim()) {
-        msg.textContent = 'Choose an interface and write a group.';
-        return;
-      }
-      if (!(port >= 1 && port <= 65535 && Math.floor(port) === port) || !(iv >= 0.1 && iv <= 3600) || !(size >= 1 && size <= 65000 && Math.floor(size) === size)) {
-        msg.textContent = 'The port is 1–65535, the interval 0.1–3600 s, the size 1–65000 bytes.';
-        return;
-      }
-      const [d, i] = split(sif.value);
-      msg.textContent = this.startStream(d, i, sg.value.trim(), port, Math.round(iv * 1000), size);
-    });
+    const n = this.sim.engine.params.num('flap-cycles');
+    return `down ${p('flap-down')}, up ${p('flap-up')}, ${n ? n + ' cycle' + (n === 1 ? '' : 's') : 'until stopped'}`;
   }
+
 
   /** The simulation panel: the clock and the pacing on top; the status and the event log side by side. */
   private buildDock(box: HTMLElement): void {
@@ -1670,34 +1606,6 @@ export class SimController implements SimulationMode {
     if (ftx.textContent !== ft) ftx.textContent = ft;
   }
 
-  /** A Send test in the list: its result; a series with how many were sent, answered and failed, the latest result and Stop. */
-  private runItem(d: Document, r: TestRun): HTMLElement {
-    const res = (x: TestRun['tests'][number]): string => (x.done ? x.result + (x.ok && x.rtt !== undefined ? ', round trip ' + rttText(x.rtt) : '') : 'waiting…');
-    if (r.count === 1) {
-      const x = r.tests[0];
-      return el(d, 'li', { 'data-ok': x.done ? String(x.ok) : 'waiting', 'data-run': null }, [`t = ${fmtSec(x.started)} · ${x.series}: ${res(x)}`]);
-    }
-    const ok = r.tests.filter((x) => x.done && x.ok).length;
-    const failed = r.tests.filter((x) => x.done && !x.ok).length + r.skipped.length;
-    const going = r.tests.filter((x) => !x.done).length;
-    const parts = [`${r.sent} of ${r.count} sent`];
-    if (ok) parts.push(`${ok} answered`);
-    if (failed) parts.push(`${failed} failed`);
-    if (going) parts.push(`${going} on ${going === 1 ? 'its' : 'their'} way`);
-    if (r.stopped) parts.push(`stopped at t = ${fmtSec(r.stoppedAt as number)}`);
-    const last = r.tests.slice().reverse().find((x) => x.done);
-    const skip = r.skipped.length ? r.skipped[r.skipped.length - 1] : null;
-    const latest = skip && (!last || skip.t >= last.started) ? skip.why : last ? res(last) : '';
-    const li = el(d, 'li', { 'data-ok': runActive(r) ? 'waiting' : failed ? 'false' : 'true', 'data-series': String(r.id) }, [`t = ${fmtSec(r.t0)} · ${r.series}, ${r.count} messages every ${secText(r.interval)}: ${parts.join(', ')}${latest ? `. Latest: ${latest}` : ''}`]);
-    if (runPending(r)) {
-      const b = el(d, 'button', { type: 'button', class: 'mini', 'data-run': String(r.id), 'aria-label': `Stop ${r.series} (${r.sent} of ${r.count} sent)` }, ['Stop']);
-      b.addEventListener('click', () => this.stopRun(r.id));
-      li.appendChild(el(d, 'span', {}, [' ']));
-      li.appendChild(b);
-    }
-    return li;
-  }
-
   /** The panels' live parts: the events, the object's actions, the status, the tests and the log. */
   updatePanels(): void {
     const d = this.host.doc;
@@ -1720,56 +1628,38 @@ export class SimController implements SimulationMode {
       }
     }
     if (this.editor) this.editor.set(this.sim.params.simValues());
-    // the Actions panel: the object's events (rebuilt when what is down or the selection changed)
+    // the Actions panel: the selected device's Simulation settings (rebuilt when the selection changed)
     const act = this.host.actionsBox ? this.host.actionsBox() : null;
-    const evs = this.sim.netEvents();
     const sel = this.host.selected ? this.host.selected() : null;
-    const ak = `${sel}|${evs.map((e) => e.ref + e.kind + e.state).join(',')}|${this.domain ? this.domain.what : ''}`;
-    if (act && act.querySelector('#sim-act-items') && ak !== this.actionsKey) {
+    const ak = `${sel}`;
+    if (act && act.querySelector('#sim-act-attrs') && ak !== this.actionsKey) {
       this.actionsKey = ak;
-      this.renderObjectActions(act);
       const attrs = act.querySelector('#sim-act-attrs') as HTMLElement;
-      const focusIn = attrs.contains(d.activeElement);
-      if (!focusIn) {
+      if (!attrs.contains(d.activeElement)) {
         while (attrs.firstChild) attrs.removeChild(attrs.firstChild);
         if (this.host.simSection) this.host.simSection(attrs);
       }
     }
-    // the network events in effect, each with its way back
-    const ek = evs.map((e) => e.ref + e.kind + e.state).join('|');
+    // the forms of Network events (a lease bound or lost, a device powered off, an interface shut …)
+    for (const f of [this.testForm, this.joinForm, this.streamForm, this.ifaceForm]) if (f && f.el.isConnected) f.sync();
+    // Active events: the events of Network events (newest first) and the other state changes in effect
+    const views = this.sim.actions();
+    const others = this.sim.otherEvents();
+    const ek = listKey(views, others);
     const ul = q('sim-events');
     if (ul && ek !== this.eventsKey) {
       this.eventsKey = ek;
-      (q('sim-failed') as HTMLElement).textContent = evs.length ? `${evs.length} in effect; several can be at once.` : 'None. The diagram’s menus and the buttons above start them.';
+      const going = views.filter((v) => v.status === 'queued' || v.status === 'running').length + others.length;
+      const done = views.length - views.filter((v) => v.status === 'queued' || v.status === 'running').length;
+      const sum = views.length + others.length ? `${going} in effect or in progress · ${done} finished` : 'None yet: start one above, or from the diagram’s menus.';
+      const fe = q('sim-failed') as HTMLElement;
+      if (fe.textContent !== sum) fe.textContent = sum;
+      const clear = q('sim-ev-clear');
+      if (clear) clear.hidden = done === 0;
       const h = q('sim-act-events-h');
-      if (h) h.textContent = `Active events${evs.length ? ` (${evs.length})` : ''}`;
-      while (ul.firstChild) ul.removeChild(ul.firstChild);
-      for (const e of evs) {
-        const what = e.kind === 'fail' ? 'failed' : e.kind === 'flap' ? `flapping (${e.state})` : e.kind === 'shut' ? 'shut' : e.state;
-        const li = el(d, 'li', { 'data-event': e.kind, 'data-ref': e.ref }, [el(d, 'span', {}, [`${this.cap(this.label(e.ref))}: ${what}, since t = ${fmtSec(e.since)}`])]);
-        if (!e.hosted) {
-          const b = el(d, 'button', { type: 'button', class: 'mini', 'aria-label': `${this.endLabel(e)}: ${this.label(e.ref)}` }, [this.endLabel(e)]);
-          b.addEventListener('click', () => this.endEvent(e));
-          li.appendChild(b);
-        }
-        ul.appendChild(li);
-      }
-    }
-    // the Send test form (a lease bound or lost, a device powered off …)
-    if (this.testForm && this.testForm.el.isConnected) this.testForm.sync();
-    // the latest tests: one line each, a series with its counts and Stop
-    const tl = q('sim-tests');
-    const runs = this.sim.testRuns().slice(0, 6);
-    const tk = runs.map((r) => `${r.id}|${r.sent}|${r.stopped}|${r.tests.map((x) => x.id + (x.done ? x.result : '')).join(',')}`).join('/');
-    if (tl && tk !== this.testsKey) {
-      this.testsKey = tk;
-      const keep = tl.contains(d.activeElement) ? (d.activeElement as HTMLElement).getAttribute('data-run') : null;
-      while (tl.firstChild) tl.removeChild(tl.firstChild);
-      for (const r of runs) tl.appendChild(this.runItem(d, r));
-      if (keep) {
-        const again = tl.querySelector(`[data-run="${keep}"]`) as HTMLElement | null;
-        if (again) again.focus();
-      }
+      const ht = `Active events${views.length + others.length ? ` (${views.length + others.length})` : ''}`;
+      if (h && h.textContent !== ht) h.textContent = ht;
+      renderEvents(d, ul, { control: (id, op) => void this.actionControl(id, op), end: (e) => void this.endEvent(e), endLabel: (e) => this.endLabel(e), label: (r) => this.label(r), inspect: (id) => this.inspectTest(id) }, views, others);
     }
     // the status side: the protocols' status, or a device's table
     const box = q('sim-status-table');

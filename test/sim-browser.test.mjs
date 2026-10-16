@@ -114,15 +114,15 @@ test('the simulation layout: setup and actions in place of the Objects list and 
       setup: v('sim-setup'), objects: v('outline-body'), actions: v('sim-actions'), tabs: v('side-body') || !!document.querySelector('#side .tabs').getClientRects().length, dock: v('sim-dock'),
       outlineName: document.getElementById(document.getElementById('outline').getAttribute('aria-labelledby')).textContent, sideName: document.getElementById(document.getElementById('side').getAttribute('aria-labelledby')).textContent,
       toolwin: netatlas.toolWindow(), detach: !!document.querySelector('#sim-dock .tw-dock, #sim-dock .tw-close'),
-      scroll: document.documentElement.scrollHeight - document.documentElement.clientHeight, obj: document.getElementById('sim-obj').value,
-      acts: Array.from(document.querySelectorAll('#sim-act-items button')).map((b) => b.textContent) }; })()`);
+      scroll: document.documentElement.scrollHeight - document.documentElement.clientHeight, obj: !!document.getElementById('sim-obj'),
+      acts: Array.from(document.querySelectorAll('#sim-act-net .sim-ne-h button > span:last-child')).map((b) => b.textContent) }; })()`);
     assert.deepEqual([L.setup, L.objects, L.actions, L.tabs, L.dock], [true, false, true, false, true]);
     assert.deepEqual([L.outlineName, L.sideName], ['Simulation setup', 'Actions']);
     assert.equal(L.toolwin, '', 'no floating window');
     assert.equal(L.detach, false, 'the panel has nothing to detach or close it');
     assert.equal(L.scroll, 0);
-    assert.equal(L.obj, 'device:core1', 'the selected object is the actions’ object');
-    assert.ok(L.acts.indexOf('Show ARP table') >= 0 && L.acts.indexOf('Power off') >= 0, L.acts.join('|'));
+    assert.equal(L.obj, false, 'no object to choose first');
+    assert.deepEqual(L.acts, ['Send network packets', 'Join multicast group', 'Start multicast stream', 'Interface actions'], 'the four actions, whatever is selected');
     // the panel: by default its header and three rows of each table, which is also its minimum; the diagram is the largest part
     const h0 = await page.eval(`document.getElementById('sim-dock').getBoundingClientRect().height`);
     const cw = await page.eval(`document.getElementById('canvas-wrap').getBoundingClientRect().height`);
@@ -178,12 +178,10 @@ test('the in-diagram menu with the mouse and the keyboard; the device tables in 
     assert.deepEqual(m.items, ['Fail link', 'Start flapping', 'Highlight broadcast domain']);
     assert.equal(m.active, 'Fail link', 'the keyboard is in the menu');
     assert.ok(Math.abs(m.x - x) < 40 && Math.abs(m.y - y) < 40, 'at that spot');
-    // the Actions panel offers the same for the cable (it is selected now)
-    assert.deepEqual(await page.eval(`Array.from(document.querySelectorAll('#sim-act-items button')).map((b) => b.textContent)`), m.items);
     await page.key('Enter', 'Enter', 13);
     await page.settle(150);
     assert.equal(await page.eval(`netatlas.simController().sim.downRefs().indexOf('link:l-carrier-r3') >= 0`), true);
-    assert.deepEqual(await page.eval(`[document.querySelector('#sim-events li[data-ref="link:l-carrier-r3"] button').textContent, Array.from(document.querySelectorAll('#sim-act-items button')).map((b) => b.textContent)[0]]`), ['Restore', 'Restore link']);
+    assert.equal(await page.eval(`document.querySelector('#sim-events li[data-ref="link:l-carrier-r3"] button').textContent`), 'Restore');
     // the same cable again: Restore link; Esc closes the menu
     await page.mouse('mousePressed', x, y, 'left');
     await page.mouse('mouseReleased', x, y, 'left');
@@ -192,8 +190,9 @@ test('the in-diagram menu with the mouse and the keyboard; the device tables in 
     await page.key('Escape', 'Escape', 27);
     await page.settle(80);
     assert.equal(await page.eval(`!!document.querySelector('.sim-menu') || !netatlas.simulationOn()`), false, 'Esc closes the menu, the simulation goes on');
-    // Restore from the Actions panel
-    await page.click('#sim-act-items button');
+    // Restore from Active events
+    await page.eval(`document.querySelector('#sim-events li[data-ref="link:l-carrier-r3"] button').scrollIntoView({ block: 'nearest' }), true`);
+    await page.click('#sim-events li[data-ref="link:l-carrier-r3"] button');
     await page.settle(100);
     assert.equal(await page.eval(`netatlas.simController().sim.netEvents().some((e) => e.ref === 'link:l-carrier-r3')`), false, 'restored (it comes up after its link-up delay)');
     // a switch: Show ARP table, Show MAC table (arrow keys move between them); the table shows in the simulation panel
@@ -401,11 +400,11 @@ test('Layers 3 and 4 on screen: a log message opens the packet inspector (keyboa
     await page.key('Enter', 'Enter', 13);
     await page.settle(80);
     // (paused: sent at the current time, it moves when the simulation plays; Send and play is offered)
-    assert.match(await page.eval(`document.getElementById('sim-t-msg').textContent`), /^Sent at t = [\d.]+ s: pc1 → srv tcp\/22\. It starts when the simulation plays\.$/);
+    assert.match(await page.eval(`document.getElementById('sim-t-msg').textContent`), /^Sent at t = [\d.]+ s: pc1 → srv tcp\/22; see Active events\. It starts when the simulation plays\.$/);
     assert.equal(await page.eval(`document.getElementById('sim-t-sendplay').hidden`), false);
     await page.eval(`netatlas.simController().runTo(netatlas.simController().t + 3000), true`);
     await page.settle(80);
-    assert.match(await page.eval(`document.querySelector('#sim-tests li').textContent`), /pc1 → srv tcp\/22: connection refused: RST from 10\.30\.0\.10 \(srv\)/);
+    assert.match(await page.eval(`document.querySelector('#sim-events li[data-kind="send"]').textContent`), /pc1 → srv tcp\/22.*#1 at t = [\d.]+ s: connection refused: RST from 10\.30\.0\.10 \(srv\)/);
     // Send test… from a device's menu: the Actions panel's form with it as the source, the keyboard in its To field
     await page.eval(`netatlas.simController().sendTestFrom('pc2'), true`);
     await page.settle(80);
@@ -429,33 +428,37 @@ test('Layers 3 and 4 on screen: a log message opens the packet inspector (keyboa
   }
 });
 
-test('multicast on screen: Join group… from a device’s menu (the Actions panel’s form), the event with Leave group, the IGMP groups, the multicast table and routes, IGMP in the inspector', { skip, timeout: 180000 }, async () => {
+test('multicast on screen: Join multicast group… from a device’s menu (the Actions panel’s form), the event with Leave group, the IGMP groups, the multicast table and routes, IGMP in the inspector', { skip, timeout: 180000 }, async () => {
   const page = await openPage(url, { width: 1440, height: 900 });
   try {
     await start(page);
     await page.eval(`netatlas.startProtocolSimulation(), netatlas.simController().setPlaying(false), netatlas.simController().runTo(40000), netatlas.fit(), true`);
     await page.settle(150);
-    // a host's menu: Join group…, Leave group for its own groups, Start stream…
+    // a host's menu: Join multicast group…, Leave group for its own groups, Start multicast stream…
     const sw = await page.rect('#canvas .node[data-ref="device:pc1"]');
     await page.mouse('mousePressed', sw.x + 10, sw.y + 10, 'left');
     await page.mouse('mouseReleased', sw.x + 10, sw.y + 10, 'left');
     await page.settle(120);
     const items = await page.eval(`Array.from(document.querySelectorAll('.sim-menu [role=menuitem]')).map((i) => i.textContent)`);
-    for (const it of ['Join group…', 'Leave group 239.1.1.1', 'Start stream…']) assert.ok(items.indexOf(it) >= 0, items.join('|'));
-    await page.eval(`Array.from(document.querySelectorAll('.sim-menu [role=menuitem]')).find((b) => b.textContent === 'Join group…').click(), true`);
+    for (const it of ['Join multicast group…', 'Leave group 239.1.1.1', 'Start multicast stream…']) assert.ok(items.indexOf(it) >= 0, items.join('|'));
+    await page.eval(`Array.from(document.querySelectorAll('.sim-menu [role=menuitem]')).find((b) => b.textContent === 'Join multicast group…').click(), true`);
     await page.settle(120);
-    assert.deepEqual(await page.eval(`[document.getElementById('sim-mc-join-toggle').getAttribute('aria-expanded'), document.getElementById('sim-mc-jif').value, document.activeElement.id]`), ['true', 'pc1:eth0', 'sim-mc-jg']);
+    assert.deepEqual(await page.eval(`[document.getElementById('sim-ne-join-toggle').getAttribute('aria-expanded'), document.getElementById('sim-j-dev').value, document.getElementById('sim-j-if').value, document.activeElement.id]`), ['true', 'pc1', 'eth0', 'sim-j-group']);
     await page.type('239.4.4.4');
-    await page.eval(`document.getElementById('sim-mc-join').scrollIntoView({ block: 'center' }), true`);
-    await page.click('#sim-mc-join');
+    await page.eval(`document.getElementById('sim-j-go').scrollIntoView({ block: 'center' }), true`);
+    await page.click('#sim-j-go');
     await page.settle(100);
-    assert.deepEqual(await page.eval(`[document.getElementById('sim-mc-msg').textContent, document.getElementById('sim-mc-join-toggle').getAttribute('aria-expanded'), document.getElementById('sim-mc-jg').value]`), ['pc1:eth0 joins 239.4.4.4.', 'true', '239.4.4.4'], 'the form stays as it was');
-    const ev = await page.eval(`(() => { const li = document.querySelector('#sim-events li[data-event="join"]'); return li ? [li.textContent, li.querySelector('button').textContent] : null; })()`);
-    assert.match(ev[0], /joined 239\.4\.4\.4/);
-    assert.equal(ev[1], 'Leave group');
-    await page.eval(`document.querySelector('#sim-events li[data-event="join"] button').click(), true`);
+    const jm = await page.eval(`[document.getElementById('sim-j-msg').textContent, document.getElementById('sim-ne-join-toggle').getAttribute('aria-expanded'), document.getElementById('sim-j-group').value]`);
+    assert.match(jm[0], /^pc1:eth0 → 239\.4\.4\.4: joining at t = [\d.]+ s; see Active events\.$/);
+    assert.deepEqual(jm.slice(1), ['true', '239.4.4.4'], 'the form stays as it was');
+    await page.eval(`(() => { const c = netatlas.simController(); c.runTo(c.t + 3000); c.refresh(true); return true; })()`);
+    const ev = await page.eval(`(() => { const li = document.querySelector('#sim-events li[data-kind="join"]'); return li ? [li.getAttribute('data-status'), li.querySelector('.sim-ev-summary').textContent, li.querySelector('button[data-op="leave"]').textContent] : null; })()`);
+    assert.equal(ev[0], 'completed');
+    assert.match(ev[1], /^membership recorded by \S+ · member of 239\.4\.4\.4$/);
+    assert.equal(ev[2], 'Leave group');
+    await page.eval(`document.querySelector('#sim-events li[data-kind="join"] button[data-op="leave"]').click(), true`);
     await page.settle(100);
-    assert.equal(await page.eval(`!!document.querySelector('#sim-events li[data-event="join"]')`), false);
+    assert.match(await page.eval(`document.querySelector('#sim-events li[data-kind="join"] .sim-ev-summary').textContent`), /not a member \(left at t = /, 'the event stays, its membership over');
     // the tables, in the simulation panel
     await page.eval(`netatlas.simController().showTable('snoop', 'acc-sw'), true`);
     await page.settle(100);

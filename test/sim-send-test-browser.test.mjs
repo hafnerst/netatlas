@@ -53,7 +53,7 @@ test('paused: Send sends at the current time and says it starts when the simulat
     const s = await page.eval(`(() => { const c = netatlas.simController(); const t = c.sim.tests()[0];
       return { msg: document.getElementById('sim-t-msg').textContent, t: c.t, clock: c.pacer.clock, playing: c.playing, started: t.started,
         items: c.drawItems().filter((d) => d.f.test === t.id).length, labels: Array.from(document.querySelectorAll('#canvas .layer-sim-labels .sim-test text')).map((x) => x.textContent) }; })()`);
-    assert.match(s.msg, /^Sent at t = 30 s: pc1 → srv ICMP echo\. It starts when the simulation plays\.$/);
+    assert.match(s.msg, /^Sent at t = 30 s: pc1 → srv ICMP echo; see Active events\. It starts when the simulation plays\.$/);
     assert.equal(s.playing, false);
     assert.equal(s.t, before.t, 'paused: the time does not move');
     assert.equal(s.clock, before.clock);

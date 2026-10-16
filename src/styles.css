@@ -1546,8 +1546,42 @@ dialog#modal.sim-start-dialog .modal-body { max-height: none; overscroll-behavio
 .perr[hidden] { display: none; }
 .psec-foot { display: flex; justify-content: flex-end; }
 /* the network events in effect, each with its way back */
-.sim-events li { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: 12.5px; }
-.sim-events li > span { flex: 1 1 200px; min-width: 0; overflow-wrap: anywhere; }
+/* Network events: four actions, each a heading with its form */
+.sim-ne { margin: 2px 0; }
+#side .sim-ne-h, .sim-ne > h4.sim-ne-h { margin: 0; font-size: inherit; font-weight: normal; text-transform: none; letter-spacing: normal; color: inherit; }
+.sim-ne-h .sp-toggle { font-weight: 600; }
+.sim-ne > [id^="sim-ne-"] { padding: 4px 0 8px 14px; }
+.sim-ev-form .sp-row { margin-top: 6px; }
+/* Active events: compact rows; the state by icon and word, bars with their numbers */
+.sim-ev-bar-top { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; justify-content: space-between; }
+.sim-ev-bar-top p { margin: 0; }
+.sim-events li.sim-ev { display: block; font-size: 12.5px; padding: 5px 6px; border: 1px solid var(--border); border-radius: 5px; background: var(--panel); min-width: 0; }
+.sim-ev-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 6px; }
+.sim-ev-icon { width: 1.1em; text-align: center; }
+.sim-ev-title { font-weight: 600; overflow-wrap: anywhere; min-width: 0; }
+.sim-ev-status { font-size: 11.5px; padding: 0 5px; border: 1px solid currentColor; border-radius: 9px; }
+.sim-ev-time { margin-left: auto; font-size: 11.5px; }
+.sim-ev[data-status="running"] .sim-ev-icon, .sim-ev[data-status="running"] .sim-ev-status, .sim-ev[data-status="queued"] .sim-ev-status { color: var(--accent); }
+.sim-ev[data-status="completed"] .sim-ev-icon, .sim-ev[data-status="completed"] .sim-ev-status { color: var(--ok); }
+.sim-ev[data-status="failed"] .sim-ev-icon, .sim-ev[data-status="failed"] .sim-ev-status { color: var(--error); }
+.sim-ev-target, .sim-ev-summary { overflow-wrap: anywhere; min-width: 0; }
+.sim-ev-target { color: var(--muted); }
+.sim-ev-row { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; margin: 2px 0; }
+.sim-ev-progress { flex: 1 1 90px; min-width: 60px; max-width: 220px; height: 8px; accent-color: var(--accent); }
+.sim-ev-count { font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.sim-ev-bar { display: flex; flex: 1 1 90px; min-width: 60px; max-width: 220px; height: 8px; border: 1px solid var(--control-border); border-radius: 4px; overflow: hidden; background: var(--canvas); }
+.sim-ev-seg { display: block; flex-basis: 0; min-width: 2px; }
+.sim-ev-seg.ok { background: var(--ok); }
+.sim-ev-seg.fail { background: var(--error); background-image: repeating-linear-gradient(45deg, transparent 0 3px, var(--panel) 3px 4px); }
+.sim-ev-seg.pending { background: var(--muted); opacity: 0.45; }
+.sim-ev-seg.unknown { background: transparent; }
+.sim-ev-actions { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 4px 8px; margin-top: 3px; }
+.sim-ev-details { flex: 1 1 100%; min-width: 0; }
+.sim-ev-details summary { cursor: pointer; font-size: 12px; width: fit-content; }
+.sim-ev-details ul { margin: 2px 0 4px; padding-left: 16px; overflow-wrap: anywhere; }
+.sim-ev-other .sim-ev-title { font-weight: normal; }
+.sim-ev-other .sim-ev-actions { margin-top: 2px; }
+#sim-act-events-h:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 /* a device's Simulation section in the Edit tab */
 .fgroup-disclosure { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; }
 .fgroup-toggle { border: none; background: none; padding: 0; font: inherit; font-weight: inherit; color: inherit; text-align: left; }

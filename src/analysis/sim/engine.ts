@@ -240,7 +240,7 @@ export interface EngineOptions {
 }
 
 /** A cable flapping: down for the flapping down time, up for the up time, so many cycles (0: until stopped). */
-interface Flap {
+export interface Flap {
   link: string;
   /** what was flapped: the cable, or a port of it */
   ref: string;
@@ -248,6 +248,9 @@ interface Flap {
   down: boolean;
   done: number;
   token: number;
+  /** how it ended (its cycles done, or Stop flapping) and when; unset while it flaps */
+  ended?: 'done' | 'stopped';
+  endedAt?: number;
 }
 
 export class Engine {
@@ -3120,10 +3123,24 @@ export class Engine {
     this.stateVersion++;
     if (!fl.down && cycles > 0 && fl.done >= cycles) {
       this.flaps.delete(fl.link);
+      fl.ended = 'done';
+      fl.endedAt = this.now;
       this.note('link', 'link', '', '', 'Flapping over', 'up', `Cable ${fl.link} stops flapping after ${fl.done} cycle${fl.done === 1 ? '' : 's'}`);
       return;
     }
     this.at(this.now + this.params.num(fl.down ? 'flap-down' : 'flap-up'), () => this.flapStep(fl));
+  }
+
+  /** The flapping of a cable or a port's cable going on now (the object stays the same until it ends). */
+  flapOf(ref: string): Flap | undefined {
+    const link = this.flapLink(ref);
+    return link ? this.flaps.get(link) : undefined;
+  }
+
+  /** Is an interface shut (by No shut it comes back)? */
+  isShut(dev: string, iface: string): boolean {
+    const at = this.simPort(dev, iface);
+    return this.shutPorts.has(portKey(at.device, at.port)) || this.shutL3.has(dev + ':' + iface);
   }
 
   stopFlap(ref: string): boolean {
@@ -3131,6 +3148,8 @@ export class Engine {
     const fl = link ? this.flaps.get(link) : undefined;
     if (!fl || !link) return false;
     this.flaps.delete(link);
+    fl.ended = 'stopped';
+    fl.endedAt = this.now;
     this.note('link', 'link', '', '', 'Flapping stopped', 'up', `Cable ${link} stops flapping (Stop flapping)`);
     this.updateCable(link);
     this.stateVersion++;

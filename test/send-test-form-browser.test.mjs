@@ -7,7 +7,8 @@
 // interface (several: a choice; one: shown); protocols by delivery type, a
 // port only for TCP and UDP, cleared when it stops applying; the message
 // count and interval; a series listed with its counts and Stop; every control
-// named; Send test… from a device's menu.
+// named; Send network packets… from a device's menu. The sends are events of
+// Active events: one per series, with its progress, outcome and Stop.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
@@ -168,8 +169,8 @@ for (const theme of ['light', 'dark']) {
       await page.click('#sim-t-send');
       await page.eval(`(() => { const c = netatlas.simController(); c.runTo(c.t + 7000); c.refresh(true); return true; })()`);
       await page.settle(100);
-      let res = await page.eval(`Array.from(document.querySelectorAll('#sim-tests li')).map((li) => li.textContent)`);
-      assert.ok(res.some((r) => /guest-phone → nas tcp\/445: no answer within 5 s .*dropped at dsl-router: .*no relation of the model and no allow entry permits it/.test(r)), res.join(' | '));
+      let res = await page.eval(`Array.from(document.querySelectorAll('#sim-events li[data-kind="send"]')).map((li) => li.textContent)`);
+      assert.ok(res.some((r) => /guest-phone → nas tcp\/445.*no answer within 5 s .*dropped at dsl-router: .*no relation of the model and no allow entry permits it/.test(r)), res.join(' | '));
       // a series: three pings a second apart, listed with its counts and Stop until the last is sent
       await set('sim-t-from', 'laptop');
       await set('sim-t-to', 'nas');
@@ -178,29 +179,31 @@ for (const theme of ['light', 'dark']) {
       await set('sim-t-interval', '1', 'input');
       await page.eval(`document.getElementById('sim-t-send').scrollIntoView({ block: 'nearest' }), true`);
       await page.click('#sim-t-send');
-      assert.match(await page.eval(`document.getElementById('sim-t-msg').textContent`), /^Message 1 of 3 sent at t = [\d.]+ s, then one every 1 s: laptop → nas ICMP echo\. It starts when the simulation plays\.$/);
-      res = await page.eval(`(() => { const li = document.querySelector('#sim-tests li'); const b = li.querySelector('button'); return [li.textContent, b ? b.textContent : null, b ? b.getAttribute('aria-label') : null]; })()`);
-      assert.match(res[0], /laptop → nas ICMP echo, 3 messages every 1 s: 1 of 3 sent, 1 on its way/);
-      assert.deepEqual(res.slice(1), ['Stop', 'Stop laptop → nas ICMP echo (1 of 3 sent)']);
+      assert.match(await page.eval(`document.getElementById('sim-t-msg').textContent`), /^Message 1 of 3 sent at t = [\d.]+ s, then one every 1 s: laptop → nas ICMP echo; see Active events\. It starts when the simulation plays\.$/);
+      const EV = `(() => { const li = document.querySelector('#sim-events li[data-kind="send"]'); const b = li.querySelector('button[data-op="stop"]'); const t = (s) => (li.querySelector(s) || { textContent: null }).textContent; return { status: li.getAttribute('data-status'), target: t('.sim-ev-target'), count: t('.sim-ev-count'), summary: t('.sim-ev-summary'), stop: b ? b.getAttribute('aria-label') : null, n: document.querySelectorAll('#sim-events li[data-kind="send"]').length }; })()`;
+      res = await page.eval(EV);
+      assert.deepEqual([res.status, res.target, res.count, res.stop], ['running', 'laptop → nas ICMP echo · 3 × 1 s', '1/3 sent', 'Stop: Send network packets, laptop → nas ICMP echo · 3 × 1 s']);
+      assert.equal(res.summary, '1 pending', 'pending, not failed');
+      const sends = res.n;
       await page.eval(`(() => { const c = netatlas.simController(); c.runTo(c.t + 5000); c.refresh(true); return true; })()`);
-      res = await page.eval(`(() => { const li = document.querySelector('#sim-tests li'); return [li.textContent, !!li.querySelector('button'), li.getAttribute('data-ok')]; })()`);
-      assert.match(res[0], /3 of 3 sent, 3 answered\. Latest: Echo Reply from 192\.168\.10\.20/);
-      assert.deepEqual(res.slice(1), [false, 'true']);
+      res = await page.eval(EV);
+      assert.deepEqual([res.status, res.count, res.summary, res.stop, res.n], ['completed', '3/3 sent', '3 answered', null, sends], 'one event for the series');
+      assert.equal(await page.eval(`document.querySelector('#sim-events li[data-kind="send"] .sim-ev-bar').getAttribute('aria-label')`), 'Outcome of 3 messages: 3 succeeded, 0 failed, 0 pending; 100 % of those finished succeeded');
       // Stop: a longer series stops where it is
       await set('sim-t-count', '20', 'input');
       await page.click('#sim-t-send');
       await page.eval(`(() => { const c = netatlas.simController(); c.runTo(c.t + 2500); c.refresh(true); return true; })()`);
-      await page.eval(`document.querySelector('#sim-tests li button').click(), true`);
+      await page.eval(`document.querySelector('#sim-events li[data-kind="send"] button[data-op="stop"]').click(), true`);
       await page.eval(`(() => { const c = netatlas.simController(); c.runTo(c.t + 30000); c.refresh(true); return true; })()`);
-      res = await page.eval(`document.querySelector('#sim-tests li').textContent`);
-      assert.match(res, /: 3 of 20 sent, 3 answered, stopped at t = /);
+      res = await page.eval(EV);
+      assert.deepEqual([res.status, res.count, res.summary], ['stopped', '3/20 sent', '3 answered']);
       // every control of the form has a name; nothing in it is wider than the panel
-      const unnamed = await page.eval(`Array.from(document.querySelectorAll('#sim-test select, #sim-test input, #sim-test button')).filter((e) => !(e.labels && e.labels.length) && !e.getAttribute('aria-label') && !e.getAttribute('aria-labelledby') && !e.textContent.trim()).map((e) => e.id)`);
+      const unnamed = await page.eval(`Array.from(document.querySelectorAll('#sim-ne-send select, #sim-ne-send input, #sim-ne-send button')).filter((e) => !(e.labels && e.labels.length) && !e.getAttribute('aria-label') && !e.getAttribute('aria-labelledby') && !e.textContent.trim()).map((e) => e.id)`);
       assert.deepEqual(unnamed, []);
-      const wide = await page.eval(`(() => { const box = document.getElementById('sim-test').getBoundingClientRect(); return Array.from(document.querySelectorAll('#sim-test *')).filter((e) => e.getBoundingClientRect().right > box.right + 1).map((e) => e.id || e.tagName); })()`);
+      const wide = await page.eval(`(() => { const box = document.getElementById('sim-actions').getBoundingClientRect(); return Array.from(document.querySelectorAll('#sim-actions *')).filter((e) => e.getClientRects().length).filter((e) => e.getBoundingClientRect().right > box.right + 1).map((e) => e.id || e.tagName); })()`);
       assert.deepEqual(wide, []);
-      // Send test… in a device's menu: it becomes the source; one that can't send says so in a few words
-      await page.eval(`(() => { const c = netatlas.simController(); c.itemsFor('device:isp').find((i) => i.label === 'Send test…').act(); return true; })()`);
+      // Send network packets… in a device's menu: it becomes the source; one that can't send says so in a few words
+      await page.eval(`(() => { const c = netatlas.simController(); c.itemsFor('device:isp').find((i) => i.label === 'Send network packets…').act(); return true; })()`);
       s = await st();
       assert.equal(s.from, 'isp');
       assert.equal(s.need, 'isp: Cannot send IP packets.');

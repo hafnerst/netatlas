@@ -240,6 +240,26 @@ there is no conversion of files written for the earlier drafts.
 
 ### Added
 
+- **Network events as direct actions:** the Actions panel starts with
+  **Send network packets**, **Join multicast group**, **Start multicast
+  stream** and **Interface actions** (Shut interface, Start flapping), each
+  with a form that chooses its own device and interface. Nothing has to be
+  selected in the diagram first, and the diagram's selection never changes
+  a form (a device's menu fills in its device when asked).
+- **Active events as one event list,** below the actions: every operation
+  as one event with a stable id, its state (*Queued*, *In progress*,
+  *Completed*, *Failed*, *Stopped*, *Cancelled*, as an icon and a word,
+  read from the simulation), its progress and outcome, its controls (Stop,
+  No shut, Leave group) and details (the basis of its outcome, its
+  messages, the packet inspector). A series is one event with *sent of
+  requested* and an outcome bar; success rates only for unicast (answered)
+  and multicast (received by a member); a broadcast without an answer is
+  *unknown*; a pending message is never a failure. A join completes when a
+  multicast router records it (or its reports are sent) and shows its
+  membership; a shut completes at once and shows the interface down. Up to
+  50 finished events are kept; **Clear finished**.
+- **A stream counts what each member received** apart from the datagrams
+  it sent.
 - **Send test asks for the delivery type first:** Unicast, Multicast,
   Local broadcast (limited, or the source interface's subnet) or Directed
   broadcast (an explicit subnet of the model). From and To stay greyed
@@ -1001,6 +1021,14 @@ there is no conversion of files written for the earlier drafts.
 
 ### Changed
 
+- **Send test is Send network packets** (its form and a device's menu
+  entry); **Join group…** and **Start stream…** are **Join multicast
+  group…** and **Start multicast stream…**.
+- **The Actions panel has no object list any more,** and Network events no
+  table viewers (Show ARP table …): those are in the diagram's menus and on
+  the simulation panel's status side, as before. Fail link and Power off
+  are started from the diagram's menus and listed in Active events. The
+  list of latest tests under Send test is replaced by Active events.
 - **Send test's interfaces are options "name - address"** (several
   addresses of one interface listed with commas as a source, as separate
   destinations), a device with one interface shows it as text, and the

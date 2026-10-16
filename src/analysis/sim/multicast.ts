@@ -148,7 +148,7 @@ interface MRoute {
 }
 
 /** A stream a host sends. */
-interface Stream {
+export interface Stream {
   id: number;
   dev: string;
   iface: string;
@@ -163,6 +163,10 @@ interface Stream {
   sent: number;
   gen: number;
   sport: number;
+  /** its datagrams each member received, by device */
+  rx: Map<string, number>;
+  /** when it was stopped (Stop stream) */
+  stoppedAt?: number;
 }
 
 /** What a receiver got of a group. */
@@ -405,17 +409,40 @@ export class Multicast {
   // ------------------------------------------------------------ hosts: join and leave
 
   /** A host joins a group on an interface (the model's join, or a Join group… event); a text when it cannot. */
-  join(dev: string, iface: string, group: string, sources: string[], origin: 'model' | 'event'): string | null {
+  /** Why a host can't join a group on an interface now, or null (the checks of `join`, nothing changed). */
+  joinProblem(dev: string, iface: string, group: string, sources: string[]): string | null {
     const g = parseAddress(group.trim());
     if (!g || !isMulticastIp(g)) return `${group} is not a multicast group`;
     if (isLinkLocalGroup(g)) return `${group} is a link-local group: it is never joined`;
     if (isSsmGroup(g) && !sources.length) return `${group} is a source-specific group: name its sources`;
     if (sources.length && this.ver(dev, iface) === 'v2') return `${dev} runs ${this.verName(g.version, 'v2')}: it cannot join with a source list`;
+    for (const s of sources) {
+      const a = parseAddress(s.trim());
+      if (!a || a.version !== g.version) return `${s} is not an IPv${g.version} source address`;
+    }
     if (!this.hostAddr(dev, iface, g.version)) return `${dev}:${iface} has no IPv${g.version} address`;
+    const m = this.hosts.get(dev + '|' + iface);
+    if (m && m.has(formatAddr(g))) return `${dev}:${iface} has already joined ${formatAddr(g)}`;
+    return null;
+  }
+
+  /** Is a host a member of a group on an interface now? */
+  isMember(dev: string, iface: string, group: string): boolean {
+    const g = parseAddress(group.trim());
+    const m = this.hosts.get(dev + '|' + iface);
+    return !!g && !!m && m.has(formatAddr(g));
+  }
+
+  /** Called when a multicast router's interface records a member's report (Network events follow joins by it). */
+  onMember: ((dev: string, iface: string, group: string, reporter: string) => void) | null = null;
+
+  join(dev: string, iface: string, group: string, sources: string[], origin: 'model' | 'event'): string | null {
+    const bad = this.joinProblem(dev, iface, group, sources);
+    if (bad) return bad;
+    const g = parseAddress(group.trim()) as IpAddr;
     const key = dev + '|' + iface;
     let m = this.hosts.get(key);
     if (!m) this.hosts.set(key, (m = new Map()));
-    if (m.has(g.version === 4 ? group.trim() : formatAddr(g))) return `${dev}:${iface} has already joined ${group}`;
     const hg: HostGroup = { group: formatAddr(g), sources: sources.map((s) => s.trim()), origin, since: this.e.now, gen: 0, answer: 0 };
     m.set(hg.group, hg);
     const ev = this.events.findIndex((x) => x.kind === 'leave' && x.ref === `iface:${dev}:${iface}` && x.group === hg.group);
@@ -432,7 +459,8 @@ export class Multicast {
     return null;
   }
 
-  private unsolicited(dev: string, iface: string): number {
+  /** The unsolicited report interval of a host's interface (its second report of a join follows after it). */
+  unsolicited(dev: string, iface: string): number {
     const r = this.e.params.num('igmp-unsolicited', dev, null, ifaceRef(dev, iface));
     return r > 0 ? r : this.ver(dev, iface) === 'v2' ? 10000 : 1000;
   }
@@ -618,6 +646,7 @@ export class Multicast {
     g.gsq = 0;
     for (const s of sources) if (g.sources.indexOf(s) < 0) g.sources.push(s);
     ri.groups.set(group, g);
+    if (this.onMember) this.onMember(ri.dev, ri.l3.id, group, reporter);
     if (isNew) {
       this.e.note('table', 'igmp', ri.dev, '', 'member', 'members', `${ri.dev}:${ri.l3.id}: ${group} has a member (${reporter}${sources.length ? ', sources ' + sources.join(', ') : ''}); kept for ${durationText(this.gmi(ri.dev))} without a report (robustness × query interval + response interval)`);
       this.membersChanged(ri.dev, ri.l3, group);
@@ -1251,11 +1280,22 @@ export class Multicast {
   // ------------------------------------------------------------ streams and receivers
 
   /** A stream from a host's interface: a UDP datagram to the group every interval. */
-  addStream(dev: string, iface: string, group: string, port: number, interval: number, size: number, origin: Stream['origin'], first = 0, label = ''): Stream | string {
+  /** Why a host can't stream to a group from an interface now, or null (the checks of `addStream`). */
+  streamProblem(dev: string, iface: string, group: string): string | null {
     const g = parseAddress(group.trim());
     if (!g || !isMulticastIp(g) || isLinkLocalGroup(g)) return `${group} is not a routable multicast group`;
     if (!this.hostAddr(dev, iface, g.version)) return `${dev}:${iface} has no IPv${g.version} address`;
-    const st: Stream = { id: ++this.seq, dev, iface, group: formatAddr(g), port, interval, size, origin, label, running: true, since: this.e.now, sent: 0, gen: 0, sport: 49152 + ((this.seq * 7919) % 16000) };
+    if (this.streams.some((x) => x.dev === dev && x.iface === iface && x.group === formatAddr(g) && x.running)) return `${dev}:${iface} already streams to ${formatAddr(g)}`;
+    return null;
+  }
+
+  addStream(dev: string, iface: string, group: string, port: number, interval: number, size: number, origin: Stream['origin'], first = 0, label = ''): Stream | string {
+    const bad = origin === 'event' ? this.streamProblem(dev, iface, group) : null;
+    if (bad) return bad;
+    const g = parseAddress(group.trim());
+    if (!g || !isMulticastIp(g) || isLinkLocalGroup(g)) return `${group} is not a routable multicast group`;
+    if (!this.hostAddr(dev, iface, g.version)) return `${dev}:${iface} has no IPv${g.version} address`;
+    const st: Stream = { id: ++this.seq, dev, iface, group: formatAddr(g), port, interval, size, origin, label, running: true, since: this.e.now, sent: 0, gen: 0, sport: 49152 + ((this.seq * 7919) % 16000), rx: new Map() };
     this.streams.push(st);
     if (origin === 'event') this.events.push({ kind: 'stream', ref: `iface:${dev}:${iface}`, group: st.group, since: this.e.now, state: `streaming to ${st.group}:${port}` });
     this.runStream(st, first);
@@ -1292,6 +1332,7 @@ export class Multicast {
     const st = this.streams.find((x) => x.dev === dev && x.iface === iface && x.group === group && x.running);
     if (!st) return false;
     st.running = false;
+    st.stoppedAt = this.e.now;
     st.gen++;
     const i = this.events.findIndex((x) => x.kind === 'stream' && x.ref === `iface:${dev}:${iface}` && x.group === st.group);
     if (i >= 0) this.events.splice(i, 1);
@@ -1306,6 +1347,7 @@ export class Multicast {
     const st = this.streams.find((x) => x.dev === dev && x.iface === iface && x.group === group && !x.running);
     if (!st) return false;
     st.running = true;
+    st.stoppedAt = undefined;
     const i = this.events.findIndex((x) => x.kind === 'stopped' && x.ref === `iface:${dev}:${iface}` && x.group === st.group);
     if (i >= 0) this.events.splice(i, 1);
     this.e.note('state', 'mcast', dev, '', 'Stream started', '', `${dev}:${iface} streams to ${st.group}:${st.port} again`);
@@ -1326,6 +1368,10 @@ export class Multicast {
       this.rx.set(k, r);
     }
     const src = formatAddr(pkt.src);
+    // (a stream's datagram: counted for that stream too)
+    const sid = (pkt.msg.data as { stream?: number } | undefined || {}).stream;
+    const st = sid ? this.streams.find((x) => x.id === sid) : undefined;
+    if (st) st.rx.set(dev, (st.rx.get(dev) || 0) + 1);
     if (r.count === 0 || !r.sources.has(src)) this.e.note('message', pkt.msg.protocol, dev, this.e.ownerOf(pkt.src) || '', 'receives', 'receiving', `${dev} receives ${g} from ${src} (${pkt.msg.label}, TTL ${pkt.ttl})`);
     else if (r.gapNoted) this.e.note('message', pkt.msg.protocol, dev, '', 'receives again', 'receiving', `${dev} receives ${g} again after ${durationText(this.e.now - r.last)} without it`);
     r.gapNoted = false;
