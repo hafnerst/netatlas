@@ -1211,8 +1211,12 @@ table.spof-table td.num, table.spof-table td.nowrap { white-space: nowrap; overf
 .layer-sim .sim-lost circle { fill: var(--panel); stroke: var(--error); stroke-width: 2; }
 .layer-sim .sim-lost path { stroke: var(--error); stroke-width: 2; fill: none; }
 .layer-sim, .layer-sim *, .layer-sim-labels, .layer-sim-labels * { pointer-events: none; }
-/* a dot opens the packet inspector */
+/* a dot opens the packet inspector: within a hit area around it (screen pixels, any zoom), outlined, the nearest one */
 .layer-sim [data-flight], .layer-sim [data-flight] * { pointer-events: auto; cursor: pointer; }
+svg.sim-dot-hover, svg.sim-dot-hover * { cursor: pointer !important; }
+.layer-sim .sim-hit circle { fill: none; pointer-events: none; }
+.layer-sim .sim-hit-under { stroke: var(--panel); opacity: 0.9; }
+.layer-sim .sim-hit-ring { stroke: var(--text); stroke-dasharray: 3 2; }
 .has-bcdomain [data-ref].bc-off { opacity: .28; }
 .has-bcdomain .bc-on .dev-box, .has-bcdomain .bc-on .net-box { stroke: var(--accent) !important; stroke-width: 3.5 !important; }
 .has-bcdomain .bc-on .cable-line { stroke: var(--accent) !important; stroke-width: 4 !important; }
@@ -1325,8 +1329,15 @@ body[data-sim="on"] #side > .tabs, body[data-sim="on"] #side-body, body[data-sim
 .sim-test-form { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 8px; align-items: center; }
 .sim-test-form > label { font-size: 12.5px; }
 /* Send test: the source's state under From, across the form (its address, lease or why it can't send) */
-.sim-t-src { grid-column: 1 / -1; margin: 0 0 4px; overflow-wrap: anywhere; }
-.sim-t-src:empty { display: none; }
+.sim-t-note { grid-column: 1 / -1; margin: 0 0 4px; overflow-wrap: anywhere; }
+.sim-t-note:empty, .sim-t-one:empty { display: none; }
+#sim-t-need { margin: 4px 0 0; }
+.sim-t-cell { min-width: 0; }
+.sim-t-cell > [hidden] { display: none; }
+.sim-t-one { display: block; font-size: 12.5px; overflow-wrap: anywhere; padding: 4px 0; }
+.sim-test-form select:disabled, .sim-test-form input:disabled { opacity: 0.55; cursor: not-allowed; }
+.sim-test-form > label:has(+ select:disabled), .sim-test-form > label:has(+ span > input:disabled) { opacity: 0.6; }
+.sim-tests li > .mini { margin-left: 2px; }
 .sim-test-form > [hidden] { display: none; }
 .sim-tests { margin: 0; padding-left: 18px; font-size: 12px; }
 .sim-tests:empty { display: none; }

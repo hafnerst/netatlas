@@ -101,6 +101,9 @@ export interface Test {
   from: string;
   /** the source interface chosen (Send test…), else the one the route gives */
   via?: string;
+  /** a Send test's series and this message's number in it (1 …) */
+  run?: number;
+  msg?: number;
   /** what it was aimed at, as written ("web1", "10.0.0.255") */
   target: string;
   dst: IpAddr;
@@ -472,7 +475,7 @@ export class Transport {
   }
 
   /** Run one test now (Send test…, test traffic, a health check, a probe); its result comes later. */
-  run(o: { from: string; via?: string; target: string; dst: IpAddr; name?: string; kind: TestKind; port?: number; size?: number; df?: boolean; keep?: boolean; source: Test['source']; series?: string; onDone?: (t: Test) => void; front?: Conn; timeout?: Resolved | { value: number } }): Test | string {
+  run(o: { from: string; via?: string; target: string; dst: IpAddr; name?: string; kind: TestKind; port?: number; size?: number; df?: boolean; keep?: boolean; source: Test['source']; series?: string; onDone?: (t: Test) => void; front?: Conn; timeout?: Resolved | { value: number }; run?: number; msg?: number }): Test | string {
     const dev = o.from;
     const sd = this.P.sd(dev);
     if (!sd) return `${dev} is not a device of the simulation`;
@@ -490,6 +493,8 @@ export class Transport {
       series,
       from: dev,
       via: o.via,
+      run: o.run,
+      msg: o.msg,
       target: o.target,
       dst: o.dst,
       kind,

@@ -4565,7 +4565,7 @@ export class App {
   private wireCanvas(): void {
     const svg = this.svg;
     const tip = this.$('tooltip');
-    let drag: null | { mode: 'pan' | 'node'; ref: string | null; sx: number; sy: number; ox: number; oy: number; moved: boolean; id: number; detail: SelDetail | null; flight?: Element | null } = null;
+    let drag: null | { mode: 'pan' | 'node'; ref: string | null; sx: number; sy: number; ox: number; oy: number; moved: boolean; id: number; detail: SelDetail | null; flight?: number | null } = null;
 
     svg.addEventListener(
       'wheel',
@@ -4602,8 +4602,9 @@ export class App {
       } else {
         drag = { mode: 'pan', ref, sx: e.clientX, sy: e.clientY, ox: this.zoom.tx, oy: this.zoom.ty, moved: false, id: e.pointerId, detail: detailRef === ref ? detail : null };
       }
-      // a dot of the protocol simulation (read here: once the pointer is captured, the release is reported on the canvas)
-      drag.flight = this.simCtl ? (e.target as Element).closest('[data-flight]') : null;
+      // a packet of the protocol simulation: the dot nearest the pointer within its hit area (read here: once the
+      // pointer is captured, the release is reported on the canvas)
+      drag.flight = this.simCtl ? this.simCtl.flightAt(this.toWorld(e.clientX, e.clientY), this.zoom.k) : null;
       try {
         svg.setPointerCapture(e.pointerId);
       } catch (err) {
@@ -4633,6 +4634,8 @@ export class App {
         }
         return;
       }
+      // a packet within reach of the pointer: outlined (the one a click opens), the pointer a hand
+      if (this.simCtl) this.simCtl.pointerAt(this.toWorld(e.clientX, e.clientY), this.zoom.k);
       this.hover(e);
     });
     const end = (e: PointerEvent): void => {
@@ -4643,9 +4646,9 @@ export class App {
       if (!d.moved) {
         // a dot of the protocol simulation: the packet inspector
         const fl = d.flight;
-        if (fl && this.simCtl) {
-          const r = fl.getBoundingClientRect();
-          this.simCtl.inspectFlight(Number(fl.getAttribute('data-flight')), { x: r.left, y: r.top, w: r.width, h: r.height });
+        if (fl !== null && fl !== undefined && this.simCtl) {
+          const r = this.hitRect(fl, e);
+          this.simCtl.inspectFlight(fl, r);
           return;
         }
         const target = (e.target as Element).closest('[data-ref]');
@@ -4664,7 +4667,17 @@ export class App {
     svg.addEventListener('pointerleave', () => {
       tip.hidden = true;
       this.markAttached(null);
+      if (this.simCtl) this.simCtl.pointerAt(null, this.zoom.k);
     });
+  }
+
+  /** Where a packet's dot is on screen (the inspector opens beside it); the pointer's spot when it is not drawn. */
+  private hitRect(flight: number, e: PointerEvent): { x: number; y: number; w: number; h: number } {
+    const p = this.simCtl ? this.simCtl.dotOf(flight) : null;
+    const b = this.svg.getBoundingClientRect();
+    const x = p ? b.left + p.x * this.zoom.k + this.zoom.tx : e.clientX;
+    const y = p ? b.top + p.y * this.zoom.k + this.zoom.ty : e.clientY;
+    return { x: x - 4, y: y - 4, w: 8, h: 8 };
   }
 
   private nodeCenter(ref: string): { x: number; y: number } {

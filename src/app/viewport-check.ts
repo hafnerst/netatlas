@@ -343,6 +343,18 @@ export async function runViewportCheck(app: App, doc: Document): Promise<Check[]
         (q('#sim-pw-l1-btn') as HTMLElement).click();
         (q('#sim-setup-senders-toggle') as HTMLElement).click();
         (q('#sim-t-more-toggle') as HTMLElement).click();
+        // Send test filled in (its longest form: a source with several interfaces, a destination with several, a series)
+        const tset = (id: string, v: string, ev = 'change'): void => {
+          const e = q('#' + id) as HTMLInputElement | HTMLSelectElement;
+          e.value = v;
+          e.dispatchEvent(new Event(ev));
+        };
+        tset('sim-t-type', 'unicast');
+        tset('sim-t-from', 'hq-rtr1');
+        tset('sim-t-to', 'hq-core1');
+        tset('sim-t-kind', 'tcp');
+        tset('sim-t-port', '443', 'input');
+        tset('sim-t-count', '100', 'input');
         ctl.sim.powerOff('hq-rtr2');
         ctl.refresh(true);
         await tick();

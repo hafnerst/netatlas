@@ -2103,7 +2103,9 @@ export class Engine {
         this.decapsulate(dev, l3, pkt);
         return;
       }
-      this.deliverLocal(dev, own || l3, pkt);
+      // delivered in the VRF of the interface it arrived for (its answer is routed there), not its sender's
+      const at = own || l3;
+      this.deliverLocal(dev, at, pkt.vrf === at.vrf ? pkt : { ...pkt, vrf: at.vrf });
       // a broadcast stays in its subnet: no router forwards it
       if (bcast && sd.routes && isLimitedBroadcast(pkt.dst) && pkt.msg.protocol !== 'dhcp') this.note('drop', pkt.msg.protocol, dev, '', pkt.msg.type, '', `${dev} takes the limited broadcast ${formatAddr(pkt.dst)} itself and routes it nowhere: it never leaves its subnet (${pkt.msg.label})`);
       return;

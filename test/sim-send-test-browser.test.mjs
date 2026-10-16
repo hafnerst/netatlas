@@ -23,9 +23,16 @@ async function load(page) {
   await page.settle(150);
 }
 
-/** Fill the Send test form (From, To, Type) in the Actions panel. */
+/** Fill the Send test form in the Actions panel: unicast, From, To (a device, else an address written in), the protocol. */
 async function fill(page, from, to, kind) {
-  await page.eval(`(() => { const f = document.getElementById('sim-t-from'); f.value = ${JSON.stringify(from)}; f.dispatchEvent(new Event('change')); const k = document.getElementById('sim-t-kind'); k.value = ${JSON.stringify(kind)}; k.dispatchEvent(new Event('change')); const t = document.getElementById('sim-t-to'); t.value = ${JSON.stringify(to)}; return true; })()`);
+  await page.eval(`(() => {
+    const set = (id, v, ev) => { const e = document.getElementById(id); e.value = v; e.dispatchEvent(new Event(ev || 'change')); };
+    set('sim-t-type', 'unicast');
+    set('sim-t-from', ${JSON.stringify(from)});
+    if (Array.from(document.getElementById('sim-t-to').options).some((o) => o.value === ${JSON.stringify(to)})) set('sim-t-to', ${JSON.stringify(to)});
+    else { set('sim-t-to', '*'); set('sim-t-addr', ${JSON.stringify(to)}, 'input'); }
+    set('sim-t-kind', ${JSON.stringify(kind)});
+    return true; })()`);
 }
 
 test('paused: Send sends at the current time and says it starts when the simulation plays; Send and play sends and plays; shown despite the senders and protocols, marked Test, with a trail', { skip, timeout: 240000 }, async () => {
@@ -99,6 +106,32 @@ test('at the dot limit, a test sent during the startup burst is drawn at once, a
     assert.ok(r.mine > 0 && r.mineDrawn, 'drawn despite the limit');
     assert.equal(r.first, r.now, 'its first message is on its way now');
     assert.ok(r.dom > 0, 'on screen');
+  } finally {
+    await page.close();
+  }
+});
+
+test('a series follows the simulated clock: paused, no further message is sent; playing at 1× or 4×, they go one interval of simulated time apart', { skip, timeout: 240000 }, async () => {
+  const page = await openPage(url, { width: 1440, height: 900 });
+  try {
+    await load(page);
+    await page.eval(`(() => { netatlas.startProtocolSimulation({ params: {} }); const c = netatlas.simController(); c.setPlaying(false); c.runTo(30000); c.refresh(true); return true; })()`);
+    const frames = [];
+    for (const speed of [1, 4]) {
+      const id = await page.eval(`(() => { const c = netatlas.simController(); c.setSpeed(${speed}); const o = c.sim.testDestinations('pc1').find((d) => d.id === 'srv').options[0];
+        c.sendPlan({ delivery: 'unicast', from: 'pc1', to: 'srv', toIface: o.iface, toAddr: o.addr, kind: 'icmp', count: 4, interval: 0.5 }); return c.sim.testRuns()[0].id; })()`);
+      // paused: a second of wall-clock time sends nothing more
+      await new Promise((r) => setTimeout(r, 1000));
+      assert.equal(await page.eval(`netatlas.simController().sim.testRuns()[0].sent`), 1, `${speed}×: paused`);
+      // playing: the animation's frames (as the page draws them, here without waiting for the screen) move the clock
+      const run = await page.eval(`(() => { const c = netatlas.simController(); c.setPlaying(true); let frames = 0; let r;
+        for (; frames < 20000; frames++) { c.advance(100); r = c.sim.testRuns().find((x) => x.id === ${id}); if (r.sent === 4 && r.tests.every((t) => t.done)) break; }
+        c.setPlaying(false); return { sent: r.sent, at: r.tests.map((t) => t.started - r.t0), frames }; })()`);
+      frames.push(run.frames);
+      assert.deepEqual(run.at, [0, 500, 1000, 1500], `${speed}×: ${JSON.stringify(run)}`);
+    }
+    // the faster playback took fewer frames for the same simulated times
+    assert.ok(frames[1] < frames[0], frames.join(' vs '));
   } finally {
     await page.close();
   }

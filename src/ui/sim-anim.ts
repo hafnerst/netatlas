@@ -121,7 +121,42 @@ export interface DrawResult {
 /** Where a track starts and ends: its two devices where it has them (a cable's ends, a relation's devices; not a network or a hub). */
 export type TrackEnds = (t: Track) => { from: string | null; to: string | null };
 
+/** A packet's hit area around its dot, in screen pixels (whatever the zoom): its radius, at least this. */
+export const HIT_PX = 12;
+
+/** A dot drawn this frame (diagram coordinates), for hit testing. */
+interface DotAt {
+  id: number;
+  x: number;
+  y: number;
+}
+
+/**
+ * The packet a point is on: the nearest dot within the hit radius (`px` screen pixels at zoom `k`),
+ * ties to the lower flight id (the earlier message); null none.
+ */
+export function nearestDot(dots: DotAt[], x: number, y: number, k: number, px = HIT_PX): DotAt | null {
+  const r = px / Math.max(k, 1e-6);
+  let best: DotAt | null = null;
+  let bd = Infinity;
+  for (const d of dots) {
+    const dist = Math.hypot(d.x - x, d.y - y);
+    if (dist > r) continue;
+    if (dist < bd - 1e-9 || (Math.abs(dist - bd) <= 1e-9 && best && d.id < best.id)) {
+      best = d;
+      bd = dist;
+    }
+  }
+  return best;
+}
+
 export class SimAnimator {
+  /** the dots of the last frame on screen, and the pointer (diagram coordinates, the zoom) when it is over the diagram */
+  private hits: DotAt[] = [];
+  private pointer: { x: number; y: number; k: number } | null = null;
+  private halo: SVGGElement | null = null;
+  /** the packet the pointer is on (its flight), null none */
+  hovered: number | null = null;
   private scene: Element | null = null;
   private dots: SVGGElement | null = null;
   private labels: SVGGElement | null = null;
@@ -170,6 +205,9 @@ export class SimAnimator {
 
   clear(): void {
     this.mark([], []);
+    this.hits = [];
+    this.hovered = null;
+    this.halo = null;
     if (this.dots && this.dots.parentNode) this.dots.parentNode.removeChild(this.dots);
     if (this.labels && this.labels.parentNode) this.labels.parentNode.removeChild(this.labels);
     this.dots = this.labels = null;
@@ -183,9 +221,62 @@ export class SimAnimator {
     if (!this.scene || !this.dots || !this.labels) return { drawn: 0, left: 0, senders: [], receivers: [] };
     while (this.dots.firstChild) this.dots.removeChild(this.dots.firstChild);
     while (this.labels.firstChild) this.labels.removeChild(this.labels.firstChild);
+    this.hits = [];
+    this.halo = null;
     const r = this.paint(this.dots, this.labels, items, opts, opts.reduce, true);
     this.mark(r.senders, r.receivers);
+    this.drawHover();
     return r;
+  }
+
+  /** The pointer moved over the diagram (diagram coordinates, the zoom), or left it (null): the packet it is on, outlined. */
+  pointerAt(p: { x: number; y: number; k: number } | null): number | null {
+    this.pointer = p;
+    this.drawHover();
+    return this.hovered;
+  }
+
+  /** The packet at a point (diagram coordinates, the zoom): as the hover outline shows it. */
+  flightAt(x: number, y: number, k: number): number | null {
+    const d = nearestDot(this.hits, x, y, k);
+    return d ? d.id : null;
+  }
+
+  /** Where a packet's dot is drawn now (diagram coordinates), null when it isn't. */
+  dotOf(id: number): { x: number; y: number } | null {
+    const d = this.hits.find((x) => x.id === id);
+    return d ? { x: d.x, y: d.y } : null;
+  }
+
+  /**
+   * The outline of the packet under the pointer: a ring around its dot, light and dark (both themes,
+   * not by colour alone), sized in screen pixels; it moves nothing and catches no pointer.
+   */
+  private drawHover(): void {
+    if (this.halo && this.halo.parentNode) this.halo.parentNode.removeChild(this.halo);
+    this.halo = null;
+    const p = this.pointer;
+    const d = p ? nearestDot(this.hits, p.x, p.y, p.k) : null;
+    this.hovered = d ? d.id : null;
+    // (the whole canvas shows the hand: the hit area reaches beyond the dot)
+    const svg = this.scene ? (this.scene as SVGGraphicsElement).ownerSVGElement || this.scene : null;
+    if (svg) svg.classList.toggle('sim-dot-hover', !!d);
+    if (!d || !p || !this.dots) return;
+    const g = this.doc.createElementNS(SVG, 'g') as SVGGElement;
+    g.setAttribute('class', 'sim-hit');
+    g.setAttribute('data-hover', String(d.id));
+    const r = (HIT_PX * 0.75) / p.k;
+    for (const cls of ['sim-hit-under', 'sim-hit-ring']) {
+      const c = this.doc.createElementNS(SVG, 'circle');
+      c.setAttribute('class', cls);
+      c.setAttribute('cx', d.x.toFixed(1));
+      c.setAttribute('cy', d.y.toFixed(1));
+      c.setAttribute('r', r.toFixed(2));
+      c.setAttribute('stroke-width', ((cls === 'sim-hit-under' ? 4 : 2) / p.k).toFixed(2));
+      g.appendChild(c);
+    }
+    this.dots.appendChild(g);
+    this.halo = g;
   }
 
   /** A static picture of what is on its way now, for an export: arrows where the dots are, with labels; the lost marks. */
@@ -287,6 +378,7 @@ export class SimAnimator {
       else {
         shape = arrows ? arrow(this.doc, p, color, cast) : dot(this.doc, p.x, p.y, color, cast);
         shape.setAttribute('data-flight', String(f.id));
+        if (live) this.hits.push({ id: f.id, x: p.x, y: p.y });
         shape.setAttribute('data-cast', cast);
       }
       const lab = box ? label(this.doc, text, box, lost, color) : null;

@@ -19,6 +19,8 @@ import { ParamChange, ParamValue, Resolved, SimParams, durationText } from './pa
 import { Multicast } from './multicast';
 import { DnsCacheRow, LeaseRow, NetServicesSim, ZoneRow } from './netsvc';
 import { Test, TestKind, Transport } from './transport';
+import { TestPlan, directedTarget, messageTime, needsInterface, planProblem, usesPorts } from './test-plan';
+import { IpAddr, parseAddress } from '../../model/ip';
 import { ArpRow, ConnRow, Flight, GridTable, MacRow, NetEvent, SessionRow, SessionStatus, SimEvent, TableTimer } from './types';
 
 
@@ -49,6 +51,12 @@ export interface TestSourceIface {
   dhcp: boolean;
   /** it has an address now */
   ready: boolean;
+  /** a test can go from it: it has an address, or it is a DHCP client (the test waits for its lease) */
+  usable: boolean;
+  /** the form's option: "eth0 - 10.0.0.1", "wlan0 - 192.168.30.23 (DHCP)", "wlan0 - No DHCP lease", "eth1 - No IP address" */
+  label: string;
+  /** the broadcast address of its IPv4 subnet now (a local broadcast's subnet scope), if it has one */
+  bcast?: string;
   /** its address, or its lease with gateway, DNS and expiry, or why it has none; and its Wi-Fi network */
   status: string;
 }
@@ -60,7 +68,66 @@ export interface TestSource {
   ok: boolean;
   /** why it can't; or, able to, what it waits for ('' nothing) */
   reason: string;
+  /** why it can't, in a few words: "Cannot send IP packets", "No interfaces", "No IP address", "Powered off" ('' it can) */
+  short: string;
+  /** its interfaces of the IP stack, those without an address too (not usable) */
   ifaces: TestSourceIface[];
+}
+
+/** A destination interface's address as the form offers it (unicast). */
+export interface TestDestOption {
+  /** "eth0|10.0.0.1", "wlan0|dhcp" (its lease when the message is sent) */
+  value: string;
+  iface: string;
+  addr: string;
+  /** "eth0 - 10.0.0.1", "wlan0 - 192.168.30.23 (DHCP)", "wlan0 - No DHCP lease" */
+  label: string;
+  ok: boolean;
+}
+
+/** A device as a unicast destination: its interfaces' addresses, or why it has none. */
+export interface TestDestination {
+  id: string;
+  ok: boolean;
+  /** why it can't be one, in a few words ('' it can) */
+  short: string;
+  options: TestDestOption[];
+}
+
+/** A Send test with its messages: one, or a series of `count` sent `interval` seconds apart. */
+export interface TestRun {
+  id: number;
+  /** its status row ("pc1 → srv ICMP echo") */
+  series: string;
+  plan: TestPlan;
+  count: number;
+  /** seconds between messages (0: one message) */
+  interval: number;
+  /** when message 1 was sent (ms) */
+  t0: number;
+  /** messages sent so far (with those not sent: `skipped`, with the reason) */
+  sent: number;
+  tests: Test[];
+  skipped: Array<{ n: number; t: number; why: string }>;
+  /** Stop: no more messages are sent (those on their way finish) */
+  stopped: boolean;
+  stoppedAt?: number;
+}
+
+/** The broadcast address of the first IPv4 subnet among addresses (none for a /31 or /32). */
+function bcastOf(addrs: Array<{ addr: IpAddr; net: IpAddr & { prefix: number } }>): string | undefined {
+  const a = addrs.find((x) => x.addr.version === 4 && x.net.prefix <= 30);
+  return a ? formatAddr(subnetBroadcast(a)) : undefined;
+}
+
+/** Are messages of a run still to be sent? */
+export function runPending(r: TestRun): boolean {
+  return !r.stopped && r.sent < r.count;
+}
+
+/** Is a run going on: messages still to be sent, or on their way? */
+export function runActive(r: TestRun): boolean {
+  return runPending(r) || r.tests.some((t) => !t.done);
 }
 
 const DHCP_STATE: { [k: string]: string } = { INIT: 'about to ask', SELECTING: 'asking (DHCPDISCOVER)', REQUESTING: 'requesting the offered address', RENEWING: 'renewing', REBINDING: 'rebinding' };
@@ -358,7 +425,198 @@ export class Simulation {
     const via = o.via || undefined;
     const r = this.transport.resolveTarget(o.from, { to: o.to.trim() }, o.kind);
     if (typeof r === 'string') return r;
-    return this.transport.run({ from: o.from, via, target: o.to.trim(), dst: r.dst, name: r.name, kind: o.kind, port: o.kind === 'icmp' ? 0 : o.port, size: o.size, df: o.df, keep: o.keep, source: 'manual' });
+    const t = this.transport.run({ from: o.from, via, target: o.to.trim(), dst: r.dst, name: r.name, kind: o.kind, port: o.kind === 'icmp' ? 0 : o.port, size: o.size, df: o.df, keep: o.keep, source: 'manual' });
+    if (typeof t !== 'string') this.keepRun({ id: ++this.runSeq, series: t.series, plan: { delivery: 'unicast', from: o.from, via, kind: o.kind, target: o.to.trim() }, count: 1, interval: 0, t0: t.started, sent: 1, tests: [t], skipped: [], stopped: false });
+    return t;
+  }
+
+  private runs: TestRun[] = [];
+  private runSeq = 0;
+
+  private keepRun(r: TestRun): void {
+    this.runs.push(r);
+    if (this.runs.length > 200) this.runs.splice(0, this.runs.length - 200);
+  }
+
+  /**
+   * Send test as the form describes it (a delivery type, a source and its interface, the destination
+   * the type asks for, a protocol, a port where it has one, and how many messages how far apart): the
+   * first message now, at the current simulated time; message n at that time plus (n − 1) intervals of
+   * simulated time, on the engine's own timeline, whether or not the messages before it were answered.
+   * A text when it can't be sent (nothing is then scheduled). Each message finds its destination when
+   * it is sent: a DHCP lease as it is then.
+   */
+  sendPlan(p: TestPlan): TestRun | string {
+    const ready = this.preparePlan(p);
+    if (typeof ready === 'string') return ready;
+    const { via, first } = ready;
+    const count = p.count === undefined ? 1 : p.count;
+    const run: TestRun = { id: ++this.runSeq, series: '', plan: { ...p, via }, count, interval: count > 1 ? (p.interval as number) : 0, t0: this.now, sent: 0, tests: [], skipped: [], stopped: false };
+    const one = (n: number): Test | string => {
+      const d = n === 1 ? first : this.planTarget(p, via);
+      if (typeof d === 'string') return `not sent: ${d}`;
+      return this.transport.run({ from: p.from, via, target: d.target, dst: d.dst, name: d.name, kind: p.kind, port: usesPorts(p.kind) ? p.port : 0, size: p.size, df: p.df, keep: p.kind === 'tcp' && !!p.keep, source: 'manual', run: run.id, msg: n });
+    };
+    const t = one(1);
+    if (typeof t === 'string') return t;
+    run.series = t.series;
+    run.sent = 1;
+    run.tests.push(t);
+    this.keepRun(run);
+    if (count > 1) this.nextMessage(run, one, 2);
+    return run;
+  }
+
+  /**
+   * What stops a plan from being sent now, in a few words, or null: the same checks as `sendPlan`
+   * (the form disables Send with this text; the two can't disagree).
+   */
+  planCheck(p: TestPlan): string | null {
+    const r = this.preparePlan(p);
+    return typeof r === 'string' ? r : null;
+  }
+
+  private preparePlan(p: TestPlan): { via: string | undefined; first: { dst: IpAddr; target: string; name?: string } } | string {
+    const bad = planProblem(p);
+    if (bad) return bad;
+    const src = this.testSources().find((x) => x.id === p.from);
+    if (!src) return `${p.from} is not a device of the model.`;
+    if (!src.ok) return `${p.from}: ${src.short}.`;
+    const usable = src.ifaces.filter((i) => i.usable);
+    let via = p.via;
+    if (via !== undefined && !usable.some((i) => i.id === via)) return `${p.from} has no interface ${via} with an IP address or DHCP.`;
+    if (via === undefined && needsInterface(p.delivery)) {
+      if (usable.length !== 1) return 'Choose the interface to send from.';
+      via = usable[0].id;
+    }
+    const first = this.planTarget(p, via);
+    if (typeof first === 'string') return first + '.';
+    return { via, first };
+  }
+
+  /** Message n of a series at its time (one timer at a time: a stopped series schedules nothing more). */
+  private nextMessage(run: TestRun, one: (n: number) => Test | string, n: number): void {
+    this.engine.at(messageTime(run.t0, n, run.interval), () => {
+      if (run.stopped) return;
+      const t = one(n);
+      run.sent = n;
+      if (typeof t === 'string') run.skipped.push({ n, t: this.now, why: t });
+      else run.tests.push(t);
+      if (n < run.count) this.nextMessage(run, one, n + 1);
+    });
+  }
+
+  /** The destination of a plan's message now: the address, and how the test names it. */
+  private planTarget(p: TestPlan, via: string | undefined): { dst: IpAddr; target: string; name?: string } | string {
+    const e = this.engine;
+    const sd = e.net.devices.get(p.from);
+    if (p.delivery === 'unicast') {
+      if (p.target) {
+        const txt = p.target.trim();
+        const a = parseAddress(txt);
+        if (!a && (this.model.index.devices.has(txt) || this.model.index.devices.has(txt.split(':')[0]))) return `${txt} is a device: choose it under To`;
+        if (a && e.isBroadcastAddr(a)) return `${txt} is a subnet’s broadcast address: choose Local or Directed broadcast`;
+        const r = this.transport.resolveTarget(p.from, { to: txt }, p.kind);
+        return typeof r === 'string' ? r : { dst: r.dst, target: txt, name: r.name };
+      }
+      const dev = p.to as string;
+      const iface = p.toIface as string;
+      const dd = this.testDestinations(p.from).find((d) => d.id === dev);
+      if (!dd) return `${dev} is not a destination of ${p.from}`;
+      const o = dd.options.find((x) => x.iface === iface && x.addr === p.toAddr);
+      if (!o) return `${dev}:${iface} has no address ${p.toAddr === 'dhcp' ? 'from DHCP' : p.toAddr}`;
+      if (!o.ok) return `${dev}:${iface} has no DHCP lease now`;
+      let dst: IpAddr | null;
+      if (o.addr === 'dhcp') {
+        const l = e.leases.get(dev + ':' + iface);
+        dst = l ? l.addr.addr : null;
+      } else dst = parseAddress(o.addr);
+      if (!dst) return `${dev}:${iface} has no address now`;
+      // the target as written: the device when it offers just this address, else its interface (and the address when it has several)
+      const target = dd.options.length === 1 ? dev : dd.options.filter((x) => x.iface === iface).length > 1 ? `${dev}:${iface} (${formatAddr(dst)})` : `${dev}:${iface}`;
+      return { dst, target };
+    }
+    if (p.delivery === 'multicast') {
+      const g = parseAddress((p.group as string).trim()) as IpAddr;
+      const l = sd && via !== undefined ? sd.l3.get(via) : undefined;
+      if (l && !this.leaseWaits(p.from, via as string) && !l.addrs.some((x) => x.addr.version === g.version)) return `${p.from}:${via} has no IPv${g.version} address for an IPv${g.version} group`;
+      return { dst: g, target: formatAddr(g) };
+    }
+    if (p.delivery === 'broadcast') {
+      const l = sd && via !== undefined ? sd.l3.get(via) : undefined;
+      if (!l) return `${p.from} has no interface ${via}`;
+      const v4 = l.addrs.find((x) => x.addr.version === 4);
+      if (!v4 && !this.leaseWaits(p.from, via as string)) return `${p.from}:${via} has no IPv4 address: IPv6 has no broadcast (choose Multicast, e.g. ff02::1 for every node of the link)`;
+      if (p.scope === 'limited') return { dst: parseAddress('255.255.255.255') as IpAddr, target: '255.255.255.255' };
+      if (!v4) return `${p.from}:${via} has no IPv4 address yet, so its subnet broadcast is not known (the limited broadcast waits for the lease)`;
+      if (v4.net.prefix > 30) return `${p.from}:${via} is a /${v4.net.prefix}: it has no subnet broadcast`;
+      const b = subnetBroadcast(v4);
+      return { dst: b, target: formatAddr(b) };
+    }
+    const b = directedTarget(p.subnet as string) as IpAddr;
+    const text = formatAddr(b);
+    if (!e.isBroadcastAddr(b)) return `${text} is not the broadcast address of a subnet of the model`;
+    const own = !!sd && Array.from(sd.l3.values()).some((l) => (via === undefined || l.id === via) && l.addrs.some((x) => x.addr.version === 4 && x.net.prefix <= 30 && formatAddr(subnetBroadcast(x)) === text));
+    if (own) return `${text} is the broadcast address of ${p.from}’s own subnet: choose Local broadcast`;
+    return { dst: b, target: text };
+  }
+
+  /** Is a DHCP client interface still waiting for its lease (a test from it waits too)? */
+  private leaseWaits(dev: string, iface: string): boolean {
+    const mi = this.model.index.interfaces.get(dev + ':' + iface);
+    return !!mi && !!mi.dhcp && !mi.addresses.length && !this.engine.leases.get(dev + ':' + iface);
+  }
+
+  /** The Send tests (each with its messages), newest first. */
+  testRuns(): TestRun[] {
+    return this.runs.slice().reverse();
+  }
+
+  /** Stop a series: no more of its messages are sent (those on their way finish). */
+  stopRun(id: number): boolean {
+    const r = this.runs.find((x) => x.id === id);
+    if (!r || !runPending(r)) return false;
+    r.stopped = true;
+    r.stoppedAt = this.now;
+    return true;
+  }
+
+  /** Stop every series (no more messages of any). */
+  stopRuns(): number {
+    let n = 0;
+    for (const r of this.runs) if (this.stopRun(r.id)) n++;
+    return n;
+  }
+
+  /**
+   * Every device but the source as a unicast destination: each address of its interfaces as an
+   * option ("eth0 - 10.0.0.1"), a DHCP client's interface with its lease now (or "No DHCP lease").
+   */
+  testDestinations(from: string): TestDestination[] {
+    const e = this.engine;
+    const out: TestDestination[] = [];
+    for (const d of this.model.devices.slice().sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))) {
+      if (d.id === from) continue;
+      const sd = e.net.devices.get(d.id);
+      const caps = sd ? sd.caps : capabilities(d);
+      if (!caps.ipStack || !sd) {
+        out.push({ id: d.id, ok: false, short: 'Cannot receive IP packets', options: [] });
+        continue;
+      }
+      const options: TestDestOption[] = [];
+      for (const l of Array.from(sd.l3.values()).sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))) {
+        const mi = this.model.index.interfaces.get(d.id + ':' + l.id);
+        if (mi && mi.dhcp && !mi.addresses.length) {
+          const lease = e.leases.get(d.id + ':' + l.id);
+          options.push({ value: `${l.id}|dhcp`, iface: l.id, addr: 'dhcp', label: lease ? `${l.id} - ${formatAddr(lease.addr.addr)} (${lease.kind === 'dhcp' ? 'DHCP' : 'link-local'})` : `${l.id} - No DHCP lease`, ok: !!lease });
+          continue;
+        }
+        for (const a of l.addrs) options.push({ value: `${l.id}|${formatAddr(a.addr)}`, iface: l.id, addr: formatAddr(a.addr), label: `${l.id} - ${formatAddr(a.addr)}`, ok: true });
+      }
+      const ok = options.some((o) => o.ok);
+      out.push({ id: d.id, ok, short: ok ? '' : options.length ? 'No DHCP lease' : 'No IP address', options });
+    }
+    return out;
   }
 
   /**
@@ -377,7 +635,7 @@ export class Simulation {
       const caps = sd ? sd.caps : capabilities(d);
       const what = deviceTypeLine(d) || 'a device without a type';
       if (!caps.ipStack || !sd) {
-        out.push({ id: d.id, ok: false, reason: `it has no IP stack of its own (${what}): it forwards or observes traffic and sends none`, ifaces: [] });
+        out.push({ id: d.id, ok: false, reason: `it has no IP stack of its own (${what}): it forwards or observes traffic and sends none`, short: 'Cannot send IP packets', ifaces: [] });
         continue;
       }
       const ifaces: TestSourceIface[] = [];
@@ -387,8 +645,11 @@ export class Simulation {
         const dhcp = !!mi && !!mi.dhcp && !mi.addresses.length;
         const at = this.attachment(d.id, l.id);
         if (!dhcp) {
-          if (!l.addrs.length) continue;
-          ifaces.push({ id: l.id, dhcp: false, ready: true, status: `${l.addrs.map((a) => a.text).join(', ')}${at ? ' · ' + at : ''}` });
+          if (!l.addrs.length) {
+            ifaces.push({ id: l.id, dhcp: false, ready: false, usable: false, label: `${l.id} - No IP address`, status: 'no IP address' });
+            continue;
+          }
+          ifaces.push({ id: l.id, dhcp: false, ready: true, usable: true, label: `${l.id} - ${l.addrs.map((a) => formatAddr(a.addr)).join(', ')}`, bcast: bcastOf(l.addrs), status: `${l.addrs.map((a) => a.text).join(', ')}${at ? ' · ' + at : ''}` });
           continue;
         }
         const lease = e.leases.get(d.id + ':' + l.id);
@@ -409,19 +670,21 @@ export class Simulation {
           ready = true;
           status = `link-local ${lease.addr.text} (no DHCP server answered: only its own segment)`;
         } else status = `DHCP: no lease yet (${cs ? DHCP_STATE[cs.state] || cs.state : 'not started'}): a test waits for it`;
-        ifaces.push({ id: l.id, dhcp: true, ready, status: status + (at ? ' · ' + at : '') });
+        const label = lease ? `${l.id} - ${formatAddr(lease.addr.addr)} (${lease.kind === 'dhcp' ? 'DHCP' : 'link-local'})` : `${l.id} - No DHCP lease`;
+        ifaces.push({ id: l.id, dhcp: true, ready, usable: true, label, bcast: lease ? bcastOf([lease.addr]) : undefined, status: status + (at ? ' · ' + at : '') });
       }
-      if (!ifaces.length) {
-        out.push({ id: d.id, ok: false, reason: 'no interface with an address or DHCP: give one an address, or turn DHCP on', ifaces });
+      const usable = ifaces.filter((i) => i.usable);
+      if (!usable.length) {
+        out.push({ id: d.id, ok: false, reason: 'no interface with an address or DHCP: give one an address, or turn DHCP on', short: ifaces.length ? 'No IP address' : 'No interfaces', ifaces });
         continue;
       }
       if (!e.deviceOn(d.id)) {
-        out.push({ id: d.id, ok: false, reason: 'it is powered off (Power on in its menu)', ifaces });
+        out.push({ id: d.id, ok: false, reason: 'it is powered off (Power on in its menu)', short: 'Powered off', ifaces });
         continue;
       }
-      const ready = ifaces.filter((i) => i.ready);
-      const waiting = ifaces.find((i) => i.dhcp && !i.ready);
-      out.push({ id: d.id, ok: true, reason: ready.length ? '' : waiting ? waiting.status.replace(/ · .*$/, '') : '', ifaces });
+      const ready = usable.filter((i) => i.ready);
+      const waiting = usable.find((i) => i.dhcp && !i.ready);
+      out.push({ id: d.id, ok: true, reason: ready.length ? '' : waiting ? waiting.status.replace(/ · .*$/, '') : '', short: '', ifaces });
     }
     return out;
   }
