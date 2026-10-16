@@ -549,6 +549,15 @@ export class Transport {
     }
   }
 
+  /**
+   * An id for the traffic of an operation that is no test (a join's reports, a stream's datagrams, from
+   * Network events): from the tests' own sequence, so it never names a test; its messages carry it as a
+   * test's do (always drawn, marked in the log, found by their event).
+   */
+  reserveId(): number {
+    return ++this.seq;
+  }
+
   /** Stop: a test that has sent nothing yet (waiting for a lease or a name) is not sent; true when it was cancelled. */
   cancel(t: Test, result: string): boolean {
     if (t.done || t.pktIds.length || t.conn) return false;

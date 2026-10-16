@@ -2639,8 +2639,8 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         await tick();
         const { list, bySender } = ctl.logEvents();
         check(
-          `${theme}: pc1 as the only sender: its badge, only its exchanges in the log (the others counted), the change logged; every device again: no badge`,
-          Array.from(doc.querySelectorAll('#canvas .sim-sender')).map((x) => x.getAttribute('data-sender')).join() === 'pc1' && list.filter((e) => e.kind === 'message' && e.t > sim.now - 6000).every((e) => e.sender === 'pc1' || e.origin === 'pc1') && bySender > 0 &&
+          `${theme}: pc1 as the only sender: its badge, only its exchanges in the log (and those of Network events, always listed; the others counted), the change logged; every device again: no badge`,
+          Array.from(doc.querySelectorAll('#canvas .sim-sender')).map((x) => x.getAttribute('data-sender')).join() === 'pc1' && list.filter((e) => e.kind === 'message' && e.t > sim.now - 6000).every((e) => e.sender === 'pc1' || e.origin === 'pc1' || e.test !== undefined) && bySender > 0 &&
             /messages from non-senders hidden/.test(q('#sim-log-note')!.textContent || '') && sim.events().some((e) => e.detail === 'Senders changed: pc1') && (q('#sim-setup-senders-toggle')!.textContent || '').indexOf('Senders (1 of 22): User PC') >= 0,
         );
         ctl.setSenders(app.session!.model.devices.map((x) => x.id));

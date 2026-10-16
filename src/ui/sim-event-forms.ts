@@ -20,6 +20,9 @@ export interface EventFormHost {
   stream(dev: string, iface: string, group: string, port: number, intervalMs: number, size: number): string;
   shut(dev: string, iface: string): string;
   flap(dev: string, iface: string): string;
+  /** the reverse actions: No shut (Bring interface up), Stop flapping */
+  noShut(dev: string, iface: string): string;
+  stopFlap(dev: string, iface: string): string;
   /** a device's interfaces, labelled as Send network packets labels them, with whether each is cabled */
   interfacesOf(dev: string): Array<{ id: string; label: string; cabled: boolean }>;
   /** the flapping cycle as the Layer 1 parameters set it ("down 5 s, up 10 s, 3 cycles") */
@@ -256,14 +259,25 @@ export class StreamForm {
   }
 }
 
-/** Interface actions: Shut interface and Start flapping for a device's interface. */
+/**
+ * Interface actions: Shut interface and Start flapping for a device's interface. The form follows the
+ * chosen interface's state in the simulation, whatever changed it (these buttons, the diagram's menus,
+ * Active events, a flap's own cycles): shut, its first button is Bring interface up; flapping, its second
+ * is Stop flapping; the state is said in words with an icon, and the form is marked. An explicit shut
+ * stops the interface's flapping first; a shut interface can't start flapping. Stop flapping ends the
+ * flapping where it is: the cable is up again unless something else holds it down, which is the state
+ * it had before it flapped when nothing else changed it.
+ */
 export class IfaceForm {
   readonly el: HTMLElement;
   private t: Target;
   private shutBtn: HTMLButtonElement;
   private flapBtn: HTMLButtonElement;
+  private state: HTMLElement;
   private times: HTMLElement;
   private f: { el: HTMLElement; need: HTMLElement; msg: HTMLElement };
+  /** the last press of each button (a second press right after it is not taken as the reverse action) */
+  private pressed = new Map<HTMLButtonElement, number>();
 
   constructor(
     doc: Document,
@@ -272,22 +286,42 @@ export class IfaceForm {
     this.t = new Target(doc, 'sim-i');
     this.shutBtn = el(doc, 'button', { type: 'button', id: 'sim-i-shut', class: 'sp-primary' }, ['Shut interface']) as HTMLButtonElement;
     this.flapBtn = el(doc, 'button', { type: 'button', id: 'sim-i-flap', class: 'sp-primary' }, ['Start flapping']) as HTMLButtonElement;
+    this.state = el(doc, 'p', { id: 'sim-i-state', class: 'small sim-i-state' });
     this.times = el(doc, 'p', { id: 'sim-i-times', class: 'small muted sim-t-note' });
     this.f = footer(doc, 'sim-i', [this.shutBtn, this.flapBtn]);
-    this.el = el(doc, 'div', { class: 'sim-ev-form' }, [grid(doc, [['sim-i-dev', 'Device', this.t.dev], ['sim-i-if', 'Interface', this.t.iface]]), this.times, this.f.el]);
+    this.t.iface.setAttribute('aria-describedby', 'sim-i-state');
+    this.el = el(doc, 'div', { class: 'sim-ev-form sim-i-form' }, [grid(doc, [['sim-i-dev', 'Device', this.t.dev], ['sim-i-if', 'Interface', this.t.iface]]), this.state, this.times, this.f.el]);
     for (const e of [this.t.dev, this.t.iface]) e.addEventListener('change', () => this.sync());
-    this.shutBtn.addEventListener('click', () => {
-      this.sync();
-      if (this.shutBtn.disabled) return;
-      this.f.msg.textContent = this.host.shut(this.t.dev.value, this.t.iface.value);
-      this.sync();
-    });
-    this.flapBtn.addEventListener('click', () => {
-      this.sync();
-      if (this.flapBtn.disabled) return;
-      this.f.msg.textContent = this.host.flap(this.t.dev.value, this.t.iface.value);
-      this.sync();
-    });
+    this.shutBtn.addEventListener('click', () => this.press(this.shutBtn, () => (this.isShut() ? this.host.noShut(this.dev(), this.iface()) : this.host.shut(this.dev(), this.iface()))));
+    this.flapBtn.addEventListener('click', () => this.press(this.flapBtn, () => (this.isFlapping() ? this.host.stopFlap(this.dev(), this.iface()) : this.host.flap(this.dev(), this.iface()))));
+    this.sync();
+  }
+
+  private dev(): string {
+    return this.t.dev.value;
+  }
+
+  private iface(): string {
+    return this.t.iface.value;
+  }
+
+  private isShut(): boolean {
+    return !!this.dev() && !!this.iface() && this.host.sim().engine.isShut(this.dev(), this.iface());
+  }
+
+  private isFlapping(): boolean {
+    return !!this.dev() && !!this.iface() && !!this.host.sim().engine.flapOf(`iface:${this.dev()}:${this.iface()}`);
+  }
+
+  /** A button pressed: its action once (a second press within half a second counts as the same press). */
+  private press(b: HTMLButtonElement, act: () => string): void {
+    const now = Date.now();
+    const last = this.pressed.get(b);
+    if (last !== undefined && now - last < 500) return;
+    this.pressed.set(b, now);
+    this.sync();
+    if (b.disabled) return;
+    this.f.msg.textContent = act();
     this.sync();
   }
 
@@ -295,21 +329,46 @@ export class IfaceForm {
     const sim = this.host.sim();
     const devs: Opt[] = [{ value: '', label: 'Select…' }].concat(sim.model.devices.slice().sort((a, b) => (a.id < b.id ? -1 : 1)).map((d) => ({ value: d.id, label: d.id })));
     const flapping = (dev: string, i: string): boolean => !!sim.engine.flapOf(`iface:${dev}:${i}`);
-    this.t.sync(devs, (d) =>
-      this.host.interfacesOf(d).map((i) => ({ value: i.id, label: i.label + (sim.engine.isShut(d, i.id) ? ' (shut)' : i.cabled && flapping(d, i.id) ? ' (flapping)' : '') })),
-    );
-    const dev = this.t.dev.value;
-    const i = this.t.iface.value;
+    this.t.sync(devs, (d) => this.host.interfacesOf(d).map((i) => ({ value: i.id, label: i.label + (sim.engine.isShut(d, i.id) ? ' (shut)' : i.cabled && flapping(d, i.id) ? ' (flapping)' : '') })));
+    const dev = this.dev();
+    const i = this.iface();
     const info = dev && i ? this.host.interfacesOf(dev).find((x) => x.id === i) : undefined;
     const t = `Flapping: ${this.host.flapTimes()} (the Layer 1 parameters of the setup).`;
     if (this.times.textContent !== t) this.times.textContent = t;
+    const shut = this.isShut();
+    const flap = this.isFlapping();
+    // the buttons say what they will do to this interface now
+    const sl = shut ? 'Bring interface up' : 'Shut interface';
+    const fl = flap ? 'Stop flapping' : 'Start flapping';
+    if (this.shutBtn.textContent !== sl) this.shutBtn.textContent = sl;
+    if (this.flapBtn.textContent !== fl) this.flapBtn.textContent = fl;
+    this.shutBtn.setAttribute('data-op', shut ? 'noshut' : 'shut');
+    this.flapBtn.setAttribute('data-op', flap ? 'stop' : 'start');
+    // its state, marked (an icon and words, not the colour alone): administrative and in operation apart
+    let text = '';
+    let mark = '';
+    if (dev && i) {
+      const st = sim.engine.portStatus(dev, i);
+      const oper = st.oper === 'up' ? 'link up' : st.oper === 'no cable' ? 'no cable' : st.oper === 'negotiating' ? 'link coming up' : `link down${st.why && st.why !== 'shut' ? ` (${st.why})` : ''}`;
+      if (shut) {
+        mark = 'shut';
+        text = `⏻ Shut: administratively down · ${oper}`;
+      } else if (flap) {
+        const fo = sim.engine.flapOf(`iface:${dev}:${i}`);
+        const n = sim.engine.params.num('flap-cycles');
+        mark = 'flapping';
+        text = `↯ Flapping: ${fo && fo.down ? 'down' : 'up'} now, cycle ${fo ? fo.done + (fo.down ? 1 : 0) : 0}${n ? ' of ' + n : ''} · administratively up`;
+      } else text = `Administratively up · ${oper}`;
+    }
+    if (this.state.textContent !== text) this.state.textContent = text;
+    if (mark) this.el.setAttribute('data-state', mark);
+    else this.el.removeAttribute('data-state');
     const base = !dev ? 'Choose a device.' : !i ? 'Choose its interface.' : null;
-    const shutWhy = base || (sim.engine.isShut(dev, i) ? `${dev}:${i} is shut: No shut is under Active events.` : null);
-    const flapWhy = base || (!info || !info.cabled ? `${dev}:${i} has no cable to flap.` : flapping(dev, i) ? `${dev}:${i} is flapping: Stop flapping is under Active events.` : null);
-    this.shutBtn.disabled = !!shutWhy;
+    const flapWhy = base || (flap ? null : shut ? `${dev}:${i} is shut: bring it up first.` : !info || !info.cabled ? `${dev}:${i} has no cable to flap.` : null);
+    this.shutBtn.disabled = !!base;
     this.flapBtn.disabled = !!flapWhy;
-    // the reason for what is disabled: once, the first one
-    const why = base || (shutWhy && flapWhy ? `${shutWhy} ${flapWhy}` : shutWhy || flapWhy);
+    // the reason for what is disabled, or what a press will also do
+    const why = base || flapWhy || (flap ? 'Shut interface stops the flapping first.' : null);
     if (this.f.need.textContent !== (why || '')) this.f.need.textContent = why || '';
   }
 

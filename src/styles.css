@@ -1552,6 +1552,12 @@ dialog#modal.sim-start-dialog .modal-body { max-height: none; overscroll-behavio
 .sim-ne-h .sp-toggle { font-weight: 600; }
 .sim-ne > [id^="sim-ne-"] { padding: 4px 0 8px 14px; }
 .sim-ev-form .sp-row { margin-top: 6px; }
+.sim-i-state { margin: 4px 0 0; overflow-wrap: anywhere; }
+.sim-i-state:empty { display: none; }
+/* an interface shut or flapping: the form marked (a bar and a tint), its state in words with an icon */
+.sim-i-form[data-state] { border-left: 3px solid var(--accent); padding-left: 8px; background: var(--accent-soft); border-radius: 4px; }
+.sim-i-form[data-state="shut"] { border-left-color: var(--error); }
+.sim-i-form[data-state] .sim-i-state { font-weight: 600; }
 /* Active events: compact rows; the state by icon and word, bars with their numbers */
 .sim-ev-bar-top { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; justify-content: space-between; }
 .sim-ev-bar-top p { margin: 0; }

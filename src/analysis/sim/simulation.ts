@@ -285,6 +285,11 @@ export class Simulation {
     return {
       now: this.now,
       member: (d, i, g) => this.multicast.isMember(d, i, g),
+      lastDrop: (id) => {
+        const log = this.engine.log;
+        for (let i = log.length - 1; i >= 0; i--) if (log[i].test === id && log[i].kind === 'drop') return { device: log[i].device, why: log[i].detail.replace(/^dropped at [^:]+: /, '') };
+        return null;
+      },
       shut: (d, i) => this.engine.isShut(d, i),
       flapCycles: this.engine.params.num('flap-cycles'),
       flapTimes: `down ${p('flap-down')}, up ${p('flap-up')}, ${this.engine.params.num('flap-cycles') || 'continuous'}${this.engine.params.num('flap-cycles') ? ' cycles' : ''}`,
@@ -303,11 +308,14 @@ export class Simulation {
     const g = parseAddress(group.trim());
     const gt = g ? formatAddr(g) : group.trim();
     const target = `${dev}:${iface} → ${gt}`;
-    const r = this.joinGroup(dev, iface, group, sources);
+    // its reports carry an id of their own: drawn whatever is ticked, in the log and the event's details
+    const traffic = this.transport.reserveId();
+    const r = this.multicast.join(dev, iface, group, sources, 'event', traffic);
+    if (r === null) this.engine.stateVersion++;
     if (r) return this.keepAction({ id: ++this.actSeq, kind: 'join', at: this.now, target, error: r });
     // its second unsolicited report goes after the unsolicited report interval; done by then, a little later
     const until = this.now + this.multicast.unsolicited(dev, iface) + 1000;
-    return this.keepAction({ id: ++this.actSeq, kind: 'join', at: this.now, target, join: { dev, iface, group: gt, sources, until } });
+    return this.keepAction({ id: ++this.actSeq, kind: 'join', at: this.now, target, traffic, join: { dev, iface, group: gt, sources, until } });
   }
 
   /** A multicast router recorded a member: a join of Network events from that host is done. */
@@ -325,16 +333,19 @@ export class Simulation {
   actStream(dev: string, iface: string, group: string, port: number, interval: number, size: number): ActionRecord {
     const g = parseAddress(group.trim());
     const target = `${dev}:${iface} → ${g ? formatAddr(g) : group.trim()}:${port}`;
-    const st = this.multicast.addStream(dev, iface, group, port, interval, size, 'event');
+    const traffic = this.transport.reserveId();
+    const st = this.multicast.addStream(dev, iface, group, port, interval, size, 'event', 0, '', traffic);
     if (typeof st === 'string') return this.keepAction({ id: ++this.actSeq, kind: 'stream', at: this.now, target, error: st });
     this.engine.stateVersion++;
-    return this.keepAction({ id: ++this.actSeq, kind: 'stream', at: this.now, target, stream: st });
+    return this.keepAction({ id: ++this.actSeq, kind: 'stream', at: this.now, target, traffic, stream: st });
   }
 
   /** Shut interface (Network events): done at once; the interface stays down until No shut. */
   actShut(dev: string, iface: string): ActionRecord {
     const target = `${dev}:${iface}`;
     if (this.engine.isShut(dev, iface)) return this.keepAction({ id: ++this.actSeq, kind: 'shut', at: this.now, target, error: `${target} is shut already` });
+    // an explicit shut ends the flapping of its cable first: no flap transition scheduled before can bring it up again
+    if (this.engine.flapOf(`iface:${dev}:${iface}`)) this.stopFlap(`iface:${dev}:${iface}`);
     if (!this.shut(dev, iface)) return this.keepAction({ id: ++this.actSeq, kind: 'shut', at: this.now, target, error: `${target} can't be shut` });
     return this.keepAction({ id: ++this.actSeq, kind: 'shut', at: this.now, target, shut: { dev, iface } });
   }
@@ -343,6 +354,11 @@ export class Simulation {
   actFlap(ref: string): ActionRecord {
     const target = ref.replace(/^iface:/, '').replace(/^link:/, 'cable ');
     if (this.engine.flapOf(ref)) return this.keepAction({ id: ++this.actSeq, kind: 'flap', at: this.now, target, error: `${target} is flapping already` });
+    // a shut interface stays down until No shut: flapping would not show anything (and could not bring it up)
+    if (ref.indexOf('iface:') === 0) {
+      const [, d, ...rest] = ref.split(':');
+      if (this.engine.isShut(d, rest.join(':'))) return this.keepAction({ id: ++this.actSeq, kind: 'flap', at: this.now, target, error: `${target} is shut: bring it up first` });
+    }
     if (!this.startFlap(ref)) return this.keepAction({ id: ++this.actSeq, kind: 'flap', at: this.now, target, error: `${target} has no cable to flap` });
     return this.keepAction({ id: ++this.actSeq, kind: 'flap', at: this.now, target, flap: { ref, obj: this.engine.flapOf(ref) as NonNullable<ReturnType<Engine['flapOf']>> } });
   }
