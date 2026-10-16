@@ -30,29 +30,43 @@ export interface SpofRow {
   ref: string;
   element: string;
   type: string;
-  /** the devices cut off, in groups ("a, b; c") ('' none) */
+  /** the devices cut off, in groups ("a, b; c"), then the guests that go down ("guests: web1, db1") ('' none) */
   cuts: string;
   relations: string;
   devicesCut: number;
   relationsDown: number;
-  /** devices cut off + relations down */
+  /** devices cut off (guests that go down included) + relations down */
   impact: number;
   /** the order of the report (most impact first) */
   rank: number;
 }
 
-const TYPE: { [k in Spof['kind']]: string } = { device: 'Device', cable: 'Cable', lag: 'LAG' };
+const TYPE: { [k in Spof['kind']]: string } = { device: 'Device', cable: 'Cable', lag: 'LAG', vswitch: 'Virtual switch', passthrough: 'Passthrough port' };
+
+/** "esx-01 vSwitch0" for a virtual switch ref. */
+function vswitchName(ref: string): string {
+  const p = ref.split(':');
+  return `${p[1]} ${p.slice(2).join(':')}`;
+}
 
 /** The rows of a report, in its order (most impact first). */
 export function spofRows(model: Model, list: Spof[]): SpofRow[] {
   return list.map((s, i) => {
-    const devicesCut = s.isolated.reduce((n, g) => n + g.length, 0);
+    const devicesCut = s.isolated.reduce((n, g) => n + g.length, 0) + s.guests.length;
+    const cuts = s.isolated.map((g) => g.join(', ')).join('; ');
     return {
       ref: s.ref,
-      // the Type column says what it is: a cable by its id alone (not "cable l-1")
-      element: s.kind === 'lag' ? `${refLabel(model, s.ref)} (${s.fail.length} cables)` : s.kind === 'cable' ? s.ref.slice(s.ref.indexOf(':') + 1) : refLabel(model, s.ref),
+      // the Type column says what it is: a cable by its id alone (not "cable l-1"); a virtual switch with why it is one
+      element:
+        s.kind === 'lag'
+          ? `${refLabel(model, s.ref)} (${s.fail.length} cables)`
+          : s.kind === 'cable'
+            ? s.ref.slice(s.ref.indexOf(':') + 1)
+            : s.kind === 'vswitch'
+              ? `${vswitchName(s.ref)}${s.note ? ' (' + s.note + ')' : ''}`
+              : refLabel(model, s.ref),
       type: TYPE[s.kind],
-      cuts: s.isolated.map((g) => g.join(', ')).join('; '),
+      cuts: [cuts, s.guests.length ? 'guests: ' + s.guests.join(', ') : ''].filter((x) => x).join('; '),
       relations: s.relations.join(', '),
       devicesCut,
       relationsDown: s.relations.length,
@@ -117,7 +131,7 @@ export function spofBody(doc: Document, rows: SpofRow[], st: SpofViewState, simu
   const box = el(doc, 'div', { class: 'spof-body' });
   box.appendChild(
     el(doc, 'p', { class: 'small' }, [
-      'A single point of failure is one cable, device or LAG (all its member cables at once) whose failure alone cuts devices off from the rest of the physical network, or brings down relations although their endpoints are still up (they have no redundant underlay). Impact: the devices cut off plus the relations that go down. ',
+      'A single point of failure is one cable, device or LAG (all its member cables at once) whose failure alone cuts devices off from the rest of the physical network, or brings down relations although their endpoints are still up (they have no redundant underlay); for virtual machines and containers also a host (unless its HA cluster has a member left to restart them on), a virtual switch with one uplink or with its uplinks to one switch, and a passthrough port. Impact: the devices cut off (guests that go down included) plus the relations that go down. ',
       el(doc, 'span', { class: 'muted' }, [simulated ? 'Computed from the model as written (not the simulated state that is on).' : 'Computed from the model as written.']),
     ]),
   );

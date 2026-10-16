@@ -51,7 +51,21 @@ test('the services: off by default; enabled, what they still need is an error; o
   for (const what of ['network', 'address range', 'default gateway', 'DNS servers']) assert.match(e, new RegExp(`scope 1 of "srv" needs its ${what}`), what);
   assert.match(errs(LAN('{dns: {}}')).join('|'), /the DNS server of "srv" needs a zone: add one \(its domain name, e\.g\. hq\.example\)/);
   assert.match(errs(LAN(SCOPE(), { type: 'storage' })).join('|'), /"srv" is not a server: DHCP and DNS servers run on a server, a VM or a container/);
-  for (const t of ['vm', 'container']) assert.deepEqual(errs(LAN(SCOPE(), { type: t })), [], t);
+  // a VM and a container run them too (on their host, through its virtual networking)
+  const guest = (t) => `netatlas: 1
+devices:
+  - {id: srv, type: ${t}, host: h, services: ${SCOPE()}, logical_interfaces: [{id: eth0, type: ${t === 'vm' ? 'vnic, port_group: pg' : 'veth, network: n'}, ip: 10.0.0.10/24}]}
+  - id: h
+    type: server
+    services: ${t === 'vm' ? '{hypervisor: {platform: kvm, vswitches: [{name: br0, type: linux_bridge, uplinks: [eth0], teaming: active_standby, port_groups: [{name: pg, vlans: 1}]}]}}' : '{container_engine: {engine: docker, networks: [{name: n, driver: macvlan, parent: eth0, subnet: 10.0.0.0/24, gateway: 10.0.0.1, mode: bridge}]}}'}
+    interfaces: [eth0]
+  - {id: r1, type: router, interfaces: [{id: g0, ip: 10.0.0.1/24}]}
+links:
+  - {id: a, a: "h:eth0", b: "r1:g0"}
+networks:
+  - {id: lan, cidr: 10.0.0.0/24}
+`;
+  for (const t of ['vm', 'container']) assert.deepEqual(errs(guest(t)), [], t);
   // the lease time: 1 day unless written
   assert.equal(NS.DEFAULT_LEASE, 86400000);
   assert.equal(V.loadModel(LAN(SCOPE(', lease: 2h'))).model.index.devices.get('srv').netServices.dhcp.scopes[0].lease, 7200000);

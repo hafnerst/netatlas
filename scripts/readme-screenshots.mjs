@@ -3,7 +3,8 @@
 // scripts/cdp.mjs) and the page's deep links
 // (#example=<n>&view=<physical|logical>&select=<ref>&devices=<id,…>). Run after "npm run build":
 //
-//   node scripts/readme-screenshots.mjs
+//   node scripts/readme-screenshots.mjs                 every screenshot
+//   node scripts/readme-screenshots.mjs a.png b.png     only these
 //
 // Each shot names its theme: the page is opened with that choice stored, as a
 // user who chose it would see it (Dark is the default). The README shows both.
@@ -16,6 +17,8 @@ import { openPage } from './cdp.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const html = resolve(root, 'dist', 'netatlas.html');
+/** the screenshots named on the command line (none: every one) */
+const only = process.argv.slice(2);
 const outDir = join(root, 'docs', 'img');
 
 // file name -> theme, deep link (example numbers follow the Examples menu), and what to do before the shot
@@ -36,6 +39,7 @@ const SHOTS = [
   ['ports-physical-lag.png', 'light', 'example=7&view=physical&select=iface:core-a:Po1'],
   ['routes-logical.png', 'dark', 'example=8&view=logical&select=route:br-rtr:1'],
   ['tagging-physical.png', 'light', 'example=13&view=physical', 'netatlas.fit()'],
+  ['virtualization-physical.png', 'dark', 'example=14&view=physical', 'netatlas.fit()'],
   ['addressing-overview.png', 'light', 'example=6&view=logical', `document.getElementById('btn-addressing').click(); document.querySelector('[data-addr-toggle="|corp"]').click()`],
 ];
 
@@ -56,6 +60,7 @@ async function main() {
   const page = await openPage(base, { width: 1700, height: 1050 });
   try {
     for (const [name, theme, link, action] of SHOTS) {
+      if (only.length && only.indexOf(name) < 0) continue;
       await page.eval(`localStorage.setItem('netatlas.theme', ${JSON.stringify(theme)}), window.__old = true`);
       // a new document each time (a changed '#…' alone would not load the page again)
       await page.cmd('Page.navigate', { url: base + '?' + name + '#' + link });
@@ -80,6 +85,7 @@ async function main() {
   }
   // the simulation layout (protocol-simulation.yaml, dark) at three window sizes: wide, narrow, narrow and short
   for (const [name, width, height] of SIM_SHOTS) {
+    if (only.length && only.indexOf(name) < 0) continue;
     const p = await openPage(base, { width, height });
     try {
       await p.settle(200);

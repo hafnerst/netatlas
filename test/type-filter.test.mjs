@@ -28,6 +28,8 @@ const drawn = (s) => {
 const ofType = (m, t) => m.devices.filter((d) => d.type === t).map((d) => d.id).sort();
 const others = (m, types) => m.devices.filter((d) => types.indexOf(d.type) < 0).map((d) => d.id).sort();
 const snap = (s, v) => JSON.stringify(Array.from(s.positionsFor(v)));
+// a server's keys: by the service it runs guests with (device-types.yaml's server is a hypervisor)
+const SERVER_KEYS = ['server', 'server:hypervisor', 'server:container'];
 
 test('the Device types filter sits next to Devices; the Endpoints and Servers switches are gone; every type is shown by default', () => {
   const html = readFileSync(join(root, 'src', 'index.html'), 'utf8');
@@ -63,7 +65,8 @@ test('switching a type off hides its devices in both views; the others stay wher
   const s = new Session(m);
   const eps = ofType(m, 'endpoint');
   const srv = ofType(m, 'server');
-  assert.ok(eps.length >= 2 && srv.length >= 1);
+  const guests = m.devices.filter((d) => d.host !== undefined).map((d) => d.id).sort();
+  assert.ok(eps.length >= 2 && srv.length >= 1 && guests.length >= 2);
   const full = Object.fromEntries(VIEWS.map((v) => [v, s.positionsFor(v)]));
   const fullSnap = Object.fromEntries(VIEWS.map((v) => [v, snap(s, v)]));
   // what each view draws without a filter (the logical view leaves out devices without logical content)
@@ -81,16 +84,18 @@ test('switching a type off hides its devices in both views; the others stay wher
       if (m.index.devices.has(id)) assert.deepEqual(p, full[v].get(id), `${v} ${id}`);
     });
   }
-  s.setTypeVisible('server', false);
+  s.setTypesVisible(SERVER_KEYS, false);
   for (const v of VIEWS) {
     s.setView(v);
     // (in the logical view a device whose only relations reached a hidden device has nothing left to draw)
     const now = drawn(s);
     assert.ok(now.every((id) => without(v, eps.concat(srv)).indexOf(id) >= 0), v + ' ' + now);
-    if (v === 'physical') assert.deepEqual(now, without(v, eps.concat(srv)));
+    // (the physical view draws a guest only inside its host: the server's VM and the container in it go too)
+    if (v === 'physical') assert.deepEqual(now, without(v, eps.concat(srv, guests)));
+    if (v === 'physical') assert.deepEqual(s.hiddenWithHost().sort(), guests);
   }
   s.setTypeVisible('endpoint', true);
-  s.setTypeVisible('server', true);
+  s.setTypesVisible(SERVER_KEYS, true);
   assert.equal(s.isFiltered(), false);
   for (const v of VIEWS) assert.equal(snap(s, v), fullSnap[v], v);
   // the model and the document are never changed
@@ -130,14 +135,14 @@ test('combined with the device selection: shown = selected and not of a hidden t
   const pick = [router, eps[0], srv[0]];
   s.setDevices(pick);
   const subset = snap(s, 'physical');
-  s.setTypeVisible('server', false);
+  s.setTypesVisible(SERVER_KEYS, false);
   assert.deepEqual([...s.selectedDevices()].sort(), pick.slice().sort(), 'the selection is unchanged');
   assert.deepEqual([...s.shownDevices()].sort(), [router, eps[0]].sort());
   assert.deepEqual(drawn(s), [router, eps[0]].sort());
   s.setTypeVisible('endpoint', false);
   assert.deepEqual(drawn(s), [router]);
   s.setTypeVisible('endpoint', true);
-  s.setTypeVisible('server', true);
+  s.setTypesVisible(SERVER_KEYS, true);
   assert.deepEqual(drawn(s), pick.slice().sort(), 'on again: the previous selection is back');
   // the devices of the selection keep the places they had in the filtered view
   assert.equal(snap(s, 'physical'), subset);
@@ -164,7 +169,7 @@ test('the stored layout is untouched: drags and edits while a type is off stay t
   const yaml = doc.exportText();
   const s = new Session(doc.result.model);
   const stored = snap(s, 'physical');
-  s.setTypeVisible('server', false);
+  s.setTypesVisible(SERVER_KEYS, false);
   const id = s.viewModel('physical').devices[0].id;
   s.moveNode('device:' + id, { x: 5, y: 7 });
   assert.equal(s.commitTemporary('device:' + id), true, 'a move is temporary while filtered');
@@ -173,8 +178,8 @@ test('the stored layout is untouched: drags and edits while a type is off stay t
   const before = s.positionsFor('physical').get(id);
   doc.setText(['title'], 'Renamed');
   s.setModel(doc.result.model);
-  assert.ok(s.isTypeHidden('server'));
+  assert.ok(s.isTypeHidden('server:hypervisor'));
   assert.deepEqual(s.positionsFor('physical').get(id), before);
-  s.setTypeVisible('server', true);
+  s.setTypesVisible(SERVER_KEYS, true);
   assert.equal(snap(s, 'physical'), stored);
 });

@@ -153,6 +153,61 @@ devices:
     type: endpoint
     interfaces:
       - {id: eth0, dhcp: true}
+  # virtualization: hv-a's uplink ends on sw3:q1, which carries VLAN 10 only (vswitch-uplink-vlan: port group pg20);
+  # vm-a1 has an address in the voice network (VLAN 20) on port group pg10 (vnic-network-vlan); vm-a2 can't restart
+  # on hv-b, which has no pg20 (ha-restart-portgroup); hv-a's VMs have more vCPUs and memory than it (hypervisor-overcommit);
+  # ct-host's macvlan network is in the voice network (VLAN 20), its parent eth1 in VLAN 10 (container-parent-vlan)
+  - id: sw3
+    type: switch
+    group: access
+    interfaces:
+      - {id: q1, vlans: 10}
+      - {id: q2, vlans: 10}
+  - id: hv-a
+    type: server
+    services:
+      hypervisor:
+        platform: kvm
+        cluster: c1
+        cpu: 4
+        ram: 8G
+        vswitches:
+          - name: br0
+            type: linux_bridge
+            uplinks: [vmnic0]
+            teaming: active_standby
+            port_groups:
+              - {name: pg10, vlans: 10}
+              - {name: pg20, vlans: 20}
+    interfaces: [vmnic0]
+  - id: hv-b
+    type: server
+    services:
+      hypervisor:
+        platform: kvm
+        cluster: c1
+        vswitches:
+          - {name: br0, type: linux_bridge, port_groups: [{name: pg10, vlans: 10}]}
+  - id: vm-a1
+    type: vm
+    host: hv-a
+    vcpu: 8
+    ram: 16G
+    logical_interfaces:
+      - {id: eth0, type: vnic, port_group: pg10, ip: 10.10.20.5/24}
+  - id: vm-a2
+    type: vm
+    host: hv-a
+    logical_interfaces:
+      - {id: eth0, type: vnic, port_group: pg20}
+  - id: ct-host
+    type: server
+    services:
+      container_engine:
+        engine: docker
+        networks:
+          - {name: mv, driver: macvlan, parent: eth1, subnet: 10.10.20.0/24, gateway: 10.10.20.1, mode: bridge}
+    interfaces: [eth1]
 
 links:
   - {id: l12, a: "r1:e0", b: "r2:e0", medium: fiber, speed: 10G}
@@ -186,6 +241,8 @@ links:
   - {id: l-mc-r1-r2, a: "mc-r1:e1", b: "mc-r2:e0"}
   - {id: l-dhcp1, a: "dhcp1:eth0", b: "dhcp-r:e0"}
   - {id: l-dhcp-pc, a: "dhcp-pc:eth0", b: "dhcp-r:e1"}
+  - {id: l-hv-a, a: "sw3:q1", b: "hv-a:vmnic0"}
+  - {id: l-ct-host, a: "sw3:q2", b: "ct-host:eth1"}
 
 networks:
   - {id: users, cidr: 10.10.10.0/24, vlan: 10}

@@ -1,0 +1,312 @@
+# netatlas example: virtualization — hypervisors and a container host, their
+# guests and virtual networking.
+#
+# * hv1 and hv2 are servers with the Hypervisor service (VMware ESXi) in the
+#   HA cluster "prod". Each has the virtual switch vSwitch0 on two uplinks,
+#   vmnic0 to tor1 and vmnic1 to tor2 (active / standby: vmnic0 carries the
+#   traffic until it fails), and the internal vSwitch1 (no uplinks) for the
+#   lab. The ToR switches' ports to the hypervisors are trunks carrying the
+#   port groups' VLANs. Each host has its management and vMotion interfaces
+#   (vmk0, vmk1) on port groups.
+# * VMs: web1 and app1 on access port groups (Servers, VLAN 10; Apps, VLAN
+#   20); tagger on the guest-tagging port group (VGT) with its own VLAN
+#   subinterfaces; db1 bound by passthrough to hv1's vmnic2 (an access port
+#   of tor1 in VLAN 10); vr1, a virtual router (Supports Layer 3) between
+#   VLAN 20 and the internal lab network, where lab1 lives.
+# * ctr1 is a server with the Container engine (Docker): the bridge network
+#   "bridge" (docker0, 172.17.0.0/16, NAT to the host's address) with web and
+#   api publishing their ports on the host, and the macvlan network "lan" on
+#   eth1 (VLAN 10), where cache has its own address and MAC on the LAN.
+# * k8s1 is a VM on hv1 with a Container engine of its own: the container
+#   metrics runs inside it, behind its NAT bridge.
+#
+# Power off hv2 in the simulation: app1, vr1 and lab1 restart on hv1 after
+# the VM restart time. Fail tor1's cable to hv1: vSwitch0 moves to vmnic1 and
+# announces its guests' MAC addresses.
+netatlas: 1
+title: Virtualization
+description: |
+  Two hypervisors in an HA cluster with teamed uplinks, VMs on port groups
+  (access, guest tagging, passthrough, a virtual router), a container host
+  with a NAT bridge network, published ports and macvlan, and a container in
+  a VM.
+
+groups:
+  - {id: dc, label: Data center, kind: site}
+  - {id: rack1, label: Rack 1, kind: rack, parent: dc}
+  - {id: rack2, label: Rack 2, kind: rack, parent: dc}
+
+devices:
+  - id: core1
+    type: switch
+    layer3: true
+    group: dc
+    interfaces:
+      - {id: Gi1/0/1, vlans: [10, 20, 30, 99], description: to tor1}
+      - {id: Gi1/0/2, vlans: [10, 20, 30, 99], description: to tor2}
+      - {id: Gi1/0/3, vlans: 40, description: clients}
+    logical_interfaces:
+      - {id: Vlan10, type: virtual, vlan: 10, ip: 10.10.0.1/24}
+      - {id: Vlan20, type: virtual, vlan: 20, ip: 10.20.0.1/24}
+      - {id: Vlan40, type: virtual, vlan: 40, ip: 10.40.0.1/24}
+      - {id: Vlan99, type: virtual, vlan: 99, ip: 10.99.0.1/24}
+    routes:
+      - {prefix: 10.60.0.0/24, via: 10.20.0.254, name: lab behind vr1}
+
+  - id: tor1
+    type: switch
+    group: rack1
+    interfaces:
+      - {id: Gi1/0/1, vlans: [10, 20, 30, 99], description: hv1 vmnic0}
+      - {id: Gi1/0/2, vlans: [10, 20, 30, 99], description: hv2 vmnic0}
+      - {id: Gi1/0/5, vlans: 10, description: hv1 vmnic2 (passthrough to db1)}
+      - {id: Gi1/0/48, vlans: [10, 20, 30, 99], description: uplink to core1}
+  - id: tor2
+    type: switch
+    group: rack2
+    interfaces:
+      - {id: Gi1/0/1, vlans: [10, 20, 30, 99], description: hv1 vmnic1}
+      - {id: Gi1/0/2, vlans: [10, 20, 30, 99], description: hv2 vmnic1}
+      - {id: Gi1/0/3, vlans: 20, description: ctr1 eth0}
+      - {id: Gi1/0/4, vlans: 10, description: ctr1 eth1 (macvlan)}
+      - {id: Gi1/0/48, vlans: [10, 20, 30, 99], description: uplink to core1}
+
+  - id: hv1
+    label: esx-01
+    type: server
+    group: rack1
+    services:
+      hypervisor:
+        platform: esxi
+        cluster: prod
+        cpu: 64
+        ram: 512G
+        vswitches:
+          - name: vSwitch0
+            type: standard
+            uplinks: [vmnic0, vmnic1]
+            teaming: active_standby
+            mtu: 1500
+            port_groups:
+              - {name: Mgmt, vlans: 99}
+              - {name: vMotion, vlans: 30}
+              - {name: Servers, vlans: 10}
+              - {name: Apps, vlans: 20}
+              - {name: VGT, guest_tagging: true}
+          - name: vSwitch1
+            type: standard
+            port_groups:
+              - {name: Lab, vlans: 60}
+    interfaces: [vmnic0, vmnic1, vmnic2]
+    logical_interfaces:
+      - {id: vmk0, type: vnic, port_group: Mgmt, role: management, ip: 10.99.0.11/24}
+      - {id: vmk1, type: vnic, port_group: vMotion, role: migration, ip: 10.30.0.11/24}
+    routes:
+      - {prefix: 0.0.0.0/0, via: 10.99.0.1}
+  - id: hv2
+    label: esx-02
+    type: server
+    group: rack2
+    services:
+      hypervisor:
+        platform: esxi
+        cluster: prod
+        cpu: 64
+        ram: 512G
+        vswitches:
+          - name: vSwitch0
+            type: standard
+            uplinks: [vmnic0, vmnic1]
+            teaming: active_standby
+            mtu: 1500
+            port_groups:
+              - {name: Mgmt, vlans: 99}
+              - {name: vMotion, vlans: 30}
+              - {name: Servers, vlans: 10}
+              - {name: Apps, vlans: 20}
+              - {name: VGT, guest_tagging: true}
+          - name: vSwitch1
+            type: standard
+            port_groups:
+              - {name: Lab, vlans: 60}
+        simulation: {vm_restart: 30}
+    interfaces: [vmnic0, vmnic1]
+    logical_interfaces:
+      - {id: vmk0, type: vnic, port_group: Mgmt, role: management, ip: 10.99.0.12/24}
+      - {id: vmk1, type: vnic, port_group: vMotion, role: migration, ip: 10.30.0.12/24}
+    routes:
+      - {prefix: 0.0.0.0/0, via: 10.99.0.1}
+
+  - id: web1
+    type: vm
+    host: hv1
+    guest_os: Ubuntu 24.04
+    vcpu: 4
+    ram: 8G
+    logical_interfaces:
+      - {id: eth0, type: vnic, port_group: Servers, mac: "00:50:56:01:00:21", ip: 10.10.0.21/24}
+    routes:
+      - {prefix: 0.0.0.0/0, via: 10.10.0.1}
+  - id: db1
+    type: vm
+    host: hv1
+    guest_os: Debian 12
+    vcpu: 8
+    ram: 32G
+    logical_interfaces:
+      - {id: eth0, type: vnic, passthrough: vmnic2, ip: 10.10.0.40/24}
+    routes:
+      - {prefix: 0.0.0.0/0, via: 10.10.0.1}
+  - id: tagger
+    type: vm
+    host: hv1
+    guest_os: Rocky Linux 9
+    vcpu: 2
+    ram: 4G
+    logical_interfaces:
+      - {id: eth0, type: vnic, port_group: VGT, mac: "00:50:56:01:00:30"}
+      - {id: eth0.10, type: virtual, ip: 10.10.0.30/24}
+      - {id: eth0.20, type: virtual, ip: 10.20.0.30/24}
+    routes:
+      - {prefix: 0.0.0.0/0, via: 10.10.0.1}
+  - id: k8s1
+    type: vm
+    host: hv1
+    guest_os: Ubuntu 24.04
+    vcpu: 8
+    ram: 16G
+    services:
+      container_engine:
+        engine: containerd
+        networks:
+          - {name: bridge, driver: bridge, interface: cni0, subnet: 172.18.0.0/16, gateway: 172.18.0.1, nat: true}
+    logical_interfaces:
+      - {id: eth0, type: vnic, port_group: Apps, mac: "00:50:56:01:00:31", ip: 10.20.0.31/24}
+    routes:
+      - {prefix: 0.0.0.0/0, via: 10.20.0.1}
+  - id: app1
+    type: vm
+    host: hv2
+    guest_os: Windows Server 2022
+    vcpu: 4
+    ram: 16G
+    logical_interfaces:
+      - {id: eth0, type: vnic, port_group: Apps, mac: "00:50:56:02:00:21", ip: 10.20.0.21/24}
+    routes:
+      - {prefix: 0.0.0.0/0, via: 10.20.0.1}
+  - id: vr1
+    label: vr1 (virtual router)
+    type: vm
+    host: hv2
+    layer3: true
+    guest_os: VyOS 1.4
+    vcpu: 2
+    ram: 2G
+    logical_interfaces:
+      - {id: eth0, type: vnic, port_group: Apps, mac: "00:50:56:02:00:fe", ip: 10.20.0.254/24}
+      - {id: eth1, type: vnic, port_group: Lab, mac: "00:50:56:02:60:01", ip: 10.60.0.1/24}
+    routes:
+      - {prefix: 0.0.0.0/0, via: 10.20.0.1}
+  - id: lab1
+    type: vm
+    host: hv2
+    guest_os: Alpine 3.20
+    vcpu: 1
+    ram: 1G
+    logical_interfaces:
+      - {id: eth0, type: vnic, port_group: Lab, mac: "00:50:56:02:60:10", ip: 10.60.0.10/24}
+    routes:
+      - {prefix: 0.0.0.0/0, via: 10.60.0.1}
+
+  - id: ctr1
+    label: docker-01
+    type: server
+    group: rack2
+    services:
+      container_engine:
+        engine: docker
+        networks:
+          - name: bridge
+            driver: bridge
+            interface: docker0
+            subnet: 172.17.0.0/16
+            gateway: 172.17.0.1
+            nat: true
+            range: 172.17.0.100-172.17.0.199
+          - {name: lan, driver: macvlan, parent: eth1, subnet: 10.10.0.0/24, gateway: 10.10.0.1, mode: bridge}
+    interfaces:
+      - {id: eth0, ip: 10.20.0.50/24}
+      - eth1
+    routes:
+      - {prefix: 0.0.0.0/0, via: 10.20.0.1}
+  - id: web
+    type: container
+    host: ctr1
+    image: nginx:1.27
+    simulation: {restart_policy: always}
+    logical_interfaces:
+      - id: eth0
+        type: veth
+        network: bridge
+        ip: 172.17.0.2
+        publish:
+          - {host_port: 8080, port: 80, protocol: tcp}
+  - id: api
+    type: container
+    host: ctr1
+    image: example/api:2.3
+    simulation: {restart_policy: on-failure}
+    logical_interfaces:
+      - id: eth0
+        type: veth
+        network: bridge
+        ip: 172.17.0.3
+        aliases: [backend]
+        publish:
+          - {host_port: 8443, port: 443, protocol: tcp}
+  - id: cache
+    type: container
+    host: ctr1
+    image: redis:7
+    simulation: {restart_policy: unless-stopped}
+    logical_interfaces:
+      - {id: eth0, type: veth, network: lan, mac: "02:42:0a:0a:00:3c", ip: 10.10.0.60/24}
+    routes:
+      - {prefix: 0.0.0.0/0, via: 10.10.0.1}
+  - id: metrics
+    type: container
+    host: k8s1
+    image: prom/node-exporter:1.8
+    simulation: {restart_policy: always}
+    logical_interfaces:
+      - id: eth0
+        type: veth
+        network: bridge
+        ip: 172.18.0.2
+        publish:
+          - {host_port: 9100, port: 9100, protocol: tcp}
+
+  - id: pc1
+    type: endpoint
+    interfaces: [{id: eth0, ip: 10.40.0.10/24}]
+    routes: [{prefix: 0.0.0.0/0, via: 10.40.0.1}]
+
+links:
+  - {id: up-tor1, a: "tor1:Gi1/0/48", b: "core1:Gi1/0/1", medium: fiber, speed: 10G}
+  - {id: up-tor2, a: "tor2:Gi1/0/48", b: "core1:Gi1/0/2", medium: fiber, speed: 10G}
+  - {id: hv1-a, a: "tor1:Gi1/0/1", b: "hv1:vmnic0", medium: dac, speed: 25G}
+  - {id: hv1-b, a: "tor2:Gi1/0/1", b: "hv1:vmnic1", medium: dac, speed: 25G}
+  - {id: hv1-pt, a: "tor1:Gi1/0/5", b: "hv1:vmnic2", medium: dac, speed: 25G}
+  - {id: hv2-a, a: "tor1:Gi1/0/2", b: "hv2:vmnic0", medium: dac, speed: 25G}
+  - {id: hv2-b, a: "tor2:Gi1/0/2", b: "hv2:vmnic1", medium: dac, speed: 25G}
+  - {id: ctr1-a, a: "tor2:Gi1/0/3", b: "ctr1:eth0", medium: copper, speed: 10G}
+  - {id: ctr1-b, a: "tor2:Gi1/0/4", b: "ctr1:eth1", medium: copper, speed: 10G}
+  - {id: client, a: "core1:Gi1/0/3", b: "pc1:eth0", medium: copper, speed: 1G}
+
+networks:
+  - {id: servers, label: Servers, cidr: 10.10.0.0/24, vlan: 10}
+  - {id: apps, label: Apps, cidr: 10.20.0.0/24, vlan: 20}
+  - {id: vmotion, label: vMotion, cidr: 10.30.0.0/24, vlan: 30}
+  - {id: clients, label: Clients, cidr: 10.40.0.0/24, vlan: 40}
+  - {id: lab, label: Lab, cidr: 10.60.0.0/24, vlan: 60}
+  - {id: mgmt, label: Management, cidr: 10.99.0.0/24, vlan: 99}

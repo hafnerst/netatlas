@@ -28,7 +28,8 @@ import { Session, View } from '../diagram/session';
 import { SelectionContext, attachedRefs, search, selectionContext, splitRef } from '../model/queries';
 import { sortedByName } from '../model/order';
 import { lookupProtocol, normalizeProtocol } from '../model/protocols';
-import { DEVICE_TYPES, deviceRoutingRole, isLayer2Switch, typeKey, typeKeyLabel } from '../model/device-types';
+import { hostOf, isGuest, machineOf } from '../model/virtual';
+import { DEVICE_TYPES, deviceRoutingRole, isLayer2Switch, typeKey, typeKeyLabel, typeKeySubLabel, typeKeysOf } from '../model/device-types';
 import { Issue } from '../validation/validate';
 import { SEVERITIES, Severity, checkById } from '../analysis/checks';
 import { addressingOverview } from '../analysis/addressing';
@@ -1890,8 +1891,13 @@ export class App {
     // (in focus mode the banner says it)
     hint.hidden = !filtered || !!(s && s.state.focus);
     const none = filtered && !!s && s.shownDevices().size === 0;
+    // (the physical view draws a guest only inside its host)
+    const orphans = s ? s.hiddenWithHost() : [];
+    const orphanText = orphans.length
+      ? `${orphans.length === 1 ? `${s ? (s.model.index.devices.get(orphans[0]) || { label: orphans[0] }).label : orphans[0]} is` : `${orphans.length} guests are`} not shown: ${orphans.length === 1 ? 'its host is' : 'their hosts are'} hidden, and a guest is drawn inside its host. `
+      : '';
     this.$('filter-hint-text').textContent =
-      (none ? (s && s.selectedDevices().size ? 'No devices shown: the selected ones are of types switched off. ' : 'No devices selected: choose devices, or Select all. ') : '') + 'Filtered-view positions are temporary and are not saved in YAML.';
+      (none ? (s && s.selectedDevices().size ? 'No devices shown: the selected ones are of types switched off. ' : 'No devices selected: choose devices, or Select all. ') : '') + orphanText + 'Filtered-view positions are temporary and are not saved in YAML.';
     if (!s) this.$('devices-panel').hidden = true;
     if (!this.$('devices-panel').hidden) this.syncDevicesList();
   }
@@ -1993,7 +1999,9 @@ export class App {
   /**
    * The Device types filter's entries: the types the model uses (in the
    * order of the format's list), each with its keys and its number of
-   * devices; a switch with both kinds lists Layer 2 and Layer 3 under it.
+   * devices; a switch with both kinds lists Layer 2 and Layer 3 under it,
+   * a server with more than one kind its Hypervisor, Container host and
+   * Other servers.
    */
   typeEntries(): Array<{ type: string; label: string; keys: string[]; count: number; subs: Array<{ key: string; label: string; count: number }> }> {
     const s = this.session;
@@ -2002,10 +2010,10 @@ export class App {
     for (const d of s.model.devices) per.set(typeKey(d), (per.get(typeKey(d)) || 0) + 1);
     const out: Array<{ type: string; label: string; keys: string[]; count: number; subs: Array<{ key: string; label: string; count: number }> }> = [];
     for (const t of DEVICE_TYPES) {
-      const keys = t.id === 'switch' ? ['switch:l2', 'switch:l3'].filter((k) => per.has(k)) : per.has(t.id) ? [t.id] : [];
+      const keys = typeKeysOf(t.id).filter((k) => per.has(k));
       if (!keys.length) continue;
       const count = keys.reduce((n, k) => n + (per.get(k) || 0), 0);
-      const subs = keys.length > 1 ? keys.map((k) => ({ key: k, label: k === 'switch:l2' ? 'Layer 2' : 'Layer 3', count: per.get(k) || 0 })) : [];
+      const subs = keys.length > 1 ? keys.map((k) => ({ key: k, label: typeKeySubLabel(k), count: per.get(k) || 0 })) : [];
       out.push({ type: t.id, label: t.label, keys, count, subs });
     }
     // devices without a type (or of an unknown one)
@@ -2053,7 +2061,8 @@ export class App {
       list.appendChild(el(this.doc, 'label', { class: 'tp-row', 'data-type-row': e.type }, [cb, el(this.doc, 'span', {}, [e.label]), el(this.doc, 'span', { class: 'tp-count', 'aria-hidden': 'true' }, [String(e.count)]), el(this.doc, 'span', { class: 'sr-only' }, [`, ${e.count} device${e.count === 1 ? '' : 's'}`])]));
       for (const sub of e.subs) {
         const sc = el(this.doc, 'input', { type: 'checkbox', 'data-type-keys': sub.key }) as HTMLInputElement;
-        list.appendChild(el(this.doc, 'label', { class: 'tp-row tp-sub', 'data-type-row': sub.key }, [sc, el(this.doc, 'span', {}, [sub.label]), el(this.doc, 'span', { class: 'tp-count', 'aria-hidden': 'true' }, [String(sub.count)]), el(this.doc, 'span', { class: 'sr-only' }, [` switches, ${sub.count} device${sub.count === 1 ? '' : 's'}`])]));
+        const what = e.type === 'switch' ? ' switches' : e.type === 'server' ? ' servers' : '';
+        list.appendChild(el(this.doc, 'label', { class: 'tp-row tp-sub', 'data-type-row': sub.key }, [sc, el(this.doc, 'span', {}, [sub.label]), el(this.doc, 'span', { class: 'tp-count', 'aria-hidden': 'true' }, [String(sub.count)]), el(this.doc, 'span', { class: 'sr-only' }, [`${what}, ${sub.count} device${sub.count === 1 ? '' : 's'}`])]));
       }
     }
     this.syncTypesList();
@@ -2800,6 +2809,8 @@ export class App {
     ctl.stop = (): void => {
       stop();
       if (self.simCtl === ctl) self.simCtl = null;
+      // the VMs back where the model has them
+      if (self.session && self.session.setPlacement(null)) self.render();
       self.simLayout(false);
     };
     this.simCtl = ctl;
@@ -3125,6 +3136,8 @@ export class App {
 
   /** The simulation's state changed (a failure, the time): the marks, the banner, the lock, the open window. */
   simChanged(): void {
+    // a VM the simulation restarted on another host is drawn there
+    if (this.session && this.session.setPlacement(this.simCtl ? this.simCtl.placement() : null)) this.render();
     this.syncLock();
     this.applyHighlight();
     this.updateChrome();
@@ -4555,7 +4568,10 @@ export class App {
       const target = (e.target as Element).closest('[data-ref]');
       const node = (e.target as Element).closest('.node');
       const ref = target ? target.getAttribute('data-ref') : null;
-      const nodeRef = node ? node.getAttribute('data-ref') : null;
+      let nodeRef = node ? node.getAttribute('data-ref') : null;
+      // a guest in the physical view is drawn inside its host: dragging it moves the machine it runs on (with everything in it)
+      const guest = nodeRef && nodeRef.indexOf('device:') === 0 && this.session.state.view === 'physical' ? this.session.model.index.devices.get(nodeRef.slice(7)) : undefined;
+      if (guest && isGuest(guest) && hostOf(this.session.model, guest)) nodeRef = 'device:' + machineOf(this.session.model, guest).id;
       // a line that shows one field of the object (an address, a VRF …): highlighted in the Edit tab (read here:
       // once the pointer is captured, the release is reported on the canvas, not on the line)
       const line = (e.target as Element).closest('[data-field]');

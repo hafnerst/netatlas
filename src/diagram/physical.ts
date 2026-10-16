@@ -24,6 +24,8 @@ import { Device, Model, ifaceKey } from '../model/types';
 import { BADGE_H, BADGE_W, deviceIcon, layerBadge, serviceBadge } from './icons';
 import { LabelPlacer, addressLineAttrs, alongSegment, centerRect, fieldAttrs, leaderLine, textLines } from './labels';
 import { VNode, h } from './scene';
+import { hostInterior } from '../layout/virtual';
+import { externalWires, interiorNodes } from './virtual';
 import { groupKindStyle, mediumStyle, speedWidth } from './style';
 
 export { deviceSubtitle };
@@ -311,7 +313,9 @@ export function renderPhysical(model: Model, layout: PhysicalLayout, opts: ViewO
   const placer = new LabelPlacer();
   const obstacles = new Map<string, Rect>();
   model.devices.forEach((d) => {
-    const b = boxes.get(d.id) as CBox;
+    const b = boxes.get(d.id);
+    // (a guest is inside its host's box)
+    if (!b) return;
     placer.block(boxRect(b, 2));
     obstacles.set(d.id, boxRect(b, 5));
   });
@@ -458,17 +462,33 @@ export function renderPhysical(model: Model, layout: PhysicalLayout, opts: ViewO
     labelNodes.push(...(labelAt.get(l.id) as VNode[]));
   }
 
-  // ---- devices: label, the entries of their interfaces, and the chips of their uncabled ports at the bottom of the box
-  const deviceNodes: VNode[] = model.devices.map((d) => {
-    const b = boxes.get(d.id) as CBox;
+  // ---- devices: label, the entries of their interfaces, and the chips of their uncabled ports at the bottom of the box;
+  // a host's interior (virtual switches, container networks, its guests) between its label and its entries
+  const deviceNodes: VNode[] = [];
+  const wireNodes: VNode[] = [];
+  const paint = { deviceNode, entryNodes };
+  for (const d of model.devices) {
+    const b = boxes.get(d.id);
+    // a guest is drawn inside its host
+    if (!b) continue;
     const flow = spareChipFlow(spareIds(model, d), b.w);
     const chipsH = chipStripH(flow);
     const items = entryItems(model, d, 'physical');
     const listH = physicalListH(entriesSize(items));
+    const inner = hostInterior(model, d.id);
+    const innerH = inner ? inner.h + ENTRY_MARGIN : 0;
     if (flow.items.length) portNodes.push(...chipNodes(d.id, flow, b.cx - b.w / 2 + IFCHIP_PAD, b.cy + b.h / 2 - chipsH, 'port-chip', () => ''));
     if (items.length) portNodes.push(...entryNodes(items, b.cx - b.w / 2 + ENTRY_MARGIN, b.cy + b.h / 2 - chipsH - listH, b.w - 2 * ENTRY_MARGIN));
-    return deviceNode('device:' + d.id, d.label, deviceSubtitle(d.type, d.layer3), d.type, b, 'type-' + cssToken(d.type), b.h - chipsH - listH, d.layer3, netServiceIds(d));
-  });
+    const bodyH = b.h - chipsH - listH - innerH;
+    deviceNodes.push(deviceNode('device:' + d.id, d.label, deviceSubtitle(d.type, d.layer3), d.type, b, 'type-' + cssToken(d.type) + (inner ? ' host' : ''), bodyH, d.layer3, netServiceIds(d)));
+    if (inner) {
+      const ox = b.cx - inner.w / 2;
+      const oy = b.cy - b.h / 2 + bodyH;
+      const guests = new Map<string, Rect>();
+      interiorNodes(inner, ox, oy, paint, { nodes: deviceNodes, wires: wireNodes, guests });
+      wireNodes.push(...externalWires(inner, ox, oy, boxRect(b), ports, d.id));
+    }
+  }
 
   // everything drawn is inside the bounds: boxes, groups, labels and cable bends
   const rects: Rect[] = [];
@@ -483,6 +503,7 @@ export function renderPhysical(model: Model, layout: PhysicalLayout, opts: ViewO
       h('g', { class: 'layer-groups' }, groupNodes),
       h('g', { class: 'layer-links' }, linkNodes),
       h('g', { class: 'layer-nodes' }, deviceNodes),
+      h('g', { class: 'layer-vwires' }, wireNodes),
       h('g', { class: 'layer-ports' }, portNodes.concat(lagNodes.marks)),
       h('g', { class: 'layer-labels' }, groupTitles.concat(labelNodes, lagNodes.labels)),
     ]),

@@ -57,19 +57,21 @@ const errs = (text) => V.loadModel(l2(text)).errors.map((e) => e.message);
 
 test('every attribute has its level: per device, per interface, per VLAN, per relation (the audit)', () => {
   const lv = (k) => Pm.paramDef(k).level || 'device';
-  for (const k of ['boot-time', 'ecmp-max', 'spf-delay', 'ttl', 'icmp-rate', 'bcast-ping', 'tcp-syn-retries', 'mac-aging', 'mac-table-size', 'stp-mode', 'stp-hello', 'stp-forward-delay', 'stp-max-age', 'bridge-priority', 'bridge-priority-vlans', 'mrouter-aging', 'spt-switchover', 'fw-action', 'fw-tcp', 'ha-failover', 'ips-fail', 'vm-restart', 'snmp-interval', 'ap-association', 'ap-idle', 'proxy-upstream', 'listening', 'test-traffic', 'test-targets', 'app-timeout']) assert.equal(lv(k), 'device', k);
+  for (const k of ['boot-time', 'ecmp-max', 'spf-delay', 'ttl', 'icmp-rate', 'bcast-ping', 'tcp-syn-retries', 'mac-aging', 'mac-table-size', 'stp-mode', 'stp-hello', 'stp-forward-delay', 'stp-max-age', 'bridge-priority', 'bridge-priority-vlans', 'mrouter-aging', 'spt-switchover', 'fw-action', 'fw-tcp', 'ha-failover', 'ips-fail', 'restart-policy', 'snmp-interval', 'ap-association', 'ap-idle', 'proxy-upstream', 'listening', 'test-traffic', 'test-targets', 'app-timeout']) assert.equal(lv(k), 'device', k);
   for (const k of ['arp-timeout', 'arp-retransmit', 'arp-retries', 'ndp-reachable', 'ping', 'icmp-errors', 'link-up-delay', 'los-detect', 'storm-bc', 'storm-mc', 'stp-port', 'stp-cost', 'stp-port-priority', 'stp-edge', 'stp-bpdu-guard', 'stp-root-guard', 'stp-link-type', 'lacp-rate', 'igmp-version', 'igmp-unsolicited', 'igmp-querier', 'igmp-query', 'igmp-max-resp', 'igmp-robustness', 'igmp-lmqi', 'pim-dr-priority', 'directed-broadcast', 'mc-passthrough', 'mc-to-unicast', 'ap-beacon']) assert.equal(lv(k), 'interface', k);
   for (const k of ['igmp-snooping', 'snoop-querier', 'fast-leave', 'unknown-mc']) assert.equal(lv(k), 'vlan', k);
+  // a hypervisor's VM restart time, a virtual switch's failover detection, a container engine's start time: per service object
+  for (const [k, svc] of [['vm-restart', 'hypervisor'], ['failover-detect', 'vswitch'], ['container-start', 'container_engine']]) assert.deepEqual([lv(k), Pm.paramDef(k).svc], ['service', svc], k);
   for (const k of ['vrrp-advert', 'ike-lifetime', 'child-lifetime', 'rekey-margin', 'dpd-interval', 'dpd-retries', 'mc-tunnel', 'lb-hc-interval', 'lb-hc-timeout', 'lb-hc-fall', 'lb-persistence', 'lb-algorithm', 'service-response']) assert.equal(lv(k), 'relation', k);
   // a device-wide default only where real devices have one
   const dd = Pm.PARAMS.filter((p) => p.level && p.level !== 'device' && p.devDefault).map((p) => p.key).sort();
   assert.deepEqual(dd, ['arp-retransmit', 'arp-retries', 'arp-timeout', 'child-lifetime', 'dpd-interval', 'dpd-retries', 'icmp-errors', 'igmp-lmqi', 'igmp-max-resp', 'igmp-querier', 'igmp-query', 'igmp-robustness', 'igmp-snooping', 'igmp-unsolicited', 'igmp-version', 'ike-lifetime', 'mc-tunnel', 'ndp-reachable', 'ping', 'rekey-margin', 'service-response', 'stp-bpdu-guard', 'stp-edge', 'dhcp-offer-delay', 'dhcp-ping-check'].sort());
   // where each kind of object's attributes apply
-  const sw = { id: 's', type: 'switch', ip: false, routes: false, aggregate: true, ipsec: false, snmpManager: false, hosts: false };
+  const sw = { id: 's', type: 'switch', ip: false, routes: false, aggregate: true, ipsec: false, snmpManager: false, hypervisor: false };
   const port = { port: true, ip: false, dhcp: false, lag: false, bridgePort: true, radio: false };
   assert.deepEqual(Pm.interfaceParams(sw, port).map((p) => p.key), ['los-detect', 'link-up-delay', 'stp-port', 'stp-cost', 'stp-port-priority', 'stp-edge', 'stp-bpdu-guard', 'stp-root-guard', 'stp-link-type', 'storm-bc', 'storm-mc']);
   assert.ok(Pm.interfaceParams(sw, { ...port, port: false, lag: true }).some((p) => p.key === 'lacp-rate'));
-  const r = { id: 'r', type: 'router', ip: true, routes: true, aggregate: false, ipsec: false, snmpManager: false, hosts: false };
+  const r = { id: 'r', type: 'router', ip: true, routes: true, aggregate: false, ipsec: false, snmpManager: false, hypervisor: false };
   const routed = { port: true, ip: true, dhcp: false, lag: false, bridgePort: false, radio: false };
   const rk = Pm.interfaceParams(r, routed).map((p) => p.key);
   assert.ok(['arp-timeout', 'igmp-querier', 'pim-dr-priority', 'directed-broadcast', 'link-up-delay'].every((k) => rk.includes(k)) && !rk.includes('stp-edge'));

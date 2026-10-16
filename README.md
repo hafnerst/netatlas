@@ -235,7 +235,7 @@ under the diagram, beside the object list, and the splitter is hidden.
 | Edit fields | Type in the inspector. A change is applied when you press Enter, leave the field, or click anything else, including the diagram. |
 | What is selected | The **Edit** tab marks the part of the configuration that belongs to what is selected, in the diagram (either view) or in the object list: a lightly tinted background, a thin accent bar on the left and a small *▸ Selected* tag, and `aria-current` for screen readers. It is as specific as the selection: a whole object marks its header; an interface (its port, chip or entry) its card; a line of an interface entry, a cable label, a network or a relation label marks that field: an address (that one row of the address list), the VLAN, VRF, DHCP switch, MAC address, tunnel source or destination, member ports, a network's prefix, a cable id, an attribute. The mark is never the red error mark, a hover or the focus ring, and leaves them visible. When it moves to a section that is off screen, the panel scrolls to it (smoothly, unless the system asks for reduced motion); the keyboard focus never moves. It follows edits, undo / redo, renames and view switches, and disappears when nothing is selected. Selection itself works as before. |
 | Rename an ID | Edit the **ID** field. Every reference (links, endpoints, `over`, group parents, protocol names) is updated, and a notice says how many. |
-| Interfaces | A device lists its interfaces in two categories. **Physical interfaces:** **+ Interface** adds a port; its **Type** is the read-only text *Physical*. **+ Port Range** next to it adds a numbered run of ports in one step (see [Port ranges](#port-ranges)). **Logical interfaces:** **+ Loopback**, **+ Virtual** and **+ Tunnel** add one of that type; the **Type** field offers exactly *Loopback*, *Virtual* and *Tunnel*. Each entry is a collapsible card with an address list, attributes, and what uses it. A card shows only the association that fits its type: **Member ports** (a virtual interface that is a bond: pick physical interfaces of the device), **VLAN ID** and the read-only **Bridge ports** (a VLAN interface), **Tunnel source** and **Tunnel destination** (a tunnel). There is no parent field. **Network / VLAN** and **Bridge ports** are *derived*: they can't be edited and change as soon as an address, a network or a port's VLANs change. Cards are listed alphabetically within each category; the order in the YAML file is left as it is. Every card except a loopback's has a **DHCP** switch beside its addresses (see [DHCP and DNS names](#dhcp-and-dns-names)). |
+| Interfaces | A device lists its interfaces in two categories. **Physical interfaces:** **+ Interface** adds a port; its **Type** is the read-only text *Physical*. **+ Port Range** next to it adds a numbered run of ports in one step (see [Port ranges](#port-ranges)). **Logical interfaces:** **+ Loopback**, **+ Virtual** and **+ Tunnel** add one of that type; the **Type** field offers exactly *Loopback*, *Virtual* and *Tunnel* (and *Virtual NIC* on a VM or a hypervisor, *Container network attachment* on a container: see [Hypervisors, VMs and containers](#hypervisors-vms-and-containers)). A VM or a container has no physical interfaces. Each entry is a collapsible card with an address list, attributes, and what uses it. A card shows only the association that fits its type: **Member ports** (a virtual interface that is a bond: pick physical interfaces of the device), **VLAN ID** and the read-only **Bridge ports** (a VLAN interface), **Tunnel source** and **Tunnel destination** (a tunnel). There is no parent field. **Network / VLAN** and **Bridge ports** are *derived*: they can't be edited and change as soon as an address, a network or a port's VLANs change. Cards are listed alphabetically within each category; the order in the YAML file is left as it is. Every card except a loopback's has a **DHCP** switch beside its addresses (see [DHCP and DNS names](#dhcp-and-dns-names)). |
 | DNS names | After the two interface sections, **DNS names** lists the device's names. **+ DNS name** asks for the name and the interfaces it belongs to (by name; interfaces with DHCP on are not offered) and adds it only when both are valid. Each entry edits its name, adds interfaces from a picker and removes them (the last one can't be removed: delete the name instead). |
 | Networks | A network is **one** prefix (**IP network (CIDR)**, required) and, optionally, the VLAN it lives in. **Members** is *derived*: every device with a configured interface or loopback address inside the prefix, listed once with the matching interfaces and addresses (an interface with DHCP on has no known address and counts for nothing). To add a member, give it an address in the network. The details also list the cables that carry its VLAN. |
 | Port VLANs | A port's card (and an aggregate's) has **VLANs**: a multi-select combobox. Its VLANs are chips, each with a remove button; typing offers the model's VLANs with their names, and takes new IDs and ranges (`30-39`); **Enter** or a comma adds, **↑ ↓** move through the list, **Backspace** in the empty field removes the last chip. One VLAN makes an access port, several a trunk: then a **Native VLAN** picker appears (*None: every VLAN tagged*, or one of its VLANs). A Layer 3 switch's port has a **Routed port** checkbox instead. The mode is a badge in words beside the field (*Access · VLAN 10*, *Trunk · 10, 20, 30–39 (native 10)*, *Routed*), and in the card's summary, the device's port list and, per cable, the Objects list. Suggestions copy the VLANs of a neighbouring port (*Same as Gi1/0/1*) or of the port at the other end of the cable (*VLANs of the connected port*). **Assign VLANs to ports…** on a device gives a range of ports (as for **+ Port Range**) the same VLANs and native VLAN, with a preview, in one undo step. A switch port without VLANs is an error at its field (marked `*`) and in Problems, which leads back to the field. A member of an aggregate shows its aggregate's VLANs, read-only. |
@@ -400,7 +400,8 @@ A device stores each interface once, in one of two lists:
   A port with VLANs is a bridge port and has no address of its own.
 * `logical_interfaces`: its **logical interfaces**, each with a `type`:
   `loopback`, `virtual` (a VLAN interface, a bond, a subinterface, a VTEP …)
-  or `tunnel`.
+  or `tunnel`; a VM's (or a hypervisor's host interface) `vnic`, a
+  container's `veth`.
 
 Logical interfaces are not nested under ports and have no generic "parent"
 field. Each kind of association is modelled by what it means:
@@ -413,6 +414,8 @@ field. Each kind of association is modelled by what it means:
 | Subinterface (`virtual`, named `<port>.<n>`) | its VLAN, or an address in a network with one | its port, which tags that VLAN (router-on-a-stick) |
 | Any other `virtual` interface | nothing | nothing; no association is assumed |
 | Tunnel | **Tunnel source** (any interface of the device, physical or logical, or an address) and **destination** (an address, a device or `device:interface`) | the source interface when an address is written; highlighting of source and destination |
+| Virtual NIC (`vnic`) | its **port group** (of its host's virtual switches), or a **passthrough** port of its host | its virtual switch, the VLAN of its port group, the uplinks it leaves by; highlighting of all of them |
+| Container network attachment (`veth`) | its **network** (of its host's container engine) | the network's driver and bridge, its host |
 
 Relations can use any interface as an endpoint. **Every interface of a shown
 device is drawn**, so it can be found, selected and connected: in the
@@ -559,9 +562,11 @@ their names.
 
 ### DHCP and DNS servers
 
-**Services card.** A server, VM or container has a **Services (DHCP,
-DNS)** card with two checkboxes, **DHCP server** and **DNS server**, both
-off by default. Ticking one writes the service and shows at once what it
+**Services card.** A server, VM or container has a **Services** card
+(a container's: **Services (DHCP, DNS)**) with the checkboxes **DHCP
+server** and **DNS server**, both off by default (a server's and a VM's
+also offer the Hypervisor and the Container engine: see [Hypervisors, VMs
+and containers](#hypervisors-vms-and-containers)). Ticking one writes the service and shows at once what it
 still needs, as errors (nothing is chosen for you); unticking removes it in
 one undo step.
 
@@ -597,6 +602,91 @@ one undo step.
 
 See [docs/FORMAT.md](docs/FORMAT.md#network-services-services-dhcp-and-dns-servers)
 and the example [`campus-services.yaml`](examples/campus-services.yaml).
+
+### Hypervisors, VMs and containers
+
+A hypervisor is a **server with the Hypervisor service**, a container host
+a **server or a VM with the Container engine service**; VMs and containers
+are **guests** bound to their host (there is no *hypervisor* device type).
+
+**Services card.** A server's **Services** card has, besides DHCP and DNS,
+two more checkboxes: **Hypervisor** and **Container engine** (a VM's card
+has Container engine). Ticking one writes the service and shows what it
+still needs, as errors; its configuration is a collapsible card:
+
+* **Hypervisor:** **Platform** (ESXi, KVM, Hyper-V, Proxmox VE, Xen,
+  Other), **HA cluster**, the inventory (**CPU cores**, **RAM**), and one
+  card per **virtual switch** (**+ Add virtual switch**): its **Name**,
+  **Type** (Standard vSwitch, Distributed switch, Linux bridge, Open
+  vSwitch), **Uplinks** (the host's ports, in teaming order, each with its
+  number and a remove button; the picker offers ports no other switch
+  uses), **Teaming** (Active / standby, Load-based, Source-based, LACP),
+  **MTU**, its **port groups** (each a row with its name, its VLANs entered
+  as on a port, a **Native VLAN** picker for a trunk, and **Guest tagging**)
+  and its **Simulation** subsection (teaming failover detection). The
+  service has its own (VM restart time).
+* **Container engine:** **Engine** (Docker, Podman, containerd, LXC /
+  Incus, Other) and one card per **container network** (**+ Add container
+  network**): its **Name**, **Driver** (Bridge, Host, macvlan, ipvlan,
+  Overlay, None) and what that driver needs — a bridge its **Bridge
+  interface**, **Subnet**, **Gateway**, **NAT** and **Address range
+  (IPAM)** (the bridge interface it creates is shown, derived); macvlan and
+  ipvlan their **Parent interface** (an interface of the host; in a VM its
+  vnics), **Subnet**, **Gateway** and **Mode**; an overlay its **Other
+  hosts**. Each lists the containers on it. Its **Simulation**
+  subsection has the container start time.
+* Unticking a service its guests run on **asks first** and lists them;
+  their `host` then breaks and is reported until they are moved or deleted.
+  Deleting a host does the same. Renaming a host updates its guests.
+
+**A host's guests.** A hypervisor lists its VMs (**VMs on this host**), a
+container host its containers, each a link, with **+ VM** / **+ Container**:
+a new guest already assigned to the host, after its other guests, in one
+undo step.
+
+**A guest.** Its first field is **Host**, a picker that offers only the
+devices that can run it (a VM: servers with the Hypervisor service; a
+container: servers and VMs with the Container engine). Its location is
+shown read-only (its host's); a VM has **Guest OS**, **vCPUs** and **RAM**,
+a container its **Image** and (in Simulation) its restart policy. A guest
+has no Physical section: its interfaces are logical.
+
+* **+ Virtual NIC** (a VM; on a hypervisor: **+ Host interface**, with its
+  **Role**): its **Port group** (a picker of its host's port groups, with
+  their VLANs) or **Passthrough port** (a picker of its host's ports no
+  virtual switch uses, with its **SR-IOV virtual function**), its **MAC
+  address** (**Generate** uses
+  the platform's OUI: 00:50:56 on ESXi, 52:54:00 on KVM …), addresses as on
+  any interface. On a guest-tagging or trunk port group, **+ Virtual** adds
+  its VLAN subinterfaces.
+* **+ Network attachment** (a container): its **Network** (its host's
+  networks, with their drivers), its address (**Next free** takes the
+  lowest free address of the network's range), **MAC address**, its DNS
+  **Aliases** and **Published ports** (bridge networks: host port → container
+  port, TCP / UDP, an optional host address).
+
+**Connect** refuses a guest (*a guest has no cables — cable its host
+instead*); relations to guests are drawn in the logical view as for any
+device. **Find** finds guests by their host (*on hv1*), port group and
+network, and the virtual switches, port groups and container networks
+themselves; selecting one of those selects its host's card.
+
+**In the diagram.** The **physical view** draws each guest inside its
+host's box (a container in a VM inside the VM): the virtual switches and
+container networks as bars with their port groups as pills, a wire from
+each vnic and veth to its port group or network, the uplink wires from the
+host's ports and a passthrough port's wire to its VM; nothing overlaps, and
+dragging a guest moves its host. The **logical view** draws each guest as a
+device whose second line names its host (*runs on esx-01*), and each bridge
+or overlay container network as a network of its own host (dashed, *NAT*
+when it masquerades). Both legends explain it. Related objects work both
+ways: a guest marks its host, port group, virtual switch and network; a host
+its guests.
+
+![The virtualization example in the physical view (dark theme): two hypervisors in racks, each box holding its virtual switches, port groups and VMs (a container inside the VM k8s1), a Docker host with its bridge and macvlan networks; the legend's Virtualization section on the right](docs/img/virtualization-physical.png)
+
+See [docs/FORMAT.md](docs/FORMAT.md#virtualization-hypervisors-vms-and-containers)
+and the example [`virtualization.yaml`](examples/virtualization.yaml).
 
 ### Static routes and port VLANs
 
@@ -942,6 +1032,21 @@ the window ends it too. Exports show the marked path, with a *Path trace: …* n
 of the picture. A trace never changes the model and adds no undo step; after
 an edit it is computed again.
 
+**Virtual machines and containers.** A vNIC leaves its host through its
+port group's virtual switch and the uplink its teaming uses (active /
+standby: the first that is up; LACP: the bond), or through its passthrough
+port; guests on one virtual switch (in one VLAN) or one container network
+meet inside the host, without a cable. The hop's row lists what it crosses
+**inside** the host (port group, virtual switch, container network: each a
+link), and the diagram marks them and the uplink used. **NAT** is modelled
+for container bridges only: a container host forwards its bridge networks'
+traffic, with NAT as the host's address (**SNAT**, a tag on the hop); a
+container behind NAT is reached from outside only at its host's address,
+on a published port (**DNAT**, the last hops); without one the window says
+it can't be reached. A macvlan container and its own host can't reach each
+other. After a failure (the failure simulation) a VM restarted by its HA
+cluster is traced from its new host.
+
 It is a **model-based approximation**, not a simulation of the protocols:
 see [Limitations](#limitations-honest-list).
 
@@ -956,9 +1061,9 @@ their endpoints are still up). A short explanation heads the table.
 
 | Column | Shows |
 |---|---|
-| Element | the cable, device or LAG (*l-hq-isp1*, *hq-fw*, *hq-core1:Port-Channel1 (2 cables)*) |
-| Type | *Cable*, *Device* or *LAG* |
-| Cuts off | the devices that lose every cable way to the rest |
+| Element | the cable, device or LAG (*l-hq-isp1*, *hq-fw*, *hq-core1:Port-Channel1 (2 cables)*); a virtual switch with why (*hv1 vSwitch0 (one uplink (vmnic0))*); a passthrough port (*hv1:vmnic2*) |
+| Type | *Cable*, *Device*, *LAG*, *Virtual switch* or *Passthrough port* |
+| Cuts off | the devices that lose every cable way to the rest, and the guests that go down (*guests: api, cache, web*) |
 | Relations down | the relations that go down with it |
 | Impact | devices cut off plus relations down |
 
@@ -986,7 +1091,15 @@ and propagating the failure through the model:
   likewise, over its cables;
 * a **redundancy group** (VRRP, HSRP …) that loses a member **fails over**
   instead of going down, and a relation of more than two devices (an OSPF
-  area) stays up while two of them are left.
+  area) stays up while two of them are left;
+* a **host** takes its guests down (a container in a VM with the VM), unless
+  it is in an **HA cluster** with a member left: then its VMs restart there
+  (degraded), except one with a passthrough port; a vNIC goes down when
+  every uplink of its virtual switch is down (degraded while it has failed
+  over), or with its passthrough port. So a host is a single point of
+  failure for the guests HA can't restart, a **virtual switch** with one
+  uplink, or with every uplink to one switch, for its guests, and a
+  **passthrough port** for its VM.
 
 ### Which entries count as related
 
@@ -1187,7 +1300,9 @@ timers and bridge priority (per VLAN for MSTP and PVST) for switches; the HA fai
 of a firewall; fail open / closed and the inspection latency of an IDS /
 IPS; the IKE and Child SA lifetimes, rekey margin and DPD of a gateway or
 IPsec endpoint; the service response time of a server, VM, container or
-storage; the VM restart time of a server hosting VMs; the SNMP polling
+storage; the VM restart time of a Hypervisor service, the teaming
+failover detection of a virtual switch, the container start time of a
+Container engine and a container's restart policy; the SNMP polling
 interval and timeout of a monitoring system; the latency and loss of a
 cloud; the association time of an access point. For Layers 3 and 4: every
 device with an address answers pings or not (and broadcast pings: off by
@@ -1306,9 +1421,26 @@ on). The diagram marks what is down.
 * **Power off / Power on**: its ports go dark, its tables and sessions are
   gone; powered on, it boots for its boot time, its ports negotiate, and
   its sessions start afresh. An inline IDS / IPS fails open (frames pass)
-  or closed as its setting says; a server's VMs and containers go down
-  with it and restart after its VM restart time on another server cabled
-  to them.
+  or closed as its setting says. A host takes its guests down with it; a
+  VM whose host is in an **HA cluster** restarts on another member that is
+  on after the VM restart time (then its boot time), its virtual NICs on
+  the same port groups there, and is **drawn there** for the rest of the
+  simulation (what lies below the host makes room); a VM with a passthrough
+  port, or without a member left, waits for its host. Powered on again, a
+  host starts its VMs, and its containers as their **restart policy** says
+  (*always*; *unless stopped*, unless stopped by hand; not *no* or *on
+  failure*), each after the engine's container start time. A VM or a
+  container is powered off and on like any device.
+* **Stop container engine / Start container engine** (the menu of a server
+  or VM with the Container engine): its containers stop, and its container
+  networks with them; started again, the containers come back as their
+  restart policy says. Listed under **Active events** with **Start engine**.
+* **A host's uplink** is a port like any other: shut it, let it flap or fail
+  its cable, and its virtual switch fails over after its **teaming failover
+  detection** time, announcing each guest's MAC address on the new uplink
+  with a **RARP** (in the event log and the packet inspector); it fails back
+  when the uplink returns. Clicking a virtual switch's or container
+  network's bar offers its **Show MAC table**.
 
 ### The simulation layout
 
@@ -2051,6 +2183,15 @@ type is shown for every model you open.
   has **Layer 2** and **Layer 3** under it (each with its count), so the
   access layer can be hidden while the routing switches stay. Switch then
   shows a mixed state while one of them is off, and ticking it shows both.
+* **Servers** likewise: with more than one kind, *Server* has
+  **Hypervisor**, **Container host** and **Other** under it (a server with
+  both services counts as a hypervisor). *Virtual machine* and *Container*
+  are entries of their own.
+* **Guests in the physical view** are drawn inside their host, so they are
+  shown only with it: when a host is hidden (by its type, the device
+  selection or focus), its guests leave the physical view too, and the hint
+  under the toolbar says so (*3 guests are not shown: their hosts are
+  hidden*). The logical view shows them as devices of their own.
 * **The button and the status bar** say what is shown: *Device types: All*,
   or *Device types: 3 of 8* (types wholly shown, of the types listed), and
   the status bar adds *device types: 3 of 8 (off: Server, Endpoint)*. The
@@ -2172,6 +2313,7 @@ YAML that is read and written is in
 | [`examples/addressing.yaml`](examples/addressing.yaml) | One router with many interfaces: every kind of address and identifier written in the diagram. Networks in several VRFs, a supernet with nested networks, VIPs and addresses in no network for the **Addressing overview**. |
 | [`examples/port-bindings.yaml`](examples/port-bindings.yaml) | **Ports test case.** Several tunnel interfaces and subinterfaces per router, three relations on one tunnel interface (IPsec carrying OSPF, and BFD), tunnels sourced from an interface and from an address (`src:` end labels), relations bound to devices as a whole (device-level ports), a LAG (`Po1` over two cables, bracketed in the physical view) and a three-device VRRP group. |
 | [`examples/branch-routing.yaml`](examples/branch-routing.yaml) | **Static routes and port VLANs.** A dual-homed branch: a default route via ISP A and a floating default (distance 250) via ISP B, equal-cost routes to HQ over both ISPs (and back), a blackhole route, a guest VRF with a blackhole default, host default gateways, and a router-on-a-stick: the router's routed port with subinterfaces for VLANs 10, 20, 30, the switch's trunk with VLAN 99 native (untagged), plus access ports. |
+| [`examples/virtualization.yaml`](examples/virtualization.yaml) | **Hypervisors, VMs and containers.** Two ESXi hosts in an HA cluster, each with a virtual switch on two teamed uplinks to two ToR switches (active / standby) and an internal lab switch; VMs on access port groups, one with guest tagging and VLAN subinterfaces, one with a passthrough port, a virtual router (Layer 3) between a VLAN and the lab; a Docker host with a NAT bridge network (published ports) and a macvlan network on the LAN; a VM running containers of its own. In the simulation: power off a host (its VMs restart on the other), fail an uplink (failover with RARP), stop the container engine. |
 | [`examples/vlan-ports.yaml`](examples/vlan-ports.yaml) | **VLANs on ports.** An L2 access switch (Gi1/0/1–10 in VLAN 10, 11–20 in VLAN 20, a trunk uplink with native VLAN 99), an L3 core whose Vlan10 and Vlan20 bind to their bridge ports, a routed uplink to a router, a LAG trunk to a second access switch, a router with a bridge port and its BVI, and deliberate mistakes: a native-VLAN mismatch (untagged frames leak) and a VLAN one end doesn't allow (dropped). Pings and the simulation log show their effects. |
 | [`examples/consistency-checks.yaml`](examples/consistency-checks.yaml) | **Consistency checks.** A small, valid network with one deliberate inconsistency for every check (static routes, port VLANs, MTU, speed and duplex, aggregates, addressing, router IDs and MAC addresses, OSPF, BGP, tunnels, virtual addresses, VRFs), each marked in the file with the check id (among them a protocol a device's relation uses but it doesn't enable, one enabled and unused, a router ID used twice in one OSPF domain, and a VRRP group's members in different groups); its `checks:` section downgrades one check. |
 | [`examples/campus-services.yaml`](examples/campus-services.yaml) | **DHCP and DNS.** A DHCP and DNS server (*srv*) for two VLANs: *pc1* and *lap1* (a reservation by MAC address) in its own VLAN, *pc2* in another one behind the Layer 3 switch *core*, which relays DHCP (`dhcp_relay`). The zone *campus.example* comes from the model's DNS names plus a CNAME (*www*). A Layer 2 access switch with per-port spanning-tree settings: a costlier second uplink (blocked) and edge ports with BPDU guard. The PCs send test traffic by host name: watch DORA (in parallel, *pc2*'s through the relay), then each name resolved before its connection; *Show DHCP leases*, *Show DNS zone* and *Show DNS cache*. |
@@ -2298,7 +2440,7 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/scr
 | **Side panel (real input)** | `test/side-panel.test.mjs` (4 tests), through the DevTools protocol | The limits (320 px, the diagram's 360 px, stored values checked); the splitter as a separator with name and value, ← → with and without Shift, Home, End, Enter, a drag, a double-click, the width remembered over a reload in local storage and never in the model; at 1440 … 600 px wide and 100 / 150 / 200 % zoom, with the default and the widest width, on every tab: no tab cut off or squeezed, the active one shown, the splitter shown only beside the diagram, the diagram's room, no sideways page scrolling; a growing tab label wraps; a very short window keeps one row with the rest in **More ▾** (the active tab never in it; ↓, Enter, Esc). |
 | **Quick actions (real input)** | `test/quick-actions.test.mjs` (3 tests), through the DevTools protocol (`scripts/cdp.mjs`) | **Pointer:** with nothing hovered no row shows Duplicate and Delete, not even the selected one; moving from row to row shows them on exactly the row under the pointer, inside it, the label still readable; Duplicate on another row adds and selects the copy without selecting that row; Ctrl+Z / Ctrl+Y; Delete asks, Cancel keeps model and selection, Delete deletes. **Keyboard:** Tab through the list: the focused row (and only it) shows its buttons, Tab reaches them, Enter duplicates and the cursor moves to the copy's ID in the Edit tab (its row selected and in view), Delete asks and Esc returns the focus to the button, with a visible focus ring. **Touch** (hover: none): a tap selects a row and shows its buttons; Delete asks first. The browser self-test adds: every row has the pair, named with action and object; quick Duplicate and Delete on every kind of object (device, link, network, relation, group, protocol) export exactly what the Edit tab's buttons export. |
 | **Help** | `test/menu.test.mjs`, the browser self-test and the viewport check | The menu by arrow keys from Find; User Manual: title, ×, Close, Esc, focus on its text and back on **Help** afterwards, a section per basic task, the contents list moving to a section without changing the page address, every screenshot a decodable embedded image with alt text and caption, shortcuts of the page off while it is open; License: names the Apache License, Version 2.0 (SPDX Apache-2.0), the full text embedded and scrolling in place, no links; both without a model. |
-| **Viewport** | `test/viewport.test.mjs` (12 tests) → `dist/netatlas.html#viewportcheck` (40 states per window size, including every tool window docked or floating, the start dialog with every section open, the simulation layout (setup, diagram, actions and the panel each whole and inside the window, none over another, nothing wider than its panel; below 860 px the Setup and Actions tabs, and in a narrow, not tall window the Diagram, Setup and Actions tabs, each tried; a table, the packet inspector, a parameter layer and Send test's options open; at 300 % zoom the clock and Exit reachable; Exit bringing back the Objects list), and the ports of `port-bindings.yaml` in both views, the start screen's actions, the open File, Export, Find and Help menus, Help → User Manual and Help → License with its full text (inside the window, × and Close reachable, the text scrolling inside the dialog), the open PNG / SVG submenu, the Find bar with its results, the diagram filters on one row with the Filters drop-down and its "off" count in both views, and a long file name in the status bar) | Stylesheet: the shell is sized by the viewport (`100dvh`, shrinkable middle row), the document is clipped, no fixed pixel heights, the panels are the scrolling regions and positioned. **In a real browser at ten window sizes** (maximized, not maximized, short and wide, both narrow layouts, and the viewports of pages zoomed to 150 %, 200 % and 300 %): with a long device form, its last field focused, both views, every tab, long lists and a dialog, the document has nothing to scroll and cannot be scrolled; toolbar controls, diagram controls, tabs and status bar are inside the window; the side panel ends at the status bar; long panels scroll to their end inside themselves. |
+| **Viewport** | `test/viewport.test.mjs` (12 tests) → `dist/netatlas.html#viewportcheck` (42 states per window size, including every tool window docked or floating, the start dialog with every section open, the simulation layout (setup, diagram, actions and the panel each whole and inside the window, none over another, nothing wider than its panel; below 860 px the Setup and Actions tabs, and in a narrow, not tall window the Diagram, Setup and Actions tabs, each tried; a table, the packet inspector, a parameter layer and Send test's options open; at 300 % zoom the clock and Exit reachable; Exit bringing back the Objects list), and the ports of `port-bindings.yaml` in both views, the start screen's actions, the open File, Export, Find and Help menus, Help → User Manual and Help → License with its full text (inside the window, × and Close reachable, the text scrolling inside the dialog), the open PNG / SVG submenu, the Find bar with its results, the diagram filters on one row with the Filters drop-down and its "off" count in both views, and a long file name in the status bar) | Stylesheet: the shell is sized by the viewport (`100dvh`, shrinkable middle row), the document is clipped, no fixed pixel heights, the panels are the scrolling regions and positioned. **In a real browser at ten window sizes** (maximized, not maximized, short and wide, both narrow layouts, and the viewports of pages zoomed to 150 %, 200 % and 300 %): with a long device form, its last field focused, both views, every tab, long lists and a dialog, the document has nothing to scroll and cannot be scrolled; toolbar controls, diagram controls, tabs and status bar are inside the window; the side panel ends at the status bar; long panels scroll to their end inside themselves. |
 | **Themes and theme-aware export** | `test/theme.test.mjs` (11 tests), through the DevTools protocol for the browser part | **Tokens:** one set of names for both themes, the dark ones the default (`:root`), no colour outside them, nothing picks the theme from the system; WCAG 2.2 AA pairs (text and muted text 4.5:1 on every surface and on the selection tint, control borders, focus ring, selection, selection bar and diagram lines 3:1). **Diagram colours:** every medium and protocol colour 3:1 on each surface in both themes. **Start-up:** a fresh profile opens in Dark; a stored Light stays Light, Dark stays Dark, a stored *system*, an invalid or an empty value becomes Dark (and is removed), with the OS set to light and to dark; the theme is already set when the page body is created (no flash). **The toggle:** right end of the toolbar at 1440, 1024, 720 and 390 px, never in a menu; name, tooltip (hover and keyboard focus) and icon; Dark ⇄ Light by mouse, Enter and Space, keeping view, selection, zoom and layout. **Storage:** the choice survives a reload; without storage the theme is Dark and switching still works. **Exports:** Light and Dark (with the OS light and dark) × both views × PNG and SVG: background and colours as on screen, no stylesheet, variable or media query in the SVG, opaque PNG; exporting changes nothing on screen. **An exported SVG opened on its own in a browser with the other colour scheme** keeps its theme. **Automated contrast check** of the rendered application in both themes. |
 | **Selection in the Edit tab** | `test/edit-highlight.test.mjs` (4 tests), through the DevTools protocol | In both themes, clicked in the physical view, the logical view and the object list: a device, a port (link end), an address of a port and of a loopback, a VRF, a VLAN, a MAC address, a DHCP switch, tunnel source and destination, member ports, a tunnel interface, a device's, a group's and a relation's address attribute, a VRRP virtual address, a network and its prefix, a link and its cable id, a relation: exactly the matching section is marked (aria-current, tag, visible). The bar has 3:1 against the panel and the tint, the tag is readable, the focus ring inside a mark shows. Scrolled only when off screen, smoothly or (reduced motion) at once; the focus stays where it was, typing is not interrupted. The mark follows an edited address, undo, redo, a view switch and a renamed interface; Duplicate marks the copy; Delete, Esc and loading a model clear it. |
 | **Segment borders** | `test/segments.test.mjs` (2 tests), through the DevTools protocol | Every segment of **View** and **Auto-arrange** and every button of **Filters**: in both themes, at 1440 and 800 px, at 100, 125, 150 and 200 % zoom, disabled, normal, selected, hovered, pressed and keyboard-focused: at each of its four edges it is on top, or the neighbour there draws its border and is in a state at least as prominent (DOM, `elementFromPoint`); the right border of a hovered segment shows its hover colour in the screenshot's pixels; nothing moves or changes size on hover. Without the fix the test reports the hovered segment's right edge covered by its neighbour. |
@@ -2312,6 +2454,11 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/scr
 | **Static routes** | `test/routes.test.mjs` (14 tests) | The format (prefix, `via`, `interface`, `blackhole`, distance, metric, VRF, name, attrs; IPv4 and IPv6), written back exactly; **which device types may have routes** (Layer 3+ and hosts; not AP, IDS/IPS, cloud, untyped) and a host's default gateway; every validation error at its field; **each route check positive and negative** (`route-nexthop-self`, `-unresolved` incl. another VRF, `-recursive`, `-interface`, `route-exit-interface` for a loopback, an uncabled port, a LAG member and another VRF, `route-duplicate`, `route-conflict`); findings at their field, never invalidating, order-independent; **editing** (add, duplicate, delete, blackhole, undo; renaming an exit interface); the **route tables and next-hop lines** of the logical view, the **Routes** switch (nothing moves), the address inventory; related objects, details, tooltip, Find; filtered views. |
 | **Port VLANs** | `test/port-vlans.test.mjs` (19 tests) | **The port model:** access, trunk with and without a native VLAN, routed (a Layer 3 switch's, a router's), hosts unaffected, LAG members taking the aggregate's VLANs, subinterfaces by name; badges and diagram tags; **validation** (a switch port's mandatory VLANs at the field, a switch's aggregate, members with their own VLANs, native VLANs, routed ports, IDs 1–4094, ranges, repeats, an address on a bridge port, the old link-end keys); router-on-a-stick against a bridge port; **VLAN interfaces** bound to every bridge port of their VLAN (access, trunk, LAG), following the ports, the bridge-port runs, two for a VLAN, none of its ports, one on a Layer 2 switch; **each VLAN check positive and negative** (`vlan-access-mismatch`, `vlan-trunk-mismatch`, `vlan-native-mismatch`, `vlan-access-trunk`, `vlan-unknown`, `lag-member-vlans`); editing (merged ranges, native, routed, one undo step each; a native VLAN that no longer fits goes), **Assign VLANs to ports…** in one undo step, making a switch Layer 2; the diagram's tags, trunk ports, the *VLANs differ* mark, details, tooltips, Find by VLAN and mode, highlighting both ways, membership. |
 | **Port VLANs in the simulation** | `test/sim-vlans.test.mjs` (6 tests) | Access ports untagged and trunks tagged except the native VLAN (the frame headers), inter-VLAN routing on the VLAN interfaces (TTL), a VLAN interface through any bridge port, ARP on it, MAC tables per VLAN, a routed port without VLANs, a disallowed VLAN dropped with the port's VLANs in the log, a native mismatch leaking with its explanation, the spanning tree on the bridge ports. |
+| **Virtualization: the format and editing** | `test/virtual.test.mjs` (20 tests), and the browser self-test | **Guests:** a host required, of the right kind (a VM: a server with the Hypervisor; a container: a server or VM with the Container engine); no ports, cables or location of their own; no hypervisor type (its error says what to do). **The services:** what they need as errors, virtual switches (uplinks, teaming, port groups), vnics (port group or passthrough, exclusive, never an uplink; guest tagging), container networks of every driver and their attachments (subnet, published ports). **Checks:** the five virtualization checks. **Related objects and Find** both ways. **Editing:** renaming a host (and a host port), deleting a host or unticking its service (guests named, references reported), + VM / + Container, port group VLANs, guest tagging, NAT, the next free address. **Connect** refuses a guest. |
+| **Virtualization in the Edit tab (real input)** | `test/virtual-ui.test.mjs` (1 test), through the DevTools protocol | A hypervisor's Services card; **+ VM** on a host, the new VM's **Host** picker offering the hypervisors only; **+ Virtual NIC** with its host's port groups; the port group of its address's VLAN suggested and set by its chip; unticking the Hypervisor of a host with guests asks first and names them, Cancel keeps it; **+ Container** with its network picker (its host's networks) and the next free address of the range; every step undone to the file as it was. |
+| **Virtualization in the diagrams** | `test/virtual-diagram.test.mjs` (7 tests), and the browser self-test | **Physical:** each guest inside its host (a container in a VM inside the VM), bars and port groups inside, nothing overlapping, deterministic; the wires from vnics and veths to their port groups or networks, uplinks from the host's ports, passthrough. **Logical:** *runs on*, bridge and overlay networks of their own host (the same subnet behind two hosts: two networks), selecting one selects its container network, its place stored as `host/name` and accepted on reload. **Filter:** servers by service, guests only with their host (with the hint), focus keeps a host's guests. **Legends.** **The simulation's HA restarts** drawn in the new host, what lies below making room. |
+| **Virtualization in the analyses** | `test/virtual-analysis.test.mjs` (7 tests) | **Path tracer:** through the port group's virtual switch and the active uplink, inside a host without a cable, guest tagging, passthrough, different VLANs on one switch; teaming failover; SNAT out of a container host (and out of a VM), DNAT to a published port, no way in without one, macvlan, a container's implicit default route. **Failures:** a host's guests down, HA restarts (not with passthrough) followed by the tracer. **Single points of failure:** a host for its guests, a passthrough port, a virtual switch with one uplink or uplinks to one switch. |
+| **Virtualization in the simulation** | `test/sim-virtual.test.mjs` (7 tests) | **The network:** a bridge per virtual switch and container network, virtual links, the uplinks' and the passthrough port's cables moved, HA standby links parked, none in the spanning tree. **Forwarding:** across hosts and inside one, nothing learned on uplinks, split horizon. **Teaming:** failover after the detection time with a RARP per guest, failback. **HA:** a host's VMs restart on the other member after the VM restart time (not with passthrough), a container with its VM. **Containers:** SNAT and the reply, published ports (DNAT and back), refused and unreachable otherwise, macvlan (and its host that can't reach it). **The engine:** stop and start, restart policies, start time. |
 | **Command registry and palette** | `test/palette.test.mjs` (6 tests) | The registry: unique ids, every command with label, group, state and action, no shortcut used twice, the commands the palette must offer and one per example. **The menus are the registry:** every menu entry names a command and shows its label and shortcut; no entry is wired by hand; the keyboard dispatches through the registry. Shortcut labels (Ctrl, or Cmd on a Mac) and matching (Ctrl/Cmd, Shift, never Alt). Fuzzy matching (word starts, subsequences, every word), ranking (recent first, unavailable entries with their reason, keywords), the results count; the objects (devices, interfaces, links, networks, relations, routes, groups), each once and selectable, found by address and next hop. |
 | **Focus mode** | `test/focus.test.mjs` (7 tests) | The devices an object stands for (device, interface, link, relation, hub, group, protocol; none for a network without members); hops along cables (physical) and relations (logical), 1 to 3; the same neighbourhood for a file in another order. The session: each view shows its neighbourhood with temporary positions, more hops keep the devices that stay in place, ending gives back the complete diagrams exactly; focus combined with a type filter, and the filtered view with a hand-moved node given back as it was; an edit deleting the focused object ends focus; focusing every device of three examples and ending restores the stored positions. |
 | **Simulated traffic (for the protocol simulation)** | `test/traffic.test.mjs` (8 tests) | The flows per protocol (OSPF and BFD both ways, VRRP from its active member, syslog one way, a bidirectional service with replies, a hub group per member) with their lanes and cables; demands traced through networks and relations, the rate growing with the bandwidth; equal-cost paths sharing a demand; a one-way cable never used backwards by the tracer, and its format; `ospf-reroute.yaml` with the primary link failed, then w1's LAN too, then both back (rerouted, VRRP failing over, the camera lost where it stops, restored exactly) and the changes from one state to the next; cables oriented by walking (LAG members the same way, unknown order both ways); determinism (file order, repeated runs, failure order); the `demands:` section's form and warnings. |
@@ -3139,6 +3286,20 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/scr
   file picker, or dropped onto the page, is never linked. The
   `beforeunload` prompt is the browser's generic one, and some browsers limit
   when it's shown.
+* **Virtualization is a model of the network side.** No Kubernetes (pods,
+  services, CNI plugins, ingress: a Kubernetes node is a container host with
+  its networks, its pods containers), no nested virtualization (a VM can't
+  have the Hypervisor service), no vMotion (a VM moves only by an HA restart
+  in the simulation), no distributed switch spanning hosts (each host's
+  switch is its own), no overlay tunnel between container hosts (an overlay
+  is one network). **NAT is modelled for container bridges only:** SNAT to
+  the host's address and DNAT for published ports; the path tracer names the
+  published ports but doesn't check port numbers, and the simulation keeps
+  one translation per flow (no port exhaustion, no hairpin NAT). HA restarts
+  a VM on the first member (by id) that is on, without admission control
+  or resources; a host's inventory (CPU, RAM) is only compared, never
+  enforced. A VM drawn in another host during the simulation makes room
+  below that host; the stored layout never changes.
 * **Connecting in the diagram** creates two-endpoint links and relations
   only; a relation with more endpoints, an underlay (`over`) or attributes is
   completed in the Edit tab afterwards. A device with very many uncabled
@@ -3302,8 +3463,9 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/scr
   summarisation and timers are not considered (BGP is treated like the
   other protocols, by hop count unless a `cost` is written). An adjacency
   forms only where the two have a network in common (a BGP session may also
-  run between loopbacks). ACLs, firewall policies, NAT, policy-based
-  routing, multicast and MPLS label switching are out of scope: the model
+  run between loopbacks). ACLs, firewall policies, NAT (but for container
+  bridges, see above), policy-based routing, multicast and MPLS label
+  switching are out of scope: the model
   doesn't describe them. Between two hops the cable way is the shortest one
   through layer-2 devices (as a spanning tree might leave it), not a
   simulation of spanning tree; an interface without a cable in the model is

@@ -224,6 +224,30 @@ export async function runViewportCheck(app: App, doc: Document): Promise<Check[]
       if (olLabel && olLabel.getBoundingClientRect().width > 0 && olLabel.getBoundingClientRect().width < 40) vw.push(`a cable's name in the Objects list is squeezed to ${Math.round(olLabel.getBoundingClientRect().width)}px by its VLAN tag`);
       state('a trunk port’s VLANs (chips, the open combobox, native VLAN, suggestions) and the Objects list’s VLAN tags fit', vw.concat(problems()));
       if (vc) vc.blur();
+      // a hypervisor: the Services card with its Hypervisor configuration and a virtual switch open, its guests with + VM
+      app.loadExample(EXAMPLES.findIndex((e) => /virtualization/.test(e.name)));
+      app.select('device:hv1');
+      app.showTab('edit');
+      await tick();
+      const hw2: string[] = [];
+      const hcard = q('#side-body details[data-svc-card="hypervisor"]') as HTMLDetailsElement | null;
+      if (hcard) hcard.open = true;
+      else hw2.push('no Hypervisor card');
+      const vsc = q('#side-body details[data-vswitch="vSwitch0"]') as HTMLDetailsElement | null;
+      if (vsc) vsc.open = true;
+      else hw2.push('no virtual switch card');
+      await tick();
+      const side4 = (q('#side-body') as HTMLElement).getBoundingClientRect();
+      const hparts = doc.querySelectorAll('#side-body input[data-act="netsvc"], #side-body details[data-svc-card] summary, #side-body details[data-vswitch] input, #side-body details[data-vswitch] select, #side-body button[data-act="add-guest"], #side-body [data-derived^="guests-"] button');
+      if (hparts.length < 8) hw2.push(`the Hypervisor's configuration shows ${hparts.length} parts`);
+      for (let i = 0; i < hparts.length; i++) {
+        const r = hparts[i].getBoundingClientRect();
+        if (r.width < 1) continue;
+        if (r.left < side4.left - 0.5 || r.right > side4.right + 0.5) hw2.push(`"${(hparts[i].textContent || hparts[i].getAttribute('aria-label') || '').trim().slice(0, 24)}" leaves the panel sideways`);
+      }
+      const sb4 = q('#side-body') as HTMLElement;
+      if (sb4.scrollWidth > sb4.clientWidth + 1) hw2.push(`the Edit tab scrolls sideways (${sb4.scrollWidth} > ${sb4.clientWidth})`);
+      state('a hypervisor’s Services card (its configuration and a virtual switch open, its guests with + VM) fits the panel', hw2.concat(problems()));
       app.loadExample(EXAMPLES.findIndex((e) => /enterprise-wan/.test(e.name)));
       await tick();
       // the tool windows of Analyze: inside the browser window (docked at the bottom when it is narrow), their title

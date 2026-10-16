@@ -16,6 +16,7 @@ const { exportBoxes, sceneRefs, viewNetworks } = load('diagram/networks-box.js')
 const { legendOf } = load('diagram/legend.js');
 const { groupRects } = load('diagram/physical.js');
 const { networkMembers } = load('model/derive.js');
+const { withVirtualNetworks } = load('model/virtual.js');
 
 const net = `netatlas: 1
 protocols:
@@ -308,7 +309,8 @@ test('logical auto-arrange keeps each group together: no frame covers a device o
       nodes.forEach((n) => {
         if (n.kind === 'device' && within(n.id, gid)) return;
         // a network or hub whose devices all lie in the group is local to it, and placed inside its frame
-        const devs = n.kind === 'network' ? networkMembers(m, n.id).map((x) => x.device) : n.kind === 'hub' ? Array.from(new Set(m.index.relations.get(n.id).endpoints.map((e) => e.device))) : [];
+        // (the logical view's networks include the container networks: withVirtualNetworks)
+        const devs = n.kind === 'network' ? networkMembers(withVirtualNetworks(m), n.id).map((x) => x.device) : n.kind === 'hub' ? Array.from(new Set(m.index.relations.get(n.id).endpoints.map((e) => e.device))) : [];
         if (devs.length && devs.every((d) => !boxes.has(d) || within(d, gid))) return;
         assert.ok(!hit(r, { x: n.cx - n.w / 2, y: n.cy - n.h / 2, w: n.w, h: n.h }), `${f}: frame of ${gid} covers ${n.ref}`);
       });

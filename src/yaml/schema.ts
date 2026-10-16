@@ -16,9 +16,21 @@ export const SCHEMA = {
   /** a parameter a protocol of the model declares: an entry of its `params` */
   param: ['key', 'label', 'type', 'scope', 'required', 'min', 'max', 'values', 'suggest', 'description'],
   group: ['id', 'label', 'kind', 'parent', 'description', 'attrs'],
-  device: ['id', 'label', 'type', 'layer3', 'group', 'tier', 'router_id', 'protocols', 'services', 'simulation', 'description', 'attrs', 'interfaces', 'logical_interfaces', 'dns_names', 'dns_servers', 'routes'],
-  /** a server's network services (its `services:`): a DHCP server, a DNS server */
-  netServices: ['dhcp', 'dns'],
+  device: ['id', 'label', 'type', 'host', 'layer3', 'group', 'tier', 'guest_os', 'vcpu', 'ram', 'image', 'router_id', 'protocols', 'services', 'simulation', 'description', 'attrs', 'interfaces', 'logical_interfaces', 'dns_names', 'dns_servers', 'routes'],
+  /** a server's services (its `services:`): a DHCP server, a DNS server, the Hypervisor and the Container engine */
+  netServices: ['dhcp', 'dns', 'hypervisor', 'container_engine'],
+  /** a server's Hypervisor service */
+  hypervisor: ['platform', 'cluster', 'cpu', 'ram', 'vswitches', 'simulation'],
+  /** a virtual switch: an entry of `services.hypervisor.vswitches` */
+  vswitch: ['name', 'type', 'uplinks', 'teaming', 'mtu', 'port_groups', 'simulation'],
+  /** a port group: an entry of a virtual switch's `port_groups` */
+  portGroup: ['name', 'vlans', 'native', 'guest_tagging'],
+  /** a server's (or a VM's) Container engine service */
+  containerEngine: ['engine', 'networks', 'simulation'],
+  /** a container network: an entry of `services.container_engine.networks` */
+  containerNetwork: ['name', 'driver', 'interface', 'subnet', 'gateway', 'nat', 'parent', 'mode', 'hosts', 'range'],
+  /** a port a container publishes on its host: an entry of a veth's `publish` */
+  published: ['host_ip', 'host_port', 'port', 'protocol'],
   dhcpService: ['scopes'],
   /** a DHCP scope: an entry of `services.dhcp.scopes` */
   dhcpScope: ['network', 'range', 'gateway', 'dns', 'lease', 'exclude', 'reservations', 'domain', 'simulation'],
@@ -30,7 +42,7 @@ export const SCHEMA = {
   /** a physical interface (a port): an entry of a device's `interfaces` */
   interface: ['id', 'label', 'vlans', 'native', 'routed', 'dhcp', 'ip', 'vrf', 'mac', 'mtu', 'dhcp_relay', 'protocols', 'multicast', 'simulation', 'description', 'attrs'],
   /** a loopback, virtual or tunnel interface: an entry of a device's `logical_interfaces` */
-  logical: ['id', 'type', 'label', 'dhcp', 'ip', 'vrf', 'mac', 'mtu', 'dhcp_relay', 'members', 'min_links', 'vlans', 'native', 'routed', 'vlan', 'source', 'destination', 'protocols', 'multicast', 'simulation', 'description', 'attrs'],
+  logical: ['id', 'type', 'label', 'port_group', 'passthrough', 'vf', 'role', 'network', 'aliases', 'dhcp', 'ip', 'vrf', 'mac', 'mtu', 'dhcp_relay', 'members', 'min_links', 'vlans', 'native', 'routed', 'vlan', 'source', 'destination', 'publish', 'protocols', 'multicast', 'simulation', 'description', 'attrs'],
   /** an interface's `multicast:` block, a group it joins written as a mapping, a stream it sends */
   multicast: ['join', 'streams'],
   mcJoin: ['group', 'sources'],

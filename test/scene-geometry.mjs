@@ -133,7 +133,9 @@ export function problems(root) {
   for (let i = 0; i < g.texts.length; i++) {
     for (let j = i + 1; j < g.texts.length; j++) if (overlap(g.texts[i].rect, g.texts[j].rect, 1)) out.push(`text overlaps text: "${g.texts[i].lines.join(' / ')}" / "${g.texts[j].lines.join(' / ')}"`);
   }
-  for (let i = 0; i < g.devices.length; i++) for (let j = i + 1; j < g.devices.length; j++) if (overlap(g.devices[i].box, g.devices[j].box)) out.push(`${g.devices[i].ref} overlaps ${g.devices[j].ref}`);
+  // (a guest's box lies wholly inside its host's: nesting, not an overlap)
+  const nested = (a, b) => inside(a, b) || inside(b, a);
+  for (let i = 0; i < g.devices.length; i++) for (let j = i + 1; j < g.devices.length; j++) if (overlap(g.devices[i].box, g.devices[j].box) && !nested(g.devices[i].box, g.devices[j].box)) out.push(`${g.devices[i].ref} overlaps ${g.devices[j].ref}`);
   // floating labels: clear of nodes and of each other
   const floating = g.pills.map((p) => ({ what: 'label ' + p.lines.join(' '), rect: p.box })).concat(g.linkLabels.map((l) => ({ what: 'cable label ' + l.lines.join(' '), rect: l.rect })), g.memberLabels.map((l) => ({ what: 'address ' + l.lines.join(' '), rect: l.rect })));
   for (const f of floating) for (const n of nodes) if (overlap(f.rect, n.box, 1)) out.push(`${f.what} covers ${n.ref}`);

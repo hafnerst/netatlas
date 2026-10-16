@@ -72,6 +72,8 @@ export function readNetServices(r: Reader, c: Ctx, n: YNode | undefined, path: s
   const m = r.map(n, path);
   if (!m) return undefined;
   r.keys(m, SCHEMA.netServices, path);
+  // (the Hypervisor and the Container engine are read in virtual.ts)
+  if (get(m, 'dhcp') === undefined && get(m, 'dns') === undefined) return undefined;
   if (SERVER_TYPES.indexOf(dev.type) < 0) {
     c.error(m, path, `"${dev.id}" is not a server: DHCP and DNS servers run on a server, a VM or a container`);
     return undefined;

@@ -11,6 +11,7 @@
  * Built from elements and text nodes only; the data comes from
  * analysis/trace.ts.
  */
+import { virtRefText } from '../analysis/trace-virtual';
 import { Hop, Path, Trace, TraceRequest, encapText, endStatus, endText, isAsymmetric } from '../analysis/trace';
 import { deviceVrfs, vrfName } from '../analysis/routing';
 import { Model, deviceInterfaces } from '../model/types';
@@ -207,7 +208,7 @@ export function traceWindowBody(doc: Document, model: Model, form: TraceForm, ru
       ' where it stops.',
     ]),
   );
-  res.appendChild(el(doc, 'p', { class: 'muted small' }, ['A model-based approximation, not a simulation of the protocols: ACLs, firewall policies and NAT are not considered. See Limitations in the README.']));
+  res.appendChild(el(doc, 'p', { class: 'muted small' }, ['A model-based approximation, not a simulation of the protocols: ACLs and firewall policies are not considered, NAT only for container bridges. See Limitations in the README.']));
   box.appendChild(res);
   return box;
 }
@@ -252,6 +253,7 @@ function hopRows(doc: Document, tb: HTMLElement, hops: Hop[], prefix: string, de
     const tags: Array<Node | string> = [];
     if (h.vrf) tags.push(el(doc, 'span', { class: 'th-tag' }, ['VRF ' + h.vrf]));
     if (h.ecmp > 1) tags.push(el(doc, 'span', { class: 'th-tag' }, [`equal-cost ${h.branch + 1} of ${h.ecmp}`]));
+    if (h.nat) tags.push(el(doc, 'span', { class: 'th-tag', title: h.nat === 'snat' ? 'The source address becomes the host’s' : 'To a published port of a container' }, [h.nat.toUpperCase()]));
     const addrs: Array<Node | string> = [];
     if (h.inAddr) addrs.push(`in ${h.inAddr}`);
     if (h.outAddr) addrs.push(`${addrs.length ? ' · ' : ''}out ${h.outAddr}`);
@@ -282,7 +284,14 @@ function hopRows(doc: Document, tb: HTMLElement, hops: Hop[], prefix: string, de
     );
     // the details under the hop: switches passed, cables, notes
     const more: Array<Node | string> = [];
+    // inside a host: port groups, virtual switches, container networks
+    const inside = h.virtual.filter((r) => r.indexOf('iface:') !== 0);
+    if (inside.length) {
+      more.push(el(doc, 'span', { class: 'th-k' }, ['inside ']));
+      inside.forEach((r, i) => more.push(i ? ', ' : '', ref(doc, r, virtRefText(r))));
+    }
     if (h.l2.length) {
+      if (more.length) more.push(' · ');
       more.push(el(doc, 'span', { class: 'th-k' }, ['through ']));
       h.l2.forEach((d, i) => more.push(i ? ', ' : '', ref(doc, 'device:' + d, d)));
     }

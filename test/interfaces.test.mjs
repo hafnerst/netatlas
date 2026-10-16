@@ -80,8 +80,9 @@ test('interfaces are stored once under their device, as physical and logical; ze
   assert.deepEqual(SCHEMA.device.slice(-5), ['interfaces', 'logical_interfaces', 'dns_names', 'dns_servers', 'routes']);
 });
 
-test('a physical interface has no type; a logical interface has one of loopback, virtual, tunnel', () => {
-  assert.deepEqual(T.LOGICAL_IFACE_TYPES, ['loopback', 'virtual', 'tunnel']);
+test('a physical interface has no type; a logical interface has one of loopback, virtual, tunnel, vnic, veth', () => {
+  // (a VM's virtual NIC and a container's network attachment: see virtual.test.mjs)
+  assert.deepEqual(T.LOGICAL_IFACE_TYPES, ['loopback', 'virtual', 'tunnel', 'vnic', 'veth']);
   for (const t of ['physical', 'loopback', 'virtual', 'tunnel', 'svi']) {
     const m = messages(`netatlas: 1\ndevices:\n  - id: a\n    interfaces:\n      - {id: e0, type: ${t}}\n`);
     assert.equal(m.length, 1, t);
@@ -95,7 +96,7 @@ test('a physical interface has no type; a logical interface has one of loopback,
   for (const t of ['logical', 'svi', 'vlan', 'lag', 'bond', 'subinterface', 'vti', 'Tunnel']) {
     const m = logical(', type: ' + t);
     assert.equal(m.length, 1, t);
-    assert.match(m[0], new RegExp(`^"${t}" is not a logical interface type: use "loopback", "virtual" or "tunnel" \\(an SVI, a VLAN interface, a bond or a subinterface is "virtual"\\)`), t);
+    assert.match(m[0], new RegExp(`^"${t}" is not a logical interface type: use "loopback", "virtual", "tunnel", "vnic" \\(a VM's virtual NIC\\) or "veth" \\(a container's network attachment\\) \\(an SVI, a VLAN interface, a bond or a subinterface is "virtual"\\)`), t);
   }
   assert.match(logical(', type: physical')[0], /a physical interface belongs in the "interfaces:" list of the device/);
   // located at the key, for the editor
@@ -541,13 +542,14 @@ test('export -> reload: the format round-trips (both categories, members, VLAN, 
 
 test('every example (and generated fixture) uses the format and draws in both views', () => {
   const files = exampleNames.map((f) => [f, example(f)]).concat(fixtureNames.map((f) => [f, fixture(f)]));
-  assert.equal(files.length, 14 + 3);
+  assert.equal(files.length, 15 + 3);
   for (const [f, text] of files) {
     const r = validate.loadModel(text);
     assert.deepEqual(r.errors.concat(r.warnings).map((e) => `${e.line}: ${e.message}`), [], f);
     for (const dev of r.model.devices) {
       assert.ok(dev.interfaces.every((i) => i.type === 'physical'), f);
-      assert.ok(dev.logical.every((i) => T.LOGICAL_IFACE_TYPES.includes(i.type)), f);
+      // (a container bridge network's interface on its host is derived, never written)
+      assert.ok(dev.logical.every((i) => T.LOGICAL_IFACE_TYPES.includes(i.type) || (i.type === 'bridge' && !!i.derived)), f);
     }
     const d = doc(text);
     assert.equal(d.exportText(), text.replace(/\r\n/g, '\n'), f + ': written back unchanged');

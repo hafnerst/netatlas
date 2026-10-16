@@ -21,6 +21,13 @@
  *     down when none is left;
  *   * static routes whose next hop can't be reached any more fail; a route
  *     that is used now and was not before (a floating route) takes over;
+ *   * virtualization: a failed host takes its guests down (a container in a
+ *     VM with the VM), unless a VM's host is in an HA cluster with a member
+ *     left: then the VM restarts on the first of them (by id) and is
+ *     degraded, a VM with a passthrough port excepted (it is bound to its
+ *     host's port). A vNIC goes down when every uplink of its virtual switch
+ *     is down (degraded while it has failed over to another), or with its
+ *     passthrough port; a macvlan / ipvlan container with its parent;
  *   * the routing context (analysis/routing.ts RoutingCtx) of the result
  *     lets the routing tables and the path tracer see the failure.
  *
@@ -29,7 +36,8 @@
  */
 import { lookupProtocol, protocolBase } from '../model/protocols';
 import { Interface, Model, Relation, Route, deviceInterfaces, ifaceKey, relationDevices } from '../model/types';
-import { networkMembers } from '../model/derive';
+import { networkMembers, subinterfaceParent } from '../model/derive';
+import { clusterMembers, hostOf, isGuest, portGroupAttachments, portGroupOf, uplinkPorts, vethNetwork, vnicHost, vnicPortGroup, vswitchRef } from '../model/virtual';
 import { prefixText } from './ipmath';
 import { RibEntry, RoutingCtx, connectedOf, resolveEntry, ribOf, routeRef, routeText, staticEntry } from './routing';
 import { pathRefs, portsOf, tracePath, tunnelRelation } from './trace';
@@ -91,6 +99,10 @@ export function simulate(model: Model, refs: string[]): FailureResult {
     else fIf.add(id);
   }
   const why = new Map<string, string>();
+  // guests: down with their host, or restarted by its HA cluster (see the module comment)
+  const guests = guestFates(model, fDev);
+  const userFailed = new Set(fDev);
+  guests.down.forEach((_, id) => fDev.add(id));
   // cables: failed, or a device or port at an end failed
   const links = new Map<string, FailState>();
   for (const l of model.links) {
@@ -136,11 +148,16 @@ export function simulate(model: Model, refs: string[]): FailureResult {
       const key = ifaceKey(i.device, i.id);
       const ref = 'iface:' + key;
       if (fDev.has(i.device)) {
-        changed = set(ifaces, key, 'down', ref, `${i.device} failed`) || changed;
+        changed = set(ifaces, key, 'down', ref, userFailed.has(i.device) ? `${i.device} failed` : (guests.down.get(i.device) as string)) || changed;
         continue;
       }
       if (fIf.has(key)) {
         changed = set(ifaces, key, 'down', ref, 'failed') || changed;
+        continue;
+      }
+      const vs = virtualState(model, i, ifState, guests.moved);
+      if (vs) {
+        changed = set(ifaces, key, vs.st, ref, vs.why) || changed;
         continue;
       }
       if (i.type === 'physical') {
@@ -223,7 +240,12 @@ export function simulate(model: Model, refs: string[]): FailureResult {
   for (const d of model.devices) {
     if (fDev.has(d.id)) {
       devices.set(d.id, 'down');
-      why.set('device:' + d.id, 'failed');
+      why.set('device:' + d.id, userFailed.has(d.id) ? 'failed' : (guests.down.get(d.id) as string));
+      continue;
+    }
+    if (guests.moved.has(d.id) || guests.movedWhy.has(d.id)) {
+      devices.set(d.id, 'degraded');
+      why.set('device:' + d.id, guests.movedWhy.get(d.id) as string);
       continue;
     }
     const lostIfs = deviceInterfaces(d)
@@ -240,8 +262,90 @@ export function simulate(model: Model, refs: string[]): FailureResult {
     relUp: (id) => relations.get(id) !== 'down',
     linkUp: (id) => links.get(id) !== 'down',
   };
+  if (guests.moved.size) ctx.hostOf = (g) => guests.moved.get(g);
   const routes = routeStates(model, ctx, why);
   return { failed, devices, ifaces, links, relations, networks, routes, why, ctx };
+}
+
+/**
+ * What happens to the guests when devices fail: those that go down (with
+ * why), the VMs restarted on another member of their host's HA cluster (by
+ * their new host), and why each moved guest (and a container moving with
+ * its VM) is degraded.
+ */
+function guestFates(model: Model, failed: Set<string>): { down: Map<string, string>; moved: Map<string, string>; movedWhy: Map<string, string> } {
+  const down = new Map<string, string>();
+  const moved = new Map<string, string>();
+  const movedWhy = new Map<string, string>();
+  // hosts before their guests: by the depth of the guest
+  const depth = (d: { id: string }): number => {
+    let n = 0;
+    let x = model.index.devices.get(d.id);
+    while (x && isGuest(x) && n < 5) {
+      x = hostOf(model, x);
+      n++;
+    }
+    return n;
+  };
+  const gs = model.devices.filter((d) => isGuest(d) && d.host !== undefined && !failed.has(d.id)).sort((a, b) => depth(a) - depth(b));
+  for (const g of gs) {
+    const h = hostOf(model, g);
+    if (!h) continue;
+    const hostGone = failed.has(h.id) || down.has(h.id);
+    if (moved.has(h.id) || movedWhy.has(h.id)) {
+      if (!hostGone) movedWhy.set(g.id, `moves with ${h.id} (restarted on ${moved.get(h.id) || h.id})`);
+      continue;
+    }
+    if (!hostGone) continue;
+    const what = failed.has(h.id) ? `its host ${h.id} failed` : `its host ${h.id} is down`;
+    const cluster = g.type === 'vm' && h.hypervisor ? h.hypervisor.cluster : undefined;
+    const spare = clusterMembers(model, cluster).filter((m) => m.id !== h.id && !failed.has(m.id)).map((m) => m.id).sort(cmp);
+    const pinned = g.logical.some((i) => i.type === 'vnic' && i.passthrough !== undefined);
+    if (cluster !== undefined && spare.length && !pinned) {
+      moved.set(g.id, spare[0]);
+      movedWhy.set(g.id, `${what}: restarts on ${spare[0]} (HA cluster ${cluster})`);
+    } else down.set(g.id, cluster !== undefined && spare.length && pinned ? `${what}; with a passthrough port HA can't restart it elsewhere` : what);
+  }
+  return { down, moved, movedWhy };
+}
+
+/**
+ * The state of a guest's virtual interface (or a host's own vNIC) from what
+ * it depends on: its virtual switch's uplinks, its passthrough port, its
+ * macvlan parent, its vNIC (a VLAN subinterface). Null for other interfaces.
+ */
+function virtualState(model: Model, i: Interface, ifState: (device: string, iface: string) => FailState, moved: Map<string, string>): { st: FailState; why: string } | null {
+  if (i.type === 'vnic') {
+    const to = moved.get(i.device);
+    const host = to !== undefined ? model.index.devices.get(to) : vnicHost(model, i);
+    if (i.passthrough !== undefined) {
+      const h = vnicHost(model, i);
+      return h && ifState(h.id, i.passthrough) === 'down' ? { st: 'down', why: `its passthrough port ${h.id}:${i.passthrough} is down` } : null;
+    }
+    const x = to !== undefined ? portGroupOf(host, i.portGroup) : vnicPortGroup(model, i);
+    if (!host) return null;
+    if (!x) return to !== undefined && i.portGroup !== undefined ? { st: 'down', why: `restarted on ${to}, which has no port group ${i.portGroup}` } : null;
+    const ports = uplinkPorts(model, host, x.vswitch);
+    if (!ports.length) return null;
+    const gone = ports.filter((p) => ifState(host.id, p) === 'down');
+    if (gone.length === ports.length) return { st: 'down', why: `every uplink of ${x.vswitch.name} on ${host.id} is down (${gone.join(', ')})` };
+    if (gone.length) return { st: 'degraded', why: `${x.vswitch.name} on ${host.id} fails over: ${gone.join(', ')} down` };
+    return null;
+  }
+  if (i.type === 'veth') {
+    const x = vethNetwork(model, i);
+    if (x && (x.net.driver === 'macvlan' || x.net.driver === 'ipvlan') && x.net.parent !== undefined && ifState(x.host.id, x.net.parent) === 'down') return { st: 'down', why: `its parent ${x.host.id}:${x.net.parent} is down` };
+    return null;
+  }
+  if (i.type === 'virtual' && !i.members.length) {
+    const p = subinterfaceParent(model, i);
+    const pi = p !== undefined ? model.index.interfaces.get(ifaceKey(i.device, p)) : undefined;
+    if (pi && pi.type === 'vnic') {
+      const st = ifState(i.device, p as string);
+      return st === 'up' ? { st: 'up', why: '' } : { st, why: `its vNIC ${p} is ${st}` };
+    }
+  }
+  return null;
 }
 
 /** The entries a table selects for exactly one prefix (the lowest distance, then metric, among the usable ones). */
@@ -418,7 +522,7 @@ export function lostReachability(model: Model, res: FailureResult): { pairs: Los
 // ------------------------------------------------------------ single points of failure
 
 export interface Spof {
-  kind: 'cable' | 'device' | 'lag';
+  kind: 'cable' | 'device' | 'lag' | 'vswitch' | 'passthrough';
   /** the object (link, device or aggregate interface) */
   ref: string;
   /** what the simulation fails for it */
@@ -427,6 +531,10 @@ export interface Spof {
   isolated: string[][];
   /** relations that go down although their endpoints are still up */
   relations: string[];
+  /** guests (VMs, containers) that go down or lose every network interface with it, sorted */
+  guests: string[];
+  /** a virtual switch: why it is one ("one uplink", "its uplinks all go to tor1") */
+  note?: string;
 }
 
 /** The groups of devices joined by cables that are up (each sorted; groups by first id). */
@@ -465,7 +573,7 @@ export function singlePointsOfFailure(model: Model): Spof[] {
   const before = components(model, () => true, () => true);
   const compOf = new Map<string, number>();
   before.forEach((c, i) => c.forEach((d) => compOf.set(d, i)));
-  const cands: Array<{ kind: Spof['kind']; ref: string; fail: string[] }> = [];
+  const cands: Array<{ kind: Spof['kind']; ref: string; fail: string[]; note?: string }> = [];
   for (const l of model.links) cands.push({ kind: 'cable', ref: 'link:' + l.id, fail: ['link:' + l.id] });
   for (const d of model.devices) cands.push({ kind: 'device', ref: 'device:' + d.id, fail: ['device:' + d.id] });
   for (const d of model.devices) {
@@ -482,6 +590,7 @@ export function singlePointsOfFailure(model: Model): Spof[] {
       cands.push({ kind: 'lag', ref: `iface:${d.id}:${i.id}`, fail: Array.from(new Set(ls)).sort(cmp).map((x) => 'link:' + x) });
     }
   }
+  cands.push(...virtualCandidates(model));
   const out: Spof[] = [];
   for (const c of cands) {
     const res = simulate(model, c.fail);
@@ -507,11 +616,62 @@ export function singlePointsOfFailure(model: Model): Spof[] {
       if (relationDevices(r).every((d) => res.devices.get(d) !== 'down')) relations.push(id);
     });
     relations.sort(cmp);
-    if (isolated.length || relations.length) out.push({ kind: c.kind, ref: c.ref, fail: c.fail, isolated, relations });
+    // guests (not the failed object itself) that go down, or keep no network interface that is up
+    const failedDevs = new Set(c.fail.filter((f) => f.indexOf('device:') === 0).map((f) => f.slice(7)));
+    const guests = model.devices
+      .filter((d) => isGuest(d) && d.host !== undefined && !failedDevs.has(d.id))
+      .filter((d) => {
+        if (res.devices.get(d.id) === 'down') return true;
+        const nics = d.logical.filter((i) => i.type === 'vnic' || i.type === 'veth');
+        return nics.length > 0 && nics.every((i) => res.ifaces.get(ifaceKey(d.id, i.id)) === 'down');
+      })
+      .map((d) => d.id)
+      .sort(cmp);
+    if (isolated.length || relations.length || guests.length) {
+      const s: Spof = { kind: c.kind, ref: c.ref, fail: c.fail, isolated, relations, guests };
+      if (c.note !== undefined) s.note = c.note;
+      out.push(s);
+    }
   }
-  const weight = (s: Spof): number => s.isolated.reduce((n, g) => n + g.length, 0) + s.relations.length;
-  const kindRank = { device: 0, lag: 1, cable: 2 };
+  const weight = (s: Spof): number => s.isolated.reduce((n, g) => n + g.length, 0) + s.relations.length + s.guests.length;
+  const kindRank = { device: 0, lag: 1, vswitch: 2, passthrough: 3, cable: 4 };
   return out.sort((a, b) => weight(b) - weight(a) || kindRank[a.kind] - kindRank[b.kind] || cmp(a.ref, b.ref));
+}
+
+/**
+ * The virtual candidates: each virtual switch with guests on it whose
+ * uplinks are one port (its failure) or all go to one device (that
+ * device's failure), and each passthrough port.
+ */
+function virtualCandidates(model: Model): Array<{ kind: Spof['kind']; ref: string; fail: string[]; note?: string }> {
+  const out: Array<{ kind: Spof['kind']; ref: string; fail: string[]; note?: string }> = [];
+  for (const h of model.devices) {
+    if (!h.hypervisor) continue;
+    for (const vs of h.hypervisor.vswitches) {
+      const used = vs.portGroups.some((pg) => portGroupAttachments(model, h, pg.name).some((i) => i.device !== h.id));
+      const ports = uplinkPorts(model, h, vs);
+      if (!used || !ports.length) continue;
+      if (ports.length === 1) {
+        out.push({ kind: 'vswitch', ref: vswitchRef(h.id, vs.name), fail: [`iface:${h.id}:${ports[0]}`], note: `one uplink (${ports[0]})` });
+        continue;
+      }
+      const far = new Set<string>();
+      for (const p of ports) {
+        const lid = model.index.ifaceLink.get(ifaceKey(h.id, p));
+        const l = lid ? model.index.links.get(lid) : undefined;
+        if (l) far.add(l.a.device === h.id ? l.b.device : l.a.device);
+      }
+      if (far.size === 1) {
+        const f = Array.from(far)[0];
+        out.push({ kind: 'vswitch', ref: vswitchRef(h.id, vs.name), fail: ['device:' + f], note: `its uplinks all go to ${f}` });
+      }
+    }
+    for (const g of model.devices) {
+      if (g.type !== 'vm' || g.host !== h.id) continue;
+      for (const i of g.logical) if (i.type === 'vnic' && i.passthrough !== undefined) out.push({ kind: 'passthrough', ref: `iface:${h.id}:${i.passthrough}`, fail: [`iface:${h.id}:${i.passthrough}`] });
+    }
+  }
+  return out;
 }
 
 /** What failed, named: "hq-fw, cable l-peer1". */

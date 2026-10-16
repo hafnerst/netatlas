@@ -290,7 +290,7 @@ export interface SessionRow {
 
 export interface NetEvent {
   /** join / leave: a host joined a group, or left one its model joins; stream / stopped: a stream started, or one of the model stopped */
-  kind: 'fail' | 'flap' | 'shut' | 'power' | 'join' | 'leave' | 'stream' | 'stopped';
+  kind: 'fail' | 'flap' | 'shut' | 'power' | 'engine' | 'join' | 'leave' | 'stream' | 'stopped';
   /** "link:x", "relation:x", "iface:dev:port", "device:x" */
   ref: string;
   /** a join, leave or stream: its group */

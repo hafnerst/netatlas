@@ -43,7 +43,8 @@ import { FOCUS_MAX_HOPS, FOCUS_MIN_HOPS, FocusUp, focusNeighbourhood, focusSeeds
 import type { FailureResult } from '../analysis/failure';
 import { refExists, relatedRefs } from '../model/queries';
 import { typeKey } from '../model/device-types';
-import { Model } from '../model/types';
+import { Device, Model } from '../model/types';
+import { hostOf, isGuest, machineOf, withPlacement, withVirtualNetworks } from '../model/virtual';
 import { renderLogical } from './logical';
 import { SceneResult, renderPhysical } from './physical';
 
@@ -111,6 +112,24 @@ export class Session {
    * where they were (until the subset is chosen or arranged anew).
    */
   private parked: { physical: Map<string, Pt> | null; logical: Map<string, Pt> | null } = { physical: null, logical: null };
+
+  /** VMs on another host than their own (the protocol simulation's HA restarts): the physical view draws them there */
+  private placement: Map<string, string> | null = null;
+  private placementKey = '';
+
+  /**
+   * Where the protocol simulation runs its VMs now (null or empty: where
+   * the model puts them). Only the physical view's drawing changes; returns
+   * whether it did.
+   */
+  setPlacement(moved: Map<string, string> | null): boolean {
+    const key = moved ? Array.from(moved).sort().join(' ') : '';
+    if (key === this.placementKey) return false;
+    this.placementKey = key;
+    this.placement = moved && moved.size ? new Map(moved) : null;
+    this.filtered.physical = null;
+    return true;
+  }
 
   /** what is up in the simulated state (null: no simulation); focus mode counts hops over it */
   private simUp: FocusUp | null = null;
@@ -218,8 +237,49 @@ export class Session {
     if (!sel && !hidden.size && !focus) return null;
     const near = focus ? focusNeighbourhood(this.model, focus.ref, focus.hops, view, this.simUp || undefined) : null;
     const out = new Set<string>();
-    for (const d of this.model.devices) if ((!sel || sel.has(d.id)) && !hidden.has(typeKey(d)) && (!near || near.has(d.id))) out.add(d.id);
+    // (a guest has no cables: in the physical view's focus it goes with the machine it runs on)
+    const nearHas = (d: Device): boolean => !near || near.has(d.id) || (view === 'physical' && isGuest(d) && near.has(machineOf(this.model, d).id));
+    for (const d of this.model.devices) if ((!sel || sel.has(d.id)) && !hidden.has(typeKey(d)) && nearHas(d)) out.add(d.id);
+    if (view === 'physical') for (const id of this.guestsWithoutHost(out)) out.delete(id);
     return out.size === this.model.devices.length ? null : out;
+  }
+
+  /**
+   * The guests of a set of shown devices whose host is not in it (or is
+   * itself such a guest): the physical view draws a guest only inside its
+   * host's box, so it leaves these out (and says so).
+   */
+  private guestsWithoutHost(shown: Set<string>): string[] {
+    const out: string[] = [];
+    const ok = (d: Device, depth: number): boolean => {
+      const h = hostOf(this.model, d);
+      if (!isGuest(d) || d.host === undefined) return true;
+      return !!h && depth < 4 && shown.has(h.id) && ok(h, depth + 1);
+    };
+    for (const d of this.model.devices) if (shown.has(d.id) && !ok(d, 0)) out.push(d.id);
+    return out;
+  }
+
+  /**
+   * The guests the physical view leaves out although the filters select
+   * them, because their host is not shown (by the device selection, a type
+   * switched off, or focus). Empty in the logical view.
+   */
+  hiddenWithHost(view: View = this.state.view): string[] {
+    if (view !== 'physical') return [];
+    const shown = this.shownSet(view);
+    if (!shown) return [];
+    const sel = this.state.devices;
+    const hidden = this.state.hiddenTypes;
+    return this.model.devices.filter((d) => isGuest(d) && d.host !== undefined && !shown.has(d.id) && (!sel || sel.has(d.id)) && !hidden.has(typeKey(d)) && this.wouldFocus(d)).map((d) => d.id);
+  }
+
+  /** Is a device within the focus (or is there none)? */
+  private wouldFocus(d: Device): boolean {
+    const focus = this.state.focus;
+    if (!focus) return true;
+    const near = focusNeighbourhood(this.model, focus.ref, focus.hops, 'physical', this.simUp || undefined);
+    return near.has(d.id) || near.has(machineOf(this.model, d).id);
   }
 
   // ------------------------------------------------------------- focus mode
@@ -357,8 +417,15 @@ export class Session {
     const c = this.filtered[view];
     if (c) return c;
     const shown = this.shownSet(view);
-    if (!shown) return { model: this.model, input: this.input };
-    const model = filterModel(this.model, shown, view);
+    // VMs the simulation restarted elsewhere: drawn in their new host
+    if (view === 'physical' && this.placement) {
+      const moved = withPlacement(shown ? filterModel(this.model, shown, view) : this.model, this.placement);
+      return (this.filtered.physical = { model: moved, input: layoutInput(moved) });
+    }
+    // the logical view draws container networks as networks (model/virtual.ts withVirtualNetworks)
+    if (!shown) return { model: view === 'logical' ? withVirtualNetworks(this.model) : this.model, input: this.input };
+    const part = filterModel(this.model, shown, view);
+    const model = view === 'logical' ? withVirtualNetworks(part) : part;
     return (this.filtered[view] = { model, input: layoutInput(model) });
   }
 
@@ -433,6 +500,11 @@ export class Session {
   }
 
   select(ref: string | null): void {
+    // a container network drawn as a network is selected as the container network
+    if (ref && ref.indexOf('network:') === 0 && !this.model.index.networks.has(ref.slice(8))) {
+      const n = withVirtualNetworks(this.model).index.networks.get(ref.slice(8));
+      if (n && n.cnet) ref = n.cnet;
+    }
     this.state.selected = ref && refExists(this.model, ref) ? ref : null;
   }
 
@@ -465,7 +537,49 @@ export class Session {
     this.state.positions.physical.forEach((p, ref) => {
       if (ref.indexOf('device:') === 0) pos.set(ref.slice(7), p);
     });
+    if (this.placement) this.makeRoom(pos);
     return { boxes: physicalBoxes(this.viewInput('physical'), pos) };
+  }
+
+  /**
+   * VMs restarted on another host (the simulation, drawn there): a host
+   * that holds more grows from its top-left corner, and what lies below it
+   * (or right of it) moves on by as much, so nothing overlaps; a host that
+   * holds fewer keeps its place. Never stored: the simulation's drawing only.
+   */
+  private makeRoom(pos: Map<string, Pt>): void {
+    const shown = this.shownSet('physical');
+    const before = physicalBoxes(shown ? layoutInput(filterModel(this.model, shown, 'physical')) : this.input, pos);
+    const after = physicalBoxes(this.viewInput('physical'), pos);
+    const grown = Array.from(after)
+      .filter(([id, b]) => {
+        const o = before.get(id);
+        return !!o && (b.h > o.h + 0.5 || b.w > o.w + 0.5);
+      })
+      .sort((p, q) => {
+        const a = before.get(p[0]) as { cy: number; h: number };
+        const b = before.get(q[0]) as { cy: number; h: number };
+        return a.cy - a.h / 2 - (b.cy - b.h / 2) || (p[0] < q[0] ? -1 : 1);
+      });
+    for (const [id, b] of grown) {
+      const o = before.get(id) as { cx: number; cy: number; w: number; h: number };
+      const dh = Math.max(0, b.h - o.h);
+      const dw = Math.max(0, b.w - o.w);
+      const left = o.cx - o.w / 2;
+      const top = o.cy - o.h / 2;
+      const p = pos.get(id) as Pt;
+      pos.set(id, { x: p.x + dw / 2, y: p.y + dh / 2 });
+      before.forEach((x, other) => {
+        if (other === id) return;
+        const q = pos.get(other);
+        if (!q) return;
+        const xl = x.cx - x.w / 2;
+        const xt = x.cy - x.h / 2;
+        const below = dh > 0 && xt >= top + o.h - 1 && xl < left + b.w && xl + x.w > left;
+        const right = dw > 0 && xl >= left + o.w - 1 && xt < top + b.h && xt + x.h > top;
+        if (below || right) pos.set(other, { x: q.x + (right ? dw : 0), y: q.y + (below ? dh : 0) });
+      });
+    }
   }
 
   render(): SceneResult {

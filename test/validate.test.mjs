@@ -168,7 +168,7 @@ test('the broken demo file reports every problem with line numbers', async () =>
     [18, /tunnel source "eth7" is neither an IP address nor an interface of "r1" — did you mean "eth0"/],
     [19, /"tun0" is a tunnel interface: the members of an aggregate are physical interfaces of the same device/],
     [20, /loopback "lo0" needs at least one IPv4 or IPv6 address/],
-    [21, /"subinterface" is not a logical interface type: use "loopback", "virtual" or "tunnel"/],
+    [21, /"subinterface" is not a logical interface type: use "loopback", "virtual", "tunnel", "vnic" \(a VM's virtual NIC\) or "veth" \(a container's network attachment\)/],
     // routing services
     [26, /unknown key "asn" \(the AS number belongs to BGP/],
     [27, /"lo5" is not a router ID: write an IPv4 address \(e\.g\. 10\.255\.0\.1\) or the id of a loopback of "r3"/],

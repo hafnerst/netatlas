@@ -53,6 +53,9 @@ export function findTrack(scene: Element, t: Track): Geo | null {
     const len = p.getTotalLength();
     return len > 1 ? { path: p, len, dir } : null;
   };
+  // a virtual link (a vNIC or veth to its virtual switch or network): its wire in the host's box, drawn from the guest's end (b)
+  // (a VM restarted on another member: its link there has the same wire, "@host" left out)
+  if (t.ref.indexOf('link:~') === 0) return pick(`path.vwire[data-link="${cssEsc(t.ref.slice(5).replace(/@[^@~]*$/, ''))}"]`, t.from === 'b' ? 1 : -1);
   if (t.ref.indexOf('link:') === 0) return pick(`g.cable[data-ref="${ref}"] path.cable-line`, t.from === 'a' ? 1 : -1);
   if (t.ref.indexOf('network:') === 0) {
     if (t.to === 'net') return pick(`path.member[data-ref="${ref}"][data-member="${cssEsc(t.from)}"]`, 1);

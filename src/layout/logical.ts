@@ -165,7 +165,7 @@ export function autoLogical(input: LayoutInput, physical: Map<string, Pt>): Map<
   const specs = logicalSpecs(input);
   if (!specs.length) return new Map();
   const edges = logicalEdges(input, specs);
-  const seed = seedPositions(specs, edges, physical);
+  const seed = seedPositions(specs, edges, guestSeeds(input, physical));
   const groupOf = new Map<string, string>();
   const groups = new Map(input.groups.map((g) => [g.id, g] as [string, LGroup]));
   for (const d of input.devices) if (d.group && groups.has(d.group)) groupOf.set(d.id, d.group);
@@ -186,6 +186,35 @@ export function commonChain(chains: string[][]): string[] {
 function roundAll(pos: Map<string, Pt>): Map<string, Pt> {
   const out = new Map<string, Pt>();
   pos.forEach((p, ref) => out.set(ref, { x: Math.round(p.x), y: Math.round(p.y) }));
+  return out;
+}
+
+/**
+ * The physical positions, with a place for every guest (it has none of its
+ * own: it is drawn inside its host): below its host's, side by side in the
+ * order of the model.
+ */
+function guestSeeds(input: LayoutInput, physical: Map<string, Pt>): Map<string, Pt> {
+  if (!input.devices.some((d) => d.inside !== undefined)) return physical;
+  const out = new Map(physical);
+  const inside = new Map(input.devices.filter((d) => d.inside !== undefined).map((d) => [d.id, d.inside as string] as [string, string]));
+  const count = new Map<string, number>();
+  for (const d of input.devices) {
+    if (d.inside === undefined) continue;
+    // one row further down per level of nesting (a container in a VM: two), side by side within a row
+    let host = d.inside;
+    let depth = 1;
+    for (let k = 0; k < 4 && inside.has(host); k++) {
+      host = inside.get(host) as string;
+      depth++;
+    }
+    const hp = physical.get(host);
+    if (!hp) continue;
+    const key = host + '|' + depth;
+    const n = count.get(key) || 0;
+    count.set(key, n + 1);
+    out.set(d.id, { x: hp.x + n * 160, y: hp.y + 140 * depth });
+  }
   return out;
 }
 

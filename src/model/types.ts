@@ -56,10 +56,33 @@ export const VLAN_MAX = 4094;
  * interface names its VLAN (the ports carrying it are derived from the
  * links), a tunnel names its source and destination.
  */
-export type InterfaceKind = 'physical' | 'loopback' | 'virtual' | 'tunnel';
+/**
+ * What an interface is. `physical`: a port (the `interfaces:` list). The
+ * logical ones (`logical_interfaces:`, with their `type`): `loopback`,
+ * `virtual`, `tunnel`; a guest's network interfaces `vnic` (a VM's virtual
+ * NIC on a port group of its host, or bound to a host port by passthrough;
+ * also a hypervisor's own host interfaces) and `veth` (a container's
+ * attachment to a container network of its host). `bridge` is never
+ * written: it is a container bridge network's interface on its host
+ * (docker0), derived from the network (Interface.derived).
+ */
+export type InterfaceKind = 'physical' | 'loopback' | 'virtual' | 'tunnel' | 'vnic' | 'veth' | 'bridge';
 
 /** The types a logical interface can have (the only interface type written in a file). */
-export const LOGICAL_IFACE_TYPES: readonly InterfaceKind[] = ['loopback', 'virtual', 'tunnel'];
+export const LOGICAL_IFACE_TYPES: readonly InterfaceKind[] = ['loopback', 'virtual', 'tunnel', 'vnic', 'veth'];
+
+/** A port a container publishes on its host (a bridge network's DNAT): host address (none: all), host port → container port. */
+export interface PublishedPort {
+  hostIp?: string;
+  hostPort: number;
+  port: number;
+  protocol: 'tcp' | 'udp';
+  line: number;
+}
+
+/** What a hypervisor's own vnic (a host interface) is for. */
+export type HostIfaceRole = 'management' | 'migration' | 'storage';
+export const HOST_IFACE_ROLES: readonly HostIfaceRole[] = ['management', 'migration', 'storage'];
 
 /** Source or destination of a tunnel interface: an address, or a reference to a device / interface of the model. */
 export interface TunnelEnd {
@@ -122,6 +145,22 @@ export interface Interface {
   source?: TunnelEnd;
   /** tunnel: the remote address, device or interface */
   destination?: TunnelEnd;
+  /** vnic: the port group (by name) on a virtual switch of its host (a VM's host, or the hypervisor itself) */
+  portGroup?: string;
+  /** vnic: the host's physical port it is bound to directly (passthrough / SR-IOV), instead of a port group */
+  passthrough?: string;
+  /** vnic with passthrough: the port's SR-IOV virtual function (none: the whole port) */
+  vf?: number;
+  /** vnic of a hypervisor (a host interface): what the host uses it for */
+  role?: HostIfaceRole;
+  /** veth: the container network (by name) of its host it is attached to */
+  network?: string;
+  /** veth: further names of the container on that network */
+  aliases?: string[];
+  /** veth: the ports published on the host (a bridge network only) */
+  publish?: PublishedPort[];
+  /** bridge: derived from a container bridge network, never written (its network's name) */
+  derived?: string;
   description?: string;
   attrs: Attrs;
   line: number;
@@ -186,8 +225,142 @@ export interface Device {
   dnsServers?: string[];
   /** a server's network services (`services:`): a DHCP server and / or a DNS server */
   netServices?: NetServices;
+  /** a server's Hypervisor service (`services.hypervisor`): its virtual switches and port groups; it runs VMs */
+  hypervisor?: HypervisorService;
+  /** a server's (or a VM's) Container engine service (`services.container_engine`): its container networks; it runs containers */
+  containerEngine?: ContainerEngine;
+  /**
+   * A guest's host (a VM or a container; required for them, nothing else
+   * has one): a server with the Hypervisor service for a VM, a server or a
+   * VM with the Container engine service for a container. A guest has no
+   * ports and no cables, and its location is its host's (model/virtual.ts).
+   */
+  host?: string;
+  /** a VM: its guest operating system, virtual CPUs and memory (as written, "16G"), all informational */
+  guestOs?: string;
+  vcpu?: number;
+  ram?: string;
+  /** a container: its image (informational) */
+  image?: string;
   /** static routes, in file order (empty unless the device type may route; see analysis/routing.ts) */
   routes: Route[];
+  line: number;
+}
+
+/** The hypervisor platforms. */
+export const HV_PLATFORMS: ReadonlyArray<{ id: string; label: string }> = [
+  { id: 'kvm', label: 'KVM' },
+  { id: 'esxi', label: 'VMware ESXi' },
+  { id: 'hyperv', label: 'Hyper-V' },
+  { id: 'proxmox', label: 'Proxmox VE' },
+  { id: 'xen', label: 'Xen' },
+  { id: 'other', label: 'Other' },
+];
+export const VSWITCH_TYPES: ReadonlyArray<{ id: string; label: string }> = [
+  { id: 'standard', label: 'Standard vSwitch' },
+  { id: 'distributed', label: 'Distributed switch' },
+  { id: 'linux_bridge', label: 'Linux bridge' },
+  { id: 'ovs', label: 'Open vSwitch' },
+];
+export const TEAMINGS: ReadonlyArray<{ id: string; label: string }> = [
+  { id: 'active_standby', label: 'Active / standby (in uplink order)' },
+  { id: 'load_based', label: 'Load-based' },
+  { id: 'source_based', label: 'Source-based (by virtual port)' },
+  { id: 'lacp', label: 'LACP (an aggregate)' },
+];
+export const CONTAINER_ENGINES: ReadonlyArray<{ id: string; label: string }> = [
+  { id: 'docker', label: 'Docker' },
+  { id: 'podman', label: 'Podman' },
+  { id: 'containerd', label: 'containerd / Kubernetes node' },
+  { id: 'lxc', label: 'LXC / Incus' },
+  { id: 'other', label: 'Other' },
+];
+export const CONTAINER_DRIVERS: ReadonlyArray<{ id: ContainerDriver; label: string }> = [
+  { id: 'bridge', label: 'Bridge (NAT on the host)' },
+  { id: 'host', label: 'Host (the host’s interfaces)' },
+  { id: 'macvlan', label: 'macvlan (own MAC on the LAN)' },
+  { id: 'ipvlan', label: 'ipvlan (the parent’s MAC)' },
+  { id: 'overlay', label: 'Overlay (across hosts)' },
+  { id: 'none', label: 'None (no network)' },
+];
+/** a macvlan network's mode, and an ipvlan network's */
+export const MACVLAN_MODES: readonly string[] = ['bridge', 'private', 'vepa', 'passthru'];
+export const IPVLAN_MODES: readonly string[] = ['l2', 'l3'];
+
+/**
+ * A port group of a virtual switch: its name and VLAN mode, as on a
+ * physical port (one VLAN: access; several: trunk with an optional native
+ * VLAN), or guest tagging (VGT: the guest tags; every VLAN of the uplinks
+ * passes).
+ */
+export interface PortGroup {
+  name: string;
+  vlans: VlanRange[];
+  native?: number;
+  guestTagging: boolean;
+  line: number;
+}
+
+/** A virtual switch of a hypervisor: its uplinks (host ports or aggregates, in order), teaming, MTU and port groups. */
+export interface VSwitch {
+  name: string;
+  type?: string;
+  /** host ports or aggregates; with active / standby teaming the first is active, the others stand by in order */
+  uplinks: string[];
+  teaming?: string;
+  mtu?: number;
+  portGroups: PortGroup[];
+  /** its simulation attributes (teaming failover detection) */
+  simulation?: Map<string, number | string>;
+  line: number;
+}
+
+/** A server's Hypervisor service. */
+export interface HypervisorService {
+  platform?: string;
+  /** the HA cluster it belongs to (hypervisors with the same name form it) */
+  cluster?: string;
+  /** inventory: CPU cores and memory (as written), informational */
+  cpu?: number;
+  ram?: string;
+  vswitches: VSwitch[];
+  /** the service's simulation attributes (VM restart time) */
+  simulation?: Map<string, number | string>;
+  line: number;
+}
+
+export type ContainerDriver = 'bridge' | 'host' | 'macvlan' | 'ipvlan' | 'overlay' | 'none';
+
+/** A container network of a container engine. */
+export interface ContainerNetwork {
+  name: string;
+  driver?: ContainerDriver;
+  /** bridge: the bridge interface it creates on the host (docker0) */
+  iface?: string;
+  /** bridge, macvlan, ipvlan, overlay: its subnet and gateway */
+  subnet?: string;
+  gateway?: string;
+  /** bridge: NAT (masquerade) to the host's address */
+  nat?: boolean;
+  /** macvlan, ipvlan: the host interface it sits on (a port, an aggregate, a VLAN subinterface; on a VM: a vnic) */
+  parent?: string;
+  /** macvlan: bridge / private / vepa / passthru; ipvlan: l2 / l3 */
+  mode?: string;
+  /** overlay: the other container engines that take part (their containers can attach to it too) */
+  hosts: string[];
+  /** IPAM: the range addresses are given from, and its two ends */
+  range?: string;
+  start?: string;
+  end?: string;
+  line: number;
+}
+
+/** A server's (or a VM's) Container engine service. */
+export interface ContainerEngine {
+  engine?: string;
+  networks: ContainerNetwork[];
+  /** the engine's simulation attributes (container start time) */
+  simulation?: Map<string, number | string>;
   line: number;
 }
 
@@ -392,6 +565,17 @@ export interface Network {
   description?: string;
   attrs: Attrs;
   line: number;
+  /**
+   * Only on a container network drawn as a network in the logical view
+   * (model/virtual.ts withVirtualNetworks; never in the file): the devices
+   * that can be its members (its own host's, not every address in the
+   * prefix: the same subnet behind two hosts is two networks) …
+   */
+  scope?: string[];
+  /** … the container network it stands for (its cnet: ref) … */
+  cnet?: string;
+  /** … and, for a bridge with NAT, the host it is hidden behind */
+  nat?: string;
 }
 
 export interface Relation {
@@ -524,5 +708,17 @@ export function loopbacks(d: Device): Interface[] {
 
 /** Display name of an interface kind. */
 export function interfaceKindLabel(k: InterfaceKind): string {
-  return k === 'physical' ? 'Physical' : k === 'virtual' ? 'Virtual' : k === 'tunnel' ? 'Tunnel' : 'Loopback';
+  return k === 'physical'
+    ? 'Physical'
+    : k === 'virtual'
+      ? 'Virtual'
+      : k === 'tunnel'
+        ? 'Tunnel'
+        : k === 'vnic'
+          ? 'Virtual NIC'
+          : k === 'veth'
+            ? 'Container network attachment'
+            : k === 'bridge'
+              ? 'Container bridge'
+              : 'Loopback';
 }

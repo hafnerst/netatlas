@@ -27,8 +27,13 @@ const SPEC = [
   ['System', 'system'],
 ];
 
-// (a switch says what its port carries: its VLANs)
-const withType = (type) => `netatlas: 1\ndevices:\n  - id: d1\n${type === undefined ? '' : `    type: ${type}\n`}    interfaces: [${type === 'switch' ? '{id: eth0, vlans: 1}' : 'eth0'}]\n`;
+// (a switch says what its port carries: its VLANs; a VM and a container are guests of a host that runs them, without ports of their own)
+const HOSTS = {
+  vm: '    host: h\n    logical_interfaces: [{id: eth0, type: vnic, port_group: pg}]\n  - {id: h, type: server, services: {hypervisor: {platform: kvm, vswitches: [{name: vs, type: linux_bridge, port_groups: [{name: pg, vlans: 1}]}]}}}\n',
+  container: '    host: h\n    logical_interfaces: [{id: eth0, type: veth, network: n}]\n  - {id: h, type: server, services: {container_engine: {engine: docker, networks: [{name: n, driver: none}]}}}\n',
+};
+const withType = (type) =>
+  `netatlas: 1\ndevices:\n  - id: d1\n${type === undefined ? '' : `    type: ${type}\n`}` + (HOSTS[type] || `    interfaces: [${type === 'switch' ? '{id: eth0, vlans: 1}' : 'eth0'}]\n`);
 
 test('the device types are exactly the specified 15, in order, with their display names', () => {
   assert.deepEqual(types.DEVICE_TYPES.map((t) => [t.label, t.id]), SPEC);
@@ -69,7 +74,7 @@ test('any other value is an error at the type, with a suggestion', () => {
     ['load-balancer', /did you mean "load_balancer"\?/],
     ['loadbalancer', /did you mean "load_balancer"\?/],
     ['ids', /unknown device type "ids"/],
-    ['hypervisor', /unknown device type "hypervisor"/],
+    ['hypervisor', /unknown device type "hypervisor" \(a hypervisor is a server with the Hypervisor service: type: server, and services: hypervisor\)/],
     ['host', /unknown device type "host"/],
     ['leaf', /unknown device type "leaf"/],
     ['spine', /unknown device type "spine"/],

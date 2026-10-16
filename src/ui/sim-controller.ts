@@ -37,6 +37,7 @@
  * happens. Nothing here changes the model or adds an undo step (a device's
  * Simulation settings are edited in the Actions panel, see modelChanged).
  */
+import { virtBridgeId } from '../model/virtual';
 import { leaseText } from '../model/addresses';
 import { FailureResult, refLabel, simulate } from '../analysis/failure';
 import { fmtSec } from '../analysis/sim/engine';
@@ -678,6 +679,11 @@ export class SimController implements SimulationMode {
     return this.pacer.items.filter((it) => !it.drawn && it.f.view === view && !it.f.hidden && this.flightShown(it.f) && this.pacer.state(it).phase !== 'gone' && this.pacer.state(it).phase !== 'waiting').length;
   }
 
+  /** The VMs on another host than their own now (restarted by their HA cluster). */
+  placement(): Map<string, string> {
+    return new Map(this.sim.engine.vmHost);
+  }
+
   /** Draw the dots now, and (when `ui`) the panels and the tables; what is down changed: the marks. */
   refresh(ui: boolean): void {
     if (this.stopped) return;
@@ -757,7 +763,7 @@ export class SimController implements SimulationMode {
   }
 
   private endLabel(ev: NetEvent): string {
-    const m: { [k: string]: string } = { fail: 'Restore', flap: 'Stop flapping', shut: 'No shut', power: 'Power on', join: 'Leave group', leave: 'Join again', stream: 'Stop stream', stopped: 'Start stream' };
+    const m: { [k: string]: string } = { fail: 'Restore', flap: 'Stop flapping', shut: 'No shut', power: 'Power on', engine: 'Start engine', join: 'Leave group', leave: 'Join again', stream: 'Stop stream', stopped: 'Start stream' };
     return m[ev.kind];
   }
 
@@ -834,7 +840,9 @@ export class SimController implements SimulationMode {
   }
 
   private cabled(dev: string, iface: string): boolean {
-    return this.sim.engine.net.ends.has(dev + '|' + iface);
+    // (a host's uplink: its cable ends at its virtual switch in the simulation)
+    const p = this.sim.engine.simPort(dev, iface);
+    return this.sim.engine.net.ends.has(p.device + '|' + p.port);
   }
 
   // ------------------------------------------------------------ the tables
@@ -1030,12 +1038,23 @@ export class SimController implements SimulationMode {
       this.domainItems(dev, items, x, y);
       if (this.sim.engine.off.has(dev)) items.push({ label: this.sim.engine.booting.has(dev) ? 'Power off (stop booting)' : 'Power on', act: () => (this.sim.engine.booting.has(dev) ? this.powerOff(dev) : this.powerOn(dev)) });
       else items.push({ label: 'Power off', act: () => this.powerOff(dev) });
+      // a container host: its engine
+      const md = this.sim.model.index.devices.get(dev);
+      if (md && md.containerEngine && !this.sim.engine.off.has(dev)) {
+        if (this.sim.engine.enginesOff.has(dev)) items.push({ label: 'Start container engine', act: () => this.did(this.sim.startEngine(dev), `${dev}: container engine started`) });
+        else items.push({ label: 'Stop container engine', act: () => this.did(this.sim.stopEngine(dev), `${dev}: container engine stopped`) });
+      }
       const ifs = this.interfaces().filter((k) => k.indexOf(dev + ':') === 0);
       if (ifs.length) items.push({ label: 'Shut an interface…', act: () => this.interfaceMenu(dev, x, y) });
     } else if (r.indexOf('iface:') === 0) {
       const rest = r.slice(6);
       const i = rest.indexOf(':');
       this.ifaceItems(rest.slice(0, i), rest.slice(i + 1), items);
+    } else if (r.indexOf('vswitch:') === 0 || r.indexOf('cnet:') === 0) {
+      // a virtual switch or a container network: the bridge the simulation runs it as
+      const parts = r.split(':');
+      const id = virtBridgeId(parts[1], parts.slice(2).join(':'));
+      if (this.sim.engine.net.devices.has(id)) items.push({ label: 'Show MAC table', act: () => void this.showTable('mac', id) });
     }
     return items;
   }

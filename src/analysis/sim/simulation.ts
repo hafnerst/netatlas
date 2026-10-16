@@ -124,10 +124,21 @@ export class Simulation {
     return this.engine.powerOn(dev);
   }
 
-  /** End an event of the list (Restore, Stop flapping, No shut, Power on). */
+  /** Stop a device's container engine (its containers and container networks stop). */
+  stopEngine(dev: string): boolean {
+    return this.engine.stopEngine(dev);
+  }
+
+  /** Start a device's container engine again (its containers as their restart policy says). */
+  startEngine(dev: string): boolean {
+    return this.engine.startEngine(dev);
+  }
+
+  /** End an event of the list (Restore, Stop flapping, No shut, Power on, Start engine). */
   end(ev: NetEvent): boolean {
     const id = ev.ref.slice(ev.ref.indexOf(':') + 1);
     if (ev.kind === 'fail') return this.restore(ev.ref);
+    if (ev.kind === 'engine') return this.startEngine(id);
     if (ev.kind === 'flap') return this.stopFlap(ev.ref);
     if (ev.kind === 'shut') {
       const i = id.indexOf(':');
@@ -299,7 +310,7 @@ export class Simulation {
   tableDevices(): Array<{ id: string; arp: boolean; mac: boolean }> {
     return Array.from(this.engine.net.devices.values())
       .filter((d) => d.l3.size > 0 || d.bridge)
-      .map((d) => ({ id: d.id, arp: Array.from(d.l3.values()).some((l) => l.addrs.length > 0 && l.kind !== 'loopback'), mac: d.bridge && d.dev.type === 'switch' }))
+      .map((d) => ({ id: d.id, arp: Array.from(d.l3.values()).some((l) => l.addrs.length > 0 && l.kind !== 'loopback'), mac: d.bridge && (d.dev.type === 'switch' || !!d.virt) }))
       .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   }
 
