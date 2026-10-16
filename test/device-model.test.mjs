@@ -120,12 +120,12 @@ test('the removed types say what they became', () => {
   assert.match(errs(one('    type: proxy\n    interfaces: [a]\n'))[0], /an application proxy is a server, vm or container; a boundary between security domains is a security_gateway/);
 });
 
-// ------------------------------------------------------------ the VPN Gateway
+// ------------------------------------------------------------ the VPN gateway
 
 const vpnGw = (vpn, more = '') => one(`    type: vpn_gateway\n${vpn}    interfaces: [{id: wan0, ip: 192.0.2.2/30}, {id: lan0, ip: 10.1.0.1/24}]\n    logical_interfaces: [{id: st0, type: tunnel, ip: 169.254.0.1/30, source: wan0, destination: 198.51.100.2}]\n${more}`);
 
-test('VPN Gateway: its VPN gateway function is required and conditional, and nothing is chosen for it', () => {
-  assert.match(errs(vpnGw(''))[0], /VPN Gateway "d1" needs its VPN gateway configuration/);
+test('VPN gateway: its VPN gateway function is required and conditional, and nothing is chosen for it', () => {
+  assert.match(errs(vpnGw(''))[0], /VPN gateway "d1" needs the configuration of its VPN/);
   const e = errs(vpnGw('    services:\n      vpn: {}\n'));
   assert.ok(e.some((x) => /needs its operation/.test(x)) && e.some((x) => /needs its technology/.test(x)), e.join('\n'));
   // site to site: tunnels; no listener or pool
@@ -138,22 +138,22 @@ test('VPN Gateway: its VPN gateway function is required and conditional, and not
   assert.ok(errs(vpnGw('    services:\n      vpn: {operation: remote_access, technology: wireguard, protected: [10.1.0.0/24]}\n')).some((x) => /needs its listener/.test(x)));
   // a technology NetAtlas does not support is reported, not replaced
   assert.ok(errs(vpnGw('    services:\n      vpn: {operation: site_to_site, technology: pptp, tunnels: [st0], protected: [10.1.0.0/24]}\n')).some((x) => /"pptp" is not a supported VPN technology/.test(x)));
-  // only a VPN Gateway has it built in (the VPN service on other devices comes with the service registry)
+  // only a VPN gateway has it built in (the VPN service on other devices comes with the service registry)
   assert.ok(errs(one('    type: router\n    services:\n      vpn: {operation: site_to_site}\n    interfaces: [a]\n')).length > 0);
 });
 
-test('VPN Gateway: it forwards only to and from its VPN, in the tracer and in the simulation', () => {
+test('VPN gateway: it forwards only to and from its VPN, in the tracer and in the simulation', () => {
   const m = model(example('wan-vpn.yaml'));
   const out = T.tracePath(m, { from: 'hq-pc', to: '192.0.2.10' });
   assert.equal(out.paths[0].end.kind, 'stopped');
   assert.equal(out.paths[0].end.reason, 'denied');
-  assert.match(out.paths[0].end.detail, /hq-vpn is a VPN Gateway: it forwards only to and from its VPN \(tunnels st0\), not from lan0 to wan0/);
+  assert.match(out.paths[0].end.detail, /hq-vpn is a VPN gateway: it forwards only to and from its VPN \(tunnels st0\), not from lan0 to wan0/);
   const ok = T.tracePath(m, { from: 'br2-pc', to: 'hq-pc' });
   assert.equal(ok.paths[0].end.kind, 'reached');
   assert.ok(ok.paths[0].hops.some((h) => h.notes.some((n) => /forwards it through its VPN \(st0\)/.test(n))));
   const s = new S.Simulation(m);
   s.runTo(9000);
-  assert.ok(ev(s, (e) => e.device === 'hq-vpn' && /is a VPN Gateway: it forwards only to and from its VPN/.test(e.detail)).length >= 1);
+  assert.ok(ev(s, (e) => e.device === 'hq-vpn' && /is a VPN gateway: it forwards only to and from its VPN/.test(e.detail)).length >= 1);
   assert.ok(ev(s, (e) => e.device === 'br2-pc' && e.what === 'Test answered').length >= 1, 'through the tunnel');
 });
 
@@ -406,13 +406,13 @@ test('editor: changing the type, mode, purpose or implementation lists what goes
   cd.applyDeviceModel(g, 'implementation', 'filtering_router');
   assert.match(cd.exportText(), /implementation: filtering_router/);
   assert.match(cd.exportText(), /- id: red-web/);
-  // a VPN Gateway made a router: its VPN goes; a router made a VPN Gateway gets none chosen
+  // a VPN gateway made a router: its VPN goes; a router made a VPN gateway gets none chosen
   const w = openDoc(example('wan-vpn.yaml'));
   const hv = w.entities('device').find((x) => x.id === 'hq-vpn').index;
   assert.ok(w.deviceModelPlan(hv, 'type', 'router').removed.some((x) => /VPN gateway configuration/.test(x.text)));
   const core = w.entities('device').find((x) => x.id === 'hq-core').index;
   w.applyDeviceModel(core, 'type', 'vpn_gateway');
-  assert.ok(validate.loadModel(w.exportText()).errors.some((e) => /VPN Gateway "hq-core" needs its VPN gateway configuration/.test(e.message)));
+  assert.ok(validate.loadModel(w.exportText()).errors.some((e) => /VPN gateway "hq-core" needs the configuration of its VPN/.test(e.message)));
 });
 
 test('every example converts its devices by behaviour: no generic gateway or proxy; a System always says what it does', () => {

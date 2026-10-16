@@ -55,7 +55,7 @@ const GLYPHS: { [name: string]: Array<[string, { [k: string]: string | number }]
     ['path', { d: 'M12 2.5l8 3v6c0 5-3.4 8.6-8 10-4.6-1.4-8-5-8-10v-6zM6.5 12s2-3.2 5.5-3.2 5.5 3.2 5.5 3.2-2 3.2-5.5 3.2-5.5-3.2-5.5-3.2z' }],
     ['circle', { cx: 12, cy: 12, r: 1.3 }],
   ],
-  // a VPN Gateway: a padlock between the two ends of a tunnel
+  // a VPN gateway: a padlock between the two ends of a tunnel
   vpn_gateway: [
     ['rect', { x: 6, y: 11, width: 12, height: 9, rx: 1.5 }],
     ['path', { d: 'M8.5 11V8a3.5 3.5 0 0 1 7 0v3M12 14.5v2M1.5 15.5h4.5M18 15.5h4.5' }],

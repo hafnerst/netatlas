@@ -165,7 +165,7 @@ test('several Wi-Fi networks over one uplink: each client in its own VLAN (its D
 });
 
 test('a network tunneled to the controller is reported as not simulated (a limitation), in the simulation and the tracer', () => {
-  const m = model(example('campus-wireless.yaml').replace("          - {id: guest, ssid: Campus-Guest, vlan: 20, radio: radio0, security: wpa2_psk, passphrase: \"<guest-psk>\"}\n    interfaces:\n      - {id: eth0, vlans: [10, 20, 99]}\n      - {id: radio0}\n    logical_interfaces:\n      - {id: mgmt, type: virtual, vlan: 99, ip: 10.20.99.11/24}", "          - {id: guest, ssid: Campus-Guest, vlan: 20, radio: radio0, security: wpa2_psk, passphrase: \"<guest-psk>\", forwarding: tunneled}\n    interfaces:\n      - {id: eth0, vlans: [10, 20, 99]}\n      - {id: radio0}\n    logical_interfaces:\n      - {id: mgmt, type: virtual, vlan: 99, ip: 10.20.99.11/24}"));
+  const m = model(example('enterprise-campus.yaml').replace("          - {id: guest, ssid: Campus-Guest, vlan: 20, radio: radio0, security: wpa2_psk, passphrase: \"<guest-psk>\"}\n    interfaces:\n      - {id: eth0, vlans: [10, 20, 99]}\n      - {id: radio0}\n    logical_interfaces:\n      - {id: mgmt, type: virtual, vlan: 99, ip: 10.20.99.11/24}", "          - {id: guest, ssid: Campus-Guest, vlan: 20, radio: radio0, security: wpa2_psk, passphrase: \"<guest-psk>\", forwarding: tunneled}\n    interfaces:\n      - {id: eth0, vlans: [10, 20, 99]}\n      - {id: radio0}\n    logical_interfaces:\n      - {id: mgmt, type: virtual, vlan: 99, ip: 10.20.99.11/24}"));
   const s = sim(m, 8000);
   assert.ok(ev(s, (e) => e.device === 'ap1' && /tunnels the Wi-Fi network guest to its controller \(forwarding: tunneled\): the tunnel is not simulated/.test(e.detail)).length >= 1);
 });
@@ -173,7 +173,8 @@ test('a network tunneled to the controller is reported as not simulated (a limit
 // ------------------------------------------------------------ the catalog in the simulation
 
 test('the exchanges services imply: NTP to its upstreams, RADIUS from the AAA server’s clients, syslog from its senders, SNMP polls of the monitored, CAPWAP to the controller', () => {
-  const s = sim(model(example('campus-wireless.yaml')), 12000);
+  // (past the first minute: a request sent while the core's interfaces are still coming up is dropped, and is sent again a minute later)
+  const s = sim(model(example('enterprise-campus.yaml')), 66000);
   const has = (proto, from) => ev(s, (e) => e.protocol === proto && e.device === from && e.kind === 'message').length > 0;
   assert.ok(has('ntp', 'core1'), 'NTP');
   assert.ok(has('radius', 'ap1') && has('radius', 'srv'), 'RADIUS request and answer');
@@ -182,7 +183,7 @@ test('the exchanges services imply: NTP to its upstreams, RADIUS from the AAA se
   assert.ok(has('capwap', 'ap1') && has('capwap', 'wlc'), 'CAPWAP echo and its answer');
   // the services listen on their ports
   const L = load('analysis/sim/transport.js');
-  const srv = model(example('campus-wireless.yaml')).index.devices.get('srv');
+  const srv = model(example('enterprise-campus.yaml')).index.devices.get('srv');
   assert.deepEqual(L.serviceListening(srv).map((r) => `${r.proto}/${r.from}`).sort(), ['udp/123', 'udp/1812', 'udp/514']);
 });
 
@@ -211,7 +212,7 @@ test('NAT: PAT out of the outside interface, in the simulation and as a note of 
 // ------------------------------------------------------------ the diagram, Find, the editor
 
 test('badges: a device’s services in a line under its type, at most three and how many more; all in the tooltip and the legend', () => {
-  const m = model(example('campus-wireless.yaml'));
+  const m = model(example('enterprise-campus.yaml'));
   const srv = m.index.devices.get('srv');
   assert.equal(R.serviceBadgesText(srv), 'DHCP · DNS · NTP +3');
   assert.equal(R.serviceListText(srv), 'DHCP server (DHCP), DNS server (DNS), NTP (NTP), AAA (AAA), Syslog collector (LOG), Monitoring (MON)');
@@ -226,7 +227,7 @@ test('Find: a Wi-Fi network by its SSID and its VLAN; a device by its services',
   const hit = (q) => Q.search(m, q).map((h) => `${h.kind}:${h.ref}`);
   assert.ok(hit('Guest').indexOf('Wi-Fi network:device:ap1') >= 0, hit('Guest').join(', '));
   assert.ok(hit('vlan 30').indexOf('Wi-Fi network:device:ap1') >= 0);
-  const c = model(example('campus-wireless.yaml'));
+  const c = model(example('enterprise-campus.yaml'));
   assert.ok(Q.search(c, 'radius').concat(Q.search(c, 'aaa')).some((h) => h.ref === 'device:srv'));
 });
 

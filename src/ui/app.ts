@@ -6,7 +6,7 @@
  * letting the browser download a new copy. Nothing is transmitted.
  */
 import { LEASE_PLACEHOLDER } from '../model/addresses';
-import { EditLocked, ModelDoc, Origin, ifaceSchemaKind } from '../editor/document';
+import { ENTITY_KINDS, EditLocked, EntityKind, ModelDoc, Origin, ifaceSchemaKind } from '../editor/document';
 import { FileAccess, PngPicture, WritableFile, detectFileAccess, downloadBlob, downloadText, exportFileName, isCancel, isWritable, pictureBaseName, readTextFile, safeYamlFileName, svgToPng, writeFile } from './files';
 import { Pt } from '../layout/geometry';
 import { ArrangeStrategy, STRATEGIES, STRATEGY_LABEL } from '../layout/strategies';
@@ -21,6 +21,7 @@ import { licenseBody, manualBody } from './help';
 import { Editor, EditorSel, SelDetail } from './inspector';
 import { LineRange, yamlBlock } from '../editor/yaml-block';
 import { EXAMPLES } from '../generated/examples';
+import { findExample } from './examples';
 import { Rect } from '../layout/geometry';
 import { IssueCount, detailsFor, headOf, legendFor, relationList, tooltipFor } from './panels';
 import { exportBoxes } from '../diagram/networks-box';
@@ -29,7 +30,7 @@ import { SelectionContext, attachedRefs, search, selectionContext, splitRef } fr
 import { sortedByName } from '../model/order';
 import { lookupProtocol, normalizeProtocol } from '../model/protocols';
 import { hostOf, isGuest, machineOf } from '../model/virtual';
-import { DEVICE_TYPES, typeKey, typeKeyLabel, typeKeySubLabel, typeKeysOf, typeDef } from '../model/device-types';
+import { DEVICE_TYPES, deviceTypeInText, typeKey, typeKeyLabel, typeKeySubLabel, typeKeysOf } from '../model/device-types';
 import { isLayer2Switch, capabilities, ROUTING_PROTOCOL_TYPES } from '../model/capabilities';
 import { Issue } from '../validation/validate';
 import { SEVERITIES, Severity, checkById } from '../analysis/checks';
@@ -441,6 +442,21 @@ export class App {
     this.doc.addEventListener('pointerdown', (e) => {
       if (!(e.target as Element).closest('.menu-wrap')) this.openMenu(null);
     });
+  }
+
+  /**
+   * Load an example by its file name: a public one as from the File menu, an internal one (registered
+   * by the test build only) as a built-in example that is in no menu. Null when there is none.
+   */
+  loadExampleNamed(name: string): LoadOutcome | null {
+    const f = findExample(name);
+    if (!f) return null;
+    return f.index >= 0 ? this.loadExample(f.index) : this.loadText(f.example.text, f.example.name, 'example');
+  }
+
+  /** Fold exactly these sections of the Objects list (the others open). */
+  setOutlineFolded(kinds: string[]): void {
+    this.editor.setFolded(kinds.filter((k): k is EntityKind => (ENTITY_KINDS as readonly string[]).indexOf(k) >= 0));
   }
 
   loadExample(i: number): LoadOutcome | null {
@@ -2062,7 +2078,7 @@ export class App {
       list.appendChild(el(this.doc, 'label', { class: 'tp-row', 'data-type-row': e.type }, [cb, el(this.doc, 'span', {}, [e.label]), el(this.doc, 'span', { class: 'tp-count', 'aria-hidden': 'true' }, [String(e.count)]), el(this.doc, 'span', { class: 'sr-only' }, [`, ${e.count} device${e.count === 1 ? '' : 's'}`])]));
       for (const sub of e.subs) {
         const sc = el(this.doc, 'input', { type: 'checkbox', 'data-type-keys': sub.key }) as HTMLInputElement;
-        const what = ' ' + ((typeDef(e.type) || { plural: '' }).plural || '').toLowerCase();
+        const what = ' ' + deviceTypeInText(e.type, true);
         list.appendChild(el(this.doc, 'label', { class: 'tp-row tp-sub', 'data-type-row': sub.key }, [sc, el(this.doc, 'span', {}, [sub.label]), el(this.doc, 'span', { class: 'tp-count', 'aria-hidden': 'true' }, [String(sub.count)]), el(this.doc, 'span', { class: 'sr-only' }, [`${what}, ${sub.count} device${sub.count === 1 ? '' : 's'}`])]));
       }
     }
@@ -2520,7 +2536,7 @@ export class App {
     const d = s.model.index.devices.get(sel.slice(7));
     if (!d) return 'Select a device first';
     if (isLayer2Switch(d)) return `Requires Layer 3: ${d.id} is a Layer 2 switch (tick Supports Layer 3 in its Edit tab first)`;
-    if (!capabilities(d).routingProtocols) return `${d.id} is not a Layer 3+ device: only ${ROUTING_PROTOCOL_TYPES.map((t) => (typeDef(t) || { plural: t }).plural.toLowerCase()).join(', ')}, Layer 3 switches and VMs, and Layer 3 forwarder Systems run routing protocols`;
+    if (!capabilities(d).routingProtocols) return `${d.id} is not a Layer 3+ device: only ${ROUTING_PROTOCOL_TYPES.map((t) => deviceTypeInText(t, true)).join(', ')}, Layer 3 switches and VMs, and Layer 3 forwarder Systems run routing protocols`;
     return '';
   }
 

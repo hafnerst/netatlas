@@ -2,7 +2,7 @@
  * The parts of a device that say what it is and how it does it: its kind
  * (and `kind_label` for `other`), its role, its mode, a System's purpose and
  * icon, its port pairs and management interfaces, and the built-in
- * functions of the appliance types — a VPN Gateway's VPN gateway
+ * functions of the appliance types — a VPN gateway's VPN gateway
  * (`services.vpn`) and a Security gateway's Domain separation
  * (`services.separation`). Read with each device; what they reference
  * (interfaces, networks, domains, profiles) is checked once every device is
@@ -150,17 +150,17 @@ export function readDeviceModel(r: Reader, c: Ctx, m: YMap, dpath: string, dev: 
   }
 }
 
-/** The appliance functions in a device's `services:`: a VPN Gateway's `vpn`, a Security gateway's `separation` (each required there, nowhere else). */
+/** The appliance functions in a device's `services:`: a VPN gateway's `vpn`, a Security gateway's `separation` (each required there, nowhere else). */
 export function readApplianceFunctions(r: Reader, c: Ctx, n: YNode | undefined, path: string, dev: Device, nodes: DeviceModelNodes): void {
   const m = !isNull(n) && (n as YNode).kind === 'map' ? (n as YMap) : null;
   const vn = m ? get(m, 'vpn') : undefined;
   const sn = m ? get(m, 'separation') : undefined;
-  // the VPN gateway: built into a VPN Gateway, a service of a router, a routed firewall, a server or a VM (the registry says who)
+  // the VPN gateway: built into a VPN gateway, a service of a router, a routed firewall, a server or a VM (the registry says who)
   const vpnDef = serviceDef('vpn') as SvcDef;
   if (!isNull(vn) && !isBuiltIn(vpnDef, dev)) {
     if (serviceEligibility(vpnDef, dev) === null) readVpn(r, c, vn as YNode, path + '.vpn', dev, nodes);
   } else if (typeDef(dev.type) && typeDef(dev.type)!.behaviour === 'vpn_gateway') {
-    if (isNull(vn)) c.error(m || nodes.map, path + '.vpn', `VPN Gateway "${dev.id}" needs its VPN gateway configuration: its operation (site-to-site or remote access), technology and tunnels or listener`, { key: m ? 'vpn' : 'services' });
+    if (isNull(vn)) c.error(m || nodes.map, path + '.vpn', `${typeDef('vpn_gateway')!.label} "${dev.id}" needs the configuration of its VPN: its operation (site-to-site or remote access), technology and tunnels or listener`, { key: m ? 'vpn' : 'services' });
     else readVpn(r, c, vn as YNode, path + '.vpn', dev, nodes);
   }
   // Domain separation: built into a Security gateway, and only there

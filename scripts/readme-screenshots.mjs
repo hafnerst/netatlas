@@ -1,7 +1,7 @@
-// Regenerates the README screenshots in docs/img/ from dist/netatlas.html,
+// Regenerates the README screenshots in docs/img/ from the test build (build/netatlas-test.html),
 // using headless Chrome/Edge/Chromium (through the DevTools protocol,
 // scripts/cdp.mjs) and the page's deep links
-// (#example=<n>&view=<physical|logical>&select=<ref>&devices=<id,…>). Run after "npm run build":
+// (#example=<n or file name>&view=<physical|logical>&select=<ref>&devices=<id,…>). Run after "npm run build":
 //
 //   node scripts/readme-screenshots.mjs                 every screenshot
 //   node scripts/readme-screenshots.mjs a.png b.png     only these
@@ -16,7 +16,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { openPage } from './cdp.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const html = resolve(root, 'dist', 'netatlas.html');
+// the test build: the released application, which can also load the internal test models some pictures show (npm run build writes it)
+const html = resolve(root, 'build', 'netatlas-test.html');
 /** the screenshots named on the command line (none: every one) */
 const only = process.argv.slice(2);
 const outDir = join(root, 'docs', 'img');
@@ -27,20 +28,20 @@ const SHOTS = [
   ['wan-physical.png', 'light', 'example=0&view=physical'],
   ['wan-logical-gre-selected.png', 'dark', 'example=0&view=logical&select=relation:gre-muc'],
   ['wan-physical-gre-path.png', 'light', 'example=0&view=physical&select=relation:gre-muc'],
-  ['device-types.png', 'light', 'example=4&view=physical'],
-  ['dc-physical.png', 'dark', 'example=1&view=physical'],
-  ['metro-physical.png', 'light', 'example=3&view=physical'],
-  ['metro-logical.png', 'dark', 'example=3&view=logical'],
+  ['device-types.png', 'light', 'example=device-types.yaml&view=physical'],
+  ['dc-physical.png', 'dark', 'example=datacenter-evpn.yaml&view=physical'],
+  ['metro-physical.png', 'light', 'example=metro-ring.yaml&view=physical'],
+  ['metro-logical.png', 'dark', 'example=metro-ring.yaml&view=logical'],
   ['wan-physical-filtered.png', 'light', 'example=0&view=physical&devices=inet,isp1-pe,hq-rtr1,hq-rtr2,hq-fw,hq-core1'],
   ['wan-logical-filtered.png', 'dark', 'example=0&view=logical&devices=inet,isp1-pe,hq-rtr1,hq-rtr2,hq-fw,hq-core1'],
-  ['addressing-physical.png', 'light', 'example=6&view=physical'],
-  ['addressing-logical-dark.png', 'dark', 'example=6&view=logical'],
-  ['ports-logical.png', 'dark', 'example=7&view=logical&select=relation:ospf-s1'],
-  ['ports-physical-lag.png', 'light', 'example=7&view=physical&select=iface:core-a:Po1'],
-  ['routes-logical.png', 'dark', 'example=8&view=logical&select=route:br-rtr:1'],
-  ['tagging-physical.png', 'light', 'example=13&view=physical', 'netatlas.fit()'],
-  ['virtualization-physical.png', 'dark', 'example=14&view=physical', 'netatlas.fit()'],
-  ['addressing-overview.png', 'light', 'example=6&view=logical', `document.getElementById('btn-addressing').click(); document.querySelector('[data-addr-toggle="|corp"]').click()`],
+  ['addressing-physical.png', 'light', 'example=addressing.yaml&view=physical'],
+  ['addressing-logical-dark.png', 'dark', 'example=addressing.yaml&view=logical'],
+  ['ports-logical.png', 'dark', 'example=port-bindings.yaml&view=logical&select=relation:ospf-s1'],
+  ['ports-physical-lag.png', 'light', 'example=port-bindings.yaml&view=physical&select=iface:core-a:Po1'],
+  ['routes-logical.png', 'dark', 'example=branch-routing.yaml&view=logical&select=route:br-rtr:1'],
+  ['tagging-physical.png', 'light', 'example=vlan-ports.yaml&view=physical', 'netatlas.fit()'],
+  ['virtualization-physical.png', 'dark', 'example=virtualization.yaml&view=physical', 'netatlas.fit()'],
+  ['addressing-overview.png', 'light', 'example=addressing.yaml&view=logical', `document.getElementById('btn-addressing').click(); document.querySelector('[data-addr-toggle="|corp"]').click()`],
 ];
 
 // the simulation layout: file name, window width and height
@@ -52,7 +53,7 @@ const SIM_SHOTS = [
 
 async function main() {
   if (!existsSync(html)) {
-    console.error('dist/netatlas.html not found: run "npm run build" first');
+    console.error('build/netatlas-test.html not found: run "npm run build" first');
     process.exit(1);
   }
   mkdirSync(outDir, { recursive: true });
@@ -89,8 +90,8 @@ async function main() {
     const p = await openPage(base, { width, height });
     try {
       await p.settle(200);
-      const ex = await p.eval(`Array.from(document.querySelectorAll('#menu-examples [data-example]')).findIndex((b) => /protocol-simulation/.test(b.textContent))`);
-      await p.eval(`localStorage.clear(), sessionStorage.clear(), netatlas.loadExample(${ex}), netatlas.setView('physical'), netatlas.select('device:core1'), netatlas.startProtocolSimulation({ params: {}, senders: netatlas.session.model.devices.map((d) => d.id) }), netatlas.simController().setPlaying(false), netatlas.simController().runTo(25200), netatlas.fit(), true`);
+      const ex = 'protocol-simulation.yaml';
+      await p.eval(`localStorage.clear(), sessionStorage.clear(), netatlas.loadExampleNamed(${JSON.stringify(ex)}), netatlas.setView('physical'), netatlas.select('device:core1'), netatlas.startProtocolSimulation({ params: {}, senders: netatlas.session.model.devices.map((d) => d.id) }), netatlas.simController().setPlaying(false), netatlas.simController().runTo(25200), netatlas.fit(), true`);
       await p.eval(`(() => { const c = netatlas.simController(); for (let i = 0; i < 20; i++) c.advance(25); c.refresh(true); document.getElementById('toast').hidden = true; return true; })()`);
       await p.mouse('mouseMoved', width - 10, height - 10);
       await p.settle(400);

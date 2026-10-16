@@ -1,4 +1,4 @@
-# netatlas example: a WAN over an MPLS service, and a dedicated VPN Gateway.
+# netatlas example: a WAN over an MPLS service, and a dedicated VPN gateway.
 #
 # Branch 1 reaches HQ over the provider's MPLS service, a Cloud of the kind
 # MPLS / VPN service: an external network whose internals are not modelled.
@@ -7,10 +7,10 @@
 # route to each other with static routes.
 #
 # Branch 2 has no MPLS access: a site-to-site IPsec VPN joins it to HQ over
-# the Internet, between two VPN Gateways (type vpn_gateway). Each has its
+# the Internet, between two VPN gateways (type vpn_gateway). Each has its
 # built-in VPN gateway function (services: vpn): the operation, the
 # technology, its tunnel interface st0 (source wan0, destination the peer)
-# and the networks behind it. A VPN Gateway forwards only to and from its
+# and the networks behind it. A VPN gateway forwards only to and from its
 # VPN: HQ's default route points at hq-vpn, but the PC's ping to the Internet
 # (192.0.2.10) is refused there; branch 2's traffic through st0 passes.
 #
@@ -18,10 +18,10 @@
 # underlay; from br1-pc it shows the MPLS hop. Simulate ▾ → Start
 # simulation…: IKE first, then the PCs' tests.
 netatlas: 1
-title: WAN — MPLS service and a VPN Gateway
+title: WAN — MPLS service and a VPN gateway
 description: |
   HQ with two branches: one over a provider's MPLS service (a Cloud), one
-  over a site-to-site IPsec VPN between two dedicated VPN Gateways.
+  over a site-to-site IPsec VPN between two dedicated VPN gateways.
 
 groups:
   - id: hq
@@ -59,7 +59,7 @@ devices:
     routes:
       - {prefix: 10.2.0.0/16, via: 10.1.0.2, name: branch 1 over MPLS}
       - {prefix: 10.3.0.0/16, via: 10.1.0.6, name: branch 2 over the VPN}
-      - {prefix: 0.0.0.0/0, via: 10.1.0.6, name: default (the VPN Gateway refuses it)}
+      - {prefix: 0.0.0.0/0, via: 10.1.0.6, name: default (the VPN gateway refuses it)}
   - id: hq-ce
     type: router
     role: ce

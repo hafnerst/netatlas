@@ -8,7 +8,7 @@
 # The Hamburg LTE uplink obtains its address by DHCP ("dhcp: true"), and a
 # few devices have DNS names ("dns_names"), each associated with interfaces.
 netatlas: 1
-title: ACME Corp — enterprise WAN
+title: Enterprise WAN — HQ and two branches over VPN
 description: |
   HQ Berlin with dual ISPs; branches Munich and Hamburg reach HQ over
   GRE-over-IPsec tunnels across the public internet.

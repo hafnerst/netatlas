@@ -37,7 +37,8 @@ function full(n) {
 
 const exampleFiles = [];
 for (const f of readdirSync(join(root, 'examples'))) if (/\.ya?ml$/.test(f)) exampleFiles.push(join('examples', f));
-for (const f of readdirSync(join(root, 'examples', 'broken'))) exampleFiles.push(join('examples', 'broken', f));
+for (const f of readdirSync(join(root, 'test', 'examples'))) if (/\.ya?ml$/.test(f)) exampleFiles.push(join('test', 'examples', f));
+for (const f of readdirSync(join(root, 'test', 'examples', 'broken'))) exampleFiles.push(join('test', 'examples', 'broken', f));
 
 // ------------------------------------------------------------ serializer
 
@@ -264,7 +265,7 @@ test('renaming a loopback updates the relations that use it', () => {
 });
 
 test('deleting an entity reports (never silently removes) broken references; undo restores', () => {
-  const d = ModelDoc.fromText(readFileSync(join(root, 'examples', 'minimal.yaml'), 'utf8'), 'm.yaml', 'file').doc;
+  const d = ModelDoc.fromText(readFileSync(join(root, 'test', 'examples', 'minimal.yaml'), 'utf8'), 'm.yaml', 'file').doc;
   d.deleteEntity('device', 1);
   assert.ok(!d.valid);
   assert.ok(d.errors.some((e) => /unknown device "r2"/.test(e.message)));

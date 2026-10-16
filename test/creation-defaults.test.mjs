@@ -125,7 +125,7 @@ test('duplicating keeps the source element\'s values (only the id changes)', () 
 
 test('importing existing models leaves their values unchanged', () => {
   for (const f of exampleNames) {
-    const text = readFileSync(join(root, 'examples', f), 'utf8').replace(/\r\n/g, '\n');
+    const text = example(f).replace(/\r\n/g, '\n');
     const d = ModelDoc.fromText(text, f, 'file').doc;
     assert.equal(d.exportText(), text, `${f} is written back byte-for-byte`);
     const m = d.result.model;

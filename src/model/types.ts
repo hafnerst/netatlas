@@ -236,7 +236,7 @@ export interface Device {
   portPairs: PortPair[];
   /** its management interfaces (`management:`): addressed, never part of the data path (a transparent firewall, a security gateway, an IDS/IPS) */
   management: string[];
-  /** its VPN gateway (`services.vpn`): built into a VPN Gateway, a service of a router, routed firewall, server or VM */
+  /** its VPN gateway (`services.vpn`): built into a VPN gateway, a service of a router, routed firewall, server or VM */
   vpn?: VpnService;
   /** its Wireless access (`services.wireless`): built into an access point, a service of a router */
   wireless?: WirelessService;
@@ -377,7 +377,7 @@ export const VPN_TECHNOLOGIES: ReadonlyArray<{ id: string; label: string; protoc
 ];
 
 /**
- * The VPN gateway function (`services.vpn`): built into a VPN Gateway. Site
+ * The VPN gateway function (`services.vpn`): built into a VPN gateway. Site
  * to site: its tunnel interfaces (each with its source, the local endpoint,
  * and its destination, the peer) and the networks behind it; remote access:
  * the interface it listens on, the clients' address pool and the networks

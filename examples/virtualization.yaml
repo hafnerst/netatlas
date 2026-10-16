@@ -11,7 +11,8 @@
 # * VMs: web1 and app1 on access port groups (Servers, VLAN 10; Apps, VLAN
 #   20); tagger on the guest-tagging port group (VGT) with its own VLAN
 #   subinterfaces; db1 bound by passthrough to hv1's vmnic2 (an access port
-#   of tor1 in VLAN 10); vr1, a virtual router (Supports Layer 3) between
+#   of tor1 in VLAN 10: HA can't restart it on hv2, and the Problems tab
+#   says so, on purpose); vr1, a virtual router (Supports Layer 3) between
 #   VLAN 20 and the internal lab network, where lab1 lives.
 # * ctr1 is a server with the Container engine (Docker): the bridge network
 #   "bridge" (docker0, 172.17.0.0/16, NAT to the host's address) with web and
@@ -24,7 +25,7 @@
 # the VM restart time. Fail tor1's cable to hv1: vSwitch0 moves to vmnic1 and
 # announces its guests' MAC addresses.
 netatlas: 1
-title: Virtualization
+title: Virtualized servers — hypervisor cluster and containers
 description: |
   Two hypervisors in an HA cluster with teamed uplinks, VMs on port groups
   (access, guest tagging, passthrough, a virtual router), a container host

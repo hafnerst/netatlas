@@ -11,7 +11,7 @@ import { root } from './helpers.mjs';
 import { findBrowser } from '../scripts/browser-selftest.mjs';
 import { openPage } from '../scripts/cdp.mjs';
 
-const url = pathToFileURL(join(root, 'dist', 'netatlas.html')).href;
+const url = pathToFileURL(join(root, 'build', 'netatlas-test.html')).href;
 const skip = findBrowser() ? false : 'no Chromium-based browser found (set NETATLAS_BROWSER)';
 const row = (ref) => `#outline-body .ol-item[data-ref="${ref}"]`;
 /** the rows whose quick actions are shown, by the ref of their entry */

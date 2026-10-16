@@ -131,7 +131,7 @@ test('export colours: rgb()/rgba() become #rrggbb plus an opacity; other values 
 
 // ------------------------------------------------------------------ browser
 
-const url = pathToFileURL(join(root, 'dist', 'netatlas.html')).href;
+const url = pathToFileURL(join(root, 'build', 'netatlas-test.html')).href;
 const skip = findBrowser() ? false : 'no Chromium-based browser found (set NETATLAS_BROWSER)';
 const BG = { light: LIGHT.get('canvas'), dark: DARK.get('canvas') };
 
@@ -241,7 +241,7 @@ test('the theme button: a Light / Dark toggle at the right end of the toolbar, n
 test('the choice is remembered in this browser (not in the model); without storage the theme is Dark and a switch lasts for the session', { skip, timeout: 120000 }, async () => {
   const page = await openPage(url);
   try {
-    await page.eval(`netatlas.loadExample(2), true`);
+    await page.eval(`netatlas.loadExampleNamed('minimal.yaml'), true`);
     await page.click('#theme-btn');
     assert.deepEqual(await themeOf(page), { theme: 'light', scheme: 'light', stored: 'light' });
     assert.doesNotMatch(await page.eval(`netatlas.exportText()`), /theme|dark/i, 'nothing about the theme in the model');
@@ -297,7 +297,7 @@ const EXPORT = `(async () => {
 test('exports: Light and Dark x view x format are drawn in the theme on screen (whatever the OS prefers), with resolved colours and an opaque background', { skip, timeout: 300000 }, async () => {
   const page = await openPage(url);
   try {
-    await page.eval(`netatlas.loadExample(6), netatlas.select('iface:core:lo0'), window.__marker = 7, true`);
+    await page.eval(`netatlas.loadExampleNamed('addressing.yaml'), netatlas.select('iface:core:lo0'), window.__marker = 7, true`);
     for (const [theme, osDark] of [['light', false], ['light', true], ['dark', false], ['dark', true]]) {
       await os(page, osDark);
       await page.eval(`netatlas.theme.set(${JSON.stringify(theme)}), true`);
@@ -335,7 +335,7 @@ test('an exported SVG looks the same in a viewer with the other colour scheme', 
   const app = await openPage(url);
   let exports;
   try {
-    await app.eval(`netatlas.loadExample(6), netatlas.setView('logical'), true`);
+    await app.eval(`netatlas.loadExampleNamed('addressing.yaml'), netatlas.setView('logical'), true`);
     exports = {};
     for (const t of ['light', 'dark']) {
       await app.eval(`netatlas.theme.set(${JSON.stringify(t)}), true`);
@@ -430,7 +430,7 @@ test('automated contrast check of the rendered application, both themes: panels,
       await page.eval(`netatlas.closeModel && netatlas.closeModel(), true`);
       await look('start screen');
       for (const ex of [0, 6]) {
-        await page.eval(`netatlas.loadExample(${ex}), netatlas.setView('physical'), true`);
+        await page.eval(`netatlas.loadExampleNamed(${JSON.stringify(ex)}), netatlas.setView('physical'), true`);
         await look(`example ${ex} physical, Legend`);
         await page.eval(`netatlas.setView('logical'), true`);
         await look(`example ${ex} logical`);

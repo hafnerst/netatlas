@@ -64,9 +64,9 @@ const MANUAL: Section[] = [
     notes: ['If moving objects by hand makes labels or boxes overlap, a note over the diagram says so; **Auto-arrange** places everything without overlaps again.'],
     figures: [
       ['physical', 'The physical view. Toolbar at the top, the object list (Objects) on the left, diagram in the middle, panels (Edit, Details, Legend …) on the right.'],
-      ['logical', 'Part of the logical view (metro ring example): routers with their loopbacks, and the iBGP, LDP and RSVP-TE relations between them.'],
-      ['addresses', 'A router in the logical view (addressing example): each interface with its addresses, VLAN, VRF and tunnel ends.'],
-      ['ports', 'The branch router of the long-labels example: GRE and OSPF leave from the port beside Tunnel10, the relations bound to the router as a whole from the hollow port beside its name.'],
+      ['logical', 'Part of the logical view of a metro ring: routers with their loopbacks, and the iBGP, LDP and RSVP-TE relations between them.'],
+      ['addresses', 'A router in the logical view: each interface with its addresses, VLAN, VRF and tunnel ends.'],
+      ['ports', 'A branch router: GRE and OSPF leave from the port beside Tunnel10, the relations bound to the router as a whole from the hollow port beside its name.'],
     ],
   },
   {
@@ -92,7 +92,7 @@ const MANUAL: Section[] = [
     figures: [
       ['find', 'Find in diagram: matches are listed as you type.'],
       ['filter-list', 'Filter object list: only the entries that contain the text stay listed.'],
-      ['device-types', 'Device types ▾ for the example protocol-simulation.yaml: Layer 2 switches unticked under Switch, the other types shown, each with its number of devices.'],
+      ['device-types', 'Device types ▾ for the example enterprise-campus.yaml: Layer 2 switches unticked under Switch, the other types shown, each with its number of devices.'],
     ],
   },
   {
@@ -146,10 +146,10 @@ const MANUAL: Section[] = [
       'To switch a check off or change its severity for this model, press **Change in the model settings** (or **Edit model settings** in the Edit tab) and choose under **Consistency checks**. The choice is written to the model\'s `checks:` section.',
     ],
     notes: [
-      'A check only compares what the model writes down: an interface\'s **MTU**, a link end\'s port **speed** and **duplex**, a device\'s **router ID** and **AS number**, protocol parameters in a relation\'s attributes. Where a value is missing, nothing is assumed. The example **consistency-checks.yaml** has a mistake for every check.',
+      'A check only compares what the model writes down: an interface\'s **MTU**, a link end\'s port **speed** and **duplex**, a device\'s **router ID** and **AS number**, protocol parameters in a relation\'s attributes. Where a value is missing, nothing is assumed.',
     ],
     figures: [
-      ['problems', 'The Problems tab of the consistency-checks example: the file has no problems; the findings with their check id, the severity filter and the check the model changes.'],
+      ['problems', 'The Problems tab of a model with a deliberate mistake for every check: the file has no problems; the findings with their check id, the severity filter and the check the model changes.'],
       ['checks', 'Model settings → Consistency checks: each check with its default severity and what this model makes of it.'],
     ],
   },
@@ -260,7 +260,7 @@ const MANUAL: Section[] = [
       'After **Exit simulation** the Objects list and the Inspector are back, with the tab and the selection you had; the diagram keeps its zoom and position.',
     ],
     notes: ['In a window narrower than 1100 px the side panels are narrower. Below 860 px **Setup** and **Actions** are tabs above the simulation panel; in a window that is also not tall, **Diagram**, **Setup** and **Actions** take turns there. The page never scrolls.'],
-    figures: [['simulation', 'The simulation layout for the example protocol-simulation.yaml: Simulation setup on the left, core1’s actions on the right, the simulation panel under the diagram with core1’s ARP table and the event log.']],
+    figures: [['simulation', 'The simulation layout for the example enterprise-campus.yaml: Simulation setup on the left, core1’s actions on the right, the simulation panel under the diagram with core1’s ARP table and the event log.']],
   },
   {
     id: 'sim-pacing',
@@ -344,7 +344,7 @@ const MANUAL: Section[] = [
       'The diagram writes **DHCP** and **DNS** in the server’s badge line and marks each client interface with *DHCP client*; the legend explains them. The checks report a client that reaches no DHCP server and a relay to an address that is none.',
       'Unticking a service removes it with its scopes or zones in one step you can undo.',
     ],
-    figures: [['services', 'srv’s Services card in campus-services.yaml: DHCP with its two scopes, DNS with the zone campus.example.']],
+    figures: [['services', 'srv’s Services card in enterprise-campus.yaml: DHCP with its two scopes, DNS with the zone campus.example.']],
   },
   {
     id: 'services-wifi',
@@ -357,11 +357,11 @@ const MANUAL: Section[] = [
     ],
     notes: [
       'A client is in its network’s VLAN only: the path tracer and the simulation give it that VLAN’s DHCP lease and keep Guest away from Staff unless a routed path allows it. Single points of failure list the uplink with every client behind it.',
-      'The diagram writes a device’s services in a line under its type, at most three and how many more; hovering it names them all. Find a Wi-Fi network by its SSID or VLAN (*Guest*, *vlan 20*). There is no radio-frequency or roaming model; a network tunneled to its controller is reported as not simulated. See **multi-ssid-ap.yaml**, **home-network.yaml**, **campus-wireless.yaml** and **dmz-services.yaml**.',
+      'The diagram writes a device’s services in a line under its type, at most three and how many more; hovering it names them all. Find a Wi-Fi network by its SSID or VLAN (*Guest*, *vlan 20*). There is no radio-frequency or roaming model; a network tunneled to its controller is reported as not simulated. See **private-house.yaml**, **enterprise-campus.yaml** and **dmz-services.yaml**.',
     ],
     figures: [
-      ['wifi-edit', 'ap1’s Wireless access in multi-ssid-ap.yaml: Staff, Guest and IoT on VLANs 10, 20 and 30 of radio0, each with its clients.'],
-      ['services-add', 'srv’s Services card in campus-wireless.yaml, below its DHCP and DNS servers: NTP with its stratum and AAA with its protocol, its placeholder secret and its clients.'],
+      ['wifi-edit', 'ap-b’s Wireless access in private-house.yaml: Internal, IoT and Guest on VLANs 10, 20 and 30 of radio0, each with its clients.'],
+      ['services-add', 'srv’s Services card in enterprise-campus.yaml, below its DHCP and DNS servers: NTP with its stratum and AAA with its protocol, its placeholder secret and its clients.'],
     ],
   },
   {
@@ -399,13 +399,13 @@ const MANUAL: Section[] = [
   },
   {
     id: 'vpn-gateway',
-    title: 'Configure a VPN Gateway',
+    title: 'Configure a VPN gateway',
     steps: [
-      'Give a device the type **VPN Gateway**. Its **VPN gateway** card is built in and can’t be removed; press **+ Configure the VPN gateway**. Nothing is chosen for you: its **Operation** and **Technology** are errors until you set them.',
+      'Give a device the type **VPN gateway**. Its **VPN gateway** card is built in and can’t be removed; press **+ Configure the VPN gateway**. Nothing is chosen for you: its **Operation** and **Technology** are errors until you set them.',
       '**Site to site:** add its **Tunnels**, tunnel interfaces of the device, each with its source (the local end) and destination (the peer). **Remote access:** its **Listener** (the interface its clients connect to) and its **Client pool**. Both: the **Protected networks** behind it.',
       'Route the protected networks through the tunnel (a static route via the peer’s tunnel address, or a routing protocol over it), and trace a path across: the trace shows the encapsulation and its underlay.',
     ],
-    notes: ['A VPN Gateway forwards only to and from its VPN: traffic between its other interfaces is refused, in the trace and in the simulation. See **wan-vpn.yaml**.'],
+    notes: ['A VPN gateway forwards only to and from its VPN: traffic between its other interfaces is refused, in the trace and in the simulation. A router or a firewall can run the VPN as a service instead and forward everything else as usual: see **dmz-services.yaml**.'],
   },
   {
     id: 'separation',
@@ -418,7 +418,7 @@ const MANUAL: Section[] = [
     ],
     notes: [
       'A permitted transfer’s replies come back; starting a transfer the other way needs its own direction and rule. The ports say their domain in the diagram, and the Details tab lists the policy in order.',
-      'This is a model of how such a boundary behaves, not of a particular product, and no assurance of a real device’s separation. See **cross-domain.yaml** and **separation-filtering.yaml**.',
+      'This is a model of how such a boundary behaves, not of a particular product, and no assurance of a real device’s separation. See **cross-domain.yaml**.',
     ],
     figures: [
       ['separation', 'cdg in cross-domain.yaml: the protocol break between Red and Black, each port with its domain, the management network apart.'],
@@ -430,13 +430,13 @@ const MANUAL: Section[] = [
     id: 'sim-dhcp-dns',
     title: 'Follow DHCP and DNS in a simulation',
     steps: [
-      'Open **campus-services.yaml** and start a simulation. As the links come up, every DHCP client sends a **DHCPDISCOVER** at the same time; the server answers *DHCPOFFER 10.10.10.100 · lease 1 d*, the client requests it and gets a **DHCPACK**. *pc2*’s DISCOVER reaches the server through the relay on *core*.',
-      'The lease is written into the client’s line in the diagram: *10.10.10.100/24 (DHCP lease)*. Everything else the client sends waits for it (the log says so). It renews at half the lease, rebinds at seven eighths, and loses the address when the lease ends; a full pool doesn’t answer, and the client tries again with longer and longer pauses.',
-      'Test traffic and **Send test** to a host name ask DNS first (*DNS A? web.campus.example*, answered *DNS A web.campus.example = 10.10.30.10*), then connect; a name missing from the server’s zone ends in NXDOMAIN, an unreachable server in a timeout.',
+      'Open **enterprise-campus.yaml** and start a simulation. As the links come up, every DHCP client sends a **DHCPDISCOVER** at the same time; the server answers *DHCPOFFER 10.20.10.100 · lease 1 d*, the client requests it and gets a **DHCPACK**. The server *srv* is in another VLAN: each DISCOVER reaches it through the relay on *core1*.',
+      'The lease is written into the client’s line in the diagram: *10.20.10.100/24 (DHCP lease)*. Everything else the client sends waits for it (the log says so). It renews at half the lease, rebinds at seven eighths, and loses the address when the lease ends; a full pool doesn’t answer, and the client tries again with longer and longer pauses.',
+      'Test traffic and **Send test** to a host name ask DNS first (*DNS A? srv.campus.example*, answered *DNS A srv.campus.example = 10.20.30.10*), then connect; a name missing from the server’s zone ends in NXDOMAIN, an unreachable server in a timeout.',
       'Click the server for **Show DHCP leases** and **Show DNS zone**, a client for **Show DNS cache**.',
     ],
     notes: ['DHCP is IPv4 only, one lease per interface; DNS has no negative caching and asks only the model’s servers. The model is never changed: after the simulation the client’s line says the lease is assigned in a simulation.'],
-    figures: [['dhcp-sim', 'The simulation of campus-services.yaml: the clients’ leases in the diagram, and srv’s DHCP leases in the simulation panel.']],
+    figures: [['dhcp-sim', 'The simulation of enterprise-campus.yaml: the clients’ leases in the diagram, and srv’s DHCP leases in the simulation panel.']],
   },
   {
     id: 'sim-virtual',
@@ -491,7 +491,7 @@ const MANUAL: Section[] = [
       'Click a name in the table to select it. **Copy as text** copies the trace; **Exit trace**, `Esc` in the diagram or closing the window removes the path.',
     ],
     notes: [
-      'The trace is computed from the routes and adjacencies in the model: an approximation, not a simulation of the protocols. A Security gateway’s policy (by the service you give: tcp/443, udp/53, icmp), a VPN Gateway’s tunnels and the paired ports of inline and pass-through devices are considered; firewall ACLs are not. Nothing in the model changes.',
+      'The trace is computed from the routes and adjacencies in the model: an approximation, not a simulation of the protocols. A Security gateway’s policy (by the service you give: tcp/443, udp/53, icmp), a firewall’s policy (the relations through it and its allow list, by the service you give), a VPN gateway’s tunnels and the paired ports of inline and pass-through devices are considered; router ACLs are not. Nothing in the model changes.',
       'Virtual machines and containers: a vNIC leaves its host through its port group’s virtual switch and the uplink its teaming uses (active / standby: the first that is up; LACP: the bond), or through its passthrough port; guests on one virtual switch or one container network reach each other inside the host, listed as **inside** under the hop. NAT only for container bridges: traffic out of the host gets the host’s address (**SNAT**); a container behind NAT is reached from outside only at its host’s address, on a published port (**DNAT**).',
     ],
     figures: [['trace', 'A path from the Munich branch to the syslog server: through the GRE-over-IPsec tunnel, the firewall and a core switch, with the equal-cost alternative dashed, and the Trace path window with its hop table.']],
@@ -508,7 +508,7 @@ const MANUAL: Section[] = [
     notes: [
       'When you add an address in the Edit tab, **Next free address** offers the lowest free address of a network of the interface\'s VRF, the networks on its cable first; **+ Add** adds it.',
     ],
-    figures: [['addressing', 'The Addressing overview of the addressing example: the default table with nested networks, gateways and VIPs, use, utilization and free ranges, one network\'s members opened.']],
+    figures: [['addressing', 'The Addressing overview of a model with many kinds of address: the default table with nested networks, gateways and VIPs, use, utilization and free ranges, one network\'s members opened.']],
   },
   {
     id: 'connect',

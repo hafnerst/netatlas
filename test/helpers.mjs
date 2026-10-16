@@ -22,10 +22,19 @@ export function sessionFromYaml(text) {
   return { session: result.model && !result.errors.length ? new state.Session(result.model) : null, result };
 }
 
+const yamls = (dir) => readdirSync(join(root, dir)).filter((f) => /\.ya?ml$/.test(f));
+/** The public examples (examples/: the File menu, shipped in dist/netatlas.html). */
+export const publicExampleNames = yamls('examples');
+/** The internal examples (test/examples/: test scenarios, in the test build only, never shipped). */
+export const internalExampleNames = yamls(join('test', 'examples'));
+/** Every valid example, public and internal: what the tests run over. */
+export const exampleNames = publicExampleNames.concat(internalExampleNames);
+
+/** An example's text by its file name: public, else internal (or a path under either, such as broken/…). */
 export function example(name) {
-  return readFileSync(join(root, 'examples', name), 'utf8');
+  const dir = publicExampleNames.indexOf(name) >= 0 ? 'examples' : join('test', 'examples');
+  return readFileSync(join(root, dir, name), 'utf8');
 }
-export const exampleNames = readdirSync(join(root, 'examples')).filter((f) => /\.ya?ml$/.test(f));
 
 /** Generated test data (scripts/make-fixtures.mjs); not offered as examples in the application. */
 export function fixture(name) {

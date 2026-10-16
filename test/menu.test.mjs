@@ -103,16 +103,66 @@ test('outline sections: folding is view state of the editor, with Links and Prot
   assert.ok(load('ui/inspector.js').Editor);
 });
 
-test('examples: the File menu offers the twenty-four hand-written examples; the generated fixtures are test data only', async () => {
-  const { readdirSync } = await import('node:fs');
-  const { EXAMPLES, FIXTURES } = load('generated/examples.js');
-  assert.deepEqual(EXAMPLES.map((e) => e.name), ['enterprise-wan.yaml', 'datacenter-evpn.yaml', 'minimal.yaml', 'metro-ring.yaml', 'device-types.yaml', 'long-labels.yaml', 'addressing.yaml', 'port-bindings.yaml', 'branch-routing.yaml', 'consistency-checks.yaml', 'campus-services.yaml', 'ospf-reroute.yaml', 'protocol-simulation.yaml', 'vlan-ports.yaml', 'virtualization.yaml', 'wan-vpn.yaml', 'hybrid-cloud.yaml', 'ot-network.yaml', 'cross-domain.yaml', 'separation-filtering.yaml', 'multi-ssid-ap.yaml', 'home-network.yaml', 'campus-wireless.yaml', 'dmz-services.yaml']);
+test('examples: the File menu offers the curated public catalog; the internal examples and fixtures are in the test build only', async () => {
+  const { readdirSync, readFileSync: read } = await import('node:fs');
+  const { EXAMPLES } = load('generated/examples.js');
+  const { INTERNAL_EXAMPLES, FIXTURES } = load('generated/test-examples.js');
+  // one representative example per architecture family, in the File menu's order
+  assert.deepEqual(EXAMPLES.map((e) => e.name), ['enterprise-wan.yaml', 'enterprise-campus.yaml', 'datacenter-evpn.yaml', 'virtualization.yaml', 'private-house.yaml', 'dmz-services.yaml', 'hybrid-cloud.yaml', 'ot-network.yaml', 'cross-domain.yaml']);
+  assert.deepEqual(readdirSync(join(root, 'examples')).filter((f) => /\.ya?ml$/.test(f)).sort(), EXAMPLES.map((e) => e.name).sort(), 'examples/ holds exactly the public catalog');
+  assert.deepEqual(INTERNAL_EXAMPLES.map((e) => e.name), readdirSync(join(root, 'test', 'examples')).filter((f) => /\.ya?ml$/.test(f)).sort());
+  assert.equal(INTERNAL_EXAMPLES.length, 16);
   assert.deepEqual(FIXTURES.map((e) => e.name).sort(), ['editor-new-network.yaml', 'metro-ring-arranged.yaml', 'minimal-edited.yaml']);
-  assert.deepEqual(readdirSync(join(root, 'examples')).filter((f) => /\.yaml$/.test(f)).sort(), EXAMPLES.map((e) => e.name).sort());
-  // nothing the user sees builds its list from FIXTURES: only the self-test imports them
-  const { readFileSync: read } = await import('node:fs');
-  for (const f of ['ui/app.ts', 'ui/inspector.ts', 'ui/panels.ts', 'app/main.ts', 'index.html']) assert.doesNotMatch(read(join(root, 'src', f), 'utf8'), /FIXTURES|editor-new-network|minimal-edited|metro-ring-arranged/, f);
-  assert.match(read(join(root, 'src', 'app', 'selftest.ts'), 'utf8'), /import \{ EXAMPLES, FIXTURES \} from/);
+  assert.ok(!INTERNAL_EXAMPLES.some((x) => EXAMPLES.some((e) => e.name === x.name)), 'no internal example has a public name');
+  // every public example has a title and a description
+  for (const e of EXAMPLES) assert.match(e.text, /^title: \S[^\n]{8,80}\ndescription: /m, e.name);
+  // only the test build's entry and its self-test and viewport check import the internal examples and fixtures
+  const importers = [];
+  const walk = (dir) => {
+    for (const f of readdirSync(join(root, 'src', dir), { withFileTypes: true })) {
+      const rel = dir ? dir + '/' + f.name : f.name;
+      if (f.isDirectory()) walk(rel);
+      else if (/\.ts$/.test(f.name) && /from '[./]*\/?generated\/test-examples'|from '\.\.\/generated\/test-examples'/.test(read(join(root, 'src', rel), 'utf8'))) importers.push(rel);
+    }
+  };
+  walk('');
+  assert.deepEqual(importers.sort(), ['app/main-test.ts', 'app/selftest.ts']);
+  for (const f of ['ui/app.ts', 'ui/inspector.ts', 'ui/panels.ts', 'ui/examples.ts', 'app/main.ts', 'app/boot.ts', 'app/public-selftest.ts', 'index.html']) assert.doesNotMatch(read(join(root, 'src', f), 'utf8'), /from '[^']*(?:test-examples|\/selftest|viewport-check)'|FIXTURES|INTERNAL_EXAMPLES/, f);
+});
+
+test('every public example is valid, without warnings, and without consistency findings but the one it shows on purpose', () => {
+  const V = load('validation/validate.js');
+  const C = load('analysis/checks.js');
+  const { EXAMPLES } = load('generated/examples.js');
+  // virtualization.yaml shows that a VM on a passthrough port can't be restarted by HA on another host
+  const intended = { 'virtualization.yaml': ['ha-restart-portgroup'] };
+  for (const e of EXAMPLES) {
+    const r = V.loadModel(e.text);
+    assert.deepEqual(r.errors.map((x) => x.message), [], e.name);
+    assert.deepEqual(r.warnings.map((x) => x.message), [], e.name);
+    assert.deepEqual(C.runChecks(r.model).map((f) => f.check), intended[e.name] || [], e.name);
+  }
+});
+
+test('packaging: dist/netatlas.html carries the public examples and none of the internal examples, fixtures, the full self-test or the viewport check; the test build has them', async () => {
+  const { readFileSync: read, existsSync } = await import('node:fs');
+  const { EXAMPLES } = load('generated/examples.js');
+  const { INTERNAL_EXAMPLES, FIXTURES } = load('generated/test-examples.js');
+  const dist = read(join(root, 'dist', 'netatlas.html'), 'utf8');
+  // a long, distinctive piece of each file, as the bundle embeds it (a JSON string)
+  const piece = (e) => JSON.stringify(e.text).slice(1, 400);
+  for (const e of EXAMPLES) assert.ok(dist.includes(piece(e)), `${e.name} is in the release (offline)`);
+  for (const e of INTERNAL_EXAMPLES.concat(FIXTURES)) assert.ok(!dist.includes(piece(e)), `${e.name} is not in the release`);
+  for (const m of ['generated/test-examples', 'app/selftest', 'app/viewport-check', 'app/main-test']) assert.ok(!dist.includes(`__defs[${JSON.stringify(m)}]`), `${m} is not in the release`);
+  assert.ok(dist.includes('__defs["app/public-selftest"]'), 'the release has its own self-test');
+  assert.ok(existsSync(join(root, 'build', 'netatlas-test.html')), 'npm run build writes the test build');
+  const testBuild = read(join(root, 'build', 'netatlas-test.html'), 'utf8');
+  for (const e of EXAMPLES.concat(INTERNAL_EXAMPLES, FIXTURES)) assert.ok(testBuild.includes(piece(e)), `${e.name} is in the test build`);
+  for (const m of ['generated/test-examples', 'app/selftest', 'app/viewport-check']) assert.ok(testBuild.includes(`__defs[${JSON.stringify(m)}]`), `${m} is in the test build`);
+  // the build refuses a release that would contain a test-only module
+  assert.match(read(join(root, 'scripts', 'build.mjs'), 'utf8'), /const TEST_ONLY = \['generated\/test-examples', 'app\/selftest', 'app\/viewport-check', 'app\/main-test'\];[\s\S]*if \(leaked\.length\) throw/);
+  // build/ is never committed
+  assert.match(read(join(root, '.gitignore'), 'utf8'), /^build\/$/m);
 });
 
 test('selection hint of the outline: "selected" and "related (n)" in the always-present tools row, without a note about dimming', () => {

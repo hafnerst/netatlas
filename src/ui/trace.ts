@@ -234,7 +234,7 @@ export function traceWindowBody(doc: Document, model: Model, form: TraceForm, ru
       ' where it stops.',
     ]),
   );
-  res.appendChild(el(doc, 'p', { class: 'muted small' }, ['A model-based approximation, not a simulation of the protocols: a Security gateway’s policy, a VPN Gateway’s tunnels and paired ports are considered, firewall ACLs are not, NAT only for container bridges. See Limitations in the README.']));
+  res.appendChild(el(doc, 'p', { class: 'muted small' }, ['A model-based approximation, not a simulation of the protocols: a Security gateway’s policy, a firewall’s policy (by the service you give), a VPN gateway’s tunnels and paired ports are considered, router ACLs are not; NAT for container bridges and the NAT service. See Limitations in the README.']));
   box.appendChild(res);
   return box;
 }

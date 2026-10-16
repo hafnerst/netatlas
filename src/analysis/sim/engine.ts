@@ -81,6 +81,7 @@ import { IpAddr, parseAddress, parsePrefix } from '../../model/ip';
 import { protocolBase } from '../../model/protocols';
 import { ND_DELAY_DEFAULT } from '../../model/sim-profiles';
 import { Link, Model, Relation, ifaceKey, relationDevices } from '../../model/types';
+import { deviceTypeInText } from '../../model/device-types';
 import { isGuest, vethNetwork, isContainer, isVm } from '../../model/virtual';
 import { compareAddr, formatAddr, inPrefix } from '../ipmath';
 import { Connected, RibEntry, RoutingCtx, lookup } from '../routing';
@@ -1781,7 +1782,7 @@ export class Engine {
     return net && net.forwarding === 'tunneled' ? net.id : null;
   }
 
-  /** Does a VPN Gateway forward a packet: in or out of one of its tunnels, or to or from its remote-access clients? (It says so when not.) */
+  /** Does a VPN gateway forward a packet: in or out of one of its tunnels, or to or from its remote-access clients? (It says so when not.) */
   private vpnTransit(sd: SimDevice, from: L3Iface, out: L3Iface, pkt: Pkt): boolean {
     const v = sd.dev.vpn;
     if (!v) return false;
@@ -1791,7 +1792,7 @@ export class Engine {
     const k = `vpnonly|${sd.id}|${from.id}|${out.id}`;
     if (!this.stormNoted.has(k) || this.now - (this.stormNoted.get(k) as number) >= 10000) {
       this.stormNoted.set(k, this.now);
-      this.note('drop', pkt.msg.protocol, sd.id, '', pkt.msg.type, '', `${sd.id} is a VPN Gateway: it forwards only to and from its VPN (${v.tunnels.length ? 'tunnels ' + v.tunnels.join(', ') : 'remote-access clients in ' + (v.pool || 'its pool')}), not ${formatAddr(pkt.src)} → ${formatAddr(pkt.dst)} from ${from.id} to ${out.id} (${pkt.msg.label})`);
+      this.note('drop', pkt.msg.protocol, sd.id, '', pkt.msg.type, '', `${sd.id} is a ${deviceTypeInText('vpn_gateway')}: it forwards only to and from its VPN (${v.tunnels.length ? 'tunnels ' + v.tunnels.join(', ') : 'remote-access clients in ' + (v.pool || 'its pool')}), not ${formatAddr(pkt.src)} → ${formatAddr(pkt.dst)} from ${from.id} to ${out.id} (${pkt.msg.label})`);
     }
     return false;
   }
@@ -2109,13 +2110,14 @@ export class Engine {
       if (frame.dst === l3.mac) this.note('drop', pkt.msg.protocol, dev, '', pkt.msg.type, '', `not routed at ${dev}: ${why} (${formatAddr(pkt.src)} → ${formatAddr(pkt.dst)}, ${pkt.msg.label})`);
       return;
     }
-    // a router: forward, with the TTL decremented and the MACs rewritten
+    // a router: forward, with the TTL decremented and the MACs rewritten, in the VRF of the interface it came in on
+    // (as the path tracer does: a VRF's routes are for what arrives in it, not for what its sender's interface was in)
     if (pkt.ttl <= 1) {
       this.note('drop', pkt.msg.protocol, dev, '', pkt.msg.type, '', `TTL expired at ${dev} (${formatAddr(pkt.src)} → ${formatAddr(pkt.dst)}, TTL ${pkt.ttl}): ${pkt.msg.label}`);
       this.icmpError(dev, pkt, 'ttl', { from: l3 });
       return;
     }
-    const next: Pkt = { ...pkt, ttl: pkt.ttl - 1 };
+    const next: Pkt = { ...pkt, ttl: pkt.ttl - 1, vrf: l3.vrf };
     this.forward(dev, next, { l3, frame });
   }
 
@@ -2318,7 +2320,7 @@ export class Engine {
         return;
       }
     }
-    // a VPN Gateway forwards only to and from its VPN
+    // a VPN gateway forwards only to and from its VPN
     if (came && sd.caps.vpnOnlyTransit && !this.vpnTransit(sd, came.l3, out, pkt)) return;
     // a firewall applies its policy to what it forwards (it logs and rejects itself)
     if (came && sd.caps.firewallPolicy && this.protocols && this.protocols.filter && !this.protocols.filter(dev, pkt, came.l3, out)) return;

@@ -9,6 +9,7 @@
  */
 import { EXAMPLES } from '../generated/examples';
 import { App } from '../ui/app';
+import { outlineStability } from './outline-check';
 
 interface Check {
   name: string;
@@ -134,7 +135,7 @@ export async function runViewportCheck(app: App, doc: Document): Promise<Check[]
     }
 
     // a long device form: every interface card open
-    app.loadExample(EXAMPLES.findIndex((e) => /enterprise-wan/.test(e.name)));
+    app.loadExampleNamed('enterprise-wan.yaml');
     app.select('device:hq-core1');
     await tick();
     const cards = doc.querySelectorAll('#side-body details');
@@ -153,7 +154,7 @@ export async function runViewportCheck(app: App, doc: Document): Promise<Check[]
     state('the model outline is longer than its panel', scrollsInside('#outline', true));
     {
       // the routing services of a device (its Protocols section) and the suggestions to enable one: inside the panel, nothing cut off sideways
-      app.loadExample(EXAMPLES.findIndex((e) => /consistency-checks/.test(e.name)));
+      app.loadExampleNamed('consistency-checks.yaml');
       app.select('device:r3');
       app.showTab('edit');
       await tick();
@@ -170,7 +171,7 @@ export async function runViewportCheck(app: App, doc: Document): Promise<Check[]
       if (sb.scrollWidth > sb.clientWidth + 1) why.push(`the Edit tab scrolls sideways (${sb.scrollWidth} > ${sb.clientWidth})`);
       state('a device’s Protocols section and its suggestions fit the panel', why.concat(problems()));
       // an interface with its input helpers and the VRF combobox, open
-      app.loadExample(EXAMPLES.findIndex((e) => /addressing/.test(e.name)));
+      app.loadExampleNamed('addressing.yaml');
       app.select('iface:core:ge-0/0/3');
       app.showTab('edit');
       await tick();
@@ -195,7 +196,7 @@ export async function runViewportCheck(app: App, doc: Document): Promise<Check[]
       state('an interface’s input helpers and the open VRF combobox fit the panel', hw.concat(problems()));
       if (vrf) vrf.blur();
       // a trunk port's VLANs: the chips, the open VLAN combobox, the Native VLAN picker, the suggestions and the mode badge; the Objects list's VLAN tags
-      app.loadExample(EXAMPLES.findIndex((e) => /vlan-ports/.test(e.name)));
+      app.loadExampleNamed('vlan-ports.yaml');
       app.select('iface:acc3:Gi0/1');
       app.showTab('edit');
       await tick();
@@ -225,7 +226,7 @@ export async function runViewportCheck(app: App, doc: Document): Promise<Check[]
       state('a trunk port’s VLANs (chips, the open combobox, native VLAN, suggestions) and the Objects list’s VLAN tags fit', vw.concat(problems()));
       if (vc) vc.blur();
       // a hypervisor: the Services card with its Hypervisor configuration and a virtual switch open, its guests with + VM
-      app.loadExample(EXAMPLES.findIndex((e) => /virtualization/.test(e.name)));
+      app.loadExampleNamed('virtualization.yaml');
       app.select('device:hv1');
       app.showTab('edit');
       await tick();
@@ -248,7 +249,7 @@ export async function runViewportCheck(app: App, doc: Document): Promise<Check[]
       const sb4 = q('#side-body') as HTMLElement;
       if (sb4.scrollWidth > sb4.clientWidth + 1) hw2.push(`the Edit tab scrolls sideways (${sb4.scrollWidth} > ${sb4.clientWidth})`);
       state('a hypervisor’s Services card (its configuration and a virtual switch open, its guests with + VM) fits the panel', hw2.concat(problems()));
-      app.loadExample(EXAMPLES.findIndex((e) => /enterprise-wan/.test(e.name)));
+      app.loadExampleNamed('enterprise-wan.yaml');
       await tick();
       // the tool windows of Analyze: inside the browser window (docked at the bottom when it is narrow), their title
       // bar's buttons shown, nothing in them cut off sideways (a table scrolls in its own box); the page never scrolls
@@ -642,7 +643,7 @@ export async function runViewportCheck(app: App, doc: Document): Promise<Check[]
     // port mark, every port is drawn, and no end label covers other text, measured with the browser's fonts
     for (const view of ['logical', 'physical']) {
       app.mdoc && app.mdoc.markSaved();
-      app.loadExample(EXAMPLES.findIndex((e) => e.name === 'port-bindings.yaml'));
+      app.loadExampleNamed('port-bindings.yaml');
       click(`[data-view-btn="${view}"]`);
       await tick(20);
       const why: string[] = [];
@@ -680,6 +681,18 @@ export async function runViewportCheck(app: App, doc: Document): Promise<Check[]
       state(`${view} view of port-bindings.yaml: every line at a port, end labels over no other text`, why.slice(0, 6));
     }
     app.mdoc && app.mdoc.markSaved();
+    // the Objects list at this window size (both themes): folding moves no section heading, the focus stays and takes no room
+    {
+      const html = doc.documentElement;
+      const before = html.getAttribute('data-theme');
+      for (const theme of ['light', 'dark']) {
+        html.setAttribute('data-theme', theme);
+        state(`${theme}: Objects list: folding and unfolding moves no section heading`, (await outlineStability(app, doc)).slice(0, 6));
+        app.mdoc && app.mdoc.markSaved();
+      }
+      if (before === null) html.removeAttribute('data-theme');
+      else html.setAttribute('data-theme', before);
+    }
   } catch (e) {
     checks.push({ name: 'viewport check crashed', ok: false, detail: String((e as Error).stack || e) });
   }

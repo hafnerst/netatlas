@@ -15,7 +15,7 @@ import { root } from './helpers.mjs';
 import { findBrowser } from '../scripts/browser-selftest.mjs';
 import { openPage } from '../scripts/cdp.mjs';
 
-const url = pathToFileURL(join(root, 'dist', 'netatlas.html')).href;
+const url = pathToFileURL(join(root, 'build', 'netatlas-test.html')).href;
 const skip = findBrowser() ? false : 'no Chromium-based browser found (set NETATLAS_BROWSER)';
 
 async function edit(page, ref) {
@@ -42,8 +42,8 @@ test('the Services card: off by default; DHCP and DNS ticked show what they need
   const page = await openPage(url, { width: 1440, height: 900 });
   try {
     await page.settle(150);
-    const ex = await page.eval(`Array.from(document.querySelectorAll('#menu-examples [data-example]')).findIndex((b) => /campus-services/.test(b.textContent))`);
-    await page.eval(`localStorage.clear(), netatlas.loadExample(${ex}), true`);
+    const ex = 'campus-services.yaml';
+    await page.eval(`localStorage.clear(), netatlas.loadExampleNamed(${JSON.stringify(ex)}), true`);
     await page.settle(150);
     // web is a server without services: the card, both boxes off
     await edit(page, 'device:web');
@@ -113,8 +113,8 @@ test('the diagram: DHCP and DNS badges on the server, a reserved lease line on e
   const page = await openPage(url, { width: 1440, height: 900 });
   try {
     await page.settle(150);
-    const ex = await page.eval(`Array.from(document.querySelectorAll('#menu-examples [data-example]')).findIndex((b) => /campus-services/.test(b.textContent))`);
-    await page.eval(`localStorage.clear(), netatlas.loadExample(${ex}), netatlas.setView('physical'), netatlas.fit(), true`);
+    const ex = 'campus-services.yaml';
+    await page.eval(`localStorage.clear(), netatlas.loadExampleNamed(${JSON.stringify(ex)}), netatlas.setView('physical'), netatlas.fit(), true`);
     await page.settle(200);
     const geo = await page.eval(`(() => { const r = (e) => { const b = e.getBoundingClientRect(); return { left: b.left, right: b.right, top: b.top, bottom: b.bottom }; }; const dev = document.querySelector('#canvas [data-ref="device:srv"]');
       const badges = Array.from(dev.querySelectorAll('.dev-sub tspan')).filter((t) => /DHCP|DNS/.test(t.textContent)).map((b) => ({ t: b.textContent, r: r(b) }));

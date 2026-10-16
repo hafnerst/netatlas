@@ -104,8 +104,8 @@ export const DEVICE_TYPES: ReadonlyArray<DeviceTypeDef> = [
   },
   {
     id: 'vpn_gateway',
-    label: 'VPN Gateway',
-    plural: 'VPN Gateways',
+    label: 'VPN gateway',
+    plural: 'VPN gateways',
     behaviour: 'vpn_gateway',
     kinds: [{ id: 'hardware', label: 'Hardware appliance' }, { id: 'virtual', label: 'Virtual appliance' }, { id: 'remote_access', label: 'Remote-access concentrator' }, OTHER],
   },
@@ -291,6 +291,18 @@ export function typeKeyLabel(key: string): string {
 export function deviceTypeLabel(id: string): string {
   const t = typeDef(id);
   return t ? t.label : '';
+}
+
+/**
+ * A type's display name inside a sentence ("… on access points and VPN gateways"): the label (or the
+ * plural) in sentence case with its first word lowercased, acronyms (VPN, IDS/IPS) kept as they are.
+ */
+export function deviceTypeInText(id: string, plural = false): string {
+  const t = typeDef(id);
+  if (!t) return id;
+  const words = (plural ? t.plural : t.label).split(' ');
+  const acronym = (w: string): boolean => /^[A-Z0-9/]{2,}$/.test(w.replace(/[^A-Za-z0-9/]/g, ''));
+  return words.map((w, i) => (i === 0 && !acronym(w) ? w.charAt(0).toLowerCase() + w.slice(1) : w)).join(' ');
 }
 
 /**

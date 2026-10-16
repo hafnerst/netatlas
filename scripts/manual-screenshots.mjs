@@ -1,5 +1,5 @@
 // Takes the screenshots of Help → User Manual from the real application:
-// it opens dist/netatlas.html in headless Chrome/Edge/Chromium, drives the UI
+// it opens the test build (build/netatlas-test.html: the application, plus the internal test models) in headless Chrome/Edge/Chromium, drives the UI
 // into each state (menus open, a device selected, a connection being drawn …)
 // with real pointer and keyboard input, and saves cropped WebP images to
 // docs/img/manual/. "npm run build" then embeds them (scripts/gen-help.mjs).
@@ -14,7 +14,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { openPage } from './cdp.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const html = resolve(root, 'dist', 'netatlas.html');
+// the test build: the released application, which can also load the internal test models some pictures show (npm run build writes it)
+const html = resolve(root, 'build', 'netatlas-test.html');
 const outDir = join(root, 'docs', 'img', 'manual');
 
 /** a box around some rectangles, with a margin */
@@ -26,7 +27,7 @@ const around = (rs, m = 12) => {
 
 async function main() {
   if (!existsSync(html)) {
-    console.error('dist/netatlas.html not found: run "npm run build" first');
+    console.error('build/netatlas-test.html not found: run "npm run build" first');
     process.exit(1);
   }
   mkdirSync(outDir, { recursive: true });
@@ -65,7 +66,7 @@ async function main() {
     await save('physical', { x: 0, y: 0, w: 1440, h: 900 }, { scale: 0.75, quality: 45 });
 
     // the logical view of the metro ring example
-    await page.eval('netatlas.loadExample(3), netatlas.setView("logical"), true');
+    await page.eval('netatlas.loadExampleNamed("metro-ring.yaml"), netatlas.setView("logical"), true');
     await page.settle(200);
     await page.key('f', 'KeyF', 70);
     await page.key('+', 'Equal', 187);
@@ -133,7 +134,7 @@ async function main() {
     await save('toolbar-groups', around([await page.rect('#view-group'), await page.rect('#filters-group')], 8));
 
     // the addresses of a router in the logical view, at 100 % (addressing example)
-    await page.eval('netatlas.loadExample(6), netatlas.setView("logical"), netatlas.select("device:core", true), netatlas.select(null), true');
+    await page.eval('netatlas.loadExampleNamed("addressing.yaml"), netatlas.setView("logical"), netatlas.select("device:core", true), netatlas.select(null), true');
     await page.eval(`(() => { const m = /scale\\(([\\d.]+)\\)/.exec(document.getElementById('viewport').getAttribute('transform')); netatlas.zoomBy(1 / Number(m[1])); return true; })()`);
     await page.eval('netatlas.select("device:core", true), netatlas.select(null), true');
     await page.mouse('mouseMoved', 700, 890);
@@ -149,7 +150,7 @@ async function main() {
     }
 
     // ports: the branch router of the long-labels example at 100 %, GRE and OSPF leaving from the port of Tunnel10
-    await page.eval('netatlas.loadExample(5), netatlas.setView("logical"), true');
+    await page.eval('netatlas.loadExampleNamed("long-labels.yaml"), netatlas.setView("logical"), true');
     await page.eval(`(() => { const m = /scale\\(([\\d.]+)\\)/.exec(document.getElementById('viewport').getAttribute('transform')); netatlas.zoomBy(1 / Number(m[1])); return true; })()`);
     await page.eval('netatlas.select("device:br-rtr", true), netatlas.select(null), true');
     await page.mouse('mouseMoved', 700, 890);
@@ -161,7 +162,7 @@ async function main() {
       const y = Math.max(c.y, b.y - 46);
       await save('ports', { x, y, w: Math.min(c.x + c.w, b.x + b.w + 320) - x, h: Math.min(c.y + c.h, b.y + b.h + 40) - y });
     }
-    await page.eval('netatlas.loadExample(6), netatlas.setView("logical"), true');
+    await page.eval('netatlas.loadExampleNamed("addressing.yaml"), netatlas.setView("logical"), true');
     await page.eval(`(() => { const m = /scale\\(([\\d.]+)\\)/.exec(document.getElementById('viewport').getAttribute('transform')); netatlas.zoomBy(1 / Number(m[1])); return true; })()`);
     await page.eval('netatlas.select("device:core", true), netatlas.select(null), true');
     await page.settle(150);
@@ -181,8 +182,8 @@ async function main() {
     }
 
     // static routes: the branch router of the branch-routing example in the logical view, at 100 %
-    const branch = await page.eval("Array.from(document.querySelectorAll('#menu-examples [data-example]')).findIndex((b) => /branch-routing/.test(b.textContent))");
-    await page.eval(`netatlas.loadExample(${branch}), netatlas.setView("logical"), true`);
+    const branch = 'branch-routing.yaml';
+    await page.eval(`netatlas.loadExampleNamed(${JSON.stringify(branch)}), netatlas.setView("logical"), true`);
     await page.eval(`(() => { const m = /scale\\(([\\d.]+)\\)/.exec(document.getElementById('viewport').getAttribute('transform')); netatlas.zoomBy(1 / Number(m[1])); return true; })()`);
     await page.eval('netatlas.select("device:br-rtr", true), netatlas.select(null), true');
     await page.mouse('mouseMoved', 700, 890);
@@ -212,8 +213,8 @@ async function main() {
     }
     // a trunk port's VLANs in the Edit tab (the VLAN example): the chips, the combobox, the native VLAN, the mode badge
     {
-      const vx = await page.eval("Array.from(document.querySelectorAll('#menu-examples [data-example]')).findIndex((b) => /vlan-ports/.test(b.textContent))");
-      await page.eval(`netatlas.loadExample(${vx}), netatlas.setView("physical"), netatlas.showTab("edit"), netatlas.select("iface:acc1:Gi1/0/48", true), true`);
+      const vx = 'vlan-ports.yaml';
+      await page.eval(`netatlas.loadExampleNamed(${JSON.stringify(vx)}), netatlas.setView("physical"), netatlas.showTab("edit"), netatlas.select("iface:acc1:Gi1/0/48", true), true`);
       await page.mouse('mouseMoved', 700, 890);
       await page.eval("document.getElementById('toast').hidden = true");
       // the card's VLAN part in the middle of the panel, so its title and the field above it are in the picture
@@ -227,8 +228,8 @@ async function main() {
 
     // the Addressing overview of the addressing example, with one network's members open
     {
-      const ex = await page.eval("Array.from(document.querySelectorAll('#menu-examples [data-example]')).findIndex((b) => /addressing\.yaml/.test(b.textContent))");
-      await page.eval(`netatlas.loadExample(${ex}), netatlas.setView("logical"), true`);
+      const ex = 'addressing.yaml';
+      await page.eval(`netatlas.loadExampleNamed(${JSON.stringify(ex)}), netatlas.setView("logical"), true`);
       await page.eval("document.getElementById('toast').hidden = true");
       await page.eval(`localStorage.removeItem('netatlas.window.addressing'), document.getElementById('btn-addressing').click(), document.querySelector('[data-addr-toggle="|corp"]').click(), true`);
       await page.mouse('mouseMoved', 700, 890);
@@ -287,16 +288,28 @@ async function main() {
       await page.settle(100);
     }
 
-    // the protocol simulation (protocol-simulation.yaml, physical view): the layout with core1's ARP table; the tables, the packet inspector, a broadcast domain, multicast routes, a device's Simulation section, the start dialog
+    // the simulation layout (enterprise-campus.yaml, a public example the manual names): core1's ARP table in the panel
     {
-      await page.eval(`netatlas.loadText(${JSON.stringify(readFileSync(join(root, 'examples', 'protocol-simulation.yaml'), 'utf8'))}, 'protocol-simulation.yaml'), netatlas.setView('physical'), true`);
+      await page.eval(`netatlas.loadExampleNamed('enterprise-campus.yaml'), netatlas.setView('physical'), true`);
+      await page.eval("document.getElementById('toast').hidden = true");
+      await page.eval(`localStorage.removeItem('netatlas.dockHeight'), sessionStorage.clear(), netatlas.startProtocolSimulation({ senders: ['laptop1', 'srv'] }), netatlas.simController().setPlaying(false), netatlas.simController().runTo(25000), netatlas.select('device:core1'), netatlas.fit(), true`);
+      await page.eval(`(() => { const c = netatlas.simController(); c.showTable('arp', 'core1'); for (let i = 0; i < 40; i++) c.advance(25); c.refresh(true); document.getElementById('toast').hidden = true; return true; })()`);
+      await page.mouse('mouseMoved', 700, 890);
+      await page.settle(300);
+      await save('simulation', { x: 0, y: 0, w: 1440, h: 900 }, { scale: 0.65, quality: 32 });
+      await page.eval(`netatlas.exitSimulation(), sessionStorage.clear(), true`);
+      await page.settle(100);
+    }
+
+    // the protocol simulation (protocol-simulation.yaml, an internal test model, physical view): the tables, the packet inspector, a broadcast domain, multicast routes, a device's Simulation section, the start dialog
+    {
+      await page.eval(`netatlas.loadText(${JSON.stringify(readFileSync(join(root, 'test', 'examples', 'protocol-simulation.yaml'), 'utf8'))}, 'protocol-simulation.yaml'), netatlas.setView('physical'), true`);
       await page.eval("document.getElementById('toast').hidden = true");
       await page.eval(`localStorage.removeItem('netatlas.dockHeight'), sessionStorage.clear(), netatlas.startProtocolSimulation({ senders: ['pc1', 'srv'] }), netatlas.simController().setPlaying(false), netatlas.simController().runTo(25000), netatlas.fit(), true`);
       // a moment with messages on their way: the readable pacing for a little real time
       await page.eval(`(() => { const c = netatlas.simController(); c.showTable('arp', 'core1'); for (let i = 0; i < 40; i++) c.advance(25); c.refresh(true); document.getElementById('toast').hidden = true; return true; })()`);
       await page.mouse('mouseMoved', 700, 890);
       await page.settle(300);
-      await save('simulation', { x: 0, y: 0, w: 1440, h: 900 }, { scale: 0.65, quality: 32 });
       const st = await page.rect('#sd-status');
       await save('arp-table', { x: st.x, y: st.y, w: st.w, h: Math.min(st.h, 300) }, { quality: 55 });
       // the packet inspector for a TCP SYN of pc1's test traffic, with Follow message
@@ -337,8 +350,10 @@ async function main() {
       await page.settle(100);
     }
 
-    // Device types ▾ for the same example: the Layer 2 switches unticked under Switch
+    // Device types ▾ for enterprise-campus.yaml: the Layer 2 switches unticked under Switch
     {
+      await page.eval(`netatlas.loadExampleNamed('enterprise-campus.yaml'), netatlas.setView('physical'), document.getElementById('toast').hidden = true, true`);
+      await page.settle(150);
       await page.eval(`netatlas.setTypeVisible('switch:l2', false), true`);
       await page.click('#types-btn');
       await page.settle(200);
@@ -348,10 +363,10 @@ async function main() {
       await page.settle(100);
     }
 
-    // DHCP and DNS (campus-services.yaml): srv's Services card; the simulation with the leases in the diagram and srv's DHCP leases
+    // DHCP and DNS (enterprise-campus.yaml): srv's Services card; the simulation with the leases in the diagram and srv's DHCP leases
     {
-      const cs = await page.eval("Array.from(document.querySelectorAll('#menu-examples [data-example]')).findIndex((b) => /campus-services/.test(b.textContent))");
-      await page.eval(`netatlas.loadExample(${cs}), netatlas.setView("physical"), netatlas.select("device:srv"), netatlas.showTab("edit"), true`);
+      const cs = 'enterprise-campus.yaml';
+      await page.eval(`netatlas.loadExampleNamed(${JSON.stringify(cs)}), netatlas.setView("physical"), netatlas.select("device:srv"), netatlas.showTab("edit"), true`);
       await page.eval("document.getElementById('toast').hidden = true");
       await page.settle(200);
       await page.eval(`(() => { const g = document.querySelector('#side-body [data-group="netservices"]'); g.scrollIntoView({ block: 'start' }); return true; })()`);
@@ -372,11 +387,11 @@ async function main() {
       await page.settle(100);
     }
 
-    // services and Wi-Fi: ap1's Wireless access (multi-ssid-ap.yaml), srv's Services card (campus-wireless.yaml)
+    // services and Wi-Fi: ap-b's Wireless access (private-house.yaml), srv's Services card (enterprise-campus.yaml)
     {
-      const ex = (name) => page.eval(`Array.from(document.querySelectorAll('#menu-examples [data-example]')).findIndex((b) => b.textContent.indexOf(${JSON.stringify(name)}) >= 0)`);
+      const ex = (name) => `${name}.yaml`;
       const card = async (example, dev, group, name, h, from = `[data-group="${group}"]`) => {
-        await page.eval(`netatlas.loadExample(${await ex(example)}), netatlas.setView("physical"), netatlas.select("device:${dev}"), netatlas.showTab("edit"), true`);
+        await page.eval(`netatlas.loadExampleNamed(${JSON.stringify(await ex(example))}), netatlas.setView("physical"), netatlas.select("device:${dev}"), netatlas.showTab("edit"), true`);
         await page.eval("document.getElementById('toast').hidden = true");
         await page.eval(`(() => { const g = document.querySelector('#side-body ${from}'); g.scrollIntoView({ block: 'start' }); return true; })()`);
         await page.mouse('mouseMoved', 700, 890);
@@ -387,15 +402,15 @@ async function main() {
         const top = Math.max(sb.y, f.y - 4);
         await save(name, { x: g.x - 4, y: top, w: g.w + 8, h: Math.min(sb.y + sb.h - top, g.y + g.h + 4 - top, h) }, { quality: 38 });
       };
-      await card('multi-ssid-ap', 'ap1', 'svc-wireless', 'wifi-edit', 560);
-      await card('campus-wireless', 'srv', 'netservices', 'services-add', 560, '[data-svc-card="ntp"]');
+      await card('private-house', 'ap-b', 'svc-wireless', 'wifi-edit', 560);
+      await card('enterprise-campus', 'srv', 'netservices', 'services-add', 560, '[data-svc-card="ntp"]');
     }
 
     // the device model: a System's Identity card (ot-network.yaml); the Security gateway (cross-domain.yaml): the diagram, its
     // Domain separation card, and Trace path with a service through its protocol break
     {
-      const ex = (name) => page.eval(`Array.from(document.querySelectorAll('#menu-examples [data-example]')).findIndex((b) => b.textContent.indexOf(${JSON.stringify(name)}) >= 0)`);
-      await page.eval(`netatlas.loadExample(${await ex('ot-network')}), netatlas.setView("physical"), netatlas.select("device:pgw"), netatlas.showTab("edit"), true`);
+      const ex = (name) => `${name}.yaml`;
+      await page.eval(`netatlas.loadExampleNamed(${JSON.stringify(await ex('ot-network'))}), netatlas.setView("physical"), netatlas.select("device:pgw"), netatlas.showTab("edit"), true`);
       await page.eval("document.getElementById('toast').hidden = true");
       await page.mouse('mouseMoved', 700, 890);
       await page.settle(250);
@@ -409,7 +424,7 @@ async function main() {
         const top = Math.max(sb.y, t.y - 30);
         await save('device-model', { x: g.x - 4, y: top, w: g.w + 8, h: Math.min(sb.y + sb.h, g.y + g.h + 4) - top }, { quality: 50 });
       }
-      await page.eval(`netatlas.loadExample(${await ex('cross-domain')}), netatlas.setView("physical"), netatlas.select(null), netatlas.fit(), true`);
+      await page.eval(`netatlas.loadExampleNamed(${JSON.stringify(await ex('cross-domain'))}), netatlas.setView("physical"), netatlas.select(null), netatlas.fit(), true`);
       await page.eval("document.getElementById('toast').hidden = true");
       await page.mouse('mouseMoved', 700, 890);
       await page.settle(250);
@@ -445,8 +460,8 @@ async function main() {
     // virtualization (virtualization.yaml): esx-01's interior in the physical view, its Services card with the Hypervisor open,
     // and the simulation after esx-02 was powered off (its VMs restarted on esx-01)
     {
-      const vx = await page.eval("Array.from(document.querySelectorAll('#menu-examples [data-example]')).findIndex((b) => /virtualization/.test(b.textContent))");
-      await page.eval(`netatlas.loadExample(${vx}), netatlas.setView("physical"), netatlas.select(null), true`);
+      const vx = 'virtualization.yaml';
+      await page.eval(`netatlas.loadExampleNamed(${JSON.stringify(vx)}), netatlas.setView("physical"), netatlas.select(null), true`);
       await page.eval("document.getElementById('toast').hidden = true");
       await page.settle(200);
       // esx-01 centred, zoomed out until its whole box fits the diagram
@@ -510,8 +525,8 @@ async function main() {
 
     // routing services: r3's Protocols card (suggestions, BGP, Enable a protocol) in the Edit tab
     {
-      const demo2 = await page.eval("Array.from(document.querySelectorAll('#menu-examples [data-example]')).findIndex((b) => /consistency-checks/.test(b.textContent))");
-      await page.eval(`netatlas.loadExample(${demo2}), netatlas.setView("physical"), netatlas.select("device:r3"), netatlas.showTab("edit"), true`);
+      const demo2 = 'consistency-checks.yaml';
+      await page.eval(`netatlas.loadExampleNamed(${JSON.stringify(demo2)}), netatlas.setView("physical"), netatlas.select("device:r3"), netatlas.showTab("edit"), true`);
       await page.eval("document.getElementById('toast').hidden = true");
       await page.settle(200);
       await page.eval(`(() => { const g = document.querySelector('#side-body [data-group="protocols"]'); g.scrollIntoView({ block: 'start' }); return true; })()`);
@@ -522,9 +537,9 @@ async function main() {
     }
 
     // consistency checks: the Problems tab of the consistency-checks example, then its check settings
-    const demo = await page.eval("Array.from(document.querySelectorAll('#menu-examples [data-example]')).findIndex((b) => /consistency-checks/.test(b.textContent))");
+    const demo = 'consistency-checks.yaml';
     // (the side panel scrolled back to its top: the cards before scrolled it)
-    await page.eval(`netatlas.loadExample(${demo}), netatlas.setView("physical"), netatlas.showTab("problems"), document.getElementById('side-body').scrollTop = 0, true`);
+    await page.eval(`netatlas.loadExampleNamed(${JSON.stringify(demo)}), netatlas.setView("physical"), netatlas.showTab("problems"), document.getElementById('side-body').scrollTop = 0, true`);
     await page.eval("document.getElementById('toast').hidden = true");
     await page.mouse('mouseMoved', 700, 890);
     await page.settle(200);

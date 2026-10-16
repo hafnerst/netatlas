@@ -54,7 +54,7 @@ test('the table as CSV (quoted where needed) and as text', () => {
   assert.equal(lines.length, rows.length + 1);
   assert.match(csv, /^hq-fw,Device,"hq-acc1, hq-core1, hq-core2, hq-log/m);
   const text = W.spofText(wan, rows);
-  assert.match(text, /^Single points of failure — ACME Corp — enterprise WAN\n\d+ single points of failure, most impact first\./);
+  assert.match(text, /^Single points of failure — Enterprise WAN — HQ and two branches over VPN\n\d+ single points of failure, most impact first\./);
   assert.match(text, /Device hq-fw \(impact \d+\)\n  cuts off: hq-acc1, hq-core1, hq-core2, hq-log/);
   // a model without any
   const ring = validate.loadModel(example('metro-ring.yaml')).model;

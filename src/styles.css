@@ -644,7 +644,8 @@ button.mini { padding: 1px 7px; font-size: 11.5px; border-radius: 5px; }
 
 #outline-body { padding: 4px 8px 16px; }
 .outline-filter { width: 100%; margin-bottom: 6px; padding: 4px 8px; border: 1px solid var(--control-border); border-radius: 6px; background: var(--canvas); }
-.ol-section { margin-top: 10px; }
+/* every section has the same spacing, open or folded: folding moves the sections below it, never its own heading */
+.ol-section { margin-top: 8px; }
 .ol-head { display: flex; align-items: center; justify-content: space-between; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); padding: 2px 2px 4px; }
 /* a row of the outline: the entry, and its quick actions (Duplicate, Delete) at the right */
 .ol-row { display: flex; align-items: center; gap: 2px; min-width: 0; border-radius: 5px; }
@@ -665,14 +666,17 @@ button.mini { padding: 1px 7px; font-size: 11.5px; border-radius: 5px; }
 /* a section folds to its heading: the heading is a button (caret, title, count) next to "+ Add" */
 .ol-tools { display: flex; align-items: center; justify-content: space-between; gap: 6px; min-height: 22px; margin: 0 0 2px; }
 .ol-tools > button { flex: none; }
-.ol-toggle { flex: 1; min-width: 0; display: flex; align-items: center; gap: 5px; border: 0; background: none; border-radius: 5px; padding: 2px 4px; text-align: left; font: inherit; text-transform: inherit; letter-spacing: inherit; color: inherit; }
+.ol-toggle { flex: 1; min-width: 0; display: flex; align-items: center; gap: 5px; border: 0; background: none; border-radius: 5px; padding: 2px 4px; text-align: left; font: inherit; line-height: 16px; text-transform: inherit; letter-spacing: inherit; color: inherit; }
+/* the heading's parts share one line box, so what a folded heading adds (its problem badge, its related count) never changes its height */
+.ol-toggle > * { line-height: 16px; }
 .ol-toggle:hover { background: var(--accent-soft); color: var(--text); }
-.ol-caret { width: 10px; flex: none; font-size: 10px; }
+.ol-caret { display: inline-block; width: 10px; flex: none; font-size: 10px; text-align: center; }
+/* one glyph in both states, turned when folded: a transform takes no room, so the title never moves */
+.ol-section.folded .ol-caret { transform: rotate(-90deg); }
 .ol-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ol-related { flex: none; color: var(--accent); letter-spacing: 0; }
 .ol-toggle .ol-badge { letter-spacing: 0; }
 .ol-head { gap: 4px; }
-.ol-section.folded { margin-top: 4px; }
 /* selection context in the element lists: shape and weight as well as colour */
 .ctx-mark { width: 10px; flex: none; text-align: center; color: var(--accent); font-weight: 700; }
 .ol-item .ctx-mark { width: 10px; }

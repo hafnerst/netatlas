@@ -2,7 +2,7 @@
 #
 # The firewall fw runs services of its own: a site-to-site IPsec VPN to the
 # branch router (the VPN gateway is a service here, as it is on the branch
-# router; on a VPN Gateway it is built in), and NAT — PAT for the inside
+# router; on a VPN gateway it is built in), and NAT — PAT for the inside
 # networks out of its outside interface, and a port forward of 443 to the
 # reverse proxy.
 #
@@ -19,7 +19,7 @@
 # proxy and the load balancer; the branch PC reaches the NAS through the
 # tunnel; the shopper's Telnet test is blocked by the IPS.
 netatlas: 1
-title: DMZ services and a VPN on a firewall
+title: Internet edge — DMZ services and a VPN on a firewall
 description: |
   A firewall with a VPN and NAT, an inline IPS, a reverse proxy, a load
   balancer with two application servers, a NAS, and a branch over IPsec.

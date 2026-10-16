@@ -17,7 +17,7 @@ export const SCHEMA = {
   param: ['key', 'label', 'type', 'scope', 'required', 'min', 'max', 'values', 'suggest', 'description'],
   group: ['id', 'label', 'kind', 'provider', 'parent', 'description', 'attrs'],
   device: ['id', 'label', 'type', 'kind', 'kind_label', 'role', 'mode', 'purpose', 'icon', 'host', 'layer3', 'group', 'tier', 'guest_os', 'vcpu', 'ram', 'image', 'router_id', 'protocols', 'services', 'port_pairs', 'management', 'simulation', 'description', 'attrs', 'interfaces', 'logical_interfaces', 'dns_names', 'dns_servers', 'routes'],
-  /** a device's services (its `services:`): a DHCP server, a DNS server, the Hypervisor and the Container engine; a VPN Gateway's VPN gateway, a Security gateway's Domain separation */
+  /** a device's services (its `services:`): a DHCP server, a DNS server, the Hypervisor and the Container engine; a VPN gateway's VPN gateway, a Security gateway's Domain separation */
   netServices: ['vpn', 'separation', 'wireless', 'load_balancing', 'inspection', 'dhcp', 'dns', 'ntp', 'aaa', 'syslog', 'monitoring', 'proxy', 'nat', 'wireless_controller', 'hypervisor', 'container_engine', 'storage', 'application'],
   wireless: ['controller', 'networks'],
   wirelessNetwork: ['id', 'ssid', 'vlan', 'untagged', 'radio', 'security', 'passphrase', 'forwarding'],
@@ -35,7 +35,7 @@ export const SCHEMA = {
   inspection: ['block'],
   /** two ports a device passes traffic between: an entry of `port_pairs` */
   portPair: ['a', 'b', 'direction', 'copy'],
-  /** a VPN Gateway's VPN gateway function (`services.vpn`) */
+  /** a VPN gateway's VPN gateway function (`services.vpn`) */
   vpn: ['operation', 'technology', 'tunnels', 'listener', 'pool', 'protected'],
   /** a Security gateway's Domain separation (`services.separation`) */
   separation: ['implementation', 'domains', 'directions', 'rules', 'profiles', 'simulation'],

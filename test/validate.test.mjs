@@ -158,7 +158,7 @@ test('the broken demo file reports every problem with line numbers', async () =>
   const { readFileSync } = await import('node:fs');
   const { join } = await import('node:path');
   const { root } = await import('./helpers.mjs');
-  const errs = errorsOf(readFileSync(join(root, 'examples', 'broken', 'errors-demo.yaml'), 'utf8'));
+  const errs = errorsOf(readFileSync(join(root, 'test', 'examples', 'broken', 'errors-demo.yaml'), 'utf8'));
   const summary = errs.map((e) => `${e.line}: ${e.message}`);
   const expected = [
     [9, /unknown key "typ" — did you mean "type"/],

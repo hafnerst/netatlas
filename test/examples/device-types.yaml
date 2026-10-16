@@ -7,7 +7,7 @@
 netatlas: 1
 title: Campus — all device types
 description: |
-  Internet edge with a remote-access VPN Gateway, firewall and inline IPS; a
+  Internet edge with a remote-access VPN gateway, firewall and inline IPS; a
   DMZ with a load balancer and a web proxy server; core and access switching
   with Wi-Fi; a server room with a virtualisation host, a monitoring
   appliance and a NAS behind a Security gateway (a filtering bridge).

@@ -23,7 +23,7 @@ test('markup: the left panel is a region named by its heading "Objects", without
 const skip = findBrowser() ? false : 'no Chromium-based browser found (set NETATLAS_BROWSER)';
 
 test('in the browser: announced as the region "Objects" with a level-2 heading; one compact row that stays visible at every width', { skip, timeout: 120000 }, async () => {
-  const page = await openPage(pathToFileURL(join(root, 'dist', 'netatlas.html')).href);
+  const page = await openPage(pathToFileURL(join(root, 'build', 'netatlas-test.html')).href);
   try {
     await page.eval(`netatlas.loadExample(0), true`);
     await page.settle(150);

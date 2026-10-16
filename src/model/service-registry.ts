@@ -9,7 +9,7 @@
  *
  * Kinds of entries:
  *   built in   the appliance's own function: always there and not
- *              removable (a VPN Gateway's VPN gateway, a Security
+ *              removable (a VPN gateway's VPN gateway, a Security
  *              gateway's Domain separation, an access point's Wireless
  *              access, a load balancer's Load balancing, an IDS/IPS's
  *              Inspection); `required` when its configuration must be
