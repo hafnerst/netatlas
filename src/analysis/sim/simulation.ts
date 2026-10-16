@@ -7,13 +7,15 @@
  */
 import { SimGroup, simProfile } from '../../model/sim-profiles';
 import { Model } from '../../model/types';
+import { capabilities } from '../../model/capabilities';
+import { deviceTypeLine } from '../../model/device-types';
 import { failableRef } from '../failure';
 import { formatAddr } from '../ipmath';
 import { Engine, EngineOptions, fmtSec, subnetBroadcast } from './engine';
 import { OTHER_BEHAVIOURS, installBootGarp, installCustomL2, installDemands, installFhrp, installL2Adverts, installLacp } from './proto-other';
 import { ROUTING_BEHAVIOURS } from './proto-routing';
 import { ProtocolSim, relationProfile } from './protocols';
-import { ParamChange, ParamValue, Resolved, SimParams } from './params';
+import { ParamChange, ParamValue, Resolved, SimParams, durationText } from './params';
 import { Multicast } from './multicast';
 import { DnsCacheRow, LeaseRow, NetServicesSim, ZoneRow } from './netsvc';
 import { Test, TestKind, Transport } from './transport';
@@ -40,6 +42,29 @@ export function usesText(e: SimProtocolEntry): string {
   return `${e.uses} ${e.unit}${e.uses === 1 ? '' : 's'}`;
 }
 
+/** An interface a test can be sent from: its address, or its DHCP lease and state. */
+export interface TestSourceIface {
+  id: string;
+  /** a DHCP client interface (its address is a lease) */
+  dhcp: boolean;
+  /** it has an address now */
+  ready: boolean;
+  /** its address, or its lease with gateway, DNS and expiry, or why it has none; and its Wi-Fi network */
+  status: string;
+}
+
+/** A device as a source of Send test…: every device is one, able to send or with the reason it can't. */
+export interface TestSource {
+  id: string;
+  /** it can send a test (now, or once its DHCP lease is there) */
+  ok: boolean;
+  /** why it can't; or, able to, what it waits for ('' nothing) */
+  reason: string;
+  ifaces: TestSourceIface[];
+}
+
+const DHCP_STATE: { [k: string]: string } = { INIT: 'about to ask', SELECTING: 'asking (DHCPDISCOVER)', REQUESTING: 'requesting the offered address', RENEWING: 'renewing', REBINDING: 'rebinding' };
+
 export class Simulation {
   readonly engine: Engine;
   readonly protocols: ProtocolSim;
@@ -65,6 +90,7 @@ export class Simulation {
     this.transport = new Transport(this.protocols);
     this.transport.multicast = this.multicast;
     this.transport.netsvc = this.netsvc;
+    this.netsvc.onLeaseFailed = (dev, iface, why) => this.transport.leaseFailed(dev, iface, why);
     this.transport.install();
     this.protocols.start();
   }
@@ -326,10 +352,89 @@ export class Simulation {
    * to a device ("web1", "web1:eth0"), an address, a subnet broadcast,
    * 255.255.255.255 or a multicast group; a text when it cannot be sent.
    */
-  sendTest(o: { from: string; to: string; kind: TestKind; port?: number; size?: number; df?: boolean; keep?: boolean }): Test | string {
+  sendTest(o: { from: string; via?: string; to: string; kind: TestKind; port?: number; size?: number; df?: boolean; keep?: boolean }): Test | string {
+    const src = this.testSources().find((x) => x.id === o.from);
+    if (src && !src.ok) return `${o.from} can't send a test: ${src.reason}`;
+    const via = o.via || undefined;
     const r = this.transport.resolveTarget(o.from, { to: o.to.trim() }, o.kind);
     if (typeof r === 'string') return r;
-    return this.transport.run({ from: o.from, target: o.to.trim(), dst: r.dst, name: r.name, kind: o.kind, port: o.kind === 'icmp' ? 0 : o.port, size: o.size, df: o.df, keep: o.keep, source: 'manual' });
+    return this.transport.run({ from: o.from, via, target: o.to.trim(), dst: r.dst, name: r.name, kind: o.kind, port: o.kind === 'icmp' ? 0 : o.port, size: o.size, df: o.df, keep: o.keep, source: 'manual' });
+  }
+
+  /**
+   * Every device of the model as a source of Send test…, and whether it can send one now. A device
+   * sends from an interface of its IP stack (the capability resolver says which devices have one)
+   * with an address: a configured one, or a DHCP client's lease. A DHCP client without its lease is a
+   * source too: its test waits for the lease (and fails, saying why, when DHCP gets no answer). A
+   * device without an IP stack (a cable's TAP, a passive monitor, a Cloud …) is listed, with the reason
+   * it sends nothing. Computed from the simulation's state each time: never a stale lease.
+   */
+  testSources(): TestSource[] {
+    const e = this.engine;
+    const out: TestSource[] = [];
+    for (const d of this.model.devices.slice().sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))) {
+      const sd = e.net.devices.get(d.id);
+      const caps = sd ? sd.caps : capabilities(d);
+      const what = deviceTypeLine(d) || 'a device without a type';
+      if (!caps.ipStack || !sd) {
+        out.push({ id: d.id, ok: false, reason: `it has no IP stack of its own (${what}): it forwards or observes traffic and sends none`, ifaces: [] });
+        continue;
+      }
+      const ifaces: TestSourceIface[] = [];
+      const l3s = Array.from(sd.l3.values()).sort((a, b) => Number(a.kind === 'loopback') - Number(b.kind === 'loopback') || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+      for (const l of l3s) {
+        const mi = this.model.index.interfaces.get(d.id + ':' + l.id);
+        const dhcp = !!mi && !!mi.dhcp && !mi.addresses.length;
+        const at = this.attachment(d.id, l.id);
+        if (!dhcp) {
+          if (!l.addrs.length) continue;
+          ifaces.push({ id: l.id, dhcp: false, ready: true, status: `${l.addrs.map((a) => a.text).join(', ')}${at ? ' · ' + at : ''}` });
+          continue;
+        }
+        const lease = e.leases.get(d.id + ':' + l.id);
+        const cs = this.netsvc.clientStatus(d.id, l.id);
+        let status: string;
+        let ready = false;
+        if (lease && lease.kind === 'dhcp') {
+          ready = true;
+          const parts = [`DHCP: ${lease.addr.text}${lease.server ? ` from ${formatAddr(lease.server)}` : ''}`];
+          if (lease.gateway) parts.push('gateway ' + formatAddr(lease.gateway));
+          if (lease.dns.length) parts.push('DNS ' + lease.dns.map(formatAddr).join(', '));
+          // (its length, not a countdown: the form's status line is announced when it changes)
+          parts.push(`lease ${durationText(lease.expires - lease.bound)}`);
+          status = parts.join(', ');
+        } else if (!e.isL3Up(d.id, l.id)) status = 'DHCP: no lease, its link is not up (it asks when the link comes up)';
+        else if (cs && cs.failed) status = `DHCP: no lease, ${cs.failed.text}${lease ? `; meanwhile the link-local address ${lease.addr.text} (only its own segment)` : ''}`;
+        else if (lease) {
+          ready = true;
+          status = `link-local ${lease.addr.text} (no DHCP server answered: only its own segment)`;
+        } else status = `DHCP: no lease yet (${cs ? DHCP_STATE[cs.state] || cs.state : 'not started'}): a test waits for it`;
+        ifaces.push({ id: l.id, dhcp: true, ready, status: status + (at ? ' · ' + at : '') });
+      }
+      if (!ifaces.length) {
+        out.push({ id: d.id, ok: false, reason: 'no interface with an address or DHCP: give one an address, or turn DHCP on', ifaces });
+        continue;
+      }
+      if (!e.deviceOn(d.id)) {
+        out.push({ id: d.id, ok: false, reason: 'it is powered off (Power on in its menu)', ifaces });
+        continue;
+      }
+      const ready = ifaces.filter((i) => i.ready);
+      const waiting = ifaces.find((i) => i.dhcp && !i.ready);
+      out.push({ id: d.id, ok: true, reason: ready.length ? '' : waiting ? waiting.status.replace(/ · .*$/, '') : '', ifaces });
+    }
+    return out;
+  }
+
+  /** Where an interface is attached, when it says something: its Wi-Fi network and VLAN. */
+  private attachment(dev: string, iface: string): string {
+    const l = this.model.links.find((x) => (x.a.device === dev && x.a.iface === iface) || (x.b.device === dev && x.b.iface === iface));
+    if (!l || !l.wirelessNetwork) return '';
+    const ap = l.a.device === dev ? l.b : l.a;
+    const apDev = this.model.index.devices.get(ap.device);
+    const n = apDev && apDev.wireless ? apDev.wireless.networks.find((x) => x.id === l.wirelessNetwork && x.radio === ap.iface) : undefined;
+    if (!n) return '';
+    return `Wi-Fi network “${n.ssid}” of ${ap.device}${n.vlan !== undefined ? ` (VLAN ${n.vlan})` : n.untagged ? ' (untagged)' : ''}`;
   }
 
   /** The latest Send test… results, newest first. */

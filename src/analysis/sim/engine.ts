@@ -581,7 +581,11 @@ export class Engine {
       const id = cond.slice(4);
       return this.relationUp(id) && (!this.protocols || !this.protocols.sessionUp || this.protocols.sessionUp(id));
     }
-    if (cond.indexOf('lease:') === 0) return !this.waitsForLease(cond.slice(6));
+    if (cond.indexOf('lease:') === 0) {
+      // "lease:<device>" (any interface it would send from) or "lease:<device>:<interface>" (the one chosen)
+      const [dev, iface] = cond.slice(6).split(':');
+      return iface !== undefined ? this.addressReady(dev, iface) : !this.waitsForLease(dev);
+    }
     if (cond.indexOf('route:') === 0) {
       const [dev, vrf, a] = cond.slice(6).split('|');
       const ip = parseAddress(a);

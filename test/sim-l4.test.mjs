@@ -110,8 +110,8 @@ test('ICMP: an echo answered; net unreachable from the router without a route; a
   // the dot's label names the error and its sender
   assert.ok(s.engine.flights.some((f) => f.label === 'ICMP Net Unreachable from 10.0.1.1'));
   const bh = run(s, { from: 'pc', to: '198.51.100.7', kind: 'icmp' });
-  assert.match(bh.result, /^no answer within 5 s/);
-  assert.ok(ev(s, (x) => /a blackhole route \(silently, no ICMP error\)/.test(x.detail)).length === 1);
+  assert.match(bh.result, /^no answer within 5 s .*; the last of its packets was dropped at r1: a blackhole route/);
+  assert.ok(ev(s, (x) => x.kind === 'drop' && /a blackhole route \(silently, no ICMP error\)/.test(x.detail)).length === 1);
 });
 
 test('ICMP: TTL exceeded in a routing loop; host unreachable when ARP fails (from the router; the sender’s own failure without ICMP)', () => {
@@ -416,7 +416,7 @@ test('broadcast: a ping to the subnet broadcast is answered only where broadcast
   // a directed broadcast from h9: dropped at r1 (off by default) …
   const off = run(s, { from: 'h9', to: '10.0.0.255', kind: 'icmp' });
   assert.match(off.result, /^no answer/);
-  assert.ok(ev(s, (x) => /r1 drops the directed broadcast to 10\.0\.0\.255 \(forward directed broadcasts Off \(default\); RFC 2644\)/.test(x.detail)).length === 1);
+  assert.ok(ev(s, (x) => x.kind === 'drop' && /r1 drops the directed broadcast to 10\.0\.0\.255 \(forward directed broadcasts Off \(default\); RFC 2644\)/.test(x.detail)).length === 1);
   // … sent on as a broadcast when it is on
   const on = sim(LAN('', ', simulation: {directed_broadcast: "on"}'));
   on.runTo(3000);

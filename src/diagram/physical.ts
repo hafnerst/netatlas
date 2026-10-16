@@ -13,7 +13,7 @@
  *   its box (model/addresses.ts), each named by its interface, so its owner
  *   is never in doubt and no floating label can cover it.
  */
-import { CBox, Pt, Rect, boxRect, rectsOverlap, segmentHitsRect, textWidth, unionRect } from '../layout/geometry';
+import { CBox, Pt, Rect, boxRect, polylineCrossings, rectsOverlap, segmentHitsRect, textWidth, unionRect } from '../layout/geometry';
 import { entryTexts, linkLabelExtraFields, linkLabelText, linkTagNote, portLinks } from '../layout/input';
 import { GROUP_PAD, PORT_FONT, PORT_LABEL_GAP, PhysicalLayout, PortPos, assignPorts, physicalListH, spareChipFlow } from '../layout/physical';
 import { ChipFlow, DEVICE_ICON, DEVICE_TEXT_X, ENTRY_FONT, GROUP_KIND_SIZE, ENTRY_GAP, ENTRY_LH, ENTRY_MARGIN, ENTRY_PAD_X, ENTRY_PAD_Y, IFCHIP_FONT, IFCHIP_H, IFCHIP_PAD, chipStripH, deviceBody, entriesSize, entryBox, groupHeader, linkLabelBox } from '../layout/sizes';
@@ -43,6 +43,8 @@ export interface ViewOptions {
 export interface SceneResult {
   root: VNode;
   bounds: Rect;
+  /** the physical view: each cable's points, port to port (tests measure crossings with them) */
+  routes?: Map<string, Pt[]>;
   /**
    * What a reader would see as overlapping: labels that found no free place
    * and pairs of overlapping nodes (after moving nodes by hand). 0 after
@@ -233,12 +235,17 @@ function portLabelBox(p: PortPos): { anchor: string; lines: PortLabelLine[]; rec
   return { anchor, lines, rect: lines.length ? unionRect(lines.map((l) => l.rect)) : { x: p.x, y: p.y, w: 0, h: 0 } };
 }
 
+/** What a cable crossing another one costs, in the choice of its way around a box: a long way round is better than a crossing. */
+export const ROUTE_CROSSING_COST = 400;
+
 /**
  * Way points between `s` and `e` that lead around the boxes the straight
  * line would pass through (at most a few bends), `m` clear of their corners.
- * Used by both views.
+ * Of the ways around a box the shortest is taken, a way that crosses one of
+ * `avoid` (the other cables) costing ROUTE_CROSSING_COST more per crossing;
+ * on a tie the first in a fixed order (deterministic). Used by both views.
  */
-export function detour(s: Pt, e: Pt, obstacles: Rect[], depth: number, m = 12): Pt[] {
+export function detour(s: Pt, e: Pt, obstacles: Rect[], depth: number, m = 12, avoid: Array<[Pt, Pt]> = []): Pt[] {
   if (depth >= 4) return [];
   let hit: Rect | null = null;
   let hitD = Infinity;
@@ -265,12 +272,12 @@ export function detour(s: Pt, e: Pt, obstacles: Rect[], depth: number, m = 12): 
     ways.push([corners[i], corners[j]], [corners[j], corners[i]]);
   }
   const usable = ways
-    .map((w, i) => ({ w, i, cost: len(s, w[0]) + (w.length > 1 ? len(w[0], w[1]) : 0) + len(w[w.length - 1], e) }))
+    .map((w, i) => ({ w, i, cost: len(s, w[0]) + (w.length > 1 ? len(w[0], w[1]) : 0) + len(w[w.length - 1], e) + (avoid.length ? ROUTE_CROSSING_COST * polylineCrossings([s, ...w, e], avoid) : 0) }))
     .filter((x) => clear(s, x.w[0]) && clear(x.w[x.w.length - 1], e))
     .sort((p, q) => p.cost - q.cost || p.i - q.i);
   if (!usable.length) return [];
   const w = usable[0].w;
-  return [...detour(s, w[0], obstacles, depth + 1, m), ...w, ...detour(w[w.length - 1], e, obstacles, depth + 1, m)];
+  return [...detour(s, w[0], obstacles, depth + 1, m, avoid), ...w, ...detour(w[w.length - 1], e, obstacles, depth + 1, m, avoid)];
 }
 
 /**
@@ -278,7 +285,7 @@ export function detour(s: Pt, e: Pt, obstacles: Rect[], depth: number, m = 12): 
  * around the device boxes and around `ports` (the squares and labels of
  * the other ports), so it never runs across another port of a device.
  */
-export function cableRoute(pa: PortPos, pb: PortPos, boxes: Map<string, Rect>, ports: Rect[] = []): Pt[] {
+export function cableRoute(pa: PortPos, pb: PortPos, boxes: Map<string, Rect>, ports: Rect[] = [], avoid: Array<[Pt, Pt]> = []): Pt[] {
   const facing = pa.nx === -pb.nx && pa.ny === -pb.ny;
   const a = { x: pa.x, y: pa.y };
   const b = { x: pb.x, y: pb.y };
@@ -298,7 +305,7 @@ export function cableRoute(pa: PortPos, pb: PortPos, boxes: Map<string, Rect>, p
   const covered = (r: Rect, o: Rect): boolean => r.x >= o.x && r.y >= o.y && r.x + r.w <= o.x + o.w && r.y + r.h <= o.y + o.h;
   const around = Array.from(boxes.values());
   const obstacles = around.concat(ports.filter((r) => !inside(sa, r) && !inside(sb, r) && !around.some((o) => covered(r, o))));
-  return [a, sa, ...detour(sa, sb, obstacles, 0), sb, b];
+  return [a, sa, ...detour(sa, sb, obstacles, 0, 12, avoid), sb, b];
 }
 
 export function renderPhysical(model: Model, layout: PhysicalLayout, opts: ViewOptions): SceneResult {
@@ -380,11 +387,26 @@ export function renderPhysical(model: Model, layout: PhysicalLayout, opts: ViewO
     for (const p of ports) if (p.device === id) parts.push(...(portArea.get(p.key) || []));
     withPorts.set(id, unionRect(parts));
   });
+  // Each cable is routed twice: alone, then knowing where the others run (their first ways), so that
+  // where it must go around a box it takes a side that crosses none of them when it can.
   const routes = new Map<string, Pt[]>();
-  for (const { l, pa, pb } of byId) {
+  const aroundOf = (pa: PortPos, pb: PortPos): Map<string, Rect> => {
     const around = new Map<string, Rect>();
     obstacles.forEach((r, id) => around.set(id, id === pa.device || id === pb.device ? r : (withPorts.get(id) as Rect)));
-    routes.set(l.id, cableRoute(pa, pb, around, otherPorts([pa.key, pb.key])));
+    return around;
+  };
+  for (const { l, pa, pb } of byId) routes.set(l.id, cableRoute(pa, pb, aroundOf(pa, pb), otherPorts([pa.key, pb.key])));
+  const first = new Map(routes);
+  for (const { l, pa, pb } of byId) {
+    const pts = first.get(l.id) as Pt[];
+    // (a straight cable has no way to choose)
+    if (pts.length <= 2) continue;
+    const avoid: Array<[Pt, Pt]> = [];
+    first.forEach((q, id) => {
+      if (id === l.id) return;
+      for (let k = 0; k + 1 < q.length; k++) avoid.push([q[k], q[k + 1]]);
+    });
+    routes.set(l.id, cableRoute(pa, pb, aroundOf(pa, pb), otherPorts([pa.key, pb.key]), avoid));
   }
   // an aggregate's name keeps clear of the cables
   routes.forEach((pts) => {
@@ -503,6 +525,7 @@ export function renderPhysical(model: Model, layout: PhysicalLayout, opts: ViewO
 
   return {
     conflicts: placer.conflicts + nodeOverlaps(Array.from(boxes.values()).map((b) => boxRect(b))),
+    routes,
     root: h('g', { class: 'scene scene-physical' }, [
       h('g', { class: 'layer-groups' }, groupNodes),
       h('g', { class: 'layer-links' }, linkNodes),

@@ -39,6 +39,8 @@ test('paused: Send sends at the current time and says it starts when the simulat
     assert.equal(before.shown, 0, 'no protocol ticked');
     assert.equal(before.sendPlay, true, 'Send and play is offered while paused');
     await fill(page, 'pc1', 'srv', 'icmp');
+    // (the Actions panel scrolls to the button, as one does)
+    await page.eval(`document.getElementById('sim-t-send').scrollIntoView({ block: 'nearest' }), true`);
     await page.click('#sim-t-send');
     await page.settle(150);
     const s = await page.eval(`(() => { const c = netatlas.simController(); const t = c.sim.tests()[0];
@@ -53,6 +55,8 @@ test('paused: Send sends at the current time and says it starts when the simulat
     assert.ok(s.labels.some((l) => /^Test · ICMP Echo → /.test(l)), s.labels.join(' | '));
     // Send and play: another test, and it plays
     await fill(page, 'pc1', '203.0.113.80', 'icmp');
+    // (the Actions panel scrolls to the button, as one does)
+    await page.eval(`document.getElementById('sim-t-sendplay').scrollIntoView({ block: 'nearest' }), true`);
     await page.click('#sim-t-sendplay');
     await page.settle(200);
     const p = await page.eval(`(() => { const c = netatlas.simController(); return { playing: c.playing, msg: document.getElementById('sim-t-msg').textContent, hidden: document.getElementById('sim-t-sendplay').hidden, n: c.sim.tests().length }; })()`);

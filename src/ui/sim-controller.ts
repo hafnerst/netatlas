@@ -1019,7 +1019,7 @@ export class SimController implements SimulationMode {
       const tabs = this.deviceTables(dev);
       const show: { [k in DevTable]: string } = { arp: 'Show ARP table', mac: 'Show MAC table', conn: 'Show connections', fw: 'Show sessions', igmp: 'Show IGMP groups', mroute: 'Show multicast routes', snoop: 'Show multicast table', dhcp: 'Show DHCP leases', dnscache: 'Show DNS cache', dnszone: 'Show DNS zone' };
       for (const k of ['arp', 'mac', 'conn', 'fw'] as DevTable[]) if (tabs.indexOf(k) >= 0) items.push({ label: show[k], act: () => void this.showTable(k, dev) });
-      if (d && d.arp) items.push({ label: 'Send test…', act: () => this.sendTestFrom(dev) });
+      items.push({ label: 'Send test…', act: () => this.sendTestFrom(dev) });
       // multicast: its groups and streams, a router's IGMP groups and multicast routes, a switch's multicast table
       for (const k of ['igmp', 'mroute', 'snoop'] as DevTable[]) if (tabs.indexOf(k) >= 0) items.push({ label: show[k], act: () => void this.showTable(k, dev) });
       // DHCP and DNS
@@ -1167,7 +1167,11 @@ export class SimController implements SimulationMode {
     if (!box) return;
     const from = box.querySelector('#sim-t-from') as HTMLSelectElement | null;
     if (from) {
+      this.fillSources(box);
       from.value = dev;
+      const via = box.querySelector('#sim-t-via') as HTMLSelectElement | null;
+      if (via) via.value = '';
+      this.fillSources(box);
       this.fillTargets(box);
     }
     const to = box.querySelector('#sim-t-to') as HTMLInputElement | null;
@@ -1184,7 +1188,7 @@ export class SimController implements SimulationMode {
    * it is sent at the current time and moves when the simulation plays
    * (`play`: Send and play).
    */
-  sendTest(o: { from: string; to: string; kind: TestKind; port?: number; size?: number; df?: boolean; keep?: boolean }, play = false): string {
+  sendTest(o: { from: string; via?: string; to: string; kind: TestKind; port?: number; size?: number; df?: boolean; keep?: boolean }, play = false): string {
     const t = this.sim.sendTest(o);
     this.testsKey = '';
     this.logKey = '';
@@ -1312,8 +1316,8 @@ export class SimController implements SimulationMode {
       ]),
     );
     // Send test
-    const tFrom = el(doc, 'select', { id: 'sim-t-from' }) as HTMLSelectElement;
-    for (const d of this.sim.tableDevices()) if (d.arp) tFrom.appendChild(el(doc, 'option', { value: d.id }, [d.id]));
+    const tFrom = el(doc, 'select', { id: 'sim-t-from', 'aria-describedby': 'sim-t-src' }) as HTMLSelectElement;
+    const tVia = el(doc, 'select', { id: 'sim-t-via', 'aria-describedby': 'sim-t-src' }) as HTMLSelectElement;
     const tTo = el(doc, 'input', { type: 'text', id: 'sim-t-to', list: 'sim-t-list', autocomplete: 'off', spellcheck: 'false', placeholder: 'device, address, broadcast, group' }) as HTMLInputElement;
     const tKind = el(doc, 'select', { id: 'sim-t-kind' }) as HTMLSelectElement;
     for (const [v, l] of [['icmp', 'ICMP (ping)'], ['tcp', 'TCP'], ['udp', 'UDP']]) tKind.appendChild(el(doc, 'option', { value: v }, [l]));
@@ -1329,7 +1333,20 @@ export class SimController implements SimulationMode {
     const more = el(doc, 'div', { class: 'sim-test-form' }, [lab('sim-t-size', 'Data'), el(doc, 'span', { class: 'pinput' }, [tSize, el(doc, 'span', { class: 'punit' }, ['bytes'])]), el(doc, 'span'), el(doc, 'label', { class: 'check' }, [tDf, ' Don’t fragment (IPv4)']), el(doc, 'span'), el(doc, 'label', { class: 'check' }, [tKeep, ' TCP: keep open (keepalive)'])]);
     box.appendChild(
       this.sec(doc, 'sim-test', 'Send test', [
-        el(doc, 'div', { class: 'sim-test-form' }, [lab('sim-t-from', 'From'), tFrom, lab('sim-t-to', 'To'), tTo, lab('sim-t-kind', 'Type'), tKind, lab('sim-t-port', 'Port'), tPort]),
+        el(doc, 'div', { class: 'sim-test-form' }, [
+          lab('sim-t-from', 'From'),
+          tFrom,
+          el(doc, 'label', { for: 'sim-t-via', id: 'sim-t-via-l' }, ['Interface']),
+          tVia,
+          // the source's state, right under it (across both columns)
+          el(doc, 'p', { id: 'sim-t-src', class: 'small sim-t-src', role: 'status' }, ['']),
+          lab('sim-t-to', 'To'),
+          tTo,
+          lab('sim-t-kind', 'Type'),
+          tKind,
+          lab('sim-t-port', 'Port'),
+          tPort,
+        ]),
         this.disclosure(doc, 'sim-t-more', 'More options', more),
         el(doc, 'datalist', { id: 'sim-t-list' }),
         el(doc, 'div', { class: 'sp-row' }, [tSend, tSendPlay]),
@@ -1342,7 +1359,13 @@ export class SimController implements SimulationMode {
     };
     tKind.addEventListener('change', sync);
     sync();
-    tFrom.addEventListener('change', () => this.fillTargets(box));
+    // a new source: its interfaces and state, and its destinations; nothing else in the form changes
+    tFrom.addEventListener('change', () => {
+      tVia.value = '';
+      this.fillSources(box);
+      this.fillTargets(box);
+    });
+    tVia.addEventListener('change', () => this.fillSources(box));
     const send = (play: boolean): void => {
       const size = tSize.value.trim() === '' ? undefined : Number(tSize.value);
       const port = Number(tPort.value);
@@ -1362,7 +1385,7 @@ export class SimController implements SimulationMode {
         tSize.focus();
         return;
       }
-      msg.textContent = this.sendTest({ from: tFrom.value, to: tTo.value, kind: tKind.value as TestKind, port, size, df: tDf.checked, keep: tKeep.checked }, play);
+      msg.textContent = this.sendTest({ from: tFrom.value, via: tVia.value || undefined, to: tTo.value, kind: tKind.value as TestKind, port, size, df: tDf.checked, keep: tKeep.checked }, play);
     };
     tSend.addEventListener('click', () => send(false));
     tSendPlay.addEventListener('click', () => send(true));
@@ -1374,7 +1397,62 @@ export class SimController implements SimulationMode {
     });
     // the selected device's Simulation settings (collapsed until opened)
     box.appendChild(el(doc, 'div', { id: 'sim-act-attrs', class: 'inspector sim-live' }));
+    this.fillSources(box);
     this.fillTargets(box);
+  }
+
+  /**
+   * The Send test sources as the simulation has them now: every device (one that can't send listed
+   * disabled, with the reason), the chosen device's interfaces when it has several, and its state
+   * (its address, or its DHCP lease, or why it has none). Kept current while the simulation runs;
+   * what is chosen stays chosen.
+   */
+  private fillSources(box: HTMLElement): void {
+    const doc = this.host.doc;
+    const from = box.querySelector('#sim-t-from') as HTMLSelectElement | null;
+    const via = box.querySelector('#sim-t-via') as HTMLSelectElement | null;
+    const status = box.querySelector('#sim-t-src') as HTMLElement | null;
+    if (!from || !via || !status) return;
+    const sources = this.sim.testSources();
+    const key = sources.map((x) => `${x.id}|${x.ok}|${x.reason}|${x.ifaces.map((i) => i.id + i.status).join(';')}`).join('/');
+    if (from.getAttribute('data-key') !== key) {
+      from.setAttribute('data-key', key);
+      const was = from.value;
+      while (from.firstChild) from.removeChild(from.firstChild);
+      for (const x of sources) {
+        const o = el(doc, 'option', { value: x.id }, [x.ok ? x.id : `${x.id} — can't send: ${x.reason}`]) as HTMLOptionElement;
+        if (!x.ok) o.disabled = true;
+        from.appendChild(o);
+      }
+      const first = sources.find((x) => x.ok);
+      from.value = was && sources.some((x) => x.id === was) ? was : first ? first.id : '';
+    }
+    const src = sources.find((x) => x.id === from.value);
+    // the interface: as the route chooses, or one of its interfaces (shown when it has several)
+    const ifs = src ? src.ifaces : [];
+    const vk = `${from.value}|${ifs.map((i) => i.id).join(',')}`;
+    if (via.getAttribute('data-key') !== vk) {
+      via.setAttribute('data-key', vk);
+      const was = via.value;
+      while (via.firstChild) via.removeChild(via.firstChild);
+      via.appendChild(el(doc, 'option', { value: '' }, ['As its routes choose']));
+      for (const i of ifs) via.appendChild(el(doc, 'option', { value: i.id }, [i.dhcp ? `${i.id} (DHCP)` : i.id]));
+      via.value = ifs.some((i) => i.id === was) ? was : '';
+    }
+    const many = ifs.length > 1;
+    via.hidden = !many;
+    const vl = box.querySelector('#sim-t-via-l') as HTMLElement | null;
+    if (vl) vl.hidden = !many;
+    let text = '';
+    if (!src) text = 'No device of the model can send a test.';
+    else if (!src.ok) text = `${src.id} can't send a test: ${src.reason}.`;
+    else {
+      const shown = via.value ? ifs.filter((i) => i.id === via.value) : ifs;
+      text = shown.map((i) => `${src.id}:${i.id}: ${i.status}`).join(' · ');
+      if (!via.value && !shown.some((i) => i.ready)) text += '. A test waits for the lease, and says so if DHCP gets no answer.';
+    }
+    if (status.textContent !== text) status.textContent = text;
+    status.setAttribute('data-state', !src || !src.ok ? 'blocked' : ifs.some((i) => i.ready) ? 'ready' : 'waiting');
   }
 
   /** The Actions panel's object part: its events as buttons, a device's interfaces and multicast forms. */
@@ -1756,6 +1834,9 @@ export class SimController implements SimulationMode {
         ul.appendChild(li);
       }
     }
+    // the Send test sources (a lease bound or lost, a device powered off …)
+    const ab = this.host.actionsBox ? this.host.actionsBox() : null;
+    if (ab) this.fillSources(ab);
     // the latest tests
     const tl = q('sim-tests');
     const tests = this.sim.tests().slice(0, 6);

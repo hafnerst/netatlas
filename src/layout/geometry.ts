@@ -128,3 +128,23 @@ export function segmentHitsRect(a: Pt, b: Pt, r: Rect): boolean {
   };
   return clip(-dx, a.x - r.x) && clip(dx, r.x + r.w - a.x) && clip(-dy, a.y - r.y) && clip(dy, r.y + r.h - a.y) && t0 <= t1;
 }
+
+/**
+ * Do two segments cross: each passes properly from one side of the other to its other side? Segments
+ * that only touch (a shared end, an end on the other segment) or lie on one line don't cross: two
+ * cables leaving one port, or meeting at one device, are not a crossing.
+ */
+export function segmentsCross(a: Pt, b: Pt, c: Pt, d: Pt): boolean {
+  const side = (p: Pt, q: Pt, r: Pt): number => {
+    const v = (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x);
+    return v > 1e-6 ? 1 : v < -1e-6 ? -1 : 0;
+  };
+  return side(a, b, c) * side(a, b, d) < 0 && side(c, d, a) * side(c, d, b) < 0;
+}
+
+/** How often a polyline crosses the given segments (see segmentsCross). */
+export function polylineCrossings(pts: Pt[], segs: Array<[Pt, Pt]>): number {
+  let n = 0;
+  for (let i = 0; i + 1 < pts.length; i++) for (const [c, d] of segs) if (segmentsCross(pts[i], pts[i + 1], c, d)) n++;
+  return n;
+}

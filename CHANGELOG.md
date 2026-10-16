@@ -240,6 +240,16 @@ there is no conversion of files written for the earlier drafts.
 
 ### Added
 
+- **Send test's sources for every device.** **From** lists every device;
+  one that can't send (no IP stack by the capability resolver, or no
+  interface with an address or DHCP) is listed greyed with the reason. Under
+  it the source's state, kept current: its address, or a DHCP client's lease
+  (server, gateway, DNS) with its Wi-Fi network and VLAN, or why it has
+  none. **Interface** chooses the interface a device with several sends
+  from. **Send test…** is in every device's menu.
+- **A timed-out test says where it ended:** the last drop of one of its
+  packets (a firewall's policy, no route, a VLAN a port doesn't carry).
+
 - **A curated example catalog** (one change across the app): the **File**
   menu offers nine examples instead of twenty-four, one representative model
   per kind of network — enterprise WAN, enterprise campus, data center,
@@ -972,6 +982,18 @@ there is no conversion of files written for the earlier drafts.
 
 ### Changed
 
+- **Auto-arrange orders rows by exchanges too**, as it already did blocks:
+  two devices of a row are exchanged when that makes the cabling shorter
+  and less crossed, and a cable whose straight line runs through a third
+  device counts against a placement. All three strategies start from this
+  ordering. Arranging a model of a few hundred devices takes longer (about
+  1 s for 300 devices, 0.7 s before); above 400 devices the exchanges are
+  skipped.
+- **Cables go around a device on the side that crosses nothing**, when
+  either side would do: each cable is routed again knowing where the others
+  run. Over all examples, crossings fell from 26 to 15 (Default) and from
+  24 to 14 (Spacious).
+
 - **VPN gateway** is the display name of the type `vpn_gateway` (it was
   *VPN Gateway*), in sentence case like *Access point* and *Load balancer*:
   every place shows the registry's name, and a type named inside a sentence
@@ -1233,6 +1255,16 @@ live protocol simulation replaces them.
   failure are tool windows now).
 
 ### Fixed
+
+- **Send test left out DHCP clients.** Its source list kept only devices
+  with a configured address, so a client like *guest-phone* in
+  `private-house.yaml` could not be chosen, and the list was built once.
+  The engine could already send from it (the test waited for the lease).
+- **A test waiting for a DHCP lease waited forever** when DHCP got no
+  answer; it now ends *not sent* with the reason.
+- **`private-house.yaml`: the core's cable to the DSL router crossed its
+  cable to the NAS** (Default and Spacious): the cable went around the NAS
+  on the side of the NAS cable.
 
 - **The Objects list's headings moved when a section was folded or
   unfolded.** A folded section had a smaller top margin than an open one
