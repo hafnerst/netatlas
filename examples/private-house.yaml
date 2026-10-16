@@ -1,0 +1,312 @@
+# netatlas example: a private house on three floors with Wi-Fi on every floor.
+#
+# The floors are groups inside the house: the Basement, the First floor
+# (above the basement) and the Second floor (above the basement, the top).
+# Every device sits in the floor where it stands, also when its cable runs to
+# a switch on another floor.
+#
+# WAN edge — a combined DSL modem/router (dsl-router, Basement). It
+# terminates the VDSL line towards the provider (PPPoE: the cable's label;
+# NetAtlas has no DSL or PPPoE model, the provider is one Layer 3 hop, the
+# Cloud "isp"), translates the house's addresses to its public one (its NAT
+# service, PAT) and filters (its firewall policy). Its type is Firewall
+# because that is the type whose policy NetAtlas enforces; its kind says what
+# it is. It also answers DNS for the house (home.arpa, the rest forwarded to
+# the provider).
+#
+# Inside — the Layer 3 switch core (Basement) is the gateway of every VLAN
+# and the DHCP server of all three Wi-Fi networks. Each network is a VLAN
+# (the same mapping on every access point and switch) in its own VRF:
+#
+#   Wi-Fi network  SSID         VLAN  subnet            VRF
+#   Internal       Home         10    192.168.10.0/24   default
+#   IoT            Home-IoT     20    192.168.20.0/24   iot
+#   Guest          Home-Guest   30    192.168.30.0/24   guest
+#   (management)   –            99    192.168.99.0/24   default
+#
+# The core routes inside each VRF only: traffic between the zones, and to
+# the Internet, leaves it through the zone's transit VLAN (110, 120, 130) on
+# the one trunk to the DSL router, whose policy decides. The policy is the
+# relations through it: each zone's devices may open HTTPS to the Internet
+# (the web server), nothing else crosses between zones (default action:
+# drop). So Guest and IoT reach the Internet but neither Internal nor each
+# other, and IoT can't open anything in Internal (the NAS). Management
+# (VLAN 99: the access points, the distribution switch) is routed with
+# Internal only.
+#
+# Wiring: the Basement access point on the core; the Second-floor switch
+# dist on the core; the First- and Second-floor access points on dist. Each
+# access point has one wired uplink, a trunk with VLANs 10, 20, 30 and 99
+# (all tagged), and one radio that carries all three networks.
+#
+# The physical view is drawn as a cross-section of the house (tier: the row
+# of each device): the Second floor at the top, the First floor, the
+# Basement, and the provider's line coming in below it.
+#
+# Simulate ▾ → Start simulation…: the leases (each client in its network's
+# VLAN), the laptop's NAS session by name, HTTPS to the web server from every
+# zone (PAT), the guest phone's and the TV's attempts at the NAS dropped by
+# the DSL router. Fail l-core-dist: both upper-floor access points lose
+# their uplink.
+netatlas: 1
+title: Private house — three floors, Wi-Fi on VLANs
+description: |
+  A DSL modem/router with NAT and a firewall, a Layer 3 switch in the
+  basement as the core, a distribution switch on the second floor and an
+  access point on every floor, each with Internal, IoT and Guest on
+  VLANs 10, 20 and 30 over one uplink.
+
+groups:
+  - id: house
+    label: House
+    kind: building
+  - id: basement
+    label: Basement
+    kind: floor
+    parent: house
+  - id: floor1
+    label: First floor (above the basement)
+    kind: floor
+    parent: house
+  - id: floor2
+    label: Second floor (top)
+    kind: floor
+    parent: house
+  - id: provider
+    label: Provider and Internet
+    kind: provider
+
+networks:
+  - {id: internal, label: Internal, cidr: 192.168.10.0/24, vlan: 10}
+  - {id: iot, label: IoT, cidr: 192.168.20.0/24, vlan: 20}
+  - {id: guest, label: Guest, cidr: 192.168.30.0/24, vlan: 30}
+  - {id: mgmt, label: Management, cidr: 192.168.99.0/24, vlan: 99}
+
+devices:
+  - id: isp
+    label: Provider (DSL)
+    type: cloud
+    tier: 8
+    kind: carrier
+    group: provider
+    interfaces: [house, web]
+  - id: web
+    label: web server (on the Internet)
+    type: server
+    tier: 9
+    group: provider
+    services:
+      application:
+        name: Web
+        ports: [tcp/443]
+    interfaces:
+      - {id: eth0, ip: 203.0.113.80/24}
+  - id: dsl-router
+    label: DSL modem/router
+    type: firewall
+    tier: 7
+    kind: other
+    kind_label: DSL modem/router
+    role: edge
+    group: basement
+    services:
+      nat:
+        inside: [lan.110, lan.120, lan.130]
+        outside: [wan]
+        rules:
+          - {type: pat, source: 192.168.0.0/16}
+      dns:
+        zones:
+          - {name: home.arpa}
+        forwarders: [203.0.113.53]
+    interfaces:
+      - {id: wan, ip: 203.0.113.10/24, description: VDSL2 line (PPPoE session to the provider)}
+      - {id: lan}
+    logical_interfaces:
+      - {id: lan.110, type: virtual, vlan: 110, ip: 10.0.10.1/30, description: "transit to the core, Internal"}
+      - {id: lan.120, type: virtual, vlan: 120, ip: 10.0.20.1/30, description: "transit to the core, IoT"}
+      - {id: lan.130, type: virtual, vlan: 130, ip: 10.0.30.1/30, description: "transit to the core, Guest"}
+    routes:
+      - {prefix: 0.0.0.0/0, via: 203.0.113.1, name: the provider}
+      - {prefix: 192.168.10.0/24, via: 10.0.10.2, name: Internal}
+      - {prefix: 192.168.99.0/24, via: 10.0.10.2, name: management}
+      - {prefix: 192.168.20.0/24, via: 10.0.20.2, name: IoT}
+      - {prefix: 192.168.30.0/24, via: 10.0.30.2, name: Guest}
+  - id: core
+    label: core (Layer 3 switch)
+    type: switch
+    tier: 5
+    layer3: true
+    role: core
+    group: basement
+    services:
+      dhcp:
+        scopes:
+          - {network: internal, range: 192.168.10.100-192.168.10.199, gateway: 192.168.10.1, dns: [10.0.10.1], domain: home.arpa}
+          - {network: iot, range: 192.168.20.100-192.168.20.199, gateway: 192.168.20.1, dns: [10.0.20.1]}
+          - {network: guest, range: 192.168.30.100-192.168.30.199, gateway: 192.168.30.1, dns: [10.0.30.1]}
+    interfaces:
+      - {id: wan, vlans: [110, 120, 130], description: "trunk to the DSL router (transit VLANs, all tagged)"}
+      - {id: ap, vlans: [10, 20, 30, 99], description: the Basement access point}
+      - {id: up2, vlans: [10, 20, 30, 99], description: to the Second-floor switch}
+      - {id: nas, vlans: 10}
+    logical_interfaces:
+      - {id: Vlan10, type: virtual, vlan: 10, ip: 192.168.10.1/24}
+      - {id: Vlan20, type: virtual, vlan: 20, ip: 192.168.20.1/24, vrf: iot}
+      - {id: Vlan30, type: virtual, vlan: 30, ip: 192.168.30.1/24, vrf: guest}
+      - {id: Vlan99, type: virtual, vlan: 99, ip: 192.168.99.1/24}
+      - {id: Vlan110, type: virtual, vlan: 110, ip: 10.0.10.2/30}
+      - {id: Vlan120, type: virtual, vlan: 120, ip: 10.0.20.2/30, vrf: iot}
+      - {id: Vlan130, type: virtual, vlan: 130, ip: 10.0.30.2/30, vrf: guest}
+    routes:
+      - {prefix: 0.0.0.0/0, via: 10.0.10.1, name: Internal to the DSL router}
+      - {prefix: 0.0.0.0/0, via: 10.0.20.1, vrf: iot, name: IoT to the DSL router}
+      - {prefix: 0.0.0.0/0, via: 10.0.30.1, vrf: guest, name: Guest to the DSL router}
+  - id: ap-b
+    label: ap-b (Basement)
+    type: ap
+    tier: 6
+    kind: indoor
+    group: basement
+    services:
+      wireless:
+        networks:
+          - {id: internal, ssid: Home, vlan: 10, radio: radio0, security: wpa3_sae, passphrase: "<home-passphrase>"}
+          - {id: iot, ssid: Home-IoT, vlan: 20, radio: radio0, security: wpa2_psk, passphrase: "<iot-passphrase>"}
+          - {id: guest, ssid: Home-Guest, vlan: 30, radio: radio0, security: wpa2_psk, passphrase: "<guest-passphrase>"}
+    interfaces:
+      - {id: eth0, vlans: [10, 20, 30, 99]}
+      - {id: radio0}
+    logical_interfaces:
+      - {id: mgmt, type: virtual, vlan: 99, ip: 192.168.99.10/24}
+    routes:
+      - {prefix: 0.0.0.0/0, via: 192.168.99.1, name: default gateway}
+  - id: ap-1
+    label: ap-1 (First floor)
+    type: ap
+    tier: 3
+    kind: indoor
+    group: floor1
+    services:
+      wireless:
+        networks:
+          - {id: internal, ssid: Home, vlan: 10, radio: radio0, security: wpa3_sae, passphrase: "<home-passphrase>"}
+          - {id: iot, ssid: Home-IoT, vlan: 20, radio: radio0, security: wpa2_psk, passphrase: "<iot-passphrase>"}
+          - {id: guest, ssid: Home-Guest, vlan: 30, radio: radio0, security: wpa2_psk, passphrase: "<guest-passphrase>"}
+    interfaces:
+      - {id: eth0, vlans: [10, 20, 30, 99]}
+      - {id: radio0}
+    logical_interfaces:
+      - {id: mgmt, type: virtual, vlan: 99, ip: 192.168.99.11/24}
+    routes:
+      - {prefix: 0.0.0.0/0, via: 192.168.99.1, name: default gateway}
+  - id: dist
+    label: dist (Layer 2 switch)
+    type: switch
+    tier: 0
+    role: distribution
+    group: floor2
+    interfaces:
+      - {id: up, vlans: [10, 20, 30, 99], description: to the core in the Basement}
+      - {id: ap1, vlans: [10, 20, 30, 99], description: the First-floor access point}
+      - {id: ap2, vlans: [10, 20, 30, 99], description: the Second-floor access point}
+    logical_interfaces:
+      - {id: mgmt, type: virtual, vlan: 99, ip: 192.168.99.2/24}
+    routes:
+      - {prefix: 0.0.0.0/0, via: 192.168.99.1, name: default gateway}
+  - id: ap-2
+    label: ap-2 (Second floor)
+    type: ap
+    tier: 1
+    kind: indoor
+    group: floor2
+    services:
+      wireless:
+        networks:
+          - {id: internal, ssid: Home, vlan: 10, radio: radio0, security: wpa3_sae, passphrase: "<home-passphrase>"}
+          - {id: iot, ssid: Home-IoT, vlan: 20, radio: radio0, security: wpa2_psk, passphrase: "<iot-passphrase>"}
+          - {id: guest, ssid: Home-Guest, vlan: 30, radio: radio0, security: wpa2_psk, passphrase: "<guest-passphrase>"}
+    interfaces:
+      - {id: eth0, vlans: [10, 20, 30, 99]}
+      - {id: radio0}
+    logical_interfaces:
+      - {id: mgmt, type: virtual, vlan: 99, ip: 192.168.99.12/24}
+    routes:
+      - {prefix: 0.0.0.0/0, via: 192.168.99.1, name: default gateway}
+  - id: nas
+    label: nas (file server)
+    type: storage
+    tier: 6
+    kind: nas
+    group: basement
+    services:
+      storage:
+        protocols: [smb]
+    interfaces:
+      - {id: eth0, ip: 192.168.10.20/24}
+    dns_names:
+      - {name: nas.home.arpa, interfaces: [eth0]}
+    routes:
+      - {prefix: 0.0.0.0/0, via: 192.168.10.1, name: default gateway}
+  - id: tv
+    label: tv (smart TV)
+    type: endpoint
+    tier: 7
+    kind: other
+    kind_label: Smart TV
+    group: basement
+    simulation: {test_traffic: "on", test_targets: "203.0.113.80 tcp/443, 192.168.10.20 tcp/445", test_interval: 10}
+    interfaces:
+      - {id: wlan0, dhcp: true}
+  - id: phone
+    type: endpoint
+    tier: 4
+    kind: mobile
+    group: floor1
+    interfaces:
+      - {id: wlan0, dhcp: true}
+  - id: guest-phone
+    type: endpoint
+    tier: 4
+    kind: mobile
+    group: floor1
+    simulation: {test_traffic: "on", test_targets: "203.0.113.80 tcp/443, 192.168.10.20 tcp/445", test_interval: 10}
+    interfaces:
+      - {id: wlan0, dhcp: true}
+  - id: laptop
+    type: endpoint
+    tier: 2
+    kind: pc
+    group: floor2
+    simulation: {test_traffic: "on", test_targets: "nas.home.arpa tcp/445, 203.0.113.80 tcp/443", test_interval: 10}
+    interfaces:
+      - {id: wlan0, dhcp: true}
+  - id: thermostat
+    type: endpoint
+    tier: 2
+    kind: other
+    kind_label: Thermostat
+    group: floor2
+    interfaces:
+      - {id: wlan0, dhcp: true}
+
+links:
+  - {id: l-dsl, a: "dsl-router:wan", b: "isp:house", medium: dsl, speed: 100M, label: VDSL2 (PPPoE)}
+  - {id: l-web, a: "isp:web", b: "web:eth0", medium: fiber, speed: 10G}
+  - {id: l-router-core, a: "dsl-router:lan", b: "core:wan", speed: 1G}
+  - {id: l-core-apb, a: "core:ap", b: "ap-b:eth0", speed: 1G}
+  - {id: l-core-dist, a: "core:up2", b: "dist:up", speed: 1G, label: riser cable}
+  - {id: l-dist-ap1, a: "dist:ap1", b: "ap-1:eth0", speed: 1G}
+  - {id: l-dist-ap2, a: "dist:ap2", b: "ap-2:eth0", speed: 1G}
+  - {id: l-core-nas, a: "core:nas", b: "nas:eth0", speed: 1G}
+  - {id: w-tv, a: "ap-b:radio0", b: "tv:wlan0", medium: wireless, wireless_network: iot}
+  - {id: w-phone, a: "ap-1:radio0", b: "phone:wlan0", medium: wireless, wireless_network: internal}
+  - {id: w-guest-phone, a: "ap-1:radio0", b: "guest-phone:wlan0", medium: wireless, wireless_network: guest}
+  - {id: w-laptop, a: "ap-2:radio0", b: "laptop:wlan0", medium: wireless, wireless_network: internal}
+  - {id: w-thermostat, a: "ap-2:radio0", b: "thermostat:wlan0", medium: wireless, wireless_network: iot}
+
+relations:
+  # the DSL router's policy: each zone may open HTTPS to the Internet, one relation per zone (nothing between zones)
+  - {id: web-internal, protocol: https, label: Internet (Internal), endpoints: [laptop, phone, web]}
+  - {id: web-iot, protocol: https, label: Internet (IoT), endpoints: [tv, thermostat, web]}
+  - {id: web-guest, protocol: https, label: Internet (Guest), endpoints: [guest-phone, web]}

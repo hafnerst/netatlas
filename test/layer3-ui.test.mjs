@@ -17,7 +17,7 @@ import { root } from './helpers.mjs';
 import { findBrowser } from '../scripts/browser-selftest.mjs';
 import { openPage } from '../scripts/cdp.mjs';
 
-const url = pathToFileURL(join(root, 'dist', 'netatlas.html')).href;
+const url = pathToFileURL(join(root, 'build', 'netatlas-test.html')).href;
 const skip = findBrowser() ? false : 'no Chromium-based browser found (set NETATLAS_BROWSER)';
 
 async function edit(page, ref) {
@@ -29,8 +29,8 @@ test('Supports Layer 3: the checkbox, the protocols disabled with their reason o
   const page = await openPage(url, { width: 1440, height: 900 });
   try {
     await page.settle(150);
-    const ex = await page.eval(`Array.from(document.querySelectorAll('#menu-examples [data-example]')).findIndex((b) => /protocol-simulation/.test(b.textContent))`);
-    await page.eval(`localStorage.clear(), netatlas.loadExample(${ex}), true`);
+    const ex = 'protocol-simulation.yaml';
+    await page.eval(`localStorage.clear(), netatlas.loadExampleNamed(${JSON.stringify(ex)}), true`);
     await page.settle(150);
     await edit(page, 'device:acc-sw');
     const f = await page.eval(`(() => { const box = document.querySelector('#side-body input[data-act="layer3"]'); const lab = box.closest('label'); const fld = box.closest('.field');

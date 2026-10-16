@@ -14,7 +14,7 @@ import { root } from './helpers.mjs';
 import { findBrowser } from '../scripts/browser-selftest.mjs';
 import { openPage } from '../scripts/cdp.mjs';
 
-const url = pathToFileURL(join(root, 'dist', 'netatlas.html')).href;
+const url = pathToFileURL(join(root, 'build', 'netatlas-test.html')).href;
 const skip = findBrowser() ? false : 'no Chromium-based browser found (set NETATLAS_BROWSER)';
 
 async function edit(page, ref) {
@@ -42,8 +42,8 @@ test('the Edit tab: a hypervisor’s card, + VM with its Host picker, + Virtual 
   const page = await openPage(url, { width: 1440, height: 900 });
   try {
     await page.settle(150);
-    const ex = await page.eval(`Array.from(document.querySelectorAll('#menu-examples [data-example]')).findIndex((b) => /virtualization/.test(b.textContent))`);
-    await page.eval(`localStorage.clear(), netatlas.loadExample(${ex}), true`);
+    const ex = 'virtualization.yaml';
+    await page.eval(`localStorage.clear(), netatlas.loadExampleNamed(${JSON.stringify(ex)}), true`);
     await page.settle(200);
     const before = await page.eval(`netatlas.exportText()`);
     // the hypervisor's card: ticked, its configuration collapsible

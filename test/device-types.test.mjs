@@ -16,7 +16,7 @@ const SPEC = [
   ['Access point', 'ap'],
   ['Load balancer', 'load_balancer'],
   ['IDS/IPS', 'ids_ips'],
-  ['VPN Gateway', 'vpn_gateway'],
+  ['VPN gateway', 'vpn_gateway'],
   ['Security gateway', 'security_gateway'],
   ['Server', 'server'],
   ['Virtual machine', 'vm'],
@@ -32,7 +32,7 @@ const HOSTS = {
   vm: '    host: h\n    logical_interfaces: [{id: eth0, type: vnic, port_group: pg}]\n  - {id: h, type: server, services: {hypervisor: {platform: kvm, vswitches: [{name: vs, type: linux_bridge, port_groups: [{name: pg, vlans: 1}]}]}}}\n',
   container: '    host: h\n    logical_interfaces: [{id: eth0, type: veth, network: n}]\n  - {id: h, type: server, services: {container_engine: {engine: docker, networks: [{name: n, driver: none}]}}}\n',
 };
-// (what a type needs to be complete: an inline IDS/IPS its port pairs, a VPN Gateway its VPN, a Security gateway its policy, a System its purpose)
+// (what a type needs to be complete: an inline IDS/IPS its port pairs, a VPN gateway its VPN, a Security gateway its policy, a System its purpose)
 const NEEDS = {
   ids_ips: '    interfaces: [eth0, eth1]\n    port_pairs: [{a: eth0, b: eth1}]\n',
   vpn_gateway: '    services: {vpn: {operation: remote_access, technology: ipsec, listener: eth0, pool: 10.250.0.0/24, protected: [10.0.0.0/8]}}\n    interfaces: [{id: eth0, ip: 192.0.2.1/24}]\n',

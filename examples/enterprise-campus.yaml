@@ -18,7 +18,7 @@
 # Simulate ▾ → Start simulation…: the clients' leases through the relays,
 # CAPWAP keepalives, RADIUS requests, syslog messages and SNMP polls.
 netatlas: 1
-title: Campus — three tiers and controller-managed Wi-Fi
+title: Enterprise campus — three tiers and controller-managed Wi-Fi
 description: |
   Core, distribution and access switches by role; two controller-managed
   access points with Staff and Guest networks on VLANs; a services server
@@ -53,7 +53,7 @@ devices:
       ntp:
         upstreams: [10.20.30.10]
     interfaces:
-      - {id: d1, vlans: [10, 20, 30, 99]}
+      - {id: d1, vlans: [10, 20, 99]}
       - {id: s1, vlans: 30}
       - {id: s2, vlans: 99}
     logical_interfaces:
@@ -165,7 +165,7 @@ devices:
     type: endpoint
     kind: pc
     group: bldg-a
-    simulation: {test_traffic: "on", test_targets: "10.20.30.10 icmp", test_interval: 10}
+    simulation: {test_traffic: "on", test_targets: "srv.campus.example icmp", test_interval: 10}
     interfaces:
       - {id: wlan0, dhcp: true}
   - id: laptop2

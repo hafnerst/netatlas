@@ -15,7 +15,7 @@ import { findBrowser } from '../scripts/browser-selftest.mjs';
 import { openPage } from '../scripts/cdp.mjs';
 
 const P = loadJs('analysis/sim/pacing.js');
-const url = pathToFileURL(join(root, 'dist', 'netatlas.html')).href;
+const url = pathToFileURL(join(root, 'build', 'netatlas-test.html')).href;
 const skip = findBrowser() ? false : 'no Chromium-based browser found (set NETATLAS_BROWSER)';
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -58,8 +58,8 @@ test('the first packets and those a minute later take their configured screen ti
   const page = await openPage(url, { width: 1440, height: 900 });
   try {
     await page.settle(150);
-    const ex = await page.eval(`Array.from(document.querySelectorAll('#menu-examples [data-example]')).findIndex((b) => /protocol-simulation/.test(b.textContent))`);
-    await page.eval(`localStorage.clear(), sessionStorage.clear(), netatlas.loadExample(${ex}), netatlas.setView('physical'), true`);
+    const ex = 'protocol-simulation.yaml';
+    await page.eval(`localStorage.clear(), sessionStorage.clear(), netatlas.loadExampleNamed(${JSON.stringify(ex)}), netatlas.setView('physical'), true`);
     await page.settle(150);
     // start, recording from the first frame, and keep the main thread busy for 400 ms before that frame
     await page.eval(`(() => { netatlas.startProtocolSimulation({ params: {}, senders: netatlas.session.model.devices.map((d) => d.id) }); ${RECORD_BODY}; const t = performance.now(); while (performance.now() - t < 400) {} return true; })()`);

@@ -12,7 +12,7 @@ import { root } from './helpers.mjs';
 import { findBrowser } from '../scripts/browser-selftest.mjs';
 import { openPage } from '../scripts/cdp.mjs';
 
-const url = pathToFileURL(join(root, 'dist', 'netatlas.html')).href;
+const url = pathToFileURL(join(root, 'build', 'netatlas-test.html')).href;
 const skip = findBrowser() ? false : 'no Chromium-based browser found (set NETATLAS_BROWSER)';
 
 const GEO = `(() => { const w = document.getElementById('toolwin'); const r = w.getBoundingClientRect(); return { open: !w.hidden, x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height), docked: document.body.classList.contains('tw-docked'), vw: document.documentElement.clientWidth, vh: document.documentElement.clientHeight, scroll: document.documentElement.scrollWidth - document.documentElement.clientWidth + document.documentElement.scrollHeight - document.documentElement.clientHeight, id: netatlas.toolWindow(), active: document.activeElement.id || document.activeElement.className }; })()`;

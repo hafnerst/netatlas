@@ -16,7 +16,7 @@ import { root, load } from './helpers.mjs';
 import { findBrowser } from '../scripts/browser-selftest.mjs';
 import { openPage } from '../scripts/cdp.mjs';
 
-const url = pathToFileURL(join(root, 'dist', 'netatlas.html')).href;
+const url = pathToFileURL(join(root, 'build', 'netatlas-test.html')).href;
 const skip = findBrowser() ? false : 'no Chromium-based browser found (set NETATLAS_BROWSER)';
 const css = readFileSync(join(root, 'src', 'styles.css'), 'utf8');
 
@@ -67,8 +67,8 @@ for (const dark of [false, true]) {
     const page = await openPage(url, { width: 1280, height: 800, dark });
     try {
       await page.settle(150);
-      const ex = await page.eval(`Array.from(document.querySelectorAll('#menu-examples [data-example]')).findIndex((b) => /protocol-simulation/.test(b.textContent))`);
-      await page.eval(`localStorage.clear(), sessionStorage.clear(), netatlas.loadExample(${ex}), netatlas.setView('physical'), netatlas.fit(), true`);
+      const ex = 'protocol-simulation.yaml';
+      await page.eval(`localStorage.clear(), sessionStorage.clear(), netatlas.loadExampleNamed(${JSON.stringify(ex)}), netatlas.setView('physical'), netatlas.fit(), true`);
       await page.eval(`document.documentElement.getAttribute('data-theme') !== ${JSON.stringify(dark ? 'dark' : 'light')} && document.getElementById('theme-btn').click(), true`);
       await page.settle(100);
       await page.eval(`netatlas.startProtocolSimulation(), netatlas.simController().setPlaying(false), netatlas.simController().runTo(15000), true`);

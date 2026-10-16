@@ -44,8 +44,9 @@ import { compareAddr, comparePrefix, formatAddr, inPrefix, networkOf, prefixText
 import { virtualGateways } from './identity';
 import { sharedDomain, virtEnd, virtRefText } from './trace-virtual';
 import { cnetNetworkId, cnetRef, vethNetwork } from '../model/virtual';
+import { firewallDecision } from './fw-policy';
 import { decide, decideBreak, profileAt, rulesBetween, ruleServiceText, ruleText, domainOf } from './separation';
-import { deviceTypeLine, NO_DEVICE_TYPE } from '../model/device-types';
+import { deviceTypeInText, deviceTypeLine, NO_DEVICE_TYPE } from '../model/device-types';
 import {
   Connected,
   Decision,
@@ -932,12 +933,27 @@ function crossDenied(w: Walk, dev: Device, inPort: string | undefined, outPort: 
 function forwardDenied(w: Walk, dev: Device, inIface: string, outIface: string, notes: string[]): string | null {
   const c = capabilities(dev);
   if (c.securityGateway) return policyDenied(w, dev, inIface, outIface, notes);
+  // a firewall: its policy (the relations through it, its allow list), as the simulation applies it
+  if (c.firewallPolicy) {
+    if (!w.svc) {
+      notes.push(`${dev.id} filters what it forwards (the relations through it, its allow list): give a service to trace its decision`);
+      return null;
+    }
+    const owner = (a: IpAddr | undefined): string | null => {
+      if (!a) return null;
+      const h = holders(w.model, a, w.ctx, null);
+      return h.length ? h[0].device : null;
+    };
+    const d = firewallDecision(w.model, dev, owner(w.src), owner(w.dest), { proto: w.svc.proto, port: w.svc.port || 0 });
+    if (!d.ok) return d.text;
+    notes.push(d.text);
+  }
   if (c.vpnOnlyTransit && dev.vpn) {
     const v = dev.vpn;
     const tunnel = v.tunnels.indexOf(inIface) >= 0 || v.tunnels.indexOf(outIface) >= 0;
     const pool = v.pool !== undefined ? parsePrefix(v.pool) : null;
     const client = !!pool && ((w.src !== undefined && inPrefix(pool, w.src)) || inPrefix(pool, w.dest));
-    if (!tunnel && !client) return `${dev.id} is a VPN Gateway: it forwards only to and from its VPN (${v.tunnels.length ? 'tunnels ' + v.tunnels.join(', ') : 'remote-access clients in ' + (v.pool || 'its pool')}), not from ${inIface} to ${outIface}`;
+    if (!tunnel && !client) return `${dev.id} is a ${deviceTypeInText('vpn_gateway')}: it forwards only to and from its VPN (${v.tunnels.length ? 'tunnels ' + v.tunnels.join(', ') : 'remote-access clients in ' + (v.pool || 'its pool')}), not from ${inIface} to ${outIface}`;
     notes.push(tunnel ? `${dev.id} forwards it through its VPN (${v.tunnels.filter((t) => t === inIface || t === outIface).join(', ')})` : `${dev.id} forwards it for a remote-access client (${v.pool})`);
   }
   return null;
@@ -1292,7 +1308,7 @@ export function traceText(t: Trace, back?: Trace | null): string {
     else desc(back);
   }
   lines.push('');
-  lines.push('Model-based approximation: computed from the routes and adjacencies in the model, not a simulation of the protocols. A Security gateway’s policy, a VPN Gateway’s tunnels and paired ports are considered; firewall ACLs are not; NAT only for container bridges (SNAT out of the host, DNAT to published ports).');
+  lines.push('Model-based approximation: computed from the routes and adjacencies in the model, not a simulation of the protocols. A Security gateway’s policy, a firewall’s policy (the relations through it and its allow list, by the service you give), a VPN gateway’s tunnels and paired ports are considered; router ACLs are not; NAT for container bridges (SNAT out of the host, DNAT to published ports) and the NAT service.');
   return lines.join('\n');
 }
 

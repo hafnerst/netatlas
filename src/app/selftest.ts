@@ -20,10 +20,13 @@ import { traceText } from '../analysis/trace';
 import { addressingCsv } from '../ui/addressing';
 import { spofCsv, spofRows } from '../ui/spof';
 import { singlePointsOfFailure } from '../analysis/failure';
-import { EXAMPLES, FIXTURES } from '../generated/examples';
+import { EXAMPLES } from '../generated/examples';
+import { FIXTURES, INTERNAL_EXAMPLES } from '../generated/test-examples';
 import { PNG_MAX_PIXELS, PNG_MAX_SIDE, WritableFile, pngScale, svgToPng } from '../ui/files';
 import { App } from '../ui/app';
 import { contrast } from '../diagram/palette';
+import { drawnProblems as drawnProblemsOf } from './drawn-check';
+import { outlineStability } from './outline-check';
 import { legendOf } from '../diagram/legend';
 import { protocolEntriesOf } from '../analysis/sim/simulation';
 
@@ -34,6 +37,14 @@ interface Check {
 }
 
 const tick = (ms = 0): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/** Every example the test build has: the public catalog, then the internal test examples. */
+const ALL_EXAMPLES = EXAMPLES.concat(INTERNAL_EXAMPLES);
+
+/** An example (public or internal) by its file name. */
+function exampleNamed(name: string): { name: string; text: string } | undefined {
+  return ALL_EXAMPLES.find((e) => e.name === name);
+}
 
 /** The refs Find lists for a query (all of them). */
 function searchHits(model: Model, query: string): string[] {
@@ -106,68 +117,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
    * browser's real font metrics (getBBox): text outside its box, overlapping
    * boxes, labels on top of each other or of a node, a shortened label.
    */
-  const drawnProblems = (rootSel = '#viewport'): string[] => {
-    const root = q(rootSel) as unknown as SVGGElement;
-    const out: string[] = [];
-    type R = { x: number; y: number; w: number; h: number };
-    const bb = (e: Element): R => {
-      const b = (e as SVGGraphicsElement).getBBox();
-      return { x: b.x, y: b.y, w: b.width, h: b.height };
-    };
-    const inside = (a: R, b: R): boolean => a.x >= b.x - 1 && a.y >= b.y - 1 && a.x + a.w <= b.x + b.w + 1 && a.y + a.h <= b.y + b.h + 1;
-    const hit = (a: R, b: R): boolean => a.x + 1 < b.x + b.w && b.x + 1 < a.x + a.w && a.y + 1 < b.y + b.h && b.y + 1 < a.y + a.h;
-    const each = (sel: string, fn: (e: Element) => void): void => Array.prototype.forEach.call(root.querySelectorAll(sel), fn);
-    const boxed = (group: string, box: string, text: string): void =>
-      each(group, (g) => {
-        const frame = g.querySelector(box);
-        if (!frame) return;
-        Array.prototype.forEach.call(g.querySelectorAll(text), (t: Element) => {
-          if (!inside(bb(t), bb(frame))) out.push(`"${t.textContent}" leaves its box (${Math.round(bb(t).w)} > ${Math.round(bb(frame).w)}; text x ${Math.round(bb(t).x)}, box x ${Math.round(bb(frame).x)})`);
-        });
-      });
-    boxed('g.device', '.dev-box', 'text');
-    boxed('g.network', '.net-box', 'text');
-    // a group's title is drawn above the lines (in the label layer), inside its frame
-    each('g.group-label', (gl) => {
-      const frame = root.querySelector(`g.group[data-ref="${gl.getAttribute('data-ref')}"] .group-box`);
-      const t = gl.querySelector('.group-title');
-      if (frame && t && !inside(bb(t), bb(frame))) out.push(`"${t.textContent}" leaves its group frame`);
-    });
-    boxed('g.pill', '.pill-box', 'text');
-    boxed('g.loop-chip', 'rect', 'text');
-    boxed('g.dns-chip', 'rect', 'text');
-    each('text', (t) => {
-      if (/…$|\.\.\.$/.test(t.textContent || '')) out.push(`shortened text "${t.textContent}"`);
-    });
-    const nodes: Array<[string, R]> = [];
-    each('g.device .dev-box, g.network .net-box', (e) => nodes.push([(e.parentElement as Element).getAttribute('data-ref') || '', bb(e)]));
-    // (a guest's box lies wholly inside its host's: nesting, not an overlap)
-    for (let i = 0; i < nodes.length; i++) for (let j = i + 1; j < nodes.length; j++) if (hit(nodes[i][1], nodes[j][1]) && !inside(nodes[i][1], nodes[j][1]) && !inside(nodes[j][1], nodes[i][1])) out.push(`${nodes[i][0]} overlaps ${nodes[j][0]}`);
-    const labels: Array<[string, R]> = [];
-    each('g.pill .pill-box, text.link-label, text.member-label', (e) => labels.push([(e.textContent || (e.parentElement as Element).textContent || '').slice(0, 40), bb(e)]));
-    for (let i = 0; i < labels.length; i++) {
-      for (let j = i + 1; j < labels.length; j++) if (hit(labels[i][1], labels[j][1])) out.push(`labels overlap: "${labels[i][0]}" / "${labels[j][0]}"`);
-      for (const n of nodes) if (hit(labels[i][1], n[1])) out.push(`label "${labels[i][0]}" covers ${n[0]}`);
-    }
-    // the entries with the interfaces' addresses: their text inside their frame, the frame inside its device's box
-    boxed('g.if-entry', 'rect', 'text');
-    each('g.if-entry', (g) => {
-      const dev = root.querySelector(`g.device[data-ref="device:${(g.getAttribute('data-ref') || '').split(':')[1]}"] .dev-box`);
-      const frame = g.querySelector('rect');
-      if (dev && frame && !inside(bb(frame), bb(dev))) out.push(`entry ${g.getAttribute('data-ref')} leaves its device's box`);
-    });
-    // no text is drawn over other text: every pair of <text> elements, measured with the real font
-    const texts: Array<[string, R]> = [];
-    each('text', (t) => {
-      const r = bb(t);
-      if (r.w > 0 && r.h > 0) texts.push([(t.textContent || '').slice(0, 40), r]);
-    });
-    // (a text's box spans the font's whole ascent and descent, so the boxes of two lines set one under the
-    // other touch: what counts is an overlap of more than 30 % of a line's height, i.e. glyphs on glyphs)
-    const textHit = (a: R, b: R): boolean => Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x) > 1 && Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y) > 0.3 * Math.min(a.h, b.h);
-    for (let i = 0; i < texts.length; i++) for (let j = i + 1; j < texts.length; j++) if (textHit(texts[i][1], texts[j][1])) out.push(`text overlaps text: "${texts[i][0]}" / "${texts[j][0]}"`);
-    return out;
-  };
+  const drawnProblems = (rootSel = '#viewport'): string[] => drawnProblemsOf(doc, rootSel);
 
   /**
    * The addresses and identifiers of the model that the diagram on screen
@@ -271,7 +221,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
           labels.join('|') === 'New model|Open model…|Save model|Save model as…|Close model' && /Ctrl\+S$/.test(entries[2]) && /Ctrl\+Shift\+S$/.test(entries[3]) &&
           entries.length === 5 + EXAMPLES.length && ['#btn-save', '#btn-save-as', '#btn-close'].every((x) => (q(x) as HTMLButtonElement).disabled && /Open or create a model first|Close the current model/.test(q(x)!.title)) &&
           q('#btn-save')!.nextElementSibling === q('#btn-save-as') && q('#btn-save-as')!.nextElementSibling === q('#btn-close') &&
-          textsOf('#menu-examples .mi-label').join() === EXAMPLES.map((e) => e.name).join() && !q('#menu-examples .active-example') && /Examples/.test(q('#menu-examples-title')!.textContent || '') && EXAMPLES.length === 24 && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(menu!.textContent || '') && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(q('#empty')!.textContent || ''),
+          textsOf('#menu-examples .mi-label').join() === EXAMPLES.map((e) => e.name).join() && !q('#menu-examples .active-example') && /Examples/.test(q('#menu-examples-title')!.textContent || '') && EXAMPLES.length === 9 && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(menu!.textContent || '') && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(q('#empty')!.textContent || ''),
         entries.join(' | '),
       );
       menuBtn!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
@@ -354,7 +304,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
           'start screen: three ways to begin — New model, Open model… (also the drop target), Load example from a picker',
           /^New model/.test((newBtn.textContent || '').trim()) && /^Open model…/.test((openBtn.textContent || '').trim()) && /Choose a YAML file, or drop one here/.test(openBtn.textContent || '') && /drop one here/.test(openBtn.textContent || '') && openBtn.classList.contains('start-drop') &&
             doc.defaultView!.getComputedStyle(openBtn).borderTopStyle === 'dashed' && (q('#empty label[for="start-example"]') as HTMLElement).textContent === 'Load example' && options[0] === 'Choose an example…' && options.length === 1 + EXAMPLES.length &&
-            options.indexOf('Minimal example') === 3 && loadBtn.disabled && doc.querySelectorAll('#empty .start-card').length === 3 && [newBtn, openBtn, pick].every(shownNow),
+            options.indexOf('Private house — three floors, Wi-Fi on VLANs') === 5 && loadBtn.disabled && doc.querySelectorAll('#empty .start-card').length === 3 && [newBtn, openBtn, pick].every(shownNow),
           options.join(' | '),
         );
         check(
@@ -414,7 +364,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         doc.dispatchEvent(new DragEvent('dragleave', { bubbles: true }));
         check('dragging a file over the page marks the "Open model…" card as the drop target; the drag is taken over by the page', over.defaultPrevented && marked && !doc.body.classList.contains('dropping'), `${over.defaultPrevented} ${marked}`);
 
-        const good = dragEvent('drop', [new File([EXAMPLES[2].text], 'dropped.yaml', { type: 'application/yaml' })]);
+        const good = dragEvent('drop', [new File([exampleNamed('minimal.yaml')!.text], 'dropped.yaml', { type: 'application/yaml' })]);
         (q('header.topbar') as HTMLElement).dispatchEvent(good);
         await until(() => !!app.mdoc);
         check(
@@ -543,14 +493,14 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
             for (let n = 0; n < 300 && downloads.length === had; n++) await tick(10);
             const got = downloads.length > had ? downloads[downloads.length - 1] : undefined;
             names.push(got ? got.name : '?');
-            const said = new RegExp(`Exported “minimal-${view}\\.${fmt}”`).test(q('#toast')!.textContent || '');
+            const said = new RegExp(`Exported “datacenter-evpn-${view}\\.${fmt}”`).test(q('#toast')!.textContent || '');
             if (fmt === 'svg') same.push(enabled && closedAtOnce && said && !!got && got.text === expected && new RegExp(`Legend — ${view} view`).test(got.text) && new RegExp(`Networks — ${view} view`).test(got.text) && /class="svg-legend"/.test(got.text) && /class="svg-networks"/.test(got.text));
             else same.push(enabled && closedAtOnce && said && !!got && pictures.has(got.name) && pictures.get(got.name)!.size > 1000);
           }
         }
         check(
           'Export view as… → SVG / PNG exports whichever view is selected, named after the model and the view; the SVG has the same content as before (legend and Networks box); the menu closes and a message names the file',
-          names.join() === 'minimal-logical.svg,minimal-logical.png,minimal-physical.svg,minimal-physical.png' && same.every((x) => x) && exMenu.hidden && downloads.length === downloads.filter((d) => d.name).length,
+          names.join() === 'datacenter-evpn-logical.svg,datacenter-evpn-logical.png,datacenter-evpn-physical.svg,datacenter-evpn-physical.png' && same.every((x) => x) && exMenu.hidden && downloads.length === downloads.filter((d) => d.name).length,
           names.join() + ' ' + same.join(),
         );
         check('the zoom bar has only zoom controls left, and Focus on the selection', textsOf('.zoombar button').join('|') === '+|−|Fit|◎ Focus' && !q('.zoombar #save-svg'), textsOf('.zoombar button').join('|'));
@@ -576,7 +526,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         const enabled = !closeBtn.disabled;
         await choose();
         clean.push(`new:${!q('#modal[open]') && onStart()}`);
-        await app.loadFile(new File([EXAMPLES[2].text], 'mine.yaml'));
+        await app.loadFile(new File([exampleNamed('minimal.yaml')!.text], 'mine.yaml'));
         await choose();
         clean.push(`file:${!q('#modal[open]') && onStart()}`);
         app.loadExample(0);
@@ -585,7 +535,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         check('Close model is available once a model is open, and a model without unsaved changes closes at once and shows the start screen (new model, opened file, example)', enabled && closeBtn.disabled && clean.join() === 'new:true,file:true,example:true' && (q('#main-menu') as HTMLElement).hidden, clean.join());
 
         // unsaved changes: three choices. Cancel leaves the model and the editor untouched.
-        await app.loadFile(new File([EXAMPLES[2].text], 'mine.yaml'));
+        await app.loadFile(new File([exampleNamed('minimal.yaml')!.text], 'mine.yaml'));
         app.select('device:r1');
         await setField('#side-body [data-p=\'["devices",0,"label"]\']', 'Router one');
         click('[data-view-btn="logical"]');
@@ -634,7 +584,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         const exampleText = dialogText();
         await answerDialog('discard');
         await tick(30);
-        check('Discard changes closes without exporting; for an example the prompt does not talk about an opened file', onStart() && downloads.length === had + 1 && /“minimal\.yaml” has changes/.test(exampleText) && /downloads a copy of the model first/.test(exampleText) && !/file you opened|on your disk/.test(exampleText), exampleText);
+        check('Discard changes closes without exporting; for an example the prompt does not talk about an opened file', onStart() && downloads.length === had + 1 && /“datacenter-evpn\.yaml” has changes/.test(exampleText) && /downloads a copy of the model first/.test(exampleText) && !/file you opened|on your disk/.test(exampleText), exampleText);
         // a new model that was edited is asked about too, and keeps its errors in view
         click('#btn-new');
         await tick(10);
@@ -664,7 +614,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         click('[data-tab="yaml"]');
         await choose();
         const gone = onStart() && doc.querySelectorAll('#viewport *').length === 0 && (q('#search') as HTMLInputElement).value === '' && (q('#search-results') as HTMLElement).hidden && doc.body.getAttribute('data-view') === 'none';
-        app.loadExample(2);
+        app.loadExampleNamed('minimal.yaml');
         const foldedNow = (Array.prototype.map.call(doc.querySelectorAll('#outline [data-section]'), (e: Element) => e.getAttribute('data-section') + '=' + e.getAttribute('data-folded')) as string[]).join();
         check(
           'closing clears the selection and the view state: the next model opens in the physical view with nothing selected, no filter, default folding, all protocols and networks shown',
@@ -931,6 +881,9 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       }
 
       // the model and its settings without a "Current model" button: the model panel stays, the settings open from the Edit tab
+      // (minimal.yaml: two routers)
+      app.loadExampleNamed('minimal.yaml');
+      await tick();
       app.select('device:r1');
       await tick();
       const panel = (q('#outline') as HTMLElement).getBoundingClientRect();
@@ -958,7 +911,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       (app.mdoc as ModelDoc).markSaved();
 
       // ---------------------------------------------- collapsible outline sections
-      app.loadExample(EXAMPLES.findIndex((e) => /enterprise-wan/.test(e.name)));
+      app.loadExampleNamed('enterprise-wan.yaml');
       await tick();
       const m0 = app.session!.model;
       const sec = (k: string): HTMLElement => q(`#outline [data-section="${k}"]`) as HTMLElement;
@@ -1009,9 +962,9 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       check('"Expand all" opens every section again', doc.querySelectorAll('#outline [data-section][data-folded="true"]').length === 0 && /Collapse all/.test(q('#outline [data-act="fold-all"]')!.textContent || ''));
     }
 
-    // ------------------------------------------------ viewer: every example
-    for (let i = 0; i < EXAMPLES.length; i++) {
-      const ex = EXAMPLES[i];
+    // ------------------------------------------------ viewer: every example (public and internal)
+    for (let i = 0; i < ALL_EXAMPLES.length; i++) {
+      const ex = ALL_EXAMPLES[i];
       const file = new File([ex.text], ex.name, { type: 'application/yaml' });
       const res = await app.loadFile(file);
       check(`${ex.name}: loads via File API without errors`, res.ok && !res.errors.length, res.errors.map((e) => `line ${e.line}: ${e.message}`).join('; '));
@@ -1059,7 +1012,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
 
     // ------------------------------------------------ static routes in the diagram and the Edit tab
     {
-      app.loadExample(EXAMPLES.findIndex((e) => e.name === 'branch-routing.yaml'));
+      app.loadExampleNamed('branch-routing.yaml');
       click('[data-view-btn="logical"]');
       await tick();
       const m = app.session!.model;
@@ -1147,7 +1100,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
 
     // ------------------------------------------------ consistency checks: Problems tab, settings, fields
     {
-      app.loadExample(EXAMPLES.findIndex((e) => e.name === 'consistency-checks.yaml'));
+      app.loadExampleNamed('consistency-checks.yaml');
       click('[data-view-btn="physical"]');
       click('[data-tab="problems"]');
       await tick();
@@ -1240,7 +1193,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
 
     // ------------------------------------------------ Analyze → Addressing overview
     {
-      app.loadExample(EXAMPLES.findIndex((e) => e.name === 'addressing.yaml'));
+      app.loadExampleNamed('addressing.yaml');
       click('[data-view-btn="logical"]');
       await tick();
       const yamlBefore = app.exportText();
@@ -1353,7 +1306,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
 
     // ------------------------------------------------ the command palette
     {
-      app.loadExample(EXAMPLES.findIndex((e) => e.name === 'enterprise-wan.yaml'));
+      app.loadExampleNamed('enterprise-wan.yaml');
       click('[data-view-btn="physical"]');
       await tick();
       const yamlBefore = app.exportText();
@@ -1425,7 +1378,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
 
     // ------------------------------------------------ focus mode
     {
-      app.loadExample(EXAMPLES.findIndex((e) => e.name === 'enterprise-wan.yaml'));
+      app.loadExampleNamed('enterprise-wan.yaml');
       click('[data-view-btn="physical"]');
       await tick();
       const yamlBefore = app.exportText();
@@ -1508,7 +1461,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
 
     // ------------------------------------------------ the path tracer
     {
-      app.loadExample(EXAMPLES.findIndex((e) => e.name === 'enterprise-wan.yaml'));
+      app.loadExampleNamed('enterprise-wan.yaml');
       click('[data-view-btn="physical"]');
       await tick();
       const yamlBefore = app.exportText();
@@ -1618,7 +1571,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
 
     // ------------------------------------------------ routing services (protocols) in the Edit tab
     {
-      app.loadExample(EXAMPLES.findIndex((e) => e.name === 'consistency-checks.yaml'));
+      app.loadExampleNamed('consistency-checks.yaml');
       await tick();
       const md = app.mdoc as ModelDoc;
       const yamlBefore = app.exportText();
@@ -1720,7 +1673,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
 
     // ------------------------------------------------ VLANs on ports (the VLAN example)
     {
-      app.loadExample(EXAMPLES.findIndex((e) => e.name === 'vlan-ports.yaml'));
+      app.loadExampleNamed('vlan-ports.yaml');
       await tick();
       const md = app.mdoc as ModelDoc;
       const yamlBefore = app.exportText();
@@ -1977,7 +1930,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
 
     // ------------------------------------------------ virtualization (the virtualization example)
     {
-      app.loadExample(EXAMPLES.findIndex((e) => e.name === 'virtualization.yaml'));
+      app.loadExampleNamed('virtualization.yaml');
       await tick();
       const md = app.mdoc as ModelDoc;
       const yamlBefore = app.exportText();
@@ -2123,7 +2076,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
 
     // ------------------------------------------------ input helpers in the Edit tab
     {
-      app.loadExample(EXAMPLES.findIndex((e) => e.name === 'addressing.yaml'));
+      app.loadExampleNamed('addressing.yaml');
       await tick();
       const md = app.mdoc as ModelDoc;
       const yamlBefore = app.exportText();
@@ -2240,7 +2193,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
 
     // ------------------------------------------------ tool windows: Analyze and Simulate, no side tabs, no scenarios
     {
-      app.loadExample(EXAMPLES.findIndex((e) => e.name === 'enterprise-wan.yaml'));
+      app.loadExampleNamed('enterprise-wan.yaml');
       click('[data-view-btn="physical"]');
       await tick();
       const yamlBefore = app.exportText();
@@ -2366,7 +2319,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       } catch (e) {
         /* no storage */
       }
-      app.loadExample(EXAMPLES.findIndex((e) => e.name === 'protocol-simulation.yaml'));
+      app.loadExampleNamed('protocol-simulation.yaml');
       click('[data-view-btn="physical"]');
       await tick();
       const yamlBefore = app.exportText();
@@ -2704,7 +2657,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     // ------------------------------------------------ DHCP and DNS (campus-services.yaml), in both themes
     for (const theme of ['light', 'dark'] as const) {
       app.theme.set(theme);
-      app.loadExample(EXAMPLES.findIndex((e) => e.name === 'campus-services.yaml'));
+      app.loadExampleNamed('campus-services.yaml');
       app.setView('physical');
       await tick();
       const errs = app.mdoc ? (app.mdoc as ModelDoc).result.errors.length + (app.mdoc as ModelDoc).result.warnings.length : -1;
@@ -2784,7 +2737,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     app.theme.set('dark');
 
     // ------------------------------------------------ viewer interactions
-    app.loadExample(EXAMPLES.findIndex((e) => /enterprise-wan/.test(e.name)));
+    app.loadExampleNamed('enterprise-wan.yaml');
     click('[data-view-btn="physical"]');
     const svg = doc.getElementById('canvas') as unknown as SVGSVGElement;
     const vp = doc.getElementById('viewport') as unknown as SVGGElement;
@@ -2983,7 +2936,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         check('the diagram on screen has no Networks box drawn into it (export only)', !q('#canvas .svg-networks'));
       }
       // a model with several disconnected components and an unconnected device
-      app.loadExample(EXAMPLES.findIndex((e) => e.name === 'metro-ring.yaml'));
+      app.loadExampleNamed('metro-ring.yaml');
       const mP = measure(app.exportSvg());
       click('[data-view-btn="logical"]');
       const mL = measure(app.exportSvg());
@@ -3009,14 +2962,14 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
           hidden.ok && has(hidden, 'Router loopbacks') && !has(hidden, 'Core link') && !has(hidden, 'Management'),
           hidden.labels.join(' | '),
         );
-        app.loadExample(EXAMPLES.findIndex((e) => e.name === 'minimal.yaml'));
+        app.loadExampleNamed('minimal.yaml');
         const none = measure(app.exportSvg(), 'g.svg-networks');
         check('a view without relevant networks says so in the box (clear empty state)', none.ok && none.labels[0] === 'Networks — logical view' && none.labels.some((x) => /The model defines no networks\./.test(x)), none.labels.join(' | '));
-        app.loadExample(EXAMPLES.findIndex((e) => e.name === 'metro-ring.yaml'));
+        app.loadExampleNamed('metro-ring.yaml');
         click('[data-view-btn="logical"]');
       }
       check('the diagram on screen has no legend drawn into it (export only)', !q('#canvas .svg-legend'));
-      app.loadExample(EXAMPLES.findIndex((e) => /enterprise-wan/.test(e.name)));
+      app.loadExampleNamed('enterprise-wan.yaml');
       click('[data-view-btn="logical"]');
     }
     click('[data-view-btn="physical"]');
@@ -3027,7 +2980,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     // ------------------------------------ device filter: Devices, Labels, Groups / Locations, Networks
     {
       if (app.mdoc) app.mdoc.markSaved();
-      app.loadExample(EXAMPLES.findIndex((e) => e.name === 'enterprise-wan.yaml'));
+      app.loadExampleNamed('enterprise-wan.yaml');
       click('[data-view-btn="physical"]');
       const s = (): NonNullable<typeof app.session> => app.session!;
       const md = (): ModelDoc => app.mdoc as ModelDoc;
@@ -3260,7 +3213,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     // ------------------------------------ device-type visibility: the Device types filter
     {
       if (app.mdoc) app.mdoc.markSaved();
-      app.loadExample(EXAMPLES.findIndex((e) => e.name === 'device-types.yaml'));
+      app.loadExampleNamed('device-types.yaml');
       const s = (): NonNullable<typeof app.session> => app.session!;
       const md = (): ModelDoc => app.mdoc as ModelDoc;
       const tbtn = q('#types-btn') as HTMLButtonElement;
@@ -3394,7 +3347,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       app.setDevices(m.devices.map((d) => d.id));
       check('Select all brings back the complete diagram', !s().isFiltered() && posOf('physical') === full.physical);
       // a model with Layer 2 and Layer 3 switches: Switch with two sub-entries
-      app.loadExample(EXAMPLES.findIndex((e) => e.name === 'protocol-simulation.yaml'));
+      app.loadExampleNamed('protocol-simulation.yaml');
       await tick();
       const pm = s().model;
       const l2 = pm.devices.filter((d) => d.type === 'switch' && !d.layer3).map((d) => d.id);
@@ -3419,8 +3372,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
 
     // ------------------------ sizing and readability: long and multi-line labels
     {
-      const idx = EXAMPLES.findIndex((e) => e.name === 'long-labels.yaml');
-      app.loadExample(idx);
+      app.loadExampleNamed('long-labels.yaml');
       const m = app.session!.model;
       click('[data-view-btn="physical"]');
       const lines = (ref: string, cls: string): string[] => {
@@ -3531,7 +3483,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         return out.sort().join(' ');
       };
       const wanIdx = EXAMPLES.findIndex((e) => /enterprise-wan/.test(e.name));
-      app.loadExample(wanIdx);
+      app.loadExampleNamed('enterprise-wan.yaml');
       click('[data-view-btn="physical"]');
       const physBefore = rects();
       {
@@ -3671,7 +3623,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       check('an equivalent file with all lists and keys in reverse order arranges identically', layoutText(rd.exportText()) === layoutText(straight.exportText()) && /\n {2}physical:/.test(layoutText(rd.exportText())));
       rd.markSaved();
       // cross-engine determinism: metro-ring-arranged.yaml was computed in Node when the app was built
-      const src = EXAMPLES.find((e) => e.name === 'metro-ring.yaml');
+      const src = exampleNamed('metro-ring.yaml');
       const ref = FIXTURES.find((e) => e.name === 'metro-ring-arranged.yaml');
       if (src && ref) {
         const md = ModelDoc.fromText(src.text, 'metro-ring.yaml', 'file').doc as ModelDoc;
@@ -4067,7 +4019,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     }
 
     // ------------------------ editor: import → edit → export → reload
-    const wanText = EXAMPLES.find((e) => /enterprise-wan/.test(e.name))!.text.replace('    label: hq-rtr1\n    type: router\n    group: hq-edge\n', '    label: hq-rtr1\n    type: router\n    group: hq-edge\n    attrs:\n      serial: JN11AB22CD\n      contract: {id: C-77, expires: 2027-01-31}\n');
+    const wanText = exampleNamed('enterprise-wan.yaml')!.text.replace('    label: hq-rtr1\n    type: router\n    group: hq-edge\n', '    label: hq-rtr1\n    type: router\n    group: hq-edge\n    attrs:\n      serial: JN11AB22CD\n      contract: {id: C-77, expires: 2027-01-31}\n');
     const imp = await app.loadFile(new File([wanText], 'acme-wan.yaml'));
     check('imported file opens in the editor', imp.ok && (app.mdoc as ModelDoc).origin === 'file' && (app.mdoc as ModelDoc).valid);
     app.select('device:hq-rtr1');
@@ -4129,7 +4081,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     // YAML tab: apply text edits, reject broken YAML without losing the model
     click('[data-tab="yaml"]');
     const ta = q('#yaml-src') as HTMLTextAreaElement;
-    ta.value = ta.value.replace('title: ACME Corp — enterprise WAN', 'title: ACME WAN (edited as text)');
+    ta.value = ta.value.replace('title: Enterprise WAN — HQ and two branches over VPN', 'title: ACME WAN (edited as text)');
     ta.dispatchEvent(new Event('input', { bubbles: true }));
     click('[data-tab="legend"]');
     click('[data-tab="yaml"]');
@@ -4319,7 +4271,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
 
       // enterprise WAN, zoomed in and panned away: the picture is still the whole diagram
       app.mdoc!.markSaved();
-      app.loadExample(EXAMPLES.findIndex((e) => e.name === 'enterprise-wan.yaml'));
+      app.loadExampleNamed('enterprise-wan.yaml');
       const res: { [view: string]: Awaited<ReturnType<typeof both>> } = {};
       for (const view of ['physical', 'logical']) {
         click(`[data-view-btn="${view}"]`);
@@ -4369,7 +4321,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       }
       {
         // long labels: nothing shortened, nothing cut off
-        app.loadExample(EXAMPLES.findIndex((e) => e.name === 'long-labels.yaml'));
+        app.loadExampleNamed('long-labels.yaml');
         for (const view of ['physical', 'logical']) {
           click(`[data-view-btn="${view}"]`);
           const r = await both('long-labels', view);
@@ -4624,7 +4576,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       check('after renaming the object, the mark is on its entry under the new id', mark() === entry('core-renamed', '  - id: access') && /“core-renamed”/.test(q('#yaml-sel')!.textContent || ''), mark());
       // a long file: a selected entry out of sight is scrolled into view once; afterwards the reader's scroll position is respected
       if (app.mdoc) app.mdoc.markSaved();
-      app.loadExample(EXAMPLES.findIndex((e) => e.name === 'enterprise-wan.yaml'));
+      app.loadExampleNamed('enterprise-wan.yaml');
       check('opening another file: no selection, nothing marked', mark() === '' && q('#yaml-sel')!.getAttribute('data-state') === 'none' && !!q('[data-tab="yaml"].active'));
       app.select('device:hq-log');
       await tick();
@@ -4647,7 +4599,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       if (app.mdoc) app.mdoc.markSaved();
       const view = doc.defaultView as Window;
       const rect = (e: Element): DOMRect => e.getBoundingClientRect();
-      app.loadExample(EXAMPLES.findIndex((e) => e.name === 'enterprise-wan.yaml'));
+      app.loadExampleNamed('enterprise-wan.yaml');
       click('[data-view-btn="logical"]');
       await tick();
       const m = app.session!.model;
@@ -4742,7 +4694,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       );
 
       // the toolbar filters: one row; in a narrow toolbar the lower-priority ones go into "Filters", which says what is off
-      app.loadExample(EXAMPLES.findIndex((e) => e.name === 'enterprise-wan.yaml'));
+      app.loadExampleNamed('enterprise-wan.yaml');
       click('[data-view-btn="logical"]');
       await tick();
       const top = q('header.topbar') as HTMLElement;
@@ -5011,7 +4963,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       await tick(30);
       check(
         'Save model as…: closing the save picker without choosing saves nothing, keeps every edit and the unsaved state, and says so',
-        before.save && !before.saveAs && before.ex === '2' && picks === 1 && suggested === 'minimal.yaml' && md().dirty && !app.linked && activeEx() === '2' && /cancelled: nothing was saved/.test(toastText()) && downloads.length === had && !q('#modal[open]'),
+        before.save && !before.saveAs && before.ex === '2' && picks === 1 && suggested === 'datacenter-evpn.yaml' && md().dirty && !app.linked && activeEx() === '2' && /cancelled: nothing was saved/.test(toastText()) && downloads.length === had && !q('#modal[open]'),
         `${JSON.stringify(before)} picks=${picks} ${toastText()}`,
       );
       // choosing a file saves there and links the model to it: the example becomes the user's file
@@ -5069,7 +5021,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         deniedText,
       );
       // Open model… with the browser's picker links the model to the opened file (write permission is asked for on the first save)
-      const opened = handle('opened.yaml', EXAMPLES[3].text, 'prompt');
+      const opened = handle('opened.yaml', exampleNamed('metro-ring.yaml')!.text, 'prompt');
       nextOpen = opened;
       click('#menu-btn');
       click('#open');
@@ -5086,7 +5038,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         `${linkedAfterOpen} ${opened.perm} ${opened.writes}`,
       );
       // a file read through the file input (or dropped without a handle) is never linked
-      await app.loadFile(new File([EXAMPLES[2].text], 'from-input.yaml'));
+      await app.loadFile(new File([exampleNamed('minimal.yaml')!.text], 'from-input.yaml'));
       const inputState = [app.linked, saveBtn.disabled, app.fileState().kind].join();
       // Ctrl+S without a link means Save model as…; here the picker is cancelled
       edit('From the input, edited');
@@ -5119,14 +5071,14 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       await tick(30);
       check(
         'without a save picker, Save model as… downloads a copy: the status says it is a copy that is not linked, the example stays marked, Save model stays unavailable',
-        downloads.length === had + 1 && downloads[downloads.length - 1].name === 'minimal.yaml' && app.fileState().kind === 'copy' && /copy downloaded as “minimal\.yaml”, not linked to a file/.test(q('#status .file-state')!.textContent || '') && activeEx() === '2' && saveBtn.disabled && !md().dirty,
+        downloads.length === had + 1 && downloads[downloads.length - 1].name === 'datacenter-evpn.yaml' && app.fileState().kind === 'copy' && /copy downloaded as “datacenter-evpn\.yaml”, not linked to a file/.test(q('#status .file-state')!.textContent || '') && activeEx() === '2' && saveBtn.disabled && !md().dirty,
         app.fileState().text,
       );
     }
 
     // ------------------------------------------------ Auto-arrange options in the application
     {
-      app.loadExample(3);
+      app.loadExampleNamed('metro-ring.yaml');
       app.setView('physical');
       const md = (): ModelDoc => app.mdoc as ModelDoc;
       const pos =(v: 'physical' | 'logical'): string => JSON.stringify(Array.from(app.session!.positionsFor(v)));
@@ -5210,7 +5162,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const toastText = (): string => q('#toast')!.textContent || '';
 
       // physical view: every port of a shown device, cabled or not
-      app.loadExample(4);
+      app.loadExampleNamed('device-types.yaml');
       app.setView('physical');
       await tick();
       const chips = (Array.prototype.map.call(doc.querySelectorAll('#viewport g.port-chip'), (e: Element) => e.getAttribute('data-ref')) as string[]).join();
@@ -5314,7 +5266,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       );
 
       // logical view: every logical interface, and relations between them
-      app.loadExample(1);
+      app.loadExampleNamed('datacenter-evpn.yaml');
       app.setView('logical');
       await tick();
       const vchips = (Array.prototype.map.call(doc.querySelectorAll('#viewport g.logical-chip'), (e: Element) => e.getAttribute('data-ref')) as string[]).sort();
@@ -5689,8 +5641,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     // ---- ports: relations and links attached to the interfaces they reference, measured with real font metrics,
     // in both themes, in the exported SVG, and with the pointer on them
     {
-      const exIndex = (name: string): number => EXAMPLES.findIndex((e) => e.name === name);
-      app.loadExample(exIndex('long-labels.yaml'));
+      app.loadExampleNamed('long-labels.yaml');
       app.setView('logical');
       await tick(30);
       const vp = q('#viewport') as unknown as SVGGElement;
@@ -5759,7 +5710,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       };
       const clashLong = labelClashes(vp);
       check('ports: with the browser\'s fonts no end label covers other text or is crossed by a line (long-labels.yaml)', clashLong.length === 0 && !!vp.querySelector('text.end-label'), clashLong.slice(0, 4).join(' | '));
-      app.loadExample(exIndex('port-bindings.yaml'));
+      app.loadExampleNamed('port-bindings.yaml');
       app.setView('logical');
       await tick(30);
       const clashPb = labelClashes(vp);
@@ -5809,7 +5760,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       check('ports: in the light and the dark theme, ports, aggregate brackets and device-level ends have 3:1 against the diagram, end labels and aggregate names 4.5:1', themesOk, themeRows.filter((r) => /0\.00|\b[0-2]\.\d\d$/.test(r)).join(' | ') || themeRows.slice(0, 3).join(' | '));
 
       // the exported SVG, in either theme: the same bindings, with the theme's colours written into the file
-      app.loadExample(exIndex('long-labels.yaml'));
+      app.loadExampleNamed('long-labels.yaml');
       app.setView('logical');
       const exportRows: string[] = [];
       let exportOk = true;
@@ -5864,14 +5815,13 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       click('[data-tab="legend"]');
     }
 
-    // ------------------------------------------------ the device model: VPN Gateway, Security gateway, Systems, both themes
+    // ------------------------------------------------ the device model: VPN gateway, Security gateway, Systems, both themes
     {
-      const exAt = (name: string): number => EXAMPLES.findIndex((e) => e.name === name);
       const html = doc.documentElement;
       const before = html.getAttribute('data-theme');
       for (const theme of ['light', 'dark']) {
         html.setAttribute('data-theme', theme);
-        app.loadExample(exAt('cross-domain.yaml'));
+        app.loadExampleNamed('cross-domain.yaml');
         app.setView('physical');
         await tick(20);
         app.select('device:cdg');
@@ -5909,7 +5859,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       app.exitTrace();
       await tick(10);
       // changing a type asks first, lists what goes, cancels or does it in one undo step
-      app.loadExample(exAt('device-types.yaml'));
+      app.loadExampleNamed('device-types.yaml');
       await tick(20);
       app.select('device:fw');
       click('[data-tab="edit"]');
@@ -5946,7 +5896,6 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
 
     // ------------------------------------------------ services and Wi-Fi: the Services card, Add service…, Wireless access, badges, both themes
     {
-      const exAt = (name: string): number => EXAMPLES.findIndex((e) => e.name === name);
       const html = doc.documentElement;
       const before = html.getAttribute('data-theme');
       const rgb = (x: string): number[] => {
@@ -5968,7 +5917,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       };
       for (const theme of ['light', 'dark']) {
         html.setAttribute('data-theme', theme);
-        app.loadExample(exAt('campus-wireless.yaml'));
+        app.loadExampleNamed('enterprise-campus.yaml');
         app.setView('physical');
         await tick(20);
         app.select('device:srv');
@@ -6005,13 +5954,13 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         const drawn = Array.prototype.map.call(doc.querySelectorAll('#viewport text'), (e: Element) => e.textContent || '').join('|');
         check(`${theme}: the radio's end of a wireless connection says its SSID and VLAN`, /SSID “Campus-Guest”/.test(drawn), drawn.slice(0, 200));
         const probs = drawnProblems();
-        check(`${theme}: campus-wireless example, measured in the browser: nothing overlaps`, !probs.length, probs.slice(0, 3).join('; '));
+        check(`${theme}: enterprise-campus example, measured in the browser: nothing overlaps`, !probs.length, probs.slice(0, 3).join('; '));
       }
       if (before === null) html.removeAttribute('data-theme');
       else html.setAttribute('data-theme', before);
       await tick(20);
       // Add service… on a router: the empty block with its errors; one undo removes it
-      app.loadExample(exAt('multi-ssid-ap.yaml'));
+      app.loadExampleNamed('multi-ssid-ap.yaml');
       await tick(20);
       app.select('device:guest-gw');
       click('[data-tab="edit"]');
@@ -6031,6 +5980,20 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const hits = search(app.session!.model, 'Guest', 200);
       check('Find lists a Wi-Fi network by its SSID (its access point)', hits.some((h) => h.ref === 'device:ap1' && /Wi-Fi network/.test(h.kind)), hits.map((h) => h.kind + ':' + h.ref).join(', '));
       app.mdoc!.markSaved();
+    }
+
+    // ------------------------------------------------ the Objects list: folding moves no section heading, both themes
+    {
+      const html = doc.documentElement;
+      const before = html.getAttribute('data-theme');
+      for (const theme of ['light', 'dark']) {
+        html.setAttribute('data-theme', theme);
+        const why = await outlineStability(app, doc);
+        check(`${theme}: Objects list: folding and unfolding a section (empty, populated, with a problem badge; by a click and by the keyboard; all at once) moves no heading; focus stays on it and takes no room`, !why.length, why.slice(0, 4).join('; '));
+        app.mdoc!.markSaved();
+      }
+      if (before === null) html.removeAttribute('data-theme');
+      else html.setAttribute('data-theme', before);
     }
 
     const perf = (doc.defaultView as Window).performance;

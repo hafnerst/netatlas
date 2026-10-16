@@ -22,7 +22,7 @@ there is no conversion of files written for the earlier drafts.
   next hop (`via`, `interface`, both, or `blackhole: true`), and optionally
   `distance` (1–255), `metric`, `vrf`, `name`, `description` and `attrs`.
   Allowed on devices that forward (a router, a switch, a routed firewall, a
-  load balancer, a VPN Gateway, a filtering router, a Layer 3 forwarder
+  load balancer, a VPN gateway, a filtering router, a Layer 3 forwarder
   System) and on hosts; an error on access points, IDS/IPS, clouds,
   pass-through Systems and devices without a type. A host's default gateway
   is a static default route.
@@ -201,7 +201,7 @@ there is no conversion of files written for the earlier drafts.
   longer an unknown key. Groups gain the kinds `cloud_region`, `vpc` and
   `vnet` with a `provider`; a VM or container in a cloud group may have no
   `host` (a cloud instance, with interfaces and cables of its own).
-- **VPN Gateway and Security gateway functions.** A VPN Gateway's
+- **VPN gateway and Security gateway functions.** A VPN gateway's
   `services: {vpn: {operation, technology, tunnels | listener + pool,
   protected}}` and a Security gateway's `services: {separation:
   {implementation, domains, directions, rules, profiles, simulation}}` are
@@ -231,7 +231,7 @@ there is no conversion of files written for the earlier drafts.
   files written for the earlier draft); its function stays *Domain
   separation* (`services.separation`).
 - **Examples converted by behaviour:** `device-types.yaml` (a remote-access
-  VPN Gateway, the proxy as a server in the DMZ, a NAS behind a filtering
+  VPN gateway, the proxy as a server in the DMZ, a NAS behind a filtering
   bridge, a System of purpose host), `metro-ring.yaml` (console servers as
   Systems of purpose host), `ospf-reroute.yaml` (a passive IDS);
   roles replace `tier` workarounds and role words in labels in
@@ -239,6 +239,37 @@ there is no conversion of files written for the earlier drafts.
   `campus-services.yaml`.
 
 ### Added
+
+- **A curated example catalog** (one change across the app): the **File**
+  menu offers nine examples instead of twenty-four, one representative model
+  per kind of network — enterprise WAN, enterprise campus, data center,
+  virtualized servers, a private house, Internet edge, hybrid cloud, OT, a
+  cross-domain boundary — each with a concise title and description. The
+  other models are **internal test examples** (`test/examples/`): the tests
+  read them, and the new **test build** loads them by name. See
+  `examples/README.md`.
+- **The private-house example** (`private-house.yaml`): three floors; a
+  combined DSL modem/router with NAT, DNS and a firewall policy; a Layer 3
+  switch in the basement as the core with the Internal, IoT and Guest
+  networks in VRFs; a Layer 2 distribution switch on the second floor; an
+  access point on every floor with Internal, IoT and Guest on VLANs 10, 20
+  and 30 over one uplink. Each zone reaches the Internet, IoT and Guest
+  reach nothing of Internal; the riser cable is the upper floors' single
+  point of failure.
+- **A test build** (`build/netatlas-test.html`, written by `npm run build`
+  next to `dist/netatlas.html`, never shipped): the application plus the
+  internal examples and fixtures, the full in-browser self-test and the
+  viewport check. `dist/netatlas.html` contains only the public examples,
+  and the build fails if it would contain a test-only module. The released
+  application keeps a self-test of its own (`#selftest`: its examples in
+  both themes, the Objects list, offline; `npm run selftest:public`);
+  its `#viewportcheck` says that the check runs on the test build.
+- **A firewall's policy in the path tracer:** with a service, a trace
+  through a routed firewall stops where its policy (the relations through
+  it, its allow list) denies it, as in the simulation; without one, the hop
+  says that it filters.
+- **Deep links by file name:** `#example=private-house.yaml` as well as
+  `#example=4` (the test build also opens the internal examples so).
 
 - **The service registry and the Services card** (one change across the
   app): every service is described once — its parameters with their types
@@ -264,10 +295,10 @@ there is no conversion of files written for the earlier drafts.
   algorithm, NAT (PAT, source NAT, port forwards; noted by the path
   tracer), an inline IPS's blocks and a passive one's alerts; the services'
   ports are listening.
-- **Four examples:** `multi-ssid-ap.yaml`, `home-network.yaml`,
-  `campus-wireless.yaml` (three tiers, controller-managed Wi-Fi, a
-  services server) and `dmz-services.yaml` (a VPN and NAT on a firewall,
-  an IPS, a reverse proxy, a load balancer, a NAS).
+- **Examples:** `enterprise-campus.yaml` (three tiers, controller-managed
+  Wi-Fi, a services server) and `dmz-services.yaml` (a VPN and NAT on a
+  firewall, an IPS, a reverse proxy, a load balancer, a NAS); the test
+  examples `multi-ssid-ap.yaml` and `home-network.yaml`.
 
 - **Capability-based behaviour** (one change across the app): every
   module decides by what a device can do — one resolver
@@ -283,7 +314,7 @@ there is no conversion of files written for the earlier drafts.
     one undo step. The **VPN gateway** and **Domain separation** cards
     (built in, not removable; nothing preselected), **Port pairs** and
     **Management interfaces**.
-  * **VPN Gateway:** forwards only to and from its VPN, in the path tracer
+  * **VPN gateway:** forwards only to and from its VPN, in the path tracer
     and in the simulation.
   * **Security gateway:** exactly two domains, permitted directions,
     ordered allow rules with every match written, a default deny both ways,
@@ -294,7 +325,7 @@ there is no conversion of files written for the earlier drafts.
     domain under each port, and its policy in the Details tab.
   * **Path tracer:** an optional **Service** (`tcp/443`, `udp/53`, `icmp`)
     a Security gateway decides by; a protocol break's **Leg 2**; port
-    pairs, TAP copies and a VPN Gateway's tunnels; a stop reason *denied*.
+    pairs, TAP copies and a VPN gateway's tunnels; a stop reason *denied*.
   * **Simulation:** a transparent firewall filters what it bridges; inline
     devices and pass-through Systems keep to their pairs (one way where
     set) and copy to monitor ports; passive monitors report what they
@@ -303,7 +334,7 @@ there is no conversion of files written for the earlier drafts.
   * **Single points of failure** follow what each device joins: a
     Security gateway's domains only with a permitted transfer, port
     pairs, never a management interface.
-  * **Diagram, legend, Find, palette:** icons for the VPN Gateway, the
+  * **Diagram, legend, Find, palette:** icons for the VPN gateway, the
     Security gateway, the kinds with an icon (Cloud gateway, PLC, HMI,
     camera …) and the System purposes (console, protocol gateway, TAP,
     diode …); the subtitle with mode, purpose and kind; the legend lists
@@ -941,6 +972,12 @@ there is no conversion of files written for the earlier drafts.
 
 ### Changed
 
+- **VPN gateway** is the display name of the type `vpn_gateway` (it was
+  *VPN Gateway*), in sentence case like *Access point* and *Load balancer*:
+  every place shows the registry's name, and a type named inside a sentence
+  keeps its acronyms (*VPN gateways*, *IDS/IPS*, not *vpn gateways*). The
+  identifier, the behaviour and labels written in a model are unchanged.
+
 - **Send test runs at once**: a test is sent at the current simulated
   time, in parallel with the traffic on screen, after only its real
   dependencies (ARP / NDP, DNS, a DHCP lease, the TCP handshake). Its
@@ -1169,7 +1206,7 @@ there is no conversion of files written for the earlier drafts.
 ### Removed
 
 - The **`gateway`** and **`proxy`** device types (converted by behaviour:
-  a VPN Gateway, a router, a System, a Security gateway, a server …), and
+  a VPN gateway, a router, a System, a Security gateway, a server …), and
   with the proxy its request relaying and its two simulation attributes;
   the Proxy service brings them back as a service of a server, VM or
   container.
@@ -1196,6 +1233,22 @@ live protocol simulation replaces them.
   failure are tool windows now).
 
 ### Fixed
+
+- **The Objects list's headings moved when a section was folded or
+  unfolded.** A folded section had a smaller top margin than an open one
+  (4 px instead of 10 px), so the heading itself jumped by 6 px, for an
+  empty section too; the caret also changed glyph (▸ / ▾). Every section
+  now has the same spacing, the caret is one glyph turned by a transform,
+  the heading's parts share one line box (a folded section's badge changes
+  nothing), and the keyboard focus stays on the heading (or *Collapse all*)
+  after it is pressed. The sections below still move up or down.
+- **The simulation routed a packet in its sender's VRF at every hop.** A
+  router now looks it up in the VRF of the interface it came in on, as the
+  path tracer does, so traffic between VRFs takes the routes of its VRF.
+- **A relation's exchange through NAT** (an HTTPS session from a NATed
+  client to a server on the Internet) was answered to the client's own
+  address; the server now answers the translated address it came from, and
+  the NAT translates it back.
 
 - **Test messages were delayed.** A test sent while many dots were on
   screen was not drawn at all (beyond the 48-dot limit, or from a sender or

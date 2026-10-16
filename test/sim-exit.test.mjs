@@ -16,7 +16,7 @@ import { root } from './helpers.mjs';
 import { findBrowser } from '../scripts/browser-selftest.mjs';
 import { openPage } from '../scripts/cdp.mjs';
 
-const url = pathToFileURL(join(root, 'dist', 'netatlas.html')).href;
+const url = pathToFileURL(join(root, 'build', 'netatlas-test.html')).href;
 const skip = findBrowser() ? false : 'no Chromium-based browser found (set NETATLAS_BROWSER)';
 
 /** What is on screen now: the notice, the lock, the layout, the simulation-only parts. */
@@ -85,8 +85,8 @@ test('Exit simulation by Esc, the banner, the panel, the menu and the palette: n
   const page = await openPage(url, { width: 1440, height: 900 });
   try {
     await page.settle(150);
-    const ex = await page.eval(`Array.from(document.querySelectorAll('#menu-examples [data-example]')).findIndex((b) => /protocol-simulation/.test(b.textContent))`);
-    await page.eval(`localStorage.clear(), sessionStorage.clear(), netatlas.loadExample(${ex}), netatlas.setView('physical'), true`);
+    const ex = 'protocol-simulation.yaml';
+    await page.eval(`localStorage.clear(), sessionStorage.clear(), netatlas.loadExampleNamed(${JSON.stringify(ex)}), netatlas.setView('physical'), true`);
     await page.settle(150);
     const routes = [
       ['Esc', 'edit', async () => {
@@ -134,9 +134,9 @@ test('closing or replacing the model during a simulation: the simulation ends wi
   const page = await openPage(url, { width: 1440, height: 900 });
   try {
     await page.settle(150);
-    const ex = await page.eval(`Array.from(document.querySelectorAll('#menu-examples [data-example]')).findIndex((b) => /protocol-simulation/.test(b.textContent))`);
+    const ex = 'protocol-simulation.yaml';
     // replacing it: another example
-    await page.eval(`localStorage.clear(), sessionStorage.clear(), netatlas.loadExample(${ex}), netatlas.setView('physical'), true`);
+    await page.eval(`localStorage.clear(), sessionStorage.clear(), netatlas.loadExampleNamed(${JSON.stringify(ex)}), netatlas.setView('physical'), true`);
     await page.settle(150);
     await start(page, 'edit');
     await page.eval(`netatlas.loadExample(0), true`);
@@ -145,7 +145,7 @@ test('closing or replacing the model during a simulation: the simulation ends wi
     await page.settle(150);
     assertBack(await page.eval(STATE), 'edit', 'device:hq-rtr1', 'replaced by another model');
     // closing it: the start screen, then a model again
-    await page.eval(`netatlas.loadExample(${ex}), true`);
+    await page.eval(`netatlas.loadExampleNamed(${JSON.stringify(ex)}), true`);
     await page.settle(150);
     await start(page, 'edit');
     await page.eval(`netatlas.closeModel ? netatlas.closeModel() : document.getElementById('btn-close').click(), true`);
@@ -155,7 +155,7 @@ test('closing or replacing the model during a simulation: the simulation ends wi
     assert.equal(closed.notice, 0);
     assert.equal(closed.dataSim, null);
     assert.ok(!closed.dock && !closed.banner && !closed.badge && closed.tables === 0, JSON.stringify(closed));
-    await page.eval(`netatlas.loadExample(${ex}), netatlas.select('device:core1'), netatlas.showTab('edit'), true`);
+    await page.eval(`netatlas.loadExampleNamed(${JSON.stringify(ex)}), netatlas.select('device:core1'), netatlas.showTab('edit'), true`);
     await page.settle(150);
     assertBack(await page.eval(STATE), 'edit', 'device:core1', 'closed, then opened again');
   } finally {

@@ -15,10 +15,9 @@ import { root, load } from './helpers.mjs';
 import { findBrowser } from '../scripts/browser-selftest.mjs';
 import { openPage } from '../scripts/cdp.mjs';
 
-const url = pathToFileURL(join(root, 'dist', 'netatlas.html')).href;
+const url = pathToFileURL(join(root, 'build', 'netatlas-test.html')).href;
 const skip = findBrowser() ? false : 'no Chromium-based browser found (set NETATLAS_BROWSER)';
 const CTRL = 2;
-const { EXAMPLES } = load('generated/examples.js');
 
 /** In the page: where the focus is and whether the new entry is ready to fill in. */
 const STATE = `(() => {
@@ -53,9 +52,9 @@ async function start() {
   return page;
 }
 
-/** Load an example and select an object, with the Edit tab open. */
+/** Load an example (by its file name) and select an object, with the Edit tab open. */
 async function open(page, example, ref) {
-  await page.eval(`netatlas.loadExample(${example}), ${ref ? `netatlas.select(${JSON.stringify(ref)}, true), ` : ''}netatlas.showTab('edit'), true`);
+  await page.eval(`netatlas.loadExampleNamed(${JSON.stringify(example)}), ${ref ? `netatlas.select(${JSON.stringify(ref)}, true), ` : ''}netatlas.showTab('edit'), true`);
   await page.settle(120);
 }
 
@@ -92,7 +91,7 @@ async function undoBack(page, what, back, gone) {
 test('+ Add in the outline: every kind of object, selected in the diagram, its row in view, the cursor in its ID; undo returns to + Add', { skip, timeout: 240000 }, async () => {
   const page = await start();
   try {
-    await open(page, 0, null);
+    await open(page, 'enterprise-wan.yaml', null);
     for (const kind of ['device', 'link', 'network', 'relation', 'group', 'protocol']) {
       const n = await count(page, `netatlas.mdoc.entities('${kind}').length`);
       await press(page, `#outline-body [data-act="add-entity"][data-kind="${kind}"]`);
@@ -112,7 +111,7 @@ test('+ Add in the outline: every kind of object, selected in the diagram, its r
 test('Duplicate (Edit tab and outline): the copy gets the focus in its ID; Ctrl+Z in the untouched field takes it back', { skip, timeout: 120000 }, async () => {
   const page = await start();
   try {
-    await open(page, 0, 'device:hq-fw');
+    await open(page, 'enterprise-wan.yaml', 'device:hq-fw');
     await press(page, '#side-body .insp-actions [data-act="dup-entity"]');
     const s = await page.eval(STATE);
     ready(s, 'duplicate', { field: 'id', value: 'hq-fw2' });
@@ -135,7 +134,7 @@ test('Duplicate (Edit tab and outline): the copy gets the focus in its ID; Ctrl+
 test('the Inspector: interface, loopback, virtual and tunnel interfaces, a port range, a route and its duplicate, a DNS name', { skip, timeout: 240000 }, async () => {
   const page = await start();
   try {
-    await open(page, 0, 'device:hq-rtr1');
+    await open(page, 'enterprise-wan.yaml', 'device:hq-rtr1');
     const nIf = `netatlas.mdoc.interfaceEntries(3).length`;
     for (const [sel, what, re] of [
       ['[data-act="add-iface"]', 'interface', /^Interface eth\d+ added to hq-rtr1\.$/],
@@ -170,7 +169,7 @@ test('the Inspector: interface, loopback, virtual and tunnel interfaces, a port 
     assert.match(s.toast, /^Route added to hq-rtr1/);
     await undoBack(page, 'route', '[data-act="add-route"]', `netatlas.mdoc.routeEntries(3).length === 0`);
     // a route's duplicate (hq-rtr2 has one)
-    await open(page, 0, 'device:hq-rtr2');
+    await open(page, 'enterprise-wan.yaml', 'device:hq-rtr2');
     await press(page, '#side-body [data-act="dup-route"]');
     s = await page.eval(STATE);
     ready(s, 'duplicated route', { field: 'text', value: '192.0.2.34/32' });
@@ -195,7 +194,7 @@ test('addresses, protocols, interface groups, attributes, endpoints, members and
   const page = await start();
   try {
     // an address typed into "+ add" and Enter: the new address is focused and selected
-    await open(page, 0, 'iface:hq-rtr1:ge-0/0/1');
+    await open(page, 'enterprise-wan.yaml', 'iface:hq-rtr1:ge-0/0/1');
     const add = `#side-body details.card[open] input.append[data-t="list-append"]`;
     await page.eval(`(() => { const i = document.querySelector(${JSON.stringify(add)}); i.scrollIntoView({ block: 'nearest' }); i.focus(); return true; })()`);
     await page.type('10.0.0.9/28');
@@ -213,14 +212,14 @@ test('addresses, protocols, interface groups, attributes, endpoints, members and
     assert.match(s.toast, /^Address 10\.0\.0\.10\/28 added\.$/);
     assert.equal(await page.eval(`!!document.querySelector('#side-body .sel-mark input[value="10.0.0.10/28"]') || [...document.querySelectorAll('#side-body .sel-mark input')].some((i) => i.value === '10.0.0.10/28')`), true, 'the new address is marked');
     // the next free address of a network (a button)
-    await open(page, 0, 'iface:hq-core1:Vlan10');
+    await open(page, 'enterprise-wan.yaml', 'iface:hq-core1:Vlan10');
     await press(page, '#side-body details.card[open] [data-act="add-next-free"]');
     s = await page.eval(STATE);
     ready(s, 'next free address');
     assert.match(s.value, /^\d+\.\d+\.\d+\.\d+\/\d+$/);
     assert.equal(s.toast.indexOf(`Address ${s.value} from `), 0, s.toast);
     // an attribute: the new key's value is focused
-    await open(page, 0, 'device:hq-fw');
+    await open(page, 'enterprise-wan.yaml', 'device:hq-fw');
     // the device's own attributes (not an interface's): its "+ new key" field
     await page.eval(`(() => { const i = [...document.querySelectorAll('#side-body input[data-t="g-newkey"]')].find((x) => /^\\["devices",\\d+,"attrs"\\]$/.test(x.getAttribute('data-p'))); i.closest('details').open = true; i.scrollIntoView({ block: 'nearest' }); i.focus(); return document.activeElement === i; })()`);
     await page.type('rack-unit');
@@ -230,7 +229,7 @@ test('addresses, protocols, interface groups, attributes, endpoints, members and
     assert.match(s.p, /"attrs","rack-unit"\]$/);
     assert.match(s.toast, /^Attribute “rack-unit” added — enter its value\.$/);
     // a protocol from Enable a protocol… (a choice): its card is focused
-    await open(page, 0, 'device:isp2-pe');
+    await open(page, 'enterprise-wan.yaml', 'device:isp2-pe');
     await page.eval(`(() => { const sel = document.querySelector('#side-body select[data-t="enable-service"]'); sel.scrollIntoView({ block: 'nearest' }); sel.focus(); sel.value = 'ospf'; sel.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
     await page.settle(150);
     s = await page.eval(STATE);
@@ -239,14 +238,13 @@ test('addresses, protocols, interface groups, attributes, endpoints, members and
     assert.match(s.toast, /^OSPF enabled on isp2-pe/);
     assert.equal(s.marked, true, 'the protocol is marked');
     // a protocol suggestion chip (consistency-checks: r3 uses OSPF without enabling it)
-    const cc = EXAMPLES.findIndex((e) => e.name === 'consistency-checks.yaml');
-    await open(page, cc, 'device:r3');
+    await open(page, 'consistency-checks.yaml', 'device:r3');
     await press(page, '#side-body [data-act="enable-service"][data-svc="ospf"]');
     s = await page.eval(STATE);
     assert.deepEqual({ inSide: s.inSide, inView: s.inView, marked: s.marked }, { inSide: true, inView: true, marked: true }, 'the enabled protocol is ready' + ' ' + JSON.stringify(s));
     assert.match(s.toast, /^OSPF enabled on r3/);
     // a VRRP group on an interface (a button)
-    await open(page, 0, 'iface:hq-core1:Ethernet1');
+    await open(page, 'enterprise-wan.yaml', 'iface:hq-core1:Ethernet1');
     const grp = await page.eval(`!!document.querySelector('#side-body [data-act="iface-svc-on"]')`);
     if (grp) {
       await press(page, '#side-body [data-act="iface-svc-on"]');
@@ -255,7 +253,7 @@ test('addresses, protocols, interface groups, attributes, endpoints, members and
       assert.match(s.p, /"protocols","vrrp",/);
     }
     // a relation's endpoint and underlay (choices), a LAG's member port (a choice)
-    await open(page, 0, 'relation:ospf-hq-area0');
+    await open(page, 'enterprise-wan.yaml', 'relation:ospf-hq-area0');
     await page.eval(`(() => { const sel = document.querySelector('#side-body select[data-t="ep-append"]'); sel.scrollIntoView({ block: 'nearest' }); sel.focus(); sel.value = 'isp2-pe'; sel.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
     await page.settle(150);
     s = await page.eval(STATE);
@@ -267,7 +265,7 @@ test('addresses, protocols, interface groups, attributes, endpoints, members and
     s = await page.eval(STATE);
     assert.deepEqual({ inSide: s.inSide, inView: s.inView, marked: s.marked }, { inSide: true, inView: true, marked: true }, 'the underlay is ready' + ' ' + JSON.stringify(s));
     assert.match(s.toast, /^Underlay \S+ added\.$/);
-    await open(page, 0, 'iface:hq-core1:Port-Channel1');
+    await open(page, 'enterprise-wan.yaml', 'iface:hq-core1:Port-Channel1');
     await page.eval(`(() => { const sel = document.querySelector('#side-body select[data-t="member-append"]'); sel.scrollIntoView({ block: 'nearest' }); sel.focus(); sel.value = 'Ethernet1'; sel.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
     await page.settle(150);
     s = await page.eval(STATE);
@@ -281,7 +279,7 @@ test('addresses, protocols, interface groups, attributes, endpoints, members and
 test('Connect in the diagram: the new link opens in the Edit tab with the focus on its first field; X no longer fails anything', { skip, timeout: 120000 }, async () => {
   const page = await start();
   try {
-    await open(page, 0, null);
+    await open(page, 'enterprise-wan.yaml', null);
     await page.eval(`netatlas.startConnection('iface:hq-acc1:Gi1/0/1') || netatlas.startConnection('device:muc-ap'), true`);
     await page.eval(`netatlas.setView('physical'), netatlas.startConnection('device:hq-log'), netatlas.completeConnection('device:muc-ap'), true`);
     await page.settle(120);
@@ -308,7 +306,7 @@ test('reduced motion: the new entry is scrolled into view at once (no smooth scr
   const page = await start();
   try {
     await page.cmd('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
-    await open(page, 0, 'device:hq-core1');
+    await open(page, 'enterprise-wan.yaml', 'device:hq-core1');
     // record how the Edit tab scrolls
     await page.eval(`(() => { window.__scrolls = []; const o = Element.prototype.scrollIntoView; Element.prototype.scrollIntoView = function (a) { window.__scrolls.push(a && a.behavior); return o.call(this, a); }; return true; })()`);
     await press(page, '#side-body [data-act="add-route"]');

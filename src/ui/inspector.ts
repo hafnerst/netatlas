@@ -25,7 +25,7 @@ import { CHECKS } from '../analysis/checks';
 import { nextFreeChoices } from '../analysis/addressing';
 import { builtinProtocols, lookupProtocol, normalizeProtocol, protocolBase } from '../model/protocols';
 import { SelectionContext, contextState } from '../model/queries';
-import { DEVICE_TYPES, isDeviceType, deviceTypeLabel, kindsOf, modesOf, purposeDef, hasPurpose, ROLES, SYSTEM_PURPOSES } from '../model/device-types';
+import { DEVICE_TYPES, isDeviceType, deviceTypeInText, kindsOf, modesOf, purposeDef, hasPurpose, ROLES, SYSTEM_PURPOSES } from '../model/device-types';
 import { ID_RE, Issue, PROTO_RE, scalarText } from '../validation/validate';
 import { duplicateRelation, endpointName, pairProblem } from '../model/connect';
 import { Endpoint, endpointText } from '../model/types';
@@ -505,7 +505,7 @@ export class Editor {
       sec.appendChild(
         this.e('div', { class: 'ol-head' }, [
           this.e('button', { type: 'button', class: 'ol-toggle', 'data-act': 'fold', 'data-kind': kind, 'aria-expanded': folded ? 'false' : 'true', 'aria-controls': listId, title: (folded ? 'Show' : 'Hide') + ' the entries of this section' }, [
-            this.e('span', { class: 'ol-caret', 'aria-hidden': 'true' }, [folded ? '▸' : '▾']),
+            this.e('span', { class: 'ol-caret', 'aria-hidden': 'true' }, ['▾']),
             this.e('span', { class: 'ol-title' }, [`${KIND_TITLE[kind]} (${ents.length})`]),
             folded && related ? this.e('span', { class: 'ol-related', title: `${related} related to the selection` }, [`• ${related}`]) : null,
             folded ? this.badge(errs, warns) : null,
@@ -545,6 +545,25 @@ export class Editor {
       }
       box.appendChild(sec);
     }
+  }
+
+  /** Fold exactly these sections of the outline (a view state; tests and the self-test). */
+  setFolded(kinds: EntityKind[]): void {
+    this.collapsed = new Set(kinds);
+    this.host.changed('filter');
+  }
+
+  /**
+   * Re-render the outline and give the keyboard focus back to the control it was on (the
+   * rendering replaces the buttons; a press with the mouse never focused them, so nothing moves then).
+   */
+  private refocusOutline(sel: string, render: () => void): void {
+    const a = this.d.activeElement;
+    const had = !!a && !!a.closest && !!a.closest('#outline') && a.matches(sel);
+    render();
+    if (!had) return;
+    const b = this.d.querySelector('#outline ' + sel) as HTMLElement | null;
+    if (b) b.focus({ preventScroll: true });
   }
 
   private badge(e: number, w: number): HTMLElement | null {
@@ -1055,7 +1074,7 @@ export class Editor {
       g('Identity', [guest ? this.hostField(base, index) : null, this.idField(base, kind), this.textField(base.concat('label'), 'Label', o, 'textarea', undefined, 'Line breaks are kept.'), this.typeField(base.concat('type'), o), ...this.modelFields(base, index), this.layer3Field(base, index)], 'identity');
       g('Placement', [guest && !doc.get(base.concat('group')) ? this.guestLocationField(base) : this.refField(base.concat('group'), 'Group / location', o, this.ids('group')), this.intField(base.concat('tier'), 'Tier (0–9)', o, 'Row in the physical view (0 = top). Empty: automatic.')], 'placement');
       if (guest) g(isVm({ type: dtype }) ? 'Virtual machine' : 'Container', isVm({ type: dtype }) ? [this.textField(base.concat('guest_os'), 'Guest OS', o, 'text', undefined, 'Informational.', 'Ubuntu 24.04'), this.intField(base.concat('vcpu'), 'vCPUs', o, 'Informational (compared with its host’s CPU cores when both are given).'), this.textField(base.concat('ram'), 'Memory', o, 'text', undefined, 'A size, e.g. 16G (compared with its host’s memory when both are given).', '16G')] : [this.textField(base.concat('image'), 'Image', o, 'text', undefined, 'Informational.', 'nginx:1.27')], 'guest');
-      // the built-in functions (a VPN Gateway's VPN, a Security gateway's Domain separation), its pairs and management interfaces
+      // the built-in functions (a VPN gateway's VPN, a Security gateway's Domain separation), its pairs and management interfaces
       for (const x of this.applianceGroups(base, index)) w.appendChild(x);
       const protos = this.protocolsGroup(base, index);
       if (protos) w.appendChild(protos);
@@ -1338,7 +1357,7 @@ export class Editor {
     }
     if (!this.capsAt(devIndex).routingProtocols) {
       if (!enabled.length && !doc.get(base.concat('router_id'))) return null;
-      kids.push(this.e('p', { class: 'field-err' }, [`Only Layer 3+ devices (${ROUTING_PROTOCOL_TYPES.map((t) => deviceTypeLabel(t).toLowerCase()).join(', ')}; a switch or VM with Supports Layer 3; a System that is a Layer 3 forwarder) run routing protocols. Remove ${enabled.length ? 'them' : 'the router ID'}, or change what the device is.`]));
+      kids.push(this.e('p', { class: 'field-err' }, [`Only Layer 3+ devices (${ROUTING_PROTOCOL_TYPES.map((t) => deviceTypeInText(t)).join(', ')}; a switch or VM with Supports Layer 3; a System that is a Layer 3 forwarder) run routing protocols. Remove ${enabled.length ? 'them' : 'the router ID'}, or change what the device is.`]));
       for (const id of enabled) kids.push(this.e('div', { class: 'svc-row' }, [this.e('span', {}, [label(id)]), this.disableButton(devIndex, devId, id, label(id))]));
       if (doc.get(base.concat('router_id'))) kids.push(this.textField(base.concat('router_id'), 'Router ID', 'device'));
       return this.group('Protocols (routing services)', kids, 'protocols');
@@ -3388,7 +3407,7 @@ export class Editor {
     if (caps.vpnOnlyTransit || doc.get(vp)) {
       const kids: Array<HTMLElement | null> = [];
       if (!doc.get(vp)) {
-        kids.push(this.e('p', { class: 'field-err' }, ['A VPN Gateway needs its VPN gateway configuration: its operation, technology and tunnels or listener. Nothing is chosen for it.']));
+        kids.push(this.e('p', { class: 'field-err' }, [`A ${deviceTypeInText('vpn_gateway')} needs the configuration of its VPN: its operation, technology and tunnels or listener. Nothing is chosen for it.`]));
         kids.push(this.e('div', { class: 'field' }, [this.e('button', { type: 'button', class: 'mini', 'data-act': 'add-block', 'data-p': J(vp), 'data-what': 'VPN gateway configuration' }, ['+ Configure the VPN gateway'])]));
       } else {
         const op = doc.text(vp.concat('operation')) || '';
@@ -4833,7 +4852,7 @@ export class Editor {
         // fold or unfold one section of the outline (a view state: nothing in the model changes)
         if (this.collapsed.has(kind)) this.collapsed.delete(kind);
         else this.collapsed.add(kind);
-        this.host.changed('filter');
+        this.refocusOutline(`[data-act="fold"][data-kind="${kind}"]`, () => this.host.changed('filter'));
         return true;
       case 'filter-close':
         this.filter = '';
@@ -4842,7 +4861,7 @@ export class Editor {
         return true;
       case 'fold-all':
         this.collapsed = new Set(kind === ('close' as string) ? ENTITY_KINDS : []);
-        this.host.changed('filter');
+        this.refocusOutline('[data-act="fold-all"]', () => this.host.changed('filter'));
         return true;
       case 'add-entity': {
         this.collapsed.delete(kind);

@@ -1304,7 +1304,7 @@ export class ModelDoc {
    * could no longer have (removed with the change, listed for the
    * confirmation) and what stays but is then reported (its guests, the
    * relations that need routing). Nothing more permissive is put in their
-   * place, and nothing new is chosen: a VPN Gateway's VPN, a Separation
+   * place, and nothing new is chosen: a VPN gateway's VPN, a Separation
    * gateway's policy or a System's purpose are left to be filled in.
    */
   deviceModelPlan(devIndex: number, key: DeviceModelKey, value: string): { removed: Array<{ path: Path; text: string }>; kept: string[] } {
@@ -1336,7 +1336,7 @@ export class ModelDoc {
       if (!layer3Option(next.type)) gone(dp.concat('layer3'), 'Supports Layer 3');
     }
     if (key === 'purpose' && this.text(dp.concat('icon')) && !purposeDef(value)?.icons.some((x) => x.id === this.text(dp.concat('icon')))) gone(dp.concat('icon'), `icon: ${shown(dp.concat('icon'))} (not an icon of this purpose)`);
-    // the built-in functions: a VPN Gateway's VPN, a Security gateway's policy
+    // the built-in functions: a VPN gateway's VPN, a Security gateway's policy
     if (!c.vpnOnlyTransit) gone(dp.concat('services', 'vpn'), 'its VPN gateway configuration (services: vpn)');
     if (!c.securityGateway) gone(dp.concat('services', 'separation'), 'its Domain separation policy (services: separation)');
     else if (key === 'implementation') {
@@ -1407,7 +1407,7 @@ export class ModelDoc {
     });
   }
 
-  /** Add an empty block (a built-in function's configuration: a VPN Gateway's VPN, a Security gateway's policy); its required fields are reported until filled in. One undo step. */
+  /** Add an empty block (a built-in function's configuration: a VPN gateway's VPN, a Security gateway's policy); its required fields are reported until filled in. One undo step. */
   addBlock(path: Path, what: string): void {
     this.change('Add ' + what, () => {
       if (path.length > 1) this.ensureMap(path.slice(0, -1), this.orderFor(path.slice(0, -2)));

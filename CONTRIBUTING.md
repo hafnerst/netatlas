@@ -31,9 +31,12 @@ These rules apply to every contributor, including the automation account
    topic (e.g. `feature/auto-arrange`, `fix/yaml-tab-crlf`). Never reuse a
    branch for an unrelated task.
 3. **Implement and test on that branch.** Run `npm test`: it builds
-   `dist/netatlas.html` and runs the Node tests and the headless-browser
-   self-test. Commit the regenerated `dist/netatlas.html` together with the
-   source changes. `npm run check:dist` confirms that the committed HTML
+   `dist/netatlas.html` (and the uncommitted test build,
+   `build/netatlas-test.html`) and runs the Node tests and the
+   headless-browser self-tests. Commit the regenerated `dist/netatlas.html`
+   together with the source changes. A new example is either public
+   (`examples/`, listed in the catalog) or a test scenario
+   (`test/examples/`): see [examples/README.md](examples/README.md). `npm run check:dist` confirms that the committed HTML
    matches the source. Keep imports within the layer rules in
    [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 4. **Push the branch and open a pull request into `dev`.** Fill in the

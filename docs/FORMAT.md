@@ -169,7 +169,7 @@ than one endpoint on the same device is bound by the first of them.
 | `logical_interfaces` | | List of the device's **logical interfaces** (below): loopbacks, virtual interfaces and tunnel interfaces; a VM's virtual NICs (`vnic`) and a container's network attachments (`veth`). |
 | `dns_names` | | List of the device's **DNS names**, each associated with one or more of its interfaces. See [DNS names](#dns-names). |
 | `dns_servers` | | The DNS servers the device asks (a list of addresses), when they are not given by a DHCP lease. See [DNS servers of a host](#dns-servers-of-a-host-dns_servers). |
-| `services` | | The **services** the device runs, by the [service registry](#services-the-registry-and-its-catalog): `services: {dhcp: {…}, ntp: {…}, wireless: {…}}`. Who may run which is the registry's (with the reason when a device may not); the built-in functions of the appliances are written here too: a VPN Gateway's `vpn`, a Security gateway's `separation`, an access point's `wireless` (required), a load balancer's `load_balancing` and an IDS/IPS's `inspection` (optional). See also [Network services](#network-services-services-dhcp-and-dns-servers), [Virtualization](#virtualization-hypervisors-vms-and-containers), [VPN Gateway](#vpn-gateway), [Security gateway](#security-gateway) and [Wireless access](#wireless-access-wi-fi-networks-on-vlans). |
+| `services` | | The **services** the device runs, by the [service registry](#services-the-registry-and-its-catalog): `services: {dhcp: {…}, ntp: {…}, wireless: {…}}`. Who may run which is the registry's (with the reason when a device may not); the built-in functions of the appliances are written here too: a VPN gateway's `vpn`, a Security gateway's `separation`, an access point's `wireless` (required), a load balancer's `load_balancing` and an IDS/IPS's `inspection` (optional). See also [Network services](#network-services-services-dhcp-and-dns-servers), [Virtualization](#virtualization-hypervisors-vms-and-containers), [VPN gateway](#vpn-gateway), [Security gateway](#security-gateway) and [Wireless access](#wireless-access-wi-fi-networks-on-vlans). |
 | `port_pairs` | inline and pass-through devices: yes | The pairs of ports traffic passes between: `port_pairs: [{a: in, b: out}]`, with `direction: a_to_b` for one way and `copy: [mon]` for monitor ports that get a copy. See [Port pairs](#port-pairs). |
 | `management` | | The device's management interfaces (`management: [mgmt0]`): never forwarded, in no domain. Firewalls, IDS/IPS, Security gateways and passive monitors. See [Management interfaces](#management-interfaces). |
 | `routes` | | List of the device's **static routes**. See [Static routes](#static-routes). Only devices whose type has a routing table may have them. |
@@ -184,7 +184,7 @@ where it belongs.
 ### Routing services (`protocols`)
 
 A Layer 3+ device (router, Layer 3 switch or VM, routed firewall, load
-balancer, VPN Gateway, a System that is a Layer 3 forwarder: what
+balancer, VPN gateway, a System that is a Layer 3 forwarder: what
 [can run routing protocols](#capabilities)) lists the
 protocols it runs under `protocols:`, each with its parameters. A protocol
 without parameters is enabled with an empty mapping. Static routes are not
@@ -266,7 +266,7 @@ diagram writes the router ID and the AS number only where they apply.
 | Access point | `ap` | `indoor`, `outdoor`, `mesh`, `bridge`, `other` | `standalone`, `controller` | bridges its wireless side to its wired side (Wireless access) |
 | Load balancer | `load_balancer` | `hardware`, `virtual`, `other` | | routes; ends client connections and passes them to its pool |
 | IDS/IPS | `ids_ips` | `appliance`, `virtual`, `other` | `inline`, `passive` | inline: passes traffic between its paired ports, may drop it; passive: receives copies, forwards nothing |
-| VPN Gateway | `vpn_gateway` | `hardware`, `virtual`, `remote_access`, `other` | | ends its VPNs; forwards only to and from them |
+| VPN gateway | `vpn_gateway` | `hardware`, `virtual`, `remote_access`, `other` | | ends its VPNs; forwards only to and from them |
 | Security gateway | `security_gateway` | `cross_domain`, `red_black`, `it_ot`, `other` | | transfers between exactly two domains only what its policy permits, the way its implementation does it |
 | Server | `server` | `physical`, `appliance`, `other` | | a host; may run DHCP, DNS, a hypervisor, a container engine |
 | Virtual machine | `vm` | `general`, `virtual_appliance`, `other` | | a guest of a hypervisor (or a cloud instance); with `layer3: true` routes |
@@ -285,7 +285,7 @@ suggests the closest type (`Router` → `router`, `load-balancer` →
 `load_balancer`) or lists all of them.
 
 There is no generic gateway and no proxy type any more. What was written as
-one is converted by what it does: a VPN gateway becomes a **VPN Gateway**
+one is converted by what it does: a VPN gateway becomes a **VPN gateway**
 (`vpn_gateway`, with its VPN gateway function); a NAT gateway a **router**; a
 public cloud's gateway a **router** of kind `cloud_gateway` in its cloud
 group; a protocol or OT gateway a **System** with its purpose (usually
@@ -399,7 +399,7 @@ interfaces, cables, VLANs, routes and policy.
 | Load balancer |  |  | ✓ |  |  |  |  |  |  |  |  |  | ✓ | ✓ |  |
 | IDS/IPS · Inline |  |  |  |  | ✓ |  |  |  |  |  |  |  |  |  | ✓ |
 | IDS/IPS · Passive |  |  |  |  |  | ✓ |  |  |  |  |  |  |  |  | ✓ |
-| VPN Gateway |  |  | ✓ |  |  |  |  |  |  |  | terminates; only via its VPN |  |  | ✓ |  |
+| VPN gateway |  |  | ✓ |  |  |  |  |  |  |  | terminates; only via its VPN |  |  | ✓ |  |
 | Security gateway (no implementation yet) |  |  |  | ✓ |  |  |  |  |  |  |  | none yet |  |  | ✓ |
 | Security gateway · filtering bridge |  | ✓ |  | ✓ |  |  |  |  |  |  |  | filtering bridge |  |  | ✓ |
 | Security gateway · filtering router |  |  | ✓ | ✓ |  |  |  |  |  |  |  | filtering router |  |  | ✓ |
@@ -458,9 +458,9 @@ them; a transparent firewall's and a filtering bridge's management
 interface is the only one with an address. The physical view writes
 "management" under the port.
 
-#### VPN Gateway
+#### VPN gateway
 
-A VPN Gateway (`vpn_gateway`) ends VPNs. Its **VPN gateway** function is
+A VPN gateway (`vpn_gateway`) ends VPNs. Its **VPN gateway** function is
 built in and required (`services: {vpn: …}`); nothing of it is chosen for
 you:
 
@@ -473,7 +473,7 @@ you:
 | `pool` | remote access | the clients' addresses, a prefix (`10.250.0.0/24`); no fixed peer |
 | `protected` | yes | the networks behind it its VPN reaches: network ids or prefixes |
 
-The keys of the other operation are errors. A VPN Gateway **forwards only
+The keys of the other operation are errors. A VPN gateway **forwards only
 to and from its VPN**: traffic in or out of one of its tunnels, or to and
 from its remote-access pool; anything else between its interfaces is
 refused, in the path tracer and in the simulation ("hq-vpn is a VPN
@@ -1149,8 +1149,8 @@ boundary.
 | Monitoring | `monitoring` | MON |  | Server, Virtual machine, Container, System | only a System whose purpose is Host runs services |
 | Proxy | `proxy` | PRX |  | Server, Virtual machine, Container, Firewall | a transparent firewall forwards no IP of its own: make it routed |
 | Load balancing | `load_balancing` | LB | Load balancer | Server, Virtual machine, Container |  |
-| VPN gateway | `vpn` | VPN | VPN Gateway (its configuration required) | Router, Firewall, Server, Virtual machine | a transparent firewall forwards no IP of its own: make it routed |
-| NAT | `nat` | NAT |  | Router, Switch, Firewall, Load balancer, VPN Gateway, Virtual machine, System | NAT is a Layer 3 forwarder’s: it routes nothing |
+| VPN gateway | `vpn` | VPN | VPN gateway (its configuration required) | Router, Firewall, Server, Virtual machine | a transparent firewall forwards no IP of its own: make it routed |
+| NAT | `nat` | NAT |  | Router, Switch, Firewall, Load balancer, VPN gateway, Virtual machine, System | NAT is a Layer 3 forwarder’s: it routes nothing |
 | Wireless access | `wireless` | WIFI | Access point (its configuration required) | Router |  |
 | Wireless controller | `wireless_controller` | WLC |  | Server, Virtual machine, System | only a System whose purpose is Host runs services |
 | Hypervisor | `hypervisor` | HV |  | Server |  |
@@ -1549,7 +1549,7 @@ container engine.
 
 `routes` lists the static routes of a device: where traffic to a
 destination prefix goes. A device that *forwards* (a router, a Layer 3
-switch, a routed firewall, a load balancer, a VPN Gateway, a filtering
+switch, a routed firewall, a load balancer, a VPN gateway, a filtering
 router, a Layer 3 forwarder System) may have any route; a *host* (server,
 VM, container, storage, endpoint, a Layer 2 switch, a transparent firewall,
 a filtering bridge or protocol break, a host System) may have routes too.
@@ -2241,7 +2241,7 @@ a list of `VLAN: value` pairs, ranges allowed.
 | Access point (`ap`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `association_time`, `client_idle_timeout`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `igmp_version`, `unsolicited_report_interval` |
 | Load balancer (`load_balancer`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `igmp_query_interval`, `spf_delay`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `max_paths`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `listening`, `igmp_version`, `unsolicited_report_interval`, `igmp_querier`, `igmp_max_response`, `igmp_robustness`, `last_member_query_interval`, `spt_switchover` |
 | IDS/IPS (`ids_ips`) | `boot_time`, `fail_mode`, `inspection_latency` |
-| VPN Gateway (`vpn_gateway`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `igmp_query_interval`, `spf_delay`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `max_paths`, `ike_lifetime`, `child_lifetime`, `rekey_margin`, `dpd_interval`, `dpd_retries`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `igmp_version`, `unsolicited_report_interval`, `igmp_querier`, `igmp_max_response`, `igmp_robustness`, `last_member_query_interval`, `spt_switchover`, `multicast_over_tunnel` |
+| VPN gateway (`vpn_gateway`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `igmp_query_interval`, `spf_delay`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `max_paths`, `ike_lifetime`, `child_lifetime`, `rekey_margin`, `dpd_interval`, `dpd_retries`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `igmp_version`, `unsolicited_report_interval`, `igmp_querier`, `igmp_max_response`, `igmp_robustness`, `last_member_query_interval`, `spt_switchover`, `multicast_over_tunnel` |
 | Security gateway (`security_gateway`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `igmp_version`, `unsolicited_report_interval` |
 | Server (`server`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `response_time`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `listening`, `igmp_version`, `unsolicited_report_interval` |
 | Virtual machine (`vm`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `igmp_query_interval`, `spf_delay`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `max_paths`, `response_time`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `listening`, `igmp_version`, `unsolicited_report_interval`, `igmp_querier`, `igmp_max_response`, `igmp_robustness`, `last_member_query_interval`, `spt_switchover` |

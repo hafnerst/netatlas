@@ -14,7 +14,7 @@ import { findBrowser } from '../scripts/browser-selftest.mjs';
 import { openPage } from '../scripts/cdp.mjs';
 
 const S = load('ui/splitter.js');
-const url = pathToFileURL(join(root, 'dist', 'netatlas.html')).href;
+const url = pathToFileURL(join(root, 'build', 'netatlas-test.html')).href;
 const skip = findBrowser() ? false : 'no Chromium-based browser found (set NETATLAS_BROWSER)';
 
 test('limits: at least 320 px, at most what leaves the diagram 360 px beside the object list; stored values are checked', () => {

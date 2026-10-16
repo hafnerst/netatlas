@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { root, load, yaml, validate, state, byClass } from './helpers.mjs';
+import { root, load, yaml, validate, state, byClass, example, exampleNames } from './helpers.mjs';
 
 const { ModelDoc } = load('editor/document.js');
 const { layoutInput, layoutSignature } = load('layout/input.js');
@@ -14,8 +14,7 @@ const { autoPhysical, physicalBoxes } = load('layout/physical.js');
 const { logicalSpecs } = load('layout/logical.js');
 const W = load('yaml/write.js');
 
-const exampleNames = readdirSync(join(root, 'examples')).filter((f) => /\.ya?ml$/.test(f));
-const read = (f) => readFileSync(join(root, 'examples', f), 'utf8');
+const read = (f) => example(f);
 const readFixture = (f) => readFileSync(join(root, 'test', 'fixtures', f), 'utf8');
 const docOf = (text, name = 'x.yaml') => {
   const r = ModelDoc.fromText(text, name, 'file');

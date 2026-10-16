@@ -715,11 +715,13 @@ export class ProtocolSim implements Protocols {
 
   /** Unicast to the peer (its address), along the routing tables. */
   unicast(s: Sess, type: string, detail: string, data: { [k: string]: unknown } = {}, state = ''): void {
-    const m = this.msg(s, type, `${s.dev} (${formatAddr(s.local.addr)}) → ${s.peer} (${formatAddr(s.remote.addr)}), ${s.profile.proto}; ${detail}`, data);
+    const to = (s.x.replyTo as IpAddr | undefined) || s.remote.addr;
+    const at = to === s.remote.addr ? formatAddr(to) : `${formatAddr(to)}, its address as translated on the way`;
+    const m = this.msg(s, type, `${s.dev} (${formatAddr(s.local.addr)}) → ${s.peer} (${at}), ${s.profile.proto}; ${detail}`, data);
     this.e.note('message', s.protocol, s.dev, s.peer, type, state, m.detail, this.e.now, m);
-    const pkt = this.e.newPacket(s.local.addr, s.remote.addr, s.local.l3.vrf, m, [s.rel.id]);
+    const pkt = this.e.newPacket(s.local.addr, to, s.local.l3.vrf, m, [s.rel.id]);
     pkt.l4 = this.l4Of(s, type);
-    this.lane(s.rel, s.dev, s.peer, m, this.e.estimate(s.dev, s.remote.addr));
+    this.lane(s.rel, s.dev, s.peer, m, this.e.estimate(s.dev, to));
     this.e.send(s.dev, pkt);
   }
 
@@ -793,6 +795,9 @@ export class ProtocolSim implements Protocols {
     if (pkt && l3 && this.portHook && !this.portHook(dev, pkt, l3)) return;
     this.startSession(s);
     s.heard = this.e.now;
+    // a peer's packets that arrive from another address than its own were translated on the way (NAT): the answers go there,
+    // as a server answers a translated client, and the NAT translates them back
+    if (pkt && !pkt.encap && formatAddr(pkt.src) !== formatAddr(s.remote.addr)) s.x.replyTo = pkt.src;
     const b = this.behaviours.get(s.profile.behaviour) as Behaviour;
     b.rx(this, s, msg, pkt, l3);
   }

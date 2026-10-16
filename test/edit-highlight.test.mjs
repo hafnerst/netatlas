@@ -15,7 +15,7 @@ import { findBrowser } from '../scripts/browser-selftest.mjs';
 import { openPage } from '../scripts/cdp.mjs';
 
 const P = load('diagram/palette.js');
-const url = pathToFileURL(join(root, 'dist', 'netatlas.html')).href;
+const url = pathToFileURL(join(root, 'build', 'netatlas-test.html')).href;
 const skip = findBrowser() ? false : 'no Chromium-based browser found (set NETATLAS_BROWSER)';
 
 /** What the Edit tab marks: one entry per marked element. */
@@ -53,7 +53,7 @@ test('each selectable element, from the physical view, the logical view and the 
     // (scrolled into view at once, so it can be checked right after the click)
     await page.cmd('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
     for (const theme of ['dark', 'light']) {
-      await page.eval(`netatlas.theme.set('${theme}'), netatlas.loadExample(6), netatlas.showTab('edit'), true`);
+      await page.eval(`netatlas.theme.set('${theme}'), netatlas.loadExampleNamed('addressing.yaml'), netatlas.showTab('edit'), true`);
       const one = (marks, want, what) => {
         assert.equal(marks.length, 1, `${theme} ${what}: exactly one mark ${JSON.stringify(marks)}`);
         const m = marks[0];
@@ -103,7 +103,7 @@ test('the mark: a tint, a 3:1 accent bar and a "Selected" tag (not colour alone)
   const page = await openPage(url);
   try {
     for (const theme of ['dark', 'light']) {
-      await page.eval(`netatlas.theme.set('${theme}'), netatlas.loadExample(6), netatlas.showTab('edit'), netatlas.setView('logical'), true`);
+      await page.eval(`netatlas.theme.set('${theme}'), netatlas.loadExampleNamed('addressing.yaml'), netatlas.showTab('edit'), netatlas.setView('logical'), true`);
       await clickLine(page, 'iface:core:lo0', 'tspan[data-value="10.255.255.1/32"]');
       const look = await page.eval(`(() => {
         const toHex = (v) => { const m = /rgba?\\(([\\d.]+),\\s*([\\d.]+),\\s*([\\d.]+)/.exec(v); return m ? '#' + [m[1], m[2], m[3]].map((x) => (+x).toString(16).padStart(2, '0')).join('') : v; };
@@ -132,7 +132,7 @@ test('the mark: a tint, a 3:1 accent bar and a "Selected" tag (not colour alone)
 test('scrolling, motion and focus: the mark is scrolled into view only when off screen, smoothly unless reduced motion is preferred, and the focus never moves', { skip, timeout: 180000 }, async () => {
   const page = await openPage(url, { width: 1440, height: 760 });
   try {
-    await page.eval(`netatlas.loadExample(6), netatlas.showTab('edit'), netatlas.setView('logical'), true`);
+    await page.eval(`netatlas.loadExampleNamed('addressing.yaml'), netatlas.showTab('edit'), netatlas.setView('logical'), true`);
     // record how the Edit tab scrolls
     await page.eval(`(() => { const orig = Element.prototype.scrollIntoView; window.__scrolls = []; Element.prototype.scrollIntoView = function (o) { window.__scrolls.push(JSON.stringify(o)); return orig.call(this, o); }; return true; })()`);
     const scrolls = () => page.eval(`window.__scrolls.splice(0)`);
@@ -182,7 +182,7 @@ test('scrolling, motion and focus: the mark is scrolled into view only when off 
 test('the mark follows edits, renames, undo / redo, duplicate, delete, view switches and a reload, and is cleared without a selection', { skip, timeout: 180000 }, async () => {
   const page = await openPage(url);
   try {
-    await page.eval(`netatlas.loadExample(6), netatlas.showTab('edit'), netatlas.setView('logical'), true`);
+    await page.eval(`netatlas.loadExampleNamed('addressing.yaml'), netatlas.showTab('edit'), netatlas.setView('logical'), true`);
     const marks = async () => (await page.eval(MARKS)).map(clean);
     await clickLine(page, 'iface:core:lo1', 'tspan[data-value="192.0.2.53/32"]');
     assert.deepEqual((await marks()).map((m) => [m.kind, m.value]), [['row', '192.0.2.53/32']]);
@@ -228,7 +228,7 @@ test('the mark follows edits, renames, undo / redo, duplicate, delete, view swit
     await page.eval(`netatlas.select('device:core'), true`);
     await page.settle(60);
     assert.equal((await marks()).length, 1);
-    await page.eval(`netatlas.loadExample(6), netatlas.showTab('edit'), true`);
+    await page.eval(`netatlas.loadExampleNamed('addressing.yaml'), netatlas.showTab('edit'), true`);
     await page.settle(80);
     assert.deepEqual(await marks(), [], 'after a reload');
   } finally {
