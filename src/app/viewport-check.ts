@@ -355,6 +355,13 @@ export async function runViewportCheck(app: App, doc: Document): Promise<Check[]
         tset('sim-t-kind', 'tcp');
         tset('sim-t-port', '443', 'input');
         tset('sim-t-count', '100', 'input');
+        // every action of Network events open, the send sent: an event in Active events with its details open
+        for (const id of ['sim-ne-join-toggle', 'sim-ne-stream-toggle', 'sim-ne-iface-toggle']) (q('#' + id) as HTMLElement).click();
+        tset('sim-i-dev', 'hq-rtr1');
+        (q('#sim-t-send') as HTMLElement).click();
+        await tick();
+        const evd = q('#sim-events li[data-kind="send"] details') as HTMLDetailsElement | null;
+        if (evd) evd.open = true;
         ctl.sim.powerOff('hq-rtr2');
         ctl.refresh(true);
         await tick();

@@ -121,10 +121,10 @@ test('what is shown: the senders’ messages and the exchanges they start; the n
     assert.ok(items.indexOf('Use as sender') >= 0, items.join('|'));
     await page.eval(`Array.from(document.querySelectorAll('.sim-menu [role=menuitem]')).find((b) => b.textContent === 'Use as sender').click(), true`);
     await page.settle(100);
-    const C = await page.eval(`({ sum: ${SUM('sim-setup-senders')}, log: netatlas.simController().sim.events().some((e) => e.detail === 'Senders changed: pc1, r1'), badges: Array.from(document.querySelectorAll('#canvas .sim-sender')).map((x) => x.getAttribute('data-sender')).sort(), stop: Array.from(document.querySelectorAll('#sim-act-items button')).map((b) => b.textContent).indexOf('Stop as sender') >= 0 })`);
+    const C = await page.eval(`({ sum: ${SUM('sim-setup-senders')}, log: netatlas.simController().sim.events().some((e) => e.detail === 'Senders changed: pc1, r1'), badges: Array.from(document.querySelectorAll('#canvas .sim-sender')).map((x) => x.getAttribute('data-sender')).sort(), stop: netatlas.simController().itemsFor('device:r1').map((i) => i.label).indexOf('Stop as sender') >= 0 })`);
     assert.deepEqual(C, { sum: 'Senders (2 of 22): r1, User PC', log: true, badges: ['pc1', 'r1'], stop: true });
-    // the Actions panel: Stop as sender
-    await page.eval(`Array.from(document.querySelectorAll('#sim-act-items button')).find((b) => b.textContent === 'Stop as sender').click(), true`);
+    // its menu again: Stop as sender
+    await page.eval(`netatlas.simController().itemsFor('device:r1').find((i) => i.label === 'Stop as sender').act(), true`);
     await page.settle(100);
     assert.equal(await page.eval(SUM('sim-setup-senders')), 'Senders (1 of 22): User PC');
     // the panel: All senders: every message shown, no badges, no note

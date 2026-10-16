@@ -327,15 +327,22 @@ async function main() {
       await page.settle(200);
       const st2 = await page.rect('#sd-status');
       await save('mroutes', { x: st2.x, y: st2.y, w: st2.w, h: Math.min(st2.h, 300) }, { quality: 55 });
-      // the Send test form: unicast from core1 (an interface chosen) to srv, UDP 53, ten messages a second apart
+      // Network events: the four actions, Send network packets open: unicast from core1 (an interface chosen) to srv, UDP 53, ten messages a second apart
       await page.eval(`(() => { const set = (id, v, ev) => { const e = document.getElementById(id); e.value = v; e.dispatchEvent(new Event(ev || 'change')); };
         set('sim-t-type', 'unicast'); set('sim-t-from', 'core1');
         const via = Array.from(document.getElementById('sim-t-via').options).find((o) => o.value && o.value !== '*' && !o.disabled); if (via) set('sim-t-via', via.value);
         set('sim-t-to', 'srv'); set('sim-t-kind', 'udp'); set('sim-t-port', '53', 'input'); set('sim-t-count', '10', 'input'); set('sim-t-interval', '1', 'input');
-        document.getElementById('sim-test').scrollIntoView({ block: 'start' }); document.getElementById('toast').hidden = true; return true; })()`);
+        document.getElementById('sim-act-net').scrollIntoView({ block: 'start' }); document.getElementById('toast').hidden = true; return true; })()`);
       await page.settle(200);
-      const tf = await page.rect('#sim-test');
-      await save('send-test', { x: tf.x + 2, y: tf.y, w: tf.w - 4, h: Math.min(tf.h, 430) }, { quality: 40 });
+      const tf = await page.rect('#sim-act-net');
+      await save('send-test', { x: tf.x + 2, y: tf.y, w: tf.w - 4, h: Math.min(tf.h, 420) }, { quality: 26 });
+      // Active events: the series sent, a join, flapping; a few seconds on (one event each, with their states and progress)
+      await page.eval(`(() => { const c = netatlas.simController(); c.startFlap('link:l-rx'); c.joinGroup('pc2', 'eth0', '239.4.4.4', []); const k = document.getElementById('sim-t-kind'); k.value = 'icmp'; k.dispatchEvent(new Event('change')); document.getElementById('sim-t-send').click();
+        c.runTo(c.t + 4500); c.refresh(true); document.getElementById('sim-act-events').scrollIntoView({ block: 'start' }); document.getElementById('toast').hidden = true; return true; })()`);
+      await page.settle(200);
+      const ae = await page.rect('#sim-act-events');
+      await save('active-events', { x: ae.x + 2, y: ae.y, w: ae.w - 4, h: Math.min(ae.h, 225) }, { quality: 24 });
+      await page.eval(`(() => { const c = netatlas.simController(); c.sim.stopRuns(); c.stopFlap('link:l-rx'); c.leaveGroup('pc2', 'eth0', '239.4.4.4'); c.runTo(c.t + 6000); return true; })()`);
       // core1's Simulation section in the Actions panel, editable while the simulation runs
       await page.eval(`netatlas.select('device:core1'), true`);
       await page.settle(200);

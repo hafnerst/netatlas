@@ -1475,10 +1475,11 @@ spot (with the keyboard in it; `Esc` closes it):
   carries; a choice when it carries several);
 * a **relation**: **Fail link** / **Restore link**;
 * a **device**: **Show ARP table**, **Show MAC table**, **Show
-  connections**, **Show sessions** (a firewall), **Send test…**, **Show
-  IGMP groups** and **Show multicast routes** (a multicast router), **Show
-  multicast table** (a switch), **Join group…**, **Leave group …**,
-  **Start stream…**, **Stop stream …** (a host), **Highlight broadcast
+  connections**, **Show sessions** (a firewall), **Send network
+  packets…**, **Show IGMP groups** and **Show multicast routes** (a
+  multicast router), **Show multicast table** (a switch), **Join multicast
+  group…**, **Leave group …**, **Start multicast stream…**, **Stop stream
+  …** (a host), **Highlight broadcast
   domain** (of an interface of it), **Power off** / **Power on**, **Shut
   an interface…** (a second menu of its interfaces);
 * an **interface**: **Shut interface** / **No shut**, **Start flapping** /
@@ -1489,12 +1490,14 @@ spot (with the keyboard in it; `Esc` closes it):
   the nearest opens; at the same distance, the earlier message. The event
   log opens the same inspector from the keyboard.
 
-Several events can be in effect at once. The **Actions** panel offers the
-same events for the selected object (the keyboard and screen-reader way of
-the menus; its **Object** list selects any device, cable or relation, and a
-device's interfaces have a list of their own), and lists the **Active
-events**, each with its way back (Restore, Stop flapping, No shut, Power
-on). The diagram marks what is down.
+Several events can be in effect at once. The **Actions** panel's
+**Network events** start packets, joins, streams, shuts and flapping from
+forms that choose their own device and interface (the keyboard and
+screen-reader way, with no selection needed; the *… …* entries of a
+device's menu open them with that device), and **Active events** lists
+everything in effect or started, each with its state and its way back
+(Restore, Stop, Stop flapping, No shut, Power on, Leave group). The diagram
+marks what is down.
 
 * **Fail link / Restore**: the cable goes dark at once (what is on it is
   lost, ✕ where it was); its ports notice after the loss-of-signal
@@ -1548,13 +1551,15 @@ ends. There is no floating simulation window.
   its count (and *· n modified*), applied at once, with Reset; and the
   **Table timers** scale.
 * **Right: Actions** (in place of the Inspector's tabs). **Network
-  events** for the selected object (selected in the diagram, or chosen in
-  its **Object** list): Fail or Restore a cable or relation, Start or Stop
-  flapping, Shut or No shut (a device's interfaces in a list of their own),
-  Power off or on, Join or Leave a group and Start or Stop a stream (a
-  host, with their forms), Show ARP / MAC / IGMP / multicast table,
-  connections and sessions, Highlight broadcast domain. **Active events**,
-  each with **Restore** or **Stop**. **Send test**: **Delivery** first
+  events**: four actions as headings that open their forms, **Send
+  network packets** (open), **Join multicast group** (Device, Interface,
+  Group, Sources for a source-specific group), **Start multicast stream**
+  (Device, Interface, Group, UDP port, Interval, Size) and **Interface
+  actions** (Device, Interface, **Shut interface**, **Start flapping**,
+  the flapping cycle in effect); each button disabled with a short reason
+  until it applies. Then **Active events** (see [Network events: direct
+  actions and one event list](#layers-3-and-4-icmp-tcp-udp-firewalls-and-tests)), then the selected
+  device's Simulation settings. **Send network packets**: **Delivery** first
   (Unicast, Multicast, Local broadcast, Directed broadcast; until then From
   and To are greyed), **From** (every device: one that can't send is greyed
   with a short reason), **Interface** (several: options *name - address*; one:
@@ -1840,6 +1845,33 @@ receiver, pulse, trail).
   results; none of them removes the device from **From**. Its interfaces
   are options *name - address* (a DHCP client's lease as it is now), the
   reasons short (*Cannot send IP packets*, *No IP address*, *Powered off*).
+* **Network events: direct actions and one event list.** The Actions
+  panel starts with four actions, each with its own form that chooses its
+  device and interface: **Send network packets**, **Join multicast
+  group**, **Start multicast stream** and **Interface actions** (Shut
+  interface, Start flapping). Nothing has to be selected first; a device's
+  menu in the diagram opens a form with that device filled in, and the
+  diagram's selection never changes a form. Table viewers (Show ARP table
+  …) are not among them: they are in the diagram's menus and on the
+  panel's status side. Fail link and Power off stay in the diagram's
+  menus. **Active events** below lists every operation of these forms (and
+  of the diagram's menus) as one event (`src/analysis/sim/actions.ts`):
+  its state as an icon and a word (*Queued*, *In progress*, *Completed*,
+  *Failed*, *Stopped*, *Cancelled*), read from the simulation each time,
+  so pausing changes nothing; its progress and outcome; its controls
+  (Stop, No shut, Leave group); its details (the basis of the outcome, the
+  messages, the packet inspector). A series of messages is one event.
+  Completed means finished, not successful. A shut or a join completes
+  when its command is done and then shows the state it left (*interface
+  down (shut)*, *member of 239.1.1.1*). A join is in progress until a
+  multicast router records it, or until its reports are sent. **Success
+  rates** only where they mean something: unicast (answered), multicast
+  (received by at least one member); a pending message is never a
+  failure; a broadcast without an answer is *unknown*; joins, streams,
+  shuts and flapping show a state, not a rate. The other changes in effect
+  (a failed cable, a device off) are listed with their way back. Finished
+  events stay, up to 50 (the oldest finished go first), until **Clear
+  finished**; exiting the simulation discards them.
 * **Send test's delivery types.** One shared definition
   (`src/analysis/sim/test-plan.ts`) says what the form offers, what blocks
   Send and what the simulation sends. **Unicast**: a destination device and
@@ -1883,7 +1915,7 @@ receiver, pulse, trail).
 ### Multicast
 
 Hosts join groups and send streams (an interface's `multicast:` block in
-the model, or **Join group…** / **Start stream…** during the simulation);
+the model, or **Join multicast group** / **Start multicast stream** during the simulation);
 routers that run PIM carry them.
 
 * **IGMP / MLD** (v2 / v3, MLDv1 / v2 by device): the routers of a subnet
@@ -2110,7 +2142,7 @@ fw1 (ICMP Administratively Prohibited), a ping to 203.0.113.80 gets Net
 Unreachable; srv's first full-size answer over the carrier path (MTU 1400)
 gets Fragmentation Needed. The lab's two switches with their spanning tree
 off storm from the start: fail *l-lab-b*. Click a dot to inspect it, and
-use Send test… from a device's menu. mcsrc streams to 239.1.1.1 and
+use Send network packets… from a device's menu. mcsrc streams to 239.1.1.1 and
 232.1.1.1: pc1 and pc2 receive them through acc-sw's snooping (pc3 in VLAN
 30 has no querier and gets nothing); open core1's IGMP groups and r1's
 multicast routes, then fail *l-core1-r1* and watch the tree move via core2.
@@ -2707,7 +2739,8 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots of the rele
 | **Send test at once** | `test/sim-send-test.test.mjs` (5 tests), `test/sim-send-test-browser.test.mjs` (3 tests, through the DevTools protocol) | A test starts at the current simulated time while other traffic is in flight, its first message leaving at once; its waits are only ARP / NDP, DNS and a DHCP lease (a test by name from a client without its lease: the lease, then DNS, then the SYN). **Marked:** its packets, their ARP, the replies, a RST, an ICMP error, its state line; no routing protocol or other traffic. **Pacing:** at the dot limit its hops are drawn at once and, while it runs, it alone holds the clock, answered without waiting behind the dots on screen. **Deterministic** with tests at given times, however the time is advanced. **On screen:** drawn and listed despite the senders and the protocols, *Test ·* in the label and **Test** in the log, a trail; during the startup burst drawn at once; paused, *Sent at t = … It starts when the simulation plays.* (the time unchanged) and **Send and play**; a series of four 0.5 s apart: paused, nothing more sent; played at 1× and 4×, the same simulated times (fewer frames at 4×). |
 | **Send test's sources** | `test/send-test.test.mjs` (6 tests) | Every device a source (guest-phone among them), the others listed with the reason from the capability resolver (a Cloud, a TAP, a passive IDS: no IP stack; a switch without an address); a DHCP client before its lease (the test waits, nothing invented) and after it (lease, server, gateway, DNS, Wi-Fi network and VLAN; the test from the leased address); DHCP without an answer (the waiting test ends with the reason, the device stays a source); no stale lease after its link went down; an interface chosen as the source (its address and VRF, an unknown one refused); a policy-denied Guest test sent and ending where the DSL router dropped it, an unreachable one ending otherwise. |
 | **Send test's plan** | `test/send-test-plan.test.mjs` (12 tests) | **Shared rules:** the protocols of each delivery type (no TCP for multicast or broadcast), ports for TCP and UDP only (none while the protocol is unselected, an ICMP plan with a port refused), what is missing named in the form's order; counts (0, 1.5, 1001, NaN refused) and intervals (0, negative, NaN, ∞, above 3600, below 0.01 refused; none needed for one message). **Labels:** *name - address* per interface, a DHCP lease before and after, two addresses of one interface as two destinations, the ISP *Cannot send IP packets*. **Unicast:** the destination interface chosen is the target (a DHCP lease found when sent; the DSL router's *wan*); several need a choice; an address that interface lacks refused. **Ports:** an ICMP test's packets carry none. **100 messages at 1 s:** exactly 100 originating echo requests at t0 … t0 + 99 s, deterministic, under 5 s; a series not waiting for replies; **Stop** (nothing more sent, those on their way finish), stopping all; the clock run in small steps or at once giving the same times. **Multicast:** members receive it, a group without members nobody; IPv6 groups need an IPv6 address. **Local broadcast:** limited and subnet scope, never past the router, not into another VLAN of the house. **Directed broadcast:** a subnet of the model and not the source's own; dropped where off, answered where on. |
-| **Send test's form** | `test/send-test-form-browser.test.mjs` (2 tests, through the DevTools protocol, both themes) | Nothing chosen: From and To disabled and greyed, Send disabled, the hint once; unicast: every device in From (the ISP disabled, *Cannot send IP packets*), the guest phone's one interface as text before and after its lease, the core's interfaces as options with *Chosen by routing*, the destination's interface (one shown, four a choice, cleared with another device); a port only for TCP and UDP and empty, cleared when ICMP is chosen; the interval greyed for one message; another delivery type clearing what doesn't fit (TCP and the destination for a group) and keeping what does (UDP and its port for a broadcast); the subnet scope's address; a directed broadcast to a subnet outside the model blocked; a Guest test dropped by the policy; a series listed with its counts and Stop, stopped where it was; every control named, nothing wider than the panel; Send test… from the ISP's menu. |
+| **Network events** | `test/network-events.test.mjs` (10 tests), `test/network-events-browser.test.mjs` (3 tests, through the DevTools protocol: light and dark at 1440 px, light at 640 px) | **Lifecycle:** every operation one event with a stable id, refused ones *Failed* with the simulation's reason, the older programmatic send listed too; a series of 20 one event with *sent of requested*, pending never failed, completed with its last answer's time; a series with failures still *Completed*; a broadcast without answers *unknown* and no rate; a group's members apart from its messages; a DHCP client's send *Queued* until its lease, Stop then *Cancelled* with nothing on the wire; a join *In progress* until q1 records it, then *Completed* with its membership and Leave group (completed 2 min later too), without a router completed after its reports; a stream's datagrams and each member's count, stopped; a shut *Completed* at once with the interface down and No shut, not listed twice; flapping's cycles (3 by 35 s), stopped part way; a failed cable and a device off in the list; the same states whether run in steps or at once; at most 50 kept, those in progress never dropped, Clear finished. **On screen:** the four actions in order as headings with their forms (no object list, no Show …), Active events after them; the tables in the device's menu and the status side; each form's device and interface (Select…, disabled until a device), its reason; the diagram's selection not changing the join form; a join, a stream, flapping (not twice), a shut and a series listed newest first with their states (icon and word), a named progress bar, paused without moving on; details open and the focus kept over four updates; the inspector from the details; Stop keeping the focus in its event; No shut; the outcome bar named; a failed cable with Restore; Clear finished keeping the flapping, the cable and the membership, the focus on the heading; nothing wider than the panel, no sideways scrolling, every control named. |
+| **Send test's form** | `test/send-test-form-browser.test.mjs` (2 tests, through the DevTools protocol, both themes) | Nothing chosen: From and To disabled and greyed, Send disabled, the hint once; unicast: every device in From (the ISP disabled, *Cannot send IP packets*), the guest phone's one interface as text before and after its lease, the core's interfaces as options with *Chosen by routing*, the destination's interface (one shown, four a choice, cleared with another device); a port only for TCP and UDP and empty, cleared when ICMP is chosen; the interval greyed for one message; another delivery type clearing what doesn't fit (TCP and the destination for a group) and keeping what does (UDP and its port for a broadcast); the subnet scope's address; a directed broadcast to a subnet outside the model blocked; a Guest test dropped by the policy; a series as one event of Active events with its progress (*1/3 sent*, *1 pending*, then *3 answered* and its named outcome bar) and Stop, stopped where it was; every control named, nothing wider than the panel; Send network packets… from the ISP's menu. |
 | **Packet hit area** | `test/sim-packet-hit.test.mjs` (1 test), `test/sim-packet-hit-browser.test.mjs` (2 tests, through the DevTools protocol, both themes) | The nearest dot within 12 screen pixels at 50 %, 100 % and 200 % zoom, ties to the earlier message, none beyond. **On screen:** 9 px beside a dot it is outlined (a ring of the same size at every zoom, the hand) and a click opens that packet; 20 px away neither; the inspector keeps its packet while the simulation moves on; the outline gone when the pointer leaves; a device clicked away from the dots selected; the event log opening a packet by the keyboard. |
 | **Even pacing from the first packet** | `test/sim-pacing-browser.test.mjs` (1 test, through the DevTools protocol) | In a real browser, the screen time of every hop (moving to arrival) ÷ its configured time is 0.95–1.06 for the first packets after the start, with the main thread blocked 400 ms before the first frame and the startup burst beyond the dot limit, and for messages a minute later; the first frame counts 0, no frame more than 100 ms; a hidden tab stops the clock and nothing jumps after it; the same hop is given the same time early and late. |
 | **Exit simulation** | `test/sim-exit.test.mjs` (2 tests, through the DevTools protocol) | By `Esc`, the banner, the simulation panel, the Simulate menu and the palette, from the Edit, Details and YAML tabs: no *Editing is paused* notice or disabled Exit button, no read-only form, the outline's Add buttons enabled, an edit applied at once; the tab and the selection back; no panel, setup, actions, banner, border label, table, packet inspector or dot. Closing or replacing the model during a simulation: the same. |
@@ -2716,7 +2749,7 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots of the rele
 | **Supports Layer 3** | `test/layer3-ui.test.mjs` (1 test, through the DevTools protocol) | The checkbox and its tooltip, no help text; on a Layer 2 switch the routing protocols listed disabled in *Requires Layer 3* with the reason, nothing suggested, a scripted choice changing nothing; the palette's reason; the endpoint pickers leaving the switch out (and saying why) of relations that need Layer 3; a new relation proposing no Layer 3 protocol and reporting one typed in; ticking makes them available; unticking a configured switch confirms the list of what goes, one undo step. |
 | **DHCP and DNS (engine)** | `test/sim-dhcp-dns.test.mjs` (10 tests) | **The model:** services off by default, what they need as errors, only on servers, VMs and containers; scopes against the model (the range inside the network, without the gateway or a static address, no overlaps; exclusions and reservations); zones (records inside the zone, no duplicates, no CNAME beside another record, the listening address, the records the DNS names give); the checks `dhcp-no-server` (same broadcast domain or through a relay) and `dhcp-relay-no-server`. **The simulation:** DORA at the start, every client in parallel, one through the relay (giaddr), the reservation and the exclusion; everything a client sends waits for its lease, its relations' sessions start with it; renew at T1 (unicast), rebind at T2 (broadcast), the end of the lease; an exhausted pool not answering, retries with backoff (4, 8, 16, 32 s), the pause and the link-local fallback; DNS answered from the zone (a CNAME followed), NXDOMAIN, a timeout with retries, the cache for the record TTL, the zone and cache tables; a deterministic timeline. |
 | **DHCP and DNS (editing, diagram)** | `test/netservices-ui.test.mjs` (2 tests, through the DevTools protocol) | The Services card off by default on a server; ticking DHCP or DNS shows what is missing as errors; **+ Add scope** with its required fields and suggestions; a zone with its derived records (read-only); unticking both restores the model, one undo brings a service back; no card on a switch; a host's DNS servers; a VLAN interface's DHCP relay. **Diagram:** the DHCP and DNS badges inside the box, apart from the label and each other; the reserved lease lines filled in a simulation without changing any entry's size. |
-| **Simulation UI** | `test/sim-ui.test.mjs` (2 tests), `test/sim-browser.test.mjs` (8 tests, through the DevTools protocol) | Start simulation… and Exit simulation in their three states with the reasons (one registry for the menu and the palette); label placement (never on a text, a box or another label). **The Start dialog with real keys:** Simulate ▾ → Start; the protocols first (groups *Layer 2 (4 of 4)* … *Custom (1 of 1)*, every protocol ticked, *OSPF 8 relations*, *(18 of 18)*), the keyboard on the first protocol, Space unticking it, a group's Clear and its count; the layers collapsed with *(8)*, a changed TTL making Layer 3 say *· 1 modified* while collapsed (in its accessible name too); no scrolling at 1366 × 768; Start primary and last; Esc cancelling, the protocols open and all ticked again on reopening; Enter on a checkbox starting; the choice in the setup panel (*(14 of 18)*, Traffic *(0 of 4)*, every layer collapsed) and on the next start. **The layout:** setup and actions in place of the Objects list and the Inspector (named *Simulation setup* and *Actions*), the panel under them, no tool window, nothing to detach it, the page not scrolling; the selected device as the actions' object; the splitter (↑ twice: 40 px taller, stored, `aria-valuenow`; never below 150 px; Enter: the default); `F6` / `Shift+F6` through setup, diagram, actions and panel; Exit bringing back the Objects list, the Legend tab, the selection and the zoom. **Menus and actions:** a click on a cable opens Fail link, Start flapping and Highlight broadcast domain at that spot with the keyboard in it, the Actions panel listing the same; Enter fails it, Restore from the Active events and from the Actions panel; a switch's menu by arrow keys; its ARP and MAC tables in the panel's status side (no floating table), Protocols again; unticking OSPF in the setup keeps the time and is remembered. **Pacing:** *Readable · 1 s per hop · 1×*, every hop 0.6–3 s; a dot clicked: the packet inspector with Follow message, the simulation paused (also when it was playing); Follow and Stop following; Step; the speed 0.25×–4×, Proportional with its scale, skipping off and on; *⏩ … skipped* reported. **Reduced motion:** still arrows with labels for the first message at once with Step, arrows that do not move while playing, Step one event at a time, the export a still picture without the moment's marks. **A device's Simulation section** in the Actions panel (once; collapsed; own and inherited values with their sources), an override written as `simulation: {arp_timeout: 45}` and logged as *(device)*, Undo taking it back; the setup's parameters applied at once, remembered, *· 1 modified*. **Layers 3 and 4, multicast:** the storm warning, a log message in the inspector by keyboard, the log by cast, layer and protocol; Send test from the Actions panel (Enter in Port) and from a device's menu; a broadcast domain; connections and sessions; Join group… from a host's menu (the form kept after the join), Leave group; the IGMP, multicast-table and multicast-route tables; IGMP in the inspector. |
+| **Simulation UI** | `test/sim-ui.test.mjs` (2 tests), `test/sim-browser.test.mjs` (8 tests, through the DevTools protocol) | Start simulation… and Exit simulation in their three states with the reasons (one registry for the menu and the palette); label placement (never on a text, a box or another label). **The Start dialog with real keys:** Simulate ▾ → Start; the protocols first (groups *Layer 2 (4 of 4)* … *Custom (1 of 1)*, every protocol ticked, *OSPF 8 relations*, *(18 of 18)*), the keyboard on the first protocol, Space unticking it, a group's Clear and its count; the layers collapsed with *(8)*, a changed TTL making Layer 3 say *· 1 modified* while collapsed (in its accessible name too); no scrolling at 1366 × 768; Start primary and last; Esc cancelling, the protocols open and all ticked again on reopening; Enter on a checkbox starting; the choice in the setup panel (*(14 of 18)*, Traffic *(0 of 4)*, every layer collapsed) and on the next start. **The layout:** setup and actions in place of the Objects list and the Inspector (named *Simulation setup* and *Actions*), the panel under them, no tool window, nothing to detach it, the page not scrolling; the four actions of Network events whatever is selected; the splitter (↑ twice: 40 px taller, stored, `aria-valuenow`; never below 150 px; Enter: the default); `F6` / `Shift+F6` through setup, diagram, actions and panel; Exit bringing back the Objects list, the Legend tab, the selection and the zoom. **Menus and actions:** a click on a cable opens Fail link, Start flapping and Highlight broadcast domain at that spot with the keyboard in it; Enter fails it, Restore from the Active events; a switch's menu by arrow keys; its ARP and MAC tables in the panel's status side (no floating table), Protocols again; unticking OSPF in the setup keeps the time and is remembered. **Pacing:** *Readable · 1 s per hop · 1×*, every hop 0.6–3 s; a dot clicked: the packet inspector with Follow message, the simulation paused (also when it was playing); Follow and Stop following; Step; the speed 0.25×–4×, Proportional with its scale, skipping off and on; *⏩ … skipped* reported. **Reduced motion:** still arrows with labels for the first message at once with Step, arrows that do not move while playing, Step one event at a time, the export a still picture without the moment's marks. **A device's Simulation section** in the Actions panel (once; collapsed; own and inherited values with their sources), an override written as `simulation: {arp_timeout: 45}` and logged as *(device)*, Undo taking it back; the setup's parameters applied at once, remembered, *· 1 modified*. **Layers 3 and 4, multicast:** the storm warning, a log message in the inspector by keyboard, the log by cast, layer and protocol; Send test from the Actions panel (Enter in Port) and from a device's menu; a broadcast domain; connections and sessions; Join multicast group… from a host's menu (the form open with the host, kept after the join), the join completed with its membership recorded, Leave group; the IGMP, multicast-table and multicast-route tables; IGMP in the inspector. |
 | **Failure simulation** | `test/failure.test.mjs` (9 tests) | A failed device (its interfaces and cables down, neighbours degraded, relations at it down, a VRRP group failing over, networks degraded or down, the routing context); a failed port (its cable, the far port) and a LAG degraded or down by `min_links`, and its LACP relation; a cable or relation failing what runs over it, recursively (OSPF over GRE over IPsec), with tunnels listed apart; a relation of three devices; static routes failing and the floating route taking over, with the path tracer following it; a VRRP failover in the tracer; device pairs losing reachability in full or in part; the single points of failure (partitioning cables and devices, a LAG listed once, relations without a redundant underlay, none in a ring, the enterprise WAN); only cables, ports, devices and relations can fail; the same result for another order of the failed objects and of the file. |
 | **Path tracer** | `test/trace.test.mjs` (14 tests) | A static path hop by hop (longest prefix match, interfaces, addresses, routes, cables, the refs it marks; ends given as device, interface or address); a floating route taking over when the better next hop's interface is down; where a trace stops and why (black hole, no route, an unresolved next hop, a loop, a host that does not forward); a destination outside the model (leaves it, or delivered into a network); bad requests; equal-cost multipath (every branch, the main path and the alternatives); routes learned over OSPF (hop count, a per-device cost, a static route beating OSPF, a failed adjacency); an adjacency without a common network; a GRE-over-IPsec tunnel with OSPF over it (the stack, the declared underlay, a routed underlay traced nested) and a VLAN missing from a trunk; a VRRP gateway and its failover; VRFs; the return path and asymmetric routing; the same text for files in another order; the paths of the enterprise WAN and branch examples. |
 | **Addressing overview** | `test/addressing.test.mjs` (11 tests) | VRF groups (default table first) from the members' VRFs, the supernet tree; members with DNS names and loopbacks, DHCP clients on cables carrying the network, nested members counted, not repeated; gateways (VRRP / interface VIPs, default-route next hops), not repeated on a supernet; used, size and utilization (IPv4 percent, IPv6 /64 count, 2^64 as text); free ranges without reserved, used and nested addresses, the next free address (IPv6 after the subnet-router anycast address), a full network; duplicates per VRF (not across VRFs), same-prefix networks and interface subnets larger than their network, addresses in no network; the same result for a file with every list reversed; filter with context rows, flat sorts; CSV (header, quoting, CRLF, exact counts); the Inspector's next-free choices (VRF, networks on the cable first); every example builds and lists every network. |
@@ -3246,6 +3279,30 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots of the rele
       offers `10.20.0.1/24` for *Management*; **+ Add** adds it, Ctrl+Z
       removes it.
 
+36. **Network events and Active events.** Open `private-house.yaml`, start
+    the simulation, in both themes, at 200 % zoom and in a window about
+    600 px wide.
+    * The Actions panel: **Network events** with *Send network packets*
+      (open), *Join multicast group*, *Start multicast stream*, *Interface
+      actions*; no Object list, no *Show …*; **Active events** below:
+      *None yet*.
+    * Join: Device *tv* (its one interface shown), Group *239.1.1.1*: the
+      event *In progress*, then *Completed · no multicast router recorded
+      it … · member of 239.1.1.1* with **Leave group**. Click *nas* in the
+      diagram: the form still says *tv*.
+    * Stream from *nas* (UDP port empty: *Enter the UDP port.*; 5004): *In
+      progress*, datagrams counted, **Stop stream**: *Stopped*.
+    * Interface actions: *core*, *wan*: the flapping cycle is shown;
+      **Start flapping**: the button greys (*is flapping*), the event counts
+      cycles to *3/3* and *Completed*. *dist*, *ap1*: **Shut interface**:
+      *Completed · interface down (shut)*, **No shut**.
+    * Send laptop → nas, ICMP, 10 messages: one event, *1/10 sent*, the
+      bar filling; **Details**: the basis and the messages, **Inspect the
+      first message**. Pause: nothing changes. Tab to *Details* and let it
+      play: the focus stays there.
+    * Fail a cable from the diagram: listed with **Restore**. **Clear
+      finished**: the events still in progress and the states in effect
+      stay; the keyboard is on the heading.
 35. **Send test's delivery types, series and packet hit area.** Open
     `private-house.yaml`, start the simulation, in both themes, at 200 % zoom
     and in a window about 600 px wide.
@@ -3392,10 +3449,11 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots of the rele
       once; the log says so, and Layer 3 says *· 1 modified*.
     * Untick ARP in the setup: the ARP dots and log lines go, the time and
       the tables stay. Select all.
-    * Choose r2 under **Object**: **Power off**, then **Power on** in
-      **Active events**: r2 boots for 1 min, then its sessions start again.
-      Click the cable *l-rx*: **Start flapping**; it goes down and up three
-      times.
+    * Click r2: **Power off**, then **Power on** in **Active events**: r2
+      boots for 1 min, then its sessions start again. **Interface actions**:
+      choose an end of the cable *l-rx*, **Start flapping**: it goes down
+      and up three times; its event counts the cycles, then says
+      *Completed*.
     * Click the cable *l-carrier-r3*: **Fail link**. r3's OSPF goes Down
       at once, r1's after its dead interval; the users' data goes via r2;
       the cable is drawn down. Table timers 1:60: entries age, r1's entry
@@ -3569,6 +3627,12 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots of the rele
   completed in the Edit tab afterwards. A device with very many uncabled
   ports gets a tall strip of chips, and one with many addressed interfaces a
   tall box: every address is written out.
+* **Network events' limits.** Fail link and Power off have no form of
+  their own (the diagram's menus start them; they are listed). Flapping
+  uses the Layer 1 parameters for every flap (no per-flap timing); a
+  stream runs until stopped (no count or duration). A join's outcome is
+  what a multicast router of its segment records; receipt by snooping
+  switches is not part of it. At most 50 finished events are kept.
 * **Send test's limits.** A series plays at the animation's pace: in
   *Readable* pacing every message's hops are drawn, so 100 messages take
   as long on screen as their hops do, while their simulated times stay one

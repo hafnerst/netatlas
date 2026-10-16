@@ -115,6 +115,8 @@ export interface Test {
   /** periodic test traffic, Send test…, a health check, a probe, a proxy's upstream */
   source: 'traffic' | 'manual' | 'health' | 'probe' | 'upstream';
   started: number;
+  /** when it ended (its answer, error or timeout) */
+  ended?: number;
   done: boolean;
   ok: boolean;
   result: string;
@@ -547,6 +549,13 @@ export class Transport {
     }
   }
 
+  /** Stop: a test that has sent nothing yet (waiting for a lease or a name) is not sent; true when it was cancelled. */
+  cancel(t: Test, result: string): boolean {
+    if (t.done || t.pktIds.length || t.conn) return false;
+    this.e.withTest(t.source === 'manual' ? t.id : null, () => this.finish(t, false, result));
+    return true;
+  }
+
   private beginNow(t: Test, name?: string): void {
     if (t.done) return;
     const dev = t.from;
@@ -621,6 +630,7 @@ export class Transport {
   private finish(t: Test, ok: boolean, result: string): void {
     if (t.done) return;
     t.done = true;
+    t.ended = this.e.now;
     t.ok = ok;
     t.result = result;
     if (ok && t.rtt === undefined) t.rtt = this.e.now - t.started;

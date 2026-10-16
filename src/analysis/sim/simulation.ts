@@ -15,10 +15,11 @@ import { Engine, EngineOptions, fmtSec, subnetBroadcast } from './engine';
 import { OTHER_BEHAVIOURS, installBootGarp, installCustomL2, installDemands, installFhrp, installL2Adverts, installLacp } from './proto-other';
 import { ROUTING_BEHAVIOURS } from './proto-routing';
 import { ProtocolSim, relationProfile } from './protocols';
-import { ParamChange, ParamValue, Resolved, SimParams, durationText } from './params';
+import { ParamChange, ParamValue, Resolved, SimParams, durationText, formatValue } from './params';
 import { Multicast } from './multicast';
 import { DnsCacheRow, LeaseRow, NetServicesSim, ZoneRow } from './netsvc';
 import { Test, TestKind, Transport } from './transport';
+import { ACTION_TITLE, ActionRecord, ActionView, CANCELLED, MAX_ACTIONS, SendRun, actionView } from './actions';
 import { TestPlan, directedTarget, messageTime, needsInterface, planProblem, usesPorts } from './test-plan';
 import { IpAddr, parseAddress } from '../../model/ip';
 import { ArpRow, ConnRow, Flight, GridTable, MacRow, NetEvent, SessionRow, SessionStatus, SimEvent, TableTimer } from './types';
@@ -95,24 +96,8 @@ export interface TestDestination {
 }
 
 /** A Send test with its messages: one, or a series of `count` sent `interval` seconds apart. */
-export interface TestRun {
-  id: number;
-  /** its status row ("pc1 → srv ICMP echo") */
-  series: string;
-  plan: TestPlan;
-  count: number;
-  /** seconds between messages (0: one message) */
-  interval: number;
-  /** when message 1 was sent (ms) */
-  t0: number;
-  /** messages sent so far (with those not sent: `skipped`, with the reason) */
-  sent: number;
-  tests: Test[];
-  skipped: Array<{ n: number; t: number; why: string }>;
-  /** Stop: no more messages are sent (those on their way finish) */
-  stopped: boolean;
-  stoppedAt?: number;
-}
+/** A Send network packets with its messages: one, or a series of `count` sent `interval` seconds apart. */
+export type TestRun = SendRun;
 
 /** The broadcast address of the first IPv4 subnet among addresses (none for a /31 or /32). */
 function bcastOf(addrs: Array<{ addr: IpAddr; net: IpAddr & { prefix: number } }>): string | undefined {
@@ -158,6 +143,8 @@ export class Simulation {
     this.transport.multicast = this.multicast;
     this.transport.netsvc = this.netsvc;
     this.netsvc.onLeaseFailed = (dev, iface, why) => this.transport.leaseFailed(dev, iface, why);
+    // a join of Network events is done when a multicast router records it
+    this.multicast.onMember = (rdev, riface, group, reporter) => this.memberRecorded(rdev, riface, group, reporter);
     this.transport.install();
     this.protocols.start();
   }
@@ -206,7 +193,9 @@ export class Simulation {
   }
 
   noShut(dev: string, iface: string): boolean {
-    return this.engine.noShut(dev, iface);
+    const ok = this.engine.noShut(dev, iface);
+    if (ok) for (const a of this.acts) if (a.shut && a.shut.dev === dev && a.shut.iface === iface && a.shut.upAt === undefined) a.shut.upAt = this.now;
+    return ok;
   }
 
   powerOff(dev: string): boolean {
@@ -265,7 +254,156 @@ export class Simulation {
   }
 
   leaveGroup(dev: string, iface: string, group: string): boolean {
-    return this.multicast.leave(dev, iface, group);
+    const ok = this.multicast.leave(dev, iface, group);
+    if (ok) for (const a of this.acts) if (a.join && a.join.dev === dev && a.join.iface === iface && a.join.group === formatAddr(parseAddress(group.trim()) as IpAddr) && a.join.leftAt === undefined) a.join.leftAt = this.now;
+    return ok;
+  }
+
+  // ------------------------------------------------------------ Network events: the operations and their list
+
+  private keepAction(a: ActionRecord): ActionRecord {
+    this.acts.push(a);
+    // bounded: the oldest finished ones go first (a hard limit of twice as many, the oldest whatever their state)
+    const views = (): ActionView[] => this.acts.map((x) => actionView(x, this.actionContext()));
+    if (this.acts.length > MAX_ACTIONS) {
+      const v = views();
+      for (let i = 0; i < v.length && this.acts.length > MAX_ACTIONS; i++) {
+        if (v[i].status === 'queued' || v[i].status === 'running') continue;
+        const id = v[i].id;
+        this.acts = this.acts.filter((x) => x.id !== id);
+      }
+    }
+    if (this.acts.length > 2 * MAX_ACTIONS) this.acts.splice(0, this.acts.length - 2 * MAX_ACTIONS);
+    return a;
+  }
+
+  private actionContext(): import('./actions').ActionContext {
+    const p = (k: string): string => {
+      const r = this.engine.params.get(k);
+      return formatValue(r.def, r.value);
+    };
+    return {
+      now: this.now,
+      member: (d, i, g) => this.multicast.isMember(d, i, g),
+      shut: (d, i) => this.engine.isShut(d, i),
+      flapCycles: this.engine.params.num('flap-cycles'),
+      flapTimes: `down ${p('flap-down')}, up ${p('flap-up')}, ${this.engine.params.num('flap-cycles') || 'continuous'}${this.engine.params.num('flap-cycles') ? ' cycles' : ''}`,
+    };
+  }
+
+  /** Send network packets (Network events): a plan sent, its event in the list (refused: a failed event). */
+  actSend(p: TestPlan): ActionRecord {
+    const r = this.sendPlan(p);
+    if (typeof r !== 'string') return this.acts.find((a) => a.run === r) as ActionRecord;
+    return this.keepAction({ id: ++this.actSeq, kind: 'send', at: this.now, target: `${p.from || '?'} → ${p.to || p.target || p.group || p.subnet || p.scope || '?'}`, error: r });
+  }
+
+  /** Join multicast group (Network events): the join, done when a multicast router records it or its reports are sent. */
+  actJoin(dev: string, iface: string, group: string, sources: string[]): ActionRecord {
+    const g = parseAddress(group.trim());
+    const gt = g ? formatAddr(g) : group.trim();
+    const target = `${dev}:${iface} → ${gt}`;
+    const r = this.joinGroup(dev, iface, group, sources);
+    if (r) return this.keepAction({ id: ++this.actSeq, kind: 'join', at: this.now, target, error: r });
+    // its second unsolicited report goes after the unsolicited report interval; done by then, a little later
+    const until = this.now + this.multicast.unsolicited(dev, iface) + 1000;
+    return this.keepAction({ id: ++this.actSeq, kind: 'join', at: this.now, target, join: { dev, iface, group: gt, sources, until } });
+  }
+
+  /** A multicast router recorded a member: a join of Network events from that host is done. */
+  private memberRecorded(rdev: string, riface: string, group: string, reporter: string): void {
+    const owner = this.engine.ownerOf(parseAddress(reporter) as IpAddr);
+    for (const a of this.acts) {
+      const j = a.join;
+      if (!j || j.byAt !== undefined || j.group !== group || owner !== j.dev || this.now > j.until) continue;
+      j.by = `${rdev}:${riface}`;
+      j.byAt = this.now;
+    }
+  }
+
+  /** Start multicast stream (Network events): the stream, running until Stop stream. */
+  actStream(dev: string, iface: string, group: string, port: number, interval: number, size: number): ActionRecord {
+    const g = parseAddress(group.trim());
+    const target = `${dev}:${iface} → ${g ? formatAddr(g) : group.trim()}:${port}`;
+    const st = this.multicast.addStream(dev, iface, group, port, interval, size, 'event');
+    if (typeof st === 'string') return this.keepAction({ id: ++this.actSeq, kind: 'stream', at: this.now, target, error: st });
+    this.engine.stateVersion++;
+    return this.keepAction({ id: ++this.actSeq, kind: 'stream', at: this.now, target, stream: st });
+  }
+
+  /** Shut interface (Network events): done at once; the interface stays down until No shut. */
+  actShut(dev: string, iface: string): ActionRecord {
+    const target = `${dev}:${iface}`;
+    if (this.engine.isShut(dev, iface)) return this.keepAction({ id: ++this.actSeq, kind: 'shut', at: this.now, target, error: `${target} is shut already` });
+    if (!this.shut(dev, iface)) return this.keepAction({ id: ++this.actSeq, kind: 'shut', at: this.now, target, error: `${target} can't be shut` });
+    return this.keepAction({ id: ++this.actSeq, kind: 'shut', at: this.now, target, shut: { dev, iface } });
+  }
+
+  /** Start flapping (Network events): a cable, or a port's cable, until its cycles are done or Stop flapping. */
+  actFlap(ref: string): ActionRecord {
+    const target = ref.replace(/^iface:/, '').replace(/^link:/, 'cable ');
+    if (this.engine.flapOf(ref)) return this.keepAction({ id: ++this.actSeq, kind: 'flap', at: this.now, target, error: `${target} is flapping already` });
+    if (!this.startFlap(ref)) return this.keepAction({ id: ++this.actSeq, kind: 'flap', at: this.now, target, error: `${target} has no cable to flap` });
+    return this.keepAction({ id: ++this.actSeq, kind: 'flap', at: this.now, target, flap: { ref, obj: this.engine.flapOf(ref) as NonNullable<ReturnType<Engine['flapOf']>> } });
+  }
+
+  /** The events of Network events, newest first, as the list shows them. */
+  actions(): ActionView[] {
+    const c = this.actionContext();
+    return this.acts.map((a) => actionView(a, c)).reverse();
+  }
+
+  /** An event's control: Stop (a send, a stream, flapping), No shut, Leave group. */
+  actionControl(id: number, op: 'stop' | 'noshut' | 'leave'): boolean {
+    const a = this.acts.find((x) => x.id === id);
+    if (!a) return false;
+    if (op === 'stop' && a.run) return this.stopRun(a.run.id);
+    if (op === 'stop' && a.stream) return this.stopStream(a.stream.dev, a.stream.iface, a.stream.group);
+    if (op === 'stop' && a.flap) return this.stopFlap(a.flap.ref);
+    if (op === 'noshut' && a.shut) return this.noShut(a.shut.dev, a.shut.iface);
+    if (op === 'leave' && a.join) return this.leaveGroup(a.join.dev, a.join.iface, a.join.group);
+    return false;
+  }
+
+  /** Clear finished: the events no longer queued or in progress leave the list. */
+  clearFinished(): number {
+    const keep = new Set(this.actions().filter((v) => v.status === 'queued' || v.status === 'running').map((v) => v.id));
+    const n = this.acts.length - keep.size;
+    this.acts = this.acts.filter((a) => keep.has(a.id));
+    return n;
+  }
+
+  /**
+   * The state changes in effect that no event of the list stands for: a cable or relation failed, a
+   * device off, a container engine stopped (from the diagram's menus), a model's stream stopped or a
+   * group it joins left, and what an event of the list no longer covers.
+   */
+  otherEvents(): NetEvent[] {
+    const views = new Map(this.actions().map((v) => [v.id, v]));
+    const covered = (e: NetEvent): boolean =>
+      this.acts.some((a) => {
+        const v = views.get(a.id);
+        if (!v) return false;
+        if (e.kind === 'shut' && a.shut) return e.ref === `iface:${a.shut.dev}:${a.shut.iface}` && v.controls.length > 0;
+        if (e.kind === 'flap' && a.flap) return e.ref === a.flap.ref && v.status === 'running';
+        if (e.kind === 'join' && a.join) return e.ref === `iface:${a.join.dev}:${a.join.iface}` && e.group === a.join.group && v.controls.length > 0;
+        if (e.kind === 'stream' && a.stream) return e.ref === `iface:${a.stream.dev}:${a.stream.iface}` && e.group === a.stream.group && v.status === 'running';
+        return false;
+      });
+    return this.netEvents().filter((e) => !covered(e));
+  }
+
+  /** The titles of the operations (Network events' sections). */
+  static readonly ACTION_TITLE = ACTION_TITLE;
+
+  /** Why a host can't join a group on an interface now (Join multicast group's checks), or null. */
+  joinProblem(dev: string, iface: string, group: string, sources: string[]): string | null {
+    return this.multicast.joinProblem(dev, iface, group, sources);
+  }
+
+  /** Why a host can't start a stream to a group from an interface now, or null. */
+  streamProblem(dev: string, iface: string, group: string): string | null {
+    return this.multicast.streamProblem(dev, iface, group);
   }
 
   /** Start stream…: a host sends UDP to a group every interval; a text when it cannot. */
@@ -426,12 +564,18 @@ export class Simulation {
     const r = this.transport.resolveTarget(o.from, { to: o.to.trim() }, o.kind);
     if (typeof r === 'string') return r;
     const t = this.transport.run({ from: o.from, via, target: o.to.trim(), dst: r.dst, name: r.name, kind: o.kind, port: o.kind === 'icmp' ? 0 : o.port, size: o.size, df: o.df, keep: o.keep, source: 'manual' });
-    if (typeof t !== 'string') this.keepRun({ id: ++this.runSeq, series: t.series, plan: { delivery: 'unicast', from: o.from, via, kind: o.kind, target: o.to.trim() }, count: 1, interval: 0, t0: t.started, sent: 1, tests: [t], skipped: [], stopped: false });
+    if (typeof t !== 'string') {
+      const run: TestRun = { id: ++this.runSeq, series: t.series, plan: { delivery: 'unicast', from: o.from, via, kind: o.kind, target: o.to.trim() }, count: 1, interval: 0, t0: t.started, sent: 1, tests: [t], skipped: [], stopped: false };
+      this.keepRun(run);
+      this.keepAction({ id: ++this.actSeq, kind: 'send', at: this.now, target: run.series, run });
+    }
     return t;
   }
 
   private runs: TestRun[] = [];
   private runSeq = 0;
+  private acts: ActionRecord[] = [];
+  private actSeq = 0;
 
   private keepRun(r: TestRun): void {
     this.runs.push(r);
@@ -463,6 +607,8 @@ export class Simulation {
     run.sent = 1;
     run.tests.push(t);
     this.keepRun(run);
+    // (every send is an event of Network events: one, whatever its number of messages)
+    this.keepAction({ id: ++this.actSeq, kind: 'send', at: this.now, target: run.series, run });
     if (count > 1) this.nextMessage(run, one, 2);
     return run;
   }
@@ -575,9 +721,11 @@ export class Simulation {
   /** Stop a series: no more of its messages are sent (those on their way finish). */
   stopRun(id: number): boolean {
     const r = this.runs.find((x) => x.id === id);
-    if (!r || !runPending(r)) return false;
+    if (!r || (!runPending(r) && !r.tests.some((t) => !t.done && !t.pktIds.length && !t.conn))) return false;
     r.stopped = true;
     r.stoppedAt = this.now;
+    // a message still waiting (for its source's DHCP lease, a DNS answer) is not sent any more
+    for (const t of r.tests) this.transport.cancel(t, CANCELLED);
     return true;
   }
 

@@ -1,5 +1,6 @@
 /**
- * The Send test form of the simulation's Actions panel. The delivery type
+ * The Send network packets form of the simulation's Actions panel (Network
+ * events; called Send test before). The delivery type
  * comes first (nothing is chosen for you): until it is chosen, From and To
  * are disabled and say why. Then only what that type uses is shown:
  *
