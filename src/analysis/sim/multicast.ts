@@ -87,6 +87,8 @@ interface HostGroup {
   gen: number;
   /** a pending answer to a query (cancelled by suppression) */
   answer: number;
+  /** joined by Network events: the id its join and leave reports carry */
+  tag?: number;
 }
 
 /** A group a router knows members of on an interface. */
@@ -165,6 +167,8 @@ export interface Stream {
   sport: number;
   /** its datagrams each member received, by device */
   rx: Map<string, number>;
+  /** started by Network events: the id its datagrams carry (drawn whatever is ticked, found by their event) */
+  tag?: number;
   /** when it was stopped (Stop stream) */
   stoppedAt?: number;
 }
@@ -436,25 +440,26 @@ export class Multicast {
   /** Called when a multicast router's interface records a member's report (Network events follow joins by it). */
   onMember: ((dev: string, iface: string, group: string, reporter: string) => void) | null = null;
 
-  join(dev: string, iface: string, group: string, sources: string[], origin: 'model' | 'event'): string | null {
+  join(dev: string, iface: string, group: string, sources: string[], origin: 'model' | 'event', tag?: number): string | null {
     const bad = this.joinProblem(dev, iface, group, sources);
     if (bad) return bad;
     const g = parseAddress(group.trim()) as IpAddr;
     const key = dev + '|' + iface;
     let m = this.hosts.get(key);
     if (!m) this.hosts.set(key, (m = new Map()));
-    const hg: HostGroup = { group: formatAddr(g), sources: sources.map((s) => s.trim()), origin, since: this.e.now, gen: 0, answer: 0 };
+    const hg: HostGroup = { group: formatAddr(g), sources: sources.map((s) => s.trim()), origin, since: this.e.now, gen: 0, answer: 0, tag };
     m.set(hg.group, hg);
     const ev = this.events.findIndex((x) => x.kind === 'leave' && x.ref === `iface:${dev}:${iface}` && x.group === hg.group);
     if (ev >= 0) this.events.splice(ev, 1);
     else if (origin === 'event') this.events.push({ kind: 'join', ref: `iface:${dev}:${iface}`, group: hg.group, since: this.e.now, state: `joined ${hg.group}${hg.sources.length ? ` (sources ${hg.sources.join(', ')})` : ''}` });
     this.e.note('state', 'igmp', dev, '', 'joins', 'member', `${dev}:${iface} joins ${hg.group}${hg.sources.length ? ' (sources ' + hg.sources.join(', ') + ')' : ''}${origin === 'event' ? ' (Join group)' : ''}`);
     this.e.stateVersion++;
-    // an unsolicited report now, repeated after the unsolicited report interval (robustness − 1 more times)
-    this.report(dev, iface, hg, 'joins (unsolicited)');
+    // an unsolicited report now, repeated after the unsolicited report interval (robustness − 1 more times);
+    // a join of Network events: they are its traffic (its answers to later queries are the membership's, not the join's)
+    this.e.withTest(hg.tag, () => this.report(dev, iface, hg, 'joins (unsolicited)'));
     const gen = ++hg.gen;
     this.e.after(this.unsolicited(dev, iface), () => {
-      if (hg.gen === gen && (this.hosts.get(key) || new Map()).get(hg.group) === hg) this.report(dev, iface, hg, 'joins (unsolicited, repeated)');
+      if (hg.gen === gen && (this.hosts.get(key) || new Map()).get(hg.group) === hg) this.e.withTest(hg.tag, () => this.report(dev, iface, hg, 'joins (unsolicited, repeated)'));
     });
     return null;
   }
@@ -479,7 +484,7 @@ export class Multicast {
     else this.events.push({ kind: 'leave', ref: `iface:${dev}:${iface}`, group: hg.group, since: this.e.now, state: `left ${hg.group}` });
     this.e.note('state', 'igmp', dev, '', 'leaves', '', `${dev}:${iface} leaves ${hg.group}`);
     this.e.stateVersion++;
-    this.report(dev, iface, hg, 'leaves the group', true);
+    this.e.withTest(hg.tag, () => this.report(dev, iface, hg, 'leaves the group', true));
     return true;
   }
 
@@ -1289,13 +1294,13 @@ export class Multicast {
     return null;
   }
 
-  addStream(dev: string, iface: string, group: string, port: number, interval: number, size: number, origin: Stream['origin'], first = 0, label = ''): Stream | string {
+  addStream(dev: string, iface: string, group: string, port: number, interval: number, size: number, origin: Stream['origin'], first = 0, label = '', tag?: number): Stream | string {
     const bad = origin === 'event' ? this.streamProblem(dev, iface, group) : null;
     if (bad) return bad;
     const g = parseAddress(group.trim());
     if (!g || !isMulticastIp(g) || isLinkLocalGroup(g)) return `${group} is not a routable multicast group`;
     if (!this.hostAddr(dev, iface, g.version)) return `${dev}:${iface} has no IPv${g.version} address`;
-    const st: Stream = { id: ++this.seq, dev, iface, group: formatAddr(g), port, interval, size, origin, label, running: true, since: this.e.now, sent: 0, gen: 0, sport: 49152 + ((this.seq * 7919) % 16000), rx: new Map() };
+    const st: Stream = { id: ++this.seq, dev, iface, group: formatAddr(g), port, interval, size, origin, label, running: true, since: this.e.now, sent: 0, gen: 0, sport: 49152 + ((this.seq * 7919) % 16000), rx: new Map(), tag };
     this.streams.push(st);
     if (origin === 'event') this.events.push({ kind: 'stream', ref: `iface:${dev}:${iface}`, group: st.group, since: this.e.now, state: `streaming to ${st.group}:${port}` });
     this.runStream(st, first);
@@ -1323,8 +1328,11 @@ export class Multicast {
     const pkt = this.e.newPacket(h.addr, g, h.l3.vrf, msg, [], 0);
     pkt.l4 = { proto: 'udp', num: 17, sport: st.sport, dport: st.port };
     pkt.len = 8 + st.size;
-    if (st.sent === 1 || st.sent % 10 === 0) this.e.note('message', msg.protocol, st.dev, '', 'Stream', '', msg.detail, this.e.now, msg);
-    this.e.send(st.dev, pkt, h.l3);
+    // (a stream of Network events: its datagrams carry its id, drawn whatever is ticked, with every copy and what stops them)
+    this.e.withTest(st.tag, () => {
+      if (st.sent === 1 || st.sent % 10 === 0) this.e.note('message', msg.protocol, st.dev, '', 'Stream', '', msg.detail, this.e.now, msg);
+      this.e.send(st.dev, pkt, h.l3);
+    });
   }
 
   /** Stop a stream (the end of a stream event, or Stop stream on one of the model). */

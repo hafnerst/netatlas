@@ -240,6 +240,14 @@ there is no conversion of files written for the earlier drafts.
 
 ### Added
 
+- **Interface actions show the interface's state** and its reverse action:
+  shut, the form is marked *⏻ Shut* and its button is **Bring interface
+  up**; flapping, *↯ Flapping* with the cycle and **Stop flapping**. The
+  administrative state and the link are said apart. It follows whatever
+  changed the interface (the form, the diagram's menus, Active events, the
+  flap's own transitions).
+- **Shut interface ends a flapping first** (no flap transition can bring
+  the interface up again); a shut interface can't start flapping.
 - **Network events as direct actions:** the Actions panel starts with
   **Send network packets**, **Join multicast group**, **Start multicast
   stream** and **Interface actions** (Shut interface, Start flapping), each
@@ -1312,6 +1320,14 @@ live protocol simulation replaces them.
 
 ### Fixed
 
+- **Multicast from Network events was not drawn.** A join's reports and a
+  stream's datagrams were generated and forwarded, and their events
+  listed, but the diagram draws only the protocols ticked in the setup,
+  and a model without multicast (the private house) has no IGMP or stream
+  protocol to tick; the senders could hide them too. They now carry their
+  event's id, as a send's messages do: drawn whatever is ticked, marked in
+  the log, opened from the event, with the stream's event saying where its
+  copies stop.
 - **An answer took the sender's VRF.** A packet delivered to a device kept
   the VRF of the interface it was sent from, so the answer was routed there:
   core's ping from VLAN 30 (VRF *guest*) to the guest phone was answered,

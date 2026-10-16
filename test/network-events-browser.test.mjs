@@ -77,8 +77,9 @@ for (const [theme, width] of [['light', 1440], ['dark', 1440], ['light', 640]]) 
       await set('sim-i-if', port);
       assert.match(await page.eval(`document.getElementById('sim-i-times').textContent`), /^Flapping: down 5 s, up 10 s, 3 cycles \(the Layer 1 parameters of the setup\)\.$/);
       await click('sim-i-flap');
-      assert.equal(await page.eval(`document.getElementById('sim-i-flap').disabled`), true, 'flapping: not twice');
-      assert.match(await page.eval(`document.getElementById('sim-i-need').textContent`), /is flapping: Stop flapping is under Active events\./);
+      // flapping: not twice; its button is Stop flapping now
+      assert.equal(await page.eval(`document.getElementById('sim-i-flap').textContent`), 'Stop flapping');
+      assert.equal(await page.eval(`document.getElementById('sim-i-need').textContent`), 'Shut interface stops the flapping first.');
       const other = 'ap1';
       await set('sim-i-dev', 'dist');
       await set('sim-i-if', other);

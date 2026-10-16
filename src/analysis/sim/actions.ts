@@ -77,6 +77,8 @@ export interface ActionRecord {
   target: string;
   /** refused by the simulation: why */
   error?: string;
+  /** a join's or a stream's traffic: the id its messages carry (as a send's messages carry their test's) */
+  traffic?: number;
   run?: SendRun;
   join?: { dev: string; iface: string; group: string; sources: string[]; until: number; by?: string; byAt?: number; leftAt?: number };
   stream?: Stream;
@@ -219,6 +221,8 @@ export function sendView(a: ActionRecord, now: number): ActionView {
 export interface ActionContext {
   now: number;
   member(dev: string, iface: string, group: string): boolean;
+  /** where the traffic of an id was last dropped, and why (the event log), or null */
+  lastDrop(id: number): { device: string; why: string } | null;
   shut(dev: string, iface: string): boolean;
   /** the flapping cycles in effect (0: until stopped), its down and up times */
   flapCycles: number;
@@ -234,7 +238,7 @@ export function actionView(a: ActionRecord, c: ActionContext): ActionView {
   if (a.kind === 'send' && a.run) return sendView(a, c.now);
   const title = ACTION_TITLE[a.kind];
   if (a.error) return failedView(a, title);
-  const base = { id: a.id, kind: a.kind, title, target: a.target, at: a.at, tests: [] as number[] };
+  const base = { id: a.id, kind: a.kind, title, target: a.target, at: a.at, tests: a.traffic !== undefined ? [a.traffic] : ([] as number[]) };
   if (a.kind === 'join' && a.join) {
     const j = a.join;
     const member = c.member(j.dev, j.iface, j.group);
@@ -256,14 +260,16 @@ export function actionView(a: ActionRecord, c: ActionContext): ActionView {
     const st = a.stream;
     const rx = Array.from(st.rx.entries()).sort((x, y) => (x[0] < y[0] ? -1 : 1));
     const got = rx.reduce((n, x) => n + x[1], 0);
+    // where its copies stop (a router without multicast routing, no member behind a snooping switch …): from the log
+    const stop = a.traffic !== undefined ? c.lastDrop(a.traffic) : null;
     return {
       ...base,
       status: st.running ? 'running' : 'stopped',
       ended: st.running ? undefined : st.stoppedAt,
       progress: { done: st.sent, total: null, unit: 'datagrams sent' },
-      summary: `${st.sent} datagram${st.sent === 1 ? '' : 's'} sent · ${rx.length ? `received by ${rx.map((x) => `${x[0]} (${x[1]})`).join(', ')}` : 'no member received any yet'}`,
+      summary: `${st.sent} datagram${st.sent === 1 ? '' : 's'} sent · ${rx.length ? `received by ${rx.map((x) => `${x[0]} (${x[1]})`).join(', ')}` : `no member received any yet${stop ? ` · stops at ${stop.device}` : ''}`}`,
       controls: st.running ? [{ op: 'stop', label: 'Stop stream' }] : [],
-      details: [`UDP to ${st.group}:${st.port}, ${st.size} bytes every ${sec(st.interval)} from ${at(st.since)}${st.stoppedAt !== undefined ? ', stopped at ' + at(st.stoppedAt) : ''}.`, `Generated: ${st.sent} datagrams. Received: ${got} in all, counted at the members (a member's copy is one).`, 'Who receives it: the members of the group that multicast routing reaches (Join multicast group).'],
+      details: [`UDP to ${st.group}:${st.port}, ${st.size} bytes every ${sec(st.interval)} from ${at(st.since)}${st.stoppedAt !== undefined ? ', stopped at ' + at(st.stoppedAt) : ''}.`, `Generated: ${st.sent} datagrams. Received: ${got} in all, counted at the members (a member's copy is one).`, 'Who receives it: the members of the group that multicast routing reaches (Join multicast group).', ...(stop ? [`Last stopped at ${stop.device}: ${stop.why}`] : [])],
     };
   }
   if (a.kind === 'shut' && a.shut) {

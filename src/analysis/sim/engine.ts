@@ -3137,6 +3137,49 @@ export class Engine {
     return link ? this.flaps.get(link) : undefined;
   }
 
+  /**
+   * An interface's state as Interface actions shows it: administratively (shut or not) and in operation
+   * (its cable up, down or coming up; a logical interface up or down), with what holds it down.
+   */
+  portStatus(dev: string, iface: string): { admin: 'up' | 'down'; oper: 'up' | 'down' | 'negotiating' | 'no cable'; why: string } {
+    const admin = this.isShut(dev, iface) ? 'down' : 'up';
+    const at = this.simPort(dev, iface);
+    const e = this.net.ends.get(portKey(at.device, at.port));
+    if (!e) {
+      const sd = this.net.devices.get(dev);
+      if (sd && sd.l3.has(iface)) {
+        const up = admin === 'up' && this.isL3Up(dev, iface);
+        return { admin, oper: up ? 'up' : 'down', why: admin === 'down' ? 'shut' : up ? '' : this.off.has(dev) ? 'the device is off' : 'what it runs over is down' };
+      }
+      return { admin, oper: 'no cable', why: 'no cable' };
+    }
+    const id = e.link;
+    const st = this.cable.get(id) || 'up';
+    if (st === 'up') return { admin, oper: 'up', why: '' };
+    const l = this.net.links.get(id) as Link;
+    const far = l.a.device === at.device && (l.a.iface || '') === at.port ? l.b : l.a;
+    const fl = this.flaps.get(id);
+    const why =
+      admin === 'down'
+        ? 'shut'
+        : this.failedLinks.has(id)
+          ? `cable ${id} failed`
+          : fl && fl.down
+            ? 'flapping (down)'
+            : this.off.has(dev)
+              ? 'the device is off'
+              : this.off.has(far.device) && !this.bypass.has(far.device)
+                ? `${far.device} is off`
+                : this.shutPorts.has(portKey(far.device, far.iface || '@' + id))
+                  ? `${far.device}:${far.iface} is shut`
+                  : this.parked.has(id)
+                    ? 'not in use (its VM runs on another host)'
+                    : st === 'negotiating'
+                      ? 'coming up (link-up delay)'
+                      : 'its cable is down';
+    return { admin, oper: st === 'negotiating' ? 'negotiating' : 'down', why };
+  }
+
   /** Is an interface shut (by No shut it comes back)? */
   isShut(dev: string, iface: string): boolean {
     const at = this.simPort(dev, iface);

@@ -820,6 +820,8 @@ export class SimController implements SimulationMode {
   /** Join multicast group: an event of the list (done when a multicast router records it, or its reports are sent). */
   joinGroup(dev: string, iface: string, group: string, sources: string[]): string {
     const a = this.sim.actJoin(dev, iface, group, sources);
+    // its first reports or datagrams are on screen now (paused too: there they wait for Play)
+    this.pacer.take();
     this.logKey = '';
     this.actionsKey = '';
     this.refresh(true);
@@ -834,6 +836,8 @@ export class SimController implements SimulationMode {
   /** Start multicast stream: an event of the list, running until Stop stream. */
   startStream(dev: string, iface: string, group: string, port: number, interval: number, size: number): string {
     const a = this.sim.actStream(dev, iface, group, port, interval, size);
+    // its first reports or datagrams are on screen now (paused too: there they wait for Play)
+    this.pacer.take();
     this.logKey = '';
     this.actionsKey = '';
     this.refresh(true);
@@ -1344,6 +1348,8 @@ export class SimController implements SimulationMode {
       stream: (d: string, i: string, g: string, port: number, iv: number, size: number) => this.startStream(d, i, g, port, iv, size),
       shut: (d: string, i: string) => (this.shut(d, i) ? `${d}:${i} shut at t = ${fmtSec(this.t)}; see Active events.` : `${d}:${i} could not be shut.`),
       flap: (d: string, i: string) => (this.startFlap(`iface:${d}:${i}`) ? `${d}:${i} flapping from t = ${fmtSec(this.t)}; see Active events.` : `${d}:${i} could not start flapping.`),
+      noShut: (d: string, i: string) => (this.noShut(d, i) ? `${d}:${i} brought up at t = ${fmtSec(this.t)} (no shut).` : `${d}:${i} is not shut.`),
+      stopFlap: (d: string, i: string) => (this.stopFlap(`iface:${d}:${i}`) ? `${d}:${i} stops flapping at t = ${fmtSec(this.t)}.` : `${d}:${i} is not flapping.`),
       interfacesOf: (d: string) => this.interfaceChoices(d),
       flapTimes: () => this.flapTimes(),
     };
