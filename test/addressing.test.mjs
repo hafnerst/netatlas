@@ -39,7 +39,7 @@ devices:
       - {id: e1, ip: 10.1.2.1/24, vrf: blue}
   - id: sw
     type: switch
-    interfaces: [p1, p2]
+    interfaces: [{id: p1, vlans: 10}, {id: p2, vlans: 10}]
   - id: pc
     type: endpoint
     interfaces:
@@ -55,7 +55,7 @@ devices:
 links:
   - {id: l1, a: "r1:e0", b: "r2:e0"}
   - id: l2
-    a: {device: sw, interface: p1, mode: access, untagged: 10}
+    a: {device: sw, interface: p1}
     b: {device: laptop, interface: wlan0}
 networks:
   - {id: site, cidr: 10.1.0.0/16, label: Site}

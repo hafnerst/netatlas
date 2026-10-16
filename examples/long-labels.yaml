@@ -31,11 +31,11 @@ devices:
       bgp: {asn: 65010}
       ospf: {}
     interfaces:
-      - {id: Hu1/0/49}
-      - {id: Hu1/0/50}
-      - {id: Hu1/0/51}
-      - {id: TwentyFiveGigE1/0/1}
-      - {id: TwentyFiveGigE1/0/2}
+      - {id: Hu1/0/49, vlans: 10}
+      - {id: Hu1/0/50, vlans: 10}
+      - {id: Hu1/0/51, routed: true}
+      - {id: TwentyFiveGigE1/0/1, vlans: 10}
+      - {id: TwentyFiveGigE1/0/2, vlans: 10}
     logical_interfaces:
       - {id: lo0, type: loopback, ip: [10.255.0.1/32, 2001:db8:ffff::1/128]}
   - id: core-b
@@ -51,10 +51,10 @@ devices:
       bgp: {asn: 65010}
       ospf: {}
     interfaces:
-      - {id: Hu1/0/49}
-      - {id: Hu1/0/50}
-      - {id: Hu1/0/51}
-      - {id: TwentyFiveGigE1/0/1}
+      - {id: Hu1/0/49, vlans: 10}
+      - {id: Hu1/0/50, vlans: 10}
+      - {id: Hu1/0/51, routed: true}
+      - {id: TwentyFiveGigE1/0/1, vlans: 10}
     logical_interfaces:
       - {id: lo0, type: loopback, ip: 10.255.0.2/32}
   - id: fw
@@ -107,7 +107,7 @@ links:
   - {id: fw-a, a: "fw:ethernet1/1", b: "core-a:TwentyFiveGigE1/0/1", medium: fiber, speed: 25G}
   - {id: fw-b, a: "fw:ethernet1/2", b: "core-b:TwentyFiveGigE1/0/1", medium: fiber, speed: 25G}
   - id: srv-a
-    a: {device: core-a, interface: TwentyFiveGigE1/0/2, mode: access, untagged: 10}
+    a: core-a:TwentyFiveGigE1/0/2
     b: "srv:eno1"
     medium: dac
     speed: 25G

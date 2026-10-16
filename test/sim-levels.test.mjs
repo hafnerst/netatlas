@@ -18,9 +18,42 @@ const S = load('analysis/sim/simulation.js');
 const V = load('validation/validate.js');
 const D = load('editor/document.js');
 
-const sim = (text, opts) => new S.Simulation(model(text), opts);
+// The switches below are written with bare ports (their attributes are what is tested);
+// every switch port is given VLAN 1 (an access port) when the text is read.
+const split = (list) => {
+  const out = [];
+  let depth = 0;
+  let cur = '';
+  for (const ch of list) {
+    if (ch === ',' && !depth) {
+      out.push(cur.trim());
+      cur = '';
+      continue;
+    }
+    if (ch === '{' || ch === '[') depth++;
+    if (ch === '}' || ch === ']') depth--;
+    cur += ch;
+  }
+  if (cur.trim()) out.push(cur.trim());
+  return out;
+};
+const portOf = (x) => (x.startsWith('{') ? (/\bvlans:/.test(x) ? x : x.replace(/^\{id: ([^,}]+)/, '{id: $1, vlans: 1')) : `{id: ${x}, vlans: 1}`);
+const ports = (line) => {
+  const at = line.indexOf('interfaces: [');
+  if (at < 0 || !/type: switch/.test(line)) return line;
+  let depth = 0;
+  let end = at + 'interfaces: '.length;
+  for (; end < line.length; end++) {
+    if (line[end] === '[') depth++;
+    if (line[end] === ']' && !--depth) break;
+  }
+  const inner = line.slice(at + 'interfaces: ['.length, end);
+  return line.slice(0, at) + 'interfaces: [' + split(inner).map(portOf).join(', ') + line.slice(end);
+};
+const l2 = (text) => text.split('\n').map(ports).join('\n');
+const sim = (text, opts) => new S.Simulation(model(l2(text)), opts);
 const ev = (s, f) => s.events().filter(f);
-const errs = (text) => V.loadModel(text).errors.map((e) => e.message);
+const errs = (text) => V.loadModel(l2(text)).errors.map((e) => e.message);
 
 test('every attribute has its level: per device, per interface, per VLAN, per relation (the audit)', () => {
   const lv = (k) => Pm.paramDef(k).level || 'device';
@@ -80,7 +113,7 @@ ${x.more || ''}`;
 
 test('wrong level: a port’s attribute on the device, a device’s on a port, a VLAN attribute without a VLAN, one that does not apply: errors that say where it belongs, never moved', () => {
   assert.deepEqual(errs(SW({ p1: '{id: p1, simulation: {stp_edge: on, stp_cost: 4}}', sw1: ', simulation: {stp_mode: rstp, bridge_priority: 4096}' })), []);
-  const m = model(SW({ p1: '{id: p1, simulation: {stp_edge: on, stp_cost: 4}}' }));
+  const m = model(l2(SW({ p1: '{id: p1, simulation: {stp_edge: on, stp_cost: 4}}' })));
   assert.deepEqual(Array.from(m.index.interfaces.get('sw1:p1').simulation), [['stp-edge', 'on'], ['stp-cost', 4]]);
   assert.match(errs(SW({ sw1: ', simulation: {stp_cost: 4}' })).join('|'), /"stp_cost" \(port path cost\) is set per switch port: in the switch port’s simulation:, not for the whole device/);
   assert.match(errs(SW({ p1: '{id: p1, simulation: {stp_mode: stp}}' })).join('|'), /"stp_mode" \(spanning tree\) is set per device: in the device’s simulation:, not on an interface/);
@@ -97,35 +130,35 @@ test('per-port spanning tree: bridge priority elects the root, port cost picks t
   // without settings: sw1 or sw2 by MAC; with bridge priority 4096 sw2 is the root
   const s = sim(SW({ sw2: ', simulation: {bridge_priority: 4096}' }));
   s.runTo(2500);
-  assert.equal(s.engine.tree(0).root, 'sw2');
+  assert.equal(s.engine.tree(1).root, 'sw2');
   // sw1's root port: p1 (lower port id) unless p2 is cheaper
-  assert.deepEqual(Array.from(s.engine.tree(0).rootPorts), ['sw1|p1']);
-  assert.deepEqual(Array.from(s.engine.tree(0).blocked), ['sw1|p2']);
+  assert.deepEqual(Array.from(s.engine.tree(1).rootPorts), ['sw1|p1']);
+  assert.deepEqual(Array.from(s.engine.tree(1).blocked), ['sw1|p2']);
   const c = sim(SW({ sw2: ', simulation: {bridge_priority: 4096}', p1: '{id: p1, simulation: {stp_cost: 200000}}' }));
   c.runTo(2500);
-  assert.deepEqual(Array.from(c.engine.tree(0).rootPorts), ['sw1|p2'], 'the cheaper path');
-  assert.deepEqual(Array.from(c.engine.tree(0).blocked), ['sw1|p1']);
+  assert.deepEqual(Array.from(c.engine.tree(1).rootPorts), ['sw1|p2'], 'the cheaper path');
+  assert.deepEqual(Array.from(c.engine.tree(1).blocked), ['sw1|p1']);
   // root guard on sw1's ports towards the better root: they are blocked (root-inconsistent), sw1 stays its own root
   const g = sim(SW({ sw2: ', simulation: {bridge_priority: 4096}', p1: '{id: p1, simulation: {stp_root_guard: on}}' }).replace('[{id: p1, simulation: {stp_root_guard: on}}, p2, p3]', '[{id: p1, simulation: {stp_root_guard: on}}, {id: p2, simulation: {stp_root_guard: on}}, p3]'));
   g.runTo(2500);
-  const t = g.engine.tree(0);
+  const t = g.engine.tree(1);
   assert.ok(t.inconsistent.has('sw1|p1') && t.inconsistent.has('sw1|p2') && t.blocked.has('sw1|p1') && t.blocked.has('sw1|p2'), JSON.stringify([...t.blocked]));
   assert.ok(ev(g, (e) => e.what === 'Root guard' && /sw1:p1 is root-inconsistent .*root guard blocks the port/.test(e.detail)).length === 1);
   // a port without spanning tree is never blocked: the loop over it storms
   const off = sim(SW({ p1: '{id: p1, simulation: {stp: off}}' }).replace('{id: sw1, type: switch, interfaces: [{id: p1, simulation: {stp: off}}, p2, p3]}', '{id: sw1, type: switch, interfaces: [{id: p1, simulation: {stp: off}}, {id: p2, simulation: {stp: off}}, p3]}'));
   off.runTo(2500);
-  assert.equal(off.engine.tree(0).blocked.size, 0);
+  assert.equal(off.engine.tree(1).blocked.size, 0);
 });
 
 test('PVST and MSTP: a priority per VLAN gives each VLAN its own root; RSTP keeps the bridge priority for every VLAN', () => {
   const Y = (mode) => `netatlas: 1
 title: pvst
 devices:
-  - {id: sw1, type: switch, interfaces: [p1, p2], simulation: {stp_mode: ${mode}, bridge_priority_vlans: "10=4096"}}
-  - {id: sw2, type: switch, interfaces: [p1, p2], simulation: {stp_mode: ${mode}, bridge_priority_vlans: "20=4096"}}
+  - {id: sw1, type: switch, interfaces: [{id: p1, vlans: [10, 20]}, {id: p2, vlans: [10, 20]}], simulation: {stp_mode: ${mode}, bridge_priority_vlans: "10=4096"}}
+  - {id: sw2, type: switch, interfaces: [{id: p1, vlans: [10, 20]}, {id: p2, vlans: [10, 20]}], simulation: {stp_mode: ${mode}, bridge_priority_vlans: "20=4096"}}
 links:
-  - {id: a, a: {device: sw1, interface: p1, mode: trunk, tagged: [10, 20]}, b: {device: sw2, interface: p1, mode: trunk, tagged: [10, 20]}}
-  - {id: b, a: {device: sw1, interface: p2, mode: trunk, tagged: [10, 20]}, b: {device: sw2, interface: p2, mode: trunk, tagged: [10, 20]}}
+  - {id: a, a: "sw1:p1", b: "sw2:p1"}
+  - {id: b, a: "sw1:p2", b: "sw2:p2"}
 `;
   const p = sim(Y('pvst'));
   p.runTo(2500);
@@ -140,17 +173,17 @@ test('an edge port forwards at once with STP; a host port without it listens and
   const plain = sim(stp('p3'));
   plain.runTo(2500);
   assert.ok(ev(plain, (e) => e.what === 'Listening' && /sw1:p3 \(to h1\) listens and learns for 2 × forward delay 15 s \(STP; edge port Off \(default\)\): it forwards at t = 32/.test(e.detail)).length === 1);
-  assert.equal(plain.engine.blocked('sw1', 'p3', 0), true);
+  assert.equal(plain.engine.blocked('sw1', 'p3', 1), true);
   plain.runTo(33000);
-  assert.equal(plain.engine.blocked('sw1', 'p3', 0), false);
+  assert.equal(plain.engine.blocked('sw1', 'p3', 1), false);
   const edge = sim(stp('{id: p3, simulation: {stp_edge: on}}'));
   edge.runTo(2500);
-  assert.equal(edge.engine.blocked('sw1', 'p3', 0), false, 'forwarding at once');
+  assert.equal(edge.engine.blocked('sw1', 'p3', 1), false, 'forwarding at once');
   assert.ok(!ev(edge, (e) => e.what === 'Listening' && e.device === 'sw1' && /sw1:p3/.test(e.detail)).length);
   // the device-wide default (PortFast default) applies to its ports
   const all = sim(stp('p3').replace('simulation: {stp_mode: stp}}', 'simulation: {stp_mode: stp, stp_edge: on}}'));
   all.runTo(2500);
-  assert.equal(all.engine.blocked('sw1', 'p3', 0), false);
+  assert.equal(all.engine.blocked('sw1', 'p3', 1), false);
   // BPDU guard on a port that hears a bridge: err-disabled (shut) until no shut
   const guard = sim(SW({ p1: '{id: p1, simulation: {stp_bpdu_guard: on}}' }));
   guard.runTo(3000);
@@ -185,16 +218,16 @@ test('a shared link waits like STP even with RSTP; storm control and the link-up
 });
 
 test('the Edit tab: an interface’s attribute is written in its simulation: block (a shorthand interface becomes a mapping), one undo step; Reset removes it', () => {
-  const d = D.ModelDoc.fromText(SW(), 't.yaml', 'file').doc;
+  const d = D.ModelDoc.fromText(l2(SW()), 't.yaml', 'file').doc;
   d.setSimAttrAt(['devices', 0, 'interfaces', 0], 'stp_edge', 'on');
-  assert.match(d.exportText(), /- \{?id: p1,? ?\n?\s*simulation: \{stp_edge: on\}|id: p1\n\s+simulation:\n\s+stp_edge: on|\{id: p1, simulation: \{stp_edge: on\}\}/);
+  assert.match(d.exportText(), /- \{?id: p1,? ?\n?\s*simulation: \{stp_edge: on\}|id: p1\n\s+simulation:\n\s+stp_edge: on|\{id: p1, (vlans: 1, )?simulation: \{stp_edge: on\}\}/);
   assert.equal(d.result.model.index.interfaces.get('sw1:p1').simulation.get('stp-edge'), 'on');
   assert.deepEqual(d.result.errors, []);
   d.setSimAttrAt(['devices', 0, 'interfaces', 0], 'stp_edge', undefined);
   assert.equal(d.result.model.index.interfaces.get('sw1:p1').simulation, undefined);
   assert.doesNotMatch(d.exportText(), /simulation/);
   // a network's (VLAN) and a relation's
-  const n = D.ModelDoc.fromText(SW({ more: 'networks:\n  - {id: n, cidr: 10.0.0.0/24, vlan: 1}\nrelations:\n  - {id: v, protocol: vrrp, endpoints: [h1, h2]}\n' }), 't.yaml', 'file').doc;
+  const n = D.ModelDoc.fromText(l2(SW({ more: 'networks:\n  - {id: n, cidr: 10.0.0.0/24, vlan: 1}\nrelations:\n  - {id: v, protocol: vrrp, endpoints: [h1, h2]}\n' })), 't.yaml', 'file').doc;
   n.setSimAttrAt(['networks', 0], 'fast_leave', 'on');
   n.setSimAttrAt(['relations', 0], 'vrrp_advert', '3');
   assert.equal(n.result.model.networks[0].simulation.get('fast-leave'), 'on');

@@ -27,7 +27,8 @@ const SPEC = [
   ['System', 'system'],
 ];
 
-const withType = (type) => `netatlas: 1\ndevices:\n  - id: d1\n${type === undefined ? '' : `    type: ${type}\n`}    interfaces: [eth0]\n`;
+// (a switch says what its port carries: its VLANs)
+const withType = (type) => `netatlas: 1\ndevices:\n  - id: d1\n${type === undefined ? '' : `    type: ${type}\n`}    interfaces: [${type === 'switch' ? '{id: eth0, vlans: 1}' : 'eth0'}]\n`;
 
 test('the device types are exactly the specified 15, in order, with their display names', () => {
   assert.deepEqual(types.DEVICE_TYPES.map((t) => [t.label, t.id]), SPEC);

@@ -194,6 +194,36 @@ export async function runViewportCheck(app: App, doc: Document): Promise<Check[]
       if (sb2.scrollWidth > sb2.clientWidth + 1) hw.push(`the Edit tab scrolls sideways (${sb2.scrollWidth} > ${sb2.clientWidth})`);
       state('an interface’s input helpers and the open VRF combobox fit the panel', hw.concat(problems()));
       if (vrf) vrf.blur();
+      // a trunk port's VLANs: the chips, the open VLAN combobox, the Native VLAN picker, the suggestions and the mode badge; the Objects list's VLAN tags
+      app.loadExample(EXAMPLES.findIndex((e) => /vlan-ports/.test(e.name)));
+      app.select('iface:acc3:Gi0/1');
+      app.showTab('edit');
+      await tick();
+      const vc = q('#side-body input[data-t="vlan-combo"]') as HTMLInputElement | null;
+      const vw: string[] = [];
+      if (vc) {
+        vc.focus();
+        vc.value = '';
+        vc.dispatchEvent(new Event('input', { bubbles: true }));
+        await tick();
+      } else vw.push('no VLAN combobox');
+      const side3 = (q('#side-body') as HTMLElement).getBoundingClientRect();
+      const vparts = doc.querySelectorAll('#side-body .vlan-chip, #side-body ul.combo-list, #side-body input[data-t="vlan-combo"], #side-body select[data-t="vlan-native"], #side-body button[data-act="vlan-copy"], #side-body .mode-badge');
+      if (vparts.length < 6) vw.push(`the port's VLANs show ${vparts.length} parts`);
+      for (let i = 0; i < vparts.length; i++) {
+        const r = vparts[i].getBoundingClientRect();
+        if (r.width < 1) continue;
+        if (r.left < side3.left - 0.5 || r.right > side3.right + 0.5) vw.push(`"${(vparts[i].textContent || vparts[i].getAttribute('aria-label') || '').trim().slice(0, 24)}" leaves the panel sideways`);
+      }
+      const sb3 = q('#side-body') as HTMLElement;
+      if (sb3.scrollWidth > sb3.clientWidth + 1) vw.push(`the Edit tab scrolls sideways (${sb3.scrollWidth} > ${sb3.clientWidth})`);
+      // a cable's row in the Objects list keeps its name readable beside the VLAN tag
+      const olRow = q('#outline-body .ol-item[data-ref="link:wrong-native"]');
+      const olLabel = olRow ? (olRow.querySelector('.ol-label') as HTMLElement | null) : null;
+      if (olRow && !olRow.querySelector('.ol-vlan')) vw.push('the Objects list shows no VLAN tag for the cable');
+      if (olLabel && olLabel.getBoundingClientRect().width > 0 && olLabel.getBoundingClientRect().width < 40) vw.push(`a cable's name in the Objects list is squeezed to ${Math.round(olLabel.getBoundingClientRect().width)}px by its VLAN tag`);
+      state('a trunk port’s VLANs (chips, the open combobox, native VLAN, suggestions) and the Objects list’s VLAN tags fit', vw.concat(problems()));
+      if (vc) vc.blur();
       app.loadExample(EXAMPLES.findIndex((e) => /enterprise-wan/.test(e.name)));
       await tick();
       // the tool windows of Analyze: inside the browser window (docked at the bottom when it is narrow), their title

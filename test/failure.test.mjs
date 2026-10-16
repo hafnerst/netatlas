@@ -39,7 +39,7 @@ devices:
       - {id: t0, type: tunnel, ip: 172.16.0.2/30, source: p3, destination: 192.0.2.1}
   - id: sw
     type: switch
-    interfaces: [a, b, c]
+    interfaces: [{id: a, vlans: 1}, {id: b, vlans: 1}, {id: c, vlans: 1}]
   - id: h
     type: endpoint
     interfaces: [{id: e0, ip: 10.0.0.50/24}]
@@ -213,9 +213,9 @@ test('single points of failure: cables and devices that partition, a LAG listed 
   // a ring has none
   const ring = model(`netatlas: 1
 devices:
-  - {id: a, type: switch, interfaces: [x, y]}
-  - {id: b, type: switch, interfaces: [x, y]}
-  - {id: c, type: switch, interfaces: [x, y]}
+  - {id: a, type: switch, interfaces: [{id: x, vlans: 1}, {id: y, vlans: 1}]}
+  - {id: b, type: switch, interfaces: [{id: x, vlans: 1}, {id: y, vlans: 1}]}
+  - {id: c, type: switch, interfaces: [{id: x, vlans: 1}, {id: y, vlans: 1}]}
 links:
   - {id: ab, a: "a:y", b: "b:x"}
   - {id: bc, a: "b:y", b: "c:x"}

@@ -59,7 +59,8 @@ export function run(browser, url, extra) {
         // any DNS lookup fails: proves nothing on the page needs the network
         '--host-resolver-rules=MAP * ~NOTFOUND',
         `--user-data-dir=${profile}`,
-        '--virtual-time-budget=120000',
+        // the self-test's waits run on virtual time; under a loaded machine (the whole test suite at once) it needs more than 2 minutes of it
+        '--virtual-time-budget=180000',
         ...extra,
         url,
       ],

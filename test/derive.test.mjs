@@ -285,11 +285,12 @@ networks:
 
 test('the schema: each fact has one key, in one place', () => {
   assert.deepEqual(SCHEMA.network, ['id', 'label', 'cidr', 'vlan', 'simulation', 'description', 'attrs']);
-  assert.deepEqual(SCHEMA.interface, ['id', 'label', 'dhcp', 'ip', 'vrf', 'mac', 'mtu', 'dhcp_relay', 'protocols', 'multicast', 'simulation', 'description', 'attrs']);
-  assert.deepEqual(SCHEMA.logical, ['id', 'type', 'label', 'dhcp', 'ip', 'vrf', 'mac', 'mtu', 'dhcp_relay', 'members', 'min_links', 'vlan', 'source', 'destination', 'protocols', 'multicast', 'simulation', 'description', 'attrs']);
+  assert.deepEqual(SCHEMA.interface, ['id', 'label', 'vlans', 'native', 'routed', 'dhcp', 'ip', 'vrf', 'mac', 'mtu', 'dhcp_relay', 'protocols', 'multicast', 'simulation', 'description', 'attrs']);
+  assert.deepEqual(SCHEMA.logical, ['id', 'type', 'label', 'dhcp', 'ip', 'vrf', 'mac', 'mtu', 'dhcp_relay', 'members', 'min_links', 'vlans', 'native', 'routed', 'vlan', 'source', 'destination', 'protocols', 'multicast', 'simulation', 'description', 'attrs']);
   assert.deepEqual(SCHEMA.route, ['prefix', 'via', 'interface', 'blackhole', 'distance', 'metric', 'vrf', 'name', 'description', 'attrs']);
   assert.ok(!('child' in SCHEMA) && !('loopback' in SCHEMA));
-  assert.deepEqual(SCHEMA.linkEnd, ['device', 'interface', 'speed', 'duplex', 'mode', 'untagged', 'tagged']);
+  // a link end only names its port and what the port is set to: its VLANs are the port's
+  assert.deepEqual(SCHEMA.linkEnd, ['device', 'interface', 'speed', 'duplex']);
   assert.deepEqual(SCHEMA.endpoint, ['device', 'interface']);
   assert.ok(!SCHEMA.relation.includes('network') && SCHEMA.relation.includes('over'));
   assert.ok(SCHEMA.link.includes('medium') && SCHEMA.link.includes('speed'));

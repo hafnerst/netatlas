@@ -8,10 +8,10 @@ self-contained HTML file, `dist/netatlas.html`, that runs in any modern
 browser, including on an air-gapped machine. Start a new model or open a YAML
 file, then:
 
-* **Physical view:** devices, their ports (with interface names and the VLAN
-  tagging of each cable end: `U 10 · T 20,30,100-199`), cabling (medium and
-  speed), and locations such as sites, floors, rooms and racks, drawn as
-  nested boxes.
+* **Physical view:** devices, their ports (with interface names and each
+  port's VLANs: `A 10` for an access port, `T 10,20,30–39 · N 10` for a
+  trunk and its native VLAN), cabling (medium and speed), and locations such
+  as sites, floors, rooms and racks, drawn as nested boxes.
 * **Logical view:** IP networks with their members, device loopbacks,
   routing adjacencies, overlays, redundancy groups, services, and tunnels such
   as GRE and IPsec. Tunnels are drawn as hollow tubes; a relation carried over
@@ -22,10 +22,11 @@ file, then:
   administrative distance and equal-cost routes. Each device's routes are a
   route table in its box in the logical view, with a dotted line from a route
   to the interface its next hop belongs to. A host's default gateway is a
-  static default route. See [Static routes and VLAN tagging](#static-routes-and-vlan-tagging).
+  static default route. See [Static routes and port VLANs](#static-routes-and-port-vlans).
 * **Consistency checks:** next hops that are not connected or don't resolve,
   exit interfaces that can't forward, duplicate and contradicting routes,
-  native-VLAN and tagged-VLAN mismatches between cable ends, and more; each
+  VLAN mismatches between the ports of a cable (access, trunk lists, native
+  VLAN), and more; each
   with a stable id, a severity and a jump to the place it is about, in the
   Problems tab.
 * **Every relation and cable at its interface:** a relation starts and ends
@@ -49,7 +50,7 @@ file, then:
 * **Editor:** an object list (*Objects*) plus a property inspector. It can create,
   change and delete every part of the model: devices, their physical and
   logical interfaces (loopbacks, virtual interfaces, tunnel interfaces),
-  static routes, links and the VLAN tagging of their ends, networks,
+  static routes, the VLANs of ports, links, networks,
   relations and tunnels, groups, protocol definitions, free-form attributes,
   and even keys the format doesn't define. Validation
   runs as you type, and the diagram updates immediately. **Save model** and
@@ -234,10 +235,11 @@ under the diagram, beside the object list, and the splitter is hidden.
 | Edit fields | Type in the inspector. A change is applied when you press Enter, leave the field, or click anything else, including the diagram. |
 | What is selected | The **Edit** tab marks the part of the configuration that belongs to what is selected, in the diagram (either view) or in the object list: a lightly tinted background, a thin accent bar on the left and a small *▸ Selected* tag, and `aria-current` for screen readers. It is as specific as the selection: a whole object marks its header; an interface (its port, chip or entry) its card; a line of an interface entry, a cable label, a network or a relation label marks that field: an address (that one row of the address list), the VLAN, VRF, DHCP switch, MAC address, tunnel source or destination, member ports, a network's prefix, a cable id, an attribute. The mark is never the red error mark, a hover or the focus ring, and leaves them visible. When it moves to a section that is off screen, the panel scrolls to it (smoothly, unless the system asks for reduced motion); the keyboard focus never moves. It follows edits, undo / redo, renames and view switches, and disappears when nothing is selected. Selection itself works as before. |
 | Rename an ID | Edit the **ID** field. Every reference (links, endpoints, `over`, group parents, protocol names) is updated, and a notice says how many. |
-| Interfaces | A device lists its interfaces in two categories. **Physical interfaces:** **+ Interface** adds a port; its **Type** is the read-only text *Physical*. **+ Port Range** next to it adds a numbered run of ports in one step (see [Port ranges](#port-ranges)). **Logical interfaces:** **+ Loopback**, **+ Virtual** and **+ Tunnel** add one of that type; the **Type** field offers exactly *Loopback*, *Virtual* and *Tunnel*. Each entry is a collapsible card with an address list, attributes, and what uses it. A card shows only the association that fits its type: **Member ports** (a virtual interface that is a bond: pick physical interfaces of the device), **VLAN ID** and the read-only **Ports carrying VLAN** (a VLAN interface), **Tunnel source** and **Tunnel destination** (a tunnel). There is no parent field. **Network / VLAN** and **Ports carrying VLAN** are *derived*: they can't be edited and change as soon as an address, a network or a link end changes. Cards are listed alphabetically within each category; the order in the YAML file is left as it is. Every card except a loopback's has a **DHCP** switch beside its addresses (see [DHCP and DNS names](#dhcp-and-dns-names)). |
+| Interfaces | A device lists its interfaces in two categories. **Physical interfaces:** **+ Interface** adds a port; its **Type** is the read-only text *Physical*. **+ Port Range** next to it adds a numbered run of ports in one step (see [Port ranges](#port-ranges)). **Logical interfaces:** **+ Loopback**, **+ Virtual** and **+ Tunnel** add one of that type; the **Type** field offers exactly *Loopback*, *Virtual* and *Tunnel*. Each entry is a collapsible card with an address list, attributes, and what uses it. A card shows only the association that fits its type: **Member ports** (a virtual interface that is a bond: pick physical interfaces of the device), **VLAN ID** and the read-only **Bridge ports** (a VLAN interface), **Tunnel source** and **Tunnel destination** (a tunnel). There is no parent field. **Network / VLAN** and **Bridge ports** are *derived*: they can't be edited and change as soon as an address, a network or a port's VLANs change. Cards are listed alphabetically within each category; the order in the YAML file is left as it is. Every card except a loopback's has a **DHCP** switch beside its addresses (see [DHCP and DNS names](#dhcp-and-dns-names)). |
 | DNS names | After the two interface sections, **DNS names** lists the device's names. **+ DNS name** asks for the name and the interfaces it belongs to (by name; interfaces with DHCP on are not offered) and adds it only when both are valid. Each entry edits its name, adds interfaces from a picker and removes them (the last one can't be removed: delete the name instead). |
 | Networks | A network is **one** prefix (**IP network (CIDR)**, required) and, optionally, the VLAN it lives in. **Members** is *derived*: every device with a configured interface or loopback address inside the prefix, listed once with the matching interfaces and addresses (an interface with DHCP on has no known address and counts for nothing). To add a member, give it an address in the network. The details also list the cables that carry its VLAN. |
-| Link-end tagging | On a link, **End A: layer 2** and **End B: layer 2** each have a **Mode** (*No layer-2 tagging*, *Access*, *Trunk*), the **Untagged VLAN** (an access port's VLAN; a trunk's **Native VLAN**) and, for a trunk, the **Tagged VLANs** as IDs and ranges (`10, 20, 100-199`). The networks of those VLANs are shown, derived. Each end is stored separately; if they disagree, a note shows how (and the VLAN checks report it), and nothing is changed for you. Speed and medium are set here too, and only here. |
+| Port VLANs | A port's card (and an aggregate's) has **VLANs**: a multi-select combobox. Its VLANs are chips, each with a remove button; typing offers the model's VLANs with their names, and takes new IDs and ranges (`30-39`); **Enter** or a comma adds, **↑ ↓** move through the list, **Backspace** in the empty field removes the last chip. One VLAN makes an access port, several a trunk: then a **Native VLAN** picker appears (*None: every VLAN tagged*, or one of its VLANs). A Layer 3 switch's port has a **Routed port** checkbox instead. The mode is a badge in words beside the field (*Access · VLAN 10*, *Trunk · 10, 20, 30–39 (native 10)*, *Routed*), and in the card's summary, the device's port list and, per cable, the Objects list. Suggestions copy the VLANs of a neighbouring port (*Same as Gi1/0/1*) or of the port at the other end of the cable (*VLANs of the connected port*). **Assign VLANs to ports…** on a device gives a range of ports (as for **+ Port Range**) the same VLANs and native VLAN, with a preview, in one undo step. A switch port without VLANs is an error at its field (marked `*`) and in Problems, which leads back to the field. A member of an aggregate shows its aggregate's VLANs, read-only. |
+| Links | A link's ends have the port settings **Speed** and **Duplex**, and show the VLANs of their ports read-only; if the two ports disagree, a note shows how (and the VLAN checks report it), and nothing is changed for you. Speed and medium of the cable are set on the link, and only there. |
 | Input helpers | Next to many fields, small buttons (*chips*) offer values that fit, taken from the model as it is; each writes its value as one undo step and is validated like typing, and nothing is filled in by itself. **MTU:** *1500*, *9000 (jumbo)*, and for a tunnel *1476 (GRE)*, *1400* and its underlay's MTU less the encapsulation overhead (*1403 (underlay 1500 − 97)*, the overhead named in the tooltip). **MAC:** **Generate** writes a random, locally administered unicast address that no interface has, in the style the model's other MAC addresses are written (`00:1c:…`, `00-1C-…` or `001c.73aa.…`), from the browser's secure random source. **VRF:** a combobox of the VRFs in use, sorted, with how often each is used; ↑ / ↓, Enter and Esc work as usual, a new name can be typed, and a name that differs from one in use only in case is flagged (and reported by the check *vrf-name-case*). **VLAN ID** (virtual interfaces, networks, a link end's untagged VLAN): the next free ID and the VLANs the model defines. **Interface ID:** the name that follows the device's other names of that kind (*xe-4* after *xe-3*), as a rename. **Router ID:** the device's loopbacks (*lo0 (10.255.0.1)*). **BGP AS number:** the AS numbers the model uses; a BGP relation end's **peer AS**: the other device's AS. **IS-IS NET:** derived from the router ID or loopback (10.255.0.1 → `49.0001.0102.5500.0001.00`). **VRRP / HSRP group:** the groups on the interface's segment (*10 (join hq-core1:Vlan10)*) and the next free number; **Virtual IP:** the group's address on the other members. **Protocol parameters:** the registry's common values (OSPF area *0.0.0.0*, hello *10* …). **Routes:** *0.0.0.0/0 (default)*, *::/0*, distance *250 (floating backup)*. Speeds, media, protocols, port modes, duplex, groups, devices and interfaces were already offered as lists. The palette has *Generate a MAC address for the selected interface* and *Set the MTU of the selected interface to 1500*. A protocol defined in the model has a **Routing service** card (*Uses a router ID*; its declared parameters are listed and edited in the YAML tab). |
 | Layer 3 (switches) | A switch has one checkbox in its *Identity* card, **Supports Layer 3** (tooltip *Routing, routing protocols, and gateways*; `layer3: true`, off by default). While it is off, *Enable a protocol…* lists the routing protocols disabled in a group *Requires Layer 3* with the reason, nothing of Layer 3 is suggested, relation endpoint pickers leave the switch out of relations that need Layer 3 (and say why), and the palette's *Enable a protocol* says the same. Ticked: a **Layer 3 switch**, with protocols, a router ID, addresses on several interfaces, VRRP / HSRP groups, tunnels and VRFs; it routes between its VLANs. Unticked: a **Layer 2 switch**: it forwards frames, has one management interface with addresses and static routes (e.g. a default gateway for management), and offers no protocols, router ID or groups. Unticking a configured Layer 3 switch asks first and lists what is removed (protocols, router ID, groups, the addresses of all but the management interface, other VRFs, tunnel interfaces, routes in other VRFs) and the relations that need routing (kept, and reported until changed); one undo step. The diagram, the legend, the object list (**L2** / **L3** beside the name), the details, Find (`l3`, `layer 3 switch`) and the palette say which a switch is. See [docs/FORMAT.md](docs/FORMAT.md#layer-2-and-layer-3-switches). |
 | Protocols (routing services) | A Layer 3+ device (router, Layer 3 switch, firewall, load balancer, proxy, gateway) has a **Protocols** card: the routing services it runs, each a small card with its parameters, and **Enable a protocol…** (BGP, OSPF, IS-IS, EIGRP, RIP, LDP, PIM, BFD, VRRP, HSRP, GLBP, CARP, and the protocols the model defines with parameters). Static routes are not a protocol: they are configured in the device's **Static routes** section and are always in effect, whatever protocols the device enables. A protocol is enabled with its parameters empty; the mandatory ones (BGP's local AS number, OSPF's router ID, IS-IS's NET, a VRRP group's number and virtual IP) are errors at their field and in Problems until you fill them in. **Router ID** appears while an enabled protocol uses one: a loopback of the device (offered) or an IPv4 address, shared by the protocols, with **Own router ID for …** per protocol behind a disclosure. **Suggested**: one-click *Enable BGP* (or OSPF …) for a protocol the device's relations use but it doesn't enable. **Disable** on a protocol asks first when it has values and lists what goes with it (its parameters, its groups on interfaces, and the router ID when nothing else uses it); it is one undo step and nothing is kept hidden in the model. An interface of a device that runs VRRP (HSRP …) has **+ VRRP group**, then a card for the group's number, virtual IP and priority. A relation of OSPF, BGP … has a card with its per-end parameters (area, timers, cost …), a field per endpoint device. See [docs/FORMAT.md](docs/FORMAT.md#routing-services-protocols). |
@@ -390,7 +392,12 @@ supported subset is refused before editing, with the line number.
 A device stores each interface once, in one of two lists:
 
 * `interfaces`: its **physical interfaces** (ports). They have no type to
-  choose, and only they can be cabled.
+  choose, and only they can be cabled. What a port carries is written on it:
+  `vlans: 10` makes an access port, `vlans: [10, 20, 30-39]` a trunk (with
+  `native: 10`, its untagged VLAN; without it every VLAN is tagged), and on
+  a Layer 3 switch `routed: true` a routed port. A switch's port needs its
+  VLANs; on a router a port without VLANs is routed; hosts are unaffected.
+  A port with VLANs is a bridge port and has no address of its own.
 * `logical_interfaces`: its **logical interfaces**, each with a `type`:
   `loopback`, `virtual` (a VLAN interface, a bond, a subinterface, a VTEP …)
   or `tunnel`.
@@ -401,8 +408,9 @@ field. Each kind of association is modelled by what it means:
 | Interface | What you enter | What is derived |
 |---|---|---|
 | Loopback | its addresses (with prefix length) | — (it has no physical parent) |
-| Bond / aggregate (`virtual`) | **Member ports**: `members: [eth0, eth1]`, physical interfaces of the same device | highlighting of the ports and their cables |
-| VLAN interface (`virtual`) | its VLAN: `vlan: 10`, or nothing if its address lies in a network that defines the VLAN | **Ports carrying VLAN**: the device's ports whose link end permits that VLAN |
+| Bond / aggregate (`virtual`) | **Member ports**: `members: [eth0, eth1]`, physical interfaces of the same device; its VLANs (`vlans`, `native`), which the members take | highlighting of the ports and their cables |
+| VLAN interface (`virtual`) | its VLAN: `vlan: 10`, or nothing if its address lies in a network that defines the VLAN; once per device and VLAN | **Bridge ports**: every port and aggregate of the device whose VLANs include it, by mode (*Access: Gi1/0/1–10 · Trunk: Gi1/0/48, Po1*); highlighting both ways |
+| Subinterface (`virtual`, named `<port>.<n>`) | its VLAN, or an address in a network with one | its port, which tags that VLAN (router-on-a-stick) |
 | Any other `virtual` interface | nothing | nothing; no association is assumed |
 | Tunnel | **Tunnel source** (any interface of the device, physical or logical, or an address) and **destination** (an address, a device or `device:interface`) | the source interface when an address is written; highlighting of source and destination |
 
@@ -480,7 +488,7 @@ address with its prefix length is one line, in a monospace font.
 | `members` of an aggregate | logical | *members …* in its entry |
 | `cidr`, `vlan` of a network | logical | the network node (*VLAN 10 · 10.10.10.0/24*) |
 | `cable` of a link | physical | under the cable's label (*cable CID-…*) |
-| the tagging of a link end (`mode`, `untagged`, `tagged`) | physical | under the port's name: `U 10 · T 20,30,100-199` |
+| a port's VLANs (`vlans`, `native`) | physical | under the port's name: `A 10`, `T 10,20,30–39 · N 10`, `R · T 10,20` (a routed port's tagged subinterfaces); a trunk is drawn larger, with a thick frame |
 | static routes (`prefix`, `via`, `interface`, `distance`, `metric`) | logical | a line per route in its device's route table (*Routes*, *Routes · VRF x*): `0.0.0.0/0 via 203.0.113.5 AD 250`; hidden with **Routes** |
 | `dns_names` | logical | under the device's entries, every name |
 | the routing identity of a device: its `router_id` (while an enabled protocol uses it), a protocol's own router ID, BGP's (and EIGRP's) AS number, IS-IS's NET | both | an entry without a name at the top of its box: `router-id 10.255.0.1`, `AS 65010`, `OSPF router-id …` |
@@ -590,7 +598,7 @@ one undo step.
 See [docs/FORMAT.md](docs/FORMAT.md#network-services-services-dhcp-and-dns-servers)
 and the example [`campus-services.yaml`](examples/campus-services.yaml).
 
-### Static routes and VLAN tagging
+### Static routes and port VLANs
 
 **Static routes.** A device of a Layer 3+ type (router, switch, firewall,
 load balancer, proxy, gateway) or a host (server, VM, container, storage,
@@ -628,26 +636,39 @@ exit interfaces that can't forward (a loopback, a LAG member port, a port
 without a cable, another VRF), the same route twice and routes that
 contradict each other. See [docs/FORMAT.md](docs/FORMAT.md#static-routes).
 
-**VLAN tagging.** Each end of a cable says how its port carries VLANs:
-`mode: access` with one `untagged` VLAN, or `mode: trunk` with `tagged` VLANs
-(IDs and ranges such as `100-199`) and an untagged native VLAN. VLANs are
+**Port VLANs.** Each port says what it carries, by VLAN ID: one VLAN in
+`vlans` makes an **access port** (untagged), several a **trunk** (tagged,
+except an optional `native` VLAN, which must be one of them). An aggregate
+holds the VLANs of its members. A Layer 3 switch's port may be `routed: true`
+instead; a router's port without VLANs is routed, and its subinterfaces
+(`ge-0/0/2.10`) tag their VLANs on it (router-on-a-stick) — a port can't be
+a bridge port and a subinterface parent for the same VLAN. VLANs are
 referenced by ID, as on networks and VLAN interfaces; the networks a cable
-carries follow from them. An end without a mode says nothing about layer 2,
-and nothing is assumed for it. The **physical view** writes the tagging under
-each port's name (`U 99 · T 10,20,30`); a cable whose ends disagree is marked
-⚠ *VLANs differ*. The checks report native-VLAN mismatches, trunks that tag
-different VLANs, access ports with tagged VLANs, VLANs untagged at one end and
-tagged at the other, and VLANs no network or VLAN interface defines. **Find**
-finds the cables carrying a VLAN (`vlan 20`). See
-[docs/FORMAT.md](docs/FORMAT.md#vlan-tagging-on-a-link-end).
+carries follow from its two ports. A **VLAN interface** is written once per
+device and VLAN and binds to every bridge port of its VLAN by itself (no
+member list): its **Bridge ports** are shown read-only, by mode. The
+**physical view** writes each port's VLANs under its name (`A 10`, `T
+10,20,30,99 · N 99`, `R · T 10,20,30`); a cable whose ports disagree is
+marked ⚠ *VLANs differ*. The checks report access ports in different VLANs,
+trunks with different lists, native-VLAN mismatches, an access port facing a
+trunk whose native VLAN is another one, VLANs no network or VLAN interface
+defines, and aggregate members whose far ends differ. **Find** finds the
+ports and cables of a VLAN (`vlan 20`) and ports by mode (`trunk`). See
+[docs/FORMAT.md](docs/FORMAT.md#port-vlans-access-trunk-routed).
 
 `examples/branch-routing.yaml` shows both: a dual-homed branch with a
 floating static default route, equal-cost routes to HQ, a blackhole, a guest
-VRF, host default gateways and a router-on-a-stick trunk with a native VLAN.
+VRF, host default gateways and a router-on-a-stick: a routed router port
+with subinterfaces, and the switch's trunk with a native VLAN.
+`examples/vlan-ports.yaml` is about port VLANs: an access switch (ports 1–10
+in VLAN 10, 11–20 in VLAN 20, a trunk uplink with a native VLAN), a Layer 3
+core with Vlan10 and Vlan20 bound to their bridge ports, a routed uplink, a
+LAG trunk, a router with a bridge port and its BVI, and two deliberate
+mismatches.
 
 ![The logical view of the branch-routing example, dark theme: route tables in the device boxes, the floating default route selected with its next hop](docs/img/routes-logical.png)
 
-![The physical view of the branch-routing example, light theme: the tagging of the trunk and the access ports under the port names](docs/img/tagging-physical.png)
+![The physical view of the VLAN example, light theme: each port's VLANs under its name (A 10, T 10,20,99 · N 99), the trunks drawn with a thick frame, and the cable with the deliberate native-VLAN mismatch marked ⚠](docs/img/tagging-physical.png)
 
 ### Consistency checks
 
@@ -882,7 +903,7 @@ the model alone:
   virtual address of a VRRP / HSRP group its active member (the one named in
   `master`, else the highest `priority`). Between two hops the **cables**
   are found through switches, access points and clouds, in the network's
-  VLAN where the link ends say which VLANs they carry, with all members of a
+  VLAN where the ports say which VLANs they carry, with all members of a
   LAG.
 * **Tunnels:** a route out of a tunnel interface encapsulates the traffic.
   The **encapsulation stack** is the tunnel relation at the interface and the
@@ -1685,10 +1706,17 @@ that hop); a log row the frame as its sender sent it.
 * **Switching.** Switches learn source MAC addresses per port and VLAN,
   flood broadcast, multicast and unknown unicast within the VLAN to every
   other port carrying it, and send known unicast only to the learned port.
-  The link ends' tagging decides what a port carries (access, trunk, native
-  VLAN, tagged VLANs) and whether a frame leaves it tagged; a frame never
-  leaves its VLAN on a Layer 2 switch. Loops are broken by a spanning tree
-  per VLAN, unless every switch on the loop has its spanning tree off (a
+  The ports' VLANs decide what a port carries: an access port sends and
+  takes its VLAN untagged; a trunk tags every VLAN but its native one (the
+  packet inspector shows the 802.1Q tag on each cable). A VLAN interface is
+  reached through any bridge port of its VLAN and answers ARP there; the MAC
+  tables learn per VLAN. A frame of a VLAN that a port doesn't allow is
+  dropped (*VLAN 30 is not allowed on the port (trunk of VLANs 10,20 (native
+  10))*), and an untagged frame between ports whose native or access VLANs
+  differ arrives in the other VLAN (*VLAN mismatch … it leaks from VLAN 10
+  into VLAN 20*), both in the log. A frame never leaves its VLAN on a Layer
+  2 switch; routed ports act at Layer 3. Loops are broken by a spanning tree
+  per VLAN, on the bridge ports, unless every switch on the loop has its spanning tree off (a
   storm, see above); STP BPDUs, LLDP and CDP are shown only where the
   model has their relations; LACP runs on every aggregate's members.
 * **Routing.** Routers and Layer 3 switches route between subnets and
@@ -2103,8 +2131,9 @@ relations:                               # everything logical
   `device:interface`.
 * **Two categories of interfaces.** `interfaces` holds the physical ones,
   `logical_interfaces` the loopback, virtual and tunnel interfaces. A bond
-  lists its `members`, a VLAN interface names its `vlan` (its ports are
-  derived from the links), a tunnel names its `source` and `destination`.
+  lists its `members`, a VLAN interface names its `vlan` (its bridge ports
+  are derived from the ports' VLANs), a tunnel names its `source` and
+  `destination`.
 * **Physical vs logical is explicit.** `links` are cables between ports.
   Logical interfaces can't be cabled.
   `relations` are protocol sessions, tunnels, overlays, redundancy groups and
@@ -2112,9 +2141,9 @@ relations:                               # everything logical
 * **Configure once, derive elsewhere.** A network has one prefix and,
   optionally, a VLAN; its members are whoever has a configured address
   inside (IP containment). An interface's VLAN is the VLAN of the network
-  containing its address. Speed and medium belong to the link. Each end of a
-  link has the layer-2 tagging of its port (`mode`, `untagged`, `tagged`, by
-  VLAN ID); the networks a cable carries follow from it. A relation's `over`
+  containing its address. Speed and medium belong to the link. Each port
+  has its VLANs (`vlans`, `native`, or `routed: true`, by VLAN ID); the
+  networks a cable carries follow from its two ports. A relation's `over`
   names what it depends on. A device's static routes are `routes` on the
   device. Derived values are shown read-only and are never written to
   the file. The
@@ -2134,7 +2163,7 @@ YAML that is read and written is in
 
 | File | Shows |
 |---|---|
-| [`examples/enterprise-wan.yaml`](examples/enterprise-wan.yaml) | HQ with two ISPs and two branches. **IPsec → GRE → OSPF** stacks over the same internet uplinks that also carry eBGP and BFD. WireGuard backup over LTE, tunnel interfaces that name their source port and destination, a port-channel with two member ports, VLAN interfaces whose ports are derived from the tagging of the cables, loopbacks used by iBGP, a multipoint OSPF area routed through a firewall whose two router ports share a transit VLAN, VRRP for the users and the servers (whose default gateway is the VRRP address), host routes that keep the tunnel endpoints on the internet uplinks, **routing services per device** (the edge routers run BGP, OSPF and BFD with their loopback as router ID, the core switches OSPF and VRRP with the groups on their VLAN interfaces, the access switch no routing protocol at all), LACP, syslog, an undeclared protocol and a user-defined one (MACsec). IP networks with derived members, two of them with a VLAN, trunks tagging the users and servers VLANs and an access port, and OSPF and VRRP over their LAN segments. |
+| [`examples/enterprise-wan.yaml`](examples/enterprise-wan.yaml) | HQ with two ISPs and two branches. **IPsec → GRE → OSPF** stacks over the same internet uplinks that also carry eBGP and BFD. WireGuard backup over LTE, tunnel interfaces that name their source port and destination, a port-channel with two member ports, VLAN interfaces bound to the bridge ports of their VLANs, loopbacks used by iBGP, a multipoint OSPF area routed through a firewall whose two router ports share a transit VLAN, VRRP for the users and the servers (whose default gateway is the VRRP address), host routes that keep the tunnel endpoints on the internet uplinks, **routing services per device** (the edge routers run BGP, OSPF and BFD with their loopback as router ID, the core switches OSPF and VRRP with the groups on their VLAN interfaces, the access switch no routing protocol at all), LACP, syslog, an undeclared protocol and a user-defined one (MACsec). IP networks with derived members, two of them with a VLAN, trunks carrying the users and servers VLANs and an access port, and OSPF and VRRP over their LAN segments. |
 | [`examples/datacenter-evpn.yaml`](examples/datacenter-evpn.yaml) | Spine/leaf fabric in racks: eBGP underlay, EVPN sessions between loopbacks, a multipoint VXLAN VNI, MLAG, LACP, and a user-defined `srv6` tunnel. The tenant network's members are the leaves' VLAN interfaces, which carry the VRF; each leaf also has a VTEP, a virtual interface that is neither a bond nor a VLAN interface. |
 | [`examples/minimal.yaml`](examples/minimal.yaml) | Two routers, one cable, a tunnel interface on each router sourced from its port, OSPF inside GRE. |
 | [`examples/metro-ring.yaml`](examples/metro-ring.yaml) | **Representative architecture for Auto-arrange.** Six PE routers in three POPs on a fibre ring, IPv4/IPv6 loopbacks (iBGP and RSVP-TE endpoints), an OSPF area, LDP per link, a dense 15-session iBGP mesh, TE tunnels, an L3VPN overlay, customer eBGP, a disconnected out-of-band network and an unconnected spare router. No stored positions. |
@@ -2142,8 +2171,9 @@ YAML that is read and written is in
 | [`examples/long-labels.yaml`](examples/long-labels.yaml) | **Sizing test case.** Device labels with line breaks, a very long label, a long host name without spaces, a long group title, three parallel cables, a long cable label, one segment as three networks (IPv4 and two IPv6 prefixes, one VLAN), and six labelled relations between the same two devices: GRE and OSPF bound to the tunnel interfaces (`Tunnel10`, `tunnel.10`, OSPF inside GRE), IPsec, eBGP, BFD and syslog bound to the devices. Nothing is shortened. |
 | [`examples/addressing.yaml`](examples/addressing.yaml) | One router with many interfaces: every kind of address and identifier written in the diagram. Networks in several VRFs, a supernet with nested networks, VIPs and addresses in no network for the **Addressing overview**. |
 | [`examples/port-bindings.yaml`](examples/port-bindings.yaml) | **Ports test case.** Several tunnel interfaces and subinterfaces per router, three relations on one tunnel interface (IPsec carrying OSPF, and BFD), tunnels sourced from an interface and from an address (`src:` end labels), relations bound to devices as a whole (device-level ports), a LAG (`Po1` over two cables, bracketed in the physical view) and a three-device VRRP group. |
-| [`examples/branch-routing.yaml`](examples/branch-routing.yaml) | **Static routes and VLAN tagging.** A dual-homed branch: a default route via ISP A and a floating default (distance 250) via ISP B, equal-cost routes to HQ over both ISPs (and back), a blackhole route, a guest VRF with a blackhole default, host default gateways, and a router-on-a-stick trunk with VLAN 99 untagged (native) and VLANs 10, 20, 30 tagged, plus access ports. |
-| [`examples/consistency-checks.yaml`](examples/consistency-checks.yaml) | **Consistency checks.** A small, valid network with one deliberate inconsistency for every check (static routes, VLAN tagging, MTU, speed and duplex, aggregates, addressing, router IDs and MAC addresses, OSPF, BGP, tunnels, virtual addresses, VRFs), each marked in the file with the check id (among them a protocol a device's relation uses but it doesn't enable, one enabled and unused, a router ID used twice in one OSPF domain, and a VRRP group's members in different groups); its `checks:` section downgrades one check. |
+| [`examples/branch-routing.yaml`](examples/branch-routing.yaml) | **Static routes and port VLANs.** A dual-homed branch: a default route via ISP A and a floating default (distance 250) via ISP B, equal-cost routes to HQ over both ISPs (and back), a blackhole route, a guest VRF with a blackhole default, host default gateways, and a router-on-a-stick: the router's routed port with subinterfaces for VLANs 10, 20, 30, the switch's trunk with VLAN 99 native (untagged), plus access ports. |
+| [`examples/vlan-ports.yaml`](examples/vlan-ports.yaml) | **VLANs on ports.** An L2 access switch (Gi1/0/1–10 in VLAN 10, 11–20 in VLAN 20, a trunk uplink with native VLAN 99), an L3 core whose Vlan10 and Vlan20 bind to their bridge ports, a routed uplink to a router, a LAG trunk to a second access switch, a router with a bridge port and its BVI, and deliberate mistakes: a native-VLAN mismatch (untagged frames leak) and a VLAN one end doesn't allow (dropped). Pings and the simulation log show their effects. |
+| [`examples/consistency-checks.yaml`](examples/consistency-checks.yaml) | **Consistency checks.** A small, valid network with one deliberate inconsistency for every check (static routes, port VLANs, MTU, speed and duplex, aggregates, addressing, router IDs and MAC addresses, OSPF, BGP, tunnels, virtual addresses, VRFs), each marked in the file with the check id (among them a protocol a device's relation uses but it doesn't enable, one enabled and unused, a router ID used twice in one OSPF domain, and a VRRP group's members in different groups); its `checks:` section downgrades one check. |
 | [`examples/campus-services.yaml`](examples/campus-services.yaml) | **DHCP and DNS.** A DHCP and DNS server (*srv*) for two VLANs: *pc1* and *lap1* (a reservation by MAC address) in its own VLAN, *pc2* in another one behind the Layer 3 switch *core*, which relays DHCP (`dhcp_relay`). The zone *campus.example* comes from the model's DNS names plus a CNAME (*www*). A Layer 2 access switch with per-port spanning-tree settings: a costlier second uplink (blocked) and edge ports with BPDU guard. The PCs send test traffic by host name: watch DORA (in parallel, *pc2*'s through the relay), then each name resolved before its connection; *Show DHCP leases*, *Show DNS zone* and *Show DNS cache*. |
 | [`examples/ospf-reroute.yaml`](examples/ospf-reroute.yaml) | **OSPF costs and failover.** Two sites and a ring of three OSPF routers whose costs make one path preferred (Trace path from *w-host* to *e-srv* takes c1 and c3), a VRRP pair, a camera VLAN routed by one router only, a one-way TAP cable to an IDS and two traffic **demands**. Single points of failure: the one link from the core to East, the switches of both sites, and the single cables of the hosts and the TAP feed. |
 | [`examples/protocol-simulation.yaml`](examples/protocol-simulation.yaml) | **The protocol simulation.** Hosts without MAC addresses, a Layer 2 access switch with a management address on trunks to two Layer 3 core switches (core1 routes between VLAN 10 and the dual-stack VLAN 20; a VRRP pair), device overrides in `simulation:` blocks (core1's ARP timeout, acc-sw's MAC aging, the internet's latency), an uplink that flaps from the start, a loop that RSTP breaks, an OSPF ring with costs whose preferred link runs through a carrier switch (so the far side notices only by the dead interval), iBGP between loopbacks, BFD, IPsec protecting GRE with OSPF over it, test traffic (open and closed ports, a firewall that rejects, no route, a smaller MTU), a lab loop without spanning tree, multicast (an ASM and an SSM stream to receivers in two VLANs behind a snooping switch, two queriers, a static RP, a tree that moves when a link fails, a VLAN without a querier), and a protocol of the model's own on a one-way relation. |
@@ -2280,7 +2310,8 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/scr
 | **Derived values and unknown keys** | `test/derive.test.mjs` (19 tests) | **Membership** from addresses: one entry per device with every match; a DHCP interface makes no member; the network prefix is the authority (the interface's own prefix length is ignored); IPv4 and IPv6 boundaries and prefix lengths (`/0`, `/30`, `/31`, `/32`, `/52`, `/128`); no matching across families; overlapping networks (every containing network, same prefix twice warns); invalid and incomplete addresses match nothing. **One prefix per network:** missing, empty, a list (even of one) and invalid prefixes are errors that keep the value in the file. **Interface VLAN:** derived per address; none when no network matches or no VLAN is defined; several addresses give several VLANs; conflicting networks give an explicit ambiguity and a warning. Derived values follow every edit and undo, and are **never written to YAML**. Membership drives highlighting, selection context, search and the layout input. **Keys outside the format** are unknown keys, located at the key; nothing is converted; the file is written back unchanged. Each fact has one key in the schema; `vrf` on interfaces; loopbacks have no physical-link properties. |
 | **Analysis: address math and routing** | `test/analysis.test.mjs` (9 tests) | **Address math** for IPv4 and IPv6: integers, canonical text (RFC 5952), networks of prefixes, sizes (up to `::/0`), ranges, containment and overlap, host counts (network and broadcast address, `/31`, `/32`, IPv6), free ranges and the next free address, `/64` counts, ordering. **Routing:** connected networks per VRF, static routes (a missing distance counts as 1), longest-prefix match, distance, metric, **equal-cost multipath**, blackholes, VRF tables, local addresses; next hops directly connected, **recursive**, through an exit interface, the device's own address, a loop, never through a default route; **interfaces that are down** remove their networks and routes and let a **floating** route take over; results independent of the order of the file; the targets of next-hop lines and the editor's next-hop suggestions. |
 | **Static routes** | `test/routes.test.mjs` (14 tests) | The format (prefix, `via`, `interface`, `blackhole`, distance, metric, VRF, name, attrs; IPv4 and IPv6), written back exactly; **which device types may have routes** (Layer 3+ and hosts; not AP, IDS/IPS, cloud, untyped) and a host's default gateway; every validation error at its field; **each route check positive and negative** (`route-nexthop-self`, `-unresolved` incl. another VRF, `-recursive`, `-interface`, `route-exit-interface` for a loopback, an uncabled port, a LAG member and another VRF, `route-duplicate`, `route-conflict`); findings at their field, never invalidating, order-independent; **editing** (add, duplicate, delete, blackhole, undo; renaming an exit interface); the **route tables and next-hop lines** of the logical view, the **Routes** switch (nothing moves), the address inventory; related objects, details, tooltip, Find; filtered views. |
-| **VLAN tagging** | `test/vlan-tagging.test.mjs` (14 tests) | Tagging stored per end (mode, untagged, tagged IDs and ranges); the tag text and the networks a cable carries derived; validation (mode needed, IDs 1–4094, ranges, repeats); **each VLAN check positive and negative** (`vlan-native-mismatch`, `vlan-tagged-mismatch`, `vlan-access-tagged`, `vlan-untagged-tagged`, `vlan-unknown`) and nothing compared for an end without a mode; editing one end never writes the other, short form in and out; renaming a network never touches link ends; the tag line of the port labels, the *VLANs differ* mark, details, tooltip, Find (`vlan 20`), selection; a VLAN interface's ports. |
+| **Port VLANs** | `test/port-vlans.test.mjs` (19 tests) | **The port model:** access, trunk with and without a native VLAN, routed (a Layer 3 switch's, a router's), hosts unaffected, LAG members taking the aggregate's VLANs, subinterfaces by name; badges and diagram tags; **validation** (a switch port's mandatory VLANs at the field, a switch's aggregate, members with their own VLANs, native VLANs, routed ports, IDs 1–4094, ranges, repeats, an address on a bridge port, the old link-end keys); router-on-a-stick against a bridge port; **VLAN interfaces** bound to every bridge port of their VLAN (access, trunk, LAG), following the ports, the bridge-port runs, two for a VLAN, none of its ports, one on a Layer 2 switch; **each VLAN check positive and negative** (`vlan-access-mismatch`, `vlan-trunk-mismatch`, `vlan-native-mismatch`, `vlan-access-trunk`, `vlan-unknown`, `lag-member-vlans`); editing (merged ranges, native, routed, one undo step each; a native VLAN that no longer fits goes), **Assign VLANs to ports…** in one undo step, making a switch Layer 2; the diagram's tags, trunk ports, the *VLANs differ* mark, details, tooltips, Find by VLAN and mode, highlighting both ways, membership. |
+| **Port VLANs in the simulation** | `test/sim-vlans.test.mjs` (6 tests) | Access ports untagged and trunks tagged except the native VLAN (the frame headers), inter-VLAN routing on the VLAN interfaces (TTL), a VLAN interface through any bridge port, ARP on it, MAC tables per VLAN, a routed port without VLANs, a disallowed VLAN dropped with the port's VLANs in the log, a native mismatch leaking with its explanation, the spanning tree on the bridge ports. |
 | **Command registry and palette** | `test/palette.test.mjs` (6 tests) | The registry: unique ids, every command with label, group, state and action, no shortcut used twice, the commands the palette must offer and one per example. **The menus are the registry:** every menu entry names a command and shows its label and shortcut; no entry is wired by hand; the keyboard dispatches through the registry. Shortcut labels (Ctrl, or Cmd on a Mac) and matching (Ctrl/Cmd, Shift, never Alt). Fuzzy matching (word starts, subsequences, every word), ranking (recent first, unavailable entries with their reason, keywords), the results count; the objects (devices, interfaces, links, networks, relations, routes, groups), each once and selectable, found by address and next hop. |
 | **Focus mode** | `test/focus.test.mjs` (7 tests) | The devices an object stands for (device, interface, link, relation, hub, group, protocol; none for a network without members); hops along cables (physical) and relations (logical), 1 to 3; the same neighbourhood for a file in another order. The session: each view shows its neighbourhood with temporary positions, more hops keep the devices that stay in place, ending gives back the complete diagrams exactly; focus combined with a type filter, and the filtered view with a hand-moved node given back as it was; an edit deleting the focused object ends focus; focusing every device of three examples and ending restores the stored positions. |
 | **Simulated traffic (for the protocol simulation)** | `test/traffic.test.mjs` (8 tests) | The flows per protocol (OSPF and BFD both ways, VRRP from its active member, syslog one way, a bidirectional service with replies, a hub group per member) with their lanes and cables; demands traced through networks and relations, the rate growing with the bandwidth; equal-cost paths sharing a demand; a one-way cable never used backwards by the tracer, and its format; `ospf-reroute.yaml` with the primary link failed, then w1's LAN too, then both back (rerouted, VRRP failing over, the camera lost where it stops, restored exactly) and the changes from one state to the next; cables oriented by walking (LAG members the same way, unknown order both ways); determinism (file order, repeated runs, failure order); the `demands:` section's form and warnings. |
@@ -2313,7 +2344,7 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/scr
 | Architecture | `test/architecture.test.mjs` (3 tests) | Every module lives in a layer folder; imports follow the allowed dependency direction (docs/ARCHITECTURE.md); the diagram, layout and UI layers never import the YAML layer |
 | **Port ranges** | `test/port-range.test.mjs` (7 tests) | The final number is the port number (also with leading zeros and multi-part names); ids follow the model's convention, with the typed name as label when it isn't a valid id. Rejected with a clear reason: missing number, different prefixes, first not lower than last, more than 256 ports, names that can't become ids. Duplicate names or ids on the device (ids and labels, physical and logical) reject the whole range; other devices don't count. Creation is all or nothing, one undo step, physical interfaces only (no addresses, VLANs, links); alphabetical display; **export → reload** of generated ports. |
 | Module APIs | `test/modules.test.mjs` (10 tests) | Document editing operations (typed values, lists, endpoints, attrs, key order, one undo step each); the format schema is the single source of allowed keys; model queries; export file names; `check:dist` accepts the current build and rejects a stale HTML file |
-| **End-to-end in a real browser** | `test/browser.test.mjs` → `dist/netatlas.html#selftest` (775 in-page checks) | Headless Chrome, Edge or Chromium opens the file from `file://` **with DNS resolution disabled** and drives the real UI. **Viewer:** every example loads through the File API path, both views are drawn, loopback chips appear only in the logical view, interaction works. **New model:** New is empty; a new device shows *Select device type* and saves no type until one is chosen; a new relation has no protocol and reports its missing protocol and endpoints (saving then needs "Download anyway" in the download fallback); a new network is only an ID; add a device, **add two loopbacks, type IPv4/IPv6 addresses, see the error for an address without a prefix and fix it**, add physical interfaces (type shown as read-only *Physical*), **a bond with two member ports, a VLAN interface whose *Ports carrying its VLAN* follow the tagging of the cable ends, and a tunnel sourced from a loopback, an address and a port (an unknown source is an error)**, all listed alphabetically while the file keeps its order, a cable (link ends offer physical interfaces only), a GRE tunnel between loopbacks with nested attrs, then **VLAN tagging on the link ends** (a trunk with tagged VLANs and a range on one end, the other untouched; a difference shown in the editor, in Problems and on the cable, and not synchronized; the same VLANs in another order agree), **save (download a copy) and reload** the file. **Static routes:** the route tables and next-hop lines of `branch-routing.yaml`, the **Routes** switch (nothing moves) and its effect on the SVG export, selecting a route (its card opens and is marked), Duplicate and undo, **+ Route** on a host with a next hop that a check reports at its field and in Problems, and the jump from Problems to the route. **Command palette:** `Ctrl+K` opens it with a combobox and a listbox (a live count), fuzzy matching, an unavailable command listed with its reason and not run, an object selected with Enter, recent entries first, a command run (Logical view), Esc returning the focus, the Find menu entry, no change to the model. **Input helpers:** the MTU chips under their field in a labelled group with accessible names, a chip writing its value in one undo step, **Generate** for a MAC (named for its interface, locally administered unicast, unique, one undo step), the VRF combobox (ARIA roles, typing opens the VRFs in use with their counts, ↓ to an option, Enter picks it, a case-only variant flagged in a live region, Esc closes and keeps the selection), naming a new port after the device's pattern as a rename, the chips readable in both themes, and the palette's MAC and MTU commands. **Routing services:** a device's Protocols section with one-click suggestions (accessible names), the findings in Problems, enabling OSPF (one undo step) with its required router ID as an error until filled in, *Enable a protocol* as a labelled choice, IS-IS's required NET and its level choice, undo back to the file, *Disable* asking first with the list of what goes, undo, the chips readable in both themes, the palette command. **Scenario templates:** the Simulate entry (a dialog), the eleven templates with one that doesn't apply greyed out and its reason (aria-describedby), the review (the editable name focused, the steps, the notes, nothing saved yet), Save and play (a saved scenario, one undo step, played: both uplinks of a shared duct fail), undo, the palette's template entries. **Simulated traffic:** `ospf-reroute.yaml` played step by step in both themes: the animation on by default in its own layer under the boxes; the baseline on the preferred path with dots on its cables; the primary link failing (rerouted, said in the tab, the old way faded and the new one emphasized, no dots on the failed cable); the second failure (VRRP failing over to w2, the camera lost with a marker at w-cam); the logical view; both links restored; Pause stopping the dots; the export with arrows, no dots and the Simulation note; switching it off; no change to the model and no undo step. **Simulation:** the Analyze menu without simulation entries and the Simulate menu with them; the Simulation tab of its own; unavailable without a selection or for a network (with the reason), `X` starting an ad-hoc scenario with the mode indicators (banner with scenario and step, the solid 2 px border, status-bar marker, *◈ Simulation running* label), the results (relations, tunnels, networks, routes, the device pairs that lose reachability), the cable drawn dotted and what runs over it marked down in both views; the edit lock (the Edit tab read-only with its Exit simulation button, the outline's Add buttons, the YAML text, the editing core refusing any edit); a trace in the simulated state saying so; `[` / `]` playing back and forward with the same results (deterministic), Restore and Remove steps; playing changing nothing and adding no undo step; Save scenario… (a labelled dialog, one undo step), a step added to a saved scenario as an undoable edit, undoing the save; replaying a saved scenario step by step; the palette's *Play scenario*; the Single points of failure report in Analyze and the Analysis tab (an entry's name only selects; **Simulate this failure** starts a scenario; unavailable during another simulation; Close report); Focus counting hops over what is up; exports with the frame and a *Simulation: scenario …* note in both themes; `Esc`. **DHCP and DNS (`campus-services.yaml`, both themes):** no problem; the server's DHCP and DNS badges with tooltips, the clients' reserved lease lines and the legend entries; the Services card with both boxes ticked, two scopes and the zone with its derived records; in the simulation the leases written into the reserved lines with *(DHCP lease)* (the reservation, the relayed client), DORA in parallel and through the relay, DNS by name before the connection; *Show DHCP leases*, *Show DNS zone* and *Show DNS cache*; the indicator (a solid 2 px inset border that catches no click, the label); the lines restored after Exit. **Path tracer:** `T` opening the Analysis tab with the selection in From and the keyboard in To, an unknown end refused at its field, a trace with its return path (the banner with the hops, the equal-cost alternative and the return path), the hop list (interfaces, addresses, the OSPF route, GRE over IPsec, the cables), the path's devices and cables marked in the physical view down to the internet underneath the tunnel, the alternative marked apart (dashed, not by colour alone), the relations in the logical view, exports with the marked path and a *Path trace* note in both themes, the text copy, no change to the model and no undo step, the trace computed again after an edit, `Esc` ending it, the Analyze menu entries. **Focus mode:** unavailable without a selection (with the reason), `Shift+F` showing one hop with the banner (object, hops, count, temporary positions), the banner's controls, `+` for 2 hops, relations in the logical view, an export with exactly the focused part and a *Focus* note, both themes, no change to the model and no undo step, `Esc` restoring every device at its position, Focus / Exit focus as commands. **Addressing overview:** opened from Analyze and with `I`, every network listed per VRF with its columns, utilization as text, the filter (with the focus kept and a live count), sorting by a header (aria-sort, reversed on a second press), a network's members opened and closed (aria-expanded), the duplicate / overlap / no-network lists, no sideways page scrolling, the CSV, a click selecting the network in the diagram, Esc closing it without changing the model or adding an undo step, both themes, and the Edit tab's **Next free address** adding an address (and undo). **Consistency checks:** the Problems tab of `consistency-checks.yaml` in two parts with a finding of every check (id, title, severity as a word, the objects as links), the severity filter (aria-pressed, focus kept), the checks the model changes, an object link selecting it, a finding opening its field with the message, an MTU fix removing the finding, the model settings' check table writing `checks:` (off, another severity, undo), and a link end's speed and duplex. **Imported model:** rename a device (every reference follows), edit, add an IPv6 loopback, save as a downloaded `…-edited.yaml`, **reload, and check that edits, hidden attributes and comments survived**. **Guards:** unsaved-changes dialog on replace; `beforeunload`; Ctrl+Z/Y; deleting a referenced device reports broken references; **exporting an invalid model requires "Download anyway"**; YAML-tab apply/reject; unknown keys kept and movable into attrs; typed text is committed before a button acts; **selection context in the lists:** selecting from the diagram, the left list and the right-hand Relations list keeps lists and diagram consistent for every element type (direct entries related, indirect ones dimmed), unrelated entries stay focusable and selectable, view switches leave no stale highlighting, and `Esc` clears everything; the device type is chosen from the 15 types by display name. **Auto-arrange:** the three options are in the top toolbar, visible and labelled (disabled until a model is open); the status reads *Auto-arranged* / *Manually adjusted* / *Edited since arranged* after loading, dragging, undo, switching views (the shown view is highlighted), Auto-arrange, moving a node back to its calculated position, export → reload of arranged and of manually adjusted layouts, a model edit, and New; loading stores nothing; the dialog shows the scope; arranging an automatic layout stores it without moving anything; repeating it is a no-op; a manual move changes only that node and is undone by arrange (and restored by undo); **arrange → export → reload is pixel-identical in both views**; a file with every list and key reversed arranges identically; **the browser reproduces the build-time positions of `metro-ring-arranged.yaml`** (a cross-engine determinism check when run in Firefox or Safari). **Safety:** hostile labels create no elements; YAML syntax errors are refused with the current model kept; **no network requests, no CSP violations**. The test is skipped if no Chromium-based browser is installed; set `NETATLAS_BROWSER` to choose one. |
+| **End-to-end in a real browser** | `test/browser.test.mjs` → `dist/netatlas.html#selftest` (811 in-page checks) | Headless Chrome, Edge or Chromium opens the file from `file://` **with DNS resolution disabled** and drives the real UI. **Viewer:** every example loads through the File API path, both views are drawn, loopback chips appear only in the logical view, interaction works. **New model:** New is empty; a new device shows *Select device type* and saves no type until one is chosen; a new relation has no protocol and reports its missing protocol and endpoints (saving then needs "Download anyway" in the download fallback); a new network is only an ID; add a device, **add two loopbacks, type IPv4/IPv6 addresses, see the error for an address without a prefix and fix it**, add physical interfaces (type shown as read-only *Physical*), **a bond with two member ports, a VLAN interface whose *Ports carrying its VLAN* follow the tagging of the cable ends, and a tunnel sourced from a loopback, an address and a port (an unknown source is an error)**, all listed alphabetically while the file keeps its order, a cable (link ends offer physical interfaces only), a GRE tunnel between loopbacks with nested attrs, then **VLAN tagging on the link ends** (a trunk with tagged VLANs and a range on one end, the other untouched; a difference shown in the editor, in Problems and on the cable, and not synchronized; the same VLANs in another order agree), **save (download a copy) and reload** the file. **Static routes:** the route tables and next-hop lines of `branch-routing.yaml`, the **Routes** switch (nothing moves) and its effect on the SVG export, selecting a route (its card opens and is marked), Duplicate and undo, **+ Route** on a host with a next hop that a check reports at its field and in Problems, and the jump from Problems to the route. **Command palette:** `Ctrl+K` opens it with a combobox and a listbox (a live count), fuzzy matching, an unavailable command listed with its reason and not run, an object selected with Enter, recent entries first, a command run (Logical view), Esc returning the focus, the Find menu entry, no change to the model. **Input helpers:** the MTU chips under their field in a labelled group with accessible names, a chip writing its value in one undo step, **Generate** for a MAC (named for its interface, locally administered unicast, unique, one undo step), the VRF combobox (ARIA roles, typing opens the VRFs in use with their counts, ↓ to an option, Enter picks it, a case-only variant flagged in a live region, Esc closes and keeps the selection), naming a new port after the device's pattern as a rename, the chips readable in both themes, and the palette's MAC and MTU commands. **Routing services:** a device's Protocols section with one-click suggestions (accessible names), the findings in Problems, enabling OSPF (one undo step) with its required router ID as an error until filled in, *Enable a protocol* as a labelled choice, IS-IS's required NET and its level choice, undo back to the file, *Disable* asking first with the list of what goes, undo, the chips readable in both themes, the palette command. **Scenario templates:** the Simulate entry (a dialog), the eleven templates with one that doesn't apply greyed out and its reason (aria-describedby), the review (the editable name focused, the steps, the notes, nothing saved yet), Save and play (a saved scenario, one undo step, played: both uplinks of a shared duct fail), undo, the palette's template entries. **Simulated traffic:** `ospf-reroute.yaml` played step by step in both themes: the animation on by default in its own layer under the boxes; the baseline on the preferred path with dots on its cables; the primary link failing (rerouted, said in the tab, the old way faded and the new one emphasized, no dots on the failed cable); the second failure (VRRP failing over to w2, the camera lost with a marker at w-cam); the logical view; both links restored; Pause stopping the dots; the export with arrows, no dots and the Simulation note; switching it off; no change to the model and no undo step. **Simulation:** the Analyze menu without simulation entries and the Simulate menu with them; the Simulation tab of its own; unavailable without a selection or for a network (with the reason), `X` starting an ad-hoc scenario with the mode indicators (banner with scenario and step, the solid 2 px border, status-bar marker, *◈ Simulation running* label), the results (relations, tunnels, networks, routes, the device pairs that lose reachability), the cable drawn dotted and what runs over it marked down in both views; the edit lock (the Edit tab read-only with its Exit simulation button, the outline's Add buttons, the YAML text, the editing core refusing any edit); a trace in the simulated state saying so; `[` / `]` playing back and forward with the same results (deterministic), Restore and Remove steps; playing changing nothing and adding no undo step; Save scenario… (a labelled dialog, one undo step), a step added to a saved scenario as an undoable edit, undoing the save; replaying a saved scenario step by step; the palette's *Play scenario*; the Single points of failure report in Analyze and the Analysis tab (an entry's name only selects; **Simulate this failure** starts a scenario; unavailable during another simulation; Close report); Focus counting hops over what is up; exports with the frame and a *Simulation: scenario …* note in both themes; `Esc`. **DHCP and DNS (`campus-services.yaml`, both themes):** no problem; the server's DHCP and DNS badges with tooltips, the clients' reserved lease lines and the legend entries; the Services card with both boxes ticked, two scopes and the zone with its derived records; in the simulation the leases written into the reserved lines with *(DHCP lease)* (the reservation, the relayed client), DORA in parallel and through the relay, DNS by name before the connection; *Show DHCP leases*, *Show DNS zone* and *Show DNS cache*; the indicator (a solid 2 px inset border that catches no click, the label); the lines restored after Exit. **Path tracer:** `T` opening the Analysis tab with the selection in From and the keyboard in To, an unknown end refused at its field, a trace with its return path (the banner with the hops, the equal-cost alternative and the return path), the hop list (interfaces, addresses, the OSPF route, GRE over IPsec, the cables), the path's devices and cables marked in the physical view down to the internet underneath the tunnel, the alternative marked apart (dashed, not by colour alone), the relations in the logical view, exports with the marked path and a *Path trace* note in both themes, the text copy, no change to the model and no undo step, the trace computed again after an edit, `Esc` ending it, the Analyze menu entries. **Focus mode:** unavailable without a selection (with the reason), `Shift+F` showing one hop with the banner (object, hops, count, temporary positions), the banner's controls, `+` for 2 hops, relations in the logical view, an export with exactly the focused part and a *Focus* note, both themes, no change to the model and no undo step, `Esc` restoring every device at its position, Focus / Exit focus as commands. **Addressing overview:** opened from Analyze and with `I`, every network listed per VRF with its columns, utilization as text, the filter (with the focus kept and a live count), sorting by a header (aria-sort, reversed on a second press), a network's members opened and closed (aria-expanded), the duplicate / overlap / no-network lists, no sideways page scrolling, the CSV, a click selecting the network in the diagram, Esc closing it without changing the model or adding an undo step, both themes, and the Edit tab's **Next free address** adding an address (and undo). **Consistency checks:** the Problems tab of `consistency-checks.yaml` in two parts with a finding of every check (id, title, severity as a word, the objects as links), the severity filter (aria-pressed, focus kept), the checks the model changes, an object link selecting it, a finding opening its field with the message, an MTU fix removing the finding, the model settings' check table writing `checks:` (off, another severity, undo), and a link end's speed and duplex. **Imported model:** rename a device (every reference follows), edit, add an IPv6 loopback, save as a downloaded `…-edited.yaml`, **reload, and check that edits, hidden attributes and comments survived**. **Guards:** unsaved-changes dialog on replace; `beforeunload`; Ctrl+Z/Y; deleting a referenced device reports broken references; **exporting an invalid model requires "Download anyway"**; YAML-tab apply/reject; unknown keys kept and movable into attrs; typed text is committed before a button acts; **selection context in the lists:** selecting from the diagram, the left list and the right-hand Relations list keeps lists and diagram consistent for every element type (direct entries related, indirect ones dimmed), unrelated entries stay focusable and selectable, view switches leave no stale highlighting, and `Esc` clears everything; the device type is chosen from the 15 types by display name. **Auto-arrange:** the three options are in the top toolbar, visible and labelled (disabled until a model is open); the status reads *Auto-arranged* / *Manually adjusted* / *Edited since arranged* after loading, dragging, undo, switching views (the shown view is highlighted), Auto-arrange, moving a node back to its calculated position, export → reload of arranged and of manually adjusted layouts, a model edit, and New; loading stores nothing; the dialog shows the scope; arranging an automatic layout stores it without moving anything; repeating it is a no-op; a manual move changes only that node and is undone by arrange (and restored by undo); **arrange → export → reload is pixel-identical in both views**; a file with every list and key reversed arranges identically; **the browser reproduces the build-time positions of `metro-ring-arranged.yaml`** (a cross-engine determinism check when run in Firefox or Safari). **Safety:** hostile labels create no elements; YAML syntax errors are refused with the current model kept; **no network requests, no CSP violations**. The test is skipped if no Chromium-based browser is installed; set `NETATLAS_BROWSER` to choose one. |
 
 ### Manual check (any browser, e.g. Firefox or Safari)
 
@@ -2397,7 +2428,7 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/scr
    * Switch views: the markings stay the same.
    * Press `Esc`: all entries return to normal.
 
-8. **Derived values and link-end tagging.** Keep the **YAML**
+8. **Derived values and port VLANs.** Keep the **YAML**
    tab in mind: at every step it must show only what you typed.
    * Choose **File → New model**. Add two devices; on each, press **+ Interface** (`eth0`).
      Add a link and choose `device1`/`eth0` for End A and `device2`/`eth0`
@@ -2419,21 +2450,13 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/scr
      *VLAN ambiguous: VLAN 78 (net1) or VLAN 99 (net2) — none is chosen*,
      and **Problems** lists a warning. Change the second network's prefix to
      `10.99.0.0/24`: the interface shows VLAN 78 again.
-   * **Per-end tagging.** Select the link: both ends read **No layer-2
-     tagging**. On End A choose **Trunk** and type `78, 100-110` into
-     **Tagged VLANs**: the YAML tab shows `mode: trunk, tagged: [78, 100-110]`
-     on end A only, the **Physical** view writes `T 78,100-110` under the
-     port's name, and Problems lists a warning that VLANs 100-110 exist
-     nowhere in the model. On End B choose **Trunk** with tagged `78`: the
-     editor and Problems say the trunks tag different VLANs, and the cable is
-     marked ⚠ *VLANs differ*. Type `100-110, 78` on End B: the warning and
-     the ⚠ disappear. The network `net1` (VLAN 78) is listed as carried by
-     the cable; selecting it highlights the cable.
-   * **Export and reload.** The YAML tab shows the tagging under `a` and
-     under `b`, one `cidr` value per network, and neither `members` nor a
-     `vlan` on any physical interface. **File → Save model as…**, then
-     **File → Open model…** the saved file: the members, the interface
-     VLANs, the tagging and both views are the same as before.
+   * **Port VLANs.** (The ports' VLANs are tried on `vlan-ports.yaml`, step
+     22.) Select the link: its ends have **Speed** and **Duplex**, and say
+     their ports have no VLANs (two router ports: routed).
+   * **Export and reload.** The YAML tab shows one `cidr` value per network,
+     and neither `members` nor a `vlan` on any physical interface. **File →
+     Save model as…**, then **File → Open model…** the saved file: the
+     members, the interface VLANs and both views are the same as before.
    * **Keys outside the format.** In the YAML tab, add `speed: 1G` to an
      interface and `members: [device1]` to a network, and **Apply**.
      Problems lists one error for each of the two keys (*unknown key*); the
@@ -2477,7 +2500,7 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/scr
       title at the top is written out in full. The three cables between
       `core-a` and `core-b` are parallel straight lines, each with its own
       label (*peer link 1*, *peer link 2*, *keepalive*); the cable to `s`
-      carries a long label, wrapped, and its port on `core-a` reads `U 10`.
+      carries a long label, wrapped, and its port on `core-a` reads `A 10`.
     * **Logical:** between the firewall and the branch router there are five
       labels that don't overlap; one names the stack bound to the tunnel
       interfaces (*GRE · primary › OSPF · area 0.0.0.10 (over IPsec)*). GRE
@@ -2671,7 +2694,7 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/scr
       **Labels** off: the names go, nothing moves. Export SVG and PNG: the
       names and a legend entry *DNS name (as configured, not looked up)*.
     * Select *hq-rtr1*: the Label hint says only *Line breaks are kept.*;
-      the Legend tab (Physical) shows *Port* and the port tagging as
+      the Legend tab (Physical) shows *Port* and the port VLANs as
       symbols, without a paragraph.
     * Switch between **Edit** and **Details**: the same header (type, *No
       problems*, name). Select *hq-log*: the header shows *hq-log (syslog)*
@@ -2744,11 +2767,12 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/scr
     * The left panel is titled **Objects**, nothing else beside it; a
       screen reader announces the region *Objects* with no description.
 
-22. **Static routes and VLAN tagging.** Open `branch-routing.yaml` from the
+22. **Static routes and port VLANs.** Open `branch-routing.yaml` from the
     **File** menu.
-    * **Physical** view: the trunk between the branch router and the access
-      switch reads `U 99 · T 10,20,30` under both port names; the access
-      ports read `U 10` and `U 20`; nothing overlaps.
+    * **Physical** view: the cable between the branch router and the access
+      switch reads `R · T 10,20,30` at the router (its subinterfaces) and `T
+      10,20,30,99 · N 99` at the switch; the access ports read `A 10` and `A
+      20`; nothing overlaps.
     * **Logical** view: the branch router's box has a *Routes* table (the
       default route, the floating default `… AD 250`, two equal-cost routes
       to `10.10.0.0/16`, a blackhole) and a *Routes · VRF GUEST* table;
@@ -2761,15 +2785,34 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/scr
       router and the ISP B port its next hop belongs to; the Edit tab opens
       its card, marked *▸ Selected*. Press ⧉ (Duplicate) and change the
       copy's distance; Ctrl+Z twice restores the file. **Find** `vlan 20`
-      lists the trunk and the access port; **Find** `203.0.113.5` lists the
-      routes via ISP B.
+      lists the trunk, the access port and their cables; **Find**
+      `203.0.113.5` lists the routes via ISP B.
     * Select *Office PC*, press **+ Route**, enter `10.30.0.0/16` and
       `10.99.0.1`: the card and **Problems** report that the next hop is not
       in a network connected to *pc1* (check `route-nexthop-unresolved`);
       clicking the problem opens the route. Undo.
-    * On the trunk, set End B's native VLAN to `98`: Problems reports the
-      native-VLAN mismatch (an error) and the cable is marked ⚠ *VLANs
-      differ*. Undo.
+    * On the switch's trunk Gi1/0/1, remove VLAN 30 (its chip's ×): Problems
+      reports that the trunks carry different VLANs and the cable is marked
+      ⚠ *VLANs differ*. Undo.
+    * Open `vlan-ports.yaml`, in both themes and at 200 % zoom. Problems
+      lists the two deliberate mistakes (acc3's native VLAN, VLAN 30 that
+      acc1 doesn't allow); the cable *wrong-native* is marked ⚠, also in the
+      Objects list. Select *acc1:Gi1/0/1*: its card reads *Access · VLAN 10*.
+      Tab into **VLANs**, type `2`, press ↓ and Enter: VLAN 20 is added, the
+      badge reads *Trunk · 10, 20* and a **Native VLAN** picker appears; a
+      screen reader announces the combobox and its options. Press Backspace:
+      VLAN 20 goes. Remove VLAN 10: the field shows the error *needs its
+      VLANs* and Problems lists it; clicking it puts the cursor back in the
+      field; **Same as Gi1/0/2** fills it in. Select *acc1* and press
+      **Assign VLANs to ports…**: from `Gi1/0/5` to `Gi1/0/14`, VLANs `30`:
+      the preview lists 10 ports; **Assign**, then one Ctrl+Z restores them.
+      Select *core1:Vlan10*: **Bridge ports** lists *Trunk: Gi1/0/1, Po1*,
+      read-only, and the diagram highlights those ports and their cables,
+      Po1's members included. Start the simulation and ping from *pc1* to
+      *pc2* (answered: routed by core1) and from *pc4* to *pc1* (not
+      answered); the log shows *VLAN mismatch* notes on *wrong-native* and
+      VLAN 30 dropped at acc1:Gi1/0/47; the packet inspector shows the
+      802.1Q tag of a frame on a trunk.
 23. **Consistency checks.** Open `consistency-checks.yaml` from the **File**
     menu and the **Problems** tab, in both themes and at 200 % zoom.
     * *The file* reports no problems; *Consistency checks* lists 34
@@ -3131,7 +3174,7 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/scr
   consistency checks compare what the model writes down (see [Consistency
   checks](#consistency-checks)). They don't read device configurations, so
   they find contradictions in the model, not in the network. It doesn't
-  compare the VLANs a port carries with the addresses of the port (carriage
+  compare the VLANs a port carries with the addresses behind it (carriage
   and membership are separate facts).
 * **The Addressing overview derives what the format doesn't say.** A
   network has no VRF of its own: it is listed in the VRFs of the interfaces
@@ -3298,11 +3341,14 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/scr
   the next-hop address, not along the path. A device of type access point,
   IDS/IPS or cloud, or without a type, can't have routes; there is no
   separate default-gateway field (a gateway is a static default route).
-* **VLAN tagging is per cable end, by VLAN ID.** There is no list of VLANs
-  with names of their own: a VLAN exists in the model when a network or a
-  VLAN interface names it. Q-in-Q, VLAN translation, private VLANs, voice
-  VLANs on access ports and allowed-VLAN pruning on the switch itself are
-  not modelled. An end without a mode is never compared with the other end.
+* **Port VLANs are 802.1Q access and trunk ports, by VLAN ID.** There is
+  no list of VLANs with names of their own: a VLAN exists in the model when
+  a network or a VLAN interface names it (VLAN 1, the default VLAN, always
+  does). A trunk's VLANs are its allowed list, pruned by nothing else.
+  Q-in-Q, VLAN translation, private VLANs, voice VLANs on access ports,
+  dynamic VLAN assignment (802.1X, VTP, MVRP) and per-VLAN port costs are
+  not modelled. A routed port with subinterfaces is compared with a trunk
+  on its tagged VLANs only; its untagged traffic is not a native VLAN.
 * **A relation names only its underlay.** A network a relation carries or
   serves (the VNI of a VXLAN, the customer networks of an L3VPN) has no
   field of its own; keep it in the relation's `attrs`. Endpoints carry no
@@ -3371,11 +3417,10 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots to dist/scr
   therefore listed.
 * **Device types are a fixed list** of 15 (see [docs/FORMAT.md](docs/FORMAT.md));
   roles such as spine or leaf go into the label, the description or `attrs`.
-* **Associations of logical interfaces are limited to three kinds:** member
-  ports, a VLAN (with derived ports) and a tunnel's source and destination.
-  A subinterface's parent port, or a VLAN interface on top of a bond, has no
-  field of its own; describe it in the label or `attrs`. *Ports carrying
-  VLAN* looks at the link ends of the interface's own device only.
+* **Associations of logical interfaces are limited to a few kinds:**
+  member ports, a VLAN (with its derived bridge ports), a subinterface's
+  port (by its name, `<port>.<n>`) and a tunnel's source and destination.
+  A VLAN interface's *Bridge ports* are the ports of its own device only.
 * **DNS names and DHCP outside a simulation.** A name belongs to whole
   interfaces; it can't be tied to one address of an interface. A DNS
   server's zone derives its A and AAAA records from the names in it; names

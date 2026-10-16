@@ -195,7 +195,7 @@ async function main() {
       const y = Math.max(c.y, b.y - 30);
       await save('routes', { x, y, w: Math.min(c.x + c.w, b.x + b.w + 120) - x, h: Math.min(c.y + c.h, b.y + b.h + 30) - y }, { quality: 65 });
     }
-    // VLAN tagging: the trunk between the branch router and the access switch, physical view, at 100 %
+    // port VLANs: the cable between the branch router (routed, with subinterfaces) and the access switch's trunk, physical view, at 100 %
     await page.eval('netatlas.setView("physical"), true');
     await page.eval(`(() => { const m = /scale\\(([\\d.]+)\\)/.exec(document.getElementById('viewport').getAttribute('transform')); netatlas.zoomBy(1 / Number(m[1])); return true; })()`);
     await page.eval('netatlas.select("link:br-trunk", true), netatlas.select(null), true');
@@ -209,6 +209,20 @@ async function main() {
       const x = Math.max(c.x, r.x - 60);
       const y = Math.max(c.y, r.y);
       await save('tagging', { x, y, w: Math.min(c.x + c.w, r.x + r.w + 60) - x, h: Math.min(c.y + c.h, r.y + r.h) - y });
+    }
+    // a trunk port's VLANs in the Edit tab (the VLAN example): the chips, the combobox, the native VLAN, the mode badge
+    {
+      const vx = await page.eval("Array.from(document.querySelectorAll('#menu-examples [data-example]')).findIndex((b) => /vlan-ports/.test(b.textContent))");
+      await page.eval(`netatlas.loadExample(${vx}), netatlas.setView("physical"), netatlas.showTab("edit"), netatlas.select("iface:acc1:Gi1/0/48", true), true`);
+      await page.mouse('mouseMoved', 700, 890);
+      await page.eval("document.getElementById('toast').hidden = true");
+      // the card's VLAN part in the middle of the panel, so its title and the field above it are in the picture
+      await page.eval("document.querySelector('#side-body details.card[open] .port-l2[data-port-l2=\"trunk\"]').scrollIntoView({ block: 'center' }), true");
+      await page.settle(300);
+      const box = await page.rect('#side-body details.card[open] .port-l2[data-port-l2="trunk"]');
+      const side = await page.rect('#side');
+      const y = Math.max(side.y, box.y - 40);
+      await save('port-vlans', { x: side.x, y, w: side.w, h: Math.min(box.y + box.h + 8, side.y + side.h) - y }, { quality: 70 });
     }
 
     // the Addressing overview of the addressing example, with one network's members open

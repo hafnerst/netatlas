@@ -14,7 +14,8 @@ import { ArrangeStrategy, STRATEGIES, STRATEGY_LABEL, allStrategyPositions } fro
 import { layoutInput, layoutSignature } from '../layout/input';
 import { dnsNameKey, dnsNameProblem } from '../model/dns';
 import { parseAddress } from '../model/ip';
-import { Model } from '../model/types';
+import { Model, VLAN_MAX, VLAN_MIN } from '../model/types';
+import { vlanRangesText } from '../model/derive';
 import { PARAMS } from '../analysis/sim/params';
 import { IFACE_RE, Issue, LoadResult, loadModel, scalarText, validate } from '../validation/validate';
 import { SCHEMA } from '../yaml/schema';
@@ -759,8 +760,8 @@ export class ModelDoc {
    * What making a switch a Layer 2 switch takes away (the Layer 3
    * configuration validation would report on a Layer 2 switch): its
    * protocols and router ID, the groups on its interfaces, the addresses of
-   * every interface but its management interface (the first with
-   * addresses), the VRFs of the others, its tunnel interfaces and the routes
+   * every interface but its management interface (the first VLAN
+   * interface with addresses), its routed ports (they need VLANs then), the VRFs of the others, its tunnel interfaces and the routes
    * in other VRFs; as texts, in file order. `relations`: the relations at it
    * that need routing (OSPF, GRE …); they are not deleted (they belong to
    * other devices too) and are reported until they are changed.
@@ -797,7 +798,8 @@ export class ModelDoc {
       const v = this.get(p.concat(k));
       return !!v && !(v.kind === 'seq' && !v.items.length);
     };
-    const mgmt = entries.find((e) => e.type !== 'tunnel' && (has(e.path, 'ip') || this.text(e.path.concat('dhcp')) === 'true'));
+    // its management interface: a VLAN interface with an address (a Layer 2 switch's ports are switch ports, without addresses)
+    const mgmt = entries.find((e) => e.kind === 'logical' && e.type === 'virtual' && !has(e.path, 'members') && (has(e.path, 'ip') || this.text(e.path.concat('dhcp')) === 'true'));
     let mvrf: string | undefined;
     for (const e of entries) {
       const name = e.id || '?';
@@ -811,6 +813,8 @@ export class ModelDoc {
         continue;
       }
       if (has(e.path, 'ip')) add(e.path.concat('ip'), `${name}: addresses ${this.listTexts(e.path.concat('ip')).join(', ')}`);
+      // a routed port becomes a switch port: it needs its VLANs then (they are not chosen for it)
+      if (this.text(e.path.concat('routed')) === 'true') add(e.path.concat('routed'), `${name}: routed port (give it its VLANs)`);
       if (this.text(e.path.concat('dhcp')) === 'true') add(e.path.concat('dhcp'), `${name}: dhcp`);
       if (this.get(e.path.concat('vrf'))) add(e.path.concat('vrf'), `${name}: vrf ${this.text(e.path.concat('vrf'))}`);
     }
@@ -989,76 +993,119 @@ export class ModelDoc {
     });
   }
 
-  /** The layer-2 tagging written on one end of a link: its mode, untagged VLAN and tagged VLANs, as written. */
-  endTagging(endPath: Path): { mode: string; untagged: string; tagged: string[] } {
-    const t = this.get(endPath.concat('tagged'));
-    const tagged = !t ? [] : t.kind === 'seq' ? t.items.map((i) => scalarText(i)).filter((x): x is string => x !== undefined) : scalarText(t) !== undefined ? [scalarText(t) as string] : [];
-    return { mode: this.text(endPath.concat('mode')) || '', untagged: this.text(endPath.concat('untagged')) || '', tagged };
+  // ------------------------------------------------------------ a port's VLANs
+
+  /** A port's (or an aggregate's) VLANs as written: the IDs and ranges of its `vlans`. */
+  portVlans(p: Path): string[] {
+    const t = this.get(p.concat('vlans'));
+    if (!t) return [];
+    if (t.kind === 'seq') return t.items.map((i) => scalarText(i)).filter((x): x is string => x !== undefined);
+    const one = scalarText(t);
+    return one !== undefined ? [one] : [];
   }
 
   /**
-   * Set the port mode of one end of a link (`endPath` is links[i].a or .b):
-   * "access" or "trunk"; '' says nothing about layer 2 and removes the
-   * mode with the end's VLANs. Only that end is written, never the other
-   * one. The short "dev:if" form becomes a mapping; an end left with only
-   * its device and interface goes back to the short form.
+   * Write a port's VLANs from text: IDs and ranges separated by commas or
+   * spaces ("10, 20, 30-39"). Valid ones are merged and written in order as
+   * the shortest ranges (one VLAN as a number, several as a flow list);
+   * anything else is kept as written, for validation to report. Nothing
+   * else changes, except that a port with VLANs is no routed port.
    */
-  setEndMode(endPath: Path, mode: string): boolean {
-    const cur = this.get(endPath);
-    if (!cur || (cur.kind === 'scalar' && scalarText(cur) === undefined)) return false;
-    this.change(mode ? 'Set port mode' : 'Remove port tagging', () => {
-      if (mode) {
-        this.ensureMap(endPath);
-        this.setAt(endPath.concat('mode'), strNode(mode), KEY_ORDER.linkEnd);
-        // an access port has one untagged VLAN: tagged VLANs of a trunk it was are dropped with the change
-        if (mode === 'access') this.removeAt(endPath.concat('tagged'));
-      } else {
-        for (const k of ['mode', 'untagged', 'tagged']) this.removeAt(endPath.concat(k));
-        this.shortEnd(endPath);
-      }
-    });
-    return true;
-  }
-
-  /** Set the untagged VLAN of a link end (the access VLAN, or a trunk's native VLAN); '' removes it. */
-  setEndUntagged(endPath: Path, text: string): boolean {
-    const cur = this.get(endPath);
-    if (!cur || (cur.kind === 'scalar' && scalarText(cur) === undefined)) return false;
-    this.change('Set untagged VLAN', () => {
-      if (text === '') {
-        this.removeAt(endPath.concat('untagged'));
-        this.shortEnd(endPath);
-        return;
-      }
-      this.ensureMap(endPath);
-      this.setAt(endPath.concat('untagged'), /^[0-9]+$/.test(text) ? numNode(Number(text)) : strNode(text), KEY_ORDER.linkEnd);
-    });
-    return true;
-  }
-
-  /**
-   * Set the tagged VLANs of a link end from text such as "10, 20, 100-199"
-   * (IDs and ranges, separated by commas or spaces). They are written as a
-   * flow list, numbers as numbers and ranges as text; anything else is kept
-   * as written for validation to report. '' removes them.
-   */
-  setEndTagged(endPath: Path, text: string): boolean {
-    const cur = this.get(endPath);
-    if (!cur || (cur.kind === 'scalar' && scalarText(cur) === undefined)) return false;
+  private writePortVlans(p: Path, text: string): void {
     const parts = text
       .split(/[,\s]+/)
-      .map((x) => x.trim())
+      .map((x) => x.trim().replace(/[–—]/g, '-'))
       .filter((x) => !!x);
-    this.change('Set tagged VLANs', () => {
-      if (!parts.length) {
-        this.removeAt(endPath.concat('tagged'));
-        this.shortEnd(endPath);
+    if (!parts.length) {
+      this.removeAt(p.concat('vlans'));
+      return;
+    }
+    const ids = new Set<number>();
+    const odd: string[] = [];
+    for (const x of parts) {
+      const m = /^([1-9][0-9]{0,3})(?:-([1-9][0-9]{0,3}))?$/.exec(x);
+      const from = m ? Number(m[1]) : NaN;
+      const to = m ? Number(m[2] !== undefined ? m[2] : m[1]) : NaN;
+      if (m && from >= VLAN_MIN && to <= VLAN_MAX && from <= to && to - from < VLAN_MAX) for (let v = from; v <= to; v++) ids.add(v);
+      else odd.push(x);
+    }
+    const runs = vlanRangesText(Array.from(ids)).split(',').filter((x: string) => !!x).concat(odd);
+    const node = (x: string): YNode => (/^[0-9]+$/.test(x) ? numNode(Number(x)) : strNode(x));
+    const order = this.orderFor(p);
+    this.ensureMap(p, order);
+    this.setAt(p.concat('vlans'), runs.length === 1 ? node(runs[0]) : seqNode(runs.map(node), true), order);
+    this.removeAt(p.concat('routed'));
+    // a native VLAN the port no longer has (or an access port's: one VLAN is untagged anyway) goes in the same step
+    const native = Number(this.text(p.concat('native')));
+    if (this.get(p.concat('native')) && (!odd.length && (ids.size < 2 || !ids.has(native)))) this.removeAt(p.concat('native'));
+  }
+
+  /** Set a port's VLANs (see writePortVlans); '' removes them. One undo step. */
+  setPortVlans(p: Path, text: string): boolean {
+    if (!this.get(p)) return false;
+    this.change(text.trim() ? 'Set VLANs' : 'Remove VLANs', () => this.writePortVlans(p, text));
+    return true;
+  }
+
+  /** Set a trunk's native (untagged) VLAN; '' removes it (every VLAN tagged). */
+  setPortNative(p: Path, text: string): boolean {
+    if (!this.get(p)) return false;
+    this.change(text ? 'Set native VLAN' : 'Remove native VLAN', () => {
+      if (!text) {
+        this.removeAt(p.concat('native'));
         return;
       }
-      this.ensureMap(endPath);
-      this.setAt(endPath.concat('tagged'), seqNode(parts.map((p) => (/^[0-9]+$/.test(p) ? numNode(Number(p)) : strNode(p))), true), KEY_ORDER.linkEnd);
+      const order = this.orderFor(p);
+      this.ensureMap(p, order);
+      this.setAt(p.concat('native'), /^[0-9]+$/.test(text) ? numNode(Number(text)) : strNode(text), order);
     });
     return true;
+  }
+
+  /** Make a Layer 3 switch's port a routed port (its VLANs and native VLAN go with it, in the same step), or a switch port again. */
+  setPortRouted(p: Path, on: boolean): boolean {
+    if (!this.get(p)) return false;
+    this.change(on ? 'Make it a routed port' : 'Make it a switch port', () => {
+      if (!on) {
+        this.removeAt(p.concat('routed'));
+        return;
+      }
+      const order = this.orderFor(p);
+      this.ensureMap(p, order);
+      this.removeAt(p.concat('vlans'));
+      this.removeAt(p.concat('native'));
+      this.setAt(p.concat('routed'), boolNode(true), order);
+    });
+    return true;
+  }
+
+  /**
+   * Assign VLANs to ports… : write the same VLANs (and native VLAN, or none)
+   * on several ports of a device at once, one undo step. `ports` are ids of
+   * the device's interfaces; those it doesn't have are returned, and then
+   * nothing is written.
+   */
+  assignPortVlans(devIndex: number, ports: string[], text: string, native: string): { missing: string[]; done: number } {
+    const entries = this.interfaceEntries(devIndex);
+    const paths: Path[] = [];
+    const missing: string[] = [];
+    for (const id of ports) {
+      const e = entries.find((x) => x.id === id);
+      if (e) paths.push(e.path);
+      else missing.push(id);
+    }
+    if (missing.length || !paths.length) return { missing, done: 0 };
+    this.change(`Assign VLANs to ${paths.length} port${paths.length === 1 ? '' : 's'}`, () => {
+      for (const p of paths) {
+        this.writePortVlans(p, text);
+        if (native) {
+          const order = this.orderFor(p);
+          this.ensureMap(p, order);
+          this.setAt(p.concat('native'), /^[0-9]+$/.test(native) ? numNode(Number(native)) : strNode(native), order);
+        } else this.removeAt(p.concat('native'));
+      }
+    });
+    return { missing, done: paths.length };
   }
 
   /** Set a text value of one link end (its port's `speed` or `duplex`); '' removes it, and an end left plain goes back to "dev:if". */

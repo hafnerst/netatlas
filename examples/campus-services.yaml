@@ -29,7 +29,7 @@ devices:
     type: switch
     layer3: true
     simulation: {stp_mode: rstp, bridge_priority: 4096}
-    interfaces: [g1, g2, g3, g4]
+    interfaces: [{id: g1, vlans: [10, 20]}, {id: g2, vlans: [10, 20]}, {id: g3, vlans: 10}, {id: g4, vlans: 30}]
     logical_interfaces:
       - {id: Vlan10, type: virtual, vlan: 10, ip: 10.10.10.1/24}
       - {id: Vlan20, type: virtual, vlan: 20, ip: 10.10.20.1/24, dhcp_relay: [10.10.10.10]}
@@ -40,11 +40,11 @@ devices:
     label: acc (access)
     simulation: {stp_mode: rstp}
     interfaces:
-      - u1
-      - {id: u2, simulation: {stp_cost: 200000}}
-      - {id: p1, simulation: {stp_edge: on, stp_bpdu_guard: on}}
-      - {id: p2, simulation: {stp_edge: on, stp_bpdu_guard: on}}
-      - {id: p3, simulation: {stp_edge: on, stp_bpdu_guard: on}}
+      - {id: u1, vlans: [10, 20]}
+      - {id: u2, vlans: [10, 20], simulation: {stp_cost: 200000}}
+      - {id: p1, vlans: 10, simulation: {stp_edge: on, stp_bpdu_guard: on}}
+      - {id: p2, vlans: 20, simulation: {stp_edge: on, stp_bpdu_guard: on}}
+      - {id: p3, vlans: 10, simulation: {stp_edge: on, stp_bpdu_guard: on}}
   - id: srv
     type: server
     label: srv (DHCP, DNS)
@@ -87,18 +87,18 @@ devices:
 
 links:
   - id: up1
-    a: {device: acc, interface: u1, mode: trunk, tagged: [10, 20]}
-    b: {device: core, interface: g1, mode: trunk, tagged: [10, 20]}
+    a: acc:u1
+    b: core:g1
     speed: 1G
   - id: up2
-    a: {device: acc, interface: u2, mode: trunk, tagged: [10, 20]}
-    b: {device: core, interface: g2, mode: trunk, tagged: [10, 20]}
+    a: acc:u2
+    b: core:g2
     speed: 1G
-  - {id: l-pc1, a: "pc1:eth0", b: {device: acc, interface: p1, mode: access, untagged: 10}}
-  - {id: l-pc2, a: "pc2:eth0", b: {device: acc, interface: p2, mode: access, untagged: 20}}
-  - {id: l-lap1, a: "lap1:eth0", b: {device: acc, interface: p3, mode: access, untagged: 10}}
-  - {id: l-srv, a: "srv:eth0", b: {device: core, interface: g3, mode: access, untagged: 10}}
-  - {id: l-web, a: "web:eth0", b: {device: core, interface: g4, mode: access, untagged: 30}}
+  - {id: l-pc1, a: "pc1:eth0", b: acc:p1}
+  - {id: l-pc2, a: "pc2:eth0", b: acc:p2}
+  - {id: l-lap1, a: "lap1:eth0", b: acc:p3}
+  - {id: l-srv, a: "srv:eth0", b: core:g3}
+  - {id: l-web, a: "web:eth0", b: core:g4}
 
 networks:
   - {id: users, cidr: 10.10.10.0/24, vlan: 10}

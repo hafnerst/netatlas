@@ -114,8 +114,8 @@ devices:
     protocols:
       ospf: {}
     interfaces:
-      - {id: eth1}
-      - {id: eth2}
+      - {id: eth1, vlans: 5}
+      - {id: eth2, vlans: 5}
       - {id: eth3, ip: 10.0.1.1/30}
       - {id: eth4, ip: 10.0.1.5/30}
     logical_interfaces:
@@ -131,12 +131,12 @@ devices:
       ospf: {}
       vrrp: {}
     interfaces:
-      - {id: Ethernet49, ip: 10.0.1.2/30}
+      - {id: Ethernet49, routed: true, ip: 10.0.1.2/30}
       - {id: Ethernet51}
       - {id: Ethernet52}
-      - {id: Ethernet1}
+      - {id: Ethernet1, vlans: [10, 20]}
     logical_interfaces:
-      - {id: Port-Channel1, type: virtual, members: [Ethernet51, Ethernet52]}
+      - {id: Port-Channel1, type: virtual, members: [Ethernet51, Ethernet52], vlans: [10, 20]}
       - id: Vlan10
         type: virtual
         ip: 10.10.10.2/24
@@ -158,12 +158,12 @@ devices:
       ospf: {}
       vrrp: {}
     interfaces:
-      - {id: Ethernet49, ip: 10.0.1.6/30}
+      - {id: Ethernet49, routed: true, ip: 10.0.1.6/30}
       - {id: Ethernet51}
       - {id: Ethernet52}
-      - {id: Ethernet1}
+      - {id: Ethernet1, vlans: [10, 20]}
     logical_interfaces:
-      - {id: Port-Channel1, type: virtual, members: [Ethernet51, Ethernet52]}
+      - {id: Port-Channel1, type: virtual, members: [Ethernet51, Ethernet52], vlans: [10, 20]}
       - id: Vlan10
         type: virtual
         ip: 10.10.10.3/24
@@ -179,9 +179,9 @@ devices:
     type: switch
     group: hq-core
     interfaces:
-      - {id: Gi1/0/49}
-      - {id: Gi1/0/50}
-      - {id: Gi1/0/1}
+      - {id: Gi1/0/49, vlans: [10, 20]}
+      - {id: Gi1/0/50, vlans: [10, 20]}
+      - {id: Gi1/0/1, vlans: 20}
     logical_interfaces:
       - {id: Vlan10, type: virtual, ip: 10.10.10.4/24, description: Switch management}
   - id: hq-log
@@ -211,7 +211,7 @@ devices:
     label: muc-sw
     type: switch
     group: branch-muc
-    interfaces: [gi1, gi8]
+    interfaces: [{id: gi1, vlans: 1}, {id: gi8, vlans: 1}]
   - id: muc-ap
     label: muc-ap
     type: ap
@@ -240,7 +240,7 @@ devices:
     label: ham-sw
     type: switch
     group: branch-ham
-    interfaces: [gi1, gi2]
+    interfaces: [{id: gi1, vlans: 1}, {id: gi2, vlans: 1}]
 
 links:
   # provider side
@@ -262,34 +262,34 @@ links:
   - {id: l-ham-inet, a: "ham-rtr:wan0", b: inet, medium: fiber, speed: 1G, label: FTTH}
   - {id: l-ham-lte, a: "ham-rtr:wan1", b: inet, medium: lte, speed: 150M, label: LTE backup}
   # HQ (the core/access cables are trunks: each end lists the VLANs it permits)
-  - {id: l-rtr1-fw, a: "hq-rtr1:ge-0/0/1", b: {device: hq-fw, interface: eth1, mode: access, untagged: 5}, medium: copper, speed: 1G}
-  - {id: l-rtr2-fw, a: "hq-rtr2:ge-0/0/1", b: {device: hq-fw, interface: eth2, mode: access, untagged: 5}, medium: copper, speed: 1G}
+  - {id: l-rtr1-fw, a: "hq-rtr1:ge-0/0/1", b: hq-fw:eth1, medium: copper, speed: 1G}
+  - {id: l-rtr2-fw, a: "hq-rtr2:ge-0/0/1", b: hq-fw:eth2, medium: copper, speed: 1G}
   - {id: l-fw-core1, a: "hq-fw:eth3", b: "hq-core1:Ethernet49", medium: fiber, speed: 10G}
   - {id: l-fw-core2, a: "hq-fw:eth4", b: "hq-core2:Ethernet49", medium: fiber, speed: 10G}
   - id: l-peer1
-    a: {device: hq-core1, interface: Ethernet51, mode: trunk, tagged: [10, 20]}
-    b: {device: hq-core2, interface: Ethernet51, mode: trunk, tagged: [10, 20]}
+    a: hq-core1:Ethernet51
+    b: hq-core2:Ethernet51
     medium: dac
     speed: 100G
     cable: DAC 1m
   - id: l-peer2
-    a: {device: hq-core1, interface: Ethernet52, mode: trunk, tagged: [10, 20]}
-    b: {device: hq-core2, interface: Ethernet52, mode: trunk, tagged: [10, 20]}
+    a: hq-core1:Ethernet52
+    b: hq-core2:Ethernet52
     medium: dac
     speed: 100G
     cable: DAC 1m
   - id: l-core1-acc
-    a: {device: hq-core1, interface: Ethernet1, mode: trunk, tagged: [10, 20]}
-    b: {device: hq-acc1, interface: Gi1/0/49, mode: trunk, tagged: [10, 20]}
+    a: hq-core1:Ethernet1
+    b: hq-acc1:Gi1/0/49
     medium: fiber
     speed: 10G
   - id: l-core2-acc
-    a: {device: hq-core2, interface: Ethernet1, mode: trunk, tagged: [10, 20]}
-    b: {device: hq-acc1, interface: Gi1/0/50, mode: trunk, tagged: [10, 20]}
+    a: hq-core2:Ethernet1
+    b: hq-acc1:Gi1/0/50
     medium: fiber
     speed: 10G
   - id: l-acc-log
-    a: {device: hq-acc1, interface: Gi1/0/1, mode: access, untagged: 20}
+    a: hq-acc1:Gi1/0/1
     b: "hq-log:eno1"
     medium: copper
     speed: 1G
@@ -302,8 +302,8 @@ networks:
   # IP networks, one prefix each. Members are not listed: every device with an
   # interface or loopback address inside "cidr" is a member. "vlan" is the VLAN
   # the subnet lives in; interfaces with an address in it show that VLAN.
-  # Which cables carry a network follows from the tagging of the link ends
-  # ("mode", "untagged", "tagged"): a port carrying VLAN 10 carries net-users.
+  # Which cables carry a network follows from the VLANs of their ports
+  # ("vlans" on the interfaces): a port in VLAN 10 carries net-users.
   - id: net-transit
     label: HQ transit
     cidr: 10.0.0.0/28

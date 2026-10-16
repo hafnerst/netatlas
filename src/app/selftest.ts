@@ -10,8 +10,8 @@
 import { Device, Interface, Model } from '../model/types';
 import { ModelDoc } from '../editor/document';
 import { DEVICE_TYPES } from '../model/device-types';
-import { interfaceAddresses, interfaceVlanText, networkMembers, vlanIds, vlanRangesText } from '../model/derive';
-import { contextState, relatedRefs, selectionContext } from '../model/queries';
+import { interfaceAddresses, interfaceVlanText, networkMembers } from '../model/derive';
+import { contextState, relatedRefs, search, selectionContext } from '../model/queries';
 import { addressInventory } from '../model/addresses';
 import { strNode } from '../yaml/parse';
 import { CHECKS } from '../analysis/checks';
@@ -34,6 +34,11 @@ interface Check {
 }
 
 const tick = (ms = 0): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/** The refs Find lists for a query (all of them). */
+function searchHits(model: Model, query: string): string[] {
+  return search(model, query, 200).map((x) => x.ref);
+}
 
 export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
   const checks: Check[] = [];
@@ -265,7 +270,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
           labels.join('|') === 'New model|Open model…|Save model|Save model as…|Close model' && /Ctrl\+S$/.test(entries[2]) && /Ctrl\+Shift\+S$/.test(entries[3]) &&
           entries.length === 5 + EXAMPLES.length && ['#btn-save', '#btn-save-as', '#btn-close'].every((x) => (q(x) as HTMLButtonElement).disabled && /Open or create a model first|Close the current model/.test(q(x)!.title)) &&
           q('#btn-save')!.nextElementSibling === q('#btn-save-as') && q('#btn-save-as')!.nextElementSibling === q('#btn-close') &&
-          textsOf('#menu-examples .mi-label').join() === EXAMPLES.map((e) => e.name).join() && !q('#menu-examples .active-example') && /Examples/.test(q('#menu-examples-title')!.textContent || '') && EXAMPLES.length === 13 && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(menu!.textContent || '') && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(q('#empty')!.textContent || ''),
+          textsOf('#menu-examples .mi-label').join() === EXAMPLES.map((e) => e.name).join() && !q('#menu-examples .active-example') && /Examples/.test(q('#menu-examples-title')!.textContent || '') && EXAMPLES.length === 14 && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(menu!.textContent || '') && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(q('#empty')!.textContent || ''),
         entries.join(' | '),
       );
       menuBtn!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
@@ -1712,6 +1717,263 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       md.markSaved();
     }
 
+    // ------------------------------------------------ VLANs on ports (the VLAN example)
+    {
+      app.loadExample(EXAMPLES.findIndex((e) => e.name === 'vlan-ports.yaml'));
+      await tick();
+      const md = app.mdoc as ModelDoc;
+      const yamlBefore = app.exportText();
+      const afterEdit = async (): Promise<void> => {
+        (app as unknown as { afterEdit(n?: string): void }).afterEdit();
+        await tick();
+      };
+      check(
+        'the VLAN example: valid, and its deliberate mistakes are the findings (acc3’s native VLAN, and VLAN 30 that acc1 does not allow)',
+        md.valid && !md.warnings.length && md.findings.map((f) => f.check).sort().join() === 'vlan-native-mismatch,vlan-trunk-mismatch',
+        md.findings.map((f) => f.message).join(' | '),
+      );
+      click('[data-view-btn="physical"]');
+      app.select('iface:acc1:Gi1/0/48');
+      click('[data-tab="edit"]');
+      await tick();
+      const combo = (port: string): HTMLInputElement | null => q(`#side-body input[data-t="vlan-combo"][aria-label="Add VLANs to ${port}"]`) as HTMLInputElement | null;
+      const chipsOf = (port: string): string[] => Array.from(doc.querySelectorAll(`#side-body [aria-label="VLANs of ${port}"] [role="listitem"]`)).map((c) => c.getAttribute('data-vlan') || '');
+      const badgeOf = (port: string): string => {
+        const c = combo(port);
+        const f = c ? (c.closest('.field') as HTMLElement) : null;
+        const b = f ? f.querySelector('.mode-badge') : null;
+        return b ? b.textContent || '' : '';
+      };
+      const natOf = (port: string): HTMLSelectElement | null => q(`#side-body select[data-t="vlan-native"][aria-label="Native VLAN of ${port}"]`) as HTMLSelectElement | null;
+      check(
+        'a trunk’s card: its VLANs as chips (each removable, named), the mode badge in words (Trunk · 10, 20, 99 (native 99)), and a Native VLAN picker',
+        chipsOf('Gi1/0/48').join() === '10,20,99' && badgeOf('Gi1/0/48') === 'Trunk · 10, 20, 99 (native 99)' &&
+          !!q('#side-body button[data-act="vlan-remove"][aria-label="Remove VLAN 20 from Gi1/0/48"]') && !!natOf('Gi1/0/48') && natOf('Gi1/0/48')!.value === '99',
+        chipsOf('Gi1/0/48').join() + ' / ' + badgeOf('Gi1/0/48'),
+      );
+      // an access port: the combobox from the keyboard
+      app.select('iface:acc1:Gi1/0/1');
+      await tick();
+      const c1 = combo('Gi1/0/1') as HTMLInputElement;
+      const listOf = (c: HTMLInputElement): HTMLElement | null => doc.getElementById(c.getAttribute('aria-controls') || '');
+      check(
+        'an access port: “Access · VLAN 10”; the VLAN field is an ARIA combobox (role, aria-autocomplete, aria-expanded, a listbox), closed at first, its help linked',
+        badgeOf('Gi1/0/1') === 'Access · VLAN 10' && !!c1 && c1.getAttribute('role') === 'combobox' && c1.getAttribute('aria-autocomplete') === 'list' && c1.getAttribute('aria-expanded') === 'false' &&
+          !!listOf(c1) && listOf(c1)!.getAttribute('role') === 'listbox' && listOf(c1)!.hidden && !!doc.getElementById(c1.getAttribute('aria-describedby') || ''),
+        badgeOf('Gi1/0/1'),
+      );
+      c1.focus();
+      c1.value = '2';
+      c1.dispatchEvent(new Event('input', { bubbles: true }));
+      await tick();
+      const opts = Array.from(listOf(c1)!.querySelectorAll('[role="option"]')).map((o) => (o.textContent || '').replace(/\s+/g, ' ').trim());
+      check('typing opens the model’s VLANs with their names (not the ones it has)', c1.getAttribute('aria-expanded') === 'true' && opts.length === 1 && opts[0] === 'VLAN 20 staff', opts.join(' | '));
+      c1.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }));
+      await tick();
+      const act = doc.getElementById(c1.getAttribute('aria-activedescendant') || '');
+      check('↓ moves to an option (aria-activedescendant, aria-selected)', !!act && act.getAttribute('aria-selected') === 'true' && act.getAttribute('data-value') === '20');
+      c1.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+      await tick();
+      check(
+        'Enter adds it: the port is a trunk of 10, 20 (one undo step), the badge says so, and a Native VLAN picker appears',
+        /\{id: Gi1\/0\/1, vlans: \[10, 20\]\}/.test(app.exportText()) && md.canUndo() === 'Set VLANs' && badgeOf('Gi1/0/1') === 'Trunk · 10, 20' && !!natOf('Gi1/0/1'),
+        badgeOf('Gi1/0/1'),
+      );
+      // a range typed, then a comma: added; Backspace in the empty field removes the last one
+      const c2 = combo('Gi1/0/1') as HTMLInputElement;
+      c2.focus();
+      c2.value = '30-31,';
+      c2.dispatchEvent(new Event('input', { bubbles: true }));
+      await tick();
+      check('a range typed with a comma is added as a range', /\{id: Gi1\/0\/1, vlans: \[10, 20, 30-31\]\}/.test(app.exportText()) && chipsOf('Gi1/0/1').join() === '10,20,30-31', chipsOf('Gi1/0/1').join());
+      const c3 = combo('Gi1/0/1') as HTMLInputElement;
+      c3.focus();
+      c3.dispatchEvent(new KeyboardEvent('keydown', { key: 'Backspace', bubbles: true, cancelable: true }));
+      await tick();
+      check('Backspace in the empty field removes the last VLAN', chipsOf('Gi1/0/1').join() === '10,20', chipsOf('Gi1/0/1').join());
+      // the native VLAN
+      const nat = natOf('Gi1/0/1') as HTMLSelectElement;
+      nat.value = '10';
+      nat.dispatchEvent(new Event('change', { bubbles: true }));
+      await tick();
+      check('the Native VLAN picker writes it (one undo step); the badge names it', /\{id: Gi1\/0\/1, vlans: \[10, 20\], native: 10\}/.test(app.exportText()) && md.canUndo() === 'Set native VLAN' && badgeOf('Gi1/0/1') === 'Trunk · 10, 20 (native 10)', badgeOf('Gi1/0/1'));
+      md.undo();
+      md.undo();
+      md.undo();
+      md.undo();
+      await afterEdit();
+      check('… undone step by step: the file as it was', app.exportText() === yamlBefore);
+      // the mandatory VLANs: removing the last one is an error at the field and in Problems, which leads back to it
+      app.select('iface:acc1:Gi1/0/1');
+      await tick();
+      click('#side-body button[data-act="vlan-remove"][aria-label="Remove VLAN 10 from Gi1/0/1"]');
+      await tick();
+      const fieldOf = (port: string): HTMLElement | null => {
+        const c = combo(port);
+        return c ? (c.closest('.field') as HTMLElement) : null;
+      };
+      const fieldErr = (): string => {
+        const f = fieldOf('Gi1/0/1');
+        return f ? Array.from(f.querySelectorAll('.field-err')).map((e) => e.textContent || '').join(' ') : '';
+      };
+      check(
+        'a switch port without VLANs: an error at its field (marked “*”, the badge says “No VLANs”, not in colour alone) and in the Problems tab',
+        /"Gi1\/0\/1" of switch "acc1" needs its VLANs/.test(fieldErr()) && md.errors.some((e) => e.path === 'devices.acc1.interfaces[0].vlans') && !!fieldOf('Gi1/0/1') && /VLANs \*/.test(fieldOf('Gi1/0/1')!.textContent || '') && badgeOf('Gi1/0/1') === 'No VLANs',
+        fieldErr() + ' / ' + badgeOf('Gi1/0/1'),
+      );
+      app.select(null);
+      click('[data-tab="problems"]');
+      await tick();
+      const item = Array.from(doc.querySelectorAll('#side-body [data-problems="format"] .issue')).find((x) => /needs its VLANs/.test(x.textContent || '')) as HTMLElement | undefined;
+      if (item) item.click();
+      await tick();
+      check('clicking the problem opens the port in the Edit tab with the focus in its VLAN field', !!item && app.session!.state.selected === 'iface:acc1:Gi1/0/1' && doc.activeElement === combo('Gi1/0/1'), doc.activeElement ? `${doc.activeElement.tagName} ${doc.activeElement.getAttribute('data-t') || ''} ${doc.activeElement.getAttribute('aria-label') || ''}` : 'nothing focused');
+      // suggestions: "Same as Gi1/0/…" and "VLANs of the connected port"
+      const sugg = (): HTMLButtonElement[] => Array.from(doc.querySelectorAll('#side-body [aria-label="Suggestions for the VLANs of Gi1/0/1"] button[data-act="vlan-copy"]')) as HTMLButtonElement[];
+      check('suggestions: the same VLANs as a neighbouring port, in a labelled group of buttons', sugg().map((b) => b.textContent).indexOf('Same as Gi1/0/2') >= 0, sugg().map((b) => b.textContent).join(' | '));
+      const same = sugg().find((b) => b.textContent === 'Same as Gi1/0/2');
+      if (same) same.click();
+      await tick();
+      check('… one click fills it in: the error is gone', /\{id: Gi1\/0\/1, vlans: 10\}/.test(app.exportText()) && md.valid && !fieldErr(), fieldErr());
+      md.undo();
+      md.undo();
+      await afterEdit();
+      check('… undone: the file as it was', app.exportText() === yamlBefore);
+      // the connected port's VLANs
+      app.select('iface:acc3:Gi0/1');
+      click('[data-tab="edit"]');
+      await tick();
+      const conn = (Array.from(doc.querySelectorAll('#side-body button[data-act="vlan-copy"]')) as HTMLButtonElement[]).find((b) => b.textContent === 'VLANs of the connected port');
+      check('“VLANs of the connected port” offers the far end’s VLANs (acc1:Gi1/0/47), with what they are', !!conn && /acc1:Gi1\/0\/47: Trunk · 10, 20 \(native 10\)/.test(conn.title), conn ? conn.title : '');
+      if (conn) conn.click();
+      await tick();
+      check('… a click makes the two ends agree: the mismatch findings go', /\{id: Gi0\/1, vlans: \[10, 20\], native: 10, description: uplink to acc1\}/.test(app.exportText()) && !md.findings.some((f) => /^vlan-/.test(f.check || '')), md.findings.map((f) => f.check).join());
+      md.undo();
+      await afterEdit();
+      // a Layer 3 switch's routed port
+      app.select('iface:core1:Te1/3');
+      await tick();
+      const routed = q(`#side-body input[data-act="port-routed"][data-p='["devices",0,"interfaces",3]']`) as HTMLInputElement | null;
+      check('a routed port of a Layer 3 switch: “Routed”, a labelled checkbox, and no VLANs to enter', !!routed && routed.checked && !!combo('Te1/3') && combo('Te1/3')!.disabled && badgeOf('Te1/3') === 'Routed' && !!routed.closest('label'), badgeOf('Te1/3'));
+      // Assign VLANs to ports…: a range, one undo step
+      app.select('device:acc1');
+      await tick();
+      click('#side-body button[data-act="assign-vlans"]');
+      await tick(10);
+      const dlg = q('#modal[open]');
+      const typeIn = (id: string, v: string): void => {
+        const i = q('#' + id) as HTMLInputElement | null;
+        if (!i) return;
+        i.value = v;
+        i.dispatchEvent(new Event('input', { bubbles: true }));
+      };
+      typeIn('assign-from', 'Gi1/0/5');
+      typeIn('assign-to', 'Gi1/0/14');
+      typeIn('assign-vlans', '30');
+      await tick();
+      const prev = (q('#assign-preview') || { textContent: '' }).textContent || '';
+      check('Assign VLANs to ports…: a dialog taking a port range; the preview says what changes', !!dlg && /Assign VLANs to ports of acc1/.test(dlg.textContent || '') && /10 ports become access ports in VLAN 30:\s*Gi1\/0\/5–14/.test(prev), prev);
+      typeIn('assign-to', 'Gi1/0/99');
+      await tick();
+      const bad = (q('#assign-preview') || { textContent: '' }).textContent || '';
+      const assignBtn = q('#modal[open] [data-value="assign"]') as HTMLButtonElement | null;
+      check('… a port the device doesn’t have: the dialog says so and Assign is unavailable', /Not a port of this device: Gi1\/0\/21/.test(bad) && !!assignBtn && assignBtn.disabled, bad);
+      typeIn('assign-to', 'Gi1/0/14');
+      await tick();
+      await answerDialog('assign');
+      const ex = app.exportText();
+      check(
+        '… applied in one undo step: Gi1/0/5–14 are in VLAN 30',
+        ['5', '6', '9', '10', '11', '14'].every((n) => new RegExp(`\\{id: Gi1/0/${n}, vlans: 30\\}`).test(ex)) && /\{id: Gi1\/0\/4, vlans: 10\}/.test(ex) && /\{id: Gi1\/0\/15, vlans: 20\}/.test(ex) && md.canUndo() === 'Assign VLANs to 10 ports',
+        md.canUndo() || '',
+      );
+      md.undo();
+      await afterEdit();
+      check('… one undo: the file as it was', app.exportText() === yamlBefore);
+      // a VLAN interface: its bridge ports, read-only, grouped by mode, each a link
+      app.select('iface:core1:Vlan10');
+      await tick();
+      const bp = q('#side-body [data-derived="bridge-ports"]');
+      const bpText = bp ? (bp.textContent || '').replace(/\s+/g, ' ') : '';
+      check(
+        'a VLAN interface shows its bridge ports, read-only and grouped by mode: Trunk: Gi1/0/1, Po1 (no member list to edit)',
+        !!bp && /Bridge ports \(VLAN 10\)/.test(bpText) && /Trunk: Gi1\/0\/1, Po1/.test(bpText) && !bp.querySelector('input, select') && !!bp.closest('details') && !bp.closest('details')!.querySelector('[data-t="member-append"]'),
+        bpText,
+      );
+      const link = bp ? (bp.querySelector('button[data-goto="iface:core1:Po1"]') as HTMLElement | null) : null;
+      // highlighting both ways: the VLAN interface lights its bridge ports and their cables (Po1's members too)
+      const hl = (ref: string): boolean => Array.from(doc.querySelectorAll(`#viewport [data-ref="${ref}"]`)).some((e) => e.classList.contains('hl'));
+      check('selecting the VLAN interface highlights its bridge ports and their cables, an aggregate’s members too', hl('iface:core1:Gi1/0/1') && hl('iface:core1:Te1/1') && hl('link:up-acc1') && hl('link:lag-2') && !hl('link:routed-up'));
+      if (link) link.click();
+      await tick();
+      const rel = relatedRefs(app.session!.model, 'iface:core1:Po1');
+      check('… a bridge port is a link to it; the port highlights its VLAN interfaces', app.session!.state.selected === 'iface:core1:Po1' && rel.has('iface:core1:Vlan10') && rel.has('iface:core1:Vlan99'));
+      // the device's port list and the Objects list carry the modes
+      app.select('device:acc1');
+      click('[data-tab="details"]');
+      await tick();
+      const row = (port: string): string => {
+        const r = q(`#side-body tr[data-iface="${port}"] .mode-badge`);
+        return r ? r.textContent || '' : '';
+      };
+      check('the port list of a device shows each port’s mode in words', row('Gi1/0/1') === 'Access · VLAN 10' && row('Gi1/0/48') === 'Trunk · 10, 20, 99 (native 99)', row('Gi1/0/1') + ' / ' + row('Gi1/0/48'));
+      const olVlan = (id: string): HTMLElement | null => q(`#outline-body .ol-item[data-ref="link:${id}"] .ol-vlan`);
+      const olText = (id: string): string => (olVlan(id) || { textContent: '' }).textContent || '';
+      check(
+        'the Objects list shows what each cable’s ports carry, once when they agree, both and ⚠ when they don’t (spelled out for screen readers)',
+        olText('up-acc1').indexOf('T 10,20,99 · N 99') === 0 && /⚠/.test(olText('wrong-native')) && !!olVlan('wrong-native') && olVlan('wrong-native')!.classList.contains('mismatch') &&
+          /they disagree/.test((olVlan('wrong-native')!.querySelector('.sr-only') || { textContent: '' }).textContent || '') && !olVlan('routed-up'),
+        olText('up-acc1') + ' | ' + olText('wrong-native'),
+      );
+      // the diagram: the ports' tags, a trunk's look, the legend
+      const tags = Array.from(doc.querySelectorAll('#viewport .port-tag')).map((t) => (t.textContent || '').trim());
+      check('the diagram labels each port with its VLANs (A 10, T 10,20,99 · N 99) and draws trunks with a heavier frame', tags.indexOf('A 10') >= 0 && tags.indexOf('T 10,20,99 · N 99') >= 0 && count('.port.trunk') > 0 && count('.cable.net-mismatch') === 1, tags.slice(0, 8).join(' | '));
+      const legendItems = legendOf(app.session!.model, 'physical').sections.reduce((all: string[], x) => all.concat(x.items.concat(x.more || []).map((i) => i.label)), []);
+      check('the legend explains the port tags and the trunk look', legendItems.some((l) => /^Port VLANs: A 10 access port/.test(l)) && legendItems.some((l) => /trunk port \(several VLANs, thick frame\)/.test(l)), legendItems.filter((l) => /VLAN|trunk/i.test(l)).join(' | '));
+      // the logical view: one row per VLAN interface
+      click('[data-view-btn="logical"]');
+      await tick();
+      const rows = Array.from(doc.querySelectorAll('#viewport g.if-entry')).map((e) => e.getAttribute('data-ref') || '');
+      check('the logical view has one row per VLAN interface', ['iface:core1:Vlan10', 'iface:core1:Vlan20', 'iface:core1:Vlan99', 'iface:acc1:Vlan99', 'iface:rtr1:bvi30'].every((r) => rows.filter((x) => x === r).length === 1), rows.filter((r) => /Vlan|bvi/.test(r)).join(' | '));
+      click('[data-view-btn="physical"]');
+      await tick();
+      // both themes: the badges and the Objects list tags are readable; the example draws cleanly
+      app.select('iface:acc1:Gi1/0/48');
+      click('[data-tab="edit"]');
+      await tick();
+      const rgbaOf = (x: string): number[] | null => {
+        const m = /rgba?\(([^)]+)\)/.exec(x);
+        if (!m) return null;
+        const v = m[1].split(',').map((y) => parseFloat(y));
+        return [v[0], v[1], v[2], v.length > 3 ? v[3] : 1];
+      };
+      const hexOf = (v: number[]): string => '#' + v.slice(0, 3).map((x) => Math.round(x).toString(16).padStart(2, '0')).join('');
+      const shownBg = (el: HTMLElement): string => {
+        const layers: number[][] = [];
+        for (let e: HTMLElement | null = el; e; e = e.parentElement) {
+          const b = rgbaOf(doc.defaultView!.getComputedStyle(e).backgroundColor);
+          if (b && b[3] > 0) layers.push(b);
+          if (b && b[3] >= 1) break;
+        }
+        let seen = [255, 255, 255];
+        for (const l of layers.reverse()) seen = seen.map((v, i) => l[i] * l[3] + v * (1 - l[3]));
+        return hexOf(seen);
+      };
+      for (const theme of ['light', 'dark']) {
+        app.theme.set(theme as 'light' | 'dark');
+        await tick();
+        const els = [q('#side-body .mode-badge'), q('#outline-body .ol-vlan:not(.mismatch)'), q('#outline-body .ol-vlan.mismatch')].filter((x): x is HTMLElement => !!x);
+        const ratios = els.map((el) => contrast(hexOf(rgbaOf(doc.defaultView!.getComputedStyle(el).color) || [0, 0, 0]), shownBg(el)));
+        check(`${theme} theme: the mode badge and the Objects list’s VLAN tags are readable (AA)`, els.length === 3 && ratios.every((r) => r >= 4.5), ratios.map((r) => r.toFixed(2)).join(', '));
+        check(`${theme} theme: the VLAN example draws without overlaps or clipped text`, drawnProblems().length === 0, drawnProblems().slice(0, 3).join(' | '));
+      }
+      // Find: by VLAN
+      const hits = searchHits(app.session!.model, 'vlan 30');
+      check('Find by VLAN: “vlan 30” finds the ports and cables of VLAN 30', hits.indexOf('iface:acc3:Gi0/3') >= 0 && hits.indexOf('iface:rtr1:ge-0/0/1') >= 0 && hits.indexOf('link:l-lab1') >= 0, hits.join(' | '));
+      app.select(null);
+      md.markSaved();
+    }
+
     // ------------------------------------------------ input helpers in the Edit tab
     {
       app.loadExample(EXAMPLES.findIndex((e) => e.name === 'addressing.yaml'));
@@ -2176,7 +2438,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       // Layers 3 and 4: the storm of the lab's loop warned of; the dots' shapes; the packet inspector and Follow message; Send test; a broadcast domain; connections and sessions
       const storm = q('#sim-storm') as HTMLElement;
       const sc = doc.defaultView!.getComputedStyle(storm);
-      check(`${theme}: the lab’s loop without spanning tree storms: the banner and the simulation panel warn (an alert, in the error colour)`, /⚠ broadcast storm in the untagged frames/.test(q('#sim-text')!.textContent || '') && !storm.hidden && storm.getAttribute('role') === 'alert' && sc.color !== sc.backgroundColor && /l-lab-/.test(storm.textContent || ''), storm.textContent || '');
+      check(`${theme}: the lab’s loop without spanning tree storms: the banner and the simulation panel warn (an alert, in the error colour)`, /⚠ broadcast storm in VLAN 1/.test(q('#sim-text')!.textContent || '') && !storm.hidden && storm.getAttribute('role') === 'alert' && sc.color !== sc.backgroundColor && /l-lab-/.test(storm.textContent || ''), storm.textContent || '');
       check(`${theme}: the dots’ shapes are explained: a circle unicast, a square broadcast, a diamond multicast`, doc.querySelectorAll('#sim-shapes svg').length === 3 && /unicast.*broadcast.*multicast/.test(q('#sim-shapes')!.textContent || ''));
       ctl.advance(300);
       const fi = ctl.pacer.items.find((it) => !!it.f.hdr && it.f.view === 'physical' && it.drawn);
@@ -3389,7 +3651,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
           !q('#side-body [data-act="add-child"]') && !/Child interfaces|Parent/.test(q('#side-body')!.textContent || ''),
         typeOptions,
       );
-      check('a loopback has no parent, member or tunnel fields', !/Member ports|Ports carrying|Tunnel source|Tunnel destination/.test(labels(lg(0))) && /Addresses/.test(labels(lg(0))), labels(lg(0)));
+      check('a loopback has no parent, member or tunnel fields', !/Member ports|Bridge ports|Tunnel source|Tunnel destination/.test(labels(lg(0))) && /Addresses/.test(labels(lg(0))), labels(lg(0)));
 
       // an aggregate: a virtual interface that names several member ports
       click('#side-body [data-act="add-iface"]');
@@ -3412,16 +3674,16 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       // a VLAN interface: it names its VLAN; the ports carrying its networks come from the link ends (checked below, once there are networks)
       click('#side-body [data-act="add-logical"][data-kind="virtual"]');
       await tick();
-      const netPorts = card(lg(2)) + ' > [data-derived="net-ports"]';
+      const bridgePorts = card(lg(2)) + ' [data-derived="bridge-ports"]';
       // a virtual interface is not assumed to be a bond or a VLAN interface: until it is one, both are offered and no ports are shown
       const plain = labels(lg(2));
-      const noPortsYet = !q(netPorts);
+      const noPortsYet = !q(bridgePorts);
       await setField(field(2, 'vlan'), '30');
       check(
-        'a VLAN interface names its VLAN; with no network of that VLAN it has no "Ports carrying its networks"; no port is entered on the interface',
-        /Member ports/.test(plain) && /VLAN ID/.test(plain) && noPortsYet && !q(netPorts) && !/Member ports/.test(labels(lg(2))) &&
-          !/VLAN ID|Ports carrying/.test(labels(lg(1))) && /- \{id: virtual1, type: virtual, vlan: 30\}/.test(app.exportText()) && r1().logical[2].members.length === 0 && dh().valid,
-        `${plain} / ${labels(lg(2))} / ${labels(lg(1))}`,
+        'a VLAN interface names its VLAN; its Bridge ports are derived (read-only: no port of the device carries VLAN 30 yet); no port is entered on the interface',
+        /Member ports/.test(plain) && /VLAN ID/.test(plain) && noPortsYet && !!q(bridgePorts) && /No port of this device has VLAN 30/.test((q(bridgePorts)!.textContent || '')) && !q(bridgePorts + ' input') && !/Member ports/.test(labels(lg(2))) &&
+          !/VLAN ID|Bridge ports/.test(labels(lg(1))) && /- \{id: virtual1, type: virtual, vlan: 30\}/.test(app.exportText()) && r1().logical[2].members.length === 0 && dh().valid,
+        `${plain} / ${labels(lg(2))} / ${labels(lg(1))} / ${q(bridgePorts) ? (q(bridgePorts)!.textContent || '') : 'no Bridge ports'}`,
       );
 
       // a tunnel: its source is any interface of the device (here a loopback) or an address
@@ -3439,7 +3701,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       check(
         'a tunnel names its source (a loopback, an address or a port: not only a physical parent) and its destination; an unknown source is an error',
         viaLoopback && viaAddress && /tunnel source "eth7" is neither an IP address nor an interface of "router1"/.test(badSource) && dh().valid && t().source!.iface === 'eth0' && /Tunnel source\|Tunnel destination/.test(labels(lg(3))) &&
-          !/Member ports|Ports carrying VLAN/.test(labels(lg(3))) && /- \{id: tun0, type: tunnel, source: eth0, destination: edge2:lo0\}/.test(app.exportText()),
+          !/Member ports|Bridge ports/.test(labels(lg(3))) && /- \{id: tun0, type: tunnel, source: eth0, destination: edge2:lo0\}/.test(app.exportText()),
         `${viaLoopback} ${viaAddress} ${badSource} ${labels(lg(3))}`,
       );
 
@@ -3614,68 +3876,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       check('derived members and interface VLANs are never written to the YAML', !/\n {4}members:|kind:/.test(ex) && (ex.match(/vlan: /g) || []).length === 3 && !/eth0[^\n]*vlan/.test(ex), ex);
     }
 
-    // ------------------------------------ layer-2 tagging on the link ends
-    {
-      click('#outline [data-act="select"][data-kind="link"][data-index="0"]');
-      await tick();
-      const end = (side: string): string => `#side-body [data-tag-end="${side}"]`;
-      const mode = (side: string): string => (q(end(side)) || { getAttribute: () => '?' }).getAttribute('data-mode') || '';
-      const mismatch = (): string => (q('#side-body [data-tag-mismatch]') || { getAttribute: () => '' }).getAttribute('data-tag-mismatch') || '';
-      const modeSel = (side: string): string => `#side-body select[data-t="end-mode"][data-p='["links",0,"${side}"]']`;
-      const taggedIn = (side: string): string => `#side-body input[data-t="end-tagged"][data-p='["links",0,"${side}","tagged"]']`;
-      const lk = (): string => {
-        const l = (app.mdoc as ModelDoc).result.model!.links[0];
-        const e = (x: typeof l.a): string => `${x.mode || '-'}/${x.untagged === undefined ? '-' : x.untagged}/${vlanRangesText(vlanIds(x.tagged))}`;
-        return e(l.a) + ' ' + e(l.b);
-      };
-      const label = (): string => (Array.prototype.map.call(doc.querySelectorAll('#viewport .link-label'), (e: Element) => e.textContent || '') as string[]).join('|');
-      const tags = (): string => (Array.prototype.map.call(doc.querySelectorAll('#viewport .port-tag'), (e: Element) => e.textContent || '') as string[]).sort().join('|');
-      check(
-        'a link end without a mode says nothing about layer 2; nothing is assumed, nothing is written',
-        mode('A') === 'none' && mode('B') === 'none' && mismatch() === 'no' && !/mode:|tagged:|untagged:/.test((app.mdoc as ModelDoc).exportText()) && lk() === '-/-/ -/-/',
-        lk(),
-      );
-      check('speed and medium are fields of the link', !!q('#side-body [data-p=\'["links",0,"speed"]\']') && !!q('#side-body [data-p=\'["links",0,"medium"]\']'));
-      await setField(modeSel('a'), 'trunk');
-      await setField(taggedIn('a'), '78, 100-110');
-      check(
-        'end A becomes a trunk with tagged VLANs (a range kept as a range); end B is not touched',
-        mode('A') === 'trunk' && mode('B') === 'none' && lk() === 'trunk/-/78,100-110 -/-/' && /a: \{device: router1, interface: eth0, mode: trunk, tagged: \[78, 100-110\]\}, b: edge2:eth0/.test((app.mdoc as ModelDoc).exportText()),
-        (app.mdoc as ModelDoc).exportText(),
-      );
-      await setField(modeSel('b'), 'trunk');
-      await setField(taggedIn('b'), '78');
-      click('[data-view-btn="physical"]');
-      check(
-        'trunks tagging different VLANs: shown in the editor, in Problems (a check) and on the cable, never repaired',
-        mismatch() === 'yes' && /tagged only at end A: 100-110/.test(text('#side-body [data-tag-mismatch]')) && (app.mdoc as ModelDoc).findings.some((f) => f.check === 'vlan-tagged-mismatch') &&
-          count('.cable.net-mismatch') === 1 && count('.net-warn') === 1 && /VLANs differ/.test(label()) && tags() === 'T 78|T 78,100-110',
-        text('#side-body [data-tag-mismatch]') + ' / ' + label() + ' / ' + tags(),
-      );
-      check('VLANs 100-110 exist nowhere in the model: a warning names them', (app.mdoc as ModelDoc).findings.some((f) => f.check === 'vlan-unknown' && /100-110/.test(f.message)));
-      await setField(taggedIn('b'), '100-110, 78');
-      check(
-        'the same VLANs at both ends (in any order): no difference, no mark on the cable',
-        lk() === 'trunk/-/78,100-110 trunk/-/78,100-110' && mismatch() === 'no' && count('.cable.net-mismatch') === 0 && count('.net-warn') === 0 && !/VLANs differ/.test(label()) && !(app.mdoc as ModelDoc).findings.some((f) => f.check === 'vlan-tagged-mismatch'),
-        label(),
-      );
-      // selecting a network highlights the cables that carry its VLAN, with their ports
-      app.select('network:net1');
-      check('selecting a network highlights the cable that carries its VLAN', count('.cable.hl') === 1, String(count('.cable.hl')));
-      app.select(null);
-      // a VLAN interface: "Ports carrying its VLAN" follows the tagging of the link ends
-      await selectDevice(0);
-      await setField("#side-body [data-p='[\"devices\",0,\"logical_interfaces\",2,\"vlan\"]']", '78');
-      const vlanPorts = `#side-body [data-card='["devices",0,"logical_interfaces",2]'] > [data-derived="vlan-ports"]`;
-      const ports = (Array.prototype.map.call(doc.querySelectorAll(vlanPorts + ' li[data-port]'), (e: Element) => e.getAttribute('data-port')) as string[]).join();
-      check(
-        'a VLAN interface shows "Ports carrying its VLAN" read-only, derived from the tagging of the link ends',
-        ports === 'eth0' && /Ports carrying its VLAN \(VLAN 78\)/.test(text(vlanPorts)) && /VLAN 78 tagged on/.test(text(vlanPorts)) && readOnly(vlanPorts) && /- \{id: virtual1, type: virtual, vlan: 78\}/.test(app.exportText()),
-        text(vlanPorts),
-      );
-      check('link-end tagging and network VLANs stay separate facts', (app.mdoc as ModelDoc).result.model!.networks[0].vlan === 78 && lk() === 'trunk/-/78,100-110 trunk/-/78,100-110');
-      click('[data-view-btn="logical"]');
-    }
+    // (the ports' VLANs are tested on the VLAN example, in the section "VLANs on ports" above)
 
     // export the new model
     click('#btn-save-as');
@@ -3693,13 +3894,12 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         !!rd && rd.valid && rd.exportText() === created.text && !!rm && rm.index.devices.get('edge2')!.logical.map((l) => l.id + ':' + l.type).join() === 'lo0:loopback,lo1:loopback' &&
           rm.index.interfaces.get('edge2:lo0')!.addresses.join(',') === '10.255.0.2/32,2001:db8:ffff::2/128,10.255.0.3/32' && rm.index.interfaces.get('edge2:lo0')!.type === 'loopback' &&
           rm.index.devices.get('router1')!.interfaces.map((i) => `${i.id}:${i.type}`).join() === 'eth0:physical,eth9:physical' &&
-          rm.index.devices.get('router1')!.logical.map((i) => `${i.id}:${i.type}:${i.members.join('+')}:${i.vlan || ''}:${i.source ? i.source.iface : ''}>${i.destination ? i.destination.text : ''}`).join() === 'lo0:loopback:::>,virtual0:virtual:eth9+eth0::>,virtual1:virtual::78:>,tun0:tunnel:::eth0>edge2:lo0' &&
+          rm.index.devices.get('router1')!.logical.map((i) => `${i.id}:${i.type}:${i.members.join('+')}:${i.vlan || ''}:${i.source ? i.source.iface : ''}>${i.destination ? i.destination.text : ''}`).join() === 'lo0:loopback:::>,virtual0:virtual:eth9+eth0::>,virtual1:virtual::30:>,tun0:tunnel:::eth0>edge2:lo0' &&
           rm.relations[0].attrs.some(([k, v]) => k === 'keepalive.interval' && v === '10s') && /key: 42/.test(created.text),
         created.text);
       check(
-        'export → reload: the tagging of both ends is in the file; members and interface VLANs are derived again, not stored',
-        !!rm && JSON.stringify([rm.links[0].a.tagged, rm.links[0].b.tagged]) === '[[{"from":78,"to":78},{"from":100,"to":110}],[{"from":100,"to":110},{"from":78,"to":78}]]' && networkMembers(rm, 'net1').map((m) => m.device).join() === 'router1,edge2' &&
-          interfaceVlanText(interfaceAddresses(rm, 'router1', 'eth0')) === 'VLAN 78' && !/\n {4}members:|kind:/.test(created.text) && /b: \{device: edge2, interface: eth0, mode: trunk, tagged: \[100-110, 78\]\}/.test(created.text),
+        'export → reload: members and interface VLANs are derived again, not stored',
+        !!rm && networkMembers(rm, 'net1').map((m) => m.device).join() === 'router1,edge2' && interfaceVlanText(interfaceAddresses(rm, 'router1', 'eth0')) === 'VLAN 78' && !/\n {4}members:|kind:/.test(created.text),
         created.text);
       if (rd) {
         app.loadText(created.text, 'reloaded.yaml', 'file');
@@ -4028,7 +4228,9 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         lines.push('devices:');
         for (let g = 0; g < 8; g++)
           for (let n = 0; n < 12; n++) {
-            lines.push(`  - id: d${g}-${n}`, `    label: Device ${n} of site ${g}`, `    type: ${n === 0 ? 'router' : 'switch'}`, `    group: site-${g}`, '    interfaces:', `      - {id: up, ip: 10.${g}.0.${n + 1}/24}`, '      - {id: down}', '      - {id: wan}');
+            // (the switches are Layer 3 switches: their ports are routed, with addresses)
+            const r = n === 0 ? '' : 'routed: true, ';
+            lines.push(`  - id: d${g}-${n}`, `    label: Device ${n} of site ${g}`, `    type: ${n === 0 ? 'router' : 'switch'}`, ...(n === 0 ? [] : ['    layer3: true']), `    group: site-${g}`, '    interfaces:', `      - {id: up, ${r}ip: 10.${g}.0.${n + 1}/24}`, `      - {id: down${r ? ', routed: true' : ''}}`, `      - {id: wan${r ? ', routed: true' : ''}}`);
             lines.push('    logical_interfaces:', `      - {id: lo0, type: loopback, ip: 10.255.${g}.${n + 1}/32}`);
           }
         lines.push('links:');

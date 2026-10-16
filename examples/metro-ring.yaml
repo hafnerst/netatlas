@@ -127,9 +127,9 @@ devices:
     type: switch
     group: oob
     interfaces:
-      - {id: p1}
-      - p2
-      - p3
+      - {id: p1, vlans: 1}
+      - {id: p2, vlans: 1}
+      - {id: p3, vlans: 1}
     logical_interfaces:
       - {id: vlan1, type: virtual, ip: 172.31.0.2/24}
   - id: oob-con1

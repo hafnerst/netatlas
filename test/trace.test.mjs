@@ -265,13 +265,13 @@ devices:
     type: router
     router_id: 10.255.0.2
     protocols: {ospf: {}}
-    interfaces: [{id: wan, ip: 192.0.2.10/29}, {id: trunk}]
+    interfaces: [{id: wan, ip: 192.0.2.10/29}, {id: trunk, vlans: [20, 30]}]
     logical_interfaces:
       - {id: tun0, type: tunnel, ip: 172.16.0.2/30, source: wan, destination: 198.51.100.2}
       - {id: vl20, type: virtual, vlan: 20, ip: 10.2.20.1/24}
   - id: sw
     type: switch
-    interfaces: [p1, p2, p3]
+    interfaces: [{id: p1, vlans: [20, 30]}, {id: p2, vlans: 20}, {id: p3, vlans: 1}]
   - id: srv
     type: server
     interfaces: [{id: e0, ip: 10.2.20.50/24}]
@@ -279,12 +279,8 @@ devices:
 links:
   - {id: l-hq, a: "hq:wan", b: inet}
   - {id: l-br, a: "br:wan", b: inet}
-  - id: l-trunk
-    a: {device: br, interface: trunk, mode: trunk, tagged: [20, 30]}
-    b: {device: sw, interface: p1, mode: trunk, tagged: [20, 30]}
-  - id: l-srv
-    a: {device: sw, interface: p2, mode: access, untagged: 20}
-    b: {device: srv, interface: e0}
+  - {id: l-trunk, a: "br:trunk", b: "sw:p1"}
+  - {id: l-srv, a: "sw:p2", b: "srv:e0"}
 networks:
   - {id: n20, cidr: 10.2.20.0/24, vlan: 20}
 relations:
@@ -329,10 +325,10 @@ test('tunnels: the encapsulation stack, the declared underlay down to the cables
   assert.deepEqual(u.links, ['l-hq', 'l-br']);
   assert.match(T.traceText(trace(routed, 'hq:lan', 'srv')), /underlay \(GRE over IPsec\):\n   1\.1\. hq/);
   // a layer-2 way that does not exist: the VLAN is not on the trunk
-  const noVlan = model(tunnel.replace('tagged: [20, 30]}\n    b: {device: sw, interface: p1, mode: trunk, tagged: [20, 30]}', 'tagged: [30]}\n    b: {device: sw, interface: p1, mode: trunk, tagged: [30]}'));
+  const noVlan = model(tunnel.replace('{id: trunk, vlans: [20, 30]}', '{id: trunk, vlans: 30}').replace('{id: p1, vlans: [20, 30]}', '{id: p1, vlans: 30}'));
   const s = trace(noVlan, 'hq:lan', 'srv').paths[0];
   assert.deepEqual([s.end.device, s.end.reason], ['br', 'no-adjacency']);
-  assert.match(s.end.detail, /VLAN 20 of br:vl20 is on none of br’s cables/);
+  assert.match(s.end.detail, /VLAN 20 of br:vl20 is on none of br’s ports/);
 });
 
 test('a VRRP virtual gateway: the active member forwards; when it is down, the backup takes over', () => {

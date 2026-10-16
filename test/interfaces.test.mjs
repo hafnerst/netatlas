@@ -1,7 +1,7 @@
 // Interfaces: physical ones (ports) and logical ones (loopback, virtual,
 // tunnel), stored once under their device. What a logical interface is
 // associated with depends on what it is: member ports of an aggregate, the
-// VLAN of a VLAN interface (its ports are derived from the links), the source
+// VLAN of a VLAN interface (its bridge ports are derived from the ports' VLANs), the source
 // and destination of a tunnel. Also: the alphabetical display order, the
 // rejection of the earlier structures, and export -> reload.
 import { test } from 'node:test';
@@ -28,11 +28,11 @@ devices:
     interfaces:
       - {id: Eth1}
       - {id: Eth2}
-      - {id: Eth3, ip: 198.51.100.2/30}
-      - Eth4
+      - {id: Eth3, routed: true, ip: 198.51.100.2/30}
+      - {id: Eth4, vlans: 10}
     logical_interfaces:
       - {id: lo0, type: loopback, label: Router ID, ip: [10.255.0.1/32, 2001:db8::1/128]}
-      - {id: Po1, type: virtual, members: [Eth1, Eth2]}
+      - {id: Po1, type: virtual, members: [Eth1, Eth2], vlans: [10, 20]}
       - {id: Vlan10, type: virtual, vlan: 10, ip: 10.10.0.2/24}
       - {id: Vlan20, type: virtual, ip: 10.20.0.2/24}
       - {id: nve1, type: virtual, description: VTEP}
@@ -42,16 +42,12 @@ devices:
   - id: sw2
     type: switch
     layer3: true
-    interfaces: [Eth1, Eth2]
+    interfaces: [{id: Eth1, vlans: [10, 20]}, {id: Eth2, vlans: [10, 20]}]
     logical_interfaces:
       - {id: lo0, type: loopback, ip: 10.255.0.2/32}
 links:
-  - id: peer1
-    a: {device: sw1, interface: Eth1, mode: trunk, tagged: [10, 20]}
-    b: {device: sw2, interface: Eth1, mode: trunk, tagged: [10, 20]}
-  - id: peer2
-    a: {device: sw1, interface: Eth2, mode: access, untagged: 10}
-    b: {device: sw2, interface: Eth2, mode: access, untagged: 10}
+  - {id: peer1, a: "sw1:Eth1", b: "sw2:Eth1"}
+  - {id: peer2, a: "sw1:Eth2", b: "sw2:Eth2"}
 networks:
   - {id: users, cidr: 10.10.0.0/24, vlan: 10}
   - {id: servers, cidr: 10.20.0.0/24, vlan: 20}
@@ -89,7 +85,7 @@ test('a physical interface has no type; a logical interface has one of loopback,
   for (const t of ['physical', 'loopback', 'virtual', 'tunnel', 'svi']) {
     const m = messages(`netatlas: 1\ndevices:\n  - id: a\n    interfaces:\n      - {id: e0, type: ${t}}\n`);
     assert.equal(m.length, 1, t);
-    assert.match(m[0], /^unknown key "type" \(known: id, label, dhcp, ip, vrf, mac, mtu, dhcp_relay, protocols, multicast, simulation, description, attrs\)/, t);
+    assert.match(m[0], /^unknown key "type" \(known: id, label, vlans, native, routed, dhcp, ip, vrf, mac, mtu, dhcp_relay, protocols, multicast, simulation, description, attrs\)/, t);
   }
   const logical = (body) => messages(`netatlas: 1\ndevices:\n  - id: a\n    logical_interfaces:\n      - {id: x0${body}}\n`);
   assert.deepEqual(logical(', type: virtual'), []);
@@ -120,7 +116,7 @@ test('stable ids: physical and logical interfaces share one set of ids per devic
   // references use those ids: a cable ends on a physical interface only, a relation on any interface
   const r = validate.loadModel(net);
   assert.deepEqual(r.model.relations.map((x) => x.endpoints.map((e) => (e.iface ? r.model.index.interfaces.get(e.device + ':' + e.iface).type : 'device')).join('-')), ['virtual-device', 'loopback-loopback']);
-  const cable = (a) => messages(net.replace('a: {device: sw1, interface: Eth2, mode: access, untagged: 10}', `a: "${a}"`));
+  const cable = (a) => messages(net.replace('{id: peer2, a: "sw1:Eth2"', `{id: peer2, a: "${a}"`));
   assert.deepEqual(cable('sw1:Eth4'), []);
   assert.match(cable('sw1:Po1')[0], /^"sw1:Po1" is a virtual interface, not a physical interface — a physical link must end on a physical interface\. Cable its member ports \(Eth1, Eth2\) instead;/);
   assert.match(cable('sw1:tun0')[0], /^"sw1:tun0" is a tunnel interface, not a physical interface .* Its source is "Eth3";/);
@@ -160,11 +156,12 @@ test('aggregate: a virtual interface references several member ports, and the re
   const m = model(net);
   const po = m.index.interfaces.get('sw1:Po1');
   assert.deepEqual(po.members, ['Eth1', 'Eth2']);
-  assert.equal(panels.associationText(m, po), 'Member ports: Eth1, Eth2');
-  assert.deepEqual(derive.associatedInterfaces(m, po), ['Eth1', 'Eth2']);
+  assert.equal(panels.associationText(m, po), 'Trunk · 10, 20 · Member ports: Eth1, Eth2');
+  assert.deepEqual(derive.associatedInterfaces(m, po), ['Eth1', 'Eth2', 'Vlan10', 'Vlan20'], 'its members, and the VLAN interfaces it is a bridge port of');
   assert.ok(derive.associatedInterfaces(m, m.index.interfaces.get('sw1:Eth1')).includes('Po1'), 'and the other way round');
   // a single member may be written without brackets
-  assert.deepEqual(model(net.replace('members: [Eth1, Eth2]', 'members: Eth1')).index.interfaces.get('sw1:Po1').members, ['Eth1']);
+  // (Eth2, no member any more, says what it carries)
+  assert.deepEqual(model(net.replace('members: [Eth1, Eth2]', 'members: Eth1').replace('      - {id: Eth2}', '      - {id: Eth2, vlans: 10}')).index.interfaces.get('sw1:Po1').members, ['Eth1']);
   const bad = (members) => validate.loadModel(net.replace('members: [Eth1, Eth2]', 'members: ' + members));
   const first = (members) => bad(members).errors[0];
   assert.match(first('[Eth1, Eth9]').message, /^device "sw1" has no physical interface "Eth9" — did you mean "Eth1"\?/);
@@ -178,7 +175,7 @@ test('aggregate: a virtual interface references several member ports, and the re
   // a port of another device is not a member port
   assert.match(messages('netatlas: 1\ndevices:\n  - {id: a, interfaces: [e0]}\n  - id: b\n    logical_interfaces:\n      - {id: bond0, type: virtual, members: [e0]}\n')[0], /device "b" has no physical interface "e0" \(the device declares no physical interfaces\)/);
   // a port in two aggregates is reported, not refused
-  const two = net.replace('      - {id: Vlan10,', '      - {id: Po2, type: virtual, members: [Eth2, Eth4]}\n      - {id: Vlan10,');
+  const two = net.replace('      - {id: Vlan10,', '      - {id: Po2, type: virtual, members: [Eth2, Eth4], vlans: 10}\n      - {id: Vlan10,').replace('{id: Eth4, vlans: 10}', 'Eth4');
   assert.deepEqual(messages(two), []);
   assert.deepEqual(warnings(two), ['port "Eth2" is also a member of "Po1"; a port normally belongs to one aggregate']);
   // members on a physical interface: the aggregate is a logical interface
@@ -187,33 +184,35 @@ test('aggregate: a virtual interface references several member ports, and the re
 
 // -------------------------------------------------- VLAN-derived port association
 
-test('VLAN interface: it names its VLAN (or takes it from its network); the ports carrying it are derived from the tagging of the links', () => {
+test('VLAN interface: it names its VLAN (or takes it from its network); its bridge ports are derived from the ports\u2019 VLANs', () => {
   const m = model(net);
   const v10 = m.index.interfaces.get('sw1:Vlan10');
   const v20 = m.index.interfaces.get('sw1:Vlan20');
-  const ports = (mm, i) => derive.interfaceVlanPorts(mm, i).map((p) => `${p.iface}/${p.link}/${p.vlan}/${p.tagged ? 'T' : 'U'}`);
+  const ports = (mm, i) => derive.interfaceVlanPorts(mm, i).map((p) => `${p.iface}/${p.kind}/${p.vlan}/${p.tagged ? 'T' : 'U'}`);
   // written on the interface
   assert.equal(v10.vlan, 10);
   assert.deepEqual(derive.interfaceVlans(m, v10), [10]);
-  assert.deepEqual(ports(m, v10), ['Eth1/peer1/10/T', 'Eth2/peer2/10/U']);
+  // every port of its VLAN, access and trunk, an aggregate as one port (its members take its VLANs)
+  assert.deepEqual(ports(m, v10), ['Eth4/access/10/U', 'Po1/trunk/10/T']);
   // not written: the VLAN of the network containing its address (entered once, on the network)
   assert.equal(v20.vlan, undefined);
   assert.deepEqual(derive.interfaceVlans(m, v20), [20]);
-  assert.deepEqual(ports(m, v20), ['Eth1/peer1/20/T']);
-  assert.equal(panels.associationText(m, v10), 'VLAN 10 · ports carrying it: Eth1, Eth2');
-  assert.equal(panels.associationText(m, v20), 'VLAN 20 · ports carrying it: Eth1');
+  assert.deepEqual(ports(m, v20), ['Po1/trunk/20/T']);
+  assert.equal(panels.associationText(m, v10), 'VLAN 10 · bridge ports: Access: Eth4 · Trunk: Po1');
+  assert.equal(panels.associationText(m, v20), 'VLAN 20 · bridge ports: Trunk: Po1');
   // the ports are nowhere in the file or the model of the interface
   assert.deepEqual(v10.members, []);
   assert.doesNotMatch(net, /Vlan10[^\n]*Eth/);
-  // they follow the links: only this device's own link ends count, and an end without the VLAN doesn't
-  const moved = model(net.replace('a: {device: sw1, interface: Eth2, mode: access, untagged: 10}', 'a: {device: sw1, interface: Eth2, mode: access, untagged: 20}'));
-  assert.deepEqual(derive.interfaceVlanPorts(moved, moved.index.interfaces.get('sw1:Vlan10')).map((p) => p.iface), ['Eth1']);
-  assert.deepEqual(derive.interfaceVlanPorts(moved, moved.index.interfaces.get('sw1:Vlan20')).map((p) => p.iface), ['Eth1', 'Eth2']);
-  assert.deepEqual(derive.portsCarryingVlans(m, 'sw2', [10]).map((p) => p.iface), ['Eth1', 'Eth2']);
-  assert.deepEqual(derive.portsCarryingVlans(m, 'sw1', [99]), []);
-  assert.deepEqual(derive.portsCarryingVlans(m, 'sw1', []), []);
-  const none = model(net.replace(/, mode: (trunk|access), (tagged: \[[0-9, ]+\]|untagged: [0-9]+)/g, ''));
-  assert.equal(panels.associationText(none, none.index.interfaces.get('sw1:Vlan10')), 'VLAN 10 · no port carries it');
+  // they follow the ports' VLANs: a port moved to VLAN 20 leaves Vlan10 and joins Vlan20
+  const moved = model(net.replace('{id: Eth4, vlans: 10}', '{id: Eth4, vlans: 20}'));
+  assert.deepEqual(derive.interfaceVlanPorts(moved, moved.index.interfaces.get('sw1:Vlan10')).map((p) => p.iface), ['Po1']);
+  assert.deepEqual(derive.interfaceVlanPorts(moved, moved.index.interfaces.get('sw1:Vlan20')).map((p) => p.iface), ['Eth4', 'Po1']);
+  assert.deepEqual(derive.bridgePorts(m, 'sw2', 10).map((p) => p.iface), ['Eth1', 'Eth2']);
+  assert.deepEqual(derive.bridgePorts(m, 'sw1', 99), []);
+  // a VLAN without a bridge port: no port, and a warning says so
+  const none = net.replace('{id: Eth4, vlans: 10}', '{id: Eth4, vlans: 20}').replace('members: [Eth1, Eth2], vlans: [10, 20]', 'members: [Eth1, Eth2], vlans: [20, 30]');
+  assert.equal(panels.associationText(model(none), model(none).index.interfaces.get('sw1:Vlan10')), 'VLAN 10 · no bridge port in its VLAN');
+  assert.deepEqual(warnings(none), ['VLAN 10 has no bridge port on "sw1": no port of the device carries it (in its "vlans"), so "Vlan10" reaches no one']);
   // not every virtual interface is a VLAN interface or a bond: nothing is assumed for the VTEP
   const nve = m.index.interfaces.get('sw1:nve1');
   assert.deepEqual([derive.interfaceVlans(m, nve), derive.interfaceVlanPorts(m, nve), nve.members, panels.associationText(m, nve)], [[], [], [], '']);
@@ -224,8 +223,9 @@ test('VLAN interface: it names its VLAN (or takes it from its network); the port
   assert.match(vlan('0')[0], /"0" is not a VLAN ID: use a whole number from 1 to 4094/);
   assert.match(vlan('users')[0], /"users" is not a VLAN ID/);
   // the VLAN written on the interface and the VLAN of its address's network must agree
-  assert.deepEqual(warnings(net.replace('vlan: 10, ip: 10.10.0.2/24', 'vlan: 30, ip: 10.10.0.2/24')), ['"Vlan10" is the interface of VLAN 30, but its address 10.10.0.2/24 lies in a network of VLAN 10']);
-  // a physical interface still has no vlan key
+  // (VLAN 30 has no bridge port on sw1 either: a second warning)
+  assert.deepEqual(warnings(net.replace('vlan: 10, ip: 10.10.0.2/24', 'vlan: 30, ip: 10.10.0.2/24')), ['"Vlan10" is the interface of VLAN 30, but its address 10.10.0.2/24 lies in a network of VLAN 10', 'VLAN 30 has no bridge port on "sw1": no port of the device carries it (in its "vlans"), so "Vlan10" reaches no one']);
+  // a physical interface has VLANs ("vlans"), not "vlan" (the VLAN interface's)
   assert.match(messages('netatlas: 1\ndevices:\n  - id: a\n    interfaces:\n      - {id: e0, vlan: 10}\n')[0], /^unknown key "vlan"/);
 });
 
@@ -276,14 +276,17 @@ test('diagrams and selection follow the associations, in both directions', () =>
   // an aggregate: its member ports and their cables
   for (const want of ['iface:sw1:Eth1', 'iface:sw1:Eth2', 'link:peer1', 'link:peer2', 'device:sw2', 'relation:lag']) assert.ok(rel('iface:sw1:Po1').has(want), want);
   assert.ok(!rel('iface:sw1:Po1').has('iface:sw1:Eth3'));
-  // a VLAN interface: the ports carrying its VLAN and their cables
-  assert.ok(rel('iface:sw1:Vlan20').has('iface:sw1:Eth1') && rel('iface:sw1:Vlan20').has('link:peer1') && !rel('iface:sw1:Vlan20').has('iface:sw1:Eth2') && !rel('iface:sw1:Vlan20').has('link:peer2'));
+  // a VLAN interface: its bridge ports and their cables (Vlan20: the aggregate Po1, its members and cables; not Eth4, which is in VLAN 10)
+  assert.ok(rel('iface:sw1:Vlan20').has('iface:sw1:Po1') && rel('iface:sw1:Vlan20').has('link:peer1') && rel('iface:sw1:Vlan20').has('link:peer2') && !rel('iface:sw1:Vlan20').has('iface:sw1:Eth4'));
+  assert.ok(rel('iface:sw1:Vlan10').has('iface:sw1:Eth4') && rel('iface:sw1:Vlan10').has('iface:sw1:Po1'));
   // a tunnel: its source (a port, or a loopback) and its destination
   assert.ok(rel('iface:sw1:tun0').has('iface:sw1:Eth3') && !rel('iface:sw1:tun0').has('device:sw2'));
   assert.ok(rel('iface:sw1:tun1').has('iface:sw1:lo0') && rel('iface:sw1:tun1').has('device:sw2') && rel('iface:sw1:tun1').has('iface:sw2:lo0'));
   // a port: the logical interfaces that use it, without pulling in their other ports' cables
   const e1 = rel('iface:sw1:Eth1');
   assert.ok(e1.has('iface:sw1:Po1') && e1.has('iface:sw1:Vlan10') && e1.has('iface:sw1:Vlan20') && e1.has('link:peer1') && !e1.has('link:peer2') && !e1.has('iface:sw1:tun0'));
+  const e4 = rel('iface:sw1:Eth4');
+  assert.ok(e4.has('iface:sw1:Vlan10') && !e4.has('iface:sw1:Vlan20'));
   assert.ok(rel('iface:sw1:Eth3').has('iface:sw1:tun0') && rel('iface:sw1:Eth3').has('iface:sw1:tun2'), 'tun2 is sourced from the address of Eth3');
   // the selection context of the lists: the cables a logical interface uses
   assert.deepEqual([...queries.selectionContext(m, 'iface:sw1:Po1').related].sort(), ['link:peer1', 'link:peer2', 'relation:lag']);
@@ -301,21 +304,23 @@ test('diagrams and selection follow the associations, in both directions', () =>
   assert.match(det('device:sw1'), /Physical interfaces \(4, 2 cabled\)/);
   assert.match(det('device:sw1'), /Logical interfaces \(8\)/);
   assert.doesNotMatch(det('device:sw1'), /child|Loopbacks \(/i);
-  assert.match(det('iface:sw1:Po1'), /type\nVirtual\nAssociations\nmember ports\nEth1\n, \nEth2\n/);
+  assert.match(det('iface:sw1:Po1'), /type\nVirtual\nAssociations\nVLANs\nTrunk · 10, 20\nmember ports\nEth1\n, \nEth2\n/);
   assert.doesNotMatch(det('iface:sw1:nve1'), /Associations/, 'no empty card for an interface without associations');
-  assert.doesNotMatch(det('iface:sw1:Po1'), /ports carrying its VLAN|tunnel source|physical interface\n/);
-  assert.match(det('iface:sw1:Vlan20'), /VLAN\n20 \(from the network of its address\)\nports carrying its VLAN\nEth1\n/);
-  assert.match(det('iface:sw1:Vlan10'), /VLAN\n10\nports carrying its VLAN\nEth1\n, \nEth2\n/);
+  assert.doesNotMatch(det('iface:sw1:Po1'), /bridge ports|tunnel source|physical interface\n/);
+  assert.match(det('iface:sw1:Vlan20'), /VLAN\n20 \(from the network of its address\)\nbridge ports\nTrunk: \nPo1\n/);
+  assert.match(det('iface:sw1:Vlan10'), /VLAN\n10\nbridge ports\nAccess: \nEth4\n · \nTrunk: \nPo1\n/);
   assert.doesNotMatch(det('iface:sw1:Vlan10'), /member ports|tunnel/);
   assert.match(det('iface:sw1:tun1'), /tunnel source\nlo0\ntunnel destination\nsw2:lo0\n/);
   assert.match(det('iface:sw1:tun2'), /tunnel source\n198\.51\.100\.2 \n→ \nsw1:Eth3\n/);
-  assert.doesNotMatch(det('iface:sw1:lo0'), /member ports|ports carrying its VLAN|tunnel source|\nVLAN\n/);
-  assert.doesNotMatch(det('iface:sw1:nve1'), /member ports|ports carrying its VLAN|tunnel source|\nVLAN\n/);
-  assert.match(det('iface:sw1:Eth1'), /Used by logical interfaces \(3\)\nPo1\n aggregate \(member port\)\nVlan10\n its VLAN is carried on this port\nVlan20\n/);
+  assert.doesNotMatch(det('iface:sw1:lo0'), /member ports|bridge ports|tunnel source|\nVLAN\n/);
+  assert.doesNotMatch(det('iface:sw1:nve1'), /member ports|bridge ports|tunnel source|\nVLAN\n/);
+  assert.match(det('iface:sw1:Eth1'), /Used by logical interfaces \(3\)\nPo1\n aggregate \(member port\)\nVlan10\n bridge port of its VLAN, through Po1\nVlan20\n/);
+  assert.match(det('iface:sw1:Eth4'), /Used by logical interfaces \(1\)\nVlan10\n bridge port of its VLAN\n/);
   assert.match(det('iface:sw1:lo0'), /Used by logical interfaces \(1\)\ntun1\n tunnel \(source\)/);
   assert.deepEqual(panels.tooltipFor(m, 'device:sw1'), ['sw1', 'Layer 3 switch', '4 physical interfaces, 2 cabled', '8 logical interfaces']);
-  assert.deepEqual(panels.tooltipFor(m, 'iface:sw1:Po1').slice(0, 3), ['sw1 Po1', 'Virtual', 'Member ports: Eth1, Eth2']);
-  assert.match(panels.tooltipFor(m, 'iface:sw1:Eth1')[2], /^used by Po1, Vlan10, Vlan20$/);
+  assert.deepEqual(panels.tooltipFor(m, 'iface:sw1:Po1').slice(0, 3), ['sw1 Po1', 'Virtual', 'Trunk · 10, 20 · Member ports: Eth1, Eth2']);
+  // a member port: its VLANs (its aggregate's), and what uses it
+  assert.deepEqual(panels.tooltipFor(m, 'iface:sw1:Eth1').slice(2, 4), ['Trunk · 10, 20 (from Po1)', 'used by Po1, Vlan10, Vlan20']);
 });
 
 // ------------------------------------------------------ alphabetical display
@@ -515,7 +520,9 @@ test('export -> reload: the format round-trips (both categories, members, VLAN, 
   const flat = (m) => m.devices.map((x) => [x.id, T.deviceInterfaces(x).map((i) => [i.id, i.type, i.addresses, i.members, i.vlan, i.source, i.destination])]);
   assert.deepEqual(flat(doc(out).result.model), flat(d.result.model));
   // … and after editing through the editor's operations
-  d.addLogical(1, 'virtual', [['id', s('Po1')], ['members', Y.seqNode([s('Eth1'), s('Eth2')], true)]]);
+  d.addLogical(1, 'virtual', [['id', s('Po1')], ['members', Y.seqNode([s('Eth1'), s('Eth2')], true)], ['vlans', Y.seqNode([Y.numNode(10), Y.numNode(20)], true)]]);
+  // (its members take its VLANs: their own go)
+  for (const k of [0, 1]) d.setPortVlans(['devices', 1, 'interfaces', k], '');
   d.addLogical(1, 'tunnel', [['id', s('tun0')], ['source', s('lo0')], ['destination', s('sw1:lo0')]]);
   d.addLogical(1, 'virtual', [['id', s('Vlan10')], ['vlan', Y.numNode(10)]]);
   d.addLoopback(1, ['2001:db8::2/128'], 'IPv6');
@@ -527,14 +534,14 @@ test('export -> reload: the format round-trips (both categories, members, VLAN, 
   const sw2 = again.result.model.index.devices.get('sw2');
   assert.equal(sw2.logical.map((i) => i.id + ':' + i.type).join(), 'lo0:loopback,Po1:virtual,tun0:tunnel,Vlan10:virtual,lo1:loopback');
   assert.deepEqual(sw2.logical[1].members, ['Eth1', 'Eth2']);
-  assert.deepEqual(derive.interfaceVlanPorts(again.result.model, sw2.logical[3]).map((p) => p.iface), ['Eth1', 'Eth2'], 'derived again after the reload, from the links');
+  assert.deepEqual(derive.interfaceVlanPorts(again.result.model, sw2.logical[3]).map((p) => p.iface), ['Po1'], 'derived again after the reload, from the ports\u2019 VLANs');
   assert.doesNotMatch(edited, /Vlan10[^\n]*Eth/, 'the derived ports are never written');
   assert.deepEqual(sw2.logical[2].source, { text: 'lo0', device: 'sw2', iface: 'lo0' });
 });
 
 test('every example (and generated fixture) uses the format and draws in both views', () => {
   const files = exampleNames.map((f) => [f, example(f)]).concat(fixtureNames.map((f) => [f, fixture(f)]));
-  assert.equal(files.length, 13 + 3);
+  assert.equal(files.length, 14 + 3);
   for (const [f, text] of files) {
     const r = validate.loadModel(text);
     assert.deepEqual(r.errors.concat(r.warnings).map((e) => `${e.line}: ${e.message}`), [], f);
@@ -554,12 +561,12 @@ test('every example (and generated fixture) uses the format and draws in both vi
   const core = wan.index.devices.get('hq-core1');
   assert.deepEqual(wan.index.interfaces.get('hq-core1:Port-Channel1').members, ['Ethernet51', 'Ethernet52']);
   assert.deepEqual(derive.interfaceVlans(wan, wan.index.interfaces.get('hq-core1:Vlan10')), [10], 'from the network of its address');
-  assert.deepEqual([...new Set(derive.interfaceVlanPorts(wan, wan.index.interfaces.get('hq-core1:Vlan10')).map((p) => p.iface))].sort(), ['Ethernet1', 'Ethernet51', 'Ethernet52']);
+  assert.deepEqual([...new Set(derive.interfaceVlanPorts(wan, wan.index.interfaces.get('hq-core1:Vlan10')).map((p) => p.iface))].sort(), ['Ethernet1', 'Port-Channel1']);
   assert.equal(core.logical.length, 3);
   assert.deepEqual(wan.index.interfaces.get('hq-rtr1:st0.10').source, { text: 'ge-0/0/0', device: 'hq-rtr1', iface: 'ge-0/0/0' });
   assert.deepEqual(wan.index.interfaces.get('hq-rtr1:st0.10').destination, { text: '192.0.2.10', address: '192.0.2.10', device: 'muc-rtr', iface: 'wan0' });
   const lab = model(fixture('editor-new-network.yaml'));
   assert.equal(lab.index.interfaces.get('edge-a:gr-0/0/0.1').source.iface, 'lo0', 'a tunnel sourced from a loopback');
-  assert.deepEqual(derive.interfaceVlanPorts(lab, lab.index.interfaces.get('edge-a:irb.100')).map((p) => p.iface), ['ge-0/0/0']);
+  assert.deepEqual(derive.interfaceVlanPorts(lab, lab.index.interfaces.get('edge-a:ge-0/0/0.100')).map((p) => p.iface), ['ge-0/0/0']);
   assert.ok(model(example('datacenter-evpn.yaml')).index.interfaces.get('leaf1:Vxlan1').members.length === 0, 'a virtual interface that is neither a bond nor a VLAN interface');
 });

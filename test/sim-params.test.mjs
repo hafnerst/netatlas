@@ -449,9 +449,9 @@ title: loop
 devices:
   - {id: h1, interfaces: [{id: e, ip: 10.0.0.1/24}]}
   - {id: h2, interfaces: [{id: e, ip: 10.0.0.2/24}]}
-  - {id: s1, type: switch, interfaces: [a, b, h]${mode ? ', simulation: {stp_mode: ' + mode + '}' : ''}}
-  - {id: s2, type: switch, interfaces: [a, c]${mode ? ', simulation: {stp_mode: ' + mode + '}' : ''}}
-  - {id: s3, type: switch, interfaces: [b, c, h]${mode ? ', simulation: {stp_mode: ' + mode + '}' : ''}}
+  - {id: s1, type: switch, interfaces: [{id: a, vlans: 1}, {id: b, vlans: 1}, {id: h, vlans: 1}]${mode ? ', simulation: {stp_mode: ' + mode + '}' : ''}}
+  - {id: s2, type: switch, interfaces: [{id: a, vlans: 1}, {id: c, vlans: 1}]${mode ? ', simulation: {stp_mode: ' + mode + '}' : ''}}
+  - {id: s3, type: switch, interfaces: [{id: b, vlans: 1}, {id: c, vlans: 1}, {id: h, vlans: 1}]${mode ? ', simulation: {stp_mode: ' + mode + '}' : ''}}
 links:
   - {id: l12, a: "s1:a", b: "s2:a"}
   - {id: l13, a: "s1:b", b: "s3:b"}
@@ -465,7 +465,7 @@ demands:
     const s = sim(loop(mode));
     s.runTo(10000);
     // the cable of the tree's path between h1 and h2
-    const t = s.engine.tree(0);
+    const t = s.engine.tree(1);
     const fail = ['l13', 'l12', 'l23'].find((id) => !Array.from(t.blocked).some((k) => k.indexOf(id === 'l13' ? 's1|b' : id === 'l12' ? 's1|a' : 's2|c') === 0));
     s.fail('link:' + fail);
     const at = s.now;
@@ -476,7 +476,7 @@ demands:
     else assert.doesNotMatch(notes[0].detail, /forward delay/, 'RSTP: at once, or after 3 hellos further away');
   }
   // a MAC table of one entry: nothing more is learned
-  const full = sim(loop('').replace('interfaces: [a, b, h]}', 'interfaces: [a, b, h], simulation: {mac_table_size: 1}}'));
+  const full = sim(loop('').replace('{id: h, vlans: 1}]}', '{id: h, vlans: 1}], simulation: {mac_table_size: 1}}'));
   full.runTo(10000);
   assert.ok(full.macTable('s1').filter((r) => r.type === 'dynamic').length <= 1);
   assert.ok(events(full, (e) => e.device === 's1' && /MAC table is full \(1 entries, device\)/.test(e.detail)).length);

@@ -126,7 +126,7 @@ groups:
 devices:
   - {id: wan, type: cloud, group: site, interfaces: [p0]}
   - {id: rtr, type: router, group: site, interfaces: [wan, lan]}
-  - {id: sw, type: switch, group: site, interfaces: [up, x1, x2]}
+  - {id: sw, type: switch, group: site, interfaces: [{id: up, vlans: 1}, {id: x1, vlans: 1}, {id: x2, vlans: 1}]}
   - {id: backup-a, type: storage, group: colo, interfaces: [e0]}
   - {id: backup-b, type: storage, group: colo, interfaces: [e0]}
 links:
@@ -169,14 +169,14 @@ devices:
   - {id: up, type: cloud, interfaces: [a, b]}
   - {id: c1, type: router, group: core, interfaces: [up, d1, d2, x]}
   - {id: c2, type: router, group: core, interfaces: [up, d3, d4, x]}
-  - {id: a1, type: switch, group: s1, interfaces: [u1]}
+  - {id: a1, type: switch, group: s1, interfaces: [{id: u1, vlans: 1}]}
   - {id: a2, type: server, group: s1, interfaces: [e0]}
-  - {id: b1, type: switch, group: s2, interfaces: [u1, u2, p1, p2, p3]}
+  - {id: b1, type: switch, group: s2, interfaces: [{id: u1, vlans: 1}, {id: u2, vlans: 1}, {id: p1, vlans: 1}, {id: p2, vlans: 1}, {id: p3, vlans: 1}]}
   - {id: b2, type: server, group: s2, interfaces: [e0]}
   - {id: b3, type: server, group: s2, interfaces: [e0]}
   - {id: b4, type: server, group: s2, interfaces: [e0]}
-  - {id: d1, type: switch, group: s3, interfaces: [u1]}
-  - {id: t1, type: switch, group: tiny, interfaces: [u1, u2]}
+  - {id: d1, type: switch, group: s3, interfaces: [{id: u1, vlans: 1}]}
+  - {id: t1, type: switch, group: tiny, interfaces: [{id: u1, vlans: 1}, {id: u2, vlans: 1}]}
   - {id: l1, type: server, group: lab, interfaces: [e0]}
   - {id: l2, type: server, group: lab, interfaces: [e0]}
   - {id: loose, type: server}

@@ -94,26 +94,26 @@ devices:
     group: campus
     tier: 3
     interfaces:
-      - {id: Et1}
-      - {id: Et2}
-      - {id: Et3}
-      - {id: Et4}
-      - {id: Et5}
+      - {id: Et1, vlans: 1}
+      - {id: Et2, vlans: 1}
+      - {id: Et3, vlans: 1}
+      - {id: Et4, vlans: 1}
+      - {id: Et5, vlans: 1}
   - id: access
     label: acc-sw1
     type: switch
     group: office
     interfaces:
-      - {id: Et49}
-      - {id: Et1}
-      - {id: Et2}
+      - {id: Et49, vlans: 1}
+      - {id: Et1, vlans: 1}
+      - {id: Et2, vlans: 1}
       # free ports: no cable yet (the physical view shows them as chips in the switch)
-      - {id: Et3}
-      - {id: Et4}
-      - {id: Et5}
-      - {id: Et6}
-      - {id: Et7}
-      - {id: Et8}
+      - {id: Et3, vlans: 1}
+      - {id: Et4, vlans: 1}
+      - {id: Et5, vlans: 1}
+      - {id: Et6, vlans: 1}
+      - {id: Et7, vlans: 1}
+      - {id: Et8, vlans: 1}
   - id: ap
     label: ap-1-01
     type: ap

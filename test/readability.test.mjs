@@ -102,7 +102,7 @@ test('no diagram text is shortened: every example, both views, draws its labels 
         }
         // every cable that has something to say is labelled (it used to be dropped when the cable was short)
         const labelled = new Set(g.linkLabels.map((l) => l.ref));
-        for (const l of m.links) if (l.speed || l.label || derive.tagMismatch(l.a, l.b)) assert.ok(labelled.has('link:' + l.id), `${f}: cable ${l.id} has its label`);
+        for (const l of m.links) if (l.speed || l.label || derive.tagMismatch(m, l)) assert.ok(labelled.has('link:' + l.id), `${f}: cable ${l.id} has its label`);
       } else {
         const pills = new Set(g.pills.map((p) => p.ref));
         for (const r of m.relations) {
@@ -179,7 +179,7 @@ test('several point-to-point cables between the same devices: parallel, straight
 
 test('a cable that would cross a device bends around it; one that needs no bend has none', () => {
   // three devices in one row: the outer two are cabled, the middle one is in the way
-  const m = model('netatlas: 1\ndevices:\n  - {id: a, type: switch, interfaces: [e0, e1]}\n  - {id: b, type: switch, interfaces: [e0, e1]}\n  - {id: c, type: switch, interfaces: [e0]}\nlinks:\n  - {id: ab, a: "a:e0", b: "b:e0"}\n  - {id: ac, a: "a:e1", b: "c:e0"}\n');
+  const m = model('netatlas: 1\ndevices:\n  - {id: a, type: switch, interfaces: [{id: e0, vlans: 1}, {id: e1, vlans: 1}]}\n  - {id: b, type: switch, interfaces: [{id: e0, vlans: 1}, {id: e1, vlans: 1}]}\n  - {id: c, type: switch, interfaces: [{id: e0, vlans: 1}]}\nlinks:\n  - {id: ab, a: "a:e0", b: "b:e0"}\n  - {id: ac, a: "a:e1", b: "c:e0"}\n');
   const s = new state.Session(m);
   // put b exactly between a and c
   s.model.layout.physical = new Map([['a', { x: 0, y: 0 }], ['b', { x: 400, y: 0 }], ['c', { x: 800, y: 0 }]]);

@@ -28,9 +28,9 @@ export const SCHEMA = {
   dnsZone: ['name', 'records', 'simulation'],
   dnsRecord: ['name', 'type', 'value'],
   /** a physical interface (a port): an entry of a device's `interfaces` */
-  interface: ['id', 'label', 'dhcp', 'ip', 'vrf', 'mac', 'mtu', 'dhcp_relay', 'protocols', 'multicast', 'simulation', 'description', 'attrs'],
+  interface: ['id', 'label', 'vlans', 'native', 'routed', 'dhcp', 'ip', 'vrf', 'mac', 'mtu', 'dhcp_relay', 'protocols', 'multicast', 'simulation', 'description', 'attrs'],
   /** a loopback, virtual or tunnel interface: an entry of a device's `logical_interfaces` */
-  logical: ['id', 'type', 'label', 'dhcp', 'ip', 'vrf', 'mac', 'mtu', 'dhcp_relay', 'members', 'min_links', 'vlan', 'source', 'destination', 'protocols', 'multicast', 'simulation', 'description', 'attrs'],
+  logical: ['id', 'type', 'label', 'dhcp', 'ip', 'vrf', 'mac', 'mtu', 'dhcp_relay', 'members', 'min_links', 'vlans', 'native', 'routed', 'vlan', 'source', 'destination', 'protocols', 'multicast', 'simulation', 'description', 'attrs'],
   /** an interface's `multicast:` block, a group it joins written as a mapping, a stream it sends */
   multicast: ['join', 'streams'],
   mcJoin: ['group', 'sources'],
@@ -41,7 +41,7 @@ export const SCHEMA = {
   route: ['prefix', 'via', 'interface', 'blackhole', 'distance', 'metric', 'vrf', 'name', 'description', 'attrs'],
   link: ['id', 'a', 'b', 'medium', 'speed', 'label', 'cable', 'direction', 'simulation', 'description', 'attrs'],
   /** one end of a link written as a mapping */
-  linkEnd: ['device', 'interface', 'speed', 'duplex', 'mode', 'untagged', 'tagged'],
+  linkEnd: ['device', 'interface', 'speed', 'duplex'],
   network: ['id', 'label', 'cidr', 'vlan', 'simulation', 'description', 'attrs'],
   relation: ['id', 'protocol', 'category', 'label', 'endpoints', 'over', 'direction', 'simulation', 'description', 'attrs'],
   /** a relation endpoint written as a mapping (the same as "device:interface") */

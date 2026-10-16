@@ -103,6 +103,15 @@ export interface Interface {
    * with its own address as the gateway address (giaddr). `dhcp_relay:`.
    */
   dhcpRelay?: string[];
+  /**
+   * A port's (or an aggregate's) VLANs as written, each an ID or a range: one
+   * VLAN makes it an access port, several a trunk. Empty: none written.
+   */
+  vlans: VlanRange[];
+  /** a trunk's native (untagged) VLAN, one of its `vlans` */
+  native?: number;
+  /** a Layer 3 switch's port (or aggregate) set to routed: no VLANs, it may have addresses */
+  routed?: boolean;
   /** virtual: ids of the physical interfaces of the same device that are its members (a bond / aggregate); in file order */
   members: string[];
   /** virtual with members: how many member links must be up for the aggregate to be up, when written */
@@ -302,9 +311,17 @@ export interface NetServices {
   };
 }
 
-/** Layer-2 port mode of a link end: an access port (one untagged VLAN) or a trunk (tagged VLANs, plus a native one). */
-export type PortMode = 'access' | 'trunk';
-export const PORT_MODES: readonly PortMode[] = ['access', 'trunk'];
+/**
+ * What a port is at layer 2 (derived from its `vlans`, `native` and `routed`
+ * and its device; see model/derive.ts portL2):
+ *   access   one VLAN, untagged;
+ *   trunk    several VLANs, 802.1Q-tagged except the native one (if any);
+ *   routed   a Layer 3 interface (a router's port, a Layer 3 switch's port
+ *            set to routed); its subinterfaces' VLANs are tagged on it;
+ *   host     a host's port without VLANs: untagged, no VLAN of its own;
+ *   unset    a switch port without VLANs that is not routed (an error).
+ */
+export type PortKind = 'access' | 'trunk' | 'routed' | 'host' | 'unset';
 
 /** A run of VLAN IDs, `from` to `to` inclusive (one ID: from === to). */
 export interface VlanRange {
@@ -313,12 +330,9 @@ export interface VlanRange {
 }
 
 /**
- * One end of a physical link, with the layer-2 tagging of the port there:
- * its mode, the untagged VLAN (the access VLAN, or a trunk's native VLAN)
- * and the tagged VLANs. Configured per end: the two ends may differ, and
- * nothing is copied from one to the other. The networks the cable carries
- * there are derived from it (the networks whose `vlan` is carried; see
- * model/derive.ts). An end without a mode says nothing about layer 2.
+ * One end of a physical link: the port it is plugged into, and what that
+ * port is set to (speed, duplex). What the cable carries at layer 2 is not
+ * written here: it follows from the port's VLANs (model/derive.ts).
  */
 export type Duplex = 'full' | 'half' | 'auto';
 export const DUPLEXES: readonly Duplex[] = ['full', 'half', 'auto'];
@@ -328,10 +342,6 @@ export interface LinkEnd extends Endpoint {
   speed?: string;
   /** the port's configured duplex */
   duplex?: Duplex;
-  mode?: PortMode;
-  untagged?: number;
-  /** tagged VLANs as written (file order), each an ID or a range */
-  tagged: VlanRange[];
 }
 
 export interface Link {

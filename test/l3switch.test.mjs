@@ -21,8 +21,8 @@ devices:
   - id: sw
     type: switch
 ${dev}    interfaces:
-      - {id: p1}
-      - {id: p2}
+      - {id: p1, vlans: 1}
+      - {id: p2, vlans: 1}
 ${extra}`;
 
 test('layer3 is for switches only; the role of a device follows from it', () => {
@@ -84,7 +84,8 @@ devices:
   - id: sw
     type: switch
     ${l3 ? 'layer3: true' : ''}
-    interfaces: [{id: p1, ip: 10.1.0.1/24}${l3 ? ', {id: p2, ip: 10.2.0.1/24}' : ', {id: p2}'}]
+    interfaces: [${l3 ? '{id: p1, routed: true, ip: 10.1.0.1/24}, {id: p2, routed: true, ip: 10.2.0.1/24}' : '{id: p1, vlans: 1}, {id: p2, vlans: 1}'}]
+    ${l3 ? '' : 'logical_interfaces: [{id: Vlan1, type: virtual, vlan: 1, ip: 10.1.0.1/24}]'}
   - {id: h2, type: endpoint, interfaces: [{id: e, ip: 10.2.0.10/24}]}
 links:
   - {id: a, a: "h1:e", b: "sw:p1"}
@@ -114,7 +115,9 @@ test('making a Layer 3 switch a Layer 2 switch: the list of what goes (and the r
   assert.equal(sw.services.length, 0);
   assert.equal(sw.routerId, undefined);
   assert.equal(sw.interfaces.concat(sw.logical).filter((i) => i.addresses.length).length, 1, 'one management interface keeps its addresses');
-  assert.ok(!d.result.errors.some((e) => /^devices\.hq-core1\./.test(e.path)), d.result.errors.map((e) => e.path + ' ' + e.message).join('\n'));
+  // its routed port is a switch port now: it needs its VLANs, reported until they are given (nothing is chosen for it)
+  assert.ok(plan.removed.indexOf('Ethernet49: routed port (give it its VLANs)') >= 0, plan.removed.join('; '));
+  assert.deepEqual(d.result.errors.filter((e) => /^devices\.hq-core1\./.test(e.path)).map((e) => e.path), ['devices.hq-core1.interfaces[0].vlans'], d.result.errors.map((e) => e.path + ' ' + e.message).join('\n'));
   assert.ok(d.result.errors.some((e) => /^relations\..*Layer 2 switch/.test(e.path + ' ' + e.message)), 'the relations that need routing are reported');
   d.undo();
   assert.equal(d.exportText(), before, 'one undo step brings it all back');

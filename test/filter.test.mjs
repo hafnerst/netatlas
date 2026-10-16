@@ -38,7 +38,7 @@ devices:
     group: rack1
     interfaces: [{id: e0, ip: 10.0.0.2/30}, {id: e1, ip: 10.1.0.2/24}]
     logical_interfaces: [{id: lo0, type: loopback, ip: 10.255.0.2/32}]
-  - {id: sw, type: switch, group: rack2, interfaces: [p1, p2, {id: p3, ip: 10.1.0.3/24}]}
+  - {id: sw, type: switch, group: rack2, interfaces: [{id: p1, vlans: 30}, {id: p2, vlans: 1}, {id: p3, vlans: 1}], logical_interfaces: [{id: Vlan1, type: virtual, vlan: 1, ip: 10.1.0.3/24}]}
   - id: r3
     type: router
     group: far
@@ -46,7 +46,7 @@ devices:
     logical_interfaces: [{id: lo0, type: loopback, ip: 10.255.0.3/32}]
 links:
   - {id: l12, a: "r1:e0", b: "r2:e0", medium: fiber}
-  - {id: l1s, a: {device: r1, interface: e2, mode: access, untagged: 30}, b: {device: sw, interface: p1, mode: access, untagged: 30}}
+  - {id: l1s, a: "r1:e2", b: "sw:p1"}
   - {id: l3s, a: "r3:e0", b: "sw:p2"}
 networks:
   - {id: lan, cidr: 10.1.0.0/24}

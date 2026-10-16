@@ -25,12 +25,28 @@ there is no conversion of files written for the earlier drafts.
   proxy, gateway) and on hosts (server, VM, container, storage, endpoint,
   system); an error on access points, IDS/IPS, clouds and devices without a
   type. A host's default gateway is a static default route.
-- **VLAN tagging on link ends** replaces the per-end `networks` list: a link
-  end has `mode` (`access` or `trunk`), `untagged` (a VLAN ID: the access VLAN
-  or a trunk's native VLAN) and `tagged` (VLAN IDs and ranges such as
-  `100-199`). VLANs are referenced by ID, as on networks and VLAN interfaces;
-  the networks a cable carries are now derived from its tagging. `networks`
-  on a link end is an unknown key.
+- **VLANs on ports** replace the per-end `networks` list (and the link-end
+  tagging of earlier drafts): a physical port, or an aggregate for its
+  members, has `vlans` (VLAN IDs and ranges such as `30-39`): one VLAN makes
+  an access port (untagged), several a trunk, with an optional `native`
+  VLAN (untagged, one of its VLANs; without it every VLAN is tagged). On a
+  Layer 3 switch a port may be `routed: true` instead. A switch's port needs
+  its VLANs (an error until they are filled in); on a router and other
+  Layer 3 devices a port without VLANs is routed; hosts are unaffected. A
+  port with VLANs is a bridge port: an address on it is an error. A member
+  of an aggregate takes the aggregate's VLANs (VLANs of its own are an
+  error). Subinterfaces (`<port>.<n>`) stay for router-on-a-stick; a port
+  can't be a bridge port and a subinterface parent for the same VLAN. VLANs
+  are referenced by ID, as on networks and VLAN interfaces; the networks a
+  cable carries are derived from its two ports. A link end holds only
+  `device`, `interface`, `speed` and `duplex`: `mode`, `untagged`,
+  `tagged` and `networks` there are unknown keys that say where the VLANs
+  go.
+- **VLAN interfaces bind to their bridge ports:** a VLAN interface is
+  written once per device and VLAN, and is bound to every bridge port of
+  its VLAN (access ports, trunks, aggregates) by itself; it has no member
+  list. Two for one VLAN are an error, one whose VLAN no port carries a
+  warning, and a Layer 2 switch has one (its management interface).
 - **Consistency facts as fields:** an interface may have `mtu`; an aggregate
   (a virtual interface with members) `min_links`; a device `router_id` (an
   IPv4 address) and `asn`; a link end the port's `speed` and `duplex`
@@ -379,8 +395,12 @@ there is no conversion of files written for the earlier drafts.
   before unicast traffic; multicast to the group's MAC; gratuitous ARP when
   an interface comes up and when a VRRP / HSRP master changes (with the
   virtual MAC); switches learning per port and VLAN, flooding within the
-  VLAN, known unicast to the learned port, the link ends' tagging; a
-  spanning tree per VLAN (BPDUs, LLDP and CDP where the model has their
+  VLAN, known unicast to the learned port; access ports untagged and trunks
+  tagged except their native VLAN (the 802.1Q tag in the packet
+  inspector), a VLAN interface reached through any bridge port of its
+  VLAN, a disallowed VLAN dropped and a native mismatch leaking, both
+  explained in the log; a spanning tree per VLAN on the bridge ports
+  (BPDUs, LLDP and CDP where the model has their
   relations); LACP on aggregates; routers and Layer 3 switches rewriting the
   MACs and decrementing the TTL hop by hop, in the event log. Interfaces
   without a MAC get a generated, locally administered one, from a fixed
@@ -488,11 +508,22 @@ there is no conversion of files written for the earlier drafts.
   Details, tooltips, **Find** (prefix, next hop, name) and selection include
   routes; a route is related to its device, its exit interface and the
   interface its next hop belongs to.
-- **VLAN tagging in the diagram and the editor.** The physical view writes
-  each link end's tagging under its port name (`U 99 · T 10,20,100-199`) and
-  marks a cable whose ends disagree with ⚠ *VLANs differ*. The Edit tab has
-  **Mode**, **Untagged / Native VLAN** and **Tagged VLANs** per end, with the
-  networks they carry; **Find** finds the cables carrying a VLAN (`vlan 20`).
+- **Port VLANs in the diagram and the editor.** The physical view writes
+  each port's VLANs under its name (`A 10`, `T 10,20,30–39 · N 10`, `R · T
+  10,20` for a routed port's tagged subinterfaces), draws trunks larger with
+  a thick frame (in the legend) and marks a cable whose ports disagree with
+  ⚠ *VLANs differ*. A port's card has a keyboard-operable multi-select
+  **VLANs** combobox (the model's VLANs with their names; new IDs and
+  ranges), a **Native VLAN** picker on trunks and a **Routed port**
+  checkbox on a Layer 3 switch; a mode badge in words (*Access · VLAN 10*,
+  *Trunk · 10, 20, 30–39 (native 10)*, *Routed*) in the card, the device's
+  port list and, per cable, the Objects list; suggestions (*Same as
+  Gi1/0/1*, *VLANs of the connected port*); **Assign VLANs to ports…** for a
+  port range in one undo step; a switch port's missing VLANs as an error at
+  the field and in Problems, which leads back to the field. A VLAN
+  interface shows its **Bridge ports** read-only, by mode, each a link; it
+  and its ports highlight each other. **Find** finds ports and cables by
+  VLAN (`vlan 20`) and ports by mode (`trunk`).
 - **Analysis module** (`src/analysis/`): address arithmetic for IPv4 and
   IPv6, routing tables (connected networks, static routes per VRF,
   longest-prefix match, distance, metric, equal-cost multipath, recursive
@@ -503,8 +534,9 @@ there is no conversion of files written for the earlier drafts.
   invalid. Checks in this release: `route-nexthop-self`,
   `route-nexthop-unresolved`, `route-nexthop-recursive` (info),
   `route-nexthop-interface`, `route-exit-interface`, `route-duplicate`,
-  `route-conflict`, `vlan-native-mismatch`, `vlan-tagged-mismatch`,
-  `vlan-access-tagged`, `vlan-untagged-tagged`, `vlan-unknown`.
+  `route-conflict`, `vlan-access-mismatch`, `vlan-trunk-mismatch`,
+  `vlan-native-mismatch`, `vlan-access-trunk`, `vlan-unknown` (VLAN 1
+  aside), `lag-member-vlans`.
 - **Addressing overview** (Analyze → Addressing overview…, `I`): the
   networks of each VRF nested by containing prefix, with VLAN, name,
   members (device, interface, address, DNS name, DHCP), gateway or VIP, used
@@ -570,13 +602,21 @@ there is no conversion of files written for the earlier drafts.
   check.
 - Example **`branch-routing.yaml`**: a dual-homed branch with a floating
   static default route, equal-cost routes to HQ, a blackhole, a guest VRF,
-  host default gateways and a router-on-a-stick trunk with a native VLAN.
-- User Manual section *Static routes and VLAN tagging* with two screenshots;
-  README screenshots of route tables and port tagging.
+  host default gateways and a router-on-a-stick (a routed router port with
+  subinterfaces, the switch's trunk with a native VLAN).
+- Example **`vlan-ports.yaml`**: an L2 access switch (ports 1–10 in VLAN
+  10, 11–20 in VLAN 20, a trunk uplink with a native VLAN), an L3 core with
+  Vlan10 and Vlan20 bound to their bridge ports, a routed uplink, a LAG
+  trunk, a router with a bridge port and its BVI, and deliberate
+  mismatches (a native VLAN that differs, a VLAN one end doesn't allow).
+- User Manual section *Static routes and port VLANs* with three
+  screenshots; README screenshots of route tables and port VLANs.
 - Tests: `test/analysis.test.mjs`, `test/routes.test.mjs`,
-  `test/vlan-tagging.test.mjs` (every route and VLAN check positive and
-  negative), and a self-test block for the routes UI, the Routes switch and
-  its effect on exports.
+  `test/port-vlans.test.mjs` (the port model, validation, VLAN interfaces,
+  every VLAN check positive and negative, editing, display),
+  `test/sim-vlans.test.mjs` (port VLANs in the simulation), and self-test
+  blocks for the routes UI, the Routes switch and its effect on exports,
+  and the port VLANs on the VLAN example in both themes.
 
 - **Relations and links attached to their interfaces.** In the logical view
   every interface a relation is bound to has a **port** beside its row on the
@@ -839,9 +879,13 @@ there is no conversion of files written for the earlier drafts.
   gateway is a VRRP address, and host routes keep the tunnel endpoints on
   the internet uplinks.
 
-- The examples and fixtures use VLAN tagging on their link ends instead of
-  per-end network lists. Cable labels no longer list networks (the port
-  labels carry the tagging).
+- The examples and fixtures write VLANs on their ports instead of per-end
+  network lists; every switch port has its VLANs. Cable labels no longer
+  list networks (the port labels carry the VLANs).
+- A Problems entry puts the cursor in the field it is about, when that is
+  an editable field.
+- Making a Layer 3 switch a Layer 2 switch also lists its routed ports
+  (they need their VLANs afterwards).
 - Logical-view routing: a relation whose route has to go around a box turns
   beyond the end labels of the rows it passes (the stubs are nested again with
   the turn the route really makes).
@@ -996,8 +1040,9 @@ live protocol simulation replaces them.
   drop-down could move the filter group to another row, after which the
   button no longer counted it (*Filters · 1 off*). The group now keeps room
   for the button's longest label, and the row settles in one pass.
-- Physical view: a tagged port's VLAN line no longer overlaps the name of
-  the untagged port below it, the ⚠ of a cable whose tagging differs is
+- Physical view: a port's VLAN line no longer overlaps the name of the
+  port below it or the title of a group (the rows and frames keep room for
+  it), the ⚠ of a cable whose ports differ is
   kept clear of other labels, and a cable no longer runs through a device
   when its way around starts at another port of that device.
 - In the **View** and **Auto-arrange** groups, a hovered or keyboard-focused

@@ -1,5 +1,5 @@
 import { IpPrefix, addrKey, hasHostBits, parseAddress, parsePrefix, prefixContains, prefixProblem } from '../model/ip';
-import { derive, interfaceAddresses } from '../model/derive';
+import { bridgePorts, derive, interfaceAddresses, interfaceVlans, isBridgePort, isVlanInterface, portL2, subinterfaceParent } from '../model/derive';
 import { CHECKS, CheckSetting, SEVERITIES, Target, runChecks } from '../analysis/checks';
 import {
   CATEGORIES,
@@ -22,8 +22,6 @@ import {
   ModelIndex,
   ModelLayout,
   Network,
-  PORT_MODES,
-  PortMode,
   RelEndpoint,
   RouterIdValue,
   ServiceConfig,
@@ -497,6 +495,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
         vrf: r.field(im, 'vrf', ipath, 100),
         mac: r.field(im, 'mac', ipath, 40),
         mtu: r.int(get(im, 'mtu'), ipath + '.mtu', 68, 65535, 'MTU'),
+        vlans: [],
         members: [],
         services: [],
         description: r.field(im, 'description', ipath, L.maxDescription),
@@ -524,6 +523,9 @@ function build(root: YNode | null, c: Ctx): Model | null {
       const igmpVer = (sb && sb.values.get('igmp-version')) || (dev.simulation && dev.simulation.get('igmp-version'));
       const mn = get(im, 'multicast');
       if (!isNull(mn)) iface.multicast = readMulticast(r, c, mn as YNode, ipath + '.multicast', iid, addrs.length > 0, igmpVer === 'v2');
+      // a port's (or an aggregate's) layer 2: its VLANs (access or trunk), a trunk's native VLAN, or routed
+      if (type === 'physical' || type === 'virtual') readPortVlans(r, c, im, ipath, iface, dev);
+      else for (const k of ['vlans', 'native', 'routed']) if (!isNull(get(im, k))) c.error(get(im, k) as YNode, `${ipath}.${k}`, `"${k}" applies to a port or an aggregate; "${iid}" is a ${type} interface — delete this key`);
       if (where === 'logical') {
         // Each association belongs to one type; on another type it is an error, not silently ignored.
         const only = (k: string, t: InterfaceKind, what: string): boolean => {
@@ -563,6 +565,17 @@ function build(root: YNode | null, c: Ctx): Model | null {
         if (only('vlan', 'virtual', 'the VLAN a VLAN interface belongs to')) {
           iface.vlan = r.vlanId(get(im, 'vlan'), ipath + '.vlan');
           vlanNodes.set(key, get(im, 'vlan') as YNode);
+          if (iface.members.length) c.error(get(im, 'vlan') as YNode, ipath + '.vlan', `"${iid}" is an aggregate (it has member ports): it carries VLANs with "vlans", it is not the interface of one VLAN — a VLAN interface binds to its bridge ports by itself`);
+        }
+        // an aggregate's VLANs (its members take them); on another virtual interface they mean nothing
+        if (type === 'virtual' && !iface.members.length) {
+          for (const k of ['vlans', 'native', 'routed']) {
+            if (isNull(get(im, k))) continue;
+            c.error(get(im, k) as YNode, `${ipath}.${k}`, `"${k}" applies to a port or an aggregate (with member ports); "${iid}" has no member ports — a VLAN interface's VLAN is "vlan", and it binds to the ports of that VLAN by itself`);
+          }
+          iface.vlans = [];
+          iface.native = undefined;
+          iface.routed = undefined;
         }
         for (const k of ['source', 'destination'] as Array<'source' | 'destination'>) {
           if (!only(k, 'tunnel', k === 'source' ? 'the local interface or address a tunnel is sourced from' : 'the remote end of a tunnel')) continue;
@@ -612,6 +625,13 @@ function build(root: YNode | null, c: Ctx): Model | null {
       const v = resolveRouterId(c, dev, s.text, s.node, s.path);
       if (v) s.svc.routerId = v;
     }
+    // its ports' VLANs: members take their aggregate's, a switch says what every port carries, no address on a switch port
+    const portNodes = new Map<string, { node: YMap; path: string }>();
+    for (const i of deviceInterfaces(dev)) {
+      const k = ifaceKey(id, i.id);
+      portNodes.set(k, { node: ifaceNodes.get(k) as YMap, path: ifacePaths.get(k) as string });
+    }
+    portRules(c, dev, portNodes, memberOf);
     if (isLayer2Switch(dev)) layer2SwitchRules(c, m, dpath, dev);
     for (const s of dev.services) {
       const def = services.get(s.id);
@@ -682,7 +702,7 @@ function build(root: YNode | null, c: Ctx): Model | null {
   const endpoint = (n: YNode, path: string, extended: boolean): (RelEndpoint & { tag: L2Tag }) | null => {
     let device: string | undefined;
     let iface: string | undefined;
-    let tag: L2Tag = { tagged: [] };
+    let tag: L2Tag = {};
     if (n.kind === 'scalar') {
       const s = r.str(n, path, 200);
       if (s === undefined) {
@@ -693,11 +713,11 @@ function build(root: YNode | null, c: Ctx): Model | null {
       device = colon < 0 ? s : s.slice(0, colon);
       iface = colon < 0 ? undefined : s.slice(colon + 1);
     } else if (n.kind === 'map') {
-      r.keys(n, extended ? EP_KEYS : LINK_END_KEYS, path, '');
+      r.keys(n, extended ? EP_KEYS : LINK_END_KEYS, path, '', extended ? {} : MOVED_TO_PORT);
       device = r.reqStr(n, 'device', path, 200);
       iface = r.field(n, 'interface', path, 200);
-      // the layer-2 tagging of the port at this end: a fact of the link end, kept exactly as configured
-      if (!extended) tag = readTagging(r, c, n, path);
+      // what the port at this end is set to (speed, duplex); its VLANs are the port's
+      if (!extended) tag = readEndSettings(r, c, n, path);
       if (device === undefined) return null;
     } else {
       c.error(n, path, `expected "device", "device:interface" or a mapping with "device:" but found ${kindOf(n)}`);
@@ -764,11 +784,9 @@ function build(root: YNode | null, c: Ctx): Model | null {
         }
         ifaceLink.set(key, id);
       }
-      const end: LinkEnd = { device: ep.device, iface: ep.iface, tagged: ep.tag.tagged };
+      const end: LinkEnd = { device: ep.device, iface: ep.iface };
       if (ep.tag.speed !== undefined) end.speed = ep.tag.speed;
       if (ep.tag.duplex !== undefined) end.duplex = ep.tag.duplex;
-      if (ep.tag.mode !== undefined) end.mode = ep.tag.mode;
-      if (ep.tag.untagged !== undefined) end.untagged = ep.tag.untagged;
       endNodes.set(`${id}.${side}`, en as YNode);
       return end;
     });
@@ -1146,6 +1164,35 @@ function build(root: YNode | null, c: Ctx): Model | null {
       if (vn) c.warn(vn, `${ifacePaths.get(key)}.vlan`, `"${i.id}" is the interface of VLAN ${i.vlan}, but its address ${other.address} lies in a network of VLAN ${other.vlan.vlan}`);
     }
   }
+  // VLAN interfaces and subinterfaces against the ports' VLANs
+  for (const d of devices) {
+    const seen = new Map<number, string>();
+    let first: Interface | null = null;
+    for (const i of d.logical) {
+      const key = ifaceKey(d.id, i.id);
+      const node = (vlanNodes.get(key) || ifaceNodes.get(key)) as YNode;
+      const path = `${ifacePaths.get(key)}${vlanNodes.has(key) ? '.vlan' : ''}`;
+      const parent = subinterfaceParent(model, i);
+      if (parent !== undefined) {
+        // a subinterface tags its VLAN on its port: that port can't carry the same VLAN as a switch port
+        const l = portL2(model, d.id, parent);
+        const clash = interfaceVlans(model, i).filter((v) => !!l && isBridgePort(l) && l.vlans.indexOf(v) >= 0);
+        if (clash.length) c.error(node, path, `"${i.id}" is a subinterface of "${parent}" in VLAN ${clash[0]}, but ${parent} is a switch port of VLAN ${clash[0]} itself: a port is either a bridge port of a VLAN or the parent of a subinterface for it — remove the VLAN from ${parent}, or use the VLAN interface of VLAN ${clash[0]} instead`);
+        continue;
+      }
+      if (!isVlanInterface(model, i)) continue;
+      for (const v of interfaceVlans(model, i)) {
+        const twice = seen.get(v);
+        if (twice !== undefined) c.error(node, path, `"${d.id}" has two VLAN interfaces for VLAN ${v} (${twice} and ${i.id}): a device has one interface per VLAN`);
+        else seen.set(v, i.id);
+        if (!bridgePorts(model, d.id, v).length) c.warn(node, path, `VLAN ${v} has no bridge port on "${d.id}": no port of the device carries it (in its "vlans"), so "${i.id}" reaches no one`);
+      }
+      if (isLayer2Switch(d)) {
+        if (first) c.error(node, path, `"${d.id}" is a Layer 2 switch: it has one VLAN interface, its management interface (${first.id}); another one (${i.id}) would route between VLANs — set layer3: true to make it a Layer 3 switch`);
+        else first = i;
+      }
+    }
+  }
 
   // ------------------------------------------------------ consistency checks
   // They describe the network, not the format, so they run on a model whose format is valid; each finding is
@@ -1205,23 +1252,22 @@ function build(root: YNode | null, c: Ctx): Model | null {
   return model;
 }
 
-/** The port settings written on a link end: speed, duplex and layer-2 tagging. */
+/** The port settings written on a link end: speed and duplex. */
 interface L2Tag {
   speed?: string;
   duplex?: Duplex;
-  mode?: PortMode;
-  untagged?: number;
-  tagged: VlanRange[];
 }
 
-/**
- * The tagging of a link end's port: `mode` (access or trunk), the untagged
- * VLAN (an access port's VLAN, a trunk's native VLAN) and the tagged VLANs,
- * each an ID or a range "100-199". VLAN IDs are 1–4094. Tagging needs a
- * mode, so nothing is assumed about a port that doesn't say what it is.
- */
-function readTagging(r: Reader, c: Ctx, n: YMap, path: string): L2Tag {
-  const out: L2Tag = { tagged: [] };
+/** What a link end used to say about VLANs, and where it is written now. */
+const MOVED_TO_PORT: { [k: string]: string } = {
+  mode: 'a port\'s VLANs are configured on the port: "vlans" on the device\'s interface (one VLAN: access; several: trunk)',
+  untagged: 'a port\'s VLANs are configured on the port: "vlans" (an access port\'s VLAN) and "native" (a trunk\'s untagged VLAN) on the device\'s interface',
+  tagged: 'a port\'s VLANs are configured on the port: "vlans" on the device\'s interface',
+};
+
+/** The settings of a link end's port: its speed and duplex (both optional; nothing is assumed). */
+function readEndSettings(r: Reader, c: Ctx, n: YMap, path: string): L2Tag {
+  const out: L2Tag = {};
   // the port's configured speed and duplex (the connection's speed is the link's)
   out.speed = r.field(n, 'speed', path, 40);
   const duplex = r.field(n, 'duplex', path, 20);
@@ -1229,15 +1275,18 @@ function readTagging(r: Reader, c: Ctx, n: YMap, path: string): L2Tag {
     if ((DUPLEXES as readonly string[]).indexOf(duplex) >= 0) out.duplex = duplex as Duplex;
     else c.error(get(n, 'duplex') as YNode, path + '.duplex', `unknown duplex "${duplex}": use "full", "half" or "auto"${suggest(duplex, DUPLEXES)}`);
   }
-  const mode = r.field(n, 'mode', path, 40);
-  if (mode !== undefined) {
-    if ((PORT_MODES as readonly string[]).indexOf(mode) >= 0) out.mode = mode as PortMode;
-    else c.error(get(n, 'mode') as YNode, path + '.mode', `unknown port mode "${mode}": use "access" (one untagged VLAN) or "trunk" (tagged VLANs, plus a native one)${suggest(mode, PORT_MODES)}`);
-  }
-  out.untagged = r.vlanId(get(n, 'untagged'), path + '.untagged');
+  return out;
+}
+
+/**
+ * A list of VLAN IDs and ranges as written ("10", "100-199", or a list of
+ * both), each ID 1–4094, none twice; the ranges as written.
+ */
+function readVlanRanges(r: Reader, c: Ctx, node: YNode | undefined, path: string, where: string): VlanRange[] {
+  const out: VlanRange[] = [];
   const seen: number[] = [];
-  r.list(get(n, 'tagged'), path + '.tagged', true).forEach((item, k) => {
-    const ip = `${path}.tagged[${k}]`;
+  r.list(node, path, true).forEach((item, k) => {
+    const ip = node && node.kind === 'seq' ? `${path}[${k}]` : path;
     const t = item.kind === 'scalar' ? scalarText(item) : undefined;
     const m = t !== undefined ? /^([0-9]{1,4})(?:\s*-\s*([0-9]{1,4}))?$/.exec(t) : null;
     const from = m ? Number(m[1]) : NaN;
@@ -1249,17 +1298,98 @@ function readTagging(r: Reader, c: Ctx, n: YMap, path: string): L2Tag {
     const twice: number[] = [];
     for (let v = from; v <= to; v++) if (seen.indexOf(v) >= 0) twice.push(v);
     if (twice.length) {
-      c.error(item, ip, `VLAN ${twice[0]}${twice.length > 1 ? ' and others' : ''} listed twice in "tagged" on this end`);
+      c.error(item, ip, `VLAN ${twice[0]}${twice.length > 1 ? ' and others' : ''} listed twice in the VLANs of ${where}`);
       return;
     }
     for (let v = from; v <= to; v++) seen.push(v);
-    out.tagged.push({ from, to });
+    out.push({ from, to });
   });
-  if (out.mode === undefined && mode === undefined && (out.untagged !== undefined || !isNull(get(n, 'tagged')))) {
-    const k = out.untagged !== undefined ? 'untagged' : 'tagged';
-    c.error(get(n, k) as YNode, path + '.' + k, 'VLAN tagging needs the port mode: add "mode: access" (one untagged VLAN) or "mode: trunk" (tagged VLANs, plus an untagged native VLAN)');
-  }
   return out;
+}
+
+/**
+ * A port's (or an aggregate's) layer 2, as written on it:
+ *   `vlans`   one VLAN (an access port, untagged) or several (a trunk);
+ *   `native`  a trunk's untagged VLAN, one of its VLANs (without it, every
+ *             VLAN of the trunk is tagged);
+ *   `routed`  a Layer 3 switch's port that is a Layer 3 interface: no VLANs.
+ * Whether a port must say it, and what an address on it means, is checked
+ * once the whole device is read (portRules).
+ */
+function readPortVlans(r: Reader, c: Ctx, im: YMap, ipath: string, iface: Interface, dev: Device): void {
+  const vn = get(im, 'vlans');
+  if (!isNull(vn)) iface.vlans = readVlanRanges(r, c, vn as YNode, ipath + '.vlans', `"${iface.id}"`);
+  const ids: number[] = [];
+  for (const x of iface.vlans) for (let v = x.from; v <= x.to; v++) ids.push(v);
+  const nn = get(im, 'native');
+  const native = r.vlanId(nn, ipath + '.native');
+  if (native !== undefined) {
+    if (ids.length < 2) {
+      c.error(nn as YNode, ipath + '.native', ids.length === 1 ? `"${iface.id}" is an access port (one VLAN, ${ids[0]}), and its frames are untagged anyway: "native" is a trunk's (several VLANs) — delete it` : `"native" is a trunk's untagged VLAN: "${iface.id}" has no VLANs — write its "vlans" first`);
+    } else if (ids.indexOf(native) < 0) {
+      c.error(nn as YNode, ipath + '.native', `the native VLAN ${native} is not one of the VLANs of "${iface.id}" (${vlanTextOf(iface.vlans)}): add it to "vlans" or choose one of them`);
+    } else iface.native = native;
+  }
+  const rn = get(im, 'routed');
+  const routed = r.bool(rn, ipath + '.routed');
+  if (routed === true) {
+    if (dev.type !== 'switch') {
+      const why = deviceRoutingRole(dev) === 'router' ? `a ${deviceTypeLabel(dev.type) || dev.type}'s port without VLANs is routed anyway — delete "routed"` : `a ${dev.type === NO_DEVICE_TYPE ? 'device without a type' : (deviceTypeLabel(dev.type) || dev.type).toLowerCase()} routes nothing`;
+      c.error(rn as YNode, ipath + '.routed', `"routed" is a Layer 3 switch's setting for a port: ${why}`);
+    } else if (!dev.layer3) {
+      c.error(rn as YNode, ipath + '.routed', `"${dev.id}" is a Layer 2 switch: its ports are switch ports (they need VLANs); set layer3: true on it to make a routed port`);
+    } else if (iface.vlans.length) {
+      c.error(rn as YNode, ipath + '.routed', `"${iface.id}" has VLANs (a switch port) and is set to routed: a routed port has no VLANs — delete one of them`);
+    } else iface.routed = true;
+  }
+}
+
+function vlanTextOf(rs: VlanRange[]): string {
+  return rs.map((x) => (x.to > x.from ? `${x.from}-${x.to}` : String(x.from))).join(', ');
+}
+
+/**
+ * The rules of a device's ports, once all of its interfaces are read:
+ *   - an aggregate's member ports take its VLANs: a member with VLANs, a
+ *     native VLAN or "routed" of its own is an error;
+ *   - a switch says what each port carries: VLANs on every port or on its
+ *     aggregate, or (a Layer 3 switch) routed; nothing is chosen for it;
+ *   - a port with VLANs (or a member of an aggregate with VLANs) is a
+ *     switch port: an address on it is an error (it belongs on the VLAN
+ *     interface).
+ */
+function portRules(c: Ctx, dev: Device, nodes: Map<string, { node: YMap; path: string }>, memberOf: Map<string, string>): void {
+  const at = (i: Interface): { node: YMap; path: string } => nodes.get(ifaceKey(dev.id, i.id)) as { node: YMap; path: string };
+  const byId = new Map<string, Interface>();
+  for (const i of deviceInterfaces(dev)) byId.set(i.id, i);
+  const configured = (i: Interface): boolean => i.vlans.length > 0 || !!i.routed;
+  for (const i of dev.interfaces) {
+    const lagId = memberOf.get(i.id);
+    const lag = lagId !== undefined ? byId.get(lagId) : undefined;
+    const a = at(i);
+    if (!a) continue;
+    if (lag) {
+      for (const k of ['vlans', 'native', 'routed']) {
+        if (isNull(get(a.node, k))) continue;
+        c.error(get(a.node, k) as YNode, `${a.path}.${k}`, `"${i.id}" is a member of the aggregate "${lag.id}": it takes the aggregate's VLANs — configure "${k}" on ${lag.id} and delete it here`);
+      }
+    }
+    const cfg = lag || i;
+    if (dev.type === 'switch' && !lag && !configured(i)) {
+      c.error(a.node, a.path + '.vlans', `"${i.id}" of switch "${dev.id}" needs its VLANs: one VLAN (an access port) or several (a trunk)${dev.layer3 ? ', or "routed: true" for a routed port' : ''}`, { key: 'vlans' });
+    }
+    if (cfg.vlans.length && (i.addresses.length || i.dhcp)) {
+      const ipN = get(a.node, i.dhcp ? 'dhcp' : 'ip') as YNode;
+      c.error(ipN, `${a.path}.${i.dhcp ? 'dhcp' : 'ip'}`, `"${i.id}" is a switch port (${lag ? `a member of ${lag.id}, ` : ''}VLANs ${vlanTextOf(cfg.vlans)}): it has no address of its own — put ${i.dhcp ? 'DHCP' : 'the address'} on the VLAN interface of its VLAN${dev.type === 'switch' && dev.layer3 && !lag ? ', or make it a routed port' : ''}`);
+    }
+  }
+  for (const g of dev.logical) {
+    if (g.type !== 'virtual' || !g.members.length) continue;
+    const a = at(g);
+    if (!a) continue;
+    if (dev.type === 'switch' && !configured(g)) c.error(a.node, a.path + '.vlans', `aggregate "${g.id}" of switch "${dev.id}" needs its VLANs (its members ${g.members.join(', ')} take them): one VLAN (access) or several (a trunk)${dev.layer3 ? ', or "routed: true"' : ''}`, { key: 'vlans' });
+    if (g.vlans.length && (g.addresses.length || g.dhcp)) c.error(get(a.node, g.dhcp ? 'dhcp' : 'ip') as YNode, `${a.path}.${g.dhcp ? 'dhcp' : 'ip'}`, `aggregate "${g.id}" is a switch port (VLANs ${vlanTextOf(g.vlans)}): it has no address of its own — put it on the VLAN interface of its VLAN`);
+  }
 }
 
 /**

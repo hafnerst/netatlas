@@ -28,7 +28,7 @@ import { deviceRoutingRole, isLayer2Switch } from '../model/device-types';
 import { IpAddr, IpPrefix, parseAddress, parsePrefix } from '../model/ip';
 import { lookupProtocol } from '../model/protocols';
 import { Interface, Link, LinkEnd, Model, Relation, deviceInterfaces, ifaceKey } from '../model/types';
-import { vlanIds, interfaceVlans, portsCarryingVlans } from '../model/derive';
+import { endL2, interfaceVlanPorts, interfaceVlans, isBridgePort } from '../model/derive';
 import { compareAddr, comparePrefix, formatAddr, inPrefix, networkOf, prefixText } from './ipmath';
 import { virtualGateways } from './identity';
 import {
@@ -527,7 +527,7 @@ interface L2State {
 
 type Segment = { kind: 'ok'; links: string[]; devices: string[] } | { kind: 'uncabled'; detail: string } | { kind: 'none'; detail: string };
 
-/** The physical ports an interface sends out of: itself, an aggregate's members, the ports carrying a VLAN interface's VLAN. */
+/** The physical ports an interface sends out of: itself, an aggregate's members, a VLAN interface's bridge ports, a subinterface's port (aggregates as their members). */
 export function portsOf(model: Model, device: string, iface: string): string[] {
   const i = model.index.interfaces.get(ifaceKey(device, iface));
   if (!i) return [];
@@ -535,19 +535,18 @@ export function portsOf(model: Model, device: string, iface: string): string[] {
   if (i.type !== 'virtual') return [];
   if (i.members.length) return i.members.slice().sort(cmpStr);
   const out: string[] = [];
-  for (const p of portsCarryingVlans(model, device, interfaceVlans(model, i))) if (out.indexOf(p.iface) < 0) out.push(p.iface);
-  // a subinterface of a port ("ge-0/0/2.10") without tagging on the cable: its parent port
-  if (!out.length) {
-    const dot = i.id.lastIndexOf('.');
-    const parent = dot > 0 ? model.index.interfaces.get(ifaceKey(device, i.id.slice(0, dot))) : undefined;
-    if (parent && parent.type === 'physical') out.push(parent.id);
+  for (const p of interfaceVlanPorts(model, i)) {
+    const pi = model.index.interfaces.get(ifaceKey(device, p.iface));
+    for (const x of pi && pi.members.length ? pi.members : [p.iface]) if (out.indexOf(x) < 0) out.push(x);
   }
   return out.sort(cmpStr);
 }
 
-function carries(e: LinkEnd, vlan: number | undefined): boolean {
-  if (vlan === undefined || !e.mode) return true;
-  return e.untagged === vlan || vlanIds(e.tagged).indexOf(vlan) >= 0;
+/** Does the port at a link end carry a VLAN? A port that says nothing about VLANs (a host's, a plain routed port) carries what comes. */
+function carries(model: Model, e: LinkEnd, vlan: number | undefined): boolean {
+  const l = endL2(model, e);
+  if (vlan === undefined || !l || !(isBridgePort(l) || (l.kind === 'routed' && l.tagged.length > 0))) return true;
+  return l.vlans.indexOf(vlan) >= 0;
 }
 
 function endUp(ctx: RoutingCtx, e: LinkEnd): boolean {
@@ -557,7 +556,7 @@ function endUp(ctx: RoutingCtx, e: LinkEnd): boolean {
 /**
  * The cables between an interface and the next hop's interface: the
  * shortest way over cables through layer-2 devices (in the VLAN, where the
- * link ends say which they carry); ties go to the lower link ids. A cable
+ * ports say which they carry); ties go to the lower link ids. A cable
  * end without an interface could be any port of its device. When one of
  * the two interfaces has no cable in the model, nothing is known (uncabled);
  * when both have cables but no way joins them, the hop can't be made.
@@ -578,8 +577,8 @@ function l2Segment(model: Model, ctx: RoutingCtx, a: { device: string; iface: st
   ] as Array<[{ device: string; iface: string }, string[]]>) {
     const i = model.index.interfaces.get(ifaceKey(s.device, s.iface));
     const vl = i ? interfaceVlans(model, i) : [];
-    if (!ports.length && vl.length && i && !i.members.length && links.some((l) => (l.a.device === s.device && !!l.a.mode) || (l.b.device === s.device && !!l.b.mode))) {
-      return { kind: 'none', detail: `VLAN ${vl.join(', ')} of ${s.device}:${s.iface} is on none of ${s.device}’s cables (missing layer-2 adjacency)` };
+    if (!ports.length && vl.length && i && !i.members.length) {
+      return { kind: 'none', detail: `VLAN ${vl.join(', ')} of ${s.device}:${s.iface} is on none of ${s.device}’s ports (missing layer-2 adjacency)` };
     }
   }
   if (!startLinks.length || !anyAtB) {
@@ -596,7 +595,7 @@ function l2Segment(model: Model, ctx: RoutingCtx, a: { device: string; iface: st
     const far = near === l.a ? l.b : l.a;
     // a unidirectional cable carries traffic from its end a to its end b only
     if (l.direction === 'unidirectional' && near !== l.a) continue;
-    if (!carries(near, vlan) || !carries(far, vlan)) continue;
+    if (!carries(model, near, vlan) || !carries(model, far, vlan)) continue;
     if (atB(far)) return finish(model, ctx, { device: far.device, via: l, prev: null });
     if (seenDev.has(far.device)) continue;
     queue.push({ device: far.device, via: l, prev: null });
@@ -613,7 +612,7 @@ function l2Segment(model: Model, ctx: RoutingCtx, a: { device: string; iface: st
       if (!near) continue;
       const far = near === l.a ? l.b : l.a;
       if (l.direction === 'unidirectional' && near !== l.a) continue;
-      if (!carries(near, vlan) || !carries(far, vlan) || (inEnd && near.iface !== undefined && inEnd.iface === near.iface)) continue;
+      if (!carries(model, near, vlan) || !carries(model, far, vlan) || (inEnd && near.iface !== undefined && inEnd.iface === near.iface)) continue;
       const next: L2State = { device: far.device, via: l, prev: s };
       if (atB(far)) return finish(model, ctx, next);
       if (seenDev.has(far.device)) continue;

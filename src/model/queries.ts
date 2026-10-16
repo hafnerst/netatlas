@@ -3,7 +3,7 @@
  * "what belongs to this object" (used for highlighting) and text search.
  * No layout, rendering or YAML knowledge.
  */
-import { addressOwners, associatedInterfaces, deviceNetworks, endNetworks, endVlans, interfaceNetworks, linkNetworks, networkMembers, vlanRangesText } from './derive';
+import { addressOwners, associatedInterfaces, deviceNetworks, endNetworks, endVlans, interfaceNetworks, isBridgePort, linkNetworks, networkMembers, portBadgeText, portL2, vlanRangesText } from './derive';
 import { Device, Model, Route, deviceInterfaces, ifaceKey, relationDevices, routeKey } from './types';
 
 export function splitRef(ref: string): [string, string] {
@@ -235,13 +235,19 @@ export function relatedRefs(model: Model, ref: string): Set<string> {
       const inf = ix.interfaces.get(id);
       if (!inf) break;
       addDevice(inf.device);
-      // what the interface is associated with on its device: member ports, ports carrying its VLAN, a tunnel's
-      // source (and, from the other side, the aggregates, VLAN interfaces and tunnels that use this interface)
+      // what the interface is associated with on its device: member ports, a VLAN interface's bridge ports, a
+      // subinterface's port, a tunnel's source (and, from the other side, the aggregates, VLAN interfaces,
+      // subinterfaces and tunnels that use this interface)
       for (const other of associatedInterfaces(model, inf)) {
         out.add(`iface:${inf.device}:${other}`);
-        // a logical interface shows the cables of the ports it uses
-        const plid = inf.type === 'physical' ? undefined : ix.ifaceLink.get(ifaceKey(inf.device, other));
-        if (plid) addLink(plid);
+        if (inf.type === 'physical') continue;
+        // a logical interface shows the cables of the ports it uses (a bridge port that is an aggregate: its members and theirs)
+        const oi = ix.interfaces.get(ifaceKey(inf.device, other));
+        for (const p of oi && oi.members.length && !inf.members.length ? oi.members : [other]) {
+          if (p !== other) out.add(`iface:${inf.device}:${p}`);
+          const plid = ix.ifaceLink.get(ifaceKey(inf.device, p));
+          if (plid) addLink(plid);
+        }
       }
       // a tunnel's destination, when it is part of the model
       if (inf.destination && inf.destination.device) {
@@ -325,8 +331,9 @@ export interface SearchHit {
 
 /**
  * Case-insensitive search over ids, labels, protocols, addresses, DNS names,
- * route prefixes and next hops, and the VLANs of link ends ("vlan 20" or
- * "20" finds the cables whose ends carry VLAN 20).
+ * route prefixes and next hops, and the VLANs of ports ("vlan 20" or "20"
+ * finds the ports in VLAN 20 and the cables carrying it; "trunk port",
+ * "access port", "routed port" their kind).
  */
 export function search(model: Model, query: string, limit = 12): SearchHit[] {
   const q = query.trim().toLowerCase();
@@ -364,14 +371,26 @@ export function search(model: Model, query: string, limit = 12): SearchHit[] {
     for (const r of d.routes) consider(routeRefOf(r), 'route', `${d.label}: ${r.prefix}${r.via !== undefined ? ' via ' + r.via : ''}${r.iface !== undefined ? ' dev ' + r.iface : ''}${r.blackhole ? ' blackhole' : ''}`, [r.prefix, r.via || '', r.iface || '', r.name || '', r.vrf ? 'vrf ' + r.vrf : '']);
   }
   const vlanQ = /^(?:vlan\s*)?([0-9]{1,4})$/.exec(q);
+  // the ports (and aggregates) in a VLAN: "vlan 20" or "20" finds every port of VLAN 20; their mode words too
+  for (const d of model.devices) {
+    for (const i of d.interfaces.concat(d.logical.filter((x) => x.members.length > 0))) {
+      const l2 = portL2(model, d.id, i.id);
+      if (!l2 || (!isBridgePort(l2) && !(l2.kind === 'routed' && i.routed))) continue;
+      const hay = [portBadgeText(l2).toLowerCase(), l2.kind === 'access' || l2.kind === 'trunk' ? l2.kind + ' port' : 'routed port'];
+      if (vlanQ) {
+        if (l2.vlans.indexOf(Number(vlanQ[1])) >= 0) hay.push('vlan ' + vlanQ[1], vlanQ[1]);
+      } else if (l2.vlans.length) hay.push('vlan ' + vlanRangesText(l2.vlans));
+      consider(`iface:${d.id}:${i.id}`, 'port', `${d.id}:${i.id} · ${portBadgeText(l2)}`, hay);
+    }
+  }
   for (const l of model.links) {
-    const vlans = vlanQ ? endVlans(l.a).concat(endVlans(l.b)) : [];
+    const vlans = vlanQ ? endVlans(model, l.a).concat(endVlans(model, l.b)) : [];
     const hay = [l.id, l.label || '', l.cable || ''];
     // a VLAN number matches the cables carrying exactly that VLAN (also inside a range); other text their VLAN list
     if (vlanQ) {
       if (vlans.indexOf(Number(vlanQ[1])) >= 0) hay.push('vlan ' + vlanQ[1], vlanQ[1]);
     } else {
-      const all = endVlans(l.a).concat(endVlans(l.b));
+      const all = endVlans(model, l.a).concat(endVlans(model, l.b));
       if (all.length) hay.push('vlan ' + vlanRangesText(all));
     }
     consider('link:' + l.id, 'link', l.label || l.id, hay);
@@ -448,8 +467,13 @@ export function selectionContext(model: Model, ref: string): SelectionContext | 
       if (!inf) break;
       selected = 'device:' + inf.device;
       add('link', ix.ifaceLink.get(id));
-      // a logical interface: the cables of its member ports, of the ports carrying its VLAN, of its tunnel source
-      if (inf.type !== 'physical') for (const other of associatedInterfaces(model, inf)) add('link', ix.ifaceLink.get(ifaceKey(inf.device, other)));
+      // a logical interface: the cables of its member ports, of its bridge ports (an aggregate's: its members'), of its tunnel source
+      if (inf.type !== 'physical') {
+        for (const other of associatedInterfaces(model, inf)) {
+          const oi = ix.interfaces.get(ifaceKey(inf.device, other));
+          for (const p of oi && oi.members.length && !inf.members.length ? oi.members : [other]) add('link', ix.ifaceLink.get(ifaceKey(inf.device, p)));
+        }
+      }
       if (inf.destination && inf.destination.device && inf.destination.device !== inf.device) add('device', inf.destination.device);
       for (const n of interfaceNetworks(model, inf.device, inf.id)) add('network', n);
       for (const r of model.relations) if (r.endpoints.some((e) => e.device === inf.device && e.iface === inf.id)) add('relation', r.id);

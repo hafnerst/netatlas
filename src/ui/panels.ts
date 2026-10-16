@@ -8,7 +8,7 @@ import { iconNode } from './dom';
 import { View } from '../diagram/session';
 import { ContextState, SelectionContext, contextState, routeRefOf, routesUsing, splitRef } from '../model/queries';
 import { mediumStyle } from '../diagram/style';
-import { AddressAssoc, addressOwners, associatedInterfaces, deviceNetworks, derivedVlanText, endNetworks, interfaceAddresses, interfaceVlanPorts, interfaceVlanText, interfaceVlans, networkMembers, networkName, tagMismatch, tagMismatchText, vlanIds, vlanRangesText } from '../model/derive';
+import { AddressAssoc, addressOwners, associatedInterfaces, bridgePortsText, deviceNetworks, portRuns, vlanPortsByMode, derivedVlanText, endL2, endNetworks, interfaceAddresses, interfaceVlanPorts, interfaceVlanText, interfaceVlans, lagOf, networkMembers, networkName, portBadgeText, portL2, subinterfaceParent, tagMismatch, tagMismatchText } from '../model/derive';
 import { relationStyle } from '../model/protocols';
 import { compareRoutes, identityLines, routeLine } from '../model/addresses';
 import { formatAddr } from '../analysis/ipmath';
@@ -61,30 +61,52 @@ function derivedAddressList(model: Model, assocs: AddressAssoc[]): VNode {
   );
 }
 
-/** The distinct ports carrying the VLANs of a virtual interface, alphabetically. */
-function vlanPortIds(model: Model, i: Interface): string[] {
-  const ids: string[] = [];
-  for (const p of interfaceVlanPorts(model, i)) if (ids.indexOf(p.iface) < 0) ids.push(p.iface);
-  return sortedByName(ids, (x) => x);
-}
-
 /**
- * What a logical interface is associated with, in words: member ports of an
- * aggregate, the VLAN of a VLAN interface and the ports carrying it, the
- * source and destination of a tunnel. '' when there is nothing to say.
+ * What an interface is associated with, in words: a port's (or an
+ * aggregate's) VLANs, an aggregate's member ports, the VLAN of a VLAN
+ * interface and its bridge ports, a subinterface's port, the source and
+ * destination of a tunnel. '' when there is nothing to say.
  */
 export function associationText(model: Model, i: Interface): string {
   const parts: string[] = [];
+  const l2 = portBadgeText(portL2(model, i.device, i.id));
+  if (l2) parts.push(l2 + (i.type === 'physical' && lagOf(model, i.device, i.id) !== undefined ? ` (from ${lagOf(model, i.device, i.id)})` : ''));
   if (i.members.length) parts.push('Member ports: ' + sortedByName(i.members, (x) => x).join(', '));
   const vlans = interfaceVlans(model, i);
   if (vlans.length) {
     parts.push(`VLAN ${vlans.join(', ')}`);
-    const ports = vlanPortIds(model, i);
-    parts.push(ports.length ? 'ports carrying it: ' + ports.join(', ') : 'no port carries it');
+    const parent = subinterfaceParent(model, i);
+    if (parent !== undefined) parts.push(`tagged on ${parent}`);
+    else {
+      const ports = bridgePortsText(model, i);
+      parts.push(ports ? 'bridge ports: ' + ports : 'no bridge port in its VLAN');
+    }
   }
   if (i.source) parts.push('Tunnel source: ' + i.source.text + (i.source.address !== undefined && i.source.iface ? ` (${i.source.iface})` : ''));
   if (i.destination) parts.push('Destination: ' + i.destination.text + (i.destination.address !== undefined && i.destination.device ? ` (${i.destination.device}${i.destination.iface ? ':' + i.destination.iface : ''})` : ''));
   return parts.join(' · ');
+}
+
+/**
+ * A VLAN interface's bridge ports by mode, "Access: Gi1/0/1–10 · Trunk:
+ * Gi1/0/48, Po1", each port (a run's first and last) a link to it; or
+ * that it has none.
+ */
+export function bridgePortsNode(model: Model, i: Interface, link: (id: string) => VNode): VNode {
+  const g = vlanPortsByMode(model, i);
+  const groups: VNode[] = [];
+  for (const [label, ids] of [['Access', g.access], ['Trunk', g.trunk]] as Array<[string, string[]]>) {
+    if (!ids.length) continue;
+    const runs: VNode[] = [];
+    portRuns(ids).forEach((r, k) => {
+      if (k) runs.push(h('span', {}, ', '));
+      if (r.last !== undefined) runs.push(h('span', { class: 'port-run' }, [link(r.first), h('span', {}, '–'), link(r.last)]));
+      else runs.push(link(r.first));
+    });
+    if (groups.length) groups.push(h('span', { class: 'muted' }, ' · '));
+    groups.push(h('span', { 'data-mode': label.toLowerCase() }, [h('span', {}, label + ': '), ...runs]));
+  }
+  return groups.length ? h('span', { class: 'bridge-ports' }, groups) : h('span', { class: 'muted' }, 'none: no port of this device has its VLAN');
 }
 
 /** A tunnel end as details content: the text as written, linked when it is part of the model. */
@@ -101,6 +123,14 @@ function tunnelEndNode(model: Model, e: TunnelEnd): VNode {
 export function contextNote(st: ContextState | null): VNode | null {
   if (!st) return null;
   return h('span', { class: 'sr-only' }, st === 'selected' ? ' (selected)' : st === 'related' ? ' (directly related)' : ' (not related)');
+}
+
+/** A port's mode badge in a port list ("Access · VLAN 10"; a member: its aggregate's, "from Po1"). */
+function modeCell(model: Model, device: string, iface: string): VNode[] {
+  const l2 = portL2(model, device, iface);
+  const t = portBadgeText(l2);
+  if (!l2 || !t) return [];
+  return [h('span', { class: 'mode-badge mode-' + l2.kind, 'data-mode': l2.kind }, t), l2.lag !== undefined ? h('span', { class: 'muted' }, ` from ${l2.lag}`) : null].filter((x): x is VNode => !!x);
 }
 
 function list(title: string, items: VNode[]): VNode | null {
@@ -171,14 +201,10 @@ export function headOf(model: Model, ref: string): { kind: string; title: string
   return null;
 }
 
-/** A link end's tagging in words: "access, untagged VLAN 10", "trunk, native VLAN 1, tagged 20,30" ('' without a mode). */
-export function tagWords(e: LinkEnd): string {
-  if (!e.mode) return '';
-  const parts: string[] = [e.mode];
-  if (e.untagged !== undefined) parts.push(`${e.mode === 'trunk' ? 'native' : 'untagged'} VLAN ${e.untagged}`);
-  const tagged = vlanIds(e.tagged);
-  if (tagged.length) parts.push('tagged ' + vlanRangesText(tagged));
-  return parts.join(', ');
+/** The port at a link end in words: "Access · VLAN 10", "Trunk · 10, 20 (native 10)", "Routed" ('' for a host's port or no port). */
+export function tagWords(model: Model, e: LinkEnd): string {
+  const l = endL2(model, e);
+  return l ? portBadgeText(l) + (l.lag !== undefined ? ` (from ${l.lag})` : '') : '';
 }
 
 /** A route's next hop in words: the address (and which interface has it), the exit interface, or "blackhole". */
@@ -243,13 +269,14 @@ export function detailsFor(model: Model, ref: string, status: IssueCount | null 
         h('section', { 'data-list': 'interfaces' }, [
           h('h4', {}, `Physical interfaces (${phys.length}, ${phys.filter((i) => ix.ifaceLink.has(ifaceKey(d.id, i.id))).length} cabled)`),
           h('table', { class: 'ports' }, [
-            h('tr', {}, [h('th', {}, 'port'), h('th', {}, 'address'), h('th', { title: 'Derived from the network containing the address' }, 'vlan'), h('th', {}, 'cable')]),
+            h('tr', {}, [h('th', {}, 'port'), h('th', { title: 'Access (one VLAN), trunk (several) or routed' }, 'mode'), h('th', {}, 'address'), h('th', { title: 'Derived from the network containing the address' }, 'vlan'), h('th', {}, 'cable')]),
             ...phys.map((i) => {
               const lid = ix.ifaceLink.get(ifaceKey(d.id, i.id));
               const l = lid ? ix.links.get(lid) : undefined;
               const peer = l ? (l.a.device === d.id && l.a.iface === i.id ? l.b : l.a) : undefined;
               return h('tr', { class: l ? '' : 'unused', 'data-iface': i.id, 'data-kind': i.type }, [
                 h('td', {}, [refLink(`iface:${d.id}:${i.id}`, i.id)]),
+                h('td', {}, modeCell(model, d.id, i.id)),
                 h('td', {}, addressText(i, ', ')),
                 h('td', {}, interfaceVlanText(interfaceAddresses(model, d.id, i.id)).replace(/VLAN /g, '')),
                 h('td', {}, peer ? [refLink('link:' + (lid as string), '→ ' + endpointText(peer))] : []),
@@ -357,30 +384,37 @@ export function detailsFor(model: Model, ref: string, status: IssueCount | null 
     const ifLink = (x: string): VNode => refLink(`iface:${i.device}:${x}`, x);
     const linked = (ids: string[]): VNode => h('span', {}, ids.reduce((acc: VNode[], x, k) => acc.concat(k ? [h('span', {}, ', '), ifLink(x)] : [ifLink(x)]), []));
     const vlans = interfaceVlans(model, i);
-    const ports = vlanPortIds(model, i);
+    const parent = subinterfaceParent(model, i);
+    const l2 = portL2(model, i.device, i.id);
+    const lag = i.type === 'physical' ? lagOf(model, i.device, i.id) : undefined;
     // only the associations that apply to this interface are shown
     kids.push(
       h('section', { 'data-assoc': i.type }, [
         kv([
+          ['VLANs', l2 && portBadgeText(l2) ? h('span', {}, [h('span', { class: 'mode-badge mode-' + l2.kind }, portBadgeText(l2)), lag !== undefined ? h('span', { class: 'muted' }, [h('span', {}, ' of the aggregate '), ifLink(lag)]) : null]) : undefined],
           ['member ports', i.members.length ? linked(sortedByName(i.members, (x) => x)) : undefined],
           ['VLAN', vlans.length ? vlans.join(', ') + (i.vlan === undefined ? ' (from the network of its address)' : '') : undefined],
-          ['ports carrying its VLAN', vlans.length ? (ports.length ? linked(ports) : 'none: no link end of this device carries it') : undefined],
+          ['subinterface of', parent !== undefined ? h('span', {}, [ifLink(parent), h('span', { class: 'muted' }, ` (VLAN ${vlans.join(', ')} tagged)`)]) : undefined],
+          ['bridge ports', vlans.length && parent === undefined ? bridgePortsNode(model, i, ifLink) : undefined],
           ['tunnel source', i.source ? tunnelEndNode(model, i.source) : undefined],
           ['tunnel destination', i.destination ? tunnelEndNode(model, i.destination) : undefined],
         ]),
-        vlans.length ? h('p', { class: 'muted small' }, 'Derived from the tagging of this device’s link ends.') : null,
+        vlans.length && parent === undefined ? h('p', { class: 'muted small' }, 'Derived: every port of this device whose VLANs include its VLAN.') : null,
       ]),
     );
     // the other direction: aggregates this port is a member of, VLAN interfaces whose VLAN it carries, tunnels sourced from it
     const d = ix.devices.get(i.device);
-    const users = d ? d.logical.filter((o) => o.id !== i.id && (o.members.indexOf(i.id) >= 0 || (!!o.source && o.source.iface === i.id) || interfaceVlanPorts(model, o).some((p) => p.iface === i.id))) : [];
+    // (a member port serves the VLAN interfaces of its aggregate's VLANs through it)
+    const viaLag = i.type === 'physical' ? lagOf(model, i.device, i.id) : undefined;
+    const bridges = (o: Interface): boolean => interfaceVlanPorts(model, o).some((p) => p.iface === i.id || (viaLag !== undefined && p.iface === viaLag));
+    const users = d ? d.logical.filter((o) => o.id !== i.id && (o.members.indexOf(i.id) >= 0 || (!!o.source && o.source.iface === i.id) || bridges(o))) : [];
     kids.push(
       list(
         'Used by logical interfaces',
         sortedByName(users, (o) => o.id).map((o) =>
           h('li', { 'data-iface': o.id }, [
             refLink(`iface:${i.device}:${o.id}`, o.id),
-            h('span', { class: 'muted' }, ' ' + (o.members.indexOf(i.id) >= 0 ? 'aggregate (member port)' : o.source && o.source.iface === i.id ? 'tunnel (source)' : 'its VLAN is carried on this port')),
+            h('span', { class: 'muted' }, ' ' + (o.members.indexOf(i.id) >= 0 ? 'aggregate (member port)' : o.source && o.source.iface === i.id ? 'tunnel (source)' : subinterfaceParent(model, o) === i.id ? 'subinterface (its VLAN tagged here)' : `bridge port of its VLAN${viaLag !== undefined && !interfaceVlanPorts(model, o).some((p) => p.iface === i.id) ? `, through ${viaLag}` : ''}`)),
           ]),
         ),
       ),
@@ -407,21 +441,21 @@ export function detailsFor(model: Model, ref: string, status: IssueCount | null 
     if (!l) return h('div', {}, 'Not found');
     kids.push(header());
     const nets = (ids: string[]): VNode[] => ids.reduce((acc: VNode[], n, k) => acc.concat(k ? [h('span', {}, ', '), refLink('network:' + n, networkName(model, n))] : [refLink('network:' + n, networkName(model, n))]), []);
-    // an end: where it plugs in, its layer-2 tagging, and the networks of the VLANs it carries (derived)
+    // an end: where it plugs in, its port's VLANs, and the networks of the VLANs it carries (derived)
     const ep = (e: LinkEnd): VNode => {
       const carried = endNetworks(model, e);
       const port = [e.speed, e.duplex ? e.duplex + ' duplex' : ''].filter((x) => !!x).join(', ');
-      const tag = [port, tagWords(e)].filter((x) => !!x).join('; ');
+      const tag = [port, tagWords(model, e)].filter((x) => !!x).join('; ');
       return h('span', {}, [
         refLink('device:' + e.device, ix.devices.get(e.device)?.label || e.device),
         e.iface ? h('span', {}, ' ') : null,
         e.iface ? refLink(`iface:${e.device}:${e.iface}`, e.iface) : null,
-        h('span', { class: tag ? 'tag-end' : 'tag-end muted' }, tag ? ' — ' + tag : ' — no layer-2 tagging'),
+        h('span', { class: tag ? 'tag-end' : 'tag-end muted' }, tag ? ' — ' + tag : ' — no VLANs'),
         carried.length ? h('span', { class: 'muted' }, ' · carries ') : null,
         ...nets(carried),
       ]);
     };
-    const mm = tagMismatch(l.a, l.b);
+    const mm = tagMismatch(model, l);
     kids.push(
       kv([
         ['A', ep(l.a)],
@@ -621,8 +655,8 @@ export function tooltipFor(model: Model, ref: string): string[] {
     return [
       `${endpointText(l.a)}  ⟷  ${endpointText(l.b)}`,
       [mediumStyle(l.medium).label, l.speed, l.label, l.cable].filter((s) => s).join(' · '),
-      l.a.mode || l.b.mode ? `A: ${tagWords(l.a) || 'no tagging'}  |  B: ${tagWords(l.b) || 'no tagging'}` : '',
-      tagMismatch(l.a, l.b) ? '⚠ VLANs differ: ' + tagMismatchText(tagMismatch(l.a, l.b) as NonNullable<ReturnType<typeof tagMismatch>>) : '',
+      tagWords(model, l.a) || tagWords(model, l.b) ? `A: ${tagWords(model, l.a) || 'no VLANs'}  |  B: ${tagWords(model, l.b) || 'no VLANs'}` : '',
+      tagMismatch(model, l) ? '⚠ VLANs differ: ' + tagMismatchText(tagMismatch(model, l) as NonNullable<ReturnType<typeof tagMismatch>>) : '',
       carried ? `carries ${carried} logical relation${carried > 1 ? 's' : ''}` : '',
     ].filter((s) => s);
   }

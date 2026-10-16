@@ -80,10 +80,11 @@ anything else.
   editing operation writes a derived value, so it can't go stale or
   contradict its source. The typed `Network` has no member list and the
   typed `Interface` no VLAN, so nothing can read a stored copy by mistake.
-  Membership (IP containment, derived), link-end tagging (layer-2
-  carriage, configured per end, by VLAN ID; the networks a cable carries
-  are derived from it) and a relation's `over` (its underlay, configured)
-  are separate facts; none is derived from another.
+  Membership (IP containment, derived), port VLANs (layer-2 carriage,
+  configured per port or aggregate, by VLAN ID; the networks a cable
+  carries and a VLAN interface's bridge ports are derived from them) and a
+  relation's `over` (its underlay, configured) are separate facts; none is
+  derived from another.
   *Trade-off:* membership is recomputed for the whole model after each edit
   (addresses × networks); that is well inside the time validation already
   takes.
