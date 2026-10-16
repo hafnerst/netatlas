@@ -642,9 +642,24 @@ export class ModelDoc {
     // a server's services: services, its dhcp and dns, a scope and its reservations, a zone and its records
     if (path[0] === 'devices' && path[2] === 'services') {
       const rest = path.slice(3).map((x) => (typeof x === 'number' ? '#' : x)).join('/');
-      const kinds: { [k: string]: string } = { '': 'netServices', dhcp: 'dhcpService', 'dhcp/scopes/#': 'dhcpScope', 'dhcp/scopes/#/reservations/#': 'dhcpReservation', dns: 'dnsService', 'dns/zones/#': 'dnsZone', 'dns/zones/#/records/#': 'dnsRecord' };
+      const kinds: { [k: string]: string } = {
+        '': 'netServices',
+        dhcp: 'dhcpService',
+        'dhcp/scopes/#': 'dhcpScope',
+        'dhcp/scopes/#/reservations/#': 'dhcpReservation',
+        dns: 'dnsService',
+        'dns/zones/#': 'dnsZone',
+        'dns/zones/#/records/#': 'dnsRecord',
+        hypervisor: 'hypervisor',
+        'hypervisor/vswitches/#': 'vswitch',
+        'hypervisor/vswitches/#/port_groups/#': 'portGroup',
+        container_engine: 'containerEngine',
+        'container_engine/networks/#': 'containerNetwork',
+      };
       if (kinds[rest]) return kinds[rest];
     }
+    // a container's published port: an entry of a veth's publish
+    if (path.length === 6 && path[0] === 'devices' && path[2] === 'logical_interfaces' && path[4] === 'publish' && typeof path[5] === 'number') return 'published';
     if (this.isLinkEnd(path)) return 'linkEnd';
     if (path.length === 1 && path[0] === 'layout') return 'layout';
     return undefined;
@@ -961,6 +976,32 @@ export class ModelDoc {
     this.change('Edit value', () => this.setAt(path, text === '' ? nullNode() : autoNode(text), this.orderFor(path.slice(0, -1))));
   }
 
+  /** A yes / no key: written as true or false; '' removes it (one undo step). */
+  setYesNo(path: Path, value: '' | 'true' | 'false'): void {
+    this.change(value ? 'Set ' + this.label(path) : 'Remove ' + this.label(path), () => {
+      if (!value) {
+        this.removeAt(path);
+        return;
+      }
+      this.ensureMap(path.slice(0, -1), this.orderFor(path.slice(0, -2)));
+      this.setAt(path, boolNode(value === 'true'), this.orderFor(path.slice(0, -1)));
+    });
+  }
+
+  /** A port group's guest tagging on (its VLANs and native VLAN go in the same step: the guest tags) or off. */
+  setGuestTagging(pgPath: Path, on: boolean): void {
+    this.change(on ? 'Guest tagging on' : 'Guest tagging off', () => {
+      if (!on) {
+        this.removeAt(pgPath.concat('guest_tagging'));
+        return;
+      }
+      this.removeAt(pgPath.concat('vlans'));
+      this.removeAt(pgPath.concat('native'));
+      this.ensureMap(pgPath, this.orderFor(pgPath.slice(0, -1)));
+      this.setAt(pgPath.concat('guest_tagging'), boolNode(true), this.orderFor(pgPath));
+    });
+  }
+
   /** Append text to a list (created as [a, b] if missing; a single value becomes a list). */
   appendText(listPath: Path, text: string, label = 'Add ' + this.label(listPath)): void {
     this.change(label, () => {
@@ -1161,9 +1202,10 @@ export class ModelDoc {
    * reported until filled in) or off (its scopes or zones go with it); one
    * undo step.
    */
-  setNetService(devIndex: number, id: 'dhcp' | 'dns', on: boolean): void {
+  setNetService(devIndex: number, id: 'dhcp' | 'dns' | 'hypervisor' | 'container_engine', on: boolean): void {
     const sp: Path = ['devices', devIndex, 'services'];
-    this.change(on ? `Enable the ${id.toUpperCase()} server` : `Disable the ${id.toUpperCase()} server`, () => {
+    const name = id === 'hypervisor' ? 'the Hypervisor' : id === 'container_engine' ? 'the Container engine' : `the ${id.toUpperCase()} server`;
+    this.change(on ? `Enable ${name}` : `Disable ${name}`, () => {
       if (on) {
         this.ensureMap(sp, KEY_ORDER.device);
         this.ensureMap(sp.concat(id), KEY_ORDER.netServices);
@@ -1172,6 +1214,44 @@ export class ModelDoc {
       this.removeAt(sp.concat(id));
       const b = this.get(sp);
       if (b && b.kind === 'map' && b.entries.size === 0) this.removeAt(sp);
+    });
+  }
+
+  /**
+   * The guests whose `host` names a device (as written: also while the
+   * model has errors), with their index and type; in file order.
+   */
+  guestsOfHost(hostId: string): Array<{ index: number; id: string; type: string }> {
+    const out: Array<{ index: number; id: string; type: string }> = [];
+    this.entities('device').forEach((d) => {
+      const t = this.text(['devices', d.index, 'type']) || '';
+      if ((t === 'vm' || t === 'container') && this.text(['devices', d.index, 'host']) === hostId) out.push({ index: d.index, id: d.id || '', type: t });
+    });
+    return out;
+  }
+
+  /**
+   * Add a guest (a VM or a container) already assigned to its host, right
+   * after the host and its other guests: an id, its type and its host (its
+   * network interfaces are the user's to add). One undo step; returns its
+   * index.
+   */
+  addGuest(hostIndex: number, type: 'vm' | 'container'): number {
+    const host = this.text(['devices', hostIndex, 'id']);
+    if (!host) return -1;
+    return this.change(type === 'vm' ? 'Add VM' : 'Add container', () => {
+      const id = this.uniqueId(type === 'vm' ? 'vm1' : 'container1');
+      const node = mapNode([
+        ['id', strNode(id)],
+        ['type', strNode(type)],
+        ['host', strNode(host)],
+      ]);
+      const seq = this.ensureSeq(['devices']);
+      // after the host and the guests it already has
+      let at = hostIndex + 1;
+      for (const g of this.guestsOfHost(host)) if (g.index >= at) at = g.index + 1;
+      seq.items.splice(at, 0, node);
+      return at;
     });
   }
 
@@ -1444,6 +1524,49 @@ export class ModelDoc {
           if (d === id && (iface === undefined || inf === iface)) out.push(lp.concat(k, 'destination'));
         });
       });
+      if (iface === undefined) {
+        // a guest's host
+        scalarRefs('devices', 'host', (t) => t === id);
+        // an overlay network's other hosts
+        this.entities('device').forEach((dev) => {
+          const np: Path = ['devices', dev.index, 'services', 'container_engine', 'networks'];
+          const nl = this.get(np);
+          if (!nl || nl.kind !== 'seq') return;
+          nl.items.forEach((it, k) => {
+            const hl = it.kind === 'map' ? it.entries.get('hosts') : undefined;
+            if (hl && hl.value.kind === 'seq') hl.value.items.forEach((h, j) => scalarText(h) === id && out.push(np.concat(k, 'hosts', j)));
+          });
+        });
+      } else {
+        const dev = this.findEntity('device', id);
+        if (dev) {
+          // a virtual switch's uplinks, a macvlan / ipvlan network's parent (on the same device)
+          const vl = this.get(['devices', dev.index, 'services', 'hypervisor', 'vswitches']);
+          if (vl && vl.kind === 'seq') {
+            vl.items.forEach((vs, k) => {
+              const ul = vs.kind === 'map' ? vs.entries.get('uplinks') : undefined;
+              if (ul && ul.value.kind === 'seq') ul.value.items.forEach((u, j) => scalarText(u) === iface && out.push(['devices', dev.index, 'services', 'hypervisor', 'vswitches', k, 'uplinks', j]));
+              else if (ul && scalarText(ul.value) === iface) out.push(['devices', dev.index, 'services', 'hypervisor', 'vswitches', k, 'uplinks']);
+            });
+          }
+          const nl = this.get(['devices', dev.index, 'services', 'container_engine', 'networks']);
+          if (nl && nl.kind === 'seq') {
+            nl.items.forEach((n, k) => {
+              const pn = n.kind === 'map' ? n.entries.get('parent') : undefined;
+              if (pn && scalarText(pn.value) === iface) out.push(['devices', dev.index, 'services', 'container_engine', 'networks', k, 'parent']);
+            });
+          }
+          // a guest's vnic bound to the port by passthrough
+          for (const g of this.guestsOfHost(id)) {
+            const gl = this.get(['devices', g.index, 'logical_interfaces']);
+            if (!gl || gl.kind !== 'seq') continue;
+            gl.items.forEach((it, k) => {
+              const pt = it.kind === 'map' ? it.entries.get('passthrough') : undefined;
+              if (pt && scalarText(pt.value) === iface) out.push(['devices', g.index, 'logical_interfaces', k, 'passthrough']);
+            });
+          }
+        }
+      }
     } else if (kind === 'group') {
       scalarRefs('groups', 'parent', (t) => t === id);
       scalarRefs('devices', 'group', (t) => t === id);
@@ -1467,7 +1590,7 @@ export class ModelDoc {
       const t = scalarText(n) as string;
       let nt = t;
       const last = p[p.length - 1];
-      if (last === 'source' || last === 'members' || p[p.length - 2] === 'members' || p[2] === 'dns_names' || (p[2] === 'routes' && last === 'interface')) {
+      if (last === 'source' || last === 'members' || p[p.length - 2] === 'members' || p[2] === 'dns_names' || (p[2] === 'routes' && last === 'interface') || last === 'passthrough' || (last === 'parent' && p[0] === 'devices') || p[p.length - 2] === 'uplinks' || last === 'uplinks') {
         // an interface of the same device, written as its bare id
         nt = newIf !== undefined ? newIf : t;
       } else if (/^(a|b|destination)$/.test(String(last)) || p[p.length - 2] === 'endpoints') {
@@ -1726,7 +1849,7 @@ export class ModelDoc {
    * returns its index in the device's `logical_interfaces` list. Only the id
    * and the type are set unless fields are given.
    */
-  addLogical(devIndex: number, type: 'loopback' | 'virtual' | 'tunnel', fields: Array<[string, YNode]> = [], base?: string): number {
+  addLogical(devIndex: number, type: 'loopback' | 'virtual' | 'tunnel' | 'vnic' | 'veth', fields: Array<[string, YNode]> = [], base?: string): number {
     const f = fields.filter(([k]) => k !== 'type');
     f.splice(f.length && f[0][0] === 'id' ? 1 : 0, 0, ['type', strNode(type)]);
     return this.change(`Add ${type} interface`, () => this.newIface(devIndex, 'logical_interfaces', f, base || (type === 'loopback' ? 'lo0' : type === 'tunnel' ? 'tun0' : 'virtual0')));

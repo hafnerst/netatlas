@@ -31,7 +31,7 @@
  * Group boxes are never stored: they are derived from their devices.
  */
 import { CBox, Pt, textWidth } from './geometry';
-import { LDev, LEnd, LayoutInput, cmp } from './input';
+import { LDev, LEnd, LayoutInput, cmp, physicalInput } from './input';
 import { ChipFlow, ENTRY_MARGIN, GROUP_PAD, IFCHIP_PAD, chipFlow, chipStripH, deviceBody, groupHeader, linkLabelBox } from './sizes';
 
 export { GROUP_PAD };
@@ -112,9 +112,10 @@ interface Block {
  */
 export function physicalBaseSize(d: LDev): { w: number; h: number } {
   const b = deviceBody(d.label, d.sub, BASE_W, BASE_H);
-  const w = Math.max(b.w, d.physList[0] ? d.physList[0] + 2 * ENTRY_MARGIN : 0);
+  // a host's interior (its virtual switches, container networks and guests) sits under its name
+  const w = Math.max(b.w, d.physList[0] ? d.physList[0] + 2 * ENTRY_MARGIN : 0, d.interior[0]);
   const flow = spareChipFlow(d.spare, w);
-  return { w: Math.max(w, flow.w + 2 * IFCHIP_PAD), h: b.h + physicalListH(d.physList) + chipStripH(flow) };
+  return { w: Math.max(w, flow.w + 2 * IFCHIP_PAD), h: b.h + d.interior[1] + physicalListH(d.physList) + chipStripH(flow) };
 }
 
 /** Height a device's address entries take in its physical box (0 without any). */
@@ -149,7 +150,9 @@ function tiersOf(ids: string[], tier: Map<string, number>): string[][] {
 }
 
 /** Auto-arranged device centers for the physical view. */
-export function autoPhysical(input: LayoutInput): Map<string, Pt> {
+export function autoPhysical(full: LayoutInput): Map<string, Pt> {
+  // (guests are drawn inside their hosts)
+  const input = physicalInput(full);
   const size = new Map<string, { w: number; h: number }>();
   const tier = new Map<string, number>();
   for (const d of input.devices) {
@@ -718,7 +721,8 @@ export function autoPhysical(input: LayoutInput): Map<string, Pt> {
 }
 
 /** Device boxes: sizes from labels and ports, centers from `positions`. */
-export function physicalBoxes(input: LayoutInput, positions: Map<string, Pt>): Map<string, CBox> {
+export function physicalBoxes(full: LayoutInput, positions: Map<string, Pt>): Map<string, CBox> {
+  const input = physicalInput(full);
   const boxes = new Map<string, CBox>();
   for (const d of input.devices) {
     const p = positions.get(d.id) || { x: 0, y: 0 };

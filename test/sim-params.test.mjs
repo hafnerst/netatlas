@@ -147,8 +147,10 @@ test('every device type has its simulation attributes (boot time at least); whic
   assert.ok(byType.firewall.indexOf('ha-failover') >= 0);
   assert.deepEqual(byType.ids_ips.filter((k) => /^ips-/.test(k)), ['ips-fail', 'ips-latency']);
   assert.ok(['ike-lifetime', 'child-lifetime', 'rekey-margin', 'dpd-interval', 'dpd-retries'].every((k) => byType.gateway.indexOf(k) >= 0));
-  assert.ok(['service-response', 'vm-restart'].every((k) => byType.server.indexOf(k) >= 0));
+  // (a hypervisor's VM restart time is its service's, not the server's; a container's restart policy is its own)
+  assert.ok(byType.server.indexOf('service-response') >= 0 && byType.server.indexOf('vm-restart') < 0);
   assert.ok(byType.vm.indexOf('service-response') >= 0 && byType.vm.indexOf('vm-restart') < 0);
+  assert.ok(byType.container.indexOf('restart-policy') >= 0 && byType.server.indexOf('restart-policy') < 0);
   assert.deepEqual(byType.cloud, ['link-latency', 'loss', 'boot-time', 'mc-support']);
   assert.ok(byType.ap.indexOf('ap-association') >= 0);
   assert.ok(byType.system.indexOf('snmp-interval') >= 0 && byType.system.indexOf('snmp-timeout') >= 0);
@@ -355,16 +357,23 @@ demands:
   closed.powerOff('x');
   closed.runTo(30000);
   assert.equal(closed.status().find((r) => r.protocol === 'demand').state, 'Lost');
-  // a VM cabled to two servers: down with the first, restarted on the second
+  // a VM in an HA cluster: down with its host, restarted on the other member after the VM restart time (the Hypervisor service's)
   const vm = sim(`netatlas: 1
 title: vm
 devices:
-  - {id: s1, type: server, interfaces: [{id: p, ip: 10.0.0.1/24}], simulation: {vm_restart: 20}}
-  - {id: s2, type: server, interfaces: [{id: p, ip: 10.0.0.2/24}]}
-  - {id: v, type: vm, interfaces: [{id: a, ip: 10.0.0.10/24}, {id: b, ip: 10.0.1.10/24}], simulation: {boot_time: 5}}
+  - {id: sw, type: switch, interfaces: [{id: p1, vlans: 10}, {id: p2, vlans: 10}]}
+  - id: s1
+    type: server
+    services: {hypervisor: {platform: kvm, cluster: c, simulation: {vm_restart: 20}, vswitches: [{name: br0, type: linux_bridge, uplinks: [eth0], teaming: active_standby, port_groups: [{name: lan, vlans: 10}]}]}}
+    interfaces: [eth0]
+  - id: s2
+    type: server
+    services: {hypervisor: {platform: kvm, cluster: c, vswitches: [{name: br0, type: linux_bridge, uplinks: [eth0], teaming: active_standby, port_groups: [{name: lan, vlans: 10}]}]}}
+    interfaces: [eth0]
+  - {id: v, type: vm, host: s1, simulation: {boot_time: 5}, logical_interfaces: [{id: eth0, type: vnic, port_group: lan, ip: 10.0.0.10/24}]}
 links:
-  - {id: l1, a: "s1:p", b: "v:a"}
-  - {id: l2, a: "s2:p", b: "v:b"}
+  - {id: l1, a: "sw:p1", b: "s1:eth0"}
+  - {id: l2, a: "sw:p2", b: "s2:eth0"}
 `);
   vm.runTo(5000);
   vm.powerOff('s1');
@@ -372,7 +381,8 @@ links:
   assert.ok(vm.netEvents().some((e) => e.ref === 'device:v' && e.hosted));
   vm.runTo(5000 + 20000 + 5000 + 100);
   assert.ok(vm.engine.deviceOn('v'));
-  assert.ok(events(vm, (e) => /v is restarted on s2 after the VM restart time 20 s \(device\)/.test(e.detail)).length);
+  assert.equal(vm.engine.hostNow('v'), 's2');
+  assert.ok(events(vm, (e) => /v is restarted on s2 by its HA cluster after the VM restart time 20 s/.test(e.detail)).length);
 });
 
 // ------------------------------------------------------------------ changes during the simulation

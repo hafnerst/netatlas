@@ -9,6 +9,7 @@ import { DEVICE_TYPE_IDS, deviceTypeLabel } from '../model/device-types';
 import { endTagText, tagMismatch } from '../model/derive';
 import { relationStyle } from '../model/protocols';
 import { CATEGORIES, Category, Model, ProtocolDef } from '../model/types';
+import { isGuest } from '../model/virtual';
 import { deviceIcon, iconName, layerBadge, serviceBadge } from './icons';
 import { VNode, h } from './scene';
 import { View } from './session';
@@ -101,6 +102,8 @@ export function legendOf(model: Model, view: View): Legend {
         ],
       });
     }
+    const virt = virtualItems(model);
+    if (virt.length) sections.push({ title: VIRTUAL_TITLE, items: virt });
     const groups = groupSection(model);
     if (groups) sections.push(groups);
     return {
@@ -129,6 +132,8 @@ export function legendOf(model: Model, view: View): Legend {
   // a server's DHCP and DNS badges too
   const svcs = netServiceItems(model);
   if (svcs.length) sections.push({ title: 'Servers', items: svcs });
+  // a guest names the host it runs on
+  if (model.devices.some((d) => isGuest(d) && d.host !== undefined)) sections.push({ title: VIRTUAL_TITLE, items: [RUNS_ON_ITEM] });
   sections.push({
     title: 'Other symbols',
     items: [
@@ -332,6 +337,47 @@ export function svgLegend(model: Model, view: View, opts: ExportOptions, bounds:
     box,
     viewBox,
   };
+}
+
+const VIRTUAL_TITLE = 'Virtualization';
+
+/** a guest in the logical view: its second line names its host */
+const RUNS_ON_ITEM: LegendItem = {
+  swatch: [h('rect', { class: 'dev-box', x: 2, y: 1, width: 40, height: 16, rx: 3 }), h('text', { x: 22, y: 12, 'text-anchor': 'middle', 'font-size': 7 }, 'runs on')],
+  label: 'Guest (VM or container): "runs on" names its host',
+};
+
+/**
+ * The physical view's symbols for what is drawn inside a host's box (those
+ * the model has): virtual switches with their port groups, container
+ * networks, the guests' boxes, and the wires.
+ */
+function virtualItems(model: Model): LegendItem[] {
+  const out: LegendItem[] = [];
+  const hv = model.devices.some((d) => !!d.hypervisor && d.hypervisor.vswitches.length > 0);
+  const ce = model.devices.some((d) => !!d.containerEngine && d.containerEngine.networks.length > 0);
+  if (!hv && !ce && !model.devices.some((d) => isGuest(d) && d.host !== undefined)) return out;
+  if (hv) {
+    out.push({
+      swatch: [h('rect', { class: 'vbar-box', x: 1, y: 1, width: 42, height: 16, rx: 3 }), h('g', { class: 'pg-pill' }, [h('rect', { class: 'pg-box', x: 5, y: 5, width: 16, height: 9, rx: 2 })]), h('g', { class: 'pg-pill' }, [h('rect', { class: 'pg-box', x: 24, y: 5, width: 16, height: 9, rx: 2 })])],
+      label: 'Virtual switch with its port groups (each with its VLAN)',
+    });
+  }
+  if (ce) {
+    out.push({
+      swatch: [h('g', { class: 'cnet-bar' }, [h('rect', { class: 'vbar-box', x: 1, y: 4, width: 42, height: 10, rx: 3 })])],
+      label: 'Container network (bridge, macvlan, overlay …): dashed',
+    });
+  }
+  out.push({
+    swatch: [h('rect', { class: 'dev-box', x: 1, y: 1, width: 42, height: 16, rx: 3 }), h('rect', { class: 'dev-box', x: 22, y: 5, width: 16, height: 9, rx: 2 })],
+    label: 'Guest drawn inside its host (a container in a VM: inside the VM)',
+  });
+  out.push({ swatch: [h('path', { class: 'vwire', d: 'M3 14V9H41' })], label: 'Virtual wire: vNIC / veth to its port group or network' });
+  if (hv || model.devices.some((d) => !!d.containerEngine && d.containerEngine.networks.some((n) => n.parent !== undefined))) {
+    out.push({ swatch: [h('rect', { class: 'port', x: 3, y: 4.5, width: 9, height: 9, rx: 1.5, fill: '#868e96' }), h('path', { class: 'vwire vwire-uplink', d: 'M12 9H41' })], label: 'Uplink: a host port to its virtual switch (passthrough: to the guest)' });
+  }
+  return out;
 }
 
 /** The legend's server-service entries: a DHCP server and a DNS server (those the model has), with their badges; a DHCP client's interface. */

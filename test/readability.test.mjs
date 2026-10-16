@@ -13,6 +13,7 @@ const { autoPositions } = load('layout/positions.js');
 const { ModelDoc } = load('editor/document.js');
 const legend = load('diagram/legend.js');
 const { addressAttrLines } = load('model/addresses.js');
+const { withVirtualNetworks } = load('model/virtual.js');
 
 const render = (m, view, opts = {}) => {
   const s = new state.Session(m);
@@ -90,7 +91,8 @@ test('no diagram text is shortened: every example, both views, draws its labels 
         assert.equal(flat(label.lines.join('')), flat(dev.label), `${f} ${view}: label of ${dev.id}`);
       }
       for (const n of g.networks) {
-        const nw = m.index.networks.get(n.ref.slice(8));
+        // (the logical view also draws container networks: withVirtualNetworks)
+        const nw = withVirtualNetworks(m).index.networks.get(n.ref.slice(8));
         assert.equal(flat(n.texts[0].lines.join('')), flat(nw.label));
         assert.ok(n.texts[1].lines.join(' ').includes(nw.cidr), `${f}: prefix ${nw.cidr} of ${nw.id} is shown`);
       }

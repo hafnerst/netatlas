@@ -41,8 +41,9 @@ import { deviceRoutingRole } from '../model/device-types';
 import { IpAddr, IpPrefix, parseAddress, parsePrefix } from '../model/ip';
 import { normalizeProtocol, protocolBase } from '../model/protocols';
 import { bgpAsn, hasService, routerIdFor } from '../model/services';
-import { Model, Relation, Route, deviceInterfaces, relationDevices, routeKey } from '../model/types';
+import { Device, Interface, Model, Relation, Route, deviceInterfaces, relationDevices, routeKey } from '../model/types';
 import { addrBig, compareAddr, comparePrefix, formatAddr, inPrefix, networkOf, prefixText } from './ipmath';
+import { vethNetwork } from '../model/virtual';
 
 /** Distance a static route without `distance` gets in route selection. */
 export const DEFAULT_STATIC_DISTANCE = 1;
@@ -77,6 +78,8 @@ export interface RoutingCtx {
   leases?: (device: string) => Connected[];
   /** routes besides the model's (the protocol simulation: a DHCP lease's default route) */
   extraRoutes?: (device: string, vrf: string) => RibEntry[];
+  /** the host a VM runs on now, when it is not its own (restarted elsewhere by its HA cluster) */
+  hostOf?: (guest: string) => string | undefined;
 }
 
 /** A device's connected networks in a state: its configured ones, and what the state adds (a DHCP lease). */
@@ -115,8 +118,10 @@ export function connectedOf(model: Model, device: string): Connected[] {
   const out: Connected[] = [];
   if (d) {
     for (const i of deviceInterfaces(d)) {
+      // (a container's address without a length is in its network's subnet)
+      const len = i.type === 'veth' ? vethPrefixLength(model, i) : undefined;
       for (const address of i.addresses) {
-        const p = parsePrefix(address, false);
+        const p = parsePrefix(len !== undefined && address.indexOf('/') < 0 ? `${address}/${len}` : address, false);
         if (!p) continue;
         out.push({ device, iface: i.id, vrf: vrfKey(i.vrf), net: networkOf(p), addr: { version: p.version, bytes: p.bytes }, address });
       }
@@ -125,6 +130,13 @@ export function connectedOf(model: Model, device: string): Connected[] {
   out.sort((a, b) => cmpStr(a.vrf, b.vrf) || comparePrefix(a.net, b.net) || cmpStr(a.iface, b.iface) || compareAddr(a.addr, b.addr));
   byDev.set(device, out);
   return out;
+}
+
+/** The prefix length of a veth's container network (its subnet's), if it has one. */
+function vethPrefixLength(model: Model, i: Interface): number | undefined {
+  const x = vethNetwork(model, i);
+  const p = x && x.net.subnet ? parsePrefix(x.net.subnet) : null;
+  return p ? p.prefix : undefined;
 }
 
 /** The VRF of an interface ('' for the default table). */
@@ -158,6 +170,8 @@ export interface RibEntry {
   protocol?: string;
   relation?: string;
   peer?: string;
+  /** static, not written: a container's default route via its network's gateway, in words */
+  implicit?: string;
 }
 
 /** A static route as a table entry (null when its prefix or next hop can't be read). */
@@ -211,8 +225,29 @@ export function ribOf(model: Model, device: string, vrf: string, ctx?: RoutingCt
     }
   }
   for (const e of dynamicEntries(model, device, vrf, ctx)) out.push(e);
+  if (d && vrf === '') for (const e of containerDefaults(model, d, out)) out.push(e);
   if (ctx && ctx.extraRoutes) for (const e of ctx.extraRoutes(device, vrf)) out.push(e);
   return dedupeConnected(out.sort(compareEntries));
+}
+
+/**
+ * A container's default route, as its engine sets it: via the gateway of
+ * the first of its networks that has one (in the order of its interfaces),
+ * unless a default route of that family is written.
+ */
+function containerDefaults(model: Model, d: Device, written: RibEntry[]): RibEntry[] {
+  if (d.type !== 'container') return [];
+  const out: RibEntry[] = [];
+  for (const i of d.logical) {
+    if (i.type !== 'veth') continue;
+    const x = vethNetwork(model, i);
+    const gw = x && x.net.gateway !== undefined ? parseAddress(x.net.gateway) : null;
+    if (!x || !gw) continue;
+    if (written.concat(out).some((e) => e.kind === 'static' && e.net.prefix === 0 && e.net.version === gw.version)) continue;
+    const net = parsePrefix(gw.version === 4 ? '0.0.0.0/0' : '::/0') as IpPrefix;
+    out.push({ kind: 'static', device: d.id, vrf: '', net, distance: DEFAULT_STATIC_DISTANCE, metric: 0, iface: i.id, via: gw, blackhole: false, implicit: `default route via ${x.net.gateway} (the gateway of the network ${x.net.name})` });
+  }
+  return out;
 }
 
 /** Two addresses of one interface in the same network give one connected entry. */

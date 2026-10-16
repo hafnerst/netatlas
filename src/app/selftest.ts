@@ -141,7 +141,8 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
     });
     const nodes: Array<[string, R]> = [];
     each('g.device .dev-box, g.network .net-box', (e) => nodes.push([(e.parentElement as Element).getAttribute('data-ref') || '', bb(e)]));
-    for (let i = 0; i < nodes.length; i++) for (let j = i + 1; j < nodes.length; j++) if (hit(nodes[i][1], nodes[j][1])) out.push(`${nodes[i][0]} overlaps ${nodes[j][0]}`);
+    // (a guest's box lies wholly inside its host's: nesting, not an overlap)
+    for (let i = 0; i < nodes.length; i++) for (let j = i + 1; j < nodes.length; j++) if (hit(nodes[i][1], nodes[j][1]) && !inside(nodes[i][1], nodes[j][1]) && !inside(nodes[j][1], nodes[i][1])) out.push(`${nodes[i][0]} overlaps ${nodes[j][0]}`);
     const labels: Array<[string, R]> = [];
     each('g.pill .pill-box, text.link-label, text.member-label', (e) => labels.push([(e.textContent || (e.parentElement as Element).textContent || '').slice(0, 40), bb(e)]));
     for (let i = 0; i < labels.length; i++) {
@@ -270,7 +271,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
           labels.join('|') === 'New model|Open model…|Save model|Save model as…|Close model' && /Ctrl\+S$/.test(entries[2]) && /Ctrl\+Shift\+S$/.test(entries[3]) &&
           entries.length === 5 + EXAMPLES.length && ['#btn-save', '#btn-save-as', '#btn-close'].every((x) => (q(x) as HTMLButtonElement).disabled && /Open or create a model first|Close the current model/.test(q(x)!.title)) &&
           q('#btn-save')!.nextElementSibling === q('#btn-save-as') && q('#btn-save-as')!.nextElementSibling === q('#btn-close') &&
-          textsOf('#menu-examples .mi-label').join() === EXAMPLES.map((e) => e.name).join() && !q('#menu-examples .active-example') && /Examples/.test(q('#menu-examples-title')!.textContent || '') && EXAMPLES.length === 14 && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(menu!.textContent || '') && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(q('#empty')!.textContent || ''),
+          textsOf('#menu-examples .mi-label').join() === EXAMPLES.map((e) => e.name).join() && !q('#menu-examples .active-example') && /Examples/.test(q('#menu-examples-title')!.textContent || '') && EXAMPLES.length === 15 && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(menu!.textContent || '') && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(q('#empty')!.textContent || ''),
         entries.join(' | '),
       );
       menuBtn!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
@@ -1974,6 +1975,152 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       md.markSaved();
     }
 
+    // ------------------------------------------------ virtualization (the virtualization example)
+    {
+      app.loadExample(EXAMPLES.findIndex((e) => e.name === 'virtualization.yaml'));
+      await tick();
+      const md = app.mdoc as ModelDoc;
+      const yamlBefore = app.exportText();
+      const afterEdit = async (): Promise<void> => {
+        (app as unknown as { afterEdit(n?: string): void }).afterEdit();
+        await tick();
+      };
+      check(
+        'the virtualization example: valid; its one finding is the VM that HA can’t restart (passthrough)',
+        md.valid && !md.warnings.length && md.findings.map((f) => f.check).join() === 'ha-restart-portgroup',
+        md.findings.map((f) => f.message).join(' | '),
+      );
+      click('[data-view-btn="physical"]');
+      await tick();
+      const boxOf = (ref: string): DOMRect | null => {
+        const r = q(`#viewport [data-ref="${ref}"] .dev-box`);
+        return r ? r.getBoundingClientRect() : null;
+      };
+      const within = (a: DOMRect | null, b: DOMRect | null): boolean => !!a && !!b && a.left >= b.left - 0.5 && a.right <= b.right + 0.5 && a.top >= b.top - 0.5 && a.bottom <= b.bottom + 0.5;
+      check(
+        'the physical view draws each guest inside its host (a container in a VM inside the VM), with the virtual switches as bars and their port groups',
+        within(boxOf('device:web1'), boxOf('device:hv1')) && within(boxOf('device:app1'), boxOf('device:hv2')) && within(boxOf('device:metrics'), boxOf('device:k8s1')) && within(boxOf('device:web'), boxOf('device:ctr1')) &&
+          !!q('#viewport g.vbar[data-ref="vswitch:hv1:vSwitch0"]') && !!q('#viewport g.pg-pill[data-ref="portgroup:hv1:Servers"]') && !!q('#viewport g.vbar[data-ref="cnet:ctr1:lan"]'),
+      );
+      check(
+        '… with the wires: a vNIC to its port group, an uplink from the host’s port, the passthrough port to its VM',
+        !!q('#viewport path.vwire[data-ref="iface:web1:eth0"][data-to="portgroup:hv1:Servers"]') && !!q('#viewport path.vwire-uplink[data-ref="iface:hv1:vmnic0"]') && !!q('#viewport path.vwire-passthrough[data-ref="iface:hv1:vmnic2"][data-to="iface:db1:eth0"]'),
+      );
+      // the Services card of a hypervisor: the checkbox on, its configuration, its guests with + VM
+      app.select('device:hv1');
+      click('[data-tab="edit"]');
+      await tick();
+      const svcBox = (id: string): HTMLInputElement | null => q(`#side-body input[data-act="netsvc"][data-svc="${id}"]`) as HTMLInputElement | null;
+      check(
+        'a server’s Services card: Hypervisor ticked with its collapsible configuration, Container engine offered; its guests listed with + VM',
+        !!svcBox('hypervisor') && svcBox('hypervisor')!.checked && !!svcBox('container_engine') && !svcBox('container_engine')!.checked && !!q('#side-body details[data-svc-card="hypervisor"]') &&
+          !!q('#side-body button[data-act="add-guest"][data-type="vm"][aria-label="Add a VM that runs on hv1"]') && /web1/.test((q('#side-body [data-derived="guests-vm"]') || { textContent: '' }).textContent || ''),
+      );
+      // + VM: a new VM on hv1, one undo step
+      click('#side-body button[data-act="add-guest"][data-type="vm"]');
+      await tick();
+      const added = app.session!.state.selected || '';
+      const newId = added.slice(7);
+      check(
+        '+ VM adds a VM that runs on hv1 (selected, in one undo step)',
+        /^device:/.test(added) && !!md.result.model && (md.result.model.index.devices.get(newId) || { host: '' }).host === 'hv1' && md.canUndo() === 'Add VM',
+        `${added} / ${md.canUndo()}`,
+      );
+      // a guest's Host is its first field: a picker offering only the hosts that can run it
+      const hostSel = q('#side-body select[data-p$=\',"host"]\']') as HTMLSelectElement | null;
+      const offered = hostSel ? Array.from(hostSel.options).map((o) => o.value).filter((v) => v) : [];
+      const firstField = q('#side-body .field select, #side-body .field input');
+      check(
+        'a VM’s first field is Host: a labelled picker offering the servers with the Hypervisor service only',
+        !!hostSel && hostSel.getAttribute('aria-label') === `Host of ${newId}` && offered.join() === 'hv1,hv2' && firstField === hostSel,
+        offered.join(),
+      );
+      md.undo();
+      await afterEdit();
+      check('… undone: the file as it was', app.exportText() === yamlBefore);
+      // disabling the Hypervisor asks first and names the guests
+      app.select('device:hv2');
+      await tick();
+      const hvBox = svcBox('hypervisor') as HTMLInputElement;
+      hvBox.click();
+      await tick(10);
+      const dlg = q('#modal[open]');
+      const dtext = dlg ? (dlg.textContent || '').replace(/\s+/g, ' ') : '';
+      check('unticking Hypervisor on a host with guests asks first and lists them', !!dlg && /Disable the Hypervisor of “hv2”\?/.test(dtext) && /app1 \(VM\)/.test(dtext) && /vr1 \(VM\)/.test(dtext) && /lab1 \(VM\)/.test(dtext), dtext.slice(0, 200));
+      await answerDialog('cancel');
+      await tick();
+      check('… Cancel keeps it', app.exportText() === yamlBefore && !!svcBox('hypervisor') && svcBox('hypervisor')!.checked);
+      // the logical view: a guest names its host; the NAT bridge is a network behind its host
+      click('[data-view-btn="logical"]');
+      await tick();
+      const subOf = (id: string): string => Array.from(doc.querySelectorAll(`#viewport .node[data-ref="device:${id}"] .dev-sub`)).map((t) => t.textContent || '').join(' ');
+      check('the logical view: a guest’s box names its host (runs on esx-01); the Docker bridge is a network of its own, marked NAT', /runs on esx-01/.test(subOf('web1')) && !!q('#viewport .node.network.cnet-net[data-ref="network:ctr1/bridge"]') && /NAT/.test((q('#viewport .node[data-ref="network:ctr1/bridge"]') || { textContent: '' }).textContent || ''), subOf('web1'));
+      click('[data-view-btn="physical"]');
+      await tick();
+      // the Device types filter: servers by their service
+      const subs = app.typeEntries().find((e) => e.type === 'server');
+      check('the Device types filter lists VMs and containers, and the servers by service (Hypervisor, Container host)', !!subs && subs.subs.map((x) => x.label).join() === 'Hypervisor,Container host' && app.typeEntries().some((e) => e.type === 'vm') && app.typeEntries().some((e) => e.type === 'container'), subs ? subs.subs.map((x) => x.label).join() : '');
+      app.setTypeVisible(['server:hypervisor'], false);
+      await tick();
+      const hint = (q('#filter-hint-text') || { textContent: '' }).textContent || '';
+      check('… hypervisors off: their guests leave the physical view too, and the hint says why', !q('#viewport [data-ref="device:web1"] .dev-box') && /guests are not shown: their hosts are hidden/.test(hint), hint);
+      app.setTypeVisible(['server:hypervisor'], true);
+      await tick();
+      // the legend
+      const legendItems = legendOf(app.session!.model, 'physical').sections.filter((x) => x.title === 'Virtualization').reduce((all: string[], x) => all.concat(x.items.map((i) => i.label)), []);
+      check('the legend explains virtual switches, container networks, guests and wires', legendItems.length >= 5, legendItems.join(' | '));
+      // both themes: the bars’ and port groups’ text readable, the example drawn cleanly
+      const rgbaOfV = (x: string): number[] | null => {
+        const m = /rgba?\(([^)]+)\)/.exec(x);
+        if (!m) return null;
+        const v = m[1].split(',').map((y) => parseFloat(y));
+        return [v[0], v[1], v[2], v.length > 3 ? v[3] : 1];
+      };
+      const hexOfV = (v: number[]): string => '#' + v.slice(0, 3).map((x) => Math.round(x).toString(16).padStart(2, '0')).join('');
+      const paint = (el: Element, prop: 'fill' | 'stroke'): number[] => {
+        const cs = doc.defaultView!.getComputedStyle(el);
+        const c = rgbaOfV(prop === 'fill' ? cs.fill : cs.stroke) || [0, 0, 0, 0];
+        const op = parseFloat(prop === 'fill' ? cs.fillOpacity : cs.strokeOpacity);
+        return [c[0], c[1], c[2], c[3] * (isNaN(op) ? 1 : op)];
+      };
+      const canvasBg = (): number[] => {
+        for (let e: HTMLElement | null = q('#viewport') as HTMLElement | null; e; e = e.parentElement) {
+          const b = rgbaOfV(doc.defaultView!.getComputedStyle(e).backgroundColor);
+          if (b && b[3] >= 1) return b;
+        }
+        return [255, 255, 255, 1];
+      };
+      const over = (layers: number[][]): number[] => layers.reduce((acc, l) => acc.map((v, i) => l[i] * l[3] + v * (1 - l[3])), canvasBg().slice(0, 3));
+      for (const theme of ['light', 'dark']) {
+        app.theme.set(theme as 'light' | 'dark');
+        await tick();
+        const host = q('#viewport [data-ref="device:hv1"] .dev-box') as Element;
+        const bar = q('#viewport g.vbar[data-ref="vswitch:hv1:vSwitch0"] .vbar-box') as Element;
+        const pill = q('#viewport g.pg-pill[data-ref="portgroup:hv1:Servers"] .pg-box') as Element;
+        const barBg = hexOfV(over([paint(host, 'fill'), paint(bar, 'fill')]));
+        const pillBg = hexOfV(over([paint(host, 'fill'), paint(bar, 'fill'), paint(pill, 'fill')]));
+        const ratios = [
+          contrast(hexOfV(paint(q('#viewport g.vbar[data-ref="vswitch:hv1:vSwitch0"] .vbar-title') as Element, 'fill')), barBg),
+          contrast(hexOfV(paint(q('#viewport g.pg-pill[data-ref="portgroup:hv1:Servers"] .pg-name') as Element, 'fill')), pillBg),
+          contrast(hexOfV(paint(q('#viewport g.pg-pill[data-ref="portgroup:hv1:Servers"] .pg-sub') as Element, 'fill')), pillBg),
+        ];
+        // the wires and the bars' outlines: graphics, 3:1 (WCAG 1.4.11)
+        const lines = [contrast(hexOfV(paint(q('#viewport path.vwire') as Element, 'stroke')), hexOfV(over([paint(host, 'fill')]))), contrast(hexOfV(paint(bar, 'stroke')), hexOfV(over([paint(host, 'fill')])))];
+        check(`${theme} theme: the virtual switches’ and port groups’ text is readable (AA), the wires and bars stand out (3:1)`, ratios.every((r) => r >= 4.5) && lines.every((r) => r >= 3), ratios.concat(lines).map((r) => r.toFixed(2)).join(', '));
+        check(`${theme} theme: the virtualization example draws without overlaps or clipped text (physical view)`, drawnProblems().length === 0, drawnProblems().slice(0, 3).join(' | '));
+        click('[data-view-btn="logical"]');
+        await tick();
+        check(`${theme} theme: … and the logical view`, drawnProblems().length === 0, drawnProblems().slice(0, 3).join(' | '));
+        click('[data-view-btn="physical"]');
+        await tick();
+      }
+      // Find: guests by their host and port group
+      const hits = searchHits(app.session!.model, 'on hv1');
+      check('Find: “on hv1” finds the guests that run on it', ['device:web1', 'device:db1', 'device:k8s1'].every((r) => hits.indexOf(r) >= 0), hits.join(' | '));
+      app.select(null);
+      md.markSaved();
+    }
+
     // ------------------------------------------------ input helpers in the Edit tab
     {
       app.loadExample(EXAMPLES.findIndex((e) => e.name === 'addressing.yaml'));
@@ -3122,7 +3269,12 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         return q(`#types-list input[data-type-keys="${k}"]`) as HTMLInputElement;
       };
       const ep = { click: (): void => tbox('endpoint').click(), get checked(): boolean { return tbox('endpoint').checked; } };
-      const sv = { click: (): void => tbox('server').click(), get checked(): boolean { return tbox('server').checked; } };
+      // (the example's server is a hypervisor: its row's keys are "server:hypervisor")
+      const svBox = (): HTMLInputElement => {
+        if (tpanel.hidden) tbtn.click();
+        return q('#types-list label[data-type-row="server"] input') as HTMLInputElement;
+      };
+      const sv = { click: (): void => svBox().click(), get checked(): boolean { return svBox().checked; } };
       const m = s().model;
       const typed = (t: string): string[] => m.devices.filter((d) => d.type === t).map((d) => d.id);
       const eps = typed('endpoint');
@@ -3215,8 +3367,8 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       const row = q(`#devices-list [data-device-row="${srv[0]}"]`);
       const total = m.devices.length;
       check(
-        'with a device selection, Server off narrows it: the selected server leaves the diagram, the selection itself is kept (its row stays checked and says "hidden: type Server off"), and the counts say what is shown',
-        onScreen().join() === ['edge', eps[0]].sort().join() && s().selectedDevices().size === 3 && new RegExp(`Devices: 2 of ${total}`).test(btn.textContent || '') && !!row && row.classList.contains('type-hidden') && /hidden: type Server off/.test(row.textContent || '') &&
+        'with a device selection, Server off narrows it: the selected server leaves the diagram, the selection itself is kept (its row stays checked and says "hidden: type Hypervisor server off": it is a hypervisor), and the counts say what is shown',
+        onScreen().join() === ['edge', eps[0]].sort().join() && s().selectedDevices().size === 3 && new RegExp(`Devices: 2 of ${total}`).test(btn.textContent || '') && !!row && row.classList.contains('type-hidden') && /hidden: type Hypervisor server off/.test(row.textContent || '') &&
           (row.querySelector('input') as HTMLInputElement).checked && new RegExp(`showing 2 of ${total} devices`).test(q('#status')!.textContent || ''),
         `${onScreen().join()} ${btn.textContent}`,
       );

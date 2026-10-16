@@ -372,6 +372,60 @@ async function main() {
       await page.settle(100);
     }
 
+    // virtualization (virtualization.yaml): esx-01's interior in the physical view, its Services card with the Hypervisor open,
+    // and the simulation after esx-02 was powered off (its VMs restarted on esx-01)
+    {
+      const vx = await page.eval("Array.from(document.querySelectorAll('#menu-examples [data-example]')).findIndex((b) => /virtualization/.test(b.textContent))");
+      await page.eval(`netatlas.loadExample(${vx}), netatlas.setView("physical"), netatlas.select(null), true`);
+      await page.eval("document.getElementById('toast').hidden = true");
+      await page.settle(200);
+      // esx-01 centred, zoomed out until its whole box fits the diagram
+      const frame = async (ref, top = 0) => {
+        await page.eval(`netatlas.select(${JSON.stringify(ref)}, true), netatlas.select(null), true`);
+        await page.settle(150);
+        const c = await page.rect('#canvas-wrap');
+        const b = await page.rect(`#viewport [data-ref="${ref}"] .dev-box`);
+        const f = Math.min(1, ((c.w - 24) / b.w), ((c.h - top - 24) / b.h));
+        if (f < 1) await page.eval(`netatlas.zoomBy(${f}), true`);
+        // (below a banner over the diagram's top)
+        if (top) await page.eval(`netatlas.zoom.ty += ${top / 2 + 6}, netatlas.applyZoom(), true`);
+        await page.mouse('mouseMoved', 700, 890);
+        await page.settle(250);
+        const r = await page.rect(`#viewport [data-ref="${ref}"] .dev-box`);
+        const x = Math.max(c.x, r.x - 10);
+        const y = Math.max(c.y, r.y - 30);
+        return { x, y, w: Math.min(c.x + c.w, r.x + r.w + 10) - x, h: Math.min(c.y + c.h, r.y + r.h + 10) - y };
+      };
+      await save('virtualization', await frame('device:hv1'), { quality: 55 });
+      await page.eval(`netatlas.select("device:hv1"), netatlas.showTab("edit"), true`);
+      await page.eval("document.getElementById('toast').hidden = true");
+      await page.settle(200);
+      await page.eval(`(() => { for (const d of document.querySelectorAll('#side-body details[data-svc-card="hypervisor"]')) d.open = true; const f = document.querySelector('#side-body input[data-svc="hypervisor"]').closest('.field'); f.scrollIntoView({ block: 'start' }); return true; })()`);
+      await page.mouse('mouseMoved', 700, 890);
+      await page.settle(200);
+      {
+        const g = await page.rect('#side-body [data-group="netservices"]');
+        const sb = await page.rect('#side-body');
+        const f = await page.rect('#side-body .field:has(> label > input[data-svc="hypervisor"])');
+        const vms = await page.rect('#side-body [data-derived="guests-vm"]');
+        const top = Math.max(sb.y, f.y - 6);
+        await save('virtualization-edit', { x: g.x - 4, y: top, w: g.w + 8, h: Math.min(sb.y + sb.h, vms.y + vms.h + 8) - top }, { quality: 45 });
+      }
+      await page.eval(`localStorage.removeItem('netatlas.dockHeight'), sessionStorage.clear(), netatlas.select(null), netatlas.startProtocolSimulation(), netatlas.simController().setPlaying(false), netatlas.simController().runTo(20000), true`);
+      await page.eval(`(() => { const c = netatlas.simController(); c.sim.powerOff('hv2'); c.runTo(20000 + 30000 + 70000); c.refresh(true); return true; })()`);
+      await page.settle(200);
+      await page.eval(`document.getElementById('toast').hidden = true, true`);
+      // esx-01 with the VMs restarted on it, under the simulation's banner
+      {
+        const banner = await page.rect('#mode-banner');
+        const r = await frame('device:hv1', banner.h);
+        const y = Math.min(r.y, banner.y);
+        await save('sim-ha', { x: r.x, y, w: r.w, h: r.y + r.h - y }, { quality: 50 });
+      }
+      await page.eval(`netatlas.exitSimulation(), sessionStorage.clear(), true`);
+      await page.settle(100);
+    }
+
     // input helpers: a tunnel interface's MTU suggestions and MAC Generate (enterprise WAN, hq-rtr1 st0.10)
     {
       await page.eval('netatlas.loadExample(0), netatlas.setView("physical"), netatlas.select("iface:hq-rtr1:st0.10"), netatlas.showTab("edit"), true');

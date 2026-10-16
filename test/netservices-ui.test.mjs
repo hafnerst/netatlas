@@ -49,8 +49,10 @@ test('the Services card: off by default; DHCP and DNS ticked show what they need
     await edit(page, 'device:web');
     let c = await page.eval(CARD);
     assert.ok(c, 'a server has the Services card');
-    assert.equal(c.title, 'Services (DHCP, DNS)');
+    // (a server's card also offers the Hypervisor and Container engine services)
+    assert.equal(c.title, 'Services');
     assert.deepEqual([c.dhcp, c.dns], [false, false], 'both off by default');
+    assert.deepEqual(await page.eval(`Array.from(document.querySelectorAll('#side-body input[data-act="netsvc"]')).map((b) => b.getAttribute('data-svc') + '=' + b.checked)`), ['dhcp=false', 'dns=false', 'hypervisor=false', 'container_engine=false']);
     assert.match(c.dhcpTitle, /Leases addresses/);
     const before = await page.eval(`netatlas.exportText()`);
     // tick DHCP server (a real click): the service is written, its missing scope is an error

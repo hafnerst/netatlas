@@ -335,7 +335,7 @@ const MANUAL: Section[] = [
     id: 'services',
     title: 'Run DHCP and DNS servers',
     steps: [
-      'Select a server, VM or container and open the **Edit** tab. Its **Services (DHCP, DNS)** card has two checkboxes, **DHCP server** and **DNS server**, both off.',
+      'Select a server, VM or container and open the **Edit** tab. Its **Services** card has the checkboxes **DHCP server** and **DNS server**, both off (a server’s also **Hypervisor** and **Container engine**: see *Model hypervisors, VMs and containers*).',
       'Tick **DHCP server**: it needs a scope, reported as an error until there is one. Press **+ Add scope** and fill in the **Network**, the **Address range**, the **Default gateway** and the **DNS servers**; the buttons under them suggest a free range, the network’s gateway and the model’s DNS servers. **Lease time** (1 day if empty), **Excluded addresses**, **Reservations** (a MAC address and its address) and **Domain name** are optional.',
       'Tick **DNS server** and press **+ Add zone**: name it (*campus.example*). The model’s DNS names in that zone are its A and AAAA records, listed read-only with the interface each comes from; add your own A, AAAA and CNAME records under them. **Listening address**, **Forwarders** and **Reverse zones** are optional.',
       'A client is an interface with **DHCP** on. In another subnet, give its gateway interface a **DHCP relay** (the server’s address). A host’s **Name resolution** card lists its static DNS servers, used when no lease gives any.',
@@ -345,6 +345,24 @@ const MANUAL: Section[] = [
       'Unticking a service removes it with its scopes or zones in one step you can undo.',
     ],
     figures: [['services', 'srv’s Services card in campus-services.yaml: DHCP with its two scopes, DNS with the zone campus.example.']],
+  },
+  {
+    id: 'virtualization',
+    title: 'Model hypervisors, VMs and containers',
+    steps: [
+      'A hypervisor is a server with the **Hypervisor** service: select a server, open the **Edit** tab and tick **Hypervisor** in its **Services** card. Choose its **Platform** (ESXi, KVM, Hyper-V …), optionally its **HA cluster**, and press **+ Add virtual switch**: its **Name**, **Type**, **Uplinks** (the host’s ports, in teaming order), **Teaming** and **+ Add port group** (a name and its VLANs, as on a port, or **Guest tagging**).',
+      'Press **+ VM** under *VMs on this host*: a new VM that runs on it. A guest’s first field is **Host**, which offers only the servers that can run it. Give it **+ Virtual NIC**: its **Port group** (or a **Passthrough port**) and its address; **Generate** gives it a MAC address with the platform’s OUI. A hypervisor’s own interfaces are **+ Host interface**, each with its **Role**.',
+      'A container host is a server (or a VM) with the **Container engine**: tick it, choose the **Engine** and add container networks — **Bridge** (its interface, subnet, gateway, NAT and address range), **macvlan** / **ipvlan** (on a parent interface), **Overlay**, **Host** or **None**. **+ Container** adds a container on it; its **+ Network attachment** names the network, takes the **Next free** address and may publish ports (host port → container port).',
+      'The physical view draws each guest inside its host, wired to its port group or network, with the uplinks from the host’s ports; dragging a guest moves its host. The logical view shows guests as devices that say where they run (*runs on esx-01*), and a NAT bridge as a network behind its host.',
+    ],
+    notes: [
+      'A guest has no ports, no cables and no location of its own (its host’s). Unticking a service its guests run on, or deleting the host, asks first and names the guests; their host then shows as an error until you move or delete them.',
+      'The checks report a port group VLAN that an uplink’s switch port doesn’t carry, a guest address in the wrong VLAN, a macvlan network in another VLAN than its parent, a VM HA can’t restart elsewhere and an overcommitted host. Kubernetes is not modelled: a node is a container host.',
+    ],
+    figures: [
+      ['virtualization', 'esx-01 in virtualization.yaml: vSwitch0 with its port groups, the VMs wired to them, a container inside the VM k8s1, the internal vSwitch1, and db1 on its passthrough port.'],
+      ['virtualization-edit', 'esx-01’s Services card: the Hypervisor with its platform, HA cluster and inventory, its two virtual switches (collapsed), and the VMs on the host with + VM.'],
+    ],
   },
   {
     id: 'sim-dhcp-dns',
@@ -357,6 +375,18 @@ const MANUAL: Section[] = [
     ],
     notes: ['DHCP is IPv4 only, one lease per interface; DNS has no negative caching and asks only the model’s servers. The model is never changed: after the simulation the client’s line says the lease is assigned in a simulation.'],
     figures: [['dhcp-sim', 'The simulation of campus-services.yaml: the clients’ leases in the diagram, and srv’s DHCP leases in the simulation panel.']],
+  },
+  {
+    id: 'sim-virtual',
+    title: 'Follow virtual networking in a simulation',
+    steps: [
+      'Open **virtualization.yaml** and start a simulation. A virtual switch learns its guests, never its uplinks, and sends what isn’t theirs by its teaming’s uplink: active / standby uses the first that is up.',
+      'Click **esx-01**’s port **vmnic0** and **Shut interface**: after the teaming failover detection (1 s) the switch fails over to vmnic1 and sends a **RARP** for each guest, so the switches learn where they are now. **No shut** and it fails back.',
+      'Click **esx-02** and **Power off**: its VMs go down with it, and after the HA cluster’s **VM restart time** they restart on esx-01, drawn inside it for the rest of the simulation. *db1*, bound to a host port by passthrough, can’t move.',
+      '**Send test** from *web* (a container behind docker-01’s NAT) to *pc1*: the log shows the **SNAT** to the host’s address and the reply translated back; a test from *pc1* to docker-01 on TCP 8080 reaches *web* by its **published port** (DNAT). **Stop container engine** on docker-01 stops its containers; started again, each comes back as its **restart policy** says.',
+    ],
+    notes: ['The VM restart time, the failover detection and the container start time are the services’ Simulation attributes (in their cards); the restart policy is the container’s. A VM drawn in its new host is the simulation’s picture only: the model is never changed.'],
+    figures: [['sim-ha', 'The simulation of virtualization.yaml after esx-02 was powered off: app1, vr1 and lab1 restarted on esx-01, marked as moved.']],
   },
   {
     id: 'sim-multicast',
@@ -398,7 +428,10 @@ const MANUAL: Section[] = [
       'The path is marked in the diagram (thick outline; equal-cost alternatives dashed, the return path dotted) and listed in a table, a row per hop: the **device**, the interfaces **in** and **out**, the **addresses**, the **route or relation** used and the **encapsulation** (GRE over IPsec …), the cables under each row. Each alternative and the return path have their own section. If it can\'t get through, the window says where and why.',
       'Click a name in the table to select it. **Copy as text** copies the trace; **Exit trace**, `Esc` in the diagram or closing the window removes the path.',
     ],
-    notes: ['The trace is computed from the routes and adjacencies in the model: an approximation, not a simulation of the protocols. ACLs, firewall policies and NAT are not considered. Nothing in the model changes.'],
+    notes: [
+      'The trace is computed from the routes and adjacencies in the model: an approximation, not a simulation of the protocols. ACLs and firewall policies are not considered. Nothing in the model changes.',
+      'Virtual machines and containers: a vNIC leaves its host through its port group’s virtual switch and the uplink its teaming uses (active / standby: the first that is up; LACP: the bond), or through its passthrough port; guests on one virtual switch or one container network reach each other inside the host, listed as **inside** under the hop. NAT only for container bridges: traffic out of the host gets the host’s address (**SNAT**); a container behind NAT is reached from outside only at its host’s address, on a published port (**DNAT**).',
+    ],
     figures: [['trace', 'A path from the Munich branch to the syslog server: through the GRE-over-IPsec tunnel, the firewall and a core switch, with the equal-cost alternative dashed, and the Trace path window with its hop table.']],
   },
   {

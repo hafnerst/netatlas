@@ -149,18 +149,21 @@ than one endpoint on the same device is bound by the first of them.
 | `id` | yes | |
 | `label` | | Display name. Drawn in full: long labels wrap, and line breaks in the label are kept (see [Sizes, labels and routes](#sizes-labels-and-routes)). |
 | `type` | | One of the [device types](#device-types) below, written exactly as listed (lower case). Any other value is an error. Without a type the device gets a generic icon. |
+| `host` | VMs and containers: yes | A **guest's host**: the device it runs on — for a VM a server with the Hypervisor service, for a container a server or a VM with the Container engine service. Required on a VM or a container, an error on any other type. See [Virtualization](#virtualization-hypervisors-vms-and-containers). |
 | `layer3` | | Switches only: `layer3: true` makes a switch a **Layer 3 switch**, with the full Layer 3+ feature set (routing protocols, a router ID, addresses on several interfaces, VRRP / HSRP groups, tunnels, VRFs). Without it a switch is a **Layer 2 switch** (see [Layer 2 and Layer 3 switches](#layer-2-and-layer-3-switches)). On any other type it is an error. |
-| `group` | | Id of the group the device is located in |
+| `group` | | Id of the group the device is located in. A guest (VM or container) has none of its own: it is where its host is, and `group` on it is an error. |
 | `tier` | | 0–9: vertical row in the physical view (0 = top). By default this comes from the type (see the table below). Set it to place a device elsewhere, e.g. `tier: 3` for core or spine switches above the access switches. |
+| `guest_os`, `vcpu`, `ram` | | VMs only, optional: the guest operating system (text), its virtual CPUs (a whole number) and its memory (`8G`, `512M`). The host's inventory (`cpu`, `ram`) counts them. |
+| `image` | | Containers only, optional: the image it runs (`nginx:1.27`). |
 | `router_id` | | The router ID the device's protocols share: the id of one of its **loopbacks** (`lo0`: its IPv4 address is used) or an **IPv4 address** without a prefix length (`10.255.0.1`). Applies only while an enabled protocol uses a router ID (OSPF, BGP, EIGRP, LDP); otherwise it is reported as not applicable. See [Routing services](#routing-services-protocols). |
 | `simulation` | | The device's **simulation attributes** (the device-level ones, and defaults for its objects where an attribute allows it), for the [protocol simulation](#simulation-parameters-and-device-attributes): only what it overrides, e.g. `simulation: {arp_timeout: 300, spf_delay: 50ms, boot_time: 2min}`. Everything else it inherits from the simulation's values or the defaults. |
 | `protocols` | | The **routing services** the device runs, with their parameters: `protocols: {bgp: {asn: 65001}, ospf: {}}`. Layer 3+ devices only (a switch with `layer3: true`). See [Routing services](#routing-services-protocols). |
 | `description`, `attrs` | | |
 | `interfaces` | | List of the device's **physical interfaces** (its ports, below). The shorthand `interfaces: [eth0, eth1]` is allowed. |
-| `logical_interfaces` | | List of the device's **logical interfaces** (below): loopbacks, virtual interfaces and tunnel interfaces. |
+| `logical_interfaces` | | List of the device's **logical interfaces** (below): loopbacks, virtual interfaces and tunnel interfaces; a VM's virtual NICs (`vnic`) and a container's network attachments (`veth`). |
 | `dns_names` | | List of the device's **DNS names**, each associated with one or more of its interfaces. See [DNS names](#dns-names). |
 | `dns_servers` | | The DNS servers the device asks (a list of addresses), when they are not given by a DHCP lease. See [DNS servers of a host](#dns-servers-of-a-host-dns_servers). |
-| `services` | | Servers, VMs and containers only: the **DHCP server** and the **DNS server** it runs, `services: {dhcp: {scopes: […]}, dns: {zones: […]}}`. See [Network services](#network-services-services-dhcp-and-dns-servers). |
+| `services` | | Servers, VMs and containers only: the **DHCP server** and the **DNS server** it runs, `services: {dhcp: {scopes: […]}, dns: {zones: […]}}`; a server's **Hypervisor** (`hypervisor`) and a server's or VM's **Container engine** (`container_engine`). See [Network services](#network-services-services-dhcp-and-dns-servers) and [Virtualization](#virtualization-hypervisors-vms-and-containers). |
 | `routes` | | List of the device's **static routes**. See [Static routes](#static-routes). Only devices whose type has a routing table may have them. |
 
 A device has no `vendor`, `model`, `role` or `mgmt` key; like every key the
@@ -254,7 +257,7 @@ diagram writes the router ID and the AS number only where they apply.
 | Firewall | `firewall` | 2 | forwards |
 | Access point | `ap` | 5 | — |
 | Server | `server` | 6 | host |
-| Virtual machine | `vm` | 6 | host |
+| Virtual machine | `vm` | 6 | host; with `layer3: true` forwards (a virtual router or firewall) |
 | Container | `container` | 6 | host |
 | Storage | `storage` | 6 | host |
 | Load balancer | `load_balancer` | 1 | forwards |
@@ -273,6 +276,12 @@ they may have routes too, typically their default gateway. An access point and
 an IDS/IPS are drawn as layer-2 or transparent devices, a cloud stands for a
 network outside the model, and a device without a type is unknown: routes on
 any of these are an error.
+
+There is no hypervisor type: a hypervisor is a **server with the Hypervisor
+service**, a container host a server (or a VM) with the **Container engine
+service**; VMs and containers are **guests** that name their `host` (see
+[Virtualization](#virtualization-hypervisors-vms-and-containers)). The value
+`hypervisor` is an unknown type whose error says so.
 
 Each type has its own icon, and the display name appears in the diagram
 subtitle, the details, tooltips, the legend and the editor. The error for
@@ -851,6 +860,233 @@ interface (`dhcp_relay`); else the consistency check `dhcp-no-server`
 reports it. A host's DNS servers come from its lease, else from
 `dns_servers`.
 
+### Virtualization: hypervisors, VMs and containers
+
+A hypervisor is a **server with the Hypervisor service**; a container host is
+a **server or a VM with the Container engine service**. VMs and containers
+are **guests**: each names its `host`, and its network goes through the
+host's virtual networking, never through a cable of its own.
+
+```yaml
+  - id: hv1
+    type: server
+    group: rack1
+    services:
+      hypervisor:
+        platform: esxi                       # kvm, esxi, hyperv, proxmox, xen, other
+        cluster: prod                        # optional: its HA cluster
+        cpu: 64                              # optional inventory: physical cores …
+        ram: 512G                            # … and memory (overcommit is reported as info)
+        vswitches:
+          - name: vSwitch0
+            type: standard                   # standard, distributed, linux_bridge, ovs
+            uplinks: [vmnic0, vmnic1]        # the host's ports (or a bond), in teaming order
+            teaming: active_standby          # active_standby, load_based, source_based, lacp
+            mtu: 1500                        # optional
+            port_groups:
+              - {name: Servers, vlans: 10}                  # access: one VLAN
+              - {name: Trunk, vlans: [10, 20], native: 10}  # trunk, with an optional native VLAN
+              - {name: VGT, guest_tagging: true}            # the guest tags (VGT)
+            simulation: {failover_detection: 1s}
+        simulation: {vm_restart: 30}
+    interfaces: [vmnic0, vmnic1, vmnic2]
+    logical_interfaces:
+      # a host interface (VMkernel port): a vnic of the host itself, with its role
+      - {id: vmk0, type: vnic, port_group: Servers, role: management, ip: 10.10.0.11/24}
+  - id: web1
+    type: vm
+    host: hv1                                # required: a server with the Hypervisor service
+    guest_os: Ubuntu 24.04                   # optional: guest_os, vcpu, ram
+    vcpu: 2
+    ram: 4G
+    logical_interfaces:
+      - {id: eth0, type: vnic, port_group: Servers, mac: "00:50:56:01:00:21", ip: 10.10.0.21/24}
+  - id: db1
+    type: vm
+    host: hv1
+    logical_interfaces:
+      - {id: eth0, type: vnic, passthrough: vmnic2, ip: 10.10.0.40/24}   # PCI passthrough (vf: SR-IOV)
+  - id: ctr1
+    type: server
+    services:
+      container_engine:
+        engine: docker                       # docker, podman, containerd, lxc, other
+        networks:
+          - name: bridge
+            driver: bridge                   # creates the bridge interface on the host
+            interface: docker0
+            subnet: 172.17.0.0/16
+            gateway: 172.17.0.1              # the bridge interface's address
+            nat: true                        # masquerade to the host's address
+            range: 172.17.0.100-172.17.0.199 # optional: IPAM, where "next free" takes from
+          - {name: lan, driver: macvlan, parent: eth1, subnet: 10.10.0.0/24, gateway: 10.10.0.1, mode: bridge}
+          - {name: host, driver: host}
+        simulation: {container_start: 2s}
+    interfaces: [{id: eth0, ip: 10.20.0.50/24}, eth1]
+  - id: web
+    type: container
+    host: ctr1                               # required: a server or VM with the Container engine
+    image: nginx:1.27
+    simulation: {restart_policy: always}
+    logical_interfaces:
+      - id: eth0
+        type: veth
+        network: bridge
+        ip: 172.17.0.2                       # static; without a length it is in the subnet
+        aliases: [web.local]                 # optional: DNS aliases on the network
+        publish:
+          - {host_port: 8080, port: 80, protocol: tcp}    # host_ip: optional
+```
+
+**Guests.** A VM or a container needs its `host`: a VM a server with the
+Hypervisor service, a container a server or a VM with the Container engine
+service (a container in a VM runs inside the VM). A guest has **no physical
+interfaces** and **no cables**: `interfaces` on it, or a link end naming it,
+is an error, and Connect refuses it (cable its host instead). It is where its
+host is: `group` on a guest is an error, and its location is its host's.
+Renaming a host updates its guests; deleting a host, or unticking its
+service, asks first and lists the guests whose `host` then breaks (they are
+reported until moved or deleted). `guest_os`, `vcpu` and `ram` (VMs) and
+`image` (containers) are optional facts.
+
+**Hypervisor service** (`services.hypervisor`, servers only; on a VM it is
+an error: nested virtualization is not modelled):
+
+| Key | Required | Description |
+|---|---|---|
+| `platform` | yes | `kvm`, `esxi`, `hyperv`, `proxmox`, `xen` or `other`; it also picks the OUI the MAC generator uses for its VMs |
+| `cluster` | | The name of its **HA cluster**: the members restart each other's VMs (see the simulation and the failure analysis) |
+| `cpu`, `ram` | | Its inventory: physical cores and memory. With it, the VMs' `vcpu` and `ram` are added up and an overcommit is reported (info) |
+| `vswitches` | yes | Its virtual switches (at least one) |
+| `simulation` | | The service's simulation attributes (`vm_restart`) |
+
+A **virtual switch** has a `name` (unique on its host), a `type`
+(`standard`, `distributed`, `linux_bridge` or `ovs`), its `uplinks` (the
+host's ports or aggregates, in teaming order; none: an internal switch), its
+`teaming` (`active_standby`, `load_based`, `source_based` or `lacp`; LACP
+needs one aggregate of the host as the uplink; without uplinks `teaming` is
+an error), an optional `mtu`, its `port_groups` (at least one) and its
+`simulation` (`failover_detection`). A port is the uplink of one virtual
+switch; an uplink with an address is an error (the host's addresses belong
+on host interfaces).
+
+A **port group** has a `name` (unique on its host: a VM names it) and its
+VLAN mode, as a port: `vlans` with one VLAN (access) or several (a trunk,
+with an optional `native` VLAN among them), or `guest_tagging: true` (the
+guest tags; every VLAN of the uplinks passes). Both, or neither, is an
+error.
+
+**Virtual NICs** (`type: vnic`, on a VM, or on a hypervisor as its host
+interface): `port_group` (a port group of its host) or `passthrough` (a
+physical port of its host, bound to the VM; `vf` its SR-IOV virtual
+function), never both. A port used for passthrough is exclusive and can't
+be an uplink. A host interface has a `role` (`management`, `migration` or
+`storage`) and no passthrough. A VM's VLAN subinterfaces (`eth0.10`, type
+`virtual`) sit on a vnic whose port group passes their tags (guest tagging
+or a trunk). A vnic is Layer 3 like any interface: `ip`, `mac`, `mtu`,
+`vrf`; a VM with `layer3: true` routes (a virtual router or firewall).
+
+**Container engine** (`services.container_engine`, servers and VMs):
+
+| Key | Required | Description |
+|---|---|---|
+| `engine` | yes | `docker`, `podman`, `containerd`, `lxc` or `other` |
+| `networks` | yes | Its container networks (at least one) |
+| `simulation` | | The service's simulation attributes (`container_start`) |
+
+A **container network** has a `name` (unique on its engine) and a `driver`:
+
+| Driver | Keys | What it is |
+|---|---|---|
+| `bridge` | `interface` (the bridge it creates on the host, e.g. `docker0`), `subnet`, `gateway` (the bridge interface's address), `nat` (masquerade to the host), `range` | a network behind its host; with NAT its containers reach out with the host's address, and are reached from outside only on their published ports |
+| `macvlan` | `parent` (a port, an aggregate or a VLAN subinterface of the host; in a VM a vnic), `subnet`, `gateway`, `mode` (`bridge`, `private`, `vepa`, `passthru`), `range` | its containers have their own MAC addresses on the parent's LAN; the host can't reach them through the parent |
+| `ipvlan` | as macvlan, `mode` (`l2`, `l3`) | its containers share the parent's MAC address |
+| `overlay` | `subnet`, `gateway`, `hosts` (the other container engines that take part), `range` | a network across hosts (its tunnel between the hosts is not modelled) |
+| `host` | — | the container uses its host's interfaces and addresses: its own address is an error |
+| `none` | — | no network |
+
+The bridge interface is derived (never written): it appears under the host's
+logical interfaces with the gateway's address. A subnet is a network with its
+prefix length and no host bits; the gateway lies in it and is not its network
+or broadcast address; the `range` (`start-end`) lies in it.
+
+**Container network attachments** (`type: veth`, on a container): its
+`network` (a network of its host's engine, or an overlay that lists the
+host), its address (`ip`: static, inside the subnet, not the gateway; without
+a prefix length it takes the subnet's — the editor's *Next free* takes the
+lowest free one of the range; DHCP only on macvlan networks), an optional
+`mac` and DNS `aliases`, and `publish` (bridge networks only): published
+ports, each `host_port`, `port`, `protocol` (`tcp`, `udp`) and an optional
+`host_ip` (an address of the host); a host address and port can be published
+once.
+
+**Out of scope.** Kubernetes (pods, services, CNI plugins, ingress) is not
+modelled: a Kubernetes node is a container host (`engine: containerd`) with
+its networks, its pods are containers. The overlay's tunnel between hosts,
+nested virtualization, vMotion (a VM moves only by an HA restart in the
+simulation), and a distributed switch spanning hosts (each host's switch is
+its own) are not modelled either.
+
+**Validation.** Besides the rules above (a container's address outside its
+network's subnet is an error), these consistency checks apply (warnings
+unless said): `vswitch-uplink-vlan` (error: the switch port at an uplink
+doesn't carry a port group's VLAN), `vnic-network-vlan` (a VM's address
+outside the network of its port group's VLAN, or of its passthrough port's),
+`duplicate-mac` (one MAC address on two interfaces, vnics included),
+`container-parent-vlan` (a macvlan network in another VLAN than its parent),
+`ha-restart-portgroup` (a VM of an HA cluster can't restart on another
+member: a port group missing there, or a passthrough port) and
+`hypervisor-overcommit` (info: more vCPUs or RAM than the host has).
+
+**In the diagrams.** The physical view draws each guest **inside its host's
+box** (a container in a VM inside the VM), with the virtual switches and
+container networks as bars, their port groups as pills, a wire from each
+vnic and veth to its port group or network, and the uplink wires from the
+host's ports; the layout keeps positions for the hosts only (dragging a
+guest moves its host). The logical view draws each guest as a device whose
+second line names its host ("runs on esx-01"), and each bridge or overlay
+network with a subnet as a **network of its own host** (dashed; "NAT" when
+it masquerades): its members are that host's bridge interface and the
+containers on it, never another host's with the same subnet. Its place in
+the logical layout is stored under `<host>/<network>` (`ctr1/bridge: [x,
+y]`), an id no device or network can have.
+
+**In the analyses.** The path tracer leaves a vnic through its port group's
+virtual switch and the uplink its teaming uses (active / standby: the first
+that is up; LACP: the bond; load- and source-based: the first that is up),
+or through its passthrough port; two guests on one virtual switch (in one
+VLAN) or one container network meet inside the host without a cable. NAT is
+modelled for container bridges only: a container host forwards for its
+bridge networks; with `nat` the source becomes the host's address (SNAT); a
+container behind NAT is reached from outside only at its host's address, on
+a published port (DNAT; the port numbers are named, not checked); without a
+published port it can't be reached. A macvlan container and its own host
+can't reach each other. A container's default route is its network's
+gateway unless it has one written. Failures: a host takes its guests down,
+unless it is in an HA cluster with a member left (its VMs restart there,
+except one with a passthrough port); a vnic goes down when every uplink of
+its virtual switch is down. Single points of failure add a host for its
+guests, a virtual switch with one uplink or uplinks to only one switch, and
+a passthrough port.
+
+**In the simulation.** Each virtual switch is a bridge without spanning
+tree: it learns its guests, not its uplinks, sends what isn't theirs by its
+teaming's uplink, never from one uplink to another, and takes broadcasts
+from the active uplink only. When the active uplink goes down it fails over
+after its `failover_detection` and announces each guest's MAC address with a
+RARP on the new uplink; it fails back when the uplink returns. A host powered
+off takes its guests down; in an HA cluster its VMs restart on another member
+after `vm_restart` (then their boot time) and are drawn there during the
+simulation only. A container host forwards between its bridge networks and
+the rest with NAT (shown in the event log and the packet inspector),
+forwards published ports to their containers, and a container starts after
+its engine's `container_start`; when its host boots or its engine starts
+again, its `restart_policy` decides whether it does (`no`, `on-failure`: not
+after a clean stop; `always`; `unless-stopped`: unless stopped by hand). The
+simulation's events include powering a VM or container off and on, a
+host's uplink (shut, flapping, its cable failed) and stopping or starting a
+container engine.
+
 ### Static routes
 
 `routes` lists the static routes of a device: where traffic to a
@@ -1332,7 +1568,7 @@ at, and is written in that object's `simulation:` block:
 | interface | a port's, an aggregate's or a logical interface's `simulation:` | ARP timers, link-up delay, a port's spanning-tree cost, edge port and BPDU guard, IGMP, a DHCP client's retries |
 | VLAN | the `simulation:` of a network with a `vlan` | IGMP snooping, the snooping querier, fast leave |
 | relation | a relation's `simulation:` | a VRRP group's advertisement interval, an IPsec tunnel's lifetimes, a load balancer pool's health checks |
-| service | a DHCP scope's or a DNS zone's `simulation:` | the offer delay and ping check of a scope, a zone's record TTL |
+| service | a DHCP scope's or a DNS zone's `simulation:`; a Hypervisor service's, a virtual switch's or a Container engine's | the offer delay and ping check of a scope, a zone's record TTL; the VM restart time, the teaming failover detection, the container start time |
 
 Some object-level attributes may also be written on the device, as the
 default for its objects (the column *Also device-wide*): `stp_edge: on` on
@@ -1435,7 +1671,7 @@ a list of `VLAN: value` pairs, ranges allowed.
 | `ha_failover` | HA failover detection (s) | 3 s | 100 ms – 5 min | a common setting (3 missed heartbeats of 1 s) | firewalls |  |
 | `fail_mode` | When it fails | Fail open | `open`, `closed` | the hardware bypass of most inline appliances | IDS / IPS |  |
 | `inspection_latency` | Inspection latency (ms) | 0 s | 0 s – 10 s | none unless set (see the appliance’s data sheet) | IDS / IPS |  |
-| `vm_restart` | VM restart time (s) | 1 min | 0 s – 1 h | a demonstration value (HA failure detection plus the restart) | servers that host VMs or containers (cabled to them) |  |
+| `restart_policy` | Restart policy | No | `no`, `always`, `on-failure`, `unless-stopped` | Docker (no) | containers |  |
 | `snmp_interval` | SNMP polling interval (s) | 1 min | 1 s – 24 h | a demonstration value (300 s is common in production) | systems and SNMP managers |  |
 | `snmp_timeout` | SNMP timeout (s) | 1 s | 100 ms – 1 min | net-snmp (1 s) | systems and SNMP managers |  |
 | `association_time` | Client association time (s) | 1 s | 0 s – 1 min | a demonstration value (WPA2-PSK takes well under a second, 802.1X longer) | access points |  |
@@ -1523,13 +1759,16 @@ a list of `VLAN: value` pairs, ranges allowed.
 | `algorithm` | Balancing algorithm | Round robin | `round-robin`, `least-connections`, `source-hash` | HAProxy and F5 BIG-IP (round robin) | a load balancer’s pool (its member relations) |  |
 | `multicast_over_tunnel` | Multicast over tunnels | On | `on`, `off` | GRE carries multicast; plain IPsec does not (RFC 4301) | `ipsec`, `gre`, `vxlan`, `wireguard`, `openvpn`, `l2tp` relations | yes |
 
-#### Service attributes (3)
+#### Service attributes (6)
 
 | Key | Attribute | Default | Range | Source of the default | Applies to | Also device-wide |
 |---|---|---|---|---|---|---|
 | `offer_delay` | Offer delay (ms) | 0 s | 0 s – 1 min | none unless set (Windows Server: a delay for the secondary of a split scope) | a DHCP server’s scopes | yes |
 | `ping_check` | Ping check before offering | Off | `on`, `off` | Windows Server conflict detection (0 attempts: off) | a DHCP server’s scopes | yes |
 | `record_ttl` | Record TTL (s) | 1 h | 0 s – 168 h | a common zone default (1 h) | a DNS server’s zones |  |
+| `vm_restart` | VM restart time (s) | 1 min | 0 s – 1 h | a demonstration value (HA failure detection plus the restart) | a Hypervisor service (`services.hypervisor.simulation`) |  |
+| `failover_detection` | Teaming failover detection (ms) | 1 s | 0 s – 1 min | a demonstration value (link-status failover detection takes about a second) | a virtual switch |  |
+| `container_start` | Container start time (s) | 2 s | 0 s – 10 min | a demonstration value (a container starts in seconds) | a Container engine service (`services.container_engine.simulation`) |  |
 
 | Device type | Device-wide simulation attributes |
 |---|---|
@@ -1537,9 +1776,9 @@ a list of `VLAN: value` pairs, ranges allowed.
 | Switch (`switch`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `mac_aging`, `stp_mode`, `igmp_snooping`, `ttl`, `icmp_errors`, `igmp_query_interval`, `spf_delay`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `max_paths`, `mac_table_size`, `stp_hello`, `stp_forward_delay`, `stp_max_age`, `bridge_priority`, `bridge_priority_vlans`, `stp_edge`, `stp_bpdu_guard`, `ike_lifetime`, `child_lifetime`, `rekey_margin`, `dpd_interval`, `dpd_retries`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `igmp_version`, `unsolicited_report_interval`, `igmp_querier`, `igmp_max_response`, `igmp_robustness`, `last_member_query_interval`, `spt_switchover`, `router_port_aging`, `multicast_over_tunnel` |
 | Firewall (`firewall`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `igmp_query_interval`, `spf_delay`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `max_paths`, `ha_failover`, `ike_lifetime`, `child_lifetime`, `rekey_margin`, `dpd_interval`, `dpd_retries`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `default_action`, `allow`, `stateful`, `tcp_session_timeout`, `tcp_handshake_timeout`, `udp_session_timeout`, `icmp_session_timeout`, `igmp_version`, `unsolicited_report_interval`, `igmp_querier`, `igmp_max_response`, `igmp_robustness`, `last_member_query_interval`, `spt_switchover`, `multicast_over_tunnel` |
 | Access point (`ap`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `association_time`, `client_idle_timeout`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `igmp_version`, `unsolicited_report_interval` |
-| Server (`server`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `response_time`, `vm_restart`, `snmp_interval`, `snmp_timeout`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `listening`, `offer_delay`, `ping_check`, `igmp_version`, `unsolicited_report_interval`, `icmp_probe_interval` |
+| Server (`server`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `response_time`, `snmp_interval`, `snmp_timeout`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `listening`, `offer_delay`, `ping_check`, `igmp_version`, `unsolicited_report_interval`, `icmp_probe_interval` |
 | Virtual machine (`vm`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `response_time`, `snmp_interval`, `snmp_timeout`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `listening`, `offer_delay`, `ping_check`, `igmp_version`, `unsolicited_report_interval`, `icmp_probe_interval` |
-| Container (`container`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `response_time`, `snmp_interval`, `snmp_timeout`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `listening`, `offer_delay`, `ping_check`, `igmp_version`, `unsolicited_report_interval`, `icmp_probe_interval` |
+| Container (`container`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `response_time`, `snmp_interval`, `snmp_timeout`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `listening`, `restart_policy`, `offer_delay`, `ping_check`, `igmp_version`, `unsolicited_report_interval`, `icmp_probe_interval` |
 | Storage (`storage`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `response_time`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `listening`, `igmp_version`, `unsolicited_report_interval` |
 | Load balancer (`load_balancer`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `igmp_query_interval`, `spf_delay`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `max_paths`, `ike_lifetime`, `child_lifetime`, `rekey_margin`, `dpd_interval`, `dpd_retries`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `listening`, `igmp_version`, `unsolicited_report_interval`, `igmp_querier`, `igmp_max_response`, `igmp_robustness`, `last_member_query_interval`, `spt_switchover`, `multicast_over_tunnel` |
 | Proxy (`proxy`) | `arp_timeout`, `arp_retransmit`, `arp_retries`, `ndp_reachable_time`, `ttl`, `icmp_errors`, `igmp_query_interval`, `spf_delay`, `tcp_syn_retries`, `tcp_keepalive`, `closed_port_reply`, `boot_time`, `max_paths`, `ike_lifetime`, `child_lifetime`, `rekey_margin`, `dpd_interval`, `dpd_retries`, `respond_to_ping`, `respond_to_broadcast_ping`, `icmp_rate_limit`, `listening`, `client_timeout`, `upstream_timeout`, `igmp_version`, `unsolicited_report_interval`, `igmp_querier`, `igmp_max_response`, `igmp_robustness`, `last_member_query_interval`, `spt_switchover`, `multicast_over_tunnel` |
@@ -2077,6 +2316,11 @@ VLANs is routed, not "access in VLAN 1").
 | `protocol-not-enabled` | warning | a Layer 3+ device that is an endpoint of a protocol's relation but does not enable the protocol | relations; devices: `protocols` |
 | `protocol-unused` | info | a protocol enabled on a device but used by none of its relations (a redundancy protocol: by no interface group) | devices: `protocols`; relations |
 | `duplicate-mac` | warning | the same MAC address on two interfaces (compared without separators and case) | interfaces: `mac` |
+| `vswitch-uplink-vlan` | error | a port group's VLAN that the switch port at an uplink of its virtual switch doesn't carry (the VLAN can't leave the host) | `services.hypervisor`: `vswitches` (`uplinks`, `port_groups`); links; interfaces: `vlans`, `native` (at the uplinks' far ends) |
+| `vnic-network-vlan` | warning | a VM's (or host interface's) address in a network of another VLAN than its port group's (a passthrough vnic: than its port's) | logical interfaces (`vnic`): `port_group`, `passthrough`, `ip`; port groups; networks: `cidr`, `vlan`; links |
+| `container-parent-vlan` | warning | a macvlan or ipvlan network whose subnet is the network of another VLAN than its parent interface's | `services.container_engine`: `networks` (`parent`, `subnet`); interfaces; networks: `cidr`, `vlan`; links |
+| `ha-restart-portgroup` | warning | a VM of an HA cluster that can't restart on another member: a port group of its vnics is missing there, or it has a passthrough port | `services.hypervisor`: `cluster`, `port_groups`; VMs: `host`; vnics: `port_group`, `passthrough` |
+| `hypervisor-overcommit` | info | a hypervisor whose VMs have more vCPUs or memory than its `cpu` or `ram` | `services.hypervisor`: `cpu`, `ram`; VMs: `host`, `vcpu`, `ram` |
 | `ospf-area-mismatch` | error | an OSPF adjacency whose ends are in different areas | OSPF relations: `area.<device>` |
 | `ospf-network-type-mismatch` | warning | different OSPF network types at the two ends | OSPF relations: `network-type.<device>` |
 | `ospf-timer-mismatch` | error | different hello or dead intervals at the two ends | OSPF relations: `hello.<device>`, `dead.<device>` |

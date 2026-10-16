@@ -25,10 +25,11 @@
  *   (or, on a short line, beside) its bundle, clear of nodes and of the labels
  *   placed before it; see diagram/labels.ts.
  */
+import { networkSubText } from '../model/virtual';
 import { CBox, Pt, Rect, boxRect, clipToBox, normal, unionRect } from '../layout/geometry';
 import { LINE_W, TUBE_WALL, buildBundle, laneLabel, relationPairs, spokeWidth } from '../layout/bundles';
 import { CHIP_H, HUB_R, LNode, LogicalLayout, commonChain, deviceRect, isMultipoint, networkSubtitle } from '../layout/logical';
-import { endLabelLines, memberAddresses } from '../layout/input';
+import { deviceSub, endLabelLines, memberAddresses } from '../layout/input';
 import { CHIP_FONT, END_LABEL_GAP, ENTRY_GAP, ENTRY_LH, ENTRY_MARGIN, ENTRY_PAD_Y, NET_LABEL_SIZE, dnsNameLines, dnsShown, endLabelBox, entriesSize, entryBox, memberLabelBox, networkBody, pillBox } from '../layout/sizes';
 import { END_LABEL_X, RowSpan, deviceRows, middleSegment, offsetPolyline, polylineD, routeLogical } from './logical-ports';
 import { addressAttrEntries, addressAttrLines } from '../model/addresses';
@@ -36,7 +37,7 @@ import { TextBlock } from '../layout/text';
 import { networkMembers } from '../model/derive';
 import { Device, LineStyle, Model, ProtocolDef, Relation, relationDevices } from '../model/types';
 import { Attrs, LabelPlacer, addressLineAttrs, alongSegment, centerRect, fieldAttrs, leaderLine, textLines } from './labels';
-import { EntryItem, cssToken, detour, deviceNode, deviceSubtitle, entryItems, entryNodes, groupFrames, groupRects, nodeOverlaps, SceneResult , netServiceIds } from './physical';
+import { EntryItem, cssToken, detour, deviceNode, entryItems, entryNodes, groupFrames, groupRects, nodeOverlaps, SceneResult , netServiceIds } from './physical';
 import { nextHopTargets } from '../analysis/routing';
 import { VNode, h } from './scene';
 import { NETWORK_COLOR } from './style';
@@ -393,7 +394,8 @@ export function renderLogical(model: Model, layout: LogicalLayout, opts: Logical
       const d = model.index.devices.get(n.id);
       if (!d) return;
       const bodyH = n.bodyH || n.h;
-      nodeLayer.push(deviceNode(n.ref, d.label, deviceSubtitle(d.type, d.layer3), d.type, deviceRect(n), 'type-' + cssToken(d.type), bodyH, d.layer3, netServiceIds(d)));
+      // (a guest's second line names its host: "runs on esx-01")
+      nodeLayer.push(deviceNode(n.ref, d.label, deviceSub(model, d), d.type, deviceRect(n), 'type-' + cssToken(d.type) + (d.host ? ' guest' : ''), bodyH, d.layer3, netServiceIds(d)));
       // the entries of its interfaces (loopbacks, virtual, tunnel, physical with addresses) and its route tables, each selectable
       const items = entryItems(model, d, 'logical');
       const listTop = n.cy - n.h / 2 + bodyH;
@@ -409,11 +411,12 @@ export function renderLogical(model: Model, layout: LogicalLayout, opts: Logical
       const color = NETWORK_COLOR;
       const x = n.cx - n.w / 2;
       const y = n.cy - n.h / 2;
-      const body = networkBody(nw.label, networkSubtitle(nw.cidr, nw.vlan), addressAttrLines(nw.attrs));
+      const body = networkBody(nw.label, networkSubText(model, nw, networkSubtitle(nw.cidr, nw.vlan)), addressAttrLines(nw.attrs));
       const top = n.cy - (body.label.h + body.sub.h) / 2;
       const rx = Math.min(n.h / 2, 21);
       nodeLayer.push(
-        h('g', { class: 'node network', 'data-ref': n.ref }, [
+        // (a container network: dashed, behind its host)
+        h('g', { class: 'node network' + (nw.cnet ? ' cnet-net' : ''), 'data-ref': n.ref }, [
           h('rect', { class: 'net-box', x, y, width: n.w, height: n.h, rx, stroke: color }),
           h('rect', { class: 'net-tint', x, y, width: n.w, height: n.h, rx, fill: color }),
           textLines({ class: 'net-label', 'text-anchor': 'middle', 'font-size': NET_LABEL_SIZE }, body.label, n.cx, top),

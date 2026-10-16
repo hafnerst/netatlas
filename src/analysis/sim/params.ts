@@ -34,6 +34,9 @@ export type Source = 'configured' | 'object' | 'device' | 'simulation' | 'defaul
  *   service    a server service's entry: a DHCP scope's or a DNS zone's block.
  */
 export type ParamLevel = 'device' | 'interface' | 'vlan' | 'relation' | 'service';
+
+/** The objects of a server's services that have simulation attributes of their own. */
+export type SvcLevel = 'dhcp' | 'dns' | 'hypervisor' | 'vswitch' | 'container_engine';
 export const PARAM_LEVELS: readonly ParamLevel[] = ['device', 'interface', 'vlan', 'relation', 'service'];
 
 /** Which interfaces an interface attribute applies to (of the devices it applies to). */
@@ -43,7 +46,7 @@ export type IfaceApplies = 'ip' | 'routed' | 'port' | 'bridge-port' | 'lag' | 'r
 export type RelApplies = string;
 
 /** Which devices a simulation attribute applies to (see deviceParams). */
-export type Applies = 'all' | 'ip' | 'dhcp' | 'router' | 'switch' | 'aggregate' | 'firewall' | 'ids' | 'vpn' | 'host' | 'hypervisor' | 'monitor' | 'cloud' | 'ap' | 'endpoint' | 'lb' | 'proxy';
+export type Applies = 'all' | 'ip' | 'dhcp' | 'router' | 'switch' | 'aggregate' | 'firewall' | 'ids' | 'vpn' | 'host' | 'hypervisor' | 'engine' | 'container' | 'monitor' | 'cloud' | 'ap' | 'endpoint' | 'lb' | 'proxy';
 
 export interface ParamDef {
   /** the registry key ("arp-timeout") */
@@ -85,8 +88,8 @@ export interface ParamDef {
   ifaces?: IfaceApplies[];
   /** a relation attribute: which relations (base protocols; "lb-service", "server-service": the service relations of one) */
   rels?: RelApplies[];
-  /** a service attribute: of a DHCP scope or a DNS zone */
-  svc?: 'dhcp' | 'dns';
+  /** a service attribute: of a DHCP scope, a DNS zone, a Hypervisor service, one of its virtual switches, a Container engine */
+  svc?: SvcLevel;
   /** a value configured on the object in the model can override it (shown in the help) */
   configured?: string;
 }
@@ -234,7 +237,10 @@ export const PARAMS: readonly ParamDef[] = [
   P({ key: 'dpd-interval', level: 'relation', devDefault: true, rels: ['ipsec'], yaml: 'dpd_interval', label: 'DPD interval', layer: 0, kind: 'duration', base: 's', dflt: 10 * S, min: S, max: 3600 * S, source: 'a common setting (RFC 7296 sets none)', help: 'Dead Peer Detection: an empty INFORMATIONAL request this often.', device: ['vpn'], configured: 'an IPsec relation’s dpd' }),
   P({ key: 'dpd-retries', level: 'relation', devDefault: true, rels: ['ipsec'], yaml: 'dpd_retries', label: 'DPD retries', layer: 0, kind: 'count', dflt: 3, min: 1, max: 20, source: 'a common setting', help: 'Unanswered requests before the SAs are deleted.', device: ['vpn'] }),
   P({ key: 'service-response', level: 'relation', devDefault: true, rels: ['server-service'], yaml: 'response_time', label: 'Service response time', layer: 0, kind: 'duration', base: 'ms', dflt: 0, min: 0, max: 60 * S, source: 'none unless set', help: 'How long its services take to answer a request.', device: ['host'] }),
-  P({ key: 'vm-restart', yaml: 'vm_restart', label: 'VM restart time', layer: 0, kind: 'duration', base: 's', dflt: 60 * S, min: 0, max: 3600 * S, source: 'a demonstration value (HA failure detection plus the restart)', help: 'Power off: its VMs restart this long after, on another server cabled to them.', device: ['hypervisor'] }),
+  P({ key: 'vm-restart', level: 'service', svc: 'hypervisor', yaml: 'vm_restart', label: 'VM restart time', layer: 0, kind: 'duration', base: 's', dflt: 60 * S, min: 0, max: 3600 * S, source: 'a demonstration value (HA failure detection plus the restart)', help: 'The host powered off: its VMs restart on another HA cluster member after this.', device: ['hypervisor'] }),
+  P({ key: 'failover-detect', level: 'service', svc: 'vswitch', yaml: 'failover_detection', label: 'Teaming failover detection', layer: 0, kind: 'duration', base: 'ms', dflt: S, min: 0, max: 60 * S, source: 'a demonstration value (link-status failover detection takes about a second)', help: 'An active uplink fails: after this, its guests move to the next uplink (with RARP).', device: ['hypervisor'] }),
+  P({ key: 'container-start', level: 'service', svc: 'container_engine', yaml: 'container_start', label: 'Container start time', layer: 0, kind: 'duration', base: 's', dflt: 2 * S, min: 0, max: 600 * S, source: 'a demonstration value (a container starts in seconds)', help: 'The engine or its host starts: its containers (by restart policy) are up after this.', device: ['engine'] }),
+  P({ key: 'restart-policy', yaml: 'restart_policy', label: 'Restart policy', layer: 0, kind: 'enum', dflt: 'no', options: [{ value: 'no', label: 'No' }, { value: 'always', label: 'Always' }, { value: 'on-failure', label: 'On failure' }, { value: 'unless-stopped', label: 'Unless stopped' }], source: 'Docker (no)', help: 'Whether the engine starts it again after its host or the engine restarts.', device: ['container'] }),
   P({ key: 'snmp-interval', yaml: 'snmp_interval', label: 'SNMP polling interval', layer: 0, kind: 'duration', base: 's', dflt: 60 * S, min: S, max: 86400 * S, source: 'a demonstration value (300 s is common in production)', help: 'How often it polls each SNMP agent.', device: ['monitor'] }),
   P({ key: 'snmp-timeout', yaml: 'snmp_timeout', label: 'SNMP timeout', layer: 0, kind: 'duration', base: 's', dflt: S, min: 100, max: 60 * S, source: 'net-snmp (1 s)', help: 'An agent that does not answer within it is reported as not responding.', device: ['monitor'] }),
   P({ key: 'ap-association', yaml: 'association_time', label: 'Client association time', layer: 0, kind: 'duration', base: 's', dflt: S, min: 0, max: 60 * S, source: 'a demonstration value (WPA2-PSK takes well under a second, 802.1X longer)', help: 'Its wireless links come up this long after the radio is back.', device: ['ap'] }),
@@ -425,8 +431,10 @@ export interface DeviceFacts {
   ipsec: boolean;
   /** polls SNMP agents (the manager of an SNMP relation) */
   snmpManager: boolean;
-  /** hosts VMs or containers (one is cabled to it) */
-  hosts: boolean;
+  /** a server with the Hypervisor service */
+  hypervisor: boolean;
+  /** has the Container engine service (a server or a VM) */
+  engine?: boolean;
   /** runs a DHCP server (services: dhcp) */
   dhcpServer?: boolean;
 }
@@ -456,7 +464,11 @@ function applies(a: Applies, f: DeviceFacts): boolean {
     case 'host':
       return HOST_TYPES.indexOf(f.type) >= 0;
     case 'hypervisor':
-      return f.type === 'server' && f.hosts;
+      return f.type === 'server' && f.hypervisor;
+    case 'engine':
+      return !!f.engine;
+    case 'container':
+      return f.type === 'container';
     case 'monitor':
       return f.type === 'system' || f.snmpManager;
     case 'cloud':
@@ -540,7 +552,7 @@ export function relationParams(r: RelFacts): ParamDef[] {
 }
 
 /** The simulation attributes of a DHCP scope or a DNS zone (its own block), in order. */
-export function serviceParams(svc: 'dhcp' | 'dns'): ParamDef[] {
+export function serviceParams(svc: SvcLevel): ParamDef[] {
   return PARAMS.filter((p) => p.level === 'service' && p.svc === svc);
 }
 
@@ -559,14 +571,22 @@ export function levelText(def: ParamDef): string {
   }
   if (l === 'vlan') return 'per VLAN: in the simulation: of the network with that VLAN';
   if (l === 'relation') return 'per relation: in the relation’s simulation:';
-  if (l === 'service') return def.svc === 'dns' ? 'per DNS zone: in the zone’s simulation:' : 'per DHCP scope: in the scope’s simulation:';
+  if (l === 'service') return SVC_WHERE[def.svc || 'dhcp'];
   return 'per device: in the device’s simulation:';
 }
+
+const SVC_WHERE: { [k in SvcLevel]: string } = {
+  dhcp: 'per DHCP scope: in the scope’s simulation:',
+  dns: 'per DNS zone: in the zone’s simulation:',
+  hypervisor: 'per Hypervisor service: in services.hypervisor.simulation:',
+  vswitch: 'per virtual switch: in the virtual switch’s simulation:',
+  container_engine: 'per Container engine: in services.container_engine.simulation:',
+};
 
 /** Every device type has some attribute (boot time at least): for the docs and the tests. */
 export function attributesByType(): Array<{ type: string; keys: string[] }> {
   return DEVICE_TYPE_IDS.map((type) => {
-    const f: DeviceFacts = { id: '', type, layer3: type === 'switch', ip: type !== 'cloud' && type !== 'ids_ips', routes: ['router', 'firewall', 'gateway', 'load_balancer', 'proxy'].indexOf(type) >= 0 || type === 'switch', aggregate: type === 'switch' || type === 'server' || type === 'router', ipsec: false, snmpManager: false, hosts: type === 'server' };
+    const f: DeviceFacts = { id: '', type, layer3: type === 'switch', ip: type !== 'cloud' && type !== 'ids_ips', routes: ['router', 'firewall', 'gateway', 'load_balancer', 'proxy'].indexOf(type) >= 0 || type === 'switch', aggregate: type === 'switch' || type === 'server' || type === 'router', ipsec: false, snmpManager: false, hypervisor: type === 'server', engine: type === 'server' || type === 'vm' };
     return { type, keys: deviceParams(f).map((p) => p.key) };
   });
 }
@@ -1005,6 +1025,10 @@ export const relRef = (id: string): string => `rel:${id}`;
 /** A DHCP scope's (by its position in the server's list) and a DNS zone's reference. */
 export const scopeRef = (device: string, index: number): string => `scope:${device}:${index}`;
 export const zoneRef = (device: string, zone: string): string => `zone:${device}:${zone}`;
+/** a hypervisor's service, one of its virtual switches, a container engine: their simulation attributes */
+export const hvRef = (device: string): string => `hv:${device}`;
+export const vswRef = (device: string, vswitch: string): string => `vsw:${device}:${vswitch}`;
+export const ceRef = (device: string): string => `ce:${device}`;
 
 /** A change as the event log writes it: "Parameter changed: ARP timeout 4 h → 60 s (simulation)". */
 export function changeText(c: ParamChange): string {

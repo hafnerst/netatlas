@@ -22,6 +22,7 @@ import { MORE_CHECKS } from './checks-more';
 import { SERVICE_CHECKS } from './checks-services';
 import { MULTICAST_CHECKS } from './checks-multicast';
 import { NETSERVICE_CHECKS } from './checks-netservices';
+import { VIRTUAL_CHECKS } from './checks-virtual';
 import { DEFAULT_STATIC_DISTANCE, connectedOf, isOwnAddress, resolveEntry, routeRef, routeText, staticEntry, vrfKey, vrfName } from './routing';
 
 export type Severity = 'error' | 'warning' | 'info';
@@ -407,7 +408,7 @@ const vlanChecks: CheckDef[] = [
 // ------------------------------------------------------------- registry
 
 /** Every check, in the order findings are listed. */
-export const CHECKS: CheckDef[] = routeChecks.concat(vlanChecks, MORE_CHECKS, SERVICE_CHECKS, MULTICAST_CHECKS, NETSERVICE_CHECKS);
+export const CHECKS: CheckDef[] = routeChecks.concat(vlanChecks, MORE_CHECKS, SERVICE_CHECKS, MULTICAST_CHECKS, NETSERVICE_CHECKS, VIRTUAL_CHECKS);
 
 export function checkById(id: string): CheckDef | undefined {
   return CHECKS.find((c) => c.id === id);

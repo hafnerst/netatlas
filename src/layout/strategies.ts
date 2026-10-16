@@ -27,7 +27,7 @@
  * integers, as in the default layout.
  */
 import { Pt } from './geometry';
-import { LayoutInput, cmp } from './input';
+import { LayoutInput, cmp, physicalInput } from './input';
 import { commonChain, logicalSpecs } from './logical';
 import { assignPorts, physicalBoxes, sideLabelWidth } from './physical';
 import { LayoutView, autoPositions } from './positions';
@@ -124,6 +124,8 @@ function viewSNodes(view: LayoutView, input: LayoutInput, base: Map<string, Pt>)
     return out;
   };
   if (view === 'physical') {
+    // (guests are drawn inside their hosts)
+    input = physicalInput(input);
     const boxes = physicalBoxes(input, base);
     // the labels of the ports on the left and right sides stand beside the box (sides as in the default
     // layout): two devices side by side keep room for the labels on their facing sides, as there

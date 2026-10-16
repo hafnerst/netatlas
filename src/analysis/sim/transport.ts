@@ -320,10 +320,13 @@ export class Transport {
         if (!server) continue;
         for (const p of t.ports) if (!rules.some((x) => x.proto === t.proto && x.from === p)) rules.push({ proto: t.proto, from: p, to: p });
       }
+      // a container serves the ports it publishes
+      const md = this.P.m.index.devices.get(dev);
+      if (md && md.type === 'container') for (const i of md.logical) for (const p of i.publish || []) if (!rules.some((x) => x.proto === p.protocol && x.from === p.port)) rules.push({ proto: p.protocol, from: p.port, to: p.port });
       rules.sort((a, b) => cmp(a.proto, b.proto) || a.from - b.from);
       this.listenCache.set(dev, rules);
     }
-    return { rules, written: false, text: rules.length ? `listening on the ports of the relations it serves: ${rules.map((r) => r.proto + '/' + r.from).join(', ')}` : 'serving no relation: no port open' };
+    return { rules, written: false, text: rules.length ? `listening on the ports of the relations it serves${(this.P.m.index.devices.get(dev) || { type: '' }).type === 'container' ? ' and the ports it publishes' : ''}: ${rules.map((r) => r.proto + '/' + r.from).join(', ')}` : 'serving no relation: no port open' };
   }
 
   private open(dev: string, proto: 'tcp' | 'udp', port: number): boolean {
@@ -435,7 +438,9 @@ export class Transport {
       if (!sd) return `${t.to} is neither a device of the model, an address nor a host name`;
       const src = this.sourceFor(dev, parseAddress('0.0.0.0') as IpAddr);
       const want = src ? src.src.version : 4;
-      const ls = Array.from(sd.l3.values()).filter((l) => (iface ? l.id === iface : l.kind !== 'tunnel')).sort((a, b) => Number(a.kind === 'loopback') - Number(b.kind === 'loopback') || cmp(a.id, b.id));
+      // (a loopback, and a container bridge's interface on its host, last: the bridge's address is not reached from outside)
+      const back = (l: { id: string; kind: string }): number => (l.kind === 'loopback' ? 1 : (this.P.m.index.interfaces.get(d + ':' + l.id) || { type: '' }).type === 'bridge' ? 2 : 0);
+      const ls = Array.from(sd.l3.values()).filter((l) => (iface ? l.id === iface : l.kind !== 'tunnel')).sort((a, b) => back(a) - back(b) || cmp(a.id, b.id));
       for (const l of ls) for (const a of l.addrs) if (!dst && a.addr.version === want) dst = a.addr;
       for (const l of ls) for (const a of l.addrs) if (!dst) dst = a.addr;
       if (!dst) return `${t.to} has no address`;

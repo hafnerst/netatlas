@@ -40,16 +40,36 @@ export function isDeviceType(id: string): boolean {
 /**
  * The key of a device in the Device types filter: its type, and for a
  * switch whether it is a Layer 2 or a Layer 3 one ("switch:l2",
- * "switch:l3"), so that the two can be shown or hidden apart.
+ * "switch:l3"), and for a server whether it runs guests ("server:hypervisor",
+ * "server:container"), so that these can be shown or hidden apart.
  */
-export function typeKey(d: { type: string; layer3?: boolean }): string {
-  return d.type === 'switch' ? (d.layer3 ? 'switch:l3' : 'switch:l2') : d.type;
+export function typeKey(d: { type: string; layer3?: boolean; hypervisor?: unknown; containerEngine?: unknown }): string {
+  if (d.type === 'switch') return d.layer3 ? 'switch:l3' : 'switch:l2';
+  // a server by the service it runs guests with (one with both counts as a hypervisor)
+  if (d.type === 'server' && d.hypervisor) return 'server:hypervisor';
+  if (d.type === 'server' && d.containerEngine) return 'server:container';
+  return d.type;
 }
 
-/** The name of a Device types key ("Server", "Layer 2 switch"). */
+/** The keys a type's entry of the Device types filter may have, in the order they are listed. */
+export function typeKeysOf(type: string): string[] {
+  if (type === 'switch') return ['switch:l2', 'switch:l3'];
+  if (type === 'server') return ['server:hypervisor', 'server:container', 'server'];
+  return [type];
+}
+
+/** A sub-entry's name under its type in the Device types filter ("Layer 2", "Hypervisor"). */
+export function typeKeySubLabel(key: string): string {
+  const subs: Record<string, string> = { 'switch:l2': 'Layer 2', 'switch:l3': 'Layer 3', 'server:hypervisor': 'Hypervisor', 'server:container': 'Container host', server: 'Other' };
+  return subs[key] || typeKeyLabel(key);
+}
+
+/** The name of a Device types key ("Server", "Layer 2 switch", "Hypervisor server"). */
 export function typeKeyLabel(key: string): string {
   if (key === 'switch:l2') return 'Layer 2 switch';
   if (key === 'switch:l3') return 'Layer 3 switch';
+  if (key === 'server:hypervisor') return 'Hypervisor server';
+  if (key === 'server:container') return 'Container host server';
   return deviceTypeLabel(key) || key;
 }
 
@@ -61,6 +81,7 @@ export function deviceTypeLabel(id: string): string {
 /** Second line of a device box: the display name of its type ("Layer 2 switch" / "Layer 3 switch" for a switch). */
 export function deviceSubtitle(type: string, layer3?: boolean): string {
   if (type === 'switch') return layer3 ? 'Layer 3 switch' : 'Layer 2 switch';
+  if (type === 'vm' && layer3) return 'Virtual machine · Layer 3';
   return deviceTypeLabel(type);
 }
 
@@ -122,6 +143,8 @@ export function routingRole(type: string): RoutingRole | null {
  */
 export function deviceRoutingRole(d: { type: string; layer3?: boolean }): RoutingRole | null {
   if (isLayer2Switch(d)) return 'host';
+  // a VM with "Supports Layer 3" is a virtual router or firewall, by the rules of a Layer 3 switch
+  if (d.type === 'vm' && d.layer3) return 'router';
   return routingRole(d.type);
 }
 

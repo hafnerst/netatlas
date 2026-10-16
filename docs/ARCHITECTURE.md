@@ -98,6 +98,21 @@ anything else.
   `interfaceNetworkPorts`, `associatedInterfaces`): the ports of a VLAN
   interface come from the link ends and are never stored. The editor
   addresses an interface by its document path (`interfaceEntries()`).
+* **Virtualization is derived, never stored twice.** A guest names its
+  `host`; everything else follows from that and the host's services:
+  `model/virtual.ts` answers what runs where (guests, port groups, a vnic's
+  virtual switch, a veth's network, the derived bridge interfaces) and is
+  read by validation (`validation/virtual.ts`), the checks
+  (`analysis/checks-virtual.ts`), the related objects and Find. The
+  physical view nests a host's interior (`layout/virtual.ts` for its
+  geometry, `diagram/virtual.ts` to draw it) inside the host's box, so the
+  layout positions hosts only; the logical view adds each bridge or overlay
+  network as a network scoped to its host (`withVirtualNetworks`, a view
+  of the model, never the model itself). The path tracer resolves where an
+  interface meets the cables (`analysis/trace-virtual.ts`); the protocol
+  simulation expands the virtual switches and container networks into
+  bridges and virtual links (`analysis/sim/net.ts expandVirtual`), so the
+  engine forwards, fails over and restarts with the machinery it has.
 * **Display order is not file order.** `model/order.ts` sorts names for
   display (editor cards, details, loopback chips, the networks box). The
   lists in the model and in the YAML tree keep the file's order, so viewing

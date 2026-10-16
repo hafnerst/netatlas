@@ -48,8 +48,28 @@
  * reachable time, MAC ageing) come from the model or the defaults
  * (model/sim-profiles.ts) and run faster by the timer scale.
  *
+ * Virtual networking (net.ts expandVirtual). A virtual switch learns
+ * like a bridge but takes no part in the spanning tree: a frame from an
+ * uplink never leaves by another (split horizon), and a guest's frames
+ * leave by its teaming's uplink (active / standby: the first that is up;
+ * load- and source-based: one of those up, by its port; LACP: the bond);
+ * broadcasts arriving on a standby uplink are dropped. When an uplink
+ * goes down, the switch fails over once its failover detection time has
+ * passed (frames meanwhile are lost) and announces its guests' MAC
+ * addresses on the new uplink with a RARP each (notify switches); it fails
+ * back when the uplink returns. A host powered off takes its guests down;
+ * a VM of an HA cluster is restarted on another member after the VM
+ * restart time (its links there take over). A container host forwards
+ * between its bridge networks and the rest; with NAT it rewrites the
+ * source to its own address and keeps the translation for the replies,
+ * and a packet to a published port is forwarded to its container. A
+ * macvlan / ipvlan network's host never reaches its containers. A
+ * container starts after its engine's start time; when its host boots or
+ * its engine starts again, its restart policy decides whether it does.
+ *
  * Network events, several at once: failed cables and relations, flapping
- * cables, shut interfaces, devices powered off (and booting again). The
+ * cables, shut interfaces, devices powered off (and booting again),
+ * container engines stopped. The
  * ports at a cable that went down go down once they notice (their ARP and
  * neighbour entries, and the MAC entries learned on them, are removed);
  * frames on it, and frames that would still cross it, are dropped where
@@ -60,13 +80,14 @@
 import { IpAddr, parseAddress } from '../../model/ip';
 import { protocolBase } from '../../model/protocols';
 import { ND_DELAY_DEFAULT } from '../../model/sim-profiles';
-import { Link, Model, Relation, relationDevices } from '../../model/types';
+import { Link, Model, Relation, ifaceKey, relationDevices } from '../../model/types';
+import { isGuest, vethNetwork } from '../../model/virtual';
 import { compareAddr, formatAddr } from '../ipmath';
 import { Connected, RibEntry, RoutingCtx, lookup } from '../routing';
 import { declaredUnderlay, encapStack, tunnelRelation, tracePath } from '../trace';
 import { BROADCAST, isGroupMac, isLinkLocalGroup, isMulticastIp, multicastMac, rng, solicitedNode, modelSeed, shortMac } from './mac';
 import { BridgePort, CableEnd, L3Iface, Lease, SimDevice, SimNet, StpConfig, buildNet, carries, ingressVlan, otherEnd, portKey, portVlansText, spanningTree } from './net';
-import { ParamChange, ParamValue, Resolved, SimParams, changeText, durationText, formatValue, ifaceRef, relRef, resolvedText, scopeRef, sourceText, vlanRef, vlanValue, zoneRef } from './params';
+import { ParamChange, ParamValue, Resolved, SimParams, ceRef, changeText, durationText, formatValue, hvRef, ifaceRef, relRef, resolvedText, scopeRef, sourceText, vlanRef, vlanValue, vswRef, zoneRef } from './params';
 import { ArpRow, ArpType, Cast, Flight, Headers, MacRow, Msg, NdState, NetEvent, Pkt, Quote, SimEvent, TableTimer, Track } from './types';
 import { parseSpeed } from '../../model/speed';
 
@@ -317,6 +338,8 @@ export class Engine {
       for (const l3 of d.l3.values()) this.l3State.set(d.id + ':' + l3.id, true);
     }
     for (const d of this.net.devices.values()) if (d.bridge) this.staticMacs(d);
+    // an HA standby's links wait until their VM is restarted there
+    for (const [id, v] of this.net.vlinks) if (v.at !== undefined) this.parked.add(id);
     for (const d of this.net.devices.values()) for (const l3 of d.l3.values()) for (const a of l3.addrs) if (a.addr.version === 4 && a.net.prefix <= 30) this.bcasts.add(formatAddr(subnetBroadcast(a)));
   }
 
@@ -1326,7 +1349,14 @@ export class Engine {
    */
   boot(): void {
     for (const l of Array.from(this.net.links.values()).sort((a, b) => cmp(a.id, b.id))) {
-      if (!this.physUp(l.id)) continue;
+      if (!this.physUp(l.id)) {
+        // a parked link (an HA standby's): down, without a word
+        if (this.parked.has(l.id)) {
+          this.cable.set(l.id, 'down');
+          for (const e of [l.a, l.b]) if (this.net.ends.has(portKey(e.device, e.iface || '@' + l.id))) this.carrier.set(portKey(e.device, e.iface || '@' + l.id), false);
+        }
+        continue;
+      }
       const id = l.id;
       const ends = [l.a, l.b].map((e) => ({ dev: e.device, port: e.iface || '@' + id, key: portKey(e.device, e.iface || '@' + id) }));
       this.cable.set(id, 'negotiating');
@@ -1577,7 +1607,10 @@ export class Engine {
   private bridge(sd: SimDevice, from: string | null, vlan: number, frame: Frame, t: number, flight: number | undefined, seen: Set<string>): void {
     // an inline appliance that failed open is a wire: no learning, no inspection
     const wire = this.bypass.has(sd.id);
-    if (from !== null && !wire) this.learn(sd, vlan, frame.src, from, t);
+    // a virtual switch takes broadcasts from its active uplink only (they would come twice), and learns nothing on its uplinks
+    const fromUplink = !!sd.virt && sd.virt.kind === 'vswitch' && from !== null && sd.virt.uplinks.indexOf(from) >= 0;
+    if (fromUplink && isGroupMac(frame.dst) && this.standbyUplink(sd, from as string)) return;
+    if (from !== null && !wire && !fromUplink) this.learn(sd, vlan, frame.src, from, t);
     if (sd.dev.type === 'ids_ips' && !wire) t += this.params.num('ips-latency', sd.id);
     // to its own VLAN interface (the switch's management or routing interface)
     if (from !== null && !wire) {
@@ -1608,7 +1641,7 @@ export class Engine {
       for (const bp of Array.from(sd.bridgePorts.values()).sort((a, b) => cmp(a.id, b.id))) if (bp.id !== from) out.push(bp);
     }
     // IGMP / MLD snooping: a group's frames to its member ports and the router ports only
-    let to = out;
+    let to = sd.virt ? this.virtOut(sd, from, frame, out, !!fresh) : out;
     if (!wire && isGroupMac(frame.dst) && frame.dst !== BROADCAST && this.protocols && this.protocols.snoop) {
       const keep = this.protocols.snoop(sd, from, vlan, frame, t);
       if (keep) to = out.filter((bp) => keep.has(bp.id));
@@ -1621,6 +1654,178 @@ export class Engine {
       const m = up.length === 1 ? up[0] : up[hashIndex(frame.src + frame.dst, up.length)];
       this.transmit(sd.id, m, c === 'untagged' ? { ...frame, inVlan: vlan } : frame.inVlan !== undefined ? { ...frame, inVlan: undefined } : frame, c === 'untagged' ? null : vlan, t, flight, seen);
     }
+  }
+
+  // ------------------------------------------------------------ virtual switches and container networks
+
+  /** a virtual switch's uplink that went down: until when its failover detection runs (by port key of the bridge port) */
+  private uplinkDownAt = new Map<string, number>();
+  /** the uplink a virtual switch announced its guests on last (active / standby) */
+  private virtActive = new Map<string, string | null>();
+
+  /** Is an uplink of a virtual switch in use: up, or down while the failover detection still runs (frames to it are lost)? */
+  private uplinkInUse(sd: SimDevice, u: string): boolean {
+    const bp = sd.bridgePorts.get(u);
+    if (!bp) return false;
+    if (bp.members.some((m) => this.portUp(sd.id, m) && this.memberReady(sd.id, m))) return true;
+    const t = this.uplinkDownAt.get(portKey(sd.id, u));
+    return t !== undefined && this.now < t;
+  }
+
+  /** The uplink a virtual switch sends a guest's frame by (its teaming); null: none is in use. */
+  private activeUplink(sd: SimDevice, from: string | null, frame: Frame): string | null {
+    const v = sd.virt as NonNullable<SimDevice['virt']>;
+    const usable = v.uplinks.filter((u) => this.uplinkInUse(sd, u));
+    if (!usable.length) return null;
+    if (v.teaming === 'load_based' || v.teaming === 'source_based') return usable[hashIndex(from || frame.src, usable.length)];
+    return usable[0];
+  }
+
+  /** Is a port a standby uplink of an active / standby virtual switch (it takes no broadcasts)? */
+  private standbyUplink(sd: SimDevice, port: string): boolean {
+    const v = sd.virt as NonNullable<SimDevice['virt']>;
+    if (v.kind !== 'vswitch' || v.uplinks.indexOf(port) < 0 || (v.teaming && v.teaming !== 'active_standby')) return false;
+    const a = v.uplinks.find((u) => this.uplinkInUse(sd, u));
+    return a !== undefined && a !== port;
+  }
+
+  /** Where a virtual switch or container network sends a frame (see the module comment). */
+  private virtOut(sd: SimDevice, from: string | null, frame: Frame, out: BridgePort[], known: boolean): BridgePort[] {
+    const v = sd.virt as NonNullable<SimDevice['virt']>;
+    const ups = v.uplinks;
+    const fromUp = from !== null && ups.indexOf(from) >= 0;
+    // macvlan / ipvlan: the host's own port and the containers never meet
+    if (v.hostPort !== undefined && from !== null && !fromUp) out = from === v.hostPort ? out.filter((bp) => ups.indexOf(bp.id) >= 0) : out.filter((bp) => bp.id !== v.hostPort);
+    if (v.kind !== 'vswitch' || !ups.length) return out;
+    // from an uplink: to its guests only (split horizon); a unicast frame for no guest of it is dropped
+    if (fromUp) return !known && !isGroupMac(frame.dst) ? [] : out.filter((bp) => ups.indexOf(bp.id) < 0);
+    // from a guest: to the others on it, and what is not theirs out of the teaming's uplink
+    const pick = this.activeUplink(sd, from, frame);
+    const local = out.filter((bp) => ups.indexOf(bp.id) < 0);
+    if (known || pick === null) return local;
+    return local.concat([sd.bridgePorts.get(pick) as BridgePort]);
+  }
+
+  /** An uplink of a virtual switch went down or came up: fail over once the failover detection has passed, or fail back. */
+  private uplinkChange(dev: string, port: string, up: boolean): void {
+    const sd = this.net.devices.get(dev);
+    if (!sd || !sd.virt || sd.virt.kind !== 'vswitch') return;
+    const bp = sd.portOf.get(port);
+    if (bp === undefined || sd.virt.uplinks.indexOf(bp) < 0) return;
+    const key = portKey(dev, bp);
+    const v = sd.virt;
+    if (!up) {
+      const r = this.params.get('failover-detect', v.owner, null, vswRef(v.owner, v.name));
+      const t = this.now + Number(r.value);
+      this.uplinkDownAt.set(key, t);
+      this.at(t, () => {
+        if (this.uplinkDownAt.get(key) !== t) return;
+        this.uplinkDownAt.delete(key);
+        this.failover(sd, `${bp} is down (failover detection ${resolvedText(r)})`);
+      });
+      return;
+    }
+    this.uplinkDownAt.delete(key);
+    this.failover(sd, `${bp} is up again`);
+  }
+
+  /** The active uplink of an active / standby virtual switch changed: the guests' MAC addresses are announced on the new one (RARP). */
+  private failover(sd: SimDevice, why: string): void {
+    const v = sd.virt as NonNullable<SimDevice['virt']>;
+    if (this.off.has(sd.id)) return;
+    const now = v.uplinks.find((u) => this.uplinkInUse(sd, u)) || null;
+    const was = this.virtActive.get(sd.id);
+    this.virtActive.set(sd.id, now);
+    // (the first uplink to come up at the start is no failover)
+    if (was === undefined || was === now || (v.teaming && v.teaming !== 'active_standby') || v.teaming === 'lacp') return;
+    if (now === null) {
+      this.note('link', 'link', sd.id, '', 'No uplink', 'down', `${v.name} on ${v.owner}: ${why}; no uplink is left: its guests are cut off from the network`);
+      return;
+    }
+    this.note('link', 'link', sd.id, '', was === null ? 'Uplink back' : 'Failover', 'up', `${v.name} on ${v.owner}: ${why}; it sends by ${now} now${was !== null ? ` (was ${was})` : ''} and notifies the switches: a RARP for each guest’s MAC address`);
+    this.flushPort(sd.id, was || now, 'its virtual switch failed over');
+    const bp = sd.bridgePorts.get(now) as BridgePort;
+    for (const p of Array.from(sd.bridgePorts.values()).sort((a, b) => cmp(a.id, b.id))) {
+      if (v.uplinks.indexOf(p.id) >= 0) continue;
+      const e = this.net.ends.get(portKey(sd.id, p.members[0]));
+      if (!e || !this.cableUp(e.link)) continue;
+      const o = otherEnd(this.net, e);
+      const m = this.net.macs.get(o.device + ':' + o.port);
+      if (!m) continue;
+      const vlan = p.vlans.untagged !== null ? p.vlans.untagged : 0;
+      const msg: Msg = { protocol: 'garp', type: 'RARP', label: `RARP ${shortMac(m.mac)} (notify switches)`, detail: `RARP from ${sd.id} for ${o.device}:${o.port} (${m.mac}) on its new uplink ${now} — to ${BROADCAST}, so that the switches learn where the address is now` };
+      const member = bp.members.find((x) => this.portUp(sd.id, x)) || bp.members[0];
+      const c = carries(bp.vlans, vlan);
+      this.note('message', msg.protocol, sd.id, '', msg.type, '', msg.detail, this.now, msg);
+      this.transmit(sd.id, member, { src: m.mac, dst: BROADCAST, msg }, c === 'tagged' ? vlan : null, this.now, undefined, new Set([sd.id]));
+    }
+  }
+
+  // ------------------------------------------------------------ container NAT
+
+  /** translations of container hosts: "host|outside src|remote|proto|port" → the container's address */
+  private natTable = new Map<string, { inside: IpAddr; port?: number }>();
+
+  /** The container network a host interface is the bridge of (docker0), with NAT or not. */
+  private bridgeNet(dev: string, l3: L3Iface): { name: string; nat: boolean } | null {
+    const i = this.model.index.interfaces.get(ifaceKey(dev, l3.id));
+    if (!i || i.type !== 'bridge' || i.derived === undefined) return null;
+    const d = this.model.index.devices.get(dev);
+    const net = d && d.containerEngine ? d.containerEngine.networks.find((n) => n.name === i.derived) : undefined;
+    return net ? { name: net.name, nat: !!net.nat } : null;
+  }
+
+  /** published-port translations: "host|container addr|container port|remote|remote port" → the host's address and port the client used */
+  private dnatTable = new Map<string, { addr: IpAddr; port: number }>();
+
+  /** A packet from a container bridge with NAT, out of another interface: its source becomes the host's address there. */
+  private snat(dev: string, from: L3Iface, out: L3Iface, pkt: Pkt): Pkt {
+    // a reply from a published port: from the address and port the client used
+    if (pkt.l4 && pkt.l4.sport !== undefined && pkt.l4.dport !== undefined) {
+      const d = this.dnatTable.get(`${dev}|${formatAddr(pkt.src)}|${pkt.l4.sport}|${formatAddr(pkt.dst)}|${pkt.l4.dport}`);
+      if (d) {
+        this.note('route', pkt.msg.protocol, dev, '', 'NAT reply', '', `${dev} translates the reply from its published port: source ${formatAddr(pkt.src)}:${pkt.l4.sport} → ${formatAddr(d.addr)}:${d.port} (${pkt.msg.label})`, this.now, pkt.msg);
+        return { ...pkt, src: d.addr, l4: { ...pkt.l4, sport: d.port } };
+      }
+    }
+    const b = this.bridgeNet(dev, from);
+    if (!b || !b.nat || out.id === from.id || this.bridgeNet(dev, out)) return pkt;
+    const a = out.addrs.find((x) => x.addr.version === pkt.src.version);
+    if (!a) return pkt;
+    const port = pkt.l4 ? pkt.l4.sport : undefined;
+    this.natTable.set(`${dev}|${formatAddr(a.addr)}|${formatAddr(pkt.dst)}|${pkt.l4 ? pkt.l4.proto : ''}|${port !== undefined ? port : ''}`, { inside: pkt.src });
+    this.note('route', pkt.msg.protocol, dev, '', 'SNAT', '', `${dev} translates the source (masquerade, network ${b.name}): ${formatAddr(pkt.src)} → ${formatAddr(a.addr)} out of ${out.id} (${pkt.msg.label})`, this.now, pkt.msg);
+    return { ...pkt, src: a.addr };
+  }
+
+  /** A packet to a container host's own address: the reply to a translated packet, or to a published port, goes on to its container. */
+  private dnat(dev: string, pkt: Pkt): Pkt | null {
+    const d = this.model.index.devices.get(dev);
+    if (!d || !d.containerEngine) return null;
+    const proto = pkt.l4 ? pkt.l4.proto : '';
+    const dport = pkt.l4 ? pkt.l4.dport : undefined;
+    const k = `${dev}|${formatAddr(pkt.dst)}|${formatAddr(pkt.src)}|${proto}|${dport !== undefined ? dport : ''}`;
+    const back = this.natTable.get(k);
+    if (back) {
+      this.note('route', pkt.msg.protocol, dev, '', 'NAT reply', '', `${dev} translates the reply back: destination ${formatAddr(pkt.dst)} → ${formatAddr(back.inside)} (${pkt.msg.label})`, this.now, pkt.msg);
+      return { ...pkt, dst: back.inside };
+    }
+    // a published port: on to the container (TCP and UDP)
+    if (!pkt.l4 || (pkt.l4.proto !== 'tcp' && pkt.l4.proto !== 'udp') || dport === undefined) return null;
+    for (const c of this.model.devices) {
+      if (c.type !== 'container' || this.hostNow(c.id) !== dev) continue;
+      for (const i of c.logical) {
+        const p = (i.publish || []).find((x) => x.hostPort === dport && x.protocol === pkt.l4!.proto && (x.hostIp === undefined || x.hostIp === formatAddr(pkt.dst)));
+        if (!p) continue;
+        const x = vethNetwork(this.model, i);
+        const addr = i.addresses.map((t) => parseAddress(t.replace(/\/.*$/, ''))).find((y) => !!y && y.version === pkt.dst.version);
+        if (!x || !addr) continue;
+        this.note('route', pkt.msg.protocol, dev, '', 'DNAT', '', `${dev} forwards its published port ${p.hostPort}/${p.protocol} to ${c.id} (${formatAddr(addr)}:${p.port}) on the network ${x.net.name} (${pkt.msg.label})`, this.now, pkt.msg);
+        if (pkt.l4.sport !== undefined) this.dnatTable.set(`${dev}|${formatAddr(addr)}|${p.port}|${formatAddr(pkt.src)}|${pkt.l4.sport}`, { addr: pkt.dst, port: p.hostPort });
+        return { ...pkt, dst: addr, l4: { ...pkt.l4, dport: p.port } };
+      }
+    }
+    return null;
   }
 
   /** "VLAN mismatch" notes already written: "<device>:<port>|<from>|<to>" → the time (at most one every 10 s per pair). */
@@ -1715,6 +1920,14 @@ export class Engine {
     if ((bcast || isMulticastIp(pkt.dst)) && (frame.loops || 0) > 0 && this.ownsAddress(dev, pkt.src)) return;
     // a routed group at a router: multicast routing (the RPF check, the outgoing interfaces); link-local groups and IGMP are its own
     if (isMulticastIp(pkt.dst) && sd.routes && !pkt.encap && this.protocols && this.protocols.mroute && this.protocols.mroute(dev, l3, pkt)) return;
+    // to a container host's address: a reply to a translated packet, or to a published port, goes on to its container
+    if (own && !bcast && !isMulticastIp(pkt.dst) && !pkt.encap) {
+      const back = this.dnat(dev, pkt);
+      if (back) {
+        this.forward(dev, back, { l3, frame });
+        return;
+      }
+    }
     if (isMulticastIp(pkt.dst) || own || bcast) {
       if (pkt.encap && pkt.inner) {
         this.decapsulate(dev, l3, pkt);
@@ -1930,6 +2143,8 @@ export class Engine {
     const hop = hops.length === 1 ? hops[0] : hops[hashIndex(pkt.flow, hops.length)];
     const out = sd.l3.get(hop.iface);
     if (!out) return;
+    // out of a container bridge with NAT: the host's address becomes the source
+    if (came) pkt = this.snat(dev, came.l3, out, pkt);
     // a next hop outside the model (no device has it): a tunnel's outer packet takes its declared underlay; anything else leaves the model
     if (hop.gateway && !this.ownerOf(hop.gateway)) {
       if (!came && this.viaUnderlay(dev, pkt)) return;
@@ -2522,7 +2737,7 @@ export class Engine {
 
   /** Is a cable physically up: nothing takes it down (a failure, flapping, a shut port, a device powered off)? */
   private physUp(id: string): boolean {
-    if (this.failedLinks.has(id)) return false;
+    if (this.failedLinks.has(id) || this.parked.has(id)) return false;
     const fl = this.flaps.get(id);
     if (fl && fl.down) return false;
     const l = this.net.links.get(id) as Link;
@@ -2626,6 +2841,7 @@ export class Engine {
       this.note('link', 'link', dev, '', `${port} ${up ? 'up' : 'down'}`, up ? 'up' : 'down', `${dev}:${port} ${up ? 'has ' + how : how} (cable ${link})`);
     }
     if (!up) this.flushPort(dev, port, `its cable ${link} went down`);
+    this.uplinkChange(dev, port, up);
     this.recomputeTrees([link]);
     if (up) this.stpPortUp(dev, port, link);
     this.syncInterfaces();
@@ -2677,10 +2893,22 @@ export class Engine {
     if (ref.indexOf('iface:') === 0) {
       const rest = ref.slice(6);
       const i = rest.indexOf(':');
-      const e = this.net.ends.get(portKey(rest.slice(0, i), rest.slice(i + 1)));
+      const p = this.simPort(rest.slice(0, i), rest.slice(i + 1));
+      const e = this.net.ends.get(portKey(p.device, p.port));
       return e ? e.link : null;
     }
     return null;
+  }
+
+  /** Where a model port's cable ends in the simulation (a host's uplink at its virtual switch, a passthrough port at its VM). */
+  simPort(dev: string, port: string): { device: string; port: string } {
+    return this.net.moved.get(portKey(dev, port)) || { device: dev, port };
+  }
+
+  /** The model's name of a simulated port key ("hv1/vSwitch0|vmnic0" → "hv1:vmnic0"). */
+  private modelPortRef(key: string): string {
+    for (const [k, v] of this.net.moved) if (portKey(v.device, v.port) === key) return 'iface:' + k.replace('|', ':');
+    return 'iface:' + key.replace('|', ':');
   }
 
   /** Start flapping a cable or a port's cable: down for the flapping down time, up for the up time, for the cycles (0: until stopped). */
@@ -2725,6 +2953,9 @@ export class Engine {
 
   /** Shut an interface: a cabled port takes its cable down (the far end notices after the loss-of-signal detection); a logical interface goes down. */
   shut(dev: string, iface: string): boolean {
+    // (a host's uplink or passthrough port: where its cable ends now; the notes keep the model's name)
+    const at = this.simPort(dev, iface);
+    if (at.device !== dev) return this.shutMoved(dev, iface, at, true);
     const sd = this.net.devices.get(dev);
     if (!sd) return false;
     const key = portKey(dev, iface);
@@ -2750,6 +2981,8 @@ export class Engine {
   }
 
   noShut(dev: string, iface: string): boolean {
+    const at = this.simPort(dev, iface);
+    if (at.device !== dev) return this.shutMoved(dev, iface, at, false);
     const key = portKey(dev, iface);
     if (this.shutPorts.delete(key)) {
       this.note('link', 'link', dev, '', `${iface} no shut`, 'up', `${dev}:${iface}: no shut at t = ${fmtSec(this.now)}`);
@@ -2768,22 +3001,29 @@ export class Engine {
     return true;
   }
 
-  /** The VMs and containers cabled to a server (it is their host). */
-  private hostedBy(dev: string): string[] {
-    const d = this.model.index.devices.get(dev);
-    if (!d || d.type !== 'server') return [];
-    const out = new Set<string>();
-    for (const l of this.net.links.values()) {
-      for (const [x, y] of [[l.a.device, l.b.device], [l.b.device, l.a.device]]) {
-        const vd = this.model.index.devices.get(y);
-        if (x === dev && vd && (vd.type === 'vm' || vd.type === 'container')) out.add(y);
-      }
-    }
-    return Array.from(out).sort(cmp);
+  /** Shut or no shut a host port whose cable ends at its virtual switch or its passthrough VM in the simulation. */
+  private shutMoved(dev: string, iface: string, at: { device: string; port: string }, shut: boolean): boolean {
+    const key = portKey(at.device, at.port);
+    if (shut === this.shutPorts.has(key)) return false;
+    if (shut) this.shutPorts.set(key, this.now);
+    else this.shutPorts.delete(key);
+    this.note('link', 'link', dev, '', `${iface} ${shut ? 'shut' : 'no shut'}`, shut ? 'down' : 'up', shut ? `${dev}:${iface} is shut (administratively down) at t = ${fmtSec(this.now)}` : `${dev}:${iface}: no shut at t = ${fmtSec(this.now)}`);
+    const e = this.net.ends.get(key);
+    if (e) this.updateCable(e.link);
+    this.stateVersion++;
+    return true;
   }
 
-  /** VMs and containers that went down with their host: the host. */
+  /** VMs and containers that went down with their host (or its container engine): the host. */
   private hostedOff = new Map<string, string>();
+  /** virtual links not in use: an HA standby's, until its VM is restarted there */
+  private parked = new Set<string>();
+  /** a VM restarted on another member of its HA cluster: where it runs now */
+  readonly vmHost = new Map<string, string>();
+  /** container engines stopped by the event, with when */
+  readonly enginesOff = new Map<string, number>();
+  /** containers stopped by hand (restart policy unless-stopped keeps them stopped) */
+  private userStopped = new Set<string>();
 
   /** Power a device off: its ports go dark, its tables and sessions are gone (an inline appliance that fails open passes frames on). */
   powerOff(dev: string, why = ''): boolean {
@@ -2809,38 +3049,187 @@ export class Engine {
     if (macs) for (const [k, e] of Array.from(macs)) if (e.type === 'dynamic') macs.delete(k);
     for (const d of this.pending) if (d.dev === dev) d.cancelled = true;
     if (this.protocols && this.protocols.deviceDown) this.protocols.deviceDown(dev);
+    // a container stopped by hand stays stopped (restart policy unless-stopped)
+    if (why === '') this.userStopped.add(dev);
+    // its engine is gone with it (it starts again when the host boots)
+    this.enginesOff.delete(dev);
+    // its virtual switches and container networks stop with it
+    this.virtPower(dev, false, false);
     for (const id of this.linksOf(dev)) this.updateCable(id);
     this.recomputeTrees(this.linksOf(dev));
     this.syncInterfaces();
     this.routingChanged();
-    // a server's VMs and containers go down with it, and are restarted where another server is cabled to them
-    const restart = this.params.get('vm-restart', dev);
-    for (const vm of this.hostedBy(dev)) {
-      if (this.off.has(vm)) continue;
-      this.hostedOff.set(vm, dev);
-      this.powerOff(vm, ` with its host ${dev}`);
-      this.at(this.now + Number(restart.value), () => {
-        if (this.hostedOff.get(vm) !== dev || !this.off.has(vm) || this.booting.has(vm)) return;
-        const other = this.linksOf(vm)
-          .map((id) => this.net.links.get(id) as Link)
-          .map((l) => (l.a.device === vm ? l.b.device : l.a.device))
-          .find((h) => h !== dev && !this.off.has(h) && (this.model.index.devices.get(h) || { type: '' }).type === 'server');
-        if (!other) {
-          this.note('link', 'link', vm, '', 'Not restarted', 'off', `${vm} is not restarted after ${resolvedText(restart)}: no other server it is connected to is on (it starts again with ${dev})`);
-          return;
-        }
-        this.hostedOff.delete(vm);
-        this.note('link', 'link', vm, other, 'Restarted', 'booting', `${vm} is restarted on ${other} after the VM restart time ${resolvedText(restart)}`);
-        this.powerOn(vm);
-      });
+    // its VMs and containers go down with it; a VM of an HA cluster is restarted on another member
+    for (const g of this.guestsOn(dev)) {
+      if (this.off.has(g)) continue;
+      this.hostedOff.set(g, dev);
+      this.powerOff(g, ` with its host ${dev}`);
+      if ((this.model.index.devices.get(g) || { type: '' }).type === 'vm') this.haRestart(g, dev);
     }
     return true;
+  }
+
+  /** The VMs and containers on a device now (a VM restarted on another member counts there). */
+  private guestsOn(dev: string): string[] {
+    return this.model.devices.filter((d) => isGuest(d) && (this.vmHost.get(d.id) || d.host) === dev).map((d) => d.id).sort(cmp);
+  }
+
+  /** Where a VM runs now. */
+  hostNow(guest: string): string | undefined {
+    const d = this.model.index.devices.get(guest);
+    return this.vmHost.get(guest) || (d ? d.host : undefined);
+  }
+
+  /** The virtual switches and container networks of a device go off or on with it (quietly: its guests' notes say it); `cnetOnly`: its container engine's. */
+  private virtPower(dev: string, on: boolean, cnetOnly: boolean): void {
+    const ids: string[] = [];
+    for (const sd of this.net.devices.values()) if (sd.virt && sd.virt.owner === dev && (!cnetOnly || sd.virt.kind === 'cnet')) ids.push(sd.id);
+    if (!ids.length) return;
+    for (const id of ids.sort(cmp)) {
+      if (on) this.off.delete(id);
+      else this.off.set(id, this.now);
+      const macs = this.macs.get(id);
+      if (!on && macs) for (const [k, e] of Array.from(macs)) if (e.type === 'dynamic') macs.delete(k);
+      for (const l of this.linksOf(id)) this.updateCable(l);
+    }
+    this.stateVersion++;
+  }
+
+  /** A VM whose host went down: its HA cluster restarts it on another member that is on, after the VM restart time. */
+  private haRestart(vm: string, host: string): void {
+    const stand = this.net.standby.get(vm);
+    if (!stand || !stand.size) return;
+    const r = this.params.get('vm-restart', host, null, hvRef(host));
+    this.at(this.now + Number(r.value), () => {
+      if (this.hostedOff.get(vm) !== host || !this.off.has(vm) || this.booting.has(vm)) return;
+      const home = (this.model.index.devices.get(vm) || { host: undefined }).host;
+      const cands = Array.from(stand.keys()).concat(home !== undefined ? [home] : []);
+      const other = cands.sort(cmp).find((m) => m !== host && !this.off.has(m));
+      if (!other) {
+        this.note('link', 'link', vm, '', 'Not restarted', 'off', `${vm} is not restarted after the VM restart time ${resolvedText(r)}: no other member of its HA cluster is on (it starts again with ${host})`);
+        return;
+      }
+      this.moveVm(vm, other);
+      this.hostedOff.delete(vm);
+      this.note('link', 'link', vm, other, 'Restarted', 'booting', `${vm} is restarted on ${other} by its HA cluster after the VM restart time ${resolvedText(r)}: its virtual NICs join the same port groups there`);
+      this.powerOn(vm);
+    });
+  }
+
+  /** the links a VM had at its own host, by the port key at its end (kept when it moves) */
+  private homeLinks = new Map<string, Map<string, string>>();
+
+  /** Move a VM to another host: its links there take over, the ones it had are parked. */
+  private moveVm(vm: string, to: string): void {
+    const home = (this.model.index.devices.get(vm) || { host: undefined }).host;
+    const stand = this.net.standby.get(vm) as Map<string, Map<string, string>>;
+    const keys = new Set<string>();
+    stand.forEach((m) => m.forEach((_, k) => keys.add(k)));
+    if (!this.homeLinks.has(vm)) {
+      const hl = new Map<string, string>();
+      for (const k of keys) {
+        const e = this.net.ends.get(k);
+        if (e) hl.set(k, e.link);
+      }
+      this.homeLinks.set(vm, hl);
+    }
+    const target = to === home ? (this.homeLinks.get(vm) as Map<string, string>) : stand.get(to);
+    if (!target) return;
+    const changed: string[] = [];
+    for (const [k, lid] of target) {
+      const cur = this.net.ends.get(k);
+      if (cur && cur.link !== lid) {
+        this.parked.add(cur.link);
+        changed.push(cur.link);
+      }
+      this.parked.delete(lid);
+      const l = this.net.links.get(lid) as Link;
+      const sep = k.indexOf('|');
+      this.net.ends.set(k, { link: lid, end: l.b.device === k.slice(0, sep) && l.b.iface === k.slice(sep + 1) ? 'b' : 'a', device: k.slice(0, sep), port: k.slice(sep + 1) });
+      changed.push(lid);
+    }
+    if (to === home) this.vmHost.delete(vm);
+    else this.vmHost.set(vm, to);
+    for (const id of changed) this.updateCable(id);
+    this.stateVersion++;
+  }
+
+  /** A container's start time: its engine's (the host it runs on). */
+  private containerStart(c: string): Resolved | null {
+    const d = this.model.index.devices.get(c);
+    if (!d || d.type !== 'container' || d.host === undefined) return null;
+    return this.params.get('container-start', d.host, null, ceRef(d.host));
+  }
+
+  /** Does a container start again when its host boots or its engine starts (its restart policy)? */
+  private restarts(c: string): { yes: boolean; why: string } {
+    const r = this.params.get('restart-policy', c);
+    const p = String(r.value);
+    const yes = p === 'always' || (p === 'unless-stopped' && !this.userStopped.has(c));
+    return { yes, why: `restart policy ${resolvedText(r)}${p === 'unless-stopped' && this.userStopped.has(c) ? ', and it was stopped by hand' : ''}` };
+  }
+
+  /** Stop a device's container engine: its containers and container networks stop. */
+  stopEngine(dev: string): boolean {
+    const d = this.model.index.devices.get(dev);
+    if (!d || !d.containerEngine || this.enginesOff.has(dev) || this.off.has(dev)) return false;
+    this.enginesOff.set(dev, this.now);
+    this.note('link', 'link', dev, '', 'Container engine stopped', 'off', `${dev}: the container engine is stopped at t = ${fmtSec(this.now)}: its containers and its container networks stop`);
+    this.virtPower(dev, false, true);
+    for (const c of this.guestsOn(dev)) {
+      if (this.off.has(c) || (this.model.index.devices.get(c) || { type: '' }).type !== 'container') continue;
+      this.hostedOff.set(c, dev);
+      this.powerOff(c, ` with the container engine of ${dev}`);
+    }
+    this.syncInterfaces();
+    this.routingChanged();
+    this.stateVersion++;
+    return true;
+  }
+
+  /** Start a device's container engine again: its networks come back, its containers as their restart policy says. */
+  startEngine(dev: string): boolean {
+    if (!this.enginesOff.has(dev)) return false;
+    this.enginesOff.delete(dev);
+    this.note('link', 'link', dev, '', 'Container engine started', 'up', `${dev}: the container engine starts again at t = ${fmtSec(this.now)}`);
+    this.virtPower(dev, true, true);
+    this.wakeGuests(dev);
+    this.syncInterfaces();
+    this.routingChanged();
+    this.stateVersion++;
+    return true;
+  }
+
+  /** The guests that waited for their host (or its engine): VMs start, containers as their restart policy says. */
+  private wakeGuests(dev: string): void {
+    for (const [g, host] of Array.from(this.hostedOff)) {
+      if (host !== dev) continue;
+      const gd = this.model.index.devices.get(g);
+      if (gd && gd.type === 'container') {
+        if (this.enginesOff.has(dev)) continue;
+        const r = this.restarts(g);
+        this.hostedOff.delete(g);
+        if (!r.yes) {
+          this.note('link', 'link', g, dev, 'Not restarted', 'off', `${g} is not started again (${r.why}): Power on starts it`);
+          continue;
+        }
+      } else this.hostedOff.delete(g);
+      this.powerOn(g);
+    }
   }
 
   /** Power a device on: it boots for its boot time, then its ports negotiate and its sessions start afresh. */
   powerOn(dev: string): boolean {
     if (!this.off.has(dev) || this.booting.has(dev)) return false;
-    const r = this.params.get('boot-time', dev);
+    // a guest needs its host (and a container its engine)
+    const host = this.hostNow(dev);
+    if (host !== undefined && (this.off.has(host) || this.booting.has(host) || this.enginesOff.has(host))) {
+      this.hostedOff.set(dev, host);
+      this.note('link', 'link', dev, host, 'Waits for its host', 'off', `${dev} starts when ${this.enginesOff.has(host) ? 'the container engine of ' + host + ' is started again' : 'its host ' + host + ' is on'}`);
+      return true;
+    }
+    this.userStopped.delete(dev);
+    const r = this.containerStart(dev) || this.params.get('boot-time', dev);
     const at = this.now + Number(r.value);
     this.booting.set(dev, at);
     this.note('link', 'link', dev, '', 'Powered on', 'booting', `${dev} is powered on at t = ${fmtSec(this.now)}: it boots for ${resolvedText(r)} (up at t = ${fmtSec(at)})`);
@@ -2851,18 +3240,15 @@ export class Engine {
       this.off.delete(dev);
       this.bypass.delete(dev);
       this.stateVersion++;
-      this.note('link', 'link', dev, '', 'Booted', 'up', `${dev} has booted: its ports come up, its tables are empty, its sessions start afresh`);
+      this.note('link', 'link', dev, '', 'Booted', 'up', `${dev} has ${this.containerStart(dev) ? 'started' : 'booted'}: its ports come up, its tables are empty, its sessions start afresh`);
+      this.virtPower(dev, true, false);
       for (const id of this.linksOf(dev)) this.updateCable(id);
       this.recomputeTrees(this.linksOf(dev));
       this.syncInterfaces();
       if (this.protocols && this.protocols.deviceUp) this.protocols.deviceUp(dev);
       this.routingChanged();
-      // its VMs and containers that waited for it start with it
-      for (const [vm, host] of Array.from(this.hostedOff)) {
-        if (host !== dev) continue;
-        this.hostedOff.delete(vm);
-        this.powerOn(vm);
-      }
+      // its VMs start with it, its containers as their restart policy says
+      this.wakeGuests(dev);
     });
     return true;
   }
@@ -2876,11 +3262,14 @@ export class Engine {
       const cycles = this.params.num('flap-cycles');
       out.push({ kind: 'flap', ref: fl.ref, since: fl.since, state: `${fl.down ? 'down' : 'up'}, cycle ${fl.done + (fl.down ? 1 : 0)}${cycles ? ' of ' + cycles : ''}` });
     }
-    for (const [k, t] of this.shutPorts) out.push({ kind: 'shut', ref: 'iface:' + k.replace('|', ':'), since: t, state: 'shut' });
+    for (const [k, t] of this.shutPorts) out.push({ kind: 'shut', ref: this.modelPortRef(k), since: t, state: 'shut' });
     for (const [k, t] of this.shutL3) out.push({ kind: 'shut', ref: 'iface:' + k, since: t, state: 'shut' });
+    for (const [d, t] of this.enginesOff) out.push({ kind: 'engine', ref: 'device:' + d, since: t, state: 'container engine stopped' });
     for (const [d, t] of this.off) {
+      if (this.net.devices.has(d) && (this.net.devices.get(d) as SimDevice).virt) continue;
       if (this.hostedOff.has(d) && !this.booting.has(d)) {
-        out.push({ kind: 'power', ref: 'device:' + d, since: t, state: `down with its host ${this.hostedOff.get(d)}`, hosted: true });
+        const h = this.hostedOff.get(d) as string;
+        out.push({ kind: 'power', ref: 'device:' + d, since: t, state: this.enginesOff.has(h) ? `stopped with the container engine of ${h}` : `down with its host ${h}`, hosted: true });
         continue;
       }
       const b = this.booting.get(d);
@@ -2894,10 +3283,11 @@ export class Engine {
     const out: string[] = [];
     for (const [id, st] of this.cable) if (st !== 'up') out.push('link:' + id);
     for (const id of this.failedRels.keys()) out.push('relation:' + id);
-    for (const k of this.shutPorts.keys()) out.push('iface:' + k.replace('|', ':'));
+    for (const k of this.shutPorts.keys()) out.push(this.modelPortRef(k));
     for (const k of this.shutL3.keys()) out.push('iface:' + k);
-    for (const [d] of this.off) if (!this.bypass.has(d)) out.push('device:' + d);
-    return out.sort(cmp);
+    for (const [d] of this.off) if (!this.bypass.has(d) && !(this.net.devices.get(d) || { virt: undefined }).virt) out.push('device:' + d);
+    // a VM's links at its own host while it runs elsewhere are not "down": they are not in use
+    return out.filter((r) => !(r.indexOf('link:~') === 0 && this.parked.has(r.slice(5)))).sort(cmp);
   }
 
   /** Cables with `simulation: {flapping: true}` start flapping once the network had time to come up (after the flapping up time). */
@@ -2941,11 +3331,19 @@ export class Engine {
       });
       if (ns.dns) for (const z of ns.dns.zones) if (z.simulation && z.simulation.size) want.set(zoneRef(d.id, z.name), { dev: d.id, values: z.simulation });
     }
+    // a hypervisor's service and its virtual switches, a container engine
+    for (const d of model.devices) {
+      if (d.hypervisor) {
+        if (d.hypervisor.simulation && d.hypervisor.simulation.size) want.set(hvRef(d.id), { dev: d.id, values: d.hypervisor.simulation });
+        for (const vs of d.hypervisor.vswitches) if (vs.simulation && vs.simulation.size) want.set(vswRef(d.id, vs.name), { dev: d.id, values: vs.simulation });
+      }
+      if (d.containerEngine && d.containerEngine.simulation && d.containerEngine.simulation.size) want.set(ceRef(d.id), { dev: d.id, values: d.containerEngine.simulation });
+    }
     const out: ParamChange[] = [];
-    const refs = new Set<string>(Array.from(want.keys()).concat(this.params.objects('iface:'), this.params.objects('vlan:'), this.params.objects('rel:'), this.params.objects('scope:'), this.params.objects('zone:')));
+    const refs = new Set<string>(Array.from(want.keys()).concat(this.params.objects('iface:'), this.params.objects('vlan:'), this.params.objects('rel:'), this.params.objects('scope:'), this.params.objects('zone:'), this.params.objects('hv:'), this.params.objects('vsw:'), this.params.objects('ce:')));
     for (const ref of Array.from(refs).sort()) {
       const w = want.get(ref);
-      const dev = w ? w.dev : ref.indexOf('iface:') === 0 || ref.indexOf('scope:') === 0 || ref.indexOf('zone:') === 0 ? ref.split(':')[1] : undefined;
+      const dev = w ? w.dev : /^(iface|scope|zone|hv|vsw|ce):/.test(ref) ? ref.split(':')[1] : undefined;
       out.push(...this.params.setObject(ref, dev, w ? w.values : new Map()));
     }
     return out;

@@ -1536,3 +1536,24 @@ dialog#modal.sim-start-dialog .modal-body { max-height: none; overscroll-behavio
 .sim-attr > button { align-self: flex-start; }
 .sim-live { margin-bottom: 10px; }
 .fgroup-disclosure > span { text-transform: none; letter-spacing: normal; font-weight: 400; }
+
+/* a host card: the button that adds a guest, as wide as its text */
+.guest-add { margin-top: 4px; }
+.guest-add > button { width: auto; }
+
+/* a host's interior in the physical view (diagram/virtual.ts): virtual switches and container networks as bars,
+   port groups as pills, the guests' boxes, and the wires from their vNICs / veths and from the host's ports */
+.vbar-box { fill: var(--group-fill); stroke: var(--dev-stroke); stroke-width: 1.2; }
+.cnet-bar .vbar-box { stroke-dasharray: 5 3; }
+.vbar-title { fill: var(--text); font-weight: 600; cursor: pointer; }
+.pg-pill { cursor: pointer; }
+.pg-box { fill: var(--pill); stroke: var(--member); stroke-width: 1; }
+.pg-name, .pg-sub { fill: var(--text); }
+.pg-name { font-weight: 600; }
+.vlane-title { fill: var(--text); font-style: italic; }
+.vwire { fill: none; stroke: var(--member); stroke-width: 1.4; stroke-linejoin: round; }
+.vwire-uplink, .vwire-passthrough, .vwire-parent { stroke-width: 2; }
+.has-selection .hl .vbar-box, .has-selection .hl.pg-pill .pg-box, .selected .vbar-box, .selected.pg-pill .pg-box { stroke: var(--sel) !important; stroke-width: 2.2 !important; }
+.has-selection .hl.vwire { stroke: var(--sel); stroke-width: 2.4; }
+/* a container network in the logical view (a bridge behind its host's NAT, an overlay): dashed */
+.cnet-net .net-box { stroke-dasharray: 7 4; }

@@ -130,7 +130,8 @@ export function derive(model: Model): Derived {
           if (!list.some((o) => o.device === d.id && o.iface === i.id)) list.push({ device: d.id, iface: i.id });
           owners.set(k, list);
         }
-        const inside = a ? nets.filter((x) => x.prefixes.some((p) => prefixContains(p, a))).map((x) => x.n) : [];
+        // (a container network's members are only the devices behind its host)
+        const inside = a ? nets.filter((x) => (!x.n.scope || x.n.scope.indexOf(d.id) >= 0) && x.prefixes.some((p) => prefixContains(p, a))).map((x) => x.n) : [];
         assocs.push({ address, valid: !!a, networks: inside.map((n) => n.id), vlan: derivedVlan(inside) });
         for (const n of inside) {
           const list = members.get(n.id) as NetworkMember[];
@@ -303,7 +304,8 @@ function subinterfaceParentIn(model: Model, i: Interface): string | undefined {
   const dot = i.id.lastIndexOf('.');
   if (dot <= 0 || dot === i.id.length - 1) return undefined;
   const p = model.index.interfaces.get(ifaceKey(i.device, i.id.slice(0, dot)));
-  return p && (p.type === 'physical' || (p.type === 'virtual' && p.members.length > 0)) ? p.id : undefined;
+  // a port, an aggregate, or a VM's virtual NIC (whose port group passes the guest's tags)
+  return p && (p.type === 'physical' || p.type === 'vnic' || (p.type === 'virtual' && p.members.length > 0)) ? p.id : undefined;
 }
 
 /** The port a subinterface belongs to (see PortL2), or undefined. */

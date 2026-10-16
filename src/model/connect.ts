@@ -7,7 +7,8 @@
  *
  * Physical view → a physical link (cable):
  *   - an end is a device (the whole device; no port is chosen for it) or a
- *     physical interface of a device; logical interfaces are never cabled;
+ *     physical interface of a device; logical interfaces are never cabled,
+ *     and neither is a guest (a VM, a container: it uses its host's ports);
  *   - a physical interface that already has a cable can't get another one
  *     (one cable per port);
  *   - the two ends must differ; on the same device both must be ports (a
@@ -63,7 +64,10 @@ export function endpointName(model: Model, e: Endpoint): string {
 
 /** Why an endpoint can't take part in a connection in this view ('' when it can). */
 export function endpointProblem(model: Model, view: ConnectView, e: Endpoint): string {
-  if (!model.index.devices.has(e.device)) return `device “${e.device}” is not in the model`;
+  const d = model.index.devices.get(e.device);
+  if (!d) return `device “${e.device}” is not in the model`;
+  // a guest (a VM, a container) has no cables: it reaches the network through its host
+  if (view === 'physical' && (d.type === 'vm' || d.type === 'container')) return `“${e.device}” is a ${d.type === 'vm' ? 'VM' : 'container'}: a guest has no cables — cable its host${d.host ? ` (“${d.host}”)` : ''} instead`;
   if (!e.iface) return '';
   const i = model.index.interfaces.get(ifaceKey(e.device, e.iface));
   if (!i) return `“${endpointText(e)}” is not an interface of the model`;

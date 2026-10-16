@@ -18,7 +18,7 @@ import { el, icon, materialize } from './dom';
 import { headOf, objectHead } from './panels';
 import { compareNames, sortedByName } from '../model/order';
 import { CATEGORIES, DIRECTIONS, DUPLEXES, Direction, InterfaceKind, LINE_STYLES, LOGICAL_IFACE_TYPES, VLAN_MAX, VLAN_MIN, ifaceKey, interfaceKindLabel, routeKey } from '../model/types';
-import { PortL2, derivedVlanText, endL2, endNetworks, endTagText, interfaceAddresses, interfaceVlans, isBridgePort, lagOf, networkMembers, portBadgeText, portL2, portRuns, subinterfaceParent, tagMismatch, tagMismatchText, vlanPortsByMode, vlanRangesText } from '../model/derive';
+import { PortL2, containingNetworks, derivedVlanText, endL2, endNetworks, endTagText, interfaceAddresses, interfaceVlans, isBridgePort, lagOf, networkMembers, portBadgeText, portL2, portRuns, subinterfaceParent, tagMismatch, tagMismatchText, vlanPortsByMode, vlanRangesText } from '../model/derive';
 import { isLayer2Switch, relationNeedsLayer3, routingRole, ROUTE_DEVICE_TYPES } from '../model/device-types';
 import { nextHopCandidates, vrfKey } from '../analysis/routing';
 import { CHECKS } from '../analysis/checks';
@@ -32,11 +32,13 @@ import { Endpoint, endpointText } from '../model/types';
 import { BUILTIN_SERVICES, ParamDef, ROUTER_ID_KEY, ServiceDef, paramsAt } from '../model/services';
 import { parsePrefix } from '../model/ip';
 import { suggestedServices } from '../analysis/identity';
-import { Suggestion, netSuggestions, peerAsSuggestions, asnSuggestions, distanceSuggestions, generateMac, groupSuggestions, mtuSuggestions, nextInterfaceName, routePrefixSuggestions, routerIdSuggestions, virtualIpSuggestions, vlanChoices, vlanSuggestions, vrfCaseVariants, vrfChoices } from '../analysis/helpers';
+import { Suggestion, netSuggestions, peerAsSuggestions, asnSuggestions, distanceSuggestions, generateMac, nextFreeContainerAddr, platformOui, groupSuggestions, mtuSuggestions, nextInterfaceName, routePrefixSuggestions, routerIdSuggestions, virtualIpSuggestions, vlanChoices, vlanSuggestions, vrfCaseVariants, vrfChoices } from '../analysis/helpers';
 import { Model, relationDevices } from '../model/types';
 import { deviceAttributes, interfaceAttributes, relationAttributes, vlanAttributes } from '../analysis/sim/attrs';
-import { ParamDef as SimParamDef, ParamValue, SimParams, deviceParamByYaml, fieldText, fieldUnit, formatValue, ifaceRef, parseValue, relRef, scopeRef, serviceParams, vlanRef, zoneRef } from '../analysis/sim/params';
+import { ParamDef as SimParamDef, ParamValue, SimParams, ceRef, deviceParamByYaml, fieldText, fieldUnit, formatValue, hvRef, ifaceRef, parseValue, relRef, scopeRef, serviceParams, vlanRef, vswRef, zoneRef } from '../analysis/sim/params';
 import { SERVER_TYPES, derivedRecords } from '../model/netservices';
+import { CONTAINER_DRIVERS, CONTAINER_ENGINES, HOST_IFACE_ROLES, HV_PLATFORMS, IPVLAN_MODES, MACVLAN_MODES, TEAMINGS, VSWITCH_TYPES } from '../model/types';
+import { containerNetworks, hostOf, portGroupAttachments, portGroupL2, portGroupText, vethNetwork } from '../model/virtual';
 import { scopeSuggestions } from '../analysis/helpers';
 
 /** `iface`: the document path of the selected physical or logical interface of a device; `route`: of the selected static route. */
@@ -1045,8 +1047,12 @@ export class Editor {
     };
     const notes = (): void => g('Notes', [this.textField(base.concat('description'), 'Description', o, 'textarea')], 'notes');
     if (kind === 'device') {
-      g('Identity', [this.idField(base, kind), this.textField(base.concat('label'), 'Label', o, 'textarea', undefined, 'Line breaks are kept.'), this.typeField(base.concat('type'), o), this.layer3Field(base, index)], 'identity');
-      g('Placement', [this.refField(base.concat('group'), 'Group / location', o, this.ids('group')), this.intField(base.concat('tier'), 'Tier (0–9)', o, 'Row in the physical view (0 = top). Empty: automatic.')], 'placement');
+      // a guest (a VM, a container): its host is its first field, its location is the host's
+      const dtype = doc.text(base.concat('type')) || '';
+      const guest = dtype === 'vm' || dtype === 'container';
+      g('Identity', [guest ? this.hostField(base, index) : null, this.idField(base, kind), this.textField(base.concat('label'), 'Label', o, 'textarea', undefined, 'Line breaks are kept.'), this.typeField(base.concat('type'), o), this.layer3Field(base, index)], 'identity');
+      g('Placement', [guest && !doc.get(base.concat('group')) ? this.guestLocationField(base) : this.refField(base.concat('group'), 'Group / location', o, this.ids('group')), this.intField(base.concat('tier'), 'Tier (0–9)', o, 'Row in the physical view (0 = top). Empty: automatic.')], 'placement');
+      if (guest) g(dtype === 'vm' ? 'Virtual machine' : 'Container', dtype === 'vm' ? [this.textField(base.concat('guest_os'), 'Guest OS', o, 'text', undefined, 'Informational.', 'Ubuntu 24.04'), this.intField(base.concat('vcpu'), 'vCPUs', o, 'Informational (compared with its host’s CPU cores when both are given).'), this.textField(base.concat('ram'), 'Memory', o, 'text', undefined, 'A size, e.g. 16G (compared with its host’s memory when both are given).', '16G')] : [this.textField(base.concat('image'), 'Image', o, 'text', undefined, 'Informational.', 'nginx:1.27')], 'guest');
       const protos = this.protocolsGroup(base, index);
       if (protos) w.appendChild(protos);
       const svcs = this.netServicesGroup(base, index);
@@ -1153,10 +1159,14 @@ export class Editor {
   }
 
   /** The MAC field with a Generate button: a random, locally administered unicast address no interface has, in the model's style. */
-  private macField(p: Path, owner: string, order: string): HTMLElement {
+  private macField(p: Path, owner: string, order: string, oui?: { oui: number[]; name: string }): HTMLElement {
     const f = this.textField(p.concat('mac'), 'MAC', order);
     const btn = this.e('button', { type: 'button', class: 'chip helper', 'data-act': 'gen-mac', 'data-p': J(p.concat('mac')), 'aria-label': `Generate MAC address for ${owner}`, title: 'A random, locally administered unicast address that no interface of the model has, written like the model’s other MAC addresses' }, ['Generate']);
-    const row = this.e('div', { class: 'helpers', role: 'group', 'aria-label': `MAC address helpers for ${owner}` }, [btn]);
+    // a guest's NIC: one with its platform's prefix too
+    const pbtn = oui
+      ? this.e('button', { type: 'button', class: 'chip helper', 'data-act': 'gen-mac', 'data-oui': oui.oui.join(','), 'data-p': J(p.concat('mac')), 'aria-label': `Generate a MAC address with the prefix ${oui.name} for ${owner}`, title: `A free address with the platform’s prefix ${oui.name}` }, [`Generate (${oui.name})`])
+      : null;
+    const row = this.e('div', { class: 'helpers', role: 'group', 'aria-label': `MAC address helpers for ${owner}` }, [btn, pbtn]);
     const ctl = f.children[1];
     f.insertBefore(row, ctl ? ctl.nextSibling : null);
     return f;
@@ -1516,6 +1526,17 @@ export class Editor {
     };
 
     const phys = sorted('interface');
+    const dtype = doc.text(['devices', devIndex, 'type']) || '';
+    const guest = dtype === 'vm' || dtype === 'container';
+    // a guest has no ports: only while its file still lists some (an error to fix) is the section shown
+    if (guest && !phys.length) {
+      w.appendChild(
+        this.e('section', { class: 'sub', 'data-list': 'interfaces' }, [
+          this.e('div', { class: 'sub-head' }, [this.e('h4', {}, ['Physical interfaces (0)'])]),
+          this.e('p', { class: 'muted small' }, [dtype === 'vm' ? 'A VM has no ports or cables: its virtual NICs are on its host’s port groups (or bound to a host port).' : 'A container has no ports or cables: it is attached to its host’s container networks.']),
+        ]),
+      );
+    }
     const is = this.e('section', { class: 'sub', 'data-list': 'interfaces' }, [
       this.e('div', { class: 'sub-head' }, [
         this.e('h4', {}, [`Physical interfaces (${phys.length})`]),
@@ -1529,12 +1550,23 @@ export class Editor {
       notList('interfaces'),
     ]);
     for (const e of phys) is.appendChild(this.ifaceCard(devIndex, e));
-    w.appendChild(is);
+    if (!guest || phys.length) w.appendChild(is);
 
     const logical = sorted('logical');
     const add = (type: string, label: string): HTMLElement => this.e('button', { type: 'button', class: 'mini', 'data-act': 'add-logical', 'data-index': String(devIndex), 'data-kind': type }, [label]);
     const ls = this.e('section', { class: 'sub', 'data-list': 'logical' }, [
-      this.e('div', { class: 'sub-head' }, [this.e('h4', {}, [`Logical interfaces (${logical.length})`]), this.e('span', { class: 'ctl row' }, [add('loopback', '+ Loopback'), add('virtual', '+ Virtual'), add('tunnel', '+ Tunnel')])]),
+      this.e('div', { class: 'sub-head' }, [
+        this.e('h4', {}, [`Logical interfaces (${logical.length})`]),
+        this.e(
+          'span',
+          { class: 'ctl row' },
+          dtype === 'vm'
+            ? [add('vnic', '+ Virtual NIC'), add('virtual', '+ Virtual'), add('loopback', '+ Loopback'), add('tunnel', '+ Tunnel')]
+            : dtype === 'container'
+              ? [add('veth', '+ Network attachment'), add('loopback', '+ Loopback')]
+              : [doc.get(['devices', devIndex, 'services', 'hypervisor']) ? add('vnic', '+ Host interface') : null, add('loopback', '+ Loopback'), add('virtual', '+ Virtual'), add('tunnel', '+ Tunnel')],
+        ),
+      ]),
       logical.length ? null : this.e('p', { class: 'muted small' }, ['Loopbacks, VLAN interfaces, bonds, subinterfaces, tunnels. Never cabled.']),
       notList('logical_interfaces'),
     ]);
@@ -1868,6 +1900,9 @@ export class Editor {
     );
     card.appendChild(this.ifIdField(p, loop ? 'lo0' : kind === 'tunnel' ? 'tun0' : kind === 'virtual' ? 'Vlan10, bond0' : 'ge-0/0/1'));
     card.appendChild(this.ifTypeField(p, entry));
+    // a guest's virtual NIC and a container's network attachment: what they are attached to, right after what they are
+    if (kind === 'vnic') for (const f of this.vnicFields(devIndex, p, id || '')) card.appendChild(f);
+    if (kind === 'veth') for (const f of this.vethFields(devIndex, p, id || '')) card.appendChild(f);
     // a port's (or an aggregate's) VLANs, right after what it is
     const isLagCard = o === 'logical' && !!doc.get(p.concat('members'));
     if (o === 'interface' || isLagCard || doc.get(p.concat('vlans')) || doc.get(p.concat('native')) || doc.get(p.concat('routed'))) card.appendChild(this.portVlanField(devIndex, p, entry));
@@ -1908,7 +1943,7 @@ export class Editor {
     if (!loop || doc.get(p.concat('mtu'))) {
       card.appendChild(this.withHelpers(this.intField(p.concat('mtu'), 'MTU (bytes)', o, 'Empty: not modelled (no MTU is assumed).'), p.concat('mtu'), 'int', model && live ? mtuSuggestions(model, live) : [], 'MTU', owner));
     }
-    if (!loop || doc.get(p.concat('mac'))) card.appendChild(this.macField(p, owner, o));
+    if (!loop || doc.get(p.concat('mac'))) card.appendChild(this.macField(p, owner, o, this.platformOuiOf(devIndex, kind)));
     for (const sc of this.ifaceServiceCards(devIndex, p, id || '')) card.appendChild(sc);
     // a routed interface with an address: its DHCP relay (helper addresses)
     const routes = routingRole(doc.text(['devices', devIndex, 'type']) || '') === 'router' && (doc.text(['devices', devIndex, 'type']) !== 'switch' || doc.text(['devices', devIndex, 'layer3']) === 'true');
@@ -2026,9 +2061,19 @@ export class Editor {
       s.appendChild(this.e('option', { value: '' }, ['Select type']));
       s.classList.add('unset');
     } else if (!valid) s.appendChild(this.e('option', { value: cur }, [cur + ' (not a valid type)']));
-    for (const t of LOGICAL_IFACE_TYPES) s.appendChild(this.e('option', { value: t }, [interfaceKindLabel(t)]));
+    // a virtual NIC on a VM (or a hypervisor's host interface), a network attachment on a container: offered where they apply
+    const dp = p.slice(0, 2);
+    const dtype = this.doc.text(dp.concat('type')) || '';
+    const vnic = dtype === 'vm' || !!this.doc.get(dp.concat('services', 'hypervisor'));
+    const veth = dtype === 'container';
+    for (const t of LOGICAL_IFACE_TYPES) if ((t !== 'vnic' || vnic || cur === t) && (t !== 'veth' || veth || cur === t)) s.appendChild(this.e('option', { value: t }, [interfaceKindLabel(t)]));
     s.value = cur;
-    return this.field('Type', s, tp, 'Loopback: own address. Virtual: VLAN interface, bond, subinterface … Tunnel: tunnel end.');
+    const hint = veth
+      ? 'Container network attachment: on a network of its host. Also loopback, virtual, tunnel.'
+      : vnic
+        ? 'Virtual NIC: on a port group, or passthrough. Also loopback, virtual, tunnel.'
+        : 'Loopback: own address. Virtual: VLAN interface, bond, subinterface … Tunnel: tunnel end.';
+    return this.field('Type', s, tp, hint);
   }
 
   /** Member ports of an aggregate (bond, LAG): physical interfaces of this device, picked from a list. */
@@ -2211,7 +2256,7 @@ export class Editor {
     const doc = this.doc;
     const type = doc.text(base.concat('type')) || '';
     const on = doc.text(base.concat('layer3')) === 'true';
-    if (type !== 'switch' && !doc.get(base.concat('layer3'))) return null;
+    if (type !== 'switch' && type !== 'vm' && !doc.get(base.concat('layer3'))) return null;
     const id = doc.text(base.concat('id')) || '';
     void id;
     // one short question; what it means is the tooltip (the badge in the diagram says which kind it is)
@@ -2219,7 +2264,7 @@ export class Editor {
     box.checked = on;
     const f = this.e('div', { class: 'field layer3-field', 'data-p': J(base.concat('layer3')) }, [
       this.e('label', { class: 'check', for: `layer3-${devIndex}`, title: 'Routing, routing protocols, and gateways' }, [box, ' Supports Layer 3']),
-      type !== 'switch' ? this.e('div', { class: 'help' }, ['Only switches have it; untick to remove it.']) : null,
+      type === 'vm' ? this.e('div', { class: 'help' }, ['A virtual router or firewall: the rules of a Layer 3 switch.']) : type !== 'switch' ? this.e('div', { class: 'help' }, ['Only switches and VMs have it; untick to remove it.']) : null,
     ]);
     for (const is of doc.issuesAt(base.concat('layer3'))) f.appendChild(this.e('div', { class: is.severity === 'error' ? 'field-err' : 'field-warn' }, [is.message]));
     return f;
@@ -2248,7 +2293,7 @@ export class Editor {
       for (const is of doc.issuesAt(path, true)) kids.push(this.e('div', { class: is.severity === 'error' ? 'field-err' : 'field-warn' }, [is.message]));
     };
     note(sp);
-    const box = (id: 'dhcp' | 'dns', label: string, title: string): HTMLElement => {
+    const box = (id: 'dhcp' | 'dns' | 'hypervisor' | 'container_engine', label: string, title: string): HTMLElement => {
       const on = !!doc.get(sp.concat(id));
       const cb = this.e('input', { type: 'checkbox', id: `svc-${id}-${devIndex}`, 'data-act': 'netsvc', 'data-svc': id, 'data-index': String(devIndex), title }) as HTMLInputElement;
       cb.checked = on;
@@ -2281,7 +2326,397 @@ export class Editor {
       kids.push(this.listField(dp.concat('forwarders'), 'Forwarders', 'dnsService', '9.9.9.9', 'Asked for names outside its zones (a DNS server of the model; else SERVFAIL).'));
       kids.push(this.listField(dp.concat('reverse_zones'), 'Reverse zones (PTR)', 'dnsService', '10.10.0.0/16', 'Networks it answers PTR queries for.'));
     }
-    return this.group('Services (DHCP, DNS)', kids, 'netservices');
+    // the Hypervisor (a server) and the Container engine (a server or a VM), each with its configuration
+    if (type === 'server' || doc.get(sp.concat('hypervisor'))) {
+      kids.push(box('hypervisor', 'Hypervisor', 'Runs VMs: its virtual switches, port groups and host interfaces'));
+      // its configuration collapsible; its guests (with + VM) always in view
+      if (doc.get(sp.concat('hypervisor'))) kids.push(this.hypervisorCard(sp.concat('hypervisor'), dev, devIndex), this.guestsField(dev, devIndex, 'vm'));
+    }
+    if (type === 'server' || type === 'vm' || doc.get(sp.concat('container_engine'))) {
+      kids.push(box('container_engine', 'Container engine', 'Runs containers: its container networks'));
+      if (doc.get(sp.concat('container_engine'))) kids.push(this.engineCard(sp.concat('container_engine'), dev, devIndex), this.guestsField(dev, devIndex, 'container'));
+    }
+    return this.group(type === 'container' ? 'Services (DHCP, DNS)' : 'Services', kids, 'netservices');
+  }
+
+  // ------------------------------------------------- virtualization: guests, Hypervisor, Container engine
+
+  /** A select of id / label pairs (the label shown, the id written), '' first; a value not offered is kept and marked. */
+  private pairSelect(p: Path, order: string, opts: ReadonlyArray<{ id: string; label: string }>, empty: string, aria: string, t = 'text'): HTMLSelectElement {
+    const cur = this.doc.text(p) || '';
+    const sel = this.e('select', { 'data-p': J(p), 'data-t': t, 'data-o': order, 'aria-label': aria }) as HTMLSelectElement;
+    sel.appendChild(this.e('option', { value: '' }, [empty]));
+    if (cur && !opts.some((x) => x.id === cur)) sel.appendChild(this.e('option', { value: cur }, [cur + ' (not offered)']));
+    for (const x of opts) sel.appendChild(this.e('option', { value: x.id }, [x.label]));
+    sel.value = cur;
+    if (!cur) sel.classList.add('unset');
+    return sel;
+  }
+
+  /**
+   * A guest's host: a picker that offers only the devices that can run it
+   * (a VM: servers with the Hypervisor service; a container: servers and
+   * VMs with the Container engine service). Required: nothing is chosen.
+   */
+  private hostField(base: Path, devIndex: number): HTMLElement {
+    const doc = this.doc;
+    const type = doc.text(base.concat('type')) || '';
+    const self = doc.text(base.concat('id')) || '';
+    const opts: Array<{ id: string; label: string }> = [];
+    doc.entities('device').forEach((d) => {
+      if (!d.id || d.id === self) return;
+      const t = doc.text(['devices', d.index, 'type']) || '';
+      const ok = type === 'vm' ? t === 'server' && !!doc.get(['devices', d.index, 'services', 'hypervisor']) : (t === 'server' || t === 'vm') && !!doc.get(['devices', d.index, 'services', 'container_engine']);
+      const label = doc.text(['devices', d.index, 'label']);
+      if (ok) opts.push({ id: d.id, label: label && label !== d.id ? `${label} (${d.id})` : d.id });
+    });
+    const what = type === 'vm' ? 'a server with the Hypervisor service' : 'a server or a VM with the Container engine service';
+    const f = this.field('Host *', this.pairSelect(base.concat('host'), 'device', opts, 'Select its host', `Host of ${self}`), base.concat('host'), `What it runs on: ${what}. Its network goes through the host; its location is the host’s.${opts.length ? '' : ' No device has that service yet: enable it on a server first.'}`);
+    void devIndex;
+    return f;
+  }
+
+  /** A guest's location: its host's (derived). */
+  private guestLocationField(base: Path): HTMLElement {
+    const doc = this.doc;
+    const model = doc.result.model;
+    const self = doc.text(base.concat('id')) || '';
+    const d = model ? model.index.devices.get(self) : undefined;
+    const h = model && d ? hostOf(model, d) : undefined;
+    const g = d && d.group && model ? model.index.groups.get(d.group) : undefined;
+    return this.derivedField(
+      'Group / location',
+      'guest-location',
+      [h ? (g ? this.e('button', { type: 'button', class: 'ref', 'data-goto': 'group:' + g.id }, [g.label]) : this.e('span', { class: 'muted' }, ['none'])) : this.e('span', { class: 'muted' }, ['(its host’s, once it has one)']), h ? this.e('span', { class: 'muted' }, [' — from its host ']) : null, h ? this.e('button', { type: 'button', class: 'ref', 'data-goto': 'device:' + h.id }, [h.label]) : null],
+      'A guest is where its host is: set the host’s location.',
+    );
+  }
+
+  /** The guests a host runs (VMs or containers), each a link, and the button that adds one already assigned to it. */
+  private guestsField(hostId: string, devIndex: number, type: 'vm' | 'container'): HTMLElement {
+    const doc = this.doc;
+    const guests = doc.guestsOfHost(hostId).filter((x) => x.type === type);
+    const what = type === 'vm' ? 'VMs' : 'Containers';
+    const list = guests.length
+      ? this.e('ul', { class: 'derived-list guests' }, guests.map((x) => this.e('li', {}, [this.e('button', { type: 'button', class: 'ref', 'data-goto': 'device:' + x.id }, [x.id])])))
+      : this.e('span', { class: 'muted' }, [`No ${what.toLowerCase()} run on it yet.`]);
+    const addText = `Add a ${type === 'vm' ? 'VM' : 'container'} that runs on ${hostId}`;
+    const add = this.e('button', { type: 'button', class: 'mini', 'data-act': 'add-guest', 'data-type': type, 'data-index': String(devIndex), title: addText, 'aria-label': addText }, [type === 'vm' ? '+ VM' : '+ Container']);
+    return this.e('div', { class: 'field derived', 'data-derived': `guests-${type}` }, [
+      this.e('label', {}, [`${what} on this host (${guests.length}) `, this.e('span', { class: 'derived-tag', title: 'The guests whose host is this device' }, ['derived'])]),
+      this.e('div', { class: 'derived-body' }, [list]),
+      this.e('div', { class: 'guest-add' }, [add]),
+    ]);
+  }
+
+  /**
+   * The Hypervisor service: its platform, HA cluster and inventory, the
+   * VMs it runs, its virtual switches (each with uplinks, teaming, MTU and
+   * port groups) and its Simulation subsection; a collapsible card.
+   */
+  private hypervisorCard(hp: Path, dev: string, devIndex: number): HTMLElement {
+    const doc = this.doc;
+    const model = doc.result.model;
+    const o = 'hypervisor';
+    const iss = doc.issuesAt(hp);
+    const errs = iss.filter((i) => i.severity === 'error').length;
+    const plat = HV_PLATFORMS.find((x) => x.id === doc.text(hp.concat('platform')));
+    const card = this.e('details', { class: 'card svc-card', 'data-card': J(hp), 'data-svc-card': 'hypervisor' });
+    if (this.open.has(J(hp)) || errs) card.setAttribute('open', '');
+    const vsN = doc.get(hp.concat('vswitches'));
+    const vsItems = vsN && vsN.kind === 'seq' ? vsN.items : [];
+    card.appendChild(this.e('summary', {}, [this.e('span', { class: 'card-title' }, [['Hypervisor', plat ? plat.label : '(no platform)', doc.text(hp.concat('cluster')) ? `cluster ${doc.text(hp.concat('cluster'))}` : '', `${vsItems.length} virtual switch${vsItems.length === 1 ? '' : 'es'}`].filter((x) => x).join(' · ')]), iss.length ? this.badge(errs, iss.length - errs) : null]));
+    for (const is of doc.issuesAt(hp, false).filter((x) => !x.key)) card.appendChild(this.e('div', { class: is.severity === 'error' ? 'field-err' : 'field-warn' }, [is.message]));
+    card.appendChild(this.field('Platform *', this.pairSelect(hp.concat('platform'), o, HV_PLATFORMS, 'Select the platform', `Hypervisor platform of ${dev}`), hp.concat('platform')));
+    const clusters = model ? Array.from(new Set(model.devices.filter((d) => d.hypervisor && d.hypervisor.cluster).map((d) => (d.hypervisor as { cluster: string }).cluster))).sort() : [];
+    card.appendChild(this.textField(hp.concat('cluster'), 'HA cluster', o, 'text', clusters, 'Hypervisors with the same cluster name restart each other’s VMs.', 'none'));
+    card.appendChild(this.intField(hp.concat('cpu'), 'CPU cores', o, 'Inventory; compared with its VMs’ vCPUs when both are given (info).'));
+    card.appendChild(this.textField(hp.concat('ram'), 'Memory', o, 'text', undefined, 'Inventory, e.g. 512G.', '512G'));
+    const vp = hp.concat('vswitches');
+    vsItems.forEach((_it, k) => card.appendChild(this.vswitchCard(vp.concat(k), dev, devIndex, k)));
+    card.appendChild(this.e('div', { class: 'field' }, [this.e('button', { type: 'button', class: 'mini', 'data-act': 'add-svc-item', 'data-p': J(vp), 'data-what': 'virtual switch' }, ['+ Add virtual switch'])]));
+    const sim = this.simSection({ path: hp, device: dev, at: hvRef(dev), idBase: `hv-${dev}`, what: 'the Hypervisor', name: `${dev} Hypervisor` }, serviceParams('hypervisor'));
+    if (sim) card.appendChild(sim);
+    return card;
+  }
+
+  /** A virtual switch: name, type, uplinks (the host's ports and bonds), teaming, MTU, its port groups; its Simulation subsection. */
+  private vswitchCard(vp: Path, dev: string, devIndex: number, k: number): HTMLElement {
+    const doc = this.doc;
+    const o = 'vswitch';
+    const name = doc.text(vp.concat('name')) || '';
+    const iss = doc.issuesAt(vp);
+    const errs = iss.filter((i) => i.severity === 'error').length;
+    const card = this.e('details', { class: 'card' + (errs ? ' has-err' : ''), 'data-card': J(vp), 'data-vswitch': name });
+    if (this.open.has(J(vp)) || errs) card.setAttribute('open', '');
+    const ups = this.listTexts(vp.concat('uplinks'));
+    card.appendChild(
+      this.e('summary', {}, [
+        this.e('span', { class: 'card-title' }, [[name || `Virtual switch ${k + 1}`, (VSWITCH_TYPES.find((x) => x.id === doc.text(vp.concat('type'))) || { label: '' }).label, ups.length ? `uplinks ${ups.join(', ')}` : 'internal'].filter((x) => x).join(' · ')]),
+        iss.length ? this.badge(errs, iss.length - errs) : null,
+        this.e('button', { type: 'button', class: 'mini danger', 'data-act': 'del-item', 'data-p': J(vp), title: 'Delete this virtual switch' }, ['×']),
+      ]),
+    );
+    card.appendChild(this.textField(vp.concat('name'), 'Name *', o, 'text', undefined, 'Unique on this host, e.g. vSwitch0 or br0.', 'vSwitch0'));
+    card.appendChild(this.field('Type *', this.pairSelect(vp.concat('type'), o, VSWITCH_TYPES, 'Select the type', `Type of virtual switch ${name || k + 1}`), vp.concat('type')));
+    // uplinks: the host's ports and bonds, in order (active / standby: the first is active)
+    const ports = doc.interfaceEntries(devIndex).filter((e) => !!e.id && (e.kind === 'interface' || !!doc.get(e.path.concat('members')))).map((e) => e.id as string);
+    const used = new Set<string>();
+    const vsl = doc.get(vp.slice(0, -1));
+    if (vsl && vsl.kind === 'seq') vsl.items.forEach((_x, j) => this.listTexts(vp.slice(0, -1).concat(j, 'uplinks')).forEach((u) => used.add(u)));
+    const ubox = this.e('div', { class: 'list-ed uplinks' });
+    ups.forEach((u, j) =>
+      ubox.appendChild(
+        this.e('div', { class: 'list-row' }, [
+          this.e('span', { class: 'uplink-order muted' }, [`${j + 1}.`]),
+          this.e('span', {}, [u]),
+          this.e('button', { type: 'button', class: 'mini', 'data-act': 'del-item', 'data-p': J(this.doc.get(vp.concat('uplinks'))?.kind === 'seq' ? vp.concat('uplinks', j) : vp.concat('uplinks')), 'aria-label': `Remove uplink ${u} from ${name || 'the virtual switch'}`, title: 'Remove this uplink' }, ['×']),
+        ]),
+      ),
+    );
+    const addSel = this.e('select', { 'data-p': J(vp.concat('uplinks')), 'data-t': 'list-append', 'data-o': o, 'aria-label': `Add an uplink to ${name || 'the virtual switch'}` }) as HTMLSelectElement;
+    addSel.appendChild(this.e('option', { value: '' }, ['+ add an uplink (a port or bond)']));
+    for (const x of ports) if (!used.has(x)) addSel.appendChild(this.e('option', { value: x }, [x]));
+    ubox.appendChild(addSel);
+    card.appendChild(this.field('Uplinks', ubox, vp.concat('uplinks'), 'The host’s ports or bonds that carry its port groups; none: an internal switch. Active / standby: in this order.'));
+    if (ups.length || doc.get(vp.concat('teaming'))) card.appendChild(this.field('Teaming *', this.pairSelect(vp.concat('teaming'), o, TEAMINGS, 'Select the teaming', `Teaming of ${name || 'the virtual switch'}`), vp.concat('teaming'), 'LACP needs one bond as its uplink.'));
+    card.appendChild(this.intField(vp.concat('mtu'), 'MTU (bytes)', o, 'Empty: not modelled.'));
+    // its port groups
+    const pp = vp.concat('port_groups');
+    const pn = doc.get(pp);
+    const pbox = this.e('div', { class: 'list-ed port-groups' });
+    (pn && pn.kind === 'seq' ? pn.items : []).forEach((_it, j) => pbox.appendChild(this.portGroupRow(pp.concat(j), dev, j)));
+    pbox.appendChild(this.e('button', { type: 'button', class: 'mini', 'data-act': 'add-svc-item', 'data-p': J(pp), 'data-what': 'port group' }, ['+ Add port group']));
+    card.appendChild(this.field('Port groups *', pbox, pp, 'Each with its VLAN mode, as on a port: one VLAN (access), several (a trunk, with a native VLAN), or guest tagging.'));
+    const sim = name ? this.simSection({ path: vp, device: dev, at: vswRef(dev, name), idBase: `vsw-${dev}-${name}`, what: `virtual switch ${name}`, name: `${dev} ${name}` }, serviceParams('vswitch')) : null;
+    if (sim) card.appendChild(sim);
+    return card;
+  }
+
+  /** A port group: its name, VLANs (or guest tagging), native VLAN; the vnics on it (derived). */
+  private portGroupRow(pp: Path, dev: string, j: number): HTMLElement {
+    const doc = this.doc;
+    const model = doc.result.model;
+    const name = doc.text(pp.concat('name')) || '';
+    const gt = doc.text(pp.concat('guest_tagging')) === 'true';
+    const vl = doc.portVlans(pp);
+    const label = name || `port group ${j + 1}`;
+    const uid = `pg-${dev}-${j}-${Math.random().toString(36).slice(2, 7)}`;
+    const box = this.e('input', { type: 'checkbox', id: uid, 'data-act': 'pg-guest', 'data-p': J(pp) }) as HTMLInputElement;
+    box.checked = gt;
+    const nat = vl.length > 1 || doc.get(pp.concat('native'));
+    const host = model ? model.index.devices.get(dev) : undefined;
+    const pg = host && host.hypervisor ? host.hypervisor.vswitches.reduce((a: unknown, v) => a || v.portGroups.find((x) => x.name === name), undefined as unknown) : undefined;
+    const on = model && host && name ? portGroupAttachments(model, host, name) : [];
+    const row = this.e('div', { class: 'pg-row' + (doc.issuesAt(pp).some((i) => i.severity === 'error') ? ' invalid' : ''), 'data-pg': name }, [
+      this.e('div', { class: 'list-row' }, [
+        this.input(pp.concat('name'), 'text', name, { placeholder: 'name (Servers)', 'aria-label': `Port group ${j + 1}: name`, 'data-o': 'portGroup' }),
+        this.input(pp.concat('vlans'), 'pg-vlans', vl.join(', '), gt ? { placeholder: '(the guests tag)', disabled: '', 'aria-label': `${label}: VLANs` } : { placeholder: 'VLANs: 10 or 10, 20', 'aria-label': `${label}: VLANs (one: access; several: a trunk)` }),
+        this.e('button', { type: 'button', class: 'mini danger', 'data-act': 'del-item', 'data-p': J(pp), 'aria-label': `Delete ${label}`, title: 'Delete this port group' }, ['×']),
+      ]),
+      this.e('div', { class: 'list-row' }, [
+        this.e('label', { class: 'check', for: uid }, [box, ' Guest tagging (VGT)']),
+        nat
+          ? this.pairSelect(pp.concat('native'), 'portGroup', [{ id: '', label: '' }].slice(1).concat(vl.filter((x) => /^[0-9]+$/.test(x)).map((x) => ({ id: x, label: `native VLAN ${x}` }))), 'no native VLAN (all tagged)', `${label}: native VLAN`, 'vlan-native')
+          : null,
+        pg ? this.e('span', { class: 'mode-badge mode-' + (gt ? 'trunk' : vl.length > 1 ? 'trunk' : 'access') }, [portGroupText(pg as never)]) : null,
+      ]),
+      on.length ? this.e('div', { class: 'muted small' }, [`On it: ${on.map((i) => `${i.device}:${i.id}`).join(', ')}`]) : null,
+    ]);
+    for (const is of doc.issuesAt(pp)) row.appendChild(this.e('div', { class: is.severity === 'error' ? 'field-err' : 'field-warn' }, [is.message]));
+    return row;
+  }
+
+  /** The Container engine service: its engine, the containers it runs, its networks; its Simulation subsection. */
+  private engineCard(ep: Path, dev: string, devIndex: number): HTMLElement {
+    const doc = this.doc;
+    const o = 'containerEngine';
+    const iss = doc.issuesAt(ep);
+    const errs = iss.filter((i) => i.severity === 'error').length;
+    const eng = CONTAINER_ENGINES.find((x) => x.id === doc.text(ep.concat('engine')));
+    const card = this.e('details', { class: 'card svc-card', 'data-card': J(ep), 'data-svc-card': 'container_engine' });
+    if (this.open.has(J(ep)) || errs) card.setAttribute('open', '');
+    const nN = doc.get(ep.concat('networks'));
+    const nItems = nN && nN.kind === 'seq' ? nN.items : [];
+    card.appendChild(this.e('summary', {}, [this.e('span', { class: 'card-title' }, [['Container engine', eng ? eng.label : '(no engine)', `${nItems.length} network${nItems.length === 1 ? '' : 's'}`].join(' · ')]), iss.length ? this.badge(errs, iss.length - errs) : null]));
+    for (const is of doc.issuesAt(ep, false).filter((x) => !x.key)) card.appendChild(this.e('div', { class: is.severity === 'error' ? 'field-err' : 'field-warn' }, [is.message]));
+    card.appendChild(this.field('Engine *', this.pairSelect(ep.concat('engine'), o, CONTAINER_ENGINES, 'Select the engine', `Container engine of ${dev}`), ep.concat('engine'), 'Kubernetes pods, services and CNI plugins are not modelled.'));
+    const np = ep.concat('networks');
+    nItems.forEach((_it, k) => card.appendChild(this.cnetCard(np.concat(k), dev, devIndex, k)));
+    card.appendChild(this.e('div', { class: 'field' }, [this.e('button', { type: 'button', class: 'mini', 'data-act': 'add-svc-item', 'data-p': J(np), 'data-what': 'container network' }, ['+ Add container network'])]));
+    const sim = this.simSection({ path: ep, device: dev, at: ceRef(dev), idBase: `ce-${dev}`, what: 'the Container engine', name: `${dev} Container engine` }, serviceParams('container_engine'));
+    if (sim) card.appendChild(sim);
+    return card;
+  }
+
+  /** A container network: name, driver, and what the driver needs (bridge interface, subnet, gateway, NAT, parent, mode, hosts, range). */
+  private cnetCard(np: Path, dev: string, devIndex: number, k: number): HTMLElement {
+    const doc = this.doc;
+    const model = doc.result.model;
+    const o = 'containerNetwork';
+    const name = doc.text(np.concat('name')) || '';
+    const driver = doc.text(np.concat('driver')) || '';
+    const iss = doc.issuesAt(np);
+    const errs = iss.filter((i) => i.severity === 'error').length;
+    const card = this.e('details', { class: 'card' + (errs ? ' has-err' : ''), 'data-card': J(np), 'data-cnet': name });
+    if (this.open.has(J(np)) || errs) card.setAttribute('open', '');
+    card.appendChild(
+      this.e('summary', {}, [
+        this.e('span', { class: 'card-title' }, [[name || `Network ${k + 1}`, driver, doc.text(np.concat('subnet')) || ''].filter((x) => x).join(' · ')]),
+        iss.length ? this.badge(errs, iss.length - errs) : null,
+        this.e('button', { type: 'button', class: 'mini danger', 'data-act': 'del-item', 'data-p': J(np), title: 'Delete this container network' }, ['×']),
+      ]),
+    );
+    card.appendChild(this.textField(np.concat('name'), 'Name *', o, 'text', undefined, 'Unique on this host; its containers name it.', 'bridge'));
+    card.appendChild(this.field('Driver *', this.pairSelect(np.concat('driver'), o, CONTAINER_DRIVERS, 'Select the driver', `Driver of container network ${name || k + 1}`), np.concat('driver')));
+    const has = (key: string): boolean => !!doc.get(np.concat(key));
+    if (driver === 'bridge' || has('interface')) card.appendChild(this.withHelpers(this.textField(np.concat('interface'), 'Bridge interface *', o, 'text', undefined, 'The interface it creates on the host, with the gateway address.', 'docker0'), np.concat('interface'), 'text', has('interface') ? [] : [{ value: 'docker0', label: 'docker0', title: 'Docker’s default bridge' }, { value: `br-${name || 'net'}`.slice(0, 15), label: `br-${name || 'net'}`.slice(0, 15), title: 'A user-defined bridge' }], 'bridge interface', `${dev} ${name}`.trim()));
+    if (['bridge', 'macvlan', 'ipvlan', 'overlay'].indexOf(driver) >= 0 || has('subnet')) card.appendChild(this.textField(np.concat('subnet'), 'Subnet *', o, 'text', undefined, undefined, driver === 'bridge' ? '172.17.0.0/16' : '10.10.0.0/24'));
+    if (['bridge', 'macvlan', 'ipvlan', 'overlay'].indexOf(driver) >= 0 || has('gateway')) card.appendChild(this.textField(np.concat('gateway'), driver === 'overlay' ? 'Gateway' : 'Gateway *', o, 'text', undefined, driver === 'bridge' ? 'The bridge interface’s address on the host.' : 'The router’s address in the subnet.', driver === 'bridge' ? '172.17.0.1' : '10.10.0.1'));
+    if (driver === 'bridge' || has('nat')) {
+      const nsel = this.e('select', { 'data-p': J(np.concat('nat')), 'data-t': 'yesno', 'data-o': o, 'aria-label': `NAT of container network ${name}` }) as HTMLSelectElement;
+      for (const [v, l] of [['', 'Select'], ['true', 'On: masquerade to the host’s address'], ['false', 'Off: routed']]) nsel.appendChild(this.e('option', { value: v }, [l]));
+      nsel.value = doc.text(np.concat('nat')) || '';
+      if (!nsel.value) nsel.classList.add('unset');
+      card.appendChild(this.field('NAT *', nsel, np.concat('nat'), 'Published ports are forwarded to its containers (DNAT).'));
+    }
+    if (driver === 'macvlan' || driver === 'ipvlan' || has('parent')) {
+      const parents = doc.interfaceEntries(devIndex).filter((e) => !!e.id).map((e) => ({ id: e.id as string, label: e.id as string }));
+      card.appendChild(this.field('Parent interface *', this.pairSelect(np.concat('parent'), o, parents, 'Select the parent', `Parent interface of container network ${name}`), np.concat('parent'), 'The host interface it sits on: a port, a bond, a VLAN subinterface (on a VM: its vNIC).'));
+      const modes = (driver === 'ipvlan' ? IPVLAN_MODES : MACVLAN_MODES).map((m) => ({ id: m, label: m }));
+      card.appendChild(this.field('Mode *', this.pairSelect(np.concat('mode'), o, modes, 'Select the mode', `Mode of container network ${name}`), np.concat('mode')));
+    }
+    if (driver === 'overlay' || has('hosts')) card.appendChild(this.listField(np.concat('hosts'), 'Other hosts', o, 'docker-02', 'The other container engines that take part; their containers can attach to it too.'));
+    if (['bridge', 'macvlan', 'ipvlan', 'overlay'].indexOf(driver) >= 0 || has('range')) card.appendChild(this.textField(np.concat('range'), 'Address range (IPAM)', o, 'text', undefined, 'start-end: where the next free address of a container is taken from; empty: the subnet.', '172.17.0.100-172.17.0.199'));
+    // derived: the bridge interface it creates, the containers on it
+    const owner = model ? model.index.devices.get(dev) : undefined;
+    const net = owner && owner.containerEngine ? owner.containerEngine.networks.find((x) => x.name === name) : undefined;
+    if (net && net.driver === 'bridge' && net.iface && net.gateway && net.subnet) card.appendChild(this.derivedField('Creates on the host', 'bridge-iface', [`${net.iface} with ${net.gateway}/${net.subnet.split('/')[1]}${net.nat ? ' (NAT)' : ''}`], 'Never written: it follows from the network.'));
+    if (net && model && owner) {
+      const on = model.devices.filter((d) => d.type === 'container').reduce((a: string[], d) => a.concat(d.logical.filter((i) => i.type === 'veth' && (vethNetwork(model, i) || { net: null }).net === net).map((i) => `${d.id}:${i.id}`)), []);
+      card.appendChild(this.derivedField('Containers on it', 'cnet-containers', [on.length ? on.join(', ') : this.e('span', { class: 'muted' }, ['none yet'])], 'Their network attachments name it.'));
+    }
+    return card;
+  }
+
+  /** A vnic: its port group on the host (or a host port by passthrough, with an SR-IOV virtual function), a host interface's role. */
+  private vnicFields(devIndex: number, p: Path, id: string): HTMLElement[] {
+    const doc = this.doc;
+    const model = doc.result.model;
+    const out: HTMLElement[] = [];
+    const dtype = doc.text(['devices', devIndex, 'type']) || '';
+    const devId = doc.text(['devices', devIndex, 'id']) || '';
+    const hostId = dtype === 'vm' ? doc.text(['devices', devIndex, 'host']) || '' : devId;
+    const hi = doc.entities('device').find((d) => d.id === hostId);
+    const hp: Path | null = hi ? ['devices', hi.index, 'services', 'hypervisor', 'vswitches'] : null;
+    // the port groups the host provides
+    const pgs: Array<{ id: string; label: string }> = [];
+    const hm = model && hostId ? model.index.devices.get(hostId) : undefined;
+    if (hm && hm.hypervisor) {
+      for (const vs of hm.hypervisor.vswitches) for (const pg of vs.portGroups) if (pg.name) pgs.push({ id: pg.name, label: `${pg.name} (${vs.name} · ${portGroupText(pg)})` });
+    } else if (hp) {
+      const vl = doc.get(hp);
+      if (vl && vl.kind === 'seq') vl.items.forEach((_v, k) => {
+        const pl = doc.get(hp.concat(k, 'port_groups'));
+        if (pl && pl.kind === 'seq') pl.items.forEach((_x, j) => {
+          const nm = doc.text(hp.concat(k, 'port_groups', j, 'name'));
+          if (nm) pgs.push({ id: nm, label: nm });
+        });
+      });
+    }
+    const pt = !!doc.get(p.concat('passthrough'));
+    // suggestions: the port groups of the VLAN its address is in (untagged on the port group)
+    const iface = model ? model.index.interfaces.get(devId + ':' + id) : undefined;
+    const vlans = new Set<number>();
+    if (model && iface) for (const a of iface.addresses) for (const n of containingNetworks(a, model.networks)) if (n.vlan !== undefined) vlans.add(n.vlan);
+    const fits: Suggestion[] = [];
+    if (hm && hm.hypervisor && vlans.size) {
+      for (const vs of hm.hypervisor.vswitches) {
+        for (const pg of vs.portGroups) {
+          const u = portGroupL2(pg).untagged;
+          if (pg.name && u !== undefined && vlans.has(u) && pg.name !== (iface ? iface.portGroup : undefined)) fits.push({ value: pg.name, label: pg.name, title: `${pg.name} on ${vs.name} carries VLAN ${u} untagged: the VLAN of its address` });
+        }
+      }
+    }
+    if (!pt) out.push(this.withHelpers(this.field('Port group *', this.pairSelect(p.concat('port_group'), 'logical', pgs, hostId ? 'Select its port group' : 'Choose the host first', `Port group of ${devId} ${id}`), p.concat('port_group'), hostId ? `On ${hostId}’s virtual switches; its VLAN comes from the port group.` : 'The host’s port groups are offered once the host is set.'), p.concat('port_group'), 'text', fits, 'port group', `${devId} ${id}`));
+    if (dtype === 'vm') {
+      // passthrough: one of the host's ports that no virtual switch uses
+      const uplinks = new Set<string>();
+      if (hm && hm.hypervisor) for (const vs of hm.hypervisor.vswitches) for (const u of vs.uplinks) uplinks.add(u);
+      const ports = hm ? hm.interfaces.filter((i) => !uplinks.has(i.id)).map((i) => ({ id: i.id, label: i.id })) : [];
+      if (pt || ports.length) {
+        out.push(this.field('Passthrough port', this.pairSelect(p.concat('passthrough'), 'logical', ports, pt ? '(none)' : 'none: on a port group', `Passthrough port of ${devId} ${id}`), p.concat('passthrough'), 'Bound directly to this host port (exclusive; no port group).'));
+        if (pt || doc.get(p.concat('vf'))) out.push(this.intField(p.concat('vf'), 'SR-IOV virtual function', 'logical', 'Empty: the whole port.'));
+      }
+    } else if (dtype === 'server') {
+      out.push(this.field('Role', this.pairSelect(p.concat('role'), 'logical', HOST_IFACE_ROLES.map((r) => ({ id: r, label: r })), 'none', `Role of host interface ${id}`), p.concat('role'), 'What the host uses it for (management, migration, storage).'));
+    }
+    return out;
+  }
+
+  /** A veth: its container network on the host (or an overlay that lists the host), the next free address, aliases, published ports. */
+  private vethFields(devIndex: number, p: Path, id: string): HTMLElement[] {
+    const doc = this.doc;
+    const model = doc.result.model;
+    const out: HTMLElement[] = [];
+    const devId = doc.text(['devices', devIndex, 'id']) || '';
+    const hostId = doc.text(['devices', devIndex, 'host']) || '';
+    const nets = model && hostId ? containerNetworks(model, hostId) : [];
+    const opts = nets.map((x) => ({ id: x.net.name, label: `${x.net.name} (${x.net.driver || '?'}${x.net.subnet ? ' · ' + x.net.subnet : ''}${x.owner.id !== hostId ? ` · overlay of ${x.owner.id}` : ''})` }));
+    out.push(this.field('Container network *', this.pairSelect(p.concat('network'), 'logical', opts, hostId ? 'Select its network' : 'Choose the host first', `Container network of ${devId} ${id}`), p.concat('network'), hostId ? `A network of ${hostId}’s container engine.` : 'The host’s networks are offered once the host is set.'));
+    // the next free address of its network (from its IPAM range)
+    const cur = doc.text(p.concat('network'));
+    const net = nets.find((x) => x.net.name === cur);
+    if (net && model && !this.listTexts(p.concat('ip')).length && ['bridge', 'macvlan', 'ipvlan', 'overlay'].indexOf(net.net.driver || '') >= 0) {
+      const next = nextFreeContainerAddr(model, net.net);
+      if (next) {
+        out.push(
+          this.e('div', { class: 'field' }, [
+            this.e('div', { class: 'helpers', role: 'group', 'aria-label': `Suggestions for the address of ${devId} ${id}` }, [
+              this.e('button', { type: 'button', class: 'chip helper', 'data-act': 'set-value', 'data-p': J(p.concat('ip')), 'data-kind': 'text', 'data-v': next, title: `The next free address of ${net.net.name}${net.net.range ? ` (range ${net.net.range})` : ''}`, 'aria-label': `Set the address of ${devId} ${id} to the next free one, ${next}` }, [`Next free: ${next}`]),
+            ]),
+          ]),
+        );
+      }
+    }
+    out.push(this.listField(p.concat('aliases'), 'Aliases', 'logical', 'db', 'Further names of the container on its network.'));
+    // published ports (a bridge network's)
+    const pp = p.concat('publish');
+    const pn = doc.get(pp);
+    if ((net && net.net.driver === 'bridge') || pn) {
+      const box = this.e('div', { class: 'list-ed publish' });
+      (pn && pn.kind === 'seq' ? pn.items : []).forEach((_it, j) => {
+        const ip = pp.concat(j);
+        const proto = this.e('select', { 'data-p': J(ip.concat('protocol')), 'data-t': 'text', 'data-o': 'published', 'aria-label': `Published port ${j + 1}: protocol` }) as HTMLSelectElement;
+        for (const x of ['', 'tcp', 'udp']) proto.appendChild(this.e('option', { value: x }, [x || 'protocol']));
+        proto.value = doc.text(ip.concat('protocol')) || '';
+        box.appendChild(
+          this.e('div', { class: 'list-row pub-row' + (doc.issuesAt(ip).some((i) => i.severity === 'error') ? ' invalid' : '') }, [
+            this.input(ip.concat('host_ip'), 'text', doc.text(ip.concat('host_ip')) || '', { placeholder: 'host address (all)', 'aria-label': `Published port ${j + 1}: host address`, 'data-o': 'published' }),
+            this.input(ip.concat('host_port'), 'int', doc.text(ip.concat('host_port')) || '', { placeholder: 'host port', inputmode: 'numeric', 'aria-label': `Published port ${j + 1}: host port`, 'data-o': 'published' }),
+            this.e('span', { 'aria-hidden': 'true' }, [' → ']),
+            this.input(ip.concat('port'), 'int', doc.text(ip.concat('port')) || '', { placeholder: 'container port', inputmode: 'numeric', 'aria-label': `Published port ${j + 1}: container port`, 'data-o': 'published' }),
+            proto,
+            this.e('button', { type: 'button', class: 'mini', 'data-act': 'del-item', 'data-p': J(ip), title: 'Remove this published port' }, ['×']),
+          ]),
+        );
+        for (const is of doc.issuesAt(ip)) box.appendChild(this.e('div', { class: is.severity === 'error' ? 'field-err' : 'field-warn' }, [is.message]));
+      });
+      box.appendChild(this.e('button', { type: 'button', class: 'mini', 'data-act': 'add-svc-item', 'data-p': J(pp), 'data-what': 'published port' }, ['+ Publish a port']));
+      out.push(this.field('Published ports', box, pp, 'Accepted on the host’s address and forwarded to the container (DNAT); a bridge network’s.'));
+    }
+    return out;
+  }
+
+  /** The MAC prefix of a guest's platform, for the Generate helper (a VM: its host's hypervisor; a container: Docker's). */
+  private platformOuiOf(devIndex: number, kind: string): { oui: number[]; name: string } | undefined {
+    const doc = this.doc;
+    if (kind === 'veth') return platformOui('docker');
+    if (kind !== 'vnic') return undefined;
+    const t = doc.text(['devices', devIndex, 'type']);
+    const hostId = t === 'vm' ? doc.text(['devices', devIndex, 'host']) : doc.text(['devices', devIndex, 'id']);
+    const hi = doc.entities('device').find((d) => d.id === hostId);
+    return hi ? platformOui(doc.text(['devices', hi.index, 'services', 'hypervisor', 'platform'])) : undefined;
   }
 
   /** A DHCP scope: its network, range, gateway, DNS servers, lease time, exclusions, reservations, domain; its Simulation subsection. */
@@ -2565,6 +3000,36 @@ export class Editor {
     return true;
   }
 
+  /** A device's Hypervisor, virtual switch and Container engine Simulation subsections (the simulation's Actions panel). */
+  private serviceSimSections(devIndex: number): HTMLElement[] {
+    const doc = this.getDoc();
+    if (!doc) return [];
+    const dev = doc.text(['devices', devIndex, 'id']) || '';
+    const sp: Path = ['devices', devIndex, 'services'];
+    const out: HTMLElement[] = [];
+    const titled = (sec: HTMLElement | null, title: string): void => {
+      if (!sec) return;
+      const t = sec.querySelector('.fgroup-toggle');
+      if (t) t.textContent = `${title}: ${t.textContent || ''}`;
+      out.push(sec);
+    };
+    if (doc.get(sp.concat('hypervisor'))) {
+      const hp = sp.concat('hypervisor');
+      titled(this.simSection({ path: hp, device: dev, at: hvRef(dev), idBase: `hv-${dev}`, what: 'the Hypervisor', name: `${dev} Hypervisor` }, serviceParams('hypervisor')), 'Hypervisor');
+      const n = doc.get(hp.concat('vswitches'));
+      const count = n && n.kind === 'seq' ? n.items.length : 0;
+      for (let k = 0; k < count; k++) {
+        const vp = hp.concat('vswitches', k);
+        const name = doc.text(vp.concat('name')) || '';
+        if (name) titled(this.simSection({ path: vp, device: dev, at: vswRef(dev, name), idBase: `vsw-${dev}-${name}`, what: `virtual switch ${name}`, name: `${dev} ${name}` }, serviceParams('vswitch')), name);
+      }
+    }
+    if (doc.get(sp.concat('container_engine'))) {
+      titled(this.simSection({ path: sp.concat('container_engine'), device: dev, at: ceRef(dev), idBase: `ce-${dev}`, what: 'the Container engine', name: `${dev} Container engine` }, serviceParams('container_engine')), 'Container engine');
+    }
+    return out;
+  }
+
   /** The selected device's Simulation section, editable (drawn above the read-only form while a simulation runs); false: no device selected. */
   renderSimSection(box: HTMLElement): boolean {
     const s = this.sel;
@@ -2572,6 +3037,8 @@ export class Editor {
     const secs: Array<HTMLElement | null> = [];
     if (s.kind === 'device') {
       secs.push(this.simulationSection(s.index));
+      // its Hypervisor (and each virtual switch) and its Container engine (each collapsed, under its name)
+      secs.push(...this.serviceSimSections(s.index));
       // and its interfaces' (each collapsed, under its name)
       for (const entry of this.doc.interfaceEntries(s.index)) {
         if (!entry.id) continue;
@@ -3537,6 +4004,13 @@ export class Editor {
       case 'int':
         doc.setInteger(p, trimmed);
         break;
+      case 'pg-vlans':
+        // a port group's VLANs, written as a port's (merged ranges; a native VLAN that no longer fits goes)
+        doc.setPortVlans(p.slice(0, -1), trimmed);
+        break;
+      case 'yesno':
+        doc.setYesNo(p, trimmed as '' | 'true' | 'false');
+        break;
       case 'auto':
         doc.setValue(p, trimmed);
         break;
@@ -3684,9 +4158,47 @@ export class Editor {
     switch (act) {
       case 'netsvc': {
         const box = btn as unknown as HTMLInputElement;
-        const id = btn.getAttribute('data-svc') as 'dhcp' | 'dns';
+        const id = btn.getAttribute('data-svc') as 'dhcp' | 'dns' | 'hypervisor' | 'container_engine';
+        const name = id === 'hypervisor' ? 'Hypervisor' : id === 'container_engine' ? 'Container engine' : id === 'dhcp' ? 'DHCP server' : 'DNS server';
+        // disabling the service its guests run on: asks first, and lists them (their host references then break and are reported)
+        if (!box.checked && (id === 'hypervisor' || id === 'container_engine')) {
+          const hostId = doc.text(['devices', index, 'id']) || '';
+          const guests = doc.guestsOfHost(hostId).filter((x) => (id === 'hypervisor' ? x.type === 'vm' : x.type === 'container'));
+          if (guests.length) {
+            const answer = await this.host.dialog({
+              title: `Disable the ${name} of “${hostId}”?`,
+              body: [
+                `${guests.length === 1 ? 'This guest runs' : `These ${guests.length} guests run`} on it; ${guests.length === 1 ? 'its host reference' : 'their host references'} will become invalid and will be listed as errors so you can move or delete ${guests.length === 1 ? 'it' : 'them'}:`,
+                this.e('ul', { class: 'removal-list' }, guests.map((x) => this.e('li', {}, [`${x.id} (${x.type === 'vm' ? 'VM' : 'container'})`]))),
+                ' You can undo this with Ctrl+Z.',
+              ],
+              buttons: [
+                { label: 'Cancel', value: 'cancel' },
+                { label: 'Disable', value: 'disable', kind: 'danger' },
+              ],
+            });
+            if (answer !== 'disable') {
+              this.host.changed();
+              return true;
+            }
+          }
+        }
         doc.setNetService(index, id, box.checked);
-        this.host.changed(`${this.devName(index)}: ${id === 'dhcp' ? 'DHCP' : 'DNS'} server ${box.checked ? 'on: fill in what it still needs' : 'off'}.`);
+        if (box.checked) this.open.add(J(['devices', index, 'services', id]));
+        this.host.changed(`${this.devName(index)}: ${name} ${box.checked ? 'on: fill in what it still needs' : 'off'}.`);
+        return true;
+      }
+      case 'add-guest': {
+        const t = (btn.getAttribute('data-type') || 'vm') as 'vm' | 'container';
+        const i = doc.addGuest(index, t);
+        if (i < 0) return true;
+        this.didCreate(['devices', i], `Added ${t === 'vm' ? 'VM' : 'container'} “${doc.text(['devices', i, 'id']) || ''}” on ${this.devName(index)}: add its ${t === 'vm' ? 'virtual NICs' : 'network attachments'}.`, btn, { sel: { kind: 'device', index: i } });
+        return true;
+      }
+      case 'pg-guest': {
+        const box = btn as unknown as HTMLInputElement;
+        doc.setGuestTagging(p, box.checked);
+        this.host.changed(box.checked ? 'Guest tagging on: the guests tag their VLANs.' : 'Guest tagging off: give the port group its VLANs.');
         return true;
       }
       case 'add-svc-item': {
@@ -3758,12 +4270,17 @@ export class Editor {
       case 'del-entity': {
         const ent = doc.entities(kind)[index];
         const refs = ent && ent.id ? doc.references(kind, ent.id) : [];
+        // a host: the guests that run on it are named
+        const guests = kind === 'device' && ent && ent.id ? doc.guestsOfHost(ent.id) : [];
         const answer = await this.host.dialog({
           title: `Delete ${kind} “${ent && ent.id ? ent.id : '(no id)'}”?`,
           body: [
             refs.length
               ? `${refs.length} reference${refs.length > 1 ? 's' : ''} to it will become invalid and will be listed as errors so you can fix or remove them.`
               : 'Nothing refers to it.',
+            ...(guests.length
+              ? [` ${guests.length === 1 ? 'This guest runs' : `These ${guests.length} guests run`} on it (${guests.length === 1 ? 'its host reference breaks' : 'their host references break'}):`, this.e('ul', { class: 'removal-list' }, guests.map((x) => this.e('li', {}, [`${x.id} (${x.type === 'vm' ? 'VM' : 'container'})`])))]
+              : []),
             ' You can undo this with Ctrl+Z.',
           ],
           buttons: [
@@ -3809,11 +4326,11 @@ export class Editor {
         await this.addPortRange(index);
         return true;
       case 'add-logical': {
-        const type = (btn.getAttribute('data-kind') || 'virtual') as 'loopback' | 'virtual' | 'tunnel';
-        const k = type === 'loopback' ? doc.addLoopback(index, []) : doc.addLogical(index, type);
+        const type = (btn.getAttribute('data-kind') || 'virtual') as 'loopback' | 'virtual' | 'tunnel' | 'vnic' | 'veth';
+        const k = type === 'loopback' ? doc.addLoopback(index, []) : doc.addLogical(index, type, [], type === 'vnic' && doc.text(['devices', index, 'type']) === 'server' ? 'vmk0' : type === 'vnic' || type === 'veth' ? 'eth0' : undefined);
         const path: Path = ['devices', index, 'logical_interfaces', k];
         const name = `${doc.text(path.concat('id')) || ''} added to ${this.devName(index)}`;
-        this.didCreate(path, type === 'loopback' ? `Loopback ${name} — enter its addresses.` : type === 'tunnel' ? `Tunnel interface ${name} — set its source and destination.` : `Virtual interface ${name}.`, btn, { sel: { kind: 'device', index, iface: path } });
+        this.didCreate(path, type === 'loopback' ? `Loopback ${name} — enter its addresses.` : type === 'tunnel' ? `Tunnel interface ${name} — set its source and destination.` : type === 'vnic' ? `Virtual NIC ${name} — choose its port group.` : type === 'veth' ? `Network attachment ${name} — choose its container network.` : `Virtual interface ${name}.`, btn, { sel: { kind: 'device', index, iface: path } });
         return true;
       }
       case 'del-iface': {
@@ -3879,7 +4396,8 @@ export class Editor {
         const model = doc.result.model;
         const cr = this.d.defaultView ? this.d.defaultView.crypto : undefined;
         if (!model || !cr) return true;
-        doc.setText(p, generateMac(model, (n) => cr.getRandomValues(new Uint8Array(n))));
+        const oui = btn.getAttribute('data-oui');
+        doc.setText(p, generateMac(model, (n) => cr.getRandomValues(new Uint8Array(n)), undefined, oui ? oui.split(',').map((x) => Number(x)) : undefined));
         this.host.changed('A MAC address was generated.');
         return true;
       }

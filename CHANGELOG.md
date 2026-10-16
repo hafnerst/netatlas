@@ -165,8 +165,85 @@ there is no conversion of files written for the earlier drafts.
   `ping_check` (a scope's, or the server's), `record_ttl` (a zone's), and
   `dhcp_retries`, `dhcp_backoff`, `link_local_fallback` (a DHCP client
   interface's).
+- **Virtualization: guests and their hosts.** There is no `hypervisor`
+  device type (an unknown type whose error says what to do): a hypervisor
+  is a server with `services: {hypervisor: {platform, cluster, cpu, ram,
+  vswitches: [{name, type, uplinks, teaming, mtu, port_groups: [{name,
+  vlans, native, guest_tagging}], simulation}], simulation}}`, a container
+  host a server or VM with `services: {container_engine: {engine,
+  networks: [{name, driver, interface, subnet, gateway, nat, parent, mode,
+  hosts, range}], simulation}}`. A VM or a container needs `host` (of the
+  right kind), has no `interfaces`, no cables and no `group` (its host's
+  location), and optionally `guest_os`, `vcpu`, `ram` (VMs) or `image`
+  (containers). New logical interface types: `vnic` (`port_group` or
+  `passthrough` with `vf`; a hypervisor's host interface with `role`) and
+  `veth` (`network`, `aliases`, `publish: [{host_port, port, protocol,
+  host_ip}]`); a bridge network's interface on its host is derived. A VM
+  may have `layer3: true` (a virtual router). The simulation attribute
+  `vm_restart` moved from the device to the Hypervisor service; new are
+  `failover_detection` (a virtual switch), `container_start` (a Container
+  engine) and `restart_policy` (a container). The logical layout may hold a
+  container network's place as `<host>/<network>`.
 
 ### Added
+
+- **Hypervisors, VMs and containers** (one change across the app):
+  * **Editing:** the **Services** card's **Hypervisor** and **Container
+    engine** checkboxes with their collapsible configuration (virtual
+    switches with uplinks, teaming and port groups; container networks of
+    every driver); a host's guests with **+ VM** / **+ Container**; a
+    guest's **Host** picker (only the hosts that can run it) as its first
+    field; **+ Virtual NIC** / **+ Host interface** / **+ Network
+    attachment** with pickers of what the host offers (port groups,
+    passthrough ports, networks), MAC generation with the platform's OUI and
+    the next free address; unticking a service or deleting a host asks
+    first and names the guests; renaming a host updates them; Connect
+    refuses a guest.
+  * **Validation and checks:** every rule of the format, and the checks
+    `vswitch-uplink-vlan`, `vnic-network-vlan`, `container-parent-vlan`,
+    `ha-restart-portgroup` and `hypervisor-overcommit` (info).
+  * **Physical view:** guests inside their host's box (a container in a VM
+    inside the VM) with the virtual switches and container networks as
+    bars, port groups as pills, wires from the vNICs and veths, uplink and
+    passthrough wires from the host's ports; dragging a guest moves its
+    host. **Logical view:** a guest's box names its host (*runs on …*);
+    bridge and overlay networks are networks of their own host (dashed,
+    *NAT*). Legend entries for both.
+  * **Filters, Find and related objects:** *Server* in **Device types ▾**
+    has **Hypervisor**, **Container host** and **Other** under it; the
+    physical view shows a guest only with its host and says which it leaves
+    out; focus keeps a host's guests; Find by host, port group and network;
+    related objects both ways.
+  * **Path tracer:** through the port group's virtual switch and the
+    teaming's uplink (or the passthrough port), inside a host without a
+    cable, SNAT out of a container host and DNAT to a published port (a
+    limited NAT model), a container's default route by its network's
+    gateway. **Failures and single points of failure:** a host takes its
+    guests (an HA cluster restarts its VMs), a vNIC follows its uplinks;
+    SPOF lists a host for its guests, a virtual switch with one uplink or
+    uplinks to one switch, and a passthrough port.
+  * **Simulation:** each virtual switch is a bridge without spanning tree
+    (split horizon, teaming), failing over after its detection time with a
+    RARP per guest; a host powered off takes its guests, an HA cluster
+    restarts its VMs on another member after the VM restart time (drawn
+    there during the simulation); container NAT, published ports and
+    macvlan; the container start time and restart policies; new events
+    **Stop / Start container engine**, and a host's uplink as a port;
+    **Show MAC table** of a virtual switch or container network.
+- Example **`virtualization.yaml`**: two ESXi hosts in an HA cluster with
+  teamed uplinks to two ToR switches, VMs on access port groups, with guest
+  tagging, with passthrough and a virtual router; a Docker host with a NAT
+  bridge network (published ports) and a macvlan network; a VM running a
+  container. `device-types.yaml` and `consistency-checks.yaml` use the new
+  model.
+- User Manual sections *Model hypervisors, VMs and containers* and *Follow
+  virtual networking in a simulation* with three screenshots; a README
+  screenshot of the virtualization example.
+- Tests: `test/virtual.test.mjs`, `test/virtual-diagram.test.mjs`,
+  `test/virtual-analysis.test.mjs`, `test/sim-virtual.test.mjs`,
+  `test/virtual-ui.test.mjs` (the Edit tab with real input); a self-test
+  block on the virtualization example in both themes and a viewport state
+  for a hypervisor's Services card.
 
 - **Send and play** in the Send test form while paused. A test's messages
   are marked **Test** (in their labels, *Test ·*, and in the event log)
@@ -962,6 +1039,8 @@ there is no conversion of files written for the earlier drafts.
 
 ### Removed
 
+- The **hypervisor** as an implied role of a server cabled to VMs (VMs and
+  containers are no longer cabled), and the device-level `vm_restart`.
 - The **Endpoints** and **Servers** toolbar switches, their overflow
   entries and commands (Device types ▾ replaces them).
 - The floating **Simulation window**, its command and the banner's

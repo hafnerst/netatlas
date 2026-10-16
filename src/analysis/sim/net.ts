@@ -15,6 +15,18 @@
  * interfaces route between its VLANs; a Layer 2 switch has at most one
  * (its management interface), which is a host on its bridge.
  *
+ * Virtual networking (expandVirtual): each virtual switch of a Hypervisor
+ * service is a bridge of its own ("hv1/vSwitch0") with the host's uplink
+ * ports (their cables end there) and a port per vNIC on its port groups,
+ * joined to the vNIC by a virtual link; it takes no part in the spanning
+ * tree (the engine forwards with split horizon and its teaming). A vNIC in
+ * passthrough takes the host port's cable. Each bridge and overlay
+ * container network is a bridge too, with its host's bridge interface
+ * (docker0) and the veths on it; a macvlan or ipvlan network takes its
+ * parent port's cable, its host's own port joins it apart (the host can't
+ * reach its children). A VM in an HA cluster has parked links to the same
+ * port groups on the other members (where it may be restarted).
+ *
  * VLANs of a bridge port (0 stands for "untagged, no VLAN known"), from
  * the port's `vlans` and `native` (an aggregate's for its members):
  *   access  carries its VLAN, untagged;
@@ -27,7 +39,8 @@
 import { interfaceVlans, isBridgePort, portL2, subinterfaceParent } from '../../model/derive';
 import { deviceRoutingRole, isLayer2Switch } from '../../model/device-types';
 import { parsePrefix, IpAddr } from '../../model/ip';
-import { Device, Interface, Link, LinkEnd, Model, deviceInterfaces, ifaceKey } from '../../model/types';
+import { Device, Interface, Link, LinkEnd, Model, PortGroup, deviceInterfaces, ifaceKey } from '../../model/types';
+import { cnetRef, clusterMembers, networkAttachments, portGroupAttachments, portGroupL2, portGroupOf, virtBridgeId, virtLinkId, vswitchRef } from '../../model/virtual';
 import { networkOf } from '../ipmath';
 import { IfaceMac, interfaceMacs } from './mac';
 
@@ -116,6 +129,34 @@ export interface SimDevice {
   l3: Map<string, L3Iface>;
   /** the bridge's id for the spanning tree with the default priority (32768), then its lowest MAC (StpConfig gives the priority in effect) */
   bridgeId: string;
+  /** a virtual switch or a container network run as a bridge (see the module comment) */
+  virt?: VirtBridge;
+}
+
+/** A virtual switch or container network the simulation runs as a bridge of its own. */
+export interface VirtBridge {
+  kind: 'vswitch' | 'cnet';
+  /** the device it runs on (a hypervisor; a container host or VM) */
+  owner: string;
+  name: string;
+  /** vswitch:… / cnet:… */
+  ref: string;
+  driver?: string;
+  /** its uplink bridge ports (to the host's ports), in teaming order */
+  uplinks: string[];
+  teaming?: string;
+  /** a macvlan / ipvlan network: the bridge port of its host's own interface (never joined to the containers) */
+  hostPort?: string;
+}
+
+/** A virtual link: the guest interface (or host interface) it joins to its virtual switch or network. */
+export interface VirtLink {
+  guest: string;
+  iface: string;
+  /** the bridge at its other end */
+  bridge: string;
+  /** an HA standby: where the VM would run (parked until it is restarted there) */
+  at?: string;
 }
 
 export interface SimNet {
@@ -127,6 +168,12 @@ export interface SimNet {
   macs: Map<string, IfaceMac>;
   /** every VLAN in use, ascending (0 first when it is) */
   vlans: number[];
+  /** the virtual links by id */
+  vlinks: Map<string, VirtLink>;
+  /** an HA cluster's VMs: for each other member, its parked links (by the port key at the VM's end: the link) */
+  standby: Map<string, Map<string, Map<string, string>>>;
+  /** a host port whose cable ends elsewhere now (an uplink at its virtual switch, a passthrough port at its VM): model port key → where */
+  moved: Map<string, { device: string; port: string }>;
 }
 
 export function portKey(device: string, port: string): string {
@@ -316,7 +363,213 @@ export function buildNet(model: Model): SimNet {
       sd.l3.set(e.port, { device: e.device, id: e.port, kind: 'routed', addrs: [], vrf: '', vlan: 0, ports: [e.port], mac: macs.get(e.device + ':' + e.port) ? (macs.get(e.device + ':' + e.port) as IfaceMac).mac : '02:00:00:00:00:00', macSimulated: true });
     }
   }
-  return { model, devices, ends, links, macs, vlans: Array.from(vlanSet).sort((a, b) => a - b) };
+  const v = expandVirtual(model, devices, ends, links, vlanSet);
+  return { model, devices, ends, links, macs, vlans: Array.from(vlanSet).sort((a, b) => a - b), vlinks: v.vlinks, standby: v.standby, moved: v.moved };
+}
+
+/** The VLANs a virtual switch's port carries for a port group (its port at a vNIC). */
+function pgPortVlans(pg: PortGroup): PortVlans {
+  const l2 = portGroupL2(pg);
+  if (l2.kind === 'guest') return { mode: 'trunk', untagged: 0, tagged: 'all' };
+  if (l2.kind === 'access') return { mode: 'access', untagged: l2.untagged as number, tagged: [] };
+  return { mode: 'trunk', untagged: l2.native !== undefined ? l2.native : null, tagged: l2.vlans.filter((x) => x !== l2.native) };
+}
+
+/** The virtual networking of a model as bridges and virtual links (see the module comment). */
+function expandVirtual(
+  model: Model,
+  devices: Map<string, SimDevice>,
+  ends: Map<string, CableEnd>,
+  links: Map<string, Link>,
+  vlanSet: Set<number>,
+): { vlinks: Map<string, VirtLink>; standby: Map<string, Map<string, Map<string, string>>>; moved: Map<string, { device: string; port: string }> } {
+  const vlinks = new Map<string, VirtLink>();
+  const standby = new Map<string, Map<string, Map<string, string>>>();
+  const moved = new Map<string, { device: string; port: string }>();
+  if (!model.devices.some((d) => !!d.hypervisor || !!d.containerEngine)) return { vlinks, standby, moved };
+  const synth = (owner: Device, id: string, label: string, virt: VirtBridge): SimDevice => {
+    const dev: Device = { ...owner, id, label, type: virt.kind === 'vswitch' ? 'virtual_switch' : 'container_network', interfaces: [], logical: [], routes: [], dnsNames: [], hypervisor: undefined, containerEngine: undefined, host: undefined };
+    const sd: SimDevice = { id, dev, bridge: true, routes: false, ip: false, l2switch: false, bridgePorts: new Map(), portOf: new Map(), l3: new Map(), bridgeId: '32768.00:00:00:00:00:00', virt };
+    devices.set(id, sd);
+    return sd;
+  };
+  const addPort = (sd: SimDevice, id: string, members: string[], vlans: PortVlans): void => {
+    sd.bridgePorts.set(id, { id, members, vlans });
+    for (const m of members) sd.portOf.set(m, id);
+    if (vlans.untagged) vlanSet.add(vlans.untagged);
+    if (vlans.tagged !== 'all') for (const x of vlans.tagged) vlanSet.add(x);
+  };
+  const link = (id: string, a: LinkEnd, b: LinkEnd, endsToo = true): void => {
+    links.set(id, { id, a, b, medium: 'virtual', direction: 'bidirectional', attrs: [], line: 0 });
+    if (!endsToo) return;
+    ends.set(portKey(a.device, a.iface as string), { link: id, end: 'a', device: a.device, port: a.iface as string });
+    ends.set(portKey(b.device, b.iface as string), { link: id, end: 'b', device: b.device, port: b.iface as string });
+  };
+  // a cable end moves from a port to another device's port (the link keeps its id)
+  const repoint = (device: string, port: string, to: string, toPort: string): boolean => {
+    const e = ends.get(portKey(device, port));
+    if (!e) return false;
+    const l = links.get(e.link) as Link;
+    const ne: LinkEnd = { device: to, iface: toPort };
+    links.set(l.id, e.end === 'a' ? { ...l, a: ne } : { ...l, b: ne });
+    ends.delete(portKey(device, port));
+    ends.set(portKey(to, toPort), { link: l.id, end: e.end, device: to, port: toPort });
+    moved.set(portKey(device, port), { device: to, port: toPort });
+    return true;
+  };
+  const membersOf = (d: Device, id: string): string[] => {
+    const i = model.index.interfaces.get(ifaceKey(d.id, id));
+    return i && i.type === 'virtual' && i.members.length ? i.members.slice().sort(cmp) : [id];
+  };
+  const ownerSd = (id: string): SimDevice | undefined => devices.get(id);
+  // virtual switches
+  for (const h of model.devices) {
+    if (!h.hypervisor) continue;
+    const hs = ownerSd(h.id);
+    for (const vs of h.hypervisor.vswitches) {
+      if (!vs.name) continue;
+      const id = virtBridgeId(h.id, vs.name);
+      const sd = synth(h, id, `${h.label} ${vs.name}`, { kind: 'vswitch', owner: h.id, name: vs.name, ref: vswitchRef(h.id, vs.name), uplinks: [], teaming: vs.teaming });
+      // the uplinks carry every port group's VLAN tagged (guest tagging: every VLAN), a port group without a VLAN untagged
+      const tagged = new Set<number>();
+      let all = false;
+      let untagged: number | null = null;
+      for (const pg of vs.portGroups) {
+        const l2 = portGroupL2(pg);
+        if (l2.kind === 'guest') all = true;
+        else if (!l2.vlans.length) untagged = 0;
+        else for (const x of l2.vlans) tagged.add(x);
+      }
+      const upVlans: PortVlans = { mode: 'trunk', untagged, tagged: all ? 'all' : Array.from(tagged).sort((a, b) => a - b) };
+      for (const u of vs.uplinks) {
+        const ms = membersOf(h, u).filter((m) => repoint(h.id, m, id, m));
+        if (!ms.length) continue;
+        addPort(sd, u, ms, upVlans);
+        (sd.virt as VirtBridge).uplinks.push(u);
+        if (hs) {
+          hs.l3.delete(u);
+          for (const m of ms) hs.l3.delete(m);
+        }
+      }
+      for (const pg of vs.portGroups) {
+        for (const i of portGroupAttachments(model, h, pg.name)) {
+          const port = `${i.device}.${i.id}`;
+          addPort(sd, port, [port], pgPortVlans(pg));
+          const lid = virtLinkId(i.device, i.id);
+          link(lid, { device: id, iface: port }, { device: i.device, iface: i.id });
+          vlinks.set(lid, { guest: i.device, iface: i.id, bridge: id });
+        }
+      }
+    }
+    // passthrough: the vNIC takes the host port's cable
+    for (const g of model.devices) {
+      if (g.type !== 'vm' || g.host !== h.id) continue;
+      for (const i of g.logical) {
+        if (i.type !== 'vnic' || i.passthrough === undefined) continue;
+        if (repoint(h.id, i.passthrough, g.id, i.id) && hs) hs.l3.delete(i.passthrough);
+      }
+    }
+  }
+  // an HA cluster's VMs: parked links to the same port groups on the other members
+  for (const g of model.devices) {
+    if (g.type !== 'vm' || g.host === undefined) continue;
+    const h = model.index.devices.get(g.host);
+    const cluster = h && h.hypervisor ? h.hypervisor.cluster : undefined;
+    if (!h || cluster === undefined || g.logical.some((i) => i.type === 'vnic' && i.passthrough !== undefined)) continue;
+    for (const m of clusterMembers(model, cluster)) {
+      if (m.id === h.id) continue;
+      const byPort = new Map<string, string>();
+      for (const i of g.logical) {
+        if (i.type !== 'vnic' || i.portGroup === undefined) continue;
+        const x = portGroupOf(m, i.portGroup);
+        const bid = x ? virtBridgeId(m.id, x.vswitch.name) : '';
+        const sd = devices.get(bid);
+        if (!x || !sd) continue;
+        const port = `${g.id}.${i.id}`;
+        addPort(sd, port, [port], pgPortVlans(x.pg));
+        const lid = virtLinkId(g.id, i.id, m.id);
+        // only the switch's end is in place: the VM's end joins when it is restarted there
+        link(lid, { device: bid, iface: port }, { device: g.id, iface: i.id }, false);
+        ends.set(portKey(bid, port), { link: lid, end: 'a', device: bid, port });
+        vlinks.set(lid, { guest: g.id, iface: i.id, bridge: bid, at: m.id });
+        byPort.set(portKey(g.id, i.id), lid);
+      }
+      if (byPort.size) {
+        if (!standby.has(g.id)) standby.set(g.id, new Map());
+        (standby.get(g.id) as Map<string, Map<string, string>>).set(m.id, byPort);
+      }
+    }
+  }
+  // container networks
+  for (const o of model.devices) {
+    if (!o.containerEngine) continue;
+    const os = ownerSd(o.id);
+    for (const net of o.containerEngine.networks) {
+      if (!net.name || net.driver === 'host' || net.driver === 'none' || !net.driver) continue;
+      const id = virtBridgeId(o.id, net.name);
+      const sd = synth(o, id, `${o.label} ${net.name}`, { kind: 'cnet', owner: o.id, name: net.name, ref: cnetRef(o.id, net.name), driver: net.driver, uplinks: [] });
+      let vlan = 0;
+      if ((net.driver === 'macvlan' || net.driver === 'ipvlan') && net.parent !== undefined) {
+        const pi = model.index.interfaces.get(ifaceKey(o.id, net.parent));
+        let phys = net.parent;
+        let pv: PortVlans = { mode: 'access', untagged: 0, tagged: [] };
+        if (pi && pi.type === 'virtual' && !pi.members.length) {
+          const p = subinterfaceParent(model, pi);
+          const vs = interfaceVlans(model, pi);
+          if (p !== undefined && vs.length) {
+            phys = p;
+            vlan = vs[0];
+            pv = { mode: 'trunk', untagged: null, tagged: [vlan] };
+          }
+        }
+        const ms = membersOf(o, phys);
+        const moved = ms.filter((m) => repoint(o.id, m, id, m));
+        if (moved.length) {
+          addPort(sd, phys, moved, pv);
+          (sd.virt as VirtBridge).uplinks.push(phys);
+          // the host's own port joins the network apart (it never reaches the containers)
+          const hp = `${o.id}.${phys}`;
+          addPort(sd, hp, moved.map((m) => `${o.id}.${m}`), pv);
+          (sd.virt as VirtBridge).hostPort = hp;
+          for (const m of moved) {
+            const lid = virtLinkId(o.id, m);
+            link(lid, { device: id, iface: `${o.id}.${m}` }, { device: o.id, iface: m });
+            vlinks.set(lid, { guest: o.id, iface: m, bridge: id });
+          }
+          // an HA standby link that ended at the parent (a VM's vNIC) ends at the network's port now
+          for (const [, byHost] of standby) {
+            for (const [, byPort] of byHost) {
+              const lid = byPort.get(portKey(o.id, phys));
+              if (lid === undefined) continue;
+              const l = links.get(lid) as Link;
+              links.set(lid, { ...l, b: { device: id, iface: phys } });
+              byPort.delete(portKey(o.id, phys));
+              byPort.set(portKey(id, phys), lid);
+            }
+          }
+        }
+      }
+      const access: PortVlans = vlan ? { mode: 'access', untagged: vlan, tagged: [] } : { mode: 'access', untagged: 0, tagged: [] };
+      // a bridge network: its interface on the host (docker0) is on it
+      if (net.driver === 'bridge' && net.iface !== undefined && model.index.interfaces.has(ifaceKey(o.id, net.iface))) {
+        const port = `${o.id}.${net.iface}`;
+        addPort(sd, port, [port], access);
+        const lid = virtLinkId(o.id, net.iface);
+        link(lid, { device: id, iface: port }, { device: o.id, iface: net.iface });
+        vlinks.set(lid, { guest: o.id, iface: net.iface, bridge: id });
+        // the host forwards between its bridge networks and the rest (with NAT, when set)
+        if (os && net.gateway !== undefined) os.routes = true;
+      }
+      for (const i of networkAttachments(model, o, net)) {
+        const port = `${i.device}.${i.id}`;
+        addPort(sd, port, [port], access);
+        const lid = virtLinkId(i.device, i.id);
+        link(lid, { device: id, iface: port }, { device: i.device, iface: i.id });
+        vlinks.set(lid, { guest: i.device, iface: i.id, bridge: id });
+      }
+    }
+  }
+  return { vlinks, standby, moved };
 }
 
 /** What the spanning tree reads of each bridge and port (the simulation's attributes; defaults without them). */
@@ -354,7 +607,8 @@ export const STP_DEFAULTS: StpConfig = { priority: () => 32768, cost: () => 2000
 export function spanningTree(net: SimNet, vlan: number, linkDown: (id: string) => boolean, cfg: StpConfig = STP_DEFAULTS): { root: string; blocked: Set<string>; ports: Set<string>; inconsistent: Set<string>; rootPorts: Set<string> } {
   type Edge = { from: string; fromPort: string; to: string; toPort: string; link: string };
   const edges = new Map<string, Edge[]>();
-  const bridges = Array.from(net.devices.values()).filter((d) => d.bridge);
+  // (a virtual switch or container network takes no part: it never loops, see the engine)
+  const bridges = Array.from(net.devices.values()).filter((d) => d.bridge && !d.virt);
   const mac = (d: SimDevice): string => d.bridgeId.split('.')[1] || '00:00:00:00:00:00';
   const bid = (id: string): string => `${String(cfg.priority(id, vlan)).padStart(5, '0')}.${mac(net.devices.get(id) as SimDevice)}`;
   const pid = (dev: string, bp: string): string => `${String(cfg.portPriority(dev, bp)).padStart(3, '0')}.${bp}`;
@@ -367,7 +621,7 @@ export function spanningTree(net: SimNet, vlan: number, linkDown: (id: string) =
         if (!e || linkDown(e.link)) continue;
         const o = otherEnd(net, e);
         const ob = net.devices.get(o.device);
-        if (!ob || !ob.bridge) continue;
+        if (!ob || !ob.bridge || ob.virt) continue;
         const obp = ob.portOf.get(o.port);
         if (!obp || !carries((ob.bridgePorts.get(obp) as BridgePort).vlans, vlan) || !cfg.enabled(ob.id, obp)) continue;
         if (!out.some((x) => x.fromPort === bp.id && x.toPort === obp && x.to === ob.id)) out.push({ from: b.id, fromPort: bp.id, to: ob.id, toPort: obp, link: e.link });

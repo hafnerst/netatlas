@@ -3,6 +3,7 @@
  * "what belongs to this object" (used for highlighting) and text search.
  * No layout, rendering or YAML knowledge.
  */
+import { cnetRef, guestsOf, hostOf, portGroupRef, virtRefTarget, virtualRelated, vnicPortGroup, vswitchRef } from './virtual';
 import { addressOwners, associatedInterfaces, deviceNetworks, endNetworks, endVlans, interfaceNetworks, isBridgePort, linkNetworks, networkMembers, portBadgeText, portL2, vlanRangesText } from './derive';
 import { Device, Model, Route, deviceInterfaces, ifaceKey, relationDevices, routeKey } from './types';
 
@@ -66,6 +67,10 @@ export function refExists(model: Model, ref: string): boolean {
       return ix.routes.has(id);
     case 'protocol':
       return model.protocols.has(id);
+    case 'vswitch':
+    case 'portgroup':
+    case 'cnet':
+      return !!virtRefTarget(model, ref);
     default:
       return false;
   }
@@ -320,6 +325,17 @@ export function relatedRefs(model: Model, ref: string): Set<string> {
       for (const r of model.relations) if (r.protocol === id) addRelation(r.id, false);
       break;
   }
+  // virtualization: a guest and its host, its port groups, virtual switches and container networks, both ways
+  if (kind === 'device' || kind === 'iface' || kind === 'vswitch' || kind === 'portgroup' || kind === 'cnet') {
+    for (const r of virtualRelated(model, ref)) {
+      out.add(r);
+      // a host port named here (an uplink, a passthrough port): with its cable
+      if (r.indexOf('iface:') === 0 && (kind !== 'iface' || r !== ref)) {
+        const lid = ix.ifaceLink.get(r.slice(6));
+        if (lid && kind !== 'device') addLink(lid);
+      }
+    }
+  }
   return out;
 }
 
@@ -355,7 +371,17 @@ export function search(model: Model, query: string, limit = 12): SearchHit[] {
     for (const i of deviceInterfaces(d)) addrs.push(...i.addresses);
     // a switch is found (and listed) with its layer: "l3", "layer 3 switch"
     const layer = d.type === 'switch' ? (d.layer3 ? ['layer 3 switch', 'l3 switch', 'l3'] : ['layer 2 switch', 'l2 switch', 'l2']) : [];
-    consider('device:' + d.id, d.type === 'switch' ? layer[0] : 'device', d.label, [d.id, d.label, d.type, ...layer, ...addrs, ...d.dnsNames.map((x) => x.name), ...serviceWords(model, d)]);
+    consider('device:' + d.id, d.type === 'switch' ? layer[0] : 'device', d.label, [d.id, d.label, d.type, ...layer, ...addrs, ...d.dnsNames.map((x) => x.name), ...serviceWords(model, d), ...virtualWords(model, d)]);
+  }
+  // the virtual networking: a host's virtual switches, port groups and container networks
+  for (const h of model.devices) {
+    if (h.hypervisor) {
+      for (const vs of h.hypervisor.vswitches) {
+        if (vs.name) consider(vswitchRef(h.id, vs.name), 'virtual switch', `${h.id} · ${vs.name}`, [vs.name, `${h.id} ${vs.name}`, vs.type || '', 'vswitch', 'virtual switch']);
+        for (const pg of vs.portGroups) if (pg.name) consider(portGroupRef(h.id, pg.name), 'port group', `${h.id} · ${pg.name}`, [pg.name, `${h.id} ${pg.name}`, 'port group']);
+      }
+    }
+    if (h.containerEngine) for (const n of h.containerEngine.networks) if (n.name) consider(cnetRef(h.id, n.name), 'container network', `${h.id} · ${n.name}`, [n.name, `${h.id} ${n.name}`, n.iface || '', n.subnet || '', n.driver || '', 'container network']);
   }
   // the virtual gateway addresses of interfaces (VRRP …)
   for (const d of model.devices) {
@@ -457,6 +483,10 @@ export function selectionContext(model: Model, ref: string): SelectionContext | 
       const d = ix.devices.get(id);
       if (!d) break;
       add('group', d.group);
+      // a guest and its host, both ways
+      const h = hostOf(model, d);
+      if (h) add('device', h.id);
+      for (const g of guestsOf(model, id)) add('device', g.id);
       for (const l of model.links) if (l.a.device === id || l.b.device === id) add('link', l.id);
       for (const n of deviceNetworks(model, id)) add('network', n);
       for (const r of model.relations) if (r.endpoints.some((e) => e.device === id)) add('relation', r.id);
@@ -475,6 +505,8 @@ export function selectionContext(model: Model, ref: string): SelectionContext | 
         }
       }
       if (inf.destination && inf.destination.device && inf.destination.device !== inf.device) add('device', inf.destination.device);
+      // a guest's vnic or veth: its host
+      for (const r of virtualRelated(model, ref)) if (r.indexOf('device:') === 0 && r !== 'device:' + inf.device) rel.add(r);
       for (const n of interfaceNetworks(model, inf.device, inf.id)) add('network', n);
       for (const r of model.relations) if (r.endpoints.some((e) => e.device === inf.device && e.iface === inf.id)) add('relation', r.id);
       break;
@@ -525,6 +557,16 @@ export function selectionContext(model: Model, ref: string): SelectionContext | 
     case 'protocol':
       for (const r of model.relations) if (r.protocol === id) add('relation', r.id);
       break;
+    case 'vswitch':
+    case 'portgroup':
+    case 'cnet': {
+      // a virtual switch, port group or container network is its host's: the host is selected, the guests on it are related
+      const t = virtRefTarget(model, ref);
+      if (!t) break;
+      selected = 'device:' + t.host.id;
+      for (const r of virtualRelated(model, ref)) if (r.indexOf('device:') === 0) rel.add(r);
+      break;
+    }
   }
   rel.delete(selected);
   return { selected, related: rel };
@@ -537,6 +579,26 @@ export function contextState(ctx: SelectionContext | null, ref: string): Context
   if (!ctx) return null;
   if (ref === ctx.selected) return 'selected';
   return ctx.related.has(ref) ? 'related' : 'unrelated';
+}
+
+/**
+ * The words a guest is found by: its host ("on esx-01", the host's id and
+ * label), its port groups and container networks.
+ */
+export function virtualWords(model: Model, d: Device): string[] {
+  const out: string[] = [];
+  const h = hostOf(model, d);
+  if (h) out.push(`on ${h.id}`, `on ${h.label}`, h.id, h.label);
+  for (const i of d.logical) {
+    if (i.type === 'vnic') {
+      const x = vnicPortGroup(model, i);
+      if (x) out.push(x.pg.name, x.vswitch.name);
+    }
+    if (i.type === 'veth' && i.network) out.push(i.network);
+  }
+  if (d.hypervisor) out.push('hypervisor');
+  if (d.containerEngine) out.push('container engine', 'container host');
+  return out;
 }
 
 /**

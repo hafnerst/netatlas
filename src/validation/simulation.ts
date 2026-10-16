@@ -36,6 +36,10 @@ export function typeAllows(a: Applies, type: string, layer3?: boolean): boolean 
       return ['server', 'vm', 'container', 'storage'].indexOf(type) >= 0;
     case 'hypervisor':
       return type === 'server';
+    case 'engine':
+      return type === 'server' || type === 'vm';
+    case 'container':
+      return type === 'container';
     case 'monitor':
       return ['system', 'server', 'vm', 'container', 'endpoint'].indexOf(type) >= 0;
     case 'cloud':

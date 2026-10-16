@@ -21,8 +21,19 @@
  *   * equal-cost next hops branch: every branch is followed (up to
  *     MAX_PATHS), the first one (in the tables' order) is the main path.
  *
- * ACLs, firewall policies, NAT, policy routing and protocol timers are not
- * modelled. Results are sorted by values, never by the order of the file.
+ *   * virtual networking (analysis/trace-virtual.ts): a guest's vNIC leaves
+ *     its host through its port group's virtual switch and the teaming's
+ *     uplink (or its passthrough port); ends on one virtual switch or one
+ *     container network meet inside the host, without a cable;
+ *   * NAT, only for container bridges (a limited model): a container host
+ *     forwards its bridge networks' traffic, and with NAT its source address
+ *     becomes the host's (SNAT); a container behind NAT is reached from
+ *     outside its host only at its host's address, on a published port
+ *     (DNAT), the port numbers named, not checked.
+ *
+ * ACLs, firewall policies, other NAT, policy routing and protocol timers are
+ * not modelled. Results are sorted by values, never by the order of the
+ * file.
  */
 import { deviceRoutingRole, isLayer2Switch } from '../model/device-types';
 import { IpAddr, IpPrefix, parseAddress, parsePrefix } from '../model/ip';
@@ -31,6 +42,8 @@ import { Interface, Link, LinkEnd, Model, Relation, deviceInterfaces, ifaceKey }
 import { endL2, interfaceVlanPorts, interfaceVlans, isBridgePort } from '../model/derive';
 import { compareAddr, comparePrefix, formatAddr, inPrefix, networkOf, prefixText } from './ipmath';
 import { virtualGateways } from './identity';
+import { sharedDomain, virtEnd, virtRefText } from './trace-virtual';
+import { cnetNetworkId, cnetRef, vethNetwork } from '../model/virtual';
 import {
   Connected,
   Decision,
@@ -125,6 +138,10 @@ export interface Hop {
   /** to the next hop: cables, layer-2 devices crossed, networks, relations used */
   links: string[];
   l2: string[];
+  /** inside a host on the way to the next hop: port groups, virtual switches, container networks, the uplinks used (refs) */
+  virtual: string[];
+  /** a container host translating the addresses: SNAT (the source becomes its address), DNAT (to a published port) */
+  nat?: 'snat' | 'dnat';
   networks: string[];
   relations: string[];
   /** a tunnel's underlay, traced (the tunnel's outer packet) */
@@ -175,6 +192,24 @@ interface Walk {
   /** tunnels already in the stack (device:iface): never used again for the outer packet */
   inside: string[];
   truncated: boolean;
+  /** the source address (for the SNAT note) */
+  srcText?: string;
+  /** the destination is a container behind its host's NAT: the walk goes to the host's address, then on to the container */
+  dnat?: Dnat;
+}
+
+interface Dnat {
+  host: string;
+  hostAddr: string;
+  device: string;
+  iface: string;
+  address: string;
+  /** the container network (its owner and name) */
+  owner: string;
+  net: string;
+  bridge?: string;
+  gateway?: string;
+  ports: string;
 }
 
 /**
@@ -236,7 +271,17 @@ export function tracePath(model: Model, req: TraceRequest, ctx: RoutingCtx = {})
   if (destDev !== undefined) out.dest.device = destDev;
   if (destIface !== undefined) out.dest.iface = destIface;
   if (destDev === srcDev) return { ...out, error: `Source and destination are the same device (${srcDev})` };
-  const w: Walk = { model, ctx, dest: destAddr, destText: formatAddr(destAddr), destInModel: destDev !== undefined, encap: [], depth: 0, inside: [], truncated: false };
+  // a container behind its host's NAT: from outside the host only at the host's address, on a published port
+  let dnat: Dnat | undefined;
+  if (destDev !== undefined && destIface !== undefined) {
+    const r = natDestination(model, srcDev, destDev, destIface, formatAddr(destAddr), srcFamilies.length ? srcFamilies : [destAddr.version]);
+    if (typeof r === 'string') return { ...out, error: 'Destination: ' + r };
+    if (r) dnat = r;
+  }
+  const walkDest = dnat ? (parseAddress(dnat.hostAddr) as IpAddr) : destAddr;
+  const w: Walk = { model, ctx, dest: walkDest, destText: formatAddr(walkDest), destInModel: destDev !== undefined, encap: [], depth: 0, inside: [], truncated: false };
+  if (srcAddr) w.srcText = formatAddr(srcAddr);
+  if (dnat) w.dnat = dnat;
   out.paths = walk(w, { device: srcDev, vrf }, [], new Set());
   out.truncated = w.truncated;
   return out;
@@ -257,7 +302,7 @@ interface At {
 
 function walk(w: Walk, at: At, before: Hop[], seen: Set<string>): Path[] {
   const { model } = w;
-  const hop: Hop = { device: at.device, vrf: at.vrf, via: { kind: 'none', text: '' }, encap: w.encap.slice(), links: [], l2: [], networks: [], relations: [], ecmp: 1, branch: 0, notes: [] };
+  const hop: Hop = { device: at.device, vrf: at.vrf, via: { kind: 'none', text: '' }, encap: w.encap.slice(), links: [], l2: [], virtual: [], networks: [], relations: [], ecmp: 1, branch: 0, notes: [] };
   if (at.ingress !== undefined) hop.ingress = at.ingress;
   if (at.inAddr !== undefined) hop.inAddr = at.inAddr;
   const stop = (reason: StopReason, detail: string): Path[] => {
@@ -270,13 +315,15 @@ function walk(w: Walk, at: At, before: Hop[], seen: Set<string>): Path[] {
   const d = model.index.devices.get(at.device);
   if (!d) return stop('unresolved', `${at.device} is not in the model`);
   const decision: Decision = lookup(model, at.device, at.vrf, w.dest, w.ctx);
+  if (decision.kind === 'local' && w.dnat && w.dnat.host === at.device) return dnatHops(w, hop, before);
   if (decision.kind === 'local') {
     const own = connectedOf(model, at.device).find((c) => compareAddr(c.addr, w.dest) === 0);
     hop.via = { kind: 'local', text: `${w.destText} is an address of ${at.device}${own ? ' (' + own.iface + ')' : ''}` };
     return [{ hops: before.concat(hop), end: own ? { kind: 'reached', device: at.device, iface: own.iface } : { kind: 'reached', device: at.device } }];
   }
   // only routers pass traffic on (the first hop sends its own)
-  if (before.length > 0 && deviceRoutingRole(d) !== 'router') {
+  // (a container host forwards the traffic of its bridge networks: it came in on the bridge's interface)
+  if (before.length > 0 && deviceRoutingRole(d) !== 'router' && !fromBridge(model, at)) {
     const what = d.type === 'generic' ? 'device without a type' : isLayer2Switch(d) ? 'Layer 2 switch' : d.type;
     return stop('not-forwarding', `${at.device} is a ${what} and does not forward traffic for others`);
   }
@@ -295,7 +342,7 @@ function walk(w: Walk, at: At, before: Hop[], seen: Set<string>): Path[] {
       w.truncated = true;
       return;
     }
-    const hp: Hop = { ...hop, encap: hop.encap.slice(), links: [], l2: [], networks: [], relations: [], notes: [], ecmp: decision.hops.length, branch: i };
+    const hp: Hop = { ...hop, encap: hop.encap.slice(), links: [], l2: [], virtual: [], networks: [], relations: [], notes: [], ecmp: decision.hops.length, branch: i };
     for (const p of step(w, at, hp, h, before, nextSeen)) {
       if (paths.length >= MAX_PATHS) {
         w.truncated = true;
@@ -316,7 +363,7 @@ function noRoute(w: Walk, at: At, hop: Hop, before: Hop[], decision: Decision): 
   };
   if (decision.unusable.length) {
     const u = decision.unusable[0];
-    const what = u.entry.route ? `the route ${routeText(u.entry.route)}` : u.entry.kind === 'dynamic' ? `the ${protoLabel(model, u.entry.protocol || '')} route to ${prefixText(u.entry.net)}` : `the connected network ${prefixText(u.entry.net)}`;
+    const what = u.entry.route ? `the route ${routeText(u.entry.route)}` : u.entry.implicit ? `the ${u.entry.implicit}` : u.entry.kind === 'dynamic' ? `the ${protoLabel(model, u.entry.protocol || '')} route to ${prefixText(u.entry.net)}` : `the connected network ${prefixText(u.entry.net)}`;
     if (u.entry.route) hop.relations = [];
     const r = end(/down/.test(u.detail) ? 'down' : 'unresolved', `no usable route to ${w.destText}: ${what} can't be used (${u.detail})`);
     if (u.entry.route) r[0].hops[r[0].hops.length - 1].via.route = routeRef(u.entry.route);
@@ -354,6 +401,12 @@ function step(w: Walk, at: At, hop: Hop, h: DecisionHop, before: Hop[], seen: Se
   if (outNet) hop.outAddr = outNet.address.replace(/\/[0-9]+$/, '');
   if (outNet) for (const n of networksOf(model, outNet.net)) hop.networks.push(n);
   const iface = model.index.interfaces.get(ifaceKey(at.device, h.iface));
+  // from a container bridge with NAT out of another interface: the host's address becomes the source
+  const snat = natBridgeIn(model, at);
+  if (snat && h.iface !== at.ingress && hop.outAddr) {
+    hop.nat = 'snat';
+    hop.notes.push(`SNAT: source ${w.srcText || 'address'} → ${hop.outAddr} (${devLabel(model, at.device)} masquerades the network ${snat})`);
+  }
   // the next device: the one with the next-hop address (or the destination, when it is connected)
   const owners = holders(model, target, w.ctx, at.device);
   let next: { device: string; iface: string; vrf: string; address: string } | null = owners.length ? owners[0] : null;
@@ -396,6 +449,8 @@ function step(w: Walk, at: At, hop: Hop, h: DecisionHop, before: Hop[], seen: Se
       hop.links = seg.links;
       hop.l2 = seg.devices;
     }
+    for (const r of seg.virtual || []) if (hop.virtual.indexOf(r) < 0) hop.virtual.push(r);
+    for (const n of seg.notes || []) hop.notes.push(n);
   }
   return walk(w, { device: next.device, vrf: next.vrf, ingress: next.iface, inAddr: next.address }, before.concat(hop), seen);
 }
@@ -408,11 +463,78 @@ function viaOf(model: Model, e: RibEntry): HopVia {
     return { kind: 'dynamic', text: `${p} route ${prefixText(e.net)} over ${e.relation} (cost ${e.metric}, distance ${e.distance})`, relation: e.relation };
   }
   const r = e.route;
+  if (!r && e.implicit) return { kind: 'static', text: e.implicit };
   return r ? { kind: 'static', text: `static route ${routeText(r)}`, route: routeRef(r) } : { kind: 'static', text: `static route ${prefixText(e.net)}` };
 }
 
 function protoLabel(model: Model, p: string): string {
   return p ? lookupProtocol(model.protocols, p).label : 'routing';
+}
+
+// ------------------------------------------------------------ container NAT
+
+function devLabel(model: Model, id: string): string {
+  const d = model.index.devices.get(id);
+  return d ? d.label : id;
+}
+
+/** Did the traffic come in on a container network's bridge interface (docker0) of this device? */
+function fromBridge(model: Model, at: At): boolean {
+  if (at.ingress === undefined) return false;
+  const i = model.index.interfaces.get(ifaceKey(at.device, at.ingress));
+  return !!i && i.type === 'bridge' && i.derived !== undefined;
+}
+
+/** The NAT bridge network the traffic came in on (its name), if any. */
+function natBridgeIn(model: Model, at: At): string | undefined {
+  if (!fromBridge(model, at)) return undefined;
+  const i = model.index.interfaces.get(ifaceKey(at.device, at.ingress as string)) as Interface;
+  const d = model.index.devices.get(at.device);
+  const net = d && d.containerEngine ? d.containerEngine.networks.find((n) => n.name === i.derived) : undefined;
+  return net && net.nat ? net.name : undefined;
+}
+
+/**
+ * A destination behind its host's NAT: a container's veth on a bridge with
+ * NAT, traced from a device that is not on that bridge. Then it is reached
+ * at its host's address on a published port (the DNAT), or not at all (a
+ * message). Null when there is no NAT in between.
+ */
+function natDestination(model: Model, srcDev: string, destDev: string, destIface: string, destAddr: string, families: Array<4 | 6>): Dnat | string | null {
+  const di = model.index.interfaces.get(ifaceKey(destDev, destIface));
+  const x = di && di.type === 'veth' ? vethNetwork(model, di) : undefined;
+  if (!di || !x || x.net.driver !== 'bridge' || !x.net.nat) return null;
+  const { owner, net } = x;
+  // the host itself and the containers on the same bridge reach it directly
+  if (srcDev === owner.id) return null;
+  const src = model.index.devices.get(srcDev);
+  if (src && src.logical.some((i) => i.type === 'veth' && (() => { const y = vethNetwork(model, i); return !!y && y.owner === owner && y.net === net; })())) return null;
+  const pubs = di.publish || [];
+  if (!pubs.length) return `${destDev} (${destAddr}) is behind the NAT of ${owner.label} (network ${net.name}) and publishes no ports: it can't be reached from outside its host`;
+  const outside = connectedOf(model, owner.id).filter((c) => {
+    const i = model.index.interfaces.get(ifaceKey(owner.id, c.iface));
+    return !!i && i.type !== 'bridge' && families.indexOf(c.addr.version) >= 0 && c.addr.version === 4;
+  });
+  if (!outside.length) return `${destDev} (${destAddr}) is behind the NAT of ${owner.label}, which has no address to publish its ports on`;
+  const ports = pubs.map((p) => `${p.hostPort}→${p.port}/${p.protocol}`).join(', ');
+  const out: Dnat = { host: owner.id, hostAddr: formatAddr(outside[0].addr), device: destDev, iface: destIface, address: destAddr, owner: owner.id, net: net.name, ports };
+  if (net.iface !== undefined) out.bridge = net.iface;
+  if (net.gateway !== undefined) out.gateway = net.gateway;
+  return out;
+}
+
+/** The host's DNAT to a published port, then the container behind it. */
+function dnatHops(w: Walk, hop: Hop, before: Hop[]): Path[] {
+  const n = w.dnat as Dnat;
+  hop.nat = 'dnat';
+  hop.via = { kind: 'connected', text: `DNAT: ${n.hostAddr} (published ${n.ports}) → ${n.address}` };
+  if (n.bridge !== undefined) hop.egress = n.bridge;
+  if (n.gateway !== undefined) hop.outAddr = n.gateway;
+  hop.virtual = [cnetRef(n.owner, n.net)];
+  hop.networks = [cnetNetworkId(n.owner, n.net)];
+  hop.notes.push(`${devLabel(w.model, n.host)} forwards its published port${n.ports.indexOf(',') >= 0 ? 's' : ''} to ${n.device} on the bridge ${n.bridge || n.net} (the port numbers are named, not checked)`);
+  const last: Hop = { device: n.device, vrf: '', ingress: n.iface, inAddr: n.address, via: { kind: 'local', text: `${n.address} is an address of ${n.device} (${n.iface})` }, encap: w.encap.slice(), links: [], l2: [], virtual: [], networks: [], relations: [], ecmp: 1, branch: 0, notes: [] };
+  return [{ hops: before.concat(hop, last), end: { kind: 'reached', device: n.device, iface: n.iface } }];
 }
 
 // ------------------------------------------------------------ address owners
@@ -490,7 +612,9 @@ function pickAddress(model: Model, device: string, iface: string | undefined, fa
   if (!d) return null;
   const kind = (c: Connected): number => {
     const i = model.index.interfaces.get(ifaceKey(device, c.iface));
-    return i ? ['loopback', 'physical', 'virtual', 'tunnel'].indexOf(i.type) : 4;
+    // (a guest's vNIC as a port; a container bridge's interface last: it is no address of the host's own)
+    const order = ['loopback', 'physical', 'vnic', 'virtual', 'veth', 'tunnel', 'bridge'];
+    return i && order.indexOf(i.type) >= 0 ? order.indexOf(i.type) : order.length;
   };
   // an interface that is down (a failure simulation) is not picked for a device as a whole
   const cands = connectedOf(model, device).filter((c) => (iface === undefined || c.iface === iface) && (vrf === undefined || c.vrf === vrf) && (iface !== undefined || !ctx || up(ctx, device, c.iface)));
@@ -525,7 +649,7 @@ interface L2State {
   prev: L2State | null;
 }
 
-type Segment = { kind: 'ok'; links: string[]; devices: string[] } | { kind: 'uncabled'; detail: string } | { kind: 'none'; detail: string };
+type Segment = ({ kind: 'ok'; links: string[]; devices: string[] } | { kind: 'uncabled'; detail: string } | { kind: 'none'; detail: string }) & { virtual?: string[]; notes?: string[] };
 
 /** The physical ports an interface sends out of: itself, an aggregate's members, a VLAN interface's bridge ports, a subinterface's port (aggregates as their members). */
 export function portsOf(model: Model, device: string, iface: string): string[] {
@@ -562,19 +686,67 @@ function endUp(ctx: RoutingCtx, e: LinkEnd): boolean {
  * when both have cables but no way joins them, the hop can't be made.
  */
 function l2Segment(model: Model, ctx: RoutingCtx, a: { device: string; iface: string }, b: { device: string; iface: string }, vlan: number | undefined): Segment {
-  const pa = portsOf(model, a.device, a.iface);
-  const pb = portsOf(model, b.device, b.iface);
+  const upf = (d: string, i: string): boolean => up(ctx, d, i);
+  const va = virtEnd(model, a.device, a.iface, upf, 0, ctx.hostOf);
+  const vb = virtEnd(model, b.device, b.iface, upf, 0, ctx.hostOf);
+  const pa = va ? va.ports : portsOf(model, a.device, a.iface);
+  const pb = vb ? vb.ports : portsOf(model, b.device, b.iface);
+  if (!va && !vb) return cabled(model, ctx, a, b, vlan, a.device, pa, b.device, pb, true);
+  const refs: string[] = [];
+  const notes: string[] = [];
+  for (const v of [va, vb]) {
+    if (!v) continue;
+    for (const r of v.refs) if (refs.indexOf(r) < 0) refs.push(r);
+    for (const n of v.notes) if (notes.indexOf(n) < 0) notes.push(n);
+  }
+  // a macvlan / ipvlan container and its own host can't reach each other
+  for (const [v, o, ov] of [
+    [va, b, vb],
+    [vb, a, va],
+  ] as Array<[typeof va, { device: string }, typeof va]>) {
+    if (v && v.childOf !== undefined && v.childOf === o.device && !(ov && ov.childOf === v.childOf)) {
+      return { kind: 'none', detail: `${devLabel(model, v.childOf)} can't reach its own macvlan / ipvlan containers: its parent interface does not pass traffic between them` };
+    }
+  }
+  const shared = sharedDomain(va, vb);
+  if (shared && va && vb && va.vlan !== undefined && vb.vlan !== undefined && va.vlan !== vb.vlan) {
+    return { kind: 'none', detail: `${a.device}:${a.iface} (VLAN ${va.vlan}) and ${b.device}:${b.iface} (VLAN ${vb.vlan}) are on ${virtRefText(shared)} in different VLANs (missing layer-2 adjacency)` };
+  }
+  if (shared) {
+    const host = (va as NonNullable<typeof va>).device;
+    return { kind: 'ok', links: [], devices: [], virtual: refs, notes: [`inside ${devLabel(model, host)}: on ${virtRefText(shared)}, no cable`].concat(notes) };
+  }
+  for (const v of [va, vb]) if (v && v.closed) return { kind: 'none', detail: v.closed };
+  // out of the host(s) by the ports found, then over the cables
+  for (const v of [va, vb]) if (v) for (const p of v.ports) if (refs.indexOf(`iface:${v.device}:${p}`) < 0) refs.push(`iface:${v.device}:${p}`);
+  const seg = cabled(model, ctx, a, b, vlan, va ? va.device : a.device, pa, vb ? vb.device : b.device, pb, false);
+  return { ...seg, virtual: refs, notes };
+}
+
+/** The cabled part of a segment: from ports of one device to ports of another (`a` and `b` name the two ends in messages). */
+function cabled(
+  model: Model,
+  ctx: RoutingCtx,
+  a: { device: string; iface: string },
+  b: { device: string; iface: string },
+  vlan: number | undefined,
+  devA: string,
+  pa: string[],
+  devB: string,
+  pb: string[],
+  plain: boolean,
+): Segment {
   const links = model.links.slice().sort((x, y) => cmpStr(x.id, y.id));
-  const atA = (e: LinkEnd): boolean => e.device === a.device && (e.iface === undefined || pa.indexOf(e.iface) >= 0);
-  const atB = (e: LinkEnd): boolean => e.device === b.device && (e.iface === undefined || pb.indexOf(e.iface) >= 0);
+  const atA = (e: LinkEnd): boolean => e.device === devA && (e.iface === undefined || pa.indexOf(e.iface) >= 0);
+  const atB = (e: LinkEnd): boolean => e.device === devB && (e.iface === undefined || pb.indexOf(e.iface) >= 0);
   const startLinks = links.filter((l) => atA(l.a) || atA(l.b));
   const anyAtB = links.some((l) => atB(l.a) || atB(l.b));
   const vtext = vlan !== undefined ? ` in VLAN ${vlan}` : '';
   // a VLAN interface whose VLAN none of its device's tagged cables carries is not connected at all
-  for (const [s, ports] of [
+  for (const [s, ports] of (plain ? [
     [a, pa],
     [b, pb],
-  ] as Array<[{ device: string; iface: string }, string[]]>) {
+  ] : []) as Array<[{ device: string; iface: string }, string[]]>) {
     const i = model.index.interfaces.get(ifaceKey(s.device, s.iface));
     const vl = i ? interfaceVlans(model, i) : [];
     if (!ports.length && vl.length && i && !i.members.length) {
@@ -588,7 +760,7 @@ function l2Segment(model: Model, ctx: RoutingCtx, a: { device: string; iface: st
   const linkUp = (l: Link): boolean => (!ctx.linkUp || ctx.linkUp(l.id)) && endUp(ctx, l.a) && endUp(ctx, l.b);
   // breadth-first over devices; a step leaves a device through a cable end and enters the next through the far end
   const queue: L2State[] = [];
-  const seenDev = new Set<string>([a.device]);
+  const seenDev = new Set<string>([devA]);
   for (const l of startLinks) {
     if (!linkUp(l)) continue;
     const near = atA(l.a) ? l.a : l.b;
@@ -849,6 +1021,7 @@ export function pathRefs(p: Path): Set<string> {
       if (h.egress) out.add(`iface:${h.device}:${h.egress}`);
       for (const l of h.links) out.add('link:' + l);
       for (const d of h.l2) out.add('device:' + d);
+      for (const r of h.virtual) out.add(r);
       for (const n of h.networks) out.add('network:' + n);
       for (const r of h.relations) out.add('relation:' + r);
       if (h.via.route) out.add(h.via.route);
@@ -895,6 +1068,8 @@ export function hopLine(h: Hop, n: string): string {
   if (h.gateway) parts.push(`next hop ${h.gateway}`);
   if (h.via.text) parts.push(h.via.text);
   if (h.encap.length) parts.push('encapsulation: ' + encapText(h.encap));
+  if (h.virtual.length) parts.push('inside: ' + h.virtual.filter((r) => r.indexOf('iface:') !== 0).map(virtRefText).join(', '));
+  if (h.nat) parts.push(h.nat.toUpperCase());
   if (h.l2.length) parts.push('through ' + h.l2.join(', '));
   if (h.links.length) parts.push('cables ' + h.links.join(', '));
   if (h.ecmp > 1) parts.push(`equal-cost ${h.branch + 1} of ${h.ecmp}`);
@@ -942,7 +1117,7 @@ export function traceText(t: Trace, back?: Trace | null): string {
     else desc(back);
   }
   lines.push('');
-  lines.push('Model-based approximation: computed from the routes and adjacencies in the model, not a simulation of the protocols. ACLs, firewall policies and NAT are not considered.');
+  lines.push('Model-based approximation: computed from the routes and adjacencies in the model, not a simulation of the protocols. ACLs and firewall policies are not considered; NAT only for container bridges (SNAT out of the host, DNAT to published ports).');
   return lines.join('\n');
 }
 

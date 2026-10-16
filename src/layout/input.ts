@@ -13,6 +13,8 @@
  * Everything is sorted by id with plain code-unit string comparison (never
  * localeCompare, which depends on the browser locale).
  */
+import { interiorSize } from './virtual';
+import { networkSubText, runsOnText, withVirtualNetworks } from '../model/virtual';
 import { deviceSubtitle } from '../model/device-types';
 import { relationStyle } from '../model/protocols';
 import { endTagText, networkMembers, tagMismatch } from '../model/derive';
@@ -58,6 +60,10 @@ export interface LDev {
   spare: string[];
   /** virtual and tunnel interfaces, in display order (chips under the device in the logical view) */
   logical: string[];
+  /** a guest: the host whose box it is drawn in (physical view); none for every other device */
+  inside?: string;
+  /** a host's interior in its physical box (virtual switches, container networks, guests): [w, h], [0, 0] without one */
+  interior: [number, number];
 }
 export interface LGroup {
   id: string;
@@ -151,13 +157,34 @@ function uniqSorted(xs: string[]): string[] {
   return Array.from(new Set(xs)).sort(cmp);
 }
 
+/**
+ * The second line of a device's box in the logical view: its type's name,
+ * and for a guest the host it runs on ("runs on esx-01"), a line of its own.
+ * (In the physical view a guest is drawn inside its host: its type alone.)
+ */
+export function deviceSub(m: Model, d: Device): string {
+  const t = deviceSubtitle(d.type, d.layer3);
+  const r = runsOnText(m, d);
+  return r ? `${t}\n${r}` : t;
+}
+
+/** The layout input of the physical view: without the guests (they are drawn inside their hosts' boxes). */
+export function physicalInput(input: LayoutInput): LayoutInput {
+  if (!input.devices.some((d) => d.inside !== undefined)) return input;
+  let c = physCache.get(input);
+  if (!c) physCache.set(input, (c = { ...input, devices: input.devices.filter((d) => d.inside === undefined) }));
+  return c;
+}
+
+const physCache = new WeakMap<LayoutInput, LayoutInput>();
+
 export function layoutInput(m: Model): LayoutInput {
   return {
     devices: byId(
       m.devices.map((d) => ({
         id: d.id,
         label: d.label,
-        sub: deviceSubtitle(d.type, d.layer3),
+        sub: deviceSub(m, d),
         tier: d.tier !== undefined ? d.tier : defaultTier(d.type),
         group: d.group || null,
         loopbacks: loopbacks(d).length,
@@ -168,6 +195,9 @@ export function layoutInput(m: Model): LayoutInput {
         reach: portReach(m, d.id),
         spare: sortedByName(d.interfaces.filter((i) => !m.index.ifaceLink.has(ifaceKey(d.id, i.id))).map((i) => i.id), (x) => x),
         logical: sortedByName(d.logical.filter((i) => i.type !== 'loopback').map((i) => i.id), (x) => x),
+        // a guest is drawn in its host's box in the physical view; a host's box holds its interior
+        inside: (d.type === 'vm' || d.type === 'container') && d.host !== undefined && m.index.devices.has(d.host) ? d.host : undefined,
+        interior: interiorSize(m, d.id),
       })),
     ),
     groups: byId(m.groups.map((g) => ({ id: g.id, parent: g.parent || null, label: g.label, kind: g.kind, extra: addressAttrLines(g.attrs) }))),
@@ -181,15 +211,16 @@ export function layoutInput(m: Model): LayoutInput {
         return cmp(ka, kb) <= 0 ? { id: l.id, a: ea, b: eb } : { id: l.id, a: eb, b: ea };
       }),
     ),
+    // (with the container networks the logical view draws as networks: model/virtual.ts withVirtualNetworks)
     networks: byId(
-      m.networks.map((n) => ({
+      withVirtualNetworks(m).networks.map((n) => ({
         id: n.id,
         label: n.label,
-        sub: networkSubtitle(n.cidr, n.vlan),
+        sub: networkSubText(m, n, networkSubtitle(n.cidr, n.vlan)),
         extra: addressAttrLines(n.attrs),
         // derived from the addresses inside the network's prefixes
-        members: uniqSorted(networkMembers(m, n.id).map((x) => x.device)),
-        memberLabels: memberLabelSizes(m, n.id),
+        members: uniqSorted(networkMembers(withVirtualNetworks(m), n.id).map((x) => x.device)),
+        memberLabels: memberLabelSizes(withVirtualNetworks(m), n.id),
       })),
     ),
     relations: byId(

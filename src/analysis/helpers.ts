@@ -5,13 +5,13 @@
  * changes the model. Pure and deterministic (the random MAC address takes
  * its random source as an argument).
  */
-import { parsePrefix } from '../model/ip';
+import { parseAddress, parsePrefix } from '../model/ip';
 import { ServiceDef, bgpAsn, paramsAt } from '../model/services';
 import { vlanIds } from '../model/derive';
 import { Interface, InterfaceKind, Model, deviceInterfaces } from '../model/types';
 import { tunnelBudget } from './checks-more';
 import { gatewayServices } from './identity';
-import { inPrefix, networkOf } from './ipmath';
+import { addrBig, bigAddr, formatAddr, inPrefix, networkOf, prefixRange, reservedOf } from './ipmath';
 
 /** One suggested value: what is written, how the chip reads, what it means. */
 export interface Suggestion {
@@ -111,16 +111,69 @@ export function formatMac(bytes: number[], style: MacStyle): string {
  * set and the multicast bit (0x01) cleared. Written in the model's style.
  * `random(n)` gives n random bytes (crypto.getRandomValues in the page).
  */
-export function generateMac(model: Model, random: (n: number) => Uint8Array, style: MacStyle = macStyleOf(model)): string {
+export function generateMac(model: Model, random: (n: number) => Uint8Array, style: MacStyle = macStyleOf(model), oui?: number[]): string {
   const used = new Set<string>();
   for (const d of model.devices) for (const i of deviceInterfaces(d)) if (i.mac) used.add(macKey(i.mac));
   for (let tries = 0; tries < 1000; tries++) {
     const r = Array.from(random(6)).slice(0, 6);
     r[0] = (r[0] & 0xfc) | 0x02;
+    // a platform's own prefix (OUI): its first three bytes (VMware's manual range keeps the fourth below 0x40)
+    if (oui) {
+      for (let k = 0; k < oui.length; k++) r[k] = oui[k];
+      if (oui[0] === 0x00 && oui[1] === 0x50 && oui[2] === 0x56) r[3] &= 0x3f;
+    }
     const mac = formatMac(r, style);
     if (!used.has(macKey(mac))) return mac;
   }
   throw new Error('no free MAC address found');
+}
+
+/**
+ * The MAC prefix (OUI) a virtualization platform gives its guests' NICs:
+ * VMware 00:50:56, KVM / QEMU 52:54:00, Hyper-V 00:15:5d, Xen 00:16:3e,
+ * Proxmox VE bc:24:11, Docker 02:42 (a container); none for another one.
+ */
+export function platformOui(platform: string | undefined): { oui: number[]; name: string } | undefined {
+  const t: { [k: string]: { oui: number[]; name: string } } = {
+    esxi: { oui: [0x00, 0x50, 0x56], name: 'VMware 00:50:56' },
+    kvm: { oui: [0x52, 0x54, 0x00], name: 'KVM 52:54:00' },
+    hyperv: { oui: [0x00, 0x15, 0x5d], name: 'Hyper-V 00:15:5d' },
+    xen: { oui: [0x00, 0x16, 0x3e], name: 'Xen 00:16:3e' },
+    proxmox: { oui: [0xbc, 0x24, 0x11], name: 'Proxmox VE bc:24:11' },
+    docker: { oui: [0x02, 0x42], name: 'Docker 02:42' },
+  };
+  return platform !== undefined ? t[platform] : undefined;
+}
+
+/**
+ * The next free address of a container network for one of its containers:
+ * from its IPAM range when it has one, else from its subnet; never the
+ * gateway, the network or broadcast address, or an address a container (or
+ * any interface of the model) already has.
+ */
+export function nextFreeContainerAddr(model: Model, net: { subnet?: string; gateway?: string; start?: string; end?: string }): string | null {
+  const p = net.subnet ? parsePrefix(net.subnet) : null;
+  if (!p) return null;
+  const used: bigint[] = [];
+  for (const d of model.devices) for (const i of deviceInterfaces(d)) for (const a of i.addresses) {
+    const x = parsePrefix(a, false);
+    if (x && inPrefix(p, x)) used.push(addrBig(x));
+  }
+  if (net.gateway) {
+    const g = parseAddress(net.gateway);
+    if (g) used.push(addrBig(g));
+  }
+  const r = prefixRange(p);
+  const lo = net.start ? parseAddress(net.start) : null;
+  const hi = net.end ? parseAddress(net.end) : null;
+  const first = lo ? addrBig(lo) : r.first;
+  const last = hi ? addrBig(hi) : r.last;
+  const reserved = reservedOf(p);
+  for (let v = first; v <= last; v++) {
+    if (used.indexOf(v) >= 0 || reserved.indexOf(v) >= 0) continue;
+    return formatAddr(bigAddr(v, p.version));
+  }
+  return null;
 }
 
 // ------------------------------------------------------------------ VRF
