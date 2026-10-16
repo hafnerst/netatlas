@@ -36,7 +36,7 @@
  *           in the VLAN of the network the far end's addresses are in (when
  *           that is one VLAN), else 0.
  */
-import { interfaceVlans, isBridgePort, portL2, subinterfaceParent } from '../../model/derive';
+import { interfaceVlans, isBridgePort, portL2, subinterfaceParent, endL2 } from '../../model/derive';
 import { deviceRoutingRole, isLayer2Switch, Capabilities, capabilities } from '../../model/capabilities';
 import { parsePrefix, IpAddr } from '../../model/ip';
 import { Device, Interface, Link, LinkEnd, Model, PortGroup, deviceInterfaces, ifaceKey } from '../../model/types';
@@ -184,7 +184,7 @@ export function portKey(device: string, port: string): string {
 export function otherEnd(net: SimNet, e: CableEnd): CableEnd {
   const l = net.links.get(e.link) as Link;
   const o = e.end === 'a' ? l.b : l.a;
-  return { link: e.link, end: e.end === 'a' ? 'b' : 'a', device: o.device, port: o.iface || '@' + e.link };
+  return { link: e.link, end: e.end === 'a' ? 'b' : 'a', device: o.device, port: linkPort(net.model, l, o) };
 }
 
 /** The VLAN of the network an interface's addresses are in, when they are in exactly one. */
@@ -217,7 +217,7 @@ function inNet(n: IpAddr & { prefix: number }, a: IpAddr): boolean {
 
 /** The VLANs a link end carries at its port (see the module comment). */
 export function endPortVlans(model: Model, l: Link, e: LinkEnd): PortVlans {
-  const p = e.iface !== undefined ? portL2(model, e.device, e.iface) : undefined;
+  const p = endL2(model, e);
   if (p && p.kind === 'access') return { mode: 'access', untagged: p.untagged as number, tagged: [] };
   if (p && p.kind === 'trunk') return { mode: 'trunk', untagged: p.native !== undefined ? p.native : null, tagged: p.tagged };
   const far = e === l.a ? l.b : l.a;
@@ -261,6 +261,21 @@ function simAddrs(i: Interface): SimAddr[] {
   return out;
 }
 
+/**
+ * The simulation's port of a link end: its interface; a cable end that names
+ * none, "@<link>"; a wireless connection's end at a radio of a Wireless
+ * access, its association "<radio>~<link>" (several share a radio, each a
+ * bridge port of its own in its Wi-Fi network's VLAN).
+ */
+export function linkPort(model: Model, l: Link, e: LinkEnd): string {
+  if (e.iface === undefined) return '@' + l.id;
+  if (l.medium === 'wireless' && l.wirelessNetwork !== undefined) {
+    const d = model.index.devices.get(e.device);
+    if (d && d.wireless && d.wireless.networks.some((x) => x.radio === e.iface)) return e.iface + '~' + l.id;
+  }
+  return e.iface;
+}
+
 /** Build the simulated network of a model. */
 export function buildNet(model: Model): SimNet {
   const macs = interfaceMacs(model);
@@ -269,7 +284,7 @@ export function buildNet(model: Model): SimNet {
   for (const l of model.links) {
     links.set(l.id, l);
     for (const [end, e] of [['a', l.a], ['b', l.b]] as Array<['a' | 'b', LinkEnd]>) {
-      const port = e.iface || '@' + l.id;
+      const port = linkPort(model, l, e);
       ends.set(portKey(e.device, port), { link: l.id, end, device: e.device, port });
     }
   }
@@ -283,7 +298,8 @@ export function buildNet(model: Model): SimNet {
     // an inline device and a pass-through between their paired ports only (the engine keeps to the pairs); a cloud (external transit)
     // carries them between its attachments as one opaque Layer 3 hop (the engine counts the hop)
     const caps = capabilities(d);
-    const bridge = caps.l2Forward || caps.inline || caps.passThrough || caps.externalTransit || hasBridgePort;
+    // (a router with Wireless access bridges its Wi-Fi networks to their VLANs)
+    const bridge = caps.l2Forward || caps.inline || caps.passThrough || caps.externalTransit || hasBridgePort || (!!d.wireless && d.wireless.networks.length > 0);
     const routedPort = (id: string): boolean => {
       const p = portL2(model, d.id, id);
       return !!p && p.kind === 'routed';
@@ -353,8 +369,8 @@ export function buildNet(model: Model): SimNet {
       }
       // (a management interface is never a bridge port: nothing is forwarded to or from it)
       for (const i of d.interfaces) if (!seen.has(i.id) && !sd.l3.has(i.id) && ends.has(portKey(d.id, i.id)) && d.management.indexOf(i.id) < 0) add(i.id, [i.id]);
-      // cable ends at the device that name no interface
-      for (const [k, e] of ends) if (e.device === d.id && e.port.charAt(0) === '@' && k === portKey(d.id, e.port)) add(e.port, [e.port]);
+      // cable ends at the device that name no interface; the associations on its radios (one bridge port each, in its Wi-Fi network's VLAN)
+      for (const [k, e] of ends) if (e.device === d.id && (e.port.charAt(0) === '@' || e.port.indexOf('~') > 0) && k === portKey(d.id, e.port)) add(e.port, [e.port]);
       const macsHere = all.map((i) => macs.get(d.id + ':' + i.id)).filter((m): m is IfaceMac => !!m).map((m) => m.mac).sort();
       // (its priority is a simulation attribute, bridge_priority: the spanning tree reads it with StpConfig)
       sd.bridgeId = `32768.${macsHere[0] || '00:00:00:00:00:00'}`;

@@ -542,7 +542,7 @@ export interface Spof {
  * Which of a device's ports it joins (null: all of them, as a switch or a
  * router does). What it can do decides: an inline or pass-through device
  * joins only its paired ports (a pair with its monitor ports); a passive
- * monitor joins none (it only receives); a Separation gateway joins its two
+ * monitor joins none (it only receives); a Security gateway joins its two
  * domains only when its policy permits some transfer between them, and its
  * management interfaces join nothing.
  */
@@ -555,7 +555,7 @@ export function portGroups(d: Device): string[][] | null {
     return out;
   }
   if (c.passiveCopy) return ports.map((x) => [x]);
-  if (c.separationGateway) {
+  if (c.securityGateway) {
     const sep = d.separation;
     const doms = sep ? sep.domains.map((x) => x.interfaces.slice()) : [];
     const permits = !!sep && !!sep.implementation && sep.directions.length > 0 && (sep.rules.length > 0 || sep.profiles.length > 0);

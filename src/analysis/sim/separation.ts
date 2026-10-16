@@ -1,5 +1,5 @@
 /**
- * Domain separation in the simulation: a Separation gateway's decisions on
+ * Domain separation in the simulation: a Security gateway's decisions on
  * what it would bridge (a filtering bridge) or route (a filtering router).
  * The policy is analysis/separation.ts; this keeps the transfers it
  * permitted, so that their replies go back (and nothing else comes the

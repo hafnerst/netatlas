@@ -105,7 +105,8 @@ test('every example, both views: every address and identifier is drawn as text, 
     for (const view of ['physical', 'logical']) {
       const r = render(m, view);
       assert.deepEqual(missing(m, view, r.root), [], `${f} ${view}`);
-      const text = drawnLines(r.root).join('\n');
+      // (a device's line of service badges counts the ones it leaves out, "+2": services, not addresses or identifiers)
+      const text = drawnLines(r.root).filter((x) => !/^[A-Z]{2,5}( · [A-Z]{2,5})* \+\d+$/.test(x)).join('\n');
       assert.doesNotMatch(text, /…|\.\.\.|\+\d+ more|\s\+\d+$/m, `${f} ${view}: nothing is shortened`);
     }
   }

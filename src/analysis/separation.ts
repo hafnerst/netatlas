@@ -1,7 +1,7 @@
 /**
- * Domain separation: what a Separation gateway lets across its boundary.
+ * Domain separation: what a Security gateway lets across its boundary.
  *
- * A Separation gateway has exactly two named domains, each with its data
+ * A Security gateway has exactly two named domains, each with its data
  * interfaces, the permitted directions of transfer (from one domain to the
  * other, one or both) and ordered allow rules. Everything else is denied in
  * both directions: an empty policy permits nothing, and no field is ever
@@ -185,7 +185,7 @@ export function decideBreak(dev: Device, inIface: string, src: IpAddr, profile: 
   return { ...d, forward: { address: fwd, port: profile.forwardPort } };
 }
 
-/** The lines of a Separation gateway's summary (the Details panel and its tooltip): implementation, domains, directions, rules. */
+/** The lines of a Security gateway's summary (the Details panel and its tooltip): implementation, domains, directions, rules. */
 export function separationSummary(dev: Device): string[] {
   const sep = dev.separation;
   if (!sep) return [];

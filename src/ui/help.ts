@@ -335,16 +335,34 @@ const MANUAL: Section[] = [
     id: 'services',
     title: 'Run DHCP and DNS servers',
     steps: [
-      'Select a server, VM or container and open the **Edit** tab. Its **Services** card has the checkboxes **DHCP server** and **DNS server**, both off (a server’s also **Hypervisor** and **Container engine**: see *Model hypervisors, VMs and containers*).',
+      'Select a router, a Layer 3 switch, a routed firewall, a server, a VM or a container and open the **Edit** tab. Its **Services** card has the checkboxes **DHCP server** and **DNS server** (as far as it may run them), both off (a server’s also **Hypervisor** and **Container engine**: see *Model hypervisors, VMs and containers*).',
       'Tick **DHCP server**: it needs a scope, reported as an error until there is one. Press **+ Add scope** and fill in the **Network**, the **Address range**, the **Default gateway** and the **DNS servers**; the buttons under them suggest a free range, the network’s gateway and the model’s DNS servers. **Lease time** (1 day if empty), **Excluded addresses**, **Reservations** (a MAC address and its address) and **Domain name** are optional.',
       'Tick **DNS server** and press **+ Add zone**: name it (*campus.example*). The model’s DNS names in that zone are its A and AAAA records, listed read-only with the interface each comes from; add your own A, AAAA and CNAME records under them. **Listening address**, **Forwarders** and **Reverse zones** are optional.',
       'A client is an interface with **DHCP** on. In another subnet, give its gateway interface a **DHCP relay** (the server’s address). A host’s **Name resolution** card lists its static DNS servers, used when no lease gives any.',
     ],
     notes: [
-      'The diagram marks the server with **DHCP** and **DNS** badges and each client interface with *DHCP client*; the legend explains them. The checks report a client that reaches no DHCP server and a relay to an address that is none.',
+      'The diagram writes **DHCP** and **DNS** in the server’s badge line and marks each client interface with *DHCP client*; the legend explains them. The checks report a client that reaches no DHCP server and a relay to an address that is none.',
       'Unticking a service removes it with its scopes or zones in one step you can undo.',
     ],
     figures: [['services', 'srv’s Services card in campus-services.yaml: DHCP with its two scopes, DNS with the zone campus.example.']],
+  },
+  {
+    id: 'services-wifi',
+    title: 'Add services and Wi-Fi networks',
+    steps: [
+      'Select a device and open the **Edit** tab. Its **Services** card lists the services it runs. **Add service…** offers the ones it may run; the others are listed disabled under *Not available here*, each with the reason (*a Layer 2 switch routes nothing: tick Supports Layer 3 first*).',
+      'Choose a service: its card appears with its fields, and what it still needs is an error until you fill it in (an NTP server’s **Stratum** or its **Upstream servers**, an AAA server’s **Protocol**, **Shared secret** and **Clients**). Nothing is chosen for you. Write a secret as a placeholder such as *<radius-secret>*. **Remove** lists what goes and is one step you can undo.',
+      'An access point’s **Wireless access** is built in (a router may add it). Press **+ Add Wi-Fi network** and fill in its **Network id**, **SSID**, **VLAN** (or tick **Untagged**), **Radio** and **Security** (a **Passphrase** placeholder for a Personal one). Add one network per SSID: Staff, Guest and IoT on VLANs 10, 20 and 30 share one radio and one uplink.',
+      'Give the uplink the VLANs: a trunk port with *10, 20, 30*. An error names a network’s VLAN that no wired port carries. Connect each client to the radio and choose its **Wi-Fi network** in the cable’s Edit card; the radio takes several connections.',
+    ],
+    notes: [
+      'A client is in its network’s VLAN only: the path tracer and the simulation give it that VLAN’s DHCP lease and keep Guest away from Staff unless a routed path allows it. Single points of failure list the uplink with every client behind it.',
+      'The diagram writes a device’s services in a line under its type, at most three and how many more; hovering it names them all. Find a Wi-Fi network by its SSID or VLAN (*Guest*, *vlan 20*). There is no radio-frequency or roaming model; a network tunneled to its controller is reported as not simulated. See **multi-ssid-ap.yaml**, **home-network.yaml**, **campus-wireless.yaml** and **dmz-services.yaml**.',
+    ],
+    figures: [
+      ['wifi-edit', 'ap1’s Wireless access in multi-ssid-ap.yaml: Staff, Guest and IoT on VLANs 10, 20 and 30 of radio0, each with its clients.'],
+      ['services-add', 'srv’s Services card in campus-wireless.yaml, below its DHCP and DNS servers: NTP with its stratum and AAA with its protocol, its placeholder secret and its clients.'],
+    ],
   },
   {
     id: 'virtualization',
@@ -370,7 +388,7 @@ const MANUAL: Section[] = [
     steps: [
       'Select a device and open the **Edit** tab. Its *Identity* card says what it is, in order: **Type**, then **Kind** (optional: the type’s kinds, such as *NGFW* for a firewall or *PLC* for an endpoint, or **Other** with a **Kind name** of your own), then **Role** (optional: *core*, *access*, *spine*, *leaf*, *border* … or your own).',
       'A firewall, an IDS/IPS and an access point have a **Mode**: a firewall *Routed* or *Transparent* (it bridges its data ports and filters what passes), an IDS/IPS *Inline* (between its paired ports) or *Passive* (it receives copies). A System has a **Purpose**, required and not preselected (host, Layer 2 or Layer 3 forwarder, inline, passive monitor, pass-through, external network), and an **Icon** among its purpose’s.',
-      'An inline device and a pass-through System have a **Port pairs** card: press **+ Add port pair**, choose its two ports, its direction, and the monitor ports that get a **copy** (a TAP). A firewall, an IDS/IPS or a Separation gateway lists its **Management interfaces**: never forwarded.',
+      'An inline device and a pass-through System have a **Port pairs** card: press **+ Add port pair**, choose its two ports, its direction, and the monitor ports that get a **copy** (a TAP). A firewall, an IDS/IPS or a Security gateway lists its **Management interfaces**: never forwarded.',
       'Changing the type, the mode or the purpose asks first when something would no longer fit, lists it and what stays but is then reported, and does it in one step you can undo. Nothing new is chosen for you.',
     ],
     notes: [
@@ -393,7 +411,7 @@ const MANUAL: Section[] = [
     id: 'separation',
     title: 'Separate two security domains',
     steps: [
-      'Give a device the type **Separation gateway**. Its **Domain separation** card is built in. Choose its **Implementation**, which has no default: a **filtering bridge** (permitted frames pass unchanged; one network on both sides), a **filtering router** (permitted packets are routed) or a **protocol break** (nothing passes through: a transfer ends at the gateway, which starts a new one of its own).',
+      'Give a device the type **Security gateway**. Its **Domain separation** card is built in. Choose its **Implementation**, which has no default: a **filtering bridge** (permitted frames pass unchanged; one network on both sides), a **filtering router** (permitted packets are routed) or a **protocol break** (nothing passes through: a transfer ends at the gateway, which starts a new one of its own).',
       'Add its two **domains**: a name each (*Red* and *Black* are only suggestions) and their data interfaces. Tick the **Permitted directions**. List the gateway’s **Management interfaces** apart: they are never forwarded.',
       'Add **rules**: each permits a transfer from one domain to the other, for a source, a destination, a protocol and ports — every field written (*any* when you mean any). The first matching rule permits; everything else is denied, both ways. A protocol break needs a **transfer profile** for each permitted transfer (HTTPS, DNS or syslog: where it listens and where it sends the new transfer).',
       'Check it with **Trace path…** and a **Service** (*tcp/443*): a permitted transfer passes (a protocol break shows **Leg 2**, its own transfer), anything else stops at the gateway with the reason. Start a simulation to see both legs and the denials in the timeline.',
@@ -473,7 +491,7 @@ const MANUAL: Section[] = [
       'Click a name in the table to select it. **Copy as text** copies the trace; **Exit trace**, `Esc` in the diagram or closing the window removes the path.',
     ],
     notes: [
-      'The trace is computed from the routes and adjacencies in the model: an approximation, not a simulation of the protocols. A Separation gateway’s policy (by the service you give: tcp/443, udp/53, icmp), a VPN Gateway’s tunnels and the paired ports of inline and pass-through devices are considered; firewall ACLs are not. Nothing in the model changes.',
+      'The trace is computed from the routes and adjacencies in the model: an approximation, not a simulation of the protocols. A Security gateway’s policy (by the service you give: tcp/443, udp/53, icmp), a VPN Gateway’s tunnels and the paired ports of inline and pass-through devices are considered; firewall ACLs are not. Nothing in the model changes.',
       'Virtual machines and containers: a vNIC leaves its host through its port group’s virtual switch and the uplink its teaming uses (active / standby: the first that is up; LACP: the bond), or through its passthrough port; guests on one virtual switch or one container network reach each other inside the host, listed as **inside** under the hop. NAT only for container bridges: traffic out of the host gets the host’s address (**SNAT**); a container behind NAT is reached from outside only at its host’s address, on a published port (**DNAT**).',
     ],
     figures: [['trace', 'A path from the Munich branch to the syslog server: through the GRE-over-IPsec tunnel, the firewall and a core switch, with the equal-cost alternative dashed, and the Trace path window with its hop table.']],

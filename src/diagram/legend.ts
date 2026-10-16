@@ -10,11 +10,12 @@ import { endTagText, tagMismatch } from '../model/derive';
 import { relationStyle } from '../model/protocols';
 import { CATEGORIES, Category, Model, ProtocolDef } from '../model/types';
 import { isGuest } from '../model/virtual';
-import { deviceIcon, iconName, layerBadge, serviceBadge, glyphFor } from './icons';
+import { deviceIcon, iconName, layerBadge, glyphFor } from './icons';
 import { VNode, h } from './scene';
 import { View } from './session';
 import { NETWORK_COLOR, groupKindStyle, mediumStyle, speedWidth } from './style';
 import { capabilities } from '../model/capabilities';
+import { SERVICES, deviceServices, MAX_BADGES } from '../model/service-registry';
 
 /** Swatches are drawn in a box of this width; `swatchH` is 18 unless an item says otherwise. */
 export const SWATCH_W = 44;
@@ -401,9 +402,11 @@ function virtualItems(model: Model): LegendItem[] {
 
 /** The legend's server-service entries: a DHCP server and a DNS server (those the model has), with their badges; a DHCP client's interface. */
 function netServiceItems(model: Model): LegendItem[] {
-  const out: LegendItem[] = [];
-  if (model.devices.some((d) => !!d.netServices && !!d.netServices.dhcp)) out.push({ swatch: [serviceBadge('dhcp', 0, 6)], swatchH: 24, label: 'DHCP server (leases addresses to its scopes’ clients)' });
-  if (model.devices.some((d) => !!d.netServices && !!d.netServices.dns)) out.push({ swatch: [serviceBadge('dns', 0, 6)], swatchH: 24, label: 'DNS server (answers for its zones)' });
+  // the badges the model's devices carry, each named once ("DHCP DHCP server", "WIFI Wireless access", "SEP Domain separation")
+  const used = SERVICES.filter((s) => model.devices.some((d) => deviceServices(d).indexOf(s) >= 0));
+  if (!used.length) return [];
+  const out: LegendItem[] = [{ swatch: [h('text', { class: 'legend-badge', x: 2, y: 15 }, 'A · B +n')], swatchH: 22, label: `a device's services under its type (at most ${MAX_BADGES}, then how many more; all in its tooltip)` }];
+  for (const s of used) out.push({ swatch: [h('text', { class: 'legend-badge', x: 2, y: 15 }, s.badge)], swatchH: 22, label: s.label });
   return out;
 }
 

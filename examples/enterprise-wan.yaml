@@ -216,8 +216,13 @@ devices:
     label: muc-ap
     type: ap
     group: branch-muc
+    services:
+      wireless:
+        networks:
+          - {id: staff, ssid: MUC-Staff, untagged: true, radio: wlan0, security: wpa2_enterprise}
     interfaces:
       - {id: eth0, ip: 10.20.0.10/24}
+      - {id: wlan0}
 
   - id: ham-rtr
     label: ham-rtr

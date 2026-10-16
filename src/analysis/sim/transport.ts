@@ -50,13 +50,13 @@
  * session timeouts. Pure and deterministic.
  */
 import { IpAddr, parseAddress } from '../../model/ip';
-import { Relation, relationDevices, TRANSFER_PROFILES } from '../../model/types';
+import { Relation, relationDevices, TRANSFER_PROFILES, ServiceInstance, Device, Model } from '../../model/types';
 import { compareAddr, formatAddr } from '../ipmath';
 import { lookup } from '../routing';
 import { IcmpKind, fmtSec, hashIndex } from './engine';
 import { isMulticastIp } from './mac';
 import { L3Iface } from './net';
-import { PortRule, Resolved, Target, durationText, ifaceRef, parsePorts, parseTargets, portsMatch, relRef, resolvedText } from './params';
+import { PortRule, Resolved, Target, durationText, ifaceRef, parsePorts, parseTargets, portsMatch, relRef, resolvedText, paramDef } from './params';
 import { Multicast } from './multicast';
 import { NetServicesSim } from './netsvc';
 import { dnsNameKey, dnsNameProblem } from '../../model/dns';
@@ -310,7 +310,7 @@ export class Transport {
       return { rules: 'list' in r ? r.list : [], written: true, text: `listening ${String(own) || 'on nothing'} (device)` };
     }
     const gw = this.P.sd(dev);
-    if (gw && gw.caps.sessionBreak && gw.caps.separationGateway) {
+    if (gw && gw.caps.sessionBreak && gw.caps.securityGateway) {
       const prof = (gw.dev.separation ? gw.dev.separation.profiles : []).filter((x) => x.listenPort !== undefined && TRANSFER_PROFILES.some((k) => k.id === x.type));
       const pr: PortRule[] = prof.map((x) => ({ proto: (TRANSFER_PROFILES.find((k) => k.id === x.type) as (typeof TRANSFER_PROFILES)[number]).transport, from: x.listenPort as number, to: x.listenPort as number }));
       return { rules: pr, written: false, text: pr.length ? `listening on its transfer profiles' ports: ${prof.map((x) => `${x.id} at ${x.listenInterface} port ${x.listenPort}`).join(', ')}` : 'a protocol break without transfer profiles: no port open' };
@@ -330,6 +330,8 @@ export class Transport {
         if (!server) continue;
         for (const p of t.ports) if (!rules.some((x) => x.proto === t.proto && x.from === p)) rules.push({ proto: t.proto, from: p, to: p });
       }
+      // the ports of the services it runs (NTP, AAA, syslog, a proxy's listener, storage, an application …)
+      for (const x of serviceListening(this.P.m.index.devices.get(dev))) if (!rules.some((y) => y.proto === x.proto && y.from === x.from)) rules.push(x);
       // a container serves the ports it publishes
       const md = this.P.m.index.devices.get(dev);
       if (md && isContainer(md)) for (const i of md.logical) for (const p of i.publish || []) if (!rules.some((x) => x.proto === p.protocol && x.from === p.port)) rules.push({ proto: p.protocol, from: p.port, to: p.port });
@@ -697,7 +699,7 @@ export class Transport {
       return;
     }
     const gw = this.P.sd(dev);
-    const breaks = !!gw && gw.caps.sessionBreak && gw.caps.separationGateway;
+    const breaks = !!gw && gw.caps.sessionBreak && gw.caps.securityGateway;
     if (d.reply && breaks && this.breakAnswer(dev, pkt)) return;
     if (d.reply) {
       const t = this.tests.find((x) => x.id === d.test && x.from === dev);
@@ -1003,7 +1005,12 @@ export class Transport {
       this.proxy(c, pkt);
       return;
     }
-    if (caps.sessionBreak && caps.separationGateway && !c.upstream) {
+    const px = svcOf(this.P.m, c.dev, 'proxy');
+    if (px && px.values.listener === c.lport && !c.upstream) {
+      this.proxyService(c, px.values);
+      return;
+    }
+    if (caps.sessionBreak && caps.securityGateway && !c.upstream) {
       this.breakTcp(c, pkt);
       return;
     }
@@ -1048,6 +1055,17 @@ export class Transport {
   /** The servers of a device's own service relations (it is the client): a load balancer's pool, a proxy's upstream. */
   private upstreams(dev: string): Member[] {
     const out: Member[] = [];
+    // a Load balancing service's backends, when written: its pool (on its service port)
+    const lb = svcOf(this.P.m, dev, 'load_balancing');
+    const backends = lb && Array.isArray(lb.values.backends) ? (lb.values.backends as string[]) : [];
+    if (backends.length) {
+      const port = typeof lb!.values.port === 'number' ? (lb!.values.port as number) : DEFAULT_TCP_PORT;
+      for (const b of backends.slice().sort(cmp)) {
+        const a = this.firstAddr(b);
+        if (a) out.push({ dev: b, addr: a, port, kind: 'tcp', rel: '', up: true, fails: 0, oks: 0, last: 'not checked yet' });
+      }
+      return out;
+    }
     for (const r of this.P.m.relations.slice().sort((a, b) => cmp(a.id, b.id))) {
       const devs = relationDevices(r);
       if (devs.length < 2 || devs[devs.length - 1] === dev || devs.indexOf(dev) < 0) continue;
@@ -1119,7 +1137,9 @@ export class Transport {
         if (m) why = `persistence: ${client} stays with ${m.dev} (persistence timeout ${resolvedText(per)})`;
       }
       if (!m && healthy.length) {
-        const alg = this.e.params.get('lb-algorithm', dev, null, this.poolRel(dev, 'lb-algorithm'));
+        // (a Load balancing service's algorithm, when written, is its configuration)
+        const svcAlg = svcOf(this.P.m, dev, 'load_balancing');
+        const alg = svcAlg && typeof svcAlg.values.algorithm === 'string' ? { value: svcAlg.values.algorithm as string, source: 'configured' as const, where: 'its Load balancing service', def: paramDef('lb-algorithm') } : this.e.params.get('lb-algorithm', dev, null, this.poolRel(dev, 'lb-algorithm'));
         if (alg.value === 'least-connections') {
           const count = (x: Member): number => Array.from((this.conns.get(dev) || new Map<string, Conn>()).values()).filter((c) => c.role === 'client' && compareAddr(c.remote, x.addr) === 0).length;
           m = healthy.slice().sort((a, b) => count(a) - count(b) || cmp(a.dev, b.dev))[0];
@@ -1243,6 +1263,39 @@ export class Transport {
     const m = this.msg('udp', 'UDP answer', `UDP ← ${formatAddr(r.local)}:${r.lport}`, `protocol break at ${dev}: the answer of leg 2 from ${formatAddr(pkt.src)} goes to ${formatAddr(r.client)}:${r.cport} as ${dev}'s own answer on leg 1 (profile ${r.profile})`, { test: r.test, reply: true });
     this.sendPkt(dev, r.local, r.client, r.vrf, m, { proto: 'udp', num: 17, sport: r.lport, dport: r.cport }, 8 + UDP_RESPONSE, false, this.e.ownerOf(r.client) || '');
     return true;
+  }
+
+  /**
+   * The Proxy service: the client's connection ends at the proxy (its
+   * listener port), and the proxy opens a connection of its own to its
+   * upstream (a reverse proxy's server, a forward proxy's parent); the answer
+   * goes back on the client's connection. A forward proxy without a parent
+   * would go to the address the client asks for: test traffic names none,
+   * so it says so and answers with an error.
+   */
+  private proxyService(front: Conn, v: { [k: string]: unknown }): void {
+    const dev = front.dev;
+    const up = typeof v.upstream === 'string' ? parseAddress(v.upstream) : null;
+    const port = typeof v.upstream_port === 'number' ? (v.upstream_port as number) : DEFAULT_TCP_PORT;
+    if (!up) {
+      this.e.note('note', 'tcp', dev, '', 'no upstream', '', `${dev} is a forward proxy without a parent: it would open a connection to the address the client asks for, which a simulated test does not name — it answers with an error (a limitation of the simulation)`);
+      this.sendData(front, 200, 'an error: 502 Bad Gateway (no destination named)');
+      return;
+    }
+    const target = this.e.ownerOf(up) || '';
+    this.e.note('message', 'tcp', dev, target, 'proxied', '', `${dev} (${v.mode} proxy) ends the connection of ${formatAddr(front.remote)}:${front.rport} at port ${front.lport} and opens its own to ${formatAddr(up)}:${port}`);
+    const t = this.run({ from: dev, target, dst: up, kind: 'tcp', port, source: 'upstream', series: `${dev} → ${target || formatAddr(up)} (proxy upstream)`, front, timeout: { value: 3600000 } });
+    if (typeof t === 'string') {
+      this.sendData(front, 200, `an error: 502 Bad Gateway (${t})`);
+      return;
+    }
+    if (t.conn) {
+      t.conn.front = front;
+      front.upstream = t.conn;
+    }
+    t.onDone = (x) => {
+      if (!x.ok) this.upstreamFailed(x.conn || front, x.result, front);
+    };
   }
 
   private upstreamFailed(c: Conn, why: string, front?: Conn): void {
@@ -1572,3 +1625,36 @@ export function rttText(ms: number): string {
   return ms >= 1000 ? `${Math.round(ms) / 1000} s` : `${Math.round(ms * 1000) / 1000} ms`;
 }
 
+/** A device's service of the registry (its values), when it runs it. */
+function svcOf(m: Model, dev: string, id: string): ServiceInstance | undefined {
+  const d = m.index.devices.get(dev);
+  return d && d.appServices ? d.appServices.get(id) : undefined;
+}
+
+/** The ports a device's services listen on. */
+export function serviceListening(d: Device | undefined): PortRule[] {
+  const out: PortRule[] = [];
+  if (!d || !d.appServices) return out;
+  const add = (proto: 'tcp' | 'udp', port: number): void => {
+    if (!out.some((x) => x.proto === proto && x.from === port)) out.push({ proto, from: port, to: port });
+  };
+  const s = d.appServices;
+  if (s.has('ntp')) add('udp', 123);
+  const aaa = s.get('aaa');
+  if (aaa) aaa.values.protocol === 'tacacs' ? add('tcp', 49) : add('udp', 1812);
+  const log = s.get('syslog');
+  if (log) add(log.values.transport === 'tcp' ? 'tcp' : 'udp', typeof log.values.port === 'number' ? (log.values.port as number) : 514);
+  const px = s.get('proxy');
+  if (px && typeof px.values.listener === 'number') add('tcp', px.values.listener as number);
+  const lb = s.get('load_balancing');
+  if (lb && typeof lb.values.port === 'number') add('tcp', lb.values.port as number);
+  if (s.has('wireless_controller')) add('udp', 5246);
+  const st = s.get('storage');
+  for (const p of st && Array.isArray(st.values.protocols) ? (st.values.protocols as string[]) : []) add('tcp', p === 'nfs' ? 2049 : p === 'smb' ? 445 : 3260);
+  const app = s.get('application');
+  for (const p of app && Array.isArray(app.values.ports) ? (app.values.ports as string[]) : []) {
+    const r = parsePorts(p);
+    if ('list' in r) for (const x of r.list) if (x.proto === 'tcp' || x.proto === 'udp') for (let k = x.from; k <= x.to && k - x.from < 64; k++) add(x.proto, k);
+  }
+  return out;
+}

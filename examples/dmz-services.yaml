@@ -1,0 +1,209 @@
+# netatlas example: a DMZ with its services, and a VPN on a firewall.
+#
+# The firewall fw runs services of its own: a site-to-site IPsec VPN to the
+# branch router (the VPN gateway is a service here, as it is on the branch
+# router; on a VPN Gateway it is built in), and NAT — PAT for the inside
+# networks out of its outside interface, and a port forward of 443 to the
+# reverse proxy.
+#
+# A shopper's request to 203.0.113.2:443 is forwarded to rproxy (a server
+# with the Proxy service, reverse mode); the proxy ends the connection and
+# opens its own to the load balancer's virtual service, whose Load balancing
+# spreads it over its two backends (the Application service, port 8443).
+# An inline IPS between the firewall and the DMZ switch inspects what passes
+# and blocks Telnet (its Inspection). The NAS serves NFS (the Storage
+# service) to the branch over the VPN. Every service is chosen and written:
+# nothing is enabled by default.
+#
+# Simulate ▾ → Start simulation…: the shopper's test goes through DNAT, the
+# proxy and the load balancer; the branch PC reaches the NAS through the
+# tunnel; the shopper's Telnet test is blocked by the IPS.
+netatlas: 1
+title: DMZ services and a VPN on a firewall
+description: |
+  A firewall with a VPN and NAT, an inline IPS, a reverse proxy, a load
+  balancer with two application servers, a NAS, and a branch over IPsec.
+
+groups:
+  - id: hq
+    label: HQ
+    kind: site
+  - id: dmz
+    label: DMZ
+    kind: zone
+    parent: hq
+  - id: lan
+    label: LAN
+    kind: zone
+    parent: hq
+  - id: branch
+    label: Branch
+    kind: site
+  - id: outside
+    label: Internet
+    kind: provider
+
+devices:
+  - id: inet
+    label: Internet
+    type: cloud
+    kind: internet
+    group: outside
+    interfaces: [hq, branch, shopper]
+  - id: shopper
+    type: endpoint
+    kind: pc
+    group: outside
+    simulation: {test_traffic: "on", test_targets: "203.0.113.2 tcp/443, 10.50.0.31 tcp/23", test_interval: 10}
+    interfaces:
+      - {id: eth0, ip: 203.0.113.50/24}
+    routes:
+      - {prefix: 0.0.0.0/0, via: 203.0.113.2, name: towards the shop (the HQ firewall)}
+  - id: fw
+    type: firewall
+    kind: ngfw
+    role: border
+    group: hq
+    # its policy: the shop, NFS from the branch, and (to show the IPS block it) Telnet
+    simulation: {allow: "tcp/443, tcp/2049, tcp/23"}
+    services:
+      vpn:
+        operation: site_to_site
+        technology: ipsec
+        tunnels: [st0]
+        protected: [10.60.0.0/24]
+      nat:
+        inside: [dmz, inside]
+        outside: [outside]
+        rules:
+          - {type: pat, source: 10.0.0.0/8}
+          - {type: dnat, protocol: tcp, port: 443, to: 10.50.0.10}
+    interfaces:
+      - {id: outside, ip: 203.0.113.2/24}
+      - {id: dmz, ip: 10.50.0.1/24}
+      - {id: inside, ip: 10.60.0.1/24}
+    logical_interfaces:
+      - {id: st0, type: tunnel, ip: 169.254.40.1/30, source: outside, destination: 198.51.100.6}
+    routes:
+      - {prefix: 10.70.0.0/24, via: 169.254.40.2, name: the branch through the tunnel}
+      - {prefix: 0.0.0.0/0, via: 203.0.113.1, name: the ISP}
+  - id: ips
+    type: ids_ips
+    mode: inline
+    group: dmz
+    services:
+      inspection:
+        block: [tcp/23]
+    port_pairs:
+      - {a: north, b: south}
+    interfaces: [north, south]
+  - id: dmz-sw
+    type: switch
+    role: dmz
+    group: dmz
+    interfaces:
+      - {id: p1, vlans: 1}
+      - {id: p2, vlans: 1}
+      - {id: p3, vlans: 1}
+      - {id: p4, vlans: 1}
+      - {id: p5, vlans: 1}
+  - id: rproxy
+    type: server
+    role: dmz
+    group: dmz
+    services:
+      proxy:
+        mode: reverse
+        listener: 443
+        upstream: 10.50.0.20
+        upstream_port: 8443
+    interfaces:
+      - {id: eth0, ip: 10.50.0.10/24}
+    routes:
+      - {prefix: 0.0.0.0/0, via: 10.50.0.1, name: default gateway}
+  - id: lb
+    type: load_balancer
+    group: dmz
+    services:
+      load_balancing:
+        port: 8443
+        backends: [app1, app2]
+        algorithm: least-connections
+    interfaces:
+      - {id: eth0, ip: 10.50.0.20/24}
+  - id: app1
+    type: server
+    group: dmz
+    services:
+      application:
+        name: Shop
+        ports: [tcp/8443]
+    interfaces:
+      - {id: eth0, ip: 10.50.0.31/24}
+  - id: app2
+    type: server
+    group: dmz
+    services:
+      application:
+        name: Shop
+        ports: [tcp/8443]
+    interfaces:
+      - {id: eth0, ip: 10.50.0.32/24}
+  - id: nas
+    type: storage
+    kind: nas
+    group: lan
+    services:
+      storage:
+        protocols: [nfs]
+    interfaces:
+      - {id: eth0, ip: 10.60.0.50/24}
+    routes:
+      - {prefix: 0.0.0.0/0, via: 10.60.0.1, name: default gateway}
+  - id: br-rtr
+    type: router
+    role: ce
+    group: branch
+    services:
+      vpn:
+        operation: site_to_site
+        technology: ipsec
+        tunnels: [st0]
+        protected: [10.70.0.0/24]
+    interfaces:
+      - {id: wan, ip: 198.51.100.6/30}
+      - {id: lan, ip: 10.70.0.1/24}
+    logical_interfaces:
+      - {id: st0, type: tunnel, ip: 169.254.40.2/30, source: wan, destination: 203.0.113.2}
+    routes:
+      - {prefix: 10.60.0.0/24, via: 169.254.40.1, name: HQ's LAN through the tunnel}
+      - {prefix: 0.0.0.0/0, via: 198.51.100.5, name: the ISP}
+  - id: br-pc
+    type: endpoint
+    kind: pc
+    group: branch
+    simulation: {test_traffic: "on", test_targets: "10.60.0.50 tcp/2049", test_interval: 10}
+    interfaces:
+      - {id: eth0, ip: 10.70.0.10/24}
+    routes:
+      - {prefix: 0.0.0.0/0, via: 10.70.0.1, name: default gateway}
+
+links:
+  - {id: l-hq, a: "fw:outside", b: "inet:hq", medium: fiber, speed: 1G}
+  - {id: l-branch, a: "inet:branch", b: "br-rtr:wan", medium: fiber, speed: 100M}
+  - {id: l-shopper, a: "inet:shopper", b: "shopper:eth0"}
+  - {id: l-fw-ips, a: "fw:dmz", b: "ips:north", speed: 10G}
+  - {id: l-ips-sw, a: "ips:south", b: "dmz-sw:p1", speed: 10G}
+  - {id: l-rproxy, a: "dmz-sw:p2", b: "rproxy:eth0", speed: 1G}
+  - {id: l-lb, a: "dmz-sw:p3", b: "lb:eth0", speed: 1G}
+  - {id: l-app1, a: "dmz-sw:p4", b: "app1:eth0", speed: 1G}
+  - {id: l-app2, a: "dmz-sw:p5", b: "app2:eth0", speed: 1G}
+  - {id: l-nas, a: "fw:inside", b: "nas:eth0", speed: 10G}
+  - {id: l-br-pc, a: "br-rtr:lan", b: "br-pc:eth0", speed: 1G}
+
+relations:
+  - id: ipsec-branch
+    protocol: ipsec
+    label: IKEv2 site-to-site
+    endpoints: ["fw:st0", "br-rtr:st0"]
+    over: [l-hq, l-branch]

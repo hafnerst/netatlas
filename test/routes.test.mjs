@@ -70,21 +70,22 @@ test('routes are stored per device with prefix, next hop (address, interface, bo
   assert.equal(doc(text).exportText(), text);
 });
 
-test('which device types may have routes: Layer 3+ (routers, switches, firewalls, …) and hosts; not APs, IDS/IPS, clouds or untyped devices', () => {
+test('which device types may have routes: Layer 3+ (routers, switches, firewalls, …) and hosts; not IDS/IPS, clouds or untyped devices (an AP: its management address’s gateway)', () => {
   // (the types that may have a routing table in some mode or purpose: a Layer 2 switch has its default gateway, a filtering router its routes)
-  assert.deepEqual(Cap.ROUTE_DEVICE_TYPES, ['router', 'switch', 'firewall', 'load_balancer', 'vpn_gateway', 'separation_gateway', 'server', 'vm', 'container', 'storage', 'endpoint', 'system']);
+  // (an access point: its management address's default gateway)
+  assert.deepEqual(Cap.ROUTE_DEVICE_TYPES, ['router', 'switch', 'firewall', 'ap', 'load_balancer', 'vpn_gateway', 'security_gateway', 'server', 'vm', 'container', 'storage', 'endpoint', 'system']);
   const role = (type, x = {}) => Cap.deviceRoutingRole({ type, ...x });
   assert.deepEqual(['router', 'firewall', 'load_balancer', 'vpn_gateway'].map((t) => role(t)), Array(4).fill('router'));
   assert.deepEqual(['server', 'vm', 'container', 'storage', 'endpoint'].map((t) => role(t)), Array(5).fill('host'));
-  // what it does decides: a System by its purpose, a Separation gateway by its implementation, a transparent firewall bridges
+  // what it does decides: a System by its purpose, a Security gateway by its implementation, a transparent firewall bridges
   assert.equal(role('system', { purpose: 'host' }), 'host');
   assert.equal(role('system', { purpose: 'l3_forwarder' }), 'router');
   assert.equal(role('system', { purpose: 'pass_through' }), null);
-  assert.equal(role('separation_gateway', { separation: { implementation: 'filtering_router' } }), 'router');
-  assert.notEqual(role('separation_gateway', { separation: { implementation: 'protocol_break' } }), 'router');
+  assert.equal(role('security_gateway', { separation: { implementation: 'filtering_router' } }), 'router');
+  assert.notEqual(role('security_gateway', { separation: { implementation: 'protocol_break' } }), 'router');
   assert.notEqual(role('firewall', { mode: 'transparent' }), 'router');
-  for (const t of ['ap', 'ids_ips', 'cloud']) {
-    const e = errorsOf(`netatlas: 1\ndevices:\n  - id: x\n    type: ${t}\n${t === 'ids_ips' ? '    mode: passive\n' : ''}    routes:\n      - {prefix: 0.0.0.0/0, via: 10.0.0.1}\n`);
+  for (const t of ['ids_ips', 'cloud']) {
+    const e = errorsOf(`netatlas: 1\ndevices:\n  - id: x\n    type: ${t}\n${t === 'ids_ips' ? '    mode: passive\n' : ''}${t === 'ap' ? '    services: {wireless: {networks: [{id: l, ssid: L, untagged: true, radio: w, security: open}]}}\n    interfaces: [w]\n' : ''}    routes:\n      - {prefix: 0.0.0.0/0, via: 10.0.0.1}\n`);
     assert.equal(e.length, 1, t);
     assert.match(e[0], /static routes are allowed on router, switch, .* devices — set the type or delete the routes/, t);
   }

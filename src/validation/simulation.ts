@@ -54,7 +54,7 @@ export function typeAllows(a: Applies, d: DeviceLike): boolean {
     case 'lb':
       return c.loadBalancing;
     case 'separation':
-      return c.separationGateway;
+      return c.securityGateway;
   }
   return false;
 }

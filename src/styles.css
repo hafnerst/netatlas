@@ -1123,6 +1123,7 @@ fieldset.locked-form { margin: 0; padding: 0; border: 0; min-width: 0; }
 .svc-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
 .svc-name { font-weight: 600; }
 .svc-btns { display: inline-flex; gap: 4px; }
+.legend-badge { font-size: 11px; font-weight: 600; fill: var(--text); letter-spacing: 0.02em; }
 .sep-dirs { display: flex; flex-wrap: wrap; gap: 4px 18px; }
 .chips-ed { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
 .chips-ed select { flex: 1 1 12em; min-width: 0; }

@@ -1,6 +1,6 @@
 // The device model: the 15 types with their kinds, roles, modes and System
 // purposes; the capability resolver every module decides by; the VPN
-// Gateway and the Separation gateway with their built-in functions; and how
+// Gateway and the Security gateway with their built-in functions; and how
 // the tracer, the simulation, the single points of failure and the editor
 // follow them.
 import { test } from 'node:test';
@@ -38,11 +38,11 @@ test('capabilities: what each type does, by its mode, Supports Layer 3, purpose 
   assert.ok(c({ type: 'ids_ips', mode: 'passive' }).passiveCopy && !c({ type: 'ids_ips', mode: 'passive' }).l2Transit);
   assert.ok(c({ type: 'cloud' }).externalTransit && !c({ type: 'cloud' }).ipStack);
   assert.ok(c({ type: 'vpn_gateway' }).vpnTermination && c({ type: 'vpn_gateway' }).vpnOnlyTransit);
-  // a Separation gateway: nothing without an implementation, then what the implementation does
-  assert.ok(!c({ type: 'separation_gateway' }).l2Forward && !c({ type: 'separation_gateway' }).l3Forward && c({ type: 'separation_gateway' }).separationGateway);
-  assert.ok(c({ type: 'separation_gateway', separation: { implementation: 'filtering_bridge' } }).l2Forward);
-  assert.ok(c({ type: 'separation_gateway', separation: { implementation: 'filtering_router' } }).l3Forward);
-  const pb = c({ type: 'separation_gateway', separation: { implementation: 'protocol_break' } });
+  // a Security gateway: nothing without an implementation, then what the implementation does
+  assert.ok(!c({ type: 'security_gateway' }).l2Forward && !c({ type: 'security_gateway' }).l3Forward && c({ type: 'security_gateway' }).securityGateway);
+  assert.ok(c({ type: 'security_gateway', separation: { implementation: 'filtering_bridge' } }).l2Forward);
+  assert.ok(c({ type: 'security_gateway', separation: { implementation: 'filtering_router' } }).l3Forward);
+  const pb = c({ type: 'security_gateway', separation: { implementation: 'protocol_break' } });
   assert.ok(pb.sessionBreak && !pb.l3Forward && !pb.l2Forward);
   // a System by its purpose; without one it does nothing
   assert.ok(c({ type: 'system', purpose: 'host' }).host);
@@ -117,7 +117,7 @@ test('a System says what it does: its purpose is required, its icon is one of it
 
 test('the removed types say what they became', () => {
   assert.match(errs(one('    type: gateway\n    interfaces: [a]\n'))[0], /unknown device type "gateway" \(.*vpn_gateway.*\)/);
-  assert.match(errs(one('    type: proxy\n    interfaces: [a]\n'))[0], /an application proxy is a server, vm or container; a boundary between security domains is a separation_gateway/);
+  assert.match(errs(one('    type: proxy\n    interfaces: [a]\n'))[0], /an application proxy is a server, vm or container; a boundary between security domains is a security_gateway/);
 });
 
 // ------------------------------------------------------------ the VPN Gateway
@@ -157,12 +157,12 @@ test('VPN Gateway: it forwards only to and from its VPN, in the tracer and in th
   assert.ok(ev(s, (e) => e.device === 'br2-pc' && e.what === 'Test answered').length >= 1, 'through the tunnel');
 });
 
-// ------------------------------------------------------------ the Separation gateway
+// ------------------------------------------------------------ the Security gateway
 
 const SEP = (impl, extra = '') => `netatlas: 1
 devices:
   - id: g
-    type: separation_gateway
+    type: security_gateway
     services:
       separation:
         implementation: ${impl}
@@ -175,8 +175,8 @@ ${extra}    management: [m0]
     interfaces: [{id: a0${impl === 'filtering_bridge' ? '' : ', ip: 10.1.0.1/24'}}, {id: b0${impl === 'filtering_bridge' ? '' : ', ip: 10.2.0.1/24'}}, {id: m0, ip: 10.9.0.1/24}]
 `;
 
-test('Separation gateway: its configuration — an implementation (no default), exactly two domains, directions, explicit rules', () => {
-  assert.match(errs(`netatlas: 1\ndevices:\n  - {id: g, type: separation_gateway, interfaces: [a]}\n`)[0], /needs its Domain separation/);
+test('Security gateway: its configuration — an implementation (no default), exactly two domains, directions, explicit rules', () => {
+  assert.match(errs(`netatlas: 1\ndevices:\n  - {id: g, type: security_gateway, interfaces: [a]}\n`)[0], /needs its Domain separation/);
   const noImpl = errs(SEP('').replace('        implementation: \n', ''));
   assert.ok(noImpl.some((x) => /Domain separation needs its implementation/.test(x)), noImpl.join('\n'));
   assert.deepEqual(errs(SEP('filtering_router')), []);
@@ -263,7 +263,7 @@ test('protocol break over UDP: a DNS query is asked again by the gateway; the an
 devices:
   - {id: c, type: endpoint, interfaces: [{id: e, ip: 10.1.0.10/24}], simulation: {test_traffic: "on", test_targets: "10.1.0.1 udp/53", test_interval: 10}}
   - id: g
-    type: separation_gateway
+    type: security_gateway
     services:
       separation:
         implementation: protocol_break

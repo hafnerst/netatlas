@@ -17,13 +17,27 @@ export const SCHEMA = {
   param: ['key', 'label', 'type', 'scope', 'required', 'min', 'max', 'values', 'suggest', 'description'],
   group: ['id', 'label', 'kind', 'provider', 'parent', 'description', 'attrs'],
   device: ['id', 'label', 'type', 'kind', 'kind_label', 'role', 'mode', 'purpose', 'icon', 'host', 'layer3', 'group', 'tier', 'guest_os', 'vcpu', 'ram', 'image', 'router_id', 'protocols', 'services', 'port_pairs', 'management', 'simulation', 'description', 'attrs', 'interfaces', 'logical_interfaces', 'dns_names', 'dns_servers', 'routes'],
-  /** a device's services (its `services:`): a DHCP server, a DNS server, the Hypervisor and the Container engine; a VPN Gateway's VPN gateway, a Separation gateway's Domain separation */
-  netServices: ['vpn', 'separation', 'dhcp', 'dns', 'hypervisor', 'container_engine'],
+  /** a device's services (its `services:`): a DHCP server, a DNS server, the Hypervisor and the Container engine; a VPN Gateway's VPN gateway, a Security gateway's Domain separation */
+  netServices: ['vpn', 'separation', 'wireless', 'load_balancing', 'inspection', 'dhcp', 'dns', 'ntp', 'aaa', 'syslog', 'monitoring', 'proxy', 'nat', 'wireless_controller', 'hypervisor', 'container_engine', 'storage', 'application'],
+  wireless: ['controller', 'networks'],
+  wirelessNetwork: ['id', 'ssid', 'vlan', 'untagged', 'radio', 'security', 'passphrase', 'forwarding'],
+  ntp: ['stratum', 'upstreams'],
+  aaa: ['protocol', 'secret', 'clients'],
+  syslog: ['port', 'transport', 'senders'],
+  monitoring: ['targets', 'icmp_interval', 'snmp_interval'],
+  proxy: ['mode', 'listener', 'upstream', 'upstream_port'],
+  load_balancing: ['virtual_address', 'port', 'backends', 'algorithm', 'snat'],
+  nat: ['inside', 'outside', 'rules'],
+  natRule: ['type', 'source', 'to', 'port', 'to_port', 'protocol'],
+  wireless_controller: ['aps'],
+  storage: ['protocols'],
+  application: ['name', 'ports'],
+  inspection: ['block'],
   /** two ports a device passes traffic between: an entry of `port_pairs` */
   portPair: ['a', 'b', 'direction', 'copy'],
   /** a VPN Gateway's VPN gateway function (`services.vpn`) */
   vpn: ['operation', 'technology', 'tunnels', 'listener', 'pool', 'protected'],
-  /** a Separation gateway's Domain separation (`services.separation`) */
+  /** a Security gateway's Domain separation (`services.separation`) */
   separation: ['implementation', 'domains', 'directions', 'rules', 'profiles', 'simulation'],
   /** a security domain: an entry of `services.separation.domains` */
   sepDomain: ['name', 'interfaces'],
@@ -69,7 +83,7 @@ export const SCHEMA = {
   dnsName: ['name', 'interfaces'],
   /** a static route of a device: an entry of a device's `routes` */
   route: ['prefix', 'via', 'interface', 'blackhole', 'distance', 'metric', 'vrf', 'name', 'description', 'attrs'],
-  link: ['id', 'a', 'b', 'medium', 'speed', 'label', 'cable', 'direction', 'simulation', 'description', 'attrs'],
+  link: ['id', 'a', 'b', 'medium', 'speed', 'label', 'cable', 'direction', 'wireless_network', 'simulation', 'description', 'attrs'],
   /** one end of a link written as a mapping */
   linkEnd: ['device', 'interface', 'speed', 'duplex'],
   network: ['id', 'label', 'cidr', 'vlan', 'simulation', 'description', 'attrs'],

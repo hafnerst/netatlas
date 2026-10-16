@@ -69,10 +69,10 @@ test('rendering and UI code never see YAML syntax', () => {
 });
 
 // Behavior follows from capabilities (src/model/capabilities.ts), not from type names: outside the
-// registry, the resolver, the icon lookup (presentation) and the self-test (which names example
+// registries (device types, services), the resolver, the icon lookup (presentation) and the self-test (which names example
 // devices), no module compares a device's type with a type id. See FORMAT.md, "Capabilities".
-const TYPE_IDS = ['router', 'switch', 'firewall', 'ap', 'load_balancer', 'ids_ips', 'vpn_gateway', 'separation_gateway', 'server', 'vm', 'container', 'storage', 'endpoint', 'cloud', 'system'];
-const TYPE_CHECK_EXEMPT = ['model/device-types', 'model/capabilities', 'diagram/icons', 'app/selftest', 'app/viewport-check'];
+const TYPE_IDS = ['router', 'switch', 'firewall', 'ap', 'load_balancer', 'ids_ips', 'vpn_gateway', 'security_gateway', 'server', 'vm', 'container', 'storage', 'endpoint', 'cloud', 'system'];
+const TYPE_CHECK_EXEMPT = ['model/device-types', 'model/capabilities', 'model/service-registry', 'diagram/icons', 'app/selftest', 'app/viewport-check'];
 
 test('no semantic type checks outside the registry and the capability resolver', () => {
   const alt = TYPE_IDS.join('|');

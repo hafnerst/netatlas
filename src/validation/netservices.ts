@@ -24,7 +24,7 @@ import { YMap, YNode } from '../yaml/parse';
 import { SCHEMA } from '../yaml/schema';
 import { Ctx, Reader, get, isNull } from './reader';
 import { SimBlock, readSimBlock } from './simulation';
-import { capabilities } from '../model/capabilities';
+import { SvcDef, serviceDef, serviceEligibility } from '../model/service-registry';
 
 
 
@@ -75,14 +75,13 @@ export function readNetServices(r: Reader, c: Ctx, n: YNode | undefined, path: s
   r.keys(m, SCHEMA.netServices, path);
   // (the Hypervisor and the Container engine are read in virtual.ts)
   if (get(m, 'dhcp') === undefined && get(m, 'dns') === undefined) return undefined;
-  if (!capabilities(dev).networkServices) {
-    c.error(m, path, `"${dev.id}" is not a server: DHCP and DNS servers run on a server, a VM or a container`);
-    return undefined;
-  }
+  // (who may run them is the service registry's: readServiceBlock reports a device that may not)
+  const may = (id: string): boolean => serviceEligibility(serviceDef(id) as SvcDef, dev) === null;
+  if (!may('dhcp') && !may('dns')) return undefined;
   const out: NetServices = {};
   const nodes: NetServiceNodes = { device: dev.id, scopes: [], zones: [] };
   // DHCP
-  const dn = get(m, 'dhcp');
+  const dn = may('dhcp') ? get(m, 'dhcp') : undefined;
   if (dn !== undefined) {
     const dm = isNull(dn) ? null : r.map(dn, path + '.dhcp');
     const dpath = path + '.dhcp';
@@ -163,7 +162,7 @@ export function readNetServices(r: Reader, c: Ctx, n: YNode | undefined, path: s
     });
   }
   // DNS
-  const zn = get(m, 'dns');
+  const zn = may('dns') ? get(m, 'dns') : undefined;
   if (zn !== undefined) {
     const zm = isNull(zn) ? null : r.map(zn, path + '.dns');
     const zpath = path + '.dns';
@@ -185,7 +184,8 @@ export function readNetServices(r: Reader, c: Ctx, n: YNode | undefined, path: s
       }
     }
     const zitems = zm && !isNull(get(zm, 'zones')) ? r.list(get(zm, 'zones'), zpath + '.zones') : [];
-    if (!zitems.length) c.error(zm || (zn as YNode), zpath + '.zones', `the DNS server of "${dev.id}" needs a zone: add one (its domain name, e.g. hq.example)`, { key: 'zones' });
+    // a DNS server answers for its zones, or forwards (a router's or firewall's DNS forwarder): one or the other
+    if (!zitems.length && !out.dns.forwarders.length) c.error(zm || (zn as YNode), zpath + '.zones', `the DNS server of "${dev.id}" needs a zone (its domain name, e.g. hq.example) or forwarders (the servers it asks)`, { key: 'zones' });
     const seenZones = new Set<string>();
     zitems.forEach((it, k) => {
       const zp = `${zpath}.zones[${k}]`;

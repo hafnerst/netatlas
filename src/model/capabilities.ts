@@ -1,7 +1,7 @@
 /**
  * What a device can do, resolved from its type (the registry of
  * model/device-types.ts), its mode, its "Supports Layer 3", a System's
- * purpose and a Separation gateway's implementation: the one place that
+ * purpose and a Security gateway's implementation: the one place that
  * turns a type into behaviour. Validation, Connect, the Layer 3+ rules, the
  * path tracer, the single points of failure, the simulation, Auto-arrange
  * and the input helpers ask this resolver (and the shared policy queries),
@@ -23,7 +23,7 @@ export interface Capabilities {
   l2Forward: boolean;
   /** routes packets between its interfaces */
   l3Forward: boolean;
-  /** applies a policy to what it forwards (a firewall's, a separation gateway's) */
+  /** applies a policy to what it forwards (a firewall's, a security gateway's) */
   policy: boolean;
   /** passes traffic between explicitly paired ports (an inline IDS/IPS, an inline System) */
   inline: boolean;
@@ -41,10 +41,10 @@ export interface Capabilities {
   vpnTermination: boolean;
   /** forwards only to and from its VPN tunnels (never plain transit) */
   vpnOnlyTransit: boolean;
-  /** separates two security domains: how it transfers between them (null: not a separation gateway, or no implementation chosen) */
+  /** separates two security domains: how it transfers between them (null: not a security gateway, or no implementation chosen) */
   separation: 'filtering_bridge' | 'filtering_router' | 'protocol_break' | null;
-  /** a separation gateway (whatever its implementation): only its Domain separation decides what crosses */
-  separationGateway: boolean;
+  /** a security gateway (whatever its implementation): only its Domain separation decides what crosses */
+  securityGateway: boolean;
   /** ends a session on one side and starts its own on the other (a load balancer, a protocol break) */
   sessionBreak: boolean;
   /** provides wireless access (an access point's built-in function) */
@@ -93,7 +93,7 @@ const NONE: Capabilities = {
   vpnTermination: false,
   vpnOnlyTransit: false,
   separation: null,
-  separationGateway: false,
+  securityGateway: false,
   sessionBreak: false,
   wirelessAccess: false,
   ipStack: false,
@@ -119,13 +119,23 @@ export interface DeviceLike {
   mode?: string;
   purpose?: string;
   separation?: { implementation?: string };
+  /** its Wireless access, when configured (a router with it bridges its Wi-Fi networks too) */
+  wireless?: unknown;
+  /** the registry's services it runs (a server with Load balancing balances like a load balancer) */
+  appServices?: Map<string, unknown>;
 }
 
 const HOST: Partial<Capabilities> = { host: true, ipStack: true, routingTable: true };
 const ROUTER: Partial<Capabilities> = { l3Forward: true, ipStack: true, routingTable: true, routingProtocols: true };
 
-/** The capabilities of a device (see the module comment). */
+/** The capabilities of a device (see the module comment): its type's, then what the services it runs add. */
 export function capabilities(d: DeviceLike): Capabilities {
+  const c = baseCapabilities(d);
+  if (d.appServices && d.appServices.has('load_balancing') && !c.loadBalancing) return { ...c, loadBalancing: true, sessionBreak: true };
+  return c;
+}
+
+function baseCapabilities(d: DeviceLike): Capabilities {
   const t = typeDef(d.type);
   if (!t) return { ...NONE };
   return { ...NONE, ...resolve(t, d) };
@@ -135,7 +145,7 @@ function resolve(t: DeviceTypeDef, d: DeviceLike): Partial<Capabilities> {
   const mode = modeOf(d);
   switch (t.behaviour) {
     case 'router':
-      return { ...ROUTER };
+      return d.wireless ? { ...ROUTER, wirelessAccess: true } : { ...ROUTER };
     case 'switch':
       // a Layer 2 switch has a management address and static routes, and routes nothing; "Supports Layer 3" makes it route
       return d.layer3 ? { ...ROUTER, l2Forward: true, l2Transit: true, switchFeatures: true } : { l2Forward: true, l2Transit: true, switchFeatures: true, ipStack: true, routingTable: true };
@@ -144,14 +154,15 @@ function resolve(t: DeviceTypeDef, d: DeviceLike): Partial<Capabilities> {
         ? { l2Forward: true, l2Transit: true, policy: true, firewallPolicy: true, managementInterfaces: true, ipStack: true, routingTable: true }
         : { ...ROUTER, policy: true, firewallPolicy: true, managementInterfaces: true };
     case 'access_point':
-      return { l2Forward: true, l2Transit: true, wirelessAccess: true, ipStack: true };
+      // (its management address may have its default gateway, as a Layer 2 switch's may: it routes nothing)
+      return { l2Forward: true, l2Transit: true, wirelessAccess: true, ipStack: true, routingTable: true };
     case 'load_balancer':
       return { ...ROUTER, sessionBreak: true, loadBalancing: true };
     case 'ids_ips':
       return mode === 'passive' ? { passiveCopy: true, inspection: true, managementInterfaces: true } : { inline: true, l2Transit: true, needsPortPairs: true, inspection: true, managementInterfaces: true };
     case 'vpn_gateway':
       return { ...ROUTER, vpnTermination: true, vpnOnlyTransit: true };
-    case 'separation_gateway':
+    case 'security_gateway':
       return separationCaps(d);
     case 'host':
       return { ...HOST, serviceHost: true, networkServices: d.type === 'server', canHostGuests: { vms: d.type === 'server', containers: d.type === 'server' } };
@@ -170,10 +181,10 @@ function resolve(t: DeviceTypeDef, d: DeviceLike): Partial<Capabilities> {
   return {};
 }
 
-/** A Separation gateway: what crosses is only what its Domain separation permits, the way its implementation does it. */
+/** A Security gateway: what crosses is only what its Domain separation permits, the way its implementation does it. */
 function separationCaps(d: DeviceLike): Partial<Capabilities> {
   const impl = d.separation && d.separation.implementation;
-  const base: Partial<Capabilities> = { separationGateway: true, policy: true, managementInterfaces: true, ipStack: true };
+  const base: Partial<Capabilities> = { securityGateway: true, policy: true, managementInterfaces: true, ipStack: true };
   if (impl === 'filtering_bridge') return { ...base, separation: impl, l2Forward: true, l2Transit: true, routingTable: true };
   if (impl === 'filtering_router') return { ...base, separation: impl, l3Forward: true, routingTable: true };
   if (impl === 'protocol_break') return { ...base, separation: impl, sessionBreak: true, routingTable: true };
@@ -264,7 +275,7 @@ export function deviceTier(d: DeviceLike & { role?: string }): number {
   if (c.canBeGuest) return 6;
   if (c.wirelessAccess) return 5;
   if (c.switchFeatures || c.passThrough) return 4;
-  if (c.policy || c.inline || c.separationGateway) return 2;
+  if (c.policy || c.inline || c.securityGateway) return 2;
   if (c.l3Forward) return 1;
   if (c.host || c.passiveCopy) return 6;
   return 4;

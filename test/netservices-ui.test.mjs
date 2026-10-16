@@ -89,14 +89,17 @@ test('the Services card: off by default; DHCP and DNS ticked show what they need
     // untick both: the services are gone; one undo brings the DNS server back
     await press(page, '#side-body input[data-act="netsvc"][data-svc="dns"]');
     await press(page, '#side-body input[data-act="netsvc"][data-svc="dhcp"]');
-    assert.equal(await page.eval(`netatlas.exportText()`), before, 'unticked: the model as before');
+    // (a service's badge changes the box, so the positions shown were written to keep the diagram still; the rest is as before)
+    assert.equal((await page.eval(`netatlas.exportText()`)).replace(/\n+layout:[\s\S]*$/, '\n'), before.replace(/\n+layout:[\s\S]*$/, '\n'), 'unticked: the model as before');
     await page.eval(`netatlas.undo(), true`);
     await page.settle(150);
     c = await page.eval(CARD);
     assert.deepEqual([c.dhcp, c.dns], [true, false], 'one undo: the DHCP server is back');
-    // the other devices: a router or switch has no Services card; a host its DNS servers; core's Vlan20 its relay
+    // the other devices: a Layer 2 switch's Services card offers what it may run (NTP) and lists DHCP disabled with the reason; a host its DNS servers; core's Vlan20 its relay
     await edit(page, 'device:acc');
-    assert.equal(await page.eval(`!!document.querySelector('#side-body [data-group="netservices"]')`), false, 'no Services card on a switch');
+    const sw = await page.eval(`(() => { const s = document.querySelector('#side-body [data-group="netservices"] select[data-t="add-service"]'); return s ? Array.from(s.options).map((o) => (o.disabled ? '-' : '+') + o.value + ' ' + o.textContent) : null; })()`);
+    assert.ok(sw && sw.some((x) => /^\+ntp /.test(x)) && sw.some((x) => /^-dhcp DHCP server — a Layer 2 switch routes nothing/.test(x)) && !sw.some((x) => /^-?separation/.test(x)), JSON.stringify(sw));
+    assert.equal(await page.eval(`!!document.querySelector('#side-body [data-group="netservices"] input[data-svc="dhcp"]')`), false, 'no DHCP box on a Layer 2 switch');
     await edit(page, 'device:pc1');
     assert.equal(await page.eval(`!!document.querySelector('#side-body [data-group="dnsclient"]')`), true, 'a host has its DNS servers');
     await edit(page, 'iface:core:Vlan20');
@@ -114,16 +117,16 @@ test('the diagram: DHCP and DNS badges on the server, a reserved lease line on e
     await page.eval(`localStorage.clear(), netatlas.loadExample(${ex}), netatlas.setView('physical'), netatlas.fit(), true`);
     await page.settle(200);
     const geo = await page.eval(`(() => { const r = (e) => { const b = e.getBoundingClientRect(); return { left: b.left, right: b.right, top: b.top, bottom: b.bottom }; }; const dev = document.querySelector('#canvas [data-ref="device:srv"]');
-      const badges = Array.from(dev.querySelectorAll('.dev-badge')).map((b) => ({ t: b.querySelector('text').textContent, r: r(b) }));
+      const badges = Array.from(dev.querySelectorAll('.dev-sub tspan')).filter((t) => /DHCP|DNS/.test(t.textContent)).map((b) => ({ t: b.textContent, r: r(b) }));
       const label = r(dev.querySelector('.dev-label')); const box = r(dev.querySelector('.dev-box'));
       return { badges, label, box }; })()`);
-    assert.deepEqual(geo.badges.map((b) => b.t), ['DHCP', 'DNS']);
+    assert.deepEqual(geo.badges.map((b) => b.t), ['DHCP · DNS'], 'the service badges, a line under its type');
     const over = (a, b) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
     for (const b of geo.badges) {
       assert.ok(!over(b.r, geo.label), `${b.t} does not touch the label`);
       assert.ok(b.r.left >= geo.box.left && b.r.right <= geo.box.right && b.r.top >= geo.box.top && b.r.bottom <= geo.box.bottom, `${b.t} inside the box: ${JSON.stringify([b.r, geo.box])}`);
     }
-    assert.ok(!over(geo.badges[0].r, geo.badges[1].r), 'the badges do not overlap');
+
     // the reserved line, as wide as a lease: filled in the simulation, the same layout
     const lines = `Array.from(document.querySelectorAll('#canvas [data-field="lease"]')).map((t) => ({ t: t.textContent, w: t.closest('[data-ref]').querySelector('rect').getBoundingClientRect().width, on: t.classList.contains('lease-on') }))`;
     const a = await page.eval(lines);

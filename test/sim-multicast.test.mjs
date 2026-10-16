@@ -400,14 +400,14 @@ title: ap
 devices:
   - {id: q, type: router, protocols: {pim: {}}, interfaces: [{id: g0, ip: 10.6.0.1/24}]}
   - {id: src, type: server, interfaces: [{id: eth0, ip: 10.6.0.10/24, multicast: {streams: [{group: 239.6.6.6}]}}]}
-  - {id: ap, type: ap, interfaces: [up, ${m2u ? '{id: w1, simulation: {multicast_to_unicast: "on"}}' : 'w1'}, w2]}
+  - {id: ap, type: ap, services: {wireless: {networks: [{id: lan, ssid: LAN, untagged: true, radio: w1, security: open}]}}, interfaces: [up, ${m2u ? '{id: w1, simulation: {multicast_to_unicast: "on"}}' : 'w1'}, w2]}
   - {id: sw, type: switch, interfaces: [{id: p1, vlans: 1}, {id: p2, vlans: 1}, {id: p3, vlans: 1}]}
   - {id: phone, type: endpoint, interfaces: [{id: wlan0, ip: 10.6.0.21/24, multicast: {join: [239.6.6.6]}}]}
 links:
   - {id: a, a: "q:g0", b: "sw:p1"}
   - {id: b, a: "src:eth0", b: "sw:p2"}
   - {id: c, a: "sw:p3", b: "ap:up"}
-  - {id: air, a: "ap:w1", b: "phone:wlan0", medium: wireless}
+  - {id: air, a: "ap:w1", b: "phone:wlan0", medium: wireless, wireless_network: lan}
 `;
   const off = sim(Y(false));
   off.runTo(15000);

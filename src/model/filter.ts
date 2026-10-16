@@ -118,9 +118,17 @@ function indexOf(devices: Device[], links: Link[], networks: Network[], relation
   const interfaces = new Map<string, Interface>();
   for (const d of devices) for (const i of d.interfaces.concat(d.logical)) interfaces.set(ifaceKey(d.id, i.id), i);
   const ifaceLink = new Map<string, string>();
+  const radioLinks = new Map<string, string[]>();
+  const devById = new Map(devices.map((d) => [d.id, d] as [string, Device]));
   for (const l of links) {
-    if (l.a.iface !== undefined) ifaceLink.set(ifaceKey(l.a.device, l.a.iface), l.id);
-    if (l.b.iface !== undefined) ifaceLink.set(ifaceKey(l.b.device, l.b.iface), l.id);
+    for (const e of [l.a, l.b]) {
+      if (e.iface === undefined) continue;
+      const k = ifaceKey(e.device, e.iface);
+      if (!ifaceLink.has(k)) ifaceLink.set(k, l.id);
+      const d = devById.get(e.device);
+      // (a radio of a Wireless access: its wireless connections)
+      if (l.medium === 'wireless' && d && d.wireless && d.wireless.networks.some((x) => x.radio === e.iface)) radioLinks.set(k, (radioLinks.get(k) || []).concat([l.id]));
+    }
   }
   const routes = new Map<string, Route>();
   for (const d of devices) for (const r of d.routes) routes.set(routeKey(d.id, r.index), r);
@@ -132,6 +140,7 @@ function indexOf(devices: Device[], links: Link[], networks: Network[], relation
     networks: new Map(networks.map((n) => [n.id, n] as [string, Network])),
     relations: new Map(relations.map((r) => [r.id, r] as [string, Relation])),
     ifaceLink,
+    radioLinks,
     routes,
   };
 }

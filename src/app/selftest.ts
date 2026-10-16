@@ -271,7 +271,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
           labels.join('|') === 'New model|Open model…|Save model|Save model as…|Close model' && /Ctrl\+S$/.test(entries[2]) && /Ctrl\+Shift\+S$/.test(entries[3]) &&
           entries.length === 5 + EXAMPLES.length && ['#btn-save', '#btn-save-as', '#btn-close'].every((x) => (q(x) as HTMLButtonElement).disabled && /Open or create a model first|Close the current model/.test(q(x)!.title)) &&
           q('#btn-save')!.nextElementSibling === q('#btn-save-as') && q('#btn-save-as')!.nextElementSibling === q('#btn-close') &&
-          textsOf('#menu-examples .mi-label').join() === EXAMPLES.map((e) => e.name).join() && !q('#menu-examples .active-example') && /Examples/.test(q('#menu-examples-title')!.textContent || '') && EXAMPLES.length === 20 && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(menu!.textContent || '') && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(q('#empty')!.textContent || ''),
+          textsOf('#menu-examples .mi-label').join() === EXAMPLES.map((e) => e.name).join() && !q('#menu-examples .active-example') && /Examples/.test(q('#menu-examples-title')!.textContent || '') && EXAMPLES.length === 24 && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(menu!.textContent || '') && !/editor-new-network|minimal-edited|metro-ring-arranged/.test(q('#empty')!.textContent || ''),
         entries.join(' | '),
       );
       menuBtn!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
@@ -2708,11 +2708,13 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       app.setView('physical');
       await tick();
       const errs = app.mdoc ? (app.mdoc as ModelDoc).result.errors.length + (app.mdoc as ModelDoc).result.warnings.length : -1;
-      const badges = Array.from(doc.querySelectorAll('#canvas [data-ref="device:srv"] .dev-badge')).map((b) => b.textContent || '');
+      // (a device's services: a line of badges under its type, every service in its tooltip)
+      const srvNode = q('#canvas [data-ref="device:srv"]');
+      const badges = srvNode ? [Array.from(srvNode.querySelectorAll('.dev-sub tspan, .dev-sub')).map((t) => t.textContent || '').join('\n'), (srvNode.querySelector(':scope > title') || { textContent: '' }).textContent || ''] : [];
       const holes = Array.from(doc.querySelectorAll('#canvas [data-field="lease"]')).map((t) => t.textContent);
       check(
-        `${theme}: campus-services: no problem; srv has its DHCP and DNS badges (with tooltips), the DHCP clients a reserved lease line; the legend lists both servers`,
-        errs === 0 && badges.some((b) => /^DHCP server/.test(b) && /DHCP$/.test(b)) && badges.some((b) => /^DNS server/.test(b) && /DNS$/.test(b)) && holes.length === 3 && holes.every((t) => t === 'lease: assigned in a simulation') &&
+        `${theme}: campus-services: no problem; srv has its DHCP and DNS badges (a line under its type, every service in its tooltip), the DHCP clients a reserved lease line; the legend lists both servers`,
+        errs === 0 && /DHCP · DNS/.test(badges[0] || '') && /DHCP server \(DHCP\), DNS server \(DNS\)/.test(badges[1] || '') && holes.length === 3 && holes.every((t) => t === 'lease: assigned in a simulation') &&
           legendOf(app.session!.model, 'physical').sections.some((x) => x.items.some((i) => /^DHCP server/.test(i.label)) && x.items.some((i) => /^DNS server/.test(i.label))),
         `${errs} ${badges.join('|')} ${holes.join('|')}`,
       );
@@ -5677,8 +5679,8 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         return `${cs.borderTopStyle} ${cs.borderTopLeftRadius}`;
       };
       check(
-        'Edit and Details share the object header and present their content in the same titled cards (Edit: Identity, Placement, Protocols, Simulation with its count, Notes; Details: Overview and its sections); Duplicate and Delete keep their names',
-        editHead && detHead && /^Identity\|Placement\|Protocols \(routing services\)\|Simulation \(\d+\)\|Notes/.test(editGroups) && /^Overview\|Physical interfaces/.test(detGroups) && buttons === 'Duplicate|Delete' && card('#side-body .fgroup') === 'solid 9px' && doc.documentElement.scrollHeight <= doc.documentElement.clientHeight + 1,
+        'Edit and Details share the object header and present their content in the same titled cards (Edit: Identity, Placement, Protocols, Services, Simulation with its count, Notes; Details: Overview and its sections); Duplicate and Delete keep their names',
+        editHead && detHead && /^Identity\|Placement\|Protocols \(routing services\)\|Services\|Simulation \(\d+\)\|Notes/.test(editGroups) && /^Overview\|Physical interfaces/.test(detGroups) && buttons === 'Duplicate|Delete' && card('#side-body .fgroup') === 'solid 9px' && doc.documentElement.scrollHeight <= doc.documentElement.clientHeight + 1,
         editGroups + ' // ' + detGroups,
       );
       click('[data-tab="legend"]');
@@ -5862,7 +5864,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       click('[data-tab="legend"]');
     }
 
-    // ------------------------------------------------ the device model: VPN Gateway, Separation gateway, Systems, both themes
+    // ------------------------------------------------ the device model: VPN Gateway, Security gateway, Systems, both themes
     {
       const exAt = (name: string): number => EXAMPLES.findIndex((e) => e.name === name);
       const html = doc.documentElement;
@@ -5878,7 +5880,7 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
         const side = q('#side-body') as HTMLElement;
         const impl = side.querySelector('select[data-key="implementation"]') as HTMLSelectElement | null;
         check(
-          `${theme}: a Separation gateway's Edit tab: Domain separation built in (no remove), its implementation chosen, two domains, the permitted direction, its transfer profile and its rule; management interfaces apart`,
+          `${theme}: a Security gateway's Edit tab: Domain separation built in (no remove), its implementation chosen, two domains, the permitted direction, its transfer profile and its rule; management interfaces apart`,
           /Domain separation \(built in\)/.test(side.textContent || '') && !!impl && impl.value === 'protocol_break' && side.querySelectorAll('.domain-card').length === 2 && side.querySelectorAll('.profile-card').length === 1 && side.querySelectorAll('.rule-card').length === 1 &&
             side.querySelectorAll('.sep-dirs input:checked').length === 1 && /Management interfaces/.test(side.textContent || '') && !side.querySelector('[data-act="disable-service"][data-svc="separation"]'),
           (side.textContent || '').slice(0, 200),
@@ -5939,6 +5941,95 @@ export async function runSelfTest(app: App, doc: Document): Promise<Check[]> {
       await tick(20);
       const purpose = q('#side-body select[data-key="purpose"]') as HTMLSelectElement | null;
       check('a System shows its purpose (required, no default offered) and its icon among its purpose\'s', !!purpose && purpose.value === 'host' && Array.prototype.some.call(purpose.options, (o: HTMLOptionElement) => o.value === '' && /Select what it does/.test(o.textContent || '')));
+      app.mdoc!.markSaved();
+    }
+
+    // ------------------------------------------------ services and Wi-Fi: the Services card, Add service…, Wireless access, badges, both themes
+    {
+      const exAt = (name: string): number => EXAMPLES.findIndex((e) => e.name === name);
+      const html = doc.documentElement;
+      const before = html.getAttribute('data-theme');
+      const rgb = (x: string): number[] => {
+        const m = /rgba?\(([^)]+)\)/.exec(x);
+        return m ? m[1].split(',').map((y) => parseFloat(y)) : [0, 0, 0, 0];
+      };
+      const hex = (v: number[]): string => '#' + v.slice(0, 3).map((x) => Math.round(x).toString(16).padStart(2, '0')).join('');
+      const seenBg = (el: HTMLElement): string => {
+        const layers: number[][] = [];
+        for (let e: HTMLElement | null = el; e; e = e.parentElement) {
+          const b = rgb(doc.defaultView!.getComputedStyle(e).backgroundColor);
+          const a = b.length > 3 ? b[3] : 1;
+          if (a > 0) layers.push([b[0], b[1], b[2], a]);
+          if (a >= 1) break;
+        }
+        let seen = [255, 255, 255];
+        for (const l of layers.reverse()) seen = seen.map((v, i) => l[i] * l[3] + v * (1 - l[3]));
+        return hex(seen);
+      };
+      for (const theme of ['light', 'dark']) {
+        html.setAttribute('data-theme', theme);
+        app.loadExample(exAt('campus-wireless.yaml'));
+        app.setView('physical');
+        await tick(20);
+        app.select('device:srv');
+        click('[data-tab="edit"]');
+        await tick(20);
+        const side = q('#side-body') as HTMLElement;
+        const add = side.querySelector('select[data-t="add-service"]') as HTMLSelectElement | null;
+        const offered = add ? Array.prototype.filter.call(add.options, (o: HTMLOptionElement) => o.value && !o.disabled).map((o: HTMLOptionElement) => o.value) : [];
+        const off = add ? Array.prototype.filter.call(add.options, (o: HTMLOptionElement) => o.disabled).map((o: HTMLOptionElement) => o.textContent || '') : [];
+        check(
+          `${theme}: a server's Services card: a card per service it runs (NTP, AAA, Syslog collector, Monitoring), Add service… offers the rest it may run and lists the others disabled with the reason`,
+          ['ntp', 'aaa', 'syslog', 'monitoring'].every((id) => !!side.querySelector(`[data-svc-card="${id}"]`)) && offered.indexOf('proxy') >= 0 && offered.indexOf('ntp') < 0 &&
+            off.some((t) => /^Wireless access — /.test(t)) && off.some((t) => /^NAT — /.test(t)),
+          `offered ${offered.join(',')}; off ${off.join(' | ').slice(0, 200)}`,
+        );
+        const secret = side.querySelector('[data-svc-card="aaa"] input[data-p*="secret"]') as HTMLInputElement | null;
+        check(`${theme}: the AAA card's shared secret shows its placeholder`, !!secret && secret.value === '<radius-secret>', secret ? secret.value : 'no field');
+        const svcEls = Array.prototype.slice.call(side.querySelectorAll('[data-group="netservices"] .svc-name, [data-group="netservices"] label, [data-group="netservices"] .help')) as HTMLElement[];
+        const low = svcEls.map((el) => [el, contrast(hex(rgb(doc.defaultView!.getComputedStyle(el).color)), seenBg(el))] as [HTMLElement, number]).filter((x) => x[1] < 4.5);
+        check(`${theme}: the Services card's names, labels and help are readable (AA)`, svcEls.length > 0 && !low.length, low.slice(0, 3).map((x) => `${(x[0].textContent || '').slice(0, 30)}: ${x[1].toFixed(2)}`).join('; '));
+        const node = q('#viewport g.device[data-ref="device:srv"]');
+        const tip = node ? node.querySelector('title') : null;
+        const nodeText = node ? Array.prototype.map.call(node.querySelectorAll('text'), (e: Element) => e.textContent || '').join('|') : '';
+        check(`${theme}: srv's badge line says three services and how many more; its tooltip names them all`, /DHCP · DNS · NTP \+3/.test(nodeText) && !!tip && /Monitoring/.test(tip.textContent || ''), nodeText + ' / ' + (tip ? tip.textContent : 'no tooltip'));
+        app.select('device:ap1');
+        await tick(20);
+        const wcard = side.querySelector('[data-svc-card="wireless"]') as HTMLElement | null;
+        const nets = wcard ? wcard.querySelectorAll('.wifi-card').length : 0;
+        check(
+          `${theme}: an access point's Wireless access (built in, no Remove): a card per Wi-Fi network with its VLAN and its clients; the controller`,
+          !!wcard && nets === 2 && /Wireless access \(built in\)/.test(side.textContent || '') && !side.querySelector('[data-act="remove-service"][data-svc="wireless"]') && /w-laptop1/.test(wcard.textContent || '') && !!wcard.querySelector('[data-p*="controller"]'),
+          wcard ? (wcard.textContent || '').slice(0, 200) : 'no card',
+        );
+        const drawn = Array.prototype.map.call(doc.querySelectorAll('#viewport text'), (e: Element) => e.textContent || '').join('|');
+        check(`${theme}: the radio's end of a wireless connection says its SSID and VLAN`, /SSID “Campus-Guest”/.test(drawn), drawn.slice(0, 200));
+        const probs = drawnProblems();
+        check(`${theme}: campus-wireless example, measured in the browser: nothing overlaps`, !probs.length, probs.slice(0, 3).join('; '));
+      }
+      if (before === null) html.removeAttribute('data-theme');
+      else html.setAttribute('data-theme', before);
+      await tick(20);
+      // Add service… on a router: the empty block with its errors; one undo removes it
+      app.loadExample(exAt('multi-ssid-ap.yaml'));
+      await tick(20);
+      app.select('device:guest-gw');
+      click('[data-tab="edit"]');
+      await tick(20);
+      const y0 = app.exportText();
+      const add = q('#side-body select[data-t="add-service"]') as HTMLSelectElement | null;
+      if (add) {
+        add.value = 'ntp';
+        add.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+      await tick(30);
+      const added = /guest-gw[\s\S]*?ntp:/.test(app.exportText()) && !!q('#side-body [data-svc-card="ntp"]') && /needs its stratum/.test(q('#side-body')!.textContent || '');
+      click('#btn-undo');
+      await tick(30);
+      check('Add service… writes the service with nothing chosen (its required fields are errors) and one undo takes it back', added && app.exportText() === y0);
+      // Find by SSID
+      const hits = search(app.session!.model, 'Guest', 200);
+      check('Find lists a Wi-Fi network by its SSID (its access point)', hits.some((h) => h.ref === 'device:ap1' && /Wi-Fi network/.test(h.kind)), hits.map((h) => h.kind + ':' + h.ref).join(', '));
       app.mdoc!.markSaved();
     }
 

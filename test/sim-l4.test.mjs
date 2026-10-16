@@ -513,11 +513,11 @@ test('a wireless client silent for its access point’s idle timeout is disassoc
   const s = sim(`netatlas: 1
 title: wifi
 devices:
-  - {id: ap, type: ap, interfaces: [{id: w, simulation: {beacon_interval: 100ms}}, up], simulation: {client_idle_timeout: 20}}
+  - {id: ap, type: ap, services: {wireless: {networks: [{id: lan, ssid: LAN, untagged: true, radio: w, security: open}]}}, interfaces: [{id: w, simulation: {beacon_interval: 100ms}}, up], simulation: {client_idle_timeout: 20}}
   - {id: phone, type: endpoint, interfaces: [{id: wlan0, ip: 10.0.0.5/24}]}
   - {id: srv, type: server, interfaces: [{id: eth0, ip: 10.0.0.10/24}]}
 links:
-  - {id: air, a: "ap:w", b: "phone:wlan0", medium: wireless}
+  - {id: air, a: "ap:w", b: "phone:wlan0", medium: wireless, wireless_network: lan}
   - {id: wire, a: "ap:up", b: "srv:eth0"}
 `);
   s.runTo(25000);

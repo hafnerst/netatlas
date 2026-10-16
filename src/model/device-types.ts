@@ -23,7 +23,7 @@ export type BaseBehaviour =
   | 'load_balancer'
   | 'ids_ips'
   | 'vpn_gateway'
-  | 'separation_gateway'
+  | 'security_gateway'
   | 'host'
   | 'guest_vm'
   | 'guest_container'
@@ -110,11 +110,11 @@ export const DEVICE_TYPES: ReadonlyArray<DeviceTypeDef> = [
     kinds: [{ id: 'hardware', label: 'Hardware appliance' }, { id: 'virtual', label: 'Virtual appliance' }, { id: 'remote_access', label: 'Remote-access concentrator' }, OTHER],
   },
   {
-    id: 'separation_gateway',
-    label: 'Separation gateway',
-    plural: 'Separation gateways',
-    behaviour: 'separation_gateway',
-    kinds: [{ id: 'cross_domain', label: 'Cross-domain gateway' }, { id: 'red_black', label: 'Red–black gateway' }, { id: 'it_ot', label: 'IT/OT separation gateway' }, OTHER],
+    id: 'security_gateway',
+    label: 'Security gateway',
+    plural: 'Security gateways',
+    behaviour: 'security_gateway',
+    kinds: [{ id: 'cross_domain', label: 'Cross-domain gateway' }, { id: 'red_black', label: 'Red–black gateway' }, { id: 'it_ot', label: 'IT/OT security gateway' }, OTHER],
   },
   { id: 'server', label: 'Server', plural: 'Servers', behaviour: 'host', kinds: [{ id: 'physical', label: 'Physical server' }, { id: 'appliance', label: 'Appliance' }, OTHER] },
   { id: 'vm', label: 'Virtual machine', plural: 'Virtual machines', behaviour: 'guest_vm', kinds: [{ id: 'general', label: 'General-purpose VM' }, { id: 'virtual_appliance', label: 'Virtual appliance' }, OTHER] },

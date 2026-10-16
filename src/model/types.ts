@@ -234,11 +234,15 @@ export interface Device {
   icon?: string;
   /** the port pairs it passes traffic between (`port_pairs:`): an inline IDS/IPS, an inline or pass-through System */
   portPairs: PortPair[];
-  /** its management interfaces (`management:`): addressed, never part of the data path (a transparent firewall, a separation gateway, an IDS/IPS) */
+  /** its management interfaces (`management:`): addressed, never part of the data path (a transparent firewall, a security gateway, an IDS/IPS) */
   management: string[];
-  /** a VPN Gateway's built-in VPN gateway function (`services.vpn`) */
+  /** its VPN gateway (`services.vpn`): built into a VPN Gateway, a service of a router, routed firewall, server or VM */
   vpn?: VpnService;
-  /** a Separation gateway's built-in Domain separation (`services.separation`) */
+  /** its Wireless access (`services.wireless`): built into an access point, a service of a router */
+  wireless?: WirelessService;
+  /** the other services of the registry it runs (model/service-registry.ts), by id: NTP, AAA, syslog, monitoring, proxy, NAT … */
+  appServices?: Map<string, ServiceInstance>;
+  /** a Security gateway's built-in Domain separation (`services.separation`) */
   separation?: SeparationService;
   /**
    * A switch that routes (`layer3: true`): a Layer 3 switch with the full
@@ -314,6 +318,53 @@ export interface PortPair {
   line: number;
 }
 
+/** A service of the registry as read (its parameters' values, its lists' entries). */
+export interface ServiceInstance {
+  id: string;
+  values: { [key: string]: unknown };
+  lists: { [key: string]: Array<{ [key: string]: unknown }> };
+  line: number;
+}
+
+/** The security of a Wi-Fi network. */
+export const WIFI_SECURITY: ReadonlyArray<{ id: string; label: string; secret: boolean }> = [
+  { id: 'open', label: 'Open (no encryption)', secret: false },
+  { id: 'wpa2_psk', label: 'WPA2-Personal (PSK)', secret: true },
+  { id: 'wpa3_sae', label: 'WPA3-Personal (SAE)', secret: true },
+  { id: 'wpa2_enterprise', label: 'WPA2-Enterprise (802.1X)', secret: false },
+  { id: 'wpa3_enterprise', label: 'WPA3-Enterprise (802.1X)', secret: false },
+];
+
+/**
+ * A Wi-Fi network of a Wireless access (an access point's, a router's): its
+ * SSID, the VLAN it is bridged to (or the untagged domain, written as such),
+ * the radio it is on, its security. A wireless connection names it.
+ */
+export interface WirelessNetwork {
+  id: string;
+  ssid?: string;
+  /** the VLAN it is bridged to (never inferred, never VLAN 1 by default) */
+  vlan?: number;
+  /** bridged to the untagged (native) domain of the uplink instead, written as `untagged: true` */
+  untagged?: boolean;
+  /** the radio: a physical interface of the device */
+  radio?: string;
+  security?: string;
+  /** a placeholder for the passphrase (a PSK / SAE network) */
+  passphrase?: string;
+  /** a controller-managed access point: bridged locally (the default) or tunneled to the controller */
+  forwarding?: 'local' | 'tunneled';
+  line: number;
+}
+
+/** Wireless access (`services.wireless`). */
+export interface WirelessService {
+  /** a controller-managed access point: its controller (a device with the Wireless controller service) */
+  controller?: string;
+  networks: WirelessNetwork[];
+  line: number;
+}
+
 /** A VPN gateway's operation and technology. */
 export const VPN_OPERATIONS: ReadonlyArray<{ id: 'site_to_site' | 'remote_access'; label: string }> = [
   { id: 'site_to_site', label: 'Site-to-site' },
@@ -346,7 +397,7 @@ export interface VpnService {
   line: number;
 }
 
-/** How a Separation gateway transfers between its two domains. */
+/** How a Security gateway transfers between its two domains. */
 export const SEPARATION_IMPLEMENTATIONS: ReadonlyArray<{ id: 'filtering_bridge' | 'filtering_router' | 'protocol_break'; label: string; help: string }> = [
   { id: 'filtering_bridge', label: 'Filtering bridge', help: 'Passes permitted frames unchanged: both domains share a network; no address in it.' },
   { id: 'filtering_router', label: 'Filtering router', help: 'Routes permitted packets: each domain has its own network, the gateway an address in each.' },
@@ -360,14 +411,14 @@ export const TRANSFER_PROFILES: ReadonlyArray<{ id: string; label: string; trans
   { id: 'syslog', label: 'Syslog message', transport: 'udp', port: 514, reply: false, help: 'A message ends here; the gateway sends a new one on. Nothing comes back.' },
 ];
 
-/** A security domain of a Separation gateway: its name and its data interfaces. */
+/** A security domain of a Security gateway: its name and its data interfaces. */
 export interface SeparationDomain {
   name: string;
   interfaces: string[];
   line: number;
 }
 
-/** A permitted transfer of a Separation gateway: who may start what, from which domain to which. */
+/** A permitted transfer of a Security gateway: who may start what, from which domain to which. */
 export interface SeparationRule {
   id: string;
   description?: string;
@@ -398,7 +449,7 @@ export interface TransferProfile {
   line: number;
 }
 
-/** The Domain separation function (`services.separation`): built into a Separation gateway, never anywhere else. */
+/** The Domain separation function (`services.separation`): built into a Security gateway, never anywhere else. */
 export interface SeparationService {
   implementation?: 'filtering_bridge' | 'filtering_router' | 'protocol_break';
   domains: SeparationDomain[];
@@ -698,6 +749,8 @@ export interface Link {
   direction: Direction;
   /** the cable's simulation settings (its `simulation:` block), when written */
   simulation?: LinkSimulation;
+  /** a wireless connection: the Wi-Fi network (of the end with Wireless access) it is associated with, by its id */
+  wirelessNetwork?: string;
   description?: string;
   attrs: Attrs;
   line: number;
@@ -830,8 +883,10 @@ export interface ModelIndex {
   links: Map<string, Link>;
   networks: Map<string, Network>;
   relations: Map<string, Relation>;
-  /** "device:iface" -> link id */
+  /** "device:iface" -> link id (a radio: its first wireless connection) */
   ifaceLink: Map<string, string>;
+  /** a radio of a Wireless access -> every wireless connection associated on it ("device:iface" -> link ids, in file order) */
+  radioLinks: Map<string, string[]>;
   /** "device:index" -> static route */
   routes: Map<string, Route>;
 }

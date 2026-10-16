@@ -1,6 +1,6 @@
 # netatlas example: a cross-domain boundary with a protocol break.
 #
-# cdg is a Separation gateway between two domains, Red and Black (the names
+# cdg is a Security gateway between two domains, Red and Black (the names
 # are only labels: NetAtlas reads no classification, trust or direction
 # from them). Its implementation is a protocol break: nothing passes
 # through it. The Red workstation sends its web request to the gateway's
@@ -25,7 +25,7 @@
 netatlas: 1
 title: Cross-domain boundary (protocol break)
 description: |
-  Red and Black domains joined by a Separation gateway that breaks the
+  Red and Black domains joined by a Security gateway that breaks the
   protocol: one permitted web transfer in two legs, one denied transfer,
   and a management network that reaches the gateway only.
 
@@ -60,7 +60,7 @@ devices:
       - {id: p2, vlans: 1}
   - id: cdg
     label: cdg (cross-domain)
-    type: separation_gateway
+    type: security_gateway
     services:
       separation:
         implementation: protocol_break

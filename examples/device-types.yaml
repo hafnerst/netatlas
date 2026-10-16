@@ -2,7 +2,7 @@
 #
 # A small campus that uses each of the 15 device types once or more:
 # cloud, router, vpn_gateway, firewall, ids_ips, load_balancer,
-# separation_gateway, switch, ap, endpoint, server, vm, container, storage
+# security_gateway, switch, ap, endpoint, server, vm, container, storage
 # and system.
 netatlas: 1
 title: Campus — all device types
@@ -10,7 +10,7 @@ description: |
   Internet edge with a remote-access VPN Gateway, firewall and inline IPS; a
   DMZ with a load balancer and a web proxy server; core and access switching
   with Wi-Fi; a server room with a virtualisation host, a monitoring
-  appliance and a NAS behind a Separation gateway (a filtering bridge).
+  appliance and a NAS behind a Security gateway (a filtering bridge).
 
 groups:
   - id: providers
@@ -137,6 +137,10 @@ devices:
     label: ap-1-01
     type: ap
     group: office
+    services:
+      wireless:
+        networks:
+          - {id: office, ssid: Office, untagged: true, radio: wlan0, security: wpa3_enterprise}
     interfaces:
       - {id: eth0}
       - {id: wlan0}
@@ -184,7 +188,7 @@ devices:
   # the NAS sits behind a filtering bridge: only NFS from the server room reaches it
   - id: sep
     label: sep-nas
-    type: separation_gateway
+    type: security_gateway
     group: server-room
     services:
       separation:
@@ -238,7 +242,7 @@ links:
   - {id: l-core-access, a: "core:Et2", b: "access:Et49", medium: fiber, speed: 10G}
   - {id: l-access-ap, a: "access:Et1", b: "ap:eth0", speed: 1G}
   - {id: l-access-pc, a: "access:Et2", b: "desktop:eth0", speed: 1G}
-  - {id: l-wifi, a: "ap:wlan0", b: "laptop:wlan0", medium: wireless}
+  - {id: l-wifi, a: "ap:wlan0", b: "laptop:wlan0", medium: wireless, wireless_network: office}
   - {id: l-core-host, a: "core:Et3", b: "host:vmnic0", medium: dac, speed: 10G}
   - {id: l-core-sep, a: "core:Et4", b: "sep:p1", medium: dac, speed: 10G}
   - {id: l-sep-nas, a: "sep:p2", b: "nas:eth0", medium: dac, speed: 10G}

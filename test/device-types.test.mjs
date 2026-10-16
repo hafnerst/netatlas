@@ -17,7 +17,7 @@ const SPEC = [
   ['Load balancer', 'load_balancer'],
   ['IDS/IPS', 'ids_ips'],
   ['VPN Gateway', 'vpn_gateway'],
-  ['Separation gateway', 'separation_gateway'],
+  ['Security gateway', 'security_gateway'],
   ['Server', 'server'],
   ['Virtual machine', 'vm'],
   ['Container', 'container'],
@@ -32,13 +32,14 @@ const HOSTS = {
   vm: '    host: h\n    logical_interfaces: [{id: eth0, type: vnic, port_group: pg}]\n  - {id: h, type: server, services: {hypervisor: {platform: kvm, vswitches: [{name: vs, type: linux_bridge, port_groups: [{name: pg, vlans: 1}]}]}}}\n',
   container: '    host: h\n    logical_interfaces: [{id: eth0, type: veth, network: n}]\n  - {id: h, type: server, services: {container_engine: {engine: docker, networks: [{name: n, driver: none}]}}}\n',
 };
-// (what a type needs to be complete: an inline IDS/IPS its port pairs, a VPN Gateway its VPN, a Separation gateway its policy, a System its purpose)
+// (what a type needs to be complete: an inline IDS/IPS its port pairs, a VPN Gateway its VPN, a Security gateway its policy, a System its purpose)
 const NEEDS = {
   ids_ips: '    interfaces: [eth0, eth1]\n    port_pairs: [{a: eth0, b: eth1}]\n',
   vpn_gateway: '    services: {vpn: {operation: remote_access, technology: ipsec, listener: eth0, pool: 10.250.0.0/24, protected: [10.0.0.0/8]}}\n    interfaces: [{id: eth0, ip: 192.0.2.1/24}]\n',
-  separation_gateway:
+  security_gateway:
     '    services: {separation: {implementation: filtering_bridge, domains: [{name: Red, interfaces: [eth0]}, {name: Black, interfaces: [eth1]}], directions: [{from: Red, to: Black}]}}\n    interfaces: [eth0, eth1]\n',
   system: '    purpose: host\n    interfaces: [eth0]\n',
+  ap: '    services: {wireless: {networks: [{id: lan, ssid: LAN, untagged: true, radio: wlan0, security: open}]}}\n    interfaces: [eth0, wlan0]\n',
 };
 const withType = (type) =>
   `netatlas: 1\ndevices:\n  - id: d1\n${type === undefined ? '' : `    type: ${type}\n`}` + (HOSTS[type] || NEEDS[type] || `    interfaces: [${type === 'switch' ? '{id: eth0, vlans: 1}' : 'eth0'}]\n`);
@@ -63,7 +64,7 @@ test('every type is accepted and has its own icon and a default tier', () => {
   assert.ok(defaultTier('cloud') < defaultTier('router') && defaultTier('router') < defaultTier('firewall'));
   assert.ok(defaultTier('firewall') < defaultTier('switch') && defaultTier('switch') < defaultTier('ap') && defaultTier('ap') < defaultTier('server'));
   assert.equal(defaultTier('ids_ips'), defaultTier('firewall'));
-  assert.equal(defaultTier('separation_gateway'), defaultTier('firewall'));
+  assert.equal(defaultTier('security_gateway'), defaultTier('firewall'));
   assert.equal(defaultTier('vpn_gateway'), defaultTier('router'));
   assert.equal(defaultTier('vm'), defaultTier('server'));
   // a passive sensor sits with the hosts; a role decides where it has one (an unknown custom role falls back)
@@ -105,10 +106,10 @@ test('any other value is an error at the type, with a suggestion', () => {
   }
   // without a close match the allowed values are listed
   const far = validate.loadModel(withType('mainframe')).errors[0].message;
-  assert.match(far, /\(known: router, switch, firewall, ap, load_balancer, ids_ips, vpn_gateway, separation_gateway, server, vm, container, storage, endpoint, cloud, system\)/);
+  assert.match(far, /\(known: router, switch, firewall, ap, load_balancer, ids_ips, vpn_gateway, security_gateway, server, vm, container, storage, endpoint, cloud, system\)/);
   // the removed types say what they became
   assert.match(validate.loadModel(withType('gateway')).errors[0].message, /unknown device type "gateway" \(.*vpn_gateway.*\)/);
-  assert.match(validate.loadModel(withType('proxy')).errors[0].message, /unknown device type "proxy" \(an application proxy is a server, vm or container; a boundary between security domains is a separation_gateway\)/);
+  assert.match(validate.loadModel(withType('proxy')).errors[0].message, /unknown device type "proxy" \(an application proxy is a server, vm or container; a boundary between security domains is a security_gateway\)/);
   // a draft with a wrong type still has a model to draw, with the generic icon
   const r = validate.loadModel(withType('hypervisor'));
   assert.ok(r.model);
