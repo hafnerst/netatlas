@@ -398,7 +398,7 @@ async function main() {
       await page.eval(`netatlas.fit(), document.getElementById('toast').hidden = true, true`);
       await page.mouse('mouseMoved', 700, 890);
       await page.settle(300);
-      await save('dhcp-sim', { x: 0, y: 0, w: 1440, h: 900 }, { scale: 0.65, quality: 32 });
+      await save('dhcp-sim', { x: 0, y: 0, w: 1440, h: 900 }, { scale: 0.65, quality: 29 });
       await page.eval(`netatlas.exitSimulation(), sessionStorage.clear(), true`);
       await page.settle(100);
     }

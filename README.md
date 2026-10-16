@@ -1715,6 +1715,42 @@ of events away: the page stays responsive and the jump goes on in the next
 frame). Off, idle time passes at the speed (1 s per second at 1×). The
 time shown is always the true simulated time (the log to the microsecond).
 
+**Foreground and background.** Many exchanges at once can't all be
+followed, and a user's action should show at once. So the display has a
+foreground and a background (`src/analysis/sim/pacing.ts`):
+
+* **Your events in front.** While a Network event with traffic of its own
+  runs (a send's messages still to send or on their way, a stream, a join
+  waiting for its router), its traffic is the foreground: only its hops
+  hold the clock, each readable, and the gaps between its messages are
+  skipped, so its next message appears as soon as the last one has been
+  seen, never after the scenario's dots. The scenario is the background:
+  its hops are not drawn as dots but as **cable activity** (the cable lit,
+  dashed, with a short count such as *OSPF ×3 · ARP ×1*, for 3 s), and
+  they hold nothing. The panel says *· your events in front*. Measured on
+  `test/examples/protocol-simulation.yaml`: a 1 s stream's datagrams
+  follow each other every ~10 s of display (one datagram's hops), against
+  two in 90 s behind the scenario's dots before. Flapping has no traffic
+  of its own (what it shows is the network's reaction) and is no
+  foreground.
+* **Bundling.** With nothing of yours running, at most 6 of the
+  scenario's exchanges (conversations: an ARP request and its reply, a
+  ping and its echo, a hello) are drawn as dots at once, each to its end;
+  the others are cable activity and hold nothing. Followed messages are
+  always drawn.
+* **Next exchange** (beside Step): on to the end of the exchange first on
+  screen, or of the next one to start.
+* **Real time** pacing (*1 s = 1 s*): the simulated clock runs with the
+  display clock (× the speed), held by nothing; every hop shows for 0.8 s
+  as a sign of its traffic, bundled. A Network event's interval is a real
+  interval. When a frame's work budget (25 ms) can't keep up, the clock
+  falls behind (*· behind*) and goes on from where it got, never catching
+  up in a burst. A hidden tab stops the display clock, as always.
+* **One network, one clock.** The foreground and the background are the
+  same simulation: a shut, a membership, a route change affect both, and
+  intervals stay simulated time, so round trips, timeouts and aging are
+  right and the same every run. Only how the time is shown differs.
+
 **Even pacing from the first packet.** Every hop gets the same screen
 time, the first ones after the start as much as those a minute later. The
 display clock starts with the first frame drawn: the time before it (the
@@ -2742,6 +2778,7 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots of the rele
 | **Send test's sources** | `test/send-test.test.mjs` (6 tests) | Every device a source (guest-phone among them), the others listed with the reason from the capability resolver (a Cloud, a TAP, a passive IDS: no IP stack; a switch without an address); a DHCP client before its lease (the test waits, nothing invented) and after it (lease, server, gateway, DNS, Wi-Fi network and VLAN; the test from the leased address); DHCP without an answer (the waiting test ends with the reason, the device stays a source); no stale lease after its link went down; an interface chosen as the source (its address and VRF, an unknown one refused); a policy-denied Guest test sent and ending where the DSL router dropped it, an unreachable one ending otherwise. |
 | **Send test's plan** | `test/send-test-plan.test.mjs` (12 tests) | **Shared rules:** the protocols of each delivery type (no TCP for multicast or broadcast), ports for TCP and UDP only (none while the protocol is unselected, an ICMP plan with a port refused), what is missing named in the form's order; counts (0, 1.5, 1001, NaN refused) and intervals (0, negative, NaN, ∞, above 3600, below 0.01 refused; none needed for one message). **Labels:** *name - address* per interface, a DHCP lease before and after, two addresses of one interface as two destinations, the ISP *Cannot send IP packets*. **Unicast:** the destination interface chosen is the target (a DHCP lease found when sent; the DSL router's *wan*); several need a choice; an address that interface lacks refused. **Ports:** an ICMP test's packets carry none. **100 messages at 1 s:** exactly 100 originating echo requests at t0 … t0 + 99 s, deterministic, under 5 s; a series not waiting for replies; **Stop** (nothing more sent, those on their way finish), stopping all; the clock run in small steps or at once giving the same times. **Multicast:** members receive it, a group without members nobody; IPv6 groups need an IPv6 address. **Local broadcast:** limited and subnet scope, never past the router, not into another VLAN of the house. **Directed broadcast:** a subnet of the model and not the source's own; dropped where off, answered where on. |
 | **Multicast drawn, interface states** | `test/mcast-actions.test.mjs` (4 tests), `test/mcast-iface-browser.test.mjs` (2 tests, through the DevTools protocol, both themes) | **Multicast:** the house has no multicast protocol to tick; a join's two reports from tv's Wi-Fi interface carry its event's id (never a test's), no datagram among them; a stream's datagrams from nas, copies on the VLAN 10 path, none towards another VLAN or past the core; 3 datagrams sent counted apart from their copies; the event says it stops at core (no PIM); the first datagram in the log for the inspector. With a router and a member: the copies reach the member, not a host that is none; Stop: no datagram after it; the join recorded; the model's own reports not marked, the join's later answers not either, its leave report marked. The same times whether run in steps or at once, nothing while the clock stands. **Interfaces:** administrative and operational state apart; Shut interface during flapping stops it first and stays down 60 s later; a shut interface can't flap; one flapping per cable from either end; Bring interface up; Stop flapping in the down phase brings the cable up, no later transition; the peer off said so. **On screen:** the join's and the stream's dots drawn at once while paused, the clock still; their copies when playing; a stream dot opening the inspector (UDP to the group); Stop: nothing after; the form marked *↯ Flapping* with Stop flapping, a quick second press not stopping it, another interface unmarked, the flap's transition followed; Shut stopping the flapping (both events), *⏻ Shut* with Bring interface up, flapping disabled with the reason; Bring interface up by Enter, the focus kept, the link up later; changes from the diagram's menu and Active events followed; the peer off; a bar and bold words, not colour alone; a new simulation without any of it. |
+| **Foreground and background** | `test/sim-foreground.test.mjs` (5 tests), `test/sim-foreground-browser.test.mjs` (2 tests, through the DevTools protocol, both themes) | **On screen:** the scenario at most 6 exchanges as dots, lit cables with *protocol ×n* counts, the note; a stream from pc1 in front (*· your events in front*, its dots drawn, the scenario's hops since then not), a stream dot opening the inspector among the activity; Next exchange named, paused after it; Real time: simulated time with the real seconds (never ahead), a datagram a second; stopped, the scenario in front again. **Model:** | On `protocol-simulation.yaml`: a stream in the foreground shows its datagrams every ~10 s of display (never more than 25 s apart), more of them than behind the scenario, still 1 s of simulated time apart; while it runs the scenario's hops are not drawn, they are cable activity (by cable and protocol), the gate held by the stream only, *· your events in front*; stopped, the scenario is the foreground again. Bundling: never more than 6 of the scenario's conversations on their way as dots, several at once, the rest activity, no dot passed by the clock, no run-away. Real time: 5 s of display = 5 s simulated, a 1 s stream sends 10–11 datagrams in 10 s, every hop 0.8 s, nothing holds the clock, 2× twice as far, a slow machine falls behind without a burst. Next exchange: the exchange first on screen ends. |
 | **Network events** | `test/network-events.test.mjs` (10 tests), `test/network-events-browser.test.mjs` (3 tests, through the DevTools protocol: light and dark at 1440 px, light at 640 px) | **Lifecycle:** every operation one event with a stable id, refused ones *Failed* with the simulation's reason, the older programmatic send listed too; a series of 20 one event with *sent of requested*, pending never failed, completed with its last answer's time; a series with failures still *Completed*; a broadcast without answers *unknown* and no rate; a group's members apart from its messages; a DHCP client's send *Queued* until its lease, Stop then *Cancelled* with nothing on the wire; a join *In progress* until q1 records it, then *Completed* with its membership and Leave group (completed 2 min later too), without a router completed after its reports; a stream's datagrams and each member's count, stopped; a shut *Completed* at once with the interface down and No shut, not listed twice; flapping's cycles (3 by 35 s), stopped part way; a failed cable and a device off in the list; the same states whether run in steps or at once; at most 50 kept, those in progress never dropped, Clear finished. **On screen:** the four actions in order as headings with their forms (no object list, no Show …), Active events after them; the tables in the device's menu and the status side; each form's device and interface (Select…, disabled until a device), its reason; the diagram's selection not changing the join form; a join, a stream, flapping (not twice), a shut and a series listed newest first with their states (icon and word), a named progress bar, paused without moving on; details open and the focus kept over four updates; the inspector from the details; Stop keeping the focus in its event; No shut; the outcome bar named; a failed cable with Restore; Clear finished keeping the flapping, the cable and the membership, the focus on the heading; nothing wider than the panel, no sideways scrolling, every control named. |
 | **Send test's form** | `test/send-test-form-browser.test.mjs` (2 tests, through the DevTools protocol, both themes) | Nothing chosen: From and To disabled and greyed, Send disabled, the hint once; unicast: every device in From (the ISP disabled, *Cannot send IP packets*), the guest phone's one interface as text before and after its lease, the core's interfaces as options with *Chosen by routing*, the destination's interface (one shown, four a choice, cleared with another device); a port only for TCP and UDP and empty, cleared when ICMP is chosen; the interval greyed for one message; another delivery type clearing what doesn't fit (TCP and the destination for a group) and keeping what does (UDP and its port for a broadcast); the subnet scope's address; a directed broadcast to a subnet outside the model blocked; a Guest test dropped by the policy; a series as one event of Active events with its progress (*1/3 sent*, *1 pending*, then *3 answered* and its named outcome bar) and Stop, stopped where it was; every control named, nothing wider than the panel; Send network packets… from the ISP's menu. |
 | **Packet hit area** | `test/sim-packet-hit.test.mjs` (1 test), `test/sim-packet-hit-browser.test.mjs` (2 tests, through the DevTools protocol, both themes) | The nearest dot within 12 screen pixels at 50 %, 100 % and 200 % zoom, ties to the earlier message, none beyond. **On screen:** 9 px beside a dot it is outlined (a ring of the same size at every zoom, the hand) and a click opens that packet; 20 px away neither; the inspector keeps its packet while the simulation moves on; the outline gone when the pointer leaves; a device clicked away from the dots selected; the event log opening a packet by the keyboard. |
@@ -3282,6 +3319,19 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots of the rele
       offers `10.20.0.1/24` for *Management*; **+ Add** adds it, Ctrl+Z
       removes it.
 
+38. **Foreground and background.** Open `test/examples/protocol-simulation.yaml`,
+    start the simulation, in both themes, at 200 % zoom and in a window about
+    600 px wide.
+    * The scenario: a few exchanges as dots, each to its end; other cables
+      lit and dashed with counts (*OSPF ×2 · ARP ×1*); the panel says how
+      many more are cable activity.
+    * Start multicast stream from *pc1* to *239.9.9.9*: its datagrams are
+      the dots now, one after the other as soon as the last arrived; the
+      scenario only lights cables; *· your events in front*. Click a dot of
+      it: the inspector. **Stop stream**: the scenario's dots come back.
+    * Pause, **Next exchange**: the exchange on screen runs to its end.
+    * Pacing **Real time (1 s = 1 s)**: the time shown counts real seconds,
+      a stream sends a datagram a second, the dots are brief.
 37. **Multicast drawn, interface states.** Open `private-house.yaml`, start
     the simulation, in both themes, at 200 % zoom and in a window about
     600 px wide.
@@ -3672,6 +3722,13 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots of the rele
   snooping knows no member, as the switches do), and a stream's event
   says where its copies stop. The datagrams sent are counted apart from
   their copies and from what each member received.
+* **Foreground and background are a display choice.** Intervals are
+  simulated time in every pacing: in Readable pacing a 1 s stream shows a
+  datagram as soon as the last one was seen (about every 10 s of display
+  over four hops), not every real second; Real time pacing gives real
+  seconds, with brief dots. Cable activity shows the last 3 s of display,
+  by cable and protocol, not every hop. A browser tab in the background
+  stops the display clock; nothing catches up when it comes back.
 * **Network events' limits.** Fail link and Power off have no form of
   their own (the diagram's menus start them; they are listed). Flapping
   uses the Layer 1 parameters for every flap (no per-flap timing); a

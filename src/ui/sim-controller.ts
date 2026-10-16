@@ -47,7 +47,7 @@ import { virtBridgeId } from '../model/virtual';
 import { leaseText } from '../model/addresses';
 import { FailureResult, refLabel, simulate } from '../analysis/failure';
 import { fmtSec } from '../analysis/sim/engine';
-import { FRAME_MAX, PACE_SCALES, PACE_SPEEDS, PaceMode, Pacer, conversationKey, scaleText } from '../analysis/sim/pacing';
+import { CONV_LIMIT, FRAME_MAX, PACE_SCALES, PACE_SPEEDS, PaceMode, Pacer, conversationKey, scaleText } from '../analysis/sim/pacing';
 import { ParamValue, Resolved, formatValue, sourceText } from '../analysis/sim/params';
 import { SimProtocolEntry, Simulation } from '../analysis/sim/simulation';
 import { TestPlan } from '../analysis/sim/test-plan';
@@ -217,6 +217,7 @@ export class SimController implements SimulationMode {
         headers: (f) => f.hdr,
         length: (f) => this.trackLength(f),
         testRunning: () => this.testRunning(),
+        foreground: () => this.sim.foregroundActive(),
       },
       MAX_DOTS,
     );
@@ -431,7 +432,7 @@ export class SimController implements SimulationMode {
     const box = this.tables.panelOf('packet');
     const to = e.relatedTarget as Node | null;
     // the focus went somewhere else on the page (not just out of the window); Play / Pause and Step decide for themselves
-    if (box && to && !box.contains(to) && !(to instanceof Element && to.closest('#sim-play, #sim-step'))) this.resumeFromInspector();
+    if (box && to && !box.contains(to) && !(to instanceof Element && to.closest('#sim-play, #sim-step, #sim-step-x'))) this.resumeFromInspector();
   };
 
   private onPointerElsewhere = (e: Event): void => {
@@ -439,7 +440,7 @@ export class SimController implements SimulationMode {
     const t = e.target as Element;
     if (!box || box.contains(t)) return;
     // Play / Pause and Step decide for themselves
-    if (t.closest && t.closest('#sim-play, #sim-step')) return;
+    if (t.closest && t.closest('#sim-play, #sim-step, #sim-step-x')) return;
     this.resumeFromInspector();
   };
 
@@ -458,6 +459,18 @@ export class SimController implements SimulationMode {
       if (this.pausedBy !== 'inspector') return this.watchInspector(false);
       if (!this.inspectorVisible()) this.resumeFromInspector();
     }, 300);
+  }
+
+  /** Next exchange: on to the end of the exchange first on screen (or the next one to start), paused. */
+  stepExchange(): number {
+    this.playing = false;
+    this.pausedBy = 'user';
+    this.watchInspector(false);
+    this.sayState();
+    this.schedule();
+    this.pacer.stepExchange();
+    this.refresh(true);
+    return this.t;
   }
 
   /** Step: to the next message event (a message arrives, or the next one starts at its sender), paused. */
@@ -713,7 +726,8 @@ export class SimController implements SimulationMode {
     }
     this.anim.setScene(this.host.scene());
     this.drawBadges();
-    const r = this.anim.draw(this.drawItems(), { view: this.host.view(), reduce: this.host.reduce(), color: (p) => this.color(p) });
+    const view = this.host.view();
+    const r = this.anim.draw(this.drawItems(), { view, reduce: this.host.reduce(), color: (p) => this.color(p), activity: this.pacer.activity(view), name: (p) => this.protocolName(p) });
     this.notDrawn = r.left + this.queued();
     this.updateClock();
     if (!ui) return;
@@ -737,6 +751,14 @@ export class SimController implements SimulationMode {
     this.refresh(true);
     this.host.toast(`${text} at t = ${fmtSec(this.t)}.`);
     return true;
+  }
+
+  /** A protocol's short name for the cable activity ("OSPF", "ARP"): its setup entry's label, else its id. */
+  private protocolName(p: string): string {
+    const e = this.entries.find((x) => x.id === p);
+    if (!e) return p === 'mcast' ? 'Multicast' : p.toUpperCase();
+    // "ICMP / ICMPv6" → "ICMP", "TCP (tests)" → "TCP"
+    return e.label.replace(/ \(.*\)$/, '').replace(/ \/ .*$/, '');
   }
 
   private label(ref: string): string {
@@ -1426,11 +1448,12 @@ export class SimController implements SimulationMode {
     while (box.firstChild) box.removeChild(box.firstChild);
     const play = el(doc, 'button', { type: 'button', id: 'sim-play', class: 'primary sd-play', 'aria-pressed': 'true' }, ['Pause']);
     const step = el(doc, 'button', { type: 'button', id: 'sim-step', class: 'sd-btn', title: 'To the next message event: a message arrives, or the next one starts' }, ['Step']);
+    const stepX = el(doc, 'button', { type: 'button', id: 'sim-step-x', class: 'sd-btn', title: 'On to the end of the exchange on screen (a request and its reply, a hello …), or of the next one', 'aria-label': 'Next exchange' }, ['Next', el(doc, 'span', { class: 'sd-long' }, [' exchange'])]);
     const speed = el(doc, 'select', { id: 'sim-speed' }) as HTMLSelectElement;
     for (const s of SPEEDS) speed.appendChild(el(doc, 'option', { value: String(s) }, [`${s}×`]));
     speed.value = String(this.pacer.speed);
     const mode = el(doc, 'select', { id: 'sim-pace' }) as HTMLSelectElement;
-    for (const [v, l] of [['readable', 'Readable'], ['proportional', 'Proportional to latency']]) mode.appendChild(el(doc, 'option', { value: v }, [l]));
+    for (const [v, l] of [['readable', 'Readable'], ['proportional', 'Proportional to latency'], ['realtime', 'Real time (1 s = 1 s)']]) mode.appendChild(el(doc, 'option', { value: v }, [l]));
     mode.value = this.pacer.mode;
     const scale = el(doc, 'select', { id: 'sim-pace-scale' }) as HTMLSelectElement;
     for (const n of PACE_SCALES) scale.appendChild(el(doc, 'option', { value: String(n) }, [scaleText(n)]));
@@ -1439,7 +1462,7 @@ export class SimController implements SimulationMode {
     skip.checked = this.pacer.skipIdle;
     const exit = el(doc, 'button', { type: 'button', id: 'sim-exit', class: 'sd-exit', 'data-command': 'sim.exit', 'aria-label': 'Exit simulation' }, ['Exit', el(doc, 'span', { class: 'sd-long' }, [' simulation'])]);
     const head = el(doc, 'div', { class: 'sd-head', role: 'toolbar', 'aria-label': 'Simulation clock' }, [
-      el(doc, 'span', { class: 'sd-group' }, [play, step, el(doc, 'span', { id: 'sim-state', class: 'sd-state small' }, [this.playState()]), el(doc, 'span', { id: 'sim-state-live', class: 'sr-only', role: 'status', 'aria-live': 'polite' }, [''])]),
+      el(doc, 'span', { class: 'sd-group' }, [play, step, stepX, el(doc, 'span', { id: 'sim-state', class: 'sd-state small' }, [this.playState()]), el(doc, 'span', { id: 'sim-state-live', class: 'sr-only', role: 'status', 'aria-live': 'polite' }, [''])]),
       el(doc, 'span', { class: 'sd-group' }, [el(doc, 'label', { for: 'sim-speed' }, ['Speed']), speed]),
       el(doc, 'span', { class: 'sd-group' }, [el(doc, 'label', { for: 'sim-pace' }, ['Pacing']), mode, el(doc, 'span', { id: 'sim-pace-scale-wrap', class: 'sd-scale' }, [el(doc, 'label', { for: 'sim-pace-scale', class: 'sr-only' }, ['Scale']), scale])]),
       el(doc, 'label', { class: 'check sd-group', for: 'sim-skip' }, [skip, ' Skip idle', el(doc, 'span', { class: 'sd-long' }, [' time'])]),
@@ -1451,6 +1474,7 @@ export class SimController implements SimulationMode {
     ]);
     play.addEventListener('click', () => this.setPlaying(!this.playing));
     step.addEventListener('click', () => this.step());
+    stepX.addEventListener('click', () => this.stepExchange());
     speed.addEventListener('change', () => this.setSpeed(Number(speed.value)));
     mode.addEventListener('change', () => this.setPacing(mode.value as PaceMode));
     scale.addEventListener('change', () => this.setPacing(this.pacer.mode, Number(scale.value)));
@@ -1618,7 +1642,7 @@ export class SimController implements SimulationMode {
     const q = (id: string): HTMLElement | null => d.getElementById(id);
     this.updateClock();
     const drawn = q('sim-drawn');
-    if (drawn) drawn.textContent = this.notDrawn ? `${this.notDrawn} message${this.notDrawn === 1 ? '' : 's'} on their way not drawn (at most ${MAX_DOTS} dots at once).` : '';
+    if (drawn) drawn.textContent = this.notDrawn ? `${this.notDrawn} more on their way as cable activity (${this.pacer.fgNow ? 'the scenario, behind your Network events' : `at most ${CONV_LIMIT} exchanges as dots at once`}).` : '';
     // a broadcast storm: a warning
     const storm = q('sim-storm');
     if (storm) {

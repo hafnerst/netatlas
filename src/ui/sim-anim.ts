@@ -29,6 +29,7 @@ import { textWidth } from '../layout/geometry';
 import { Flight, Track } from '../analysis/sim/types';
 import type { PaceState } from '../analysis/sim/pacing';
 import { Box, BoxIndex, candidates, placeLabel } from './sim-labels';
+import { Activity } from '../analysis/sim/pacing';
 
 /** At most this many dots (with their labels) are drawn at once. */
 export const MAX_DOTS = 48;
@@ -92,6 +93,10 @@ export interface DrawOptions {
   /** static arrows instead of moving dots (reduced motion) */
   reduce: boolean;
   color: (protocol: string) => string;
+  /** cables (relations) with traffic not drawn as dots, lately: lit, with a short count ("OSPF ×3") */
+  activity?: Activity[];
+  /** a protocol's short name for those counts */
+  name?: (protocol: string) => string;
 }
 
 /** A hop to draw: its flight, where the pacing says it is, and how it is marked. */
@@ -305,6 +310,36 @@ export class SimAnimator {
     for (const d of receivers) add(d, 'sim-rx');
   }
 
+  /**
+   * Cable activity: each cable (relation, network line) with traffic not drawn as dots lately is lit
+   * along its way, in its busiest protocol's colour, with a short count ("OSPF ×3 · ARP ×1") where a
+   * label finds room. It never moves and holds nothing: a sign of what the scenario does meanwhile.
+   */
+  private paintActivity(dots: SVGGElement, labels: SVGGElement, opts: DrawOptions, placed: BoxIndex): void {
+    const scene = this.scene as Element;
+    const name = opts.name || ((p: string): string => p);
+    for (const a of opts.activity || []) {
+      if (a.view !== opts.view || !a.counts.length) continue;
+      const geo = findTrack(scene, a.track);
+      if (!geo) continue;
+      const color = opts.color(a.counts[0][0]);
+      const path = trail(this.doc, geo, 1, color);
+      path.setAttribute('class', 'sim-activity');
+      path.setAttribute('data-activity', a.ref);
+      dots.appendChild(path);
+      const text = a.counts.slice(0, 2).map(([p, n]) => `${name(p)} ×${n}`).join(' · ') + (a.counts.length > 2 ? ` +${a.counts.length - 2}` : '');
+      const p = at(geo, 0.5);
+      const w = textWidth(text, FONT) + 4;
+      const box = placeLabel(candidates(p.x, p.y, p.ux, p.uy, w, FONT + 4, 1), this.obstacles, placed);
+      if (!box) continue;
+      placed.add(box);
+      const lab = label(this.doc, text, box, false, color);
+      lab.classList.add('sim-activity-label');
+      lab.setAttribute('data-activity', a.ref);
+      labels.appendChild(lab);
+    }
+  }
+
   private paint(dots: SVGGElement, labels: SVGGElement, items: DrawItem[], opts: DrawOptions, arrows: boolean, live: boolean): DrawResult {
     const scene = this.scene as Element;
     const placed = new BoxIndex();
@@ -320,6 +355,8 @@ export class SimAnimator {
         if (geo) dots.appendChild(trail(this.doc, geo, it.st.frac, opts.color(it.f.protocol)));
       }
     }
+    // cable activity: the traffic not drawn as dots (bundled, or the background while a Network event runs), lit under the dots
+    if (live && opts.activity) this.paintActivity(dots, labels, opts, placed);
     // a Send test's hops first (their labels always find room), then the earliest: what started first keeps its place
     const list = items.filter((it) => it.f.view === opts.view).sort((a, b) => Number(!!b.test) - Number(!!a.test) || a.f.t0 - b.f.t0 || a.f.id - b.f.id);
     for (const it of list) {
@@ -396,6 +433,7 @@ export class SimAnimator {
 }
 
 /** The way a followed message has come along a track so far. */
+
 function trail(doc: Document, g: Geo, frac: number, color: string): SVGPathElement {
   const n = Math.max(2, Math.ceil(g.len / 12));
   const pts: string[] = [];

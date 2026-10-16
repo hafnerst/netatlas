@@ -240,6 +240,21 @@ there is no conversion of files written for the earlier drafts.
 
 ### Added
 
+- **Foreground and background in the simulation's display.** While a
+  Network event with traffic of its own runs (a send, a stream, a join),
+  its traffic alone holds the clock and the gaps between its messages are
+  skipped: the next message appears as soon as the last one was seen,
+  never behind the scenario's dots. The scenario goes on as the
+  background, shown as **cable activity** (a lit cable with a short count
+  such as *OSPF ×3*) instead of dots; the panel says *your events in
+  front*. One network and one clock: both share every state change.
+- **Bundling:** with nothing of yours running, at most 6 of the
+  scenario's exchanges are drawn as dots at once, the rest as cable
+  activity.
+- **Next exchange** beside Step: on to the end of the exchange on screen.
+- **Real time pacing** (*1 s = 1 s*): the simulated clock runs with the
+  real one (× the speed), every hop briefly; behind when the simulation
+  can't keep up, never catching up in a burst.
 - **Interface actions show the interface's state** and its reverse action:
   shut, the form is marked *⏻ Shut* and its button is **Bring interface
   up**; flapping, *↯ Flapping* with the cycle and **Stop flapping**. The
@@ -1029,6 +1044,8 @@ there is no conversion of files written for the earlier drafts.
 
 ### Changed
 
+- **The scenario's dots beyond 6 exchanges at once** are cable activity
+  instead of more dots (before: up to 48 dots, the rest not drawn).
 - **Send test is Send network packets** (its form and a device's menu
   entry); **Join group…** and **Start stream…** are **Join multicast
   group…** and **Start multicast stream…**.

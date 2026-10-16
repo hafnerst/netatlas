@@ -48,8 +48,8 @@ function ratios(out, exclude = () => false) {
   return out.recs.filter((r) => r.start !== null && r.end !== null && !r.lost && !r.pre && r.hop > 0 && !exclude(r)).map((r) => ({ ...r, ratio: ((r.end - r.start - capped(out, r.start, r.end)) * out.speed) / r.hop }));
 }
 
-function assertPaced(rs, what) {
-  assert.ok(rs.length >= 5, `${what}: enough hops measured (${rs.length})`);
+function assertPaced(rs, what, min = 5) {
+  assert.ok(rs.length >= min, `${what}: enough hops measured (${rs.length})`);
   const bad = rs.filter((r) => r.ratio < 0.95 || r.ratio > 1.06);
   assert.equal(bad.length, 0, `${what}: screen time ÷ configured time out of 0.95–1.06: ${bad.slice(0, 5).map((r) => `${r.track} ${r.hop.toFixed(0)} ms → ${r.ratio.toFixed(3)}`).join(', ')}`);
 }
@@ -62,12 +62,13 @@ test('the first packets and those a minute later take their configured screen ti
     await page.eval(`localStorage.clear(), sessionStorage.clear(), netatlas.loadExampleNamed(${JSON.stringify(ex)}), netatlas.setView('physical'), true`);
     await page.settle(150);
     // start, recording from the first frame, and keep the main thread busy for 400 ms before that frame
-    await page.eval(`(() => { netatlas.startProtocolSimulation({ params: {}, senders: netatlas.session.model.devices.map((d) => d.id) }); ${RECORD_BODY}; const t = performance.now(); while (performance.now() - t < 400) {} return true; })()`);
+    await page.eval(`(() => { netatlas.startProtocolSimulation({ params: {}, senders: netatlas.session.model.devices.map((d) => d.id) }); netatlas.simController().pacer.convLimit = 1000; ${RECORD_BODY}; const t = performance.now(); while (performance.now() - t < 400) {} return true; })()`);
     await wait(8000);
     const early = JSON.parse(await page.eval(READ));
     // the first frame counts nothing (the setup and the blocked thread are not display time); no frame jumps
     assert.equal(early.steps[0], 0, 'the clock starts with the first frame: ' + early.steps.slice(0, 5).join(', '));
     assert.ok(Math.max(...early.steps) <= P.FRAME_MAX * early.speed + 1e-6, 'no step beyond FRAME_MAX: ' + Math.max(...early.steps));
+    // the startup burst: more hops than the dot limit (bundling is off here: this measures each hop's own time, which bundling doesn't change)
     assert.ok(early.recs.length > 48, 'the startup burst: more hops than the dot limit (' + early.recs.length + ')');
     const r1 = ratios(early);
     assertPaced(r1, 'the first packets');

@@ -363,6 +363,28 @@ export class Simulation {
     return this.keepAction({ id: ++this.actSeq, kind: 'flap', at: this.now, target, flap: { ref, obj: this.engine.flapOf(ref) as NonNullable<ReturnType<Engine['flapOf']>> } });
   }
 
+  /**
+   * Is a Network event running with traffic of its own: a send with messages still to send or on their
+   * way (one waiting for its source's DHCP lease does not count yet), a stream, a join waiting for its
+   * router? Its traffic is then the foreground of the display (pacing.ts). Flapping has none of its own:
+   * what it shows is the network's reaction, the scenario's.
+   */
+  foregroundActive(): boolean {
+    for (const a of this.acts) {
+      if (a.run) {
+        const r = a.run;
+        if (!r.stopped && r.sent < r.count) return true;
+        if (r.tests.some((t) => !t.done && t.result.indexOf('waiting for a DHCP lease') !== 0)) return true;
+      } else if (a.stream) {
+        if (a.stream.running) return true;
+      } else if (a.join) {
+        const j = a.join;
+        if (j.byAt === undefined && j.leftAt === undefined && this.now < j.until) return true;
+      }
+    }
+    return false;
+  }
+
   /** The events of Network events, newest first, as the list shows them. */
   actions(): ActionView[] {
     const c = this.actionContext();
