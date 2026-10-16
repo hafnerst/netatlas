@@ -1324,6 +1324,10 @@ body[data-sim="on"] #side > .tabs, body[data-sim="on"] #side-body, body[data-sim
 .sp-toggle:hover { background: var(--accent-soft); }
 .sim-test-form { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 8px; align-items: center; }
 .sim-test-form > label { font-size: 12.5px; }
+/* Send test: the source's state under From, across the form (its address, lease or why it can't send) */
+.sim-t-src { grid-column: 1 / -1; margin: 0 0 4px; overflow-wrap: anywhere; }
+.sim-t-src:empty { display: none; }
+.sim-test-form > [hidden] { display: none; }
 .sim-tests { margin: 0; padding-left: 18px; font-size: 12px; }
 .sim-tests:empty { display: none; }
 .sim-tests li[data-ok="false"] { color: var(--error); }

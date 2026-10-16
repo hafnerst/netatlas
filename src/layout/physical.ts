@@ -30,7 +30,7 @@
  *
  * Group boxes are never stored: they are derived from their devices.
  */
-import { CBox, Pt, textWidth } from './geometry';
+import { CBox, Pt, segmentHitsRect, textWidth } from './geometry';
 import { LDev, LEnd, LayoutInput, cmp, physicalInput } from './input';
 import { ChipFlow, ENTRY_MARGIN, GROUP_PAD, IFCHIP_PAD, chipFlow, chipStripH, deviceBody, groupHeader, linkLabelBox } from './sizes';
 
@@ -72,6 +72,8 @@ const LAYER_GAP = 96;
 /** rounds of reordering, and what one crossing of two cables costs compared with cable length (px) */
 const ROUNDS = 6;
 const CROSSING_COST = 160;
+/** what a straight cable through a third device's box adds to the cost of a placement (less than a crossing: it may be gone around cleanly) */
+const BLOCKED_COST = 150;
 const MAX_EXCHANGES = 300;
 /** a layer below the top one may be at least this wide before it continues on a second line */
 const LOWER_LAYER_W = 1800;
@@ -618,6 +620,27 @@ export function autoPhysical(full: LayoutInput): Map<string, Pt> {
         }
       }
     }
+    // a cable whose straight line runs through a third device has to go around it: that way can cross
+    // what leaves the device, so a placement that keeps such devices out of the way is better
+    if (seg.length <= 600 && input.devices.length <= 400) {
+      const rects = input.devices.map((d) => {
+        const p = pos.get(d.id) as Pt;
+        const sz = size.get(d.id) as { w: number; h: number };
+        return { id: d.id, r: { x: p.x - sz.w / 2, y: p.y - sz.h / 2, w: sz.w, h: sz.h } };
+      });
+      cables.forEach((l, i) => {
+        const [a, b] = seg[i];
+        const x0 = Math.min(a.x, b.x);
+        const x1 = Math.max(a.x, b.x);
+        const y0 = Math.min(a.y, b.y);
+        const y1 = Math.max(a.y, b.y);
+        for (const o of rects) {
+          // (a box beside the cable's extent can't be in its way: the exact test only for the others)
+          if (o.r.x > x1 || o.r.x + o.r.w < x0 || o.r.y > y1 || o.r.y + o.r.h < y0) continue;
+          if (o.id !== l.a.device && o.id !== l.b.device && segmentHitsRect(a, b, o.r)) total += BLOCKED_COST;
+        }
+      });
+    }
     return total;
   };
   /** what a round is built from: the placement before it and the order of every row */
@@ -670,6 +693,21 @@ export function autoPhysical(full: LayoutInput): Map<string, Pt> {
               bestCost = c;
               improved = true;
             } else [list[i], list[j]] = [list[j], list[i]];
+          }
+        }
+      }
+      // and two devices of one row: the sweep orders a row by where its neighbours are, which can't see
+      // that a cable to one side (an uplink, a leaf's server) crosses the cables of a device beside it
+      for (const row of best.rows) {
+        for (let i = 0; i < row.length && tries < MAX_EXCHANGES; i++) {
+          for (let j = i + 1; j < row.length && tries < MAX_EXCHANGES; j++) {
+            tries++;
+            [row[i], row[j]] = [row[j], row[i]];
+            const c = place();
+            if (c < bestCost - 0.5) {
+              bestCost = c;
+              improved = true;
+            } else [row[i], row[j]] = [row[j], row[i]];
           }
         }
       }

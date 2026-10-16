@@ -124,6 +124,16 @@ interface Client {
   /** bumped whenever its timers are replaced */
   gen: number;
   offer?: { ip: IpAddr; server: IpAddr; prefix: number; gateway?: IpAddr; dns: IpAddr[]; lease: number; domain?: string };
+  /** its last round without an offer (when, and what happened), until it is bound again */
+  failed?: { at: number; text: string };
+}
+
+/** A DHCP client interface's state, as Send test… shows it. */
+export interface DhcpClientStatus {
+  state: ClientState;
+  /** the DHCPDISCOVERs of the current round so far */
+  attempt: number;
+  failed?: { at: number; text: string };
 }
 
 interface DhcpData {
@@ -171,6 +181,14 @@ interface Query {
 export class NetServicesSim {
   private scopes: Scope[] = [];
   private clients = new Map<string, Client>();
+  /** told when a client gives up a round without a lease (Send tests waiting for it fail and say why) */
+  onLeaseFailed: ((dev: string, iface: string, why: string) => void) | null = null;
+
+  /** A DHCP client interface's state (null: the interface is no DHCP client of the simulation). */
+  clientStatus(dev: string, iface: string): DhcpClientStatus | null {
+    const c = this.clients.get(dev + ':' + iface);
+    return c ? { state: c.state, attempt: c.attempt, failed: c.failed ? { ...c.failed } : undefined } : null;
+  }
   private cache = new Map<string, Map<string, { addr: IpAddr; expires: number; server: string; type: string }>>();
   private queries = new Map<number, Query>();
   private qid = 0;
@@ -274,7 +292,10 @@ export class NetServicesSim {
       c.attempt = 0;
       const ll = this.P.e.params.get('link-local', c.dev, null, ifaceRef(c.dev, c.iface));
       const fall = ll.value === 'on' && !this.P.e.leases.has(c.dev + ':' + c.iface);
+      c.failed = { at: this.P.e.now, text: `no DHCPOFFER after ${this.retries(c)} DHCPDISCOVERs; it tries again in ${durationText(DHCP_PAUSE)}` };
       this.P.e.note('state', 'dhcp', c.dev, '', 'no DHCP server', 'no lease', `${c.dev}:${c.iface} got no DHCPOFFER after ${this.retries(c)} DHCPDISCOVERs: it starts again in ${durationText(DHCP_PAUSE)}${fall ? '; meanwhile a link-local address (RFC 3927)' : ` (link-local fallback ${ll.value === 'on' ? 'on' : 'off'}: it stays without an address)`}`);
+      // the Send tests waiting for this lease fail now, saying why (before a link-local address could stand in for it)
+      if (this.onLeaseFailed) this.onLeaseFailed(c.dev, c.iface, c.failed.text);
       if (fall) this.linkLocal(c);
       const g2 = ++c.gen;
       this.P.e.after(DHCP_PAUSE, () => {
@@ -329,6 +350,7 @@ export class NetServicesSim {
     const lease = d.lease || DEFAULT_LEASE;
     const was = c.state;
     c.state = 'BOUND';
+    c.failed = undefined;
     c.attempt = 0;
     const gen = ++c.gen;
     const l: Lease = { dev: c.dev, iface: c.iface, addr: { addr: ip, net, text: `${formatAddr(ip)}/${prefix}` }, vrf: this.vrf(c), gateway: d.gateway ? (parseAddress(d.gateway) as IpAddr) : undefined, dns: (d.dns || []).map((x) => parseAddress(x) as IpAddr), domain: d.domain, server: d.server ? (parseAddress(d.server) as IpAddr) : undefined, kind: 'dhcp', bound: this.P.e.now, expires: this.P.e.now + lease };

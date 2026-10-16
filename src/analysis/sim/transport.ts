@@ -99,6 +99,8 @@ export interface Test {
   /** the status row it belongs to ("pc1 → web1 tcp/443") */
   series: string;
   from: string;
+  /** the source interface chosen (Send test…), else the one the route gives */
+  via?: string;
   /** what it was aimed at, as written ("web1", "10.0.0.255") */
   target: string;
   dst: IpAddr;
@@ -270,9 +272,15 @@ export class Transport {
   // ------------------------------------------------------------ addresses and ports
 
   /** The address a device sends from towards a destination: the egress interface's (else its first of the family), and the VRF. */
-  sourceFor(dev: string, dst: IpAddr): { src: IpAddr; vrf: string; l3: L3Iface | null } | null {
+  sourceFor(dev: string, dst: IpAddr, via?: string): { src: IpAddr; vrf: string; l3: L3Iface | null } | null {
     const sd = this.P.sd(dev);
     if (!sd) return null;
+    // an interface chosen as the source: its address of the family (its lease), in its VRF
+    if (via !== undefined) {
+      const l = sd.l3.get(via);
+      const a = l ? l.addrs.find((x) => x.addr.version === dst.version && (!this.e.isBroadcastAddr(dst) || isMulticastIp(dst) || inNet(x, dst) || formatAddr(dst) === '255.255.255.255')) || l.addrs.find((x) => x.addr.version === dst.version) : undefined;
+      return l && a ? { src: a.addr, vrf: l.vrf, l3: l } : null;
+    }
     const ifs = Array.from(sd.l3.values()).sort((a, b) => Number(a.kind === 'loopback') - Number(b.kind === 'loopback') || cmp(a.id, b.id));
     // a broadcast or a group: the first interface with an address of the family (a subnet broadcast: that subnet's)
     for (const l of ifs) {
@@ -464,20 +472,24 @@ export class Transport {
   }
 
   /** Run one test now (Send test…, test traffic, a health check, a probe); its result comes later. */
-  run(o: { from: string; target: string; dst: IpAddr; name?: string; kind: TestKind; port?: number; size?: number; df?: boolean; keep?: boolean; source: Test['source']; series?: string; onDone?: (t: Test) => void; front?: Conn; timeout?: Resolved | { value: number } }): Test | string {
+  run(o: { from: string; via?: string; target: string; dst: IpAddr; name?: string; kind: TestKind; port?: number; size?: number; df?: boolean; keep?: boolean; source: Test['source']; series?: string; onDone?: (t: Test) => void; front?: Conn; timeout?: Resolved | { value: number } }): Test | string {
     const dev = o.from;
-    if (!this.P.sd(dev)) return `${dev} is not a device of the simulation`;
+    const sd = this.P.sd(dev);
+    if (!sd) return `${dev} is not a device of the simulation`;
     if (!this.e.deviceOn(dev)) return `${dev} is powered off`;
+    if (o.via !== undefined && !sd.l3.get(o.via)) return `${dev} has no interface ${o.via} with an IP address or DHCP`;
     // (a DHCP client without its lease yet: the test waits for it; a host name: for its answer)
-    const s = o.name || this.e.waitsForLease(dev) ? null : this.sourceFor(dev, o.dst);
-    if (!s && !o.name && !this.e.waitsForLease(dev)) return `${dev} has no IPv${o.dst.version} address to send from`;
+    const waits = this.leaseWait(dev, o.via);
+    const s = o.name || waits ? null : this.sourceFor(dev, o.dst, o.via);
+    if (!s && !o.name && !waits) return `${o.via !== undefined ? dev + ':' + o.via : dev} has no IPv${o.dst.version} address to send from`;
     const kind = o.kind;
     const port = kind === 'icmp' ? 0 : o.port || (kind === 'tcp' ? DEFAULT_TCP_PORT : DEFAULT_UDP_PORT);
-    const series = o.series || `${dev} → ${o.target} ${kind === 'icmp' ? 'ICMP echo' : kind + '/' + port}`;
+    const series = o.series || `${o.via !== undefined ? dev + ':' + o.via : dev} → ${o.target} ${kind === 'icmp' ? 'ICMP echo' : kind + '/' + port}`;
     const t: Test = {
       id: ++this.seq,
       series,
       from: dev,
+      via: o.via,
       target: o.target,
       dst: o.dst,
       kind,
@@ -513,13 +525,31 @@ export class Transport {
     this.e.withTest(t.source === 'manual' ? t.id : null, () => this.beginNow(t, name));
   }
 
+  /** The DHCP client interface a test from this device (by this interface) waits for, if any. */
+  private leaseWait(dev: string, via?: string): string | null {
+    if (via === undefined) return this.e.waitsForLease(dev);
+    return this.e.addressReady(dev, via) ? null : via;
+  }
+
+  /**
+   * A DHCP client gave up a round (no offer after its retries): the Send tests waiting for its lease
+   * are not sent, and say why (the client starts again later; a new test waits for that).
+   */
+  leaseFailed(dev: string, iface: string, why: string): void {
+    for (const t of this.tests) {
+      if (t.done || t.from !== dev || t.result.indexOf('waiting for a DHCP lease on ' + dev + ':' + iface) !== 0) continue;
+      this.e.withTest(t.source === 'manual' ? t.id : null, () => this.finish(t, false, `not sent: ${dev}:${iface} has no DHCP lease (${why})`));
+    }
+  }
+
   private beginNow(t: Test, name?: string): void {
+    if (t.done) return;
     const dev = t.from;
-    const lease = this.e.waitsForLease(dev);
+    const lease = this.leaseWait(dev, t.via);
     const what: Msg = { protocol: t.kind, type: 'test', label: `Test ${t.series}`, detail: `Test ${t.series}` };
     if (lease) {
       t.result = `waiting for a DHCP lease on ${dev}:${lease}`;
-      this.e.waitFor('lease:' + dev, `a DHCP lease on ${dev}:${lease}`, dev, what, () => this.begin(t, name), 'test|' + t.id);
+      this.e.waitFor('lease:' + dev + (t.via !== undefined ? ':' + t.via : ''), `a DHCP lease on ${dev}:${lease}`, dev, what, () => this.begin(t, name), 'test|' + t.id);
       return;
     }
     if (name && this.netsvc) {
@@ -538,9 +568,9 @@ export class Transport {
       });
       return;
     }
-    const s = this.sourceFor(dev, t.dst);
+    const s = this.sourceFor(dev, t.dst, t.via);
     if (!s) {
-      this.finish(t, false, `not sent: ${dev} has no IPv${t.dst.version} address to send from`);
+      this.finish(t, false, `not sent: ${t.via !== undefined ? dev + ':' + t.via : dev} has no IPv${t.dst.version} address to send from`);
       return;
     }
     const o = { dst: t.dst };
@@ -556,7 +586,7 @@ export class Transport {
       if (t.answers.length && isMulticastIp(t.dst)) this.finish(t, true, `received by ${t.answers.length} member${t.answers.length === 1 ? '' : 's'}: ${t.answers.slice().sort().join(', ')}`);
       else if (isMulticastIp(t.dst) && t.kind === 'udp') this.finish(t, false, `no member received it within ${'def' in t.timeout ? resolvedText(t.timeout as Resolved) : durationText(Number(t.timeout.value))}`);
       else if (t.answers.length) this.finish(t, true, `${t.answers.length} answer${t.answers.length === 1 ? '' : 's'}: ${t.answers.join(', ')}`);
-      else this.finish(t, false, `no answer within ${'def' in t.timeout ? resolvedText(t.timeout as Resolved) : durationText(Number(t.timeout.value))} (timed out)`);
+      else this.finish(t, false, `no answer within ${'def' in t.timeout ? resolvedText(t.timeout as Resolved) : durationText(Number(t.timeout.value))} (timed out)${this.lastDrop(t)}`);
     });
     if (kind === 'icmp') this.ping(t, s.src, s.vrf);
     else if (kind === 'udp') this.udpRequest(t, s.src, s.vrf);
@@ -567,6 +597,20 @@ export class Transport {
   private later(dt: number, fn: () => void): void {
     const id = this.e.testCtx;
     this.e.after(dt, () => this.e.withTest(id, fn));
+  }
+
+  /**
+   * Why a Send test's traffic went unanswered, when the log knows: the last drop of one of its own
+   * packets (a firewall's policy, no route, a VLAN a port doesn't carry …), so a timeout says where it ended.
+   */
+  private lastDrop(t: Test): string {
+    if (t.source !== 'manual') return '';
+    for (let i = this.e.log.length - 1; i >= 0; i--) {
+      const ev = this.e.log[i];
+      if (ev.t < t.started) break;
+      if (ev.test === t.id && ev.kind === 'drop') return `; the last of its packets was dropped at ${ev.device}: ${ev.detail.replace(/^dropped at [^:]+: /, '')}`;
+    }
+    return '';
   }
 
   private finish(t: Test, ok: boolean, result: string): void {
