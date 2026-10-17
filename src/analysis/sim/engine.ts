@@ -247,10 +247,11 @@ export interface EngineOptions {
   params?: { [key: string]: ParamValue };
 }
 
-/** A cable flapping: down for the flapping down time, up for the up time, so many cycles (0: until stopped). */
+/** A port flapping (its cable follows): down for the flapping down time, up for the up time, so many cycles (0: until stopped). */
 export interface Flap {
+  /** the port's cable */
   link: string;
-  /** what was flapped: the cable, or a port of it */
+  /** the port that flaps ("iface:dev:port") */
   ref: string;
   since: number;
   down: boolean;
@@ -3108,9 +3109,12 @@ export class Engine {
     return true;
   }
 
-  /** The cable of a flapping target: a cable, or a cabled port ("iface:dev:port"). */
+  /**
+   * The cable of a flapping target: a cabled port ("iface:dev:port") only.
+   * Flapping is an interface's action: a cable ("link:x") is no target (it
+   * goes down and up as a consequence of its ports).
+   */
   private flapLink(ref: string): string | null {
-    if (ref.indexOf('link:') === 0) return this.net.links.has(ref.slice(5)) ? ref.slice(5) : null;
     if (ref.indexOf('iface:') === 0) {
       const rest = ref.slice(6);
       const i = rest.indexOf(':');
@@ -3132,14 +3136,18 @@ export class Engine {
     return 'iface:' + key.replace('|', ':');
   }
 
-  /** Start flapping a cable or a port's cable: down for the flapping down time, up for the up time, for the cycles (0: until stopped). */
+  /**
+   * Start flapping an interface (a cabled port, "iface:dev:port"): it goes down for the flapping down time, up
+   * for the up time, for the cycles (0: until stopped); its cable follows (down while the port is). A cable is
+   * no target, and one cable flaps from one of its ends at a time.
+   */
   startFlap(ref: string, why = ''): boolean {
     const link = this.flapLink(ref);
     if (!link || this.flaps.has(link)) return false;
     const fl: Flap = { link, ref, since: this.now, down: false, done: 0, token: ++this.tokens };
     this.flaps.set(link, fl);
     const p = (k: string): string => resolvedText(this.params.get(k));
-    this.note('link', 'link', '', '', 'Flapping', 'flapping', `${ref.indexOf('link:') === 0 ? 'Cable ' + link : 'Port ' + ref.slice(6) + ' (cable ' + link + ')'} starts flapping${why}: down ${p('flap-down')}, up ${p('flap-up')}, ${p('flap-cycles')} cycles`);
+    this.note('link', 'link', '', '', 'Flapping', 'flapping', `Port ${ref.slice(6)} starts flapping${why} (its cable ${link} follows): down ${p('flap-down')}, up ${p('flap-up')}, ${p('flap-cycles')} cycles`);
     this.stateVersion++;
     this.flapStep(fl);
     return true;
@@ -3150,20 +3158,20 @@ export class Engine {
     fl.down = !fl.down;
     if (!fl.down) fl.done++;
     const cycles = this.params.num('flap-cycles');
-    this.note('link', 'link', '', '', fl.down ? 'Flap down' : 'Flap up', fl.down ? 'down' : 'up', `Flapping cable ${fl.link}: ${fl.down ? 'down' : 'up'} (cycle ${fl.done + (fl.down ? 1 : 0)}${cycles ? ' of ' + cycles : ''})`);
+    this.note('link', 'link', '', '', fl.down ? 'Flap down' : 'Flap up', fl.down ? 'down' : 'up', `Flapping port ${fl.ref.slice(6)}: ${fl.down ? 'down' : 'up'}, its cable ${fl.link} with it (cycle ${fl.done + (fl.down ? 1 : 0)}${cycles ? ' of ' + cycles : ''})`);
     this.updateCable(fl.link);
     this.stateVersion++;
     if (!fl.down && cycles > 0 && fl.done >= cycles) {
       this.flaps.delete(fl.link);
       fl.ended = 'done';
       fl.endedAt = this.now;
-      this.note('link', 'link', '', '', 'Flapping over', 'up', `Cable ${fl.link} stops flapping after ${fl.done} cycle${fl.done === 1 ? '' : 's'}`);
+      this.note('link', 'link', '', '', 'Flapping over', 'up', `Port ${fl.ref.slice(6)} stops flapping after ${fl.done} cycle${fl.done === 1 ? '' : 's'}`);
       return;
     }
     this.at(this.now + this.params.num(fl.down ? 'flap-down' : 'flap-up'), () => this.flapStep(fl));
   }
 
-  /** The flapping of a cable or a port's cable going on now (the object stays the same until it ends). */
+  /** The flapping going on now on a port's cable (from this port or its other end; the object stays the same until it ends). */
   flapOf(ref: string): Flap | undefined {
     const link = this.flapLink(ref);
     return link ? this.flaps.get(link) : undefined;
@@ -3225,7 +3233,7 @@ export class Engine {
     this.flaps.delete(link);
     fl.ended = 'stopped';
     fl.endedAt = this.now;
-    this.note('link', 'link', '', '', 'Flapping stopped', 'up', `Cable ${link} stops flapping (Stop flapping)`);
+    this.note('link', 'link', '', '', 'Flapping stopped', 'up', `Port ${fl.ref.slice(6)} stops flapping (Stop flapping); its cable ${link} as it would be without it`);
     this.updateCable(link);
     this.stateVersion++;
     return true;
@@ -3570,11 +3578,13 @@ export class Engine {
     return out.filter((r) => !(r.indexOf('link:~') === 0 && this.parked.has(r.slice(5)))).sort(cmp);
   }
 
-  /** Cables with `simulation: {flapping: true}` start flapping once the network had time to come up (after the flapping up time). */
+  /** Ports with `simulation: {flapping: "on"}` start flapping once the network had time to come up (after the flapping up time). */
   startConfigured(): void {
-    for (const l of Array.from(this.net.links.values()).sort((a, b) => cmp(a.id, b.id))) {
-      if (!l.simulation || !l.simulation.flapping) continue;
-      this.at(this.params.num('flap-up'), () => this.startFlap('link:' + l.id, ' (configured on the cable)'));
+    for (const d of this.model.devices.slice().sort((a, b) => cmp(a.id, b.id))) {
+      for (const i of d.interfaces) {
+        if (!i.simulation || i.simulation.get('flapping') !== 'on') continue;
+        this.at(this.params.num('flap-up'), () => this.startFlap(`iface:${d.id}:${i.id}`, ' (configured on the interface)'));
+      }
     }
   }
 

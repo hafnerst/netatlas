@@ -149,13 +149,13 @@ test('multicast: blocks are checked: a group, never link-local; SSM with its sou
 
 test('IGMP: the lowest address is the querier; the other stops and takes over when it goes silent (other-querier-present interval)', () => {
   const s = sim(LAN({ q1: ', simulation: {igmp_query_interval: 10}', q2: ', simulation: {igmp_query_interval: 10}' }));
-  s.runTo(3000);
+  s.runTo(6000);
   assert.ok(ev(s, (e) => e.device === 'q2' && e.what === 'not querier' && /hears a query from 10\.5\.0\.1 \(lower than its 10\.5\.0\.2\)/.test(e.detail)).length === 1);
-  assert.match(s.igmpTable('q2').notes.join(' '), /g0 \(10\.5\.0\.2\): not the querier \(10\.5\.0\.1 queries\)/);
+  assert.match(s.igmpTable('q2').notes.join(' '), /g0 \(10\.5\.0\.2, 10\.5\.0\.0\/24\): not the querier \(10\.5\.0\.1 \(q1\) queries\)/);
   s.powerOff('q1');
   // robustness 2 × 10 s + 10 s ÷ 2 = 25 s
   s.runTo(s.now + 30000);
-  const take = ev(s, (e) => e.device === 'q2' && e.what === 'querier' && /takes over as IGMP querier: no query from 10\.5\.0\.1 for 25 s/.test(e.detail));
+  const take = ev(s, (e) => e.device === 'q2' && e.what === 'querier' && /takes over as IGMP querier: no query from 10\.5\.0\.1 \(q1\) for 25 s/.test(e.detail));
   assert.equal(take.length, 1);
   assert.match(s.igmpTable('q2').notes[0], /the querier/);
 });
@@ -289,9 +289,9 @@ links:
   on.runTo(18000);
   const q = ev(on, (e) => e.device === 'sw' && e.what === 'Query');
   assert.ok(q.length >= 2);
-  assert.match(q[0].detail, /General Query from sw \(snooping querier, 10\.9\.0\.2\) in VLAN 1: no multicast router there/);
+  assert.match(q[0].detail, /General Query from sw \(snooping querier, 10\.9\.0\.2\) in VLAN 1: which groups have members\?/);
   assert.ok(ev(on, (e) => e.device === 'h1' && /answers the general query of 10\.9\.0\.2/.test(e.detail)).length >= 1);
-  assert.ok(on.snoopTable('sw').notes.some((n) => n === 'Snooping querier of VLAN 1 (10.9.0.2) while no multicast router queries there.'));
+  assert.ok(on.snoopTable('sw').notes.some((n) => n === 'VLAN 1: the IGMP querier (10.9.0.2), elected.'), on.snoopTable('sw').notes.join(' | '));
   // the querier needs snooping enabled on the switch, and an address of its own in the VLAN
   const net = 'networks:\n  - {id: v1, cidr: 10.9.0.0/24, vlan: 1, simulation: {snooping_querier: "on"}}\n';
   const dis = sim(Y(', simulation: {igmp_query_interval: 5}', 'disabled') + net);
@@ -300,7 +300,7 @@ links:
   const noAddr = sim(Y(', simulation: {igmp_query_interval: 5}', 'enabled', false) + net);
   noAddr.runTo(18000);
   assert.ok(!ev(noAddr, (e) => e.device === 'sw' && e.what === 'Query').length, 'no address in the VLAN: no querier');
-  assert.ok(ev(noAddr, (e) => e.device === 'sw' && /^sw is no snooping querier in VLAN 1: it has no IPv4 address there \(a VLAN interface\) to query from$/.test(e.detail)).length >= 1);
+  assert.ok(ev(noAddr, (e) => e.device === 'sw' && /^sw is no snooping querier candidate in VLAN 1: it has no IPv4 address there \(a VLAN interface\) to query from$/.test(e.detail)).length >= 1);
 });
 
 // ------------------------------------------------------------------ PIM

@@ -1,0 +1,95 @@
+# netatlas example (internal, for the tests): the IGMP querier election and
+# a group's members coming and going.
+#
+# LAN A (VLAN 10, 10.5.0.0/24): two multicast routers, q1 (10.5.0.1) and q2
+# (10.5.0.2), both querier candidates; a snooping switch sw (VLAN 10
+# enabled); a sender src and receivers rx1, rx2 on their own ports, rx3 and
+# rx4 behind one port of sw (an edge switch, edge, without snooping: one
+# member port for both). q1 has the lower
+# address: after the startup queries it is the querier, q2 a non-querier
+# that takes over when q1 falls silent.
+#
+# LAN B (also VLAN 10, 10.6.0.0/24, not cabled to LAN A): its own querier
+# candidate q3 and a switch sw-b with one host: the same VLAN ID, a
+# separate election.
+#
+# Simulate ▾ → Start simulation…, then Network events: Join multicast group
+# (rx1, rx2 on 239.5.5.5), Start multicast stream (src to 239.5.5.5), Leave
+# multicast group (rx1); power q1 off and watch q2 take over.
+netatlas: 1
+title: Multicast querier election
+description: |
+  Two querier candidates on one LAN with a snooping switch, a sender and four
+  receivers (two behind one port); a second LAN with the same VLAN ID and its
+  own querier.
+
+groups:
+  - {id: lan-a, label: LAN A (VLAN 10), kind: site}
+  - {id: lan-b, label: LAN B (VLAN 10), kind: site}
+
+networks:
+  - {id: a, label: LAN A, cidr: 10.5.0.0/24, vlan: 10}
+  - {id: b, label: LAN B, cidr: 10.6.0.0/24, vlan: 10}
+
+devices:
+  - id: q1
+    type: router
+    group: lan-a
+    protocols: {pim: {mode: dense}}
+    simulation: {igmp_query_interval: 20}
+    interfaces: [{id: g0, ip: 10.5.0.1/24}]
+  - id: q2
+    type: router
+    group: lan-a
+    protocols: {pim: {mode: dense}}
+    simulation: {igmp_query_interval: 20}
+    interfaces: [{id: g0, ip: 10.5.0.2/24}]
+  - id: sw
+    type: switch
+    group: lan-a
+    igmp_mld_snooping: {10: enabled}
+    interfaces:
+      - {id: p1, vlans: 10}
+      - {id: p2, vlans: 10}
+      - {id: p3, vlans: 10}
+      - {id: p4, vlans: 10}
+      - {id: p5, vlans: 10}
+      - {id: p6, vlans: 10}
+  - {id: src, type: server, group: lan-a, interfaces: [{id: eth0, ip: 10.5.0.20/24}]}
+  - {id: rx1, type: endpoint, group: lan-a, interfaces: [{id: eth0, ip: 10.5.0.11/24}]}
+  - {id: rx2, type: endpoint, group: lan-a, interfaces: [{id: eth0, ip: 10.5.0.12/24}]}
+  - id: edge
+    type: switch
+    group: lan-a
+    igmp_mld_snooping: {10: disabled}
+    interfaces: [{id: up, vlans: 10}, {id: a, vlans: 10}, {id: b, vlans: 10}]
+  - {id: rx3, type: endpoint, group: lan-a, interfaces: [{id: eth0, ip: 10.5.0.13/24}]}
+  - {id: rx4, type: endpoint, group: lan-a, interfaces: [{id: eth0, ip: 10.5.0.14/24}]}
+  - id: q3
+    type: router
+    group: lan-b
+    protocols: {pim: {mode: dense}}
+    simulation: {igmp_query_interval: 20}
+    interfaces: [{id: g0, ip: 10.6.0.1/24}]
+  - id: sw-b
+    type: switch
+    group: lan-b
+    igmp_mld_snooping: {10: enabled}
+    interfaces: [{id: p1, vlans: 10}, {id: p2, vlans: 10}]
+  - {id: hb, type: endpoint, group: lan-b, interfaces: [{id: eth0, ip: 10.6.0.11/24}]}
+
+# (PIM runs without relations here: only its querier role matters on these LANs)
+checks:
+  protocol-unused: "off"
+
+links:
+  - {id: l-q1, a: "q1:g0", b: "sw:p1"}
+  - {id: l-q2, a: "q2:g0", b: "sw:p2"}
+  - {id: l-src, a: "src:eth0", b: "sw:p3"}
+  - {id: l-rx1, a: "rx1:eth0", b: "sw:p4"}
+  - {id: l-rx2, a: "rx2:eth0", b: "sw:p5"}
+  - {id: l-edge, a: "edge:up", b: "sw:p6"}
+  - {id: l-rx3, a: "rx3:eth0", b: "edge:a"}
+  - {id: l-rx4, a: "rx4:eth0", b: "edge:b"}
+  - {id: l-q3, a: "q3:g0", b: "sw-b:p1"}
+  - {id: l-hb, a: "hb:eth0", b: "sw-b:p2"}

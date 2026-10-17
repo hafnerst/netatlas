@@ -14,7 +14,7 @@
 import { ArpRow, ConnRow, GridTable, Headers, MacRow, SessionRow, TableTimer } from '../analysis/sim/types';
 import { el } from './dom';
 
-export type TableKind = 'arp' | 'mac' | 'conn' | 'fw' | 'packet' | 'igmp' | 'snoop' | 'members' | 'mroute' | 'dhcp' | 'dnscache' | 'dnszone';
+export type TableKind = 'arp' | 'mac' | 'conn' | 'fw' | 'packet' | 'igmp' | 'querier' | 'snoop' | 'members' | 'mroute' | 'dhcp' | 'dnscache' | 'dnszone';
 
 export interface ConnData {
   rows: ConnRow[];
@@ -37,7 +37,7 @@ export interface PacketData {
 
 type AnyData = ArpData | MacData | ConnData | FwData | PacketData | GridTable;
 
-const TITLES: { [k in TableKind]: string } = { arp: 'ARP table', mac: 'MAC table', conn: 'Connections', fw: 'Sessions', packet: 'Packet', igmp: 'IGMP / MLD groups', snoop: 'IGMP / MLD snooping', members: 'Group memberships', mroute: 'Multicast routes', dhcp: 'DHCP leases', dnscache: 'DNS cache', dnszone: 'DNS zone' };
+const TITLES: { [k in TableKind]: string } = { arp: 'ARP table', mac: 'MAC table', conn: 'Connections', fw: 'Sessions', packet: 'Packet', igmp: 'IGMP / MLD groups', querier: 'Querier election', snoop: 'IGMP / MLD snooping', members: 'Group memberships', mroute: 'Multicast routes', dhcp: 'DHCP leases', dnscache: 'DNS cache', dnszone: 'DNS zone' };
 
 export interface ArpData {
   v4: ArpRow[];
@@ -268,7 +268,7 @@ export class TablePanels {
       this.announce(p, n);
       return;
     }
-    if (p.kind === 'igmp' || p.kind === 'snoop' || p.kind === 'members' || p.kind === 'mroute' || p.kind === 'dhcp' || p.kind === 'dnscache' || p.kind === 'dnszone') {
+    if (p.kind === 'igmp' || p.kind === 'querier' || p.kind === 'snoop' || p.kind === 'members' || p.kind === 'mroute' || p.kind === 'dhcp' || p.kind === 'dnscache' || p.kind === 'dnszone') {
       this.announce(p, this.gridPanel(p));
       return;
     }

@@ -259,7 +259,7 @@ export class Simulation {
     return this.engine.restore(ref);
   }
 
-  /** Start flapping a cable ("link:x") or a cabled port's cable ("iface:dev:port"). */
+  /** Start flapping a cabled port ("iface:dev:port"; its cable follows). A cable is no target: false. */
   startFlap(ref: string): boolean {
     return this.engine.startFlap(ref);
   }
@@ -333,10 +333,58 @@ export class Simulation {
     return r;
   }
 
+  /** Leave group (a host's menu, a join's control, the form): a Leave multicast group event; false when it is no member. */
   leaveGroup(dev: string, iface: string, group: string): boolean {
-    const ok = this.multicast.leave(dev, iface, group);
-    if (ok) for (const a of this.acts) if (a.join && a.join.dev === dev && a.join.iface === iface && a.join.group === formatAddr(parseAddress(group.trim()) as IpAddr) && a.join.leftAt === undefined) a.join.leftAt = this.now;
-    return ok;
+    return !this.actLeave(dev, iface, group).error;
+  }
+
+  /** What a leave will send, and from where (the Leave multicast group form's note). */
+  leaveContext(dev: string, iface: string, group: string): string {
+    return this.multicast.leaveContext(dev, iface, group);
+  }
+
+  /** Why a host can't leave a group on an interface now (null: it can). */
+  leaveProblem(dev: string, iface: string, group: string): string | null {
+    return this.multicast.leaveProblem(dev, iface, group);
+  }
+
+  /**
+   * Leave multicast group (Network events): the host's membership ends now
+   * (no more answers to queries) and its leave goes out through the network,
+   * drawn and inspectable with its event's id. The event follows what the
+   * network had learned of the membership on the host's way (a snooping
+   * switch's port facing it, a router's group on its subnet) until each is
+   * removed — or kept, because another member behind it answered the group
+   * queries.
+   */
+  actLeave(dev: string, iface: string, group: string): ActionRecord {
+    const g = parseAddress(group.trim());
+    const gt = g ? formatAddr(g) : group.trim();
+    const target = `${dev}:${iface} → ${gt}`;
+    const bad = this.multicast.leaveProblem(dev, iface, group);
+    if (bad) return this.keepAction({ id: ++this.actSeq, kind: 'leave', at: this.now, target, error: bad });
+    const watch = this.multicast.leaveWatch(dev, iface, gt);
+    const sent = this.multicast.canReport(dev, iface);
+    const traffic = this.transport.reserveId();
+    this.multicast.leave(dev, iface, gt, traffic);
+    this.engine.stateVersion++;
+    for (const a of this.acts) if (a.join && a.join.dev === dev && a.join.iface === iface && a.join.group === gt && a.join.leftAt === undefined) a.join.leftAt = this.now;
+    return this.keepAction({ id: ++this.actSeq, kind: 'leave', at: this.now, target, traffic, leave: { dev, iface, group: gt, sent, watch, until: this.now + this.multicast.leaveTime(watch), removed: [], kept: [] } });
+  }
+
+  /** The leaves' progress: each watched entry removed, or kept (still there after the network's leave time). */
+  private updateLeaves(): void {
+    for (const a of this.acts) {
+      const l = a.leave;
+      if (!l || l.done !== undefined) continue;
+      for (const w of l.watch) {
+        if (l.removed.indexOf(w.where) >= 0 || l.kept.indexOf(w.where) >= 0) continue;
+        const st = this.multicast.watchState(w);
+        if (!st.present) l.removed.push(w.where);
+        else if (this.now >= l.until) l.kept.push(`${w.where}${st.reporter ? ' (' + st.reporter + ' reports it)' : ''}`);
+      }
+      if (l.removed.length + l.kept.length >= l.watch.length && (l.watch.length || this.now >= a.at)) l.done = this.now;
+    }
   }
 
   // ------------------------------------------------------------ Network events: the operations and their list
@@ -406,7 +454,7 @@ export class Simulation {
     for (const a of this.acts) {
       const j = a.join;
       if (!j || j.byAt !== undefined || j.group !== group || owner !== j.dev || this.now > j.until) continue;
-      j.by = `${rdev}:${riface}`;
+      j.by = riface.indexOf('VLAN ') === 0 || riface.indexOf('the untagged') === 0 ? `${rdev} (${riface})` : `${rdev}:${riface}`;
       j.byAt = this.now;
     }
   }
@@ -432,10 +480,13 @@ export class Simulation {
     return this.keepAction({ id: ++this.actSeq, kind: 'shut', at: this.now, target, shut: { dev, iface } });
   }
 
-  /** Start flapping (Network events): a cable, or a port's cable, until its cycles are done or Stop flapping. */
+  /** Start flapping (Network events): an interface (a cabled port), until its cycles are done or Stop flapping; never a cable. */
   actFlap(ref: string): ActionRecord {
     const target = ref.replace(/^iface:/, '').replace(/^link:/, 'cable ');
-    if (this.engine.flapOf(ref)) return this.keepAction({ id: ++this.actSeq, kind: 'flap', at: this.now, target, error: `${target} is flapping already` });
+    // flapping is an interface's action: a cable goes down and up only as its ports do
+    if (ref.indexOf('iface:') !== 0) return this.keepAction({ id: ++this.actSeq, kind: 'flap', at: this.now, target, error: `${target} is no interface: flapping is an interface action (choose a device and its interface)` });
+    const going = this.engine.flapOf(ref);
+    if (going) return this.keepAction({ id: ++this.actSeq, kind: 'flap', at: this.now, target, error: going.ref === ref ? `${target} is flapping already` : `its cable ${going.link} flaps already, from ${going.ref.slice(6)}` });
     // a shut interface stays down until No shut: flapping would not show anything (and could not bring it up)
     if (ref.indexOf('iface:') === 0) {
       const [, d, ...rest] = ref.split(':');
@@ -469,6 +520,7 @@ export class Simulation {
 
   /** The events of Network events, newest first, as the list shows them. */
   actions(): ActionView[] {
+    this.updateLeaves();
     const c = this.actionContext();
     return this.acts.map((a) => actionView(a, c)).reverse();
   }

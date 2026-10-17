@@ -51,9 +51,10 @@ import { CONV_LIMIT, FRAME_MAX, PACE_SCALES, PACE_SPEEDS, PaceMode, Pacer, conve
 import { ParamValue, Resolved, formatValue, sourceText } from '../analysis/sim/params';
 import { DeviceStateView, SimProtocolEntry, Simulation, hasLifecycle } from '../analysis/sim/simulation';
 import { StatusPlacer } from './status-place';
+import { QuerierInfo } from '../analysis/sim/multicast';
 import { TestPlan } from '../analysis/sim/test-plan';
 import { TestForm } from './sim-test-form';
-import { IfaceForm, JoinForm, StreamForm } from './sim-event-forms';
+import { IfaceForm, JoinForm, LeaveForm, StreamForm } from './sim-event-forms';
 import { listKey, renderEvents } from './sim-event-list';
 import { TestKind } from '../analysis/sim/transport';
 import { Flight, Headers, NetEvent, SessionStatus, SimEvent, TableTimer, Track } from '../analysis/sim/types';
@@ -141,7 +142,7 @@ export type MenuItem = { label: string; act: () => void };
 
 /** The tables of a device the simulation panel can show (the status side's tabs). */
 type DevTable = Exclude<TableKind, 'packet'>;
-const DEV_TABLE_LABEL: { [k in DevTable]: string } = { arp: 'ARP', mac: 'MAC', conn: 'Connections', fw: 'Sessions', igmp: 'IGMP / MLD', snoop: 'Snooping', members: 'Memberships', mroute: 'Multicast routes', dhcp: 'DHCP leases', dnscache: 'DNS cache', dnszone: 'DNS zone' };
+const DEV_TABLE_LABEL: { [k in DevTable]: string } = { arp: 'ARP', mac: 'MAC', conn: 'Connections', fw: 'Sessions', igmp: 'IGMP / MLD', querier: 'Querier', snoop: 'Snooping', members: 'Memberships', mroute: 'Multicast routes', dhcp: 'DHCP leases', dnscache: 'DNS cache', dnszone: 'DNS zone' };
 
 /** An interval in seconds as the form has it: "1 s", "0.25 s". */
 function secText(sec: number): string {
@@ -180,6 +181,7 @@ export class SimController implements SimulationMode {
   private logProto = '';
   private testForm: TestForm | null = null;
   private joinForm: JoinForm | null = null;
+  private leaveForm: LeaveForm | null = null;
   private streamForm: StreamForm | null = null;
   private ifaceForm: IfaceForm | null = null;
   private domainKey = '';
@@ -705,7 +707,8 @@ export class SimController implements SimulationMode {
     const scene = this.host.scene();
     const states = this.deviceStates();
     const all = Array.from(states).sort((a, b) => (a[0] < b[0] ? -1 : 1));
-    const key = `${all.map((x) => x[0] + '=' + x[1].state + ':' + x[1].detail).join('|')}|${this.host.view()}`;
+    const marks = this.querierMarks();
+    const key = `${all.map((x) => x[0] + '=' + x[1].state + ':' + x[1].detail).join('|')}|${Array.from(marks).map(([d, m]) => d + '=' + m.text + m.state).join('|')}|${this.host.view()}`;
     if (this.power && this.power.isConnected && this.power.parentNode === scene && key === this.powerKey) return;
     if (this.power && this.power.parentNode) this.power.parentNode.removeChild(this.power);
     this.power = null;
@@ -720,7 +723,7 @@ export class SimController implements SimulationMode {
     if (labels) scene.insertBefore(g, labels);
     else scene.appendChild(g);
     this.power = g;
-    const place = new StatusPlacer(scene);
+    const place = StatusPlacer.for(scene);
     const H = 14;
     for (const [dev, st] of all) {
       const box = scene.querySelector(`.node[data-ref="device:${dev.replace(/["\\]/g, '\\$&')}"] .dev-box`) as SVGGraphicsElement | null;
@@ -770,6 +773,73 @@ export class SimController implements SimulationMode {
       tx.setAttribute('y', (at.y + H / 2 + 3.5).toFixed(1));
       s.setAttribute('data-edge', at.edge);
     }
+    // the active IGMP / MLD queriers: a mark of their own beside the status, with the LANs they query
+    for (const [dev, m] of marks) {
+      const box = scene.querySelector(`.node[data-ref="device:${dev.replace(/["\\]/g, '\\$&')}"] .dev-box`) as SVGGraphicsElement | null;
+      if (!box || typeof box.getBBox !== 'function') continue;
+      let b: DOMRect;
+      try {
+        b = box.getBBox();
+      } catch (e) {
+        continue;
+      }
+      const s = doc.createElementNS(NS, 'g');
+      s.setAttribute('class', 'sim-querier');
+      s.setAttribute('data-device', dev);
+      s.setAttribute('data-role', m.state);
+      s.setAttribute('role', 'img');
+      s.setAttribute('aria-label', `${dev}: ${m.detail}`);
+      const t = doc.createElementNS(NS, 'title');
+      t.textContent = `${dev}: ${m.detail}`;
+      const r = doc.createElementNS(NS, 'rect');
+      const tx = doc.createElementNS(NS, 'text');
+      tx.textContent = m.text;
+      s.appendChild(t);
+      s.appendChild(r);
+      s.appendChild(tx);
+      g.appendChild(s);
+      let tw = m.text.length * 5.4;
+      try {
+        tw = (tx as SVGTextContentElement).getComputedTextLength() || tw;
+      } catch (e) {
+        /* not laid out: the estimate */
+      }
+      const w = Math.ceil(tw + 12);
+      const at = place.find(b, w, H);
+      r.setAttribute('x', at.x.toFixed(1));
+      r.setAttribute('y', at.y.toFixed(1));
+      r.setAttribute('width', String(w));
+      r.setAttribute('height', String(H));
+      r.setAttribute('rx', '3');
+      tx.setAttribute('x', (at.x + 6).toFixed(1));
+      tx.setAttribute('y', (at.y + H / 2 + 3.5).toFixed(1));
+      s.setAttribute('data-edge', at.edge);
+    }
+  }
+
+  /**
+   * The devices that query a LAN now, as the election has it (never from the
+   * configuration): "Querier · VLAN 10" (several: "Querier · VLAN 10, 20",
+   * more than two: "Querier · 3 LANs"), or "Querier? · VLAN 10" while it is
+   * the querier only for now (its startup queries). Non-queriers, devices
+   * configured off and those down have no mark (the table lists them).
+   */
+  querierMarks(): Map<string, { text: string; state: 'querier' | 'starting'; detail: string }> {
+    const out = new Map<string, { text: string; state: 'querier' | 'starting'; detail: string }>();
+    const by = new Map<string, QuerierInfo[]>();
+    for (const q of this.sim.multicast.querierRoles()) {
+      if (q.role !== 'querier' && q.role !== 'starting') continue;
+      by.set(q.dev, (by.get(q.dev) || []).concat([q]));
+    }
+    for (const [dev, qs] of by) {
+      const lans = Array.from(new Set(qs.map((q) => q.lan.replace(/^VLAN /, ''))));
+      const vlansOnly = qs.every((q) => /^VLAN /.test(q.lan));
+      const starting = qs.every((q) => q.role === 'starting');
+      const where = lans.length > 2 ? `${lans.length} LANs` : (vlansOnly ? 'VLAN ' : '') + lans.join(', ');
+      const detail = qs.map((q) => `${q.family} querier of ${q.lan}${q.iface && q.kind === 'router' ? ' (' + q.iface + ')' : ''} from ${q.addr}${q.role === 'starting' ? ' — for now: its startup queries, the election not settled' : ', elected'}`).join('; ');
+      out.set(dev, { text: `${starting ? 'Querier?' : 'Querier'} · ${where}`, state: starting ? 'starting' : 'querier', detail });
+    }
+    return out;
   }
 
   /** The devices' lifecycle for the diagram's marks, by ref (those powered off or booting). */
@@ -896,7 +966,7 @@ export class SimController implements SimulationMode {
     return this.did(this.sim.restore(ref), `${this.cap(this.label(ref))} restored`);
   }
 
-  /** Start flapping (a cable's or a port's menu, Interface actions): an event of the list. */
+  /** Start flapping (an interface's menu, Interface actions; never a cable): an event of the list. */
   startFlap(ref: string): boolean {
     const a = this.sim.actFlap(ref);
     return this.did(!a.error, `${this.cap(this.label(ref))} starts flapping`);
@@ -936,11 +1006,11 @@ export class SimController implements SimulationMode {
 
   // ------------------------------------------------------------ multicast: joins and streams
 
-  /** Join multicast group… / Start multicast stream… from a device's menu: that form of Network events, open, with the device. */
-  multicastFrom(dev: string, what: 'join' | 'stream'): void {
-    const f = what === 'join' ? this.joinForm : this.streamForm;
+  /** Join multicast group… / Leave multicast group… / Start multicast stream… from a device's menu: that form of Network events, open, with the device. */
+  multicastFrom(dev: string, what: 'join' | 'leave' | 'stream'): void {
+    const f = what === 'join' ? this.joinForm : what === 'leave' ? this.leaveForm : this.streamForm;
     if (!f) return;
-    this.openSection(what === 'join' ? 'sim-ne-join' : 'sim-ne-stream');
+    this.openSection(what === 'join' ? 'sim-ne-join' : what === 'leave' ? 'sim-ne-leave' : 'sim-ne-stream');
     f.setDevice(dev);
     f.focus();
   }
@@ -974,7 +1044,21 @@ export class SimController implements SimulationMode {
   }
 
   leaveGroup(dev: string, iface: string, group: string): boolean {
-    return this.did(this.sim.leaveGroup(dev, iface, group), `${dev}:${iface} leaves ${group}`);
+    const ok = this.sim.leaveGroup(dev, iface, group);
+    // its leave is on screen now (paused too: there it waits for Play)
+    this.pacer.take();
+    return this.did(ok, `${dev}:${iface} leaves ${group}`);
+  }
+
+  /** Leave multicast group (the form): an event of the list, followed until the network has forgotten the membership. */
+  leaveAct(dev: string, iface: string, group: string): string {
+    const a = this.sim.actLeave(dev, iface, group);
+    this.pacer.take();
+    this.logKey = '';
+    this.actionsKey = '';
+    this.refresh(true);
+    if (a.error) return a.error;
+    return `${a.target}: leave sent at t = ${fmtSec(this.t)}; see Active events.`;
   }
 
   /** Start multicast stream: an event of the list, running until Stop stream. */
@@ -1035,6 +1119,7 @@ export class SimController implements SimulationMode {
     if (d.arp) out.push('conn');
     if (this.isFirewall(dev)) out.push('fw');
     if (this.sim.multicast.igmpDevice(dev)) out.push('igmp');
+    if (this.sim.multicast.querierDevice(dev)) out.push('querier');
     if (this.sim.multicast.mcRouter(dev)) out.push('mroute');
     if (this.sim.multicast.snoopDevice(dev)) out.push('snoop');
     if (this.sim.multicast.memberDevice(dev)) out.push('members');
@@ -1074,6 +1159,7 @@ export class SimController implements SimulationMode {
     if (kind === 'igmp') return () => this.sim.igmpTable(dev);
     if (kind === 'snoop') return () => this.sim.snoopTable(dev);
     if (kind === 'members') return () => this.sim.memberTable(dev);
+    if (kind === 'querier') return () => this.sim.multicast.querierTable(dev);
     if (kind === 'mroute') return () => this.sim.mrouteTable(dev);
     if (kind === 'dhcp') return () => this.sim.leaseGrid(dev);
     if (kind === 'dnscache') return () => this.sim.dnsCacheGrid(dev);
@@ -1203,19 +1289,17 @@ export class SimController implements SimulationMode {
       if (this.eventOf(r, 'fail')) items.push({ label: 'Restore link', act: () => this.restoreLink(r) });
       else items.push({ label: 'Fail link', act: () => this.failLink(r) });
       if (r.indexOf('link:') === 0) {
-        if (this.eventOf(r, 'flap')) items.push({ label: 'Stop flapping', act: () => this.stopFlap(r) });
-        else items.push({ label: 'Start flapping', act: () => this.startFlap(r) });
         this.linkDomainItems(r.slice(5), items, x, y);
       }
     } else if (r.indexOf('device:') === 0) {
       const dev = r.slice(7);
       const d = this.sim.tableDevices().find((q) => q.id === dev);
       const tabs = this.deviceTables(dev);
-      const show: { [k in DevTable]: string } = { arp: 'Show ARP table', mac: 'Show MAC table', conn: 'Show connections', fw: 'Show sessions', igmp: 'Show IGMP / MLD groups', mroute: 'Show multicast routes', snoop: 'Show snooping table', members: 'Show group memberships', dhcp: 'Show DHCP leases', dnscache: 'Show DNS cache', dnszone: 'Show DNS zone' };
+      const show: { [k in DevTable]: string } = { arp: 'Show ARP table', mac: 'Show MAC table', conn: 'Show connections', fw: 'Show sessions', igmp: 'Show IGMP / MLD groups', querier: 'Show querier election', mroute: 'Show multicast routes', snoop: 'Show snooping table', members: 'Show group memberships', dhcp: 'Show DHCP leases', dnscache: 'Show DNS cache', dnszone: 'Show DNS zone' };
       for (const k of ['arp', 'mac', 'conn', 'fw'] as DevTable[]) if (tabs.indexOf(k) >= 0) items.push({ label: show[k], act: () => void this.showTable(k, dev) });
       items.push({ label: 'Send network packets…', act: () => this.sendTestFrom(dev) });
       // multicast: a host's memberships, a router's IGMP / MLD groups and multicast routes, a switch's snooping table
-      for (const k of ['members', 'igmp', 'mroute', 'snoop'] as DevTable[]) if (tabs.indexOf(k) >= 0) items.push({ label: show[k], act: () => void this.showTable(k, dev) });
+      for (const k of ['members', 'igmp', 'querier', 'mroute', 'snoop'] as DevTable[]) if (tabs.indexOf(k) >= 0) items.push({ label: show[k], act: () => void this.showTable(k, dev) });
       // DHCP and DNS
       for (const k of ['dhcp', 'dnszone', 'dnscache'] as DevTable[]) if (tabs.indexOf(k) >= 0) items.push({ label: show[k], act: () => void this.showTable(k, dev) });
       if (this.senders.has(dev)) items.push({ label: 'Stop as sender', act: () => void this.setSender(dev, false) });
@@ -1224,6 +1308,7 @@ export class SimController implements SimulationMode {
       if (d && d.arp && sdv && !sdv.routes) {
         items.push({ label: 'Join multicast group…', act: () => this.multicastFrom(dev, 'join') });
         for (const j of this.sim.multicast.joined(dev)) items.push({ label: `Leave group ${j.group}`, act: () => void this.leaveGroup(dev, j.iface, j.group) });
+        if (this.sim.multicast.joined(dev).length) items.push({ label: 'Leave multicast group…', act: () => this.multicastFrom(dev, 'leave') });
         items.push({ label: 'Start multicast stream…', act: () => this.multicastFrom(dev, 'stream') });
         for (const st of this.sim.multicast.streamsOf(dev)) {
           if (st.running) items.push({ label: `Stop stream ${st.group}`, act: () => void this.stopStream(dev, st.iface, st.group) });
@@ -1497,6 +1582,7 @@ export class SimController implements SimulationMode {
     const fh = {
       sim: () => this.sim,
       join: (d: string, i: string, g: string, src: string[]) => this.joinGroup(d, i, g, src),
+      leave: (d: string, i: string, g: string) => this.leaveAct(d, i, g),
       stream: (d: string, i: string, g: string, port: number, iv: number, size: number) => this.startStream(d, i, g, port, iv, size),
       shut: (d: string, i: string) => (this.shut(d, i) ? `${d}:${i} shut at t = ${fmtSec(this.t)}; see Active events.` : `${d}:${i} could not be shut.`),
       flap: (d: string, i: string) => (this.startFlap(`iface:${d}:${i}`) ? `${d}:${i} flapping from t = ${fmtSec(this.t)}; see Active events.` : `${d}:${i} could not start flapping.`),
@@ -1507,11 +1593,13 @@ export class SimController implements SimulationMode {
     };
     this.testForm = new TestForm(doc, { sim: () => this.sim, send: (p, play) => this.sendPlan(p, play), playing: () => this.playing }, (d, id, title, body) => this.disclosure(d, id, title, body));
     this.joinForm = new JoinForm(doc, fh);
+    this.leaveForm = new LeaveForm(doc, fh);
     this.streamForm = new StreamForm(doc, fh);
     this.ifaceForm = new IfaceForm(doc, fh);
     const net = this.sec(doc, 'sim-act-net', 'Network events', [
       this.action(doc, 'sim-ne-send', 'Send network packets', this.testForm.el, true),
       this.action(doc, 'sim-ne-join', 'Join multicast group', this.joinForm.el),
+      this.action(doc, 'sim-ne-leave', 'Leave multicast group', this.leaveForm.el),
       this.action(doc, 'sim-ne-stream', 'Start multicast stream', this.streamForm.el),
       this.action(doc, 'sim-ne-iface', 'Interface actions', this.ifaceForm.el),
     ]);
@@ -1565,7 +1653,7 @@ export class SimController implements SimulationMode {
       return s;
     };
     const btn = (id: string, label: string, up: boolean): HTMLButtonElement => {
-      const b = el(doc, 'button', { type: 'button', id, class: 'icon-btn sp-bulk', 'aria-label': label, title: label, 'aria-controls': 'sim-ne-send sim-ne-join sim-ne-stream sim-ne-iface' }) as HTMLButtonElement;
+      const b = el(doc, 'button', { type: 'button', id, class: 'icon-btn sp-bulk', 'aria-label': label, title: label, 'aria-controls': 'sim-ne-send sim-ne-join sim-ne-leave sim-ne-stream sim-ne-iface' }) as HTMLButtonElement;
       b.appendChild(icon(up));
       b.addEventListener('click', () => this.setAllActions(!up));
       return b;
@@ -1884,7 +1972,7 @@ export class SimController implements SimulationMode {
       }
     }
     // the forms of Network events (a lease bound or lost, a device powered off, an interface shut …)
-    for (const f of [this.testForm, this.joinForm, this.streamForm, this.ifaceForm]) if (f && f.el.isConnected) f.sync();
+    for (const f of [this.testForm, this.joinForm, this.leaveForm, this.streamForm, this.ifaceForm]) if (f && f.el.isConnected) f.sync();
     // Active events: the events of Network events (newest first) and the other state changes in effect
     const views = this.sim.actions();
     const others = this.sim.otherEvents();

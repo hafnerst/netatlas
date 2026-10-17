@@ -1686,7 +1686,7 @@ devices:
 | `medium` | | `fiber`, `copper`, `dac`, `aoc`, `wireless`/`lte`/`5g`/`microwave`, `serial`, `virtual`, or any other text (it gets its own colour). **The only place the medium of the connection is configured**; without it the cable is drawn as "Unspecified". |
 | `speed` | | e.g. `1G`, `10G`, `100G`, `250M`. **The only place the speed of the connection is configured**; it sets the line width. |
 | `direction` | | `unidirectional`: traffic only from end `a` to end `b` (simplex fibre, a data diode, a TAP or SPAN feed), drawn with an arrow at end `b`; the path tracer and the simulated traffic never use it the other way. `bidirectional` is the default and is not written. Anything else is an error. |
-| `simulation` | | The cable's settings for the [protocol simulation](#simulation-parameters-and-device-attributes): `latency` (its propagation delay; a bare number is in ms, or `250us`, `2ms`), `loss` (the share of frames lost, in percent) and `flapping: true` (it flaps from the start, with the simulation's flapping times). Configured here, they take precedence over everything else. |
+| `simulation` | | The cable's settings for the [protocol simulation](#simulation-parameters-and-device-attributes): `latency` (its propagation delay; a bare number is in ms, or `250us`, `2ms`), `loss` (the share of frames lost, in percent). Flapping is not a cable's: a port flaps (its `simulation: {flapping: "on"}`, or Interface actions → Start flapping) and its cable follows; `flapping` here is an unknown key that says so. Configured here, they take precedence over everything else. |
 | `wireless_network` | wireless connections at a radio: yes | The Wi-Fi network (its `id`) of the end with Wireless access the connection is associated with: it takes that network's VLAN. An error on any other link. |
 | `label`, `cable` (cable/circuit id), `description`, `attrs` | | |
 
@@ -1746,7 +1746,7 @@ link end are unknown keys; the error says where the VLANs go.
 | `label` | |
 | `cidr` | required: **exactly one** IPv4 or IPv6 prefix **with a prefix length**, written as one value: `10.10.10.0/24` or `2001:db8::/64`. The prefix decides who is a member. A list is an error, even a one-element list; use one network per prefix (e.g. an IPv4 and an IPv6 network for one segment, both with the same `vlan`). |
 | `vlan` | the VLAN ID (1–4094) this IP network lives in, if any |
-| `simulation` | the VLAN's **simulation attributes** (IGMP snooping and its querier, fast leave, unknown multicast), for every switch carrying the VLAN; only on a network with a `vlan`. See [Levels](#levels-where-an-attribute-is-written). |
+| `simulation` | the VLAN's **simulation attributes** (the snooping querier, fast leave), for every switch carrying the VLAN (IGMP / MLD snooping itself is each switch's `igmp_mld_snooping`); only on a network with a `vlan`. See [Levels](#levels-where-an-attribute-is-written). |
 | `description`, `attrs` | |
 
 A network is always an IP network: there is no `kind`. It has no `vrf` (a VRF
@@ -2065,7 +2065,7 @@ at, and is written in that object's `simulation:` block:
 |---|---|---|
 | device | the device's `simulation:` | boot time, ECMP paths, the spanning-tree mode and bridge priority, a firewall's policy |
 | interface | a port's, an aggregate's or a logical interface's `simulation:` | ARP timers, link-up delay, a port's spanning-tree cost, edge port and BPDU guard, IGMP, a DHCP client's retries |
-| VLAN | the `simulation:` of a network with a `vlan` | IGMP snooping, the snooping querier, fast leave |
+| VLAN | the `simulation:` of a network with a `vlan` | the snooping querier, fast leave |
 | relation | a relation's `simulation:` | a VRRP group's advertisement interval, an IPsec tunnel's lifetimes, a load balancer pool's health checks |
 | service | a DHCP scope's or a DNS zone's `simulation:`; a Hypervisor service's, a virtual switch's or a Container engine's | the offer delay and ping check of a scope, a zone's record TTL; the VM restart time, the teaming failover detection, the container start time |
 
@@ -2190,11 +2190,12 @@ a list of `VLAN: value` pairs, ranges allowed.
 | `multicast` | Carries multicast | Off | `on`, `off` | the internet routes no multicast | clouds |  |
 | `icmp_probe_interval` | ICMP probe interval (s) | 1 min | 1 s – 24 h | Zabbix simple checks (1 min) | systems and SNMP managers |  |
 
-#### Interface attributes (33)
+#### Interface attributes (34)
 
 | Key | Attribute | Default | Range | Source of the default | Applies to | Also device-wide |
 |---|---|---|---|---|---|---|
 | `los_detection` | Loss-of-signal detection (ms) | 0 s | 0 s – 1 min | Junos hold-time down 0 ms (Cisco carrier-delay is the same idea) | ports |  |
+| `flapping` | Flapping from the start | Off | `on`, `off` | off: a port flaps only when told to (Interface actions → Start flapping) | ports |  |
 | `link_up_delay` | Link-up delay (s) | 2 s | 0 s – 5 min | 1000BASE-T autonegotiation and link training (IEEE 802.3 clauses 28 and 40) take about 2 s | ports |  |
 | `arp_timeout` | ARP timeout (s) | 4 h | 1 s – 2147483 s | Cisco IOS (4 h); RFC 826 sets none | interfaces with an address | yes |
 | `arp_retransmit` | ARP retransmit interval (s) | 1 s | 100 ms – 1 min | RFC 4861 RETRANS_TIMER (used for ARP as well) | interfaces with an address | yes |
@@ -2328,7 +2329,7 @@ networks:
 relations:
   - {id: gw, protocol: vrrp, endpoints: [core1, core2], simulation: {vrrp_advert: 300ms}}
 links:
-  - {id: uplink2, a: "acc-sw:up2", b: "core2:down1", simulation: {flapping: true}}
+  - {id: uplink2, a: "acc-sw:up2", b: "core2:down1"}       # acc-sw:up2 has simulation: {flapping: "on"}
 ```
 
 ### Multicast
@@ -2370,20 +2371,47 @@ highest router ID.
 
 What the simulation does with them:
 
-- **IGMPv2 / IGMPv3 and MLDv1 / MLDv2** (the device's `igmp_version`): every
-  router that runs PIM (or is the router end of an IGMP relation) with its
-  querier on takes part in the querier election of its subnets (the lowest
-  address queries every query interval; another takes over after the
-  other-querier-present interval, robustness × query interval + response
-  interval ÷ 2). A host reports a join at once and again after the
-  unsolicited report interval, answers a query after a random delay (from
-  the seed) up to the response interval, and (v2) sends none when it heard
-  another member's report first. A leave (IGMPv2 Leave, MLDv1 Done, a v3 /
-  MLDv2 report that blocks the sources) brings robustness group-specific
-  queries, one last member query interval apart; unanswered, the group
-  goes. A membership not reported for robustness × query interval +
-  response interval expires. Reports: v2 to the group, v3 to 224.0.0.22,
-  MLDv2 to ff02::16 (ICMPv6 143), all with TTL 1.
+- **The querier election** (IGMPv2 / IGMPv3, MLDv1 / MLDv2; RFC 3376 §6.6,
+  RFC 3810 §7.6). The **candidates** are configured: every interface with
+  an address of a router that runs PIM (or is the router end of an IGMP
+  relation) whose `igmp_querier` is on (the default there), and every VLAN
+  of a switch with the VLAN's `snooping_querier: on`, its snooping enabled
+  and an IPv4 address on its VLAN interface there (it queries from it).
+  Enabling snooping makes no candidate; a candidate is not yet the querier.
+  The **role** is the election's: it starts by itself with the simulation —
+  each candidate, as soon as its interface is up (a switch: its first
+  port), takes itself for the querier *for now* and sends its **startup
+  queries**: robustness of them, a quarter of the query interval apart.
+  Every candidate that hears a query from a **lower address** stops
+  querying (a non-querier); the lowest address of the LAN keeps querying,
+  and once its startup queries are sent it is the elected querier, which
+  sends a General Query every query interval. A non-querier that hears
+  nothing from the querier for the **other querier present interval**
+  (robustness × query interval + response interval ÷ 2) takes over. The
+  election is the LAN's: only the queries that reach a candidate count (its
+  cables, VLANs and ports), so two LANs with the same VLAN ID elect apart,
+  and a device can be the querier on one LAN and a non-querier on another.
+  A candidate whose interface or device goes down stops (its schedule with
+  it); up again, it starts afresh (startup queries; a lower one silences it
+  again). One schedule per candidate: a newer start ends the older one.
+- **Members** (`igmp_version` of the host): a host reports a join at once
+  and again after the unsolicited report interval, and keeps its
+  membership (its intent) until it leaves: it answers every query after a
+  random delay (from the seed) up to the response interval, and (v2) sends
+  none when it heard another member's report first. What the switches and
+  routers learned of it lasts the membership interval (robustness × query
+  interval + response interval) and is refreshed by these answers; if they
+  don't arrive (its cable down, a filter), the network forgets it while the
+  host still wants the group, and learns it again from its next answer. A
+  host that is off sends nothing; on again it reports its groups. A
+  **leave** ends the host's membership at once (no later answer for the
+  group) and sends an IGMPv2 Leave / MLDv1 Done, or a v3 / MLDv2 report
+  that blocks its sources; the querier (a router, or a switch that is the
+  VLAN's querier) asks with group-specific queries, robustness times a last
+  member query interval apart, and stops when a member answers; unanswered,
+  the group goes at the routers and the port at the switches. Reports: v2
+  to the group, v3 to 224.0.0.22, MLDv2 to ff02::16 (ICMPv6 143), all with
+  TTL 1.
 - **Snooping** (RFC 4541), each switch's own choice per VLAN
   ([`igmp_mld_snooping`](#igmp--mld-snooping-per-vlan)). Enabled: router
   ports from queries and PIM Hellos (for the router-port aging time), member
@@ -2400,11 +2428,12 @@ What the simulation does with them:
   Forwarding is by group: the sources an IGMPv3 / MLDv2 member names are
   shown in the snooping table but not filtered at the switch. Disabled, or
   not configured (an error of the checks): everything is flooded in the
-  VLAN. A switch with `snooping_querier: on` (and snooping enabled) queries
-  a VLAN that has no router port, from its VLAN interface's IPv4 address;
-  without one it is no querier (the log says so). The querier sends IGMP
-  queries only (no MLD queries): IPv6 members are learned from their
-  unsolicited reports and from the queries of a multicast router.
+  VLAN. A switch with `snooping_querier: on` (and snooping enabled) is a
+  querier candidate of that VLAN (see the election above), from its VLAN
+  interface's IPv4 address; without one it is no candidate (the log says
+  so). Its queries are IGMP only (no MLD queries): IPv6 members are learned
+  from their unsolicited reports and from the queries of a multicast
+  router.
 - **Snooping is not routing.** On a Layer 3 switch snooping decides what
   goes out of the ports of each VLAN; what crosses its VLAN interfaces to
   other VLANs is multicast routing, which needs PIM (and a member there).
@@ -2441,10 +2470,14 @@ What the simulation does with them:
   multicast type: to every group joined in the model) is answered by
   nobody; the test lists the members that received it.
 
-The window's **Multicast** section (and a host's menu) joins a group or
-starts a stream as a network event, ended by **Leave group** / **Stop
-stream**; the groups and streams of the model can be left or stopped the
-same way. A model's `interval` is simulated time (its stream belongs to
+**Network events** (and a host's menu) join a group (**Join multicast
+group**), leave one (**Leave multicast group**: the interface's
+memberships offered, none chosen for you; its event follows what the
+network had learned on the host's way — a snooping switch's port facing
+it, a router's group on its subnet — until each is removed, or kept
+because another member there answered) or start a stream (**Start
+multicast stream**, ended by **Stop stream**); the groups and streams of
+the model can be left or stopped the same way. A model's `interval` is simulated time (its stream belongs to
 the scenario); a stream started during the simulation sends every
 interval of real time instead, side by side with any others (see the
 README's *Foreground and background*). **Show IGMP / MLD groups** (a router: its interfaces' querier state and
@@ -2452,7 +2485,11 @@ groups, with the last reporter, version, sources and expiry), **Show
 snooping table** (a switch: per VLAN its router ports and each group's
 member ports with version, sources, reporter and time left, and each VLAN's
 setting), **Show group memberships** (a host: its own groups, version,
-filter and what it received) and **Show multicast routes** (a router: (*, G) and (S, G) with their
+filter and what it received, and who queries its LAN), **Show querier
+election** (a router or a switch candidate: per LAN its address, its
+role — *Querier (starting)*, *Querier*, *Non-querier*, *Not a candidate*,
+*Down* — the querier it yields to and how long until it would take over,
+its general queries) and **Show multicast routes** (a router: (*, G) and (S, G) with their
 RPF interface and neighbour, outgoing interfaces and flags, and the RP)
 show the state, with the timers in effect.
 
@@ -2625,8 +2662,11 @@ fallback, and no recursion beyond the model's DNS servers.
   loss-of-signal detection time (a port whose own device took it down: at
   once). When it comes back, its ports come up after the link-up delay
   (an access point's wireless links: its association time); a loss shorter
-  than the detection time is never noticed. Flapping: down for the
-  flapping down time, up for the up time, for its cycles.
+  than the detection time is never noticed. Flapping is an interface's
+  (a cabled port's; a cable is no target): the port goes down for the
+  flapping down time and up for the up time, for its cycles, its cable
+  with it, while the port stays administratively up; one cable flaps from
+  one of its ends at a time.
 * **Layer 2.** The ARP and neighbour timers below; the MAC aging time and
   the MAC table size (a full table learns nothing new: frames to an
   unknown address are flooded); the spanning tree's convergence after a

@@ -59,7 +59,7 @@ const errs = (text) => V.loadModel(l2(text)).errors.map((e) => e.message);
 test('every attribute has its level: per device, per interface, per VLAN, per relation (the audit)', () => {
   const lv = (k) => Pm.paramDef(k).level || 'device';
   for (const k of ['boot-time', 'ecmp-max', 'spf-delay', 'ttl', 'icmp-rate', 'bcast-ping', 'tcp-syn-retries', 'mac-aging', 'mac-table-size', 'stp-mode', 'stp-hello', 'stp-forward-delay', 'stp-max-age', 'bridge-priority', 'bridge-priority-vlans', 'mrouter-aging', 'spt-switchover', 'fw-action', 'fw-tcp', 'ha-failover', 'ips-fail', 'restart-policy', 'snmp-interval', 'ap-association', 'ap-idle', 'listening', 'test-traffic', 'test-targets', 'app-timeout']) assert.equal(lv(k), 'device', k);
-  for (const k of ['arp-timeout', 'arp-retransmit', 'arp-retries', 'ndp-reachable', 'ping', 'icmp-errors', 'link-up-delay', 'los-detect', 'storm-bc', 'storm-mc', 'stp-port', 'stp-cost', 'stp-port-priority', 'stp-edge', 'stp-bpdu-guard', 'stp-root-guard', 'stp-link-type', 'lacp-rate', 'igmp-version', 'igmp-unsolicited', 'igmp-querier', 'igmp-query', 'igmp-max-resp', 'igmp-robustness', 'igmp-lmqi', 'pim-dr-priority', 'directed-broadcast', 'mc-passthrough', 'mc-to-unicast', 'ap-beacon']) assert.equal(lv(k), 'interface', k);
+  for (const k of ['arp-timeout', 'arp-retransmit', 'arp-retries', 'ndp-reachable', 'ping', 'icmp-errors', 'link-up-delay', 'los-detect', 'flapping', 'storm-bc', 'storm-mc', 'stp-port', 'stp-cost', 'stp-port-priority', 'stp-edge', 'stp-bpdu-guard', 'stp-root-guard', 'stp-link-type', 'lacp-rate', 'igmp-version', 'igmp-unsolicited', 'igmp-querier', 'igmp-query', 'igmp-max-resp', 'igmp-robustness', 'igmp-lmqi', 'pim-dr-priority', 'directed-broadcast', 'mc-passthrough', 'mc-to-unicast', 'ap-beacon']) assert.equal(lv(k), 'interface', k);
   for (const k of ['snoop-querier', 'fast-leave']) assert.equal(lv(k), 'vlan', k);
   // IGMP / MLD snooping itself is no simulation attribute: the switch's configuration (igmp_mld_snooping)
   for (const k of ['igmp-snooping', 'unknown-mc']) assert.throws(() => Pm.paramDef(k), /unknown simulation parameter/);
@@ -72,7 +72,7 @@ test('every attribute has its level: per device, per interface, per VLAN, per re
   // where each kind of object's attributes apply
   const sw = { id: 's', type: 'switch', caps: Cap.capabilities({ type: 'switch' }), ip: false, routes: false, aggregate: true, ipsec: false, snmpManager: false, hypervisor: false };
   const port = { port: true, ip: false, dhcp: false, lag: false, bridgePort: true, radio: false };
-  assert.deepEqual(Pm.interfaceParams(sw, port).map((p) => p.key), ['los-detect', 'link-up-delay', 'stp-port', 'stp-cost', 'stp-port-priority', 'stp-edge', 'stp-bpdu-guard', 'stp-root-guard', 'stp-link-type', 'storm-bc', 'storm-mc']);
+  assert.deepEqual(Pm.interfaceParams(sw, port).map((p) => p.key), ['los-detect', 'flapping', 'link-up-delay', 'stp-port', 'stp-cost', 'stp-port-priority', 'stp-edge', 'stp-bpdu-guard', 'stp-root-guard', 'stp-link-type', 'storm-bc', 'storm-mc']);
   assert.ok(Pm.interfaceParams(sw, { ...port, port: false, lag: true }).some((p) => p.key === 'lacp-rate'));
   const r = { id: 'r', type: 'router', caps: Cap.capabilities({ type: 'router' }), ip: true, routes: true, aggregate: false, ipsec: false, snmpManager: false, hypervisor: false };
   const routed = { port: true, ip: true, dhcp: false, lag: false, bridgePort: false, radio: false };

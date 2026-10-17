@@ -1,6 +1,6 @@
 /**
  * The forms of Network events besides Send network packets: Join multicast
- * group, Start multicast stream and Interface actions. Each chooses its own
+ * group, Leave multicast group, Start multicast stream and Interface actions. Each chooses its own
  * device and interface (nothing is taken from the diagram's selection unless
  * asked: a device's menu fills in its device, nothing else), shows what
  * applies, and disables its button with a short reason until it can be
@@ -17,6 +17,7 @@ import { el } from './dom';
 export interface EventFormHost {
   sim(): Simulation;
   join(dev: string, iface: string, group: string, sources: string[]): string;
+  leave(dev: string, iface: string, group: string): string;
   stream(dev: string, iface: string, group: string, port: number, intervalMs: number, size: number): string;
   shut(dev: string, iface: string): string;
   flap(dev: string, iface: string): string;
@@ -177,6 +178,66 @@ export class JoinForm {
     if (!ssm && this.sources.value) this.sources.value = '';
     show(this.el, 'sim-j-src', ssm);
     const why = !this.t.dev.value ? 'Choose a host.' : !this.t.iface.value ? 'Choose its interface.' : !this.group.value.trim() ? 'Enter the group.' : sim.joinProblem(this.t.dev.value, this.t.iface.value, this.group.value.trim(), this.srcList());
+    setNeed(this.f.need, [this.btn], why ? why.replace(/\.?$/, '.') : null);
+  }
+
+  setDevice(dev: string): void {
+    this.t.set(dev);
+    this.sync();
+  }
+
+  focus(): void {
+    (this.t.dev.value ? this.group : this.t.dev).focus();
+  }
+}
+
+/**
+ * Leave multicast group: a host's interface leaves one of its groups. The
+ * groups offered are that interface's memberships now (IGMP or MLD by the
+ * group's family), none chosen for you; a host without memberships is
+ * listed with the reason. Its leave goes through the simulation like any
+ * report; the event follows what the network had learned until it is gone.
+ */
+export class LeaveForm {
+  readonly el: HTMLElement;
+  private t: Target;
+  private group: HTMLSelectElement;
+  private ctx: HTMLElement;
+  private btn: HTMLButtonElement;
+  private f: { el: HTMLElement; need: HTMLElement; msg: HTMLElement };
+
+  constructor(
+    private doc: Document,
+    private host: EventFormHost,
+  ) {
+    this.t = new Target(doc, 'sim-l');
+    this.group = el(doc, 'select', { id: 'sim-l-group' }) as HTMLSelectElement;
+    this.ctx = el(doc, 'p', { id: 'sim-l-ctx', class: 'small muted sim-t-note' });
+    this.btn = el(doc, 'button', { type: 'button', id: 'sim-l-go', class: 'sp-primary' }, ['Leave group']) as HTMLButtonElement;
+    this.f = footer(doc, 'sim-l', [this.btn]);
+    this.el = el(doc, 'div', { class: 'sim-ev-form' }, [grid(doc, [['sim-l-dev', 'Device', this.t.dev], ['sim-l-if', 'Interface', this.t.iface], ['sim-l-group', 'Group', this.group]]), this.ctx, this.f.el]);
+    for (const e of [this.t.dev, this.t.iface, this.group]) e.addEventListener('change', () => this.sync());
+    this.btn.addEventListener('click', () => {
+      this.sync();
+      if (this.btn.disabled) return;
+      this.f.msg.textContent = this.host.leave(this.t.dev.value, this.t.iface.value, this.group.value);
+      this.sync();
+    });
+    this.sync();
+  }
+
+  sync(): void {
+    const sim = this.host.sim();
+    // the hosts with a membership now; the others listed with the reason
+    const devs = hostOptions(sim).map((o) => (!o.value || o.disabled || sim.multicast.joined(o.value).length ? o : { ...o, label: `${o.value} — no membership`, disabled: true }));
+    this.t.sync(devs, (d) => hostIfaces(sim, d).map((o) => (o.disabled || sim.multicast.joined(d).some((j) => j.iface === o.value) ? o : { ...o, label: `${o.label} — no membership`, disabled: true })));
+    const groups = this.t.dev.value && this.t.iface.value ? sim.multicast.joined(this.t.dev.value).filter((j) => j.iface === this.t.iface.value) : [];
+    fill(this.doc, this.group, [{ value: '', label: groups.length ? 'Select…' : this.t.iface.value ? 'No membership here' : 'Choose an interface first' }].concat(groups.map((j) => ({ value: j.group, label: `${j.group} (${(parseAddress(j.group) as { version: number }).version === 4 ? 'IGMP' : 'MLD'}${j.sources.length ? ', sources ' + j.sources.join(', ') : ''})` }))));
+    this.group.disabled = !groups.length;
+    const ctx = this.group.value ? sim.leaveContext(this.t.dev.value, this.t.iface.value, this.group.value) : '';
+    if (this.ctx.textContent !== ctx) this.ctx.textContent = ctx;
+    this.ctx.hidden = !ctx;
+    const why = !this.t.dev.value ? 'Choose a host with a membership.' : !this.t.iface.value ? 'Choose its interface.' : !groups.length ? `${this.t.dev.value}:${this.t.iface.value} is no member of any group.` : !this.group.value ? 'Choose the group to leave.' : sim.leaveProblem(this.t.dev.value, this.t.iface.value, this.group.value);
     setNeed(this.f.need, [this.btn], why ? why.replace(/\.?$/, '.') : null);
   }
 

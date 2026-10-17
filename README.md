@@ -1503,9 +1503,12 @@ marks what is down.
 * **Fail link / Restore**: the cable goes dark at once (what is on it is
   lost, ✕ where it was); its ports notice after the loss-of-signal
   detection time; restored, they come up after the link-up delay.
-* **Flapping**: down for the flapping down time, up for the up time, for
-  the configured cycles (or until **Stop flapping**). A cable with
-  `simulation: {flapping: true}` in the model flaps from the start.
+* **Flapping** (an interface's action, never a cable's): the port goes
+  down for the flapping down time, up for the up time, for the configured
+  cycles (or until **Stop flapping**); its cable goes down and up with it,
+  while the port stays administratively up. One cable flaps from one end
+  at a time. A port with `simulation: {flapping: "on"}` in the model flaps
+  from the start.
 * **Shut interface / No shut**: a port shut takes its cable down (its own
   side knows at once, the far end after the detection time); a logical
   interface (a VLAN interface, a loopback, a tunnel) just goes down.
@@ -1582,9 +1585,10 @@ ends. There is no floating simulation window.
   its count (and *· n modified*), applied at once, with Reset; and the
   **Table timers** scale.
 * **Right: Actions** (in place of the Inspector's tabs). **Network
-  events**: four actions as headings that open their forms, **Send
+  events**: five actions as headings that open their forms, **Send
   network packets** (open), **Join multicast group** (Device, Interface,
-  Group, Sources for a source-specific group), **Start multicast stream**
+  Group, Sources for a source-specific group), **Leave multicast group**
+  (Device, Interface, one of its groups), **Start multicast stream**
   (Device, Interface, Group, UDP port, Interval, Size) and **Interface
   actions** (Device, Interface, its state marked with an icon and words,
   **Shut interface** or **Bring interface up**, **Start flapping** or
@@ -1943,10 +1947,11 @@ receiver, pulse, trail).
   are options *name - address* (a DHCP client's lease as it is now), the
   reasons short (*Cannot send IP packets*, *No IP address*, *Powered off*).
 * **Network events: direct actions and one event list.** The Actions
-  panel starts with four actions, each with its own form that chooses its
+  panel starts with five actions, each with its own form that chooses its
   device and interface: **Send network packets**, **Join multicast
-  group**, **Start multicast stream** and **Interface actions** (Shut
-  interface, Start flapping). Nothing has to be selected first; a device's
+  group**, **Leave multicast group**, **Start multicast stream** and
+  **Interface actions** (Shut interface, Start flapping: flapping is an
+  interface's action, never a cable's). Nothing has to be selected first; a device's
   menu in the diagram opens a form with that device filled in, and the
   diagram's selection never changes a form. Table viewers (Show ARP table
   …) are not among them: they are in the diagram's menus and on the
@@ -2027,6 +2032,35 @@ time, side by side with any others (see
   memberships not reported in time expire. **Show IGMP / MLD groups**
   lists a router's groups with their last reporter, version, sources and
   expiry; **Show group memberships** a host's own.
+* **The querier election** starts by itself with the simulation (RFC 3376
+  §6.6, RFC 3810 §7.6). Candidates are configured — a multicast router's
+  interfaces (their `igmp_querier`, on by default), a switch's VLANs with
+  the snooping querier on, snooping enabled and an address there; snooping
+  alone makes none — and the role is the protocol's: each candidate takes
+  itself for the querier when its interface comes up and sends its startup
+  queries (robustness of them, a quarter of the query interval apart);
+  whoever hears a lower address stops; the lowest of each LAN is the
+  elected querier once its startup queries are sent and queries every
+  query interval; a non-querier takes over after the other querier present
+  interval without a query; a querier that comes back starts afresh. The
+  election is per LAN (only the queries that reach a candidate count: two
+  LANs with the same VLAN ID elect apart; a router can be the querier on one
+  interface and a non-querier on another). One schedule per candidate (a
+  generation token ends an older one: no duplicate queries after a flap or
+  a reboot). The diagram marks the active querier beside the status
+  (**Querier · VLAN 10**, dashed **Querier? · VLAN 10** while it is the
+  querier only for now); **Show querier election** lists every candidacy
+  with its role, the querier it yields to and how long until it would take
+  over.
+* **Members and leaves.** A host's membership is its intent: it lasts until
+  it leaves, and the host answers every query for it, so what the switches
+  and routers learned stays (no second join). What they learned ages out if
+  the answers can't arrive, and comes back with the next one. **Leave
+  multicast group** ends the intent at once (no later answer) and sends the
+  leave through the network; its event follows the entries the network had
+  learned on the host's way until each is removed (the querier's group
+  queries unanswered) or kept (another member there answered); a stream
+  goes on for the others.
 * **Snooping** is each switch's configuration, an explicit choice per VLAN
   its ports carry (`igmp_mld_snooping: {10: enabled, 99: disabled}`, the
   switch's **IGMP / MLD snooping** section in the Edit tab; a VLAN without
@@ -2854,6 +2888,7 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots of the rele
 | **Streams in real time** | `test/sim-realtime.test.mjs` (11 tests, a fake clock), `test/realtime-streams-browser.test.mjs` (2 tests, through the DevTools protocol, both themes), `test/mcast-actions.test.mjs`, `test/network-events.test.mjs` | **The schedule:** the first send at once, then every 1 s, 2 s, 250 ms, never early and within a frame of its deadline; two entries of 1 s at 0, 1, 2, 3 s in the same frames, in the order added (*abababab*); other intervals and start times each on their own grid, the same deadline in the order added; 20 000 irregularly late frames leave the last send within 110 ms of its deadline (no drift); a 3.5 s stall sends once for the latest deadline and counts 2 skipped, then the grid goes on; paused, nothing sent and nothing caught up after; a removed entry never sends again, even from the pump under way; clear removes all. **Streams:** two 1 s streams (srv, pc2 to 239.1.1.1) send 4 each in 3 s at the same simulated moments, 11 each in 10 s, both reach pc1 and rx; a 1 s and a 2 s stream started 0.4 s apart keep their counts (7 and 3 in 6 s); 3 s of real time with the clock standing still send 3 datagrams at that moment (no waiting for forwarding); 2 minutes of simulated time alone send none; Stop one, the other goes on; paused: *Paused*, then on from there; a second Start is refused (no second schedule); closed: nothing more; the source off: nothing sent, *not sending: srv is off*, *3 while srv was off*, then on its grid again after booting; the model's streams stay on simulated time; Start again from the menu is one schedule. **On screen:** two streams from the form, each a datagram every real second within two (5 s measured), side by side within one, both with at least 2 datagrams on their way at once, both *Paused* and not counting while paused, a dot of the second opening the inspector with port 5012, Stop one and the other goes on. |
 | **Device state** | `test/device-state.test.mjs` (5 tests), `test/realtime-streams-browser.test.mjs` (both themes), `test/events-status-snooping-browser.test.mjs` | **Model:** operational, powered off, booting (until its boot time, not a millisecond before), operational again, each with its words, the same state as `deviceOn` (packet processing); powered off while booting and on again: the first boot never completes the second; a shut interface, a failed cable, the gateway off leave a device operational (only r3 marked); an external network *External*, a pass-through *Passive*, a device the simulation lacks *Unknown*; a guest *down with its host hv2*; a new simulation all operational. **On screen:** every device's indicator, *lab-h* *Operational*; powered off: *Powered off*, its tooltip and accessible name *Powered off at t = …*, the outline marked, the box neither moved nor resized, its label clear, the menu's state line and *Power on*; powered on: *Booting* with *up at t = …*, still booting a millisecond before, operational after; a shut interface of srv marks no device; *inet* *External*, no Power off; Exit clears every indicator and mark. |
 | **Every device's status, Expand all / Collapse all, snooping on screen** | `test/events-status-snooping-browser.test.mjs` (3 tests, through the DevTools protocol: light and dark at 1440 × 900, light at 720 × 450 — 200 % zoom) | **Status:** all 14 devices of the private house with an indicator (13 *Operational* with the theme's green LED, *isp* *External*), its role and accessible name its tooltip, none over a text or port mark or another indicator (in the drawing's coordinates), every box where it was before the simulation, through Power off / on and after Exit; *Powered off*, *Booting*, *Operational* again after the boot time; a shut interface leaves the device *Operational*; the menu's state line equals the tooltip; the diagram's accessible name lists *powered off: ap-1*. **Bulk:** the accessible names and tooltips, mixed (both enabled), Expand all by Enter (all open, it disabled, the focus on Collapse all), Collapse all by Space (all closed, it disabled, the focus back), Active events and More options untouched, the heading and buttons not moving, a typed group kept, a running stream still counting, nothing wider than the panel. **Snooping:** dist's rows (10, 20, 30 enabled, 99 disabled), *Not configured* an error and gone from the YAML, chosen again; the thermostat's stream only to dist and core (*stops at core*), the core's snooping table empty with its notes, the TV's join in the open table without reopening it, *Show group memberships*, no table viewer among Network events. |
+| **Querier election, members, leaves, interface flapping** | `test/querier-election.test.mjs` (11 tests, the fake clock), `test/querier-leave-browser.test.mjs` (3 tests, through the DevTools protocol: light and dark at 1440 × 900, light at 720 × 450), the internal example `multicast-querier.yaml` | **Election:** down before the interfaces are up; every candidate queries at once (q1, q2), q2 hears q1 and stops, q1 *starting* then *querier* after its 2 startup queries 5 s apart, then one every 20 s, q2 none; the tables; the query's addresses. **Scope:** LAN B (the same VLAN 10) elects q3; the hosts say who queries them; one router on two LANs: querier on one, non-querier on the other; no candidate at all (snooping enabled is none): no query, the host says none heard. **Failover / recovery:** q1 off, q2 takes over exactly 45 s after q1's last query, then every 20 s; q1 back: two startup queries 5 s apart, then every 20 s (no duplicate schedule), q2 silent. **Flapping** q1's port: its candidacy down and up again, startup each time, q2 never queries. **Members:** still learned at 200 s (membership interval 50 s) through ≥ 8 answers; a cable down drops the switch's port, not the host's membership; learned again from its next answer. **Leave:** refused for a group or host without membership; the watch (sw port p4, q1:g0, q2:g0); *cleanup pending (3 of 3)* until removed at the switch's port and kept at the routers (rx2 answered the one group query); the leave report inspectable; delivery to rx1 stops, rx2 and the source go on; no later answer from rx1; rx3 leaving keeps the shared port (rx4 answers); a leave that can't be sent fails with its reason; MLD named as MLD. **Interfaces only:** a cable refused by the simulation, a port flaps (admin up, link down), the model's `flapping: "on"` on a port. **On screen:** the query dots of q1, q2, q3; dashed *Querier? · VLAN 10* on q1 and q3, then *Querier · VLAN 10*, no mark on q2; clear of texts, ports and statuses; boxes unmoved; Show querier election; the five actions in order, Leave in Expand all; no group chosen for you, the note; Enter on Leave group; the event's summaries; the packet inspector's TO_IN; q1 off: q2's mark; Exit clears all. |
 | **IGMP / MLD snooping per VLAN** | `test/snooping.test.mjs` (8 tests), `test/sim-multicast.test.mjs` (snooping tests rewritten), `test/sim-levels.test.mjs`, `test/mcast-actions.test.mjs` | **Format:** enabled / disabled per VLAN or range, the model's ranges, `snoopingChoice`, the errors (a wrong value, a VLAN twice, not a mapping, not a switch) and the warning for a VLAN no port carries; the check `snooping-not-configured` (an error, its VLANs listed; a routed port and a VLAN interface alone need none; disabled counts as a choice); the removed attributes `igmp_snooping` / `unknown_multicast` as errors that say where snooping lives. **Forwarding:** nothing to any host before a join; a join opens its own port, its group, its VLAN only (not the same group from VLAN 20, not another group, not h2); never back to the source; the log's *forwards … to no port*; reports only to router ports, queries flooded; refresh by answers to queries (still there at 90 s with a 30 s membership interval), a leave (after the last member queries), a link down (at once, logged), learned again after the restore, expiry of a host powered off, a switch powered off, a new simulation empty; IPv6 (MLDv2 member, ff05::1 to its member only, the host's memberships); a Layer 3 switch without PIM routes nothing to VLAN 20, with PIM (dense) to its member only. **The private house:** the six scenarios (no join; the TV's join, only towards ap-b and the TV; leave; nothing into Internal or Guest; the TV moved to Internal gets nothing without multicast routing, its membership in VLAN 10); disabled floods, not configured floods and says so. |
 | **Network events** | `test/network-events.test.mjs` (10 tests), `test/network-events-browser.test.mjs` (3 tests, through the DevTools protocol: light and dark at 1440 px, light at 640 px) | **Lifecycle:** every operation one event with a stable id, refused ones *Failed* with the simulation's reason, the older programmatic send listed too; a series of 20 one event with *sent of requested*, pending never failed, completed with its last answer's time; a series with failures still *Completed*; a broadcast without answers *unknown* and no rate; a group's members apart from its messages; a DHCP client's send *Queued* until its lease, Stop then *Cancelled* with nothing on the wire; a join *In progress* until q1 records it, then *Completed* with its membership and Leave group (completed 2 min later too), without a router completed after its reports; a stream's datagrams and each member's count, stopped; a shut *Completed* at once with the interface down and No shut, not listed twice; flapping's cycles (3 by 35 s), stopped part way; a failed cable and a device off in the list; the same states whether run in steps or at once; at most 50 kept, those in progress never dropped, Clear finished. **On screen:** the four actions in order as headings with their forms (no object list, no Show …), Active events after them; the tables in the device's menu and the status side; each form's device and interface (Select…, disabled until a device), its reason; the diagram's selection not changing the join form; a join, a stream, flapping (not twice), a shut and a series listed newest first with their states (icon and word), a named progress bar, paused without moving on; details open and the focus kept over four updates; the inspector from the details; Stop keeping the focus in its event; No shut; the outcome bar named; a failed cable with Restore; Clear finished keeping the flapping, the cable and the membership, the focus on the heading; nothing wider than the panel, no sideways scrolling, every control named. |
 | **Send test's form** | `test/send-test-form-browser.test.mjs` (2 tests, through the DevTools protocol, both themes) | Nothing chosen: From and To disabled and greyed, Send disabled, the hint once; unicast: every device in From (the ISP disabled, *Cannot send IP packets*), the guest phone's one interface as text before and after its lease, the core's interfaces as options with *Chosen by routing*, the destination's interface (one shown, four a choice, cleared with another device); a port only for TCP and UDP and empty, cleared when ICMP is chosen; the interval greyed for one message; another delivery type clearing what doesn't fit (TCP and the destination for a group) and keeping what does (UDP and its port for a broadcast); the subnet scope's address; a directed broadcast to a subnet outside the model blocked; a Guest test dropped by the policy; a series as one event of Active events with its progress (*1/3 sent*, *1 pending*, then *3 answered* and its named outcome bar) and Stop, stopped where it was; every control named, nothing wider than the panel; Send network packets… from the ISP's menu. |
@@ -3395,6 +3430,32 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots of the rele
       offers `10.20.0.1/24` for *Management*; **+ Add** adds it, Ctrl+Z
       removes it.
 
+41. **Querier election, Leave multicast group, interface flapping.** Open the
+    internal example `test/examples/multicast-querier.yaml` in the test
+    build, start the simulation, in both themes, at 200 % zoom and in a
+    window about 600 px wide.
+    * At once: IGMP query dots from q1, q2 and q3; q1 and q3 marked dashed
+      *Querier? · VLAN 10*, q2 unmarked. After a few seconds q1 and q3 say
+      *Querier · VLAN 10* (solid); hover: the LAN, g0 and the address.
+      q2's menu, **Show querier election**: *Non-querier*, *10.5.0.1 (q1)*,
+      the time until it would take over.
+    * **Join multicast group** rx1 and rx2 on `239.5.5.5`, **Start
+      multicast stream** from src: both receive; the snooping table of sw
+      lists p4 and p5; wait several query intervals (20 s): still there,
+      no second join.
+    * **Leave multicast group** (right below Join; also in Expand all):
+      rx1, eth0; the group list offers `239.5.5.5 (IGMP)`, none chosen; the
+      note says *sends an IGMPv3 report that blocks 239.5.5.5 …*. Leave:
+      the event says *cleanup pending*, then *removed at sw (VLAN 10, port
+      p4)* and *kept at q1:g0 … another member there answered*; rx1 gets
+      nothing more, rx2 does; rx1 never answers a later query for it.
+    * rx3 and rx4 (behind edge) join, rx3 leaves: *kept at sw (VLAN 10,
+      port p6)*: rx4 answered.
+    * Power q1 off: about 45 s later q2 says *Querier · VLAN 10*. Power q1
+      on: after its boot it is *Querier?*, then *Querier* again; q2 loses
+      its mark. LAN B's q3 is never affected.
+    * A cable's menu has no flapping; Interface actions flaps rx2's eth0
+      (*↯ Flapping*, the link down and up). Exit: no mark left.
 40. **Expand all / Collapse all, every device's status, snooping per VLAN.**
     Open `private-house.yaml`, in both themes, at 200 % zoom and in a window
     about 600 px wide.
@@ -3408,7 +3469,7 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots of the rele
       edge — *Operational* with a green LED, *External* (hollow) on *isp* —
       none over a name, an address, a port or a cable; zoom in and out:
       the boxes never move.
-    * Beside **Network events**: **Collapse all** closes the four forms
+    * Beside **Network events**: **Collapse all** closes the five forms
       (Expand all enabled, Collapse all disabled, the keyboard moves to
       Expand all); **Expand all** opens them all. Type a group in Start
       multicast stream, collapse and expand: it is still there. Active
@@ -3885,8 +3946,7 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots of the rele
   A switch's snooping querier sends IGMP (IPv4) queries only, from its
   VLAN interface's IPv4 address (none: no querier); IPv6 members are
   learned from their own reports and from multicast routers' queries.
-  There is no querier election among switches (one with a live router port
-  stays silent). Memberships and router ports age in simulated time (the
+  Memberships and router ports age in simulated time (the
   membership interval, the router port aging), never in real time; a
   stream of Network events is sent at the simulated time it is due, so its
   datagrams follow the same tables. Access points and virtual switches
@@ -3894,6 +3954,22 @@ node scripts/browser-selftest.mjs --shot   # also writes screenshots of the rele
   point to the clients of that Wi-Fi network only). A change of a switch's
   VLANs or snooping needs the simulation started again (the model is
   locked meanwhile).
+* **The querier election's limits.** IGMPv2 / v3 and MLDv1 / v2 rules
+  (the lowest address wins, startup queries, the other querier present
+  interval); IGMPv1 (no election) is not simulated. A switch's snooping
+  querier takes part in the same election by its VLAN interface's address
+  (some switches instead defer to any multicast router; that is not
+  modelled). All IGMP / MLD timers — the election, the queries, the
+  members' answers, the aging — run on the simulated clock; in Readable
+  pacing that clock slows while dots are shown, in Real time pacing (or
+  while a stream of Network events runs) it follows real time. A leave
+  report is sent once (a v3 / MLDv2 state-change report is not repeated);
+  a lost leave is covered by the membership interval. A Leave multicast
+  group follows the entries learned on the host's way when it is sent; an
+  entry learned later (another join of it) is not followed. Querier marks
+  are placed like the status pills: when nothing beside a box is free they
+  take its top right corner. Fast leave removes a switch's port at once,
+  also when another member is behind it (as configured switches do).
 * **Network events' limits.** Fail link and Power off have no form of
   their own (the diagram's menus start them; they are listed). Flapping
   uses the Layer 1 parameters for every flap (no per-flap timing); a

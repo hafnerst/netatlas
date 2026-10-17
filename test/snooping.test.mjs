@@ -136,7 +136,7 @@ test('control traffic: reports go to the router ports only (no other host hears 
   assert.ok(ev(s, (e) => e.device === 'h1' && /answers the general query of 10\.10\.0\.1/.test(e.detail)).length >= 1);
   // h2 answers no query for a group it never joined
   assert.ok(!ev(s, (e) => e.device === 'h2' && e.what === 'Report').length);
-  assert.ok(s.snoopTable('sw').notes.includes('Snooping querier of VLAN 10 (10.10.0.1) while no multicast router queries there.'));
+  assert.ok(s.snoopTable('sw').notes.includes('VLAN 10: the IGMP querier (10.10.0.1), elected.'), s.snoopTable('sw').notes.join(' | '));
 });
 
 test('lifecycle: refreshed by the answers to queries, gone after a leave (group queries) or when nothing refreshes it; a link down takes its port at once; a new simulation starts empty', () => {

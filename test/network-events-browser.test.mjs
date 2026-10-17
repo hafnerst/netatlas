@@ -1,6 +1,6 @@
 // Network events on screen (headless Chrome/Edge/Chromium through the
 // DevTools protocol; skipped without one), in the private house, both themes,
-// a wide and a narrow window: the four actions in order with their own forms
+// a wide and a narrow window: the five actions in order with their own forms
 // (no object to choose first, no table viewer among them; the tables stay in
 // the diagram's menus and the panel's status side); Active events below
 // them, one event per operation with its state, progress, outcome and
@@ -35,14 +35,14 @@ for (const [theme, width] of [['light', 1440], ['dark', 1440], ['light', 640]]) 
       await page.settle(150);
       await page.eval(`(() => { netatlas.startProtocolSimulation({ params: {} }); const c = netatlas.simController(); c.setPlaying(false); c.runTo(9000); c.refresh(true); if (document.getElementById('spt-actions')) document.getElementById('spt-actions').click(); return true; })()`);
       await page.settle(150);
-      // the structure: four actions in order, each a heading with its button; no object list; Active events after them
+      // the structure: five actions in order, each a heading with its button; no object list; Active events after them
       const S = await page.eval(`(() => { const net = document.getElementById('sim-act-net'); return {
         actions: Array.from(net.querySelectorAll('.sim-ne-h button')).map((b) => [b.querySelector('span:last-child').textContent, b.getAttribute('aria-expanded'), b.getAttribute('aria-controls')]),
         heading: Array.from(net.querySelectorAll('.sim-ne-h')).every((h) => h.tagName === 'H4'),
         obj: !!document.getElementById('sim-obj'), shows: /Show /.test(net.textContent),
         after: !!(net.compareDocumentPosition(document.getElementById('sim-act-events')) & Node.DOCUMENT_POSITION_FOLLOWING),
         none: document.getElementById('sim-failed').textContent }; })()`);
-      assert.deepEqual(S.actions, [['Send network packets', 'true', 'sim-ne-send'], ['Join multicast group', 'false', 'sim-ne-join'], ['Start multicast stream', 'false', 'sim-ne-stream'], ['Interface actions', 'false', 'sim-ne-iface']]);
+      assert.deepEqual(S.actions, [['Send network packets', 'true', 'sim-ne-send'], ['Join multicast group', 'false', 'sim-ne-join'], ['Leave multicast group', 'false', 'sim-ne-leave'], ['Start multicast stream', 'false', 'sim-ne-stream'], ['Interface actions', 'false', 'sim-ne-iface']]);
       assert.deepEqual([S.heading, S.obj, S.shows, S.after], [true, false, false, true]);
       assert.equal(S.none, 'None yet: start one above, or from the diagram’s menus.');
       // the tables stay where they belong: the device's menu, the panel's status side

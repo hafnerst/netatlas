@@ -715,6 +715,7 @@ function simStateSection(): LegendSection {
       { swatch: led('off'), label: 'Powered off (red): or down with its host or its container engine; it takes no part' },
       { swatch: led('booting'), label: 'Booting (blue): powered on, it takes part when its boot time is over' },
       { swatch: led('passive'), label: 'Passive or External (hollow grey): a patch panel, a TAP, an external network — no power state of its own' },
+      { swatch: [h('g', { class: 'sim-querier', 'data-role': 'querier' }, [h('rect', { x: 1, y: 2, width: 40, height: 14, rx: 3 }), h('text', { x: 5, y: 12.5 }, 'Querier')])], label: 'Querier · VLAN 10: the elected IGMP / MLD querier of that LAN (the election’s, not the configuration’s); dashed “Querier?”: only for now, its startup queries not yet sent' },
     ],
     note: 'Every device has its indicator on its box’s edge while the simulation runs. Only the device itself counts: a shut interface, a cable down, a peer away or a blocked packet never mark a device off, and operational says nothing about its interfaces, services or destinations. The indicator’s tooltip and the device’s menu say the state with its time.',
   };

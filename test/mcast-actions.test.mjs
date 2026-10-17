@@ -91,16 +91,20 @@ test('with a multicast router and a member: the stream reaches the member only; 
   const j = s.actJoin('h2', 'eth0', '239.2.2.2', []);
   s.runTo(s.now + 2000);
   assert.ok(flightsOf(s, j.traffic).some((f) => f.sender === 'h2' && f.protocol === 'igmp'));
-  assert.equal(view(s, j.id).summary, 'membership recorded by q1:g0');
+  // (the snooping switch learns its port first: the membership is recorded there)
+  assert.equal(view(s, j.id).summary, 'membership recorded by sw (VLAN 1, port p4)');
   s.runTo(s.now + 130000);
   assert.ok(s.engine.flights.filter((f) => f.protocol === 'igmp' && f.sender === 'h1').every((f) => f.test === undefined), 'h1’s reports are the model’s');
   // the join's answers to later queries belong to the membership, not to the join
   const later = s.events().filter((e) => e.test === j.traffic && e.kind === 'message' && e.t > j.at + 3000);
   assert.deepEqual(later, []);
-  // Leave group: its leave report is the event's too
+  // Leave group (the join's control): a Leave multicast group event of its own, its leave report carrying its id
   s.actionControl(j.id, 'leave');
   s.runTo(s.now + 100);
-  assert.ok(s.events().some((e) => e.test === j.traffic && /leaves the group/.test(e.detail)));
+  const lv = s.actions().find((v) => v.kind === 'leave');
+  assert.ok(lv && lv.target === 'h2:eth0 → 239.2.2.2');
+  assert.ok(s.events().some((e) => e.test === lv.tests[0] && /leaves the group/.test(e.detail)));
+  assert.match(view(s, j.id).state, /^not a member \(left at t = /);
 });
 
 test('a stream of Network events is scheduled in real time: its datagrams at its interval of real time, whatever simulated time does; a stream of the model on the simulated clock', () => {
@@ -134,7 +138,11 @@ test('interface states: administrative and operational apart; Shut interface end
   const f = s.actFlap('iface:core:wan');
   s.runTo(s.now + 1000);
   assert.equal(E.portStatus('core', 'wan').why, 'flapping (down)');
-  assert.equal(s.actFlap('iface:dsl-router:lan').error, 'dsl-router:lan is flapping already', 'one flapping per cable, from either end');
+  assert.equal(s.actFlap('iface:dsl-router:lan').error, 'its cable l-router-core flaps already, from core:wan', 'one flapping per cable, from either end');
+  assert.equal(s.actFlap('iface:core:wan').error, 'core:wan is flapping already');
+  // a cable is no target: flapping is an interface's action, refused by the simulation itself
+  assert.equal(s.actFlap('link:l-router-core').error, 'cable l-router-core is no interface: flapping is an interface action (choose a device and its interface)');
+  assert.equal(s.startFlap('link:l-core-dist'), false);
   const sh = s.actShut('core', 'wan');
   assert.equal(sh.error, undefined);
   assert.equal(view(s, f.id).status, 'stopped');

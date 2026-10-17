@@ -122,7 +122,7 @@ test('the simulation layout: setup and actions in place of the Objects list and 
     assert.equal(L.detach, false, 'the panel has nothing to detach or close it');
     assert.equal(L.scroll, 0);
     assert.equal(L.obj, false, 'no object to choose first');
-    assert.deepEqual(L.acts, ['Send network packets', 'Join multicast group', 'Start multicast stream', 'Interface actions'], 'the four actions, whatever is selected');
+    assert.deepEqual(L.acts, ['Send network packets', 'Join multicast group', 'Leave multicast group', 'Start multicast stream', 'Interface actions'], 'the five actions, whatever is selected');
     // the panel: by default its header and three rows of each table, which is also its minimum; the diagram is the largest part
     const h0 = await page.eval(`document.getElementById('sim-dock').getBoundingClientRect().height`);
     const cw = await page.eval(`document.getElementById('canvas-wrap').getBoundingClientRect().height`);
@@ -175,7 +175,8 @@ test('the in-diagram menu with the mouse and the keyboard; the device tables in 
     await page.mouse('mouseReleased', x, y, 'left');
     await page.settle(150);
     const m = await page.eval(`(() => { const b = document.querySelector('.sim-menu'); const r = b.getBoundingClientRect(); return { items: Array.from(b.querySelectorAll('[role=menuitem]')).map((i) => i.textContent), active: document.activeElement.textContent, x: r.left, y: r.top }; })()`);
-    assert.deepEqual(m.items, ['Fail link', 'Start flapping', 'Highlight broadcast domain']);
+    // no flapping on a cable: that is an interface's (its ports' menus, Interface actions)
+    assert.deepEqual(m.items, ['Fail link', 'Highlight broadcast domain']);
     assert.equal(m.active, 'Fail link', 'the keyboard is in the menu');
     assert.ok(Math.abs(m.x - x) < 40 && Math.abs(m.y - y) < 40, 'at that spot');
     await page.key('Enter', 'Enter', 13);
@@ -186,7 +187,7 @@ test('the in-diagram menu with the mouse and the keyboard; the device tables in 
     await page.mouse('mousePressed', x, y, 'left');
     await page.mouse('mouseReleased', x, y, 'left');
     await page.settle(120);
-    assert.deepEqual(await page.eval(`Array.from(document.querySelectorAll('.sim-menu [role=menuitem]')).map((i) => i.textContent)`), ['Restore link', 'Start flapping', 'Highlight broadcast domain']);
+    assert.deepEqual(await page.eval(`Array.from(document.querySelectorAll('.sim-menu [role=menuitem]')).map((i) => i.textContent)`), ['Restore link', 'Highlight broadcast domain']);
     await page.key('Escape', 'Escape', 27);
     await page.settle(80);
     assert.equal(await page.eval(`!!document.querySelector('.sim-menu') || !netatlas.simulationOn()`), false, 'Esc closes the menu, the simulation goes on');
@@ -206,7 +207,7 @@ test('the in-diagram menu with the mouse and the keyboard; the device tables in 
     await page.key('Enter', 'Enter', 13);
     await page.settle(120);
     const st = await page.eval(`({ tabs: Array.from(document.querySelectorAll('#sd-sttabs [data-st]')).map((b) => b.textContent + (b.getAttribute('aria-pressed') === 'true' ? '*' : '')), heads: Array.from(document.querySelectorAll('#sim-status-table thead th')).slice(0, 8).map((h) => h.textContent), rows: document.querySelectorAll('#sim-status-table tbody tr[data-ip]').length, panels: document.querySelectorAll('.sim-table-panel').length })`);
-    assert.deepEqual(st.tabs, ['Protocols', 'ARP*', 'MAC', 'Connections', 'IGMP / MLD', 'Multicast routes', 'Snooping']);
+    assert.deepEqual(st.tabs, ['Protocols', 'ARP*', 'MAC', 'Connections', 'IGMP / MLD', 'Querier', 'Multicast routes', 'Snooping']);
     assert.deepEqual(st.heads, ['IP address', 'MAC address', 'Interface', 'VLAN', 'Type', 'State', 'Age', 'Expires in']);
     assert.ok(st.rows > 0);
     assert.equal(st.panels, 0, 'no floating table');
@@ -454,7 +455,8 @@ test('multicast on screen: Join multicast group… from a device’s menu (the A
     await page.eval(`(() => { const c = netatlas.simController(); c.runTo(c.t + 3000); c.refresh(true); return true; })()`);
     const ev = await page.eval(`(() => { const li = document.querySelector('#sim-events li[data-kind="join"]'); return li ? [li.getAttribute('data-status'), li.querySelector('.sim-ev-summary').textContent, li.querySelector('button[data-op="leave"]').textContent] : null; })()`);
     assert.equal(ev[0], 'completed');
-    assert.match(ev[1], /^membership recorded by \S+ · member of 239\.4\.4\.4$/);
+    // (the first device that learns it: here the snooping switch's port)
+    assert.match(ev[1], /^membership recorded by (\S+|\S+ \(VLAN \d+, port \S+\)) · member of 239\.4\.4\.4$/);
     assert.equal(ev[2], 'Leave group');
     await page.eval(`document.querySelector('#sim-events li[data-kind="join"] button[data-op="leave"]').click(), true`);
     await page.settle(100);

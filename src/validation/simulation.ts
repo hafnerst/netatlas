@@ -206,12 +206,12 @@ export function checkObjectBlocks(c: Ctx, model: Model, blocks: Array<{ kind: 'i
   }
 }
 
-/** A cable's `simulation:` block: latency, packet loss, and flapping from the start. */
+/** A cable's `simulation:` block: latency and packet loss (flapping is an interface's: a port flaps, its cable follows). */
 export function readLinkSimulation(r: Reader, c: Ctx, n: YNode | undefined, path: string): LinkSimulation | undefined {
   if (isNull(n)) return undefined;
   const m = r.map(n, path);
   if (!m) return undefined;
-  r.keys(m, ['latency', 'loss', 'flapping'], path);
+  r.keys(m, ['latency', 'loss'], path, '', { flapping: 'flapping is an interface’s: write simulation: {flapping: "on"} on one of the cable’s ports (the cable follows it)' });
   const out: LinkSimulation = {};
   const num = (key: string, def: ParamDef): number | undefined => {
     const node = get(m as YMap, key);
@@ -227,8 +227,6 @@ export function readLinkSimulation(r: Reader, c: Ctx, n: YNode | undefined, path
   if (lat !== undefined) out.latency = lat;
   const loss = num('loss', paramDef('loss'));
   if (loss !== undefined) out.loss = loss;
-  const flap = r.bool(get(m, 'flapping'), path + '.flapping');
-  if (flap !== undefined) out.flapping = flap;
   return out;
 }
 

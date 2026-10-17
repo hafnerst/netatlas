@@ -117,6 +117,7 @@ export const PARAMS: readonly ParamDef[] = [
   P({ key: 'link-latency', yaml: 'latency', label: 'Link latency', layer: 1, kind: 'duration', base: 'ms', dflt: 0.1, min: 0, max: 10 * S, source: 'about 20 km of fibre (5 µs per km); a cable in one building is far shorter', help: 'Propagation delay of a cable; serialization (frame size ÷ speed) is added.', device: ['cloud'], configured: 'a cable’s simulation: latency' }),
   P({ key: 'loss', yaml: 'loss', label: 'Packet loss', layer: 1, kind: 'percent', dflt: 0, min: 0, max: 100, source: 'a healthy link loses nothing', help: 'Share of frames lost on each cable, from a fixed seed.', device: ['cloud'], configured: 'a cable’s simulation: loss' }),
   P({ key: 'los-detect', level: 'interface', ifaces: ['port'], device: ['all'], yaml: 'los_detection', label: 'Loss-of-signal detection', layer: 1, kind: 'duration', base: 'ms', dflt: 0, min: 0, max: 60 * S, source: 'Junos hold-time down 0 ms (Cisco carrier-delay is the same idea)', help: 'How long a port takes to report that its cable went dark; frames are lost meanwhile.' }),
+  P({ key: 'flapping', level: 'interface', ifaces: ['port'], device: ['all'], yaml: 'flapping', label: 'Flapping from the start', layer: 0, kind: 'enum', dflt: 'off', options: ON_OFF, source: 'off: a port flaps only when told to (Interface actions → Start flapping)', help: 'The port goes down and up from the start, with the flapping times; its cable follows.' }),
   P({ key: 'link-up-delay', level: 'interface', ifaces: ['port'], device: ['all'], yaml: 'link_up_delay', label: 'Link-up delay', layer: 1, kind: 'duration', base: 's', dflt: 2 * S, min: 0, max: 300 * S, source: '1000BASE-T autonegotiation and link training (IEEE 802.3 clauses 28 and 40) take about 2 s', help: 'After a restore or power-on: the time until the port is up again.' }),
   P({ key: 'default-speed', yaml: 'speed', label: 'Default speed', layer: 1, kind: 'speed', dflt: 1e9, min: 1e3, max: 1.6e12, source: '1000BASE-T, the usual access port', help: 'For cables without a speed: serialization time of each frame.', configured: 'a cable’s speed' }),
   P({ key: 'flap-down', yaml: 'flap_down', label: 'Flapping: down time', layer: 1, kind: 'duration', base: 's', dflt: 5 * S, min: 100, max: 3600 * S, source: 'a demonstration value', help: 'Start flapping: how long the cable stays down in each cycle.' }),
@@ -368,8 +369,8 @@ export function deviceParamByYaml(yaml: string): ParamDef | undefined {
   return BY_YAML.get(yaml);
 }
 
-/** The cable attributes (a link's `simulation:` block): latency, loss, flapping from the start. */
-export const LINK_KEYS: readonly string[] = ['latency', 'loss', 'flapping'];
+/** The cable attributes (a link's `simulation:` block): latency, loss (flapping is a port's: its `flapping` attribute). */
+export const LINK_KEYS: readonly string[] = ['latency', 'loss'];
 
 export const LAYER_TITLES: { [n: number]: string } = { 1: 'Layer 1 – Physical', 2: 'Layer 2 – Data link', 3: 'Layer 3 – Network', 4: 'Layer 4 – Transport' };
 
